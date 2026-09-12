@@ -18,10 +18,27 @@
 //!
 //! **Arm 1 — the recorded corpus (`recorded_cells_agree`).** Every recorded llm cell of the three
 //! families where a status frame and a plane finish can disagree — 36 `upstream_down`, 30
-//! `ok_stream` — carried below as the facts the two deciders read, transcribed from
-//! `testing/shadow-oracle/golden/1.5.5`. Both deciders are driven over every one and must answer the
-//! same count, and that count must be the count the golden billed. This arm is the money guarantee:
-//! while it is green, the MOVE is byte-identical on everything the node has ever recorded.
+//! `ok_stream` — READ from `testing/shadow-oracle/golden/1.5.5` at run time through
+//! [`golden::family`], never transcribed. Both deciders are driven over every one and must answer
+//! the same count, and that count must be the count the golden billed. This arm is the money
+//! guarantee: while it is green, the MOVE is byte-identical on everything the node has ever
+//! recorded.
+//!
+//! # WHY THE CORPUS IS READ AND NOT TYPED IN
+//!
+//! It used to be typed in: 78 `Cell { name: "…", … }` literals, each one spelling a golden cell id,
+//! and a golden llm cell id is `<ingress dialect>__<upstream dialect>__request__<ending>`. That is
+//! 146 vendor names in the crate that COMPOSES the node — and `kind-isolation` counted every one of
+//! them, because a composition root naming a vendor is a root that has learned something about a
+//! dialect.
+//!
+//! The name was the only thing in those literals that knew what a dialect was. This fee decision
+//! reads four facts about an exchange — was it admitted, is the origin a client's, did a
+//! destination resolve, what did the answer's head say — and not one of them is a fact about a
+//! vendor. So the corpus is read: the ids come off the file names, the facts come off the
+//! recordings, the root spells no vendor, and the transcription can no longer drift from the thing
+//! it transcribes. The cross-check the old header claimed for the transcription is now a
+//! cross-check on the DERIVATION, and it is asserted in arm 1 rather than described here.
 //!
 //! **Arm 2 — the fact cube (`the_two_rules_are_not_the_same_rule`).** The two rules are NOT the same
 //! expression, and arm 1 passing is not evidence that they are — it is evidence that the corpus
@@ -46,36 +63,97 @@
 //!
 //! What `billed` therefore is: **1.5.5's own rule evaluated over the recorded facts** — the rule
 //! `retired_plane_fee` holds verbatim, which is what the published binary ran. Its agreement with
-//! the presence of `spend_cents` across all 78 cells is a CROSS-CHECK on the transcription, not the
-//! source of the column. The money statement this cell supports is exactly: the kernel's decider
-//! answers what the shipped 1.5.5 decider answered, on every fact combination the node has
-//! recorded. It is not, and cannot be, a claim that the golden recorded a fee.
+//! the presence of `spend_cents` is a CROSS-CHECK on the derivation, not the source of the figure,
+//! and it is asserted where it HOLDS: on all 66 cells of arm 1's family, and on none of arm 3's,
+//! where eleven of the twelve recorded no spend at all for a fault the rule bills and the twelfth
+//! recorded one because its partial frame happened to carry a usage block. That split is arm 3's
+//! whole subject. The money statement this cell supports is exactly: the kernel's decider answers
+//! what the shipped 1.5.5 decider answered, on every fact combination the node has recorded. It is
+//! not, and cannot be, a claim that the golden recorded a fee.
 
 use busbar_contract::{FinishClass, StatusLeg};
 use busbar_kernel::teller::{charge, Charge, DisputePolicy, FeeEvidence, TariffCell};
 
-/// One recorded cell, reduced to the facts the two deciders read.
+mod golden;
+
+/// One cell of the corpus, as the two deciders read it.
 ///
-/// `name` is the golden's cell id with its leading family segment implied: every cell below is an
-/// `llm|…` cell, the family is stated once in the module header, and spelling it 66 more times
-/// would be this test file teaching the composition root a plane's name 66 times over. Prefix it
-/// back to look one up in `ledger.tsv`.
-///
-/// Transcribed from `golden/1.5.5/cells/llm__*__{upstream_down,ok_stream}.json`:
-/// `status` is the cell's client-facing `status`; `upstream_leg` is whether the recording shows a
-/// dial (a non-empty `effects.egress`, or a `busbar_upstream_attempts_total` metric);
-/// `upstream_candidate` is whether a destination resolved (a `pool=` label on any metric);
-/// `billed` is the flat fee the golden charged, read off `effects.usage.spend_cents`.
-///
-/// `effects.usage.requests` is NOT the fee: it is the request SLOT, drawn at the door and never
-/// released, which is why every `upstream_down` cell records `requests: 1` against a fee of zero.
+/// Built by [`recorded`] from the pinned golden and by [`the_two_rules_are_not_the_same_rule`] from
+/// a boolean cube. `name` is the golden's own cell id where there is one, and it is carried for the
+/// divergence message alone: no decider below reads it, which is precisely why it never needed to
+/// be spelled in this file.
 struct Cell {
-    name: &'static str,
+    name: String,
     status: u16,
     upstream_leg: bool,
     upstream_candidate: bool,
     client_origin: bool,
     billed: u32,
+    /// Whether the RECORDING carries a spend. Not a decision and not a fee — see the module header
+    /// on what a recorded spend says. It rides on the cell so the corpus is read once.
+    recorded_spend: bool,
+}
+
+/// THE RECORDED FACTS OF ONE FAMILY, read from the pinned golden.
+///
+/// `family` is the id prefix — the one segment of a cell id that is not a vendor's name — and
+/// `endings` selects the recordings inside it whose ending this file is about. Every other field is
+/// read by [`golden`], with its derivation stated there.
+///
+/// `client_origin` is `true` on every cell because the oracle drives no provider push, and a
+/// constant is not a fact about a recording.
+///
+/// `billed` is 1.5.5's own rule over the recorded facts, held below as [`retired_plane_fee`]. It is
+/// NOT read from the recording: see the module header on what a golden llm cell can and cannot say
+/// about a fee.
+fn recorded(family: &str, endings: &[&str]) -> Vec<Cell> {
+    golden::family(family)
+        .into_iter()
+        .filter(|rec| {
+            endings
+                .iter()
+                .any(|e| rec.name.ends_with(&format!("__{e}")))
+        })
+        .map(|rec| {
+            let recorded_spend = rec.recorded_spend();
+            let mut cell = Cell {
+                name: rec.name,
+                status: rec.status,
+                upstream_leg: rec.upstream_leg,
+                upstream_candidate: rec.upstream_candidate,
+                client_origin: true,
+                billed: 0,
+                recorded_spend,
+            };
+            cell.billed = retired_plane_fee(&cell);
+            cell
+        })
+        .collect()
+}
+
+/// **ARM 1's FAMILY** — the recorded `llm` cells where a status frame and a plane finish can
+/// disagree: the upstream never answered, or it streamed a complete one.
+fn recorded_exchanges() -> Vec<Cell> {
+    recorded("llm__", &["ok_stream", "upstream_down"])
+}
+
+/// **THE MID-STREAM FAMILY.** The door writes 200, the first frames go out, and the upstream then
+/// fails — announced in the dialect's own error shape (`stream-error`) or not announced at all
+/// (`cut`).
+///
+/// Read by [`recorded_stream_faults`] from `golden/1.5.5/cells`. Every one of the twelve records
+/// `status: 200`, a single `busbar_upstream_attempts_total` metric (the dial happened, the lane
+/// answered), `effects.usage.requests: 1` — the slot, drawn and never released — and, on eleven of
+/// the twelve, NO `spend_cents` key at all, because the tokens seen before the failure bill nothing
+/// and the flat fee is configured to zero in this harness. See the module header on what that does
+/// and does not license: `billed` here is 1.5.5's own rule over the recorded facts, which is 1, and
+/// the recording neither confirms nor contradicts it.
+///
+/// The PLANE's finish on all twelve is an error — the tap saw a cut or a terminal error, which is
+/// the same fact `billing_failed` carries — while the frame the client saw said 200. That is the
+/// contradiction, and this is the family the kernel's dispute arm exists for.
+fn recorded_stream_faults() -> Vec<Cell> {
+    recorded("llm.stream__", &["cut", "stream-error"])
 }
 
 /// THE KERNEL'S DECIDER, reached over what the root leg actually builds for this plane — the
@@ -148,663 +226,15 @@ fn retired_plane_fee(c: &Cell) -> u32 {
     u32::from(delivered && c.upstream_leg)
 }
 
-/// The recorded facts of the three families. See [`Cell`] for provenance.
-///
-/// The 6 `llm|…|stream_upstream_error` cells of the third family are absent because they are absent
-/// from the golden — SKIP, a named gap. See the module header.
-const RECORDED: &[Cell] = &[
-    Cell {
-        name: "anthropic|anthropic|request|ok_stream",
-        status: 200,
-        upstream_leg: true,
-        upstream_candidate: true,
-        client_origin: true,
-        billed: 1,
-    },
-    Cell {
-        name: "anthropic|anthropic|request|upstream_down",
-        status: 503,
-        upstream_leg: true,
-        upstream_candidate: true,
-        client_origin: true,
-        billed: 0,
-    },
-    Cell {
-        name: "anthropic|bedrock|request|ok_stream",
-        status: 200,
-        upstream_leg: true,
-        upstream_candidate: true,
-        client_origin: true,
-        billed: 1,
-    },
-    Cell {
-        name: "anthropic|bedrock|request|upstream_down",
-        status: 503,
-        upstream_leg: true,
-        upstream_candidate: true,
-        client_origin: true,
-        billed: 0,
-    },
-    Cell {
-        name: "anthropic|cohere|request|ok_stream",
-        status: 200,
-        upstream_leg: true,
-        upstream_candidate: true,
-        client_origin: true,
-        billed: 1,
-    },
-    Cell {
-        name: "anthropic|cohere|request|upstream_down",
-        status: 503,
-        upstream_leg: true,
-        upstream_candidate: true,
-        client_origin: true,
-        billed: 0,
-    },
-    Cell {
-        name: "anthropic|gemini|request|upstream_down",
-        status: 503,
-        upstream_leg: true,
-        upstream_candidate: true,
-        client_origin: true,
-        billed: 0,
-    },
-    Cell {
-        name: "anthropic|openai|request|ok_stream",
-        status: 200,
-        upstream_leg: true,
-        upstream_candidate: true,
-        client_origin: true,
-        billed: 1,
-    },
-    Cell {
-        name: "anthropic|openai|request|upstream_down",
-        status: 503,
-        upstream_leg: true,
-        upstream_candidate: true,
-        client_origin: true,
-        billed: 0,
-    },
-    Cell {
-        name: "anthropic|responses|request|ok_stream",
-        status: 200,
-        upstream_leg: true,
-        upstream_candidate: true,
-        client_origin: true,
-        billed: 1,
-    },
-    Cell {
-        name: "anthropic|responses|request|upstream_down",
-        status: 503,
-        upstream_leg: true,
-        upstream_candidate: true,
-        client_origin: true,
-        billed: 0,
-    },
-    Cell {
-        name: "bedrock|anthropic|request|ok_stream",
-        status: 200,
-        upstream_leg: true,
-        upstream_candidate: true,
-        client_origin: true,
-        billed: 1,
-    },
-    Cell {
-        name: "bedrock|anthropic|request|upstream_down",
-        status: 503,
-        upstream_leg: true,
-        upstream_candidate: true,
-        client_origin: true,
-        billed: 0,
-    },
-    Cell {
-        name: "bedrock|bedrock|request|ok_stream",
-        status: 200,
-        upstream_leg: true,
-        upstream_candidate: true,
-        client_origin: true,
-        billed: 1,
-    },
-    Cell {
-        name: "bedrock|bedrock|request|upstream_down",
-        status: 503,
-        upstream_leg: true,
-        upstream_candidate: true,
-        client_origin: true,
-        billed: 0,
-    },
-    Cell {
-        name: "bedrock|cohere|request|ok_stream",
-        status: 200,
-        upstream_leg: true,
-        upstream_candidate: true,
-        client_origin: true,
-        billed: 1,
-    },
-    Cell {
-        name: "bedrock|cohere|request|upstream_down",
-        status: 503,
-        upstream_leg: true,
-        upstream_candidate: true,
-        client_origin: true,
-        billed: 0,
-    },
-    Cell {
-        name: "bedrock|gemini|request|upstream_down",
-        status: 503,
-        upstream_leg: true,
-        upstream_candidate: true,
-        client_origin: true,
-        billed: 0,
-    },
-    Cell {
-        name: "bedrock|openai|request|ok_stream",
-        status: 200,
-        upstream_leg: true,
-        upstream_candidate: true,
-        client_origin: true,
-        billed: 1,
-    },
-    Cell {
-        name: "bedrock|openai|request|upstream_down",
-        status: 503,
-        upstream_leg: true,
-        upstream_candidate: true,
-        client_origin: true,
-        billed: 0,
-    },
-    Cell {
-        name: "bedrock|responses|request|ok_stream",
-        status: 200,
-        upstream_leg: true,
-        upstream_candidate: true,
-        client_origin: true,
-        billed: 1,
-    },
-    Cell {
-        name: "bedrock|responses|request|upstream_down",
-        status: 503,
-        upstream_leg: true,
-        upstream_candidate: true,
-        client_origin: true,
-        billed: 0,
-    },
-    Cell {
-        name: "cohere|anthropic|request|ok_stream",
-        status: 200,
-        upstream_leg: true,
-        upstream_candidate: true,
-        client_origin: true,
-        billed: 1,
-    },
-    Cell {
-        name: "cohere|anthropic|request|upstream_down",
-        status: 503,
-        upstream_leg: true,
-        upstream_candidate: true,
-        client_origin: true,
-        billed: 0,
-    },
-    Cell {
-        name: "cohere|bedrock|request|ok_stream",
-        status: 200,
-        upstream_leg: true,
-        upstream_candidate: true,
-        client_origin: true,
-        billed: 1,
-    },
-    Cell {
-        name: "cohere|bedrock|request|upstream_down",
-        status: 503,
-        upstream_leg: true,
-        upstream_candidate: true,
-        client_origin: true,
-        billed: 0,
-    },
-    Cell {
-        name: "cohere|cohere|request|ok_stream",
-        status: 200,
-        upstream_leg: true,
-        upstream_candidate: true,
-        client_origin: true,
-        billed: 1,
-    },
-    Cell {
-        name: "cohere|cohere|request|upstream_down",
-        status: 503,
-        upstream_leg: true,
-        upstream_candidate: true,
-        client_origin: true,
-        billed: 0,
-    },
-    Cell {
-        name: "cohere|gemini|request|upstream_down",
-        status: 503,
-        upstream_leg: true,
-        upstream_candidate: true,
-        client_origin: true,
-        billed: 0,
-    },
-    Cell {
-        name: "cohere|openai|request|ok_stream",
-        status: 200,
-        upstream_leg: true,
-        upstream_candidate: true,
-        client_origin: true,
-        billed: 1,
-    },
-    Cell {
-        name: "cohere|openai|request|upstream_down",
-        status: 503,
-        upstream_leg: true,
-        upstream_candidate: true,
-        client_origin: true,
-        billed: 0,
-    },
-    Cell {
-        name: "cohere|responses|request|ok_stream",
-        status: 200,
-        upstream_leg: true,
-        upstream_candidate: true,
-        client_origin: true,
-        billed: 1,
-    },
-    Cell {
-        name: "cohere|responses|request|upstream_down",
-        status: 503,
-        upstream_leg: true,
-        upstream_candidate: true,
-        client_origin: true,
-        billed: 0,
-    },
-    Cell {
-        name: "gemini|anthropic|request|ok_stream",
-        status: 200,
-        upstream_leg: true,
-        upstream_candidate: true,
-        client_origin: true,
-        billed: 1,
-    },
-    Cell {
-        name: "gemini|anthropic|request|upstream_down",
-        status: 503,
-        upstream_leg: true,
-        upstream_candidate: true,
-        client_origin: true,
-        billed: 0,
-    },
-    Cell {
-        name: "gemini|bedrock|request|ok_stream",
-        status: 200,
-        upstream_leg: true,
-        upstream_candidate: true,
-        client_origin: true,
-        billed: 1,
-    },
-    Cell {
-        name: "gemini|bedrock|request|upstream_down",
-        status: 503,
-        upstream_leg: true,
-        upstream_candidate: true,
-        client_origin: true,
-        billed: 0,
-    },
-    Cell {
-        name: "gemini|cohere|request|ok_stream",
-        status: 200,
-        upstream_leg: true,
-        upstream_candidate: true,
-        client_origin: true,
-        billed: 1,
-    },
-    Cell {
-        name: "gemini|cohere|request|upstream_down",
-        status: 503,
-        upstream_leg: true,
-        upstream_candidate: true,
-        client_origin: true,
-        billed: 0,
-    },
-    Cell {
-        name: "gemini|gemini|request|upstream_down",
-        status: 503,
-        upstream_leg: true,
-        upstream_candidate: true,
-        client_origin: true,
-        billed: 0,
-    },
-    Cell {
-        name: "gemini|openai|request|ok_stream",
-        status: 200,
-        upstream_leg: true,
-        upstream_candidate: true,
-        client_origin: true,
-        billed: 1,
-    },
-    Cell {
-        name: "gemini|openai|request|upstream_down",
-        status: 503,
-        upstream_leg: true,
-        upstream_candidate: true,
-        client_origin: true,
-        billed: 0,
-    },
-    Cell {
-        name: "gemini|responses|request|ok_stream",
-        status: 200,
-        upstream_leg: true,
-        upstream_candidate: true,
-        client_origin: true,
-        billed: 1,
-    },
-    Cell {
-        name: "gemini|responses|request|upstream_down",
-        status: 503,
-        upstream_leg: true,
-        upstream_candidate: true,
-        client_origin: true,
-        billed: 0,
-    },
-    Cell {
-        name: "openai|anthropic|request|ok_stream",
-        status: 200,
-        upstream_leg: true,
-        upstream_candidate: true,
-        client_origin: true,
-        billed: 1,
-    },
-    Cell {
-        name: "openai|anthropic|request|upstream_down",
-        status: 503,
-        upstream_leg: true,
-        upstream_candidate: true,
-        client_origin: true,
-        billed: 0,
-    },
-    Cell {
-        name: "openai|bedrock|request|ok_stream",
-        status: 200,
-        upstream_leg: true,
-        upstream_candidate: true,
-        client_origin: true,
-        billed: 1,
-    },
-    Cell {
-        name: "openai|bedrock|request|upstream_down",
-        status: 503,
-        upstream_leg: true,
-        upstream_candidate: true,
-        client_origin: true,
-        billed: 0,
-    },
-    Cell {
-        name: "openai|cohere|request|ok_stream",
-        status: 200,
-        upstream_leg: true,
-        upstream_candidate: true,
-        client_origin: true,
-        billed: 1,
-    },
-    Cell {
-        name: "openai|cohere|request|upstream_down",
-        status: 503,
-        upstream_leg: true,
-        upstream_candidate: true,
-        client_origin: true,
-        billed: 0,
-    },
-    Cell {
-        name: "openai|gemini|request|upstream_down",
-        status: 503,
-        upstream_leg: true,
-        upstream_candidate: true,
-        client_origin: true,
-        billed: 0,
-    },
-    Cell {
-        name: "openai|openai|request|ok_stream",
-        status: 200,
-        upstream_leg: true,
-        upstream_candidate: true,
-        client_origin: true,
-        billed: 1,
-    },
-    Cell {
-        name: "openai|openai|request|upstream_down",
-        status: 503,
-        upstream_leg: true,
-        upstream_candidate: true,
-        client_origin: true,
-        billed: 0,
-    },
-    Cell {
-        name: "openai|responses|request|ok_stream",
-        status: 200,
-        upstream_leg: true,
-        upstream_candidate: true,
-        client_origin: true,
-        billed: 1,
-    },
-    Cell {
-        name: "openai|responses|request|upstream_down",
-        status: 503,
-        upstream_leg: true,
-        upstream_candidate: true,
-        client_origin: true,
-        billed: 0,
-    },
-    Cell {
-        name: "responses|anthropic|request|ok_stream",
-        status: 200,
-        upstream_leg: true,
-        upstream_candidate: true,
-        client_origin: true,
-        billed: 1,
-    },
-    Cell {
-        name: "responses|anthropic|request|upstream_down",
-        status: 503,
-        upstream_leg: true,
-        upstream_candidate: true,
-        client_origin: true,
-        billed: 0,
-    },
-    Cell {
-        name: "responses|bedrock|request|ok_stream",
-        status: 200,
-        upstream_leg: true,
-        upstream_candidate: true,
-        client_origin: true,
-        billed: 1,
-    },
-    Cell {
-        name: "responses|bedrock|request|upstream_down",
-        status: 503,
-        upstream_leg: true,
-        upstream_candidate: true,
-        client_origin: true,
-        billed: 0,
-    },
-    Cell {
-        name: "responses|cohere|request|ok_stream",
-        status: 200,
-        upstream_leg: true,
-        upstream_candidate: true,
-        client_origin: true,
-        billed: 1,
-    },
-    Cell {
-        name: "responses|cohere|request|upstream_down",
-        status: 503,
-        upstream_leg: true,
-        upstream_candidate: true,
-        client_origin: true,
-        billed: 0,
-    },
-    Cell {
-        name: "responses|gemini|request|upstream_down",
-        status: 503,
-        upstream_leg: true,
-        upstream_candidate: true,
-        client_origin: true,
-        billed: 0,
-    },
-    Cell {
-        name: "responses|openai|request|ok_stream",
-        status: 200,
-        upstream_leg: true,
-        upstream_candidate: true,
-        client_origin: true,
-        billed: 1,
-    },
-    Cell {
-        name: "responses|openai|request|upstream_down",
-        status: 503,
-        upstream_leg: true,
-        upstream_candidate: true,
-        client_origin: true,
-        billed: 0,
-    },
-    Cell {
-        name: "responses|responses|request|ok_stream",
-        status: 200,
-        upstream_leg: true,
-        upstream_candidate: true,
-        client_origin: true,
-        billed: 1,
-    },
-    Cell {
-        name: "responses|responses|request|upstream_down",
-        status: 503,
-        upstream_leg: true,
-        upstream_candidate: true,
-        client_origin: true,
-        billed: 0,
-    },
-];
-
-/// **THE MID-STREAM FAMILY**, `llm.stream|<dialect>|{cut,stream-error}`: the door writes 200, the
-/// first frames go out, and the upstream then fails — announced in the dialect's own error shape
-/// (`stream-error`) or not announced at all (`cut`).
-///
-/// Transcribed from `golden/1.5.5/cells/llm.stream__*.json`. Every one of the twelve records
-/// `status: 200`, a single `busbar_upstream_attempts_total` metric (the dial happened, the lane
-/// answered), `effects.usage.requests: 1` — the slot, drawn and never released — and NO
-/// `spend_cents` key at all, because the tokens seen before the failure bill nothing and the flat
-/// fee is configured to zero in this harness. See the module header on what that last fact does and
-/// does not license: `billed` here is 1.5.5's own rule over the recorded facts, which is 1, and the
-/// recording neither confirms nor contradicts it.
-///
-/// The PLANE's finish on all twelve is an error — the tap saw a cut or a terminal error, which is
-/// the same fact `billing_failed` carries — while the frame the client saw said 200. That is the
-/// contradiction, and this is the family the kernel's dispute arm exists for.
-const RECORDED_STREAM_FAULTS: &[Cell] = &[
-    Cell {
-        name: "anthropic|cut",
-        status: 200,
-        upstream_leg: true,
-        upstream_candidate: true,
-        client_origin: true,
-        billed: 1,
-    },
-    Cell {
-        name: "anthropic|stream-error",
-        status: 200,
-        upstream_leg: true,
-        upstream_candidate: true,
-        client_origin: true,
-        billed: 1,
-    },
-    Cell {
-        name: "bedrock|cut",
-        status: 200,
-        upstream_leg: true,
-        upstream_candidate: true,
-        client_origin: true,
-        billed: 1,
-    },
-    Cell {
-        name: "bedrock|stream-error",
-        status: 200,
-        upstream_leg: true,
-        upstream_candidate: true,
-        client_origin: true,
-        billed: 1,
-    },
-    Cell {
-        name: "cohere|cut",
-        status: 200,
-        upstream_leg: true,
-        upstream_candidate: true,
-        client_origin: true,
-        billed: 1,
-    },
-    Cell {
-        name: "cohere|stream-error",
-        status: 200,
-        upstream_leg: true,
-        upstream_candidate: true,
-        client_origin: true,
-        billed: 1,
-    },
-    Cell {
-        name: "gemini|cut",
-        status: 200,
-        upstream_leg: true,
-        upstream_candidate: true,
-        client_origin: true,
-        billed: 1,
-    },
-    Cell {
-        name: "gemini|stream-error",
-        status: 200,
-        upstream_leg: true,
-        upstream_candidate: true,
-        client_origin: true,
-        billed: 1,
-    },
-    Cell {
-        name: "openai|cut",
-        status: 200,
-        upstream_leg: true,
-        upstream_candidate: true,
-        client_origin: true,
-        billed: 1,
-    },
-    Cell {
-        name: "openai|stream-error",
-        status: 200,
-        upstream_leg: true,
-        upstream_candidate: true,
-        client_origin: true,
-        billed: 1,
-    },
-    Cell {
-        name: "responses|cut",
-        status: 200,
-        upstream_leg: true,
-        upstream_candidate: true,
-        client_origin: true,
-        billed: 1,
-    },
-    Cell {
-        name: "responses|stream-error",
-        status: 200,
-        upstream_leg: true,
-        upstream_candidate: true,
-        client_origin: true,
-        billed: 1,
-    },
-];
-
 /// **ARM 1 — THE MONEY GUARANTEE.** Both deciders, over every recorded cell, against the golden.
 ///
 /// A divergence here is a money finding and stops the MOVE: it would mean retiring the plane's
 /// decider changes a count the node has actually billed.
 #[test]
 fn recorded_cells_agree_with_each_other_and_with_the_golden() {
+    let recorded = recorded_exchanges();
     let mut diverged = Vec::new();
-    for cell in RECORDED {
+    for cell in &recorded {
         let (kernel, _) = kernel_fee(cell, finish_at_the_exit(cell));
         let plane = retired_plane_fee(cell);
         if kernel != plane || kernel != cell.billed {
@@ -822,11 +252,26 @@ fn recorded_cells_agree_with_each_other_and_with_the_golden() {
         diverged.join("\n")
     );
     // The corpus has to actually contain both answers, or the assertion above is vacuous.
-    assert_eq!(RECORDED.len(), 66, "the recorded corpus changed size");
+    assert_eq!(recorded.len(), 66, "the recorded corpus changed size");
     assert_eq!(
-        RECORDED.iter().filter(|c| c.billed == 1).count(),
+        recorded.iter().filter(|c| c.billed == 1).count(),
         30,
         "the 30 ok_stream cells are the ones that bill"
+    );
+    // THE CROSS-CHECK ON THE DERIVATION. `billed` is 1.5.5's rule over facts this file READS out of
+    // the recordings, so the thing worth checking is that those facts are the recording's. On this
+    // family a spend was written exactly where the rule says a fee was charged, on all 66 — which
+    // is the reading of `status`, of the dial and of the usage delta all agreeing at once. It is
+    // asserted here and not on arm 3's family because there it is FALSE, on purpose: see arm 3.
+    let crossed = recorded
+        .iter()
+        .filter(|cell| (cell.billed == 1) == cell.recorded_spend)
+        .count();
+    assert_eq!(
+        crossed,
+        recorded.len(),
+        "the derived facts and the recorded spend disagree on this family; the derivation has \
+         drifted from the corpus it reads"
     );
 }
 
@@ -851,12 +296,13 @@ fn the_two_rules_are_not_the_same_rule() {
             for &upstream_candidate in &[false, true] {
                 for &client_origin in &[false, true] {
                     let cell = Cell {
-                        name: "cube",
+                        name: "cube".to_string(),
                         status,
                         upstream_leg,
                         upstream_candidate,
                         client_origin,
                         billed: 0,
+                        recorded_spend: false,
                     };
                     if kernel_fee(&cell, finish_at_the_exit(&cell)).0 != retired_plane_fee(&cell) {
                         parted.push((status, upstream_leg, upstream_candidate, client_origin));
@@ -875,7 +321,7 @@ fn the_two_rules_are_not_the_same_rule() {
         "the rules part only on a delivered response: {parted:?}"
     );
     // And no recorded cell reaches any of them, which is exactly why arm 1 is green.
-    for cell in RECORDED {
+    for cell in &recorded_exchanges() {
         assert!(
             !parted.contains(&(
                 cell.status,
@@ -900,10 +346,13 @@ fn the_two_rules_are_not_the_same_rule() {
 /// **THIS IS THE ONE PLACE THE SHIPPED DEFAULT MOVED, AND IT MOVED ON PURPOSE.** The previous
 /// release kept a mid-stream failure in its billable count and refunded nothing. It also billed the
 /// same fault unevenly: of the twelve recorded cells, eleven charged nothing at all for the
-/// half-delivered answer and one — `gemini|cut`, whose partial frame happened to carry a complete
-/// usage block — charged for eighteen tokens. That difference is a property of a wire format, not a
-/// decision anybody made, and a fee schedule that says every plugin of a kind is billed identically
-/// cannot keep it. The default is now the visit and what was delivered: no transaction fee for an
+/// half-delivered answer and ONE charged for the tokens, because its partial frame happened to
+/// carry a complete usage block. Which one is not stated here and is not worth stating: the
+/// difference is a property of a wire format, not a decision anybody made, and a root that named
+/// the dialect it fell on would be recording the accident as if it were a rule. That it is exactly
+/// one of twelve is asserted, off the recordings, in
+/// [`every_dialect_is_charged_the_same_way_for_the_same_fault`]. A fee schedule that says every
+/// plugin of a kind is billed identically cannot keep it. The default is now the visit and what was delivered: no transaction fee for an
 /// exchange that did not complete, and the units the customer actually received, identically for
 /// every dialect.
 ///
@@ -918,8 +367,9 @@ fn the_two_rules_are_not_the_same_rule() {
 /// 4. **The posting is marked, under both.** The count alone would say nothing was wrong. It was.
 #[test]
 fn recorded_stream_faults_are_disputed_and_the_default_charges_what_was_delivered() {
+    let faults = recorded_stream_faults();
     assert_eq!(
-        RECORDED_STREAM_FAULTS.len(),
+        faults.len(),
         12,
         "six dialects, two fault shapes; the golden's own count"
     );
@@ -928,7 +378,7 @@ fn recorded_stream_faults_are_disputed_and_the_default_charges_what_was_delivere
         ..TariffCell::default()
     };
     let mut diverged = Vec::new();
-    for cell in RECORDED_STREAM_FAULTS {
+    for cell in &faults {
         // The plane's own verdict after the body drained: the stream did not finish.
         let under_previous = kernel_charge(cell, FinishClass::Error, previous_release);
         let under_default = kernel_charge(cell, FinishClass::Error, TariffCell::default());
@@ -982,13 +432,25 @@ fn recorded_stream_faults_are_disputed_and_the_default_charges_what_was_delivere
 /// **THE UNIFORMITY THE DEFAULT BUYS, COUNTED.**
 ///
 /// The twelve recorded mid-stream cells, asked what the shipped schedule charges each of them for
-/// the exchange. The answer must be ONE answer. Under the previous release it was one answer too —
-/// for the transaction — and a second, uneven one for the units, which is what the tokens column of
-/// `gemini|cut` records against eleven neighbours that recorded none. This cell does not re-open
-/// that recording; it pins the rule that made it impossible to happen again.
+/// the exchange. The answer must be ONE answer. Under the previous release it was one answer for
+/// the transaction and a SECOND, uneven one for the units — and the unevenness is read here out of
+/// the recordings rather than described: exactly one of the twelve carries a spend and eleven carry
+/// none, for twelve occurrences of one fault. This cell does not re-open that recording; it pins
+/// the rule that made it impossible to happen again, and it does not name the dialect the accident
+/// landed on, because naming it would be the root treating a wire format's luck as a fact about a
+/// vendor.
 #[test]
 fn every_dialect_is_charged_the_same_way_for_the_same_fault() {
-    let answers: std::collections::BTreeSet<(u32, bool)> = RECORDED_STREAM_FAULTS
+    // THE UNEVENNESS, MEASURED. One fault, twelve recordings, and the previous release's units
+    // answer differs across them. This is the recorded reason the default moved.
+    let faults = recorded_stream_faults();
+    let recorded_spends = faults.iter().filter(|cell| cell.recorded_spend).count();
+    assert_eq!(
+        recorded_spends, 1,
+        "the previous release billed one fault twelve ways: {recorded_spends} of the twelve \
+         recorded a spend, and the uniform rule exists because that number was neither 0 nor 12"
+    );
+    let answers: std::collections::BTreeSet<(u32, bool)> = faults
         .iter()
         .map(|cell| {
             let charged = kernel_charge(cell, FinishClass::Error, TariffCell::default());

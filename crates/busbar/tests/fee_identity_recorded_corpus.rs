@@ -41,69 +41,23 @@
 //! Nothing here leans on the six `stream_upstream_error` cells: they are `needs_fixture` on this
 //! tree and record nothing, which is the gap TARIFF already owed and this file does not paper over.
 
-use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
-
 use busbar_caps::{OriginKind, Outcome, PostingFlags};
 use busbar_kernel::teller::{
     charge, requests_drawn, requests_settled, settle_lines, Evidence, FeeEvidence, FinishClass,
     StatusAt, StatusClass, StatusLeg, TariffCell, KERNEL_ACCRUAL_CLASS,
 };
 
-/// The pinned golden's cell directory.
-fn cells_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../testing/shadow-oracle/golden/1.5.5/cells")
-}
+mod golden;
 
-/// One recorded cell, reduced to the three things the money depends on.
-struct Recorded {
-    name: String,
-    status: u16,
-    /// The recorded `effects.usage` delta, keyed as the oracle wrote it.
-    usage: BTreeMap<String, i64>,
-}
+use golden::Recorded;
 
-/// Every `llm__*` cell the pinned golden holds.
+/// Every `llm__*` cell the pinned golden holds, read through the ONE reader of the corpus.
+///
+/// It used to be read here, by a private copy of the same directory walk and the same JSON
+/// reduction. Two readers of one corpus is how two cells come to disagree about what a recording
+/// says while both stay green, so the walk moved to [`golden`] and this is the one call.
 fn recorded_llm_cells() -> Vec<Recorded> {
-    let dir = cells_dir();
-    let mut out = Vec::new();
-    for entry in std::fs::read_dir(&dir).expect("the pinned golden's cells are checked in") {
-        let path = entry.expect("a readable directory entry").path();
-        let name = path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or_default()
-            .to_string();
-        if !name.starts_with("llm__") || !name.ends_with(".json") {
-            continue;
-        }
-        let text = std::fs::read_to_string(&path).expect("a readable cell");
-        let json: serde_json::Value = serde_json::from_str(&text).expect("a recorded cell is JSON");
-        let status = json
-            .get("status")
-            .and_then(serde_json::Value::as_u64)
-            .map(|s| u16::try_from(s).unwrap_or(u16::MAX))
-            .unwrap_or(0);
-        let mut usage = BTreeMap::new();
-        if let Some(map) = json
-            .get("effects")
-            .and_then(|e| e.get("usage"))
-            .and_then(serde_json::Value::as_object)
-        {
-            for (k, v) in map {
-                if let Some(n) = v.as_i64() {
-                    usage.insert(k.clone(), n);
-                }
-            }
-        }
-        out.push(Recorded {
-            name: name.trim_end_matches(".json").to_string(),
-            status,
-            usage,
-        });
-    }
-    out.sort_by(|a, b| a.name.cmp(&b.name));
-    out
+    golden::family("llm__")
 }
 
 /// The head the served leg records, built from the recorded status ALONE.
@@ -141,7 +95,7 @@ fn served_head(status: u16) -> StatusLeg {
 /// refusal is the node's own, no destination was picked and the recording carries no delta at all.
 /// A 503 is the upstream leg failing, which is a unit that drew its request slot and paid no fee.
 fn selected_upstream(rec: &Recorded) -> bool {
-    rec.usage.contains_key("requests")
+    rec.recorded_requests() != 0
 }
 
 #[test]
@@ -188,8 +142,8 @@ fn every_recorded_model_plane_cell_settles_exactly_what_it_recorded() {
             requests_drawn(OriginKind::Client, evidence.upstream_candidate),
         );
 
-        let recorded_requests = rec.usage.get("requests").copied().unwrap_or(0);
-        let recorded_spend = rec.usage.contains_key("spend_cents");
+        let recorded_requests = rec.recorded_requests();
+        let recorded_spend = rec.recorded_spend();
 
         // 1. The request slot.
         if i64::from(requests) != recorded_requests {
