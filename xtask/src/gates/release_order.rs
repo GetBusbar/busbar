@@ -41,6 +41,11 @@ use crate::gates::{prove_green, prove_red, prove_rows_red, Gate, Report};
 use crate::ledger::{Row, Verdict};
 
 const WORKFLOWS: &str = ".github/workflows";
+/// Composite-action manifests. R14 (below) reads `uses:` out of these too, not just workflows: a
+/// composite action's `runs.steps` has exactly the same `uses:` shape and the same third-party-code
+/// exposure, and a repo that grows one is a repo where "every `uses:` in the tree is a sha" would
+/// otherwise quietly stop being true the day the first `action.yml` lands.
+const ACTIONS_DIR: &str = ".github/actions";
 
 /// The jobs allowed to create a user-facing name. Everything here must be downstream of the staged
 /// consumer verification.
@@ -583,6 +588,43 @@ fn workflow_names(cx: &Ctx) -> Result<Vec<String>, String> {
     Ok(out)
 }
 
+/// True when there is an actual composite-action manifest to scan, either on disk or planted by a
+/// selftest overlay. Mirrors `Ctx::list`'s own `overlay_adds_it` test: `.github/actions` need not
+/// exist in the real tree today (it does not) for a plant UNDER it to be a legitimate root, exactly
+/// as a plant into any other not-yet-existing directory is (see `Ctx::list`'s own comment on this).
+fn has_composite_actions(cx: &Ctx) -> bool {
+    if cx.exists(ACTIONS_DIR) {
+        return true;
+    }
+    let prefix = format!("{ACTIONS_DIR}/");
+    cx.overlay()
+        .map(|ov| ov.paths().any(|p| p.to_string_lossy().starts_with(&prefix)))
+        .unwrap_or(false)
+}
+
+/// Every composite-action manifest (`action.yml` / `action.yaml`, at any depth under
+/// `.github/actions`) as `(relative path, text)`. Empty, not an error, when there is nothing to
+/// scan — unlike `workflow_names`'s floor, a repo with zero composite actions today is not a repo
+/// that lost its subject.
+fn action_manifests(cx: &Ctx) -> Result<Vec<(String, String)>, String> {
+    if !has_composite_actions(cx) {
+        return Ok(Vec::new());
+    }
+    let mut out = Vec::new();
+    for ext in ["yml", "yaml"] {
+        let files = cx
+            .walk(&WalkSpec::new([ACTIONS_DIR]).ext(ext))
+            .map_err(|e| e.to_string())?;
+        for f in files {
+            let rel = f.rel_str();
+            if rel.rsplit('/').next() == Some(&format!("action.{ext}")) {
+                out.push((rel, f.text));
+            }
+        }
+    }
+    Ok(out)
+}
+
 pub fn check(cx: &Ctx) -> Result<Vec<Finding>, String> {
     let mut bad: Vec<Finding> = Vec::new();
     let names = workflow_names(cx)?;
@@ -610,19 +652,37 @@ pub fn check(cx: &Ctx) -> Result<Vec<Finding>, String> {
     // be force-moved under a name we already trust can push an image and mint an attestation, which
     // is to say it can put a user-facing name on bytes nothing in this repository ever built.
     //
+    // SCOPE: EVERY WORKFLOW, PLUS EVERY COMPOSITE ACTION. `workflow_names` covers the former; the
+    // latter is `action_manifests` (`.github/actions/**/action.yml`), added because a composite
+    // action's `runs.steps` carries the identical `uses:` shape and the identical exposure — CI
+    // secrets and, on the promote path, `packages`/`id-token`/`attestations` write. There is no
+    // `.github/actions` in this tree today, so that half scans zero files and costs nothing; the
+    // day one is added, this rule already covers it rather than needing to be told to.
+    //
+    // The independently-resolved SHA behind every pin below, re-checked against upstream rather
+    // than trusted from whatever a scanner suggested, is `docs/ci/actions-pins.md`.
+    //
     // LOCAL `uses:` IS EXEMPT, AND ONLY LOCAL. A `./` reference resolves inside this repository at
-    // the caller's own commit; there is no third party and nothing to force-move.
+    // the caller's own commit; there is no third party and nothing to force-move. A `docker://`
+    // reference is exempt for the same reason a SHA is required everywhere else: it names an image
+    // by DIGEST, not by a movable ref, so it is already the thing this rule wants and is judged
+    // instead by the digest-pin rule over `services:` images.
     //
     // THE TRAILING TAG COMMENT IS PART OF THE PIN: without it Dependabot cannot tell what the sha
     // stands for and silently stops updating it, so the pin rots into a permanently stale,
     // unpatched version.
-    for name in &names {
-        let text = strip_comments(&read(name).unwrap_or_default());
+    let mut targets: Vec<(String, String)> = names
+        .iter()
+        .map(|n| (n.clone(), read(n).unwrap_or_default()))
+        .collect();
+    targets.extend(action_manifests(cx)?);
+    for (name, raw) in &targets {
+        let text = strip_comments(raw);
         for line in text.lines() {
             let Some((reference, comment)) = parse_uses(line) else {
                 continue;
             };
-            if reference.starts_with("./") {
+            if reference.starts_with("./") || reference.starts_with("docker://") {
                 continue;
             }
             let Some((_, at)) = reference.rsplit_once('@') else {
@@ -2163,6 +2223,51 @@ jobs:
         // Forgiving, so it runs -- and a guard whose upstream is broken is expected to go red
         // itself rather than report success.
         assert_eq!(simulate(&all, "gate")["promote"], "failure");
+    }
+
+    #[test]
+    fn r14_reads_uses_out_of_a_composite_action_too_not_only_workflows() {
+        // THE RED PLANT for the widened scope: `.github/actions` does not exist in the real tree,
+        // so this plants one via overlay and proves R14 finds it anyway (`has_composite_actions`
+        // is exactly what makes that legitimate rather than a MissingRoot). A floating tag inside
+        // `runs.steps` is the identical exposure a workflow's `uses:` carries, and before this
+        // widening it would have scanned clean forever, from the day the first composite action
+        // landed, having never been proven to look.
+        let cx = Ctx::workspace().expect("workspace context");
+        let mut ov = Overlay::new();
+        ov.set(
+            format!("{ACTIONS_DIR}/example/action.yml"),
+            "runs:\n  using: composite\n  steps:\n    - uses: actions/checkout@v7\n",
+        );
+        let cx = cx.with_overlay(ov);
+        let findings = check(&cx).expect("check runs over the overlay");
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.rule == "R14" && f.message.contains(".github/actions/example/action.yml")),
+            "R14 did not flag the floating tag inside the planted composite action: {:?}",
+            findings.iter().map(|f| &f.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn a_composite_action_pinned_to_a_sha_with_its_tag_comment_is_silent() {
+        // The GREEN twin: the same shape, correctly pinned, must not fire.
+        let cx = Ctx::workspace().expect("workspace context");
+        let mut ov = Overlay::new();
+        ov.set(
+            format!("{ACTIONS_DIR}/example/action.yml"),
+            "runs:\n  using: composite\n  steps:\n    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7\n",
+        );
+        let cx = cx.with_overlay(ov);
+        let findings = check(&cx).expect("check runs over the overlay");
+        assert!(
+            !findings
+                .iter()
+                .any(|f| f.message.contains(".github/actions/example/action.yml")),
+            "a correctly pinned composite action must not be flagged: {:?}",
+            findings.iter().map(|f| &f.message).collect::<Vec<_>>()
+        );
     }
 
     #[test]
