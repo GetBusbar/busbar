@@ -576,14 +576,14 @@ pub(crate) struct HookView {
     /// for an operator diffing what they wrote against what busbar parsed. It is NOT the effective
     /// answer on its own: empty means "fall back", and what it falls back TO is `at:` if set and the
     /// four core stages otherwise. For the effective answer read `fires_at`.
-    ///
-    /// DECLARED AFTER `global`, NOT beside `at`: 1.5.5's `HookView` has no `phase`/`fires_at`/
-    /// `groups` at all, so this field (and the two below) is placed after every field 1.5.5 had, in
-    /// 1.5.5's own order, so schemars' generated `required` array — and every 1.6.0-additive admin
-    /// view's serialized field order — is a PREFIX-preserving superset of 1.5.5's, not merely a
-    /// same-membership reordering of it (the shadow oracle's `additive` proof walks a JSON array
-    /// positionally, and an inserted-before-the-end element fails that walk even though nothing
-    /// about the field itself changed).
+    // DECLARED AFTER `global`, NOT beside `at`: 1.5.5's `HookView` has no `phase`/`fires_at`/
+    // `groups` at all, so this field (and the two below) is placed after every field 1.5.5 had, in
+    // 1.5.5's own order, so schemars' generated `required` array — and every 1.6.0-additive view's
+    // serialized field order — is a PREFIX-preserving superset of 1.5.5's, not merely a
+    // same-membership reordering of it (the shadow oracle's `additive` proof walks a JSON array
+    // positionally, and an inserted-before-the-end element fails that walk even though nothing
+    // about the field itself changed). Plain comment, not doc: this is engineering rationale for
+    // maintainers, not served API documentation, so it must never reach schemars' description.
     pub(crate) phase: Vec<&'static str>,
     /// The RESOLVED stage set: the stages this hook ACTUALLY fires at, in pipeline order, never
     /// empty. This is the field that answers "when does this hook run", and it is computed by
