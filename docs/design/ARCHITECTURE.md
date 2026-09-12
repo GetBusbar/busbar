@@ -73,7 +73,7 @@ them). Each axis is blind to the other two; only the kernel composes them.
   `src/tests/`; the proofs (overlap totality over the selector-form pairs, the lint symbol lists, the
   compile-fail fixtures and their positive companions, the honesty tables) are not surface and live
   in each crate's `tests/` or `fixtures/`. Measured and gated by `scripts/loc-surface.py`
-  (`--ceiling busbar-contract,busbar-caps=3655`), which the construction gate runs as
+  (`--ceiling busbar-contract,busbar-caps=3663`), which the construction gate runs as
   `surface-ceiling:contract+caps`. The figure is the PIN, not a budget: it is held at zero
   slack against today's measurement, and it moves up only when a new-architecture face lands
   with a declared raise (`[gate.ceiling_raises]` in `qa/construction.toml`) that names the face
@@ -109,7 +109,8 @@ them). Each axis is blind to the other two; only the kernel composes them.
   implemented on every type and every default is the REFUSING value, so a field nobody wrote can
   never read as a fact that passes. Nothing is added to what a plugin author must read: no trait
   takes these types and no plugin is handed one. The fourth is **`busbar_contract::tasks`**
-  (`TaskStore`, `TaskRecord`; 15 code lines + 1 module line, declared at +16): the seam every
+  (`TaskStore`, `TaskRecord`; 15 code lines + 1 module line, declared at +16, and a further +8 for
+  the WRITE half — `update` and `cancel` — landed by MCP-G with §11.4's lines 7b/7c): the seam every
   plane's task-store methods read a stored task through: one `id`/`status`/timestamps/`ttl_ms`/
   `poll_interval_ms` shape, with `result`, `error` and each `inputRequests` entry carried as opaque
   bytes — the store's own codec's encoding of whatever it settled — because mcp's SEP-2663 extension
@@ -118,7 +119,12 @@ them). Each axis is blind to the other two; only the kernel composes them.
   never existed does, so the face cannot be used to probe which ids exist. `busbar-mcp`'s
   `super::tasks::Registry` (its existing in-process task registry) is the first implementor, read by
   `busbar_plane_mcp::tasks::get` to render `tasks/get`'s document off the face instead of building it
-  inline — plan line 7's first cut (docs/design/1.6.0-mcp-engine.md section 7). Nothing is added to
+  inline — plan line 7's first cut (docs/design/1.6.0-mcp-engine.md section 7). The write half takes
+  the clock as an ARGUMENT rather than reading one behind the face — a plane's rule is that it reads
+  no clock but the one its context hands it, and a face that broke that rule for the store's
+  convenience would move the violation rather than remove it — and answers `None` on a foreign task
+  exactly as the read does, which matters more on a write than on a read: a distinguishable refusal
+  would let a caller enumerate live ids without ever being able to read one. Nothing is added to
   what a plugin author must read: no trait takes an ABI type and no plugin is handed one. The fifth
   is MCP-G's catalogue vocabulary. **`busbar_contract::catalogue`** (`CatalogueView` and the eight
   shapes it answers in — `CatalogueEntry`, `Address`, `Found`, `Resolution`, `PromptTemplate`,

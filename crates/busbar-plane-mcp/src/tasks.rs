@@ -66,6 +66,54 @@ pub fn get(store: &dyn TaskStore, task_id: &str, principal: &str) -> Option<serd
         .map(|record| detailed_document(&record))
 }
 
+/// `tasks/update`'s whole answer: deliver the caller's `inputResponses` through the store face and
+/// hand back the ack. `None` when the store holds nothing for this (id, principal) pair.
+///
+/// THE ACK CARRIES NO TASK ENVELOPE, and that is the SEP-2322 discriminator rule rather than
+/// terseness: a response carrying `taskId`/`status` would be a second, racing view of the task
+/// beside `tasks/get`, and a client would have to decide which of the two to believe. One reader.
+///
+/// The answers arrive as this plane's own object notation — the shape the caller sent — and are
+/// ENCODED to bytes on the way into the face, for the reason
+/// [`busbar_contract::tasks`](busbar_contract::tasks) states: the store carries whatever its own
+/// codec framed, and the face does not speak it. A value that fails to encode is DROPPED rather than
+/// failing the whole delivery, symmetric with [`detailed_document`]'s decode: the caller sent the
+/// rest in good faith and one unencodable member is this crate's bug, not a reason to lose the other
+/// nine answers a client may have waited a round to send.
+#[must_use]
+pub fn update(
+    store: &dyn TaskStore,
+    task_id: &str,
+    principal: &str,
+    responses: &serde_json::Map<String, serde_json::Value>,
+    now_ms: u64,
+) -> Option<serde_json::Value> {
+    let answers: Vec<(String, Vec<u8>)> = responses
+        .iter()
+        .filter_map(|(k, v)| serde_json::to_vec(v).ok().map(|b| (k.clone(), b)))
+        .collect();
+    store
+        .update(task_id, principal, &answers, now_ms)
+        .map(|()| serde_json::json!({}))
+}
+
+/// `tasks/cancel`'s whole answer: cancel through the store face and hand back the SAME empty ack
+/// [`update`] does. `None` when the store holds nothing for this (id, principal) pair.
+///
+/// IDEMPOTENT on a task that has already settled — the face says so, and this function does not
+/// re-state it as a second rule that could drift from the first.
+#[must_use]
+pub fn cancel(
+    store: &dyn TaskStore,
+    task_id: &str,
+    principal: &str,
+    now_ms: u64,
+) -> Option<serde_json::Value> {
+    store
+        .cancel(task_id, principal, now_ms)
+        .map(|()| serde_json::json!({}))
+}
+
 #[cfg(test)]
 #[path = "tests/tasks.rs"]
 mod tests;

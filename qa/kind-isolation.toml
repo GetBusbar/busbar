@@ -1902,7 +1902,7 @@ count = "596"
 [[cell]]
 crate = "busbar-mcp"
 kind = "api"
-count = "138"
+count = "141"
 
 [[cell]]
 crate = "busbar-mcp"
@@ -1932,7 +1932,7 @@ count = "57"
 [[cell]]
 crate = "busbar-mcp"
 kind = "plane"
-count = "3430"
+count = "3472"
 
 [[cell]]
 crate = "busbar-mcp"
@@ -1952,7 +1952,7 @@ count = "37"
 [[cell]]
 crate = "busbar-mcp"
 kind = "transport"
-count = "1114"
+count = "1121"
 
 [[cell]]
 crate = "busbar-mcp-codec"

@@ -1073,22 +1073,23 @@ impl Session {
         let handle = tokio::spawn(async move {
             loop {
                 tokio::time::sleep(WATCH_INTERVAL).await;
-                let Some(task) = super::tasks::TASKS.get(&task_id, &actor) else {
+                // THE FACE, not the registry's own row. `McpTask::detailed()` is deleted: this pump
+                // was its last caller, and one renderer on the side of the seam that names the wire
+                // is what keeps a notification's document and a `tasks/get`'s document from being
+                // two things that merely agree today.
+                let Some(record) =
+                    busbar_contract::tasks::TaskStore::get(&*super::tasks::TASKS, &task_id, &actor)
+                else {
                     return; // expired or swept — the TTL is the registry's statement, not ours
                 };
-                let detail = task.detailed();
-                let status = detail
-                    .get("status")
-                    .and_then(|s| s.as_str())
-                    .unwrap_or("")
-                    .to_string();
+                let status = record.status.clone();
                 if last_status.as_deref() != Some(status.as_str()) {
                     last_status = Some(status.clone());
                     session
                         .emit(&serde_json::json!({
                             "jsonrpc": "2.0",
                             "method": "notifications/tasks",
-                            "params": detail,
+                            "params": busbar_plane_mcp::tasks::detailed_document(&record),
                         }))
                         .await;
                 }

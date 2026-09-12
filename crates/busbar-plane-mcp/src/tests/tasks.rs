@@ -2,7 +2,7 @@
 //! implementation and nothing else; still a direct child module, so `use super::*` reaches the
 //! private items it always did.
 
-use super::{detailed_document, get};
+use super::{cancel, detailed_document, get, update};
 use busbar_contract::tasks::{TaskRecord, TaskStore};
 
 fn minimal_record() -> TaskRecord {
@@ -80,6 +80,60 @@ impl TaskStore for FakeStore {
     fn get(&self, _id: &str, _principal: &str) -> Option<TaskRecord> {
         self.0.clone()
     }
+
+    fn update(
+        &self,
+        _id: &str,
+        _principal: &str,
+        _answers: &[(String, Vec<u8>)],
+        _now_ms: u64,
+    ) -> Option<()> {
+        // The record's presence stands in for "this caller owns it", which is the only thing the
+        // writes branch on.
+        self.0.as_ref().map(|_| ())
+    }
+
+    fn cancel(&self, _id: &str, _principal: &str, _now_ms: u64) -> Option<()> {
+        self.0.as_ref().map(|_| ())
+    }
+}
+
+/// A store that ASSERTS what crossed the face instead of recording it.
+///
+/// Recording would mean a `static` with interior mutability, and `tests/purity.rs` forbids this
+/// crate from holding interior state — in a test double as much as in the adapter, because the
+/// scanner is over the whole of `src/` and the rule it enforces is the one this crate exists to
+/// keep. Asserting inside the implementor is the stateless form of the same observation: the cell
+/// fails on the store's side, which is exactly where the encoding is owed.
+struct AssertingStore(&'static [(&'static str, &'static str)]);
+
+impl TaskStore for AssertingStore {
+    fn get(&self, _id: &str, _principal: &str) -> Option<TaskRecord> {
+        None
+    }
+
+    fn update(
+        &self,
+        _id: &str,
+        _principal: &str,
+        answers: &[(String, Vec<u8>)],
+        _now_ms: u64,
+    ) -> Option<()> {
+        assert_eq!(answers.len(), self.0.len(), "answer count");
+        for ((key, bytes), (want_key, want_json)) in answers.iter().zip(self.0) {
+            assert_eq!(key, want_key, "the key crossed unchanged");
+            assert_eq!(
+                serde_json::from_slice::<serde_json::Value>(bytes).expect("valid codec bytes"),
+                serde_json::from_str::<serde_json::Value>(want_json).unwrap(),
+                "the value crossed as its own codec's bytes and round-trips unchanged"
+            );
+        }
+        Some(())
+    }
+
+    fn cancel(&self, _id: &str, _principal: &str, _now_ms: u64) -> Option<()> {
+        Some(())
+    }
 }
 
 /// `get` renders the store's record when there is one.
@@ -96,4 +150,43 @@ fn get_renders_the_stores_record() {
 fn get_answers_none_when_the_store_has_nothing() {
     let store = FakeStore(None);
     assert_eq!(get(&store, "unknown", "principal"), None);
+}
+
+/// `update` encodes the caller's answers to the face's opaque bytes, keyed the way the record's own
+/// `input_requests` are, and acks with the EMPTY document — no task envelope, because `tasks/get` is
+/// the one reader of a task's state.
+#[test]
+fn update_encodes_the_answers_and_acks_empty() {
+    let store = AssertingStore(&[("first", r#"{"action":"accept"}"#)]);
+    let mut responses = serde_json::Map::new();
+    responses.insert("first".into(), serde_json::json!({ "action": "accept" }));
+    let ack = update(&store, "t-1", "principal", &responses, 7).expect("the task is this caller's");
+    assert_eq!(ack, serde_json::json!({}));
+}
+
+/// An EMPTY answer set is well-formed, not an error: a caller that has nothing yet has said so.
+#[test]
+fn an_empty_answer_set_is_delivered_rather_than_refused() {
+    let store = AssertingStore(&[]);
+    let ack = update(&store, "t-1", "principal", &serde_json::Map::new(), 7);
+    assert_eq!(ack, Some(serde_json::json!({})));
+}
+
+/// `cancel` acks with the SAME empty document `update` does, and both answer `None` — naming no
+/// JSON-RPC code — when the store holds nothing for this (id, principal) pair.
+#[test]
+fn cancel_acks_the_same_empty_document_and_absence_names_no_code() {
+    let held = FakeStore(Some(minimal_record()));
+    assert_eq!(
+        cancel(&held, "t-1", "principal", 7),
+        Some(serde_json::json!({}))
+    );
+
+    let nothing = FakeStore(None);
+    assert_eq!(cancel(&nothing, "t-1", "principal", 7), None);
+    assert_eq!(
+        update(&nothing, "t-1", "principal", &serde_json::Map::new(), 7),
+        None,
+        "a foreign task is absent to the write exactly as it is to the read"
+    );
 }

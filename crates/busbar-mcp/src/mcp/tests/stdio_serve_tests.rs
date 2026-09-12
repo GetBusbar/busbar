@@ -1248,9 +1248,13 @@ async fn a_tasks_transition_is_pushed_over_the_channel() {
         "jsonrpc": "2.0", "id": "t0",
         "result": { "resultType": "task", "taskId": task.id, "status": "submitted" },
     }));
-    crate::mcp::tasks::TASKS
-        .cancel(&task.id, "anonymous", busbar_substrate::store::now_ms())
-        .expect("cancel the task");
+    busbar_contract::tasks::TaskStore::cancel(
+        &*crate::mcp::tasks::TASKS,
+        &task.id,
+        "anonymous",
+        busbar_substrate::store::now_ms(),
+    )
+    .expect("cancel the task");
     let pushed = client.recv().await;
     assert_eq!(
         pushed.get("method").and_then(|m| m.as_str()),

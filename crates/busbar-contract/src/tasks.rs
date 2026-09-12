@@ -63,12 +63,53 @@ pub struct TaskRecord {
     pub input_requests: Vec<(String, Vec<u8>)>,
 }
 
-/// The seam every plane's task methods read a stored task through.
+/// The seam every plane's task methods read and move a stored task through.
 ///
 /// One face for every plane that has a task extension, so a kind-neutral step (or, short of one, a
 /// second plane reading the same shape) never has to know which store answered it.
+///
+/// ## The clock is HANDED IN, never read here
+///
+/// Both writes take `now_ms` rather than reading a clock behind the face. A store that read its own
+/// clock would be a second reading of the time on a request that already took one, and the two can
+/// disagree — a plane's own rule is that it reads no clock but the one its context hands it, and a
+/// face that broke that rule for the store's convenience would move the violation rather than
+/// remove it. The millisecond scale is the one every timestamp on [`TaskRecord`] was formatted from.
+///
+/// ## An absent task and a foreign one are ONE answer, on the writes too
+///
+/// [`TaskStore::update`] and [`TaskStore::cancel`] answer `None` on a task that belongs to somebody
+/// else, exactly as [`TaskStore::get`] does and for exactly the same reason. It matters MORE here,
+/// not less: a write that refused a foreign task by name would let a caller enumerate live ids
+/// without ever being able to read one, which is the probe the read arm was closed against.
 pub trait TaskStore {
     /// Resolve `id` FOR `principal`. `None` when there is no such task, OR it belongs to a
     /// different principal — see the module header for why the two are the same answer.
     fn get(&self, id: &str, principal: &str) -> Option<TaskRecord>;
+
+    /// DELIVER the caller's answers to a task's outstanding asks.
+    ///
+    /// `answers` is keyed the way [`TaskRecord::input_requests`] is, and each value is the plane's
+    /// own codec's bytes for the same reason the asks are: a value already framed in one plane's
+    /// dialect is not translated a second time by a face that does not speak it. An answer to a key
+    /// the task never asked for is the STORE's business, not this face's — the store knows what it
+    /// parked on and this face does not.
+    ///
+    /// `Some(())` when the task was this caller's; `None` otherwise. Delivering an EMPTY answer set
+    /// is well-formed and not an error: a caller that has nothing yet has said so.
+    fn update(
+        &self,
+        id: &str,
+        principal: &str,
+        answers: &[(String, Vec<u8>)],
+        now_ms: u64,
+    ) -> Option<()>;
+
+    /// CANCEL a task, IDEMPOTENTLY.
+    ///
+    /// A task that has already settled is not an error and is not rewritten: a task can terminate
+    /// between the poll that observed it running and the cancel that followed, and making every
+    /// caller handle a race it cannot avoid is not a contract worth having. `Some(())` when the task
+    /// was this caller's — settled or not — and `None` otherwise.
+    fn cancel(&self, id: &str, principal: &str, now_ms: u64) -> Option<()>;
 }

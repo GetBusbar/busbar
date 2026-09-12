@@ -218,36 +218,6 @@ impl McpTask {
         state.updated_ms = now_ms;
     }
 
-    /// The `DetailedTask` a `tasks/get` answers with, minus the `resultType` the response builder
-    /// stamps.
-    ///
-    /// `requestState` is ABSENT and its absence is load-bearing: SEP-2663 removed the field from the
-    /// v2 wire, and it lives on SEP-2322's `InputRequiredResult` — a lexically adjacent slot in a
-    /// document read alongside this one. Putting it here would make a client deduplicate state
-    /// across two flows that do not share one.
-    pub(crate) fn detailed(&self) -> serde_json::Value {
-        let state = self.lock();
-        let mut obj = serde_json::Map::new();
-        obj.insert("taskId".into(), self.id.clone().into());
-        obj.insert("status".into(), state.status.token().into());
-        obj.insert("createdAt".into(), iso8601_ms(state.created_ms).into());
-        obj.insert("lastUpdatedAt".into(), iso8601_ms(state.updated_ms).into());
-        obj.insert("ttlMs".into(), TASK_TTL_MS.into());
-        obj.insert("pollIntervalMs".into(), TASK_POLL_INTERVAL_MS.into());
-        if let Some(result) = &state.result {
-            obj.insert("result".into(), result.clone());
-        }
-        if let Some(error) = &state.error {
-            obj.insert("error".into(), error.clone());
-        }
-        if !state.input_requests.is_empty() {
-            let map: serde_json::Map<String, serde_json::Value> =
-                state.input_requests.iter().cloned().collect();
-            obj.insert("inputRequests".into(), serde_json::Value::Object(map));
-        }
-        serde_json::Value::Object(obj)
-    }
-
     /// The `CreateTaskResult` a `tools/call` answers with — a FLAT `Result & Task` intersection, so
     /// `taskId`/`status`/`createdAt`/`lastUpdatedAt`/`ttlMs` sit at the top level and there is no
     /// nested `task` wrapper.
@@ -523,26 +493,6 @@ impl Registry {
             tasks.remove(&id);
         }
     }
-
-    /// Deliver `inputResponses` to a task this caller owns.
-    pub(crate) fn update(
-        &self,
-        id: &str,
-        principal: &str,
-        responses: &serde_json::Map<String, serde_json::Value>,
-        now_ms: u64,
-    ) -> Option<()> {
-        let task = self.get(id, principal)?;
-        task.deliver(responses, now_ms);
-        Some(())
-    }
-
-    /// Cancel a task this caller owns. Idempotent — see [`McpTask::cancel`].
-    pub(crate) fn cancel(&self, id: &str, principal: &str, now_ms: u64) -> Option<()> {
-        let task = self.get(id, principal)?;
-        task.cancel(now_ms);
-        Some(())
-    }
 }
 
 /// `tasks/get`'s READ, over the contract's neutral store face — plan line 7's first cut.
@@ -556,9 +506,10 @@ impl Registry {
 /// straight back, so the round trip changes no byte `method::tasks_get` puts on the wire; it is paid
 /// once per poll and `tasks/get` is not a hot path.
 ///
-/// `stdio_serve.rs`'s background task-change watcher keeps reading `McpTask::detailed()` directly —
-/// it is not a task METHOD, it is this crate's own notification pump, and moving it is not this
-/// commit's line.
+/// `McpTask::detailed()` IS GONE: `stdio_serve.rs`'s background task-change watcher — the one caller
+/// that was not a task method, and the reason MCP-F left the body standing — reads this face too
+/// now, and renders through `busbar_plane_mcp::tasks::detailed_document` like everything else. One
+/// renderer, on the side of the seam that names the wire.
 impl busbar_contract::tasks::TaskStore for Registry {
     fn get(&self, id: &str, principal: &str) -> Option<busbar_contract::tasks::TaskRecord> {
         let task = Registry::get(self, id, principal)?;
@@ -584,6 +535,42 @@ impl busbar_contract::tasks::TaskStore for Registry {
                 .filter_map(|(k, v)| serde_json::to_vec(v).ok().map(|b| (k.clone(), b)))
                 .collect(),
         })
+    }
+
+    /// `tasks/update`'s WRITE — plan line 7b. The answers arrive as the face's opaque bytes (see
+    /// `busbar_contract::tasks`'s module note) and are decoded back into this plane's own object
+    /// notation here, because that is what `McpTask::deliver` parks against and this crate is where
+    /// that notation is named. A member that fails to decode is DROPPED rather than failing the
+    /// delivery: the caller sent the rest in good faith, and losing nine answers because one did not
+    /// round-trip would cost a client a whole round of an exchange it already waited for.
+    fn update(
+        &self,
+        id: &str,
+        principal: &str,
+        answers: &[(String, Vec<u8>)],
+        now_ms: u64,
+    ) -> Option<()> {
+        let task = Registry::get(self, id, principal)?;
+        let responses: serde_json::Map<String, serde_json::Value> = answers
+            .iter()
+            .filter_map(|(k, bytes)| {
+                serde_json::from_slice(bytes)
+                    .ok()
+                    .map(|v: serde_json::Value| (k.clone(), v))
+            })
+            .collect();
+        task.deliver(&responses, now_ms);
+        Some(())
+    }
+
+    /// `tasks/cancel`'s WRITE — plan line 7c. Idempotent on a settled task, which is
+    /// [`McpTask::cancel`]'s own property rather than a second rule written here. The AUDIT ROW is
+    /// NOT emitted from inside this face: it is a host-side effect and not task-store data, so it
+    /// stays at `method::tasks_cancel`'s call site where the actor and the host handle are.
+    fn cancel(&self, id: &str, principal: &str, now_ms: u64) -> Option<()> {
+        let task = Registry::get(self, id, principal)?;
+        task.cancel(now_ms);
+        Some(())
     }
 }
 

@@ -241,37 +241,6 @@ fn missing_tasks_capability(id: Option<serde_json::Value>) -> Response {
     )
 }
 
-/// Resolve `params.taskId` for THIS caller, or the refusal that replaces it.
-///
-/// An unknown id is `-32602`, which SEP-2663 fixes for exactly this case, and an id belonging to
-/// ANOTHER caller takes the identical arm rather than a `403`. That is deliberate: two different
-/// answers would tell a caller which ids exist, and a task id is the only credential a poll
-/// presents.
-///
-/// The error arm is BOXED because a `Response` is a large value and the success arm is one `Arc`:
-/// an unboxed `Result` would make every caller of this function move the whole refusal envelope
-/// around on the happy path.
-fn resolve_task(
-    ctx: &Ctx<'_>,
-    params: Option<&serde_json::Value>,
-    id: &Option<serde_json::Value>,
-) -> Result<std::sync::Arc<super::tasks::McpTask>, Box<Response>> {
-    let Some(task_id) = string_param(params, "taskId") else {
-        return Err(Box::new(invalid_params(
-            id.clone(),
-            "`params.taskId` is required and must be a string.",
-        )));
-    };
-    super::tasks::TASKS
-        .get(task_id, task_principal(ctx))
-        .ok_or_else(|| {
-            Box::new(invalid_params(
-                id.clone(),
-                "No task with that `taskId` exists for this caller.",
-            ))
-        })
-}
-
 /// The principal a task is filed under. The KEY ID where there is one, and one honest constant
 /// where governance is disabled — such a deployment has exactly one caller, so filing every task
 /// under it is a true statement rather than a fabricated distinction. The same reasoning
@@ -313,9 +282,12 @@ fn tasks_get(
 
 /// `tasks/update` — deliver `inputResponses`, acked with an EMPTY `{resultType:"complete"}`.
 ///
-/// The ack carries no task envelope, and that is the SEP-2322 discriminator rule rather than
-/// terseness: a response carrying `taskId`/`status` would be a second, racing view of the task
-/// beside `tasks/get`, and a client would have to decide which of the two to believe. One reader.
+/// PLAN LINE 7b. The delivery and the ack are both the face's side now:
+/// `busbar_contract::tasks::TaskStore::update` (implemented on `super::tasks::Registry`) moves the
+/// task, and `busbar_plane_mcp::tasks::update` writes the ack. What is left here is the capability
+/// refusal, the parameter shape and the JSON-RPC terminal — the engine's three, and none of them the
+/// store's. The `resolve_task` helper this used to share with `tasks/cancel` went with them: the
+/// (id, principal) pair IS the resolution, and a second one above the face could disagree with it.
 fn tasks_update(
     ctx: &Ctx<'_>,
     params: Option<&serde_json::Value>,
@@ -324,9 +296,8 @@ fn tasks_update(
     if let Some(refusal) = refuse_undeclared_tasks(ctx, &id) {
         return refusal;
     }
-    let task = match resolve_task(ctx, params, &id) {
-        Ok(task) => task,
-        Err(refusal) => return *refusal,
+    let Some(task_id) = string_param(params, "taskId") else {
+        return invalid_params(id, "`params.taskId` is required and must be a string.");
     };
     // ABSENT is treated as empty rather than refused. The method's job is to deliver what the
     // client has; a client that has nothing yet has sent a well-formed, if pointless, request.
@@ -335,13 +306,20 @@ fn tasks_update(
         .and_then(|v| v.as_object())
         .cloned()
         .unwrap_or_default();
-    super::tasks::TASKS.update(
-        &task.id,
+    match busbar_plane_mcp::tasks::update(
+        &*super::tasks::TASKS,
+        task_id,
         task_principal(ctx),
         &responses,
         ctx.host.clock_now_ms(),
-    );
-    result(id, serde_json::json!({}))
+    ) {
+        Some(ack) => result(id, ack),
+        // An unknown id is `-32602`, which SEP-2663 fixes for exactly this case, and an id belonging
+        // to ANOTHER caller takes the identical arm rather than a `403`. That is deliberate, and the
+        // face keeps it true on the WRITE as well as the read: two different answers would tell a
+        // caller which ids exist, and a task id is the only credential a poll presents.
+        None => invalid_params(id, "No task with that `taskId` exists for this caller."),
+    }
 }
 
 /// `tasks/cancel` — the same empty ack, and IDEMPOTENT on a task that has already settled.
@@ -350,6 +328,11 @@ fn tasks_update(
 /// cannot avoid: a task can terminate between the poll that observed it running and the cancel
 /// that followed. The spec reserves `-32602` for ids the server does not recognise, and a task it
 /// finished a moment ago is one it recognises perfectly well.
+///
+/// PLAN LINE 7c. The cancel itself is the face's; the AUDIT ROW is not, and stays here. An audit row
+/// is a host-side effect naming an actor and a resource — it is not task-store data, and a store
+/// face that emitted one would be reaching for a host it deliberately cannot see. It is emitted only
+/// on the arm where the cancel applied, which is the arm it always fired on.
 fn tasks_cancel(
     ctx: &Ctx<'_>,
     params: Option<&serde_json::Value>,
@@ -358,18 +341,26 @@ fn tasks_cancel(
     if let Some(refusal) = refuse_undeclared_tasks(ctx, &id) {
         return refusal;
     }
-    let task = match resolve_task(ctx, params, &id) {
-        Ok(task) => task,
-        Err(refusal) => return *refusal,
+    let Some(task_id) = string_param(params, "taskId") else {
+        return invalid_params(id, "`params.taskId` is required and must be a string.");
     };
-    super::tasks::TASKS.cancel(&task.id, task_principal(ctx), ctx.host.clock_now_ms());
-    ctx.host.audit_emit(
-        "mcp_task.cancel",
-        &format!("mcp_task:{}", task.id),
-        busbar_substrate::audit::vocab::OUTCOME_APPLIED,
-        ctx.actor,
-    );
-    result(id, serde_json::json!({}))
+    match busbar_plane_mcp::tasks::cancel(
+        &*super::tasks::TASKS,
+        task_id,
+        task_principal(ctx),
+        ctx.host.clock_now_ms(),
+    ) {
+        Some(ack) => {
+            ctx.host.audit_emit(
+                "mcp_task.cancel",
+                &format!("mcp_task:{task_id}"),
+                busbar_substrate::audit::vocab::OUTCOME_APPLIED,
+                ctx.actor,
+            );
+            result(id, ack)
+        }
+        None => invalid_params(id, "No task with that `taskId` exists for this caller."),
+    }
 }
 
 /// `completion/complete` — argument autocompletion, which for this server is always the EMPTY set.

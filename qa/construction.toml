@@ -296,7 +296,7 @@ because = "the audit unit's own record and window verifier, named by the root th
 # a green baseline value for a scratch copy; the checked-in numbers below never move except by the
 # owner's own hand.
 [gate.surface_ceilings]
-contract_caps = 3655
+contract_caps = 3663
 grammar = 388
 contract_transport = 845
 
@@ -517,12 +517,12 @@ kernel_crate = "busbar-kernel"
 kernel_ceiling = 5382
 caps_crate = "busbar-caps"
 contract_crate = "busbar-contract"
-caps_contract_ceiling = 3657
+caps_contract_ceiling = 3665
 unit_crate_glob = "busbar-unit-*"
 unit_total_ceiling = 15149
 verbs_crate = "busbar-unit-verbs"
 verbs_ceiling = 1428
-union_ceiling = 24188
+union_ceiling = 24196
 # Files (by basename, wherever they sit under busbar-kernel/src) whose bodies seed the call-graph
 # name-match: every identifier called from one of these files, that busbar-kernel does not itself
 # define, is looked up by name against every busbar-unit-* file.
@@ -2111,3 +2111,87 @@ key = "cell.busbar-plane-mcp.codec.count"
 file = "qa/kind-isolation.toml"
 by = 1
 because = "busbar_plane_mcp::catalogue's one `use busbar_mcp_codec::sanitize` — the markup strip that keeps operator and caller text re-entering a model's instruction stream from carrying instructions of its own. It moved here with the bodies that called it, so this +1 in the plane is the same strip busbar-mcp's method.rs stopped naming on the same commit; a second copy of the sanitiser would have been the alternative, and a second copy is the second place a filter gets forgotten."
+
+# ── MCP-G (1.6.0): THE TASK-STORE WRITE SHAPE, AND section 11.4's LINES 7b/7c ───────────────────
+#
+# MCP-F's busbar_contract::tasks::TaskStore was READ-ONLY, which is why section 11.4 left
+# tasks/update and tasks/cancel with an open question ("mint TaskStore::deliver or fold the ack into
+# get at the call site, decided when this line is picked up"). Neither: the face gains `update` and
+# `cancel` beside `get`, because what those two handlers do IS a store verb and folding an ack into
+# a read would make a poll and a delivery the same call.
+#
+# THE CLOCK IS HANDED IN. Both writes take `now_ms` rather than reading a clock behind the face. A
+# store that read its own clock would be a second reading of the time on a request that already took
+# one, and busbar-plane-mcp's own rule (its Cargo.toml header) is that it reads no clock but the one
+# its context hands it; a face that broke that rule for the store's convenience would move the
+# violation rather than remove it.
+#
+# THE PRIVACY RULE HOLDS ON THE WRITES. A foreign task answers `None` on `update` and `cancel`
+# exactly as it does on `get`, and the handler renders that as the SAME -32602 with the SAME message
+# an id that never existed takes. It matters MORE here than on the read: a write that refused a
+# foreign task distinguishably would let a caller enumerate live ids without ever being able to read
+# one, which is the probe the read arm was closed against.
+#
+# BODIES DELETED. McpTask::detailed() IS GONE -- MCP-F kept it because stdio_serve.rs's background
+# task-change notification pump was a second, real production caller; that caller reads
+# busbar_contract::tasks::TaskStore::get and renders through
+# busbar_plane_mcp::tasks::detailed_document now, so the body has no callers left and is deleted in
+# the same commit that took its last one. Registry::update and Registry::cancel (the inherent pair)
+# are deleted too: their bodies MOVED onto the TaskStore impl rather than being wrapped by it, so
+# there is one write path and not two. method::resolve_task is deleted: the (id, principal) pair IS
+# the resolution and a second one above the face could disagree with it. The audit row on
+# tasks/cancel STAYS in busbar-mcp, exactly as section 11.4 said it should -- it is a host-side
+# effect naming an actor and a resource, not task-store data.
+#
+# RED FIRST. Four new dispatch-driven cells in tasks_tests.rs
+# (tasks_update_delivers_through_the_task_store_face,
+# tasks_cancel_settles_through_the_task_store_face_and_is_idempotent,
+# a_foreign_task_is_absent_to_the_writes_rather_than_refused_by_name,
+# tasks_update_and_cancel_refuse_an_undeclared_capability_before_touching_the_store) plus three in
+# busbar-plane-mcp. With Registry's TaskStore::update and TaskStore::cancel forced to return None
+# unconditionally, the first two red (400/invalid_params where 200/the empty ack is owed, and the
+# task unmoved) while the undeclared-capability sibling stays GREEN -- a defect confined to the face
+# write. The foreign-task cell also stays green under that mutation and deliberately so: its
+# expected answer IS the refusal, which is why it is a companion to the two rather than a substitute
+# for them. The 486-cell battery is byte-identical; 490 with the four added.
+#
+# MEASURED. busbar-mcp production source 22255 -> 22234 (-21 net: four bodies deleted, against the
+# write shape moved onto the TaskStore impl and the two handlers re-spelled). busbar-contract production as the
+# gate counts it 2504 -> 2512 (+8: TaskStore::update's five-line signature, TaskStore::cancel's one,
+# and the two lines the trait body needs around them). caps_contract_ceiling 3657 -> 3665,
+# gate.surface_ceilings.contract_caps 3655 -> 3663, union_ceiling 24188 -> 24196, each the same +8,
+# with ARCHITECTURE.md 1.1 amended in the SAME commit. kind-isolation: busbar-mcp x api 138 -> 141,
+# busbar-mcp x plane 3430 -> 3472, busbar-mcp x transport 1114 -> 1121, each declared below.
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.caps_contract_ceiling"
+by = 8
+because = "the WRITE half of FACE busbar_contract::tasks::TaskStore: `update` (deliver the caller's answers, keyed and encoded exactly as TaskRecord::input_requests are) and `cancel` (idempotent on a settled task), both taking the clock as an argument rather than reading one behind the face, and both answering None on a foreign task exactly as `get` does. 8 code lines. busbar-contract production 2504 -> 2512. No new type: the write shape is two methods on the trait MCP-F already landed, not a second vocabulary beside it."
+
+[[gate.ceiling_raises]]
+key = "gate.surface_ceilings.contract_caps"
+by = 8
+because = "the same 8 lines as the LOC line above, on the surface line as well, for the reason every face on this list gives: a vocabulary shared across a crate boundary IS surface. Nothing is added to what a plugin author must read beyond two more methods on a trait that was already there."
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.union_ceiling"
+by = 8
+because = "the same two methods carried through the union (which carries busbar-contract) and nothing else. Neither is a unit, so unit_total_ceiling does not move. busbar-mcp production falls by 21 net on this commit (McpTask::detailed, Registry::update, Registry::cancel and method::resolve_task are all deleted, against the write shape moved onto the TaskStore impl) but busbar-mcp is not in the union, so that drain cannot offset this sum and is not claimed to."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-mcp.api.count"
+file = "qa/kind-isolation.toml"
+by = 3
+because = "the four new dispatch-driven cells share one TaskCtxFixture that builds busbar_api::VirtualKey and busbar_api::PlaneRequestCtx once instead of once per cell -- which is why this is +3 for four cells rather than the +3 MCP-F paid for two. The fixture is lifted out of MCP-F's two inline copies in the same edit, so the naming is consolidated where it would otherwise have been duplicated four more times."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-mcp.plane.count"
+file = "qa/kind-isolation.toml"
+by = 42
+because = "PLAN LINE 7b/7c: tasks/update and tasks/cancel each name busbar_plane_mcp::tasks at their call site, stdio_serve.rs's notification pump names busbar_plane_mcp::tasks::detailed_document where it used to name McpTask::detailed(), the tasks_tests.rs helper that replaced that method names it once for the whole file, and the four new cells drive method::dispatch through a shared fixture that names the plane's method table. The same asymmetry MCP-F's +39 and MCP-G's own +25 record: plane VOCABULARY rises at the seam while plane BODIES leave -- four of them on this commit, 21 production lines net out of busbar-mcp."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-mcp.transport.count"
+file = "qa/kind-isolation.toml"
+by = 7
+because = "the four new cells drive method::dispatch the same way method_tests.rs::call already does, which means naming axum::http::{HeaderMap, StatusCode} and axum::body::to_bytes directly; the shared TaskCtxFixture and dispatch_task_method helper hold those names once each rather than once per cell, and the assertions on the 200/400 split name StatusCode again at each terminal they pin."
