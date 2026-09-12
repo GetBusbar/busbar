@@ -35,12 +35,25 @@ permissions:
 
 jobs:
   cut:
-    runs-on: ubuntu-latest
+    # LK-7: moved off ubuntu-latest to a Latchkey label (this job's cargo build/test had no cache
+    # at all before this migration — see the Fast Cache restore/save steps below, LK-5's form).
+    runs-on: latchkey-large
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
       - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
+      - name: Latchkey Fast Cache (cargo registry + target, restore)
+        uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
+        with:
+          action: restore
+          key: cargo-${{ runner.os }}-prepare-release-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-prepare-release-
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
 
       - name: Validate version + not already released
         # The input reaches the shell via `env:` (a plain variable), NEVER via `${{ }}` inside
@@ -82,6 +95,17 @@ jobs:
             echo "::error::A zero-match 'cargo test' exits 0 — this is NOT a pass. Fix the filter."
             exit 1
           }
+
+      - name: Latchkey Fast Cache (cargo registry + target, save)
+        if: always()
+        uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
+        with:
+          action: save
+          key: cargo-${{ runner.os }}-prepare-release-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
 
       - name: Commit + push to dev (NO tag — tag-on-main.yml cuts the release when this reaches main)
         run: |
