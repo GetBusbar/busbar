@@ -666,3 +666,57 @@ fn a_declaration_with_no_receiving_origin_refuses_the_boot() {
         "and it must end BEFORE a listener is bound, not after; log:\n{log}"
     );
 }
+
+/// EVERY DECLARED ROW SERVES ITS SESSION THROUGH THE ONE MOUNTED DRIVER — the mount's own claim, in
+/// the shape `sideband_serves_a_session` proves the first row in.
+///
+/// The three dialect rows are three rows of a list: the root reads `SURFACE.bindings` and registers
+/// one arrival per binding at the binding's own first mount pattern, all of them serving on ONE
+/// composed driver. So the thing to prove is not that one URL works but that the LIST is what was
+/// mounted: each declared row completes its upgrade, on the same token, against the same node — and
+/// a path no row declares does not exist even on a node that mounts the plane.
+///
+/// What each row then puts on the wire is the DIALECT's business and is deliberately not asserted
+/// alike: only the GA row declares an opening event, so only it owes a first frame before a frame
+/// arrives (that is `sideband_serves_a_session`). Here the claim per row is the one the mount is
+/// answerable for — the driver opened a session on that row and the socket bound.
+#[test]
+fn each_declared_dialect_row_serves_its_session_through_the_mounted_driver() {
+    let node = Node::boot("rows", true, true);
+    let token = node.audience_bound(&node.mint("vt11-rows", None));
+
+    for row in ["sideband", "telephony", "gemini"] {
+        let mut sock = upgrade(
+            node.data,
+            &format!("/v1/realtime/{row}/{CALL_ID}"),
+            Some(&token),
+        );
+        assert_eq!(
+            sock.status,
+            101,
+            "the `{row}` row is declared on the plane's surface, so the root mounted it and the one \
+             composed driver serves it; got:\n{}\nlog:\n{}",
+            sock.head,
+            node.log()
+        );
+        assert!(
+            sock.head.contains(WS_ACCEPT),
+            "the `{row}` row's 101 must carry the RFC6455 accept for the fixed client key; got:\n{}",
+            sock.head
+        );
+        sock.close();
+    }
+
+    // A path no binding declares is not served by a node that serves the three that are: the
+    // arrivals come off the declaration, not off a prefix this node made up.
+    let undeclared = upgrade(
+        node.data,
+        &format!("/v1/realtime/undeclared/{CALL_ID}"),
+        Some(&token),
+    );
+    assert_ne!(
+        undeclared.status, 101,
+        "an undeclared row must not upgrade on a node that mounts the declared ones; got:\n{}",
+        undeclared.head
+    );
+}

@@ -35,7 +35,11 @@ async fn a_voice_session_open_increments_the_plane_labelled_counter() {
         rt: &rt,
         host: Arc::clone(&host),
         provider: None,
-        ingress: Ingress::Sideband,
+        // The `ek_` MINT one-shot pass — the front door this crate still owns. (It was the browser
+        // sideband; that leg is served by the root-mounted streams driver now and the WS variants of
+        // this enum went with it. What is counted is the front-door request, which is the same
+        // either way.)
+        ingress: Ingress::Mint,
         owner: "acct".to_string(),
         call_id: "call-metrics".to_string(),
         vkey: None,

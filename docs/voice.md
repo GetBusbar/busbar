@@ -37,7 +37,10 @@ apply (`crates/busbar-voice/src/lib.rs:148-160`). **Both wire formats are mounte
 serves the `ek_` mint, the SDP broker, the browser-sideband WS accept and the telephony WS accept
 (all under `/v1/realtime`); Gemini Live serves its own WS accept, a thin duplex proxy in the same
 shape as telephony (client WS ↔ Busbar ↔ provider WS), under `/v1/realtime/gemini`
-(`crates/busbar-voice/src/mount.rs`, `voice_claims` / `voice_ws_arrivals`). Gemini Live has no
+(`crates/busbar-voice/src/mount.rs`, `voice_claims`, for the claims; the three WS accepts are
+declared by the ROOT off the plane's own wire surface —
+`crates/busbar/src/root/ws_arrival.rs::MountedStreams::arrivals` over
+`busbar_plane_streams::surface::SURFACE` — and served by one composed session driver). Gemini Live has no
 ephemeral-mint or SDP-broker concept of its own — it is a native full-duplex socket on both legs — so
 it gains one route, not a mint/SDP pair.
 

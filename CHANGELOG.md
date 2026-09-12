@@ -130,6 +130,17 @@ named next.
 Each of these is an owner-accepted difference from 1.5.5: additive, or strictly better, and a
 1.5.5 client or operator keeps working unchanged.
 
+- **The live-voice plane's three realtime URLs are SERVED by the composition root's own session
+  driver.** `/v1/realtime/sideband/{call_id}`, `/v1/realtime/telephony/{call_id}` and
+  `/v1/realtime/gemini/{call_id}` are registered from the plane's declared wire surface rather than
+  from a route table written beside it, and every session on all three opens on ONE governed loop:
+  the unit loop admits BEFORE any socket is bound, the operator's gate and rewrite tap run before the
+  upgrade, the first server event a dialect owes is written before the pump starts, and the upstream
+  leg (when a row configures one) is dialled through the one guarded egress port. A session that was
+  refused never reaches a socket; a session that is admitted is metered by the same ledger as every
+  other plane's work. The plane's own WS-accept door, its telephony proxy and their duplex ingress
+  variants are deleted, not left beside the new path.
+
 - **Every error and warning line carries a diagnostic code.** `[error]`, `[warn]` and `warning:`
   lines on stderr are prefixed `BUSBAR-NNNN:`, and every boot log line carries `diag=BUSBAR-NNNN`.
   The text after the code is byte-identical to 1.5.5; the code is a stable key into

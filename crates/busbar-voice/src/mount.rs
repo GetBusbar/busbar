@@ -31,36 +31,23 @@
 //! still governs and mounts — it serves the client socket only, exactly as documented in
 //! `docs/voice.md`.
 
-use crate::ir::codec::gemini::GeminiLiveCodec;
-use crate::ir::codec::{DuplexReader, DuplexWriter, OpenAiRealtimeCodec};
+use crate::ir::codec::OpenAiRealtimeCodec;
 use crate::ir::config::SessionConfig;
 use crate::runtime::carrier::Carrier;
 use crate::runtime::scope::SessionHandle;
-use crate::runtime::session::{serve_with_sweep, ServedSession, UplinkForwarder};
 use crate::runtime::{EchoToolExecutor, LocalMeteringPort, VoiceRuntime};
 use crate::topology::minter_https::HttpsTokenMinter;
-use crate::topology::telephony::{begin_telephony, g711_config, open_admitted_telephony};
 use crate::topology::webrtc::TokenMinter;
-use crate::topology::{
-    begin_session, dial_provider, open_admitted_session, stream_breaker_key, SessionBudget,
-    SessionGauntlet, StartError,
-};
+use crate::topology::{begin_session, SessionBudget, StartError};
 // THE ONE REDACTOR, reached through the neutral plane that declares the dialect rows: the row that
 // says a credential rides a query string is the one that obliges the scrub, and this crate holds
 // neither.
-use busbar_plane_streams::dialect::redact_url_credentials;
 use busbar_substrate::egress::engine::{send_bounded, EngineClient};
-use busbar_substrate::ingress::byte_duplex::serve_messages;
-use busbar_substrate::ingress::duplex_ws::{
-    accept_gauntlet, WsAcceptFuture, WsArrival, WsArrivalSpec,
-};
-use busbar_substrate::net_guard::GuardPolicy;
 use busbar_substrate::plane::handle_engine::DurableHandleEngine;
 use busbar_substrate::plane::observe::Counted;
 use busbar_substrate::plane::registry::{BuildCtx, PlaneBootCtx};
 use busbar_substrate::plane::PlaneAdmission;
 use busbar_substrate::plane_host::{EngineHost, GateOutcome, TransformVerdict};
-use busbar_substrate::plane_host::{GauntletPlane, GauntletRequest};
 use busbar_substrate::plane_routes::PlaneRouteSpec;
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full};
@@ -539,8 +526,8 @@ pub fn voice_admission(slot: &dyn Any) -> Option<PlaneAdmission> {
 /// (S4a Option A): the `ek_` mint + SDP broker passes, each a thin neutral handler over `PlaneReqCtx`.
 /// Both are `RouteAuth::Key` — behind the plane's one audience — so a token minted for another
 /// resource is refused at the door. The browser-sideband + telephony WS-accept legs are NOT here: an
-/// inbound WS upgrade cannot ride the buffered-body `PlaneReqCtx` adapter, so they are declared through
-/// the neutral inbound WS-accept seam instead (see [`voice_ws_arrivals`]). Empty when the plane has no
+/// inbound WS upgrade cannot ride the buffered-body `PlaneReqCtx` adapter, so they are declared by the
+/// ROOT off `SURFACE.bindings` (`crates/busbar/src/root/ws_arrival.rs`). Empty when the plane has no
 /// receiving side (no dispatch slot), so a deployment that fronts nothing mounts nothing.
 #[must_use]
 pub fn voice_routes(slot: &dyn Any) -> Vec<PlaneRouteSpec> {
@@ -566,67 +553,21 @@ pub fn voice_routes(slot: &dyn Any) -> Vec<PlaneRouteSpec> {
     ]
 }
 
-/// THE VOICE PLANE'S INBOUND WS-ACCEPT ARRIVALS — the browser-sideband + telephony media legs,
-/// declared through the neutral substrate WS-accept seam (`WsArrivalSpec`) rather than `routes`,
-/// because an inbound WS upgrade cannot ride the buffered-body `PlaneReqCtx` adapter (its body is
-/// already consumed). Both are `RouteAuth::Key` under the plane's one audience — the SAME admission bar
-/// the mint/SDP routes carry — so the auth middleware refuses a foreign-resource token BEFORE the
-/// accept fn runs. The composition root installs these (`install_ws_arrivals`) and the core router
-/// mounts one gauntlet-gated WS-accept route per spec, resolving the live runtime slot under the
-/// plane's decl `key`. Empty when the plane has no receiving side, exactly as [`voice_routes`].
-#[must_use]
-pub fn voice_ws_arrivals() -> Vec<WsArrivalSpec> {
-    use busbar_plugin::cold::http_endpoint::RouteAuth;
-    let key = crate::PLANE_DECL.key;
-    vec![
-        WsArrivalSpec {
-            path: SIDEBAND_PATH.to_string(),
-            auth: RouteAuth::Key,
-            slot_key: key,
-            accept: Arc::new(|a: WsArrival| -> WsAcceptFuture {
-                Box::pin(ws_accept(a, Ingress::Sideband, OpenAiRealtimeCodec))
-            }),
-        },
-        WsArrivalSpec {
-            path: TELEPHONY_PATH.to_string(),
-            auth: RouteAuth::Key,
-            slot_key: key,
-            accept: Arc::new(|a: WsArrival| -> WsAcceptFuture {
-                Box::pin(ws_accept(a, Ingress::Telephony, OpenAiRealtimeCodec))
-            }),
-        },
-        // THE GEMINI LIVE THIN-DUPLEX ACCEPT (the second-dialect route) — same admission bar (RouteAuth::Key under the
-        // plane's one audience), the SAME `ws_accept` choke point, generic over the Gemini codec
-        // instead of the OpenAI one.
-        WsArrivalSpec {
-            path: GEMINI_PATH.to_string(),
-            auth: RouteAuth::Key,
-            slot_key: key,
-            accept: Arc::new(|a: WsArrival| -> WsAcceptFuture {
-                Box::pin(ws_accept(a, Ingress::Gemini, GeminiLiveCodec))
-            }),
-        },
-    ]
-}
-
 /// WHICH ingress a route drives — the topology-shaping fact a handler carries into the shared governed
-/// open. Every arm funnels through [`crate::topology::begin_session`] (so through
-/// `run_gauntlet_session`); they differ only in the locked config and carrier the topology binds.
+/// open. Both arms funnel through [`crate::topology::begin_session`] (so through
+/// `run_gauntlet_session`); they differ only in the locked config the topology binds.
+///
+/// TWO ARMS, NOT FIVE. `Sideband`, `Telephony` and `Gemini` were the three DUPLEX legs, and they are
+/// gone with the accept they named: a duplex session is served by the composition's own mounted
+/// driver now, under the three rows the plane DECLARES, and the enum that told one accept fn which
+/// of three shapes it was serving has nothing left to tell it. What remains are the two ONE-SHOT
+/// HTTP passes, which are not sessions and never were.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Ingress {
     /// The `ek_` mint (browser-WebRTC sideband): a sideband control session, no downlink media relay.
     Mint,
     /// The SDP broker: same sideband governed open; the SDP handshake is the credential-gated tail.
     Sdp,
-    /// The browser-WebRTC sideband accept.
-    Sideband,
-    /// The telephony media leg — `g711_ulaw` end-to-end through the thin proxy.
-    Telephony,
-    /// THE GEMINI LIVE THIN-DUPLEX LEG (the second-dialect route) — a native full-duplex socket both sides, proxied through
-    /// the SAME [`crate::topology::telephony::TelephonyProxy`] shape the telephony leg uses (client WS
-    /// <-> busbar <-> provider WS), just without the g711 lock and under the Gemini codec + the
-    /// Gemini-keyed composed provider.
-    Gemini,
 }
 
 /// The neutral inputs one governed session-open reads — bundled so the choke point takes ONE argument
@@ -718,12 +659,10 @@ pub(crate) async fn open_governed(req: GovernedOpen<'_>) -> axum::response::Resp
     };
     // The session-open params the hooks screen and (maybe) rewrite: the g711 lock for telephony, the
     // plane-default session posture otherwise. One projection both the gate and the tap read.
-    let mut session_cfg = match ingress {
-        Ingress::Telephony => g711_config(),
-        Ingress::Mint | Ingress::Sdp | Ingress::Sideband | Ingress::Gemini => {
-            rt.session_defaults.clone()
-        }
-    };
+    // Both remaining arms are the sideband's one-shot passes, so both open on the plane-default
+    // posture: the µ-law lock belonged to the carrier leg, and the carrier leg is served by the
+    // composition's mounted driver now.
+    let mut session_cfg = rt.session_defaults.clone();
 
     // (1) HOOKS-GATE — refuse before any lease/mint/dial. Zero-cost / byte-identical when unattached.
     if let Err(refused) = hook_gate(&host, key.clone(), &call_id, now, &session_cfg).await {
@@ -737,26 +676,12 @@ pub(crate) async fn open_governed(req: GovernedOpen<'_>) -> axum::response::Resp
         Err(refused) => return finish(*refused),
     }
 
-    // (3) THE GOVERNED OPEN. Telephony has no durable handle to correlate; the sideband topologies keep
-    // the handle so the SDP broker can stamp the `rtc_<call_id>` onto the row. `Gemini` never reaches
-    // this fn today (no HTTP one-shot route dispatches it — only the WS-accept seam does, see
-    // `ws_accept`); the arm exists only so this match stays exhaustive over `Ingress`.
+    // (3) THE GOVERNED OPEN. The sideband topologies keep the durable handle so the SDP broker can
+    // stamp the `rtc_<call_id>` onto the row. There is no carrier arm left here: a carrier leg is a
+    // SESSION and a session is served by the composition's mounted driver, which is where its
+    // governed open now happens.
     let resp = match ingress {
-        Ingress::Telephony => match begin_telephony(
-            rt,
-            OpenAiRealtimeCodec,
-            owner,
-            call_id,
-            session_cfg,
-            budget,
-            meter,
-            now,
-        ) {
-            Ok(_proxy) => sideband_pending(),
-            Err(e) => start_refusal(&e),
-        },
-        Ingress::Gemini => sideband_pending(),
-        Ingress::Mint | Ingress::Sdp | Ingress::Sideband => match begin_session(
+        Ingress::Mint | Ingress::Sdp => match begin_session(
             rt,
             OpenAiRealtimeCodec,
             owner,
@@ -772,7 +697,6 @@ pub(crate) async fn open_governed(req: GovernedOpen<'_>) -> axum::response::Resp
                 Ingress::Mint => serve_mint(provider, handle.owner(), &session_cfg).await,
                 Ingress::Sdp => serve_sdp(provider, &headers, body, &handle, now).await,
                 // The inbound WS-accept seam (browser sideband) lands separately — no bare on_upgrade.
-                _ => sideband_pending(),
             },
             Err(e) => start_refusal(&e),
         },
@@ -1156,323 +1080,6 @@ async fn mint_route(ctx: busbar_substrate::plane_routes::PlaneReqCtx) -> axum::r
 async fn sdp_route(ctx: busbar_substrate::plane_routes::PlaneReqCtx) -> axum::response::Response {
     serve(ctx, Ingress::Sdp).await
 }
-/// THE PROVIDER SIDE OF A WS DIAL — the origin, converted to `ws(s)://`, plus the fixed path the
-/// dialect's realtime endpoint answers on. `api_key` rides in the URL for the ONE dialect whose native
-/// scheme allows it (Gemini's documented `?key=` query form); OpenAI Realtime's native scheme is a
-/// header (`Authorization: Bearer`) the neutral WS dialer (`busbar_substrate::egress::duplex_ws::dial`,
-/// a `tokio_tungstenite::client_async` call with no custom-header hook) cannot carry today — a known,
-/// stated limit of the shared dialer, not something this plane's dial call papers over. A loopback test
-/// provider (this plane's own conformance harness) does not check either scheme, so the wiring proves
-/// out end to end even though a real OpenAI dial would still need the dialer's header hook to land.
-fn provider_ws_url(base_url: &str, dialect: &str, api_key: &str) -> String {
-    let ws = base_url
-        .replacen("https://", "wss://", 1)
-        .replacen("http://", "ws://", 1);
-    let ws = ws.trim_end_matches('/');
-    if dialect == crate::GEMINI_LIVE {
-        format!(
-            "{ws}/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key={api_key}"
-        )
-    } else {
-        format!("{ws}/v1/realtime")
-    }
-}
-
-/// THE INBOUND WS-ACCEPT FN for the browser-sideband / telephony / Gemini-Live media legs — what
-/// replaces the `501` stub, moving the WS legs onto the neutral inbound WS-accept seam. Generic over
-/// the dialect `codec` (the second-dialect route): [`voice_ws_arrivals`] instantiates it once per dialect
-/// ([`OpenAiRealtimeCodec`] for the sideband/telephony legs, [`GeminiLiveCodec`] for the Gemini leg) so
-/// every leg runs the SAME choke point rather than a per-dialect copy. It builds the `GauntletRequest`
-/// and [`SessionGauntlet`] EXACTLY as [`begin_session`] does (gov threaded from the audience-checked
-/// auth layer, `destination` = the locked upstream model) and hands the upgrade to [`accept_gauntlet`]
-/// — the ONLY path that consumes the upgrade into a live socket, and never a bare `on_upgrade`.
-///
-/// GAUNTLET-BEFORE-UPGRADE: `accept_gauntlet` runs `run_gauntlet_session` SYNCHRONOUSLY and, on a
-/// refused destination, returns the gate's own `403` WITHOUT upgrading a socket, spawning a task, or
-/// opening a durable row. Only on admit is the socket upgraded and `on_socket` spawned.
-///
-/// VERIFY-BEFORE-CHARGE, NO ORPHANED ROW: the D2 lease reserve + durable session open happen INSIDE
-/// `on_socket` — AFTER the gauntlet admitted and BEFORE the pump reads a byte — through the gauntlet-
-/// free [`open_admitted_session`] / [`open_admitted_telephony`] (the gauntlet already ran; re-running
-/// it would double the gate). A refused accept opens nothing; a post-admit budget/durable refusal
-/// commits no durable row and simply closes the just-upgraded socket. So no refused-or-aborted accept
-/// ever leaves a live session row.
-///
-/// THE PROVIDER DIAL (the provider-dial leg): for `Telephony` and `Gemini`, when the ingress's dialect has a COMPOSED
-/// provider, the leg opens a [`crate::topology::telephony::TelephonyProxy`] (the same thin-duplex
-/// shape for both) and dials the provider through [`dial_provider`] — the net-guarded, breaker-admitted
-/// path — before pumping either socket. A dial failure drops the just-admitted session (the proxy's
-/// lease-close guard closes the reserve on drop) rather than serving a client socket with nowhere to
-/// relay to. With NO provider composed, both legs fall back to serving the client socket only (the
-/// documented "governed but not yet dialing" posture) exactly as before.
-///
-/// EVERY SERVED SESSION IS A GOVERNED SESSION: all three legs below — the dialed proxy, the
-/// uplink-only fallback and the WebRTC sideband — take their binding from
-/// [`bind_served_session`], which mints this session's identifier and hands it the node's own
-/// open-call table AS THIS SLOT WAS HANDED IT. That is the join the tool moat was missing: the
-/// composition root entered a wait where it planned a call's leg, and until this binding existed there
-/// was nothing on a socket that could wake it or sweep it. A deployment with no root composed reads
-/// `None` here and keeps exactly the behaviour it had.
-pub(crate) async fn ws_accept<C>(
-    arrival: WsArrival,
-    ingress: Ingress,
-    codec: C,
-) -> axum::response::Response
-where
-    C: DuplexReader + DuplexWriter + Send + Sync + 'static,
-{
-    let Some(mount) = arrival.slot.downcast_ref::<VoiceMount>() else {
-        return refusal(
-            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-            "voice WS-accept reached without its dispatch slot",
-        );
-    };
-    // The dialect this leg speaks — the `ingress_protocol` label + the composed-provider table a
-    // `Telephony`/`Gemini` dial reads from. Every other leg (Sideband) stays OpenAI-labelled: it has no
-    // Gemini analogue today.
-    let dialect = match ingress {
-        Ingress::Gemini => crate::GEMINI_LIVE,
-        _ => crate::OPENAI_REALTIME,
-    };
-    // The neutral host seam the operator hooks fire through — the SAME seam the one-shot passes read in
-    // `open_governed`, so the WS-accept front door screens a session-open identically to mint/SDP.
-    let host = Arc::clone(&arrival.host);
-    // The presenting key, resolved once: the authorization gate, the hook projection, the budget
-    // ceiling and the turn attribution all read it.
-    let vkey = arrival.gov.as_ref().and_then(|g| g.key()).cloned();
-    // (0) AUTHORIZATION, before the upgrade — a key that holds no session scope on this pool is refused
-    // with the plane's own answer and no socket is bound, exactly as the one-shot passes refuse.
-    if let Some(k) = vkey.as_ref() {
-        if !session_scope_allowed(k) {
-            return session_scope_refusal();
-        }
-    }
-    // The per-generation runtime, its money hop rebound onto the live host lease so this session
-    // reserves and settles against the caller's real grant rather than an in-process cell.
-    let rt = Arc::new(crate::runtime::build_runtime_hosted(
-        &mount.runtime,
-        Arc::clone(&host),
-    ));
-    // The caller `(id, name)` the hook gate/tap read — the middleware-resolved key, or `None` ungoverned.
-    let key = vkey.as_ref().map(|k| (k.id.clone(), k.name.clone()));
-    // The resolved caller the audience-checked key chain attached (the session owner), or the honest
-    // constant on an ungoverned deployment.
-    let owner = arrival
-        .caller_principal
-        .clone()
-        .unwrap_or_else(|| "<ungoverned>".to_string());
-    // The `{call_id}` capture the accept route matched.
-    let call_id = arrival
-        .path_params
-        .iter()
-        .find(|(k, _)| k == "call_id")
-        .map(|(_, v)| v.clone())
-        .unwrap_or_else(|| format!("voice-{}", unix_secs(&*host)));
-    let now = unix_secs(&*host);
-    // The locked session posture: g711 for telephony, the plane-default otherwise (including Gemini —
-    // the Gemini leg carries no media-format lock of its own). The destination the gauntlet judges is
-    // this config's model, exactly as `begin_session` derives it.
-    let mut session_cfg = match ingress {
-        Ingress::Telephony => g711_config(),
-        _ => rt.session_defaults.clone(),
-    };
-    // (1) HOOKS-GATE — a rejecting operator gate refuses the session-open BEFORE the upgrade: a
-    // pre-upgrade refusal Response, no socket bound, no lease/durable open. This closes the intra-plane
-    // gap where telephony (which has no preceding `ek_` mint pass) reached the media leg screened by
-    // nothing but the destination gauntlet; both WS legs now honor the operator gate exactly as the
-    // one-shot mint/SDP passes do in `open_governed`.
-    if let Err(refused) = hook_gate(&host, key.clone(), &call_id, now, &session_cfg).await {
-        return *refused;
-    }
-    // (2) HOOKS-TAP — a committed rewrite replaces the locked session posture BEFORE the gauntlet judges
-    // the destination and BEFORE the socket binds; byte-identical when no rewrite hook is attached.
-    match hook_tap(&host, key, &call_id, now, &session_cfg).await {
-        Ok(Some(rewritten)) => session_cfg = rewritten,
-        Ok(None) => {}
-        Err(refused) => return *refused,
-    }
-    let destination = session_cfg.model.clone().unwrap_or_default();
-    let gov = arrival.gov.clone().unwrap_or_default();
-    let gauntlet_req = GauntletRequest {
-        gov: &gov,
-        destination: &destination,
-        correlation_id: 0,
-        charged_at: now,
-        started: std::time::Instant::now(),
-    };
-    let gate: Box<dyn GauntletPlane> = Box::new(SessionGauntlet {
-        deny: rt.destination_denied(&destination),
-    });
-    // The session budget: the coarse over-estimate at reserve, no flat fee, and the presenting key's
-    // REAL remaining budget as the ceiling — the SAME shape `open_governed` uses for the one-shot
-    // passes, so both doors meter a session identically.
-    let budget = SessionBudget {
-        estimate_nanos: SESSION_ESTIMATE_NANOS,
-        fee_nanos: 0,
-        cap_nanos: crate::runtime::principal_cap_nanos(&host, vkey.as_ref(), now),
-    };
-    // THE METER STEP's attribution for this WS session — the presenting key each turn's usage is
-    // landed on through the core seam, under THIS LEG'S OWN dialect label (K4: no longer a plane-wide
-    // constant). Built from the resolved key (or `None` ungoverned) and moved into the post-upgrade
-    // open below, exactly as `open_governed` does for the one-shot passes.
-    let meter = vkey.clone().map(|k| {
-        crate::runtime::metering::TurnMeter::new(Arc::clone(&host), k, FRONT_DOOR_POOL, dialect)
-    });
-    // The provider FOR THIS LEG'S DIALECT and the node's table, both taken OFF THIS SLOT — the
-    // generation's own facts, CLONED into owned values so the `'static` `on_socket` closure below
-    // carries them rather than a borrow of the (non-`'static`) `arrival` this fn is about to move out
-    // of. That clone is the whole reason these used to be process-wide statics; it costs two strings
-    // and an `Arc` per accepted socket, and it buys a door that dials what its own generation
-    // resolved.
-    let provider = match ingress {
-        Ingress::Gemini => mount.gemini_provider.as_ref(),
-        _ => mount.provider.as_ref(),
-    }
-    .map(|p| ProviderEndpoint {
-        base_url: p.base_url.clone(),
-        api_key: p.api_key.clone(),
-    });
-    let calls = mount.governed_calls.clone();
-    accept_gauntlet(
-        arrival.upgrade,
-        gauntlet_req,
-        gate,
-        move |stream, sink| async move {
-            match ingress {
-                // TELEPHONY / GEMINI: a thin duplex proxy. With a composed provider, dial it and pump
-                // both sockets through `TelephonyProxy::run` (the provider-dial leg); with none, fall back to serving the
-                // client socket only (the documented "governed but not dialing" posture).
-                Ingress::Telephony | Ingress::Gemini => match provider {
-                    Some(p) => match open_admitted_telephony(
-                        &rt,
-                        codec,
-                        owner,
-                        call_id,
-                        session_cfg,
-                        budget,
-                        meter,
-                        now,
-                        bind_served_session(calls.clone()),
-                    ) {
-                        Ok(proxy) => {
-                            let pool = stream_breaker_key(dialect);
-                            let url = provider_ws_url(&p.base_url, dialect, &p.api_key);
-                            match dial_provider(
-                                host.as_ref(),
-                                &pool,
-                                0,
-                                &url,
-                                GuardPolicy::default(),
-                            )
-                            .await
-                            {
-                                Ok((provider_in, provider_out)) => {
-                                    let core = Arc::clone(proxy.core());
-                                    serve_with_sweep(
-                                        core,
-                                        proxy.run(provider_in, provider_out, stream, sink),
-                                    )
-                                    .await;
-                                }
-                                Err(e) => {
-                                    // The dial failed: nothing to relay client frames to. Drop the
-                                    // proxy (its lease-close guard closes the D2 reserve, and its
-                                    // durable handle's own drop path applies) rather than serve a
-                                    // client socket with no upstream — fail closed, no orphaned row.
-                                    tracing::warn!(
-                                        error = %redact_url_credentials(&e.to_string()),
-                                        dialect,
-                                        "voice: provider dial failed; the just-admitted session is \
-                                         dropped rather than served with no upstream"
-                                    );
-                                }
-                            }
-                        }
-                        Err(_) => { /* budget/durable refusal: no durable row, socket closes */ }
-                    },
-                    // NO PROVIDER COMPOSED: serve the client socket only. The uplink plane forwards
-                    // client→server frames to a channel whose receiver is DROPPED (bare `_`, not a
-                    // named binding), so `unbounded_send` fails fast via `is_disconnected` and each
-                    // frame is discarded with ZERO buffering — client uplink is decoded + metered with
-                    // no upstream to funnel to, and no unbounded queue grows for the session's life.
-                    None => {
-                        if let Ok((core, _handle, _guard)) = open_admitted_session(
-                            &rt,
-                            codec,
-                            owner,
-                            call_id,
-                            Some(session_cfg),
-                            Carrier::sideband(),
-                            budget,
-                            meter,
-                            now,
-                            bind_served_session(calls.clone()),
-                        ) {
-                            let (upstream_tx, _) = futures::channel::mpsc::unbounded::<Vec<u8>>();
-                            serve_with_sweep(
-                                Arc::clone(&core),
-                                serve_messages(
-                                    stream,
-                                    sink,
-                                    Arc::new(UplinkForwarder::new(core, upstream_tx)),
-                                ),
-                            )
-                            .await;
-                        }
-                    }
-                },
-                // BROWSER-WEBRTC SIDEBAND: media is peer-to-peer by design (see `crate::topology::webrtc`
-                // docs) — this socket is control-only, so there is no provider leg to dial here. It is
-                // therefore the one leg SERVED rather than relayed: the frames on it are the browser's
-                // own client→server events, and the only party that can answer them is this node.
-                Ingress::Sideband => {
-                    if let Ok((core, _handle, _guard)) = open_admitted_session(
-                        &rt,
-                        codec,
-                        owner,
-                        call_id,
-                        Some(session_cfg),
-                        Carrier::sideband(),
-                        budget,
-                        meter,
-                        now,
-                        bind_served_session(calls.clone()),
-                    ) {
-                        // THE FIRST SERVER EVENT, written before the pump takes the sink. GA opens
-                        // with `session.created` and every other leg gets it by relaying the
-                        // upstream's; this leg has no upstream, so it authors its own from the config
-                        // the session is locked to. It goes HERE rather than through the pump because
-                        // the neutral pump is frame-driven — it writes when a frame arrives — and the
-                        // one frame a session owes before any frame arrives is this one. A write that
-                        // fails means the client is already gone; there is then no session to serve
-                        // and the arm ends rather than pumping into a dead socket.
-                        let mut sink = sink;
-                        if let Some(created) = core.served_session_created() {
-                            use futures::SinkExt as _;
-                            if sink.send(created.0.to_vec()).await.is_err() {
-                                tracing::debug!(
-                                    "voice: the sideband client went away before its session.created \
-                                     could be written; the session is not served"
-                                );
-                                return;
-                            }
-                        }
-                        serve_with_sweep(
-                            Arc::clone(&core),
-                            serve_messages(stream, sink, Arc::new(ServedSession::new(core))),
-                        )
-                        .await;
-                    }
-                }
-                Ingress::Mint | Ingress::Sdp => {
-                    // Never reached: the WS-accept seam mounts only Sideband/Telephony/Gemini (see
-                    // `voice_ws_arrivals`); Mint/Sdp are the one-shot HTTP passes (`voice_routes`).
-                }
-            }
-        },
-    )
-}
-
 #[cfg(test)]
 #[path = "tests/mount_tests.rs"]
 mod mount_tests;

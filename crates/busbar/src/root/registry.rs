@@ -106,6 +106,15 @@ use busbar_transport_tls::TlsTransport;
 #[cfg(feature = "duplex-wire")]
 use busbar_transport_ws::WsTransport;
 
+/// THE `ws` WIRE'S DECLARED KEY, read off the wire's own type in the ONE file this binary composes
+/// that wire in.
+///
+/// The duplex mount resolves a declared binding by transport key, and a key it spelled for itself
+/// would be this binary holding a second opinion about what `ws` is. So it asks here, where the wire
+/// is registered, and the answer is the wire's own declaration rather than a string.
+#[cfg(feature = "duplex-wire")]
+pub const WS_TRANSPORT_KEY: &str = <WsTransport as TransportMeta>::KEY;
+
 /// Why a node will not boot.
 ///
 /// Every arm is a statement about the composition, not about a request: an operator sees it once,

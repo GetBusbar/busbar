@@ -122,7 +122,7 @@ fn node_over(plane: VoicePlane, io: VoiceIo) -> VoiceNode {
     built
 }
 
-fn node(io: VoiceIo) -> VoiceNode {
+pub(crate) fn node(io: VoiceIo) -> VoiceNode {
     // A deployment that configured no group: every caller is attributed and none is capped.
     node_governed_by(io, busbar_unit_admission::GroupTable::default())
 }
@@ -194,7 +194,7 @@ fn node_on_plane(
     })
 }
 
-fn serviceable() -> VoiceIo {
+pub(crate) fn serviceable() -> VoiceIo {
     VoiceIo {
         lease: Box::new(OpenLease),
         ..VoiceIo::default()
@@ -563,27 +563,37 @@ fn a_configured_row_is_no_longer_refused_at_route() {
     );
 }
 
-/// AND A SESSION WITH NO CONFIGURED ROW IS STILL REFUSED, which is the other half and is not a
-/// judgement about a dial at all: it is the absence of anywhere to dial.
+/// AND A SESSION WITH NO CONFIGURED ROW IS NOT REFUSED EITHER — the correction the MOUNT forced,
+/// and the second of the two refusals this step used to make.
 ///
-/// The distinction is the whole of why one refusal stayed on this step while the other went. A
-/// plane with no upstream configured answers "where does this go" with nothing, and a step that
-/// proceeded on that would park a leg with no address for the composition to open.
+/// It read "no upstream configured" as "nowhere to go". It is not: it is the GOVERNED BUT NOT
+/// DIALLING posture, and the browser sideband is exactly that leg — it dials nobody by design and it
+/// is the one leg this plane has always served. Under the old reading a deployment that declared
+/// `streams:` and configured no upstream was refused at Route on every session, which unserved the
+/// one URL the standing claim covers; the shipped rig proves the URL now (`busbar --test
+/// streams_served_session`) and this is the unit-level half of the same correction.
+///
+/// What the step does instead is settle NO destination, so `pending_leg` stays `None` and nothing
+/// ever dials. A client that then asks for a response is told the ROW's own declared terminal,
+/// refused before the door — which is `busbar_plane_streams::tests::session_params::a_refused_request_renders_the_rows_own_terminal`,
+/// not this step.
 #[test]
-fn a_session_with_no_configured_upstream_is_refused_at_route() {
+fn a_session_with_no_configured_upstream_opens_and_seals_no_leg() {
     let kernel = Kernel::new();
     let node = node_over(VoicePlane::EMPTY, serviceable());
     let unit = VoiceUnit::new(&node, UnitShape::SessionOpen, 7, 1_700_000_000);
     let Ended::Settled { end, .. } = run(&kernel, &unit) else {
         panic!("the exit settles it");
     };
+    assert_eq!(
+        end.outcome(),
+        Outcome::Completed,
+        "a session on a plane with no configured row OPENS: it is governed, and it dials nobody"
+    );
     assert!(
-        matches!(
-            end.outcome(),
-            Outcome::Failed(busbar_caps::StepName::Route, ReasonCode::NoDestination)
-        ),
-        "got {:?}",
-        end.outcome()
+        node.bound(7)
+            .is_some_and(|binding| binding.destination.is_none()),
+        "and unit zero sealed NO destination for it, so nothing on the serving path has a leg to          open"
     );
 }
 

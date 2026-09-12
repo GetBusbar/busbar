@@ -1805,7 +1805,7 @@ fn probe_session_scope() -> (&'static str, String) {
 // only the OpenAI base, so a caller had no path to reach the Gemini dialect at all.
 // ══════════════════════════════════════════════════════════════════════════════════════════════════
 
-use busbar_plane_streams::surface::{BINDING_GEMINI_LIVE as GEMINI_NAME, SURFACE as SERVED};
+use busbar_plane_streams::surface::SURFACE as SERVED;
 
 /// Where the composition says one declared name is served, off the same `const` the node reads.
 fn declared_mount(name: &str) -> Option<&'static str> {
@@ -1875,59 +1875,13 @@ fn probe_gemini_live_route() -> (&'static str, String) {
         );
     }
 
-    // A lookup and not a literal, so that it is the DECLARATION this leg is conformant to.
-    let Some(gemini_mount) = declared_mount(GEMINI_NAME) else {
-        return ("FAIL", "nothing is declared where Gemini is served".into());
-    };
-
-    let arrivals = busbar_voice::mount::voice_ws_arrivals();
-
-    // ALL THREE, not just this leg's row: the drift being judged does not announce which of the
-    // three it happened to, and one row checked is a green run on a node whose carrier moved.
-    for decl in SERVED.bindings {
-        for at in decl.mounts {
-            let Some(served) = arrivals.iter().find(|a| a.path == *at) else {
-                return (
-                    "FAIL",
-                    format!(
-                        "`{}` is declared at `{at}` and nothing accepts there; served: {:?}",
-                        decl.name,
-                        arrivals.iter().map(|a| &a.path).collect::<Vec<_>>()
-                    ),
-                );
-            };
-            if served.slot_key != busbar_voice::PLANE_DECL.key {
-                return (
-                    "FAIL",
-                    format!(
-                        "`{at}` is keyed to '{}', not '{}'",
-                        served.slot_key,
-                        busbar_voice::PLANE_DECL.key
-                    ),
-                );
-            }
-        }
-    }
-
-    let Some(gemini) = arrivals.iter().find(|a| a.path == gemini_mount) else {
-        return (
-            "FAIL",
-            format!(
-                "nothing accepts at the declared `{gemini_mount}`; served: {:?}",
-                arrivals.iter().map(|a| &a.path).collect::<Vec<_>>()
-            ),
-        );
-    };
-    if gemini.slot_key != busbar_voice::PLANE_DECL.key {
-        return (
-            "FAIL",
-            format!(
-                "the Gemini arrival is keyed to '{}', not the plane's own slot '{}'",
-                gemini.slot_key,
-                busbar_voice::PLANE_DECL.key
-            ),
-        );
-    }
+    // THE ARRIVAL HALF OF THIS LEG IS RETIRED, and its claim MOVED rather than went. It read
+    // `mount::voice_ws_arrivals` and held every declared mount to an accept fn this crate installed.
+    // The arrivals are the COMPOSITION's now — one per declared binding, over the composed serving
+    // path — so a binary of this crate has none to read: nothing installs them in this process, and
+    // a leg that read an empty registry would be a green run that proved nothing. What it asserted
+    // is asserted where the arrivals are built (`root::tests::ws_arrival`), and the served session
+    // itself is driven end to end against the shipped binary by `streams_served_session`.
 
     // THE HANDSHAKE ITSELF, over the exact runtime type the mounted route is generic over: a provider's
     // `setupComplete` answers the client's `setup` by relaying verbatim (`IrServerEvent::SessionCreated`

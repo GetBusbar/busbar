@@ -282,12 +282,6 @@ because = "FACE busbar-contract-transport::surface — `BindingDecl::mounts` bec
 # which is a legacy crate naming the plane kind's vocabulary where it used to name a string literal.
 # Each expires when the base carries the number.
 [[gate.ceiling_raises]]
-key = "cell.busbar-voice.plane.count"
-file = "qa/kind-isolation.toml"
-by = 7
-because = "busbar-voice \u00d7 plane (busbar-voice, plane): the gemini-live-route conformance leg used to compare the mounted arrival and the admitted bases against URLs written out in the harness \u2014 a copy of the declaration standing beside the declaration, which goes apart the moment either is edited and leaves the leg passing against its own copy while the served surface changes. That is the exact failure that let the composition declare `/twilio/stream` while the node served `/v1/realtime/telephony/{call_id}`, with every test in the tree green. The leg now reads the mounts off `busbar_plane_streams::surface::SURFACE` \u2014 the same const a duplex wire addresses an upgrade against \u2014 and holds ALL THREE declared mounts to the arrivals the legacy engine actually serves, each keyed to the plane's own slot. Import lines and a lookup over declared data, not a plane in a plane: the words counted are the declaration's own, and they are the price of the rig judging the node rather than judging itself (795 -> 802)"
-
-[[gate.ceiling_raises]]
 key = "cell.busbar-voice.dialect.count"
 file = "qa/kind-isolation.toml"
 by = 5
@@ -1295,7 +1289,7 @@ while the total falls is that intermediate step, visible and not fatal."""
 scope_globs = ["crates/busbar/src/root/*.rs", "crates/busbar/src/main.rs"]
 # THE ONE GATING FIGURE: distinct symbols named through every prefix below, summed. Calibrated to
 # the tree it was written against; it may only go down.
-ceiling = 91
+ceiling = 81
 
 # Each sub-row below GATES, in both directions. `figure` is the per-crate count PINNED TO TODAY'S
 # MEASUREMENT: above it is that row's own FAIL, below it is `ceiling-slack`. It was informational --
@@ -1328,7 +1322,7 @@ because = "the substrate seams the root installs; each moves onto the ABI as the
 # regression: nothing ever held this number. So it is calibrated ONCE, to what the tree measures
 # today, and it ratchets down from here like every other figure in this file. It may only go down;
 # `ceiling-slack` holds it from below and this row holds it from above.
-figure = 47
+figure = 37
 
 # ── 31. no-test-doubles-in-production ────────────────────────────────────────────────────────────
 [rules.no-test-doubles-in-production]
@@ -1599,8 +1593,8 @@ because = "busbar-a2a x plane (busbar-a2a, plane): the A2A plane's `build` stopp
 [[gate.ceiling_raises]]
 key = "cell.busbar-voice.plane.count"
 file = "qa/kind-isolation.toml"
-by = 20
-because = "busbar-voice x plane (busbar-voice, plane): the plane that had the defect pays for reading its own section off the composition and for the door that read opened. Two things are here and neither is prose: the build seam now takes the section it was handed (its own key, downcast where the key has a type) and threads it into the per-generation runtime, replacing a process-wide latch written from a deserializer and read back at build time; and `build` stopped answering the absence of a receiving origin with silence. A declared section with no origin now MOUNTS, claims its paths and binds no audience, which is the pair the composition's R2 ratchet ends a boot on by name — so the two cells that pin it have to name the mount, the claim, the admission and the slot, because those four are exactly what the ratchet reads and a cell that named fewer could not say which of them moved. The price was measured first and then made smaller: prose that only restated the landing was cut from both cells and from the seam doc before this number was written down, and it fell by 3 for it. Re-measured at 838 when the slot-facts landing that follows deleted the three composed statics and the prose naming them, so this `by` is 20 and not the 22 first written (811 -> 838, of which 7 is already declared for the gemini-live route)"
+by = 11
+because = "RE-MEASURED BY THE MOUNT (VT-11 R3), which deleted 11 of the 20 lines this face measured: the door it counted was `ws_accept` and the WS-arrival list beside it, and both are gone \u2014 the three duplex rows are mounted by the root off the declared surface now. What is left of the face is the build seam and the two cells that pin the no-origin refusal. busbar-voice x plane (busbar-voice, plane): the plane that had the defect pays for reading its own section off the composition and for the door that read opened. Two things are here and neither is prose: the build seam now takes the section it was handed (its own key, downcast where the key has a type) and threads it into the per-generation runtime, replacing a process-wide latch written from a deserializer and read back at build time; and `build` stopped answering the absence of a receiving origin with silence. A declared section with no origin now MOUNTS, claims its paths and binds no audience, which is the pair the composition's R2 ratchet ends a boot on by name — so the two cells that pin it have to name the mount, the claim, the admission and the slot, because those four are exactly what the ratchet reads and a cell that named fewer could not say which of them moved. The price was measured first and then made smaller: prose that only restated the landing was cut from both cells and from the seam doc before this number was written down, and it fell by 3 for it. Re-measured at 838 when the slot-facts landing that follows deleted the three composed statics and the prose naming them, so this `by` is 20 and not the 22 first written (811 -> 838, of which 7 is already declared for the gemini-live route)"
 
 # STRUCK — the raise this entry declared no longer exists. `cell.busbar.plane.count` stood at 1,799
 # against a base of 1,798 when the boot-refusal cell landed; the slot-facts landing that follows
@@ -1752,21 +1746,6 @@ key = "cell.busbar-voice.dialect.count"
 file = "qa/kind-isolation.toml"
 by = 2
 because = "busbar-voice x dialect (busbar-voice, dialect): the legacy plane STOPS OWNING A REDACTOR and names the neutral plane's instead \u2014 one `use` line in the mount and one in its cells, because the row that says a credential rides a query string is the row that obliges the scrub and this crate holds neither. It is the shape of a deletion rather than a write: twenty-five production lines left this crate in the same commit and what replaced them is two imports, both of which fall with the mount bodies they serve (718 -> 720)"
-
-[[gate.ceiling_raises]]
-key = "cell.busbar-voice.plane.count"
-file = "qa/kind-isolation.toml"
-by = 4
-because = "busbar-voice x plane (busbar-voice, plane): the SAME two import lines, counted a second time under the plane kind, because the neutral plane's crate name is spelled in each of them and `busbar_plane_streams::dialect` is one hit in each column by construction. There is no line here that is not already declared above, and both fall with the legacy bodies that call through them (839 -> 843)"
-
-# ── declared raises: R1 HALF 2 — THE CREDENTIAL'S SOURCE. A `streams.upstreams[]` row gains a
-# `model:` addressing the node's ONE upstream catalog, the composition root resolves that entry's
-# origin and credential AFTER the generation that resolves it exists, and the resolved secret rides
-# the sealed leg (`SessionBinding` -> `SessionUnits::leg_credential` -> `PendingLeg` ->
-# `pending_leg` -> `LegDialing` -> the dialler's borrowed face) instead of sitting on the port. Every
-# rise below is the COMPOSITION ROOT composing — ARCHITECTURE.md 1.1/3.1's own rule that the root is
-# the one place a plugin instance may be named — plus the cells that prove it. Each expires when the
-# base carries the number.
 
 [[gate.ceiling_raises]]
 key = "cell.busbar.contract-transport.count"
@@ -1931,3 +1910,60 @@ key = "cell.busbar.caps.count"
 file = "qa/kind-isolation.toml"
 by = 2
 because = "busbar x caps (busbar, caps): the two cells assert the sealed ending in the kernel's own vocabulary — `Refused(Verify, NoDestination)` and not-refused — because the claim is about WHICH step ended the unit and only that word says it. A cell that asserted the rendered bytes instead would be asserting the plane's answer to prove the root's question (334 -> 336)"
+
+# ── THE MOUNT (VT-11 R3). The plane's declared surface becomes served URLs in the root: one new root
+# file (`crates/busbar/src/root/ws_arrival.rs`), its cells, and the composition in `main.rs` that
+# leaks the serving path once. Every raise below is that one landing, measured per kind.
+[[gate.ceiling_raises]]
+key = "cell.busbar.contract-transport.count"
+file = "qa/kind-isolation.toml"
+by = 20
+because = "busbar x contract-transport (busbar, contract-transport): the mount reads a WIRE SURFACE and opens a SESSION on it — `WireSurface`, `duplex_binding_at`, `SessionOpen`, `SessionHandle`, `SessionEnd`, `Cut`, `SessionBudgets`, `SessionDriver`, the transport facts and the close reason. That vocabulary IS the contract's duplex-session face and is the whole of what the file knows: it is how a mount serves a declared row without naming the plane that declared it (91 -> 111)"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.transport.count"
+file = "qa/kind-isolation.toml"
+by = 53
+because = "busbar x transport (busbar, transport): the serving path is composed here — the driver, the leg dialler, the egress port and the neutral pump the accepted socket is driven by — and the mount plus its two cells name that composition once each. The transport kind is what a composition root is FOR: the alternative is a wire composed inside a plane, which is the thing every one of these rows exists to stop (1,117 -> 1,169)"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.plane.count"
+file = "qa/kind-isolation.toml"
+by = 55
+because = "busbar x plane (busbar, plane): the composition supplies the mount with the four plane-supplied facts a served row needs — the surface, the registry key, the media and the session ceilings — and the two new cells compose a node over the real plane rather than a double, because a mount proven over a made-up plane proves the double. The plane is named where a plane is chosen and nowhere inside the serving path (2,013 -> 2,061)"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.dialect.count"
+file = "qa/kind-isolation.toml"
+by = 48
+because = "busbar x dialect (busbar, dialect): the three declared rows are three rows of the streams plane's list, and the composition that leaks the mount names that plane's crate — its surface, its media, its upstream rows and its decl key — in one function. The mount file itself names no dialect: what it is handed is a `WireSurface`, and it could not say whose (785 -> 827)"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.substrate.count"
+file = "qa/kind-isolation.toml"
+by = 25
+because = "busbar x substrate (busbar, substrate): the inbound WS-accept seam is the substrate's — `ingress::duplex_ws::{WsArrival, WsArrivalSpec, accept_coded, install_ws_arrivals}` — and so are the two operator hops the mount fires across the await (`plane_host::{EngineHost, GateOutcome, TransformVerdict}`). This is the seam the root is entitled to name; the same landing paid 25 other substrate spellings off by identity, so the root's reach into the retiring crate FELL (9 -> 34)"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.api.count"
+file = "qa/kind-isolation.toml"
+by = 1
+because = "busbar x api (busbar, api): the operator gate is told WHICH key opened the session, and the key is on the middleware-resolved request context the arrival carries (`busbar_api::PlaneRequestCtx::key`). A gate that could not name the caller is a gate an operator cannot write a rule with (122 -> 123)"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.caps.count"
+file = "qa/kind-isolation.toml"
+by = 1
+because = "busbar x caps (busbar, caps): the mount's own cells compose the node's canary and its session identity in the kernel's own vocabulary, because the claim under test is WHICH admission answered and only that vocabulary says it. Nothing on the serving path itself names a cap (336 -> 338)"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.kernel.count"
+file = "qa/kind-isolation.toml"
+by = 2
+because = "busbar x kernel (busbar, kernel): one session loop means one kernel and one concurrency gauge, and the composition that leaks the serving path composes both — the cells compose the same pair, so what they drive is the composition production runs and not a second one built for them (181 -> 183)"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.plugin-tooling.count"
+file = "qa/kind-isolation.toml"
+by = 2
+because = "busbar x plugin-tooling (busbar, plugin-tooling): the admission bar an arrival DECLARES is the plugin ABI's `RouteAuth`, recorded verbatim on the spec so the core auth middleware enforces it before the accept fn runs. This binary names it through `busbar_plugin_loader`'s re-export — the way it already reaches every other ABI wire type — rather than taking a second, direct edge to the ABI crate (28 -> 30)"

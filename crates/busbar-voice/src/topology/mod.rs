@@ -1,25 +1,27 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE TWO TOPOLOGIES the voice runtime exposes (design `plane4-duplex-session.md` §5-6), behind the `runtime` feature.
+//! THE TOPOLOGY the voice runtime exposes (design `plane4-duplex-session.md` §5-6), behind the `runtime` feature.
 //!
 //! * [`webrtc`] — the BROWSER WebRTC sideband: busbar mints the ephemeral token and holds a persistent
 //!   sideband control channel owning tools + instructions; the browser's MEDIA path is peer-to-peer, so
 //!   busbar is mint/guard + control, NOT a media relay.
-//! * [`telephony`] — a THIN WS PROXY: `g711_ulaw` end-to-end so 8 kHz passes straight through (no
-//!   resample), with barge-in truncate driven from the codec's playback marks.
 //!
-//! Both are assembled from a [`crate::runtime::VoiceRuntime`] via [`begin_session`], which opens the D2
+//! The THIN TELEPHONY WS PROXY that stood beside it is GONE: the telephony WS leg is served by the
+//! ROOT-mounted streams driver (`crates/busbar/src/root/ws_arrival.rs`) off `SURFACE.bindings`, and
+//! `g711_ulaw` end-to-end is the dialect row's own locked config, declared where the IR it configures
+//! lives (`crate::ir::config::g711_config`).
+//!
+//! It is assembled from a [`crate::runtime::VoiceRuntime`] via [`begin_session`], which opens the D2
 //! metering lease (fail-closed on a refused budget) and the durable [`SessionHandle`] before a frame
 //! flows.
 
 pub mod minter_https;
-pub mod telephony;
 /// MOVED to `busbar-voice-codec`: the Twilio Media Streams messages are a GRAMMAR, not a dial — a
 /// total function from a frame to an IR event and back — so they travelled with the IR they map
 /// onto. Re-exported here under the old in-crate path so `crate::topology::twilio::…` and
 /// `busbar_voice::topology::twilio::…` resolve unchanged. The Twilio DIAL (the outbound call the
-/// webhook answers) is `telephony`, and it stayed.
+/// webhook answers) is served by the root-mounted streams driver.
 pub use busbar_voice_codec::topology::twilio;
 pub mod webrtc;
 
@@ -107,9 +109,8 @@ fn dial_signal(e: &DialError) -> CanonicalSignal {
 /// ([`UpstreamWireKind::Duplex`]) and lets the SUBSTRATE open the socket: the dialer
 /// resolves-then-pins-then-guards `url` and hands back the message `Stream`/`Sink<Vec<u8>>` pair the
 /// session pump (`serve_messages`) consumes. The plane holds no socket, resolver or WS framing of its
-/// own — it feeds the returned pair to a topology's provider leg
-/// ([`telephony::TelephonyProxy::run`](crate::topology::telephony::TelephonyProxy::run) or the webrtc
-/// sideband) and keeps ONLY data/session/media logic.
+/// own — it feeds the returned pair to a topology's provider leg (the webrtc sideband) and keeps ONLY
+/// data/session/media logic.
 ///
 /// `policy` is the outbound trust posture (a public provider `wss://` takes the fail-closed
 /// [`GuardPolicy::default`]); the guard NEVER opens a socket to a target it did not pin.

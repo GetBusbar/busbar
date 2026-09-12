@@ -11,7 +11,6 @@ use super::{
     voice_admission, voice_build, voice_claims, voice_hydrate, voice_routes, voice_start,
     MOUNT_PATH,
 };
-use crate::ir::codec::OpenAiRealtimeCodec;
 // Test-support-only: the governed-open battery (`governed_open` + its denied-destination test) drives
 // `open_governed` over `Ingress`; both are used ONLY under `#[cfg(feature = "test-support")]`, so gate
 // the imports to keep a `runtime`-without-`test-support` build (the workspace clippy default now that
@@ -21,9 +20,10 @@ use super::Ingress;
 #[cfg(feature = "test-support")]
 use crate::mount::open_governed;
 use crate::runtime::scope::rehydrate_sessions;
-use crate::runtime::{EchoToolExecutor, LocalMeteringPort, SessionHandle, VoiceRuntime};
-use crate::topology::telephony::{begin_telephony, g711_config};
-use crate::topology::SessionBudget;
+use crate::runtime::SessionHandle;
+// The runtime a governed open is driven over is composed only by the `test-support` battery below.
+#[cfg(feature = "test-support")]
+use crate::runtime::{EchoToolExecutor, LocalMeteringPort, VoiceRuntime};
 use busbar_api::{PlaneRecord, PlaneSelector, StoreResult};
 use busbar_plane_streams::dialect::redact_url_credentials;
 use busbar_plugin::cold::http_endpoint::{RouteAuth, RouteMethod};
@@ -31,8 +31,6 @@ use busbar_substrate::plane::handle_engine::DurableHandleEngine;
 use busbar_substrate::plane::registry::{BuildCtx, CardIssuer, PlaneBootCtx, RestoredSummary};
 use busbar_substrate::plane::store::PlaneStore;
 use busbar_substrate::plane_host::EngineHost;
-use futures::channel::mpsc::unbounded;
-use futures::StreamExt;
 use std::sync::{Arc, Mutex};
 
 const PUBLIC_URL: &str = "https://gw.example.com";
@@ -173,6 +171,7 @@ fn slot_from_public_url(public_url: Option<&str>) -> Option<Arc<dyn std::any::An
 /// A session runtime with no live money hop — the in-process `LocalMeteringPort` — used to drive
 /// `open_governed` without any provider. `model` seeds the gauntlet destination; `deny` is the plane's
 /// open-pass denial set.
+#[cfg(feature = "test-support")]
 fn runtime_for(model: &str, deny: &[&str]) -> VoiceRuntime {
     let mut rt = VoiceRuntime::new(
         Arc::new(DurableHandleEngine::new()),
@@ -226,7 +225,7 @@ fn build_binds_the_audience_from_public_url_and_none_without() {
 }
 
 #[test]
-fn the_five_ingress_doors_mount_audience_checked_across_the_http_and_ws_seams() {
+fn the_two_one_shot_ingress_doors_mount_audience_checked_across_the_http_seam() {
     let slot = slot_from_public_url(Some(PUBLIC_URL)).expect("a public_url ⇒ a dispatch slot");
 
     // The TWO one-shot HTTP doors ride the buffered-body `routes` seam: ek_ mint + SDP broker.
@@ -251,34 +250,11 @@ fn the_five_ingress_doors_mount_audience_checked_across_the_http_and_ws_seams() 
         "the two one-shot HTTP doors mount, each RouteAuth::Key behind the plane's one audience"
     );
 
-    // The TWO inbound WS-accept doors ride the neutral WS-accept seam instead (an upgrade cannot ride
-    // the buffered-body adapter): sideband + telephony, SAME RouteAuth::Key under the same audience,
-    // keyed to the plane's decl slot so the core mount resolves the live runtime.
-    let ws: Vec<(String, RouteAuth, &'static str)> = crate::mount::voice_ws_arrivals()
-        .into_iter()
-        .map(|a| (a.path, a.auth, a.slot_key))
-        .collect();
-    assert_eq!(
-        ws,
-        vec![
-            (
-                "/v1/realtime/sideband/{call_id}".to_string(),
-                RouteAuth::Key,
-                crate::PLANE_DECL.key
-            ),
-            (
-                "/v1/realtime/telephony/{call_id}".to_string(),
-                RouteAuth::Key,
-                crate::PLANE_DECL.key
-            ),
-            (
-                "/v1/realtime/gemini/{call_id}".to_string(),
-                RouteAuth::Key,
-                crate::PLANE_DECL.key
-            ),
-        ],
-        "the THREE WS-accept doors declare through the neutral seam, RouteAuth::Key under the plane's key"
-    );
+    // The THREE inbound WS-accept doors are NOT here: an upgrade cannot ride the buffered-body
+    // adapter, and they are now declared by the ROOT off `SURFACE.bindings`
+    // (`crates/busbar/src/root/ws_arrival.rs::MountedStreams::arrivals`). The claim that each of the
+    // three mounts RouteAuth::Key and serves a session is made by `busbar --test
+    // streams_served_session`.
 
     // No receiving side ⇒ no HTTP routes, exactly as it claims and admits nothing.
     assert!(
@@ -318,9 +294,10 @@ async fn arrival_runs_run_gauntlet_session_refusing_a_denied_destination_before_
     // is the D3 call-site invariant at the ROUTE layer: no byte, no charge on a refused destination.
     let host = busbar_substrate::testkit::fixture_host::FixtureHost::new().into_host();
     let denied = runtime_for("blocked-model", &["blocked-model"]);
-    // Mint is a live `open_governed` production ingress (the browser `ek_` pass); the Sideband/Telephony
-    // WS legs prove the same verify-before-charge through `ws_accept`'s destination gauntlet + the
-    // substrate `accept_gauntlet_refuse_returns_refusal_and_spawns_zero_socket_tasks` witness.
+    // Mint is a live `open_governed` production ingress (the browser `ek_` pass); the three duplex WS
+    // legs are served by the ROOT-mounted streams driver now, and their verify-before-charge is the
+    // unit loop's own — proven at the mount by
+    // `root::ws_arrival::tests::the_socket_is_bound_only_after_unit_zero_admitted`.
     let refused = open_governed(governed_open(
         &denied,
         Arc::clone(&host),
@@ -335,11 +312,11 @@ async fn arrival_runs_run_gauntlet_session_refusing_a_denied_destination_before_
     );
 
     // A non-denied destination proceeds PAST the gate and opens the governed session; with no provider
-    // configured the one-shot mint/SDP passes answer 501 (governed, uncomposed). Only Mint/Sdp route
-    // through `open_governed`; the Sideband/Telephony WS legs route through `ws_accept` (the inbound
-    // WS-accept seam) — their governed open + operator-gate screening is proven by
-    // `hook_gate_tests::a_reject_all_operator_gate_refuses_a_ws_accept_before_the_upgrade` and their
-    // route mounting by `the_five_ingress_doors_mount_audience_checked_across_the_http_and_ws_seams`.
+    // configured the one-shot mint/SDP passes answer 501 (governed, uncomposed). Mint/Sdp are the only
+    // two that route through `open_governed` at all now: the three duplex WS legs are mounted by the
+    // root, and their operator-gate screening is proven by
+    // `root::ws_arrival::tests::a_reject_all_operator_gate_refuses_the_open_before_the_upgrade`, their
+    // mounting by `busbar --test streams_served_session`.
     let allowed = runtime_for("allowed-model", &["blocked-model"]);
     for ingress in [Ingress::Mint, Ingress::Sdp] {
         let opened = open_governed(governed_open(
@@ -411,126 +388,17 @@ fn hydrate_rehydrates_the_durable_session_working_set() {
     );
 }
 
-#[tokio::test]
-async fn duplex_session_runs_in_process_through_the_gauntlet_after_hydrate() {
-    // (1) HYDRATE first, before any listener — the ephemeral no-op gate.
-    assert!(voice_hydrate(&FakeBootCtx { store: None }).is_ok());
+// THE IN-PROCESS DUPLEX SESSION — the cell MOVED with the body it drove. `begin_telephony` opened
+// the session through `run_gauntlet_session`; the telephony WS leg is now served by the ROOT-mounted
+// streams driver, so the claim (hydrate, then a served session relays both directions through the
+// gauntlet) is made by `busbar --test streams_served_session`.
 
-    // (2) ARRIVAL: begin_telephony opens the session THROUGH `run_gauntlet_session` (verify strictly
-    // before the D2 lease reserve). g711 carries no model, so the destination is unset and admitted.
-    let rt = runtime_for("", &[]);
-    let budget = SessionBudget {
-        estimate_nanos: 1_000,
-        fee_nanos: 0,
-        cap_nanos: None,
-    };
-    let proxy = begin_telephony(
-        &rt,
-        OpenAiRealtimeCodec,
-        "acct",
-        "call-x",
-        g711_config(),
-        budget,
-        None,
-        1,
-    )
-    .expect("the open-pass gauntlet admits and the session opens");
-
-    // (3) HANDLER: drive the session over the neutral pump with an in-process MOCK PEER — four
-    // in-memory channels stand in for the provider socket and the client socket. No live provider.
-    let (prov_in_tx, prov_in_rx) = unbounded::<Vec<u8>>();
-    let (prov_out_tx, mut prov_out_rx) = unbounded::<Vec<u8>>();
-    let (cli_in_tx, cli_in_rx) = unbounded::<Vec<u8>>();
-    let (cli_out_tx, mut cli_out_rx) = unbounded::<Vec<u8>>();
-
-    prov_in_tx
-        .unbounded_send(
-            serde_json::to_vec(&serde_json::json!({
-                "type":"response.output_audio.delta","delta":"AAAA"
-            }))
-            .unwrap(),
-        )
-        .unwrap();
-    cli_in_tx
-        .unbounded_send(
-            serde_json::to_vec(&serde_json::json!({
-                "type":"input_audio_buffer.append","audio":"BBBB"
-            }))
-            .unwrap(),
-        )
-        .unwrap();
-    drop(prov_in_tx);
-    drop(cli_in_tx);
-
-    proxy
-        .run(prov_in_rx, prov_out_tx, cli_in_rx, cli_out_tx)
-        .await;
-
-    // Downlink: the provider's audio reached the client. Uplink: the client's audio reached the provider.
-    cli_out_rx.close();
-    let mut downlink = Vec::new();
-    while let Some(f) = cli_out_rx.next().await {
-        let v: serde_json::Value = serde_json::from_slice(&f).unwrap();
-        downlink.push(v["type"].as_str().unwrap().to_string());
-    }
-    assert!(
-        downlink.contains(&"response.output_audio.delta".to_string()),
-        "the governed session relayed provider downlink audio to the client: {downlink:?}"
-    );
-
-    prov_out_rx.close();
-    let mut uplink = Vec::new();
-    while let Some(f) = prov_out_rx.next().await {
-        let v: serde_json::Value = serde_json::from_slice(&f).unwrap();
-        uplink.push(v["type"].as_str().unwrap().to_string());
-    }
-    assert!(
-        uplink.contains(&"input_audio_buffer.append".to_string()),
-        "the governed session relayed client uplink audio to the provider: {uplink:?}"
-    );
-}
-
-/// THE PROVIDER CREDENTIAL DOES NOT REACH THE LOG. The Gemini leg's native provider scheme carries the
-/// API key in the dial URL, and the neutral dialer's URL-shaped refusal quotes the target it could not
-/// use back verbatim — so the one line the failed-dial arm writes is a line the deployment's resolved
-/// provider credential can ride out on. This drives the exact pair that arm composes: the URL the leg
-/// builds, and the rendering of the error a `base_url` the dialer cannot parse produces.
-#[test]
-fn a_failed_gemini_dial_does_not_write_the_provider_key_into_the_log() {
-    const KEY: &str = "AIzaSyTOPSECRETVALUE";
-    // The URL the Gemini leg dials — the key rides the query, which is that dialect's native scheme.
-    let url = super::provider_ws_url(
-        "https://generativelanguage.googleapis.com",
-        crate::GEMINI_LIVE,
-        KEY,
-    );
-    assert!(
-        url.contains(KEY),
-        "the premise: the Gemini dial target really does carry the credential in its query"
-    );
-
-    // A `base_url` the neutral dialer cannot use quotes the whole target back — key and all.
-    let refusal = crate::topology::DialProviderError::Dial(
-        busbar_substrate::egress::duplex_ws::DialError::Url(url.clone()),
-    );
-    let raw = refusal.to_string();
-    assert!(
-        raw.contains(KEY),
-        "the premise: the dialer's own refusal quotes the target verbatim, so the raw error is not \
-         a thing this plane may hand to a logger"
-    );
-
-    // What the arm actually logs.
-    let logged = redact_url_credentials(&raw);
-    assert!(
-        !logged.contains(KEY),
-        "the logged line must not carry the provider credential; it read: {logged}"
-    );
-    assert!(
-        logged.contains("generativelanguage.googleapis.com"),
-        "and it must still name the target an operator has to fix: {logged}"
-    );
-}
+// THE PROVIDER CREDENTIAL DOES NOT REACH THE LOG — the cell MOVED with the body it drove. The
+// Gemini leg's dial URL was composed here by `provider_ws_url`, which died with the plane's own
+// dial; the leg is now dialled by the ROOT's guarded egress, so the claim (a query-credential dial
+// records a REDACTED url in the audit record) is made by
+// `root::tests::session_driver::a_query_credential_dial_records_a_redacted_url`. What survives here
+// is the narrow shape of the redaction itself.
 
 /// The redaction is narrow: a `key=` that is not a query parameter is ordinary text, and a message
 /// with no credential in it survives byte-identical — an error line an operator reads is not worth

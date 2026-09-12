@@ -353,31 +353,8 @@ fn a_node_the_root_composed_no_table_for_binds_nothing() {
     );
 }
 
-/// **THE ROOT IDENTITY, from this side: no served session-open reaches the ungoverned path.**
-///
-/// The cells above prove a binding works when one is handed over. This one proves there is no served
-/// call site that declines to hand one — the property that makes "served" and "governed" the same set
-/// rather than two sets that happen to overlap. It reads the door's own source because that is where
-/// the property lives: the three legs are three call sites in one function, and a fourth added
-/// without the binding would be a session nobody could sweep, discovered by a customer.
-#[test]
-fn every_served_session_open_asks_the_composition_for_its_binding() {
-    let door = include_str!("../mount.rs");
-    let accept = door
-        .split_once("pub(crate) async fn ws_accept")
-        .expect("the door is where the served legs are")
-        .1;
-
-    let opens = accept.matches("open_admitted_session(").count()
-        + accept.matches("open_admitted_telephony(").count();
-    assert_eq!(
-        opens, 3,
-        "the served legs are the dialed proxy, the uplink-only fallback and the WebRTC sideband; \
-         a fourth needs its own binding and this cell counted {opens}"
-    );
-    let bound = accept.matches("bind_served_session(calls.clone())").count();
-    assert_eq!(
-        bound, opens,
-        "every served session-open asks the composition for its binding: {bound} of {opens} do"
-    );
-}
+// THE ROOT IDENTITY, FROM THIS SIDE — the cell MOVED with the door it read. It counted the served
+// session-opens inside `ws_accept` and held each to a composed binding; the served legs are the
+// ROOT's now, and there is exactly one session-open on that path (`SessionDriver::open`, run before
+// the acceptor is asked for anything). The structural claim is made where the door is:
+// `root::ws_arrival::tests::the_mount_opens_one_session_and_opens_it_before_the_socket`.

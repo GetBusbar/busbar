@@ -265,6 +265,37 @@ pub fn upstream_rows(section: &dyn busbar_substrate::plane::config::PlaneCfg) ->
         .unwrap_or_default()
 }
 
+/// THE DEPLOYMENT'S DECLARED SESSION DEFAULTS, as the JSON the plane's own projector parses.
+///
+/// The same read as [`upstream_rows`] beside it and the same shape: the root takes the section it
+/// already resolved, behind the neutral carrier it already holds it in, and gets back a string it
+/// does not read. What parses it is the plane, on the far side of the neutral configuration view —
+/// which is why the bytes matter and the type does not: a deployment's configured gate is matched
+/// against these bytes, so a second rendering anywhere would be a gate that silently stopped
+/// matching.
+#[must_use]
+pub fn session_defaults_json(section: &dyn busbar_substrate::plane::config::PlaneCfg) -> String {
+    section
+        .as_any()
+        .downcast_ref::<StreamsCfg>()
+        .and_then(|parsed| serde_json::to_string(&parsed.session).ok())
+        .unwrap_or_default()
+}
+
+/// THE SESSION WALL-CLOCK CEILING this deployment declared, in whole seconds.
+///
+/// The plane-imposed ceiling, read for the one thing outside the plane that needs it: the pump's
+/// whole-session deadline. A build with this crate compiled out declares none, which the caller
+/// reads as the section default rather than as "unbounded" — an absent ceiling and a declared
+/// absence of one are different postures and only one of them is what an operator wrote.
+#[must_use]
+pub fn session_max_secs(section: &dyn busbar_substrate::plane::config::PlaneCfg) -> u32 {
+    section
+        .as_any()
+        .downcast_ref::<StreamsCfg>()
+        .map_or_else(default_session_max_secs, |parsed| parsed.session_max_secs)
+}
+
 /// PLANE_DECL.parse_section — deserialize `streams:` through the plane's own typed shape, boxed as the
 /// neutral [`busbar_substrate::plane::config::PlaneCfg`]. Mirror of `mcp_parse_section` /
 /// `a2a_parse_section`. UNCONDITIONAL (outside the `runtime` gate): config parse/validate is needed

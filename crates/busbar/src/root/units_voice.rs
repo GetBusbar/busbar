@@ -2243,6 +2243,12 @@ impl Units for VoiceUnit<'_> {
         // zero opens the leg, which is why the dial is here and under this shape's arm alone — a
         // second dial per turn would be a second socket per sentence.
         if !self.shape.is_handshake() {
+            // NOTHING ON THIS ARM REFUSES A TURN FOR HAVING NOWHERE TO RELAY, and the distinction is
+            // the dialect's rather than this step's. A turn opened on a NOTIFICATION — audio
+            // arriving, a buffer committed — is quietly consumed when there is no leg, because the
+            // wire gives a server nothing to send back for one. A turn opened on a REQUEST is
+            // refused before the door, at verify, off the fact the plane's reader set from the
+            // DIALECT's own declaration — which is what puts the wire's own terminal on the socket.
             let spent = self.usage.audio_ms_in;
             self.accrued.fetch_add(spent, Ordering::AcqRel);
             meter.accrue(spent);
@@ -2253,19 +2259,21 @@ impl Units for VoiceUnit<'_> {
             return Decision::proceed(token, RoutePlan::default());
         }
 
-        if self.upstream().is_none() {
-            // No upstream configured. The plane says so honestly rather than fabricating a host,
-            // and the answer here is the same: nowhere to go. This is the ONLY refusal left on this
-            // arm, and it is not a judgement about a dial — it is the absence of anywhere to dial.
-            return Decision::refuse(token, Refusal::new(ReasonCode::NoDestination));
-        }
-        // AND A CONFIGURED ROW PROCEEDS. The step used to run a synchronous probe here and refuse
-        // on its answer, which meant a deployment that had configured its upstream correctly was
-        // refused at Route on every session — the probe's default implementor is `Detached`, and
-        // `Detached` refuses. Nothing here judges a dial now: the leg is sealed, the composition
-        // opens it between frames, and the ONE guard that decides whether that socket may be opened
-        // runs there, where the socket is. A refusal from it ends the session at the pump, which is
-        // the honest place for a dial's answer to arrive.
+        // NOTHING ON THIS STEP JUDGES A DIAL, AND NOTHING ON IT REFUSES ONE.
+        //
+        // Two refusals stood here and both are gone, for two different reasons. The first was a
+        // SYNCHRONOUS PROBE whose default implementor is `Detached` and therefore refuses, so a
+        // deployment that had configured its upstream correctly was refused at Route on every
+        // session; the guard that decides whether a socket may be opened now runs where the socket
+        // is opened, and a refusal from it ends the session at the pump.
+        //
+        // The second was "no upstream configured ⇒ `NoDestination`", and the commit that MOUNTS this
+        // plane is what corrects it. A session with no configured row is not a session with nowhere
+        // to go: it is the GOVERNED BUT NOT DIALLING posture — the browser sideband is exactly that
+        // leg, it dials nobody by design, and it is the one leg this plane has always served. Unit
+        // zero seals no destination for it, so `pending_leg` stays `None` and nothing ever dials;
+        // what a client asking for a response is told is the row's own declared terminal, refused
+        // before the door. Refusing here unserved the one URL the standing claim covers.
         Decision::proceed(token, RoutePlan::default())
     }
 
@@ -2767,4 +2775,4 @@ pub const fn handshake_scope() -> &'static str {
 
 #[cfg(test)]
 #[path = "tests/units_voice.rs"]
-mod tests;
+pub(crate) mod tests;

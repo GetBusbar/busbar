@@ -78,6 +78,11 @@ pub mod registry;
 // other — an acceptor with nothing to serve, or a driver nothing serves through. It reaches into no
 // plane's anything either: what it is handed is a declared row and a unit set, and it could not say
 // whose they are.
+// WHERE A DUPLEX PLANE'S DECLARED SURFACE BECOMES SERVED URLS, under the same neutral switch as the
+// serving path it mounts. It reads a `WireSurface` and registers one inbound WS-accept arrival per
+// declared binding; it names no plane, no dialect and no wire's protocol.
+#[cfg(feature = "root-duplex-serve")]
+pub mod ws_arrival;
 // THE ONE GUARD IN FRONT OF AN EGRESS DIAL, under the same neutral switch as the leg it guards: the
 // network judge and the breaker cell every plane's outbound duplex socket is opened past. It names
 // no plane and no wire — what it is handed is a sealed destination.

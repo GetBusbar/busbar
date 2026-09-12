@@ -916,22 +916,22 @@
       "capability": "hooks-gate",
       "plane": "voice-client",
       "state": "proven",
-      "test": "crates/busbar-voice/src/tests/hook_gate_tests.rs::a_reject_all_operator_gate_refuses_a_ws_accept_before_the_upgrade",
+      "test": "crates/busbar-voice/src/tests/hook_gate_tests.rs::streams_hooks_reject_all_refuses_a_session_open",
       "root": {
         "state": "none",
         "leg": "root-voice",
-        "reason": "the refusal a session meets on the root-voice leg is the scope unit's at approve; hooks::gate::decide is reached by no cell on this leg"
+        "reason": "the refusal a session meets on the root-voice leg is the scope unit's at approve; hooks::gate::decide is reached by no cell on this leg. The operator gate on the SERVED door is fired by the plane-neutral duplex mount rather than by this leg, and is proven in the mount's own file (crates/busbar/src/root/tests/ws_arrival.rs::a_reject_all_operator_gate_refuses_the_open_before_the_upgrade)"
       }
     },
     {
       "capability": "hooks-gate",
       "plane": "voice-server",
       "state": "proven",
-      "test": "crates/busbar-voice/src/tests/hook_gate_tests.rs::a_reject_all_operator_gate_refuses_a_ws_accept_before_the_upgrade",
+      "test": "crates/busbar-voice/src/tests/hook_gate_tests.rs::streams_hooks_reject_all_refuses_a_session_open",
       "root": {
         "state": "none",
         "leg": "root-voice",
-        "reason": "the refusal a session meets on the root-voice leg is the scope unit's at approve; hooks::gate::decide is reached by no cell on this leg"
+        "reason": "the refusal a session meets on the root-voice leg is the scope unit's at approve; hooks::gate::decide is reached by no cell on this leg. The operator gate on the SERVED door is fired by the plane-neutral duplex mount rather than by this leg, and is proven in the mount's own file (crates/busbar/src/root/tests/ws_arrival.rs::a_reject_all_operator_gate_refuses_the_open_before_the_upgrade)"
       }
     },
     {

@@ -151,7 +151,7 @@ fn handle_cli_flags() -> Option<i32> {
                                 "warning: {code}: config at {config_path} did not parse; printing the \
                                  built-in metadata denylist only (security.blocked_metadata_hosts \
                                  skipped). Run busbar normally to see the parse error.",
-                                code = busbar_substrate::diagnostics::CLI_METADATA_BLOCKLIST_CONFIG_UNREADABLE.banner()
+                                code = busbar_substrate_values::diagnostics::CLI_METADATA_BLOCKLIST_CONFIG_UNREADABLE.banner()
                             );
                             }
                         }
@@ -165,7 +165,7 @@ fn handle_cli_flags() -> Option<i32> {
                             "warning: {code}: config at {config_path} failed to interpolate; printing \
                              the built-in metadata denylist only (security.blocked_metadata_hosts \
                              skipped). Run busbar normally to see the interpolation error.",
-                            code = busbar_substrate::diagnostics::CLI_METADATA_BLOCKLIST_CONFIG_UNREADABLE.banner()
+                            code = busbar_substrate_values::diagnostics::CLI_METADATA_BLOCKLIST_CONFIG_UNREADABLE.banner()
                         );
                     }
                 }
@@ -300,7 +300,7 @@ fn validate_config_command() -> i32 {
         Err(e) => {
             eprintln!(
                 "[error] {}: {e}",
-                busbar_substrate::diagnostics::CLI_VALIDATE_CONFIG_INVALID.banner()
+                busbar_substrate_values::diagnostics::CLI_VALIDATE_CONFIG_INVALID.banner()
             );
             return 1;
         }
@@ -320,7 +320,7 @@ fn validate_config_command() -> i32 {
         Err(errs) => {
             eprintln!(
                 "[error] {}: config errors:\n  - {}",
-                busbar_substrate::diagnostics::CLI_VALIDATE_CONFIG_INVALID.banner(),
+                busbar_substrate_values::diagnostics::CLI_VALIDATE_CONFIG_INVALID.banner(),
                 errs.join("\n  - ")
             );
             return 1;
@@ -334,7 +334,7 @@ fn validate_config_command() -> i32 {
     if let Err(errs) = config_validate::validate_with_unset(&cfg, &unset_env_vars) {
         eprintln!(
             "[error] {}: config validation failed:\n  - {}",
-            busbar_substrate::diagnostics::CLI_VALIDATE_CONFIG_INVALID.banner(),
+            busbar_substrate_values::diagnostics::CLI_VALIDATE_CONFIG_INVALID.banner(),
             errs.join("\n  - ")
         );
         return 1;
@@ -349,7 +349,7 @@ fn validate_config_command() -> i32 {
         Err(e) => {
             eprintln!(
                 "[error] {}: {e}",
-                busbar_substrate::diagnostics::CLI_VALIDATE_PLUGIN_PREFLIGHT_FAILED.banner()
+                busbar_substrate_values::diagnostics::CLI_VALIDATE_PLUGIN_PREFLIGHT_FAILED.banner()
             );
             return 1;
         }
@@ -361,7 +361,7 @@ fn validate_config_command() -> i32 {
     if let Err(e) = validate_builtin_secrets_resolve(&cfg) {
         eprintln!(
             "[error] {}: {e}",
-            busbar_substrate::diagnostics::CLI_VALIDATE_CONFIG_INVALID.banner()
+            busbar_substrate_values::diagnostics::CLI_VALIDATE_CONFIG_INVALID.banner()
         );
         return 1;
     }
@@ -426,7 +426,7 @@ fn list_plugins_command() -> i32 {
         Err(e) => {
             eprintln!(
                 "[warn] {}: config not readable ({e}); using the default plugins block",
-                busbar_substrate::diagnostics::CLI_LIST_PLUGINS_CONFIG_UNREADABLE.banner()
+                busbar_substrate_values::diagnostics::CLI_LIST_PLUGINS_CONFIG_UNREADABLE.banner()
             );
             (
                 config::PluginsCfg::default(),
@@ -439,7 +439,7 @@ fn list_plugins_command() -> i32 {
         Err(e) => {
             eprintln!(
                 "[error] {}: plugins.trust is invalid: {e}",
-                busbar_substrate::diagnostics::CLI_LIST_PLUGINS_TRUST_INVALID.banner()
+                busbar_substrate_values::diagnostics::CLI_LIST_PLUGINS_TRUST_INVALID.banner()
             );
             return 1;
         }
@@ -496,7 +496,7 @@ fn list_plugins_command() -> i32 {
 fn die(msg: impl std::fmt::Display) -> ! {
     eprintln!(
         "[error] {}: {msg}",
-        busbar_substrate::diagnostics::BOOT_FATAL_ERROR.banner()
+        busbar_substrate_values::diagnostics::BOOT_FATAL_ERROR.banner()
     );
     std::process::exit(1);
 }
@@ -532,7 +532,7 @@ fn worker_threads_from_env(name: &str) -> Option<usize> {
                 eprintln!(
                     "[warn] {code}: {name}={v:?} is not a positive integer; ignoring it and using \
                      the default worker-thread count",
-                    code = busbar_substrate::diagnostics::WORKER_THREADS_INVALID.banner()
+                    code = busbar_substrate_values::diagnostics::WORKER_THREADS_INVALID.banner()
                 );
                 None
             }
@@ -561,7 +561,7 @@ fn worker_threads_from_config() -> Option<usize> {
             // it goes to STDERR like the other boot diagnostics.
             eprintln!(
                 "[warn] {}: {msg}",
-                busbar_substrate::diagnostics::WORKER_THREADS_INVALID.banner()
+                busbar_substrate_values::diagnostics::WORKER_THREADS_INVALID.banner()
             );
             None
         }
@@ -723,7 +723,7 @@ fn register_planes() {
 }
 
 /// REGISTER THE LINKED PLANES' DIAGNOSTICS — the composition root's one write into the diagnostics
-/// axis (`busbar_substrate::diagnostics::install_diagnostics`), exactly `register_planes`' shape on
+/// axis (`busbar_substrate_values::diagnostics::install_diagnostics`), exactly `register_planes`' shape on
 /// the diagnostics axis. Each extracted plane crate OWNS its `Diagnostic` consts and exposes them as
 /// `DIAGNOSTICS`; core carries no plane-specific diagnostic (the neutral catalog is the plane-agnostic
 /// half). The neutral `REGISTRY ∪ installed` fold makes these codes resolve through `by_code` and land
@@ -735,30 +735,74 @@ fn register_planes() {
 #[allow(clippy::vec_init_then_push)]
 fn register_diagnostics() {
     #[allow(unused_mut)]
-    let mut installed: Vec<&'static busbar_substrate::diagnostics::Diagnostic> = Vec::new();
+    let mut installed: Vec<&'static busbar_substrate_values::diagnostics::Diagnostic> = Vec::new();
     #[cfg(feature = "plane-mcp")]
     installed.extend_from_slice(busbar_mcp::DIAGNOSTICS);
     #[cfg(feature = "plane-a2a")]
     installed.extend_from_slice(busbar_a2a::DIAGNOSTICS);
     #[cfg(feature = "plane-voice")]
     installed.extend_from_slice(busbar_voice::DIAGNOSTICS);
-    busbar_substrate::diagnostics::install_diagnostics(installed.leak());
+    busbar_substrate_values::diagnostics::install_diagnostics(installed.leak());
 }
 
-/// REGISTER THE LINKED DUPLEX PLANES' INBOUND WS-ACCEPT ARRIVALS — the composition root's one write
-/// into the neutral WS-accept registry (`busbar_substrate::ingress::duplex_ws::install_ws_arrivals`),
-/// exactly `register_planes`' shape on the WS-accept axis. Each duplex plane crate OWNS its
-/// `WsArrivalSpec`s (path + audience + a neutral gauntlet-gated accept fn) and exposes them as
-/// `voice_ws_arrivals()`; core carries none. Installed BEFORE the router is built (in `run()`), so
-/// `take_ws_arrivals` drains a populated set; a build with no duplex plane installs nothing and the
-/// router mounts no WS-accept route. Voice is the only duplex plane today, so this is a single
-/// feature-gated push — with `plane-voice` off, nothing installs, exactly as the plane row is absent.
-fn register_ws_arrivals() {
-    #[cfg(feature = "plane-voice")]
-    {
-        let installed = busbar_voice::mount::voice_ws_arrivals();
-        busbar_substrate::ingress::duplex_ws::install_ws_arrivals(installed);
-    }
+/// COMPOSE THE SERVING PATH AND REGISTER THE PLANE'S DECLARED URLS — the switch-over, and the one
+/// place a plane's surface becomes a socket this node answers.
+///
+/// LEAKED ONCE, HERE, and for the reason the composed upstream rows are: an accept fn registered
+/// into a process-wide arrival registry outlives every session it will ever serve, and a driver
+/// composed per session would be a second node — its own unit counter, its own open-session table,
+/// its own idea of how many sessions this process is carrying. There is exactly one call site and it
+/// runs once per process at boot, which is the same fixed registration-time term the interner is.
+///
+/// WHAT IS COMPOSED, and none of it is this function's decision:
+///
+/// * the UNITS are the plane's own, over the node the root built — the same node the governed-call
+///   table was composed on, so one session's money, its door and its leg are one node's;
+/// * the PLANE is the same value the node holds, with the deployment's own upstream rows;
+/// * the CONFIG the plane reads its posture off is the deployment's `streams.session:`, rendered
+///   once here and parsed by the plane, so this file carries a string it does not read;
+/// * the WIRE is the seal's own instance and never a fresh one, which is what keeps the transport
+///   registered in exactly one place;
+/// * the GUARD in front of the dial is the fail-closed posture, unconditionally.
+#[cfg(all(feature = "root-voice", feature = "root-duplex-serve"))]
+fn compose_streams_mount(
+    sealed: &root::registry::BootRegistry,
+    node: &std::sync::Arc<root::units_voice::VoiceNode>,
+    rows: &'static [busbar_plane_streams::Upstream],
+    session_defaults: String,
+    session_max_secs: u32,
+) -> &'static root::ws_arrival::MountedStreams<root::units_voice::ComposedUnits> {
+    let kernel: &'static _ = Box::leak(Box::new(root::kernel::new_kernel()));
+    let units: &'static _ = Box::leak(Box::new(root::units_voice::ComposedUnits::new(
+        std::sync::Arc::clone(node),
+    )));
+    let plane: &'static _ = Box::leak(Box::new(busbar_plane_streams::VoicePlane::new(rows)));
+    let config: &'static _ = Box::leak(Box::new(root::ws_arrival::SessionDefaults(
+        session_defaults,
+    )));
+    let gauge: &'static _ = Box::leak(Box::new(busbar_kernel::slice::ConcurrencyGauge::new()));
+    let canary: &'static _ = Box::leak(Box::new(busbar_caps::Canary::new()));
+    let driver: &'static _ = Box::leak(Box::new(root::session_driver::SessionLoopDriver::new(
+        kernel, units, plane, config, gauge, canary,
+    )));
+    let egress: &'static _ = Box::leak(Box::new(root::registry::WsLegEgress::new(
+        std::sync::Arc::clone(&sealed.transports.ws),
+        busbar_contract::TransportKeyHandle::issue(&kernel.transport_key_token(), 0, ""),
+        driver,
+        root::egress_guard::EgressGuard::default(),
+        busbar_plane_streams::surface::MEDIA_JSON,
+        busbar_contract::transport::session::EGRESS_DEPTH,
+    )));
+    Box::leak(Box::new(root::ws_arrival::MountedStreams {
+        driver,
+        egress,
+        surface: &busbar_plane_streams::surface::SURFACE,
+        plane_key: busbar_voice::PLANE_DECL.key,
+        media: busbar_plane_streams::surface::MEDIA_JSON,
+        budgets: busbar_contract::transport::session::SessionBudgets {
+            deadline: Some(std::time::Duration::from_secs(u64::from(session_max_secs))),
+        },
+    }))
 }
 
 /// SEAL THE COMPOSITION ROOT AND MOUNT THE VOICE PLANE ONTO IT — the switch-over, behind
@@ -792,10 +836,11 @@ fn mount_root_voice(
     rows: &'static [busbar_plane_streams::Upstream],
     lease: std::sync::Arc<root::units_voice::NodeSessionLease>,
 ) -> (
+    root::registry::BootRegistry,
     std::sync::Arc<root::units_voice::VoiceNode>,
     std::sync::Arc<dyn busbar_voice::runtime::GovernedCalls>,
 ) {
-    match root::registry::seal(root::policy::client_settings(limits)) {
+    let sealed = match root::registry::seal(root::policy::client_settings(limits)) {
         Ok(sealed) => {
             // A BOOT REFUSAL for the same reason the seal's own `Err` arm is one, and it was a
             // `debug_assert!`: a seal that reported success without the plane this function exists
@@ -814,17 +859,23 @@ fn mount_root_voice(
                 );
                 std::process::exit(2);
             }
+            sealed
         }
         Err(refusal) => {
             eprintln!("busbar: the composition root did not seal: {refusal}");
             std::process::exit(2);
         }
-    }
+    };
     // THE OTHER HALF OF THE MOUNT: the node this root serves the plane's units on, and the one seam
     // the half of the plane that owns sockets reaches it through. Without this the seal composed a
     // node nothing on a socket could name — a client-served tool call's wait was entered where the
     // leg was planned, and no frame arriving on any session could wake it and no tick could sweep it.
-    compose_voice_governed_calls(rows, lease)
+    // THE SEAL IS HANDED BACK BESIDE THE TABLE, because the mount needs what it composed: the ONE
+    // `ws` wire the seal registered. A mount that built a second one would be a second registration
+    // in everything but the word, which is the property `kind-isolation:transport-registration`
+    // exists to hold.
+    let (node, calls) = compose_voice_governed_calls(rows, lease);
+    (sealed, node, calls)
 }
 
 /// THE SECTION'S ROWS, COMPOSED INTO THE LIST THE MOUNTED NODE IS BUILT WITH.
@@ -958,13 +1009,13 @@ fn main() {
     // any reader. Each plane contributes its `DIAGNOSTICS` under its feature; a no-planes build
     // installs nothing and the catalog is the neutral built-ins alone.
     register_diagnostics();
-    // INBOUND WS-ACCEPT ARRIVAL REGISTRATION, same slot and the same reason as the axes above: the
-    // core router drains the installed arrivals at build (`take_ws_arrivals`), which happens later in
-    // `run()` — so the duplex planes' arrivals must be installed here, before the router is built. Each
-    // duplex plane contributes its `WsArrivalSpec`s under its feature; a build with no duplex plane
-    // installs nothing and the router mounts no WS-accept route. Gated to `plane-voice` (voice is the
-    // only duplex plane today), so a shipped build drops it entirely — strong-form deletable.
-    register_ws_arrivals();
+    // THE INBOUND WS-ACCEPT ARRIVALS ARE NOT REGISTERED HERE ANY MORE, and the move is the point.
+    // They used to be installed in this slot, beside the axes, because the plane crate that owned
+    // them needed nothing but itself. The arrivals a composition installs now carry the composed
+    // SERVING PATH — a driver over this deployment's units, its node and its configured rows — and
+    // none of that exists until the configuration has been read. So the registration moves into
+    // `run()`, to the same slot it always had to be before: after the config, before the router is
+    // built (which is what drains it). Nothing else about it changed.
     // THE COMPOSITION ROOT'S OWN SEAL is NOT here, and it is the one boot step that is not: it
     // composes the transports a switched-over plane would serve through, and the http one carries
     // the operator's `limits.request_body_max_bytes`, so it cannot run before the configuration it
@@ -1307,7 +1358,7 @@ async fn run(data_workers: usize) {
         // `resolve_backend` already warned with the remediation; repeat the posture here so the one
         // line an operator greps for ("config is ...") never claims a durability busbar does not have.
         tracing::warn!(
-            diag = %busbar_substrate::diagnostics::CONFIG_OVERLAY_NOT_WRITABLE.banner(),
+            diag = %busbar_substrate_values::diagnostics::CONFIG_OVERLAY_NOT_WRITABLE.banner(),
             "config is READ-ONLY (the overlay backend is not writable): busbar serves traffic \
              normally, but admin-API config mutations are refused. Set `config.locked: true` to \
              declare this deliberately, or give `config.overlay.file` a writable path."
@@ -1335,7 +1386,7 @@ async fn run(data_workers: usize) {
     // flag that dumps the full list.
     if cfg.allow_all_metadata {
         tracing::warn!(
-            diag = %busbar_substrate::diagnostics::METADATA_PROTECTION_DISABLED.banner(),
+            diag = %busbar_substrate_values::diagnostics::METADATA_PROTECTION_DISABLED.banner(),
             "metadata protection DISABLED — all cloud-metadata endpoints reachable"
         );
     } else {
@@ -1387,8 +1438,33 @@ async fn run(data_workers: usize) {
     #[cfg(feature = "root-voice")]
     let voice_lease = std::sync::Arc::new(root::units_voice::NodeSessionLease::default());
     #[cfg(feature = "root-voice")]
-    let (voice_node, voice_calls) =
+    let (voice_sealed, voice_node, voice_calls) =
         mount_root_voice(&cfg.limits, voice_rows, std::sync::Arc::clone(&voice_lease));
+    // THE SERVING PATH, COMPOSED AND ITS URLS REGISTERED — the switch-over. Here rather than beside
+    // the axes in `main()` because the arrivals now carry a driver over THIS deployment's units,
+    // node and configured rows, and none of that exists until the configuration has been read; the
+    // router that drains them is built a few hundred lines down, which is the ordering the
+    // registration always needed. A build with the switch off registers nothing and the router
+    // mounts no WS-accept route, byte-identically to the assembly it had before.
+    #[cfg(all(feature = "root-voice", feature = "root-duplex-serve"))]
+    {
+        let section = cfg.plane_section(busbar_voice::PLANE_DECL.config_section);
+        let defaults = section
+            .map(busbar_voice::config::session_defaults_json)
+            .unwrap_or_default();
+        let max_secs = section
+            .map(busbar_voice::config::session_max_secs)
+            .unwrap_or_default();
+        let mount =
+            compose_streams_mount(&voice_sealed, &voice_node, voice_rows, defaults, max_secs);
+        busbar_substrate::ingress::duplex_ws::install_ws_arrivals(mount.arrivals());
+    }
+    // A build with the serving switch OFF composes the seal and serves nothing through it — the same
+    // shape `voice_calls` is dropped in below, and for the same reason: the value is the switch's,
+    // and a `_`-prefixed binding would hide the day the switch stops being the only reader.
+    #[cfg(all(feature = "root-voice", not(feature = "root-duplex-serve")))]
+    drop(voice_sealed);
+
     // THE ROOT-COMPOSED PORTS this build hands across the plane-build seam, keyed by the OWNING
     // PLANE'S config section. The voice node's open-call table is one: the root builds it (it is the
     // root's node, its journal and its origin) and the plane cannot, so it crosses HERE, into the
@@ -2052,7 +2128,7 @@ async fn shutdown_signal() {
     let ctrl_c = async {
         if let Err(e) = tokio::signal::ctrl_c().await {
             tracing::warn!(
-                diag = %busbar_substrate::diagnostics::SHUTDOWN_SIGNAL_HANDLER_INSTALL_FAILED.banner(),
+                diag = %busbar_substrate_values::diagnostics::SHUTDOWN_SIGNAL_HANDLER_INSTALL_FAILED.banner(),
                 error = %e, "failed to install ctrl_c handler; SIGINT shutdown disabled"
             );
             std::future::pending::<()>().await;
@@ -2067,7 +2143,7 @@ async fn shutdown_signal() {
             }
             Err(e) => {
                 tracing::warn!(
-                    diag = %busbar_substrate::diagnostics::SHUTDOWN_SIGNAL_HANDLER_INSTALL_FAILED.banner(),
+                    diag = %busbar_substrate_values::diagnostics::SHUTDOWN_SIGNAL_HANDLER_INSTALL_FAILED.banner(),
                     error = %e, "failed to install SIGTERM handler; SIGTERM shutdown disabled"
                 );
                 std::future::pending::<()>().await;
@@ -2098,7 +2174,7 @@ async fn shutdown_signal() {
                 }
                 Err(e) => {
                     tracing::warn!(
-                        diag = %busbar_substrate::diagnostics::SHUTDOWN_SIGNAL_HANDLER_INSTALL_FAILED.banner(),
+                        diag = %busbar_substrate_values::diagnostics::SHUTDOWN_SIGNAL_HANDLER_INSTALL_FAILED.banner(),
                         error = %e, "failed to install ctrl_close handler; CTRL_CLOSE shutdown disabled"
                     );
                     std::future::pending::<()>().await;
@@ -2112,7 +2188,7 @@ async fn shutdown_signal() {
                 }
                 Err(e) => {
                     tracing::warn!(
-                        diag = %busbar_substrate::diagnostics::SHUTDOWN_SIGNAL_HANDLER_INSTALL_FAILED.banner(),
+                        diag = %busbar_substrate_values::diagnostics::SHUTDOWN_SIGNAL_HANDLER_INSTALL_FAILED.banner(),
                         error = %e, "failed to install ctrl_shutdown handler; CTRL_SHUTDOWN shutdown disabled"
                     );
                     std::future::pending::<()>().await;
@@ -2176,7 +2252,7 @@ fn spawn_jemalloc_idle_purge_fallback() {
                     eprintln!(
                         "[warn] {}: jemalloc idle-purge fallback disabled: could not read \
                          opt.dirty_decay_ms ({e})",
-                        busbar_substrate::diagnostics::JEMALLOC_IDLE_PURGE_FALLBACK_UNAVAILABLE
+                        busbar_substrate_values::diagnostics::JEMALLOC_IDLE_PURGE_FALLBACK_UNAVAILABLE
                             .banner()
                     );
                     return;
@@ -2205,7 +2281,7 @@ fn spawn_jemalloc_idle_purge_fallback() {
     if let Err(e) = spawned {
         eprintln!(
             "[warn] {}: could not spawn the jemalloc idle-purge fallback thread ({e})",
-            busbar_substrate::diagnostics::JEMALLOC_IDLE_PURGE_FALLBACK_UNAVAILABLE.banner()
+            busbar_substrate_values::diagnostics::JEMALLOC_IDLE_PURGE_FALLBACK_UNAVAILABLE.banner()
         );
     }
 }
@@ -2385,7 +2461,7 @@ fn generate_signing_key_command() -> i32 {
         Err(e) => {
             eprintln!(
                 "busbar: {}: could not generate a signing key: {e}",
-                busbar_substrate::diagnostics::SIGNING_KEY_GENERATION_FAILED.banner()
+                busbar_substrate_values::diagnostics::SIGNING_KEY_GENERATION_FAILED.banner()
             );
             return 1;
         }

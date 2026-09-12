@@ -1,21 +1,24 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! TOPOLOGY TESTS (behind `runtime`): the telephony proxy relays both ways over in-memory sockets and
-//! tears down on hard-close; the WebRTC sideband mints a token, governs the locked config, and relays
-//! NO media (media is peer-to-peer).
+//! TOPOLOGY TESTS (behind `runtime`): the WebRTC sideband mints a token, governs the locked config,
+//! and relays NO media (media is peer-to-peer).
+//!
+//! The telephony-proxy relay cell is GONE with the proxy body it drove: the telephony WS leg is
+//! served by the ROOT-mounted streams driver (`crates/busbar/src/root/ws_arrival.rs`), and the claim
+//! "a served session relays both directions" is made there by `streams_served_session`.
 
 use crate::ir::codec::OpenAiRealtimeCodec;
 use crate::ir::config::SessionConfig;
 use crate::runtime::carrier::Carrier;
 use crate::runtime::metering::{HostMeteringPort, MockMeteringHost};
 use crate::runtime::VoiceRuntime;
-use crate::topology::telephony::{begin_telephony, g711_config};
 use crate::topology::webrtc::{attach, EphemeralToken, MintError, TokenMinter};
+// Used by the guarded-dial battery below (`StreamExt::next` over the dialled pair).
 use crate::topology::SessionBudget;
 use busbar_substrate::plane::handle_engine::DurableHandleEngine;
 use busbar_substrate::plane_host::MeteringHost;
-use futures::channel::mpsc::unbounded;
+#[cfg(feature = "test-support")]
 use futures::StreamExt;
 use std::sync::Arc;
 // Test-support-only: the guarded provider-dial battery (dial_provider through the net-guard) and its
@@ -48,84 +51,6 @@ fn runtime() -> VoiceRuntime {
 
 fn json_frame(v: serde_json::Value) -> Vec<u8> {
     serde_json::to_vec(&v).unwrap()
-}
-
-// ── Topology B: the thin telephony proxy relays both directions ─────────────────────────────────
-
-#[tokio::test]
-async fn telephony_proxy_relays_both_directions() {
-    let rt = runtime();
-    let budget = SessionBudget {
-        estimate_nanos: 1_000,
-        fee_nanos: 0,
-        cap_nanos: None,
-    };
-    // g711 end-to-end: 8 kHz µ-law passes straight through, no resample.
-    let cfg = g711_config();
-    assert_eq!(
-        cfg.output_audio_format,
-        Some(crate::ir::media::AudioFormat::G711Ulaw)
-    );
-    let proxy = begin_telephony(
-        &rt,
-        OpenAiRealtimeCodec,
-        "acct-1",
-        "call-9",
-        cfg,
-        budget,
-        None,
-        1,
-    )
-    .expect("telephony begins");
-
-    let (prov_in_tx, prov_in_rx) = unbounded::<Vec<u8>>();
-    let (prov_out_tx, mut prov_out_rx) = unbounded::<Vec<u8>>();
-    let (cli_in_tx, cli_in_rx) = unbounded::<Vec<u8>>();
-    let (cli_out_tx, mut cli_out_rx) = unbounded::<Vec<u8>>();
-
-    // The provider emits a downlink audio frame → it must reach the client.
-    prov_in_tx
-        .unbounded_send(json_frame(serde_json::json!({
-            "type":"response.output_audio.delta","delta":"AAAA"
-        })))
-        .unwrap();
-    // The client (phone) sends an uplink audio frame → it must reach the provider.
-    cli_in_tx
-        .unbounded_send(json_frame(serde_json::json!({
-            "type":"input_audio_buffer.append","audio":"BBBB"
-        })))
-        .unwrap();
-    // EOF both sockets so the proxy returns cleanly.
-    drop(prov_in_tx);
-    drop(cli_in_tx);
-
-    proxy
-        .run(prov_in_rx, prov_out_tx, cli_in_rx, cli_out_tx)
-        .await;
-
-    // Downlink: the client received the provider's audio.
-    cli_out_rx.close();
-    let mut downlink = Vec::new();
-    while let Some(f) = cli_out_rx.next().await {
-        let v: serde_json::Value = serde_json::from_slice(&f).unwrap();
-        downlink.push(v["type"].as_str().unwrap().to_string());
-    }
-    assert!(
-        downlink.contains(&"response.output_audio.delta".to_string()),
-        "provider downlink audio reached the client: {downlink:?}"
-    );
-
-    // Uplink: the provider received the client's forwarded audio append.
-    prov_out_rx.close();
-    let mut uplink = Vec::new();
-    while let Some(f) = prov_out_rx.next().await {
-        let v: serde_json::Value = serde_json::from_slice(&f).unwrap();
-        uplink.push(v["type"].as_str().unwrap().to_string());
-    }
-    assert!(
-        uplink.contains(&"input_audio_buffer.append".to_string()),
-        "client uplink audio reached the provider: {uplink:?}"
-    );
 }
 
 // ── The provider WSS dials THROUGH the neutral guarded transport (HARD RULE 3) ───────────────────

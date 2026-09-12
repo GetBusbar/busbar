@@ -54,6 +54,13 @@ busbar-a2a = { path = "../busbar-a2a", optional = true }
 busbar-voice = { path = "../busbar-voice", optional = true }
 # Boot-time plugin listing (`--plugins`) reads the registry the loader builds.
 busbar-plugin-loader = { path = "../plugin-loader" }
+# THE ONE EDGE THE SERVED DUPLEX MOUNT NEEDS, OPTIONAL and carried by `root-duplex-serve` rather
+# than by `default`: the accepted socket arrives as a pair of `futures` channels. It is not reachable
+# from the request path and it disappears with the switch, exactly as the same edge disappears from
+# `busbar-voice` with its own `runtime`. (The admission bar an arrival declares is the plugin ABI's
+# `RouteAuth`; this binary names it through `busbar_plugin_loader`'s re-export, which is how it
+# already reaches every other ABI wire type, rather than taking a second edge to the ABI crate.)
+futures = { workspace = true, optional = true }
 
 # ── THE COMPOSITION ROOT'S OWN EDGES (src/root/) ────────────────────────────────────────────────
 # The binary is the one place entitled to name the kernel, the units, the planes and the transports
@@ -166,7 +173,7 @@ tikv-jemallocator = { workspace = true, features = ["disable_initial_exec_tls"] 
 # SAME default set the monolithic crate had; `root-admin`, `root-mcp`, `root-a2a`, `root-voice` and
 # `root-llm` are the additions, and all five are paths rather than surfaces — the operations, their
 # bytes and their features are unchanged.
-default = ["auth-admin-tokens", "hooks-ranking", "proto-llm", "plane-mcp", "plane-a2a", "plane-voice", "root-admin", "root-mcp", "root-a2a", "root-voice", "root-llm"]
+default = ["auth-admin-tokens", "hooks-ranking", "proto-llm", "plane-mcp", "plane-a2a", "plane-voice", "root-admin", "root-mcp", "root-a2a", "root-voice", "root-llm", "root-duplex-serve"]
 # A protocol crate: the dependency edge plus its registration line in main.rs. Dropping the
 # feature is the deletion test's level-1 build. There is no per-DIALECT feature and there must not
 # be one — "LLM coverage or not" is the choice this seam offers, and a `proto-gemini` knob would be
@@ -244,7 +251,11 @@ root-voice = ["plane-voice"]
 # `--no-default-features` still drops it, `cargo xtask gate duplex-ws-default-edge` still reads a
 # graph without the WS crate, and the strong-form plane deletion still strips the `?/` forward by the
 # same rule it strips every other one.
-root-duplex-serve = ["duplex-wire", "busbar-transport-ws?/serve-sessions"]
+root-duplex-serve = [
+    "duplex-wire",
+    "busbar-transport-ws?/serve-sessions",
+    "dep:futures",
+]
 # THE LLM PLANE THROUGH THE COMPOSITION ROOT, DEFAULT ON: the loop over the nine step files instead
 # of the shell over the engine. Same six dialects under the same six names. Default-off was the
 # ordering, not the destination — the root is BUILT before any plane is SWITCHED onto it — and the
