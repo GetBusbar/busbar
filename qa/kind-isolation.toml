@@ -149,6 +149,21 @@ crate = "busbar-core-hooks"
 kind = "core"
 reason = "the hook-dispatch surface being carved out of busbar-core; core kind, neutral spine only"
 
+[[announced]]
+crate = "busbar-plane-streams-openai"
+kind = "dialect"
+reason = "the OpenAI Realtime duplex dialect of the streams plane; the four-segment busbar-plane-<plane>-<dialect> form (ARCHITECTURE.md §1.1), announced so the door can mint its rows and the dialect column's first crate"
+
+[[announced]]
+crate = "busbar-plane-streams-gemini"
+kind = "dialect"
+reason = "the Gemini Live duplex dialect of the streams plane; the four-segment busbar-plane-<plane>-<dialect> form (ARCHITECTURE.md §1.1)"
+
+[[announced]]
+crate = "busbar-plane-streams-twilio"
+kind = "dialect"
+reason = "the Twilio Media Streams duplex dialect of the streams plane; the four-segment busbar-plane-<plane>-<dialect> form (ARCHITECTURE.md §1.1)"
+
 # ------------------------------------------------------------------------------------------------
 # [[minted]] — THE ROWS A CRATE THAT DID NOT EXIST BRINGS WITH IT
 # ------------------------------------------------------------------------------------------------

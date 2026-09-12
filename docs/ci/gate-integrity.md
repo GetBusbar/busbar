@@ -32,6 +32,17 @@ drift hides.
 `ship-ready` is the row that says both halves are true at the same time, on a tree that is asking to
 be promoted.
 
+Announcing a kind before its first crate is how the ratchet stays honest across a chain of branches
+rather than forcing one branch to do everything at once. `kind-isolation`'s `[[minted_kind]]` door
+only opens a new kind's column on a branch that lands the kind's first crate — and only if the
+merge-base's own `[[announced]]` table already names a crate of that kind, so the crate cannot
+announce itself and mint its column in the same signature. An `[[announced]]` row with no crate on
+disk yet is therefore inert by construction: it teaches the census a name and a kind and nothing
+else, mints no `[[minted]]` or `[[minted_kind]]` row, and changes no gate verdict on the branch that
+carries only the announcement. What it buys is the BASE that a later branch mints against — the one
+place `unannounced-kind-mint` and `minted-row`'s crate check look to find out whether a crate or a
+column was invented in the same commit that opens it.
+
 ## What CI holds mechanically
 
 | check | what it is | required on |
