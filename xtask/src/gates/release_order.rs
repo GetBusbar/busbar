@@ -1827,8 +1827,8 @@ fn mutations() -> Vec<Mutation> {
             apply: |t| {
                 replace_once(
                     t,
-                    "    needs: [plan, branch-green]\n    runs-on: ubuntu-latest\n    outputs:",
-                    "    needs: [plan]\n    runs-on: ubuntu-latest\n    outputs:",
+                    "    needs: [plan, branch-green]\n    runs-on: latchkey-small\n    outputs:",
+                    "    needs: [plan]\n    runs-on: latchkey-small\n    outputs:",
                 )
             },
             creates: false,
@@ -1840,8 +1840,8 @@ fn mutations() -> Vec<Mutation> {
             apply: |t| {
                 replace_once(
                     t,
-                    "    needs: [plan, branch-green]\n    runs-on: ubuntu-latest\n    services:",
-                    "    needs: [plan]\n    runs-on: ubuntu-latest\n    services:",
+                    "    needs: [plan, branch-green]\n    runs-on: latchkey-xlarge\n    services:",
+                    "    needs: [plan]\n    runs-on: latchkey-xlarge\n    services:",
                 )
             },
             creates: false,
