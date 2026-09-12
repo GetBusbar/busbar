@@ -827,12 +827,20 @@ exempt_sites = [
 max_zero_stamps = 0
 # Ratchet, not zero: the one hit is `busbar-api`'s `VirtualKey`, argued above. Tightens to 0 when
 # the ABI can drop the derive.
+#
+# NO `[gate.ceiling_raises]` ENTRY STANDS FOR THIS KEY, and none is admissible. `ceiling-rose`
+# compares each dotted path against the SAME path read out of the base's copy of this file — the
+# rise it looks for is `now.get(path)` against a `before` it only ever gets from iterating `was`,
+# the base's own map. `rules.ts-reads-the-clock` does not exist in the base at all (the table is
+# minted by this commit), so this path is simply ABSENT from `was`: the comparison loop never
+# visits it, and no rise is ever seen at that path. A declaration here would not describe that
+# non-event — `raises()` requires a declaration to be `used`, i.e. to match a path the diff loop
+# actually flagged as risen, and a path that never appears in `was` can never be marked used. The
+# entry would therefore sit in `[gate.ceiling_raises]` forever failing its own expiry check ("a
+# declared raise ... that is not a raise at the base"), which is `ceiling-rose`'s stale-waiver
+# refusal — the exact RED this comment exists to explain the absence of. A ceiling minted at 1 with
+# no prior figure needs no transaction: there is nothing to raise it FROM.
 max_default_derives = 1
-
-[gate.ceiling_raises."rules.ts-reads-the-clock.max_default_derives"]
-from = 0
-to = 1
-because = "ts-reads-the-clock is minted by this commit and is born gating with one hit already on the tree: VirtualKey's Default derive in the frozen busbar-api ABI, argued above as a ratchet rather than an exemption, so the ceiling opens at 1 rather than 0."
 
 # ── 26. unit-no-finding-ids ──────────────────────────────────────────────────────────────────────
 [rules.unit-no-finding-ids]

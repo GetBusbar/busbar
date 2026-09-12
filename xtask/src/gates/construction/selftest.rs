@@ -1000,16 +1000,24 @@ fn vocabulary_cases<'a>(gate: &'a dyn Gate, cx: &'a Ctx, base: &Overlay) -> Repo
 
     // ── WHO READ THE CLOCK, AND WHAT GOT STAMPED ───────────────────────────────────────────────
     //
-    // Five rows, ONE plant, because they are one subject: a clock read that should not have
+    // Four rows, ONE plant, because they are one subject: a clock read that should not have
     // happened here, and a timestamp field that never read one at all. Grouping them is this
     // file's own convention — the plants are grouped by family so a family costs ONE whole-tree
-    // scan rather than five — and it is not a weaker proof for it: `prove_red` requires EVERY
+    // scan rather than four — and it is not a weaker proof for it: `prove_red` requires EVERY
     // covered row to be red, so a rule that stopped counting turns this case green and the
     // self-test says so.
     //
-    // The planted clock file earns three of the five by itself: `SystemTime::now()` inside a unit
-    // crate is that crate reading a clock it may not read, AND a second wall-clock implementation
-    // beside the one the node has.
+    // THERE IS NO FIFTH ROW. `ts_reads_the_clock` (see `rules2.rs`) emits exactly two row ids —
+    // `ts-reads-the-clock` and `ts-reads-the-clock:default-derive` — and `unit_no_wall_clock`
+    // emits exactly one, `unit-no-wall-clock`; a `ts-reads-the-clock:second-clock` id named in
+    // `covers` would match no row `evidence_for` ever sees, and `prove_red`'s `narrowed_got`
+    // treats a covered id with no evidence as `Expect::Green` for the WHOLE case — which is silent
+    // rather than loud: the case would report Green no matter how red the four real rows went.
+    //
+    // The planted clock file earns two of the four by itself: `SystemTime::now()` inside a unit
+    // crate is that crate reading a clock it may not read (`unit-no-wall-clock`), and the PB-1/
+    // CG-2 citation in its own leading comment is a finding id nothing may cite (`unit-no-finding-
+    // ids`).
     //
     // THE TWO FIELD-NAME ROWS ARE PLANTED NAME BY NAME, for the reason [`plant_each`] gives: a
     // plant that exercised two of the eight `timestamp_fields` would leave the other six deletable
@@ -1042,7 +1050,6 @@ fn vocabulary_cases<'a>(gate: &'a dyn Gate, cx: &'a Ctx, base: &Overlay) -> Repo
         "unit-no-finding-ids",
         "ts-reads-the-clock",
         "ts-reads-the-clock:default-derive",
-        "ts-reads-the-clock:second-clock",
     ]);
     match target {
         Some(unit) if !ts_fields.is_empty() => {
