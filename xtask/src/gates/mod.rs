@@ -389,6 +389,18 @@ const TAKEN: &str = "2026-09-10 b6f66e929";
 /// are not; the four still say where they came from.
 const TAKEN_RECUT: &str = "2026-09-11 0063bc20d";
 
+/// `construction`'s OWN re-take, on its own tree, and DELIBERATELY NOT [`TAKEN_RECUT`].
+///
+/// `TAKEN_RECUT` named `0063bc20d` for a run that could not have happened on it: that commit's own
+/// message says 52 self-test cases, 0 skipped, and the figure filed under it was measured against
+/// 59. A 59-case run first became possible at a later commit on this chain, so the honest sha is
+/// whichever commit's tree actually carried 59 cases when the battery ran — never the one the
+/// case-count comment merely claimed. Writing that re-take under this tree's own date and sha,
+/// rather than folding it back into `TAKEN_RECUT`, is the fix for the failure this doc-comment
+/// spent a paragraph forbidding: it does not touch `kind-isolation`'s own `TAKEN_RECUT` entry,
+/// which this re-take neither re-ran nor re-verified.
+const TAKEN_RECUT_CONSTRUCTION: &str = "2026-09-11 4faf099ba";
+
 // THE MEASUREMENTS. Each is `work units at --jobs 1` on the tree named in [`TAKEN`], read off the
 // self-test's own cost line. Constants rather than literals inside the table so that a re-baseline
 // is a diff a reviewer can read as a list of numbers that moved.
@@ -396,14 +408,15 @@ const MEASURED_PLANE_PURITY: f64 = 27_923.0; // 16 cases, 298.0 s
 const MEASURED_PLANE_PURITY_STRICT: f64 = 19_435.0; // 12 cases, 202.1 s
 const MEASURED_STRUCTURE_LINT: f64 = 7_938.0; // 39 cases, 88.4 s
 
-// RE-TAKEN 33 096 -> 53 337 (GATES-2, `--jobs 1`, one unit 12.5 ms on the box in `TAKEN_RECUT`).
-// NOT A REGRESSION AND NOT SLACK: the battery went from 36 cases to 59 and the entry did not. Its
-// 36-case figure was set on `b6f66e929`, which is nine commits down THIS chain; by the chain's tip
-// the same battery measured 52 595 against an allowance of 52 954 — 99.3 per cent of it, with two
-// of the seven per cent the `construction` entry's own note calls out as the failure this struct
-// exists to prevent. The re-take is the whole battery, serially, on one tree, with the case count
-// written beside it so the next reader can see which of the two numbers moved.
-const MEASURED_CONSTRUCTION: f64 = 53_337.0; // 59 cases, 665.2 s at --jobs 1
+// RE-TAKEN AGAIN: 53 337 -> 63 125, honestly this time. The GATES-2 figure of 53 337 was filed
+// under `TAKEN_RECUT`'s `0063bc20d` beside a comment claiming 59 cases; that commit's own message
+// says 52. A 59-case run cannot have happened on a 52-case tree, so the figure could not be
+// checked against the sha it named. Re-run in full, serially, on `4faf099ba` (this chain's own
+// tip, actually carrying 59 cases): `cargo xtask gate construction --selftest --jobs 1` measured
+// 890.6 s, 63 125 work units, 59 cases, 0 skipped. `TAKEN_RECUT_CONSTRUCTION` is a SEPARATE
+// constant from `TAKEN_RECUT` on purpose — see its own doc comment — so this re-take does not
+// imply anything about whether `kind-isolation`'s figure below is still attributed correctly.
+const MEASURED_CONSTRUCTION: f64 = 63_125.0; // 59 cases, 890.6 s at --jobs 1
 
 // RE-TAKEN 128 034 -> 132 539 (GATES-2, `--jobs 1`, on the fleet box in `TAKEN_RECUT`'s tree at a
 // 1-minute load of 5.0 on 32 cores, 2 182.8 s of wall clock, 175 cases, the battery GREEN and
@@ -514,7 +527,7 @@ const SELFTEST_BUDGETS: &[Budget] = &[
         gate: "construction",
         measured: MEASURED_CONSTRUCTION,
         allowed: MEASURED_CONSTRUCTION * BUDGET_SLACK,
-        taken: TAKEN_RECUT,
+        taken: TAKEN_RECUT_CONSTRUCTION,
         why: "Thirty-six rules over a 660k-line tree, the plants grouped by family so one case carries every edit a family needs. The file scan is memoised; what is left is the rules themselves. THIS IS THE ENTRY THAT PROVED THE OLD SHAPE WRONG: its note claimed `about 15 600 units` while the tree measured three times that, under a budget it was within seven per cent of blowing.",
     },
     Budget {
