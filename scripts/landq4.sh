@@ -1136,30 +1136,49 @@ lq_queue_reconcile() { # $1 = batch file, $2 = queue file (default $Q)
 # So EITHER answer lands it: the sha is an ancestor (it was merged, or the tree is the one it was
 # written on), OR some commit since the last landed tip carries its cherry-pick trailer. The queue
 # writes short shas and the trailer is 40 hex, so the trailer is matched by prefix.
-lq_landed_range() { # $1 = tree; prints the rev range to search for cherry-pick trailers
-  local tipf="${LANDQ_TIPFILE:-$1/target/gate/landq4.tip}" t
-  t="$(tr -d '[:space:]' <"$tipf" 2>/dev/null || true)"
-  if [ -n "$t" ] && git -C "$1" rev-parse -q --verify "$t^{commit}" >/dev/null 2>&1 \
-     && [ "$(git -C "$1" rev-parse "$t")" != "$(git -C "$1" rev-parse HEAD)" ]; then
-    printf '%s..HEAD\n' "$t"; return 0
-  fi
-  # No usable last-tip — and the usual case is that it IS HEAD, because it is written after every
-  # batch. Then the range is the whole of this branch since the integration base, and failing that
-  # (a scratch repo, a detached tree) the whole log.
-  if git -C "$1" rev-parse -q --verify "origin/$BR^{commit}" >/dev/null 2>&1; then
-    printf 'origin/%s..HEAD\n' "$BR"
-  else printf 'HEAD\n'; fi
+# ── AND THE RANGE IT SEARCHES IS THE LANDED HISTORY, NOT A WINDOW THAT IS USUALLY EMPTY ─────────
+# MEASURED ON THE LIVE TREE (2026-09-12, T0-D2's `#HOLD-after-56fe23748`): the three arms of the old
+# form of this function all resolve to NOTHING on a healthy runner.
+#
+#   * `landq4.tip` is written after EVERY batch, so it IS HEAD; the first arm is skipped by design.
+#   * `origin/integration/oracle-phase0..HEAD` is then the range — and the runner PUSHES after every
+#     batch too, so origin is HEAD as well: `git rev-list --count origin/…..HEAD` = 0. Measured: 0.
+#   * the third arm (`HEAD`) is only reached when there is no integration ref at all.
+#
+# So the provenance rule — the ONLY arm that can ever release a hold on a tree that lands by
+# cherry-pick — has been searching ZERO commits since it was written. K4b's six picks landed as
+# 503638943..08bef296f with `(cherry picked from commit …)` trailers naming the originals, and
+# T0-D2 sat held behind a sha that was on the tree the whole time. Measured the other way too: the
+# same trailer IS found, exactly once, by a depth-bounded search of HEAD.
+#
+# THE RANGE IS NOW `-n <depth> HEAD`, unconditionally. HEAD is the landed history — this tree IS the
+# integration line — so there is no window to get wrong, and the depth is what keeps it cheap: the
+# trailers that matter are on recent landings, 165 landings is well under a thousand commits, and a
+# bounded `git log --format=%b` over two thousand is tens of milliseconds. A DEPTH IS NOT A WINDOW
+# THAT CAN BE EMPTY, which is the whole difference.
+LQ_PROV_DEPTH="${LANDQ_PROVENANCE_DEPTH:-2000}"
+lq_landed_range() { # $1 = tree; prints the `git log` arguments that name the landed history
+  case "$LQ_PROV_DEPTH" in ''|*[!0-9]*) LQ_PROV_DEPTH=2000 ;; esac
+  printf -- '-n %s HEAD\n' "$LQ_PROV_DEPTH"
 }
 lq_landed_here() { # $1 = tree, $2 = sha; 0 when that commit is on this tree, as itself or as a pick
-  git -C "$1" merge-base --is-ancestor "$2" HEAD 2>/dev/null && return 0
+  printf '%s\n' "$(lq_landed_how "$1" "$2")" | grep -q .
+}
+# …AND IT SAYS WHICH OF THE TWO IT WAS. A release logged as "landed" tells an integrator nothing
+# about WHY a hold that has been stuck for a day suddenly moved; `ancestor` and `cherry-picked` are
+# different facts, and the second is the one that was silently unreachable (see lq_landed_range).
+lq_landed_how() { # $1 = tree, $2 = sha; prints 'ancestor' or 'cherry-picked', or nothing
+  git -C "$1" merge-base --is-ancestor "$2" HEAD 2>/dev/null && { printf 'ancestor\n'; return 0; }
   # NOT A PIPELINE. `git log … | grep -q` hands git a SIGPIPE the moment grep has its answer, and
   # under `set -o pipefail` the whole thing then reports 141 — a "yes" that reads as an error.
   local body
+  # shellcheck disable=SC2046
   body="$(git -C "$1" log --format=%b $(lq_landed_range "$1") 2>/dev/null || true)"
-  grep -qE "cherry picked from commit $2[0-9a-f]*\)" <<<"$body"
+  grep -qE "cherry picked from commit $2[0-9a-f]*\)" <<<"$body" && { printf 'cherry-picked\n'; return 0; }
+  return 0
 }
 lq_release_holds() { # $1 = tree; rewrites $Q in place, printing one line per release
-  local line rest tok out sha tmp released=0 stamp log=""
+  local line rest tok out sha tmp released=0 stamp log="" _how=""
   [ -f "$Q" ] || return 0
   stamp="$(lq_qstamp)"           # the same read→rewrite window the popper has, and the same guard
   tmp="$Q.release.$$"; : >"$tmp"
@@ -1175,9 +1194,15 @@ lq_release_holds() { # $1 = tree; rewrites $Q in place, printing one line per re
       case "$rest" in *' '*) rest="${rest#* }" ;; *) rest="" ;; esac
       sha=""
       case "$tok" in '#HOLD-after-'*) sha="${tok#\#HOLD-after-}" ;; esac
-      if [ -n "$sha" ] && printf '%s' "$sha" | grep -qxE '[0-9a-f]{7,40}' \
-         && lq_landed_here "$1" "$sha"; then
-        log="$log""released $tok: landed
+      _how=""
+      if [ -n "$sha" ] && printf '%s' "$sha" | grep -qxE '[0-9a-f]{7,40}'; then
+        _how="$(lq_landed_how "$1" "$sha")"
+      fi
+      if [ -n "$_how" ]; then
+        # EVERY RELEASE IS LOGGED, WITH THE REASON. A hold released because the sha is an ancestor
+        # and a hold released because a LANDED commit carries its cherry-pick trailer are different
+        # facts about the tree, and the second one is the one that was unreachable for a day.
+        log="$log""released $tok: landed ($_how)
 "; released=$((released + 1))
       else
         out="$out$tok "
@@ -2862,6 +2887,21 @@ if ptr and os.path.isdir(ptr):
         sweep.append({"box": rd(hf).strip() or "?", "line": line, "started_epoch": st})
 d["sweep"] = sweep
 
+# ── THE LINES THAT DID NOT APPLY, AND WHY THEY ARE IN THIS FILE AND NOT IN A LOG ────────────────
+# Big-batch mode takes everything that applies onto the tip plus the batch so far; a line that does
+# not apply is NOT parked and NOT red — it stays live and is offered again at the next tip. That is
+# the right disposition and it is also invisible: a queue of 250 with three lines that never join
+# any batch looks exactly like a queue of 250. The rows are written by the popper every pop
+# (landq4.noapply, replaced, never appended) and rendered here so `landq-ctl status` says it.
+noapply = []
+for l in rd(E.get("LQJ_NOAPPLY", "")).splitlines():
+    f = l.split("\t")
+    if len(f) >= 3 and f[0]:
+        noapply.append({"verdict": f[0], "tip": f[1], "line": f[2]})
+d["no_apply"] = noapply
+d["batch_mode"] = "big" if E.get("LQJ_BIGBATCH") == "1" else "rules"
+d["batch_max"] = E.get("LQJ_BATCHMAX", "")
+
 backoff = {}
 for l in rd(E["LQJ_FAULTS"]).splitlines():
     f = l.split("\t")
@@ -2945,6 +2985,7 @@ lq_status_json() { # $1 = the batch file in flight (optional), $2 = when it star
   local bf="${1:-}" bstart="${2:-}" out="${STATUSJ}"
   mkdir -p "$(dirname "$out")" 2>/dev/null || true
   LQJ_OUT="$out" LQJ_Q="$Q" LQJ_D="$D" LQJ_FAULTS="$FAULTS" LQJ_RING="$FAULTRING" \
+  LQJ_NOAPPLY="$NOAPPLY" LQJ_BIGBATCH="$LQ_BIG_BATCH" LQJ_BATCHMAX="$LAND_BATCH_MAX" \
   LQJ_PAGE="$PAGE" LQJ_BATCH="$bf" LQJ_BSTART="$bstart" LQJ_SWEEPPTR="$SWEEPPTR" \
   LQJ_TIP="$(git -C "$W" rev-parse --short HEAD 2>/dev/null || true)" \
   LQJ_ENGINE="$(lq_engine_sha)" LQJ_PPB="$(lq_prove_per_box)" LQJ_PPL="$PREPROVE_LINES" \
@@ -2952,6 +2993,194 @@ lq_status_json() { # $1 = the batch file in flight (optional), $2 = when it star
   python3 -c "$LQ_STATUS_PY" || return 1
   return 0
 }
+
+# ──────────────────────────────────────────────────────────────────────────────────────────────────
+# BIG-BATCH MODE (owner ruling, 2026-09-11 21:0x) — THE POP TAKES EVERY LINE THAT APPLIES
+# ──────────────────────────────────────────────────────────────────────────────────────────────────
+# MEASURED: 6 landings in 24 h against 259 lines still to land. At that rate the queue needs 43
+# days. Every one of the popper's admission rules — one file to one line, one gates-touching line
+# per batch, a ceiling raise never beside a lower, a pre-proof green before a line may join — was
+# written to make ONE landing's red READABLE, and each of them costs lines per batch. The owner's
+# ruling replaces the whole trade: take EVERYTHING that applies, land it as one unit, and let the
+# BISECT do the reading.
+#
+#   THE POP takes every live line whose picks apply cleanly onto the tip PLUS THE BATCH SO FAR, in
+#   queue order, to LAND_BATCH_MAX (40).
+#   IT CHAINS AS ONE UNIT — `#UNIT 1` on every line after the first — so land.sh's existing
+#   prefix bisect (land_unit_prefix) attributes a red to the first line that carries it and every
+#   line after it comes back HELD, unproven and unparked. That is the ruling's "bisect by prefix on
+#   red", and it is land.sh's code, not a second implementation of it.
+#   A `#HOLD-after-<sha>` IS RELEASED when <sha> is landed (lq_landed_how — ancestor or
+#   cherry-picked) OR when it is carried by a line ALREADY IN THIS BATCH. The second half is what
+#   makes a fourteen-deep chain land in one batch instead of fourteen.
+#   NO PRE-PROOF IS REQUIRED TO JOIN. The sweep still runs and its verdicts are still recorded —
+#   they are worth reading — but a green is no longer the price of admission and a RED is no longer
+#   a park at pop time: the union's own bisect is the judge now, and it is the one that measures the
+#   line against the tree it will actually land on.
+#   THE ONE-FILE, ONE-GATES-LINE AND RAISE-BESIDE-LOWER RULES ARE DROPPED. lq_may_join is not
+#   called from here. Two lines touching one file used to be refused because a red would be
+#   ambiguous; under a prefix bisect it is not ambiguous, it is bisected.
+#
+# AND WHAT DOES NOT APPLY IS NOT A RED. `NONE:no-apply` is recorded for it, the line stays LIVE and
+# unmarked in the queue, and it is offered again at the next tip — which is usually all it needed,
+# because the line it conflicted with has just landed. Nothing is parked by this popper.
+LQ_BIG_BATCH="${LAND_BIG_BATCH:-1}"
+LAND_BATCH_MAX="${LAND_BATCH_MAX:-40}"
+case "$LAND_BATCH_MAX" in ''|*[!0-9]*) LAND_BATCH_MAX=40 ;; esac
+[ "$LAND_BATCH_MAX" -ge 1 ] || LAND_BATCH_MAX=40
+# WHERE THE NON-APPLYING LINES ARE RECORDED for the status file. One row per line per pop, replaced
+# every pop: it is a statement about THIS tip and it would be a lie about the next one.
+NOAPPLY="${LANDQ_NOAPPLY:-$W/target/gate/landq4.noapply}"
+
+# ── DO THIS LINE'S PICKS APPLY ONTO WHAT THE BATCH HAS SO FAR? ──────────────────────────────────
+# The ruling's words are "merge-tree clean", and this is exactly that: no worktree, no index, no
+# checkout, nothing written to the runner tree. `git merge-tree --write-tree` performs the same
+# three-way merge a cherry-pick performs — base = the pick's parent, ours = what the batch has
+# accumulated, theirs = the pick — and answers 0 with a tree oid or non-zero on a conflict. The
+# accumulated tree is carried forward as a throwaway commit (`commit-tree`) so the NEXT pick can be
+# merged onto it; those objects are unreferenced and the next gc takes them.
+#
+# WHY NOT A SCRATCH WORKTREE AND A REAL CHERRY-PICK: a worktree is 3,580 files to create and
+# register, it writes metadata into the shared git directory, and forty lines' worth of picks is
+# forty chances for a half-finished `cherry-pick --abort` to leave state behind. The object database
+# is append-only and concurrent-safe, which is the whole reason this shape is available.
+#
+# A LINE WITH NO PICKS (`--prove` alone) APPLIES TRIVIALLY, and that is correct: there is nothing to
+# apply. It joins the batch and the union proves the tree as it stands.
+lq_apply_probe() { # $1 = repo, $2 = the accumulated commit, $3 = a queue line's payload; prints the new accumulator
+  local repo="$1" acc="$2" line="$3" h t
+  for h in $(lq_line_hashes "$line"); do
+    git -C "$repo" rev-parse -q --verify "$h^{commit}" >/dev/null 2>&1 || return 1
+    git -C "$repo" rev-parse -q --verify "$h^{commit}^" >/dev/null 2>&1 || return 1
+    t="$(git -C "$repo" merge-tree --write-tree --merge-base="$h^" "$acc" "$h" 2>/dev/null)" || return 1
+    case "$t" in *[!0-9a-f]*|'') return 1 ;; esac
+    acc="$(git -C "$repo" commit-tree "$t" -p "$acc" -m "landq4 apply probe $h" 2>/dev/null)" || return 1
+    [ -n "$acc" ] || return 1
+  done
+  printf '%s\n' "$acc"
+}
+
+# ── IS THIS LINE STILL HELD? ────────────────────────────────────────────────────────────────────
+# Prints the reason it is held and nothing at all when it is free. Every leading `#` token is read,
+# because a held line is routinely written `#HOLD-after-<sha> #T0-B2-seam --prove …` and the second
+# token is a LABEL, not a dependency (lq_hold_after_sha's header has the census: 36 lines).
+#
+#   `#HOLD-after-<hex>`  released when the sha is landed, or carried by a line already in the batch
+#   `#HOLD…` anything else (`#HOLD-after-strike`, `#HOLD-after-K3-and-A1`, a non-hex remainder)
+#                        the integrator's to release; this popper never guesses at a word
+#   `#RED…`, `#MALFORMED` a park. A park is a decision somebody took and the pop does not overturn
+#                        it, however big the batch is allowed to be.
+#   anything else        a label. Skipped.
+lq_line_still_held() { # $1 = repo, $2 = the queue line, $3 = the shas this batch already carries
+  local repo="$1" rest="$2" carried="$3" tok sha
+  while : ; do
+    case "$rest" in '#'*) ;; *) break ;; esac
+    tok="${rest%% *}"
+    case "$rest" in *' '*) rest="${rest#* }" ;; *) rest="" ;; esac
+    case "$tok" in
+      '#RED'*|'#MALFORMED'*) printf 'parked (%s)\n' "$tok"; return 0 ;;
+      '#HOLD-after-'*)
+        sha="${tok#\#HOLD-after-}"
+        printf '%s' "$sha" | grep -qxE '[0-9a-f]{7,40}' || { printf 'a word, not a sha (%s)\n' "$tok"; return 0; }
+        # ALREADY IN THIS BATCH FIRST, because it is the cheap answer and the common one in a big
+        # batch: the predecessor is three lines up. Matched by PREFIX in both directions, because
+        # the queue writes short shas and a tag may be shorter or longer than the pick it names.
+        case "$carried" in *"$TAB$sha"*) continue ;; esac
+        if lq_carried_prefix "$carried" "$sha"; then continue; fi
+        [ -n "$(lq_landed_how "$repo" "$sha")" ] || { printf 'waiting on %s\n' "$sha"; return 0; }
+        ;;
+      '#HOLD'*) printf 'a hold this engine does not read (%s)\n' "$tok"; return 0 ;;
+    esac
+  done
+  case "$rest" in '--'*) ;; *) printf 'no payload\n'; return 0 ;; esac
+  return 0
+}
+# A SHA THE BATCH CARRIES, BY PREFIX EITHER WAY (the queue's short shas against a pick's long one).
+lq_carried_prefix() { # $1 = the carried set, $2 = sha
+  local carried="$1" sha="$2" h
+  for h in $(printf '%s' "$carried" | tr "$TAB" ' '); do
+    [ -n "$h" ] || continue
+    case "$h" in "$sha"*) return 0 ;; esac
+    case "$sha" in "$h"*) return 0 ;; esac
+  done
+  return 1
+}
+
+# ── THE BIG-BATCH POP ───────────────────────────────────────────────────────────────────────────
+# Queue order, start to finish, one pass. Everything that is not admitted is written to the keep
+# file BYTE FOR BYTE — tags and all — which is what makes this safe to run against a queue an
+# integrator is also editing: the only lines that leave are the ones that went into the batch.
+lq_pop_big() { # $1 = tip, $2 = max, $3 = batch file out, $4 = keep file out; prints the count
+  local tip="$1" b="$2" batch="$3" keep="$4"
+  local line pay acc newacc why h n=0 nap=0 nheld=0 carried="$TAB" root=""
+  : >"$batch"; : >"$keep"; : >"$batch.chain"; : >"$NOAPPLY"
+  case "$b" in ''|*[!0-9]*) b="$LAND_BATCH_MAX" ;; esac
+  [ "$b" -ge 1 ] || b="$LAND_BATCH_MAX"
+  acc="$(git -C "$W" rev-parse -q --verify "$tip^{commit}" 2>/dev/null || true)"
+  if [ -z "$acc" ]; then
+    # NO TIP TO APPLY ONTO IS NOT AN EMPTY QUEUE. Nothing is popped and nothing is lost: the queue
+    # is written back exactly as it was read.
+    cat "$Q" >"$keep" 2>/dev/null || true
+    lq_log "big-batch: $tip does not resolve in this tree; nothing popped, the queue is unchanged"
+    echo 0; return 0
+  fi
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      '') printf '\n' >>"$keep"; continue ;;
+      '# '*) printf '%s\n' "$line" >>"$keep"; continue ;;
+    esac
+    pay="$(lq_line_payload "$line")"
+    case "$pay" in
+      '--'*) ;;
+      *) printf '%s\n' "$line" >>"$keep"; continue ;;
+    esac
+    # THE CEILING IS A CEILING, NOT A STOP. Lines past it are written back untouched and are the
+    # next batch's; the walk continues so the keep file stays in queue order.
+    if [ "$n" -ge "$b" ]; then printf '%s\n' "$line" >>"$keep"; continue; fi
+    why="$(lq_line_still_held "$W" "$line" "$carried")"
+    if [ -n "$why" ]; then
+      printf '%s\n' "$line" >>"$keep"; nheld=$((nheld + 1)); continue
+    fi
+    newacc="$(lq_apply_probe "$W" "$acc" "$pay")" || newacc=""
+    if [ -z "$newacc" ]; then
+      # ── NONE:no-apply — AND THE LINE STAYS LIVE ───────────────────────────────────────────────
+      # It is not a red and it is not a park: the picks do not apply onto THIS tip plus THIS batch,
+      # which is a fact about an ordering and not about the work. The commonest cause is the line
+      # three rows above it, which is about to land — and then it applies.
+      printf '%s\n' "$line" >>"$keep"
+      printf 'NONE:no-apply%s%s%s%s\n' "$TAB" "$tip" "$TAB" "$pay" >>"$NOAPPLY"
+      nap=$((nap + 1))
+      lq_log "big-batch: NONE:no-apply — $(printf '%.90s' "$pay") does not apply onto $(printf '%.9s' "$tip") plus the $n line(s) taken; it stays LIVE"
+      continue
+    fi
+    acc="$newacc"
+    n=$((n + 1))
+    if [ "$n" = 1 ]; then
+      root="$pay"
+      printf '%s\n' "$pay" >>"$batch"
+    else
+      # ONE UNIT, ROOTED AT THE FIRST LINE (see land.sh's `#UNIT` reader and land_unit_prefix). The
+      # whole batch is a chain: each line was admitted onto the tree the lines before it make, so a
+      # red in the middle says nothing about the lines after it and they must come back HELD.
+      printf '#UNIT 1\n' >>"$batch"
+      printf '%s\n' "$pay" >>"$batch"
+    fi
+    # THE CHAIN MAP, so a red or a missing outcome puts a HELD line back UNDER ITS HOLD. lq_park_line
+    # and the requeue both read this file: a payload put back bare is a line that was never un-held
+    # going live with its predecessor unlanded. Only lines that were HELD get a row — a line that
+    # was already live has no tag to restore.
+    case "$line" in
+      '#'*) printf '%s%s%s%s%s\n' "$pay" "$TAB" "$line" "$TAB" "${root}" >>"$batch.chain" ;;
+    esac
+    for h in $(lq_line_hashes "$pay"); do carried="$carried$h$TAB"; done
+    lq_log "big-batch: line $n of at most $b: $(printf '%.90s' "$pay")"
+  done <"$Q"
+  [ "$nap" = 0 ] || lq_log "big-batch: $nap line(s) recorded NONE:no-apply and left LIVE (they are offered again at the next tip)"
+  [ "$nheld" = 0 ] || lq_log "big-batch: $nheld line(s) still held or parked (a word hold, a park, or a sha that is neither landed nor in this batch)"
+  lq_log "big-batch: popped $n line(s) as ONE unit onto $(printf '%.9s' "$tip") (ceiling $b); a red is bisected by prefix"
+  echo "$n"
+}
+
 # ──────────────────────────────────────────────────────────────────────────────────────────────────
 # THE POPPER
 # ──────────────────────────────────────────────────────────────────────────────────────────────────
@@ -4205,7 +4434,7 @@ lq_selftest() {
   _t "the landed hold is released"             1 "$(grep -cx -- "--prove landed" "$Q" || true)"
   # Three lines carry that sha, and each release is its own log line: the ledger reads how many
   # lines a landing freed, not merely that something was freed.
-  _t "  ...and the release is logged, by tag"  3 "$(grep -cx "released #HOLD-after-$hland: landed" "$root/rel.txt" || true)"
+  _t "  ...and the release is logged, by tag"  3 "$(grep -cx "released #HOLD-after-$hland: landed (ancestor)" "$root/rel.txt" || true)"
   _t "a sha that has NOT landed still holds"   1 "$(grep -cx -- "#HOLD-after-$hside --prove unlanded" "$Q" || true)"
   _t "  ...and is not logged as released"      0 "$(grep -c "$hside" "$root/rel.txt" || true)"
   _t "a hold on a WORD is the integrator's"    1 "$(grep -cx -- '#HOLD-after-strike --prove worded' "$Q" || true)"
@@ -4243,9 +4472,40 @@ lq_selftest() {
   printf '#HOLD-after-%s --prove picked\n#HOLD-after-%s --prove stillheld\n' "$hpick" "$hside" >"$Q"
   lq_release_holds "$repo" >"$root/rel3.txt"
   _t "the cherry-picked hold is released"      1 "$(grep -cx -- '--prove picked' "$Q" || true)"
-  _t "  ...and logged"                         1 "$(grep -cx "released #HOLD-after-$hpick: landed" "$root/rel3.txt" || true)"
+  _t "  ...and logged"                         1 "$(grep -cx "released #HOLD-after-$hpick: landed (cherry-picked)" "$root/rel3.txt" || true)"
   _t "  ...while the unpicked one still holds" 1 "$(grep -cx -- "#HOLD-after-$hside --prove stillheld" "$Q" || true)"
   _t "the main flow releases holds before it reads the head" 1 "$(grep -c '^  lq_release_holds "\$W" | while' "$0")"
+
+  # ── AND IT FIRES ON THE TREE A HEALTHY RUNNER ACTUALLY HAS (live defect, 2026-09-12) ──────────
+  # THE CASES ABOVE PASSED WHILE PRODUCTION WAS BROKEN, and that is the whole lesson: this fixture
+  # has no `landq4.tip` and no `origin/<BR>`, so the old lq_landed_range fell through to its third
+  # arm (`HEAD`) and searched the whole log. A RUNNING engine has both — the tip file is written
+  # after every batch and the push follows it — so both resolve to HEAD, the range was
+  # `origin/<BR>..HEAD` = ZERO COMMITS, and the provenance arm could not fire at all. T0-D2 sat
+  # behind `#HOLD-after-56fe23748` for a day while K4b's picks were on the tree with their trailers.
+  #
+  # So the fixture is made to look like a running engine, and the release must still happen.
+  local savedTIPF="${LANDQ_TIPFILE:-}" savedBR="$BR"
+  git -C "$repo" update-ref "refs/remotes/origin/$BR" HEAD
+  LANDQ_TIPFILE="$root/tipfile.txt"; git -C "$repo" rev-parse HEAD >"$LANDQ_TIPFILE"
+  _t "the runner's own shape: the tip file IS head"   0 \
+     "$( [ "$(tr -d '[:space:]' <"$LANDQ_TIPFILE")" = "$(git -C "$repo" rev-parse HEAD)" ] && echo 0 || echo 1)"
+  _t "  ...and origin/<BR> is head too"               0 \
+     "$( [ "$(git -C "$repo" rev-parse "refs/remotes/origin/$BR")" = "$(git -C "$repo" rev-parse HEAD)" ] && echo 0 || echo 1)"
+  _t "  ...so the old window would have been empty"   0 \
+     "$(git -C "$repo" rev-list --count "origin/$BR..HEAD" 2>/dev/null || echo x)"
+  _t "  ...and the provenance release STILL fires"    "cherry-picked" "$(lq_landed_how "$repo" "$hpick")"
+  printf '#HOLD-after-%s --prove picked2\n' "$hpick" >"$Q"
+  lq_release_holds "$repo" >"$root/rel4.txt"
+  _t "  ...on a queue, at the loop top, on that tree" 1 "$(grep -cx -- '--prove picked2' "$Q" || true)"
+  # THE RANGE IS A DEPTH, WHICH CANNOT BE EMPTY. Asked of the function, not of a comment.
+  case "$(lq_landed_range "$repo")" in
+    '-n '*' HEAD') _t "the range is a bounded depth over HEAD, never a window" 0 0 ;;
+    *) _t "the range is a bounded depth over HEAD, never a window" 0 1 ;;
+  esac
+  _t "  ...and it names no ref that can equal the tip" 0 \
+     "$(sed -n '/^lq_landed_range() {/,/^}/p' "$LQ_SRC" | grep -c 'origin/\$BR\|LANDQ_TIPFILE' || true)"
+  LANDQ_TIPFILE="$savedTIPF"; BR="$savedBR"
 
   # ── THE QUEUE IS REWRITTEN BY ITS READER, ONLY IF IT MOVED, AND ONLY IF NOBODY ELSE MOVED IT ───
   # The runner used to rewrite land-queue.txt in full from its own snapshot on EVERY loop, unlocked:
@@ -4933,8 +5193,14 @@ lq_selftest() {
      "$(grep -c 'want="$(lq_batch_lines "$batch" | grep -c . || true)"' "$LQ_SRC")"
   _t "  ...and the HALT requeue never puts a marker in the queue" 1 \
      "$(grep -A1 -F '/^[[:space:]]*(#|$)/ { next }' "$LQ_SRC" | grep -c 'print (($0 in m)')"
+  # TWO WRITERS OF THE MARKER NOW, AND BOTH ARE NAMED. The chained pre-proof hands a chain to a box
+  # as one unit; big-batch mode writes the whole batch as one (lq_pop_big). A count of one would go
+  # red on the second the moment it was added, which teaches nobody anything — so each is asked for
+  # in its own function, where an accidental deletion is what actually shows up.
   _t "a chained pre-proof is handed to the box as ONE unit" 1 \
-     "$(grep -c "printf '#UNIT 1" "$LQ_SRC")"
+     "$(sed -n '/^lq_pop() {/,/^}/p' "$LQ_SRC" | grep -c "printf '#UNIT %s" || true)"
+  _t "  ...and a big batch is written as one unit too"      1 \
+     "$(sed -n '/^lq_pop_big() {/,/^}/p' "$LQ_SRC" | grep -c "printf '#UNIT 1" || true)"
 
   # THE SWEEP'S SIDE: which held lines are worth a box, and what a chained box's verdict is.
   printf -- '--prove %s\n#HOLD-after-%s --prove %s\n#HOLD-dialect-kind-mint --prove %s\n' "$ha" "$ha" "$hb" "$hc" >"$Q"
@@ -5029,6 +5295,173 @@ lq_selftest() {
 
   _t "one live line is now worth a sweep"       1 \
      "$(grep -c 'if \[ "$(lq_live_lines "\$Q")" -lt 1 \]' "$0")"
+  # ──────────────────────────────────────────────────────────────────────────────────────────────
+  # BIG-BATCH MODE (the owner's ruling, case by case)
+  # ──────────────────────────────────────────────────────────────────────────────────────────────
+  echo "landq4 selftest: BIG-BATCH MODE — everything that applies, as one unit, bisected by prefix"
+  local bb="$root/bbbatch.txt" bbk="$root/bbkeep.txt" bn tipsha mainbr2
+  local savedNA="$NOAPPLY"; NOAPPLY="$root/bbnoapply.txt"
+  mainbr2="$(git -C "$repo" rev-parse --abbrev-ref HEAD)"
+  tipsha="$(git -C "$repo" rev-parse HEAD)"
+  # ── THE PICKS THESE CASES ARE ABOUT ───────────────────────────────────────────────────────────
+  # CUT FROM THE TIP, not taken from its history. A commit that is already IN the tip does not
+  # "apply onto" it — its files are add/add conflicts against the versions the tip has evolved — and
+  # the first draft of these cases used the fixture's own ancestors and measured that instead of
+  # what it meant to. A queue line is always a pick from a slot branch cut off the tip; so are these.
+  local pa pb pc px1 px2 py1 py2
+  _bbcut() { # $1 = branch, $2 = file, $3 = content; prints the sha
+    git -C "$repo" checkout -q -B "$1" "$tipsha" >/dev/null 2>&1
+    printf '%s\n' "$3" >"$repo/$2"; git -C "$repo" add -A; git -C "$repo" commit -qm "$1" >/dev/null 2>&1
+    git -C "$repo" rev-parse HEAD
+    git -C "$repo" checkout -q "$mainbr2" >/dev/null 2>&1
+  }
+  pa="$(_bbcut bb-a bba.txt A)"; pb="$(_bbcut bb-b bbb.txt B)"; pc="$(_bbcut bb-c bbc.txt C)"
+  # TWO PICKS OVER ONE LINE OF ONE FILE: the second cannot merge onto the first.
+  px1="$(_bbcut bb-x1 bbclash.txt one)"; px2="$(_bbcut bb-x2 bbclash.txt two)"
+  # …AND TWO PICKS OVER ONE FILE, FAR APART, WHICH CAN. This is the case the dropped one-file rule
+  # used to refuse: the ruling says take both, and a merge answers whether that is safe.
+  git -C "$repo" checkout -q -B bb-ybase "$tipsha" >/dev/null 2>&1
+  printf 'l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nl9\nl10\n' >"$repo/bbshared.txt"
+  git -C "$repo" add -A; git -C "$repo" commit -qm ybase >/dev/null 2>&1
+  local pybase; pybase="$(git -C "$repo" rev-parse HEAD)"
+  git -C "$repo" checkout -q "$mainbr2" >/dev/null 2>&1
+  git -C "$repo" cherry-pick -x "$pybase" >/dev/null 2>&1
+  tipsha="$(git -C "$repo" rev-parse HEAD)"
+  git -C "$repo" checkout -q -B bb-y1 "$tipsha" >/dev/null 2>&1
+  sed 's/^l1$/L1/' "$repo/bbshared.txt" >"$repo/bbshared.new" && mv "$repo/bbshared.new" "$repo/bbshared.txt"
+  git -C "$repo" add -A; git -C "$repo" commit -qm y1 >/dev/null 2>&1
+  py1="$(git -C "$repo" rev-parse HEAD)"
+  git -C "$repo" checkout -q -B bb-y2 "$tipsha" >/dev/null 2>&1
+  sed 's/^l10$/L10/' "$repo/bbshared.txt" >"$repo/bbshared.new" && mv "$repo/bbshared.new" "$repo/bbshared.txt"
+  git -C "$repo" add -A; git -C "$repo" commit -qm y2 >/dev/null 2>&1
+  py2="$(git -C "$repo" rev-parse HEAD)"
+  git -C "$repo" checkout -q "$mainbr2" >/dev/null 2>&1
+
+  # ── THE PROBE IS merge-tree, AND IT WRITES NOTHING ────────────────────────────────────────────
+  local bacc bacc2
+  bacc="$(lq_apply_probe "$repo" "$tipsha" "--prove $pa")"
+  _t "a pick applies onto the tip"             1 "$( [ -n "$bacc" ] && echo 1 || echo 0)"
+  _t "  ...and the probe wrote nothing to the tree" 0 "$(git -C "$repo" status --porcelain | grep -c . || true)"
+  _t "  ...and left HEAD where it was"         "$tipsha" "$(git -C "$repo" rev-parse HEAD)"
+  bacc2="$(lq_apply_probe "$repo" "$bacc" "--prove $pb")"
+  _t "  ...and a second pick applies onto the first" 1 "$( [ -n "$bacc2" ] && echo 1 || echo 0)"
+  _t "a pick this repository does not have does not apply" "" "$(lq_apply_probe "$repo" "$tipsha" "--prove deadbeef1" || true)"
+  _t "a line with NO picks applies trivially"  "$tipsha" "$(lq_apply_probe "$repo" "$tipsha" "--prove --tests xtask")"
+  _t "two picks over one line of one file clash" "" \
+     "$(lq_apply_probe "$repo" "$(lq_apply_probe "$repo" "$tipsha" "--prove $px1")" "--prove $px2" || true)"
+
+  # ── THE POP ───────────────────────────────────────────────────────────────────────────────────
+  : >"$L"; : >"$PP"
+  printf -- '--prove %s\n--prove %s\n--prove %s\n' "$pa" "$pb" "$pc" >"$Q"
+  bn="$(lq_pop_big "$tipsha" 40 "$bb" "$bbk")"
+  _t "every applying line joins, in queue order" 3 "$bn"
+  _t "  ...the first line roots the unit"        "--prove $pa" "$(sed -n 1p "$bb")"
+  _t "  ...and every line after it is #UNIT 1"   2 "$(grep -cx '#UNIT 1' "$bb" || true)"
+  _t "  ...in queue order"                       "--prove $pc" "$(lq_batch_lines "$bb" | sed -n 3p)"
+  _t "  ...nothing is left live"                 0 "$(grep -c '^--' "$bbk" || true)"
+  _t "  ...and no pre-proof was consulted"       0 "$(grep -c . "$PP" || true)"
+  # THE PREFIX BISECT IS land.sh's, READ OUT OF land.sh: `#UNIT` is what it keys on, so a big batch
+  # written as one unit is bisected by prefix by the code that already does it.
+  _t "land.sh bisects a unit by prefix"          1 \
+     "$(grep -c '^land_unit_prefix() {' "$SCRIPTS/land.sh" 2>/dev/null || echo 0)"
+
+  # A PRE-PROOF RED IS NOT A PARK AT POP TIME ANY MORE (the ruling: no pre-proof to join).
+  printf 'RED%s%s%s/l/x%s--prove %s\n' "$TAB" "$tipsha" "$TAB" "$TAB" "$pa" >"$PP"
+  bn="$(lq_pop_big "$tipsha" 40 "$bb" "$bbk")"
+  _t "a pre-proof RED still joins the big batch" 3 "$bn"
+  _t "  ...and nothing was parked by the popper" 0 "$(grep -c '#RED' "$bbk" || true)"
+  : >"$PP"
+
+  # ── THE ONE-FILE RULE IS DROPPED, AND A REAL CLASH IS NONE:no-apply ───────────────────────────
+  : >"$L"
+  printf -- '--prove %s\n--prove %s\n' "$px1" "$px2" >"$Q"
+  bn="$(lq_pop_big "$tipsha" 40 "$bb" "$bbk")"
+  _t "the first of two clashing lines is taken"  1 "$bn"
+  _t "  ...and the second is NONE:no-apply"      1 "$(grep -c "^NONE:no-apply$TAB" "$NOAPPLY" || true)"
+  _t "  ...naming the tip it did not apply onto" 1 "$(grep -c "^NONE:no-apply$TAB$tipsha$TAB" "$NOAPPLY" || true)"
+  _t "  ...the line stays LIVE and unmarked"     1 "$(grep -cx -- "--prove $px2" "$bbk" || true)"
+  _t "  ...never parked, never red"              0 "$(grep -c '#RED' "$bbk" || true)"
+  _t "  ...and the log says so once"             1 "$(grep -c 'NONE:no-apply — ' "$L" || true)"
+  _t "  ...and the rows are replaced, not appended" 1 \
+     "$(lq_pop_big "$tipsha" 40 "$bb" "$bbk" >/dev/null; grep -c "^NONE:no-apply$TAB" "$NOAPPLY" || true)"
+  printf -- '--prove %s\n--prove %s\n' "$py1" "$py2" >"$Q"
+  bn="$(lq_pop_big "$tipsha" 40 "$bb" "$bbk")"
+  _t "two lines touching ONE file, far apart, both join" 2 "$bn"
+
+  # ── THE HOLD RELEASE (the ruling's second half) ────────────────────────────────────────────────
+  printf -- '--prove %s\n#HOLD-after-%s --prove %s\n' "$pa" "$pa" "$pb" >"$Q"
+  bn="$(lq_pop_big "$tipsha" 40 "$bb" "$bbk")"
+  _t "a hold is released by a line ALREADY IN THE BATCH" 2 "$bn"
+  _t "  ...and the batch remembers the held line it came from" 1 \
+     "$(grep -cF -- "--prove $pb$TAB#HOLD-after-$pa --prove $pb$TAB--prove $pa" "$bb.chain" || true)"
+  # …SO A RED OR A MISSING OUTCOME PUTS IT BACK UNDER ITS HOLD, through the map lq_park_line reads.
+  printf 'RED%s--prove %s\nHELD%s--prove %s\n' "$TAB" "$pa" "$TAB" "$pb" >"$bb.result"
+  local bred="$root/bbred.txt"; : >"$bred"
+  lq_park_line "--prove $pb" "$bb" "$bred" HELD
+  _t "  ...a held rung goes back with its tag, never bare" 1 \
+     "$(grep -cx -- "#HOLD-after-$pa --prove $pb" "$bred" || true)"
+  _t "  ...and never as a bare payload"          0 "$(grep -cx -- "--prove $pb" "$bred" || true)"
+  # THE SHORT-SHA FORM, WHICH IS WHAT THE QUEUE ACTUALLY WRITES.
+  printf -- '--prove %s\n#HOLD-after-%s --prove %s\n' "$pa" "$(printf '%.9s' "$pa")" "$pb" >"$Q"
+  bn="$(lq_pop_big "$tipsha" 40 "$bb" "$bbk")"
+  _t "a SHORT sha in the tag matches the pick it names" 2 "$bn"
+  # A HOLD ON AN UNLANDED SHA NOBODY IN THE BATCH CARRIES STILL HOLDS.
+  printf -- '#HOLD-after-%s --prove %s\n' "$px1" "$pb" >"$Q"
+  bn="$(lq_pop_big "$tipsha" 40 "$bb" "$bbk")"
+  _t "an unlanded sha nobody carries still holds" 0 "$bn"
+  _t "  ...tag intact"                            1 "$(grep -cx -- "#HOLD-after-$px1 --prove $pb" "$bbk" || true)"
+  # A LANDED SHA RELEASES IT WITH NO PREDECESSOR IN THE BATCH AT ALL — and `pybase` landed by
+  # CHERRY-PICK, which is the arm that was unreachable until lq_landed_range was fixed.
+  printf -- '#HOLD-after-%s --prove %s\n' "$pybase" "$pb" >"$Q"
+  bn="$(lq_pop_big "$tipsha" 40 "$bb" "$bbk")"
+  _t "a hold on a CHERRY-PICKED sha is released"  1 "$bn"
+  _t "  ...by provenance, not by ancestry"        "cherry-picked" "$(lq_landed_how "$repo" "$pybase")"
+  # A WORD HOLD AND A PARK ARE NEVER OVERTURNED, however big the batch may be.
+  printf -- '#HOLD-after-strike --prove %s\n#RED-preproof /l/1 --prove %s\n#HOLD-after-zzzzzzz --prove %s\n' "$pa" "$pb" "$pc" >"$Q"
+  bn="$(lq_pop_big "$tipsha" 40 "$bb" "$bbk")"
+  _t "a word hold, a park and a non-hex hold all stay" 0 "$bn"
+  _t "  ...all three written back byte for byte"       3 "$(grep -c '^#' "$bbk" || true)"
+  # A LABEL BESIDE A RELEASED HOLD IS NOT A SECOND DEPENDENCY (36 of the queue's lines are this).
+  printf -- '--prove %s\n#HOLD-after-%s #T0-B2-seam --prove %s\n' "$pa" "$pa" "$pb" >"$Q"
+  bn="$(lq_pop_big "$tipsha" 40 "$bb" "$bbk")"
+  _t "a slot label beside the hold does not hold it" 2 "$bn"
+
+  # ── THE CEILING ───────────────────────────────────────────────────────────────────────────────
+  printf -- '--prove %s\n--prove %s\n--prove %s\n' "$pa" "$pb" "$pc" >"$Q"
+  bn="$(lq_pop_big "$tipsha" 2 "$bb" "$bbk")"
+  _t "LAND_BATCH_MAX is a ceiling"               2 "$bn"
+  _t "  ...and the rest is written back in order" "--prove $pc" "$(grep '^--' "$bbk" | sed -n 1p)"
+  _t "the ceiling's default is forty"            40 "$(LAND_BATCH_MAX="${LAND_BATCH_MAX:-40}"; echo "$LAND_BATCH_MAX")"
+  # A COMMENT THAT IS ONLY A COMMENT SURVIVES THE POP.
+  printf '# a note\n\n--prove %s\n' "$pa" >"$Q"
+  bn="$(lq_pop_big "$tipsha" 40 "$bb" "$bbk")"
+  _t "a note is written back untouched"          1 "$(grep -cx '# a note' "$bbk" || true)"
+  # A TIP THAT DOES NOT RESOLVE POPS NOTHING AND LOSES NOTHING.
+  printf -- '--prove %s\n' "$pa" >"$Q"
+  bn="$(lq_pop_big deadbeefdeadbeef 40 "$bb" "$bbk")"
+  _t "an unresolvable tip pops nothing"          0 "$bn"
+  _t "  ...and the queue comes back whole"       1 "$(grep -cx -- "--prove $pa" "$bbk" || true)"
+  # THE MODE IS ONE VARIABLE, AND THE TWO POPPERS ARE NEVER MIXED.
+  _t "the main flow dispatches on LAND_BIG_BATCH" 1 \
+     "$(grep -c 'if \[ "\$LQ_BIG_BATCH" = 1 \]; then' "$LQ_SRC")"
+  _t "  ...and big-batch calls lq_may_join not at all" 0 \
+     "$(sed -n '/^lq_pop_big() {/,/^}/p' "$LQ_SRC" | grep -c 'lq_may_join' || true)"
+  _t "the status file carries the no-apply rows"  1 "$(grep -c 'd\["no_apply"\] = noapply' "$LQ_SRC")"
+  # ── AND THERE IS AN ADOPTION GATE FOR IT (the owner's 19:28 process rule) ──────────────────────
+  # A popper has no Latchkey job to create, so --smoke-latchkey cannot drive it. What it must be
+  # driven against is the REAL queue, and it must not be able to touch it: the gate COPIES the
+  # queue to the scratch root and pops the copy.
+  _t "there is a --smoke-bigbatch adoption gate"  1 \
+     "$(grep -c 'if \[ "\${1:-}" = "--smoke-bigbatch" \]; then' "$LQ_SRC")"
+  _t "  ...and it copies the queue rather than popping the live one" 1 \
+     "$(grep -c 'cp "\$sq" "\$sdir/queue.txt"' "$LQ_SRC")"
+  _t "  ...it accounts for every line it read"    1 \
+     "$(grep -c 'every queue line is accounted for exactly once' "$LQ_SRC")"
+  _t "  ...and re-derives the apply independently of the pop that chose it" 1 \
+     "$(grep -c 'every batched line applies, in the order the batch names, re-derived' "$LQ_SRC")"
+  unset -f _bbcut; NOAPPLY="$savedNA"
+  git -C "$repo" checkout -q "$mainbr2" >/dev/null 2>&1 || true
+
   Q="$savedQ8"; PP="$savedPP8"; L="$savedL8"; W="$savedW8"; D="$savedD8"; LAND_CHAIN_DEPTH="$savedCD8"
 
   echo "landq4 selftest: the status line (a tick reads tail -n 1, not the log)"
@@ -5655,6 +6088,86 @@ esac
 # WHAT IT CHECKS, and each of these was a live defect: a job was created for every line; the scratch
 # tree is byte-clean afterwards, with no `.latchkey` in it; there is a verdict row per line in the
 # engine's own shape; and the job logs were kept where the ledgers cite them.
+# ──────────────────────────────────────────────────────────────────────────────────────────────────
+# --smoke-bigbatch [<queue file>] [<tip>]: THE ADOPTION GATE FOR BIG-BATCH MODE
+# ──────────────────────────────────────────────────────────────────────────────────────────────────
+#   LANDQ_ROOT=~/Developer/tmp/smoke/root scripts/landq4.sh --smoke-bigbatch <the real land-queue.txt>
+#
+# OWNER'S RULE (2026-09-11 19:28): no engine change is handed back until it has been driven the
+# engine's way once, small, on a scratch root — never discovered by the live runner. A POPPER has no
+# Latchkey job to create and no box to reach, so the thing it must be driven against is the thing it
+# can be wrong about: THE REAL QUEUE. Two hundred and fifty lines of it, on a real tree, with every
+# tag shape an integrator has ever written in it.
+#
+# IT IS READ-ONLY BY CONSTRUCTION. The queue is COPIED to the scratch root first and lq_pop_big is
+# pointed at the copy; the live file is opened for reading and nothing else, and the runner tree is
+# never named. The pop writes a batch and a keep file under the scratch root's target/gate and
+# lands nothing — there is no landing in a pop.
+#
+# WHAT IT CHECKS, and each of these is a way for a popper to lose work: every line of the queue is
+# accounted for exactly once (batch + keep + markers = the queue, line for line); nothing was
+# PARKED; every line in the batch really applies onto the tip plus its predecessors (re-derived
+# here, independently of the pop); and the unit is ONE unit.
+if [ "${1:-}" = "--smoke-bigbatch" ]; then
+  shift
+  sq="${1:-$Q}"
+  [ -f "$sq" ] || { echo "landq4: --smoke-bigbatch: no such queue file: $sq" >&2; exit 2; }
+  stip="${2:-$(git -C "$W" rev-parse HEAD 2>/dev/null)}"
+  sdir="$W/target/gate/smoke-bigbatch-$$"
+  mkdir -p "$sdir"
+  cp "$sq" "$sdir/queue.txt" || { echo "landq4: could not copy the queue to $sdir" >&2; exit 2; }
+  echo "smoke: root $W"
+  echo "smoke: tip $(printf '%.9s' "$stip")"
+  echo "smoke: queue $sq -> $sdir/queue.txt ($(grep -c . "$sq") line(s); $(grep -c '^--' "$sq" || true) live, $(grep -c '#HOLD-after-' "$sq" || true) held)"
+  echo "smoke: mode $( [ "$LQ_BIG_BATCH" = 1 ] && echo big || echo rules ); ceiling $LAND_BATCH_MAX"
+  savedQ="$Q"; savedNA="$NOAPPLY"; savedL="$L"
+  Q="$sdir/queue.txt"; NOAPPLY="$sdir/noapply.txt"; L="$sdir/pop.log"; : >"$L"
+  sn="$(lq_pop_big "$stip" "$LAND_BATCH_MAX" "$sdir/batch.txt" "$sdir/keep.txt")"
+  Q="$savedQ"; NOAPPLY="$sdir/noapply.txt"
+  echo
+  echo "smoke: popped $sn landing line(s) of $LAND_BATCH_MAX"
+  echo "smoke: NONE:no-apply rows: $(grep -c . "$sdir/noapply.txt" 2>/dev/null || echo 0)"
+  src=0
+  # EVERY LINE ACCOUNTED FOR EXACTLY ONCE. batch (landing lines only — the `#UNIT` markers are the
+  # popper's own) plus keep must equal the queue that was read, line for line. A popper that drops a
+  # line drops WORK, silently, and the queue is the only record it was ever there.
+  qn="$(grep -c '' "$sdir/queue.txt")"
+  kn="$(grep -c '' "$sdir/keep.txt" 2>/dev/null || echo 0)"
+  ln="$(lq_batch_lines "$sdir/batch.txt" | grep -c . || true)"
+  if [ "$(( kn + ln ))" = "$qn" ]; then
+    echo "smoke: every queue line is accounted for exactly once — $ln batched + $kn kept = $qn read"
+  else
+    echo "smoke: FAILED — $ln batched + $kn kept = $(( kn + ln )), but $qn were read; a line was lost or duplicated"
+    src=1
+  fi
+  # NOTHING IS PARKED BY THIS POPPER, ever. A park is a decision, and this pop takes none.
+  pk="$(grep -c '^#RED' "$sdir/keep.txt" 2>/dev/null || true)"
+  pkq="$(grep -c '^#RED' "$sdir/queue.txt" 2>/dev/null || true)"
+  if [ "${pk:-0}" = "${pkq:-0}" ]; then echo "smoke: no line was parked (the #RED count is the queue's own: ${pkq:-0})"
+  else echo "smoke: FAILED — the park count moved ${pkq:-0} -> ${pk:-0}"; src=1; fi
+  # THE BATCH IS ONE UNIT, rooted at the first landing line.
+  um="$(grep -cx '#UNIT 1' "$sdir/batch.txt" 2>/dev/null || true)"
+  if [ "${ln:-0}" -le 1 ] || [ "${um:-0}" = "$(( ln - 1 ))" ]; then
+    echo "smoke: the batch is ONE unit — $um marker(s) for $ln landing line(s)"
+  else echo "smoke: FAILED — $um unit marker(s) for $ln landing line(s); the batch is not one unit"; src=1; fi
+  # AND THE APPLY IS RE-DERIVED, independently of the pop that chose it: the picks really do apply
+  # onto the tip in the order the batch names, one after another.
+  sacc="$(git -C "$W" rev-parse -q --verify "$stip^{commit}" 2>/dev/null || true)"
+  bad=0
+  while IFS= read -r sline; do
+    [ -n "$sline" ] || continue
+    sacc="$(lq_apply_probe "$W" "$sacc" "$sline")" || { echo "smoke: FAILED — $(printf '%.80s' "$sline") does not apply where the pop put it"; bad=1; break; }
+    [ -n "$sacc" ] || { echo "smoke: FAILED — $(printf '%.80s' "$sline") does not apply where the pop put it"; bad=1; break; }
+  done <<EOF
+$(lq_batch_lines "$sdir/batch.txt")
+EOF
+  [ "$bad" = 0 ] && echo "smoke: every batched line applies, in the order the batch names, re-derived" || src=1
+  echo "smoke: artifacts under $sdir"
+  L="$savedL"; NOAPPLY="$savedNA"
+  [ "$src" = 0 ] && { echo "smoke-bigbatch: GREEN"; exit 0; }
+  echo "smoke-bigbatch: RED"; exit 1
+fi
+
 if [ "${1:-}" = "--smoke-latchkey" ]; then
   shift
   [ $# -gt 0 ] || { echo "landq4: --smoke-latchkey needs at least one queue line" >&2; exit 2; }
@@ -5839,8 +6352,16 @@ while true; do
     # ROOT of every chain behind it, and the sweep has as many boxes' worth of work as the queue is deep.
     if [ "$(lq_live_lines "$Q")" -lt 1 ]; then lq_log "pre-prove: no live line to sweep or chain from; sweep skipped"
     else [ "${LANDQ_NO_PREPROVE:-}" = 1 ] || lq_preprove_sweep; fi
-    B="$(lq_batch_size "$tip")"
-    n="$(lq_pop "$tip" "$B" "$batch" "$keep")"
+    # ── WHICH POPPER (see BIG-BATCH MODE) ────────────────────────────────────────────────────────
+    # `LAND_BIG_BATCH=0` is the way back to the admission-rule popper, in one variable, for an
+    # operator who finds the big batch wanting. The two are never mixed: a batch is all one shape.
+    if [ "$LQ_BIG_BATCH" = 1 ]; then
+      B="$LAND_BATCH_MAX"
+      n="$(lq_pop_big "$tip" "$B" "$batch" "$keep")"
+    else
+      B="$(lq_batch_size "$tip")"
+      n="$(lq_pop "$tip" "$B" "$batch" "$keep")"
+    fi
   fi
   # THE REWRITE, ONCE, GUARDED (see lq_queue_rewrite): only when this loop actually changed the
   # queue, and only if the file is still the one that was read. A refusal drops THIS RUNNER'S loop,
