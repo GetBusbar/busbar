@@ -1,5 +1,9 @@
 name: MCP conformance
 
+# LATCHKEY MIGRATION (phase 4, LK-7): every ubuntu-latest job moved to a latchkey-* label
+# (latchkey-xlarge for every battery/control/probe leg, latchkey-small for the pure verdict
+# aggregator). No Windows or arm64 legs live in this file, so nothing here is left on GitHub.
+
 # WHERE THIS RUNS, AND WHY IT RUNS HERE.
 #
 # A conformance battery is a statement ABOUT BUSBAR, so it belongs where busbar is built and where a
@@ -62,7 +66,7 @@ concurrency:
 jobs:
   gate-selftest:
     name: gate self-test (the coverage assertion cannot be lied to)
-    runs-on: ubuntu-latest
+    runs-on: latchkey-xlarge
     # BOUNDED. Measured p95 0.2 min over the last 9 runs of this job; the
     # ceiling is the 10-minute floor of the `p95 x 1.5` rule ci.yml documents.
     # Unbounded, this job inherits the runner's six-hour default.
@@ -108,7 +112,7 @@ jobs:
   official-control:
     name: official suite · CONTROL (pinned reference SDK)
     needs: gate-selftest
-    runs-on: ubuntu-latest
+    runs-on: latchkey-xlarge
     # The control peer is a full third-party workspace build. Generous, because a timeout here would
     # be a red that is not a defect — the exact thing this workflow is arranged to avoid.
     timeout-minutes: 45
@@ -159,7 +163,7 @@ jobs:
   official-subject:
     name: official suite · SUBJECT (busbar — ARMED OR RED)
     needs: official-control
-    runs-on: ubuntu-latest
+    runs-on: latchkey-xlarge
     timeout-minutes: 45
     # PUBLISHED, not inferred. A job whose steps all skip still reports `success`, so the aggregator
     # cannot tell "armed and passed" from "unarmed and did nothing" by reading the job result --
@@ -256,7 +260,7 @@ jobs:
   battery-control:
     name: in-house battery · CONTROL (pinned python reference peer)
     needs: gate-selftest
-    runs-on: ubuntu-latest
+    runs-on: latchkey-xlarge
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -283,7 +287,7 @@ jobs:
   battery-negative-control:
     name: in-house battery · NEGATIVE control (a broken peer MUST be red)
     needs: gate-selftest
-    runs-on: ubuntu-latest
+    runs-on: latchkey-xlarge
     # Raised with the row count: the negative control now drives all 24 of the peer's modes rather
     # than 7, and four of them (`stall`, `truncate`, `half-answer`, `giant`) answer nothing or
     # nearly nothing by design, so each spends its per-mode ceiling before being reported.
@@ -311,7 +315,7 @@ jobs:
   battery-subject:
     name: in-house battery · SUBJECT (busbar — ARMED OR RED)
     needs: battery-control
-    runs-on: ubuntu-latest
+    runs-on: latchkey-xlarge
     timeout-minutes: 30
     outputs:
       armed: ${{ steps.arm.outputs.armed }}
@@ -404,7 +408,7 @@ jobs:
   fixture-absence:
     name: the test fixtures are absent from a real build (both axes)
     needs: gate-selftest
-    runs-on: ubuntu-latest
+    runs-on: latchkey-xlarge
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -417,7 +421,7 @@ jobs:
 
   verdict:
     name: MCP conformance verdict
-    runs-on: ubuntu-latest
+    runs-on: latchkey-small
     # BOUNDED. Measured p95 0.1 min over the last 9 runs of this job; the
     # ceiling is the 10-minute floor of the `p95 x 1.5` rule ci.yml documents.
     # Unbounded, this job inherits the runner's six-hour default.
