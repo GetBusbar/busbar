@@ -7,7 +7,7 @@ description: >-
   therefore restores/saves an empty, never-populated directory on Latchkey while the real registry
   and git checkouts sit under /usr/share/rust/.cargo and are silently never cached — every job
   re-downloads the full registry. Run this ONCE per job, before the first cache restore step, then
-  reference `${{ env.CARGO_HOME }}` (or `${{ steps.<id>.outputs.cargo_home }}`) in that step's
+  reference the env context's CARGO_HOME (or this action's cargo_home output) in that step's
   `path:`.
 outputs:
   cargo_home:
