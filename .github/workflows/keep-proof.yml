@@ -91,6 +91,8 @@ jobs:
         uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
         with:
           components: rustfmt, clippy
+      - name: Resolve cargo home (Latchkey image sets CARGO_HOME off $HOME)
+        uses: ./.github/actions/cargo-home
       - name: Latchkey Fast Cache (cargo registry + target, restore)
         uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
         with:
@@ -99,8 +101,8 @@ jobs:
           restore-keys: |
             cargo-${{ runner.os }}-build-clippy-
           path: |
-            ~/.cargo/registry
-            ~/.cargo/git
+            ${{ env.CARGO_HOME }}/registry
+            ${{ env.CARGO_HOME }}/git
             target
       - name: Format check
         run: cargo fmt --all -- --check
@@ -150,8 +152,8 @@ jobs:
           action: save
           key: cargo-${{ runner.os }}-build-clippy-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
           path: |
-            ~/.cargo/registry
-            ~/.cargo/git
+            ${{ env.CARGO_HOME }}/registry
+            ${{ env.CARGO_HOME }}/git
             target
   tests:
     name: tests (shard ${{ matrix.shard }})
@@ -208,6 +210,8 @@ jobs:
         run: ./scripts/ci-service-endpoints.sh postgres=${{ job.services.postgres.id }} valkey=${{ job.services.valkey.id }}
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
+      - name: Resolve cargo home (Latchkey image sets CARGO_HOME off $HOME)
+        uses: ./.github/actions/cargo-home
       - name: Latchkey Fast Cache (cargo registry + target, restore)
         uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
         with:
@@ -216,8 +220,8 @@ jobs:
           restore-keys: |
             cargo-${{ runner.os }}-tests-
           path: |
-            ~/.cargo/registry
-            ~/.cargo/git
+            ${{ env.CARGO_HOME }}/registry
+            ${{ env.CARGO_HOME }}/git
             target
 
       # `json-render-diagnostics`, not plain `json`: the machine-readable stream goes to the file the
@@ -392,8 +396,8 @@ jobs:
           action: save
           key: cargo-${{ runner.os }}-tests-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
           path: |
-            ~/.cargo/registry
-            ~/.cargo/git
+            ${{ env.CARGO_HOME }}/registry
+            ${{ env.CARGO_HOME }}/git
             target
   tests-total:
     name: tests total (the five shards summed against the suite floor)
@@ -481,6 +485,8 @@ jobs:
         run: git fetch origin '+refs/backup/audit-pins/*:refs/audit-pins/*' || true
       - name: Install Rust toolchain (the gate runner)
         uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
+      - name: Resolve cargo home (Latchkey image sets CARGO_HOME off $HOME)
+        uses: ./.github/actions/cargo-home
       - name: Latchkey Fast Cache (cargo registry + target, restore)
         uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
         with:
@@ -489,8 +495,8 @@ jobs:
           restore-keys: |
             cargo-${{ runner.os }}-gates-
           path: |
-            ~/.cargo/registry
-            ~/.cargo/git
+            ${{ env.CARGO_HOME }}/registry
+            ${{ env.CARGO_HOME }}/git
             target
       - name: Build the gate runner once
         run: cargo build -p xtask --locked
@@ -512,8 +518,8 @@ jobs:
           action: save
           key: cargo-${{ runner.os }}-gates-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
           path: |
-            ~/.cargo/registry
-            ~/.cargo/git
+            ${{ env.CARGO_HOME }}/registry
+            ${{ env.CARGO_HOME }}/git
             target
   design-bindings:
     name: design bindings (existence · regen-clean)
@@ -624,6 +630,8 @@ jobs:
         run: ./scripts/ci-service-endpoints.sh postgres=${{ job.services.postgres.id }} mysql=${{ job.services.mysql.id }} valkey=${{ job.services.valkey.id }}
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
+      - name: Resolve cargo home (Latchkey image sets CARGO_HOME off $HOME)
+        uses: ./.github/actions/cargo-home
       - name: Latchkey Fast Cache (cargo registry + target, restore)
         uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
         with:
@@ -632,8 +640,8 @@ jobs:
           restore-keys: |
             cargo-${{ runner.os }}-oracle-
           path: |
-            ~/.cargo/registry
-            ~/.cargo/git
+            ${{ env.CARGO_HOME }}/registry
+            ${{ env.CARGO_HOME }}/git
             target
 
       # The scope, read once and PRINTED. A run whose filter nobody can see is a run whose verdict
@@ -831,8 +839,8 @@ jobs:
           action: save
           key: cargo-${{ runner.os }}-oracle-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
           path: |
-            ~/.cargo/registry
-            ~/.cargo/git
+            ${{ env.CARGO_HOME }}/registry
+            ${{ env.CARGO_HOME }}/git
             target
   construction-gate:
     name: construction gate (blocking on its posture)
@@ -855,6 +863,8 @@ jobs:
           fetch-depth: 0
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
+      - name: Resolve cargo home (Latchkey image sets CARGO_HOME off $HOME)
+        uses: ./.github/actions/cargo-home
       - name: Latchkey Fast Cache (cargo registry + target, restore)
         uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
         with:
@@ -863,8 +873,8 @@ jobs:
           restore-keys: |
             cargo-${{ runner.os }}-construction-gate-
           path: |
-            ~/.cargo/registry
-            ~/.cargo/git
+            ${{ env.CARGO_HOME }}/registry
+            ${{ env.CARGO_HOME }}/git
             target
       # BOTH STEPS RAN A SCRIPT THAT IS NOT IN THIS TREE. `scripts/construction-gate.sh` does not
       # exist — the shell was converted to `cargo xtask gate construction` and this file was never
@@ -894,8 +904,8 @@ jobs:
           action: save
           key: cargo-${{ runner.os }}-construction-gate-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
           path: |
-            ~/.cargo/registry
-            ~/.cargo/git
+            ${{ env.CARGO_HOME }}/registry
+            ${{ env.CARGO_HOME }}/git
             target
   verdict:
     name: keep-proof verdict

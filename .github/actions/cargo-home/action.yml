@@ -1,0 +1,24 @@
+name: Resolve cargo home
+description: >-
+  Resolves CARGO_HOME at run time and exports it to $GITHUB_ENV (plus a step output for callers
+  that prefer it) so downstream cache steps cache the registry/git dirs the toolchain actually
+  uses. The Latchkey runner image sets CARGO_HOME=/usr/share/rust/.cargo; GitHub-hosted runners
+  leave it unset, so cargo defaults to $HOME/.cargo. A cache step hardcoded to `~/.cargo/registry`
+  therefore restores/saves an empty, never-populated directory on Latchkey while the real registry
+  and git checkouts sit under /usr/share/rust/.cargo and are silently never cached — every job
+  re-downloads the full registry. Run this ONCE per job, before the first cache restore step, then
+  reference `${{ env.CARGO_HOME }}` (or `${{ steps.<id>.outputs.cargo_home }}`) in that step's
+  `path:`.
+outputs:
+  cargo_home:
+    description: The resolved CARGO_HOME (the pre-existing env var if set, else $HOME/.cargo).
+    value: ${{ steps.resolve.outputs.cargo_home }}
+runs:
+  using: composite
+  steps:
+    - id: resolve
+      shell: bash
+      run: |
+        resolved="${CARGO_HOME:-$HOME/.cargo}"
+        echo "CARGO_HOME=${resolved}" >> "$GITHUB_ENV"
+        echo "cargo_home=${resolved}" >> "$GITHUB_OUTPUT"
