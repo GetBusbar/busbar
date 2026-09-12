@@ -548,16 +548,18 @@ fn a_recorded_update_is_not_delivered_to_a_caller_whose_grant_does_not_reach_it(
                 busbar_substrate::trust::validate::Snapshot::Watching,
                 crate::mcp::subscribe::MAX_LIFETIME,
             ),
-            accepted: crate::mcp::subscribe::accept(
-                &serde_json::from_value(
-                    serde_json::json!({ "resourceSubscriptions": ["docs://guide"] }),
-                )
-                .expect("the SDK filter type accepts the wire shape"),
-                |_| true,
+            composer: busbar_plane_mcp::subscribe::Listen::opened(
+                id,
+                busbar_plane_mcp::subscribe::accept(
+                    &crate::mcp::subscribe::requested_of(
+                        &serde_json::from_value(
+                            serde_json::json!({ "resourceSubscriptions": ["docs://guide"] }),
+                        )
+                        .expect("the SDK filter type accepts the wire shape"),
+                    ),
+                    |_| true,
+                ),
             ),
-            meta: crate::mcp::subscribe::subscription_meta(&id),
-            id,
-            phase: crate::mcp::subscribe::Phase::Acknowledge,
             last_write: std::time::Instant::now(),
             cursor: 0,
         }
@@ -748,14 +750,16 @@ fn a_revoked_key_stops_being_served_on_the_next_poll() {
         // Through the production narrowing rather than hand-built, so this fixture cannot ask for a
         // category the served endpoint would have refused. No uri is requested, so the entitlement
         // predicate is the honest constant.
-        accepted: crate::mcp::subscribe::accept(
-            &serde_json::from_value(serde_json::json!({ "toolsListChanged": true }))
-                .expect("the SDK filter type accepts the wire shape"),
-            |_| false,
+        composer: busbar_plane_mcp::subscribe::Listen::opened(
+            id,
+            busbar_plane_mcp::subscribe::accept(
+                &crate::mcp::subscribe::requested_of(
+                    &serde_json::from_value(serde_json::json!({ "toolsListChanged": true }))
+                        .expect("the SDK filter type accepts the wire shape"),
+                ),
+                |_| false,
+            ),
         ),
-        meta: crate::mcp::subscribe::subscription_meta(&id),
-        id,
-        phase: crate::mcp::subscribe::Phase::Acknowledge,
         last_write: std::time::Instant::now(),
         cursor: 0,
     };
@@ -911,5 +915,193 @@ fn the_long_lived_response_holds_no_principal_it_resolved_at_open() {
         code.contains("principal_standing"),
         "the stream opens a standing permission and never asks it anything (re-asked through the \
          `EngineHost::principal_standing` host seam, which drives `Standing::still_permitted` core-side)"
+    );
+}
+
+// ── THE PINS UNDER THE MOVE ─────────────────────────────────────────────────────────────────────
+//
+// `busbar-plane-mcp` composes every frame this stream writes and cannot name the SDK: it depends on
+// the contract and on the codec, and the SDK's model types live one crate further in. So the four
+// wire shapes it re-spells are PINNED HERE, in the one crate that can name both sides. A copy that
+// is checked is not a second opinion; a copy that is not checked is, and there are none of those.
+
+/// THE ACKNOWLEDGEMENT'S BODY IS THE SDK'S ENCODING OF THE SAME FILTER, member for member, and the
+/// OMISSIONS are the load-bearing half: an emitted `null` reads as a category the server took a
+/// position on, and a client that reads one will not fall back.
+#[test]
+fn the_planes_filter_encoding_is_the_sdks() {
+    for (tools, prompts, resources, uris) in [
+        (None, None, None, None),
+        (
+            Some(true),
+            Some(false),
+            None,
+            Some(vec!["docs://a".to_string()]),
+        ),
+        (Some(false), Some(true), Some(true), None),
+    ] {
+        let mut sdk = rmcp::model::SubscriptionFilter::new();
+        sdk.tools_list_changed = tools;
+        sdk.prompts_list_changed = prompts;
+        sdk.resources_list_changed = resources;
+        sdk.resource_subscriptions = uris.clone();
+        let plane = busbar_plane_mcp::subscribe::Filter {
+            tools_list_changed: tools,
+            prompts_list_changed: prompts,
+            resources_list_changed: resources,
+            resource_subscriptions: uris,
+        };
+        assert_eq!(
+            plane.wire(),
+            serde_json::to_value(&sdk).expect("the SDK filter encodes"),
+            "the plane's acknowledgement body and the SDK's encoding of the same filter"
+        );
+    }
+}
+
+/// THE SUBSCRIPTION TAG IS THE SDK'S, key and value, for both id kinds a JSON-RPC id can be.
+#[test]
+fn the_planes_subscription_tag_is_the_sdks() {
+    for id in [serde_json::json!(7), serde_json::json!("s-1")] {
+        let request_id: rmcp::model::RequestId =
+            serde_json::from_value(id.clone()).expect("a number and a string are both request ids");
+        assert_eq!(
+            busbar_plane_mcp::subscribe::subscription_meta(&id),
+            serde_json::to_value(rmcp::model::SubscriptionsListenResultMeta::new(request_id))
+                .expect("the SDK meta encodes"),
+            "one `_meta` key for one subscription, spelled the SDK's way"
+        );
+    }
+}
+
+/// THE FIVE NOTIFICATION NAMES ARE THE SDK'S CONST STRINGS. A name that drifts is a frame no client
+/// dispatches, delivered to a client that is still waiting for it.
+#[test]
+fn the_planes_notification_names_are_the_sdks() {
+    use busbar_plane_mcp::subscribe::Kind;
+    use rmcp::model::ConstString;
+    assert_eq!(
+        Kind::Tools.method(),
+        rmcp::model::ToolListChangedNotificationMethod::VALUE
+    );
+    assert_eq!(
+        Kind::Prompts.method(),
+        rmcp::model::PromptListChangedNotificationMethod::VALUE
+    );
+    assert_eq!(
+        Kind::Resources.method(),
+        rmcp::model::ResourceListChangedNotificationMethod::VALUE
+    );
+    assert_eq!(
+        busbar_plane_mcp::subscribe::METHOD_ACKNOWLEDGED,
+        rmcp::model::SubscriptionsAcknowledgedNotificationMethod::VALUE
+    );
+    assert_eq!(
+        busbar_mcp_codec::codec::METHOD_NOTIFY_RESOURCES_UPDATED,
+        rmcp::model::ResourceUpdatedNotificationMethod::VALUE
+    );
+}
+
+/// THE GRACEFUL CLOSE IS THE SDK'S `SubscriptionsListenResult`, `resultType` and tag together.
+#[test]
+fn the_planes_completion_document_is_the_sdks() {
+    let id = serde_json::json!(11);
+    let request_id: rmcp::model::RequestId =
+        serde_json::from_value(id.clone()).expect("a number is a request id");
+    let sdk = serde_json::to_value(rmcp::model::SubscriptionsListenResult::complete(request_id))
+        .expect("the SDK result encodes");
+    let mut listen = busbar_plane_mcp::subscribe::Listen::opened(
+        id.clone(),
+        busbar_plane_mcp::subscribe::Filter {
+            tools_list_changed: Some(true),
+            ..Default::default()
+        },
+    );
+    let chunk = listen
+        .step(busbar_plane_mcp::subscribe::Poll::Complete)
+        .expect("the bound writes a closing frame");
+    let frame: serde_json::Value = serde_json::from_str(
+        chunk
+            .lines()
+            .find_map(|l| l.strip_prefix("data: "))
+            .expect("one data line"),
+    )
+    .expect("one JSON value");
+    assert_eq!(frame["result"], sdk);
+    assert_eq!(frame["id"], id);
+}
+
+/// THE VERDICT'S WORD IS THE AUDIT VOCABULARY'S WORD. `busbar_contract::counterparty::Verdict` is
+/// the vocabulary the frame composer renders `data.reason` from, and this crate is where it meets
+/// the substrate constants every other step reports through — two spellings of one filter is the
+/// thing a shared vocabulary exists to prevent.
+#[test]
+fn the_verdicts_reported_word_is_the_audit_vocabularys() {
+    use busbar_contract::counterparty::Verdict;
+    use busbar_substrate::trust::validate::reason;
+    assert_eq!(
+        Verdict::Allow.reason(),
+        None,
+        "a verdict that serves is not a refusal"
+    );
+    assert_eq!(
+        Verdict::IdentityNotLive.reason(),
+        Some(reason::IDENTITY_NOT_LIVE)
+    );
+    assert_eq!(Verdict::NotGranted.reason(), Some(reason::NOT_GRANTED));
+    assert_eq!(Verdict::EgressDenied.reason(), Some(reason::EGRESS_DENIED));
+    assert_eq!(
+        Verdict::ArtifactDrifted.reason(),
+        Some(reason::ARTIFACT_DRIFTED)
+    );
+    assert_eq!(
+        Verdict::GenerationMoved.reason(),
+        Some(reason::GENERATION_MOVED)
+    );
+    for register in [
+        Verdict::Quarantined,
+        Verdict::NeedsApproval,
+        Verdict::Denied,
+    ] {
+        assert_eq!(
+            register.reason(),
+            Some(reason::NOT_SERVING),
+            "the register's three refusals are kept apart as REMEDIES and reported under the one \
+             word an operator filters on"
+        );
+    }
+}
+
+/// THE LAPSE IS READ AS A VERDICT, AND THE BOUND IS NOT A VERDICT. This is plan line 9's verdict
+/// read at the seam that performs it: the ordered walk is `Standing::still_permitted`'s and is not
+/// re-decided here, so what this asserts is the VOCABULARY — that every arm substrate can answer
+/// with lands on the contract word that names the same step, and that the bound lands on none of
+/// them because a counterparty vocabulary has no word for "this response has been open long enough".
+#[test]
+fn the_standings_lapse_is_read_in_the_contracts_words_and_the_bound_is_not_one_of_them() {
+    use busbar_contract::counterparty::Verdict;
+    use busbar_substrate::trust::validate::{Lapsed, Refusal};
+    let identity = Lapsed::Identity(Refusal::IdentityNotLive {
+        principal: "k-1".to_string(),
+    });
+    let (verdict, sentence) =
+        crate::mcp::subscribe::verdict_of(&identity).expect("an identity lapse is a refusal");
+    assert_eq!(verdict, Verdict::IdentityNotLive);
+    assert!(
+        sentence.contains("k-1"),
+        "and the sentence is the refusing side's own, carried rather than re-written: {sentence}"
+    );
+    let generation = Lapsed::Generation(Refusal::GenerationMoved {
+        admitted: 1,
+        live: 2,
+    });
+    assert_eq!(
+        crate::mcp::subscribe::verdict_of(&generation).map(|(v, _)| v),
+        Some(Verdict::GenerationMoved)
+    );
+    assert_eq!(
+        crate::mcp::subscribe::verdict_of(&Lapsed::Expired),
+        None,
+        "the bound is a fact about the response, not about the party at the other end"
     );
 }

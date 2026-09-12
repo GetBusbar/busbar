@@ -296,7 +296,7 @@ because = "the audit unit's own record and window verifier, named by the root th
 # a green baseline value for a scratch copy; the checked-in numbers below never move except by the
 # owner's own hand.
 [gate.surface_ceilings]
-contract_caps = 3665
+contract_caps = 3679
 grammar = 388
 contract_transport = 845
 
@@ -517,12 +517,12 @@ kernel_crate = "busbar-kernel"
 kernel_ceiling = 5382
 caps_crate = "busbar-caps"
 contract_crate = "busbar-contract"
-caps_contract_ceiling = 3667
+caps_contract_ceiling = 3681
 unit_crate_glob = "busbar-unit-*"
 unit_total_ceiling = 15149
 verbs_crate = "busbar-unit-verbs"
 verbs_ceiling = 1428
-union_ceiling = 24198
+union_ceiling = 24212
 # Files (by basename, wherever they sit under busbar-kernel/src) whose bodies seed the call-graph
 # name-match: every identifier called from one of these files, that busbar-kernel does not itself
 # define, is looked up by name against every busbar-unit-* file.
@@ -2193,8 +2193,8 @@ because = "PLAN LINE 7b/7c: tasks/update and tasks/cancel each name busbar_plane
 [[gate.ceiling_raises]]
 key = "cell.busbar-mcp.transport.count"
 file = "qa/kind-isolation.toml"
-by = 7
-because = "the four new cells drive method::dispatch the same way method_tests.rs::call already does, which means naming axum::http::{HeaderMap, StatusCode} and axum::body::to_bytes directly; the shared TaskCtxFixture and dispatch_task_method helper hold those names once each rather than once per cell, and the assertions on the 200/400 split name StatusCode again at each terminal they pin."
+by = 4
+because = "AMENDED 7 -> 4 by MCP-I (mcp plan line 9): three of these lines left busbar-mcp with the frame composer — crates/busbar-mcp/src/mcp/subscribe.rs no longer spells the stream framing it handed to busbar_plane_mcp::subscribe — and the gate's rule is that the LIVE entries for a ceiling sum to EXACTLY the measured rise, so the over-declaration is amended rather than left as slack. Originally: the four new cells drive method::dispatch the same way method_tests.rs::call already does, which means naming axum::http::{HeaderMap, StatusCode} and axum::body::to_bytes directly; the shared TaskCtxFixture and dispatch_task_method helper hold those names once each rather than once per cell, and the assertions on the 200/400 split name StatusCode again at each terminal they pin."
 
 # ── MCP-G (1.6.0): A2A ON THE SAME FACE, AND THE MEASUREMENT THAT SAYS WHAT DOES NOT CROSS ──────
 #
@@ -2341,3 +2341,46 @@ key = "cell.busbar-a2a.plane.count"
 file = "qa/kind-isolation.toml"
 by = 2
 because = "the doc comment on the_section_is_a_first_class_member_of_the_chassis, which now says out loud that the cell REGISTERS the plane it asks about and why an unregistered read was an order-dependent green. Vocabulary the matrix scanner scores on the word `plane`, in a test file, against zero production line change."
+
+# MCP-I — mcp plan line 9: `subscriptions/listen`'s FRAME COMPOSER moves onto the neutral plane, and
+# the stream's verdict read moves onto the contract's counterparty vocabulary
+# (docs/design/1.6.0-mcp-engine.md section 13). Every frame the held stream writes —  the
+# acknowledgement's accepted subset, the three list-changed notifications, the resource-update
+# relay's frame, the graceful completion and the refusal — is built by `busbar_plane_mcp::subscribe`
+# now; `crates/busbar-mcp/src/mcp/subscribe.rs` falls 335 -> 216 surface lines in the same commit,
+# and what is left there is the three reads no plane may make: the clock, the standing re-ask
+# (`Standing::still_permitted` through the `EngineHost::principal_standing` seam, unchanged) and the
+# grant-scoped catalogue walk.
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.caps_contract_ceiling"
+by = 14
+because = "FACE busbar_contract::counterparty gains `Verdict::reason` (14 code lines): the stable word each verdict is REPORTED under, so the first reader outside the fold that has to render one does not mint a SECOND verdict-to-word mapping beside it. The frame composer reads it for a refused subscription's `data.reason`."
+
+[[gate.ceiling_raises]]
+key = "gate.surface_ceilings.contract_caps"
+by = 14
+because = "the same 14 lines as the LOC line above, on the surface line as well, for the same face: busbar_contract::counterparty::Verdict::reason. A const fn on an existing enum — no new type, no new trait, and nothing a plugin author is handed."
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.union_ceiling"
+by = 14
+because = "the same 14 lines carried through the union (which carries busbar-contract) and nothing else: busbar_contract::counterparty::Verdict::reason, the word a refusal is reported under, spelled once beside the verdict it belongs to."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-mcp.plane.count"
+file = "qa/kind-isolation.toml"
+by = 40
+because = "PLAN LINE 9's cut: crates/busbar-mcp/src/mcp/subscribe.rs names busbar_plane_mcp::subscribe for every byte the held stream writes — the composer it holds, the Poll it hands over per frame, the keepalive bytes and the accepted filter it builds through the plane's own narrowing. The bodies those names replace are DELETED in the same commit (335 -> 216 surface lines in that file), which is the engine shrinking while its naming of the plane grows: the crate is dropped whole later and every line of it is legacy until then."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-plane-mcp.codec.count"
+file = "qa/kind-isolation.toml"
+by = 3
+because = "busbar_plane_mcp::subscribe reads the codec's own notification names rather than re-spelling them: METHOD_NOTIFY_TOOLS_LIST_CHANGED on the tools arm and METHOD_NOTIFY_RESOURCES_UPDATED on the relay, plus the module's note that the two names it DOES spell are the ones the codec does not carry. No wire format is written twice where the codec already writes it once."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-plane-mcp.transport.count"
+file = "qa/kind-isolation.toml"
+by = 4
+because = "the SSE framing the frame composer writes: `event: message`, the blank-line terminator and the keepalive comment now live in busbar_plane_mcp::subscribe, because they are bytes on this plane's own wire. The same lines left busbar-mcp in this commit — its transport cell falls 1121 -> 1118 and MCP-F's over-declaration there is amended 7 -> 4 to the measured figure."

@@ -148,3 +148,38 @@ pub enum Verdict {
     /// The snapshot moved between admission and the deal.
     GenerationMoved,
 }
+
+impl Verdict {
+    /// THE STABLE WORD this verdict is REPORTED under, for a reader that has to filter a log or
+    /// fill a protocol's `reason` member.
+    ///
+    /// [`Allow`](Self::Allow) answers `None`, because a verdict that serves is not a refusal and a
+    /// word for it would be a word somebody renders.
+    ///
+    /// The three register refusals — [`Quarantined`](Self::Quarantined),
+    /// [`NeedsApproval`](Self::NeedsApproval) and [`Denied`](Self::Denied) — share ONE word, and
+    /// that is deliberate rather than lossy. They are kept apart as verdicts because each names a
+    /// different REMEDY, which is what the operator acts on; they collapse here because what an
+    /// operator FILTERS on is "the register refused", and the register's own answer has been one
+    /// word for as long as there has been an audit vocabulary. A fourth and fifth word here would
+    /// not tell anybody anything the verdict beside them does not already say, and would make two
+    /// spellings of one filter.
+    ///
+    /// WHY THIS LIVES ON THE VERDICT AND NOT AT THE READER: the words are already spelled once, in
+    /// the audit vocabulary every step reports through, and a reader that mapped a verdict onto one
+    /// of them would be a second mapping — and the second mapping is the one that disagrees the
+    /// first time a verdict is added. A reader that names this method cannot fall out of step with
+    /// the fold that produced the verdict.
+    #[must_use]
+    pub const fn reason(self) -> Option<&'static str> {
+        match self {
+            Verdict::Allow => None,
+            Verdict::Quarantined | Verdict::NeedsApproval | Verdict::Denied => Some("not_serving"),
+            Verdict::IdentityNotLive => Some("identity_not_live"),
+            Verdict::NotGranted => Some("not_granted"),
+            Verdict::EgressDenied => Some("egress_denied"),
+            Verdict::ArtifactDrifted => Some("artifact_drifted"),
+            Verdict::GenerationMoved => Some("generation_moved"),
+        }
+    }
+}

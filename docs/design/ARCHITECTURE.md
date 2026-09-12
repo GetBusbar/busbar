@@ -95,7 +95,9 @@ them). Each axis is blind to the other two; only the kernel composes them.
   root's copy went in the same commit. Nothing is added to what a plugin author must read: no trait
   takes these types and no plugin is handed one. The third is **`busbar_contract::counterparty`**
   (`Liveness`, `Grant`, `RegistrationState`, `Artifact`, `CounterpartyFacts`, `Verdict`; 54 code
-  lines + 1 module line, declared at +55): the vocabulary for the PARTY at the other end of a
+  lines + 1 module line, declared at +55, and a further +14 for `Verdict::reason` — the stable word
+  each verdict is REPORTED under, landed by MCP-I with mcp plan line 9 when the first reader outside
+  the fold had to render one): the vocabulary for the PARTY at the other end of a
   destination — what one side asserts about the other, and the closed verdict that answers it. The
   contract already owned the resolved half of that subject (the sealed and verified destination);
   what it did not own was any way to say a word about the counterparty itself, so the fold that
@@ -107,7 +109,12 @@ them). Each axis is blind to the other two; only the kernel composes them.
   minted, the fold is `busbar_unit_trust::counterparty` and what stays in the engine is the
   TRANSLATION, written once because the host-vtable is the only place the POD is read. `Default` is
   implemented on every type and every default is the REFUSING value, so a field nobody wrote can
-  never read as a fact that passes. Nothing is added to what a plugin author must read: no trait
+  never read as a fact that passes. `Verdict::reason` is on the verdict rather than at the reader
+  for the same reason the fold is one function: a reader that mapped a verdict onto an audit word
+  itself would be a SECOND mapping, and the second mapping is the one that disagrees the first time
+  a verdict is added — the register's three refusals (`Quarantined`, `NeedsApproval`, `Denied`)
+  deliberately share one word, because what an operator FILTERS on is "the register refused" while
+  what the verdict beside it names is which REMEDY applies. Nothing is added to what a plugin author must read: no trait
   takes these types and no plugin is handed one. The fourth is **`busbar_contract::tasks`**
   (`TaskStore`, `TaskRecord`; 15 code lines + 1 module line, declared at +16, and a further +8 for
   the WRITE half — `update` and `cancel`, landed by MCP-G with §11.4's lines 7b/7c and then SPLIT

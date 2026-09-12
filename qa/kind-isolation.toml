@@ -1912,7 +1912,7 @@ count = "9"
 [[cell]]
 crate = "busbar-mcp"
 kind = "codec"
-count = "39"
+count = "40"
 
 [[cell]]
 crate = "busbar-mcp"
@@ -1932,7 +1932,7 @@ count = "57"
 [[cell]]
 crate = "busbar-mcp"
 kind = "plane"
-count = "3476"
+count = "3516"
 
 [[cell]]
 crate = "busbar-mcp"
@@ -1952,7 +1952,7 @@ count = "37"
 [[cell]]
 crate = "busbar-mcp"
 kind = "transport"
-count = "1121"
+count = "1118"
 
 [[cell]]
 crate = "busbar-mcp-codec"
@@ -2112,7 +2112,7 @@ count = "2"
 [[cell]]
 crate = "busbar-plane-mcp"
 kind = "codec"
-count = "34"
+count = "37"
 
 [[cell]]
 crate = "busbar-plane-mcp"
@@ -2137,7 +2137,7 @@ count = "15"
 [[cell]]
 crate = "busbar-plane-mcp"
 kind = "transport"
-count = "82"
+count = "86"
 
 [[cell]]
 crate = "busbar-plane-voice"

@@ -91,12 +91,9 @@ use std::time::{Duration, Instant};
 
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use rmcp::model::{
-    ConstString, PromptListChangedNotificationMethod, ResourceListChangedNotificationMethod,
-    ResourceUpdatedNotificationMethod, SubscriptionFilter,
-    SubscriptionsAcknowledgedNotificationMethod, SubscriptionsListenResult,
-    SubscriptionsListenResultMeta, ToolListChangedNotificationMethod,
-};
+use busbar_contract::counterparty::Verdict;
+use busbar_plane_mcp::subscribe::{self as compose, Poll};
+use rmcp::model::SubscriptionFilter;
 
 /// How often the pin generation is re-read. Short enough that a client learns of a registration
 /// change within a human's idea of "immediately", long enough that a held stream is one atomic load
@@ -117,82 +114,11 @@ const POLL_INTERVAL: Duration = Duration::from_millis(250);
 /// `a_revoked_key_keeps_being_served_until_the_lifetime_bound`, which pins today's behaviour.
 const MAX_LIFETIME: Duration = Duration::from_secs(300);
 
-/// How often a stream that has nothing to say writes an SSE comment. Not a protocol message —
-/// comment lines carry no `data:` and every SSE reader drops them — but the bytes are what stops an
-/// idle proxy between busbar and its caller from reclaiming a connection that is working correctly.
+/// How often a stream that has nothing to say writes an SSE comment. The BYTES are the plane's
+/// ([`compose::KEEPALIVE`]) because they are bytes on this wire; WHEN they are written is here,
+/// because it is a clock read and the plane reads no clock. What they stop is an idle proxy between
+/// busbar and its caller reclaiming a connection that is working correctly.
 const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(15);
-
-/// The catalogue kinds busbar can observe changing BY COMPARISON, and the notification each one
-/// becomes.
-///
-/// A closed set of the change-key categories. `resourceSubscriptions` is deliberately not a
-/// fourth arm: it is uri-scoped rather than boolean, and its changes arrive as recorded upstream
-/// EVENTS rather than as a catalogue slice to compare — the relay in [`Listen::step`]'s watch arm
-/// is its whole delivery path, and a `Kind` for it would be a boolean that means nothing.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Kind {
-    Tools,
-    Prompts,
-    Resources,
-}
-
-impl Kind {
-    /// Every kind, so a new arm cannot be added without appearing in the loop that emits.
-    const ALL: [Kind; 3] = [Kind::Tools, Kind::Prompts, Kind::Resources];
-
-    /// The wire method name, off `rmcp`'s const-string types.
-    fn method(self) -> &'static str {
-        match self {
-            Kind::Tools => ToolListChangedNotificationMethod::VALUE,
-            Kind::Prompts => PromptListChangedNotificationMethod::VALUE,
-            Kind::Resources => ResourceListChangedNotificationMethod::VALUE,
-        }
-    }
-
-    /// Whether the ACCEPTED filter opted this kind in.
-    fn wanted(self, filter: &SubscriptionFilter) -> bool {
-        let f = match self {
-            Kind::Tools => filter.tools_list_changed,
-            Kind::Prompts => filter.prompts_list_changed,
-            Kind::Resources => filter.resources_list_changed,
-        };
-        f == Some(true)
-    }
-}
-
-/// Narrow a requested filter to what busbar will actually deliver FOR THIS CALLER.
-///
-/// Written as an explicit construction rather than as `SubscriptionFilter::intersection` with a
-/// constant, because what busbar can deliver is not a fixed value to intersect against: it is a
-/// statement per category, and `resourceSubscriptions` is narrowed for a different reason than an
-/// unrequested list-changed is. Two reasons that read the same in a diff is how one of them gets
-/// quietly changed.
-///
-/// `entitled` answers "does THIS caller's grant reach a resource at this uri" — the same ordered
-/// gate `resources/read` asks, threaded in as a predicate because the answer needs the catalogue
-/// and the caller, and this function deliberately holds neither. A uri the caller cannot see is
-/// dropped HERE, at open, so the acknowledgement never names another tenant's inventory — and the
-/// entitlement is re-asked per poll at delivery, so a grant that narrows mid-stream bites there
-/// too. The narrowed list is left `None` when nothing survives rather than set to an empty list:
-/// an empty list is "you subscribed to no resources", which is a different statement from "this
-/// category has nothing for you".
-fn accept(requested: &SubscriptionFilter, entitled: impl Fn(&str) -> bool) -> SubscriptionFilter {
-    let mut accepted = SubscriptionFilter::new();
-    accepted.tools_list_changed = requested.tools_list_changed.filter(|v| *v);
-    accepted.prompts_list_changed = requested.prompts_list_changed.filter(|v| *v);
-    accepted.resources_list_changed = requested.resources_list_changed.filter(|v| *v);
-    accepted.resource_subscriptions = requested
-        .resource_subscriptions
-        .as_ref()
-        .map(|uris| {
-            uris.iter()
-                .filter(|u| entitled(u))
-                .cloned()
-                .collect::<Vec<_>>()
-        })
-        .filter(|kept| !kept.is_empty());
-    accepted
-}
 
 /// A CHANGE KEY for one grant-scoped catalogue slice: two runs that produce the same value saw the
 /// same list, and a different value means the client should re-read.
@@ -217,6 +143,11 @@ fn change_key(mut parts: Vec<&str>) -> u64 {
 
 /// The three change keys of what ONE CALLER can see, taken together so a single walk of the
 /// snapshot answers all three.
+///
+/// A CATALOGUE WALK UNDER A GRANT, which is why it stayed on this side of the seam when the frames
+/// left: what a caller may see is a read of the live registry, and the plane is handed the ANSWER.
+/// The array is in `compose::Kind::ALL` order, and that ordering is the contract between the walk
+/// and the loop that emits — pinned by a cell rather than by this sentence.
 fn change_keys(
     catalogue: &super::catalogue::Catalogue,
     caller: &busbar_substrate::catalogue::Caller<'_>,
@@ -249,53 +180,19 @@ fn change_keys(
     ]
 }
 
-/// The `params._meta` every frame on this stream carries, built through the SDK's own type so the
-/// key is the SDK's spelling rather than a second copy of it here.
+/// THE CALLER'S REQUESTED CATEGORIES, off the SDK's own parameter type and onto the plane's.
 ///
-/// The subscription id IS the listen request's own JSON-RPC id, which is what
-/// [`SubscriptionsListenResultMeta::new`] takes: under a revision with no sessions, the request that
-/// opened the stream is the only durable name the stream has, and minting a second identifier would
-/// give a client two names for one thing and no way to relate them.
-fn subscription_meta(id: &serde_json::Value) -> serde_json::Value {
-    let request_id: Option<rmcp::model::RequestId> = serde_json::from_value(id.clone()).ok();
-    request_id
-        .map(SubscriptionsListenResultMeta::new)
-        .and_then(|m| serde_json::to_value(m).ok())
-        .unwrap_or_else(|| serde_json::json!({}))
-}
-
-/// One JSON-RPC notification envelope, tagged with the subscription it belongs to.
-///
-/// **No `id`, ever.** JSON-RPC 2.0 section 4.1 makes the absence of `id` the definition of a
-/// notification, and an id here would oblige a client to answer something busbar is not waiting for.
-/// The tag goes in `params._meta`, which is where the revision's own scenario looks for it.
-fn notification(
-    method: &str,
-    meta: &serde_json::Value,
-    extra: serde_json::Value,
-) -> serde_json::Value {
-    let mut params = match extra {
-        serde_json::Value::Object(map) => map,
-        _ => serde_json::Map::new(),
-    };
-    params.insert("_meta".to_string(), meta.clone());
-    serde_json::json!({
-        "jsonrpc": "2.0",
-        "method": method,
-        "params": serde_json::Value::Object(params),
-    })
-}
-
-/// What the stream is doing between polls. An explicit phase rather than a flag, so "the
-/// acknowledgement has not been sent yet" cannot be confused with "nothing has changed yet" — the
-/// first of those is a MUST about ordering and the second is ordinary quiet.
-enum Phase {
-    /// Nothing has been written. The acknowledgement is owed, and it is owed FIRST.
-    Acknowledge,
-    /// Acknowledged; watching the generation.
-    Watch { generation: u64, seen: [u64; 3] },
-    /// The final result has been written. The next poll ends the stream.
-    Ended,
+/// The SDK type is the ACCEPTANCE TEST and that is why the parse stays here: a hand-read
+/// `params.notifications.toolsListChanged` accepts shapes the specification does not, and each
+/// acceptance is a difference between what busbar serves and what the protocol says. What crosses
+/// the seam is the four members the wire has, which the plane narrows and then writes.
+fn requested_of(filter: &SubscriptionFilter) -> compose::Filter {
+    compose::Filter {
+        tools_list_changed: filter.tools_list_changed,
+        prompts_list_changed: filter.prompts_list_changed,
+        resources_list_changed: filter.resources_list_changed,
+        resource_subscriptions: filter.resource_subscriptions.clone(),
+    }
 }
 
 struct Listen {
@@ -308,10 +205,9 @@ struct Listen {
     /// THE PRINCIPAL'S ID AND THE BOUND, never the principal. See the module header: a resolved key
     /// carried into a `'static` stream is an identity believed for five minutes.
     standing: busbar_substrate::trust::validate::Standing,
-    accepted: SubscriptionFilter,
-    meta: serde_json::Value,
-    id: serde_json::Value,
-    phase: Phase,
+    /// THE FRAME COMPOSER — the accepted filter, the subscription tag and the phase, on the plane
+    /// that names this wire. Every byte this stream writes is one of its answers.
+    composer: compose::Listen,
     last_write: Instant,
     /// This stream's position in [`crate::mcp::client::pool::ResourceUpdates`] — the newest
     /// sequence at OPEN, so a subscription relays what upstreams announce AFTER it exists rather
@@ -333,8 +229,8 @@ struct Listen {
 /// Only re-reading the key closes it, which is what [`busbar_substrate::trust::validate::Standing`] does and
 /// why the fix is a core primitive rather than an extra `&&` on this line.
 ///
-/// A free function rather than a method, because the caller holds `&mut` on the phase while it holds
-/// this — two disjoint fields, which the borrow checker allows and a `&self` method does not.
+/// A free function rather than a method, because the caller holds `&mut` on the composer while it
+/// holds this — two disjoint fields, which the borrow checker allows and a `&self` method does not.
 ///
 /// It builds a `Caller` rather than a grant closure so that the per-frame catalogue read asks the
 /// same ordered gate every other catalogue read asks, identity step included.
@@ -354,50 +250,41 @@ fn caller_of<'a>(
     }
 }
 
-impl Listen {
-    /// THE LAST FRAME. A bound reached is a graceful end and says so; a lapsed permission is a
-    /// REFUSAL and says which one, in the core vocabulary, so a client and an operator reading the
-    /// same word mean the same thing.
-    ///
-    /// One function rather than a frame written at each exit, because a stream that ends by simply
-    /// closing the socket is one a client cannot tell from a dropped connection — which is the whole
-    /// reason anything is written at all.
-    fn closing_frame(&self, lapsed: &busbar_substrate::trust::validate::Lapsed) -> String {
-        use busbar_substrate::trust::validate::Lapsed;
-        match lapsed {
-            // The revision's own "this subscription ended gracefully" answer, correlated to the
-            // request that opened the stream.
-            Lapsed::Expired => {
-                let request_id: Option<rmcp::model::RequestId> =
-                    serde_json::from_value(self.id.clone()).ok();
-                let result = request_id
-                    .map(SubscriptionsListenResult::complete)
-                    .and_then(|r| serde_json::to_value(r).ok())
-                    .unwrap_or_else(|| serde_json::json!({ "resultType": "complete" }));
-                event(&serde_json::json!({
-                    "jsonrpc": "2.0",
-                    "id": self.id,
-                    "result": result,
-                }))
-            }
-            Lapsed::Identity(refusal) | Lapsed::Generation(refusal) => event(&serde_json::json!({
-                "jsonrpc": "2.0",
-                "id": self.id,
-                "error": {
-                    // The base protocol's own "invalid request", owned by the one envelope reader
-                    // for both planes rather than re-spelled here.
-                    "code": busbar_substrate::ingress::jsonrpc::INVALID_REQUEST,
-                    "message": refusal.to_string(),
-                    "data": { "reason": refusal.reason() },
-                },
-            })),
-        }
+/// THE STANDING'S ANSWER, READ AS A VERDICT — plan line 9's verdict read, and the whole of what
+/// this seam translates.
+///
+/// `Standing::still_permitted` walks expiry, then generation, then identity, and the arm it stops at
+/// IS the step that refused: that walk is the fold, performed once, and re-folding asserted facts
+/// here would be a SECOND decision that could disagree with it. So nothing is re-decided — what
+/// changes is the VOCABULARY the answer is read in. A lapse used to be matched arm by arm where the
+/// frame was written, in `busbar_substrate::trust::validate::{Lapsed, Refusal}`; it is now one closed
+/// [`Verdict`] from `busbar_contract::counterparty`, the vocabulary the verify step's own fold
+/// answers in, so the word a refused client reads and
+/// the word an operator's ledger filters on are the same word by construction rather than by
+/// agreement.
+///
+/// `None` is the BOUND, which is not a verdict: a counterparty vocabulary has no word for "this
+/// response has been open long enough", because that is a fact about the response and not about the
+/// party at the other end. It becomes the revision's graceful close.
+fn verdict_of(lapsed: &busbar_substrate::trust::validate::Lapsed) -> Option<(Verdict, String)> {
+    use busbar_substrate::trust::validate::Lapsed;
+    match lapsed {
+        Lapsed::Expired => None,
+        Lapsed::Identity(refusal) => Some((Verdict::IdentityNotLive, refusal.to_string())),
+        Lapsed::Generation(refusal) => Some((Verdict::GenerationMoved, refusal.to_string())),
     }
+}
 
+impl Listen {
     /// Produce the next chunk of the stream, `Some("")` for "nothing to say yet", or `None` to close
     /// it.
+    ///
+    /// EVERY BYTE IS THE PLANE'S and every READ is this crate's, which is the whole shape of this
+    /// function: re-read the live snapshot once, re-ask the standing, walk the caller's catalogue,
+    /// judge what an upstream announced — then hand the answers over as one [`Poll`] and write what
+    /// comes back.
     fn step(&mut self) -> Option<String> {
-        // ENDED IS ENDED, and this is checked FIRST rather than in the phase match below.
+        // ENDED IS ENDED, and this is checked FIRST rather than left to the composer.
         //
         // The re-check underneath it answers the same way every time it is asked, so a stream whose
         // permission has lapsed would re-emit its closing frame on every poll for ever instead of
@@ -405,7 +292,7 @@ impl Listen {
         // one, which is the exact failure the graceful close exists to avoid. Found by
         // `a_revoked_key_stops_being_served_on_the_next_poll`'s final assertion, which is why that
         // assertion is not decoration.
-        if matches!(self.phase, Phase::Ended) {
+        if self.composer.ended() {
             return None;
         }
         // The LIVE runtime, re-read ONCE per poll off the host's retained handle, then reused for
@@ -419,114 +306,88 @@ impl Listen {
         // `Arc` survives config swaps) and the clock is engine-snapshot independent.
         let host = self.host.clone();
         let catalogue = &rt.catalogue;
+        let now = Instant::now();
         // THE STANDING PERMISSION, RE-ASKED. A principal that has stopped resolving live ends the
         // stream on THIS frame rather than at the bound, which is the whole of the fix.
-        let key = match host.principal_standing(
+        let chunk = match host.principal_standing(
             &self.standing,
             catalogue.generation(),
             host.clock_now_secs(),
         ) {
-            Ok(key) => key,
-            Err(lapsed) => {
-                self.phase = Phase::Ended;
-                return Some(self.closing_frame(&lapsed));
+            Err(lapsed) => match verdict_of(&lapsed) {
+                Some((verdict, sentence)) => self.composer.step(Poll::Refused {
+                    verdict,
+                    sentence: &sentence,
+                })?,
+                None => self.composer.step(Poll::Complete)?,
+            },
+            Ok(key) => {
+                let caller = caller_of(&host, key.as_ref(), catalogue.generation());
+                let keys = change_keys(catalogue, &caller);
+                let updates = match self.composer.subscribed() {
+                    None => Vec::new(),
+                    Some(uris) => relay(&mut self.cursor, uris, &rt, catalogue, &caller),
+                };
+                self.composer.step(Poll::Allowed {
+                    generation: catalogue.generation(),
+                    keys,
+                    updates: &updates,
+                })?
             }
         };
-        let caller = caller_of(&host, key.as_ref(), catalogue.generation());
-        let now = Instant::now();
-        match &mut self.phase {
-            Phase::Acknowledge => {
-                let seen = change_keys(catalogue, &caller);
-                let params = serde_json::json!({
-                    "notifications": serde_json::to_value(&self.accepted)
-                        .unwrap_or_else(|_| serde_json::json!({})),
-                });
-                let frame = event(&notification(
-                    SubscriptionsAcknowledgedNotificationMethod::VALUE,
-                    &self.meta,
-                    params,
-                ));
-                self.phase = Phase::Watch {
-                    generation: catalogue.generation(),
-                    seen,
-                };
-                self.last_write = now;
-                Some(frame)
-            }
-            Phase::Watch { generation, seen } => {
-                let live = catalogue.generation();
-                let mut out = String::new();
-                if live != *generation {
-                    *generation = live;
-                    let fresh = change_keys(catalogue, &caller);
-                    for (index, kind) in Kind::ALL.into_iter().enumerate() {
-                        if fresh[index] == seen[index] || !kind.wanted(&self.accepted) {
-                            continue;
-                        }
-                        out.push_str(&event(&notification(
-                            kind.method(),
-                            &self.meta,
-                            serde_json::json!({}),
-                        )));
-                    }
-                    *seen = fresh;
-                }
-                // THE RESOURCE-UPDATE RELAY — upstream announcements recorded by the client leg,
-                // delivered onto this stream's `resourceSubscriptions` category. Judged per event,
-                // per poll, against THREE facts at once, each of which is load-bearing: the
-                // subscriber ASKED for this uri (the accepted list), the uri resolves under the
-                // subscriber's LIVE grant to an operator-declared resource (the same ordered gate
-                // `resources/read` asks, re-derived this poll so a narrowed grant bites here), and
-                // the resolved resource belongs to THE SERVER THAT ANNOUNCED it — an upstream
-                // cannot speak for another registration's inventory. The cursor moves whether or
-                // not anything matched: an event judged and refused is an event handled, not one
-                // to re-judge for ever.
-                if let Some(uris) = &self.accepted.resource_subscriptions {
-                    let (events, latest) = rt.pool.updates.since(self.cursor);
-                    self.cursor = latest;
-                    for (server, uri) in events {
-                        if !uris.iter().any(|u| u == &uri) {
-                            continue;
-                        }
-                        let entitled = matches!(
-                            catalogue.resource_by_uri(&caller, &uri),
-                            super::catalogue::ResourceLookup::One(entry) if entry.server == server
-                        );
-                        if !entitled {
-                            continue;
-                        }
-                        out.push_str(&event(&notification(
-                            ResourceUpdatedNotificationMethod::VALUE,
-                            &self.meta,
-                            serde_json::json!({ "uri": uri }),
-                        )));
-                    }
-                }
-                if !out.is_empty() {
-                    self.last_write = now;
-                    return Some(out);
-                }
-                // NOTHING HAPPENED, which is the ordinary case and is not nothing to write: an idle
-                // connection is reclaimed by intermediaries that cannot tell it from a dead one.
-                if now.duration_since(self.last_write) >= KEEPALIVE_INTERVAL {
-                    self.last_write = now;
-                    return Some(": keepalive\n\n".to_string());
-                }
-                Some(String::new())
-            }
-            Phase::Ended => None,
+        if !chunk.is_empty() {
+            self.last_write = now;
+            return Some(chunk);
         }
+        // NOTHING HAPPENED, which is the ordinary case and is not nothing to write: an idle
+        // connection is reclaimed by intermediaries that cannot tell it from a dead one.
+        if now.duration_since(self.last_write) >= KEEPALIVE_INTERVAL {
+            self.last_write = now;
+            return Some(compose::KEEPALIVE.to_string());
+        }
+        Some(String::new())
     }
 }
 
-/// One SSE `message` event. The same framing [`super::sse`] writes, and deliberately the same
-/// function shape: two spellings of an event frame is two places for the blank-line terminator to be
-/// forgotten.
-fn event(value: &serde_json::Value) -> String {
-    format!(
-        "event: message\ndata: {}\n\n",
-        serde_json::to_string(value).unwrap_or_else(|_| "null".to_string())
-    )
+/// THE RESOURCE-UPDATE RELAY'S JUDGEMENT — upstream announcements recorded by the client leg,
+/// narrowed to the uris this poll may deliver. The FRAME is the plane's; this is the grant read
+/// under it.
+///
+/// Judged per event, per poll, against THREE facts at once, each of which is load-bearing: the
+/// subscriber ASKED for this uri (the accepted list, handed in), the uri resolves under the
+/// subscriber's LIVE grant to an operator-declared resource (the same ordered gate `resources/read`
+/// asks, re-derived this poll so a narrowed grant bites here), and the resolved resource belongs to
+/// THE SERVER THAT ANNOUNCED it — an upstream cannot speak for another registration's inventory.
+///
+/// The cursor moves whether or not anything matched: an event judged and refused is an event
+/// handled, not one to re-judge for ever.
+///
+/// A free function over `&mut u64` rather than a method, because the accepted list is borrowed out
+/// of the composer while the cursor is written — two disjoint fields.
+fn relay(
+    cursor: &mut u64,
+    asked: &[String],
+    rt: &super::McpRuntime,
+    catalogue: &super::catalogue::Catalogue,
+    caller: &busbar_substrate::catalogue::Caller<'_>,
+) -> Vec<String> {
+    let (events, latest) = rt.pool.updates.since(*cursor);
+    *cursor = latest;
+    let mut out = Vec::new();
+    for (server, uri) in events {
+        if !asked.iter().any(|u| u == &uri) {
+            continue;
+        }
+        let entitled = matches!(
+            catalogue.resource_by_uri(caller, &uri),
+            super::catalogue::ResourceLookup::One(entry) if entry.server == server
+        );
+        if !entitled {
+            continue;
+        }
+        out.push(uri);
+    }
+    out
 }
 
 /// SERVE one `subscriptions/listen`.
@@ -557,16 +418,14 @@ pub(crate) fn listen(
         let rt = super::runtime_of(&ctx.host);
         let catalogue = &rt.catalogue;
         let caller = caller_of(&ctx.host, ctx.gov.key.as_ref(), catalogue.generation());
-        accept(&requested, |uri| {
+        compose::accept(&requested_of(&requested), |uri| {
             matches!(
                 catalogue.resource_by_uri(&caller, uri),
                 super::catalogue::ResourceLookup::One(_)
             )
         })
     };
-    if !Kind::ALL.into_iter().any(|k| k.wanted(&accepted))
-        && accepted.resource_subscriptions.is_none()
-    {
+    if accepted.delivers_nothing() {
         // A STREAM THAT CAN DELIVER NOTHING IS NOT A NARROWER STREAM, it is a connection held open
         // to say nothing, and a client waiting on one waits for ever. Refusing is the answer that
         // lets it fall back; acknowledging an empty filter and then going silent is the answer that
@@ -584,7 +443,7 @@ pub(crate) fn listen(
     }
     // Never `None` on this path — `ingress` has already refused a notification and a null id — and
     // carried as `Option` only because every method in the table takes one. `Null` here would
-    // produce a subscription with no name, which the SDK's own result type refuses to build.
+    // produce a subscription with no name, which the plane's own tag refuses to build.
     let id = id.unwrap_or(serde_json::Value::Null);
     let now = Instant::now();
     let mut state = Listen {
@@ -600,10 +459,7 @@ pub(crate) fn listen(
             busbar_substrate::trust::validate::Snapshot::Watching,
             MAX_LIFETIME,
         ),
-        accepted,
-        meta: subscription_meta(&id),
-        id,
-        phase: Phase::Acknowledge,
+        composer: compose::Listen::opened(id, accepted),
         last_write: now,
         // From NOW: announcements recorded before this subscription existed are not replayed.
         cursor: super::runtime_of(&ctx.host).pool.updates.latest(),

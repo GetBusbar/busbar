@@ -49,6 +49,7 @@ pub mod meta;
 pub mod ops;
 pub mod plane;
 pub mod records;
+pub mod subscribe;
 pub mod tasks;
 pub mod view;
 
