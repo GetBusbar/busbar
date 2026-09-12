@@ -551,18 +551,6 @@ pub(crate) struct HookView {
     /// 1.6.0 owner rule: a 1.5.5 client reading this view must see this field byte-for-byte, so it
     /// is RESTORED alongside `phase`/`fires_at`.
     pub(crate) at: Option<&'static str>,
-    /// The `phase:` STAGE LIST exactly as configured, empty when unset. The literal config echo,
-    /// for an operator diffing what they wrote against what busbar parsed. It is NOT the effective
-    /// answer on its own: empty means "fall back", and what it falls back TO is `at:` if set and the
-    /// four core stages otherwise. For the effective answer read `fires_at`.
-    pub(crate) phase: Vec<&'static str>,
-    /// The RESOLVED stage set: the stages this hook ACTUALLY fires at, in pipeline order, never
-    /// empty. This is the field that answers "when does this hook run", and it is computed by
-    /// `config::HookCfg::resolved_stages` through the same `fires_at_stage` predicate the firing
-    /// path uses, so it cannot disagree with runtime behavior. It reflects the frozen precedence
-    /// (a non-empty `phase:` wins, else the legacy single `at:`, else the four core stages) without
-    /// asking the reader to re-derive it from the two spellings above.
-    pub(crate) fires_at: Vec<&'static str>,
     /// Gate fallback on timeout/error, a CLOSED, unambiguous string union: one of the
     /// reserved terminals (`"weighted"` | `"reject"` | `"first"` | `"nothing"`) or the NAME of the
     /// fallback hook the chain continues through. Unambiguous by construction: the terminal words
@@ -584,6 +572,26 @@ pub(crate) struct HookView {
     pub(crate) settings_keys: Vec<String>,
     /// Whether this hook fires on every request (globally wired).
     pub(crate) global: bool,
+    /// The `phase:` STAGE LIST exactly as configured, empty when unset. The literal config echo,
+    /// for an operator diffing what they wrote against what busbar parsed. It is NOT the effective
+    /// answer on its own: empty means "fall back", and what it falls back TO is `at:` if set and the
+    /// four core stages otherwise. For the effective answer read `fires_at`.
+    ///
+    /// DECLARED AFTER `global`, NOT beside `at`: 1.5.5's `HookView` has no `phase`/`fires_at`/
+    /// `groups` at all, so this field (and the two below) is placed after every field 1.5.5 had, in
+    /// 1.5.5's own order, so schemars' generated `required` array — and every 1.6.0-additive admin
+    /// view's serialized field order — is a PREFIX-preserving superset of 1.5.5's, not merely a
+    /// same-membership reordering of it (the shadow oracle's `additive` proof walks a JSON array
+    /// positionally, and an inserted-before-the-end element fails that walk even though nothing
+    /// about the field itself changed).
+    pub(crate) phase: Vec<&'static str>,
+    /// The RESOLVED stage set: the stages this hook ACTUALLY fires at, in pipeline order, never
+    /// empty. This is the field that answers "when does this hook run", and it is computed by
+    /// `config::HookCfg::resolved_stages` through the same `fires_at_stage` predicate the firing
+    /// path uses, so it cannot disagree with runtime behavior. It reflects the frozen precedence
+    /// (a non-empty `phase:` wins, else the legacy single `at:`, else the four core stages) without
+    /// asking the reader to re-derive it from the two spellings above.
+    pub(crate) fires_at: Vec<&'static str>,
     /// The `groups:` CALLER SCOPE exactly as configured: the caller groups this hook fires for,
     /// empty meaning ALL callers (unscoped). The other half of "when does this hook run", and the
     /// same writable-but-unreadable gap `phase` had.
