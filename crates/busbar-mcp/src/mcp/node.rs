@@ -195,8 +195,9 @@ pub fn installed() -> bool {
 /// plane's own records and no upstream, so nothing is priced, nothing is dialled and no grant is
 /// spent. `resources/list` is the second, `prompts/list` the third and
 /// `resources/templates/list` the fourth on the same measurement — one record walk each, no
-/// upstream. The order the rest follow is the plan's (§14.3), money-free first and `tools/call`
-/// last.
+/// upstream — and `completion/complete` is the fifth on a stronger version of it, since its answer
+/// is a constant and reads no record at all. The order the rest follow is the plan's (§14.3),
+/// money-free first and `tools/call` last.
 fn document_for(op: busbar_contract::ids::OpClassId) -> Option<super::method::ClassDocument> {
     if op == ops::OP_TOOLS_LIST {
         return Some(super::method::tools_list_document);
@@ -209,6 +210,9 @@ fn document_for(op: busbar_contract::ids::OpClassId) -> Option<super::method::Cl
     }
     if op == ops::OP_RESOURCE_TEMPLATES_LIST {
         return Some(super::method::resources_templates_list_document);
+    }
+    if op == ops::OP_COMPLETION {
+        return Some(super::method::completion_complete_document);
     }
     None
 }

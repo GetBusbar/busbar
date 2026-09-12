@@ -223,7 +223,12 @@ pub(crate) async fn dispatch(
         // audit row and no meter is DELETED rather than kept beside the node. Its document is still
         // this crate's and is `resources_templates_list_document` below; what left is the serving.
         ops::OP_RESOURCE_READ => resources_read(ctx, params, id),
-        ops::OP_COMPLETION => completion_complete(id),
+        // `ops::OP_COMPLETION` HAS NO ARM. The fifth class the composition's node has taken, and it
+        // is fifth for the reason §14.3 orders by: it is money-free — it consults no record at all
+        // and no upstream, so nothing is priced, nothing is dialled and no grant is spent. The arm
+        // that answered it here with no door, no budget, no audit row and no meter is DELETED
+        // rather than kept beside the node. Its document is still this crate's and is
+        // `completion_complete_document` below; what left is the serving.
         ops::OP_TASK_GET => tasks_get(ctx, params, id),
         ops::OP_TASK_UPDATE => tasks_update(ctx, params, id),
         ops::OP_TASK_CANCEL => tasks_cancel(ctx, params, id),
@@ -419,6 +424,26 @@ fn tasks_cancel(
 ///
 /// This does NOT dispatch, charge or audit, and it takes no `Ctx`: it reads nothing the caller's
 /// grant scopes, so there is nothing for a grant to narrow and nothing for an audit row to name.
+/// `completion/complete`'s document, in the shape the node's table holds.
+///
+/// The same lift the four before it are, and it forwards to [`completion_complete`], which is byte
+/// for byte the body that answered this class when the dispatch table still had an arm for it.
+///
+/// IT IGNORES BOTH THE CONTEXT AND THE PARAMETERS, and that is the method rather than the lift: the
+/// answer this class gives is a CONSTANT — no completions, `hasMore: false` — so it reads no record
+/// and consults no caller grant. That constant is also why this class's stdio before/after is the
+/// WEAKEST of the thirteen and is not what proves the move here: a constant answer is byte-identical
+/// whether the node served it, the arm served it, or nothing did. What proves it is the structural
+/// cell (a class in `document_for` has no arm, by construction) and the capped-door run, where the
+/// second and third frames are refused — an outcome only the node's admission step can produce.
+pub(in crate::mcp) fn completion_complete_document(
+    _ctx: &Ctx<'_>,
+    _params: Option<&serde_json::Value>,
+    id: Option<serde_json::Value>,
+) -> Response {
+    completion_complete(id)
+}
+
 fn completion_complete(id: Option<serde_json::Value>) -> Response {
     result(
         id,
