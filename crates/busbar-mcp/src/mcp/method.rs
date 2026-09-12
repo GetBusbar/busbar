@@ -203,7 +203,12 @@ pub(crate) async fn dispatch(
         // Its document is still this crate's and is `tools_list_document` below; what left is the
         // serving.
         ops::OP_TOOL_CALL => tools_call_via_gauntlet(ctx, params, id).await,
-        ops::OP_PROMPTS_LIST => prompts_list(ctx, id),
+        // `ops::OP_PROMPTS_LIST` HAS NO ARM. The third class the composition's node has taken, and
+        // it is third for the reason §14.3 orders by: it is money-free — it reaches this plane's
+        // own prompt records and no upstream, so nothing is priced, nothing is dialled and no grant
+        // is spent. The arm that answered it here with no door, no budget, no audit row and no
+        // meter is DELETED rather than kept beside the node. Its document is still this crate's and
+        // is `prompts_list_document` below; what left is the serving.
         ops::OP_PROMPT_GET => prompts_get(ctx, params, id),
         // `ops::OP_RESOURCES_LIST` HAS NO ARM. The second class the composition's node has taken,
         // and it is second for the reason §14.3 orders by: it is money-free — it reaches this
@@ -505,6 +510,22 @@ fn tools_list(ctx: &Ctx<'_>, id: Option<serde_json::Value>) -> Response {
         .map(CatalogueItem::render)
         .collect();
     result(id, busbar_plane_mcp::view::tools_result(tools))
+}
+
+/// `prompts/list`'s document, in the shape the node's table holds.
+///
+/// The same lift [`tools_list_document`] and [`resources_list_document`] are, and for the same
+/// reason: it forwards to [`prompts_list`], which is byte for byte the body that answered this
+/// class when the dispatch table still had an arm for it. That sameness is the whole of why the
+/// byte-identity is provable rather than asserted — there is one body, and what changed is the path
+/// that reaches it. The class takes no parameters, and saying so by ignoring the argument is the
+/// declaration.
+pub(in crate::mcp) fn prompts_list_document(
+    ctx: &Ctx<'_>,
+    _params: Option<&serde_json::Value>,
+    id: Option<serde_json::Value>,
+) -> Response {
+    prompts_list(ctx, id)
 }
 
 /// `prompts/list`, with every description markup-normalised on the way out.
