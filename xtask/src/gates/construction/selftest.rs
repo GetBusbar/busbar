@@ -156,6 +156,7 @@ pub fn run(gate: &dyn Gate, cx: &Ctx) -> Report {
 
     r.append(shape_cases(gate, cx, &base));
     r.append(loop_cases(gate, cx, &base));
+    r.append(step_order_cases(gate, cx, &base));
     r.append(delegated_cases(gate, cx, &base));
     r.append(ceiling_cases(gate, cx, &base));
     r.append(kind_cases(gate, cx, &base));
@@ -301,21 +302,6 @@ fn loop_cases(gate: &dyn Gate, cx: &Ctx, base: &Overlay) -> Report {
         &["one-teller-loop", "one-teller-loop:run_gauntlet"],
         ov,
         &["zz_planted_loop.rs"],
-    ));
-
-    let mut ov = on(base);
-    ov.set(
-        "crates/busbar-substrate/src/teller/run.rs",
-        "pub fn run_unit() {\n    unit.audit();\n    unit.arrival();\n}\n\npub fn open_unit() {\n \
-         unit.audit();\n}\n",
-    );
-    r.push(prove_red(
-        cx,
-        gate,
-        "the loop calls its steps out of the canonical order",
-        &["teller-step-order"],
-        ov,
-        &["calls the steps as"],
     ));
 
     let mut ov = on(base);
@@ -1156,6 +1142,170 @@ fn money_cases(gate: &dyn Gate, cx: &Ctx, base: &Overlay) -> Report {
             ]));
             double_naming
         }),
+    ));
+    r
+}
+
+/// THE LOOP'S STEP ORDER, PROVEN AGAINST A PLANTED LOOP RATHER THAN A PLANTED LINE.
+///
+/// The rule reads its subject in EVALUATION order, so a plant that only moves a line proves
+/// nothing: the shapes that used to defeat the old line reader — a refused arm written above the
+/// admitted one, a tail in a helper two arms share, a Route dispatched through a leg — are exactly
+/// what the planted loop below is built out of. The GREEN case is the loop written correctly in all
+/// three of those shapes; each RED case is that same loop with one thing wrong.
+fn step_order_cases(gate: &dyn Gate, cx: &Ctx, base: &Overlay) -> Report {
+    let mut r = Report::new();
+
+    // The loop as the kernel writes it, reduced to its structure: the six door steps as a chain,
+    // a `match` whose REFUSED arm is written FIRST, the audit-and-encode tail in a helper both
+    // arms reach, and Route dispatched through a leg so the loop has one await.
+    let loop_src = |door: &str, admitted: &str, tail: &str| -> String {
+        format!(
+            "pub async fn run_unit_async(kernel: &Kernel, units: &U, route: &R) -> Ended {{\n\
+             \x20   let opened = on_step(|| units.arrival(t, ctx))\n\
+             {door}\
+             \x20   match opened {{\n\
+             \x20       Err(refusal) => {{\n\
+             \x20           on_step(|| units.audit_refused(t, ctx, &refusal));\n\
+             \x20           on_step(|| units.encode(t, ctx, &outcome));\n\
+             \x20           exit(kernel, units, outcome)\n\
+             \x20       }}\n\
+             \x20       Ok(admission) => {{\n\
+             {admitted}\
+             \x20       }}\n\
+             \x20   }}\n\
+             }}\n\n\
+             pub fn run_unit(kernel: &Kernel, units: &U) -> Ended {{\n\
+             \x20   let blocking = Blocking(units);\n\
+             \x20   poll(run_unit_async(kernel, units, &blocking))\n\
+             }}\n\n\
+             fn terminal(kernel: &Kernel, units: &U, ctx: &UnitCtx, outcome: Outcome) -> Ended {{\n\
+             \x20   on_step(|| units.audit(t, ctx, &outcome));\n\
+             \x20   on_step(|| units.encode(t, ctx, &outcome));\n\
+             \x20   exit(kernel, units, outcome)\n\
+             }}\n\n\
+             async fn under_hold(kernel: &Kernel, units: &U, route: &R, ctx: &UnitCtx) -> Outcome {{\n\
+             \x20   let routed = route.route_leg(&token, ctx, meter).await;\n\
+             {tail}\
+             \x20   outcome\n\
+             }}\n\n\
+             fn exit(kernel: &Kernel, units: &U, outcome: Outcome) -> Ended {{\n\
+             \x20   let evidence = units.evidence(ctx);\n\
+             \x20   let _ = run.cell.admit(hold, &AdmitToken::mint(seal));\n\
+             \x20   Ended::Settled\n\
+             }}\n"
+        )
+    };
+    const DOOR: &str = concat!(
+        "        .and_then(|_| on_step(|| units.decode(t, ctx)))\n",
+        "        .and_then(|_| on_step(|| units.authenticate(t, ctx)))\n",
+        "        .and_then(|_| on_step(|| units.verify(t, ctx)))\n",
+        "        .and_then(|_| on_step(|| units.approve(t, ctx)))\n",
+        "        .and_then(|_| on_step(|| units.admit(t, ctx, &groups)));\n",
+    );
+    const ADMITTED: &str = concat!(
+        "            let outcome = under_hold(kernel, units, route, ctx).await;\n",
+        "            terminal(kernel, units, ctx, outcome)\n",
+    );
+    const METER_TAIL: &str = "    on_step(|| units.meter(t, ctx, &provisional));\n";
+    const LOOP_FILE: &str = "crates/busbar-kernel/src/teller.rs";
+
+    // GREEN: the kernel's own three shapes, read in evaluation order, satisfy the rule. The
+    // hold cell's `run.cell.admit` in `exit` is in the plant on purpose: a receiver-blind table
+    // would read it as a SECOND admit and this case would go red.
+    let mut ov = on(base);
+    ov.set(LOOP_FILE, loop_src(DOOR, ADMITTED, METER_TAIL));
+    r.push(prove_rows_green(
+        cx,
+        gate,
+        "a loop whose refused arm is written first, whose tail is a shared helper and whose Route \
+         is leg-dispatched reads as the ten steps in order",
+        &["teller-step-order"],
+        ov,
+    ));
+
+    // RED: the order is wrong — the unit is metered before the door admits it.
+    let reordered = concat!(
+        "        .and_then(|_| on_step(|| units.decode(t, ctx)))\n",
+        "        .and_then(|_| on_step(|| units.authenticate(t, ctx)))\n",
+        "        .and_then(|_| on_step(|| units.verify(t, ctx)))\n",
+        "        .and_then(|_| on_step(|| units.approve(t, ctx)))\n",
+        "        .and_then(|_| on_step(|| units.meter(t, ctx, &provisional)))\n",
+        "        .and_then(|_| on_step(|| units.admit(t, ctx, &groups)));\n",
+    );
+    let mut ov = on(base);
+    ov.set(LOOP_FILE, loop_src(reordered, ADMITTED, ""));
+    r.push(prove_rows_red(
+        cx,
+        gate,
+        "the loop meters the unit before the door admits it",
+        &["teller-step-order"],
+        ov,
+        &["'meter', 'admit'"],
+    ));
+
+    // RED: a step is simply not there. Approve falls out of the chain.
+    let missing = concat!(
+        "        .and_then(|_| on_step(|| units.decode(t, ctx)))\n",
+        "        .and_then(|_| on_step(|| units.authenticate(t, ctx)))\n",
+        "        .and_then(|_| on_step(|| units.verify(t, ctx)))\n",
+        "        .and_then(|_| on_step(|| units.admit(t, ctx, &groups)));\n",
+    );
+    let mut ov = on(base);
+    ov.set(LOOP_FILE, loop_src(missing, ADMITTED, METER_TAIL));
+    r.push(prove_rows_red(
+        cx,
+        gate,
+        "the loop never approves the unit it admits",
+        &["teller-step-order"],
+        ov,
+        &["evaluates all 10 steps in order"],
+    ));
+
+    // RED: THE REFUSAL ARM ALONE DOES NOT SATISFY THE ORDER. The admitted arm ends the unit without
+    // routing or metering it, so the only audit-and-encode the loop reaches is the refusal's — and
+    // a rule that judged "the first tail it met" would call that the order and pass.
+    let mut ov = on(base);
+    ov.set(
+        LOOP_FILE,
+        loop_src(
+            DOOR,
+            "            exit(kernel, units, outcome)\n",
+            METER_TAIL,
+        ),
+    );
+    r.push(prove_rows_red(
+        cx,
+        gate,
+        "only the refusal arm has a tail, so no path runs the whole loop",
+        &["teller-step-order"],
+        ov,
+        &["evaluates all 10 steps in order"],
+    ));
+
+    // RED: the subject itself is gone. A rule that kept the ceiling it earned while its loop was
+    // deleted would be a gate measuring nothing.
+    let mut ov = on(base);
+    ov.remove(LOOP_FILE);
+    r.push(prove_rows_red(
+        cx,
+        gate,
+        "the loop file is deleted out from under the rule",
+        &["teller-step-order"],
+        ov,
+        &["does not exist"],
+    ));
+
+    // GREEN: the SUBSTRATE's old loop file being absent is not this rule's business any more. The
+    // subject is the kernel's one loop, so the second loop's deletion leaves nothing vacuous.
+    let mut ov = on(base);
+    ov.remove("crates/busbar-substrate/src/teller/run.rs");
+    r.push(prove_rows_green(
+        cx,
+        gate,
+        "the second loop's file being absent leaves the rule with a subject",
+        &["teller-step-order"],
+        ov,
     ));
     r
 }

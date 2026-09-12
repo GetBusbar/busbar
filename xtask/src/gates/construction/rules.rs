@@ -12,6 +12,7 @@ use crate::gates::construction::model::{
     self, need_int, need_str, plain, py_dict, py_list, sorted_unique, use_line_rx, word, CRow, Cfg,
     VACUOUS,
 };
+use crate::gates::construction::step_order;
 use crate::gates::construction::tree::{fnmatch, Fnc, Line, Tree};
 use crate::ledger::Status;
 use crate::rx::{self, Regex};
@@ -856,139 +857,64 @@ pub fn token_sealed(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
 
 // ── 9. teller-step-order ─────────────────────────────────────────────────────────────────────────
 
-/// Walk `entry`'s body in source order, splicing in the bodies of the file's own helper functions
-/// where they are called, and return the ordered list of step names met.
-fn expanded_calls(
-    tree: &Tree,
-    rel: &str,
-    entry: &str,
-    steps: &[String],
-    depth: usize,
-) -> Result<Vec<String>, String> {
-    let local: BTreeMap<&str, &Fnc> = tree
-        .fns
-        .get(rel)
-        .into_iter()
-        .flat_map(|v| v.iter())
-        .filter(|f| !f.intest)
-        .map(|f| (f.name.as_str(), f))
-        .collect();
-    let step_rx = Regex::new(&format!(
-        r"\.({})\s*\(",
-        steps
-            .iter()
-            .map(|s| rx::escape(s))
-            .collect::<Vec<_>>()
-            .join("|")
-    ))?;
-    let call_rx = Regex::new(r"(?<![A-Za-z0-9_.:])([a-z_][a-z0-9_]*)\s*\(")?;
-    let mut seen: Vec<String> = Vec::new();
-
-    #[allow(clippy::too_many_arguments)]
-    fn walk(
-        tree: &Tree,
-        rel: &str,
-        local: &BTreeMap<&str, &Fnc>,
-        step_rx: &Regex,
-        call_rx: &Regex,
-        depth: usize,
-        name: &str,
-        d: usize,
-        stack: &[String],
-        seen: &mut Vec<String>,
-    ) {
-        let Some(f) = local.get(name) else { return };
-        if d > depth || stack.iter().any(|s| s == name) {
-            return;
-        }
-        let lines = &tree.files[rel];
-        for l in &lines[f.body_start - 1..f.end] {
-            let bytes = l.code_bytes();
-            // (offset, kind, name) — sorted exactly as Python sorts the tuple, so `call` precedes
-            // `step` at the same column.
-            let mut events: Vec<(usize, &'static str, String)> = step_rx
-                .find_iter(bytes)
-                .iter()
-                .filter_map(|m| m.str_of(bytes, 1).map(|n| (m.start, "step", n)))
-                .collect();
-            events.extend(call_rx.find_iter(bytes).iter().filter_map(|m| {
-                let n = m.str_of(bytes, 1)?;
-                (local.contains_key(n.as_str()) && n != name).then_some((m.start, "call", n))
-            }));
-            events.sort();
-            for (_pos, kind, nm) in events {
-                if kind == "step" {
-                    seen.push(nm);
-                } else {
-                    let mut next = stack.to_vec();
-                    next.push(name.to_string());
-                    walk(
-                        tree,
-                        rel,
-                        local,
-                        step_rx,
-                        call_rx,
-                        depth,
-                        &nm,
-                        d + 1,
-                        &next,
-                        seen,
-                    );
-                }
-            }
-        }
-    }
-
-    walk(
-        tree,
-        rel,
-        &local,
-        &step_rx,
-        &call_rx,
-        depth,
-        entry,
-        0,
-        &[],
-        &mut seen,
-    );
-    Ok(seen)
-}
-
-/// True when every step occurs and their FIRST occurrences are in order.
-fn in_order(seen: &[String], steps: &[String]) -> bool {
-    let mut firsts = Vec::new();
-    for s in steps {
-        match seen.iter().position(|x| x == s) {
-            None => return false,
-            Some(i) => firsts.push(i),
-        }
-    }
-    let mut sorted = firsts.clone();
-    sorted.sort_unstable();
-    firsts == sorted
-}
-
+/// The ten steps, in EVALUATION order, on every path a request can take through the loop.
+///
+/// The reading this rule judges is built by [`step_order`], and the reason it is not a
+/// top-to-bottom read of the loop's lines is written out at the top of that module: a `match` whose
+/// refused arm is written above its admitted arm, a tail that lives in a helper two arms call, and
+/// a Route dispatched through a leg all make source order a fact about the FILE and not about the
+/// request. Evaluation order is the order the steps actually happen in — arguments before the call
+/// they feed, one arm of a choice and never two, a helper spliced where it is called, a leg-
+/// dispatched step counted as the step it performs — so it is the only reading a gate over "the
+/// steps happen once each, in this order" can be built on.
 pub fn teller_step_order(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
     let c = cfg.rule("teller-step-order")?;
     let rel = need_str(c, "file", "teller-step-order")?;
     let steps = c.list_of("steps");
     let max_findings = need_int(c, "max_findings", "teller-step-order")?;
     let loop_function = need_str(c, "loop_function", "teller-step-order")?;
-    let opener_function = need_str(c, "opener_function", "teller-step-order")?;
-    let door_step = need_str(c, "door_step", "teller-step-order")?;
-    let title = "the Teller loop calls the nine steps once each, in the canonical order";
+    let driver_function = need_str(c, "driver_function", "teller-step-order")?;
+    let follow_depth = need_int(c, "follow_depth", "teller-step-order")?;
+    let title = "the Teller loop calls the ten steps once each, in the canonical order";
 
-    if !tree.fns.contains_key(rel) {
+    if steps.is_empty() {
+        return Err("[rules.teller-step-order] has no `steps`".to_string());
+    }
+    let performed = cfg
+        .doc
+        .table("rules.teller-step-order.performed_by")
+        .ok_or_else(|| {
+            "qa/construction.toml has no [rules.teller-step-order.performed_by] table".to_string()
+        })?;
+    let mut performed_by: Vec<Vec<String>> = Vec::new();
+    for s in &steps {
+        let calls = performed.list_of(s);
+        if calls.is_empty() {
+            return Err(format!(
+                "[rules.teller-step-order.performed_by] names no call that performs `{s}`"
+            ));
+        }
+        performed_by.push(calls);
+    }
+    let tbl = step_order::StepTable {
+        steps: steps.clone(),
+        performed_by,
+    };
+
+    // A subject that is not in the tree is VACUOUS and therefore RED: a rule that keeps the ceiling
+    // it earned while its subject is gone is a gate measuring nothing.
+    let Some(src) = step_order::Source::load(tree, rel) else {
         return Ok(vec![plain(
             "teller-step-order",
-            true,
+            false,
             title,
-            format!("{VACUOUS}{rel} does not exist yet; no loop to order"),
-            0,
+            format!("{VACUOUS}{rel} does not exist; the loop this rule reads has no subject"),
+            1,
             max_findings,
-            vec![],
+            vec![rel.to_string()],
         )]);
-    }
+    };
+
     let mut findings: Vec<String> = Vec::new();
     let loops = tree.fns[rel]
         .iter()
@@ -999,35 +925,59 @@ pub fn teller_step_order(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
             "expected exactly one `fn {loop_function}` in {rel}, found {loops}"
         ));
     }
-    let run_seen = expanded_calls(tree, rel, loop_function, &steps, 4)?;
-    if !in_order(&run_seen, &steps) {
-        findings.push(format!(
-            "`{loop_function}` (expanded through its helpers) calls the steps as {}; the canonical \
-             order is {}",
-            py_list(&run_seen),
-            py_list(&steps)
-        ));
+    let depth = follow_depth.max(0) as usize;
+    let mut admitted: Vec<String> = Vec::new();
+    for entry in [loop_function, driver_function] {
+        if !src.has_fn(entry) {
+            findings.push(format!("`{entry}` is not a function in {rel}"));
+            continue;
+        }
+        let paths = src.paths(&tbl, entry, depth);
+        if paths.is_empty() {
+            findings.push(format!("`{entry}` reaches no step at all in {rel}"));
+            continue;
+        }
+        // 2. EVERY path is in canonical order, and 3. no path repeats a step. A refusal arm is
+        //    allowed to be short; it is not allowed to meter before it admits, or to run a step
+        //    twice.
+        for p in &paths {
+            if !step_order::ascending(p) {
+                findings.push(format!(
+                    "`{entry}` has a path that evaluates {}; the canonical order is {}",
+                    py_list(&step_order::names(p, &steps)),
+                    py_list(&steps)
+                ));
+            }
+        }
+        // 1. Some path — the admitted one, the path a request that reaches the wire takes — meets
+        //    every step once each, in order.
+        match paths
+            .iter()
+            .find(|p| p.len() == steps.len() && step_order::ascending(p))
+        {
+            Some(full) => admitted = step_order::names(full, &steps),
+            None => {
+                let best = paths.iter().max_by_key(|p| p.len()).expect("non-empty");
+                findings.push(format!(
+                    "no path through `{entry}` evaluates all {} steps in order; its longest \
+                     evaluates {}, and the canonical order is {}",
+                    steps.len(),
+                    py_list(&step_order::names(best, &steps)),
+                    py_list(&steps)
+                ));
+            }
+        }
     }
-    let door_at = steps.iter().position(|s| s == door_step).ok_or_else(|| {
-        format!("[rules.teller-step-order] door_step `{door_step}` is not a step")
-    })?;
-    let door = &steps[..door_at + 1];
-    let open_seen = expanded_calls(tree, rel, opener_function, &steps, 4)?;
-    if open_seen.is_empty() {
-        findings.push(format!("`{opener_function}` calls no step at all in {rel}"));
-    } else if !in_order(&open_seen, door) || open_seen.iter().any(|s| !door.contains(s)) {
-        findings.push(format!(
-            "`{opener_function}` (expanded) calls {}; a session opener runs exactly the steps up \
-             to the door, in order: {}",
-            py_list(&open_seen),
-            py_list(door)
-        ));
-    }
+    findings = sorted_unique(&findings);
     let current = findings.len() as i64;
     let detail = format!(
         "{current} order finding(s) in {rel} (ceiling {max_findings}): {}",
         if findings.is_empty() {
-            format!("`{loop_function}` runs {}", run_seen.join(" \u{2192} "))
+            format!(
+                "`{loop_function}` evaluates {} on its admitted path, and every other path is a \
+                 shorter run of the same order",
+                admitted.join(" \u{2192} ")
+            )
         } else {
             findings.join("; ")
         }

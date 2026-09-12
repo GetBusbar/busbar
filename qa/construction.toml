@@ -272,16 +272,39 @@ max_admit_token_mint_sites = 0
 
 # ── 9. teller-step-order ─────────────────────────────────────────────────────────────────────────
 [rules.teller-step-order]
-why = """The loop is nine named steps in one fixed order, written once. The loop file is read as \
-the loop plus the helpers it calls (the opener is synchronous, the runner is async), and the steps \
-must appear once each in the canonical order; the session opener runs exactly the steps up to the \
-door. Exactly one loop function may exist."""
-file = "crates/busbar-substrate/src/teller/run.rs"
-loop_function = "run_unit"
-opener_function = "open_unit"
-door_step = "admit"
-steps = ["arrival", "decode", "authenticate", "verify", "approve", "admit", "route", "meter", "audit"]
+why = """The loop is ten named steps in one fixed order, and a request meets each of them once. \
+The order is READ AS IT IS EVALUATED, not as it is written: arguments run before the call they are \
+handed to, a `match` runs exactly one arm and never two, a helper runs where it is called, and a \
+step dispatched through a leg (`route.route_leg`) is still that step being performed. Source order \
+is a fact about where an author pressed return — the kernel's loop writes its refused arm above \
+its admitted arm and puts the audit-and-encode tail in a helper two arms share, so read by lines it \
+"calls" encode before route and admits twice, which describes nothing a request ever does. Three \
+things are judged over the set of paths the loop offers: the ADMITTED path meets all ten steps once \
+each in the canonical order; EVERY path meets its steps in that order, so a refusal arm may be \
+short but may not meter before it admits; and no path meets a step twice. Exactly one loop function \
+may exist, and the synchronous driver must reach the same one rather than carry a second copy."""
+file = "crates/busbar-kernel/src/teller.rs"
+loop_function = "run_unit_async"
+driver_function = "run_unit"
+follow_depth = 6
+steps = ["arrival", "decode", "authenticate", "verify", "approve", "admit", "route", "meter", "audit", "encode"]
 max_findings = 0
+
+# THE STEP -> PERFORMING CALL TABLE. Receiver-qualified, so the hold cell's own `cell.admit` is not
+# mistaken for the door's `units.admit`, and the leg the one await is built on is read as the Route
+# step it performs. A spelling that falls off this table makes its step unreachable on every path,
+# which is a RED — the table fails safe.
+[rules.teller-step-order.performed_by]
+arrival = ["units.arrival"]
+decode = ["units.decode"]
+authenticate = ["units.authenticate"]
+verify = ["units.verify"]
+approve = ["units.approve"]
+admit = ["units.admit"]
+route = ["units.route", "route.route_leg"]
+meter = ["units.meter"]
+audit = ["units.audit", "units.audit_refused"]
+encode = ["units.encode"]
 
 # ── 10. one-teller-loop ──────────────────────────────────────────────────────────────────────────
 [rules.one-teller-loop]
