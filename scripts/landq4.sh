@@ -625,6 +625,18 @@ lq_census() { # $1 = holder pid, $2 = tree, $3 = listing (default: live ps); rc 
   [ -n "${3:-}" ] || cwdpids="$(lq_cwd_pids "$tree")"
   while read -r pid _ppid args; do
     [ -n "$pid" ] || continue
+    # THE RUNNER'S OWN CHAIN IS KNOWN BY PID, NEVER BY ARGV (F1d). MEASURED 2026-09-11 under the
+    # supervisor: `bash landq-supervisor.sh` → `bash <engine home>/scripts/landq4.sh`, started from
+    # ~/Developer/tmp, names the tree NOWHERE — not in argv, not in cwd — so the census found
+    # nothing at all, called itself broken, and refused every batch at every loop top. The
+    # hand-started runner only ever passed because the integrator's shell wrapper happened to carry
+    # the tree in its command text. A lock this process holds is a fact about identity that no
+    # string can be; the holder and everything below it are SELF, whatever they are called.
+    if lq_descends "$pid" "$holder" "$list"; then
+      found=$((found + 1))
+      printf 'own pid %s (%s)\n' "$pid" "$(printf '%.100s' "$args")"
+      continue
+    fi
     hit=0
     case "$args" in *"$tree"*) hit=1 ;; esac
     if [ "$hit" = 0 ] && printf '%s' "$args" | grep -qE "$LQ_ENGINE_RE"; then
@@ -642,9 +654,6 @@ $pid
     fi
     [ "$hit" = 1 ] || continue
     found=$((found + 1))
-    if lq_descends "$pid" "$holder" "$list"; then
-      printf 'own pid %s (%s)\n' "$pid" "$(printf '%.100s' "$args")"; continue
-    fi
     case "
 $anc
 " in *"
@@ -3270,6 +3279,30 @@ lq_selftest() {
   _t "a process whose CWD is the tree is a stranger" 1 "$(grep -c "^stranger pid $cwdpid killed" "$root/census5.txt" || true)"
   _t "  ...though its argv names neither tree nor engine" 0 "$(ps -o args= -p "$cwdpid" 2>/dev/null | grep -c "$cwdtree" || true)"
   kill "$cwdpid" 2>/dev/null; wait "$cwdpid" 2>/dev/null
+
+  # ── THE SUPERVISED RUNNER NAMES NOTHING (F1d, measured 2026-09-11) ────────────────────────────
+  # Under scripts/landq-supervisor.sh the chain is `bash landq-supervisor.sh` → `bash
+  # <engine home>/scripts/landq4.sh` → `bash <engine home>/scripts/land.sh`, started from
+  # ~/Developer/tmp: not one of those strings contains the tree. Judged by argv the census saw
+  # NOTHING and refused every batch (`NONE:census-empty`) at every loop top. Judged by PID — the
+  # lock holder and its descendants — it sees its own chain, and the queue moves.
+  local suplist
+  suplist="$(printf '900 1 bash /Users/x/.busbar-engine/current/scripts/landq-supervisor.sh\n%s 900 bash /Users/x/.busbar-engine/current/scripts/landq4.sh\n950 %s bash /Users/x/.busbar-engine/current/scripts/land.sh --batch b\n980 950 cargo xtask gate construction --selftest\n990 1 bash /x/tree/scripts/land.sh --batch stray\n' "$$" "$$")"
+  # RED BEFORE GREEN: the text rules alone say the supervised runner is not in the tree at all.
+  _t "the supervised runner's argv names the tree nowhere" 0 \
+     "$(printf '%s' "$suplist" | grep -v 'batch stray' | grep -c "$fake" || true)"
+  LANDQ_CENSUS_DRY=1 lq_census $$ "$fake" "$suplist" >"$root/census6.txt"
+  _t "a supervised census is not broken"       0 "$(LANDQ_CENSUS_DRY=1 lq_census $$ "$fake" "$suplist" >/dev/null; echo $?)"
+  _t "  ...the runner itself is own, by pid"   1 "$(grep -c "^own pid $$ " "$root/census6.txt" || true)"
+  _t "  ...so is the land.sh it started"       1 "$(grep -c '^own pid 950 ' "$root/census6.txt" || true)"
+  _t "  ...and the gate below that"            1 "$(grep -c '^own pid 980 ' "$root/census6.txt" || true)"
+  _t "  ...none of them killed"                0 "$(grep -c "stranger pid \($$\|950\|980\) " "$root/census6.txt" || true)"
+  # AND A STRANGER IS STILL JUDGED BY THE THREE TEXT FORMS: identity by pid exempts the chain, not
+  # the host.
+  _t "a stranger in the tree is still killed"  1 "$(grep -c '^stranger pid 990 killed' "$root/census6.txt" || true)"
+  _t "  ...and the supervisor above is left alone" 0 "$(grep -c 'pid 900 ' "$root/census6.txt" || true)"
+  _t "the chain is recognised by pid before any text rule" 1 \
+     "$(grep -c 'if lq_descends "\$pid" "\$holder" "\$list"; then' "$LQ_SRC")"
 
   _t "the main flow takes the census before the sweep and the pop" 1 "$(grep -c '^  census="\$(lq_census \$\$ "\$W")"' "$0")"
   _t "  ...and refuses on an empty one"        1 "$(grep -c '^    fn="\$(lq_fault_record census-empty ' "$0")"

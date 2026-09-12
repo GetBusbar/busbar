@@ -22,6 +22,13 @@ That is the whole restart procedure. No env line, no staged copy under `land-fan
 Run it from outside the tree it lands into: started inside, it would be a stranger process in the
 runner tree, and the census would kill it (one engine in the tree).
 
+The runner recognises **its own chain by PID** — the holder of the host lock and every descendant of
+it — never by what the command line says. A supervised start (`bash landq-supervisor.sh` → `bash
+~/.busbar-engine/current/scripts/landq4.sh`, from a scratch cwd) names the tree in no argv and no
+cwd; judged by text the census saw nothing at all, called itself broken, and refused every batch
+with `NONE:census-empty` at every loop top (measured 2026-09-11). Strangers are still judged by the
+three text forms — identity by pid exempts the runner's chain, not the host.
+
 Useful arguments: `--selftest` (every decision, against a stub runner), `--once` (one start, one
 decision, then return), `--help`.
 
