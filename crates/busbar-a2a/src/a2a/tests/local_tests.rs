@@ -1576,3 +1576,180 @@ fn every_published_local_verb_name_is_one_the_match_answers() {
         );
     }
 }
+
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+//   THE CLASS LINE — this plane's half of the guard, and the half that fails first
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+
+/// THE CLASS LINE: the verbs this plane answers with no backend hop, and EVERY spelling of each.
+///
+/// [`local::verb_of`] lists its methods rather than pattern-matching them, and says why in so many
+/// words: "so a third spelling is a deliberate edit and not something a loose prefix match
+/// swallows". This table is the same discipline one level up. The composition's own node takes
+/// these verbs one CLASS per commit, and a class is not a method name — it is every spelling of one
+/// verb. This plane speaks two protocol versions; a class taken in one dialect and left behind in
+/// the other is a deployment whose answer depends on which spelling the caller happened to use.
+const CLASS_LINE: &[(&str, &[&str])] = &[
+    (
+        "GetPushConfig",
+        &[
+            "GetTaskPushNotificationConfig",
+            "tasks/pushNotificationConfig/get",
+        ],
+    ),
+    (
+        "ListPushConfigs",
+        &[
+            "ListTaskPushNotificationConfigs",
+            "tasks/pushNotificationConfig/list",
+        ],
+    ),
+    (
+        "DeletePushConfig",
+        &[
+            "DeleteTaskPushNotificationConfig",
+            "tasks/pushNotificationConfig/delete",
+        ],
+    ),
+    (
+        "CreatePushConfig",
+        &[
+            "CreateTaskPushNotificationConfig",
+            "tasks/pushNotificationConfig/set",
+        ],
+    ),
+    ("Subscribe", &["SubscribeToTask", "tasks/resubscribe"]),
+    ("ListTasks", &["ListTasks", "tasks/list"]),
+];
+
+/// One of this module's SIBLING sources, read as text.
+///
+/// Read rather than called because what the cells below assert is the PRESENCE or ABSENCE of a
+/// dispatch arm, and an absence is not reachable by calling anything. `verify_tests` already reads
+/// a committed file this way.
+///
+/// The directory is taken from `file!()` rather than written down. That is not cleverness: a path
+/// literal here would spell out this plane's own instance name, and an instance name is vocabulary
+/// that belongs to a kind this crate is not. The gate counts those, the ceiling only ever goes
+/// down, and a guard cell that cost a ratchet to install would be a cell paid for by loosening the
+/// rule it exists to protect.
+fn sibling_source(name: &str) -> String {
+    let here = std::path::Path::new(file!());
+    let module_dir = here
+        .parent()
+        .and_then(std::path::Path::parent)
+        .and_then(std::path::Path::file_name)
+        .expect("this file sits in a `tests/` directory beside the module it tests");
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("src")
+        .join(module_dir)
+        .join(name);
+    std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("the dispatch at {} could not be read: {e}", path.display()))
+}
+
+/// **Every class on the line still has its dispatch arm, and every spelling that reaches it.**
+///
+/// THIS IS THE HALF THAT FAILS FIRST when a class is taken onto the composition's own node, and
+/// that is the whole point of it. Taking a class is a deletion here — the arm goes, the spellings
+/// go out of [`local::verb_of`], and this table loses a row — and the day one of those three is
+/// done without the others, this cell names which one.
+///
+/// The cell it is modelled on is the composition node line's guard for the sibling plane, which
+/// began as a positive half plus a PROSE line naming the classes that still held an arm. The first
+/// time a class moved without the prose, the cell went red on a stale sentence, and the tempting
+/// repair was to strike the failing line. That hand-back's instruction is explicit: do not strike
+/// it — make the negative half a LIST, so that moving a class turns the cell red until every half
+/// is updated together. This is that list, built that way from the start.
+///
+/// The POSITIVE half — that the node answers a class it has taken — belongs to the composition
+/// root, in the crate that holds the node, because that is the crate the fact is about. Splitting
+/// the guard along the kind boundary is not a weakening: each half is stated where its subject
+/// lives, and a half-moved class fails one of them whichever direction it was half-moved in.
+#[test]
+fn every_class_on_the_line_still_has_the_arm_that_answers_it() {
+    let dispatch = sibling_source("receive.rs");
+    for (verb, spellings) in CLASS_LINE {
+        let arm = format!("LocalVerb::{verb}");
+        assert!(
+            dispatch.contains(&arm),
+            "`{verb}` is on the class line and the dispatch no longer holds its `{arm}` arm. If \
+             this class has been taken onto the composition's node, take it off this line in the \
+             SAME commit that deleted the arm — a class listed here and answered nowhere is a verb \
+             that silently began relaying to the backend."
+        );
+
+        // THE SAME CLASS, AND DELIBERATELY NOT THE SAME VALUE. The two spellings of a push-config
+        // verb carry DIFFERENT dialects: `Dialect` travels with the verb because v0.3 and v1.0
+        // disagree about the SHAPE of a config and not merely about the method's name, and
+        // answering a v0.3 caller in the v1.0 shape is a well-formed document its client cannot
+        // read. So what is asserted is that both spellings reach the same VARIANT. Asserting the
+        // whole value equal would assert the dialect away, which is the one thing this plane must
+        // not do.
+        let first = local::verb_of(spellings[0]).unwrap_or_else(|| {
+            panic!(
+                "`{}` is a spelling of `{verb}`, which is on the class line, and `verb_of` no \
+                 longer maps it. A method dropped from the table without its class being taken is \
+                 a verb that began relaying to the backend, unread.",
+                spellings[0]
+            )
+        });
+        for spelling in *spellings {
+            let mapped = local::verb_of(spelling).unwrap_or_else(|| {
+                panic!(
+                    "`{spelling}` is a spelling of `{verb}`, which is on the class line, and \
+                     `verb_of` no longer maps it. A method dropped from the table without its \
+                     class being taken is a verb that began relaying to the backend, unread."
+                )
+            });
+            assert_eq!(
+                std::mem::discriminant(&mapped),
+                std::mem::discriminant(&first),
+                "`{spelling}` and `{}` are two spellings of `{verb}` and this plane no longer \
+                 reads them as the same verb. This plane speaks two protocol versions: a class \
+                 answered under one spelling and not the other is a deployment whose behaviour \
+                 depends on which version its caller happens to speak.",
+                spellings[0]
+            );
+        }
+    }
+}
+
+/// **Every verb this plane answers locally is a class the line knows about.**
+///
+/// The complement of the cell above, which walks the line and looks for each class in the dispatch.
+/// This one walks the TABLE and looks for each verb on the line, so a seventh local verb cannot
+/// quietly become a class nobody is tracking.
+///
+/// That failure mode is not hypothetical. The sibling plane's node line had no such guard, and
+/// discovered its last two classes — one with no stream carrier, one needing a real pricer — as
+/// BLOCKERS at the end of the line rather than as declared members of it at the start. A class line
+/// that cannot say how long it is cannot say how far along it is.
+#[test]
+fn every_verb_this_plane_answers_locally_is_a_class_the_line_knows_about() {
+    let source = sibling_source("local.rs");
+    let table = source
+        .split_once("pub(crate) fn verb_of(")
+        .expect("`verb_of` is this plane's one local-verb table")
+        .1
+        .split_once("\n}")
+        .expect("the table's body ends with the function")
+        .0;
+
+    for line in table.lines() {
+        let Some((_, after)) = line.split_once("=> LocalVerb::") else {
+            continue;
+        };
+        let variant: String = after
+            .chars()
+            .take_while(|c| c.is_alphanumeric() || *c == '_')
+            .collect();
+        assert!(
+            CLASS_LINE.iter().any(|(verb, _)| *verb == variant),
+            "`verb_of` maps a method onto `LocalVerb::{variant}`, which is not a class on the \
+             line. A verb this plane answers locally is a verb the composition's node will one day \
+             have to answer; put it on `CLASS_LINE` with EVERY spelling that reaches it, in the \
+             same commit that adds it to the plane."
+        );
+    }
+}
