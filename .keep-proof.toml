@@ -23,8 +23,14 @@
 #              the whole point of the move is that these classes now draw a budget slot and seal a
 #              row where they previously drew and sealed nothing. `admin.ops` covers the operator
 #              surface that reads those rows back.
-#   tests    — `busbar-mcp`, which holds the 500 cells every class move is checked by (including
-#              the `document_for`/`dispatch` complement guard), and `busbar`, which holds the root's
-#              own node cells and the end-to-end battery against the real binary.
+#   tests    — `busbar`, which holds the root's own node cells, the composition's approve-step cells
+#              (including the declared ungoverned posture) and the END-TO-END battery against the
+#              real binary — that battery is the one the stale scope of this file's first version
+#              never ran, and it is the one that found the stop. `busbar-mcp`, which holds the 500
+#              cells every class move is checked by, including the `document_for`/`dispatch`
+#              complement guard and the seam's own cells, which moved into `method_tests` when the
+#              legacy crate was drained. `busbar-plane-mcp` and `busbar-mcp-codec` are named because
+#              the drain MOVED CODE ACROSS these crate boundaries: a scope that named only the two
+#              ends of a move is a scope that cannot see the move.
 families = '^(mcp|boot|neutrality|admin\.ops|billing|ledger)([|.]|$)'
-tests = ["busbar-mcp", "busbar"]
+tests = ["busbar", "busbar-mcp", "busbar-plane-mcp", "busbar-mcp-codec"]
