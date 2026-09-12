@@ -98,8 +98,20 @@ LAND_BASE_BRANCH="${LAND_BASE_BRANCH:-refs/heads/integration/oracle-phase0}"
 # 700 KB log went to `…/.claude/worktrees/busbar-landq-state/`, which no ledger reads and which the
 # next `git worktree prune` is entitled to remove. The main repository's own root is what
 # `--git-common-dir` names, whichever worktree this is.
+# ── AND IT IS A PATH IN THE ENV FILE, NOT A DERIVATION ──────────────────────────────────────────
+# MEASURED (2026-09-12): the derivation is right for the runner tree and wrong for every other tree
+# it is pointed at — the landing smoke on a scratch clone under $LAND_TMP kept its job logs beside
+# the SCRATCH, under ~/Developer/tmp/…/busbar-landq-state/, which no ledger reads and which nothing
+# preserves. The ledgers cite these logs by path months later, so there is exactly one right answer
+# and it is not a function of which tree happened to be proving. `LATCHKEY_LOG_DIR` is set in
+# scripts/landq.env.example and the supervisor exports it; the derivation stays as the last resort
+# for an operator running by hand, and it says so when it is used.
 LK_STATE_HOME="$(cd "$(dirname "$(git -C "$REPO" rev-parse --git-common-dir 2>/dev/null || echo "$REPO/.git")")/.." 2>/dev/null && pwd)"
-LK_LOGDIR="${LATCHKEY_LOG_DIR:-$LK_STATE_HOME/busbar-landq-state/gate/latchkey-logs}"
+LK_LOGDIR="${LATCHKEY_LOG_DIR:-}"
+if [ -z "$LK_LOGDIR" ]; then
+  LK_LOGDIR="$LK_STATE_HOME/busbar-landq-state/gate/latchkey-logs"
+  LK_LOGDIR_DERIVED=1
+fi
 
 # THE DELIMITERS THE VERDICT FILE TRAVELS IN. Latchkey copies no files back — a log is the entire
 # return channel — so the box prints `<batch>.result` between these two lines and this side parses
@@ -154,6 +166,112 @@ lk_base_sha() { # $1 = repo, $2 = the tip being proven (default HEAD)
   # NO INTEGRATION REF IN THIS REPOSITORY AT ALL (a scratch clone, a fresh worktree). The tip's own
   # parent is the only ancestor there is to offer, and it IS an ancestor, which is the invariant.
   git -C "$repo" rev-parse --verify --quiet "${head}~1" 2>/dev/null || return 1
+}
+
+# ── THE SCOPE FILE IS TOML, AND IT IS READ AS TOML ──────────────────────────────────────────────
+# MEASURED (M1c-b-r, 2026-09-12): `.keep-proof.toml`'s `tests` array was read with a single-line
+# `sed 's/tests[[:space:]]*=[[:space:]]*\[\(.*\)\]/\1/p'`. A MULTI-LINE array —
+#
+#     tests = [
+#       "busbar-core",
+#       "xtask",
+#     ]
+#
+# — matches nothing, so the value came back EMPTY, and empty means "the caller named no package",
+# which the runner answers with `cargo test --workspace`: NINETY-FOUR MINUTES. That is what walked
+# three of M1c-b's jobs into the 7200 s ceiling. Not the self-test batteries, not the runner size —
+# a regex that could only read one of TOML's two spellings of the same array, failing OPEN, into the
+# most expensive leg the engine has.
+#
+# SO IT IS PARSED, NOT MATCHED. `python3 -c` with `tomllib` is the first reader — it is in the
+# standard library from 3.11 and the runners and this laptop all have it, and it is the same parser
+# cargo's own ecosystem uses. The awk fallback joins the bracket span before it splits, so it reads
+# both spellings too; it exists for a machine with no python3 and it is not the path anybody is
+# expected to take.
+#
+# AND AN EMPTY ARRAY IS NOT AN ABSENT KEY. `tests = []` says "this hand-back asks for NO cargo
+# test"; an absent `tests` says "the caller did not scope it". The first must not become the
+# workspace — that is the failing-open bug again, one level up — so the reader prints the sentinel
+# `-` for a declared-empty array and the runner subtracts the leg rather than widening it.
+lk_toml_array() { # $1 = file, $2 = key; prints the members space-separated, or '-' when declared empty
+  local f="${1:-}" k="${2:-}"
+  [ -n "$f" ] && [ -f "$f" ] || return 0
+  # `LK_TOML_FORCE_AWK=1` exists for ONE caller — this file's own selftest — because a laptop and a
+  # runner both have python3, so the fallback would otherwise never be executed by anything until
+  # the day it was the only reader left.
+  if [ -z "${LK_TOML_FORCE_AWK:-}" ] && command -v python3 >/dev/null 2>&1; then
+    LK_TOML_F="$f" LK_TOML_K="$k" python3 - <<'PY' 2>/dev/null && return 0
+import os, sys
+try:
+    import tomllib
+except ImportError:
+    sys.exit(1)
+try:
+    with open(os.environ["LK_TOML_F"], "rb") as fh:
+        d = tomllib.load(fh)
+except Exception:
+    sys.exit(1)
+k = os.environ["LK_TOML_K"]
+if k not in d:
+    sys.exit(0)
+v = d[k]
+if isinstance(v, list):
+    items = [str(x).strip() for x in v if str(x).strip()]
+    print(" ".join(items) if items else "-")
+elif isinstance(v, str):
+    print(v)
+sys.exit(0)
+PY
+  fi
+  # THE FALLBACK JOINS THE BRACKET SPAN FIRST, which is the whole point: the defect was a reader
+  # that looked at one line at a time. The span is captured and the DECISION is taken in shell,
+  # because a pipeline cannot tell "the key was declared empty" from "the key was not there" —
+  # `printf '' | awk '{…}'` runs no rule at all, and that is the same failing-open shape again.
+  local span found=0
+  span="$(awk -v key="$k" '
+    BEGIN { inb = 0; buf = "" }
+    {
+      line = $0
+      sub(/[[:space:]]*#.*$/, "", line)
+      if (!inb) {
+        if (line ~ "^[[:space:]]*" key "[[:space:]]*=[[:space:]]*\\[") {
+          sub("^[[:space:]]*" key "[[:space:]]*=[[:space:]]*\\[", "", line)
+          inb = 1; buf = line
+        } else next
+      } else { buf = buf " " line }
+      if (inb && buf ~ /\]/) { sub(/\].*$/, "", buf); print "FOUND" buf; exit }
+    }
+  ' "$f" 2>/dev/null)"
+  case "$span" in FOUND*) found=1; span="${span#FOUND}" ;; *) return 0 ;; esac
+  [ "$found" = 1 ] || return 0
+  span="$(printf '%s' "$span" | tr -d "\"'" | tr ',' ' ' | tr -s '[:space:]' ' ' | sed 's/^ *//; s/ *$//')"
+  if [ -n "$span" ]; then printf '%s\n' "$span"; else printf -- '-\n'; fi
+}
+lk_toml_string() { # $1 = file, $2 = key; prints the value, or nothing
+  local f="${1:-}" k="${2:-}"
+  [ -n "$f" ] && [ -f "$f" ] || return 0
+  # `LK_TOML_FORCE_AWK=1` exists for ONE caller — this file's own selftest — because a laptop and a
+  # runner both have python3, so the fallback would otherwise never be executed by anything until
+  # the day it was the only reader left.
+  if [ -z "${LK_TOML_FORCE_AWK:-}" ] && command -v python3 >/dev/null 2>&1; then
+    LK_TOML_F="$f" LK_TOML_K="$k" python3 - <<'PY' 2>/dev/null && return 0
+import os, sys
+try:
+    import tomllib
+except ImportError:
+    sys.exit(1)
+try:
+    with open(os.environ["LK_TOML_F"], "rb") as fh:
+        d = tomllib.load(fh)
+except Exception:
+    sys.exit(1)
+v = d.get(os.environ["LK_TOML_K"])
+if isinstance(v, str):
+    print(v)
+sys.exit(0)
+PY
+  fi
+  sed -n "s/^[[:space:]]*$k[[:space:]]*=[[:space:]]*['\"]\(.*\)['\"][[:space:]]*\$/\1/p" "$f" 2>/dev/null | head -1
 }
 
 # Every hash a batch file names, so the picks travel as objects. Same shape land.sh's own reader
@@ -410,12 +528,20 @@ else
   say "build (workspace, locked)";      cargo build --workspace --locked || exit 1
   say "fmt";                            cargo fmt --all -- --check || exit 1
   say "clippy -D warnings";             RUSTFLAGS="-D warnings" cargo clippy --workspace --all-targets --locked -- -D warnings || exit 1
-  say "tests${TESTS:+ (packages: $TESTS)}"
-  if [ -n "$TESTS" ]; then
+  # ── AND AN EMPTY SCOPE SUBTRACTS THE LEG, IT DOES NOT WIDEN IT ────────────────────────────────
+  # `-` is what the scope reader prints for a DECLARED-EMPTY `tests = []`: the hand-back is saying
+  # "no cargo test", which is a scope and not a silence. It used to be indistinguishable from an
+  # absent key, and an absent key falls through to `cargo test --workspace` — 94 minutes, and the
+  # real reason three of M1c-b's jobs hit the 7200 s ceiling (see lk_toml_array's header).
+  if [ "$TESTS" = "-" ]; then
+    say "tests (the scope declares an EMPTY set: the test leg is NOT part of this verdict)"
+  elif [ -n "$TESTS" ]; then
+    say "tests (packages: $TESTS)"
     args=""; for p in $TESTS; do args="$args -p $p"; done
     # shellcheck disable=SC2086
     cargo test --locked $args || exit 1
   else
+    say "tests (the scope names no package, so the whole workspace — this is the expensive path)"
     cargo test --workspace --locked || exit 1
   fi
   say "gates: the legs a --to dev landing runs (posture: $POSTURE)"
@@ -1152,6 +1278,62 @@ if [ "${1:-}" = "--selftest" ]; then
     && say PASS "the minutes reported are the job's Started..Completed, not the wall" \
     || say FAIL "the minutes reported are this script's wall clock"
 
+  # ── THE SCOPE FILE IS TOML, AND A MULTI-LINE ARRAY IS AN ARRAY (M1c-b-r's defect) ─────────────
+  # The single-line `sed` read a multi-line `tests = [...]` as EMPTY, and empty falls through to
+  # `cargo test --workspace` — 94 minutes, which is what walked three of M1c-b's jobs into the
+  # 7200 s ceiling. Both spellings, and the two readers are asked the same questions so the fallback
+  # cannot answer differently from the parser.
+  echo "== the scope file (.keep-proof.toml) =="
+  kp="$root/kp"; mkdir -p "$kp"
+  printf 'families = %s\ntests = [\n  "busbar-core",\n  "xtask",\n]\n' "'^(boot)([|.]|\$)'" >"$kp/multi.toml"
+  printf 'tests = ["a", "b"]\nfamilies = "^x"\n' >"$kp/one.toml"
+  printf 'tests = []\n' >"$kp/empty.toml"
+  printf 'families = "^y"\n' >"$kp/absent.toml"
+  printf 'tests = [\n  "a",   # a comment inside the array\n  "b",\n]\n' >"$kp/cmt.toml"
+  _kpcase() { # $1 = label, $2 = expected tests, $3 = file, $4 = 1 to force the awk fallback
+    local got
+    if [ "${4:-0}" = 1 ]; then
+      got="$( LK_TOML_FORCE_AWK=1 lk_toml_array "$3" tests )"
+    else
+      got="$( lk_toml_array "$3" tests )"
+    fi
+    [ "$got" = "$2" ] && say PASS "$1" || say FAIL "$1 (wanted [$2], got [$got])"
+  }
+  for _fb in 0 1; do
+    _w="the parser"; [ "$_fb" = 1 ] && _w="the awk fallback"
+    _kpcase "$_w reads a MULTI-LINE tests array"        "busbar-core xtask" "$kp/multi.toml" "$_fb"
+    _kpcase "  ...and the single-line spelling too"     "a b"               "$kp/one.toml"   "$_fb"
+    _kpcase "  ...a DECLARED-EMPTY array is '-', never empty" "-"           "$kp/empty.toml" "$_fb"
+    _kpcase "  ...and an ABSENT key is empty, never '-'"     ""            "$kp/absent.toml" "$_fb"
+    _kpcase "  ...a comment inside the array is not a package" "a b"        "$kp/cmt.toml"   "$_fb"
+  done
+  [ "$(lk_toml_string "$kp/multi.toml" families)" = '^(boot)([|.]|$)' ] \
+    && say PASS "a families regex survives its own brackets and pipes" \
+    || say FAIL "the families regex was mangled ($(lk_toml_string "$kp/multi.toml" families))"
+  [ -z "$(lk_toml_string "$kp/empty.toml" families)" ] \
+    && say PASS "  ...and an absent families is nothing (the caller substitutes '.')" \
+    || say FAIL "an absent families read as something"
+  [ -z "$(lk_toml_array "$root/no-such.toml" tests)" ] \
+    && say PASS "a scope file that is not there scopes nothing" \
+    || say FAIL "a missing scope file produced a value"
+  # AND THE EMPTY SCOPE SUBTRACTS THE LEG RATHER THAN WIDENING IT — asked of the runner's own text.
+  emit_kp="$(lk_onbox_script tip br dev)"
+  case "$emit_kp" in
+    *'if [ "$TESTS" = "-" ]; then'*) say PASS "the runner subtracts the test leg on a declared-empty scope" ;;
+    *) say FAIL "the runner cannot tell a declared-empty scope from an absent one" ;;
+  esac
+  case "$emit_kp" in
+    *'cargo test --workspace --locked'*) say PASS "  ...and the workspace path is still there for an ABSENT scope" ;;
+    *) say FAIL "the workspace fallback was removed along with the bug" ;;
+  esac
+  sed -n '/^SCOPE_FAM=/,/^fi$/p' "${BASH_SOURCE[0]}" | grep -q 'lk_toml_array "$REPO/.keep-proof.toml" tests' \
+    && say PASS "the live reader is the one these cases drove" \
+    || say FAIL "the live reader is not lk_toml_array"
+  sed -n '/^SCOPE_FAM=/,/^fi$/p' "${BASH_SOURCE[0]}" | grep -q "sed -n 's/\^\[\[:space:\]\]\*tests" \
+    && say FAIL "the single-line sed reader is still the live one" \
+    || say PASS "  ...and the single-line sed reader is gone from it"
+  unset -f _kpcase
+
   # ── THE BASE IS THE MERGE-BASE, AND ALWAYS AN ANCESTOR OF THE TIP (K4d-r's defect) ────────────
   echo "== the base a proof is judged against =="
   br="$root/baserepo"; mkdir -p "$br" "$root/nohooks"
@@ -1378,6 +1560,7 @@ fi
 
 command -v "$LK_BIN" >/dev/null 2>&1 || lkdie "no \`$LK_BIN\` on PATH — install the Latchkey CLI or set LATCHKEY_BIN"
 lk_load_token || lkdie "no LATCHKEY_TOKEN in the environment and none readable in $LK_ENVFILE"
+[ -n "${LK_LOGDIR_DERIVED:-}" ] && lklog "note: LATCHKEY_LOG_DIR is unset, so the job logs go to the DERIVED path $LK_LOGDIR — set it in the env file; the ledgers cite these by path"
 
 TIP="$(git -C "$REPO" rev-parse "${BRANCH:-HEAD}")" || lkdie "no such rev: ${BRANCH:-HEAD}"
 BASE="$(lk_base_sha "$REPO" "$TIP")" || lkdie "no integration base to judge the ceilings against"
@@ -1392,10 +1575,9 @@ case "$BRANCH_NAME" in HEAD|"") BRANCH_NAME="$REF" ;; esac
 # operator should see the scope before the minutes start, not in the log afterwards.
 SCOPE_FAM='.'; SCOPE_TESTS=''
 if [ -f "$REPO/.keep-proof.toml" ]; then
-  SCOPE_FAM="$(sed -n "s/^[[:space:]]*families[[:space:]]*=[[:space:]]*['\"]\(.*\)['\"][[:space:]]*\$/\1/p" "$REPO/.keep-proof.toml" | head -1)"
+  SCOPE_FAM="$(lk_toml_string "$REPO/.keep-proof.toml" families)"
   [ -n "$SCOPE_FAM" ] || SCOPE_FAM='.'
-  SCOPE_TESTS="$(sed -n 's/^[[:space:]]*tests[[:space:]]*=[[:space:]]*\[\(.*\)\].*/\1/p' "$REPO/.keep-proof.toml" \
-                 | head -1 | tr -d '"'"'" | tr ',' ' ')"
+  SCOPE_TESTS="$(lk_toml_array "$REPO/.keep-proof.toml" tests)"
 fi
 
 PICKS=""
@@ -1421,7 +1603,11 @@ lklog "tip $(git -C "$REPO" rev-parse --short "$TIP")   base $(printf '%.9s' "$B
 lklog "mode:            $MODE${BATCH:+ (batch $BATCH, $(grep -c . "$BATCH" 2>/dev/null || echo 0) line(s))}"
 lklog "posture:         --posture $POSTURE"
 lklog "oracle families: $SCOPE_FAM"
-lklog "test packages:   ${SCOPE_TESTS:-<the whole workspace>}"
+case "$SCOPE_TESTS" in
+  '-') lklog "test packages:   <none: the scope declares tests = [], so there is no test leg>" ;;
+  '')  lklog "test packages:   <the whole workspace — the scope names none; this is the 94-minute path>" ;;
+  *)   lklog "test packages:   $SCOPE_TESTS" ;;
+esac
 lklog "runner:          $LK_SIZE, timeout ${LK_TIMEOUT}s, polled every ${LK_POLL_SECS}s"
 
 # ── STAGE THE TREE ──────────────────────────────────────────────────────────────────────────────

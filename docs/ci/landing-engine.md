@@ -251,3 +251,173 @@ that carried an engine line adopts (and the 23:54Z batch — a docs line beside 
 script fix, reproduced as a fixture — does not), that an archive without `landq4.sh` is refused
 before the swap, that a first start with no baseline adopts nothing, and that a `PIN` holds the
 engine through an engine landing while still tracking the tip.
+
+## 9. The adoption gates — no engine change reaches the home unproven
+
+> **Owner's process rule, 2026-09-11 19:28:** *test piecemeal, never let a 2-hour run find it.*
+
+The rule exists because of a measured cost. The first Latchkey sweep ran on an engine whose
+dispatcher resolved one path wrongly, and **twelve real queue lines were parked before anybody read
+a log**. The second died on a staging race that every sweep would have hit. Neither defect was in
+the new backend; both were in the code path that had assumed there was only one.
+
+So there are three gates, one per thing that can be wrong, and each of them **drives the real thing**
+— the real CLI, the real queue, a real landing — on a scratch root, in minutes rather than in a
+sweep. An engine change is not handed back until its gate is green **on the exact scripts the home
+will carry**.
+
+| gate | what it drives | what it would have caught |
+|---|---|---|
+| `landq4.sh --smoke-latchkey '<line>' …` | the pre-proof backend: one batch file per line, all dispatched at once, so the concurrency the sweep really has is the concurrency the gate has | the dispatcher's path resolution; the staging race; the tree's `land.sh` being shipped instead of the engine's |
+| `landq4.sh --smoke-latchkey --landing` | **one real landing**: picks applied, the union proven as rented jobs, a tip published, the push taken | anything that publishes |
+| `landq4.sh --smoke-bigbatch <queue file>` | the popper, against the **real queue** — 717 lines with every tag shape an integrator has ever written | a popper that loses a line |
+
+```bash
+LANDQ_ROOT=~/Developer/tmp/smoke/root LAND_SH_SRC=~/.busbar-engine/current/scripts \
+BUSBAR_PROVE_BACKEND=latchkey LATCHKEY_SIZE=large \
+  bash scripts/landq4.sh --smoke-latchkey '--prove --tests xtask <sha>'
+
+LANDQ_ROOT=~/Developer/tmp/smoke/root LAND_SH_SRC=~/.busbar-engine/current/scripts \
+BUSBAR_LAND_BACKEND=latchkey LATCHKEY_SIZE=large \
+  bash scripts/landq4.sh --smoke-latchkey --landing
+
+LANDQ_ROOT=~/Developer/tmp/smoke/root \
+  bash scripts/landq4.sh --smoke-bigbatch <the runner's land-queue.txt>
+```
+
+**None of them takes the landing lock, and that is deliberate.** The lock is host-wide
+(`$HOME/.busbar-landq4.lock`); a gate that could only run while the live runner is down is a gate
+that is run once and then never again. The pre-proof gate is placed above the lock acquisition
+entirely and lands nothing by construction (every line goes through the pre-proof leg, which
+publishes nothing). The landing gate points `LANDQ_LOCK` at its own scratch path.
+
+**The landing gate cannot reach the real remote.** It creates a **bare origin of its own** under
+`$LAND_TMP`, repoints the clone's `origin` at it for the duration, and puts the URL back whatever
+happens. It takes **its own pick**, cut in the clone off the clone's own tip — a queue line's picks
+may or may not apply at whatever tip a scratch clone is sitting on, and a gate that can fail because
+the scratch tree is a day old is a gate nobody trusts. A docs-only pick selects no cargo package and
+names no family, so the union's plan is the floor and the landing is ONE job: the cheapest shape
+that is still a whole landing.
+
+And it **compares the landed tree with the fleet path's**, byte for byte. The two backends differ in
+*where* `prove_tree` ran and in nothing else; `prove_tree` publishes nothing; and the picking code is
+literally the same file, because `land-remote.sh` copies the engine to the box exactly as
+`prove-latchkey.sh` packs it into the job. So the tip a latchkey landing publishes must be
+tree-identical to the one the fleet path publishes for the same line — checked by taking the same
+pick in a third checkout at the same base with the same `git cherry-pick -x`, and comparing tree
+oids.
+
+**A RED landing is not a failed gate.** The distinction the pre-proof gate already draws holds here:
+a verdict about a TREE is the tree's, and the gate is about the transport. A `cap`, a `harness` or a
+`box-unreachable` class is `NO VERDICT` (exit 75) — nothing was learned; any other red is reported
+as the tree's, and the gate then checks the one thing a red landing owes: **that the tree was put
+back where it started.**
+
+## 10. Big-batch mode — what the runner pops, and what a red costs
+
+> **Owner's ruling, 2026-09-11 21:0x:** every applicable line joins the union, chains as one unit,
+> no pre-proof to join, `LAND_BATCH_MAX` 40, bisect by prefix.
+
+The ruling is a trade taken deliberately, and it is worth writing down which way. Measured: **6
+landings in 24 h** against **259 lines still to land** — 43 days. Every admission rule the popper
+had was written to make ONE landing's red readable:
+
+| rule | what it bought | what it cost |
+|---|---|---|
+| one file to one line | a red names one line unambiguously | two lines that touch one file are two batches |
+| one gates-touching line per batch | the gate under test has one editor | the gates lines land one at a time |
+| a raise never beside a lower | a ceiling move is attributable | two figure lines are two batches |
+| a pre-proof green before joining | evidence before the serial proof | a line the sweep never reached cannot land |
+
+Under a **prefix bisect** the thing they bought is bought differently: a red in a chained unit is
+attributed to the first line that carries it, and every line after it comes back `HELD` — unproven,
+unparked, and requeued exactly as it was popped. So the rules are dropped and the bisect does the
+reading.
+
+**What the pop does now.** In queue order, to `LAND_BATCH_MAX` (40): take every line whose picks
+apply cleanly onto **the tip plus the batch so far**, and write the whole batch as ONE unit
+(`#UNIT 1` on every line after the first), which is what `land.sh`'s existing `land_unit_prefix`
+bisect keys on.
+
+**"Applies cleanly" is `merge-tree`, and it writes nothing.** `lq_apply_probe` runs the same
+three-way merge a cherry-pick runs — base = the pick's parent, ours = what the batch has
+accumulated, theirs = the pick — and carries the result forward as a throwaway `commit-tree` so the
+next pick merges onto it. No worktree, no index, no checkout, nothing written to the runner tree; the
+object database is append-only and concurrent-safe, which is why this shape is available at all. A
+scratch worktree and a real cherry-pick would be 3,580 files to create, metadata written into the
+shared git directory, and forty chances for a half-finished `--abort` to leave state behind.
+
+**A `#HOLD-after-<sha>` releases when the sha is landed *or* when a line already in this batch
+carries it.** The second half is what turns a fourteen-deep chain from fourteen batches into one.
+"Landed" means either of two facts and the engine now says which: the sha is an **ancestor** of
+HEAD, or a landed commit carries its `(cherry picked from commit <sha>)` **trailer**. This tree lands
+by cherry-pick, so the second is the arm that matters — and it had been searching **zero commits**
+since it was written, because every rev range the engine tried (`landq4.tip..HEAD`,
+`origin/<BR>..HEAD`) is empty on a healthy runner: both are written after every batch. It is a
+bounded **depth** over HEAD now (`LANDQ_PROVENANCE_DEPTH`, 2000), and a depth cannot be empty.
+
+**What does not apply is `NONE:no-apply`, not a red.** The line stays LIVE and unmarked and is
+offered again at the next tip — which is usually all it needed, because the line it conflicted with
+has just landed. The rows go to `landq.status.json`'s `no_apply`, because a queue of 250 with three
+lines that never join any batch looks exactly like a queue of 250. **Nothing is parked by this
+popper, ever.**
+
+**A park and a word hold are never overturned**, however big the batch is allowed to be: `#RED…`,
+`#MALFORMED`, `#HOLD-after-strike` and any non-hex remainder are the integrator's, and the popper
+does not guess at a word. A *label* beside a hold is not a dependency — 36 of the queue's held lines
+are written `#HOLD-after-<sha> #T0-B2-seam --prove …` and the second token names the slot.
+
+Measured by `--smoke-bigbatch` on the real 717-line queue at tip `3236c8a2b`: **12 landing lines in
+one batch**, 39 `NONE:no-apply` rows all still live, 12 batched + 705 kept = 717 read, the park count
+unmoved, one unit, and every batched line re-verified to apply in the order the batch names.
+
+`LAND_BIG_BATCH=0` is the way back to the admission-rule popper, in one variable. **The two are
+never mixed** — a batch is all one shape.
+
+## 11. Two more rules the live sweep asked for
+
+### A crate-test red the base also has is the base's — `NONE:base-test`
+
+The oracle has had this rule since 09-11: *an oracle red the base also has is the tip's standing
+state, not these picks'* (`lq_line_red_is_base_oracle`, recorded `NONE:base`, requeued live, never
+parked). A **crate test** is the same fact about the same tree and had no rule at all.
+
+Measured 2026-09-12: LK-ALL landed with `--tests ''` and broke
+`gates::release_order::tests::every_rule_and_the_graph_proof_are_proven_able_to_go_red` **on the
+tip**. Two live lines then went RED on a test neither of them can have touched, and both were parked.
+
+So there is a second ledger beside the oracle's, keyed by tip, with the same `#measured` row — and
+the `#measured` row is the load-bearing part, because *"no test is red at this tip"* and *"nobody
+has measured this tip"* are different sentences with different dispositions. The sweep's base replay
+now carries `--tests xtask` so it writes that ledger; a landed wholly-green batch writes it too.
+Neither learner records `#measured` for a leg that did not run — that is the `base-unmeasured`
+lesson with the sign flipped, and recording it falsely would excuse every future test red at that
+tip on no evidence.
+
+**Every** failing test must be red at the base, not merely one of them: a line that broke one test
+and happens to also trip a standing one is a line that broke a test.
+
+### A union touching the workflows or `xtask/` tests `xtask`, whatever the line said
+
+The other half of the same defect. LK-ALL's whole diff was `.github/workflows/**` and `xtask/**`,
+and:
+
+* the `gate` leg **runs** the gates — it does not test them;
+* the per-gate self-test **batteries** (`land_gate_battery_set`) prove a gate against its own
+  fixtures — they are not `cargo test -p xtask`, which is where a rule's red-before-green cells live;
+* the packages a line contributes are derived from `^crates/[^/]*`, so a union whose diff is
+  `.github/` and `xtask/` derives **no package** and runs no cargo test at all.
+
+`land_tests_floor_xtask` closes it: `.github/workflows/`, `.github/actions/` or `xtask/` in the
+union's diff and `xtask` is **added** to whatever the line named — never substituted for it, and
+applied before the plan is taken so the `tests` and `clippy` legs are in it.
+
+### And the job-log home is a path in the env file, not a derivation
+
+The scripts walked from the tree being proved to the main repository's parent. That is right for the
+runner tree and wrong for every other `LANDQ_ROOT`: the landing gate on a scratch clone kept its job
+logs beside the **scratch**, under `~/Developer/tmp/…/busbar-landq-state/`, where no ledger reads
+them and nothing preserves them. The ledgers cite these logs by path months later, so there is
+exactly one right answer and it is not a function of which tree happened to be proving.
+`LATCHKEY_LOG_DIR` is in `scripts/landq.env.example`; the derivation stays as the last resort for an
+operator running by hand, and it says so in the log when it is used.

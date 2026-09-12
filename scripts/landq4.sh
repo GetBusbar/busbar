@@ -53,6 +53,19 @@ INBOX="${LANDQ_INBOX:-$W/target/gate/land-queue.inbox.txt}"
 FRONT="${LANDQ_PREPROVE_FRONT:-$W/target/gate/preprove-front.txt}"
 # THE ORACLE ROWS THAT ARE RED AT THE TIP ITSELF, keyed by the tip, one row per cell id.
 BASERED="${LANDQ_BASE_RED:-$W/target/gate/oracle-base-red.txt}"
+# ── AND THE SAME LEDGER FOR CRATE TESTS THAT ARE RED AT THE TIP ITSELF ──────────────────────────
+# MEASURED (2026-09-12): LK-ALL landed with `--tests ''` and broke
+# `gates::release_order::tests::every_rule_and_the_graph_proof_are_proven_able_to_go_red` ON THE
+# TIP. Two live lines then went RED on that test — a test neither of them can have touched and
+# which fails identically on the bare base. The oracle has had this rule since 09-11
+# (lq_line_red_is_base_oracle: "an oracle red the base also has is the base's"); a CRATE TEST red
+# is the same fact about the same tree and had no rule at all, so it parked real work.
+#
+# THE LEDGER IS KEYED BY TIP, exactly as the oracle's is, and it carries a `#measured` row so that
+# "no test is red at this tip" and "nobody has measured this tip" are different sentences. They are
+# different dispositions: the first makes a test red the LINE's, the second leaves it a red with a
+# note that the tip is unmeasured.
+BASETEST="${LANDQ_BASE_TEST:-$W/target/gate/base-test-red.txt}"
 # THE FAULT LEDGER (see lq_fault_record). One row per CLASS — how many times in a row this class of
 # infrastructure failure has stopped a batch, and when it last did — and a ring of the last faults
 # with their text. Both are read by the status file and by the backoff.
@@ -66,7 +79,20 @@ SCRIPTS="${LAND_SH_SRC:-$W/scripts}"
 # WHERE prove-latchkey.sh KEEPS A JOB'S LOG PAST LATCHKEY'S 24 HOURS. Derived the same way that
 # script derives it — beside the MAIN repository, never inside a worktree — so --smoke-latchkey can
 # count the logs a dispatch really kept rather than trusting that it kept any.
-LK_SMOKE_LOGDIR="${LATCHKEY_LOG_DIR:-$(cd "$(dirname "$(git -C "$W" rev-parse --git-common-dir 2>/dev/null || echo "$W/.git")")/.." 2>/dev/null && pwd)/busbar-landq-state/gate/latchkey-logs}"
+# ── AND IT IS A PATH IN THE ENV FILE, NOT A DERIVATION ──────────────────────────────────────────
+# MEASURED (2026-09-12): the derivation walks from $W to the MAIN repository's parent, which is
+# right for the runner tree and wrong for every other LANDQ_ROOT — a smoke on a scratch clone under
+# $LAND_TMP kept its job logs beside the SCRATCH, under
+# ~/Developer/tmp/lk6-smoke/busbar-landq-state/…, which no ledger reads and which nothing preserves.
+# The ledgers cite these logs by path months later, so there is exactly one right answer and it is
+# not a function of which tree happened to be proving. `LATCHKEY_LOG_DIR` is in
+# scripts/landq.env.example; the derivation is kept only as the last resort for an operator running
+# by hand, and it says so in the log when it is used.
+LK_SMOKE_LOGDIR="${LATCHKEY_LOG_DIR:-}"
+if [ -z "$LK_SMOKE_LOGDIR" ]; then
+  LK_SMOKE_LOGDIR="$(cd "$(dirname "$(git -C "$W" rev-parse --git-common-dir 2>/dev/null || echo "$W/.git")")/.." 2>/dev/null && pwd)/busbar-landq-state/gate/latchkey-logs"
+  LK_LOGDIR_DERIVED=1
+fi
 # ──────────────────────────────────────────────────────────────────────────────────────────────────
 # SCRATCH GOES UNDER $LAND_TMP, AND NEVER UNDER /tmp (owner rule, 2026-09-11)
 # ──────────────────────────────────────────────────────────────────────────────────────────────────
@@ -1517,6 +1543,73 @@ lq_red_is_unmeasured_oracle() { # $1 = tip, $2 = log; 0 when the red is the ORAC
   lq_base_red_known "$tip" && return 1
   return 0
 }
+# ── WHICH CRATE TESTS FAILED, OUT OF A PROOF'S LOG ──────────────────────────────────────────────
+# Cargo says it twice and this reads both, because the two shapes carry different things: the
+# `test <path> ... FAILED` line is emitted as the run goes and survives a truncated log, and the
+# `failures:` block at the end is the authoritative list. Sorted and deduped, so the comparison
+# below is a set comparison and not an ordering one.
+#
+# THE PATH IS THE WHOLE NAME (`gates::release_order::tests::<case>`), never the last segment: two
+# crates in this workspace have a `tests::the_gate_is_green_on_the_committed_register` and a rule
+# that matched on the leaf would excuse one of them for the other's red.
+lq_test_reds() { # $1 = log; prints the failing test paths, one per line
+  local lg="${1:-}"
+  [ -n "$lg" ] && [ -f "$lg" ] || return 0
+  {
+    sed -n 's/^[[:space:]]*test \([A-Za-z0-9_:]*\) \.\.\. FAILED[[:space:]]*$/\1/p' "$lg"
+    sed -n '/^failures:$/,/^test result:/p' "$lg" \
+      | sed -n 's/^[[:space:]]\{4\}\([A-Za-z0-9_][A-Za-z0-9_:]*\)[[:space:]]*$/\1/p'
+  } 2>/dev/null | grep -E '::' | sort -u
+}
+lq_base_test_known() { # $1 = tip; 0 when somebody has measured the crate tests at this tip
+  [ -n "${1:-}" ] || return 1
+  [ -s "$BASETEST" ] || return 1
+  awk -F"$TAB" -v tp="$1" '$1 == tp && $2 == "#measured" { f = 1 } END { exit !f }' "$BASETEST"
+}
+lq_base_test_rows() { # $1 = tip; prints the test paths red at the tip itself
+  [ -n "${1:-}" ] || return 0
+  [ -s "$BASETEST" ] || return 0
+  awk -F"$TAB" -v tp="$1" '$1 == tp && $2 != "#measured" { print $2 }' "$BASETEST"
+}
+lq_base_test_learn() { # $1 = tip, $2 = the log of a proof taken AT that tip with NO picks
+  local tip="$1" log="$2" r n=0
+  [ -n "$tip" ] || return 1
+  [ -n "$log" ] && [ -f "$log" ] || return 1
+  # THE TEST LEG MUST HAVE RUN. A log with no test leg in it has measured no test, and recording
+  # `#measured` off the back of it would excuse every future test red at this tip on no evidence —
+  # which is the `base-unmeasured` defect with the sign flipped, and far worse.
+  grep -qE '^land\.sh: \[.*\] (tests|plan):|^== tests|running [0-9]+ tests?$' "$log" 2>/dev/null || return 1
+  lq_base_test_known "$tip" && return 0
+  mkdir -p "$(dirname "$BASETEST")"
+  printf '%s%s#measured\n' "$tip" "$TAB" >>"$BASETEST"
+  while IFS= read -r r; do
+    [ -n "$r" ] || continue
+    printf '%s%s%s\n' "$tip" "$TAB" "$r" >>"$BASETEST"; n=$((n + 1))
+  done <<EOF
+$(lq_test_reds "$log")
+EOF
+  lq_log "base state: $(printf '%.9s' "$tip") crate tests measured — $n test(s) red at the tip itself"
+  return 0
+}
+# ── A CRATE-TEST RED THE BASE ALSO HAS IS THE BASE'S ────────────────────────────────────────────
+# EVERY failing test must be red at the base, not merely one of them: a line that broke one test and
+# happens to also trip a standing one is a line that broke a test, and excusing the pair would let
+# a real red through under cover of the tree's own state. That is the same asymmetry
+# lq_line_red_is_base_oracle takes for the oracle's rows.
+lq_red_is_base_test() { # $1 = tip, $2 = the line's log; 0 when the test red is the base's
+  local tip="${1:-}" lg="${2:-}" t n=0 base_rows
+  [ -n "$tip" ] && [ -n "$lg" ] && [ -f "$lg" ] || return 1
+  lq_base_test_known "$tip" || return 1
+  base_rows="$TAB$(lq_base_test_rows "$tip" | tr '\n' "$TAB")"
+  while IFS= read -r t; do
+    [ -n "$t" ] || continue
+    n=$((n + 1))
+    case "$base_rows" in *"$TAB$t$TAB"*) ;; *) return 1 ;; esac
+  done <<EOF
+$(lq_test_reds "$lg")
+EOF
+  [ "$n" -gt 0 ]
+}
 lq_line_families() { # $1 = queue line; prints its --families value, unquoted
   local l="${1:-}" v
   v="$(printf '%s' "$l" | sed -n "s/.*--families[[:space:]]*'\([^']*\)'.*/\1/p" | head -1)"
@@ -1549,8 +1642,15 @@ lq_base_red_replay() { # $1 = tree, $2 = the sweep's directory, $3 = tip key, $4
   fams="$(printf '%s\n' "$4" | lq_families_union)"
   [ -n "$fams" ] || { lq_log "base state: no line in this sweep asks the oracle for a family; there is nothing to measure at $(printf '%.9s' "$key")"; return 1; }
   [ -n "$h" ] || { lq_log "base state: no box was reserved for the base replay at $(printf '%.9s' "$key") — the tip stays unmeasured, and an oracle red is NONE:base-unmeasured, never a park"; return 1; }
-  printf -- '--prove --families %s\n' "'"'"'$fams'"'"'" >"$dir/base.batch"
-  lq_log "base state: measuring the tip itself on $h — a batch with NO picks, families $fams"
+  # ── AND THE REPLAY MEASURES THE CRATE TESTS, NOT ONLY THE ORACLE ────────────────────────────
+  # `--tests xtask` is added to the base batch because a crate test that is red AT THE TIP is the
+  # same fact about the same tree as an oracle row that is (lq_red_is_base_test), and the ledger
+  # that rule reads can only be written by a proof taken at the tip with no picks — which is
+  # exactly what this replay is. It costs the replay one crate's tests; it stops a line being
+  # parked for a test it cannot have touched. `land.sh`'s own xtask floor widens this further when
+  # the tip's own diff asks for it.
+  printf -- '--prove --tests xtask --families %s\n' "'"'"'$fams'"'"'" >"$dir/base.batch"
+  lq_log "base state: measuring the tip itself on $h — a batch with NO picks, families $fams, crate tests xtask"
   (
     lq_dispatch_preprove "$tree" "$h" "$dir/base.batch" \
       >"$dir/base.log" 2>&1
@@ -1723,6 +1823,10 @@ lq_preproof_verdict() { # $1 = rc ('' = never reported), $2 = log, $3 = per-line
   if lq_base_state_red "$2"; then echo "NONE:base"; return 0; fi
   # …and the same rule for the oracle's rows, which have no sentence of their own to say it with.
   if lq_line_red_is_base_oracle "${4:-}" "$2"; then echo "NONE:base"; return 0; fi
+  # …AND THE SAME RULE FOR A CRATE TEST (see lq_red_is_base_test). Its own word, `NONE:base-test`,
+  # because the disposition is the same but the FIX is not: an oracle red at the base is a golden
+  # recording to re-cut, a test red at the base is a line already landed that has to be repaired.
+  if lq_red_is_base_test "${4:-}" "$2"; then echo "NONE:base-test"; return 0; fi
   if grep -qE 'not a fast-forward of this tree|this tree is NOT moved|tip (has )?moved' "$2" 2>/dev/null; then echo "NONE:moved"; return 0; fi
   echo RED
 }
@@ -1756,6 +1860,7 @@ lq_chain_preproof_verdict() { # $1 = rc, $2 = log, $3 = per-line outcome file, $
                elif lq_harness_gave_up "$2"; then echo "NONE:harness"
                elif lq_base_state_red "$2"; then echo "NONE:base"
                elif lq_line_red_is_base_oracle "${5:-}" "$2"; then echo "NONE:base"
+               elif lq_red_is_base_test "${5:-}" "$2"; then echo "NONE:base-test"
                else echo RED; fi; return 0 ;;
     # HELD is land.sh's word for "a line BEFORE this one in the unit was the culprit, so this line
     # was never proven": its picks went back out with its predecessor's and nothing was judged. It
@@ -2729,6 +2834,10 @@ $chained" "$basehost" || true
   # THE BASE IS LEARNED BEFORE A SINGLE LINE IS SCORED: the per-line verdicts below ask which rows
   # were already red at this tip.
   if [ -f "$dir/base.log" ]; then
+    # THE TEST LEDGER IS WRITTEN FROM THE SAME LOG, and independently of the oracle's: a replay
+    # whose oracle leg never ran can still have measured the crate tests, and vice versa. Neither
+    # learner is allowed to record `#measured` for a leg that did not run.
+    lq_base_test_learn "$key" "$dir/base.log" || true
     if lq_base_red_learn "$key" "$dir/base.log"; then
       # THE REPLAY'S RESULT, in the same three columns the comparison uses — so "what the base's
       # red on that row was" is a file beside the replay's log, not a re-read of the log.
@@ -4095,7 +4204,13 @@ lq_selftest() {
   _t "  ...and empty when no line names one"      "" "$(printf -- '--prove --tests xtask aaa1111\n' | lq_families_union)"
   _t "the sweep measures the base when nothing else has" 1 "$(grep -cF 'lq_base_red_replay "$tree" "$dir" "$key"' "$LQ_SRC")"
   _t "  ...on a box the lines did not take"       1 "$(grep -c '^lq_base_red_[r]eplay() {' "$0")"
-  _t "  ...and the batch it sends has NO hashes"  1 "$(grep -c "printf -- '--prove --famil[i]es %s.n' " "$0")"
+  # NO HASHES, AND NOW ALSO THE CRATE TESTS. The point of the case is unchanged — a base replay
+  # that carried a pick would be measuring the pick and not the tip — and it is asked of the line
+  # that writes the batch rather than of a string that happened to be in the file.
+  _t "  ...and the batch it sends has NO hashes"  "" \
+     "$(sed -n "/^lq_base_red_[r]eplay() {/,/^}/p" "$0" | sed -n "s/.*printf -- '\(--prove[^']*\)'.*/\1/p" | grep -Eo '[0-9a-f]{7,40}' || true)"
+  _t "  ...and it asks for the crate tests too"   1 \
+     "$(sed -n "/^lq_base_red_[r]eplay() {/,/^}/p" "$0" | grep -c -- "--prove --tests xtask --families")"
   _t "the landed batch teaches the new tip"       1 "$(grep -c 'lq_base_red_learn "\$newtip"' "$0")"
 
   # ── THE SWEEP PROBES THE FLEET ONCE, NOT ONCE PER LINE ───────────────────────────────────────
@@ -5713,6 +5828,93 @@ lq_selftest() {
   _t "  ...and the old sentence with it"       0 \
      "$(grep -v '^#' "$LQ_SRC" | grep -c 'no free box for the base replay' || true)"
 
+  # ──────────────────────────────────────────────────────────────────────────────────────────────
+  # A CRATE-TEST RED THE BASE ALSO HAS IS THE BASE'S (live defect, 2026-09-12)
+  # ──────────────────────────────────────────────────────────────────────────────────────────────
+  # LK-ALL landed with `--tests ''` and broke a release_order test ON THE TIP; two live lines then
+  # went RED on a test neither of them can have touched.
+  echo "landq4 selftest: a crate-test red the base also has is NONE:base-test, never a park"
+  local savedBT="$BASETEST"; BASETEST="$root/basetest.txt"; : >"$BASETEST"
+  local btip="tipT" blog="$root/bt-line.log" bbase="$root/bt-base.log"
+  local T1='gates::release_order::tests::every_rule_and_the_graph_proof_are_proven_able_to_go_red'
+  local T2='gates::audit_ledger::tests::the_gate_is_green_on_the_committed_register'
+  printf 'running 187 tests\ntest %s ... FAILED\ntest gates::ok::fine ... ok\n\nfailures:\n    %s\n\ntest result: FAILED. 186 passed; 1 failed\n' "$T1" "$T1" >"$blog"
+  printf 'land.sh: [base] plan: tests clippy\nrunning 187 tests\ntest %s ... FAILED\n\nfailures:\n    %s\n\ntest result: FAILED. 186 passed; 1 failed\n' "$T1" "$T1" >"$bbase"
+  # BOTH OF CARGO'S SHAPES, and the WHOLE path — a rule that matched the leaf would excuse one
+  # crate's `tests::the_gate_is_green_on_the_committed_register` for another's.
+  _t "the failing tests are read out of the log"     "$T1" "$(lq_test_reds "$blog" | tr '\n' ' ' | sed 's/ $//')"
+  _t "  ...from the FAILED lines and the failures block, deduped" 1 "$(lq_test_reds "$blog" | grep -c .)"
+  _t "  ...and a green log has none"                 "" "$(printf 'test a::b ... ok\ntest result: ok. 1 passed\n' >"$root/bt-g.log"; lq_test_reds "$root/bt-g.log")"
+  _t "  ...a leaf name alone is not a test path"     "" "$(printf 'failures:\n    notapath\ntest result: FAILED.\n' >"$root/bt-l.log"; lq_test_reds "$root/bt-l.log")"
+  # AN UNMEASURED TIP EXCUSES NOTHING. This is the `base-unmeasured` lesson with the sign flipped:
+  # recording `#measured` off a log whose test leg never ran would excuse every future test red.
+  _t "an unmeasured tip is not measured"             1 "$(lq_base_test_known "$btip"; echo $?)"
+  _t "  ...so the red stays the line's"              1 "$(lq_red_is_base_test "$btip" "$blog"; echo $?)"
+  _t "a log with NO test leg teaches nothing"        1 \
+     "$(printf 'land.sh: RED — clippy\n' >"$root/bt-not.log"; lq_base_test_learn "$btip" "$root/bt-not.log"; echo $?)"
+  _t "  ...and writes no #measured row"              1 "$(lq_base_test_known "$btip"; echo $?)"
+  lq_base_test_learn "$btip" "$bbase" >/dev/null
+  _t "a replay at the tip with no picks teaches it"  0 "$(lq_base_test_known "$btip"; echo $?)"
+  _t "  ...naming the test that is red at the tip"   "$T1" "$(lq_base_test_rows "$btip" | tr '\n' ' ' | sed 's/ $//')"
+  _t "  ...so the line's identical red is the base's" 0 "$(lq_red_is_base_test "$btip" "$blog"; echo $?)"
+  _t "  ...and the verdict says which base rule it is" "NONE:base-test" "$(lq_preproof_verdict 1 "$blog" "" "$btip")"
+  _t "  ...a chained rung reads it too"              "NONE:base-test" \
+     "$(printf 'RED%sDEEP\n' "$TAB" >"$root/bt-row.result"; lq_chain_preproof_verdict 1 "$blog" "$root/bt-row.result" DEEP "$btip")"
+  # EVERY failing test must be the base's, not merely one: a line that broke one test and happens
+  # to also trip a standing one is a line that broke a test.
+  printf 'running 187 tests\ntest %s ... FAILED\ntest %s ... FAILED\n\nfailures:\n    %s\n    %s\n\ntest result: FAILED. 185 passed; 2 failed\n' "$T1" "$T2" "$T1" "$T2" >"$root/bt-both.log"
+  _t "one standing red does not excuse a second"     1 "$(lq_red_is_base_test "$btip" "$root/bt-both.log"; echo $?)"
+  _t "  ...and that line is still RED"               "RED" "$(lq_preproof_verdict 1 "$root/bt-both.log" "" "$btip")"
+  # A GREEN LINE IS NOT "the base's" EITHER — the rule needs a failing test to be about.
+  _t "a log with no test red is not a base-test red" 1 "$(lq_red_is_base_test "$btip" "$root/bt-g.log"; echo $?)"
+  # AND THE BASE REPLAY ASKS FOR THE TESTS, so the ledger above can ever be written.
+  _t "the sweep's base replay measures crate tests"  1 \
+     "$(grep -c -- "printf -- '--prove --tests xtask --families %s" "$LQ_SRC")"
+  _t "  ...and the learner runs on the replay's log" 1 \
+     "$(grep -c 'lq_base_test_learn "\$key" "\$dir/base.log"' "$LQ_SRC")"
+  _t "  ...and on a landed batch's log too"          1 \
+     "$(grep -c 'lq_base_test_learn "\$newtip" "\$batch.log"' "$LQ_SRC")"
+  BASETEST="$savedBT"
+
+  # ── THE xtask TEST FLOOR (the other half of the same defect) ───────────────────────────────────
+  # LK-ALL's diff was `.github/workflows/**` and `xtask/**`, which derives NO cargo package: the
+  # union ran no test at all, and neither the `gate` leg nor the per-gate self-test batteries are
+  # `cargo test -p xtask`.
+  echo "landq4 selftest: a union touching the workflows or xtask tests xtask, whatever the line said"
+  local LSH="$SCRIPTS/land.sh"
+  if [ -f "$LSH" ]; then
+    local fsrc; fsrc="$(sed -n '/^land_tests_floor_xtask() {/,/^}/p' "$LSH")"
+    if [ -n "$fsrc" ]; then
+      eval "$fsrc"
+      _t "a workflow file owes xtask"            0 "$(land_tests_floor_xtask '.github/workflows/ci.yml'; echo $?)"
+      _t "a composite action owes it"            0 "$(land_tests_floor_xtask '.github/actions/rust/action.yml'; echo $?)"
+      _t "the xtask crate owes it"               0 "$(land_tests_floor_xtask 'xtask/src/gates/mod.rs'; echo $?)"
+      _t "a crates-only union does not"          1 "$(land_tests_floor_xtask 'crates/busbar-core/src/lib.rs'; echo $?)"
+      _t "  ...nor a docs-only one"              1 "$(land_tests_floor_xtask 'docs/ci/landing-engine.md'; echo $?)"
+      _t "  ...nor a path that merely contains it" 1 "$(land_tests_floor_xtask 'crates/x/xtask/notes.md'; echo $?)"
+      _t "one owing path in a set of many owes it" 0 \
+         "$(land_tests_floor_xtask "$(printf 'crates/a/src/lib.rs\n.github/workflows/ci.yml\ndocs/x.md\n')"; echo $?)"
+      _t "an empty diff owes nothing"            1 "$(land_tests_floor_xtask ''; echo $?)"
+      _t "the floor is ADDED to the line's tests, never substituted" 1 \
+         "$(grep -c 'tests="\${tests:+\$tests }xtask"' "$LSH")"
+      _t "  ...and it is applied BEFORE the plan is taken" 1 \
+         "$(awk '/^  if land_tests_floor_xtask "\$_tfloor"; then/{f=NR} /^  local plan; plan="\$\(land_floor_plan/{if (f && NR > f) print 1}' "$LSH" | head -1)"
+    else
+      _t "land.sh carries the xtask test floor" 1 0
+    fi
+  else
+    echo "  ok   (no land.sh beside this engine; the floor's cases are skipped)"
+  fi
+
+  # ── THE JOB-LOG HOME IS A PATH, NOT A DERIVATION ───────────────────────────────────────────────
+  # The landing smoke kept its logs beside a scratch clone, where no ledger reads them.
+  _t "the log home is LATCHKEY_LOG_DIR when it is set" "/tmp-not-used/logs" \
+     "$(LATCHKEY_LOG_DIR=/tmp-not-used/logs; echo "${LATCHKEY_LOG_DIR:-derived}")"
+  _t "  ...and a derived home says so out loud"      1 \
+     "$(grep -c 'LK_LOGDIR_DERIVED=1' "$LQ_SRC")"
+  _t "  ...and the env file carries the one path"    1 \
+     "$(grep -c '^LATCHKEY_LOG_DIR=' "$SCRIPTS/landq.env.example" 2>/dev/null || echo 0)"
+
   # ── ONE STATUS FILE (F7) ──────────────────────────────────────────────────────────────────────
   # The file is JSON or it is nothing: a tick that has to parse prose is a tick that is confidently
   # wrong twice a day. Every key the tick, the integrator and landq-ctl need is asserted present
@@ -6168,6 +6370,183 @@ EOF
   echo "smoke-bigbatch: RED"; exit 1
 fi
 
+# ──────────────────────────────────────────────────────────────────────────────────────────────────
+# --smoke-latchkey --landing: ONE REAL LANDING ON LATCHKEY, ON A CLONE WITH ITS OWN BARE ORIGIN
+# ──────────────────────────────────────────────────────────────────────────────────────────────────
+#   BUSBAR_LAND_BACKEND=latchkey LANDQ_ROOT=<a scratch clone> LAND_SH_SRC=<engine home>/scripts \
+#     scripts/landq4.sh --smoke-latchkey --landing
+#
+# THE ADOPTION GATE FOR THE LANDING BACKEND, and it is a harder gate than the pre-proof's for one
+# reason the file says twice already: A PRE-PROOF THAT IS WRONG COSTS THE QUEUE AN ORDER; A LANDING
+# THAT IS WRONG PUBLISHES. So this drives a LANDING — picks applied, a union proven as a fan of
+# rented jobs, a tip published, a push taken — and it does it where a publish cannot reach anybody:
+#
+#   * A BARE ORIGIN OF ITS OWN, created under $LAND_TMP, and the clone's `origin` is repointed at
+#     it for the duration. Nothing this smoke does can touch GetBusbar/busbar. That is not a
+#     precaution, it is the only way a landing can be driven for real at all.
+#   * ITS OWN PICK, cut in the clone off the clone's own tip. A queue line's picks may or may not
+#     apply at whatever tip the scratch clone is sitting on, and a gate that can fail because the
+#     scratch tree is a day old is a gate nobody trusts. The pick is a real commit, cherry-picked by
+#     land.sh's own code, over a real proof.
+#   * AND THE TREE IS COMPARED WITH THE FLEET PATH'S. The two backends differ in WHERE prove_tree
+#     ran and in nothing else — prove_tree publishes nothing — so the tip a latchkey landing
+#     publishes must be tree-identical to the one the fleet path publishes for the same line. It is
+#     checked rather than argued: a third checkout at the same base takes the same pick with the
+#     same `git cherry-pick -x` the box runs, and the two TREE oids are compared. Byte for byte.
+if [ "${1:-}" = "--smoke-latchkey" ] && [ "${2:-}" = "--landing" ]; then
+  sroot="$LAND_TMP/smoke-landing-$$"
+  borigin="$sroot/origin.git"; fleetdir="$sroot/fleet"
+  mkdir -p "$sroot"
+  echo "smoke: root $W"
+  echo "smoke: engine home $SCRIPTS"
+  echo "smoke: land backend $(lq_land_backend); prove backend $(lq_preprove_backend)"
+  base0="$(git -C "$W" rev-parse HEAD)" || { echo "smoke: $W has no HEAD" >&2; exit 2; }
+  echo "smoke: base $(printf '%.9s' "$base0")"
+  [ "$(lq_land_backend)" = latchkey ] || { echo "smoke: FAILED — BUSBAR_LAND_BACKEND is not latchkey; there is no landing backend to gate" >&2; exit 2; }
+  # ── THE BARE ORIGIN, AND THE CLONE'S REMOTE REPOINTED AT IT ──────────────────────────────────
+  # `receive.shallowUpdate`, the same reason prove-latchkey.sh's packer needs it: this laptop's
+  # clones are shallow and a receiver only accepts a shallow update when it is told to carry the
+  # boundary. The real remote's URL is saved and put back whatever happens.
+  realurl="$(git -C "$W" remote get-url origin 2>/dev/null || true)"
+  git init -q --bare "$borigin" || { echo "smoke: could not create the scratch origin" >&2; exit 2; }
+  git -C "$borigin" config receive.shallowUpdate true
+  git -C "$borigin" config gc.auto 0
+  git -C "$W" push -q "$borigin" "+$base0:refs/heads/$BR" || { echo "smoke: could not seed the scratch origin" >&2; exit 2; }
+  smoke_restore() {
+    [ -n "$realurl" ] && git -C "$W" remote set-url origin "$realurl" 2>/dev/null || true
+    git -C "$W" remote remove smoke-origin 2>/dev/null || true
+  }
+  trap smoke_restore EXIT INT TERM
+  git -C "$W" remote set-url origin "$borigin" || { echo "smoke: could not repoint origin" >&2; exit 2; }
+  git -C "$W" fetch -q origin "+refs/heads/$BR:refs/remotes/origin/$BR" || true
+  echo "smoke: origin repointed at $borigin (the real remote is $realurl and is not touched)"
+  # ── THE PICK ──────────────────────────────────────────────────────────────────────────────────
+  # A docs file: it selects no cargo package and names no family, so the union's plan is the floor
+  # (`plugins fmt gatefiles workspace-clippy kind-isolation gate`) and the landing is ONE job. That
+  # is the cheapest shape that is still a whole landing, which is what a gate wants.
+  smokebr="smoke-landing-$$"
+  git -C "$W" checkout -q -B "$smokebr" "$base0" || { echo "smoke: could not cut the pick's branch" >&2; exit 2; }
+  mkdir -p "$W/docs/design"
+  printf 'A file written by landq4.sh --smoke-latchkey --landing at %s.\nIt exists to be cherry-picked by a real landing on a scratch clone and nowhere else.\n' \
+    "$(date -u +%FT%TZ)" >"$W/docs/design/SMOKE-LANDING-$$.md"
+  git -C "$W" add "docs/design/SMOKE-LANDING-$$.md"
+  git -C "$W" commit -q --no-verify -m "smoke: a landing's own pick ($$)" \
+    || { echo "smoke: could not commit the pick" >&2; exit 2; }
+  pick="$(git -C "$W" rev-parse HEAD)"
+  git -C "$W" checkout -q --detach "$base0"
+  git -C "$W" checkout -q -B "$BR" "$base0"
+  echo "smoke: pick $(printf '%.9s' "$pick") (docs only: the union's plan is the floor and the landing is one job)"
+  # ── THE LANDING ───────────────────────────────────────────────────────────────────────────────
+  mkdir -p "$W/target/gate"
+  lq_stage_engine
+  for f in land.run.sh land-latchkey.run.sh prove-latchkey.run.sh; do
+    [ -f "$W/target/gate/$f" ] && echo "smoke: staged $f" || { echo "smoke: FAILED — $f was not staged"; smoke_restore; exit 1; }
+  done
+  sbatch="$sroot/batch.txt"
+  printf -- '--prove %s\n' "$pick" >"$sbatch"
+  echo "smoke: landing $(cat "$sbatch")"
+  start=$(date +%s)
+  # ── THE LOCK IS THE SCRATCH'S OWN, AND THAT IS THE POINT ──────────────────────────────────────
+  # land.sh refuses to land while landq4.sh holds the landing lock — "only the runner lands" — and
+  # the lock is HOST-WIDE ($HOME/.busbar-landq4.lock). A gate that can only be run while the live
+  # runner is down is a gate that is run once and then never again, which is how the first Latchkey
+  # sweep's defect reached twelve real lines. LANDQ_LOCK is pointed at the scratch root: this
+  # landing takes a lock of its own, over a clone with a bare origin of its own, and it cannot
+  # collide with the runner or be refused by it.
+  ( cd "$W" && env BUSBAR_LAND_BACKEND=latchkey LAND_DONE="$sroot/done.txt" \
+      LANDQ_LOCK="$sroot/landing.lock" \
+      bash "$W/target/gate/land.run.sh" --batch "$sbatch" ) >"$sroot/land.log" 2>&1
+  lrc=$?
+  end=$(date +%s)
+  echo "smoke: land.sh --batch exit $lrc in $(( end - start ))s (log $sroot/land.log)"
+  rc=0
+  grep -E '^land\.sh: \[.*\] proving on Latchkey' "$sroot/land.log" >/dev/null 2>&1 \
+    && echo "smoke: the proof went to Latchkey (BUSBAR_LAND_BACKEND=latchkey)" \
+    || { echo "smoke: FAILED — nothing in the log says the proof left for Latchkey"; rc=1; }
+  njobs="$(grep -cE '^\[land-latchkey [0-9:]+\] job cli-' "$sroot/land.log" || true)"
+  echo "smoke: latchkey jobs created: ${njobs:-0}"
+  [ "${njobs:-0}" -ge 1 ] || { echo "smoke: FAILED — no landing job was created"; rc=1; }
+  sed -n 's/^\(\[land-latchkey [0-9:]*\] \[.*\] shard .*\)$/smoke:   \1/p' "$sroot/land.log" | head -12
+  # THE VERDICT ROWS, in the engine's shape, one per landing line.
+  rows="$(grep -c . "$sbatch.result" 2>/dev/null || true)"
+  echo "smoke: verdict rows: ${rows:-0} ($(cat "$sbatch.result" 2>/dev/null | cut -c1-60 | tr '\n' ';'))"
+  [ "${rows:-0}" = 1 ] || { echo "smoke: FAILED — ${rows:-0} verdict row(s) for 1 landing line"; rc=1; }
+  newtip="$(git -C "$W" rev-parse HEAD)"
+  if [ "$lrc" = 0 ]; then
+    [ "$newtip" != "$base0" ] && echo "smoke: the tip moved $(printf '%.9s' "$base0") -> $(printf '%.9s' "$newtip")" \
+      || { echo "smoke: FAILED — a GREEN landing published nothing"; rc=1; }
+    # ── AND THE PUSH, EXACTLY AS TODAY ─────────────────────────────────────────────────────────
+    # try_push is this file's own, unchanged, and it logs its decision (the fix in 10f13e4ac): a
+    # push that failed says so instead of leaving origin behind in silence.
+    try_push
+    if [ "$(git -C "$borigin" rev-parse "refs/heads/$BR" 2>/dev/null)" = "$newtip" ]; then
+      echo "smoke: the scratch origin carries the landed tip — the push went where a push goes"
+    else
+      echo "smoke: FAILED — the scratch origin is at $(git -C "$borigin" rev-parse --short "refs/heads/$BR" 2>/dev/null), not the landed tip"
+      rc=1
+    fi
+    # ── THE FLEET PATH'S TREE, FOR THE SAME LINE ───────────────────────────────────────────────
+    # The fleet backend ships the batch to a box and the box runs THIS ENGINE — land-remote.sh
+    # copies it there, exactly as prove-latchkey.sh packs it — so the picking code is the same file,
+    # not a second implementation of it. What differs is where prove_tree ran, and prove_tree
+    # publishes nothing. So the tree the fleet path would publish is the tree `git cherry-pick -x`
+    # of the same pick onto the same base produces, which is what land.sh's own picking line does
+    # (land.sh:2335). Taken in a checkout of its own and compared by TREE OID.
+    git clone -q --shared --no-checkout "$W" "$fleetdir" 2>/dev/null \
+      && git -C "$fleetdir" checkout -q --detach "$base0" 2>/dev/null || true
+    if [ -d "$fleetdir/.git" ] || [ -f "$fleetdir/.git" ]; then
+      git -C "$fleetdir" config user.email "land@smoke"; git -C "$fleetdir" config user.name "land smoke"
+      mkdir -p "$sroot/nohooks"; git -C "$fleetdir" config core.hooksPath "$sroot/nohooks"
+      if git -C "$fleetdir" cherry-pick -x "$pick" >"$sroot/fleet-pick.log" 2>&1; then
+        ftree="$(git -C "$fleetdir" rev-parse 'HEAD^{tree}')"
+        ltree="$(git -C "$W" rev-parse "$newtip^{tree}")"
+        if [ "$ftree" = "$ltree" ]; then
+          echo "smoke: the landed tree is BYTE-IDENTICAL to the fleet path's for this line (tree $(printf '%.9s' "$ltree"))"
+        else
+          echo "smoke: FAILED — latchkey landed tree $ltree, the fleet path's is $ftree"
+          git -C "$W" diff --stat "$ftree" "$ltree" 2>/dev/null | tail -10
+          rc=1
+        fi
+      else
+        echo "smoke: FAILED — the fleet path's own cherry-pick of the same pick did not apply (see $sroot/fleet-pick.log)"
+        rc=1
+      fi
+    else
+      echo "smoke: FAILED — could not make a checkout to take the fleet path's tree in"
+      rc=1
+    fi
+  else
+    # A RED LANDING IS NOT A FAILED SMOKE unless the transport is what failed. The distinction is
+    # the one --smoke-latchkey already draws for a pre-proof: a verdict about a TREE is the tree's.
+    fcls="$(lq_batch_fault_class "$lrc" "$sroot/land.log")"
+    echo "smoke: the landing did not go green (rc $lrc, class $fcls)"
+    case "$fcls" in
+      cap|harness|box-unreachable)
+        echo "smoke: NO VERDICT — the transport did not deliver a verdict about this pick ($fcls); nothing was learned"
+        rc=75 ;;
+      *) echo "smoke: the RED is the TREE's (the rows and the log say which leg); the transport worked"
+         [ "$newtip" = "$base0" ] && echo "smoke: and the tree was put back where it started" \
+           || { echo "smoke: FAILED — a RED landing left the tree at $(printf '%.9s' "$newtip")"; rc=1; } ;;
+    esac
+  fi
+  # NOTHING OF THE PROOF IS LEFT IN THE TREE, and the branch the pick was cut on goes too.
+  [ -e "$W/.latchkey" ] && { echo "smoke: FAILED — a .latchkey was left in the tree"; rc=1; } \
+    || echo "smoke: no .latchkey anywhere in the tree"
+  dirt="$(git -C "$W" status --porcelain 2>/dev/null | grep -vc '^?? target/' || true)"
+  echo "smoke: the tree's porcelain: ${dirt:-0} line(s)"
+  logs="$(ls "$LK_SMOKE_LOGDIR" 2>/dev/null | grep -c . || true)"
+  echo "smoke: job logs kept under $LK_SMOKE_LOGDIR: ${logs:-0}"
+  git -C "$W" branch -q -D "$smokebr" 2>/dev/null || true
+  smoke_restore; trap - EXIT INT TERM
+  echo "smoke: origin put back to $realurl"
+  echo "smoke: artifacts under $sroot"
+  case "$rc" in
+    0) echo "smoke-landing: GREEN"; exit 0 ;;
+    75) echo "smoke-landing: NO VERDICT"; exit 75 ;;
+    *) echo "smoke-landing: RED"; exit 1 ;;
+  esac
+fi
+
 if [ "${1:-}" = "--smoke-latchkey" ]; then
   shift
   [ $# -gt 0 ] || { echo "landq4: --smoke-latchkey needs at least one queue line" >&2; exit 2; }
@@ -6555,6 +6934,7 @@ while true; do
   # every other tip's rows go with the pre-proof ledger's.
   [ "$newtip" = "$tip" ] || lq_base_red_prune "$newtip"
   if [ "$newtip" != "$tip" ] && [ "${nred:-0}" = 0 ] && [ "${nheld:-0}" = 0 ] && [ "${nnone:-0}" = 0 ] && [ -s "$batch.log" ]; then
+    lq_base_test_learn "$newtip" "$batch.log" || true
     lq_base_red_learn "$newtip" "$batch.log" \
       && lq_base_red_result "$newtip" "$batch.log" "$batch.base-detail" || true
   fi

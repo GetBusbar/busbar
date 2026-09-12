@@ -203,6 +203,14 @@ land_legs_only() { # $1 = the plan; prints the plan narrowed by LAND_LEGS_ONLY, 
   printf '%s\n' "$out"
 }
 
+# WHICH UNIONS OWE `cargo test -p xtask` WHATEVER THEIR LINE SAID (see the floor in prove_tree).
+# A function with its own cases, not a `grep` inline, for the reason land_floor_plan is one: it is
+# the answer to "can this union report green having run no cargo test over the gate code it
+# rewrote", and the selftest asks it directly.
+land_tests_floor_xtask() { # $1 = newline-separated touched paths; 0 when xtask is owed
+  printf '%s\n' "${1:-}" | grep -qE '^(\.github/workflows/|\.github/actions/|xtask/)'
+}
+
 land_floor_plan() {
   # $2 (the union's gate rows) is deliberately NOT read any more: it used to decide WHETHER the
   # construction gate ran, and it is now only the row filter the `gate` leg narrows with. The
@@ -1605,6 +1613,37 @@ prove_tree() {
     fi
     PROVEN=" selftest prover;"; echo "land.sh: [$label] selftest prover: green"; return 0
   fi
+
+  # ── THE xtask TEST FLOOR ──────────────────────────────────────────────────────────────────────
+  # MEASURED (2026-09-12): LK-ALL landed with `--tests ''` while its picks rewrote
+  # `.github/workflows/**` and `xtask/**`, and it broke
+  # `gates::release_order::tests::every_rule_and_the_graph_proof_are_proven_able_to_go_red` ON THE
+  # TIP. Two live lines then went red on it.
+  #
+  # NOTHING IN THE PLAN COVERED IT, and that is the gap rather than an oversight by whoever wrote
+  # the line. The `gate` leg RUNS the gates; the per-gate self-test BATTERIES (land_gate_battery_set)
+  # prove a gate against its own fixtures; neither of them is `cargo test -p xtask`, which is where
+  # a rule's red-before-green cells live. And the packages a line contributes are derived from
+  # `^crates/[^/]*` (land_batch_range), so a union whose whole diff is `.github/` and `xtask/`
+  # derives NO package and runs no test at all.
+  #
+  # So the floor is not the caller's to choose: a union touching the workflows, the composite
+  # actions or the xtask crate tests xtask, whatever the line said. It is ADDED to what the line
+  # named and never substituted for it.
+  #
+  # AND IT IS DECIDED BEFORE ANY DELEGATION. The latchkey backend below hands `$tests` to the
+  # transport and returns; a floor applied after it would be a leg the fleet path runs and the
+  # latchkey path does not — two backends proving different plans for the same line, which is the
+  # one thing the two-way landing must not be.
+  local _tfloor; _tfloor="$(git -C "$here" diff --name-only "$base" HEAD 2>/dev/null || true)"
+  if land_tests_floor_xtask "$_tfloor"; then
+    case " $tests " in
+      *" xtask "*) ;;
+      *) tests="${tests:+$tests }xtask"
+         echo "land.sh: [$label] tests: +xtask (this union touches .github/workflows, .github/actions or xtask/ — neither the gate leg nor the self-test batteries run cargo tests)" ;;
+    esac
+  fi
+
 
   # ── THE LATCHKEY BACKEND: THIS PROOF LEAVES, THE ENGINE STAYS ───────────────────────────────
   # Placed AFTER the selftest prover (which must stay a function of the tree, so the bisect's own
