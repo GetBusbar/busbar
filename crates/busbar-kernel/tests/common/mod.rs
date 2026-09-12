@@ -19,8 +19,8 @@ use std::sync::{Arc, Mutex};
 pub use busbar_caps::{
     Admission, Admit, AdmitToken, Approve, Arrival, Audit, Authenticate, Canary, Decision, Decode,
     Encode, Hold, HoldCell, Meter, MeterClassId, OriginKind, Outcome, PrincipalId, ReasonCode,
-    Refusal, Route, ScopeFacts, StepName, UnitKey, UnitToken, Usage, UsageLine, UsageToken,
-    VerifiedDestination, Verify,
+    Refusal, Route, RoutePlan, ScopeFacts, StepName, UnitKey, UnitToken, Usage, UsageLine,
+    UsageToken, VerifiedDestination, Verify,
 };
 use busbar_kernel::registry::Generation;
 use busbar_kernel::teller::{AccrualMeter, Evidence, Kernel, UnitCtx, Units};
