@@ -8,6 +8,7 @@
 #                                                  # LANDQ_IDLE_STOP_MINS (default 15). EBS persists.
 #   ./scripts/ci-fleet-power.sh --start N          # START N stopped boxes and WAIT for readiness
 #   ./scripts/ci-fleet-power.sh --ensure-slots D   # start only as many as D proof slots are short of
+#   ./scripts/ci-fleet-power.sh --free-slots       # how many proof slots are awake and free, NOW
 #   ./scripts/ci-fleet-power.sh --status           # what is running, what is stopped, what is busy
 #   ./scripts/ci-fleet-power.sh --selftest         # the whole mechanism against a stubbed `aws`
 #
@@ -268,10 +269,22 @@ power_start() { # $1 = how many
 # batch in flight and the base-only replay, because those are proofs on boxes too. The free slots on
 # the boxes that are ALREADY AWAKE are subtracted first; only the shortfall is started, rounded up
 # to whole boxes at BUSBAR_PROVE_PER_BOX slots each, and never past CI_RUNNER_RUNNING_MAX.
+# A FRESH ROUND, ALWAYS, AND NEVER A CACHED TABLE. This asks the boxes themselves, over ssh, every
+# time it is called. It is what a caller that is about to DISPATCH must read: the sweep's cached
+# fleet-table (ci-remote-lib.sh's fleet_table_open) is by construction the probe from before any box
+# was started, and a dispatch that trusts it on the retry sees the fleet it had at the fault.
+#
+# THE PROTOCOL IS INSTALLED FIRST. `busy` is a script on the box, and a box that is awake but has
+# never been through a stop/start pass does not have it — `power_ask busy` then prints nothing and
+# the box is counted as having no free slot at all. That is a fleet that is up and reports zero,
+# which is the exact shape of the fault this is read to prevent, so the install is part of the ask
+# (power_ready does the same thing for the same reason). A box that will not take the install is
+# unreachable or unprepared, and is correctly not free.
 power_free_slots() {
   local running h free=0 n
   running="$(ids_in_state 'running')"
   for h in $running; do
+    power_install "$h" || continue                      # unreachable or unprepared: not free
     n="$(power_ask "$h" busy)"
     case "$n" in ''|*[!0-9]*) continue ;; esac          # unreachable or unprepared: not free
     [ "$n" -lt "$PROVE_PER_BOX" ] && free=$(( free + PROVE_PER_BOX - n ))
@@ -531,6 +544,36 @@ SSHSTUB
   _t "  ...and at the ceiling it starts nothing" "" "$(cat "$root/calls")"
   RUNNING_MAX=10
 
+  # ── --free-slots: THE NUMBER A DISPATCH CAN CHECK ──────────────────────────────────────────────
+  # `--ensure-slots` reports success for "starting nothing" and for "no stopped box to start" alike,
+  # so a caller that dispatches on its exit status dispatches into a fleet that is entirely asleep —
+  # measured as five NONE:probe-empty faults in two hours on 09-12. This is the ask that can be read.
+  echo "ci-fleet-power selftest: --free-slots answers with a number a dispatch can check"
+  PROVE_PER_BOX=2
+  printf 'i-a running\ni-b stopped\n' >"$root/state"; box clear >/dev/null
+  rm -f "$BH/busbar-prove/.proof.pid"
+  _t "one idle box at 2 slots each is 2 free"    2 "$(power_free_slots)"
+  echo $$ >"$BH/busbar-prove/.proof.pid"
+  _t "  ...and a box holding one proof is 1 free" 1 "$(power_free_slots)"
+  rm -f "$BH/busbar-prove/.proof.pid"
+  # A FLEET THAT IS ALL STOPPED IS ZERO, AND SAYS SO. This is the state every probe-empty fault was
+  # taken in; `--ensure-slots` said nothing about it and the landing went out anyway.
+  printf 'i-a stopped\ni-b stopped\n' >"$root/state"
+  _t "  ...and a fleet that is all asleep is 0"  0 "$(power_free_slots)"
+  _t "  ...which ensure-slots cannot report: it exits 0 for it" 0 \
+     "$(power_ensure_slots 1 >/dev/null 2>&1; echo $?)"
+  # THE FLAG IS WIRED, and it prints the number and nothing else (plog goes to stderr).
+  _t "the flag reaches it"                       0 \
+     "$(printf 'i-a stopped\n' >"$root/state"; bash "$HERE/ci-fleet-power.sh" --free-slots 2>/dev/null | tail -n1)"
+  _t "  ...and it is not an unknown argument"    0 \
+     "$(bash "$HERE/ci-fleet-power.sh" --free-slots >/dev/null 2>&1; echo $?)"
+  # THE PROTOCOL IS INSTALLED BEFORE THE ASK: a box that is awake but has never been through a
+  # stop/start pass has no ~/.busbar-power.sh, and counting it as zero free is a fleet that is up
+  # and reports nothing — the exact shape of the fault this number exists to prevent.
+  _t "the ask installs the protocol first"       1 \
+     "$(sed -n '/^power_free_slots() {/,/^}/p' "$HERE/ci-fleet-power.sh" | grep -c 'power_install "\$h" || continue')"
+  printf 'i-a running\ni-b stopped\ni-c stopped\ni-d stopped\n' >"$root/state"; box clear >/dev/null
+
   echo "ci-fleet-power selftest: the stopper, the running floor, and the claim it keeps"
   printf 'i-a running\ni-b running\ni-c running\n' >"$root/state"
   : >"$root/calls"; box clear >/dev/null
@@ -585,7 +628,12 @@ case "${1:---status}" in
   --stop-idle)    power_stop_idle; exit $? ;;
   --start)        power_start "${2:-1}"; exit $? ;;
   --ensure-slots) power_ensure_slots "${2:-0}"; exit $? ;;
+  # --free-slots: HOW MANY PROOF SLOTS ARE AWAKE AND FREE, RIGHT NOW, as one number on stdout.
+  # `--ensure-slots` cannot answer this: it reports success for "starting nothing" and for "no
+  # stopped box to start (the fleet is all awake or all gone)" alike, so a caller that dispatches on
+  # its exit status dispatches into a fleet that is entirely asleep. A number can be checked.
+  --free-slots)   power_free_slots; exit 0 ;;
   --status)       power_status; exit 0 ;;
   -h|--help)      sed -n '2,30p' "$0"; exit 0 ;;
-  *)              pdie "unknown argument '$1' (expected --stop-idle, --start N, --ensure-slots D, --status, --print-box or --selftest)" ;;
+  *)              pdie "unknown argument '$1' (expected --stop-idle, --start N, --ensure-slots D, --free-slots, --status, --print-box or --selftest)" ;;
 esac

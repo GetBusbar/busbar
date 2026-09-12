@@ -2032,6 +2032,70 @@ lq_fault_wake() { # $1 = slots the next attempt needs (default 1), $2 = tree (de
   return 0
 }
 
+# ──────────────────────────────────────────────────────────────────────────────────────────────────
+# THE POP'S PRECONDITION — A LANDING THAT NEEDS A BOX HAS ONE BEFORE THE QUEUE IS TOUCHED
+# ──────────────────────────────────────────────────────────────────────────────────────────────────
+# MEASURED 2026-09-12: five NONE:probe-empty faults between 07:49 and 14:31, no landing at all in
+# those seven hours, and in the end a runner restart ordered by hand. Every one of the five is the
+# same shape, and it is not the allocator's arithmetic — `power_ensure_slots` is correct.
+#
+# (1) NOTHING ASKED. `--ensure-slots` is asked for in exactly one place, the pre-proof sweep, and
+#     the sweep is SKIPPED on precisely the loops that still land: a base fix at the head pops alone
+#     with no sweep, and a queue with no live line has no sweep either. On those loops the batch is
+#     popped onto whatever the fleet happens to be — and the fleet idle-stops itself after
+#     LANDQ_IDLE_STOP_MINS, so after an hour of Latchkey pre-proofs it is asleep by construction.
+#     land-remote.sh then probes it and dies on "no prepared, reachable on-demand box among the N".
+#
+# (2) WAKING AFTER THE FAULT DOES NOT CLOSE IT. lq_fault_wake runs on the requeue, and a box is
+#     60–90 s from proving while the first backoff is 60 s: the retry probes a box that is still
+#     booting and scores the same class again. Three in a row, then five.
+#
+# (3) AND THE RETRY MUST RE-PROBE, NOT RE-READ. The sweep caches one probe round for its whole
+#     dispatch (ci-remote-lib.sh's fleet_table_open); that table is by construction the fleet from
+#     BEFORE any box was started. `--free-slots` is a fresh round over ssh to the boxes themselves,
+#     asked here on every loop, so the retry reads the fleet as it is and never as it was.
+#
+# THE FIX IS A PRECONDITION, NOT A RETRY: a batch is never popped onto a fleet that cannot take it.
+# If no awake box has a free slot, one is started and WAITED for (power_start polls readiness for
+# CI_RUNNER_START_WAIT_SECS), and then the fleet is asked AGAIN. The second ask is the whole point —
+# `--ensure-slots` exits 0 for "starting nothing" and for "no stopped box to start (the fleet is all
+# awake or all gone)" alike, and a landing dispatched on that exit status is a landing dispatched
+# into nothing. A number can be checked; an exit status of that shape cannot.
+#
+# A FLEET THAT WILL NOT WAKE IS NOT A FAULT OF THE QUEUE'S. Nothing is popped, no line moves, no
+# class is scored against anybody's picks, and the loop is taken again on the class's backoff. The
+# queue is left exactly as it was read — which is the difference between this and probe-empty, where
+# every fault popped lines, failed them, and put them back.
+#
+# ON THE LATCHKEY LANDING BACKEND THIS IS A NO-OP, by design: that backend needs no box at all, and
+# asking the fleet for one would be the engine paying for the resource it exists to stop using.
+lq_landing_needs_box() { [ "$(lq_land_backend)" = fleet ]; }
+lq_landing_free_slots() { # $1 = power script; prints the live count, 0 when it cannot be read
+  local n; n="$(bash "${1}" --free-slots 2>/dev/null | tail -n1)"
+  case "$n" in ''|*[!0-9]*) n=0 ;; esac
+  printf '%s\n' "$n"
+}
+lq_landing_slot_ready() { # $1 = tree (default $W); 0 = pop, 1 = pop NOTHING this loop
+  local tree="${1:-$W}" pw free
+  lq_landing_needs_box || return 0
+  pw="$tree/target/gate/ci-fleet-power.sh"
+  # BEST-EFFORT, EXACTLY AS lq_fault_wake IS. A home with no power script staged, or no credentials,
+  # behaves precisely as this engine did before: the pop is taken and the transport says what it
+  # finds. A precondition that HALTED a queue because a script was missing would be a worse bug than
+  # the one it closes.
+  [ -x "$pw" ] || { lq_log "fleet: no staged power script at $pw; the pop is taken as it always was"; return 0; }
+  free="$(lq_landing_free_slots "$pw")"
+  [ "$free" -gt 0 ] && { lq_fault_clear landing-asleep; return 0; }
+  lq_log "fleet: the landing backend is fleet and NO awake box has a free proof slot — starting one and WAITING for it before anything is popped"
+  bash "$pw" --ensure-slots 1 >>"$L" 2>&1 \
+    || lq_log "fleet: --ensure-slots 1 did not report success; the second ask is what decides this"
+  free="$(lq_landing_free_slots "$pw")"
+  [ "$free" -gt 0 ] || return 1
+  lq_log "fleet: $free proof slot(s) awake and free after the start; the pop goes ahead"
+  lq_fault_clear landing-asleep
+  return 0
+}
+
 # A PROCESS'S START TIME, as a string that is stable for the life of that process and different for
 # the next process to wear its pid. `ps -o lstart=` says it on both BSD and procps.
 lq_pid_start() { # $1 = pid; prints the start time, or nothing
@@ -6004,7 +6068,9 @@ sys.exit(1 if missing else 0)' "$STATUSJ"; echo $?)"
           -lt "$(grep -n '^  lq_status_json "\$batch" "\$bstart"$' "$LQ_SRC" | head -n1 | cut -d: -f1)" ] && echo 1 || echo 0)"
   _t "  ...counting the loop as it goes"       1 "$(grep -c '^  LQ_LOOP=\$((LQ_LOOP + 1))$' "$LQ_SRC")"
   _t "  ...when the batch goes to a box"       1 "$(grep -c '^  lq_status_json "\$batch" "\$bstart"$' "$LQ_SRC")"
-  _t "  ...and on every fault"                 3 "$(grep -c 'lq_status_json; sleep\|^    lq_status_json$' "$LQ_SRC")"
+  # FOUR FAULT SITES NOW: the census, the moved tree, the no-result requeue, and the pop's
+  # precondition — which writes it too, because a loop that refuses to pop still changed the ledger.
+  _t "  ...and on every fault"                 4 "$(grep -c 'lq_status_json; sleep\|^    lq_status_json$' "$LQ_SRC")"
   _t "the sweep says where it is"              1 "$(grep -cF '>"$SWEEPPTR"' "$LQ_SRC")"
   _t "  ...and takes it back when it is over"  1 "$(grep -c '^  rm -f "\$SWEEPPTR"$' "$LQ_SRC")"
   _t "  ...each slot's start is written down"  2 "$(grep -cF 'date +%s >"$dir/line-$i.start"' "$LQ_SRC")"
@@ -6191,7 +6257,9 @@ sys.exit(1 if missing else 0)' "$STATUSJ"; echo $?)"
   # THE SITE ITSELF: the batch-outcome mismatch no longer exits, and HALT is left to the ONE tree
   # fact. Counted on the implementation with the selftest cut out of it.
   _t "no-result no longer HALTs"               0 "$(grep -c 'HALT: land.sh --batch left' "$LQ_SRC")"
-  _t "  ...it requeues, backs off and continues" 1 \
+  # TWO SITES BACK OFF AND CONTINUE NOW, and they are opposites: the no-result fault, which popped
+  # lines and put them back, and the pop's precondition, which never popped at all.
+  _t "  ...it requeues, backs off and continues" 2 \
      "$(grep -c 'sleep "\$fwait"; continue' "$LQ_SRC")"
   _t "  ...naming the class in the ledger"     1 "$(grep -c 'lq_fault_verdict "\$fcls") no-result' "$LQ_SRC")"
   _t "  ...and the requeue still happens first" 1 \
@@ -6215,6 +6283,98 @@ sys.exit(1 if missing else 0)' "$STATUSJ"; echo $?)"
   _t "the host lock records the holder's start time" 1 \
      "$(grep -cF 'lq_pid_start "$me")" >"$LOCK"' "$LQ_SRC")"
   _t "  ...and the queue lock does too"        1 "$(grep -c 'lq_pid_start "\$\$" >"\$QLOCK/start"' "$LQ_SRC")"
+
+  # ── THE POP'S PRECONDITION (see lq_landing_slot_ready) ────────────────────────────────────────
+  # The five NONE:probe-empty faults of 09-12, proven closed at the decision rather than at the log
+  # line: a batch is not popped onto a fleet that cannot take it, and the fleet is asked AGAIN after
+  # the start because `--ensure-slots` exits 0 for "no stopped box to start" as well.
+  echo "landq4 selftest: the landing's box is a PRECONDITION on the pop, never a fault after it"
+  local savedLB="$LANDQ_LAND_BACKEND" savedL7="${L:-}" savedLG7="${LANDQ_LOG:-}"
+  local ptree="$root/ptree"; mkdir -p "$ptree/target/gate"
+  L="$root/pw.out"; LANDQ_LOG="$L"; : >"$L"
+  local pw="$ptree/target/gate/ci-fleet-power.sh"
+  # THE ALLOCATOR, STUBBED AS A QUEUE OF ANSWERS. One line of pw.free is consumed per `--free-slots`,
+  # which is how "asleep, then awake after the start" is expressed as data rather than as a sleep.
+  cat >"$pw" <<PWSTUB
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >>"$root/pw.calls"
+case "\$1" in
+  --free-slots)
+    head -n1 "$root/pw.free" 2>/dev/null || printf '0\n'
+    tail -n +2 "$root/pw.free" >"$root/pw.free.tmp" 2>/dev/null && mv -f "$root/pw.free.tmp" "$root/pw.free" ;;
+esac
+exit 0
+PWSTUB
+  chmod +x "$pw"
+  _pwreset() { printf '%s\n' "$@" >"$root/pw.free"; : >"$root/pw.calls"; }
+
+  # THE LATCHKEY LANDING BACKEND NEEDS NO BOX, and must not be made to pay for one.
+  LANDQ_LAND_BACKEND=latchkey; _pwreset 0 0
+  _t "on the latchkey backend it is a no-op"   0 "$(lq_landing_slot_ready "$ptree" >/dev/null 2>&1; echo $?)"
+  _t "  ...and it asked the fleet nothing"     0 "$(grep -c . "$root/pw.calls" || true)"
+
+  LANDQ_LAND_BACKEND=fleet
+  # A BOX IS ALREADY AWAKE: the pop goes ahead, and NOTHING is started. An engine that woke a box on
+  # every loop would be an engine that never lets the fleet idle-stop.
+  _pwreset 2
+  _t "a free slot lets the pop through"        0 "$(lq_landing_slot_ready "$ptree" >/dev/null 2>&1; echo $?)"
+  _t "  ...having asked once and started nothing" "--free-slots" "$(cat "$root/pw.calls")"
+
+  # THE FLEET IS ASLEEP AND WAKES: one box is started, WAITED for, and the fleet is asked AGAIN.
+  _pwreset 0 2
+  _t "an asleep fleet that wakes lets the pop through" 0 \
+     "$(lq_landing_slot_ready "$ptree" >/dev/null 2>&1; echo $?)"
+  _t "  ...it started a box between the two asks" "--free-slots|--ensure-slots 1|--free-slots" \
+     "$(tr '\n' '|' <"$root/pw.calls" | sed 's/|$//')"
+
+  # AND THE FLEET THAT WILL NOT WAKE. `--ensure-slots` exited 0 here, exactly as it does for "no
+  # stopped box to start"; the SECOND ask is what refuses the pop.
+  _pwreset 0 0; : >"$L"
+  _t "a fleet that will not wake refuses the pop" 1 \
+     "$(lq_landing_slot_ready "$ptree" >/dev/null 2>&1; echo $?)"
+  _t "  ...and it asked twice before deciding"  2 "$(grep -c -- '--free-slots' "$root/pw.calls" || true)"
+  _t "  ...and said so in the log"              1 \
+     "$(grep -c 'NO awake box has a free proof slot' "$L" || true)"
+
+  # A HOME WITH NO POWER SCRIPT BEHAVES EXACTLY AS THIS ENGINE DID BEFORE. A precondition that stopped
+  # a queue because a script was missing would be worse than the fault it closes.
+  _pwreset 0 0
+  _t "no staged power script is never a refusal" 0 \
+     "$(lq_landing_slot_ready "$root/nosuchtree" >/dev/null 2>&1; echo $?)"
+
+  # THE CLASS IS ITS OWN, AND IT IS A NONE — never a red, never a park.
+  _t "the refusal is its own fault class"      "NONE:landing-asleep" "$(lq_fault_verdict landing-asleep)"
+  _t "  ...and a slot that comes free clears it" 0 \
+     "$(lq_fault_record landing-asleep x >/dev/null; _pwreset 2
+        lq_landing_slot_ready "$ptree" >/dev/null 2>&1; lq_fault_count landing-asleep)"
+  LANDQ_LAND_BACKEND="$savedLB"; L="$savedL7"; LANDQ_LOG="$savedLG7"
+
+  # ── THE SITE: BEFORE THE POP, BEFORE THE LOCK, AND POPPING NOTHING ────────────────────────────
+  _t "the engine has the precondition at its pop" 1 \
+     "$(grep -c '^  if ! lq_landing_slot_ready "\$W"; then' "$LQ_SRC")"
+  # BEFORE THE QUEUE LOCK: waking a box takes up to CI_RUNNER_START_WAIT_SECS, and a lock held for
+  # that long blocks every landq-ctl command for the whole of an outage the engine is handling.
+  _t "  ...and it runs BEFORE the queue lock is taken" 1 \
+     "$( [ "$(grep -n 'if ! lq_landing_slot_ready "\$W"; then' "$LQ_SRC" | head -n1 | cut -d: -f1)" \
+          -lt "$(grep -n '^  if ! lq_qlock; then' "$LQ_SRC" | head -n1 | cut -d: -f1)" ] && echo 1 || echo 0)"
+  _t "  ...and before any popper is reached"   1 \
+     "$( [ "$(grep -n 'if ! lq_landing_slot_ready "\$W"; then' "$LQ_SRC" | head -n1 | cut -d: -f1)" \
+          -lt "$(grep -n 'n="\$(lq_pop ' "$LQ_SRC" | head -n1 | cut -d: -f1)" ] && echo 1 || echo 0)"
+  # NOTHING IS POPPED AND NOTHING IS REQUEUED: this branch touches neither $Q nor $batch. That is the
+  # whole difference from probe-empty, where every one of the five faults popped lines and put them
+  # back — five queue rewrites that taught nobody anything about anybody's picks.
+  _t "  ...and the refusal writes a no-pop row" 1 \
+     "$(grep -c 'lq_fault_verdict landing-asleep) no-pop' "$LQ_SRC")"
+  _t "  ...and requeues nothing at all"        0 \
+     "$(sed -n '/^  if ! lq_landing_slot_ready "\$W"; then/,/^  fi$/p' "$LQ_SRC" | grep -c 'batch.requeue\|>"\$Q' || true)"
+  # THE FRESH ROUND. `--free-slots` probes the boxes over ssh every time it is asked; the sweep's
+  # cached fleet-table is the probe from before any box was started, and the retry must not read it.
+  _t "the precondition asks --free-slots, not a cached table" 1 \
+     "$(sed -n '/^lq_landing_free_slots() {/,/^}/p' "$LQ_SRC" | grep -c -- 'bash "\${1}" --free-slots')"
+  _t "  ...and reads no fleet-table at all"    0 \
+     "$(sed -n '/^lq_landing_slot_ready() {/,/^}/p' "$LQ_SRC" | grep -c 'FLEET_TABLE\|fleet_table_' || true)"
+  _t "  ...and asks it TWICE, around the start" 2 \
+     "$(sed -n '/^lq_landing_slot_ready() {/,/^}/p' "$LQ_SRC" | grep -c 'lq_landing_free_slots "\$pw"')"
   FAULTS="$savedF"; FAULTRING="$savedR"
 
   # ── THE EXIT-CODE CONTRACT AND THE BOUNDARY SIGNAL (F1) ───────────────────────────────────────
@@ -6698,6 +6858,21 @@ while true; do
     lq_status_json; sleep "$(lq_backoff_secs "$fn")"; continue
   fi
   lq_fault_clear census-empty; lq_fault_clear tree-moved
+  # ── THE POP'S PRECONDITION (see lq_landing_slot_ready) ──────────────────────────────────────────
+  # BEFORE THE QUEUE LOCK, deliberately. Waking a box takes up to CI_RUNNER_START_WAIT_SECS, and the
+  # queue lock is the one thing landq-ctl needs to edit the queue at all: holding it for five minutes
+  # of EC2 boot would block every operator command for the whole of an outage the engine is already
+  # handling. Nothing here reads or writes the queue, so there is nothing to hold it for.
+  if ! lq_landing_slot_ready "$W"; then
+    fn="$(lq_fault_record landing-asleep "the landing backend is fleet and no box could be woken with a free proof slot")"
+    fwait="$(lq_backoff_secs "$fn")"
+    lq_log "=== $(lq_fault_verdict landing-asleep): NOTHING was popped — the queue is untouched, no line moved, and no picks were measured"
+    lq_log "=== backoff: this is fault $fn of class landing-asleep in a row; the pop is tried again in $((fwait / 60)) min"
+    echo "$(lq_fault_verdict landing-asleep) no-pop $(date +%FT%T)" >>"$D"
+    try_push
+    lq_status_json
+    sleep "$fwait"; continue
+  fi
   batch="$W/target/gate/landq4-batch.$$.txt"; keep="$W/target/gate/landq4-keep.$$.txt"
   # ONE WRITER OF THE QUEUE (see lq_qlock). Taken here and dropped the moment the rewrite is taken
   # or refused; the pre-prove sweep below runs INSIDE it only because the pop that follows must read
