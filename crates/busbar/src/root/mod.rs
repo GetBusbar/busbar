@@ -70,12 +70,17 @@ pub mod harness;
 pub mod kernel;
 pub mod ledger_identity;
 pub mod migration;
+/// The kernel-held record leg, and the reach onto the published store protocol that lands it: the
+/// composition root's half of a plane's durable state.
+/// **THE MCP NODE** — the long-lived half `units_mcp`'s bindings are borrowed from, and the drive
+/// that walks one class of that plane through the loop. Under the same feature as the bindings it
+/// serves: with `root-mcp` off there is no node and the plane is the one it was.
+#[cfg(feature = "root-mcp")]
+pub mod node_mcp;
 pub mod policy;
 /// The composition root's one write into both protocol seams, moved verbatim out of
 /// `busbar-core::proto::registry`: the boot installers belong to the root that calls them.
 pub mod proto_install;
-/// The kernel-held record leg, and the reach onto the published store protocol that lands it: the
-/// composition root's half of a plane's durable state.
 pub mod records;
 pub mod registry;
 pub mod store;

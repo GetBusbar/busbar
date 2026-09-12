@@ -793,6 +793,25 @@ pub fn approve(
     Ok(resources)
 }
 
+/// **THE POLICY THIS PLANE'S CLASSES ARE JUDGED UNDER**, folded onto whatever base the boot holds.
+///
+/// Every class, and every class is the point: the scope unit reads silence as a DENIAL, so a policy
+/// short by an entry is a plane whose remaining classes answer a refusal for the life of the
+/// process. The table it folds is [`required_scopes`] — this plane's own declaration — under the one
+/// claim key the plane keys its policy by, so a class added to the plane is a class this fold picks
+/// up rather than one somebody has to remember to add here.
+///
+/// Takes and returns the base for the reason the a2a fold does: a node mounts several planes onto
+/// ONE policy, and a fold that built its own would be a second policy the approve step never reads.
+#[must_use]
+pub fn scope_policy(base: crate::root::policy::ScopePolicy) -> crate::root::policy::ScopePolicy {
+    required_scopes()
+        .into_iter()
+        .fold(base, |policy, (op, scope)| {
+            policy.declaring(claim_key(), op, scope)
+        })
+}
+
 /// The scope every operation class of this plane requires, as the root declares it to the policy.
 ///
 /// A read is read-only and everything that reaches a server or writes a record is full. The table is
