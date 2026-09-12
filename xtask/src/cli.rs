@@ -18,6 +18,7 @@ usage:
   cargo xtask gate --list
   cargo xtask gate --all [--format=tsv]
   cargo xtask gate <name> --parity -- <legacy argv...>
+  cargo xtask gate construction --raise-ledger <base> <head>
   cargo xtask selftest [<name>] [--jobs N]
   cargo xtask denylist [--selftest] [--format=tsv]
   cargo xtask teller-steps [--root-legs] [--root-legs-gating]
@@ -188,6 +189,30 @@ fn gate(args: &[String]) -> i32 {
         }
         return 2;
     };
+
+    // `--raise-ledger <base> <head>` — the construction gate's own arithmetic sweep, over an
+    // explicit pair rather than the branch's own base. This is `scripts/raise-ledger-sweep.sh`'s
+    // one moving part: it resolves a queue line's branch tip and its `base_ref` and hands both
+    // here. Neither number comes from the environment or from `ceilings::base_ref`, so the caller
+    // controls exactly what is compared — see `gates::construction::raise_ledger`.
+    if let Some(pos) = args.iter().position(|a| a == "--raise-ledger") {
+        if reg.name != "construction" {
+            eprintln!(
+                "xtask gate {name} --raise-ledger: this is the construction gate's own arithmetic \
+                 sweep; `{name}` has no such arm."
+            );
+            return 2;
+        }
+        let rest: Vec<&String> = args[pos + 1..]
+            .iter()
+            .filter(|a| !a.starts_with("--"))
+            .collect();
+        let (Some(base), Some(head)) = (rest.first(), rest.get(1)) else {
+            eprintln!("xtask gate construction --raise-ledger: needs <base> <head>");
+            return 2;
+        };
+        return crate::gates::construction::raise_ledger::run_cli(&cx, base, head);
+    }
 
     // THE RELEASE-TIME ARMS, as flags on the gate and never as an environment variable.
     //

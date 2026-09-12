@@ -29,6 +29,26 @@ to the change and it can therefore run on every push rather than once a quarter.
 landing that grew the coupling; a number left above what it measures is slack, and slack is where
 drift hides.
 
+**Held exactly is not the same claim as held correctly.** `ceiling-rose` proves no ceiling in either
+file is higher than it is at the base, or a declared raise sums to exactly its rise — but a face
+that under-declares its own rise by a few lines makes that same row PASS, on the honour of a
+commit message the row never reads: the tree measures higher than the declaration says, and the
+row cannot tell, because it was never asked the arithmetic per key. A hand audit of the queue found
+two such gaps in one pass, both single-digit, both agreeing with each other (the prose and the
+TOML) while disagreeing with the tree — the one kind of error reading the commit message cannot
+catch, because the commit message is what is wrong.
+
+`cargo xtask gate construction --raise-ledger <base> <head>` is that arithmetic, run on demand
+over an explicit pair rather than only "this branch against its own base": for every ceiling key in
+`qa/construction.toml` and `qa/kind-isolation.toml` it prints the figure at each end, the measured
+rise, the sum of the raises declared for it, and a verdict — exact, over-declared, under-declared,
+an undeclared rise, or expired (a live declaration naming a key that did not rise) — exiting
+non-zero the moment one key is not exact. The construction gate runs it on every push, as the
+`raise-ledger` row, HEAD against its own `base_ref`; `scripts/raise-ledger-sweep.sh <queue-file>`
+runs the same check over every live `--prove` line of a land queue, read-only, resolving each
+line's own tip and base rather than the running branch's — the nightly sweep an audit of the queue
+asked for, made runnable by hand rather than by a human re-deriving the sums.
+
 `ship-ready` is the row that says both halves are true at the same time, on a tree that is asking to
 be promoted.
 
