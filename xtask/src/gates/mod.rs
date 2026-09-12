@@ -382,10 +382,26 @@ const DEFAULT_BUDGET_UNITS: f64 = 9000.0;
 /// failure this whole shape exists to make impossible.
 const TAKEN: &str = "2026-09-10 b6f66e929";
 
+/// WHEN AND ON WHAT `plane-purity` ALONE WAS RE-TAKEN, and why it has its own date.
+///
+/// The row is split out of [`TAKEN`] rather than re-stamping the sitting: the other five entries
+/// were not re-measured here, and moving their date to say they were is the one thing this shape
+/// exists to prevent. The struct carries `taken` per row for exactly this — one number moved, one
+/// provenance moved with it.
+///
+/// It moved because THE TREE GREW SOURCE THIS GATE SCANS, not because a rule got dearer. The same
+/// sixteen cases run; four of them are whole-tree plants over the plane crates, and this landing
+/// adds a `src/meta.rs` to each of the four `busbar-plane-*` crates for them to read. MEASURED back
+/// to back on one machine at `--jobs 16`: 28 191 units on the base and 34 602 with this line, so
+/// the cost is the new files and nothing else. That is the re-measurement the owner's rule admits —
+/// it describes what the machine did over the same cases and permits no new coupling, surface or
+/// LOC anywhere — and not a raise, which is the other door and needs a face.
+const TAKEN_PLANE_PURITY: &str = "2026-09-12 4e548f36c";
+
 // THE MEASUREMENTS. Each is `work units at --jobs 1` on the tree named in [`TAKEN`], read off the
 // self-test's own cost line. Constants rather than literals inside the table so that a re-baseline
 // is a diff a reviewer can read as a list of numbers that moved.
-const MEASURED_PLANE_PURITY: f64 = 27_923.0; // 16 cases, 298.0 s
+const MEASURED_PLANE_PURITY: f64 = 31_877.0; // 16 cases, 475.5 s — on TAKEN_PLANE_PURITY's tree
 const MEASURED_PLANE_PURITY_STRICT: f64 = 19_435.0; // 12 cases, 202.1 s
 const MEASURED_STRUCTURE_LINT: f64 = 7_938.0; // 39 cases, 88.4 s
 const MEASURED_CONSTRUCTION: f64 = 33_096.0; // 36 cases, 352.4 s
@@ -464,8 +480,8 @@ const SELFTEST_BUDGETS: &[Budget] = &[
         gate: "plane-purity",
         measured: MEASURED_PLANE_PURITY,
         allowed: MEASURED_PLANE_PURITY * BUDGET_SLACK,
-        taken: TAKEN,
-        why: "The dearest self-test in the registry after the two kind-isolation batteries, and a name on the shard's own drain list. Not analysed here; the entry is the measurement, written down so that a doubling is a red row rather than minutes nobody attributes.",
+        taken: TAKEN_PLANE_PURITY,
+        why: "The dearest self-test in the registry after the two kind-isolation batteries, and a name on the shard's own drain list. Not analysed here; the entry is the measurement, written down so that a doubling is a red row rather than minutes nobody attributes. RE-TAKEN on its own date (see TAKEN_PLANE_PURITY): four of the sixteen cases are whole-tree plants over the plane crates, so a file added to a plane crate is read sixteen times over and shows up here.",
     },
     Budget {
         gate: "plane-purity-strict",
