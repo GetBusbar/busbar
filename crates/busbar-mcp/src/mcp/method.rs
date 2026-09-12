@@ -247,7 +247,15 @@ pub(crate) async fn dispatch(
         // that answered it here with no door, no budget, no audit row and no meter is DELETED
         // rather than kept beside the node. Its document is still this crate's and is
         // `completion_complete_document` below; what left is the serving.
-        ops::OP_TASK_GET => tasks_get(ctx, params, id),
+        // `ops::OP_TASK_GET` HAS NO ARM. The eighth class the composition's node has taken, and the
+        // first of the tasks namespace. It reads one task record scoped to the caller and reaches
+        // no upstream, so nothing is priced, nothing is dialled and no grant is spent. The
+        // `-32021` gate below stays the METHOD'S first act rather than becoming the node's: whether
+        // a caller declared the tasks extension is a fact about the protocol this crate speaks, not
+        // about admission, and a node that enforced it would be a second place SEP-2663 is read.
+        // The arm that answered it here with no door, no budget, no audit row and no meter is
+        // DELETED rather than kept beside the node. Its document is still this crate's and is
+        // `tasks_get_document` below; what left is the serving.
         ops::OP_TASK_UPDATE => tasks_update(ctx, params, id),
         ops::OP_TASK_CANCEL => tasks_cancel(ctx, params, id),
         // The one class whose answer is a STREAM rather than a document. It returns through the same
@@ -323,6 +331,20 @@ fn task_principal<'a>(ctx: &'a Ctx<'_>) -> &'a str {
 /// `McpTask::detailed()` used to build inline. This function keeps exactly the two refusals it
 /// always answered — the undeclared-capability refusal and "no task with that id for this
 /// caller" — and hands everything else to the face.
+/// `tasks/get`'s document, in the shape the node's table holds.
+///
+/// The same lift the seven before it are, forwarding parameters to [`tasks_get`], which is byte for
+/// byte the body that answered this class when the dispatch table still had an arm for it —
+/// including the `-32021` extension gate it opens with, which is the method's and stays the
+/// method's.
+fn tasks_get_document(
+    ctx: &Ctx<'_>,
+    params: Option<&serde_json::Value>,
+    id: Option<serde_json::Value>,
+) -> Response {
+    tasks_get(ctx, params, id)
+}
+
 fn tasks_get(
     ctx: &Ctx<'_>,
     params: Option<&serde_json::Value>,
@@ -2910,7 +2932,9 @@ pub(super) type ClassDocument =
 /// and reads no record at all. `server/discover` is the sixth and the last of the money-free ones:
 /// it merges the same records the four list classes walk. `resources/read` is the seventh and the
 /// last before the tasks namespace; it is the first row here for a class that carries a REQUEST
-/// rather than only a question. The order the rest follow is the plan's (§14.3), money-free first
+/// rather than only a question. `tasks/get` is the eighth and opens that namespace; the `-32021`
+/// extension gate stays inside the method, because whether a caller declared the tasks extension is
+/// a fact about the protocol rather than about admission. The order the rest follow is the plan's (§14.3), money-free first
 /// and `tools/call` last.
 ///
 /// `prompts/get` is NOT here, and its absence is a ruling in flight rather than an oversight: its
@@ -2939,6 +2963,9 @@ pub(super) fn document_for(op: busbar_contract::ids::OpClassId) -> Option<ClassD
     }
     if op == ops::OP_RESOURCE_READ {
         return Some(resources_read_document);
+    }
+    if op == ops::OP_TASK_GET {
+        return Some(tasks_get_document);
     }
     None
 }
