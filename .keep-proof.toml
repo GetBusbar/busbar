@@ -1,24 +1,34 @@
 # WHAT THIS HAND-BACK ASKS keep-proof TO PROVE.
 #
-# .keep-proof.toml is read by .github/workflows/keep-proof.yml at the root of a `keep-*` branch. It
-# scopes the two expensive legs of the run to what the branch actually touched, so a verdict says
-# something specific instead of "everything, slowly". The INTEGRATION tree carries no such file —
-# it is a keep-branch artefact, and this branch is a keep branch.
+# .keep-proof.toml is read by .github/workflows/keep-proof.yml at the root of a `keep-*` branch, and
+# by scripts/prove-latchkey.sh before it rents a runner. It scopes the two expensive legs of the run
+# to what the branch actually touched, so a verdict says something specific instead of "everything,
+# slowly". The INTEGRATION tree carries no such file — it is a keep-branch artefact, and this branch
+# is a keep branch.
+#
+# THE SCOPE MOVED WITH THE BRANCH. It used to be the boot/config/documented families, which was the
+# honest scope while this branch worked on the frozen parse surface. The branch is now the net_guard
+# line: the network-address control had TWO copies (busbar-substrate's and busbar-unit-trust's, kept
+# from disagreeing by an anti-drift parity test) and this branch is deleting the readers of the
+# dying one. What that can break is a REFUSAL'S WORDING on every path that guards an outbound hop,
+# so the scope is the families that carry one.
 #
 #   families — a regex handed to the shadow oracle's `--id-filter`. The oracle replays this build
-#              against the published 1.5.5 binary and reports divergences; unfiltered that is the
-#              better part of half an hour. This branch is the pre-existing-reds branch: it works
-#              on the tree's frozen PARSE SURFACE (a limit's three refusal sentences) and on the
-#              gates that read the tree as data, so the honest scope is the boot / config /
-#              documented families — the cells that read what the binary PRINTS when it refuses a
-#              document, which is exactly what the first item here moved back to 1.5.5's words.
-#              boot.refusal|BOOT-P20|validate, BOOT-P29 and BOOT-P30 are the three cells that must
-#              turn byte-identical; the rest of the boot/config families are the blast radius of
-#              touching a deserializer every section's parse runs through.
+#              against the published 1.5.5 binary and reports divergences. A run that omits the
+#              line's families does not pass by default: every cell in a family that was never
+#              exercised is scored `missing.candidate`, which reads as 522 reds that are SCOPE and
+#              not content. The families here are the ones whose recorded cells carry a guard
+#              refusal or ride a guarded hop: the four planes (llm, mcp, a2a, voice), the
+#              neutrality suite that pins one refusal's wording across planes, admin.ops and boot
+#              (the config-validate path that names the same SSRF atoms), auth.lifecycle (the
+#              self-minting token endpoints SUB-5 moved) and route.failover (whose ATTEMPT-1 arm
+#              names a guard verdict as a definitive strike).
 #   tests    — the packages whose test binaries the sharded legs must include by name.
-#              `busbar-substrate` holds the limit grammar itself; `busbar-core` re-exports it at
-#              the historical config path and owns the pre-pass that sets the frozen-list rule;
-#              `busbar` is the binary whose --validate the boot cells drive; `xtask` is the gate
-#              runner whose own selftests are on this branch's list.
-families = '^(boot|config|documented)([|.]|$)'
-tests = ["busbar-core", "busbar-substrate", "xtask", "busbar"]
+#              `busbar-unit-trust` owns the surviving copy; `busbar-substrate` owns the dying one;
+#              `busbar-core` re-exports the survivor at the historical `net_guard` path and holds
+#              the async resolve-then-pin door; `busbar-mcp`, `busbar-a2a` and `busbar-voice` are
+#              the remaining readers; `busbar` is the binary and carries the extraction-parity
+#              test; `xtask` is the gate runner whose kind-isolation and construction selftests
+#              judge every ledger row this line moves.
+families = '^(llm|mcp|a2a|voice|neutrality|admin\.ops|boot|auth\.lifecycle|route\.failover)([|.]|$)'
+tests = ["busbar-unit-trust", "busbar-substrate", "busbar-core", "busbar-mcp", "busbar-a2a", "busbar-voice", "busbar", "xtask"]
