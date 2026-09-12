@@ -10,24 +10,33 @@
 //! [`crate::ingress::byte_duplex::serve_messages`] consumes — so the plane composes session/media
 //! logic on top and never holds a socket, a resolver, or the WS framing.
 //!
-//! ## THE GUARD IS NOT OPTIONAL (the egress-audit finding this closes)
+//! ## THE GUARD IS NOT OPTIONAL, AND IT IS NOT THIS MODULE'S (the egress-audit finding this closes)
 //!
 //! A `wss://` upstream is an operator/runtime target, so it is resolved-then-pinned-then-guarded on
 //! EXACTLY the discipline the HTTP egress seam applies — never a raw `connect_async` that resolves DNS
-//! itself. The order is [`crate::net_guard::resolve_and_pin_async`] FIRST (structural refusals, one
-//! resolution, every answered address judged, the survivor pinned), then a TCP connect to THAT pinned
-//! address, then a TLS handshake presenting the URL host for SNI / certificate validation, then the
-//! client WS handshake OVER that already-guarded stream. The socket is never opened to anything the
-//! guard did not judge: the `tokio-tungstenite` `connect` feature (which would resolve the name a
-//! second time) is deliberately left off, and this is the only door.
+//! itself. What changed is WHO does it: [`dial`] is handed an ALREADY-PINNED address and resolves
+//! nothing. The caller's order is this module's own parser first (a pure string function, so the
+//! caller and the dialer cannot read an authority differently), then its own
+//! resolve-then-pin-then-judge, then [`dial`] on the survivor.
+//!
+//! This module then connects, hands the caller's host to the handshake for SNI / certificate
+//! validation, and upgrades — and judges nothing. The socket is never opened to anything the caller
+//! did not pin, because the address is the only thing this module has: the `tokio-tungstenite`
+//! `connect` feature (which would resolve the name a second time) is deliberately left off, there is
+//! no resolver here to reach for, and this is the only door.
+//!
+//! WHY THE JUDGEMENT LEFT. Deciding what an address MEANS — internal, cloud-metadata, plaintext,
+//! unresolvable — is a trust judgement, and this crate is frozen and dissolving: it may not name the
+//! unit that owns that control, and it gains no dependency to reach one. Holding a socket is what it
+//! is still for. So the socket stays and the judgement goes to the caller, which in this build is
+//! the retiring streams crate and, after it, whichever composition binds the wire.
 
+use std::net::SocketAddr;
 use std::sync::Arc;
 
 use futures::{Sink, SinkExt, Stream, StreamExt};
 use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::Message;
-
-use crate::net_guard::{self, GuardPolicy, GuardRefusal};
 
 /// How many frames an upstream may have in flight ahead of the leg reading them. The same reasoning
 /// the inbound acceptor's queue is bounded by, pointed the other way: an upstream that emits faster
@@ -48,14 +57,13 @@ const MAX_QUEUED_OUTBOUND_FRAMES: usize =
     crate::config::limits::DEFAULT_DUPLEX_OUTBOUND_QUEUE_FRAMES;
 
 /// Why an outbound duplex dial failed — the FACT, kept separate so a caller renders its own sentence
-/// (mirroring how [`GuardRefusal`] callers convert into their own vocabulary).
+/// (mirroring how every other refusal fact in this tree travels: the caller renders it).
 #[derive(Debug)]
 pub enum DialError {
-    /// The URL was not a `ws(s)://` URL, or had no usable host/port.
+    /// The URL was not a `ws(s)://` URL, or had no usable host/port. Produced by [`split_ws_url`],
+    /// which the CALLER runs before it pins — a spelling with no usable authority is a target
+    /// nothing can judge, so it never reaches a guard and never reaches a socket.
     Url(String),
-    /// The net-guard refused the target (SSRF, plaintext, unresolvable, internal, metadata, …). The
-    /// dial NEVER opens a socket past this — the guard is the reason a socket exists at all.
-    Guard(GuardRefusal),
     /// The TCP connect to the pinned address failed.
     Connect(String),
     /// The TLS handshake to the pinned address (SNI = the URL host) failed.
@@ -68,7 +76,6 @@ impl std::fmt::Display for DialError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             DialError::Url(u) => write!(f, "`{u}` is not a usable ws(s):// URL"),
-            DialError::Guard(r) => write!(f, "{r}"),
             DialError::Connect(e) => write!(f, "connecting to the pinned address failed: {e}"),
             DialError::Tls(e) => write!(f, "the TLS handshake failed: {e}"),
             DialError::Handshake(e) => write!(f, "the WebSocket handshake failed: {e}"),
@@ -78,17 +85,18 @@ impl std::fmt::Display for DialError {
 
 impl std::error::Error for DialError {}
 
-impl From<GuardRefusal> for DialError {
-    fn from(r: GuardRefusal) -> Self {
-        DialError::Guard(r)
-    }
-}
-
 /// `wss://host[:port]/path` (or `ws://…`) split into `(secure, host, port, request-url)`. Hand-written
 /// because what is wanted is a STRICT recogniser over an operator-supplied string, not a permissive
 /// parser; the request-url handed to the handshake keeps the original `ws(s)` scheme so the `Host` /
 /// `Sec-WebSocket-*` headers are exactly what the upstream expects.
-fn split_ws_url(url: &str) -> Result<(bool, String, u16, String), DialError> {
+/// SPLIT the URL into (secure, host, port, request-url) — the caller's FIRST step, and
+/// `pub` for exactly that reason: the caller has to know the host and port to pin them, and the
+/// dialer has to present the same authority the caller judged. One parser, so the two cannot read
+/// an authority differently — which is the whole safety property the pin exists to hold, pointed at
+/// the string instead of at the address.
+///
+/// A pure string function: no resolution, no socket, no judgement about what the host MEANS.
+pub fn split_ws_url(url: &str) -> Result<(bool, String, u16, String), DialError> {
     let (secure, rest) = if let Some(r) = url.strip_prefix("wss://") {
         (true, r)
     } else if let Some(r) = url.strip_prefix("ws://") {
@@ -157,11 +165,23 @@ fn tls_config() -> Arc<rustls::ClientConfig> {
 /// WS layer and never surface as frames — the neutral pump names no protocol and sees only data
 /// payloads.
 ///
-/// The guard runs FIRST and the socket is connected to the PINNED address; a `ws://` (plaintext)
-/// target is admitted only when `policy` opts into it, exactly as the HTTP guard admits plaintext.
+/// EVERY ARGUMENT IS THE CALLER'S JUDGEMENT, ALREADY MADE. `addr` is the address the caller
+/// resolved and pinned and the ONLY address this opens a socket to — it is never re-resolved, which
+/// is the TOCTOU the pin closes, and it is never second-guessed, because there is nothing here to
+/// second-guess it with. `host` is the authority the caller judged, presented for SNI/certificate
+/// validation so a pinned address still rides a TLS session validated against the name the operator
+/// registered. `secure` selects TLS or bare TCP; a plaintext target is admitted because the caller
+/// admitted it, exactly as the HTTP path admits plaintext under its own policy. `request_url` is
+/// what the WS handshake asks for.
+///
+/// The obligation this moves to the caller is real and it is stated rather than typed: hand this an
+/// address a guard pinned, from the same `host`/`port` the parser above read. The only caller in
+/// this build does precisely that, one line above the call.
 pub async fn dial(
-    url: &str,
-    policy: GuardPolicy,
+    addr: SocketAddr,
+    host: &str,
+    secure: bool,
+    request_url: &str,
 ) -> Result<
     (
         impl Stream<Item = Vec<u8>> + Unpin,
@@ -169,15 +189,9 @@ pub async fn dial(
     ),
     DialError,
 > {
-    let (secure, host, port, request_url) = split_ws_url(url)?;
-
-    // THE GUARD, FIRST — resolve then pin then judge. `https = secure`: a `ws://` target is judged as
-    // plaintext (admitted only under the policy's plaintext stance), a `wss://` as TLS. No socket is
-    // opened to anything this did not pin.
-    let pinned = net_guard::resolve_and_pin_async(&host, port, secure, policy).await?;
-
-    // TCP to the PINNED address — never re-resolving the name (the TOCTOU the pin closes).
-    let tcp = TcpStream::connect(pinned.socket_addr())
+    // TCP to the PINNED address the caller handed in — never a name, so there is nothing to
+    // re-resolve and no second answer a resolver could give (the TOCTOU the pin closes).
+    let tcp = TcpStream::connect(addr)
         .await
         .map_err(|e| DialError::Connect(e.to_string()))?;
 
@@ -185,19 +199,19 @@ pub async fn dial(
     // host, so the certificate is validated against the operator-registered name while the connection
     // rides the pinned address); `ws` runs the handshake over bare TCP.
     if secure {
-        let server_name = rustls::pki_types::ServerName::try_from(host.clone())
+        let server_name = rustls::pki_types::ServerName::try_from(host.to_string())
             .map_err(|e| DialError::Tls(e.to_string()))?;
         let tls = tokio_rustls::TlsConnector::from(tls_config())
             .connect(server_name, tcp)
             .await
             .map_err(|e| DialError::Tls(e.to_string()))?;
-        let (ws, _resp) = tokio_tungstenite::client_async(&request_url, tls)
+        let (ws, _resp) = tokio_tungstenite::client_async(request_url, tls)
             .await
             .map_err(|e| DialError::Handshake(e.to_string()))?;
         let (tx, rx) = split_messages(ws);
         Ok((BoxedStream(rx), BoxedSink(tx)))
     } else {
-        let (ws, _resp) = tokio_tungstenite::client_async(&request_url, tcp)
+        let (ws, _resp) = tokio_tungstenite::client_async(request_url, tcp)
             .await
             .map_err(|e| DialError::Handshake(e.to_string()))?;
         let (tx, rx) = split_messages(ws);

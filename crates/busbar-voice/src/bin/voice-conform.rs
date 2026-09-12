@@ -2145,8 +2145,13 @@ fn probe_route_failover() -> (&'static str, String) {
         // ATTEMPT 1 — breaker CLOSED: a real dial to a target the default fail-closed guard refuses (a
         // plaintext `ws://` loopback address, `allow_plaintext: false` by default) genuinely fails,
         // and the guard refusal's canonical signal (Auth-class => HardDown) trips the cell.
+        //
+        // The refusal arrives on `Guard` because the guard now runs in THIS plane, ahead of a neutral
+        // dialer that is handed an already-pinned address and resolves nothing. Naming the arm is the
+        // point of the leg: what this probe asserts is that a guard-refused target is a DEFINITIVE
+        // strike, and it would still read a `Dial` connect/TLS failure as one if the arm were widened.
         match dial_provider(&host, pool, 0, "ws://127.0.0.1:1/", policy).await {
-            Err(DialProviderError::Dial(_)) => {}
+            Err(DialProviderError::Guard(_)) => {}
             Ok(_) => {
                 return (
                     "FAIL",

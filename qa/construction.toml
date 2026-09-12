@@ -144,6 +144,33 @@ from = 10
 to = 16
 because = "busbar-core x unit: the token-endpoint VERIFY judgement left busbar-substrate's two self-minting OAuth mechanisms and is composed here, on busbar-unit-trust's net -- the surviving copy of the SSRF control, the one the extraction-parity gate pins the dying copy against. The six hits are the dependency line and the one `use` that names it; the substrate took no edge of any class and its own cell fell in the same commit."
 
+# THE SECOND MOVE, the same shape as the first: the third and last place busbar-substrate reached
+# into `net_guard` was the duplex dialer, which resolved a name and judged every answered address
+# before it opened a socket. The socket stays (holding one is what the crate is still for); the
+# JUDGEMENT goes to the caller, because deciding what an address MEANS is a trust judgement and a
+# frozen crate may not name the unit that owns that control. So `dial` is handed an already-pinned
+# address and the only caller in this build -- the retiring streams crate, which already named the
+# guard -- runs parse, then resolve-then-pin, then dial.
+#
+# THE SOURCE FELL IN THIS COMMIT, and here it is instrumented rather than argued: busbar-substrate x
+# transport falls 1138 -> 1137 and busbar-substrate x plane falls 770 -> 767, both re-pinned DOWN,
+# and the substrate names `net_guard` at ZERO production sites afterwards. What rises is the two
+# cells of the crate that took the judgement, for the two steps it now runs. Nothing in the frozen
+# crate rose, and no edge of any class was added anywhere: the caller already named both the guard
+# and the dialer.
+
+[gate.ceiling_raises."cell.324.count"]
+file = "qa/kind-isolation.toml"
+from = 290
+to = 298
+because = "busbar-voice x transport: the guard-then-dial sequence moved out of the frozen substrate's duplex dialer and into its only caller, so the caller now spells the parser and the dialer where it used to spell the dialer alone -- in the production dial, in the two suites that drive it (including the refusal cases that came across with the judgement), and in the route-failover conformance leg, whose ATTEMPT-1 arm has to NAME the refusal it asserts is a definitive strike now that a guard verdict and a connect failure are separate variants. The substrate's own transport cell falls 1138 -> 1137 in the same commit and it now names the guard at zero production sites."
+
+[gate.ceiling_raises."cell.321.count"]
+file = "qa/kind-isolation.toml"
+from = 811
+to = 812
+because = "busbar-voice x plane: one word, in the same move. The refusal battery that came across with the judgement keys a breaker cell per case (a guard refusal is a definitive hard-down, so two cases sharing a cell would prove the breaker instead of the guard), and naming those cells is naming this plane's own keyspace prefix once more. The substrate's plane cell falls 770 -> 767 in the same commit."
+
 [gate.ceiling_raises."cell.73.count"]
 file = "qa/kind-isolation.toml"
 from = 2145

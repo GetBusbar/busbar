@@ -14,8 +14,11 @@
 # `FixtureHost` (a real in-memory breaker, not a stand-in that always admits):
 #
 #   1. breaker CLOSED, a real dial to a target the default fail-closed `GuardPolicy` refuses (a
-#      plaintext `ws://` loopback address) — a genuine `DialProviderError::Dial(_)`, and the guard
-#      refusal's canonical signal (Auth-class) trips the cell HARD DOWN on this first strike.
+#      plaintext `ws://` loopback address) — a genuine `DialProviderError::Guard(_)`, and the guard
+#      refusal's canonical signal (Auth-class) trips the cell HARD DOWN on this first strike. The
+#      refusal arrives on the PLANE's own `Guard` arm because the guard runs in the plane, ahead of a
+#      neutral dialer that is handed an already-pinned address and resolves nothing; the sentence a
+#      reader sees is unchanged.
 #   2. breaker now OPEN — a SECOND dial, to a syntactically GARBAGE target a real dial would fail
 #      differently on (`DialProviderError::Dial(Url(_))`), must instead come back
 #      `DialProviderError::BreakerOpen` with a positive `Retry-After` — proving the breaker check runs

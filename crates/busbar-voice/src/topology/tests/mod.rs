@@ -23,7 +23,9 @@ use std::sync::Arc;
 // tests, so gate the imports to match — otherwise a `runtime`-without-`test-support` build (the
 // workspace clippy default now that voice ships default-on) sees them as unused.
 #[cfg(feature = "test-support")]
-use crate::topology::dial_provider;
+use crate::topology::{dial_provider, DialProviderError};
+#[cfg(feature = "test-support")]
+use busbar_substrate::egress::duplex_ws::DialError;
 #[cfg(feature = "test-support")]
 use busbar_substrate::ingress::byte_duplex::{CallRef, DuplexHandle, DuplexPlane};
 #[cfg(feature = "test-support")]
@@ -198,17 +200,60 @@ async fn dial_provider_routes_through_the_guarded_ws_transport() {
 
 /// The provider dial FAILS CLOSED on a guard-failing target — the plane never opens a socket the
 /// net-guard did not pin (the egress-audit finding this closes).
+///
+/// THE GUARD RUNS HERE NOW. The neutral dialer is handed an already-pinned address and holds no
+/// resolver, because judging what an address MEANS is a trust judgement and the frozen substrate may
+/// not name the unit that owns that control. So this battery is where the whole
+/// parse-then-resolve-then-pin-then-dial sequence is proven, and every arm of it names the refusal
+/// the plane hands back: an internal address, a cloud-metadata literal, and a spelling that is not a
+/// duplex target at all (which is refused by the parser, before any address exists to judge).
 #[cfg(feature = "test-support")]
 #[tokio::test]
 async fn dial_provider_fails_closed_on_a_guarded_target() {
-    // A public loopback under the fail-closed default is an internal address — refused, no socket.
+    // ONE CELL PER CASE. A guard refusal is a DEFINITIVE hard-down, so it opens the `(pool, lane)`
+    // cell it was recorded on; a second case sharing that cell would be refused at admission and
+    // would prove the breaker rather than the guard. Each arm below therefore keys its own cell.
     let host = FixtureHost::new();
-    let pool = crate::topology::stream_breaker_key("openai-realtime");
+    let pool = crate::topology::stream_breaker_key("realtime-internal");
+
+    // A loopback under the fail-closed default is an internal address — refused, no socket.
+    let refused = dial_provider(&host, &pool, 0, "wss://127.0.0.1/", GuardPolicy::default()).await;
     assert!(
-        dial_provider(&host, &pool, 0, "wss://127.0.0.1/", GuardPolicy::default())
-            .await
-            .is_err(),
-        "the provider dial must refuse an unpinned/guard-failing target"
+        matches!(refused.err(), Some(DialProviderError::Guard(_))),
+        "loopback under the default policy must come back as a GUARD refusal"
+    );
+
+    // A cloud-metadata literal is refused unconditionally — `allow_private` or not, and even with
+    // plaintext allowed, because this is the address that hands out the instance's own identity.
+    let permissive = GuardPolicy {
+        allow_private: true,
+        allow_plaintext: true,
+        ..GuardPolicy::default()
+    };
+    let metadata_pool = crate::topology::stream_breaker_key("realtime-metadata");
+    let refused = dial_provider(
+        &host,
+        &metadata_pool,
+        0,
+        "wss://169.254.169.254/latest/meta-data",
+        permissive,
+    )
+    .await;
+    assert!(
+        matches!(refused.err(), Some(DialProviderError::Guard(_))),
+        "the metadata address must be refused whatever the policy says about private addresses"
+    );
+
+    // A non-`ws(s)` spelling is not a duplex target: the parser refuses it, so there is no address
+    // for the guard to judge and no socket for anything to open.
+    let parse_pool = crate::topology::stream_breaker_key("realtime-unparseable");
+    let refused = dial_provider(&host, &parse_pool, 0, "https://example.com/", permissive).await;
+    assert!(
+        matches!(
+            refused.err(),
+            Some(DialProviderError::Dial(DialError::Url(_)))
+        ),
+        "a non-ws scheme must come back as the parser's URL refusal, not a guard verdict"
     );
 }
 

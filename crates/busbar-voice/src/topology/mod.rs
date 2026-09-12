@@ -34,7 +34,7 @@ use crate::runtime::session::SessionCore;
 use crate::runtime::{LeaseCloseGuard, VoiceRuntime};
 use busbar_substrate::breaker::{CanonicalSignal, StatusClass};
 use busbar_substrate::egress::duplex_ws::{self, DialError};
-use busbar_substrate::net_guard::GuardPolicy;
+use busbar_substrate::net_guard::{self, GuardPolicy, GuardRefusal};
 use busbar_substrate::plane::handle_engine::HandleEngineError;
 use busbar_substrate::plane_host::{
     run_gauntlet_session, BreakerHost, DispatchScope, GauntletPlane, GauntletRequest, VerifyOutcome,
@@ -62,8 +62,16 @@ pub enum DialProviderError {
         /// Seconds until the cell's cooldown expires (floored at 1).
         retry_after_secs: u64,
     },
-    /// The dial itself failed (guard-refused / connect / TLS / handshake). The failure has already
-    /// been recorded into the breaker cell.
+    /// THE GUARD REFUSED THE TARGET (SSRF, plaintext, unresolvable, internal, cloud-metadata, …),
+    /// so no socket was opened. This arm is the PLANE'S now: the neutral dialer takes an
+    /// already-pinned address and resolves nothing, because deciding what an address MEANS is a
+    /// trust judgement and the frozen substrate may not name the unit that owns that control. The
+    /// refusal fact is unchanged, and so is what a reader sees — `Guard(<refusal>)`, exactly what a
+    /// `{:?}` of the dialer's old variant printed. The failure has already been recorded into the
+    /// breaker cell.
+    Guard(GuardRefusal),
+    /// The dial itself failed (URL / connect / TLS / handshake). The failure has already been
+    /// recorded into the breaker cell.
     Dial(DialError),
 }
 
@@ -74,6 +82,9 @@ impl std::fmt::Display for DialProviderError {
                 f,
                 "voice provider dial refused: breaker open (retry after {retry_after_secs}s)"
             ),
+            // `Guard({r:?})` rather than `{r:?}`: this used to be `DialError::Guard(r)` rendered
+            // through the line below, and that is the string a reader and a log already know.
+            DialProviderError::Guard(r) => write!(f, "voice provider dial failed: Guard({r:?})"),
             DialProviderError::Dial(e) => write!(f, "voice provider dial failed: {e:?}"),
         }
     }
@@ -81,17 +92,30 @@ impl std::fmt::Display for DialProviderError {
 
 impl std::error::Error for DialProviderError {}
 
-/// The canonical breaker signal one [`DialError`] means. A target busbar's OWN net-guard or URL parse
-/// refused is a DEFINITIVE (hard-down) failure — that configured/derived target can never be dialed
+/// The canonical breaker signal one [`DialError`] means. A URL this plane cannot even parse into a
+/// target is a DEFINITIVE (hard-down) failure — that configured/derived target can never be dialed
 /// for this session, so its cell earns the sticky cooldown, exactly as an auth/billing hard-down does.
 /// A connect / TLS / handshake failure to a pinned address is a TRANSIENT upstream signal (the cell
 /// trips only once the error-rate window crosses its threshold), the same disposition the model
 /// plane's own dispatch records a network blip under.
 fn dial_signal(e: &DialError) -> CanonicalSignal {
     let class = match e {
-        DialError::Guard(_) | DialError::Url(_) => StatusClass::Auth,
+        DialError::Url(_) => StatusClass::Auth,
         DialError::Connect(_) | DialError::Tls(_) | DialError::Handshake(_) => StatusClass::Network,
     };
+    signal(class)
+}
+
+/// The signal a GUARD refusal means — the SAME definitive hard-down the URL arm above earns, and
+/// deliberately the same value the retired `DialError::Guard` arm produced: a target this node's own
+/// trust judgement refused is not a target that becomes dialable by waiting.
+fn guard_signal() -> CanonicalSignal {
+    signal(StatusClass::Auth)
+}
+
+/// One canonical signal from one class — the two arms above differ in the class and in nothing else,
+/// so the rest is stated once.
+fn signal(class: StatusClass) -> CanonicalSignal {
     CanonicalSignal {
         class,
         provider_signal: None,
@@ -112,7 +136,11 @@ fn dial_signal(e: &DialError) -> CanonicalSignal {
 /// sideband) and keeps ONLY data/session/media logic.
 ///
 /// `policy` is the outbound trust posture (a public provider `wss://` takes the fail-closed
-/// [`GuardPolicy::default`]); the guard NEVER opens a socket to a target it did not pin.
+/// [`GuardPolicy::default`]); the guard NEVER opens a socket to a target it did not pin. THE GUARD
+/// RUNS HERE, not in the dialer: the neutral dialer is handed an already-pinned address and resolves
+/// nothing, because what an address MEANS is a trust judgement and the frozen substrate may not name
+/// the unit that owns that control. This plane already named the guard, so this is where the two
+/// steps before the socket live until the composition takes them.
 ///
 /// THE BREAKER RIDES BENEATH THE DIAL (the voice-client cell): before any socket, the `(pool, lane)`
 /// cell is probed through `host.breaker_admit` — an OPEN cell fast-fails in microseconds with the
@@ -163,7 +191,35 @@ pub async fn dial_provider(
         return Err(DialProviderError::Dial(e));
     };
 
-    match duplex_ws::dial(url, policy).await {
+    // THE PLANE'S TWO STEPS BEFORE THE SOCKET, in this order. (1) Parse the target through the
+    // dialer's own parser, so the authority this judges is byte-for-byte the authority the dialer
+    // will present. (2) Resolve it ONCE and pin the survivor through the net-guard: structural
+    // refusals first, every answered address judged, no socket to anything unpinned. The dialer
+    // then connects to the pinned address and nothing else — it holds no resolver, so a target this
+    // refuses here has no second door.
+    let (secure, host_name, port, request_url) = match duplex_ws::split_ws_url(url) {
+        Ok(parts) => parts,
+        Err(e) => {
+            host.breaker_record_signal(pool, lane, &dial_signal(&e));
+            return Err(DialProviderError::Dial(e));
+        }
+    };
+    let pinned = match net_guard::resolve_and_pin_async(&host_name, port, secure, policy).await {
+        Ok(pinned) => pinned,
+        Err(refusal) => {
+            host.breaker_record_signal(pool, lane, &guard_signal());
+            return Err(DialProviderError::Guard(refusal));
+        }
+    };
+
+    match duplex_ws::dial(
+        pinned.socket_addr(),
+        pinned.host(),
+        pinned.is_https(),
+        &request_url,
+    )
+    .await
+    {
         Ok((stream, sink)) => {
             host.breaker_record_success(pool, lane);
             // `sink_map_err(|_| ())`: the substrate dialer's own Sink `Error` associated type is an

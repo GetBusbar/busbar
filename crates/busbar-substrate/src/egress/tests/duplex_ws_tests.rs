@@ -15,7 +15,6 @@ use futures::{SinkExt, StreamExt};
 use crate::egress::duplex_ws::{self, DialError};
 use crate::ingress::byte_duplex::{CallRef, DuplexHandle, DuplexPlane};
 use crate::ingress::duplex_ws as ws_ingress;
-use crate::net_guard::{GuardPolicy, GuardRefusal};
 use crate::transport::{Transport, UpstreamWireKind};
 
 /// A trivial ECHO plane bound to the acceptor: no protocol, no wire vocabulary — it echoes each frame
@@ -123,14 +122,31 @@ async fn spawn_gauntlet_ws_server(refuse: bool) -> SocketAddr {
     addr
 }
 
-/// A permissive policy for a LOOPBACK plaintext `ws://` dial: loopback is private and plaintext, so both
-/// stances must be opened for the guard to admit the local test server. Everything else stays fail-closed.
-fn loopback_policy() -> GuardPolicy {
-    GuardPolicy {
-        allow_private: true,
-        allow_plaintext: true,
-        ..GuardPolicy::default()
-    }
+/// DIAL AN ALREADY-PINNED LOOPBACK TARGET — the caller's two steps, done the way the plane does
+/// them, except that a loopback IP literal IS its own resolution so there is nothing for a guard to
+/// decide about it. Every case below that dials a real server goes through here, so what is
+/// exercised is the dialer's whole remaining job: connect to the address it was handed, present the
+/// authority it was handed, upgrade.
+///
+/// The guard-refusal cases are NOT here any more, and they are not gone: judging what an address
+/// MEANS left this crate with the resolution, so the resolve-then-pin-then-dial SEQUENCE is proven
+/// where it now runs (`busbar-voice`'s `topology::tests` drive `dial_provider` against an internal
+/// address, a cloud-metadata literal and a non-`ws` scheme). What stays provable here is that a URL
+/// with no usable authority never becomes a socket, because this crate still owns the parser.
+async fn dial_pinned(
+    url: &str,
+) -> Result<
+    (
+        impl futures::Stream<Item = Vec<u8>> + Unpin,
+        impl futures::Sink<Vec<u8>> + Unpin + Send + 'static,
+    ),
+    DialError,
+> {
+    let (secure, host, port, request_url) = duplex_ws::split_ws_url(url)?;
+    let addr: SocketAddr = format!("{host}:{port}")
+        .parse()
+        .expect("the loopback cases spell an IP literal, which is its own pin");
+    duplex_ws::dial(addr, &host, secure, &request_url).await
 }
 
 /// THE ROUND TRIP over both halves of the neutral WS transport: the ingress acceptor serves an echo
@@ -140,7 +156,7 @@ async fn ws_transport_round_trips_a_frame_both_directions() {
     let addr = spawn_echo_ws_server().await;
     let url = format!("ws://{addr}/");
 
-    let (mut stream, mut sink) = duplex_ws::dial(&url, loopback_policy())
+    let (mut stream, mut sink) = dial_pinned(&url)
         .await
         .expect("dial through the guard to the loopback acceptor");
 
@@ -187,9 +203,7 @@ async fn the_acceptor_queues_no_more_inbound_frames_than_its_bound() {
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
 
     let url = format!("ws://{addr}/");
-    let (_stream, mut sink) = duplex_ws::dial(&url, loopback_policy())
-        .await
-        .expect("dial the parked acceptor");
+    let (_stream, mut sink) = dial_pinned(&url).await.expect("dial the parked acceptor");
 
     let flood = ws_ingress::MAX_QUEUED_INBOUND_FRAMES * 8;
     for _ in 0..flood {
@@ -253,7 +267,7 @@ async fn the_acceptor_refuses_an_inbound_message_past_the_body_ceiling() {
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
 
     let url = format!("ws://{addr}/");
-    let (mut stream, mut sink) = duplex_ws::dial(&url, loopback_policy())
+    let (mut stream, mut sink) = dial_pinned(&url)
         .await
         .expect("dial the size-capped acceptor");
 
@@ -318,9 +332,7 @@ async fn the_dialer_queues_no_more_upstream_frames_than_its_bound() {
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
 
     let url = format!("ws://{addr}/");
-    let (mut stream, _sink) = duplex_ws::dial(&url, loopback_policy())
-        .await
-        .expect("dial the flooding upstream");
+    let (mut stream, _sink) = dial_pinned(&url).await.expect("dial the flooding upstream");
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
 
     // Counted WITHOUT yielding, so the reader task cannot refill behind the count: this is what the
@@ -474,7 +486,7 @@ async fn websocket_transport_is_armed_by_a_real_dialer() {
     let addr = spawn_echo_ws_server().await;
     let url = format!("ws://{addr}/");
     let (mut stream, mut sink) = match Transport::WebSocket.upstream_wire() {
-        Some(UpstreamWireKind::Duplex) => duplex_ws::dial(&url, loopback_policy())
+        Some(UpstreamWireKind::Duplex) => dial_pinned(&url)
             .await
             .expect("the Duplex wire dials a live socket"),
         other => panic!("WebSocket must select the Duplex wire, got {other:?}"),
@@ -496,7 +508,7 @@ async fn governed_ws_accept_serves_on_proceed_and_binds_no_socket_on_refuse() {
     // PROCEED: the gauntlet admits, the socket is bound to the echo pump, and a frame round-trips.
     let addr = spawn_gauntlet_ws_server(false).await;
     let url = format!("ws://{addr}/");
-    let (mut stream, mut sink) = duplex_ws::dial(&url, loopback_policy())
+    let (mut stream, mut sink) = dial_pinned(&url)
         .await
         .expect("a proceeding gauntlet admits the session and binds the socket");
     sink.send(b"governed".to_vec()).await.ok();
@@ -510,52 +522,56 @@ async fn governed_ws_accept_serves_on_proceed_and_binds_no_socket_on_refuse() {
     // the WS handshake — the socket was never bound, so nothing reached the pump.
     let addr = spawn_gauntlet_ws_server(true).await;
     let url = format!("ws://{addr}/");
-    let refused = duplex_ws::dial(&url, loopback_policy()).await;
+    let refused = dial_pinned(&url).await;
     assert!(
         refused.is_err(),
         "a refused destination binds no socket, so the WS dial cannot upgrade"
     );
 }
 
-/// THE DIALER REFUSES A GUARD-FAILING TARGET — it NEVER opens a socket to something the net-guard did
-/// not pin. A loopback `wss://` under the fail-closed default is an internal address; a cloud-metadata
-/// literal is refused unconditionally; a non-`ws(s)` scheme never reaches the resolver.
-#[tokio::test]
-async fn dial_refuses_unpinned_and_guard_failing_targets() {
-    // The dial hands back a live `(Stream, Sink)` on success — neither is `Debug`, so a refusal test
-    // takes the `.err()` (a `Debug` `Option<DialError>`) and never the whole `Result`.
-
-    // Loopback, fail-closed default (no `allow_private`) ⇒ InternalAddress, no socket opened.
-    let err = duplex_ws::dial("wss://127.0.0.1/", GuardPolicy::default())
-        .await
-        .err();
+/// A URL WITH NO USABLE AUTHORITY NEVER BECOMES A SOCKET. This crate still owns the parser the
+/// caller judges through, so this is the half of the old refusal battery that is still this crate's:
+/// a spelling the parser cannot read is a target nothing can pin, and it is refused before any
+/// address exists at all. The other half — what an address MEANS — went with the resolution to the
+/// caller, and `busbar-voice`'s `topology::tests` prove it there, through `dial_provider`, against a
+/// real internal address, a cloud-metadata literal and this same non-`ws` scheme.
+///
+/// The last case is why the parser is `pub`: the caller judges the authority this hands back and the
+/// dialer presents that same authority, so ONE parser is what stops the two disagreeing about where
+/// the socket is going.
+#[test]
+fn a_url_with_no_usable_authority_is_refused_before_any_address_exists() {
     assert!(
         matches!(
-            err,
-            Some(DialError::Guard(GuardRefusal::InternalAddress { .. }))
+            duplex_ws::split_ws_url("https://example.com/"),
+            Err(DialError::Url(_))
         ),
-        "loopback under the default policy must be refused internal, got {err:?}"
+        "a non-ws scheme is not a duplex target"
     );
-
-    // Cloud-metadata address ⇒ refused unconditionally, `allow_private` or not.
-    let err = duplex_ws::dial("wss://169.254.169.254/latest/meta-data", loopback_policy())
-        .await
-        .err();
     assert!(
         matches!(
-            err,
-            Some(DialError::Guard(GuardRefusal::CloudMetadataAddress { .. }))
+            duplex_ws::split_ws_url("wss://user:pass@example.com/"),
+            Err(DialError::Url(_))
         ),
-        "the metadata address must be refused unconditionally, got {err:?}"
+        "userinfo in an egress target is an unusable authority"
     );
-
-    // A non-ws(s) scheme is not a duplex target — refused before any resolution.
-    let err = duplex_ws::dial("https://example.com/", loopback_policy())
-        .await
-        .err();
-    assert!(
-        matches!(err, Some(DialError::Url(_))),
-        "a non-ws scheme must be a Url error, got {err:?}"
+    assert!(matches!(
+        duplex_ws::split_ws_url("wss://"),
+        Err(DialError::Url(_))
+    ));
+    assert!(matches!(
+        duplex_ws::split_ws_url("wss://example.com:notaport/"),
+        Err(DialError::Url(_))
+    ));
+    assert_eq!(
+        duplex_ws::split_ws_url("wss://[::1]:9443/rt").expect("a bracketed v6 literal with a port"),
+        (
+            true,
+            "::1".to_string(),
+            9443,
+            "wss://[::1]:9443/rt".to_string()
+        ),
+        "the authority handed back is unbracketed for the guard and for SNI alike"
     );
 }
 
@@ -613,7 +629,7 @@ async fn accept_gauntlet_refuse_returns_refusal_and_spawns_zero_socket_tasks() {
 
     // REFUSE: the dial cannot upgrade (no socket bound) and NO on_socket task ran.
     let addr = spawn_accept_gauntlet_ws_server(true).await;
-    let refused = duplex_ws::dial(&format!("ws://{addr}/"), loopback_policy()).await;
+    let refused = dial_pinned(&format!("ws://{addr}/")).await;
     assert!(
         refused.is_err(),
         "a refused destination binds no socket, so the dial cannot upgrade"
@@ -628,7 +644,7 @@ async fn accept_gauntlet_refuse_returns_refusal_and_spawns_zero_socket_tasks() {
 
     // PROCEED: the socket binds and the on_socket task runs exactly once — the counter is not vacuous.
     let addr = spawn_accept_gauntlet_ws_server(false).await;
-    let (_stream, _sink) = duplex_ws::dial(&format!("ws://{addr}/"), loopback_policy())
+    let (_stream, _sink) = dial_pinned(&format!("ws://{addr}/"))
         .await
         .expect("a proceeding gauntlet binds the socket");
     let mut ran = false;

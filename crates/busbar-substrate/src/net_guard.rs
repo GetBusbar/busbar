@@ -495,8 +495,9 @@ impl PinnedTarget {
     /// presenting the original name is the whole trick: the certificate is still validated against
     /// the name the operator registered. Pinning the address without preserving the name would turn
     /// a validated TLS connection into an unvalidated one, which trades one hole for a bigger one.
-    // MCP-only: the MCP client reads the pinned host back to preserve SNI; the A2A fetch path does
-    // not, so with `plane-mcp` off (and A2A on) it has no caller.
+    // Read by every caller that presents the name while connecting to the address: the client pool
+    // keys on it, and the duplex dialer's caller hands it in for SNI now that the dialer resolves
+    // nothing itself. Kept behind the feature allow for the build that composes neither.
     #[cfg_attr(not(feature = "dispatch"), allow(dead_code))]
     pub fn host(&self) -> &str {
         &self.host
@@ -509,8 +510,9 @@ impl PinnedTarget {
         self.port
     }
 
-    // As `port()`: the suites assert the pin remembers the scheme it was judged under.
-    #[cfg_attr(not(test), allow(dead_code))]
+    // The scheme the pin was judged under, read back by a caller that has to tell a dialer whether
+    // to wrap the pinned socket in TLS — the judgement is made once, here, and not re-derived from
+    // the URL a second time. The suites also assert the pin remembers it.
     pub fn is_https(&self) -> bool {
         self.https
     }

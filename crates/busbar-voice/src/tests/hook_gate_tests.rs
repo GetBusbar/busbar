@@ -174,14 +174,26 @@ async fn ws_accept_handshake(host: Arc<dyn EngineHost>) -> Result<(), ()> {
     tokio::spawn(async move {
         axum::serve(listener, app).await.unwrap();
     });
+    // The plane's two steps before the socket, the way `topology::dial_provider` takes them: parse
+    // the target through the dialer's own parser, then resolve-and-pin it through the guard. The
+    // dialer is handed the pinned address and resolves nothing.
     let policy = busbar_substrate::net_guard::GuardPolicy {
         allow_private: true,
         allow_plaintext: true,
         ..busbar_substrate::net_guard::GuardPolicy::default()
     };
+    let url = format!("ws://{addr}/telephony/call-ws");
+    let (secure, host_name, port, request_url) =
+        busbar_substrate::egress::duplex_ws::split_ws_url(&url).map_err(|_| ())?;
+    let pinned =
+        busbar_substrate::net_guard::resolve_and_pin_async(&host_name, port, secure, policy)
+            .await
+            .map_err(|_| ())?;
     match busbar_substrate::egress::duplex_ws::dial(
-        &format!("ws://{addr}/telephony/call-ws"),
-        policy,
+        pinned.socket_addr(),
+        pinned.host(),
+        pinned.is_https(),
+        &request_url,
     )
     .await
     {

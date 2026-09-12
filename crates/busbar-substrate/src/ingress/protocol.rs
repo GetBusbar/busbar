@@ -33,7 +33,8 @@
 //!
 //! ## A caller keeps its refusal VOCABULARY, not its DECISION
 //!
-//! That is [`crate::net_guard`]'s rule, and it is this module's rule too. [`CoreRefusal`] is the
+//! That is the outbound net-guard's rule, stated for a second concern, and it is this module's rule
+//! too (a prose cross-reference, not a link: the guard is leaving this crate). [`CoreRefusal`] is the
 //! CLOSED set of refusals core makes on this path. [`Words`] is the one thing a protocol has to
 //! write to receive them, and it is a TOTAL match over that enum: a refusal core grows later
 //! cannot be folded into a nearby arm, because the compiler makes every protocol give it a
