@@ -987,7 +987,7 @@ fn vetoed(proto: &str) -> Response {
 }
 
 /// What a node that cannot take the unit at all answers with, in the caller's own dialect.
-fn unavailable(proto: &str) -> Response {
+pub(super) fn unavailable(proto: &str) -> Response {
     busbar_substrate::proxy::ingress_error(
         proto,
         StatusCode::SERVICE_UNAVAILABLE,
@@ -1620,6 +1620,16 @@ pub fn settle(
 /// reached here. One of these exists, it is built on first use, and every request on this plane
 /// walks through it.
 static NODE: LazyLock<LlmNode> = LazyLock::new(LlmNode::new);
+
+/// THE PROCESS'S ONE NODE, reached by name.
+///
+/// The re-entry's entry point beside this file drives the SAME node the arrivals drive, and it has
+/// to be able to say so: a second node beside this one
+/// would be a second in-flight table, a second lane interner and a second set of counters, which is
+/// exactly the "one plane, two paths" this root exists to end.
+pub(super) fn node() -> &'static LlmNode {
+    &NODE
+}
 
 /// Bind the process's one node to the process's one book.
 ///

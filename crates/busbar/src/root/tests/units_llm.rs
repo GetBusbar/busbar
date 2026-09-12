@@ -2409,3 +2409,168 @@ async fn the_route_seam_is_driven_once_by_a_served_unit_and_never_by_a_refused_o
         failures.join("\n")
     );
 }
+
+// ---------------------------------------------------------------------------------------------
+// THE RE-ENTRY
+// ---------------------------------------------------------------------------------------------
+//
+// A completion busbar asks for on its own behalf — the sampling bridge reaching
+// `CompletionHost::synthesize_completion` — comes back into the plane through the substrate's
+// resolved-completion seam. It is the SAME ask as an arrival with the model handed in, so it must be
+// the same unit: same door, same pinned history, same accrual, same two audit doors, same exit. The
+// cells below are the arrivals' own two, asked of the re-entry: does it ride the loop at all, and
+// does it leave what the shipped shell left.
+
+/// THE ASK CORE HANDS IN. Fresh headers (never the caller's — core mints these), the model the
+/// operator declared, and the body the sampling bridge built, which carries that same model.
+fn completion_ask(
+    rig: &Rig,
+    fixture: Fixture,
+) -> busbar_substrate::ingress::arrival::CompletionArrival {
+    busbar_substrate::ingress::arrival::CompletionArrival {
+        ctx: busbar_substrate::ingress::arrival::ArrivalCtx::new(ArrivalPayload {
+            host: rig.host(),
+            gov: rig.gov(),
+            // The re-entry carries no bearer: core threads `caller_token: None`, because the ask is
+            // busbar's own and the caller's grant is already resolved into `gov`.
+            caller_token: None,
+        }),
+        model: fixture.model().to_string(),
+        headers: json_headers(),
+        body: fixture.body(),
+    }
+}
+
+/// LEG 1 — the shipped re-entry, the plane's own shell beside the loop.
+async fn reentry_legacy(fixture: Fixture) -> Observed {
+    let rig = rig(fixture).await;
+    let resp =
+        busbar_llm::native_ingress::synthesize_completion(completion_ask(&rig, fixture)).await;
+    let observed = observe(&rig, resp).await;
+    rig.server.shutdown().await;
+    observed
+}
+
+/// LEG 2 — the same ask through the kernel's loop over the nine step files, on a node of its own so
+/// the drive count below is this completion's.
+async fn reentry_loop(fixture: Fixture) -> (Observed, Option<u64>, bool) {
+    let rig = rig(fixture).await;
+    let node = LlmNode::new();
+    let resp =
+        crate::root::units_llm_completion::complete_on(&node, completion_ask(&rig, fixture)).await;
+    let driven = node.driven();
+    let observed = observe(&rig, resp).await;
+    let dialled = rig.upstream.get_last_request_path().is_some();
+    rig.server.shutdown().await;
+    (observed, driven, dialled)
+}
+
+/// **A sampled completion is served through the mounted leg, and metered once.**
+///
+/// The whole of this line in one sentence, and every clause of it is a separate way the re-entry was
+/// wrong. *Served through the mounted leg*: the ask reaches the node the arrivals reach, so it is
+/// counted by the seam the arrivals are counted by — before this line the installed synthesizer was
+/// the plane's own shell and the node never saw a sampled completion at all. *Metered once*: one
+/// completion is one request, one row and one billable, on the operator's model, because a re-entry
+/// that is metered twice bills a caller for an ask they made once and a re-entry that is metered
+/// zero times is a completion the operator paid an upstream for and busbar recorded nowhere.
+///
+/// RED FIRST, and it was run red. With the registration pointing at
+/// `busbar_llm::native_ingress::synthesize_completion` — the shell this line retires — there is no
+/// `complete_on` to call and no node to count: the cell does not build. Written against the shell
+/// instead (`synthesize_completion(ask)` on a node-per-request rig) it reports:
+///
+/// ```text
+/// the completion did not reach the node: the engine was driven 0 time(s), expected 1
+/// ```
+///
+/// The money half reads the same on both legs, which is exactly the point of asserting it here: the
+/// path moved and the figures did not.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_sampled_completion_is_served_through_the_mounted_llm_leg_and_metered_once() {
+    let mut failures: Vec<String> = Vec::new();
+    let (observed, driven, dialled) = reentry_loop(Fixture::BufferedOk).await;
+
+    // THE LEG. The node's own dispatch count, which is the one fact a status cannot carry: a
+    // completion the shell served and a completion the loop served are the same bytes on the wire.
+    match driven {
+        None => failures.push(
+            "the completion reached no seam that counts — the Route step is not the node's"
+                .to_string(),
+        ),
+        Some(1) => {}
+        Some(got) => failures.push(format!(
+            "the completion did not reach the node: the engine was driven {got} time(s), expected 1"
+        )),
+    }
+    // And the independent witness on the other side of the loop: the operator's lane was dialled.
+    if !dialled {
+        failures.push(
+            "the count says the engine ran and the operator's upstream was never dialled"
+                .to_string(),
+        );
+    }
+
+    // THE ANSWER. A delivered completion, in the caller's dialect.
+    if field(&observed, "status") != "200" {
+        failures.push(format!(
+            "the completion was not delivered: status {}",
+            field(&observed, "status")
+        ));
+    }
+
+    // THE METER, ONCE. One request against the caller's own bucket, and one row carrying the
+    // upstream's own token figures against the operator's model — not two, and not none.
+    if field(&observed, "ledger_requests") != "1" {
+        failures.push(format!(
+            "the completion was metered {} time(s) against the caller's bucket, expected 1",
+            field(&observed, "ledger_requests")
+        ));
+    }
+    let rows = field(&observed, "metering_rows");
+    let want = format!("{LANE}/test in={INPUT} out={OUTPUT} cr=0 cw=0 req=1 billable=1");
+    if rows != want {
+        failures.push(format!(
+            "the completion's metering rows are not one row on the operator's model\n  \
+             want: {want}\n  got:  {rows}"
+        ));
+    }
+
+    assert!(
+        failures.is_empty(),
+        "{} finding(s) at the re-entry:\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
+}
+
+/// **THE SWITCH, ON THE RE-ENTRY.** Same ask in, same bytes and same counters out — through the
+/// shipped shell and through the loop, on two deployments of their own.
+///
+/// The arrivals' [`the_loop_matches_the_shipped_entry_point_on_every_fixture`] asked of the other
+/// way in. Every end a client can reach is walked, including the two the re-entry has always had a
+/// different shape for: `Malformed`, where the shell refuses the body itself, and `UnknownModel`,
+/// where the model was handed in rather than read. A divergence on any field here is a byte of the
+/// money path or the wire moving, and the line stops.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_re_entry_on_the_loop_matches_the_shipped_re_entry_on_every_fixture() {
+    let mut failures: Vec<String> = Vec::new();
+    for fixture in [
+        Fixture::BufferedOk,
+        Fixture::StreamedOk,
+        Fixture::Malformed,
+        Fixture::OverBudget,
+        Fixture::PoolAcl,
+        Fixture::UnknownModel,
+    ] {
+        let legacy = reentry_legacy(fixture).await;
+        let (looped, _, _) = reentry_loop(fixture).await;
+        compare(&format!("{fixture:?}"), &legacy, &looped, &mut failures);
+    }
+    assert!(
+        failures.is_empty(),
+        "{} divergence(s) between the shipped re-entry and the loop:\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
+}

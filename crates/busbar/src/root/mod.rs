@@ -71,6 +71,11 @@ pub mod units_a2a;
 pub mod units_admin;
 #[cfg(feature = "root-llm")]
 pub mod units_llm;
+// THE RE-ENTRY'S ENTRY POINT, beside the arrivals' node: one re-entrant completion driven through
+// the same loop, over the same mounted leg. Gated with the module above because it is that node's
+// second door, not a second node.
+#[cfg(feature = "root-llm")]
+pub mod units_llm_completion;
 #[cfg(feature = "root-mcp")]
 pub mod units_mcp;
 #[cfg(feature = "root-voice")]

@@ -1309,7 +1309,7 @@ drain = "delete the unit name from the unit crate: a unit reaches unit through t
 [[cell]]
 crate = "busbar"
 kind = "api"
-count = "122"
+count = "123"
 
 [[cell]]
 crate = "busbar"
@@ -1354,7 +1354,7 @@ count = "98"
 [[cell]]
 crate = "busbar"
 kind = "plane"
-count = "1798"
+count = "1815"
 
 [[cell]]
 crate = "busbar"
@@ -1379,7 +1379,7 @@ count = "9"
 [[cell]]
 crate = "busbar"
 kind = "transport"
-count = "939"
+count = "940"
 
 [[cell]]
 crate = "busbar"

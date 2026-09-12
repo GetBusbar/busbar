@@ -649,11 +649,27 @@ fn register_protocols() {
     body_ingress.extend_from_slice(root::units_llm::BODY_INGRESS);
     busbar_substrate::ingress::arrival::install_body_ingress(body_ingress);
 
-    // THE RESOLVED-COMPLETION SYNTHESIZER — the LLM plane's single re-entry the MCP sampling path drives
-    // a synthesized chat completion through (`EngineHost::synthesize_completion`). Installed here beside
+    // THE RESOLVED-COMPLETION SYNTHESIZER — the single RE-ENTRY the sampling bridge drives a
+    // synthesized chat completion through (`EngineHost::synthesize_completion`). Installed here beside
     // the body arrivals, gated on the LLM plane exactly as they are: with no LLM plane linked there is
     // no chat dialect to synthesize, and core returns the honest "no default chat protocol" error.
-    #[cfg(feature = "proto-llm")]
+    //
+    // THE ROOT-DRIVEN RE-ENTRY (composition-root switch-over S2), the re-entry's twin of the
+    // `BODY_INGRESS` swap above and registered under the same switch. The ask is the same ask and the
+    // answer is the plane's own; what the swap changes is the PATH it takes to reach one — through
+    // the kernel's loop, over the plane's nine step files, past the two audit doors and out through
+    // the one exit, instead of through the plane's own shell beside the loop. A re-entrant completion
+    // is not a second kind of unit, so it must not have a second kind of path: with the arrivals on
+    // the loop and the re-entry off it, a shipped binary metered one of its two ways in through a
+    // door the other never passed.
+    #[cfg(all(feature = "proto-llm", feature = "root-llm"))]
+    busbar_substrate::ingress::arrival::install_completion_ingress(
+        root::units_llm_completion::synthesize_completion,
+    );
+    // Off, this line does not exist and the re-entry is the one it was — the plane's own shell, which
+    // the legacy-retirement line deletes together with the `BODY_INGRESS`/`PATH_INGRESS` shells it
+    // shares a body with (the switch-over design's §5 row 7).
+    #[cfg(all(feature = "proto-llm", not(feature = "root-llm")))]
     busbar_substrate::ingress::arrival::install_completion_ingress(
         busbar_llm::native_ingress::synthesize_completion,
     );
