@@ -166,8 +166,6 @@ jobs:
         with:
           action: restore
           key: cargo-${{ runner.os }}-baseline-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
-          restore-keys: |
-            cargo-${{ runner.os }}-baseline-
           path: |
             ~/.cargo/registry
             ~/.cargo/git
@@ -252,8 +250,6 @@ jobs:
         with:
           action: restore
           key: cargo-${{ runner.os }}-shard-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
-          restore-keys: |
-            cargo-${{ runner.os }}-shard-
           path: |
             ~/.cargo/registry
             ~/.cargo/git
