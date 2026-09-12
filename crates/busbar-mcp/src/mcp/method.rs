@@ -233,7 +233,14 @@ pub(crate) async fn dispatch(
         // dialled and no grant is spent. The arm that answered it here with no door, no budget, no
         // audit row and no meter is DELETED rather than kept beside the node. Its document is still
         // this crate's and is `resources_templates_list_document` below; what left is the serving.
-        ops::OP_RESOURCE_READ => resources_read(ctx, params, id),
+        // `ops::OP_RESOURCE_READ` HAS NO ARM. The seventh class the composition's node has taken,
+        // and the last one before the tasks namespace. It takes a URI, resolves it concrete-before-
+        // template against this plane's own records and reaches no upstream, so nothing is priced,
+        // nothing is dialled and no grant is spent. It is also the third of the three injectable
+        // surfaces, which is the reason it was worth moving with the content paths exercised rather
+        // than the not-found alone. The arm that answered it here with no door, no budget, no audit
+        // row and no meter is DELETED rather than kept beside the node. Its document is still this
+        // crate's and is `resources_read_document` below; what left is the serving.
         // `ops::OP_COMPLETION` HAS NO ARM. The fifth class the composition's node has taken, and it
         // is fifth for the reason §14.3 orders by: it is money-free — it consults no record at all
         // and no upstream, so nothing is priced, nothing is dialled and no grant is spent. The arm
@@ -765,6 +772,21 @@ fn resources_templates_list(ctx: &Ctx<'_>, id: Option<serde_json::Value>) -> Res
 
 /// `resources/read` — the CONTENT, sanitized. The third injectable surface, beside tool output and
 /// prompt templates, and no less injectable for arriving as "data".
+/// `resources/read`'s document, in the shape the node's table holds.
+///
+/// The same lift the six before it are, and the FIRST to forward its parameters: it hands
+/// [`resources_read`] the URI untouched, and that body is byte for byte the one that answered this
+/// class when the dispatch table still had an arm for it. All four of its terminals — contents,
+/// a template expanded against the URI actually asked for, the ambiguity refusal and the
+/// not-found — are the body's, not the lift's, and each was captured on both sides of the move.
+fn resources_read_document(
+    ctx: &Ctx<'_>,
+    params: Option<&serde_json::Value>,
+    id: Option<serde_json::Value>,
+) -> Response {
+    resources_read(ctx, params, id)
+}
+
 fn resources_read(
     ctx: &Ctx<'_>,
     params: Option<&serde_json::Value>,
@@ -2886,8 +2908,16 @@ pub(super) type ClassDocument =
 /// the fourth on the same measurement — one record walk each, no upstream — and
 /// `completion/complete` is the fifth on a stronger version of it, since its answer is a constant
 /// and reads no record at all. `server/discover` is the sixth and the last of the money-free ones:
-/// it merges the same records the four list classes walk. The order the rest follow is the plan's
-/// (§14.3), money-free first and `tools/call` last.
+/// it merges the same records the four list classes walk. `resources/read` is the seventh and the
+/// last before the tasks namespace; it is the first row here for a class that carries a REQUEST
+/// rather than only a question. The order the rest follow is the plan's (§14.3), money-free first
+/// and `tools/call` last.
+///
+/// `prompts/get` is NOT here, and its absence is a ruling in flight rather than an oversight: its
+/// recorded cell asserts that an over-budget refusal NAMES THE BUDGET, and `refused` above will not
+/// name one, because a refusal that told a caller about the deployment's money is the leak the
+/// unpriced-refusal rule forbids. Bytes against that rule is the owner's call; until it is made, the
+/// class keeps its arm.
 pub(super) fn document_for(op: busbar_contract::ids::OpClassId) -> Option<ClassDocument> {
     if op == ops::OP_TOOLS_LIST {
         return Some(tools_list_document);
@@ -2906,6 +2936,9 @@ pub(super) fn document_for(op: busbar_contract::ids::OpClassId) -> Option<ClassD
     }
     if op == ops::OP_DISCOVER {
         return Some(discover_document);
+    }
+    if op == ops::OP_RESOURCE_READ {
+        return Some(resources_read_document);
     }
     None
 }
