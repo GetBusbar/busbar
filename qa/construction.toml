@@ -2300,3 +2300,44 @@ key = "cell.busbar-mcp.plane.count"
 file = "qa/kind-isolation.toml"
 by = 4
 because = "the TaskAnswers impl's own header on busbar-mcp's Registry, which says out loud why THIS plane implements the write face and the other does not -- an a2a input-required is answered by a fresh message/send on the task's context rather than by a write to a stored row. Four lines of prose naming the other plane, at the one place a reader of this impl would ask the question."
+
+# ── MCP-G (1.6.0): THE ORDER-DEPENDENT GREEN IN busbar-a2a's CHASSIS CELL ───────────────────────
+#
+# MCP-F's hand-back reported busbar-a2a::a2a::config::config_tests::
+# the_section_is_a_first_class_member_of_the_chassis as a pre-existing RED on the base f7be4e89e.
+# It is not a feature-unification failure and it is not a production defect: it is an ORDER-DEPENDENT
+# GREEN, and the red is only visible when the cell runs first or alone.
+#
+# THE CAUSE, at the root. Under the test-support surface `NamedMapSection::sections()` is FOLDED from
+# the process plane registry -- `busbar_substrate::plane::registry::register_test_plane`'s set, which
+# stands in for production's composition-root `install_planes`. So "is `agents:` a member of the
+# named-map chassis" is only a question once THIS plane is registered, and this cell registered
+# nothing: it read the chassis and passed on whichever sibling happened to run first (any cell that
+# builds an App, whose finalizer registers, or `testkit::install_test_seams`). Run alone --
+# `cargo test -p busbar-a2a --features test-support the_section_is_a_first_class_member` -- it reds
+# with the expect message its own author wrote for exactly this case. In PRODUCTION `plane_decls()`
+# folds the INSTALLED set the composition root wrote, which is deterministic, so there is no
+# production defect behind it and none is claimed.
+#
+# THE FIX is the idiom the very same file already uses one cell above
+# (`a_cross_plane_hook_reference_is_refused` registers the `pools:` stand-in it reaches for):
+# ESTABLISH WHAT YOU READ. The cell registers `crate::a2a::PLANE_DECL` before reading the chassis.
+# The registration is idempotent by key and process-wide, exactly as the production composition
+# root's is, so it neither perturbs a sibling nor depends on one -- and the cell now measures its own
+# stated property rather than a sibling's side effect. An order-dependent green is worse than a red:
+# it reports somebody else's work as this cell's.
+#
+# SWEPT, not spot-fixed. The same shape was looked for everywhere the two plane crates read the
+# derived section list (`named_map_section_facts`, `plane_sections()`, `default_plane_sections`):
+# busbar-mcp reads none of them from a cell at all, and busbar-a2a's only other reader
+# (`config_tests`'s `validate_section_hooks` helper) calls `default_plane_sections` directly rather
+# than through the registry fold, so it has nothing to be ordered against. One cell, one fix.
+#
+# MEASURED. Test-only: no production line changes in any crate. `cell.busbar-a2a.plane.count`
+# 2775 -> 2777 for the two lines of the fix's own prose that name the plane being registered.
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-a2a.plane.count"
+file = "qa/kind-isolation.toml"
+by = 2
+because = "the doc comment on the_section_is_a_first_class_member_of_the_chassis, which now says out loud that the cell REGISTERS the plane it asks about and why an unregistered read was an order-dependent green. Vocabulary the matrix scanner scores on the word `plane`, in a test file, against zero production line change."

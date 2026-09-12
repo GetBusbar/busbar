@@ -525,8 +525,23 @@ fn the_admin_write_path_and_the_file_share_one_grammar() {
 }
 
 /// The section is a real member of the named-map chassis, not a special case bolted beside it.
+///
+/// THIS CELL REGISTERS THE PLANE IT ASKS ABOUT, and that is the fix rather than a setup detail.
+/// Under the test-support surface `NamedMapSection::sections()` is FOLDED from the process plane
+/// registry — `register_test_plane`'s set, which the composition root's `install_planes` stands in
+/// for — so "is `agents:` a member of the chassis" is only a question once THIS plane is registered.
+/// It was not registered here, so the cell passed on whichever sibling happened to run first
+/// (any cell that builds an `App`, or `install_test_seams`) and FAILED when run alone or first:
+/// `cargo test -p busbar-a2a --features test-support the_section_is_a_first_class_member` was red
+/// on the base this line was cut from. An order-dependent green is worse than a red — it reports
+/// the sibling's side effect as this cell's property — and the remedy is the one
+/// `a_cross_plane_hook_reference_is_refused` above already uses: establish what you read.
+///
+/// The registration is idempotent by key and process-wide, exactly as the production composition
+/// root's is, so this neither perturbs a sibling nor depends on one.
 #[test]
 fn the_section_is_a_first_class_member_of_the_chassis() {
+    busbar_substrate::plane::registry::register_test_plane(&crate::a2a::PLANE_DECL);
     let agents = engine()
         .named_map_section_facts(crate::a2a::PLANE_DECL.config_section)
         .expect(
