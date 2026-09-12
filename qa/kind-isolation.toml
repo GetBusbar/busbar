@@ -172,6 +172,10 @@ reason = "the hook-dispatch surface being carved out of busbar-core; core kind, 
 #   moved_from — optional, and the ceiling for a CARVE-OUT: a minted cell may not exceed the count
 #                the merge-base pinned for the same kind in the crate the vocabulary was moved from.
 #                A move carries vocabulary across, it does not create it.
+#   ceiling    — optional. This row admits the ledger row's EXISTENCE; `ceiling` is the highest
+#                figure any construction-ceilings key it covers may carry, and it is
+#                `construction::ceilings::mints_in` — not this file's reader — that reads and
+#                enforces it. This reader only has to stop refusing the field.
 #
 # ONCE MEANS ONCE. A [[minted]] row the merge-base already carries admits nothing more — the crate's
 # rows are history and every ceiling after that moves through `ceiling-rose`, in a commit that says
@@ -206,6 +210,8 @@ reason = "the hook-dispatch surface being carved out of busbar-core; core kind, 
 #   edges  — EXACTLY how many `<from> -> <kind>` and `<kind> -> <to>` [[edge]] classes this row
 #            admits. An [[edge]] is named by kinds and belongs to the column: a [[minted]] row
 #            admits a crate's cells and disagreements and NO class.
+#   ceiling — optional, same field and same reader as [[minted]]'s: the highest figure any
+#             construction-ceilings key this column covers may carry.
 #
 # EVERY MINTED CELL IS A FIRST MEASUREMENT AND NOTHING ELSE. A column cell may not exceed what the
 # tree measures (`mint-over-measure`): above the measurement is slack minted with the row, and slack

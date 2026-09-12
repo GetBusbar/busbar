@@ -782,6 +782,11 @@ struct Announced {
 ///   so its cells are the old crate's cells under a new name — and a minted cell may not exceed the
 ///   same-kind count the base pinned for the crate it was moved from. A move cannot raise the union
 ///   of the two rows; if it does, it is not a move.
+/// * `ceiling` is OPTIONAL and this reader does not interpret it — it exists so the row can carry
+///   the figure `construction::ceilings::mints_in` needs to bound a MINTED ledger key's own value,
+///   which is a question this table's admission (that the row exists) never answered. Legal
+///   absent; present and empty, or present and not a non-negative number, is refused the same way
+///   `cells` already is.
 #[derive(Debug, Clone)]
 struct Minted {
     krate: String,
@@ -789,6 +794,15 @@ struct Minted {
     cells: i64,
     /// The crate this one was carved out of, when it was carved out of one.
     moved_from: Option<String>,
+    /// THE FIGURE THIS ROW ADMITS AT, read here and INTERPRETED nowhere here: `moved_from` says
+    /// where a carve-out's cells came from, `ceiling` says the highest one a ledger row this
+    /// admission covers may carry, and the door that reads and enforces it is
+    /// `construction::ceilings::mints_in`, which reads its own copy of this row with its own
+    /// parser by design — see that function's doc comment for why the two gates do not share a
+    /// model. So nothing in THIS module reads the field back out; carrying it here is what turns
+    /// `unknown-field` off for it, which is the whole of this commit.
+    #[allow(dead_code)]
+    ceiling: Option<i64>,
 }
 
 /// One `[[minted_kind]]` row: THE ONE THING THAT LETS A NEW KIND'S COLUMN EXIST.
@@ -827,6 +841,11 @@ struct MintedKind {
     commit: String,
     cells: i64,
     edges: i64,
+    /// THE COLUMN'S OWN FIGURE, for the same reason and read the same way as
+    /// [`Minted::ceiling`]: `construction::ceilings::mints_in` is the door that reads it, through
+    /// its own parser, never through this struct.
+    #[allow(dead_code)]
+    ceiling: Option<i64>,
 }
 
 /// One `[[renamed]]` row: A CRATE THAT IS THE SAME CRATE UNDER A NEW NAME.
@@ -1277,27 +1296,21 @@ fn push_row(reg: &mut KindRegistry, table: &str, fields: &[(String, String)], at
         // base's own `[[cell]]` counts) over in `matrix`; what is checked HERE is only that the row
         // is readable, because a row nobody can read is not an admission.
         "minted" => {
-            // `moved_from` is the one OPTIONAL field in this file, so it is lifted out before
-            // `take_row` — which refuses a field it was not asked for, correctly, for every other
-            // table. A row without it is a crate that was written rather than carved.
-            let moved_from = fields
-                .iter()
-                .find(|(k, _)| k == "moved_from")
-                .map(|(_, v)| v.clone());
-            if moved_from.as_deref() == Some("") {
-                reg.errors.push(format!(
-                    "empty-field\t{REGISTRY_FILE}:{at}\t`[[minted]]` declares `moved_from` with an \
-                     empty value; a carve-out that names no source crate has no ceiling over it"
-                ));
-                return;
-            }
-            let rest: Vec<(String, String)> = fields
-                .iter()
-                .filter(|(k, _)| k != "moved_from")
-                .cloned()
-                .collect();
-            let Some(v) = take_row(&rest, &["crate", "commit", "cells"], table, at, &mut reg.errors)
-            else {
+            // `moved_from` and `ceiling` are the two OPTIONAL fields in this table, taken by
+            // `take_row_opt` rather than `take_row` — which refuses any field it was not asked
+            // for, correctly, for every mandatory-only table. `moved_from` names a carve-out's
+            // source crate; `ceiling` exists because `kind-isolation` admits a `[[minted]]` row's
+            // EXISTENCE but has no opinion on the FIGURE it is born at — that is
+            // `construction::ceilings::mints_in`'s door, and it reads this same row for the same
+            // field. This reader only has to stop refusing it.
+            let Some((v, opt)) = take_row_opt(
+                fields,
+                &["crate", "commit", "cells"],
+                &["moved_from", "ceiling"],
+                table,
+                at,
+                &mut reg.errors,
+            ) else {
                 return;
             };
             let Ok(cells) = v[2].parse::<i64>() else {
@@ -1318,20 +1331,39 @@ fn push_row(reg: &mut KindRegistry, table: &str, fields: &[(String, String)], at
                 ));
                 return;
             }
+            let ceiling = match opt.get("ceiling") {
+                Some(raw) => match raw.parse::<i64>() {
+                    Ok(c) if c >= 0 => Some(c),
+                    _ => {
+                        reg.errors.push(format!(
+                            "bad-count\t{REGISTRY_FILE}:{at}\t`[[minted]] ceiling = \"{raw}\"` is \
+                             not a non-negative number. A ceiling that cannot be compared to a \
+                             measurement is not a ceiling"
+                        ));
+                        return;
+                    }
+                },
+                None => None,
+            };
             reg.minted.push(Minted {
                 krate: v[0].clone(),
                 commit: v[1].clone(),
                 cells,
-                moved_from,
+                moved_from: opt.get("moved_from").cloned(),
+                ceiling,
             });
         }
         // THE COLUMN ADMISSION — the row a NEW KIND's column arrives under. As with `[[minted]]`,
         // every field is checked against history over in `matrix`; what is checked here is that
         // the row reads, that its two numbers are numbers, and that its kind is one of the table's.
         "minted_kind" => {
-            let Some(v) = take_row(
+            // `ceiling` is this table's own OPTIONAL field, for the same reason `[[minted]]`
+            // carries one: `construction::ceilings::mints_in` reads it to price the column this
+            // row opens, and this reader only has to stop refusing the row that carries it.
+            let Some((v, opt)) = take_row_opt(
                 fields,
                 &["kind", "commit", "cells", "edges"],
+                &["ceiling"],
                 table,
                 at,
                 &mut reg.errors,
@@ -1370,10 +1402,25 @@ fn push_row(reg: &mut KindRegistry, table: &str, fields: &[(String, String)], at
                 ));
                 return;
             }
+            let ceiling = match opt.get("ceiling") {
+                Some(raw) => match raw.parse::<i64>() {
+                    Ok(c) if c >= 0 => Some(c),
+                    _ => {
+                        reg.errors.push(format!(
+                            "bad-count\t{REGISTRY_FILE}:{at}\t`[[minted_kind]] ceiling = \"{raw}\"` \
+                             is not a non-negative number. A ceiling that cannot be compared to a \
+                             measurement is not a ceiling"
+                        ));
+                        return;
+                    }
+                },
+                None => None,
+            };
             reg.minted_kinds.push(MintedKind {
                 kind: v[0].clone(),
                 commit: v[1].clone(),
                 cells: counts[0],
+                ceiling,
                 edges: counts[1],
             });
         }
@@ -6860,6 +6907,111 @@ impl Gate for KindIsolationGate {
             ));
         }
 
+        // THE CEILINGS DOOR'S OWN FIELD ON THE MINT DOOR'S TWO TABLES. `construction::ceilings`'s
+        // `mints_in` reads `ceiling` off `[[minted]]` and `[[minted_kind]]` rows to bound the
+        // figure a mint is born at; before this, this reader refused any `ceiling` field on either
+        // table as `unknown-field` and the row it was written on was DROPPED — a row the ceilings
+        // door needed and a row this reader threw away, at once. These five cases are that
+        // contract: legal absent (untouched by these cases), legal present with a value, illegal
+        // present and empty, illegal present and not a number — for BOTH tables — and an actually
+        // unknown field is still refused, because this reader is not being loosened, only taught
+        // one more name.
+        report.push(prove_rows_green(
+            cx,
+            self,
+            "a `[[minted]]` row carrying `ceiling` is kept, not dropped as an unknown field",
+            &[ROW_REGISTRY],
+            registry_plus(
+                cx,
+                "[[minted]]\ncrate = \"busbar-contract\"\ncommit = \"468bad131\"\ncells = \
+                 \"1\"\nceiling = \"26\"\n",
+            ),
+        ));
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "a `[[minted]]` row's `ceiling` with an empty value is refused at load",
+            &[ROW_REGISTRY],
+            registry_plus(
+                cx,
+                "[[minted]]\ncrate = \"busbar-contract\"\ncommit = \"468bad131\"\ncells = \
+                 \"1\"\nceiling = \"\"\n",
+            ),
+            &["empty-field", "ceiling"],
+        ));
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "a `[[minted]]` row's `ceiling` that is not a number is refused as a bad ceiling",
+            &[ROW_REGISTRY],
+            registry_plus(
+                cx,
+                "[[minted]]\ncrate = \"busbar-contract\"\ncommit = \"468bad131\"\ncells = \
+                 \"1\"\nceiling = \"x\"\n",
+            ),
+            &["bad-count", "ceiling", "x"],
+        ));
+        report.push(prove_rows_green(
+            cx,
+            self,
+            "a `[[minted_kind]]` row carrying `ceiling` is kept, not dropped as an unknown field",
+            &[ROW_REGISTRY],
+            registry_plus(
+                cx,
+                "[[minted_kind]]\nkind = \"plane\"\ncommit = \"468bad131\"\ncells = \
+                 \"1\"\nedges = \"1\"\nceiling = \"26\"\n",
+            ),
+        ));
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "a `[[minted_kind]]` row's `ceiling` with an empty value is refused at load",
+            &[ROW_REGISTRY],
+            registry_plus(
+                cx,
+                "[[minted_kind]]\nkind = \"plane\"\ncommit = \"468bad131\"\ncells = \
+                 \"1\"\nedges = \"1\"\nceiling = \"\"\n",
+            ),
+            &["empty-field", "ceiling"],
+        ));
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "a `[[minted_kind]]` row's `ceiling` that is not a number is refused as a bad ceiling",
+            &[ROW_REGISTRY],
+            registry_plus(
+                cx,
+                "[[minted_kind]]\nkind = \"plane\"\ncommit = \"468bad131\"\ncells = \
+                 \"1\"\nedges = \"1\"\nceiling = \"x\"\n",
+            ),
+            &["bad-count", "ceiling", "x"],
+        ));
+        // …AND THE DOOR IS NOT LOOSENED: a field neither table asked for is still refused, on both.
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "a `[[minted]]` row with a field nobody asked for is still refused",
+            &[ROW_REGISTRY],
+            registry_plus(
+                cx,
+                "[[minted]]\ncrate = \"busbar-contract\"\ncommit = \"468bad131\"\ncells = \
+                 \"1\"\nplanted_unknown = \"x\"\n",
+            ),
+            &["unknown-field", "planted_unknown"],
+        ));
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "a `[[minted_kind]]` row with a field nobody asked for is still refused",
+            &[ROW_REGISTRY],
+            registry_plus(
+                cx,
+                "[[minted_kind]]\nkind = \"plane\"\ncommit = \"468bad131\"\ncells = \
+                 \"1\"\nedges = \"1\"\nplanted_unknown = \"x\"\n",
+            ),
+            &["unknown-field", "planted_unknown"],
+        ));
+
         // THE CONTRACT SINK IS THE SPEC'S, NOT A MEASUREMENT. `hooks -> contract` is in no snapshot
         // and never was; PLUGIN-TREE.md §4 grants it, as it grants every kind the contract. This case plants that
         // dependency and requires the row to stay GREEN — it was RED before the sink was read off
@@ -8737,6 +8889,23 @@ impl Gate for KindIsolationGate {
 fn registry_plant(rows: &str) -> Overlay {
     let mut ov = Overlay::new();
     ov.set(REGISTRY_FILE, rows.to_string());
+    ov
+}
+
+/// The REAL [`REGISTRY_FILE`] with `rows` APPENDED, for a case whose subject is one new row rather
+/// than the whole table: [`registry_plant`] discards every real row, which is right when the case's
+/// row is the file's only subject, and wrong when the case needs the real `[[announced]]` /
+/// `[[cell]]` history still standing underneath it.
+fn registry_plus(cx: &Ctx, rows: &str) -> Overlay {
+    let mut ov = Overlay::new();
+    ov.set(
+        REGISTRY_FILE,
+        format!(
+            "{}\n\n{}",
+            cx.read(REGISTRY_FILE).unwrap_or_default().trim_end(),
+            rows.trim_end()
+        ),
+    );
     ov
 }
 
