@@ -145,10 +145,15 @@ busbar-voice = ["busbar-voice-codec"]
 # raises, 80 characters of reason, a key that names a row and never a slot. The array shape
 # written with `from`/`to` is neither shape and stays refused by name.
 #
-# THE TRANSITION CLOSES ON A DATE. When the last line cut in the retired header has landed, the
-# commit `gate ceiling-rose: the from/to transition closes — the retired header is refused again`,
-# cut on 2026-09-18, deletes the acceptance arm and restores the refusal. It is not a second
-# supported shape; it is a ramp with an end written on it.
+# THE TRANSITION CLOSES ON A NAMED COMMIT, NOT A DATE THIS GATE READS. Nothing here compares
+# against a clock, so nothing reds when a date passes — the transition closes when the closing
+# line lands, and it is queued to land on 2026-09-18. That commit, `gate ceiling-rose: the from/to
+# transition closes — the retired header is refused again`, deletes both transitional arms at
+# once: `read_pair`'s acceptance of this from/to header, and the ordinal-resolution arm that
+# resolves a `cell.<N>.count` key against the base's row order (`xtask/src/gates/construction/
+# ceilings.rs`, `judged`). It is not a second supported shape; it is a ramp with an end written on
+# it, and the end is a landing. See `docs/ci/gate-integrity.md`'s construction-rows section for
+# the full statement of what that commit deletes.
 
 # NO ENTRY STANDS HERE TODAY, and an empty list is this mechanism working rather than resting:
 # every entry that ever stood here was struck once the base carried it.

@@ -864,11 +864,16 @@ fn partition(entries: Vec<Raise>, mut at_base: Vec<Raise>) -> Declared {
 /// delta that is a raise, and a key that is a row's IDENTITY and never its ordinal. The transition
 /// is about how a declaration is spelled, not about what it has to say.
 ///
-/// AND IT CLOSES ON A DATE. The warning is not a second supported shape — it is a ramp with an end
-/// written on it. When the last line cut in the retired header has landed, the commit
-/// **`gate ceiling-rose: the from/to transition closes — the retired header is refused again`**,
-/// cut on **2026-09-18**, deletes [`read_pair`]'s acceptance arm and restores the refusal below it.
-/// Until then a from/to entry is a warning; after it, a refusal, and nothing else changes.
+/// AND IT CLOSES ON A NAMED COMMIT, NOT A DATE A GATE READS. The warning is not a second supported
+/// shape — it is a ramp with an end written on it, and the end is a landing, not a clock: nothing
+/// in this gate reads `now()` or compares against a stored date, so nothing reds when a date passes.
+/// The transition closes when the closing line lands, and it is queued to land on 2026-09-18. When
+/// it does, the commit **`gate ceiling-rose: the from/to transition closes — the retired header is
+/// refused again`** deletes [`read_pair`]'s acceptance arm (the block above reading the retired
+/// header as a delta) and restores the refusal below it. Until then a from/to entry is a warning;
+/// after the closing line lands, a refusal, and nothing else changes. See
+/// `docs/ci/gate-integrity.md`'s construction-rows section for the full statement of what that
+/// commit deletes.
 pub fn raises_in(text: &str) -> (Vec<Raise>, Vec<String>, Vec<String>) {
     raises_in_at(text, &Ordinals::default())
 }
@@ -995,7 +1000,9 @@ fn judged(
     // position 178, and the next `[[cell]]` struck above it hands that slot to a different one. It
     // is RESOLVED against the base's row order while the transition is open (see [`Ordinals`]) and
     // warned about, because two thirds of the declarations waiting in the queue are written that
-    // way; with no base to resolve against, it is refused, as it will be again after the cutoff.
+    // way; with no base to resolve against, it is refused, as it will be again once the closing
+    // line lands (queued for 2026-09-18, see `raises_in`'s doc comment above `read_pair`) — that
+    // same commit deletes this resolution arm alongside `read_pair`'s from/to acceptance.
     let mut warnings = Vec::new();
     let mut written_key = None;
     let key = match ordinal_form(key) {

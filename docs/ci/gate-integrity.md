@@ -123,6 +123,28 @@ The first three are read from the gates that own those rules rather than re-impl
 implemented in two places is a rule two gates can disagree about while both stay green. If the
 construction gate stops emitting `ceiling-slack` at all, this gate goes **red**, not quiet.
 
+### The `ceiling-rose` transition, and its closing line
+
+`ceiling-rose` currently reads a declared raise in either of two shapes: the array form
+(`[[gate.ceiling_raises]]`, keyed by a row's identity) and a retired `[gate.ceiling_raises."<key>"]
+from`/`to` header, kept alive only because a queue of already-measured faces was cut against the
+reader that took it. The same transition also lets an ordinal key (`cell.<N>.count`) resolve
+against the base's row order, for the same reason — most of the queued declarations were written
+against a position, not an identity. Neither of these is read from a clock: nothing in the gate
+calls `now()`, reads a commit date, or compares against a stored one, so nothing turns red when a
+date passes. The transition closes only when a specific commit lands.
+
+That commit is **`gate ceiling-rose: the from/to transition closes — the retired header is refused
+again`**, queued to land on **2026-09-18**. It deletes two arms in
+`xtask/src/gates/construction/ceilings.rs`: `read_pair`'s acceptance of the retired `from`/`to`
+header, and the ordinal-resolution arm inside `judged` that resolves a `cell.<N>.count` key against
+the base's row order. After it lands, both shapes are refused exactly as they were before the
+transition opened. A selftest case (`transition_arms_present_cases` in
+`xtask/src/gates/construction/selftest.rs`) plants both shapes today and holds them to green by
+name; the closing commit's own diff deletes that case along with the arms it was proving present,
+so a reader can tell the transition is still open by that case still existing rather than by
+reading a date in a comment.
+
 `ship-ready:standing-reds` is the one row that reads a posture. The standing-red list is a *dev-line
 convenience*: construction rows that are known red, written down, and deliberately not blocking the
 integration line while they are drained. That is reasonable to have and unreasonable to promote —

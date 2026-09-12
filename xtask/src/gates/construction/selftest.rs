@@ -577,6 +577,9 @@ fn ceiling_ratchet_cases<'a>(
 
     r.append(declared_raise_cases(gate, cx, base, &based, &text, cfg));
     r.append(kind_row_identity_cases(gate, cx, base, &based, &text));
+    r.append(transition_arms_present_cases(
+        gate, cx, base, &based, &text, cfg,
+    ));
     r.append(minted_ceiling_cases(gate, cx, base, &based, &text));
 
     // A base whose ceilings file cannot be PARSED is a comparison that cannot be made, and a
@@ -1236,6 +1239,115 @@ fn kind_row_identity_cases<'a>(
             cell_count(&kinds) + 500
         )),
         &["keyed by ORDINAL", "no `[[cell]]` at that position"],
+    ));
+    r
+}
+
+/// THE CLOSING LINE, NAMED RATHER THAN A DATE NOTHING READS.
+///
+/// The commit that lands **`gate ceiling-rose: the from/to transition closes — the retired header
+/// is refused again`**, queued for 2026-09-18, deletes two arms: `read_pair`'s acceptance of the
+/// retired `from`/`to` header (see the case above naming it), and the ordinal-resolution arm in
+/// `judged` that resolves a `cell.<N>.count` key against the base's row order (see
+/// [`kind_row_identity_cases`]'s ordinal case). Both are proven present, separately, by cases that
+/// exercise the mechanism they hang off of. This one exists for a narrower reason: it plants BOTH
+/// arms in a single tree and holds them to green TODAY, by name, so that landing the closing
+/// commit is what turns this specific case red — not a re-read of a comment, a case the closing
+/// commit's own diff has to delete along with the arms it removes. A case that outlives the code it
+/// was proving is a case asserting nothing; this one and the closing commit are landed together for
+/// exactly that reason.
+fn transition_arms_present_cases<'a>(
+    gate: &'a dyn Gate,
+    cx: &'a Ctx,
+    base: &Overlay,
+    based: &str,
+    ceilings_text: &str,
+    cfg: &Cfg,
+) -> Report<'a> {
+    let mut r = Report::new();
+    let text = &strip_raises(ceilings_text);
+
+    // ARM ONE: `read_pair`'s acceptance of the retired `from`/`to` header.
+    let (table, key) = ("rules.legacy-reach", "ceiling");
+    let Some(now) = cfg.doc.table(table).and_then(|t| t.int_of(key)) else {
+        r.note_infra_failure(format!(
+            "[{table}] carries no `{key}`, so the closing line's from/to arm is unproven rather \
+             than passing"
+        ));
+        return r;
+    };
+    const RISE: i64 = 3;
+    let Some(lowered) = ceilings::set_int(text, table, key, now - RISE) else {
+        r.note_infra_failure(format!(
+            "[{table}] `{key}` could not be lowered at the base, so the closing line's from/to \
+             arm is unproven rather than passing"
+        ));
+        return r;
+    };
+    let dotted = format!("{table}.{key}");
+    let pair_entry = format!(
+        "\n[gate.ceiling_raises.\"{dotted}\"]\nfrom = {}\nto = {now}\nbecause = \"planted by the \
+         self-test for the 2026-09-18 closing line: the retired from/to header must still be \
+         accepted today\"\n",
+        now - RISE
+    );
+
+    // ARM TWO: the ordinal-resolution arm in `judged`, over the same setup
+    // `kind_row_identity_cases` uses — a strike above the raised cell, so an ordinal key would name
+    // a different cell entirely were it not resolved against the base's row order.
+    let file = ceilings::KIND_CEILINGS;
+    let Ok(kinds) = cx.read(file) else {
+        r.note_infra_failure(format!(
+            "{file} could not be read, so the closing line's ordinal arm is unproven rather than \
+             passing"
+        ));
+        return r;
+    };
+    let struck = strike_cell(&kinds, 3);
+    let raised = (178..cell_count(&kinds)).find_map(|n| match cell_identity(&kinds, n) {
+        Some((k, kd, c)) if c > 0 => Some((n, k, kd, c)),
+        _ => None,
+    });
+    let (Some(struck), Some((ordinal, krate, kind, count))) = (struck, raised) else {
+        r.note_infra_failure(format!(
+            "{file} does not carry a strikable `[[cell]]` above a later one with a count above \
+             zero, so the closing line's ordinal arm is unproven rather than passing"
+        ));
+        return r;
+    };
+    let Some(base_kinds) = set_cell_count(&kinds, ordinal, count - 1) else {
+        r.note_infra_failure(format!(
+            "the `[[cell]]` at {ordinal} in {file} carries no count to lower at the base, so the \
+             closing line's ordinal arm is unproven rather than passing"
+        ));
+        return r;
+    };
+    let identity = format!("cell.{krate}.{kind}.count");
+    let ordinal_entry = format!(
+        "\n[[gate.ceiling_raises]]\nkey = \"cell.{ordinal}.count\"\nfile = \"{file}\"\nby = 1\n\
+         because = \"planted by the self-test for the 2026-09-18 closing line: an ordinal key \
+         must still resolve against the base's row order today\"\n"
+    );
+
+    let mut ov = on(base);
+    ov.set_command(format!("git-show:{based}:{CEILINGS}"), lowered);
+    ov.set_command(format!("git-show:{based}:{file}"), base_kinds);
+    ov.set(CEILINGS, format!("{text}{pair_entry}{ordinal_entry}"));
+    ov.set(file, struck);
+
+    r.push(prove_row_pass_naming(
+        cx,
+        gate,
+        "the 2026-09-18 closing line's two transitional arms -- the retired from/to header and \
+         ordinal resolution -- are both still accepted today; the closing commit is what flips \
+         this case, and its own diff deletes the case along with the arms",
+        ceilings::ROW_ROSE,
+        ov,
+        &[
+            "retired `from`/`to` header",
+            "keyed by ORDINAL, resolved",
+            &format!("`{identity}`"),
+        ],
     ));
     r
 }
