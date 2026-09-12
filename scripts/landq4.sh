@@ -6603,6 +6603,30 @@ PWSTUB
   _t "an unknown argument really is refused"      2 \
      "$(bash "$LQ_SRC" --smoke-latchkey --landing --nope >/dev/null 2>&1; echo $?)"
 
+  # ── A JUDGED LANDING IS NOT AN UNREACHABLE BOX (the C.2 landing smoke, 2026-09-12) ────────────
+  # union GREEN, oracle shard RED, BASE REPLAY RED on the same rows: land.sh wrote a per-line
+  # verdict row and said the red was the tip's standing state. The gate called it box-unreachable —
+  # the class that, on the live engine, sends lq_fault_wake off to start EC2 boxes for a workload
+  # that has left them. The floor belongs to a batch with NO rows; it must not reach a judged one.
+  echo "landq4 selftest: a landing that delivered a verdict row was judged"
+  local _jd="$root/judged"; mkdir -p "$_jd"
+  printf 'land.sh: RED — oracle: the same rows are red at the base (shard(s) fam-1); this is the tip'"'"'s standing state, not these picks'"'"'\n' >"$_jd/base-red.log"
+  printf 'scp: Connection closed\n' >"$_jd/unreach.log"
+  : >"$_jd/quiet.log"
+  _t "the base-standing oracle red is no transport fault" "" "$(lq_fault_class 1 "$_jd/base-red.log")"
+  _t "  ...so with a verdict row the gate reads 'judged'"  "judged" \
+     "$(rows=1; f="$(lq_fault_class 1 "$_jd/base-red.log")"; [ -n "$f" ] || f=judged; echo "$f")"
+  _t "  ...and with NO row the floor still applies"        "box-unreachable" \
+     "$(rows=0; if [ "$rows" -ge 1 ]; then lq_fault_class 1 "$_jd/base-red.log"; else lq_batch_fault_class 1 "$_jd/base-red.log"; fi)"
+  _t "a REAL transport fault is still named, row or not"   "box-unreachable" \
+     "$(rows=1; f="$(lq_fault_class 2 "$_jd/unreach.log")"; [ -n "$f" ] || f=judged; echo "$f")"
+  _t "  ...and a quiet log with a row is judged, not a box" "judged" \
+     "$(rows=1; f="$(lq_fault_class 1 "$_jd/quiet.log")"; [ -n "$f" ] || f=judged; echo "$f")"
+  _t "the gate asks lq_fault_class when it has a row"      1 \
+     "$(lq_count "$(grep -c 'fcls="$(lq_fault_class "$lrc" "$sroot/land.log")"' "$LQ_SRC" || true)")"
+  _t "  ...and the floor only when it has none"            1 \
+     "$(lq_count "$(grep -c 'fcls="$(lq_batch_fault_class "$lrc" "$sroot/land.log")"' "$LQ_SRC" || true)")"
+
   # ── COUNTING A ZERO (the big-batch smoke's own defect, 2026-09-12) ────────────────────────────
   # `grep -c` on a file with no matches PRINTS 0 and EXITS 1. The engine used to write
   # `$(grep -c … || echo 0)`, which captures `0\n0` and turns every arithmetic use into a syntax
@@ -6915,7 +6939,28 @@ if [ "${1:-}" = "--smoke-latchkey" ] && [ "${2:-}" = "--landing" ]; then
   else
     # A RED LANDING IS NOT A FAILED SMOKE unless the transport is what failed. The distinction is
     # the one --smoke-latchkey already draws for a pre-proof: a verdict about a TREE is the tree's.
-    fcls="$(lq_batch_fault_class "$lrc" "$sroot/land.log")"
+    # A LANDING THAT DELIVERED A PER-LINE VERDICT ROW WAS JUDGED, so the box-unreachable FLOOR must
+    # not be applied to it. `lq_batch_fault_class` exists for a batch that came back with NO
+    # per-line outcomes — that is what its floor is a statement about — and calling it here made a
+    # judged landing read as a transport fault.
+    #
+    # MEASURED (the C.2 landing smoke, 2026-09-12): union GREEN, oracle shard fam-1 RED, and the
+    # BASE REPLAY RED on the same rows. land.sh said so itself —
+    #
+    #   RED — oracle: the same rows are red at the base (shard(s) fam-1); this is the tip's
+    #   standing state, not these picks'
+    #
+    # — which is ruling D's `NONE:base-test` shape one leg over: a red the BARE BASE also has is the
+    # base's. Three jobs ran, three verdicts came back and a verdict row was written. Reporting that
+    # as `box-unreachable` told the operator the transport had failed when it had worked perfectly,
+    # and on the live engine that class is what sends lq_fault_wake off to start EC2 boxes for a
+    # workload that has left them.
+    if [ "${rows:-0}" -ge 1 ] 2>/dev/null; then
+      fcls="$(lq_fault_class "$lrc" "$sroot/land.log")"
+      [ -n "$fcls" ] || fcls=judged
+    else
+      fcls="$(lq_batch_fault_class "$lrc" "$sroot/land.log")"
+    fi
     echo "smoke: the landing did not go green (rc $lrc, class $fcls)"
     case "$fcls" in
       cap|harness|box-unreachable)
