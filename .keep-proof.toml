@@ -1,24 +1,27 @@
 # WHAT THIS HAND-BACK ASKS keep-proof TO PROVE.
 #
-# .keep-proof.toml is read by .github/workflows/keep-proof.yml at the root of a `keep-*` branch. It
-# scopes the two expensive legs of the run to what the branch actually touched, so a verdict says
-# something specific instead of "everything, slowly". The INTEGRATION tree carries no such file —
-# it is a keep-branch artefact, and this branch is a keep branch.
+# .keep-proof.toml is read by .github/workflows/keep-proof.yml at the root of a `keep-*` branch, and
+# by scripts/prove-latchkey.sh before it rents a runner. It scopes the two expensive legs of the run
+# to what the branch actually touched, so a verdict says something specific instead of "everything,
+# slowly". The INTEGRATION tree carries no such file — it is a keep-branch artefact, and this branch
+# is a keep branch.
 #
 #   families — a regex handed to the shadow oracle's `--id-filter`. The oracle replays this build
 #              against the published 1.5.5 binary and reports divergences; unfiltered that is the
-#              better part of half an hour. This branch is the pre-existing-reds branch: it works
-#              on the tree's frozen PARSE SURFACE (a limit's three refusal sentences) and on the
-#              gates that read the tree as data, so the honest scope is the boot / config /
-#              documented families — the cells that read what the binary PRINTS when it refuses a
-#              document, which is exactly what the first item here moved back to 1.5.5's words.
-#              boot.refusal|BOOT-P20|validate, BOOT-P29 and BOOT-P30 are the three cells that must
-#              turn byte-identical; the rest of the boot/config families are the blast radius of
-#              touching a deserializer every section's parse runs through.
+#              better part of half an hour. THIS branch is the MONEY branch: the llm plane stops
+#              carrying an amount, the root's fee decision is re-keyed off the recorded corpus
+#              rather than off a transcription that spelled a vendor 146 times, and the ceilings
+#              that measure both are re-pinned. So the scope is every family where a fee, a posting
+#              or a ledger row can move — `billing`, `ledger` and the four billing planes — plus
+#              `boot`, because a tariff that cannot be parsed is a node that does not start. If ANY
+#              cell in those families moves a byte, this line stops and reports rows; a money golden
+#              is never re-recorded to make a line green.
 #   tests    — the packages whose test binaries the sharded legs must include by name.
-#              `busbar-substrate` holds the limit grammar itself; `busbar-core` re-exports it at
-#              the historical config path and owns the pre-pass that sets the frozen-list rule;
-#              `busbar` is the binary whose --validate the boot cells drive; `xtask` is the gate
-#              runner whose own selftests are on this branch's list.
-families = '^(boot|config|documented)([|.]|$)'
-tests = ["busbar-core", "busbar-substrate", "xtask", "busbar"]
+#              `busbar-llm` is the plane whose Meter step lost its pricing seam; `busbar` is the
+#              composition root that holds the one pricing site and the byte-identity cells that
+#              drive it; `busbar-unit-cost` is the crate that owns the card and the one whose scope
+#              grammar this line drained a dialect's name out of; `xtask` is the gate runner whose
+#              ceilings and kind matrix this line re-pinned, and whose own selftests are the proof
+#              that the re-pin is a measurement rather than an edit.
+families = '^(billing|ledger|llm|mcp|a2a|admin\.ops|boot)([|.]|$)'
+tests = ["busbar-llm", "busbar", "busbar-unit-cost", "xtask"]
