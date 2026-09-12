@@ -374,8 +374,9 @@ pub fn ceiling_rose(cx: &Ctx) -> Vec<CRow> {
             )]
         }
     };
-    let declared = raises(cx);
+    let (declared, refused) = raises(cx);
     let mut risen: Vec<String> = Vec::new();
+    risen.extend(refused);
     let mut allowed: Vec<String> = Vec::new();
     let mut unreadable: Vec<String> = Vec::new();
     let mut used: BTreeSet<String> = BTreeSet::new();
@@ -415,7 +416,7 @@ pub fn ceiling_rose(cx: &Ctx) -> Vec<CRow> {
             // row sees is gone, and the entry describes nothing and is refused as stale. See
             // [`raises`].
             match declared.get(&format!("{file}:{path}")) {
-                Some(r) if r.from == *before && r.to == *after && r.because.len() >= MIN_REASON => {
+                Some(r) if after - before == r.by => {
                     used.insert(format!("{file}:{path}"));
                     allowed.push(format!(
                         "{file} {path}: {before} -> {after} ({})",
@@ -425,9 +426,8 @@ pub fn ceiling_rose(cx: &Ctx) -> Vec<CRow> {
                 Some(r) => {
                     used.insert(format!("{file}:{path}"));
                     risen.push(format!(
-                        "{file} {path}: {before} -> {after}, declared as {}->{} with a {}-character reason. A raise is allowed by a declaration that describes THIS raise and gives a reason, or by nothing",
-                        r.from,
-                        r.to,
+                        "{file} {path}: {before} -> {after}, declared as by {} with a {}-character reason. A raise is allowed by a declaration whose `by` matches THIS raise and gives a reason, or by nothing",
+                        r.by,
                         r.because.len()
                     ));
                 }
@@ -441,9 +441,8 @@ pub fn ceiling_rose(cx: &Ctx) -> Vec<CRow> {
     for (key, r) in &declared {
         if !used.contains(key) {
             risen.push(format!(
-                "{key}: a declared raise {} -> {} that is not a raise at the base {}. Either the                  commit that needed it has landed — strike the entry — or it names a ceiling that                  never moved.",
-                r.from,
-                r.to,
+                "{key}: a declared raise by {} that is not a raise at the base {}. Either the                  commit that needed it has landed — strike the entry — or it names a ceiling that                  never moved.",
+                r.by,
                 &base[..8.min(base.len())]
             ));
         }
@@ -494,15 +493,39 @@ const ROSE_TITLE: &str = "no ceiling in a qa ceilings file is higher than it is 
 /// A declaration shorter than this is a shrug, not a reason.
 const MIN_REASON: usize = 80;
 
-/// ONE DECLARED RAISE: the exact numbers, and why.
+/// ONE DECLARED RAISE: the delta it adds to the ceiling it names, and why.
 #[derive(Debug, Clone)]
 pub struct Raise {
-    pub from: i64,
-    pub to: i64,
+    pub by: i64,
     pub because: String,
 }
 
-/// The declared raises, keyed `<file>:<dotted path>`.
+/// THE `from`/`to` HEADER FORM WAS RETIRED ON THIS DATE, by name, in the message [`raises`] emits
+/// for one — not by a clock this gate reads.
+///
+/// A pair of absolute numbers cannot sum with a second face's declaration of the same ceiling, and
+/// it does not expire on its own the way a delta against the base does: `from`/`to` describes a
+/// SLOT, `key`/`by` describes an EDIT. That is why the shape is retired, and the date is written
+/// here so the refusal names when the retirement took effect. IT IS DOCUMENTATION, NOT A GUARD:
+/// nothing in this module calls `now()`, reads a commit date, or compares against a stored one, so
+/// the gate's verdict never depends on the wall-clock day a build happens to run on — only on the
+/// code and the ceilings file it is given. A gate whose PASS/FAIL for an unchanged tree could flip
+/// between two runs a week apart, with no diff between them, is not a gate a landing can trust; see
+/// `docs/ci/gate-integrity.md`'s construction-rows section.
+pub const RAISE_FORM_RETIRED_ON: &str = "2026-09-18";
+
+/// A key naming a SLOT rather than an IDENTITY: any dotted segment that is nothing but digits, as
+/// in `cell.0.count` (the array position of a `[[cell]]` row). Striking one row of an array
+/// renumbers every later row, so a declaration keyed by ordinal re-targets whichever row slides
+/// into that position after the strike that motivated it — a declared raise pointing at a ceiling
+/// nobody declared it for. A declaration names a row, never a position.
+fn is_ordinal_key(key: &str) -> bool {
+    key.split('.')
+        .any(|seg| !seg.is_empty() && seg.chars().all(|c| c.is_ascii_digit()))
+}
+
+/// The declared raises, keyed `<file>:<dotted path>`, and every entry this reader refuses along
+/// with why.
 ///
 /// WHY A RAISE CAN BE DECLARED AT ALL. A ratchet with no route through it is a ratchet somebody
 /// edits the rule to get past, and there is one raise that is legitimate and cannot be avoided:
@@ -511,42 +534,91 @@ pub struct Raise {
 /// said nothing. The commit that makes such a row gate cannot also be the commit that reports a
 /// regression, because nothing was ever held.
 ///
-/// So the raise is DECLARED, and the declaration is not a waiver: it names the file, the exact
-/// dotted path and BOTH numbers, so it describes one edit and not a direction; it carries a reason
-/// long enough to be one; and it EXPIRES BY ITSELF, because the moment its commit lands the base
-/// carries the new number, the rise disappears, and an entry that describes no rise is refused as
-/// stale. It cannot be left behind, and it cannot cover the next raise of the same ceiling.
-pub fn raises(cx: &Ctx) -> BTreeMap<String, Raise> {
+/// So the raise is DECLARED, and the declaration is not a waiver: `[[gate.ceiling_raises]]` names
+/// the ceiling by IDENTITY (`key`, never an ordinal — see [`is_ordinal_key`]), the exact delta it
+/// adds (`by`, always positive: a fall needs no declaration at all), and a reason long enough to be
+/// one (`because`, at least [`MIN_REASON`] characters); `file` is optional and defaults to
+/// [`CEILINGS`]. It EXPIRES BY ITSELF, because the moment its commit lands the base carries the new
+/// number, the rise disappears, and an entry that describes no rise is refused as stale (see
+/// [`ceiling_rose`]). It cannot be left behind, and — because it is a delta rather than a pair of
+/// absolute numbers — a second declaration against the same key sums rather than colliding.
+///
+/// THE RETIRED `[gate.ceiling_raises."<key>"]` `from`/`to` HEADER IS REFUSED BY NAME, never read as
+/// a declaration: see [`RAISE_FORM_RETIRED_ON`].
+pub fn raises(cx: &Ctx) -> (BTreeMap<String, Raise>, Vec<String>) {
     let mut out = BTreeMap::new();
+    let mut refused = Vec::new();
     let Ok(text) = cx.read(CEILINGS) else {
-        return out;
+        return (out, refused);
     };
     let Ok(doc) = crate::toml_doc::parse_str(&text) else {
-        return out;
+        return (out, refused);
     };
     // `Document::children` cannot answer this: the entry's key IS a dotted path, so a header like
     // `[gate.ceiling_raises."rules.legacy-reach.prefixes.busbar_substrate.figure"]` registers a
     // table whose remainder contains dots, which `children` filters out as a deeper sub-table.
     let prefix = "gate.ceiling_raises.";
-    for (key, t) in doc
+    let array_len = doc.array_len("gate.ceiling_raises");
+    for (key, _t) in doc
         .tables()
         .into_iter()
         .filter_map(|(p, t)| p.strip_prefix(prefix).map(|k| (k.to_string(), t)))
     {
-        let (Some(from), Some(to)) = (t.int_of("from"), t.int_of("to")) else {
+        // The array-of-tables form (`[[gate.ceiling_raises]]`) is stored internally as tables
+        // named `gate.ceiling_raises.0`, `.1`, … — the same prefix this loop matches on. Those are
+        // read below, by `array_of_tables`; a bare numeric segment here is one of THOSE rows, never
+        // a `[gate.ceiling_raises."<key>"]` header (whose key is a ceiling's dotted path and so is
+        // never a bare integer).
+        if key.parse::<usize>().is_ok_and(|i| i < array_len) {
+            continue;
+        }
+        refused.push(format!(
+            "[{prefix}\"{key}\"]: the `from`/`to` header form of a declared raise was retired on \
+             {RAISE_FORM_RETIRED_ON} and is refused by name — a pair of absolute numbers cannot \
+             sum with a second face's declaration of the same ceiling and does not expire on its \
+             own. Declare a delta instead:\n[[gate.ceiling_raises]]\nkey = \"{key}\"\nby = \
+             <the raise>\nbecause = \"...\""
+        ));
+    }
+    for t in doc.array_of_tables("gate.ceiling_raises") {
+        let (Some(key), Some(by)) = (t.str_of("key"), t.int_of("by")) else {
+            refused.push(
+                "[[gate.ceiling_raises]]: a declared raise names a `key` and a `by`, and this one \
+                 does not"
+                    .to_string(),
+            );
             continue;
         };
+        if by <= 0 {
+            refused.push(format!(
+                "[[gate.ceiling_raises]] key = \"{key}\": `by = {by}` is not a raise. A ceiling \
+                 that goes down is re-pinned by `--write` with no declaration at all"
+            ));
+            continue;
+        }
+        let because = t.str_of("because").unwrap_or("").trim().to_string();
+        if because.len() < MIN_REASON {
+            refused.push(format!(
+                "[[gate.ceiling_raises]] key = \"{key}\": a {}-character `because` names no face. \
+                 A declared raise names the face it lands and the lines it measured, in at least \
+                 {MIN_REASON} characters",
+                because.len()
+            ));
+            continue;
+        }
+        if is_ordinal_key(key) {
+            refused.push(format!(
+                "[[gate.ceiling_raises]] key = \"{key}\": a declared raise keyed by ORDINAL. \
+                 Striking one row of an array renumbers every later row, so this entry re-targets \
+                 whichever row slides into that position. Key it by the fields that NAME the row \
+                 instead of its position."
+            ));
+            continue;
+        }
         let file = t.str_of("file").unwrap_or(CEILINGS).to_string();
-        out.insert(
-            format!("{file}:{key}"),
-            Raise {
-                from,
-                to,
-                because: t.str_of("because").unwrap_or("").trim().to_string(),
-            },
-        );
+        out.insert(format!("{file}:{key}"), Raise { by, because });
     }
-    out
+    (out, refused)
 }
 
 /// Every integer in a TOML document, by dotted path — WHETHER IT IS WRITTEN AS A TOML INTEGER OR
@@ -633,5 +705,103 @@ mod tests {
     fn a_pin_that_names_no_key_writes_nothing() {
         assert!(set_int(DOC, "rules.y", "n", 9).is_none());
         assert!(set_int(DOC, "rules.x", "missing", 9).is_none());
+    }
+
+    // ── the raise-form cutoff: the retired header refused by name, the array form read ──────────
+
+    fn raises_in(text: &str) -> (BTreeMap<String, Raise>, Vec<String>) {
+        let cx = crate::ctx::Ctx::workspace().expect("the workspace opens");
+        let mut ov = crate::ctx::Overlay::new();
+        ov.set(CEILINGS, text);
+        raises(&cx.with_overlay(ov))
+    }
+
+    /// THE RETIRED HEADER IS NEVER READ AS A DECLARATION, whatever `from`/`to` it carries — it is
+    /// refused BY NAME, naming the shape and the date it closed on, so a reader is told what to
+    /// write instead rather than left to guess why the raise it declared did nothing.
+    #[test]
+    fn the_retired_from_to_header_is_refused_by_name_with_the_closing_date() {
+        let (live, refused) = raises_in(
+            "[gate.ceiling_raises.\"rules.legacy-reach.ceiling\"]\nfrom = 1\nto = 9\n\
+             because = \"planted by a unit test; this shape is refused whatever it says\"\n",
+        );
+        assert!(
+            live.is_empty(),
+            "the retired header must never become a live declaration"
+        );
+        assert_eq!(refused.len(), 1);
+        assert!(refused[0].contains("rules.legacy-reach.ceiling"));
+        assert!(refused[0].contains(RAISE_FORM_RETIRED_ON));
+        assert!(refused[0].contains("from"));
+        assert!(refused[0].contains("[[gate.ceiling_raises]]"));
+    }
+
+    /// THE NEW SHAPE IS READ, keyed by identity, and is unaffected by the retired header living
+    /// beside it — the cutoff is about the OLD shape, not about the mechanism.
+    #[test]
+    fn the_array_form_is_read_as_a_live_declaration() {
+        let (live, refused) = raises_in(
+            "[[gate.ceiling_raises]]\nkey = \"rules.legacy-reach.ceiling\"\nby = 8\n\
+             because = \"a unit test proving the array shape is read as a delta by identity, not \
+             a pair of absolute numbers\"\n",
+        );
+        assert!(
+            refused.is_empty(),
+            "a well-formed array entry is not refused: {refused:?}"
+        );
+        let r = live
+            .get(&format!("{CEILINGS}:rules.legacy-reach.ceiling"))
+            .expect("the entry is keyed by file:key");
+        assert_eq!(r.by, 8);
+    }
+
+    /// A `by` that is not positive is not a raise — a fall needs no declaration, and a `by` of
+    /// exactly zero is a declaration proving nothing happened.
+    #[test]
+    fn a_by_that_does_not_raise_is_refused() {
+        let (live, refused) = raises_in(
+            "[[gate.ceiling_raises]]\nkey = \"rules.legacy-reach.ceiling\"\nby = 0\n\
+             because = \"a unit test proving a non-positive delta is refused outright here, with \
+             no declaration needed\"\n",
+        );
+        assert!(live.is_empty());
+        assert_eq!(refused.len(), 1);
+        assert!(refused[0].contains("by = 0"));
+    }
+
+    /// A reason under the floor names no face, in either shape.
+    #[test]
+    fn a_short_reason_is_refused() {
+        let (live, refused) = raises_in(
+            "[[gate.ceiling_raises]]\nkey = \"rules.legacy-reach.ceiling\"\nby = 5\n\
+             because = \"too short\"\n",
+        );
+        assert!(live.is_empty());
+        assert_eq!(refused.len(), 1);
+        assert!(refused[0].contains("character"));
+    }
+
+    /// A key naming a slot — `cell.0.count` — is refused whatever it lines up with: striking one
+    /// `[[cell]]` renumbers every later row, so an ordinal key re-targets whichever row slides into
+    /// that position.
+    #[test]
+    fn an_ordinal_key_is_refused_in_the_array_form() {
+        let (live, refused) = raises_in(
+            "[[gate.ceiling_raises]]\nkey = \"cell.0.count\"\nby = 5\n\
+             because = \"a unit test proving an ordinal-keyed declaration is refused by name, \
+             whatever it lines up with\"\n",
+        );
+        assert!(live.is_empty());
+        assert_eq!(refused.len(), 1);
+        assert!(refused[0].contains("ORDINAL"));
+    }
+
+    /// An identity key that merely CONTAINS digits (a crate name, a version) is not an ordinal —
+    /// only a dotted SEGMENT that is nothing but digits is a slot.
+    #[test]
+    fn a_key_containing_digits_that_is_not_a_bare_segment_is_not_ordinal() {
+        assert!(!is_ordinal_key("legacy-reach.busbar2.figure"));
+        assert!(is_ordinal_key("cell.0.count"));
+        assert!(is_ordinal_key("dep.12.from"));
     }
 }

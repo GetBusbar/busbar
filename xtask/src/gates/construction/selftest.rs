@@ -596,19 +596,19 @@ fn ceiling_ratchet_cases<'a>(
         ov.set(
             CEILINGS,
             format!(
-                "{text}\n[gate.ceiling_raises.\"rules.legacy-reach.ceiling\"]\nfrom = 999\n\
-                 to = 998\nbecause = \"planted by the self-test: a declaration whose numbers are \
-                 not the raise it sits beside, so the raise is still undeclared and still \
-                 refused\"\n"
+                "{text}\n[[gate.ceiling_raises]]\nkey = \"rules.legacy-reach.ceiling\"\n\
+                 by = 999999\nbecause = \"planted by the self-test: a declaration whose `by` is \
+                 not the delta of the raise it sits beside, so the raise is still undeclared and \
+                 still refused\"\n"
             ),
         );
         r.push(prove_rows_red(
             cx,
             gate,
-            "a declared raise whose numbers are not this raise excuses nothing",
+            "a declared raise whose `by` is not this raise's delta excuses nothing",
             &[ceilings::ROW_ROSE],
             ov,
-            &["declared as 999->998"],
+            &["declared as by 999999"],
         ));
     } else {
         r.note_infra_failure(
@@ -624,7 +624,7 @@ fn ceiling_ratchet_cases<'a>(
     ov.set(
         CEILINGS,
         format!(
-            "{text}\n[gate.ceiling_raises.\"rules.legacy-reach.ceiling\"]\nfrom = 1\nto = 2\n\
+            "{text}\n[[gate.ceiling_raises]]\nkey = \"rules.legacy-reach.ceiling\"\nby = 1\n\
              because = \"planted by the self-test; it describes no raise on this branch and must \
              therefore be refused as a stale declaration rather than carried\"\n"
         ),
@@ -637,6 +637,85 @@ fn ceiling_ratchet_cases<'a>(
         ov,
         &["is not a raise at the base"],
     ));
+
+    // ── the raise-form cutoff: the retired `from`/`to` header is refused BY NAME ────────────────
+    //
+    // `[gate.ceiling_raises."<key>"]` `from`/`to` closed on `ceilings::RAISE_FORM_RETIRED_ON`
+    // (2026-09-18) — see that constant's doc comment for why the date is documentation naming when
+    // the shape stopped being read, never a clock this gate compares against. `qa/construction.toml`
+    // and `qa/kind-isolation.toml` carry zero entries in the retired shape at this base (`grep -c
+    // '\[gate\.ceiling_raises\.' qa/*.toml` is 0 everywhere), so the cutoff is a pure parser change
+    // rather than a live migration: the shape is refused unconditionally, and this case plants it
+    // — over a real rise, so the only thing that could excuse the row is the declaration the plant
+    // writes — and holds `ceiling-rose` RED by the refusal, naming the shape and the closing date.
+    if let Some(base_lowered) = ceilings::set_int(&text, "rules.legacy-reach", "ceiling", 0) {
+        let mut ov = on(base);
+        ov.set_command(format!("git-show:{based}:{CEILINGS}"), base_lowered);
+        ov.set(
+            CEILINGS,
+            format!(
+                "{text}\n[gate.ceiling_raises.\"rules.legacy-reach.ceiling\"]\nfrom = 0\nto = 1\n\
+                 because = \"planted by the self-test: the retired from/to header, which is \
+                 refused by name whatever numbers it carries\"\n"
+            ),
+        );
+        r.push(prove_rows_red(
+            cx,
+            gate,
+            "the retired `[gate.ceiling_raises.\"<key>\"]` from/to header is refused by name, \
+             naming the closing date, and never read as a declaration",
+            &[ceilings::ROW_ROSE],
+            ov,
+            &[
+                "rules.legacy-reach.ceiling",
+                ceilings::RAISE_FORM_RETIRED_ON,
+                "[[gate.ceiling_raises]]",
+            ],
+        ));
+    } else {
+        r.note_infra_failure(
+            "[rules.legacy-reach] carries no `ceiling` to lower at the base, so the arm that \
+             refuses the retired from/to header is unproven",
+        );
+    }
+
+    // AND THE NEW SHAPE, DECLARING THE SAME RAISE, IS UNAFFECTED BY THE CUTOFF — the transition
+    // is about the OLD shape only; a well-formed `[[gate.ceiling_raises]]` entry still excuses the
+    // real rise it describes, on this same tree, today.
+    if let Some(base_lowered) = ceilings::set_int(&text, "rules.legacy-reach", "ceiling", 0) {
+        let mut ov = on(base);
+        ov.set_command(format!("git-show:{based}:{CEILINGS}"), base_lowered);
+        let Some(now_val) = crate::toml_doc::parse_str(&text)
+            .ok()
+            .and_then(|d| d.table("rules.legacy-reach")?.int_of("ceiling"))
+        else {
+            r.note_infra_failure(
+                "[rules.legacy-reach] ceiling could not be read back, so the arm proving the new \
+                 shape unaffected by the cutoff is unproven",
+            );
+            return r;
+        };
+        ov.set(
+            CEILINGS,
+            format!(
+                "{text}\n[[gate.ceiling_raises]]\nkey = \"rules.legacy-reach.ceiling\"\nby = {now_val}\n\
+                 because = \"planted by the self-test: the array shape, declaring the same raise, \
+                 is unaffected by the from/to cutoff\"\n"
+            ),
+        );
+        r.push(prove_rows_green(
+            cx,
+            gate,
+            "the array-of-tables raise form is unaffected by the retired header's cutoff",
+            &[ceilings::ROW_ROSE],
+            ov,
+        ));
+    } else {
+        r.note_infra_failure(
+            "[rules.legacy-reach] carries no `ceiling` to lower at the base, so the arm proving \
+             the new shape unaffected by the cutoff is unproven",
+        );
+    }
 
     // A base whose ceilings file cannot be PARSED is a comparison that cannot be made, and a
     // comparison that cannot be made is not a comparison that passed.
