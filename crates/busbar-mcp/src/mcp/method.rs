@@ -197,7 +197,17 @@ pub(crate) async fn dispatch(
         return Some(answer);
     }
     Some(match row.op {
-        ops::OP_DISCOVER => discover(ctx, id),
+        // `ops::OP_DISCOVER` HAS NO ARM. The sixth class the composition's node has taken, and the
+        // last of the money-free ones §14.3 orders first: it merges this plane's own catalogue
+        // records and reaches no upstream, so nothing is priced, nothing is dialled and no grant is
+        // spent. The arm that answered it here with no door, no budget, no audit row and no meter
+        // is DELETED rather than kept beside the node. Its document is still this crate's and is
+        // `discover_document` below; what left is the serving.
+        //
+        // Its `methods` list is unchanged by any of this, and deliberately so: `implemented_methods`
+        // reads the PLANE'S static `ops::METHODS` table, never this match's arms. A class that
+        // advertised itself by having an arm here would have un-advertised itself the moment it
+        // moved, and the advertisement would have been measuring the wrong thing all along.
         // `ops::OP_TOOLS_LIST` HAS NO ARM. The class is served through the composition's node —
         // `served`, consulted before this table — so the arm that answered it here
         // with no door, no budget, no audit row and no meter is DELETED rather than kept beside it.
@@ -462,6 +472,19 @@ fn completion_complete(id: Option<serde_json::Value>) -> Response {
 /// answer makes about the protocol now lives. What is left here is the three facts that are not the
 /// plane's to know — the BINARY's version, the codec's accepted-version list and this crate's own
 /// tasks extension id — handed over as one value.
+/// `server/discover`'s document, in the shape the node's table holds.
+///
+/// The same lift the five before it are, and it forwards to [`discover`], which is byte for byte
+/// the body that answered this class when the dispatch table still had an arm for it. The class
+/// takes no parameters, and saying so by ignoring the argument is the declaration.
+fn discover_document(
+    ctx: &Ctx<'_>,
+    _params: Option<&serde_json::Value>,
+    id: Option<serde_json::Value>,
+) -> Response {
+    discover(ctx, id)
+}
+
 fn discover(ctx: &Ctx<'_>, id: Option<serde_json::Value>) -> Response {
     result(
         id,
@@ -2862,8 +2885,9 @@ pub(super) type ClassDocument =
 /// spent. `resources/list` is the second, `prompts/list` the third and `resources/templates/list`
 /// the fourth on the same measurement — one record walk each, no upstream — and
 /// `completion/complete` is the fifth on a stronger version of it, since its answer is a constant
-/// and reads no record at all. The order the rest follow is the plan's (§14.3), money-free first and
-/// `tools/call` last.
+/// and reads no record at all. `server/discover` is the sixth and the last of the money-free ones:
+/// it merges the same records the four list classes walk. The order the rest follow is the plan's
+/// (§14.3), money-free first and `tools/call` last.
 pub(super) fn document_for(op: busbar_contract::ids::OpClassId) -> Option<ClassDocument> {
     if op == ops::OP_TOOLS_LIST {
         return Some(tools_list_document);
@@ -2879,6 +2903,9 @@ pub(super) fn document_for(op: busbar_contract::ids::OpClassId) -> Option<ClassD
     }
     if op == ops::OP_COMPLETION {
         return Some(completion_complete_document);
+    }
+    if op == ops::OP_DISCOVER {
+        return Some(discover_document);
     }
     None
 }

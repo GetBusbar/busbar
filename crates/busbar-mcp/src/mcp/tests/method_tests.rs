@@ -779,6 +779,10 @@ async fn a_minted_ask_the_caller_cannot_answer_is_32021_and_400() {
 /// document for this class, which is only true for a class whose arm is gone — `document_for`'s rows
 /// and `dispatch`'s arms are complements by construction, and a class in both would be two serving
 /// paths.
+///
+/// BOTH SIDES OF THE COMPLEMENT ARE ASSERTED HERE, which is what makes it a check rather than a
+/// tally: the moved classes must have a row, and every class still holding an arm must NOT. Moving a
+/// class turns this cell red until BOTH lists are updated, so the two can never quietly disagree.
 #[test]
 fn the_moved_classes_are_served_through_the_node_and_no_longer_by_the_dispatch_table() {
     assert!(
@@ -802,14 +806,29 @@ fn the_moved_classes_are_served_through_the_node_and_no_longer_by_the_dispatch_t
         "completion/complete is the fifth class the node has taken, so its document is named here"
     );
     assert!(
-        super::document_for(super::ops::OP_TOOL_CALL).is_none(),
-        "tools/call has NOT moved: it is the last class, and it still has its arm"
+        super::document_for(super::ops::OP_DISCOVER).is_some(),
+        "server/discover is the sixth class the node has taken, so its document is named here too"
     );
-    assert!(
-        super::document_for(super::ops::OP_DISCOVER).is_none(),
-        "server/discover has not moved either; a class with a row here and an arm there would be \
-         two serving paths"
-    );
+    // AND THE OTHER HALF OF THE COMPLEMENT: every class still holding an arm has NO row. Named one
+    // by one rather than derived, so that moving a class makes this cell go red until the line
+    // below it is struck — a class with a row here AND an arm there would be two serving paths, and
+    // this is the assertion that would catch it. `tools/call` is last on this list by the plan's
+    // order (§14.3), because it is the only one with money on it.
+    for (op, method) in [
+        (super::ops::OP_PROMPT_GET, "prompts/get"),
+        (super::ops::OP_RESOURCE_READ, "resources/read"),
+        (super::ops::OP_TASK_GET, "tasks/get"),
+        (super::ops::OP_TASK_UPDATE, "tasks/update"),
+        (super::ops::OP_TASK_CANCEL, "tasks/cancel"),
+        (super::ops::OP_SUBSCRIPTIONS_LISTEN, "subscriptions/listen"),
+        (super::ops::OP_TOOL_CALL, "tools/call"),
+    ] {
+        assert!(
+            super::document_for(op).is_none(),
+            "`{method}` has NOT moved: it still has its arm in the dispatch table, so the node's \
+             table must not name a document for it"
+        );
+    }
 }
 
 /// A class the node has taken is not answered at all when nothing is installed.
