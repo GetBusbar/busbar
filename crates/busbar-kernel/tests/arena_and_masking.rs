@@ -224,7 +224,12 @@ fn the_arena_is_four_kibibytes_and_is_reset_per_frame() {
         .expect("room");
     assert_eq!(bytes.as_slice(), b"a frame's worth of bytes");
     assert_eq!(arena.used(), 24);
-    drop(arena);
+    // THE LEASE ENDS HERE, and it ends by itself. `UnitArena` implements no `Drop` — it owns
+    // nothing to release, it is a cursor over a buffer somebody else holds — so the lease is over
+    // at its last use and the re-lease below is legal from this line on. It used to say
+    // `drop(arena)`, which reads like a release and is not one: `drop` on a type with no `Drop`
+    // only extends the lifetimes inside it, which is the opposite of what the line was there to
+    // say, and clippy refuses it by name (`drop_non_drop`) under the workspace's `-D warnings`.
 
     // On the relay path the arena is reset per frame, so a session that relays all day uses the
     // same four kibibytes it used at its first frame. The reset IS the re-lease: it takes the
