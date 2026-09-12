@@ -96,8 +96,6 @@ jobs:
         with:
           action: restore
           key: cargo-${{ runner.os }}-build-clippy-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
-          restore-keys: |
-            cargo-${{ runner.os }}-build-clippy-
           path: |
             ~/.cargo/registry
             ~/.cargo/git
@@ -213,8 +211,6 @@ jobs:
         with:
           action: restore
           key: cargo-${{ runner.os }}-tests-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
-          restore-keys: |
-            cargo-${{ runner.os }}-tests-
           path: |
             ~/.cargo/registry
             ~/.cargo/git
@@ -486,8 +482,6 @@ jobs:
         with:
           action: restore
           key: cargo-${{ runner.os }}-gates-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
-          restore-keys: |
-            cargo-${{ runner.os }}-gates-
           path: |
             ~/.cargo/registry
             ~/.cargo/git
@@ -629,8 +623,6 @@ jobs:
         with:
           action: restore
           key: cargo-${{ runner.os }}-oracle-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
-          restore-keys: |
-            cargo-${{ runner.os }}-oracle-
           path: |
             ~/.cargo/registry
             ~/.cargo/git
@@ -860,8 +852,6 @@ jobs:
         with:
           action: restore
           key: cargo-${{ runner.os }}-construction-gate-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
-          restore-keys: |
-            cargo-${{ runner.os }}-construction-gate-
           path: |
             ~/.cargo/registry
             ~/.cargo/git
