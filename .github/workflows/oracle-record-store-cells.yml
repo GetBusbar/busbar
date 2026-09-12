@@ -152,9 +152,10 @@ jobs:
           [ -n "$digest" ] || { echo "::error::golden-digests.tsv pins no 1.5.5 linux tarball; there is nothing to record from"; exit 1; }
           echo "key=oracle-artifacts-${digest:0:12}" >> "$GITHUB_OUTPUT"
 
-      - name: Cache the pinned 1.5.5 artifacts
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4
+      - name: Cache the pinned 1.5.5 artifacts (restore)
+        uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
         with:
+          action: restore
           path: ~/.cache/busbar-oracle
           key: ${{ steps.rev.outputs.key }}
 
@@ -175,6 +176,12 @@ jobs:
           for pl in $plugins; do
             bash testing/shadow-oracle/fetch-plugin.sh "$pl" >/dev/null
           done
+      - name: Cache the pinned 1.5.5 artifacts (save)
+        uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
+        with:
+          action: save
+          path: ~/.cache/busbar-oracle
+          key: ${{ steps.rev.outputs.key }}
 
       # THE BACKEND VERSIONS GO IN THE NOTE, NOT JUST IN THE LOG. A store cell's recorded bytes can
       # carry a backend's own error text or its wire behaviour, so "which Postgres" is part of what

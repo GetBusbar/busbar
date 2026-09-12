@@ -145,13 +145,20 @@ jobs:
           }
           echo "ref=$ref" >> "$GITHUB_OUTPUT"
           echo "suite=$(printf '%s' "$suite" | tr -c 'A-Za-z0-9._-' '-')" >> "$GITHUB_OUTPUT"
-      - name: Cache the pinned control peer
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      - name: Cache the pinned control peer (restore)
+        uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
         with:
+          action: restore
           path: .mcp-conformance/sdk
           key: mcp-control-peer-${{ steps.pin.outputs.ref }}-${{ steps.pin.outputs.suite }}
       - name: Judge the pinned reference SDK
         run: ./scripts/mcp-conformance.sh --official-control
+      - name: Cache the pinned control peer (save)
+        uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
+        with:
+          action: save
+          path: .mcp-conformance/sdk
+          key: mcp-control-peer-${{ steps.pin.outputs.ref }}-${{ steps.pin.outputs.suite }}
       - name: Publish the control results
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -177,7 +184,17 @@ jobs:
         with:
           node-version: '22'
       - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - name: Resolve cargo home (Latchkey image sets CARGO_HOME off $HOME)
+        uses: ./.github/actions/cargo-home
+      - name: Latchkey Fast Cache (cargo registry + target, restore)
+        uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
+        with:
+          action: restore
+          key: cargo-${{ runner.os }}-official-subject-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
+          path: |
+            ${{ env.CARGO_HOME }}/registry
+            ${{ env.CARGO_HOME }}/git
+            target
 
       # THE SUBJECT IS BUILT FROM THIS COMMIT, and that is the change that makes this leg mean
       # something. It used to be armed from `vars.MCP_CONFORMANCE_SUBJECT_URL` -- an externally
@@ -194,6 +211,15 @@ jobs:
         env:
           CARGO_INCREMENTAL: '0'
         run: cargo build --bin busbar
+      - name: Latchkey Fast Cache (cargo registry + target, save)
+        uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
+        with:
+          action: save
+          key: cargo-${{ runner.os }}-official-subject-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
+          path: |
+            ${{ env.CARGO_HOME }}/registry
+            ${{ env.CARGO_HOME }}/git
+            target
 
       # This step RECORDS the arm state and does not judge it; the `Judge busbar` step below fails
       # on its own when unarmed, and the verdict fails independently on the output. Two mechanisms
@@ -328,7 +354,17 @@ jobs:
         with:
           python-version: '3.12'
       - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - name: Resolve cargo home (Latchkey image sets CARGO_HOME off $HOME)
+        uses: ./.github/actions/cargo-home
+      - name: Latchkey Fast Cache (cargo registry + target, restore)
+        uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
+        with:
+          action: restore
+          key: cargo-${{ runner.os }}-battery-subject-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
+          path: |
+            ${{ env.CARGO_HOME }}/registry
+            ${{ env.CARGO_HOME }}/git
+            target
 
       # THE SUBJECT IS BUILT FROM THIS COMMIT, the same change that made the official subject leg
       # mean something, applied to the leg that never ran at all. This one was armed out of
@@ -343,6 +379,15 @@ jobs:
         env:
           CARGO_INCREMENTAL: '0'
         run: cargo build --bin busbar
+      - name: Latchkey Fast Cache (cargo registry + target, save)
+        uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
+        with:
+          action: save
+          key: cargo-${{ runner.os }}-battery-subject-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
+          path: |
+            ${{ env.CARGO_HOME }}/registry
+            ${{ env.CARGO_HOME }}/git
+            target
       - name: Record the arm state
         id: arm
         env:
@@ -413,11 +458,30 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - name: Resolve cargo home (Latchkey image sets CARGO_HOME off $HOME)
+        uses: ./.github/actions/cargo-home
+      - name: Latchkey Fast Cache (cargo registry + target, restore)
+        uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
+        with:
+          action: restore
+          key: cargo-${{ runner.os }}-fixture-absence-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
+          path: |
+            ${{ env.CARGO_HOME }}/registry
+            ${{ env.CARGO_HOME }}/git
+            target
       # Two axes, because a fixture can survive into a shipped build two independent ways and
       # neither axis sees the other's. See the script's header.
       - name: Both axes
         run: ./scripts/mcp-fixture-absence-gate.sh --run
+      - name: Latchkey Fast Cache (cargo registry + target, save)
+        uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
+        with:
+          action: save
+          key: cargo-${{ runner.os }}-fixture-absence-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
+          path: |
+            ${{ env.CARGO_HOME }}/registry
+            ${{ env.CARGO_HOME }}/git
+            target
 
   verdict:
     name: MCP conformance verdict

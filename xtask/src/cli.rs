@@ -260,6 +260,13 @@ fn gate(args: &[String]) -> i32 {
             // disagree about what the tree measures; what the flag changes is whether the answer
             // is printed or committed.
             "construction" => crate::gates::construction::ceilings::rewrite(&cx),
+            // The declared shape is a DERIVED projection of the workflow (structural JSON), never
+            // hand-edited — see `qa_gate_dispatch::DECLARED`'s doc comment. `--write` regenerates it
+            // from whatever `qa-gate.yml` this branch carries, exactly like `design-bindings` and
+            // `construction` regenerate their own derived artifacts from what this branch measures.
+            "qa-gate-dispatch" => {
+                crate::gates::qa_gate_dispatch::QaGateDispatchGate::new().write_declared(&cx)
+            }
             _ => {
                 eprintln!("xtask gate {name}: this gate has nothing to write");
                 return 2;

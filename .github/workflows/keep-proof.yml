@@ -139,7 +139,8 @@ jobs:
   # So each shard compiles the WHOLE workspace exactly as CI does -- `cargo build --workspace` then
   # `cargo test --workspace --locked --no-run`, one feature resolution, identical to the unsharded
   # run -- and then EXECUTES a deterministic slice of the test binaries that compile produced. The
-  # compile is what sccache deduplicates across the runners; the execution is what parallelises.
+  # compile is what the Latchkey Fast Cache (cargo registry + target) deduplicates across the
+  # runners; the execution is what parallelises.
   # Membership is DERIVED (sorted binary list, index modulo four), never a hand-maintained list, so a
   # new test target joins a shard the day it exists and cannot fall out of all of them.
   #

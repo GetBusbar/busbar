@@ -240,27 +240,27 @@ jobs:
       - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
         with:
           components: clippy, rustfmt
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - name: Resolve cargo home (Latchkey image sets CARGO_HOME off $HOME)
+        uses: ./.github/actions/cargo-home
+      - name: Latchkey Fast Cache (cargo registry + target, restore)
+        # Both `plugin/target` and `busbarAI/target` are cached explicitly: both checkouts above
+        # use `path:`, so the two Cargo workspaces live at `plugin/` and `busbarAI/`, and neither is
+        # at $GITHUB_WORKSPACE's root. Both entries are needed, not just the plugin: this workflow
+        # builds busbar-plugin-pack and a full `cargo build --release --bin busbar` out of
+        # busbarAI/, which is by far the larger of the two.
+        #
+        # The key includes `matrix.ref`: two legs build DIFFERENT busbar commits into
+        # `busbarAI/target`, and sharing one cache entry between them means each leg restores the
+        # other's artifacts and immediately invalidates them, which is worse than no cache.
+        uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
         with:
-          # `workspaces:` IS REQUIRED HERE and its absence was a silent, total cache miss. The action
-          # defaults to a single workspace at `$GITHUB_WORKSPACE`, and NOTHING is checked out there:
-          # both checkouts above use `path:`, so the two Cargo workspaces live at `plugin/` and
-          # `busbarAI/`. With no `workspaces:` the action looked for a Cargo.toml at the checkout
-          # root, did not find one, printed "could not find Cargo.toml", and carried on WITHOUT
-          # FAILING -- so every plugin repo rebuilt busbar and its whole dependency graph from
-          # scratch on every single run while the log said the cache step succeeded.
-          #
-          # Both entries are needed, not just the plugin: this workflow builds busbar-plugin-pack and
-          # a full `cargo build --release --bin busbar` out of busbarAI/, which is by far the larger
-          # of the two.
-          #
-          # The key must also separate the matrix legs. Two legs build DIFFERENT busbar commits into
-          # the same `busbarAI/target`; sharing one cache entry between them means each leg restores
-          # the other's artifacts and immediately invalidates them, which is worse than no cache.
-          workspaces: |
-            plugin
-            busbarAI
-          key: busbar-${{ matrix.ref }}
+          action: restore
+          key: cargo-${{ runner.os }}-build-test-signoff-${{ matrix.ref }}-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
+          path: |
+            ${{ env.CARGO_HOME }}/registry
+            ${{ env.CARGO_HOME }}/git
+            plugin/target
+            busbarAI/target
 
       - name: PUBLIC-HYGIENE GATE — nothing THIS repo publishes may describe how it was built
         # INHERITED BY EVERY PLUGIN REPO, deliberately, and that inheritance is the whole point: the
@@ -318,6 +318,16 @@ jobs:
           BUSBAR_TEST_WIREMOCK_URL: ${{ inputs.service == 'wiremock' && 'http://127.0.0.1:8080' || '' }}
           BUSBAR_TEST_LDAP_URL: ${{ inputs.service == 'openldap' && 'ldap://127.0.0.1:389' || '' }}
         run: cargo test
+      - name: Latchkey Fast Cache (cargo registry + target, save)
+        uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
+        with:
+          action: save
+          key: cargo-${{ runner.os }}-build-test-signoff-${{ matrix.ref }}-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
+          path: |
+            ${{ env.CARGO_HOME }}/registry
+            ${{ env.CARGO_HOME }}/git
+            plugin/target
+            busbarAI/target
 
       # REMOVED, and deliberately not replaced by a skippable equivalent: a step named
       # `cargo test (sibling busbarAI checkout — this backend's own monorepo integration test)`
@@ -881,13 +891,30 @@ jobs:
       - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
         with:
           components: llvm-tools-preview
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - name: Resolve cargo home (Latchkey image sets CARGO_HOME off $HOME)
+        uses: ./.github/actions/cargo-home
+      - name: Latchkey Fast Cache (cargo registry + target, restore)
+        uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
         with:
-          workspaces: plugin
+          action: restore
+          key: cargo-${{ runner.os }}-coverage-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
+          path: |
+            ${{ env.CARGO_HOME }}/registry
+            ${{ env.CARGO_HOME }}/git
+            plugin/target
       - uses: taiki-e/install-action@b3c2424e62a3f08fd88bf434799847a4d0da36c8 # cargo-llvm-cov
       - name: Collect coverage (report only, not a re-gate)
         working-directory: plugin
         run: cargo llvm-cov --workspace --ignore-run-fail --lcov --output-path lcov.info
+      - name: Latchkey Fast Cache (cargo registry + target, save)
+        uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
+        with:
+          action: save
+          key: cargo-${{ runner.os }}-coverage-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
+          path: |
+            ${{ env.CARGO_HOME }}/registry
+            ${{ env.CARGO_HOME }}/git
+            plugin/target
       - name: Upload to Codecov (never fails the build)
         uses: codecov/codecov-action@0fb7174895f61a3b6b78fc075e0cd60383518dac # v5
         with:
