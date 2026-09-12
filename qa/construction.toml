@@ -639,7 +639,7 @@ identical counting rule to busbar-caps + busbar-contract once their proof tables
 this rule's own `loc-ceilings:caps-contract` row is not that row and is not removed by it -- the two \
 are expected to converge once the move lands, not to be reconciled here."""
 kernel_crate = "busbar-kernel"
-kernel_ceiling = 5408
+kernel_ceiling = 5459
 caps_crate = "busbar-caps"
 contract_crate = "busbar-contract"
 caps_contract_ceiling = 3492
@@ -647,7 +647,7 @@ unit_crate_glob = "busbar-unit-*"
 unit_total_ceiling = 14591
 verbs_crate = "busbar-unit-verbs"
 verbs_ceiling = 1428
-union_ceiling = 23491
+union_ceiling = 23542
 # Files (by basename, wherever they sit under busbar-kernel/src) whose bodies seed the call-graph
 # name-match: every identifier called from one of these files, that busbar-kernel does not itself
 # define, is looked up by name against every busbar-unit-* file.
@@ -656,7 +656,7 @@ teller_files = ["teller.rs"]
 [rules.loc-ceilings.kernel_files.teller]
 label = "Teller loop"
 patterns = ["teller.rs"]
-ceiling = 635
+ceiling = 686
 
 [rules.loc-ceilings.kernel_files.pump]
 label = "pump/scheduler"
@@ -1967,3 +1967,38 @@ key = "cell.busbar.plugin-tooling.count"
 file = "qa/kind-isolation.toml"
 by = 2
 because = "busbar x plugin-tooling (busbar, plugin-tooling): the admission bar an arrival DECLARES is the plugin ABI's `RouteAuth`, recorded verbatim on the spec so the core auth middleware enforces it before the accept fn runs. This binary names it through `busbar_plugin_loader`'s re-export — the way it already reaches every other ABI wire type — rather than taking a second, direct edge to the ABI crate (28 -> 30)"
+
+# ── declared raises: THE LOOP'S OPENING — one FACE, the same 51 lines counted three times.
+# ARCHITECTURE.md section 1.1 carries the face. The loop's first six steps (arrival, decode,
+# authenticate, verify, approve, admit) all answer IN PLACE; only Route touches the wire. So those
+# six are now reachable on their own as `busbar_kernel::teller::open_unit`, which runs them and
+# STOPS at the door with the hold in the cell and the leases drawn; `serve_held` runs the remaining
+# four and the exit on what the door produced; `refuse_unit` is the one way an opening's refusal is
+# ended. `run_unit_async` is those three halves called in order.
+#
+# NOT ONE STEP MOVED AND NOT ONE STEP IS WRITTEN TWICE. `teller-step-order` reads the same ten calls
+# in the same evaluation order, spliced across three functions instead of one, and stays GREEN. The
+# 51 lines are signatures, the two types the door's answer travels on (`Held`, `Opened`) and the doc
+# comments' code — the seam itself, not a second copy of anything.
+#
+# WHY IT HAD TO EXIST: an arrival whose shape is a long-lived SESSION cannot be opened and served in
+# one call. The thing that makes the session exist — an accepted upgrade, a bound carrier — is a
+# point of no return, so the ten questions have to be answered BEFORE it and the wire work then runs
+# per leg on that one answer. Without the seam such a caller either admits AFTER the point of no
+# return, which is an admission that cannot refuse, or grows a second admission beside the loop.
+# It is SESSION-NEUTRAL: no plane, dialect, transport or modality is named by any of it.
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.kernel_files.teller.ceiling"
+by = 51
+because = "FACE (ARCHITECTURE.md section 1.1) the loop's OPENING: `open_unit` (the six steps that answer in place, stopping at the door with the hold in the cell), `serve_held` (the remaining four and the exit) and `refuse_unit` (the refused audit door), plus the `Held` and `Opened` types the door's answer travels on. 51 surface lines in teller.rs, measured; no step moved and no step written twice, and `teller-step-order` reads the same ten calls in the same order across the three functions (635 -> 686)"
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.kernel_ceiling"
+by = 51
+because = "The SAME 51 lines, counted again in the crate total the Teller loop belongs to (5,408 -> 5,459). No other file in `busbar-kernel` moved a line, and no busbar-unit-* file entered or left the call-graph name-match"
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.union_ceiling"
+by = 51
+because = "The SAME 51 lines again, counted in the union the kernel belongs to (23,491 -> 23,542). Neither `busbar-caps`/`busbar-contract` nor the `busbar-unit-*` union moved a line on this landing"
