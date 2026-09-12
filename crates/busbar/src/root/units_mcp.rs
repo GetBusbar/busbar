@@ -63,6 +63,7 @@ use busbar_plane_mcp::meta::{CLASS_BYTES, CLASS_TOOL_CALLS};
 use busbar_plane_mcp::{claims, ops, records, McpPlane, Server};
 use busbar_plugin_loader::store_adapter::StoreAdapter;
 
+use crate::root::bindings::Posture;
 use crate::root::store::{PlaneRecords, RecordAnswer, RecordLeg, RecordRefusal};
 use busbar_unit_admission::{
     Admission, AdmissionUnit, BucketChain, ClassEstimate, Door, Estimate, InMemoryCells, Pricer,
@@ -775,6 +776,23 @@ pub enum ApproveRefusal {
 /// compare true. A deployment with no registration is refused before either, because an authorization
 /// to reach nothing is not an authorization.
 ///
+/// ## AND THE POSTURE, WHICH IS ASKED FIRST OF ALL
+///
+/// [`Posture::Ungoverned`] is a deployment that configured NO grant table. There is no table for any
+/// of the three answers to be about: no grant to compare, no policy entry the operator wrote, and no
+/// authorization for a registration to be an authorization TO. So the three do not run, and the
+/// resources the plane named travel with the approval exactly as they do on the governed path —
+/// possibly none of them, which on this posture is a fact about the deployment rather than a
+/// refusal.
+///
+/// THIS IS NOT A BYPASS AND IT IS NOT NEW. A roleless admitted principal is served UNGOVERNED by
+/// 1.5.5, warned about on stderr in so many words, and asserted by a battery against the real
+/// binary. The class this file serves used to be a `match` arm with no approve step in front of it
+/// at all; moving it onto a node put one there, and a step that refused where the release before it
+/// served would be 1.6.0 inventing a refusal on a supported posture. The posture is the composition
+/// root's own reading of the operator's config and reaches here as a value, never as an inference
+/// from an absent key — see [`Posture`].
+///
 /// The hook seats are not here. `approve` runs first and a veto after it wins regardless, which is a
 /// composition the root makes around this call rather than something the scope unit can express.
 pub fn approve(
@@ -782,8 +800,12 @@ pub fn approve(
     op: OpClassId,
     held: Grants,
     policy: &dyn PolicyView,
+    posture: Posture,
 ) -> Result<Vec<Resource>, ApproveRefusal> {
     let resources = resources(plane, op);
+    if posture == Posture::Ungoverned {
+        return Ok(resources);
+    }
     if resources.is_empty() {
         return Err(ApproveRefusal::NoResource);
     }
@@ -1813,6 +1835,8 @@ pub struct McpBindings<'r> {
     pub meter_policy: &'r crate::root::policy::MeterPolicyHandle,
     /// What the scope unit reads at approve.
     pub scope_policy: &'r crate::root::policy::ScopePolicy,
+    /// WHETHER THIS DEPLOYMENT CONFIGURED A GRANT TABLE, as the approve step is told it.
+    pub posture: Posture,
     /// The journal, the ledger and the two audit chains.
     pub durability: &'r Mutex<crate::root::durability::Durability>,
     /// The registration this unit is on, keyed the way the breaker keys it.
@@ -2092,6 +2116,7 @@ impl Units for McpUnits<'_> {
             op,
             self.grants,
             self.bindings.scope_policy,
+            self.bindings.posture,
         ) {
             // A deployment that registered nothing has nothing here to be authorized to reach, and
             // a pair the policy is silent about has not been authorized. Both are the scope unit's

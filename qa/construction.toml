@@ -2600,3 +2600,24 @@ key = "cell.busbar.unit.count"
 file = "qa/kind-isolation.toml"
 by = 38
 because = "THE MCP NODE handing each step to the unit that answers it: `busbar_unit_admission::{ChainWalk, GroupTable}` for the door, `busbar_unit_scope::{Grants, Scope}` for the grant the approve step reads, `busbar_unit_trust` for the destination seal the verify step takes, and `busbar_unit_auth`, `busbar_unit_breaker`, `busbar_unit_ledger` and `busbar_unit_wal` where the cells assert the step reached the unit rather than a stub. Every core step served ONCE by a kind-neutral unit is the rule; naming the units is how a composition obeys it."
+
+# THE DECLARED UNGOVERNED POSTURE at the approve step: `root::bindings::Posture`, read once at boot
+# off the operator's `auth.role_bindings`, carried on the node and on every leg's bindings, and asked
+# by `root::units_mcp::approve` before any of its three answers. A deployment that configured NO
+# grant table has no table for a grant check to be about — and 1.5.5 serves exactly such a deployment
+# UNGOVERNED, warns about it on the session's own stderr, and has a battery asserting it. The sixth
+# class reached an approve step for the first time when it moved onto the node; a step that refused
+# there would have been 1.6.0 inventing a refusal on a supported posture, so the posture is carried
+# to the step instead. Two cells rise, both in the composition: the mount that READS the config and
+# the cell that asserts both halves of the ruling on one deployment shape.
+[[gate.ceiling_raises]]
+key = "cell.busbar.plane.count"
+file = "qa/kind-isolation.toml"
+by = 8
+because = "THE DECLARED UNGOVERNED POSTURE, named where the composition reads it and where both halves of it are asserted: the mount in main.rs that reads `auth.role_bindings` once and hands the node a `Posture`, and the approve cells that drive one deployment shape twice — governed refuses exactly as before, ungoverned approves. The posture is the COMPOSITION's reading of the operator's config and never an inference from an absent key, because an inference would turn every unresolved credential on a governed deployment into an ungoverned one."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.transport.count"
+file = "qa/kind-isolation.toml"
+by = 2
+because = "THE DECLARED UNGOVERNED POSTURE's second half, in the cell that proves the posture is not a skeleton key: a registered deployment on a real wire, with a policy that says nothing about the class, is STILL refused on the governed path. The registration a cell like that needs is a server on a transport, and naming the wire is the only way to write one down."

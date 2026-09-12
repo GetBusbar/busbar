@@ -817,9 +817,85 @@ fn nothing_registered_is_a_refusal_and_not_a_pass() {
         ops::OP_TOOL_CALL,
         Grants::of(Scope::Full),
         &policy,
+        crate::root::bindings::Posture::Governed,
     )
     .expect_err("a plane with no server authorizes nothing");
     assert_eq!(refusal, ApproveRefusal::NoResource);
+}
+
+/// **THE UNGOVERNED POSTURE, BOTH HALVES, ON THE SAME THREE INPUTS.**
+///
+/// One deployment shape is asked twice and answers twice, which is what makes this a check on the
+/// posture rather than on the plane: nothing registered, a policy that names the class, and a caller
+/// holding every grant. Told it is GOVERNED, the approve step refuses — the plane named no resource,
+/// so there is nothing here to be authorized to reach, and that is the answer this release has
+/// always given. Told it is UNGOVERNED, it approves — no grant table is configured, so there is no
+/// table for the refusal to be about.
+///
+/// WHY THIS CELL EXISTS AT ALL. `server/discover` reached this step for the first time when it moved
+/// onto the node; as a `match` arm it had no approve step in front of it and 1.5.5 answered a
+/// roleless principal with a document. A step that refused there would have been 1.6.0 inventing a
+/// refusal on a posture the release before it supports, warns about on stderr and has a battery for.
+/// The two assertions below are the ruling, written down: byte-identity on the ungoverned posture,
+/// and the governed path untouched.
+///
+/// And the silence half is asserted too, because an ungoverned posture that ALSO skipped a
+/// registered deployment's policy lookup would be a hole rather than a posture: with a server
+/// registered and a policy that says nothing, the governed answer is still a refusal.
+#[test]
+fn the_ungoverned_posture_skips_the_grant_check_and_the_governed_one_refuses_exactly_as_before() {
+    let policy = crate::root::policy::ScopePolicy::new().declaring(
+        claim_key(),
+        ops::OP_DISCOVER,
+        Scope::ReadOnly,
+    );
+    let governed = approve(
+        &McpPlane::EMPTY,
+        ops::OP_DISCOVER,
+        Grants::of(Scope::Full),
+        &policy,
+        crate::root::bindings::Posture::Governed,
+    )
+    .expect_err("a governed deployment that registered nothing authorizes nothing");
+    assert_eq!(
+        governed,
+        ApproveRefusal::NoResource,
+        "the governed path is not changed by the existence of the other one"
+    );
+
+    let ungoverned = approve(
+        &McpPlane::EMPTY,
+        ops::OP_DISCOVER,
+        Grants::of(Scope::Full),
+        &policy,
+        crate::root::bindings::Posture::Ungoverned,
+    )
+    .expect("a deployment that configured no grant table has no grant check to fail");
+    assert!(
+        ungoverned.is_empty(),
+        "the resources the plane named travel with the approval unchanged, and this plane named \
+         none — the posture skips the CHECK, it does not invent a resource"
+    );
+
+    // AND THE POSTURE IS NOT A SKELETON KEY FOR THE GOVERNED PATH. Same class, a server registered,
+    // and a policy that says nothing about it: governed is still a refusal, and silence is still
+    // what refuses it.
+    static SERVERS: &[Server] = &[Server {
+        id: "fs",
+        lane: LaneId::new("fs-lane"),
+        host: "127.0.0.1:9",
+        transport: claims::TRANSPORT_HTTP,
+    }];
+    let silent = crate::root::policy::ScopePolicy::new();
+    let refusal = approve(
+        &McpPlane::new(SERVERS),
+        ops::OP_DISCOVER,
+        Grants::of(Scope::Full),
+        &silent,
+        crate::root::bindings::Posture::Governed,
+    )
+    .expect_err("silence is a refusal on the governed path, posture or no posture");
+    assert_eq!(refusal, ApproveRefusal::NoPolicyEntry);
 }
 
 /// A pair the policy says nothing about is refused, even when the caller holds every grant.
@@ -836,8 +912,14 @@ fn silence_is_a_refusal() {
     }];
     let plane = McpPlane::new(SERVERS);
     let silent = crate::root::policy::ScopePolicy::new();
-    let refusal = approve(&plane, ops::OP_TOOL_CALL, Grants::of(Scope::Full), &silent)
-        .expect_err("an unwritten policy entry authorizes nothing");
+    let refusal = approve(
+        &plane,
+        ops::OP_TOOL_CALL,
+        Grants::of(Scope::Full),
+        &silent,
+        crate::root::bindings::Posture::Governed,
+    )
+    .expect_err("an unwritten policy entry authorizes nothing");
     assert_eq!(refusal, ApproveRefusal::NoPolicyEntry);
 }
 
@@ -860,7 +942,8 @@ fn a_read_only_grant_lists_and_does_not_call() {
         &plane,
         ops::OP_TOOLS_LIST,
         Grants::of(Scope::ReadOnly),
-        &policy
+        &policy,
+        crate::root::bindings::Posture::Governed,
     )
     .is_ok());
 
@@ -869,6 +952,7 @@ fn a_read_only_grant_lists_and_does_not_call() {
         ops::OP_TOOL_CALL,
         Grants::of(Scope::ReadOnly),
         &policy,
+        crate::root::bindings::Posture::Governed,
     )
     .expect_err("a read-only grant does not call a tool");
     assert!(matches!(refusal, ApproveRefusal::Insufficient(_)));
@@ -1856,6 +1940,9 @@ impl LegNode {
             // `PlaneMeta` and the record legs are bound to the plane's own declaration table.
             node: crate::root::bindings::Node::over(
                 Auth::new(busbar_unit_auth::AuthChain::new(Vec::new(), false)),
+                // GOVERNED: these cells assert the governed path, so the posture they are driven under is the
+                // one that runs every grant check. The ungoverned half is asserted by name, on its own cell.
+                crate::root::bindings::Posture::Governed,
                 crate::root::kernel::auth_bindings::AuthBindings::without_directory(),
                 Door::new(InMemoryCells::new()),
                 Pricer::flat(0),
@@ -1939,6 +2026,7 @@ impl LegNode {
             records: boot.records,
             meter_policy: boot.meter_policy,
             scope_policy: boot.scope_policy,
+            posture: boot.posture,
             durability: boot.durability,
             pool: "fs",
             at: Clocks {

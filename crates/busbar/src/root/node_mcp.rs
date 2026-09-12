@@ -576,6 +576,9 @@ impl McpNode {
             records: bound.records,
             meter_policy: bound.meter_policy,
             scope_policy: bound.scope_policy,
+            // THE DEPLOYMENT'S OWN POSTURE, carried to the approve step rather than inferred at it.
+            // Read once, at boot, off the operator's `auth.role_bindings`; see `bindings::Posture`.
+            posture: bound.posture,
             durability: bound.durability,
             pool: &pool,
             at,

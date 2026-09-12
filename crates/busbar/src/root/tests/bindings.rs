@@ -33,6 +33,9 @@ fn other_operations(schema: RecordSchemaId) -> &'static [&'static str] {
 fn bare_node() -> Node {
     Node::over(
         Auth::new(AuthChain::new(Vec::new(), false)),
+        // GOVERNED: these cells assert the governed path, so the posture they are driven under is the
+        // one that runs every grant check. The ungoverned half is asserted by name, on its own cell.
+        crate::root::bindings::Posture::Governed,
         crate::root::kernel::auth_bindings::AuthBindings::without_directory(),
         Door::new(InMemoryCells::new()),
         Pricer::flat(0),

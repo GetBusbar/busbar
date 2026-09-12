@@ -1447,7 +1447,7 @@ count = "100"
 # cells switched onto both. See the declarations in qa/construction.toml.
 crate = "busbar"
 kind = "plane"
-count = "2180"
+count = "2188"
 
 [[cell]]
 # RAISED by ROOT COMPOSITION (MCP-NODE, 1.6.0): `root/node_mcp.rs` is the composition's own
@@ -1497,7 +1497,7 @@ count = "10"
 # qa/construction.toml.
 crate = "busbar"
 kind = "transport"
-count = "987"
+count = "989"
 
 # RAISED by ROOT COMPOSITION (MCP-T, 1.6.0): root/units_mcp.rs gains McpDraft/McpBindings/McpUnits and
 # the `impl Units` behind them, so an MCP request enters the Teller loop and the seven steps are served

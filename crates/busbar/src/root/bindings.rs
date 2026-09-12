@@ -48,6 +48,32 @@ use busbar_unit_breaker::DestinationId;
 use crate::root::adapters::{LaneMap, PlaneBreakerView, RootBreakerUnit};
 use crate::root::store::PlaneRecords;
 
+/// **WHETHER THIS DEPLOYMENT CONFIGURED A GRANT TABLE**, as boot read it and as the approve step is
+/// told it.
+///
+/// Not a request-shaped fact and deliberately so. Whether a caller HOLDS a grant is read off the
+/// caller; whether this deployment GRANTS AT ALL is read off the operator's config, once, at boot,
+/// and handed to the node — because a posture inferred per request from an absent key would turn
+/// every unresolved credential on a governed deployment into an ungoverned one, which is the failure
+/// this type exists to make unspellable.
+///
+/// The ungoverned posture is not new in 1.6.0 and is not invented here. A deployment whose admitted
+/// principal earns no enforcement key under `auth.role_bindings` is served UNGOVERNED by 1.5.5, it
+/// is warned about in so many words on the session's stderr, and there is a battery that asserts it.
+/// What the node added was a serving path with an approve step in it, and an approve step that
+/// refused where the release before it served would be 1.6.0 inventing a refusal. So the posture is
+/// carried to the step instead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Posture {
+    /// A grant table IS configured. Every grant check runs, and a caller that holds no grant is
+    /// refused exactly as it is today.
+    Governed,
+    /// NO grant table is configured. There is no table for a grant to be checked against, so the
+    /// grant check does not run — a comparison against an empty table is not a refusal anyone wrote,
+    /// it is a question nobody asked.
+    Ungoverned,
+}
+
 /// ONE PLANE'S DECLARATION, as a node holds it after mounting that plane.
 ///
 /// Both halves are the plane's own data rather than the root's reading of it: the record legs are
@@ -89,6 +115,10 @@ struct Mounted {
 pub struct Node {
     /// The authentication chain, as configuration resolved it.
     pub auth: Auth,
+    /// WHETHER THIS DEPLOYMENT CONFIGURED A GRANT TABLE. Read once, at boot, off the operator's
+    /// `auth.role_bindings`, and the same answer for every plane this node mounts — a deployment is
+    /// governed or it is not, and a node that could be both would be two deployments.
+    pub posture: Posture,
     /// The node's one set of authentication seams — the credential cache and the revocation view.
     pub auth_bindings: crate::root::kernel::auth_bindings::AuthBindings,
     /// The admission unit's long-lived door.
@@ -150,6 +180,7 @@ impl Node {
     #[must_use]
     pub fn over(
         auth: Auth,
+        posture: Posture,
         auth_bindings: crate::root::kernel::auth_bindings::AuthBindings,
         door: Door<InMemoryCells>,
         pricer: Pricer,
@@ -160,6 +191,7 @@ impl Node {
     ) -> Self {
         Node {
             auth,
+            posture,
             auth_bindings,
             door,
             pricer,
@@ -187,6 +219,10 @@ impl Node {
 pub struct LegBindings<'r> {
     /// The authentication chain, as configuration resolved it.
     pub auth: &'r Auth,
+    /// WHETHER THIS DEPLOYMENT CONFIGURED A GRANT TABLE, as the approve step is told it. The node's
+    /// and not the plane's: a plane does not get to decide whether the deployment it is mounted in
+    /// governs.
+    pub posture: Posture,
     /// The node's one set of authentication seams.
     pub auth_bindings: &'r crate::root::kernel::auth_bindings::AuthBindings,
     /// The admission unit's long-lived door.
@@ -228,6 +264,7 @@ pub fn resolve_bindings<'r>(plane_key: &str, node: &'r Node) -> Option<LegBindin
     let plane = &mounted.plane;
     Some(LegBindings {
         auth: &node.auth,
+        posture: node.posture,
         auth_bindings: &node.auth_bindings,
         door: &node.door,
         pricer: &node.pricer,

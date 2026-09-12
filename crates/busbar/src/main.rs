@@ -914,6 +914,7 @@ fn mount_root_mcp(
     store: &busbar_plugin_loader::store_adapter::StoreAdapter,
     book: &root::durability::NodeBook,
     groups: &std::collections::BTreeMap<String, busbar_substrate::config::groups::GroupCfg>,
+    posture: root::bindings::Posture,
 ) {
     use busbar_contract::plane::PlaneMeta;
     use busbar_plane_mcp::McpPlane;
@@ -963,6 +964,7 @@ fn mount_root_mcp(
     let node = root::bindings::Node::over(
         // EMPTY AND UNREACHED. See the header: the authenticate step reads the door's outcome.
         busbar_unit_auth::Auth::new(busbar_unit_auth::AuthChain::new(Vec::new(), false)),
+        posture,
         root::kernel::auth_bindings::AuthBindings::without_directory(),
         busbar_unit_admission::Door::new(busbar_unit_admission::InMemoryCells::new()),
         // NOTHING IS PRICED on the classes this node serves. A flat zero is the statement, not a
@@ -1400,6 +1402,21 @@ async fn run(data_workers: usize) {
     #[cfg(all(feature = "plane-mcp", feature = "root-mcp"))]
     let mcp_groups = cfg.groups.clone();
 
+    // THE DEPLOYMENT'S GOVERNANCE POSTURE, read HERE — once, off the operator's own config, in the
+    // composition that mounts the node. `auth.role_bindings` is the GRANT TABLE: a module's roles
+    // mapped to what they earn. A deployment that configured none has no table for a grant check to
+    // be about, and 1.5.5 serves such a deployment UNGOVERNED — the session says so on its own
+    // stderr. The approve step is TOLD this rather than allowed to infer it from an absent key,
+    // because an inference would turn every unresolved credential on a GOVERNED deployment into an
+    // ungoverned one. Read after the overlay merge for the same reason the group tree is: the table
+    // this node enforces is the one the operator's API writes as well as the one the file declares.
+    #[cfg(all(feature = "plane-mcp", feature = "root-mcp"))]
+    let mcp_posture = if cfg.auth.as_ref().is_none_or(|a| a.role_bindings.is_empty()) {
+        root::bindings::Posture::Ungoverned
+    } else {
+        root::bindings::Posture::Governed
+    };
+
     // Metadata-SSRF protection status (discoverability). When the nuclear `allow_all_metadata` is set
     // the guard is OFF — that is a security-relevant degradation, so WARN. Otherwise report the count
     // of blocked hosts (hardcoded denylist ∪ security.blocked_metadata_hosts) and point at the CLI
@@ -1739,7 +1756,7 @@ async fn run(data_workers: usize) {
     // class that has left the dispatch table is answered by this node or by nothing.
     #[cfg(all(feature = "plane-mcp", feature = "root-mcp"))]
     if let Some(store) = node_store.as_ref() {
-        mount_root_mcp(&app_handle, store, &book, &mcp_groups);
+        mount_root_mcp(&app_handle, store, &book, &mcp_groups, mcp_posture);
     }
 
     // THE STDIO SERVE MODE (`--mcp-stdio`). The SAME boot ran above — config load, plugin
