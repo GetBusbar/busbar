@@ -6,19 +6,16 @@
 # of "everything, slowly". The INTEGRATION tree carries no such file — it is a keep-branch artefact,
 # and this branch is a keep branch.
 #
-#   families — a regex handed to the shadow oracle's `--id-filter`. This branch collapses the two
-#              copies of the engine's forward SHELL (the correlation-id stamp, the `forward` span,
-#              the completion-shape capture, the `WrapSetup` profiler stage and the response-stage
-#              taps) into the one function that owns it, so the Route step CALLS the shell instead of
-#              re-implementing it beside the original. That is the whole money path of the LLM plane:
-#              every dialect, every outcome class, the failover walk, the breaker's cooldown, and the
-#              billing/ledger rows the served request settles onto. `neutrality` and `boot` are in
-#              scope because the shipped leg (`root-llm`, default on) is the one being changed and a
-#              deployment must still not be able to tell from a route set or a boot line which way
-#              the binary was built.
-#   tests    — the plane and everything that compiles against its step files: the binary crate that
-#              composes the leg (`busbar`, which carries the switch-over's own identity proof), the
-#              plane crate itself, its codec, the egress unit that holds the moved engine, the plane
-#              crate the parse half is moving to, and `xtask` for the construction gates.
-families = '^(llm|billing|ledger|route\.failover|cooldown|neutrality|boot)([|.]|$)'
-tests = ["busbar", "busbar-llm", "busbar-llm-codec", "busbar-unit-egress", "busbar-plane-llm", "xtask"]
+#   families — a regex handed to the shadow oracle's `--id-filter`. This branch measures the SECOND
+#              request loop (the substrate's) against the one the kernel owns, and adds one cell to
+#              the kernel's stage profiler. Nothing on a money path moves, so the families in scope
+#              are the ones that would notice if something had: `teller` is the loop itself, the
+#              `billing`/`ledger` pair is every posting a unit that rides it settles onto,
+#              `admin.ops` is the other surface already mounted on the kernel's loop, and
+#              `neutrality`/`boot` are here because a deployment must not be able to tell from a
+#              route set or a boot line that anything changed.
+#   tests    — the two loops and everything between them: the kernel that owns the one loop, the
+#              substrate that holds the second, the core and the binary that compose both, every
+#              plane crate that rides the substrate's gauntlet today, and `xtask` for the gates.
+families = '^(teller|billing|ledger|admin\.ops|neutrality|boot)([|.]|$)'
+tests = ["busbar", "busbar-kernel", "busbar-substrate", "busbar-core", "busbar-plane-llm", "busbar-plane-mcp", "busbar-plane-a2a", "busbar-plane-voice", "xtask"]
