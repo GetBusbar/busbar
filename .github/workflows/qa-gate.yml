@@ -143,7 +143,7 @@ jobs:
       github.event_name == 'workflow_dispatch' ||
       (github.event.workflow_run.conclusion == 'success' &&
        contains(fromJSON('["qa"]'), github.event.workflow_run.head_branch))
-    runs-on: ubuntu-latest
+    runs-on: latchkey-large
     # CORRECTED after the first real run. This job was originally a SIBLING of `build`, on the
     # reasoning that a 5s fast tier alongside a 157s build costs nothing. Both halves of that were
     # wrong in CI: the 5s was measured locally against a WARM target, and with no artifact this job
@@ -214,7 +214,7 @@ jobs:
       github.event_name == 'workflow_dispatch' ||
       (github.event.workflow_run.conclusion == 'success' &&
        contains(fromJSON('["qa"]'), github.event.workflow_run.head_branch))
-    runs-on: ubuntu-latest
+    runs-on: latchkey-xlarge
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -254,7 +254,7 @@ jobs:
   slow:
     name: ${{ matrix.segment.id }}
     needs: [build, fast]
-    runs-on: ubuntu-latest
+    runs-on: latchkey-xlarge
     # Still generous, on purpose. release-check.sh today runs its FULL coverage-preserving gate for
     # any --segment label; per-segment PHASE PARTITIONING is the documented additive refinement that
     # actually converts this fan-out into wall clock. Until that lands, a leg can still be long, and
@@ -310,7 +310,7 @@ jobs:
   loader:
     name: plugin-loader mechanism tests
     needs: [build, fast]
-    runs-on: ubuntu-latest
+    runs-on: latchkey-large
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -360,7 +360,7 @@ jobs:
       (github.event_name == 'workflow_dispatch' ||
        (github.event.workflow_run.conclusion == 'success' &&
         contains(fromJSON('["qa"]'), github.event.workflow_run.head_branch)))
-    runs-on: ubuntu-latest
+    runs-on: latchkey-small
     timeout-minutes: 5
     steps:
       # `needs.slow.result` collapses the WHOLE matrix to one value, so this is red if any leg is.
