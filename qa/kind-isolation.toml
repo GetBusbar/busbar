@@ -163,6 +163,27 @@ kind = "core"
 reason = "the hook-dispatch surface being carved out of busbar-core; core kind, neutral spine only"
 
 # ------------------------------------------------------------------------------------------------
+# [[minted]] — VT-12: THE TWO DIALECT CRATES' OWN CELLS, ADMITTED AT THE FIGURE THEY MINT
+# ------------------------------------------------------------------------------------------------
+#
+# `busbar-plane-streams-gemini` (crate = codec 5) and `busbar-plane-streams-twilio` (codec 8, plane
+# 6, transport 29) each mint the `[[cell]]` rows below by name: the crate did not exist at the
+# merge-base, so those rows have no `before` a bare `ceiling-rose` reading could compare against.
+# `ceiling` is the highest figure this row admits any of the crate's own cells to; every one of
+# these crates' cells stays below it, so nothing here is slack riding in with the admission.
+[[minted]]
+crate = "busbar-plane-streams-gemini"
+commit = "423c40f56"
+cells = "1"
+ceiling = "5"
+
+[[minted]]
+crate = "busbar-plane-streams-twilio"
+commit = "6d1367cb9"
+cells = "3"
+ceiling = "29"
+
+# ------------------------------------------------------------------------------------------------
 # [[edge]] / [[cell]] / [[disagreement]] — THE KIND × CRATE VOCABULARY MATRIX
 # ------------------------------------------------------------------------------------------------
 #

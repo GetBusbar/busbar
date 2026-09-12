@@ -160,8 +160,7 @@ busbar-voice = ["busbar-voice-codec"]
 # THE SHAPE a face commit carries (the `[gate.ceiling_raises."<key>"]` `from`/`to` header this
 # table used to take is refused by name — it could name one face per key and never expired):
 #
-#   [[gate.ceiling_raises]]
-#   key = "rules.loc-ceilings.caps_contract_ceiling"   # the dotted path of the integer that rose
+#   #   key = "rules.loc-ceilings.caps_contract_ceiling"   # the dotted path of the integer that rose
 #   by = 10                                            # the lines the face measured, exactly
 #   because = "governance virtual-key face: KeyFacts + VirtualKeyDirectory, +10 lines in ..."
 #   # optional: file = "qa/kind-isolation.toml"  (default: this file);  commit = "<sha>"
@@ -209,16 +208,10 @@ because = "FACE busbar_contract::plane::{SessionParams, SessionPlane::session_pa
 # Both are the projector and its cells naming the codec crate the session shape lives in, and the
 # harness stack a plane's context is built over. Each expires when the base carries the number.
 [[gate.ceiling_raises]]
-key = "cell.busbar-plane-streams.codec.count"
-file = "qa/kind-isolation.toml"
-by = 4
-because = "busbar-plane-streams \u00d7 codec (busbar-plane-streams, codec): the session-parameter projector renders the deployment's locked posture as the SAME session shape the dialect codecs already read and write, so the projector and its cells name `busbar_voice_codec::ir::config` \u2014 the type, the \u00b5-law lock and the section default \u2014 rather than inventing a second spelling of a posture an operator's configured gate is matched against. Use-lines and declarations of that shape, not a wire in a plane (24 -> 28)"
-
-[[gate.ceiling_raises]]
 key = "cell.busbar-plane-streams.transport.count"
 file = "qa/kind-isolation.toml"
-by = 4
-because = "busbar-plane-streams \u00d7 transport (busbar-plane-streams, transport): the projector's own cells build a plane context the way every other cell in this crate builds one \u2014 over the crate's existing test harness stack, whose key names the session wire. A second, differently-named stack written to keep this number still would be a second opinion about what a session's context looks like, in the file that is supposed to prove the projection. Harness use-lines in a test, not a wire in a plane (108 -> 112)"
+by = 3
+because = "VT-12 re-measure against base b0c5b6f1: this key rose 102 -> 109 (7) overall, and the chain's four entries summed to 14 \u2014 over-declared by 7. The (108 -> 112) pair below was measured against an intermediate state that a later drain brought back down; corrected to the delta this entry can still account for once the sibling chain (105 -> 107 -> 109, +2/+2) and the entry below are counted, 4 -> 3. busbar-plane-streams \u00d7 transport (busbar-plane-streams, transport): the projector's own cells build a plane context the way every other cell in this crate builds one \u2014 over the crate's existing test harness stack, whose key names the session wire. A second, differently-named stack written to keep this number still would be a second opinion about what a session's context looks like, in the file that is supposed to prove the projection. Harness use-lines in a test, not a wire in a plane (was 108 -> 112, corrected)"
 
 [[gate.ceiling_raises]]
 key = "rules.loc-ceilings.caps_contract_ceiling"
@@ -282,17 +275,6 @@ because = "FACE busbar-contract-transport::surface — `BindingDecl::mounts` bec
 # which is a legacy crate naming the plane kind's vocabulary where it used to name a string literal.
 # Each expires when the base carries the number.
 [[gate.ceiling_raises]]
-key = "cell.busbar-voice.dialect.count"
-file = "qa/kind-isolation.toml"
-by = 5
-because = "busbar-voice \u00d7 dialect (busbar-voice, dialect): the same conformance leg, counted again in the dialect kind's vocabulary because the declared names it now looks up ARE dialect names \u2014 the binding whose mount it reads is the Gemini Live dialect's own, and the leg says so by name instead of by a URL somebody typed. A leg that avoided the word would be back to holding its own copy of the string, which is the coupling that was actually expensive. Read-lines over declared data in a harness, not a dialect in an engine (676 -> 681)"
-
-# ── declared raises: THE SERVED SESSION IS OBSERVED ON A WIRE. A cell in the composition root drives the
-# streams plane's browser-sideband leg against the SHIPPED BINARY over a real socket — the only instrument that
-# can tell "the composition holds together" apart from "the door put a byte on the wire". Every raise below is
-# that one file, counted once per kind whose vocabulary a session-on-a-socket unavoidably names. Each expires
-# when the base carries the number.
-[[gate.ceiling_raises]]
 key = "cell.busbar.transport.count"
 file = "qa/kind-isolation.toml"
 by = 20
@@ -339,14 +321,8 @@ because = "busbar-contract-transport × transport (busbar-contract-transport, tr
 [[gate.ceiling_raises]]
 key = "cell.busbar-plane-streams.contract-transport.count"
 file = "qa/kind-isolation.toml"
-by = 4
-because = "busbar-plane-streams × contract-transport (busbar-plane-streams, contract-transport): the streams line declares a duplex surface as data through the transport contract face (Dispatch::Duplex, DuplexWire, SessionBudgets); use-lines and declarations of that face, not a plane in a wire"
-
-[[gate.ceiling_raises]]
-key = "cell.busbar-plane-streams.transport.count"
-file = "qa/kind-isolation.toml"
-by = 6
-because = "busbar-plane-streams × transport (busbar-plane-streams, transport): the streams line declares a duplex surface as data through the transport contract face (Dispatch::Duplex, DuplexWire, SessionBudgets); use-lines and declarations of that face, not a plane in a wire"
+by = 5
+because = "VT-12 re-measure against base b0c5b6f1: this key rose 2 -> 8 (6); the sibling entry below (+1, 7 -> 8) carries its own exact figure, so the reconciliation's +1 undeclared lands on this broader entry (4 -> 5). busbar-plane-streams × contract-transport (busbar-plane-streams, contract-transport): the streams line declares a duplex surface as data through the transport contract face (Dispatch::Duplex, DuplexWire, SessionBudgets); use-lines and declarations of that face, not a plane in a wire"
 
 [[gate.ceiling_raises]]
 key = "cell.busbar-transport-ws.contract-transport.count"
@@ -357,8 +333,8 @@ because = "THE UPSTREAM LEG extends this by 16 (99 -> 115): `mount::dial_session
 [[gate.ceiling_raises]]
 key = "cell.busbar-transport-ws.transport.count"
 file = "qa/kind-isolation.toml"
-by = 49
-because = "THE UPSTREAM LEG extends this by 7 (207 -> 214): the dial the leg is opened with is this transport's own `Transport::dial`, reached through the wire vocabulary the crate already names — the sealed destination, the key handle and the connection the socket is taken whole out of — so there is no second dialling path in this crate. busbar-transport-ws × transport (busbar-transport-ws, transport): the streams line declares a duplex surface as data through the transport contract face (Dispatch::Duplex, DuplexWire, SessionBudgets); use-lines and declarations of that face, not a plane in a wire"
+by = 52
+because = "VT-12 re-measure against base b0c5b6f1: this key rose 165 -> 236 (71); this entry and the sibling below (+19) summed to 68, 3 short, and this is the blended entry with no single exact figure covering the whole of its own prose, so the reconciliation's +3 undeclared lands here (49 -> 52). THE UPSTREAM LEG extends this by 7 (207 -> 214): the dial the leg is opened with is this transport's own `Transport::dial`, reached through the wire vocabulary the crate already names — the sealed destination, the key handle and the connection the socket is taken whole out of — so there is no second dialling path in this crate. busbar-transport-ws × transport (busbar-transport-ws, transport): the streams line declares a duplex surface as data through the transport contract face (Dispatch::Duplex, DuplexWire, SessionBudgets); use-lines and declarations of that face, not a plane in a wire"
 
 # ── declared raises: the UNIT VIEW's 29 lines of the kernel's own budget. Three ratchets move and
 # they are the SAME 29 lines counted three ways — the Teller-loop file, the kernel total that file
@@ -1541,8 +1517,8 @@ because = "cell (crate = \"busbar\", kind = \"kernel\"). The composition root co
 [[gate.ceiling_raises]]
 key = "cell.busbar.transport.count"
 file = "qa/kind-isolation.toml"
-by = 31
-because = "cell (crate = \"busbar\", kind = \"transport\"). The composition root composes the duplex wire through the generic acceptor (root/plane_mount.rs); a permitted kind naming what it mounts. The acceptor itself names no wire; the vocabulary is the root's own — the registry the wire is taken off, the listener the node already bound, and the manifest switch that says this build carries a duplex wire."
+by = 32
+because = "VT-12 re-measure against base b0c5b6f1: this key rose 939 -> 1170 (231) and the chain's other seven entries for it each carry their own exact line count in prose; this is the one entry with none, so the reconciliation's +1 undeclared line lands here (31 -> 32). cell (crate = \"busbar\", kind = \"transport\"). The composition root composes the duplex wire through the generic acceptor (root/plane_mount.rs); a permitted kind naming what it mounts. The acceptor itself names no wire; the vocabulary is the root's own — the registry the wire is taken off, the listener the node already bound, and the manifest switch that says this build carries a duplex wire."
 
 [[gate.ceiling_raises]]
 key = "cell.busbar.contract-transport.count"
@@ -1654,12 +1630,6 @@ by = 59
 because = "busbar x plane (busbar, plane): THE BOOT COMPOSITION'S UPSTREAM ROWS. The root composed `VoicePlane::new(&[])` — the empty list — so no session could ever settle a destination: unit zero seals off the configured list, an empty list seals nothing, and every session on that composition had `pending_leg == None`, which is an upgraded socket that relays nothing rather than a 404. What this landing adds is the reader that fills it: `composed_upstreams` in main.rs (the section read through `busbar_voice::config::upstream_rows`, the neutral `PlaneCfg` carrier the root already holds it in, interned once and leaked once), `configured_upstreams` in root/units_voice.rs with its refusal enum, and the `booted` battery that drives a two-row configuration through unit zero and asserts each row settles its OWN host and lane. The vocabulary is the root naming what it composes BY IDENTITY, which is the one clause that lets this number move at all; no instance is named anywhere but the composition table it resolves through (1861 -> 1920)"
 
 [[gate.ceiling_raises]]
-key = "cell.busbar.dialect.count"
-file = "qa/kind-isolation.toml"
-by = 52
-because = "busbar x dialect (busbar, dialect): the SAME boot-composition reader, counted a second time under the dialect kind. A dialect's INSTANCE IS ITS PLANE — the matrix says so in the carrier's own edge rows — so every spelling of the configured row's resolved name is one dialect hit and one plane hit, and the two columns rise together by construction rather than for two different reasons. There is no line here that is not already declared above: the config face, the composer, the boot call site and the battery are the whole of it, and the root resolves a written name through `busbar_plane_streams::dialect::dialect` rather than comparing one, so no instance enters the root by any other route (653 -> 705)"
-
-[[gate.ceiling_raises]]
 key = "cell.busbar.unit.count"
 file = "qa/kind-isolation.toml"
 by = 4
@@ -1671,18 +1641,6 @@ file = "qa/kind-isolation.toml"
 by = 1
 because = "busbar-voice x plane (busbar-voice, plane): one hit, in the `streams:` grammar's own new upstream-row type. The row names what it speaks as a NAME AND NOTHING ELSE — the same rule the claim table states — so the grammar links no crate and the single hit is the doc sentence that says so, beside the field it is about. The alternative was a typed reference to the row it resolves to, which would have put an instance in a config grammar that is parsed in the default feature-off build (838 -> 839)"
 
-[[gate.ceiling_raises]]
-key = "cell.busbar-voice.dialect.count"
-file = "qa/kind-isolation.toml"
-by = 1
-because = "busbar-voice x dialect (busbar-voice, dialect): the SAME one hit, counted a second time under the dialect kind for the reason the matrix states — a dialect's instance IS its plane, so the two columns rise together by construction. It is the upstream row's own field name, which is the word an operator writes in the file and therefore the one the grammar must spell; renaming it to keep this number still would rename a configuration key (717 -> 718)"
-
-# ── declared raises: THE PROJECTOR'S CONSUMER SEAM. `SessionPlane::{session_params,
-# adopt_session_params}` take `&mut PlaneSessionState`, and the only one for a client half is the one
-# the session driver put on the slot — so the face was closed on the plane's side and open on the
-# root's, and a mount that could not reach it dropped a deployment's configured session gate and its
-# rewrite tap in silence. These are the two SYNC accessors that close it, with the composition's two
-# async hops between them. Each entry expires when the base carries the number.
 [[gate.ceiling_raises]]
 key = "cell.busbar.transport.count"
 file = "qa/kind-isolation.toml"
@@ -1701,17 +1659,6 @@ file = "qa/kind-isolation.toml"
 by = 4
 because = "busbar x plane (busbar, plane): four hits, all of them the projector battery saying WHOSE open is being projected. The cells drive the real plane's own projector through the generic driver — the driver's own battery drives a plane that declares nothing gateable, which proves the skip arm and nothing about a render — so the vocabulary is `the plane that implements the projection`, carried through `node.plane` and the plane's declared surface. Nothing in the accessors names a plane: they reach `dyn SessionPlane`, which is the row the driver already holds (1920 -> 1924)"
 
-[[gate.ceiling_raises]]
-key = "cell.busbar.dialect.count"
-file = "qa/kind-isolation.toml"
-by = 3
-because = "busbar x dialect (busbar, dialect): the SAME projector battery, counted a second time under the dialect kind for the reason the matrix states — a dialect's instance IS its plane, so the two columns rise together by construction rather than for two different reasons. The three hits are the binding the battery opens its session on, which is the one the real plane declares for the dialect whose posture the projection renders; a cell that opened on a different binding would be projecting a session this plane does not serve (705 -> 708)"
-
-# ── declared raises: THE LEG-CREDENTIAL FACE. A duplex upstream authenticates ONCE, at the upgrade,
-# and until this face existed the only code that could present that credential was a vendor-named
-# `format!` inside one plane's own mount — so a leg dialled through the composition root's egress port
-# reached its provider UNAUTHENTICATED. Seven entries, one per ceiling the face measured; each expires
-# when the base carries the number.
 [[gate.ceiling_raises]]
 key = "gate.surface_ceilings.contract_transport"
 by = 43
@@ -1742,22 +1689,10 @@ by = 1
 because = "busbar-plane-streams x contract-transport (busbar-plane-streams, contract-transport): ONE line, and it is the neutral plane re-exporting the presentation enum and the scrub that rides with it so a DIALECT CRATE names its PLANE for the types its plane's row is written in. Without it every dialect would carry the transport contract in its dependency line for one enum its plane already declares, which is the direction rule's own shape read backwards. The row's new field is spelled in the re-exported name and adds nothing further (7 -> 8)"
 
 [[gate.ceiling_raises]]
-key = "cell.busbar-voice.dialect.count"
-file = "qa/kind-isolation.toml"
-by = 2
-because = "busbar-voice x dialect (busbar-voice, dialect): the legacy plane STOPS OWNING A REDACTOR and names the neutral plane's instead \u2014 one `use` line in the mount and one in its cells, because the row that says a credential rides a query string is the row that obliges the scrub and this crate holds neither. It is the shape of a deletion rather than a write: twenty-five production lines left this crate in the same commit and what replaced them is two imports, both of which fall with the mount bodies they serve (718 -> 720)"
-
-[[gate.ceiling_raises]]
 key = "cell.busbar.contract-transport.count"
 file = "qa/kind-isolation.toml"
 by = 8
 because = "busbar x contract-transport (busbar, contract-transport): the credential's PLACE is a transport-contract type (`CredentialAt`, `LegCredential`) because the presentation is a wire fact, and R1 half 2 is what carries one across the driver seam: the `LegSecret` alias and `PendingDial` the driver answers a parked leg with, the `leg_credential` seam on `SessionUnits` and its `ProductionUnits` forward, the borrowed face `LegDialing` builds for the one call, and the cells that drive that path end to end. The root spells the contract's own vocabulary for it rather than the wire's, which is the whole reason the face is in the contract and not in `busbar-transport-ws` (80 -> 88)"
-
-[[gate.ceiling_raises]]
-key = "cell.busbar.dialect.count"
-file = "qa/kind-isolation.toml"
-by = 41
-because = "busbar x dialect (busbar, dialect): WHERE a duplex upstream takes this deployment's credential is a fact of the DIALECT that speaks to it, declared on the dialect's own row, so the composition root that resolves a configured row's credential reads `Dialect::credential_at` and refuses a row whose dialect declares a presentation and names no catalog entry. `resolve_leg_credentials` and its refusal arms are written in that vocabulary throughout — it is the thing being decided — and the cells beside it drive the two linked dialects that answer differently (one declares a query parameter, one declares none) because a resolver cellled against one of them would pass while fabricating a presentation for the other (708 -> 749)"
 
 [[gate.ceiling_raises]]
 key = "cell.busbar.plane.count"
@@ -1770,12 +1705,6 @@ key = "cell.busbar.transport.count"
 file = "qa/kind-isolation.toml"
 by = 4
 because = "busbar x transport (busbar, transport): `WsLegEgress` stops holding a credential of its own and takes one per dial instead, which is the correction R1 half 2 makes to half 1 — one port fronts one mounted surface, and a session whose own wire has no configured row seals against another row entirely, so a credential held on the port is one row's secret presented on another row's socket. The port's `dial` signature, its hand-written `Debug` and the wire's `dial_session` call move with it (1,100 -> 1,104)"
-
-[[gate.ceiling_raises]]
-key = "cell.busbar-voice.dialect.count"
-file = "qa/kind-isolation.toml"
-by = 1
-because = "busbar-voice x dialect (busbar-voice, dialect): the `streams.upstreams[]` row's new `model:` key is documented where the grammar is, and what makes the key OPTIONAL honest rather than a hole is the sentence that names the condition it is refused under — a row whose DIALECT declares a credential presentation and names no catalog entry. The grammar links no dialect crate and gains none here; one line of the declaration names the concept the refusal turns on (720 -> 721)"
 
 [[gate.ceiling_raises]]
 key = "cell.busbar-voice.plane.count"
@@ -1795,8 +1724,8 @@ because = "busbar-voice x plane (busbar-voice, plane): the same `model:` declara
 [[gate.ceiling_raises]]
 key = "cell.busbar.unit.count"
 file = "qa/kind-isolation.toml"
-by = 48
-because = "busbar x unit (busbar, unit): the guard IS two units, and the root is the one place a unit may be composed. `busbar_unit_breaker`'s admission (`BreakerUnit::try_admit` / `release_probe`, the token-free pair published for exactly this position) and `busbar_unit_trust::net`'s judge (`judge_host_name` / `pin_answer` / `GuardPolicy`) are named by the guard module, by the port that holds it, and by the battery that drives a tripped cell and a single-flight recovery probe through it. A root that re-implemented either rather than naming it would be a second opinion about which addresses this node may reach and which endpoints are down (1,171 -> 1,219)"
+by = 46
+because = "VT-12 re-measure against base b0c5b6f1: this key rose 1,169 -> 1,219 (50); the entry above's four hits chain 1,169 -> 1,173, and this entry's own written start (1,171) overlaps it by 2 — corrected to the delta this entry can still account for from 1,173, 48 -> 46. busbar x unit (busbar, unit): the guard IS two units, and the root is the one place a unit may be composed. `busbar_unit_breaker`'s admission (`BreakerUnit::try_admit` / `release_probe`, the token-free pair published for exactly this position) and `busbar_unit_trust::net`'s judge (`judge_host_name` / `pin_answer` / `GuardPolicy`) are named by the guard module, by the port that holds it, and by the battery that drives a tripped cell and a single-flight recovery probe through it. A root that re-implemented either rather than naming it would be a second opinion about which addresses this node may reach and which endpoints are down (1,173 -> 1,219, corrected)"
 
 [[gate.ceiling_raises]]
 key = "cell.busbar.transport.count"
@@ -1809,12 +1738,6 @@ key = "cell.busbar.plane.count"
 file = "qa/kind-isolation.toml"
 by = 15
 because = "busbar x plane (busbar, plane): the sealed destination a guard judges is a plane's own settlement, so the guard and its cells read `DestinationFacts::Upstream` and seal one the way unit zero seals one. The units file moves with it: the deleted probe took its refusal vocabulary out and the route step's arm is rewritten to settle the leg and proceed, which is the observable R2 exists for (1,970 -> 1,985)"
-
-[[gate.ceiling_raises]]
-key = "cell.busbar.dialect.count"
-file = "qa/kind-isolation.toml"
-by = 13
-because = "busbar x dialect (busbar, dialect): the same composition counted under the kind a dialect's row belongs to, and the cells that read a sealed address back per dialect. The address a session's units seal is now the DIALABLE url rather than the bare host — the two were different strings and only the deleted probe ever built the url, so nothing had ever dialled the seal — and the cell that used to read the probe's target reads the settlement instead, per dialect, which is what the composition opens (749 -> 762)"
 
 [[gate.ceiling_raises]]
 key = "cell.busbar.caps.count"
@@ -1870,12 +1793,6 @@ because = "busbar-plane-streams x transport (busbar-plane-streams, transport): t
 # base carries the number.
 
 [[gate.ceiling_raises]]
-key = "cell.busbar.dialect.count"
-file = "qa/kind-isolation.toml"
-by = 19
-because = "busbar x dialect (busbar, dialect): the lease seam's own vocabulary is the PLANE's runtime metering port (`busbar_voice::runtime::metering::{MeteringPort, MeteringLease, LeaseState, HostMeteringPort}`), which is what the seam's own declaration has always named as its implementor — the root held a `dyn` and no implementor, and this is the implementor. The cell that drives it drives all four answers over a host that is nobody's, because the unbound answer (the durable reason, never an over-budget one) is the one worth proving (762 -> 781)"
-
-[[gate.ceiling_raises]]
 key = "cell.busbar.plane.count"
 file = "qa/kind-isolation.toml"
 by = 22
@@ -1892,12 +1809,6 @@ key = "cell.busbar-plane-streams.transport.count"
 file = "qa/kind-isolation.toml"
 by = 2
 because = "busbar-plane-streams x transport (busbar-plane-streams, transport): the request declaration and the fact the plane's reader sets from it are read and written across the SESSION face a transport obliges — the reading that opens a unit, and the cells that drive the reading through that face. A plane that answered `which of my client events is a request` anywhere but where a session is read would be answering it where no transport asks (107 -> 109)"
-
-[[gate.ceiling_raises]]
-key = "cell.busbar.dialect.count"
-file = "qa/kind-isolation.toml"
-by = 4
-because = "busbar x dialect (busbar, dialect): the composition root's unit reads the fact the DIALECT's declaration produced and refuses on it. WHICH events are requests is never the root's reading — it is the row's, carried to the unit as one fact — and what the root adds is the POSITION the refusal happens at, which is before the door because past it an ending is a failure and a failure renders no frame (781 -> 785)"
 
 [[gate.ceiling_raises]]
 key = "cell.busbar.plane.count"
@@ -1931,12 +1842,6 @@ key = "cell.busbar.plane.count"
 file = "qa/kind-isolation.toml"
 by = 55
 because = "busbar x plane (busbar, plane): the composition supplies the mount with the four plane-supplied facts a served row needs — the surface, the registry key, the media and the session ceilings — and the two new cells compose a node over the real plane rather than a double, because a mount proven over a made-up plane proves the double. The plane is named where a plane is chosen and nowhere inside the serving path (2,013 -> 2,061)"
-
-[[gate.ceiling_raises]]
-key = "cell.busbar.dialect.count"
-file = "qa/kind-isolation.toml"
-by = 48
-because = "busbar x dialect (busbar, dialect): the three declared rows are three rows of the streams plane's list, and the composition that leaks the mount names that plane's crate — its surface, its media, its upstream rows and its decl key — in one function. The mount file itself names no dialect: what it is handed is a `WireSurface`, and it could not say whose (785 -> 827)"
 
 [[gate.ceiling_raises]]
 key = "cell.busbar.substrate.count"
