@@ -161,6 +161,23 @@ jobs:
         if: ${{ inputs.busbar_version == 'this-tree' || inputs.plugin_ref == 'this-tree' }}
         uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
 
+      # LK-7: this job's `cargo build` calls (busbar itself and/or the plugin cdylib, on the
+      # this-tree paths) had no cache at all before this migration. Latchkey Fast Cache, same
+      # restore/save form as ci.yml/keep-proof.yml, guarded by the same `if:` as the Rust install
+      # above so a pure release-artifact run (nothing built from source) never pays for it.
+      - name: Latchkey Fast Cache (cargo registry + target, restore)
+        if: ${{ inputs.busbar_version == 'this-tree' || inputs.plugin_ref == 'this-tree' }}
+        uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
+        with:
+          action: restore
+          key: cargo-${{ runner.os }}-plugin-functional-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-plugin-functional-
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+
       # ── Resolve the busbar binary. A failure here does NOT try to be clever: the probe step below
       # ── guards on the binary's presence and records `did not run`, which verdict.sh reports as RED.
       - name: Resolve the busbar binary
@@ -306,3 +323,14 @@ jobs:
             *) kind_id="$PLUGIN_KIND" ;;
           esac
           EXPECTED_IDS="${kind_id}:${PLUGIN_ALIAS}" testing/fleet-fixtures/verdict.sh
+
+      - name: Latchkey Fast Cache (cargo registry + target, save)
+        if: ${{ always() && (inputs.busbar_version == 'this-tree' || inputs.plugin_ref == 'this-tree') }}
+        uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
+        with:
+          action: save
+          key: cargo-${{ runner.os }}-plugin-functional-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
