@@ -67,57 +67,43 @@
 # owner = "the person who reviewed it"
 
 [[allow]]
-crate = "auth-admin-tokens"
-dep = "libc"
-via = "cpufeatures"
-reason = "cpufeatures uses libc for CPU feature detection only (getauxval/sysctl); no I/O primitive is reachable; re-review if any other path to libc appears"
-owner = "orchestrator, 2026-09-05"
-
-[[allow]]
-crate = "auth-static-plugin"
-dep = "libc"
-via = "cpufeatures"
-reason = "cpufeatures uses libc for CPU feature detection only (getauxval/sysctl); no I/O primitive is reachable; re-review if any other path to libc appears"
-owner = "orchestrator, 2026-09-05"
-
-[[allow]]
-crate = "busbar-plane-a2a"
-dep = "libc"
-via = "cpufeatures"
-reason = "cpufeatures uses libc for CPU feature detection only (getauxval/sysctl); no I/O primitive is reachable; re-review if any other path to libc appears"
-owner = "orchestrator, 2026-09-05"
-
-[[allow]]
 crate = "busbar-plane-llm"
 dep = "libc"
-via = "cpufeatures, getrandom"
-reason = "Two reviewed, non-I/O edges reach libc from this plane, both closed once the xtask/denylist.rs phantom-optional-dependency fix (edge_is_active) dropped the third, unreal one (sonic_rs -> faststr -> rkyv -> uuid_1 -> getrandom -> libc: faststr's rkyv dependency is optional and its 'rkyv' feature is active nowhere in the workspace -- confirmed against the real rustc invocation for busbar-plane-llm, which carries no --cfg feature=\"rkyv\" and no --extern rkyv). (1) cpufeatures uses libc for CPU feature detection only (getauxval/sysctl); no I/O primitive is reachable through this edge. (2) getrandom uses libc only to issue the getentropy(2)/getrandom(2) syscall (busbar-llm-codec's own direct `getrandom = { workspace = true }` dependency, drawn by synth_rng.rs's thread-local entropy pool); this is a syscall wrapper, not a socket/file/process primitive. This edge is NOT yet what ARCHITECTURE.md section 1.2 wants of a pure plane (entropy should arrive through Ctx, not be drawn by the codec itself) -- verified that busbar_llm_codec::write_error_envelope, the one codec entry point busbar-plane-llm calls that touches entropy, unconditionally calls the anthropic writer's error_envelope() (which mints via synth_rng::fill_entropy/getrandom) even on the call path where the caller supplies its own entropy and the drawn value is immediately overwritten and discarded. Feature-gating that draw (an `os-entropy` feature, default-on for busbar-llm/the engine, off for the plane) needs a source change in crates/busbar-llm-codec/src/{lib.rs,synth_rng.rs,anthropic/writer.rs} outside this waiver's file scope, AND would not by itself clear this xtask report: `cargo metadata`'s resolve graph unifies features across the WHOLE workspace (confirmed: busbar_llm_codec's single metadata node already shows `test-support` active workspace-wide even though busbar-plane-llm's own [dependencies] line never requests it), so a plane-only feature attenuation cannot be distinguished from the engine's own default-on request in this tool's model. Tracked as follow-up debt, not fixed here; re-review if any OTHER path to libc appears."
+via = "getrandom"
+reason = "sha2/cpufeatures left busbar-api and busbar-substrate-values (DENY-2: pure-Rust SHA-256/HMAC-SHA256 in busbar-api, proven byte-for-byte vs sha2/hmac on NIST/RFC/SigV4 vectors), so the cpufeatures edge this waiver used to name is gone from the closure. One edge remains: getrandom uses libc only to issue the getentropy(2)/getrandom(2) syscall (busbar-llm-codec's own direct `getrandom = { workspace = true }` dependency, drawn by synth_rng.rs's thread-local entropy pool); this is a syscall wrapper, not a socket/file/process primitive. This edge is NOT yet what ARCHITECTURE.md section 1.2 wants of a pure plane (entropy should arrive through Ctx, not be drawn by the codec itself); tracked as follow-up debt, not fixed here. Re-review if any other path to libc appears."
 owner = "orchestrator, 2026-09-05"
 
 [[allow]]
 crate = "busbar-plane-mcp"
 dep = "libc"
-via = "cpufeatures, getrandom"
-reason = "Two reviewed, non-I/O edges reach libc from this plane through its codec: (1) cpufeatures uses libc for CPU feature detection only (getauxval/sysctl); (2) getrandom, reached through sonic_rs -> ahash's hasher seeding, uses libc only to issue the getentropy(2)/getrandom(2) syscall. Neither edge exposes a socket, file or process primitive. Re-review if any other path to libc appears."
+via = "ahash"
+reason = "sha2/cpufeatures left busbar-api and busbar-substrate-values (DENY-2), so the cpufeatures edge this waiver used to name is gone from the closure. One edge remains: getrandom, reached through sonic_rs -> ahash's hasher seeding, uses libc only to issue the getentropy(2)/getrandom(2) syscall. Not a socket/file/process primitive. Re-review if any other path to libc appears."
 owner = "orchestrator, 2026-09-05"
 
 [[allow]]
 crate = "busbar-plane-streams"
 dep = "libc"
-via = "cpufeatures, getrandom"
-reason = "Two reviewed, non-I/O edges reach libc from this plane through its codec: (1) cpufeatures uses libc for CPU feature detection only (getauxval/sysctl); (2) getrandom, reached through sonic_rs -> ahash's hasher seeding, uses libc only to issue the getentropy(2)/getrandom(2) syscall. Neither edge exposes a socket, file or process primitive. Re-review if any other path to libc appears."
+via = "ahash"
+reason = "sha2/cpufeatures left busbar-api and busbar-substrate-values (DENY-2), so the cpufeatures edge this waiver used to name is gone from the closure. One edge remains: getrandom, reached through sonic_rs -> ahash's hasher seeding, uses libc only to issue the getentropy(2)/getrandom(2) syscall. Not a socket/file/process primitive. Re-review if any other path to libc appears."
 owner = "orchestrator, 2026-09-05"
 
 [[allow]]
-crate = "hook-test-plugin"
+crate = "busbar-plane-streams-gemini"
 dep = "libc"
-via = "cpufeatures"
-reason = "cpufeatures uses libc for CPU feature detection only (getauxval/sysctl); no I/O primitive is reachable; re-review if any other path to libc appears"
+via = "ahash"
+reason = "Same plane, same codec, same structural edge as busbar-plane-streams: sha2/cpufeatures is gone from the closure (DENY-2). The dialect crate inherits busbar_voice_codec -> busbar_substrate_values -> sonic_rs -> ahash -> getrandom -> libc, the one edge already reviewed and waived for the parent plane and for busbar-plane-llm/-mcp. getrandom here is a syscall wrapper (getentropy(2)/getrandom(2)) for ahash's hasher seeding, not a socket/file/process primitive. Re-review if any other path to libc appears."
 owner = "orchestrator, 2026-09-05"
 
 [[allow]]
-crate = "hooks-ranking"
+crate = "busbar-plane-streams-openai"
 dep = "libc"
-via = "cpufeatures"
-reason = "cpufeatures uses libc for CPU feature detection only (getauxval/sysctl); no I/O primitive is reachable; re-review if any other path to libc appears"
+via = "ahash"
+reason = "Same plane, same codec, same structural edge as busbar-plane-streams: sha2/cpufeatures is gone from the closure (DENY-2). The dialect crate inherits busbar_voice_codec -> busbar_substrate_values -> sonic_rs -> ahash -> getrandom -> libc, the one edge already reviewed and waived for the parent plane and for busbar-plane-llm/-mcp. getrandom here is a syscall wrapper (getentropy(2)/getrandom(2)) for ahash's hasher seeding, not a socket/file/process primitive. Re-review if any other path to libc appears."
+owner = "orchestrator, 2026-09-05"
+
+[[allow]]
+crate = "busbar-plane-streams-twilio"
+dep = "libc"
+via = "ahash"
+reason = "Same plane, same codec, same structural edge as busbar-plane-streams: sha2/cpufeatures is gone from the closure (DENY-2). The dialect crate inherits busbar_voice_codec -> busbar_substrate_values -> sonic_rs -> ahash -> getrandom -> libc, the one edge already reviewed and waived for the parent plane and for busbar-plane-llm/-mcp. getrandom here is a syscall wrapper (getentropy(2)/getrandom(2)) for ahash's hasher seeding, not a socket/file/process primitive. Re-review if any other path to libc appears."
 owner = "orchestrator, 2026-09-05"
