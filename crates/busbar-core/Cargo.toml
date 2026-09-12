@@ -53,6 +53,14 @@ busbar-plugin-sign = { path = "../plugin-sign" }
 busbar-secret-ref = { path = "../secret-ref" }
 busbar-auth-admin-tokens = { path = "../auth-admin-tokens", optional = true }
 busbar-hooks-ranking = { path = "../hooks-ranking", optional = true }
+# THE SCOPE MODEL, named once. `Scope`, `Grants` and the method+path authorization matrix used to
+# exist twice — here, in this crate's v1 contract module, and again in the unit, whose own doc
+# comment called its copy a verbatim port of this one. Two encodings of one authorization rule is a
+# rule that can be tightened in one place and not the other, on the one surface where that is least
+# survivable. The unit is the copy that stays (deciding whether a held grant satisfies a requirement
+# is what a unit DOES); core names it and keeps its own call sites spelling `Scope` exactly as they
+# always did.
+busbar-unit-scope = { path = "../busbar-unit-scope" }
 axum = { workspace = true }
 tower = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal", "io-util", "io-std", "process"] }

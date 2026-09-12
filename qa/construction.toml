@@ -207,11 +207,30 @@ from = 1798
 to = 1860
 because = "busbar x plane: the root's new plane_install.rs (the installer, its composition refusals and their proofs) and crates/busbar/tests/plane_declaration_agreement.rs. the composition root now composes what it mounts on this axis: it pairs each plane's declaration with its behaviour row and installs both in one call. The rise is the root spelling the plane axis it owns, in the one crate the architecture allows to; busbar-core x plane falls 3067 -> 3056 in the same commit as the readers move off core's copy. Ordinal 9 is the busbar x plane row -- this tree's raises() cannot key an array of tables by identity, and the row carries the same note beside its count."
 
-[gate.ceiling_raises."cell.65.count"]
+# ── THE AUTHORIZATION MATRIX'S CELLS ─────────────────────────────────────────────────────────────
+#
+# `cell.65` (busbar-core x control) HAD a raise here: the plane-declaration move's one cfg(test) line,
+# 5521 -> 5522. It is STRUCK rather than re-based, because the ceiling it names no longer rises at
+# all -- deleting core's copy of the scope model takes that cell to 5518, four BELOW the base, and an
+# entry declaring a raise that is not one is an entry that would outlive the thing it excused. The
+# line it named is still there and still dies with the row's data fields; it simply no longer costs a
+# raise. The FALL itself is re-pinned in qa/kind-isolation.toml by measurement, not declared here.
+#
+# The two entries below are the same MOVE's destination side, and both are base -> tip figures read
+# off the base 3236c8a2 rather than chained from this branch's own predecessor.
+
+
+[gate.ceiling_raises."cell.300.count"]
 file = "qa/kind-isolation.toml"
-from = 5521
-to = 5522
-because = "busbar-core x control: one line: the cfg(test)-only `declaration_of`, which hands a behaviour row's `admin_noun` across to the contract declaration for core's OWN test built-ins. It dies with the row's data fields, in SUB-1. Ordinal 65 is the busbar-core x control row -- this tree's raises() cannot key an array of tables by identity, and the row carries the same note beside its count."
+from = 139
+to = 146
+because = "busbar-unit-scope x control: the admin method+path authorization matrix ARRIVING at the crate that now owns it. This is a MOVE, declared with its source's fall in the same commit: busbar-core x control falls 5522 -> 5518 as core's second copy of Scope/Grants/required_scope is deleted. The seven hits are the dry-run exemption's doc comment and the red-before-green test that pins it to the PATH rather than the method, which is where the two copies had drifted -- the proofs went with the rule, and a table of expected answers left behind in core would have been a third encoding of it. Ordinal 300 is the busbar-unit-scope x control row -- this tree's raises() cannot key an array of tables by identity, and the row carries the same note beside its count."
+
+[gate.ceiling_raises."cell.74.count"]
+file = "qa/kind-isolation.toml"
+from = 10
+to = 22
+because = "busbar-core x unit: the twelve hits of the drain's own edge, and nothing else. Four in crates/busbar-core/Cargo.toml (the dependency line, counted once as a package name and once as a kind-qualified id), six where `busbar_unit_scope::` is now spelled in crates/busbar-core/src/admin/v1/contract/mod.rs in place of the definitions that were deleted there, two in the adapter's own test. A legacy crate naming the unit it is emptying into is the direction the retirement runs, which is why the standing [[transitional]] row `busbar-core -> busbar-unit-*` (owner ruling 2026-09-08) carries the edge; the shipped [[dep]] row added in the same commit states it at count 1. Every prose hit was drained before this figure was taken -- the manifest comment and the adapter doc comment are worded to add no vocabulary the landing does not need. Ordinal 74 is the busbar-core x unit row -- this tree's raises() cannot key an array of tables by identity, and the row carries the same note beside its count."
 
 [gate.ceiling_raises."cell.130.count"]
 file = "qa/kind-isolation.toml"

@@ -1641,7 +1641,7 @@ count = "4"
 [[cell]]
 crate = "busbar-core"
 kind = "control"
-count = "5522"
+count = "5518"
 
 [[cell]]
 crate = "busbar-core"
@@ -1686,7 +1686,17 @@ count = "2145"
 [[cell]]
 crate = "busbar-core"
 kind = "unit"
-count = "10"
+# 10 -> 22, HAND-SET to the measurement and declared in qa/construction.toml's
+# [gate.ceiling_raises] as `cell.74.count`: the twelve hits of the drain's own edge --
+# `busbar-unit-scope` in this crate's manifest (once as a package name, once as a kind-qualified id,
+# on each of the two literals), `busbar_unit_scope::` where `Scope`, `Grants` and the authorization
+# matrix used to be DEFINED in src/admin/v1/contract/mod.rs, and the adapter's own test. Legacy
+# naming the unit it is emptying into is the direction the retirement runs; the standing
+# [[transitional]] row `busbar-core -> busbar-unit-*` carries the edge and the shipped [[dep]] row
+# added in the same commit states it. The key is an ORDINAL because that is the only key this tree's
+# `ceilings.rs::raises()` can resolve against an array-of-tables; ordinal 74 IS this row
+# (busbar-core x unit), and no cell row is added or removed by this commit so no other ordinal moves.
+count = "22"
 
 [[cell]]
 crate = "busbar-export-example-plugin"
@@ -2816,7 +2826,15 @@ count = "3"
 [[cell]]
 crate = "busbar-unit-scope"
 kind = "control"
-count = "139"
+# 139 -> 146, HAND-SET to the measurement and declared in qa/construction.toml's
+# [gate.ceiling_raises] as `cell.300.count`: the admin method+path authorization matrix arriving at
+# the crate that now owns it, with its source's fall -- busbar-core x control 5522 -> 5518 -- in the
+# SAME commit. The seven hits are the dry-run exemption's doc comment and the test that pins the
+# exemption to the PATH rather than the method, which is where the two copies had drifted. The key is
+# an ORDINAL because that is the only key this tree's `ceilings.rs::raises()` can resolve against an
+# array-of-tables; ordinal 300 IS this row (busbar-unit-scope x control), and no cell row is added or
+# removed by this commit so no other ordinal moves.
+count = "146"
 
 [[cell]]
 crate = "busbar-unit-scope"
@@ -2826,7 +2844,7 @@ count = "1"
 [[cell]]
 crate = "busbar-unit-scope"
 kind = "transport"
-count = "6"
+count = "4"
 
 [[cell]]
 crate = "busbar-unit-transport-key"
@@ -3746,6 +3764,16 @@ verdict = "not-allowed"
 cite    = "ARCHITECTURE.md 1.2 \"Core -> plugin. Never plugin -> core.\" / ARCHITECTURE.md 1.1 the three axes are blind to each other. The retiring 1.5.x crates fuse plane+core+transport in one name."
 why     = "busbar-core names busbar-timing: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
 drain   = "delete the busbar-timing dependency from busbar-core's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
+
+[[dep]]
+from    = "busbar-core"
+to      = "busbar-unit-scope"
+half    = "shipped"
+count   = "1"
+verdict = "not-allowed"
+cite    = "ARCHITECTURE.md 1.2 \"Core -> plugin. Never plugin -> core.\" / ARCHITECTURE.md 1.1 the three axes are blind to each other. The [[transitional]] row `busbar-core -> busbar-unit-*` (owner ruling 2026-09-08, at the head of this file) is what makes the edge landable: the drain is legacy code moving INTO the units, and the edge it needs on the way is a grant with an expiry rather than the absence of one."
+why     = "busbar-core names busbar-unit-scope: declared normal in the shipped graph, 1 declaration(s) at this commit. The scope model and the method+path authorization matrix existed twice — in core's v1 admin contract and in the unit — and the two had drifted on the dry-run exemption. The unit is the copy that stays; core's is deleted and core names the unit for `Scope`, `Grants` and `admin_required_scope`. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "the edge dies with busbar-core. Until then it is the drain's own edge: the admin surface's authorization is decided once, in busbar-unit-scope, and the crate that still hosts the v1 surface names it. `kind-isolation-ship` is RED while busbar-core exists at all, which is where this row expires."
 
 [[dep]]
 from    = "busbar-export-example-plugin"

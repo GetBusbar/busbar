@@ -1,36 +1,35 @@
 # WHAT THIS HAND-BACK ASKS keep-proof TO PROVE.
 #
-# .keep-proof.toml is read by .github/workflows/keep-proof.yml at the root of a `keep-*` branch, and
-# by scripts/prove-remote.sh when it runs the SAME legs on a fleet box. It scopes the two expensive
-# legs of the run to what the branch actually touched, so a verdict says something specific instead
-# of "everything, slowly". The INTEGRATION tree carries no such file — it is a keep-branch artefact,
-# and this branch is a keep branch.
+# .keep-proof.toml is read by .github/workflows/keep-proof.yml at the root of a `keep-*` branch, by
+# scripts/prove-remote.sh when it runs the SAME legs on a fleet box, and by scripts/prove-latchkey.sh
+# when it runs them on a managed runner. It scopes the two expensive legs of the run to what the
+# branch actually touched, so a verdict says something specific instead of "everything, slowly". The
+# INTEGRATION tree carries no such file — it is a keep-branch artefact, and this branch is one.
 #
-#   families — a regex handed to the shadow oracle's `--id-filter`. This branch moves the PLANE
-#              DECLARATION out of busbar-core and into busbar-contract as data, moves the installer
-#              to the composition root, and leaves the substrate's behaviour table where it is. That
-#              is a MOVE: the process still boots the same planes, in the same layering order, off
-#              the same config sections, and answers the same operator surface. So the honest scope
-#              is the four families that would notice if it were not a move — `boot` (the planes are
-#              installed before the first read and in canonical order), `config` (a section still
-#              resolves to its plane, and the section list is still the same list), `neutrality` (no
-#              plane's traffic changed) and `admin.ops` (the operator surface is byte-identical).
-#              Those four are the STOP RULE for this line: not one recorded byte may move.
+#   families — a regex handed to the shadow oracle's `--id-filter`. This branch DELETES busbar-core's
+#              second copy of the admin scope model — `Scope`, `Grants`, the `allows`/`meet`/
+#              `dominates` arithmetic and the method+path authorization matrix — and names
+#              busbar-unit-scope's copy instead. Every admin request is authorized by that matrix
+#              before it reaches a handler, so `admin.ops` is the family that would notice if this
+#              were anything other than a move; `auth.lifecycle` carries the scope TOKENS and the
+#              `max_admin_scope:` ceiling whose one accepted-value list `parse_ceiling` still is; and
+#              `documented` carries the openapi scope annotations rendered off `Scope::as_str`.
+#              Those three are the STOP RULE for this line: not one recorded byte may move. (The
+#              unit's dry-run exemption IS re-keyed from path+POST to path alone — that is the fix,
+#              and it makes the unit agree with the shipped surface, which is why no recorded byte
+#              moves when the surface is the thing being replayed.)
 #   tests    — every crate that carries a line this branch changes or a reader it rebinds:
-#              busbar-contract (the face), busbar-substrate (its PlaneDecl is the behaviour table
-#              the root now writes), busbar-core (the copy that is deleted and the ~38 readers that
-#              rebind), busbar (the composition root that gains the installer), the four engine
-#              crates that fill their own declaration (busbar-llm, busbar-mcp, busbar-a2a,
-#              busbar-voice) and xtask (the ceilings and cells this branch re-pins).
-families = '^(boot|config|neutrality|admin\.ops)([|.]|$)'
+#              busbar-core (the copy that is deleted and the call sites that rebind),
+#              busbar-unit-scope (the copy that stays, and the red-before-green proof of the
+#              re-keyed exemption), busbar-plane-admin (its admin-verb conformance tests assert their
+#              declared route scope against the bar `required_scope` enforces), busbar (the
+#              composition root that mounts that surface) and xtask (the cells, the raise entries and
+#              the new `[[dep]]` row this branch writes).
+families = '^(admin\.ops|auth\.lifecycle|documented)([|.]|$)'
 tests = [
-  "busbar-contract",
-  "busbar-substrate",
   "busbar-core",
+  "busbar-unit-scope",
+  "busbar-plane-admin",
   "busbar",
-  "busbar-mcp",
-  "busbar-a2a",
-  "busbar-llm",
-  "busbar-voice",
   "xtask",
 ]

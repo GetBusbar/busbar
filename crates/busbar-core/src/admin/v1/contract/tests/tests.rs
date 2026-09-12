@@ -87,50 +87,16 @@ fn required_scope_mutations_are_full() {
     );
 }
 
-/// `parse` drops the retired delegated tokens (they now resolve to `None`, i.e. no grant), while
-/// `read-only`/`full` still round-trip.
-#[test]
-fn scope_parse_drops_mint_and_hooks_register() {
-    assert!(Scope::parse("mint").is_none());
-    assert!(Scope::parse("hooks-register").is_none());
-    assert!(Scope::parse("bogus").is_none());
-    assert_eq!(Scope::parse("read-only"), Some(Scope::ReadOnly));
-    assert_eq!(Scope::parse("full"), Some(Scope::Full));
-    assert_eq!(Scope::ReadOnly.as_str(), "read-only");
-    assert_eq!(Scope::Full.as_str(), "full");
-}
-
-/// The two-rung chain: `ReadOnly` does not satisfy a `Full` requirement, `Full` satisfies both, and
-/// a `Full` grant capped by a `ReadOnly` ceiling collapses to read-only.
-#[test]
-fn readonly_not_allow_full_full_allows_readonly() {
-    assert!(!Scope::ReadOnly.allows(Scope::Full));
-    assert!(Scope::ReadOnly.allows(Scope::ReadOnly));
-    assert!(Scope::Full.allows(Scope::ReadOnly));
-    assert!(Scope::Full.allows(Scope::Full));
-
-    // Grants: a Full grant capped by a ReadOnly ceiling authorizes reads but not mutations.
-    let capped = Grants::of(Scope::Full).capped_by(Scope::ReadOnly);
-    assert!(capped.allows(Scope::ReadOnly));
-    assert!(!capped.allows(Scope::Full));
-
-    // `with` is a union over `allows`, and `dominates`/`meet` derive from the same seam.
-    for a in Scope::ALL {
-        for b in Scope::ALL {
-            let union = Grants::of(a).with(b);
-            for n in Scope::ALL {
-                assert_eq!(
-                    union.allows(n),
-                    a.allows(n) || b.allows(n),
-                    "Grants::of({a:?}).with({b:?}).allows({n:?})"
-                );
-            }
-        }
-    }
-    assert_eq!(Scope::Full.meet(Scope::ReadOnly), Scope::ReadOnly);
-    assert!(Scope::Full.dominates(Scope::ReadOnly));
-    assert!(!Scope::ReadOnly.dominates(Scope::Full));
-}
+// THE SCOPE ALGEBRA'S PROOFS MOVED WITH THE ALGEBRA. `scope_parse_drops_mint_and_hooks_register`
+// and `readonly_not_allow_full_full_allows_readonly` stood here word for word beside identically
+// named tests in `busbar-unit-scope`, over a `Scope` that was itself a second copy. The definition
+// is the unit's now and so are its proofs — including the one that pins the dry-run exemption to the
+// path rather than the method, which is where the two copies had drifted
+// (`the_dry_run_exemption_does_not_ask_which_method_was_used`, in that crate's `tests.rs`). What
+// this file still proves about scope is the part that is genuinely this crate's: that the adapter
+// above hands the unit's matrix the method this surface's handlers were given
+// (`required_scope_matrix`, `required_scope_mutations_are_full`). A second walk of the matrix HERE
+// would be a third encoding of the rule and would drift from both.
 
 /// The stable error taxonomy is locked: each variant's `code` + HTTP status is the frozen wire
 /// contract tooling branches on. A change here is a breaking change to v1 and must fail this test.
