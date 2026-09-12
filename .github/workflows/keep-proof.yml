@@ -502,10 +502,18 @@ jobs:
         run: cargo xtask gate --all --format=tsv
 
   # ── DESIGN BINDINGS ────────────────────────────────────────────────────────────────────────────
-  # The same two assertions ci.yml's design-bindings job makes, for the same reason, on a job that
-  # needs no toolchain: EXISTENCE (every check an Appendix B binding names still exists) and
-  # REGEN-CLEAN (the committed ledger is what the deriver produces from Appendix B today). A
-  # hand-back that edits ARCHITECTURE.md and skips the regen lands a stale generated artifact.
+  # The same two assertions ci.yml's design-bindings job makes, for the same reason: EXISTENCE
+  # (every check an Appendix B binding names still exists) and REGEN-CLEAN (the committed ledger
+  # is what the deriver produces from Appendix B today, folded into the gate's own
+  # `design-bindings:regen-clean` row rather than a second diff step). A hand-back that edits
+  # ARCHITECTURE.md and skips the regen lands a stale generated artifact.
+  #
+  # BOTH STEPS RAN A SCRIPT THAT IS NOT IN THIS TREE, the same bug this file's construction-gate
+  # job had: `scripts/design-bindings.sh` and `scripts/design-bindings.py` do not exist — the
+  # shell/Python pair was converted to `cargo xtask gate design-bindings` and this file was never
+  # updated, so every step here failed at exit 127 on a missing file. The deriver is a cargo
+  # binary now, not stdlib python, so this job needs the toolchain the `gates` job above needs and
+  # for the same reason.
       - name: Latchkey Fast Cache (cargo registry + target, save)
         uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
         with:
@@ -522,25 +530,32 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - name: Design bindings self-test
-        run: scripts/design-bindings.sh --selftest
-      - name: Design bindings check (existence)
-        run: scripts/design-bindings.sh --check
-      - name: Design bindings regen-clean
-        run: |
-          set -euo pipefail
-          mkdir -p target/design-bindings
-          python3 scripts/design-bindings.py --write \
-            --out-json target/design-bindings/fresh.json \
-            --out-md target/design-bindings/fresh.md
-          stale=0
-          diff -u qa/design-bindings.json target/design-bindings/fresh.json || stale=1
-          diff -u qa/DESIGN-BINDINGS.md target/design-bindings/fresh.md || stale=1
-          if [ "$stale" -ne 0 ]; then
-            echo "::error::the committed design-bindings artifacts are not what the deriver produces"
-            echo "::error::from Appendix B today. Re-run the deriver and commit the result."
-            exit 1
-          fi
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
+      - name: Resolve cargo home (Latchkey image sets CARGO_HOME off $HOME)
+        uses: ./.github/actions/cargo-home
+      - name: Latchkey Fast Cache (cargo registry + target, restore)
+        uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
+        with:
+          action: restore
+          key: cargo-${{ runner.os }}-design-bindings-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
+          path: |
+            ${{ env.CARGO_HOME }}/registry
+            ${{ env.CARGO_HOME }}/git
+            target
+      - name: Design bindings self-test (the gate proves itself before it judges the tree)
+        run: cargo xtask gate design-bindings --selftest
+      - name: Design bindings (existence; unmapped bindings listed as named gaps; regen-clean)
+        run: cargo xtask gate design-bindings
+      - name: Latchkey Fast Cache (cargo registry + target, save)
+        uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
+        with:
+          action: save
+          key: cargo-${{ runner.os }}-design-bindings-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
+          path: |
+            ${{ env.CARGO_HOME }}/registry
+            ${{ env.CARGO_HOME }}/git
+            target
 
   # ── THE SHADOW ORACLE, SCOPED BY THE BRANCH ────────────────────────────────────────────────────
   # THE POINT OF THE WHOLE FILE, restated: the oracle is the single most expensive thing an agent
