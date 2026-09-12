@@ -165,6 +165,8 @@ jobs:
       # this-tree paths) had no cache at all before this migration. Latchkey Fast Cache, same
       # restore/save form as ci.yml/keep-proof.yml, guarded by the same `if:` as the Rust install
       # above so a pure release-artifact run (nothing built from source) never pays for it.
+      - name: Resolve cargo home (Latchkey image sets CARGO_HOME off $HOME)
+        uses: ./.github/actions/cargo-home
       - name: Latchkey Fast Cache (cargo registry + target, restore)
         if: ${{ inputs.busbar_version == 'this-tree' || inputs.plugin_ref == 'this-tree' }}
         uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
@@ -174,8 +176,8 @@ jobs:
           restore-keys: |
             cargo-${{ runner.os }}-plugin-functional-
           path: |
-            ~/.cargo/registry
-            ~/.cargo/git
+            ${{ env.CARGO_HOME }}/registry
+            ${{ env.CARGO_HOME }}/git
             target
 
       # ── Resolve the busbar binary. A failure here does NOT try to be clever: the probe step below
@@ -331,6 +333,6 @@ jobs:
           action: save
           key: cargo-${{ runner.os }}-plugin-functional-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
           path: |
-            ~/.cargo/registry
-            ~/.cargo/git
+            ${{ env.CARGO_HOME }}/registry
+            ${{ env.CARGO_HOME }}/git
             target

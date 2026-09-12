@@ -43,6 +43,8 @@ jobs:
         with:
           fetch-depth: 0
       - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
+      - name: Resolve cargo home (Latchkey image sets CARGO_HOME off $HOME)
+        uses: ./.github/actions/cargo-home
       - name: Latchkey Fast Cache (cargo registry + target, restore)
         uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
         with:
@@ -51,8 +53,8 @@ jobs:
           restore-keys: |
             cargo-${{ runner.os }}-prepare-release-
           path: |
-            ~/.cargo/registry
-            ~/.cargo/git
+            ${{ env.CARGO_HOME }}/registry
+            ${{ env.CARGO_HOME }}/git
             target
 
       - name: Validate version + not already released
@@ -103,8 +105,8 @@ jobs:
           action: save
           key: cargo-${{ runner.os }}-prepare-release-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
           path: |
-            ~/.cargo/registry
-            ~/.cargo/git
+            ${{ env.CARGO_HOME }}/registry
+            ${{ env.CARGO_HOME }}/git
             target
 
       - name: Commit + push to dev (NO tag — tag-on-main.yml cuts the release when this reaches main)
