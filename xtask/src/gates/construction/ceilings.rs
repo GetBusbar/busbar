@@ -35,10 +35,11 @@ use crate::gates::construction::model::{plain, CRow, Cfg};
 use crate::gates::construction::{CEILINGS, SURFACE};
 // THE ONE NARROW SEAM BETWEEN THE TWO GATES: the minted-dep door admits a brand new edge between
 // two crates that already exist off the SAME grant table `kind-isolation` scores that edge
-// against everywhere else, read through the two functions it exports for exactly this. Everything
-// else in this module (the `[[minted]]`/`[[minted_kind]]` reader above) stays independent on
-// purpose; this is the one place a new edge's admission cannot be checked without it.
-use crate::gates::kind_isolation::{dep_class_verdict, kind_of_crate};
+// against everywhere else, read through the three functions it exports for exactly this.
+// Everything else in this module (the `[[minted]]`/`[[minted_kind]]` reader above) stays
+// independent on purpose; this is the one place a new edge's admission cannot be checked without
+// it.
+use crate::gates::kind_isolation::{dep_class_verdict, kind_of_crate, transitional_covers};
 
 /// The other ceilings file this gate watches. It is not read by any construction rule — it is the
 /// `kind-isolation:matrix` allowance — and it is watched HERE because `ceiling-rose` is one claim
@@ -1371,6 +1372,15 @@ fn minted_before(
 /// itself, which would make the ledger the authority on its own graph rather than a record of it.
 /// Above `ceiling`, the edge is an ordinary ceiling and rises are ordinary declared raises.
 ///
+/// THE `[[transitional]]` ARM. A pair the grant table implies `not-allowed` for is not automatically
+/// refused here: `busbar-core -> busbar-unit-*` is `not-allowed` by class and a standing
+/// `[[transitional]]` drain exemption at once (owner ruling 2026-09-08) — `kind-isolation:deps`
+/// already reads exactly this row to accept the edge, off `kind_isolation::transitional_covers`. A
+/// row covered by that table admits its mint at its own `ceiling` without the class check: the
+/// transitional table is a GRANT with an expiry, not the absence of one, and a door that could not
+/// see it would refuse the edge the drain is already carrying. An UNCOVERED pair is refused exactly
+/// as before.
+///
 /// Returns `None` when this tree carries no `[[dep]]` row for `(from, to, half)` at all, so the
 /// caller falls through to the generic "no admission" refusal rather than a dep-shaped one.
 fn dep_admission(
@@ -1390,6 +1400,9 @@ fn dep_admission(
              row is born at>\"`"
         )));
     };
+    if transitional_covers(cx, from, to) {
+        return Some(Ok(ceiling));
+    }
     let (fk, tk) = (kind_of_crate(cx, from), kind_of_crate(cx, to));
     let (Some(fk), Some(tk)) = (fk, tk) else {
         return Some(Err(format!(

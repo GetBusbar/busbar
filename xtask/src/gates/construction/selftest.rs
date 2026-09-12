@@ -51,6 +51,7 @@ use crate::gates::construction::tree::{crate_name_of_dir, dirs_for_globs};
 use crate::gates::construction::{
     ceilings, census, external, ConstructionGate, CEILINGS, UNSAFE_HALVES,
 };
+use crate::gates::kind_isolation::{dep_class_verdict, kind_of_crate};
 use crate::gates::{
     execute, prove_red, prove_rows_green, prove_rows_red, Case, Expect, Gate, Report,
 };
@@ -582,6 +583,7 @@ fn ceiling_ratchet_cases<'a>(
     ));
     r.append(minted_ceiling_cases(gate, cx, base, &based, &text));
     r.append(dep_admission_cases(gate, cx, base, &based));
+    r.append(dep_admission_transitional_cases(gate, cx, base, &based));
 
     // A base whose ceilings file cannot be PARSED is a comparison that cannot be made, and a
     // comparison that cannot be made is not a comparison that passed.
@@ -1686,6 +1688,129 @@ fn dep_admission_cases<'a>(
         &[ceilings::ROW_ROSE],
         ov,
     ));
+    r
+}
+
+/// The byte range of the `[[transitional]] from = "<from>" to = "<to>"` row, if the ledger carries
+/// one — found by identity, the same way [`find_dep`] keys a `dep` row.
+fn find_transitional(text: &str, from: &str, to: &str) -> Option<(usize, usize)> {
+    for n in 0.. {
+        let (s, e) = nth_table(text, "[[transitional]]", n)?;
+        if field_of(text, s, e, "from").as_deref() == Some(from)
+            && field_of(text, s, e, "to").as_deref() == Some(to)
+        {
+            return Some((s, e));
+        }
+    }
+    None
+}
+
+/// The ledger with the named `[[transitional]]` row struck out entirely.
+fn strike_transitional(text: &str, from: &str, to: &str) -> Option<String> {
+    let (s, e) = find_transitional(text, from, to)?;
+    Some(format!("{}{}", &text[..s], &text[e..]))
+}
+
+/// THE MINTED-DEP DOOR'S `[[transitional]]` ARM (K12g): a pair the architecture's grant table
+/// implies `not-allowed` for is not automatically refused — `busbar-core -> busbar-unit-*` is
+/// `not-allowed` by class and a standing `[[transitional]]` drain exemption at once (owner ruling
+/// 2026-09-08), and `kind-isolation:deps` already accepts exactly this edge off that row. The door
+/// has to see the same table for the same reason.
+///
+/// Both arms plant the SAME new `[[dep]]` row — `busbar-core -> busbar-unit-scope`, `not-allowed`,
+/// `ceiling = "1"` — against the REAL ledger's own `[[transitional]] from = "busbar-core" to =
+/// "busbar-unit-*"` row, present or struck. The pair is real (both crates exist on this tree) and
+/// the identity is new (no `[[dep]]` row names it today), so it is minted at both base copies
+/// without either arm needing to touch the base.
+fn dep_admission_transitional_cases<'a>(
+    gate: &'a dyn Gate,
+    cx: &'a Ctx,
+    base: &Overlay,
+    based: &str,
+) -> Report<'a> {
+    let mut r = Report::new();
+    let file = ceilings::KIND_CEILINGS;
+    let Ok(kinds) = cx.read(file) else {
+        r.note_infra_failure(format!(
+            "{file} could not be read, so the transitional arm of the minted-dep door is unproven \
+             here rather than passing"
+        ));
+        return r;
+    };
+    let planted = "\n[[dep]]\nfrom    = \"busbar-core\"\nto      = \"busbar-unit-scope\"\n\
+         half    = \"shipped\"\ncount   = \"1\"\nceiling = \"1\"\nverdict = \"not-allowed\"\n\
+         cite    = \"planted by the self-test\"\nwhy     = \"planted by the self-test\"\n\
+         drain   = \"none\"\n"
+        .to_string();
+
+    // ARM ONE (K12g's exact red): the standing `[[transitional]] busbar-core -> busbar-unit-*`
+    // row is STRUCK, so the pair is covered by no exemption — refused by class exactly as any
+    // other `not-allowed` mint is.
+    let Some(without_transitional) = strike_transitional(&kinds, "busbar-core", "busbar-unit-*")
+    else {
+        r.note_infra_failure(format!(
+            "{file} carries no `[[transitional]] from = \"busbar-core\" to = \"busbar-unit-*\"` \
+             row to strike, so the transitional arm's red is unproven here rather than passing"
+        ));
+        return r;
+    };
+    let mut ov = on(base);
+    ov.set_command(format!("git-show:{based}:{file}"), kinds.clone());
+    ov.set(file, format!("{without_transitional}{planted}"));
+    r.push(prove_rows_red(
+        cx,
+        gate,
+        "a new `[[dep]]` edge with `ceiling` and no covering `[[transitional]]` row is refused by its class",
+        &[ceilings::ROW_ROSE],
+        ov,
+        &["busbar-core", "busbar-unit-scope", "not-allowed"],
+    ));
+
+    // ARM TWO (K12g's exact green): the standing row is left exactly as the tree carries it, so
+    // the pair IS covered — admitted at the row's own `ceiling` without the class check.
+    let mut ov = on(base);
+    ov.set_command(format!("git-show:{based}:{file}"), kinds.clone());
+    ov.set(file, format!("{kinds}{planted}"));
+    r.push(prove_rows_green(
+        cx,
+        gate,
+        "a new `[[dep]]` edge with `ceiling` and a covering `[[transitional]]` row is admitted",
+        &[ceilings::ROW_ROSE],
+        ov,
+    ));
+
+    // E1B'S TWO ROWS: `busbar-plugin-loader` / `busbar-plugin-sdk` -> `busbar-contract`, `tcb`,
+    // `ceiling = "1"` — not the transitional arm at all, the same door's ordinary `tcb` path, on
+    // the real crates E1b names. `kind_isolation::ARCHITECTURE_TCB` does NOT yet grant
+    // `plugin-tooling -> contract` on THIS branch — that grant is E1b's own (queued separately, on
+    // `keep-plugin-error-seam-recut`), and a landing that added it here would double- or
+    // conflict-declare the exact tuple E1b's own commit adds. So this proof is HELD BEHIND E1b:
+    // gated at case-construction time on `kind_isolation::dep_class_verdict` actually returning
+    // `tcb` for the pair, and pushing nothing (rather than a hand-written or forced answer) when it
+    // does not. The two cases start proving themselves the moment E1b's grant lands beneath this
+    // branch, with no further change needed here.
+    let e1b_granted = kind_of_crate(cx, "busbar-plugin-loader")
+        .zip(kind_of_crate(cx, "busbar-contract"))
+        .is_some_and(|(fk, tk)| dep_class_verdict(fk, tk) == "tcb");
+    if e1b_granted {
+        for from in ["busbar-plugin-loader", "busbar-plugin-sdk"] {
+            let planted_e1b = format!(
+                "\n[[dep]]\nfrom    = \"{from}\"\nto      = \"busbar-contract\"\nhalf    = \"shipped\"\n\
+                 count   = \"1\"\nceiling = \"1\"\nverdict = \"tcb\"\ncite    = \"planted by the \
+                 self-test\"\nwhy     = \"planted by the self-test\"\ndrain   = \"none\"\n"
+            );
+            let mut ov = on(base);
+            ov.set_command(format!("git-show:{based}:{file}"), kinds.clone());
+            ov.set(file, format!("{kinds}{planted_e1b}"));
+            r.push(prove_rows_green(
+                cx,
+                gate,
+                format!("E1b's `{from} -> busbar-contract` row admits under the door"),
+                &[ceilings::ROW_ROSE],
+                ov,
+            ));
+        }
+    }
     r
 }
 

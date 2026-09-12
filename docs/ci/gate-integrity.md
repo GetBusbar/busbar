@@ -164,6 +164,36 @@ afterwards is an ordinary declared raise. This is the one place `xtask/src/gates
 ceilings.rs` reads `xtask/src/gates/kind_isolation.rs` — a narrow, one-directional seam kept to two
 functions so the two gates never carry two different answers about the same grant table.
 
+**Two defects in that door, both measured before a real edge tried to use it.** First, `[[dep]]`'s
+own row reader (`take_row` in `xtask/src/gates/kind_isolation.rs`) took every field it was given
+POSITIONALLY and treated every one as mandatory, so a row carrying the door's new `ceiling` field was
+either refused outright (`ceiling` was not in the wanted-field list, so it read as `unknown-field`
+and the whole row was dropped) or, if `ceiling` were simply added to that list, silently reindexed
+every row that does NOT carry it — `verdict` would read `count`'s old slot on every one of the
+ledger's other 219 rows. The fix is `take_row_opt`, a sibling reader that keeps the mandatory fields
+positional (so every row written before `ceiling` existed keeps reading byte-identically) and reads
+the optional set BY NAME instead (so a field's absence cannot shift anything after it). `[[dep]]` is
+its first user; a `ceiling`-less row reads exactly as before, a `ceiling`-bearing row's figure is
+carried on `DepEdge` and surfaced in the `--report` debt printout, and an empty or non-numeric
+`ceiling` is refused at load the same way every other malformed number in this table is.
+
+Second, the door's own admission (`dep_admission`) checked a new row's `verdict` against ONLY the
+architecture's ordinary grant table (`ARCHITECTURE_ALLOWED` / `ARCHITECTURE_TCB`), which has no arm
+for a transitional exemption — so a pair the grant table implies `not-allowed` for was refused by
+class even when a standing `[[transitional]]` row already carries it as a named drain exemption
+(`busbar-core -> busbar-unit-*`, owner ruling 2026-09-08, which `kind-isolation:deps` already accepts
+off the same table). `dep_admission` now asks `kind_isolation::transitional_covers` first: a pair a
+`[[transitional]]` row names is admitted at the row's own `ceiling` without the class check — the
+transitional table is a grant with an expiry, not the absence of one — and an uncovered pair is
+refused exactly as before.
+
+The selftest also carries two cases for E1b's own two rows (`busbar-plugin-loader` /
+`busbar-plugin-sdk -> busbar-contract`, `tcb`) on the ordinary (non-transitional) `tcb` path — but
+only once `ARCHITECTURE_TCB` actually grants that pair, which is E1b's own change and not this
+door's. The cases are gated at construction time on `kind_isolation::dep_class_verdict` returning
+`tcb` for the pair and push nothing when it does not, so they neither fail today nor need a second
+change once E1b's grant lands beneath this branch.
+
 `ship-ready:standing-reds` is the one row that reads a posture. The standing-red list is a *dev-line
 convenience*: construction rows that are known red, written down, and deliberately not blocking the
 integration line while they are drained. That is reasonable to have and unreasonable to promote —
