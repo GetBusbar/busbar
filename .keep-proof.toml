@@ -5,20 +5,16 @@
 # something specific instead of "everything, slowly". The INTEGRATION tree carries no such file —
 # it is a keep-branch artefact, and this branch is a keep branch.
 #
-#   families — a regex handed to the shadow oracle's `--id-filter`. The oracle replays this build
-#              against the published 1.5.5 binary and reports divergences; unfiltered that is the
-#              better part of half an hour. This branch is the pre-existing-reds branch: it works
-#              on the tree's frozen PARSE SURFACE (a limit's three refusal sentences) and on the
-#              gates that read the tree as data, so the honest scope is the boot / config /
-#              documented families — the cells that read what the binary PRINTS when it refuses a
-#              document, which is exactly what the first item here moved back to 1.5.5's words.
-#              boot.refusal|BOOT-P20|validate, BOOT-P29 and BOOT-P30 are the three cells that must
-#              turn byte-identical; the rest of the boot/config families are the blast radius of
-#              touching a deserializer every section's parse runs through.
+#   families — a regex handed to the shadow oracle's `--id-filter`. This branch is TS-1's
+#              `ts-reads-the-clock` construction-rule line, re-cut by TS-3: it plants a clock read
+#              and two timestamp-field sites across the a2a record legs, the admin mount / root
+#              audit clock, the durable journal's retention stamp, the voice and oauth_as sweeps,
+#              and a ChainBreak marker's own reading — so the honest scope is a2a, mcp, llm,
+#              admin.ops, boot and teller, the families whose cells actually walk those sites.
 #   tests    — the packages whose test binaries the sharded legs must include by name.
-#              `busbar-substrate` holds the limit grammar itself; `busbar-core` re-exports it at
-#              the historical config path and owns the pre-pass that sets the frozen-list rule;
-#              `busbar` is the binary whose --validate the boot cells drive; `xtask` is the gate
-#              runner whose own selftests are on this branch's list.
-families = '^(boot|config|documented)([|.]|$)'
-tests = ["busbar-core", "busbar-substrate", "xtask", "busbar"]
+#              `busbar-core` and `busbar` carry the construction rule's own crates and the a2a
+#              record legs; `busbar-a2a` and `busbar-mcp` are the plane crates the plant touches
+#              directly; `xtask` is the gate runner whose own selftests (`construction`) are the
+#              subject of this hand-back's fix.
+families = '^(a2a|mcp|llm|admin\.ops|boot|teller)([|.]|$)'
+tests = ["busbar-core", "busbar", "busbar-a2a", "busbar-mcp", "xtask"]
