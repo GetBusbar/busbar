@@ -49,9 +49,31 @@ fn list_and_a_named_gate_run_and_all_reaches_a_verdict_over_the_real_tree() {
     );
 }
 
+/// THE `selftest` DISPATCH ARMS, NOT THE BATTERY.
+///
+/// This case used to also assert `run(&["selftest"])` — bare, no gate name — which walks
+/// `gates::REGISTRY` and drives EVERY registered gate's RED proof in-process, sequentially,
+/// inside whichever `cargo test` binary this file compiles into. That is the one call in this
+/// file whose cost is the size of the gate registry rather than the size of a fixture: measured
+/// at 15-20 minutes on keep-proof.yml's own dedicated runner for it, and over an hour on a laptop
+/// the day a `git cat-file --batch` child deadlocked under one of the gates (see keep-proof.yml's
+/// `tests (shard xtask)` job header). Putting that walk inside `cargo test` means the ordinary
+/// per-test-binary hang ceiling — sized for a fixture-driving suite, not for a second copy of the
+/// whole gate registry — is the only thing standing between a slow gate and a SIGKILL, and the
+/// bigger that ceiling gets the longer a genuine deadlock runs before anyone is told about one.
+///
+/// The bare walk is not gone, it moved to the two places that already run it as a CLI invocation
+/// instead of a library call baked into a test binary: `structure-lint` (and the other named-gate
+/// jobs) in ci.yml call `cargo xtask gate <name> --selftest` once per registered gate, bounded
+/// per-gate rather than as one aggregate; `the_registry_and_the_workflow_still_name_the_same_gates`
+/// below asserts, on every push, that ci.yml's gate steps name the SAME set `gates::REGISTRY`
+/// does, so a gate cannot go uncovered by drifting out of that per-gate wiring; and
+/// keep-proof.yml's `gates` job runs the bare `cargo xtask selftest` directly (not through `cargo
+/// test`) on its own runner, with its own 45-minute ceiling, for every `keep-*` push. What is left
+/// here is the cheap, fast half: that the dispatcher's `selftest` arm still reaches a NAMED gate
+/// correctly, both spellings.
 #[test]
-fn selftest_runs_every_registered_gates_red_proof() {
-    assert_eq!(run(&["selftest"]), 0);
+fn selftest_dispatches_to_a_named_gate() {
     assert_eq!(run(&["selftest", "segregation"]), 0);
     assert_eq!(run(&["gate", "segregation", "--selftest"]), 0);
 }
