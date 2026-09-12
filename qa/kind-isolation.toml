@@ -1318,6 +1318,11 @@ why = "crates of kind unit naming unit vocabulary: unit package names in any spe
 drain = "delete the unit name from the unit crate: a unit reaches unit through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
 
 [[cell]]
+# RAISED by ROOT COMPOSITION (MCP-NODE, 1.6.0): `root/node_mcp.rs` is the composition's own
+# serving path for the MCP plane — the drive `root/units_mcp.rs`'s ten arms never had — mounted at
+# main.rs's node store and proved by `root/tests/node_mcp.rs`. Every word counted is the root
+# NAMING WHAT IT MOUNTS, which is what a composition root is for. See the declaration in
+# qa/construction.toml.
 # RAISED by ROOT COMPOSITION (BIND-1, 1.6.0): the node's ONE store handle, bound by the root
 # (`root/store.rs`) and driven through a plane's record legs by `root/tests/store.rs`. See the
 # declaration in qa/construction.toml.
@@ -1326,7 +1331,7 @@ drain = "delete the unit name from the unit crate: a unit reaches unit through t
 # cells switched onto both. See the declarations in qa/construction.toml.
 crate = "busbar"
 kind = "api"
-count = "161"
+count = "165"
 
 [[cell]]
 crate = "busbar"
@@ -1341,12 +1346,17 @@ count = "25"
 # through the file's existing imports rather than fully qualified, which is why the rise is 12 and not
 # larger. The count is TODAY'S MEASUREMENT, exact in both directions.
 [[cell]]
+# RAISED by ROOT COMPOSITION (MCP-NODE, 1.6.0): `root/node_mcp.rs` is the composition's own
+# serving path for the MCP plane — the drive `root/units_mcp.rs`'s ten arms never had — mounted at
+# main.rs's node store and proved by `root/tests/node_mcp.rs`. Every word counted is the root
+# NAMING WHAT IT MOUNTS, which is what a composition root is for. See the declaration in
+# qa/construction.toml.
 # RAISED again by ROOT COMPOSITION (BIND-1, 1.6.0): the ONE resolver (`root/bindings.rs`) and
 # the kind-neutral record-leg runner it hands back (`root/store.rs::PlaneRecords`), with MCP-T's
 # cells switched onto both. See the declarations in qa/construction.toml.
 crate = "busbar"
 kind = "caps"
-count = "318"
+count = "327"
 
 [[cell]]
 crate = "busbar"
@@ -1366,9 +1376,14 @@ count = "18"
 # through the file's existing imports rather than fully qualified, which is why the rise is 1 and not
 # larger. The count is TODAY'S MEASUREMENT, exact in both directions.
 [[cell]]
+# RAISED by ROOT COMPOSITION (MCP-NODE, 1.6.0): `root/node_mcp.rs` is the composition's own
+# serving path for the MCP plane — the drive `root/units_mcp.rs`'s ten arms never had — mounted at
+# main.rs's node store and proved by `root/tests/node_mcp.rs`. Every word counted is the root
+# NAMING WHAT IT MOUNTS, which is what a composition root is for. See the declaration in
+# qa/construction.toml.
 crate = "busbar"
 kind = "control"
-count = "1101"
+count = "1103"
 
 [[cell]]
 crate = "busbar"
@@ -1383,14 +1398,24 @@ count = "5"
 # through the file's existing imports rather than fully qualified, which is why the rise is 4 and not
 # larger. The count is TODAY'S MEASUREMENT, exact in both directions.
 [[cell]]
+# RAISED by ROOT COMPOSITION (MCP-NODE, 1.6.0): `root/node_mcp.rs` is the composition's own
+# serving path for the MCP plane — the drive `root/units_mcp.rs`'s ten arms never had — mounted at
+# main.rs's node store and proved by `root/tests/node_mcp.rs`. Every word counted is the root
+# NAMING WHAT IT MOUNTS, which is what a composition root is for. See the declaration in
+# qa/construction.toml.
 # RAISED again by ROOT COMPOSITION (BIND-1, 1.6.0): the ONE resolver (`root/bindings.rs`) and
 # the kind-neutral record-leg runner it hands back (`root/store.rs::PlaneRecords`), with MCP-T's
 # cells switched onto both. See the declarations in qa/construction.toml.
 crate = "busbar"
 kind = "kernel"
-count = "166"
+count = "177"
 
 [[cell]]
+# RAISED by ROOT COMPOSITION (MCP-NODE, 1.6.0): `root/node_mcp.rs` is the composition's own
+# serving path for the MCP plane — the drive `root/units_mcp.rs`'s ten arms never had — mounted at
+# main.rs's node store and proved by `root/tests/node_mcp.rs`. Every word counted is the root
+# NAMING WHAT IT MOUNTS, which is what a composition root is for. See the declaration in
+# qa/construction.toml.
 # RAISED by ROOT COMPOSITION (BIND-1, 1.6.0): the node's ONE store handle, bound by the root
 # (`root/store.rs`) and driven through a plane's record legs by `root/tests/store.rs`. See the
 # declaration in qa/construction.toml.
@@ -1399,7 +1424,7 @@ count = "166"
 # cells switched onto both. See the declarations in qa/construction.toml.
 crate = "busbar"
 kind = "legacy"
-count = "97"
+count = "100"
 
 # RAISED by ROOT COMPOSITION (MCP-T, 1.6.0): root/units_mcp.rs gains McpDraft/McpBindings/McpUnits and
 # the `impl Units` behind them, so an MCP request enters the Teller loop and the seven steps are served
@@ -1409,6 +1434,11 @@ count = "97"
 # through the file's existing imports rather than fully qualified, which is why the rise is 51 and not
 # larger. The count is TODAY'S MEASUREMENT, exact in both directions.
 [[cell]]
+# RAISED by ROOT COMPOSITION (MCP-NODE, 1.6.0): `root/node_mcp.rs` is the composition's own
+# serving path for the MCP plane — the drive `root/units_mcp.rs`'s ten arms never had — mounted at
+# main.rs's node store and proved by `root/tests/node_mcp.rs`. Every word counted is the root
+# NAMING WHAT IT MOUNTS, which is what a composition root is for. See the declaration in
+# qa/construction.toml.
 # RAISED by ROOT COMPOSITION (BIND-1, 1.6.0): the node's ONE store handle, bound by the root
 # (`root/store.rs`) and driven through a plane's record legs by `root/tests/store.rs`. See the
 # declaration in qa/construction.toml.
@@ -1417,15 +1447,20 @@ count = "97"
 # cells switched onto both. See the declarations in qa/construction.toml.
 crate = "busbar"
 kind = "plane"
-count = "2000"
+count = "2165"
 
 [[cell]]
+# RAISED by ROOT COMPOSITION (MCP-NODE, 1.6.0): `root/node_mcp.rs` is the composition's own
+# serving path for the MCP plane — the drive `root/units_mcp.rs`'s ten arms never had — mounted at
+# main.rs's node store and proved by `root/tests/node_mcp.rs`. Every word counted is the root
+# NAMING WHAT IT MOUNTS, which is what a composition root is for. See the declaration in
+# qa/construction.toml.
 # RAISED by ROOT COMPOSITION (BIND-1, 1.6.0): the node's ONE store handle, bound by the root
 # (`root/store.rs`) and driven through a plane's record legs by `root/tests/store.rs`. See the
 # declaration in qa/construction.toml.
 crate = "busbar"
 kind = "plugin-tooling"
-count = "32"
+count = "34"
 
 [[cell]]
 crate = "busbar"
@@ -1438,9 +1473,14 @@ kind = "store"
 count = "29"
 
 [[cell]]
+# RAISED by ROOT COMPOSITION (MCP-NODE, 1.6.0): `root/node_mcp.rs` is the composition's own
+# serving path for the MCP plane — the drive `root/units_mcp.rs`'s ten arms never had — mounted at
+# main.rs's node store and proved by `root/tests/node_mcp.rs`. Every word counted is the root
+# NAMING WHAT IT MOUNTS, which is what a composition root is for. See the declaration in
+# qa/construction.toml.
 crate = "busbar"
 kind = "substrate"
-count = "9"
+count = "10"
 
 # RAISED by ROOT COMPOSITION (MCP-T, 1.6.0): root/units_mcp.rs gains McpDraft/McpBindings/McpUnits and
 # the `impl Units` behind them, so an MCP request enters the Teller loop and the seven steps are served
@@ -1450,9 +1490,14 @@ count = "9"
 # through the file's existing imports rather than fully qualified, which is why the rise is 6 and not
 # larger. The count is TODAY'S MEASUREMENT, exact in both directions.
 [[cell]]
+# RAISED by ROOT COMPOSITION (MCP-NODE, 1.6.0): `root/node_mcp.rs` is the composition's own
+# serving path for the MCP plane — the drive `root/units_mcp.rs`'s ten arms never had — mounted at
+# main.rs's node store and proved by `root/tests/node_mcp.rs`. Every word counted is the root
+# NAMING WHAT IT MOUNTS, which is what a composition root is for. See the declaration in
+# qa/construction.toml.
 crate = "busbar"
 kind = "transport"
-count = "949"
+count = "971"
 
 # RAISED by ROOT COMPOSITION (MCP-T, 1.6.0): root/units_mcp.rs gains McpDraft/McpBindings/McpUnits and
 # the `impl Units` behind them, so an MCP request enters the Teller loop and the seven steps are served
@@ -1462,12 +1507,17 @@ count = "949"
 # through the file's existing imports rather than fully qualified, which is why the rise is 8 and not
 # larger. The count is TODAY'S MEASUREMENT, exact in both directions.
 [[cell]]
+# RAISED by ROOT COMPOSITION (MCP-NODE, 1.6.0): `root/node_mcp.rs` is the composition's own
+# serving path for the MCP plane — the drive `root/units_mcp.rs`'s ten arms never had — mounted at
+# main.rs's node store and proved by `root/tests/node_mcp.rs`. Every word counted is the root
+# NAMING WHAT IT MOUNTS, which is what a composition root is for. See the declaration in
+# qa/construction.toml.
 # RAISED again by ROOT COMPOSITION (BIND-1, 1.6.0): the ONE resolver (`root/bindings.rs`) and
 # the kind-neutral record-leg runner it hands back (`root/store.rs::PlaneRecords`), with MCP-T's
 # cells switched onto both. See the declarations in qa/construction.toml.
 crate = "busbar"
 kind = "unit"
-count = "1229"
+count = "1267"
 
 [[cell]]
 crate = "busbar-a2a"

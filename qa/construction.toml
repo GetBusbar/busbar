@@ -2510,3 +2510,93 @@ key = "cell.busbar.caps.count"
 file = "qa/kind-isolation.toml"
 by = 1
 because = "the capability vocabulary the seal cell drives the verify step through: the kernel seal that mints the step's own tokens, which is the only way to obtain the trust token a sealed destination is sealed with. A cell that reached the sealed set without one would be proving a step that cannot run, because sealing a destination is not something a caller can do unaided."
+
+# ── THE MCP NODE, DECLARED BY IDENTITY ───────────────────────────────────────────────────────────
+#
+# THE COMPOSITION'S OWN SERVING PATH FOR THE MCP PLANE: `crates/busbar/src/root/node_mcp.rs` (741
+# lines) and the cells beside it (`crates/busbar/src/root/tests/node_mcp.rs`, 291), mounted at
+# `main.rs`'s node_store and bound onto the units `root/units_mcp.rs` already declared. Before it,
+# `root::units_mcp` was TEN ARMS NOTHING DROVE: the binding existed, the long-lived half a unit
+# borrows was never assembled, and no MCP request had ever entered the Teller loop. This file is
+# that half and the drive, on `root::units_llm`'s `LlmNode` precedent — one kernel, one in-flight
+# table, one gauge, one canary, a monotonic clock that ORDERS what the wall clock only DATES, and
+# one `answer` that walks a request through the ten steps and returns what the terminal posted.
+#
+# WHY THESE TEN ARE A DECLARATION AND NOT A COUPLING. Every word counted below is the ROOT NAMING
+# WHAT IT MOUNTS. ARCHITECTURE.md 1.1 is the grant and it is the whole grant: the three axes are
+# blind to each other and the composition root is the ONE place they are allowed to see each other,
+# because composing them is what a composition root IS. A node cannot mount a plane without naming
+# the plane, drive a kernel loop without naming the kernel, or hand a step to a unit without naming
+# the unit. The root also has NO LOC ceiling, for the same reason: what it holds is the wiring, and
+# wiring is measured by what it wires. The landed precedents are the same shape and were declared
+# the same way — the arena and the three seam views of the A1 landing, and the Rx mount chain's
+# record legs (`cell.busbar.{api,control,kernel,plane,unit}.count` above).
+#
+# WHAT IS NOT DECLARED HERE. Nothing in a LEGACY crate. `busbar-mcp` is retiring, the node's seam
+# does not live in it, and the four `busbar-mcp × *` rises this landing measured are DRAINED rather
+# than declared — whatever the node needs from that crate is reached through the codec or the
+# contract, or it moved out. A ceiling on a crate that is being deleted may only go down.
+#
+# EXPIRY. Each entry rides in the commit that lands the seam; once that commit is in the base,
+# `gate construction --write` strikes it. The figures stay pinned to the measurement by
+# `ceiling-slack` — a declaration moves the ratchet, it does not loosen it.
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.api.count"
+file = "qa/kind-isolation.toml"
+by = 4
+because = "THE MCP NODE's reach onto the neutral ABI: `busbar_api::VirtualKey` — the caller's resolved key as the seam hands it over, and the same type in the node's cells. A plane may not hold a key directory and a unit may not know a schema, so the mapping from an arrived credential to the identity the loop's steps judge belongs to the composition and to nothing else. Two hits in node_mcp.rs and two in its cells, and no api spelling anywhere else in the landing."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.caps.count"
+file = "qa/kind-isolation.toml"
+by = 9
+because = "THE MCP NODE's capability vocabulary: `busbar_caps::{ArrivalRecord, PrincipalId}` — the arrival record the node builds for the claim the transport named and the principal identity the authenticate step settles on, plus the mount's own spelling in main.rs and the one the MCP units file needed to name the same principal. Minting the evidence a step is judged against is the kernel seal's, and reaching it is the composition's: a plane that built its own ArrivalRecord would be a plane deciding what arrived."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.control.count"
+file = "qa/kind-isolation.toml"
+by = 2
+because = "THE MCP NODE's two `admin` spellings: the operator surface's own scope name, read where the node's audit rows are landed so a row this loop seals is readable back through the surface that reads every other loop's. The node names the scope and never the surface — there is no busbar-plane-admin edge in this landing — and the rise is the two words and nothing else."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.kernel.count"
+file = "qa/kind-isolation.toml"
+by = 11
+because = "THE MCP NODE's kernel: `busbar_kernel::inflight::InFlight`, `busbar_kernel::slice::ConcurrencyGauge` and `busbar_kernel::teller::{AccrualMeter, Kernel, UnitCtx}` — the loop itself, the in-flight table it admits into, the gauge that bounds it and the meter its accruals post through. Driving the Teller loop is what makes this a serving path rather than a function call, and the ONE kind entitled to drive it is the composition that built it. Ten hits in node_mcp.rs, one in its cells."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.legacy.count"
+file = "qa/kind-isolation.toml"
+by = 2
+because = "THE MCP NODE's mount point, which is still in the retiring crate: `busbar_core` spelled in main.rs where the node is installed beside the engine the unmoved classes are still dispatched through, and once in the node's cells. Two above the base, which is the rise this tree actually measured — the third spelling this landing writes replaces one the base already carried. This is the ONLY figure here that goes UP on a legacy prefix, it is the mount and not a new body, and it goes to zero with the crate: `legacy-reach` is the ratchet that watches it and the drain is `git rm -r`, never an edit."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.plane.count"
+file = "qa/kind-isolation.toml"
+by = 165
+because = "THE MCP NODE naming the plane it mounts: `busbar_plane_mcp::{claims, ops, McpPlane}` — the claim vocabulary the arrival step judges a carrier against, the method table (`ops::row_for`) the operation class is read off so this file parses nothing and is not a second grammar, and the plane type whose `McpPlane::route` returns the plan the route step walks. The bulk is the bare instance id `mcp` in the node, its cells, the mount in main.rs and the module line in root/mod.rs; the neighbouring planes appear only where the node's cells assert that a2a and llm are NOT this one."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.plugin-tooling.count"
+file = "qa/kind-isolation.toml"
+by = 2
+because = "THE MCP NODE's cells loading the REAL plugin over the REAL C ABI: `busbar_plugin_loader` named once where main.rs installs the node beside the loader that supplies its store and auth plugins, and once in the cells that drive a class through a loaded plugin rather than an in-process double. A double cannot show that a class reached the door, which is the only thing these cells exist to show."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.substrate.count"
+file = "qa/kind-isolation.toml"
+by = 1
+because = "THE MCP NODE's single neutral-values spelling: `busbar_substrate_values`, named once in node_mcp.rs for the value family the node hands the loop. One word, in the pure half of the ABI and never the engine beside it; the node takes no busbar-substrate edge and the cell rises by exactly one."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.transport.count"
+file = "qa/kind-isolation.toml"
+by = 22
+because = "THE MCP NODE's CELLS naming the wires a class arrives over: every hit is in `crates/busbar/src/root/tests/node_mcp.rs` and none is in the node itself. The arrival step refuses a record whose composed stack does not END at the claim that matched, and the only way to assert that is to write the stacks down — stdio for the pipe surface, tcp/tls/http for the document one, and ws where a cell asserts a stack this plane does not serve. A cell that named no wire would be asserting a pairing with nothing to pair."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.unit.count"
+file = "qa/kind-isolation.toml"
+by = 38
+because = "THE MCP NODE handing each step to the unit that answers it: `busbar_unit_admission::{ChainWalk, GroupTable}` for the door, `busbar_unit_scope::{Grants, Scope}` for the grant the approve step reads, `busbar_unit_trust` for the destination seal the verify step takes, and `busbar_unit_auth`, `busbar_unit_breaker`, `busbar_unit_ledger` and `busbar_unit_wal` where the cells assert the step reached the unit rather than a stub. Every core step served ONCE by a kind-neutral unit is the rule; naming the units is how a composition obeys it."
