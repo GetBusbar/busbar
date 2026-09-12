@@ -109,6 +109,27 @@ reason = "Two reviewed, non-I/O edges reach libc from this plane through its cod
 owner = "orchestrator, 2026-09-05"
 
 [[allow]]
+crate = "busbar-plane-streams-openai"
+dep = "libc"
+via = "cpufeatures, getrandom"
+reason = "THE SAME TWO EDGES ITS PLANE ALREADY CARRIES, reached through the shared duplex IR this dialect's row is written against: (1) cpufeatures uses libc for CPU feature detection only (getauxval/sysctl); (2) getrandom, reached through sonic_rs -> ahash's hasher seeding, uses libc only to issue the getentropy(2)/getrandom(2) syscall. Neither edge exposes a socket, file or process primitive, and a dialect crate is a vendor's event vocabulary as data — it opens nothing of its own. Entered 2026-09-12, when the `dialect` kind's glob started matching the crates that carry it: the crates and the edges are unchanged and were scanned under the `plane` kind before. Re-review if any other path to libc appears."
+owner = "orchestrator, 2026-09-12"
+
+[[allow]]
+crate = "busbar-plane-streams-gemini"
+dep = "libc"
+via = "cpufeatures, getrandom"
+reason = "THE SAME TWO EDGES ITS PLANE ALREADY CARRIES, reached through the shared duplex IR this dialect's row is written against: (1) cpufeatures uses libc for CPU feature detection only (getauxval/sysctl); (2) getrandom, reached through sonic_rs -> ahash's hasher seeding, uses libc only to issue the getentropy(2)/getrandom(2) syscall. Neither edge exposes a socket, file or process primitive, and a dialect crate is a vendor's event vocabulary as data — it opens nothing of its own. Entered 2026-09-12, when the `dialect` kind's glob started matching the crates that carry it: the crates and the edges are unchanged and were scanned under the `plane` kind before. Re-review if any other path to libc appears."
+owner = "orchestrator, 2026-09-12"
+
+[[allow]]
+crate = "busbar-plane-streams-twilio"
+dep = "libc"
+via = "cpufeatures, getrandom"
+reason = "THE SAME TWO EDGES ITS PLANE ALREADY CARRIES, reached through the shared duplex IR this dialect's row is written against: (1) cpufeatures uses libc for CPU feature detection only (getauxval/sysctl); (2) getrandom, reached through sonic_rs -> ahash's hasher seeding, uses libc only to issue the getentropy(2)/getrandom(2) syscall. Neither edge exposes a socket, file or process primitive, and a dialect crate is a vendor's event vocabulary as data — it opens nothing of its own. Entered 2026-09-12, when the `dialect` kind's glob started matching the crates that carry it: the crates and the edges are unchanged and were scanned under the `plane` kind before. Re-review if any other path to libc appears."
+owner = "orchestrator, 2026-09-12"
+
+[[allow]]
 crate = "hook-test-plugin"
 dep = "libc"
 via = "cpufeatures"

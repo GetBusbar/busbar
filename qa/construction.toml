@@ -47,7 +47,30 @@ test_path_fragments = ["/tests/", "_tests.rs", "_test.rs", "/tests.rs"]
 #     directories to their existing `package.name` (PLUGIN-TREE.md section 7) makes these globs
 #     correct by construction and is the cheap first half of kind-by-declaration.
 [gate.plugin_kinds]
-plane = ["crates/busbar-plane-*"]
+# THE PLANE GLOB IS A LIST OF NAMES, and it stopped being `crates/busbar-plane-*` on 2026-09-12.
+#
+# The wildcard predates the `dialect` kind. `busbar-plane-<plane>-<dialect>` is the dialect NAME
+# form ARCHITECTURE.md §1.1 gives, so `crates/busbar-plane-*` matches every dialect crate as well as
+# every plane — and the three streams dialects were scanned as PLANES by `manifest-allowlist` and
+# `source-denylist`, which red them for naming the plane they are a dialect OF. That edge is the one
+# the kind table GRANTS (`dialect -> plane`, the direction the dialect crates' own headers state and
+# `kind-isolation:deps` admits at an exact count); reading it as `plane -> plane` was the glob's
+# error, not the tree's.
+#
+# The names are literal because this reader's globs carry ONE `*` and no negation
+# (`xtask/src/denylist.rs::glob_match`), so "every plane but a four-segment one" cannot be spelled.
+# `[gate.census].plugin_kinds.plane` is what stops the narrowing being silent: it pins how many
+# directories this list matches, from below and against the base, so dropping a plane out of scope
+# is RED whichever direction it is done in.
+plane = [
+  "crates/busbar-plane-llm",
+  "crates/busbar-plane-mcp",
+  "crates/busbar-plane-a2a",
+  "crates/busbar-plane-streams",
+  # `busbar-plane-admin` is the `control` kind wearing a plane's name (the R7 rename makes it
+  # `busbar-control-admin`); it is scanned here today exactly as the wildcard scanned it.
+  "crates/busbar-plane-admin",
+]
 # THE THREE KINDS THIS TABLE DID NOT NAME, added 2026-09-09. ARCHITECTURE.md's kind list is
 # normative and names ten kinds plus the `unit` core row; this table named ten KEYS and three of the
 # eleven were missing from it -- `dialect`, `unit` and `control`. `cargo xtask gate kind-isolation`
@@ -55,11 +78,24 @@ plane = ["crates/busbar-plane-*"]
 # refused), so a kind the design states and this file does not mention was invisible to both.
 # `kind-isolation:truths` compares the three vocabularies in both directions now.
 #
-# `dialect` has no crate yet: the pre-split dialects are the `*-codec` crates and the rename that
-# splits them into `busbar-plane-<plane>-<dialect>` is what creates the first one. The glob is
-# written for the shape it will have, and a kind whose glob matches nothing is a kind with no crate
-# rather than a rule switched off -- which is exactly the case `kind-isolation:truths` now watches.
-dialect = ["crates/busbar-plane-*-*"]
+# `dialect` HAS CRATES NOW — three, all of them this plane's (2026-09-12) — and the pattern it was
+# written with never matched one of them. This reader's globs carry ONE `*`
+# (`xtask/src/denylist.rs::glob_match`: prefix + suffix), so `crates/busbar-plane-*-*` asked for a
+# directory whose name ENDS in `-*`, which is no directory at all: the kind read as "no crate yet"
+# for as long as its crates have existed, and `[gate.census].plugin_kinds.dialect = 0` recorded
+# that as intended. So the three are named literally, the census number is raised with them, and
+# `[rules.source-denylist].kinds` names the kind — a dialect is a vendor's vocabulary as data and is
+# held to the same no-I/O bar its plane is.
+#
+# `manifest-allowlist` does not scan this kind: its kind list is a literal in
+# `xtask/src/gates/construction/rules2.rs` and changing a gate's code is not this file's business.
+# What judges a dialect's edges is `kind-isolation:deps`, which carries a `[[dep]]` row per edge
+# class at an exact count and admits `dialect -> plane` as the granted direction.
+dialect = [
+  "crates/busbar-plane-streams-openai",
+  "crates/busbar-plane-streams-gemini",
+  "crates/busbar-plane-streams-twilio",
+]
 # `control` is the tenth kind (owner ruling 2026-09-08). Its one member is `busbar-plane-admin`,
 # whose NAME says plane and which is not one; the R7 rename makes it `busbar-control-admin`. The
 # declaration lives in qa/kind-isolation.toml's [[registered]] row, which is where PLUGIN-TREE.md
@@ -744,7 +780,10 @@ patterns = [
 ]
 # kinds scanned: plane, hook, pure_auth, egress_auth (gate.plugin_kinds); store/secret/export are
 # I/O kinds and are out of scope for this rule by design (section 1.2 exempts them).
-kinds = ["plane", "hook", "pure_auth", "egress_auth"]
+# `dialect` added 2026-09-12 with the three streams dialects: a dialect is a vendor's vocabulary as
+# data and does no I/O either, and it was scanned under the `plane` glob until that glob stopped
+# matching it. Dropping it from this list instead would have been the narrowing without the rule.
+kinds = ["plane", "hook", "pure_auth", "egress_auth", "dialect"]
 # Reviewed exceptions: crate -> list of patterns from above accepted for that crate, with the reason
 # living in the commit that added it. Empty at hour 0.
 [rules.source-denylist.allowlist]
@@ -1455,7 +1494,9 @@ plane_crates = 4
 # the point: this table records what is scanned, not what ought to be.
 [gate.census.plugin_kinds]
 plane = 5
-dialect = 0
+# THREE, from 2026-09-12: the streams plane's three dialects are the first crates of this kind, and
+# the number is raised with them exactly as the note above this table said it would be.
+dialect = 3
 control = 0
 unit = 14
 hook = 2
