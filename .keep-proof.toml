@@ -5,20 +5,20 @@
 # something specific instead of "everything, slowly". The INTEGRATION tree carries no such file —
 # it is a keep-branch artefact, and this branch is a keep branch.
 #
-#   families — a regex handed to the shadow oracle's `--id-filter`. The oracle replays this build
-#              against the published 1.5.5 binary and reports divergences; unfiltered that is the
-#              better part of half an hour. This branch is the pre-existing-reds branch: it works
-#              on the tree's frozen PARSE SURFACE (a limit's three refusal sentences) and on the
-#              gates that read the tree as data, so the honest scope is the boot / config /
-#              documented families — the cells that read what the binary PRINTS when it refuses a
-#              document, which is exactly what the first item here moved back to 1.5.5's words.
-#              boot.refusal|BOOT-P20|validate, BOOT-P29 and BOOT-P30 are the three cells that must
-#              turn byte-identical; the rest of the boot/config families are the blast radius of
-#              touching a deserializer every section's parse runs through.
-#   tests    — the packages whose test binaries the sharded legs must include by name.
-#              `busbar-substrate` holds the limit grammar itself; `busbar-core` re-exports it at
-#              the historical config path and owns the pre-pass that sets the frozen-list rule;
-#              `busbar` is the binary whose --validate the boot cells drive; `xtask` is the gate
-#              runner whose own selftests are on this branch's list.
-families = '^(boot|config|documented)([|.]|$)'
-tests = ["busbar-core", "busbar-substrate", "xtask", "busbar"]
+# This branch (keep-gates-close) touches only xtask/src/gates/construction/ceilings.rs,
+# xtask/src/gates/construction/selftest.rs and xtask/src/gates/mod.rs: the raise-form cutoff (the
+# retired `[gate.ceiling_raises."<key>"]` from/to header refused by name, the
+# `[[gate.ceiling_raises]]` key/by/because array form added) and construction's own re-measured
+# SELFTEST_BUDGETS entry. No boot/config/parse-surface code moved.
+#
+#   families — a regex handed to the shadow oracle's `--id-filter`. This branch changes no wire
+#              behaviour and no documented/printed shape other than a gate's own refusal text, so
+#              the honest scope is the `documented` family alone — the cells that read what a
+#              refusal message says, which is exactly what changed here (the retired header's
+#              refusal now names the shape and the 2026-09-18 closing date instead of the old
+#              from/to mismatch wording).
+#   tests    — the packages whose test binaries the sharded legs must include by name. `xtask` is
+#              the only crate this branch edits; its own gate self-tests are what this branch adds
+#              cases to.
+families = '^(documented)([|.]|$)'
+tests = ["xtask"]
