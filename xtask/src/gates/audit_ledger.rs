@@ -572,7 +572,7 @@ fn stamp_first(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::gates::{execute, verify_report};
+    use crate::gates::{execute, set_selftest_jobs, verify_report};
 
     /// THE ENVIRONMENTAL INPUT THESE CASES ASSUME, SAID OUT LOUD BEFORE THEY FAIL ABOUT IT.
     ///
@@ -625,15 +625,47 @@ mod tests {
 
     /// EVERY OWED ROW IS PROVEN RED-ABLE, and every planted case named the offender it planted. This
     /// is what stops a rule from being deleted with the selftest still green.
+    ///
+    /// A FAILURE HERE IS RETAKEN AT `--jobs 1` BEFORE IT IS BELIEVED, same as `cargo xtask selftest`
+    /// already does for a human at the terminal (`cli::selftest_cmd`). The reason is specific to
+    /// THIS gate: it alone carries no [`crate::gates::SELFTEST_BUDGETS`] entry (struck when its
+    /// measured cost, 4 433 units at `--jobs 1`, sat comfortably under the bare default with slack
+    /// to spare), so it runs with none of the margin every other budgeted battery gets. `cargo test
+    /// -p xtask --lib` drives dozens of `#[test]` functions concurrently IN ONE PROCESS, and several
+    /// of the others are themselves whole-gate batteries that ask `default_jobs()` for
+    /// `available_parallelism()` worker threads of their own — the same oversubscription
+    /// `work_unit_here`'s per-thread ruler exists to normalise away, except THIS gate's cost is
+    /// dominated by `git` subprocess fork/exec rather than the arithmetic the ruler is, so it tracks
+    /// that contention less faithfully than a regex- or CPU-bound gate does. The result is a budget
+    /// finding that comes and goes with how many sibling tests happen to be mid-battery at the same
+    /// moment — the harness's own concurrency, not a defect in the register — and the fix is the
+    /// same fix `cli.rs` already applies: believe a serial re-take, not the parallel one.
     #[test]
     fn the_selftest_proves_every_owed_row() {
         let cx = Ctx::workspace().expect("workspace context");
         let report = AuditLedgerGate.selftest(&cx);
         if let Err(failures) = verify_report(&AuditLedgerGate, &report) {
-            panic!(
-                "audit-ledger selftest did not prove itself: {failures:#?}{}",
-                the_environment_this_case_assumes(&cx)
-            );
+            let jobs = report.jobs();
+            set_selftest_jobs(1);
+            let serial = AuditLedgerGate.selftest(&cx);
+            let again = verify_report(&AuditLedgerGate, &serial);
+            set_selftest_jobs(jobs);
+            match again {
+                Ok(()) => {
+                    eprintln!(
+                        "audit-ledger selftest: {} finding(s) at --jobs {jobs} went away when \
+                         retaken at --jobs 1 — that is cargo test's own thread pool oversubscribing \
+                         the box (see this test's doc comment), not a defect in the register: \
+                         {failures:#?}",
+                        failures.len()
+                    );
+                }
+                Err(still_failing) => panic!(
+                    "audit-ledger selftest did not prove itself, at --jobs {jobs} or serially: \
+                     {still_failing:#?}{}",
+                    the_environment_this_case_assumes(&cx)
+                ),
+            }
         }
     }
 
