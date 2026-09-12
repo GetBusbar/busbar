@@ -135,36 +135,12 @@ impl<'a> BuildCtx<'a> {
     }
 }
 
-/// AN UPSTREAM ENDPOINT THE COMPOSITION ROOT ALREADY RESOLVED — the origin of the provider serving a
-/// model, and the credential that authenticates the busbar↔provider hop.
-///
-/// The credential is the RESOLVED value, not the reference: it crossed the deployment's own secret
-/// resolver once, at the same point in the build every other upstream credential does. It stays
-/// server-side — nothing here renders it, and a plane that holds one is holding what its own dial
-/// needs and nothing a caller can see.
-#[derive(Clone, Debug)]
-pub struct ResolvedUpstream {
-    /// The provider origin (scheme + authority, e.g. `https://api.example.com`).
-    pub base_url: String,
-    /// The resolved provider credential, held server-side.
-    pub api_key: String,
-}
-
-/// THE DEPLOYMENT'S MODEL→UPSTREAM CATALOG — implemented by the composition over the resolved
-/// `models:`/`providers:` sections and the deployment's secret resolver, and read by a plane's `build`
-/// through [`BuildCtx::upstream_for_model`].
-///
-/// One question, and the plane supplies the model name: a plane whose grammar pins a model gets that
-/// model's origin and credential without a second copy of the provider catalog, a second parse of it,
-/// or a process-wide write the next config apply cannot move.
-pub trait UpstreamCatalog {
-    /// The upstream serving `model`. `Ok(None)` when the deployment declares no such model; `Err`
-    /// with the resolver's own message when it does and the credential reference will not resolve.
-    ///
-    /// # Errors
-    /// The secret resolver's message for a declared-but-unresolvable credential reference.
-    fn upstream_for_model(&self, model: &str) -> Result<Option<ResolvedUpstream>, String>;
-}
+// THE UPSTREAM CATALOG SEAM -- the resolved pair and the one-question trait a plane asks it
+// through -- is a VALUE FAMILY: two owned `String`s and a `&str -> Result` method, and nothing
+// else. It lives in `busbar-substrate-values`, the PURE half of the substrate that survives its
+// retirement, and is re-exported here at the path it has always had. `BuildCtx` itself is what is
+// NOT a value -- it borrows `crate::plane_host::PlaneSlots` -- so it stays in the frozen half.
+pub use busbar_substrate_values::plane::{ResolvedUpstream, UpstreamCatalog};
 
 /// A PLANE BOOT HOOK — [`PlaneDecl::hydrate`] or [`PlaneDecl::start`]. Handed the [`PlaneBootCtx`] for
 /// its phase; an `Err` REFUSES BOOT (the fold propagates it with `?`).

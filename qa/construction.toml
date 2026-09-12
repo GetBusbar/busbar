@@ -1671,3 +1671,48 @@ key = "cell.busbar.dialect.count"
 file = "qa/kind-isolation.toml"
 by = 3
 because = "busbar x dialect (busbar, dialect): the SAME projector battery, counted a second time under the dialect kind for the reason the matrix states — a dialect's instance IS its plane, so the two columns rise together by construction rather than for two different reasons. The three hits are the binding the battery opens its session on, which is the one the real plane declares for the dialect whose posture the projection renders; a cell that opened on a different binding would be projecting a session this plane does not serve (705 -> 708)"
+
+# ─────────────────────────────────────────────────────────────────────────────────────────────────
+# THE SUBSTRATE'S THREE PURE VALUE FAMILIES LEAVE THE FROZEN HALF.
+#
+# Five rows, one face, one manoeuvre. The close-code slot, the upstream-catalog seam and the
+# `groups:` value grammar are all pure values — an `Arc<AtomicU16>` with a store and a load, two
+# owned `String`s and a one-question trait, and a serde shape family over `busbar-api`'s
+# `ScopeRef` — and the substrate is FROZEN, so all three MOVE to `busbar-substrate-values`, the
+# pure half that SURVIVES, re-exported at the paths they have always had.
+#
+# Every rise below is that move's OTHER END: the same text, scored against the crate it now sits
+# in. The falls are re-pinned by measurement in the same commit — busbar-substrate x control
+# 352 -> 350, x legacy 298 -> 297, x plane 764 -> 763 — and busbar-substrate x transport does not
+# move in either direction. The frozen crate is 467 production lines lighter, which is the point.
+# ─────────────────────────────────────────────────────────────────────────────────────────────────
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-substrate-values.api.count"
+file = "qa/kind-isolation.toml"
+by = 3
+because = "the three pure value families' move out of the frozen substrate (crates/busbar-substrate/src/config/groups.rs -> crates/busbar-substrate-values/src/config/groups.rs, 424 lines, `git mv` byte for byte): the three hits are the `groups:` grammar's own `busbar_api::ScopeRef` signature and the sentences naming it, the SAME text scored against the crate it now sits in. The dependency edge busbar-substrate-values -> busbar-api already exists and is unchanged, and busbar-substrate re-exports the module so every reader's spelling is byte-identical."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-substrate-values.control.count"
+file = "qa/kind-isolation.toml"
+by = 2
+because = "the three pure value families' move out of the frozen substrate: the two hits are the `groups:` limit tree's own control vocabulary — the field and variant names an operator writes into a `groups:` block — arriving with the grammar file. busbar-substrate x control FALLS 352 -> 350 in this same diff, which is the other end of these two."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-substrate-values.legacy.count"
+file = "qa/kind-isolation.toml"
+by = 1
+because = "the three pure value families' move out of the frozen substrate: the one hit is the `groups:` grammar header's own sentence naming busbar-core's historical `config::groups` re-export. busbar-substrate x legacy FALLS 298 -> 297 in this same diff, and legacy-reach does not move in either direction because the re-exports keep the root's spellings byte-identical."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-substrate-values.plane.count"
+file = "qa/kind-isolation.toml"
+by = 1
+because = "the three pure value families' move out of the frozen substrate: the one hit is the `groups:` grammar naming the plane vocabulary the section it parses belongs to. busbar-substrate x plane FALLS 764 -> 763 in this same diff, which is the other end of this one. The upstream-catalog seam's own plane vocabulary was already counted on both sides and does not move the figure."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-substrate.substrate.count"
+file = "qa/kind-isolation.toml"
+by = 6
+because = "THE PRICE OF THE MOVE, STATED. busbar-substrate x substrate rises 26 -> 32 because the frozen crate now NAMES the crate it handed three value families to: `pub use busbar_substrate_values::config::groups;`, `pub use busbar_substrate_values::ingress::close_slot::CloseSlot;`, `pub use busbar_substrate_values::plane::{ResolvedUpstream, UpstreamCatalog};` and the three sentences above them that say where each went and why. Without those the historical spellings break for every reader and the move becomes three renames. The crate's three other moved cells FALL in the same commit, its transport cell does not move, and its production line count falls 30260 -> 29793."

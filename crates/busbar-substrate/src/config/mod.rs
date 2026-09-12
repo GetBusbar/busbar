@@ -15,7 +15,12 @@
 use serde::{Deserialize, Serialize};
 
 pub mod auth;
-pub mod groups;
+// THE `groups:` VALUE GRAMMAR lives in `busbar-substrate-values`, the PURE half of the substrate
+// that survives its retirement: the file holds only the serde SHAPES, their `Default`s and their
+// pure accessors, over `busbar-api`'s `ScopeRef` -- it opens nothing. It is re-exported here as
+// the module it has always been, so `busbar_substrate::config::groups::<anything>` resolves
+// exactly as before and no reader, in or out of this crate, changes a spelling.
+pub use busbar_substrate_values::config::groups;
 pub mod hooks;
 pub mod limits;
 pub mod pools;

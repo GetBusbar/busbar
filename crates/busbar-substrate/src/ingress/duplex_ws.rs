@@ -57,38 +57,12 @@ fn max_inbound_message_bytes() -> usize {
         .unwrap_or(crate::config::limits::DEFAULT_REQUEST_BODY_MAX_BYTES)
 }
 
-/// THE CLOSE CODE ONE ENDING IS SPELLED WITH, on its way from whoever ended the session to the task
-/// that owns the socket.
-///
-/// A session ends for a reason, and a client is entitled to the number for it: a money refusal, a
-/// policy refusal and this node's own fault are three different endings and were, until this type,
-/// one silence. The frame channel below hands out a stream and a sink and nothing else, so a caller
-/// adapting a sink over it had nowhere to put the code and every ending arrived bare.
-///
-/// It is a SLOT rather than a second channel because the ordering has to be exact: the code is read
-/// only after the outbound queue has drained, so a code stored while frames are still queued does
-/// not preempt them. Dropping the sender is what ends that queue, and the store happens-before the
-/// load on the one task that does both.
-///
-/// Zero is "no code": the ending is then the bare close this acceptor has always sent, byte for
-/// byte, which is what keeps every existing caller unchanged.
-#[derive(Clone, Debug, Default)]
-pub struct CloseSlot(std::sync::Arc<std::sync::atomic::AtomicU16>);
-
-impl CloseSlot {
-    /// SPELL this session's ending. Last writer wins; a code stored after the queue has drained is
-    /// a code that arrived too late and is not sent, which is the same race a second channel would
-    /// have had and could not have resolved without holding the socket open for it.
-    pub fn set(&self, code: u16) {
-        self.0.store(code, std::sync::atomic::Ordering::Release);
-    }
-
-    /// The code this ending carries, or zero for the bare close.
-    #[must_use]
-    pub fn code(&self) -> u16 {
-        self.0.load(std::sync::atomic::Ordering::Acquire)
-    }
-}
+// THE CLOSE CODE ONE ENDING IS SPELLED WITH is a VALUE -- an `Arc<AtomicU16>` with a store and a
+// load on it, and nothing else -- so it lives in `busbar-substrate-values`, the PURE half of the
+// substrate that survives its retirement, and is re-exported here at the path it has always had.
+// The two coded siblings below are what is NOT a value: they spawn and they wait, so they stay in
+// the frozen half beside what they hold.
+pub use busbar_substrate_values::ingress::close_slot::CloseSlot;
 
 /// Bridge an already-upgraded [`WebSocket`] into the neutral `(frame-stream, frame-sink)` the pump
 /// speaks, over two mpsc channels (both `Unpin + Send`, the shape `serve_messages` requires): inbound

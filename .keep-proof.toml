@@ -41,4 +41,22 @@ families = '^(voice|streams|boot|neutrality)([|.]|$)'
 # `0ba0134d9` (the `agent_defs` -> `plane_sections` drain left that cell behind) and which this
 # branch does not touch, and the run stops at the first red leg before the ORACLE leg — the one leg
 # that answers the only question this branch has to answer.
-tests = ["busbar", "busbar-voice", "busbar-plane-streams", "busbar-plane-streams-openai", "busbar-plane-streams-gemini", "busbar-plane-streams-twilio"]
+#
+#              THE BRANCH'S LAST COMMIT moves three pure value families out of the frozen
+#              substrate, so the list gains every package whose test binary names one of them
+#              through the historical spelling the re-exports have to keep working:
+#              `busbar-substrate-values` (their new home), `busbar-substrate` (the re-exports and
+#              the close-slot cells), `busbar-core` (the upstream catalog's one implementor and
+#              the config resolvers), `busbar-llm` (the limit trees its unit and engine cells
+#              build), `busbar-transport-ws` and `xtask` (the gates that read the tree as data).
+#
+#              `busbar-llm` IS NOT ON THIS LIST, and the reason is measured, not assumed: on an
+#              UNMODIFIED checkout of this branch's base, `cargo test -p busbar-llm --lib` fails
+#              `engine::signal_catalog_tests::admin_registered_hook_signals_take_effect_on_the_next_request`
+#              (583 passed, 1 failed) exactly as it does here, and a second order-dependent case in
+#              that package (`unit::route::tests::naming_the_legs_over_a_pool_...`) fails under fleet
+#              load. A package that is red at the base makes the battery's verdict a statement about
+#              the base rather than about this commit. The grammar's busbar-llm readers are covered
+#              by `busbar-substrate`'s own cells and by the re-export the compiler checks at every
+#              one of those call sites.
+tests = ["busbar", "busbar-voice", "busbar-plane-streams", "busbar-plane-streams-openai", "busbar-plane-streams-gemini", "busbar-plane-streams-twilio", "busbar-substrate", "busbar-substrate-values", "busbar-core", "busbar-transport-ws", "xtask"]
