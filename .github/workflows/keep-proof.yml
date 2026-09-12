@@ -70,12 +70,6 @@ env:
   # did not mean what the required check means. `cargo xtask full-gate --selftest` asserts this
   # string against ci.yml's; it is spelled identically here on purpose.
   RUSTFLAGS: "-D warnings"
-  # See ci.yml's "COMPILER CACHE (sccache)" note. The five test shards compile the same workspace at
-  # the same moment; without a content-addressed cache under them, sharding buys wall-clock by
-  # paying for the same rustc invocations four times.
-  SCCACHE_GHA_ENABLED: "true"
-  RUSTC_WRAPPER: "sccache"
-  CARGO_INCREMENTAL: "0"
 
 jobs:
   # ── FMT · CLIPPY · BUILD ────────────────────────────────────────────────────────────────────────
@@ -101,12 +95,13 @@ jobs:
         uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
         with:
           action: restore
-          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          key: cargo-${{ runner.os }}-build-clippy-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-build-clippy-
           path: |
-            ~/.cargo
-            target/
-      - name: Compiler cache (sccache, GitHub Actions cache backend)
-        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
       - name: Format check
         run: cargo fmt --all -- --check
       - name: Clippy
@@ -150,14 +145,14 @@ jobs:
   # DOCTESTS RIDE SHARD 1. `--no-run` produces no doctest binary, so a pure binary partition would
   # silently drop every doctest from the summed total. Shard 1 runs `--doc` and counts it.
       - name: Latchkey Fast Cache (cargo registry + target, save)
-        if: always()
         uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
         with:
           action: save
-          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          key: cargo-${{ runner.os }}-build-clippy-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
           path: |
-            ~/.cargo
-            target/
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
   tests:
     name: tests (shard ${{ matrix.shard }})
     runs-on: latchkey-xlarge
@@ -217,12 +212,13 @@ jobs:
         uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
         with:
           action: restore
-          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          key: cargo-${{ runner.os }}-tests-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-tests-
           path: |
-            ~/.cargo
-            target/
-      - name: Compiler cache (sccache, GitHub Actions cache backend)
-        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
 
       # `json-render-diagnostics`, not plain `json`: the machine-readable stream goes to the file the
       # enumerator reads, and compiler errors are still RENDERED to the log. A compile failure whose
@@ -391,14 +387,14 @@ jobs:
   # green shards that ran 5700. So the counts are summed and floored, exactly as ci.yml floors its
   # unsharded workspace run -- the floor is the same number, because it is the same suite.
       - name: Latchkey Fast Cache (cargo registry + target, save)
-        if: always()
         uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
         with:
           action: save
-          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          key: cargo-${{ runner.os }}-tests-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
           path: |
-            ~/.cargo
-            target/
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
   tests-total:
     name: tests total (the five shards summed against the suite floor)
     runs-on: latchkey-small
@@ -489,12 +485,13 @@ jobs:
         uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
         with:
           action: restore
-          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          key: cargo-${{ runner.os }}-gates-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-gates-
           path: |
-            ~/.cargo
-            target/
-      - name: Compiler cache (sccache, GitHub Actions cache backend)
-        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
       - name: Build the gate runner once
         run: cargo build -p xtask --locked
       # SELF-TEST BEFORE VERDICT, as everywhere else in this repository: never believe a gate's
@@ -510,14 +507,14 @@ jobs:
   # REGEN-CLEAN (the committed ledger is what the deriver produces from Appendix B today). A
   # hand-back that edits ARCHITECTURE.md and skips the regen lands a stale generated artifact.
       - name: Latchkey Fast Cache (cargo registry + target, save)
-        if: always()
         uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
         with:
           action: save
-          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          key: cargo-${{ runner.os }}-gates-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
           path: |
-            ~/.cargo
-            target/
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
   design-bindings:
     name: design bindings (existence · regen-clean)
     runs-on: latchkey-large
@@ -631,12 +628,13 @@ jobs:
         uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
         with:
           action: restore
-          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          key: cargo-${{ runner.os }}-oracle-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-oracle-
           path: |
-            ~/.cargo
-            target/
-      - name: Compiler cache (sccache, GitHub Actions cache backend)
-        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
 
       # The scope, read once and PRINTED. A run whose filter nobody can see is a run whose verdict
       # nobody can size: "0 divergences" over one family and over twenty-six look identical.
@@ -681,11 +679,12 @@ jobs:
           digest=$(awk -F'\t' '$1=="1.5.5" && $2=="busbar-x86_64-unknown-linux-gnu.tar.gz"{print $3}' \
                    testing/shadow-oracle/golden-digests.tsv)
           echo "key=oracle-artifacts-${digest:0:12}" >> "$GITHUB_OUTPUT"
-      - name: Cache the pinned 1.5.5 artifacts
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      - name: Cache the pinned 1.5.5 artifacts (restore)
+        uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
         with:
-          path: ~/.cache/busbar-oracle
+          action: restore
           key: ${{ steps.rev.outputs.key }}
+          path: ~/.cache/busbar-oracle
       - name: The differ can see a diff (replay selftest)
         run: ./bin/oracle replay-selftest
       - name: Fetch the published 1.5.5 binary and plugins by digest
@@ -697,6 +696,12 @@ jobs:
           for pl in $plugins; do
             ./bin/oracle fetch-plugin "$pl" >/dev/null
           done
+      - name: Cache the pinned 1.5.5 artifacts (save)
+        uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
+        with:
+          action: save
+          key: ${{ steps.rev.outputs.key }}
+          path: ~/.cache/busbar-oracle
       - name: Build the candidate (release, with the release public key)
         run: |
           set -euo pipefail
@@ -821,14 +826,14 @@ jobs:
   # list — a gate that is blocking in one workflow and report-only in the other is the drift both
   # umbrellas exist to refuse.
       - name: Latchkey Fast Cache (cargo registry + target, save)
-        if: always()
         uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
         with:
           action: save
-          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          key: cargo-${{ runner.os }}-oracle-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
           path: |
-            ~/.cargo
-            target/
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
   construction-gate:
     name: construction gate (blocking on its posture)
     runs-on: latchkey-xlarge
@@ -854,12 +859,13 @@ jobs:
         uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
         with:
           action: restore
-          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          key: cargo-${{ runner.os }}-construction-gate-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-construction-gate-
           path: |
-            ~/.cargo
-            target/
-      - name: Compiler cache (sccache, GitHub Actions cache backend)
-        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
       # BOTH STEPS RAN A SCRIPT THAT IS NOT IN THIS TREE. `scripts/construction-gate.sh` does not
       # exist — the shell was converted to `cargo xtask gate construction` and this file was never
       # updated — so the self-test step failed on a missing file and the gate step swallowed the
@@ -883,14 +889,14 @@ jobs:
   # CANCELLED is not a pass, and the classic version of this job -- one that only runs on success --
   # writes no status at all on the runs where the answer matters most.
       - name: Latchkey Fast Cache (cargo registry + target, save)
-        if: always()
         uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
         with:
           action: save
-          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          key: cargo-${{ runner.os }}-construction-gate-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
           path: |
-            ~/.cargo
-            target/
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
   verdict:
     name: keep-proof verdict
     runs-on: latchkey-small
