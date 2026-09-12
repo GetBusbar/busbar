@@ -5,19 +5,26 @@
 # something specific instead of "everything, slowly". The INTEGRATION tree carries no such file —
 # it is a keep-branch artefact, and this branch is a keep branch.
 #
-#   families — a regex handed to the shadow oracle's `--id-filter`. This branch is the DEPENDENCY
-#              side of the kind-isolation gate: one manifest reader, a census that walks the whole
-#              repository, an instance-level dependency ledger, three new rows and a `--write` arm.
-#              It changes no crate's behaviour, no wire byte and no plane/transport source — every
-#              edit is in `xtask/`, `qa/kind-isolation.toml`, `qa/construction.toml` and
-#              `docs/design/xtask-gates.md`. The honest scope is therefore `documented`: the claims
-#              the docs make about the gate, which is the one family this branch edits. `neutrality`
-#              is not in scope on purpose — this branch touches no plane and no transport source, so
-#              replaying that family would be a claim about code it did not change. An unfiltered
-#              replay is the better part of half an hour and would be a claim about twenty-six
-#              families this branch does not touch.
-#   tests    — `xtask` and nothing else. Every rule, every reader, every ledger row and all
-#              ninety-five self-test cases live in that package; no other crate's test binary
-#              contains a line this branch changed.
-families = '^documented([|.]|$)'
-tests = ["xtask"]
+# THIS FILE WAS INHERITED STALE AND IS REWRITTEN HERE. What it carried was the scope of a previous
+# keep branch — the kind-isolation gate's dependency side, `tests = ["xtask"]` and
+# `families = '^documented([|.]|$)'`. Every word of that was true about that branch and none of it
+# is true about this one. A stale scope is worse than no scope: it produces a GREEN that is a claim
+# about code the branch did not touch, while running none of the cells that could go red. The first
+# Latchkey job of this hand-back was submitted against the stale copy before it was noticed, and it
+# is reported as what it is rather than quietly dropped.
+#
+#   families — a regex handed to the shadow oracle's `--id-filter`. This branch moves eleven of the
+#              MCP plane's thirteen client classes off `method::dispatch`'s arms and onto the
+#              composition root's MCP node, so a class that used to be a function call now walks
+#              admission, metering and both audit doors. `mcp` is the plane whose serving path
+#              moved. `boot` is the composition: the node is built and mounted in `main.rs`.
+#              `neutrality` IS in scope here — unlike on the branch this file used to describe,
+#              this one edits plane source directly. `billing` and `ledger` are in scope because
+#              the whole point of the move is that these classes now draw a budget slot and seal a
+#              row where they previously drew and sealed nothing. `admin.ops` covers the operator
+#              surface that reads those rows back.
+#   tests    — `busbar-mcp`, which holds the 500 cells every class move is checked by (including
+#              the `document_for`/`dispatch` complement guard), and `busbar`, which holds the root's
+#              own node cells and the end-to-end battery against the real binary.
+families = '^(mcp|boot|neutrality|admin\.ops|billing|ledger)([|.]|$)'
+tests = ["busbar-mcp", "busbar"]
