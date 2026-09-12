@@ -1072,3 +1072,88 @@ fn the_scope_is_appended_to_the_journal_row_and_moves_no_field_above_it() {
         "the row carries the scope in the one spelling the type declares"
     );
 }
+
+/// **ONE SCOPE, ONE COLUMN — a journal row cannot give two accounts of where a unit was priced.**
+///
+/// The tariff scopes tier over pool over plane over default and resolves to ABSOLUTE terms, and the
+/// scope that walk stopped at is what the posting records: `tier:gold`, `pool:eu`, `plane:llm`,
+/// `default`. `TariffScope::encoded` is the one vocabulary — `kind:key` — declared beside the type
+/// that means it, so an operator's configuration path, the journal row and an audit answer are the
+/// same string.
+///
+/// **RED FIRST, and this is what it catches.** The row carries a SECOND scope field beside that
+/// one: a two-word `tier`/`default` reading of the same fact, resolved by a second mechanism — a
+/// basis-point multiplier over the card — that answers separately. Two fields for one fact means a
+/// row that says `tier:gold` in one column and `default` in the other is representable, and there is
+/// nothing in the tree that stops it being written. So the assertion is the narrowest statement of
+/// the property: change ONLY the retired field and the row's bytes must not move, because there is
+/// only one scope on the row to move.
+///
+/// The second half reads the scope back. A row nobody can decode is a row an audit cannot re-price,
+/// and `decode` is the inverse of the one encoding rather than a second parser.
+#[test]
+fn a_journal_row_records_the_scope_it_was_priced_at_once_and_in_one_vocabulary() {
+    use busbar_caps::{
+        step::Admit, AdmitToken, Hold, KernelSeal, LedgerToken, MeterClassId, PrincipalId,
+        QuantitySource, Usage, UsageLine, UsageToken,
+    };
+    let seal = KernelSeal::acquire_for_kernel();
+    let mut durability = memory_node();
+    let key = totals_key("vk_gold");
+    durability.ledger.record_hold_opened(&key, 86_400, 5_000);
+    let hold = Hold::open(
+        &AdmitToken::<Admit>::mint(&seal),
+        PrincipalId::new("vk_gold"),
+        5_000,
+    );
+    let usage = Usage::report(
+        &UsageToken::mint(&seal),
+        vec![UsageLine {
+            class: MeterClassId::new("nano_units"),
+            quantity: 4_200,
+            source: QuantitySource::Count,
+            estimated: false,
+        }],
+    )
+    .expect("one line");
+    let durability_token = token();
+    let gold = busbar_contract::tariff::TariffScope::tier("gold");
+    let settled = durability
+        .settle(
+            &Settling {
+                key: &key,
+                window: 86_400,
+                durability: &durability_token,
+                step: StepName::Meter,
+                stamp: stamp(),
+                scope: &gold,
+            },
+            hold,
+            4_200,
+            &usage,
+            &LedgerToken::mint(&seal),
+        )
+        .expect("the null shipper takes it");
+
+    // THE SCOPE IS ON THE ROW, in the one vocabulary, and it reads back as the scope it was.
+    assert_eq!(
+        settled.posting.scope, gold,
+        "the posting carries the scope the walk stopped at"
+    );
+    assert_eq!(
+        busbar_contract::tariff::TariffScope::decode(&settled.posting.scope.encoded()),
+        Some(gold.clone()),
+        "`kind:key` reads back through the one decoder, so an audit can re-price the row"
+    );
+
+    // AND THERE IS NOTHING ELSE ON THE ROW THAT CLAIMS TO SAY WHERE IT WAS PRICED. A second
+    // reading of one fact is a row that can contradict itself; the bytes must not move when the
+    // retired field is the only thing that changes.
+    let mut other = settled.posting.clone();
+    other.tier_scope = busbar_unit_cost::TIER_SCOPE_TIER;
+    assert_eq!(
+        settled.posting.body(),
+        other.body(),
+        "the row gave a second account of the scope it was priced at: one fact, one column"
+    );
+}

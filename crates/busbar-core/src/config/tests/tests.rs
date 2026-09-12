@@ -4021,3 +4021,33 @@ fn test_auth_policy_rejects_bad_input_at_parse() {
         .expect_err("a typo'd ceiling key must be rejected (deny_unknown_fields)");
     assert!(err.to_string().contains("unknown field"), "got: {err}");
 }
+
+/// **A GROUP'S `tier_bp` IS RETIRED, AND THE REFUSAL NAMES WHERE A TIER'S PRICE LIVES NOW.**
+///
+/// A tier is a SCOPE of the tariff — `tariff.tier.<group>`, resolving to the same absolute fee
+/// terms every other scope resolves to, by the one tier > pool > plane > default walk. The retired
+/// key was the other mechanism: a basis-point multiplier over whatever the card said, which priced
+/// a second way and could not be read off the schedule an operator wrote.
+///
+/// It is refused BY NAME rather than ignored, because a deployment that wrote `tier_bp: 5000` and
+/// booted without it would be charged double what its operator agreed to, silently. The hint names
+/// the key, its new home, and the one thing the new home cannot do — a scope names absolute
+/// amounts, so there is no figure to carry across mechanically and the migrator does not pretend
+/// otherwise.
+///
+/// RED FIRST: on the tree this cell was written against, `groups.<g>.tier_bp` was a live field that
+/// parsed silently and a validator only refused it above a hundredfold — so the parse SUCCEEDED and
+/// there was no error to name anything.
+#[test]
+fn a_groups_tier_bp_is_refused_by_name_and_points_at_the_tariffs_tier_scope() {
+    let err = serde_yaml::from_str::<DeployCfg>(
+        "groups:\n  gold:\n    tier_bp: 5000\nproviders: {}\nmodels: {}\npools: {}\n",
+    )
+    .expect_err("the retired per-group tier multiplier must be rejected");
+    let hint = crate::config::augment_config_error(err);
+    assert!(
+        hint.contains("tier_bp") && hint.contains("tariff.tier"),
+        "the refusal must name the retired key AND the tariff scope a tier's price lives at now; \
+         got: {hint}"
+    );
+}
