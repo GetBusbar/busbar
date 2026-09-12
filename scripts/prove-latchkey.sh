@@ -5,7 +5,9 @@
 #   ./scripts/prove-latchkey.sh                       # prove THIS worktree's tip
 #   ./scripts/prove-latchkey.sh <branch>              # prove a local branch's tip
 #   ./scripts/prove-latchkey.sh --posture ship        # …and the release-time gates as well
+#   ./scripts/prove-latchkey.sh --tree /path/to/worktree    # …prove THAT checkout (a slot's own)
 #   ./scripts/prove-latchkey.sh --preprove --batch <file>   # the engine's sweep pre-proof leg
+#   ./scripts/prove-latchkey.sh --preprove --batch <f> --no-shards   # …as ONE job, the old way
 #   ./scripts/prove-latchkey.sh --setup [host]        # a no-op: there is no box to prepare
 #   ./scripts/prove-latchkey.sh --selftest
 #
@@ -126,14 +128,32 @@ lk_validate_posture() { # $1 = the value
 # transcription of it — merge-base with the integration line, and the integration line as THIS
 # repository holds it, never the tip being proven (land-remote.sh's note explains what pinning the
 # tip under the base's name costs: every ceiling row compares a file against itself and passes).
-lk_base_sha() { # $1 = repo
-  local repo="${1:-$REPO}" head mb
-  head="$(git -C "$repo" rev-parse HEAD 2>/dev/null)" || return 1
-  mb="$(git -C "$repo" merge-base HEAD "$LAND_BASE_REF" 2>/dev/null || true)"
-  if [ -n "$mb" ] && [ "$mb" != "$head" ]; then printf '%s\n' "$mb"; return 0; fi
-  mb="$(git -C "$repo" rev-parse --verify --quiet "$LAND_BASE_BRANCH" 2>/dev/null || true)"
-  if [ -n "$mb" ] && [ "$mb" != "$head" ]; then printf '%s\n' "$mb"; return 0; fi
-  git -C "$repo" rev-parse --verify --quiet "HEAD~1" 2>/dev/null || return 1
+# ── AND IT IS THE MERGE-BASE OR NOTHING. A BRANCH TIP IS NOT A BASE ────────────────────────────
+# MEASURED (K4d-r, 2026-09-12): a slot's tree whose tip was already an ANCESTOR of
+# origin/integration/oracle-phase0 — a re-pick with no delta of its own — made `merge-base` equal
+# HEAD, and the old fallback below it then answered with the raw local branch tip
+# `refs/heads/integration/oracle-phase0`, which is AHEAD of that tip. That sha is not an ancestor of
+# what `push +tip:refs/heads/tip` carried, so the objects never arrived, `update-ref` died
+# `nonexistent object`, and the whole proof came back `could not stage the history` — an infra
+# refusal wearing a tree's clothes, on every line that slot pre-proved.
+#
+# THE INVARIANT IS ONE SENTENCE: THE BASE IS ALWAYS AN ANCESTOR OF THE TIP. The merge-base is that
+# by construction, so its objects travel with the tip's push and no extra transfer can fail. A
+# branch tip is not, and no amount of "it is usually behind" makes it so.
+#
+# AND A BASE THAT EQUALS THE TIP IS THE RIGHT ANSWER FOR A ZERO-DELTA TREE, not an error to route
+# around. The tree owes no delta; the PICKS are the delta, and they arrive as their own refs. The
+# caller decides whether a proof with neither a delta nor a pick is worth running (see the refusal
+# beside `TIP`), and this function's job is only to be true.
+lk_base_sha() { # $1 = repo, $2 = the tip being proven (default HEAD)
+  local repo="${1:-$REPO}" tip="${2:-HEAD}" head mb
+  head="$(git -C "$repo" rev-parse "$tip" 2>/dev/null)" || return 1
+  mb="$(git -C "$repo" merge-base "$head" "$LAND_BASE_REF" 2>/dev/null || true)"
+  [ -n "$mb" ] || mb="$(git -C "$repo" merge-base "$head" "$LAND_BASE_BRANCH" 2>/dev/null || true)"
+  if [ -n "$mb" ]; then printf '%s\n' "$mb"; return 0; fi
+  # NO INTEGRATION REF IN THIS REPOSITORY AT ALL (a scratch clone, a fresh worktree). The tip's own
+  # parent is the only ancestor there is to offer, and it IS an ancestor, which is the invariant.
+  git -C "$repo" rev-parse --verify --quiet "${head}~1" 2>/dev/null || return 1
 }
 
 # Every hash a batch file names, so the picks travel as objects. Same shape land.sh's own reader
@@ -200,6 +220,20 @@ lk_stage_repo() { # $1 = repo  $2 = stage dir (inside the repo)  $3 = tip  $4 = 
   # THE BASE UNDER THE NAME THE GATE READS. It is an ancestor of the tip, so its objects arrived
   # with the push above and this is a ref write, not a transfer. Both spellings, because
   # `ceilings::base_ref` reads the remote-tracking one and land.sh's own plumbing reads the branch.
+  # ── AND IT IS ASKED FOR BEFORE IT IS NAMED ────────────────────────────────────────────────────
+  # `update-ref` on an object the bare repo does not have fails `nonexistent object`, and that
+  # refusal reached the caller as `could not stage the history` — which reads like a transport fault
+  # and is actually "somebody handed me a base that is not an ancestor of the tip" (see
+  # lk_base_sha's header for the measurement). The object is checked for, pushed by itself if it is
+  # genuinely absent, and only then named; a base that cannot be made present is said in words.
+  if ! git -C "$bare" cat-file -e "${base}^{commit}" 2>/dev/null; then
+    git -C "$repo" push -q "$bare" "+${base}:refs/proof/base/$base" 2>/dev/null || true
+  fi
+  git -C "$bare" cat-file -e "${base}^{commit}" 2>/dev/null || {
+    echo "prove-latchkey: the base $base is not in the staged repository and could not be pushed into it." >&2
+    echo "prove-latchkey:   A base must be an ANCESTOR of the tip; this one is not, so no ceiling row" >&2
+    echo "prove-latchkey:   could be measured against it. Nothing was staged and nothing is proven." >&2
+    return 1; }
   git -C "$bare" update-ref refs/remotes/origin/integration/oracle-phase0 "$base" || return 1
   git -C "$bare" update-ref refs/heads/integration/oracle-phase0 "$base" || return 1
   return 0
@@ -344,14 +378,21 @@ lk_onbox_script() { # $1 = mode (preprove|tip)  $2 = branch name  $3 = posture
 #!/usr/bin/env bash
 # Generated by scripts/prove-latchkey.sh — runs on a Latchkey runner, never on a fleet box.
 set -uo pipefail
-MODE="$1"; BR="$2"; POSTURE="$3"; TIP="$4"; BASE="$5"; FAMILIES="${6:-.}"; TESTS="${7:-}"
+MODE="$1"; BR="$2"; POSTURE="$3"; TIP="$4"; BASE="$5"; FAMILIES="${6:-.}"; TESTS="${7:-}"; LEGS="${8:-}"
 ONBOX
   lk_onbox_preamble
   cat <<'ONBOX'
 
 RC=0
+# ── THE LEG SUBSET THIS SHARD OWNS ──────────────────────────────────────────────────────────────
+# land.sh's LAND_LEGS_ONLY, which only ever SUBTRACTS from the plan the union owes (land_legs_only
+# refuses an empty intersection loudly rather than reporting green over nothing). Empty — which is
+# a tip proof and an unsharded pre-proof — leaves the plan exactly as it has always been.
+# LAND_LATCHKEY_INNER goes with it: a runner must never rent a runner.
+[ -n "$LEGS" ] && export LAND_LEGS_ONLY="$LEGS"
+export LAND_LATCHKEY_INNER=1
 if [ "$MODE" = preprove ]; then
-  say "land.sh --preprove over the batch (the picks, the legs, the bisect — and it publishes nothing)"
+  say "land.sh --preprove over the batch${LEGS:+, legs [$LEGS]} (the picks, the legs, the bisect — and it publishes nothing)"
   bash "$ENGINE" --preprove --batch "$STAGE/batch.txt"; RC=$?
   say "the per-line verdict file"
   # THE RETURN CHANNEL IS THE LOG. Latchkey copies no files back, so `<batch>.result` is printed
@@ -457,6 +498,10 @@ lk_job_verdict() { # $1 = log file  $2 = job exit code
   case "$rc" in
     0) echo GREEN ;;
     75) echo "NONE:no-verdict" ;;
+    # THE 7200 s CEILING (lk_job_capped). A job that ran out of time measured whatever it measured
+    # and was then killed; the legs it never reached are exactly as unproven as they were before it
+    # started, and that is `NONE`, not `RED`.
+    124) echo "NONE:cap" ;;
     *) echo RED ;;
   esac
 }
@@ -472,8 +517,27 @@ lk_load_token() {
   [ -n "${LATCHKEY_TOKEN:-}" ]
 }
 
-lk_submit() { # $1 = the bash line; prints the job id
-  "$LK_BIN" run --size "$LK_SIZE" --timeout "$LK_TIMEOUT" --quiet --detach "$1" 2>/dev/null | tr -d '[:space:]'
+# ── AND A REFUSAL SAYS WHY, IN THE CLI'S OWN WORDS ──────────────────────────────────────────────
+# MEASURED (the sharded smoke, 2026-09-12 13:03): a submission took four minutes and came back with
+# no job id, and this script said "the workspace's runner cap is shared with CI" — which was a
+# GUESS. `2>/dev/null` had thrown away the only sentence that could have named the real cause, and
+# the operator's next move (wait for the cap) was the wrong one. The `latchkey` CLI writes its
+# progress AND its errors to stderr and the job id alone to stdout, so the two are separable: the
+# id is read from stdout as before, and the last few lines of stderr are kept in $LK_SUBMIT_ERR for
+# the caller to log when there is no id. Nothing is guessed and nothing is hidden.
+# THE REASON TRAVELS IN A FILE, NOT IN A VARIABLE. Every caller of this runs it inside `$( cd … &&
+# lk_submit … )` — a SUBSHELL — so a variable set here is gone before the caller can read it. The
+# path is this process's alone (its pid) and the caller reads it with lk_submit_err.
+LK_SUBMIT_ERRFILE="$LAND_TMP/lk-submit-err.$$"
+lk_submit() { # $1 = the bash line; prints the job id; writes the CLI's own words when there is none
+  local id
+  : >"$LK_SUBMIT_ERRFILE" 2>/dev/null || true
+  id="$("$LK_BIN" run --size "$LK_SIZE" --timeout "$LK_TIMEOUT" --quiet --detach "$1" 2>>"$LK_SUBMIT_ERRFILE" | tr -d '[:space:]')"
+  case "$id" in cli-*) : >"$LK_SUBMIT_ERRFILE" 2>/dev/null || true ;; esac
+  printf '%s' "$id"
+}
+lk_submit_err() { # prints the last thing the CLI said about a submission that made no job
+  grep -v '^[[:space:]]*$' "$LK_SUBMIT_ERRFILE" 2>/dev/null | tail -5 | tr '\n' ' '
 }
 
 lk_state() { # $1 = job id
@@ -505,12 +569,47 @@ lk_job_started() { # $1 = job id; 0 when the command really began
 }
 # THE ONE PLACE A TERMINAL STATE BECOMES AN EXIT CODE. Prints the code; 75 whenever the job never
 # ran, whatever Latchkey called the state.
+# ── AND A JOB THE CAP KILLED IS NOT A RED EITHER ────────────────────────────────────────────────
+# MEASURED (SUB-4's tree and three of M1c-b's, 2026-09-11/12): a pre-proof on `large` ran past the
+# 7200 s per-job ceiling inside `xtask selftest plane-purity-strict` and came back as a FAILURE with
+# a timeout reason. Scored as a failure that is `RED`, and three live queue lines were called red
+# for the size of the runner they were rented — which is the 127 defect and the VcpuLimitExceeded
+# defect arriving a third time. The ceiling is a statement about THIS SCRIPT'S SHARD PLAN and about
+# the runner size; it is never a statement about anybody's picks.
+#
+# LATCHKEY SPELLS IT THREE WAYS and this asks all three: the terminal state `expired`; a `failed`
+# job whose own Failure reason names a timeout; and a job whose Started..Completed reaches the
+# ceiling. 124 is the code — the shell's own timeout code — and lk_job_verdict turns it into
+# `NONE:cap`, which is not a verdict.
+lk_reason_is_cap() { # $1 = Latchkey's failure reason
+  case "$(printf '%s' "${1:-}" | tr 'A-Z' 'a-z')" in
+    *timeout*|*timed?out*|*time?limit*|*deadline*|*max?duration*) return 0 ;;
+  esac
+  return 1
+}
+lk_job_capped() { # $1 = job id, $2 = terminal state; 0 when the 7200 s ceiling is what ended it
+  local id="$1" state="$2" secs
+  [ "$state" = expired ] && return 0
+  lk_reason_is_cap "$(lk_failure_reason "$id")" && return 0
+  secs="$(lk_runner_secs "$id")"
+  [ -n "$secs" ] && [ "$secs" -ge "$LK_TIMEOUT" ] && return 0
+  return 1
+}
+# WHAT THE JOB GOT THROUGH BEFORE THE CEILING TOOK IT. A `NONE:cap` with no evidence is a shrug;
+# with the legs it completed it is the shard plan's next move, written down. The runner's own
+# headings (`== <leg>`) and the engine's own plan/leg sentences, and nothing invented here.
+lk_legs_completed() { # $1 = log file
+  local log="${1:-}"
+  [ -f "$log" ] || return 0
+  grep -E '^== |^land\.sh: \[' "$log" 2>/dev/null | sed 's/^== //' | tail -40
+}
 lk_job_rc() { # $1 = job id, $2 = terminal state
   local id="$1" state="$2" rc why
   case "$state" in
     cancelled) printf '130\n'; return 0 ;;
     expired)   printf '124\n'; return 0 ;;
   esac
+  if lk_job_capped "$id" "$state"; then printf '124\n'; return 0; fi
   rc="$(lk_exit_code "$id")"
   if [ -z "$rc" ] && ! lk_job_started "$id"; then
     why="$(lk_failure_reason "$id")"
@@ -549,6 +648,122 @@ lk_poll() { # $1 = job id; prints the terminal state, returns 1 on running out o
     sleep "$LK_POLL_SECS"; waited=$(( waited + LK_POLL_SECS ))
   done
   printf 'timeout\n'; return 1
+}
+
+# ──────────────────────────────────────────────────────────────────────────────────────────────────
+# THE PRE-PROOF'S SHARD PLAN — THE F5 SHAPE, UNDER THE 7200 s CEILING
+# ──────────────────────────────────────────────────────────────────────────────────────────────────
+# MEASURED (SUB-4's tree, three of M1c-b's, 2026-09-11/12): one pre-proof job runs the WHOLE plan
+# serially — build, tests, clippy, the gates AND the gate self-test batteries — and the batteries
+# alone have been measured at 4,900 s (land_gate_battery_set's table). On `large` that walks past
+# the 7200 s ceiling inside `xtask selftest plane-purity-strict`, and `xlarge` is not available
+# (VcpuLimitExceeded, four times in one night). The landing path already answers this by fanning the
+# plan across jobs (F5, scripts/land-latchkey.sh); this is the same answer for the pre-proof, and it
+# is the same reason: the ceiling is PER JOB, so the fix is more jobs, never a longer one.
+#
+# THE SPLIT, AND WHY IT IS THIS SPLIT:
+#
+#   build   plugins fmt gatefiles tests clippy workspace-clippy   the cold build and everything
+#                                                                 that rides on it
+#   gates   kind-isolation gate                                   THE CAP'S HOME: the gate legs and
+#                                                                 the self-test batteries they own
+#   oracle  oracle                                                the recorder + replay
+#
+# EVERY SHARD INTERSECTS EVERY POSSIBLE PLAN, and that is a property, not a coincidence.
+# `plugins fmt gatefiles` and `kind-isolation gate` are FLOOR in land_floor_plan — every union owes
+# them — so neither of those two shards can ever select an empty subset of a line's plan, which is
+# the one input land_legs_only refuses (correctly: a shard that owns no leg has measured nothing).
+#
+# THE ORACLE IS THE EXCEPTION AND IT IS HANDLED BY ASKING, NOT BY HOPING. `oracle` is in a union's
+# plan only when the line names `--families`. A batch with even ONE line that names none would give
+# that line an empty intersection in an oracle-only shard — a loud RED about a line whose plan
+# simply has no oracle leg in it. So the oracle becomes its own job only when EVERY landing line in
+# the batch names families; otherwise it rides with `build`, where it always has something to do.
+#
+# AND THE FAMILIES ARE NOT BUCKETED HERE, DELIBERATELY. land-latchkey.sh splits one union's family
+# alternation across jobs because a landing is ONE union and the transport is handed its expression.
+# A pre-proof batch is N lines, each carrying its OWN `--families` inside its argv, and land.sh
+# reads that argv per line — there is no per-line channel through which this transport could hand a
+# bucket down. Bucketing would mean rewriting queue lines, and a transport that edits the line it is
+# proving is proving a different line. The leg split is what is expressible here, and it is what
+# moves the cap: the batteries leave the critical path.
+LK_PREPROVE_SHARDED="${LATCHKEY_PREPROVE_SHARDS:-1}"
+
+lk_batch_lines_all_have_families() { # $1 = batch file; 0 when every landing line names --families
+  local bf="${1:-}" l n=0
+  [ -f "$bf" ] || return 1
+  while IFS= read -r l || [ -n "$l" ]; do
+    case "$l" in ''|'#'*) continue ;; esac
+    n=$(( n + 1 ))
+    case "$l" in *--families*) ;; *) return 1 ;; esac
+  done <"$bf"
+  [ "$n" -gt 0 ]
+}
+
+# Prints one `<name>|<legs>` row per job, or NOTHING when this batch should go as one job (which is
+# exactly what this script did before the split, unchanged).
+lk_preprove_shard_plan() { # $1 = batch file
+  local bf="${1:-}"
+  [ "$LK_PREPROVE_SHARDED" = 1 ] || return 1
+  [ -f "$bf" ] || return 1
+  grep -qvE '^[[:space:]]*(#|$)' "$bf" 2>/dev/null || return 1
+  if lk_batch_lines_all_have_families "$bf"; then
+    printf 'build|plugins fmt gatefiles tests clippy workspace-clippy\n'
+    printf 'gates|kind-isolation gate\n'
+    printf 'oracle|oracle\n'
+  else
+    printf 'build|plugins fmt gatefiles tests clippy workspace-clippy oracle\n'
+    printf 'gates|kind-isolation gate\n'
+  fi
+}
+
+# ── ONE VERDICT ROW PER LINE, OUT OF N SHARDS' ROWS ─────────────────────────────────────────────
+# Each shard writes land.sh's own per-line file — `<STATUS><TAB><the line>` — over the SAME batch,
+# so the rows are keyed by the line's text, which is how landq4.sh already reads them
+# (lq_outcome_row). The merge is a WORST-WINS over the statuses, and the order is the worst-wins
+# order for a reason apiece:
+#
+#   RED-CONFLICT  the PICK did not apply. Every shard saw the identical cherry-pick of the identical
+#                 sha onto the identical tip, so it is the same fact in each of them.
+#   RED           a leg this shard owns said no. One shard's red is the line's red — the other
+#                 shards proved different legs and cannot speak for it.
+#   HELD          land.sh's word for "a line before this one in its unit was the culprit, so this
+#                 line was never applied". It OUTRANKS GREEN, which is the case that matters: a line
+#                 the gates shard proved green may have been held in the build shard, and a line
+#                 whose build was never run is not a proven line.
+#   GREEN         only when every shard that owns a leg of it said so.
+#
+# AND A LINE THAT NOT EVERY SHARD REPORTED GETS NO ROW AT ALL. The shard sets are chosen so that
+# every shard owns a leg of every line (see the plan above), so a missing row means that shard's
+# file was truncated — and a merged GREEN assembled from a subset of the shards is exactly the
+# "judged on a subset nobody chose" failure the landing path refuses by name.
+lk_merge_results() { # $1 = the merged file, $2 = how many shards must have reported, $3.. = the shard files
+  local out="$1" want="$2"; shift 2
+  [ "$#" -ge 1 ] || return 1
+  awk -F'\t' -v want="$want" '
+    function rank(x) {
+      if (x ~ /^RED-CONFLICT/) return 4
+      if (x ~ /^RED/)          return 3
+      if (x == "HELD")         return 2
+      if (x == "GREEN")        return 1
+      return 0
+    }
+    NF >= 2 {
+      t = $2
+      for (i = 3; i <= NF; i++) t = t FS $i
+      if (!(t in seen)) { order[++n] = t; seen[t] = 1; best[t] = "" }
+      if (rank($1) > rank(best[t])) best[t] = $1
+      cnt[t]++
+    }
+    END {
+      for (i = 1; i <= n; i++) {
+        t = order[i]
+        if (cnt[t] < want) continue
+        printf "%s\t%s\n", best[t], t
+      }
+    }
+  ' "$@" >"$out" 2>/dev/null
+  [ -s "$out" ]
 }
 
 # ──────────────────────────────────────────────────────────────────────────────────────────────────
@@ -707,11 +922,17 @@ if [ "${1:-}" = "--selftest" ]; then
     *'unset RUSTC_WRAPPER'*) say PASS "  ...with no sccache: measured unreliable from these runners" ;;
     *) say FAIL "the on-box environment still reaches for sccache" ;;
   esac
-  # THE BASE IS NEVER THE TIP. land-remote.sh's selftest keeps this line for the same reason: a base
-  # pinned to the tip makes every ceiling row compare a file against itself and pass.
-  grep -qE 'merge-base HEAD "\$LAND_BASE_REF"' "${BASH_SOURCE[0]}" \
+  # THE BASE IS THE MERGE-BASE AND NOTHING ELSE. The old form of this asked only that a merge-base
+  # appeared somewhere; the FALLBACK underneath it — a raw `rev-parse` of the integration branch —
+  # is what actually answered on a zero-delta tree, and that sha is not an ancestor of the tip
+  # (K4d-r's `nonexistent object`). Both halves are asked now: the merge-base is used, and the
+  # branch ref is never rev-parsed for a base.
+  grep -qE 'merge-base "\$head" "\$LAND_BASE_REF"' "${BASH_SOURCE[0]}" \
     && say PASS "the base is the merge-base with the integration line, resolved here" \
     || say FAIL "the base is not the merge-base with the integration line"
+  sed -n '/^lk_base_sha() {/,/^}/p' "${BASH_SOURCE[0]}" | grep -q 'rev-parse --verify --quiet "\$LAND_BASE' \
+    && say FAIL "lk_base_sha still falls back to a raw branch tip, which is not an ancestor of the tip" \
+    || say PASS "  ...and never a raw branch tip (an object the tip's push does not carry)"
   [ "$(grep -c 'LAND_BASE_REF="\${LAND_BASE_REF:-refs/remotes/origin/integration/oracle-phase0}"' "${BASH_SOURCE[0]}")" = 1 ] \
     && say PASS "  ...named once, the same name land-remote.sh uses" \
     || say FAIL "the integration ref is spelled more than once, or differently"
@@ -931,6 +1152,167 @@ if [ "${1:-}" = "--selftest" ]; then
     && say PASS "the minutes reported are the job's Started..Completed, not the wall" \
     || say FAIL "the minutes reported are this script's wall clock"
 
+  # ── THE BASE IS THE MERGE-BASE, AND ALWAYS AN ANCESTOR OF THE TIP (K4d-r's defect) ────────────
+  echo "== the base a proof is judged against =="
+  br="$root/baserepo"; mkdir -p "$br" "$root/nohooks"
+  # A THROWAWAY REPOSITORY, NOT THIS DEVELOPER'S — land.sh's selftest says it first: the host's
+  # global core.hooksPath (an identity check, here) would refuse every commit this case needs.
+  ( cd "$br" && git init -q . && git config core.hooksPath "$root/nohooks" \
+    && git config user.email t@t && git config user.name t \
+    && echo a >a && git add a && git commit -qm a \
+    && git branch -q integration/oracle-phase0 \
+    && echo b >b && git add b && git commit -qm b \
+    && git update-ref refs/heads/integration/oracle-phase0 HEAD \
+    && git checkout -q -b slot HEAD~1 ) >/dev/null 2>&1
+  # `slot` is an ANCESTOR of the integration branch: merge-base(slot, integration) == slot itself.
+  # The old fallback answered with the integration BRANCH TIP, which is not among the objects the
+  # tip's push carries — the `nonexistent object` that killed every one of K4d-r's pre-proofs.
+  zb="$(LAND_BASE_REF=refs/heads/integration/oracle-phase0 LAND_BASE_BRANCH=refs/heads/integration/oracle-phase0 \
+        lk_base_sha "$br" "$(git -C "$br" rev-parse HEAD)")"
+  zt="$(git -C "$br" rev-parse HEAD)"
+  ztip="$(git -C "$br" rev-parse refs/heads/integration/oracle-phase0)"
+  [ "$zb" = "$zt" ] && say PASS "a zero-delta tree's base is the tip itself, not a branch tip" \
+    || say FAIL "a zero-delta tree resolved its base to '$zb' (tip $zt, branch $ztip)"
+  [ "$zb" != "$ztip" ] && say PASS "  ...and it is never the raw integration branch tip" \
+    || say FAIL "the base is the integration branch tip, whose objects the tip's push does not carry"
+  git -C "$br" merge-base --is-ancestor "$zb" "$zt" 2>/dev/null \
+    && say PASS "  ...the base is an ancestor of the tip (so its objects always travel)" \
+    || say FAIL "the base is not an ancestor of the tip"
+  ( cd "$br" && git checkout -q integration/oracle-phase0 && echo c >c && git add c && git commit -qm c ) >/dev/null 2>&1
+  db="$(LAND_BASE_REF=refs/heads/integration/oracle-phase0 LAND_BASE_BRANCH=refs/heads/integration/oracle-phase0 \
+        lk_base_sha "$br" "$(git -C "$br" rev-parse slot)")"
+  [ "$db" = "$(git -C "$br" rev-parse slot)" ] \
+    && say PASS "a tree with a delta still gets the merge-base" \
+    || say FAIL "a tree with a delta resolved its base to '$db'"
+  # AND THE STAGING NEVER NAMES AN OBJECT IT DID NOT PUSH.
+  sd="$root/stage"; mkdir -p "$sd"
+  if lk_stage_repo "$br" "$sd/.latchkey" "$(git -C "$br" rev-parse slot)" "$(git -C "$br" rev-parse slot)" >/dev/null 2>&1; then
+    say PASS "a zero-delta tree stages (base == tip is a base, not a failure)"
+    [ "$(git -C "$sd/.latchkey/git" rev-parse refs/remotes/origin/integration/oracle-phase0 2>/dev/null)" \
+      = "$(git -C "$br" rev-parse slot)" ] \
+      && say PASS "  ...and the staged repo resolves the base ref to it" \
+      || say FAIL "the staged repo does not resolve the base ref"
+  else
+    say FAIL "a zero-delta tree could not be staged"
+  fi
+  grep -qF 'cat-file -e "${base}^{commit}"' "${BASH_SOURCE[0]}" \
+    && say PASS "the staging asks for the base object before it names it" \
+    || say FAIL "the staging names the base without asking whether it arrived"
+
+  # ── THE 7200 s CEILING IS NEVER A RED ─────────────────────────────────────────────────────────
+  echo "== the cap =="
+  [ "$(lk_job_verdict "$root/none.log" 124)" = "NONE:cap" ] \
+    && say PASS "exit 124 (the ceiling) is NONE:cap, not RED" \
+    || say FAIL "the ceiling is scored $(lk_job_verdict "$root/none.log" 124)"
+  [ "$(lk_job_verdict "$root/none.log" 1)" = "RED" ] \
+    && say PASS "  ...and a real failure is still RED" || say FAIL "a real failure stopped being RED"
+  for r in "timeout" "Timed out after 7200s" "job deadline exceeded" "max_duration reached"; do
+    lk_reason_is_cap "$r" && say PASS "Latchkey's '$r' reads as the cap" \
+      || say FAIL "'$r' was not read as the cap"
+  done
+  lk_reason_is_cap "launch_failed: VcpuLimitExceeded" \
+    && say FAIL "a launch failure was read as the cap" \
+    || say PASS "a launch failure is NOT the cap (it is the 75 that never started)"
+  printf '== build\n== fmt\nland.sh: [l] plan: plugins fmt gate\nnoise\n' >"$root/capped.log"
+  [ "$(lk_legs_completed "$root/capped.log" | grep -c .)" = 3 ] \
+    && say PASS "a capped job reports what it completed, out of the log's own headings" \
+    || say FAIL "the completed legs are not read out of the log"
+  grep -qF 'prove-latchkey: NONE:cap' "${BASH_SOURCE[0]}" \
+    && say PASS "the cap is said in a sentence the engine can grep" \
+    || say FAIL "the cap has no sentence"
+
+  # ── THE SHARD PLAN ────────────────────────────────────────────────────────────────────────────
+  echo "== the pre-proof's shard plan (the F5 shape under the ceiling) =="
+  printf -- '--prove --tests xtask --families %s aaaaaaa\n' "'^(llm)([|.]|\$)'" >"$root/bf-fam.txt"
+  printf -- '--prove --tests xtask bbbbbbb\n' >"$root/bf-nofam.txt"
+  printf -- '--prove --tests xtask --families %s aaaaaaa\n--prove --tests xtask bbbbbbb\n' "'^(llm)([|.]|\$)'" >"$root/bf-mixed.txt"
+  : >"$root/bf-empty.txt"
+  pf="$(LK_PREPROVE_SHARDED=1 lk_preprove_shard_plan "$root/bf-fam.txt")"
+  pn="$(LK_PREPROVE_SHARDED=1 lk_preprove_shard_plan "$root/bf-nofam.txt")"
+  pm="$(LK_PREPROVE_SHARDED=1 lk_preprove_shard_plan "$root/bf-mixed.txt")"
+  [ "$(printf '%s\n' "$pf" | grep -c .)" = 3 ] && say PASS "an all-families batch is three jobs" \
+    || say FAIL "an all-families batch is $(printf '%s\n' "$pf" | grep -c .) job(s)"
+  [ "$(printf '%s\n' "$pn" | grep -c .)" = 2 ] && say PASS "a batch with a family-less line is two" \
+    || say FAIL "a family-less batch is $(printf '%s\n' "$pn" | grep -c .) job(s)"
+  [ "$(printf '%s\n' "$pm" | grep -c .)" = 2 ] \
+    && say PASS "  ...and ONE family-less line is enough to keep the oracle off its own job" \
+    || say FAIL "a mixed batch split the oracle out, and that line's plan has no oracle leg to select"
+  case "$pf" in *"gates|kind-isolation gate"*) say PASS "the gate legs are ALWAYS their own job (the cap's home)" ;;
+    *) say FAIL "the gate legs are not their own job" ;; esac
+  case "$pn" in *"gates|kind-isolation gate"*) say PASS "  ...on a family-less batch too" ;;
+    *) say FAIL "the gate legs are not their own job on a family-less batch" ;; esac
+  case "$pn" in *"oracle"*) say PASS "  ...and the oracle rides with build rather than vanishing" ;;
+    *) say FAIL "the oracle leg was dropped from the plan entirely" ;; esac
+  LK_PREPROVE_SHARDED=0 lk_preprove_shard_plan "$root/bf-fam.txt" >/dev/null 2>&1 \
+    && say FAIL "LATCHKEY_PREPROVE_SHARDS=0 still sharded" \
+    || say PASS "LATCHKEY_PREPROVE_SHARDS=0 (and --no-shards) is one job, exactly as before"
+  LK_PREPROVE_SHARDED=1 lk_preprove_shard_plan "$root/bf-empty.txt" >/dev/null 2>&1 \
+    && say FAIL "an empty batch was sharded" || say PASS "an empty batch has no plan to shard"
+  # EVERY SHARD OWNS A LEG OF EVERY POSSIBLE PLAN — land.sh's own floor plan is the authority.
+  lsh=""
+  for c in "$HERE/land.run.sh" "$HERE/land.sh" "$REPO/scripts/land.sh"; do [ -f "$c" ] && { lsh="$c"; break; }; done
+  if [ -n "$lsh" ]; then
+    fsrc="$(sed -n '/^land_floor_plan() {/,/^}/p' "$lsh")"
+    eval "$fsrc" 2>/dev/null
+    for planv in "$(land_floor_plan '' '' '')" "$(land_floor_plan busbar loc '^x')"; do
+      for row in $(printf '%s\n' "$pf" "$pn" | grep -c . >/dev/null; printf '%s\n' "$pf" | sed 's/|.*//'); do :; done
+      while IFS= read -r row; do
+        [ -n "$row" ] || continue
+        nm="${row%%|*}"; lg="${row#*|}"
+        [ "$nm" = oracle ] && continue   # the oracle's job exists only when every line owes it
+        hit=0
+        for leg in $lg; do case " $planv " in *" $leg "*) hit=1 ;; esac; done
+        [ "$hit" = 1 ] && say PASS "shard $nm owns a leg of the plan [$planv]" \
+          || say FAIL "shard $nm owns NO leg of [$planv] — land_legs_only would red it"
+      done <<SHEOF
+$pn
+SHEOF
+    done
+  else
+    say PASS "(no land.sh beside this transport; the plan-intersection case is skipped)"
+  fi
+
+  # ── THE MERGE ─────────────────────────────────────────────────────────────────────────────────
+  echo "== merging N shards' rows into one verdict row per line =="
+  T="$(printf '\t')"
+  printf 'GREEN%sL1\nGREEN%sL2\nGREEN%sL3\n' "$T" "$T" "$T" >"$root/m1"
+  printf 'GREEN%sL1\nRED%sL2\nHELD%sL3\n'   "$T" "$T" "$T" >"$root/m2"
+  printf 'GREEN%sL1\nGREEN%sL2\nGREEN%sL3\n' "$T" "$T" "$T" >"$root/m3"
+  lk_merge_results "$root/mout" 3 "$root/m1" "$root/m2" "$root/m3"
+  [ "$(awk -F"$T" '$2=="L1"{print $1}' "$root/mout")" = GREEN ] \
+    && say PASS "green in every shard is GREEN" || say FAIL "a line green everywhere is not GREEN"
+  [ "$(awk -F"$T" '$2=="L2"{print $1}' "$root/mout")" = RED ] \
+    && say PASS "one shard's RED is the line's RED" || say FAIL "a shard's red did not reach the merge"
+  [ "$(awk -F"$T" '$2=="L3"{print $1}' "$root/mout")" = HELD ] \
+    && say PASS "HELD outranks GREEN (a held line was never applied, so it was never proven)" \
+    || say FAIL "a line held in one shard came out GREEN"
+  printf 'RED-CONFLICT%sL4\n' "$T" >>"$root/m1"; printf 'RED%sL4\n' "$T" >>"$root/m2"; printf 'GREEN%sL4\n' "$T" >>"$root/m3"
+  lk_merge_results "$root/mout2" 3 "$root/m1" "$root/m2" "$root/m3"
+  [ "$(awk -F"$T" '$2=="L4"{print $1}' "$root/mout2")" = RED-CONFLICT ] \
+    && say PASS "RED-CONFLICT outranks everything (the pick is the same fact in every shard)" \
+    || say FAIL "a conflict was outranked"
+  printf 'GREEN%sL5\n' "$T" >>"$root/m1"
+  lk_merge_results "$root/mout3" 3 "$root/m1" "$root/m2" "$root/m3"
+  [ -z "$(awk -F"$T" '$2=="L5"{print $1}' "$root/mout3")" ] \
+    && say PASS "a line not every shard reported gets NO row (never a green on a subset)" \
+    || say FAIL "a line only one shard reported was given a merged row"
+  # AND THE LINE TEXT SURVIVES ITS OWN PUNCTUATION — 44 queue lines carry a bracketed regex.
+  printf "GREEN%s--prove --families '^(llm)([|.]|\$)' abc\n" "$T" >"$root/m4"
+  printf "RED%s--prove --families '^(llm)([|.]|\$)' abc\n" "$T" >"$root/m5"
+  lk_merge_results "$root/mout4" 2 "$root/m4" "$root/m5"
+  grep -q "^RED${T}--prove --families '\^(llm)(\[|\.\]|\\\$)' abc$" "$root/mout4" \
+    && say PASS "a line carrying a bracketed family regex merges by its raw bytes" \
+    || say FAIL "a family regex was mangled by the merge ($(cat "$root/mout4"))"
+
+  # ── --tree ────────────────────────────────────────────────────────────────────────────────────
+  case "$argv_src" in *"--tree"*) say PASS "the argument parser handles --tree" ;;
+    *) say FAIL "the argument parser does not handle --tree" ;; esac
+  case "$argv_src" in *"--no-shards"*) say PASS "the argument parser handles --no-shards" ;;
+    *) say FAIL "the argument parser does not handle --no-shards" ;; esac
+  grep -qF 'LK_LOGDIR="${LATCHKEY_LOG_DIR:-$LK_STATE_HOME/busbar-landq-state/gate/latchkey-logs}"' "${BASH_SOURCE[0]}" \
+    && say PASS "--tree re-derives the log home from the tree it was given" \
+    || say FAIL "--tree leaves the log home pointing at the engine home"
+
   if [ "$fails" -ne 0 ]; then
     echo "[selftest] FAILED: $fails case(s) did not hold." >&2
     exit 1
@@ -942,10 +1324,23 @@ fi
 # ──────────────────────────────────────────────────────────────────────────────────────────────────
 # THE ARGUMENTS — prove-remote.sh's, plus the engine's pre-proof leg.
 # ──────────────────────────────────────────────────────────────────────────────────────────────────
-BRANCH=""; SETUP=0; POSTURE=dev; MODE=tip; BATCH=""; IGNORED_HOST=""
+BRANCH=""; SETUP=0; POSTURE=dev; MODE=tip; BATCH=""; IGNORED_HOST=""; TREE=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --setup) SETUP=1; shift ;;
+    # ── WHICH CHECKOUT IS BEING PROVEN ────────────────────────────────────────────────────────────
+    # This script resolves its repository as `$(dirname "$0")/..`, which is right for the copy in a
+    # checkout's own scripts/ and WRONG for the deployed one: the engine home is
+    # ~/.busbar-engine/current/scripts, whose `..` is the engine home, not anybody's tree. Every
+    # slot that wanted to prove its own worktree had to COPY the transport into it first — which is
+    # the "an unlanded script is not in the tree" mistake, made by hand, once per slot.
+    # `--tree <worktree>` says it instead, and it is the documented slot invocation.
+    --tree) TREE="${2:-}"; shift 2 ;;
+    # THE SHARD SPLIT, OFF. `--no-shards` is the escape hatch for an operator comparing a sharded
+    # pre-proof against the single job it replaced; LATCHKEY_PREPROVE_SHARDS=0 is the same switch
+    # for the engine home's env file.
+    --shards)    LK_PREPROVE_SHARDED=1; shift ;;
+    --no-shards) LK_PREPROVE_SHARDED=0; shift ;;
     # ACCEPTED AND IGNORED, ON PURPOSE. The engine's sweep hands its dispatch a box; a backend that
     # refused the flag would need the caller to know which backend it had, which is the coupling
     # BUSBAR_PROVE_BACKEND exists to remove.
@@ -968,12 +1363,25 @@ if [ "$SETUP" = 1 ]; then
   exit 0
 fi
 
+# ── THE TREE UNDER PROOF, AND EVERYTHING THIS SCRIPT DERIVES FROM IT ────────────────────────────
+# Re-derived, not patched: LK_STATE_HOME and LK_LOGDIR are computed from $REPO at load time, and a
+# `--tree` that moved $REPO without moving them would keep a slot's job logs beside the engine home
+# rather than beside the state repository the ledgers cite.
+if [ -n "$TREE" ]; then
+  [ -d "$TREE" ] || lkdie "--tree: no such directory: $TREE"
+  REPO="$(cd "$TREE" && pwd)" || lkdie "--tree: could not enter $TREE"
+  git -C "$REPO" rev-parse --git-dir >/dev/null 2>&1 || lkdie "--tree: $REPO is not a git checkout"
+  LK_STATE_HOME="$(cd "$(dirname "$(git -C "$REPO" rev-parse --git-common-dir 2>/dev/null || echo "$REPO/.git")")/.." 2>/dev/null && pwd)"
+  LK_LOGDIR="${LATCHKEY_LOG_DIR:-$LK_STATE_HOME/busbar-landq-state/gate/latchkey-logs}"
+  lklog "tree: $REPO (--tree)"
+fi
+
 command -v "$LK_BIN" >/dev/null 2>&1 || lkdie "no \`$LK_BIN\` on PATH — install the Latchkey CLI or set LATCHKEY_BIN"
 lk_load_token || lkdie "no LATCHKEY_TOKEN in the environment and none readable in $LK_ENVFILE"
 
 TIP="$(git -C "$REPO" rev-parse "${BRANCH:-HEAD}")" || lkdie "no such rev: ${BRANCH:-HEAD}"
-BASE="$(lk_base_sha "$REPO")" || lkdie "no integration base to judge the ceilings against"
-[ -n "$BASE" ] && [ "$BASE" != "$TIP" ] || lkdie "the base resolved to the tip — every ceiling row would compare a file against itself"
+BASE="$(lk_base_sha "$REPO" "$TIP")" || lkdie "no integration base to judge the ceilings against"
+[ -n "$BASE" ] || lkdie "no integration base to judge the ceilings against"
 REF="latchkey-$(date -u +%Y%m%d-%H%M%S)-$$"
 BRANCH_NAME="$(git -C "$REPO" rev-parse --abbrev-ref HEAD 2>/dev/null)"
 case "$BRANCH_NAME" in HEAD|"") BRANCH_NAME="$REF" ;; esac
@@ -995,6 +1403,18 @@ if [ "$MODE" = preprove ]; then
   [ -n "$BATCH" ] || lkdie "--preprove needs --batch <file>"
   [ -f "$BATCH" ] || lkdie "no such batch file: $BATCH"
   PICKS="$(lk_batch_hashes "$BATCH")"
+fi
+
+# ── A PROOF WITH NEITHER A DELTA NOR A PICK IS REFUSED; ONE WITH PICKS IS NOT ───────────────────
+# The old refusal was `BASE != TIP` unconditionally, and it was aimed at the right target: a base
+# pinned to the tip makes every ceiling row compare a file against itself and pass. But a PRE-PROOF
+# of a zero-delta tree is the normal shape of a re-pick — the tree owes nothing, the PICKS are the
+# delta, and they arrive as their own refs and are applied by the engine on the runner. Refusing
+# that case cost K4d-r every line it tried to prove. So the question is not "is the base the tip"
+# but "is there anything for a ceiling to measure": a delta, or a pick.
+NPICKS="$(printf '%s\n' "$PICKS" | grep -c . || true)"
+if [ "$BASE" = "$TIP" ] && [ "${NPICKS:-0}" = 0 ]; then
+  lkdie "the base resolved to the tip and this proof carries no picks — there is no delta for a ceiling row to measure, and every one of them would compare a file against itself and pass"
 fi
 
 lklog "tip $(git -C "$REPO" rev-parse --short "$TIP")   base $(printf '%.9s' "$BASE")   ref $REF"
@@ -1024,53 +1444,120 @@ lklog "engine: $LK_ENGINE travels with the job (the tree's own scripts/land.sh i
 lk_onbox_script "$MODE" "$BRANCH_NAME" "$POSTURE" >"$PACK/$RUNNER"
 chmod +x "$PACK/$RUNNER"
 
-LOG="$REPO/target/land-latchkey-$REF.log"
-mkdir -p "$(dirname "$LOG")"
+mkdir -p "$REPO/target" 2>/dev/null || true
+
+# ── THE JOBS: ALL SUBMITTED FIRST, THEN POLLED ──────────────────────────────────────────────────
+# A loop that polled each job before submitting the next would serialise exactly the fan-out that
+# exists to fit under the ceiling. One packed tree, N submissions of it, N logs, one merged verdict.
+SH_NAMES=""; SH_IDS=""
+lk_launch() { # $1 = shard name, $2 = the legs it owns ('' = the whole plan); prints nothing
+  local name="$1" legs="$2" id
+  id="$(cd "$PACK" && lk_submit "bash $RUNNER $MODE $BRANCH_NAME $POSTURE $TIP $BASE '$SCOPE_FAM' '$SCOPE_TESTS' '$legs'")"
+  case "$id" in cli-*) ;; *) return 1 ;; esac
+  SH_NAMES="$SH_NAMES $name"; SH_IDS="$SH_IDS $id"
+  lklog "job $id  = shard $name${legs:+  (legs: $legs)}"
+  return 0
+}
+lk_cancel_all() {
+  local j
+  for j in $SH_IDS; do "$LK_BIN" cancel "$j" >/dev/null 2>&1 || true; done
+}
 
 START=$(date +%s)
-JOB="$(cd "$PACK" && lk_submit "bash $RUNNER $MODE $BRANCH_NAME $POSTURE $TIP $BASE '$SCOPE_FAM' '$SCOPE_TESTS'")"
-case "$JOB" in
-  cli-*) ;;
-  # NO JOB IS NOT A RED. The 20-runner workspace cap is shared with CI, and "the account was full"
-  # is a statement about the account, not about the tree: exit 75 so the queue re-queues the line
-  # instead of parking it on somebody else's build.
-  *) lklog "no job was created (the workspace's runner cap is shared with CI) — exit 75, nothing was proven"; exit 75 ;;
-esac
-lklog "job $JOB submitted"
+PLAN=""
+[ "$MODE" = preprove ] && PLAN="$(lk_preprove_shard_plan "$BATCH" || true)"
+if [ -n "$PLAN" ]; then
+  lklog "the pre-proof is SHARDED into $(printf '%s\n' "$PLAN" | grep -c .) job(s) over one packed tree — the ${LK_TIMEOUT}s ceiling is per JOB"
+  while IFS= read -r row; do
+    [ -n "$row" ] || continue
+    lk_launch "${row%%|*}" "${row#*|}" && continue
+    # NO JOB IS NOT A RED, and a HALF-SUBMITTED fan is not a proof: the shards already in flight are
+    # cancelled rather than left to bill for a verdict this script will not merge.
+    lklog "no job was created for shard ${row%%|*}: $(lk_submit_err) — cancelling the fan; exit 75, nothing was proven"
+    lk_cancel_all
+    exit 75
+  done <<EOF
+$PLAN
+EOF
+else
+  lk_launch "$MODE" "" || { lklog "no job was created: $(lk_submit_err) — exit 75, nothing was proven"; exit 75; }
+fi
 
-STATE="$(lk_poll "$JOB")" || { lklog "gave up waiting on $JOB after ${LK_POLL_MAX}s — exit 75, no verdict"; "$LK_BIN" cancel "$JOB" >/dev/null 2>&1 || true; exit 75; }
+# ── COLLECTING ──────────────────────────────────────────────────────────────────────────────────
+RC=0; CAPPED=""; NOVERDICT=""; NSH=0; RESFILES=""; TOTSECS=0
+rm -f "$BATCH.result" 2>/dev/null || true
+set -- $SH_NAMES
+for JOB in $SH_IDS; do
+  NAME="$1"; shift
+  NSH=$(( NSH + 1 ))
+  LOG="$REPO/target/land-latchkey-$REF-$NAME.log"
+  if STATE="$(lk_poll "$JOB")"; then
+    "$LK_BIN" logs "$JOB" >"$LOG" 2>&1 || true
+    mkdir -p "$LK_LOGDIR" 2>/dev/null && cp "$LOG" "$LK_LOGDIR/$JOB.log" 2>/dev/null \
+      && lklog "log kept: $LK_LOGDIR/$JOB.log" \
+      || lklog "WARNING: could not keep the log under $LK_LOGDIR — Latchkey drops it in 24 h"
+    JRC="$(lk_job_rc "$JOB" "$STATE")"
+    VERDICT="$(lk_job_verdict "$LOG" "$JRC")"
+    RSECS="$(lk_runner_secs "$JOB")"
+  else
+    # A POLLER THAT GAVE UP HAS NOT MEASURED A TIMEOUT, it has stopped looking. The job is cancelled
+    # so it stops billing, and the outcome is the honest "no verdict", never the cap and never a red.
+    lklog "gave up waiting on $JOB after ${LK_POLL_MAX}s — no verdict"
+    "$LK_BIN" cancel "$JOB" >/dev/null 2>&1 || true
+    STATE=unpolled; JRC=75; VERDICT="NONE:no-verdict"; RSECS=""
+  fi
+  TOTSECS=$(( TOTSECS + ${RSECS:-0} ))
+  lklog "shard $NAME  job $JOB  state $STATE  exit $JRC  verdict $VERDICT  runner ${RSECS:-?}s  ~$(( ( ${RSECS:-0} + 59 ) / 60 )) billed runner-minute(s)  log $LOG"
+  case "$VERDICT" in
+    GREEN) ;;
+    # ── THE CEILING, SAID IN WORDS, WITH WHAT IT GOT THROUGH ──────────────────────────────────────
+    # landq4.sh greps this sentence (LQ_LK_CAP_RE) and scores the line NONE:cap — live, unparked,
+    # re-swept. The legs that DID complete are printed with it because they are the shard plan's
+    # next move: a cap in `gates` says split the batteries, a cap in `build` says the tree grew.
+    NONE:cap)
+      CAPPED="${CAPPED:+$CAPPED }$NAME"
+      echo "prove-latchkey: NONE:cap — shard $NAME hit the ${LK_TIMEOUT}s per-job ceiling; the cap is this plan's, never these picks'" >&2
+      echo "prove-latchkey: NONE:cap — what shard $NAME completed before the ceiling:" >&2
+      lk_legs_completed "$LOG" | sed 's/^/prove-latchkey:   /' >&2 ;;
+    NONE:*) NOVERDICT="${NOVERDICT:+$NOVERDICT }$NAME ($VERDICT)" ;;
+    *) RC=1 ;;
+  esac
+  if [ "$MODE" = preprove ]; then
+    if lk_parse_result "$LOG" >"$BATCH.result.$NAME" 2>/dev/null && [ -s "$BATCH.result.$NAME" ]; then
+      RESFILES="$RESFILES $BATCH.result.$NAME"
+    else
+      rm -f "$BATCH.result.$NAME" 2>/dev/null || true
+      lklog "WARNING: no result block in $LOG — shard $NAME did not reach its reporting stage"
+    fi
+  fi
+done
 END=$(date +%s)
-"$LK_BIN" logs "$JOB" >"$LOG" 2>&1 || true
+lklog "$NSH job(s)   wall $(( END - START ))s   runner ${TOTSECS}s total   ~$(( ( TOTSECS + 59 ) / 60 )) billed runner-minute(s)"
 
-# THE FULL LOG OUTLIVES LATCHKEY'S 24 HOURS. The ledgers cite logs by path months later.
-mkdir -p "$LK_LOGDIR" 2>/dev/null && cp "$LOG" "$LK_LOGDIR/$JOB.log" 2>/dev/null \
-  && lklog "log kept: $LK_LOGDIR/$JOB.log" \
-  || lklog "WARNING: could not keep the log under $LK_LOGDIR — Latchkey drops it in 24 h"
-
-RC="$(lk_job_rc "$JOB" "$STATE")"
-VERDICT="$(lk_job_verdict "$LOG" "$RC")"
-RSECS="$(lk_runner_secs "$JOB")"
-MINUTES=$(( ( ${RSECS:-$(( END - START ))} + 59 ) / 60 ))
-lklog "job $JOB   state $STATE   exit $RC   verdict $VERDICT   wall $(( END - START ))s   runner ${RSECS:-?}s   ~${MINUTES} billed runner-minute(s)"
+# ── THE MERGED VERDICT ──────────────────────────────────────────────────────────────────────────
+# A no-verdict outranks everything, in both of its flavours, and for one reason: a plan that was cut
+# into jobs is only proven when every job reported. A merged file assembled from the shards that DID
+# answer is a verdict on a subset nobody chose — and worse here than in a landing, because
+# lq_outcome_green would read a wholly-GREEN partial file and score the line GREEN over an rc of 75.
+# So the partial files go, no `<batch>.result` is written at all, and 75 says what 75 says.
+if [ -n "$CAPPED" ] || [ -n "$NOVERDICT" ]; then
+  rm -f "$BATCH.result" $RESFILES 2>/dev/null || true
+  [ -n "$CAPPED" ] && echo "prove-latchkey: NONE:cap — shard(s) $CAPPED exceeded the ${LK_TIMEOUT}s ceiling; nothing about these picks was learned" >&2
+  [ -n "$NOVERDICT" ] && lklog "no verdict from shard(s) $NOVERDICT — exit 75, the line stays live"
+  exit 75
+fi
 
 if [ "$MODE" = preprove ]; then
   # THE RESULT FILE COMES BACK TO THE PATH THE LOCAL RUNNER ALREADY READS. target/gate/landq*.sh
   # reads `<batch>.result` and nothing else.
-  if lk_parse_result "$LOG" >"$BATCH.result.tmp" 2>/dev/null && [ -s "$BATCH.result.tmp" ]; then
-    mv "$BATCH.result.tmp" "$BATCH.result"
-    lklog "per-line outcomes: $BATCH.result"
+  if [ -n "$RESFILES" ] && lk_merge_results "$BATCH.result" "$NSH" $RESFILES; then
+    lklog "per-line outcomes: $BATCH.result (merged from $NSH shard(s))"
     sed 's/^/  /' "$BATCH.result" >&2
+    rm -f $RESFILES 2>/dev/null || true
   else
-    rm -f "$BATCH.result.tmp"
-    lklog "WARNING: no result block in $LOG — the batch did not reach its reporting stage"
+    rm -f "$BATCH.result" $RESFILES 2>/dev/null || true
+    lklog "WARNING: the shards' result blocks could not be merged — no per-line outcomes for this batch"
   fi
 fi
 
-# A HEALED ZERO IS NOT A GREEN, AND IT IS NOT A RED EITHER. 75 is the queue's "prove this again"
-# code — the same one land-remote.sh uses when a box vanishes mid-proof.
-if [ "$VERDICT" = "NONE:healed" ]; then
-  lklog "NONE:healed — Latchkey's self-heal sidecar retried this job to zero, so the 0 is not this tree's; exit 75"
-  rm -f "$BATCH.result" 2>/dev/null || true
-  exit 75
-fi
 exit "$RC"

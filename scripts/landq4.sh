@@ -110,6 +110,31 @@ PREPROVE_HEAD="${LANDQ_PREPROVE_HEAD:-2}"
 # as a red. Nothing about the tree has been learned when the account is full.
 LANDQ_PROVE_BACKEND="${BUSBAR_PROVE_BACKEND:-fleet}"
 LATCHKEY_MAX_JOBS="${LATCHKEY_MAX_JOBS:-12}"
+# ── AND IT IS A BOUND ON *JOBS*, WHICH IS NOT THE SAME AS A BOUND ON PRE-PROOFS ─────────────────
+# MEASURED (the first sharded smoke, 2026-09-12): a pre-proof is no longer ONE job. It is a fan —
+# build, gates, and the oracle when every line in the batch owes it (prove-latchkey.sh's
+# lk_preprove_shard_plan) — so twelve pre-proofs in flight are up to THIRTY-SIX runners, on a
+# workspace whose concurrent cap is twenty and is shared with CI. The number that must stay under
+# the cap is the JOB count, so the process bound is the job bound DIVIDED by the fan.
+#
+# THREE, BECAUSE THREE IS THE WIDEST FAN. Under-dividing would blow the cap; over-dividing only
+# leaves a runner slot idle for a minute. The fan is read from the transport's own plan when it can
+# be (a batch that names no families is two), and three is the ceiling either way.
+LATCHKEY_JOBS_PER_PROOF="${LATCHKEY_JOBS_PER_PROOF:-3}"
+case "$LATCHKEY_JOBS_PER_PROOF" in ''|*[!0-9]*) LATCHKEY_JOBS_PER_PROOF=3 ;; esac
+[ "$LATCHKEY_JOBS_PER_PROOF" -ge 1 ] || LATCHKEY_JOBS_PER_PROOF=1
+# HOW MANY PRE-PROOF PROCESSES THAT ALLOWS, never fewer than one: a bound of zero would turn the
+# whole backend off and every line would silently take a fleet box, which is the opposite of this
+# phase. Integer division, so the fan never exceeds the cap.
+lq_latchkey_proc_bound() {
+  # A CAP OF ZERO IS A CAP OF ZERO. The floor below exists so that a fan WIDER than the cap still
+  # leaves one pre-proof able to run (it will simply be refused and fall back to a box, which is an
+  # honest outcome); it must not resurrect a backend an operator turned off by setting the cap to 0.
+  [ "${LATCHKEY_MAX_JOBS:-0}" -ge 1 ] 2>/dev/null || { printf '0\n'; return 0; }
+  local n=$(( LATCHKEY_MAX_JOBS / LATCHKEY_JOBS_PER_PROOF ))
+  [ "$n" -ge 1 ] || n=1
+  printf '%s\n' "$n"
+}
 
 # ── AND WHICH MACHINE THE LANDING ITSELF RUNS ON: `BUSBAR_LAND_BACKEND=fleet|latchkey` ──────────
 # Phase 3. The owner's goal is ZERO EC2, and the landing is the last workload on the fleet: with
@@ -146,7 +171,7 @@ lq_latchkey_inflight() {
 }
 lq_latchkey_slot_free() {
   local n; n="$(lq_latchkey_inflight)"
-  [ "${n:-0}" -lt "$LATCHKEY_MAX_JOBS" ]
+  [ "${n:-0}" -lt "$(lq_latchkey_proc_bound)" ]
 }
 
 # ONE DISPATCH, TWO BACKENDS, AND THE FLEET IS THE FALLBACK OF BOTH. Every pre-proof in this file
@@ -1645,6 +1670,12 @@ lq_box_gone() { # $1 = rc, $2 = log; 0 when the BOX went away rather than the pr
 #        lq_harness_gave_up, and now also when the log never got far enough to say it)
 # 75 is deliberately NOT on this list: lq_box_gone already reads it, it is already a NONE, and it is
 # already never a park — moving it would relabel every reclaimed box in the ledger.
+# DID THE LATCHKEY CEILING END THIS PROOF? One reader, so the verdict and the fault class cannot
+# disagree about what a capped job is.
+lq_lk_capped() { # $1 = log path
+  [ -n "${1:-}" ] && [ -f "$1" ] || return 1
+  grep -qE "$LQ_LK_CAP_RE" "$1" 2>/dev/null
+}
 lq_rc_is_harness() { # $1 = rc; 0 when the code is the harness's, never a tree's
   case "${1:-}" in 126|127|70) return 0 ;; esac
   return 1
@@ -1654,6 +1685,10 @@ lq_preproof_verdict() { # $1 = rc ('' = never reported), $2 = log, $3 = per-line
   [ -n "$1" ] || { echo "NONE:never-reported"; return 0; }
   [ "$1" = 0 ] && { echo GREEN; return 0; }
   if lq_outcome_green "${3:-}"; then echo GREEN; return 0; fi
+  # THE LATCHKEY CEILING, BEFORE EVERY OTHER RULE THAT READS THE LOG. A capped job was KILLED
+  # mid-leg: it wrote no per-line outcome file, so nothing above this could have answered, and every
+  # rule below would fall through to RED — which is exactly the defect (see LQ_LK_CAP_RE).
+  if lq_lk_capped "$2"; then echo "NONE:cap"; return 0; fi
   # BEFORE EVERY OTHER RULE, because the others all read a log a harness failure never wrote.
   if lq_rc_is_harness "$1"; then echo "NONE:harness"; return 0; fi
   # …and only then the box: a proof that finished and reported GREEN before the box was reclaimed
@@ -1690,7 +1725,8 @@ lq_chain_preproof_verdict() { # $1 = rc, $2 = log, $3 = per-line outcome file, $
     # …and a RED row is the dependent's OWN red only when the proof really ran and really judged
     # it: a box reclaimed mid-proof and a harness that gave up are no more a verdict on a chained
     # line than on a single one (the bisect attributes rows it never got to judge to nobody).
-    RED|RED-*) if lq_rc_is_harness "$1"; then echo "NONE:harness"
+    RED|RED-*) if lq_lk_capped "$2"; then echo "NONE:cap"
+               elif lq_rc_is_harness "$1"; then echo "NONE:harness"
                elif lq_box_gone "$1" "$2"; then echo "NONE:box"
                elif lq_harness_gave_up "$2"; then echo "NONE:harness"
                elif lq_base_state_red "$2"; then echo "NONE:base"
@@ -1759,6 +1795,19 @@ LQ_SPOT_RE='Service initiated|instance-action|spot (instance|interruption)|marke
 # the 7200 s job ceiling: none of them is a statement about anybody's picks, and every one of them
 # used to be indistinguishable from a box that went away.
 LQ_LK_REFUSED_RE='land-latchkey: (concurrency_limit|NO VERDICT)|no job was created|Job creation blocked|never started \(|launch_failed|VcpuLimitExceeded'
+# ── THE 7200 s PER-JOB CEILING IS ITS OWN CLASS, AND IT IS NEVER A RED ──────────────────────────
+# MEASURED (SUB-4's tree and three of M1c-b's, 2026-09-11/12): a pre-proof on `large` ran past
+# Latchkey's per-job ceiling inside `xtask selftest plane-purity-strict` and the job came back as a
+# failure. Scored as a failure it was RED, and three live lines were called red for the SIZE OF THE
+# RUNNER THEY WERE RENTED. Nothing about those picks was measured: the job was killed mid-leg.
+#
+# IT IS NOT `harness` AND IT IS NOT `box-unreachable`, and the difference is the disposition. A
+# harness fault retries the same thing; box-unreachable sends lq_fault_wake off to start EC2 boxes
+# for a workload that has left them. A cap says THE SHARD PLAN DID NOT FIT — the retry is worth
+# taking (the tree moves, a shard gets cheaper) but the fix is a plan with more jobs in it, and a
+# class of its own is what makes that legible in the status file instead of buried in `harness`.
+# The sentence is prove-latchkey.sh's and land-latchkey.sh's own, spelled once in each.
+LQ_LK_CAP_RE='(prove|land)-latchkey: NONE:cap'
 LQ_UNREACH_RE='Connection closed by|Connection closed$|ssh: connect to host|ssh_exchange_identification|^scp: |scp: Connection|rsync: |Connection timed out|Connection refused|Broken pipe|No route to host|Host key verification failed|unreachable for [0-9]+ polls|the box vanished mid-proof|Permission denied \(publickey'
 
 # WHICH CLASS THIS LOG IS, IF IT IS ONE AT ALL. Prints nothing when the failure is not the
@@ -1775,6 +1824,9 @@ lq_fault_class() { # $1 = rc, $2 = log (optional); prints the class, or nothing
     # on the latchkey backend has no box to be unreachable and `box-unreachable` would send
     # lq_fault_wake off to start EC2 instances for a workload that has left them — which is the
     # opposite of what this phase is for. All three sentences are land-latchkey.sh's own.
+    # THE CEILING FIRST: a capped job also prints the shard names, and a log that says both should
+    # be read as the cap — the thing that ended it — rather than as the refusal it also mentions.
+    grep -qE "$LQ_LK_CAP_RE" "$lg" 2>/dev/null && { printf 'cap\n'; return 0; }
     grep -qE "$LQ_LK_REFUSED_RE" "$lg" 2>/dev/null && { printf 'harness\n'; return 0; }
     grep -qE "$LQ_UNREACH_RE"     "$lg" 2>/dev/null && { printf 'box-unreachable\n'; return 0; }
   fi
@@ -3922,6 +3974,21 @@ lq_selftest() {
   _t "  ...and with NO box to fall back to it is an honest 75" "75 latchkey" "$(_bk latchkey '' 75)"
   # THE CAP. Twelve, not twenty, so the CI this is replacing still has runners.
   _t "the latchkey job cap defaults to twelve"               12 "$(LATCHKEY_MAX_JOBS="${LATCHKEY_MAX_JOBS:-12}"; echo "$LATCHKEY_MAX_JOBS")"
+  # ── AND IT BOUNDS JOBS, NOT PRE-PROOFS (the sharded pre-proof's fan) ────────────────────────────
+  # A pre-proof is a fan of up to three jobs now, so twelve processes would be thirty-six runners on
+  # a twenty-runner workspace shared with CI. The process bound is the job bound over the fan.
+  _t "twelve jobs over a fan of three is four pre-proofs"    4 \
+     "$(LATCHKEY_MAX_JOBS=12 LATCHKEY_JOBS_PER_PROOF=3 lq_latchkey_proc_bound)"
+  _t "  ...over a fan of two it is six"                      6 \
+     "$(LATCHKEY_MAX_JOBS=12 LATCHKEY_JOBS_PER_PROOF=2 lq_latchkey_proc_bound)"
+  _t "  ...and an unsharded fan of one is the cap itself"    12 \
+     "$(LATCHKEY_MAX_JOBS=12 LATCHKEY_JOBS_PER_PROOF=1 lq_latchkey_proc_bound)"
+  _t "  ...a fan wider than the cap still leaves ONE proof"  1 \
+     "$(LATCHKEY_MAX_JOBS=2 LATCHKEY_JOBS_PER_PROOF=3 lq_latchkey_proc_bound)"
+  _t "  ...and a cap of zero stays zero (the backend is OFF)" 0 \
+     "$(LATCHKEY_MAX_JOBS=0 LATCHKEY_JOBS_PER_PROOF=3 lq_latchkey_proc_bound)"
+  _t "  ...and a fan that is not a number is read as three"  4 \
+     "$(LATCHKEY_MAX_JOBS=12; LATCHKEY_JOBS_PER_PROOF=three; case "$LATCHKEY_JOBS_PER_PROOF" in ''|*[!0-9]*) LATCHKEY_JOBS_PER_PROOF=3 ;; esac; lq_latchkey_proc_bound)"
   _t "a full cap takes a box instead of a runner"            "0 fleet" "$(LATCHKEY_MAX_JOBS=0 _bk latchkey i-0stub 0)"
   # AND A FULL CAP ASKS THE ALLOCATOR FOR ONE, where a free slot does not.
   # THE TREE IS AN ARGUMENT, because the answer depends on whether THAT tree has a staged transport
@@ -3974,6 +4041,30 @@ lq_selftest() {
   # ── AN EXIT CODE THAT CANNOT BE A VERDICT IS NOT A RED (live defect, 18:09) ───────────────────
   # 127 was recorded `RED <tip>@…` in preproved.txt and the lines were parked `#RED-preproof`.
   # Nothing had been built, picked or judged.
+  # ── AND NEITHER IS THE 7200 s CEILING (live defect, SUB-4 + three of M1c-b's) ────────────────
+  # The job is killed mid-leg: no per-line outcome file was written, so every rule below falls
+  # through to RED and a live line is parked for the size of the runner it was rented.
+  echo "landq4 selftest: the Latchkey per-job ceiling is NONE:cap, never RED and never a park"
+  local cl="$root/cap.log"
+  printf 'prove-latchkey: NONE:cap — shard gates hit the 7200s per-job ceiling\n' >"$cl"
+  _t "a capped pre-proof is NONE:cap"                        "NONE:cap" "$(lq_preproof_verdict 1 "$cl")"
+  _t "  ...whatever exit code the transport gave it"         "NONE:cap" "$(lq_preproof_verdict 75 "$cl")"
+  _t "  ...and it is its own fault class, not 'harness'"     "cap"      "$(lq_fault_class 1 "$cl")"
+  # AND IT NEVER STARTS AN EC2 BOX. `cap` is a statement about a RENTED runner's ceiling; the wake
+  # arm is for box-stopped and probe-empty only, and a cap that fell into `box-unreachable` would
+  # spend money on the fleet this whole phase exists to empty.
+  _t "  ...and the wake arm names only the two box classes"  1 \
+     "$(grep -c 'in box-stopped|probe-empty) lq_fault_wake' "$LQ_SRC")"
+  _t "  ...a chained rung reads the ceiling too"             "NONE:cap" \
+     "$(printf 'RED%sDEEP\n' "$TAB" >"$root/caprow.result"; lq_chain_preproof_verdict 1 "$cl" "$root/caprow.result" DEEP)"
+  local lcl="$root/cap-land.log"
+  printf 'land-latchkey: NONE:cap — shard(s) fam-2 exceeded the 7200s ceiling\n' >"$lcl"
+  _t "the LANDING backend's ceiling says it the same way"    "cap"      "$(lq_fault_class 1 "$lcl")"
+  # …AND AN ORDINARY LATCHKEY LOG IS NOT A CAP. A rule that matched the word would swallow every red.
+  local ncl="$root/nocap.log"
+  printf 'land.sh: RED — tests: cargo test failed (cap 3 of 4)\n' >"$ncl"
+  _t "a red that merely says 'cap' is still RED"             "RED"      "$(lq_preproof_verdict 1 "$ncl")"
+
   echo "landq4 selftest: 126/127/70 are the harness's codes, never a tree's verdict"
   local hl="$root/harness.log"; : >"$hl"
   _t "the shell's could-not-find (127) is NONE:harness"      "NONE:harness" "$(lq_preproof_verdict 127 "$hl")"

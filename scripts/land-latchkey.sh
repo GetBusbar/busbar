@@ -215,12 +215,15 @@ ll_submit_retry() { # $1 = the bash line; prints the job id, or nothing
   id="$(lk_submit "$line")"
   case "$id" in cli-*) printf '%s\n' "$id"; return 0 ;; esac
   for w in $LKL_RETRY_WAITS; do
-    lllog "submission refused (the workspace's 20-runner cap is shared with CI) — retrying in ${w}s"
+    # THE CLI'S OWN WORDS, NEVER THIS FILE'S GUESS. `2>/dev/null` on the submission used to throw
+    # away the only sentence that could say whether this was the cap at all (measured: a four-minute
+    # refusal that was a PACKING failure and was reported as the cap, 2026-09-12).
+    lllog "submission refused: $(lk_submit_err) — retrying in ${w}s"
     sleep "$w"
     id="$(lk_submit "$line")"
     case "$id" in cli-*) printf '%s\n' "$id"; return 0 ;; esac
   done
-  lllog "the cap refused this submission on $(( $(printf '%s\n' $LKL_RETRY_WAITS | grep -c .) + 1 )) attempts — exit 75, nothing was proven, the batch is re-taken"
+  lllog "the submission was refused on $(( $(printf '%s\n' $LKL_RETRY_WAITS | grep -c .) + 1 )) attempts ($(lk_submit_err)) — exit 75, nothing was proven, the batch is re-taken"
   return 1
 }
 
@@ -410,6 +413,28 @@ if [ "${1:-}" = "--selftest" ]; then
     && _ok "every job's log is kept under the state repository's latchkey-logs" \
     || _fail "a job's log is not kept past Latchkey's retention"
 
+  echo "== land-latchkey selftest: the 7200 s ceiling is NONE:cap, never a red and never a base red =="
+  _eq "the ceiling's exit code is NONE:cap" "NONE:cap" "$(lk_job_verdict "$root/nosuch.log" 124)"
+  _eq "  ...and a real failure is still RED"      "RED"      "$(lk_job_verdict "$root/nosuch.log" 1)"
+  grep -qF 'land-latchkey: NONE:cap' "${BASH_SOURCE[0]}" \
+    && _ok "  ...said in a sentence landq4.sh's LQ_LK_CAP_RE can grep" \
+    || _fail "the ceiling has no sentence for the engine to read"
+  # THE CAP OUTRANKS THE OTHER NO-VERDICTS, and both outrank a red: a union called red on the
+  # strength of the shards that DID report is a union judged on a subset nobody chose.
+  _capln="$(grep -n '^if \[ -n "\$CAPPED" \]; then' "${BASH_SOURCE[0]}" | head -1 | cut -d: -f1)"
+  _novln="$(grep -n '^if \[ "\$NOVERDICT" = 1 \]; then' "${BASH_SOURCE[0]}" | head -1 | cut -d: -f1)"
+  [ -n "$_capln" ] && [ -n "$_novln" ] && [ "$_capln" -lt "$_novln" ] \
+    && _ok "the cap is checked before the other no-verdicts" \
+    || _fail "the cap rule does not come first (cap at ${_capln:-none}, no-verdict at ${_novln:-none})"
+  sed -n '/^if \[ -n "\$CAPPED" \]; then/,$p' "${BASH_SOURCE[0]}" | grep -q 'NOVERDICT" = 1' \
+    && _ok "  ...and the healed/unpolled rule still runs after it" \
+    || _fail "the cap displaced the healed/unpolled rule"
+  # A BASE REPLAY THAT MEASURED NOTHING DOES NOT EXCUSE AN ORACLE RED. BASE_RED is what turns a red
+  # into "the tip's standing state"; a shard that never reported cannot say that about anything.
+  sed -n '/^    base) case "\$verdict" in/,/esac ;;/p' "${BASH_SOURCE[0]}" | grep -q 'NONE:\*) lllog' \
+    && _ok "an unmeasured base replay leaves the tip UNMEASURED, it does not excuse a red" \
+    || _fail "a base replay that measured nothing can still set BASE_RED"
+
   if [ "$fails" = 0 ]; then echo "land-latchkey selftest: GREEN"; exit 0; fi
   echo "land-latchkey selftest: RED ($fails failure(s))" >&2; exit 1
 fi
@@ -565,7 +590,7 @@ fi
 
 # ── COLLECTING ──────────────────────────────────────────────────────────────────────────────────
 lllog "[$LABEL] ${#JOB_IDS[@]} job(s) in flight; polling every ${LK_POLL_SECS}s (cap ${LK_TIMEOUT}s per job)"
-RC=0; HARNESS=0; NOVERDICT=0; BASE_RED=0; ORACLE_RED=""
+RC=0; HARNESS=0; NOVERDICT=0; BASE_RED=0; ORACLE_RED=""; CAPPED=""
 i=0
 while [ "$i" -lt "${#JOB_IDS[@]}" ]; do
   name="${JOB_NAMES[$i]}"; id="${JOB_IDS[$i]}"
@@ -576,10 +601,28 @@ EOF
   case "$name" in
     # THE BASE REPLAY IS A MEASUREMENT, NOT A VOTE. Its red is the tree's standing state and can
     # never be a verdict on picks that are not in it.
-    base) [ "$verdict" = GREEN ] || BASE_RED=1 ;;
+    # A CAPPED OR UNPOLLED BASE REPLAY IS AN UNMEASURED BASE, NOT A RED ONE. `BASE_RED=1` is what
+    # turns an oracle red into "the tip's standing state"; setting it from a shard that measured
+    # nothing would excuse a real red as the base's.
+    base) case "$verdict" in
+            GREEN) ;;
+            NONE:*) lllog "[$LABEL] the base replay returned $verdict — the tip stays UNMEASURED; an oracle red is judged on its own" ;;
+            *) BASE_RED=1 ;;
+          esac ;;
     *)
       case "$verdict" in
         GREEN) ;;
+        # ── THE 7200 s CEILING, AND IT IS NEVER A RED ────────────────────────────────────────────
+        # lk_job_capped's three spellings, read by prove-latchkey.sh's library. A shard the ceiling
+        # killed measured whatever it measured and was then stopped mid-leg: the legs it never
+        # reached are exactly as unproven as they were before it started. The named shard and what
+        # it completed go in the log, because that is the next move for THIS file's shard plan —
+        # a cap in `fam-2` says the bucket count is too low, a cap in `union` says split the union.
+        NONE:cap)
+          CAPPED="${CAPPED:+$CAPPED }$name"
+          echo "land-latchkey: NONE:cap — shard $name hit the ${LK_TIMEOUT}s per-job ceiling; the cap is this shard plan's, never these picks'" >&2
+          echo "land-latchkey: NONE:cap — what shard $name completed before the ceiling:" >&2
+          lk_legs_completed "$jlog" | sed 's/^/land-latchkey:   /' >&2 ;;
         NONE:healed|NONE:no-verdict) NOVERDICT=1 ;;
         # 75 IS THE PLATFORM'S, NOT THE TREE'S: a job that never started (launch_failed), or a
         # poller that gave up. 126/127/70/124/130 are the harness's own codes. Neither is a verdict.
@@ -601,6 +644,14 @@ done
 # A no-verdict outranks a red: a shard that was healed, expired or never polled has measured nothing
 # about the tree, and a union called red on the strength of the shards that DID report is a union
 # judged on a subset nobody chose.
+# THE CEILING OUTRANKS EVERY OTHER NO-VERDICT, because it is the one with an action attached: the
+# shard plan did not fit and the operator has to widen it. landq4.sh's LQ_LK_CAP_RE reads the
+# sentence above and scores the batch `cap` — a class of its own, re-taken on the backoff, never a
+# park and never a box woken for a workload that has left the fleet.
+if [ -n "$CAPPED" ]; then
+  echo "land-latchkey: NONE:cap — shard(s) $CAPPED exceeded the ${LK_TIMEOUT}s ceiling; nothing about these picks was learned (exit 75)" >&2
+  exit 75
+fi
 if [ "$NOVERDICT" = 1 ]; then
   echo "land-latchkey: NO VERDICT — a shard came back healed or unpolled; nothing about these picks was learned (exit 75)" >&2
   exit 75
