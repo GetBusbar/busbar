@@ -563,5 +563,20 @@ task's own "push after every commit" rule).
    path) and the `~/.cargo/bin/cargo-mutants` binary cache in `gate-mutants.yml`'s `shard` job are
    deliberately left alone — the former never ran on Latchkey and the latter is a separate,
    pre-existing cache keyed on a different path this fix's mandate does not cover.
-   **Measured on `keep-ci-latchkey-cache-home`** (pushed on top of LK-7's tip,
-   `41fabf25a`): `<FILLED IN AFTER THE keep-proof.yml RUN — see below>`.
+   **Measured on `keep-ci-latchkey-all-2`** (this slot's re-pick of the whole LK-4/LK-5/LK-7/LK-5b
+   chain onto the current tip, head `5a3d9aee9`; `keep-proof.yml` run
+   [34673965931](https://github.com/GetBusbar/busbar/actions/runs/34673965931)):
+   `fmt · clippy · build` (`latchkey-large`, runner `ip-10-1-12-150`) restored
+   `cargo-Linux-build-clippy-c56dc1336004ebd44adc4ef36208b5beba1e00276b01dc775adfaf54c0048524` in
+   **10912ms** — a real cache HIT, not the pre-fix no-op: the restore step's own logged `path:`
+   resolved to `/usr/share/rust/.cargo/registry`, `/usr/share/rust/.cargo/git` and `target` (the
+   Latchkey image's actual `CARGO_HOME`, not the literal `~/.cargo/...` §11 above measured as dead
+   weight). The job's save step logged `Cache already exists for key=...-c56dc..., skipping save`
+   (idempotent no-op, not a failure to write) rather than re-uploading; the whole job (toolchain
+   install through fmt/clippy/build) completed in **2m11s** (04:48:59–04:51:10Z) warm. The other
+   eleven jobs in this run split as expected from §4-§7 above: `tests` shards 1-4 and
+   `construction-gate` passed; `design-bindings`, `shadow-oracle` and `tests (shard xtask)` failed
+   for the same pre-existing, unrelated-to-this-slot reasons already flagged there (missing
+   `scripts/design-bindings.sh`, the `.keep-proof.toml` FAMILIES filter, and the xtask suite's
+   pre-existing hang), which is what carries the overall `keep-proof verdict` red — not a
+   regression from this fix or from the re-pick.
