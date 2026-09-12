@@ -56,6 +56,11 @@ busbar-mcp-codec = { path = "../busbar-mcp-codec" }
 # already has) and it is named as such in qa/kind-isolation.toml's `[[transitional]]` table. Nothing
 # crosses back: `busbar-plane-mcp` does not name this crate and may not.
 busbar-plane-mcp = { path = "../busbar-plane-mcp" }
+# THE CONTRACT. Named directly rather than only reached transitively through `busbar-plane-mcp`, for
+# `busbar_contract::tasks::TaskStore`: `super::tasks::Registry` implements the trait so `tasks/get`
+# can be answered through the same face the plane's own render (`busbar_plane_mcp::tasks::get`)
+# reads — the one busbar crate a plugin manifest may name without argument (ARCHITECTURE.md 1.2).
+busbar-contract = { path = "../busbar-contract" }
 # The plugin contracts crate, named ahead of use per owner ruling R-E (see header).
 busbar-api = { path = "../api" }
 # The specification authors' own crate, pinned narrow (see busbar-core/Cargo.toml's rationale): the

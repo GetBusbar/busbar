@@ -48,6 +48,7 @@ pub mod meta;
 pub mod ops;
 pub mod plane;
 pub mod records;
+pub mod tasks;
 pub mod view;
 
 use busbar_contract::ids::LaneId;

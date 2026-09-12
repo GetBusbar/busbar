@@ -545,6 +545,48 @@ impl Registry {
     }
 }
 
+/// `tasks/get`'s READ, over the contract's neutral store face — plan line 7's first cut.
+///
+/// This is the same lock-and-project `McpTask::detailed()` performs, spelled through
+/// [`busbar_contract::tasks::TaskRecord`] instead of a bare `serde_json::Value`: `result`, `error`
+/// and each `inputRequests` entry are RE-ENCODED to bytes rather than cloned as a `Value`, because
+/// the face on the other side of this crate boundary carries this plane's own codec's bytes for
+/// exactly the reason `busbar_contract::wire` does everywhere else it crosses one — see
+/// `busbar_contract::tasks`'s module note. `busbar-plane-mcp::tasks::detailed_document` decodes them
+/// straight back, so the round trip changes no byte `method::tasks_get` puts on the wire; it is paid
+/// once per poll and `tasks/get` is not a hot path.
+///
+/// `stdio_serve.rs`'s background task-change watcher keeps reading `McpTask::detailed()` directly —
+/// it is not a task METHOD, it is this crate's own notification pump, and moving it is not this
+/// commit's line.
+impl busbar_contract::tasks::TaskStore for Registry {
+    fn get(&self, id: &str, principal: &str) -> Option<busbar_contract::tasks::TaskRecord> {
+        let task = Registry::get(self, id, principal)?;
+        let state = task.lock();
+        Some(busbar_contract::tasks::TaskRecord {
+            id: task.id.clone(),
+            status: state.status.token().to_string(),
+            created_at: iso8601_ms(state.created_ms),
+            updated_at: iso8601_ms(state.updated_ms),
+            ttl_ms: TASK_TTL_MS,
+            poll_interval_ms: TASK_POLL_INTERVAL_MS,
+            result: state
+                .result
+                .as_ref()
+                .and_then(|v| serde_json::to_vec(v).ok()),
+            error: state
+                .error
+                .as_ref()
+                .and_then(|v| serde_json::to_vec(v).ok()),
+            input_requests: state
+                .input_requests
+                .iter()
+                .filter_map(|(k, v)| serde_json::to_vec(v).ok().map(|b| (k.clone(), b)))
+                .collect(),
+        })
+    }
+}
+
 /// Everything the background runner needs, gathered once. Owned rather than borrowed: the runner
 /// outlives the request that started it, so it cannot hold a reference into that request's frame.
 pub(crate) struct Runner {

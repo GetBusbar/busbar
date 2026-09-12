@@ -73,7 +73,7 @@ them). Each axis is blind to the other two; only the kernel composes them.
   `src/tests/`; the proofs (overlap totality over the selector-form pairs, the lint symbol lists, the
   compile-fail fixtures and their positive companions, the honesty tables) are not surface and live
   in each crate's `tests/` or `fixtures/`. Measured and gated by `scripts/loc-surface.py`
-  (`--ceiling busbar-contract,busbar-caps=3564`), which the construction gate runs as
+  (`--ceiling busbar-contract,busbar-caps=3580`), which the construction gate runs as
   `surface-ceiling:contract+caps`. The figure is the PIN, not a budget: it is held at zero
   slack against today's measurement, and it moves up only when a new-architecture face lands
   with a declared raise (`[gate.ceiling_raises]` in `qa/construction.toml`) that names the face
@@ -108,7 +108,19 @@ them). Each axis is blind to the other two; only the kernel composes them.
   TRANSLATION, written once because the host-vtable is the only place the POD is read. `Default` is
   implemented on every type and every default is the REFUSING value, so a field nobody wrote can
   never read as a fact that passes. Nothing is added to what a plugin author must read: no trait
-  takes these types and no plugin is handed one. Two crates carry their own surface ceilings beside it, because
+  takes these types and no plugin is handed one. The fourth is **`busbar_contract::tasks`**
+  (`TaskStore`, `TaskRecord`; 15 code lines + 1 module line, declared at +16): the seam every
+  plane's task-store methods read a stored task through: one `id`/`status`/timestamps/`ttl_ms`/
+  `poll_interval_ms` shape, with `result`, `error` and each `inputRequests` entry carried as opaque
+  bytes — the store's own codec's encoding of whatever it settled — because mcp's SEP-2663 extension
+  and a2a's native `Task` object close their own status vocabularies differently and this face takes
+  a position on neither. A task belonging to another principal answers `None`, exactly as an id that
+  never existed does, so the face cannot be used to probe which ids exist. `busbar-mcp`'s
+  `super::tasks::Registry` (its existing in-process task registry) is the first implementor, read by
+  `busbar_plane_mcp::tasks::get` to render `tasks/get`'s document off the face instead of building it
+  inline — plan line 7's first cut (docs/design/1.6.0-mcp-engine.md section 7). Nothing is added to
+  what a plugin author must read: no trait takes an ABI type and no plugin is handed one. Two crates
+  carry their own surface ceilings beside it, because
   each is contract surface that a plugin author does not read and a ceiling nothing measures is a
   ceiling that has been abolished rather than met: `busbar-grammar` — the closed JSON span grammar,
   std-only, named by the kernel and re-exported as `busbar_contract::spans` — ≤ **0.5k**, gated as

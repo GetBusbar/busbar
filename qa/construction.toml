@@ -296,7 +296,7 @@ because = "the audit unit's own record and window verifier, named by the root th
 # a green baseline value for a scratch copy; the checked-in numbers below never move except by the
 # owner's own hand.
 [gate.surface_ceilings]
-contract_caps = 3564
+contract_caps = 3580
 grammar = 388
 contract_transport = 845
 
@@ -517,12 +517,12 @@ kernel_crate = "busbar-kernel"
 kernel_ceiling = 5382
 caps_crate = "busbar-caps"
 contract_crate = "busbar-contract"
-caps_contract_ceiling = 3566
+caps_contract_ceiling = 3582
 unit_crate_glob = "busbar-unit-*"
 unit_total_ceiling = 15149
 verbs_crate = "busbar-unit-verbs"
 verbs_ceiling = 1428
-union_ceiling = 24097
+union_ceiling = 24113
 # Files (by basename, wherever they sit under busbar-kernel/src) whose bodies seed the call-graph
 # name-match: every identifier called from one of these files, that busbar-kernel does not itself
 # define, is looked up by name against every busbar-unit-* file.
@@ -1931,3 +1931,95 @@ because = "THE SUCCESS ENVELOPE, and this is the legacy engine reading the face 
 # `cell.busbar-plane-mcp.codec.count` 33 -> 34 for `ops::settled_document`'s read of the codec's
 # document; the cell that compared this plane's method table against the codec's second copy of the
 # list went with the copy, and the count is back at the base 468bad13's 33.
+
+# ── MCP-F (1.6.0): THE TASK-STORE FACE, ON THE COUNTERPARTY VOCABULARY PH-4 ALREADY LANDED ─────
+#
+# Lines 7 and 9 of docs/design/1.6.0-mcp-engine.md section 7 cannot leave busbar-mcp until the six
+# task handlers and subscribe.rs's frame composer stop reaching `ctx.host`
+# (`busbar_substrate::plane_host::EngineHost`), `super::catalogue` and
+# `busbar_substrate::trust::validate::Standing` directly. This slot mints ONE kind-neutral CONTRACT
+# face for the first of those reaches: `busbar_contract::tasks::{TaskStore, TaskRecord}`, the seam
+# both mcp's and a2a's task-store legs read a stored task through, mirroring BIND-1's `PlaneRecords`
+# shape (`origin/keep-leg-bindings-boot` d8b1bd55e/368bb4537) where the root implements a
+# kind-neutral trait over the node's own store.
+#
+# `busbar_contract::counterparty` IS NOT THIS COMMIT'S FACE AND IS NOT DECLARED HERE. PH-4
+# (`origin/keep-plane-host-counterparty` 87ebb3e55) is this commit's PARENT lineage, not a branch
+# beside it: the module is already in the tree when this commit applies, PH-4's own
+# `[[gate.ceiling_raises]]` entries already bought its 55 lines, and a second entry for the same
+# lines would be the same 55 declared twice. An earlier cut of this commit sat on a base PH-4 was
+# absent from and minted the module VERBATIM to converge the two vocabularies; the queue lands PH-4
+# first (`#HOLD-after-87ebb3e55`), so the convergence is now a shared commit rather than a copy and
+# the duplicate is gone. What is left to declare is the 16 lines of the task face and nothing else.
+#
+# Line 7 lands for ONE handler, `tasks/get` — the smallest of the six: `super::tasks::Registry`
+# (busbar-mcp) implements `TaskStore`, and `busbar_plane_mcp::tasks::{detailed_document, get}`
+# renders the exact `DetailedTask` document `McpTask::detailed()` built inline, member for member,
+# member order preserved. `method::tasks_get`'s OWN read of `task.detailed()` is deleted and
+# replaced by the face call; `McpTask::detailed()` itself is NOT deleted, because
+# `stdio_serve.rs`'s background task-change notification pump is a second, real production caller
+# this commit does not touch. The 484-cell battery (`cargo test -p busbar-mcp --features
+# test-support --lib`, `running 484 tests` before and after) is byte-identical; two new red-first
+# cells are added (`tasks_get_answers_through_the_task_store_face`,
+# `tasks_get_refuses_an_undeclared_capability_before_reading_the_store`), watched red against
+# `Registry`'s `TaskStore::get` forced to return `None` unconditionally (400/`invalid_params`
+# instead of 200/the document; the undeclared-capability refusal cell stayed green, which is the
+# shape of a defect confined to the face read and nothing above it), then green on the real impl.
+# `tasks/update`, `tasks/cancel`, `server/discover`, `prompts/get`, `resources/read` and
+# `subscriptions/listen` (line 9) are NOT moved by this commit — see docs/design/1.6.0-mcp-engine.md
+# section 7's amendment for the ordered plan each is left to.
+#
+# MEASURED ON THIS STACK (PH-4 87ebb3e55 + MCP-M2's five, re-cut on it), every figure against the
+# gate's own base — `ceilings::base_ref` = merge-base(HEAD, integration/oracle-phase0) = 468bad13,
+# never the git parent. busbar-contract production 2413 -> 2429 (+16 and only +16: the counterparty
+# 55 is already in the parent's 2413, bought by PH-4's own raise). `caps_contract_ceiling` 3566 -> 3582, `contract_caps`
+# 3564 -> 3580, `union_ceiling` 24097 -> 24113, each +16 off PH-4's LANDED figures rather than off
+# the pre-PH-4 3509/3511/23842 an earlier cut used; `unit_total_ceiling` unchanged (the task face is
+# not a unit). Against the base 468bad13 those three rows read 3480/3478/23465, and the live
+# declarations over them are PH-4's 86/86/632 plus this commit's 16 — which is what `ceiling-rose`
+# sums. kind-isolation cells, same base: `cell.busbar-contract.plane.count` 42 -> 48 (+6),
+# `cell.busbar-mcp.api.count` 135 -> 138 (+3), `cell.busbar-mcp.plane.count` 3345 -> 3405 (+60, of
+# which MCP-M1/M2 declared 21 and this commit declares 39), `cell.busbar-mcp.transport.count`
+# 1111 -> 1115 (+4). A new `[[dep]]` row, busbar-mcp -> busbar-contract, `verdict = "allowed"`
+# (ARCHITECTURE.md 1.2's manifest allow-list), is declared in qa/kind-isolation.toml rather than
+# raised here, because it is a new edge and not a ratcheted count. `cargo xtask gate kind-isolation`
+# 11/11 green.
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.caps_contract_ceiling"
+by = 16
+because = "ONE FACE, and it is not a unit: busbar_contract::tasks (TaskStore, TaskRecord — the seam mcp's and a2a's task-store legs read a stored task through, one status word carried opaque and unread by the face per its own module note, mirroring BIND-1's PlaneRecords shape of a root-neutral trait over a kind's own store). 15 code lines + the 1 module line lib.rs needs = 16. busbar-contract production 2413 -> 2429. busbar_contract::counterparty is NOT declared here: PH-4 (keep-plane-host-counterparty 87ebb3e55) is this commit's parent lineage and its own raise already bought those 55 lines; declaring them a second time would be the same lines bought twice."
+
+[[gate.ceiling_raises]]
+key = "gate.surface_ceilings.contract_caps"
+by = 16
+because = "the same 16 lines as the LOC line above, on the surface line as well, because a vocabulary shared across a crate boundary IS surface: busbar_contract::tasks (TaskStore + TaskRecord). No ABI type and no protocol word is in the face, and nothing is added to what a plugin author must read beyond the module itself. 3564 -> 3580, off PH-4's landed figure."
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.union_ceiling"
+by = 16
+because = "the same one face carried through the union (which carries busbar-contract) and nothing else: 16 for busbar_contract::tasks. The face is not a unit, so unit_total_ceiling does not move, and no busbar-core or busbar-mcp production line was deleted on this branch to offset the sum (the read this commit moves is the handler's, not the storage's — see the section header). 24097 -> 24113, off PH-4's landed figure."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-contract.plane.count"
+file = "qa/kind-isolation.toml"
+by = 6
+because = "busbar_contract::tasks's own doc prose: the module comment and the doc comments on TaskRecord/TaskStore repeatedly name what the face is FOR — a plane's task-store leg — which is vocabulary the matrix scanner scores on the word, not on a dependency edge. 6 hits, all in crates/busbar-contract/src/tasks.rs. 42 at the base 468bad13 -> 48 here."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-mcp.api.count"
+file = "qa/kind-isolation.toml"
+by = 3
+because = "the new red-first cells (tasks_get_answers_through_the_task_store_face, tasks_get_refuses_an_undeclared_capability_before_reading_the_store) build a real Ctx by constructing busbar_api::VirtualKey and busbar_api::PlaneRequestCtx directly, the same pattern method_tests.rs's existing gov_with_scopes helper already uses to drive method::dispatch without going through HTTP. 135 at the base 468bad13 -> 138 here: the rise ceiling-rose measures is against THAT base, not against the parent's 134, which is a figure two unlanded lines happened to lower."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-mcp.plane.count"
+file = "qa/kind-isolation.toml"
+by = 39
+because = "PLAN LINE 7's first cut: tasks/get's handler reads busbar_contract::tasks::TaskStore (implemented on Registry) through busbar_plane_mcp::tasks::get rather than building the document inline, and the two new cells in tasks_tests.rs each build a real Ctx/EngineHost/PlaneRequestCtx and drive method::dispatch directly — the same plane-naming shape method_tests.rs's own call() helper already carries, doubled because this face needed its own capability and governance fixture rather than reusing that file's private one. 3366 -> 3405 on this stack; against the base 468bad13's 3345 the rise is 60, of which MCP-M1/M2's own entries declare 21 and this one declares the remaining 39."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-mcp.transport.count"
+file = "qa/kind-isolation.toml"
+by = 4
+because = "the two new cells drive method::dispatch the same way method_tests.rs::call already does, which means naming axum::http::{HeaderMap, StatusCode} directly rather than through a shared test helper this file does not import. 1111 at the base 468bad13 -> 1115 here."

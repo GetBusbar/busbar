@@ -276,6 +276,13 @@ fn task_principal<'a>(ctx: &'a Ctx<'_>) -> &'a str {
 ///
 /// There is no `tasks/result`: SEP-2663 removed it precisely so a client cannot observe a task as
 /// complete and then fail to fetch what it completed with.
+///
+/// PLAN LINE 7's FIRST CUT. The document itself is no longer built here: it is read off
+/// `busbar_contract::tasks::TaskStore` (implemented on `super::tasks::Registry`) through
+/// `busbar_plane_mcp::tasks::get`, the plane's own render of the same shape
+/// `McpTask::detailed()` used to build inline. This function keeps exactly the two refusals it
+/// always answered — the undeclared-capability refusal and "no task with that id for this
+/// caller" — and hands everything else to the face.
 fn tasks_get(
     ctx: &Ctx<'_>,
     params: Option<&serde_json::Value>,
@@ -284,9 +291,12 @@ fn tasks_get(
     if let Some(refusal) = refuse_undeclared_tasks(ctx, &id) {
         return refusal;
     }
-    match resolve_task(ctx, params, &id) {
-        Ok(task) => result(id, task.detailed()),
-        Err(refusal) => *refusal,
+    let Some(task_id) = string_param(params, "taskId") else {
+        return invalid_params(id, "`params.taskId` is required and must be a string.");
+    };
+    match busbar_plane_mcp::tasks::get(&*super::tasks::TASKS, task_id, task_principal(ctx)) {
+        Some(doc) => result(id, doc),
+        None => invalid_params(id, "No task with that `taskId` exists for this caller."),
     }
 }
 

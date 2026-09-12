@@ -1642,7 +1642,7 @@ count = "1"
 [[cell]]
 crate = "busbar-contract"
 kind = "plane"
-count = "42"
+count = "48"
 
 [[cell]]
 crate = "busbar-contract"
@@ -1902,7 +1902,7 @@ count = "596"
 [[cell]]
 crate = "busbar-mcp"
 kind = "api"
-count = "134"
+count = "138"
 
 [[cell]]
 crate = "busbar-mcp"
@@ -1932,7 +1932,7 @@ count = "57"
 [[cell]]
 crate = "busbar-mcp"
 kind = "plane"
-count = "3366"
+count = "3405"
 
 [[cell]]
 crate = "busbar-mcp"
@@ -1952,7 +1952,7 @@ count = "37"
 [[cell]]
 crate = "busbar-mcp"
 kind = "transport"
-count = "1111"
+count = "1115"
 
 [[cell]]
 crate = "busbar-mcp-codec"
@@ -4012,6 +4012,16 @@ verdict = "not-allowed"
 cite    = "ARCHITECTURE.md 1.2 \"Core -> plugin. Never plugin -> core.\" / ARCHITECTURE.md 1.1 the three axes are blind to each other. The retiring 1.5.x crates fuse plane+core+transport in one name."
 why     = "busbar-mcp names busbar-api: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
 drain   = "delete the busbar-api dependency from busbar-mcp's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
+
+[[dep]]
+from    = "busbar-mcp"
+to      = "busbar-contract"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.2 manifest allow-list — busbar-contract is the face every kind is written against, plugin included."
+why     = "busbar-mcp names busbar-contract: declared normal in the shipped graph, 1 declaration(s) at this commit. `busbar_contract::tasks::TaskStore` is the face `super::tasks::Registry` implements so `tasks/get` can be answered through the same read `busbar_plane_mcp::tasks::get` renders — MCP-F plan line 7's first cut (docs/design/1.6.0-mcp-engine.md section 7). The count is TODAY'S MEASUREMENT, exact in both directions."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
 
 [[dep]]
 from    = "busbar-mcp"

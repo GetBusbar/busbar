@@ -9,6 +9,7 @@
 //! the ISO-8601 test against a hand-rolled day arithmetic that put 2100-03-01 on the wrong day.
 
 use super::*;
+use crate::testkit::TestAppMcpExt;
 
 /// Two callers, two tasks, and neither can address the other's. The refusal is INDISTINGUISHABLE
 /// from an unknown id on purpose — see `Registry::get`.
@@ -449,4 +450,122 @@ fn the_detached_runner_discloses_its_frozen_principal_and_the_bound_it_trades_on
         field.contains("BOUNDED"),
         "the freeze is no longer disclosed as a freeze"
     );
+}
+
+/// PLAN LINE 7's first cut, asserted through the REAL dispatch: `tasks/get` answers off
+/// `busbar_contract::tasks::TaskStore` (`Registry`'s impl) rendered by
+/// `busbar_plane_mcp::tasks::get`, not off `McpTask::detailed()` called inline — `method::tasks_get`
+/// no longer names that method at all. RED FIRST: this test was watched fail (the document member
+/// this cell asserts came back absent) with `Registry::get`'s `TaskStore` impl forced to return
+/// `None` unconditionally, which is the shape of a bug in the face read rather than in the routing
+/// above it — the undeclared-capability and unknown-id refusals are untouched by that mutation and
+/// stayed green, exactly as they should for a defect confined to the settled document.
+#[tokio::test]
+async fn tasks_get_answers_through_the_task_store_face() {
+    use crate::mcp::test_engine::{app_handle, engine_host_from_handle, test_app};
+
+    let cfg = crate::mcp::McpCfg {
+        canonical_uri: "https://gateway.example.com/mcp".to_string(),
+        authorization_servers: vec!["https://login.example.com".to_string()],
+        scopes_supported: Vec::new(),
+        allowed_origins: Vec::new(),
+    };
+    let app = test_app().mcp(&cfg).build();
+    crate::testkit::prefresh_mcp_sightings(app.as_ref());
+    let handle = app_handle(app.clone());
+    let host = engine_host_from_handle(&handle);
+
+    let task = TASKS.create("k-test", busbar_substrate::store::now_ms());
+
+    let key = busbar_api::VirtualKey {
+        id: "k-test".to_string(),
+        name: "test".to_string(),
+        ..Default::default()
+    };
+    let gov = busbar_api::PlaneRequestCtx {
+        key: Some(std::sync::Arc::new(key)),
+    };
+    let capabilities = serde_json::json!({ "extensions": { TASKS_EXTENSION_ID: {} } });
+    let headers = axum::http::HeaderMap::new();
+    let ctx = crate::mcp::method::Ctx {
+        host,
+        gov: &gov,
+        actor: "test-principal",
+        capabilities: &capabilities,
+        headers: &headers,
+        scope: None,
+    };
+
+    let response = crate::mcp::method::dispatch(
+        &ctx,
+        "tasks/get",
+        Some(&serde_json::json!({ "taskId": task.id })),
+        Some(1.into()),
+    )
+    .await
+    .expect("`tasks/get` must be in the method table");
+    let status = response.status();
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+
+    assert_eq!(status, axum::http::StatusCode::OK);
+    assert_eq!(body["result"]["taskId"], task.id.as_str());
+    assert_eq!(body["result"]["status"], "working");
+    assert!(
+        body["result"]["result"].is_null(),
+        "a working task carries no `result` member"
+    );
+}
+
+/// The two refusals `tasks_get` still owns directly are untouched by the face move: an undeclared
+/// capability is `-32021` before the store is ever read.
+#[tokio::test]
+async fn tasks_get_refuses_an_undeclared_capability_before_reading_the_store() {
+    use crate::mcp::test_engine::{app_handle, engine_host_from_handle, test_app};
+
+    let cfg = crate::mcp::McpCfg {
+        canonical_uri: "https://gateway.example.com/mcp".to_string(),
+        authorization_servers: vec!["https://login.example.com".to_string()],
+        scopes_supported: Vec::new(),
+        allowed_origins: Vec::new(),
+    };
+    let app = test_app().mcp(&cfg).build();
+    crate::testkit::prefresh_mcp_sightings(app.as_ref());
+    let handle = app_handle(app.clone());
+    let host = engine_host_from_handle(&handle);
+
+    let key = busbar_api::VirtualKey {
+        id: "k-test-2".to_string(),
+        name: "test".to_string(),
+        ..Default::default()
+    };
+    let gov = busbar_api::PlaneRequestCtx {
+        key: Some(std::sync::Arc::new(key)),
+    };
+    let capabilities = serde_json::json!({});
+    let headers = axum::http::HeaderMap::new();
+    let ctx = crate::mcp::method::Ctx {
+        host,
+        gov: &gov,
+        actor: "test-principal",
+        capabilities: &capabilities,
+        headers: &headers,
+        scope: None,
+    };
+
+    let response = crate::mcp::method::dispatch(
+        &ctx,
+        "tasks/get",
+        Some(&serde_json::json!({ "taskId": "does-not-exist" })),
+        Some(1.into()),
+    )
+    .await
+    .expect("`tasks/get` must be in the method table");
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(body["error"]["code"], -32021);
 }
