@@ -254,8 +254,8 @@ spell a token constructor. Every such spelling elsewhere is a forged token."""
 patterns = ["UnitToken::mint(", "LedgerToken::mint(", "UsageToken::mint(", "AuditToken::mint(", "ExitToken::mint("]
 allowed_root = "crates/busbar-kernel/src"
 max_sites = 0
-# Two more of the same shape, scoped to busbar-kernel (not busbar-substrate/src/teller, which is
-# the pre-busbar-kernel path the `patterns` list above still ratchets against): `KernelSeal::
+# Two more of the same shape, scoped to busbar-kernel (there is no second Teller home left for the
+# `patterns` list above to ratchet against): `KernelSeal::
 # acquire_for_kernel(` mints the one seal every token constructor needs, and the unit crates'
 # OWN test modules call it directly to build sealed tokens for their tests (mirroring
 # busbar-caps/src/tests.rs) -- allowed there because production_only test-classification already
@@ -310,12 +310,18 @@ encode = ["units.encode"]
 [rules.one-teller-loop]
 why = """Each plane enters the loop from one place, so a unit cannot be run twice or half-run. The \
 legacy adapter (`run_gauntlet`) is the coexistence shim the planes migrate off one at a time; its \
-call-site count is a ratchet the owner drives to zero and never loosens."""
+call-site count is a ratchet the owner drives to zero and never loosens. There is now ONE loop to \
+count callers of — `busbar_kernel::teller` — because the substrate's nine-step copy of it is gone; \
+what survived there is the two-hook ordering seam `run_gauntlet` names, which is what this row's \
+second ratchet counts down."""
 loop_verb = "run_unit"
-loop_root = "crates/busbar-substrate/src/teller"
+loop_root = "crates/busbar-kernel/src"
 max_callers_per_plane_crate = 1
 legacy_verb = "run_gauntlet"
-# Today: the LLM, MCP and A2A planes plus the host-seam adapter body. Down to 0 when the planes move.
+# Today: the LLM, MCP and A2A planes plus the host-seam delegator body. It does NOT fall with the
+# second loop: `run_gauntlet` is the verify-before-charge ORDERING seam, and the three planes plus
+# the voice WS-accept still enter through it because the kernel has no arrival mount for MCP or A2A
+# and no synchronous opener for the WS-accept. Down to 0 when those land.
 max_legacy_sites = 4
 
 # ── 11. no-response-escapes-audit ────────────────────────────────────────────────────────────────
@@ -773,9 +779,10 @@ because = "aborting skips every exit path at once; the node drains instead"
 [rules.hold-escapes.symbols.assert-unwind-safe]
 symbol = "AssertUnwindSafe"
 confined_to = "kernel/src/teller"
-# The Teller loop's two homes in this tree: the kernel's own teller.rs, and the substrate teller
-# module that rules 12 and 13 above already treat as where the loop is entered.
-confined_to_paths = ["crates/busbar-kernel/src/teller.rs", "crates/busbar-substrate/src/teller"]
+# The Teller loop's ONE home in this tree. It named two until the substrate's nine-step copy of the
+# loop was deleted onto the kernel's; a second entry here would now be a second place a hold may
+# cross a catch_unwind, which is the thing this row exists to refuse.
+confined_to_paths = ["crates/busbar-kernel/src/teller.rs"]
 because = "it is what lets a hold cross a catch_unwind; the loop needs it in exactly one place"
 
 [rules.hold-escapes.symbols.join-abort]

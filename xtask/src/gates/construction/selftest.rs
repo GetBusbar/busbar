@@ -1296,16 +1296,18 @@ fn step_order_cases(gate: &dyn Gate, cx: &Ctx, base: &Overlay) -> Report {
         &["does not exist"],
     ));
 
-    // GREEN: the SUBSTRATE's old loop file being absent is not this rule's business any more. The
-    // subject is the kernel's one loop, so the second loop's deletion leaves nothing vacuous.
-    let mut ov = on(base);
-    ov.remove("crates/busbar-substrate/src/teller/run.rs");
+    // GREEN, AND OVER THE REAL TREE: there is exactly one Teller loop left, and the rule reads its
+    // ten steps in order on it. This case carried a plant while the substrate's nine-step copy of
+    // the loop was still in the tree — it removed that file, to prove the rule's subject was the
+    // kernel's loop and would not go vacuous when the copy went. The copy is gone, so the plant
+    // would now remove nothing, and a plant that changes nothing is a case with the gate taken out
+    // of it. The claim it was making is the unplanted reading, so that is what it asks for.
     r.push(prove_rows_green(
         cx,
         gate,
-        "the second loop's file being absent leaves the rule with a subject",
+        "the one Teller loop left in the tree reads the ten steps in evaluation order",
         &["teller-step-order"],
-        ov,
+        on(base),
     ));
     r
 }

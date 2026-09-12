@@ -122,7 +122,7 @@ fn every_billing_plane_reaches_the_core_meter_seam_in_production() {
 // The gate above scans the PLANE CRATE, which is the legacy path's answer: the plane crate serves
 // the request and reaches the host's metering entry points itself. Over the composition root the
 // plane does not hold the host at all — it contributes one method per Teller step
-// (`busbar_substrate::teller::TellerPlane`) and the loop calls them in order, so the Meter step is
+// (the `Units` trait the one loop calls) and the loop calls them in order, so the Meter step is
 // `fn meter(&mut self, token: &UnitToken<Meter>, usage: &UsageToken, …) -> Decision<Meter>` in that
 // plane's leg under `crates/busbar/src/root/`.
 //
