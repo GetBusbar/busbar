@@ -296,7 +296,7 @@ because = "the audit unit's own record and window verifier, named by the root th
 # a green baseline value for a scratch copy; the checked-in numbers below never move except by the
 # owner's own hand.
 [gate.surface_ceilings]
-contract_caps = 3580
+contract_caps = 3655
 grammar = 388
 contract_transport = 845
 
@@ -517,12 +517,12 @@ kernel_crate = "busbar-kernel"
 kernel_ceiling = 5382
 caps_crate = "busbar-caps"
 contract_crate = "busbar-contract"
-caps_contract_ceiling = 3582
+caps_contract_ceiling = 3657
 unit_crate_glob = "busbar-unit-*"
 unit_total_ceiling = 15149
 verbs_crate = "busbar-unit-verbs"
 verbs_ceiling = 1428
-union_ceiling = 24113
+union_ceiling = 24188
 # Files (by basename, wherever they sit under busbar-kernel/src) whose bodies seed the call-graph
 # name-match: every identifier called from one of these files, that busbar-kernel does not itself
 # define, is looked up by name against every busbar-unit-* file.
@@ -2021,5 +2021,93 @@ because = "PLAN LINE 7's first cut: tasks/get's handler reads busbar_contract::t
 [[gate.ceiling_raises]]
 key = "cell.busbar-mcp.transport.count"
 file = "qa/kind-isolation.toml"
+by = 3
+because = "the two new cells drive method::dispatch the same way method_tests.rs::call already does, which means naming axum::http::{HeaderMap, StatusCode} directly rather than through a shared test helper this file does not import. AMENDED BY MCP-G from 4 to 3, which is what this tree actually rose by against the gate's own base (ceilings::base_ref = merge-base(HEAD, integration/oracle-phase0) = 468bad13, where this cell reads 1111): plan line 3 moved resources/read's content writers out of method.rs and one transport name went with them, so one of MCP-F's four DRAINED in the same file on the very next landing, 1115 -> 1114. A `by` is the lines the face MEASURED, not room for it — the gate says so in its own refusal, and lowering it here is that refusal's stated remedy rather than a re-opening of MCP-F's declaration."
+
+# ── MCP-G (1.6.0): THE CATALOGUE FACE, AND PLAN LINE 3's CUT FOR THE THREE READING METHODS ──────
+#
+# docs/design/1.6.0-mcp-engine.md section 11.4 leaves lines 7d/7e/7f (`server/discover`,
+# `prompts/get`, `resources/read`) waiting on one face that plan line 3 had already NAMED and
+# nobody had MINTED: the three reach `super::catalogue` through `runtime_of(&ctx.host)` — a
+# `busbar_substrate::plane_host::EngineHost` read — and then build their documents inline, so the
+# documents could not leave `busbar-mcp` however thin the adapter beside them got.
+#
+# THE FACE. `busbar_contract::catalogue::{CatalogueView, CatalogueEntry, Address, Found,
+# Resolution, PromptTemplate, PromptMessage, PromptContent, ResourceBody}` is the seam every plane's
+# catalogue methods read a registry through: three caller-scoped inventories (name + owning server,
+# the NAMESPACED spelling in every case), one `is_empty` (a different statement from "this caller
+# reaches nothing", and one a discovery document must make out loud), and one kind-tagged `resolve`
+# that answers One/NotFound/Ambiguous for either address kind.
+#
+# THE CALLER IS BOUND, NOT PASSED, and that is the one shape decision in this face. Unlike
+# `busbar_contract::tasks::TaskStore`, whose principal is a plain string a store files a row under,
+# a catalogue's scoping input is `busbar_substrate::catalogue::Caller` — a key that may have
+# expired, the generation the ask is judged under and the clock both are compared against. Passing
+# it through would drag the substrate's own vocabulary across a seam whose entire purpose is that it
+# does not cross, so a `CatalogueView` is minted FOR ONE CALLER by whoever holds the registry
+# (`super::catalogue::CallerCatalogue`, built from `Ctx::catalogue_view()`) and a plane reading
+# through it never names a caller at all.
+#
+# BODIES DELETED, not copied. `method::discover`'s whole document (the capability block, the
+# extension advertisement, the counts, `registryEmpty`), `method::render_prompt_messages`,
+# `method::substitute_arguments`, `method::concrete_resource_content` and
+# `method::templated_resource_content` are GONE from busbar-mcp in this commit; what is left at each
+# of the three call sites is the JSON-RPC refusal shape, which is the engine's, and — on
+# `prompts/get` — the caller-ask decision, which is governance and not a document. The
+# substitute-then-normalise ORDER, which is the security property those functions existed for, moves
+# with them to `busbar_plane_mcp::catalogue`, where the wire it writes is named.
+#
+# RED FIRST, against the existing battery rather than new cells. With `CallerCatalogue::resolve`
+# forced to answer `Resolution::NotFound` unconditionally, 18 cells red — every `prompts/get` and
+# `resources/read` cell across content_tests, resource_uri_tests, method_tests and prompt_args_tests,
+# including both ambiguity cells (409 owed, 404 answered) — and the rest of the 486 stay green. With
+# `CallerCatalogue::tools_for` forced to answer the empty inventory, EXACTLY ONE cell reds
+# (`server_discover_advertises_the_merged_grant_scoped_catalogue`) while its three siblings
+# (`discover_advertises_exactly_the_versions_the_ingress_accepts`,
+# `discover_advertises_the_method_that_dispatch_accepts`,
+# `discover_declares_the_capabilities_the_listen_stream_delivers`) stay green — a defect confined to
+# the inventory read and nothing else the document says. Reverted, green: the 486-cell busbar-mcp
+# battery is byte-identical before and after, with no cell added or removed on that side.
+#
+# MEASURED. busbar-contract production 2429 -> 2504 (+75: 74 for FACE busbar_contract::catalogue
+# plus the 1 module line lib.rs needs); `caps_contract_ceiling` 3582 -> 3657,
+# `gate.surface_ceilings.contract_caps` 3580 -> 3655, `union_ceiling` 24113 -> 24188, each the same
+# +75 (the union figure is PH-4's landed 24097 carried through MCP-F's +16; against the gate's own
+# base 468bad13 it reads 23465, and the live declarations over it are PH-4's 632, MCP-F's 16 and
+# this commit's 75). kind-isolation: `cell.busbar-contract.plane.count` 48 -> 52, `cell.busbar-mcp.plane.count`
+# 3405 -> 3430, `cell.busbar-plane-mcp.codec.count` 33 -> 34, each declared below;
+# `cell.busbar-mcp.transport.count` 1115 -> 1114 is a DROP and needs no declaration (MCP-F's own
+# raise row is amended from 4 to 3 above, which is the gate's stated remedy for an over-declaration).
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.caps_contract_ceiling"
+by = 75
+because = "ONE FACE, not a unit: FACE busbar_contract::catalogue (CatalogueView plus the eight data shapes it answers in — CatalogueEntry, Address, Found, Resolution, PromptTemplate, PromptMessage, PromptContent, ResourceBody), the seam every plane's catalogue methods read a registry through. 74 lines in the module plus the 1 module line lib.rs needs = 75. busbar-contract production 2429 -> 2504. The face carries no substrate type: the scoping identity (busbar_substrate::catalogue::Caller) is BOUND at mint by whoever holds the registry rather than passed per call, which is why no `Caller` field appears here."
+
+[[gate.ceiling_raises]]
+key = "gate.surface_ceilings.contract_caps"
+by = 75
+because = "the same 75 lines as the LOC line above, on the surface line as well, because a vocabulary shared across a crate boundary IS surface — the same reading MCP-F and PH-4 gave their own faces. No ABI type and no protocol word is in this face: the prompt role and the entry names are carried opaque, exactly as busbar_contract::tasks::TaskRecord::status is, so nothing here takes a position on which plane's vocabulary is correct."
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.union_ceiling"
+by = 75
+because = "the same face carried through the union (which carries busbar-contract) and nothing else: 75 for busbar_contract::catalogue. The face is not a unit, so unit_total_ceiling does not move. busbar-mcp production lines DO fall on this commit (five bodies are deleted from method.rs: the discovery document, render_prompt_messages, substitute_arguments, concrete_resource_content, templated_resource_content) but busbar-mcp is not in the union, so that drain cannot offset this sum and is not claimed to."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-contract.plane.count"
+file = "qa/kind-isolation.toml"
 by = 4
-because = "the two new cells drive method::dispatch the same way method_tests.rs::call already does, which means naming axum::http::{HeaderMap, StatusCode} directly rather than through a shared test helper this file does not import. 1111 at the base 468bad13 -> 1115 here."
+because = "busbar_contract::catalogue's own doc prose: the module comment and the doc comments on CatalogueView and PromptTemplate repeatedly name what the face is FOR — a plane's catalogue methods — which is vocabulary the matrix scanner scores on the word, not on a dependency edge. 4 hits, all in crates/busbar-contract/src/catalogue.rs. The same shape MCP-F declared 6 of for busbar_contract::tasks."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-mcp.plane.count"
+file = "qa/kind-isolation.toml"
+by = 25
+because = "PLAN LINE 3's cut: server/discover, prompts/get and resources/read each name busbar_plane_mcp::catalogue at their call site (discovery_document + ServerIdentity, prompt_document, resource_read + the three ResourceRead arms), and the busbar-mcp impl of the face carries doc comments naming what the plane's half now owns. This is the same asymmetry MCP-F's +39 records and it is the shape of a MOVE rather than a growth: the plane VOCABULARY rises at the seam while the plane BODIES leave — five of them on this commit — because a call to the crate that took the body names that crate where the body itself named nothing."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-plane-mcp.codec.count"
+file = "qa/kind-isolation.toml"
+by = 1
+because = "busbar_plane_mcp::catalogue's one `use busbar_mcp_codec::sanitize` — the markup strip that keeps operator and caller text re-entering a model's instruction stream from carrying instructions of its own. It moved here with the bodies that called it, so this +1 in the plane is the same strip busbar-mcp's method.rs stopped naming on the same commit; a second copy of the sanitiser would have been the alternative, and a second copy is the second place a filter gets forgotten."

@@ -19,8 +19,8 @@
 //! implementation substitutes perfectly and sanitises nothing.
 //!
 //! An unsupplied placeholder is deliberately LEFT VISIBLE rather than emptied — see
-//! `super::super::method::substitute_arguments` — because a prompt that silently drops a missing
-//! argument reads as complete and means something else.
+//! `busbar_plane_mcp::catalogue::substitute_arguments` — because a prompt that silently drops a
+//! missing argument reads as complete and means something else.
 
 use crate::mcp::config::{
     McpPinMechanism, McpServerDefCfg, PromptAllowCfg, ServerPinCfg, ServerRequestGrants,

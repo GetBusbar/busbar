@@ -149,6 +149,17 @@ impl Ctx<'_> {
             ),
         }
     }
+
+    /// THIS CALLER'S SLICE OF THIS SNAPSHOT, as the contract's neutral catalogue face.
+    ///
+    /// Minted per read rather than held on the `Ctx`, because it borrows the governance key out of
+    /// `self` and a field would make every `Ctx` construction site carry the runtime lookup whether
+    /// it reads a catalogue or not. The two things it binds are exactly the two `caller()` already
+    /// pairs — the principal and the generation — so the face cannot answer from a snapshot other
+    /// than the one this request's caller was judged under.
+    fn catalogue_view(&self) -> super::catalogue::CallerCatalogue<'_> {
+        super::catalogue::CallerCatalogue::new(super::runtime_of(&self.host), self.caller())
+    }
 }
 
 /// DISPATCH one JSON-RPC method. `None` means "not implemented", which ingress renders as `404` +
@@ -391,107 +402,26 @@ fn completion_complete(id: Option<serde_json::Value>) -> Response {
 
 /// `server/discover` — the MERGED, GRANT-SCOPED catalogue advertisement.
 ///
-/// Under `2026-07-28` there is no `initialize`, so this is the only capability advertisement there
-/// is, and the rule that governs every other check under on-demand negotiation governs this one:
-/// it is computed PER REQUEST from the caller's own grant, never once and then cached. Two callers
-/// discover two different servers. That is the point — a discovery document that described the
-/// deployment rather than the caller would enumerate every registered upstream to anyone who asked,
-/// which is a map of the operator's internal estate handed out for the price of one token.
-///
-/// The counts are of what THIS caller can reach, and the `servers` list names only servers this
-/// caller holds at least one capability on.
+/// PLAN LINE 3. The document is no longer built here: it is read off
+/// `busbar_contract::catalogue::CatalogueView` (implemented on `super::catalogue::CallerCatalogue`)
+/// through `busbar_plane_mcp::catalogue::discovery_document`, which is where every sentence this
+/// answer makes about the protocol now lives. What is left here is the three facts that are not the
+/// plane's to know — the BINARY's version, the codec's accepted-version list and this crate's own
+/// tasks extension id — handed over as one value.
 fn discover(ctx: &Ctx<'_>, id: Option<serde_json::Value>) -> Response {
-    let rt = super::runtime_of(&ctx.host);
-    let cat = &rt.catalogue;
-    let caller = ctx.caller();
-    let tools = cat.tools_for(&caller);
-    let prompts = cat.prompts_for(&caller);
-    let resources = cat.resources_for(&caller);
-    let mut servers: Vec<&str> = tools
-        .iter()
-        .map(|t| t.server.as_str())
-        .chain(prompts.iter().map(|p| p.server.as_str()))
-        .chain(resources.iter().map(|r| r.server.as_str()))
-        .collect();
-    servers.sort_unstable();
-    servers.dedup();
-
     result(
         id,
-        busbar_plane_mcp::view::cacheable(serde_json::json!({
-            "protocolVersion": super::envelope::PROTOCOL_VERSION,
-            // The versions this server will ACCEPT, which is the mandatory field of a
-            // `DiscoverResult` and is not the same statement as `protocolVersion` above (that one
-            // names the revision this answer is written in). It is the SAME constant the ingress
-            // refuses an unsupported version against, and it is that constant rather than a copy
-            // for a reason the conformance suite checks directly: it correlates the `data.supported`
-            // list on an `UnsupportedProtocolVersionError` against this list, so two lists that
-            // could disagree would be a client told to retry with a version it will be refused for.
-            "supportedVersions": super::envelope::SUPPORTED_PROTOCOL_VERSIONS,
-            "serverInfo": { "name": "busbar", "version": env!("CARGO_PKG_VERSION") },
-            // Advertised as present only when this caller can actually reach one. A capability
-            // advertised to a caller who holds nothing under it is an invitation to a refusal.
-            "capabilities": {
-                // `listChanged: true` on all three, because `subscriptions/listen` DELIVERS all
-                // three: `super::subscribe` narrows a requested filter to exactly
-                // {tools,prompts,resources}ListChanged and emits each on the caller's own stream
-                // when the grant-scoped catalogue slice moves. This flag is the field a client
-                // reads to decide whether change notifications exist AT ALL — advertising `false`
-                // beside a working stream is an undeclared surface no conforming client will ever
-                // open, and one that probed the method anyway was told by this very document to
-                // expect `-32601`, so the stream response read as a hang. The declaration and the
-                // delivery are pinned to each other by
-                // `discover_declares_the_capabilities_the_listen_stream_delivers`.
-                "tools": { "listChanged": true },
-                "prompts": { "listChanged": true },
-                // `subscribe: true` since the relay landed: `resourceSubscriptions` on
-                // `subscriptions/listen` is DELIVERED now — an upstream's own
-                // `notifications/resources/updated` is recorded by the client leg and relayed to
-                // subscribers whose grant reaches the named resource. The old `false` was pinned
-                // to the sentence "busbar is not told when a resource's contents change", and
-                // that sentence stopped being true; a declaration and a delivery must keep
-                // agreeing in BOTH directions, which is what
-                // `discover_declares_the_capabilities_the_listen_stream_delivers` pins.
-                "resources": { "listChanged": true, "subscribe": true },
-                // Present because `completion/complete` is IMPLEMENTED and answers correctly, which
-                // is what the capability declares. It is not a claim that this deployment has
-                // suggestions to give — see `completion_complete` for why the answer is the empty
-                // set and why that is a complete answer rather than a stub.
-                "completions": {},
-                // Present because busbar EMITS `notifications/message` records about its own
-                // handling of a request, on the response stream of the request they describe. There
-                // is deliberately no `logging/setLevel`: this revision has no session for a level to
-                // live in, so the level is named per request in `_meta` — see `super::sse`.
-                "logging": {},
-                // SEP-2663, advertised UNCONDITIONALLY — unlike the counts below, which are scoped
-                // to what this caller can reach.
-                //
-                // The asymmetry is deliberate and it is the difference between a CATALOGUE and a
-                // PROTOCOL. `tools`/`prompts`/`resources` describe what this caller may see, and a
-                // caller whose grant reaches nothing legitimately sees nothing. An extension
-                // describes what the SERVER can do with the wire: `tasks/get`, `tasks/update` and
-                // `tasks/cancel` are implemented, gated only on the caller's own declaration, and
-                // answer correctly for every caller — including one who currently holds no
-                // task-supporting tool, for whom the honest answer is "the surface exists, you have
-                // nothing on it" rather than "the surface does not exist".
-                //
-                // It is advertised under `extensions` and NOT as a v1-style `capabilities.tasks`
-                // slot, because the extension REPLACED that surface rather than living beside it,
-                // and a server advertising both would be claiming two protocols at once.
-                "extensions": { super::tasks::TASKS_EXTENSION_ID: {} },
+        busbar_plane_mcp::catalogue::discovery_document(
+            &ctx.catalogue_view(),
+            &busbar_plane_mcp::catalogue::ServerIdentity {
+                name: "busbar",
+                version: env!("CARGO_PKG_VERSION"),
+                protocol_version: super::envelope::PROTOCOL_VERSION,
+                supported_versions: super::envelope::SUPPORTED_PROTOCOL_VERSIONS,
+                tasks_extension_id: super::tasks::TASKS_EXTENSION_ID,
             },
-            "methods": implemented_methods(),
-            "servers": servers,
-            "counts": {
-                "tools": tools.len(),
-                "prompts": prompts.len(),
-                "resources": resources.len(),
-            },
-            // Honest, and deliberately advertised: an MCP deployment with an empty registry answers
-            // every catalogue with an empty list, and a client that cannot tell "you may see
-            // nothing" from "there is nothing" will retry for ever.
-            "registryEmpty": cat.is_empty(),
-        })),
+            &implemented_methods(),
+        ),
     )
 }
 
@@ -540,68 +470,6 @@ fn prompts_list(ctx: &Ctx<'_>, id: Option<serde_json::Value>) -> Response {
         .catalogue
         .prompts_rendered(&caller);
     result(id, busbar_plane_mcp::view::prompts_result(prompts))
-}
-
-/// Substitute `{arg}` placeholders in a prompt template from the caller's `params.arguments`.
-///
-/// The `{name}` spelling is the one the operator-facing templates already use; what was missing was
-/// the substitution, so a client that sent arguments got the template back with its placeholders
-/// intact and no indication that anything had been ignored.
-///
-/// TWO RULES, and both are about where the caller's text is allowed to reach.
-///
-/// 1. THE SUBSTITUTED TEXT IS NORMALISED, NOT THE TEMPLATE. Sanitising first and substituting after
-///    would put caller-controlled bytes into a model's context having passed through no filter at
-///    all — the argument value is exactly as injectable as the template it lands in, and it is more
-///    attacker-controlled, because the template is the operator's and the argument is not. So this
-///    function only builds the string; the single `normalise` at the call site runs over the
-///    RESULT, after substitution.
-/// 2. AN UNKNOWN PLACEHOLDER IS LEFT ALONE rather than emptied. `{arg1}` with no `arg1` supplied
-///    stays `{arg1}`, which is visible to a human reading the output; silently substituting the
-///    empty string would turn "you forgot an argument" into a prompt that reads as complete and
-///    means something else.
-///
-/// Only string arguments substitute. A structured value has no single correct rendering into a
-/// text template, and picking one (`JSON.stringify`, say) would let an argument's shape decide what
-/// the prompt says.
-fn substitute_arguments(template: &str, params: Option<&serde_json::Value>) -> String {
-    let Some(args) = params
-        .and_then(|p| p.get("arguments"))
-        .and_then(|a| a.as_object())
-    else {
-        return template.to_string();
-    };
-    // ONE PASS OVER THE TEMPLATE, never over the result. A pass PER ARGUMENT would substitute into
-    // an accumulator that already holds earlier arguments' text, so a `{b}` a caller spelled inside
-    // the value of `a` would be filled from `b` — one argument deciding what another means — and,
-    // chained, each argument would MULTIPLY the ones before it: ten linked keys in a 300-byte request
-    // is 10^10 bytes of string on a request thread. Reading the template once makes the output length
-    // the template plus the arguments, whatever those arguments spell.
-    let mut out = String::with_capacity(template.len());
-    let mut rest = template;
-    while let Some(open) = rest.find('{') {
-        out.push_str(&rest[..open]);
-        // `{` is ASCII, so this is a char boundary; so is the `}` found below.
-        let after = &rest[open + 1..];
-        let Some(close) = after.find('}') else {
-            // An unclosed `{` is the operator's literal text: emit the remainder verbatim.
-            out.push_str(&rest[open..]);
-            return out;
-        };
-        let name = &after[..close];
-        match args.get(name).and_then(|v| v.as_str()) {
-            Some(text) => out.push_str(text),
-            // RULE 2: an unknown placeholder is left alone, spelling and all.
-            None => {
-                out.push('{');
-                out.push_str(name);
-                out.push('}');
-            }
-        }
-        rest = &after[close + 1..];
-    }
-    out.push_str(rest);
-    out
 }
 
 /// `prompts/get` — the TEMPLATE, sanitized. Prompt templates are in the sanitization set
@@ -705,83 +573,23 @@ fn prompts_get(
             return input_required_result(id, &asks, &request_state);
         }
     }
-    // Substitute FIRST, normalise SECOND — see `substitute_arguments` rule 1. The caller's argument
-    // values pass through the same markup strip the operator's template does.
-    result(
-        id,
-        serde_json::json!({
-            "description": sanitize::normalise_opt(prompt.description.as_deref()),
-            "messages": render_prompt_messages(prompt, params),
-        }),
-    )
-}
-
-/// The `messages` array `prompts/get` returns, in whichever of the two forms the operator declared.
-///
-/// ONE FUNCTION FOR BOTH FORMS, and that is the point rather than tidiness: the text form and the
-/// typed form must go through the SAME substitute-then-normalise pass. A second rendering path
-/// would be a second place to forget the strip, and a new content type that skipped it would be a
-/// hole opened by a feature nobody thought of as a text surface.
-fn render_prompt_messages(
-    prompt: &super::catalogue::PromptEntry,
-    params: Option<&serde_json::Value>,
-) -> Vec<serde_json::Value> {
-    use super::config::PromptContentCfg;
-
-    // SUBSTITUTE FIRST, NORMALISE SECOND — `substitute_arguments` rule 1. The caller's argument
-    // values pass through the same markup strip the operator's own text does.
-    let render = |s: &str| sanitize::normalise(&substitute_arguments(s, params));
-
-    if prompt.messages.is_empty() {
-        return vec![serde_json::json!({
-            "role": "user",
-            "content": {
-                "type": "text",
-                "text": render(prompt.template.as_deref().unwrap_or("")),
-            },
-        })];
+    // THE DOCUMENT IS THE FACE'S SIDE NOW — plan line 3. The substitute-then-normalise pass and the
+    // message rendering left with it; what remains here is the ask decision above, which is
+    // governance, and the refusal below, which is this crate's JSON-RPC shape. The face is asked for
+    // the prompt a SECOND time (the ask decision above needed the engine-side entry for its rounds
+    // and its server's cap, which are config this seam deliberately does not carry): one extra
+    // grant-scoped map lookup per `prompts/get`, paid so that the only thing that writes this
+    // document is the crate that names this wire.
+    match busbar_plane_mcp::catalogue::prompt_document(&ctx.catalogue_view(), name, params) {
+        Some(doc) => result(id, doc),
+        // Unreachable while the two lookups read one snapshot — the entry above came out of it. The
+        // refusal is the SAME not-found the lookup above answers, because a caller must not be able
+        // to tell an engine-side disagreement from an address it does not hold.
+        None => not_found(
+            id,
+            &format!("`{name}` is not a prompt this server exposes."),
+        ),
     }
-
-    prompt
-        .messages
-        .iter()
-        .map(|m| {
-            let content = match &m.content {
-                PromptContentCfg::Text { text } => serde_json::json!({
-                    "type": "text", "text": render(text),
-                }),
-                // The base64 payload is NOT normalised. `normalise` strips markup from text that
-                // re-enters a model's instruction stream; a media payload is opaque bytes the client
-                // was told the type of, and running a text filter over base64 would corrupt it while
-                // protecting nothing. It is validated as decodable at BOOT instead.
-                PromptContentCfg::Image { data, mime_type } => serde_json::json!({
-                    "type": "image", "data": data, "mimeType": mime_type,
-                }),
-                PromptContentCfg::Audio { data, mime_type } => serde_json::json!({
-                    "type": "audio", "data": data, "mimeType": mime_type,
-                }),
-                PromptContentCfg::Resource { resource } => {
-                    let mut r = serde_json::Map::new();
-                    // The URI substitutes: `test_prompt_with_embedded_resource` takes the URI to
-                    // embed as an ARGUMENT, so a template that could not substitute here could not
-                    // express the shape at all. It is normalised too — a URI carrying an HTML-like
-                    // tag is not a URI, and this one is echoed into a model's context.
-                    r.insert("uri".into(), render(&resource.uri).into());
-                    if let Some(m) = &resource.mime_type {
-                        r.insert("mimeType".into(), m.clone().into());
-                    }
-                    if let Some(t) = &resource.text {
-                        r.insert("text".into(), render(t).into());
-                    }
-                    if let Some(b) = &resource.blob {
-                        r.insert("blob".into(), b.clone().into());
-                    }
-                    serde_json::json!({ "type": "resource", "resource": r })
-                }
-            };
-            serde_json::json!({ "role": m.role, "content": content })
-        })
-        .collect()
 }
 
 /// `resources/list`, with every free-text field markup-normalised on the way out.
@@ -827,52 +635,25 @@ fn resources_read(
     let Some(uri) = string_param(params, "uri") else {
         return invalid_params(id, "`params.uri` is required and must be a string.");
     };
-    let caller = ctx.caller();
-    // CONCRETE FIRST, TEMPLATE SECOND, and never the other way round. A URI the operator approved BY
-    // NAME must not be answered by a template that happens to match it: the two are different
-    // approvals, and letting the broader one win would let adding a template silently change what an
-    // already-approved URI returns.
-    let content = match super::runtime_of(&ctx.host)
-        .catalogue
-        .resource_by_uri(&caller, uri)
-    {
-        super::catalogue::ResourceLookup::One(res) => concrete_resource_content(res),
-        // NEVER A GUESS. Two servers this caller can reach both expose this URI, so which one was
+    // THE RESOLUTION AND THE DOCUMENT ARE BOTH THE FACE'S SIDE NOW — plan line 3. What used to be
+    // two lookups and two content writers here is one `CatalogueView::resolve` (which owns the
+    // concrete-before-template ordering, beside the registry that holds both) and one
+    // `busbar_plane_mcp::catalogue::resource_read` (which owns the filter and the block). What stays
+    // is the JSON-RPC shape of the three terminals, which is this crate's.
+    match busbar_plane_mcp::catalogue::resource_read(&ctx.catalogue_view(), uri) {
+        busbar_plane_mcp::catalogue::ResourceRead::Contents(doc) => result(id, doc),
+        // NEVER A GUESS. Two approvals this caller can reach both answer this URI, so which one was
         // meant is a question only the caller can answer. The whole reason the catalogue was
         // namespaced was that this case used to be resolved SILENTLY, by config order, and served
         // one server's content to a caller who had asked for the other's.
-        super::catalogue::ResourceLookup::Ambiguous(candidates) => {
-            return ambiguous_resource(id, uri, &candidates)
+        busbar_plane_mcp::catalogue::ResourceRead::Ambiguous(candidates) => {
+            ambiguous_resource(id, uri, &candidates)
         }
-        super::catalogue::ResourceLookup::NotFound => {
-            match super::runtime_of(&ctx.host)
-                .catalogue
-                .resource_template_for(&caller, uri)
-            {
-                super::catalogue::ResourceLookup::One((template, bindings)) => {
-                    templated_resource_content(uri, template, &bindings)
-                }
-                // THE SAME REFUSAL, and it must be the same one. An operator who writes an approval
-                // with a parameter in it has not thereby agreed that busbar may pick between two
-                // upstreams on their behalf; a plane where the literal spelling refuses and the
-                // parameterised spelling quietly resolves is a plane where the refusal is bypassed
-                // by writing the approval differently.
-                super::catalogue::ResourceLookup::Ambiguous(candidates) => {
-                    return ambiguous_resource(id, uri, &candidates)
-                }
-                super::catalogue::ResourceLookup::NotFound => {
-                    return not_found(
-                        id,
-                        &format!("`{uri}` is not a resource this server exposes."),
-                    )
-                }
-            }
-        }
-    };
-    result(
-        id,
-        busbar_plane_mcp::view::cacheable(serde_json::json!({ "contents": [content] })),
-    )
+        busbar_plane_mcp::catalogue::ResourceRead::NotFound => not_found(
+            id,
+            &format!("`{uri}` is not a resource this server exposes."),
+        ),
+    }
 }
 
 /// THE ONE AMBIGUITY REFUSAL, shared by both address resolutions.
@@ -892,63 +673,6 @@ fn ambiguous_resource(id: Option<serde_json::Value>, uri: &str, candidates: &[St
         ),
         Some(serde_json::json!({ "reason": "resource_ambiguous", "candidates": candidates })),
     )
-}
-
-/// The `ResourceContents` block for a CONCRETE resource.
-///
-/// `text` and `blob` are the schema's two ALTERNATIVES, and exactly one is emitted. Config
-/// validation already refuses a declaration carrying both, so the `else` arm here is the honest
-/// "neither was declared" — an approved resource with no content, which answers the empty text form
-/// rather than an error, because the operator approving a URI and leaving it empty is a statement
-/// about content, not a malformed request.
-fn concrete_resource_content(res: &super::catalogue::ResourceEntry) -> serde_json::Value {
-    let mut content = serde_json::Map::new();
-    // ECHOED AS ASKED. A client correlates this block to its own request by this field.
-    content.insert("uri".into(), res.uri.clone().into());
-    if let Some(m) = &res.mime_type {
-        content.insert("mimeType".into(), m.clone().into());
-    }
-    match &res.blob {
-        // NOT normalised — see `ResourceAllowCfg::blob`. A markup strip over base64 corrupts the
-        // payload and protects nothing; what protects the client is the boot-time decode check.
-        Some(blob) => {
-            content.insert("blob".into(), blob.clone().into());
-        }
-        None => {
-            content.insert(
-                "text".into(),
-                sanitize::normalise(res.text.as_deref().unwrap_or("")).into(),
-            );
-        }
-    }
-    serde_json::Value::Object(content)
-}
-
-/// The `ResourceContents` block for one EXPANSION of a template.
-///
-/// The URI echoed is the one the CALLER ASKED FOR, not the template. A client correlates the content
-/// it received with the URI it sent; answering with the unexpanded template would hand back an
-/// identifier that names every expansion at once.
-///
-/// The bindings substitute into the content, and the substituted result is normalised — the
-/// parameter values come from the caller's own URI, so they are exactly as attacker-controlled as a
-/// prompt argument and go through exactly the same strip.
-fn templated_resource_content(
-    requested_uri: &str,
-    template: &super::catalogue::ResourceTemplateEntry,
-    bindings: &std::collections::BTreeMap<String, String>,
-) -> serde_json::Value {
-    let mut text = template.text.clone().unwrap_or_default();
-    for (name, value) in bindings {
-        text = text.replace(&format!("{{{name}}}"), value);
-    }
-    let mut content = serde_json::Map::new();
-    content.insert("uri".into(), requested_uri.into());
-    if let Some(m) = &template.mime_type {
-        content.insert("mimeType".into(), m.clone().into());
-    }
-    content.insert("text".into(), sanitize::normalise(&text).into());
-    serde_json::Value::Object(content)
 }
 
 /// THE PER-CALL RECORD UNDER CONSTRUCTION: what this dispatch knows about itself so far.

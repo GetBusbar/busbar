@@ -73,7 +73,7 @@ them). Each axis is blind to the other two; only the kernel composes them.
   `src/tests/`; the proofs (overlap totality over the selector-form pairs, the lint symbol lists, the
   compile-fail fixtures and their positive companions, the honesty tables) are not surface and live
   in each crate's `tests/` or `fixtures/`. Measured and gated by `scripts/loc-surface.py`
-  (`--ceiling busbar-contract,busbar-caps=3580`), which the construction gate runs as
+  (`--ceiling busbar-contract,busbar-caps=3655`), which the construction gate runs as
   `surface-ceiling:contract+caps`. The figure is the PIN, not a budget: it is held at zero
   slack against today's measurement, and it moves up only when a new-architecture face lands
   with a declared raise (`[gate.ceiling_raises]` in `qa/construction.toml`) that names the face
@@ -119,7 +119,28 @@ them). Each axis is blind to the other two; only the kernel composes them.
   `super::tasks::Registry` (its existing in-process task registry) is the first implementor, read by
   `busbar_plane_mcp::tasks::get` to render `tasks/get`'s document off the face instead of building it
   inline — plan line 7's first cut (docs/design/1.6.0-mcp-engine.md section 7). Nothing is added to
-  what a plugin author must read: no trait takes an ABI type and no plugin is handed one. Two crates
+  what a plugin author must read: no trait takes an ABI type and no plugin is handed one. The fifth
+  is MCP-G's catalogue vocabulary. **`busbar_contract::catalogue`** (`CatalogueView` and the eight
+  shapes it answers in — `CatalogueEntry`, `Address`, `Found`, `Resolution`, `PromptTemplate`,
+  `PromptMessage`, `PromptContent`, `ResourceBody`; 74 code lines + 1 module line, declared at +75)
+  is the seam every plane's catalogue methods read a registry through: three caller-scoped
+  inventories, one `is_empty` — a different statement from "this caller reaches nothing", and one a
+  discovery document has to make out loud — and one kind-tagged `resolve` answering
+  One/NotFound/Ambiguous for either address kind. Not-found and not-granted are ONE answer in every
+  arm, for the reason `busbar_contract::tasks` gives about an id; ambiguity is the third arm rather
+  than an absence, because two approvals a caller holds answering one address is a question only the
+  caller can settle and picking a winner would serve one upstream's content under another's name.
+  THE CALLER IS BOUND AT MINT, NOT PASSED: a catalogue's scoping input is a whole
+  identity-plus-clock-plus-generation value (`busbar_substrate::catalogue::Caller` on the engine
+  side), and passing it through would drag the engine's vocabulary across a seam whose whole purpose
+  is that it does not cross — so the registry's holder mints one view per caller and a plane reading
+  through it never names a caller at all. Nothing in the face is sanitised or substituted: both
+  passes read the caller's own request, which the face never sees, and write the wire, which the
+  face does not name. `busbar-mcp`'s `super::catalogue::CallerCatalogue` is the first implementor,
+  read by `busbar_plane_mcp::catalogue` to write `server/discover`, `prompts/get` and
+  `resources/read`'s documents off the face instead of building them inline — plan line 3
+  (docs/design/1.6.0-mcp-engine.md section 11.4's lines 7d/7e/7f). Nothing is added to what a plugin
+  author must read: no trait takes an ABI type and no plugin is handed one. Two crates
   carry their own surface ceilings beside it, because
   each is contract surface that a plugin author does not read and a ceiling nothing measures is a
   ceiling that has been abolished rather than met: `busbar-grammar` — the closed JSON span grammar,

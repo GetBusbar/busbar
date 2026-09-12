@@ -1364,3 +1364,201 @@ impl CatalogueItem for ResourceTemplateEntry {
         })
     }
 }
+
+/// THE CATALOGUE READ, over the contract's neutral face — plan line 3's cut.
+///
+/// One caller's slice of one snapshot, bound together at mint so the three methods that read it
+/// (`server/discover`, `prompts/get`, `resources/read`) cannot pair one caller's grant with another
+/// request's enumeration. That is the guarantee `Ctx::caller()` already gave by building the
+/// `busbar_substrate::catalogue::Caller` once per request; this carries it across the crate
+/// boundary, where the substrate's own `Caller` may not go — see `busbar_contract::catalogue`'s
+/// module note on why the caller is BOUND rather than passed.
+///
+/// The runtime is held as the `Arc` `runtime_of` hands back rather than a borrow of it, because the
+/// snapshot this answers from must not change underneath a document half-written: two counts and a
+/// server list read from two generations would describe a deployment that never existed.
+pub(crate) struct CallerCatalogue<'a> {
+    runtime: std::sync::Arc<super::McpRuntime>,
+    caller: Caller<'a>,
+}
+
+impl<'a> CallerCatalogue<'a> {
+    /// Bind this request's caller to this request's snapshot.
+    pub(crate) fn new(runtime: std::sync::Arc<super::McpRuntime>, caller: Caller<'a>) -> Self {
+        CallerCatalogue { runtime, caller }
+    }
+
+    fn cat(&self) -> &Catalogue {
+        &self.runtime.catalogue
+    }
+}
+
+/// The PUBLISHED name and the owning server, for one entry of any of the three inventories. Named
+/// once so the three `*_for` methods below cannot drift in which of an entry's several spellings
+/// they report: it is the NAMESPACED one in every case — the value a grant names and the wire
+/// carries — never the bare upstream spelling, which is not unique across the registry.
+fn row(namespaced: &str, server: &str) -> busbar_contract::catalogue::CatalogueEntry {
+    busbar_contract::catalogue::CatalogueEntry {
+        name: namespaced.to_string(),
+        server: server.to_string(),
+    }
+}
+
+impl busbar_contract::catalogue::CatalogueView for CallerCatalogue<'_> {
+    fn tools_for(&self) -> Vec<busbar_contract::catalogue::CatalogueEntry> {
+        Catalogue::tools_for(self.cat(), &self.caller)
+            .into_iter()
+            .map(|t| row(&t.namespaced, &t.server))
+            .collect()
+    }
+
+    fn prompts_for(&self) -> Vec<busbar_contract::catalogue::CatalogueEntry> {
+        Catalogue::prompts_for(self.cat(), &self.caller)
+            .into_iter()
+            .map(|p| row(&p.namespaced, &p.server))
+            .collect()
+    }
+
+    fn resources_for(&self) -> Vec<busbar_contract::catalogue::CatalogueEntry> {
+        Catalogue::resources_for(self.cat(), &self.caller)
+            .into_iter()
+            .map(|r| row(&r.namespaced, &r.server))
+            .collect()
+    }
+
+    fn is_empty(&self) -> bool {
+        Catalogue::is_empty(self.cat())
+    }
+
+    /// CONCRETE FIRST, TEMPLATE SECOND on the resource arm, and never the other way round. A URI the
+    /// operator approved BY NAME must not be answered by a template that happens to match it: the
+    /// two are different approvals, and letting the broader one win would let adding a template
+    /// silently change what an already-approved URI returns. The ordering lives HERE, beside the
+    /// registry that holds both, rather than at the reader — a second reader would be a second place
+    /// to get it backwards.
+    ///
+    /// The ambiguity arm is the SAME refusal for both, and it must be. An operator who writes an
+    /// approval with a parameter in it has not thereby agreed that busbar may pick between two
+    /// upstreams on their behalf; a plane where the literal spelling refuses and the parameterised
+    /// spelling quietly resolves is a plane where the refusal is bypassed by writing the approval
+    /// differently.
+    fn resolve(
+        &self,
+        address: busbar_contract::catalogue::Address<'_>,
+    ) -> busbar_contract::catalogue::Resolution {
+        use busbar_contract::catalogue::{Address, Found, Resolution};
+        match address {
+            Address::Prompt(name) => match self.cat().prompt_for(&self.caller, name) {
+                Some(entry) => Resolution::One(Found::Prompt(prompt_template(entry))),
+                None => Resolution::NotFound,
+            },
+            Address::Resource(uri) => match self.cat().resource_by_uri(&self.caller, uri) {
+                ResourceLookup::One(res) => Resolution::One(Found::Resource(concrete_body(res))),
+                ResourceLookup::Ambiguous(candidates) => Resolution::Ambiguous(candidates),
+                ResourceLookup::NotFound => {
+                    match self.cat().resource_template_for(&self.caller, uri) {
+                        ResourceLookup::One((template, bindings)) => Resolution::One(
+                            Found::Resource(expanded_body(uri, template, &bindings)),
+                        ),
+                        ResourceLookup::Ambiguous(candidates) => Resolution::Ambiguous(candidates),
+                        ResourceLookup::NotFound => Resolution::NotFound,
+                    }
+                }
+            },
+        }
+    }
+}
+
+/// One [`PromptEntry`] as the face's flattened template.
+///
+/// THE TWO OPERATOR FORMS COLLAPSE HERE. A prompt written as a bare `template:` string and one
+/// written as a typed `messages:` list are the same thing to a caller, and the difference is a fact
+/// about how the config was written; flattening it on this side of the face means the renderer has
+/// ONE shape to walk, which is what keeps a second rendering path — the second place a filter gets
+/// forgotten — from existing at all. The bare form becomes exactly the one `user`/text message the
+/// renderer built for it inline before this function existed.
+///
+/// Nothing is normalised and nothing is substituted: both passes read the caller's own arguments and
+/// write the wire, and both are the plane's — see `busbar_contract::catalogue::PromptTemplate`.
+fn prompt_template(entry: &PromptEntry) -> busbar_contract::catalogue::PromptTemplate {
+    use super::config::PromptContentCfg;
+    use busbar_contract::catalogue::{PromptContent, PromptMessage, PromptTemplate};
+
+    let messages = if entry.messages.is_empty() {
+        vec![PromptMessage {
+            role: "user".to_string(),
+            content: PromptContent::Text {
+                text: entry.template.clone().unwrap_or_default(),
+            },
+        }]
+    } else {
+        entry
+            .messages
+            .iter()
+            .map(|m| PromptMessage {
+                role: m.role.clone(),
+                content: match &m.content {
+                    PromptContentCfg::Text { text } => PromptContent::Text { text: text.clone() },
+                    PromptContentCfg::Image { data, mime_type } => PromptContent::Image {
+                        data: data.clone(),
+                        mime_type: mime_type.clone(),
+                    },
+                    PromptContentCfg::Audio { data, mime_type } => PromptContent::Audio {
+                        data: data.clone(),
+                        mime_type: mime_type.clone(),
+                    },
+                    PromptContentCfg::Resource { resource } => PromptContent::Resource {
+                        uri: resource.uri.clone(),
+                        mime_type: resource.mime_type.clone(),
+                        text: resource.text.clone(),
+                        blob: resource.blob.clone(),
+                    },
+                },
+            })
+            .collect()
+    };
+    PromptTemplate {
+        name: entry.namespaced.clone(),
+        server: entry.server.clone(),
+        description: entry.description.clone(),
+        messages,
+    }
+}
+
+/// One concrete [`ResourceEntry`] as the face's content body. The URI echoed is the entry's own,
+/// which for a literal approval IS the one the caller asked for.
+fn concrete_body(res: &ResourceEntry) -> busbar_contract::catalogue::ResourceBody {
+    busbar_contract::catalogue::ResourceBody {
+        uri: res.uri.clone(),
+        mime_type: res.mime_type.clone(),
+        text: res.text.clone(),
+        blob: res.blob.clone(),
+    }
+}
+
+/// One EXPANSION of a [`ResourceTemplateEntry`] as the face's content body.
+///
+/// The URI carried is the one the CALLER ASKED FOR, not the template: a client correlates the
+/// content it received with the URI it sent, and answering with the unexpanded template would hand
+/// back an identifier that names every expansion at once.
+///
+/// The bindings substitute into the content HERE, on the registry's side, because they come off the
+/// registry's own match rather than off the request body — the normalising pass over the result is
+/// still the plane's, and runs after, which is the same substitute-then-strip order every other
+/// caller-influenced text on this plane goes through.
+fn expanded_body(
+    requested_uri: &str,
+    template: &ResourceTemplateEntry,
+    bindings: &std::collections::BTreeMap<String, String>,
+) -> busbar_contract::catalogue::ResourceBody {
+    let mut text = template.text.clone().unwrap_or_default();
+    for (name, value) in bindings {
+        text = text.replace(&format!("{{{name}}}"), value);
+    }
+    busbar_contract::catalogue::ResourceBody {
+        uri: requested_uri.to_string(),
+        mime_type: template.mime_type.clone(),
+        text: Some(text),
+        blob: None,
+    }
+}

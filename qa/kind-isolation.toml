@@ -1642,7 +1642,7 @@ count = "1"
 [[cell]]
 crate = "busbar-contract"
 kind = "plane"
-count = "48"
+count = "52"
 
 [[cell]]
 crate = "busbar-contract"
@@ -1932,7 +1932,7 @@ count = "57"
 [[cell]]
 crate = "busbar-mcp"
 kind = "plane"
-count = "3405"
+count = "3430"
 
 [[cell]]
 crate = "busbar-mcp"
@@ -1952,7 +1952,7 @@ count = "37"
 [[cell]]
 crate = "busbar-mcp"
 kind = "transport"
-count = "1115"
+count = "1114"
 
 [[cell]]
 crate = "busbar-mcp-codec"
@@ -2112,7 +2112,7 @@ count = "2"
 [[cell]]
 crate = "busbar-plane-mcp"
 kind = "codec"
-count = "33"
+count = "34"
 
 [[cell]]
 crate = "busbar-plane-mcp"
