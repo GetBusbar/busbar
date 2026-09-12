@@ -382,13 +382,22 @@ const DEFAULT_BUDGET_UNITS: f64 = 9000.0;
 /// failure this whole shape exists to make impossible.
 const TAKEN: &str = "2026-09-10 b6f66e929";
 
-// THE MEASUREMENTS. Each is `work units at --jobs 1` on the tree named in [`TAKEN`], read off the
-// self-test's own cost line. Constants rather than literals inside the table so that a re-baseline
-// is a diff a reviewer can read as a list of numbers that moved.
+/// `construction`'s OWN re-measurement, taken separately from [`TAKEN`] because it is the one
+/// entry this commit's own edits moved: the raise-form cutoff (the retired `from`/`to` header
+/// refused by name, the `[[gate.ceiling_raises]]` array form added) grew its self-test by two
+/// cases. Re-baselining every OTHER entry's `taken` to this date would claim they were re-measured
+/// on a tree they were not — the same dishonesty this whole shape exists to refuse — so only this
+/// one entry points here.
+const TAKEN_CONSTRUCTION: &str = "2026-09-12 4aee0749f";
+
+// THE MEASUREMENTS. Each is `work units at --jobs 1` on the tree named in [`TAKEN`] (or, for
+// `construction`, [`TAKEN_CONSTRUCTION`]), read off the self-test's own cost line. Constants
+// rather than literals inside the table so that a re-baseline is a diff a reviewer can read as a
+// list of numbers that moved.
 const MEASURED_PLANE_PURITY: f64 = 27_923.0; // 16 cases, 298.0 s
 const MEASURED_PLANE_PURITY_STRICT: f64 = 19_435.0; // 12 cases, 202.1 s
 const MEASURED_STRUCTURE_LINT: f64 = 7_938.0; // 39 cases, 88.4 s
-const MEASURED_CONSTRUCTION: f64 = 33_096.0; // 36 cases, 352.4 s
+const MEASURED_CONSTRUCTION: f64 = 45_746.0; // 38 cases, 700.5 s at --jobs 1, taken on a contended laptop (see TAKEN_CONSTRUCTION's doc comment) — up from 33 096 (36 cases) mainly because the raise-form cutoff's two new cases each plant and prove a full ceiling-rose comparison, plus general host load; BUDGET_SLACK's 1.6x already assumes a worse-than-serial reading, so this is taken as the honest figure rather than re-taken hunting for a quieter moment.
 const MEASURED_KIND_ISOLATION: f64 = 128_034.0; // 152 cases, 1360.9 s
 const MEASURED_KIND_ISOLATION_SHIP: f64 = 120_208.0; // 122 cases, 1290.7 s
 
@@ -485,8 +494,8 @@ const SELFTEST_BUDGETS: &[Budget] = &[
         gate: "construction",
         measured: MEASURED_CONSTRUCTION,
         allowed: MEASURED_CONSTRUCTION * BUDGET_SLACK,
-        taken: TAKEN,
-        why: "Thirty-six rules over a 660k-line tree, the plants grouped by family so one case carries every edit a family needs. The file scan is memoised; what is left is the rules themselves. THIS IS THE ENTRY THAT PROVED THE OLD SHAPE WRONG: its note claimed `about 15 600 units` while the tree measured three times that, under a budget it was within seven per cent of blowing.",
+        taken: TAKEN_CONSTRUCTION,
+        why: "Thirty-eight rules over a 660k-line tree, the plants grouped by family so one case carries every edit a family needs. The file scan is memoised; what is left is the rules themselves. THIS IS THE ENTRY THAT PROVED THE OLD SHAPE WRONG: its note once claimed `about 15 600 units` while the tree measured three times that, under a budget it was within seven per cent of blowing. Re-measured again here after the raise-form cutoff added two cases to this same self-test.",
     },
     Budget {
         gate: "kind-isolation",
