@@ -99,10 +99,16 @@ on:
         type: string
         default: "latest"
       runner:
-        description: "Runner label. Must be NATIVE for the artifact under test (a downloaded aarch64 binary needs an arm runner)."
+        description: >-
+          Runner label. Must be NATIVE for the artifact under test (a downloaded aarch64 binary
+          needs an arm runner). Default is a Latchkey label (LK-7): this reusable workflow lives in
+          busbar and is called with an x86_64 artifact by default, so the default moves off
+          GitHub-hosted with everything else in this migration. An aarch64 (or other
+          Latchkey-unsupported architecture) caller MUST override this input explicitly — the input
+          stays a plain string for exactly that reason, never a hardcoded runs-on.
         required: false
         type: string
-        default: "ubuntu-latest"
+        default: "latchkey-xlarge"
       hook_sidecar:
         description: "hook kind only: 1 to wire a forwarding hook to a sidecar fixture and assert receipt; 0 for an in-process content-intent hook."
         required: false
