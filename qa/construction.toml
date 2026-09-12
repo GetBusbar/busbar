@@ -141,8 +141,8 @@ busbar-voice = ["busbar-voice-codec"]
 [gate.ceiling_raises."cell.74.count"]
 file = "qa/kind-isolation.toml"
 from = 10
-to = 16
-because = "busbar-core x unit: the token-endpoint VERIFY judgement left busbar-substrate's two self-minting OAuth mechanisms and is composed here, on busbar-unit-trust's net -- the surviving copy of the SSRF control, the one the extraction-parity gate pins the dying copy against. The six hits are the dependency line and the one `use` that names it; the substrate took no edge of any class and its own cell fell in the same commit."
+to = 18
+because = "busbar-core x unit: the network-address judgement is the unit's, in two moves on this one branch. The first put the token-endpoint VERIFY judgement here after it left busbar-substrate's two self-minting OAuth mechanisms (10 -> 16). The second, this one, is the LAST two hits: core's `net_guard` module was a glob shim over busbar-substrate's SECOND COPY of that same control -- the copy an anti-drift parity test exists to keep from disagreeing with the first -- and it now globs the unit's, which is the copy that survives. The two hits are the single `pub use` that names it and nothing else; every in-core call site is unchanged, no edge of any class was taken (the `busbar-core -> busbar-unit-*` transitional row and its dep row both pre-date this branch), and the substrate's own cell cannot fall to show it because `busbar-substrate` is struck from the substrate vocabulary as a proper segment prefix of `busbar-substrate-values`. What fell instead is the substrate's reader count: core reaches `busbar_substrate::net_guard` at zero sites now."
 
 # THE SECOND MOVE, the same shape as the first: the third and last place busbar-substrate reached
 # into `net_guard` was the duplex dialer, which resolved a name and judged every answered address

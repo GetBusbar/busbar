@@ -106,7 +106,7 @@ impl CimdFetch for GuardedFetch {
             // THE GUARD: structural name refusals, EXACTLY ONE resolution, every answered address
             // judged, then the pin. All of it core's, including the ordering that keeps the
             // cloud-metadata arm ahead of everything a knob could say.
-            let pin = net_guard::resolve_and_pin_async(&host, port, https, policy)
+            let pin = crate::plane_host::egress::resolve_and_pin_async(&host, port, https, policy)
                 .await
                 .map_err(|e| e.to_string())?;
 

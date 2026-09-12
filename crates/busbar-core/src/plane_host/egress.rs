@@ -15,7 +15,7 @@
 //!   built from the [`EgressDesc`] outbound tail (the `verb`, the packed header set, and the one-shot
 //!   request `body`), the credential is INJECTED host-side (the resolved credential the plane named by
 //!   ref, never plaintext the plane held — see [`inject_credential`]), then resolve-then-pin over
-//!   [`crate::net_guard::resolve_and_pin_async`], a per-hop PINNED client (the a2a lesson — a pooled
+//!   [`resolve_and_pin_async`], a per-hop PINNED client (the a2a lesson — a pooled
 //!   client re-resolves and reopens the DNS-rebind window, so a governed hop pins the address and
 //!   refuses a second lookup), the post-connect observed peer identity handed back in the
 //!   [`EgressHead`], a background streaming task that pumps `resp.chunk().await` into a bounded
@@ -282,6 +282,41 @@ fn guard_policy(scope: u32) -> crate::net_guard::GuardPolicy {
         max_body_bytes: usize::MAX,
         timeout: EGRESS_TIMEOUT,
     }
+}
+
+/// RESOLVE THEN PIN on an async path, through the runtime's own resolver.
+///
+/// THE JUDGEMENT IS THE UNIT'S and is not restated here: the structural name refusals
+/// ([`crate::net_guard::judge_host_name`]) come first so a hostile name never reaches the resolver,
+/// then EXACTLY ONE resolution, then every answered address is judged and the survivor pinned by
+/// [`crate::net_guard::pin_answer`]. What is HERE, and is the only reason this door exists, is the
+/// socket: a unit holds none, and a dispatch path inside a runtime must not block a worker on
+/// `getaddrinfo`. The synchronous twin — [`crate::net_guard::resolve_and_pin`], the unit's, over a
+/// caller-supplied resolver seam — funnels through the same [`crate::net_guard::pin_answer`]. Two
+/// doors, one room, and the room is the unit's.
+///
+/// An IP LITERAL is its own answer: judged and pinned without asking a resolver about it. The
+/// resolver is not merely unnecessary there, it is wrong — a stub that echoes literals back is one
+/// more thing that could disagree with this check.
+pub(crate) async fn resolve_and_pin_async(
+    host: &str,
+    port: u16,
+    https: bool,
+    policy: crate::net_guard::GuardPolicy,
+) -> Result<crate::net_guard::PinnedTarget, crate::net_guard::AddressRefusal> {
+    crate::net_guard::judge_host_name(host, policy)?;
+    if let Ok(addr) = host.parse::<std::net::IpAddr>() {
+        return crate::net_guard::pin_answer(host, port, https, &[addr], policy);
+    }
+    let addrs: Vec<std::net::IpAddr> = tokio::net::lookup_host((host, port))
+        .await
+        .map_err(|e| crate::net_guard::AddressRefusal::Unresolvable {
+            host: host.to_string(),
+            reason: e.to_string(),
+        })?
+        .map(|sa| sa.ip())
+        .collect();
+    crate::net_guard::pin_answer(host, port, https, &addrs, policy)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
@@ -893,9 +928,7 @@ fn run_http_stream(
         // address judged, the survivor pinned.
         let socket_addr = match pinned {
             Some(addr) => addr,
-            None => match crate::net_guard::resolve_and_pin_async(host_name, port, https, policy)
-                .await
-            {
+            None => match resolve_and_pin_async(host_name, port, https, policy).await {
                 Ok(pin) => pin.socket_addr(),
                 Err(refusal) => {
                     let _ = head_tx.send(HeadMsg::Refused(refusal.to_string()));
