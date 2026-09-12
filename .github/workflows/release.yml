@@ -132,7 +132,7 @@ jobs:
   # built.
   plan:
     name: plan (version, staging name, is this name still free)
-    runs-on: ubuntu-latest
+    runs-on: latchkey-small
     outputs:
       version: ${{ steps.p.outputs.version }}
       tag: ${{ steps.p.outputs.tag }}
@@ -248,7 +248,7 @@ jobs:
     name: gate 0 (refuse to release from a red commit)
     needs: plan
     if: ${{ needs.plan.outputs.release == '1' }}
-    runs-on: ubuntu-latest
+    runs-on: latchkey-small
     # Bounded well above a normal CI run (the `check` job with its Postgres and Valkey service
     # containers is the long pole) and well below anything that would sit here all day. Running out
     # is a refusal, not a pass, so a generous bound costs waiting and never correctness.
@@ -494,7 +494,7 @@ jobs:
   resolve-staged:
     name: resolve the staged record (refuse if absent, stale or contradicted)
     needs: [plan, branch-green]
-    runs-on: ubuntu-latest
+    runs-on: latchkey-small
     outputs:
       staging_tag: ${{ steps.r.outputs.staging_tag }}
       digest: ${{ steps.r.outputs.digest }}
@@ -816,7 +816,7 @@ jobs:
   promote-release:
     name: promote ${{ needs['resolve-staged'].outputs.promote_tag }} (tag + publish + prove it landed)
     needs: [plan, resolve-staged, promote-image]
-    runs-on: ubuntu-latest
+    runs-on: latchkey-small
     outputs:
       version: ${{ needs.plan.outputs.version }}
       # Re-exported so the three public-facing jobs below can branch on it WITHOUT taking a
@@ -1014,7 +1014,7 @@ jobs:
     # re-pins itself to the upstream release and publishes; telling them about `1.6.0-rc.1` would
     # fan a soak out to nineteen repos as though it had shipped.
     if: ${{ needs['promote-release'].outputs.is_rc != '1' }}
-    runs-on: ubuntu-latest
+    runs-on: latchkey-small
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Dispatch upstream-release to every listed downstream repo
@@ -1082,7 +1082,7 @@ jobs:
     # ...and not for a release CANDIDATE: an @everyone announcing a soak build is exactly the kind
     # of noise that teaches a community to mute the channel.
     if: ${{ needs['promote-release'].result == 'success' && needs.plan.outputs.release == '1' && needs['promote-release'].outputs.is_rc != '1' }}
-    runs-on: ubuntu-latest
+    runs-on: latchkey-small
     permissions:
       contents: read
     steps:
