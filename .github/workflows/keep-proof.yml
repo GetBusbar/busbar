@@ -10,10 +10,19 @@ name: keep-proof
 # the fact everyone else can read, and the runners are sitting idle while the laptop thermally
 # throttles.
 #
-# So a push of any `keep-*` branch runs the SAME required set CI runs, on GitHub's runners, and
-# writes a ONE-LINE VERDICT back onto the commit as a status named `keep-proof`. The harvest
-# question -- "is this hand-back green?" -- becomes a lookup on the sha instead of an hour of
-# somebody's afternoon.
+# So this workflow runs the SAME required set CI runs, on GitHub's runners, and writes a ONE-LINE
+# VERDICT back onto the commit as a status named `keep-proof`. The harvest question -- "is this
+# hand-back green?" -- becomes a lookup on the sha instead of an hour of somebody's afternoon.
+#
+# NO LONGER FIRES ON EVERY `keep-*` PUSH (LK-ALL-2, this slot). Measured: the landing engine's
+# first Latchkey sweep had all 12 pre-proof jobs REFUSED at the workspace's 20-job cap while only 2
+# CLI jobs were running, because the cap is SHARED with GitHub Actions and this workflow fired 12
+# Latchkey jobs on every `keep-*` push -- two slots pushing within the hour starved the engine's own
+# sweep. Slots now prove their trees with the engine's `scripts/prove-remote.sh` (over ssh, on a
+# warm box, no queue) before handing back, so the `keep-*` push trigger duplicated that proof AND
+# ate the shared cap doing it. See `docs/ci/latchkey-migration.md` §8. This workflow still exists
+# for the branches CI actually gates (integration/dev/qa/main) and for `workflow_dispatch`, so a
+# human or the landing engine can still ask "is this sha green" on demand.
 #
 # WHAT IS AND IS NOT HERE, AND WHY.
 #   HERE:     fmt, clippy -D warnings, workspace build, the workspace test suite SHARDED across five
@@ -42,12 +51,17 @@ name: keep-proof
 
 on:
   push:
-    # `!wip/**` is redundant against `keep-*` TODAY and is here anyway, because the thing that
-    # actually burned the queue was not this pattern: fifteen `wip/` checkpoint branches were pushed
-    # and each spawned a CI run, from the OLDER ci.yml those branches carry, back when every branch
-    # push triggered one. A branch filter only ever binds the copy of the workflow ON that branch —
-    # so the exclusion is stated in both files, where a future widening of either pattern will see it.
-    branches: ['keep-*', '!wip/**']
+    # Same branch set as ci.yml/gate-mutants.yml. `keep-*` (and `wip/*`, `slot-*`) WAS here and is
+    # not any more (LK-ALL-2) -- see the header comment above and §8 of
+    # docs/ci/latchkey-migration.md. This workflow now only auto-fires on the branches CI itself
+    # gates; a slot's own hand-back proof runs on the engine via `scripts/prove-remote.sh`, not here.
+    branches: ['integration/**', 'dev', 'qa', 'main']
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Branch, tag or sha to prove (defaults to the ref this is dispatched on)'
+        required: false
+        default: ''
 
 # One verdict per branch tip. An agent that pushes three fixups in five minutes should pay for the
 # last one, not for all three -- these are five-runner test shards plus an oracle recording, and
@@ -87,6 +101,8 @@ jobs:
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ inputs.ref || github.ref }}
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
         with:
@@ -197,6 +213,8 @@ jobs:
           --health-retries 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ inputs.ref || github.ref }}
       # SERVICE CONTAINERS ARE ADDRESSED BY CONTAINER IP, NOT localhost. On a GitHub-hosted runner
       # a job owned the whole machine, so `ports: - 5432:5432` and `localhost:5432` were the same
       # fact. On busbar-xl FOUR agents share a box and the host's 5432 is one resource: the second
@@ -470,6 +488,7 @@ jobs:
       # depth-1 clone cannot. It is red on a stamp it cannot check rather than passing over it.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
+          ref: ${{ inputs.ref || github.ref }}
           fetch-depth: 0
       # THE AUDIT PINS, WHICH NO CHECKOUT CARRIES. See the identical step in ci.yml for the
       # measurement: pins live under `refs/audit-pins/*` locally and are mirrored to
@@ -522,6 +541,8 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ inputs.ref || github.ref }}
       - name: Design bindings self-test
         run: scripts/design-bindings.sh --selftest
       - name: Design bindings check (existence)
@@ -613,6 +634,8 @@ jobs:
           --health-retries 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ inputs.ref || github.ref }}
       # SERVICE CONTAINERS ARE ADDRESSED BY CONTAINER IP, NOT localhost. On a GitHub-hosted runner
       # a job owned the whole machine, so `ports: - 5432:5432` and `localhost:5432` were the same
       # fact. On busbar-xl FOUR agents share a box and the host's 5432 is one resource: the second
@@ -852,6 +875,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
+          ref: ${{ inputs.ref || github.ref }}
           fetch-depth: 0
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
