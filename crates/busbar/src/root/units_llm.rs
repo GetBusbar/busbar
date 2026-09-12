@@ -1641,54 +1641,22 @@ impl Units for LlmUnit<'_> {
         if let Some(head) = self.served_head() {
             let _ = ctx.record_head(token, head);
         }
-        // THE ACCRUAL IS NOT MADE HERE, and the reason is a fact about this plane rather than a
+        // NOTHING IS PRICED AT THIS STEP, and the reason is a fact about this plane rather than a
         // choice. What the unit is worth is what the response's tap reports, and the tap fills its
         // cell when the BODY is consumed — which on this surface is after the loop's terminal has
         // handed the client its bytes. At this step the cell is on the response and empty, so a
-        // figure read here would be zero on every delivered unit and a meter accruing it would be
-        // accruing a zero it could not tell from a free request.
+        // figure worked out here would be zero on every delivered unit and indistinguishable from
+        // a free request.
         //
-        // WHAT THIS LINE ADDS IS THE PRICING, and it is here because the history is here. The step
-        // assembles what the unit consumed and asks; this closure answers, against the SNAPSHOT this
-        // unit was admitted under and at the instant it arrived — the same snapshot and the same
-        // instant the late reading is resolved at, through the same one expression — and the step
-        // spends the answer against the hold it was handed. A build with no history pinned answers
-        // nothing, which is the honest figure for a node that can price nothing rather than a rate
-        // it invented for itself.
-        //
-        // THE SNAPSHOT TRAVELS, NOT A CARD. Handing this closure one card would have thrown away the
-        // instant: it would price whatever the report said at whatever card the door happened to
-        // hold, and a unit whose price changed underneath it would settle at the wrong entry with
-        // nothing on the record saying so.
-        // THE FEE IS THE KERNEL'S, HERE TOO. The live pricing and the late pricing are two readings
-        // of one unit, so they are answered off one decision: the same `fee_evidence` the exit path
-        // settles from. The step used to hand its own count in on the report and this closure used
-        // to spend it, which is how a plane that could not see the origin came to decide money.
-        let schedule = crate::root::kernel::tariff_of(
-            <LlmPlane as PlaneMeta>::KEY,
-            Some(self.walk.effective_pool(&self.model()).as_str()),
-            None,
-        );
-        let fee = busbar_kernel::teller::charge(
-            &fee_evidence(&self.walk, ctx.origin()),
-            ctx.head(),
-            &schedule.cell,
-        );
-        self.walk.meter(token, usage, &|report| {
-            self.history
-                .as_ref()
-                .map(|history| {
-                    priced_amount(
-                        history,
-                        self.arrived,
-                        usage,
-                        report,
-                        fee,
-                        schedule.scope.clone(),
-                    )
-                })
-                .unwrap_or(0)
-        })
+        // There used to be a pricing closure here, handed DOWN into the plane's Meter step, which
+        // spent its answer against a hold the step is never given on this loop — so the amount was
+        // computed on every unit, carried on the plane's own carry, and settled nothing. Two things
+        // were wrong with it and only one was that it was dead: an amount that travels INTO a plane
+        // is an amount a plane can be read for, and the rule is that a plane never prices. The walk
+        // now hands the counts OUT and the one pricing site — [`priced_amount`] over the cost unit's
+        // card, off the SAME `fee_evidence` the exit path settles from — is reached once, on the
+        // late reading below, where the tap's figures actually exist.
+        self.walk.meter(token, usage)
     }
 
     fn audit(

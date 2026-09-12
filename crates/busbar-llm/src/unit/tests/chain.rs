@@ -842,12 +842,15 @@ async fn drive(
         .response
         .into_response();
     }
-    let hold = match admitted.decision.into_result(seal) {
-        Ok(Admission::Own(hold)) => Some(hold),
+    // THE DOOR'S ANSWER, read for its SHAPE and dropped. The reservation goes no further on this
+    // plane: the kernel's loop keeps it in the unit's own cell from the door to the exit, and the
+    // Meter step below is handed nothing — there is no parameter left for it to be handed through.
+    // Reading it here still holds the door's contract: a client unit owns its admission.
+    match admitted.decision.into_result(seal) {
+        Ok(Admission::Own(_)) | Ok(Admission::ZeroHold) => {}
         Ok(Admission::Accrual(_)) => panic!("a client unit holds its own admission"),
-        Ok(Admission::ZeroHold) => None,
         Err(_) => unreachable!("a refusal carries its rendered bytes and returned above"),
-    };
+    }
 
     // ---- STEP 5, ROUTE ----------------------------------------------------------------------
     // THE READER'S COPY of the meter half, taken before the walk takes it — the same move the
@@ -898,18 +901,15 @@ async fn drive(
     // The half the walk handed BACK where it never dispatched, and the reader's copy where it did.
     let meter_sink = meter_sink.or(meter_half);
     let ctx = meter::MeterCtx::bind(host, meter_sink.as_ref(), lane, &facts, charged);
-    // The rehearsal drives this plane's steps and keeps no books, so what a report is worth is a
-    // question it cannot answer: it holds no card, and inventing one here would be this crate
-    // deciding what a lane's rates are. It answers nothing, and the hold below reaches no exit
-    // path anyway. What the money actually comes to is the composition root's, and it is proven
-    // where the card is.
+    // The rehearsal drives this plane's steps and keeps no books, and it is not asked to: the step
+    // takes no reservation and answers no amount, so there is no card for this crate to invent.
+    // What the money actually comes to is the composition root's, and it is proven where the card
+    // is.
     let metered = meter::meter(
         &UnitToken::mint(seal),
         &UsageToken::mint(seal),
         &ctx,
-        hold,
         &Outcome::Completed,
-        &|_| 0,
     );
     metering.reached = true;
     // The accrual arm's own report of itself. `row` is filled whether the step posted or only
@@ -923,9 +923,6 @@ async fn drive(
         split(facts.usage.as_ref()),
         facts.billing_failed,
     );
-    // The hold reaches no exit path in this rehearsal: the exit is the kernel's, and there is no
-    // plane-side settle. Held to the end of the unit so the accounting is not silently dropped.
-    let _hold = metered.hold;
     let _usage = metered.decision;
 
     // ---- STEP 7, AUDIT ----------------------------------------------------------------------
@@ -1405,8 +1402,6 @@ async fn the_walks_tap_and_the_meter_step_make_one_posting_between_them() {
 /// [`Worth`]: crate::unit::meter::Worth
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_live_carry_hands_the_meter_step_the_meter_half_the_walk_took() {
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
     // THE ONE DELIVERED END WHOSE FIGURES EXIST AT STEP 6 — see the fixture's own doc. A
     // same-protocol relay's tap fills while the CLIENT drains the body, which is after the unit has
     // ended, so binding the step with a meter half is necessary for this arm and not sufficient: the
@@ -1485,34 +1480,16 @@ async fn the_live_carry_hands_the_meter_step_the_meter_half_the_walk_took() {
         "the fixture delivers, so the step below is bound to a lane that answered"
     );
 
-    // THE HOLDER OF THE CARD, standing where the composition root stands. It counts its own calls,
-    // which is the whole instrument: a seam that is never invoked answers zero and a seam that is
-    // invoked twice answers one report two ways.
-    let asked = AtomicUsize::new(0);
-    let seen: std::sync::Mutex<Option<crate::unit::walk::LateReport>> = std::sync::Mutex::new(None);
-    const WORTH: u64 = 4_242;
-    let decision = walk.meter(
-        &UnitToken::mint(&seal),
-        &UsageToken::mint(&seal),
-        &|report| {
-            asked.fetch_add(1, Ordering::SeqCst);
-            *seen.lock().expect("no panic on this path") = Some(report.clone());
-            WORTH
-        },
-    );
+    let decision = walk.meter(&UnitToken::mint(&seal), &UsageToken::mint(&seal));
     assert!(decision.into_result(&seal).is_ok(), "the step proceeds");
 
-    assert_eq!(
-        asked.load(Ordering::SeqCst),
-        1,
-        "the Meter step asks the holder of the card what this unit is worth, exactly once — a zero \
-         here is the step bound with no meter half, which is the arm that was unreachable"
-    );
-    let report = seen
-        .lock()
-        .expect("no panic on this path")
-        .clone()
-        .expect("the ask carries the report it is about");
+    // WHAT THE CARRY KEPT, which is the whole instrument now that no amount comes back: a step
+    // bound with no meter half reports NOTHING, and that `None` is exactly the arm that was dead.
+    // There is no closure to count calls on because there is no seam for a price to arrive
+    // through - the counts go OUT to the cost unit and this plane is never told a figure.
+    let report = walk
+        .reported_at_step()
+        .expect("the Meter step reports what the unit consumed; a `None` here is the dead arm");
     assert_eq!(
         (report.lane.as_str(), report.provider.as_str()),
         (LANE, "test"),
@@ -1534,15 +1511,6 @@ async fn the_live_carry_hands_the_meter_step_the_meter_half_the_walk_took() {
         ],
         "and the split is the tap's own, not a figure the step invented"
     );
-
-    // WHAT THE CARRY KEPT. The step's products used to be dropped on the floor here, which is what
-    // made the dead arm indistinguishable from a live one.
-    assert_eq!(
-        walk.reported_at_step().as_ref(),
-        Some(&report),
-        "the carry keeps the reading the card was asked about"
-    );
-    assert_eq!(walk.priced_at_step(), WORTH, "and the answer it was given");
 
     // ONE ACCRUAL. The walk's tap made it; the step sealed it. Making the arm reachable must not
     // make it POST — that would be this unit's tokens on the ledger twice.

@@ -207,14 +207,7 @@ async fn the_step_accrues_the_same_metering_row_as_the_live_tap() {
         false,
     );
     let (seal, unit_token, usage_token) = tokens();
-    let metered = meter(
-        &unit_token,
-        &usage_token,
-        &ctx,
-        None,
-        &Outcome::Completed,
-        &worth_of,
-    );
+    let metered = meter(&unit_token, &usage_token, &ctx, &Outcome::Completed);
 
     assert_eq!(
         metered.row.as_ref().expect("a served response is metered"),
@@ -304,14 +297,7 @@ fn the_refund_is_decided_by_the_status_and_the_charge() {
         ),
     ] {
         let ctx = MeterCtx::new(&host, None, None, None, status, charged, false);
-        let metered = meter(
-            &unit_token,
-            &usage_token,
-            &ctx,
-            None,
-            &Outcome::Completed,
-            &worth_of,
-        );
+        let metered = meter(&unit_token, &usage_token, &ctx, &Outcome::Completed);
         assert_eq!(metered.refund, refund, "{why}: refund");
         assert!(
             metered.row.is_none(),
@@ -341,12 +327,10 @@ fn a_stream_that_died_bills_zero_tokens_and_keeps_the_fee_it_earned() {
         &unit_token,
         &usage_token,
         &ctx,
-        None,
         &Outcome::Failed(
             StepName::Route,
             busbar_caps::ReasonCode::DestinationUnreachable,
         ),
-        &worth_of,
     );
     assert!(!metered.refund, "the client saw a success");
     assert!(metered.row.is_none(), "nothing was accrued");
@@ -364,11 +348,6 @@ fn a_stream_that_died_bills_zero_tokens_and_keeps_the_fee_it_earned() {
 fn the_step_has_the_meters_shape() {
     let _: MeterStep = meter;
 }
-
-/// The two token figures the priced accrual is pinned on, chosen so no arithmetic over them
-/// coincides with their sum: a hundred in and fifty out.
-const PRICED_INPUT: u64 = 100;
-const PRICED_OUTPUT: u64 = 50;
 
 /// The card the accrual is priced against, keyed by the SERVING lane's config name — the only
 /// key space a rate card is allowed to use, and the same key the metering row attributes to.
@@ -391,34 +370,6 @@ fn priced_card() -> busbar_core::cost::CostModel {
         0,
         &Default::default(),
     )
-}
-
-/// What that card prices this usage at: 100 × 2_000 + 50 × 6_000 nano-units.
-const PRICED_NANOS: u64 = 500_000;
-
-/// THE HOLDER OF THE CARD, as these tests stand in for it.
-///
-/// The step names no rate, so what a report is worth arrives from outside — this is the
-/// composition root's half of that seam, spelled with the same two literals `priced_card` is
-/// built from and reading the REPORT the step assembled rather than the response it came from.
-///
-/// That is deliberate: a step that handed over an empty report, or one keyed by names a card
-/// cannot look up, would be answered zero here, and the spend assertions below would fail. So
-/// they are assertions about the report as much as about the accrual.
-fn worth_of(report: &crate::unit::walk::LateReport) -> u64 {
-    report
-        .usage
-        .usage_units
-        .iter()
-        .map(|(class, quantity)| {
-            let per_unit = match class.as_str() {
-                busbar_contract::DIM_TOKENS_IN => 2_000,
-                busbar_contract::DIM_TOKENS_OUT => 6_000,
-                _ => 0,
-            };
-            quantity * per_unit
-        })
-        .sum()
 }
 
 /// A rig whose deployment carries [`priced_card`], one lane named for it, and governance — so
@@ -457,173 +408,24 @@ fn priced_rig() -> (
     (builder.build(), std::sync::Arc::new(key))
 }
 
-/// THE ACCRUAL IS MONEY, AND THE STEP IS TOLD WHAT IT IS. What the step spends against the
-/// unit's reservation is what the holder of the card answered over the report the step
-/// assembled, in the nano-units the reservation is in — never the sum of the token counts,
-/// which is a figure in no unit at all.
-///
-/// Two things at once, and that is deliberate. The spend is the answer, so the arithmetic in
-/// this file is a pass-through. And the answer is derived from the REPORT — a step that handed
-/// over an empty one, or one keyed by names a card cannot look up, would be answered zero and
-/// this assertion would fail. So it pins the report as much as the accrual.
-///
-/// A reservation is nano-units. A usage report carries one quantity per meter class, each in
-/// that class's own unit, and adding them across classes gives a number that is not comparable
-/// with the reservation it is subtracted from. So a step that accrued the sum would leave the
-/// residual the exit releases, the overdraft it carries out and every legacy row derived from
-/// the pair wrong by whatever the classes happened to be — and here it would be wrong by a
-/// factor of more than three thousand in the cheap direction.
-///
-/// The literals: 100 input tokens and 50 output tokens priced at 2_000 and 6_000 nano-units
-/// each is 500_000 nano-units of value delivered. Today the step accrues 150.
-#[test]
-fn the_accrual_against_the_reservation_is_the_priced_total_not_the_token_count() {
-    use busbar_caps::{step::Admit as AdmitStep, AdmitToken, KernelSeal, PrincipalId};
-
-    let (app, key) = priced_rig();
-    let (host, rt) = crate::engine::test_host_rt(&app);
-    let reported = busbar_substrate::billing::TokenUsage {
-        input: PRICED_INPUT,
-        output: PRICED_OUTPUT,
-        ..Default::default()
-    };
-    let sink = sink(&host, &key, busbar_substrate::store::now());
-    let tables = crate::engine::EngineTables::new(&rt);
-    let lane = &tables.lanes()[0];
-    let ctx = MeterCtx::new(
-        &host,
-        Some(&sink),
-        Some(lane),
-        Some(&reported),
-        200,
-        true,
-        false,
-    );
-
-    let seal = KernelSeal::acquire_for_kernel();
-    let unit_token = UnitToken::<Meter>::mint(&seal);
-    let usage_token = UsageToken::mint(&seal);
-    // A reservation wide enough that the priced spend fits inside it, so the figure under test
-    // is the accrual itself and not a top-up or an overdraft reacting to it.
-    let hold = busbar_caps::Hold::open(
-        &AdmitToken::<AdmitStep>::mint(&seal),
-        PrincipalId::new(&key.id),
-        1_000_000,
-    );
-    let metered = meter(
-        &unit_token,
-        &usage_token,
-        &ctx,
-        Some(hold),
-        &Outcome::Completed,
-        &worth_of,
-    );
-
-    let hold = metered.hold.expect("the hold rides back out to the exit");
-    assert_eq!(
-        hold.accrued(),
-        PRICED_NANOS,
-        "the step spends what it was told the report was worth, not the sum of the token counts"
-    );
-    assert_eq!(
-        hold.remaining(),
-        1_000_000 - PRICED_NANOS,
-        "and what the exit releases is the reservation less that same money figure"
-    );
-
-    // The report is untouched by the pricing: it still carries one line per non-zero tier, in
-    // the classes' own units, because the lines are what the posting is evidence FOR.
-    let usage = metered
-        .decision
-        .into_result(&seal)
-        .expect("a delivered response proceeds");
-    assert_eq!(usage.lines().len(), 2, "two tiers reported, two lines");
-    assert_eq!(
-        usage.total(),
-        PRICED_INPUT + PRICED_OUTPUT,
-        "the quantity sum is still there to be read; it is simply not the money"
-    );
-}
-
-/// A SPEND THAT RUNS PAST THE RESERVATION IS AN OVERDRAFT, and the hold has to carry it out.
-///
-/// The reservation is the size of a guess made at the door, before a single upstream token
-/// existed. A guess being too small is not a reason to take back an admission — the value was
-/// delivered — so the spend lands in full and whatever nothing could back is carried into the
-/// next window's admissible budget. That carry is the ONLY record that the deployment was owed
-/// more than it reserved; the exit settles the hold, and a hold whose overdraft is zero settles
-/// as a request that fitted.
-///
-/// This step cannot draw a top-up. Drawing from the principal's slice is the admission unit's
-/// act and this step holds no slice, so the headroom it spends against is zero and the whole
-/// shortfall is carried. What it must not do is look away.
-///
-/// The literals: a reservation of 100_000 nano-units against 500_000 of delivered value, priced
-/// by the same card as the accrual test above. 400_000 of it is unbacked.
-#[test]
-fn a_spend_past_the_reservation_is_carried_out_as_an_overdraft() {
-    use busbar_caps::{step::Admit as AdmitStep, AdmitToken, KernelSeal, PrincipalId};
-
-    let (app, key) = priced_rig();
-    let (host, rt) = crate::engine::test_host_rt(&app);
-    let reported = busbar_substrate::billing::TokenUsage {
-        input: PRICED_INPUT,
-        output: PRICED_OUTPUT,
-        ..Default::default()
-    };
-    let sink = sink(&host, &key, busbar_substrate::store::now());
-    let tables = crate::engine::EngineTables::new(&rt);
-    let ctx = MeterCtx::new(
-        &host,
-        Some(&sink),
-        Some(&tables.lanes()[0]),
-        Some(&reported),
-        200,
-        true,
-        false,
-    );
-
-    let seal = KernelSeal::acquire_for_kernel();
-    // A reservation deliberately too small for what the response turned out to be worth.
-    const RESERVED: u64 = 100_000;
-    let hold = busbar_caps::Hold::open(
-        &AdmitToken::<AdmitStep>::mint(&seal),
-        PrincipalId::new(&key.id),
-        RESERVED,
-    );
-    let metered = meter(
-        &UnitToken::<Meter>::mint(&seal),
-        &UsageToken::mint(&seal),
-        &ctx,
-        Some(hold),
-        &Outcome::Completed,
-        &worth_of,
-    );
-
-    let hold = metered.hold.expect("the hold rides back out to the exit");
-    assert_eq!(
-        hold.accrued(),
-        PRICED_NANOS,
-        "the spend lands in full: the value was delivered"
-    );
-    assert_eq!(
-        hold.overdraft(),
-        PRICED_NANOS - RESERVED,
-        "and what nothing backed is carried out on the hold, not discarded"
-    );
-    assert_eq!(
-        hold.remaining(),
-        0,
-        "a reservation spent past its end has nothing left to release"
-    );
-}
+// THE TWO PLANE-SIDE MONEY CELLS THAT USED TO SIT HERE ARE GONE WITH THE THING THEY PINNED.
+//
+// `the_accrual_against_the_reservation_is_the_priced_total_not_the_token_count` and
+// `a_spend_past_the_reservation_is_carried_out_as_an_overdraft` drove this step with a
+// reservation and a pricing closure and asserted what it SPENT. Both were true of the step as it
+// was written and neither is a statement about this plane any more: the step takes no reservation
+// and is told no amount, so there is nothing here to spend and no figure to spend it with. A
+// reservation is spent where it is held -- the kernel's own cell, from the door to the exit -- and
+// what a report is worth is the cost unit's answer over the counts this step reports. The
+// arithmetic those two cells pinned is pinned where the card is -- the crate that owns it, and the
+// composition root's ledger-identity cells -- and naming that crate from here would be this plane
+// learning which unit prices it, which is the coupling the kind matrix counts.
 
 /// SEALING IS NOT POSTING, and the step has to say which it did.
 ///
 /// A unit reaches this step in one of two states. Either the walk was handed the admission's
 /// meter half and its tap has already made this unit's one accrual — in which case the step
-/// SEALS: it reports the row and spends the money, and it must not touch the ledger a second
-/// time. Or the walk held no meter half, and the step IS the accrual. `MeterFacts::accrued` is
+/// SEALS: it reports the row and must not touch the ledger a second time. Or the walk held no meter half, and the step IS the accrual. `MeterFacts::accrued` is
 /// the fact that separates them, and the walk carries the answer forward as `posted_here` so the
 /// rehearsal can assert one posting per unit.
 ///
@@ -664,9 +466,7 @@ fn the_step_says_whether_it_posted_or_only_sealed() {
             true,
             false,
         ),
-        None,
         &Outcome::Completed,
-        &worth_of,
     );
     assert_eq!(
         accrued(&app1, &key1.id, charged_at).ledger_tokens,
@@ -696,9 +496,7 @@ fn the_step_says_whether_it_posted_or_only_sealed() {
             &facts,
             true,
         ),
-        None,
         &Outcome::Completed,
-        &worth_of,
     );
     let gov2 = app2.governance.clone().expect("governance is configured");
     gov2.flush_metering();

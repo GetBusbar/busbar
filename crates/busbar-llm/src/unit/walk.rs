@@ -108,13 +108,10 @@ struct Carry {
     posted_here: bool,
     /// WHAT THE UNIT CONSUMED, as the Meter step assembled it at step 6.
     ///
-    /// The step's own report, kept rather than dropped. It is the reading the card-holder was asked
-    /// to price, and holding it is what lets the seam be observed at all: a report the step builds
+    /// The step's own report, kept rather than dropped. It is the reading the cost unit is handed
+    /// to price, and holding it is what lets the step be observed at all: a report the step builds
     /// and the carry throws away is a report no test can tell apart from one that was never built.
     step_report: Option<LateReport>,
-    /// WHAT THE HOLDER OF THE CARD ANSWERED over that report, in nano-units. Zero where there was
-    /// nothing to price, which is the honest figure for a unit that reached no lane.
-    priced: u64,
     /// What the Meter step said about the refund. The FEE is not here: it is the kernel's one
     /// decision, taken in the composition root off the evidence the exit path settles from.
     refund: bool,
@@ -407,16 +404,6 @@ impl Walk {
         self.lock().step_report.clone()
     }
 
-    /// WHAT THAT REPORT WAS WORTH, as the holder of the card answered it, in nano-units.
-    ///
-    /// The plane holds no rate and works out no amount: this is the answer the composition root's
-    /// own pricing expression gave, carried back so the figure the step was told is a figure the
-    /// unit can be asked about. Zero where nothing was reported.
-    #[must_use]
-    pub fn priced_at_step(&self) -> u64 {
-        self.lock().priced
-    }
-
     /// Whether the Audit step owes a refund of the fee base.
     #[must_use]
     pub fn refund(&self) -> bool {
@@ -684,14 +671,11 @@ impl Walk {
     /// rehearsal's admitted fixtures — seal the accrual the walk's tap already made, or make it
     /// where the walk held no meter half — and answer with the report the posting is made against.
     ///
-    /// `worth` is the holder of the card, passed down from the composition root. Nothing on this
-    /// side of it names a rate: the step assembles what the unit consumed and is told a total.
-    pub fn meter(
-        &self,
-        token: &UnitToken<Meter>,
-        usage: &UsageToken,
-        worth: crate::unit::meter::Worth<'_>,
-    ) -> Decision<Meter> {
+    /// NOTHING HERE IS PRICED. The step assembles what the unit consumed and the carry keeps it;
+    /// what it is worth is asked of the cost unit by the composition root, off this report. There
+    /// is no seam into this file for an amount to come back through, which is what makes "the
+    /// plane never prices" a property of the shape rather than of the discipline of its callers.
+    pub fn meter(&self, token: &UnitToken<Meter>, usage: &UsageToken) -> Decision<Meter> {
         let mut carry = self.lock();
         let charged = carry.charged;
         let Some(facts) = carry.facts.as_ref() else {
@@ -733,23 +717,18 @@ impl Walk {
         let tables = crate::engine::EngineTables::new(&self.rt);
         let lane = facts.lane.and_then(|i| tables.lanes().get(i));
         let ctx = MeterCtx::bind(&self.host, carry.meter_sink.as_ref(), lane, &facts, charged);
-        let metered =
-            crate::unit::meter::meter(token, usage, &ctx, None, &Outcome::Completed, worth);
+        let metered = crate::unit::meter::meter(token, usage, &ctx, &Outcome::Completed);
         // What the ACCRUAL ARM reported about itself. `row` is filled whether this step posted or
         // only sealed, so reading it here called every sealed unit a posting — and this value is
         // what the rehearsal asserts one-posting-per-unit on.
         carry.posted_here = metered.posted;
         carry.refund = metered.refund;
-        // WHAT THE STEP REPORTED AND WHAT IT WAS TOLD IT WAS WORTH, kept rather than dropped. Both
-        // used to fall on the floor here, which is what made the whole seam unobservable: a report
-        // the step assembles and the carry discards cannot be told apart from one it never built.
+        // WHAT THE STEP REPORTED, kept rather than dropped. It used to fall on the floor here,
+        // which is what made the accrual arm unobservable: a report the step assembles and the
+        // carry discards cannot be told apart from one it never built. It is also the ONLY thing
+        // the step answers with that a holder can read, which is the point — counts, never a
+        // figure.
         carry.step_report = metered.report;
-        carry.priced = metered.priced;
-        // The hold rides back out exactly as it arrived plus its accrual. On this loop the step is
-        // handed none — the kernel put the unit's reservation in its own cell at the door and the
-        // exit is the one place it comes out again — so there is nothing here to settle and nothing
-        // to drop. See this method's header.
-        drop(metered.hold);
         metered.decision
     }
 }
