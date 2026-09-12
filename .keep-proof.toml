@@ -1,21 +1,22 @@
 # WHAT THIS HAND-BACK ASKS keep-proof TO PROVE.
 #
 # .keep-proof.toml is read by .github/workflows/keep-proof.yml at the root of a `keep-*` branch, and
-# by scripts/prove-remote.sh when the same legs are run on a fleet box. It scopes the two expensive
-# legs of the run to what the branch actually touched, so a verdict says something specific instead
-# of "everything, slowly". The INTEGRATION tree carries no such file — it is a keep-branch artefact,
-# and this branch is a keep branch.
+# by scripts/prove-remote.sh / scripts/prove-latchkey.sh when the same legs are run on a runner. It
+# scopes the two expensive legs to what the branch actually touched, so a verdict says something
+# specific instead of "everything, slowly". The INTEGRATION tree carries no such file — it is a
+# keep-branch artefact, and this branch is a keep branch.
 #
-#   families — a regex handed to the shadow oracle's `--id-filter`. This branch measures the SECOND
-#              request loop (the substrate's) against the one the kernel owns, and adds one cell to
-#              the kernel's stage profiler. Nothing on a money path moves, so the families in scope
-#              are the ones that would notice if something had: `teller` is the loop itself, the
-#              `billing`/`ledger` pair is every posting a unit that rides it settles onto,
-#              `admin.ops` is the other surface already mounted on the kernel's loop, and
-#              `neutrality`/`boot` are here because a deployment must not be able to tell from a
-#              route set or a boot line that anything changed.
-#   tests    — the two loops and everything between them: the kernel that owns the one loop, the
-#              substrate that holds the second, the core and the binary that compose both, every
-#              plane crate that rides the substrate's gauntlet today, and `xtask` for the gates.
-families = '^(teller|billing|ledger|admin\.ops|neutrality|boot)([|.]|$)'
-tests = ["busbar", "busbar-kernel", "busbar-substrate", "busbar-core", "busbar-plane-llm", "busbar-plane-mcp", "busbar-plane-a2a", "busbar-plane-voice", "xtask"]
+#   families — a regex handed to the shadow oracle's `--id-filter`. This branch gives the kernel's
+#              one loop an OPENING — `open_unit` / `serve_held` / `refuse_unit` — for an arrival
+#              whose shape is a long-lived session. No caller moves onto it here, so nothing on a
+#              money path moves; the families in scope are the ones that would notice if something
+#              had. `teller` is the loop itself; `billing`/`ledger` is every posting a unit that
+#              rides it settles onto; `voice`/`streams` are the session-shaped families the opening
+#              exists for and the first place a byte would show; `neutrality`/`boot` are here
+#              because a deployment must not be able to tell from a route set or a boot line that
+#              anything changed.
+#   tests    — the loop's own crate, the substrate whose session opener this face is aimed at, the
+#              binary that composes both, the voice plane and its crate as the session-shaped
+#              reader, and `xtask` for the gates.
+families = '^(voice|streams|teller|billing|ledger|boot|neutrality)([|.]|$)'
+tests = ["busbar", "busbar-kernel", "busbar-substrate", "busbar-voice", "busbar-plane-voice", "xtask"]
