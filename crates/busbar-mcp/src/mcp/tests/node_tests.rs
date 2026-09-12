@@ -14,17 +14,21 @@
 use super::double::install_test_node;
 use super::{installed, Carrier};
 
-/// **`tools/list` HAS LEFT THE DISPATCH TABLE**, and the seam is what answers it.
+/// **THE CLASSES THAT HAVE LEFT THE DISPATCH TABLE**, and the seam is what answers them.
 ///
 /// The structural half of the move, asserted where it cannot be faked: the node's own table names a
 /// document for this class, which is only true for a class whose arm is gone — `document_for`'s rows
 /// and `method::dispatch`'s arms are complements by construction, and a class in both would be two
 /// serving paths.
 #[test]
-fn tools_list_is_served_through_the_node_and_no_longer_by_the_dispatch_table() {
+fn the_moved_classes_are_served_through_the_node_and_no_longer_by_the_dispatch_table() {
     assert!(
         super::document_for(busbar_plane_mcp::ops::OP_TOOLS_LIST).is_some(),
         "tools/list is a class the node has taken, so its document is named in the node's table"
+    );
+    assert!(
+        super::document_for(busbar_plane_mcp::ops::OP_RESOURCES_LIST).is_some(),
+        "resources/list is the second class the node has taken, so its document is named here too"
     );
     assert!(
         super::document_for(busbar_plane_mcp::ops::OP_TOOL_CALL).is_none(),
