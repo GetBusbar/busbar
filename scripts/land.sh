@@ -222,8 +222,6 @@ hold-discipline:cancellation-before-await
 hold-escapes
 kernel-seal-impls
 one-pick-site
-one-pricing-site:fee-fields
-plane-no-money
 ports-only-tests:busbar-llm
 request-path-fn-size
 terminal-doors-in-audit-step

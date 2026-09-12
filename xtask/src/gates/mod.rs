@@ -163,8 +163,19 @@ pub const CONSTRUCTION_STANDING_REDS: &[&str] = &[
     "hold-escapes",
     "kernel-seal-impls",
     "one-pick-site",
-    "one-pricing-site:fee-fields",
-    "plane-no-money",
+    // STRUCK, both of them, in the commit that made them green. A standing red is an allowance
+    // for a row that is red TODAY, and a row that has gone green and kept its entry is an
+    // allowance nobody is using and nobody notices when it starts being used again -- so the
+    // landing engine refuses a tree whose list names a row that passes, by name, and that refusal
+    // is what carried these two out.
+    //
+    //   `one-pricing-site:fee-fields` -- the four fee-field reads outside the crate that owns the
+    //   card are gone; the tariff's amounts are applied where the card lives.
+    //   `plane-no-money` -- the llm plane's Meter step took a pricing closure, answered an amount
+    //   in nano-units, spent it and carried it on its own value. The seam is deleted: the step has
+    //   no parameter an amount could arrive through and no field one could leave on. The walk
+    //   hands the cost unit COUNTS, and the one pricing site is the composition root's late
+    //   reading, off the same evidence the exit settles from.
     "ports-only-tests:busbar-llm",
     "request-path-fn-size",
     "terminal-doors-in-audit-step",
