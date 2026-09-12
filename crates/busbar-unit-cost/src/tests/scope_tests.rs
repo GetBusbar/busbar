@@ -134,7 +134,11 @@ fn the_row_encoding_round_trips_and_an_absent_field_reads_as_the_node() {
     );
     assert_eq!(TariffScope::node().encoded(), "default");
     assert_eq!(TariffScope::pool("busy").encoded(), "pool:busy");
-    assert_eq!(TariffScope::decode("dialect:openai"), None, "not a scope");
+    // A KIND THE GRAMMAR DOES NOT KNOW IS NOT A SCOPE, and the key it carries is not read at all.
+    // It used to be spelled with a vendor's name, which made this crate the one unit in the tree
+    // that knew a dialect's name -- and a unit naming a dialect is the coupling the kind matrix
+    // exists to catch, whether it is asserting the name is refused or accepting it.
+    assert_eq!(TariffScope::decode("dialect:x"), None, "not a scope");
     assert_eq!(TariffScope::decode("pool:"), None, "a pool with no name");
     assert_eq!(
         TariffScope::decode("default:x"),

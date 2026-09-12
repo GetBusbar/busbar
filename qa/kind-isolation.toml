@@ -1336,7 +1336,7 @@ kind = "caps"
 # (`tests/kernel.rs:528,542`); and the journal-row cell that proves a tier-scoped settlement records
 # `tier` on the chain imports the caps vocabulary its fixture already needed once more, inline at the
 # test that needed it (`tests/durability.rs`). Four call sites, one caps name.
-count = "331"
+count = "327"
 
 [[cell]]
 crate = "busbar"
@@ -1370,7 +1370,7 @@ kind = "control"
 # 1076 -> 1078: the fee schedule's install and its holder in the composition root. Boot closes over
 # the deployment's `tariff:` section and hands the root a RESOLVER; the holder answers it. Control
 # vocabulary because the root is where a deployment's configuration becomes a running node.
-count = "1100"
+count = "1102"
 
 [[cell]]
 crate = "busbar"
@@ -1385,7 +1385,7 @@ kind = "kernel"
 # the lines up instead of reading a field, and they name the kernel's own `settle_lines` to do it.
 # 173 -> 168: FIVE FEWER, as measured. The five hand-written fee-evidence assemblies are gone and
 # each leg relays two declarations instead, so the root names less kernel vocabulary than it did.
-count = "181"
+count = "180"
 
 [[cell]]
 crate = "busbar"
@@ -1407,7 +1407,7 @@ kind = "plane"
 # registry key the plane itself declares. A FACE READ, not a plane name the root learned: the root
 # asks the same question of all five in the same words, and a sixth answers it without this file
 # changing.
-count = "1927"
+count = "1935"
 
 [[cell]]
 crate = "busbar"
@@ -1450,7 +1450,7 @@ kind = "unit"
 # the line that needs it. The isolation scanner counts the crate's long name and its short
 # hyphenated form as two separate hits on the same line, which is why the true count of NEW call
 # sites — thirty-six — books here as double.
-count = "1271"
+count = "1193"
 
 [[cell]]
 crate = "busbar-a2a"
@@ -1795,7 +1795,7 @@ kind = "caps"
 # — one import line — and the three rows in the existing batteries that used to set one located
 # quantity now build one dimension instead. The library does not move: `teller.rs` names the same
 # import list it already had, one name wider.
-count = "75"
+count = "77"
 
 [[cell]]
 crate = "busbar-kernel"
@@ -1833,7 +1833,7 @@ count = "3"
 [[cell]]
 crate = "busbar-llm"
 kind = "caps"
-count = "47"
+count = "43"
 
 [[cell]]
 crate = "busbar-llm"
@@ -1903,7 +1903,7 @@ count = "60"
 [[cell]]
 crate = "busbar-llm-codec"
 kind = "plane"
-count = "285"
+count = "286"
 
 [[cell]]
 crate = "busbar-llm-codec"
@@ -2723,7 +2723,7 @@ count = "165"
 [[cell]]
 crate = "busbar-unit-admission"
 kind = "caps"
-count = "50"
+count = "49"
 
 [[cell]]
 crate = "busbar-unit-admission"

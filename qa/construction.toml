@@ -644,8 +644,8 @@ because = "the same two: 60 on the caps/contract pair for the declaration and 11
 [[gate.ceiling_raises]]
 key = "cell.busbar.kernel.count"
 file = "qa/kind-isolation.toml"
-by = 9
-because = "busbar_kernel::teller::Charge carried WHOLE into the llm leg's pricing instead of `.transaction` being picked off at the call site — a visit and a transaction are two counts, the pricing site needs both, and handing one over and re-deriving the other is the plane deciding a count again — plus the root cell that drives the schedule holder through `TariffCell` and `DisputePolicy`. Measured 171 -> 182, and 180 once the holder began answering with the scope beside the cell: the root cell names the holder's own answer where it used to name the kernel's type twice. The `by` is the 9 the face measures on THIS tree, not the 11 it measured on the one before it."
+by = 2
+because = "busbar_kernel::teller::Charge carried WHOLE into the llm leg's pricing instead of `.transaction` being picked off at the call site — a visit and a transaction are two counts, the pricing site needs both, and handing one over and re-deriving the other is the plane deciding a count again. 2 = the face's 9 less the 7 the LIVE pricing site gave back when it was deleted: the llm leg used to build a schedule and a `Charge` at its Meter step to feed a closure the plane spent, and that closure priced on every unit and settled nothing (see `plane-no-money`'s drain). The face survives on the LATE reading, which is the one that reaches a posting, and there it is two `busbar_kernel::teller::Charge` annotations and nothing else. A `by` is what the face measures on THIS tree, and the tree it measured 9 on is not this one."
 
 [[gate.ceiling_raises]]
 key = "cell.busbar.unit.count"
@@ -653,11 +653,11 @@ file = "qa/kind-isolation.toml"
 by = 6
 because = "`busbar_unit_cost::charge_minor` and the card's terms accessor in the composition root's ONE card relay and in the cells that drive it. Measured 1193 -> 1199 — LOWER than the 1205 the first writing measured, because the amounts stopped being a second record the root had to name and became the contract data it already speaks."
 
-[[gate.ceiling_raises]]
-key = "cell.busbar-core.unit.count"
-file = "qa/kind-isolation.toml"
-by = 2
-because = "`busbar_unit_cost::RESERVED_CLASSES` in the one-fee-two-numbers check: which dimensions a configured `rate_card:` already prices is the CARD's answer and there is no second list of those four names anywhere. Measured 37 -> 39 — the 51 the first writing measured was a translation function in the retiring engine, and it is gone: the terms are contract data now and the card takes them unchanged."
+# STRUCK: `cell.busbar-core.unit.count` +2 for `busbar_unit_cost::RESERVED_CLASSES` in the
+# one-fee-two-numbers check. The symbol is DELETED — the plane never prices, so there is no reserved
+# class list for anything outside the card to read — and a declaration that names a face the tree no
+# longer carries is a declaration excusing lines that are not there. The key still rises (10 -> 37)
+# and the three entries below it measure all 27 of it.
 
 [[gate.ceiling_raises]]
 key = "cell.busbar-core.plane.count"
@@ -2148,5 +2148,61 @@ because = "the same face on the union, NET of what naming it deleted: the card's
 [[gate.ceiling_raises]]
 key = "cell.busbar-core.plane.count"
 file = "qa/kind-isolation.toml"
-by = 20
-because = "the refusal for a plane-scoped amount no unit of that plane would pay. `TariffCfg::shadowed_plane_amounts` and the validator arm that reads it are a rule ABOUT the plane scope of the `tariff:` section — the collision is between `tariff.plane.<k>` and a narrower cell, and a refusal that could not say the word could not name which two cells collide or which edit resolves it. The counts half and the amounts half fold one order; the card carries one entry per configured scope; a plane amount beside a pool or tier cell is a schedule that shape cannot carry, and it was silently charging that plane's units everywhere except inside the scoped pool. The cells that drive it name the scope in the same breath."
+by = 18
+because = "18 = the face's 20 less the 2 the retiring engine's `cost.rs` gave back in the same landing, which is what the tree actually rose by and therefore what a `by` says. The face itself is the refusal for a plane-scoped amount no unit of that plane would pay. `TariffCfg::shadowed_plane_amounts` and the validator arm that reads it are a rule ABOUT the plane scope of the `tariff:` section — the collision is between `tariff.plane.<k>` and a narrower cell, and a refusal that could not say the word could not name which two cells collide or which edit resolves it. The counts half and the amounts half fold one order; the card carries one entry per configured scope; a plane amount beside a pool or tier cell is a schedule that shape cannot carry, and it was silently charging that plane's units everywhere except inside the scoped pool. The cells that drive it name the scope in the same breath."
+
+# ── TARIFF-8: THE KIND-MATRIX CELLS THIS STACK ROSE AND DID NOT DECLARE ──────────────────────────
+#
+# Every entry below is measured the same way: the cell's count at this branch's base cd77af378
+# against its count at this tip, with the per-file deltas read off `cargo xtask gate kind-isolation
+# --report` on both trees. Each names what the remaining lines ARE. They are the stack's own rises
+# -- P3/P5, the status-leg landing, TARIFF-4/5b, TIER-1 and the TARIFF-7 fold -- declared in chain
+# form as each landed, with the tail nobody had counted yet.
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-kernel.caps.count"
+file = "qa/kind-isolation.toml"
+by = 1
+because = "68 -> 77 and the two chain-form entries above cover 8 of it. The 1 is the kernel's own cells naming `busbar_caps` for the things the money landing gave the loop to answer: `fee_identity.rs` (+3), `status_leg.rs` (+2), `body_under_the_hold.rs` and `verified_set_survives.rs` (+1 each) and `loop_battery.rs` (+5) are new or grown cells over the per-unit record, the answer's head and the fee decision, against `teller.rs` (-5) and `arena_and_masking.rs` (-1), which gave caps vocabulary BACK when the record took it off the loop's signatures. It is caps and not a unit's because every one of them is a token, a step name or a posting flag the kernel mints and a plugin never sees."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-unit-egress.contract-transport.count"
+file = "qa/kind-isolation.toml"
+by = 1
+because = "55 -> 58 and the chain-form entry above covers 2 of it. The 1 is the THIRD read of `busbar_contract_transport::wire::StatusClass` in this crate: the egress unit's `attempt.rs` classifies the frame it actually relayed, and the two body cells (`body_tests.rs`, `body_pump_tests.rs`) drive that classification over a body that drains after the walk returns. It is one more read of a face the transport contract already declared and this crate already depended on -- the status leg -- not a new edge, which is why it is one line and not a face declaration of its own."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-unit-usage.caps.count"
+file = "qa/kind-isolation.toml"
+by = 3
+because = "19 -> 22, undeclared until now. The 3 are the DECLARED DIMENSION vocabulary reaching the unit that accrues: `busbar_caps::{MeterClassId, QuantitySource}` in `accrual.rs` and the two the cell beside it drives. This is the token-dimensions face landing on the accrual side -- a usage line is a quantity in a class a PLANE declared and a source that says where the figure came from, and before it this unit took a bare number whose class and provenance were the caller's business. The class ids are caps vocabulary because the kernel mints them and the plane names them; the accrual unit only counts against them."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.caps.count"
+file = "qa/kind-isolation.toml"
+by = 1
+because = "302 -> 327 and the five entries above cover 24 of it. The 1 is the composition root's new byte-identity cells naming `busbar_caps::PostingFlags` where the recorded corpus is driven through the kernel's own decision: `fee_one_decision.rs` (+3) and `fee_identity_recorded_corpus.rs` (+2) both read the mark off a `Charge`, against `units_llm.rs` (-5), which gave five caps names back when the llm leg's live pricing site was deleted. A flag is the kernel's word for what it noticed about a posting, and a cell that proves the money did not move has to be able to say the mark did not move either."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.control.count"
+file = "qa/kind-isolation.toml"
+by = 16
+because = "1063 -> 1102 and the four entries above cover 23 of it. The 16 are the ADMIN SURFACE reached by the tariff landing exactly as every other plane is: `units_admin/tests/units_admin.rs` (+20 `admin`, +3 `busbar-plane-admin`) and `units_admin/mod.rs` (+9, +2) grow because an admin request is a visit that answers to zero ledger columns and the schedule has to say so at the same site it says what a billing plane costs; `kernel.rs` (+3, +1) and `tariff_knobs.rs` (+2, +1) name the fifth plane in the same mount and the same knob table. Against them `auth_bindings.rs`, `tests/units_a2a.rs` and `tests/units_voice.rs` give one each back. This is the composition root naming what it MOUNTS, which is the one thing it is allowed to name, and the count is the price of the admin surface being uniform with the other four rather than an exception."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.plane.count"
+file = "qa/kind-isolation.toml"
+by = 10
+because = "1798 -> 1935 and the eight entries above cover 127 of it. The 10 are the two byte-identity cells the money landing added, each of which reads a recorded corpus and therefore names the plane whose family it reads: `fee_identity_recorded_corpus.rs` (+7 -- every recorded model-plane cell settles exactly what it recorded, through the kernel's own fee decision and its own settlement) and `tariff_default_is_1_5_5.rs` (+4 -- the shipped default schedule is the previous release's, knob for knob), less one the llm leg gave back. A cell that proves a recorded byte did not move has to name the family the recording is in; it names no dialect, which is what `busbar x dialect` measures and what this stack's other drain took to zero."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.transport.count"
+file = "qa/kind-isolation.toml"
+by = 2
+because = "939 -> 954 and the three entries above cover 13 of it. The 2 are the same two byte-identity cells reading the CLASS off the transport: `fee_identity_recorded_corpus.rs` (+3) and `fee_one_decision.rs` (+3) build the head the served leg records by classifying a recorded status through `busbar_transport_http::status_class`, against `tests/units_mcp.rs` (-2) and `tests/units_voice.rs` (-1), which stopped writing that classification out by hand once the plane declared where its status is reported. A status CLASS is transport vocabulary and the place it is read at is the plane's declaration; a cell that drives the fee off a recording has to name both or it is proving the decision against a literal."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.unit.count"
+file = "qa/kind-isolation.toml"
+by = 8
+because = "1169 -> 1193 -- the ceiling this stack carried was 1271, which was 78 lines of slack the TieredAt fold had already killed, and it is re-pinned to the measurement in this same commit. Against the base the real rise is 24 and the three entries above cover 16. The 8 are the root reading the cost unit where the cost unit is the answer: `units_llm.rs` (+8) and `kernel.rs` (+4) name `busbar_unit_cost`'s card and its scope at the ONE pricing site, `tests/policy.rs` (+6) pins that the two readers of one `groups:` section resolve alike, and `tests/units_llm.rs` (+4) drives it -- against `units_voice.rs`, `auth_bindings.rs` and `tests/units_voice.rs`, which give six back between them. The root composes the unit that prices; it does not price."
