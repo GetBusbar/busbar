@@ -41,6 +41,7 @@ pub mod ceilings;
 pub mod census;
 pub mod external;
 pub mod model;
+pub mod raise_ledger;
 pub mod rules;
 pub mod rules2;
 pub mod selftest;
@@ -209,6 +210,7 @@ impl ConstructionGate {
             ceilings::ROW_SLACK,
             ceilings::ROW_FROZEN,
             ceilings::ROW_ARCH,
+            raise_ledger::ROW_LEDGER,
             // UNCONDITIONAL, AND THAT IS THE ENTIRE POINT. Every id below this block is derived
             // from the same `Cfg` the rules read, so deleting a rule table deletes the obligation
             // to run it in the same edit. This one is a literal: `ceiling-census` is owed whatever
@@ -490,6 +492,25 @@ impl ConstructionGate {
         rows.extend(ceilings::ceiling_rose(cx));
         let slack = ceilings::ceiling_slack(&cfg, &rows);
         rows.extend(slack);
+        // THE NIGHTLY SWEEP, RUN ON THIS COMMIT. `ceiling-rose` proves no ceiling rose without a
+        // declaration that sums to exactly its rise; this is the same arithmetic, keyed so a
+        // reader can see WHICH key and by how much, over HEAD against the gate's own base — see
+        // `raise_ledger`. `scripts/raise-ledger-sweep.sh` runs it over every live queue line.
+        rows.push(match ceilings::base_ref(cx) {
+            Ok(base) => raise_ledger::row(cx, &base, "HEAD"),
+            Err(e) => plain(
+                raise_ledger::ROW_LEDGER,
+                false,
+                "every ceiling's declared raises sum exactly to its measured rise",
+                format!(
+                    "no base commit could be established, so no ceiling key could be compared \
+                     against one ({e})"
+                ),
+                -1,
+                0,
+                vec![],
+            ),
+        });
         Ok((rows, problems))
     }
 }
@@ -564,7 +585,11 @@ impl Gate for ConstructionGate {
     }
 
     fn selftest<'a>(&'a self, cx: &'a Ctx) -> Report<'a> {
-        selftest::run(self, cx)
+        // `raise_ledger`'s own RED proof is folded in here rather than added to
+        // `selftest.rs`'s case list — see `raise_ledger::selftest_cases`'s doc comment.
+        let mut r = selftest::run(self, cx);
+        r.append(raise_ledger::selftest_cases(self, cx));
+        r
     }
 
     /// THE PARITY TRANSLATOR, and it reads the legacy's OWN LEDGER FILE rather than its stdout.
