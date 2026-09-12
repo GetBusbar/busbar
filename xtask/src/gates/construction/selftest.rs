@@ -717,14 +717,14 @@ fn ceiling_ratchet_cases<'a>(
 /// * an entry the base does NOT carry, naming a ceiling that did not rise, is stale and red;
 /// * the retired `from`/`to` shape is refused by name, and the refusal prints the array shape;
 /// * `--write` strikes exactly the carried entries and leaves the live one.
-fn declared_raise_cases(
-    gate: &dyn Gate,
-    cx: &Ctx,
+fn declared_raise_cases<'a>(
+    gate: &'a dyn Gate,
+    cx: &'a Ctx,
     base: &Overlay,
     based: &str,
     text: &str,
     cfg: &Cfg,
-) -> Report {
+) -> Report<'a> {
     let mut r = Report::new();
     let (table, key) = ("rules.legacy-reach", "ceiling");
     let Some(now) = cfg.doc.table(table).and_then(|t| t.int_of(key)) else {
@@ -986,13 +986,13 @@ fn prove_row_pass_naming(
 /// * with no declaration, the refusal NAMES the cell — `cell.<crate>.<kind>.count`, not a slot;
 /// * a declaration keyed by that identity excuses it, across the renumbering;
 /// * a declaration keyed by the ordinal is refused outright, whatever it lines up with.
-fn kind_row_identity_cases(
-    gate: &dyn Gate,
-    cx: &Ctx,
+fn kind_row_identity_cases<'a>(
+    gate: &'a dyn Gate,
+    cx: &'a Ctx,
     base: &Overlay,
     based: &str,
     ceilings_text: &str,
-) -> Report {
+) -> Report<'a> {
     let mut r = Report::new();
     let file = ceilings::KIND_CEILINGS;
     let Ok(kinds) = cx.read(file) else {
