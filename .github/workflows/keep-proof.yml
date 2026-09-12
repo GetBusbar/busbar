@@ -86,7 +86,8 @@ jobs:
   # nothing at all. A layout debt and a broken test are independent facts about a commit.
   build-clippy:
     name: fmt · clippy · build
-    runs-on: [self-hosted, linux, x64, busbar-xl]
+    runs-on: latchkey-large
+
     # Measured against ci.yml's `check`, whose fmt+clippy+build steps total ~1.6 min warm and whose
     # whole job is bounded at 75 for cold-cache headroom. 40 is that headroom without the test step.
     timeout-minutes: 40
@@ -96,8 +97,14 @@ jobs:
         uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
         with:
           components: rustfmt, clippy
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - name: Latchkey Fast Cache (cargo registry + target, restore)
+        uses: latchkey-dev/cache-action@v1
+        with:
+          action: restore
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          path: |
+            ~/.cargo
+            target/
       - name: Compiler cache (sccache, GitHub Actions cache backend)
         uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
       - name: Format check
@@ -142,9 +149,19 @@ jobs:
   #
   # DOCTESTS RIDE SHARD 1. `--no-run` produces no doctest binary, so a pure binary partition would
   # silently drop every doctest from the summed total. Shard 1 runs `--doc` and counts it.
+      - name: Latchkey Fast Cache (cargo registry + target, save)
+        if: always()
+        uses: latchkey-dev/cache-action@v1
+        with:
+          action: save
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          path: |
+            ~/.cargo
+            target/
   tests:
     name: tests (shard ${{ matrix.shard }})
-    runs-on: [self-hosted, linux, x64, busbar-xl]
+    runs-on: latchkey-xlarge
+
     # ci.yml's Test step measures 9.3 min warm for the WHOLE suite; a quarter of the execution plus a
     # full compile lands well inside 20. 30 is that with cold-cache headroom, and it is a ceiling on
     # a hang, not a target. The `xtask` leg is the one that needs the room: its single binary is a
@@ -196,8 +213,14 @@ jobs:
         run: ./scripts/ci-service-endpoints.sh postgres=${{ job.services.postgres.id }} valkey=${{ job.services.valkey.id }}
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - name: Latchkey Fast Cache (cargo registry + target, restore)
+        uses: latchkey-dev/cache-action@v1
+        with:
+          action: restore
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          path: |
+            ~/.cargo
+            target/
       - name: Compiler cache (sccache, GitHub Actions cache backend)
         uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
 
@@ -367,9 +390,19 @@ jobs:
   # Five green shards that between them ran 900 tests look identical, in the Actions UI, to five
   # green shards that ran 5700. So the counts are summed and floored, exactly as ci.yml floors its
   # unsharded workspace run -- the floor is the same number, because it is the same suite.
+      - name: Latchkey Fast Cache (cargo registry + target, save)
+        if: always()
+        uses: latchkey-dev/cache-action@v1
+        with:
+          action: save
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          path: |
+            ~/.cargo
+            target/
   tests-total:
     name: tests total (the five shards summed against the suite floor)
-    runs-on: [self-hosted, linux, x64, busbar-xl]
+    runs-on: latchkey-small
+
     timeout-minutes: 10
     needs: tests
     if: always()
@@ -426,7 +459,8 @@ jobs:
   # `qa/kind-isolation.toml`, exact in both directions. A branch that raises one is red here.
   gates:
     name: cargo xtask gate --all · selftest
-    runs-on: [self-hosted, linux, x64, busbar-xl]
+    runs-on: latchkey-xlarge
+
     # MEASURED, AND RAISED ONCE ALREADY. ci.yml's structure-lint (the same registry, one gate per
     # step) measures p95 14.5 min, so 25 looked generous — and this job was CANCELLED at 25 on its
     # first run, because `cargo xtask selftest` drives EVERY registered gate's RED proof rather than
@@ -451,11 +485,14 @@ jobs:
         run: git fetch origin '+refs/backup/audit-pins/*:refs/audit-pins/*' || true
       - name: Install Rust toolchain (the gate runner)
         uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - name: Latchkey Fast Cache (cargo registry + target, restore)
+        uses: latchkey-dev/cache-action@v1
         with:
-          workspaces: ". -> target"
-          key: xtask
+          action: restore
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          path: |
+            ~/.cargo
+            target/
       - name: Compiler cache (sccache, GitHub Actions cache backend)
         uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
       - name: Build the gate runner once
@@ -472,9 +509,19 @@ jobs:
   # needs no toolchain: EXISTENCE (every check an Appendix B binding names still exists) and
   # REGEN-CLEAN (the committed ledger is what the deriver produces from Appendix B today). A
   # hand-back that edits ARCHITECTURE.md and skips the regen lands a stale generated artifact.
+      - name: Latchkey Fast Cache (cargo registry + target, save)
+        if: always()
+        uses: latchkey-dev/cache-action@v1
+        with:
+          action: save
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          path: |
+            ~/.cargo
+            target/
   design-bindings:
     name: design bindings (existence · regen-clean)
-    runs-on: [self-hosted, linux, x64, busbar-xl]
+    runs-on: latchkey-large
+
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -524,7 +571,8 @@ jobs:
   # proof path is the one place a dependency is least welcome.
   oracle:
     name: shadow oracle (this build vs the published 1.5.5, families the branch names)
-    runs-on: [self-hosted, linux, x64, busbar-xl]
+    runs-on: latchkey-xlarge
+
     # ci.yml's shadow-oracle measures 23-24 min unfiltered (release build ~4-7 min, recording ~15).
     # Same ceiling as ci.yml's, for the same job.
     timeout-minutes: 60
@@ -579,8 +627,14 @@ jobs:
         run: ./scripts/ci-service-endpoints.sh postgres=${{ job.services.postgres.id }} mysql=${{ job.services.mysql.id }} valkey=${{ job.services.valkey.id }}
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - name: Latchkey Fast Cache (cargo registry + target, restore)
+        uses: latchkey-dev/cache-action@v1
+        with:
+          action: restore
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          path: |
+            ~/.cargo
+            target/
       - name: Compiler cache (sccache, GitHub Actions cache backend)
         uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
 
@@ -766,9 +820,19 @@ jobs:
   # moment a row it does not name goes red. Scored here and in ci.yml, the same way, off the same
   # list — a gate that is blocking in one workflow and report-only in the other is the drift both
   # umbrellas exist to refuse.
+      - name: Latchkey Fast Cache (cargo registry + target, save)
+        if: always()
+        uses: latchkey-dev/cache-action@v1
+        with:
+          action: save
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          path: |
+            ~/.cargo
+            target/
   construction-gate:
     name: construction gate (blocking on its posture)
-    runs-on: [self-hosted, linux, x64, busbar-xl]
+    runs-on: latchkey-xlarge
+
     # Measured: this gate is CANCELLED at ci.yml's 15-minute ceiling on every recent run, and it was
     # cancelled again at 25 here, so its true runtime is still unknown and >25. 40 is a ceiling meant
     # to let it FINISH ONCE so its real duration becomes a measurement instead of a cancellation.
@@ -786,11 +850,14 @@ jobs:
           fetch-depth: 0
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - name: Latchkey Fast Cache (cargo registry + target, restore)
+        uses: latchkey-dev/cache-action@v1
         with:
-          workspaces: ". -> target"
-          key: xtask
+          action: restore
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          path: |
+            ~/.cargo
+            target/
       - name: Compiler cache (sccache, GitHub Actions cache backend)
         uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
       # BOTH STEPS RAN A SCRIPT THAT IS NOT IN THIS TREE. `scripts/construction-gate.sh` does not
@@ -815,9 +882,19 @@ jobs:
   # `if: always()` and every dependency's result read explicitly: a job that was SKIPPED or
   # CANCELLED is not a pass, and the classic version of this job -- one that only runs on success --
   # writes no status at all on the runs where the answer matters most.
+      - name: Latchkey Fast Cache (cargo registry + target, save)
+        if: always()
+        uses: latchkey-dev/cache-action@v1
+        with:
+          action: save
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          path: |
+            ~/.cargo
+            target/
   verdict:
     name: keep-proof verdict
-    runs-on: [self-hosted, linux, x64, busbar-xl]
+    runs-on: latchkey-small
+
     timeout-minutes: 10
     if: always()
     needs:
