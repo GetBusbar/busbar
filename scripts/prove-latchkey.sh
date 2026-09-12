@@ -90,8 +90,14 @@ LK_ENVFILE="${LATCHKEY_ENV_FILE:-$HOME/.busbar-engine/latchkey.env}"
 # so "the base" means one thing across both transports.
 LAND_BASE_REF="${LAND_BASE_REF:-refs/remotes/origin/integration/oracle-phase0}"
 LAND_BASE_BRANCH="${LAND_BASE_BRANCH:-refs/heads/integration/oracle-phase0}"
-# Where the full job log is kept for the 24 h Latchkey keeps its own copy, and after.
-LK_LOGDIR="${LATCHKEY_LOG_DIR:-$(cd "$REPO/.." 2>/dev/null && pwd)/busbar-landq-state/gate/latchkey-logs}"
+# ── WHERE THE FULL JOB LOG IS KEPT, PAST LATCHKEY'S 24 HOURS ────────────────────────────────────
+# Beside the MAIN repository, never beside this checkout. Measured the wrong way round first: a slot
+# proves from `<repo>/.claude/worktrees/agent-lk3`, so `$REPO/..` is `.claude/worktrees` and the
+# 700 KB log went to `…/.claude/worktrees/busbar-landq-state/`, which no ledger reads and which the
+# next `git worktree prune` is entitled to remove. The main repository's own root is what
+# `--git-common-dir` names, whichever worktree this is.
+LK_STATE_HOME="$(cd "$(dirname "$(git -C "$REPO" rev-parse --git-common-dir 2>/dev/null || echo "$REPO/.git")")/.." 2>/dev/null && pwd)"
+LK_LOGDIR="${LATCHKEY_LOG_DIR:-$LK_STATE_HOME/busbar-landq-state/gate/latchkey-logs}"
 
 # THE DELIMITERS THE VERDICT FILE TRAVELS IN. Latchkey copies no files back — a log is the entire
 # return channel — so the box prints `<batch>.result` between these two lines and this side parses
@@ -376,6 +382,22 @@ lk_exit_code() { # $1 = job id; prints the command's exit code, or nothing
   "$LK_BIN" status "$1" 2>/dev/null | awk '/^Exit code:/{print $3}' | grep -E '^[0-9]+$' || true
 }
 
+# ── WHAT IS ACTUALLY BILLED ─────────────────────────────────────────────────────────────────────
+# The RUNNER's seconds, from the job's own Started/Completed — not this script's wall clock, which
+# also contains the pack, the upload and the queue. Measured on the first real two-way proof: 717 s
+# of laptop wall against 540 s on the runner, so reporting the wall would have overstated the bill
+# by a third and made every cost comparison in the migration doc wrong in the same direction.
+lk_runner_secs() { # $1 = job id; prints seconds, or nothing when the job never started
+  local st ed
+  st="$("$LK_BIN" status "$1" 2>/dev/null | awk '/^Started:/{print $2}')"
+  ed="$("$LK_BIN" status "$1" 2>/dev/null | awk '/^Completed:/{print $2}')"
+  case "$st$ed" in *-*) ;; *) return 0 ;; esac
+  local a b
+  a="$(date -u -j -f '%Y-%m-%dT%H:%M:%S' "${st%%.*}" +%s 2>/dev/null || date -u -d "$st" +%s 2>/dev/null)" || return 0
+  b="$(date -u -j -f '%Y-%m-%dT%H:%M:%S' "${ed%%.*}" +%s 2>/dev/null || date -u -d "$ed" +%s 2>/dev/null)" || return 0
+  [ -n "$a" ] && [ -n "$b" ] && [ "$b" -ge "$a" ] && printf '%s\n' "$(( b - a ))"
+}
+
 # BOUNDED. Every $LK_POLL_SECS, never a watcher process, and it gives up rather than waiting for a
 # job that has been reaped — a poller that outlives its job holds a sweep slot for nothing.
 lk_poll() { # $1 = job id; prints the terminal state, returns 1 on running out of patience
@@ -572,6 +594,21 @@ if [ "${1:-}" = "--selftest" ]; then
   grep -qF 'latchkey-logs' "${BASH_SOURCE[0]}" \
     && say PASS "the full job log is copied where it outlives Latchkey's 24 h" \
     || say FAIL "the job log is not kept past Latchkey's retention"
+  # …BESIDE THE MAIN REPOSITORY, NEVER BESIDE THIS CHECKOUT. This went the wrong way round on the
+  # first real proof: a slot proves from `<repo>/.claude/worktrees/<slot>`, so `$REPO/..` was
+  # `.claude/worktrees` and the log landed where no ledger reads and `git worktree prune` may
+  # delete. Driven on the REAL resolution, from whichever checkout this is.
+  case "$LK_LOGDIR" in
+    */.claude/worktrees/*) say FAIL "the log directory is inside a worktree ($LK_LOGDIR)" ;;
+    */busbar-landq-state/gate/latchkey-logs) say PASS "  ...beside the state repository, not inside this checkout" ;;
+    *) say FAIL "the log directory is not the state repository's ($LK_LOGDIR)" ;;
+  esac
+  # THE BILL IS THE RUNNER'S SECONDS, NOT THIS SCRIPT'S WALL CLOCK. Measured: 717 s of laptop wall
+  # against 540 s on the runner, so the wall overstates the bill by a third — in the direction that
+  # makes every cost comparison in the migration doc wrong.
+  grep -qF 'lk_runner_secs "$JOB"' "${BASH_SOURCE[0]}" \
+    && say PASS "the minutes reported are the job's Started..Completed, not the wall" \
+    || say FAIL "the minutes reported are this script's wall clock"
 
   if [ "$fails" -ne 0 ]; then
     echo "[selftest] FAILED: $fails case(s) did not hold." >&2
@@ -691,8 +728,9 @@ case "$STATE" in
   expired)   RC=124 ;;
 esac
 VERDICT="$(lk_job_verdict "$LOG" "$RC")"
-MINUTES=$(( (END - START + 59) / 60 ))
-lklog "job $JOB   state $STATE   exit $RC   verdict $VERDICT   wall $(( END - START ))s   ~${MINUTES} runner-minute(s)"
+RSECS="$(lk_runner_secs "$JOB")"
+MINUTES=$(( ( ${RSECS:-$(( END - START ))} + 59 ) / 60 ))
+lklog "job $JOB   state $STATE   exit $RC   verdict $VERDICT   wall $(( END - START ))s   runner ${RSECS:-?}s   ~${MINUTES} billed runner-minute(s)"
 
 if [ "$MODE" = preprove ]; then
   # THE RESULT FILE COMES BACK TO THE PATH THE LOCAL RUNNER ALREADY READS. target/gate/landq*.sh
