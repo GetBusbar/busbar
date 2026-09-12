@@ -81,15 +81,14 @@ plane_src_roots() {   # echo "crates/busbar-<k>/src crates/busbar-<k>-codec/src 
 # on their way out and not the crates they were landing in was watching the wrong end of the move,
 # and it printed green the whole way.
 #
-# TWO OF THE FOURTEEN UNITS ARE NOT HERE YET, AND THIS IS WHERE THEY ARE OWED. `busbar-unit-trust`
-# and `busbar-unit-ledger` carry vendor-named FIXTURE strings in their test code — a vendor
-# hostname a host-normaliser is judged against, a vendor meter label a migration is keyed on.
-# Measured on this tree they are worth seven DIALECT hits and seven KEY hits in the test-scope
-# pass, which is seven and seven above ceilings that only go down. Adding the two roots before
-# those fixtures are neutral would force both ceilings UP, which is the move the ratchet exists to
-# refuse. Neutralising the fixtures is a landing in those crates; the two roots go in here on the
-# commit that makes them.
-NEUTRAL_ROOTS_LIST="crates/busbar-core/src crates/busbar-substrate/src crates/busbar-substrate-values/src crates/api/src crates/busbar-kernel/src crates/busbar-unit-admission/src crates/busbar-unit-audit/src crates/busbar-unit-auth/src crates/busbar-unit-breaker/src crates/busbar-unit-cost/src crates/busbar-unit-egress/src crates/busbar-unit-egress-auth/src crates/busbar-unit-scope/src crates/busbar-unit-transport-key/src crates/busbar-unit-usage/src crates/busbar-unit-verbs/src crates/busbar-unit-wal/src"
+# ALL FOURTEEN UNITS ARE HERE NOW. `busbar-unit-trust` and `busbar-unit-ledger` were the two still
+# owed: their test code carried vendor-named FIXTURE strings — a vendor hostname a host-normaliser
+# was judged against, a vendor meter label a migration was keyed on — worth seven DIALECT hits and
+# seven KEY hits in the test-scope pass, seven and seven above ceilings that only go down. The
+# fixtures are reworded to neutral spellings rather than deleted, so each test still proves the
+# same property against a name that carries no dialect and no plane key. Both units' roots land in
+# the same commit as the reword, which is the rule this comment used to state.
+NEUTRAL_ROOTS_LIST="crates/busbar-core/src crates/busbar-substrate/src crates/busbar-substrate-values/src crates/api/src crates/busbar-kernel/src crates/busbar-unit-admission/src crates/busbar-unit-audit/src crates/busbar-unit-auth/src crates/busbar-unit-breaker/src crates/busbar-unit-cost/src crates/busbar-unit-egress/src crates/busbar-unit-egress-auth/src crates/busbar-unit-ledger/src crates/busbar-unit-scope/src crates/busbar-unit-transport-key/src crates/busbar-unit-trust/src crates/busbar-unit-usage/src crates/busbar-unit-verbs/src crates/busbar-unit-wal/src"
 
 neutral_src_roots() { printf '%s' "$NEUTRAL_ROOTS_LIST"; }
 

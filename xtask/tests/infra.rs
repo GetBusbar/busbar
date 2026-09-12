@@ -473,24 +473,27 @@ fn the_plane_key_contract_matches_plane_keys_sh() {
             "crates/busbar-unit-cost/src",
             "crates/busbar-unit-egress/src",
             "crates/busbar-unit-egress-auth/src",
+            "crates/busbar-unit-ledger/src",
             "crates/busbar-unit-scope/src",
             "crates/busbar-unit-transport-key/src",
+            "crates/busbar-unit-trust/src",
             "crates/busbar-unit-usage/src",
             "crates/busbar-unit-verbs/src",
             "crates/busbar-unit-wal/src",
         ]
     );
-    // AND THE TWO THAT ARE OWED, asserted absent on purpose. Their test code still carries
-    // vendor-named fixtures, so adding them today would force the test-scope DIALECT and KEY
-    // ceilings UP — the move the ratchet exists to refuse. Naming them here means the day they are
-    // added is a day this cell changes, rather than a quiet widening nobody reads.
-    for owed in [
+    // ALL FOURTEEN, NOW PRESENT. `busbar-unit-trust` and `busbar-unit-ledger` were the two owed:
+    // their test code carried vendor-named fixtures, which forced the test-scope DIALECT and KEY
+    // ceilings up until the fixtures were reworded to neutral spellings. This assertion used to
+    // name them absent on purpose; it now asserts them present, which is the day this cell said it
+    // would change.
+    for landed in [
         "crates/busbar-unit-trust/src",
         "crates/busbar-unit-ledger/src",
     ] {
         assert!(
-            !neutral.contains(&owed.to_string()),
-            "{owed} joined the scan set: neutralise its fixtures and update this cell together"
+            neutral.contains(&landed.to_string()),
+            "{landed} is missing from the neutral scan set"
         );
     }
 }

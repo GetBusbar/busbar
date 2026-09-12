@@ -91,15 +91,15 @@ pub fn neutral_src_roots() -> Vec<String> {
 /// Spelled out rather than globbed for the reason the roots above are: a glob that stops matching
 /// is a scan that quietly narrows, and the walk can only refuse a root it was told to expect.
 ///
-/// TWO OF THE FOURTEEN ARE NOT HERE YET, AND THIS IS WHERE THEY ARE OWED. `busbar-unit-trust` and
-/// `busbar-unit-ledger` carry vendor-named FIXTURE strings in their test code — a vendor hostname
-/// a host-normaliser is judged against, a vendor meter label a migration is keyed on. Measured on
-/// this tree they are worth seven DIALECT hits and seven KEY hits in the `--strict` (test-scope)
-/// pass, which is seven and seven above ceilings that only go down. Adding the two roots before
-/// those fixtures are neutral would force both ceilings UP, which is the move the ratchet exists to
-/// refuse. Neutralising the fixtures is a landing in those crates, not in this one; the two lines
-/// go in here on the commit that makes them.
-const UNIT_KEYS: [&str; 12] = [
+/// ALL FOURTEEN ARE HERE NOW. `busbar-unit-trust` and `busbar-unit-ledger` were the two still owed:
+/// their test code carried vendor-named FIXTURE strings — a vendor hostname a host-normaliser was
+/// judged against, a vendor meter label a migration was keyed on — worth seven DIALECT hits and
+/// seven KEY hits in the `--strict` (test-scope) pass, seven and seven above ceilings that only go
+/// down. The fixtures are reworded to neutral spellings (`api.vendor-a.test` for the hostname,
+/// `/api` for the path, `vendor-a` for the meter label) rather than deleted, so each test still
+/// proves the same property against a name that carries no dialect and no plane key. Both units'
+/// roots land in the same commit as the reword, which is the rule this comment used to state.
+const UNIT_KEYS: [&str; 14] = [
     "admission",
     "audit",
     "auth",
@@ -107,8 +107,10 @@ const UNIT_KEYS: [&str; 12] = [
     "cost",
     "egress",
     "egress-auth",
+    "ledger",
     "scope",
     "transport-key",
+    "trust",
     "usage",
     "verbs",
     "wal",

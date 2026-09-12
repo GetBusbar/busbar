@@ -1332,8 +1332,8 @@ because = """POSITIONAL, NOT A RISE. ceiling-rose keys an array-of-tables ceilin
 [gate.ceiling_raises."cell.308.count"]
 file = "qa/kind-isolation.toml"
 from = 8
-to = 20
-because = """POSITIONAL, NOT A RISE. ceiling-rose keys an array-of-tables ceiling by its INDEX, so striking one [[cell]] renumbers every cell after it and each surviving path reads its neighbour's number. Two cells were STRUCK on this branch because kind-isolation:matrix refuses a row that covers nothing: `busbar-unit-auth x dialect` (4 -> struck; the unit stopped naming a dialect at all) and `busbar-unit-auth x plane` (2 -> struck; its last plane-named test fixture became a neutral one). The only cell whose own number moved is `busbar-unit-egress-auth x dialect`, 34 -> 5, and it moved DOWN. This path is index 308: it held busbar-unit-trust x contract-transport (8) and now holds busbar-unit-trust x plane (20), a number no commit of this branch touched."""
+to = 13
+because = """POSITIONAL, PLUS ONE REAL EDIT THAT MOVED DOWN. ceiling-rose keys an array-of-tables ceiling by its INDEX. Index 308 has carried this positional residue since the AUTH-D commit that struck `busbar-unit-auth x dialect` and `busbar-unit-auth x plane`: it held `busbar-unit-trust x contract-transport` (8) at the base and `busbar-unit-trust x plane` from that commit on. AUTH-E rewords `busbar-unit-trust`'s own `/mcp`-path and `a2a.vendor` test fixtures to neutral spellings so the unit can join the neutral scan set (`crates/busbar-unit-trust/src` and `crates/busbar-unit-ledger/src` are added to `neutral_src_roots`), which is a real tightening of `busbar-unit-trust x plane` itself: 20 -> 13. Combined with the pre-existing positional gap (base 8, neighbour's number), this path now reads 13. The two cells this commit STRIKES are further down the array (`busbar-unit-ledger x dialect` and `busbar-unit-trust x dialect`, both measured 0 once their vendor-named DIALECT fixtures were reworded), so their positional fallout lands at cell.348/349/350, not here."""
 
 [gate.ceiling_raises."cell.309.count"]
 file = "qa/kind-isolation.toml"
@@ -1443,21 +1443,21 @@ from = 4
 to = 5
 because = """POSITIONAL, NOT A RISE. ceiling-rose keys an array-of-tables ceiling by its INDEX, so striking one [[cell]] renumbers every cell after it and each surviving path reads its neighbour's number. Two cells were STRUCK on this branch because kind-isolation:matrix refuses a row that covers nothing: `busbar-unit-auth x dialect` (4 -> struck; the unit stopped naming a dialect at all) and `busbar-unit-auth x plane` (2 -> struck; its last plane-named test fixture became a neutral one). The only cell whose own number moved is `busbar-unit-egress-auth x dialect`, 34 -> 5, and it moved DOWN. This path is index 347: it held busbar-unit-auth x dialect (4) and now holds busbar-unit-egress-auth x dialect (5), a number no commit of this branch touched."""
 
+[gate.ceiling_raises."cell.348.count"]
+file = "qa/kind-isolation.toml"
+from = 3
+to = 7
+because = """POSITIONAL, NOT A RISE. AUTH-E strikes two more `[[cell]]` rows — `busbar-unit-ledger x dialect` and `busbar-unit-trust x dialect` — because both units' DIALECT fixtures (a vendor hostname `net_tests.rs` judged, a vendor meter label `migration_tests.rs` keyed on) are reworded to neutral spellings and kind-isolation:matrix's own scanner now measures each at 0; `dead-cell` refuses a `[[cell]]` that covers nothing, so both rows are struck rather than zeroed. ceiling-rose keys an array-of-tables ceiling by its INDEX, so striking two rows renumbers every cell after them by two. This path is index 348: it held busbar-unit-breaker x dialect (3) at the base and now holds busbar-unit-usage x dialect (7), a number no commit of this branch touched."""
+
+[gate.ceiling_raises."cell.349.count"]
+file = "qa/kind-isolation.toml"
+from = 34
+to = 335
+because = """POSITIONAL, NOT A RISE. AUTH-E strikes two more `[[cell]]` rows — `busbar-unit-ledger x dialect` and `busbar-unit-trust x dialect` — because both units' DIALECT fixtures (a vendor hostname `net_tests.rs` judged, a vendor meter label `migration_tests.rs` keyed on) are reworded to neutral spellings and kind-isolation:matrix's own scanner now measures each at 0; `dead-cell` refuses a `[[cell]]` that covers nothing, so both rows are struck rather than zeroed. ceiling-rose keys an array-of-tables ceiling by its INDEX, so striking two rows renumbers every cell after them by two. This path is index 349: it held busbar-unit-egress-auth x dialect (34) at the base and now holds busbar-voice x dialect (335), a number no commit of this branch touched."""
+
 [gate.ceiling_raises."cell.350.count"]
 file = "qa/kind-isolation.toml"
 from = 2
-to = 7
-because = """POSITIONAL, NOT A RISE. ceiling-rose keys an array-of-tables ceiling by its INDEX, so striking one [[cell]] renumbers every cell after it and each surviving path reads its neighbour's number. Two cells were STRUCK on this branch because kind-isolation:matrix refuses a row that covers nothing: `busbar-unit-auth x dialect` (4 -> struck; the unit stopped naming a dialect at all) and `busbar-unit-auth x plane` (2 -> struck; its last plane-named test fixture became a neutral one). The only cell whose own number moved is `busbar-unit-egress-auth x dialect`, 34 -> 5, and it moved DOWN. This path is index 350: it held busbar-unit-ledger x dialect (2) and now holds busbar-unit-usage x dialect (7), a number no commit of this branch touched."""
-
-[gate.ceiling_raises."cell.351.count"]
-file = "qa/kind-isolation.toml"
-from = 5
-to = 335
-because = """POSITIONAL, NOT A RISE. ceiling-rose keys an array-of-tables ceiling by its INDEX, so striking one [[cell]] renumbers every cell after it and each surviving path reads its neighbour's number. Two cells were STRUCK on this branch because kind-isolation:matrix refuses a row that covers nothing: `busbar-unit-auth x dialect` (4 -> struck; the unit stopped naming a dialect at all) and `busbar-unit-auth x plane` (2 -> struck; its last plane-named test fixture became a neutral one). The only cell whose own number moved is `busbar-unit-egress-auth x dialect`, 34 -> 5, and it moved DOWN. This path is index 351: it held busbar-unit-trust x dialect (5) and now holds busbar-voice x dialect (335), a number no commit of this branch touched."""
-
-[gate.ceiling_raises."cell.352.count"]
-file = "qa/kind-isolation.toml"
-from = 7
 to = 257
-because = """POSITIONAL, NOT A RISE. ceiling-rose keys an array-of-tables ceiling by its INDEX, so striking one [[cell]] renumbers every cell after it and each surviving path reads its neighbour's number. Two cells were STRUCK on this branch because kind-isolation:matrix refuses a row that covers nothing: `busbar-unit-auth x dialect` (4 -> struck; the unit stopped naming a dialect at all) and `busbar-unit-auth x plane` (2 -> struck; its last plane-named test fixture became a neutral one). The only cell whose own number moved is `busbar-unit-egress-auth x dialect`, 34 -> 5, and it moved DOWN. This path is index 352: it held busbar-unit-usage x dialect (7) and now holds busbar-voice-codec x dialect (257), a number no commit of this branch touched."""
+because = """POSITIONAL, NOT A RISE. AUTH-E strikes two more `[[cell]]` rows — `busbar-unit-ledger x dialect` and `busbar-unit-trust x dialect` — because both units' DIALECT fixtures (a vendor hostname `net_tests.rs` judged, a vendor meter label `migration_tests.rs` keyed on) are reworded to neutral spellings and kind-isolation:matrix's own scanner now measures each at 0; `dead-cell` refuses a `[[cell]]` that covers nothing, so both rows are struck rather than zeroed. ceiling-rose keys an array-of-tables ceiling by its INDEX, so striking two rows renumbers every cell after them by two. This path is index 350: it held busbar-unit-ledger x dialect (2) at the base and now holds busbar-voice-codec x dialect (257), a number no commit of this branch touched. (This path already carried a prior positional raise, from AUTH-D's own two strikes; the number that now lands here has moved again, by AUTH-E's two additional strikes.)"""
 

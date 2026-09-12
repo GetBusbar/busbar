@@ -131,7 +131,7 @@ fn a_serving_deployment() -> SeededRows {
             window_figure("team-a", 86_400, "gpt-4", "input", 6_000),
             window_figure("team-a", 86_400, "gpt-4", "output", 2_500),
             window_figure("team-a", 86_400, "claude", "input", 500),
-            meter_figure("team-a", 86_400, "gpt-4", "openai", "input", 4_000),
+            meter_figure("team-a", 86_400, "gpt-4", "vendor-a", "input", 4_000),
             meter_figure("team-a", 86_400, "gpt-4", "azure", "input", 2_000),
             window_figure("team-b", 86_400, "gpt-4", "input", 40),
         ],
@@ -209,7 +209,7 @@ fn the_opening_figures_are_the_legacy_figures_exactly() {
             totals,
             "team-a",
             CapDimension::Class("input".into()),
-            BucketScope::Pool("meter:gpt-4/openai".into()),
+            BucketScope::Pool("meter:gpt-4/vendor-a".into()),
             86_400,
         )
         .settled,

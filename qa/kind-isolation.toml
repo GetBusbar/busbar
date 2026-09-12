@@ -2849,7 +2849,7 @@ count = "8"
 [[cell]]
 crate = "busbar-unit-trust"
 kind = "plane"
-count = "20"
+count = "13"
 
 [[cell]]
 crate = "busbar-unit-trust"
@@ -5544,16 +5544,6 @@ count = "3"
 
 [[cell]]
 crate = "busbar-unit-egress-auth"
-kind = "dialect"
-count = "5"
-
-[[cell]]
-crate = "busbar-unit-ledger"
-kind = "dialect"
-count = "2"
-
-[[cell]]
-crate = "busbar-unit-trust"
 kind = "dialect"
 count = "5"
 
