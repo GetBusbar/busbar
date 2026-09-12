@@ -581,6 +581,7 @@ fn ceiling_ratchet_cases<'a>(
         gate, cx, base, &based, &text, cfg,
     ));
     r.append(minted_ceiling_cases(gate, cx, base, &based, &text));
+    r.append(dep_admission_cases(gate, cx, base, &based));
 
     // A base whose ceilings file cannot be PARSED is a comparison that cannot be made, and a
     // comparison that cannot be made is not a comparison that passed.
@@ -1525,6 +1526,167 @@ fn set_cell_count(text: &str, n: usize, value: i64) -> Option<String> {
         })
         .collect();
     hit.then(|| format!("{}{body}{}", &text[..start], &text[end..]))
+}
+
+/// The byte range of the `n`th row of an array-of-tables table named `marker` (e.g. `"[[dep]]"`).
+/// The same walk [`nth_cell`] does for `[[cell]]`, generalised to any marker.
+fn nth_table(text: &str, marker: &str, n: usize) -> Option<(usize, usize)> {
+    let mut at = 0usize;
+    let mut seen = 0usize;
+    let mut start: Option<usize> = None;
+    for line in text.split_inclusive('\n') {
+        let t = line.trim();
+        match start {
+            Some(s) if t.starts_with('[') => return Some((s, at)),
+            Some(_) => {}
+            None => {
+                if t == marker {
+                    if seen == n {
+                        start = Some(at);
+                    }
+                    seen += 1;
+                }
+            }
+        }
+        at += line.len();
+    }
+    start.map(|s| (s, text.len()))
+}
+
+/// One field of the table occupying `text[start..end]`, by exact key.
+fn field_of(text: &str, start: usize, end: usize, key: &str) -> Option<String> {
+    text[start..end].lines().find_map(|l| {
+        let (k, v) = l.trim().split_once('=')?;
+        (k.trim() == key).then(|| v.trim().trim_matches('"').to_string())
+    })
+}
+
+/// The byte range of the `[[dep]] from = "<from>" to = "<to>" half = "<half>"` row, if the ledger
+/// carries one — found by identity, the same way [`crate::gates::construction::ceilings`]'s own
+/// reader keys a `dep` row, never by position.
+fn find_dep(text: &str, from: &str, to: &str, half: &str) -> Option<(usize, usize)> {
+    for n in 0.. {
+        let (s, e) = nth_table(text, "[[dep]]", n)?;
+        if field_of(text, s, e, "from").as_deref() == Some(from)
+            && field_of(text, s, e, "to").as_deref() == Some(to)
+            && field_of(text, s, e, "half").as_deref() == Some(half)
+        {
+            return Some((s, e));
+        }
+    }
+    None
+}
+
+/// The ledger with the named `[[dep]]` row struck out entirely.
+fn strike_dep(text: &str, from: &str, to: &str, half: &str) -> Option<String> {
+    let (s, e) = find_dep(text, from, to, half)?;
+    Some(format!("{}{}", &text[..s], &text[e..]))
+}
+
+/// The ledger with the named `[[dep]]` row given (or overwriting) a `ceiling` field, right after
+/// `count`.
+fn set_dep_ceiling(text: &str, from: &str, to: &str, half: &str, ceiling: i64) -> Option<String> {
+    let (s, e) = find_dep(text, from, to, half)?;
+    let mut out = text[s..e].to_string();
+    if let Some(at) = out.find("\ncount") {
+        let line_end = out[at + 1..]
+            .find('\n')
+            .map(|i| at + 1 + i + 1)
+            .unwrap_or(out.len());
+        out.insert_str(line_end, &format!("ceiling = \"{ceiling}\"\n"));
+    }
+    Some(format!("{}{out}{}", &text[..s], &text[e..]))
+}
+
+/// THE MINTED-DEP DOOR: a NEW `[[dep]]` edge between two crates that ALREADY EXIST is admitted by
+/// the row's own `ceiling` and `verdict`, never by `[[minted]]`/`[[minted_kind]]` — neither of
+/// which has anything to say about an edge whose crates are not new. `busbar-kernel ->
+/// busbar-contract` is a real, already-`ARCHITECTURE_ALLOWED` edge this tree already ships, so
+/// striking its row out of the BASE only (never the tree) is the honest plant for "this key is
+/// absent at the base" — the crates on either end are real, and the census reads their actual
+/// manifests, not this overlay, so their kinds resolve exactly as they would for any other row.
+fn dep_admission_cases<'a>(
+    gate: &'a dyn Gate,
+    cx: &'a Ctx,
+    base: &Overlay,
+    based: &str,
+) -> Report<'a> {
+    let mut r = Report::new();
+    let file = ceilings::KIND_CEILINGS;
+    let Ok(kinds) = cx.read(file) else {
+        r.note_infra_failure(format!(
+            "{file} could not be read, so the minted-dep door is unproven here rather than passing"
+        ));
+        return r;
+    };
+    const FROM: &str = "busbar-kernel";
+    const TO: &str = "busbar-contract";
+    const HALF: &str = "shipped";
+    let Some(without) = strike_dep(&kinds, FROM, TO, HALF) else {
+        r.note_infra_failure(format!(
+            "{file} carries no `[[dep]] from = \"{FROM}\" to = \"{TO}\" half = \"{HALF}\"` row \
+             to strike, so the minted-dep door is unproven here rather than passing"
+        ));
+        return r;
+    };
+    let identity = format!("dep.{FROM}.{TO}.{HALF}.count");
+
+    // ARM ONE: the real row, unmodified, minus its own base copy — carries no `ceiling`, so it is
+    // refused by name exactly as an un-admitted `[[minted]]` cell is.
+    let mut ov = on(base);
+    ov.set_command(format!("git-show:{based}:{file}"), without.clone());
+    ov.set(file, kinds.clone());
+    r.push(prove_rows_red(
+        cx,
+        gate,
+        "a new `[[dep]]` edge between two existing crates, with no `ceiling`, is refused by name",
+        &[ceilings::ROW_ROSE],
+        ov,
+        &["MINTED on this branch", "carries no `ceiling`", &identity],
+    ));
+
+    // ARM TWO: a forbidden class. `busbar-contract -> busbar-kernel` names no edge the
+    // architecture grants at all (the allowed direction is the other way), so a fabricated row
+    // claiming `ceiling` and `verdict = "allowed"` for it is refused by its CLASS, not by a
+    // missing field.
+    let forbidden = "\n[[dep]]\nfrom    = \"busbar-contract\"\nto      = \"busbar-kernel\"\n\
+         half    = \"shipped\"\ncount   = \"1\"\nceiling = \"1\"\nverdict = \"allowed\"\n\
+         cite    = \"planted by the self-test\"\nwhy     = \"planted by the self-test\"\n\
+         drain   = \"none\"\n"
+        .to_string();
+    let mut ov = on(base);
+    ov.set_command(format!("git-show:{based}:{file}"), kinds.clone());
+    ov.set(file, format!("{kinds}{forbidden}"));
+    r.push(prove_rows_red(
+        cx,
+        gate,
+        "a new `[[dep]]` edge with `ceiling` but a class the architecture does not grant is refused by its class",
+        &[ceilings::ROW_ROSE],
+        ov,
+        &["contract -> kernel", "not-allowed"],
+    ));
+
+    // ARM THREE: both present — `ceiling` and the verdict the architecture already grants this
+    // class — and the row is the admission itself.
+    let Some(admitted) = set_dep_ceiling(&kinds, FROM, TO, HALF, 1) else {
+        r.note_infra_failure(format!(
+            "{file}'s `[[dep]] from = \"{FROM}\" to = \"{TO}\" half = \"{HALF}\"` row could not \
+             be given a `ceiling`, so the admitted arm of the minted-dep door is unproven here \
+             rather than passing"
+        ));
+        return r;
+    };
+    let mut ov = on(base);
+    ov.set_command(format!("git-show:{based}:{file}"), without);
+    ov.set(file, admitted);
+    r.push(prove_rows_green(
+        cx,
+        gate,
+        "a new `[[dep]]` edge with `ceiling` and the class the architecture already grants it is admitted",
+        &[ceilings::ROW_ROSE],
+        ov,
+    ));
+    r
 }
 
 fn rose_plants(cx: &Ctx) -> Vec<(String, String, String)> {

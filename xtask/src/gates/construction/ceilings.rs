@@ -33,6 +33,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::ctx::Ctx;
 use crate::gates::construction::model::{plain, CRow, Cfg};
 use crate::gates::construction::{CEILINGS, SURFACE};
+// THE ONE NARROW SEAM BETWEEN THE TWO GATES: the minted-dep door admits a brand new edge between
+// two crates that already exist off the SAME grant table `kind-isolation` scores that edge
+// against everywhere else, read through the two functions it exports for exactly this. Everything
+// else in this module (the `[[minted]]`/`[[minted_kind]]` reader above) stays independent on
+// purpose; this is the one place a new edge's admission cannot be checked without it.
+use crate::gates::kind_isolation::{dep_class_verdict, kind_of_crate};
 
 /// The other ceilings file this gate watches. It is not read by any construction rule — it is the
 /// `kind-isolation:matrix` allowance — and it is watched HERE because `ceiling-rose` is one claim
@@ -409,6 +415,7 @@ pub fn ceiling_rose(cx: &Ctx) -> Vec<CRow> {
     let short = &base[..8.min(base.len())];
     let declared = raises(cx, &base);
     let mints = mints_in(&cx.read(KIND_CEILINGS).unwrap_or_default());
+    let deps = dep_admissions_in(&cx.read(KIND_CEILINGS).unwrap_or_default());
     let mut risen: Vec<String> = declared.refused.clone();
     let mut allowed: Vec<String> = Vec::new();
     let mut unreadable: Vec<String> = Vec::new();
@@ -417,7 +424,7 @@ pub fn ceiling_rose(cx: &Ctx) -> Vec<CRow> {
     // is left afterwards is an entry describing a rise that did not happen.
     let mut judged: BTreeSet<usize> = BTreeSet::new();
 
-    let (rose, unread, unadmitted) = rose(cx, &base, &mints);
+    let (rose, unread, unadmitted) = rose(cx, &base, &mints, &deps);
     unreadable.extend(unread);
     risen.extend(unadmitted);
     for (key, (before, after, minted)) in &rose {
@@ -589,6 +596,7 @@ fn rose(
     cx: &Ctx,
     base: &str,
     mints: &Mints,
+    deps: &DepAdmissions,
 ) -> (BTreeMap<String, (i64, i64, bool)>, Vec<String>, Vec<String>) {
     let (mut out, mut unreadable, mut unadmitted) = (BTreeMap::new(), Vec::new(), Vec::new());
     for file in [CEILINGS, KIND_CEILINGS] {
@@ -623,7 +631,7 @@ fn rose(
             let minted = !was.contains_key(path);
             let before = match was.get(path) {
                 Some(b) => *b,
-                None => match minted_before(mints, file, path) {
+                None => match minted_before(cx, mints, deps, file, path) {
                     Ok(b) => b,
                     Err(why) => {
                         unadmitted.push(format!("{file} {path} = {after}: {why}"));
@@ -1134,7 +1142,8 @@ pub fn struck_text(cx: &Ctx) -> Result<(String, Vec<Raise>, Vec<Raise>), String>
     let base = base_ref(cx)?;
     let declared = raises(cx, &base);
     let mints = mints_in(&cx.read(KIND_CEILINGS).unwrap_or_default());
-    let (rose, _, _) = rose(cx, &base, &mints);
+    let deps = dep_admissions_in(&cx.read(KIND_CEILINGS).unwrap_or_default());
+    let (rose, _, _) = rose(cx, &base, &mints, &deps);
     // WHAT `--write` STRIKES: every entry the base already carries (its face landed), and every
     // live entry naming a ceiling that did not rise (it has EXPIRED — see [`ceiling_rose`]'s
     // expiry arm, where the same comparison reports it as a warning rather than a red).
@@ -1285,7 +1294,13 @@ fn ordinal_form(key: &str) -> Option<&'static (&'static str, &'static [&'static 
 /// file is the owner's rule table, a new rule arrives with its own figure, and the figure is small
 /// enough to declare outright. Its `before` is 0, so the whole of it is a declared raise — which is
 /// what "the FIRST gating figure of a row that was not gating before" has always meant here.
-fn minted_before(mints: &Mints, file: &str, path: &str) -> Result<i64, String> {
+fn minted_before(
+    cx: &Ctx,
+    mints: &Mints,
+    deps: &DepAdmissions,
+    file: &str,
+    path: &str,
+) -> Result<i64, String> {
     if file != KIND_CEILINGS {
         return Ok(0);
     }
@@ -1301,7 +1316,8 @@ fn minted_before(mints: &Mints, file: &str, path: &str) -> Result<i64, String> {
     };
     // THE CRATE'S OWN ADMISSION TAKES THE ROW FIRST, then the column's — the same order
     // `kind-isolation`'s own mint door reads them in, so the two doors never disagree about which
-    // row admitted what.
+    // row admitted what. This covers a `dep` key too: an edge OUT OF a freshly minted crate is
+    // admitted the same way any other of that crate's rows is.
     for name in &crates {
         if let Some(m) = mints.crates.get(*name) {
             return m.ceiling.ok_or_else(|| {
@@ -1326,6 +1342,15 @@ fn minted_before(mints: &Mints, file: &str, path: &str) -> Result<i64, String> {
             });
         }
     }
+    // THE MINTED-DEP DOOR. Neither crate a `[[dep]]` row names has to be new — usually neither is,
+    // only the EDGE is — so when no `[[minted]]`/`[[minted_kind]]` row above already admitted it,
+    // a brand new edge between two crates that already exist is admitted by the `[[dep]]` row
+    // itself. See [`dep_admission`].
+    if let ("dep", [from, to, half, ..]) = (table, names.as_slice()) {
+        if let Some(result) = dep_admission(cx, deps, from, to, half) {
+            return result;
+        }
+    }
     Err(format!(
         "a ceiling MINTED on this branch — {KIND_CEILINGS} at the base carries no such key — and no \
          `[[minted]]` or `[[minted_kind]]` row of {KIND_CEILINGS} admits it. A row that did not \
@@ -1334,6 +1359,56 @@ fn minted_before(mints: &Mints, file: &str, path: &str) -> Result<i64, String> {
          Admit it with the row that admits its crate (or its kind's column), carrying the `ceiling` \
          it is born at"
     ))
+}
+
+/// THE DEP DOOR'S OWN ADMISSION. `[[minted]]` and `[[minted_kind]]` admit a ledger row because a
+/// CRATE or a KIND is new; a `[[dep]]` row is usually neither — `busbar-plugin-loader ->
+/// busbar-contract` is a NEW EDGE between two crates the tree has carried for years, and no mint
+/// row has anything to say about it. So the row is its own admission: it must carry `ceiling` (the
+/// count it is born at, same field `[[minted]]` carries for the same reason), and its `verdict`
+/// must be the class the architecture's OWN grant table already implies for the (from-kind,
+/// to-kind) pair (`kind_isolation::dep_class_verdict`) — never a class the row is asserting for
+/// itself, which would make the ledger the authority on its own graph rather than a record of it.
+/// Above `ceiling`, the edge is an ordinary ceiling and rises are ordinary declared raises.
+///
+/// Returns `None` when this tree carries no `[[dep]]` row for `(from, to, half)` at all, so the
+/// caller falls through to the generic "no admission" refusal rather than a dep-shaped one.
+fn dep_admission(
+    cx: &Ctx,
+    deps: &DepAdmissions,
+    from: &str,
+    to: &str,
+    half: &str,
+) -> Option<Result<i64, String>> {
+    let (ceiling, verdict) = deps.get(from, to, half)?;
+    let at = format!("[[dep]] from = \"{from}\" to = \"{to}\" half = \"{half}\"");
+    let Some(ceiling) = ceiling else {
+        return Some(Err(format!(
+            "a ceiling MINTED on this branch under `{at}`, which carries no `ceiling`. A row \
+             admits the EXISTENCE of the edge; the figure it is born at is the other half, and \
+             without it a minted edge may be born at any size. Add `ceiling = \"<the count this \
+             row is born at>\"`"
+        )));
+    };
+    let (fk, tk) = (kind_of_crate(cx, from), kind_of_crate(cx, to));
+    let (Some(fk), Some(tk)) = (fk, tk) else {
+        return Some(Err(format!(
+            "a ceiling MINTED on this branch under `{at}` carries `ceiling`, but `{from}` or \
+             `{to}` resolves to no kind this tree's census can name, so no class can be checked \
+             against the architecture's grant table"
+        )));
+    };
+    let implied = dep_class_verdict(fk, tk);
+    if implied == "not-allowed" || verdict != implied {
+        return Some(Err(format!(
+            "a ceiling MINTED on this branch under `{at}` carries `ceiling`, but its verdict \
+             `{verdict}` is not the one the architecture's grant table implies for a {fk} -> {tk} \
+             edge (`{implied}`). A row's own `ceiling` admits a NEW edge only when its verdict is \
+             the class the grant table already grants that pair, never a class the row is \
+             asserting for itself"
+        )));
+    }
+    Some(Ok(ceiling))
 }
 
 /// One `[[minted]]` or `[[minted_kind]]` row, as THIS module needs it: the ceiling it admits at.
@@ -1382,6 +1457,55 @@ pub fn mints_in(text: &str) -> Mints {
     out
 }
 
+/// One `[[dep]]` row's OWN admission, as the minted-dep door needs it: the `ceiling` it is born
+/// at (if any) and the `verdict` it claims for its class. Everything else about the row —
+/// `cite`, `why`, `drain` — is `kind-isolation`'s to read, not this door's.
+#[derive(Debug, Clone, Default)]
+struct DepAdmission {
+    ceiling: Option<i64>,
+    verdict: String,
+}
+
+/// The `[[dep]]` rows of one ledger text, by `(from, to, half)` — the identity [`IDENTITIES`]
+/// already keys them by. Read with the document reader for the reason [`mints_in`] gives: a
+/// `[[dep]]` row's `count` (and, since the minted-dep door, its `ceiling`) is written as a quoted
+/// integer like every other count in this file.
+#[derive(Debug, Clone, Default)]
+struct DepAdmissions(BTreeMap<(String, String, String), DepAdmission>);
+
+impl DepAdmissions {
+    fn get(&self, from: &str, to: &str, half: &str) -> Option<(Option<i64>, &str)> {
+        let a = self
+            .0
+            .get(&(from.to_string(), to.to_string(), half.to_string()))?;
+        Some((a.ceiling, a.verdict.as_str()))
+    }
+}
+
+fn dep_admissions_in(text: &str) -> DepAdmissions {
+    let mut out = BTreeMap::new();
+    let Ok(doc) = crate::toml_doc::parse_str(text) else {
+        return DepAdmissions(out);
+    };
+    for t in doc.array_of_tables("dep") {
+        let (Some(from), Some(to), Some(half)) =
+            (t.str_of("from"), t.str_of("to"), t.str_of("half"))
+        else {
+            continue;
+        };
+        let ceiling = t.int_of("ceiling").or_else(|| {
+            t.str_of("ceiling")
+                .and_then(|s| s.trim().parse::<i64>().ok())
+        });
+        let verdict = t.str_of("verdict").unwrap_or("").to_string();
+        out.insert(
+            (from.to_string(), to.to_string(), half.to_string()),
+            DepAdmission { ceiling, verdict },
+        );
+    }
+    DepAdmissions(out)
+}
+
 /// Every integer in a TOML document, by dotted path — WHETHER IT IS WRITTEN AS A TOML INTEGER OR
 /// AS A QUOTED STRING. The reader this crate has refuses a document it does not understand, which
 /// is the behaviour wanted here too: a ceilings file that cannot be parsed is a comparison that
@@ -1423,7 +1547,21 @@ fn ints_of(text: &str) -> Result<BTreeMap<String, i64>, String> {
             continue;
         }
         let label = identity_of(path, table).unwrap_or_else(|| path.to_string());
+        // AN IDENTITY ROW'S OWN `ceiling` IS NOT A CEILING EITHER, for the same reason
+        // `[[minted]]`'s and `[[minted_kind]]`'s is excluded above: since the minted-dep door, a
+        // `[[dep]]` row may carry one (the figure it admits ITSELF at), and reading that as a
+        // ceiling to compare would red the row's own admission the moment it was written. Scoped
+        // to [`IDENTITIES`]' array-of-tables rows ONLY — `[rules.legacy-reach] ceiling = …` is a
+        // dotted table field that happens to share the word, and IS an ordinary ceiling.
+        let (table_name, ord_rest) = path.split_once('.').unwrap_or((path, ""));
+        let ord = ord_rest.split('.').next().unwrap_or("");
+        let is_identity_row = !ord.is_empty()
+            && ord.chars().all(|c| c.is_ascii_digit())
+            && IDENTITIES.iter().any(|(n, _)| *n == table_name);
         for key in table.keys() {
+            if key == "ceiling" && is_identity_row {
+                continue;
+            }
             if let Some(v) = table
                 .int_of(key)
                 .or_else(|| table.str_of(key).and_then(|s| s.trim().parse::<i64>().ok()))

@@ -2334,6 +2334,24 @@ struct DepInstance {
     sections: Vec<String>,
 }
 
+/// PUBLIC FOR THE MINTED-DEP DOOR (`construction::ceilings`): the one narrow seam between the two
+/// gates. A brand new `[[dep]]` edge between two crates that ALREADY EXIST cannot be admitted by
+/// `[[minted]]`/`[[minted_kind]]` — neither crate is new — so `ceiling-rose` admits it off the row's
+/// own `verdict`, checked against the SAME grant table this row is scored against everywhere else.
+/// A copy of that table in the construction gate would be a second answer the day one of them
+/// changed; this is the one function that keeps there from being two.
+pub fn dep_class_verdict(from_kind: &str, to_kind: &str) -> &'static str {
+    verdict_for(&(from_kind.to_string(), to_kind.to_string()))
+}
+
+/// PUBLIC FOR THE MINTED-DEP DOOR: which kind, if any, one crate of this tree resolves to — read
+/// fresh off the same census every other row of this gate is scored against, because the door only
+/// asks this for the rare `dep.<from>.<to>.<half>.count` key with no covering `[[minted]]`/
+/// `[[minted_kind]]` row, never in a hot loop.
+pub fn kind_of_crate(cx: &Ctx, name: &str) -> Option<&'static str> {
+    census(cx).ok()?.into_iter().find(|c| c.name == name)?.kind
+}
+
 /// The verdict the architecture implies for a class, before anybody writes a sentence about it.
 fn verdict_for(class: &(String, String)) -> &'static str {
     let pair = (class.0.as_str(), class.1.as_str());

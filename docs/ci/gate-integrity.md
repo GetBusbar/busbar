@@ -145,6 +145,25 @@ name; the closing commit's own diff deletes that case along with the arms it was
 so a reader can tell the transition is still open by that case still existing rather than by
 reading a date in a comment.
 
+### The minted-dep door
+
+`ceiling-rose` admits a ceiling the base never carried through `[[minted]]` (a new crate) or
+`[[minted_kind]]` (a new column) — but a brand new `[[dep]]` edge is usually between two crates
+that already exist; neither mint row has anything to say about it, and until now that left it
+unlandable: `kind-isolation:deps` requires the row for any new shipped edge, and `ceiling-rose`
+refused the row's key (`dep.<from>.<to>.<half>.count`, absent at the base) because no `[[minted]]`
+or `[[minted_kind]]` row admitted it either.
+
+The row is now its own admission, in the same style `[[minted]]` uses: it must carry `ceiling` (the
+count it is born at), and its `verdict` must be the class `kind-isolation`'s own grant table
+(`ARCHITECTURE_ALLOWED` / `ARCHITECTURE_TCB`, read through `kind_isolation::dep_class_verdict`)
+already implies for the (from-kind, to-kind) pair — never a class the row asserts for itself. A row
+with no `ceiling` is refused by name; a row with `ceiling` but a class the architecture does not
+grant is refused by its class; a row with both is admitted, and a rise above that `ceiling`
+afterwards is an ordinary declared raise. This is the one place `xtask/src/gates/construction/
+ceilings.rs` reads `xtask/src/gates/kind_isolation.rs` — a narrow, one-directional seam kept to two
+functions so the two gates never carry two different answers about the same grant table.
+
 `ship-ready:standing-reds` is the one row that reads a posture. The standing-red list is a *dev-line
 convenience*: construction rows that are known red, written down, and deliberately not blocking the
 integration line while they are drained. That is reasonable to have and unreasonable to promote —
