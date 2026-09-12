@@ -82,6 +82,79 @@ PREPROVE_LINES="${LANDQ_PREPROVE_LINES:-6}"
 # two lines the runner is about to POP go unproven — measured 2026-09-10 on a sweep of twelve.
 PREPROVE_HEAD="${LANDQ_PREPROVE_HEAD:-2}"
 
+# ──────────────────────────────────────────────────────────────────────────────────────────────────
+# WHICH MACHINE A SWEEP'S PRE-PROOF RUNS ON: `BUSBAR_PROVE_BACKEND=fleet|latchkey`
+# ──────────────────────────────────────────────────────────────────────────────────────────────────
+# The owner's goal is 100% off EC2. The two workloads leave the fleet in order, and this variable is
+# the seam for the FIRST of them: the sweep's pre-proofs. `fleet` is the default and is exactly what
+# this engine has always done — `land.run.sh --preprove --remote <box>`. `latchkey` routes the same
+# leg through scripts/prove-latchkey.sh, which rents a 16-vCPU runner per line and gives it back.
+#
+# THE LANDING ITSELF STAYS ON THE FLEET IN THIS PHASE, deliberately. A pre-proof that is wrong costs
+# the queue an order; a landing that is wrong publishes. The pre-proof is where a new transport is
+# allowed to be measured in anger, and the landing moves when this one has a week of green behind it.
+#
+# TWELVE, NOT TWENTY. The workspace's runner cap is 20 CONCURRENT and CI shares it — measured, and
+# measured the hard way: `latchkey run` answered `Job creation blocked: concurrency_limit` on seven
+# consecutive submissions while LK-1's CI push held the account. A sweep that took all twenty would
+# stop the CI it is meant to replace. So the sweep takes twelve and the rest of a sweep's lines go
+# to boxes; the two backends coexist until the cap is raised.
+#
+# AND THE OVERFLOW IS A FLEET BOX, NOT A QUEUE. A line whose job cannot be created is a line nobody
+# is proving; prove-latchkey.sh answers `exit 75` — "no verdict, prove this again" — for exactly
+# that case, and the dispatcher below reads a 75 as "take a box and do it the old way" rather than
+# as a red. Nothing about the tree has been learned when the account is full.
+LANDQ_PROVE_BACKEND="${BUSBAR_PROVE_BACKEND:-fleet}"
+LATCHKEY_MAX_JOBS="${LATCHKEY_MAX_JOBS:-12}"
+
+lq_validate_backend() { # $1 = the value; the engine refuses a backend it does not have
+  case "${1:-}" in fleet|latchkey) return 0 ;; esac
+  lq_log "pre-prove: BUSBAR_PROVE_BACKEND='${1:-}' is not a backend this engine has (fleet | latchkey) — using fleet"
+  return 1
+}
+lq_preprove_backend() { lq_validate_backend "$LANDQ_PROVE_BACKEND" && printf '%s
+' "$LANDQ_PROVE_BACKEND" || printf 'fleet
+'; }
+
+# HOW MANY LATCHKEY JOBS THIS ENGINE HAS IN FLIGHT. Counted from the processes, not from a file: a
+# counter file survives a killed sweep and then refuses every line in the next one, which is the
+# failure mode a lock file has whenever the thing it counts can be SIGKILLed.
+lq_latchkey_inflight() {
+  pgrep -f 'prove-latchkey\.sh .*--preprove' 2>/dev/null | grep -c . || true
+}
+lq_latchkey_slot_free() {
+  local n; n="$(lq_latchkey_inflight)"
+  [ "${n:-0}" -lt "$LATCHKEY_MAX_JOBS" ]
+}
+
+# ONE DISPATCH, TWO BACKENDS, AND THE FLEET IS THE FALLBACK OF BOTH. Every pre-proof in this file
+# goes through here — the live lines, the chained holds and the base replay — so a backend cannot be
+# half-adopted by a sweep that forgot one of its three loops.
+#
+# `$2` is the box the allocator handed this line, or the empty string when the sweep did not take
+# one because the backend does not need it. A latchkey dispatch that cannot create a job and has no
+# box to fall back to is the honest 75 the caller already knows how to read.
+# A BOX IS ONLY TAKEN WHEN A BOX IS WHAT WILL BE USED. On the latchkey backend a line that has a
+# free runner slot needs NO fleet box, and taking one anyway would bound the sweep by the very
+# resource the backend exists to stop using — six boxes' worth of lines out of a queue of a hundred
+# and twenty, on a backend with twelve slots. The empty string means "no box", and the dispatcher
+# reads it as "there is nothing to fall back to".
+lq_preprove_needs_box() {
+  [ "$(lq_preprove_backend)" = latchkey ] && lq_latchkey_slot_free && return 1
+  return 0
+}
+lq_dispatch_preprove() { # $1 = tree, $2 = host ('' = none), $3 = batch file; returns the leg's rc
+  local tree="$1" host="$2" bf="$3" rc=0
+  if [ "$(lq_preprove_backend)" = latchkey ] && lq_latchkey_slot_free; then
+    env -u LAND_SELFTEST_SHARDS bash "$tree/scripts/prove-latchkey.sh" --preprove --batch "$bf" </dev/null
+    rc=$?
+    [ "$rc" != 75 ] && return "$rc"
+    lq_log "pre-prove: latchkey created no job for $(basename "$bf") (the workspace cap is shared with CI) — falling back to a box"
+  fi
+  [ -n "$host" ] || { lq_log "pre-prove: no box to fall back to for $(basename "$bf") — no verdict"; return 75; }
+  env -u LAND_SELFTEST_SHARDS bash "$tree/target/gate/land.run.sh" --preprove --remote "$host" --batch "$bf" </dev/null
+}
+
 export LAND_ORACLE_SHARDS="${LAND_ORACLE_SHARDS:-3}"
 export LAND_ORACLE_PORT_BASE="${LAND_ORACLE_PORT_BASE:-50100}"
 export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-8}"
@@ -1385,7 +1458,7 @@ lq_base_red_replay() { # $1 = tree, $2 = the sweep's directory, $3 = tip key, $4
   printf -- '--prove --families %s\n' "'"'"'$fams'"'"'" >"$dir/base.batch"
   lq_log "base state: measuring the tip itself on $h — a batch with NO picks, families $fams"
   (
-    env -u LAND_SELFTEST_SHARDS bash "$tree/target/gate/land.run.sh" --preprove --remote "$h" --batch "$dir/base.batch" \
+    lq_dispatch_preprove "$tree" "$h" "$dir/base.batch" \
       >"$dir/base.log" 2>&1
     echo $? >"$dir/base.rc"
   ) &
@@ -2364,13 +2437,17 @@ $chained" || true)"
     # ONE ASK, NAMING THE BOXES THIS SWEEP ALREADY HOLDS: the allocator refuses them itself, so a
     # box is never handed out twice and no line has to re-probe the fleet to discover that.
     # shellcheck disable=SC2086
-    cand="$( fleet_pick_host $hosts )" || cand=""
-    [ -n "$cand" ] || { lq_log "pre-prove: out of free boxes; the rest of the sweep waits for the next one"; break; }
-    hosts="$hosts $cand"
+    if lq_preprove_needs_box; then
+      cand="$( fleet_pick_host $hosts )" || cand=""
+      [ -n "$cand" ] || { lq_log "pre-prove: out of free boxes; the rest of the sweep waits for the next one"; break; }
+      hosts="$hosts $cand"
+    else
+      cand=""
+    fi
     i=$((i + 1))
     local bf="$dir/line-$i.batch"
     printf '%s\n' "$line" >"$bf"
-    printf '%s\n' "$cand" >"$dir/line-$i.host"
+    printf '%s\n' "${cand:-latchkey}" >"$dir/line-$i.host"
     date +%s >"$dir/line-$i.start"   # when this line went to that box, for the status file
     # THE CHAIN THIS SLOT IS THE ROOT OF, if it is one (see lq_slot_root_red). A live single's root
     # is itself: when it is proven red alone, the rungs held behind it are empty.
@@ -2386,7 +2463,7 @@ $chained" || true)"
       # </dev/null: this child is backgrounded while the loop is still READING the list of lines
       # from its heredoc, and a child that inherits that stdin eats the next line — measured: three
       # disjoint lines, two boxes chosen, no "out of free boxes", the third line simply never read.
-      env -u LAND_SELFTEST_SHARDS bash "$tree/target/gate/land.run.sh" --preprove --remote "$cand" --batch "$bf" \
+      lq_dispatch_preprove "$tree" "$cand" "$bf" \
         >"$dir/line-$i.log" 2>&1 </dev/null
       echo $? >"$dir/line-$i.rc"
     ) &
@@ -2410,9 +2487,13 @@ EOF
     local chain2; chain2="$(lq_chain_of "$line" "$Q" "$tree" "$LAND_CHAIN_DEPTH")" || continue
     [ -n "$chain2" ] || continue
     # shellcheck disable=SC2086
-    cand="$( fleet_pick_host $hosts )" || cand=""
-    [ -n "$cand" ] || { lq_log "pre-prove: out of free boxes; the chained holds wait for the next sweep"; break; }
-    hosts="$hosts $cand"
+    if lq_preprove_needs_box; then
+      cand="$( fleet_pick_host $hosts )" || cand=""
+      [ -n "$cand" ] || { lq_log "pre-prove: out of free boxes; the chained holds wait for the next sweep"; break; }
+      hosts="$hosts $cand"
+    else
+      cand=""
+    fi
     ctext="$(printf '%s' "$chain2" | tail -n1)"
     ck="$(printf '%s' "$chain2" | sed '$d' | lq_chain_key "$key")"
     i=$((i + 1))
@@ -2428,7 +2509,7 @@ EOF
         u=$((u + 1)); [ "$u" = 1 ] || printf '#UNIT 1\n' >>"$bf2"
         printf '%s\n' "$cl" >>"$bf2"
       done; }
-    printf '%s\n' "$cand" >"$dir/line-$i.host"
+    printf '%s\n' "${cand:-latchkey}" >"$dir/line-$i.host"
     date +%s >"$dir/line-$i.start"   # when this line went to that box, for the status file
     printf '%s\n' "$ck" >"$dir/line-$i.chainkey"
     printf '%s\n' "$ctext" >"$dir/line-$i.chaintext"
@@ -2437,7 +2518,7 @@ EOF
     printf '%s\n' "$(printf '%s\n' "$chain2" | head -n1)" >"$dir/line-$i.root"
     lq_log "pre-prove: chained $(printf '%.70s' "$ctext") on $(printf '%s' "$chain2" | grep -c .) line(s) at $(printf '%.9s' "$key")"
     (
-      env -u LAND_SELFTEST_SHARDS bash "$tree/target/gate/land.run.sh" --preprove --remote "$cand" --batch "$bf2" \
+      lq_dispatch_preprove "$tree" "$cand" "$bf2" \
         >"$dir/line-$i.log" 2>&1 </dev/null
       echo $? >"$dir/line-$i.rc"
     ) &
@@ -3604,7 +3685,10 @@ lq_selftest() {
      "$( [ "$(grep -nF 'basehost="$(lq_base_replay_reserve ' "$LQ_SRC" | head -n1 | cut -d: -f1)" \
           -lt "$(grep -nF 'cand="$( fleet_pick_host $hosts )"' "$LQ_SRC" | head -n1 | cut -d: -f1)" ] && echo 1 || echo 0)"
   _t "  ...so no line re-probes the fleet looking for one"  0 "$(grep -c 'try=\$((try + 1))' "$0")"
-  _t "the box each line went to is written down"            2 "$(grep -c 'printf .%s.n. "\$cand" >"\$dir/line-\$i.host"' "$0")"
+  # …OR THE WORD `latchkey` WHEN NO BOX WAS TAKEN. The status file's question is "where is this
+  # line being proven", and on the latchkey backend the honest answer is not a box id; an empty
+  # file would read as "nowhere", which is the one thing it was never.
+  _t "the box each line went to is written down"            2 "$(grep -c 'printf .%s.n. "\${cand:-latchkey}" >"\$dir/line-\$i.host"' "$0")"
   _t "a line that LOST its box drops it from the table"     1 "$(grep -c 'fleet_table_drop "\$(cat "\$dir/line-\$j.host"' "$0")"
   # THE RECORDER'S BOUNDS ARE FORWARDED, NEVER INVENTED HERE. A bound this runner set would be a
   # laptop's guess about a box's speed; the box measures its own load (land.sh's land_oracle_bounds).
@@ -3635,10 +3719,61 @@ lq_selftest() {
   lq_stage_engine
   _t "land.run.sh's root is the runner's tree, not the scratch" "here=$W" "$(bash "$W/target/gate/land.run.sh")"
   _t "land-remote.sh's REPO is the runner's tree"               "REPO=$W" "$(bash "$W/target/gate/land-remote.sh")"
-  # THREE: the live lines, the chained holds, and the base replay that measures the tip itself.
-  _t "the sweep launches the staged engine, live lines, chains and the base alike" 3 \
+  # THREE: the live lines, the chained holds, and the base replay that measures the tip itself —
+  # and all three now go through ONE dispatcher (lq_dispatch_preprove), which is the point: a
+  # backend cannot be half-adopted by a sweep that forgot one of its three loops. So the count that
+  # used to be 3 launches is 3 DISPATCHES and exactly ONE fleet launch, inside the dispatcher.
+  _t "the sweep dispatches live lines, chains and the base alike"  3 \
+     "$(grep -c 'lq_dispatch_preprove "\$tree"' "$0")"
+  _t "  ...and the fleet leg is launched from exactly one place"   1 \
      "$(grep -c 'bash "\$tree/target/gate/land.run.sh" --preprove' "$0")"
   _t "the sweep never launches \$SCRIPTS/land.sh"              0 "$(grep -c 'bash "\$SCRIPTS/land.sh" --preprove' "$0")"
+
+  # ── BUSBAR_PROVE_BACKEND, DRIVEN OVER A STUBBED `latchkey` ────────────────────────────────────
+  # The dispatcher is the one thing in this file that decides which MACHINE a proof runs on, so it
+  # is driven here rather than described: two stub scripts stand in for prove-latchkey.sh and the
+  # staged fleet engine, each of them recording that it ran and returning a code the dispatcher has
+  # to act on. No runner is rented and no box is touched.
+  echo "landq4 selftest: BUSBAR_PROVE_BACKEND routes the sweep's pre-proof, and the fleet is the fallback"
+  local bt="$root/backend"; mkdir -p "$bt/scripts" "$bt/target/gate"
+  printf '#!/usr/bin/env bash\necho latchkey "$@" >>"%s/calls"\nexit ${LK_STUB_RC:-0}\n' "$bt" >"$bt/scripts/prove-latchkey.sh"
+  printf '#!/usr/bin/env bash\necho fleet "$@" >>"%s/calls"\nexit 0\n' "$bt" >"$bt/target/gate/land.run.sh"
+  printf -- '--prove --tests xtask\n' >"$bt/b.batch"
+  _bk() { # $1 = backend, $2 = host, $3 = stub rc; prints "<rc> <who>"
+    local rc who
+    : >"$bt/calls"
+    LANDQ_PROVE_BACKEND="$1" LK_STUB_RC="$3" lq_dispatch_preprove "$bt" "$2" "$bt/b.batch" >/dev/null 2>&1
+    rc=$?
+    who="$(awk '{print $1}' "$bt/calls" | tr '\n' ',' | sed 's/,$//')"
+    printf '%s %s\n' "$rc" "${who:-nobody}"
+  }
+  # THE DEFAULT IS THE FLEET, and it is the default because an unset variable must mean "what this
+  # engine did yesterday".
+  _t "an unset BUSBAR_PROVE_BACKEND is the fleet"            fleet "$(BUSBAR_PROVE_BACKEND=""; LANDQ_PROVE_BACKEND="${BUSBAR_PROVE_BACKEND:-fleet}"; lq_preprove_backend)"
+  _t "BUSBAR_PROVE_BACKEND=latchkey is a backend this engine has" latchkey "$(LANDQ_PROVE_BACKEND=latchkey; lq_preprove_backend)"
+  # A BACKEND NOBODY IMPLEMENTED IS NOT A SILENT PASS-THROUGH. It falls back to the fleet AND says
+  # so: a typo that quietly proved nothing on a machine nobody named is the shape this refuses.
+  _t "a backend this engine does not have falls back to the fleet" fleet "$(LANDQ_PROVE_BACKEND=azure; lq_preprove_backend 2>/dev/null)"
+  # THE REFUSAL IS SAID OUT LOUD, IN THE ENGINE'S OWN LOG — `lq_log` appends to $L, so the case
+  # points $L at a scratch file and reads it back. Driving the real function, not describing it.
+  _t "  ...and says so in the log"                           1 \
+     "$( L="$bt/backend.log"; : >"$L"; LANDQ_PROVE_BACKEND=azure lq_preprove_backend >/dev/null; \
+         grep -c 'is not a backend this engine has' "$bt/backend.log" )"
+  _t "the fleet backend launches the staged engine"          "0 fleet"    "$(_bk fleet i-0stub 0)"
+  _t "the latchkey backend launches prove-latchkey.sh"       "0 latchkey" "$(_bk latchkey i-0stub 0)"
+  _t "  ...and its RED is the line's red, not a fallback"    "1 latchkey" "$(_bk latchkey i-0stub 1)"
+  # 75 IS "NO JOB WAS CREATED", WHICH IS NOT A VERDICT. The workspace's 20-runner cap is shared with
+  # CI and was measured full for seven consecutive submissions; a line that met a full account has
+  # learned NOTHING about its tree, so it goes to a box rather than being scored.
+  _t "a latchkey 75 overflows onto the box the sweep holds"  "0 latchkey,fleet" "$(_bk latchkey i-0stub 75)"
+  _t "  ...and with NO box to fall back to it is an honest 75" "75 latchkey" "$(_bk latchkey '' 75)"
+  # THE CAP. Twelve, not twenty, so the CI this is replacing still has runners.
+  _t "the latchkey job cap defaults to twelve"               12 "$(LATCHKEY_MAX_JOBS="${LATCHKEY_MAX_JOBS:-12}"; echo "$LATCHKEY_MAX_JOBS")"
+  _t "a full cap takes a box instead of a runner"            "0 fleet" "$(LATCHKEY_MAX_JOBS=0 _bk latchkey i-0stub 0)"
+  # AND A FULL CAP ASKS THE ALLOCATOR FOR ONE, where a free slot does not.
+  _t "a free latchkey slot needs no fleet box"               1 "$(LANDQ_PROVE_BACKEND=latchkey LATCHKEY_MAX_JOBS=12 lq_preprove_needs_box; echo $?)"
+  _t "  ...a full cap does"                                  0 "$(LANDQ_PROVE_BACKEND=latchkey LATCHKEY_MAX_JOBS=0 lq_preprove_needs_box; echo $?)"
+  _t "  ...and the fleet backend always does"                0 "$(LANDQ_PROVE_BACKEND=fleet lq_preprove_needs_box; echo $?)"
   # THE SWEEP READS EVERY LINE IT WAS GIVEN, even though each child it starts is backgrounded while
   # the loop is still reading its list: a child that inherited that stdin ate the next line (three
   # disjoint lines, two boxes chosen, no "out of free boxes"). The stub engine swallows its stdin
