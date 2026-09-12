@@ -157,13 +157,32 @@ lk_stage_repo() { # $1 = repo  $2 = stage dir (inside the repo)  $3 = tip  $4 = 
   # is told to carry the boundary.
   git -C "$bare" config receive.shallowUpdate true || return 1
   git -C "$bare" config gc.auto 0 || return 1
-  local -a specs=( "+${tip}:refs/heads/tip" )
+  # ── THE TIP GOES ALONE, AND EVERY PICK GOES BY ITSELF AFTER IT ────────────────────────────────
+  # MEASURED (--smoke-latchkey on a scratch clone at 09dacd152, the pick 6b47b1ca5): pushing the tip
+  # and one pick in ONE `git push` fails with
+  #
+  #     ! [remote failure]  6b47b1ca5 -> refs/proof/picks/6b47b1ca5 (remote failed to report status)
+  #     error: failed to push some refs
+  #
+  # and `git push` is ATOMIC over its refspecs, so the TIP failed with it and the whole proof died
+  # `could not stage the history`. The same pick pushed ALONE into the same bare repo succeeds; so
+  # does the tip alone, and so do both when the tip goes first. The receiving side cannot report
+  # status for a second ref while it is carrying a shallow boundary — which is this laptop's clone,
+  # permanently. This is the audit pins' lesson, one paragraph down, arriving for the picks: a
+  # single ref that cannot travel takes everything in its push with it.
+  #
+  # AND A PICK THAT CANNOT TRAVEL IS A REFUSAL, WHICH IS WHERE IT DIFFERS FROM A PIN. A pin that
+  # does not arrive costs one gate row. A pick that does not arrive is a batch the runner cannot
+  # cherry-pick — it would prove the TIP and report on the line — so it is rc 1 here and the caller
+  # turns it into "nothing was staged", never into a verdict about the line.
+  git -C "$repo" push -q "$bare" "+${tip}:refs/heads/tip" 2>/dev/null || return 1
   local h
   for h in "$@"; do
     [ -n "$h" ] || continue
-    specs+=( "+${h}:refs/proof/picks/$h" )
+    git -C "$repo" push -q "$bare" "+${h}:refs/proof/picks/$h" 2>/dev/null || {
+      echo "prove-latchkey: the pick $h could not be pushed into the staged repository; nothing is proven without it" >&2
+      return 1; }
   done
-  git -C "$repo" push -q "$bare" "${specs[@]}" 2>/dev/null || return 1
   # THE AUDIT PINS TRAVEL TOO, for the reason remote_push_tree names: qa/audit-ledger.json records
   # the commit each audit round read, the audit-ledger gate re-derives that tree, and a repository
   # that cannot resolve the pin reds for a reason that is not the tree's.
@@ -213,6 +232,30 @@ lk_pack_dir() { # $1 = repo  $2 = the tree-ish to export  $3 = a unique id; prin
   rm -rf "$d"; mkdir -p "$d" || return 1
   git -C "$repo" archive --format=tar "$treeish" | tar -xf - -C "$d" || return 1
   printf '%s\n' "$d"
+}
+
+# ── THE ENGINE THE RUNNER RUNS IS THE ONE THAT SENT IT, NEVER THE TREE'S ────────────────────────
+# MEASURED (--smoke-latchkey on a scratch clone at 09dacd152): the runner ran `bash scripts/land.sh
+# --preprove --batch …` out of the PACKED TREE, and that tree's land.sh has no `--preprove` at all —
+# the flag fell through its parser into the hash list and the job died
+# `RED — cherry-pick --preprove conflicted`. Every pre-proof on that tip would have.
+#
+# THE REASON IS STRUCTURAL AND land-remote.sh ALREADY SAYS IT: the tree's `scripts/land.sh` is
+# whatever LANDED LAST, and the engine driving this proof is whatever the runner is carrying — which
+# is routinely newer, because land.sh's own fixes travel through the queue and are in flight. A
+# landing judged by an engine older than the one on the laptop was the first fleet batch's defect,
+# and it is this one's. So the engine travels INTO the pack, exactly as land-remote.sh copies it to
+# the box, and `here=` is re-pointed at the runner's cwd on arrival.
+#
+# IT IS THE ENGINE BESIDE THIS TRANSPORT. `land.run.sh` first — that is the name lq_stage_engine
+# gives the runner's copy — then the sibling in scripts/. This file and the engine that uses it are
+# staged together by lq_stage_engine, so "beside" is exactly right and never a guess.
+lk_engine_path() { # prints the land.sh this proof should be judged by, or nothing
+  local c
+  for c in "$HERE/land.run.sh" "$HERE/land.sh" "$REPO/scripts/land.sh"; do
+    [ -f "$c" ] && { printf '%s\n' "$c"; return 0; }
+  done
+  return 1
 }
 
 # ── THE SCRIPT THE RUNNER EXECUTES ──────────────────────────────────────────────────────────────
@@ -278,6 +321,21 @@ export BUSBAR_GATE_BASE_REF="$BASE" GATE_MUTANTS_BASE="$BASE"
 export LAND_ORACLE_PORT_BASE="${LAND_ORACLE_PORT_BASE:-40000}"
 export LAND_TMP="$HOME/latchkey-tmp"; mkdir -p "$LAND_TMP"
 unset RUSTC_WRAPPER SCCACHE_DIR SCCACHE_CACHE_SIZE SCCACHE_SERVER_PORT
+
+# ── THE ENGINE THAT SENT THIS JOB, ROOTED IN THIS CHECKOUT ──────────────────────────────────────
+# Shipped as $STAGE/land.run.sh (see lk_engine_path for why it is not the tree's), with `here=`
+# re-pointed at the directory that was packed — land.sh derives every path from that one line, and
+# land-remote.sh does the identical rewrite on a fleet box. $ENGINE is what every mode below runs.
+ENGINE="$STAGE/land.run.sh"
+if [ -f "$ENGINE" ]; then
+  sed "s|^here=.*|here=\"$PWD\"|" "$ENGINE" >"$STAGE/land.local.sh"
+  ENGINE="$STAGE/land.local.sh"
+  echo "   engine: the runner's land.sh, rooted at $PWD ($(grep -c . "$ENGINE") lines)"
+else
+  echo "prove-latchkey: RED — no $STAGE/land.run.sh in the packed tree; the engine never shipped and"
+  echo "prove-latchkey:       the tree's own land.sh is whatever landed last, which is not this proof's judge"
+  exit 2
+fi
 PREAMBLE
 }
 
@@ -294,7 +352,7 @@ ONBOX
 RC=0
 if [ "$MODE" = preprove ]; then
   say "land.sh --preprove over the batch (the picks, the legs, the bisect — and it publishes nothing)"
-  bash scripts/land.sh --preprove --batch "$STAGE/batch.txt"; RC=$?
+  bash "$ENGINE" --preprove --batch "$STAGE/batch.txt"; RC=$?
   say "the per-line verdict file"
   # THE RETURN CHANNEL IS THE LOG. Latchkey copies no files back, so `<batch>.result` is printed
   # between two delimiters the laptop parses. An absent file is printed as an absent block, never
@@ -323,7 +381,7 @@ else
   # land.sh's OWN verdict functions, read out of the tree under test and eval'd, exactly as
   # prove-remote.sh does it — so this leg and the landing engine's cannot disagree about what a red
   # means, and no copy of the standing-red list lives in this file.
-  gsrc="$(sed -n '/^land_construction_standing_reds() {/,/^}/p;/^land_ceiling_verdict() {/,/^}/p;/^land_gate_verdict() {/,/^}/p' scripts/land.sh)"
+  gsrc="$(sed -n '/^land_construction_standing_reds() {/,/^}/p;/^land_ceiling_verdict() {/,/^}/p;/^land_gate_verdict() {/,/^}/p' "$ENGINE")"
   case "$gsrc" in
     *"land_gate_verdict()"*) ;;
     *) echo "prove-latchkey: RED — land.sh's gate verdict is not readable out of this tree"; exit 2 ;;
@@ -424,6 +482,43 @@ lk_state() { # $1 = job id
 
 lk_exit_code() { # $1 = job id; prints the command's exit code, or nothing
   "$LK_BIN" status "$1" 2>/dev/null | awk '/^Exit code:/{print $3}' | grep -E '^[0-9]+$' || true
+}
+
+# ── A JOB THAT NEVER RAN IS NOT A RED ───────────────────────────────────────────────────────────
+# MEASURED (--smoke-latchkey, 2026-09-12): two jobs came back `State: failed`, `Exit code: -`,
+# `Started: -`, `Failure reason: launch_failed: VcpuLimitExceeded`. Latchkey could not get the
+# instance; the runner script was never executed; not one byte of anybody's tree was read. Scored
+# from the state alone that is `failed` -> rc 1 -> RED, and two live queue lines would have been
+# parked for AWS's capacity — which is the 127 defect wearing a different hat.
+#
+# THE QUESTION IS "DID THE COMMAND RUN", AND THE STATUS ANSWERS IT TWICE OVER: a job that ran has a
+# `Started:` timestamp and an `Exit code:`. Either one absent on a terminal job means the verdict
+# belongs to the platform, and the platform's verdicts are 75 — "nothing was learned, ask again".
+lk_failure_reason() { # $1 = job id; prints Latchkey's own reason, or nothing
+  "$LK_BIN" status "$1" 2>/dev/null | sed -n 's/^Failure reason:[[:space:]]*//p' | sed 's/[[:space:]]*$//' | grep -v '^-\?$' || true
+}
+lk_job_started() { # $1 = job id; 0 when the command really began
+  local st
+  st="$("$LK_BIN" status "$1" 2>/dev/null | awk '/^Started:/{print $2}')"
+  case "$st" in *-*-*) return 0 ;; esac
+  return 1
+}
+# THE ONE PLACE A TERMINAL STATE BECOMES AN EXIT CODE. Prints the code; 75 whenever the job never
+# ran, whatever Latchkey called the state.
+lk_job_rc() { # $1 = job id, $2 = terminal state
+  local id="$1" state="$2" rc why
+  case "$state" in
+    cancelled) printf '130\n'; return 0 ;;
+    expired)   printf '124\n'; return 0 ;;
+  esac
+  rc="$(lk_exit_code "$id")"
+  if [ -z "$rc" ] && ! lk_job_started "$id"; then
+    why="$(lk_failure_reason "$id")"
+    lklog "job $id never started (${why:-no reason given}) — the runner script did not run, so there is no verdict: 75"
+    printf '75\n'; return 0
+  fi
+  [ -n "$rc" ] || { case "$state" in succeeded) rc=0 ;; *) rc=1 ;; esac; }
+  printf '%s\n' "$rc"
 }
 
 # ── WHAT IS ACTUALLY BILLED ─────────────────────────────────────────────────────────────────────
@@ -701,6 +796,105 @@ if [ "${1:-}" = "--selftest" ]; then
     || say FAIL "this script still stages into the repository"
   rm -rf "$_p1" "$_p2"
 
+  echo "== prove-latchkey SELF-TEST (the engine travels; the TREE's land.sh is not the judge) =="
+  # MEASURED (--smoke-latchkey on a scratch clone at 09dacd152): the runner ran the PACKED TREE's
+  # scripts/land.sh, which on that tip has no `--preprove` at all — the flag fell through its parser
+  # into the hash list and every pre-proof died `RED — cherry-pick --preprove conflicted`. The
+  # tree's engine is whatever landed last; the engine driving a proof is whatever the runner carries.
+  case "$emit" in
+    *'ENGINE="$STAGE/land.run.sh"'*) say PASS "the runner takes its engine from the packed stage" ;;
+    *) say FAIL "the runner does not look for a shipped engine" ;;
+  esac
+  case "$emit" in
+    *'bash "$ENGINE" --preprove --batch'*) say PASS "  ...and the pre-proof leg runs THAT engine" ;;
+    *) say FAIL "the pre-proof leg still runs the tree's own scripts/land.sh" ;;
+  esac
+  case "$emit" in
+    *'bash scripts/land.sh'*) say FAIL "something in the runner still runs the tree's scripts/land.sh" ;;
+    *) say PASS "  ...and nothing in the runner runs the tree's scripts/land.sh" ;;
+  esac
+  case "$emit" in
+    *'sed "s|^here=.*|here=\"$PWD\"|"'*) say PASS "  ...with here= re-pointed at the packed directory" ;;
+    *) say FAIL "the engine's root is not re-pointed on the runner" ;;
+  esac
+  case "$emit" in
+    *'the engine never shipped'*) say PASS "  ...and a job with no engine in it REFUSES, rather than falling back to the tree's" ;;
+    *) say FAIL "a missing engine falls back silently" ;;
+  esac
+  lk_engine_path >/dev/null 2>&1 \
+    && say PASS "an engine is found beside this transport ($(basename "$(lk_engine_path)"))" \
+    || say FAIL "no engine could be found beside this transport"
+
+  echo "== prove-latchkey SELF-TEST (a job that never ran is not a red) =="
+  # MEASURED (--smoke-latchkey, 2026-09-12): `State: failed`, `Exit code: -`, `Started: -`,
+  # `Failure reason: launch_failed: VcpuLimitExceeded`. The runner script never executed and two
+  # live queue lines would have been parked for AWS's capacity. Driven over a stubbed CLI that
+  # prints those exact four lines.
+  _lkstatus="$root/status.txt"
+  LK_BIN="$root/fake-latchkey"
+  printf '#!/usr/bin/env bash\n[ "$1" = status ] && cat "%s"\nexit 0\n' "$_lkstatus" >"$LK_BIN"
+  chmod +x "$LK_BIN"
+  printf 'Job:              cli-x\nState:            failed\nExit code:        -\nFailure reason:   launch_failed: VcpuLimitExceeded\nStarted:          -\nCompleted:        2026-09-12T02:42:38.263Z\n' >"$_lkstatus"
+  [ "$(lk_job_rc cli-x failed 2>/dev/null)" = 75 ] \
+    && say PASS "a job that never started is 75, never a red about anybody's picks" \
+    || say FAIL "a job that never started was scored $(lk_job_rc cli-x failed 2>/dev/null)"
+  lk_failure_reason cli-x 2>/dev/null | grep -q 'VcpuLimitExceeded' \
+    && say PASS "  ...and Latchkey's own reason is read, so the ledger can say why" \
+    || say FAIL "the failure reason is not read"
+  printf 'Job:              cli-y\nState:            failed\nExit code:        1\nStarted:          2026-09-12T02:42:38.000Z\nCompleted:        2026-09-12T02:52:38.000Z\n' >"$_lkstatus"
+  [ "$(lk_job_rc cli-y failed 2>/dev/null)" = 1 ] \
+    && say PASS "  ...but a job that RAN and exited 1 is still a red" \
+    || say FAIL "a real red was excused (got $(lk_job_rc cli-y failed 2>/dev/null))"
+  printf 'Job:              cli-z\nState:            succeeded\nExit code:        0\nStarted:          2026-09-12T02:42:38.000Z\nCompleted:        2026-09-12T02:52:38.000Z\n' >"$_lkstatus"
+  [ "$(lk_job_rc cli-z succeeded 2>/dev/null)" = 0 ] \
+    && say PASS "  ...and one that ran and exited 0 is still a green" \
+    || say FAIL "a real green was lost"
+  [ "$(lk_job_rc cli-z expired 2>/dev/null)" = 124 ] \
+    && say PASS "  ...and the 7200 s ceiling is 124, which is the shard plan's fault and not the tree's" \
+    || say FAIL "an expired job is not 124"
+  LK_BIN="${LATCHKEY_BIN:-latchkey}"
+
+  echo "== prove-latchkey SELF-TEST (the tip and its picks travel, and neither takes the other down) =="
+  # MEASURED: one `git push` carrying the tip AND a pick fails on a shallow clone, and takes the tip
+  # with it because a push is atomic over its refspecs. Driven on a real repository with a real pick
+  # that is NOT an ancestor of the tip — which is what a batch's picks always are.
+  _pk="$root/picktree"
+  git init -q "$_pk" 2>/dev/null
+  git -C "$_pk" config user.email lk@selftest; git -C "$_pk" config user.name lk
+  printf 'base\n' >"$_pk/a.txt"; git -C "$_pk" add a.txt >/dev/null 2>&1
+  git -C "$_pk" commit -q --no-verify -m base
+  _pkbase="$(git -C "$_pk" rev-parse HEAD)"
+  printf 'tip\n' >>"$_pk/a.txt"; git -C "$_pk" add a.txt >/dev/null 2>&1
+  git -C "$_pk" commit -q --no-verify -m tip
+  _pktip="$(git -C "$_pk" rev-parse HEAD)"
+  # the pick: a commit on a side branch, reachable from no ref the tip is on
+  git -C "$_pk" checkout -q -b side "$_pkbase"
+  printf 'pick\n' >"$_pk/p.txt"; git -C "$_pk" add p.txt >/dev/null 2>&1
+  git -C "$_pk" commit -q --no-verify -m pick
+  _pkpick="$(git -C "$_pk" rev-parse HEAD)"
+  git -C "$_pk" checkout -q "$_pktip"
+  if lk_stage_repo "$_pk" "$root/pkstage" "$_pktip" "$_pkbase" "$_pkpick"; then
+    say PASS "a tip and a pick stage together into one bare repository"
+    [ "$(git -C "$root/pkstage/git" rev-parse refs/heads/tip)" = "$_pktip" ] \
+      && say PASS "  ...the tip is there" || say FAIL "the tip did not arrive"
+    [ "$(git -C "$root/pkstage/git" rev-parse "refs/proof/picks/$_pkpick")" = "$_pkpick" ] \
+      && say PASS "  ...and so is the pick, under the ref the runner cherry-picks from" \
+      || say FAIL "the pick did not arrive"
+  else
+    say FAIL "staging a tip with a pick failed (this is the defect --smoke-latchkey found)"
+  fi
+  # THE TIP GOES BY ITSELF. Not a style point: one push carrying both is the failure above.
+  [ "$(grep -c 'git -C "\$repo" push -q "\$bare" "+\${tip}:refs/heads/tip"' "${BASH_SOURCE[0]}")" = 1 ] \
+    && say PASS "  ...because the tip is pushed in a refspec of its own" \
+    || say FAIL "the tip does not have a push of its own"
+  # A PICK THAT CANNOT TRAVEL IS A REFUSAL, never a proof of the tip reported as the line's.
+  # NOT ALL-ZEROS: git reads an all-zero source as a DELETE, which succeeds, and this case passed
+  # against a staging that had refused nothing. A well-formed sha that is not in the object store is
+  # what a pick on the far side of a shallow boundary actually looks like.
+  lk_stage_repo "$_pk" "$root/pkstage2" "$_pktip" "$_pkbase" deadbeefdeadbeefdeadbeefdeadbeefdeadbeef >/dev/null 2>&1 \
+    && say FAIL "a pick that cannot be pushed was staged anyway" \
+    || say PASS "  ...and a pick that cannot travel refuses the staging outright"
+
   echo "== prove-latchkey SELF-TEST (the batch's picks travel as objects) =="
   printf '#UNIT 1\n--prove --tests xtask deadbee cafebab  # a comment\n\n#a whole comment line\n' >"$root/b.txt"
   n="$(lk_batch_hashes "$root/b.txt" | grep -c .)"
@@ -823,6 +1017,9 @@ cleanup() { rm -rf "$PACK"; }
 trap cleanup EXIT INT TERM
 lk_stage_repo "$REPO" "$STAGE" "$TIP" "$BASE" $PICKS || lkdie "could not stage the history into $STAGE"
 lklog "packed from $PACK ($(find "$PACK" -type f | grep -c . || true) file(s)); history $(du -sh "$STAGE/git" 2>/dev/null | cut -f1), $(printf '%s' "$PICKS" | grep -c . || true) pick(s)"
+LK_ENGINE="$(lk_engine_path)" || lkdie "no land.sh beside $HERE to send with this proof"
+cp "$LK_ENGINE" "$STAGE/land.run.sh" || lkdie "could not stage the engine ($LK_ENGINE) into the pack"
+lklog "engine: $LK_ENGINE travels with the job (the tree's own scripts/land.sh is not this proof's judge)"
 [ -n "$BATCH" ] && cp "$BATCH" "$STAGE/batch.txt"
 lk_onbox_script "$MODE" "$BRANCH_NAME" "$POSTURE" >"$PACK/$RUNNER"
 chmod +x "$PACK/$RUNNER"
@@ -850,13 +1047,7 @@ mkdir -p "$LK_LOGDIR" 2>/dev/null && cp "$LOG" "$LK_LOGDIR/$JOB.log" 2>/dev/null
   && lklog "log kept: $LK_LOGDIR/$JOB.log" \
   || lklog "WARNING: could not keep the log under $LK_LOGDIR — Latchkey drops it in 24 h"
 
-RC=1
-case "$STATE" in
-  succeeded) RC="$(lk_exit_code "$JOB")"; [ -n "$RC" ] || RC=0 ;;
-  failed)    RC="$(lk_exit_code "$JOB")"; [ -n "$RC" ] || RC=1 ;;
-  cancelled) RC=130 ;;
-  expired)   RC=124 ;;
-esac
+RC="$(lk_job_rc "$JOB" "$STATE")"
 VERDICT="$(lk_job_verdict "$LOG" "$RC")"
 RSECS="$(lk_runner_secs "$JOB")"
 MINUTES=$(( ( ${RSECS:-$(( END - START ))} + 59 ) / 60 ))

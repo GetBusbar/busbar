@@ -1758,7 +1758,7 @@ LQ_SPOT_RE='Service initiated|instance-action|spot (instance|interruption)|marke
 # refused, a shard the self-heal sidecar touched or one that was never polled, and a shard that hit
 # the 7200 s job ceiling: none of them is a statement about anybody's picks, and every one of them
 # used to be indistinguishable from a box that went away.
-LQ_LK_REFUSED_RE='land-latchkey: (concurrency_limit|NO VERDICT)|no job was created|Job creation blocked'
+LQ_LK_REFUSED_RE='land-latchkey: (concurrency_limit|NO VERDICT)|no job was created|Job creation blocked|never started \(|launch_failed|VcpuLimitExceeded'
 LQ_UNREACH_RE='Connection closed by|Connection closed$|ssh: connect to host|ssh_exchange_identification|^scp: |scp: Connection|rsync: |Connection timed out|Connection refused|Broken pipe|No route to host|Host key verification failed|unreachable for [0-9]+ polls|the box vanished mid-proof|Permission denied \(publickey'
 
 # WHICH CLASS THIS LOG IS, IF IT IS ONE AT ALL. Prints nothing when the failure is not the
@@ -5583,7 +5583,7 @@ if [ "${1:-}" = "--smoke-latchkey" ]; then
     [ -f "$W/target/gate/$f" ] && echo "smoke: staged $f" || echo "smoke: NOT staged $f"
   done
   logs_before="$(ls "$LK_SMOKE_LOGDIR" 2>/dev/null | grep -c . || true)"
-  k=0; pids=""
+  k=0; pids=""; nover=0
   for line in "$@"; do
     k=$((k + 1))
     printf '%s\n' "$line" >"$sdir/line-$k.batch"
@@ -5604,7 +5604,15 @@ if [ "${1:-}" = "--smoke-latchkey" ]; then
     printf 'smoke: line %s  rc %-4s job %-16s result-rows %-3s verdict %s\n' \
       "$i" "${lrc:-?}" "${job:-<none created>}" "${rows:-0}" "$verdict"
     [ -n "$job" ] || rc=1
-    [ "${rows:-0}" -gt 0 ] || rc=1
+    # ── A LINE THAT GOT NO VERDICT IS NOT A FAILED SMOKE, AND IT IS NOT A PASSED ONE ────────────
+    # MEASURED (2026-09-12): every submission came back `launch_failed: VcpuLimitExceeded` — the
+    # platform had no xlarge to give, the runner script never executed, and rc 75 with no result
+    # rows is the CORRECT answer. Calling that RED would teach an operator to re-run until AWS has
+    # capacity and read the green as evidence about the engine; calling it GREEN would be worse.
+    # It is its own outcome, with its own exit code, and it says which.
+    if [ "$lrc" = 75 ]; then nover=$((nover + 1))
+    elif [ "${rows:-0}" -gt 0 ]; then :
+    else rc=1; fi
     i=$((i + 1))
   done
   porcelain_after="$(git -C "$W" status --porcelain 2>/dev/null | grep -c . || true)"
@@ -5621,8 +5629,16 @@ if [ "${1:-}" = "--smoke-latchkey" ]; then
   echo "smoke: job logs kept under $LK_SMOKE_LOGDIR: $logs_before -> $logs_after"
   [ "${logs_after:-0}" -gt "${logs_before:-0}" ] || { echo "smoke: FAILED — no job log was kept"; rc=1; }
   echo "smoke: artifacts under $sdir"
-  [ "$rc" = 0 ] && echo "smoke-latchkey: GREEN" || echo "smoke-latchkey: RED"
-  exit "$rc"
+  if [ "$rc" != 0 ]; then echo "smoke-latchkey: RED"; exit 1; fi
+  if [ "$nover" = "$k" ]; then
+    echo "smoke-latchkey: NO VERDICT — all $k line(s) came back 75 (no job ever ran: see the"
+    echo "                Failure reason above). The transport, the staging and the disposition are"
+    echo "                proven; the LEGS are not, because nothing executed them. Exit 75, re-run."
+    exit 75
+  fi
+  [ "$nover" = 0 ] || echo "smoke-latchkey: $nover of $k line(s) got no verdict (75); the rest reported"
+  echo "smoke-latchkey: GREEN"
+  exit 0
 fi
 
 mkdir -p "$W/target/gate"

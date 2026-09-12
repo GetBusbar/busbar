@@ -197,7 +197,9 @@ set -- --prove
 [ -n "$FAMILIES" ] && set -- "$@" --families "$FAMILIES"
 [ -n "$FEATURES" ] && set -- "$@" --features "$FEATURES"
 echo "   argv: $*"
-bash scripts/land.sh "$@"; RC=$?
+# THE ENGINE THAT SENT THIS JOB, not the packed tree's scripts/land.sh — which is whatever landed
+# last, and on one measured tip had no `--preprove` at all. $ENGINE is set by the shared preamble.
+bash "$ENGINE" "$@"; RC=$?
 echo
 echo "land-latchkey: shard $SHARD exit $RC"
 exit $RC
@@ -233,13 +235,9 @@ ll_collect() { # $1 = shard name, $2 = job id
   "$LK_BIN" logs "$id" >"$log" 2>&1 || true
   mkdir -p "$LK_LOGDIR" 2>/dev/null && cp "$log" "$LK_LOGDIR/$id.log" 2>/dev/null \
     || lllog "WARNING: could not keep $name's log under $LK_LOGDIR — Latchkey drops it in 24 h"
-  rc=1
-  case "$state" in
-    succeeded) rc="$(lk_exit_code "$id")"; [ -n "$rc" ] || rc=0 ;;
-    failed)    rc="$(lk_exit_code "$id")"; [ -n "$rc" ] || rc=1 ;;
-    cancelled) rc=130 ;;
-    expired)   rc=124 ;;
-  esac
+  # lk_job_rc, not the state: a job that never STARTED (launch_failed: VcpuLimitExceeded, measured)
+  # has run none of this tree and is 75 — "nothing was learned" — never a red about these picks.
+  rc="$(lk_job_rc "$id" "$state")"
   verdict="$(lk_job_verdict "$log" "$rc")"
   secs="$(lk_runner_secs "$id")"
   printf '%s %s %s %s\n' "$verdict" "$rc" "${secs:-0}" "$log"
@@ -328,8 +326,14 @@ if [ "${1:-}" = "--selftest" ]; then
     *) _fail "a differing base is not refused on the runner" ;;
   esac
   case "$emit" in
-    *'bash scripts/land.sh "$@"'*) _ok "the legs are run by the TREE's own land.sh, not by this file" ;;
+    *'bash "$ENGINE" "$@"'*) _ok "the legs are run by land.sh, not by this file" ;;
     *) _fail "this file runs legs of its own" ;;
+  esac
+  # …AND IT IS THE ENGINE THAT SENT THE JOB, not the packed tree's. The tree's scripts/land.sh is
+  # whatever landed last; on the tip this was first smoked against it had no `--preprove` at all.
+  case "$emit" in
+    *'bash scripts/land.sh'*) _fail "a shard still runs the packed tree's own scripts/land.sh" ;;
+    *) _ok "  ...the one that SENT the job, never the tree's" ;;
   esac
   case "$emit" in
     *'export LAND_REMOTE_INNER=1 LAND_LATCHKEY_INNER=1'*) _ok "  ...with BOTH loop-breakers set (a runner must not rent a runner)" ;;
@@ -438,6 +442,11 @@ command -v "$LK_BIN" >/dev/null 2>&1 || { echo "land-latchkey: no \`$LK_BIN\` on
 lk_load_token || { echo "land-latchkey: no LATCHKEY_TOKEN in the environment and none readable in $LK_ENVFILE" >&2; exit 70; }
 ll_load_families_reader || { echo "land-latchkey: land.sh's family branch reader is not readable — refusing to split an alternation by hand" >&2; exit 70; }
 
+# THE ENGINE THAT WILL JUDGE, resolved before anything is staged: lk_engine_path picks the land.sh
+# beside this transport (the runner's staged copy first), never the packed tree's — the tree's is
+# whatever landed last and is not this proof's judge.
+LL_ENGINE="$(HERE="$LKL_HERE" lk_engine_path)" || { echo "land-latchkey: no land.sh beside $LKL_HERE to send with these jobs" >&2; exit 70; }
+
 LKL_REF="land-lk-$(date -u +%Y%m%d-%H%M%S)-$$"
 TIP="$(git -C "$REPO" rev-parse HEAD)" || { echo "land-latchkey: $REPO has no HEAD" >&2; exit 70; }
 [ -n "$BASE" ] || BASE="$(lk_base_sha "$REPO")"
@@ -462,6 +471,7 @@ ll_base_tree() { # prints a directory holding the base's tree, packed and ready
   local d
   d="$(lk_pack_dir "$REPO" "$BASE" "$LKL_REF-base")" || return 1
   lk_stage_repo "$REPO" "$d/.latchkey" "$BASE" "$BASE" || return 1
+  cp "$LL_ENGINE" "$d/.latchkey/land.run.sh" || return 1
   ll_onbox_script >"$d/.lk-land.sh"
   printf '%s\n' "$d"
 }
@@ -510,6 +520,8 @@ else
     || { echo "land-latchkey: could not export $(git -C "$REPO" rev-parse --short "$TIP") into $LAND_TMP — nothing was packed" >&2; exit 70; }
   lk_stage_repo "$REPO" "$PACKDIR/.latchkey" "$TIP" "$BASE" \
     || { echo "land-latchkey: could not stage the history into $PACKDIR/.latchkey" >&2; exit 70; }
+  cp "$LL_ENGINE" "$PACKDIR/.latchkey/land.run.sh" \
+    || { echo "land-latchkey: could not stage the engine into the pack" >&2; exit 70; }
   ll_onbox_script >"$PACKDIR/.lk-land.sh"
   lllog "[$LABEL] tip $(git -C "$REPO" rev-parse --short "$TIP")  base $(printf '%.9s' "$BASE")  packed from $PACKDIR, history $(du -sh "$PACKDIR/.latchkey/git" 2>/dev/null | cut -f1)"
 
@@ -569,7 +581,10 @@ EOF
       case "$verdict" in
         GREEN) ;;
         NONE:healed|NONE:no-verdict) NOVERDICT=1 ;;
-        *) if ll_rc_is_harness "$jrc"; then HARNESS=1
+        # 75 IS THE PLATFORM'S, NOT THE TREE'S: a job that never started (launch_failed), or a
+        # poller that gave up. 126/127/70/124/130 are the harness's own codes. Neither is a verdict.
+        *) if [ "$jrc" = 75 ]; then NOVERDICT=1
+           elif ll_rc_is_harness "$jrc"; then HARNESS=1
            else
              RC=1
              case "$name" in fam-*) ORACLE_RED="${ORACLE_RED:+$ORACLE_RED }$name" ;; esac
