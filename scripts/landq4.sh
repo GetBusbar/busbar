@@ -6609,7 +6609,7 @@ PWSTUB
   # not itself the thing it counts.
   local _bad; _bad="grep -c"
   _t "the engine never writes \`$_bad … || echo 0\`" 0 \
-     "$(grep -vE '^[[:space:]]*#' "$LQ_SRC" | grep -cE "$_bad[^|]*\|\| echo 0" || true)"
+     "$(lq_count "$(grep -vE '^[[:space:]]*#' "$LQ_SRC" | grep -cE "${_bad}[^|]*\|\| echo 0" || true)")"
 
   rm -rf "$root"
   if [ "$fails" -eq 0 ]; then
