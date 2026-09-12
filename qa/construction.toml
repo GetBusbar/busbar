@@ -373,7 +373,7 @@ identical counting rule to busbar-caps + busbar-contract once their proof tables
 this rule's own `loc-ceilings:caps-contract` row is not that row and is not removed by it -- the two \
 are expected to converge once the move lands, not to be reconciled here."""
 kernel_crate = "busbar-kernel"
-kernel_ceiling = 5593
+kernel_ceiling = 5644
 caps_crate = "busbar-caps"
 contract_crate = "busbar-contract"
 caps_contract_ceiling = 3480
@@ -381,7 +381,7 @@ unit_crate_glob = "busbar-unit-*"
 unit_total_ceiling = 14606
 verbs_crate = "busbar-unit-verbs"
 verbs_ceiling = 1428
-union_ceiling = 23679
+union_ceiling = 23730
 # Files (by basename, wherever they sit under busbar-kernel/src) whose bodies seed the call-graph
 # name-match: every identifier called from one of these files, that busbar-kernel does not itself
 # define, is looked up by name against every busbar-unit-* file.
@@ -390,7 +390,7 @@ teller_files = ["teller.rs"]
 [rules.loc-ceilings.kernel_files.teller]
 label = "Teller loop"
 patterns = ["teller.rs"]
-ceiling = 634
+ceiling = 685
 
 [rules.loc-ceilings.kernel_files.pump]
 label = "pump/scheduler"
@@ -1284,3 +1284,58 @@ to = 160
 because = """The root's two `busbar_kernel::profile::{enabled,dump}` lines — the operator's periodic \
 stage dump, which named `busbar_substrate::profile` until the profiler MOVED into the kernel because \
 the table it reports is the loop's own steps. Four substrate/plane cells fall in the same commit."""
+
+# ── declared ceiling raises (gate.ceiling_raises) ────────────────────────────────────────────────
+#
+# THE RAISE BELOW IS ONE FACE — the same 51 lines counted three times — declared from the BASE the
+# branch is diffed from, which is why each `from` is the figure before the stage profiler's own
+# declared raise (a25de0386, teller.rs 606 -> 634, kernel 5,379 -> 5,593, union 23,465 -> 23,679)
+# rather than after it. That raise is already declared and reasoned in its own commit on the line
+# beneath this one; the 51 lines below are this landing's and this landing's alone: 634 -> 685.
+#
+# THE FACE (ARCHITECTURE.md section 1.1): OPENING a unit and holding it open is one of the loop's own
+# duties. The loop's first six steps — arrival, decode, authenticate, verify, approve, admit — all
+# answer in place; only Route touches the wire. So those six are now reachable on their own as
+# `open_unit`, which runs them and STOPS at the door with the hold in the cell and the leases drawn;
+# `serve_held` runs the remaining four and the exit on what the door produced; `refuse_unit` is the
+# one way an opening's refusal is ended. `run_unit_async` is those halves called in order.
+#
+# NOT ONE STEP MOVED AND NOT ONE STEP IS WRITTEN TWICE. `teller-step-order` reads the same ten calls
+# in the same evaluation order, spliced across three functions instead of one, and stays GREEN; the
+# 51 lines are signatures, the two types the door's answer travels on, and the doc comments' code —
+# the seam itself, not a second copy of anything.
+#
+# WHY THE FACE HAD TO EXIST: an arrival whose shape is a long-lived SESSION cannot be opened and
+# served in one call. The thing that makes the session exist — an accepted upgrade, a bound carrier —
+# is a point of no return, so the ten questions have to be answered BEFORE it, and the wire work then
+# runs per leg on that one answer. Without the seam such a caller either admits after the point of no
+# return, which is an admission that cannot refuse, or grows a second admission beside the loop.
+#
+# The section 1.1 design figures do not move and are not close: the Teller loop's design allowance is
+# 1.5k and `busbar-kernel`'s is 8k. What moves is the RATCHET, which is tighter than both.
+
+[gate.ceiling_raises."rules.loc-ceilings.kernel_files.teller.ceiling"]
+from = 606
+to = 685
+because = """606 -> 634 is the stage profiler's face, declared at a25de0386 beneath this branch. \
+634 -> 685 is this landing: the loop's opening, as a face — `open_unit` (the six steps that answer in place, \
+stopping at the door), `serve_held` (the remaining four and the exit) and `refuse_unit` (the refused \
+audit door), plus the `Held` and `Opened` types the door's answer travels on. 51 surface lines, \
+measured; no step moved and no step written twice, and `teller-step-order` reads the same ten calls \
+in the same order across the three functions."""
+
+[gate.ceiling_raises."rules.loc-ceilings.kernel_ceiling"]
+from = 5379
+to = 5644
+because = """5,379 -> 5,593 is the stage profiler's move into the kernel, declared at a25de0386 \
+beneath this branch. 5,593 -> 5,644 is this landing: the Teller loop's own rise, carried into the \
+crate total unchanged — the 51 surface lines of the opening face in `teller.rs`. No other file in `busbar-kernel` moved a line, and no \
+busbar-unit-* file entered or left the call-graph name-match."""
+
+[gate.ceiling_raises."rules.loc-ceilings.union_ceiling"]
+from = 23465
+to = 23730
+because = """23,465 -> 23,679 is the stage profiler's rise, declared at a25de0386 beneath this \
+branch. 23,679 -> 23,730 is this landing: the kernel's own rise, carried into the union arithmetic \
+unchanged — the same 51 surface lines. Neither `busbar-caps`/`busbar-contract` nor the `busbar-unit-*` union moved a line on \
+this landing."""

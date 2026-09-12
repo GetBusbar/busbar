@@ -69,7 +69,19 @@ them). Each axis is blind to the other two; only the kernel composes them.
   served the unit and no plane can add one; a plane wanting finer attribution inside its own Route
   step nests the per-method timers (`busbar-timing`) rather than growing this table. Both halves are
   deliberate: a profiler whose rows are one plane's internals can only ever describe that plane, and
-  a table with rows nothing fires is a report promising an attribution the code never makes. **LOC ceilings, gated as one union and per file, by call-graph** (a
+  a table with rows nothing fires is a report promising an attribution the code never makes.
+  **Opening a unit and holding it open is the loop's own face too**: the loop's first six steps
+  (arrival, decode, authenticate, verify, approve, admit) all answer in place, so they are reachable
+  on their own as `busbar_kernel::teller::open_unit`, which runs them and STOPS at the door with the
+  hold in the cell and the leases drawn; `serve_held` runs the remaining four and the exit on what
+  the door produced, and `refuse_unit` is the one way an opening's refusal is ended. `run_unit_async`
+  is those halves called in order, so every step is still written exactly once and the ten-step order
+  is still read as one thing by `teller-step-order`. The face exists because an arrival whose shape
+  is a long-lived SESSION cannot be opened and served in one call: the thing that makes the session
+  exist — an accepted upgrade, a bound carrier — is a point of no return, so the ten questions must be
+  answered BEFORE it and the wire work then runs per leg on that one answer. It is SESSION-NEUTRAL:
+  the kernel names no plane, dialect, transport or modality, and any arrival long-lived enough to
+  want an opening opens through it. **LOC ceilings, gated as one union and per file, by call-graph** (a
   `busbar-unit-*` file reachable from the Teller loop **without crossing a sealed unit-trait boundary**
   — helpers the loop calls directly, not the units behind their traits — counts against the kernel
   ceiling): `busbar-kernel`

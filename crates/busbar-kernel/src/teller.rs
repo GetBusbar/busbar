@@ -693,14 +693,16 @@ pub fn run_unit<U: Units>(kernel: &Kernel, units: &U, ctx: &UnitCtx, run: Run<'_
 
 /// Run one unit through every step, and end it exactly once — for a plane whose Route awaits.
 ///
-/// The order below is the whole point of this function, so it is written as one chain: each step
-/// hands the next what it produced, a refusal simply stops the chain, and there is no `?` and no
-/// early return anywhere in it.
-///
 /// The unit runs on the CALLER'S runtime: nothing here is spawned, nothing is parked on a blocking
 /// worker, and the only thing this task occupies while the upstream thinks is its own in-flight
 /// slot. Drop the future and the unit is cancelled — see [`Abandoned`] for what the caller going
 /// away costs and what it does not.
+///
+/// The ten steps are not written here. They are written ONCE, in the loop's two halves — the six
+/// [`open_unit`] asks and the four [`serve_held`] asks — and this is those halves in order. A
+/// request opens and serves in one call, which is what this function is; an arrival whose shape is a
+/// SESSION opens first, keeps what the door produced, and serves a leg at a time on it. Same steps,
+/// same order, one place each of them is written.
 pub async fn run_unit_async<U: Units, R: RouteAwait>(
     kernel: &Kernel,
     units: &U,
@@ -708,6 +710,78 @@ pub async fn run_unit_async<U: Units, R: RouteAwait>(
     run: Run<'_>,
     route: &R,
 ) -> Ended {
+    match open_unit(kernel, units, ctx, run) {
+        Opened::Refused { run, refusal } => refuse_unit(kernel, units, ctx, run, refusal),
+        Opened::Held(held) => serve_held(kernel, units, ctx, held, route).await,
+    }
+}
+
+/// A UNIT HELD OPEN AT THE DOOR: the loop's first six steps, run, and stopped.
+///
+/// The hold is in the cell and the concurrency leases are drawn; what has NOT happened is anything
+/// that touches the wire. This is what an arrival whose shape is a long-lived session keeps — the
+/// ten questions were asked once, at the open, and this is the answer, held for as long as the
+/// session is.
+///
+/// It is opaque on purpose. A caller may keep it, move it and hand it back to [`serve_held`], and
+/// that is the whole of what it may do: the hold, the leases and the settle stay the kernel's.
+///
+/// A HELD UNIT IS NEVER LEAKED. The hold is in the cell, and the cell has two key-holders — the exit
+/// path and the node's sweep. A session that dies between its opening and its first leg is settled
+/// by the sweep, exactly as a task that disappears mid-Route is.
+#[derive(Debug)]
+pub struct Held<'r> {
+    run: Run<'r>,
+    settling: Settling,
+    /// The end a unit that passed the door but LOST THE CELL already has. The door said yes and
+    /// then the cell refused a second hold, so this unit never reaches the wire — but it is an
+    /// admitted unit and leaves through the admitted audit door like every other one, which is why
+    /// it is carried here rather than answered as a refusal.
+    lost_cell: Option<Outcome>,
+}
+
+/// What [`open_unit`] answered.
+#[derive(Debug)]
+pub enum Opened<'r> {
+    /// The door said yes. The unit is held open and the caller keeps it.
+    Held(Held<'r>),
+    /// A step refused before the door. Nothing is held and nothing was charged; the unit has NOT
+    /// been ended yet, and [`refuse_unit`] is the one thing that may end it — which is why the run
+    /// comes back with the refusal rather than being consumed here. A caller that drops it instead
+    /// leaves the arrival hold in the cell, where the node's sweep settles it.
+    Refused {
+        /// Everything the unit borrows, handed back so the refused door can be run on it.
+        run: Run<'r>,
+        /// What the step said, with the step it said it at still stamped on it.
+        refusal: Refusal,
+    },
+}
+
+/// RUN THE LOOP'S FIRST SIX STEPS AND STOP AT THE DOOR.
+///
+/// Arrival, Decode, Authenticate, Verify, Approve, Admit — asked in that order, once each, and every
+/// one of them answers in place, which is why this is a plain function and not a future. Route is
+/// the only step of the ten that touches the wire, and it is on the far side of this line.
+///
+/// THE FACE THIS IS. A request is opened and served in one call and has no use for the seam. An
+/// arrival whose shape is a SESSION does: the thing that makes the session exist — an accepted
+/// upgrade, a bound carrier — is a point of no return, so the ten questions have to be answered
+/// BEFORE it, and the wire work then runs per leg, for as long as the session lasts, on that one
+/// answer. Without this seam such a caller either admits after the point of no return, which is an
+/// admission that cannot refuse, or grows a second admission of its own beside the loop.
+///
+/// SESSION-NEUTRAL, and deliberately so: nothing here knows what a session IS. It is the loop's
+/// opening for any arrival long-lived enough to want one — a duplex socket, a relayed stream, a
+/// future bidirectional plane — and no plane, dialect, transport or modality is named by it.
+///
+/// The order is fixed here exactly as it is in the whole loop: written once, in the chain below, and
+/// again by the types, since each step's answer can only be built with that step's own token.
+pub fn open_unit<'r, U: Units>(
+    kernel: &Kernel,
+    units: &U,
+    ctx: &UnitCtx,
+    run: Run<'r>,
+) -> Opened<'r> {
     let seal = &kernel.seal;
     let opened = profile::on_step(LoopStep::Arrival, || {
         units
@@ -797,24 +871,11 @@ pub async fn run_unit_async<U: Units, R: RouteAwait>(
     match opened {
         // The refused door: nothing was charged beyond the arrival hold the table minted, and the
         // audit that seals it never sees a hold.
-        Err(refusal) => {
-            // The step comes from the decision that stamped it. `unwrap_or` names the door
-            // rather than a sentinel: a refusal that reached here without a stamp did not come
-            // from a decision at all, and the door is the last step it could have been raised at.
-            let outcome =
-                Outcome::Refused(refusal.step().unwrap_or(StepName::Admit), refusal.reason());
-            let _sealed = profile::on_step(LoopStep::Audit, || {
-                units
-                    .audit_refused(&UnitToken::<Audit>::mint(seal), ctx, &refusal)
-                    .into_result(seal)
-            });
-            let _bytes = profile::on_step(LoopStep::Encode, || {
-                units
-                    .encode(&UnitToken::<Encode>::mint(seal), ctx, &outcome)
-                    .into_result(seal)
-            });
-            exit(kernel, units, ctx, run, outcome, false)
-        }
+        // The refused door: nothing was charged beyond the arrival hold the table minted, and the
+        // audit that seals it never sees a hold. The opener does not run that door itself —
+        // `refuse_unit` does — because the opener's whole subject is the first six steps and a
+        // session's refusal is ended by the same one call a request's is.
+        Err(refusal) => Opened::Refused { run, refusal },
         // The door answered, and its answer decides exactly two things: whether a hold goes into the
         // cell, and what the end is settled against. Everything after it — the walk, the meter, the
         // audit door, the bytes and the settle — is the same for all three shapes, so it is written
@@ -853,21 +914,84 @@ pub async fn run_unit_async<U: Units, R: RouteAwait>(
                     }
                 }
             };
-            match refused_cell {
-                // A unit that never reached the wire, so there is nothing to await and nothing a
-                // caller going away could interrupt. It still ends where every admitted unit ends.
-                Some(outcome) => terminal(kernel, units, ctx, run, outcome, settling),
-                None => {
-                    let meter = run.meter;
-                    // THE ONE AWAIT is inside this scope, and so is the only place a caller that
-                    // goes away can drop the loop. The guard owns the terminal for the length of it.
-                    let mut abandoned = Abandoned::arm(kernel, units, ctx, run, settling);
-                    let outcome = under_hold(kernel, units, route, ctx, meter).await;
-                    abandoned.reached(outcome)
-                }
-            }
+            // THE OPENER STOPS HERE. The hold is in the cell, the leases are drawn, and what is
+            // handed back is the unit itself rather than an end: a request's caller serves it on
+            // the next line, a session's keeps it for the length of the session and serves a leg at
+            // a time on it. A unit that lost the cell carries its end with it and is served into
+            // that end without ever reaching the wire.
+            Opened::Held(Held {
+                run,
+                settling,
+                lost_cell: refused_cell,
+            })
         }
     }
+}
+
+/// RUN THE REMAINING FOUR STEPS AND THE EXIT, on a unit already held open.
+///
+/// Route and Meter under the hold, then the audit door, the bytes and the settle — the second half
+/// of the one loop, reached with the opening's answer rather than by deciding it again. The one
+/// await is in here, which is why this is the half that is a future, and [`Abandoned`] is armed
+/// across it so a caller that goes away still leaves through the same audit door, the same settle
+/// and the same exit a finished unit leaves through.
+pub async fn serve_held<U: Units, R: RouteAwait>(
+    kernel: &Kernel,
+    units: &U,
+    ctx: &UnitCtx,
+    held: Held<'_>,
+    route: &R,
+) -> Ended {
+    let Held {
+        run,
+        settling,
+        lost_cell,
+    } = held;
+    match lost_cell {
+        // A unit that never reached the wire, so there is nothing to await and nothing a caller
+        // going away could interrupt. It still ends where every admitted unit ends.
+        Some(outcome) => terminal(kernel, units, ctx, run, outcome, settling),
+        None => {
+            let meter = run.meter;
+            // THE ONE AWAIT is inside this scope, and so is the only place a caller that goes away
+            // can drop the loop. The guard owns the terminal for the length of it.
+            let mut abandoned = Abandoned::arm(kernel, units, ctx, run, settling);
+            let outcome = under_hold(kernel, units, route, ctx, meter).await;
+            abandoned.reached(outcome)
+        }
+    }
+}
+
+/// END A UNIT THE OPENING REFUSED: the refused audit door, the bytes, and the exit.
+///
+/// The unit never passed the door, so nothing was charged beyond the arrival hold the in-flight
+/// table minted and the audit that seals it never sees a hold. This is the one way an
+/// [`Opened::Refused`] may be ended, and it is the same one for a request and for a session: a
+/// refused session is a refused unit, ended here, before anything that would have made the session
+/// exist has happened.
+pub fn refuse_unit<U: Units>(
+    kernel: &Kernel,
+    units: &U,
+    ctx: &UnitCtx,
+    run: Run<'_>,
+    refusal: Refusal,
+) -> Ended {
+    let seal = &kernel.seal;
+    // The step comes from the decision that stamped it. `unwrap_or` names the door rather than a
+    // sentinel: a refusal that reached here without a stamp did not come from a decision at all,
+    // and the door is the last step it could have been raised at.
+    let outcome = Outcome::Refused(refusal.step().unwrap_or(StepName::Admit), refusal.reason());
+    let _sealed = profile::on_step(LoopStep::Audit, || {
+        units
+            .audit_refused(&UnitToken::<Audit>::mint(seal), ctx, &refusal)
+            .into_result(seal)
+    });
+    let _bytes = profile::on_step(LoopStep::Encode, || {
+        units
+            .encode(&UnitToken::<Encode>::mint(seal), ctx, &outcome)
+            .into_result(seal)
+    });
+    exit(kernel, units, ctx, run, outcome, false)
 }
 
 /// Draw the concurrency lease the door's yes entitles a unit to, on the unit's own SLOT.
@@ -927,6 +1051,7 @@ fn draw_lease(ctx: &UnitCtx, run: &Run<'_>, groups: &GroupLeaseSlip) {
 /// Not a second copy of `Admission`: what the loop needs after the door is only which of the two
 /// settles applies, and — for the one that opens a reservation of its own — whether the unit reached
 /// the door at all.
+#[derive(Debug)]
 enum Settling {
     /// A child's spend, which goes into the parent's still-open hold rather than a hold of its own.
     Parent(HoldAccrual),
