@@ -580,3 +580,29 @@ task's own "push after every commit" rule).
    `scripts/design-bindings.sh`, the `.keep-proof.toml` FAMILIES filter, and the xtask suite's
    pre-existing hang), which is what carries the overall `keep-proof verdict` red — not a
    regression from this fix or from the re-pick.
+
+## 8. Why `keep-*` pushes no longer run CI (LK-ALL-2)
+
+MEASURED (integrator, 06:0x on `keep-ci-latchkey-all-2`): the landing engine's first Latchkey
+sweep had all 12 pre-proof jobs REFUSED at the workspace's 20-job cap while only 2 CLI jobs were
+running. The cap is **shared with GitHub Actions** — it is not a per-workflow or per-repo ceiling,
+it is the whole Latchkey workspace's concurrent-job budget — and `keep-proof.yml`'s `push:` trigger
+fired all 12 of its Latchkey jobs on *every* `keep-*` push. Two slots each pushed a hand-back
+within the same hour, so the engine's own sweep (2 CLI jobs, trying to land) queued behind 24
+Latchkey jobs it did not ask for and could not preempt.
+
+The trigger was redundant on top of being expensive: slots now prove their own tree with the
+engine's `scripts/prove-remote.sh` (over ssh, against a warm box with the toolchain, sccache
+objects and a prior `target/` already in place) before handing back, so a `keep-*` push's 12-job
+GitHub Actions run was re-proving something the hand-back had already proved, on the machine that
+had the least capacity to spare. `keep-proof.yml`'s `push:` trigger now only names
+`integration/**`, `dev`, `qa` and `main` — the branches CI itself gates — plus `workflow_dispatch`
+(with an optional `ref` input), so a human or the engine can still ask "is this sha green" without
+every intermediate hand-back commit paying for a 12-job run it didn't need. `gate-mutants.yml` and
+`ci.yml` already carried `!wip/**`-style exclusions from earlier Latchkey work (CI2's `363ac81b8`)
+and never re-added a `keep-*`/`wip/*`/`slot-*` include on their `push:` triggers; this slot only
+had to change `keep-proof.yml`.
+
+`docs/ci/landing-engine.md` does not exist in this checkout, so there is nothing to cross-reference
+it from; slot proofs run on the engine's own boxes via `scripts/prove-remote.sh`, described above
+and in that script's own header comment.
