@@ -6,16 +6,18 @@
 # of "everything, slowly". The INTEGRATION tree carries no such file — it is a keep-branch artefact,
 # and this branch is a keep branch.
 #
-#   families — a regex handed to the shadow oracle's `--id-filter`. This branch measures the SECOND
-#              request loop (the substrate's) against the one the kernel owns, and adds one cell to
-#              the kernel's stage profiler. Nothing on a money path moves, so the families in scope
-#              are the ones that would notice if something had: `teller` is the loop itself, the
-#              `billing`/`ledger` pair is every posting a unit that rides it settles onto,
-#              `admin.ops` is the other surface already mounted on the kernel's loop, and
-#              `neutrality`/`boot` are here because a deployment must not be able to tell from a
-#              route set or a boot line that anything changed.
-#   tests    — the two loops and everything between them: the kernel that owns the one loop, the
-#              substrate that holds the second, the core and the binary that compose both, every
-#              plane crate that rides the substrate's gauntlet today, and `xtask` for the gates.
-families = '^(teller|billing|ledger|admin\.ops|neutrality|boot)([|.]|$)'
-tests = ["busbar", "busbar-kernel", "busbar-substrate", "busbar-core", "busbar-plane-llm", "busbar-plane-mcp", "busbar-plane-a2a", "busbar-plane-voice", "xtask"]
+#   families — a regex handed to the shadow oracle's `--id-filter`. This branch moves the SAMPLING
+#              RE-ENTRY off the LLM plane's own shell and onto the kernel's one loop, which is the
+#              same loop the plane's arrivals already ride. Nothing on a money path moves, so the
+#              families in scope are the ones that would notice if something had: `llm` is every
+#              recorded byte of the answer, the `billing`/`ledger` pair is every posting the unit
+#              settles, `mcp` is the surface the re-entry is reached FROM, `a2a` is the neighbouring
+#              plane that must be untouched, `teller` is the loop itself, and `neutrality`/`boot`
+#              are here because a deployment must not be able to tell from a route set or a boot
+#              line that anything changed.
+#   tests    — the re-entry's two ends and everything between them: the binary that composes the
+#              entry point, the plane whose shell it replaces, the plane crate, the crate that
+#              reaches the seam (`busbar-mcp`), the kernel that owns the loop, the substrate that
+#              holds the seam, and `xtask` for the gates.
+families = '^(llm|billing|ledger|mcp|a2a|boot|neutrality|teller)([|.]|$)'
+tests = ["busbar", "busbar-llm", "busbar-plane-llm", "busbar-mcp", "busbar-kernel", "busbar-substrate", "xtask"]
