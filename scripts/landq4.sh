@@ -6586,6 +6586,23 @@ PWSTUB
   _t "  ...and this very selftest ran under it" 1 \
      "$(case "$root" in "$LAND_TMP"/*) echo 1 ;; *) echo 0 ;; esac)"
 
+  # ── THE LANDING GATE MUST BE ABLE TO DRIVE THE SHAPE THE QUEUE ACTUALLY HAS ───────────────────
+  # A landing line WITHOUT --families is one union job; the oracle buckets and the base replay —
+  # the two things land-latchkey.sh exists to fan out — are never dispatched for it. Most live
+  # queue lines carry families, so a gate that could only drive the familyless shape was passing on
+  # a shape the queue does not have.
+  echo "landq4 selftest: the landing gate can carry --families"
+  local _lsrc; _lsrc="$(sed -n '/^if \[ "${1:-}" = "--smoke-latchkey" \] && \[ "${2:-}" = "--landing" \]; then/,/^fi$/p' "$LQ_SRC")"
+  _t "the landing smoke parses --families"        1 "$(printf '%s' "$_lsrc" | grep -c -- '--families) shift;' || true)"
+  _t "  ...and refuses an argument it does not know" 1 "$(printf '%s' "$_lsrc" | grep -c 'unknown argument' || true)"
+  _t "  ...and refuses --families with no expression" 1 "$(printf '%s' "$_lsrc" | grep -c -- '--families wants an expression' || true)"
+  _t "the batch line carries the expression when given" 1 \
+     "$(printf '%s' "$_lsrc" | grep -c -- "--prove --families '%s' %s" || true)"
+  _t "  ...and is the bare form when it is not"   1 \
+     "$(printf '%s' "$_lsrc" | grep -cF -- "printf -- '--prove %s\\n' \"\$pick\"" || true)"
+  _t "an unknown argument really is refused"      2 \
+     "$(bash "$LQ_SRC" --smoke-latchkey --landing --nope >/dev/null 2>&1; echo $?)"
+
   # ── COUNTING A ZERO (the big-batch smoke's own defect, 2026-09-12) ────────────────────────────
   # `grep -c` on a file with no matches PRINTS 0 and EXITS 1. The engine used to write
   # `$(grep -c … || echo 0)`, which captures `0\n0` and turns every arithmetic use into a syntax
@@ -6751,7 +6768,21 @@ fi
 #     publishes must be tree-identical to the one the fleet path publishes for the same line. It is
 #     checked rather than argued: a third checkout at the same base takes the same pick with the
 #     same `git cherry-pick -x` the box runs, and the two TREE oids are compared. Byte for byte.
+#   * AND THE LINE MAY CARRY `--families`, because most live queue lines do. WITHOUT it the union
+#     is the whole landing — one job — and the two shapes this backend exists to fan out, THE
+#     ORACLE BUCKETS AND THE BASE REPLAY, are never dispatched: the gate would pass on a shape the
+#     queue does not have. `--families <expr>` puts the expression on the batch line, which is the
+#     only channel land.sh reads it through, and the fan follows from land-latchkey.sh's own plan.
 if [ "${1:-}" = "--smoke-latchkey" ] && [ "${2:-}" = "--landing" ]; then
+  shift 2
+  SMOKE_FAM=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --families) shift; [ $# -ge 1 ] || { echo "landq4: --families wants an expression" >&2; exit 2; }
+                  SMOKE_FAM="$1"; shift ;;
+      *) echo "landq4: --smoke-latchkey --landing: unknown argument '$1'" >&2; exit 2 ;;
+    esac
+  done
   sroot="$LAND_TMP/smoke-landing-$$"
   borigin="$sroot/origin.git"; fleetdir="$sroot/fleet"
   mkdir -p "$sroot"
@@ -6793,7 +6824,11 @@ if [ "${1:-}" = "--smoke-latchkey" ] && [ "${2:-}" = "--landing" ]; then
   pick="$(git -C "$W" rev-parse HEAD)"
   git -C "$W" checkout -q --detach "$base0"
   git -C "$W" checkout -q -B "$BR" "$base0"
-  echo "smoke: pick $(printf '%.9s' "$pick") (docs only: the union's plan is the floor and the landing is one job)"
+  if [ -n "$SMOKE_FAM" ]; then
+    echo "smoke: pick $(printf '%.9s' "$pick") (docs only) + --families '$SMOKE_FAM' — the union fans, the oracle buckets, and the base replay is its own job"
+  else
+    echo "smoke: pick $(printf '%.9s' "$pick") (docs only: the union's plan is the floor and the landing is one job)"
+  fi
   # ── THE LANDING ───────────────────────────────────────────────────────────────────────────────
   mkdir -p "$W/target/gate"
   lq_stage_engine
@@ -6801,7 +6836,11 @@ if [ "${1:-}" = "--smoke-latchkey" ] && [ "${2:-}" = "--landing" ]; then
     [ -f "$W/target/gate/$f" ] && echo "smoke: staged $f" || { echo "smoke: FAILED — $f was not staged"; smoke_restore; exit 1; }
   done
   sbatch="$sroot/batch.txt"
-  printf -- '--prove %s\n' "$pick" >"$sbatch"
+  if [ -n "$SMOKE_FAM" ]; then
+    printf -- "--prove --families '%s' %s\n" "$SMOKE_FAM" "$pick" >"$sbatch"
+  else
+    printf -- '--prove %s\n' "$pick" >"$sbatch"
+  fi
   echo "smoke: landing $(cat "$sbatch")"
   start=$(date +%s)
   # ── THE LOCK IS THE SCRATCH'S OWN, AND THAT IS THE POINT ──────────────────────────────────────
