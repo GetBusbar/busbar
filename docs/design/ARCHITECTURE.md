@@ -85,17 +85,28 @@ them). Each axis is blind to the other two; only the kernel composes them.
   kernel deciding what a plane declares) · pump/scheduler 1.5k ·
   in-flight/sessions 1k · recovery 0.8k · slice/lease
   0.8k · registry + generations 0.8k · grammars incl. JSON span scanner 0.8k · Ticks/drain/fleet 0.5k ·
-  arena/masking 0.3k; `busbar-caps` + `busbar-contract` ≤ 3.6k **of plugin-visible SURFACE** —
+  arena/masking 0.3k; `busbar-caps` + `busbar-contract` ≤ 3.81k **of plugin-visible SURFACE** —
   non-blank, non-comment code lines under each crate's `src/`, excluding `#[cfg(test)]` modules and
   `src/tests/`; the proofs (overlap totality over the selector-form pairs, the lint symbol lists, the
   compile-fail fixtures and their positive companions, the honesty tables) are not surface and live
   in each crate's `tests/` or `fixtures/`. Measured and gated by `scripts/loc-surface.py`
-  (`--ceiling busbar-contract,busbar-caps=3613`), which the construction gate runs as
+  (`--ceiling busbar-contract,busbar-caps=3803`), which the construction gate runs as
   `surface-ceiling:contract+caps`. The figure is the PIN, not a budget: it is held at zero
   slack against today's measurement, and it moves up only when a new-architecture face lands
   with a declared raise (`[gate.ceiling_raises]` in `qa/construction.toml`) that names the face
-  and its measured lines, this figure amended in the same commit — the virtual-key directory
-  face (`KeyScope`, `KeyFacts`, `VirtualKeyDirectory`; 19 lines) was the first, and the deletion
+  and its measured lines, this figure amended in the same commit. **IT WAS LEFT AT 3613 WHILE
+  THE PIN WENT TO 3803**, which is the drift this paragraph exists to prevent: the faces below
+  each landed with their declaration and their `surface-ceiling` edit, and each left this
+  sentence's arithmetic one landing behind, so a document that is the authority on the figure
+  came to disagree with the gate that enforces it by 190 lines. The figure is now the pin, and
+  the declared raises in `qa/construction.toml` sum to exactly what the pair rose by against
+  this branch's base — the ROUTED BODY on `busbar-caps::egress` (61 lines: the relay handed
+  back rather than run, so a hold over a routed body is a hold over a body that has not
+  drained), net of the twenty-one the never-written `Unit` byte and frame counts paid back and
+  the two the tariff fold returned, beside the seven faces the sentences below name. Nothing in
+  it adds a line a plugin author must READ: no trait takes any of them and no plugin is handed
+  one. The first was the virtual-key directory
+  face (`KeyScope`, `KeyFacts`, `VirtualKeyDirectory`; 19 lines), and the deletion
   that followed it (the never-written `Unit` byte and frame counts, 21 lines) paid it back. The
   second is **`busbar_contract::limits`** (`LimitMetric`, `ScopeSpec`, `LimitSpec`, `GroupSpec`;
   33 lines, declared at +31 against the two the pair had already given back): the CONFIGURED limit

@@ -248,10 +248,14 @@ busbar-voice = ["busbar-voice-codec"]
 key = "rules.loc-ceilings.kernel_ceiling"
 by = 36
 because = """CHAIN FORM: 5595 is P3's tip, not this branch's base — a stacked line declares its own delta and the rows beneath it declared theirs. +36, all of it one shape: the kernel's settlement evidence stops carrying ONE quantity against ONE class and carries what a unit spent PER DIMENSION THE PLANE DECLARED. A dimension is not a kernel word — `MeterClassDecl` is plane data and the declarations are not one line each, four on the model plane, seven-plus on the streaming plane, two on the tool plane, one on the agent plane, none on the control plane — so a kernel that settled one number was a kernel deciding what a plane declares, and it is the join that threw three of the model plane's four numbers away before anything could price them. `settle_amount` becomes `settle_lines` and answers with one line per key; the seven rows are neither reordered nor rewritten, and the two that post what a DESTINATION reported now post all of it. +34 in `teller.rs` and +2 in `recovery.rs`, which is the same shape seen twice; `record.rs` does NOT move, because the completion was already on it — P4 put it there and nothing until now could read more than one number of it."""
-[[gate.ceiling_raises]]
-key = "rules.loc-ceilings.kernel_files.record.ceiling"
-by = 13
-because = """CHAIN FORM off P4's tip 157. The same 13 lines seen per file: the head's cell, its accessor and its prose, beside the two facts Verify seals and the routed body's hold that are already there. It is the record and not the fee leg because a head is something a unit HAS rather than something a plane can be asked for twice — a second reading of one answer is how a unit ends up with two heads and the fee decision reads whichever ran last — so it is write-once and it answers whether the caller is the one that wrote it."""
+# STRUCK: `rules.loc-ceilings.kernel_files.record.ceiling` +13 and +9. The base cd77af378 carries NO
+# `kernel_files.record` row at all — `busbar-kernel/src/record.rs` is BORN on this line, and a
+# per-file row that did not exist at the base is the FIRST gating figure of a row that was not
+# gating before, not a ceiling that rose. `ceiling-rose` says so in the only way it can: a
+# declaration naming a key that did not move is refused, whatever the face behind it. The face is
+# real and it is declared where it IS a rise — `kernel_ceiling`, which the record's 179 lines count
+# against, below.
+
 [[gate.ceiling_raises]]
 key = "rules.loc-ceilings.kernel_files.teller.ceiling"
 by = 36
@@ -283,10 +287,7 @@ key = "rules.loc-ceilings.kernel_ceiling"
 by = 13
 because = """CHAIN FORM AGAIN, off P5's tip 5631: +13 for the TIER. The kernel's per-unit record gains one write-once cell and one accessor, and the loop seals the cell from the authenticate step's own answer at the instant that step settles an identity. It is 13 lines and not one because the seal has to say WHY it is the loop's and not a leg's: the tariff scopes tier over pool over plane over default and the tier is the PRINCIPAL'S — a key's configured group — so it is established where the principal is and read everywhere the money is decided, and five legs each resolving a caller's group for themselves is five chances for one unit to be admitted against one group and billed against another. The kernel does not price it, names no tariff and cannot read what it is worth; it carries it, which is the whole of its part. +4 in `teller.rs` and +9 in `record.rs`."""
 
-[[gate.ceiling_raises]]
-key = "rules.loc-ceilings.kernel_files.record.ceiling"
-by = 9
-because = """CHAIN FORM AGAIN, off P5's tip 170: +9. The tier the caller is on, as a write-once cell beside the two facts Verify seals and the answer's head: `seal_tier` under the same trust token (a tier a later step could write would be a tier the fee site reads whichever of two writers ran last) and `tier()`, which every step from Verify onward reads and no step may answer for itself. `Option<TierId>` inside the cell and not `TierId`, because a caller on NO tier is a real answer and not a missing one — the anonymous principal, a module that asserts no group, and every key in a deployment that configures none — and sealing it is what makes "nobody wrote a tier" and "the tier is nothing" one reading."""
+
 
 [[gate.ceiling_raises]]
 key = "rules.loc-ceilings.kernel_files.teller.ceiling"
@@ -298,12 +299,11 @@ key = "rules.loc-ceilings.caps_contract_ceiling"
 by = 27
 because = """CHAIN FORM AGAIN, off P5's tip 3550: +27, and all of it is the tier. `busbar-contract` gains `TierId` — which tier a principal is on, a `String` newtype beside `PrincipalId` for the same reason `PrincipalId` is one: a tier's name comes from a deployment's own configuration and is minted at boot, so the `declare_id!` `&'static str` shape cannot hold it. `busbar-caps` gains the shape of the answer the Authenticate step hands forward: `Authenticated::Principal` stops being a bare id and becomes `{ id, tier }`, with an accessor for each. It is the caps vocabulary and not a unit's because the only value that step handed forward was the id, so a tier a leg carried alongside would be a second channel out of one step and the kernel could not seal it. It carries no amount and names no price: a tier is who is calling, and what a tier COSTS is the tariff's, four steps later, at the one site that prices."""
 
-[[gate.ceiling_raises]]
-key = "rules.loc-ceilings.unit_total_ceiling"
-by = 42
-because = """CHAIN FORM AGAIN, off P5's tip 14776: +11, all in `busbar-unit-auth`. `ResolvedKey` and `Principal` each gain the key's configured group, and the unit's own answer fills the caps field from it. The unit CARRIES the tier and never reads it: it does not know what a tier costs and must not. What it knows is that a tier is a property of the KEY, so the step that resolved the key is the only step that can state it without looking the same binding up a second time on a different code path.
+# STRUCK: `rules.loc-ceilings.unit_total_ceiling` +42 for `busbar-unit-auth`'s `ResolvedKey` and
+# `Principal`. `03ecf1da8` DELETED `ResolvedKey`, `KeyVerifier` and `RevocationView` outright —
+# "funded by the face", as its own subject says — and at this tip `busbar-unit-auth` measures NET
+# -6 lines against the base. There is no face left here for a `by` to be the measurement of.
 
-CHAIN FORM AGAIN, off 50dd22e2c's tip 14787: +31, all in `busbar-unit-cost`. `TieredAt` — the multiplier a posting resolved at AND the scope it was resolved at, together, so a reader of a booked line cannot mistake a half-price tier for the standard price of a halved card — replaces the bare `tier_bp: u32` `Posting::from_usage` took, and `Posting` itself gains the `tier_scope` field the journal row carries the word on. This crate does not resolve a tier to a price; that is the root's one site. What it holds is the SHAPE the resolution travels in, so every caller of `from_usage` states which scope it resolved at rather than a figure with no account of where it came from."""
 
 [[gate.ceiling_raises]]
 key = "rules.loc-ceilings.union_ceiling"
@@ -441,13 +441,13 @@ because = "the same face, busbar_contract::plane::PlaneMeta::STATUS_LEG: the uni
 
 [[gate.ceiling_raises]]
 key = "rules.loc-ceilings.kernel_files.teller.ceiling"
-by = 30
-because = "the dispute policy as a value, busbar_kernel::teller::DisputePolicy: three variants, a Default derive and the decide that applies both readings, 22 surface lines in teller.rs measured 606 -> 628. The match arm it replaces is the same three lines it was, so the 22 are the policy and nothing else — what a contradicted fee costs, lifted out of control flow into a value that can be named, cited, chosen per deployment and changed on purpose."
+by = 22
+because = "22 AND NOT 30 — the figure this entry already measured and stated in its own next breath, and a `by` is the lines the face measured, never the room it was given. The dispute policy as a value, busbar_kernel::teller::DisputePolicy: three variants, a Default derive and the decide that applies both readings, 22 surface lines in teller.rs measured 606 -> 628. The match arm it replaces is the same three lines it was, so the 22 are the policy and nothing else — what a contradicted fee costs, lifted out of control flow into a value that can be named, cited, chosen per deployment and changed on purpose."
 
 [[gate.ceiling_raises]]
 key = "rules.loc-ceilings.kernel_ceiling"
-by = 30
-because = "the same 22 lines, counted on the kernel's own total: 5381 -> 5403. The call-graph-reachable busbar-unit-* set does not move on this landing (2298 lines in the same 10 files), so the whole of the rise is teller.rs's own."
+by = 22
+because = "22 AND NOT 30, for the reason the sentence after this one already gives: 5381 -> 5403 is twenty-two lines. The same 22 lines, counted on the kernel's own total: 5381 -> 5403. The call-graph-reachable busbar-unit-* set does not move on this landing (2298 lines in the same 10 files), so the whole of the rise is teller.rs's own."
 
 [[gate.ceiling_raises]]
 key = "rules.loc-ceilings.union_ceiling"
@@ -633,8 +633,8 @@ because = "the same face, on the pair's own line count. Every line of it is the 
 
 [[gate.ceiling_raises]]
 key = "rules.loc-ceilings.unit_total_ceiling"
-by = 111
-because = "crates/busbar-unit-cost/src/schedule.rs and the amounts it added to posting.rs and rate.rs: the bounded charge over a deployment's terms, in the crate that owns the card. There is nowhere else it could live — a price applied outside the crate that holds the dated card is a second pricing policy, which is the one thing the one-pricing-site row exists to refuse — and landing it is what took that row's fee-field reads from four to zero. Measured 14992 -> 15103; the ceiling rises by the 111 this landing measured and NOT to the measurement, so the 59-line overage this tree already carried stays visible and stays somebody's to drain."
+by = 44
+because = "44, which is what `crates/busbar-unit-cost/src/schedule.rs` measures at this tip. The 111 counted the amounts this face added to `posting.rs` and `rate.rs` as well, and the TieredAt fold deleted the second pricing mechanism those amounts were applied through — `posting.rs` -115 and the ledger recompute -105 — so the face no longer measures them. What it still is: `crates/busbar-unit-cost/src/schedule.rs` — the bounded charge over a deployment's terms, in the crate that owns the card. There is nowhere else it could live — a price applied outside the crate that holds the dated card is a second pricing policy, which is the one thing the one-pricing-site row exists to refuse — and landing it is what took that row's fee-field reads from four to zero. Measured 14992 -> 15103; the ceiling rises by the 111 this landing measured and NOT to the measurement, so the 59-line overage this tree already carried stays visible and stays somebody's to drain."
 
 [[gate.ceiling_raises]]
 key = "rules.loc-ceilings.union_ceiling"
@@ -710,8 +710,8 @@ because = "the same face, on the pair's own line count. There is no card, no cur
 
 [[gate.ceiling_raises]]
 key = "rules.loc-ceilings.unit_total_ceiling"
-by = 121
-because = "the posting's own scope field and the card's per-scope terms, in the crate that owns the card, plus the ledger row that books it: `Posting::scope` and `Posting::at_scope`, `RateCard::{fee_terms_at, set_scope_terms, absent_scoped, from_config_scoped, from_micro_rates_scoped}`, and `busbar_unit_ledger::recompute::Posting::scope` threaded into the ONE lookup the ledger prices a line through. It cannot live anywhere else: a scope resolved at read time, outside the crate that holds the dated card, would be a second answer to what one unit was charged that no later reader could re-derive. Measured 15044 -> 15165."
+by = 62
+because = "62 AND NOT 121: 62 is what this face measures on the unit crates at THIS tip, and the 121 was its figure before the TieredAt fold took the second pricing mechanism out from under it. The posting's own scope field and the card's per-scope terms, in the crate that owns the card, plus the ledger row that books it: `Posting::scope` and `Posting::at_scope`, `RateCard::{fee_terms_at, set_scope_terms, absent_scoped, from_config_scoped, from_micro_rates_scoped}`, and `busbar_unit_ledger::recompute::Posting::scope` threaded into the ONE lookup the ledger prices a line through. It cannot live anywhere else: a scope resolved at read time, outside the crate that holds the dated card, would be a second answer to what one unit was charged that no later reader could re-derive. Measured 15044 -> 15165."
 
 [[gate.ceiling_raises]]
 key = "rules.loc-ceilings.union_ceiling"
@@ -1053,10 +1053,10 @@ caps_crate = "busbar-caps"
 contract_crate = "busbar-contract"
 caps_contract_ceiling = 3805
 unit_crate_glob = "busbar-unit-*"
-unit_total_ceiling = 15235
+unit_total_ceiling = 15069
 verbs_crate = "busbar-unit-verbs"
 verbs_ceiling = 1428
-union_ceiling = 24738
+union_ceiling = 24572
 # Files (by basename, wherever they sit under busbar-kernel/src) whose bodies seed the call-graph
 # name-match: every identifier called from one of these files, that busbar-kernel does not itself
 # define, is looked up by name against every busbar-unit-* file.
@@ -1065,7 +1065,7 @@ teller_files = ["teller.rs"]
 [rules.loc-ceilings.kernel_files.teller]
 label = "Teller loop"
 patterns = ["teller.rs"]
-ceiling = 677
+ceiling = 699
 
 # The loop's memory and the loop's record, pinned on their own row. section 1.1 names them inside the
 # Teller loop's 1.5k; the two are pinned separately here so a line added to either has to say which.
@@ -2206,3 +2206,54 @@ key = "cell.busbar.unit.count"
 file = "qa/kind-isolation.toml"
 by = 8
 because = "1169 -> 1193 -- the ceiling this stack carried was 1271, which was 78 lines of slack the TieredAt fold had already killed, and it is re-pinned to the measurement in this same commit. Against the base the real rise is 24 and the three entries above cover 16. The 8 are the root reading the cost unit where the cost unit is the answer: `units_llm.rs` (+8) and `kernel.rs` (+4) name `busbar_unit_cost`'s card and its scope at the ONE pricing site, `tests/policy.rs` (+6) pins that the two readers of one `groups:` section resolve alike, and `tests/units_llm.rs` (+4) drives it -- against `units_voice.rs`, `auth_bindings.rs` and `tests/units_voice.rs`, which give six back between them. The root composes the unit that prices; it does not price."
+
+# ── TARIFF-8: THE LOC CEILINGS THIS STACK ROSE AND DID NOT DECLARE ───────────────────────────────
+#
+# Seven keys in this file rose against the base cd77af378 and their declared raises did not sum to
+# what rose. The entries above were written in CHAIN FORM, each off its own predecessor's tip, and
+# chain form cannot close: a face declared off P5's tip is silent about everything that landed
+# between the branch point and P5, and a face whose lines a LATER commit deleted keeps declaring
+# lines the tree no longer has. The remainders below were measured the only way they can be — by
+# re-measuring every ceiling's own rule at the base and at this tip, per file, and attributing each
+# changed file to the commits that changed it — and each entry names what its figure is made of.
+#
+# Where a face's own lines were deleted beneath it, the give-back is NETTED and SAID, because a `by`
+# is what the tree rose by at this tip. `by` cannot be negative (the row refuses it, correctly: a
+# ceiling that falls is re-pinned by `--write` with no declaration at all), so a deletion has to be
+# carried on the entry whose arithmetic absorbs it, and carrying it silently is what produced the
+# mismatch these entries close.
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.kernel_ceiling"
+by = 216
+because = """5379 -> 5698 is +319 and the five entries above name 103 of it. THE 216 IS SIX KERNEL FACES NOBODY DECLARED, less the one figure above that no longer measures anything. The six: the PER-UNIT RECORD itself (`5d93803f8`, +114 — `record.rs` is born, the unit's own memory and the one `Ctx` the loop builds per unit over one lease of it, plus one line of module wiring in `lib.rs` and one line OFF `teller.rs`, which is the six scalars stopping being parameters); the ROUTED BODY AS A HANDLE (`cc754dac4`, +45 — `record.rs` +43 for the lease and what the stream counted, `teller.rs` +2 for the exit that releases it, which is what makes the Meter step able to read a completion the seam did not fix); the CONTRACT ARENA (`d2354b688`, +44, `arena.rs`, the tree's first production arena and the second bump buffer deleted); the DISPUTE POLICY AS A VALUE (`9c8005b80`, +16 in `teller.rs`) and ITS CONTRADICTION ARM (`f8cf1cecc`, +6, the same file); and the ANSWER'S HEAD (`858d6322a`, +13 in `record.rs`, the cell the fee decision reads a relayed status off). That is 238. Against it, the `+22` entry above declares lines the per-file measurement does not find in this tree's kernel figures at this tip — the reachable `busbar-unit-*` set is the same ten files at both ends and moved +3 in total — so 238 less that 22 is the 216 this entry carries, and the sum closes at 319 exactly."""
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.kernel_files.arena.ceiling"
+by = 44
+because = """178 -> 222, and this key had NO declaration at all: it is the one ceiling in this file whose whole rise is one commit, one file and one face, and it was simply never written down. `d2354b688` — the tree's first production contract arena, in the kernel, and the second bump buffer deleted — takes `crates/busbar-kernel/src/arena.rs` from 178 to 222. It is the kernel's and not a unit's because an arena is the loop's own memory: the per-unit record leases from it once per unit, and a second bump buffer beside it was two allocators disagreeing about the lifetime of one request. The same 44 lines are declared against `kernel_ceiling` and against `union_ceiling`, because both of those totals see this file; that is the file being counted by three rules, not the face being paid for three times."""
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.kernel_files.teller.ceiling"
+by = 1
+because = """606 -> 699 is +93 and the four entries above now name 92 of it, once the dispute policy's figure is the 22 it measured rather than the 30 it was written at. The last line is a NET of two: the routed body's handle adds two lines to `teller.rs` (`cc754dac4` — the exit is the one place a unit's body lease comes out, so the exit path is where it is released), and the per-unit record takes one away (`5d93803f8` — the six scalars every step used to be handed stop being parameters the moment the thing behind them lives on the unit). Two up and one down is one, and the reason it is declared rather than absorbed into a neighbour is that a `by` is what a face measured: neither of those faces measured 93, and neither measured 92."""
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.caps_contract_ceiling"
+by = 61
+because = """3480 -> 3805 is +325 and the nine entries above name 264 of it. THE 61 IS THREE FACES ON THE PAIR, NET OF WHAT THE STACK DELETED BENEATH THEM. The three: the ROUTED BODY (`cc754dac4`, +61 — `busbar-caps/src/egress.rs` +58 and `lib.rs` +3, the relay handed BACK instead of run, so a hold over a routed body is a hold over a body that has not drained yet); the VIRTUAL-KEY DIRECTORY (`c94df25af`, +19 in `busbar-contract/src/kinds.rs`); and one line of the tier's configured limits (`b37c1d5af`, +1 in `limits.rs`). That is 81. Against it the stack DELETED 20 lines of the pair that no entry above has already netted: `9d6a1eaf6` took `Unit::{byte_counts, frame_counts, set_counts}` and their two fields out of `busbar-contract/src/unit.rs` (-21, counts the kernel never wrote), and the TieredAt fold `35038a0a8` took one line each out of `ids.rs` and `limits.rs` (-2); three of those 23 are already carried in the `+31` and `+27` figures above, which say so in their own text. 81 less 20 is 61, and the sum closes at 325 exactly."""
+
+[[gate.ceiling_raises]]
+key = "gate.surface_ceilings.contract_caps"
+by = 61
+because = """3478 -> 3803 is +325 and the nine entries above name 264 of it. This is the SAME 61 as the `caps_contract_ceiling` entry beside it, on the PLUGIN-VISIBLE surface rather than on the pair's own line count — the two rules scan the pair with different scanners (`scripts/loc-surface.py` excludes `src/tests/` and nests block comments; the construction gate's tree classifier scores those paths zero instead) and land two lines apart at both ends, so the deltas are identical and the totals are not. The three faces are the routed body on `busbar-caps/src/egress.rs` (`cc754dac4`, +58 plus 3 in `lib.rs`), the virtual-key directory in `busbar-contract/src/kinds.rs` (`c94df25af`, +19) and one line of the tier's configured limits (`b37c1d5af`); the give-back is `9d6a1eaf6`'s deletion of the three never-written `Unit` counts (-21) and the TieredAt fold's two (-2), less the three already netted above. None of the three adds anything a plugin author must READ: no trait takes them and no plugin is handed one."""
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.unit_total_ceiling"
+by = 8
+because = """14476 -> 15069 is +593 and the six entries above now name 585 of it, once the schedule face measures the 44 lines it still has and the posting-scope face measures the 62 it still has. The 8 is a NET of two, and both are real: the ROUTED BODY (`cc754dac4`) adds 18 lines across the unit crates — the walk answers with a `Routed` the root drives to a `Relayed`, which is how many frames went past, what the plane made of the ending and what the answer carried per declared dimension, three readings of one instant kept together — and the SECOND PRICE TABLES (`708459941`) give 10 back, because a table that answered what another table already answered is two answers to one question and the deletion did not change the answer either of them gave. Eighteen up and ten down is eight, and the sum closes at 593 exactly."""
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.union_ceiling"
+by = 138
+because = """23335 -> 24572 is +1237 and the thirteen entries above name 1099 of it. The union is not a face of its own: it is the kernel total plus the caps/contract pair plus the unit total, with the call-graph-reachable `busbar-unit-*` files counted twice on purpose, so every line of it is a line one of the other six keys already sees. THIS ENTRY SAYS WHAT THE 138 IS THE REMAINDER OF rather than claiming a face nobody landed. The faces the union carries that the entries above do not name are exactly the ones this commit declares on the component keys: the per-unit record (`5d93803f8`, +114), the routed body across the kernel and the pair (`cc754dac4`, +124), the contract arena (`d2354b688`, +44), the one fold from a report to a record onto `busbar-unit-usage` (`12aa37303`, +69), the answer's head (`858d6322a`, +22), the virtual-key directory (`c94df25af`, +19) and the dispute policy with its contradiction arm (`9c8005b80` +16, `f8cf1cecc` +6). Against them the stack DELETED 214 union lines that no entry above nets: `9d6a1eaf6` -21, `03ecf1da8` -16, `708459941` -10 and the TieredAt fold `35038a0a8` -167. The thirteen chain-form entries above, written off four different tips, already carry the balance of those same faces; 138 is what is left, and the sum closes at 1237 exactly."""
