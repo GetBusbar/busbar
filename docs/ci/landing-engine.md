@@ -455,6 +455,22 @@ picks, and the loop is taken again on the class's backoff — where `probe-empty
 them and put them back, five times over. On `BUSBAR_LAND_BACKEND=latchkey` it is a no-op by design:
 that backend needs no box at all.
 
+#### And a box under a stop claim is not a free box
+
+The other half, found by reading the live runner at fault 5. A box the operator had just started by
+hand was logged `skipped (unreachable or unprepared)` while running and idle. A hand start
+(`aws ec2 start-instances`) runs none of `ci-fleet-power.sh`, so the `~/.busbar-stopping` the stopper
+wrote before stopping that box is still there — and the landing's proof probe begins
+`test -e ~/.busbar-stopping && exit 1`, so it gets no answer and the caller reads the silence as an
+unreachable box. `power_start` clears it through `power_ready`; a hand start has nobody to do it.
+
+`busy` cannot see this: a claimed box holds no proof — that is *why* it was claimed — so it answers
+0 and the box counts as fully free. Without this, the precondition above passes and the landing
+fails anyway. So the allocator asks the question the landing will ask (`~/.busbar-power.sh stopping`
+-> `STOPPING` | `CLEAR`) and clears a claim it finds, rather than counting a box it knows the landing
+cannot use. The verb is a question and writes nothing: `clear` also drops the idle clock, and a
+fleet asked for free slots every loop would never idle out.
+
 ### Which tags carry an argument is one list, and every reader of the prefix walks it
 
 A queue line is `<tag>… -- <payload>`, and almost every tag is one `#` token — so every reader of the
