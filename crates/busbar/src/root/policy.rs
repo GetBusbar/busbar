@@ -278,6 +278,63 @@ impl ScopePolicy {
     }
 }
 
+/// **THE DEPLOYMENT'S OWN RATE CARD, PROJECTED INTO THE ADMISSION UNIT'S PRICER.**
+///
+/// This is where a node's card comes from, and it is the ONLY place in the composition that builds
+/// one. Before it, the MCP node shipped with a hardcoded zero — a value that read the operator's
+/// `rate_card:` and `per_request_fee:` not at all, and would have gone on reading them not at all
+/// on the day a class reached an upstream. That is the difference between a card and a placeholder,
+/// and it is why the composition asks for this rather than spelling a constant at the mount.
+///
+/// ## The two arms, and both of them are the operator's answer
+///
+/// A card CONFIGURED is authoritative: each entry's four micro-float tiers are projected once, here,
+/// through the pricing law's own `RateNanos::from_micros_per_token` — never a second copy of the
+/// clamp and the rounding — and a model the card does not name derives at zero, which is the
+/// operator's edit taking effect. A card ABSENT is not a missing value and not a degraded build: a
+/// deployment that configured no card prices no tokens, the flat fee still bills, and token caps
+/// still count tokens. Declaring that arm is what this function is; composing a node out of a
+/// constant is what it replaces.
+///
+/// The FEE travels on both arms because it is configured on both: `per_request_fee:` is a flat
+/// charge per request and is independent of whether a token card exists.
+/// `present` is the CARD'S PRESENCE and not the emptiness of `rates`, for the same reason
+/// [`crate::root::kernel::card_from_config`] takes it separately: an operator who wrote
+/// `rate_card: {}` configured a card that prices every model at zero, and an operator who wrote no
+/// `rate_card:` at all configured none. Deriving one from the other would make those two
+/// indistinguishable, and they are not the same deployment.
+///
+/// The rates arrive in the substrate's NEUTRAL raw-rate view, which is the same shape the cost
+/// unit's card is built from one file over — so the composition reads the operator's figures through
+/// one seam and never through this plane's config grammar.
+#[must_use]
+pub fn pricer<'r>(
+    rates: impl IntoIterator<Item = (&'r str, busbar_substrate::billing::RawTierRates)>,
+    per_request_fee: i64,
+    present: bool,
+) -> busbar_unit_admission::Pricer {
+    if !present {
+        return busbar_unit_admission::Pricer::flat(per_request_fee);
+    }
+    busbar_unit_admission::Pricer::with_card(
+        per_request_fee,
+        rates
+            .into_iter()
+            .map(|(model, raw)| {
+                (
+                    model.to_string(),
+                    busbar_unit_admission::RateNanos::from_micros_per_token(
+                        raw.input,
+                        raw.output,
+                        raw.cache_read,
+                        raw.cache_write,
+                    ),
+                )
+            })
+            .collect(),
+    )
+}
+
 impl PolicyView for ScopePolicy {
     fn required_scope(&self, claim: ClaimKey, op: OpClassId) -> Option<Scope> {
         // `None` here is a refusal, not a pass, and this is the whole of the implementation for

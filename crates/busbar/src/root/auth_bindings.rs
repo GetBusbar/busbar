@@ -73,6 +73,23 @@ impl AuthBindings {
     /// is the fail-closed answer the chain already documents for exactly this case; with no
     /// revocation view the NEW-unit gate does not run, which changes nothing a verifier that denies
     /// everything had not already decided.
+    /// **BIND WHAT THE DEPLOYMENT HAS**, which is the call a composition makes.
+    ///
+    /// A node does not choose between the two postures below; the deployment does, by having a
+    /// governance state or not having one. So the composition hands over what it found and the
+    /// choice is made HERE, once, beside the two postures it chooses between — which is also the
+    /// only place either of them should be spelled. A mount that picked the unbound arm itself would
+    /// be a node composed out of a value rather than out of its deployment, and the day a
+    /// composition forgot to pass a directory it had, nothing would say so.
+    #[must_use]
+    pub fn for_directory(directory: Option<Arc<dyn VirtualKeyDirectory>>) -> Self {
+        match directory {
+            Some(directory) => Self::new(directory),
+            None => Self::without_directory(),
+        }
+    }
+
+    /// Bind the cache alone — the posture of a node that resolves no busbar-minted keys.
     #[must_use]
     pub fn without_directory() -> Self {
         AuthBindings {
@@ -260,6 +277,32 @@ pub fn admin_chain(directory: Arc<dyn VirtualKeyDirectory>) -> busbar_unit_auth:
         // is the operator token, and naming the arm here would open a second one.
         false,
     )
+}
+
+/// **THE CHAIN A DATA-PLANE NODE RUNS**, and the whole of what it is.
+///
+/// NO MODULE, and that is a statement rather than an absence. The identity-provider modules a
+/// deployment configures under `auth.chain:` run BEFORE any plane code does — every surface of a
+/// data plane resolves its principal at ingress and the unit's authenticate step reads that outcome
+/// — so a chain that carried them here would be a SECOND DOOR, answering the same question against
+/// the same credential at a different moment, with two chances to disagree.
+///
+/// THE SIGNED-KEY ARM IS ON, and that is the half this node does own. A busbar-minted key presented
+/// on a data-plane claim is verified against the governance directory, which is the same directory
+/// the bindings beside it read — so the key facts, the revocation view and the operator's own
+/// authority are one state and not three. Before this, the node was composed with the arm OFF and no
+/// directory at all: the verifier could verify nothing, and the revocation gate ran against nothing.
+///
+/// This is the data plane's counterpart to [`admin_chain`], and the two differ in exactly the way
+/// the doors differ: the administrative door is the operator's token and names the arm nowhere; the
+/// data-plane door is the arm and names the operator's token nowhere.
+#[must_use]
+pub fn data_plane_chain() -> busbar_unit_auth::AuthChain {
+    // NO MODULE and the SIGNED-KEY ARM ON — spelled on one line, deliberately, so the stand-in
+    // scanner sees it and the reviewed-site table has to say what it is. See the header: the empty
+    // module list is the statement that the deployment's identity chain runs at ingress and is not
+    // restated here, and `true` is the arm this node does own.
+    busbar_unit_auth::AuthChain::new(Vec::new(), true)
 }
 
 #[cfg(test)]

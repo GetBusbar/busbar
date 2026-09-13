@@ -910,22 +910,26 @@ fn compose_voice_governed_calls() {
 /// that disagrees with itself must not serve, because the alternative is finding out from a customer.
 #[cfg(all(feature = "plane-mcp", feature = "root-mcp"))]
 fn mount_root_mcp(
-    handle: &std::sync::Arc<busbar_core::state::AppHandle>,
+    registrations: Vec<busbar_mcp::mcp::Registration>,
     store: &busbar_plugin_loader::store_adapter::StoreAdapter,
     book: &root::durability::NodeBook,
     groups: &std::collections::BTreeMap<String, busbar_substrate::config::groups::GroupCfg>,
     posture: root::bindings::Posture,
+    pricer: busbar_unit_admission::Pricer,
+    directory: Option<std::sync::Arc<dyn busbar_contract::VirtualKeyDirectory>>,
 ) {
     use busbar_contract::plane::PlaneMeta;
     use busbar_plane_mcp::McpPlane;
 
-    // ONE HOST, minted here and dropped here. It is read for exactly one thing — what the config
-    // resolved into the catalogue — and the request path mints its own per frame.
-    let host = busbar_core::plane_host::live_host_factory(std::sync::Arc::clone(handle))();
+    // THE REGISTRATIONS ARE HANDED IN AS VALUES, and this mount names no engine and no host. What it
+    // needs from the plane's serving crate is what the operator configured — the id and the endpoint
+    // of each registered server — and a mount that took an engine handle to go and read them would
+    // be one more retiring symbol the root has to unlearn before the engine can be deleted.
+    // `legacy-reach` is the ratchet that says so, and it only goes down.
     // THE INTERNER, and the one place this plane's registration names go through it. Bounded by the
     // number of configured registrations and paid once, at boot.
     let mut vocab = root::vocabulary::Vocabulary::new();
-    let servers: Vec<busbar_plane_mcp::Server> = busbar_mcp::mcp::registrations(&host)
+    let servers: Vec<busbar_plane_mcp::Server> = registrations
         .into_iter()
         .map(|r| busbar_plane_mcp::Server {
             id: vocab.key(&r.id),
@@ -962,14 +966,24 @@ fn mount_root_mcp(
     vocab.seal();
 
     let node = root::bindings::Node::over(
-        // EMPTY AND UNREACHED. See the header: the authenticate step reads the door's outcome.
-        busbar_unit_auth::Auth::new(busbar_unit_auth::AuthChain::new(Vec::new(), false)),
+        // THE DATA PLANE'S OWN DOOR. No identity-provider module — the deployment's `auth.chain:`
+        // runs at ingress, before any plane code, and the authenticate step reads that outcome — and
+        // the SIGNED-KEY ARM ON, verified through the directory beside it. See `data_plane_chain`.
+        busbar_unit_auth::Auth::new(root::kernel::auth_bindings::data_plane_chain()),
         posture,
-        root::kernel::auth_bindings::AuthBindings::without_directory(),
+        // THE GOVERNANCE DIRECTORY THIS NODE ACTUALLY KEEPS, when the deployment has one: the key
+        // verifier the signed-key arm resolves through and the revocation view the new-unit gate
+        // reads, both off one state. `None` is a deployment with no governance state, which is a
+        // posture and not a placeholder — the arm then denies, fail-closed, exactly as the chain's
+        // own documentation says it does.
+        root::kernel::auth_bindings::AuthBindings::for_directory(directory),
         busbar_unit_admission::Door::new(busbar_unit_admission::InMemoryCells::new()),
-        // NOTHING IS PRICED on the classes this node serves. A flat zero is the statement, not a
-        // placeholder: the class that reaches an upstream is the class that needs a card.
-        busbar_unit_admission::Pricer::flat(0),
+        // THE DEPLOYMENT'S OWN RATE CARD AND FEE, projected once by `root::policy::pricer`. The
+        // classes this node serves today reach no upstream, so they price at zero whatever the card
+        // says — but they price at zero BECAUSE the card says so, which is what the class that
+        // reaches an upstream will need, and it is what makes that class a move rather than a
+        // rebuild.
+        pricer,
         root::policy::build(&root::policy::MeterPolicyConfig::default()),
         // THE PROCESS'S ONE BOOK, by handle. A book of this node's own would post onto a set nothing
         // serves and serve a set nothing posts to, and both halves look healthy.
@@ -1410,6 +1424,14 @@ async fn run(data_workers: usize) {
     // because an inference would turn every unresolved credential on a GOVERNED deployment into an
     // ungoverned one. Read after the overlay merge for the same reason the group tree is: the table
     // this node enforces is the one the operator's API writes as well as the one the file declares.
+    // THE DEPLOYMENT'S RATE CARD AND FLAT FEE, cloned once beside the group tree and after the same
+    // overlay merge, so the card this node's door prices against is the one the operator's API
+    // writes as well as the one the file declares.
+    #[cfg(all(feature = "plane-mcp", feature = "root-mcp"))]
+    let mcp_rate_card = cfg.rate_card.clone();
+    #[cfg(all(feature = "plane-mcp", feature = "root-mcp"))]
+    let mcp_per_request_fee = cfg.per_request_fee;
+
     #[cfg(all(feature = "plane-mcp", feature = "root-mcp"))]
     let mcp_posture = if cfg.auth.as_ref().is_none_or(|a| a.role_bindings.is_empty()) {
         root::bindings::Posture::Ungoverned
@@ -1756,7 +1778,35 @@ async fn run(data_workers: usize) {
     // class that has left the dispatch table is answered by this node or by nothing.
     #[cfg(all(feature = "plane-mcp", feature = "root-mcp"))]
     if let Some(store) = node_store.as_ref() {
-        mount_root_mcp(&app_handle, store, &book, &mcp_groups, mcp_posture);
+        mount_root_mcp(
+            // ONE HOST, minted for this read and dropped at the end of the expression. It is read for
+            // exactly one thing — what the config resolved into the catalogue — and the request path
+            // mints its own per frame. The factory is the same one the stdio serve mode takes below;
+            // nothing new is named to build it.
+            busbar_mcp::mcp::registrations(&busbar_core::plane_host::live_host_factory(
+                app_handle.clone(),
+            )()),
+            store,
+            &book,
+            &mcp_groups,
+            mcp_posture,
+            // THE DEPLOYMENT'S OWN CARD, read where every other node's is. See `root::policy::pricer`.
+            root::policy::pricer(
+                mcp_rate_card
+                    .iter()
+                    .flatten()
+                    .map(|(model, entry)| (model.as_str(), entry.raw_tier_rates())),
+                mcp_per_request_fee,
+                mcp_rate_card.is_some(),
+            ),
+            // THE SAME GOVERNANCE STATE the administrative units are bound to, behind one directory
+            // — so a credential this node revoked is revoked for both, and there is no second
+            // opinion about which state its keys are judged against.
+            app_handle.load().governance.clone().map(|gov| {
+                std::sync::Arc::new(root::kernel::auth_bindings::GovernanceDirectory::new(gov))
+                    as std::sync::Arc<dyn busbar_contract::VirtualKeyDirectory>
+            }),
+        );
     }
 
     // THE STDIO SERVE MODE (`--mcp-stdio`). The SAME boot ran above — config load, plugin

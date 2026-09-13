@@ -523,3 +523,65 @@ fn the_two_group_projections_agree_on_the_empty_and_clamped_ends() {
     identity_case(&BTreeMap::new(), -1);
     identity_case(&BTreeMap::from([configured("solo", Vec::new())]), 0);
 }
+
+/// **THE DEPLOYMENT'S CARD IS THE NODE'S CARD**, and an absent one is a posture and not a zero.
+///
+/// The MCP node used to ship a hardcoded `Pricer::flat(0)` — a value that read the operator's
+/// `rate_card:` and `per_request_fee:` not at all. This cell is what the replacement owes: the fee
+/// travels on BOTH arms, because it is configured on both; a configured card is authoritative and
+/// its rates are the pricing law's own projection of the operator's micro-floats; and an absent card
+/// is distinguishable from an empty one, because `rate_card: {}` and no `rate_card:` are two
+/// different deployments and a pricer that could not tell them apart would price one of them wrong.
+#[test]
+fn the_pricer_is_the_deployments_own_card_and_an_absent_card_is_not_an_empty_one() {
+    let rates = |input: f64| busbar_substrate::billing::RawTierRates {
+        input,
+        output: 0.0,
+        cache_read: 0.0,
+        cache_write: 0.0,
+    };
+
+    // NO CARD CONFIGURED: nothing prices, the fee still bills, and `pricing_enabled` says which of
+    // the two postures this is.
+    let absent = pricer(std::iter::empty(), 7, false);
+    assert!(
+        !absent.pricing_enabled(),
+        "a deployment that configured no rate card has no card, and the node must be able to say so"
+    );
+    assert_eq!(
+        absent.price_per_request_cents(),
+        7,
+        "the flat fee still bills"
+    );
+
+    // A CARD CONFIGURED BUT EMPTY: a card, and every model derives at zero through it. Same
+    // iterator contents as the arm above and a different answer, which is the whole point.
+    let empty = pricer(std::iter::empty(), 7, true);
+    assert!(
+        empty.pricing_enabled(),
+        "`rate_card: {{}}` is a configured card that prices every model at zero, not an absent one"
+    );
+
+    // A CARD WITH AN ENTRY: the operator's micro-floats through the pricing law's own projection,
+    // and a model the card does not name derives at zero rather than at a guess.
+    let card = pricer([("m", rates(2.0))], 0, true);
+    assert_eq!(
+        card.rate_for("m").map(|r| r.input),
+        Some(busbar_unit_cost::nano_rate(2.0)),
+        "the rate is the cost unit's own projection of the configured figure, not a second copy \
+         of the clamp and the rounding"
+    );
+    assert!(
+        card.rate_for("unnamed").is_none(),
+        "a card that is present and silent about a model is the operator's edit, and the derive \
+         paths price it at zero"
+    );
+
+    // AND THE FEE IS CLAMPED, on the arm the node actually takes. A negative fee is not a discount:
+    // the derivation ADDS fee times count, so an unclamped one would subtract and walk a bucket
+    // already over its cap back under it.
+    assert_eq!(
+        pricer(std::iter::empty(), -5, true).price_per_request_cents(),
+        0
+    );
+}

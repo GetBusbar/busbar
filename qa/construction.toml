@@ -1253,6 +1253,27 @@ symbol = "without_directory("
 verdict = "double"
 because = "the same node's unbound key authorities, where the sealed root has the governance directory"
 
+# THE DATA PLANE'S OWN DOOR, declared where the administrative one is. Reviewed 2026-09-12 with the
+# MCP node's composition: the empty module list is a STATEMENT (the deployment's `auth.chain:` runs
+# at ingress, before any plane code, and a second copy here would be a second door), and the
+# signed-key arm is ON and resolves through the governance directory the bindings beside it carry.
+# The node this replaced was composed with the arm OFF and no directory at all.
+[rules.no-test-doubles-in-production.known_sites.data-plane-chain]
+file = "crates/busbar/src/root/auth_bindings.rs"
+symbol = "AuthChain::new(Vec::new()"
+verdict = "real"
+because = "this is where the data-plane chain is declared; a data-plane node's door is the signed-key arm, and the deployment's identity modules run at ingress before any plane code"
+
+# THE ABSENT-RATE-CARD ARM, declared where the card is projected. Reviewed 2026-09-12: a deployment
+# that configured no `rate_card:` prices no tokens and still bills its `per_request_fee:`, which is
+# the operator's answer and not a fixture's. The site the MCP node used to carry — a hardcoded
+# `Pricer::flat(0)` at the mount, reading neither key — is deleted in the same commit.
+[rules.no-test-doubles-in-production.known_sites.rate-card-absent]
+file = "crates/busbar/src/root/policy.rs"
+symbol = "Pricer::flat("
+verdict = "real"
+because = "this is where the deployment's own card is projected into the pricer; the absent-card arm is the operator's configuration, and the fee still bills on it"
+
 [rules.no-test-doubles-in-production.known_sites.bindings-constructor]
 file = "crates/busbar/src/root/auth_bindings.rs"
 symbol = "without_directory("
@@ -2568,8 +2589,8 @@ because = "THE MCP NODE's kernel: `busbar_kernel::inflight::InFlight`, `busbar_k
 [[gate.ceiling_raises]]
 key = "cell.busbar.legacy.count"
 file = "qa/kind-isolation.toml"
-by = 2
-because = "THE MCP NODE's mount point, which is still in the retiring crate: `busbar_core` spelled in main.rs where the node is installed beside the engine the unmoved classes are still dispatched through, and once in the node's cells. Two above the base, which is the rise this tree actually measured — the third spelling this landing writes replaces one the base already carried. This is the ONLY figure here that goes UP on a legacy prefix, it is the mount and not a new body, and it goes to zero with the crate: `legacy-reach` is the ratchet that watches it and the drain is `git rm -r`, never an edit."
+by = 1
+because = "THE MCP NODE's mount point, which is still in the retiring crate: `busbar_mcp` spelled in main.rs where the node's registrations are read and where the node is installed. ONE above the base, and it was two until the mount stopped taking an engine handle — the drain that took `busbar_core::state::AppHandle` out of the root's mouth entirely took this figure with it. This is the ONLY figure here that goes UP on a legacy name, it is the mount and not a new body, and it goes to zero with the crate: `legacy-reach` is the ratchet that watches it and the drain is `git rm -r`, never an edit."
 
 [[gate.ceiling_raises]]
 key = "cell.busbar.plane.count"
@@ -2621,3 +2642,38 @@ key = "cell.busbar.transport.count"
 file = "qa/kind-isolation.toml"
 by = 2
 because = "THE DECLARED UNGOVERNED POSTURE's second half, in the cell that proves the posture is not a skeleton key: a registered deployment on a real wire, with a policy that says nothing about the class, is STILL refused on the governed path. The registration a cell like that needs is a server on a transport, and naming the wire is the only way to write one down."
+
+# THE NODE'S REAL CARD AND ITS REAL DOOR (integrator ruling, 2026-09-12). The MCP node shipped with
+# `Pricer::flat(0)`, an empty `AuthChain` and unbound key authorities — three stand-ins in the
+# SHIPPED BINARY, which took `no-test-doubles-in-production:doubles` from 5 to 8, and which the
+# ruling REFUSED as a rise. They are gone: the node now composes `root::policy::pricer` over the
+# deployment's own `rate_card:`/`per_request_fee:`, `auth_bindings::data_plane_chain` (no identity
+# module, because the deployment's chain runs at ingress; the SIGNED-KEY ARM on) and
+# `AuthBindings::for_directory` over the same governance state the administrative units are bound
+# to. The doubles row is back at its base of 5 and class 13's "hard blocker" is gone with it. The
+# mount also stopped taking an engine handle — it takes the registrations as VALUES — which takes
+# `busbar_core::state::AppHandle` out of the root's vocabulary and `legacy-reach` back to green.
+# Four cells rise, every one of them the composition naming what it composes.
+[[gate.ceiling_raises]]
+key = "cell.busbar.control.count"
+file = "qa/kind-isolation.toml"
+by = 1
+because = "THE NODE'S REAL DOOR: one `admin` spelling where the data-plane chain is declared beside the administrative one, saying which of the two doors it is NOT. The two differ exactly as the doors differ — the administrative door is the operator's token and names the signed-key arm nowhere; the data-plane door is the arm and names the operator's token nowhere — and a reader who cannot see both in one place cannot check that."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.plane.count"
+file = "qa/kind-isolation.toml"
+by = 15
+because = "THE NODE'S REAL CARD AND DOOR, at the mount that composes them: the registrations handed to the mount as VALUES rather than read through an engine handle, and the plane's own name where the card, the chain and the directory are threaded to it. This is the composition reading the operator's `rate_card:` and governance state for the plane it mounts, which is the one kind entitled to read either."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.transport.count"
+file = "qa/kind-isolation.toml"
+by = 1
+because = "THE NODE'S REAL CARD, in the cell fixture that drives one registration on a wire through the composed pricer. A registration a cell can price is a registration on a transport, and naming the wire is the only way to write one down."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.unit.count"
+file = "qa/kind-isolation.toml"
+by = 12
+because = "THE NODE'S REAL CARD AND DOOR, named where they are built and where the cell that proves the card is the deployment's own drives them: `busbar_unit_admission::{Pricer, RateNanos}` for the deployment's own rate card projected through the pricing law's own `from_micros_per_token` (never a second copy of the clamp and the rounding), and `busbar_unit_auth::AuthChain` for the data plane's signed-key arm. Composing a node out of the units that answer its steps is what a composition root does; composing it out of a constant is what this landing deleted."
