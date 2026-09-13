@@ -324,3 +324,30 @@ pub trait SessionPlane: Plane {
     /// Open one upstream half of this session's codec state.
     fn open_upstream<'u>(&self, dest: &VerifiedDestination, ctx: &Ctx<'u>) -> PlaneSessionState;
 }
+
+/// THE HOLD POSTURE OF ONE BINDING: what a unit admitted on it keeps, and until when.
+///
+/// Declared DATA, beside the binding's transport, and read by the kernel at the door. It is not a
+/// property of a plane, a modality or a wire: two bindings of two different planes that declare the
+/// same posture are admitted, held and settled identically, and a plane implements no part of it.
+///
+/// The two postures are the two ends a unit can have, and there is no third:
+///
+/// - [`SessionPosture::Release`] — the unit settles at ITS OWN exit. The request slot and the
+///   in-flight lease the door drew are given back when the call that opened them ends. This is what
+///   every binding has always had, and it is what an undeclared binding gets, which is why nothing
+///   that ships today moves unless a declaration asks it to.
+/// - [`SessionPosture::Hold`] — the admitted unit KEEPS the request slot and the in-flight lease for
+///   the life of the session it opened, and settles once, at the session's end. A live session is a
+///   long-lived request: it occupies one of the node's slots for as long as it is live, exactly as a
+///   streaming response does, and the per-leg work runs against that one admission.
+///
+/// A duplex binding declares [`SessionPosture::Hold`]. A request-response binding declares nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SessionPosture {
+    /// Settle at this unit's own exit — the default, and what an undeclared binding has.
+    #[default]
+    Release,
+    /// Keep the slot and the lease for the session's life, and settle at the session's end.
+    Hold,
+}

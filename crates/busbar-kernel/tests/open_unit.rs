@@ -28,7 +28,7 @@ mod common;
 use busbar_kernel::slice::{ConcurrencyGauge, LeaseCell, IN_FLIGHT};
 use busbar_kernel::teller::{
     open_unit, refuse_unit, run_unit, serve_held, AccrualMeter, Ended, Kernel, Opened, RouteAwait,
-    RouteLeg, Run, UnitCtx,
+    RouteLeg, Run, SessionPosture, Settles, UnitCtx,
 };
 
 use common::{
@@ -70,6 +70,7 @@ fn the_opener_runs_to_the_door_and_holds_there() {
         &kernel,
         &units,
         &ctx,
+        SessionPosture::Hold,
         Run {
             cell: &cell,
             parent: None,
@@ -130,6 +131,7 @@ fn a_refused_open_ends_at_the_refused_door_holding_nothing() {
         &kernel,
         &units,
         &ctx,
+        SessionPosture::Hold,
         Run {
             cell: &cell,
             parent: None,
@@ -199,6 +201,7 @@ fn opening_then_serving_is_the_same_ten_steps_as_running() {
         &kernel,
         &in_halves,
         &ctx_a,
+        SessionPosture::default(),
         Run {
             cell: &cell_a,
             parent: None,
@@ -283,4 +286,384 @@ fn ready<F: std::future::Future>(fut: F) -> F::Output {
         std::task::Poll::Ready(out) => out,
         std::task::Poll::Pending => panic!("a leg that is ready on its first poll never parks"),
     }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// R-SESSION — WHAT A LIVE SESSION COSTS THE NODE WHILE IT IS LIVE.
+//
+// A session of any plane is a UNIT. It is not a special case that the loop tolerates, and it is
+// not admitted by a door that reserves nothing: it draws the node's request slot at the door and
+// holds the in-flight lease for its whole life, exactly as a streaming response does, and it
+// settles once, at the session's end. The cells below are that rule stated in the only place it
+// can be checked — the bytes the loop's two halves actually move — and nothing in them names a
+// plane, a dialect, a transport or a modality.
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+/// Units whose verified set carried an upstream candidate — the evidence that makes a client unit
+/// draw a request slot, and the shape every real session opening has.
+fn reaching_an_upstream() -> TestUnits {
+    TestUnits {
+        evidence: busbar_kernel::teller::Evidence {
+            upstream_candidate: true,
+            ..Default::default()
+        },
+        ..TestUnits::passing()
+    }
+}
+
+/// ONE REQUEST SLOT, DRAWN AT THE DOOR AND SETTLED AT THE SESSION'S END.
+///
+/// The slot is drawn by the opening and nothing releases it in between: a session that has been
+/// open for an hour is one request this node is still running, which is what the cap is for. The
+/// settle happens once, when the session ends, and it names one request and not one per leg.
+#[test]
+fn a_session_draws_one_request_slot_at_the_door_and_settles_it_at_its_end() {
+    let kernel = Kernel::new();
+    let units = reaching_an_upstream();
+    let cell = cell(&kernel);
+    let canary = Canary::new();
+    let gauge = ConcurrencyGauge::new();
+    let leases = LeaseCell::new();
+    let meter = AccrualMeter::new();
+    let ctx = ctx(5);
+
+    let held = match open_unit(
+        &kernel,
+        &units,
+        &ctx,
+        SessionPosture::Hold,
+        Run {
+            cell: &cell,
+            parent: None,
+            leases: &leases,
+            gauge: &gauge,
+            canary: &canary,
+            meter: &meter,
+        },
+    ) {
+        Opened::Held(held) => held,
+        Opened::Refused { .. } => panic!("a passing plane's session opens"),
+    };
+    assert_eq!(
+        cell.state(),
+        HoldCellState::Admitted,
+        "the hold the door gave the session is the session's OWN, and it is in the cell"
+    );
+    assert_eq!(
+        held.settles_at(),
+        Settles::SessionEnd,
+        "a binding that declared Hold keeps its slot until the SESSION ends, not until this call does"
+    );
+
+    // The session is LIVE here. Nothing has settled, nothing has been released, and the node is
+    // running one unit — for as long as this goes on.
+    assert_eq!(
+        gauge.count(&IN_FLIGHT),
+        1,
+        "the slot is drawn for the session's life, not for the leg that opened it"
+    );
+
+    match ready(serve_held(&kernel, &units, &ctx, held, &InPlace(&units))) {
+        Ended::AlreadySettled => panic!("nobody else had this session to settle"),
+        Ended::Settled { requests, .. } => assert_eq!(
+            requests, 1,
+            "a session settles EXACTLY ONE request slot, at its end — the one its door drew"
+        ),
+    }
+    assert_eq!(
+        cell.state(),
+        HoldCellState::Taken,
+        "and the hold leaves the cell exactly once, at the end the settle named"
+    );
+}
+
+/// A REFUSED OPENING DRAWS NONE. The door never said yes, so there is no slot to release and no
+/// lease to give back — a node turning sessions away is not a node filling up with them.
+#[test]
+fn a_refused_opening_draws_no_request_slot_and_no_lease() {
+    let kernel = Kernel::new();
+    let units = TestUnits {
+        evidence: busbar_kernel::teller::Evidence {
+            upstream_candidate: true,
+            ..Default::default()
+        },
+        ..TestUnits::refusing(StepName::Approve, ReasonCode::ScopeDenied)
+    };
+    let cell = cell(&kernel);
+    let canary = Canary::new();
+    let gauge = ConcurrencyGauge::new();
+    let leases = LeaseCell::new();
+    let meter = AccrualMeter::new();
+    let ctx = ctx(6);
+
+    let (run, refusal) = match open_unit(
+        &kernel,
+        &units,
+        &ctx,
+        SessionPosture::Hold,
+        Run {
+            cell: &cell,
+            parent: None,
+            leases: &leases,
+            gauge: &gauge,
+            canary: &canary,
+            meter: &meter,
+        },
+    ) {
+        Opened::Held(_) => panic!("a refused opening is not a held session"),
+        Opened::Refused { run, refusal } => (run, refusal),
+    };
+    assert_eq!(
+        gauge.count(&IN_FLIGHT),
+        0,
+        "a session the door refused occupies nothing while it is being refused"
+    );
+    match refuse_unit(&kernel, &units, &ctx, run, refusal) {
+        Ended::AlreadySettled => panic!("nobody else had this to settle"),
+        Ended::Settled { requests, fee, .. } => {
+            assert_eq!(requests, 0, "a refused opening draws no request slot");
+            assert_eq!(
+                fee, 0,
+                "and posts no fee — the per-leg fees never get a leg"
+            );
+        }
+    }
+    assert_eq!(
+        gauge.count(&IN_FLIGHT),
+        0,
+        "and the gauge is exactly where the refusal found it"
+    );
+}
+
+/// THE LEASE SPANS THE SESSION, and the span is the point. It is taken by the opening, it is still
+/// taken across whatever the session does in between — this cell stands in for minutes of it — and
+/// it goes back at the session's end and at no other moment. N live sessions occupy N of the node's
+/// in-flight slots, which is the byte a deployment is sized by.
+#[test]
+fn the_in_flight_lease_spans_the_session_rather_than_one_leg() {
+    let kernel = Kernel::new();
+    let gauge = ConcurrencyGauge::new();
+
+    let first = reaching_an_upstream();
+    let cell_a = cell(&kernel);
+    let canary_a = Canary::new();
+    let leases_a = LeaseCell::new();
+    let meter_a = AccrualMeter::new();
+    let ctx_a = ctx(7);
+    let held_a = match open_unit(
+        &kernel,
+        &first,
+        &ctx_a,
+        SessionPosture::Hold,
+        Run {
+            cell: &cell_a,
+            parent: None,
+            leases: &leases_a,
+            gauge: &gauge,
+            canary: &canary_a,
+            meter: &meter_a,
+        },
+    ) {
+        Opened::Held(held) => held,
+        Opened::Refused { .. } => panic!("a passing plane's session opens"),
+    };
+    assert_eq!(gauge.count(&IN_FLIGHT), 1, "one live session, one slot");
+
+    // A SECOND SESSION OPENS WHILE THE FIRST IS STILL LIVE. This is the whole of what "for its
+    // whole life" means to a node: the two are counted together because both are running.
+    let second = reaching_an_upstream();
+    let cell_b = cell(&kernel);
+    let canary_b = Canary::new();
+    let leases_b = LeaseCell::new();
+    let meter_b = AccrualMeter::new();
+    let ctx_b = ctx(8);
+    let held_b = match open_unit(
+        &kernel,
+        &second,
+        &ctx_b,
+        SessionPosture::Hold,
+        Run {
+            cell: &cell_b,
+            parent: None,
+            leases: &leases_b,
+            gauge: &gauge,
+            canary: &canary_b,
+            meter: &meter_b,
+        },
+    ) {
+        Opened::Held(held) => held,
+        Opened::Refused { .. } => panic!("a passing plane's session opens"),
+    };
+    assert_eq!(
+        gauge.count(&IN_FLIGHT),
+        2,
+        "TWO live sessions occupy TWO of the node's in-flight slots"
+    );
+
+    let _ = ready(serve_held(
+        &kernel,
+        &first,
+        &ctx_a,
+        held_a,
+        &InPlace(&first),
+    ));
+    assert_eq!(
+        gauge.count(&IN_FLIGHT),
+        1,
+        "the first session's end gives back the first session's slot and nobody else's"
+    );
+    let _ = ready(serve_held(
+        &kernel,
+        &second,
+        &ctx_b,
+        held_b,
+        &InPlace(&second),
+    ));
+    assert_eq!(
+        gauge.count(&IN_FLIGHT),
+        0,
+        "and the node is empty only when the last session has ended"
+    );
+}
+
+/// A BINDING THAT DECLARED NOTHING SETTLES AT THE EXIT, which is what every binding has always done.
+///
+/// `Release` is the default, so this cell is also the statement that nothing shipped moves: the
+/// undeclared posture and the explicitly-released one are the same value, and the unit they open
+/// ends where the call that opened it ends.
+#[test]
+fn an_undeclared_binding_is_released_and_settles_at_this_exit() {
+    let kernel = Kernel::new();
+    let units = reaching_an_upstream();
+    let cell = cell(&kernel);
+    let canary = Canary::new();
+    let gauge = ConcurrencyGauge::new();
+    let leases = LeaseCell::new();
+    let meter = AccrualMeter::new();
+    let ctx = ctx(9);
+
+    assert_eq!(
+        SessionPosture::default(),
+        SessionPosture::Release,
+        "an undeclared binding is a RELEASED one — the default is what nothing shipped changing means"
+    );
+
+    let held = match open_unit(
+        &kernel,
+        &units,
+        &ctx,
+        SessionPosture::Release,
+        Run {
+            cell: &cell,
+            parent: None,
+            leases: &leases,
+            gauge: &gauge,
+            canary: &canary,
+            meter: &meter,
+        },
+    ) {
+        Opened::Held(held) => held,
+        Opened::Refused { .. } => panic!("a passing plane's request is admitted"),
+    };
+    assert_eq!(
+        held.settles_at(),
+        Settles::ThisExit,
+        "a released binding's unit gives the node's slot back when THIS call ends"
+    );
+    assert_eq!(
+        gauge.count(&IN_FLIGHT),
+        1,
+        "it occupies a slot while it runs"
+    );
+    match ready(serve_held(&kernel, &units, &ctx, held, &InPlace(&units))) {
+        Ended::AlreadySettled => panic!("nobody else had this unit to settle"),
+        Ended::Settled { requests, .. } => {
+            assert_eq!(requests, 1, "one request, settled at its own exit")
+        }
+    }
+    assert_eq!(
+        gauge.count(&IN_FLIGHT),
+        0,
+        "and the slot is back the moment the call that drew it ended"
+    );
+}
+
+/// THE POSTURE IS THE DECLARATION'S, NOT THE PLANE'S. Two different planes — two different `Units`
+/// implementations, answering with different doors' worth of detail — declared at the same posture
+/// are opened, held and settled by the identical bytes: the same steps in the same order, the same
+/// slot drawn, the same end. There is nothing in the kernel for a plane to vary here, which is the
+/// whole of what "no plane implements holding itself" means.
+#[test]
+fn two_different_planes_at_one_posture_are_opened_and_settled_identically() {
+    let kernel = Kernel::new();
+
+    // Two planes that differ in what their door says — one names capped groups on its yes, the other
+    // names none — and agree on nothing else except the posture their binding declared.
+    let plane_a = reaching_an_upstream();
+    let plane_b = TestUnits {
+        evidence: busbar_kernel::teller::Evidence {
+            upstream_candidate: true,
+            ..Default::default()
+        },
+        ..TestUnits::in_groups(&["a-capped-group"])
+    };
+
+    let mut ends = Vec::new();
+    let mut walks = Vec::new();
+    let mut settles = Vec::new();
+    for (key, units) in [(10u64, &plane_a), (11u64, &plane_b)] {
+        let cell = cell(&kernel);
+        let canary = Canary::new();
+        let gauge = ConcurrencyGauge::new();
+        let leases = LeaseCell::new();
+        let meter = AccrualMeter::new();
+        let ctx = ctx(key);
+        let held = match open_unit(
+            &kernel,
+            units,
+            &ctx,
+            SessionPosture::Hold,
+            Run {
+                cell: &cell,
+                parent: None,
+                leases: &leases,
+                gauge: &gauge,
+                canary: &canary,
+                meter: &meter,
+            },
+        ) {
+            Opened::Held(held) => held,
+            Opened::Refused { .. } => panic!("both planes' sessions open"),
+        };
+        settles.push(held.settles_at());
+        assert_eq!(
+            gauge.count(&IN_FLIGHT),
+            1,
+            "one session, one slot, either plane"
+        );
+        let requests = match ready(serve_held(&kernel, units, &ctx, held, &InPlace(units))) {
+            Ended::AlreadySettled => panic!("nobody else had this session to settle"),
+            Ended::Settled { requests, .. } => requests,
+        };
+        assert_eq!(
+            gauge.count(&IN_FLIGHT),
+            0,
+            "and it goes back at the session's end"
+        );
+        ends.push(requests);
+        walks.push((units.called(), units.doors()));
+    }
+
+    assert_eq!(
+        settles[0], settles[1],
+        "the same declared posture answers the same end for either plane"
+    );
+    assert_eq!(
+        walks[0], walks[1],
+        "the same ten steps, the same order, the same audit door — the plane varies none of it"
+    );
+    assert_eq!(
+        ends[0], ends[1],
+        "and the same one request slot is settled at the same one end"
+    );
 }
