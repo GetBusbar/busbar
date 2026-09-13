@@ -1256,3 +1256,9 @@ export = 1
 transport = 7
 loader = 1
 abi = 1
+
+[[minted_rule]]
+rule = "ts-reads-the-clock"
+commit = "247a16a07"
+max_zero_stamps = "0"
+max_default_derives = "1"
