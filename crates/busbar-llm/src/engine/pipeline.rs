@@ -422,7 +422,11 @@ pub(crate) async fn forward_with_pool_parsed_inner(
     let upstream_creds = EngineTables::new(rt).pool_upstream_creds(pool_name);
 
     drop(_prep);
-    run_failover_dispatch(
+    // Box::pin: the dispatch loop's future carries the full failover state (25 moved-in inputs + the
+    // per-hop attempt future). Held inline it re-inflated this fn's coroutine past the pinned forward
+    // bound; boxed, the loop's state lands on the heap and the forward future stays flat. The alloc is
+    // the extraction's own cost, not a per-attempt one — it fires once per request at dispatch entry.
+    Box::pin(run_failover_dispatch(
         host,
         rt,
         cands,
@@ -448,7 +452,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
         client_has_stream_options,
         gemini_json_array,
         body_is_json,
-    )
+    ))
     .await
 }
 
@@ -591,6 +595,10 @@ pub(crate) fn resolve_breaker_cfg(
 /// protocol serves every 1.x operation) keeps the caller's `Vec` as-is with no re-allocation; only
 /// when a lane lacks the handler do we pay the filter (an all-dropped non-empty set is the same
 /// no-handler 404; an initially-empty set passes through to the pool-empty 503 downstream).
+///
+/// (`result_large_err`: the `Err` is the plane's OWN finished response, carried by value because the
+/// caller returns it verbatim — the same by-value pattern as `attempt::assemble::build`.)
+#[allow(clippy::result_large_err)]
 fn filter_cands_by_op_support(
     rt: &Arc<NativeRuntime>,
     cands: Vec<WeightedLane>,
@@ -862,6 +870,7 @@ fn resolve_failover_limits(
 /// `cands`; else the last ordering gate wins, filtered to the surviving set). Returns the possibly
 /// shrunk `cands` and the reconciled gate order, or `Err(response)` on a reject / fail-closed exit.
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::result_large_err)]
 async fn reconcile_decision_gates(
     host: &Arc<dyn EngineHost>,
     rt: &Arc<NativeRuntime>,
@@ -1059,6 +1068,7 @@ async fn reconcile_decision_gates(
 /// `on_error`, persisting a RESTRICT by shrinking `cands`. Returns `(policy_order,
 /// chosen_policy_name, cands)`, or `Err(response)` on a reject / fail-closed exit.
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::result_large_err)]
 async fn resolve_policy_order(
     host: &Arc<dyn EngineHost>,
     rt: &Arc<NativeRuntime>,
