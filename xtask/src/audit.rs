@@ -244,6 +244,33 @@ fn files_cache() -> &'static FilesCache {
     C.get_or_init(|| std::sync::Mutex::new(BTreeMap::new()))
 }
 
+/// THE PROCESS-WIDE COMMIT-DISTANCE MEMO, keyed on `(repo, old, new)`.
+///
+/// `commits_between` shells `rev-list --count` and [`rows`] asks it once per scope — a couple of
+/// hundred processes for one gate run, and the self-test makes that run a dozen times over. Both
+/// endpoints are commits, immutable objects an overlay cannot move (a plant rewrites the register's
+/// text, not the history a commit id names), so `(repo, old, new)` always counts the same and is
+/// cached here rather than re-forked per scope per overlay.
+type BetweenCache = std::sync::Mutex<BTreeMap<String, Option<u64>>>;
+
+fn between_cache() -> &'static BetweenCache {
+    static C: std::sync::OnceLock<BetweenCache> = std::sync::OnceLock::new();
+    C.get_or_init(|| std::sync::Mutex::new(BTreeMap::new()))
+}
+
+/// THE PROCESS-WIDE PER-BLOB LOC MEMO, keyed on `(repo, blob oid)`.
+///
+/// A blob oid names immutable bytes, so its line count never changes; [`rows`] measures the whole
+/// HEAD tree's worth of blobs on every gate run and the self-test runs the gate a dozen times over
+/// the same tree. Caching per oid — not per oid SET — lets any run reuse the counts an earlier run
+/// already read, and only the blobs never seen before are asked of `cat-file` at all.
+type LocCache = std::sync::Mutex<BTreeMap<String, usize>>;
+
+fn loc_cache() -> &'static LocCache {
+    static C: std::sync::OnceLock<LocCache> = std::sync::OnceLock::new();
+    C.get_or_init(|| std::sync::Mutex::new(BTreeMap::new()))
+}
+
 impl Git {
     pub fn new(repo: impl Into<std::path::PathBuf>) -> Git {
         Git {
@@ -409,9 +436,22 @@ impl Git {
     }
 
     pub fn commits_between(&self, old: &str, new: &str) -> Option<u64> {
-        self.run(&["rev-list", "--count", &format!("{old}..{new}")])
+        let key = format!("{}\u{0}{}\u{0}{}", self.repo.display(), old, new);
+        if let Some(hit) = between_cache()
+            .lock()
             .ok()
-            .and_then(|s| s.trim().parse().ok())
+            .and_then(|m| m.get(&key).copied())
+        {
+            return hit;
+        }
+        let val = self
+            .run(&["rev-list", "--count", &format!("{old}..{new}")])
+            .ok()
+            .and_then(|s| s.trim().parse().ok());
+        if let Ok(mut m) = between_cache().lock() {
+            m.insert(key, val);
+        }
+        val
     }
 
     /// LOC per blob, through ONE `git cat-file --batch` process rather than one per file.
@@ -440,7 +480,28 @@ impl Git {
         if oids.is_empty() {
             return out;
         }
-        let requests: Vec<u8> = oids
+        // What this process has already counted is answered from the memo; only oids never seen
+        // before reach `cat-file` at all, so a self-test that measures the same HEAD tree a dozen
+        // times reads its blobs once.
+        let mut misses: BTreeSet<String> = BTreeSet::new();
+        if let Ok(cache) = loc_cache().lock() {
+            for o in oids {
+                match cache.get(&format!("{}\u{0}{}", self.repo.display(), o)) {
+                    Some(c) => {
+                        out.insert(o.clone(), *c);
+                    }
+                    None => {
+                        misses.insert(o.clone());
+                    }
+                }
+            }
+        } else {
+            misses = oids.clone();
+        }
+        if misses.is_empty() {
+            return out;
+        }
+        let requests: Vec<u8> = misses
             .iter()
             .flat_map(|o| o.bytes().chain(std::iter::once(b'\n')))
             .collect();
@@ -482,7 +543,12 @@ impl Git {
         });
 
         if let Ok(answered) = answered {
-            out = answered.value;
+            if let Ok(mut cache) = loc_cache().lock() {
+                for (o, c) in &answered.value {
+                    cache.insert(format!("{}\u{0}{}", self.repo.display(), o), *c);
+                }
+            }
+            out.extend(answered.value);
         }
         out
     }
