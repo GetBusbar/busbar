@@ -26,7 +26,7 @@
 
 use super::{recover, HostState};
 use busbar_plugin::hot::host::HostCtx;
-use busbar_plugin::hot::pod::POD_VERSION;
+use busbar_plugin::hot::pod::{decode_command, read_child_cwd, POD_VERSION};
 use busbar_plugin::hot::{EgressDesc, EgressHead, EgressId, EgressOpen, PipeId, StatusClass};
 use busbar_plugin::read_sized_field;
 use std::collections::HashMap;
@@ -133,30 +133,6 @@ fn close_and_remove(id: u64) -> bool {
     }
 }
 
-/// Decode the packed `program + argv` blob the [`EgressDesc::target`](EgressDesc) carries for a
-/// subprocess open: a sequence of records, each `u32 len` (LE) then `len` bytes. The FIRST record is
-/// the program path; the rest are argv. Malformed input yields `None` (fail-closed — an undecodable
-/// command is refused, never guessed into a spawn).
-///
-/// # Safety
-/// `(ptr, len)` MUST describe a live, initialized byte range for the call.
-unsafe fn decode_command(ptr: *const u8, len: usize) -> Option<(String, Vec<String>)> {
-    if ptr.is_null() || len == 0 {
-        return None;
-    }
-    // SAFETY: caller's contract — `(ptr, len)` is a live borrowed range.
-    let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
-    let mut tokens: Vec<String> = Vec::new();
-    let mut i = 0usize;
-    while i < bytes.len() {
-        let tok = busbar_plugin::read_len_prefixed(bytes, &mut i)?;
-        tokens.push(String::from_utf8_lossy(tok).into_owned());
-    }
-    let mut it = tokens.into_iter();
-    let program = it.next()?;
-    Some((program, it.collect()))
-}
-
 /// The result of resolving the child's environment: the fully-resolved `(name, value)` pairs the child
 /// will get, or a fail-closed refusal (a malformed record, or a secret reference the host could not
 /// resolve — the child is NOT spawned with a missing variable).
@@ -225,20 +201,6 @@ unsafe fn resolve_child_env(ptr: *const u8, len: usize) -> EnvOutcome {
     EnvOutcome::Ready(out)
 }
 
-/// Read the subprocess working directory off the [`EgressDesc`] tail: `Some(dir)` when a non-empty cwd
-/// was written, `None` (⇒ inherit the host's cwd) when the field is absent or empty. Read only behind
-/// the sized-struct guard so a sender that predates the tail leaves the host's cwd untouched.
-fn read_child_cwd(d: &EgressDesc) -> Option<String> {
-    let ptr = read_sized_field!(d, d.size, EgressDesc, cwd_ptr)?;
-    let len = read_sized_field!(d, d.size, EgressDesc, cwd_len)?;
-    if ptr.is_null() || len == 0 {
-        return None;
-    }
-    // SAFETY: a non-null `(cwd_ptr, cwd_len)` is a live borrowed range for the call (ABI discipline).
-    let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
-    Some(String::from_utf8_lossy(bytes).into_owned())
-}
-
 /// The HOST command allowlist: a program is admissible only when it is an ABSOLUTE path AND it is
 /// explicitly named on the HOST-supplied program allowlist. This is policy the HOST owns end to end —
 /// the plane's [`EgressDesc`] carries only DATA (never a capability), so the plane's `allowlist_scope`
@@ -292,7 +254,9 @@ pub(super) fn open_subprocess(
     // discard; inherit sends the child's diagnostics to the host's stderr where an operator reads
     // them), both read only behind the sized-struct guard so a sender that predates the tail keeps the
     // pre-enrichment shape (an empty environment, the host's cwd, a discarded stderr).
-    let cwd = read_child_cwd(d);
+    // SAFETY: `(cwd_ptr, cwd_len)`, when the guard reports it written, is a live borrowed
+    // range for the call (ABI discipline).
+    let cwd = unsafe { read_child_cwd(d) };
     let stderr = if read_sized_field!(d, d.size, EgressDesc, stderr_inherit) == Some(1) {
         Stdio::inherit()
     } else {

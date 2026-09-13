@@ -277,3 +277,120 @@ fn an_unknown_guard_class_byte_is_never_a_phantom_refusal() {
     );
     assert_eq!(GuardClass::from_u8(refused.class), GuardClass::Allowed);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// The `EgressDesc` subprocess-tail readers. Both were exercised only through the HOST
+// subprocess-open path before they moved here, so these are their first direct cells.
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+/// Pack a `u32 len` (LE) + bytes record sequence — the framing `decode_command` reads.
+fn pack_records(items: &[&str]) -> Vec<u8> {
+    let mut out = Vec::new();
+    for it in items {
+        out.extend_from_slice(&(it.len() as u32).to_le_bytes());
+        out.extend_from_slice(it.as_bytes());
+    }
+    out
+}
+
+#[test]
+fn decode_command_splits_program_from_argv() {
+    let blob = pack_records(&["/usr/bin/tool", "--flag", "value"]);
+    // SAFETY: `blob` is a live, initialized byte range for the call.
+    let got = unsafe { decode_command(blob.as_ptr(), blob.len()) };
+    assert_eq!(
+        got,
+        Some((
+            "/usr/bin/tool".to_string(),
+            vec!["--flag".to_string(), "value".to_string()]
+        )),
+        "the FIRST record is the program; the rest are argv"
+    );
+}
+
+#[test]
+fn decode_command_takes_a_lone_program_with_empty_argv() {
+    let blob = pack_records(&["/bin/echo"]);
+    // SAFETY: `blob` is a live, initialized byte range for the call.
+    let got = unsafe { decode_command(blob.as_ptr(), blob.len()) };
+    assert_eq!(got, Some(("/bin/echo".to_string(), Vec::new())));
+}
+
+#[test]
+fn decode_command_is_fail_closed_on_unreadable_input() {
+    // A null range and a zero-length range are both "no command", never an empty spawn.
+    // SAFETY: a null pointer is the documented null case; the len is ignored.
+    assert_eq!(unsafe { decode_command(core::ptr::null(), 0) }, None);
+    let blob = pack_records(&["/bin/echo"]);
+    // SAFETY: `blob` is live; a zero length is the documented empty case.
+    assert_eq!(unsafe { decode_command(blob.as_ptr(), 0) }, None);
+
+    // A TRUNCATED record: a length prefix promising more bytes than the block holds. An
+    // undecodable command is REFUSED, never guessed into a spawn with the bytes that did parse.
+    let mut truncated = pack_records(&["/bin/echo"]);
+    truncated.extend_from_slice(&64u32.to_le_bytes());
+    truncated.extend_from_slice(b"--partial");
+    // SAFETY: `truncated` is a live, initialized byte range for the call.
+    assert_eq!(
+        unsafe { decode_command(truncated.as_ptr(), truncated.len()) },
+        None,
+        "a truncated record refuses the whole command"
+    );
+
+    // An EMPTY block that is well-formed yields no records at all, so there is no program.
+    let empty = pack_records(&[]);
+    assert!(empty.is_empty());
+}
+
+/// A zeroed `EgressDesc` advertising its full size — the base a cwd cell fills in.
+fn blank_egress_desc() -> EgressDesc {
+    // SAFETY: `EgressDesc` is a `repr(C)` POD of integers and raw pointers; an all-zero bit
+    // pattern is a valid (null-pointer, zero-length) value for every field.
+    let mut d: EgressDesc = unsafe { core::mem::zeroed() };
+    d.size = core::mem::size_of::<EgressDesc>() as u32;
+    d
+}
+
+#[test]
+fn read_child_cwd_reads_a_written_working_directory() {
+    let cwd = "/var/run/child";
+    let mut d = blank_egress_desc();
+    d.cwd_ptr = cwd.as_ptr();
+    d.cwd_len = cwd.len();
+    // SAFETY: `cwd` outlives the call, so `(cwd_ptr, cwd_len)` is a live borrowed range.
+    assert_eq!(unsafe { read_child_cwd(&d) }, Some(cwd.to_string()));
+}
+
+#[test]
+fn read_child_cwd_reports_absent_for_an_empty_or_null_field() {
+    let mut d = blank_egress_desc();
+    // A zeroed tail is a null pointer and a zero length ⇒ inherit the host's cwd.
+    // SAFETY: the field is null, which the reader checks before any dereference.
+    assert_eq!(unsafe { read_child_cwd(&d) }, None);
+
+    // A non-null pointer with a ZERO length is equally "inherit", not an empty-string cwd — an
+    // empty working directory is not a directory a child could be started in.
+    let cwd = "/var/run/child";
+    d.cwd_ptr = cwd.as_ptr();
+    d.cwd_len = 0;
+    // SAFETY: the length is zero, so the reader returns before any dereference.
+    assert_eq!(unsafe { read_child_cwd(&d) }, None);
+}
+
+#[test]
+fn read_child_cwd_hides_the_tail_from_a_sender_that_predates_it() {
+    // THE SIZED-STRUCT GUARD: a sender whose advertised `size` stops before `cwd_ptr` never wrote
+    // the field, so the host must NOT read it — it leaves the host's own cwd untouched instead of
+    // reading whatever memory follows a shorter struct.
+    let cwd = "/var/run/child";
+    let mut d = blank_egress_desc();
+    d.cwd_ptr = cwd.as_ptr();
+    d.cwd_len = cwd.len();
+    d.size = core::mem::offset_of!(EgressDesc, cwd_ptr) as u32;
+    // SAFETY: the guard refuses the field on the advertised size, so nothing is dereferenced.
+    assert_eq!(
+        unsafe { read_child_cwd(&d) },
+        None,
+        "a pre-minor-8 sender's cwd is hidden, not read past"
+    );
+}

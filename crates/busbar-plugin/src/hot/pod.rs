@@ -1141,6 +1141,54 @@ pub unsafe fn decode_usage_units(usage: *const Usage) -> std::collections::BTree
     out
 }
 
+/// Decode the packed `program + argv` blob the [`EgressDesc::target_ptr`] range carries for a
+/// subprocess open: a sequence of records, each `u32 len` (LE) then `len` bytes. The FIRST record is
+/// the program path; the rest are argv. Malformed input yields `None` (fail-closed — an undecodable
+/// command is refused WHOLE, never guessed into a spawn from the records that did parse).
+///
+/// The framing is [`crate::read_len_prefixed`], the ONE definition of a length-prefixed record on
+/// this ABI; this reader is the `EgressDesc` tail's use of it, and lives with the POD whose field it
+/// reads rather than on whichever host happens to spawn the child.
+///
+/// # Safety
+/// `(ptr, len)` MUST describe a live, initialized byte range for the call.
+#[must_use]
+pub unsafe fn decode_command(ptr: *const u8, len: usize) -> Option<(String, Vec<String>)> {
+    if ptr.is_null() || len == 0 {
+        return None;
+    }
+    // SAFETY: caller's contract — `(ptr, len)` is a live borrowed range.
+    let bytes = unsafe { core::slice::from_raw_parts(ptr, len) };
+    let mut tokens: Vec<String> = Vec::new();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        let tok = crate::read_len_prefixed(bytes, &mut i)?;
+        tokens.push(String::from_utf8_lossy(tok).into_owned());
+    }
+    let mut it = tokens.into_iter();
+    let program = it.next()?;
+    Some((program, it.collect()))
+}
+
+/// Read the subprocess working directory off the [`EgressDesc`] tail: `Some(dir)` when a non-empty cwd
+/// was written, `None` (⇒ inherit the host's cwd) when the field is absent or empty. Read only behind
+/// the sized-struct guard so a sender that predates the tail leaves the host's cwd untouched.
+///
+/// # Safety
+/// When the guard reports the field written, `(cwd_ptr, cwd_len)` MUST in turn describe a live,
+/// initialized byte range for the call (the ABI borrow discipline).
+#[must_use]
+pub unsafe fn read_child_cwd(d: &EgressDesc) -> Option<String> {
+    let ptr = crate::read_sized_field!(d, d.size, EgressDesc, cwd_ptr)?;
+    let len = crate::read_sized_field!(d, d.size, EgressDesc, cwd_len)?;
+    if ptr.is_null() || len == 0 {
+        return None;
+    }
+    // SAFETY: a non-null `(cwd_ptr, cwd_len)` is a live borrowed range for the call (ABI discipline).
+    let bytes = unsafe { core::slice::from_raw_parts(ptr, len) };
+    Some(String::from_utf8_lossy(bytes).into_owned())
+}
+
 /// A [`Usage`] tied to the lifetime of its borrowed attribution words so the borrows can't dangle.
 pub struct UsageGuard<'a> {
     usage: Usage,
