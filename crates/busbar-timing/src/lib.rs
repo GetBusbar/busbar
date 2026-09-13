@@ -125,7 +125,7 @@ pub use imp::{dump, dump_scoped, enabled, record, reset, scope, timer, Timer};
 #[cfg(feature = "timing")]
 mod imp {
     use std::collections::HashMap;
-    use std::panic::{catch_unwind, AssertUnwindSafe};
+    use std::panic::catch_unwind;
     use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
     use std::sync::{Arc, Mutex, OnceLock, Weak};
     use std::time::Instant;
@@ -402,8 +402,10 @@ mod imp {
     /// broken stderr on a shutting-down process is not exotic, and a poisoned lock elsewhere in the
     /// dump path would do it too). Catching here keeps a failed diagnostic print at process exit a
     /// failed diagnostic print, rather than an abort in the last moments of an otherwise clean run.
+    /// `dump` is a bare fn item with no captured state, so it is `UnwindSafe` on its own merits —
+    /// no `AssertUnwindSafe` wrapper is needed or wanted here.
     extern "C" fn timing_atexit() {
-        let _ = catch_unwind(AssertUnwindSafe(dump));
+        let _ = catch_unwind(dump);
     }
 
     /// Record `nanos` against `name`. No-op unless [`enabled`]. The recording cost is: a relaxed
