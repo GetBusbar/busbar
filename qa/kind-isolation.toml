@@ -1317,6 +1317,13 @@ cite = "none. ARCHITECTURE.md 1.1 — three blind axes, one small kernel: a crat
 why = "crates of kind unit naming unit vocabulary: unit package names in any spelling, the kind-qualified id (unit-<id>), and — where unit is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
 drain = "delete the unit name from the unit crate: a unit reaches unit through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
 
+# RAISED by ROOT COMPOSITION (A2A-NODE, 1.6.0): `root/node_a2a.rs` is the composition's own
+# declaration for the A2A plane and the node its serving entry reaches — every field of
+# `busbar_a2a::PLANE_DECL` copied by identity, `routes` replaced by a root fn that swaps the served
+# rows' handlers with `(path, method, auth)` verbatim, and the loop `root/units_a2a.rs`'s twelve arms
+# never had. Proved by `root/tests/node_a2a.rs`. Every word counted is the root NAMING WHAT IT
+# MOUNTS, which is what a composition root is for (ARCHITECTURE.md 1.1). See the declaration in
+# qa/construction.toml.
 [[cell]]
 # RAISED by ROOT COMPOSITION (BIND-1, 1.6.0): the node's ONE store handle, bound by the root
 # (`root/store.rs`) and driven through a plane's record legs by `root/tests/store.rs`. See the
@@ -1326,7 +1333,7 @@ drain = "delete the unit name from the unit crate: a unit reaches unit through t
 # cells switched onto both. See the declarations in qa/construction.toml.
 crate = "busbar"
 kind = "api"
-count = "161"
+count = "166"
 
 [[cell]]
 crate = "busbar"
@@ -1340,13 +1347,20 @@ count = "25"
 # is that file and its cells, nothing else. Net, not gross: the caps and kernel spellings were taken
 # through the file's existing imports rather than fully qualified, which is why the rise is 12 and not
 # larger. The count is TODAY'S MEASUREMENT, exact in both directions.
+# RAISED by ROOT COMPOSITION (A2A-NODE, 1.6.0): `root/node_a2a.rs` is the composition's own
+# declaration for the A2A plane and the node its serving entry reaches — every field of
+# `busbar_a2a::PLANE_DECL` copied by identity, `routes` replaced by a root fn that swaps the served
+# rows' handlers with `(path, method, auth)` verbatim, and the loop `root/units_a2a.rs`'s twelve arms
+# never had. Proved by `root/tests/node_a2a.rs`. Every word counted is the root NAMING WHAT IT
+# MOUNTS, which is what a composition root is for (ARCHITECTURE.md 1.1). See the declaration in
+# qa/construction.toml.
 [[cell]]
 # RAISED again by ROOT COMPOSITION (BIND-1, 1.6.0): the ONE resolver (`root/bindings.rs`) and
 # the kind-neutral record-leg runner it hands back (`root/store.rs::PlaneRecords`), with MCP-T's
 # cells switched onto both. See the declarations in qa/construction.toml.
 crate = "busbar"
 kind = "caps"
-count = "318"
+count = "332"
 
 [[cell]]
 crate = "busbar"
@@ -1365,10 +1379,17 @@ count = "18"
 # is that file and its cells, nothing else. Net, not gross: the caps and kernel spellings were taken
 # through the file's existing imports rather than fully qualified, which is why the rise is 1 and not
 # larger. The count is TODAY'S MEASUREMENT, exact in both directions.
+# RAISED by ROOT COMPOSITION (A2A-NODE, 1.6.0): `root/node_a2a.rs` is the composition's own
+# declaration for the A2A plane and the node its serving entry reaches — every field of
+# `busbar_a2a::PLANE_DECL` copied by identity, `routes` replaced by a root fn that swaps the served
+# rows' handlers with `(path, method, auth)` verbatim, and the loop `root/units_a2a.rs`'s twelve arms
+# never had. Proved by `root/tests/node_a2a.rs`. Every word counted is the root NAMING WHAT IT
+# MOUNTS, which is what a composition root is for (ARCHITECTURE.md 1.1). See the declaration in
+# qa/construction.toml.
 [[cell]]
 crate = "busbar"
 kind = "control"
-count = "1101"
+count = "1107"
 
 [[cell]]
 crate = "busbar"
@@ -1382,14 +1403,28 @@ count = "5"
 # is that file and its cells, nothing else. Net, not gross: the caps and kernel spellings were taken
 # through the file's existing imports rather than fully qualified, which is why the rise is 4 and not
 # larger. The count is TODAY'S MEASUREMENT, exact in both directions.
+# RAISED by ROOT COMPOSITION (A2A-NODE, 1.6.0): `root/node_a2a.rs` is the composition's own
+# declaration for the A2A plane and the node its serving entry reaches — every field of
+# `busbar_a2a::PLANE_DECL` copied by identity, `routes` replaced by a root fn that swaps the served
+# rows' handlers with `(path, method, auth)` verbatim, and the loop `root/units_a2a.rs`'s twelve arms
+# never had. Proved by `root/tests/node_a2a.rs`. Every word counted is the root NAMING WHAT IT
+# MOUNTS, which is what a composition root is for (ARCHITECTURE.md 1.1). See the declaration in
+# qa/construction.toml.
 [[cell]]
 # RAISED again by ROOT COMPOSITION (BIND-1, 1.6.0): the ONE resolver (`root/bindings.rs`) and
 # the kind-neutral record-leg runner it hands back (`root/store.rs::PlaneRecords`), with MCP-T's
 # cells switched onto both. See the declarations in qa/construction.toml.
 crate = "busbar"
 kind = "kernel"
-count = "166"
+count = "183"
 
+# RAISED by ROOT COMPOSITION (A2A-NODE, 1.6.0): `root/node_a2a.rs` is the composition's own
+# declaration for the A2A plane and the node its serving entry reaches — every field of
+# `busbar_a2a::PLANE_DECL` copied by identity, `routes` replaced by a root fn that swaps the served
+# rows' handlers with `(path, method, auth)` verbatim, and the loop `root/units_a2a.rs`'s twelve arms
+# never had. Proved by `root/tests/node_a2a.rs`. Every word counted is the root NAMING WHAT IT
+# MOUNTS, which is what a composition root is for (ARCHITECTURE.md 1.1). See the declaration in
+# qa/construction.toml.
 [[cell]]
 # RAISED by ROOT COMPOSITION (BIND-1, 1.6.0): the node's ONE store handle, bound by the root
 # (`root/store.rs`) and driven through a plane's record legs by `root/tests/store.rs`. See the
@@ -1399,7 +1434,7 @@ count = "166"
 # cells switched onto both. See the declarations in qa/construction.toml.
 crate = "busbar"
 kind = "legacy"
-count = "97"
+count = "99"
 
 # RAISED by ROOT COMPOSITION (MCP-T, 1.6.0): root/units_mcp.rs gains McpDraft/McpBindings/McpUnits and
 # the `impl Units` behind them, so an MCP request enters the Teller loop and the seven steps are served
@@ -1408,6 +1443,13 @@ count = "97"
 # is that file and its cells, nothing else. Net, not gross: the caps and kernel spellings were taken
 # through the file's existing imports rather than fully qualified, which is why the rise is 51 and not
 # larger. The count is TODAY'S MEASUREMENT, exact in both directions.
+# RAISED by ROOT COMPOSITION (A2A-NODE, 1.6.0): `root/node_a2a.rs` is the composition's own
+# declaration for the A2A plane and the node its serving entry reaches — every field of
+# `busbar_a2a::PLANE_DECL` copied by identity, `routes` replaced by a root fn that swaps the served
+# rows' handlers with `(path, method, auth)` verbatim, and the loop `root/units_a2a.rs`'s twelve arms
+# never had. Proved by `root/tests/node_a2a.rs`. Every word counted is the root NAMING WHAT IT
+# MOUNTS, which is what a composition root is for (ARCHITECTURE.md 1.1). See the declaration in
+# qa/construction.toml.
 [[cell]]
 # RAISED by ROOT COMPOSITION (BIND-1, 1.6.0): the node's ONE store handle, bound by the root
 # (`root/store.rs`) and driven through a plane's record legs by `root/tests/store.rs`. See the
@@ -1417,7 +1459,7 @@ count = "97"
 # cells switched onto both. See the declarations in qa/construction.toml.
 crate = "busbar"
 kind = "plane"
-count = "2000"
+count = "2117"
 
 [[cell]]
 # RAISED by ROOT COMPOSITION (BIND-1, 1.6.0): the node's ONE store handle, bound by the root
@@ -1437,10 +1479,17 @@ crate = "busbar"
 kind = "store"
 count = "29"
 
+# RAISED by ROOT COMPOSITION (A2A-NODE, 1.6.0): `root/node_a2a.rs` is the composition's own
+# declaration for the A2A plane and the node its serving entry reaches — every field of
+# `busbar_a2a::PLANE_DECL` copied by identity, `routes` replaced by a root fn that swaps the served
+# rows' handlers with `(path, method, auth)` verbatim, and the loop `root/units_a2a.rs`'s twelve arms
+# never had. Proved by `root/tests/node_a2a.rs`. Every word counted is the root NAMING WHAT IT
+# MOUNTS, which is what a composition root is for (ARCHITECTURE.md 1.1). See the declaration in
+# qa/construction.toml.
 [[cell]]
 crate = "busbar"
 kind = "substrate"
-count = "9"
+count = "10"
 
 # RAISED by ROOT COMPOSITION (MCP-T, 1.6.0): root/units_mcp.rs gains McpDraft/McpBindings/McpUnits and
 # the `impl Units` behind them, so an MCP request enters the Teller loop and the seven steps are served
@@ -1449,10 +1498,17 @@ count = "9"
 # is that file and its cells, nothing else. Net, not gross: the caps and kernel spellings were taken
 # through the file's existing imports rather than fully qualified, which is why the rise is 6 and not
 # larger. The count is TODAY'S MEASUREMENT, exact in both directions.
+# RAISED by ROOT COMPOSITION (A2A-NODE, 1.6.0): `root/node_a2a.rs` is the composition's own
+# declaration for the A2A plane and the node its serving entry reaches — every field of
+# `busbar_a2a::PLANE_DECL` copied by identity, `routes` replaced by a root fn that swaps the served
+# rows' handlers with `(path, method, auth)` verbatim, and the loop `root/units_a2a.rs`'s twelve arms
+# never had. Proved by `root/tests/node_a2a.rs`. Every word counted is the root NAMING WHAT IT
+# MOUNTS, which is what a composition root is for (ARCHITECTURE.md 1.1). See the declaration in
+# qa/construction.toml.
 [[cell]]
 crate = "busbar"
 kind = "transport"
-count = "949"
+count = "959"
 
 # RAISED by ROOT COMPOSITION (MCP-T, 1.6.0): root/units_mcp.rs gains McpDraft/McpBindings/McpUnits and
 # the `impl Units` behind them, so an MCP request enters the Teller loop and the seven steps are served
@@ -1461,13 +1517,20 @@ count = "949"
 # is that file and its cells, nothing else. Net, not gross: the caps and kernel spellings were taken
 # through the file's existing imports rather than fully qualified, which is why the rise is 8 and not
 # larger. The count is TODAY'S MEASUREMENT, exact in both directions.
+# RAISED by ROOT COMPOSITION (A2A-NODE, 1.6.0): `root/node_a2a.rs` is the composition's own
+# declaration for the A2A plane and the node its serving entry reaches — every field of
+# `busbar_a2a::PLANE_DECL` copied by identity, `routes` replaced by a root fn that swaps the served
+# rows' handlers with `(path, method, auth)` verbatim, and the loop `root/units_a2a.rs`'s twelve arms
+# never had. Proved by `root/tests/node_a2a.rs`. Every word counted is the root NAMING WHAT IT
+# MOUNTS, which is what a composition root is for (ARCHITECTURE.md 1.1). See the declaration in
+# qa/construction.toml.
 [[cell]]
 # RAISED again by ROOT COMPOSITION (BIND-1, 1.6.0): the ONE resolver (`root/bindings.rs`) and
 # the kind-neutral record-leg runner it hands back (`root/store.rs::PlaneRecords`), with MCP-T's
 # cells switched onto both. See the declarations in qa/construction.toml.
 crate = "busbar"
 kind = "unit"
-count = "1229"
+count = "1287"
 
 [[cell]]
 crate = "busbar-a2a"
