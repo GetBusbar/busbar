@@ -21,7 +21,7 @@ use std::sync::Mutex;
 
 use busbar_caps::{Route, UnitToken};
 
-use crate::pool::Member;
+use crate::pool::{ambiguous, Arity, Member};
 use crate::ports::{Admit, Breaker, Capacity, DestinationId, Permit, Unavailable};
 
 /// The request's own state across the whole walk: the deadline, everything it has already tried,
@@ -39,6 +39,13 @@ pub struct RequestCtx {
     excluded_reasons: Vec<(DestinationId, Unavailable)>,
     /// Every pool this request has already routed through, for the spill loop guard.
     visited_pools: HashSet<String>,
+    /// The candidates a `One`-arity binding could not choose between. Empty on every ordinary
+    /// pick; set only when the fitting set held more than one member and the binding admits one.
+    /// Replaced wholesale each pick, exactly as [`Self::excluded_reasons`] is, so a spill reports
+    /// its own ambiguity and never a stale earlier one — and read by the caller's AUDIT step, which
+    /// records the ids the way it records every other refusal context. The refusal itself names no
+    /// amount: an ambiguity is about a set, and a refused request is unpriced.
+    ambiguous: Vec<DestinationId>,
 }
 
 impl RequestCtx {
@@ -51,6 +58,7 @@ impl RequestCtx {
             excluded: HashSet::new(),
             excluded_reasons: Vec::new(),
             visited_pools: HashSet::new(),
+            ambiguous: Vec::new(),
         }
     }
 
@@ -88,6 +96,13 @@ impl RequestCtx {
     #[must_use]
     pub fn excluded_reasons(&self) -> &[(DestinationId, Unavailable)] {
         &self.excluded_reasons
+    }
+
+    /// The candidates a `One`-arity pick could not choose between, for the AUDIT step. Empty unless
+    /// the last pick found the fitting set ambiguous under a `One`-arity binding.
+    #[must_use]
+    pub fn ambiguous(&self) -> &[DestinationId] {
+        &self.ambiguous
     }
 
     /// Mark a pool as routed through, for the spill loop guard.
@@ -309,6 +324,10 @@ pub struct PickInput<'a, 't> {
     pub affinity: Option<u64>,
     /// A ranking hook's preference, where one was resolved.
     pub preference: Preference<'a>,
+    /// How many of the fitting candidates the binding admits. `Any` is the shipped default and
+    /// leaves the walk exactly as it was; `One` refuses a fitting set of more than one as an
+    /// ambiguity rather than choosing quietly.
+    pub arity: Arity,
     /// This second, read once for the whole pick.
     pub now: u64,
     /// The capability token proving the loop is at the route step for this unit right now
@@ -327,6 +346,20 @@ pub struct PickInput<'a, 't> {
 /// keeping them out of this loop is what makes "the pick never blocks" a structural fact rather
 /// than a rule someone has to remember.
 pub fn pick_among<'a>(input: &PickInput<'a, '_>, ctx: &mut RequestCtx) -> Option<Picked<'a>> {
+    // The arity posture, decided once against the fitting set before the order is walked. `Any` —
+    // every pool that has ever shipped — does no extra work and reaches the walk unchanged. `One`
+    // is the only posture that can refuse here: a fitting set of more than one is an ambiguity the
+    // binding declared it will not resolve by guessing, so the walk is not entered and the
+    // candidates are handed to the AUDIT step. `TheOne` and `NoCandidate` fall through — the order
+    // admits the single fitting member, or finds nothing, exactly as it did before arity existed.
+    ctx.ambiguous.clear();
+    if matches!(input.arity, Arity::One) {
+        ctx.ambiguous = ambiguous(input.arity, &fitting_candidates(input, ctx));
+        if !ctx.ambiguous.is_empty() {
+            return None;
+        }
+    }
+
     let mut order = Order::new(input, ctx);
     let mut passed_over: Vec<(DestinationId, Unavailable)> = Vec::new();
     let mut refused: Option<usize> = None;
@@ -355,6 +388,28 @@ pub fn pick_among<'a>(input: &PickInput<'a, '_>, ctx: &mut RequestCtx) -> Option
         permit: admitted.permit,
         probe: admitted.probe,
     })
+}
+
+/// The members that FIT this hop, for the arity decision: not already tried, not drained, usable
+/// and ready. It is the same health filter the order applies before it spends a turn (steps 3 and
+/// 4 of [`Order::next`]) minus the order's own local burn set, which is empty on the pick where
+/// arity is decided. Capacity is deliberately NOT consulted: a member at capacity still FITS —
+/// arity is about how many candidates a binding admits, not how many have a free slot this instant,
+/// and folding capacity in would make an ambiguity appear and vanish with load.
+fn fitting_candidates(input: &PickInput<'_, '_>, ctx: &RequestCtx) -> Vec<DestinationId> {
+    input
+        .members
+        .iter()
+        .filter(|member| {
+            member.weight != 0
+                && !ctx.is_excluded(member.destination)
+                && input.breaker.admissible(member.destination)
+                && input
+                    .breaker
+                    .ready(input.pool, member.destination, input.now, input.token)
+        })
+        .map(|member| member.destination)
+        .collect()
 }
 
 /// A successful admission: the breaker said yes and a slot was taken.

@@ -246,14 +246,18 @@ async fn handle_fallback_pool<'a>(
                 members: &members,
                 affinity: None,
                 preference: None,
+                arity: pool.failover.arity,
                 now,
                 token: request.token,
             },
             ctx,
         );
         let Some(pick) = pick else {
-            // The spill target is itself exhausted: consult ITS terminal. The visited set is what
-            // guarantees this recursion ends.
+            // The spill target found nowhere to send — exhausted, or a `One`-arity target whose
+            // fitting set the pick refused to choose between (it returns `None` with the ambiguous
+            // ids already on the context). Either way this degraded overflow path consults the
+            // target's own terminal rather than minting a second refusal shape; the visited set is
+            // what guarantees this recursion ends.
             return Box::pin(handle_exhaustion_for_pool(request, ctx, pool, &members)).await;
         };
         let Some(member) = members.iter().find(|m| m.destination == pick.destination) else {

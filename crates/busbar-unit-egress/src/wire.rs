@@ -41,6 +41,15 @@ pub const DETAIL_INVALID_JSON: &str = "We could not parse the JSON body of your 
 pub const DETAIL_RESTRICT_NO_LANE: &str =
     "No upstream satisfies a required gate's restriction. Please retry shortly.";
 
+/// The words a shed says when a `One`-arity binding's fitting set held more than one candidate.
+///
+/// The client is told only that the request could not be routed to a single destination; WHICH
+/// candidates were ambiguous is operator-facing evidence and goes to the AUDIT step, never onto the
+/// wire. The refusal names no amount: an ambiguity is about a set, and a refused request is
+/// unpriced.
+pub const DETAIL_AMBIGUOUS: &str =
+    "The request could not be routed: more than one destination fits a binding that admits one.";
+
 /// The status every shed above carries.
 pub const STATUS_SERVICE_UNAVAILABLE: u16 = 503;
 
@@ -119,6 +128,22 @@ impl Shed {
             detail: DETAIL_RESTRICT_NO_LANE,
             retry_after_secs: None,
             gate_rejected: true,
+        }
+    }
+
+    /// A `One`-arity binding's fitting set held more than one candidate. No wait is advertised:
+    /// retrying an unchanged binding against an unchanged set produces the same ambiguity, so a
+    /// `Retry-After` would only invite a client to re-earn the same refusal. The ambiguous ids
+    /// travel to the AUDIT step on the request context, not in this shed — the shed carries no
+    /// amount and no list, exactly as the refusal ruling requires.
+    #[must_use]
+    pub fn ambiguous() -> Self {
+        Self {
+            status: STATUS_INTERNAL_ERROR,
+            kind: KIND_API_ERROR,
+            detail: DETAIL_AMBIGUOUS,
+            retry_after_secs: None,
+            gate_rejected: false,
         }
     }
 

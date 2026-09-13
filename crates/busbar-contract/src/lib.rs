@@ -30,8 +30,7 @@ pub use bounded::{
     MAX_SESSION_UPSTREAMS, MAX_USAGE_LINES,
 };
 pub use dest::{
-    decide_arity, Arity, ArityVerdict, AuthDecoration, CandidateIdx, CandidateSet, ClientMode,
-    DestinationFacts, DestinationId,
+    AuthDecoration, CandidateIdx, CandidateSet, ClientMode, DestinationFacts, DestinationId,
     EgressBody, Leg, OnEmpty, Permutation, RoutePlan, SecretOnce, SecretSlot, TransportKeyHandle,
     UpstreamAddress, VerifiedDestination, VetoCode,
 };

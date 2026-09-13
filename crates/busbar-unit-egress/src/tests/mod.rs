@@ -11,6 +11,7 @@
 mod harness;
 
 mod allocation_tests;
+mod arity_tests;
 mod deadline_tests;
 mod exhaustion_tests;
 mod pick_order_tests;
@@ -45,6 +46,9 @@ pub(crate) struct Node {
     pub timeout_secs: u64,
     pub affinity: Option<u64>,
     pub preference: Option<Vec<DestinationId>>,
+    /// The arity posture the direct [`Node::pick`] helper drives. `Any` by default, exactly as a
+    /// shipped binding's is; a test that wants the `One` posture sets it.
+    pub arity: crate::pool::Arity,
     pub wants_stream: bool,
     /// The envelope field the lane name is carried in, for the lane cross-check. `None` by
     /// default: most tests have no lane field to check and the cross-check is a no-op for them.
@@ -69,6 +73,7 @@ impl Node {
             timeout_secs: 120,
             affinity: None,
             preference: None,
+            arity: crate::pool::Arity::Any,
             wants_stream: false,
             lane_field: None,
         }
@@ -197,6 +202,7 @@ impl Node {
                 members,
                 affinity: self.affinity,
                 preference: self.preference.as_deref(),
+                arity: self.arity,
                 now: self.clock.now_secs(),
                 token: &token,
             },

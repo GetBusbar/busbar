@@ -10,7 +10,83 @@
 //! decides anything — the deciding is in the walk, the order and the terminals, each of which
 //! reads these values and none of which invents one.
 
+use busbar_contract::CandidateIdx;
+
 use crate::ports::DestinationId;
+
+/// HOW MANY CANDIDATES A BINDING ADMITS — the ROUTE step's pick posture as binding data.
+///
+/// A pick over a set has always had two honest postures and only one of them was ever written
+/// down. `Any` is the one every pool has: several members can serve this work, choosing between
+/// them is the pick's job, and which one it chose is not something the caller needed to be asked
+/// about. `One` is the other: the binding declares that exactly one of its candidates may serve a
+/// request, and a set that offers two has not narrowed to an answer — it has produced an ambiguity,
+/// and quietly taking the first of them would send a caller's work somewhere the caller did not
+/// choose with no way to tell it happened.
+///
+/// It lives with [`Failover`], the binding it is a field of: the posture is a property of what was
+/// bound, not of the request that arrived, and no plane reads it — only this unit's own pick does,
+/// so it is unit-internal and never plugin-visible contract surface.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum Arity {
+    /// Any one of the fitting candidates may serve. The pick chooses among them.
+    #[default]
+    Any,
+    /// Exactly one candidate may fit. More than one is an ambiguity, not a choice.
+    One,
+}
+
+/// What [`decide_arity`] found about a fitting set.
+///
+/// The arms are deliberately not a `Result`: three of the four are ordinary and only one of them
+/// is a refusal. `NoCandidate` is NOT a new refusal — it is the no-candidate answer every pick
+/// already had, named here so the caller can see that arity did not invent it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ArityVerdict {
+    /// The binding admits any of them; the pick's own ordering decides, exactly as before.
+    ChooseAmong,
+    /// The binding admits one and exactly one fits.
+    TheOne(CandidateIdx),
+    /// The binding admits one and these fit. The refusal NAMES them: an operator shown "ambiguous"
+    /// with no list has been told that something is wrong and not what.
+    Ambiguous(Vec<CandidateIdx>),
+    /// Nothing fits. The caller's existing no-candidate refusal, unchanged.
+    NoCandidate,
+}
+
+/// THE ARITY DECISION, WRITTEN ONCE.
+///
+/// The pick asks this one question of its own fitting set, so it is answered here — once, beside
+/// the binding both the walk and the wait terminal read — rather than open-coded at each call,
+/// where the second copy is the one that drifts. It is pure, it allocates only on the ambiguity
+/// arm, and it names no amount, no budget and no price: an ambiguity is a refusal about a SET, and
+/// a refused request is unpriced.
+#[must_use]
+pub fn decide_arity(arity: Arity, fitting: &[CandidateIdx]) -> ArityVerdict {
+    match (arity, fitting) {
+        (Arity::Any, _) => ArityVerdict::ChooseAmong,
+        (Arity::One, []) => ArityVerdict::NoCandidate,
+        (Arity::One, [only]) => ArityVerdict::TheOne(*only),
+        (Arity::One, many) => ArityVerdict::Ambiguous(many.to_vec()),
+    }
+}
+
+/// The candidates a binding could not choose between, or empty when the fitting set is a choice
+/// (`Any`, or a `One` set of exactly zero or one). The pick calls this over its own fitting set,
+/// so [`decide_arity`] is consulted from the pick site while its candidate-index plumbing stays
+/// here. The ids come back in the fitting order, for the AUDIT step.
+#[must_use]
+pub fn ambiguous(arity: Arity, fitting: &[DestinationId]) -> Vec<DestinationId> {
+    let idxs: Vec<CandidateIdx> = (0..fitting.len())
+        .map(|i| CandidateIdx(u16::try_from(i).unwrap_or(u16::MAX)))
+        .collect();
+    match decide_arity(arity, &idxs) {
+        ArityVerdict::Ambiguous(candidates) => {
+            candidates.iter().map(|c| fitting[c.0 as usize]).collect()
+        }
+        _ => Vec::new(),
+    }
+}
 
 /// The walk's deadline when the pool names none. Whole seconds, and the deadline is checked before
 /// every attempt including a streaming one.
@@ -62,6 +138,13 @@ pub struct Failover {
     pub timeout_secs: u64,
     /// How many hops after the first the walk may take.
     pub max_hops: usize,
+    /// How many of the fitting candidates this binding admits — the ROUTE step's pick posture as
+    /// contract data. `Any` (the default) is every pool that has ever shipped: several members may
+    /// serve and choosing between them is the pick's own job. `One` is the other honest posture —
+    /// the binding declares that exactly one candidate may serve, so a fitting set of more than one
+    /// is an ambiguity the walk refuses rather than a choice it makes quietly. It is data on the
+    /// binding, not a flag on the request, because the posture is a property of what was bound.
+    pub arity: Arity,
     /// Member names this pool will never select, primary or failover. They are removed from the
     /// membership rather than marked as already-tried: a consumer reading the tried set could not
     /// otherwise tell a blocklisted member from one this request has burned through, and the
@@ -74,6 +157,7 @@ impl Default for Failover {
         Self {
             timeout_secs: DEFAULT_FAILOVER_DEADLINE_SECS,
             max_hops: DEFAULT_FAILOVER_CAP,
+            arity: Arity::Any,
             exclusions: Vec::new(),
         }
     }

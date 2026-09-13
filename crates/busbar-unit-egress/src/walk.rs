@@ -138,12 +138,19 @@ pub async fn walk(request: &RouteRequest<'_>, ctx: &mut RequestCtx) -> RouteOutc
                 members: &members,
                 affinity: request.affinity,
                 preference: request.preference,
+                arity: pool.failover.arity,
                 now,
                 token: request.token,
             },
             ctx,
         );
         let Some(mut pick) = pick else {
+            // A `One`-arity binding whose fitting set held more than one candidate refuses here,
+            // before any terminal, and the AUDIT step reads the ambiguous ids off the context. The
+            // walk did not choose; it declined to, and says so with a refusal that names no amount.
+            if !ctx.ambiguous().is_empty() {
+                return RouteOutcome::Refused(Shed::ambiguous());
+            }
             if members.is_empty() {
                 return RouteOutcome::Refused(Shed::empty_pool());
             }
