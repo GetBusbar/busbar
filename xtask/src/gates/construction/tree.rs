@@ -470,20 +470,28 @@ fn base_scan(
         let handles: Vec<_> = rels
             .chunks(chunk.max(1))
             .map(|chunk| {
-                scope.spawn(move || {
-                    let mut out = Vec::with_capacity(chunk.len());
-                    for rel in chunk {
-                        let abs = cx.abs(rel);
-                        let text =
-                            std::fs::read_to_string(&abs).map_err(|e| format!("{rel}: {e}"))?;
-                        let abs = abs.to_string_lossy().into_owned();
-                        out.push((
-                            rel.clone(),
-                            scan_file(lexer, &abs, rel, &text, test_fragments),
-                        ));
-                    }
-                    Ok(out)
-                })
+                // Workers get an explicit large stack, not std::thread::scope's default
+                // ~2 MiB: scan_file drives rx.rs's hand-rolled lexer, whose own docs note
+                // the general repeat path recurses per iteration and overflows a small
+                // stack on a long literal. The main thread has ~8 MiB; match it here so a
+                // worker fails exactly as the serial pass would, never with a stack abort.
+                std::thread::Builder::new()
+                    .stack_size(16 * 1024 * 1024)
+                    .spawn_scoped(scope, move || {
+                        let mut out = Vec::with_capacity(chunk.len());
+                        for rel in chunk {
+                            let abs = cx.abs(rel);
+                            let text =
+                                std::fs::read_to_string(&abs).map_err(|e| format!("{rel}: {e}"))?;
+                            let abs = abs.to_string_lossy().into_owned();
+                            out.push((
+                                rel.clone(),
+                                scan_file(lexer, &abs, rel, &text, test_fragments),
+                            ));
+                        }
+                        Ok(out)
+                    })
+                    .expect("spawn a base-scan worker thread")
             })
             .collect();
         handles
