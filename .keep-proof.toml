@@ -1,24 +1,19 @@
 # WHAT THIS HAND-BACK ASKS keep-proof TO PROVE.
 #
-# .keep-proof.toml is read by .github/workflows/keep-proof.yml at the root of a `keep-*` branch. It
-# scopes the two expensive legs of the run to what the branch actually touched, so a verdict says
-# something specific instead of "everything, slowly". The INTEGRATION tree carries no such file —
-# it is a keep-branch artefact, and this branch is a keep branch.
+# .keep-proof.toml is read by .github/workflows/keep-proof.yml at the root of a `keep-*` branch, and
+# by scripts/prove-latchkey.sh, which runs the SAME legs on a rented runner. It scopes the two
+# expensive legs of the run to what the branch actually touched, so a verdict says something
+# specific instead of "everything, slowly".
 #
-#   families — a regex handed to the shadow oracle's `--id-filter`. The oracle replays this build
-#              against the published 1.5.5 binary and reports divergences; unfiltered that is the
-#              better part of half an hour. This branch is the pre-existing-reds branch: it works
-#              on the tree's frozen PARSE SURFACE (a limit's three refusal sentences) and on the
-#              gates that read the tree as data, so the honest scope is the boot / config /
-#              documented families — the cells that read what the binary PRINTS when it refuses a
-#              document, which is exactly what the first item here moved back to 1.5.5's words.
-#              boot.refusal|BOOT-P20|validate, BOOT-P29 and BOOT-P30 are the three cells that must
-#              turn byte-identical; the rest of the boot/config families are the blast radius of
-#              touching a deserializer every section's parse runs through.
-#   tests    — the packages whose test binaries the sharded legs must include by name.
-#              `busbar-substrate` holds the limit grammar itself; `busbar-core` re-exports it at
-#              the historical config path and owns the pre-pass that sets the frozen-list rule;
-#              `busbar` is the binary whose --validate the boot cells drive; `xtask` is the gate
-#              runner whose own selftests are on this branch's list.
-families = '^(boot|config|documented)([|.]|$)'
-tests = ["busbar-core", "busbar-substrate", "xtask", "busbar"]
+#   families — TLS-1 deletes busbar-core::tls.rs's cert/key/CA parsing against
+#              busbar-unit-transport-key's own (now the one live copy, whose parse-error messages
+#              were made byte-identical to core's originals) and MOVES its accept/serve loop by
+#              identity to crates/busbar/src/root/listener.rs. `boot` is the family that would show
+#              a changed boot-diagnostic sentence if the secret-source naming had drifted; `config`
+#              is the TLS section's own parse surface; `neutrality` pins that a plain config sees no
+#              new boot line or metrics series from the move.
+#   tests    — busbar-core (the deletion), busbar-unit-transport-key (the one live copy, whose
+#              tests.rs pins the parse-error text byte for byte) and busbar (the composition root
+#              that now hosts the accept/serve loop and re-points its two TLS call sites).
+families = '^(boot|neutrality|config)([|.]|$)'
+tests = ["busbar-core", "busbar-unit-transport-key", "busbar"]
