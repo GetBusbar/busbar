@@ -1382,12 +1382,15 @@ because = "the first gating figure of a sub-row that was not gating before: the 
 # A key this row did not name would be refused as an unadmitted mint, so both are named. The row is
 # SPENT the moment the rule lands and `gate construction --write` strikes it then.
 #
-# `commit` is ABSENT HERE and is added by the follow-up commit that can name this one: the field
-# points at the landing that minted the table, and a commit cannot carry its own hash. A row with
-# no readable `commit` is trusted on its keys' presence alone — the same trust a `[[minted]]` row's
-# `ceiling` gets — so this row admits at this prefix; the follow-up turns it from an assertion into
-# a record the door can check against that commit's own copy of this file.
+# `commit` NAMES THE LANDING THAT MINTED THE TABLE, and it is written HERE rather than in that
+# landing itself because a commit cannot carry its own hash. `64dfe7eab` is the commit that mints
+# `[rules.ts-reads-the-clock]` — its own copy of this file carries exactly these two figures at
+# these two paths, which is what `rule_admissions` checks the row against. Until this line existed
+# the row was trusted on its keys' presence alone (the same trust a `[[minted]]` row's `ceiling`
+# gets, and green at that prefix); with it the row is a RECORD the door can verify rather than an
+# assertion it has to take.
 [[minted_rule]]
 rule = "ts-reads-the-clock"
+commit = "64dfe7eab"
 max_zero_stamps = "0"
 max_default_derives = "1"
