@@ -37,7 +37,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::ctx::{Ctx, Overlay, WalkSpec};
-use crate::gates::{prove_green, prove_red, prove_rows_red, Case, Gate, Report};
+use crate::gates::{prove_green, prove_red, prove_rows_red, Gate, Report};
 use crate::ledger::{Row, Verdict};
 
 const WORKFLOWS: &str = ".github/workflows";
@@ -1479,7 +1479,7 @@ impl Gate for ReleaseOrderGate {
         out
     }
 
-    fn selftest(&self, cx: &Ctx) -> Report {
+    fn selftest<'a>(&'a self, cx: &'a Ctx) -> Report<'a> {
         let mut report = Report::new();
         report.push(prove_green(
             cx,
@@ -1561,19 +1561,35 @@ struct Mutation {
     creates: bool,
 }
 
+/// A case whose answer needs no gate run: the plant could not be made, so the rule is UNPROVEN
+/// here rather than passing. Same `expected` and `covers` as the red case it stands in for, so the
+/// report reads exactly as it did when this was a `prove_red` with its verdict overwritten.
+fn skipped<'a>(name: String, rule: &str) -> crate::gates::CasePlan<'a> {
+    crate::gates::Case {
+        name,
+        covers: vec![rule.to_string()],
+        expected: crate::gates::Expect::Red { naming: Vec::new() },
+        got: crate::gates::Expect::Skipped,
+    }
+    .into()
+}
+
 impl Mutation {
-    fn case(&self, cx: &Ctx, gate: &dyn Gate) -> Case {
+    fn case<'a>(&self, cx: &'a Ctx, gate: &'a dyn Gate) -> crate::gates::CasePlan<'a> {
         let rel = format!("{WORKFLOWS}/{}", self.file);
         if self.creates {
             if cx.exists(&rel) {
-                let mut c = prove_red(cx, gate, self.label, &[self.rule], Overlay::new(), &[]);
-                c.got = crate::gates::Expect::Skipped;
-                c.name = format!(
-                    "{}: the file this mutation plants already exists, so planting it proves \
-                     nothing",
-                    self.label
+                // SKIPPED without running the gate: the case's answer is already known, and a
+                // plan that ran the whole gate in order to throw the verdict away was a whole
+                // tree scan spent on a case that proves nothing either way.
+                return skipped(
+                    format!(
+                        "{}: the file this mutation plants already exists, so planting it proves \
+                         nothing",
+                        self.label
+                    ),
+                    self.rule,
                 );
-                return c;
             }
             let mut ov = Overlay::new();
             ov.set(&rel, (self.apply)(""));
@@ -1582,23 +1598,20 @@ impl Mutation {
         let original = match cx.read(&rel) {
             Ok(t) => t,
             Err(e) => {
-                let mut c = prove_red(cx, gate, self.label, &[self.rule], Overlay::new(), &[]);
-                c.got = crate::gates::Expect::Skipped;
-                c.name = format!("{}: {e}", self.label);
-                return c;
+                return skipped(format!("{}: {e}", self.label), self.rule);
             }
         };
         let mutated = (self.apply)(&original);
         if mutated == original {
             // Reported as a case that did not do what it expected, which fails the report — a
             // mutation that edits nothing produces no RED and proves no rule.
-            let mut c = prove_red(cx, gate, self.label, &[self.rule], Overlay::new(), &[]);
-            c.got = crate::gates::Expect::Skipped;
-            c.name = format!(
-                "{}: the anchor this mutation edits has moved, so the rule is no longer proven",
-                self.label
+            return skipped(
+                format!(
+                    "{}: the anchor this mutation edits has moved, so the rule is no longer proven",
+                    self.label
+                ),
+                self.rule,
             );
-            return c;
         }
         let mut ov = Overlay::new();
         ov.set(&rel, mutated);

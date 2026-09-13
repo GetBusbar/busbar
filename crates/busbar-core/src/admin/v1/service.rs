@@ -2489,7 +2489,7 @@ fn rebuild_hook_derived(next: &mut crate::state::App) {
 // this fold names no plane registry type. A plane with no per-registration gates (the LLM plane)
 // declares `None` and is skipped, exactly as the old plane-gated blocks skipped a compiled-out plane.
 fn reresolve_plane_gates(next: &mut crate::state::App) {
-    for decl in crate::plane::registry::plane_decls() {
+    for decl in crate::plane::registry::plane_behaviours() {
         if let Some(reresolve) = decl.reresolve_gates {
             reresolve(next);
         }
@@ -2500,7 +2500,7 @@ fn reresolve_plane_gates(next: &mut crate::state::App) {
 /// seam — resolved by config section, so the admin read path names no plane view type. Empty for a
 /// section whose plane is compiled out (no decl) or is not a named-definition map.
 fn plane_named_def_list(section: NamedMapSection, app: &crate::state::App) -> Vec<NamedDefView> {
-    crate::plane::registry::plane_decl_for_config_section(section.key())
+    crate::plane::registry::behaviour_for_config_section(section.key())
         .and_then(|d| d.named_def_list)
         .map_or_else(Vec::new, |f| {
             f(app as &dyn busbar_substrate::plane_host::PlaneSlots)
@@ -2514,7 +2514,7 @@ fn plane_named_def_get(
     app: &crate::state::App,
     name: &str,
 ) -> Option<NamedDefView> {
-    crate::plane::registry::plane_decl_for_config_section(section.key())
+    crate::plane::registry::behaviour_for_config_section(section.key())
         .and_then(|d| d.named_def_get)
         .and_then(|f| f(app as &dyn busbar_substrate::plane_host::PlaneSlots, name))
 }

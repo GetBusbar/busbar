@@ -741,7 +741,91 @@ fn read_compiled(rel: &str, text: &str) -> Vec<Compiled> {
     compiled
 }
 
-pub fn rule_inputs(cx: &Ctx, crates: &[CrateInfo], planes: &BTreeSet<String>) -> Row {
+/// The table headers that redirect what cargo compiles, and the files that may carry them.
+const REDIRECT_HEADS: &[&str] = &["patch", "replace", "source"];
+
+/// EVERY `[patch]`, `[replace]` AND `[source]` TABLE IN THE REPOSITORY, held to the named rows.
+///
+/// Read off the raw header lines rather than through a TOML value model on purpose: the claim is
+/// about the FILE, and a reader that has to resolve the table to see it is a reader with a place to
+/// be wrong. A header this reader cannot close (`[patch.crates-io` with no `]`) is reported too,
+/// because a line that opens a redirect and does not close is a line whose scope nobody can state.
+fn redirect_findings(cx: &Ctx, reg: &super::KindRegistry) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let files = match cx.walk(&WalkSpec::new(["."]).ext("toml")) {
+        Ok(f) => f,
+        Err(e) => {
+            return vec![format!(
+                "redirect-scan	.\t{e} — a scan of no manifests finds no `[patch]`, which is \
+                 indistinguishable from a tree that has none."
+            )]
+        }
+    };
+    for f in &files {
+        let rel = f.rel_str();
+        let name = rel.rsplit('/').next().unwrap_or(&rel);
+        let is_cargo_toml = name == "Cargo.toml";
+        let is_cargo_config = name == "config.toml" && rel.contains(".cargo/");
+        if !is_cargo_toml && !is_cargo_config {
+            continue;
+        }
+        for (i, raw) in f.text.lines().enumerate() {
+            let t = raw.trim().trim_start_matches('\u{feff}');
+            let t = match t.split_once('#') {
+                Some((head, _)) => head.trim(),
+                None => t,
+            };
+            let Some(head) = t.strip_prefix('[') else {
+                continue;
+            };
+            let head = head.trim_end_matches(']').trim_start_matches('[');
+            let first = head.split('.').next().unwrap_or(head).trim();
+            if !REDIRECT_HEADS.contains(&first) {
+                continue;
+            }
+            let entry = head.trim();
+            if reg
+                .patch_allows
+                .iter()
+                .any(|a| a.file == rel && a.entry == entry)
+            {
+                continue;
+            }
+            out.push(format!(
+                "redirect\t{rel}:{}\t`[{entry}]` substitutes one crate for another AFTER every \
+                 manifest in this tree has been read: the census, the edge ledger, the matrix and \
+                 the lock cross-check are all downstream of a decision none of them can see. It is \
+                 allowed by a `[[patch]]` row naming this file and this entry, or by nothing.",
+                i + 1
+            ));
+        }
+    }
+    // A ROW THAT COVERS NOTHING IS A STANDING HOLE. The allowance expires with the entry it names.
+    for a in &reg.patch_allows {
+        let live = files.iter().any(|f| {
+            f.rel_str() == a.file
+                && f.text.lines().any(|l| {
+                    let t = l.trim();
+                    t.starts_with('[') && t.trim_matches(['[', ']']).trim() == a.entry
+                })
+        });
+        if !live {
+            out.push(format!(
+                "dead-patch-row	{}\t`[[patch]] file = \"{}\" entry = \"{}\"` covers nothing: no \
+                 such table exists. Strike the row ({}).",
+                a.file, a.file, a.entry, a.reason
+            ));
+        }
+    }
+    out
+}
+
+pub fn rule_inputs(
+    cx: &Ctx,
+    crates: &[CrateInfo],
+    planes: &BTreeSet<String>,
+    reg: &super::KindRegistry,
+) -> Row {
     let mut offenders: Vec<String> = Vec::new();
     let by_dir: BTreeMap<&str, &CrateInfo> = crates.iter().map(|c| (c.dir.as_str(), c)).collect();
     let by_name: BTreeMap<&str, &CrateInfo> = crates.iter().map(|c| (c.name.as_str(), c)).collect();
@@ -953,6 +1037,20 @@ pub fn rule_inputs(cx: &Ctx, crates: &[CrateInfo], planes: &BTreeSet<String>) ->
              be read cannot be compared with the manifests that asked for it."
         )),
     }
+
+    // ── 7. NOTHING REDIRECTS WHAT CARGO COMPILES ─────────────────────────────────────────────────
+    //
+    // `[patch]`, `[replace]` and `.cargo/config.toml`'s `[source] replace-with` substitute one
+    // crate for another AFTER every manifest in this tree has been read and agreed with. The
+    // census, the edge ledger, the matrix and the lock cross-check are all downstream of a
+    // decision none of them can see: `[patch.crates-io] busbar-plane-llm = { path = "…" }` links a
+    // different plane into every crate in the workspace with no finding anywhere. Nothing in this
+    // gate read those tables at all -- `grep '\[patch' xtask/src` returned nothing.
+    //
+    // So EVERY one of them is red unless a `[[patch]]` row names the exact file and the exact
+    // entry and says why. There is no allowance in this source and no default: the tree has none
+    // today, so the measured ceiling is zero and the ledger's table is empty.
+    offenders.extend(redirect_findings(cx, reg));
 
     // ── 6. THE OUT-OF-TREE REGISTRY IS FILED UNDER THIS TREE'S KINDS ─────────────────────────────
     match cx.read(PLUGIN_REGISTRY) {

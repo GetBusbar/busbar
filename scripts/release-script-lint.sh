@@ -177,10 +177,18 @@ list_direct_invoked_scripts() {
 # the rule, so a guard that had been COMMENTED OUT still satisfied it — and this file's target, the
 # 1.5.2 gate, documents its own watchdog in prose at length, which satisfied it with no guard at
 # all. Every other scanner here opens with `/^[[:space:]]*#/ { next }`; this one did not.
+# THE PREDICATE FEEDS THE HAYSTACK IN WITHOUT A PIPE, ON PURPOSE. It was
+# `printf '%s\n' "$code" | grep -q …` twice, and under this file's own `set -o pipefail` that is a
+# RACE, not a read: `grep -q` exits the instant it matches, so on any haystack larger than the pipe
+# buffer the `printf` still writing behind it takes SIGPIPE (141), pipefail promotes 141 to the
+# pipeline's status, and the rule reports WATCHDOG MISSING about a file whose guard is right there.
+# It reads as a flake because it turns on how far into the file the FIRST match falls: the 1.5.2
+# gate's guard is at line 69 of a long script, so the local run wins the race and CI loses it. A
+# here-string is a temp file, not a pipe — no second process, no SIGPIPE, no status to promote.
 watchdog_armed() {  # watchdog_armed <file> -> 0 when the guard is present in EXECUTABLE code
   local code; code="$(sed 's/#.*//' "$1")" || return 1
-  printf '%s\n' "$code" | grep -q 'WATCHDOG_ARMED' || return 1
-  printf '%s\n' "$code" | grep -Eq 'exec[[:space:]]+(g)?timeout'
+  grep -q 'WATCHDOG_ARMED' <<<"$code" || return 1
+  grep -Eq 'exec[[:space:]]+(g)?timeout' <<<"$code"
 }
 
 run_selftest() {
@@ -214,6 +222,20 @@ run_selftest() {
     fail=1; note "WATCHDOG FAILED: a COMMENTED-OUT guard satisfied the rule"
   else
     pass=$((pass+1)); note "WATCHDOG: a commented-out guard does not satisfy it"
+  fi
+  # A GUARD THAT IS REALLY THERE IS FOUND HOWEVER LONG THE FILE IS. The three fixtures above are
+  # three lines each, so every one of them fits in a pipe buffer and none of them could ever have
+  # caught the SIGPIPE race the predicate used to carry: the rule was GREEN on its whole self-test
+  # and RED on the tree at the same time. This fixture is the shape that actually failed — the
+  # match on the first line, ~3.5 MB of file behind it — so the reader can only pass by not racing.
+  {
+    printf '%s\n' 'WATCHDOG_ARMED=1 exec timeout --kill-after=30 1500 bash "$0" "$@"'
+    awk 'BEGIN { for (i = 0; i < 200000; i++) print "filler line " i }'
+  } > "${tmp}/wd-long.sh"
+  if watchdog_armed "${tmp}/wd-long.sh"; then
+    pass=$((pass+1)); note "WATCHDOG: a real guard above a long tail is found, not raced away"
+  else
+    fail=1; note "WATCHDOG FAILED: a guard on line 1 of a long file read as MISSING (the SIGPIPE race)"
   fi
 
   # ── THE EXEC-BIT RULE MUST REFUSE A SCAN OF NOTHING ────────────────────────────────────────────

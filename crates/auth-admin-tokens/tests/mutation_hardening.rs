@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Mutation-hardening tests for `busbar-auth-admin-tokens`, added after a `cargo mutants` pass.
+//! Mutation-hardening tests for `busbar-auth-admin-tokens`.
 //!
-//! ## Surviving mutant: `bearer_match | header_match` → `bearer_match ^ header_match`
+//! ## Fold operator: `bearer_match | header_match` must stay bitwise-OR, not XOR
 //!
 //! No existing test presented BOTH carriers matching the configured token at once, so the fold's
 //! operator (bitwise-OR vs XOR) was unobserved: OR and XOR only disagree when both operands are 1.

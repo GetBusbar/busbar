@@ -625,7 +625,27 @@ jobs:
       # container) — see docs/plugins.md and scripts/release-check.sh's Vault phase for how the
       # monorepo now gates on that repo's own test suite via a sibling checkout instead.
     steps:
+      # FULL HISTORY AND THE AUDIT PINS, FOR THE SAME REASON THE structure-lint JOB TAKES THEM.
+      # `cargo test -p xtask` below runs `gates::audit_ledger::tests::…`, and those two tests assert
+      # the same two facts the blocking `audit-ledger` gate asserts over there: that every record's
+      # `audited_at` commit RESOLVES, and that the tree it stamps is the one that commit held. Both
+      # questions are answered by asking git. This job's checkout answered neither: `actions/checkout`
+      # defaults to depth 1, and it carries nothing outside `refs/heads/*` and `refs/tags/*`, so the
+      # pin set here was empty and `reachable()` degenerated to "an ancestor of HEAD". Measured on
+      # this base: 23 records name 23 commits, TEN of which are ancestors of HEAD — the other
+      # thirteen are green only because thirteen `refs/audit-pins/*` refs exist, and no checkout
+      # brings them. So the job ran a claim it had not been given the inputs to judge, and reported
+      # `audit-ledger:audited-at-reachable: FAIL` and `audit-ledger:hash-matches-commit: FAIL` about
+      # a register that is sound. The claim is right; what was missing is the history it reads.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+      # `fetch-depth: 0` is depth, not namespace: it cannot bring a ref the remote never advertises
+      # under `refs/heads/*`. Pins are written locally under `refs/audit-pins/*` and MIRRORED to
+      # `refs/backup/audit-pins/*`, which is the namespace this fetch reads. `|| true`: a repository
+      # with no pins yet is not a broken job, and the tests are what decide whether one is missing.
+      - name: Fetch the audit pins (no checkout carries refs/audit-pins/*)
+        run: git fetch origin '+refs/backup/audit-pins/*:refs/audit-pins/*' || true
 
       # SERVICE CONTAINERS ARE ADDRESSED BY CONTAINER IP, NOT localhost. On a GitHub-hosted runner
       # a job owned the whole machine, so `ports: - 5432:5432` and `localhost:5432` were the same
@@ -1211,10 +1231,18 @@ jobs:
       # the whole workflow: a job that grows a `cargo` line later must not red on a missing wrapper.
       - name: Compiler cache (sccache, GitHub Actions cache backend)
         uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+      # THIS JOB NEEDS A TOOLCHAIN, AND NOW DECLARES ONE. It ran `cargo xtask gate service-images`
+      # on whatever the runner image happened to ship, and that is a property of the image, not of
+      # anything this repository controls. It failed exactly the way an assumption fails: the cache
+      # step reported `Command failed: rustc -vV` and the gate step reported
+      # `cargo: command not found`, exit 127 — a green gate turned into a red job with nothing
+      # about service images having changed. `structure-lint` declares the same pin for the same
+      # stated reason; this is that reason applied to the second job that builds only the runner.
+      - name: Install Rust toolchain (the gate runner)
+        uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
       # THE REGISTRY/TARGET CACHE, which this job never had: it builds the gate runner from source on
-      # every run with nothing restored, on the image's ambient toolchain. Keyed `xtask`, the same key
-      # `structure-lint` uses, so the two jobs that build only the runner share one entry instead of
-      # each paying for it.
+      # every run with nothing restored. Keyed `xtask`, the same key `structure-lint` uses, so the
+      # two jobs that build only the runner share one entry instead of each paying for it.
       - name: Cache cargo
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
@@ -2523,11 +2551,11 @@ jobs:
 
   ship-ready:
     name: ship-ready
-    # THE SHIP CRITERION, AS A CHECK RATHER THAN A CHECKLIST. The criterion used to be prose in a
-    # design document — the ship twin is zero everywhere, no ceiling carries slack, no ceiling rose,
-    # nothing is standing red, the mutation job caught everything — and nothing in the repository
-    # could tell whether any line of it was true. `cargo xtask gate ship-ready` is those five lines
-    # as five rows that can each go red on their own.
+    # THE SHIP CRITERION, AS A CHECK RATHER THAN A CHECKLIST. The criterion used to be prose that
+    # nothing enforced — the ship twin is zero everywhere, no ceiling carries slack, no ceiling
+    # rose, nothing is standing red, the mutation job caught everything — and nothing in the
+    # repository could tell whether any line of it was true. `cargo xtask gate ship-ready` is those
+    # five lines as five rows that can each go red on their own.
     #
     # IT IS RED ON THIS LINE, ON PURPOSE, AND THAT IS WHY IT IS NOT IN THE UMBRELLA'S `needs`. The
     # integration line is not the ship SHA: the twin is red on HEAD by design and the standing-red

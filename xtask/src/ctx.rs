@@ -35,6 +35,14 @@ pub enum Change {
     Content(String),
     /// The file is absent, whatever the real tree says.
     Absent,
+    /// The path IS there — a walk lists it — and reading it FAILS.
+    ///
+    /// It is a third state because "absent" and "unreadable" are two different claims and the gates
+    /// answer them differently: an absent input is often a tree that legitimately has not got one,
+    /// while an input that is listed and will not read is an input the rule cannot measure and must
+    /// refuse. Every gate that treats a read error as "found nothing" is a gate that goes green on
+    /// a corrupt tree, and there was no fixture in the harness that could plant one.
+    Unreadable(String),
 }
 
 /// A per-plant view of the tree: path overrides plus canned outputs for the few derived inputs
@@ -58,6 +66,12 @@ impl Overlay {
     pub fn remove(&mut self, rel: impl AsRef<Path>) {
         self.files
             .insert(rel.as_ref().to_path_buf(), Change::Absent);
+    }
+
+    /// The path stays in every walk and every read of it fails with `why`.
+    pub fn unreadable(&mut self, rel: impl AsRef<Path>, why: impl Into<String>) {
+        self.files
+            .insert(rel.as_ref().to_path_buf(), Change::Unreadable(why.into()));
     }
 
     /// Override a derived input keyed by a stable string (e.g. `cargo-metadata:xtask/Cargo.toml`).
@@ -374,6 +388,9 @@ impl Ctx {
                 Some(Change::Absent) => {
                     return Err(format!("{}: absent (overlay)", rel.display()));
                 }
+                Some(Change::Unreadable(why)) => {
+                    return Err(format!("{}: {why} (overlay)", rel.display()));
+                }
                 None => {}
             }
         }
@@ -385,6 +402,8 @@ impl Ctx {
         if let Some(ov) = self.overlay() {
             match ov.files.get(rel) {
                 Some(Change::Content(_)) => return true,
+                // An unreadable file IS on disk; it is the READ that fails, not the stat.
+                Some(Change::Unreadable(_)) => return true,
                 Some(Change::Absent) => return false,
                 None => {}
             }
@@ -394,6 +413,40 @@ impl Ctx {
 
     /// The repo walk. Sorted, floor-checked, missing-root-checked, overlay-aware.
     pub fn walk(&self, spec: &WalkSpec) -> Result<Vec<SourceFile>, WalkError> {
+        let kept = self.list(spec)?;
+        let mut out = Vec::new();
+        for rel in kept {
+            let text = self.read(&rel).map_err(|message| WalkError::Io {
+                path: rel.clone(),
+                message,
+            })?;
+            out.push(SourceFile {
+                abs: self.abs(&rel),
+                rel,
+                text,
+            });
+        }
+        out.sort_by_key(SourceFile::rel_str);
+
+        if out.len() < spec.min_files {
+            return Err(WalkError::BelowFloor {
+                found: out.len(),
+                floor: spec.min_files,
+                roots: spec.roots.clone(),
+            });
+        }
+        Ok(out)
+    }
+
+    /// THE WALK WITHOUT THE READ — the same roots, the same overlay, the same ignore rules, the
+    /// same ext and exclude filters, sorted, and NO floor.
+    ///
+    /// It exists because a caller that wants EVERY file a crate ships cannot ask [`Self::walk`] for
+    /// it: `walk` reads each path as UTF-8 and a repository is entitled to carry a `.gz` or a
+    /// `.png`. A caller that must SKIP those and still be able to NAME the ones it skipped needs
+    /// the list before the read, which is this. The floor stays with `walk` because the floor is a
+    /// property of a scan set, and a list is not yet one.
+    pub fn list(&self, spec: &WalkSpec) -> Result<Vec<PathBuf>, WalkError> {
         let mut rels: Vec<PathBuf> = Vec::new();
         for root in &spec.roots {
             let abs = self.abs(root);
@@ -424,7 +477,7 @@ impl Ctx {
                     .any(|r| r == "." || s.starts_with(&format!("{r}/")) || &s == r);
                 match change {
                     Change::Absent => rels.retain(|p| p != path),
-                    Change::Content(_) => {
+                    Change::Unreadable(_) | Change::Content(_) => {
                         if under_a_root && !rels.contains(path) {
                             rels.push(path.clone());
                         }
@@ -451,30 +504,9 @@ impl Ctx {
             }
             kept.push(rel);
         }
-        let kept = self.drop_ignored(kept);
-
-        let mut out = Vec::new();
-        for rel in kept {
-            let text = self.read(&rel).map_err(|message| WalkError::Io {
-                path: rel.clone(),
-                message,
-            })?;
-            out.push(SourceFile {
-                abs: self.abs(&rel),
-                rel,
-                text,
-            });
-        }
-        out.sort_by_key(SourceFile::rel_str);
-
-        if out.len() < spec.min_files {
-            return Err(WalkError::BelowFloor {
-                found: out.len(),
-                floor: spec.min_files,
-                roots: spec.roots.clone(),
-            });
-        }
-        Ok(out)
+        let mut kept = self.drop_ignored(kept);
+        kept.sort();
+        Ok(kept)
     }
 
     /// Drop the paths the working tree's own ignore rules exclude.

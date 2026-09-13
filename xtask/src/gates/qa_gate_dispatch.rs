@@ -423,7 +423,7 @@ impl Gate for QaGateDispatchGate {
         Verdict::of(self.rows(cx))
     }
 
-    fn selftest(&self, cx: &Ctx) -> Report {
+    fn selftest<'a>(&'a self, cx: &'a Ctx) -> Report<'a> {
         let mut report = Report::new();
 
         report.push(prove_green(
@@ -495,7 +495,8 @@ impl Gate for QaGateDispatchGate {
                 "a needs: edge is removed from the dispatcher",
                 &[ROW_DECLARED_CURRENT],
                 &["jobs.slow.needs"],
-            ),
+            )
+            .into(),
         });
 
         // BOTH ARMS OF THE BRANCH SPLIT. The cases above prove the COMPARISON discriminates; they
@@ -509,17 +510,23 @@ impl Gate for QaGateDispatchGate {
                 let mut ov = Overlay::new();
                 ov.set(WORKFLOW, changed.clone());
                 ov.set(DECLARED, canonical(&shape));
-                report.push(prove_red(
-                    cx,
-                    &QaGateDispatchGate::judging_as("qa", DEFAULT_BRANCH_REF, Some(&base)),
-                    "on qa an unpromoted run-graph change is red against the default branch",
-                    &[ROW_DEFAULT_BRANCH],
-                    ov,
-                    &[
-                        "differs STRUCTURALLY from the one on origin/main",
-                        "jobs.slow.needs",
-                    ],
-                ));
+                // The gate is built FOR THIS CASE — a promotion arm the registry does not carry —
+                // so the case owns it rather than borrowing a temporary that dies at this `;`.
+                let arm = QaGateDispatchGate::judging_as("qa", DEFAULT_BRANCH_REF, Some(&base));
+                report.push(crate::gates::CasePlan::new(move || {
+                    prove_red(
+                        cx,
+                        &arm,
+                        "on qa an unpromoted run-graph change is red against the default branch",
+                        &[ROW_DEFAULT_BRANCH],
+                        ov,
+                        &[
+                            "differs STRUCTURALLY from the one on origin/main",
+                            "jobs.slow.needs",
+                        ],
+                    )
+                    .take()
+                }));
             }
             Err(e) => report.note_infra_failure(format!(
                 "the promotion-arm fixture did not parse, so the qa arm is unproven here: {e}"
@@ -528,18 +535,22 @@ impl Gate for QaGateDispatchGate {
 
         // FAILS CLOSED, proven with real `git` rather than asserted: a ref that cannot exist is
         // unreadable, and an unreadable promoted copy on a promotion branch is a named failure.
-        report.push(prove_red(
-            cx,
-            &QaGateDispatchGate::judging_as(
-                "main",
-                "refs/heads/no-such-ref-for-the-qa-gate-dispatch-selftest",
-                None,
-            ),
-            "on main an unreadable default branch is a failure, never a pass",
-            &[ROW_DEFAULT_BRANCH],
-            Overlay::new(),
-            &["could not read", "Unknown is not green"],
-        ));
+        let unreadable_default = QaGateDispatchGate::judging_as(
+            "main",
+            "refs/heads/no-such-ref-for-the-qa-gate-dispatch-selftest",
+            None,
+        );
+        report.push(crate::gates::CasePlan::new(move || {
+            prove_red(
+                cx,
+                &unreadable_default,
+                "on main an unreadable default branch is a failure, never a pass",
+                &[ROW_DEFAULT_BRANCH],
+                Overlay::new(),
+                &["could not read", "Unknown is not green"],
+            )
+            .take()
+        }));
 
         report
     }
@@ -678,18 +689,18 @@ fn graph_change(cx: &Ctx, path: &str) -> Option<String> {
     Some(text.replacen(needle, "needs: [build]", 1))
 }
 
-fn plant(
-    cx: &Ctx,
-    gate: &dyn Gate,
+fn plant<'a>(
+    cx: &'a Ctx,
+    gate: &'a dyn Gate,
     name: &str,
     covers: &[&str],
     path: &str,
     edit: Edit,
     naming: &[&str],
-) -> Case {
+) -> crate::gates::CasePlan<'a> {
     let mut ov = Overlay::new();
     if edit.apply(cx, path, &mut ov).is_err() {
-        return unplantable(name, covers, naming);
+        return unplantable(name, covers, naming).into();
     }
     prove_red(cx, gate, name, covers, ov, naming)
 }
@@ -958,7 +969,8 @@ mod tests {
     #[test]
     fn the_selftest_proves_every_owed_row_can_still_be_red() {
         let gate = QaGateDispatchGate::new();
-        let report = gate.selftest(&cx());
+        let cx = cx();
+        let report = gate.selftest(&cx);
         if let Err(errs) = gates::verify_report(&gate, &report) {
             panic!("qa-gate-dispatch selftest: {errs:#?}");
         }

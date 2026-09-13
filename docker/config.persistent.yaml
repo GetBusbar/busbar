@@ -1,0 +1,43 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (C) 2026 Busbar Inc and contributors
+#
+# The ACTIVE counterpart of ./config.yaml's commented-out "Durable store" block, mounted by
+# ../docker/docker-compose.yml so that example is wired end to end rather than merely documented.
+# Identical to config.yaml except the store/plugins block below is live instead of commented — see
+# docs/getting-started.md#durable-store-giving-persistence-a-writable-volume for what each of the
+# four keys does and the exact refusal text if one is missing.
+
+listen: "0.0.0.0:8080"
+
+# 1.5.3: an identity provider is DEFINED once here and REFERENCED by bare name from the chains.
+identity-providers:
+  admin-tokens: { module: admin-tokens, token: { env: BUSBAR_ADMIN_TOKEN } }
+
+auth:
+  chain: []                                            # open data-plane relay — see ./config.yaml's note
+  admin_auth: [admin-tokens]                           # bare NAME into identity-providers: above
+
+providers:
+  anthropic:
+    api_key: { env: ANTHROPIC_KEY }
+
+models:
+  claude:
+    provider: anthropic
+
+pools:
+  default:
+    members:
+      - model: claude
+
+# ── Durable store (ACTIVE — this is the one difference from ./config.yaml) ────────────────────────
+store:
+  module: sqlite
+  settings:
+    db_path: /var/lib/busbar/governance.db     # directory must exist on a writable volume (see compose's busbar-data)
+
+plugins:
+  enabled: true                                # master switch — default false
+  dir: /etc/busbar/plugins                     # ABSOLUTE — the default ("plugins") resolves to /plugins here
+  fetch:
+    - github: "GetBusbar/store-sqlite@v1.0.0"  # writes into plugins.dir at boot, hence that dir must be writable (see compose's busbar-plugins)

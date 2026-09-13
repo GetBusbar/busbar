@@ -400,7 +400,7 @@ impl Gate for PlaneAbiNeutralityGate {
         Some(translate(run))
     }
 
-    fn selftest(&self, cx: &Ctx) -> Report {
+    fn selftest<'a>(&'a self, cx: &'a Ctx) -> Report<'a> {
         let mut report = Report::new();
         report.push(prove_green(
             cx,
@@ -551,6 +551,30 @@ impl Gate for PlaneAbiNeutralityGate {
             &[ROW_PLANE_KEYS],
             ov,
             &["quantum"],
+        ));
+
+        // THE MATCHED HALF of the case above, and the one that would have caught this gate reading
+        // four plane crates that declare no plane. A `const` whose name merely BEGINS with the
+        // grammar is not a declaration of anything: the row must stay GREEN on a crate carrying one
+        // and nothing else. Without the colon in `PLANE_GRAMMAR` this case is RED and names
+        // `quantum` — which is exactly the false reading the four `PLANE_DECLARATION` constants
+        // produced on the real tree.
+        let mut ov = Overlay::new();
+        ov.set(
+            "crates/busbar-quantum/src/lib.rs",
+            // Spelt out rather than built from PLANE_GRAMMAR: the whole point is a name the grammar
+            // is a PREFIX of, and a fixture assembled from the needle cannot express one.
+            "//! A planted crate whose only `const` has a name BEGINNING with the plane grammar.\n\
+             pub const PLANE_DECLARATION: busbar_contract::plane::PlaneDeclaration =\n    \
+             busbar_contract::plane::PlaneDeclaration { key: \"quantum\" };\n"
+                .to_string(),
+        );
+        report.push(crate::gates::prove_rows_green(
+            cx,
+            self,
+            "a const whose NAME merely begins with the plane grammar declares no plane",
+            &[ROW_PLANE_KEYS],
+            ov,
         ));
 
         report

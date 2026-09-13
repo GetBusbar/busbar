@@ -28,10 +28,16 @@ name: gate-mutants
 
 on:
   push:
-    # Same branch set as ci.yml, plus the `keep-*` hand-back branches: an agent's branch is exactly
-    # where a new gate rule first appears, so it is exactly where the hole is cheapest to find.
+    # Same branch set as ci.yml. `keep-*` WAS here and is not any more, and it is not an ungating:
+    # with ~15 live hand-back branches each fanning 24 shards onto the 32-slot busbar-xl fleet, the
+    # per-branch `concurrency:` below cannot help (it cancels a branch's OWN superseded run, not its
+    # neighbours'), and the integration tip's proof sat starved behind slot work — exactly the
+    # arithmetic docs/ci/self-hosted-runners.md §1-2 predicts. A slot that touches the mutation
+    # scope (`xtask/src/gates/**` et al., scripts/gate-mutants.sh) runs the same proof by hand —
+    # `scripts/gate-mutants.sh --shard 1/1` — and says so in its hand-back; the 24-shard run then
+    # happens at landing, on the integration branch, where the required check is read from.
     # `!wip/**` for the same reason ci.yml carries it — checkpoint pushes arrive by the dozen.
-    branches: ['integration/**', 'dev', 'qa', 'main', 'keep-*', '!wip/**']
+    branches: ['integration/**', 'dev', 'qa', 'main', '!wip/**']
   pull_request:
   workflow_dispatch:
     inputs:
@@ -106,10 +112,16 @@ jobs:
   # THE BASELINE. The test command, on the UNMUTATED tree, once for the whole commit.
   #
   # THE SHARDS RUN THEIR OWN BASELINE TOO, and this job does not replace it: a shard's baseline is
-  # about the scratch copy cargo-mutants builds, and this one is about the checkout. They are
-  # different environments and the first run of this workflow found them disagreeing — the lib
-  # suite passes here and fails there, which under a skipped per-shard baseline reported every
-  # mutant CAUGHT over a campaign that measured nothing.
+  # about the scratch copy cargo-mutants builds, and this one is about the checkout. The first run
+  # of this workflow was read as those two disagreeing — the lib suite passing here and failing
+  # there — and that reading was wrong. Both were failing, for one reason, in one place: this
+  # workflow never fetched `refs/backup/audit-pins/*`, so `audit-ledger` could not resolve thirteen
+  # of the register's commits on the runner, and the scratch copy inherited the same empty pin set
+  # because `--copy-vcs true` copies the refs it was given. The fetch step above is the fix.
+  #
+  # The per-shard baseline stays anyway, and not out of superstition: it is the only thing that can
+  # observe the environment a mutant is actually tested in, and a campaign whose baseline is assumed
+  # rather than measured scores every mutant CAUGHT the moment that assumption breaks.
   #
   # What this job adds is the plain statement, on the tree as it actually stands, that the four
   # gates DO hold their own planted faults. If it is red, `gate-mutants` is red, and no shard's
@@ -129,6 +141,22 @@ jobs:
         run: |
           git fetch --no-tags --quiet origin \
             +refs/heads/integration/oracle-phase0:refs/remotes/origin/integration/oracle-phase0
+      - name: Fetch the audit pins (no checkout carries refs/audit-pins/*)
+        # WITHOUT THIS STEP EVERY SHARD REPORTS BASELINE RED, AND THAT IS NOT A FIGURE OF SPEECH:
+        # it is what the first two runs of this workflow did. `audit-ledger`'s
+        # `audited-at-reachable` row asks whether every commit the register names can still be
+        # produced -- an ancestor of HEAD, or of an audit pin. Pins are written locally under
+        # `refs/audit-pins/*` and MIRRORED to `refs/backup/audit-pins/*`, and neither `git clone`
+        # nor `actions/checkout` carries anything outside `refs/heads/*` and `refs/tags/*`. On a
+        # runner that has not fetched the mirror the pin set is EMPTY, thirteen of the register's
+        # commits read as unreachable, and two `audit_ledger` cases in `cargo test -p xtask --lib`
+        # go red for a reason that has nothing to do with any mutation.
+        #
+        # `cargo-mutants`' scratch copy was blamed for this and is innocent: `--copy-vcs true`
+        # copies `.git` faithfully, so the copy carries exactly the refs the checkout had -- no
+        # pins in, no pins out. The difference was never checkout-vs-copy, it was runner-vs-laptop.
+        # ci.yml and keep-proof.yml already carried this fetch; this workflow did not.
+        run: git fetch origin '+refs/backup/audit-pins/*:refs/audit-pins/*'
       - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
@@ -137,10 +165,19 @@ jobs:
       - name: Build the gate runner once
         run: cargo build -p xtask --locked
       - name: The test command, unmutated
+        # THE SAME COMMAND THE SHARDS RUN, INCLUDING THE SAME GATE LIST. `--gates` computes it from
+        # the diff (see scripts/gate-mutants.sh): a diff confined to one gate's directory needs only
+        # that gate's self-proof, because no other gate's self-proof runs the stubbed line. A
+        # baseline proving a WIDER command than the shards run would be a baseline about a different
+        # command, and this job exists precisely to be about the shards' command.
         env:
           XTASK_GATE_MUTATION_PROOF: "1"
           XTASK_GATE_CEILING_SECS: "3600"
-        run: cargo test -p xtask --lib --test gate_mutation_proof
+        run: |
+          set -euo pipefail
+          gates="$(scripts/gate-mutants.sh --gates)"
+          echo "gate self-proofs in the test command: $gates"
+          XTASK_GATE_MUTATION_GATES="$gates" cargo test -p xtask --lib --test gate_mutation_proof
 
   # -------------------------------------------------------------------------------------------
   # THE MUTANTS. One shard per runner; every shard sees the same diff and the same denominator, or
@@ -151,7 +188,13 @@ jobs:
     needs: scope
     if: needs.scope.outputs.in_scope == 'yes'
     runs-on: [self-hosted, linux, x64, busbar-xl]
-    timeout-minutes: 55
+    # 120, NOT 55, AND THE NUMBER IS MEASURED RATHER THAN GUESSED. A shard pays the test command
+    # twice for one mutant -- once as its baseline, once for the mutant -- and the widest test
+    # command measures 39m43 (docs/ci/gate-integrity.md). 55 minutes could not hold that, and a
+    # shard that times out is red ABOUT THE CLOCK rather than about the tree, which is the least
+    # useful red there is. The narrowing brings a construction-scoped push to ~14m; a
+    # kind-isolation-scoped one is still ~67m, and this is the number that lets it report.
+    timeout-minutes: 120
     strategy:
       # fail-fast OFF on purpose. The output of this job is the LIST of survivors; cancelling the
       # other 23 shards the moment one of them finds a hole reports one hole and hides the rest,
@@ -167,6 +210,22 @@ jobs:
         run: |
           git fetch --no-tags --quiet origin \
             +refs/heads/integration/oracle-phase0:refs/remotes/origin/integration/oracle-phase0
+      - name: Fetch the audit pins (no checkout carries refs/audit-pins/*)
+        # WITHOUT THIS STEP EVERY SHARD REPORTS BASELINE RED, AND THAT IS NOT A FIGURE OF SPEECH:
+        # it is what the first two runs of this workflow did. `audit-ledger`'s
+        # `audited-at-reachable` row asks whether every commit the register names can still be
+        # produced -- an ancestor of HEAD, or of an audit pin. Pins are written locally under
+        # `refs/audit-pins/*` and MIRRORED to `refs/backup/audit-pins/*`, and neither `git clone`
+        # nor `actions/checkout` carries anything outside `refs/heads/*` and `refs/tags/*`. On a
+        # runner that has not fetched the mirror the pin set is EMPTY, thirteen of the register's
+        # commits read as unreachable, and two `audit_ledger` cases in `cargo test -p xtask --lib`
+        # go red for a reason that has nothing to do with any mutation.
+        #
+        # `cargo-mutants`' scratch copy was blamed for this and is innocent: `--copy-vcs true`
+        # copies `.git` faithfully, so the copy carries exactly the refs the checkout had -- no
+        # pins in, no pins out. The difference was never checkout-vs-copy, it was runner-vs-laptop.
+        # ci.yml and keep-proof.yml already carried this fetch; this workflow did not.
+        run: git fetch origin '+refs/backup/audit-pins/*:refs/audit-pins/*'
       - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:

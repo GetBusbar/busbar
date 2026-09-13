@@ -82,7 +82,7 @@ plane_roots_resolve() {   # $1.. = plane keys. Sets PLANE_ROOT_<key> per plane; 
     return 1
   fi
   root="${PLANE_ROOTS_SEARCH_ROOT:-crates}"
-  grammar="${PLANE_ROOTS_GRAMMAR:-pub const PLANE_DECL}"
+  grammar="${PLANE_ROOTS_GRAMMAR:-pub const PLANE_DECL:}"
   for plane in "$@"; do
     hits=$(find "$root" -type d -name "$plane" -not -path '*/target/*' 2>/dev/null | sort -u)
     # A NAME MATCH IS NOT AN OWNERSHIP CLAIM (see the file header). A candidate must directly hold a

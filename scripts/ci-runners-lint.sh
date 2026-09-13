@@ -32,7 +32,7 @@ command -v shellcheck >/dev/null || {
 rc=0
 for f in "$HERE"/ci-runners-lib.sh "$HERE"/ci-runners-up.sh "$HERE"/ci-runners-register.sh \
          "$HERE"/ci-runners-reconcile.sh "$HERE"/ci-runners-down.sh "$HERE"/ci-runners-ssh.sh \
-         "$HERE"/ci-runners-lint.sh "$HERE"/ci-remote-lib.sh; do
+         "$HERE"/ci-runners-lint.sh "$HERE"/ci-runners-selftest.sh "$HERE"/ci-remote-lib.sh; do
   printf '%-34s ' "$(basename "$f")"
   if bash -n "$f" 2>/dev/null; then printf 'bash -n: OK   '; else printf 'bash -n: FAIL '; rc=1; fi
   if shellcheck -x "$f"; then

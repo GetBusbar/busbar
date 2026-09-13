@@ -14,7 +14,8 @@
 # that finishes a keep-proof run is immediately available to ci.yml instead of sitting idle behind
 # a repo boundary.
 #
-# THE TOKEN IS MINTED HERE AND ONLY HERE. `gh api -X POST .../registration-token` returns a
+# THE TOKEN IS MINTED IN ONE PLACE: register_agents in scripts/ci-runners-lib.sh, which this
+# script and ci-runners-reconcile.sh both call. `gh api -X POST .../registration-token` returns a
 # ~60-minute credential; it travels to the boxes over SSM SendCommand (encrypted in transit,
 # never written to a file, never placed in user-data where any CI job could read it back out of
 # the metadata service) and is used within seconds. Nothing on the box persists it: after
@@ -41,31 +42,13 @@ ONLINE="$(ssm_online "$IDS")"
 [ -n "$ONLINE" ] || die "no named fleet instance is reachable over SSM yet — wait for bootstrap and retry"
 log "SSM-online: $ONLINE"
 
-if dry; then
-  log "[dry-run] would mint one org registration token and SSM-dispatch"
-  log "[dry-run]   /usr/local/bin/busbar-runner-register <token> $ORG $RUNNER_LABELS"
-  log "[dry-run] to: $ONLINE"
-  exit 0
-fi
-
-# One call, one token, used immediately. If this 403s the org API limit is exhausted; wait for the
-# reset rather than retrying in a loop (a retry loop is what exhausts it).
-TOKEN="$(gh api -X POST "/orgs/${ORG}/actions/runners/registration-token" --jq .token)" \
-  || die "could not mint a registration token (rate limit? scope? needs admin:org)"
-[ -n "$TOKEN" ] || die "empty registration token"
-log "minted a registration token (not printed, expires in ~60 min)"
-
-# shellcheck disable=SC2086  # $ONLINE is a whitespace-separated id list and must word-split
-CMD_ID="$(aws ssm send-command \
-  --instance-ids $ONLINE \
-  --document-name AWS-RunShellScript \
-  --comment "register busbar CI runners" \
-  --parameters "commands=[\"/usr/local/bin/busbar-runner-register '$TOKEN' '$ORG' '$RUNNER_LABELS'\"]" \
-  --query 'Command.CommandId' --output text)" || die "send-command failed"
-unset TOKEN
-log "ssm command $CMD_ID dispatched; polling"
-
-log "ssm: $(ssm_wait "$CMD_ID" 60 10)"
+# THE MINT AND THE DISPATCH LIVE IN ci-runners-lib.sh (register_agents), not here. This script is
+# the operator's entry point to them; ci-runners-reconcile.sh calls the same function directly
+# rather than shelling out to this file — see the long comment above register_agents for the hour
+# of dead fleet that bought that rule.
+# shellcheck disable=SC2086  # a whitespace-separated id list and must word-split
+register_agents $ONLINE || die "registration failed (see above)"
+dry && exit 0
 
 log "org runners now registered:"
 gh api "/orgs/${ORG}/actions/runners" \

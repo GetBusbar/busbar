@@ -10,13 +10,45 @@
 //! singleton can be initialised once per test binary, which would leave the fold's order and skip
 //! rules provable only by booting binaries.
 
-use crate::plane::config::{config_sections, config_sections_from, refuse_cross_plane_reference};
+use crate::plane::config::refuse_cross_plane_reference;
 use crate::plane::registry::{
-    build_dispatch, builtin_plane_decls, install_planes, merged_boot_plane_decls, plane_decl_for,
-    PlaneDecl,
+    build_dispatch, builtin_plane_decls, plane_decl_for, table, PlaneDecl,
 };
+use busbar_contract::plane::registry::{PlaneDeclaration, CORE_OWNED_CONCRETE_SECTIONS};
 use std::any::Any;
 use std::collections::BTreeMap;
+
+/// THE BOOT FOLD over behaviour rows: each row's facts, folded by the contract, the survivors
+/// returned. The skip report is read where a test asserts on it.
+fn merged_boot_plane_decls(
+    installed: &[&'static PlaneDecl],
+    builtins: &[&'static PlaneDecl],
+) -> Vec<PlaneDeclaration> {
+    boot_fold(installed, builtins).decls
+}
+
+fn boot_fold(
+    installed: &[&'static PlaneDecl],
+    builtins: &[&'static PlaneDecl],
+) -> busbar_contract::plane::registry::BootFold {
+    let facts = |rows: &[&'static PlaneDecl]| -> Vec<PlaneDeclaration> {
+        rows.iter().map(|d| table::declaration_of(d)).collect()
+    };
+    busbar_contract::plane::registry::merged_boot_plane_decls(&facts(installed), &facts(builtins))
+}
+
+/// The facts of a set of behaviour rows — what the contract folds.
+fn facts_of(rows: &[&'static PlaneDecl]) -> Vec<PlaneDeclaration> {
+    rows.iter().map(|d| table::declaration_of(d)).collect()
+}
+
+/// THE SECTION FOLD over a given list, with the process wrapper's own trailing sections.
+fn config_sections_from(decls: &[PlaneDeclaration]) -> Vec<&'static str> {
+    busbar_contract::plane::registry::config_sections_from(
+        decls,
+        &busbar_substrate::plane::config::NAMED_MAP_SECTIONS,
+    )
+}
 
 /// THE SHIPPED `[llm, mcp, a2a]` PROCESS PLANE LIST for core's OWN test binary. The three plane
 /// crates are dev-dependencies here, so this names their public `PLANE_DECL`s across the honest crate
@@ -76,7 +108,7 @@ static WIDGET_PLANE: PlaneDecl = PlaneDecl {
     owned_config_sections: &[],
 };
 
-fn installed() -> Vec<&'static PlaneDecl> {
+fn installed() -> Vec<PlaneDeclaration> {
     merged_boot_plane_decls(&[&WIDGET_PLANE], builtin_plane_decls())
 }
 
@@ -104,7 +136,7 @@ fn an_installed_plane_reaches_the_cross_plane_refusal() {
 
     // THE CONTROL: without the registration, core has no idea `widgets:` is a plane, and the same
     // reference gets the generic not-a-bare-name sentence instead. This is what the seam changed.
-    let builtin_only = config_sections_from(builtin_plane_decls());
+    let builtin_only = config_sections_from(&facts_of(builtin_plane_decls()));
     let refusal = refuse_cross_plane_reference("widgets.reporter", "widgets.audit", &builtin_only)
         .expect_err("still refused, but for a different reason");
     assert!(
@@ -155,7 +187,7 @@ fn installed_planes_fold_ahead_and_the_builtin_order_is_unchanged() {
     let mut without_widgets = sections.clone();
     without_widgets.retain(|s| *s != "widgets");
     assert_eq!(
-        config_sections_from(builtin_plane_decls()),
+        config_sections_from(&facts_of(builtin_plane_decls())),
         without_widgets,
         "removing the installed plane leaves the built-in grammar byte-identical"
     );
@@ -203,7 +235,14 @@ fn a_same_key_registration_is_skipped_and_the_first_copy_wins() {
         owned_config_sections: &[],
     };
 
-    let folded = merged_boot_plane_decls(&[&A2A_FROM_THE_CRATE], builtin_plane_decls());
+    let fold = boot_fold(&[&A2A_FROM_THE_CRATE], builtin_plane_decls());
+    // The skip is REPORTED, not only logged: it is the built-in copy that was skipped.
+    assert_eq!(
+        fold.skipped,
+        ["a2a"],
+        "the later (built-in) a2a copy is the one skipped"
+    );
+    let folded = fold.decls;
     let keys: Vec<&str> = folded.iter().map(|d| d.key).collect();
     assert_eq!(
         keys,
@@ -217,8 +256,9 @@ fn a_same_key_registration_is_skipped_and_the_first_copy_wins() {
         .iter()
         .find(|d| d.key == "a2a")
         .expect("the folded set has an a2a entry");
-    assert!(
-        std::ptr::eq(*a2a_entry, &A2A_FROM_THE_CRATE),
+    assert_eq!(
+        *a2a_entry,
+        table::declaration_of(&A2A_FROM_THE_CRATE),
         "the installed copy is the one that survives"
     );
     // And the grammar does not gain a duplicate section from the doubled registration.
@@ -245,7 +285,11 @@ fn every_plane_key_answers_from_its_declaration() {
     let _isolation = busbar_substrate::plane::registry::TestRegistryIsolation::empty();
     for decl in builtin_plane_decls() {
         let resolved = plane_decl_for(decl.key).expect("every built-in key resolves to a decl");
-        assert!(std::ptr::eq(resolved, *decl));
+        assert_eq!(*resolved, table::declaration_of(decl));
+        // And the BEHAVIOUR row the key resolves to is the built-in row itself, not a copy.
+        let row = crate::plane::registry::behaviour_for(decl.key)
+            .expect("every built-in key resolves to its behaviour row");
+        assert!(std::ptr::eq(row, *decl));
         assert_eq!(
             crate::plane::wire_format_names(decl.key),
             (decl.wire_format_names)()
@@ -306,7 +350,12 @@ fn a_registered_plane_cannot_collide_with_a_builtin_vocabulary() {
         "scope kinds collide: {scope_kinds:?}"
     );
 
-    let mut audit_kinds: Vec<&str> = folded.iter().map(|d| d.audit_kind).collect();
+    // The audit kind is a BEHAVIOUR-row fact (not in the contract's declaration), so it is read off
+    // the rows the fold was given: the registered plane's own row and the built-ins.
+    let rows: Vec<&'static PlaneDecl> = std::iter::once(&WIDGET_PLANE)
+        .chain(builtin_plane_decls().iter().copied())
+        .collect();
+    let mut audit_kinds: Vec<&str> = rows.iter().map(|d| d.audit_kind).collect();
     let before = audit_kinds.len();
     audit_kinds.sort_unstable();
     audit_kinds.dedup();
@@ -335,7 +384,8 @@ fn a_registered_plane_cannot_collide_with_a_builtin_vocabulary() {
 /// that routes through `scope_kind_index` is proven to invert the decoder here.
 #[test]
 fn the_scope_kind_index_is_the_exact_inverse_of_scope_kind_at() {
-    use crate::plane::registry::{scope_kind_at, scope_kind_index};
+    use crate::plane::registry::scope_kind_at;
+    use busbar_contract::plane::registry::scope_kind_index;
     // The neutral base kind plus every kind any registered plane declares — the full vocabulary the
     // two functions share. Iterating this (rather than a literal list) means a plane adding a kind
     // is covered with no edit here.
@@ -363,25 +413,6 @@ fn the_scope_kind_index_is_the_exact_inverse_of_scope_kind_at() {
         None,
         "an undeclared kind must have no index (fail-closed)"
     );
-}
-
-/// INSTALL BEFORE FIRST READ, enforced. The module header states the invariant: a declaration
-/// installed after another layer resolved against the smaller (built-ins-only) set would mean two
-/// layers of one process disagree about which planes exist, so [`install_planes`] must refuse to
-/// run once the process plane list has been read even once.
-///
-/// This is the ONLY test in the crate that calls [`install_planes`], deliberately: it is a write to
-/// process-global `OnceLock`s, and a second call anywhere else in this binary would make this test's
-/// outcome depend on test execution order. [`config_sections`] is called here specifically to force
-/// the read `install_planes` must then refuse to follow — it is exercised incidentally by many other
-/// tests in this crate's test binary already (any test that reaches
-/// `plane::config::config_sections()`), so this call is not what makes the read happen; it is what
-/// makes the read happen NO LATER than this test needs it to, regardless of what ran before it.
-#[test]
-#[should_panic(expected = "install_planes called after the plane list was first read")]
-fn install_planes_after_first_read_panics() {
-    let _ = config_sections();
-    install_planes(&[]);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -942,7 +973,7 @@ fn dup_claim_guard_fires_when_two_planes_claim_the_same_section() {
     let decls: Vec<&'static PlaneDecl> = vec![&ALPHA_CLAIMS_FOO, &BETA_CLAIMS_FOO];
     let err = crate::plane::registry::check_owned_config_claims(
         &decls,
-        crate::plane::registry::CORE_OWNED_CONCRETE_SECTIONS,
+        CORE_OWNED_CONCRETE_SECTIONS,
     )
     .expect_err("two planes claiming section `foo` MUST be refused — one plane's grammar would answer for the other's");
     assert!(
@@ -956,7 +987,7 @@ fn dup_claim_guard_fires_when_a_plane_claims_a_core_owned_section() {
     let decls: Vec<&'static PlaneDecl> = vec![&GAMMA_CLAIMS_RATE_CARD];
     let err = crate::plane::registry::check_owned_config_claims(
         &decls,
-        crate::plane::registry::CORE_OWNED_CONCRETE_SECTIONS,
+        CORE_OWNED_CONCRETE_SECTIONS,
     )
     .expect_err("claiming `rate_card` while core still owns it concretely MUST be refused — the grammar would be declared twice");
     assert!(
@@ -986,13 +1017,13 @@ fn dup_claim_guard_admits_streams_alone_and_refuses_a_streams_collision() {
     // M5: `streams` is NOT in `CORE_OWNED_CONCRETE_SECTIONS`, so voice's lone claim is ADMITTED.
     crate::plane::registry::check_owned_config_claims(
         &[&ONE_CLAIMS_STREAMS],
-        crate::plane::registry::CORE_OWNED_CONCRETE_SECTIONS,
+        CORE_OWNED_CONCRETE_SECTIONS,
     )
     .expect("`streams` is not core-owned and has one claimant — the voice claim must be admitted");
     // A SECOND claimant of `streams` is refused by construction, naming both planes and the section.
     let err = crate::plane::registry::check_owned_config_claims(
         &[&ONE_CLAIMS_STREAMS, &TWO_CLAIMS_STREAMS],
-        crate::plane::registry::CORE_OWNED_CONCRETE_SECTIONS,
+        CORE_OWNED_CONCRETE_SECTIONS,
     )
     .expect_err("two planes claiming `streams` MUST be refused — one plane's grammar would answer for the other's");
     assert!(
@@ -1005,10 +1036,7 @@ fn dup_claim_guard_admits_streams_alone_and_refuses_a_streams_collision() {
 fn dup_claim_guard_passes_for_the_shipped_empty_registry() {
     // STAGE 1 INVARIANT: every shipped plane claims `&[]`, so the guard is a no-op over the real set.
     let decls = merged_boot_plane_decls(&[], builtin_plane_decls());
-    crate::plane::registry::check_owned_config_claims(
-        &decls,
-        crate::plane::registry::CORE_OWNED_CONCRETE_SECTIONS,
-    )
+    busbar_contract::plane::registry::check_owned_config_claims(&decls, CORE_OWNED_CONCRETE_SECTIONS)
     .expect("stage 1 ships an EMPTY owned-config registry — no plane claims any section, so the guard must pass");
     for decl in &decls {
         assert!(
@@ -1016,5 +1044,83 @@ fn dup_claim_guard_passes_for_the_shipped_empty_registry() {
             "stage 1 is infra-only: plane `{}` must claim NO owned config sections (registry starts empty)",
             decl.key
         );
+    }
+}
+
+/// THE SEEDING SHIM for core's OWN test binary: it carries [`TEST_BUILTIN_PLANE_DECLS`] and has no
+/// bootstrap that runs before an arbitrary test, so every read goes through here and installs the
+/// rows first (idempotent). The names mirror the production `use`s in `plane/registry.rs`.
+pub(crate) mod seeded {
+    use super::TEST_BUILTIN_PLANE_DECLS;
+    use crate::plane::registry::table;
+    use crate::plane::registry::PlaneDecl;
+    use busbar_contract::plane::registry::{self as list, PlaneDeclaration};
+
+    /// Hand the built-in rows across as data, exactly as the composition root's installer does.
+    pub(crate) fn seed() {
+        list::install_builtins(
+            TEST_BUILTIN_PLANE_DECLS
+                .iter()
+                .map(|d| table::declaration_of(d))
+                .collect(),
+        );
+        // The test surface's growable registration set is the contract list's LATE source: bound
+        // here, at the one seeding point every read of core's test binary goes through, because the
+        // substrate is frozen and its `register_test_plane` cannot bind it itself.
+        list::install_late_registration_source(|| {
+            busbar_substrate::plane::registry::test_registered_planes()
+                .into_iter()
+                .map(table::declaration_of)
+                .collect()
+        });
+        table::builtins::install_builtin_behaviours(TEST_BUILTIN_PLANE_DECLS);
+        for decl in TEST_BUILTIN_PLANE_DECLS {
+            for kind in decl.scope_kinds {
+                busbar_api::register_scope_kind(kind);
+            }
+        }
+    }
+
+    pub(crate) fn plane_decls() -> &'static [PlaneDeclaration] {
+        seed();
+        list::plane_decls()
+    }
+    pub(crate) fn plane_decl_for(key: &str) -> Option<&'static PlaneDeclaration> {
+        seed();
+        list::plane_decl_for(key)
+    }
+    pub(crate) fn plane_decl_for_config_section(
+        section: &str,
+    ) -> Option<&'static PlaneDeclaration> {
+        seed();
+        list::plane_decl_for_config_section(section)
+    }
+    pub(crate) fn plane_key_index(key: &str) -> u8 {
+        seed();
+        list::plane_key_index(key)
+    }
+    pub(crate) fn plane_key_at(idx: u8) -> Option<&'static str> {
+        seed();
+        list::plane_key_at(idx)
+    }
+    pub(crate) fn scope_kind_at(idx: u32) -> Option<&'static str> {
+        seed();
+        list::scope_kind_at(idx)
+    }
+    pub(crate) fn behaviour_for(key: &str) -> Option<&'static PlaneDecl> {
+        seed();
+        table::behaviour_for(key)
+    }
+    pub(crate) fn behaviour_for_config_section(section: &str) -> Option<&'static PlaneDecl> {
+        seed();
+        table::behaviour_for_config_section(section)
+    }
+    pub(crate) fn plane_behaviours() -> Vec<&'static PlaneDecl> {
+        seed();
+        table::plane_behaviours()
+    }
+    pub(crate) fn config_sections() -> Vec<&'static str> {
+        seed();
+        crate::plane::config::config_sections_folded()
     }
 }

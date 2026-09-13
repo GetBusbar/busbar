@@ -40,17 +40,27 @@ remote_wrapper
 BATCH=""
 i=0
 while [ $i -lt ${#ARGS[@]} ]; do
-  [ "${ARGS[$i]}" = "--batch" ] && BATCH="${ARGS[$((i+1))]}"
+  if [ "${ARGS[$i]}" = "--batch" ]; then
+    BATCH="${ARGS[$((i+1))]}"
+    # THE BOX SEES A REPO-RELATIVE PATH. The queue runner hands land.sh an absolute path under the
+    # tree; the box's checkout is at a different absolute path, so the batch travels by its path
+    # RELATIVE TO THE REPO and the remote argv carries that. A path outside the repo is refused:
+    # there is nowhere on the box to put it that land.sh there would find.
+    case "$BATCH" in
+      "$REPO"/*) BATCH="${BATCH#"$REPO"/}"; ARGS[$((i+1))]="$BATCH" ;;
+      /*) rdie "--batch: $BATCH is outside the repository $REPO" ;;
+    esac
+  fi
   i=$((i+1))
 done
 
 REF="land-$(date -u +%Y%m%d-%H%M%S)-$$"
 HASHES=""
 if [ -n "$BATCH" ]; then
-  [ -f "$BATCH" ] || rdie "--batch: no such file: $BATCH"
+  [ -f "$REPO/$BATCH" ] || rdie "--batch: no such file: $REPO/$BATCH"
   # Every token that resolves to a commit in THIS repository. A token that does not resolve is not
   # this script's problem to diagnose — land.sh on the box will say so, in its own words.
-  for tok in $(tr -s ' \t' '\n\n' < "$BATCH" | grep -Eo '^[0-9a-f]{7,40}$' | sort -u); do
+  for tok in $(tr -s ' \t' '\n\n' < "$REPO/$BATCH" | grep -Eo '^[0-9a-f]{7,40}$' | sort -u); do
     git -C "$REPO" rev-parse -q --verify "$tok^{commit}" >/dev/null 2>&1 && HASHES="$HASHES $tok"
   done
 else
@@ -70,8 +80,17 @@ RBATCH=""
 if [ -n "$BATCH" ]; then
   RBATCH="busbar-prove/${BATCH#./}"
   rsh "$HOST" mkdir -p "$(dirname "$RBATCH")"
-  rcp_to "$HOST" "$BATCH" "$RBATCH" || rdie "could not copy $BATCH to $HOST"
+  rcp_to "$HOST" "$REPO/$BATCH" "$RBATCH" || rdie "could not copy $REPO/$BATCH to $HOST"
 fi
+# THE ENGINE THE BOX RUNS IS THE ONE THE RUNNER CHOSE. The tree's own scripts/land.sh at the pushed
+# HEAD is whatever landed last; the runner may be carrying a fixed land.sh that is itself in the
+# queue (the local runner already runs a copy of it, `land.run.sh`). Running the tree's copy on the
+# box meant a landing was judged by an engine older than the one on the laptop, and the first fleet
+# batch was bisected by a self-test the fix in the batch had already cured. So the runner's land.sh
+# — this script's sibling — travels to the box and is what runs there.
+rsh "$HOST" mkdir -p busbar-prove/target/gate
+ENGINE="$HERE/land.sh"; [ -f "$HERE/land.run.sh" ] && ENGINE="$HERE/land.run.sh"   # the runner's copy is named land.run.sh
+rcp_to "$HOST" "$ENGINE" "busbar-prove/target/gate/land.run.sh" || rdie "could not copy the runner's land.sh ($ENGINE) to $HOST"
 
 # The remote argv is this one with the batch path rewritten to the box's copy.
 RARGS=()
@@ -81,18 +100,31 @@ done
 
 START=$(date +%s)
 set +e
-rsh_script "$HOST" "$REF" "${RARGS[@]}" <<'RUN'
+# DETACHED ON THE BOX, POLLED FROM HERE. The SSM-tunnelled ssh session dies after roughly 3000
+# seconds whatever ServerAlive says (observed: every landing longer than that ended in a dead
+# session and a proof with no verdict). So the box runs land.sh under setsid with its log and its
+# exit status on disk, this side polls with SHORT sessions, and no proof is ever bounded by how long
+# one ssh connection survives. The verdict is the .rc file: absent = still running, present =
+# land.sh's own exit status. There is no "the session ended so it must have finished" path.
+RLOG="busbar-prove/target/land-remote-$REF.log"
+RRC="busbar-prove/target/land-remote-$REF.rc"
+# THE RUNNER'S CEILING TRAVELS WITH THE JOB. The block below is a quoted heredoc, so a
+# `${XTASK_GATE_CEILING_SECS:-1800}` inside it is expanded on the BOX, where nothing sets it: the
+# runner's 3600 never arrived and the box judged with 1800 (seen: a green tree reported "hung").
+# It goes across as a positional, the one channel this script already owns.
+rsh_script "$HOST" "$REF" "${XTASK_GATE_CEILING_SECS:-3600}" "${RARGS[@]}" <<'RUN'
 set -uo pipefail
-REF="$1"; shift
+REF="$1"; CEIL="$2"; shift 2
 export PATH="$HOME/.cargo/bin:$PATH"
-export CARGO_TERM_COLOR=always CARGO_INCREMENTAL=0
+export CARGO_TERM_COLOR=never CARGO_INCREMENTAL=0
 export RUSTC_WRAPPER=sccache SCCACHE_DIR=/var/cache/sccache SCCACHE_CACHE_SIZE=60G
 # A SERVER PORT OF ITS OWN. sccache's server is addressed by a TCP port that defaults to
 # 4226 for every process on the box; the four runner agents each hold one of their own, and
 # joining theirs would mean a neighbour's `sccache --stop-server` killing this proof
 # mid-compile — seen once, as `Connection reset by peer` inside rustc.
 export SCCACHE_SERVER_PORT="${SCCACHE_SERVER_PORT:-4300}"
-export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-8}"
+export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-16}"
+export XTASK_GATE_CEILING_SECS="$CEIL"
 # LAND_REMOTE_INNER is the loop-breaker: this copy of land.sh must run the engine, not delegate.
 export LAND_REMOTE_INNER=1
 # The box may be running four proofs at once; the recorder's fixed port block would collide.
@@ -101,10 +133,44 @@ cd "$HOME/busbar-prove" || { echo "no ~/busbar-prove — ./scripts/prove-remote.
 git fetch -q prove "+refs/heads/$REF:refs/heads/$REF" "+refs/proof/$REF/*:refs/proof/$REF/*" "+refs/audit-pins/*:refs/audit-pins/*" || exit 2
 git checkout -q -f "$REF" || exit 2
 git clean -qffdx -e target -e .cargo -e node_modules
-echo "remote tree: $(git rev-parse --short HEAD)  on $(hostname)"
-exec ./scripts/land.sh "$@"
+mkdir -p target
+LOG="target/land-remote-$REF.log"; RC="target/land-remote-$REF.rc"
+rm -f "$RC"
+echo "remote tree: $(git rev-parse --short HEAD)  on $(hostname)" >"$LOG"
+# The landed tip is published to the bare repo under refs/heads/<ref>-landed the moment land.sh
+# returns, whatever its status: a partially green batch has a tip too, and the local side
+# fast-forwards to exactly what the box proved.
+# The runner's engine, with its tree root pointed at this checkout.
+sed "s|^here=.*|here=\"$HOME/busbar-prove\"|" target/gate/land.run.sh >target/gate/land.run.local.sh
+setsid nohup bash -c '
+  bash target/gate/land.run.local.sh "$@" >>"'"$LOG"'" 2>&1; rc=$?
+  git push -q --force prove "HEAD:refs/heads/'"$REF"'-landed" >>"'"$LOG"'" 2>&1
+  echo $rc >"'"$RC"'"
+' _ "$@" >/dev/null 2>&1 </dev/null &
+echo "detached: $LOG"
 RUN
-RC=$?
+[ $? -eq 0 ] || { rlog "could not start the landing on $HOST"; exit 2; }
+
+# POLL. Every 60 s: the .rc file (the verdict), then the log's new bytes (the operator's view).
+RC=""; SEEN=0; QUIET=0
+while :; do
+  sleep 60
+  out="$(rsh "$HOST" bash -c "cat $RRC 2>/dev/null; echo ::; wc -c <$RLOG 2>/dev/null" </dev/null 2>/dev/null)"
+  if [ -z "$out" ]; then
+    QUIET=$((QUIET + 1))
+    [ "$QUIET" -ge 10 ] && { rlog "ERROR: $HOST unreachable for 10 polls — no verdict"; RC=2; break; }
+    continue
+  fi
+  QUIET=0
+  rc_now="${out%%::*}"; rc_now="$(printf '%s' "$rc_now" | tr -d '[:space:]')"
+  size="${out##*::}"; size="$(printf '%s' "$size" | tr -d '[:space:]')"
+  case "$size" in ''|*[!0-9]*) size=0 ;; esac
+  if [ "$size" -gt "$SEEN" ]; then
+    rsh "$HOST" tail -c +"$((SEEN + 1))" "$RLOG" </dev/null 2>/dev/null | sed 's/^/  | /' >&2
+    SEEN="$size"
+  fi
+  if [ -n "$rc_now" ]; then RC="$rc_now"; break; fi
+done
 set -e
 END=$(date +%s)
 
@@ -112,12 +178,33 @@ END=$(date +%s)
 # <batch>.result and nothing else; if it is not here, the queue runner reads a landing that never
 # reported, which is worse than a red.
 if [ -n "$BATCH" ]; then
-  if rcp_back "$HOST" "$RBATCH.result" "$BATCH.result"; then
-    rlog "per-line outcomes: $BATCH.result"
-    sed 's/^/  /' "$BATCH.result" >&2
+  if rcp_back "$HOST" "$RBATCH.result" "$REPO/$BATCH.result"; then
+    rlog "per-line outcomes: $REPO/$BATCH.result"
+    sed 's/^/  /' "$REPO/$BATCH.result" >&2
   else
     rlog "WARNING: no $RBATCH.result on $HOST — the batch did not reach its reporting stage"
   fi
+  # land.sh on the box appended its rows to the box's land-done.txt; they belong in ours.
+  rcp_back "$HOST" "busbar-prove/target/gate/land-done.txt" "$REPO/$BATCH.remote-done" 2>/dev/null \
+    && { grep -F -v -x -f "$REPO/target/gate/land-done.txt" "$REPO/$BATCH.remote-done" >>"$REPO/target/gate/land-done.txt" 2>/dev/null || true; rm -f "$REPO/$BATCH.remote-done"; }
+fi
+
+# THE LANDED TIP COMES BACK TOO. What the box proved is what this tree must now be at: the local
+# HEAD was the base the box started from, so a fast-forward is the only honest move — anything
+# else means the tree here and the tree proved there have diverged, and that is a refusal.
+if GIT_SSH_COMMAND="$SSH_WRAP" git -C "$REPO" fetch -q "ssh://$REMOTE_USER@$HOST/~/$REMOTE_BARE" "+refs/heads/$REF-landed:refs/remotes/landed/$REF" 2>/dev/null; then
+  landed="$(git -C "$REPO" rev-parse "refs/remotes/landed/$REF")"
+  if [ "$landed" != "$(git -C "$REPO" rev-parse HEAD)" ]; then
+    if git -C "$REPO" merge -q --ff-only "$landed" 2>/dev/null; then
+      rlog "tree fast-forwarded to the landed tip $(git -C "$REPO" rev-parse --short HEAD)"
+    else
+      rlog "ERROR: the landed tip $(echo "$landed" | cut -c1-9) is not a fast-forward of this tree — refusing"; RC=2
+    fi
+  fi
+  git -C "$REPO" update-ref -d "refs/remotes/landed/$REF" 2>/dev/null || true
+else
+  rlog "WARNING: no landed tip came back from $HOST (refs/heads/$REF-landed)"
+  [ "$RC" = 0 ] && RC=2
 fi
 rlog "host $HOST   exit $RC   wall $(( END - START ))s"
 exit "$RC"

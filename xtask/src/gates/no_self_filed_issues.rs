@@ -338,7 +338,7 @@ impl Gate for NoSelfFiledIssuesGate {
         Some(translate(run))
     }
 
-    fn selftest(&self, cx: &Ctx) -> Report {
+    fn selftest<'a>(&'a self, cx: &'a Ctx) -> Report<'a> {
         let mut report = Report::new();
         report.push(prove_green(
             cx,

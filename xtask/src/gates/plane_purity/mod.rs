@@ -376,7 +376,7 @@ impl Gate for PlanePurityGate {
         Verdict::of(rows)
     }
 
-    fn selftest(&self, cx: &Ctx) -> Report {
+    fn selftest<'a>(&'a self, cx: &'a Ctx) -> Report<'a> {
         let mut report = Report::new();
         let owed: Vec<String> = self.owed();
         let all: Vec<&str> = owed.iter().map(String::as_str).collect();
@@ -850,7 +850,7 @@ impl Gate for PlanePurityStrictGate {
         Verdict::of(strict_rows(&ceilings, &cats, &reach))
     }
 
-    fn selftest(&self, cx: &Ctx) -> Report {
+    fn selftest<'a>(&'a self, cx: &'a Ctx) -> Report<'a> {
         let mut report = Report::new();
         let owed = self.owed();
         let base = cx.read(strict::STRICT_TOML).unwrap_or_default();
@@ -1085,15 +1085,15 @@ fn unscannable(owed: &[String], why: &str) -> Vec<Row> {
 }
 
 /// Plant a NEW file inside a scanned root and require RED naming the plant.
-fn create(
-    cx: &Ctx,
-    gate: &dyn Gate,
+fn create<'a>(
+    cx: &'a Ctx,
+    gate: &'a dyn Gate,
     name: &str,
     covers: &[&str],
     path: &str,
     content: &str,
     naming: &[&str],
-) -> Case {
+) -> crate::gates::CasePlan<'a> {
     let mut ov = Overlay::new();
     if Edit::Create(content.to_string())
         .apply(cx, path, &mut ov)
@@ -1106,21 +1106,22 @@ fn create(
                 naming: naming.iter().map(|s| (*s).to_string()).collect(),
             },
             got: Expect::Skipped,
-        };
+        }
+        .into();
     }
     prove_red(cx, gate, name, covers, ov, naming)
 }
 
 /// The control arm: the SAME shape planted with its excuse in place must be GREEN, or the RED case
 /// beside it proves only that the rule fires on everything.
-fn green_with(
-    cx: &Ctx,
-    gate: &dyn Gate,
+fn green_with<'a>(
+    cx: &'a Ctx,
+    gate: &'a dyn Gate,
     name: &str,
     covers: &[&str],
     path: &str,
     content: &str,
-) -> Case {
+) -> crate::gates::CasePlan<'a> {
     let mut ov = Overlay::new();
     if Edit::Create(content.to_string())
         .apply(cx, path, &mut ov)
@@ -1131,7 +1132,8 @@ fn green_with(
             covers: covers.iter().map(|s| (*s).to_string()).collect(),
             expected: Expect::Green,
             got: Expect::Skipped,
-        };
+        }
+        .into();
     }
     let planted = cx.with_overlay(ov);
     prove_green(&planted, gate, name, covers)

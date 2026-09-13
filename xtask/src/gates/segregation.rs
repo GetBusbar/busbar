@@ -148,7 +148,7 @@ impl Gate for SegregationGate {
         Verdict::of(rows)
     }
 
-    fn selftest(&self, cx: &Ctx) -> Report {
+    fn selftest<'a>(&'a self, cx: &'a Ctx) -> Report<'a> {
         let mut report = Report::new();
         report.push(prove_green(
             cx,
@@ -259,15 +259,15 @@ impl Gate for SegregationGate {
     }
 }
 
-fn plant(
-    cx: &Ctx,
-    gate: &dyn Gate,
+fn plant<'a>(
+    cx: &'a Ctx,
+    gate: &'a dyn Gate,
     name: &str,
     covers: &[&str],
     path: &str,
     edit: Edit,
     naming: &[&str],
-) -> Case {
+) -> crate::gates::CasePlan<'a> {
     let mut ov = Overlay::new();
     if edit.apply(cx, path, &mut ov).is_err() {
         // NOTHING TO PLANT (the rule's subject is absent from this tree) is a VISIBLE case in the
@@ -279,7 +279,8 @@ fn plant(
                 naming: naming.iter().map(|s| (*s).to_string()).collect(),
             },
             got: crate::gates::Expect::Skipped,
-        };
+        }
+        .into();
     }
     prove_red(cx, gate, name, covers, ov, naming)
 }

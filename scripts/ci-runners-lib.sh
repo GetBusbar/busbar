@@ -350,6 +350,65 @@ ssm_wait() { # $1 = command id, $2 = polls, $3 = seconds between. Echoes the fin
   printf 'TimedOut\n'
 }
 
+# ── Registration: the mint and the dispatch, IN THE LIBRARY ─────────────────────────────────────
+# THIS LIVED IN ci-runners-register.sh AND THE FLEET SAT AT 8 AGENTS OF 40 FOR AN HOUR BECAUSE OF
+# IT. ci-runners-reconcile.sh registered by SHELLING OUT to its sibling — `"$HERE/ci-runners-
+# register.sh" $REACHABLE >/dev/null 2>&1 || true` — and on 2026-09-10 the reconcile was being run
+# from a copied scripts directory that did not contain that sibling. Every pass printed
+# `registering: <eight boxes>` and then, truthfully but uselessly, "still no agents online on those
+# boxes — bootstrap is not finished": the exec had failed 127 into /dev/null, the `|| true` ate it,
+# and the summary line was indistinguishable from a fleet that was merely still booting. Eight
+# fully-bootstrapped 32-vCPU boxes idled with their runner tarballs unpacked and no credentials.
+#
+# So registration is a FUNCTION OF THE LIBRARY that every caller sources. A scripts directory that
+# can run the reconcile at all can register, because the reconcile cannot start without this file —
+# `. "$HERE/ci-runners-lib.sh"` is fatal when it is missing, where a missing sibling was silent.
+#
+# THE TOKEN IS MINTED HERE AND ONLY HERE. `gh api -X POST .../registration-token` returns a
+# ~60-minute credential; it travels to the boxes over SSM SendCommand (encrypted in transit, never
+# written to a file, never placed in user-data where any CI job could read it back out of the
+# metadata service) and is used within seconds. Nothing on the box persists it: after `config.sh`
+# runs the box holds a per-runner .credentials issued by GitHub, not this token.
+#
+# Returns 0 only when the dispatch actually succeeded on every named box. A caller that ignores the
+# status is re-introducing the defect above.
+register_agents() { # $@ = SSM-reachable instance ids. Echoes nothing; the log goes to stderr.
+  local ids="$*" token cid st
+  [ -n "$ids" ] || return 0
+  if dry; then
+    log "[dry-run] gh api -X POST /orgs/$ORG/actions/runners/registration-token" >&2
+    log "[dry-run] aws ssm send-command --instance-ids $ids  # busbar-runner-register <token> $ORG $RUNNER_LABELS" >&2
+    return 0
+  fi
+  # One call, one token, used immediately. If this 403s the org API limit is exhausted; wait for the
+  # reset rather than retrying in a loop (a retry loop is what exhausts it).
+  token="$(gh api -X POST "/orgs/${ORG}/actions/runners/registration-token" --jq .token 2>/dev/null)"
+  if [ -z "$token" ]; then
+    log "REGISTRATION FAILED: could not mint a token (rate limit? scope? needs admin:org)" >&2
+    return 1
+  fi
+  log "minted a registration token (not printed, expires in ~60 min)" >&2
+  # shellcheck disable=SC2086  # a whitespace-separated id list, one argv entry per instance
+  cid="$(aws ssm send-command \
+    --instance-ids $ids \
+    --document-name AWS-RunShellScript \
+    --comment "register busbar CI runners" \
+    --parameters "commands=[\"/usr/local/bin/busbar-runner-register '$token' '$ORG' '$RUNNER_LABELS'\"]" \
+    --query 'Command.CommandId' --output text 2>/dev/null)"
+  unset token
+  if [ -z "$cid" ]; then
+    log "REGISTRATION FAILED: send-command was not accepted" >&2
+    return 1
+  fi
+  st="$(ssm_wait "$cid" 60 10)"
+  log "ssm $cid: $st" >&2
+  case "$st" in
+    *Failed*|*TimedOut*|*Cancelled*|*Undeliverable*|*Terminated*)
+      log "REGISTRATION FAILED on at least one box: $st" >&2; return 1 ;;
+  esac
+  return 0
+}
+
 # The host list every remote entry point reads. Written here rather than only in ci-runners-ssh.sh
 # because it goes STALE the moment a spot box is reclaimed, and a stale entry makes the round-robin
 # allocator in ci-remote-lib.sh hand an agent a host that no longer exists.

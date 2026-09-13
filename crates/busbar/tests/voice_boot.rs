@@ -73,7 +73,7 @@ fn dup_claim_guard_refuses_a_planted_streams_collision() {
 #[test]
 fn registering_voice_puts_streams_into_config_sections() {
     register_test_plane(&busbar_voice::PLANE_DECL);
-    let sections = busbar_core::plane::config::config_sections();
+    let sections = busbar_core::plane::config::config_sections_folded();
     assert!(
         sections.contains(&"streams"),
         "voice's owned `streams:` section must reach the config grammar once the plane is \

@@ -377,42 +377,147 @@ const DEFAULT_BUDGET_UNITS: f64 = 9000.0;
 /// and I/O, so the proxy drifts a little with the machine; and the failure being caught is a rule
 /// that grew a whole-tree scan per plant, which is a factor of ten. A budget tight enough to flap
 /// is a budget somebody raises without reading it.
-const SELFTEST_BUDGETS: &[(&str, f64, &str)] = &[
-    (
-        "plane-purity",
-        80000.0,
-        "25 792 units measured, the dearest self-test in the registry by a factor of two. Not analysed here; the entry is the measurement, written down so that a doubling is a red row rather than four minutes nobody attributes. It is the first name on the shard's own drain list.",
-    ),
-    (
-        "plane-purity-strict",
-        45000.0,
-        "13 959 units measured, the ratcheted twin of plane-purity and the second name on the same drain list. Not analysed here either.",
-    ),
-    (
-        "structure-lint",
-        22000.0,
-        "6 914 units measured. One gate over a dozen rule families, each with its own planted tree, and the census walks the whole workspace.",
-    ),
-    (
-        "audit-ledger",
-        22000.0,
-        "6 552 units measured, down from 7 868 once the reachability rule stopped forking a `merge-base` per record per pin. What is left is `ls-tree` and `cat-file` per planted register, which is the instrument reading the repository rather than the register.",
-    ),
-    (
-        "construction",
-        50000.0,
-        "about 15 600 units: thirty-six rules over a 660k-line tree, thirty cases, the plants grouped by family so one case carries every edit a family needs. The file scan is memoised; what is left is the rules themselves.",
-    ),
-    (
-        "kind-isolation",
-        310000.0,
-        "102 581 units measured over 126 cases, up from 86 069 over 107 when the VAULT DOOR round-two LOCK landed: the compiled set held against the scanned set (every `mod`/`#[path]` resolved to the file the compiler opens, and a `git check-ignore` hit on one reported in its own words), `include!` on the marker list with its argument read across lines and either resolved or refused, the build script held to the DIRECTORY rather than to the name, the entry face read as TOKENS so a `use … as` rename and a rustfmt-wrapped header are the same implementation, and a case for each of the ten registry-parser refusals a mutation campaign found unproven. Nineteen cases for about nineteen per cent more work: the new source-side rules lex every line of every file, which is why the per-file compiled set is memoised on (path, bytes) exactly as `matrix.rs` memoises its scan. Before that: 86 069 over 107, up from 79 594 over 88 when the round-two rules landed: the merge-base provenance of the ledger (a `[[dep]]` row may RECORD a not-allowed edge and never INTRODUCE one; a minted `[[cell]]` is a 0 -> N raise), the census refusals that fail closed, and the manifest reader's own unreadable-line report. Nineteen cases for about eight per cent more work, which is the shape a battery grows in when the new rules read history rather than the tree: the merge-base is read ONCE per process and memoised, so the cost is the plants, not the git. Before that: up from 19 500 when the dependency side landed -- eleven rows rather than eight, and a plant that ADDS OR REMOVES A CRATE changes the derived vocabulary and invalidates the matrix memo, which thirty of those cases do, because a census that walks the whole repository is proven by planting crates in it.",
-    ),
-    (
-        "kind-isolation-ship",
-        285000.0,
-        "94 236 units measured over 104 cases, up from 80 289 over 86 when the round-two LOCK landed. The twin owes the shared arm, so it carries the compiled-set, include-argument, build-script and registry-refusal cases; it does NOT carry the `impl<T: Trait>` green arm, because `:faces` is red on the real tree at ship time BY DESIGN and a green assertion there would be asserting that the four standing foreign faces are drained. Before that: 80 289 over 86, up from 79 940 over 80: the same eleven rows, plus the ship ones -- the source index, the shape check, the control-path scan and the conformance battery walk -- which are not on the per-push twin. The round-two census cases are in the shared arm, so the twin owes six of them; the ledger-provenance cases are not, because the twin does not read the ledger. Half a per cent for six cases, which is what a case that plants ONE manifest costs when the memos hold. It sat at 79 940 against a budget of 80 000 once, which is a budget that flaps rather than one that catches anything.",
-    ),
+/// WHEN AND ON WHAT EVERY MEASUREMENT BELOW WAS TAKEN. One constant, because they were taken in one
+/// sitting on one tree — and because a re-baseline that moves the numbers and not the date is the
+/// failure this whole shape exists to make impossible.
+const TAKEN: &str = "2026-09-10 b6f66e929";
+
+/// WHEN AND ON WHAT `plane-purity` ALONE WAS RE-TAKEN, and why it has its own date.
+///
+/// The row is split out of [`TAKEN`] rather than re-stamping the sitting: the other five entries
+/// were not re-measured here, and moving their date to say they were is the one thing this shape
+/// exists to prevent. The struct carries `taken` per row for exactly this — one number moved, one
+/// provenance moved with it.
+///
+/// It moved because THE TREE GREW SOURCE THIS GATE SCANS, not because a rule got dearer. The same
+/// sixteen cases run; four of them are whole-tree plants over the plane crates, and this landing
+/// adds a `src/meta.rs` to each of the four `busbar-plane-*` crates for them to read. MEASURED back
+/// to back on one machine at `--jobs 16`: 28 191 units on the base and 34 602 with this line, so
+/// the cost is the new files and nothing else. That is the re-measurement the owner's rule admits —
+/// it describes what the machine did over the same cases and permits no new coupling, surface or
+/// LOC anywhere — and not a raise, which is the other door and needs a face.
+const TAKEN_PLANE_PURITY: &str = "2026-09-12 4e548f36c";
+
+// THE MEASUREMENTS. Each is `work units at --jobs 1` on the tree named in [`TAKEN`], read off the
+// self-test's own cost line. Constants rather than literals inside the table so that a re-baseline
+// is a diff a reviewer can read as a list of numbers that moved.
+const MEASURED_PLANE_PURITY: f64 = 31_877.0; // 16 cases, 475.5 s — on TAKEN_PLANE_PURITY's tree
+const MEASURED_PLANE_PURITY_STRICT: f64 = 19_435.0; // 12 cases, 202.1 s
+const MEASURED_STRUCTURE_LINT: f64 = 7_938.0; // 39 cases, 88.4 s
+const MEASURED_CONSTRUCTION: f64 = 33_096.0; // 36 cases, 352.4 s
+const MEASURED_KIND_ISOLATION: f64 = 128_034.0; // 152 cases, 1360.9 s
+const MEASURED_KIND_ISOLATION_SHIP: f64 = 120_208.0; // 122 cases, 1290.7 s
+
+// `audit-ledger` MEASURED 4 433 UNITS (14 cases, 46.5 s) AND NO LONGER HAS AN ENTRY. Its budget was
+// 22 000 against a note claiming 6 552; times the declared slack its measurement asks for 7 093,
+// which is BELOW `DEFAULT_BUDGET_UNITS`. An exception that no longer excuses anything is a line
+// nobody re-reads, so it is struck rather than re-baselined — the default covers it with room, and
+// if the gate grows back past 9 000 the default is what says so. This is the same stale-waiver rule
+// the tree applies to every other exception it carries.
+
+/// ONE BUDGETED SELF-TEST: WHAT IT MEASURED, WHEN, ON WHAT, AND WHAT IT IS ALLOWED.
+///
+/// A STRUCT AND NOT A TUPLE OF PROSE, because the thing that went wrong here was prose. The
+/// `construction` entry's note said "about 15 600 units"; the tree measured three times that, under
+/// a budget it was within seven per cent of blowing. A number a reader cannot check against a
+/// measurement is not a guard, it is a number — and every arm below is now checked by
+/// `every_budget_carries_the_measurement_it_was_set_from`.
+pub struct Budget {
+    /// The registered gate this is about.
+    pub gate: &'static str,
+    /// WHAT IT MEASURED, at `--jobs 1`, on the tree and date in `taken`. The entry IS this number;
+    /// `allowed` is derived from it.
+    pub measured: f64,
+    /// What the self-test may spend before it is RED: `measured` times [`BUDGET_SLACK`].
+    pub allowed: f64,
+    /// WHEN AND ON WHAT, as `YYYY-MM-DD <sha>` — so a reader can re-take the measurement on the
+    /// same tree, and so an entry whose tree is long gone is visibly old rather than quietly wrong.
+    pub taken: &'static str,
+    /// What the gate is doing with the time. Not the budget's justification — the slack is that,
+    /// and it is declared once for all of them — but what a reader needs in order to act on a
+    /// regression.
+    pub why: &'static str,
+}
+
+/// THE SLACK OVER THE MEASUREMENT, DECLARED ONCE AND MEASURED RATHER THAN GUESSED.
+///
+/// It used to be "about three times what the gate measured", for two reasons: the ruler drifts with
+/// the machine, and the failure being caught is a factor of ten. The first half is now a number
+/// instead of an adjective. With the ruler read on the worker between cases (see
+/// [`work_unit_here`]), `structure-lint` measured, on one box, in one sitting:
+///
+/// ```text
+/// jobs    summed     units    vs serial
+///    1     96.0 s     7934      1.00x
+///    4     99.1 s     7980      1.01x
+///    8    116.5 s     8330      1.05x
+///   12    142.1 s     9323      1.18x
+///   18    179.7 s    11367      1.43x
+/// ```
+///
+/// So the ruler's own spread, between the serial figure written into an entry and the worst reading
+/// the harness's DEFAULT job count produces, is 1.43x. THE SLACK IS 1.6x: that measured worst case
+/// with a little room, and nothing else. It still catches what the budget is for — a rule that grew
+/// a whole-tree scan per plant, a factor of ten — with a margin of six.
+///
+/// It is deliberately TIGHTER than the three it replaces. Three times a measurement that was itself
+/// three times stale is how `construction` came to sit at 93 per cent of a budget its own note said
+/// it used a third of.
+pub const BUDGET_SLACK: f64 = 1.6;
+
+// THE SLACK IS CHECKED WHERE IT IS WRITTEN, at compile time, because it is a constant and a
+// constant that is wrong should not build. Below the ruler's measured spread it would red a battery
+// for the box it ran on; at the size of the regression it is catching nothing.
+const _: () = assert!(BUDGET_SLACK >= 1.43);
+const _: () = assert!(BUDGET_SLACK < 10.0);
+
+/// The gates whose self-tests legitimately cost more than [`DEFAULT_BUDGET_UNITS`], each with the
+/// measurement it was set from. An entry for a gate that is no longer registered is refused by
+/// `gates::posture_tests`, and so is an entry whose `allowed` is not its `measured` times the
+/// declared slack, or whose measurement does not say when and on what it was taken.
+const SELFTEST_BUDGETS: &[Budget] = &[
+    Budget {
+        gate: "plane-purity",
+        measured: MEASURED_PLANE_PURITY,
+        allowed: MEASURED_PLANE_PURITY * BUDGET_SLACK,
+        taken: TAKEN_PLANE_PURITY,
+        why: "The dearest self-test in the registry after the two kind-isolation batteries, and a name on the shard's own drain list. Not analysed here; the entry is the measurement, written down so that a doubling is a red row rather than minutes nobody attributes. RE-TAKEN on its own date (see TAKEN_PLANE_PURITY): four of the sixteen cases are whole-tree plants over the plane crates, so a file added to a plane crate is read sixteen times over and shows up here.",
+    },
+    Budget {
+        gate: "plane-purity-strict",
+        measured: MEASURED_PLANE_PURITY_STRICT,
+        allowed: MEASURED_PLANE_PURITY_STRICT * BUDGET_SLACK,
+        taken: TAKEN,
+        why: "The ratcheted twin of plane-purity and the second name on the same drain list. Not analysed here either.",
+    },
+    Budget {
+        gate: "structure-lint",
+        measured: MEASURED_STRUCTURE_LINT,
+        allowed: MEASURED_STRUCTURE_LINT * BUDGET_SLACK,
+        taken: TAKEN,
+        why: "One gate over a dozen rule families, each with its own planted tree, and the census walks the whole workspace.",
+    },
+    Budget {
+        gate: "construction",
+        measured: MEASURED_CONSTRUCTION,
+        allowed: MEASURED_CONSTRUCTION * BUDGET_SLACK,
+        taken: TAKEN,
+        why: "Thirty-six rules over a 660k-line tree, the plants grouped by family so one case carries every edit a family needs. The file scan is memoised; what is left is the rules themselves. THIS IS THE ENTRY THAT PROVED THE OLD SHAPE WRONG: its note claimed `about 15 600 units` while the tree measured three times that, under a budget it was within seven per cent of blowing.",
+    },
+    Budget {
+        gate: "kind-isolation",
+        measured: MEASURED_KIND_ISOLATION,
+        allowed: MEASURED_KIND_ISOLATION * BUDGET_SLACK,
+        taken: TAKEN,
+        why: "The dearest battery in the registry: every case plants an overlay and drives the whole gate over a 660k-line tree. The per-file compiled set and the matrix scan are memoised on (path, bytes) and the merge-base is read once per process; what is left is the plants and the rules. A plant that ADDS OR REMOVES A CRATE changes the derived vocabulary and invalidates the matrix memo, which many cases do, because a census that walks the whole repository is proven by planting crates in it.",
+    },
+    Budget {
+        gate: "kind-isolation-ship",
+        measured: MEASURED_KIND_ISOLATION_SHIP,
+        allowed: MEASURED_KIND_ISOLATION_SHIP * BUDGET_SLACK,
+        taken: TAKEN,
+        why: "The ship twin of the battery above: the same shape held to a ceiling of zero, plus the derivations with a degenerate answer and the floors whose subject is the size of their own input.",
+    },
 ];
 
 /// One WORK UNIT: how long THIS process takes to run a fixed piece of arithmetic, measured once.
@@ -422,35 +527,77 @@ const SELFTEST_BUDGETS: &[(&str, f64, &str)] = &[
 /// a budget compared against it needs.
 pub fn work_unit() -> std::time::Duration {
     static UNIT: std::sync::OnceLock<std::time::Duration> = std::sync::OnceLock::new();
-    *UNIT.get_or_init(|| {
-        let t = std::time::Instant::now();
-        let buf: Vec<u8> = (0..1u32 << 16).map(|i| (i % 251) as u8).collect();
-        let mut acc: u64 = 0;
-        for round in 0..64u64 {
-            use std::hash::{Hash, Hasher};
-            let mut h = std::collections::hash_map::DefaultHasher::new();
-            round.hash(&mut h);
-            buf.hash(&mut h);
-            acc = acc.wrapping_add(h.finish());
-        }
-        // The accumulator is fed to something the caller could observe, so the loop is not code the
-        // optimiser may delete: a ruler that compiles away measures nothing.
-        if acc == u64::MAX {
-            eprintln!("xtask: the calibration ruler measured {acc}");
-        }
-        t.elapsed().max(std::time::Duration::from_micros(1))
-    })
+    *UNIT.get_or_init(ruler_once)
+}
+
+/// The fixed arithmetic, once, on this thread.
+fn ruler_once() -> std::time::Duration {
+    let t = std::time::Instant::now();
+    let buf: Vec<u8> = (0..1u32 << 16).map(|i| (i % 251) as u8).collect();
+    let mut acc: u64 = 0;
+    for round in 0..64u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        round.hash(&mut h);
+        buf.hash(&mut h);
+        acc = acc.wrapping_add(h.finish());
+    }
+    // The accumulator is fed to something the caller could observe, so the loop is not code the
+    // optimiser may delete: a ruler that compiles away measures nothing.
+    if acc == u64::MAX {
+        eprintln!("xtask: the calibration ruler measured {acc}");
+    }
+    t.elapsed().max(std::time::Duration::from_micros(1))
+}
+
+/// ONE WORK UNIT AS THE THREAD THAT JUST TOOK A CASE FINDS IT — the ruler for a battery taken
+/// across the cores.
+///
+/// THE BUG THIS EXISTS TO FIX, AND IT IS THE ONE THE BUDGET'S OWN DOCTRINE WARNED ABOUT. The cases
+/// are summed by WALL CLOCK, so taking eighteen at once inflates every one of them: they share
+/// memory bandwidth, caches and whatever else is on the machine. `construction` measured 68 063
+/// units against a budget of 50 000 AT `--jobs 18` AND WAS COMFORTABLY UNDER IT AT `--jobs 1`, on
+/// the same tree, in the same minute. A gate that is red because the box was busy is a gate
+/// somebody deletes -- which is exactly why the budget is denominated in work units and not in
+/// seconds in the first place.
+///
+/// The ruler was measured ONCE, ON ONE THREAD, so it did not stretch when the cases did. Here it
+/// does: the same fixed arithmetic is run on `jobs` threads AT THE SAME TIME and the unit is the
+/// mean of what each thread took. "Four times more contended produces a calibration four times
+/// slower too" was always the claim; this is what makes it true when the contention is the
+/// harness's own.
+///
+/// AND IT IS READ ON THE WORKER, BETWEEN CASES, NOT ONCE BEFORE THEM. Calibrating `jobs` threads of
+/// arithmetic up front does not work and the measurement says so: on eighteen cores that is one
+/// arithmetic thread per core and it barely stretches at all — `structure-lint`'s ruler moved from
+/// 11.0 ms to 11.6 ms while the cases it was measuring went from 85.7 s to 152.5 s. Pure arithmetic
+/// on an idle box is not what a battery does to a box.
+///
+/// So each worker reads the ruler immediately after the case it just took, WITH THE OTHER
+/// SEVENTEEN STILL SCANNING. It is then competing for cache and memory with the real work, which is
+/// the only condition under which the proxy tracks what it is a proxy for — and a case is scored
+/// against the ruler read on its own thread, in its own seconds, rather than against a number taken
+/// when the machine was quiet.
+///
+/// It costs one ruler per case: about 11 ms against cases that average a second, which is under one
+/// per cent of a battery and is the price of a budget that does not flap.
+fn work_unit_here() -> std::time::Duration {
+    ruler_once()
 }
 
 fn selftest_budget(gate: &str) -> f64 {
     SELFTEST_BUDGETS
         .iter()
-        .find(|(n, _, _)| *n == gate)
-        .map(|(_, u, _)| *u)
+        .find(|b| b.gate == gate)
+        .map(|b| b.allowed)
         .unwrap_or(DEFAULT_BUDGET_UNITS)
 }
 
-pub trait Gate {
+/// `Sync`, because a self-test's cases are taken across the cores and every one of them reaches
+/// its gate through `&dyn Gate`. Nothing here has interior mutability — the gates are unit structs
+/// and flag-carrying structs read through `&self` — so this is a bound that says what was already
+/// true rather than a constraint anything had to be changed to meet.
+pub trait Gate: Sync {
     fn name(&self) -> &'static str;
 
     /// Every ledger row id this gate can emit. THE OWED SET. Non-empty by construction: a gate
@@ -501,7 +648,7 @@ pub trait Gate {
 
     /// Proves the gate can still be RED, by planting violations into overlays and requiring the
     /// run to report them BY NAME.
-    fn selftest(&self, cx: &Ctx) -> Report;
+    fn selftest<'a>(&'a self, cx: &'a Ctx) -> Report<'a>;
 
     /// The planted trees `cargo xtask gate <name> --parity` drives BOTH implementations over.
     ///
@@ -701,63 +848,327 @@ impl Case {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct Report {
-    cases: Vec<Case>,
-    /// What each case COST, in the same order. Parallel to `cases` rather than a field of `Case`,
-    /// because a `Case` is built in twenty places across the gates and a timer is not something any
-    /// of them should have to remember to start.
-    took: Vec<std::time::Duration>,
-    /// Failures that are not about a single case — an unplantable fixture, an unreadable tree.
-    infra: Vec<String>,
-    /// When the previous case finished. The work a case costs happens between two pushes.
-    mark: std::time::Instant,
+/// ONE CASE THE HARNESS HAS NOT TAKEN YET.
+///
+/// WHY A SELF-TEST CASE IS A PLAN AND NOT A RESULT. Every case here plants an overlay and drives
+/// the whole gate over the planted tree; the two dearest batteries do that a hundred and twenty
+/// times over a 660k-line tree, and taken one after another that is the slowest leg of the release.
+/// The work is embarrassingly parallel and always was — an [`Overlay`] is per-plant by
+/// construction, `with_overlay` returns a NEW `Ctx` and never mutates the base, so no case can
+/// observe another case's plant however many run at once — but a `prove_red` that returns a
+/// finished `Case` has already spent the time by the time the report sees it, and a report cannot
+/// spread work it was handed after the fact.
+///
+/// So the `prove_*` family returns the WORK rather than its answer, [`Report::push`] takes the plan
+/// in the case's own position in the list, and [`Report::resolve`] runs them across the cores and
+/// writes the answers back into those positions. The order the reader sees is the order they were
+/// pushed, whichever thread finished first, so the printed report is the same report either way.
+///
+/// A `Case` converts into a plan that simply hands it back, so a gate that builds a case by hand —
+/// or takes one and edits it — pushes it exactly as before.
+pub struct CasePlan<'a> {
+    take: Box<dyn FnOnce() -> Case + Send + 'a>,
+    /// What this case had already cost by the time it was pushed: the overlay it built, and — for
+    /// a case that was taken eagerly — the run itself. Measured by [`Report::push`] between two
+    /// pushes, which is where that work happens.
+    prepaid: Duration,
 }
 
-impl Default for Report {
-    fn default() -> Report {
-        Report {
-            cases: Vec::new(),
-            took: Vec::new(),
-            infra: Vec::new(),
-            mark: std::time::Instant::now(),
+impl<'a> CasePlan<'a> {
+    /// A plan from the work itself.
+    pub fn new(take: impl FnOnce() -> Case + Send + 'a) -> CasePlan<'a> {
+        CasePlan {
+            take: Box::new(take),
+            prepaid: Duration::ZERO,
+        }
+    }
+
+    /// Take the case NOW, on this thread. For a case whose gate or context is built inside the
+    /// plan itself — a gate constructed with a flag the registry does not carry — where the
+    /// `prove_*` call has to happen where those locals live.
+    pub fn take(self) -> Case {
+        (self.take)()
+    }
+
+    /// Edit the case this plan will produce, WITHOUT taking it now. The shape a gate needs when it
+    /// wants `prove_red`'s proof and one field of the resulting case changed.
+    pub fn map(self, f: impl FnOnce(Case) -> Case + Send + 'a) -> CasePlan<'a> {
+        let take = self.take;
+        CasePlan {
+            take: Box::new(move || f(take())),
+            prepaid: self.prepaid,
         }
     }
 }
 
-impl Report {
-    pub fn new() -> Report {
+impl<'a> From<Case> for CasePlan<'a> {
+    fn from(case: Case) -> CasePlan<'a> {
+        CasePlan::new(move || case)
+    }
+}
+
+/// WHAT A CASE PLANTS, AND WHEN IT BUILDS IT.
+///
+/// An `Overlay` handed to `prove_*` was already BUILT by the time the plan was made, because Rust
+/// evaluates arguments where they are written. For most cases that is nothing — a map with one file
+/// in it. For the batteries that matter it is not: a plant that reads the ledger, lists `crates/`,
+/// re-renders a registry or formats a thousand lines of filler is real work, and doing it at the
+/// push is doing it ON ONE THREAD while seventeen sit idle.
+///
+/// THE MEASUREMENT THAT SAYS SO. `kind-isolation` took 1621 s serial and 201 s across eighteen
+/// cores. Solve those two for the serial fraction and it is about 117 s — which is to say that
+/// after the gate runs were spread across the box, MORE THAN HALF of what was left was the plants
+/// being built one after another.
+///
+/// So a plant may be given as the overlay OR as the closure that makes one, and the closure is
+/// called on the worker that takes the case. Both spellings are this one trait, so a case that
+/// plants a single file keeps reading exactly as it did and only the dear ones say `move ||`.
+pub trait Plant<'a>: Send + 'a {
+    fn build(self) -> Overlay;
+}
+
+/// The plant that is already built. Unchanged, and the right answer whenever building it is a map
+/// insert or two.
+impl<'a> Plant<'a> for Overlay {
+    fn build(self) -> Overlay {
+        self
+    }
+}
+
+/// The plant BUILT ON THE WORKER. `Overlay` is a local type and cannot implement `FnOnce`, which is
+/// what lets these two impls coexist.
+impl<'a, F: FnOnce() -> Overlay + Send + 'a> Plant<'a> for F {
+    fn build(self) -> Overlay {
+        self()
+    }
+}
+
+/// How many cases run at once when nothing says otherwise: the cores this box will admit to.
+///
+/// `XTASK_SELFTEST_JOBS` overrides it and `--jobs N` on the command line overrides that. `1` is
+/// the serial harness exactly as it was, which is what the two are for: a case that fails in
+/// parallel is re-run at `1` before it is believed, and the measurement that justifies any of this
+/// is `--jobs 1` against the default on the same box.
+pub fn default_jobs() -> usize {
+    let asked = SELFTEST_JOBS.load(std::sync::atomic::Ordering::SeqCst);
+    if asked > 0 {
+        return asked;
+    }
+    if let Some(n) = std::env::var("XTASK_SELFTEST_JOBS")
+        .ok()
+        .and_then(|s| s.trim().parse::<usize>().ok())
+        .filter(|n| *n > 0)
+    {
+        return n;
+    }
+    std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1)
+}
+
+/// What `--jobs N` asked for. `0` — the default — means nobody asked, and [`default_jobs`] then
+/// reads the environment and the box.
+///
+/// A PROCESS-WIDE SETTING BECAUSE A REPORT IS BUILT WHERE THE COMMAND LINE IS NOT. Every gate's
+/// selftest builds its own `Report` (and several build sub-reports and fold them in), so a flag
+/// carried down through forty `selftest` signatures would be forty diffs and a hole for the
+/// forty-first. Set once by the runner, before any gate runs.
+static SELFTEST_JOBS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// `cargo xtask ... --selftest --jobs N`. `1` is the serial harness exactly as it was.
+pub fn set_selftest_jobs(jobs: usize) {
+    SELFTEST_JOBS.store(jobs, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// What the cases cost, in the order they were pushed.
+struct Taken {
+    cases: Vec<Case>,
+    took: Vec<Duration>,
+    /// What each case cost IN WORK UNITS, scored against the ruler its own worker read right after
+    /// taking it. Kept per case rather than as one divisor because the machine is not the same from
+    /// one end of a battery to the other, and the whole point is that the ruler moves with it.
+    units: Vec<f64>,
+    /// The half of `took` that was spent BEFORE the case reached a worker — building the plant, on
+    /// the one thread that pushes. THE SERIAL FRACTION, itemised: it is the only part of a battery
+    /// that more cores cannot help, so it is the only part worth rewriting, and a number beats a
+    /// guess about which plants are dear.
+    prepaid: Vec<Duration>,
+}
+
+pub struct Report<'a> {
+    /// The cases not yet taken, in push order. Emptied by the first read.
+    plans: std::sync::Mutex<Vec<CasePlan<'a>>>,
+    /// The answers, in the SAME order. Filled once, by whichever reader asks first — a report can
+    /// be read through `&self` from four places and none of them may see a report with the cases
+    /// missing, because "0 cases, all green" is the one verdict this harness exists to refuse.
+    taken: std::sync::OnceLock<Taken>,
+    /// Failures that are not about a single case — an unplantable fixture, an unreadable tree.
+    infra: Vec<String>,
+    /// When the previous case was pushed. The work between two pushes is the next case's prepaid
+    /// cost: the overlay it built, and whatever a hand-built case did to produce itself.
+    mark: std::time::Instant,
+    jobs: usize,
+}
+
+impl Default for Report<'_> {
+    fn default() -> Self {
+        Report {
+            plans: std::sync::Mutex::new(Vec::new()),
+            taken: std::sync::OnceLock::new(),
+            infra: Vec::new(),
+            mark: std::time::Instant::now(),
+            jobs: default_jobs(),
+        }
+    }
+}
+
+impl<'a> Report<'a> {
+    pub fn new() -> Report<'a> {
         Report::default()
     }
 
-    pub fn push(&mut self, case: Case) {
-        self.took.push(self.mark.elapsed());
+    /// The same report, run across `jobs` threads. `0` is read as `1`.
+    pub fn with_jobs(mut self, jobs: usize) -> Report<'a> {
+        self.jobs = jobs.max(1);
+        self
+    }
+
+    pub fn jobs(&self) -> usize {
+        self.jobs
+    }
+
+    pub fn push(&mut self, plan: impl Into<CasePlan<'a>>) {
+        let mut plan = plan.into();
+        plan.prepaid += self.mark.elapsed();
         self.mark = std::time::Instant::now();
-        self.cases.push(case);
+        self.plans
+            .get_mut()
+            .expect("the plan list is never held across a panic")
+            .push(plan);
     }
 
     /// Fold another report's cases and infra failures into this one, for a gate whose selftest is
-    /// assembled from per-rule sub-reports rather than written as one list.
-    pub fn append(&mut self, other: Report) {
-        self.cases.extend(other.cases);
-        self.took.extend(other.took);
-        self.infra.extend(other.infra);
+    /// assembled from per-rule sub-reports rather than written as one list. The sub-report's cases
+    /// keep their order and land after this one's, taken or not.
+    pub fn append(&mut self, other: Report<'a>) {
+        let Report {
+            plans,
+            taken,
+            infra,
+            ..
+        } = other;
+        let mine = self
+            .plans
+            .get_mut()
+            .expect("the plan list is never held across a panic");
+        if let Some(Taken { cases, took, .. }) = taken.into_inner() {
+            for (case, took) in cases.into_iter().zip(took) {
+                let mut plan = CasePlan::from(case);
+                plan.prepaid = took;
+                mine.push(plan);
+            }
+        }
+        mine.extend(
+            plans
+                .into_inner()
+                .expect("the plan list is never held across a panic"),
+        );
+        self.infra.extend(infra);
         self.mark = std::time::Instant::now();
     }
 
-    /// What this report cost, in [`work_unit`]s.
+    /// TAKE EVERY CASE NOW AND HAND BACK A REPORT THAT BORROWS NOTHING.
+    ///
+    /// For a gate whose cases are proven through a gate IT BUILT — the changelog gate's release
+    /// arms are the same gate with a flag, and the flag cannot come from the registry — so the
+    /// `&dyn Gate` the plans name is a local. Sealing the report where that local still lives is
+    /// how those cases are taken in parallel like every other, rather than the whole family being
+    /// held serial by one borrow.
+    pub fn sealed<'b>(self) -> Report<'b> {
+        let taken = std::sync::OnceLock::new();
+        let _ = taken.set(match self.taken.into_inner() {
+            Some(already) => already,
+            None => take_all(
+                self.plans
+                    .into_inner()
+                    .expect("the plan list is never held across a panic"),
+                self.jobs,
+            ),
+        });
+        Report {
+            plans: std::sync::Mutex::new(Vec::new()),
+            taken,
+            infra: self.infra,
+            mark: self.mark,
+            jobs: self.jobs,
+        }
+    }
+
+    /// TAKE EVERY CASE, ACROSS THE CORES, AND WRITE THE ANSWERS BACK IN PUSH ORDER.
+    ///
+    /// The workers pull from one queue, so a battery whose cases differ by a factor of fifty in
+    /// cost still finishes in about the time of its longest case rather than in the time of its
+    /// slowest shard. Each answer is written into the slot its plan was pushed into, so the case
+    /// list — and therefore the printed report and every verdict read off it — does not depend on
+    /// which thread won.
+    ///
+    /// THE COST IS SUMMED PER CASE, NOT TAKEN OFF THE WALL CLOCK. [`selftest_budget`] is about a
+    /// rule that grew a whole-tree scan per plant, which is a property of the WORK; dividing the
+    /// work by the cores would hide exactly that regression behind a bigger box.
+    fn resolve(&self) -> &Taken {
+        self.taken.get_or_init(|| {
+            let plans = std::mem::take(
+                &mut *self
+                    .plans
+                    .lock()
+                    .expect("the plan list is never held across a panic"),
+            );
+            take_all(plans, self.jobs)
+        })
+    }
+
+    /// What this report cost, in [`work_unit`]s — each case scored against the ruler its own
+    /// worker read, never against one taken when the machine was quiet.
     pub fn units(&self) -> f64 {
-        self.total().as_secs_f64() / work_unit().as_secs_f64()
+        self.resolve().units.iter().sum()
+    }
+
+    /// The ruler this report's units worked out to, for the message that quotes one.
+    pub fn unit(&self) -> std::time::Duration {
+        let units = self.units();
+        if units <= 0.0 {
+            return work_unit();
+        }
+        std::time::Duration::from_secs_f64(self.total().as_secs_f64() / units)
     }
 
     pub fn total(&self) -> std::time::Duration {
-        self.took.iter().sum()
+        self.resolve().took.iter().sum()
+    }
+
+    /// WHAT THIS BATTERY SPENT ON ONE THREAD, building its plants. The rest was spread across the
+    /// cores; this was not, and this is what a further speed-up has to come out of.
+    pub fn planting(&self) -> std::time::Duration {
+        self.resolve().prepaid.iter().sum()
+    }
+
+    /// The case whose PLANT cost the most — the first name on the list of plants worth making lazy.
+    pub fn dearest_plant(&self) -> Option<(&str, std::time::Duration)> {
+        let taken = self.resolve();
+        taken
+            .cases
+            .iter()
+            .zip(taken.prepaid.iter())
+            .max_by_key(|(_, t)| **t)
+            .map(|(c, t)| (c.name.as_str(), *t))
     }
 
     pub fn slowest(&self) -> Option<(&str, std::time::Duration)> {
-        self.cases
+        let taken = self.resolve();
+        taken
+            .cases
             .iter()
-            .zip(self.took.iter())
+            .zip(taken.took.iter())
             .max_by_key(|(_, t)| **t)
             .map(|(c, t)| (c.name.as_str(), *t))
     }
@@ -767,11 +1178,11 @@ impl Report {
     }
 
     pub fn cases(&self) -> &[Case] {
-        &self.cases
+        &self.resolve().cases
     }
 
     pub fn skipped(&self) -> usize {
-        self.cases
+        self.cases()
             .iter()
             .filter(|c| matches!(c.got, Expect::Skipped))
             .count()
@@ -779,12 +1190,84 @@ impl Report {
 
     pub fn failures(&self) -> Vec<String> {
         let mut out = self.infra.clone();
-        out.extend(self.cases.iter().filter_map(Case::failure));
+        out.extend(self.cases().iter().filter_map(Case::failure));
         out
     }
 
     pub fn ok(&self) -> bool {
         self.failures().is_empty()
+    }
+}
+
+/// Take `plans` on `jobs` threads and return the cases IN THE ORDER THE PLANS CAME IN.
+///
+/// Scoped threads rather than a pool with `'static` work: a plan borrows the `Ctx` and the `&dyn
+/// Gate` its gate's selftest was handed, and a scope is how that borrow is proven to outlive the
+/// threads instead of being asserted by a comment over an `unsafe impl Send`.
+fn take_all(plans: Vec<CasePlan<'_>>, jobs: usize) -> Taken {
+    let n = plans.len();
+    if n == 0 {
+        return Taken {
+            cases: Vec::new(),
+            took: Vec::new(),
+            units: Vec::new(),
+            prepaid: Vec::new(),
+        };
+    }
+    let mut queue: Vec<(usize, CasePlan<'_>)> = plans.into_iter().enumerate().collect();
+    // Popped from the back, so the cases start in push order.
+    queue.reverse();
+    let queue = std::sync::Mutex::new(queue);
+    #[allow(clippy::type_complexity)]
+    let out: Vec<std::sync::Mutex<Option<(Case, Duration, Duration, f64)>>> =
+        (0..n).map(|_| std::sync::Mutex::new(None)).collect();
+    let out = &out;
+    let queue = &queue;
+    let workers = jobs.max(1).min(n);
+    std::thread::scope(|scope| {
+        for _ in 0..workers {
+            scope.spawn(move || loop {
+                let next = queue
+                    .lock()
+                    .expect("the case queue is never held across a panic")
+                    .pop();
+                let Some((slot, plan)) = next else { return };
+                let prepaid = plan.prepaid;
+                let started = std::time::Instant::now();
+                let case = (plan.take)();
+                let spent = prepaid + started.elapsed();
+                // THE RULER, HERE, NOW — with the other workers still at their own cases. See
+                // [`work_unit_here`].
+                let unit = work_unit_here();
+                let units = spent.as_secs_f64() / unit.as_secs_f64();
+                *out[slot]
+                    .lock()
+                    .expect("a case slot is never held across a panic") =
+                    Some((case, spent, prepaid, units));
+            });
+        }
+    });
+
+    let mut cases = Vec::with_capacity(n);
+    let mut took = Vec::with_capacity(n);
+    let mut prepaid = Vec::with_capacity(n);
+    let mut units = Vec::with_capacity(n);
+    for slot in out {
+        let (case, spent, before, scored) = slot
+            .lock()
+            .expect("a case slot is never held across a panic")
+            .take()
+            .expect("every plan was taken: the queue is drained before the scope ends");
+        cases.push(case);
+        took.push(spent);
+        prepaid.push(before);
+        units.push(scored);
+    }
+    Taken {
+        cases,
+        took,
+        units,
+        prepaid,
     }
 }
 
@@ -839,6 +1322,52 @@ pub fn ceiling_for(name: &str, env: impl Fn(&str) -> Option<String>) -> Option<D
 /// The ceiling as the runner reads it, from the real process environment.
 pub fn ceiling_from_env(name: &str) -> Option<Duration> {
     ceiling_for(name, |k| std::env::var(k).ok())
+}
+
+/// A BATTERY IS NOT A GATE RUN, AND MUST NOT BE HELD TO A GATE RUN'S CEILING.
+///
+/// `kind-isolation`'s self-test drives the whole gate over a planted tree ONE HUNDRED AND
+/// SEVENTY-SIX TIMES. Five minutes is the right number for "this gate has stopped making progress";
+/// it is plainly the wrong number for a hundred and seventy-six of them, and holding a battery to
+/// it means the ceiling fires on a self-test that is working perfectly — which is a runner killing
+/// the one job that would have told it what was wrong.
+///
+/// IT WAS ONLY EVER MASKED. Before the cases became plans, a battery ran inside `gate.selftest(cx)`
+/// with the watchdog armed over it, and a serial `construction --selftest` — 617 s measured — was
+/// killed at 300 s exactly like this. The lazy report hid it for one commit (the work happened
+/// after the watchdog was dropped) and resolving under the watchdog put it back. It is a real
+/// finding either way, and the answer is a ceiling that knows what it is bounding.
+///
+/// THIRTY MINUTES, and it is still a ceiling rather than a budget: the dearest battery in the
+/// registry takes about three and a half at the default job count, so this is an order of magnitude
+/// of headroom and anything that reaches it is wedged, not slow. The REGRESSION guard is
+/// [`selftest_budget`], which is denominated in work units and is the thing that notices a battery
+/// that merely grew. `XTASK_SELFTEST_CEILING_SECS` moves it; `0` disables it; an unreadable value
+/// is the default, never "no ceiling".
+pub const DEFAULT_SELFTEST_CEILING: Duration = Duration::from_secs(1800);
+
+/// The ceiling for one BATTERY, read from the environment the same way [`ceiling_for`] reads a
+/// gate's. A gate-specific `XTASK_GATE_CEILING_SECS_<GATE>` still wins, because a caller who named
+/// one gate meant that gate.
+pub fn selftest_ceiling_for(name: &str, env: impl Fn(&str) -> Option<String>) -> Option<Duration> {
+    let per_gate = format!(
+        "XTASK_GATE_CEILING_SECS_{}",
+        name.to_uppercase().replace(['-', '.', '/'], "_")
+    );
+    let raw = env(&per_gate).or_else(|| env("XTASK_SELFTEST_CEILING_SECS"));
+    match raw {
+        None => Some(DEFAULT_SELFTEST_CEILING),
+        Some(s) => match s.trim().parse::<u64>() {
+            Ok(0) => None,
+            Ok(n) => Some(Duration::from_secs(n)),
+            Err(_) => Some(DEFAULT_SELFTEST_CEILING),
+        },
+    }
+}
+
+/// The battery ceiling as the runner reads it, from the real process environment.
+pub fn selftest_ceiling_from_env(name: &str) -> Option<Duration> {
+    selftest_ceiling_for(name, |k| std::env::var(k).ok())
 }
 
 /// [`execute`], UNDER A WALL-CLOCK CEILING. A gate that exceeds it is RED, with `hung` in every
@@ -1000,7 +1529,7 @@ pub fn execute_with_skips(gate: &dyn Gate, cx: &Ctx, skip_allow: &[&str]) -> Ver
 /// The single exception is DECLARED, NAMED and stale-checked: [`Gate::informational`] rows are
 /// PASS by construction, so they are held to being exercised rather than to going red, and a
 /// declaration that no longer names an owed row is itself refused.
-pub fn verify_report(gate: &dyn Gate, report: &Report) -> Result<(), Vec<String>> {
+pub fn verify_report(gate: &dyn Gate, report: &Report<'_>) -> Result<(), Vec<String>> {
     let mut errs = report.failures();
 
     // THE BUDGET. See [`SELFTEST_BUDGETS`]: an unmeasured selftest is one that grows until the
@@ -1015,13 +1544,13 @@ pub fn verify_report(gate: &dyn Gate, report: &Report) -> Result<(), Vec<String>
         errs.push(format!(
             "{}: this self-test spent {spent:.0} work units against a budget of {budget:.0} (one unit is {:.1}ms on this box right now, so {:.0}s of wall clock here). A self-test that grew a whole-tree scan per plant is how the xtask shard goes from minutes to an hour, and the runner that finds out is the one that cancels the job.{slowest}",
             gate.name(),
-            work_unit().as_secs_f64() * 1000.0,
+            report.unit().as_secs_f64() * 1000.0,
             report.total().as_secs_f64()
         ));
     }
 
     if !report
-        .cases
+        .cases()
         .iter()
         .any(|c| matches!(c.expected, Expect::Red { .. }))
     {
@@ -1033,13 +1562,13 @@ pub fn verify_report(gate: &dyn Gate, report: &Report) -> Result<(), Vec<String>
     }
 
     let covered: BTreeSet<String> = report
-        .cases
+        .cases()
         .iter()
         .filter(|c| matches!(c.expected, Expect::Red { .. }))
         .flat_map(|c| c.covers.iter().cloned())
         .collect();
     let exercised: BTreeSet<String> = report
-        .cases
+        .cases()
         .iter()
         .flat_map(|c| c.covers.iter().cloned())
         .collect();
@@ -1140,25 +1669,34 @@ fn narrowed_got(verdict: &Verdict, covers: &[&str]) -> Expect {
 /// xtask selftest` still green. Now every id in `covers` must itself be red, which makes this
 /// function and [`prove_rows_red`] the same proof; the latter survives as the name that says so at
 /// the call site.
-pub fn prove_red(
+pub fn prove_red<'a>(
     cx: &Ctx,
-    gate: &dyn Gate,
+    gate: &'a dyn Gate,
     name: impl Into<String>,
     covers: &[&str],
-    overlay: Overlay,
+    plant: impl Plant<'a>,
     naming: &[&str],
-) -> Case {
-    let planted = cx.with_overlay(overlay);
-    let verdict = execute(gate, &planted);
-    let got = narrowed_got(&verdict, covers);
-    Case {
-        name: name.into(),
-        covers: covers.iter().map(|s| (*s).to_string()).collect(),
-        expected: Expect::Red {
-            naming: naming.iter().map(|s| (*s).to_string()).collect(),
-        },
-        got,
-    }
+) -> CasePlan<'a> {
+    let name = name.into();
+    let covers: Vec<String> = covers.iter().map(|s| (*s).to_string()).collect();
+    let naming: Vec<String> = naming.iter().map(|s| (*s).to_string()).collect();
+    let cx = cx.clone();
+    CasePlan::new(move || {
+        let planted = cx.with_overlay(plant.build());
+        let verdict = execute(gate, &planted);
+        let got = narrowed_got(&verdict, &refs(&covers));
+        Case {
+            name,
+            covers,
+            expected: Expect::Red { naming },
+            got,
+        }
+    })
+}
+
+/// The `&str` view of an owned `covers` list, for the readers that were written against `&[&str]`.
+fn refs(v: &[String]) -> Vec<&str> {
+    v.iter().map(String::as_str).collect()
 }
 
 /// The red arm, NARROWED TO THE ROWS THE CASE IS ABOUT — the counterpart of [`prove_rows_green`],
@@ -1169,24 +1707,15 @@ pub fn prove_red(
 /// them, "the gate went red and something in the report said the word" is satisfiable by a row the
 /// case is not about. Reading only the covered rows makes the case say what it means: THIS rule
 /// went red, and it named the offender that was planted for it.
-pub fn prove_rows_red(
+pub fn prove_rows_red<'a>(
     cx: &Ctx,
-    gate: &dyn Gate,
+    gate: &'a dyn Gate,
     name: impl Into<String>,
     covers: &[&str],
-    overlay: Overlay,
+    plant: impl Plant<'a>,
     naming: &[&str],
-) -> Case {
-    let planted = cx.with_overlay(overlay);
-    let verdict = execute(gate, &planted);
-    Case {
-        name: name.into(),
-        covers: covers.iter().map(|s| (*s).to_string()).collect(),
-        expected: Expect::Red {
-            naming: naming.iter().map(|s| (*s).to_string()).collect(),
-        },
-        got: narrowed_got(&verdict, covers),
-    }
+) -> CasePlan<'a> {
+    prove_red(cx, gate, name, covers, plant, naming)
 }
 
 /// The green arm, NARROWED TO THE ROWS THE CASE IS ABOUT.
@@ -1201,31 +1730,38 @@ pub fn prove_rows_red(
 /// So this reads the covered rows and nothing else. It is not a weaker proof of the same claim, it
 /// is the proof of a narrower and more honest one, and the row ids it reads are the same ones the
 /// case must declare in `covers` anyway.
-pub fn prove_rows_green(
+pub fn prove_rows_green<'a>(
     cx: &Ctx,
-    gate: &dyn Gate,
+    gate: &'a dyn Gate,
     name: impl Into<String>,
     covers: &[&str],
-    overlay: Overlay,
-) -> Case {
-    let planted = cx.with_overlay(overlay);
-    let verdict = execute(gate, &planted);
-    let offenders: Vec<String> = verdict
-        .rows
-        .iter()
-        .filter(|r| r.status != crate::ledger::Status::Pass && covers.contains(&r.id.as_str()))
-        .map(|r| format!("{} {} {}", r.id, r.title, r.detail))
-        .collect();
-    Case {
-        name: name.into(),
-        covers: covers.iter().map(|s| (*s).to_string()).collect(),
-        expected: Expect::Green,
-        got: if offenders.is_empty() {
-            Expect::Green
-        } else {
-            Expect::Red { naming: offenders }
-        },
-    }
+    plant: impl Plant<'a>,
+) -> CasePlan<'a> {
+    let name = name.into();
+    let covers: Vec<String> = covers.iter().map(|s| (*s).to_string()).collect();
+    let cx = cx.clone();
+    CasePlan::new(move || {
+        let planted = cx.with_overlay(plant.build());
+        let verdict = execute(gate, &planted);
+        let offenders: Vec<String> = verdict
+            .rows
+            .iter()
+            .filter(|r| {
+                r.status != crate::ledger::Status::Pass && covers.iter().any(|c| c == &r.id)
+            })
+            .map(|r| format!("{} {} {}", r.id, r.title, r.detail))
+            .collect();
+        Case {
+            name,
+            covers,
+            expected: Expect::Green,
+            got: if offenders.is_empty() {
+                Expect::Green
+            } else {
+                Expect::Red { naming: offenders }
+            },
+        }
+    })
 }
 
 /// The tree in which `crates/` is present, readable and holds a file, and NO plane declares its
@@ -1241,52 +1777,67 @@ pub const PLANE_ROOT_MISSING_FIXTURE: &str = "xtask/fixtures/plane-root-missing"
 /// answer is not to hand-write the case's `got` — that is a case with the gate taken out of it,
 /// and it passes just as happily when the rule it names has been deleted. The answer is to point
 /// a whole `Ctx` at a tree where the subject really is absent and run `execute` there.
-pub fn prove_rows_red_at(
+pub fn prove_rows_red_at<'a>(
     cx: &Ctx,
-    gate: &dyn Gate,
+    gate: &'a dyn Gate,
     name: impl Into<String>,
     covers: &[&str],
     fixture_rel: &str,
     naming: &[&str],
-) -> Case {
+) -> CasePlan<'a> {
     let name = name.into();
     let expected = Expect::Red {
         naming: naming.iter().map(|s| (*s).to_string()).collect(),
     };
-    let covers_owned: Vec<String> = covers.iter().map(|s| (*s).to_string()).collect();
-    let Ok(fixture_cx) = Ctx::at(cx.abs(fixture_rel), cx.scratch()) else {
-        return Case {
-            name,
-            covers: covers_owned,
-            expected,
-            got: Expect::Skipped,
+    let covers: Vec<String> = covers.iter().map(|s| (*s).to_string()).collect();
+    let fixture_abs = cx.abs(fixture_rel);
+    let scratch = cx.scratch().to_path_buf();
+    CasePlan::new(move || {
+        let Ok(fixture_cx) = Ctx::at(fixture_abs, scratch) else {
+            return Case {
+                name,
+                covers,
+                expected,
+                got: Expect::Skipped,
+            };
         };
-    };
-    let verdict = execute(gate, &fixture_cx);
-    Case {
-        name,
-        covers: covers_owned,
-        expected,
-        got: narrowed_got(&verdict, covers),
-    }
+        let verdict = execute(gate, &fixture_cx);
+        let got = narrowed_got(&verdict, &refs(&covers));
+        Case {
+            name,
+            covers,
+            expected,
+            got,
+        }
+    })
 }
 
 /// The other arm: the unplanted tree must be GREEN, or every RED above proves only that the gate
 /// is broken.
-pub fn prove_green(cx: &Ctx, gate: &dyn Gate, name: impl Into<String>, covers: &[&str]) -> Case {
-    let verdict = execute(gate, cx);
-    Case {
-        name: name.into(),
-        covers: covers.iter().map(|s| (*s).to_string()).collect(),
-        expected: Expect::Green,
-        got: if verdict.red {
-            Expect::Red {
-                naming: reported_text(&verdict),
-            }
-        } else {
-            Expect::Green
-        },
-    }
+pub fn prove_green<'a>(
+    cx: &Ctx,
+    gate: &'a dyn Gate,
+    name: impl Into<String>,
+    covers: &[&str],
+) -> CasePlan<'a> {
+    let name = name.into();
+    let covers: Vec<String> = covers.iter().map(|s| (*s).to_string()).collect();
+    let cx = cx.clone();
+    CasePlan::new(move || {
+        let verdict = execute(gate, &cx);
+        Case {
+            name,
+            covers,
+            expected: Expect::Green,
+            got: if verdict.red {
+                Expect::Red {
+                    naming: reported_text(&verdict),
+                }
+            } else {
+                Expect::Green
+            },
+        }
+    })
 }
 
 fn reported_text(verdict: &Verdict) -> Vec<String> {
@@ -1606,6 +2157,176 @@ pub fn print_rows_tsv(rows: &[Row]) {
 }
 
 #[cfg(test)]
+mod parallel_tests {
+    use super::*;
+    use crate::ledger::Row;
+
+    /// A gate that reports WHAT IT READ at one path, so a case's verdict names the bytes that case
+    /// planted and nothing else.
+    struct EchoGate;
+
+    const ECHO_ROW: &str = "echo:read";
+    const ECHO_PATH: &str = "qa/zz-selftest-parallel-echo.txt";
+
+    impl Gate for EchoGate {
+        fn name(&self) -> &'static str {
+            "echo"
+        }
+        fn owed(&self) -> Vec<String> {
+            vec![ECHO_ROW.to_string()]
+        }
+        fn run(&self, cx: &Ctx) -> Verdict {
+            let seen = cx
+                .read(ECHO_PATH)
+                .unwrap_or_else(|_| "<absent>".to_string());
+            // Long enough for a racing case to overwrite a shared plant, if plants were shared.
+            std::thread::sleep(Duration::from_millis(40));
+            let again = cx
+                .read(ECHO_PATH)
+                .unwrap_or_else(|_| "<absent>".to_string());
+            Verdict::of(vec![Row::fail(
+                ECHO_ROW.to_string(),
+                "echo".to_string(),
+                format!("{seen}|{again}"),
+            )])
+        }
+        fn selftest<'a>(&'a self, _cx: &'a Ctx) -> Report<'a> {
+            Report::new()
+        }
+    }
+
+    /// TWO CONFLICTING FIXTURES, PLANTED AT THE SAME PATH, TAKEN AT THE SAME TIME.
+    ///
+    /// This is the property the whole parallel harness rests on, and it is asserted rather than
+    /// argued: each case must see ITS OWN plant, twice, with the other case's plant live on
+    /// another thread in between. A harness that planted on disk — the shape
+    /// `scripts/construction-gate/plant.py` had, with its `TOUCHED` list and its restore step —
+    /// answers this test with one case reading the other's bytes, which is a green case that
+    /// proves nothing and a red case that names the wrong offender.
+    ///
+    /// The gate reads the path TWICE with a sleep between, so a case that merely won a race is not
+    /// mistaken for a case that was isolated.
+    #[test]
+    fn two_cases_planted_at_the_same_path_never_see_each_other() {
+        let cx = Ctx::workspace().expect("the workspace opens");
+        let gate = EchoGate;
+        let mut report = Report::new().with_jobs(2);
+        for mine in ["FIXTURE-A", "FIXTURE-B"] {
+            let mut ov = Overlay::new();
+            ov.set(ECHO_PATH, mine);
+            report.push(prove_red(
+                &cx,
+                &gate,
+                format!("the case that planted {mine}"),
+                &[ECHO_ROW],
+                ov,
+                &[&format!("{mine}|{mine}")],
+            ));
+        }
+        let failures = report.failures();
+        assert!(
+            failures.is_empty(),
+            "a case read a plant that was not its own — the cases are not isolated: {failures:#?}"
+        );
+        let names: Vec<&str> = report.cases().iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec![
+                "the case that planted FIXTURE-A",
+                "the case that planted FIXTURE-B"
+            ],
+            "the cases must be reported in the order they were pushed, whichever thread finished \
+             first"
+        );
+    }
+
+    /// The order is the PUSH order even when the later case finishes first, which is the only way
+    /// a parallel report can be read against a serial one.
+    #[test]
+    fn the_case_list_is_push_order_not_finish_order() {
+        let mut report = Report::new().with_jobs(4);
+        for (i, delay) in [40u64, 20, 10, 0].into_iter().enumerate() {
+            report.push(CasePlan::new(move || {
+                std::thread::sleep(Duration::from_millis(delay));
+                Case {
+                    name: format!("case {i}"),
+                    covers: vec!["r".to_string()],
+                    expected: Expect::Green,
+                    got: Expect::Green,
+                }
+            }));
+        }
+        let names: Vec<&str> = report.cases().iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names, vec!["case 0", "case 1", "case 2", "case 3"]);
+    }
+
+    /// A BATTERY GETS THE BATTERY'S CEILING, and a gate named on the command line still wins.
+    ///
+    /// Red first, in the shape that bit: a serial `construction --selftest` measured 617 s and the
+    /// gate-run ceiling is 300 s, so the runner killed a self-test that was working.
+    #[test]
+    fn a_battery_is_not_held_to_one_gate_runs_ceiling() {
+        let none = |_: &str| None;
+        assert_eq!(
+            selftest_ceiling_for("construction", none),
+            Some(DEFAULT_SELFTEST_CEILING),
+            "a battery's default ceiling is the battery's, not the gate run's"
+        );
+        assert!(
+            DEFAULT_SELFTEST_CEILING > Duration::from_secs(617),
+            "the measured serial `construction` battery must fit under it, or the ceiling is \
+             killing working self-tests"
+        );
+        assert_eq!(
+            ceiling_for("construction", none),
+            Some(DEFAULT_GATE_CEILING),
+            "one gate RUN keeps the five minutes it always had"
+        );
+
+        // The env forms, and the precedence between them.
+        let per_gate =
+            |k: &str| (k == "XTASK_GATE_CEILING_SECS_CONSTRUCTION").then(|| "42".to_string());
+        assert_eq!(
+            selftest_ceiling_for("construction", per_gate),
+            Some(Duration::from_secs(42)),
+            "a caller who named one gate meant that gate"
+        );
+        let all = |k: &str| (k == "XTASK_SELFTEST_CEILING_SECS").then(|| "7".to_string());
+        assert_eq!(
+            selftest_ceiling_for("construction", all),
+            Some(Duration::from_secs(7))
+        );
+        let off = |k: &str| (k == "XTASK_SELFTEST_CEILING_SECS").then(|| "0".to_string());
+        assert_eq!(selftest_ceiling_for("construction", off), None, "0 is off");
+        // AND A TYPO IS THE DEFAULT, NEVER "NO CEILING".
+        let typo = |k: &str| (k == "XTASK_SELFTEST_CEILING_SECS").then(|| "ten".to_string());
+        assert_eq!(
+            selftest_ceiling_for("construction", typo),
+            Some(DEFAULT_SELFTEST_CEILING),
+            "an unreadable override must not be the thing that lets a wedged battery hang forever"
+        );
+    }
+
+    /// A report whose cases were never taken must not read as a report with no cases. Every reader
+    /// goes through the same resolution, so "0 cases, all green" cannot be produced by forgetting
+    /// to run them.
+    #[test]
+    fn an_unresolved_report_is_never_read_as_an_empty_one() {
+        let mut report = Report::new();
+        report.push(CasePlan::new(|| Case {
+            name: "a case nobody asked to take".to_string(),
+            covers: vec!["r".to_string()],
+            expected: Expect::Green,
+            got: Expect::Red {
+                naming: vec!["r went red".to_string()],
+            },
+        }));
+        assert_eq!(report.cases().len(), 1);
+        assert!(!report.ok(), "the case failed, and the report says so");
+    }
+}
+
+#[cfg(test)]
 mod posture_tests {
     use super::*;
     use crate::ledger::Row;
@@ -1732,18 +2453,72 @@ mod posture_tests {
     /// to be one is a number nobody argued for.
     #[test]
     fn every_selftest_budget_names_a_registered_gate_with_a_reason() {
-        for (name, units, why) in SELFTEST_BUDGETS {
+        for b in SELFTEST_BUDGETS {
+            let name = b.gate;
             assert!(
                 find(name).is_some(),
                 "`{name}` has a self-test budget and is not a registered gate"
             );
             assert!(
-                *units > DEFAULT_BUDGET_UNITS,
-                "`{name}`'s budget of {units} units is not above the default; strike the entry"
+                b.allowed > DEFAULT_BUDGET_UNITS,
+                "`{name}`'s budget of {} units is not above the default; strike the entry",
+                b.allowed
             );
             assert!(
-                why.len() > 60,
+                b.why.len() > 60,
                 "`{name}`'s budget reason is too short to be one"
+            );
+        }
+    }
+
+    /// A BUDGET WITHOUT A WRITTEN MEASUREMENT IS REFUSED, and so is one whose measurement no longer
+    /// explains it.
+    ///
+    /// THE BUG THIS IS THE FIX FOR. `construction`'s entry allowed 50 000 work units and its note
+    /// said the gate measured "about 15 600". The tree measured three times that — so the entry read
+    /// as a guard with two-thirds of its room to spare while it was in fact a few per cent from
+    /// firing, and the first thing that pushed it over would have been read as a regression in
+    /// whatever touched it last. A number whose written provenance is prose is a number nobody can
+    /// check.
+    ///
+    /// Every arm here is about that: the measurement is a NUMBER and not a sentence, the budget is
+    /// DERIVED from it by one declared slack rather than chosen per entry, and the date and the tree
+    /// it was taken on are written down so a reader can take it again.
+    #[test]
+    fn every_budget_carries_the_measurement_it_was_set_from() {
+        for b in SELFTEST_BUDGETS {
+            let name = b.gate;
+            assert!(
+                b.measured > 0.0,
+                "`{name}` has a budget and no measurement. The entry IS the measurement; a budget \
+                 set from nothing cannot be checked, re-taken, or argued with."
+            );
+            // THE BUDGET IS THE MEASUREMENT TIMES THE ONE DECLARED SLACK, not a number somebody
+            // liked. Compared with a tolerance because it is written as a product of two floats.
+            let want = b.measured * BUDGET_SLACK;
+            assert!(
+                (b.allowed - want).abs() < 1.0,
+                "`{name}`'s budget is {} against a measurement of {} — that is {:.2}x, and the \
+                 declared slack is {BUDGET_SLACK}x. A budget that drifted from its own measurement \
+                 is the shape `construction` was in when it sat a few per cent under a budget its \
+                 note said it used a third of.",
+                b.allowed,
+                b.measured,
+                b.allowed / b.measured
+            );
+            // WHEN, AND ON WHAT. `YYYY-MM-DD <sha>`, both halves present and both readable.
+            let (date, sha) = b
+                .taken
+                .split_once(' ')
+                .unwrap_or_else(|| panic!("`{name}`'s measurement does not say when it was taken"));
+            assert!(
+                date.len() == 10 && date.split('-').count() == 3,
+                "`{name}`'s measurement date `{date}` is not a YYYY-MM-DD"
+            );
+            assert!(
+                sha.len() >= 7 && sha.chars().all(|c| c.is_ascii_hexdigit()),
+                "`{name}`'s measurement names no tree: `{sha}` is not a commit sha, so nobody can \
+                 re-take it"
             );
         }
     }

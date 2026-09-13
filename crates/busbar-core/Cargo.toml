@@ -33,6 +33,9 @@ busbar-api = { path = "../api" }
 # written in the contract's words, which is why they have to be nameable from here. The contract is
 # granted to every kind (ARCHITECTURE.md 1.2 manifest allow-list), so this edge is not part of the
 # transitional drain and does not die with busbar-core.
+# THE CONTRACT — the plane declaration LIST is contract data (`busbar_contract::plane::registry`):
+# which planes exist, by key, section and scope kind. Core reads it there; the composition root
+# writes it there; neither names the other.
 busbar-contract = { path = "../busbar-contract" }
 # The NEUTRAL SUBSTRATE. Phase-B B0-b relocated the Tier-0 leaves (net-guard primitives, the
 # diagnostics catalog, the audit vocabulary, the JSON-RPC envelope reader, the wire-format names,

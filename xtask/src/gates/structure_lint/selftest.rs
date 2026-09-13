@@ -21,28 +21,49 @@ use crate::gates::structure_lint::{
     axis, census, choke_points, corpus, fn_scoped, hybrid, inline_tests, oversized, plane_dups,
     plane_store, roots, StructureLintGate, Tables,
 };
-use crate::gates::{prove_rows_green, prove_rows_red, Case, Gate, Report};
+use crate::gates::{prove_rows_green, prove_rows_red, Gate, Report};
 
 /// A tree plant: the overlay, and the strings the ROWS THIS CASE COVERS must name.
-fn tree_case(
-    cx: &Ctx,
-    gate: &dyn Gate,
+fn tree_case<'a>(
+    cx: &'a Ctx,
+    gate: &'a dyn Gate,
     name: &str,
     covers: &[&str],
     ov: Overlay,
     naming: &[&str],
-) -> Case {
+) -> crate::gates::CasePlan<'a> {
     prove_rows_red(cx, gate, name, covers, ov, naming)
 }
 
 /// A table plant: the same proof, over a table this tree could not otherwise produce.
-fn table_case(cx: &Ctx, name: &str, covers: &[&str], tables: Tables, naming: &[&str]) -> Case {
-    let planted = StructureLintGate::with_tables(tables);
-    prove_rows_red(cx, &planted, name, covers, Overlay::new(), naming)
+fn table_case<'a>(
+    cx: &'a Ctx,
+    name: &str,
+    covers: &[&str],
+    tables: Tables,
+    naming: &[&str],
+) -> crate::gates::CasePlan<'a> {
+    // The gate is built FOR THIS CASE, so the case owns it: the plan is taken on whichever thread
+    // reaches it, long after this function has returned.
+    let name = name.to_string();
+    let covers: Vec<String> = covers.iter().map(|s| (*s).to_string()).collect();
+    let naming: Vec<String> = naming.iter().map(|s| (*s).to_string()).collect();
+    crate::gates::CasePlan::new(move || {
+        let planted = StructureLintGate::with_tables(tables);
+        let covers: Vec<&str> = covers.iter().map(String::as_str).collect();
+        let naming: Vec<&str> = naming.iter().map(String::as_str).collect();
+        prove_rows_red(cx, &planted, name, &covers, Overlay::new(), &naming).take()
+    })
 }
 
 /// The green arm of a rule, over the rows that rule owns.
-fn green_case(cx: &Ctx, gate: &dyn Gate, name: &str, covers: &[&str], ov: Overlay) -> Case {
+fn green_case<'a>(
+    cx: &'a Ctx,
+    gate: &'a dyn Gate,
+    name: &str,
+    covers: &[&str],
+    ov: Overlay,
+) -> crate::gates::CasePlan<'a> {
     prove_rows_green(cx, gate, name, covers, ov)
 }
 
@@ -84,7 +105,7 @@ fn base_tables(cx: &Ctx) -> Tables {
     Tables::real(&roots::resolve(cx, &mut throwaway))
 }
 
-pub fn run(gate: &StructureLintGate, cx: &Ctx) -> Report {
+pub fn run<'a>(gate: &'a StructureLintGate, cx: &'a Ctx) -> Report<'a> {
     let mut report = Report::new();
     let t = base_tables(cx);
 

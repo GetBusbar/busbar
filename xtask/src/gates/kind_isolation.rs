@@ -869,6 +869,8 @@ struct KindRegistry {
     matrix_edges: Vec<MatrixEdge>,
     matrix_cells: Vec<MatrixCell>,
     matrix_disagreements: Vec<MatrixDisagreement>,
+    /// Every named `[patch]`/`[replace]`/`[source]` allowance. See [`PatchAllow`].
+    patch_allows: Vec<PatchAllow>,
     /// Rows REFUSED AT LOAD. A malformed or over-broad row is not skipped and it is not tolerated:
     /// it is reported, because a table that quietly drops what it cannot understand is a table that
     /// says yes to it.
@@ -982,6 +984,16 @@ fn bad_transitional_prefix(to: &str) -> Option<String> {
         ));
     }
     None
+}
+
+/// ONE NAMED ALLOWANCE for a `[patch]`, `[replace]` or `[source]` redirect: the exact file, the
+/// exact entry, and the sentence that says why the tree compiles something other than what its
+/// manifests declare.
+#[derive(Debug, Clone)]
+pub struct PatchAllow {
+    pub file: String,
+    pub entry: String,
+    pub reason: String,
 }
 
 fn push_row(reg: &mut KindRegistry, table: &str, fields: &[(String, String)], at: usize) {
@@ -1140,6 +1152,24 @@ fn push_row(reg: &mut KindRegistry, table: &str, fields: &[(String, String)], at
                 count,
             });
         }
+        // `[patch]` AND `[replace]` REDIRECT WHAT CARGO COMPILES, AND NOTHING IN THIS GATE READ
+        // THEM. A `[patch.crates-io] busbar-plane-llm = { path = "…" }`, or a
+        // `[source] replace-with` in `.cargo/config.toml`, substitutes one crate for another after
+        // every manifest in the tree has been read and agreed with — the census, the edge ledger,
+        // the matrix and the lock cross-check are all downstream of a decision none of them see.
+        // So every one of them is REFUSED unless a row here names the exact file and the exact
+        // entry and says why.
+        "patch" => {
+            let Some(v) = take_row(fields, &["file", "entry", "reason"], table, at, &mut reg.errors)
+            else {
+                return;
+            };
+            reg.patch_allows.push(PatchAllow {
+                file: v[0].clone(),
+                entry: v[1].clone(),
+                reason: v[2].clone(),
+            });
+        }
         "disagreement" => {
             let Some(v) = take_row(fields, &["crate", "kind", "note"], table, at, &mut reg.errors)
             else {
@@ -1294,7 +1324,7 @@ fn parse_registry(text: &str) -> KindRegistry {
             reg.errors.push(format!(
                 "unknown-table\t{REGISTRY_FILE}:{}\t`{t}` — the file holds `[[transitional]]`, \
                  `[[registered]]`, `[[announced]]`, `[[dep]]`, `[[question]]`, `[[face]]`, \
-                 `[[edge]]`, `[[cell]]` and `[[disagreement]]` rows and nothing else",
+                 `[[edge]]`, `[[cell]]`, `[[disagreement]]` and `[[patch]]` rows and nothing else",
                 i + 1
             ));
             continue;
@@ -4000,7 +4030,7 @@ fn rule_testkit(crates: &[CrateInfo], idx: &SourceIndex) -> Row {
 /// restated here, because a hand-written step list is a list that goes stale the first time a step
 /// is added and nothing says so.
 const STEP_TABLE_FILE: &str = "crates/busbar-caps/src/step.rs";
-const PLANE_TRAIT_FILE: &str = "crates/busbar-contract/src/plane.rs";
+const PLANE_TRAIT_FILE: &str = "crates/busbar-contract/src/plane/mod.rs";
 
 /// A tree with fewer than this many plane-owned steps has not been read; the loop is ten steps long
 /// and the planes own seven of them.
@@ -4997,7 +5027,7 @@ impl Gate for KindIsolationGate {
             rule_name(&crates, &planes, &ports, &reg),
             rule_deps(cx, &crates, &reg, Half::Shipped, self.ship),
             rule_deps(cx, &crates, &reg, Half::Test, self.ship),
-            inputs::rule_inputs(cx, &crates, &planes),
+            inputs::rule_inputs(cx, &crates, &planes, &reg),
             rule_vocab(cx, &crates, &planes),
             rule_registry(cx, &crates, &reg, self.ship),
             rule_steps(cx, &crates),
@@ -5044,7 +5074,7 @@ impl Gate for KindIsolationGate {
         Verdict::of(rows)
     }
 
-    fn selftest(&self, cx: &Ctx) -> Report {
+    fn selftest<'a>(&'a self, cx: &'a Ctx) -> Report<'a> {
         let mut report = Report::new();
 
         // THE WRITE ARM PROVES ITSELF WITHOUT WRITING ANYTHING, and that is not a compromise:
@@ -5560,6 +5590,34 @@ impl Gate for KindIsolationGate {
             &["cross-instance", "busbar-plane-llm"],
         ));
 
+        // …AND THE DIALECT DIRECTION, WHICH IS THE ONE THE SPLIT DEPENDS ON. `cross-instance` reads
+        // the two crates' INSTANCES and says nothing when they match, so a plane reaching back into
+        // its OWN dialect walked through it: same instance, same family, no finding. That edge is
+        // the re-fusion the `busbar-plane-<plane>-<dialect>` rename exists to undo — a dialect names
+        // its plane, a plane never names a dialect — and a mutation campaign found nothing proving
+        // it. The plant is the first crate of the pending `dialect` kind plus the edge back.
+        let mut ov = manifest_plant(
+            "crates/busbar-plane-llm-openai",
+            "busbar-plane-llm-openai",
+            &["busbar-plane-llm"],
+        );
+        ov.set(
+            "crates/busbar-plane-llm/Cargo.toml",
+            manifest_plus(
+                cx,
+                "crates/busbar-plane-llm/Cargo.toml",
+                "\n[dependencies]\nbusbar-plane-llm-openai = { workspace = true }\n",
+            ),
+        );
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "a plane depending on its own dialect is the re-fusion the rename exists to undo",
+            &[ROW_DEPS],
+            ov,
+            &["plane-names-dialect", "busbar-plane-llm-openai"],
+        ));
+
         // THE LEDGER CASES BELONG TO THE PER-PUSH GATE ALONE. Every one is about the `[[dep]]`
         // rows in the registry file, and the SHIP twin does not read them: it owes the
         // ARCHITECTURE'S graph, so planting a raised row against it would produce the same red it
@@ -5691,7 +5749,7 @@ impl Gate for KindIsolationGate {
                 &[ROW_DEPS],
                 registry_with(
                     cx,
-                    "crate = \"busbar\"\nkind = \"api\"\ncount = \"122\"",
+                    "crate = \"busbar\"\nkind = \"api\"\ncount = \"123\"",
                     "crate = \"busbar\"\nkind = \"api\"\ncount = \"-1\"",
                 ),
                 &[
@@ -6100,7 +6158,7 @@ impl Gate for KindIsolationGate {
             self,
             "the crate census collapsed below its floor",
             &[ROW_REGISTRY],
-            all_but(cx, "toml", 4),
+            move || all_but(cx, "toml", 4),
             &["floor", &MIN_MANIFESTS.to_string()],
         ));
         report.push(prove_rows_red(
@@ -6108,8 +6166,108 @@ impl Gate for KindIsolationGate {
             self,
             "the source walk collapsed below its floor",
             &[ROW_VOCAB],
-            all_but(cx, "rs", 4),
+            move || all_but(cx, "rs", 4),
             &["floor", &MIN_SOURCES.to_string()],
+        ));
+
+        // …AND THE REST OF THE FLOORS, one case each. EVERY ONE OF THESE IS A RULE WHOSE SUBJECT IS
+        // THE SIZE OF ITS OWN INPUT, and a mutation campaign found that not one of them was proven:
+        // `if false && scanned == 0`, `.min_files(0)` and `if false && planes.is_empty()` all left
+        // the battery green. A floor nothing proves is a floor somebody deletes as dead code, and
+        // the tree it then reads as clean is the tree that has nothing in it.
+
+        // NO FILE REACHED THE VOCABULARY RULE. The walk is over its floor and every file it found
+        // belongs to no crate the census knows, so the rule looked at nothing and found nothing.
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "a :vocab scan that reached zero kind-bearing files is refused, not read as clean",
+            &[ROW_VOCAB],
+            move || all_but(cx, "toml", 0),
+            &["0 file(s) reached the vocabulary rule"],
+        ));
+
+        // THE MONEY LIST IS THE CONTROL SURFACE'S BAN, and a ban over no words bans nothing.
+        let mut ov = Overlay::new();
+        ov.remove(MONEY_LIST_FILE);
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "the money vocabulary unreadable is a refusal, never a surface that names no price",
+            &[ROW_VOCAB],
+            ov,
+            &["A ban over no words bans nothing"],
+        ));
+
+        // A STEP LIST THAT READ TWO STEPS IS NOT A PLANE THAT RUNS EVERY STEP.
+        let mut ov = Overlay::new();
+        ov.set(
+            STEP_TABLE_FILE,
+            "pub const ALL: [StepName; 2] = [\n    StepName::Route,\n    StepName::Meter,\n];\n",
+        );
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "a step list that read fewer than five plane-owned steps is refused",
+            &[ROW_STEPS],
+            ov,
+            &["floor", &MIN_PLANE_STEPS.to_string()],
+        ));
+
+        // A TREE WITH NO PLANE IN IT. Zero planes skip every step.
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "a tree with no plane crate at all is refused by the step rule",
+            &[ROW_STEPS],
+            move || kind_gone(cx, "busbar-plane-"),
+            &["0 plane crate(s)"],
+        ));
+
+        // A TREE WITH NO WIRE IN IT. Zero wires are registered twice.
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "a tree with no transport crate at all is refused by the registration rule",
+            &[ROW_WIRES],
+            move || kind_gone(cx, "busbar-transport-"),
+            &["0 wire(s)"],
+        ));
+
+        // THE REGISTRATION RULE'S OWN WALK HAS A FLOOR TOO, and it is a different walk from
+        // `:vocab`'s: the wires are read off the census, so the manifests survive and the rule
+        // reaches its source scan with nothing to scan.
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "the registration rule's source walk below its floor is refused",
+            &[ROW_WIRES],
+            move || all_but(cx, "rs", 4),
+            &["a scan of no files finds no second registration"],
+        ));
+
+        // THE CENSUS ITSELF FAILING IS OWED BY EVERY ROW. Not "absent" — UNREADABLE: a manifest the
+        // walk lists and cannot read is the one input state that is neither a crate nor no crate,
+        // and a gate that reads it as no crate is a gate that goes green on a corrupt tree.
+        let mut ov = Overlay::new();
+        ov.unreadable(
+            "crates/busbar-caps/Cargo.toml",
+            "Input/output error (os error 5)",
+        );
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "the crate census failing is refused on every row this gate owes, not on one",
+            &[
+                ROW_NAME,
+                ROW_VOCAB,
+                ROW_REGISTRY,
+                ROW_STEPS,
+                ROW_WIRES,
+                ROW_MATRIX,
+            ],
+            ov,
+            &["the census did not run"],
         ));
 
         // ── THE ENTRY FACES ──────────────────────────────────────────────────────────────────────
@@ -6277,6 +6435,66 @@ impl Gate for KindIsolationGate {
             &[ROW_INPUTS],
             ov,
             &["path-include", "busbar-plane-llm", "busbar-transport-http"],
+        ));
+
+        // NOTHING REDIRECTS WHAT CARGO COMPILES. `[patch]` substitutes one crate for another
+        // AFTER every manifest in this tree has been read and agreed with, so the census, the edge
+        // ledger, the matrix and the lock cross-check are all downstream of a decision none of them
+        // can see. Nothing in this gate read the table at all until today.
+        let mut ov = Overlay::new();
+        ov.set(
+            "Cargo.toml",
+            manifest_plus(
+                cx,
+                "Cargo.toml",
+                "\n[patch.crates-io]\nbusbar-plane-llm = { path = \"crates/busbar-plane-mcp\" }\n",
+            ),
+        );
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "a `[patch]` table redirects what cargo compiles and is refused unless a row names it",
+            &[ROW_INPUTS],
+            ov,
+            &["redirect", "patch.crates-io", "Cargo.toml"],
+        ));
+
+        // THE SAME CLAIM IN `.cargo/config.toml`, which is not a manifest at all and which no rule
+        // in this gate had ever opened.
+        let mut ov = Overlay::new();
+        ov.set(
+            ".cargo/config.toml",
+            format!(
+                "{}\n[source.crates-io]\nreplace-with = \"vendored\"\n",
+                cx.read(".cargo/config.toml").unwrap_or_default().trim_end()
+            ),
+        );
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "a `[source] replace-with` in .cargo/config.toml is the same redirect, in a file no \
+             rule opened",
+            &[ROW_INPUTS],
+            ov,
+            &["redirect", "source.crates-io", ".cargo/config.toml"],
+        ));
+
+        // A NAMED ROW IS THE ONE WAY THROUGH, AND IT EXPIRES WITH THE TABLE IT NAMES.
+        let mut ov = Overlay::new();
+        ov.set(
+            REGISTRY_FILE,
+            format!(
+                "{}\n\n[[patch]]\nfile = \"Cargo.toml\"\nentry = \"patch.crates-io\"\nreason = \"planted\"\n",
+                cx.read(REGISTRY_FILE).unwrap_or_default().trim_end()
+            ),
+        );
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "a `[[patch]]` row whose table is not in the tree is a standing hole, and is struck",
+            &[ROW_INPUTS],
+            ov,
+            &["dead-patch-row", "patch.crates-io"],
         ));
 
         // A LIB TARGET POINTING INTO ANOTHER KIND. The transport IS the plane at link time, with
@@ -7381,6 +7599,123 @@ impl Gate for KindIsolationGate {
             &["no-implementor", "busbar-store-subjectless", "Store"],
         ));
 
+        // ── THE THREE SHIP FINDINGS WITH NO CASE ─────────────────────────────────────────────────
+        //
+        // `:shape` and `:testkit` derive what they demand: the skeleton and the single entry come
+        // from the kind's EXEMPLAR, and the battery is whichever one the kind's members already run.
+        // Both derivations have a degenerate answer — no exemplar, no entry, no battery — and in
+        // each of them the rule keeps going and judges every crate of the kind against nothing. A
+        // mutation campaign found all three unproven.
+
+        // THE EXEMPLAR ITSELF IS NOT IN THE TREE. `busbar-plane-a2a` is the canonical plane; without
+        // it the `plane` skeleton is derived from an empty file list and every plane in the tree
+        // passes a comparison against nothing.
+        let mut ov = Overlay::new();
+        ov.remove("crates/busbar-plane-a2a/Cargo.toml");
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "a kind whose canonical exemplar is not in the tree derives its skeleton from nothing",
+            &[ROW_SHAPE],
+            ov,
+            &["no-exemplar", "busbar-plane-a2a"],
+        ));
+
+        // THE EXEMPLAR STATES NO SINGLE ENTRY. A second `impl Plane for …` in the canonical plane
+        // makes the kind's entry count TWO, and `entry-count` — the rule that holds every other
+        // plane to exactly one — is guarded on the exemplar stating exactly one, so it goes quiet
+        // for the whole kind. The finding is that the spec stopped saying anything, and it is a
+        // finding rather than a silence.
+        let mut ov = Overlay::new();
+        ov.set(
+            "crates/busbar-plane-a2a/src/planted_second_entry.rs",
+            "pub struct Second;\nimpl Plane for Second {}\n",
+        );
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "a kind whose exemplar states no single entry states nothing every member owes",
+            &[ROW_SHAPE],
+            ov,
+            &["no-entry", "busbar-plane-a2a", "2 time(s)"],
+        ));
+
+        // A KIND WITH NO SHARED BATTERY AT ALL. The `plane` kind's battery is the one its members
+        // already run — `tests/conformance.rs` in `busbar-plane-a2a` and `busbar-plane-mcp`. Take
+        // both away and the kind has no battery to be judged against, so `not-run` (which is
+        // guarded on there being one) says nothing about the other planes at all.
+        let mut ov = Overlay::new();
+        ov.remove("crates/busbar-plane-a2a/tests/conformance.rs");
+        ov.remove("crates/busbar-plane-mcp/tests/conformance.rs");
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "a kind no member of which runs any shared battery has no battery, and is told so",
+            &[ROW_TESTKIT],
+            ov,
+            &["no-battery", "kind:plane"],
+        ));
+
+        // ── THE SHIP TWIN'S OWN FLOORS: ZERO IS A REFUSAL, NOT A CLEAN TREE ──────────────────────
+        //
+        // Four rules on this twin have the size of their own input as their subject, and a mutation
+        // campaign found not one of them proven: `if false && checked == 0`, `if false &&
+        // controls.is_empty()` and `.min_files(0)` each left the battery green. Every one of them
+        // reads, when starved, EXACTLY like the tree the criterion is asking for — no crate deviates
+        // from a skeleton nobody compared, no crate skips a battery nobody looked for, no surface
+        // strays off a path nobody walked — which is why a floor nothing proves is a floor somebody
+        // deletes as dead code and a criterion that then passes on an empty tree.
+
+        // NO CRATE OF ANY EXEMPLAR KIND REACHED `:shape`. The census is intact and readable; what it
+        // no longer holds is a single crate of the three kinds that HAVE an exemplar, so the rule
+        // compared every crate of a kind against its skeleton and found nothing to compare.
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "no crate of any exemplar kind reached the shape rule is refused, not read as clean",
+            &[ROW_SHAPE],
+            move || kinds_gone(cx, &["plane", "transport", "unit"]),
+            &["0 crate(s) reached the shape rule"],
+        ));
+
+        // NO CRATE OF ANY BATTERY KIND REACHED `:testkit` — the same starvation over the nine kinds
+        // that owe a shared conformance battery. Zero crates skip every battery.
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "no crate of any battery kind reached the battery rule is refused, not read as clean",
+            &[ROW_TESTKIT],
+            move || kinds_gone(cx, BATTERY_KINDS),
+            &["0 crate(s) reached the battery rule"],
+        ));
+
+        // NO CONTROL SURFACE REACHED `:control-path`. The tree carries exactly one control crate —
+        // `busbar-plane-admin`, which is `control` by its `[[registered]]` row and not by its name —
+        // so the honest fixture for "this rule looked at no surface at all" is that row's crate out
+        // of the census. Zero surfaces run zero data-path steps and name zero upstreams, which reads
+        // exactly like a control kind that keeps to its own path.
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "no control surface reached the control-path rule is refused, not read as clean",
+            &[ROW_CONTROL],
+            move || kinds_gone(cx, &["control"]),
+            &["0 control crate(s)"],
+        ));
+
+        // THE SOURCE INDEX IS THESE TWO ROWS' OWN INPUT, and it has a floor of its own. An index
+        // built over four files knows of no lib.rs, no entry implementation and no battery anywhere
+        // — which is the same silence as a tree in which every crate of every kind is correct. Both
+        // ship rows owe the refusal, and they owe it together, because they read ONE index.
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "the source index below its floor is refused on both ship rows, not read as no findings",
+            &[ROW_SHAPE, ROW_TESTKIT],
+            move || all_but(cx, "rs", 4),
+            &["the source index did not run", &MIN_SOURCES.to_string()],
+        ));
+
         report
     }
 }
@@ -7406,6 +7741,47 @@ fn all_but(cx: &Ctx, ext: &str, keep: usize) -> Overlay {
     };
     for f in files.iter().skip(keep) {
         ov.remove(f.rel_str());
+    }
+    ov
+}
+
+/// THE TREE WITH EVERY CRATE OF THE NAMED KINDS OUT OF THE CENSUS — the floors' own fixture.
+///
+/// A rule whose subject is "no crate of any of these kinds reached me" cannot be proven by a plant
+/// that adds one, and it cannot be proven by a path prefix either: a crate's KIND is what the
+/// census resolves its PACKAGE NAME to (and what a `[[registered]]` row may override), not what its
+/// directory is spelled. `crates/store-memory` is `busbar-store-memory`, `crates/busbar-plane-admin`
+/// is registered `control` — a marker over paths would miss the first and mis-file the second. So
+/// this reads the same census the rule reads and removes the manifest of every crate it resolves to
+/// one of `kinds`, which is what makes a crate leave a census.
+fn kinds_gone(cx: &Ctx, kinds: &[&str]) -> Overlay {
+    let mut ov = Overlay::new();
+    let Ok(crates) = census(cx) else {
+        return ov;
+    };
+    for c in &crates {
+        if c.kind.is_some_and(|k| kinds.contains(&k)) {
+            ov.remove(&c.manifest);
+        }
+    }
+    ov
+}
+
+/// THE TREE WITH EVERY MANIFEST UNDER `crates/<marker>*` REMOVED — a whole KIND deleted.
+///
+/// A rule whose subject is "this tree has no crate of kind K at all" cannot be proven by a plant
+/// that adds one; the only honest fixture is a census that really has none, and a crate leaves the
+/// census when its manifest does.
+fn kind_gone(cx: &Ctx, marker: &str) -> Overlay {
+    let mut ov = Overlay::new();
+    let Ok(files) = cx.walk(&WalkSpec::new(["crates"]).ext("toml")) else {
+        return ov;
+    };
+    for f in files.iter() {
+        let rel = f.rel_str();
+        if rel.starts_with(&format!("crates/{marker}")) && rel.ends_with("/Cargo.toml") {
+            ov.remove(rel);
+        }
     }
     ov
 }

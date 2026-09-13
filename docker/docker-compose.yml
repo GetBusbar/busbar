@@ -1,0 +1,31 @@
+# docker/docker-compose.yml — busbar wired to a durable sqlite store, end to end.
+#
+# This is the compose form of the "Durable store" recipe in
+# docs/getting-started.md#durable-store-giving-persistence-a-writable-volume: the four config keys
+# (plugins.enabled, an ABSOLUTE plugins.dir, store.module + store.settings, the signed tarball
+# actually in plugins.dir) plus the two volumes that make them durable. `docker compose up` boots
+# it; `docker compose down` (no `-v`) keeps both volumes, so keys/usage/ledgers/audit survive.
+#
+# Uses `plugins.fetch` (see docker/config.persistent.yaml) so the sqlite plugin tarball is
+# downloaded at boot rather than requiring a separate download-and-mount step — that is why
+# `busbar-plugins` below must be writable, not merely mounted. docker/config.yaml (the image's
+# shipped default) keeps the same store/plugins block commented out; config.persistent.yaml is
+# that block turned on, so this file is a live demonstration of it, not just documentation.
+
+services:
+  busbar:                                        # the one container this whole file exists to run
+    image: getbusbar/busbar:latest                # pin an exact tag in production; see README.md
+    ports:
+      - "8080:8080"                               # the data-plane + admin-API listener
+    environment:
+      ANTHROPIC_KEY: ${ANTHROPIC_KEY:?set ANTHROPIC_KEY in your shell or an .env file}   # provider credential; never baked into the image or this file
+      BUSBAR_ADMIN_TOKEN: ${BUSBAR_ADMIN_TOKEN:?set BUSBAR_ADMIN_TOKEN in your shell or an .env file}   # admin-API bearer token
+    volumes:
+      - ./config.persistent.yaml:/etc/busbar/config.yaml:ro   # store+plugins ACTIVE (see that file's header); read-only here too — admin-API mutations use a separate overlay path, not this file
+      - busbar-plugins:/etc/busbar/plugins          # plugins.dir from config.yaml — WRITABLE because plugins.fetch downloads the signed tarball into it at boot
+      - busbar-data:/var/lib/busbar                 # store.settings.db_path's directory — the sqlite file itself, durable across restarts
+    restart: unless-stopped                        # a governed data plane should come back on its own after a host reboot or crash
+
+volumes:
+  busbar-plugins:   # holds the fetched store-sqlite.tar.gz (repo-named, per plugins.fetch's github: rule); safe to delete and re-fetch, never hand-edit
+  busbar-data:      # holds governance.db; THIS is the volume that makes keys/usage/ledgers/audit durable — never `docker compose down -v` this by accident

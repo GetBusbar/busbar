@@ -131,7 +131,7 @@ fn cells(cx: &Ctx) -> Option<(String, String)> {
     Some((recorded, skipped))
 }
 
-pub fn run(gate: &dyn Gate, cx: &Ctx) -> Report {
+pub fn run<'a>(gate: &'a dyn Gate, cx: &'a Ctx) -> Report<'a> {
     let mut r = Report::new();
     let owed: Vec<String> = gate.owed();
     let all: Vec<&str> = owed.iter().map(String::as_str).collect();
@@ -413,7 +413,12 @@ pub fn run(gate: &dyn Gate, cx: &Ctx) -> Report {
 /// THE WAYS ONE CITATION SETTLES NOTHING that had no plant. Each is a single check on a single
 /// binding, so the row that reds is the row the case is about and the reason it prints is the arm
 /// under test.
-fn broken_citation_cases(gate: &dyn Gate, cx: &Ctx, all: &[&str], real_fn: &str) -> Report {
+fn broken_citation_cases<'a>(
+    gate: &'a dyn Gate,
+    cx: &'a Ctx,
+    all: &[&str],
+    real_fn: &str,
+) -> Report<'a> {
     let mut r = Report::new();
 
     // A CITATION THAT CLAIMS `mapped` AND NAMES NOTHING. Until this case the empty ref was dropped
@@ -524,7 +529,12 @@ fn broken_citation_cases(gate: &dyn Gate, cx: &Ctx, all: &[&str], real_fn: &str)
 
 /// THE THREE VERDICTS A BINDING CAN EARN that no plant reached: every citation broken, the ledger's
 /// own note, and the named gap.
-fn binding_verdict_cases(gate: &dyn Gate, cx: &Ctx, all: &[&str], real_fn: &str) -> Report {
+fn binding_verdict_cases<'a>(
+    gate: &'a dyn Gate,
+    cx: &'a Ctx,
+    all: &[&str],
+    real_fn: &str,
+) -> Report<'a> {
     let mut r = Report::new();
 
     // EVERY CITATION BROKEN IS `unproven`, NOT `partly proven`. The two arms print different words
@@ -609,7 +619,7 @@ fn binding_verdict_cases(gate: &dyn Gate, cx: &Ctx, all: &[&str], real_fn: &str)
 
 /// THE TWO REFUSALS THAT ARE NOT ABOUT A CITATION: the instrument could not read its ledger, and
 /// the derivation it compares that ledger against could not be made.
-fn instrument_cases(gate: &dyn Gate, cx: &Ctx) -> Report {
+fn instrument_cases<'a>(gate: &'a dyn Gate, cx: &'a Ctx) -> Report<'a> {
     let mut r = Report::new();
 
     // A LEDGER THAT CANNOT BE READ IS NOT A LEDGER WITH NO BINDINGS IN IT. Every owed row goes

@@ -39,7 +39,7 @@
 use serde_json::{json, Value};
 
 use crate::ctx::{Ctx, Overlay};
-use crate::gates::{prove_rows_green, prove_rows_red, Case, Gate, Report};
+use crate::gates::{prove_rows_green, prove_rows_red, Gate, Report};
 
 use super::schema;
 use super::{
@@ -123,7 +123,12 @@ fn drop_type(doc: &mut Value, key: &str) {
 /// THE REGISTER IS EMPTIED IN EVERY ONE OF THESE. The committed register's single line is stale
 /// against this branch's own `HEAD`, so leaving it in place would let a verdict about waivers decide
 /// a case that is not about waivers. The waiver cases plant their own register explicitly.
-fn additive_green(cx: &Ctx, gate: &dyn Gate, name: &str, f: impl Fn(&mut Value)) -> Case {
+fn additive_green<'a>(
+    cx: &'a Ctx,
+    gate: &'a dyn Gate,
+    name: &str,
+    f: impl Fn(&mut Value),
+) -> crate::gates::CasePlan<'a> {
     prove_rows_green(
         cx,
         gate,
@@ -134,13 +139,13 @@ fn additive_green(cx: &Ctx, gate: &dyn Gate, name: &str, f: impl Fn(&mut Value))
 }
 
 /// A red case for the additive rule, naming the path and the reason the report must carry.
-fn additive_red(
-    cx: &Ctx,
-    gate: &dyn Gate,
+fn additive_red<'a>(
+    cx: &'a Ctx,
+    gate: &'a dyn Gate,
     name: &str,
     naming: &[&str],
     f: impl Fn(&mut Value),
-) -> Case {
+) -> crate::gates::CasePlan<'a> {
     prove_rows_red(
         cx,
         gate,
@@ -151,7 +156,7 @@ fn additive_red(
     )
 }
 
-pub fn run(gate: &dyn Gate, cx: &Ctx) -> Report {
+pub fn run<'a>(gate: &'a dyn Gate, cx: &'a Ctx) -> Report<'a> {
     let mut report = Report::new();
 
     // ── THE CONTROLS. Every RED below is worth nothing unless the unplanted tree is green in the

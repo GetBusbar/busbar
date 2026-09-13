@@ -380,6 +380,26 @@ then the mechanical remainder; then the plugin signature/loader block leaves `co
 Movable the day the crate exists, with zero outbound edges: `config/secret.rs` (130) and
 `config/groups.rs` (83).
 
+**Deletion-wave blocker for `config_validate/`, measured 2026-09-09 (slot R5-3).** The wave's premise
+for this module was `config_validate` → `busbar-substrate::config` validation. **That destination
+does not exist.** `crates/busbar-substrate/src/config/` (`mod.rs`, `auth.rs`, `groups.rs`, `hooks.rs`,
+`limits.rs`, `pools.rs`, `providers.rs`, `sections.rs`) contains ZERO validation code: no function
+named `validate*`, no function returning `Result<(), Vec<String>>`, no refusal-text producer at all.
+It is pure serde grammar. The substrate's only `secret_refs` is a **trait method** on the plane
+config-section trait (`plane/config.rs:41`), which enumerates a plane section's own refs — not the
+`RootCfg` walk that `config_validate/secret_refs.rs` is.
+
+So the refusal texts have exactly one producer today: `config_validate/mod.rs` (2,240 lines) +
+`secret_refs.rs` (457) = **2,697 production lines**, behind `validate`, `validate_with_unset` and
+`metadata_denylist_entries`. The single production reader outside core is the composition root —
+`crates/busbar/src/main.rs` at lines 62, 133, 334, 1277 — and it has nowhere to be re-pointed TO.
+Deleting the module means WRITING ~2.7 k lines of validation, with byte-identical 1.5.5 refusal
+texts, into the substrate; the deletion wave forbids that, and the config-corpus snaps and `BOOT-P*`
+cells would move the moment it were attempted by hand. No dead sub-item to cut either: every `fn` in
+`config_validate/mod.rs` has an in-module caller. **Skipped, net-zero.** This module is not residue —
+it is the enforcement half of the config grammar, and it travels with `busbar-core-config` on the
+sequence above, never ahead of it.
+
 ### 7.3 The hooks engine has no home — `busbar-core-hooks`
 
 `hooks/` is **1,662** surface lines (`mod.rs` 879, `gate.rs` 236, `scrape.rs` 255, `wire.rs` 250,

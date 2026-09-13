@@ -305,7 +305,11 @@ pub fn arch_tcb(text: &str) -> Vec<String> {
 /// Each plants the DOCUMENT the truth lives in rather than the code that reads it, because the
 /// finding is always about a document having drifted from the other two — a plant in the reader
 /// would prove the reader can be broken, which is not the claim.
-pub fn selftest(cx: &Ctx, gate: &dyn crate::gates::Gate, report: &mut crate::gates::Report) {
+pub fn selftest<'a>(
+    cx: &Ctx,
+    gate: &'a dyn crate::gates::Gate,
+    report: &mut crate::gates::Report<'a>,
+) {
     use crate::ctx::Overlay;
     use crate::gates::{prove_rows_green, prove_rows_red};
 
@@ -372,7 +376,11 @@ pub fn selftest(cx: &Ctx, gate: &dyn crate::gates::Gate, report: &mut crate::gat
 /// says "the gate is proven RED-able". The `unmapped-kind` arm was proven gut-able exactly that way:
 /// with its match arm emptied the gate ran GREEN over the tree and the self-test reported every case
 /// passing.
-fn registry_selftest(cx: &Ctx, gate: &dyn crate::gates::Gate, report: &mut crate::gates::Report) {
+fn registry_selftest<'a>(
+    cx: &Ctx,
+    gate: &'a dyn crate::gates::Gate,
+    report: &mut crate::gates::Report<'a>,
+) {
     use crate::ctx::Overlay;
     use crate::gates::prove_rows_red;
 

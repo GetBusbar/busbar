@@ -559,7 +559,7 @@ impl Gate for ConstructionGate {
         }
     }
 
-    fn selftest(&self, cx: &Ctx) -> Report {
+    fn selftest<'a>(&'a self, cx: &'a Ctx) -> Report<'a> {
         selftest::run(self, cx)
     }
 

@@ -19,9 +19,6 @@
 //! - [`substitute`] — applies a decoration's [`SecretSlot`]s to an envelope exactly once each.
 //! - [`lane_cross_check`] — the post-decoration re-check: the envelope must still equal the
 //!   [`VerifiedDestination`] the trust unit sealed.
-//! - [`FORWARDED_CLIENT_HEADERS`] / [`allowed_client_headers_for`] — the allow-listed client
-//!   request headers that ride upstream verbatim, scoped per egress dialect so a beta header sent
-//!   for one dialect never leaks to a different one on a cross-protocol route or failover.
 //!
 //! ## What is deliberately absent
 //!
@@ -291,36 +288,6 @@ pub fn lane_cross_check(
     } else {
         diverged
     }
-}
-
-/// The allow-listed client request headers that ride upstream verbatim, paired with the egress
-/// dialect(s) they are meaningful for. Every OTHER client request header is dropped, never
-/// forwarded. Never contains a hop-by-hop, `host`, or auth/credential header — forwarding is
-/// strictly opt-in.
-pub const FORWARDED_CLIENT_HEADERS: &[(&str, &[&str])] = &[
-    ("anthropic-beta", &["anthropic"]),
-    ("anthropic-version", &["anthropic"]),
-    ("openai-beta", &["openai", "responses"]),
-];
-
-/// The union of every forwardable client-header name, for a collector that runs before the egress
-/// dialect is known (routing/failover may still pick a different dialect's lane after collection).
-pub fn forwardable_client_header_names() -> Vec<&'static str> {
-    FORWARDED_CLIENT_HEADERS
-        .iter()
-        .map(|(name, _)| *name)
-        .collect()
-}
-
-/// The client-header names allow-listed for `egress_dialect` — the no-cross-dialect-leak guard
-/// applied at egress assembly, once the actual destination dialect is known. Empty for a dialect
-/// with no forwardable header names.
-pub fn allowed_client_headers_for(egress_dialect: &str) -> Vec<&'static str> {
-    FORWARDED_CLIENT_HEADERS
-        .iter()
-        .filter(|(_, dialects)| dialects.contains(&egress_dialect))
-        .map(|(name, _)| *name)
-        .collect()
 }
 
 #[cfg(test)]

@@ -429,7 +429,7 @@ pub(crate) fn base_data_router(
     // fns are granted only the router and their own `&dyn Any` slot — never a `Store`/`GovCtx`/audit
     // handle. Declaration order (MCP before A2A) is preserved, so the route order is stable.
     let mut router = router;
-    for decl in crate::plane::registry::plane_decls() {
+    for decl in crate::plane::registry::plane_behaviours() {
         let Some(slot) = plane_slots.get(decl.key) else {
             continue;
         };

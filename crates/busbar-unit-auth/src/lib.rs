@@ -59,7 +59,6 @@ pub mod carrier;
 pub mod chain;
 pub mod challenge;
 pub mod creds;
-pub mod detect;
 pub mod exchange;
 pub mod module;
 pub mod principal;
@@ -72,7 +71,6 @@ pub use carrier::{extract_bearer_token, extract_client_token, CallerToken, Heade
 pub use chain::{AuthChain, ChainEntry, ChainVerdict};
 pub use challenge::{Challenge, ChallengeBounds};
 pub use creds::{mint, resolve};
-pub use detect::{protocol_id, Rung, LADDER};
 pub use exchange::{BrowserAction, AUTH_TOKEN_PATH};
 pub use module::{AuthModule, AuthOutcome};
 pub use principal::{Principal, ANONYMOUS};

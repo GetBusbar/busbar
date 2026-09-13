@@ -63,7 +63,7 @@ impl Gate for SleepyGate {
         std::thread::sleep(Duration::from_secs(600));
         Verdict::of(vec![Row::pass("sleepy/one", "never", "reached")])
     }
-    fn selftest(&self, _cx: &Ctx) -> Report {
+    fn selftest<'a>(&'a self, _cx: &'a Ctx) -> Report<'a> {
         Report::new()
     }
 }
@@ -84,7 +84,7 @@ impl Gate for BriskGate {
     fn run(&self, _cx: &Ctx) -> Verdict {
         Verdict::of(vec![Row::pass("brisk/one", "brisk", "done")])
     }
-    fn selftest(&self, _cx: &Ctx) -> Report {
+    fn selftest<'a>(&'a self, _cx: &'a Ctx) -> Report<'a> {
         Report::new()
     }
 }

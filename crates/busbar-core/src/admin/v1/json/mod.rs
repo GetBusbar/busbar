@@ -288,7 +288,7 @@ pub(crate) mod named_map;
 /// snapshot through the host the shim mints per request, so no build-time slot value is needed — a
 /// unit placeholder satisfies the signature.
 fn mount_plane_admin_routes(mut router: Router<Arc<AppHandle>>) -> Router<Arc<AppHandle>> {
-    for decl in crate::plane::registry::plane_decls() {
+    for decl in crate::plane::registry::plane_behaviours() {
         if let Some(admin_routes) = decl.admin_routes {
             for spec in admin_routes(&() as &dyn std::any::Any) {
                 router = mount_one_admin_spec(router, decl.key, spec);
