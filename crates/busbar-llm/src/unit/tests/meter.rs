@@ -208,12 +208,7 @@ async fn the_step_accrues_the_same_metering_row_as_the_live_tap() {
         false,
     );
     let (seal, unit_token, usage_token) = tokens();
-    let metered = meter(
-        &unit_token,
-        &usage_token,
-        &ctx,
-        &Outcome::Completed,
-    );
+    let metered = meter(&unit_token, &usage_token, &ctx, &Outcome::Completed);
 
     assert_eq!(
         metered.row.as_ref().expect("a served response is metered"),

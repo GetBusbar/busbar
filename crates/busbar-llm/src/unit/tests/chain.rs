@@ -846,12 +846,12 @@ async fn drive(
     // The admission variant is still checked — a client unit holds its OWN admission — but the
     // reservation never reaches the Meter step: it stays in the kernel's cell from the door to the
     // exit, and the plane prices and settles nothing.
-    let _admission = match admitted.decision.into_result(seal) {
-        Ok(Admission::Own(_hold)) => (),
+    match admitted.decision.into_result(seal) {
+        Ok(Admission::Own(_hold)) => {}
         Ok(Admission::Accrual(_)) => panic!("a client unit holds its own admission"),
-        Ok(Admission::ZeroHold) => (),
+        Ok(Admission::ZeroHold) => {}
         Err(_) => unreachable!("a refusal carries its rendered bytes and returned above"),
-    };
+    }
 
     // ---- STEP 5, ROUTE ----------------------------------------------------------------------
     // THE READER'S COPY of the meter half, taken before the walk takes it — the same move the
@@ -906,7 +906,12 @@ async fn drive(
     // names no price and asks for none. It assembles what the unit consumed and hands the report
     // over. What the money actually comes to is the composition root's, and it is proven where the
     // card is.
-    let metered = meter::meter(&UnitToken::mint(seal), &UsageToken::mint(seal), &ctx, &Outcome::Completed);
+    let metered = meter::meter(
+        &UnitToken::mint(seal),
+        &UsageToken::mint(seal),
+        &ctx,
+        &Outcome::Completed,
+    );
     metering.reached = true;
     // The accrual arm's own report of itself. `row` is filled whether the step posted or only
     // sealed, so it cannot be the instrument here: one-posting-per-unit is what this pins.
@@ -1395,7 +1400,6 @@ async fn the_walks_tap_and_the_meter_step_make_one_posting_between_them() {
 /// [`the_chain_leaves_the_money_where_the_legacy_plane_leaves_it`]; this is the reachability.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_live_carry_hands_the_meter_step_the_meter_half_the_walk_took() {
-
     // THE ONE DELIVERED END WHOSE FIGURES EXIST AT STEP 6 — see the fixture's own doc. A
     // same-protocol relay's tap fills while the CLIENT drains the body, which is after the unit has
     // ended, so binding the step with a meter half is necessary for this arm and not sufficient: the
@@ -1480,12 +1484,10 @@ async fn the_live_carry_hands_the_meter_step_the_meter_half_the_walk_took() {
     let decision = walk.meter(&UnitToken::mint(&seal), &UsageToken::mint(&seal));
     assert!(decision.into_result(&seal).is_ok(), "the step proceeds");
 
-    let report = walk
-        .reported_at_step()
-        .expect(
-            "the step assembles the report it consumed — a None here is the arm that was \
+    let report = walk.reported_at_step().expect(
+        "the step assembles the report it consumed — a None here is the arm that was \
              unreachable, bound with no meter half",
-        );
+    );
     assert_eq!(
         (report.lane.as_str(), report.provider.as_str()),
         (LANE, "test"),
