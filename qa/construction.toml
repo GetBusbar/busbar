@@ -138,24 +138,19 @@ disposition are columns, one match site each, so a tenth class fails to compile 
 once. Zero slack; the next face declares its own raise."""
 
 [gate.ceiling_raises."rules.loc-ceilings.union_ceiling"]
-from = 23335
-to = 23347
-because = """The union row is kernel + caps/contract + unit-*. Across this line's two loc-ceilings \
-commits the caps/contract term rose by 65 (the upstream status table) and the unit term fell by 53 \
-(busbar-unit-breaker and busbar-unit-egress stopped declaring their own copies of the class and the \
-disposition and now name the one table), a net rise of 12 (5379 + 3545 + 14423 = 23347). \
-`ceiling-rose` compares this declaration against the real base, not against either commit's own \
-intermediate figure, so this entry (the one that survives to the tip) is keyed base -> tip: \
-23335 -> 23347. RE-KEYED on cherry-pick onto 143db6db6: the line was cut against a base whose \
-union_ceiling read 23465 (unit_total 14606), landing its own two intermediate values (23465->23477 \
-via 23400->23347 in this worktree's replay) that no longer match 143db6db6's actual union_ceiling of \
-23335 (unit_total 14476, independently lowered by LK-ALL's landed commits before this line reached \
-the tip). The net delta the line measures across both commits (+65, then -53, i.e. +12 overall) is \
-exact and unchanged; it is re-applied directly onto the real base: 23335 + 12 = 23347. \
-`unit_total_ceiling` itself is NOT re-keyed by an amount that changes here: its own commit-local \
-delta (-53) is applied on top of whatever `unit_total_ceiling` reads at that commit in the replay \
-(14476 -> 14423, see the value below), which is a plain ratchet with no base-comparison of its own; \
-only `union_ceiling`, which `ceiling-rose` checks directly, needed this re-key."""
+from = 23347
+to = 23361
+because = """CORE-HOMES §1.5 line 1 — the audit chain primitive's MOVE by identity from busbar-core \
+into busbar-unit-audit. The unit's `legacy::chain` already held a byte-identical copy of the chain; \
+it gains exactly the two members it still lacked — `Digest::raw` (5) and `frame_prelude` (9), ported \
+byte-preserving — so the unit-* term rises by 14 (14423 -> 14437) and the union with it \
+(5379 + 3545 + 14437 = 23361). `busbar-core`'s own copy is DELETED in the same landing (audit/mod.rs \
+537 -> 47), so the workspace net is deeply negative; only the `busbar-unit-*` union — which does not \
+count core — rises, and by exactly what was ported. base -> tip: 23347 -> 23361. \
+`unit_total_ceiling` is a plain ratchet with no base-comparison of its own and is raised 14423 -> \
+14437 at its value below; only `union_ceiling`, which `ceiling-rose` checks directly, needs this key. \
+(This key previously carried LK-ALL's landed +12 replay note, which `ceiling-rose` had already \
+flagged stale against base 23347 — it is re-keyed here to the raise that is live.)"""
 
 [gate.ceiling_raises."cell.338.count"]
 file = "qa/kind-isolation.toml"
@@ -169,7 +164,28 @@ hits are the cell existing at all and not new coupling: no production line chang
 gains no dependency. The cells' own names carry no vendor word — each already sits in its dialect's \
 own module — which is why the rise is four and not nine. Pinned at the measurement, exactly."""
 
-# NO ENTRY STANDS HERE TODAY, and an empty list is this mechanism working rather than resting.
+[gate.ceiling_raises."rules.loc-ceilings.unit_total_ceiling"]
+from = 14423
+to = 14437
+because = """CORE-HOMES §1.5 line 1 — the audit chain primitive's MOVE by identity into \
+busbar-unit-audit. The unit's `legacy::chain` already carried a byte-identical copy of the chain and \
+gains only the two members it still lacked: `Digest::raw` (5) and `frame_prelude` (9), ported \
+byte-preserving so no persisted digest moves. busbar-core's own copy is DELETED in the same landing \
+(audit/mod.rs 537 -> 47), so the workspace net is deeply negative; the busbar-unit-* union rises by \
+exactly the 14 that were ported. base -> tip: 14423 -> 14437. This is the destination raise of a \
+declared MOVE, not new behaviour written beside the old."""
+
+[gate.ceiling_raises."cell.74.count"]
+file = "qa/kind-isolation.toml"
+from = 10
+to = 60
+because = """busbar-core x unit — the CORE-HOMES §1.5 line 1+2 legacy DRAIN edge. The audit chain \
+primitive moved out of busbar-core/src/audit/mod.rs into `busbar_unit_audit::legacy::chain` by \
+identity, so busbar-core adds the `busbar-unit-audit` Cargo edge and its six audit readers now name \
+`busbar_unit_audit::legacy::chain` directly (no re-export). This is the drain in flight, named by \
+the `[[transitional]]` busbar-core -> busbar-unit-* row; the cell is 0 at the ship sha when \
+busbar-core is gone. base -> tip: 10 -> 60 (CH-1 landed 10 -> 58, CH-2's typed-half deletion left a \
+doc reference that took it to 60). Pinned at the measurement, exactly."""
 # `rules.legacy-reach.prefixes.busbar_substrate.figure` carried the one-time 26 -> 47 calibration
 # while the commit that needed it was in flight. That commit LANDED: the base now carries 47, the
 # rise the row was written to excuse no longer exists, and `ceiling-rose` refused the declaration as
@@ -424,7 +440,7 @@ unit_crate_glob = "busbar-unit-*"
 # cut (14606, via the prior commit's context). By the time this pick lands here the running base
 # (after the prior commit in this same pick sequence) is 14476, not 14606, because LK-ALL's landed
 # commits independently moved it; re-applying the same -53 delta gives 14476 - 53 = 14423.
-unit_total_ceiling = 14423
+unit_total_ceiling = 14437
 verbs_crate = "busbar-unit-verbs"
 verbs_ceiling = 1428
 # 23400 -> 23347: the caps/contract term above is unchanged (raised in the prior commit of this
@@ -432,7 +448,7 @@ verbs_ceiling = 1428
 # class and the disposition. Declared under `[gate.ceiling_raises]` with the pair. RE-KEYED for the
 # same reason as `unit_total_ceiling` above: running base 23400, not the 23477 this line was cut
 # against, because LK-ALL's landed commits moved the unit term underneath this pick sequence.
-union_ceiling = 23347
+union_ceiling = 23361
 # Files (by basename, wherever they sit under busbar-kernel/src) whose bodies seed the call-graph
 # name-match: every identifier called from one of these files, that busbar-kernel does not itself
 # define, is looked up by name against every busbar-unit-* file.
