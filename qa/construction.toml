@@ -159,9 +159,9 @@ to = 222
 because = """The same 44 lines as `rules.loc-ceilings.kernel_ceiling`, all of them in this file: the production arena arrives and the second bump buffer is deleted rather than left beside it. The design's own figure for this row is 0.3k and does not move."""
 
 [gate.ceiling_raises."rules.loc-ceilings.union_ceiling"]
-from = 23465
-to = 23509
-because = """The same 44 lines again, seen from the union. `caps_contract_ceiling` does NOT move for this landing: the arena is the loop's memory and is measured against the kernel's ceiling, not against what a plugin author has to read."""
+from = 23335
+to = 23379
+because = """The same 44 lines again, seen from the union. `caps_contract_ceiling` does NOT move for this landing: the arena is the loop's memory and is measured against the kernel's ceiling, not against what a plugin author has to read. Re-keyed onto a later base (28b0fbe46): the base's own union_ceiling had already moved to 23335 from other landed lines, so this declaration's numbers are re-pinned to that base while the rise this landing needs stays the same +44."""
 
 # The surface ceilings from ARCHITECTURE.md section 1.1: what a PLUGIN AUTHOR has to read. These are
 # owner decisions, not ratchets that drift upward with the tree — the gate reads them
