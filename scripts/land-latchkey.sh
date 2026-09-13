@@ -83,6 +83,18 @@ LK_LIB_ONLY=1 . "$LKL_LIB" || { echo "land-latchkey: could not source the packer
 # The library derives REPO from ITS OWN path; this script's is the authority (the two differ the
 # moment the engine stages one of them and not the other).
 REPO="$LKL_REPO"
+# ── …UNLESS THE CALLER NAMED THE TREE, AND land.sh ALWAYS DOES ─────────────────────────────────
+# `LAND_LATCHKEY_REPO` is the tree prove_tree is about. For an ordinary landing it IS this script's
+# parent — the runner tree W — and nothing changes. For a rung of land.sh's bisect fan it is a
+# SCRATCH CHECKOUT carrying that prefix's picks, and the transport must pack THAT: six rungs proven
+# at once are six different trees, and a transport that packed its own parent would pack the same
+# tree six times and report six verdicts about one prefix.
+# A worktree's `.git` is a FILE, not a directory, and the fan's rungs are worktrees — so both
+# spellings count, and a value naming neither is ignored rather than obeyed into a packless run.
+if [ -n "${LAND_LATCHKEY_REPO:-}" ] \
+   && { [ -d "${LAND_LATCHKEY_REPO}/.git" ] || [ -f "${LAND_LATCHKEY_REPO}/.git" ]; }; then
+  REPO="$(cd "$LAND_LATCHKEY_REPO" && pwd)"
+fi
 
 LKL_SHARDS="${LAND_LATCHKEY_SHARDS:-4}"
 LKL_BASE_REPLAY="${LAND_LATCHKEY_BASE_REPLAY:-1}"

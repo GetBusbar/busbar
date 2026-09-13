@@ -177,6 +177,50 @@ land_validate_backend() { # $1 = the value; an unknown backend is the fleet, lou
 LAND_BACKEND="$(land_validate_backend "$LAND_BACKEND")"
 
 # ──────────────────────────────────────────────────────────────────────────────────────────────────
+# THE BISECT FAN: `LATCHKEY_PREFIX_FAN` — HOW MANY PREFIXES OF A RED UNIT ARE PROVEN AT ONCE
+# ──────────────────────────────────────────────────────────────────────────────────────────────────
+# MEASURED (2026-09-12, live): a 32-line big batch's union went RED in seconds — the gate runner
+# would not build — and the prefix ladder below then proved prefix 1, then 1..2, then 1..3 … ONE AT
+# A TIME at ~10 minutes a rung, with THREE Latchkey jobs in flight against a workspace cap of 20.
+# That is ~6 lines an hour on a queue of 250, and the machine it is starving is rented by the minute.
+#
+# The ladder's rungs do not depend on each other's VERDICTS, only on each other's trees — and the
+# tree of every rung of a round is knowable the moment the round starts, because it is the round's
+# base plus a prefix of the same pick list. So a round proves up to `fan` rungs CONCURRENTLY, each
+# from a scratch checkout of its own, and reads the verdicts together afterwards.
+#
+# THE BOUND IS THE ENGINE'S OWN. landq4.sh's `lq_latchkey_proc_bound` is LATCHKEY_MAX_JOBS ÷
+# LATCHKEY_JOBS_PER_PROOF — how many PROOFS the workspace cap will carry at once — and the fan is
+# bounded by it because a fan wider than the cap does not go faster: the extra jobs are refused
+# (`concurrency_limit`), come back 75, and a 75 is not a verdict. The arithmetic is duplicated here
+# rather than sourced because land.sh is the thing that travels to a runner and landq4.sh is not.
+LAND_PREFIX_FAN="${LATCHKEY_PREFIX_FAN:-6}"
+land_latchkey_proc_bound() {  # landq4.sh's lq_latchkey_proc_bound, over the same two variables
+  local mx="${LATCHKEY_MAX_JOBS:-12}" per="${LATCHKEY_JOBS_PER_PROOF:-3}"
+  case "$mx"  in ''|*[!0-9]*) mx=12 ;; esac
+  case "$per" in ''|*[!0-9]*) per=3 ;; esac
+  [ "$per" -ge 1 ] || per=1
+  # A CAP OF ZERO IS A CAP OF ZERO, and here it means "no fan": one rung at a time, the serial
+  # ladder this engine has always climbed. It must never be read as "unbounded".
+  [ "$mx" -ge 1 ] || { printf '1\n'; return 0; }
+  local n=$(( mx / per )); [ "$n" -ge 1 ] || n=1
+  printf '%s\n' "$n"
+}
+land_prefix_fan_width() {  # prints how many rungs one round may prove at once; 1 is the serial ladder
+  local want="$LAND_PREFIX_FAN"
+  case "$want" in ''|*[!0-9]*) want=6 ;; esac
+  [ "$want" -ge 1 ] || want=1
+  # ONLY THE LATCHKEY BACKEND FANS. A fleet proof holds one box's proof slot for its whole run, so
+  # six of them at once is six boxes this engine has no allocator for; and the fleet transport
+  # (land-remote.sh) ships a BATCH, not a tree. On `fleet` the width is 1 and the path below is the
+  # one that has always run.
+  [ "$LAND_BACKEND" = latchkey ] || { printf '1\n'; return 0; }
+  local bound; bound="$(land_latchkey_proc_bound)"
+  [ "$want" -le "$bound" ] || want="$bound"
+  printf '%s\n' "$want"
+}
+
+# ──────────────────────────────────────────────────────────────────────────────────────────────────
 # LAND_LEGS_ONLY: THE SHARD'S SUBSET OF THE PLAN, AND IT ONLY EVER SUBTRACTS.
 # ──────────────────────────────────────────────────────────────────────────────────────────────────
 # A Latchkey job is capped at 7200 s and a full oracle run has been measured at 2.2 h serial, so a
@@ -1654,9 +1698,13 @@ prove_tree() {
   # an unlanded transport in the tree is exactly the 127 the first Latchkey sweep recorded as RED on
   # every line it touched.
   if [ "$LAND_BACKEND" = latchkey ] && [ -z "${LAND_LATCHKEY_INNER:-}" ]; then
+    # LAND_LATCHKEY_RUN is the bisect fan's: a prefix rung's tree is a scratch checkout with no
+    # `target/` at all, so it cannot find the staged transport under its own HEAD. The fan resolves
+    # it ONCE from the landing tree and hands it down, so every rung of a round is proven by the
+    # same transport the landing itself would have used.
     local lkt=""
-    for lkt in "$here/target/gate/land-latchkey.run.sh" "$(cd "$(dirname "$0")" && pwd)/land-latchkey.sh"; do
-      [ -f "$lkt" ] && break || lkt=""
+    for lkt in "${LAND_LATCHKEY_RUN:-}" "$here/target/gate/land-latchkey.run.sh" "$(cd "$(dirname "$0")" && pwd)/land-latchkey.sh"; do
+      [ -n "$lkt" ] && [ -f "$lkt" ] && break || lkt=""
     done
     if [ -z "$lkt" ]; then
       # 70 IS EX_SOFTWARE AND landq4.sh READS IT AS NONE:harness. Not 1, and not 127: a transport
@@ -1670,7 +1718,12 @@ prove_tree() {
     [ -n "$gate" ]     && set -- "$@" --gate "$gate"
     [ -n "$families" ] && set -- "$@" --families "$families"
     [ -n "$features" ] && set -- "$@" --features "$features"
-    bash "$lkt" "$@" </dev/null
+    # THE TRANSPORT PACKS THE TREE THIS PROOF IS ABOUT, and it is told which one rather than left to
+    # derive it from its own path. For a landing they are the same directory; for a rung of the
+    # bisect fan they are NOT — the rung is a scratch checkout and the transport is the engine's —
+    # and a transport that packed its own parent would prove the runner tree N times and call it N
+    # different prefixes.
+    LAND_LATCHKEY_REPO="$here" bash "$lkt" "$@" </dev/null
     local lkrc=$?
     # THE PROVEN LIST IS NOT EMPTY ON A GREEN, because the line below this function's leg loop reds
     # a proof that proved nothing — and a Latchkey green proved a full plan on somebody else's
@@ -2504,12 +2557,34 @@ land_batch_range() {  # $@ = line indices; the tree is at their base on entry
 #     to be judged on does not exist yet and nothing about it was proven. The runner writes it back
 #     to the queue under the hold it was popped from (lq_park_line) and its chained verdict is
 #     dropped. A line parked #RED here would be a line convicted for its predecessor's fault.
+# THE PREFIX'S UNION, built in ONE place because two paths now build it — the serial ladder and the
+# fan's rounds — and a rung proven over a different union from the one the ladder would have used is
+# a rung that answers a different question. It is land_batch_range's union over the indices it is
+# handed, and it is always the WHOLE prefix from the unit's root, never the round's slice: a rung is
+# "lines 1..k", so its plan is what lines 1..k owe.
+LAND_U_TESTS=""; LAND_U_FEATS=""; LAND_U_GATE=""; LAND_U_FAMS=""; LAND_U_LBL=""
+land_prefix_union() {  # $@ = the indices of the prefix, in queue order
+  local q
+  LAND_U_TESTS=""; LAND_U_FEATS=""; LAND_U_GATE=""; LAND_U_FAMS=""; LAND_U_LBL=""
+  for q in "$@"; do
+    LAND_U_TESTS="$LAND_U_TESTS ${BL_tests[$q]}"
+    [ -n "${BL_feats[$q]}" ] && LAND_U_FEATS="$LAND_U_FEATS,${BL_feats[$q]}"
+    [ -n "${BL_gate[$q]}" ]  && LAND_U_GATE="$LAND_U_GATE|${BL_gate[$q]}"
+    [ -n "${BL_fams[$q]}" ]  && LAND_U_FAMS="$LAND_U_FAMS|(${BL_fams[$q]})"
+    LAND_U_LBL="$LAND_U_LBL,$((q + 1))"
+  done
+  # shellcheck disable=SC2086
+  LAND_U_TESTS="$(printf '%s\n' $LAND_U_TESTS | sed '/^$/d' | sort -u | tr '\n' ' ')"
+  LAND_U_FEATS="$(printf '%s\n' "$LAND_U_FEATS" | tr ',' '\n' | sed '/^$/d' | sort -u | paste -sd, -)"
+  LAND_U_GATE="${LAND_U_GATE#|}"; LAND_U_FAMS="${LAND_U_FAMS#|}"; LAND_U_LBL="prefix ${LAND_U_LBL#,}"
+  return 0
+}
+
 land_unit_prefix() {  # $@ = the indices of ONE unit, in queue order; the tree is at their base on entry
   local -a idx; local i=0
   for a in "$@"; do idx[$i]="$a"; i=$((i + 1)); done
   local n=$i
   [ "$n" -gt 0 ] || return 0
-  local base0; base0="$(git -C "$here" rev-parse HEAD)"
   if [ "$n" -eq 1 ]; then
     # One line is its own prefix; land_batch_range has already proven it red and reset the tree.
     BL_out[${idx[0]}]=RED
@@ -2517,34 +2592,38 @@ land_unit_prefix() {  # $@ = the indices of ONE unit, in queue order; the tree i
     return 0
   fi
   echo "land.sh: === RED over a unit of $n line(s) — bisecting BY PREFIX (root; root+1; root+2 …)" >&2
-  local culprit=-1 pre j lbl u_tests u_feats u_gate u_fams repinned
+  local fan; fan="$(land_prefix_fan_width)"
+  if [ "$fan" -le 1 ]; then
+    land_unit_prefix_serial "${idx[@]}"
+  else
+    land_unit_prefix_fan "$fan" "${idx[@]}"
+  fi
+  return 0
+}
+
+# ── THE SERIAL LADDER — ONE RUNG AT A TIME, IN W ─────────────────────────────────────────────────
+# What this engine has always done, and what it still does on the fleet backend and at fan 1. The
+# tree it climbs is W itself: every rung is applied to W, proven there, and either kept (green) or
+# reset off it (red). One proof in flight, ~10 minutes a rung.
+land_unit_prefix_serial() {  # $@ = the unit's indices; the tree is at their base on entry
+  local -a idx; local i=0
+  for a in "$@"; do idx[$i]="$a"; i=$((i + 1)); done
+  local n=$i
+  local base0; base0="$(git -C "$here" rev-parse HEAD)"
+  local culprit=-1 pre j repinned
   i=0
   while [ "$i" -lt "$n" ]; do
     j="${idx[$i]}"
     pre="$(git -C "$here" rev-parse HEAD)"
     if ! land_apply_line "$j"; then culprit=$i; break; fi
     # The union of the prefix, exactly as land_batch_range builds a batch's.
-    u_tests=""; u_feats=""; u_gate=""; u_fams=""; lbl=""
-    local m=0 q
-    while [ "$m" -le "$i" ]; do
-      q="${idx[$m]}"
-      u_tests="$u_tests ${BL_tests[$q]}"
-      [ -n "${BL_feats[$q]}" ] && u_feats="$u_feats,${BL_feats[$q]}"
-      [ -n "${BL_gate[$q]}" ] && u_gate="$u_gate|${BL_gate[$q]}"
-      [ -n "${BL_fams[$q]}" ] && u_fams="$u_fams|(${BL_fams[$q]})"
-      lbl="$lbl,$((q + 1))"
-      m=$((m + 1))
-    done
-    # shellcheck disable=SC2086
-    u_tests="$(printf '%s\n' $u_tests | sed '/^$/d' | sort -u | tr '\n' ' ')"
-    u_feats="$(printf '%s\n' "$u_feats" | tr ',' '\n' | sed '/^$/d' | sort -u | paste -sd, -)"
-    u_gate="${u_gate#|}"; u_fams="${u_fams#|}"; lbl="prefix ${lbl#,}"
+    land_prefix_union "${idx[@]:0:$((i + 1))}"
     repinned=1
-    land_repin_ledger "$lbl" || repinned=0
-    echo "land.sh: === proving $lbl at $(git -C "$here" rev-parse --short HEAD)"
-    if [ "$repinned" = 1 ] && prove_tree "$base0" "$u_tests" "$u_gate" "$u_fams" "$lbl" "$u_feats"; then
+    land_repin_ledger "$LAND_U_LBL" || repinned=0
+    echo "land.sh: === proving $LAND_U_LBL at $(git -C "$here" rev-parse --short HEAD)"
+    if [ "$repinned" = 1 ] && prove_tree "$base0" "$LAND_U_TESTS" "$LAND_U_GATE" "$LAND_U_FAMS" "$LAND_U_LBL" "$LAND_U_FEATS"; then
       BL_out[$j]=GREEN; BL_repin[$j]="${LAND_REPIN_SHA:-none}"
-      echo "land.sh: === GREEN $lbl — line $((j + 1)) is green with its own proof, by:$PROVEN"
+      echo "land.sh: === GREEN $LAND_U_LBL — line $((j + 1)) is green with its own proof, by:$PROVEN"
     else
       git -C "$here" reset -q --hard "$pre"
       BL_out[$j]=RED
@@ -2554,6 +2633,18 @@ land_unit_prefix() {  # $@ = the indices of ONE unit, in queue order; the tree i
     fi
     i=$((i + 1))
   done
+  land_prefix_hold "$culprit" "${idx[@]}"
+  return 0
+}
+
+# ── WHAT IS HELD, whichever way the ladder was climbed ───────────────────────────────────────────
+# One writer for the rule in land_unit_prefix's header: every line after the culprit is HELD, never
+# RED. Its predecessor did not land, so the tree it is to be judged on does not exist yet.
+land_prefix_hold() {  # $1 = the culprit's POSITION in the unit (-1 = none); $2.. = the unit's indices
+  local culprit="$1"; shift
+  local -a idx; local i=0
+  for a in "$@"; do idx[$i]="$a"; i=$((i + 1)); done
+  local n=$i
   [ "$culprit" -ge 0 ] || return 0
   i=$((culprit + 1))
   while [ "$i" -lt "$n" ]; do
@@ -2561,6 +2652,198 @@ land_unit_prefix() {  # $@ = the indices of ONE unit, in queue order; the tree i
     echo "land.sh: === HELD line $(( ${idx[$i]} + 1 )) — its predecessor did not land; not proven, not red" >&2
     i=$((i + 1))
   done
+  return 0
+}
+
+# ── THE BISECT FAN — A ROUND OF RUNGS, PROVEN AT ONCE, READ IN ORDER ─────────────────────────────
+# The ladder, climbed `fan` rungs to the round instead of one. What the round does, in six lines:
+#
+#   1. the round's BASE is W's HEAD — the unit's base on the first round, the last LANDED rung's
+#      tree on every round after it. W's HEAD moves when a prefix lands and at no other moment.
+#   2. each rung k of the round is staged into a SCRATCH CHECKOUT of its own at that base, with the
+#      picks of the round's lines up to k cherry-picked into it. W's working copy is never the
+#      subject of a proof in flight, and no two rungs share a directory.
+#   3. every staged rung is dispatched CONCURRENTLY — its own re-pin, its own prove_tree, its own
+#      fan of Latchkey jobs — and the round waits for them together, not one after another.
+#   4. the verdicts are read IN ORDER. Every rung green up to the first red lands: W is reset onto
+#      the last green rung's tree, which carries every pick and every re-pin of the round in order.
+#   5. the first red rung's LAST line is the culprit — the rung below it was green — and it is RED,
+#      backed out, exactly as the serial ladder parks it.
+#   6. every rung PAST the first red is discarded UNREAD: it carries the culprit, so its verdict is
+#      about a tree the queue will never land and its log is not evidence about anybody's picks.
+#      The lines past the culprit are HELD, as they are on the serial ladder.
+#
+# A ROUND THAT IS ALL GREEN LANDS ITS WHOLE WIDTH and the next round starts at the rung after it, on
+# the tree the round just landed.
+land_unit_prefix_fan() {  # $1 = the round width; $2.. = the unit's indices, in queue order
+  local fan="$1"; shift
+  local -a idx; local i=0
+  for a in "$@"; do idx[$i]="$a"; i=$((i + 1)); done
+  local n=$i
+
+  # The transport, resolved ONCE from the landing tree: a scratch rung has no `target/` of its own.
+  local lkrun="${LAND_LATCHKEY_RUN:-}"
+  [ -n "$lkrun" ] || { [ -f "$here/target/gate/land-latchkey.run.sh" ] && lkrun="$here/target/gate/land-latchkey.run.sh"; }
+
+  local root; root="$LAND_TMP/land-prefix-$stamp-$$"
+  mkdir -p "$root" 2>/dev/null || true
+  local next=0 culprit=-1 round=0
+  while [ "$next" -lt "$n" ] && [ "$culprit" -lt 0 ]; do
+    round=$((round + 1))
+    local rbase; rbase="$(git -C "$here" rev-parse HEAD)"
+    local w=$(( n - next )); [ "$w" -le "$fan" ] || w="$fan"
+
+    # ── STAGE ────────────────────────────────────────────────────────────────────────────────────
+    # In queue order, one checkout per rung, each carrying the round's picks up to its own line. A
+    # pick that will not apply stops the staging there and is the round's culprit position: every
+    # rung above it would carry the same conflict, so there is nothing above it to prove.
+    local -a rdir; rdir=(); local rdirs="" staged=0 conflict=-1 k m d
+    local save_here="$here"
+    while [ "$staged" -lt "$w" ]; do
+      k=$(( next + staged ))
+      d="$root/r$round-p$((k + 1))"
+      rm -rf "$d" 2>/dev/null || true
+      if ! git -C "$save_here" worktree add -q --detach "$d" "$rbase" >/dev/null 2>&1; then
+        echo "land.sh: === the bisect fan could not stage a scratch checkout at $d — falling back to the serial ladder" >&2
+        here="$save_here"
+        land_prefix_fan_cleanup "$save_here" "$root" "$rdirs"
+        land_unit_prefix_serial "${idx[@]:$next}"
+        return 0
+      fi
+      here="$d"
+      m="$next"; local ok=1
+      while [ "$m" -le "$k" ]; do
+        if ! land_apply_line "${idx[$m]}"; then ok=0; break; fi
+        m=$((m + 1))
+      done
+      here="$save_here"
+      if [ "$ok" = 0 ]; then
+        # land_apply_line has already recorded RED-CONFLICT for the line and said so.
+        conflict="$k"
+        git -C "$save_here" worktree remove --force "$d" >/dev/null 2>&1 || rm -rf "$d"
+        break
+      fi
+      rdir[$staged]="$d"; rdirs="$rdirs$d
+"
+      staged=$((staged + 1))
+    done
+
+    if [ "$staged" -eq 0 ]; then
+      # The round's first rung conflicts: there is nothing to prove and the culprit is that line.
+      culprit="$conflict"
+      break
+    fi
+
+    # ── DISPATCH ─────────────────────────────────────────────────────────────────────────────────
+    echo "land.sh: === bisect ROUND $round: $staged prefix(es) proven CONCURRENTLY on $(git -C "$save_here" rev-parse --short "$rbase") (fan $fan)" >&2
+    local -a rpid; rpid=(); local r=0
+    while [ "$r" -lt "$staged" ]; do
+      k=$(( next + r )); d="${rdir[$r]}"
+      land_prefix_union "${idx[@]:0:$((k + 1))}"
+      echo "land.sh: === proving $LAND_U_LBL at $(git -C "$d" rev-parse --short HEAD) [round $round, rung $((r + 1))/$staged, $d]"
+      (
+        here="$d"
+        LAND_LATCHKEY_RUN="$lkrun"
+        [ -n "$lkrun" ] && export LAND_LATCHKEY_RUN || unset LAND_LATCHKEY_RUN
+        land_repin_ledger "$LAND_U_LBL" || exit 1
+        prove_tree "$rbase" "$LAND_U_TESTS" "$LAND_U_GATE" "$LAND_U_FAMS" "$LAND_U_LBL" "$LAND_U_FEATS"
+      ) >"$d.log" 2>&1 &
+      rpid[$r]=$!
+      r=$((r + 1))
+    done
+
+    # ── READ, IN ORDER ───────────────────────────────────────────────────────────────────────────
+    local read_to=0 landed=""
+    r=0
+    while [ "$r" -lt "$staged" ]; do
+      k=$(( next + r )); d="${rdir[$r]}"
+      local rc=0
+      wait "${rpid[$r]}" || rc=$?
+      # THE RUNG'S OWN WORDS, ON THE LANDING'S LOG, IN LADDER ORDER. landq4.sh reads this log for
+      # `NONE:cap` and `NONE:base-test` and for the red's diagnosis; a rung whose log stayed in a
+      # scratch file would be a verdict with no evidence behind it.
+      cat "$d.log" >&2 || true
+      land_prefix_union "${idx[@]:0:$((k + 1))}"
+      if [ "$rc" = 0 ]; then
+        BL_out[${idx[$k]}]=GREEN
+        BL_repin[${idx[$k]}]="$(land_prefix_repin "$d")"
+        landed="$(git -C "$d" rev-parse HEAD)"
+        echo "land.sh: === GREEN $LAND_U_LBL — line $(( ${idx[$k]} + 1 )) is green with its own proof, by: latchkey round $round;"
+        read_to=$((r + 1))
+      else
+        BL_out[${idx[$k]}]=RED
+        echo "land.sh: === RED line $(( ${idx[$k]} + 1 )) — the first prefix that turns red; it is the culprit, backed out" >&2
+        culprit="$k"
+        read_to=$((r + 1))
+        break
+      fi
+      r=$((r + 1))
+    done
+
+    # ── DISCARD THE REST, UNREAD ─────────────────────────────────────────────────────────────────
+    if [ "$read_to" -lt "$staged" ]; then
+      echo "land.sh: === $(( staged - read_to )) prefix(es) of round $round are DISCARDED UNREAD — every one of them carries line $(( ${idx[$culprit]} + 1 )), so nothing they say is about picks that can land" >&2
+      r="$read_to"
+      while [ "$r" -lt "$staged" ]; do land_prefix_kill_tree "${rpid[$r]}"; wait "${rpid[$r]}" 2>/dev/null || true; r=$((r + 1)); done
+    fi
+
+    # ── LAND THE GREENS: ONE MOVE OF W PER ROUND ─────────────────────────────────────────────────
+    # The last green rung's tree IS the round's landing: the round's base, plus every pick up to it
+    # in order, plus the re-pin commit its own measurement made. Resetting onto it is how W's HEAD
+    # moves, and it is the only way W's HEAD moves in this function.
+    if [ -n "$landed" ]; then
+      git -C "$save_here" reset -q --hard "$landed"
+      local nl="$read_to"; [ "$culprit" -lt 0 ] || nl=$(( read_to - 1 ))
+      echo "land.sh: === round $round landed $nl line(s); W is at $(git -C "$save_here" rev-parse --short HEAD)" >&2
+    fi
+    land_prefix_fan_cleanup "$save_here" "" "$rdirs"
+    [ "$culprit" -ge 0 ] || next=$(( next + staged ))
+    # A round that staged fewer rungs than its width stopped on a conflict; that line is the culprit.
+    if [ "$culprit" -lt 0 ] && [ "$conflict" -ge 0 ]; then culprit="$conflict"; fi
+  done
+  rm -rf "$root" 2>/dev/null || true
+  land_prefix_hold "$culprit" "${idx[@]}"
+  return 0
+}
+
+# A DISCARDED RUNG IS STOPPED, NOT ORPHANED. The rung is a subshell whose child is the transport,
+# whose child is the poller; killing only the subshell would leave a `latchkey` poller running for
+# the rest of the 7200 s ceiling on a verdict nobody will read. The remote jobs themselves are left
+# to expire on their own — the workspace cap is per RUNNER, and a job already created has already
+# taken its slot; cancelling it buys nothing this round can use.
+land_prefix_kill_tree() {  # $1 = a pid; the pid and everything below it
+  local p="${1:-}" c
+  [ -n "$p" ] || return 0
+  for c in $(pgrep -P "$p" 2>/dev/null || true); do land_prefix_kill_tree "$c"; done
+  kill "$p" 2>/dev/null || true
+  return 0
+}
+
+# The re-pin sha a landed rung contributes, or `none`: the rung's HEAD when its own measurement
+# committed one on top of its picks, and nothing when it did not.
+land_prefix_repin() {  # $1 = the rung's directory
+  local d="$1" sha
+  sha="$(git -C "$d" log -1 --format=%H --grep='^ledger: re-pinned by measurement' 2>/dev/null | head -1)"
+  if [ -n "$sha" ] && [ "$sha" = "$(git -C "$d" rev-parse HEAD)" ]; then
+    git -C "$d" rev-parse --short HEAD; return 0
+  fi
+  printf 'none\n'
+}
+
+# Scratch checkouts are the fan's alone and are removed the moment their verdict is read: they are
+# registered worktrees of this repository, and a landing that left six of them behind per round
+# would fill `git worktree list` with trees nobody can name.
+land_prefix_fan_cleanup() {  # $1 = the landing tree, $2 = a root to remove or "", $3 = dirs, one per line
+  local w="$1" root="$2" dirs="${3:-}"
+  local d
+  while IFS= read -r d; do
+    [ -n "$d" ] || continue
+    git -C "$w" worktree remove --force "$d" >/dev/null 2>&1 || rm -rf "$d" 2>/dev/null || true
+  done <<EOF
+$dirs
+EOF
+  [ -z "$root" ] || rm -rf "$root" 2>/dev/null || true
+  git -C "$w" worktree prune >/dev/null 2>&1 || true
   return 0
 }
 
@@ -4042,8 +4325,9 @@ STUBCARGO
      "$(grep -c 'if \[ "\$LAND_BACKEND" = latchkey \] && \[ -z "\${LAND_LATCHKEY_INNER:-}" \]; then' "$LAND_SRC")"
   _t2 "  ...and a home with no transport is 70, never 127 and never a red" 1 \
      "$(grep -c 'return 70' "$LAND_SRC")"
-  # Twice: the candidate list prove_tree searches, and the sentence a home without it prints.
-  _t2 "  ...the staged copy is preferred to the tree's own" 2 \
+  # Three times: the candidate list prove_tree searches, the sentence a home without it prints, and
+  # the bisect fan's one resolution of it for rungs that have no `target/` of their own.
+  _t2 "  ...the staged copy is preferred to the tree's own" 3 \
      "$(grep -c 'target/gate/land-latchkey.run.sh' "$LAND_SRC")"
   # ── THESE TWO LIVE BELOW land_selftest, so they are read out of $0 with a letter of each needle
   # hidden in a bracket: a grep that travels in the file it searches is otherwise its own hit.
