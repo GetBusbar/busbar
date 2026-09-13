@@ -152,27 +152,35 @@ land_parse_args() {
 # tokens: plugins  fmt  gatefiles  tests  clippy  workspace-clippy  kind-isolation  gate  oracle
 # ──────────────────────────────────────────────────────────────────────────────────────────────────
 # ──────────────────────────────────────────────────────────────────────────────────────────────────
-# WHICH MACHINE A LANDING IS PROVEN ON: `BUSBAR_LAND_BACKEND=fleet|latchkey`
+# WHICH MACHINE A LANDING IS PROVEN ON: `BUSBAR_LAND_BACKEND=latchkey` (the only backend)
 # ──────────────────────────────────────────────────────────────────────────────────────────────────
-# `fleet` is the default and is exactly what this engine has always done: the whole batch goes to
-# one EC2 box (scripts/land-remote.sh), which picks, proves, bisects and publishes a tip the laptop
-# fast-forwards onto. `latchkey` is the other shape, and it is a different shape rather than a
-# different host:
+# `fleet` used to be the default: the whole batch shipped to one EC2 box (scripts/land-remote.sh),
+# which picked, proved, bisected and published a tip the laptop fast-forwarded onto. That box, the
+# script that shipped to it and the EC2 runner fleet it addressed are all deleted (LK-5); `latchkey`
+# is the only shape this engine has left, and it is a different shape rather than a different host:
 #
 #   THE ENGINE STAYS HERE. This script applies the picks in W, halves the batch on red, writes
-#   `<batch>.result` and pushes, exactly as the copy on a box does — and only prove_tree leaves, as
-#   a fan of `latchkey run` jobs over the tree AS IT STANDS. That is what makes the bisect work
+#   `<batch>.result` and pushes, exactly as the deleted fleet copy did — and only prove_tree leaves,
+#   as a fan of `latchkey run` jobs over the tree AS IT STANDS. That is what makes the bisect work
 #   unchanged: it resets to a smaller pick set and calls the prover again, and the prover packs
 #   whatever it is given. It is also what makes the oracle shardable at all — a fleet transport that
 #   ships a BATCH cannot split a leg, because the leg does not exist until the box has picked.
 #
-# LAND_LATCHKEY_INNER is the loop-breaker, the twin of LAND_REMOTE_INNER: the copy of this script
-# running ON a Latchkey runner has it set, so it runs the engine instead of renting another runner.
-LAND_BACKEND="${BUSBAR_LAND_BACKEND:-fleet}"
-land_validate_backend() { # $1 = the value; an unknown backend is the fleet, loudly, never a guess
-  case "${1:-}" in fleet|latchkey) printf '%s\n' "$1"; return 0 ;; esac
-  echo "land.sh: BUSBAR_LAND_BACKEND='${1:-}' is not a backend this engine has (fleet | latchkey) — using fleet" >&2
-  printf 'fleet\n'
+# RETIRED (LK-5b): `fleet` is no longer a value this engine has. `land_validate_backend` below
+# refuses it BY NAME, the same way `lq_validate_backend` in landq4.sh already does.
+#
+# LAND_LATCHKEY_INNER is the loop-breaker: the copy of this script running ON a Latchkey runner has
+# it set, so it runs the engine instead of renting another runner.
+LAND_BACKEND="${BUSBAR_LAND_BACKEND:-latchkey}"
+land_validate_backend() { # $1 = the value; latchkey is the only backend this engine has — everything
+                          # else, including the retired `fleet`, is refused BY NAME, never a guess
+  case "${1:-}" in latchkey) printf '%s\n' "$1"; return 0 ;; esac
+  if [ "${1:-}" = fleet ]; then
+    echo "land.sh: BUSBAR_LAND_BACKEND=fleet names a backend this engine deleted (EC2 decommissioned, LK-5) — using latchkey" >&2
+  else
+    echo "land.sh: BUSBAR_LAND_BACKEND='${1:-}' is not a backend this engine has (latchkey is the only one) — using latchkey" >&2
+  fi
+  printf 'latchkey\n'
 }
 LAND_BACKEND="$(land_validate_backend "$LAND_BACKEND")"
 
@@ -3168,10 +3176,16 @@ land_selftest() {
   _st "lock: a dead pid holds nobody"              1 _held
   rm -f "$lk"
   _st "lock: no lock file holds nobody"            1 _held
-  printf '%s\n' "$$" >"$lk"
-  _st "lock: --remote <sha> while held is REFUSED (rc 2)" 2 env LANDQ_LOCK="$lk" LAND_SELFTEST_ROOT="$repo" bash "$0" --remote box-x deadbeefcafe
-  _stgrep "lock: ...and says who holds it"          "$ST_OUT" "landq4.sh \(pid $$\) holds the landing lock"
   rm -f "$lk"
+  echo "land.sh selftest: --remote / LAND_REMOTE are retired (LK-5b) — refused BY NAME, not delegated"
+  _st "remote: --remote <sha> is refused (rc 2)" 2 env LAND_SELFTEST_ROOT="$repo" bash "$0" --remote box-x deadbeefcafe
+  _stgrep "remote: ...naming the flag and the reason" "$ST_OUT" "REFUSED — --remote 'box-x' names a landing mode this engine deleted"
+  _st "remote: LAND_REMOTE alone is refused the same way" 2 env LAND_REMOTE=auto LAND_SELFTEST_ROOT="$repo" bash "$0" deadbeefcafe
+  _stgrep "remote: ...mentioning EC2 and LK-5"      "$ST_OUT" "EC2 fleet it shipped to are decommissioned, LK-5"
+  # $0, not $LAND_SRC: the refusal sits in MAIN, below land_selftest()'s own definition, which is
+  # exactly what $LAND_SRC was trimmed to exclude (see its own comment above).
+  _t2 "remote: ...and the refusal is skipped for --selftest itself" 1 \
+     "$(grep -c '\[ "\$P_selftest" != 1 \]' "$0")"
 
   # THE LEG ITSELF, ON A REAL GATE. Everything above tests the arithmetic over fabricated logs; this
   # runs `cargo xtask gate <g> --selftest --shard k/n` for real and asserts the leg's own verdict,
@@ -4013,10 +4027,12 @@ STUBCARGO
      "$(grep -c '^LAND_TMP=' "$LAND_SRC")"
 
   # ── THE LANDING BACKEND AND THE SHARD'S LEG SUBSET ────────────────────────────────────────────
-  echo "land.sh selftest: BUSBAR_LAND_BACKEND, and a shard subset that can only subtract"
-  _t2 "P: fleet is the default backend"            fleet "$(BUSBAR_LAND_BACKEND=""; land_validate_backend "${BUSBAR_LAND_BACKEND:-fleet}" 2>/dev/null)"
-  _t2 "  ...latchkey is the other one"             latchkey "$(land_validate_backend latchkey 2>/dev/null)"
-  _t2 "  ...and a backend this engine has not is the fleet, not a guess" fleet "$(land_validate_backend ec3 2>/dev/null)"
+  echo "land.sh selftest: BUSBAR_LAND_BACKEND — latchkey is the only backend (LK-5b)"
+  _t2 "P: latchkey is the default backend"         latchkey "$(BUSBAR_LAND_BACKEND=""; land_validate_backend "${BUSBAR_LAND_BACKEND:-latchkey}" 2>/dev/null)"
+  _t2 "  ...and stays latchkey when named"         latchkey "$(land_validate_backend latchkey 2>/dev/null)"
+  _t2 "  ...the retired fleet is refused, not honoured" latchkey "$(land_validate_backend fleet 2>/dev/null)"
+  _t2 "  ...naming EC2 and LK-5"                    1 "$(land_validate_backend fleet 2>&1 >/dev/null | grep -c 'EC2 decommissioned, LK-5')"
+  _t2 "  ...and a backend this engine has not is latchkey, not a guess" latchkey "$(land_validate_backend ec3 2>/dev/null)"
   _t2 "  ...loudly"                                1 "$(land_validate_backend ec3 2>&1 >/dev/null | grep -c 'is not a backend')"
   # LAND_LEGS_ONLY IS AN INTERSECTION IN THE PLAN'S ORDER. The plan is the authority on what a union
   # owes; a variable that could ADD a leg would be an environment variable deciding what a proof is.
@@ -4045,19 +4061,15 @@ STUBCARGO
   # Twice: the candidate list prove_tree searches, and the sentence a home without it prints.
   _t2 "  ...the staged copy is preferred to the tree's own" 2 \
      "$(grep -c 'target/gate/land-latchkey.run.sh' "$LAND_SRC")"
-  # ── THESE TWO LIVE BELOW land_selftest, so they are read out of $0 with a letter of each needle
-  # hidden in a bracket: a grep that travels in the file it searches is otherwise its own hit.
-  _t2 "  ...and the batch is NOT handed to land-remote.sh on that backend" 1 \
-     "$(grep -c 'the batch is landed [H]ERE and each proof is rented' "$0")"
   # THE SELFTEST PROVER IS STILL A FUNCTION OF THE TREE. The bisect's own cases must never rent a
-  # runner, so the delegation sits BELOW the selftest prover's early return.
+  # runner, so prove_tree's delegation sits BELOW the selftest prover's early return.
   _t2 "  ...but the selftest prover still answers first" 1 \
      "$( [ "$(grep -n 'selftest prover: green' "$LAND_SRC" | head -n1 | cut -d: -f1)" \
           -lt "$(grep -n 'if \[ "\$LAND_BACKEND" = latchkey \]' "$LAND_SRC" | head -n1 | cut -d: -f1)" ] && echo 1 || echo 0)"
-  # THE LANDING LOCK BINDS ON BOTH BACKENDS. On this one the engine runs in THIS tree, so it matters
-  # more, not less: a slot that landed for real here would move the runner's own HEAD.
-  _t2 "  ...and the landing lock is asked on the latchkey path too" 2 \
-     "$(grep -c 'holds the landing [l]ock; only the runner lands' "$0")"
+  # RETIRED (LK-5b): the two checks that used to live here confirmed --remote was CONSUMED on the
+  # latchkey backend rather than delegated, and that the landing lock still bound on that path.
+  # --remote is refused outright now, on every backend, before either question is reached — see the
+  # "remote:" cases in land_selftest above, which run the real refusal rather than grep for prose.
 
   if [ "$fails" = 0 ]; then
     printf '\nland.sh selftest: GREEN (floor plan, shard partition, shard collection, batch bisect,\n'
@@ -4119,52 +4131,24 @@ land_validate_to "$P_to" || exit 2
 land_refuse_red_overrides || exit 2
 land_print_posture "$P_to"
 
-# ── --remote: THE SAME LANDING, ON A FLEET BOX ────────────────────────────────────────────────────
-# The owner's ruling during dev churn is that GitHub Actions judges integration/qa/main and nothing
-# else; a landing is proven on the EC2 fleet, directly. That is a transport decision, not a proof
-# decision, so it is delegated here and NOTHING below this block changes: scripts/land-remote.sh
-# pushes this tree and the batch's picks to a box, runs THIS script there with the same arguments
-# minus --remote, streams the log back, copies <batch>.result back to the path the local runner
-# reads, and exits with the REMOTE's status.
-#
-# LAND_REMOTE_INNER is what stops the delegation from being infinite: the copy running on the box
-# has it set, sees it, and falls through to the ordinary engine.
+# ── --remote / LAND_REMOTE: RETIRED (LK-5b) ─────────────────────────────────────────────────────
+# `--remote` used to ship this tree and the batch's picks to an EC2 box (scripts/land-remote.sh),
+# run THIS script there with the same arguments minus --remote, stream the log back and exit with
+# the REMOTE's status. That was a transport decision, not a proof one — `latchkey` is now the only
+# backend this engine has (see LAND_BACKEND above), and land-remote.sh and the EC2 fleet it shipped
+# to are deleted (LK-5). So a `--remote` argument, or a LAND_REMOTE value inherited from an
+# operator's environment (the runner used to carry LAND_REMOTE=auto for the fleet), is REFUSED BY
+# NAME here — never silently consumed, and never a guess at a box that no longer exists.
 [ -n "${LAND_REMOTE:-}" ] && [ -z "$P_remote" ] && P_remote="$LAND_REMOTE"
-# THE FLAG BECOMES THE VARIABLE, HERE AND ONLY HERE. Every batch line is parsed by the same
-# land_parse_args, which would reset `P_preprove` to 0; the mode is a property of the RUN.
-[ "$P_preprove" = 1 ] && LAND_PREPROVE=1
-# THE LATCHKEY BACKEND DOES NOT DELEGATE THE BATCH — IT KEEPS IT (see LAND_BACKEND above). The
-# picks, the bisect, the outcome rows and the push all happen here; prove_tree is the only thing
-# that leaves. So `--remote`/LAND_REMOTE is consumed and ignored on this backend rather than
-# refused: the runner's environment carries LAND_REMOTE=auto for the fleet and an operator should
-# not have to strip it to change backend.
-#
-# THE LANDING LOCK STILL BINDS. On the fleet path the refusal below is what stops a slot landing for
-# real while the runner is landing; on this path the engine runs in THIS tree, so the refusal
-# matters more, not less.
-if [ "$LAND_BACKEND" = latchkey ] && [ -n "$P_remote" ] && [ -z "${LAND_REMOTE_INNER:-}" ] && [ "$P_selftest" != 1 ]; then
-  if [ "${LAND_PREPROVE:-}" != 1 ] && holder="$(land_runner_holds_lock)"; then
-    echo "land.sh: REFUSED — landq4.sh (pid $holder) holds the landing lock; only the runner lands. Prove this branch with --preprove, which publishes nothing." >&2
-    exit 2
-  fi
-  echo "land.sh: BUSBAR_LAND_BACKEND=latchkey — the batch is landed HERE and each proof is rented; --remote '$P_remote' is ignored."
-  P_remote=""
-fi
 if [ -n "$P_remote" ] && [ -z "${LAND_REMOTE_INNER:-}" ] && [ "$P_selftest" != 1 ]; then
-  if [ "${LAND_PREPROVE:-}" != 1 ] && holder="$(land_runner_holds_lock)"; then
-    echo "land.sh: REFUSED — landq4.sh (pid $holder) holds the landing lock; only the runner lands. Prove this branch with --preprove, which publishes nothing." >&2
-    exit 2
-  fi
-  # THE PRE-PROVE MODE TRAVELS ON THE ARGV, because the environment does not travel at all: see
-  # `--preprove` in land_parse_args. `LAND_PREPROVE=1 land.sh --remote <host>` used to prove on the
-  # box in ORDINARY mode and fast-forward this tree onto the result.
-  if [ "${LAND_PREPROVE:-}" = 1 ] && [ "$P_preprove" != 1 ]; then
-    # PREPENDED, never appended: land_parse_args stops at the first non-flag and treats the rest as
-    # hashes, so `--prove <sha> --preprove` would have made `--preprove` a commit-ish.
-    exec "$(cd "$(dirname "$0")" && pwd)/land-remote.sh" --host "$P_remote" --preprove "$@"
-  fi
-  exec "$(cd "$(dirname "$0")" && pwd)/land-remote.sh" --host "$P_remote" "$@"
+  echo "land.sh: REFUSED — --remote '$P_remote' names a landing mode this engine deleted (land-remote.sh and the EC2 fleet it shipped to are decommissioned, LK-5). Land on Latchkey instead, and delete LAND_REMOTE from the environment." >&2
+  exit 2
 fi
+
+# THE FLAG BECOMES THE VARIABLE, HERE AND ONLY HERE. Every batch line is parsed by the same
+# land_parse_args, which would reset `P_preprove` to 0; the mode is a property of the RUN. This is
+# unrelated to --remote (deleted above) — --preprove works standalone on the latchkey backend too.
+[ "$P_preprove" = 1 ] && LAND_PREPROVE=1
 
 if [ "$P_selftest" = 1 ]; then land_selftest; exit $?; fi
 
