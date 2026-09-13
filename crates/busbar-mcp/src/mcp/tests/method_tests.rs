@@ -825,13 +825,17 @@ fn the_moved_classes_are_served_through_the_node_and_no_longer_by_the_dispatch_t
         super::document_for(super::ops::OP_TASK_CANCEL).is_some(),
         "tasks/cancel is the tenth class the node has taken, and it closes the tasks namespace"
     );
+    assert!(
+        super::document_for(super::ops::OP_PROMPT_GET).is_some(),
+        "prompts/get is the eleventh class the node has taken — the one that needed a ruling, \
+         because its refusal bytes changed"
+    );
     // AND THE OTHER HALF OF THE COMPLEMENT: every class still holding an arm has NO row. Named one
     // by one rather than derived, so that moving a class makes this cell go red until the line
     // below it is struck — a class with a row here AND an arm there would be two serving paths, and
     // this is the assertion that would catch it. `tools/call` is last on this list by the plan's
     // order (§14.3), because it is the only one with money on it.
     for (op, method) in [
-        (super::ops::OP_PROMPT_GET, "prompts/get"),
         (super::ops::OP_SUBSCRIPTIONS_LISTEN, "subscriptions/listen"),
         (super::ops::OP_TOOL_CALL, "tools/call"),
     ] {

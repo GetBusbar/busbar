@@ -512,10 +512,40 @@ tools:
     );
     let refusal = refusal.expect("the over-budget call must be refused");
     let message = serde_json::to_string(&refusal).unwrap();
+    // **THE REFUSAL NAMES THE GATE AND NEVER THE MONEY** (owner ruling, 2026-09-12, plane-agnostic).
+    //
+    // This line used to assert the opposite — `message.contains("budget")` — and 1.5.5 satisfied it
+    // by naming the limit that bit: the GROUP, the metric, the window and a retry-after, rendered
+    // out of a `Limit { .. }` debug. That is the deployment's own money described to the caller that
+    // ran into it, which is exactly the leak the unpriced-refusal rule forbids, and the rule is
+    // about every plane rather than about this one. The owner ruled the rule over the recorded
+    // bytes; the change is carried to the tag as an advisory rather than made quietly.
+    //
+    // So what is asserted now is the rule itself, in both directions: the caller is told WHICH GATE
+    // said no and that nothing was charged, and is told NOTHING about the cap it met.
     assert!(
-        message.contains("budget"),
-        "the refusal names the budget: {refusal}"
+        message.contains("not admitted") && message.contains("Nothing was charged"),
+        "the refusal names the gate and says nothing was charged: {refusal}"
     );
+    for leak in [
+        "budget",
+        "limit",
+        "Limit",
+        "quota",
+        "group",
+        "tiny",
+        "retry_after",
+        "per hour",
+        "window",
+        "metric",
+        "requests",
+    ] {
+        assert!(
+            !message.contains(leak),
+            "an unpriced refusal names no amount, no cap and no window — found `{leak}` in \
+             {refusal}"
+        );
+    }
 
     let code = child.eof_and_wait();
     assert_eq!(code, 0, "EOF on stdin is a clean shutdown");

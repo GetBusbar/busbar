@@ -220,7 +220,14 @@ pub(crate) async fn dispatch(
         // is spent. The arm that answered it here with no door, no budget, no audit row and no
         // meter is DELETED rather than kept beside the node. Its document is still this crate's and
         // is `prompts_list_document` below; what left is the serving.
-        ops::OP_PROMPT_GET => prompts_get(ctx, params, id),
+        // `ops::OP_PROMPT_GET` HAS NO ARM. The eleventh class the composition's node has taken, and
+        // the one that needed an OWNER RULING to move: its recorded cell asserted that an
+        // over-budget refusal NAMES THE BUDGET, and the loop's refusal will not name one. The rule
+        // that won is plane-agnostic — a refused request of ANY plane is unpriced and its refusal
+        // names no amount, no group and no window — so the bytes changed and the change is on the
+        // record. The arm that answered it here with no door, no budget, no audit row and no meter
+        // is DELETED rather than kept beside the node. Its document is still this crate's and is
+        // `prompts_get_document` below; what left is the serving.
         // `ops::OP_RESOURCES_LIST` HAS NO ARM. The second class the composition's node has taken,
         // and it is second for the reason §14.3 orders by: it is money-free — it reaches this
         // plane's own resource records and no upstream, so nothing is priced, nothing is dialled
@@ -653,6 +660,26 @@ fn prompts_list(ctx: &Ctx<'_>, id: Option<serde_json::Value>) -> Response {
 /// `prompts/get` — the TEMPLATE, sanitized. Prompt templates are in the sanitization set
 /// explicitly, because a template is exactly as injectable as tool output, and an early draft of
 /// this design covered neither.
+/// `prompts/get`'s document, in the shape the node's table holds.
+///
+/// The same lift the ten before it are, forwarding parameters to [`prompts_get`], which is byte for
+/// byte the body that answered this class when the dispatch table still had an arm for it — the
+/// rendered prompt, the not-found refusal and the envelope's own `-32020` all included.
+///
+/// WHAT IS NOT BYTE-IDENTICAL, and it is the only thing on this line that is not: the OVER-BUDGET
+/// refusal. 1.5.5 answered one by naming the limit that bit — the group, the metric, the window and
+/// a retry-after. The loop's refusal names the GATE and nothing else, because a refusal that tells a
+/// caller about the deployment's money is the leak the unpriced-refusal rule forbids, and that rule
+/// is plane-agnostic. The owner ruled the rule over the bytes; the exact change is recorded in the
+/// hand-back as an advisory for the tag.
+fn prompts_get_document(
+    ctx: &Ctx<'_>,
+    params: Option<&serde_json::Value>,
+    id: Option<serde_json::Value>,
+) -> Response {
+    prompts_get(ctx, params, id)
+}
+
 fn prompts_get(
     ctx: &Ctx<'_>,
     params: Option<&serde_json::Value>,
@@ -2981,11 +3008,11 @@ pub(super) type ClassDocument =
 /// three tasks methods are served through the composition. The order the rest follow is the plan's (§14.3), money-free first
 /// and `tools/call` last.
 ///
-/// `prompts/get` is NOT here, and its absence is a ruling in flight rather than an oversight: its
-/// recorded cell asserts that an over-budget refusal NAMES THE BUDGET, and `refused` above will not
-/// name one, because a refusal that told a caller about the deployment's money is the leak the
-/// unpriced-refusal rule forbids. Bytes against that rule is the owner's call; until it is made, the
-/// class keeps its arm.
+/// `prompts/get` is the eleventh, and it is the one class on this line whose BYTES CHANGED. Its
+/// recorded cell asserted that an over-budget refusal names the budget; the loop's refusal names the
+/// gate and nothing else. The owner ruled the uniform rule over the recorded bytes — a refused
+/// request of ANY plane is unpriced and its refusal names no amount — and the change is carried as
+/// an advisory to the tag rather than quietly.
 pub(super) fn document_for(op: busbar_contract::ids::OpClassId) -> Option<ClassDocument> {
     if op == ops::OP_TOOLS_LIST {
         return Some(tools_list_document);
@@ -3016,6 +3043,9 @@ pub(super) fn document_for(op: busbar_contract::ids::OpClassId) -> Option<ClassD
     }
     if op == ops::OP_TASK_CANCEL {
         return Some(tasks_cancel_document);
+    }
+    if op == ops::OP_PROMPT_GET {
+        return Some(prompts_get_document);
     }
     None
 }
