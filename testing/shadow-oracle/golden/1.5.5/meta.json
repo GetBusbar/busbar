@@ -1,31 +1,32 @@
 {
-  "at": "2026-09-13T00:52:56Z",
+  "at": "2026-09-13T00:54:49Z",
   "binary": "<oracle-cache>/1.5.5/busbar",
   "binary_sha256": "84bde0a047fe368b661e9f6f14b2916390c40b71a6d91cdff1dbfa350aaf80e7",
-  "harness_rev": "0281cb27b090a21c7f0a9620bd304b02a2a10195ece97c89bc954c9125e73bc3",
+  "harness_rev": "14c7f342e5ea65a861292fd7910f5bd4e8aa52029f61fe1567aa9f80d9bbd53d",
   "harness_rev_history": [
     "bba66fd7ecaea5d7930f0a0428a39799c0d80c5ace39fa2fdf27f050000fb4fe",
     "3a032c36e8cc2e3a217565ca40d5f49c53036840165257c584db01c6ee327e4e",
     "d473bb552f39489c5decedc3f30793458a6968c65f9ba42da1977219c7798824",
-    "c3cdbdbe87c82d5224776cef3b03743f39b78897a8a87a8f3a26408562852de5"
+    "c3cdbdbe87c82d5224776cef3b03743f39b78897a8a87a8f3a26408562852de5",
+    "0281cb27b090a21c7f0a9620bd304b02a2a10195ece97c89bc954c9125e73bc3"
   ],
-  "harness_rev_note": "the 12 llm.stream mid-stream fault cells, recorded from the published 1.5.5's PINNED aarch64-apple-darwin build (48e2800c) at busbar-oracle v0.3.20; byte-identical to the same 12 cells recorded on x86_64-unknown-linux-gnu at v0.3.13, so neither the host nor the tool move them | Earlier note: harness moved 1.5.5(d473bb55)->0.3.18(c3cdbdbe): pin bump to busbar-oracle v0.3.18; cells.json needs_fixture lifted on 3 cells; 2 stale SKIP ledger placeholders (ok_cachepoint_document, ok_citation) removed from the prior golden to make room for their first real recording; no existing recorded cell's bytes changed | Earlier note: 2026-09-11: RE-STAMPED 3a032c36e8cc -> d473bb552f39, ATTRIBUTED FILE BY FILE. The 139 op-axis cells below WERE recorded, from the published 1.5.5 (binary_sha256 84bde0a0..) on x86_64-unknown-linux-gnu, twice, byte-identically; NO EXISTING CELL WAS RE-RECORDED AND NO EXISTING CELL'S BYTES CHANGED -- all 915 cells/*.json from the 2026-09-07 recording, and their ledger rows, are exactly as that recording left them. What moved the revision, and what each change was: (1) testing/shadow-oracle/cells.json 2318 -> 2457 cells -- the OPERATION axis (31 llm.op cells over the measured ingress x egress matrix) and three forwarded chat outcomes over all 36 pairs (ok_tool_call, ok_tool_result, upstream_429), 139 in all, each of which then had its `needs_fixture` LIFTED by this same commit because this same commit recorded it; (2) testing/shadow-oracle/oracle.pin v0.3.7 -> v0.3.17 -- the tool half of the harness is a DIGEST, so the pin move alone changes this revision, and it is the change that made the 139 cells drivable at all; (3) busbar-oracle build-request.py -- the operation decides the door before the dialect does (six leaf-op request shapes, one of them multipart); (4) busbar-oracle mock-upstream.py -- six leaf-op answers, two body-multiplexed paths, and the `tool-call` verb; (5) busbar-oracle normalize.py -- one new SCOPED rule, text.responses-item-id, in scope for 5 cells and for NONE of the 915 already recorded, so it cannot have moved a committed byte. Items (3)-(5) reach this revision through (2), not as files: under the pin the tool is hashed as its digest. | Earlier note: the 139 op-axis cells, recorded from the published 1.5.5 on x86_64-unknown-linux-gnu at busbar-oracle v0.3.17 | Earlier note: 2026-09-07: RE-NORMALISED PROVENANCE to a single revision 785f6b673 (the tree's own ./bin/oracle harness-rev at busbar-oracle v0.3.0). The recording was mixed-rev — merged from a 913-cell part recorded at f2094498a and a 2-cell part recorded at 3fea00879, stamped 2ef756c92 — and the v0.3.0 skew guard compares provenance SETS, so no candidate recorded from this tree could ever match it without --allow-harness-skew, a flag that would then hide real skew as well. The merge history is kept verbatim under `provenance_history` (a field the tool does not read). NO CELL WAS RE-RECORDED AND NO CELL'S BYTES CHANGED: every cells/*.json, the ledger, `recorded`, `binary_sha256`, `at`, `version` and `host_triple` are exactly as the EC2 re-record left them. Earlier history, in order: GOLDEN RE-RECORDED on EC2 x86_64-unknown-linux-gnu from the published 1.5.5 (sha256 84bde0a0…), busbar-oracle v0.2.2; recorded at harness 3fea00879, stamped to the settled tree 5862dd13d. Prior darwin golden's stamp history: re-stamped to the tree after the record.sh fixture-gate landing moved the harness revision; no cell was re-recorded and no cell byte changed. Earlier note: RE-STAMPED 2026-09-06 (CI reads the committed golden): NO cell was re-recorded and no cell's bytes changed — every cells/*.json, the ledger, `recorded`, `binary_sha256` and `at` are exactly as the full re-record below left them. The rev moved b | re-stamped 5862dd13d -> 6e5219e9e: tool v0.2.3 (host-capability rule covers the 1.6.0 jemalloc spelling) and hygiene rewording of cell prose; no cell re-recorded. | re-stamped 6e5219e9e -> 2ef756c92: the durable-precondition driver clears the first boot's staging dir, and F-016 widened to BOOT-P31; no cell re-recorded. | re-stamped 2ef756c92 -> 785f6b673: busbar-oracle pin moved to v0.3.0 (script cells now PASS only on a driver exit 0), three drivers gained a give-up path, all 24 drivers say exit 0 out loud, and the gemini tool-use cell dropped a mock_control the mock resolves to no verb; no cell re-recorded.",
+  "harness_rev_note": "the six llm|<d>|<d>|request|stream_upstream_error cells, first recorded here: the recorder gap that made them unrecordable closed in busbar-oracle v0.3.14/v0.3.15, both of which this tree's v0.3.20 pin carries. From the published 1.5.5's PINNED aarch64-apple-darwin build (48e2800c); the six stale SKIP placeholders were removed to make room for their first real recording. | Earlier note: the 12 llm.stream mid-stream fault cells, recorded from the published 1.5.5's PINNED aarch64-apple-darwin build (48e2800c) at busbar-oracle v0.3.20; byte-identical to the same 12 cells recorded on x86_64-unknown-linux-gnu at v0.3.13, so neither the host nor the tool move them | Earlier note: harness moved 1.5.5(d473bb55)->0.3.18(c3cdbdbe): pin bump to busbar-oracle v0.3.18; cells.json needs_fixture lifted on 3 cells; 2 stale SKIP ledger placeholders (ok_cachepoint_document, ok_citation) removed from the prior golden to make room for their first real recording; no existing recorded cell's bytes changed | Earlier note: 2026-09-11: RE-STAMPED 3a032c36e8cc -> d473bb552f39, ATTRIBUTED FILE BY FILE. The 139 op-axis cells below WERE recorded, from the published 1.5.5 (binary_sha256 84bde0a0..) on x86_64-unknown-linux-gnu, twice, byte-identically; NO EXISTING CELL WAS RE-RECORDED AND NO EXISTING CELL'S BYTES CHANGED -- all 915 cells/*.json from the 2026-09-07 recording, and their ledger rows, are exactly as that recording left them. What moved the revision, and what each change was: (1) testing/shadow-oracle/cells.json 2318 -> 2457 cells -- the OPERATION axis (31 llm.op cells over the measured ingress x egress matrix) and three forwarded chat outcomes over all 36 pairs (ok_tool_call, ok_tool_result, upstream_429), 139 in all, each of which then had its `needs_fixture` LIFTED by this same commit because this same commit recorded it; (2) testing/shadow-oracle/oracle.pin v0.3.7 -> v0.3.17 -- the tool half of the harness is a DIGEST, so the pin move alone changes this revision, and it is the change that made the 139 cells drivable at all; (3) busbar-oracle build-request.py -- the operation decides the door before the dialect does (six leaf-op request shapes, one of them multipart); (4) busbar-oracle mock-upstream.py -- six leaf-op answers, two body-multiplexed paths, and the `tool-call` verb; (5) busbar-oracle normalize.py -- one new SCOPED rule, text.responses-item-id, in scope for 5 cells and for NONE of the 915 already recorded, so it cannot have moved a committed byte. Items (3)-(5) reach this revision through (2), not as files: under the pin the tool is hashed as its digest. | Earlier note: the 139 op-axis cells, recorded from the published 1.5.5 on x86_64-unknown-linux-gnu at busbar-oracle v0.3.17 | Earlier note: 2026-09-07: RE-NORMALISED PROVENANCE to a single revision 785f6b673 (the tree's own ./bin/oracle harness-rev at busbar-oracle v0.3.0). The recording was mixed-rev — merged from a 913-cell part recorded at f2094498a and a 2-cell part recorded at 3fea00879, stamped 2ef756c92 — and the v0.3.0 skew guard compares provenance SETS, so no candidate recorded from this tree could ever match it without --allow-harness-skew, a flag that would then hide real skew as well. The merge history is kept verbatim under `provenance_history` (a field the tool does not read). NO CELL WAS RE-RECORDED AND NO CELL'S BYTES CHANGED: every cells/*.json, the ledger, `recorded`, `binary_sha256`, `at`, `version` and `host_triple` are exactly as the EC2 re-record left them. Earlier history, in order: GOLDEN RE-RECORDED on EC2 x86_64-unknown-linux-gnu from the published 1.5.5 (sha256 84bde0a0…), busbar-oracle v0.2.2; recorded at harness 3fea00879, stamped to the settled tree 5862dd13d. Prior darwin golden's stamp history: re-stamped to the tree after the record.sh fixture-gate landing moved the harness revision; no cell was re-recorded and no cell byte changed. Earlier note: RE-STAMPED 2026-09-06 (CI reads the committed golden): NO cell was re-recorded and no cell's bytes changed — every cells/*.json, the ledger, `recorded`, `binary_sha256` and `at` are exactly as the full re-record below left them. The rev moved b | re-stamped 5862dd13d -> 6e5219e9e: tool v0.2.3 (host-capability rule covers the 1.6.0 jemalloc spelling) and hygiene rewording of cell prose; no cell re-recorded. | re-stamped 6e5219e9e -> 2ef756c92: the durable-precondition driver clears the first boot's staging dir, and F-016 widened to BOOT-P31; no cell re-recorded. | re-stamped 2ef756c92 -> 785f6b673: busbar-oracle pin moved to v0.3.0 (script cells now PASS only on a driver exit 0), three drivers gained a give-up path, all 24 drivers say exit 0 out loud, and the gemini tool-use cell dropped a mock_control the mock resolves to no verb; no cell re-recorded.",
   "harness_rev_recorded": "3a032c36e8cc2e3a217565ca40d5f49c53036840165257c584db01c6ee327e4e",
   "host_triple": "aarch64-apple-darwin",
   "merged_from": [
     {
       "part": "1.5.5",
-      "recorded": 1057,
-      "at": "2026-09-11T23:12:34Z",
-      "binary": "<oracle-cache>/1.5.5/busbar",
-      "harness_rev": "c3cdbdbe87c82d5224776cef3b03743f39b78897a8a87a8f3a26408562852de5"
-    },
-    {
-      "part": "eg1-rec",
-      "recorded": 12,
+      "recorded": 1069,
       "at": "2026-09-13T00:52:56Z",
       "binary": "<oracle-cache>/1.5.5/busbar",
       "harness_rev": "0281cb27b090a21c7f0a9620bd304b02a2a10195ece97c89bc954c9125e73bc3"
+    },
+    {
+      "part": "eg1-se",
+      "recorded": 6,
+      "at": "2026-09-13T00:54:49Z",
+      "binary": "<oracle-cache>/1.5.5/busbar",
+      "harness_rev": "14c7f342e5ea65a861292fd7910f5bd4e8aa52029f61fe1567aa9f80d9bbd53d"
     }
   ],
   "provenance_history": {
@@ -99,7 +100,7 @@
       }
     ]
   },
-  "recorded": 1069,
+  "recorded": 1075,
   "version": "busbar 1.5.5",
   "binary_sha256_pins": [
     {
@@ -108,7 +109,7 @@
       "pinned_as": "busbar-x86_64-unknown-linux-gnu"
     },
     {
-      "part": "eg1-rec",
+      "part": "eg1-se",
       "binary_sha256": "48e2800cc1fbf229104d73c23039ba4d4a703c0a8db9e7872e22fec33f9b1e48",
       "pinned_as": "busbar-aarch64-apple-darwin"
     }

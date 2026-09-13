@@ -300,24 +300,29 @@ def llm_cells(inv: dict) -> list[dict]:
     # error looks like on the wire, the door decides what the client is told, and the diagonal
     # covers all six of each.
     #
-    # THESE SIX STAY `needs_fixture`, AND THE REASON IS NOT THE MOCK. The mock grew the
-    # `stream-error` verb for all six dialects and the PINNED tool (oracle.pin v0.3.7) ships it. What
-    # is missing is the RECORDER, and it is missing twice, on the two independent legs of the cell:
-    #   1. record.sh's built-in `llm` driver writes the mock control for exactly ONE outcome —
-    #      `if [ "$outcome" = upstream_down ]` -> "down". A cell's own `mock_control` is read by the
-    #      `http` and `concurrent` drivers only. On an llm cell it is dead, so the mock answers the
-    #      HEALTHY 200 — the same silent-pass shape the gemini tool-use note below describes.
-    #   2. build-request.py decides streaming by `oc in ("ok_stream", "ok_stream_array")`.
-    #      `stream_upstream_error` is in neither tuple, so the request it builds is BUFFERED: not a
+    # THESE SIX WERE `needs_fixture` FOR A RECORDER GAP, AND THE PIN CLOSED IT. The mock has shipped
+    # the `stream-error` verb for all six dialects since v0.3.7; what was missing was the RECORDER,
+    # twice over, on the two independent legs of the cell:
+    #   1. record.sh's built-in `llm` driver wrote the mock control for exactly ONE outcome —
+    #      `if [ "$outcome" = upstream_down ]` -> "down". A cell's own `mock_control` was read by the
+    #      `http` and `concurrent` drivers only. On an llm cell it was dead, so the mock answered the
+    #      HEALTHY 200 — a silent pass under the name of a failure.
+    #   2. build-request.py decided streaming by `oc in ("ok_stream", "ok_stream_array")`.
+    #      `stream_upstream_error` was in neither tuple, so the request it built was BUFFERED: not a
     #      stream at all, and a buffered request can never fail mid-stream.
-    # MEASURED, NOT ARGUED (2026-09-10, published 1.5.5, aarch64-apple-darwin): with `needs_fixture`
-    # lifted, all six record `HTTP 200; usage Δ {"requests":1,"spend_cents":250,"tokens":18}` and a
-    # buffered `chat.completion` body — the happy path frozen under the name of the failure, and
-    # frozen identically on the candidate, so the cell would prove the opposite of what it claims.
-    # Recording them therefore needs a TOOL release that teaches the llm driver `mock_control` and
-    # build-request.py the streaming outcome; that is named in accepted-gaps.json and owed to a pin
-    # bump, not to anything in this tree. The behaviour itself is pinned TODAY by the
-    # `llm.stream|<dialect>|<fault>` family above, in the half of the harness busbar owns.
+    # MEASURED BOTH TIMES, NEVER ARGUED. 2026-09-10, published 1.5.5, aarch64-apple-darwin, with
+    # `needs_fixture` lifted under the v0.3.7 pin: all six recorded `HTTP 200; usage delta
+    # {"requests":1,"spend_cents":250,"tokens":18}` and a buffered `chat.completion` body — the happy
+    # path frozen under the name of the failure. Re-measured on the SAME binary under this tree's
+    # v0.3.20 pin: all six record `HTTP 200; usage delta {"requests":1}` and the dialect's own
+    # mid-stream error frames (anthropic `event: error`, bedrock `internalServerException` on the
+    # eventstream, cohere/openai/responses `type: error`, gemini `error.status INTERNAL`) — no
+    # billed tokens, no spend, and the fault the cell is named for. busbar-oracle v0.3.14 gave every
+    # driver `cell_mock_control`, and v0.3.15 made a request stream because the CELL says so rather
+    # than because of an outcome's name; between them the gap is gone, so `needs_fixture` comes off
+    # and these six are recorded here. The `llm.stream|<dialect>|<fault>` family above is NOT made
+    # redundant by them: it also pins the SOCKET-CUT arm (no error to translate at all), the ledger
+    # row, the settle-pause re-read and the breaker's record, which these six do not carry.
     # gemini is not in the inventory's `streams` set (its streaming is the path-selected
     # streamGenerateContent framing, not a `streaming` field), but it streams, and a mid-stream
     # failure is exactly as unrecorded there — so it gets the cell too: all six backends.
@@ -325,7 +330,6 @@ def llm_cells(inv: dict) -> list[dict]:
         if d not in streams and d != "gemini":
             continue
         c = cell(d, d, *STREAM_UPSTREAM_ERROR_OUTCOME)
-        c["needs_fixture"] = True
         c["mock_control"] = {"stream-error": True}
         cells.append(c)
     # THE TWO SHAPES THE HAPPY-PATH FIXTURES DO NOT COVER. Same SKIP-able posture as the mid-stream
@@ -1516,13 +1520,16 @@ def llm_stream_fault_cells(inv: dict) -> list[dict]:
     moving into it (L2 MOVE 7); a first activation on the money path cannot be proven byte-identical
     against a recording that stops at the first byte.
 
-    WHY NOT THE SIX `llm|<d>|<d>|request|stream_upstream_error` ROWS BELOW. Because under the PINNED
-    recorder they cannot record what they name, and they fail green. See the comment on those rows:
-    record.sh's llm driver writes the mock control for `upstream_down` and nothing else, and
-    build-request.py only streams for `ok_stream`/`ok_stream_array`. Measured against 1.5.5 with
-    their `needs_fixture` lifted, all six recorded the BUFFERED HAPPY PATH -- `usage delta
-    {"requests":1,"spend_cents":250,"tokens":18}` -- under the name of the failure. Those rows stay a
-    NAMED gap owed to a tool release; this family pins the behaviour in the half busbar owns.
+    WHAT THIS FAMILY HOLDS THAT THE SIX `llm|<d>|<d>|request|stream_upstream_error` ROWS DO NOT.
+    Those six were unrecordable under the v0.3.7 pin and are recorded now (v0.3.14 gave every driver
+    the cell's own `mock_control`; v0.3.15 made a request stream because the CELL says so) -- but
+    they cover ONE of the two fault shapes and ONE of the four things that can go wrong with it.
+    They record the in-band error arm only: the caller's bytes and the usage delta. This family also
+    records the SOCKET-CUT arm, where there is no error frame to translate and the door must invent
+    the terminal or not; and on both arms it records the LEDGER ROW, a second usage read after a
+    settle pause (a late or doubled posting), and what the breaker made of a lane that answered and
+    then died. Those are the money and the failover halves of the same failure, and no `llm|*` cell
+    reaches them.
 
     DIALECT-DRIVEN, NEVER DIALECT-SPECIFIC. The list comes from the field inventory, exactly as
     llm_cells' does, so a seventh backend is a new cell the day it is inventoried and nobody is in

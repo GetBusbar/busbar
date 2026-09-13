@@ -709,6 +709,18 @@ ledger|amend|refused-unsigned
 ledger|currency|minor-unit-rounding
 ledger|currency|native
 ledger|rate-history|as-of
+llm.stream|anthropic|cut
+llm.stream|anthropic|stream-error
+llm.stream|bedrock|cut
+llm.stream|bedrock|stream-error
+llm.stream|cohere|cut
+llm.stream|cohere|stream-error
+llm.stream|gemini|cut
+llm.stream|gemini|stream-error
+llm.stream|openai|cut
+llm.stream|openai|stream-error
+llm.stream|responses|cut
+llm.stream|responses|stream-error
 llm|anthropic|anthropic|request|malformed
 llm|anthropic|anthropic|request|ok
 llm|anthropic|anthropic|request|ok_stream
@@ -717,6 +729,7 @@ llm|anthropic|anthropic|request|ok_tool_result
 llm|anthropic|anthropic|request|out_of_scope
 llm|anthropic|anthropic|request|over_budget
 llm|anthropic|anthropic|request|over_budget_total
+llm|anthropic|anthropic|request|stream_upstream_error
 llm|anthropic|anthropic|request|unauthenticated
 llm|anthropic|anthropic|request|upstream_429
 llm|anthropic|anthropic|request|upstream_down
@@ -764,6 +777,7 @@ llm|bedrock|bedrock|request|ok_tool_result
 llm|bedrock|bedrock|request|out_of_scope
 llm|bedrock|bedrock|request|over_budget
 llm|bedrock|bedrock|request|over_budget_total
+llm|bedrock|bedrock|request|stream_upstream_error
 llm|bedrock|bedrock|request|unauthenticated
 llm|bedrock|bedrock|request|upstream_429
 llm|bedrock|bedrock|request|upstream_down
@@ -814,6 +828,7 @@ llm|cohere|cohere|request|ok_tool_result
 llm|cohere|cohere|request|out_of_scope
 llm|cohere|cohere|request|over_budget
 llm|cohere|cohere|request|over_budget_total
+llm|cohere|cohere|request|stream_upstream_error
 llm|cohere|cohere|request|unauthenticated
 llm|cohere|cohere|request|upstream_429
 llm|cohere|cohere|request|upstream_down
@@ -872,6 +887,7 @@ llm|gemini|gemini|request|ok_tool_use_tokens
 llm|gemini|gemini|request|out_of_scope
 llm|gemini|gemini|request|over_budget
 llm|gemini|gemini|request|over_budget_total
+llm|gemini|gemini|request|stream_upstream_error
 llm|gemini|gemini|request|unauthenticated
 llm|gemini|gemini|request|upstream_429
 llm|gemini|gemini|request|upstream_down
@@ -932,6 +948,7 @@ llm|openai|openai|request|ok_tool_result
 llm|openai|openai|request|out_of_scope
 llm|openai|openai|request|over_budget
 llm|openai|openai|request|over_budget_total
+llm|openai|openai|request|stream_upstream_error
 llm|openai|openai|request|unauthenticated
 llm|openai|openai|request|upstream_429
 llm|openai|openai|request|upstream_down
@@ -981,6 +998,7 @@ llm|responses|responses|request|ok_tool_result
 llm|responses|responses|request|out_of_scope
 llm|responses|responses|request|over_budget
 llm|responses|responses|request|over_budget_total
+llm|responses|responses|request|stream_upstream_error
 llm|responses|responses|request|unauthenticated
 llm|responses|responses|request|upstream_429
 llm|responses|responses|request|upstream_down

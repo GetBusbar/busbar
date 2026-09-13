@@ -1,19 +1,31 @@
 {
-  "_comment": [
-    "Ids from owed-baseline.txt that the CURRENT golden no longer owes (moved to SKIP/FAIL, or",
-    "dropped from cells.json) — named here with an owner and a rationale so the loss is a decision,",
-    "not silence. replay.sh reads this file; an id it does not cover is RED. `cells` is a regex over",
-    "the cell id (same convention as accepted-differences.json's `cells` field).",
-    "Coverage GROWING (a new id owed that was not in the baseline) needs no entry here — it is",
-    "always allowed and just printed; only a SHRINK needs to be named.",
-    "Nothing has been dropped from the 1.5.5 golden since owed-baseline.txt was generated from",
-    "golden/1.5.5/ledger.tsv's PASS rows.",
-    "",
-    "CLOSED (OR-OP-2, busbar-oracle v0.3.18): gemini-tool-use-token-term. The mock now answers a",
-    "`tool-use-tokens` control on gemini's chat leaf with `usageMetadata.toolUsePromptTokenCount`;",
-    "llm|gemini|gemini|request|ok_tool_use_tokens is recorded (golden/1.5.5), needs_fixture lifted,",
-    "and owed-baseline.txt carries it. Removed from `accepted` rather than left stale: the gap this",
-    "entry named no longer exists, and a gap entry with no matching gap is a claim about nothing."
-  ],
-  "accepted": []
+ "_comment": [
+  "Ids from owed-baseline.txt that the CURRENT golden no longer owes (moved to SKIP/FAIL, or",
+  "dropped from cells.json) — named here with an owner and a rationale so the loss is a decision,",
+  "not silence. replay.sh reads this file; an id it does not cover is RED. `cells` is a regex over",
+  "the cell id (same convention as accepted-differences.json's `cells` field).",
+  "Coverage GROWING (a new id owed that was not in the baseline) needs no entry here — it is",
+  "always allowed and just printed; only a SHRINK needs to be named.",
+  "Nothing has been dropped from the 1.5.5 golden since owed-baseline.txt was generated from",
+  "golden/1.5.5/ledger.tsv's PASS rows.",
+  "",
+  "CLOSED (OR-OP-2, busbar-oracle v0.3.18): gemini-tool-use-token-term. The mock now answers a",
+  "`tool-use-tokens` control on gemini's chat leaf with `usageMetadata.toolUsePromptTokenCount`;",
+  "llm|gemini|gemini|request|ok_tool_use_tokens is recorded (golden/1.5.5), needs_fixture lifted,",
+  "and owed-baseline.txt carries it. Removed from `accepted` rather than left stale: the gap this",
+  "entry named no longer exists, and a gap entry with no matching gap is a claim about nothing.",
+  "",
+  "CLOSED (EG-1, busbar-oracle v0.3.14 + v0.3.15, carried by this tree's v0.3.20 pin):",
+  "llm-stream-upstream-error-needs-recorder. The six `llm|<d>|<d>|request|stream_upstream_error`",
+  "cells were unrecordable for a RECORDER reason, not a mock one: record.sh's llm driver wrote the",
+  "mock control for `upstream_down` alone, and build-request.py streamed only for ok_stream /",
+  "ok_stream_array, so a cell ordering a mid-stream fault was posted BUFFERED and recorded the happy",
+  "path under the name of the failure. v0.3.14 routed every driver through cell_mock_control and",
+  "v0.3.15 made a request stream because the CELL says so; re-measured on the same published 1.5.5",
+  "binary under this pin, all six record the dialect's own mid-stream error frames and a usage delta",
+  "of {\"requests\":1} with no spend and no tokens. needs_fixture is lifted, the six are recorded in",
+  "golden/1.5.5, and owed-baseline.txt carries them. No entry is left behind: a gap entry with no",
+  "matching gap is a claim about nothing."
+ ],
+ "accepted": []
 }
