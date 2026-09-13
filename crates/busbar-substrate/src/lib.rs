@@ -40,7 +40,6 @@ pub use busbar_substrate_values::diagnostics;
 // in-crate) keeps resolving. Deliberately re-exported at the ROOT only, never under `diagnostics` —
 // core glob-imports that module and a macro there would collide with core's own `pub(crate)` twins.
 pub use busbar_substrate_values::{diag_debug, diag_error, diag_warn};
-pub mod net_guard;
 // A′ (ABI-purity P4): the ENV-guarded hot-path stage profiler (`Stage`/`start`/`record`/`dump`),
 // relocated DOWN from `busbar-core` so the `busbar-llm` engine names it via the ABI instead of
 // reaching back into `busbar_core::profile`. Pure std (atomics/Mutex/Instant), no `App`/`Store`

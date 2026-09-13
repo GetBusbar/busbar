@@ -42,8 +42,8 @@ crc32fast = { workspace = true }
 # build resolves NO reqwest edge from this crate.
 reqwest = { workspace = true, optional = true }
 bytes = { workspace = true }
-# `net_guard::resolve_and_pin_async` does the ONE DNS resolution via `tokio::net::lookup_host`, so
-# the relocated guard needs tokio's `net` API; the relocated verify-on-call gate (`trust::verify`)
+# The relocated egress engine dials with `tokio::net::TcpStream`, so this crate needs tokio's `net`
+# API; the relocated verify-on-call gate (`trust::verify`)
 # single-flights its refresh through a `tokio::sync::Mutex`, so it needs `sync` too. Still no runtime,
 # macros or timers in the shipped surface.
 # The relocated egress engine adds `time` (the CONNECT-handshake wall-clock bound rides
