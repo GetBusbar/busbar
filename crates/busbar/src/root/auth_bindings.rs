@@ -67,12 +67,6 @@ impl AuthBindings {
         }
     }
 
-    /// Bind the cache alone — the posture of a node that resolves no busbar-minted keys.
-    ///
-    /// Not a degraded build and not a placeholder. With no verifier the signed-key arm denies, which
-    /// is the fail-closed answer the chain already documents for exactly this case; with no
-    /// revocation view the NEW-unit gate does not run, which changes nothing a verifier that denies
-    /// everything had not already decided.
     /// **BIND WHAT THE DEPLOYMENT HAS**, which is the call a composition makes.
     ///
     /// A node does not choose between the two postures below; the deployment does, by having a
@@ -90,6 +84,11 @@ impl AuthBindings {
     }
 
     /// Bind the cache alone — the posture of a node that resolves no busbar-minted keys.
+    ///
+    /// Not a degraded build and not a placeholder. With no verifier the signed-key arm denies, which
+    /// is the fail-closed answer the chain already documents for exactly this case; with no
+    /// revocation view the NEW-unit gate does not run, which changes nothing a verifier that denies
+    /// everything had not already decided.
     #[must_use]
     pub fn without_directory() -> Self {
         AuthBindings {
