@@ -42,7 +42,7 @@ const MAX_IDENTIFY_TTL_SECS: u64 = 3600;
 /// The base lifetime of a cached pass, in seconds.
 const PASS_TTL_SECS: u64 = 5;
 /// The most rows the cache holds, across every module.
-const MAX_ENTRIES: usize = 4096;
+pub(crate) const MAX_ENTRIES: usize = 4096;
 
 /// How a credential is digested for the cache key.
 ///

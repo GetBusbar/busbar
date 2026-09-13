@@ -130,7 +130,6 @@ pub mod admin;
 /// admin-mutation STREAM that runs on it, not a second mechanism.
 pub mod audit;
 pub mod auth;
-pub mod auth_cache;
 pub mod billing;
 /// THE BOOT SEAM: one entry point per boot action, so the internals each action composes stay
 /// crate-private. See the module header.

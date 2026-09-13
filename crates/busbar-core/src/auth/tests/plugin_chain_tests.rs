@@ -803,7 +803,7 @@ fn a_blocking_auth_plugin_does_not_park_the_reactor() {
         )],
         /* has_plugin_module = */ true,
     ));
-    let cache = std::sync::Arc::new(crate::auth_cache::CredentialCache::new());
+    let cache = std::sync::Arc::new(crate::auth::new_credential_cache());
 
     let rt = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(1)
@@ -853,7 +853,7 @@ fn an_in_process_chain_is_not_offloaded() {
         )],
         /* has_plugin_module = */ false,
     ));
-    let cache = std::sync::Arc::new(crate::auth_cache::CredentialCache::new());
+    let cache = std::sync::Arc::new(crate::auth::new_credential_cache());
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -900,7 +900,7 @@ impl busbar_api::AuthModule for CacheablePass {
 }
 
 /// Always `Reject`s, and is cacheable (cacheability is irrelevant to `Reject`, which
-/// `auth_cache.rs:104` never caches regardless — included so the chain-position test is honest).
+/// the cache never caches regardless — included so the chain-position test is honest).
 struct CacheableReject;
 impl busbar_api::AuthModule for CacheableReject {
     fn name(&self) -> &'static str {
@@ -939,7 +939,7 @@ impl busbar_api::AuthModule for CacheableIdentify {
 /// An unauthenticated caller (a chain that never identifies) must leave NO trace in the
 /// cache. A `run_chain_cached` that `put`s a fresh `Pass` immediately leaves `flush_all()`
 /// observing 1 — and that `Pass` is what displaces a real
-/// `Identify` under the oldest-inserted eviction rule (`auth_cache.rs:111-114`).
+/// `Identify` under the cache's oldest-inserted eviction rule.
 #[test]
 fn an_unauthenticated_chain_admits_nothing_to_the_cache() {
     let auth = AuthMiddleware::from_chain_for_test(
@@ -949,7 +949,7 @@ fn an_unauthenticated_chain_admits_nothing_to_the_cache() {
         )],
         /* has_plugin_module = */ false,
     );
-    let cache = crate::auth_cache::CredentialCache::new();
+    let cache = crate::auth::new_credential_cache();
 
     let verdict = auth.run_chain_cached(Some("junk-token"), Some(&cache), None, None);
 
@@ -980,7 +980,7 @@ fn a_rejected_chain_admits_nothing_to_the_cache() {
         ],
         /* has_plugin_module = */ false,
     );
-    let cache = crate::auth_cache::CredentialCache::new();
+    let cache = crate::auth::new_credential_cache();
 
     let verdict = auth.run_chain_cached(Some("junk-token"), Some(&cache), None, None);
 
@@ -997,7 +997,7 @@ fn a_rejected_chain_admits_nothing_to_the_cache() {
 /// with distinct junk credentials at the SAME `now`, so `retain`'s expiry sweep reclaims nothing
 /// and every `put` must fall through to `min_by_key(inserted_seq)`. An unconditional-`Pass`-put
 /// admits each of those, and because the `Identify` was inserted first it has the lowest
-/// `inserted_seq` and is evicted FIRST (`auth_cache.rs:111-114`).
+/// `inserted_seq` and is evicted FIRST.
 #[test]
 fn pass_churn_cannot_evict_an_identity() {
     let auth = AuthMiddleware::from_chain_for_test(
@@ -1007,13 +1007,13 @@ fn pass_churn_cannot_evict_an_identity() {
         )],
         /* has_plugin_module = */ false,
     );
-    let cache = crate::auth_cache::CredentialCache::new();
+    let cache = crate::auth::new_credential_cache();
     let now = 1_000_000u64;
 
     cache.put(
         "real-identity-module",
         "real-credential",
-        &busbar_api::AuthOutcome::Identify(crate::auth::Principal {
+        &busbar_unit_auth::module::AuthOutcome::Identify(busbar_unit_auth::principal::Principal {
             id: "real:identity".to_string(),
             name: None,
             roles: vec![],
@@ -1031,7 +1031,7 @@ fn pass_churn_cannot_evict_an_identity() {
     assert!(
         matches!(
             cache.get("real-identity-module", "real-credential", now),
-            Some(busbar_api::AuthOutcome::Identify(_))
+            Some(crate::auth::CachedOutcome::Identify(_))
         ),
         "unauthenticated Pass churn must not evict a real identity from the cache"
     );
@@ -1057,7 +1057,7 @@ fn an_identified_chain_still_caches_the_leading_pass() {
         ],
         /* has_plugin_module = */ false,
     );
-    let cache = crate::auth_cache::CredentialCache::new();
+    let cache = crate::auth::new_credential_cache();
 
     let verdict = auth.run_chain_cached(Some("good"), Some(&cache), None, None);
 

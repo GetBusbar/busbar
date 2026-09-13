@@ -1903,7 +1903,7 @@ impl TestApp {
             plane_slots,
             spent_token_ledger: Default::default(),
             demotion_record: Default::default(),
-            credential_cache: std::sync::Arc::new(crate::auth_cache::CredentialCache::new()),
+            credential_cache: std::sync::Arc::new(crate::auth::new_credential_cache()),
             auth_scope_caps: std::collections::HashMap::new(),
             role_bindings: self.role_bindings.unwrap_or_default(),
             config_path: self.disk_paths.as_ref().map(|(c, _)| c.clone()),

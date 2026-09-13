@@ -31,6 +31,11 @@ busbar-api = { path = "../api" }
 # and the capped upstream-body read) DOWN into this crate; core re-exports each unchanged so the
 # in-core call sites keep naming `crate::…`. Substrate never depends back on core.
 busbar-substrate = { path = "../busbar-substrate" }
+# THE LEGACY DRAIN. This unit owns the credential cache outright: core deleted its hand-copy and
+# core's readers follow what left. A NAMED TRANSITIONAL exemption (qa/kind-isolation.toml) that
+# goes away when core does. The `sha256` feature is deliberately NOT taken — core hands the cache
+# its own digest, the one it hashes everything else with.
+busbar-unit-auth = { path = "../busbar-unit-auth" }
 # Inline-capacity vectors for the per-request lane-selection working set (`proxy::select`): a
 # typical pool has a handful of members, so the candidate view, the SWRR scratch and the tried-set
 # live on the stack instead of costing three heap allocations per pick. Workspace-pinned.

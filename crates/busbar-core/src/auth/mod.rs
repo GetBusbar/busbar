@@ -260,6 +260,58 @@ impl fmt::Debug for AuthMiddleware {
     }
 }
 
+/// THE CREDENTIAL CACHE, and the two names its verdict has.
+///
+/// The cache is the unit's — `busbar_unit_auth::cache` — and the unit owns the rules outright:
+/// the lifetimes, the never-cached rejection, the bound, and the flush generation that closes the
+/// cached-allow window an in-flight authentication used to re-open. Core keeps only the crossing,
+/// because the chain speaks the PLUGIN ABI's verdict ([`AuthOutcome`]) and the cache speaks the
+/// unit's. They are the same three arms over the same four principal fields, so the crossing is
+/// field-for-field and normalises NOTHING — no trimming, no defaulting, no reserved-prefix check.
+/// A conversion that tidied anything here would make a cache hit and a cache miss disagree about
+/// who is calling.
+pub(crate) use busbar_unit_auth::cache::CredentialCache;
+pub(crate) use busbar_unit_auth::module::AuthOutcome as CachedOutcome;
+use busbar_unit_auth::principal::Principal as CachedPrincipal;
+
+/// A credential cache over the engine's own digest.
+///
+/// The unit takes its digest as a trait rather than a dependency, and the digest the engine hands
+/// it is the one it hashes everything else with: `busbar_api::sha256_hex`, reached through
+/// `crate::sigv4`. That is the same function 1.5.5 keyed this cache with, so the key and the pass
+/// jitter (the digest's first byte) are byte-for-byte what they were.
+pub(crate) fn new_credential_cache() -> CredentialCache {
+    CredentialCache::new(crate::sigv4::sha256_hex as fn(&[u8]) -> String)
+}
+
+/// The cache's verdict, as the plugin ABI spells it.
+fn from_cached(o: CachedOutcome) -> AuthOutcome {
+    match o {
+        CachedOutcome::Identify(p) => AuthOutcome::Identify(Principal {
+            id: p.id,
+            name: p.name,
+            roles: p.roles,
+            ttl_secs: p.ttl_secs,
+        }),
+        CachedOutcome::Reject => AuthOutcome::Reject,
+        CachedOutcome::Pass => AuthOutcome::Pass,
+    }
+}
+
+/// The plugin ABI's verdict, as the cache spells it — [`from_cached`]'s inverse, on the same terms.
+pub(crate) fn to_cached(o: &AuthOutcome) -> CachedOutcome {
+    match o {
+        AuthOutcome::Identify(p) => CachedOutcome::Identify(CachedPrincipal {
+            id: p.id.clone(),
+            name: p.name.clone(),
+            roles: p.roles.clone(),
+            ttl_secs: p.ttl_secs,
+        }),
+        AuthOutcome::Reject => CachedOutcome::Reject,
+        AuthOutcome::Pass => CachedOutcome::Pass,
+    }
+}
+
 impl AuthMiddleware {
     /// Build the auth chain by RESOLVING the configured module entries against the plugin
     /// `registry`. The built-in `keys` (signed-key verifier) is engine-handled: virtual keys
@@ -393,7 +445,7 @@ impl AuthMiddleware {
     pub(crate) fn run_chain_cached(
         &self,
         candidate: Option<&str>,
-        cache: Option<&crate::auth_cache::CredentialCache>,
+        cache: Option<&CredentialCache>,
         gov: Option<&crate::governance::GovState>,
         expected_aud: Option<&str>,
     ) -> ChainVerdict {
@@ -408,7 +460,7 @@ impl AuthMiddleware {
         // `Pass` puts are BUFFERED, not admitted, until the chain identifies. An all-`Pass` chain
         // ends `Denied` (below), so admitting them eagerly let an unauthenticated caller fill the
         // cache with entries that then evict real `Identify` rows under the oldest-inserted
-        // eviction rule (`auth_cache.rs:106-119`). Committing only on the `Identified` return means
+        // eviction rule the cache states). Committing only on the `Identified` return means
         // unauthenticated traffic causes no admissions at all. A cache HIT is never re-`put`: doing
         // so would refresh its TTL and quietly extend the revocation window.
         let mut pending_pass: Vec<&str> = Vec::new();
@@ -417,8 +469,9 @@ impl AuthMiddleware {
         // the run computed — the run's verdicts all predate the flush. Without this, an
         // authentication in flight across `POST /admin/auth/cache/flush` re-inserted its PRE-flush
         // allow verdict after the flush returned `200 {"flushed": N}`, and the "instant revocation"
-        // the endpoint documents revoked nothing for up to an hour. See `auth_cache::CacheGeneration`.
-        let cache_gen = cache.map(crate::auth_cache::CredentialCache::generation);
+        // the endpoint documents revoked nothing for up to an hour. See [`CachedOutcome`]'s
+        // module and its `CacheGeneration`.
+        let cache_gen = cache.map(CredentialCache::generation);
         for (provider, module) in &self.chain {
             let cache_here = match (cache, candidate) {
                 (Some(c), Some(cred)) if module.cacheable() => Some((c, cred)),
@@ -429,7 +482,7 @@ impl AuthMiddleware {
             // sharing a cache row between them would let one provider's verdict admit the other's
             // credential. The name is the instance, so the cache key must be the name.
             let outcome = match cache_here.and_then(|(c, cred)| c.get(provider, cred, now)) {
-                Some(hit) => hit,
+                Some(hit) => from_cached(hit),
                 None => {
                     let o = module.authenticate(candidate);
                     if cache_here.is_some() && matches!(o, AuthOutcome::Pass) {
@@ -442,13 +495,13 @@ impl AuthMiddleware {
                 AuthOutcome::Identify(principal) => {
                     if let (Some(c), Some(cred), Some(g)) = (cache, candidate, cache_gen) {
                         for name in &pending_pass {
-                            c.put(name, cred, &AuthOutcome::Pass, now, g);
+                            c.put(name, cred, &to_cached(&AuthOutcome::Pass), now, g);
                         }
                         if cache_here.is_some() {
                             c.put(
                                 provider,
                                 cred,
-                                &AuthOutcome::Identify(principal.clone()),
+                                &to_cached(&AuthOutcome::Identify(principal.clone())),
                                 now,
                                 g,
                             );
@@ -503,7 +556,7 @@ impl AuthMiddleware {
     /// started are both `Denied`, never an admit.
     pub(crate) async fn run_chain_on_request_path(
         auth: &std::sync::Arc<AuthMiddleware>,
-        cache: &std::sync::Arc<crate::auth_cache::CredentialCache>,
+        cache: &std::sync::Arc<CredentialCache>,
         candidate: Option<String>,
         gov: Option<std::sync::Arc<crate::governance::GovState>>,
         expected_aud: Option<String>,
@@ -918,7 +971,7 @@ fn run_admin_chain(
     };
     let now = busbar_substrate::store::now();
     // Captured BEFORE the first module runs — see the identical capture in `run_chain_cached` and
-    // `auth_cache::CacheGeneration`. This is the plane the hazard actually bites on: an external
+    // the cache's `CacheGeneration`. This is the plane the hazard actually bites on: an external
     // `kind: auth` admin module runs on the blocking pool with a multi-second budget (the shipped
     // OIDC module does a JWKS HTTPS round-trip with a 10s timeout), so the flush-then-reinsert
     // window here is seconds wide.
@@ -929,7 +982,7 @@ fn run_admin_chain(
         let cacheable = name != "admin-tokens";
         if let Some(cred) = composite.as_deref().filter(|_| cacheable) {
             if let Some(outcome) = app.credential_cache.get(name, cred, now) {
-                match outcome {
+                match from_cached(outcome) {
                     AuthOutcome::Identify(principal) => {
                         let cap = module_admin_scope_cap(app, name);
                         return (
@@ -989,7 +1042,7 @@ fn run_admin_chain(
         };
         if let Some(cred) = composite.as_deref().filter(|_| cacheable) {
             app.credential_cache
-                .put(name, cred, &outcome, now, cache_gen);
+                .put(name, cred, &to_cached(&outcome), now, cache_gen);
         }
         match outcome {
             AuthOutcome::Identify(principal) => {

@@ -1197,3 +1197,31 @@ export = 1
 transport = 7
 loader = 1
 abi = 1
+
+# ------------------------------------------------------------------------------------------------
+# [gate.ceiling_raises] — THE DECLARED RAISE, AND THE ONLY KIND THERE IS
+# ------------------------------------------------------------------------------------------------
+#
+# A raise is not a waiver and cannot be used as one: the entry names the exact file, the exact
+# dotted path and BOTH numbers, so it describes one edit rather than a direction; it carries a
+# reason; and it EXPIRES BY ITSELF, because the moment its branch lands the base carries the new
+# number, the rise disappears, and an entry that describes no rise is refused as stale. See
+# `xtask/src/gates/construction/ceilings.rs`.
+
+# THE DRAIN EDGE. `busbar-core x unit` is the one ceiling in this tree that is SUPPOSED to rise,
+# and the reason is structural rather than an exception to the rule. busbar-core is being retired
+# by moving what it owns into the units; a duplicate deleted against a unit re-points core's
+# readers onto that unit, and core's source then names the unit's vocabulary where it used to name
+# its own. The hits are the drain happening. Draining them would mean putting the duplicate back.
+#
+# What holds it honest is that it is measured and declared base -> tip in the same commit as core's
+# fall, never chained and never waived: `busbar-core -> busbar-unit-auth` is a `[[dep]]` row whose
+# class stays `not-allowed` and whose instance is admitted only by the standing
+# `[[transitional]] busbar-core -> busbar-unit-*` exemption, and that exemption expires on the SHIP
+# SHA, where `kind-isolation-ship` is RED for as long as busbar-core still exists. The route to zero
+# is busbar-core ceasing to exist, which is the line this whole release is walking.
+[gate.ceiling_raises."cell.74.count"]
+file = "qa/kind-isolation.toml"
+from = 10
+to = 26
+because = "THE DRAIN EDGE. busbar-core deleted its duplicate credential cache against busbar-unit-auth::cache and re-pointed its readers onto the unit, so core's source now names the unit's vocabulary: sixteen hits, counted not estimated — three aliased `use` lines at the seam in auth/mod.rs, four in Cargo.toml, four in the one test that drives the cache directly, and the eight the base already carried. The edge is the legacy drain in progress, declared base->tip in the same commit as core's fall rather than chained behind it, and its drain is busbar-core ceasing to exist: the `[[transitional]] busbar-core -> busbar-unit-*` row that admits it is RED on the ship sha for as long as busbar-core is in the tree."

@@ -440,7 +440,7 @@ pub struct App {
         std::collections::BTreeMap<&'static str, Arc<dyn std::any::Any + Send + Sync>>,
     /// The credential cache — Arc-shared ACROSS config swaps (like the
     /// mutation limiter): an apply/reload must not silently re-open every cached-allow window.
-    pub(crate) credential_cache: Arc<crate::auth_cache::CredentialCache>,
+    pub(crate) credential_cache: Arc<crate::auth::CredentialCache>,
     /// Per-module `max_admin_scope:` ceilings (from the auth chain entries) - consulted at admin
     /// scope resolution.
     pub(crate) auth_scope_caps: std::collections::HashMap<String, String>,

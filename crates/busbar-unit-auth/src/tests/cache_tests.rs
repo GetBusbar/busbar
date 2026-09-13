@@ -4,7 +4,7 @@
 //! The credential cache's rules, and the ones about what must NOT be admitted to it.
 
 use super::{entry, test_digest, Canned};
-use crate::cache::CredentialCache;
+use crate::cache::{CredentialCache, MAX_ENTRIES};
 use crate::chain::{AuthChain, ChainVerdict};
 use crate::module::AuthOutcome;
 use crate::principal::Principal;
@@ -357,4 +357,69 @@ fn pass_churn_cannot_evict_an_identity() {
         ),
         "unauthenticated churn admits nothing, so it can evict nothing"
     );
+}
+
+/// The SAME credential under two provider names is two rows, and flushing one leaves the other.
+///
+/// The key is the PROVIDER name, not the module's self-reported name: two named providers backed
+/// by one module are two verifiers with two settings, so a shared row would let one admit the
+/// other's credential. `flush_module_counts_only_its_own_rows` above partitions two DIFFERENT
+/// credentials, which a cache keyed on the credential alone would also pass; this one holds the
+/// credential fixed, which is the only way the name is under test.
+#[test]
+fn the_same_credential_under_two_providers_is_two_rows() {
+    let cache = CredentialCache::new(test_digest);
+    let g = cache.generation();
+    cache.put(
+        "m1",
+        "cred",
+        &AuthOutcome::Identify(Principal::from_id("u1")),
+        1000,
+        g,
+    );
+    let g = cache.generation();
+    cache.put(
+        "m2",
+        "cred",
+        &AuthOutcome::Identify(Principal::from_id("u1")),
+        1000,
+        g,
+    );
+    assert_eq!(cache.len(), 2, "one credential, two providers, two rows");
+    assert_eq!(cache.flush_module("m1"), 1);
+    assert!(cache.get("m1", "cred", 1001).is_none());
+    assert!(
+        cache.get("m2", "cred", 1001).is_some(),
+        "the other provider's partition is untouched"
+    );
+}
+
+/// The bound holds at the constant, and the eviction victim is the OLDEST INSERTED.
+///
+/// `pass_churn_cannot_evict_an_identity` proves the chain never ADMITS enough to reach the bound;
+/// this proves what happens when a cacheable module legitimately does. Driving the cache to
+/// `MAX_ENTRIES` live identifications and inserting once more must not grow the map past the
+/// constant, and the row that goes is the first one in — not a hash-order arbitrary one, which is
+/// what an eviction keyed on anything but `inserted_seq` would produce.
+#[test]
+fn the_bound_holds_and_evicts_the_oldest_inserted() {
+    let cache = CredentialCache::new(test_digest);
+    let t = 1_000_000;
+    for i in 0..MAX_ENTRIES {
+        let g = cache.generation();
+        let mut p = Principal::from_id("u1");
+        p.ttl_secs = Some(3600);
+        cache.put("m", &format!("cred-{i}"), &AuthOutcome::Identify(p), t, g);
+    }
+    assert_eq!(cache.len(), MAX_ENTRIES, "filled to the bound exactly");
+    let g = cache.generation();
+    let mut p = Principal::from_id("u1");
+    p.ttl_secs = Some(3600);
+    cache.put("m", "one-more", &AuthOutcome::Identify(p), t, g);
+    assert!(cache.len() <= MAX_ENTRIES, "the cap held: {}", cache.len());
+    assert!(
+        cache.get("m", "cred-0", t + 1).is_none(),
+        "the oldest-inserted row was the eviction victim"
+    );
+    assert!(cache.get("m", "one-more", t + 1).is_some());
 }
