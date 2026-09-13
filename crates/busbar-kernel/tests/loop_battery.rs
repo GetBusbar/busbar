@@ -127,7 +127,7 @@ fn a_challenge_round_runs_every_step_as_the_arrival_subject() {
     let subjects = units.subjects.lock().unwrap().clone();
     assert_eq!(subjects.len(), 3, "verify, approve and admit each ran once");
     assert!(
-        subjects.iter().all(busbar_caps::PrincipalId::is_anonymous),
+        subjects.iter().all(|p| p.as_str() == "anonymous"),
         "a challenge has no established identity, so the three steps run for the arrival subject"
     );
     match ended {

@@ -760,7 +760,9 @@ pub async fn run_unit_async<U: Units, R: RouteAwait>(
             // subject is resolved first and the three steps are written once. A round's subject is
             // the arrival principal the design names: anonymous, with no bucket.
             let (principal, challenge) = match authenticated {
-                Authenticated::Challenge(_) => (PrincipalId::anonymous(), true),
+                // The arrival subject is spelled where it is used: a constructor on the contract
+                // id would be a second home for a name `busbar-unit-auth` already owns.
+                Authenticated::Challenge(_) => (PrincipalId::new("anonymous"), true),
                 Authenticated::Principal(principal) => (principal, false),
             };
             units
