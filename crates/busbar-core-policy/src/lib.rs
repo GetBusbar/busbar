@@ -74,6 +74,11 @@ fn policy_timeout(timeout_ms: u64) -> std::time::Duration {
 /// own phase-2 reconcile (which also has a candidate set to reconcile) stays in `proxy::engine`.
 pub mod gate;
 pub mod plugin;
+// THE NEUTRAL HOOK RUNNER, moved here by identity from the routing engine's `engine/hooks.rs`.
+// The projection / rewrite / decision-mapping half of the hook seam: it names the hook contract
+// and the neutral substrate and nothing else, which is why it is the policy engine's and not one
+// protocol's. See the module's own header for what stayed behind and why.
+pub mod runner;
 /// THE SEAT: the port through which the engine reaches a `kind: hook` plugin, the projections it
 /// drives one with, and the built-in ranking resolver the composition hands in.
 pub mod seat;

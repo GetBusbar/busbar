@@ -58,6 +58,11 @@ from = "busbar-core"
 to = "busbar-core-policy"
 reason = "legacy drain: the hook policy engine is busbar-core-policy; busbar-core keeps the seat adapter and the re-export until its last hooks reader is drained"
 
+[[transitional]]
+from = "busbar-llm"
+to = "busbar-core-policy"
+reason = "legacy drain: the NEUTRAL HOOK RUNNER — the projection / rewrite / decision-mapping half of the routing engine's hook seam — moved by identity into busbar-core-policy, where it is the policy engine's vocabulary rather than one protocol's private module. busbar-llm keeps the re-export at the historical short paths and the one seam that still names its own routing tables (decide_policy_order), until that seam rides the engine's own move"
+
 # The same phenomenon one crate over, and it is in the tree TODAY rather than on a branch:
 # `busbar-voice` is the retiring 1.5.x streams crate and `busbar-plane-voice` is the plane it is
 # draining into. The rule is written about the drain, not about `busbar-core`, so this edge is named
@@ -1824,7 +1829,7 @@ count = "4"
 [[cell]]
 crate = "busbar-llm"
 kind = "api"
-count = "301"
+count = "277"
 
 [[cell]]
 crate = "busbar-llm"
@@ -1846,6 +1851,16 @@ crate = "busbar-llm"
 kind = "control"
 count = "88"
 
+# THE SOURCE NAMING THE KIND IT DRAINED INTO. busbar-llm's hook seam lost its neutral half to
+# busbar-core-policy (`[[transitional]] busbar-llm -> busbar-core-policy` above), and what it keeps
+# is the dependency declaration plus the re-export that holds the historical short paths. Those
+# mentions are the move's receipt, not a new coupling: the count falls with the re-export when the
+# routing engine itself moves and the remainder goes with it.
+[[cell]]
+crate = "busbar-llm"
+kind = "core"
+count = "8"
+
 [[cell]]
 crate = "busbar-llm"
 kind = "hooks"
@@ -1864,7 +1879,7 @@ count = "79"
 [[cell]]
 crate = "busbar-llm"
 kind = "plane"
-count = "300"
+count = "297"
 
 [[cell]]
 crate = "busbar-llm"
@@ -5563,3 +5578,17 @@ count = "2"
 cite = "none. ARCHITECTURE.md 1.1 gives the composition root a REGISTRY to assemble from; assembling a store is not implementing one."
 why = "the root implements the store face twice in its own assembly rather than composing a store plugin that does. Two implementations, in shipped source."
 drain = "move both implementations into a store-kind crate and have the root REGISTER it. The root names every kind by design and implements none of them."
+
+# THE DRAIN EDGE OF THE HOOK-RUNNER MOVE. It is `not-allowed` as a CLASS and it says so: no
+# architecture clause grants a 1.5.x crate an edge into the core kind, and none is being claimed.
+# What grants it here is the `[[transitional]]` row above — the legacy drain, which is the one edge
+# that is SUPPOSED to be new — and it dies with the crate.
+[[dep]]
+from    = "busbar-llm"
+to      = "busbar-core-policy"
+half    = "shipped"
+count   = "1"
+verdict = "not-allowed"
+cite    = "none. ARCHITECTURE.md 1.1 grants no legacy -> core edge; the `[[transitional]]` row `busbar-llm -> busbar-core-policy` is the drain this edge belongs to, and the drain is what carries it."
+why     = "busbar-llm names busbar-core-policy: declared normal in the shipped graph, 1 declaration(s) at this commit. The neutral hook runner moved OUT of the routing engine into the policy engine by identity, and the routing engine keeps the re-export at the historical short paths plus the one seam that still names its own tables. This is the drain pointing at where its contents went."
+drain   = "finish the routing engine's own move: `decide_policy_order` and the re-export are the whole remainder, and the day the engine follows its runner this edge and this crate go together."

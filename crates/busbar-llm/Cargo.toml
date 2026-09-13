@@ -103,6 +103,12 @@ teller-waist = ["dep:busbar-caps", "dep:busbar-contract"]
 # `busbar_api::X` was by-identity (the very same type/const), i.e. byte-identical behaviour.
 busbar-substrate = { path = "../busbar-substrate", default-features = false }
 busbar-api = { path = "../api" }
+# THE NEUTRAL HOOK RUNNER. The projection / rewrite / decision-mapping half of `engine/hooks.rs`
+# moved OUT of this crate into the hook policy engine, where the seam is neutral vocabulary rather
+# than one protocol's private module. This edge is the TRANSITIONAL direction of that move — the
+# 1.5.x routing engine naming the crate its contents are draining into — and it is written down as
+# such in `qa/kind-isolation.toml`'s `[[transitional]]` table. It falls when the engine follows.
+busbar-core-policy = { path = "../busbar-core-policy" }
 # THE CODECS. The pure half of this plugin, split out so `busbar-plane-llm` can name the dialect
 # readers/writers, the IR, the stream translator and the answer-normalization pass without pulling
 # this crate's HTTP stack and async runtime into a pure kind's closure. Every module that moved is
