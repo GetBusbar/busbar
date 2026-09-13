@@ -25,6 +25,34 @@
 #   to      — an exact crate name, or a `prefix*` glob for a family the drain lands one member at a
 #             time (`busbar-unit-*`: audit and scope exist on branches, auth and cost are coming).
 #   reason  — why the edge is transitional rather than permanent.
+#   ceiling — OPTIONAL, and only with `drain`. The opening number for a `[[cell]]` this branch
+#             MINTS (see below). Omit both and the row grants the edge and nothing else.
+#   drain   — OPTIONAL, and only with `ceiling`. The sentence that names what DELETES this row.
+#
+# THE MINTED CELL — THE DRAIN'S OWN FIRST MEASUREMENT (owner ruling, 2026-09-12).
+#
+# Granting the EDGE was never enough to let the drain land. `kind-isolation:matrix` measures a
+# second thing — the VOCABULARY one crate names of one kind — and `minted-row` refuses any
+# `[[cell]]` that is in no copy of this file at the merge-base, because a row that did not exist is
+# a `0 -> N` raise wearing the clothes of a first measurement and `ceiling-rose` cannot see it. So a
+# legacy crate handed the edge `busbar-mcp -> busbar-unit-trust` by a reviewed row still could not
+# NAME the unit, at any count, for any reason.
+#
+# A row that carries BOTH `ceiling` and `drain` admits exactly one thing: a minted
+# `<its from crate> × <its to glob's kind>` cell whose count is at or below `ceiling`. Nothing else.
+# The `from` is already refused unless it is LEGACY and the `to` unless it is one kind's
+# `busbar-<kind>-*` prefix, so the admission is the DELETE-LEGACY direction by construction — the
+# retiring crate reads the unit until it dies. An exact crate name in `to` admits no cell at all: it
+# names a crate, and a crate is not a kind. The ceiling is read ONCE, at the mint; from the next
+# commit the `[[cell]]` row's own count is scored against the tree exactly, in both directions, like
+# every other cell in this file. `transitional-live` reds the row at ship time while the crate
+# exists, so the row, the edge and the cell die together.
+#
+# A NEW `[[cell]]` ROW IS APPENDED TO THE END OF THE ARRAY, NEVER INSERTED. `ceiling-rose` keys
+# every number in this file by its POSITIONAL path (`cell.103.count`), so inserting a row shifts
+# every later index and the rule compares cell N of this file against cell N of the base's — 155
+# phantom "ceiling ROSE" findings, measured. The durable fix keys array-of-table rows by IDENTITY
+# and is being made separately; until it lands, append.
 #
 # EXPIRY. The row's expiry is not "the edge went away" — the drain lands edge by edge, on branch
 # after branch, and a row scored dead the week its edge is between branches would teach everyone to

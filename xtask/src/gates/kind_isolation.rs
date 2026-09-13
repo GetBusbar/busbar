@@ -119,6 +119,24 @@
 //! across branches — but the SHIP SHA: the `kind-isolation-ship` twin is RED for any row whose
 //! `from` crate still exists, so the table is empty at the tag or the tag does not happen.
 //!
+//! ## GRANTING THE EDGE IS NOT GRANTING THE VOCABULARY
+//!
+//! `:deps` and `:matrix` measure two different things and the drain needs both. `:deps` asks which
+//! crates a crate DEPENDS on; `:matrix` asks how much of another kind's VOCABULARY it names — the
+//! package names, the kind-qualified ids, in identifiers, strings, comments and manifests alike.
+//! A `[[transitional]]` row buys the first. The second is a `[[cell]]`, and `matrix`'s `minted-row`
+//! refuses any cell that is in no copy of [`REGISTRY_FILE`] at the merge-base, because a row that
+//! did not exist is a `0 -> N` raise wearing the clothes of a first measurement.
+//!
+//! That refusal is right for a coupling somebody grew and wrong for the one cell that is SUPPOSED
+//! to be new: the retiring crate's first naming of the unit it is draining onto. So a
+//! `[[transitional]]` row may declare two more fields — an opening `ceiling` and the `drain`
+//! sentence that names what deletes the row — and a row carrying both admits exactly one minted
+//! cell: its own `from` crate × its own `to` glob's kind, at or below that ceiling. See
+//! `matrix::drain_admits_mint`. Four conditions, three enforced at load, and the ship twin reds the
+//! granting row while the retiring crate still exists — the row, the edge and the cell die
+//! together.
+//!
 //! ## A CRATE THAT IS LANDING IS ANNOUNCED, NOT DISCOVERED
 //!
 //! The registry row refuses a crate that resolves to no kind, which is correct and which bites the
@@ -719,9 +737,41 @@ struct Transitional {
     from: String,
     to: String,
     reason: String,
+    /// THE MOST VOCABULARY THE DRAINING CRATE MAY NAME OF THE TARGET KIND, declared on the row that
+    /// grants the edge, or `None` when the row declares none.
+    ///
+    /// Only a row that carries BOTH this and [`Transitional::drain`] can admit a `[[cell]]` that
+    /// did not exist at the merge-base (see `matrix::minted_rows`). The number is an OPENING
+    /// ceiling, read once, at the mint: every later commit is scored by the `[[cell]]` row's own
+    /// count against the tree, exactly, in both directions, like every other cell in the file.
+    ceiling: Option<i64>,
+    /// THE SENTENCE THAT NAMES WHAT ENDS THIS ROW, or `None` when the row names nothing.
+    ///
+    /// `reason` says why the edge exists this week; `drain` says what deletes it. A row that grants
+    /// a mint owes both, because a first measurement with no named end is a coupling that has
+    /// acquired a number rather than a retirement that has acquired a deadline.
+    drain: Option<String>,
 }
 
 impl Transitional {
+    /// Does this row name the drain of `from`'s vocabulary INTO one kind — and say what ends it?
+    ///
+    /// `covers` above answers about an EDGE (`from` names the crate `dep`); this answers about a
+    /// CELL (`from` names the kind `kind`'s vocabulary at all). Only the `busbar-<kind>-*` glob
+    /// form answers yes: a row whose `to` is one exact crate name names a CRATE, and a crate is not
+    /// a kind — `busbar-voice -> busbar-plane-voice` grants that one edge and says nothing about
+    /// `busbar-voice` naming the plane kind at large.
+    fn admits_kind(&self, from: &str, kind: &str) -> bool {
+        if self.from != from || self.drain.is_none() {
+            return false;
+        }
+        self.to
+            .strip_suffix('*')
+            .and_then(|p| p.strip_prefix("busbar-"))
+            .and_then(|p| p.strip_suffix('-'))
+            == Some(kind)
+    }
+
     /// Does this row name the edge `from -> dep`?
     ///
     /// `to` is an exact crate name or a `prefix*` glob. The glob is what lets ONE reviewed row cover
@@ -921,6 +971,23 @@ fn take_row(
     at: usize,
     errors: &mut Vec<String>,
 ) -> Option<Vec<String>> {
+    take_row_opt(fields, want, &[], table, at, errors)
+}
+
+/// [`take_row`], plus a named set of fields the table MAY carry and does not have to.
+///
+/// The optional set is still a CLOSED set: a field outside `want ∪ opt` is refused exactly as
+/// before, because a field the gate does not read is a field that says nothing. What `opt` buys is
+/// a table whose rows can say more than the minimum without every row that pre-dates the addition
+/// becoming unreadable — `[[transitional]]`'s `ceiling`/`drain` pair is the one use.
+fn take_row_opt(
+    fields: &[(String, String)],
+    want: &[&str],
+    opt: &[&str],
+    table: &str,
+    at: usize,
+    errors: &mut Vec<String>,
+) -> Option<Vec<String>> {
     let mut out = Vec::new();
     for key in want {
         match fields.iter().find(|(k, _)| k == key) {
@@ -941,12 +1008,22 @@ fn take_row(
             }
         }
     }
-    for (k, _) in fields {
-        if !want.contains(&k.as_str()) {
+    for (k, v) in fields {
+        if !want.contains(&k.as_str()) && !opt.contains(&k.as_str()) {
             errors.push(format!(
                 "unknown-field\t{REGISTRY_FILE}:{at}\t`[[{table}]]` declares `{k}`, which this \
                  table has no meaning for — a field the gate does not read is a field that says \
                  nothing"
+            ));
+            return None;
+        }
+        // AN OPTIONAL FIELD IS OPTIONAL TO WRITE, NOT OPTIONAL TO MEAN. A row may leave it out
+        // entirely; a row that writes it empty has written a field nobody can read, which is the
+        // same refusal every required field gets.
+        if opt.contains(&k.as_str()) && v.is_empty() {
+            errors.push(format!(
+                "empty-field\t{REGISTRY_FILE}:{at}\t`[[{table}]]` declares `{k}` with an empty \
+                 value; every field of a row is part of the reason a human re-reads it"
             ));
             return None;
         }
@@ -999,8 +1076,14 @@ pub struct PatchAllow {
 fn push_row(reg: &mut KindRegistry, table: &str, fields: &[(String, String)], at: usize) {
     match table {
         "transitional" => {
-            let Some(v) = take_row(fields, &["from", "to", "reason"], table, at, &mut reg.errors)
-            else {
+            let Some(v) = take_row_opt(
+                fields,
+                &["from", "to", "reason"],
+                &["ceiling", "drain"],
+                table,
+                at,
+                &mut reg.errors,
+            ) else {
                 return;
             };
             let (from, to, reason) = (v[0].clone(), v[1].clone(), v[2].clone());
@@ -1050,7 +1133,52 @@ fn push_row(reg: &mut KindRegistry, table: &str, fields: &[(String, String)], at
                     return;
                 }
             }
-            reg.transitional.push(Transitional { from, to, reason });
+            // THE TWO FIELDS THAT MAKE A ROW ABLE TO ADMIT A MINT, AND THEY COME AS A PAIR.
+            //
+            // Three fields describe the drain's EDGE and every row in this table has them. A row
+            // that also wants to admit a `[[cell]]` this branch minted — the first measurement of a
+            // draining crate's naming of a kind — owes two more: the opening `ceiling` the cell is
+            // scored against at the mint, and the `drain` sentence that names what deletes the row.
+            // Either alone is half a transaction: a ceiling with no end is a coupling with a
+            // number, and an end with no ceiling is a blank cheque with a deadline. A row carrying
+            // neither is a plain edge row and admits no mint at all, which is what the three rows
+            // that pre-date this clause are.
+            let ceiling = fields.iter().find(|(k, _)| k == "ceiling").map(|(_, v)| v);
+            let drain = fields.iter().find(|(k, _)| k == "drain").map(|(_, v)| v);
+            if ceiling.is_some() != drain.is_some() {
+                reg.errors.push(format!(
+                    "half-a-mint\t{REGISTRY_FILE}:{at}\t`[[transitional]] {from} -> {to}` declares \
+                     `{}` without `{}`. The two are one transaction: `ceiling` is the opening \
+                     number a minted `[[cell]]` is scored against and `drain` is the sentence that \
+                     names what deletes this row. Declare both, or neither",
+                    if ceiling.is_some() { "ceiling" } else { "drain" },
+                    if ceiling.is_some() { "drain" } else { "ceiling" },
+                ));
+                return;
+            }
+            let ceiling = match ceiling {
+                None => None,
+                Some(raw) => match raw.parse::<i64>() {
+                    Ok(n) if n >= 0 => Some(n),
+                    _ => {
+                        reg.errors.push(format!(
+                            "bad-count\t{REGISTRY_FILE}:{at}\t`[[transitional]] ceiling = \
+                             \"{raw}\"` is not a count. An opening ceiling a measurement cannot be \
+                             compared against is not a ceiling — it is this row's mint admission \
+                             switched off in a value that reads like a reviewed figure"
+                        ));
+                        return;
+                    }
+                },
+            };
+            let drain = drain.cloned();
+            reg.transitional.push(Transitional {
+                from,
+                to,
+                reason,
+                ceiling,
+                drain,
+            });
         }
         "announced" => {
             let Some(v) = take_row(

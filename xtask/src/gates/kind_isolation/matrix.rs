@@ -1100,7 +1100,48 @@ pub fn measured_cells(
 /// and the refusal is the transaction the ceiling machinery is built on everywhere else: the number
 /// moves in a commit that says so, and a reviewer reads the sentence rather than the diff's
 /// arithmetic.
-fn minted_rows(cx: &Ctx) -> Vec<String> {
+/// Is this minted `[[cell]]` key the LEGACY DRAIN's own first measurement, declared and priced?
+///
+/// THE DRAIN IS THE ONE CELL THAT IS SUPPOSED TO BE NEW. `:deps` already carries exactly this
+/// carve-out for exactly this reason, and states it in its own words: a `[[transitional]]` row
+/// describes a RETIREMENT IN PROGRESS, and a retirement lands edge by edge, branch after branch.
+/// The vocabulary matrix had no such clause, so it refused the drain's own mechanism one gate
+/// later: a legacy crate granted the edge `busbar-mcp -> busbar-unit-trust` by a reviewed row still
+/// could not NAME the unit, at any count, because it had no `× unit` cell at the merge-base and a
+/// row that did not exist is a `0 -> N` raise.
+///
+/// THE ADMISSION IS NARROWER THAN THE EDGE'S, AND IT IS NOT A WAIVER. Four things must hold, and
+/// the first three are checked by the loader before this rule sees the row at all:
+///
+/// 1. a `[[transitional]]` row covers exactly this crate → this kind. `from` must be a LEGACY crate
+///    or the row does not load (`not-legacy`), and `to` must be one kind's `busbar-<kind>-*` prefix
+///    (`bad-glob`) — an exact crate name names a crate, not a kind, and admits nothing here.
+/// 2. the row declares an opening `ceiling`, and the cell's count is at or below it. The number is
+///    the reviewer's, read once; from the next commit the `[[cell]]` row's own count is scored
+///    against the tree exactly, in both directions, like every other cell in the file.
+/// 3. the row names its `drain` — the sentence that says what deletes it.
+/// 4. the cell has a `[[cell]]` row to score. A mint with no row is `unlisted-cell`'s finding, not
+///    this one's, and admitting it here would be admitting a number nobody wrote.
+///
+/// It cannot outlive the retirement: the ship twin reds every `[[transitional]]` row whose crate is
+/// still in the tree (`transitional-live`), so the row, the edge and the cell die with the crate.
+fn drain_admits_mint(reg: &super::KindRegistry, key: &str) -> bool {
+    let Some((krate, kind)) = key.split_once(" \u{d7} ") else {
+        return false;
+    };
+    let Some(cell) = reg
+        .matrix_cells
+        .iter()
+        .find(|c| c.krate == krate && c.kind == kind)
+    else {
+        return false;
+    };
+    reg.transitional
+        .iter()
+        .any(|t| t.admits_kind(krate, kind) && t.ceiling.is_some_and(|c| cell.count <= c))
+}
+
+fn minted_rows(cx: &Ctx, reg: &super::KindRegistry) -> Vec<String> {
     let base = match super::base::read(cx) {
         Ok(b) => b,
         Err(why) => {
@@ -1163,6 +1204,12 @@ fn minted_rows(cx: &Ctx) -> Vec<String> {
             {
                 continue;
             }
+            // THE LEGACY DRAIN'S FIRST MEASUREMENT, PRICED BY THE ROW THAT GRANTS THE EDGE.
+            // See [`drain_admits_mint`] — four conditions, three of them enforced at load, and
+            // the ship twin reds the granting row while the retiring crate still exists.
+            if table == "cell" && drain_admits_mint(reg, &key) {
+                continue;
+            }
             out.push(format!(
                 "minted-row\t[[{table}]] {key}\tthis row is in no copy of {LEDGER} at the \
                  merge-base {}: this branch MINTED it. It is {what}, and a row that did not exist \
@@ -1221,7 +1268,7 @@ pub fn rule_matrix(cx: &Ctx, crates: &[CrateInfo], reg: &super::KindRegistry, sh
     let listed = read_ledger(reg);
 
     let mut offenders: Vec<String> = duplicates(reg);
-    offenders.extend(minted_rows(cx));
+    offenders.extend(minted_rows(cx, reg));
     let kind_of: BTreeMap<&str, &'static str> = crates
         .iter()
         .filter_map(|c| c.kind.map(|k| (c.name.as_str(), k)))
@@ -1482,6 +1529,49 @@ fn cell_row(krate: &str, kind: &str, count: &str) -> String {
     format!("crate = \"{krate}\"\nkind = \"{kind}\"\ncount = \"{count}\"")
 }
 
+/// A FILE INSIDE A RETIRING CRATE THAT NAMES A UNIT — the drain's first measurement, planted.
+///
+/// `busbar-mcp` is legacy and has no `× unit` cell at the merge-base, so this plant mints one. The
+/// four cases below hand the same plant four different ledgers and assert that exactly one of them
+/// admits it.
+const MINT_PROBE: &str = "crates/busbar-mcp/src/mint_probe.rs";
+
+/// The count `MINT_PROBE` measures. Asserted by the cases themselves: the ratchet is exact in both
+/// directions, so a case that writes the wrong number goes red on `ratchet` rather than passing.
+const MINT_PROBE_COUNT: &str = "1";
+
+/// The plant, the `[[cell]]` row that records it, and whatever `[[transitional]]` row the case is
+/// about, appended to the ledger's end.
+fn mint_case(cx: &Ctx, count: &str, transitional: &str) -> crate::ctx::Overlay {
+    let mut ov = plant(
+        MINT_PROBE,
+        "//! The client door's addresses are judged by busbar-unit-trust.\n",
+    );
+    ov.set(
+        LEDGER,
+        format!(
+            "{}\n\n{transitional}\n[[cell]]\n{}\n",
+            cx.read(LEDGER).unwrap_or_default().trim_end(),
+            cell_row("busbar-mcp", "unit", count)
+        ),
+    );
+    ov
+}
+
+/// One `[[transitional]]` row, in the mint-admitting form or without one of its two extra fields.
+fn drain_row(to: &str, ceiling: Option<&str>) -> String {
+    let mut row = format!(
+        "[[transitional]]\nfrom = \"busbar-mcp\"\nto = \"{to}\"\nreason = \"legacy drain\"\n"
+    );
+    if let Some(c) = ceiling {
+        row.push_str(&format!(
+            "ceiling = \"{c}\"\ndrain = \"the edge dies with the crate: busbar-mcp is a retiring \
+             1.5.x plugin and its client door moves onto busbar-plane-mcp's step list.\"\n"
+        ));
+    }
+    row
+}
+
 /// Every RED case this row owes, and the GREEN one it is measured against.
 pub fn selftest<'a>(
     cx: &'a Ctx,
@@ -1552,6 +1642,65 @@ pub fn selftest<'a>(
         &[
             "minted-row",
             "busbar-store-memory \u{d7} transport",
+            "this branch MINTED it",
+        ],
+    ));
+
+    // ─── THE LEGACY DRAIN'S FIRST MEASUREMENT: ONE ADMITTED, THREE REFUSED ───
+    //
+    // The clause above is the only door through `minted-row`, and a door is proved by what it does
+    // NOT open. All four cases plant the SAME file — one unit named inside a retiring crate, a cell
+    // that does not exist at the merge-base — and differ only in the `[[transitional]]` row the
+    // ledger carries. Three of the four are refused, and each is refused for its own reason, so a
+    // condition deleted from `drain_admits_mint` takes a case with it.
+    report.push(prove_rows_green(
+        cx,
+        gate,
+        "a legacy crate's first naming of a unit, covered by a priced [[transitional]] row",
+        &[ROW_MATRIX],
+        mint_case(
+            cx,
+            MINT_PROBE_COUNT,
+            &drain_row("busbar-unit-*", Some(MINT_PROBE_COUNT)),
+        ),
+    ));
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "the same mint with NO transitional row — a coupling that acquired a number",
+        &[ROW_MATRIX],
+        mint_case(cx, MINT_PROBE_COUNT, ""),
+        &[
+            "minted-row",
+            "busbar-mcp \u{d7} unit",
+            "this branch MINTED it",
+        ],
+    ));
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "the same mint under a row that drains this crate into a DIFFERENT kind",
+        &[ROW_MATRIX],
+        mint_case(
+            cx,
+            MINT_PROBE_COUNT,
+            &drain_row("busbar-plane-*", Some(MINT_PROBE_COUNT)),
+        ),
+        &[
+            "minted-row",
+            "busbar-mcp \u{d7} unit",
+            "this branch MINTED it",
+        ],
+    ));
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "the same mint above the ceiling its transitional row declared",
+        &[ROW_MATRIX],
+        mint_case(cx, MINT_PROBE_COUNT, &drain_row("busbar-unit-*", Some("0"))),
+        &[
+            "minted-row",
+            "busbar-mcp \u{d7} unit",
             "this branch MINTED it",
         ],
     ));
