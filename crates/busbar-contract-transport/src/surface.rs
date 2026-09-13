@@ -196,6 +196,38 @@ pub struct Operation {
     pub response_media: &'static str,
 }
 
+/// THE HOLD POSTURE OF ONE BINDING: what a unit admitted on it keeps, and until when.
+///
+/// Declared DATA, beside the binding's transport, because it is the same KIND of fact: a binding
+/// that says "I am carried over WebSocket" also says "a unit admitted on me is held for the
+/// session's life". It is not a property of a plane, a modality or a wire, and a plane implements
+/// no part of it — the kernel reads the declaration at the door and serves both postures through
+/// the one seam, so two bindings of two different planes that declared the same posture are
+/// admitted, held and settled by identical bytes.
+///
+/// The two postures are the two ends a unit can have, and there is no third:
+///
+/// - [`SessionPosture::Release`] — the unit settles at ITS OWN exit. The request slot and the
+///   in-flight lease the door drew are given back when the call that opened them ends. This is what
+///   every binding has always had, and it is what DECLARING NOTHING means, which is why nothing
+///   that ships today moves unless a declaration asks it to.
+/// - [`SessionPosture::Hold`] — the admitted unit KEEPS the request slot and the in-flight lease for
+///   the life of the session it opened, and settles once, at the session's end. A live session is a
+///   long-lived request: it occupies one of the node's slots for as long as it is live, exactly as a
+///   streaming response does, and the per-leg work runs against that one admission.
+///
+/// A duplex binding declares [`SessionPosture::Hold`]. A request-response binding declares nothing,
+/// which is [`SessionPosture::Release`] and is what [`BindingDecl::RELEASED`] spells for a `const`
+/// declaration that has no opinion to state.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, serde::Serialize)]
+pub enum SessionPosture {
+    /// Settle at this unit's own exit — the default, and what declaring nothing means.
+    #[default]
+    Release,
+    /// Keep the slot and the lease for the session's life, and settle at the session's end.
+    Hold,
+}
+
 /// One wire binding a surface is served under.
 ///
 /// The name is the declarer's own word for the binding and is what a published document advertises;
@@ -236,6 +268,28 @@ pub struct BindingDecl {
     ///
     /// Empty for a binding whose operations are named by their target or by a service descriptor.
     pub mounts: &'static [&'static str],
+    /// WHAT A UNIT ADMITTED ON THIS BINDING KEEPS, and until when — see [`SessionPosture`].
+    ///
+    /// Beside `transport` because it is the same kind of fact and is declared by the same declarer:
+    /// the kernel reads it at the door and nothing else decides it. A request-response binding
+    /// declares nothing, which is [`SessionPosture::Release`] and is what [`BindingDecl::RELEASED`]
+    /// fills in.
+    pub session: SessionPosture,
+}
+
+impl BindingDecl {
+    /// THE BINDING THAT DECLARES NOTHING about what its units keep, for a `const` declaration to
+    /// finish itself with: `BindingDecl { name, transport, mounts, ..BindingDecl::RELEASED }`.
+    ///
+    /// Not a `Default` impl, because a binding with no name and no transport is not a thing that can
+    /// exist — this is a hole to fill the ONE field a declarer with no opinion has no words for, and
+    /// the value it fills it with is the one every binding has always had.
+    pub const RELEASED: Self = Self {
+        name: "",
+        transport: "",
+        mounts: &[],
+        session: SessionPosture::Release,
+    };
 }
 
 /// Everything a transport needs to serve a plane, and nothing that says which plane it is.

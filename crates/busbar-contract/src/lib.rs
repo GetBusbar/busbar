@@ -52,16 +52,19 @@ pub use kinds::{
     SignFailed, Signer, SliceGrant, Store, StoreError, VirtualKeyDirectory,
 };
 pub use plane::{
-    Ingress, Plane, PlaneMeta, PlaneSessionState, Progress, Response, SessionPlane, SessionPosture,
-    UnitDraft,
+    Ingress, Plane, PlaneMeta, PlaneSessionState, Progress, Response, SessionPlane, UnitDraft,
 };
 // `KernelSeal` is deliberately absent: it is reachable as `plugin::KernelSeal` and nowhere else, so
 // it is not among the names this crate offers as the plugin-visible ABI. It cannot be made private
 // — the capability crate implements it on every token and sits above this one — so the scan named
 // in its own documentation is what holds the in-tree side.
 pub use plugin::{AbiVersion, Kind, KindMarker, Plugin, STORE_ABI};
+// `SessionPosture` is re-exported at the root beside the rest of the transport-facing vocabulary
+// because the kernel reads it at the door and a plugin author DECLARES it on a binding: it is one
+// name for both readers, and a second spelling of it would be a second answer to "what does this
+// unit keep".
 pub use transport::{
-    check_composition, CompositionError, FrameStream, Fut, Registered, Transport,
+    check_composition, CompositionError, FrameStream, Fut, Registered, SessionPosture, Transport,
     TransportConfigView, TransportMeta, TRANSPORT_ABI,
 };
 pub use unit::{

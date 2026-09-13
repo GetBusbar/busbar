@@ -10,7 +10,8 @@
 
 use busbar_contract_transport::surface::{
     binding_at, check_surface, match_target, resolve_document, resolve_service, resolve_target,
-    Answering, Bar, BindingDecl, Dispatch, Operation, SurfaceError, WireSurface, MAX_CAPTURES,
+    Answering, Bar, BindingDecl, Dispatch, Operation, SessionPosture, SurfaceError, WireSurface,
+    MAX_CAPTURES,
 };
 
 const DOC: &str = "doc";
@@ -62,16 +63,19 @@ const SURFACE: WireSurface = WireSurface {
             name: DOC,
             transport: "http",
             mounts: &["/mount", "/mount/"],
+            ..BindingDecl::RELEASED
         },
         BindingDecl {
             name: TGT,
             transport: "http",
             mounts: &[],
+            ..BindingDecl::RELEASED
         },
         BindingDecl {
             name: SVC,
             transport: "grpc",
             mounts: &[],
+            ..BindingDecl::RELEASED
         },
     ],
     operations: &[
@@ -256,6 +260,7 @@ const UNADDRESSABLE: WireSurface = WireSurface {
         name: TGT,
         transport: "http",
         mounts: &[],
+        ..BindingDecl::RELEASED
     }],
     operations: &[Operation {
         op: "ghost",
@@ -279,6 +284,7 @@ const DUPLICATE: WireSurface = WireSurface {
         name: TGT,
         transport: "http",
         mounts: &[],
+        ..BindingDecl::RELEASED
     }],
     operations: &[
         Operation {
@@ -312,6 +318,7 @@ const BAD_TEMPLATE: WireSurface = WireSurface {
         name: TGT,
         transport: "http",
         mounts: &[],
+        ..BindingDecl::RELEASED
     }],
     operations: &[Operation {
         op: "bent",
@@ -339,6 +346,7 @@ const UNKNOWN_BINDING: WireSurface = WireSurface {
         name: TGT,
         transport: "http",
         mounts: &[],
+        ..BindingDecl::RELEASED
     }],
     operations: &[Operation {
         op: "lost",
@@ -381,4 +389,87 @@ fn every_refusal_is_legible() {
     ] {
         assert!(!e.to_string().is_empty());
     }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// THE HOLD POSTURE IS THE BINDING'S OWN DECLARATION.
+//
+// A binding already says which transport carries it. It now says the other thing a mount cannot
+// work out for itself: what a unit admitted on it KEEPS, and until when. The cells below are that
+// declaration read back off the surface — nothing here names a protocol, a dialect or a plane, and
+// nothing here implements holding, because a declaration implements nothing.
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+/// A surface whose duplex binding DECLARES `Hold` and whose document binding declares nothing.
+const POSTURED: WireSurface = WireSurface {
+    bindings: &[
+        BindingDecl {
+            name: DOC,
+            transport: "http",
+            mounts: &["/doc"],
+            ..BindingDecl::RELEASED
+        },
+        BindingDecl {
+            name: "duplex",
+            transport: "ws",
+            mounts: &["/duplex"],
+            session: SessionPosture::Hold,
+        },
+    ],
+    operations: &[Operation {
+        op: "one",
+        dispatch: D_OPEN,
+        answering: Answering::Unary,
+        request_media: "application/json",
+        response_media: "application/json",
+    }],
+};
+
+/// DECLARING NOTHING IS DECLARING `Release`, and that is why nothing that ships today moves: every
+/// binding written before the field existed reads back as the posture it has always had.
+#[test]
+fn a_binding_that_declares_nothing_is_released() {
+    assert_eq!(
+        SessionPosture::default(),
+        SessionPosture::Release,
+        "the posture a declarer leaves out is the one every binding has always had"
+    );
+    assert_eq!(
+        BindingDecl::RELEASED.session,
+        SessionPosture::Release,
+        "the hole a `const` declaration fills itself with declares nothing"
+    );
+    for binding in SURFACE.bindings {
+        assert_eq!(
+            binding.session,
+            SessionPosture::Release,
+            "the surface written before the field existed still keeps nothing past an exit"
+        );
+    }
+}
+
+/// AND A DUPLEX BINDING DECLARES `Hold` — beside its transport, in the same breath, read back off
+/// the mount the arrival landed on. The posture travels with the BINDING and with nothing else: two
+/// bindings of one surface differ in it, so it cannot be a property of the surface, the plane that
+/// declared the surface, or the operation being addressed.
+#[test]
+fn a_duplex_binding_declares_hold_beside_its_transport() {
+    let duplex = binding_at(&POSTURED, "/duplex").expect("the duplex mount resolves");
+    assert_eq!(duplex.transport, "ws", "the binding says what carries it");
+    assert_eq!(
+        duplex.session,
+        SessionPosture::Hold,
+        "and in the same breath, that a unit admitted on it is held for the session's life"
+    );
+
+    let doc = binding_at(&POSTURED, "/doc").expect("the document mount resolves");
+    assert_eq!(
+        doc.session,
+        SessionPosture::Release,
+        "while the request-response binding beside it declared nothing and keeps nothing"
+    );
+    assert_ne!(
+        doc.session, duplex.session,
+        "one surface, two postures — so the posture is the BINDING's and not the declarer's"
+    );
 }

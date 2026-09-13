@@ -187,9 +187,9 @@ busbar-voice = ["busbar-voice-codec"]
 # a green baseline value for a scratch copy; the checked-in numbers below never move except by the
 # owner's own hand.
 [gate.surface_ceilings]
-contract_caps = 3497
+contract_caps = 3491
 grammar = 388
-contract_transport = 1099
+contract_transport = 1114
 
 # ── declared raises: the streams line's SURFACE — the duplex session seam and the DUPLEX dispatch kind
 # are contract-transport surface, and the root's one route to that seam is one line of busbar-contract.
@@ -642,12 +642,12 @@ kernel_crate = "busbar-kernel"
 kernel_ceiling = 5476
 caps_crate = "busbar-caps"
 contract_crate = "busbar-contract"
-caps_contract_ceiling = 3499
+caps_contract_ceiling = 3493
 unit_crate_glob = "busbar-unit-*"
 unit_total_ceiling = 14591
 verbs_crate = "busbar-unit-verbs"
 verbs_ceiling = 1428
-union_ceiling = 23566
+union_ceiling = 23560
 # Files (by basename, wherever they sit under busbar-kernel/src) whose bodies seed the call-graph
 # name-match: every identifier called from one of these files, that busbar-kernel does not itself
 # define, is looked up by name against every busbar-unit-* file.
@@ -2025,15 +2025,32 @@ because = "The SAME 17 lines, counted again in the crate total the Teller loop b
 
 [[gate.ceiling_raises]]
 key = "rules.loc-ceilings.caps_contract_ceiling"
-by = 7
-because = "`SessionPosture` itself — 7 lines of DATA in `busbar-contract`. It is DECLARED here rather than implemented anywhere because a plane must be able to SAY what its session costs the node without being able to DO anything about it; the kernel is the only reader, and the only thing it does with the answer is decide which exit settles (3,492 -> 3,499)"
+by = 1
+because = "ONE LINE, and it is a re-export. The hold posture is declared ON THE BINDING — `BindingDecl.session`, in `busbar-contract-transport`, beside the `transport` the same declarer writes on the same binding — so the type itself is not in this pair at all. What this pair gains is the name: `busbar_contract::SessionPosture` re-exported at the root beside the rest of the transport-facing vocabulary, because the kernel reads the posture at the door and a plugin author declares it, and one name for both readers is the whole point (3,492 -> 3,493)"
 
 [[gate.ceiling_raises]]
 key = "gate.surface_ceilings.contract_caps"
-by = 7
-because = "The SAME `SessionPosture` declaration, counted again by scripts/loc-surface.py over the same pair (3,490 -> 3,497). The two rows count the pair with the same counting rule and differ only in which script measures it, so the face is declared to both rather than to whichever was red first"
+by = 1
+because = "THE SAME ONE LINE, counted the other way: `surface-ceiling:contract+caps` counts plugin-visible SURFACE rather than file lines, and a re-exported name is surface. The declaration it names is `BindingDecl.session`, counted against the transport-facing contract below (3,490 -> 3,491)"
 
 [[gate.ceiling_raises]]
 key = "rules.loc-ceilings.union_ceiling"
-by = 24
-because = "The SAME lines again, counted in the union both crates belong to: the kernel's 17 and the contract's 7 (23,542 -> 23,566). The `busbar-unit-*` union did not move a line on this landing"
+by = 18
+because = "The SAME lines again, counted in the union both crates belong to: the kernel's 17 and the contract's ONE re-export line (23,542 -> 23,560). The DECLARATION itself lives on the binding in `busbar-contract-transport` and is counted in the transport-facing surface, not the union arithmetic of this pair. The `busbar-unit-*` union did not move a line on this landing"
+
+# ── declared raises: THE HOLD POSTURE'S DECLARATION MOVES ONTO THE BINDING. `SessionPosture` and the
+# `BindingDecl.session` field it types live in `busbar-contract-transport`, beside the `transport` the
+# same declarer writes on the same binding, because they are the same kind of fact with the same
+# declarer. What the contract pair keeps is only the re-exported NAME (the +1 above); the declaration
+# itself is transport-facing surface and a transport-facing matrix cell. Each expires when the base
+# carries the number.
+[[gate.ceiling_raises]]
+key = "gate.surface_ceilings.contract_transport"
+by = 15
+because = "THE DECLARED HOLD POSTURE, 15 lines of DATA on the binding declaration. `BindingDecl` already says which transport carries it; it now says the other thing a mount cannot work out for itself — what a unit admitted on it KEEPS, and until when. `SessionPosture` is the two-value vocabulary (`Release`, the default and what DECLARING NOTHING means, and `Hold`, which keeps the node's request slot and in-flight lease for the session's life and settles at its end), `BindingDecl.session` is the field, and `BindingDecl::RELEASED` is the hole a `const` declaration with no opinion fills itself with, so no binding written before the field existed changes what it means. It is DECLARED here rather than implemented anywhere because a plane must not be able to vary it: the kernel reads the declaration at the door and serves both postures through the one seam. 15 surface lines measured by scripts/loc-surface.py (1,099 -> 1,114)"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-contract-transport.transport.count"
+file = "qa/kind-isolation.toml"
+by = 6
+because = "busbar-contract-transport × transport: `BindingDecl.session` and the `SessionPosture` it is typed by — the posture declared beside the binding's `transport` because it is the same kind of fact and has the same declarer — plus the two cells that read the declaration back off a surface whose duplex binding says `ws` and whose document binding says `http`. Six hits, all of them the word the face is ABOUT: the posture is declared next to the transport, so it names it (186 -> 192)"

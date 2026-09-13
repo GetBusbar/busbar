@@ -25,6 +25,7 @@ const SURFACE: WireSurface = WireSurface {
         name: "b",
         transport: "http",
         mounts: &[],
+        ..BindingDecl::RELEASED
     }],
     operations: &[OP],
 };
