@@ -38,9 +38,7 @@ use busbar_substrate::breaker::{CanonicalSignal, StatusClass};
 use busbar_substrate::egress::duplex_ws::{self, DialError};
 use busbar_substrate::net_guard::GuardPolicy;
 use busbar_substrate::plane::handle_engine::HandleEngineError;
-use busbar_substrate::plane_host::{
-    run_gauntlet_session, BreakerHost, DispatchScope, GauntletPlane, GauntletRequest, VerifyOutcome,
-};
+use busbar_substrate::plane_host::{BreakerHost, DispatchScope};
 use busbar_substrate::transport::{Transport, UpstreamWireKind};
 use futures::{Sink, Stream};
 use std::sync::Arc;
@@ -200,8 +198,9 @@ pub struct SessionBudget {
 /// Why a session failed to start before any frame flowed.
 #[derive(Debug)]
 pub enum StartError {
-    /// The OPEN-PASS gauntlet gate ([`run_gauntlet_session`]) REFUSED the session's destination BEFORE
-    /// any lease/durable open — zero bytes, zero charge. The verify-strictly-before-charge invariant.
+    /// The plane's own destination screen REFUSED the session's destination (an upstream model on the
+    /// denial set) BEFORE any lease/durable open — zero bytes, zero charge. The
+    /// verify-strictly-before-charge invariant, decided in-plane on the plane's own data.
     DestinationRefused,
     /// The D2 metering lease REFUSED the reserve (a refuse-all / zero budget) — fail closed, never open.
     BudgetRefused,
@@ -226,42 +225,6 @@ impl std::fmt::Display for StartError {
 
 impl std::error::Error for StartError {}
 
-/// THE VOICE PLANE's [`GauntletPlane`] for a SESSION open — its contribution to the shared open-pass
-/// gauntlet gate. `verify_destination` (stage 2, the ONE shared pre-admission check) refuses a session
-/// whose upstream `destination` (model) is on the plane's denial set, so the refusal lands BEFORE the
-/// lease/durable open (zero bytes, zero charge). `drive` (the one-shot stages 4+5) is UNREACHABLE on the
-/// session path — [`run_gauntlet_session`] only runs the gate, never `drive` — so it fails closed with a
-/// neutral 500 if a future refactor ever mis-routed a session opener through the one-shot path.
-pub(crate) struct SessionGauntlet {
-    pub(crate) deny: bool,
-}
-
-#[async_trait::async_trait]
-impl GauntletPlane for SessionGauntlet {
-    fn verify_destination(&self, _req: &GauntletRequest<'_>) -> VerifyOutcome {
-        if self.deny {
-            VerifyOutcome::Refuse(
-                axum::response::Response::builder()
-                    .status(axum::http::StatusCode::FORBIDDEN)
-                    .body(axum::body::Body::from("voice session destination denied"))
-                    .expect("static refusal response builds"),
-            )
-        } else {
-            VerifyOutcome::Proceed
-        }
-    }
-
-    async fn drive(self: Box<Self>, _req: GauntletRequest<'_>) -> axum::response::Response {
-        // Never reached on the session path (the opener runs only the admission gate). Fail closed.
-        axum::response::Response::builder()
-            .status(axum::http::StatusCode::INTERNAL_SERVER_ERROR)
-            .body(axum::body::Body::from(
-                "session gauntlet never drives a one-shot response",
-            ))
-            .expect("static fault response builds")
-    }
-}
-
 /// BEGIN a governed session, common to both topologies: open the D2 metering lease (fail-closed on a
 /// refused budget), open the durable [`SessionHandle`] at genesis, and assemble the [`SessionCore`]
 /// with the plane's locked config, chosen `codec`, and `carrier`. The caller then serves the returned
@@ -285,33 +248,23 @@ pub fn begin_session<C>(
 where
     C: DuplexReader + DuplexWriter + Send + Sync + 'static,
 {
-    // OPEN-PASS ADMISSION FIRST (verify STRICTLY before any charge): run the shared gauntlet gate at the
-    // TOP through `run_gauntlet_session`. On refuse NOTHING is opened — no lease, no durable genesis, no
-    // socket — so a refused session costs ZERO bytes and ZERO charge. The session's own charge
-    // (`open_lease`, the cost_reserve leg) fires only AFTER the gate clears, matching the LLM plane's
-    // real verify-before-admission-door order.
+    // OPEN-PASS ADMISSION FIRST (verify STRICTLY before any charge): the plane consults its OWN denial
+    // set — the destination model this session targets — and refuses BEFORE any lease/durable open, so a
+    // refused session costs ZERO bytes and ZERO charge. This is the plane's own data (`destination_denied`),
+    // checked in-plane: a plane declares session posture and screens its own destinations, it never opens
+    // a session through the kernel. The session's own admission (its ONE node slot + in-flight lease) is
+    // drawn ONCE, in the kernel, by the ROOT's owning-Held driver when the session is served — not here.
     let destination = locked_config
         .as_ref()
         .and_then(|c| c.model.clone())
         .unwrap_or_default();
-    let gov = busbar_api::PlaneRequestCtx::default();
-    let gauntlet_req = GauntletRequest {
-        gov: &gov,
-        destination: &destination,
-        correlation_id: 0,
-        charged_at: now,
-        started: std::time::Instant::now(),
-    };
-    let plane: Box<dyn GauntletPlane> = Box::new(SessionGauntlet {
-        deny: rt.destination_denied(&destination),
-    });
-    // The call-site the D3 witness pins: begin_session ACTUALLY calls run_gauntlet_session here.
-    run_gauntlet_session(gauntlet_req, plane).map_err(|_refusal| StartError::DestinationRefused)?;
+    if rt.destination_denied(&destination) {
+        return Err(StartError::DestinationRefused);
+    }
 
     // Only past the gate: reserve/bind/open the live carrier. Factored into [`open_admitted_session`]
-    // so the inbound WS-accept seam — where the gauntlet has ALREADY run inside `accept_gauntlet`,
-    // strictly before the socket upgrades — reuses the SAME post-admit open without re-running (or
-    // duplicating) the gate. begin_session's own order is byte-identical: gauntlet, then this.
+    // so a caller that has already screened the destination reuses the SAME post-admit open without
+    // re-running the check. begin_session's own order is byte-identical: verify, then this.
     open_admitted_session(
         rt,
         codec,
@@ -332,12 +285,12 @@ where
 }
 
 /// THE POST-ADMIT OPEN of a governed session — the reserve/bind/open half of [`begin_session`],
-/// called ONLY after the open-pass gauntlet has already admitted the destination (verify strictly
-/// before any charge). Opens the D2 metering lease (fail-closed on a refused budget), opens the
-/// durable [`SessionHandle`] at genesis, and assembles the [`SessionCore`]. NO gauntlet runs here: the
-/// caller (`begin_session`, or the inbound WS-accept `accept_gauntlet` path) is responsible for having
-/// run it first. A refused budget or a failed durable open returns before ANY durable row is committed
-/// — so an aborted open, like a refused gauntlet, leaves no orphaned live session row.
+/// called ONLY after the destination has already been screened (verify strictly before any charge).
+/// Opens the D2 metering lease (fail-closed on a refused budget), opens the durable [`SessionHandle`]
+/// at genesis, and assembles the [`SessionCore`]. NO destination screen runs here: the caller
+/// (`begin_session`) is responsible for having run it first. A refused budget or a failed durable open
+/// returns before ANY durable row is committed — so an aborted open, like a refused destination,
+/// leaves no orphaned live session row.
 ///
 /// `governed` is the node's open-call table and the identifier this session is known to it by — the
 /// composition root's own binding, minted per session at the served door

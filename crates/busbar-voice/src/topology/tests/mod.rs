@@ -204,12 +204,13 @@ async fn webrtc_sideband_mints_token_locks_config_and_relays_no_media() {
     assert!(attached.core.carrier().is_closed());
 }
 
-// ── D3 CALL-SITE WITNESS: begin_session runs run_gauntlet_session at the TOP (refuse ⇒ zero charge) ──
+// ── D3 CALL-SITE WITNESS: begin_session screens its OWN destination denial set at the TOP (refuse ⇒ zero charge) ──
 
 #[test]
 fn begin_session_refuses_a_denied_destination_before_any_charge() {
-    // The D3 call-site witness: `begin_session` ACTUALLY calls `run_gauntlet_session` at the top, so a
-    // denied upstream destination is refused BEFORE the lease/durable open — zero bytes, zero charge.
+    // The D3 call-site witness: `begin_session` screens its OWN denial set (`rt.destination_denied`) at
+    // the top — in-plane, on the plane's own data, no kernel/substrate gate — so a denied upstream
+    // destination is refused BEFORE the lease/durable open — zero bytes, zero charge.
     let host = Arc::new(MockMeteringHost::default());
     let rt = VoiceRuntime::new(
         Arc::new(DurableHandleEngine::new()),
