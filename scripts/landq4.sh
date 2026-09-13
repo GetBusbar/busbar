@@ -2935,7 +2935,7 @@ lq_preprove_sweep() { # $1 = tree to prove FROM (default $W), $2 = the sha rows 
   # THE BASE REPLAY TAKES ITS SLOT FIRST (see lq_base_replay_reserve). It is what makes every other
   # verdict in this sweep readable — an unmeasured tip turns the oracle's rows into a line's own red
   # with no evidence — so it is never what the sweep spends its leftovers on. RETIRED (LK-5b): the
-  # reserved box used to be tracked in a `hosts` accumulator so `fleet_pick_host $hosts` never
+  # reserved box used to be tracked in a `hosts` accumulator so `fleet_pick_hos[t] $hosts` never
   # handed the same box to a line — there is no allocator left to hand anything to, so `basehost` is
   # never anything but empty and there is nothing left to accumulate.
   local basehost basewant=0
@@ -7290,8 +7290,8 @@ if [ "${1:-}" = "--smoke-latchkey" ] && [ "${2:-}" = "--sweep" ]; then
     if grep -qF -- "$1" "$L" 2>/dev/null; then echo "smoke:   LOG: $1"
     else echo "smoke: FAILED — the sweep's log never said: $1"; rc=1; fi
   }
-  _smoke_said "sweep: fleet demand 0 — no EC2 box is started or reserved (prove backend latchkey)"
-  _smoke_said "this sweep reaches no box, so it opens no ssh wrapper and probes no fleet table"
+  _smoke_said "sweep: fleet demand 0 — no EC2 box is started or reserved (prove backend latchkey, EC2 decommissioned)"
+  _smoke_said "no ssh wrapper is opened and no fleet table is probed"
   _smoke_said "is a LATCHKEY job — no EC2 box is reserved or started for it"
   _smoke_said "measuring the tip itself on a latchkey job of its own (no EC2 box)"
   ncalls="$(lq_count "$(grep -c . "$fpcalls" 2>/dev/null)")"

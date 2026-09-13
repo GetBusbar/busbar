@@ -3429,10 +3429,10 @@ EOF
       "$(grep -c 'fn free_port() -> u16 { TcpListener::bind' "$LAND_SRC")"
   _t4 "  ...and lists the one that was measured"        1 \
       "$(grep -c 'crates/busbar/tests/no_data_dir_neutrality.rs      crates/busbar/tests/boot_lines_neutrality.rs' "$LAND_SRC")"
-  _t4 "the transport asks for a claimed block"      1 \
-      "$(grep -c 'LAND_ORACLE_PORT_CLAIM=1' "$(dirname "$0")/land-remote.sh" 2>/dev/null || true)"
-  _t4 "  ...and its pid formula is only the fallback" 1 \
-      "$(grep -c 'LAND_ORACLE_PORT_BASE=\$(( 40000 + ( \$\$ % 40 ) \* 200 ))' "$(dirname "$0")/land-remote.sh" 2>/dev/null || true)"
+  # RETIRED (LK-5b): the two checks that used to live here asked land-remote.sh for its own copy of
+  # the port-claim env var and its pid-formula fallback — that file (and the remote transport it
+  # ran) is deleted (LK-5); the claim/release/wrapper checks above are the only copy of this
+  # behaviour left to prove, and they run against this file's own source.
 
   echo "land.sh selftest: the recorder's bounds scale with the box's measured load"
   _t3() { if [ "$2" = "$3" ]; then printf '  ok   %-46s\n' "$1"; else printf '  FAIL %-46s (wanted [%s], got [%s])\n' "$1" "$2" "$3"; fails=$((fails + 1)); fi; }
