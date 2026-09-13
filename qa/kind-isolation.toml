@@ -1619,7 +1619,7 @@ count = "183"
 [[cell]]
 crate = "busbar-core"
 kind = "api"
-count = "610"
+count = "608"
 
 [[cell]]
 crate = "busbar-core"
@@ -1634,7 +1634,7 @@ count = "4"
 [[cell]]
 crate = "busbar-core"
 kind = "control"
-count = "5521"
+count = "5512"
 
 [[cell]]
 crate = "busbar-core"
@@ -1644,7 +1644,7 @@ count = "46"
 [[cell]]
 crate = "busbar-core"
 kind = "plane"
-count = "3067"
+count = "3057"
 
 [[cell]]
 crate = "busbar-core"
@@ -1679,7 +1679,7 @@ count = "2145"
 [[cell]]
 crate = "busbar-core"
 kind = "unit"
-count = "10"
+count = "58"
 
 [[cell]]
 crate = "busbar-export-example-plugin"
@@ -3729,6 +3729,16 @@ verdict = "not-allowed"
 cite    = "ARCHITECTURE.md 1.2 \"Core -> plugin. Never plugin -> core.\" / ARCHITECTURE.md 1.1 the three axes are blind to each other. The retiring 1.5.x crates fuse plane+core+transport in one name."
 why     = "busbar-core names busbar-timing: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
 drain   = "delete the busbar-timing dependency from busbar-core's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
+
+[[dep]]
+from    = "busbar-core"
+to      = "busbar-unit-audit"
+half    = "shipped"
+count   = "1"
+verdict = "not-allowed"
+cite    = "Owner ruling 2026-09-08: \"while busbar-core drains, it MAY depend on unit crates … the row must be a NAMED TRANSITIONAL EXEMPTION that is empty on the ship sha.\" Named in [[transitional]] busbar-core -> busbar-unit-* (legacy drain). CORE-HOMES-design.md §1.5 line 2."
+why     = "busbar-core names busbar-unit-audit: the append-only hash-chain primitive (Digest/frame_prelude/ChainedRecord/seal/Chain/verify_chain) moved out of core's audit/mod.rs into busbar_unit_audit::legacy::chain BY IDENTITY (byte-for-byte), and core's six audit readers now name the unit. 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "the edge dies with busbar-core: the chain primitive already lives in busbar-unit-audit, and the remaining core readers (calllog, admin/audit, plane/auditlog, plane_host/journal, proxy/reqlog, audit/journal) leave for their own homes as the drain completes. This row is empty on the ship sha, when busbar-core is gone."
 
 [[dep]]
 from    = "busbar-export-example-plugin"

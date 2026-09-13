@@ -76,7 +76,9 @@ use std::sync::{Mutex, MutexGuard};
 
 use indexmap::IndexMap;
 
-use crate::audit::{verify_window, ChainBreak, ChainLabels, ChainedRecord, Digest, Framing};
+use busbar_unit_audit::legacy::chain::{
+    verify_window, ChainBreak, ChainLabels, ChainedRecord, Digest, Framing,
+};
 
 /// The outcome and reason tokens this stream uses, from the ONE audit vocabulary. Re-exported so the
 /// call site keeps one import path; the definitions, and the argument for each word, live in core.
@@ -87,7 +89,7 @@ pub use crate::audit::vocab::{
 
 /// This stream's chain: one per principal. A type alias over the core mechanism — there is no second
 /// implementation behind it.
-pub(crate) type RequestChain = crate::audit::Chain<RequestRecord>;
+pub(crate) type RequestChain = busbar_unit_audit::legacy::chain::Chain<RequestRecord>;
 
 /// The scope an UNGOVERNED request is chained under. A fixed engine-chosen string, never anything a
 /// caller can influence, so no request can be steered into a governed principal's chain.
@@ -132,7 +134,7 @@ const MAX_TRACKED_PRINCIPALS: usize = 16_384;
 /// they are the chain's own business and are supplied by [`crate::audit::Chain::append`], so no call
 /// site can supply a sequence number or a link of its own choosing.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct RequestInput {
+pub struct RequestInput {
     pub(crate) ts: u64,
     /// The dialect the request ARRIVED on (`anthropic`, `openai`, `gemini`, …). The plane speaks
     /// six, so which one a caller used is a fact about the request rather than about the build.

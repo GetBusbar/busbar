@@ -114,12 +114,12 @@ use crate::plane::store::{decode, PlaneStore, KIND_CALL};
 use busbar_api::{PlaneSelector, StoreError, StoreResult};
 
 use crate::audit::journal::NeutralBody;
-use crate::audit::{verify_chain, ChainBreak, Framing};
 use crate::plane_host::journal::PlaneJournalRecord;
 use busbar_plugin::hot::host::HostCtx;
 use busbar_plugin::hot::{
     Framing as AbiFraming, JournalStreamDesc, RawFraming, ReframeOut, StatusClass, POD_VERSION,
 };
+use busbar_unit_audit::legacy::chain::{verify_chain, ChainBreak, Framing};
 use core::mem::MaybeUninit;
 
 /// The host-assigned `kind_id` the MCP `call` durable stream is registered under and addressed by on

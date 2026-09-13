@@ -23,7 +23,7 @@
 //!    vectors below recompute each formula independently, the old way, and require the new
 //!    mechanism to agree byte for byte.
 
-use super::*;
+use busbar_unit_audit::legacy::chain::*;
 
 use crate::admin::audit::{AuditEntry, AuditInput};
 

@@ -42,12 +42,14 @@
 
 use super::recover;
 use crate::audit::journal::{Journal, NeutralRecord};
-use crate::audit::{frame_prelude, Chain, ChainLabels, ChainedRecord, Digest, Framing};
 use crate::plane::store::PlaneStoreView;
 use busbar_plugin::hot::host::{HostCtx, JournalReframeFn};
 use busbar_plugin::hot::{
     ChainBreakHdr, Framing as AbiFraming, FramingDesc, JournalQuery, JournalStreamDesc, RawFraming,
     ReframeOut, RestoredHdr, Seq, StatusClass, VerifyChainHdr, POD_VERSION,
+};
+use busbar_unit_audit::legacy::chain::{
+    frame_prelude, Chain, ChainLabels, ChainedRecord, Digest, Framing,
 };
 use core::mem::MaybeUninit;
 use std::collections::HashMap;
@@ -709,7 +711,7 @@ pub(crate) extern "C-unwind" fn journal_read_scoped(
             Err(_) => return StatusClass::Fault,
         };
         // Verify before trusting the stored chain (mirrors the RAM `journal_read`).
-        if crate::audit::verify_chain(&rows).is_err() {
+        if busbar_unit_audit::legacy::chain::verify_chain(&rows).is_err() {
             return StatusClass::Fault;
         }
         let encoded = encode_rows(&rows, from_seq, limit);
@@ -1104,7 +1106,7 @@ pub(crate) extern "C-unwind" fn journal_read(
         };
         // The real audit read path VERIFIES the stored chain before it is trusted — a tamper is
         // surfaced as a fault rather than silently handed back (mirrors `Chain::from_persisted`).
-        if crate::audit::verify_chain(&st.rows).is_err() {
+        if busbar_unit_audit::legacy::chain::verify_chain(&st.rows).is_err() {
             return StatusClass::Fault;
         }
         // Durable-store cleave point: a store-backed Journal would make this window read a range scan.

@@ -36,7 +36,7 @@
 
 use serde::Serialize;
 
-use crate::audit::{ChainLabels, ChainedRecord, Digest, Framing};
+use busbar_unit_audit::legacy::chain::{ChainLabels, ChainedRecord, Digest, Framing};
 
 /// One admin audit record. `outcome` is a stable token tooling can branch on. The record is
 /// HASH-CHAINED for tamper-EVIDENCE: `hash = sha256(prev_hash | seq | ts | action | resource |
@@ -84,7 +84,7 @@ pub struct AuditEntry {
 /// here: they are the chain's own business, allocated under the ring lock and sealed by
 /// [`crate::audit::seal`], so no call site can supply a sequence number or a link of its own
 /// choosing.
-pub(crate) struct AuditInput {
+pub struct AuditInput {
     pub(crate) ts: u64,
     pub(crate) action: String,
     pub(crate) resource: String,
@@ -216,7 +216,7 @@ impl AuditLog {
             // `crate::audit::seal` builds and digests the record. The caller's payload and the
             // chain's position arrive through different arguments, so no call site can supply a seq
             // or a link of its own choosing.
-            let entry: AuditEntry = crate::audit::seal(
+            let entry: AuditEntry = busbar_unit_audit::legacy::chain::seal(
                 ADMIN_LOG,
                 seq,
                 prev_hash,
@@ -279,7 +279,7 @@ impl AuditLog {
     pub(crate) fn verify(&self) -> bool {
         let q = self.entries.lock().unwrap_or_else(|e| e.into_inner());
         let window: Vec<AuditEntry> = q.iter().cloned().collect();
-        crate::audit::verify_window(&window).is_ok()
+        busbar_unit_audit::legacy::chain::verify_window(&window).is_ok()
     }
 
     /// A page of entries newest-first, optionally filtered by exact `action` and/or `resource`:
