@@ -1594,6 +1594,34 @@ land_selftest_leg() { # $1 gate  $2 log  $3 CEIL=VALUE
 # ceilings::base_ref; this side of it is exported HERE, from the base this run already computed
 # (the PRE-PICK HEAD), so every xtask gate, every gate --selftest and gate-mutants.sh judges the
 # tree against the tree it was picked onto. A tree that does not read the variable ignores it.
+# THE DIFF BASE OF A TREE SOMEBODY ELSE PICKED ONTO. Every diff-scoped leg — rustfmt over the picked
+# .rs files, the crate selection the test and clippy legs read, the gatefiles fallback — asks
+# `git diff <base> HEAD`, and on a landing that does its own cherry-picking `<base>` is simply HEAD
+# before the picks. A LATCHKEY landing is not that shape: the laptop picks, pushes the tip, and the
+# runner proves the tip with `--prove` and NO hashes, so HEAD-before-the-picks IS the tip and the
+# diff is EMPTY.
+#
+# MEASURED (`--smoke-latchkey --bisect`, first real run): a union carrying a deliberately
+# misformatted .rs came back GREEN off a rented runner, with `rustfmt on 0 picked .rs file(s)` and
+# `nothing was named — falling back to the workspace floor` in its own log. Every latchkey landing
+# so far has proved its picks' formatting and its picks' crate tests over the EMPTY SET.
+#
+# The transport already knows the answer and already exports it — `land-latchkey.sh` sets
+# LAND_BASE_SHA to the batch's base for `land_base_check`. It is read here too, under three guards,
+# so that a tree nobody picked onto is the only tree it can speak for: this invocation applies no
+# picks of its own, the sha resolves in THIS tree, and it is a real ancestor of HEAD (never HEAD).
+# Anything else — a hand landing, the fleet box, which picks on the box and whose base IS HEAD
+# before it does — keeps exactly today's answer.
+land_diff_base() { # $1 = how many hashes this invocation picks; prints the base to diff against
+  local picks="${1:-0}" head; head="$(git -C "$here" rev-parse HEAD)"
+  [ "$picks" = 0 ] && [ -n "${LAND_BASE_SHA:-}" ] || { printf '%s\n' "$head"; return 0; }
+  local b; b="$(git -C "$here" rev-parse --verify --quiet "${LAND_BASE_SHA}^{commit}")" || {
+    printf '%s\n' "$head"; return 0; }
+  [ "$b" != "$head" ] && git -C "$here" merge-base --is-ancestor "$b" "$head" 2>/dev/null \
+    || { printf '%s\n' "$head"; return 0; }
+  printf '%s\n' "$b"
+}
+
 land_export_gate_base() { # $1 = the base sha this run is judging against
   [ -n "${1:-}" ] || return 0
   export BUSBAR_GATE_BASE_REF="$1" GATE_MUTANTS_BASE="$1"
@@ -4419,6 +4447,42 @@ EOF
   _t2 "MF6:   ...and the advisory is read in exactly one place" 1 \
      "$(grep -c 'if \[ -s "\$(land_advisory_file)" \]; then' "$LAND_SRC")"
 
+  # ── MF7 — THE DIFF BASE OF A TREE SOMEBODY ELSE PICKED ONTO ──────────────────────────────────
+  # FOUND BY `--smoke-latchkey --bisect` ON REAL RUNNERS: a union carrying a misformatted .rs came
+  # back GREEN, because the runner proves the tip with NO picks of its own and `base` was HEAD, so
+  # the fmt leg's `git diff base HEAD` named nothing. Four guards, each with its own case, because
+  # the wrong one silently rescopes a leg that is meant to be scoped to the picks.
+  echo "land.sh selftest: the diff base of a tree somebody else picked onto"
+  local dbrepo="$root/dbase"; rm -rf "$dbrepo"; mkdir -p "$dbrepo"
+  git -C "$dbrepo" init -q; git -C "$dbrepo" config user.email d@e; git -C "$dbrepo" config user.name D
+  # The host's global core.hooksPath refuses a commit from any identity but this developer's; a
+  # throwaway repository is not this developer's, and the rest of this selftest neutralises it the
+  # same way.
+  mkdir -p "$root/nohooks"; git -C "$dbrepo" config core.hooksPath "$root/nohooks"
+  git -C "$dbrepo" config commit.gpgsign false
+  : >"$dbrepo/a"; git -C "$dbrepo" add -A; git -C "$dbrepo" commit -qm one
+  local db0; db0="$(git -C "$dbrepo" rev-parse HEAD)"
+  : >"$dbrepo/b"; git -C "$dbrepo" add -A; git -C "$dbrepo" commit -qm two
+  local db1; db1="$(git -C "$dbrepo" rev-parse HEAD)"
+  # No sourcing: this selftest IS land.sh, so land_diff_base is already defined — and sourcing a
+  # second copy would reassign the `here` the function reads.
+  _db() { ( here="$dbrepo"; land_diff_base "$1" ); }
+  _t2 "MF7: no picks + a base the laptop chose -> that base" "$db0" "$(LAND_BASE_SHA="$db0" _db 0)"
+  _t2 "MF7:   ...an invocation that picks for itself keeps HEAD" "$db1" "$(LAND_BASE_SHA="$db0" _db 3)"
+  _t2 "MF7:   ...no LAND_BASE_SHA at all keeps HEAD"          "$db1" "$(unset LAND_BASE_SHA; _db 0)"
+  _t2 "MF7:   ...a base that is already HEAD keeps HEAD"      "$db1" "$(LAND_BASE_SHA="$db1" _db 0)"
+  _t2 "MF7:   ...a sha that does not resolve here keeps HEAD" "$db1" \
+      "$(LAND_BASE_SHA=0123456789012345678901234567890123456789 _db 0)"
+  : >"$dbrepo/c"; git -C "$dbrepo" add -A; git -C "$dbrepo" commit -qm side
+  local dbside; dbside="$(git -C "$dbrepo" rev-parse HEAD)"; git -C "$dbrepo" reset -q --hard "$db1"
+  _t2 "MF7:   ...a sha that is NOT an ancestor keeps HEAD"    "$db1" "$(LAND_BASE_SHA="$dbside" _db 0)"
+  # Both of these live in the MAIN section, which `$LAND_SRC` (the selftest-stripped copy) cuts
+  # away — so they are asked of this file itself.
+  _t2 "MF7: the rescoping is announced, never silent" 2 \
+     "$(grep -c 'the diff-scoped legs are scoped to' "$0")"
+  _t2 "MF7: the single landing asks for it, and nothing else does" 1 \
+     "$(grep -c 'base="\$(land_diff_base "\$#")"' "$0")"
+
   # ── CASE N — THE PLUGIN CDYLIBS THE TEST HARNESSES dlopen ─────────────────────────────────────
   # The batteries in busbar-core do not skip when the artifact is missing and do not judge when it
   # is stale; both are hard failures, and both were landing-reds this week. A stub `cargo` on PATH
@@ -4681,7 +4745,9 @@ fi
 # look, and a conflict stops at the conflicting hash.
 set -- $P_hashes
 [ $# -gt 0 ] || [ "$P_prove" = 1 ] || { echo "land.sh: no hashes" >&2; exit 2; }
-base="$(git -C "$here" rev-parse HEAD)"
+base="$(land_diff_base "$#")"
+[ "$base" = "$(git -C "$here" rev-parse HEAD)" ] \
+  || echo "land.sh: this tree was picked onto elsewhere — the diff-scoped legs are scoped to $(printf '%.9s' "$base")..HEAD, the batch's own base"
 land_export_gate_base "$base"
 git -C "$here" checkout -- Cargo.lock 2>/dev/null || true
 LAND_LEDGER_RESOLVED=""
