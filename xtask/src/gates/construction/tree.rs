@@ -392,6 +392,123 @@ fn scan_file(
     entry
 }
 
+/// THE WHOLE-TREE SCAN, HELD ONCE FOR THE WHOLE BATTERY, and the reason it exists is the SELF-TEST.
+///
+/// The per-file [`SCAN_MEMO`] above stops a plant from re-LEXING a file it did not touch. It does
+/// NOT stop [`Tree::load`] from re-READING and re-HASHING every one of them: the memo key is a hash
+/// of the file's bytes, so a full memo hit still costs one `read_to_string` and one hash of the
+/// whole tree PER PLANT. On a 660k-line tree that is thirty-six full reads and thirty-six full
+/// hashes for a battery that changes one file per case — a whole-tree scan per plant in everything
+/// but the lex, and where the xtask shard's wall clock went once the ceiling-rose cases stopped
+/// failing fast and every plant ran the gate to completion.
+///
+/// So the DISK tree — the one every plant shares, because a plant never edits the disk — is walked,
+/// read and scanned exactly once, keyed on what its contents depend on ([`Ctx::root`], the scan
+/// roots and the test-path fragments). A plant then starts from a clone of these maps (the values
+/// are `Arc`s, so the clone is a pointer per file, not a `Line` per line) and re-scans ONLY the
+/// paths its overlay actually touched. The one cold scan is the baseline case's; every case after
+/// it pays for its own plant and nothing else.
+struct BaseScan {
+    files: BTreeMap<String, std::sync::Arc<Vec<Line>>>,
+    fns: BTreeMap<String, std::sync::Arc<Vec<Fnc>>>,
+}
+
+static BASE_SCAN: std::sync::OnceLock<std::sync::Mutex<BTreeMap<u64, std::sync::Arc<BaseScan>>>> =
+    std::sync::OnceLock::new();
+
+/// The disk tree, scanned once and shared. Overlay-free by construction: it reads through
+/// `std::fs` rather than `cx.read`, because the thing being cached is precisely the tree BEFORE any
+/// plant, and a plant is the only thing an overlay carries.
+fn base_scan(
+    cx: &Ctx,
+    lexer: &Lexer,
+    scan_roots: &[String],
+    test_fragments: &[String],
+) -> Result<std::sync::Arc<BaseScan>, String> {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    cx.root().to_string_lossy().hash(&mut h);
+    scan_roots.hash(&mut h);
+    test_fragments.hash(&mut h);
+    let key = h.finish();
+
+    let cache = BASE_SCAN.get_or_init(Default::default);
+    if let Some(found) = cache
+        .lock()
+        .expect("the base-scan mutex is never poisoned")
+        .get(&key)
+    {
+        return Ok(found.clone());
+    }
+
+    let mut rels: Vec<String> = Vec::new();
+    for pattern in scan_roots {
+        for dir in glob_dirs(cx, pattern) {
+            collect_rs(cx, &dir, &mut rels);
+        }
+    }
+    rels.sort();
+    rels.dedup();
+
+    // SCAN THE COLD TREE ACROSS THE CORES. This is the one whole-tree lex of the battery — every
+    // plant after it reuses these maps — and it is the single dearest thing the self-test does: on
+    // a 660k-line tree, lexing every file through the backtracking literal matcher is most of the
+    // baseline case's wall clock. The files are independent and [`scan_file`] lexes OUTSIDE the memo
+    // lock, so this is embarrassingly parallel; splitting it over the box turns a minutes-long
+    // serial scan into a seconds-long one and drops it out of the shard's critical path.
+    //
+    // `read_to_string` reads through the filesystem, not the overlay: the base is the tree every
+    // plant shares. A `.rs` file the walk yielded but that will not read is a corrupt tree, and a
+    // corrupt tree is a load error here exactly as it was when this was one serial pass — never a
+    // file the scan quietly drops.
+    let workers = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1)
+        .min(rels.len().max(1));
+    let scanned: Vec<Result<Vec<(String, Scanned)>, String>> = std::thread::scope(|scope| {
+        let chunk = rels.len().div_ceil(workers.max(1));
+        let handles: Vec<_> = rels
+            .chunks(chunk.max(1))
+            .map(|chunk| {
+                scope.spawn(move || {
+                    let mut out = Vec::with_capacity(chunk.len());
+                    for rel in chunk {
+                        let abs = cx.abs(rel);
+                        let text =
+                            std::fs::read_to_string(&abs).map_err(|e| format!("{rel}: {e}"))?;
+                        let abs = abs.to_string_lossy().into_owned();
+                        out.push((
+                            rel.clone(),
+                            scan_file(lexer, &abs, rel, &text, test_fragments),
+                        ));
+                    }
+                    Ok(out)
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|h| h.join().expect("a base-scan worker never panics"))
+            .collect()
+    });
+
+    let mut files = BTreeMap::new();
+    let mut fns = BTreeMap::new();
+    for part in scanned {
+        for (rel, (lines, fns_of)) in part? {
+            fns.insert(rel.clone(), fns_of);
+            files.insert(rel, lines);
+        }
+    }
+
+    let scan = std::sync::Arc::new(BaseScan { files, fns });
+    cache
+        .lock()
+        .expect("the base-scan mutex is never poisoned")
+        .insert(key, scan.clone());
+    Ok(scan)
+}
+
 pub struct Tree {
     pub root: std::path::PathBuf,
     /// rel path (`/`-separated) -> lines, in sorted path order.
@@ -412,35 +529,46 @@ impl Tree {
         test_fragments: &[String],
     ) -> Result<Tree, String> {
         let lexer = Lexer::new()?;
-        let mut rels: Vec<String> = Vec::new();
-        for pattern in scan_roots {
-            for dir in glob_dirs(cx, pattern) {
-                collect_rs(cx, &dir, &mut rels);
-            }
-        }
-        // The overlay may add a file under a root the real tree does not carry it under; a plant
-        // that the walk cannot see is a plant that proves nothing.
-        if let Some(ov) = cx.overlay() {
-            for p in ov.paths() {
-                let s = p.to_string_lossy().replace('\\', "/");
-                if s.ends_with(".rs")
-                    && cx.exists(&s)
-                    && !rels.contains(&s)
-                    && under_any(&s, scan_roots)
-                {
-                    rels.push(s);
-                }
-            }
-        }
-        rels.sort();
-        rels.dedup();
+        let base = base_scan(cx, &lexer, scan_roots, test_fragments)?;
 
-        let mut files = BTreeMap::new();
-        let mut fns = BTreeMap::new();
-        for rel in rels {
-            if !cx.exists(&rel) {
+        // NO OVERLAY, NO WORK: the base is exactly what this plant would scan, so it is handed back
+        // as the tree with only its `Arc` maps cloned. This is the read-only run's path too.
+        let Some(ov) = cx.overlay() else {
+            return Ok(Tree {
+                root: cx.root().to_path_buf(),
+                files: base.files.clone(),
+                fns: base.fns.clone(),
+                lexer,
+            });
+        };
+
+        // A plant differs from the disk tree by EXACTLY the paths its overlay carries. Everything
+        // else the base already scanned, so this re-reads and re-scans only those — the whole point
+        // of holding the base once. The maps are cloned first (a pointer per file), then the
+        // overlay's own `.rs` paths are applied over the clone.
+        let mut files = base.files.clone();
+        let mut fns = base.fns.clone();
+        for p in ov.paths() {
+            let rel = p.to_string_lossy().replace('\\', "/");
+            if !rel.ends_with(".rs") {
                 continue;
             }
+            let in_base = files.contains_key(&rel);
+            // A `.rs` path the overlay adds outside every scan root is a plant the walk would never
+            // have yielded, so it is no more part of the tree here than it was one pass ago.
+            if !in_base && !under_any(&rel, scan_roots) {
+                continue;
+            }
+            // An overlay that makes a file absent removes it from the tree, exactly as the old
+            // walk's `if !cx.exists { continue }` dropped it before scanning.
+            if !cx.exists(&rel) {
+                files.remove(&rel);
+                fns.remove(&rel);
+                continue;
+            }
+            // Content or unreadable. `cx.read` returns the planted bytes for the first and an error
+            // for the second; a corrupt plant is a load error here just as a corrupt disk file is,
+            // never a file the scan silently keeps at its base contents.
             let text = cx.read(&rel)?;
             let abs = cx.abs(&rel).to_string_lossy().into_owned();
             let (lines, fns_of) = scan_file(&lexer, &abs, &rel, &text, test_fragments);
