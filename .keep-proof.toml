@@ -2,23 +2,21 @@
 #
 # .keep-proof.toml is read by .github/workflows/keep-proof.yml at the root of a `keep-*` branch. It
 # scopes the two expensive legs of the run to what the branch actually touched, so a verdict says
-# something specific instead of "everything, slowly". The INTEGRATION tree carries no such file —
-# it is a keep-branch artefact, and this branch is a keep branch.
+# something specific instead of "everything, slowly".
 #
-#   families — a regex handed to the shadow oracle's `--id-filter`. The oracle replays this build
-#              against the published 1.5.5 binary and reports divergences; unfiltered that is the
-#              better part of half an hour. This branch is the pre-existing-reds branch: it works
-#              on the tree's frozen PARSE SURFACE (a limit's three refusal sentences) and on the
-#              gates that read the tree as data, so the honest scope is the boot / config /
-#              documented families — the cells that read what the binary PRINTS when it refuses a
-#              document, which is exactly what the first item here moved back to 1.5.5's words.
-#              boot.refusal|BOOT-P20|validate, BOOT-P29 and BOOT-P30 are the three cells that must
-#              turn byte-identical; the rest of the boot/config families are the blast radius of
-#              touching a deserializer every section's parse runs through.
-#   tests    — the packages whose test binaries the sharded legs must include by name.
-#              `busbar-substrate` holds the limit grammar itself; `busbar-core` re-exports it at
-#              the historical config path and owns the pre-pass that sets the frozen-list rule;
-#              `busbar` is the binary whose --validate the boot cells drive; `xtask` is the gate
-#              runner whose own selftests are on this branch's list.
-families = '^(boot|config|documented)([|.]|$)'
-tests = ["busbar-core", "busbar-substrate", "xtask", "busbar"]
+#   families — this branch changes no gate's PRODUCTION behaviour (no rule row moves, no ceiling
+#              moves); it only changes how xtask's own CLI test proves its selftest claim. The
+#              `documented` family is what covers the CLI-surface / help-text contract the touched
+#              command (`cargo xtask selftest --list`) is now part of, so it is the one family this
+#              branch owes the oracle.
+#   tests    — xtask is the only crate this branch touches: `CasePlan::new` grew a name/expected
+#              pair, `Report::plan` and `gates::plan_has_red` are new, and
+#              `xtask/tests/cli.rs::selftest_runs_every_registered_gates_red_proof` is rewritten to
+#              read the list instead of taking the whole battery. Naming `xtask` here is exactly
+#              the one line this hand-back needs measured: this leg's own wall-clock time is the
+#              number the defect was about (4 686s before, driving the whole battery; a few seconds
+#              after, reading the plan). No other package's tests changed.
+families = '^(documented)([|.]|$)'
+tests = [
+  "xtask",
+]
