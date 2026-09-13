@@ -175,6 +175,11 @@ mod hook_seam_tests;
 #[cfg(test)]
 #[path = "tests/hook_seat_order_tests.rs"]
 mod hook_seat_order_tests;
+// THE HOOK RUNNER'S OWN CELL: a hook registered on a served request fires once, at the same seat,
+// through `busbar_core_policy::runner` — the crate the neutral half of this seam moved into.
+#[cfg(test)]
+#[path = "tests/hook_runner_seat_tests.rs"]
+mod hook_runner_seat_tests;
 #[cfg(test)]
 #[path = "tests/ingress_indistinguishability_tests.rs"]
 mod ingress_indistinguishability_tests;
