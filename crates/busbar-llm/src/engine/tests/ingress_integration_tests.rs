@@ -2138,9 +2138,6 @@ async fn test_role_bound_principal_governed_like_a_virtual_key() {
     let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
         .governance(store, Some("admintok".to_string()), None)
         .unwrap();
-    let auth_cfg = busbar_substrate::config::auth::AuthCfg::with_chain(vec![
-        busbar_substrate::config::auth::AuthChainEntry::bare("test-groups-module"),
-    ]);
     let mut app = TestApp::new()
         .lane(
             LaneSpec::new(
@@ -2152,9 +2149,7 @@ async fn test_role_bound_principal_governed_like_a_virtual_key() {
         )
         .pool("gpool-a", &[(0, 1)])
         .pool("gpool-b", &[(0, 1)])
-        .auth(StdArc::new(busbar_core::auth::AuthMiddleware::new_builtin(
-            &auth_cfg,
-        )))
+        .groups_chain()
         .governance_kit(gov)
         // The old GovState carried fee 0; keep the no-charge semantics under the CostModel.
         .cost_kit(crate::test_support::engine_kit::CORE_ENGINE_KIT.cost_flat(0))

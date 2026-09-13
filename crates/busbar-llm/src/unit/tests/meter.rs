@@ -3,7 +3,7 @@
 //! super::*` reaches the private items it always did.
 
 use super::*;
-use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
+use crate::test_support::{BuiltApp, LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
 use busbar_caps::{KernelSeal, StepName};
 use busbar_substrate::testkit::engine_kit::{EngineTestKit as _, TestAppKit};
 
@@ -415,11 +415,11 @@ const PRICED_OUTPUT: u64 = 50;
 /// projection turns into 2_000 and 6_000 nano-units per token. The two tiers are priced
 /// DIFFERENTLY on purpose: a card that priced them alike could not tell a money figure from a
 /// token count, which is the whole thing under test.
-fn priced_card() -> busbar_core::cost::CostModel {
-    busbar_core::cost::CostModel::resolve_parts(
+fn priced_card() -> std::sync::Arc<dyn busbar_substrate::testkit::engine_kit::CostKit> {
+    crate::test_support::engine_kit::CORE_ENGINE_KIT.cost_parts(
         Some(&std::collections::BTreeMap::from([(
             "m0".to_string(),
-            busbar_core::config::RateEntryCfg {
+            busbar_substrate::config::sections::RateEntryCfg {
                 input_utok: 2.0,
                 output_utok: 6.0,
                 cache_read_utok: 0.0,
@@ -463,7 +463,7 @@ fn worth_of(report: &crate::unit::walk::LateReport) -> u64 {
 /// the sink the door pins carries a card that actually prices something. No upstream is dialled
 /// here: this test drives the step directly over a usage report the reader already produced.
 fn priced_rig() -> (
-    std::sync::Arc<busbar_core::state::App>,
+    std::sync::Arc<BuiltApp>,
     std::sync::Arc<busbar_api::VirtualKey>,
 ) {
     crate::testkit::install_test_seams();
@@ -490,7 +490,7 @@ fn priced_rig() -> (
                 .provider("zai"),
         )
         .pool("p", &[(0, 1)])
-        .cost(priced_card());
+        .cost_kit(priced_card());
     TestAppKit::set_governance(&mut builder, gov_kit);
     (builder.build(), std::sync::Arc::new(key))
 }

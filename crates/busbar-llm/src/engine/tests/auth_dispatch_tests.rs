@@ -10,7 +10,6 @@
 
 use axum::http::header::AUTHORIZATION;
 use busbar_api::ScopeRef;
-use busbar_core::auth::AuthMiddleware;
 use busbar_substrate::sigv4::{
     sha256_hex, sign_v4, uri_encode_path, X_AMZ_CONTENT_SHA256, X_AMZ_DATE,
 };
@@ -40,16 +39,6 @@ fn bindings_for(
     let mut rb = busbar_substrate::config::auth::RoleBindings::new();
     rb.insert(module.to_string(), table);
     rb
-}
-
-/// Helper: an `AuthCfg` whose data-plane chain names the given modules (bare entries).
-fn chain_cfg(modules: &[&str]) -> busbar_substrate::config::auth::AuthCfg {
-    busbar_substrate::config::auth::AuthCfg::with_chain(
-        modules
-            .iter()
-            .map(|m| busbar_substrate::config::auth::AuthChainEntry::bare(*m))
-            .collect(),
-    )
 }
 
 /// Helper: SigV4-sign a Bedrock request the way a real AWS client would, returning the
@@ -187,7 +176,6 @@ async fn test_chain_accepts_all_carriers_and_native_401() {
     }
     let server = MockServer::new(state).await;
 
-    let auth_cfg = chain_cfg(&["test-groups-module"]);
     let app = TestApp::new()
         .lane(
             LaneSpec::new(
@@ -198,7 +186,7 @@ async fn test_chain_accepts_all_carriers_and_native_401() {
             .api_key("busbar-upstream-key"),
         )
         .pool("pa", &[(0, 1)])
-        .auth(Arc::new(AuthMiddleware::new_builtin(&auth_cfg)))
+        .groups_chain()
         .build();
 
     let router = busbar_substrate::testkit::build_router(app);
@@ -707,7 +695,6 @@ async fn test_governance_inert_without_admin_token_static_token_admitted() {
     let server = MockServer::new(state).await;
 
     let token = "grp:static";
-    let auth_cfg = chain_cfg(&["test-groups-module"]);
     // The default-deploy governance engine: RAM store, NO admin token, NO minted keys → INERT.
     let store = Arc::new(MemoryStore::new());
     let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
@@ -728,7 +715,7 @@ async fn test_governance_inert_without_admin_token_static_token_admitted() {
             .api_key("busbar-upstream-key"),
         )
         .pool("pa", &[(0, 1)])
-        .auth(Arc::new(AuthMiddleware::new_builtin(&auth_cfg)))
+        .groups_chain()
         .governance_kit(gov)
         .build();
 
@@ -1035,7 +1022,6 @@ async fn test_inert_governance_persisted_key_is_not_enforced_static_chain_wins()
     // The STATIC chain is what actually gates now - a chain that recognizes a DIFFERENT
     // credential shape (`grp:<role>`), NOT the persisted key secret.
     let static_token = "grp:static-chain";
-    let auth_cfg = chain_cfg(&["test-groups-module"]);
 
     let app = TestApp::new()
         .lane(
@@ -1047,7 +1033,7 @@ async fn test_inert_governance_persisted_key_is_not_enforced_static_chain_wins()
             .api_key("busbar-upstream-key"),
         )
         .pool("pa", &[(0, 1)])
-        .auth(Arc::new(AuthMiddleware::new_builtin(&auth_cfg)))
+        .groups_chain()
         .governance_kit(gov)
         .build();
 
@@ -1370,9 +1356,7 @@ async fn test_1_5_2_role_bound_principal_synthesized() {
         )
         .pool("pa", &[(0, 1)])
         .pool("pb", &[(0, 1)])
-        .auth(std::sync::Arc::new(AuthMiddleware::new_builtin(
-            &chain_cfg(&["test-groups-module"]),
-        )))
+        .groups_chain()
         .governance_kit(gov)
         .role_bindings(rb)
         .build();

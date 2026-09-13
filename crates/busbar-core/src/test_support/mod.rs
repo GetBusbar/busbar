@@ -1372,6 +1372,23 @@ impl TestApp {
         ));
         self
     }
+    /// Chaining twin of [`Self::keys_chain`]/[`Self::idp_chain`]: the test-only GROUPS module
+    /// (`test-groups-module`) as the whole data-plane chain — a non-empty chain with no matching
+    /// credential denies fail-closed, and a `grp:<name>` bearer credential resolves to that group.
+    /// Use it wherever the thing under test is group-scoped authorization/routing rather than vkey
+    /// or IdP identity. Named alongside its siblings rather than generalized to an arbitrary
+    /// module list: every plane call site that needs a data-plane chain wants one of these three
+    /// concrete built-in test modules, never a caller-chosen one.
+    pub fn groups_chain(mut self) -> Self {
+        let cfg = crate::config::AuthCfg {
+            chain: vec![crate::config::AuthChainEntry::bare("test-groups-module")],
+            ..crate::config::AuthCfg::default_none()
+        };
+        self.auth = Some(std::sync::Arc::new(
+            crate::auth::AuthMiddleware::new_builtin(&cfg),
+        ));
+        self
+    }
 
     /// Set the `role_bindings:` table used by the built `App` (default: empty). Needed by tests that
     /// exercise the group re-key (an IdP/test principal whose role binds a group grant).

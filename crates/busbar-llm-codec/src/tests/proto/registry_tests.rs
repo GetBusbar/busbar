@@ -395,8 +395,11 @@ impl busbar_substrate_values::ir::handle::IrHandle for TelexRespHandle {
 /// would do differently is supply the declaration from a `dlopen`ed crate instead of from this file.
 #[test]
 fn a_protocol_nobody_wrote_costs_a_declaration_and_nothing_else() {
+    // `busbar-core`'s own `builtin_decls()` is empty under `test-support` (see `builtins()` above),
+    // so the built-in half of this registry is the plugin's OWN declarations, exactly as production
+    // registers them — not a second, core-owned copy.
     let reg = Registry::new(
-        busbar_core::proto::registry::builtin_decls()
+        crate::DECLS
             .iter()
             .copied()
             .chain(std::iter::once(&TELEX_DECL)),
