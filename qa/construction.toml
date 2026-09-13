@@ -349,10 +349,10 @@ caps_crate = "busbar-caps"
 contract_crate = "busbar-contract"
 caps_contract_ceiling = 3480
 unit_crate_glob = "busbar-unit-*"
-unit_total_ceiling = 14476
+unit_total_ceiling = 14479
 verbs_crate = "busbar-unit-verbs"
 verbs_ceiling = 1428
-union_ceiling = 23335
+union_ceiling = 23338
 # Files (by basename, wherever they sit under busbar-kernel/src) whose bodies seed the call-graph
 # name-match: every identifier called from one of these files, that busbar-kernel does not itself
 # define, is looked up by name against every busbar-unit-* file.
@@ -1238,3 +1238,37 @@ file = "qa/kind-isolation.toml"
 from = 10
 to = 16
 because = "the legacy drain's first governance step: busbar-core deletes its second copy of the admission unit's window vocabulary against the unit that owns it, and names that unit in a Cargo dependency and one `use` alias. Six hits = two matrix needles (`busbar-unit-admission`, `unit-admission`) over three sites (the dependency key, its path, the single alias). Held on the clock by the standing [[transitional]] busbar-core -> busbar-unit-* row; returns to 10 when governance/ leaves the crate."
+
+# The admission unit's in-flight grant gains the one verb an outside counter needs: 14476 -> 14479.
+#
+# WHAT ROSE. Three production lines in `busbar-unit-admission::decide` — the signature, the push,
+# the brace of `AdmitGrant::count_gauge`. Nothing else in any unit crate changed.
+#
+# WHY IT IS A MOVE AND NOT A GROWTH. busbar-core carried a SECOND `AdmitGrant`: the same
+# `Vec<Arc<AtomicI64>>`, the same `fetch_sub` on drop, the same `held`, and a `Debug` printing the
+# same `AdmitGrant { gauges: N }` bytes the plane host copies verbatim into a caller's refusal. An
+# in-flight count that cannot leak is ONE invariant, and the only reason it had two implementations
+# is that the unit's grant could only be built by the unit's own door. The copy is DELETED against
+# the unit in this same commit — 34 lines out of busbar-core — and the engine's own gauges are
+# handed over instead. Three lines in, thirty-four out, one release rule where there were two.
+#
+# WHAT TAKES IT BACK DOWN. Nothing, and it should not: this is where the type lives. The line that
+# ends its use is `governance/state.rs`'s own concurrent-gauge loop leaving busbar-core for the
+# door that already runs it character-for-character (CORE-HOMES `governance/` ordering row); on that
+# commit `count_gauge` has no caller left and goes with it.
+[gate.ceiling_raises."rules.loc-ceilings.unit_total_ceiling"]
+file = "qa/construction.toml"
+from = 14476
+to = 14479
+because = "the legacy drain's second governance step, a MOVE by identity: busbar-core's duplicate `AdmitGrant` (34 lines, same fields, same drop, same Debug bytes) is deleted against `busbar-unit-admission::AdmitGrant`, which gains the three-line `count_gauge` a caller that ran the compare-and-swap itself needs in order to hand the handle over. Three lines in, thirty-four out; one release rule for one invariant."
+
+# The kernel + caps/contract + unit union follows the unit-total rise by the same three lines:
+# 23335 -> 23338. The union is a SUM over the same measurement — kernel 5379 and caps/contract 3480
+# are untouched by this commit — so it rises by exactly what `unit_total` rose by and for exactly
+# the reason recorded above. It is declared separately because it is a separate ceiling, not
+# because it is a separate transaction.
+[gate.ceiling_raises."rules.loc-ceilings.union_ceiling"]
+file = "qa/construction.toml"
+from = 23335
+to = 23338
+because = "the union sum follows `unit_total` by the same three production lines of `busbar-unit-admission::decide::AdmitGrant::count_gauge`; kernel (5379) and caps/contract (3480) are unchanged by this commit. Same transaction as the unit-total entry above: busbar-core's duplicate grant deleted against the unit that owns it."

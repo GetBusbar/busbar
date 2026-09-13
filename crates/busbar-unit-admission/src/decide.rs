@@ -150,6 +150,20 @@ impl AdmitGrant {
     pub fn group_leases(&self) -> &[&'static str] {
         &self.groups
     }
+
+    /// Record a gauge the CALLER incremented, so this grant's drop is what gives it back.
+    ///
+    /// The door counts and records in one loop and never needs this. A caller that ran the same
+    /// compare-and-swap against its own gauges does: without it that caller keeps a second grant
+    /// type of its own, and then one invariant — an in-flight count that cannot leak — has two
+    /// release rules that can drift apart. Handing the handle over instead leaves exactly one.
+    ///
+    /// No name rides along. A gauge counted from outside was not interned by the composition root,
+    /// so [`AdmitGrant::group_leases`] stays shorter than [`AdmitGrant::held`], which is precisely
+    /// what it already means for a counted group the root handed no name.
+    pub fn count_gauge(&mut self, gauge: Arc<AtomicI64>) {
+        self.gauges.push(gauge);
+    }
 }
 
 impl Drop for AdmitGrant {

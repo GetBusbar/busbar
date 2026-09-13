@@ -320,34 +320,17 @@ pub enum LimitBlocked {
 /// rides inside the request's `UsageSink` (dropped when the response stream completes / the request
 /// context unwinds on any error path). The Vec is EMPTY (no allocation) for the common chain with
 /// no concurrent caps.
-#[derive(Default)]
-pub struct AdmitGrant {
-    gauges: Vec<Arc<std::sync::atomic::AtomicI64>>,
-}
-
-impl AdmitGrant {
-    /// TEST-ONLY: how many gauges this grant holds.
-    #[cfg(test)]
-    pub(crate) fn held(&self) -> usize {
-        self.gauges.len()
-    }
-}
-
-impl Drop for AdmitGrant {
-    fn drop(&mut self) {
-        for g in &self.gauges {
-            g.fetch_sub(1, Ordering::Relaxed);
-        }
-    }
-}
-
-impl std::fmt::Debug for AdmitGrant {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("AdmitGrant")
-            .field("gauges", &self.gauges.len())
-            .finish()
-    }
-}
+///
+/// Re-export BY IDENTITY of the admission unit's own grant. This engine carried a second copy
+/// of the type: the same `Vec<Arc<AtomicI64>>`, the same `fetch_sub` on drop, the same `held`, and
+/// a `Debug` that printed the same `AdmitGrant { gauges: N }` bytes the host copies into a
+/// caller's refusal. An in-flight count that cannot leak is ONE invariant, and two types enforcing
+/// it is how the two come to disagree about what a release is. The copy is deleted against the
+/// unit that owns it rather than kept in step by a test, and the engine's own gauges are handed
+/// over with [`AdmitGrant::count_gauge`] - the counting stays exactly where it was, only the
+/// release rule is now singular. `crate::governance::AdmitGrant` resolves to the very same type it
+/// always did, and the erased `Box<dyn Send>` the dispatch arena registers is unchanged.
+pub use self::admission::AdmitGrant;
 
 /// A derived (read-time) usage view for admin/metrics consumers: `spend_cents` is COMPUTED from
 /// the token ledger x the current rate card at the moment of the read - never stored.

@@ -163,3 +163,38 @@ fn a_refusal_names_nothing() {
     assert_eq!(grant.held(), 1);
     assert_eq!(grant.group_leases(), ["team"]);
 }
+
+/// A caller that counted the gauges ITSELF still gets the grant's one release rule.
+///
+/// The door above counts and records in the same loop, so nothing outside it ever had to say "I
+/// took this one". The legacy engine does: it walks its own chain, runs the same compare-and-swap
+/// against its own gauges, and then needs exactly what this type is — a handle set whose drop gives
+/// the counts back, on every path including the unwind. Without a way to hand a counted gauge over,
+/// that caller has to keep a second grant of its own, and then there are two release rules for one
+/// invariant.
+///
+/// The case is the whole contract: hand over two gauges the caller incremented, read the count
+/// back, and watch both go to zero on the drop — no double release, and none left behind.
+#[test]
+fn a_counted_gauge_handed_over_is_released_by_the_grant() {
+    use std::sync::atomic::{AtomicI64, Ordering};
+    use std::sync::Arc;
+
+    let outer = Arc::new(AtomicI64::new(0));
+    let inner = Arc::new(AtomicI64::new(0));
+
+    let mut grant = crate::decide::AdmitGrant::default();
+    for gauge in [&outer, &inner] {
+        gauge.fetch_add(1, Ordering::Relaxed);
+        grant.count_gauge(Arc::clone(gauge));
+    }
+
+    assert_eq!(grant.held(), 2, "both handed-over gauges are held");
+    assert_eq!(outer.load(Ordering::Relaxed), 1);
+    assert_eq!(inner.load(Ordering::Relaxed), 1);
+
+    drop(grant);
+
+    assert_eq!(outer.load(Ordering::Relaxed), 0, "released on drop");
+    assert_eq!(inner.load(Ordering::Relaxed), 0, "released on drop");
+}

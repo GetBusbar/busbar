@@ -1813,7 +1813,7 @@ impl GovState {
                     retry_after: None,
                 });
             }
-            grant.gauges.push(gauge);
+            grant.count_gauge(gauge);
         }
 
         // 3. WINDOWED limits: acquire every involved shard's write lock in ASCENDING shard order
