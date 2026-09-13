@@ -228,6 +228,22 @@ fn reach_cache() -> &'static ReachCache {
     C.get_or_init(|| std::sync::Mutex::new(BTreeMap::new()))
 }
 
+/// THE PROCESS-WIDE TREE MEMO, keyed on `(repo, rev)`.
+///
+/// [`Git::files_at`] shells `ls-tree` over a whole committed tree, and a commit's tree is
+/// immutable: an overlay rewrites the register the gate judges, never a ref or the objects a rev
+/// resolves to. So the same `(repo, rev)` always answers the same map, and it is cached here so a
+/// self-test that re-roots a fresh `Git` per overlay pays for each distinct tree once per process
+/// rather than once per overlay. `HEAD` is a stable name for the run's duration; a repository whose
+/// HEAD moved mid-process would be a different tree under the same key, which is why nothing in
+/// this crate moves the working repo's HEAD (the throwaway-repo tests key off their own path).
+type FilesCache = std::sync::Mutex<BTreeMap<String, std::sync::Arc<BTreeMap<String, String>>>>;
+
+fn files_cache() -> &'static FilesCache {
+    static C: std::sync::OnceLock<FilesCache> = std::sync::OnceLock::new();
+    C.get_or_init(|| std::sync::Mutex::new(BTreeMap::new()))
+}
+
 impl Git {
     pub fn new(repo: impl Into<std::path::PathBuf>) -> Git {
         Git {
@@ -250,7 +266,17 @@ impl Git {
 
     /// THE UNIVERSE: every tracked blob at `rev`, path -> blob oid. Blobs only — a submodule's
     /// `commit` entry is not a file this repository's audit can read.
+    ///
+    /// Served from a PROCESS-WIDE memo — see [`files_cache`] — because `rev` names an immutable
+    /// committed tree that no overlay can move, and the audit-ledger self-test asks for the same
+    /// couple of dozen commits' trees again for every one of the dozen overlays it plants: without
+    /// the memo that is hundreds of whole-tree `ls-tree`s per run, each 3½ thousand lines forked,
+    /// walked and parsed, which is what pushed the self-test past its budget under load.
     pub fn files_at(&self, rev: &str) -> Result<BTreeMap<String, String>, String> {
+        let key = format!("{}\u{0}{}", self.repo.display(), rev);
+        if let Some(hit) = files_cache().lock().ok().and_then(|m| m.get(&key).cloned()) {
+            return Ok((*hit).clone());
+        }
         let out = self.run(&["ls-tree", "-r", rev, "--full-tree"])?;
         let mut table = BTreeMap::new();
         for line in out.lines() {
@@ -267,6 +293,9 @@ impl Git {
                     table.insert(path.to_string(), oid.to_string());
                 }
             }
+        }
+        if let Ok(mut m) = files_cache().lock() {
+            m.insert(key, std::sync::Arc::new(table.clone()));
         }
         Ok(table)
     }
