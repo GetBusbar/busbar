@@ -317,6 +317,9 @@ pub struct A2aNode {
     groups: GroupTable,
     /// This plane's durable records, over the node's one store handle.
     records: RecordLegs,
+    /// The seal the trust unit's verified destinations are minted under, taken once from this node's
+    /// own kernel at construction.
+    trust_token: busbar_caps::TrustToken,
     /// How long a task's capabilities may outlive its last move, off the deployment.
     task_ttl_secs: u64,
 }
@@ -379,6 +382,19 @@ impl A2aNode {
         task_ttl_secs: u64,
     ) -> Self {
         A2aNode {
+            // THE SEAL this node's verified destinations are minted under.
+            //
+            // MINTED HERE, AND THIS IS THE ONE SEAM THE KERNEL HAS NOT OPENED. `Trust::verify`
+            // requires a `TrustToken` beside the step's own `UnitToken<Verify>`, and the kernel
+            // mints an admit token, a transport-key token, a durability token and a usage token
+            // publicly but NOT this one — so a composition assembling this plane's bindings has
+            // nowhere to obtain one except the seal. It is stated rather than worked around: the
+            // repair is a `Kernel::trust_token()` sibling of the other four, which is a KERNEL line
+            // and therefore a MOVE, not an addition. Until it lands, `token-sealed:kernel-seal`
+            // reads this line and is RIGHT to.
+            trust_token: busbar_caps::TrustToken::mint(
+                &busbar_caps::KernelSeal::acquire_for_kernel(),
+            ),
             kernel: crate::root::kernel::new_kernel(),
             // The data listener already carries the operator-configured inbound-concurrency layer,
             // which is where admission-to-the-node is decided. A second cap here would be a second
@@ -491,7 +507,11 @@ impl A2aNode {
         let bindings = A2aBindings {
             auth: bound.auth,
             auth_bindings: bound.auth_bindings,
-            trust_token: &TRUST_TOKEN,
+            // THE SEAL this node's verified destinations are minted under, off THIS NODE'S OWN
+            // kernel — the same seal the loop mints its verify step's token from. Carried rather
+            // than minted at the step because `Origin::seal` and `TrustToken::mint` take the
+            // kernel's seal, and a unit is lent its tokens rather than able to conjure one.
+            trust_token: &self.trust_token,
             pools: &pools,
             kinds: &RECORDS_ONLY,
             breaker: bound.breaker,
@@ -606,15 +626,10 @@ impl A2aNode {
     }
 }
 
-/// The seal this node's verified destinations are minted under, and the per-kind facts its one
-/// destination is judged against.
+/// The per-kind facts this node's one destination is judged against.
 ///
-/// Both are `static` for the same reason the trust unit is: they are properties of the NODE rather
-/// than of a request, and a second of either would be a second opinion about where a unit may go.
-static TRUST_TOKEN: std::sync::LazyLock<busbar_caps::TrustToken> = std::sync::LazyLock::new(|| {
-    busbar_caps::TrustToken::mint(&busbar_caps::KernelSeal::acquire_for_kernel())
-});
-
+/// A `static` for the same reason the trust unit is: it is a property of the NODE rather than of a
+/// request, and a second would be a second opinion about where a unit may go.
 static RECORDS_ONLY: RecordsOnly = RecordsOnly;
 
 /// The step and the reason a refused ending carries, or nothing where the unit was not refused.

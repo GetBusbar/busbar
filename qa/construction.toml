@@ -1392,6 +1392,18 @@ symbol = "without_directory("
 verdict = "double"
 because = "the same node's unbound key authorities, where the sealed root has the governance directory"
 
+[rules.no-test-doubles-in-production.known_sites.a2a-node-chain]
+file = "crates/busbar/src/root/node_a2a.rs"
+symbol = "AuthChain::new(Vec::new()"
+verdict = "real"
+because = "the DEPLOYMENT'S OWN CHAIN, and the empty vector is the chain's own shape rather than an absence: the built-in signed-key verifier is an ENGINE-SIDE ARM and not a boxed module, so a deployment that configured `auth.chain: [keys]` resolves to an empty module list with the keys arm named — `AuthChain::is_open()` is false and the front door is SHUT. The second `Some` arm is `auth.chain: []`, which is the open front door the operator wrote down. A chain naming a provider this composition has no unit-side arm for answers `None` and the node DOES NOT MOUNT, which is what stops an empty chain ever standing in for a door somebody configured."
+
+[rules.no-test-doubles-in-production.known_sites.a2a-node-pricer]
+file = "crates/busbar/src/root/node_a2a.rs"
+symbol = "Pricer::flat("
+verdict = "real"
+because = "the DEPLOYMENT'S OWN FEE on a deployment with no `rate_card:`. `flat(fee)` is not `flat(0)`: an absent card prices every class at nothing and STILL charges the configured flat fee, which is exactly what the previous release bills for that deployment. The arm above it builds `Pricer::with_card` from the operator's own card, projected through the pricing law's own `nano_rate` rounding rather than a second arithmetic."
+
 [rules.no-test-doubles-in-production.known_sites.bindings-constructor]
 file = "crates/busbar/src/root/auth_bindings.rs"
 symbol = "without_directory("
