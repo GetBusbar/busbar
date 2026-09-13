@@ -7465,6 +7465,170 @@ if [ "${1:-}" = "--smoke-latchkey" ] && [ "${2:-}" = "--landing" ]; then
 fi
 
 # ──────────────────────────────────────────────────────────────────────────────────────────────────
+# --smoke-latchkey --bisect: THE ADOPTION GATE FOR THE BISECT FAN — ONE ROUND, THREE REAL RUNGS
+# ──────────────────────────────────────────────────────────────────────────────────────────────────
+#   BUSBAR_LAND_BACKEND=latchkey LANDQ_ROOT=<a scratch clone> LAND_SH_SRC=<engine home>/scripts \
+#     scripts/landq4.sh --smoke-latchkey --bisect [--fan <n>]
+#
+# --smoke-latchkey --landing proves that ONE landing can be rented. This proves the thing the queue
+# actually spends its nights doing: a big batch whose UNION is red, bisected by prefix — and it
+# proves that the rungs of that bisect are now proven TOGETHER rather than one at a time.
+#
+# THREE LINES, ONE UNIT, WITH A RED PLANTED AT LINE 2. The red is a misformatted `.rs` file under
+# docs/ — land.sh's `fmt` leg runs rustfmt over the .rs files the PICKS touched, whatever directory
+# they are in, so it is a real red from a real leg with no crate to build and no test to run. Lines
+# 1 and 3 are ordinary docs files. What must come out of one round:
+#
+#   * `bisect ROUND 1: 3 prefix(es) proven CONCURRENTLY` — the round is ONE round of THREE rungs,
+#     not three rounds of one;
+#   * prefix 1 GREEN and prefix 2 RED, both with real Latchkey jobs behind them;
+#   * prefix 3 DISCARDED UNREAD — it carries line 2;
+#   * line 1 GREEN and LANDED (the tip moved by exactly one commit, and the push took it);
+#   * line 2 RED — the culprit, backed out;
+#   * line 3 HELD — live, not parked, its picks not on the tree.
+#
+# It runs against a bare origin of its own, exactly as --landing does, so a publish cannot reach
+# anybody.
+if [ "${1:-}" = "--smoke-latchkey" ] && [ "${2:-}" = "--bisect" ]; then
+  shift 2
+  SMOKE_FAN=6
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --fan) shift; [ $# -ge 1 ] || { echo "landq4: --fan wants a number" >&2; exit 2; }
+             SMOKE_FAN="$1"; shift ;;
+      *) echo "landq4: --smoke-latchkey --bisect: unknown argument '$1'" >&2; exit 2 ;;
+    esac
+  done
+  sroot="$LAND_TMP/smoke-bisect-$$"
+  borigin="$sroot/origin.git"
+  mkdir -p "$sroot"
+  echo "smoke: root $W"
+  echo "smoke: engine home $SCRIPTS"
+  echo "smoke: land backend $(lq_land_backend); prove backend $(lq_preprove_backend); fan $SMOKE_FAN"
+  base0="$(git -C "$W" rev-parse HEAD)" || { echo "smoke: $W has no HEAD" >&2; exit 2; }
+  echo "smoke: base $(printf '%.9s' "$base0")"
+  [ "$(lq_land_backend)" = latchkey ] || { echo "smoke: FAILED — BUSBAR_LAND_BACKEND is not latchkey; there is no bisect fan to gate" >&2; exit 2; }
+  realurl="$(git -C "$W" remote get-url origin 2>/dev/null || true)"
+  git init -q --bare "$borigin" || { echo "smoke: could not create the scratch origin" >&2; exit 2; }
+  git -C "$borigin" config receive.shallowUpdate true
+  git -C "$borigin" config gc.auto 0
+  git -C "$W" push -q "$borigin" "+$base0:refs/heads/$BR" || { echo "smoke: could not seed the scratch origin" >&2; exit 2; }
+  smoke_restore() {
+    [ -n "$realurl" ] && git -C "$W" remote set-url origin "$realurl" 2>/dev/null || true
+  }
+  trap smoke_restore EXIT INT TERM
+  git -C "$W" remote set-url origin "$borigin" || { echo "smoke: could not repoint origin" >&2; exit 2; }
+  git -C "$W" fetch -q origin "+refs/heads/$BR:refs/remotes/origin/$BR" || true
+  echo "smoke: origin repointed at $borigin (the real remote is $realurl and is not touched)"
+  # ── THE THREE PICKS, EACH ON ITS OWN BRANCH OFF THE BASE ──────────────────────────────────────
+  smokebr="smoke-bisect-$$"
+  mkdir -p "$sroot/nohooks"
+  smoke_pick() { # $1 = path, $2 = contents; prints the sha
+    git -C "$W" checkout -q -B "$smokebr" "$base0" >/dev/null 2>&1 || return 1
+    mkdir -p "$W/$(dirname "$1")"
+    printf '%s' "$2" >"$W/$1"
+    git -C "$W" add -- "$1" >/dev/null 2>&1 || return 1
+    git -C "$W" commit -q --no-verify -m "smoke: bisect pick $(basename "$1")" >/dev/null 2>&1 || return 1
+    git -C "$W" rev-parse HEAD
+  }
+  p1="$(smoke_pick "docs/design/SMOKE-BISECT-1-$$.md" \
+        "A file written by landq4.sh --smoke-latchkey --bisect at $(date -u +%FT%TZ). Line 1.
+")" || { echo "smoke: could not cut pick 1" >&2; smoke_restore; exit 2; }
+  # THE PLANTED RED. Misformatted Rust, and rustfmt --check is what says so.
+  p2="$(smoke_pick "docs/design/SMOKE-BISECT-RED-$$.rs" \
+        'fn   main( ) {let  x   =1;println!("{}",x);}
+')" || { echo "smoke: could not cut pick 2" >&2; smoke_restore; exit 2; }
+  p3="$(smoke_pick "docs/design/SMOKE-BISECT-3-$$.md" \
+        "A file written by landq4.sh --smoke-latchkey --bisect at $(date -u +%FT%TZ). Line 3.
+")" || { echo "smoke: could not cut pick 3" >&2; smoke_restore; exit 2; }
+  git -C "$W" checkout -q -B "$BR" "$base0"
+  echo "smoke: pick 1 $(printf '%.9s' "$p1") (docs)   pick 2 $(printf '%.9s' "$p2") (MISFORMATTED .rs — the planted red)   pick 3 $(printf '%.9s' "$p3") (docs)"
+  # ── THE BATCH: THREE LINES, ONE UNIT ─────────────────────────────────────────────────────────
+  mkdir -p "$W/target/gate"
+  lq_stage_engine
+  for f in land.run.sh land-latchkey.run.sh prove-latchkey.run.sh; do
+    [ -f "$W/target/gate/$f" ] && echo "smoke: staged $f" || { echo "smoke: FAILED — $f was not staged"; smoke_restore; exit 1; }
+  done
+  sbatch="$sroot/batch.txt"
+  { printf -- '--prove %s\n' "$p1"
+    printf '#UNIT 1\n'; printf -- '--prove %s\n' "$p2"
+    printf '#UNIT 1\n'; printf -- '--prove %s\n' "$p3"; } >"$sbatch"
+  echo "smoke: the batch is ONE unit of three lines:"; sed 's/^/smoke:   /' "$sbatch"
+  start=$(date +%s)
+  ( cd "$W" && env BUSBAR_LAND_BACKEND=latchkey LAND_DONE="$sroot/done.txt" \
+      LANDQ_LOCK="$sroot/landing.lock" LATCHKEY_PREFIX_FAN="$SMOKE_FAN" \
+      bash "$W/target/gate/land.run.sh" --batch "$sbatch" ) >"$sroot/land.log" 2>&1
+  lrc=$?
+  end=$(date +%s)
+  echo "smoke: land.sh --batch exit $lrc in $(( end - start ))s (log $sroot/land.log)"
+  rc=0
+  _sk() { # $1 = what, $2 = a grep -E pattern
+    if grep -qE "$2" "$sroot/land.log" 2>/dev/null; then
+      echo "smoke:   LOG: $(grep -hEm1 "$2" "$sroot/land.log" | sed 's/^[[:space:]]*//' | cut -c1-150)"
+    else echo "smoke: FAILED — $1"; rc=1; fi
+  }
+  _sk "the union never went red, so nothing was bisected" 'RED over a unit of 3 line\(s\) — bisecting BY PREFIX'
+  _sk "the bisect did not open a round of three"          'bisect ROUND 1: 3 prefix\(es\) proven CONCURRENTLY'
+  _sk "prefix 1 was not proven green"                     '=== GREEN prefix 1 —'
+  _sk "prefix 2 was not the first red"                    '=== RED line 2 — the first prefix that turns red'
+  _sk "prefix 3 was not discarded unread"                 '1 prefix\(es\) of round 1 are DISCARDED UNREAD'
+  _sk "the round did not land its green prefix"           'round 1 landed 1 line\(s\); W is at'
+  _sk "line 3 was not held"                               '=== HELD line 3 — its predecessor did not land'
+  grep -qE 'bisect ROUND 2' "$sroot/land.log" 2>/dev/null \
+    && { echo "smoke: FAILED — a second round was opened; three rungs did not fit in one"; rc=1; } \
+    || echo "smoke: exactly ONE round — the whole unit's ladder was proven at once"
+  njobs="$(lq_count "$(grep -cE '^\[land-latchkey [0-9:]+\] job cli-' "$sroot/land.log")")"
+  echo "smoke: latchkey jobs created across the run: $njobs"
+  [ "$njobs" -ge 4 ] || { echo "smoke: FAILED — $njobs job(s); a union plus three rungs is at least four"; rc=1; }
+  # EACH RUNG PACKED ITS OWN TREE. Three rungs, three different pack directories, and none of them
+  # is the landing tree.
+  npack="$(lq_count "$(grep -hoE 'packed from [^,]+' "$sroot/land.log" | sort -u | grep -c .)")"
+  echo "smoke: distinct packed trees: $npack"
+  [ "$npack" -ge 3 ] || { echo "smoke: FAILED — $npack distinct pack(s); the rungs did not pack trees of their own"; rc=1; }
+  grep -qE "packed from $W," "$sroot/land.log" 2>/dev/null \
+    && { echo "smoke: FAILED — a rung packed the LANDING TREE itself"; rc=1; } \
+    || echo "smoke: no rung packed the landing tree"
+  # ── THE VERDICT ROWS ─────────────────────────────────────────────────────────────────────────
+  echo "smoke: verdict rows:"; sed 's/^/smoke:   /' "$sbatch.result" 2>/dev/null | cut -c1-90
+  grep -qE "^GREEN.*$p1" "$sbatch.result" 2>/dev/null || { echo "smoke: FAILED — line 1 is not GREEN"; rc=1; }
+  grep -qE "^RED.*$p2"   "$sbatch.result" 2>/dev/null || { echo "smoke: FAILED — line 2 is not RED"; rc=1; }
+  grep -qE "^HELD.*$p3"  "$sbatch.result" 2>/dev/null || { echo "smoke: FAILED — line 3 is not HELD"; rc=1; }
+  grep -qE "^RED.*$p3"   "$sbatch.result" 2>/dev/null && { echo "smoke: FAILED — line 3 was parked RED for its predecessor's fault"; rc=1; }
+  # ── AND THE TREE ─────────────────────────────────────────────────────────────────────────────
+  newtip="$(git -C "$W" rev-parse HEAD)"
+  nc="$(lq_count "$(git -C "$W" log --oneline "$base0..$newtip" 2>/dev/null | grep -c '^')")"
+  echo "smoke: the tip moved $(printf '%.9s' "$base0") -> $(printf '%.9s' "$newtip") ($nc commit(s))"
+  [ "$nc" = 1 ] || { echo "smoke: FAILED — $nc commit(s) landed; exactly line 1's pick should have"; rc=1; }
+  [ -f "$W/docs/design/SMOKE-BISECT-1-$$.md" ] || { echo "smoke: FAILED — line 1's file is not on the tree"; rc=1; }
+  [ -f "$W/docs/design/SMOKE-BISECT-RED-$$.rs" ] && { echo "smoke: FAILED — the culprit's file is still on the tree"; rc=1; } \
+    || echo "smoke: the culprit is backed out"
+  [ -f "$W/docs/design/SMOKE-BISECT-3-$$.md" ] && { echo "smoke: FAILED — the held line's pick is on the tree"; rc=1; } \
+    || echo "smoke: the held line's picks are NOT on the tree"
+  # `try_push || true` and not a bare `try_push`: the main loop's two bare calls are counted by the
+  # selftest (the push is at the loop's top and again after the batch, and nowhere else), and a
+  # smoke that added a third would make that count a lie about the loop.
+  try_push || true
+  if [ "$(git -C "$borigin" rev-parse "refs/heads/$BR" 2>/dev/null)" = "$newtip" ]; then
+    echo "smoke: the scratch origin carries the landed tip — ONE push, at the end, exactly as today"
+  else
+    echo "smoke: FAILED — the scratch origin is at $(git -C "$borigin" rev-parse --short "refs/heads/$BR" 2>/dev/null), not the landed tip"; rc=1
+  fi
+  # NO SCRATCH CHECKOUT OUTLIVES THE ROUND.
+  nwt="$(lq_count "$(git -C "$W" worktree list 2>/dev/null | grep -c 'land-prefix-')")"
+  [ "$nwt" = 0 ] && echo "smoke: no scratch checkout was left registered" \
+    || { echo "smoke: FAILED — $nwt scratch checkout(s) left behind"; rc=1; }
+  [ -e "$W/.latchkey" ] && { echo "smoke: FAILED — a .latchkey was left in the tree"; rc=1; } \
+    || echo "smoke: no .latchkey anywhere in the tree"
+  echo "smoke: round wall time: the whole batch took $(( end - start ))s"
+  git -C "$W" branch -q -D "$smokebr" 2>/dev/null || true
+  smoke_restore; trap - EXIT INT TERM
+  echo "smoke: origin put back to $realurl"
+  echo "smoke: artifacts under $sroot"
+  [ "$rc" = 0 ] && { echo "smoke-bisect: GREEN"; exit 0; }
+  echo "smoke-bisect: RED"; exit 1
+fi
+
+# ──────────────────────────────────────────────────────────────────────────────────────────────────
 # --smoke-latchkey --sweep: THE ADOPTION GATE FOR LK-9 — A REAL SWEEP THAT STARTS NO BOX
 # ──────────────────────────────────────────────────────────────────────────────────────────────────
 #   LANDQ_ROOT=~/Developer/tmp/lk6-smoke/root LAND_SH_SRC=<engine home>/scripts \
