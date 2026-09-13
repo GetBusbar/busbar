@@ -5,7 +5,8 @@
 //! (`busbar_substrate::testkit::engine_kit_plus`), on the SAME fixture types the base kit is
 //! implemented for ([`CoreEngineKit`], `TestApp`, `App`): every verb is a thin delegate to the fixture
 //! builder, the built App's own tables (`planes`, `plane_breakers`, the data route table view) or the
-//! process-wide service (`metrics::render`, the prometheus exporter, `tls::install_crypto_provider`,
+//! process-wide service (`metrics::render`, the prometheus exporter, `busbar_unit_transport_key::
+//! install_crypto_provider`,
 //! the built-in secret resolver, the named-map chassis) a plane's tests used to name directly. A
 //! plane's test tree binds [`CORE_ENGINE_KIT`](super::engine_kit::CORE_ENGINE_KIT) once as
 //! `&'static dyn EngineTestKitPlus` and reaches both kits through it.
@@ -48,7 +49,10 @@ impl EngineTestKitPlus for CoreEngineKit {
     }
 
     fn install_crypto_provider(&self) {
-        crate::tls::install_crypto_provider();
+        // core's own copy (`tls::install_crypto_provider`) is deleted (TLS-1): the unit
+        // (`busbar-unit-transport-key`) is the one live copy, an optional `test-support` edge
+        // exactly like `dep:rmcp`/`dep:reqwest` above it.
+        busbar_unit_transport_key::install_crypto_provider();
     }
 
     fn builtin_secret_resolver(&self) -> Box<dyn SecretResolve> {

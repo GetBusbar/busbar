@@ -25,6 +25,9 @@
 //! - [`transports`] — one provisioned listener per configured address. The transport-key unit
 //!   resolves the material through the secret plugin, journals the access, and hands back a handle
 //!   that carries a slot number and a fingerprint and no bytes at all.
+//! - [`listener`] — the ingress listener's own accept/serve loop (TLS + plain HTTP) and the
+//!   thread-per-core connection-placement balancer. Moved by identity from `busbar-core::tls`
+//!   (TLS-1): boot/root-shaped, single-reader (`main.rs`) code, not a transport's wire kind.
 //! - [`adapters`] — the seams where two units name the same object at two widths, plus the boot
 //!   assertion that the two hand-kept metric label banks still agree.
 //! - [`policy`] — the values the units take from configuration rather than from a `Default`.
@@ -61,6 +64,10 @@ pub mod durability;
 pub mod harness;
 pub mod kernel;
 pub mod ledger_identity;
+/// The ingress listener's accept/serve machinery, TLS termination and the connection-placement
+/// balancer — MOVED BY IDENTITY from `busbar-core::tls` (TLS-1); see its own module doc for why it
+/// lives here and not in a transport crate.
+pub mod listener;
 pub mod migration;
 pub mod policy;
 pub mod registry;

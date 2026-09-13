@@ -59,7 +59,12 @@ use std::time::Duration;
 
 use axum::Router;
 
-use busbar_core::{admin, config, config_validate, export, metrics, observability, tls};
+use busbar_core::{admin, config, config_validate, export, metrics, observability};
+// TLS-1: `busbar_core::tls` is deleted. The ingress accept/serve loop (`ConnBalancer`,
+// `serve`/`serve_plain`) moved by identity to `root::listener`; cert/key parsing now lives in
+// `busbar_unit_transport_key` (named directly at its two call sites below), with `root::listener::
+// build_server_config` bridging a resolved `TlsCfg` to that unit's `TlsMaterial`.
+use root::listener;
 use busbar_core::{
     build_app_from_config, build_split_routers_with_limits, load_config_from_disk,
     preflight_plugins_and_secrets, validate_builtin_secrets_resolve, LoadedConfig,
@@ -1737,8 +1742,8 @@ fn serve_thread_per_core(
     // worker builds the same server config from the same files, so a bad cert or key must be
     // reported exactly once and stop the boot (workers racing to `die` would each print it).
     if let Some(tls) = tls_cfg.as_ref() {
-        tls::install_crypto_provider();
-        let _ = tls::build_server_config(tls, &secret_resolver)
+        busbar_unit_transport_key::install_crypto_provider();
+        let _ = listener::build_server_config(tls, &secret_resolver)
             .unwrap_or_else(|e| die(format!("TLS configuration error for '{addr}': {e}")));
     }
     let core_ids = core_affinity::get_core_ids().unwrap_or_default();
@@ -1754,9 +1759,9 @@ fn serve_thread_per_core(
         "thread-per-core data plane: one SO_REUSEPORT listener per worker (admin + background \
          tasks stay on the control runtime)"
     );
-    // The connection-placement balancer (see `tls::ConnBalancer`): one handle per worker, fixing
+    // The connection-placement balancer (see `listener::ConnBalancer`): one handle per worker, fixing
     // SO_REUSEPORT's few-connection imbalance at ACCEPT time (placement only, never migration).
-    let mut balancers: Vec<Option<tls::ConnBalancer>> = tls::ConnBalancer::build(cores.len())
+    let mut balancers: Vec<Option<listener::ConnBalancer>> = listener::ConnBalancer::build(cores.len())
         .into_iter()
         .map(Some)
         .collect();
@@ -1887,8 +1892,8 @@ async fn serve_listener(
     label: &str,
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
     // The data workers' connection-placement balancer (`None` for the admin listener and
-    // non-unix builds — those accept exactly as before). See `tls::ConnBalancer`.
-    balancer: Option<tls::ConnBalancer>,
+    // non-unix builds — those accept exactly as before). See `listener::ConnBalancer`.
+    balancer: Option<listener::ConnBalancer>,
     // Whether THIS call logs "busbar listening" at INFO. `true` for the admin listener and for the
     // single data listener on non-unix builds (both call this exactly once); on unix's
     // thread-per-core data plane, `serve_thread_per_core` calls this once PER WORKER on the SAME
@@ -1903,19 +1908,19 @@ async fn serve_listener(
             } else {
                 tracing::debug!(listen = %label, "busbar listening");
             }
-            if let Err(e) = tls::serve_plain(listener, router, shutdown, balancer).await {
+            if let Err(e) = self::listener::serve_plain(listener, router, shutdown, balancer).await {
                 die(format!("server error on '{label}': {e}"));
             }
         }
         Some(tls) => {
-            tls::install_crypto_provider();
+            busbar_unit_transport_key::install_crypto_provider();
             // blocking-ffi-lint: allow — BOOT, once per listener, before that listener accepts.
             // `serve_listener` is never spawned as a task: the admin call runs directly under
             // `run()` on the control thread, and each per-worker data call is the FIRST thing its
             // freshly-built runtime `block_on`s — in both shapes this resolve parks a thread that
-            // is not yet serving anything. It also completes before `tls::serve` below is reached,
+            // is not yet serving anything. It also completes before `listener::serve` below is reached,
             // so no connection on this listener can be waiting on it.
-            let server_config = tls::build_server_config(&tls, &secret_resolver)
+            let server_config = listener::build_server_config(&tls, &secret_resolver)
                 .unwrap_or_else(|e| die(format!("TLS configuration error for '{label}': {e}")));
             let mtls = tls.client_ca.is_some();
             if log_at_info {
@@ -1923,7 +1928,7 @@ async fn serve_listener(
             } else {
                 tracing::debug!(listen = %label, mtls, "busbar listening (TLS)");
             }
-            if let Err(e) = tls::serve(listener, router, server_config, shutdown, balancer).await {
+            if let Err(e) = self::listener::serve(listener, router, server_config, shutdown, balancer).await {
                 die(format!("server error on '{label}': {e}"));
             }
         }

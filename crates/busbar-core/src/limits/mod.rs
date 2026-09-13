@@ -58,15 +58,16 @@ fn get() -> Option<LimitsResolved> {
 // figure or an admission figure -- it is a transport body cap, so its home is the neutral values
 // leaf that already owns it, not a unit. This crate's four call sites now name that home.
 
-/// TLS handshake wall-clock bound (seconds), read per accepted connection in `tls::serve_one`.
-pub(crate) fn tls_handshake_timeout_secs() -> u64 {
-    get()
-        .map(|l| l.tls_handshake_timeout_secs)
-        .unwrap_or(crate::config::DEFAULT_TLS_HANDSHAKE_TIMEOUT_SECS)
-}
+// `tls_handshake_timeout_secs()` is DELETED (TLS-1): its one caller was `tls::serve_one`, moved by
+// identity to `crates/busbar/src/root/listener.rs`'s `handshake_timeout()`, which reads
+// `busbar_substrate::config::limits::installed()` directly (that crate's own canonical accessor,
+// reachable across the crate boundary this pub(crate) wrapper never was).
 
-/// Inbound request-BODY inter-frame read bound (seconds), read per served connection in `tls`. Bounds
-/// a slow-loris that dribbles the request body after headers are complete.
+/// Inbound request-BODY inter-frame read bound (seconds). TEST-ONLY now: the one production reader
+/// was `tls::serve_one`/`serve_one_plain`, moved by identity to `root::listener`'s
+/// `body_read_timeout()` (TLS-1), which reads `busbar_substrate::config::limits::installed()`
+/// directly; this crate's own regression test below is the last caller of this pub(crate) wrapper.
+#[cfg(test)]
 pub(crate) fn request_body_read_timeout_secs() -> u64 {
     get()
         .map(|l| l.request_body_read_timeout_secs)

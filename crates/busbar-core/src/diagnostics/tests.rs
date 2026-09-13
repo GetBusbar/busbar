@@ -41,7 +41,11 @@ const MIGRATED_FILES: &[&str] = &[
     "src/boot.rs",
     "src/preflight.rs",
     "src/telemetry.rs",
-    "src/tls.rs",
+    // `tls.rs` DELETED (TLS-1): its cert/key/CA parsing duplicated `busbar-unit-transport-key`'s
+    // own (now the one live copy) and its accept/serve loop MOVED BY IDENTITY to the composition
+    // root's `crates/busbar/src/root/listener.rs`, which still uses `diag_warn!` and carries its
+    // own coverage — core does not scan the binary crate's tree here any more than it scans a
+    // plane crate's.
     "src/config/overlay.rs",
     "src/config/mod.rs",
     "src/config_validate/mod.rs",

@@ -1,16 +1,19 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests ported from `busbar-core::tls`'s test module, restricted to what this crate actually does
-//! (resolve key material, journal the access, build a `ServerConfig`).
+//! Tests ported from `busbar-core::tls`'s (now-deleted; TLS-1) test module, restricted to what this
+//! crate actually does (resolve key material, journal the access, build a `ServerConfig`) — this
+//! crate is the ONE live copy of that parsing logic now, and its parse-error tests below pin the
+//! exact secret-source-naming text core's copy always emitted.
 //!
-//! NOT PORTED, and why: `busbar-core::tests::tls_tests` is mostly END-TO-END wire tests —
+//! NOT PORTED, and why: `busbar-core`'s old `tests::tls_tests` was mostly END-TO-END wire tests —
 //! `tls_happy_path_trusted_client_gets_200`, `mtls_valid_client_cert_gets_200`, and their sibling
 //! rejection cases — each of which boots a real `tokio::net::TcpListener`, drives
-//! `busbar_core::tls::serve` (the hyper/axum accept-and-serve loop), and completes an actual HTTPS
-//! round trip with a `reqwest` client. That loop, and the `AcceptBackoff` policy its
-//! `accept_backoff_spins_only_on_per_connection_transients` test covers, are LISTENER concerns this
-//! crate does not implement (see the crate doc): this crate resolves key material and builds the
+//! `root::listener::serve` (the hyper/axum accept-and-serve loop, moved by identity to the
+//! composition root), and completes an actual HTTPS round trip with a `reqwest` client. That loop,
+//! and the `AcceptBackoff` policy its `accept_backoff_spins_only_on_per_connection_transients` test
+//! covers, are LISTENER concerns this crate does not implement (see the crate doc) and now live in
+//! `crates/busbar/src/root/tests/listener.rs`: this crate resolves key material and builds the
 //! `ServerConfig` a listener consumes, and stops there. Porting the wire tests here would have
 //! required pulling `axum`, `hyper-util`, and a running multi-threaded `tokio` runtime into a crate
 //! whose whole point is standing alone with `rustls` as its one real dependency.
@@ -264,9 +267,12 @@ fn a_client_ca_with_no_certificates_in_it_is_refused() {
     let (cert_pem, key_pem) = gen_self_signed();
     let material = TlsMaterial {
         cert_pem: cert_pem.into_bytes(),
+        cert_source: "cert".to_string(),
         key_pem: key_pem.clone().into_bytes(),
+        key_source: "key".to_string(),
         // A PEM, and a real one — just not one with a certificate anywhere in it.
         client_ca_pem: Some(key_pem.into_bytes()),
+        client_ca_source: Some("client_ca".to_string()),
     };
     let err = build_server_config(&material).unwrap_err();
     assert!(err.contains("client_ca"), "{err}");
@@ -373,10 +379,52 @@ fn a_certified_key() -> Arc<CertifiedKey> {
     let (cert_pem, key_pem) = gen_self_signed();
     certified_key(&TlsMaterial {
         cert_pem: cert_pem.into_bytes(),
+        cert_source: "cert".to_string(),
         key_pem: key_pem.into_bytes(),
+        key_source: "key".to_string(),
         client_ca_pem: None,
+        client_ca_source: None,
     })
     .unwrap()
+}
+
+/// Parse-error messages name the secret SOURCE, in exactly the text `busbar-core::tls`'s own copy
+/// of these functions emitted before this unit became the one live copy: `TlsMaterial`'s two
+/// bare-`Vec<u8>` fields kept no source at all, so re-pointing `main.rs`'s two call sites at this
+/// unit instead of core's (now-deleted) `build_server_config` would have silently swapped a
+/// source-named boot-failure message for a source-BLIND one — exactly the kind of drift the
+/// boot-family oracle is pinned against. `cert_source`/`key_source`/`client_ca_source` are what
+/// closes that gap; this test is the one place the resulting text is pinned byte for byte.
+#[test]
+fn parse_errors_name_the_secret_source_matching_cores_original_text() {
+    let material = TlsMaterial {
+        cert_pem: b"not a pem cert".to_vec(),
+        cert_source: "cert-secret".to_string(),
+        key_pem: b"not a pem key".to_vec(),
+        key_source: "key-secret".to_string(),
+        client_ca_pem: None,
+        client_ca_source: None,
+    };
+    let err = build_server_config(&material).unwrap_err();
+    assert_eq!(
+        err,
+        "TLS cert (cert-secret) contains no certificates (expected a PEM chain, leaf first)"
+    );
+
+    // A client CA that resolves but contains no certificate names its own source the same way,
+    // not the cert's.
+    let (cert_pem, key_pem) = gen_self_signed();
+    let material = TlsMaterial {
+        cert_pem: cert_pem.into_bytes(),
+        cert_source: "cert-secret".to_string(),
+        key_pem: key_pem.clone().into_bytes(),
+        key_source: "key-secret".to_string(),
+        // A real PEM, just not one with a certificate in it.
+        client_ca_pem: Some(key_pem.into_bytes()),
+        client_ca_source: Some("ca-secret".to_string()),
+    };
+    let err = build_server_config(&material).unwrap_err();
+    assert_eq!(err, "TLS client_ca (ca-secret) contains no CA certificates");
 }
 
 /// A cert/key pair that do not belong together is refused at `with_single_cert`, never silently
@@ -388,8 +436,11 @@ fn mismatched_cert_and_key_pair_is_refused() {
     let (_other_cert_pem, other_key_pem) = gen_self_signed();
     let material = TlsMaterial {
         cert_pem: cert_pem.into_bytes(),
+        cert_source: "cert".to_string(),
         key_pem: other_key_pem.into_bytes(),
+        key_source: "key".to_string(),
         client_ca_pem: None,
+        client_ca_source: None,
     };
     assert!(build_server_config(&material).is_err());
 }
@@ -400,8 +451,11 @@ fn mismatched_cert_and_key_pair_is_refused() {
 fn empty_cert_chain_is_refused() {
     let material = TlsMaterial {
         cert_pem: b"not a pem cert".to_vec(),
+        cert_source: "cert".to_string(),
         key_pem: b"not a pem key".to_vec(),
+        key_source: "key".to_string(),
         client_ca_pem: None,
+        client_ca_source: None,
     };
     let err = build_server_config(&material).unwrap_err();
     assert!(err.contains("cert"), "{err}");

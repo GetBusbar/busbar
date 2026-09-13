@@ -112,6 +112,15 @@ busbar-transport-stdio = { path = "../busbar-transport-stdio" }
 # `rustls` config: the root builds the dial-side trust store, and the deployment's trust roots are
 # its own statement rather than a unit's.
 rustls = { workspace = true }
+# THE INGRESS LISTENER'S OWN ACCEPT/SERVE LOOP (`root/listener.rs`), moved by identity from
+# `busbar-core::tls` (TLS-1): the rustls handshake acceptor, the hyper connection builder + service
+# bridging axum's `Router`, and the inbound body-timeout wrapper. Binary-only — nothing on the
+# routing hot path names these; see `root/listener.rs`'s own doc for the axum-0.7-vs-`Listener`-
+# trait rationale.
+tokio-rustls = { workspace = true }
+hyper = { workspace = true }
+hyper-util = { workspace = true }
+bytes = { workspace = true }
 # The root's card is SWAPPED by a live config apply and PINNED by every unit that prices against it,
 # which is one atomic store against many lock-free readers — the same shape, and the same crate, the
 # engine already swaps its config snapshot with.

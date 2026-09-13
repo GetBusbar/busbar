@@ -1,12 +1,32 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Native inbound TLS termination (+ optional mutual-TLS) for the client↔Busbar hop.
+//! The ingress listener's accept/serve machinery: TLS termination (+ optional mutual-TLS) and the
+//! plain-HTTP fallback for the client↔Busbar hop, plus the thread-per-core connection-placement
+//! balancer.
 //!
-//! This module is a thin transport wrapper around the *ingress* listener. It does NOT touch routing,
-//! request translation, the breaker, or failover — it only decides, once at startup, whether the
-//! accepted TCP stream is handed to axum as-is (plain HTTP, the historical default) or first put
-//! through a rustls server handshake.
+//! ## TLS-1: why this lives in the composition root and not `busbar-core`
+//!
+//! This is a MOVE BY IDENTITY of `busbar-core::tls`'s `AcceptBackoff`/`ConnBalancer`/`serve`/
+//! `serve_plain` (and their private machinery — `TimeoutBody`, `BodyTimeoutService`,
+//! `hardened_conn_builder`, `serve_one[_plain]`) — the code below this module's doc comment is
+//! byte-identical to core's (now-deleted) copy, only the import paths changed to cross the crate
+//! boundary. It is boot/root-shaped code with exactly one reader (`main.rs`) and no twin anywhere
+//! else in the tree, so `CORE-HOMES`' row sending `tls.rs` to `busbar-transport-tls` was wrong:
+//! that crate is the generic `tls` WIRE KIND (a `Frame`/`Kind`/`Transport` session over raw TCP)
+//! and never touches axum, hyper, or an HTTP router — this file is the axum/hyper ingress
+//! listener's own accept loop, which is the composition root's job to drive, not a transport's.
+//!
+//! The OTHER half of core's old `tls.rs` — cert/key/CA PEM parsing and `rustls::ServerConfig`
+//! construction (`install_crypto_provider`, `load_cert_chain`, `load_private_key`,
+//! `load_client_roots`, `build_server_config`) — was a byte-for-byte duplicate of
+//! `busbar_unit_transport_key`'s own port of the same functions (the unit's own doc comment used
+//! to say so). Core's copy is DELETED; the unit is the one live copy, and its parse-error messages
+//! now carry the same secret-SOURCE naming core's originals always did (`TlsMaterial::{cert_source,
+//! key_source, client_ca_source}`), so re-pointing through it changes no boot-diagnostic text.
+//! [`build_server_config`] below is this file's thin bridge from a resolved [`TlsCfg`] to that
+//! unit's `TlsMaterial`, through the same neutral `busbar_substrate::tls::read_pem` seam core's
+//! parsing functions always read through.
 //!
 //! ## Why we drive hyper directly here instead of `axum::serve`
 //!
@@ -21,15 +41,12 @@
 //!     `TowerToHyperService` bridging the cloned axum `Router`,
 //!   * drain in-flight connections on shutdown via `hyper_util`'s `GracefulShutdown`.
 //!
-//! The plain-HTTP path in `main.rs` is left exactly as it was; only `cfg.tls == Some(_)` reaches
-//! this module.
-//!
 //! ## Crypto provider
 //!
 //! rustls 0.23 requires a process-wide [`rustls::crypto::CryptoProvider`]. busbar already links
-//! `ring` (via reqwest/hyper-rustls), so [`install_crypto_provider`] installs ring's provider once
-//! at startup and the `ServerConfig` is built on it — exactly one provider in the process, never
-//! aws-lc-rs.
+//! `ring` (via reqwest/hyper-rustls), so `busbar_unit_transport_key::install_crypto_provider`
+//! installs ring's provider once at startup and the `ServerConfig` is built on it — exactly one
+//! provider in the process, never aws-lc-rs.
 //!
 //! ## Failure model
 //!
@@ -40,19 +57,25 @@
 use std::io;
 use std::net::SocketAddr;
 use std::sync::Arc;
-
-use crate::diagnostics::{diag_warn, TLS_ACCEPT_PERSISTENT_FAILURE};
 use std::time::{Duration, Instant};
+
+use busbar_core::diagnostics::{diag_warn, TLS_ACCEPT_PERSISTENT_FAILURE};
+use busbar_substrate::config::sections::TlsCfg;
 
 /// Hard wall-clock bound on the TLS handshake for a single accepted connection. A client that
 /// connects then stalls (sends nothing / dribbles handshake bytes) must not park a task + FDs
 /// indefinitely — this caps the pre-auth slowloris / handshake-flood surface. The cost is incurred
 /// BEFORE mTLS client-cert verification, so this guards the unauthenticated edge.
 /// Operator-tunable via `limits.tls_handshake_timeout_secs` (default 10s), read through the
-/// process-wide `crate::limits` install. A function (not a `const`) so the configured value is read
-/// per accepted connection; falls back to the historical 10s when limits aren't installed.
+/// process-wide `busbar_substrate::config::limits` install. A function (not a `const`) so the
+/// configured value is read per accepted connection; falls back to the historical 10s when limits
+/// aren't installed.
 fn handshake_timeout() -> Duration {
-    Duration::from_secs(crate::limits::tls_handshake_timeout_secs())
+    Duration::from_secs(
+        busbar_substrate::config::limits::installed()
+            .map(|l| l.tls_handshake_timeout_secs)
+            .unwrap_or(busbar_substrate::config::limits::DEFAULT_TLS_HANDSHAKE_TIMEOUT_SECS),
+    )
 }
 
 /// Max wall-clock time allowed BETWEEN inbound request-body frames before the connection is dropped.
@@ -62,10 +85,14 @@ fn handshake_timeout() -> Duration {
 /// permits indefinitely, starving real traffic. `DefaultBodyLimit` caps total SIZE, not TIME between
 /// frames, so it does not help. This wraps every inbound body in a [`TimeoutBody`] that trips when no
 /// frame arrives within this bound. Operator-tunable via `limits.request_body_read_timeout_secs`
-/// (default 30s), read per connection through the process-wide `crate::limits` install; falls back to
-/// the default when limits aren't installed (tests / pre-install).
+/// (default 30s), read per connection through the process-wide `busbar_substrate::config::limits`
+/// install; falls back to the default when limits aren't installed (tests / pre-install).
 fn body_read_timeout() -> Duration {
-    Duration::from_secs(crate::limits::request_body_read_timeout_secs())
+    Duration::from_secs(
+        busbar_substrate::config::limits::installed()
+            .map(|l| l.request_body_read_timeout_secs)
+            .unwrap_or(busbar_substrate::config::limits::DEFAULT_REQUEST_BODY_READ_TIMEOUT_SECS),
+    )
 }
 
 /// MINIMUM sustained throughput a body read must maintain once the grace period has elapsed. The
@@ -106,143 +133,43 @@ use hyper_util::rt::{TokioExecutor, TokioIo};
 use hyper_util::server::conn::auto::Builder as ConnBuilder;
 use hyper_util::server::graceful::GracefulShutdown;
 use hyper_util::service::TowerToHyperService;
-use rustls::pki_types::pem::PemObject;
-use rustls::pki_types::{CertificateDer, PrivateKeyDer};
-use rustls::server::WebPkiClientVerifier;
-use rustls::{RootCertStore, ServerConfig};
+use rustls::ServerConfig;
 use tokio::net::TcpListener;
 use tokio_rustls::TlsAcceptor;
 
-use crate::config::TlsCfg;
-
-/// Install ring's [`rustls::crypto::CryptoProvider`] as the process default.
+/// Resolve `tls`'s cert/key/CA [`busbar_api::SecretRef`]s to PEM bytes through the SAME neutral
+/// `busbar_substrate::tls::read_pem` seam `busbar-core`'s (deleted) `tls::load_cert_chain`/
+/// `load_private_key`/`load_client_roots` always read through, then hand the resolved
+/// `busbar_unit_transport_key::TlsMaterial` to the unit's `build_server_config` — the one live copy
+/// of the parsing logic those three (deleted) core functions duplicated. A resolve or parse failure
+/// therefore names the identical secret SOURCE, in the identical words, core's own copy always did.
 ///
-/// Idempotent and safe to call alongside reqwest/hyper-rustls, which also use ring: a "provider
-/// already installed" error is expected and ignored, because all we require is that *a ring provider*
-/// is the process default before any `ServerConfig` is built. Must run before [`build_server_config`].
-pub fn install_crypto_provider() {
-    // Err(_) => some other code path already installed a provider. Since busbar only ever links ring,
-    // that provider is ring too, so there is nothing to fix and nothing to warn about.
-    let _ = rustls::crypto::ring::default_provider().install_default();
-}
-
-/// Resolve a TLS secret reference to its PEM bytes, mapping any resolve error into a clear,
-/// source-named message. Never logs contents.
+/// # Errors
 ///
-/// The ONE turn-a-`SecretRef`-into-TLS-PEM function now lives NEUTRALLY in
-/// [`busbar_substrate::tls::read_pem`] and is re-exported here so this crate's inbound-listener call
-/// sites (`load_cert_chain`/`load_private_key`/`load_client_roots`) are unchanged — and so the A2A
-/// plane's OUTBOUND client identity resolver names the neutral home rather than reaching into core.
-/// One place in the tree turns a `SecretRef` into TLS PEM; a second would be a second place for the
-/// "never echo what you read" rule to be forgotten.
-pub(crate) use busbar_substrate::tls::read_pem;
-
-/// Parse the PEM certificate chain (leaf first). Errors name the secret source; cert bytes are
-/// public, but we still avoid echoing them.
-fn load_cert_chain(
-    resolver: &crate::config::secret::SecretResolver,
-    secret: &crate::config::SecretRef,
-) -> Result<Vec<CertificateDer<'static>>, String> {
-    let src = secret.describe();
-    let bytes = read_pem(resolver, secret, "cert")?;
-    let certs = CertificateDer::pem_slice_iter(&bytes)
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| format!("cannot parse TLS cert ({src}): {e}"))?;
-    if certs.is_empty() {
-        return Err(format!(
-            "TLS cert ({src}) contains no certificates (expected a PEM chain, leaf first)"
-        ));
-    }
-    Ok(certs)
-}
-
-/// Parse the PEM private key, accepting PKCS#8, PKCS#1 (RSA), or SEC1 (EC) encodings. NEVER logs key
-/// material - error messages name only the secret source.
-fn load_private_key(
-    resolver: &crate::config::secret::SecretResolver,
-    secret: &crate::config::SecretRef,
-) -> Result<PrivateKeyDer<'static>, String> {
-    let src = secret.describe();
-    let bytes = read_pem(resolver, secret, "key")?;
-    // `PrivateKeyDer::from_pem_slice` accepts PKCS#8, PKCS#1 (RSA), and SEC1 (EC) sections, picking the
-    // first private-key section it finds. `NoItemsFound` means none was present; any other variant is a
-    // genuine parse error. Neither path echoes key material - error messages name only the source.
-    use rustls::pki_types::pem::Error as PemError;
-    PrivateKeyDer::from_pem_slice(&bytes).map_err(|e| match e {
-        PemError::NoItemsFound => {
-            format!("TLS key ({src}) contains no private key (expected PKCS#8 / PKCS#1 / SEC1 PEM)")
-        }
-        other => format!("cannot parse TLS key ({src}): {other}"),
-    })
-}
-
-/// Build the client-cert verifier root store from the operator's CA bundle (mTLS).
-fn load_client_roots(
-    resolver: &crate::config::secret::SecretResolver,
-    secret: &crate::config::SecretRef,
-) -> Result<RootCertStore, String> {
-    let src = secret.describe();
-    let bytes = read_pem(resolver, secret, "client_ca")?;
-    let cas = CertificateDer::pem_slice_iter(&bytes)
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| format!("cannot parse TLS client_ca ({src}): {e}"))?;
-    if cas.is_empty() {
-        return Err(format!("TLS client_ca ({src}) contains no CA certificates"));
-    }
-    let mut roots = RootCertStore::empty();
-    for ca in cas {
-        roots
-            .add(ca)
-            .map_err(|e| format!("invalid CA certificate in TLS client_ca ({src}): {e}"))?;
-    }
-    Ok(roots)
-}
-
-/// Construct the rustls [`ServerConfig`] from the operator's [`TlsCfg`].
-///
-/// * `client_ca` present ⇒ a [`WebPkiClientVerifier`] is installed: the client MUST present a
-///   certificate chaining to that CA or the handshake fails (mTLS required).
-/// * `client_ca` absent ⇒ `with_no_client_auth()` (server-only TLS).
-///
-/// ALPN advertises only `http/1.1` — busbar's axum server speaks http/1.1, so we must not advertise
-/// h2. Returns a clear, source-named error on any load/parse problem (the caller turns it into `die`).
+/// A listener's material could not be resolved through `resolver`, or did not parse into a usable
+/// certificate and key. The message names the secret's SOURCE and never its bytes.
 pub fn build_server_config(
     tls: &TlsCfg,
-    resolver: &crate::config::secret::SecretResolver,
+    resolver: &busbar_core::config::secret::SecretResolver,
 ) -> Result<ServerConfig, String> {
-    let certs = load_cert_chain(resolver, &tls.cert)?;
-    let key = load_private_key(resolver, &tls.key)?;
-
-    let builder = ServerConfig::builder();
-
-    let builder = match &tls.client_ca {
-        Some(ca) => {
-            let roots = load_client_roots(resolver, ca)?;
-            let verifier = WebPkiClientVerifier::builder(Arc::new(roots))
-                .build()
-                .map_err(|e| {
-                    format!(
-                        "cannot build client-cert verifier from TLS client_ca ({}): {e}",
-                        ca.describe()
-                    )
-                })?;
-            builder.with_client_cert_verifier(verifier)
-        }
-        None => builder.with_no_client_auth(),
+    let cert_pem = busbar_substrate::tls::read_pem(resolver, &tls.cert, "cert")?;
+    let key_pem = busbar_substrate::tls::read_pem(resolver, &tls.key, "key")?;
+    let (client_ca_pem, client_ca_source) = match &tls.client_ca {
+        Some(ca) => (
+            Some(busbar_substrate::tls::read_pem(resolver, ca, "client_ca")?),
+            Some(ca.describe()),
+        ),
+        None => (None, None),
     };
-
-    let mut config = builder.with_single_cert(certs, key).map_err(|e| {
-        format!(
-            "TLS cert/key are not a valid pair (cert {}, key {}): {e}",
-            tls.cert.describe(),
-            tls.key.describe()
-        )
-    })?;
-
-    // http/1.1 only — busbar's axum 0.7 server does not serve h2.
-    config.alpn_protocols = vec![b"http/1.1".to_vec()];
-
-    Ok(config)
+    let material = busbar_unit_transport_key::TlsMaterial {
+        cert_pem,
+        cert_source: tls.cert.describe(),
+        key_pem,
+        key_source: tls.key.describe(),
+        client_ca_pem,
+        client_ca_source,
+    };
+    busbar_unit_transport_key::build_server_config(&material)
 }
 
 /// THE ONE ACCEPT-ERROR POLICY, shared by both listener loops below.
@@ -913,5 +840,5 @@ async fn serve_one(
 }
 
 #[cfg(test)]
-#[path = "tests/tls_tests.rs"]
+#[path = "tests/listener.rs"]
 mod tests;

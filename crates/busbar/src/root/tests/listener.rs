@@ -1,8 +1,16 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for `crates/busbar-core/src/tls.rs`.
-
+//! Tests for `root/listener.rs`. MOVED BY IDENTITY from `busbar-core/src/tests/tls_tests.rs`
+//! (TLS-1) — assertions and scenarios are unchanged; only the paths crossing the crate boundary
+//! (`TlsCfg`, `SecretRef`, `SecretResolver`, `LimitsResolved`, `LIMITS_TEST_LOCK`, `InstallGuard`)
+//! now name their canonical `busbar_substrate`/`busbar_core` homes instead of `crate::`, and
+//! `spawn_tls_server`/`bad_cert_path_errors_clearly`/`malformed_cert_errors_clearly`/
+//! `server_posture_matches_the_1_5_5_defaults` build the `ServerConfig` through `super::
+//! build_server_config` (this file's bridge to `busbar_unit_transport_key`) rather than the old
+//! `tls::build_server_config(TlsCfg, SecretResolver)` signature — the parsing IT calls is the
+//! same, now-unit-owned code, so the error text and posture assertions are unchanged.
+//!
 //! End-to-end TLS / mTLS transport tests. Each spins a real busbar TLS listener on an ephemeral
 //! port with rcgen-generated certs and drives it with a real reqwest https client over the wire —
 //! exercising the actual rustls handshake (incl. client-cert verification), not a mock.
@@ -16,22 +24,21 @@ use rcgen::{CertificateParams, CertifiedKey, IsCa, Issuer, KeyPair};
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 
-use crate::config::TlsCfg;
+use busbar_substrate::config::sections::TlsCfg;
 
-/// `crate::limits::install` is a PROCESS-GLOBAL swap, and cargo runs this file's `#[tokio::test]`
-/// fns concurrently by default. Any test that installs a non-default `LimitsResolved` (the
-/// body-read-timeout / throughput-floor / total-deadline tests below) can otherwise stomp a
-/// concurrently-running sibling's installed value mid-test — observed directly: the throughput
-/// floor and total-deadline tests both pass in isolation but fail when run alongside each other.
-/// Every test that calls `crate::limits::install` holds this for its ENTIRE body (not just the
-/// install call), so no two such tests are ever mid-flight at once. An async-aware
-/// `tokio::sync::Mutex`, not `std::sync::Mutex`: every holder awaits (socket I/O) while holding
-/// it, and holding a `std` mutex guard across an await point risks blocking the executor thread
-/// underneath a parked task (clippy's `await_holding_lock`, correctly `-D warnings` here).
-/// MOVED to `crate::limits` (same lock, same rules) so that the `InstallGuard` tests living
-/// beside the static they mutate are serialized against these too — a lock only this file held
-/// protected these tests from each other but not from those, or those from these.
-use crate::limits::LIMITS_TEST_LOCK;
+/// `busbar_substrate::config::limits::install`/`set_installed` is a PROCESS-GLOBAL swap, and cargo
+/// runs this file's `#[tokio::test]` fns concurrently by default. Any test that installs a
+/// non-default `LimitsResolved` (the body-read-timeout / throughput-floor / total-deadline tests
+/// below) can otherwise stomp a concurrently-running sibling's installed value mid-test — observed
+/// directly: the throughput floor and total-deadline tests both pass in isolation but fail when run
+/// alongside each other. Every test that installs non-default limits holds this for its ENTIRE
+/// body (not just the install call), so no two such tests are ever mid-flight at once. An
+/// async-aware `tokio::sync::Mutex`, not `std::sync::Mutex`: every holder awaits (socket I/O) while
+/// holding it, and holding a `std` mutex guard across an await point risks blocking the executor
+/// thread underneath a parked task (clippy's `await_holding_lock`, correctly `-D warnings` here).
+/// Named at its canonical substrate home directly — `busbar-core`'s `pub(crate)` re-export of the
+/// same static is not reachable from this crate.
+use busbar_substrate::config::limits::LIMITS_TEST_LOCK;
 
 /// THE ACCEPT-ERROR POLICY, asserted directly. Both listener loops route every `accept()` error
 /// through `AcceptBackoff`, so this covers the class rather than one loop.
@@ -133,12 +140,14 @@ fn gen_ca_and_leaf(cn_sans: Vec<String>) -> (String, String, String) {
 
 /// Boot a busbar TLS listener from a `TlsCfg` on an ephemeral port. Returns the bound address and
 /// a shutdown sender (drop or send to stop + drain). Mirrors `main`'s TLS branch exactly:
-/// install provider → build ServerConfig → `tls::serve`.
+/// install provider → build ServerConfig → `listener::serve`.
 async fn spawn_tls_server(tls: &TlsCfg) -> (SocketAddr, oneshot::Sender<()>) {
-    super::install_crypto_provider();
-    let server_config =
-        super::build_server_config(tls, &crate::config::secret::SecretResolver::builtins_only())
-            .expect("valid test TLS config");
+    busbar_unit_transport_key::install_crypto_provider();
+    let server_config = super::build_server_config(
+        tls,
+        &busbar_core::config::secret::SecretResolver::builtins_only(),
+    )
+    .expect("valid test TLS config");
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let (tx, rx) = oneshot::channel::<()>();
@@ -165,8 +174,8 @@ async fn tls_happy_path_trusted_client_gets_200() {
     let cert_file = temp_pem("srv-cert", &cert_pem);
     let key_file = temp_pem("srv-key", &key_pem);
     let tls = TlsCfg {
-        cert: crate::config::SecretRef::file(cert_file.to_string_lossy().into_owned()),
-        key: crate::config::SecretRef::file(key_file.to_string_lossy().into_owned()),
+        cert: busbar_api::SecretRef::file(cert_file.to_string_lossy().into_owned()),
+        key: busbar_api::SecretRef::file(key_file.to_string_lossy().into_owned()),
         client_ca: None,
     };
     let (addr, _stop) = spawn_tls_server(&tls).await;
@@ -195,9 +204,9 @@ async fn mtls_valid_client_cert_gets_200() {
     let key_file = temp_pem("m2-srv-key", &srv_key_pem);
     let ca_file = temp_pem("m2-ca", &ca_pem);
     let tls = TlsCfg {
-        cert: crate::config::SecretRef::file(cert_file.to_string_lossy().into_owned()),
-        key: crate::config::SecretRef::file(key_file.to_string_lossy().into_owned()),
-        client_ca: Some(crate::config::SecretRef::file(
+        cert: busbar_api::SecretRef::file(cert_file.to_string_lossy().into_owned()),
+        key: busbar_api::SecretRef::file(key_file.to_string_lossy().into_owned()),
+        client_ca: Some(busbar_api::SecretRef::file(
             ca_file.to_string_lossy().into_owned(),
         )),
     };
@@ -230,9 +239,9 @@ async fn mtls_rejects_bad_client_then_serves_valid() {
     let key_file = temp_pem("m3-srv-key", &srv_key_pem);
     let ca_file = temp_pem("m3-ca", &ca_pem);
     let tls = TlsCfg {
-        cert: crate::config::SecretRef::file(cert_file.to_string_lossy().into_owned()),
-        key: crate::config::SecretRef::file(key_file.to_string_lossy().into_owned()),
-        client_ca: Some(crate::config::SecretRef::file(
+        cert: busbar_api::SecretRef::file(cert_file.to_string_lossy().into_owned()),
+        key: busbar_api::SecretRef::file(key_file.to_string_lossy().into_owned()),
+        client_ca: Some(busbar_api::SecretRef::file(
             ca_file.to_string_lossy().into_owned(),
         )),
     };
@@ -313,13 +322,13 @@ async fn plain_http_still_works_without_tls() {
 #[test]
 fn bad_cert_path_errors_clearly() {
     let tls = TlsCfg {
-        cert: crate::config::SecretRef::file("/nonexistent/busbar/does-not-exist-cert.pem"),
-        key: crate::config::SecretRef::file("/nonexistent/busbar/does-not-exist-key.pem"),
+        cert: busbar_api::SecretRef::file("/nonexistent/busbar/does-not-exist-cert.pem"),
+        key: busbar_api::SecretRef::file("/nonexistent/busbar/does-not-exist-key.pem"),
         client_ca: None,
     };
     let err = super::build_server_config(
         &tls,
-        &crate::config::secret::SecretResolver::builtins_only(),
+        &busbar_core::config::secret::SecretResolver::builtins_only(),
     )
     .expect_err("missing cert file must error");
     assert!(
@@ -335,13 +344,13 @@ fn malformed_cert_errors_clearly() {
     let (_c, key_pem) = gen_self_signed();
     let key_file = temp_pem("ok-key", &key_pem);
     let tls = TlsCfg {
-        cert: crate::config::SecretRef::file(cert_file.to_string_lossy().into_owned()),
-        key: crate::config::SecretRef::file(key_file.to_string_lossy().into_owned()),
+        cert: busbar_api::SecretRef::file(cert_file.to_string_lossy().into_owned()),
+        key: busbar_api::SecretRef::file(key_file.to_string_lossy().into_owned()),
         client_ca: None,
     };
     let err = super::build_server_config(
         &tls,
-        &crate::config::secret::SecretResolver::builtins_only(),
+        &busbar_core::config::secret::SecretResolver::builtins_only(),
     )
     .expect_err("malformed cert must error");
     assert!(err.contains("cert"), "error must reference the cert: {err}");
@@ -370,11 +379,11 @@ async fn body_read_timeout_trips_on_stalled_body() {
     // — LIMITS_TEST_LOCK only serializes the four installers in THIS file against each other,
     // not against every reader elsewhere. The guard restores whatever was installed before it
     // (never committed, so it always rolls back) when it drops at the end of this test.
-    let limits = crate::config::LimitsResolved {
+    let limits = busbar_substrate::config::limits::LimitsResolved {
         request_body_read_timeout_secs: 1,
-        ..crate::config::LimitsResolved::default()
+        ..busbar_substrate::config::limits::LimitsResolved::default()
     };
-    let _limits_guard = crate::limits::InstallGuard::install(&limits);
+    let _limits_guard = busbar_substrate::config::limits::InstallGuard::install(&limits);
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -421,11 +430,11 @@ async fn body_read_timeout_trips_on_stalled_body() {
 
 /// TEST — AN UNCOMMITTED `InstallGuard`'s ROLLBACK GOVERNS A REAL INBOUND CONNECTION.
 ///
-/// The end-to-end half of the `InstallGuard` coverage in `limits/tests/limits_tests.rs`: those
-/// tests assert the rolled-back value through the accessors (including from another thread),
-/// this one asserts the SERVER BEHAVIOUR an actual client gets. It is the same slow-loris
-/// scenario as `body_read_timeout_trips_on_stalled_body` with the sign flipped: a rejected
-/// candidate config carrying a 1s body-read timeout is installed through a guard and then
+/// The end-to-end half of the `InstallGuard` coverage in `busbar-core`'s own `limits/tests/
+/// limits_tests.rs`: those tests assert the rolled-back value through the accessors (including
+/// from another thread), this one asserts the SERVER BEHAVIOUR an actual client gets. It is the
+/// same slow-loris scenario as `body_read_timeout_trips_on_stalled_body` with the sign flipped: a
+/// rejected candidate config carrying a 1s body-read timeout is installed through a guard and then
 /// dropped WITHOUT commit (the failed-apply path), and only AFTER that rollback is the
 /// connection made. The stalled body must now survive well past 1s, because the bound in force
 /// is the restored 30s default that `serve_one_plain` reads per connection.
@@ -442,15 +451,21 @@ async fn a_rejected_configs_limits_do_not_govern_later_connections() {
     let _guard = LIMITS_TEST_LOCK.lock().await;
     // The "accepted config that is already serving": the historical defaults (30s inter-frame).
     // Itself guarded so this test leaks nothing to the rest of the binary.
-    let _baseline = crate::limits::InstallGuard::install(&crate::config::LimitsResolved::default());
+    let _baseline = busbar_substrate::config::limits::InstallGuard::install(
+        &busbar_substrate::config::limits::LimitsResolved::default(),
+    );
     {
         // A candidate config whose build then FAILS. Its limits are live while the build runs…
-        let _rejected = crate::limits::InstallGuard::install(&crate::config::LimitsResolved {
-            request_body_read_timeout_secs: 1,
-            ..crate::config::LimitsResolved::default()
-        });
+        let _rejected = busbar_substrate::config::limits::InstallGuard::install(
+            &busbar_substrate::config::limits::LimitsResolved {
+                request_body_read_timeout_secs: 1,
+                ..busbar_substrate::config::limits::LimitsResolved::default()
+            },
+        );
         assert_eq!(
-            crate::limits::request_body_read_timeout_secs(),
+            busbar_substrate::config::limits::installed()
+                .unwrap()
+                .request_body_read_timeout_secs,
             1,
             "sanity: the candidate's bound must really be installed, or the rollback below \
                  proves nothing"
@@ -517,12 +532,10 @@ async fn throughput_floor_trips_on_a_dribble_the_inter_frame_timer_cannot_catch(
     // this timer NEVER fires (the dribble is far faster than 30s per byte). Through the RAII guard,
     // not the bare setter, for the reason the sibling tests in this file already write down: a bare
     // `install` REPLACES the whole struct behind the process-global RwLock with no restore, so it
-    // leaves the limits INSTALLED for every later reader in the binary — and `limits_tests.rs`'s
-    // `uninstalled_accessors_return_historical_defaults` asserts against the UNINSTALLED state.
-    // That it currently passes is an accident of the values happening to equal the defaults; the
-    // guard makes it a property instead of a coincidence.
-    let _limits_guard =
-        crate::limits::InstallGuard::install(&crate::config::LimitsResolved::default());
+    // leaves the limits INSTALLED for every later reader in the binary.
+    let _limits_guard = busbar_substrate::config::limits::InstallGuard::install(
+        &busbar_substrate::config::limits::LimitsResolved::default(),
+    );
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -599,10 +612,9 @@ async fn a_fast_large_upload_is_not_killed_by_the_throughput_floor() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     let _guard = LIMITS_TEST_LOCK.lock().await;
-    // Through the RAII guard, not the bare setter — see the note in
-    // `throughput_floor_trips_on_a_dribble_the_inter_frame_timer_cannot_catch`.
-    let _limits_guard =
-        crate::limits::InstallGuard::install(&crate::config::LimitsResolved::default());
+    let _limits_guard = busbar_substrate::config::limits::InstallGuard::install(
+        &busbar_substrate::config::limits::LimitsResolved::default(),
+    );
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -679,18 +691,14 @@ async fn total_deadline_trips_on_a_body_that_stays_above_the_floor_forever() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     let _guard = LIMITS_TEST_LOCK.lock().await;
-    let limits = crate::config::LimitsResolved {
+    let limits = busbar_substrate::config::limits::LimitsResolved {
         request_body_max_bytes: 2048, // total_body_deadline() = 2048 / 1024 B/s = 2s
-        ..crate::config::LimitsResolved::default()
+        ..busbar_substrate::config::limits::LimitsResolved::default()
     };
     // Through the RAII guard, not the bare setter: a bare `install` of this 2 KiB cap LEAKS it
-    // to every test in the binary that reads limits afterward (`install` replaces the whole
-    // struct with no restore), and `limits/tests/limits_tests.rs`'s
-    // `uninstalled_accessors_return_historical_defaults` asserts
-    // `busbar_substrate::proxy::max_translate_body_bytes() == DEFAULT_REQUEST_BODY_MAX_BYTES` — so whether the suite
-    // passed depended on that test happening to run BEFORE this one. Never committed, so it
-    // always rolls back at the end of this test.
-    let _limits_guard = crate::limits::InstallGuard::install(&limits);
+    // to every test in the binary that reads limits afterward. Never committed, so it always
+    // rolls back at the end of this test.
+    let _limits_guard = busbar_substrate::config::limits::InstallGuard::install(&limits);
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -911,32 +919,33 @@ fn recv_side_from_std_failure_releases_the_sender_increment() {
 #[tokio::test]
 async fn server_posture_matches_the_1_5_5_defaults() {
     let _guard = LIMITS_TEST_LOCK.lock().await;
-    // Uninstalled `crate::limits` state: the historical hardcoded defaults these two accessors
-    // fall back to, exactly like `uninstalled_accessors_return_historical_defaults` pins for the
-    // sibling probe-interval/timeout accessors.
+    // Uninstalled state: the historical hardcoded defaults `handshake_timeout`/
+    // `body_read_timeout` fall back to, exactly like `busbar-core`'s own
+    // `uninstalled_accessors_return_historical_defaults` pins for the sibling
+    // probe-interval/timeout accessors.
     assert_eq!(
-        crate::limits::tls_handshake_timeout_secs(),
-        10,
+        super::handshake_timeout(),
+        Duration::from_secs(10),
         "tls_handshake_timeout_secs default"
     );
     assert_eq!(
-        crate::limits::request_body_read_timeout_secs(),
-        30,
+        super::body_read_timeout(),
+        Duration::from_secs(30),
         "request_body_read_timeout_secs default"
     );
 
-    super::install_crypto_provider();
+    busbar_unit_transport_key::install_crypto_provider();
     let (cert_pem, key_pem) = gen_self_signed();
     let cert_file = temp_pem("posture-cert", &cert_pem);
     let key_file = temp_pem("posture-key", &key_pem);
     let tls = TlsCfg {
-        cert: crate::config::SecretRef::file(cert_file.to_string_lossy().into_owned()),
-        key: crate::config::SecretRef::file(key_file.to_string_lossy().into_owned()),
+        cert: busbar_api::SecretRef::file(cert_file.to_string_lossy().into_owned()),
+        key: busbar_api::SecretRef::file(key_file.to_string_lossy().into_owned()),
         client_ca: None,
     };
     let server_config = super::build_server_config(
         &tls,
-        &crate::config::secret::SecretResolver::builtins_only(),
+        &busbar_core::config::secret::SecretResolver::builtins_only(),
     )
     .expect("valid test TLS config");
     assert_eq!(

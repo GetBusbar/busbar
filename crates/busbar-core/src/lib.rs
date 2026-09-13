@@ -222,7 +222,11 @@ pub mod store;
 pub mod telemetry;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
-pub mod tls;
+// `tls` is DELETED (TLS-1): its cert/key/CA parsing + `build_server_config` duplicated
+// `busbar-unit-transport-key`'s own (now the one live copy; `main.rs` re-points through it), and
+// its axum/hyper accept-loop (`AcceptBackoff`, `ConnBalancer`, `serve`, `serve_plain`) was
+// boot/root-shaped, single-reader (`main.rs`) code with no twin — MOVED BY IDENTITY to the
+// composition root's `crates/busbar/src/root/listener.rs`.
 pub use busbar_substrate::transport;
 
 #[cfg(test)]

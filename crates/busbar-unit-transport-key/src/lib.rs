@@ -99,11 +99,21 @@ pub trait AccessJournal {
 pub struct TlsMaterial {
     /// PEM certificate chain, leaf first.
     pub cert_pem: Vec<u8>,
+    /// Where `cert_pem` was resolved from, as the secret source spells it. Named in parse-error
+    /// messages so a boot failure says which secret was wrong — the same secret-source naming
+    /// `busbar-core::tls`'s (deleted) copy of these functions always emitted, so re-pointing a
+    /// caller at this unit changes no boot-diagnostic text.
+    pub cert_source: String,
     /// PEM private key (PKCS#8, PKCS#1, or SEC1).
     pub key_pem: Vec<u8>,
+    /// Where `key_pem` was resolved from; see [`cert_source`](Self::cert_source).
+    pub key_source: String,
     /// PEM CA bundle for verifying a presented client certificate; `None` means server-only TLS
     /// (no mTLS).
     pub client_ca_pem: Option<Vec<u8>>,
+    /// Where `client_ca_pem` was resolved from, when present; see
+    /// [`cert_source`](Self::cert_source).
+    pub client_ca_source: Option<String>,
 }
 
 /// Resolve one listener's TLS key material through `source`, journaling one [`AccessJournal`] entry
@@ -140,51 +150,57 @@ pub fn resolve_tls_material(
 
     Ok(TlsMaterial {
         cert_pem,
+        cert_source: cert_location.to_string(),
         key_pem,
+        key_source: key_location.to_string(),
         client_ca_pem,
+        client_ca_source: client_ca_location.map(|s| s.to_string()),
     })
 }
 
 /// Parse the PEM certificate chain (leaf first). Cert bytes are public, but errors still avoid
-/// echoing them — only the byte length is safe to name and even that is omitted here, matching the
-/// ported original's stance of naming only the secret SOURCE.
-fn load_cert_chain(pem: &[u8]) -> Result<Vec<CertificateDer<'static>>, String> {
+/// echoing them; `src` (the secret's SOURCE, never its bytes) is named in every error, matching
+/// `busbar-core::tls`'s original (now-deleted) copy of this function byte for byte.
+fn load_cert_chain(pem: &[u8], src: &str) -> Result<Vec<CertificateDer<'static>>, String> {
     let certs = CertificateDer::pem_slice_iter(pem)
         .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| format!("cannot parse TLS cert: {e}"))?;
+        .map_err(|e| format!("cannot parse TLS cert ({src}): {e}"))?;
     if certs.is_empty() {
-        return Err(
-            "TLS cert contains no certificates (expected a PEM chain, leaf first)".to_string(),
-        );
+        return Err(format!(
+            "TLS cert ({src}) contains no certificates (expected a PEM chain, leaf first)"
+        ));
     }
     Ok(certs)
 }
 
-/// Parse the PEM private key, accepting PKCS#8, PKCS#1 (RSA), or SEC1 (EC) encodings. Never logs
-/// key material.
-fn load_private_key(pem: &[u8]) -> Result<PrivateKeyDer<'static>, String> {
+/// Parse the PEM private key, accepting PKCS#8, PKCS#1 (RSA), or SEC1 (EC) encodings. NEVER logs
+/// key material — errors name only `src`, the secret's SOURCE, matching `busbar-core::tls`'s
+/// original (now-deleted) copy of this function byte for byte.
+fn load_private_key(pem: &[u8], src: &str) -> Result<PrivateKeyDer<'static>, String> {
     use rustls::pki_types::pem::Error as PemError;
     PrivateKeyDer::from_pem_slice(pem).map_err(|e| match e {
         PemError::NoItemsFound => {
-            "TLS key contains no private key (expected PKCS#8 / PKCS#1 / SEC1 PEM)".to_string()
+            format!("TLS key ({src}) contains no private key (expected PKCS#8 / PKCS#1 / SEC1 PEM)")
         }
-        other => format!("cannot parse TLS key: {other}"),
+        other => format!("cannot parse TLS key ({src}): {other}"),
     })
 }
 
-/// Build the client-cert verifier root store from the operator's CA bundle (mTLS).
-fn load_client_roots(pem: &[u8]) -> Result<RootCertStore, String> {
+/// Build the client-cert verifier root store from the operator's CA bundle (mTLS). Errors name
+/// only `src`, the secret's SOURCE, matching `busbar-core::tls`'s original (now-deleted) copy of
+/// this function byte for byte.
+fn load_client_roots(pem: &[u8], src: &str) -> Result<RootCertStore, String> {
     let cas = CertificateDer::pem_slice_iter(pem)
         .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| format!("cannot parse TLS client_ca: {e}"))?;
+        .map_err(|e| format!("cannot parse TLS client_ca ({src}): {e}"))?;
     if cas.is_empty() {
-        return Err("TLS client_ca contains no CA certificates".to_string());
+        return Err(format!("TLS client_ca ({src}) contains no CA certificates"));
     }
     let mut roots = RootCertStore::empty();
     for ca in cas {
         roots
             .add(ca)
-            .map_err(|e| format!("invalid CA certificate in TLS client_ca: {e}"))?;
+            .map_err(|e| format!("invalid CA certificate in TLS client_ca ({src}): {e}"))?;
     }
     Ok(roots)
 }
@@ -208,26 +224,30 @@ pub const DEFAULT_ALPN: &[&[u8]] = &[b"http/1.1"];
 /// it. A caller that provisions with a different declared protocol list ([`provision_server`],
 /// [`provision_server_named`]) overrides it after this returns.
 pub fn build_server_config(material: &TlsMaterial) -> Result<ServerConfig, String> {
-    let certs = load_cert_chain(&material.cert_pem)?;
-    let key = load_private_key(&material.key_pem)?;
+    let certs = load_cert_chain(&material.cert_pem, &material.cert_source)?;
+    let key = load_private_key(&material.key_pem, &material.key_source)?;
 
     let builder = ServerConfig::builder();
     let builder = match &material.client_ca_pem {
         Some(ca_pem) => {
-            let roots = load_client_roots(ca_pem)?;
+            let ca_src = material.client_ca_source.as_deref().unwrap_or("client_ca");
+            let roots = load_client_roots(ca_pem, ca_src)?;
             let verifier = WebPkiClientVerifier::builder(Arc::new(roots))
                 .build()
                 .map_err(|e| {
-                    format!("cannot build client-cert verifier from TLS client_ca: {e}")
+                    format!("cannot build client-cert verifier from TLS client_ca ({ca_src}): {e}")
                 })?;
             builder.with_client_cert_verifier(verifier)
         }
         None => builder.with_no_client_auth(),
     };
 
-    let mut config = builder
-        .with_single_cert(certs, key)
-        .map_err(|e| format!("TLS cert/key are not a valid pair: {e}"))?;
+    let mut config = builder.with_single_cert(certs, key).map_err(|e| {
+        format!(
+            "TLS cert/key are not a valid pair (cert {}, key {}): {e}",
+            material.cert_source, material.key_source
+        )
+    })?;
 
     config.alpn_protocols = vec![b"http/1.1".to_vec()];
     Ok(config)
@@ -357,21 +377,24 @@ pub struct NamedTlsLocations<'a> {
 /// listener builds several of these and installs them behind one resolver rather than baking a
 /// single one straight into a `ServerConfig`.
 fn certified_key(material: &TlsMaterial) -> Result<Arc<CertifiedKey>, String> {
-    let certs = load_cert_chain(&material.cert_pem)?;
-    let key = load_private_key(&material.key_pem)?;
+    let certs = load_cert_chain(&material.cert_pem, &material.cert_source)?;
+    let key = load_private_key(&material.key_pem, &material.key_source)?;
     let provider = rustls::crypto::ring::default_provider();
-    CertifiedKey::from_der(certs, key, &provider)
-        .map(Arc::new)
-        .map_err(|e| format!("TLS cert/key are not a valid pair: {e}"))
+    CertifiedKey::from_der(certs, key, &provider).map(Arc::new).map_err(|e| {
+        format!(
+            "TLS cert/key are not a valid pair (cert {}, key {}): {e}",
+            material.cert_source, material.key_source
+        )
+    })
 }
 
 /// Build the client-cert verifier for a named-SNI listener's shared mTLS setting. Kept apart from
 /// [`build_server_config`]'s inline equivalent so that function is untouched by this addition.
-fn client_verifier(client_ca_pem: &[u8]) -> Result<Arc<dyn ClientCertVerifier>, String> {
-    let roots = load_client_roots(client_ca_pem)?;
+fn client_verifier(client_ca_pem: &[u8], src: &str) -> Result<Arc<dyn ClientCertVerifier>, String> {
+    let roots = load_client_roots(client_ca_pem, src)?;
     WebPkiClientVerifier::builder(Arc::new(roots))
         .build()
-        .map_err(|e| format!("cannot build client-cert verifier from TLS client_ca: {e}"))
+        .map_err(|e| format!("cannot build client-cert verifier from TLS client_ca ({src}): {e}"))
 }
 
 /// Picks a [`CertifiedKey`] by the `ClientHello`'s SNI name, falling back to the listener's
@@ -482,7 +505,13 @@ pub fn provision_server_named(
 
     let builder = ServerConfig::builder();
     let builder = match &default_material.client_ca_pem {
-        Some(ca_pem) => builder.with_client_cert_verifier(client_verifier(ca_pem)?),
+        Some(ca_pem) => {
+            let ca_src = default_material
+                .client_ca_source
+                .as_deref()
+                .unwrap_or("client_ca");
+            builder.with_client_cert_verifier(client_verifier(ca_pem, ca_src)?)
+        }
         None => builder.with_no_client_auth(),
     };
     let resolver = SniCertResolver::build(named, default)?;
