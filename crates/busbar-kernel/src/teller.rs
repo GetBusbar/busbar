@@ -192,6 +192,26 @@ impl Kernel {
         UsageToken::mint(&self.seal)
     }
 
+    /// The trust unit's token, as the composition root lends it to a plane's bindings.
+    ///
+    /// The SIXTH token minted outside the loop, and the one this set was missing. `Trust::verify`
+    /// asks for a `TrustToken` BESIDE the step's own `UnitToken<Verify>`: the step token says which
+    /// step is running, and this one says the destination was verified under the node's own
+    /// authority rather than assembled by whoever held the value. A composition that resolves a
+    /// plane's bindings at boot holds neither — the verify step has not begun — so there was no
+    /// step whose token could stand in, and a root that needed one had to spell
+    /// `KernelSeal::acquire_for_kernel()` itself. That is the one symbol which must not be spelled
+    /// outside this crate, and `token-sealed:kernel-seal` is right to read it wherever it appears.
+    ///
+    /// It mints nothing a step could not: a verified destination is a FACT about a target the trust
+    /// unit already decided, and holding the token moves no money and opens no hold.
+    ///
+    /// Kept beside the other five and named the same way, so the source scan that accounts for every
+    /// mint sees this one too.
+    pub fn trust_token(&self) -> TrustToken {
+        TrustToken::mint(&self.seal)
+    }
+
     /// The seal itself, for the other two places in the kernel that mint tokens: the recovery
     /// module, which materialises a hold from a journal record, and the node's sweep, which is the
     /// second and last holder of an exit token.

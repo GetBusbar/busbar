@@ -381,21 +381,13 @@ impl A2aNode {
         records: RecordLegs,
         task_ttl_secs: u64,
     ) -> Self {
+        let kernel = crate::root::kernel::new_kernel();
         A2aNode {
-            // THE SEAL this node's verified destinations are minted under.
-            //
-            // MINTED HERE, AND THIS IS THE ONE SEAM THE KERNEL HAS NOT OPENED. `Trust::verify`
-            // requires a `TrustToken` beside the step's own `UnitToken<Verify>`, and the kernel
-            // mints an admit token, a transport-key token, a durability token and a usage token
-            // publicly but NOT this one — so a composition assembling this plane's bindings has
-            // nowhere to obtain one except the seal. It is stated rather than worked around: the
-            // repair is a `Kernel::trust_token()` sibling of the other four, which is a KERNEL line
-            // and therefore a MOVE, not an addition. Until it lands, `token-sealed:kernel-seal`
-            // reads this line and is RIGHT to.
-            trust_token: busbar_caps::TrustToken::mint(
-                &busbar_caps::KernelSeal::acquire_for_kernel(),
-            ),
-            kernel: crate::root::kernel::new_kernel(),
+            // THE TOKEN this node's verified destinations are minted under, FROM THE KERNEL.
+            // The mint is the kernel's own `trust_token()`, beside the five siblings it already
+            // lends: the seal is spelled inside `busbar-kernel` and nowhere else.
+            trust_token: kernel.trust_token(),
+            kernel,
             // The data listener already carries the operator-configured inbound-concurrency layer,
             // which is where admission-to-the-node is decided. A second cap here would be a second
             // answer to one question and the one that refused first would decide, silently. So the

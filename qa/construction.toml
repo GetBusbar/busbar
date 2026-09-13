@@ -154,6 +154,33 @@ key = "rules.legacy-reach.prefixes.busbar_substrate.figure"
 by = 1
 because = "moved verbatim from busbar-core/src/proto/registry.rs (52 lines): the composition root owns the boot installers. kind-isolation cell crate `busbar`, kind `substrate`. The root's busbar_core:: prefix falls 27 -> 25 and its total legacy reach falls 91 -> 90 in the same commit."
 
+# THE SIXTH MINT: `busbar_kernel::teller::Kernel::trust_token()` (crates/busbar-kernel/src/teller.rs,
+# 3 measured lines: the signature, the mint, the brace), declared beside the five siblings it joins —
+# `admit_token`, `transport_key_token`, `verbs_token`, `durability_token`/`ledger_token` and
+# `usage_token`. A MOVE BY IDENTITY, and both sides are in this commit: the composition root's
+# `crates/busbar/src/root/node_a2a.rs` spelled `busbar_caps::TrustToken::mint(&busbar_caps::
+# KernelSeal::acquire_for_kernel())` over four lines because `Trust::verify` asks for a `TrustToken`
+# beside the step's own `UnitToken<Verify>` and there was no public mint for it; those four lines
+# fall to one `kernel.trust_token()` call in the same commit, and `token-sealed:kernel-seal` — which
+# read that spelling and was RIGHT to — goes GREEN. The mint is not an addition to the kernel's
+# authority: it lends a token it already holds the seal for, over a value (a verified destination)
+# the trust unit already decided. `kernel_ceiling` and `union_ceiling` rise by the same three lines,
+# because teller.rs is counted in both.
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.kernel_files.teller.ceiling"
+by = 3
+because = "MOVE by identity: the sixth token mint, `Kernel::trust_token()`, three measured lines beside the five siblings in teller.rs. The composition root's four-line hand-rolled `TrustToken::mint(&KernelSeal::acquire_for_kernel())` in root/node_a2a.rs dies in THIS commit and becomes one `kernel.trust_token()` call, which is what takes `token-sealed:kernel-seal` from RED to GREEN. The kernel lends a token it already holds the seal for; nothing new is authorised."
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.kernel_ceiling"
+by = 3
+because = "MOVE by identity: the same three lines of `Kernel::trust_token()` in teller.rs, counted here because the kernel ceiling is the crate's own files plus the call-graph-reachable unit files. The root's four-line seal spelling falls in the same commit, so the tree holds three lines fewer of mint code in total and the one symbol that must not be spelled outside busbar-kernel is not spelled outside it."
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.union_ceiling"
+by = 3
+because = "MOVE by identity: the same three lines of `Kernel::trust_token()` carried through the union, which carries busbar-kernel whole. No caps, contract or unit-* line moves in this commit; the rise is the kernel's three and nothing else, and it is paid for by the four lines the composition root loses in the same commit."
+
 # THE CHAIN CACHE FACE: `busbar_unit_admission::{ChainCache, Chain, BucketView}`
 # (crates/busbar-unit-admission/src/cache.rs, 136 surface lines, + 2 module-wiring lines in that
 # crate's lib.rs = 138 measured). Every chain a resolved `GroupTable` can produce, walked ONCE at
@@ -649,7 +676,7 @@ identical counting rule to busbar-caps + busbar-contract once their proof tables
 this rule's own `loc-ceilings:caps-contract` row is not that row and is not removed by it -- the two \
 are expected to converge once the move lands, not to be reconciled here."""
 kernel_crate = "busbar-kernel"
-kernel_ceiling = 5382
+kernel_ceiling = 5385
 caps_crate = "busbar-caps"
 contract_crate = "busbar-contract"
 caps_contract_ceiling = 3681
@@ -657,7 +684,7 @@ unit_crate_glob = "busbar-unit-*"
 unit_total_ceiling = 15164
 verbs_crate = "busbar-unit-verbs"
 verbs_ceiling = 1428
-union_ceiling = 24227
+union_ceiling = 24230
 # Files (by basename, wherever they sit under busbar-kernel/src) whose bodies seed the call-graph
 # name-match: every identifier called from one of these files, that busbar-kernel does not itself
 # define, is looked up by name against every busbar-unit-* file.
@@ -666,7 +693,7 @@ teller_files = ["teller.rs"]
 [rules.loc-ceilings.kernel_files.teller]
 label = "Teller loop"
 patterns = ["teller.rs"]
-ceiling = 606
+ceiling = 609
 
 [rules.loc-ceilings.kernel_files.pump]
 label = "pump/scheduler"
