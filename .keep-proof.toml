@@ -54,7 +54,18 @@
 #              plane contributes admin verbs), and `billing`/`ledger` — because the rule this line
 #              is held to is that the money path stays byte-identical, and a family that is not
 #              replayed cannot testify to that.
-families = '^(a2a|boot|config|neutrality|admin\.ops|billing|ledger)([|.]|$)'
+#              AND `a2a` IS OUT OF THE FILTER, which is a correction rather than a narrowing.
+#              MEASURED (r4 §6 of `docs/design/1.6.0-a2a-node.md`): the 1.5.5 golden corpus is 915
+#              cells over 24 families and `a2a` IS NOT ONE OF THEM -- the only filename carrying the
+#              string is `neutrality__routes__a2a-shaped-404.json`, which the `neutrality` arm
+#              already replays. So the `a2a` arm matched nothing, and a filter arm that matches
+#              nothing does not fail quietly: it reads GREEN, and a reader takes that green for
+#              evidence about the plane's recorded bytes when it is evidence about an empty set.
+#              The tripwire is kept HERE, as this comment, rather than as a filter arm that lies:
+#              the first slot to RECORD a2a cells puts the arm back in the same commit that records
+#              them. Until then the byte proof for this plane is the real-binary capture, which is
+#              the only evidence that exists, and it now drives two callers.
+families = '^(boot|config|neutrality|admin\.ops|billing|ledger)([|.]|$)'
 tests = [
     "busbar",
     "busbar-plane-a2a",
