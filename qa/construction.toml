@@ -1212,3 +1212,86 @@ export = 1
 transport = 7
 loader = 1
 abi = 1
+
+# ------------------------------------------------------------------------------------------------
+# [gate.ceiling_raises] -- THE COMPOSITION ROOT'S ELEVEN CELLS, DECLARED BY IDENTITY
+# ------------------------------------------------------------------------------------------------
+#
+# `ceiling-rose` reads EVERY number in qa/kind-isolation.toml, and eleven of them are the `busbar`
+# crate's own `[[cell]]` rows. `busbar` is the composition root: the one crate ARCHITECTURE 1.2
+# permits to name every kind, because naming them is what composing them IS. A root cell rises when
+# the root mounts more, and there is nothing to drain -- draining it would mean the root composing
+# less. That is the standing WIRE_PERMITTED reading, and it is the ONLY rise on this branch that is
+# eligible for a declared raise: every other risen cell is either a retiring crate's own vocabulary
+# (recorded as dropped, see the commit above this one) or a surviving crate's, which is drained.
+#
+# Each entry names the file, the exact dotted path, BOTH numbers read off the base 28b0fbe46 (never
+# chained from this branch's own predecessor) and what the rise is made of. Each EXPIRES BY ITSELF:
+# the moment this lands the base carries the new number, the rise disappears, and an entry that
+# describes no rise is refused as stale. None of them can cover a second raise of the same ceiling.
+
+[gate.ceiling_raises."cell.0.count"]
+file = "qa/kind-isolation.toml"
+from = 122
+to = 149
+because = "busbar x api: the composition root composes what it mounts on this axis -- the root's own tests of the api kind it composes: units_a2a.rs (42), units_llm.rs (38), migration.rs (18), units_mcp.rs (16) and the two installers those tests drive. This is the root spelling the kind it owns the wiring for, in the one crate ARCHITECTURE 1.2 allows to name every kind; no other crate's cell rises to pay for it. Ordinal 0 is the busbar x api row -- this tree's raises() cannot key an array of tables by identity, and the row carries the same note beside its count."
+
+[gate.ceiling_raises."cell.2.count"]
+file = "qa/kind-isolation.toml"
+from = 302
+to = 315
+because = "busbar x caps: the composition root composes what it mounts on this axis -- the root's tests of the caps it hands each unit: units_voice.rs (67), units_admin.rs (32), units_a2a.rs (30), units_mcp.rs (26) and units_llm.rs (26). This is the root spelling the kind it owns the wiring for, in the one crate ARCHITECTURE 1.2 allows to name every kind; no other crate's cell rises to pay for it. Ordinal 2 is the busbar x caps row -- this tree's raises() cannot key an array of tables by identity, and the row carries the same note beside its count."
+
+[gate.ceiling_raises."cell.5.count"]
+file = "qa/kind-isolation.toml"
+from = 1063
+to = 1106
+because = "busbar x control: the composition root composes what it mounts on this axis -- the admin CONTROL surface the root now mounts itself: units_admin/mod.rs (157), units_admin/tests (268), kernel.rs (122), admin_mount.rs (100). This is the root spelling the kind it owns the wiring for, in the one crate ARCHITECTURE 1.2 allows to name every kind; no other crate's cell rises to pay for it. Ordinal 5 is the busbar x control row -- this tree's raises() cannot key an array of tables by identity, and the row carries the same note beside its count."
+
+[gate.ceiling_raises."cell.7.count"]
+file = "qa/kind-isolation.toml"
+from = 158
+to = 159
+because = "busbar x kernel: the composition root composes what it mounts on this axis -- one more spelling of the kernel the root builds, in the a2a unit wiring. This is the root spelling the kind it owns the wiring for, in the one crate ARCHITECTURE 1.2 allows to name every kind; no other crate's cell rises to pay for it. Ordinal 7 is the busbar x kernel row -- this tree's raises() cannot key an array of tables by identity, and the row carries the same note beside its count."
+
+[gate.ceiling_raises."cell.8.count"]
+file = "qa/kind-isolation.toml"
+from = 98
+to = 101
+because = "busbar x legacy: the composition root composes what it mounts on this axis -- three more names of the 1.5.x crates the root still composes while they drain, in main.rs and the manifest. This is the root spelling the kind it owns the wiring for, in the one crate ARCHITECTURE 1.2 allows to name every kind; no other crate's cell rises to pay for it. Ordinal 8 is the busbar x legacy row -- this tree's raises() cannot key an array of tables by identity, and the row carries the same note beside its count."
+
+[gate.ceiling_raises."cell.9.count"]
+file = "qa/kind-isolation.toml"
+from = 1798
+to = 1861
+because = "busbar x plane: the composition root composes what it mounts on this axis -- the root pairing each plane's declaration with its behaviour row and installing both: main.rs (251), units_voice tests (197), the manifest (179), plane_host_universal_purity.rs (155). This is the root spelling the kind it owns the wiring for, in the one crate ARCHITECTURE 1.2 allows to name every kind; no other crate's cell rises to pay for it. Ordinal 9 is the busbar x plane row -- this tree's raises() cannot key an array of tables by identity, and the row carries the same note beside its count."
+
+[gate.ceiling_raises."cell.10.count"]
+file = "qa/kind-isolation.toml"
+from = 28
+to = 30
+because = "busbar x plugin-tooling: the composition root composes what it mounts on this axis -- two more spellings of the plugin tooling the root's CLI drives, in cli_validate.rs. This is the root spelling the kind it owns the wiring for, in the one crate ARCHITECTURE 1.2 allows to name every kind; no other crate's cell rises to pay for it. Ordinal 10 is the busbar x plugin-tooling row -- this tree's raises() cannot key an array of tables by identity, and the row carries the same note beside its count."
+
+[gate.ceiling_raises."cell.11.count"]
+file = "qa/kind-isolation.toml"
+from = 5
+to = 8
+because = "busbar x secret: the composition root composes what it mounts on this axis -- three more spellings of the secret kind the root resolves for a transport, in transports.rs and the migration corpus. This is the root spelling the kind it owns the wiring for, in the one crate ARCHITECTURE 1.2 allows to name every kind; no other crate's cell rises to pay for it. Ordinal 11 is the busbar x secret row -- this tree's raises() cannot key an array of tables by identity, and the row carries the same note beside its count."
+
+[gate.ceiling_raises."cell.14.count"]
+file = "qa/kind-isolation.toml"
+from = 939
+to = 1014
+because = "busbar x transport: the composition root composes what it mounts on this axis -- the root composing each wire in the one place the architecture allows: registry.rs (150), main.rs (125), transport_composed_over_consistency.rs (123), units_mcp tests (94). This is the root spelling the kind it owns the wiring for, in the one crate ARCHITECTURE 1.2 allows to name every kind; no other crate's cell rises to pay for it. Ordinal 14 is the busbar x transport row -- this tree's raises() cannot key an array of tables by identity, and the row carries the same note beside its count."
+
+[gate.ceiling_raises."cell.15.count"]
+file = "qa/kind-isolation.toml"
+from = 1169
+to = 1198
+because = "busbar x unit: the composition root composes what it mounts on this axis -- the root seating more units: units_admin/tests (194), units_admin/mod.rs (124), units_voice.rs (93), kernel.rs (89), units_a2a tests (84). This is the root spelling the kind it owns the wiring for, in the one crate ARCHITECTURE 1.2 allows to name every kind; no other crate's cell rises to pay for it. Ordinal 15 is the busbar x unit row -- this tree's raises() cannot key an array of tables by identity, and the row carries the same note beside its count."
+
+[gate.ceiling_raises."cell.330.count"]
+file = "qa/kind-isolation.toml"
+from = 175
+to = 176
+because = "busbar x dialect: the composition root composes what it mounts on this axis -- one more spelling of a dialect the root's llm wiring names. This is the root spelling the kind it owns the wiring for, in the one crate ARCHITECTURE 1.2 allows to name every kind; no other crate's cell rises to pay for it. Ordinal 330 is the busbar x dialect row -- this tree's raises() cannot key an array of tables by identity, and the row carries the same note beside its count."

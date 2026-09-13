@@ -1309,7 +1309,15 @@ drain = "delete the unit name from the unit crate: a unit reaches unit through t
 [[cell]]
 crate = "busbar"
 kind = "api"
-count = "122"
+# 122 -> 149, HAND-SET to the measurement and declared in qa/construction.toml's
+# [gate.ceiling_raises] as `cell.0.count`. BY IDENTITY: `busbar` is the COMPOSITION ROOT, and a
+#  root's cell on an axis IS what it mounts on that axis -- the root's own tests of the api kind it composes: units_a2a.rs (42), units_llm.rs (38), migration.rs (18), units_mcp.rs (16) and the two installers those tests drive.
+# The rise is the root spelling the kind it composes, in the one crate ARCHITECTURE 1.2 allows to;
+# no other crate's cell rises for it. base -> tip off 28b0fbe46, never chained from a predecessor.
+# The key is an ORDINAL because that is the only key this tree's `ceilings.rs::raises()` can resolve
+# against an array-of-tables; ordinal 0 IS this row (busbar x api), and no [[cell]] row is added or
+# removed by this commit so no other ordinal moves.
+count = "149"
 
 [[cell]]
 crate = "busbar"
@@ -1319,7 +1327,15 @@ count = "25"
 [[cell]]
 crate = "busbar"
 kind = "caps"
-count = "302"
+# 302 -> 315, HAND-SET to the measurement and declared in qa/construction.toml's
+# [gate.ceiling_raises] as `cell.2.count`. BY IDENTITY: `busbar` is the COMPOSITION ROOT, and a
+#  root's cell on an axis IS what it mounts on that axis -- the root's tests of the caps it hands each unit: units_voice.rs (67), units_admin.rs (32), units_a2a.rs (30), units_mcp.rs (26) and units_llm.rs (26).
+# The rise is the root spelling the kind it composes, in the one crate ARCHITECTURE 1.2 allows to;
+# no other crate's cell rises for it. base -> tip off 28b0fbe46, never chained from a predecessor.
+# The key is an ORDINAL because that is the only key this tree's `ceilings.rs::raises()` can resolve
+# against an array-of-tables; ordinal 2 IS this row (busbar x caps), and no [[cell]] row is added or
+# removed by this commit so no other ordinal moves.
+count = "315"
 
 [[cell]]
 crate = "busbar"
@@ -1334,7 +1350,15 @@ count = "17"
 [[cell]]
 crate = "busbar"
 kind = "control"
-count = "1063"
+# 1063 -> 1106, HAND-SET to the measurement and declared in qa/construction.toml's
+# [gate.ceiling_raises] as `cell.5.count`. BY IDENTITY: `busbar` is the COMPOSITION ROOT, and a
+#  root's cell on an axis IS what it mounts on that axis -- the admin CONTROL surface the root now mounts itself: units_admin/mod.rs (157), units_admin/tests (268), kernel.rs (122), admin_mount.rs (100).
+# The rise is the root spelling the kind it composes, in the one crate ARCHITECTURE 1.2 allows to;
+# no other crate's cell rises for it. base -> tip off 28b0fbe46, never chained from a predecessor.
+# The key is an ORDINAL because that is the only key this tree's `ceilings.rs::raises()` can resolve
+# against an array-of-tables; ordinal 5 IS this row (busbar x control), and no [[cell]] row is added or
+# removed by this commit so no other ordinal moves.
+count = "1106"
 
 [[cell]]
 crate = "busbar"
@@ -1344,27 +1368,67 @@ count = "5"
 [[cell]]
 crate = "busbar"
 kind = "kernel"
-count = "158"
+# 158 -> 159, HAND-SET to the measurement and declared in qa/construction.toml's
+# [gate.ceiling_raises] as `cell.7.count`. BY IDENTITY: `busbar` is the COMPOSITION ROOT, and a
+#  root's cell on an axis IS what it mounts on that axis -- one more spelling of the kernel the root builds, in the a2a unit wiring.
+# The rise is the root spelling the kind it composes, in the one crate ARCHITECTURE 1.2 allows to;
+# no other crate's cell rises for it. base -> tip off 28b0fbe46, never chained from a predecessor.
+# The key is an ORDINAL because that is the only key this tree's `ceilings.rs::raises()` can resolve
+# against an array-of-tables; ordinal 7 IS this row (busbar x kernel), and no [[cell]] row is added or
+# removed by this commit so no other ordinal moves.
+count = "159"
 
 [[cell]]
 crate = "busbar"
 kind = "legacy"
-count = "98"
+# 98 -> 101, HAND-SET to the measurement and declared in qa/construction.toml's
+# [gate.ceiling_raises] as `cell.8.count`. BY IDENTITY: `busbar` is the COMPOSITION ROOT, and a
+#  root's cell on an axis IS what it mounts on that axis -- three more names of the 1.5.x crates the root still composes while they drain, in main.rs and the manifest.
+# The rise is the root spelling the kind it composes, in the one crate ARCHITECTURE 1.2 allows to;
+# no other crate's cell rises for it. base -> tip off 28b0fbe46, never chained from a predecessor.
+# The key is an ORDINAL because that is the only key this tree's `ceilings.rs::raises()` can resolve
+# against an array-of-tables; ordinal 8 IS this row (busbar x legacy), and no [[cell]] row is added or
+# removed by this commit so no other ordinal moves.
+count = "101"
 
 [[cell]]
 crate = "busbar"
 kind = "plane"
-count = "1798"
+# 1798 -> 1861, HAND-SET to the measurement and declared in qa/construction.toml's
+# [gate.ceiling_raises] as `cell.9.count`. BY IDENTITY: `busbar` is the COMPOSITION ROOT, and a
+#  root's cell on an axis IS what it mounts on that axis -- the root pairing each plane's declaration with its behaviour row and installing both: main.rs (251), units_voice tests (197), the manifest (179), plane_host_universal_purity.rs (155).
+# The rise is the root spelling the kind it composes, in the one crate ARCHITECTURE 1.2 allows to;
+# no other crate's cell rises for it. base -> tip off 28b0fbe46, never chained from a predecessor.
+# The key is an ORDINAL because that is the only key this tree's `ceilings.rs::raises()` can resolve
+# against an array-of-tables; ordinal 9 IS this row (busbar x plane), and no [[cell]] row is added or
+# removed by this commit so no other ordinal moves.
+count = "1861"
 
 [[cell]]
 crate = "busbar"
 kind = "plugin-tooling"
-count = "28"
+# 28 -> 30, HAND-SET to the measurement and declared in qa/construction.toml's
+# [gate.ceiling_raises] as `cell.10.count`. BY IDENTITY: `busbar` is the COMPOSITION ROOT, and a
+#  root's cell on an axis IS what it mounts on that axis -- two more spellings of the plugin tooling the root's CLI drives, in cli_validate.rs.
+# The rise is the root spelling the kind it composes, in the one crate ARCHITECTURE 1.2 allows to;
+# no other crate's cell rises for it. base -> tip off 28b0fbe46, never chained from a predecessor.
+# The key is an ORDINAL because that is the only key this tree's `ceilings.rs::raises()` can resolve
+# against an array-of-tables; ordinal 10 IS this row (busbar x plugin-tooling), and no [[cell]] row is added or
+# removed by this commit so no other ordinal moves.
+count = "30"
 
 [[cell]]
 crate = "busbar"
 kind = "secret"
-count = "5"
+# 5 -> 8, HAND-SET to the measurement and declared in qa/construction.toml's
+# [gate.ceiling_raises] as `cell.11.count`. BY IDENTITY: `busbar` is the COMPOSITION ROOT, and a
+#  root's cell on an axis IS what it mounts on that axis -- three more spellings of the secret kind the root resolves for a transport, in transports.rs and the migration corpus.
+# The rise is the root spelling the kind it composes, in the one crate ARCHITECTURE 1.2 allows to;
+# no other crate's cell rises for it. base -> tip off 28b0fbe46, never chained from a predecessor.
+# The key is an ORDINAL because that is the only key this tree's `ceilings.rs::raises()` can resolve
+# against an array-of-tables; ordinal 11 IS this row (busbar x secret), and no [[cell]] row is added or
+# removed by this commit so no other ordinal moves.
+count = "8"
 
 [[cell]]
 crate = "busbar"
@@ -1379,12 +1443,28 @@ count = "8"
 [[cell]]
 crate = "busbar"
 kind = "transport"
-count = "939"
+# 939 -> 1014, HAND-SET to the measurement and declared in qa/construction.toml's
+# [gate.ceiling_raises] as `cell.14.count`. BY IDENTITY: `busbar` is the COMPOSITION ROOT, and a
+#  root's cell on an axis IS what it mounts on that axis -- the root composing each wire in the one place the architecture allows: registry.rs (150), main.rs (125), transport_composed_over_consistency.rs (123), units_mcp tests (94).
+# The rise is the root spelling the kind it composes, in the one crate ARCHITECTURE 1.2 allows to;
+# no other crate's cell rises for it. base -> tip off 28b0fbe46, never chained from a predecessor.
+# The key is an ORDINAL because that is the only key this tree's `ceilings.rs::raises()` can resolve
+# against an array-of-tables; ordinal 14 IS this row (busbar x transport), and no [[cell]] row is added or
+# removed by this commit so no other ordinal moves.
+count = "1014"
 
 [[cell]]
 crate = "busbar"
 kind = "unit"
-count = "1169"
+# 1169 -> 1198, HAND-SET to the measurement and declared in qa/construction.toml's
+# [gate.ceiling_raises] as `cell.15.count`. BY IDENTITY: `busbar` is the COMPOSITION ROOT, and a
+#  root's cell on an axis IS what it mounts on that axis -- the root seating more units: units_admin/tests (194), units_admin/mod.rs (124), units_voice.rs (93), kernel.rs (89), units_a2a tests (84).
+# The rise is the root spelling the kind it composes, in the one crate ARCHITECTURE 1.2 allows to;
+# no other crate's cell rises for it. base -> tip off 28b0fbe46, never chained from a predecessor.
+# The key is an ORDINAL because that is the only key this tree's `ceilings.rs::raises()` can resolve
+# against an array-of-tables; ordinal 15 IS this row (busbar x unit), and no [[cell]] row is added or
+# removed by this commit so no other ordinal moves.
+count = "1198"
 
 [[cell]]
 crate = "busbar-a2a"
@@ -5450,7 +5530,15 @@ drain = "move both implementations into a store-kind crate and have the root REG
 [[cell]]
 crate = "busbar"
 kind = "dialect"
-count = "175"
+# 175 -> 176, HAND-SET to the measurement and declared in qa/construction.toml's
+# [gate.ceiling_raises] as `cell.330.count`. BY IDENTITY: `busbar` is the COMPOSITION ROOT, and a
+#  root's cell on an axis IS what it mounts on that axis -- one more spelling of a dialect the root's llm wiring names.
+# The rise is the root spelling the kind it composes, in the one crate ARCHITECTURE 1.2 allows to;
+# no other crate's cell rises for it. base -> tip off 28b0fbe46, never chained from a predecessor.
+# The key is an ORDINAL because that is the only key this tree's `ceilings.rs::raises()` can resolve
+# against an array-of-tables; ordinal 330 IS this row (busbar x dialect), and no [[cell]] row is added or
+# removed by this commit so no other ordinal moves.
+count = "176"
 
 [[cell]]
 crate = "busbar-a2a"
