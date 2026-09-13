@@ -2655,7 +2655,7 @@ land_unit_prefix_serial() {  # $@ = the unit's indices; the tree is at their bas
   for a in "$@"; do idx[$i]="$a"; i=$((i + 1)); done
   local n=$i
   local base0; base0="$(git -C "$here" rev-parse HEAD)"
-  local culprit=-1 pre j repinned
+  local culprit=-1 noverdict=-1 pre j repinned
   i=0
   while [ "$i" -lt "$n" ]; do
     j="${idx[$i]}"
@@ -2666,9 +2666,23 @@ land_unit_prefix_serial() {  # $@ = the unit's indices; the tree is at their bas
     repinned=1
     land_repin_ledger "$LAND_U_LBL" || repinned=0
     echo "land.sh: === proving $LAND_U_LBL at $(git -C "$here" rev-parse --short HEAD)"
-    if [ "$repinned" = 1 ] && prove_tree "$base0" "$LAND_U_TESTS" "$LAND_U_GATE" "$LAND_U_FAMS" "$LAND_U_LBL" "$LAND_U_FEATS"; then
+    local prc=0
+    if [ "$repinned" = 1 ]; then
+      prove_tree "$base0" "$LAND_U_TESTS" "$LAND_U_GATE" "$LAND_U_FAMS" "$LAND_U_LBL" "$LAND_U_FEATS" || prc=$?
+    else
+      prc=1
+    fi
+    if [ "$prc" = 0 ]; then
       BL_out[$j]=GREEN; BL_repin[$j]="${LAND_REPIN_SHA:-none}"
       echo "land.sh: === GREEN $LAND_U_LBL — line $((j + 1)) is green with its own proof, by:$PROVEN"
+    elif [ "$prc" = 75 ]; then
+      # THE SAME RULE THE FAN OBEYS, and for the same reason: 75 is no verdict, so this rung's own
+      # line is neither green nor red, nothing is parked, and the ladder stops rather than blaming
+      # the line whose proof never ran. Serial or fanned, a capacity refusal parks nobody.
+      git -C "$here" reset -q --hard "$pre"
+      echo "land.sh: === NO VERDICT on $LAND_U_LBL (exit 75) — line $((j + 1)) is neither green nor red; the ladder stops and nothing is parked" >&2
+      noverdict=$i
+      break
     else
       git -C "$here" reset -q --hard "$pre"
       BL_out[$j]=RED
@@ -2678,11 +2692,32 @@ land_unit_prefix_serial() {  # $@ = the unit's indices; the tree is at their bas
     fi
     i=$((i + 1))
   done
+  land_prefix_noverdict_hold "$noverdict" "${idx[@]}"
   land_prefix_hold "$culprit" "${idx[@]}"
   return 0
 }
 
 # ── WHAT IS HELD, whichever way the ladder was climbed ───────────────────────────────────────────
+# One writer for the rule in land_unit_prefix's header: every line after the culprit is HELD, never
+# RED. Its predecessor did not land, so the tree it is to be judged on does not exist yet.
+# A ROUND THAT LEARNED NOTHING ABOUT A LINE HOLDS IT — IT NEVER PARKS IT. Where land_prefix_hold
+# (below) starts AFTER the culprit — the culprit is already RED, by its own proof — this starts AT
+# the rung, because a rung that came back 75 has no verdict about its OWN line either.
+land_prefix_noverdict_hold() { # $1 = the no-verdict rung's POSITION; $2.. = the unit's indices
+  local at="$1"; shift
+  local -a idx; local i=0
+  for a in "$@"; do idx[$i]="$a"; i=$((i + 1)); done
+  local n=$i
+  [ "$at" -ge 0 ] || return 0
+  i="$at"
+  while [ "$i" -lt "$n" ]; do
+    BL_out[${idx[$i]}]=HELD
+    echo "land.sh: === HELD line $(( ${idx[$i]} + 1 )) — the round returned NO VERDICT about it; not proven, not red" >&2
+    i=$((i + 1))
+  done
+  return 0
+}
+
 # One writer for the rule in land_unit_prefix's header: every line after the culprit is HELD, never
 # RED. Its predecessor did not land, so the tree it is to be judged on does not exist yet.
 land_prefix_hold() {  # $1 = the culprit's POSITION in the unit (-1 = none); $2.. = the unit's indices
@@ -2732,7 +2767,7 @@ land_unit_prefix_fan() {  # $1 = the round width; $2.. = the unit's indices, in 
 
   local root; root="$LAND_TMP/land-prefix-$stamp-$$"
   mkdir -p "$root" 2>/dev/null || true
-  local next=0 culprit=-1 round=0
+  local next=0 culprit=-1 round=0 noverdict=-1
   while [ "$next" -lt "$n" ] && [ "$culprit" -lt 0 ]; do
     round=$((round + 1))
     local rbase; rbase="$(git -C "$here" rev-parse HEAD)"
@@ -2815,6 +2850,23 @@ land_unit_prefix_fan() {  # $1 = the round width; $2.. = the unit's indices, in 
         landed="$(git -C "$d" rev-parse HEAD)"
         echo "land.sh: === GREEN $LAND_U_LBL — line $(( ${idx[$k]} + 1 )) is green with its own proof, by: latchkey round $round;"
         read_to=$((r + 1))
+      elif [ "$rc" = 75 ]; then
+        # ── A 75 IS NO VERDICT, ON ANY RUNG, INCLUDING THE FIRST ─────────────────────────────────
+        # MEASURED (`--smoke-latchkey --bisect`, 2026-09-13, during the Latchkey vCPU outage): rung
+        # 1's job never started (`launch_failed: VcpuLimitExceeded`), land-latchkey.sh returned 75
+        # and said `NO VERDICT — nothing about these picks was learned`, and this loop read the
+        # non-zero as red and printed `RED line 1 — it is the culprit, backed out`. A capacity
+        # refusal on somebody else's fleet would have parked good lines wholesale.
+        #
+        # The LK-9 ruling is that 75 is not a verdict: the line stays LIVE and unmarked and is swept
+        # again. So there is no culprit, nothing is parked, the rungs behind this one are discarded
+        # unread exactly as they are behind a red, the round's EARLIER greens still land (each rung
+        # is proven on a tree of its own, and those proofs are real), and the unit is abandoned
+        # here — the next sweep re-takes the round.
+        noverdict="$k"
+        echo "land.sh: === NO VERDICT on $LAND_U_LBL (exit 75) — line $(( ${idx[$k]} + 1 )) is neither green nor red; the round is abandoned and re-taken, and nothing is parked" >&2
+        read_to=$((r + 1))
+        break
       else
         BL_out[${idx[$k]}]=RED
         echo "land.sh: === RED line $(( ${idx[$k]} + 1 )) — the first prefix that turns red; it is the culprit, backed out" >&2
@@ -2827,7 +2879,8 @@ land_unit_prefix_fan() {  # $1 = the round width; $2.. = the unit's indices, in 
 
     # ── DISCARD THE REST, UNREAD ─────────────────────────────────────────────────────────────────
     if [ "$read_to" -lt "$staged" ]; then
-      echo "land.sh: === $(( staged - read_to )) prefix(es) of round $round are DISCARDED UNREAD — every one of them carries line $(( ${idx[$culprit]} + 1 )), so nothing they say is about picks that can land" >&2
+      local _blame="$culprit"; [ "$_blame" -ge 0 ] || _blame="$noverdict"
+      echo "land.sh: === $(( staged - read_to )) prefix(es) of round $round are DISCARDED UNREAD — every one of them carries line $(( ${idx[$_blame]} + 1 )), so nothing they say is about picks that can land" >&2
       r="$read_to"
       while [ "$r" -lt "$staged" ]; do land_prefix_kill_tree "${rpid[$r]}"; wait "${rpid[$r]}" 2>/dev/null || true; r=$((r + 1)); done
     fi
@@ -2838,15 +2891,18 @@ land_unit_prefix_fan() {  # $1 = the round width; $2.. = the unit's indices, in 
     # moves, and it is the only way W's HEAD moves in this function.
     if [ -n "$landed" ]; then
       git -C "$save_here" reset -q --hard "$landed"
-      local nl="$read_to"; [ "$culprit" -lt 0 ] || nl=$(( read_to - 1 ))
+      local nl="$read_to"; [ "$culprit" -lt 0 ] && [ "$noverdict" -lt 0 ] || nl=$(( read_to - 1 ))
       echo "land.sh: === round $round landed $nl line(s); W is at $(git -C "$save_here" rev-parse --short HEAD)" >&2
     fi
     land_prefix_fan_cleanup "$save_here" "" "$rdirs"
+    # A round with no verdict opens no next round: there is nothing to continue FROM.
+    [ "$noverdict" -lt 0 ] || break
     [ "$culprit" -ge 0 ] || next=$(( next + staged ))
     # A round that staged fewer rungs than its width stopped on a conflict; that line is the culprit.
     if [ "$culprit" -lt 0 ] && [ "$conflict" -ge 0 ]; then culprit="$conflict"; fi
   done
   rm -rf "$root" 2>/dev/null || true
+  land_prefix_noverdict_hold "$noverdict" "${idx[@]}"
   land_prefix_hold "$culprit" "${idx[@]}"
   return 0
 }
@@ -4376,7 +4432,7 @@ EOF
   local bf3="$root/batchMF3.txt"
   { echo "--prove $f1"; for h in "$fn" "$f2" "$f3" "$f5" "$f6"; do echo "#UNIT 1"; echo "--prove $h"; done; } >"$bf3"
   git -C "$repo" checkout -q integ; git -C "$repo" reset -q --hard "$integ"
-  _st "MF3: a NONE in the fan exits 1 (the batch is not green)" 1 \
+  _st "MF3: a NONE in the fan is not a failed batch (nothing is red)" 0 \
       env LAND_SELFTEST_ROOT="$repo" LAND_DONE="$root/done-MF.txt" BUSBAR_LAND_BACKEND=latchkey \
           LATCHKEY_PREFIX_FAN=6 LATCHKEY_MAX_JOBS=40 LATCHKEY_JOBS_PER_PROOF=3 \
           LAND_TMP="$root/fantmp" bash "$0" --batch "$bf3"
@@ -4386,6 +4442,46 @@ EOF
   _stgrep "MF3: the rungs behind it are discarded unread" "$ST_OUT" 'DISCARDED UNREAD'
   _stgrep "MF3: line 3 is HELD, never parked red"   "$bf3.result" "^HELD.*$f2"
   _stno   "MF3: ...and nothing after the no-verdict is RED" "$bf3.result" "^RED.*$f3"
+  # …AND THE RUNG ITSELF IS NOT THE CULPRIT. This is the assertion MF3 did not make, and the engine
+  # it would have caught shipped: the FIRST rung's 75 was read as a non-zero and printed
+  # `RED line 1 — it is the culprit, backed out`.
+  _stgrep "MF3: the no-verdict rung is HELD, not the culprit" "$bf3.result" "^HELD.*$fn"
+  _stno   "MF3:   ...and it is never RED"           "$bf3.result" "^RED.*$fn"
+  _stno   "MF3:   ...nothing in the unit is parked at all" "$bf3.result" "^RED"
+  _stno   "MF3:   ...and no culprit is named"       "$ST_OUT" 'it is the culprit, backed out'
+  _stgrep "MF3:   ...the round says it is abandoned and re-taken" "$ST_OUT" 'the round is abandoned and re-taken, and nothing is parked'
+
+  # MF8 — A 75 ON THE FIRST RUNG, SERIAL AND FANNED, PARKS NOBODY.
+  # MEASURED (`--smoke-latchkey --bisect`, during the Latchkey vCPU outage): rung 1's job never
+  # started (`launch_failed: VcpuLimitExceeded`), the transport returned 75 saying `NO VERDICT —
+  # nothing about these picks was learned`, and the ladder parked line 1 as the culprit. Under a
+  # capacity refusal on somebody else's fleet that parks good lines wholesale. Both ladders are
+  # asked, because fan 1 is a path of its own and the outage does not care which one is running.
+  echo "land.sh selftest: a 75 on the FIRST rung is no verdict — on both ladders"
+  # THE NO-VERDICT IS THE UNIT'S **FIRST** RUNG — the case MF3 does not cover and the one the
+  # outage actually produced. Nothing precedes it, so nothing lands and the tip must not move.
+  local bf8="$root/batchMF8.txt"
+  { echo "--prove $fn"; for h in "$f2" "$f3"; do echo "#UNIT 1"; echo "--prove $h"; done; } >"$bf8"
+  local w tip8
+  for w in 6 1; do
+    git -C "$repo" checkout -q integ; git -C "$repo" reset -q --hard "$integ"
+    rm -f "$bf8.result"
+    tip8="$(git -C "$repo" rev-parse HEAD)"
+    _st "MF8[fan $w]: a first-rung no-verdict is not a failed batch" 0 \
+        env LAND_SELFTEST_ROOT="$repo" LAND_DONE="$root/done-MF.txt" BUSBAR_LAND_BACKEND=latchkey \
+            LATCHKEY_PREFIX_FAN="$w" LATCHKEY_MAX_JOBS=40 LATCHKEY_JOBS_PER_PROOF=3 \
+            LAND_TMP="$root/fantmp" bash "$0" --batch "$bf8"
+    _t2 "MF8[fan $w]: NOT ONE line is parked"   0 "$(grep -c '^RED' "$bf8.result" 2>/dev/null || true)"
+    _stgrep "MF8[fan $w]: the first rung itself is HELD" "$bf8.result" "^HELD.*$fn"
+    _stgrep "MF8[fan $w]:   ...and so is everything behind it" "$bf8.result" "^HELD.*$f3"
+    _stno   "MF8[fan $w]: no culprit is named"  "$ST_OUT" 'it is the culprit, backed out'
+    _stgrep "MF8[fan $w]: the log says NO VERDICT, and names the 75" "$ST_OUT" 'NO VERDICT on .*exit 75'
+    _t2 "MF8[fan $w]: the tree did not move"    "$tip8" "$(git -C "$repo" rev-parse HEAD)"
+  done
+  _t2 "MF8: one writer holds a no-verdict rung, and it starts AT it" 1 \
+     "$(grep -c '^land_prefix_noverdict_hold() {' "$LAND_SRC")"
+  _t2 "MF8:   ...and both ladders call it" 2 \
+     "$(grep -c 'land_prefix_noverdict_hold "\$noverdict"' "$LAND_SRC")"
 
   # MF4 — FAN 1 IS THE SERIAL LADDER, UNCHANGED. Same batch as MF1, same verdicts, same landed
   # tree — and not one round, because there are no rounds on that path.
