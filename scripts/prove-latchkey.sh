@@ -1403,6 +1403,32 @@ if [ "${1:-}" = "--selftest" ]; then
     && say PASS "the cap is said in a sentence the engine can grep" \
     || say FAIL "the cap has no sentence"
 
+  # ── A BASE REPLAY IS "NO DELTA AND NO PICKS", AND THAT IS WHAT IT IS FOR ─────────────────────
+  # MEASURED (`landq4.sh --smoke-latchkey --sweep`, 2026-09-12): every base-state replay died
+  # `ERROR: the base resolved to the tip and this proof carries no picks`. On the runner's own
+  # branch the integration base IS the tip, so lk_base_sha returns the tip, and the engine's base
+  # replay — a pre-proof batch with no picks, on purpose — could never run. The tip would be
+  # unmeasured for ever and every oracle red in the queue would be NONE:base-unmeasured.
+  echo "== a pre-proof batch with NO picks is a base replay, not a vacuous ceiling =="
+  _brsrc="$(sed -n '/^if \[ "$BASE" = "$TIP" \] && \[ "$NPICKS" = 0 \]; then/,/^fi$/p' "${BASH_SOURCE[0]}")"
+  [ -n "$_brsrc" ] && say PASS "the refusal is still there, and it is one block" \
+    || say FAIL "the no-delta refusal could not be read out of this script"
+  printf '%s\n' "$_brsrc" | grep -q 'if \[ "$MODE" = preprove \]; then' \
+    && say PASS "  ...and a PRE-PROOF batch is let through it" \
+    || say FAIL "a pre-proof batch with no picks is still refused — every base replay dies here"
+  printf '%s\n' "$_brsrc" | grep -q 'lklog "the base IS the tip and this batch carries no picks' \
+    && say PASS "  ...saying in the log WHY a ceiling row has nothing to compare" \
+    || say FAIL "the base replay goes through in silence"
+  printf '%s\n' "$_brsrc" | grep -q 'lkdie ' \
+    && say PASS "  ...while a --tree/--prove-tree run with no delta and no pick still dies" \
+    || say FAIL "the refusal was removed rather than narrowed"
+  # THE COUNT IT TURNS ON IS ONE INTEGER. `grep -c` on no matches prints 0 AND exits 1, so the
+  # `|| true` idiom yields `0\n0` and `[ "$NPICKS" = 0 ]` is false for a batch with no picks —
+  # the refusal would then never fire at all, which is the same defect with the sign flipped.
+  grep -qF 'NPICKS="${NPICKS%%$'"'"'\n'"'"'*}"' "${BASH_SOURCE[0]}" \
+    && say PASS "the pick count is ONE integer, whatever grep -c printed" \
+    || say FAIL "the pick count can be two lines, and the refusal then never fires"
+
   # ── THE SHARD PLAN ────────────────────────────────────────────────────────────────────────────
   echo "== the pre-proof's shard plan (the F5 shape under the ceiling) =="
   printf -- '--prove --tests xtask --families %s aaaaaaa\n' "'^(llm)([|.]|\$)'" >"$root/bf-fam.txt"
@@ -1595,8 +1621,27 @@ fi
 # that case cost K4d-r every line it tried to prove. So the question is not "is the base the tip"
 # but "is there anything for a ceiling to measure": a delta, or a pick.
 NPICKS="$(printf '%s\n' "$PICKS" | grep -c . || true)"
-if [ "$BASE" = "$TIP" ] && [ "${NPICKS:-0}" = 0 ]; then
-  lkdie "the base resolved to the tip and this proof carries no picks — there is no delta for a ceiling row to measure, and every one of them would compare a file against itself and pass"
+NPICKS="${NPICKS%%$'\n'*}"; case "$NPICKS" in ''|*[!0-9]*) NPICKS=0 ;; esac
+if [ "$BASE" = "$TIP" ] && [ "$NPICKS" = 0 ]; then
+  # ── …UNLESS IT IS A BASE REPLAY, WHICH IS THAT SHAPE ON PURPOSE ───────────────────────────────
+  # MEASURED (`landq4.sh --smoke-latchkey --sweep`, 2026-09-12): the engine's base-state replay is a
+  # pre-proof batch with NO PICKS at the tip — that is the whole of what it is, a measurement of the
+  # tree every line in the sweep is about to be judged against (landq4.sh's lq_base_red_replay). On
+  # the runner's own branch the integration base IS the tip, so `lk_base_sha` returns the tip and
+  # this refusal fired on EVERY base replay: `ERROR: the base resolved to the tip and this proof
+  # carries no picks`. The tip would then be unmeasured for ever, every oracle red would be
+  # NONE:base-unmeasured, and no line in the queue could be judged on its oracle rows at all.
+  #
+  # The refusal is right about ceilings and wrong about this batch. Its target is a proof that
+  # claims to have gated a DELTA and has none — a line's proof passing every ceiling row by
+  # comparing a file against itself. A batch with no picks makes no such claim: nobody reads a base
+  # replay's ceilings, and what IS read (the oracle's rows, the crate tests' reds) is a measurement
+  # of this tree and needs no delta whatever. So a pre-proof says so and goes; anything else dies.
+  if [ "$MODE" = preprove ]; then
+    lklog "the base IS the tip and this batch carries no picks — this is a BASE REPLAY: it measures the tree itself, so a ceiling row has nothing to compare and nobody reads one from it"
+  else
+    lkdie "the base resolved to the tip and this proof carries no picks — there is no delta for a ceiling row to measure, and every one of them would compare a file against itself and pass"
+  fi
 fi
 
 lklog "tip $(git -C "$REPO" rev-parse --short "$TIP")   base $(printf '%.9s' "$BASE")   ref $REF"

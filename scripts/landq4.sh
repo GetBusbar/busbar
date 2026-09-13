@@ -1059,7 +1059,32 @@ lq_line_unpark() { # $1 = a queue line; prints it with every leading park tag (a
       case "$rest" in *' '*) rest="${rest#* }" ;; *) rest="" ;; esac        # its argument
     fi
   done
+  # AND THE SAME NORMALISATION lq_line_payload MAKES: an un-parked line is a QUEUE LINE, and a
+  # queue line begins with a flag. A park whose tag this engine did not know leaves its log path
+  # at the head; un-parking must not write that back into the queue.
+  case "$rest" in
+    /*) case "$rest" in *' --'*) rest="--${rest#* --}" ;; esac ;;
+  esac
   printf '%s\n' "$rest"
+}
+# ── A PARKED LINE'S LOG IS ITS OWN FILE, NOT A SLOT THE NEXT SWEEP REUSES ───────────────────────
+# MEASURED on the live runner (2026-09-12): `preprove-<base>/line-N.log` is written by slot N of
+# EVERY sweep taken at that base, and a `#RED-preproof` park cites that path. The next sweep at the
+# same tip hands slot N to a different line and overwrites it — so the evidence an integrator opens
+# hours later is another line's proof, under this line's park, and the two are indistinguishable.
+# A park is a durable record and it needs a durable file. The log is COPIED beside itself as
+# `parked-<the line's last sha>.log` — keyed on the LINE rather than on the slot — and the park
+# cites the copy. A copy that cannot be made is not a reason to lose the park: the original path is
+# returned and the park is exactly what it was.
+lq_park_log_keep() { # $1 = the sweep's log path, $2 = the queue line; prints the path the park should cite
+  local lg="${1:-}" line="${2:-}" sha dst
+  [ -n "$lg" ] && [ -f "$lg" ] || { printf '%s\n' "$lg"; return 0; }
+  sha="$(lq_line_hashes "$(lq_line_payload "$line")" | tail -n1)"
+  [ -n "$sha" ] || { printf '%s\n' "$lg"; return 0; }
+  dst="$(dirname "$lg")/parked-$(printf '%.9s' "$sha").log"
+  [ "$lg" = "$dst" ] && { printf '%s\n' "$dst"; return 0; }
+  cp -f "$lg" "$dst" 2>/dev/null || { printf '%s\n' "$lg"; return 0; }
+  printf '%s\n' "$dst"
 }
 # ONE COMMAND, APPLIED TO THE QUEUE FILE IN PLACE. rc 0 = applied, 1 = malformed (logged, skipped).
 lq_inbox_apply() { # $1 = queue file, $2 = the command line
@@ -1378,6 +1403,14 @@ lq_line_payload() { # $1 = queue line
       case "$rest" in *' '*) rest="${rest#* }" ;; *) rest="" ;; esac
     fi
   done
+  # ── AND A PAYLOAD THAT BEGINS WITH A PATH IS AN ARGUMENT THIS ENGINE DID NOT RECOGNISE ────────
+  # The park KEEPS its path — that is where the evidence is — but the payload behind it is a queue
+  # line, and a RETAG that wrote a path back as the head of one is the defect 40e650299 closed for
+  # the two tags it knew. This closes it for the tag nobody has added to LQ_ARG_TAGS yet: a queue
+  # payload always begins with a flag, and an absolute path never does.
+  case "$rest" in
+    /*) case "$rest" in *' --'*) rest="--${rest#* --}" ;; esac ;;
+  esac
   printf '%s\n' "$rest"
 }
 # THE ONE SHA A HELD LINE WAITS FOR — and nothing else. The line must carry EXACTLY ONE `#HOLD-`
@@ -1414,13 +1447,28 @@ EOF
 # THE QUEUE LINE WHOSE PICKS INCLUDE THAT SHA. The queue writes short shas and a tag may be shorter
 # or longer than the pick it names, so the match is a prefix in either direction.
 lq_line_naming() { # $1 = sha, $2 = queue file; prints the FIRST queue line whose payload names it
-  local sha="$1" qf="$2" line pay h
+  local sha="$1" qf="$2" line pay h hs
   [ -n "$sha" ] && [ -f "$qf" ] || return 1
   while IFS= read -r line || [ -n "$line" ]; do
     case "$line" in '') continue ;; '# '*) continue ;; '#'*) ;; '--'*) ;; *) continue ;; esac
     pay="$(lq_line_payload "$line")"
-    case "$pay" in '--'*) ;; *) continue ;; esac
-    for h in $(lq_line_hashes "$pay"); do
+    # ── A LINE IS ADDRESSABLE BY ITS SHAS WHATEVER PREFIX PRECEDES THEM ─────────────────────────
+    # MEASURED on the live runner (2026-09-12, landq.out): nine `UNPARK <sha>`, two `RETAG`, a
+    # `SUPERSEDE` and a `FRONT` were all logged `inbox: MALFORMED, skipped — no queue line names
+    # <sha>`, and every one of those shas WAS in the queue — as the last pick of a
+    # `#RED-preproof <log path> --prove … <sha>` line. The tag walk is what resolves that prefix
+    # (LQ_ARG_TAGS), and a home whose engine does not yet know a park tag — or a park tag nobody has
+    # added to the list yet — hands back a payload that begins with a PATH, which this loop then
+    # skipped. An integrator's hand-back is then silently dropped and the queue stops moving.
+    #
+    # So the tag walk stays AUTHORITATIVE and it is no longer the only key. A queue line's sha
+    # tokens are hashes and nothing else is: a log path is one whitespace-delimited token and no
+    # path is 7-40 characters of [0-9a-f], and neither is `#PARK-RED-on-143db6db6-…`. When the walk
+    # yields no payload, the line is keyed on its own tokens — whatever prefix or path precedes
+    # them. It is a fallback, not a second vocabulary: a well-formed line never reaches it.
+    case "$pay" in '--'*) hs="$(lq_line_hashes "$pay")" ;;
+                   *)     hs="$(lq_line_hashes "$line")" ;; esac
+    for h in $hs; do
       case "$h" in "$sha"*) printf '%s\n' "$line"; return 0 ;; esac
       case "$sha" in "$h"*) printf '%s\n' "$line"; return 0 ;; esac
     done
@@ -1773,7 +1821,16 @@ lq_base_red_replay() { # $1 = tree, $2 = the sweep's directory, $3 = tip key, $4
   # exactly what this replay is. It costs the replay one crate's tests; it stops a line being
   # parked for a test it cannot have touched. `land.sh`'s own xtask floor widens this further when
   # the tip's own diff asks for it.
-  printf -- '--prove --tests xtask --families %s\n' "'"'"'$fams'"'"'" >"$dir/base.batch"
+  # ── AND IT IS QUOTED THE WAY A QUEUE LINE IS QUOTED ──────────────────────────────────────────
+  # MEASURED (`--smoke-latchkey --sweep`, 2026-09-12): this line was
+  # `printf -- '…--families %s\n' "'"'"'$fams'"'"'"`, which yields `--families '"<expr>"'` — the
+  # expression wrapped in DOUBLE quotes INSIDE the single ones. `lq_line_families` reads that back
+  # as `"<expr>"`, and land.sh then asks the oracle for a family regex beginning with a quote
+  # character, which matches NO family at all. Every base replay since this line was written
+  # measured the oracle over the empty set — on the fleet as well — and the tip was then recorded
+  # `#measured` with zero red rows, which excuses nothing and looks exactly like a clean tip.
+  # One `%s` inside literal single quotes, which is what every other writer of a queue line does.
+  printf -- "--prove --tests xtask --families '%s'\n" "$fams" >"$dir/base.batch"
   lq_log "base state: measuring the tip itself on ${h:-a latchkey job of its own (no EC2 box)} — a batch with NO picks, families $fams, crate tests xtask"
   (
     lq_dispatch_preprove "$tree" "$h" "$dir/base.batch" \
@@ -3661,6 +3718,9 @@ EOF
         lq_log "pre-prove RED at $(printf '%.9s' "$tip") is the BASE's (a ceiling the head repairs); NONE, left live: $(printf '%.80s' "$line") (log: $lg)"
         st=NONE
       else
+        # THE PARK'S EVIDENCE IS ITS OWN FILE, not a slot the next sweep overwrites (see
+        # lq_park_log_keep). The park is a durable record; `line-N.log` is not a durable path.
+        lg="$(lq_park_log_keep "$lg" "$line")"
         printf '#RED-preproof %s %s\n' "${lg:-no-log}" "$line" >>"$keep"
         parked="$parked$line$TAB"   # every line chained behind it goes back to held (see above)
         local why; why="$(lq_preproof_reason "$lg")"
@@ -4481,6 +4541,16 @@ lq_selftest() {
      "$(sed -n "/^lq_base_red_[r]eplay() {/,/^}/p" "$0" | sed -n "s/.*printf -- '\(--prove[^']*\)'.*/\1/p" | grep -Eo '[0-9a-f]{7,40}' || true)"
   _t "  ...and it asks for the crate tests too"   1 \
      "$(sed -n "/^lq_base_red_[r]eplay() {/,/^}/p" "$0" | grep -c -- "--prove --tests xtask --families")"
+  # AND THE CLOSING PROPERTY: the batch reads back as the families it was ASKED for. The line that
+  # writes it double-quoted the expression inside the single quotes for as long as it existed, so
+  # every base replay measured the oracle over a regex that matches no family at all.
+  _t "  ...and the batch reads back as the SAME families" "^(documented)([|.]|\$)" \
+     "$( _bq="$root/basequote"; mkdir -p "$_bq"
+        fleet_pick_host() { echo i-0q; }
+        L="$root/bq.log"; : >"$L"
+        LANDQ_PROVE_BACKEND=fleet lq_base_red_replay "$root" "$_bq" tipQ \
+          "--prove --families '^(documented)([|.]|\$)' aaa1111" i-0q >/dev/null 2>&1
+        lq_line_families "$(cat "$_bq/base.batch" 2>/dev/null)" )"
   _t "the landed batch teaches the new tip"       1 "$(grep -c 'lq_base_red_learn "\$newtip"' "$0")"
 
   # ── THE SWEEP PROBES THE FLEET ONCE, NOT ONCE PER LINE ───────────────────────────────────────
@@ -4796,7 +4866,12 @@ lq_selftest() {
   # AND AN ORDINARY RED IS STILL PARKED — the rule narrows nothing else.
   printf 'RED%stip1%s%s%s--prove %s\n' "$TAB" "$TAB" "$ordlog" "$TAB" "$hb" >"$PP"
   n="$(lq_pop tip1 4 "$root/b18.txt" "$root/k18.txt")"
-  _t "an ordinary pre-proof red is still parked" 1 "$(grep -c "^#RED-preproof $ordlog " "$root/k18.txt" || true)"
+  # AND THE PARK CITES A COPY OF THE LOG, KEYED ON THE LINE (LK-9 h) — `line-N.log` is slot N of
+  # every sweep at this base, and the park is a durable record.
+  _t "an ordinary pre-proof red is still parked" 1 \
+     "$(grep -c "^#RED-preproof $root/parked-$(printf '%.9s' "$hb").log " "$root/k18.txt" || true)"
+  _t "  ...citing its OWN copy of that sweep's log" "land.sh: RED — tests failed in: busbar" \
+     "$(cat "$root/parked-$(printf '%.9s' "$hb").log" 2>/dev/null)"
   PP="$savedPP4"; rm -f "$repo/qa/construction.toml"
   Q="$savedQ"; PP="$savedPP"; L="$savedL"; W="$savedW"
 
@@ -5028,6 +5103,79 @@ lq_selftest() {
   # truncated, and only THEN the stamp. An append made at any point after that lands in the inbox,
   # not in the file the stamp describes, so the rewrite at the end of the loop still matches and the
   # pop stands. The line is folded in at the next loop top, one minute later.
+  # ── LK-9 (g): A PARKED LINE IS ADDRESSABLE BY ITS SHAS, WHATEVER PRECEDES THEM ────────────────
+  # MEASURED on the live runner (2026-09-12, landq.out): nine `UNPARK <sha>`, two `RETAG`, a
+  # `SUPERSEDE` and a `FRONT` all logged `inbox: MALFORMED, skipped — no queue line names <sha>`,
+  # and every one of those shas WAS in the queue, as the last pick of a `#RED-preproof <log path>`
+  # line. An integrator's whole hand-back was dropped and the queue stopped moving.
+  #
+  # THE RED-FIRST IS `LQ_ARG_TAGS=""` — the engine that does not know the park tag, which is both
+  # the engine the live runner was carrying and the engine anybody gets the day a SIXTH
+  # argument-carrying tag is invented. Under it, every one of the four verbs must still resolve.
+  echo "landq4 selftest: LK-9 (g) — a park's log path never hides the line behind it"
+  local gq="$root/g-queue.txt" glog="/Users/x/gate/preprove-09dacd152/line-3.log" gsha="25b492d94"
+  printf "#RED-preproof %s --prove --tests '' --families '^(documented)([|.]|\$)' 8ae844289 %s\n" "$glog" "$gsha" >"$gq"
+  printf -- '--prove --tests xtask aaaaaaaaa\n' >>"$gq"
+  _t "the line is found by its LAST sha"          1 "$([ -n "$(lq_line_naming "$gsha" "$gq")" ] && echo 1 || echo 0)"
+  _t "  ...and by an earlier one"                 1 "$([ -n "$(lq_line_naming 8ae844289 "$gq")" ] && echo 1 || echo 0)"
+  _t "  ...and a sha nobody carries is still not found" 1 \
+     "$(lq_line_naming deadbeef1 "$gq" >/dev/null 2>&1; echo $?)"
+  _t "  ...and the LOG PATH is not a sha"         1 "$(lq_line_naming 09dacd152 "$gq" >/dev/null 2>&1; echo $?)"
+  _t "an engine that does not know the tag finds it TOO" 1 \
+     "$( LQ_ARG_TAGS=""; [ -n "$(lq_line_naming "$gsha" "$gq")" ] && echo 1 || echo 0)"
+  # AND THE PAYLOAD IS A QUEUE LINE, not a path — the arm that a RETAG writes back.
+  _t "  ...and its payload is a line, never a path" "--prove" \
+     "$( LQ_ARG_TAGS=""; lq_line_payload "$(head -n1 "$gq")" | cut -d' ' -f1)"
+  _t "  ...and un-parking it leaves a line too"     "--prove" \
+     "$( LQ_ARG_TAGS=""; lq_line_unpark "$(head -n1 "$gq")" | cut -d' ' -f1)"
+  # ALL FOUR VERBS, END TO END, ON THE ENGINE THAT DOES NOT KNOW THE TAG.
+  _gverb() { # $1 = the inbox command; prints the queue's first line after it, or MALFORMED
+    local w="$root/g-work.txt"; cp -f "$gq" "$w"
+    ( LQ_ARG_TAGS=""; L="$root/g.log"; : >"$L"
+      lq_inbox_apply "$w" "$1" >/dev/null 2>&1 || { printf 'MALFORMED\n'; return 0; }
+      head -n1 "$w" )
+  }
+  _t "UNPARK resolves it, and the park comes off"  "--prove" "$(_gverb "UNPARK $gsha" | cut -d' ' -f1)"
+  _t "RETAG resolves it, and writes a LINE behind the tag" "#NEW --prove" \
+     "$(_gverb "RETAG $gsha #NEW" | cut -d' ' -f1,2)"
+  _t "SUPERSEDE resolves it"                       "--prove --tests xtask ffffffff1" \
+     "$(_gverb "SUPERSEDE $gsha --prove --tests xtask ffffffff1")"
+  _t "FRONT resolves it, and moves it to the head" "#RED-preproof" "$(_gverb "FRONT $gsha" | cut -d' ' -f1)"
+  _t "PARK resolves it"                            "#PARK-why" "$(_gverb "PARK $gsha why" | cut -d' ' -f1)"
+  # AND A PAYLOAD WITH NO FLAG AT ALL STILL RESOLVES — the raw-token fallback, which is the arm the
+  # normalisation above cannot reach.
+  local gq2="$root/g-queue2.txt"
+  printf '#WEIRD-tag /Users/x/only/a/path/and/a/sha 25b492d94\n' >"$gq2"
+  _t "a line that is a tag, a path and a sha resolves" 1 \
+     "$( LQ_ARG_TAGS=""; [ -n "$(lq_line_naming "$gsha" "$gq2")" ] && echo 1 || echo 0)"
+
+  # ── LK-9 (h): A PARKED LINE'S LOG IS ITS OWN FILE, NOT THE NEXT SWEEP'S SLOT ──────────────────
+  # `preprove-<base>/line-N.log` is slot N of EVERY sweep taken at that base. A park cites that
+  # path, and the next sweep at the same tip hands slot N to a different line — so the evidence an
+  # integrator opens hours later is another line's proof, under this line's park.
+  echo "landq4 selftest: LK-9 (h) — a park cites evidence the next sweep cannot overwrite"
+  local hd="$root/h-sweep"; mkdir -p "$hd"
+  local hline="--prove --tests xtask 1111111aa 22222222b"
+  printf 'the FIRST sweep, line 3\n' >"$hd/line-3.log"
+  local hkept; hkept="$(lq_park_log_keep "$hd/line-3.log" "$hline")"
+  _t "the park cites a path keyed on the LINE"  "$hd/parked-22222222b.log" "$hkept"
+  _t "  ...with that sweep's proof in it"       "the FIRST sweep, line 3" "$(cat "$hkept")"
+  printf 'the SECOND sweep, another line entirely\n' >"$hd/line-3.log"
+  _t "  ...which the next sweep cannot overwrite" "the FIRST sweep, line 3" "$(cat "$hkept")"
+  _t "  ...though the SLOT really was reused"     "the SECOND sweep, another line entirely" "$(cat "$hd/line-3.log")"
+  # TWO LINES, ONE SLOT NAME, TWO PARKS — the live shape, and the whole of the defect.
+  printf 'the SECOND sweep, line 3\n' >"$hd/line-3.log"
+  local hkept2; hkept2="$(lq_park_log_keep "$hd/line-3.log" "--prove --tests xtask 33333333c")"
+  _t "two parks at one base cite two files"     1 "$( [ "$hkept" != "$hkept2" ] && echo 1 || echo 0)"
+  _t "  ...and the first still reads as itself" "the FIRST sweep, line 3" "$(cat "$hkept")"
+  # A COPY THAT CANNOT BE MADE IS NOT A REASON TO LOSE THE PARK.
+  _t "a log that is not there keeps its path"   "/nope/line-1.log" "$(lq_park_log_keep /nope/line-1.log "$hline")"
+  _t "a line with no sha keeps its slot path"   "$hd/line-3.log" "$(lq_park_log_keep "$hd/line-3.log" "--prove --tests xtask")"
+  _t "  ...and no log at all is no path"        "" "$(lq_park_log_keep "" "$hline")"
+  _t "asking twice is idempotent"               "$hkept" "$(lq_park_log_keep "$hkept" "$hline")"
+  _t "the popper parks the COPY, never the slot" 1 \
+     "$(grep -cF 'lg="$(lq_park_log_keep "$lg" "$line")"' "$LQ_SRC")"
+
   echo "landq4 selftest: the inbox (an append that does not race the runner's rewrite)"
   local savedIB="${INBOX:-}"; INBOX="$root/inbox.txt"; : >"$INBOX"
   printf -- '--prove A\n--prove B\n' >"$Q"
@@ -5320,7 +5468,8 @@ lq_selftest() {
   printf 'RED%stip1%s%s%s--prove %s\n' "$TAB" "$TAB" "$rl" "$TAB" "$hb" >"$PP"
   printf -- '--prove %s\n' "$hb" >"$Q"
   local rn2; rn2="$(lq_pop tip1 4 "$root/rb.txt" "$root/rk.txt")"
-  _t "the line is still parked with its log"   1 "$(grep -c "^#RED-preproof $rl " "$root/rk.txt" || true)"
+  _t "the line is still parked with its log"   1 \
+     "$(grep -c "^#RED-preproof $root/parked-$(printf '%.9s' "$hb").log " "$root/rk.txt" || true)"
   _t "  ...and the ledger carries the reason"  1 "$(grep -cx "pre-prove RED reason: land.sh: RED — tests failed in: busbar-core" "$L" || true)"
   printf 'RED%stip1%s%s%s--prove %s\n' "$TAB" "$TAB" "$rn" "$TAB" "$hb" >"$PP"
   printf -- '--prove %s\n' "$hb" >"$Q"; : >"$L"
@@ -5432,7 +5581,8 @@ lq_selftest() {
      "$TAB" "$TAB" "$credlog" "$TAB" "$ha" "$TAB" "$ha" "$TAB" "$TAB" "$hb" >"$PP"
   cn="$(lq_pop tip1 4 "$cb" "$ckp")"
   _t "a parked predecessor pops nothing"        0 "$cn"
-  _t "  ...the predecessor is parked"           1 "$(grep -c "^#RED-preproof $credlog " "$ckp" || true)"
+  _t "  ...the predecessor is parked"           1 \
+     "$(grep -c "^#RED-preproof $root/parked-$(printf '%.9s' "$ha").log " "$ckp" || true)"
   _t "  ...the dependent is back to held, tag intact" 1 "$(grep -cx -- "#HOLD-after-$ha --prove $hb" "$ckp" || true)"
   _t "  ...and its chained verdict is dropped"  0 "$(grep -c "tip1@$ha" "$PP" || true)"
   _t "  ...the bare-tip rows are untouched"     1 "$(grep -c "^RED${TAB}tip1${TAB}" "$PP" || true)"
@@ -6103,7 +6253,9 @@ lq_selftest() {
      "$(grep -cF 'want="$(lq_sweep_fleet_demand ' "$LQ_SRC")"
   _t "  ...and a demand of ZERO never reaches it"         1 \
      "$(grep -cF 'if [ "${want:-0}" = 0 ]; then' "$LQ_SRC")"
-  _t "  ...with one line an operator can grep the bill against" 1 \
+  # TWICE: the sweep SAYS it, and `--smoke-latchkey --sweep` ASSERTS it on a real run. A sentence
+  # the adoption gate does not check is a sentence that can be deleted by a refactor in silence.
+  _t "  ...with one line an operator can grep the bill against" 2 \
      "$(grep -c 'sweep: fleet demand 0 — no EC2 box is started or reserved (prove backend ' "$LQ_SRC")"
   _t "  ...and the allocator is still asked from exactly one place" 1 \
      "$(grep -cF 'ci-fleet-power.sh" --ensure-slots "$want"' "$LQ_SRC")"
@@ -6130,6 +6282,22 @@ lq_selftest() {
      "$( LANDQ_PROVE_BACKEND=latchkey lq_base_replay_reserve tipLK9 "--prove --tests xtask aaa1111" "$lk9" >/dev/null 2>&1; echo $? )"
   # THREE SITES, AND NOT ONE OF THEM ASKS FOR A HOST: the reserved-box log, the latchkey log, and
   # the dispatch. The replay happens because the SWEEP wants it, not because a box was handed over.
+  # ── AND THE DISPATCH REALLY HAPPENS WITH NO HOST ──────────────────────────────────────────────
+  # Driven, not described: a stub stands in for the transport where the dispatcher really looks.
+  # No runner is rented and no box is touched. This is the assertion that catches an engine whose
+  # reserve still demands a box — the log line alone would still read correctly.
+  local lk9r="$root/lk9-replay"; mkdir -p "$lk9r"
+  printf '#!/usr/bin/env bash\nbf=""; while [ $# -gt 0 ]; do [ "$1" = --batch ] && bf="$2"; shift; done\necho "[latchkey 00:00:00] job cli-0lk9 over $bf"\nexit 0\n' >"$lk9/target/gate/prove-latchkey.run.sh"
+  chmod +x "$lk9/target/gate/prove-latchkey.run.sh"
+  ( LANDQ_PROVE_BACKEND=latchkey LATCHKEY_MAX_JOBS=12 \
+      lq_base_red_replay "$lk9" "$lk9r" tipLK9 "$lk9line" "" ) >/dev/null 2>&1
+  local w9=0; while [ "$w9" -lt 60 ] && [ ! -f "$lk9r/base.rc" ]; do sleep 0.1; w9=$((w9 + 1)); done
+  _t "the replay dispatched with NO host at all"    0 "$(cat "$lk9r/base.rc" 2>/dev/null)"
+  _t "  ...through the latchkey transport"          1 "$(grep -c 'job cli-0lk9' "$lk9r/base.log" 2>/dev/null)"
+  _t "  ...over a batch with no picks"              "" "$(lq_line_hashes "$(cat "$lk9r/base.batch" 2>/dev/null)")"
+  _t "  ...and the crate tests asked for"           1 "$(grep -c -- '--tests xtask' "$lk9r/base.batch" 2>/dev/null)"
+  _t "the FLEET backend with no host still refuses" 1 \
+     "$( LANDQ_PROVE_BACKEND=fleet lq_base_red_replay "$lk9" "$root/lk9-replay2" tipLK9 "$lk9line" "" >/dev/null 2>&1; echo $? )"
   _t "the replay is dispatched on WANT, never on a host"  3 \
      "$(grep -cF '"$basewant" = 1 ]' "$LQ_SRC")"
   _t "  ...and the old host-shaped dispatch is gone"      0 \
@@ -6271,7 +6439,7 @@ lq_selftest() {
   # kept — the replay takes its slot first, whatever kind of slot it is.
   _t "the reservation happens, and names the tip" 2 \
      "$(grep -c 'BEFORE any line was dispatched' "$LQ_SRC")"
-  _t "  ...and on latchkey it reserves no box at all" 1 \
+  _t "  ...and on latchkey it reserves no box at all" 2 \
      "$(grep -c 'is a LATCHKEY job — no EC2 box is reserved or started for it' "$LQ_SRC")"
   _t "  ...and the reserved box is in hosts from the start" 1 \
      "$(grep -cF 'local i=0 line hosts="$basehost" cand' "$LQ_SRC")"
@@ -6320,7 +6488,7 @@ lq_selftest() {
   _t "a log with no test red is not a base-test red" 1 "$(lq_red_is_base_test "$btip" "$root/bt-g.log"; echo $?)"
   # AND THE BASE REPLAY ASKS FOR THE TESTS, so the ledger above can ever be written.
   _t "the sweep's base replay measures crate tests"  1 \
-     "$(grep -c -- "printf -- '--prove --tests xtask --families %s" "$LQ_SRC")"
+     "$(grep -c -- 'printf -- "--prove --tests xtask --families .%s.\\n' "$LQ_SRC")"
   _t "  ...and the learner runs on the replay's log" 1 \
      "$(grep -c 'lq_base_test_learn "\$key" "\$dir/base.log"' "$LQ_SRC")"
   _t "  ...and on a landed batch's log too"          1 \
@@ -7262,12 +7430,21 @@ if [ "${1:-}" = "--smoke-latchkey" ] && [ "${2:-}" = "--sweep" ]; then
   : >"$BASERED"; : >"$BASETEST"
   : >"$L"
   echo "smoke: queue $Q -> $(cat "$Q")"
-  # ── THE RECORDING STUB, WHERE THE SWEEP REALLY LOOKS FOR THE POWER SWITCH ─────────────────────
-  lq_stage_engine
+  # ── THE RECORDING STUB, IN THE ENGINE HOME THE SWEEP STAGES FROM ─────────────────────────────
+  # NOT in `$W/target/gate` directly: `lq_preprove_sweep` calls `lq_stage_engine` itself, which
+  # re-copies `ci-fleet-power.sh` out of the engine home — a stub written into the staged copy is
+  # overwritten by the very function under test, and the gate would then be measuring the real
+  # allocator while reporting on a stub. So the ENGINE HOME is a copy for the duration, with the
+  # stub standing in for the power switch, and every staging in the run stages the stub.
+  smokeeh="$sroot/engine"; mkdir -p "$smokeeh"
+  cp "$SCRIPTS"/*.sh "$smokeeh/" 2>/dev/null || { echo "smoke: could not copy the engine home" >&2; exit 2; }
   fpcalls="$sroot/fleet-power.calls"; : >"$fpcalls"
-  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >>"%s"\nexit 0\n' "$fpcalls" >"$W/target/gate/ci-fleet-power.sh"
-  chmod +x "$W/target/gate/ci-fleet-power.sh"
-  echo "smoke: ci-fleet-power.sh is a recording stub ($fpcalls) — a sweep that starts a box writes there"
+  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >>"%s"\nexit 0\n' "$fpcalls" >"$smokeeh/ci-fleet-power.sh"
+  chmod +x "$smokeeh/ci-fleet-power.sh"
+  SCRIPTS="$smokeeh"
+  lq_stage_engine
+  echo "smoke: engine home copied to $smokeeh with ci-fleet-power.sh as a recording stub ($fpcalls)"
+  echo "smoke: a sweep that starts a box writes there — a green run is that file with nothing in it"
   start=$(date +%s)
   lq_preprove_sweep "$W" "$base0"
   src=$?
