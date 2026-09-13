@@ -661,6 +661,34 @@ fn ceiling_ratchet_cases<'a>(
         on(base),
     ));
 
+    // THE DEFECT, PINNED AT THE GATE: a `[[cell]]` inserted BEFORE existing rows in
+    // `qa/kind-isolation.toml`, with no count changed anywhere, is not a rise. Keyed by POSITION
+    // this used to compare row K's (shifted) count against row K-1's number at the base for every
+    // row after the insertion point — 155 phantom "ceiling ROSE" findings from one alphabetical
+    // re-sort that changed no count at all. `ceilings::identity_path` keys every `[[cell]]` (and
+    // any other array-of-tables row this rule reads) by its own non-numeric fields instead, which
+    // is what `minted-row` (`xtask/src/gates/kind_isolation/matrix.rs`) already keys the same rows
+    // by. The base carries two cells; the tree carries the same two PLUS a new one, INSERTED
+    // FIRST, with a bigger count than either — the exact shape that used to misattribute a rise.
+    let kind_before = "[[cell]]\ncrate = \"busbar-a\"\nkind = \"x\"\ncount = \"1\"\n\n\
+                        [[cell]]\ncrate = \"busbar-b\"\nkind = \"y\"\ncount = \"2\"\n";
+    let kind_after = "[[cell]]\ncrate = \"busbar-new\"\nkind = \"z\"\ncount = \"10\"\n\n\
+                       [[cell]]\ncrate = \"busbar-a\"\nkind = \"x\"\ncount = \"1\"\n\n\
+                       [[cell]]\ncrate = \"busbar-b\"\nkind = \"y\"\ncount = \"2\"\n";
+    let mut ov = on(base);
+    ov.set_command(
+        format!("git-show:{based}:{}", ceilings::KIND_CEILINGS),
+        kind_before,
+    );
+    ov.set(ceilings::KIND_CEILINGS, kind_after);
+    r.push(prove_rows_green(
+        cx,
+        gate,
+        "a cell inserted ahead of existing rows, with no count changed anywhere, is not a rise",
+        &[ceilings::ROW_ROSE],
+        ov,
+    ));
+
     // -- ceiling-census --------------------------------------------------------------------------
     //
     // THE ROW THAT COUNTS THE RULE TABLES THE REST OF THE GATE IS DERIVED FROM. `owed()` reads the

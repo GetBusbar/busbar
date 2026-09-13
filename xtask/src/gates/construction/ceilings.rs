@@ -559,10 +559,23 @@ pub fn raises(cx: &Ctx) -> BTreeMap<String, Raise> {
 /// at zero ceilings: the whole file was re-pinnable by hand with this row printing PASS. How a
 /// number is spelled is a matter of the file's own style, and a ratchet that a change of quoting
 /// switches off is not a ratchet.
+///
+/// AN ARRAY-OF-TABLES ROW IS NAMED BY ITS IDENTITY, NEVER ITS POSITION. `doc.tables()` hands back
+/// `[[cell]]` number 103 under the path `cell.103` because that is where it sits in the file today
+/// — but `qa/kind-isolation.toml`'s rows are not a list this rule owns the order of; they are
+/// appended and (until this fix) alphabetised by hand. Keying `cell.103.count` by that position
+/// meant inserting one `[[cell]]` ahead of the rest shifted every later row's path by one, and the
+/// comparison against the base became "does row K's count exceed row K-1's" for the whole rest of
+/// the file — 155 phantom "ceiling ROSE" findings from a single alphabetical re-sort that changed
+/// no count at all. [`identity_path`] rewrites the position to the row's own non-numeric fields
+/// (`cell.crate=busbar&kind=api`) before it becomes part of the dotted key, which is what
+/// `minted-row` (`xtask/src/gates/kind_isolation/matrix.rs`) already keys the same rows by, for the
+/// same reason: a row's identity does not move when a sibling is inserted before it.
 fn ints_of(text: &str) -> Result<BTreeMap<String, i64>, String> {
     let doc = crate::toml_doc::parse_str(text)?;
     let mut out = BTreeMap::new();
     for (path, table) in doc.tables() {
+        let path = identity_path(&doc, path, table);
         for key in table.keys() {
             if let Some(v) = table
                 .int_of(key)
@@ -578,6 +591,60 @@ fn ints_of(text: &str) -> Result<BTreeMap<String, i64>, String> {
         }
     }
     Ok(out)
+}
+
+/// The fields that NAME an array-of-tables row, joined in the order the row wrote them: every
+/// string-valued key that is NOT itself a number wearing quotes. `count = "122"` is the ceiling
+/// this rule watches, never part of a row's name; `crate = "busbar"` and `kind = "api"` are the
+/// name. `None` when the row carries no such field to be named by (an all-numeric row has nothing
+/// else to key it on, so [`identity_path`] leaves its position alone rather than collapse every
+/// row of the table onto the same empty identity).
+fn row_identity(table: &crate::toml_doc::Table) -> Option<String> {
+    let parts: Vec<String> = table
+        .keys()
+        .iter()
+        .filter_map(|key| {
+            let crate::toml_doc::Value::Str(s) = table.get(key)? else {
+                return None;
+            };
+            if s.trim().parse::<i64>().is_ok() {
+                return None;
+            }
+            Some(format!("{key}={s}"))
+        })
+        .collect();
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join("&"))
+    }
+}
+
+/// Rewrite an array-of-tables entry's POSITIONAL path (`cell.0`, the Nth `[[cell]]` written) to an
+/// IDENTITY path (`cell.crate=busbar&kind=api`) keyed by [`row_identity`].
+///
+/// A path that is not an array-of-tables slot at all — its last segment does not parse as an
+/// index this document's own array-length ledger (`Document::array_len`) recognises — is returned
+/// UNCHANGED, and so is one whose row has no non-numeric field: a bare position is still a legible
+/// path, and for a row with nothing else to name it by it is the only one available.
+fn identity_path(
+    doc: &crate::toml_doc::Document,
+    path: &str,
+    table: &crate::toml_doc::Table,
+) -> String {
+    let Some((prefix, idx)) = path.rsplit_once('.') else {
+        return path.to_string();
+    };
+    let is_array_slot = idx
+        .parse::<usize>()
+        .is_ok_and(|i| i < doc.array_len(prefix));
+    if !is_array_slot {
+        return path.to_string();
+    }
+    match row_identity(table) {
+        Some(id) => format!("{prefix}.{id}"),
+        None => path.to_string(),
+    }
 }
 
 #[cfg(test)]
@@ -597,14 +664,47 @@ mod tests {
     /// and for as long as this reader took TOML integers only, `ceiling-rose` scored that entire
     /// file at zero ceilings — a hand re-pin of any cell passed unremarked. How a number is spelled
     /// is the file's own style; it is not a switch that turns the ratchet off.
+    ///
+    /// THE KEY IS THE ROW'S IDENTITY, NOT ITS POSITION — `cell.crate=busbar&kind=api.count`, never
+    /// `cell.0.count`. See [`identity_path`].
     #[test]
     fn a_count_written_as_a_quoted_string_is_still_a_ceiling() {
         let doc = "[[cell]]\ncrate = \"busbar\"\nkind = \"api\"\ncount = \"122\"\n";
         let ints = ints_of(doc).expect("the fixture parses");
-        assert_eq!(ints.get("cell.0.count"), Some(&122));
+        assert_eq!(ints.get("cell.crate=busbar&kind=api.count"), Some(&122));
         // The neighbouring strings are words, not numbers, and must not become ceilings.
-        assert_eq!(ints.get("cell.0.crate"), None);
-        assert_eq!(ints.get("cell.0.kind"), None);
+        assert_eq!(ints.get("cell.crate=busbar&kind=api.crate"), None);
+        assert_eq!(ints.get("cell.crate=busbar&kind=api.kind"), None);
+        // The old, position-keyed path must not appear either: that key is exactly what shifted
+        // out from under an inserted sibling and produced the phantom rises this fix removes.
+        assert_eq!(ints.get("cell.0.count"), None);
+    }
+
+    /// THE DEFECT, PINNED: inserting a `[[cell]]` BEFORE existing rows, with no count changed
+    /// anywhere, used to shift every later row's positional path by one and compare it against the
+    /// wrong row's number at the base — 155 phantom "ceiling ROSE" findings from one alphabetical
+    /// re-sort. Keyed by identity, the base's two rows keep their own paths and their own numbers
+    /// no matter what is inserted ahead of them, or where.
+    #[test]
+    fn inserting_a_cell_ahead_of_existing_ones_does_not_move_their_keys() {
+        let before = "[[cell]]\ncrate = \"busbar-a\"\nkind = \"x\"\ncount = \"1\"\n\n\
+                       [[cell]]\ncrate = \"busbar-b\"\nkind = \"y\"\ncount = \"2\"\n";
+        // A brand-new row, carrying a bigger count than either existing one, inserted FIRST.
+        let after = "[[cell]]\ncrate = \"busbar-new\"\nkind = \"z\"\ncount = \"10\"\n\n\
+                      [[cell]]\ncrate = \"busbar-a\"\nkind = \"x\"\ncount = \"1\"\n\n\
+                      [[cell]]\ncrate = \"busbar-b\"\nkind = \"y\"\ncount = \"2\"\n";
+        let was = ints_of(before).expect("the base fixture parses");
+        let now = ints_of(after).expect("the tree fixture parses");
+        // Position-keyed, `cell.0.count` would read 1 at the base and 10 in the tree — a phantom
+        // rise. Identity-keyed, each pre-existing row's own key carries its own, unmoved number.
+        assert_eq!(was.get("cell.crate=busbar-a&kind=x.count"), Some(&1));
+        assert_eq!(now.get("cell.crate=busbar-a&kind=x.count"), Some(&1));
+        assert_eq!(was.get("cell.crate=busbar-b&kind=y.count"), Some(&2));
+        assert_eq!(now.get("cell.crate=busbar-b&kind=y.count"), Some(&2));
+        // The new row has no `before` at all: it is a MINT, which `minted-row` refuses — not a
+        // rise, which `ceiling-rose` cannot see it as without a key already in the base.
+        assert_eq!(was.get("cell.crate=busbar-new&kind=z.count"), None);
+        assert_eq!(now.get("cell.crate=busbar-new&kind=z.count"), Some(&10));
     }
 
     /// A string that is not a number is not a ceiling, and must not make the file unreadable
