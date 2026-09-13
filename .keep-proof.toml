@@ -17,6 +17,8 @@
 #              anything changed.
 #   tests    — the loop's own crate, the substrate whose session opener this face is aimed at, the
 #              binary that composes both, the voice plane and its crate as the session-shaped
-#              reader, and `xtask` for the gates.
+#              reader, and the transport-facing contract the hold posture is DECLARED on. `xtask`
+#              is deliberately absent: the gates are run as gates, and a gate crate under `--tests`
+#              proves the gate's own unit tests rather than the tree the gate is about.
 families = '^(voice|streams|teller|billing|ledger|boot|neutrality)([|.]|$)'
-tests = ["busbar", "busbar-kernel", "busbar-substrate", "busbar-voice", "busbar-plane-voice", "xtask"]
+tests = ["busbar", "busbar-kernel", "busbar-substrate", "busbar-voice", "busbar-plane-voice", "busbar-contract-transport"]
