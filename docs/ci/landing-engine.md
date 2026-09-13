@@ -1,11 +1,15 @@
 # The landing engine
 
-`scripts/landq4.sh` lands the queue: it pops a batch, proves it on a fleet box, pushes what went
-green and parks what did not. This page is about the **engine around it** — how it is started, how
-it is adopted when a new version of itself lands, what its exit status means, and what an
-integrator has to do (very nearly nothing).
+`scripts/landq4.sh` lands the queue: it pops a batch, proves it as a fan of rented Latchkey jobs,
+pushes what went green and parks what did not. This page is about the **engine around it** — how it
+is started, how it is adopted when a new version of itself lands, what its exit status means, and
+what an integrator has to do (very nearly nothing).
 
-The fleet it proves on is `docs/ci/fleet.md`. The queue commands are `scripts/landq-ctl.sh`.
+**Latchkey is the only backend this engine has** (LK-5b). It used to prove on an EC2 fleet
+(`docs/ci/fleet.md`, `scripts/ci-fleet-power.sh`); that fleet, its power switch and its transport
+(`scripts/land-remote.sh`, `scripts/ci-remote-lib.sh`) are all deleted (LK-5, LK-9). See §12–13 for
+what that changed and what a `BUSBAR_LAND_BACKEND=fleet`/`BUSBAR_PROVE_BACKEND=fleet` value does
+now (refused by name, latchkey used instead). The queue commands are `scripts/landq-ctl.sh`.
 
 ---
 
@@ -173,10 +177,16 @@ engine costs.
    cp <repo>/scripts/landq.env.example ~/.busbar-engine/env
    ```
    Edit `~/.busbar-engine/env` so that every variable of the current hand-typed restart line is in
-   it — `LANDQ_ROOT`, `LAND_BATCH`, `LAND_CHAIN_DEPTH`, `LAND_SELFTEST_SHARDS`, `LAND_REMOTE`,
-   `XTASK_GATE_CEILING_SECS`, `LANDQ_PREPROVE_LINES`, `LANDQ_PREPROVE_HEAD`, `BUSBAR_PROVE_PER_BOX`,
-   `BUSBAR_PROVE_SEED`, `LANDQ_IDLE_STOP_MINS`, the four `CI_RUNNER_*` knobs, `AWS_REGION`, `PATH`,
-   `LAND_TMP` — and **drop `LAND_SH_SRC`**: it is the supervisor's now.
+   it — `LANDQ_ROOT`, `LAND_BATCH`, `LAND_CHAIN_DEPTH`, `LAND_SELFTEST_SHARDS`,
+   `XTASK_GATE_CEILING_SECS`, `LANDQ_PREPROVE_LINES`, `LANDQ_PREPROVE_HEAD`,
+   `BUSBAR_PROVE_SEED`, `AWS_REGION`, `PATH`, `LAND_TMP` — and **drop `LAND_SH_SRC`**: it is the
+   supervisor's now. **Drop, do not carry forward, the retired EC2-fleet knobs**: `LAND_REMOTE`,
+   `BUSBAR_PROVE_PER_BOX`, `LANDQ_IDLE_STOP_MINS`, and the four `CI_RUNNER_*` knobs
+   (`CI_RUNNER_ITYPE`, `CI_RUNNER_ONDEMAND_FLOOR`, `CI_RUNNER_RUNNING_MIN`,
+   `CI_RUNNER_RUNNING_MAX`, `CI_RUNNER_START_WAIT_SECS`). None of them is read any more (LK-5b):
+   `--remote`/`LAND_REMOTE` is refused by name in `land.sh`, and the rest were the fleet's own
+   power-and-slot arithmetic (`scripts/ci-fleet-power.sh`, also deleted). A carried-forward value
+   is inert, not honoured — see §12.
 
 2. **Ask the running runner for a boundary:**
 
@@ -434,6 +444,12 @@ operator running by hand, and it says so in the log when it is used.
 
 ## 12. Two rulings the live runner paid for in landings
 
+Both of these are history: they were paid for while `BUSBAR_LAND_BACKEND=fleet` was still reachable.
+`fleet` is retired (LK-5b) — refused by name in both `land_validate_backend` (land.sh) and
+`lq_validate_backend` (landq4.sh), latchkey used instead — so neither defect can recur, but the
+narrative stays because it is what taught `lq_landing_slot_ready` and `lq_fault_wake` the shape they
+have now (§2, `lq_landing_needs_box`/`lq_fault_wake` are permanent no-ops for the same reason).
+
 ### A landing that needs a box HAS one before the pop — the precondition, not the retry
 
 Measured 2026-09-12: five `NONE:probe-empty` faults between 07:49 and 14:31, no landing at all in
@@ -519,12 +535,14 @@ cannot have touched it (`lq_red_is_base_test`). Ruled 2026-09-11 after a line wa
 three hours on rows nobody had measured, and the answer is `NONE:base-unmeasured` / `NONE:base-test`:
 live, unparked, at the **front** of the next sweep.
 
-**Its shape does not change with the backend. Its home does.**
+**Its shape does not change with the backend. Its home does** — or did: `fleet` is retired (LK-5b)
+and `latchkey` is the only row this table still has a live reader for. The `fleet` row stays for the
+history in the measurement below it.
 
 | `BUSBAR_PROVE_BACKEND` | where the replay runs | what the sweep reserves for it | log |
 |---|---|---|---|
-| `fleet` | an EC2 box, taken **before any line is dispatched** so measuring the base never costs a line its proof | one proof slot, held out of `hosts` from the start | `base state: <i-…> reserved for the base replay at <tip> BEFORE any line was dispatched` |
-| `latchkey` | a **rented runner of its own** — the same `lq_dispatch_preprove` every line and every chained hold goes through | **no box at all**; it takes a Latchkey slot instead, still before any line, and counts against `lq_latchkey_proc_bound` like any other pre-proof | `base state: the base replay at <tip> is a LATCHKEY job — no EC2 box is reserved or started for it, …` |
+| `fleet` (RETIRED, LK-5b) | an EC2 box, taken **before any line is dispatched** so measuring the base never costs a line its proof | one proof slot, held out of `hosts` from the start | `base state: <i-…> reserved for the base replay at <tip> BEFORE any line was dispatched` |
+| `latchkey` (the only backend) | a **rented runner of its own** — the same `lq_dispatch_preprove` every line and every chained hold goes through | **no box at all**; it takes a Latchkey slot instead, still before any line, and counts against `lq_latchkey_proc_bound` like any other pre-proof | `base state: the base replay at <tip> is a LATCHKEY job — no EC2 box is reserved or started for it, …` |
 
 Measured, live, 2026-09-12 16:15: with **both** backends on `latchkey`, every line's pre-proof went
 to Latchkey and the sweep still logged `base state: i-063… reserved for the base replay` and
