@@ -52,7 +52,8 @@ pub use kinds::{
     SignFailed, Signer, SliceGrant, Store, StoreError, VirtualKeyDirectory,
 };
 pub use plane::{
-    Ingress, Plane, PlaneMeta, PlaneSessionState, Progress, Response, SessionPlane, UnitDraft,
+    Ingress, Plane, PlaneMeta, PlaneSessionState, Progress, Response, SessionPlane, SessionPosture,
+    UnitDraft,
 };
 // `KernelSeal` is deliberately absent: it is reachable as `plugin::KernelSeal` and nowhere else, so
 // it is not among the names this crate offers as the plugin-visible ABI. It cannot be made private

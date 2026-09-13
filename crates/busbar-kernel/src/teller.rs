@@ -384,7 +384,7 @@ impl AccrualMeter {
 /// arrives, a plane declares how a unit finished, and the settlement table below reads both. A
 /// kernel-local restatement of any of them would be a second spelling of a value that crosses the
 /// plugin boundary in both directions.
-pub use busbar_contract::{FinishClass, StatusAt, StatusClass};
+pub use busbar_contract::{FinishClass, SessionPosture, StatusAt, StatusClass};
 
 /// Everything the settlement table reads.
 ///
@@ -818,7 +818,10 @@ pub async fn run_unit_async<U: Units, R: RouteAwait>(
     run: Run<'_>,
     route: &R,
 ) -> Ended {
-    match open_unit(kernel, units, ctx, run) {
+    // THE DECLARED DEFAULT, and the reason nothing that ships today moves: a unit opened and served
+    // in one call settles at its own exit, which is what `SessionPosture::Release` is. A binding that
+    // declares `Hold` does not reach this function — it keeps what the opener gave it.
+    match open_unit(kernel, units, ctx, SessionPosture::default(), run) {
         Opened::Refused { run, refusal } => refuse_unit(kernel, units, ctx, run, refusal),
         Opened::Held(held) => serve_held(kernel, units, ctx, held, route).await,
     }
@@ -841,11 +844,46 @@ pub async fn run_unit_async<U: Units, R: RouteAwait>(
 pub struct Held<'r> {
     run: Run<'r>,
     settling: Settling,
+    /// What the BINDING declared, carried so the end this unit has can be asked for rather than
+    /// assumed. The kernel read it at the door; this is the answer it read.
+    posture: SessionPosture,
     /// The end a unit that passed the door but LOST THE CELL already has. The door said yes and
     /// then the cell refused a second hold, so this unit never reaches the wire — but it is an
     /// admitted unit and leaves through the admitted audit door like every other one, which is why
     /// it is carried here rather than answered as a refusal.
     lost_cell: Option<Outcome>,
+}
+
+/// WHEN A HELD UNIT'S SLOT GOES BACK — the kernel's own answer, read off the binding's declared
+/// posture at the door, and the one thing a caller has to obey about a unit it is holding.
+///
+/// It is not advice. A unit's request slot and in-flight lease are the node's, and this says which
+/// end gives them back: the end of the call that opened the unit, or the end of the session that
+/// unit opened. Two bindings of two different planes that declared the same posture get the same
+/// answer here, because the answer is the declaration's and not the plane's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Settles {
+    /// At the exit of the call that opened it. The binding declared nothing, or declared
+    /// [`SessionPosture::Release`]: this is a request, and a request ends where it began.
+    ThisExit,
+    /// At the end of the SESSION this unit opened. The binding declared [`SessionPosture::Hold`]:
+    /// the slot and the lease are the session's for as long as it is live, and the per-leg work runs
+    /// against this one admission.
+    SessionEnd,
+}
+
+impl Held<'_> {
+    /// WHAT THE DOOR READ OFF THE DECLARATION: which end settles this unit.
+    ///
+    /// A unit that never reached the wire — the one that passed the door and then lost the cell —
+    /// settles at this exit whatever the binding declared: there is no session for it to be the
+    /// length of.
+    pub fn settles_at(&self) -> Settles {
+        match (self.posture, self.lost_cell.is_some()) {
+            (SessionPosture::Hold, false) => Settles::SessionEnd,
+            _ => Settles::ThisExit,
+        }
+    }
 }
 
 /// What [`open_unit`] answered.
@@ -882,12 +920,20 @@ pub enum Opened<'r> {
 /// opening for any arrival long-lived enough to want one — a duplex socket, a relayed stream, a
 /// future bidirectional plane — and no plane, dialect, transport or modality is named by it.
 ///
+/// WHAT THE POSTURE IS AND WHERE IT COMES FROM. `posture` is DECLARED DATA — the binding's own, read
+/// here and nowhere else, and the whole of what it decides is which end gives the node's slot back
+/// ([`Held::settles_at`]). The kernel does not know, and cannot ask, what kind of binding declared
+/// it: a duplex row of one plane and a duplex row of another that declare the same posture are
+/// opened, held and settled by the identical bytes. An undeclared binding is
+/// [`SessionPosture::Release`], which is what every binding has always had.
+///
 /// The order is fixed here exactly as it is in the whole loop: written once, in the chain below, and
 /// again by the types, since each step's answer can only be built with that step's own token.
 pub fn open_unit<'r, U: Units>(
     kernel: &Kernel,
     units: &U,
     ctx: &UnitCtx,
+    posture: SessionPosture,
     run: Run<'r>,
 ) -> Opened<'r> {
     let seal = &kernel.seal;
@@ -1018,6 +1064,7 @@ pub fn open_unit<'r, U: Units>(
             Opened::Held(Held {
                 run,
                 settling,
+                posture,
                 lost_cell: refused_cell,
             })
         }
@@ -1041,6 +1088,7 @@ pub async fn serve_held<U: Units, R: RouteAwait>(
     let Held {
         run,
         settling,
+        posture: _,
         lost_cell,
     } = held;
     match lost_cell {

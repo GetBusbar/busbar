@@ -73,7 +73,16 @@ them). Each axis is blind to the other two; only the kernel composes them.
   exist — an accepted upgrade, a bound carrier — is a point of no return, so the ten questions must be
   answered BEFORE it and the wire work then runs per leg on that one answer. It is SESSION-NEUTRAL:
   the kernel names no plane, dialect, transport or modality, and any arrival long-lived enough to
-  want an opening opens through it. **LOC ceilings, gated as one union and per file, by call-graph** (a
+  want an opening opens through it. **And WHAT A UNIT KEEPS, and until when, is DECLARED DATA on the
+  binding rather than behaviour a plane implements**: `busbar_contract::SessionPosture` is `Release`
+  (the default and what every binding has always had — the unit settles at its own exit) or `Hold`
+  (the admitted unit keeps the node's request slot and its in-flight lease for the life of the session
+  it opened, and settles once, at that session's end). The kernel READS the posture at the door and
+  answers it as `Held::settles_at`, and it serves both postures through the one seam. A duplex binding
+  declares `Hold`; a request-response binding declares nothing. No plane implements holding, and two
+  bindings of two different planes that declared the same posture are admitted, held and settled by
+  identical bytes — which is the only way the rule can be uniform across planes rather than four
+  plane-shaped approximations of it. **LOC ceilings, gated as one union and per file, by call-graph** (a
   `busbar-unit-*` file reachable from the Teller loop **without crossing a sealed unit-trait boundary**
   — helpers the loop calls directly, not the units behind their traits — counts against the kernel
   ceiling): `busbar-kernel`
