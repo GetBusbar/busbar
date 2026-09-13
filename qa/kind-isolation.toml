@@ -1922,7 +1922,7 @@ count = "70"
 [[cell]]
 crate = "busbar-kernel"
 kind = "control"
-count = "24"
+count = "25"
 
 [[cell]]
 crate = "busbar-kernel"

@@ -55,6 +55,7 @@
 //! "every unit posts exactly once" has to be readable in the shape of the code, not just true.
 
 use std::future::Future;
+use std::sync::Arc;
 
 use busbar_caps::{
     Abort, AdminToken, Admission, Admit, AdmitToken, Approve, Arrival, Audit, Authenticate,
@@ -65,6 +66,7 @@ use busbar_caps::{
     VerifiedDestination, Verify,
 };
 
+use crate::inflight::UnitSlot;
 use crate::registry::Generation;
 use crate::slice::{takes_lease, ConcurrencyGauge, GroupLeaseSlip, LeaseCell, IN_FLIGHT};
 
@@ -1132,6 +1134,177 @@ pub fn refuse_unit<U: Units>(
         .encode(&UnitToken::<Encode>::mint(seal), ctx, &outcome)
         .into_result(seal);
     exit(kernel, units, ctx, run, outcome, false)
+}
+
+/// A UNIT HELD OPEN AT THE DOOR THAT OWNS ITS SLOT — the seam a session crosses an upgrade with.
+///
+/// [`Held`] borrows its [`Run`], and a [`Run`] borrows a cell and a lease set that a synchronous
+/// driver mints on its stack. That borrow is exactly what a session cannot have: the thing that
+/// makes a session exist — an accepted socket upgrade, a bound carrier — is an await, and a `Held`
+/// that borrows the stack cannot cross it. So a `Held` that must live from before the upgrade to the
+/// session's end OWNS the two per-session things instead of borrowing them: the cell and the leases,
+/// which live together in an [`Arc<UnitSlot>`] the caller drew from the in-flight table. The rest of
+/// what a [`Run`] needs — the gauge and the canary — is the node's own machinery, node-wide already,
+/// and is held by reference beside the slot; the meter is this unit's and is owned here.
+///
+/// WHY THE SLOT AND NOT A STACK CELL. A held session has two ends exactly as any other unit does —
+/// the exit path and the node's sweep — and a cell that lived in an accept task's frame would go
+/// away with the task, leaving the sweep nothing to settle. The slot is in the table, reachable by
+/// the sweep by key, so a session that dies between its opening and its close is settled and not
+/// leaked, the same as a request abandoned mid-Route is.
+///
+/// KIND-NEUTRAL, exactly as [`open_unit`] is: nothing here knows what a session IS. It is the owning
+/// form of the loop's opening for any arrival long-lived enough to want one, and no plane, dialect,
+/// transport or modality is named by it.
+#[derive(Debug)]
+pub struct SessionHold<'n> {
+    /// The unit's own slot, drawn from the in-flight table: the cell the hold lives in and the lease
+    /// set the door drew, owned together so both survive the upgrade and both stay sweep-reachable.
+    slot: Arc<UnitSlot>,
+    /// The node's gauge, node-wide, that the leases go back to.
+    gauge: &'n ConcurrencyGauge,
+    /// The counts the node balances, node-wide.
+    canary: &'n Canary,
+    /// What this unit has spent so far. Owned, because the unit that owns the slot owns its meter.
+    meter: AccrualMeter,
+    /// What the door decided this unit's end settles against.
+    settling: Settling,
+    /// What the binding declared, carried so the end can be asked for rather than assumed.
+    posture: SessionPosture,
+    /// The end a unit that passed the door but lost the cell already has, carried exactly as
+    /// [`Held`] carries it.
+    lost_cell: Option<Outcome>,
+}
+
+/// A borrowed [`Run`] over an owned slot and the node's handles — the one place the owning form's
+/// run is built, so [`SessionHold::run`], [`SessionHold::settle`] and [`open_unit_owned`] agree on
+/// its shape rather than each spelling it. `parent` is `None`: the owning hold IS a session's own
+/// admission, not a child of one.
+fn run_over<'r>(
+    slot: &'r UnitSlot,
+    gauge: &'r ConcurrencyGauge,
+    canary: &'r Canary,
+    meter: &'r AccrualMeter,
+) -> Run<'r> {
+    Run {
+        cell: slot.cell(),
+        parent: None,
+        leases: slot.leases(),
+        gauge,
+        canary,
+        meter,
+    }
+}
+
+impl SessionHold<'_> {
+    /// WHICH END SETTLES THIS UNIT, read off the declaration exactly as [`Held::settles_at`] reads
+    /// it. A unit that never reached the wire settles at this exit whatever the binding declared.
+    pub fn settles_at(&self) -> Settles {
+        match (self.posture, self.lost_cell.is_some()) {
+            (SessionPosture::Hold, false) => Settles::SessionEnd,
+            _ => Settles::ThisExit,
+        }
+    }
+
+    /// THE SESSION'S OWN CELL, so a leg opened on this session can name it as the parent it accrues
+    /// against. A leg is a child unit spending against this admission, and this is the admission.
+    pub fn cell(&self) -> &HoldCell {
+        self.slot.cell()
+    }
+
+    /// A borrowed [`Run`] over the owned slot and handles, for a caller that has to build one — a
+    /// leg served on this session names [`SessionHold::cell`] as its parent rather than this run,
+    /// but a caller that settles or inspects the session's own unit reaches it through here.
+    pub fn run(&self) -> Run<'_> {
+        run_over(&self.slot, self.gauge, self.canary, &self.meter)
+    }
+
+    /// END THE SESSION, ONCE. The session's own hold has sat in the cell for the session's whole
+    /// life, drawing one request slot and one in-flight lease; this is the one place it goes back.
+    /// It runs the same terminal every admitted unit ends through — the audit door, the bytes, the
+    /// settle — so a session leaves the node the way every other unit does, and the cell's
+    /// compare-and-set makes it exactly once: a sweep that got here first has already emptied the
+    /// cell, and this call answers [`Ended::AlreadySettled`] and touches nothing.
+    pub fn settle<U: Units>(self, kernel: &Kernel, units: &U, ctx: &UnitCtx) -> Ended {
+        let SessionHold {
+            slot,
+            gauge,
+            canary,
+            meter,
+            settling,
+            posture: _,
+            lost_cell,
+        } = self;
+        let run = run_over(&slot, gauge, canary, &meter);
+        let outcome = lost_cell.unwrap_or(Outcome::Completed);
+        terminal(kernel, units, ctx, run, outcome, settling)
+    }
+}
+
+/// What [`open_unit_owned`] answered.
+#[derive(Debug)]
+pub enum OpenedOwned<'n> {
+    /// The door said yes. The unit is held open, owns its slot, and can cross the upgrade.
+    Held(SessionHold<'n>),
+    /// A step refused before the door. Nothing is held; the unit has already been ended through the
+    /// refused door, on the slot the caller drew, so the caller has only to give the slot's table
+    /// row up — there is no second settle owed.
+    Refused(Ended),
+}
+
+/// RUN THE LOOP'S FIRST SIX STEPS ON A SLOT THE CALLER OWNS, AND STOP AT THE DOOR — the owning
+/// [`open_unit`].
+///
+/// The one difference from [`open_unit`] is where the cell and the leases live: not on the caller's
+/// stack, but in the [`Arc<UnitSlot>`] the caller drew from the in-flight table and hands in here.
+/// The six steps are the identical six — this delegates to [`open_unit`] and does not re-write
+/// them — and what it returns owns the slot, so the hold the door put in the cell can be kept across
+/// the await that makes the session exist.
+///
+/// A REFUSAL IS ENDED HERE. [`open_unit`] hands a refusal back unended because a borrowing caller
+/// may want to run the refused door itself; an owning caller cannot — its whole reason to be here is
+/// that it is about to await, and a refused session never reaches the await — so the refusal is
+/// ended on the spot through [`refuse_unit`] and the caller gets the [`Ended`], not a run to finish.
+pub fn open_unit_owned<'n, U: Units>(
+    kernel: &Kernel,
+    units: &U,
+    ctx: &UnitCtx,
+    posture: SessionPosture,
+    slot: Arc<UnitSlot>,
+    gauge: &'n ConcurrencyGauge,
+    canary: &'n Canary,
+) -> OpenedOwned<'n> {
+    let meter = AccrualMeter::new();
+    // The six steps run against a `Run` borrowing the slot and the meter for the length of the open
+    // ONLY. What escapes this scope is the door's owned answer — never the borrow — which is what
+    // lets the slot and the meter move into the owning hold below and cross the upgrade.
+    let answer = {
+        let run = run_over(&slot, gauge, canary, &meter);
+        match open_unit(kernel, units, ctx, posture, run) {
+            Opened::Refused { run, refusal } => Err(refuse_unit(kernel, units, ctx, run, refusal)),
+            // The borrowed `run` is left in the pattern's `..`, so it drops at the end of this arm
+            // and its borrow of the slot and the meter ends here — which is the whole reason the
+            // owning form can then take both. What escapes is only the door's owned answer.
+            Opened::Held(Held {
+                settling,
+                posture,
+                lost_cell,
+                ..
+            }) => Ok((settling, posture, lost_cell)),
+        }
+    };
+    match answer {
+        Err(ended) => OpenedOwned::Refused(ended),
+        Ok((settling, posture, lost_cell)) => OpenedOwned::Held(SessionHold {
+            slot,
+            gauge,
+            canary,
+            meter,
+            settling,
+            posture,
+            lost_cell,
+        }),
+    }
 }
 
 /// Draw the concurrency lease the door's yes entitles a unit to, on the unit's own SLOT.

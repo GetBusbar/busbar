@@ -387,6 +387,37 @@ key = "rules.loc-ceilings.union_ceiling"
 by = 13
 because = "The same 29 lines again, counted in the union the kernel total belongs to \u2014 but the union is NET 13 against the base (23,465 -> 23,478), because this branch had already drained 16 lines out of it before this landing and the ceiling was re-pinned to 23,449 there. 13 is what this tree actually rose by, which is what a declared raise is for; the other 16 were paid. caps/contract did not move \u2014 the view is spelled in the vocabulary the contract already carries, and busbar-caps gained nothing: the seal reaches the contract as a token that already exists"
 
+# \u2500\u2500 declared raises: the OWNING-Held kernel form. Three ratchets move and they are the SAME 95
+# surface lines counted three ways \u2014 the Teller-loop file, the kernel total that file is in, and the
+# union that total is in. section 1.1's OWNER figures are untouched and still true: busbar-kernel <=
+# 8k with the Teller loop <= 1.5k, measured at 5,571 and 798 \u2014 both well under. What these three pin
+# is today's measurement.
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.kernel_files.teller.ceiling"
+by = 95
+because = "FACE busbar_kernel::teller::{SessionHold, OpenedOwned, open_unit_owned, run_over} \u2014 the OWNING form of the loop's opening, so a held unit can cross the socket upgrade a duplex session is built on. `Held<'r>` borrows its `Run<'r>`, and a `Run` borrows a cell and a lease set a synchronous driver mints on its stack; a value borrowing the stack cannot be held across an await, so `SessionHold` OWNS the two per-session things \u2014 the cell and the leases, together in an `Arc<UnitSlot>` drawn from the in-flight table \u2014 and holds the gauge and canary by reference beside them. `open_unit_owned` delegates the six steps to `open_unit` (no second copy of the loop), `settle` ends the session once through the shared `terminal`, and `run_over` is the one place the owning run is built. Kind-neutral: no plane, dialect, transport or modality named. 95 surface lines measured (703 -> 798)"
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.kernel_ceiling"
+by = 95
+because = "The same 95 lines as the Teller-loop raise above, counted again in the kernel total the file belongs to (5,476 -> 5,571). No reachable busbar-unit-* file moved: the owning form names none of them \u2014 it is spelled in the kernel's own in-flight and slice vocabulary and in busbar-caps types the loop already carries"
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.union_ceiling"
+by = 95
+because = "The same 95 lines again, counted in the union the kernel total belongs to (23,560 -> 23,655). caps/contract did not move: `SessionHold` owns an `Arc<UnitSlot>` the kernel already defines and reaches the gauge, canary and meter it already names \u2014 no new caps or contract surface is added by the owning form"
+
+# \u2500\u2500 declared raise: the one control-vocabulary hit the OWNING-Held red-first slot test adds. Drawing
+# a real slot means naming `busbar_kernel::inflight::Enter`, whose `admin_listener` field the control
+# matcher counts as control vocabulary. It is the mandatory field of a kernel-own struct named once
+# in a test, not a coupling to any control surface \u2014 a vocabulary artifact on a row whose drain is
+# the R7 control rename.
+[[gate.ceiling_raises]]
+key = "cell.busbar-kernel.control.count"
+file = "qa/kind-isolation.toml"
+by = 1
+because = "busbar-kernel \u00d7 control (busbar-kernel, control): the OWNING-Held red-first test (tests/owning_held.rs) draws a real slot from the in-flight table, which means constructing `busbar_kernel::inflight::Enter`; its mandatory `admin_listener` field is the one occurrence the control matcher counts (24 -> 25). Enter is the kernel's own struct, named once in a test \u2014 there is no control surface reached, only the field name of a kernel type"
+
 # ── declared raise: the UNIT VIEW. `Kernel::unit_view` is the sixth thing minted outside the loop,
 # and the two lines it costs are the two the other five cost: the seal reaches the contract as a
 # TOKEN (`KernelSeal` is busbar-caps's own hole and does not implement the contract's marker; the
@@ -639,7 +670,7 @@ identical counting rule to busbar-caps + busbar-contract once their proof tables
 this rule's own `loc-ceilings:caps-contract` row is not that row and is not removed by it -- the two \
 are expected to converge once the move lands, not to be reconciled here."""
 kernel_crate = "busbar-kernel"
-kernel_ceiling = 5476
+kernel_ceiling = 5571
 caps_crate = "busbar-caps"
 contract_crate = "busbar-contract"
 caps_contract_ceiling = 3493
@@ -647,7 +678,7 @@ unit_crate_glob = "busbar-unit-*"
 unit_total_ceiling = 14591
 verbs_crate = "busbar-unit-verbs"
 verbs_ceiling = 1428
-union_ceiling = 23560
+union_ceiling = 23655
 # Files (by basename, wherever they sit under busbar-kernel/src) whose bodies seed the call-graph
 # name-match: every identifier called from one of these files, that busbar-kernel does not itself
 # define, is looked up by name against every busbar-unit-* file.
@@ -656,7 +687,7 @@ teller_files = ["teller.rs"]
 [rules.loc-ceilings.kernel_files.teller]
 label = "Teller loop"
 patterns = ["teller.rs"]
-ceiling = 703
+ceiling = 798
 
 [rules.loc-ceilings.kernel_files.pump]
 label = "pump/scheduler"
