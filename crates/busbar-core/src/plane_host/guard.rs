@@ -85,22 +85,14 @@ pub(crate) fn guard_url(
             // leaving `out` untouched.
             return StatusClass::Refused;
         };
-        let (verdict, class, reason) = match judge_url(url, allow_private != 0) {
-            Ok(()) => (0u8, GuardClass::Allowed, String::new()),
-            Err((class, reason)) => (1u8, class, reason),
+        let (refused, class, reason) = match judge_url(url, allow_private != 0) {
+            Ok(()) => (false, GuardClass::Allowed, String::new()),
+            Err((class, reason)) => (true, class, reason),
         };
         // SAFETY: `reason_buf`/`reason_cap` are a writable range (or null) per the ABI.
         let reason_len =
             unsafe { busbar_plugin::write_capped(reason_buf, reason_cap, reason.as_bytes()) };
-        let out_pod = GuardVerdict {
-            size: core::mem::size_of::<GuardVerdict>() as u32,
-            version: busbar_plugin::hot::POD_VERSION,
-            _reserved: 0,
-            verdict,
-            class: class as u8,
-            _reserved2: 0,
-            reason_len: reason_len as u32,
-        };
+        let out_pod = GuardVerdict::new(refused, class, reason_len as u32);
         // SAFETY: `out` is a writable, aligned `MaybeUninit<GuardVerdict>` slot (or null, tolerated);
         // the write publishes only on the Ok path (init-only-on-Ok).
         unsafe { busbar_plugin::write_out(out, out_pod) };
@@ -154,19 +146,6 @@ fn probe_url(host: &str) -> String {
     }
 }
 
-/// Reconstruct a [`GuardClass`] from the verdict's neutral class byte (the inverse of `class as u8`);
-/// an unknown byte reads as [`GuardClass::Allowed`] (forward-compat, never a phantom refusal).
-fn guard_class_from_u8(v: u8) -> GuardClass {
-    match v {
-        1 => GuardClass::Scheme,
-        2 => GuardClass::NoHost,
-        3 => GuardClass::CloudMetadata,
-        4 => GuardClass::ObfuscatedHost,
-        5 => GuardClass::InternalHost,
-        _ => GuardClass::Allowed,
-    }
-}
-
 /// Judge a URL-shaped tool argument through the host [`guard_url`] seam, returning the structural
 /// verdict. `allow_private` is whether reaching internal hosts through this target is deliberate (the
 /// target's `allow_private`). The judgement is STRUCTURAL and resolves no name (see the module
@@ -204,7 +183,7 @@ pub fn guard_url_over(app: &App, url: &str, allow_private: bool) -> GuardOutcome
     }
     let n = (verdict.reason_len as usize).min(reason_buf.len());
     GuardOutcome::Deny {
-        class: guard_class_from_u8(verdict.class),
+        class: GuardClass::from_u8(verdict.class),
         reason: String::from_utf8_lossy(&reason_buf[..n]).into_owned(),
     }
 }

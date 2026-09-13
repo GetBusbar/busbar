@@ -30,7 +30,7 @@ use super::{recover, HostState};
 use busbar_plugin::hot::host::HostCtx;
 use busbar_plugin::hot::{
     CallerRef, ContentChunk, GateDecision, GateSubjectRef, GateVerdictOut, OpDesc, OpResult,
-    StatusClass, TargetRef, WorkHandleDesc, WorkHandleId, POD_VERSION,
+    StatusClass, TargetRef, WorkHandleDesc, WorkHandleId,
 };
 use busbar_plugin::{borrow_bytes, borrow_str};
 use core::mem::MaybeUninit;
@@ -364,31 +364,6 @@ fn run_content_gate(
 // gate_decide — fire the operator's request-admission hook gates (fail-closed to a 403 reject).
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 
-/// Write the [`GateVerdictOut`] out-param (tolerating a null slot): the verdict + clamped status + the
-/// rendered `message`/`hook` lengths.
-///
-/// # Safety
-/// `out`, when non-null, is a writable, aligned `MaybeUninit<GateVerdictOut>` for the call.
-unsafe fn write_gate_verdict(
-    out: *mut MaybeUninit<GateVerdictOut>,
-    proceed: u8,
-    status: u16,
-    message_len: u32,
-    hook_len: u32,
-) {
-    let verdict = GateVerdictOut {
-        size: core::mem::size_of::<GateVerdictOut>() as u32,
-        version: POD_VERSION,
-        proceed,
-        _reserved: 0,
-        status,
-        message_len,
-        hook_len,
-    };
-    // SAFETY: `out` is a writable, aligned MaybeUninit slot (or null, which `write_out` tolerates).
-    unsafe { busbar_plugin::write_out(out, verdict) };
-}
-
 /// WIRED `gate_decide` → fire the operator's REQUEST-ADMISSION hook gates over the REAL
 /// [`crate::hooks::gate::decide`]. The host re-selects the resolved gate set by `(plane_key, container)`
 /// — it owns the `ResolvedPolicy` set the plane never holds — reconstructs the SAME `InvokeReq`-shaped
@@ -418,8 +393,8 @@ pub(crate) extern "C-unwind" fn gate_decide(
     catch_unwind(AssertUnwindSafe(|| {
         // Initialize `out` up front so NO path (refuse, fault, or a caught panic below) leaves it
         // uninitialized: the fail-closed reject a `Proceed`/`Reject` overwrites on the Ok path.
-        // SAFETY: ABI out-param discipline (writable/aligned or null; see `write_gate_verdict`).
-        unsafe { write_gate_verdict(out, 0, 403, 0, 0) };
+        // SAFETY: ABI out-param discipline (writable/aligned or null; `write_out` tolerates null).
+        unsafe { busbar_plugin::write_out(out, GateVerdictOut::new(0, 403, 0, 0)) };
         // SAFETY: recovery invariant (see `recover`).
         let state: &HostState = unsafe { recover(host) };
         if subject.is_null() {
@@ -512,7 +487,7 @@ pub(crate) extern "C-unwind" fn gate_decide(
         match verdict {
             crate::hooks::gate::GateVerdict::Proceed => {
                 // SAFETY: ABI out-param discipline.
-                unsafe { write_gate_verdict(out, 1, 0, 0, 0) };
+                unsafe { busbar_plugin::write_out(out, GateVerdictOut::new(1, 0, 0, 0)) };
             }
             crate::hooks::gate::GateVerdict::Reject {
                 status,
@@ -525,7 +500,12 @@ pub(crate) extern "C-unwind" fn gate_decide(
                 // SAFETY: as above.
                 let h = unsafe { busbar_plugin::write_capped(hook_buf, hook_cap, hook.as_bytes()) };
                 // SAFETY: ABI out-param discipline.
-                unsafe { write_gate_verdict(out, 0, status, m as u32, h as u32) };
+                unsafe {
+                    busbar_plugin::write_out(
+                        out,
+                        GateVerdictOut::new(0, status, m as u32, h as u32),
+                    )
+                };
             }
         }
         StatusClass::Ok

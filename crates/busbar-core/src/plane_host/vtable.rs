@@ -248,27 +248,6 @@ extern "C-unwind" fn govern_admit(host: HostCtx, facts: *const Facts) -> Decisio
     .unwrap_or(Decision::Deny) // fail-closed: a panicked admit denies.
 }
 
-/// Write the [`GovRefusal`] out-param (tolerating a null slot): the recovery floor + the rendered
-/// reason length.
-///
-/// # Safety
-/// `out`, when non-null, is a writable, aligned `MaybeUninit<GovRefusal>` for the call.
-unsafe fn write_gov_refusal(
-    out: *mut MaybeUninit<GovRefusal>,
-    retry_after_secs: u64,
-    reason_len: usize,
-) {
-    let refusal = GovRefusal {
-        size: core::mem::size_of::<GovRefusal>() as u32,
-        version: busbar_plugin::hot::POD_VERSION,
-        _reserved: 0,
-        retry_after_secs,
-        reason_len,
-    };
-    // SAFETY: `out` is a writable, aligned MaybeUninit slot (or null, which `write_out` tolerates).
-    unsafe { busbar_plugin::write_out(out, refusal) };
-}
-
 /// WIRED `govern_admit_reason` — [`govern_admit`] WITH REFUSAL FIDELITY. Identical admit behaviour
 /// (the budget-POD gate, the real `try_admit` chain, the RAII grant registered in the dispatch arena),
 /// the difference being that a BLOCKED limit RENDERS its reason into `reason_buf` (the exact
@@ -287,8 +266,8 @@ extern "C-unwind" fn govern_admit_reason(
     catch_unwind(AssertUnwindSafe(|| {
         // Initialize `out` up front so no path (admit, block, or a caught panic below) leaves it
         // uninitialized; a block overwrites it with the rendered reason length + recovery floor.
-        // SAFETY: ABI out-param discipline (writable/aligned or null; see `write_gov_refusal`).
-        unsafe { write_gov_refusal(out, 0, 0) };
+        // SAFETY: ABI out-param discipline (writable/aligned or null; `write_out` tolerates null).
+        unsafe { busbar_plugin::write_out(out, GovRefusal::new(0, 0)) };
         // SAFETY: recovery invariant (see `recover`).
         let state: &HostState = unsafe { recover(host) };
         if facts.is_null() {
@@ -304,7 +283,12 @@ extern "C-unwind" fn govern_admit_reason(
                     busbar_plugin::write_capped(reason_buf, reason_cap, blocked.reason.as_bytes())
                 };
                 // SAFETY: as above.
-                unsafe { write_gov_refusal(out, blocked.retry_after_secs, written) };
+                unsafe {
+                    busbar_plugin::write_out(
+                        out,
+                        GovRefusal::new(blocked.retry_after_secs, written),
+                    )
+                };
                 Decision::Deny
             }
         }

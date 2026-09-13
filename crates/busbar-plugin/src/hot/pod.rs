@@ -606,6 +606,30 @@ pub enum GuardClass {
     InternalHost = 5,
 }
 
+impl GuardClass {
+    /// Reconstruct a class from the neutral byte a [`GuardVerdict`] carries — the exact inverse of
+    /// `class as u8`, and the reading every host of this verdict needs.
+    ///
+    /// An UNKNOWN byte reads as [`GuardClass::Allowed`], not as a refusal. That is deliberate and it
+    /// is the append-only field rule in enum form: a sender at a newer minor may name a class this
+    /// reader has never heard of, and a reader that turned "I do not recognise this" into a phantom
+    /// refusal would reject traffic for no reason. The REFUSAL ITSELF is carried by
+    /// [`GuardVerdict::verdict`], which is a plain boolean byte every version agrees on; this enum
+    /// only says WHY, so an unreadable why never changes the answer.
+    #[inline]
+    #[must_use]
+    pub fn from_u8(v: u8) -> Self {
+        match v {
+            1 => Self::Scheme,
+            2 => Self::NoHost,
+            3 => Self::CloudMetadata,
+            4 => Self::ObfuscatedHost,
+            5 => Self::InternalHost,
+            _ => Self::Allowed,
+        }
+    }
+}
+
 /// The FINE, dialect-normalized health class a plane reports for a FAILED guarded operation — the
 /// refinement of the coarse [`StatusClass`] that lets the host reproduce the breaker's exact
 /// disposition (transient cooldown vs. sticky hard-down vs. relay-verbatim) instead of a lossy
@@ -1279,6 +1303,25 @@ pub struct GovRefusal {
     pub reason_len: usize,
 }
 
+impl GovRefusal {
+    /// Build the admission refusal's out-param with its preamble filled from the TYPE.
+    ///
+    /// `reason_len` is what [`write_capped`](crate::write_capped) actually wrote into the caller's
+    /// reason buffer. An ADMIT is spelled as a zero `reason_len` (there is no reason to render), which
+    /// is why this is written on every path and never left uninitialized.
+    #[inline]
+    #[must_use]
+    pub fn new(retry_after_secs: u64, reason_len: usize) -> Self {
+        Self {
+            size: core::mem::size_of::<Self>() as u32,
+            version: POD_VERSION,
+            _reserved: 0,
+            retry_after_secs,
+            reason_len,
+        }
+    }
+}
+
 /// The out-param the host's structural URL guard (`guard_url`) writes on [`StatusClass::Ok`]: whether
 /// the judged URL is admissible, the refusal CLASS when it is not, and the LENGTH of the offending
 /// host/url bytes the host copied into the caller's paired reason buffer — so a refused URL keeps its
@@ -1304,6 +1347,28 @@ pub struct GuardVerdict {
     /// The number of offending host/url bytes the host copied into the caller's reason buffer (`0` on
     /// an allow, or when no buffer was supplied). Read `reason_buf[..reason_len]`.
     pub reason_len: u32,
+}
+
+impl GuardVerdict {
+    /// Build the URL guard's out-param with its preamble filled from the TYPE.
+    ///
+    /// `refused` is the ANSWER and `class` only says why — the two are kept separate here for the same
+    /// reason [`GuardClass::from_u8`] tolerates an unknown byte: a reader that cannot name the class
+    /// must still be able to read the refusal. `reason_len` is what
+    /// [`write_capped`](crate::write_capped) actually wrote.
+    #[inline]
+    #[must_use]
+    pub fn new(refused: bool, class: GuardClass, reason_len: u32) -> Self {
+        Self {
+            size: core::mem::size_of::<Self>() as u32,
+            version: POD_VERSION,
+            _reserved: 0,
+            verdict: u8::from(refused),
+            class: class as u8,
+            _reserved2: 0,
+            reason_len,
+        }
+    }
 }
 
 /// The descriptor for opening a governed egress. Carries a credential-REF (which pool/hop/exchange),
@@ -1873,6 +1938,25 @@ pub struct AuthResolved {
     pub expires_unix: u64,
 }
 
+impl AuthResolved {
+    /// Build the resolved-credential out-param with its preamble filled from the TYPE.
+    ///
+    /// `resolved_ref` is an OPAQUE host-side handle and NEVER a secret: the plaintext stays host-side
+    /// and the plane carries only this reference, which is the whole point of the slot.
+    #[inline]
+    #[must_use]
+    pub fn new(resolved_ref: u64, expires_unix: u64) -> Self {
+        Self {
+            size: core::mem::size_of::<Self>() as u32,
+            version: POD_VERSION,
+            _reserved: 0,
+            _reserved2: 0,
+            resolved_ref,
+            expires_unix,
+        }
+    }
+}
+
 /// An inbound-identity resolution query — the input to the `identity_admit` slot. It carries ONLY the
 /// caller's OWN wire credential (the token it presented), the expected AUDIENCE, and the RESOURCE
 /// canonical-uri: no busbar secret crosses, exactly the inputs the in-process data-plane admission reads.
@@ -2027,6 +2111,28 @@ pub struct GateVerdictOut {
     /// The number of hook-name bytes the host copied into the caller's `hook_buf` (`0` on a proceed).
     /// Read `hook_buf[..hook_len]`.
     pub hook_len: u32,
+}
+
+impl GateVerdictOut {
+    /// Build the gate's out-param with its preamble filled from the TYPE — the only way to spell a
+    /// `size`/`version` that cannot disagree with the layout the golden test pins.
+    ///
+    /// `status` is the caller's already-clamped refusal status (see [`GateVerdictOut::status`]); the
+    /// two lengths are what [`write_capped`](crate::write_capped) actually wrote into the caller's
+    /// message and hook buffers, not what the host wished to write.
+    #[inline]
+    #[must_use]
+    pub fn new(proceed: u8, status: u16, message_len: u32, hook_len: u32) -> Self {
+        Self {
+            size: core::mem::size_of::<Self>() as u32,
+            version: POD_VERSION,
+            proceed,
+            _reserved: 0,
+            status,
+            message_len,
+            hook_len,
+        }
+    }
 }
 
 /// The out-param a `cost_settle` writes on [`StatusClass::Ok`]: the state of the lease's budget cell

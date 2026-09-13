@@ -25,7 +25,7 @@ use super::HostState;
 use crate::governance::{AdmitGrant, LimitBlocked};
 use crate::plane::cost::{CostAmount, CostBreakdown, CostComponent};
 use busbar_plugin::hot::{
-    AuthQuery, AuthResolved, Decision, Facts, MeterOutcome, Usage, UsageComponent, POD_VERSION,
+    AuthQuery, AuthResolved, Decision, Facts, MeterOutcome, Usage, UsageComponent,
 };
 use busbar_plugin::{borrow_string_lossy, read_sized_field};
 
@@ -352,15 +352,9 @@ pub(super) fn resolve_auth(_state: &HostState, query: &AuthQuery) -> Option<Auth
     // FFI-F5: BIND the mint to the destination the plane named (`audience`), so `egress_open` injects
     // this secret ONLY on a hop to that destination — never a plane-chosen attacker host.
     let resolved_ref = super::creds::mint(secret, audience, expires_unix, now);
-    Some(AuthResolved {
-        size: core::mem::size_of::<AuthResolved>() as u32,
-        version: POD_VERSION,
-        _reserved: 0,
-        _reserved2: 0,
-        // An OPAQUE host-side reference (NEVER a secret): a fresh mint, distinct from the input ref.
-        resolved_ref,
-        expires_unix,
-    })
+    // `resolved_ref` is an OPAQUE host-side reference (NEVER a secret): a fresh mint, distinct from
+    // the input ref.
+    Some(AuthResolved::new(resolved_ref, expires_unix))
 }
 
 #[cfg(test)]

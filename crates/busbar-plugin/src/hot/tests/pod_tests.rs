@@ -170,3 +170,110 @@ fn the_raw_carriers_are_layout_identical_to_the_bare_enums() {
     assert_eq!(core::mem::offset_of!(FramingDesc, framing), 6);
     assert_eq!(core::mem::offset_of!(JournalStreamDesc, framing), 6);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// The out-param constructors and the guard-class inverse.
+//
+// These four PODs were each built by hand at the host's call site, with `size` and `version` spelled
+// out every time. Spelling a preamble by hand is the one mistake the sized-struct discipline cannot
+// survive -- a `size` that disagrees with the type makes a reader hide fields that ARE written, or
+// read fields that are NOT -- so the preamble is now derived from the type and cannot be passed in.
+// The behaviour was exercised only through core's call sites before; it is asserted here.
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+/// EVERY out-param constructor stamps the preamble FROM THE TYPE. This is the property that makes
+/// the constructors worth having: there is no argument that could make `size` disagree with the
+/// layout `abi_layout_matches_golden` pins.
+#[test]
+fn every_out_param_constructor_stamps_its_own_size_and_version() {
+    let gate = GateVerdictOut::new(1, 200, 3, 4);
+    assert_eq!(gate.size, core::mem::size_of::<GateVerdictOut>() as u32);
+    assert_eq!(gate.version, POD_VERSION);
+
+    let refusal = GovRefusal::new(30, 7);
+    assert_eq!(refusal.size, core::mem::size_of::<GovRefusal>() as u32);
+    assert_eq!(refusal.version, POD_VERSION);
+
+    let verdict = GuardVerdict::new(true, GuardClass::InternalHost, 9);
+    assert_eq!(verdict.size, core::mem::size_of::<GuardVerdict>() as u32);
+    assert_eq!(verdict.version, POD_VERSION);
+
+    let auth = AuthResolved::new(42, 1_700_000_000);
+    assert_eq!(auth.size, core::mem::size_of::<AuthResolved>() as u32);
+    assert_eq!(auth.version, POD_VERSION);
+}
+
+/// The constructors carry their arguments through unchanged, and zero the reserved padding — a
+/// non-zero reserved byte is what a future minor's field would look like to a newer reader.
+#[test]
+fn the_out_param_constructors_carry_their_arguments_and_zero_the_padding() {
+    let gate = GateVerdictOut::new(0, 403, 11, 5);
+    assert_eq!(
+        (gate.proceed, gate.status, gate.message_len, gate.hook_len),
+        (0, 403, 11, 5)
+    );
+    assert_eq!(gate._reserved, 0);
+
+    let refusal = GovRefusal::new(30, 7);
+    assert_eq!((refusal.retry_after_secs, refusal.reason_len), (30, 7));
+    assert_eq!(refusal._reserved, 0);
+
+    let auth = AuthResolved::new(42, 1_700_000_000);
+    assert_eq!((auth.resolved_ref, auth.expires_unix), (42, 1_700_000_000));
+    assert_eq!((auth._reserved, auth._reserved2), (0, 0));
+}
+
+/// A guard verdict keeps the ANSWER and the REASON in separate fields: `verdict` is the refusal,
+/// `class` only says why. A reader that could not name the class must still read the refusal.
+#[test]
+fn a_guard_verdict_separates_the_refusal_from_its_class() {
+    let allowed = GuardVerdict::new(false, GuardClass::Allowed, 0);
+    assert_eq!(allowed.verdict, 0);
+    assert_eq!(allowed.class, GuardClass::Allowed as u8);
+    assert_eq!(allowed.reason_len, 0);
+
+    let refused = GuardVerdict::new(true, GuardClass::CloudMetadata, 12);
+    assert_eq!(refused.verdict, 1);
+    assert_eq!(refused.class, GuardClass::CloudMetadata as u8);
+    assert_eq!(refused.reason_len, 12);
+    assert_eq!(refused._reserved2, 0);
+}
+
+/// `GuardClass::from_u8` is the EXACT inverse of `class as u8` for every declared variant — the
+/// round trip a host performs on every guarded URL.
+#[test]
+fn the_guard_class_byte_round_trips_for_every_variant() {
+    for class in [
+        GuardClass::Allowed,
+        GuardClass::Scheme,
+        GuardClass::NoHost,
+        GuardClass::CloudMetadata,
+        GuardClass::ObfuscatedHost,
+        GuardClass::InternalHost,
+    ] {
+        assert_eq!(GuardClass::from_u8(class as u8), class, "{class:?}");
+    }
+}
+
+/// An UNKNOWN class byte reads as `Allowed`, never a phantom refusal. A sender at a newer minor may
+/// name a class this reader has never heard of; turning "I cannot name this" into a rejection would
+/// refuse traffic for no reason. The refusal itself travels in `GuardVerdict::verdict`, which every
+/// version agrees on, so an unreadable reason never changes the answer.
+#[test]
+fn an_unknown_guard_class_byte_is_never_a_phantom_refusal() {
+    for byte in [6u8, 7, 99, 255] {
+        assert_eq!(
+            GuardClass::from_u8(byte),
+            GuardClass::Allowed,
+            "byte {byte}"
+        );
+    }
+    // ... and the refusal still reads TRUE even when the class byte is unnameable.
+    let mut refused = GuardVerdict::new(true, GuardClass::InternalHost, 3);
+    refused.class = 200;
+    assert_eq!(
+        refused.verdict, 1,
+        "the answer survives an unreadable reason"
+    );
+    assert_eq!(GuardClass::from_u8(refused.class), GuardClass::Allowed);
+}
