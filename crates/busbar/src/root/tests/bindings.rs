@@ -37,14 +37,14 @@ fn bare_node() -> Node {
         Door::new(InMemoryCells::new()),
         Pricer::flat(0),
         crate::root::policy::build(&crate::root::policy::MeterPolicyConfig::default()),
-        Mutex::new(
+        Arc::new(Mutex::new(
             crate::root::durability::build(
                 &crate::root::durability::DurabilityConfig { data_dir: None },
                 Box::new(busbar_unit_wal::NullShipper::new()),
                 Box::new(busbar_unit_ledger::legacy::RecordingRows::new()),
             )
             .expect("a memory-buffered journal cannot fail to open"),
-        ),
+        )),
         busbar_kernel::teller::Kernel::new().origin(busbar_caps::OriginKind::Client),
         std::sync::Arc::new(busbar_unit_breaker::BreakerUnit::with_diagnostics(
             crate::root::adapters::root_diagnostics(),
@@ -79,7 +79,7 @@ fn the_resolver_fills_a_mounted_plane_s_bindings_from_the_node() {
         "the leg is bound to the NODE'S door, not to a door of its own"
     );
     assert!(
-        std::ptr::eq(bindings.durability, &node.durability),
+        std::ptr::eq(bindings.durability, &*node.durability),
         "the leg settles onto THE PROCESS'S ONE BOOK"
     );
     assert!(

@@ -70,6 +70,8 @@ pub mod harness;
 pub mod kernel;
 pub mod ledger_identity;
 pub mod migration;
+#[cfg(all(feature = "plane-a2a", feature = "root-a2a"))]
+pub mod node_a2a;
 pub mod policy;
 /// The composition root's one write into both protocol seams, moved verbatim out of
 /// `busbar-core::proto::registry`: the boot installers belong to the root that calls them.
