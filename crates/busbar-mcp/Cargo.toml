@@ -137,11 +137,18 @@ auth-admin-tokens = ["busbar-core?/auth-admin-tokens"]
 # planes' config types unconditionally (`crate::a2a::config::AgentsCfg`, the `tools:` types), so this
 # forwards `plane-mcp`/`plane-a2a` too — the same both-planes shape core's own dual-compile test binary
 # builds with — or the fixture's `crate::a2a` references are configured out and cannot resolve.
+#
+# Also forwards to `busbar-mcp-codec/test-support`: this crate already normal-depends on the codec
+# (an allowed same-family edge), so requesting `busbar-mcp/test-support` — already done above by
+# `busbar-core`'s dev-dependency edge — is what turns on the codec's own sanitizer cells and
+# structured-output schema check under `cargo test --workspace`, with no second edge straight from
+# busbar-core to busbar-mcp-codec.
 test-support = [
     "dep:busbar-core",
     "busbar-core/test-support",
     "busbar-core/plane-mcp",
     "busbar-core/plane-a2a",
+    "busbar-mcp-codec/test-support",
     "dep:reqwest",
     "dep:busbar-store-memory",
 ]

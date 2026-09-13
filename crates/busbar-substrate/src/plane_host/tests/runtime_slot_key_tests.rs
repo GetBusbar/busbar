@@ -15,8 +15,8 @@ use crate::plane_host::runtime_slot_key;
 
 #[test]
 fn composes_the_documented_key_colon_runtime_shape() {
-    assert_eq!(runtime_slot_key("llm"), "llm:runtime");
-    assert_eq!(runtime_slot_key("mcp"), "mcp:runtime");
+    assert_eq!(runtime_slot_key("alpha"), "alpha:runtime");
+    assert_eq!(runtime_slot_key("beta"), "beta:runtime");
 }
 
 #[test]
