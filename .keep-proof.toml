@@ -12,11 +12,22 @@
 #              is one slot per catalog entry now. Every one of those is a claim about HOOK behaviour
 #              — which hook runs, with which grants, what it is handed — so `hooks` is the family
 #              that can move; `documented` rides along because the kind-isolation gate and its
-#              ledger changed and the docs make claims about both. `neutrality` is out of scope on
-#              purpose: no plane and no transport source changed.
+#              ledger changed and the docs make claims about both.
+#
+#              MOVE 3 WIDENS IT. The neutral hook RUNNER — the projection, the content ceiling, the
+#              rewrite write-back, the on_error fallback walk and the decision mapping — moved out of
+#              `busbar-llm`'s routing engine into this crate by identity, so every LLM request that
+#              carries a hook now runs through the moved code. `llm` is therefore a family that can
+#              move and is in scope; `neutrality` and `boot` are in scope BECAUSE the claim is that
+#              nothing moved — the runner is a core-kind crate now and a plane- or transport-shaped
+#              answer coming out of it, or a composition that boots differently, is the failure this
+#              line has to be able to see. They were out of scope when no source outside busbar-core
+#              changed; that is no longer true.
 #   tests    — the crates a line this branch changed lives in: the engine, the retiring crate that
 #              re-exports it, the contract (SignalBag), the substrate (secret/session), the api
 #              crate (one re-export line), the llm engine (the upsert call sites) and xtask (the
-#              gate seam and its selftest cases).
-families = '^(hooks|documented)([|.]|$)'
-tests = ["busbar-core-policy", "busbar-core", "busbar-contract", "busbar-substrate", "busbar-api", "busbar-llm", "xtask"]
+#              gate seam and its selftest cases), plus `busbar` itself — the composition that binds
+#              the moved runner behind the seat, which is where a by-identity move stops being a
+#              claim about two crates and becomes a claim about the served binary.
+families = '^(llm|hooks|neutrality|boot|documented)([|.]|$)'
+tests = ["busbar-llm", "busbar-core-policy", "busbar", "busbar-core", "busbar-contract", "busbar-substrate", "busbar-api"]
