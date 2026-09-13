@@ -1079,15 +1079,55 @@ macro_rules! no_governance_rows {
     };
 }
 
-/// A store that remembers which kind-tagged operation it was asked for.
+// The store-protocol names the doubles below are written against, imported once rather
+// than spelled as a path at every signature: one line says which protocol this file's
+// stand-ins implement, and the rest of them read as the trait does.
+use busbar_api::{PlaneDisposition, PlaneRecord, PlaneSelector, Store, StoreError, StoreResult};
+
+/// A store that remembers which kind-tagged operation it was asked for, and — for the two verbs
+/// that WRITE — the typed sidecar a durable backend keys, orders and retention-sweeps on.
+///
+/// The sidecar is remembered as `(kind, ts, terminal)` rather than as the whole record because that
+/// triple IS what retention reads: a real backend never decodes the body, so those three columns are
+/// the entire input to the purge predicate. Keeping them here is what lets one store answer both
+/// questions this file asks — which operation ran, and what age the row it wrote will be swept at.
 #[derive(Default)]
 struct RecordingStore {
     calls: Mutex<Vec<String>>,
+    sidecars: Mutex<Vec<(String, u64, bool)>>,
 }
 
 impl RecordingStore {
     fn calls(&self) -> Vec<String> {
         self.calls.lock().expect("calls lock").clone()
+    }
+
+    /// The typed sidecars of every row written through this store, in write order.
+    fn sidecars(&self) -> Vec<(String, u64, bool)> {
+        self.sidecars.lock().expect("sidecars lock").clone()
+    }
+
+    /// Remember one written row's retention columns.
+    fn keep(&self, kind: &str, ts: u64, terminal: bool) {
+        self.sidecars
+            .lock()
+            .expect("sidecars lock")
+            .push((kind.to_string(), ts, terminal));
+    }
+
+    /// THE SHIPPED RETENTION PREDICATE, applied to what was written: a row of `kind` older than
+    /// `before` goes, except under kind `task`, where only a TERMINAL row may go. Returns how many
+    /// rows the sweep took, and drops them, exactly as a durable backend does.
+    fn sweep(&self, kind: &str, before: u64) -> usize {
+        let mut rows = self.sidecars.lock().expect("sidecars lock");
+        let was = rows.len();
+        rows.retain(|(k, ts, terminal)| {
+            if k != kind || *ts >= before {
+                return true;
+            }
+            kind == "task" && !*terminal
+        });
+        was - rows.len()
     }
 
     fn kinds(&self) -> Vec<String> {
@@ -1105,34 +1145,36 @@ impl RecordingStore {
     }
 }
 
-impl busbar_api::Store for RecordingStore {
+impl Store for RecordingStore {
     no_governance_rows!();
 
-    fn upsert_plane_record(&self, record: &busbar_api::PlaneRecord) -> busbar_api::StoreResult<()> {
+    fn upsert_plane_record(&self, record: &PlaneRecord) -> StoreResult<()> {
         self.note("put", &record.kind);
+        self.keep(&record.kind, record.ts, terminal(record));
         Ok(())
     }
 
-    fn get_plane_record(&self, kind: &str, _id: &str) -> busbar_api::StoreResult<Option<Vec<u8>>> {
+    fn get_plane_record(&self, kind: &str, _id: &str) -> StoreResult<Option<Vec<u8>>> {
         self.note("get", kind);
         Ok(None)
     }
 
-    fn append_plane_record(&self, record: &busbar_api::PlaneRecord) -> busbar_api::StoreResult<()> {
+    fn append_plane_record(&self, record: &PlaneRecord) -> StoreResult<()> {
         self.note("append", &record.kind);
+        self.keep(&record.kind, record.ts, terminal(record));
         Ok(())
     }
 
     fn list_plane_records(
         &self,
         kind: &str,
-        _selector: &busbar_api::PlaneSelector,
-    ) -> busbar_api::StoreResult<Vec<Vec<u8>>> {
+        _selector: &PlaneSelector,
+    ) -> StoreResult<Vec<Vec<u8>>> {
         self.note("scan", kind);
         Ok(Vec::new())
     }
 
-    fn delete_plane_record(&self, kind: &str, _id: &str) -> busbar_api::StoreResult<()> {
+    fn delete_plane_record(&self, kind: &str, _id: &str) -> StoreResult<()> {
         self.note("delete", kind);
         Ok(())
     }
@@ -1143,7 +1185,7 @@ impl busbar_api::Store for RecordingStore {
         _token: &str,
         _expires_at: u64,
         _now: u64,
-    ) -> busbar_api::StoreResult<bool> {
+    ) -> StoreResult<bool> {
         self.note("redeem", kind);
         Ok(true)
     }
@@ -1154,25 +1196,25 @@ impl busbar_api::Store for RecordingStore {
         _token: &str,
         _expires_at: u64,
         _now: u64,
-    ) -> busbar_api::StoreResult<bool> {
+    ) -> StoreResult<bool> {
         self.note("verify_live", kind);
         Ok(true)
     }
 }
 
+/// Whether one written row's disposition says retention may drop it once it is old enough.
+fn terminal(record: &PlaneRecord) -> bool {
+    record.disposition == PlaneDisposition::Terminal
+}
+
 /// A store that refuses everything, so a failure on the record path is a testable event.
 struct RefusingStore;
 
-impl busbar_api::Store for RefusingStore {
+impl Store for RefusingStore {
     no_governance_rows!();
 
-    fn upsert_plane_record(
-        &self,
-        _record: &busbar_api::PlaneRecord,
-    ) -> busbar_api::StoreResult<()> {
-        Err(busbar_api::StoreError(
-            "the store is unavailable".to_string(),
-        ))
+    fn upsert_plane_record(&self, _record: &PlaneRecord) -> StoreResult<()> {
+        Err(StoreError("the store is unavailable".to_string()))
     }
 }
 
@@ -1186,7 +1228,7 @@ impl busbar_api::Store for RefusingStore {
 /// columns were supposed to carry.
 #[derive(Default)]
 struct CapabilityStore {
-    tokens: Mutex<Vec<(String, busbar_api::PlaneDisposition)>>,
+    tokens: Mutex<Vec<(String, PlaneDisposition)>>,
     /// Every task body this store was asked to write, in order.
     ///
     /// Kept so a refusal can be asserted to have changed NOTHING, which is the half of "the
@@ -1201,7 +1243,7 @@ impl CapabilityStore {
         self.tokens
             .lock()
             .expect("tokens lock")
-            .push((id.to_string(), busbar_api::PlaneDisposition::Active));
+            .push((id.to_string(), PlaneDisposition::Active));
     }
 
     fn holds(&self, id: &str) -> bool {
@@ -1217,10 +1259,10 @@ impl CapabilityStore {
     }
 }
 
-impl busbar_api::Store for CapabilityStore {
+impl Store for CapabilityStore {
     no_governance_rows!();
 
-    fn upsert_plane_record(&self, record: &busbar_api::PlaneRecord) -> busbar_api::StoreResult<()> {
+    fn upsert_plane_record(&self, record: &PlaneRecord) -> StoreResult<()> {
         if record.kind == records::SCHEMA_PUSH_CONFIG.as_str() {
             let mut tokens = self.tokens.lock().expect("tokens lock");
             match tokens.iter_mut().find(|(t, _)| *t == record.id) {
@@ -1237,14 +1279,11 @@ impl busbar_api::Store for CapabilityStore {
         Ok(())
     }
 
-    fn append_plane_record(
-        &self,
-        _record: &busbar_api::PlaneRecord,
-    ) -> busbar_api::StoreResult<()> {
+    fn append_plane_record(&self, _record: &PlaneRecord) -> StoreResult<()> {
         Ok(())
     }
 
-    fn delete_plane_record(&self, kind: &str, id: &str) -> busbar_api::StoreResult<()> {
+    fn delete_plane_record(&self, kind: &str, id: &str) -> StoreResult<()> {
         if kind == records::SCHEMA_PUSH_CONFIG.as_str() {
             self.tokens
                 .lock()
@@ -1260,7 +1299,7 @@ impl busbar_api::Store for CapabilityStore {
         token: &str,
         expires_at: u64,
         now: u64,
-    ) -> busbar_api::StoreResult<bool> {
+    ) -> StoreResult<bool> {
         if kind != records::SCHEMA_PUSH_CONFIG.as_str() {
             return Ok(false);
         }
@@ -1269,9 +1308,7 @@ impl busbar_api::Store for CapabilityStore {
             .lock()
             .expect("tokens lock")
             .iter()
-            .any(|(t, d)| {
-                t == token && matches!(d, busbar_api::PlaneDisposition::Active) && now <= expires_at
-            }))
+            .any(|(t, d)| t == token && matches!(d, PlaneDisposition::Active) && now <= expires_at))
     }
 }
 
@@ -1940,49 +1977,6 @@ fn two_units_of_one_caller_are_handed_the_same_chain() {
 
 // ── THE RETENTION AXIS — a record written through the legs is not born infinitely old ────────────
 
-/// A store that KEEPS what the legs write and sweeps it the way a durable backend does: the typed
-/// sidecar `ts` is the only age it reads, because a real backend never decodes the opaque body.
-#[derive(Default)]
-struct SweepingStore {
-    rows: Mutex<Vec<busbar_api::PlaneRecord>>,
-}
-
-impl SweepingStore {
-    fn rows(&self) -> std::sync::MutexGuard<'_, Vec<busbar_api::PlaneRecord>> {
-        self.rows.lock().expect("rows lock")
-    }
-}
-
-impl busbar_api::Store for SweepingStore {
-    no_governance_rows!();
-
-    fn upsert_plane_record(&self, record: &busbar_api::PlaneRecord) -> busbar_api::StoreResult<()> {
-        let mut rows = self.rows();
-        rows.retain(|r| !(r.kind == record.kind && r.id == record.id));
-        rows.push(record.clone());
-        Ok(())
-    }
-
-    fn append_plane_record(&self, record: &busbar_api::PlaneRecord) -> busbar_api::StoreResult<()> {
-        self.rows().push(record.clone());
-        Ok(())
-    }
-
-    /// The shipped backend's own predicate: a row of this kind older than the cutoff goes, except
-    /// under kind `task`, where only a TERMINAL row may go.
-    fn purge_plane_records_before(&self, kind: &str, before: u64) -> busbar_api::StoreResult<u64> {
-        let mut rows = self.rows();
-        let was = rows.len();
-        rows.retain(|r| {
-            if r.kind != kind || r.ts >= before {
-                return true;
-            }
-            kind == "task" && r.disposition != busbar_api::PlaneDisposition::Terminal
-        });
-        Ok((was - rows.len()) as u64)
-    }
-}
-
 /// **A RECORD WRITTEN THROUGH THE LEGS CARRIES THE CLOCK IT WAS WRITTEN AT.**
 ///
 /// The store keys, orders and sweeps on the typed sidecar columns and never decodes the body, so
@@ -1997,7 +1991,7 @@ impl busbar_api::Store for SweepingStore {
 #[test]
 fn the_legs_carry_the_pinned_clock_onto_the_axis_retention_sweeps() {
     const PINNED: u64 = 1_700_000_000;
-    let store = Arc::new(SweepingStore::default());
+    let store = Arc::new(RecordingStore::default());
     let legs = RecordLegs::new(store.clone());
     let key = LegKey {
         id: "t-1",
@@ -2021,13 +2015,9 @@ fn the_legs_carry_the_pinned_clock_onto_the_axis_retention_sweeps() {
     )
     .expect("the event leg runs");
 
-    let stamps: Vec<(String, u64)> = store
-        .rows()
-        .iter()
-        .map(|r| (r.kind.clone(), r.ts))
-        .collect();
-    assert_eq!(stamps.len(), 2, "both legs wrote a row");
-    for (kind, ts) in &stamps {
+    let written = store.sidecars();
+    assert_eq!(written.len(), 2, "both legs wrote a row");
+    for (kind, ts, _) in &written {
         assert_eq!(
             *ts, PINNED,
             "the {kind} row was written at the pinned arrival epoch but landed on the retention \
@@ -2036,27 +2026,26 @@ fn the_legs_carry_the_pinned_clock_onto_the_axis_retention_sweeps() {
     }
 
     // THE CONSEQUENCE: a sweep at the instant these rows were written must reach neither of them.
-    // Named through the published store protocol, which is the surface the node's sweep uses.
-    let sweep = |kind: &str, before: u64| {
-        busbar_api::Store::purge_plane_records_before(store.as_ref(), kind, before)
-            .expect("the sweep answers")
-    };
     for schema in [records::SCHEMA_TASK, records::SCHEMA_TASK_EVENT] {
         assert_eq!(
-            sweep(schema.as_str(), PINNED),
+            store.sweep(schema.as_str(), PINNED),
             0,
             "retention dropped a {schema} row written at the very cutoff it was swept against"
         );
     }
-    assert_eq!(store.rows().len(), 2, "both rows survive their own instant");
+    assert_eq!(
+        store.sidecars().len(),
+        2,
+        "both rows survive their own instant"
+    );
 
     // And the axis still bites once the window really has passed them.
     for schema in [records::SCHEMA_TASK, records::SCHEMA_TASK_EVENT] {
         assert_eq!(
-            sweep(schema.as_str(), PINNED + 1),
+            store.sweep(schema.as_str(), PINNED + 1),
             1,
             "a cutoff past the write must drop the {schema} row"
         );
     }
-    assert!(store.rows().is_empty(), "the sweep is a real sweep");
+    assert!(store.sidecars().is_empty(), "the sweep is a real sweep");
 }
