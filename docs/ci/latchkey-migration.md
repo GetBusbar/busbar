@@ -9,10 +9,14 @@ see §2).
 
 `docs/ci/fleet.md` **does not exist in this checkout.** The task brief that started this slot named
 `docs/ci/fleet.md §4` and a "FLEET-2... RED at N=2 on 32 vCPU" measurement; neither the file nor
-that finding-shaped string exists anywhere under `docs/`. The nearest real material is
+that finding-shaped string exists anywhere under `docs/`. The nearest real material at the time was
 `docs/ci/self-hosted-runners.md` (the EC2 fleet's own 32-vCPU-per-box, 8-vCPU-per-slot arithmetic)
 and the construction gate's own work-unit budget note in `xtask/src/gates/mod.rs` (§3 below), which
-is what this document uses instead. Said loudly rather than fabricated.
+is what this document used instead. Said loudly rather than fabricated. **Update (LK-5):**
+`docs/ci/self-hosted-runners.md` and the `scripts/ci-runners-*.sh` / `scripts/ci-remote-lib.sh` /
+`scripts/land-remote.sh` / `scripts/prove-remote.sh` fleet scripts it described are deleted — the
+EC2 fleet they ran is decommissioned. This section is left as the historical record of what phase 1
+read; it is no longer a pointer to live material.
 
 ## 1. Label map (job → size)
 

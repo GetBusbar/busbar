@@ -63,8 +63,9 @@ env:
   CARGO_MUTANTS_VERSION: "27.1.0"
   # THE FAN-OUT. Wall clock is (baseline) + (mutants-per-shard x one full four-gate self-proof).
   # One self-proof is roughly half an hour, so the shard count is chosen to keep the expected
-  # mutants-per-shard at one for a normal landing-sized diff. The fleet is ~40 busbar-xl runners;
-  # 24 leaves room for the rest of CI to run beside it.
+  # mutants-per-shard at one for a normal landing-sized diff. This job runs on Latchkey now (the
+  # EC2 `busbar-xl` fleet this comment used to size against is decommissioned, LK-5); 24 leaves
+  # room for the rest of CI to run beside it.
   SHARD_COUNT: "24"
 
 jobs:

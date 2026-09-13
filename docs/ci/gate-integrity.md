@@ -88,9 +88,10 @@ and the mutant SURVIVES.
 that only moves a ceiling still has to prove the rule reading it is held, because moving a number is
 exactly how a rule stops biting.
 
-**Sharding.** The mutants are fanned across 24 shards of the `busbar-xl` fleet (`--shard k/n`,
-round-robin). Wall clock is one baseline plus however many mutants land on the busiest shard; a
-landing-sized diff puts about one on each.
+**Sharding.** The mutants are fanned across 24 shards, on Latchkey (`--shard k/n`, round-robin) —
+the EC2 `busbar-xl` fleet this used to shard across is decommissioned (LK-5). Wall clock is one
+baseline plus however many mutants land on the busiest shard; a landing-sized diff puts about one
+on each.
 
 ### The wall clock, measured
 
@@ -157,9 +158,10 @@ mutant in the campaign.
 
 That fan-out is why the trigger stops at `integration/**`, `dev`, `qa`, `main` and pull requests, and
 no longer includes `keep-*`. The workflow's `concurrency:` cancels a branch's *own* superseded run,
-which is no help when the load is ~15 distinct hand-back branches each claiming 24 of the fleet's 32
-spot slots at once: the integration tip's proof queued behind slot work it had nothing to do with
-([self-hosted-runners.md §1-2](self-hosted-runners.md#1-why-a-fleet-at-all) predicts exactly this).
+which is no help when the load is ~15 distinct hand-back branches each claiming a shard at once: the
+integration tip's proof queued behind slot work it had nothing to do with (`docs/ci/self-hosted-
+runners.md`, the old EC2-fleet-sizing doc, predicted exactly this before it was retired with the
+fleet itself — LK-5).
 So for a slot branch the 24-shard proof runs in two places instead: **locally**, as
 `scripts/gate-mutants.sh --shard 1/1` (one shard, every mutant, same script and same test command),
 by any slot whose diff enters the mutation scope, stated in the hand-back; and **at landing**, on
