@@ -702,9 +702,17 @@ fn ceiling_ratchet_cases<'a>(
 /// lands — so a case that read whichever entry the tree happened to carry would be a self-test
 /// held hostage by the mechanism it is proving. Both halves are planted instead: the BASE's copy
 /// of one real ceiling is lowered by a known amount, which makes the committed figure a genuine
-/// rise of exactly that amount, and the declarations are appended to the tree's copy. Every case
-/// below runs against a `[[gate.ceiling_raises]]` table that is empty on the committed tree, which
-/// is the state it is meant to spend most of its life in.
+/// rise of exactly that amount, and the declarations are appended to the tree's copy.
+///
+/// AND THE TABLE THE PLANT STARTS FROM IS EMPTY, BECAUSE THIS CODE EMPTIES IT. Both copies are
+/// built from [`ceilings::strip_raises`] of the committed text — every ceiling as committed, and
+/// not one `[[gate.ceiling_raises]]` entry — plus exactly what the case wants: the CARRIED entries
+/// go on the base's copy, the LIVE ones on the tree's. Before that strip, this family read the
+/// entries this branch happened to have in flight (110 of them at the time it was written): every
+/// one was classified `carried by the base`, and the counts these cases name — "1 declared
+/// raise(s)" — read whatever that number was, so six arms failed for a reason that was no arm's.
+/// The header had always claimed the invariant; now the code establishes it, and the family reads
+/// the same on the batch before a face lands as on the batch after.
 ///
 /// The cases, over ONE real ceiling (`rules.legacy-reach.ceiling`) and one real base:
 ///
@@ -716,7 +724,11 @@ fn ceiling_ratchet_cases<'a>(
 ///   cannot ride in the same batch as the face;
 /// * an entry the base does NOT carry, naming a ceiling that did not rise, is stale and red;
 /// * the retired `from`/`to` shape is refused by name, and the refusal prints the array shape;
-/// * `--write` strikes exactly the carried entries and leaves the live one.
+/// * `--write` strikes exactly the carried entries and leaves the live one;
+/// * and the plant itself is proven, both ways: with the base's copy lowered and NO declaration
+///   the row is RED (so a case that reads PASS reads it because of the entry it planted, never
+///   because the plant was toothless), and with neither a lowering nor a declaration it is GREEN
+///   (so the stripped text carries no rise and no stray entry of its own).
 fn declared_raise_cases<'a>(
     gate: &'a dyn Gate,
     cx: &'a Ctx,
@@ -734,6 +746,17 @@ fn declared_raise_cases<'a>(
         ));
         return r;
     };
+    // THE HERMETIC TEXT: this tree's ceilings, and a declared-raise table that is empty because
+    // this line emptied it. Every plant below is built from `text`, never from the committed file,
+    // so each case's own entries are the whole of the table it is judged against.
+    let text = &ceilings::strip_raises(text);
+    if !ceilings::raises_in(text).0.is_empty() {
+        r.note_infra_failure(
+            "the committed ceilings file still carries declared raises after the strip, so the \
+             declared-raise arms would be judged against entries no case planted",
+        );
+        return r;
+    }
     const RISE: i64 = 15;
     let Some(lowered) = ceilings::set_int(text, table, key, now - RISE) else {
         r.note_infra_failure(format!(
@@ -750,13 +773,59 @@ fn declared_raise_cases<'a>(
              declared raise, and nothing else on this tree is\"\n"
         )
     };
+    // THE OTHER CEILINGS FILE IS PINNED FLAT. `ceiling-rose` compares TWO files — this one and
+    // `qa/kind-isolation.toml` — and one declared-raise table excuses rises in both. Left alone,
+    // the kind file's real rises against the real base would be inside every plant below, needing
+    // excuses no case planted, and the row would be red for a reason that belongs to the branch
+    // rather than to the arm. So the base's copy of it is this tree's copy: no rise, nothing to
+    // declare, and the only movement in the plant is the one the case put there.
+    let Ok(kinds) = cx.read(ceilings::KIND_CEILINGS) else {
+        r.note_infra_failure(format!(
+            "{} could not be read, so the declared-raise arms could not be sealed off from its \
+             rises and are unproven rather than passing",
+            ceilings::KIND_CEILINGS
+        ));
+        return r;
+    };
     // The base's copy and the tree's copy, both planted.
     let plant = |at_base: String, tree: String| -> Overlay {
         let mut ov = on(base);
         ov.set_command(format!("git-show:{based}:{CEILINGS}"), at_base);
+        ov.set_command(
+            format!("git-show:{based}:{}", ceilings::KIND_CEILINGS),
+            kinds.clone(),
+        );
         ov.set(CEILINGS, tree);
         ov
     };
+
+    let rose = format!("{} -> {now}", now - RISE);
+    // THE PLANT IS PROVEN BEFORE ANY CASE LEANS ON IT, in both directions.
+    //
+    // RED WITHOUT THE ENTRY. The lowering at the base is a real rise of exactly RISE lines, and
+    // with nothing declared for it the row is refused. Every PASS below plants the same lowering
+    // and adds a declaration, so this case is what makes those greens mean the declaration — a
+    // plant that could not turn the row red would pass them all with any entry at all, or none.
+    r.push(prove_rows_red(
+        cx,
+        gate,
+        "the plant's own lowering at the base is a rise, and undeclared it is refused",
+        &[ceilings::ROW_ROSE],
+        plant(lowered.clone(), text.to_string()),
+        &[&dotted, &rose],
+    ));
+    // GREEN WITH NEITHER. The stripped text against itself carries no rise and no entry, so the
+    // row is green and its detail reports NO declared raise at all. This is the hermetic claim
+    // itself: whatever this branch is carrying in `[[gate.ceiling_raises]]` today, no case below
+    // is judged against it.
+    r.push(prove_row_pass_naming(
+        cx,
+        gate,
+        "the stripped ceilings file against itself is a tree with no rise and no declaration",
+        ceilings::ROW_ROSE,
+        plant(text.to_string(), text.to_string()),
+        &["no ceiling in"],
+    ));
 
     r.push(prove_row_pass_naming(
         cx,

@@ -793,6 +793,42 @@ pub fn strike(text: &str, ordinal: usize) -> Option<String> {
     Some(out)
 }
 
+/// The ceilings-file text with EVERY `[[gate.ceiling_raises]]` entry struck — the committed file
+/// reduced to the state its own self-test header describes: a ceilings file whose declared-raise
+/// table is EMPTY.
+///
+/// THIS EXISTS FOR THE SELF-TEST'S PLANT, AND FOR NOTHING ELSE. `declared_raise_cases` proves the
+/// reader's arms by planting two copies of a ceilings file — one at the base, one on the tree —
+/// and reading the row the difference produces. If those copies are built from the committed text
+/// AS IT STANDS, they inherit whatever entries this branch happens to be carrying today: the
+/// counts the cases name ("1 declared raise(s)") become however many entries are in flight, and
+/// the arms are judged against a table nobody wrote for them. Stripping the table first makes each
+/// case's plant the WHOLE of the declared raises in that plant, so a case names only its own
+/// deltas, and it names the same ones on the batch before a face lands and the batch after.
+///
+/// Ceilings are untouched: only the `[[gate.ceiling_raises]]` blocks go, each with the comment
+/// lines that describe it, exactly as [`strike`] takes one.
+pub fn strip_raises(text: &str) -> String {
+    let header = format!("[[{RAISES}]]");
+    let mut out = text.to_string();
+    // Highest ordinal first, so each strike leaves the ordinals below it where they were.
+    loop {
+        let n = out
+            .lines()
+            .filter(|raw| raw.trim() == header.as_str())
+            .count();
+        if n == 0 {
+            return out;
+        }
+        match strike(&out, n) {
+            Some(next) => out = next,
+            // `strike` found no such header though the count says there is one: the text is not
+            // one this line editor can take apart, and half-stripped is not a state to hand on.
+            None => return out,
+        }
+    }
+}
+
 /// The ceilings-file text with every expired entry struck, and the entries struck — the same
 /// derivation [`rewrite`] commits, exposed so the self-test can prove it without writing a file.
 pub fn struck_text(cx: &Ctx) -> Result<(String, Vec<Raise>), String> {
@@ -1184,6 +1220,32 @@ mod tests {
         );
         assert!(strike(&text, 3).is_none());
         assert!(strike(&text, 0).is_none());
+    }
+
+    /// THE STRIP EMPTIES THE TABLE AND TOUCHES NO CEILING. The self-test's declared-raise plant
+    /// is built on this: every entry gone, whatever the branch is carrying, and every real ceiling
+    /// beside them exactly where it was, byte for byte. Stripping a file that carries none is the
+    /// file.
+    #[test]
+    fn the_strip_removes_every_declared_raise_and_leaves_every_ceiling() {
+        let text = format!(
+            "{DOC}\n# face A\n[[gate.ceiling_raises]]\nkey = \"rules.x.n\"\nby = 10\n\
+             because = \"{BECAUSE}\"\n\n# face B\n[[gate.ceiling_raises]]\n\
+             key = \"rules.loc-ceilings.union_ceiling\"\nby = 5\nbecause = \"{BECAUSE}\"\n\n\
+             [rules.y]\nm = 2\n"
+        );
+        assert_eq!(raises_in(&text).0.len(), 2, "the fixture carries two entries");
+        let out = strip_raises(&text);
+        assert!(raises_in(&out).0.is_empty(), "{out}");
+        assert_eq!(out, format!("{DOC}\n[rules.y]\nm = 2\n"));
+        // The ceilings the file is FOR are untouched by the strip.
+        let (before, after) = (
+            ints_of(&text).expect("the fixture parses"),
+            ints_of(&out).expect("the stripped fixture parses"),
+        );
+        assert_eq!(before, after);
+        // A file with no table to strip comes back as itself.
+        assert_eq!(strip_raises(&out), out);
     }
 
     /// THE DECLARATIONS ARE NOT CEILINGS. `[[gate.ceiling_raises]]` rows carry an integer, `by`,
