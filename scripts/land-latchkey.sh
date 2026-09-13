@@ -161,6 +161,85 @@ EOF
 # prove-latchkey.sh's runner uses for land.sh's verdict functions, and for the same reason: a second
 # implementation of "what are the branches of this expression" is a second answer, and the two would
 # disagree exactly on the bracketed pipe every family in this tree ends with.
+# ──────────────────────────────────────────────────────────────────────────────────────────────────
+# THE ORACLE LEG IS JUDGED ON THE DELTA AGAINST THE BASE REPLAY
+# ──────────────────────────────────────────────────────────────────────────────────────────────────
+# MEASURED, LIVE (2026-09-12): big-batch prefix 1's UNION was GREEN and its oracle shard and its
+# base shard were red on the SAME THREE ROWS with the IDENTICAL divergence — HookView/description
+# and DeleteOverlaySection content-length, the oracle tool's own `~1`-escaping limitation, which no
+# busbar line can repair until the tool pin lands. The engine said, correctly, "the same rows are
+# red at the base; this is the tip's standing state, not these picks'" — and then returned RED, the
+# landing was scored `NONE:base-test`, and the line went back LIVE. Forever: every line whose
+# families include one of those rows could never land, on any tip, by construction.
+#
+# A STANDING RED IS NOT A VERDICT ON PICKS THAT DID NOT CAUSE IT. So the oracle leg is judged on
+# the DELTA, and the base replay is what makes the delta knowable:
+#
+#   * a row that diverges at the TIP and diverges IDENTICALLY at the base — same cell id, same
+#     class list, same first-divergence text — is the BASE's. It is carried, named in an ADVISORY,
+#     and it is not this landing's red.
+#   * a row that diverges at the tip and does NOT diverge at the base, or diverges DIFFERENTLY, is
+#     this landing's RED, exactly as today.
+#   * a row red at the base that is GREEN at the tip is a row these picks FIXED. It is green and the
+#     advisory does not name it — the advisory is what the landing CARRIES, not what it inherited.
+#   * and with NO base verdict the delta does not exist: `NONE:base-test`, nothing learned, re-take.
+#     That case, and only that case, is what that word means from here on.
+#
+# The row extractor is byte-for-byte landq4.sh's `lq_oracle_fail_detail`, because the two have to
+# agree about what a row IS — one of them writes the base-red set the sweep remembers and the other
+# reads the same shape out of a landing's shard log.
+LL_TAB="$(printf '\t')"
+ll_oracle_fail_detail() { # $1 = a proof log; prints `<id>TAB<classes>TAB<detail>` per FAIL row, deduped by id
+  [ -n "${1:-}" ] && [ -f "$1" ] || return 0
+  sed -n "s/^\( *| \)\{0,1\}\([^$LL_TAB]*\)${LL_TAB}FAIL${LL_TAB}\(.*\)/\2${LL_TAB}\3/p" "$1" \
+    | awk -F"$LL_TAB" '!seen[$1]++'
+}
+ll_oracle_leg_ran() { # $1 = log; 0 when the ORACLE leg reported at all, green or red
+  [ -n "${1:-}" ] && [ -f "$1" ] || return 1
+  grep -qE 'land[.]sh: (oracle green on:|RED — oracle (families|shard))' "$1" 2>/dev/null
+}
+# A SHARD WHOSE RED IS NOT THE ORACLE'S IS THE LINE'S, whatever the rows say. An oracle shard also
+# builds, and a build or a harness red in it is not a divergence to compare against anything.
+ll_shard_red_is_oracle() { # $1 = log; 0 when every RED this shard declared is an oracle red
+  [ -n "${1:-}" ] && [ -f "$1" ] || return 1
+  grep -E 'land[.]sh: RED — ' "$1" 2>/dev/null | grep -qvE 'land[.]sh: RED — oracle' && return 1
+  return 0
+}
+# THE DELTA, over whole rows: `<id>TAB<classes>TAB<detail>`. Whole-line equality IS the ruling's
+# "same row id, same divergence text" — a row whose detail moved is a different red about the same
+# cell, and it is the line's.
+ll_oracle_new_rows() {     # $1 = the tip's rows, $2 = the base's; prints the rows only the TIP has
+  local row
+  while IFS= read -r row; do
+    [ -n "$row" ] || continue
+    grep -qxF -- "$row" "$2" 2>/dev/null || printf '%s\n' "$row"
+  done <"$1"
+}
+ll_oracle_carried_rows() { # $1 = the tip's rows, $2 = the base's; prints the rows BOTH have
+  local row
+  while IFS= read -r row; do
+    [ -n "$row" ] || continue
+    grep -qxF -- "$row" "$2" 2>/dev/null && printf '%s\n' "$row"
+  done <"$1"
+}
+
+# THE RULING, IN ONE FUNCTION, so that the four cases it distinguishes are the four cases the
+# selftest drives. Prints `GREEN`, `RED` or `NONE:base-test` on the first line and, for a GREEN that
+# carried something, the advisory on the second.
+ll_oracle_delta_verdict() { # $1 = the tip's rows, $2 = the base's rows, $3 = 1 when the base MEASURED
+  local tip="$1" base="$2" measured="${3:-0}" new carried
+  # NO BASE VERDICT, NO DELTA. Not "the rows matched" — there was nothing to match them against.
+  [ "$measured" = 1 ] || { printf 'NONE:base-test\n'; return 0; }
+  new="$(ll_oracle_new_rows "$tip" "$base")"
+  if [ -n "$new" ]; then printf 'RED\n'; printf '%s\n' "$new"; return 0; fi
+  # A ROW RED AT THE BASE AND GREEN AT THE TIP IS A ROW THESE PICKS FIXED: it is not in the tip's
+  # set at all, so it is not carried and the advisory does not name it.
+  carried="$(ll_oracle_carried_rows "$tip" "$base")"
+  printf 'GREEN\n'
+  [ -n "$carried" ] && printf 'base-standing oracle reds carried: %s\n' "$(printf '%s\n' "$carried" | cut -f1 | paste -sd, -)"
+  return 0
+}
+
 ll_load_families_reader() {
   declare -F ll_families_branches >/dev/null && return 0
   local src lsh=""
@@ -481,9 +560,87 @@ if [ "${1:-}" = "--selftest" ]; then
     || _fail "the cap displaced the healed/unpolled rule"
   # A BASE REPLAY THAT MEASURED NOTHING DOES NOT EXCUSE AN ORACLE RED. BASE_RED is what turns a red
   # into "the tip's standing state"; a shard that never reported cannot say that about anything.
-  sed -n '/^    base) case "\$verdict" in/,/esac ;;/p' "${BASH_SOURCE[0]}" | grep -q 'NONE:\*) lllog' \
+  sed -n '/^    base)$/,/esac ;;/p' "${BASH_SOURCE[0]}" | grep -q 'NONE:\*) lllog' \
     && _ok "an unmeasured base replay leaves the tip UNMEASURED, it does not excuse a red" \
     || _fail "a base replay that measured nothing can still set BASE_RED"
+
+  # ── THE ORACLE'S DELTA AGAINST THE BASE REPLAY (the landing deadlock of 2026-09-12) ───────────
+  # MEASURED: prefix 1's union was GREEN and its oracle shard and its base shard were red on the
+  # SAME three rows with the IDENTICAL divergence — the oracle tool's own `~1`-escaping limitation,
+  # which no busbar line can repair. The landing was scored NONE and the line went back live, for
+  # ever. These four cases are the ruling, driven through the function the transport itself calls.
+  echo "== land-latchkey selftest: the oracle leg is judged on the DELTA against the base replay =="
+  _dr() { printf '  | %s\t%s\t%s\n' "$1" FAIL "$2"; }    # a FAIL row as a shard log carries it
+  _tipl="$root/d-tip.log"; _basel="$root/d-base.log"
+  _tipr="$root/d-tip.rows"; _baser="$root/d-base.rows"
+  # (a) THE SAME THREE ROWS, THE SAME DIVERGENCE, AT BOTH: GREEN, with the advisory.
+  { _dr 'documented|HookView|description'          "$(printf 'effects.body\tadditive: not a superset at /components/HookView')"
+    _dr 'documented|DeleteOverlaySection|validate' "$(printf 'effects.headers\tadditive: not a superset at /content-length')"
+  } >"$_tipl"
+  cp "$_tipl" "$_basel"
+  ll_oracle_fail_detail "$_tipl" >"$_tipr"; ll_oracle_fail_detail "$_basel" >"$_baser"
+  _eq "identical rows at tip and base are GREEN" GREEN "$(ll_oracle_delta_verdict "$_tipr" "$_baser" 1 | head -1)"
+  _eq "  ...and the advisory names every row it carried" \
+      "base-standing oracle reds carried: documented|HookView|description,documented|DeleteOverlaySection|validate" \
+      "$(ll_oracle_delta_verdict "$_tipr" "$_baser" 1 | sed -n 2p)"
+  # (b) A NEW DIVERGING ROW IS THE LINE'S RED, however many carried rows sit beside it.
+  _dr 'documented|NewThing|validate' "$(printf 'effects.body\tadditive: not a superset at /new')" >>"$_tipl"
+  ll_oracle_fail_detail "$_tipl" >"$_tipr"
+  _eq "a row that diverges only at the tip is RED" RED "$(ll_oracle_delta_verdict "$_tipr" "$_baser" 1 | head -1)"
+  _eq "  ...and only THAT row is named" 1 "$(ll_oracle_delta_verdict "$_tipr" "$_baser" 1 | tail -n +2 | grep -c '^')"
+  _eq "  ...by name" "documented|NewThing|validate" \
+      "$(ll_oracle_delta_verdict "$_tipr" "$_baser" 1 | sed -n 2p | cut -f1)"
+  # (c) THE SAME ROW WITH A DIFFERENT DIVERGENCE IS ALSO THE LINE'S. Same cell id is not enough:
+  # a row whose first divergence moved is a different red about the same cell.
+  { _dr 'documented|HookView|description' "$(printf 'effects.body\tadditive: not a superset at /components/HookView')"
+    _dr 'documented|DeleteOverlaySection|validate' "$(printf 'effects.headers\tadditive: MISSING KEY at /x')"
+  } >"$_tipl"
+  ll_oracle_fail_detail "$_tipl" >"$_tipr"
+  _eq "the same row with a different divergence is RED" RED "$(ll_oracle_delta_verdict "$_tipr" "$_baser" 1 | head -1)"
+  _eq "  ...and it is the row whose detail moved" "documented|DeleteOverlaySection|validate" \
+      "$(ll_oracle_delta_verdict "$_tipr" "$_baser" 1 | sed -n 2p | cut -f1)"
+  # (d) A ROW THE LINE FIXED: red at the base, GREEN at the tip. The landing is green and the
+  # advisory does not name it — the advisory is what this landing CARRIED, not what it inherited.
+  _dr 'documented|HookView|description' "$(printf 'effects.body\tadditive: not a superset at /components/HookView')" >"$_tipl"
+  ll_oracle_fail_detail "$_tipl" >"$_tipr"
+  _eq "a base red the line FIXED is still GREEN" GREEN "$(ll_oracle_delta_verdict "$_tipr" "$_baser" 1 | head -1)"
+  _eq "  ...and the advisory omits the row it fixed" \
+      "base-standing oracle reds carried: documented|HookView|description" \
+      "$(ll_oracle_delta_verdict "$_tipr" "$_baser" 1 | sed -n 2p)"
+  # (e) NO BASE VERDICT, NO DELTA: NONE:base-test, which is now the ONLY thing that word means.
+  _eq "an UNMEASURED base is NONE:base-test" "NONE:base-test" \
+      "$(ll_oracle_delta_verdict "$_tipr" "$_baser" 0 | head -1)"
+  _eq "  ...whatever rows the base file happens to hold" "NONE:base-test" \
+      "$(ll_oracle_delta_verdict "$_tipr" /dev/null 0 | head -1)"
+  # …and "measured" is the ORACLE LEG having reported, green or red — never the shard's exit code.
+  printf 'land.sh: oracle green on: (^(documented)([|.]|$))\n' >"$root/d-ran.log"
+  ll_oracle_leg_ran "$root/d-ran.log" && _ok "a green oracle leg IS a measurement of the base" \
+    || _fail "a green base replay does not count as measured"
+  printf 'land.sh: RED — oracle families\n' >"$root/d-ran2.log"
+  ll_oracle_leg_ran "$root/d-ran2.log" && _ok "  ...and so is a red one" || _fail "a red base replay is not measured"
+  printf 'land.sh: [base] plan: oracle\nerror: could not compile\n' >"$root/d-noran.log"
+  ll_oracle_leg_ran "$root/d-noran.log" && _fail "a base that never reached the oracle counts as measured" \
+    || _ok "  ...but a base that never reached the leg measured NOTHING"
+  # (f) AN ORACLE SHARD WHOSE RED IS NOT A DIVERGENCE IS THE LINE'S, FULL STOP. It also builds.
+  printf 'land.sh: RED — oracle families\n' >"$root/d-orc.log"
+  ll_shard_red_is_oracle "$root/d-orc.log" && _ok "an oracle shard's oracle red goes to the delta" \
+    || _fail "an oracle red is not sent to the delta"
+  printf 'land.sh: RED — oracle families\nland.sh: RED — the tree will not build\n' >"$root/d-bld.log"
+  ll_shard_red_is_oracle "$root/d-bld.log" && _fail "a build red in an oracle shard is laundered by the delta" \
+    || _ok "  ...but a build red in the same shard is the line's, not the base's"
+  # THE ORDER: the base-unmeasured 75 is decided BEFORE the red below it, or an unmeasurable oracle
+  # red would be parked on evidence that does not exist.
+  _bul="$(grep -n '^if \[ "\$BASE_UNMEASURED" = 1 \]' "${BASH_SOURCE[0]}" | head -1 | cut -d: -f1)"
+  _redl="$(grep -n '^if \[ -n "\$ORACLE_RED" \] && \[ "\$BASE_RED" = 1 \]' "${BASH_SOURCE[0]}" | head -1 | cut -d: -f1)"
+  [ -n "$_bul" ] && [ -n "$_redl" ] && [ "$_bul" -lt "$_redl" ] \
+    && _ok "an unmeasurable oracle red is a NONE before it is ever a red" \
+    || _fail "the base-unmeasured rule does not come first (${_bul:-none} vs ${_redl:-none})"
+  grep -qF 'land-latchkey: NONE:base-test' "${BASH_SOURCE[0]}" \
+    && _ok "  ...said in a sentence landq4.sh's LQ_LK_BASE_UNMEASURED_RE can grep" \
+    || _fail "the unmeasured base has no sentence for the engine to read"
+  grep -qF 'LAND_ADVISORY_OUT' "${BASH_SOURCE[0]}" \
+    && _ok "the advisory travels to the land-done row through LAND_ADVISORY_OUT" \
+    || _fail "the advisory never leaves the log"
 
   if [ "$fails" = 0 ]; then echo "land-latchkey selftest: GREEN"; exit 0; fi
   echo "land-latchkey selftest: RED ($fails failure(s))" >&2; exit 1
@@ -641,6 +798,12 @@ fi
 # ── COLLECTING ──────────────────────────────────────────────────────────────────────────────────
 lllog "[$LABEL] ${#JOB_IDS[@]} job(s) in flight; polling every ${LK_POLL_SECS}s (cap ${LK_TIMEOUT}s per job)"
 RC=0; HARNESS=0; NOVERDICT=0; BASE_RED=0; ORACLE_RED=""; CAPPED=""
+# THE DELTA'S TWO ROW SETS, and whether the base measured at all. They are files rather than
+# variables because a row carries tabs and a first-divergence text, and `grep -qxF` over a file is
+# the one comparison that cannot be confused by either.
+BASE_MEASURED=0; BASE_UNMEASURED=0
+LL_TIPROWS="$LAND_TMP/land-lk-tiprows-$$.txt"; : >"$LL_TIPROWS"
+LL_BASEROWS="$LAND_TMP/land-lk-baserows-$$.txt"; : >"$LL_BASEROWS"
 i=0
 while [ "$i" -lt "${#JOB_IDS[@]}" ]; do
   name="${JOB_NAMES[$i]}"; id="${JOB_IDS[$i]}"
@@ -654,11 +817,21 @@ EOF
     # A CAPPED OR UNPOLLED BASE REPLAY IS AN UNMEASURED BASE, NOT A RED ONE. `BASE_RED=1` is what
     # turns an oracle red into "the tip's standing state"; setting it from a shard that measured
     # nothing would excuse a real red as the base's.
-    base) case "$verdict" in
+    base)
+      # THE BASE REPLAY IS A MEASUREMENT, and what it measured is the ROWS. A base shard whose
+      # oracle leg reported — green or red — has measured the tree's standing state; one that did
+      # not has measured nothing, and nothing is not zero.
+      if ll_oracle_leg_ran "$jlog"; then
+        BASE_MEASURED=1
+        ll_oracle_fail_detail "$jlog" >>"$LL_BASEROWS"
+      else
+        BASE_UNMEASURED=1
+      fi
+      case "$verdict" in
             GREEN) ;;
             NONE:*) lllog "[$LABEL] the base replay returned $verdict — the tip stays UNMEASURED; an oracle red is judged on its own" ;;
             *) BASE_RED=1 ;;
-          esac ;;
+      esac ;;
     *)
       case "$verdict" in
         GREEN) ;;
@@ -679,8 +852,19 @@ EOF
         *) if [ "$jrc" = 75 ]; then NOVERDICT=1
            elif ll_rc_is_harness "$jrc"; then HARNESS=1
            else
-             RC=1
-             case "$name" in fam-*) ORACLE_RED="${ORACLE_RED:+$ORACLE_RED }$name" ;; esac
+             # AN ORACLE SHARD'S RED IS NOT SCORED HERE. It is a set of diverging rows, and whether
+             # those rows are these picks' is a question only the base replay can answer — which is
+             # asked once, below, over every shard's rows at once. Everything else (the union, a
+             # shard whose red is a build or a harness) is red the moment it is read, as before.
+             case "$name" in
+               fam-*) ORACLE_RED="${ORACLE_RED:+$ORACLE_RED }$name"
+                      if ll_shard_red_is_oracle "$jlog"; then
+                        ll_oracle_fail_detail "$jlog" >>"$LL_TIPROWS"
+                      else
+                        RC=1
+                      fi ;;
+               *)     RC=1 ;;
+             esac
              # THE RED'S OWN WORDS, out of the shard's log, so the operator reads a diagnosis here
              # and not only a job id. land.sh's sentences are the ones the ledgers already carry.
              grep -E '^land\.sh: RED —' "$jlog" 2>/dev/null | head -5 >&2
@@ -689,6 +873,40 @@ EOF
   esac
   i=$((i + 1))
 done
+
+# ── THE ORACLE'S DELTA, ASKED ONCE, OVER EVERY SHARD'S ROWS ─────────────────────────────────────
+# Before any of the merge rules below, because it is what decides whether there is an oracle red to
+# merge at all.
+ADVISORY=""
+if [ -n "$ORACLE_RED" ] && [ "$RC" = 0 ]; then
+  LL_VERDICT="$(ll_oracle_delta_verdict "$LL_TIPROWS" "$LL_BASEROWS" "$BASE_MEASURED")"
+  case "$(printf '%s\n' "$LL_VERDICT" | head -1)" in
+    RED)
+      echo "land.sh: RED — oracle: $(printf '%s\n' "$LL_VERDICT" | tail -n +2 | grep -c '^') row(s) diverge at the tip and do NOT diverge identically at the base — these are these picks' (shard(s) $ORACLE_RED):" >&2
+      printf '%s\n' "$LL_VERDICT" | tail -n +2 | sed "s/$LL_TAB/ /g; s/^/land-latchkey:   /" >&2
+      RC=1 ;;
+    GREEN)
+      # GREEN, AND IT SAYS WHAT IT CARRIED. The advisory is the landing's record of a standing red
+      # it did not cause and did not repair; land.sh puts it on the land-done row so that the
+      # ledger, and not somebody's memory, is where "those three rows are the tool's" lives.
+      ADVISORY="$(printf '%s\n' "$LL_VERDICT" | sed -n 2p)"
+      echo "land-latchkey: the oracle DELTA against the base replay is EMPTY — every row that diverges at the tip diverges identically at the base, so the oracle leg is GREEN for these picks"
+      [ -n "$ADVISORY" ] && echo "land-latchkey: $ADVISORY"
+      ORACLE_RED="" ;;
+    *)
+      # NO BASE VERDICT, NO DELTA. This is the one thing `NONE:base-test` means from here on: not
+      # "the rows matched", but "there was nothing to match them against".
+      echo "land-latchkey: NONE:base-test — the base replay produced no oracle verdict, so an oracle red at the tip cannot be told from the tree's standing state; nothing about these picks was learned" >&2
+      BASE_UNMEASURED=1 ;;
+  esac
+fi
+rm -f "$LL_TIPROWS" "$LL_BASEROWS" 2>/dev/null || true
+# The advisory travels to land.sh's land-done row through a file, because the transport's stdout is
+# the landing's log and a ledger row is not grepped out of a log.
+if [ -n "$ADVISORY" ] && [ -n "${LAND_ADVISORY_OUT:-}" ]; then
+  mkdir -p "$(dirname "$LAND_ADVISORY_OUT")" 2>/dev/null || true
+  printf '%s\n' "$ADVISORY" >>"$LAND_ADVISORY_OUT"
+fi
 
 # ── THE MERGED VERDICT ──────────────────────────────────────────────────────────────────────────
 # A no-verdict outranks a red: a shard that was healed, expired or never polled has measured nothing
@@ -710,16 +928,25 @@ if [ "$HARNESS" = 1 ]; then
   echo "land-latchkey: NO VERDICT — a shard failed as a harness (timeout, cancel or a code no proof can reach); exit 70" >&2
   exit 70
 fi
+# AN ORACLE RED WITH NO BASE TO SUBTRACT IS NOT A VERDICT. It outranks the red below it for the
+# same reason the ceiling does: the red may be entirely the tree's own standing state, and parking a
+# line for it is a park with no evidence about that line. 75 — nothing learned, ask again.
+if [ "$BASE_UNMEASURED" = 1 ] && [ -n "$ORACLE_RED" ]; then
+  echo "land-latchkey: NONE:base-test — shard(s) $ORACLE_RED are red and the base is UNMEASURED; nothing about these picks was learned (exit 75)" >&2
+  exit 75
+fi
 if [ "$RC" = 0 ]; then
   echo "land-latchkey: GREEN — ${#JOB_IDS[@]} job(s), tip $(git -C "$REPO" rev-parse --short "$TIP")${ORACLE_RED:+ }"
   exit 0
 fi
-# ── AN ORACLE RED THE BASE ALSO HAS IS THE BASE'S ───────────────────────────────────────────────
-# Said in land.sh's own words ("at the base"), because landq4.sh's lq_base_state_red already reads
-# that sentence and scores it NONE:base — requeued live, never parked. A second vocabulary for the
-# same fact would be a second thing to keep in step.
+# ── AN ORACLE RED THE BASE ALSO HAS IS THE BASE'S, AND IT IS NO LONGER A RED AT ALL ─────────────
+# It was: this exited 1 with land.sh's "at the base" wording, landq4.sh scored the landing NONE, and
+# the line went back live — for ever, because nothing in the queue could repair a row the oracle
+# TOOL gets wrong. The delta above now clears `ORACLE_RED` for exactly that case and the landing is
+# GREEN with an advisory, so this arm is only reachable when the union or a non-oracle shard is red
+# BESIDE a carried row: then the landing is red on its own merits and the base is not its excuse.
 if [ -n "$ORACLE_RED" ] && [ "$BASE_RED" = 1 ]; then
-  echo "land.sh: RED — oracle: the same rows are red at the base (shard(s) $ORACLE_RED); this is the tip's standing state, not these picks'" >&2
+  echo "land.sh: RED — oracle: rows diverge at this tip that do not diverge at the base (shard(s) $ORACLE_RED); the base's own rows were subtracted first" >&2
   exit 1
 fi
 echo "land-latchkey: RED — shard(s) ${ORACLE_RED:-union} (see the logs above and $LK_LOGDIR)" >&2

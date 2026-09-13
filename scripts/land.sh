@@ -194,6 +194,15 @@ LAND_BACKEND="$(land_validate_backend "$LAND_BACKEND")"
 # bounded by it because a fan wider than the cap does not go faster: the extra jobs are refused
 # (`concurrency_limit`), come back 75, and a 75 is not a verdict. The arithmetic is duplicated here
 # rather than sourced because land.sh is the thing that travels to a runner and landq4.sh is not.
+# ── THE ORACLE'S ADVISORY, AND WHY IT IS A FILE ─────────────────────────────────────────────────
+# The transport judges the oracle leg on the DELTA against the base replay (land-latchkey.sh has the
+# ruling and the measurement). A landing that carries a standing base red is GREEN, and the rows it
+# carried have to reach the LEDGER — not only 40 MB of log — or the next reader of land-done.txt has
+# no way to tell a clean green from one that inherited three rows the oracle tool gets wrong.
+# It is a file because the transport is a subprocess whose stdout is the landing's log, and because
+# the bisect fan proves rungs in SUBSHELLS: a variable set in one of them reaches nobody.
+land_advisory_file() { printf '%s\n' "${LAND_ADVISORY_OUT:-$LAND_TMP/land-advisory-$stamp-$$.txt}"; }
+
 LAND_PREFIX_FAN="${LATCHKEY_PREFIX_FAN:-6}"
 land_latchkey_proc_bound() {  # landq4.sh's lq_latchkey_proc_bound, over the same two variables
   local mx="${LATCHKEY_MAX_JOBS:-12}" per="${LATCHKEY_JOBS_PER_PROOF:-3}"
@@ -1731,7 +1740,7 @@ prove_tree() {
     # bisect fan they are NOT — the rung is a scratch checkout and the transport is the engine's —
     # and a transport that packed its own parent would prove the runner tree N times and call it N
     # different prefixes.
-    LAND_LATCHKEY_REPO="$here" bash "$lkt" "$@" </dev/null
+    LAND_LATCHKEY_REPO="$here" LAND_ADVISORY_OUT="$(land_advisory_file)" bash "$lkt" "$@" </dev/null
     local lkrc=$?
     # THE PROVEN LIST IS NOT EMPTY ON A GREEN, because the line below this function's leg loop reds
     # a proof that proved nothing — and a Latchkey green proved a full plan on somebody else's
@@ -2936,13 +2945,20 @@ land_run_batch() {  # $1 = batch file
   land_preproving && done_file="$here/target/land-preprove-$stamp.done"
   mkdir -p "$(dirname "$done_file")" 2>/dev/null || true
   local green=0 red=0 conflict=0 held=0
+  # WHAT THIS LANDING CARRIED. One ` advisory=<…>` field on every row of the batch, because a
+  # standing base red is a property of the TREE these lines landed on and not of one of them.
+  local adv=""
+  if [ -s "$(land_advisory_file)" ]; then
+    adv=" advisory=$(sort -u "$(land_advisory_file)" | paste -sd'; ' - | tr -d '\n')"
+    echo "land.sh: batch $stamp:$adv"
+  fi
   i=0
   while [ "$i" -lt "$n" ]; do
     local st="${BL_out[$i]}"
     [ "$st" = PENDING ] && st=RED   # never left unstated: an unproven line is red
     printf '%s\t%s\n' "$st" "${BL_text[$i]}" >>"$res"
     # `repin=` names the ledger re-pin commit that is part of this line's landed tip (or `none`).
-    printf '%s batch=%s log=%s repin=%s %s\n' "$st" "$stamp" "$here/target/land-$stamp.log" "${BL_repin[$i]:-none}" "${BL_text[$i]}" >>"$done_file"
+    printf '%s batch=%s log=%s repin=%s%s %s\n' "$st" "$stamp" "$here/target/land-$stamp.log" "${BL_repin[$i]:-none}" "$adv" "${BL_text[$i]}" >>"$done_file"
     # HELD IS NOT RED (see land_unit_prefix): the line was never proven and never applied, so it
     # counts as neither a landing nor a refusal — and it never occurs without the culprit's RED in
     # the same result file, so the batch's exit status is red exactly as it should be.
