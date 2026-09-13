@@ -206,8 +206,26 @@ pub const UNCOVERED_BY_DESIGN: &[(&str, &str)] = &[
 /// The git reads the register rests on, always `-C <repo>` and never a `cd`.
 pub struct Git {
     repo: std::path::PathBuf,
-    /// See [`Git::reachable`]. Resolved at most once, and never from anything an overlay can move.
-    reachable: std::sync::OnceLock<BTreeSet<String>>,
+    /// See [`Git::reachable`]. Resolved at most once per instance, and populated out of a
+    /// PROCESS-WIDE memo so a run that builds a dozen overlays pays for the whole-history
+    /// `rev-list` once, not once per overlay. Never from anything an overlay can move.
+    reachable: std::sync::OnceLock<std::sync::Arc<BTreeSet<String>>>,
+}
+
+/// THE PROCESS-WIDE REACHABILITY MEMO, keyed on the only inputs [`Git::reachable`] reads.
+///
+/// A `Git` is made fresh for every overlay the self-test plants — `execute` re-roots a whole
+/// `Ctx` per case — so a per-instance memo re-runs the whole-history `rev-list` once per plant,
+/// which is the "whole-tree scan per plant" the self-test budget exists to catch. The set's two
+/// inputs, HEAD and the pin refs, are exactly what a plant CANNOT move (a plant rewrites the
+/// register, never a ref), so the answer is identical across every overlay in a process and is
+/// cached here, keyed on `(repo, HEAD, pins)` so a different repository — or a HEAD or pin set
+/// that genuinely moved — is a different question with a different answer.
+type ReachCache = std::sync::Mutex<BTreeMap<String, std::sync::Arc<BTreeSet<String>>>>;
+
+fn reach_cache() -> &'static ReachCache {
+    static C: std::sync::OnceLock<ReachCache> = std::sync::OnceLock::new();
+    C.get_or_init(|| std::sync::Mutex::new(BTreeMap::new()))
 }
 
 impl Git {
@@ -310,19 +328,39 @@ impl Git {
     /// processes per case and thousands per run, and it showed: `audit-ledger --selftest` spent
     /// eight seconds a case, almost all of it forking.
     ///
-    /// One `rev-list` answers all of them. The set is memoised for the life of the process because
-    /// its two inputs -- HEAD and the pin refs -- are exactly what an overlay CANNOT change: a
-    /// plant may rewrite the register, which is the file this gate judges, but it cannot rewrite
-    /// the repository's refs. A memo keyed on something a plant could move would be a stale
-    /// reading rather than a fast one.
+    /// One `rev-list` answers all of them, and the set is memoised for the life of the PROCESS —
+    /// see [`reach_cache`] — because its two inputs, HEAD and the pin refs, are exactly what an
+    /// overlay CANNOT change: a plant may rewrite the register, which is the file this gate judges,
+    /// but it cannot rewrite the repository's refs. The memo is keyed on `(repo, HEAD, pins)`, the
+    /// identity of those inputs, so a plant that could move one of them would be a different key
+    /// rather than a stale reading. Without the PROCESS-wide half, the self-test — which builds a
+    /// fresh `Git` per overlay — re-ran this whole-history walk a dozen times and drifted over its
+    /// budget whenever the box was loaded.
     pub fn reachable(&self) -> &BTreeSet<String> {
-        self.reachable.get_or_init(|| {
+        &**self.reachable.get_or_init(|| {
+            let pins = self.audit_pins();
+            let head = self.head().unwrap_or_default();
+            let key = format!(
+                "{}\u{0}{}\u{0}{}",
+                self.repo.display(),
+                head,
+                pins.join(",")
+            );
+            if let Some(hit) = reach_cache().lock().ok().and_then(|m| m.get(&key).cloned()) {
+                return hit;
+            }
             let mut argv: Vec<String> = vec!["rev-list".to_string(), "HEAD".to_string()];
-            argv.extend(self.audit_pins());
+            argv.extend(pins);
             let refs: Vec<&str> = argv.iter().map(String::as_str).collect();
-            self.run(&refs)
-                .map(|out| out.lines().map(str::trim).map(str::to_string).collect())
-                .unwrap_or_default()
+            let set: std::sync::Arc<BTreeSet<String>> = std::sync::Arc::new(
+                self.run(&refs)
+                    .map(|out| out.lines().map(str::trim).map(str::to_string).collect())
+                    .unwrap_or_default(),
+            );
+            if let Ok(mut m) = reach_cache().lock() {
+                m.insert(key, set.clone());
+            }
+            set
         })
     }
 
