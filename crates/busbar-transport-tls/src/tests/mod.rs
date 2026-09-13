@@ -664,7 +664,11 @@ async fn an_in_band_upgrade_adopts_the_lower_layers_stream() {
     // The facts of the pre-upgrade layer do not survive it: the layer below has given the stream
     // up and no longer knows the connection, and the record the upgraded layer reports is its own,
     // naming the composed stack rather than either half of it.
-    assert_eq!(lower.arrival(&lower_conn).port, 0, "the source kept nothing");
+    assert_eq!(
+        lower.arrival(&lower_conn).port,
+        0,
+        "the source kept nothing"
+    );
     let record = tls.arrival(&upgraded);
     assert_eq!(record.transport_chain, vec!["tcp", "tls"]);
     assert_eq!(
@@ -840,9 +844,7 @@ impl Transport for StubSource {
         body: &[u8],
         arena: &'a dyn busbar_contract::Arena,
     ) -> Result<ArenaBytes<'a>, Encode> {
-        arena
-            .alloc_bytes(body)
-            .map_err(|_| Encode::ArenaExhausted)
+        arena.alloc_bytes(body).map_err(|_| Encode::ArenaExhausted)
     }
 
     fn adopt<'a>(
