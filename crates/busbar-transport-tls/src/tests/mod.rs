@@ -6,6 +6,11 @@
 use super::*;
 use busbar_contract::plugin::KernelSeal;
 use busbar_contract::ConfigView;
+// ONE spelling of the transport contract for the whole battery. The stub below answers the same
+// ABI question the real transport does, and six fully-qualified paths to say so taught this
+// crate the contract crate's name six times over for no reader's benefit.
+use busbar_contract_transport::wire::{Encode, RawStream};
+use busbar_contract_transport::{registry::TRANSPORT_ABI, AbiVersion};
 use futures::StreamExt;
 use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
@@ -231,7 +236,7 @@ async fn a_silent_client_cannot_park_the_listener() {
     let addr = listener.local_addr();
 
     let silent = bounded(
-        "tokio::net::TcpStream::connect(&addr)",
+        "the plain client connect",
         tokio::net::TcpStream::connect(&addr),
     )
     .await
@@ -548,7 +553,7 @@ async fn handshake_failure_maps_to_its_own_error() {
         async move { bounded("server.accept(&listener)", server.accept(&listener)).await }
     });
     let mut plain = bounded(
-        "tokio::net::TcpStream::connect(&addr)",
+        "the plain client connect",
         tokio::net::TcpStream::connect(&addr),
     )
     .await
@@ -601,10 +606,10 @@ async fn an_in_band_upgrade_adopts_the_lower_layers_stream() {
     let (server_cfg, client_cfg) = self_signed();
     let tls = TlsTransport::new();
     tls.register_server_config(0, server_cfg.clone());
-    let tcp = busbar_transport_tcp::TcpTransport::new();
+    let lower = busbar_transport_tcp::TcpTransport::new();
 
-    struct TcpCfg;
-    impl ConfigView for TcpCfg {
+    struct LowerCfg;
+    impl ConfigView for LowerCfg {
         fn get_str(&self, _k: &str) -> Option<&str> {
             None
         }
@@ -615,25 +620,25 @@ async fn an_in_band_upgrade_adopts_the_lower_layers_stream() {
             None
         }
     }
-    impl TransportConfigView for TcpCfg {
+    impl TransportConfigView for LowerCfg {
         fn bind(&self) -> Option<&str> {
             Some("127.0.0.1:0")
         }
     }
     let key0 = fixture_key(0);
-    let listener = bounded("tcp.listen(&TcpCfg, &key0)", tcp.listen(&TcpCfg, &key0))
+    let listener = bounded("the lower layer's listen", lower.listen(&LowerCfg, &key0))
         .await
         .unwrap();
     let addr = listener.local_addr();
 
     let accept_fut = tokio::spawn(async move {
-        bounded("tcp.accept(&listener)", tcp.accept(&listener))
+        bounded("the lower layer's accept", lower.accept(&listener))
             .await
-            .map(|c| (tcp, c))
+            .map(|c| (lower, c))
     });
 
     let client_plain = bounded(
-        "tokio::net::TcpStream::connect(&addr)",
+        "the plain client connect",
         tokio::net::TcpStream::connect(&addr),
     )
     .await
@@ -649,17 +654,17 @@ async fn an_in_band_upgrade_adopts_the_lower_layers_stream() {
         .await
     });
 
-    let (tcp, tcp_conn) = bounded("accept_fut", accept_fut).await.unwrap().unwrap();
+    let (lower, lower_conn) = bounded("accept_fut", accept_fut).await.unwrap().unwrap();
     let upgraded = bounded(
-        "tls.adopt(&tcp, tcp_conn.clone(), &key0)",
-        tls.adopt(&tcp, tcp_conn.clone(), &key0),
+        "the in-band upgrade's adopt",
+        tls.adopt(&lower, lower_conn.clone(), &key0),
     )
     .await
     .unwrap();
-    // The facts of the pre-upgrade layer do not survive it: `tcp` has given the stream up and no
-    // longer knows the connection, and the record the upgraded layer reports is its own, naming
-    // the composed stack rather than either half of it.
-    assert_eq!(tcp.arrival(&tcp_conn).port, 0, "the source kept nothing");
+    // The facts of the pre-upgrade layer do not survive it: the layer below has given the stream
+    // up and no longer knows the connection, and the record the upgraded layer reports is its own,
+    // naming the composed stack rather than either half of it.
+    assert_eq!(lower.arrival(&lower_conn).port, 0, "the source kept nothing");
     let record = tls.arrival(&upgraded);
     assert_eq!(record.transport_chain, vec!["tcp", "tls"]);
     assert_eq!(
@@ -776,8 +781,8 @@ impl busbar_contract::Plugin for StubSource {
     fn kind(&self) -> busbar_contract::Kind {
         busbar_contract::Kind::Transport
     }
-    fn abi(&self) -> busbar_contract_transport::AbiVersion {
-        busbar_contract_transport::registry::TRANSPORT_ABI
+    fn abi(&self) -> AbiVersion {
+        TRANSPORT_ABI
     }
 }
 
@@ -834,10 +839,10 @@ impl Transport for StubSource {
         _fields: &[(&str, &[u8])],
         body: &[u8],
         arena: &'a dyn busbar_contract::Arena,
-    ) -> Result<ArenaBytes<'a>, busbar_contract_transport::wire::Encode> {
+    ) -> Result<ArenaBytes<'a>, Encode> {
         arena
             .alloc_bytes(body)
-            .map_err(|_| busbar_contract_transport::wire::Encode::ArenaExhausted)
+            .map_err(|_| Encode::ArenaExhausted)
     }
 
     fn adopt<'a>(
@@ -849,9 +854,9 @@ impl Transport for StubSource {
         Box::pin(async { Err(TransportError::HandoffMismatch) })
     }
 
-    fn detach(&self, conn: &Conn) -> Option<busbar_contract_transport::wire::RawStream> {
+    fn detach(&self, conn: &Conn) -> Option<RawStream> {
         let io = self.io.lock().unwrap().take()?;
-        Some(busbar_contract_transport::wire::RawStream::new(
+        Some(RawStream::new(
             self.key,
             conn.peer(),
             Box::new(TokioAsyncReadCompatExt::compat(io)),
@@ -2140,8 +2145,8 @@ async fn a_unit0_refusal_ends_a_live_frame_stream_and_drops_the_session() {
 }
 
 /// An address on a network nothing routes: the connect is sent and no answer of any kind comes
-/// back. See the same constant in the `tcp` battery — the two dial paths share the defect and the
-/// budget that closes it.
+/// back. See the same constant in the base transport's battery — both dial paths share the defect
+/// and the budget that closes it.
 const BLACKHOLE: &str = "10.255.255.1:9";
 
 /// A TLS DIAL GIVES UP ON A PEER THAT NEVER ANSWERS THE CONNECT.

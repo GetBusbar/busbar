@@ -100,33 +100,33 @@ async fn upgrade_then_round_trip_byte_exact() {
 /// — and the composed chain the adopted connection reports is the real one, not a name for itself.
 #[tokio::test]
 async fn an_in_band_upgrade_over_http_with_cleared_facts() {
-    let http = Arc::new(busbar_transport_http::HttpTransport::new(
+    let lower = Arc::new(busbar_transport_http::HttpTransport::new(
         busbar_transport_http::ClientSettings::default(),
     ));
     let ws = Arc::new(WsTransport::new());
     let keys = test_key_handle();
     let listener = bounded(
-        "http .listen(&HttpCfg(\"127.0.0.1:0\".to_string(), None), &...",
-        http.listen(&HttpCfg("127.0.0.1:0".to_string(), None), &keys),
+        "the lower layer's listen",
+        lower.listen(&HttpCfg("127.0.0.1:0".to_string(), None), &keys),
     )
     .await
     .unwrap();
     let addr = listener.local_addr();
 
     let upgrade_task = {
-        let (http, ws, keys) = (http.clone(), ws.clone(), test_key_handle());
+        let (lower, ws, keys) = (lower.clone(), ws.clone(), test_key_handle());
         tokio::spawn(async move {
-            let http_conn = bounded("http.accept(&listener)", http.accept(&listener))
+            let lower_conn = bounded("the lower layer's accept", lower.accept(&listener))
                 .await
                 .unwrap();
-            let before = http.arrival(&http_conn).transport_chain;
+            let before = lower.arrival(&lower_conn).transport_chain;
             let upgraded = bounded(
-                "ws.adopt(&*http, http_conn.clone(), &keys)",
-                ws.adopt(&*http, http_conn.clone(), &keys),
+                "the in-band upgrade's adopt",
+                ws.adopt(&*lower, lower_conn.clone(), &keys),
             )
             .await
             .unwrap();
-            (before, http.arrival(&http_conn), upgraded)
+            (before, lower.arrival(&lower_conn), upgraded)
         })
     };
 
@@ -183,7 +183,7 @@ async fn a_composed_round_trip_over_the_layers_below() {
     let client_t = WsTransport::over(Arc::new(busbar_transport_tcp::TcpTransport::new()));
     let keys = test_key_handle();
     let listener = bounded(
-        "server_t .listen(&HttpCfg(\"127.0.0.1:0\".to_string(), None...",
+        "the server side's listen",
         server_t.listen(&HttpCfg("127.0.0.1:0".to_string(), None), &keys),
     )
     .await
@@ -264,7 +264,7 @@ async fn a_transport_with_no_lower_layer_cannot_listen_or_dial() {
     let keys = test_key_handle();
     assert_eq!(
         bounded(
-            "t.listen(&HttpCfg(\"127.0.0.1:0\".to_string(), None), &keys)",
+            "the lower-less listen",
             t.listen(&HttpCfg("127.0.0.1:0".to_string(), None), &keys)
         )
         .await
@@ -342,7 +342,7 @@ async fn the_message_cap_is_the_operator_s_and_not_the_library_s() {
     )));
     // The listener is where the operator's configuration reaches this transport at all.
     let listener = bounded(
-        "t .listen( &HttpCfg(\"127.0.0.1:0\".to_string(), Some(CAP a...",
+        "the capped listen",
         t.listen(
             &HttpCfg("127.0.0.1:0".to_string(), Some(CAP as i64)),
             &test_key_handle(),
@@ -1007,8 +1007,8 @@ async fn a_handoff_from_an_undeclared_layer_is_a_mismatch() {
 #[tokio::test]
 async fn a_handoff_from_an_undeclared_source_that_could_have_detached_is_still_refused() {
     let (end_a, end_b) = tokio::io::duplex(64 * 1024);
-    // `stdio` is a real transport in this project and one `ws` does NOT declare: COMPOSES_OVER is
-    // `http`, `tcp`, `tls`.
+    // `stdio` is a real transport in this project and one this one does NOT declare: read
+    // `COMPOSES_OVER` for the three that are declared, and this key is not among them.
     let below = StubLower::holding_as("stdio", end_a);
     let ws = WsTransport::new();
     let keys = test_key_handle();
@@ -1445,7 +1445,7 @@ fn a_redial_reuses_the_interned_address_rather_than_leaking_a_new_one() {
 #[tokio::test]
 async fn a_secure_target_over_a_cleartext_lower_layer_is_refused_before_any_byte_is_written() {
     let listener = bounded(
-        "tokio::net::TcpListener::bind(\"127.0.0.1:0\")",
+        "the cleartext listener bind",
         tokio::net::TcpListener::bind("127.0.0.1:0"),
     )
     .await

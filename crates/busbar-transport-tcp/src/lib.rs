@@ -64,8 +64,8 @@ pub const READ_CHUNK_BYTES: usize = 16 * 1024;
 /// address parks until the operating system's own connect timeout — a number this node did not
 /// choose, measured in minutes on the platforms it runs on. The dial happens inside the route step,
 /// under the unit's hold, so that is an in-flight slot and a concurrency lease held for minutes by a
-/// peer that has not sent a byte. Ten seconds is the same figure the `tls` transport's
-/// `HANDSHAKE_TIMEOUT` carries, which is what makes it one budget rather than two.
+/// peer that has not sent a byte. Ten seconds is the same figure the transport this one upgrades
+/// to carries for its own handshake, which is what makes it one budget rather than two.
 pub const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// One connection's live state. Never reachable from the opaque [`Conn`] handle directly; only
