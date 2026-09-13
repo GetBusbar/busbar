@@ -985,6 +985,7 @@ async fn a_provider_origin_unit_posts_no_flat_fee() {
             generation: busbar_kernel::registry::Generation::FIRST,
             admin_listener: false,
             kernel_verb_only: false,
+            session_member: false,
         };
         busbar_kernel::teller::fee_count(&unit.evidence(&ctx).fee).0
     };
@@ -1082,6 +1083,7 @@ async fn drive_keeping_the_unit<'n>(
         generation: busbar_kernel::registry::Generation::FIRST,
         admin_listener: false,
         kernel_verb_only: false,
+        session_member: false,
     };
     let ended = busbar_kernel::teller::run_unit_async(
         &node.kernel,

@@ -117,6 +117,7 @@ impl AdminNode {
                     // from the concurrency gauge — and what makes the admin API answer at a
                     // saturated cap.
                     kernel_verb_only: true,
+                    session_member: false,
                 };
                 let meter = busbar_kernel::teller::AccrualMeter::new();
                 let ended = busbar_kernel::teller::run_unit(

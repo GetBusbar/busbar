@@ -296,6 +296,7 @@ pub fn ctx(key: u64) -> UnitCtx {
         generation: Generation::FIRST,
         admin_listener: false,
         kernel_verb_only: false,
+        session_member: false,
     }
 }
 

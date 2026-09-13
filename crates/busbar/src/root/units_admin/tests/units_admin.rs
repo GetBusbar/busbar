@@ -296,6 +296,7 @@ fn a_recorded_mutation_names_the_principal_and_not_the_credential() {
             generation: busbar_kernel::registry::Generation::FIRST,
             admin_listener: true,
             kernel_verb_only: true,
+            session_member: false,
         };
         let decode_token: UnitToken<Decode> = UnitToken::mint(&seal);
         let _ = decode(&binding, &decode_token, &ctx).into_result(&seal);
@@ -380,6 +381,7 @@ fn a_money_governance_verb_is_checked_against_the_posture_the_fleet_sealed() {
             generation: busbar_kernel::registry::Generation::FIRST,
             admin_listener: true,
             kernel_verb_only: true,
+            session_member: false,
         };
         let decode_token: UnitToken<Decode> = UnitToken::mint(&seal);
         decode(&binding, &decode_token, &ctx)
@@ -576,6 +578,7 @@ fn an_admin_unit_settles_at_zero_requests_and_zero_fee() {
         generation: busbar_kernel::registry::Generation::FIRST,
         admin_listener: true,
         kernel_verb_only: true,
+        session_member: false,
     };
     let evidence = evidence(&ctx);
     assert!(!evidence.upstream_candidate);
@@ -1087,6 +1090,7 @@ fn a_bound_unit(request: AdminRequest) -> (AdminBinding, UnitCtx, busbar_caps::K
         generation: busbar_kernel::registry::Generation::FIRST,
         admin_listener: true,
         kernel_verb_only: true,
+        session_member: false,
     };
     let seal = busbar_caps::KernelSeal::acquire_for_kernel();
     // Decode is what puts the verb in the table. A cell that called `set_verb` itself would be
@@ -1496,6 +1500,7 @@ fn each_recovery_verb_reaches_the_store_and_a_refusing_store_is_the_answer() {
             generation: busbar_kernel::registry::Generation::FIRST,
             admin_listener: true,
             kernel_verb_only: true,
+            session_member: false,
         };
         decode(&binding, &UnitToken::mint(&seal), &ctx)
             .into_result(&seal)
@@ -2602,6 +2607,7 @@ fn a_read_only_credential_reaches_every_view_and_still_no_mutation() {
             generation: busbar_kernel::registry::Generation::FIRST,
             admin_listener: true,
             kernel_verb_only: true,
+            session_member: false,
         };
         let token: UnitToken<Approve> = UnitToken::mint(&seal);
         let decision = approve(

@@ -150,7 +150,7 @@ use busbar_contract::transport::facts as tfacts;
 use busbar_contract::transport::session::{
     EgressLease, SessionDriver, SessionEnd, SessionFrame, SessionHandle, SessionOpen, SessionReply,
 };
-use busbar_contract::transport::surface::{Answering, Bar, Dispatch, WireSurface};
+use busbar_contract::transport::surface::{Answering, Bar, Dispatch, SessionPosture, WireSurface};
 use busbar_contract::unit::{
     Clock, ConfigView, Ctx, Refusal as PlaneRefusal, SessionView, Step, TransportView,
 };
@@ -540,7 +540,7 @@ struct LegMoment<'a> {
 }
 
 /// Everything one open session holds, and the only thing that outlives a frame.
-struct Open {
+struct Open<'n> {
     /// The facts the mount published at the upgrade, OWNED so they outlive the upgrade.
     ///
     /// Owned rather than borrowed, and that is forced rather than chosen: the strings the mount
@@ -581,6 +581,20 @@ struct Open {
     /// `None` for every session that never relays, and dropping it is what closes the client's half:
     /// the drain writes this wire's orderly close when its offering end goes.
     client: Option<Box<dyn EgressLease>>,
+    /// THE SESSION'S OWN HOLD, held for the session's whole life.
+    ///
+    /// The opener drew ONE request slot and ONE in-flight lease at the door and the door's hold sits
+    /// in this slot's cell; this owns them across the upgrade and every frame the session serves, and
+    /// [`SessionDriver::close`] settles it EXACTLY ONCE — the one place both go back. A session that
+    /// relayed a thousand frames still settles one request slot, because a leg drew none of its own.
+    ///
+    /// `Option` for the one reason the sessions table's removal is under a lock: [`SessionHold::settle`]
+    /// consumes the hold, so taking it out here is what makes a double close settle exactly once — the
+    /// second caller finds `None` and gives nothing back twice.
+    hold: Option<busbar_kernel::teller::SessionHold<'n>>,
+    /// The context the opener ran under, kept so the close settles the hold against the SAME unit the
+    /// door admitted — the opener's key, origin and session — rather than a freshly-guessed one.
+    open_ctx: UnitCtx,
 }
 
 /// WHAT A DEPLOYMENT'S OPERATOR HOPS ARE HANDED FOR ONE SESSION OPEN, owned.
@@ -769,13 +783,24 @@ pub struct SessionLoopDriver<'n, U: SessionUnits + ?Sized> {
     config: &'n dyn ConfigView,
     gauge: &'n busbar_kernel::slice::ConcurrencyGauge,
     canary: &'n busbar_caps::Canary,
+    /// THIS DRIVER'S OWN in-flight table, from which a session's opener draws its ONE slot.
+    ///
+    /// The slot's cell and lease set are what the [`SessionHold`](busbar_kernel::teller::SessionHold)
+    /// owns across the upgrade — an `Arc<UnitSlot>` that outlives any accept-task frame, so a session
+    /// that dies between its opening and its close is still settle-reachable by key. Uncapped, for
+    /// the reason the one-shot driver's is: admission-to-the-node is the operator-configured inbound
+    /// layer's decision and has already been made by the time an upgrade reaches here, so a second
+    /// cap would be a second, silently-different answer to the one question the listener answered.
+    inflight: busbar_kernel::inflight::InFlight,
+    /// The node's arrival door, minting each opener's arrival hold before the six steps run.
+    door: crate::root::kernel::AdmissionDoor,
     /// Where the monotonic half of every clock reading this driver hands a plane is measured from.
     started: Instant,
     next_key: AtomicU64,
     next_session: AtomicU64,
     /// The open sessions, by the handle this driver minted. See this module's header on the two
     /// locks and on why the outer one is never held across a unit.
-    open: Mutex<HashMap<u64, Arc<Mutex<Open>>>>,
+    open: Mutex<HashMap<u64, Arc<Mutex<Open<'n>>>>>,
 }
 
 impl<U: SessionUnits + ?Sized> std::fmt::Debug for SessionLoopDriver<'_, U> {
@@ -806,6 +831,8 @@ impl<'n, U: SessionUnits + ?Sized> SessionLoopDriver<'n, U> {
             config,
             gauge,
             canary,
+            inflight: busbar_kernel::inflight::InFlight::new(usize::MAX, 0),
+            door: crate::root::kernel::AdmissionDoor,
             started: Instant::now(),
             next_key: AtomicU64::new(1),
             next_session: AtomicU64::new(1),
@@ -844,7 +871,7 @@ impl<'n, U: SessionUnits + ?Sized> SessionLoopDriver<'n, U> {
     /// `None` for a handle this driver never minted and for one it has already closed, which are the
     /// same answer and should be: a frame for a session that is over is a frame with nothing to read
     /// it against.
-    fn slot(&self, session: SessionHandle) -> Option<Arc<Mutex<Open>>> {
+    fn slot(&self, session: SessionHandle) -> Option<Arc<Mutex<Open<'n>>>> {
         self.open.lock().ok()?.get(&session.0).cloned()
     }
 
@@ -1325,6 +1352,10 @@ impl<'n, U: SessionUnits + ?Sized> SessionLoopDriver<'n, U> {
             generation: busbar_kernel::registry::Generation::FIRST,
             admin_listener: false,
             kernel_verb_only: false,
+            // A LEG served on an already-admitted session. The session's own opening drew the one
+            // request slot and one in-flight lease this whole session runs on; this leg spends
+            // against that admission and draws neither, so N frames never cost N slots.
+            session_member: true,
         };
         busbar_kernel::teller::run_unit(
             self.kernel,
@@ -1406,24 +1437,80 @@ impl<U: SessionUnits + ?Sized> SessionDriver for SessionLoopDriver<'_, U> {
         );
         let state = self.plane.open_session(&ctx);
 
-        // THE OPENING UNIT: the unit that answers the arrival, and the upgrade's answer is its
-        // ending. It runs BEFORE the table is touched, so a session whose opening unit did not
-        // complete leaves nothing behind but its own audit record — the plane's half above drops
-        // with this stack frame.
-        let ended = self.run(
-            self.next_unit(),
-            &SessionRead {
-                session: id,
-                draft: None,
-                facts: &facts,
-                clock,
-            },
+        // THE POSTURE THE BINDING DECLARED — data the kernel reads at the door, not a shape this
+        // driver chooses. A duplex binding declares [`SessionPosture::Hold`], so its opening unit
+        // KEEPS the request slot and the in-flight lease for the whole session; a binding that
+        // declares nothing is [`SessionPosture::Release`], which is what every binding had before.
+        let posture = surface
+            .bindings
+            .iter()
+            .find(|b| b.name == open.binding)
+            .map_or(SessionPosture::Release, |b| b.session);
+
+        let read = SessionRead {
+            session: id,
+            draft: None,
+            facts: &facts,
+            clock,
+        };
+
+        // THE OPENING UNIT, drawn on the driver's OWN in-flight slot so the hold the door puts in the
+        // cell can be held across the upgrade this session is built on. It runs BEFORE the table of
+        // open sessions is touched, so a session whose opening did not admit leaves nothing behind but
+        // its own audit record and the slot it gives straight back. This unit — and ONLY this unit —
+        // draws the session's one request slot and one in-flight lease; every leg served on the
+        // session after it is a `session_member` and draws neither.
+        let key = self.next_unit();
+        let open_ctx = UnitCtx {
+            key,
+            origin: busbar_caps::OriginKind::Client,
+            session: Some(self.kernel.session_id(id)),
+            generation: busbar_kernel::registry::Generation::FIRST,
+            admin_listener: false,
+            kernel_verb_only: false,
+            session_member: false,
+        };
+        let unit = self.units.unit(&read);
+        let units = Borrowed(&*unit);
+        let arrival = busbar_kernel::inflight::arrival_hold(
+            self.kernel,
+            &self.door,
+            busbar_caps::PrincipalId::new(""),
         );
-        let outcome = outcome_of(&ended);
-        if outcome != Outcome::Completed {
+        let entered = self.inflight.insert(busbar_kernel::inflight::Enter {
+            key,
+            origin: busbar_caps::OriginKind::Client,
+            session: Some(self.kernel.session_id(id)),
+            admin_listener: false,
+            provider_of_open_session: false,
+            zero_hold_tick: false,
+            arrival,
+            now: u64::try_from(clock.monotonic_nanos / 1_000_000).unwrap_or(u64::MAX),
+        });
+        let Ok(slot_arc) = entered else {
             self.units.closed(id);
-            return Err(outcome);
-        }
+            return Err(Outcome::Unavailable);
+        };
+        // THE DOOR, on the drawn slot. On refusal the unit has already run its audit door and left
+        // through its exit on this slot — nothing is held — so the table row goes straight back and
+        // the units are told the session is over. On admission the owning hold is kept, in the `Open`
+        // below, for the session's whole life.
+        let hold = match busbar_kernel::teller::open_unit_owned(
+            self.kernel,
+            &units,
+            &open_ctx,
+            posture,
+            slot_arc,
+            self.gauge,
+            self.canary,
+        ) {
+            busbar_kernel::teller::OpenedOwned::Held(hold) => hold,
+            busbar_kernel::teller::OpenedOwned::Refused(ended) => {
+                self.inflight.remove(key);
+                self.units.closed(id);
+                return Err(outcome_of(&ended));
+            }
+        };
 
         let slot = Open {
             facts,
@@ -1435,6 +1522,8 @@ impl<U: SessionUnits + ?Sized> SessionDriver for SessionLoopDriver<'_, U> {
             pending: None,
             upstream: None,
             client: None,
+            hold: Some(hold),
+            open_ctx,
         };
         // The table is the LAST thing touched, so every path that refuses above leaves it untouched.
         let mut table = self.open.lock().map_err(|_| Outcome::Unavailable)?;
@@ -1646,6 +1735,28 @@ impl<U: SessionUnits + ?Sized> SessionDriver for SessionLoopDriver<'_, U> {
             return;
         };
         drop(table);
+        // SETTLE THE SESSION'S OWN HOLD, EXACTLY ONCE. The slot is out of the sessions table, so no
+        // frame can still reach it; taking the hold from under its own lock is what makes a double
+        // close give the one request slot and the one in-flight lease back exactly once. It runs the
+        // same terminal every admitted unit ends through, against the unit the door admitted.
+        if let Ok(mut open) = slot.lock() {
+            if let Some(hold) = open.hold.take() {
+                let key = open.open_ctx.key;
+                let ctx = open.open_ctx.clone();
+                let read = SessionRead {
+                    session: session.0,
+                    draft: None,
+                    facts: &open.facts,
+                    clock: self.clock(),
+                };
+                let unit = self.units.unit(&read);
+                let units = Borrowed(&*unit);
+                let _ended = hold.settle(self.kernel, &units, &ctx);
+                drop(unit);
+                // The kernel slot table gives its row up too, now the hold that lived in it is gone.
+                self.inflight.remove(key);
+            }
+        }
         // The units are told once, by the same "exactly once" the removal enforces: a wait this
         // session's units entered ends with the session.
         self.units.closed(session.0);

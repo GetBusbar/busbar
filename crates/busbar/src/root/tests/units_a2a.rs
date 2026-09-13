@@ -1749,6 +1749,7 @@ fn a2a_ctx_from(origin: busbar_caps::OriginKind) -> UnitCtx {
         generation: busbar_kernel::registry::Generation::FIRST,
         admin_listener: false,
         kernel_verb_only: false,
+        session_member: false,
     }
 }
 

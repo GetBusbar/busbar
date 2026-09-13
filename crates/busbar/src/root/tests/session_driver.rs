@@ -58,7 +58,7 @@ use busbar_contract::transport::surface::{
 use busbar_contract::transport::Outcome;
 use busbar_contract::unit::{ConfigView, Ctx, Refusal as PlaneRefusal, Unit, UnitEnd};
 use busbar_contract::wire::{CloseReason, Frame, FrameCursor};
-use busbar_kernel::slice::{ConcurrencyGauge, GroupLeaseSlip};
+use busbar_kernel::slice::{ConcurrencyGauge, GroupLeaseSlip, IN_FLIGHT};
 use busbar_kernel::teller::{AccrualMeter, Evidence, UnitCtx, Units};
 
 use super::{declared_run, declares_a_run, SessionLoopDriver, SessionRead, SessionUnits};
@@ -1182,7 +1182,64 @@ fn a_handle_this_driver_does_not_hold_is_not_a_session() {
         assert_eq!(reply.outcome, Outcome::NotFound);
         assert_eq!(reply.close, Some(CloseReason::TransportFailed));
     }
-    assert_eq!(node.moments().len(), 1, "neither ran a unit");
+    assert_eq!(
+        node.moments().len(),
+        2,
+        "neither drive ran a unit: the two moments are the opening unit's DOOR at open and its own \
+         terminal at close, the session settling itself exactly once"
+    );
+}
+
+/// A SESSION HOLDS EXACTLY ONE IN-FLIGHT LEASE FOR ITS WHOLE LIFE — drawn ONCE at the opening,
+/// unmoved across every frame it serves, and given back ONCE at the close.
+///
+/// This is the driver's half of the owning-Held form. The opening unit draws the node's one in-flight
+/// slot and KEEPS it (the owning hold sits in the cell across the upgrade), so a node reading its
+/// gauge sees exactly one session in flight from open to close — not zero (which is what the old
+/// synchronous opener left, having settled itself the instant it opened) and not one-per-frame (which
+/// is what a leg that drew its own lease would climb to). Driving N frames leaves the gauge exactly
+/// where the open put it, because a leg is a `session_member` and draws none; only the close gives
+/// the one lease back.
+#[test]
+fn a_session_holds_one_in_flight_lease_from_open_through_frames_to_close() {
+    let node = Node::new();
+    let driver = node.driver();
+
+    assert_eq!(
+        node.gauge.count(&IN_FLIGHT),
+        0,
+        "nothing is in flight before the session opens"
+    );
+
+    let session = driver
+        .open(upgrade(OPEN_BINDING, Bar::Open, &[]), &OPEN_SURFACE)
+        .expect("the declared mount opens");
+    assert_eq!(
+        node.gauge.count(&IN_FLIGHT),
+        1,
+        "the opening unit drew the node's ONE in-flight slot and KEEPS it across the upgrade"
+    );
+
+    // EVERY FRAME IS A LEG, and a leg draws no lease of its own. N of them leave the gauge at one.
+    for seq in 0..4 {
+        assert_eq!(
+            driver.drive(session, frame(seq, OPENS_A_UNIT)).outcome,
+            Outcome::Completed,
+            "each frame opens its own leg unit under the one session"
+        );
+        assert_eq!(
+            node.gauge.count(&IN_FLIGHT),
+            1,
+            "a leg is a session_member: it draws no in-flight lease, so N frames never climb past one"
+        );
+    }
+
+    driver.close(session, CLIENT_WENT);
+    assert_eq!(
+        node.gauge.count(&IN_FLIGHT),
+        0,
+        "the one lease the session held for its whole life goes back at the close, exactly once"
+    );
 }
 
 /// CLOSE RELEASES EXACTLY ONCE, TELLS THE UNITS EXACTLY ONCE, and the "exactly" is enforced rather
@@ -1603,8 +1660,8 @@ async fn a_failed_dial_ends_the_session_before_the_next_frame_is_read() {
 /// The leg goes on through the DECORATOR rather than by calling `attach_leg` directly, because that
 /// is the only path the composition has: a cell that attached one by hand would be proving the
 /// driver's half of an arrangement whose other half nothing exercised.
-async fn relayed(
-    driver: &SessionLoopDriver<'_, RecordingUnits>,
+async fn relayed<'a>(
+    driver: &'a SessionLoopDriver<'a, RecordingUnits>,
     session: SessionHandle,
     client: FakeLease,
 ) {
@@ -1687,8 +1744,9 @@ async fn a_made_up_providers_reply_reaches_the_client() {
     );
     assert_eq!(
         node.moments(),
-        vec![(1, false), (1, true)],
-        "the opening unit and the unit the client's frame opened, and NOTHING for the reply"
+        vec![(1, false), (1, true), (1, false)],
+        "the opening unit, the unit the client's frame opened, and the session's OWN close-settle \
+         (the opener's terminal, run once at the end) — and NOTHING for the reply"
     );
     assert_eq!(
         end.reason,

@@ -438,6 +438,7 @@ impl busbar_contract::transport::UnitDriver for LoopDriver<'_> {
             generation: busbar_kernel::registry::Generation::FIRST,
             admin_listener: false,
             kernel_verb_only: false,
+            session_member: false,
         };
         // THE LOOP ITSELF, not an approximation of it. Whatever this driver cannot yet do above the
         // loop, the ten steps below it are the node's own.

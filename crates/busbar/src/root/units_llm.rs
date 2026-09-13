@@ -554,6 +554,7 @@ impl LlmNode {
                     generation: busbar_kernel::registry::Generation::FIRST,
                     admin_listener: false,
                     kernel_verb_only: false,
+                    session_member: false,
                 };
                 let ended = busbar_kernel::teller::run_unit_async(
                     &self.kernel,

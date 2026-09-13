@@ -328,6 +328,17 @@ pub struct UnitCtx {
     /// Whether every destination it may reach is a kernel verb, which is what makes it exempt from
     /// the concurrency gauge.
     pub kernel_verb_only: bool,
+    /// Whether this unit is a leg served ON an already-admitted session rather than the session's
+    /// own opening.
+    ///
+    /// A session's own opening draws the node's ONE request slot and ONE in-flight lease and holds
+    /// them for the session's whole life (see [`SessionHold`]); a leg served on it spends against
+    /// that admission and draws neither, so it can never double-draw a slot the settle path would
+    /// then never release. This is a fact ABOUT the unit — where it sits relative to its session —
+    /// and not about any plane: nothing here names a plane, a dialect, a transport or a modality.
+    /// It is `false` for every unit that is not such a leg, which is what every unit was before the
+    /// owning-Held session form existed.
+    pub session_member: bool,
 }
 
 /// The kernel's running total of what a unit has spent, in nano-units.
@@ -1341,7 +1352,10 @@ pub fn open_unit_owned<'n, U: Units>(
 /// forgotten the N in flight. So the slot holds it, beside the leases, and the same two ends give
 /// it back.
 fn draw_lease(ctx: &UnitCtx, run: &Run<'_>, groups: &GroupLeaseSlip) {
-    if !takes_lease(ctx.origin, ctx.kernel_verb_only) {
+    // A leg served on an already-admitted session draws NO in-flight lease: the session's own
+    // opening drew the one lease the whole session runs on, and a leg that drew a second would take
+    // a count no exit and no sweep releases per frame — the invisible cap this form closes.
+    if ctx.session_member || !takes_lease(ctx.origin, ctx.kernel_verb_only) {
         return;
     }
     for bucket in std::iter::once(IN_FLIGHT).chain(groups.taken()) {
@@ -1580,7 +1594,14 @@ pub fn exit<U: Units>(
             let flags = table_flags.with(fee_flags);
             let requests = requests_settled(
                 reached_admitted,
-                requests_drawn(ctx.origin, evidence.upstream_candidate),
+                // A leg served on an already-admitted session draws NO request slot: the session's
+                // own opening drew the one slot the whole session settles, so a leg draws none
+                // whatever its evidence says it reaches. Everything that is not such a leg is
+                // counted exactly as it was.
+                requests_drawn(
+                    ctx.origin,
+                    evidence.upstream_candidate && !ctx.session_member,
+                ),
             );
             // What the unit spent while it ran is applied to the hold here, where the hold is
             // owned. The spend lands in full: past the end of the reservation it grows out of

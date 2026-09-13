@@ -29,7 +29,8 @@ use std::sync::Arc;
 use busbar_kernel::inflight::{Enter, InFlight};
 use busbar_kernel::slice::{ConcurrencyGauge, IN_FLIGHT};
 use busbar_kernel::teller::{
-    open_unit_owned, Ended, Evidence, Kernel, OpenedOwned, SessionPosture, Settles,
+    open_unit_owned, run_unit, AccrualMeter, Ended, Evidence, Kernel, OpenedOwned, Run,
+    SessionPosture, Settles, UnitCtx,
 };
 
 use common::{
@@ -206,6 +207,72 @@ fn an_owning_open_that_refuses_holds_no_slot_and_owes_no_settle() {
         HoldCellState::Taken,
         "the refused unit left through its exit — nothing is held for a session the door refused"
     );
+}
+
+/// A LEG SERVED ON AN ALREADY-ADMITTED SESSION DRAWS NOTHING — no request slot — even though it
+/// reaches an upstream.
+///
+/// This is the crux the whole form exists for. The session's own opening drew the one request slot
+/// and the one in-flight lease the whole session runs on (the cell above); a leg served on it is a
+/// `session_member`, spends against that admission and draws NEITHER — so a session that relayed a
+/// thousand frames still settles ONE request slot, not one per frame. The contrast is baked into the
+/// one cell: the SAME unit and the SAME evidence, but NOT a session member, draws one — which is what
+/// makes `session_member` load-bearing rather than cosmetic, and is exactly the per-frame draw this
+/// turns off. Nothing here names a plane, a dialect, a socket or a modality: a leg is session-shaped
+/// and that is the whole of what it is.
+#[test]
+fn a_session_member_leg_reaching_an_upstream_draws_no_request_slot() {
+    let kernel = Kernel::new();
+
+    // THE LEG: a `session_member`, whose verified set reaches an upstream. It runs the ordinary loop
+    // on its own slot — a child of nothing, writing its own end — and settles ZERO request slots.
+    let member = UnitCtx {
+        session_member: true,
+        ..ctx(10)
+    };
+    let leg_requests = run_one(&kernel, 10, &member);
+    assert_eq!(
+        leg_requests, 0,
+        "a leg on an admitted session draws no request slot — the session's opening drew the one"
+    );
+
+    // THE CONTRAST, in the same cell: the SAME evidence, NOT a session member, draws one — the
+    // behaviour every Client unit reaching an upstream has always had, and the per-frame red this
+    // form turns off for a leg.
+    let opener = ctx(11);
+    let opener_requests = run_one(&kernel, 11, &opener);
+    assert_eq!(
+        opener_requests, 1,
+        "a non-member Client unit reaching an upstream draws one — the flag is what decides"
+    );
+}
+
+/// Run one unit reaching an upstream on its own drawn slot, and answer how many request slots it
+/// settled. The unit runs the ordinary loop (not the owning form): a leg is an ordinary unit.
+fn run_one(kernel: &Kernel, key: u64, ctx: &UnitCtx) -> u32 {
+    let units = reaching_an_upstream();
+    let table = InFlight::new(8, 2);
+    let slot = draw_slot(kernel, &table, key);
+    let gauge = ConcurrencyGauge::new();
+    let canary = Canary::new();
+    let meter = AccrualMeter::new();
+    let ended = run_unit(
+        kernel,
+        &units,
+        ctx,
+        Run {
+            cell: slot.cell(),
+            parent: None,
+            leases: slot.leases(),
+            gauge: &gauge,
+            canary: &canary,
+            meter: &meter,
+        },
+    );
+    match ended {
+        Ended::Settled { requests, .. } => requests,
+        Ended::AlreadySettled => panic!("the unit had its own cell to settle"),
+    }
 }
 
 /// Drive a future to its answer on no runtime at all — the whole test being about a hold that

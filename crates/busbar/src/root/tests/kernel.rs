@@ -276,6 +276,7 @@ fn a_unit_this_root_did_not_compose_is_not_sealed_as_an_admin_read() {
         generation: busbar_kernel::registry::Generation::FIRST,
         admin_listener: false,
         kernel_verb_only: false,
+        session_member: false,
     };
     assert!(
         !units.is_admin(&ctx),

@@ -407,6 +407,49 @@ key = "rules.loc-ceilings.union_ceiling"
 by = 95
 because = "The same 95 lines again, counted in the union the kernel total belongs to (23,560 -> 23,655). caps/contract did not move: `SessionHold` owns an `Arc<UnitSlot>` the kernel already defines and reaches the gauge, canary and meter it already names \u2014 no new caps or contract surface is added by the owning form"
 
+# \u2500\u2500 declared raises: THE LEG-DRAWS-NOTHING kernel form. Four surface lines in teller.rs, counted
+# three ways \u2014 the Teller-loop file, the kernel total that file is in, and the union that total is in.
+# section 1.1's OWNER figures are untouched and still true: busbar-kernel <= 8k with the Teller loop
+# <= 1.5k, measured at 5,575 and 802 \u2014 both well under. What these three pin is today's measurement.
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.kernel_files.teller.ceiling"
+by = 4
+because = "FACE busbar_kernel::teller::UnitCtx::session_member \u2014 the kind-neutral bool that makes a leg served on an already-admitted session draw NO request slot and NO in-flight lease. A session's own opening draws the node's one request slot and one in-flight lease and holds them for the session's whole life (`SessionHold`); a leg spending against that admission that drew a second would settle a request the books never give back, once per frame \u2014 the invisible per-frame cap this closes. Four surface lines measured (798 -> 802): the struct field, and the settle site's `requests_drawn` argument widening to gate on the flag (`evidence.upstream_candidate && !ctx.session_member`), which rustfmt lays over three lines. `draw_lease` reads the same flag on its existing line. No plane, dialect, transport or modality named"
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.kernel_ceiling"
+by = 4
+because = "The same 4 lines as the Teller-loop raise above, counted again in the kernel total the file belongs to (5,571 -> 5,575). No reachable busbar-unit-* file moved: the leg-draws-nothing flag is spelled in the kernel's own UnitCtx and read at its own draw_lease and settle sites"
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.union_ceiling"
+by = 4
+because = "The same 4 lines again, counted in the union the kernel total belongs to (23,655 -> 23,659). caps/contract did not move: `session_member` is a bool on a struct the kernel already defines, read at sites the kernel already owns \u2014 no new caps or contract surface"
+
+# \u2500\u2500 declared raises: THE SESSION DRIVER DRAWS ITS OWN SLOT. The root's session driver now opens each
+# session's ONE persistent unit through the owning-Held seam \u2014 it draws a slot from a driver-owned
+# in-flight table and holds the `SessionHold` across the upgrade \u2014 so `session_driver.rs` names the
+# kernel's in-flight and owning-open vocabulary and the capability vocabulary that slot is drawn in.
+# All three cells are `busbar`, the composition root \u2014 the one WIRE-PERMITTED kind, naming what it
+# composes; a rise anywhere else would be coupling and would be drained instead.
+[[gate.ceiling_raises]]
+key = "cell.busbar.kernel.count"
+file = "qa/kind-isolation.toml"
+by = 10
+because = "busbar \u00d7 kernel (busbar, kernel): the root's session driver draws each session's ONE slot through the owning-Held seam, so `crates/busbar/src/root/session_driver.rs` now names `busbar_kernel::inflight::{InFlight, Enter, arrival_hold}` (the driver-owned table and the arrival hold minted into it), `busbar_kernel::teller::{open_unit_owned, OpenedOwned, SessionHold}` (the owning open the door answers and the hold kept across the upgrade) and `crate::root::kernel::AdmissionDoor` beside them \u2014 the same in-flight and owning-open vocabulary the one-shot LLM node already opens a unit in, one seam over (183 -> 193)"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.caps.count"
+file = "qa/kind-isolation.toml"
+by = 3
+because = "busbar \u00d7 caps (busbar, caps): the session driver's opener and its close-settle name the capability vocabulary the slot is drawn and ended in \u2014 `busbar_caps::PrincipalId` on the arrival hold and `busbar_caps::OriginKind::Client` on the `Enter` and the opener's own `UnitCtx` \u2014 the same capability nouns the one-shot driver opens a unit with, now spelled where the session driver opens its one persistent unit (337 -> 340)"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.control.count"
+file = "qa/kind-isolation.toml"
+by = 2
+because = "busbar \u00d7 control (busbar, control): the session driver reads the binding's declared `SessionPosture` at the door (the posture data the kernel settles the session against) and threads the kind-neutral `session_member` posture through the opener's and the leg's `UnitCtx` \u2014 the composition root's own control vocabulary reaching the owning-Held seam it now composes each session over (1,091 -> 1,093)"
+
 # \u2500\u2500 declared raise: the one control-vocabulary hit the OWNING-Held red-first slot test adds. Drawing
 # a real slot means naming `busbar_kernel::inflight::Enter`, whose `admin_listener` field the control
 # matcher counts as control vocabulary. It is the mandatory field of a kernel-own struct named once
@@ -670,7 +713,7 @@ identical counting rule to busbar-caps + busbar-contract once their proof tables
 this rule's own `loc-ceilings:caps-contract` row is not that row and is not removed by it -- the two \
 are expected to converge once the move lands, not to be reconciled here."""
 kernel_crate = "busbar-kernel"
-kernel_ceiling = 5571
+kernel_ceiling = 5575
 caps_crate = "busbar-caps"
 contract_crate = "busbar-contract"
 caps_contract_ceiling = 3493
@@ -678,7 +721,7 @@ unit_crate_glob = "busbar-unit-*"
 unit_total_ceiling = 14591
 verbs_crate = "busbar-unit-verbs"
 verbs_ceiling = 1428
-union_ceiling = 23655
+union_ceiling = 23659
 # Files (by basename, wherever they sit under busbar-kernel/src) whose bodies seed the call-graph
 # name-match: every identifier called from one of these files, that busbar-kernel does not itself
 # define, is looked up by name against every busbar-unit-* file.
@@ -687,7 +730,7 @@ teller_files = ["teller.rs"]
 [rules.loc-ceilings.kernel_files.teller]
 label = "Teller loop"
 patterns = ["teller.rs"]
-ceiling = 798
+ceiling = 802
 
 [rules.loc-ceilings.kernel_files.pump]
 label = "pump/scheduler"

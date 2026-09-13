@@ -101,26 +101,32 @@ pub trait LegDialer: Send + Sync {
 /// It reads no frame, decides nothing about one and cannot say what protocol is under it. What it
 /// adds to the source it wraps is one question asked at one moment: has this session's driver parked
 /// a leg that nothing has dialled?
-pub struct LegDialing<'d, S, U: SessionUnits + ?Sized> {
+pub struct LegDialing<'d, 'e, S, U: SessionUnits + ?Sized> {
     source: S,
     driver: &'d SessionLoopDriver<'d, U>,
     session: SessionHandle,
-    dialler: &'d dyn LegDialer,
+    dialler: &'e dyn LegDialer,
 }
 
-impl<S, U: SessionUnits + ?Sized> std::fmt::Debug for LegDialing<'_, S, U> {
+impl<S, U: SessionUnits + ?Sized> std::fmt::Debug for LegDialing<'_, '_, S, U> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("LegDialing")
     }
 }
 
-impl<'d, S, U: SessionUnits + ?Sized> LegDialing<'d, S, U> {
+impl<'d, 'e, S, U: SessionUnits + ?Sized> LegDialing<'d, 'e, S, U> {
     /// Wrap one session's inbound half.
+    ///
+    /// The driver and the dialler carry SEPARATE lifetimes because they are owned in separate places
+    /// and, since the driver holds each session's owning [`SessionHold`] across the upgrade, its type
+    /// is INVARIANT in its own lifetime: a `'static` composed driver cannot be re-borrowed for a
+    /// shorter scope, so tying the dialler to the driver's lifetime would force every dialler to be
+    /// `'static` too. They are unrelated facts and are spelled as unrelated lifetimes.
     pub fn new(
         source: S,
         driver: &'d SessionLoopDriver<'d, U>,
         session: SessionHandle,
-        dialler: &'d dyn LegDialer,
+        dialler: &'e dyn LegDialer,
     ) -> Self {
         Self {
             source,
@@ -168,7 +174,9 @@ async fn dial_pending<U: SessionUnits + ?Sized + Sync>(
     Ok(())
 }
 
-impl<S: FrameSource + Send, U: SessionUnits + ?Sized + Sync> FrameSource for LegDialing<'_, S, U> {
+impl<S: FrameSource + Send, U: SessionUnits + ?Sized + Sync> FrameSource
+    for LegDialing<'_, '_, S, U>
+{
     async fn next_frame(&mut self) -> Option<Result<Vec<u8>, TransportError>> {
         // BEFORE the read, which is what "between frames" means: the frame whose unit sealed the leg
         // has already been driven and answered, and the frame that may need the leg has not been
