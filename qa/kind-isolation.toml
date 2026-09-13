@@ -1309,7 +1309,8 @@ drain = "delete the unit name from the unit crate: a unit reaches unit through t
 [[cell]]
 crate = "busbar"
 kind = "api"
-count = "122"
+# TLS-1-r2: root/listener.rs + root/tests/listener.rs MOVED BY IDENTITY from busbar-core.
+count = "137"
 
 [[cell]]
 crate = "busbar"
@@ -1334,7 +1335,8 @@ count = "18"
 [[cell]]
 crate = "busbar"
 kind = "control"
-count = "1063"
+# TLS-1-r2: root/listener.rs MOVED BY IDENTITY from busbar-core.
+count = "1064"
 
 [[cell]]
 crate = "busbar"
@@ -1349,12 +1351,14 @@ count = "158"
 [[cell]]
 crate = "busbar"
 kind = "legacy"
-count = "98"
+# TLS-1-r2: root/listener.rs + root/tests/listener.rs MOVED BY IDENTITY from busbar-core.
+count = "116"
 
 [[cell]]
 crate = "busbar"
 kind = "plane"
-count = "1798"
+# TLS-1-r2: root/listener.rs + root/tests/listener.rs MOVED BY IDENTITY from busbar-core.
+count = "1802"
 
 [[cell]]
 crate = "busbar"
@@ -1364,7 +1368,8 @@ count = "28"
 [[cell]]
 crate = "busbar"
 kind = "secret"
-count = "5"
+# TLS-1-r2: root/listener.rs + root/tests/listener.rs MOVED BY IDENTITY from busbar-core.
+count = "21"
 
 [[cell]]
 crate = "busbar"
@@ -1379,12 +1384,14 @@ count = "9"
 [[cell]]
 crate = "busbar"
 kind = "transport"
-count = "939"
+# TLS-1-r2: root/listener.rs + root/tests/listener.rs MOVED BY IDENTITY from busbar-core.
+count = "1139"
 
 [[cell]]
 crate = "busbar"
 kind = "unit"
-count = "1169"
+# TLS-1-r2: root/listener.rs + root/tests/listener.rs MOVED BY IDENTITY from busbar-core.
+count = "1191"
 
 [[cell]]
 crate = "busbar-a2a"
@@ -2834,12 +2841,19 @@ count = "3"
 [[cell]]
 crate = "busbar-unit-transport-key"
 kind = "legacy"
-count = "6"
+# TLS-1-r2: the doc comments that named the deleted busbar-core::tls duplicate by name were
+# reworded to stop naming it (a unit never names core); net legacy-vocab count fell.
+count = "3"
 
 [[cell]]
 crate = "busbar-unit-transport-key"
 kind = "transport"
-count = "106"
+# TLS-1-r2: TlsMaterial's cert_source/key_source/client_ca_source fields and the red-first
+# parse_errors_name_the_secret_source_matching_cores_original_text test are the ruling's own
+# mandated fix (item 1: the unit's errors gain the secret-source naming core's deleted copy
+# always emitted) — this crate's whole job is TLS, so naming it more is the direct, minimal,
+# unavoidable cost of that fix, not scope creep.
+count = "112"
 
 [[cell]]
 crate = "busbar-unit-trust"
@@ -3054,7 +3068,7 @@ note = "segment scanner 54, window scanner 59. The two read the brand and acrony
 [[disagreement]]
 crate = "busbar-unit-transport-key"
 kind = "transport"
-note = "segment scanner 105, window scanner 106. The two read the brand and acronym spellings differently: `gRPC` splits at its own camel joint for the segment scanner and reads whole for the window scanner, and `A2AService` is the mirror case. The scored count is the higher, never the lower, and it falls to zero with the hits."
+note = "segment scanner 105, window scanner 106 as of the base commit this landed on (TLS-1-r2 raised the window count to 112; the segment count was not independently re-measured here). The two read the brand and acronym spellings differently: `gRPC` splits at its own camel joint for the segment scanner and reads whole for the window scanner, and `A2AService` is the mirror case. The scored count is the higher, never the lower, and it falls to zero with the hits."
 
 
 # ------------------------------------------------------------------------------------------------

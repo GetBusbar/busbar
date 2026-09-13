@@ -532,7 +532,6 @@ dependencies = [
  "busbar-store-memory",
  "busbar-substrate",
  "busbar-timing",
- "busbar-unit-transport-key",
  "bytes",
  "crc32fast",
  "criterion",

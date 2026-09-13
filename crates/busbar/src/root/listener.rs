@@ -61,6 +61,9 @@ use std::time::{Duration, Instant};
 
 use busbar_core::diagnostics::{diag_warn, TLS_ACCEPT_PERSISTENT_FAILURE};
 use busbar_substrate::config::sections::TlsCfg;
+use busbar_substrate::config::limits as substrate_limits;
+use busbar_substrate::proxy as substrate_proxy;
+use busbar_substrate::tls as substrate_tls;
 
 /// Hard wall-clock bound on the TLS handshake for a single accepted connection. A client that
 /// connects then stalls (sends nothing / dribbles handshake bytes) must not park a task + FDs
@@ -72,9 +75,9 @@ use busbar_substrate::config::sections::TlsCfg;
 /// aren't installed.
 fn handshake_timeout() -> Duration {
     Duration::from_secs(
-        busbar_substrate::config::limits::installed()
+        substrate_limits::installed()
             .map(|l| l.tls_handshake_timeout_secs)
-            .unwrap_or(busbar_substrate::config::limits::DEFAULT_TLS_HANDSHAKE_TIMEOUT_SECS),
+            .unwrap_or(substrate_limits::DEFAULT_TLS_HANDSHAKE_TIMEOUT_SECS),
     )
 }
 
@@ -89,9 +92,9 @@ fn handshake_timeout() -> Duration {
 /// install; falls back to the default when limits aren't installed (tests / pre-install).
 fn body_read_timeout() -> Duration {
     Duration::from_secs(
-        busbar_substrate::config::limits::installed()
+        substrate_limits::installed()
             .map(|l| l.request_body_read_timeout_secs)
-            .unwrap_or(busbar_substrate::config::limits::DEFAULT_REQUEST_BODY_READ_TIMEOUT_SECS),
+            .unwrap_or(substrate_limits::DEFAULT_REQUEST_BODY_READ_TIMEOUT_SECS),
     )
 }
 
@@ -118,7 +121,7 @@ const BODY_THROUGHPUT_GRACE: Duration = Duration::from_secs(10);
 /// always admits exactly "the whole cap, sustained at the floor," regardless of how the operator has
 /// configured the cap.
 fn total_body_deadline() -> Duration {
-    let cap_bytes = busbar_substrate::proxy::max_translate_body_bytes() as u64;
+    let cap_bytes = substrate_proxy::max_translate_body_bytes() as u64;
     Duration::from_secs(cap_bytes / MIN_BODY_THROUGHPUT_BYTES_PER_SEC)
 }
 
@@ -152,11 +155,11 @@ pub fn build_server_config(
     tls: &TlsCfg,
     resolver: &busbar_core::config::secret::SecretResolver,
 ) -> Result<ServerConfig, String> {
-    let cert_pem = busbar_substrate::tls::read_pem(resolver, &tls.cert, "cert")?;
-    let key_pem = busbar_substrate::tls::read_pem(resolver, &tls.key, "key")?;
+    let cert_pem = substrate_tls::read_pem(resolver, &tls.cert, "cert")?;
+    let key_pem = substrate_tls::read_pem(resolver, &tls.key, "key")?;
     let (client_ca_pem, client_ca_source) = match &tls.client_ca {
         Some(ca) => (
-            Some(busbar_substrate::tls::read_pem(resolver, ca, "client_ca")?),
+            Some(substrate_tls::read_pem(resolver, ca, "client_ca")?),
             Some(ca.describe()),
         ),
         None => (None, None),

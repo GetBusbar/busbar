@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests ported from `busbar-core::tls`'s (now-deleted; TLS-1) test module, restricted to what this
-//! crate actually does (resolve key material, journal the access, build a `ServerConfig`) — this
-//! crate is the ONE live copy of that parsing logic now, and its parse-error tests below pin the
-//! exact secret-source-naming text core's copy always emitted.
+//! Tests ported from the composition root's now-deleted `tls`-module test module (TLS-1),
+//! restricted to what this crate actually does (resolve key material, journal the access, build a
+//! `ServerConfig`) — this crate is the ONE live copy of that parsing logic now, and its
+//! parse-error tests below pin the exact secret-source-naming text the deleted original always
+//! emitted.
 //!
-//! NOT PORTED, and why: `busbar-core`'s old `tests::tls_tests` was mostly END-TO-END wire tests —
+//! NOT PORTED, and why: the old `tests::tls_tests` module was mostly END-TO-END wire tests —
 //! `tls_happy_path_trusted_client_gets_200`, `mtls_valid_client_cert_gets_200`, and their sibling
 //! rejection cases — each of which boots a real `tokio::net::TcpListener`, drives
 //! `root::listener::serve` (the hyper/axum accept-and-serve loop, moved by identity to the
@@ -388,10 +389,10 @@ fn a_certified_key() -> Arc<CertifiedKey> {
     .unwrap()
 }
 
-/// Parse-error messages name the secret SOURCE, in exactly the text `busbar-core::tls`'s own copy
-/// of these functions emitted before this unit became the one live copy: `TlsMaterial`'s two
+/// Parse-error messages name the secret SOURCE, in exactly the text the deleted original of these
+/// functions emitted before this unit became the one live copy: `TlsMaterial`'s two
 /// bare-`Vec<u8>` fields kept no source at all, so re-pointing `main.rs`'s two call sites at this
-/// unit instead of core's (now-deleted) `build_server_config` would have silently swapped a
+/// unit instead of the deleted `build_server_config` would have silently swapped a
 /// source-named boot-failure message for a source-BLIND one — exactly the kind of drift the
 /// boot-family oracle is pinned against. `cert_source`/`key_source`/`client_ca_source` are what
 /// closes that gap; this test is the one place the resulting text is pinned byte for byte.

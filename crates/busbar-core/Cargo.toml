@@ -49,13 +49,6 @@ busbar-plugin-sign = { path = "../plugin-sign" }
 busbar-secret-ref = { path = "../secret-ref" }
 busbar-auth-admin-tokens = { path = "../auth-admin-tokens", optional = true }
 busbar-hooks-ranking = { path = "../hooks-ranking", optional = true }
-# TLS-1: the unit that now owns the ONE cert/key/CA-parsing + `build_server_config` implementation
-# (core's own copy — the ~90-line duplicate the unit's doc comment used to call "ported unchanged
-# from busbar-core's tls::build_server_config" — is deleted; the unit is the live copy). Optional +
-# `test-support` only: the sole in-core caller left is `test_support::engine_kit_plus`'s
-# `install_crypto_provider` facade, which a dependent crate's tests reach through that feature,
-# exactly like `dep:rmcp`/`dep:reqwest` below.
-busbar-unit-transport-key = { path = "../busbar-unit-transport-key", optional = true }
 axum = { workspace = true }
 tower = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal", "io-util", "io-std", "process"] }
@@ -225,7 +218,7 @@ loom-model = ["dep:loom"]
 # the bin enables it from its [dev-dependencies] edge only. Forwards to substrate's matching feature
 # so the relocated test-only `governance::signing::TokenSigner::mint_for_audience` is likewise
 # revealed to a dependent test binary.
-test-support = ["busbar-substrate/test-support", "dep:rmcp", "dep:reqwest", "dep:busbar-unit-transport-key"]
+test-support = ["busbar-substrate/test-support", "dep:rmcp", "dep:reqwest"]
 # Passthrough to `busbar-timing`'s debug-only per-method micro-timing. DEFAULT OFF: with this off,
 # `busbar_timing::timeit!` expands to `()` and the RAII guards it produces are zero-sized no-ops, so
 # the `drop(_guard)` calls that end a timed span are compiled in ONLY under this feature (dropping a

@@ -100,8 +100,8 @@ pub struct TlsMaterial {
     /// PEM certificate chain, leaf first.
     pub cert_pem: Vec<u8>,
     /// Where `cert_pem` was resolved from, as the secret source spells it. Named in parse-error
-    /// messages so a boot failure says which secret was wrong — the same secret-source naming
-    /// `busbar-core::tls`'s (deleted) copy of these functions always emitted, so re-pointing a
+    /// messages so a boot failure says which secret was wrong — the same secret-source naming the
+    /// composition root's now-deleted ingress-listener TLS setup always emitted, so re-pointing a
     /// caller at this unit changes no boot-diagnostic text.
     pub cert_source: String,
     /// PEM private key (PKCS#8, PKCS#1, or SEC1).
@@ -160,7 +160,7 @@ pub fn resolve_tls_material(
 
 /// Parse the PEM certificate chain (leaf first). Cert bytes are public, but errors still avoid
 /// echoing them; `src` (the secret's SOURCE, never its bytes) is named in every error, matching
-/// `busbar-core::tls`'s original (now-deleted) copy of this function byte for byte.
+/// the deleted original of this function byte for byte.
 fn load_cert_chain(pem: &[u8], src: &str) -> Result<Vec<CertificateDer<'static>>, String> {
     let certs = CertificateDer::pem_slice_iter(pem)
         .collect::<Result<Vec<_>, _>>()
@@ -174,8 +174,8 @@ fn load_cert_chain(pem: &[u8], src: &str) -> Result<Vec<CertificateDer<'static>>
 }
 
 /// Parse the PEM private key, accepting PKCS#8, PKCS#1 (RSA), or SEC1 (EC) encodings. NEVER logs
-/// key material — errors name only `src`, the secret's SOURCE, matching `busbar-core::tls`'s
-/// original (now-deleted) copy of this function byte for byte.
+/// key material — errors name only `src`, the secret's SOURCE, matching the deleted original of
+/// this function byte for byte.
 fn load_private_key(pem: &[u8], src: &str) -> Result<PrivateKeyDer<'static>, String> {
     use rustls::pki_types::pem::Error as PemError;
     PrivateKeyDer::from_pem_slice(pem).map_err(|e| match e {
@@ -187,8 +187,7 @@ fn load_private_key(pem: &[u8], src: &str) -> Result<PrivateKeyDer<'static>, Str
 }
 
 /// Build the client-cert verifier root store from the operator's CA bundle (mTLS). Errors name
-/// only `src`, the secret's SOURCE, matching `busbar-core::tls`'s original (now-deleted) copy of
-/// this function byte for byte.
+/// only `src`, the secret's SOURCE, matching the deleted original of this function byte for byte.
 fn load_client_roots(pem: &[u8], src: &str) -> Result<RootCertStore, String> {
     let cas = CertificateDer::pem_slice_iter(pem)
         .collect::<Result<Vec<_>, _>>()
