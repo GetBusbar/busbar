@@ -269,7 +269,13 @@ lq_dispatch_preprove() { # $1 = tree, $2 = host ('' = none), $3 = batch file; re
       # engine home does not carry has measured NOTHING about anybody's picks.
       lq_log "pre-prove: this engine home carries no latchkey transport (no target/gate/prove-latchkey.run.sh) — nothing was proven on it"
     else
-      env -u LAND_SELFTEST_SHARDS bash "$lkscript" --preprove --batch "$bf" </dev/null
+      # LATCHKEY_ENGINE=1: this dispatch — a line's pre-proof or the base replay (§13; both come
+      # through this one function) — is the engine's own sweep, not a slot's. prove-latchkey.sh's
+      # slot-side semaphore reads this marker to bypass its own pool: the pool exists to protect
+      # this dispatcher's share of the workspace cap from every slot drawing on the same cap, and
+      # queuing the engine behind the slots it protects would be the inverse of the goal (MEASURED
+      # 17:40: twelve slots starved this exact call with "latchkey created no job").
+      env -u LAND_SELFTEST_SHARDS LATCHKEY_ENGINE=1 bash "$lkscript" --preprove --batch "$bf" </dev/null
       rc=$?
       [ "$rc" != 75 ] && return "$rc"
       # ── A REFUSED JOB IS NOT A REASON TO WAKE A BOX ─────────────────────────────────────────
@@ -4659,7 +4665,10 @@ lq_selftest() {
   # BOTH STUBS WHERE THE DISPATCHER REALLY LOOKS: the STAGED transport under target/gate (never
   # `$tree/scripts` — that is the live defect this file now refuses), and the staged fleet engine
   # beside it. A stub placed where the code does not look is a case that passes by not running.
-  _lkstub() { printf '#!/usr/bin/env bash\necho latchkey "$@" >>"%s/calls"\nexit ${LK_STUB_RC:-0}\n' "$bt" >"$bt/target/gate/prove-latchkey.run.sh"; chmod +x "$bt/target/gate/prove-latchkey.run.sh"; }
+  # THE STUB RECORDS ITS OWN ENVIRONMENT TOO, not just its argv — LATCHKEY_ENGINE travels as an
+  # environment variable (never a flag: prove-latchkey.sh's slot-side semaphore reads it before any
+  # argument is parsed), so the argv-only recording every other case here uses cannot see it.
+  _lkstub() { printf '#!/usr/bin/env bash\necho latchkey "$@" "env=LATCHKEY_ENGINE=${LATCHKEY_ENGINE:-unset}" >>"%s/calls"\nexit ${LK_STUB_RC:-0}\n' "$bt" >"$bt/target/gate/prove-latchkey.run.sh"; chmod +x "$bt/target/gate/prove-latchkey.run.sh"; }
   _flstub() { printf '#!/usr/bin/env bash\necho fleet "$@" >>"%s/calls"\nexit 0\n' "$bt" >"$bt/target/gate/land.run.sh"; chmod +x "$bt/target/gate/land.run.sh"; }
   _lkstub; _flstub
   printf -- '--prove --tests xtask\n' >"$bt/b.batch"
@@ -4685,6 +4694,18 @@ lq_selftest() {
          grep -c 'is not a backend this engine has' "$bt/backend.log" )"
   _t "the fleet backend launches the staged engine"          "0 fleet"    "$(_bk fleet i-0stub 0)"
   _t "the latchkey backend launches prove-latchkey.sh"       "0 latchkey" "$(_bk latchkey i-0stub 0)"
+  # ── THE DISPATCH IS MARKED AS THE ENGINE'S OWN, so its slot-side semaphore bypasses its pool ────
+  # MEASURED 17:40: twelve slots' own prove-latchkey.sh starved this exact dispatcher of the same
+  # cap. Driven over the stub's own recording of its environment, not its argv (see _lkstub above),
+  # and against a BARE invocation of the identical stub — the shape a slot's own prove-latchkey.sh
+  # runs in, never routed through lq_dispatch_preprove at all — to show the marker is really this
+  # dispatcher's doing and not just always true in this process.
+  _t "  ...marked LATCHKEY_ENGINE=1 — this dispatch is the engine's, not a slot's" 1 \
+     "$(grep -c 'env=LATCHKEY_ENGINE=1' "$bt/calls")"
+  ( : >"$bt/calls"; unset LATCHKEY_ENGINE
+    bash "$bt/target/gate/prove-latchkey.run.sh" --preprove --batch "$bt/b.batch" ) >/dev/null 2>&1
+  _t "  ...but a BARE invocation (a slot's own, never through this dispatcher) carries no marker" 1 \
+     "$(grep -c 'env=LATCHKEY_ENGINE=unset' "$bt/calls")"
   _t "  ...and its RED is the line's red, not a fallback"    "1 latchkey" "$(_bk latchkey i-0stub 1)"
   # 75 IS "NO JOB WAS CREATED", WHICH IS NOT A VERDICT. The workspace's 20-runner cap is shared with
   # CI and was measured full for seven consecutive submissions; a line that met a full account has

@@ -84,6 +84,17 @@ LK_LIB_ONLY=1 . "$LKL_LIB" || { echo "land-latchkey: could not source the packer
 # moment the engine stages one of them and not the other).
 REPO="$LKL_REPO"
 
+# ── EVERY SHARD THIS SCRIPT LAUNCHES IS THE ENGINE'S OWN JOB ────────────────────────────────────
+# prove-latchkey.sh's slot-side semaphore (lk_slot_acquire, sourced above) bounds how many
+# `latchkey run` submissions a SLOT'S OWN prove-latchkey.sh puts in flight; it exists to protect
+# the engine's own share of the cap, not to queue the engine behind the slots it protects. Nothing
+# invokes this file except the landing engine itself (land.sh's `--prove-tree`/`--base-replay`
+# leg, itself only reached from landq4.sh's dispatch, under BUSBAR_LAND_BACKEND=latchkey) — there
+# is no "a slot runs land-latchkey.sh directly" case the way a slot runs prove-latchkey.sh — so
+# every job ll_submit_retry submits (the union, each family bucket, the base) is marked as the
+# engine's from the start, set here rather than left to whichever caller happens to export it.
+LATCHKEY_ENGINE=1
+
 LKL_SHARDS="${LAND_LATCHKEY_SHARDS:-4}"
 LKL_BASE_REPLAY="${LAND_LATCHKEY_BASE_REPLAY:-1}"
 # THE SUBMISSION BACKOFF, in seconds, one per attempt. Spelled as a list rather than computed so
@@ -283,6 +294,33 @@ if [ "${1:-}" = "--selftest" ]; then
   grep -qF 'exit 70' "${BASH_SOURCE[0]}" \
     && _ok "a home carrying no packer exits 70 (the harness's own code), never a red" \
     || _fail "a missing packer is not exit 70"
+
+  echo "== land-latchkey selftest: every shard this file launches is the engine's own job =="
+  # prove-latchkey.sh's slot-side semaphore reads LATCHKEY_ENGINE to bypass its own pool — the pool
+  # exists to protect THIS dispatcher's share of the workspace cap from every slot drawing on the
+  # same cap, so this file's own shard launches (ll_submit_retry -> lk_submit, the sourced library)
+  # must never queue behind the slots they are protected from. Set once, near the top, unconditional
+  # on how this file was invoked — there is no "a slot runs land-latchkey.sh directly" case.
+  [ "${LATCHKEY_ENGINE:-}" = 1 ] \
+    && _ok "LATCHKEY_ENGINE=1 by the time this process can launch a shard" \
+    || _fail "LATCHKEY_ENGINE is not set (got '${LATCHKEY_ENGINE:-}')"
+  grep -n '^LATCHKEY_ENGINE=1$' "${BASH_SOURCE[0]}" | head -1 | cut -d: -f1 | { read -r _lkline
+    grep -n '^LKL_SHARDS=' "${BASH_SOURCE[0]}" | head -1 | cut -d: -f1 | { read -r _shline
+      [ -n "$_lkline" ] && [ -n "$_shline" ] && [ "$_lkline" -lt "$_shline" ] \
+        && _ok "  ...set before this file's own shard machinery, not after" \
+        || _fail "LATCHKEY_ENGINE=1 is not set ahead of the shard machinery"
+    }
+  }
+  # DRIVEN, NOT JUST READ: a real lk_submit call, over a fake CLI so nothing is rented, actually
+  # sees the bypass. LK_SLOT_JOBS=0 makes the pool otherwise UNSATISFIABLE — no slot could ever be
+  # taken — so a submission that still returns a job id proves the bypass ran, not that a slot
+  # happened to be free.
+  _fakebin="$root/fake-latchkey"
+  printf '#!/usr/bin/env bash\necho cli-fake\n' >"$_fakebin"; chmod +x "$_fakebin"
+  _gotid="$(LK_BIN="$_fakebin" LK_SLOT_DIR="$root/slots" LK_SLOT_JOBS=0 lk_submit "echo hi" 2>/dev/null)"
+  [ "$_gotid" = cli-fake ] \
+    && _ok "  ...and a real lk_submit (LK_SLOT_JOBS=0, otherwise unsatisfiable) never touches the pool" \
+    || _fail "lk_submit did not bypass an unsatisfiable pool despite LATCHKEY_ENGINE=1 (got '$_gotid')"
 
   echo "== land-latchkey selftest: the family buckets (land.sh's branch reader, never \`tr | \\n\`) =="
   ll_load_families_reader && _ok "land.sh's land_families_branches is read out of land.sh" \
