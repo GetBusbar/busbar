@@ -20,8 +20,16 @@
 #              `busbar-llm` is the plane whose Meter step lost its pricing seam; `busbar` is the
 #              composition root that holds the one pricing site and the byte-identity cells that
 #              drive it; `busbar-unit-cost` is the crate that owns the card and the one whose scope
-#              grammar this line drained a dialect's name out of; `xtask` is the gate runner whose
-#              ceilings and kind matrix this line re-pinned, and whose own selftests are the proof
-#              that the re-pin is a measurement rather than an edit.
+#              grammar this line drained a dialect's name out of.
+#
+#              `xtask` IS NOT HERE, AND MUST NEVER BE. Under `--tests` it runs
+#              xtask/tests/cli.rs::selftest_runs_every_registered_gates_red_proof, which
+#              re-executes the WHOLE gate battery inside the test leg — and the test leg runs
+#              BEFORE the gates, selftest and oracle legs. A battery that reads red there (or
+#              merely spends the 7200 s job ceiling) ABORTS the job before the oracle ever
+#              records a cell, so the money question this file exists to ask is never put. The
+#              battery's one home is the run's own `xtask selftest` leg, which this job already
+#              has; the gate runner's re-pins are proven there and by the laptop's
+#              `cargo test -p xtask --lib`, never twice.
 families = '^(billing|ledger|llm|mcp|a2a|admin\.ops|boot)([|.]|$)'
-tests = ["busbar-llm", "busbar", "busbar-unit-cost", "xtask"]
+tests = ["busbar-llm", "busbar", "busbar-unit-cost"]
