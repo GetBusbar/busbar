@@ -48,6 +48,7 @@ const BINDINGS: &[BindingDecl] = &[BindingDecl {
     name: "duplex",
     transport: "ws",
     mounts: &["/session"],
+    ..BindingDecl::RELEASED
 }];
 
 const OPERATIONS: &[Operation] = &[Operation {

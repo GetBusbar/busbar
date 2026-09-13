@@ -70,7 +70,7 @@
 //! claim now and a binding below: the wire it was waiting for was already registered.
 
 use busbar_contract::transport::surface::{
-    Answering, Bar, BindingDecl, Dispatch, Operation, WireSurface,
+    Answering, Bar, BindingDecl, Dispatch, Operation, SessionPosture, WireSurface,
 };
 
 /// The OpenAI Realtime binding's name — the dialect's own word for itself, borrowed from the claim
@@ -214,16 +214,25 @@ pub const SURFACE: WireSurface = WireSurface {
             name: BINDING_OPENAI_REALTIME,
             transport: crate::claims::WS_TRANSPORT,
             mounts: &[MOUNT_OPENAI_REALTIME],
+            // A duplex session binding: a unit admitted on it is HELD for the session's life
+            // (one request slot, one in-flight lease), settled once at the session's end.
+            session: SessionPosture::Hold,
         },
         BindingDecl {
             name: BINDING_GEMINI_LIVE,
             transport: crate::claims::WS_TRANSPORT,
             mounts: &[MOUNT_GEMINI_LIVE],
+            // A duplex session binding: a unit admitted on it is HELD for the session's life
+            // (one request slot, one in-flight lease), settled once at the session's end.
+            session: SessionPosture::Hold,
         },
         BindingDecl {
             name: BINDING_CARRIER,
             transport: crate::claims::WS_TRANSPORT,
             mounts: &[MOUNT_CARRIER],
+            // A duplex session binding: a unit admitted on it is HELD for the session's life
+            // (one request slot, one in-flight lease), settled once at the session's end.
+            session: SessionPosture::Hold,
         },
     ],
     operations: &[Operation {

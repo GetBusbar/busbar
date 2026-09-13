@@ -81,6 +81,7 @@ const RUN_SURFACE: WireSurface = WireSurface {
         name: RUN_BINDING,
         transport: "ws",
         mounts: &["/made/up/run"],
+        ..BindingDecl::RELEASED
     }],
     operations: &[Operation {
         op: "open",
@@ -105,6 +106,7 @@ const OPEN_SURFACE: WireSurface = WireSurface {
         name: OPEN_BINDING,
         transport: "ws",
         mounts: &["/made/up/open"],
+        ..BindingDecl::RELEASED
     }],
     operations: &[Operation {
         op: "open",

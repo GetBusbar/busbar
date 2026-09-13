@@ -54,16 +54,19 @@ const BINDINGS: &[BindingDecl] = &[
         name: "duplex",
         transport: "ws",
         mounts: &["/session", "/session/"],
+        ..BindingDecl::RELEASED
     },
     BindingDecl {
         name: "elsewhere",
         transport: "http",
         mounts: &["/elsewhere"],
+        ..BindingDecl::RELEASED
     },
     BindingDecl {
         name: "posted",
         transport: "ws",
         mounts: &["/posted"],
+        ..BindingDecl::RELEASED
     },
     // A session mount whose declared PATTERN carries an identifier. A published URL with a key in
     // it is the ordinary shape of a session that is ABOUT something, and it is the one shape a
@@ -73,6 +76,7 @@ const BINDINGS: &[BindingDecl] = &[
         name: "keyed",
         transport: "ws",
         mounts: &["/session/leg/{leg_id}"],
+        ..BindingDecl::RELEASED
     },
 ];
 

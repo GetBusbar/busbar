@@ -49,6 +49,7 @@ const SURFACE: WireSurface = WireSurface {
         name: BINDING,
         transport: "ws",
         mounts: &["/made/up/sessions"],
+        ..BindingDecl::RELEASED
     }],
     operations: &[Operation {
         op: "open",

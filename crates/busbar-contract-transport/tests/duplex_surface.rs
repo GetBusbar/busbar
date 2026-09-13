@@ -65,16 +65,19 @@ const SURFACE: WireSurface = WireSurface {
             name: SESS,
             transport: WIRE,
             mounts: &["/open/here"],
+            ..BindingDecl::RELEASED
         },
         BindingDecl {
             name: KEYED,
             transport: WIRE,
             mounts: &["/open/keyed/{leg}/frames"],
+            ..BindingDecl::RELEASED
         },
         BindingDecl {
             name: NOT_SESS,
             transport: WIRE,
             mounts: &["/posted/here"],
+            ..BindingDecl::RELEASED
         },
     ],
     operations: &[
@@ -164,6 +167,7 @@ fn the_strictest_duplex_bar_on_a_binding_wins() {
             name: SESS,
             transport: WIRE,
             mounts: &["/open/here"],
+            ..BindingDecl::RELEASED
         }],
         operations: &[Operation {
             op: "session",
@@ -185,6 +189,7 @@ fn a_duplex_binding_with_no_mount_is_refused() {
             name: SESS,
             transport: WIRE,
             mounts: &[],
+            ..BindingDecl::RELEASED
         }],
         operations: &[Operation {
             op: "session",
@@ -211,6 +216,7 @@ fn a_duplex_row_on_a_unary_operation_is_refused() {
             name: SESS,
             transport: WIRE,
             mounts: &["/open/here"],
+            ..BindingDecl::RELEASED
         }],
         operations: &[Operation {
             op: "session",
@@ -234,6 +240,7 @@ fn a_duplex_row_on_an_undeclared_binding_is_refused() {
             name: NOT_SESS,
             transport: WIRE,
             mounts: &["/posted/here"],
+            ..BindingDecl::RELEASED
         }],
         operations: &[Operation {
             op: "session",
@@ -273,6 +280,7 @@ fn two_duplex_rows_at_one_address_are_refused() {
             name: SESS,
             transport: WIRE,
             mounts: &["/open/here"],
+            ..BindingDecl::RELEASED
         }],
         operations: &[Operation {
             op: "session",
@@ -309,6 +317,7 @@ fn a_duplex_address_does_not_collide_with_a_service_of_the_same_name() {
             name: SESS,
             transport: WIRE,
             mounts: &["/open/here"],
+            ..BindingDecl::RELEASED
         }],
         operations: &[Operation {
             op: "session",
@@ -407,6 +416,7 @@ fn a_malformed_mount_pattern_is_refused_at_boot() {
             name: SESS,
             transport: WIRE,
             mounts: &["/open/{}/here"],
+            ..BindingDecl::RELEASED
         }],
         operations: &[Operation {
             op: "session",
