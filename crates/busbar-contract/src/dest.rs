@@ -311,6 +311,63 @@ pub enum OnEmpty {
     First,
 }
 
+/// HOW MANY CANDIDATES A BINDING ADMITS — the ROUTE step's pick as contract data.
+///
+/// A pick over a set has always had two honest postures and only one of them was ever written
+/// down. `Any` is the one every pool has: several members can serve this work, choosing between
+/// them is the pick's job, and which one it chose is not something the caller needed to be asked
+/// about. `One` is the other: the binding declares that exactly one of its candidates may serve a
+/// request, and a set that offers two has not narrowed to an answer — it has produced an ambiguity,
+/// and quietly taking the first of them would send a caller's work somewhere the caller did not
+/// choose with no way to tell it happened.
+///
+/// It is DATA on the binding rather than a flag on the call, because the posture is a property of
+/// what was bound, not of the request that arrived: two bindings in one deployment may hold
+/// different postures and neither is the walk's opinion.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, serde::Serialize)]
+pub enum Arity {
+    /// Any one of the fitting candidates may serve. The pick chooses among them.
+    #[default]
+    Any,
+    /// Exactly one candidate may fit. More than one is an ambiguity, not a choice.
+    One,
+}
+
+/// What [`decide_arity`] found about a fitting set.
+///
+/// The arms are deliberately not a `Result`: three of the four are ordinary and only one of them
+/// is a refusal. `NoCandidate` is NOT a new refusal — it is the no-candidate answer every pick
+/// already had, named here so the caller can see that arity did not invent it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ArityVerdict {
+    /// The binding admits any of them; the pick's own ordering decides, exactly as before.
+    ChooseAmong,
+    /// The binding admits one and exactly one fits.
+    TheOne(CandidateIdx),
+    /// The binding admits one and these fit. The refusal NAMES them: an operator shown "ambiguous"
+    /// with no list has been told that something is wrong and not what.
+    Ambiguous(Vec<CandidateIdx>),
+    /// Nothing fits. The caller's existing no-candidate refusal, unchanged.
+    NoCandidate,
+}
+
+/// THE ARITY DECISION, WRITTEN ONCE.
+///
+/// Every pick in the tree asks this same question of its own candidate set, so it is answered here
+/// — in the contract both sides are written against — rather than once per pick, where the second
+/// copy is the one that drifts. It is pure, it allocates only on the ambiguity arm, and it names
+/// no amount, no budget and no price: an ambiguity is a refusal about a SET, and a refused request
+/// is unpriced.
+#[must_use]
+pub fn decide_arity(arity: Arity, fitting: &[CandidateIdx]) -> ArityVerdict {
+    match (arity, fitting) {
+        (Arity::Any, _) => ArityVerdict::ChooseAmong,
+        (Arity::One, []) => ArityVerdict::NoCandidate,
+        (Arity::One, [only]) => ArityVerdict::TheOne(*only),
+        (Arity::One, many) => ArityVerdict::Ambiguous(many.to_vec()),
+    }
+}
+
 /// The closed code a gate hook vetoes with.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize)]
 pub enum VetoCode {

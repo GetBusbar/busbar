@@ -51,12 +51,16 @@
 //! A pool with every lane excluded still proceeds through the door — the slot is drawn and retained
 //! — and ends at the pool's exhaustion terminal.
 //!
-//! ## The ordering natives are hooks
+//! ## WHERE THE PICK IS, AND WHY IT IS NOT HERE
 //!
-//! Session affinity, the ranked walk and the weighted floor every deployment gets when it names no
-//! strategy are all destination-changing hooks, declared as such
-//! ([`order::OrderingHook::may_change_destination`]) rather than privileged. That is what keeps the
-//! pick order a stated policy with an audit trail instead of an unstated property of a loop.
+//! This crate used to carry a second copy of the ROUTE step's walk — session affinity offered once
+//! with its grace, the deadline guard, the hop's candidate set, a ranked ordering falling through
+//! to the weighted floor, and one mutating admission per offered candidate. It was the same five
+//! steps as the walk the ROUTE step actually runs, over a different set of ports, and it had NO
+//! caller anywhere in the tree outside its own tests. Two spellings of one decision is how the two
+//! come to disagree, and the one that is never run is the one that disagrees silently, so the
+//! unreached copy was struck and the reached one is the only pick. The weighted floor
+//! ([`swrr`]) stays: it is a rotation, not a walk, and it is a distinct thing to prove.
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
@@ -66,7 +70,6 @@ pub mod destination;
 pub mod guard;
 pub mod lane;
 pub mod net;
-pub mod order;
 pub mod swrr;
 pub mod unit;
 
@@ -83,9 +86,6 @@ pub use lane::{
 pub use net::{
     check_destination, check_destination_facts, AddressRefusal, Denylist, GuardPolicy,
     NetworkRefusal, PinnedTarget, Resolver,
-};
-pub use order::{
-    pick, reconcile_order, sticky_position, OrderVerdict, OrderingHook, Pick, PickOutcome,
 };
 pub use swrr::{select_weighted, SwrrState};
 pub use unit::{Trust, VerifyRequest};
