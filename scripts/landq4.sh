@@ -113,28 +113,26 @@ PREPROVE_LINES="${LANDQ_PREPROVE_LINES:-6}"
 PREPROVE_HEAD="${LANDQ_PREPROVE_HEAD:-2}"
 
 # ──────────────────────────────────────────────────────────────────────────────────────────────────
-# WHICH MACHINE A SWEEP'S PRE-PROOF RUNS ON: `BUSBAR_PROVE_BACKEND=fleet|latchkey`
+# WHICH MACHINE A SWEEP'S PRE-PROOF RUNS ON: `BUSBAR_PROVE_BACKEND=latchkey` (the only backend)
 # ──────────────────────────────────────────────────────────────────────────────────────────────────
-# The owner's goal is 100% off EC2. The two workloads leave the fleet in order, and this variable is
-# the seam for the FIRST of them: the sweep's pre-proofs. `fleet` is the default and is exactly what
-# this engine has always done — `land.run.sh --preprove --remote <box>`. `latchkey` routes the same
-# leg through scripts/prove-latchkey.sh, which rents a 16-vCPU runner per line and gives it back.
-#
-# THE LANDING ITSELF STAYS ON THE FLEET IN THIS PHASE, deliberately. A pre-proof that is wrong costs
-# the queue an order; a landing that is wrong publishes. The pre-proof is where a new transport is
-# allowed to be measured in anger, and the landing moves when this one has a week of green behind it.
+# RETIRED (LK-5b): the EC2 fleet is decommissioned — `scripts/ci-runners-*.sh`, `land-remote.sh`,
+# `prove-remote.sh` and `ci-remote-lib.sh` are deleted (LK-5), and `fleet` is no longer a value this
+# engine has for either `BUSBAR_PROVE_BACKEND` or `BUSBAR_LAND_BACKEND`. `latchkey` routes the
+# sweep's pre-proof leg through scripts/prove-latchkey.sh, which rents a runner per line and gives it
+# back; `lq_validate_backend` refuses anything else BY NAME (see below) rather than silently trying
+# to reach a script that is no longer in this tree.
 #
 # TWELVE, NOT TWENTY. The workspace's runner cap is 20 CONCURRENT and CI shares it — measured, and
 # measured the hard way: `latchkey run` answered `Job creation blocked: concurrency_limit` on seven
 # consecutive submissions while LK-1's CI push held the account. A sweep that took all twenty would
-# stop the CI it is meant to replace. So the sweep takes twelve and the rest of a sweep's lines go
-# to boxes; the two backends coexist until the cap is raised.
+# stop the CI it is meant to replace. So the sweep takes twelve; a line whose job cannot be created
+# is a line nobody is proving this loop.
 #
-# AND THE OVERFLOW IS A FLEET BOX, NOT A QUEUE. A line whose job cannot be created is a line nobody
-# is proving; prove-latchkey.sh answers `exit 75` — "no verdict, prove this again" — for exactly
-# that case, and the dispatcher below reads a 75 as "take a box and do it the old way" rather than
-# as a red. Nothing about the tree has been learned when the account is full.
-LANDQ_PROVE_BACKEND="${BUSBAR_PROVE_BACKEND:-fleet}"
+# THE OVERFLOW IS A LINE THAT STAYS LIVE, NOT A FLEET BOX. prove-latchkey.sh answers `exit 75` —
+# "no verdict, prove this again" — when the workspace cap is short, and the dispatcher below reads a
+# 75 as NONE:cap: the line stays live and unmarked and is swept again next loop. There is no
+# fall-back to a box on this backend, because there is no fleet to fall back to.
+LANDQ_PROVE_BACKEND="${BUSBAR_PROVE_BACKEND:-latchkey}"
 LATCHKEY_MAX_JOBS="${LATCHKEY_MAX_JOBS:-12}"
 # ── AND IT IS A BOUND ON *JOBS*, WHICH IS NOT THE SAME AS A BOUND ON PRE-PROOFS ─────────────────
 # MEASURED (the first sharded smoke, 2026-09-12): a pre-proof is no longer ONE job. It is a fan —
@@ -182,31 +180,34 @@ lq_count() { # $1.. = a count command's output, however many lines and however i
   printf '%s\n' "$v"
 }
 
-# ── AND WHICH MACHINE THE LANDING ITSELF RUNS ON: `BUSBAR_LAND_BACKEND=fleet|latchkey` ──────────
-# Phase 3. The owner's goal is ZERO EC2, and the landing is the last workload on the fleet: with
-# this at `latchkey` the batch is proven as a fan of rented jobs and no box is needed for it at all
-# (scripts/land-latchkey.sh has the shape and the shard plan).
+# ── AND WHICH MACHINE THE LANDING ITSELF RUNS ON: `BUSBAR_LAND_BACKEND=latchkey` (the only backend) ──
+# Phase 3. The EC2 fleet is decommissioned: the batch is proven as a fan of rented Latchkey jobs and
+# no box is needed for it at all (scripts/land-latchkey.sh has the shape and the shard plan).
 #
-# IT IS A SEPARATE VARIABLE FROM BUSBAR_PROVE_BACKEND ON PURPOSE. A pre-proof that is wrong costs
-# the queue an order; a landing that is wrong PUBLISHES. The two moved in that order and they must
-# be able to move back independently — an operator who finds the landing backend wanting sets one
-# variable and restarts at a boundary, without giving up the sweep's twelve rented runners too.
+# RETIRED (LK-5b): `fleet` is no longer a value this engine has. It used to mean "the whole batch
+# ships to one EC2 box (`land-remote.sh`)"; that script, `ci-remote-lib.sh` and the EC2 runner
+# fleet it addressed are deleted (LK-5). `lq_validate_backend` below refuses `fleet` BY NAME.
 #
 # THE CAP IS NOT WAITED ON. 20 concurrent runners shared with CI (40 requested). A landing whose
 # submission is refused has learned NOTHING about its picks: land-latchkey.sh retries on a bounded
 # backoff and then exits 75, and this file scores that `harness` — the batch's lines go back on the
 # queue LIVE and unchanged and the batch is re-taken on the class's backoff. Never a park, never a
 # HALT, and never a landing that holds the engine open until a slot appears.
-LANDQ_LAND_BACKEND="${BUSBAR_LAND_BACKEND:-fleet}"
-lq_land_backend() { lq_validate_backend "$LANDQ_LAND_BACKEND" && printf '%s\n' "$LANDQ_LAND_BACKEND" || printf 'fleet\n'; }
+LANDQ_LAND_BACKEND="${BUSBAR_LAND_BACKEND:-latchkey}"
+lq_land_backend() { lq_validate_backend "$LANDQ_LAND_BACKEND" && printf '%s\n' "$LANDQ_LAND_BACKEND" || printf 'latchkey\n'; }
 
-lq_validate_backend() { # $1 = the value; the engine refuses a backend it does not have
-  case "${1:-}" in fleet|latchkey) return 0 ;; esac
-  lq_log "pre-prove: BUSBAR_PROVE_BACKEND='${1:-}' is not a backend this engine has (fleet | latchkey) — using fleet"
+lq_validate_backend() { # $1 = the value; latchkey is the only backend this engine has — everything
+                         # else, including the retired `fleet`, is refused BY NAME, never a guess
+  case "${1:-}" in latchkey) return 0 ;; esac
+  if [ "${1:-}" = fleet ]; then
+    lq_log "pre-prove: BUSBAR_PROVE_BACKEND=fleet names a backend this engine deleted (EC2 decommissioned, LK-5) — using latchkey"
+  else
+    lq_log "pre-prove: BUSBAR_PROVE_BACKEND='${1:-}' is not a backend this engine has (latchkey is the only one) — using latchkey"
+  fi
   return 1
 }
 lq_preprove_backend() { lq_validate_backend "$LANDQ_PROVE_BACKEND" && printf '%s
-' "$LANDQ_PROVE_BACKEND" || printf 'fleet
+' "$LANDQ_PROVE_BACKEND" || printf 'latchkey
 '; }
 
 # HOW MANY LATCHKEY JOBS THIS ENGINE HAS IN FLIGHT. Counted from the processes, not from a file: a
@@ -2236,83 +2237,30 @@ lq_fault_clear() { # $1 = class (default: all), $2 = ledger (default $FAULTS)
 lq_fault_verdict() { # $1 = class
   printf 'NONE:%s\n' "$1"
 }
-# THE TWO CLASSES THE ENGINE CAN FIX BY ITSELF. A stopped fleet and an empty probe round are both
-# "there is no box awake", and the engine owns the switch: ci-fleet-power.sh --ensure-slots starts
-# exactly as many boxes as the slots it is short of, at BUSBAR_PROVE_PER_BOX slots each, and never
-# more. Best-effort by construction — no power script staged, or no credentials, and the backoff
-# alone carries the retry, exactly as it did before.
-lq_fault_wake() { # $1 = slots the next attempt needs (default 1), $2 = tree (default $W)
-  local want="${1:-1}" tree="${2:-$W}" pw="${2:-$W}/target/gate/ci-fleet-power.sh"
-  [ -x "$pw" ] || { lq_log "fleet: no staged power script at $pw; the backoff alone carries this retry"; return 1; }
-  lq_log "fleet: asking for $want proof slot(s) to be awake before the next attempt"
-  bash "$pw" --ensure-slots "$want" >>"$L" 2>&1 \
-    || lq_log "fleet: --ensure-slots $want did not report success; the backoff still carries the retry"
-  return 0
+# RETIRED (LK-5b): `box-stopped` and `probe-empty` were both "there is no EC2 box awake", and the
+# engine used to own the switch — `ci-fleet-power.sh --ensure-slots` — to fix it. `ci-fleet-power.sh`
+# and the fleet it managed are decommissioned (LK-5); this is now a named no-op so a caller reading
+# GREEN never mistakes "logged" for "a box was started" — there is no box to start, and the backoff
+# alone carries the retry, exactly as it always did for every other fault class.
+lq_fault_wake() { # $1 = slots the next attempt needs (default 1), $2 = tree (default $W), unused
+  local want="${1:-1}"
+  lq_log "fleet: EC2 is decommissioned (LK-5) — no power script to ask for $want proof slot(s); the backoff alone carries this retry"
+  return 1
 }
 
 # ──────────────────────────────────────────────────────────────────────────────────────────────────
-# THE POP'S PRECONDITION — A LANDING THAT NEEDS A BOX HAS ONE BEFORE THE QUEUE IS TOUCHED
+# THE POP'S PRECONDITION — RETIRED (LK-5b): THE LANDING BACKEND NEVER NEEDS A BOX ANY MORE
 # ──────────────────────────────────────────────────────────────────────────────────────────────────
-# MEASURED 2026-09-12: five NONE:probe-empty faults between 07:49 and 14:31, no landing at all in
-# those seven hours, and in the end a runner restart ordered by hand. Every one of the five is the
-# same shape, and it is not the allocator's arithmetic — `power_ensure_slots` is correct.
-#
-# (1) NOTHING ASKED. `--ensure-slots` is asked for in exactly one place, the pre-proof sweep, and
-#     the sweep is SKIPPED on precisely the loops that still land: a base fix at the head pops alone
-#     with no sweep, and a queue with no live line has no sweep either. On those loops the batch is
-#     popped onto whatever the fleet happens to be — and the fleet idle-stops itself after
-#     LANDQ_IDLE_STOP_MINS, so after an hour of Latchkey pre-proofs it is asleep by construction.
-#     land-remote.sh then probes it and dies on "no prepared, reachable on-demand box among the N".
-#
-# (2) WAKING AFTER THE FAULT DOES NOT CLOSE IT. lq_fault_wake runs on the requeue, and a box is
-#     60–90 s from proving while the first backoff is 60 s: the retry probes a box that is still
-#     booting and scores the same class again. Three in a row, then five.
-#
-# (3) AND THE RETRY MUST RE-PROBE, NOT RE-READ. The sweep caches one probe round for its whole
-#     dispatch (ci-remote-lib.sh's fleet_table_open); that table is by construction the fleet from
-#     BEFORE any box was started. `--free-slots` is a fresh round over ssh to the boxes themselves,
-#     asked here on every loop, so the retry reads the fleet as it is and never as it was.
-#
-# THE FIX IS A PRECONDITION, NOT A RETRY: a batch is never popped onto a fleet that cannot take it.
-# If no awake box has a free slot, one is started and WAITED for (power_start polls readiness for
-# CI_RUNNER_START_WAIT_SECS), and then the fleet is asked AGAIN. The second ask is the whole point —
-# `--ensure-slots` exits 0 for "starting nothing" and for "no stopped box to start (the fleet is all
-# awake or all gone)" alike, and a landing dispatched on that exit status is a landing dispatched
-# into nothing. A number can be checked; an exit status of that shape cannot.
-#
-# A FLEET THAT WILL NOT WAKE IS NOT A FAULT OF THE QUEUE'S. Nothing is popped, no line moves, no
-# class is scored against anybody's picks, and the loop is taken again on the class's backoff. The
-# queue is left exactly as it was read — which is the difference between this and probe-empty, where
-# every fault popped lines, failed them, and put them back.
-#
-# ON THE LATCHKEY LANDING BACKEND THIS IS A NO-OP, by design: that backend needs no box at all, and
-# asking the fleet for one would be the engine paying for the resource it exists to stop using.
-lq_landing_needs_box() { [ "$(lq_land_backend)" = fleet ]; }
-lq_landing_free_slots() { # $1 = power script; prints the live count, 0 when it cannot be read
-  local n; n="$(bash "${1}" --free-slots 2>/dev/null | tail -n1)"
-  case "$n" in ''|*[!0-9]*) n=0 ;; esac
-  printf '%s\n' "$n"
-}
-lq_landing_slot_ready() { # $1 = tree (default $W); 0 = pop, 1 = pop NOTHING this loop
-  local tree="${1:-$W}" pw free
-  lq_landing_needs_box || return 0
-  pw="$tree/target/gate/ci-fleet-power.sh"
-  # BEST-EFFORT, EXACTLY AS lq_fault_wake IS. A home with no power script staged, or no credentials,
-  # behaves precisely as this engine did before: the pop is taken and the transport says what it
-  # finds. A precondition that HALTED a queue because a script was missing would be a worse bug than
-  # the one it closes.
-  [ -x "$pw" ] || { lq_log "fleet: no staged power script at $pw; the pop is taken as it always was"; return 0; }
-  free="$(lq_landing_free_slots "$pw")"
-  [ "$free" -gt 0 ] && { lq_fault_clear landing-asleep; return 0; }
-  lq_log "fleet: the landing backend is fleet and NO awake box has a free proof slot — starting one and WAITING for it before anything is popped"
-  bash "$pw" --ensure-slots 1 >>"$L" 2>&1 \
-    || lq_log "fleet: --ensure-slots 1 did not report success; the second ask is what decides this"
-  free="$(lq_landing_free_slots "$pw")"
-  [ "$free" -gt 0 ] || return 1
-  lq_log "fleet: $free proof slot(s) awake and free after the start; the pop goes ahead"
-  lq_fault_clear landing-asleep
-  return 0
-}
+# Until LK-5/LK-9, `BUSBAR_LAND_BACKEND=fleet` was reachable and the pop had to wait for an EC2 box
+# to be awake before popping onto it (five NONE:probe-empty faults on 09-12 were exactly that gap).
+# `fleet` is no longer a value `lq_land_backend` returns (see `lq_validate_backend`), so this
+# precondition can never see a backend that needs a box: it is a permanent no-op, kept as a named
+# function — not deleted outright — only because the pop still calls it below, and a caller reading
+# GREEN should see why the box question no longer applies rather than have the call site vanish
+# silently. `lq_landing_free_slots` and the `ci-fleet-power.sh --ensure-slots` call it used to make
+# are deleted outright: there is no fleet left for either to ask.
+lq_landing_needs_box() { return 1; }
+lq_landing_slot_ready() { return 0; } # $1 = tree (ignored); the pop is always taken now
 
 # A PROCESS'S START TIME, as a string that is stable for the life of that process and different for
 # the next process to wear its pid. `ps -o lstart=` says it on both BSD and procps.
@@ -2452,9 +2400,12 @@ lq_stage_engine() { # $1 = tree (default $W)
   local t="${1:-$W}"
   mkdir -p "$t/target/gate"
   sed "s|^here=.*|here=\"$t\"|" "$SCRIPTS/land.sh" >"$t/target/gate/land.run.sh"
-  sed "s|^REPO=.*|REPO=\"$t\"|" "$SCRIPTS/land-remote.sh" >"$t/target/gate/land-remote.sh"
-  cp "$SCRIPTS/ci-remote-lib.sh" "$t/target/gate/ci-remote-lib.sh"
-  # THE LATCHKEY TRANSPORT IS STAGED EXACTLY LIKE THE FLEET ONE, AND FOR THE SAME REASON TWICE OVER.
+  # RETIRED (LK-5b): land-remote.sh and ci-remote-lib.sh — the EC2 fleet's transport and its
+  # allocator library — are deleted (LK-5). Staging them here used to be unconditional and would
+  # now stage a `sed`/`cp` FAILURE (an empty or missing file, chmod'd +x anyway) rather than an
+  # honest absence; not staging them at all is the honest version of what LK-9 already made
+  # `lq_dispatch_preprove` do when a Latchkey transport is missing — say so, prove nothing.
+  # THE LATCHKEY TRANSPORT IS STAGED THE SAME WAY THE FLEET ONE USED TO BE, FOR THE SAME REASON.
   #
   # MEASURED, LIVE (2026-09-11 18:09, first sweep on BUSBAR_PROVE_BACKEND=latchkey): the dispatcher
   # ran `bash "$tree/scripts/prove-latchkey.sh"` and the runner tree is the checkout at the LANDED
@@ -2488,12 +2439,9 @@ lq_stage_engine() { # $1 = tree (default $W)
   else
     rm -f "$t/target/gate/land-latchkey.run.sh"
   fi
-  # THE FLEET'S POWER SWITCH TRAVELS WITH THE ENGINE, for the same reason the transport does: the
-  # sweep runs out of the staged tree, and a sweep that could not start a stopped box would quietly
-  # dispatch to whatever happened to be awake and call the rest "out of free boxes".
-  [ -f "$SCRIPTS/ci-fleet-power.sh" ] && cp "$SCRIPTS/ci-fleet-power.sh" "$t/target/gate/ci-fleet-power.sh"
-  chmod +x "$t/target/gate/land.run.sh" "$t/target/gate/land-remote.sh"
-  [ -f "$t/target/gate/ci-fleet-power.sh" ] && chmod +x "$t/target/gate/ci-fleet-power.sh"
+  # ci-fleet-power.sh (the fleet's power switch) is deleted along with the fleet it managed
+  # (LK-5b) — nothing stages it and nothing calls it any more.
+  chmod +x "$t/target/gate/land.run.sh"
   return 0
 }
 
@@ -3009,63 +2957,21 @@ lq_preprove_sweep() { # $1 = tree to prove FROM (default $W), $2 = the sha rows 
   if [ -z "$lines" ] && [ -z "$chained" ]; then
     lq_log "pre-prove: no disjoint line and no chained hold to hand out at $(printf '%.9s' "$key")"; return 0
   fi
-  # ONE BOX PER LINE, ALLOCATED BEFORE ANY OF THEM STARTS.
-  #
-  # `fleet_pick_host` is a read-modify-write of a cursor FILE shared by every agent on this host, so
-  # six processes asking at once can be handed the same box — and six pre-proofs queued on one box
-  # is the wall clock of six serial landings, which is the opposite of the point. The hosts are
-  # therefore picked here, serially, before a single child is launched, and each is named to
-  # `land.sh --remote <host>` explicitly rather than left to `auto`.
+  # RETIRED (LK-5b): `ci-remote-lib.sh` (the fleet's allocator library, `fleet_pick_host` /
+  # `remote_wrapper` / `fleet_table_open`) and `ci-fleet-power.sh` (its power switch) are deleted
+  # along with the EC2 fleet they addressed (LK-5). This dispatch no longer sources either, probes
+  # no ssh wrapper and no fleet table, and starts no box: every line below is either a rented
+  # Latchkey job or, on the rare home with no Latchkey transport staged, NO VERDICT — there is no
+  # fleet left to fall back to. `lq_sweep_fleet_demand` is kept only as the log line's own
+  # measurement (see below); its "fleet" arm can no longer fire, because `lq_land_backend` can no
+  # longer return `fleet` (see `lq_validate_backend`).
   lq_stage_engine "$tree"
-  # shellcheck source=scripts/ci-remote-lib.sh
-  . "$tree/target/gate/ci-remote-lib.sh" 2>/dev/null || {
-    lq_log "pre-prove: no ci-remote-lib.sh; the sweep has no transport and is skipped"; return 0; }
-  # ONE PROBE ROUND FOR THE WHOLE SWEEP. Measured 2026-09-10: dispatching twelve pre-proofs took
-  # from 18:41 to 19:1x, because every line walked the fleet box by box with a `timeout 15 ssh`
-  # apiece — and asked again whenever it was handed a box this sweep already held. The table is
-  # probed ONCE, every box at the same time and the round still bounded by that same 15 s, and each
-  # line is then a read of it plus a take. A box that turns out to have vanished is dropped from the
-  # table by the line that lost it, below, so the table is only ever more accurate than the round.
-  # ── START WHAT THIS DISPATCH NEEDS, AND NOTHING ELSE, BEFORE THE ROUND ─────────────────────────
-  # An idle box is STOPPED (scripts/ci-fleet-power.sh, on the reconcile's timer), which costs EBS and
-  # nothing else and is 60-90 s from proving. So the sweep asks for the slots it is about to use
-  # BEFORE it probes: --ensure-slots subtracts the free slots on the boxes already awake, starts
-  # only the whole boxes the shortfall needs at BUSBAR_PROVE_PER_BOX slots each, and WAITS for the
-  # same readiness probe the allocator asks — a box that is merely starting is not free, and a box
-  # counted before it is ready is a line dispatched into a bootstrap. It never goes past
-  # CI_RUNNER_RUNNING_MAX; if it cannot get there the sweep dispatches to what there is and says so,
-  # exactly as it does today when the fleet is short.
   local nch_d=0
   [ -n "$chained" ] && nch_d="$(lq_count "$(printf '%s\n' "$chained" | grep -c .)")"
   local ifl; ifl="$( [ -n "$inflight" ] && [ -f "$inflight" ] && echo 1 || echo 0 )"
   local work; work="$(lq_sweep_slot_demand "$nlive" "$nch_d" "${LANDQ_BASE_REPLAY:-1}" "$ifl")"
-  # WHAT THE FLEET IS ASKED FOR IS WHAT WILL RUN ON THE FLEET, never the whole demand — see
-  # lq_sweep_fleet_demand. A sweep whose every proof is a rented runner asks the allocator for
-  # NOTHING, and says so in one sentence an operator can grep the bill against.
-  local want; want="$(lq_sweep_fleet_demand "$nlive" "$nch_d" "${LANDQ_BASE_REPLAY:-1}" "$ifl" "$tree")"
-  if [ "${want:-0}" = 0 ]; then
-    lq_log "sweep: fleet demand 0 — no EC2 box is started or reserved (prove backend $(lq_preprove_backend))"
-    lq_log "pre-prove: this dispatch is $work proof slot(s) of work, none of it fleet-bound"
-  elif [ -x "$tree/target/gate/ci-fleet-power.sh" ]; then
-    lq_log "pre-prove: this dispatch wants $want proof slot(s) on the FLEET (of $work in all) — starting only what the awake fleet is short of"
-    bash "$tree/target/gate/ci-fleet-power.sh" --ensure-slots "$want" >/dev/null 2>&1 \
-      || lq_log "pre-prove: could not start a stopped box; dispatching to the boxes that are already awake"
-  fi
-  # ── A SWEEP THAT REACHES NO BOX OPENS NO SSH WRAPPER AND PROBES NO FLEET ──────────────────────
-  # The wrapper and the probe round are the fleet's transport, and both are real work against real
-  # boxes — `remote_wrapper` refuses outright on a host with no session-manager-plugin, which used
-  # to SKIP THE WHOLE SWEEP, and `fleet_table_open` is an ssh round over every instance. A sweep
-  # whose fleet demand is zero on the latchkey backend has nothing to say to either of them, and a
-  # runner that can no longer reach EC2 at all is exactly where the owner's goal ends up.
-  # The fallback is unchanged and still honest: if the runner bound runs out mid-sweep, the line
-  # asks `fleet_pick_host` with no table, finds no box, and the sweep says "out of free boxes".
-  if [ "${want:-0}" = 0 ] && [ "$(lq_preprove_backend)" = latchkey ]; then
-    lq_log "pre-prove: this sweep reaches no box, so it opens no ssh wrapper and probes no fleet table"
-  else
-    ( remote_wrapper ) || { lq_log "pre-prove: no ssh wrapper for the fleet; sweep skipped"; return 0; }
-    fleet_table_open "$dir/fleet-table" >/dev/null \
-      || lq_log "pre-prove: the fleet probe round found nothing to cache; each line will ask the fleet itself"
-  fi
+  lq_log "sweep: fleet demand 0 — no EC2 box is started or reserved (prove backend $(lq_preprove_backend), EC2 decommissioned)"
+  lq_log "pre-prove: this dispatch is $work proof slot(s) of work, none of it fleet-bound; no ssh wrapper is opened and no fleet table is probed"
   # THE BASE REPLAY TAKES ITS SLOT FIRST (see lq_base_replay_reserve). It is what makes every other
   # verdict in this sweep readable — an unmeasured tip turns the oracle's rows into a line's own red
   # with no evidence — so it is never what the sweep spends its leftovers on. The reserved box is in
@@ -3081,13 +2987,11 @@ $chained" "$tree")" && basewant=1
   fi
   while IFS= read -r line || [ -n "$line" ]; do
     [ -n "$line" ] || continue
-    # ONE ASK, NAMING THE BOXES THIS SWEEP ALREADY HOLDS: the allocator refuses them itself, so a
-    # box is never handed out twice and no line has to re-probe the fleet to discover that.
-    # shellcheck disable=SC2086
+    # RETIRED (LK-5b): there is no fleet left to ask for a box. `lq_preprove_needs_box` is true only
+    # on the rare home with no Latchkey transport staged; on that home nothing proves this line.
     if lq_preprove_needs_box "$tree"; then
-      cand="$( fleet_pick_host $hosts )" || cand=""
-      [ -n "$cand" ] || { lq_log "pre-prove: out of free boxes; the rest of the sweep waits for the next one"; break; }
-      hosts="$hosts $cand"
+      lq_log "pre-prove: no latchkey transport staged and no fleet to fall back to (EC2 decommissioned) — the rest of the sweep waits for the next one"
+      break
     else
       cand=""
     fi
@@ -3130,15 +3034,13 @@ EOF
   while IFS= read -r line || [ -n "$line" ]; do
     [ -n "$line" ] || continue
     # THE CHAIN BEFORE THE BOX. A candidate whose chain no longer resolves must not first be handed
-    # a host it then never uses: `fleet_pick_host` is a read-modify-write of a shared cursor, and a
-    # box taken and abandoned is a box the next line in this very loop is refused.
+    # a host it then never uses.
     local chain2; chain2="$(lq_chain_of "$line" "$Q" "$tree" "$LAND_CHAIN_DEPTH")" || continue
     [ -n "$chain2" ] || continue
-    # shellcheck disable=SC2086
+    # RETIRED (LK-5b): there is no fleet left to ask for a box (see the live-lines loop above).
     if lq_preprove_needs_box "$tree"; then
-      cand="$( fleet_pick_host $hosts )" || cand=""
-      [ -n "$cand" ] || { lq_log "pre-prove: out of free boxes; the chained holds wait for the next sweep"; break; }
-      hosts="$hosts $cand"
+      lq_log "pre-prove: no latchkey transport staged and no fleet to fall back to (EC2 decommissioned) — the chained holds wait for the next sweep"
+      break
     else
       cand=""
     fi
@@ -3237,9 +3139,8 @@ $chained" "$basehost" || true
       GREEN) printf 'GREEN%s%s%s%s%s%s\n' "$TAB" "$key" "$TAB" "$dir/line-$j.log" "$TAB" "$text" >>"$PP"; lq_front_drop "$text" ;;
       RED)   printf 'RED%s%s%s%s%s%s\n' "$TAB" "$key" "$TAB" "$dir/line-$j.log" "$TAB" "$text" >>"$PP"; lq_front_drop "$text" ;;
       NONE:box)  lq_front_add "$text"
-                 # THE BOX IS OUT OF THIS SWEEP'S TABLE. It was reachable when the round was made
-                 # and it is not now, and the table is what every remaining allocation reads.
-                 fleet_table_drop "$(cat "$dir/line-$j.host" 2>/dev/null || true)"
+                 # RETIRED (LK-5b): there is no fleet table to drop the box from any more — this
+                 # verdict is now only reachable on a home missing its Latchkey transport.
                  lq_log "pre-prove: line $j lost its BOX mid-proof (reclaimed, or it stopped answering); no verdict on the line — re-queued to the front (log: $dir/line-$j.log)" ;;
       NONE:harness)  lq_front_add "$text"
                  lq_log "pre-prove: line $j died of a HARNESS failure on its box (a give-up the recorder refused), not of anything its picks did; re-queued to the front (log: $dir/line-$j.log)" ;;
@@ -3249,7 +3150,8 @@ $chained" "$basehost" || true
     esac
     j=$((j + 1))
   done
-  fleet_table_close
+  # fleet_table_close is RETIRED (LK-5b): no table is ever opened now (see above), so there is
+  # nothing to close.
   # NO LINE IS ON A BOX ANY MORE, and the status file must not keep saying one is.
   rm -f "$SWEEPPTR"
   lq_log "pre-prove: recorded in $PP"
@@ -6904,96 +6806,27 @@ sys.exit(1 if missing else 0)' "$STATUSJ"; echo $?)"
   _t "  ...and the queue lock does too"        1 "$(grep -c 'lq_pid_start "\$\$" >"\$QLOCK/start"' "$LQ_SRC")"
 
   # ── THE POP'S PRECONDITION (see lq_landing_slot_ready) ────────────────────────────────────────
-  # The five NONE:probe-empty faults of 09-12, proven closed at the decision rather than at the log
-  # line: a batch is not popped onto a fleet that cannot take it, and the fleet is asked AGAIN after
-  # the start because `--ensure-slots` exits 0 for "no stopped box to start" as well.
-  echo "landq4 selftest: the landing's box is a PRECONDITION on the pop, never a fault after it"
-  local savedLB="$LANDQ_LAND_BACKEND" savedL7="${L:-}" savedLG7="${LANDQ_LOG:-}"
-  local ptree="$root/ptree"; mkdir -p "$ptree/target/gate"
-  L="$root/pw.out"; LANDQ_LOG="$L"; : >"$L"
-  local pw="$ptree/target/gate/ci-fleet-power.sh"
-  # THE ALLOCATOR, STUBBED AS A QUEUE OF ANSWERS. One line of pw.free is consumed per `--free-slots`,
-  # which is how "asleep, then awake after the start" is expressed as data rather than as a sleep.
-  cat >"$pw" <<PWSTUB
-#!/usr/bin/env bash
-printf '%s\n' "\$*" >>"$root/pw.calls"
-case "\$1" in
-  --free-slots)
-    head -n1 "$root/pw.free" 2>/dev/null || printf '0\n'
-    tail -n +2 "$root/pw.free" >"$root/pw.free.tmp" 2>/dev/null && mv -f "$root/pw.free.tmp" "$root/pw.free" ;;
-esac
-exit 0
-PWSTUB
-  chmod +x "$pw"
-  _pwreset() { printf '%s\n' "$@" >"$root/pw.free"; : >"$root/pw.calls"; }
+  # RETIRED (LK-5b): `fleet` is no longer a value `lq_land_backend` returns, so `lq_landing_needs_box`
+  # is a permanent `return 1` and `lq_landing_slot_ready` a permanent `return 0` — the pop is always
+  # taken, on any tree, and neither reads `ci-fleet-power.sh` any more.
+  echo "landq4 selftest: the landing's box precondition is a permanent no-op (EC2 decommissioned)"
+  _t "needs-box is always false now"           1 "$(lq_landing_needs_box >/dev/null 2>&1; echo $?)"
+  _t "slot-ready always lets the pop through"  0 "$(lq_landing_slot_ready "$root/nosuchtree" >/dev/null 2>&1; echo $?)"
+  _t "  ...even naming BUSBAR_LAND_BACKEND=fleet" 0 \
+     "$(LANDQ_LAND_BACKEND=fleet lq_landing_slot_ready "$root/nosuchtree" >/dev/null 2>&1; echo $?)"
+  _t "lq_landing_free_slots is gone, not just unused" 0 "$(grep -c '^lq_landing_free_slots()' "$LQ_SRC")"
+  _t "the pop's precondition reads no power script"   0 \
+     "$(sed -n '/^lq_landing_slot_ready() {/,/^}/p' "$LQ_SRC" | grep -c 'ci-fleet-power\|ensure-slots\|free-slots')"
 
-  # THE LATCHKEY LANDING BACKEND NEEDS NO BOX, and must not be made to pay for one.
-  LANDQ_LAND_BACKEND=latchkey; _pwreset 0 0
-  _t "on the latchkey backend it is a no-op"   0 "$(lq_landing_slot_ready "$ptree" >/dev/null 2>&1; echo $?)"
-  _t "  ...and it asked the fleet nothing"     0 "$(grep -c . "$root/pw.calls" || true)"
-
-  LANDQ_LAND_BACKEND=fleet
-  # A BOX IS ALREADY AWAKE: the pop goes ahead, and NOTHING is started. An engine that woke a box on
-  # every loop would be an engine that never lets the fleet idle-stop.
-  _pwreset 2
-  _t "a free slot lets the pop through"        0 "$(lq_landing_slot_ready "$ptree" >/dev/null 2>&1; echo $?)"
-  _t "  ...having asked once and started nothing" "--free-slots" "$(cat "$root/pw.calls")"
-
-  # THE FLEET IS ASLEEP AND WAKES: one box is started, WAITED for, and the fleet is asked AGAIN.
-  _pwreset 0 2
-  _t "an asleep fleet that wakes lets the pop through" 0 \
-     "$(lq_landing_slot_ready "$ptree" >/dev/null 2>&1; echo $?)"
-  _t "  ...it started a box between the two asks" "--free-slots|--ensure-slots 1|--free-slots" \
-     "$(tr '\n' '|' <"$root/pw.calls" | sed 's/|$//')"
-
-  # AND THE FLEET THAT WILL NOT WAKE. `--ensure-slots` exited 0 here, exactly as it does for "no
-  # stopped box to start"; the SECOND ask is what refuses the pop.
-  _pwreset 0 0; : >"$L"
-  _t "a fleet that will not wake refuses the pop" 1 \
-     "$(lq_landing_slot_ready "$ptree" >/dev/null 2>&1; echo $?)"
-  _t "  ...and it asked twice before deciding"  2 "$(grep -c -- '--free-slots' "$root/pw.calls" || true)"
-  _t "  ...and said so in the log"              1 \
-     "$(grep -c 'NO awake box has a free proof slot' "$L" || true)"
-
-  # A HOME WITH NO POWER SCRIPT BEHAVES EXACTLY AS THIS ENGINE DID BEFORE. A precondition that stopped
-  # a queue because a script was missing would be worse than the fault it closes.
-  _pwreset 0 0
-  _t "no staged power script is never a refusal" 0 \
-     "$(lq_landing_slot_ready "$root/nosuchtree" >/dev/null 2>&1; echo $?)"
-
-  # THE CLASS IS ITS OWN, AND IT IS A NONE — never a red, never a park.
-  _t "the refusal is its own fault class"      "NONE:landing-asleep" "$(lq_fault_verdict landing-asleep)"
-  _t "  ...and a slot that comes free clears it" 0 \
-     "$(lq_fault_record landing-asleep x >/dev/null; _pwreset 2
-        lq_landing_slot_ready "$ptree" >/dev/null 2>&1; lq_fault_count landing-asleep)"
-  LANDQ_LAND_BACKEND="$savedLB"; L="$savedL7"; LANDQ_LOG="$savedLG7"
-
-  # ── THE SITE: BEFORE THE POP, BEFORE THE LOCK, AND POPPING NOTHING ────────────────────────────
+  # ── THE SITE: THE POP STILL ASKS, EVEN THOUGH THE ANSWER IS NOW FIXED ─────────────────────────
   _t "the engine has the precondition at its pop" 1 \
      "$(grep -c '^  if ! lq_landing_slot_ready "\$W"; then' "$LQ_SRC")"
-  # BEFORE THE QUEUE LOCK: waking a box takes up to CI_RUNNER_START_WAIT_SECS, and a lock held for
-  # that long blocks every landq-ctl command for the whole of an outage the engine is handling.
   _t "  ...and it runs BEFORE the queue lock is taken" 1 \
      "$( [ "$(grep -n 'if ! lq_landing_slot_ready "\$W"; then' "$LQ_SRC" | head -n1 | cut -d: -f1)" \
           -lt "$(grep -n '^  if ! lq_qlock; then' "$LQ_SRC" | head -n1 | cut -d: -f1)" ] && echo 1 || echo 0)"
   _t "  ...and before any popper is reached"   1 \
      "$( [ "$(grep -n 'if ! lq_landing_slot_ready "\$W"; then' "$LQ_SRC" | head -n1 | cut -d: -f1)" \
           -lt "$(grep -n 'n="\$(lq_pop ' "$LQ_SRC" | head -n1 | cut -d: -f1)" ] && echo 1 || echo 0)"
-  # NOTHING IS POPPED AND NOTHING IS REQUEUED: this branch touches neither $Q nor $batch. That is the
-  # whole difference from probe-empty, where every one of the five faults popped lines and put them
-  # back — five queue rewrites that taught nobody anything about anybody's picks.
-  _t "  ...and the refusal writes a no-pop row" 1 \
-     "$(grep -c 'lq_fault_verdict landing-asleep) no-pop' "$LQ_SRC")"
-  _t "  ...and requeues nothing at all"        0 \
-     "$(sed -n '/^  if ! lq_landing_slot_ready "\$W"; then/,/^  fi$/p' "$LQ_SRC" | grep -c 'batch.requeue\|>"\$Q' || true)"
-  # THE FRESH ROUND. `--free-slots` probes the boxes over ssh every time it is asked; the sweep's
-  # cached fleet-table is the probe from before any box was started, and the retry must not read it.
-  _t "the precondition asks --free-slots, not a cached table" 1 \
-     "$(sed -n '/^lq_landing_free_slots() {/,/^}/p' "$LQ_SRC" | grep -c -- 'bash "\${1}" --free-slots')"
-  _t "  ...and reads no fleet-table at all"    0 \
-     "$(sed -n '/^lq_landing_slot_ready() {/,/^}/p' "$LQ_SRC" | grep -c 'FLEET_TABLE\|fleet_table_' || true)"
-  _t "  ...and asks it TWICE, around the start" 2 \
-     "$(sed -n '/^lq_landing_slot_ready() {/,/^}/p' "$LQ_SRC" | grep -c 'lq_landing_free_slots "\$pw"')"
   FAULTS="$savedF"; FAULTRING="$savedR"
 
   # ── THE EXIT-CODE CONTRACT AND THE BOUNDARY SIGNAL (F1) ───────────────────────────────────────
