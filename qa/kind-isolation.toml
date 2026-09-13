@@ -1641,7 +1641,9 @@ count = "4"
 [[cell]]
 crate = "busbar-core"
 kind = "control"
-count = "5521"
+# TLS-1-r3: tls.rs's deletion (TLS-1/TLS-1-r2) lowered the measured count; the ceiling had gone
+# stale (slack) — ratcheted down to match.
+count = "5520"
 
 [[cell]]
 crate = "busbar-core"
@@ -1651,7 +1653,9 @@ count = "46"
 [[cell]]
 crate = "busbar-core"
 kind = "plane"
-count = "3067"
+# TLS-1-r3: tls.rs's deletion (TLS-1/TLS-1-r2) lowered the measured count; the ceiling had gone
+# stale (slack) — ratcheted down to match.
+count = "3062"
 
 [[cell]]
 crate = "busbar-core"
@@ -1661,7 +1665,9 @@ count = "266"
 [[cell]]
 crate = "busbar-core"
 kind = "secret"
-count = "337"
+# TLS-1-r3: tls.rs's deletion (TLS-1/TLS-1-r2) lowered the measured count; the ceiling had gone
+# stale (slack) — ratcheted down to match.
+count = "318"
 
 [[cell]]
 crate = "busbar-core"
@@ -1681,7 +1687,9 @@ count = "9"
 [[cell]]
 crate = "busbar-core"
 kind = "transport"
-count = "2145"
+# TLS-1-r3: tls.rs's deletion (TLS-1/TLS-1-r2) lowered the measured count; the ceiling had gone
+# stale (slack) — ratcheted down to match.
+count = "1943"
 
 [[cell]]
 crate = "busbar-core"

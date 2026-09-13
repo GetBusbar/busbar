@@ -113,7 +113,80 @@ busbar-voice = ["busbar-voice-codec"]
 # and an entry that describes no rise is refused as stale. It cannot be left behind, and it cannot
 # cover the next raise of the same ceiling.
 
-# NO ENTRY STANDS HERE TODAY, and an empty list is this mechanism working rather than resting.
+# TLS-1: `crates/busbar-core/src/tls.rs`'s accept/serve half (`AcceptBackoff`, `ConnBalancer`,
+# `serve`, `serve_plain`) MOVED BY IDENTITY to `crates/busbar/src/root/listener.rs` in the same
+# commit as core's fall (TLS-1-r2, bd67f5f43); the root now names `busbar_substrate::config::limits`,
+# `busbar_substrate::proxy` and `busbar_substrate::tls` directly where core used to, on the root's
+# side of the same identity move, and the kind-isolation ceilings below record the matching rise in
+# the crate that received the code, in the same commit as the crate that lost it.
+[gate.ceiling_raises."rules.legacy-reach.prefixes.busbar_substrate.figure"]
+from = 47
+to = 52
+because = "TLS-1: root/listener.rs's identity move off busbar-core now names busbar_substrate directly (limits, proxy, tls) where core's own tls.rs used to; core's matching fall is the same commit"
+
+[gate.ceiling_raises."rules.legacy-reach.ceiling"]
+from = 91
+to = 96
+because = "TLS-1: the busbar_substrate sub-row above rose by identity (root/listener.rs's move), which raises this row's own total by the same five symbols; nothing else in the total moved"
+
+[gate.ceiling_raises."cell.0.count"]
+file = "qa/kind-isolation.toml"
+from = 122
+to = 137
+because = "TLS-1-r2: root/listener.rs + root/tests/listener.rs MOVED BY IDENTITY from busbar-core, raising the root's own api-kind vocabulary by exactly what core's fall gave up in the same commit"
+
+[gate.ceiling_raises."cell.5.count"]
+file = "qa/kind-isolation.toml"
+from = 1063
+to = 1064
+because = "TLS-1-r2: root/listener.rs MOVED BY IDENTITY from busbar-core, raising the root's own control-kind vocabulary by exactly what core's fall gave up in the same commit"
+
+[gate.ceiling_raises."cell.8.count"]
+file = "qa/kind-isolation.toml"
+from = 98
+to = 116
+because = "TLS-1-r2: root/listener.rs + root/tests/listener.rs MOVED BY IDENTITY from busbar-core, raising the root's own legacy-kind vocabulary by exactly what core's fall gave up in the same commit"
+
+[gate.ceiling_raises."cell.9.count"]
+file = "qa/kind-isolation.toml"
+from = 1798
+to = 1802
+because = "TLS-1-r2: root/listener.rs + root/tests/listener.rs MOVED BY IDENTITY from busbar-core, raising the root's own plane-kind vocabulary by exactly what core's fall gave up in the same commit"
+
+[gate.ceiling_raises."cell.11.count"]
+file = "qa/kind-isolation.toml"
+from = 5
+to = 21
+because = "TLS-1-r2: root/listener.rs + root/tests/listener.rs MOVED BY IDENTITY from busbar-core, raising the root's own secret-kind vocabulary by exactly what core's fall gave up in the same commit"
+
+[gate.ceiling_raises."cell.14.count"]
+file = "qa/kind-isolation.toml"
+from = 939
+to = 1139
+because = "TLS-1-r2: root/listener.rs + root/tests/listener.rs MOVED BY IDENTITY from busbar-core, raising the root's own transport-kind vocabulary by exactly what core's fall gave up in the same commit"
+
+[gate.ceiling_raises."cell.15.count"]
+file = "qa/kind-isolation.toml"
+from = 1169
+to = 1191
+because = "TLS-1-r2: root/listener.rs + root/tests/listener.rs MOVED BY IDENTITY from busbar-core, raising the root's own unit-kind vocabulary by exactly what core's fall gave up in the same commit"
+
+[gate.ceiling_raises."cell.306.count"]
+file = "qa/kind-isolation.toml"
+from = 106
+to = 112
+because = "TLS-1: the unit's parse-error messages gained the secret-source naming core's deleted copy always emitted (TlsMaterial::cert_source/key_source/client_ca_source), the ruling's own mandated fix, not scope creep"
+
+[gate.ceiling_raises."rules.loc-ceilings.unit_total_ceiling"]
+from = 14476
+to = 14497
+because = "TLS-1: TlsMaterial's cert_source/key_source/client_ca_source fields and their docs are the ruling's own mandated fix (the unit's errors must name the secret source core's deleted copy always did); 21 surface lines is the direct, minimal, unavoidable cost"
+
+[gate.ceiling_raises."rules.loc-ceilings.union_ceiling"]
+from = 23335
+to = 23356
+because = "TLS-1: the same 21-line unit_total_ceiling rise above is summed into this union figure; nothing else in the union moved"
+
 # `rules.legacy-reach.prefixes.busbar_substrate.figure` carried the one-time 26 -> 47 calibration
 # while the commit that needed it was in flight. That commit LANDED: the base now carries 47, the
 # rise the row was written to excuse no longer exists, and `ceiling-rose` refused the declaration as
@@ -349,10 +422,13 @@ caps_crate = "busbar-caps"
 contract_crate = "busbar-contract"
 caps_contract_ceiling = 3480
 unit_crate_glob = "busbar-unit-*"
-unit_total_ceiling = 14476
+# TLS-1: raised 14476 -> 14497 (declared above) — TlsMaterial's cert_source/key_source/
+# client_ca_source fields, the ruling's mandated secret-source-naming fix.
+unit_total_ceiling = 14497
 verbs_crate = "busbar-unit-verbs"
 verbs_ceiling = 1428
-union_ceiling = 23335
+# TLS-1: raised 23335 -> 23356 (declared above) — the same unit_total_ceiling rise, summed in.
+union_ceiling = 23356
 # Files (by basename, wherever they sit under busbar-kernel/src) whose bodies seed the call-graph
 # name-match: every identifier called from one of these files, that busbar-kernel does not itself
 # define, is looked up by name against every busbar-unit-* file.
@@ -986,7 +1062,10 @@ while the total falls is that intermediate step, visible and not fatal."""
 scope_globs = ["crates/busbar/src/root/*.rs", "crates/busbar/src/main.rs"]
 # THE ONE GATING FIGURE: distinct symbols named through every prefix below, summed. Calibrated to
 # the tree it was written against; it may only go down.
-ceiling = 91
+# TLS-1-r2/r3: raised 91 -> 96 (declared above) — root/listener.rs's identity move off busbar-core
+# now names busbar_substrate directly for five more symbols than core's own copy needed to spell,
+# since core read some of them through its own internal re-exports.
+ceiling = 96
 
 # Each sub-row below GATES, in both directions. `figure` is the per-crate count PINNED TO TODAY'S
 # MEASUREMENT: above it is that row's own FAIL, below it is `ceiling-slack`. It was informational --
@@ -1019,7 +1098,11 @@ because = "the substrate seams the root installs; each moves onto the ABI as the
 # regression: nothing ever held this number. So it is calibrated ONCE, to what the tree measures
 # today, and it ratchets down from here like every other figure in this file. It may only go down;
 # `ceiling-slack` holds it from below and this row holds it from above.
-figure = 47
+# TLS-1-r2/r3: raised 47 -> 52 (declared above) — root/listener.rs's identity move off busbar-core
+# (AcceptBackoff/ConnBalancer/serve/serve_plain) now names busbar_substrate::config::limits,
+# busbar_substrate::proxy and busbar_substrate::tls directly, where core's own (now-deleted) copy
+# read some of the same seams through its own internal re-exports rather than the substrate path.
+figure = 52
 
 # ── 31. no-test-doubles-in-production ────────────────────────────────────────────────────────────
 [rules.no-test-doubles-in-production]
