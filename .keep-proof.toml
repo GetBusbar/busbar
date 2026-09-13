@@ -5,20 +5,31 @@
 # something specific instead of "everything, slowly". The INTEGRATION tree carries no such file —
 # it is a keep-branch artefact, and this branch is a keep branch.
 #
-#   families — a regex handed to the shadow oracle's `--id-filter`. The oracle replays this build
-#              against the published 1.5.5 binary and reports divergences; unfiltered that is the
-#              better part of half an hour. This branch is the pre-existing-reds branch: it works
-#              on the tree's frozen PARSE SURFACE (a limit's three refusal sentences) and on the
-#              gates that read the tree as data, so the honest scope is the boot / config /
-#              documented families — the cells that read what the binary PRINTS when it refuses a
-#              document, which is exactly what the first item here moved back to 1.5.5's words.
-#              boot.refusal|BOOT-P20|validate, BOOT-P29 and BOOT-P30 are the three cells that must
-#              turn byte-identical; the rest of the boot/config families are the blast radius of
-#              touching a deserializer every section's parse runs through.
+#   families — a regex handed to the shadow oracle's `--id-filter`. This branch folds duplicated
+#              PLUGIN-ABI DISCIPLINE onto one definition each: the borrowed-range reads and the
+#              capped out-buffer write, the length-prefixed record framing, and the out-param
+#              preamble. Those are not a corner of the tree — they are read on every host call the
+#              plane-host vtable serves, and the vtable is WIRED: `gate_decide_over` is called from
+#              busbar-mcp and busbar-a2a, `with_dispatch_scope` from the audit log, `guard_url_over`
+#              from the egress guard. So the honest scope is every family whose cells cross one of
+#              those slots, measured slot by slot rather than guessed:
+#
+#                llm         the request path the whole vtable hangs off
+#                hooks       gate_decide / gate_scan — GateVerdictOut and the message/hook writes
+#                billing     meter_charge — the Usage unit-count tail's length-prefixed framing
+#                ledger      the same charge, recorded
+#                auth        auth_resolve — AuthResolved and the audience borrow
+#                route       guard_url + the egress fault path — GuardVerdict and GuardClass
+#                admin       the audit log's own dispatch scope
+#                neutrality  the kind-neutral readings of the same slots
+#                plugins     the subprocess egress descriptor (argv + child env framing)
+#                teller      the loop that drives the slots
+#
+#              What is deliberately OUT: config.migrate and cli touch no host call, and boot only
+#              through composition this branch does not change.
 #   tests    — the packages whose test binaries the sharded legs must include by name.
-#              `busbar-substrate` holds the limit grammar itself; `busbar-core` re-exports it at
-#              the historical config path and owns the pre-pass that sets the frozen-list rule;
-#              `busbar` is the binary whose --validate the boot cells drive; `xtask` is the gate
-#              runner whose own selftests are on this branch's list.
-families = '^(boot|config|documented)([|.]|$)'
-tests = ["busbar-core", "busbar-substrate", "xtask", "busbar"]
+#              `busbar-plugin` owns every definition that moved and every cell asserting it;
+#              `busbar-core` is the side the copies were deleted from; `busbar-plugin-loader` is the
+#              other reader of the crate's root discipline; `busbar` is the binary the oracle drives.
+families = '^(llm|hooks|billing|ledger|auth|route|admin|neutrality|plugins|teller)([|.]|$)'
+tests = ["busbar-core", "busbar-plugin", "busbar-plugin-loader", "busbar"]
