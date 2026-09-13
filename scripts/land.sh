@@ -4397,7 +4397,27 @@ EOF
   _t2 "MF:   ...and it is the only reset it does"   1 \
      "$(sed -n '/^land_unit_prefix_fan() {/,/^}$/p' "$LAND_SRC" | grep -c 'reset -q --hard')"
   _t2 "MF:   ...every rung names the tree it packs" 1 \
-     "$(grep -c 'LAND_LATCHKEY_REPO="\$here" bash "\$lkt"' "$LAND_SRC")"
+     "$(grep -c 'LAND_LATCHKEY_REPO="\$here" LAND_ADVISORY_OUT=' "$LAND_SRC")"
+
+  # ── MF6 — THE ADVISORY REACHES THE LEDGER ROW ────────────────────────────────────────────────
+  # land-latchkey.sh judges the oracle leg on the delta against the base replay and writes what a
+  # GREEN landing CARRIED into LAND_ADVISORY_OUT. The batch puts it on every land-done row, because
+  # a standing base red is a property of the TREE those lines landed on and not of one of them — and
+  # a green that inherited three rows the oracle tool gets wrong has to be tellable, in the ledger,
+  # from a green that inherited nothing.
+  echo "land.sh selftest: the oracle advisory reaches the land-done row, not only the log"
+  local advf="$root/adv.txt"
+  printf 'base-standing oracle reds carried: documented|HookView|description\n' >"$advf"
+  git -C "$repo" checkout -q integ; git -C "$repo" reset -q --hard "$integ"
+  _st "MF6: a batch that carried a standing base red runs" 0 \
+      env LAND_SELFTEST_ROOT="$repo" LAND_DONE="$root/done-adv.txt" LAND_ADVISORY_OUT="$advf" \
+          bash "$0" --batch "$bc"
+  _stgrep "MF6: every land-done row carries the advisory" "$root/done-adv.txt" 'advisory=base-standing oracle reds carried'
+  _t2 "MF6:   ...every one of the three"        3 "$(grep -c 'advisory=base-standing' "$root/done-adv.txt")"
+  _stgrep "MF6:   ...and the batch says it on the log too" "$ST_OUT" 'advisory=base-standing oracle reds carried'
+  _stno   "MF6: a batch with nothing to carry has no such field" "$root/done.txt" 'advisory='
+  _t2 "MF6:   ...and the advisory is read in exactly one place" 1 \
+     "$(grep -c 'if \[ -s "\$(land_advisory_file)" \]; then' "$LAND_SRC")"
 
   # ── CASE N — THE PLUGIN CDYLIBS THE TEST HARNESSES dlopen ─────────────────────────────────────
   # The batteries in busbar-core do not skip when the artifact is missing and do not judge when it

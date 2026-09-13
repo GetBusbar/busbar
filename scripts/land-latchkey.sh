@@ -653,7 +653,9 @@ MODE=""; BASE=""; TESTS=""; GATE=""; FAMILIES=""; FEATURES=""; LABEL="landing"; 
 while [ $# -gt 0 ]; do
   case "$1" in
     --prove-tree)  MODE=prove-tree; shift ;;
-    --base-replay) MODE=base-replay; shift ;;
+    # QUOTED, and it has to be: with the delta's arithmetic in scope the linter reads a bare
+    # `MODE=base-replay` as the subtraction `base - replay` (SC2100).
+    --base-replay) MODE="base-replay"; shift ;;
     --base)      BASE="${2:-}"; shift 2 ;;
     --tests)     TESTS="${2:-}"; shift 2 ;;
     --gate)      GATE="${2:-}"; shift 2 ;;
