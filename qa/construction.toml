@@ -1197,3 +1197,44 @@ export = 1
 transport = 7
 loader = 1
 abi = 1
+
+# ------------------------------------------------------------------------------------------------
+# [gate.ceiling_raises] — A NUMBER THAT WENT UP, AND THE TRANSACTION THAT LET IT
+# ------------------------------------------------------------------------------------------------
+#
+# `ceiling-rose` refuses every number in this file and in `qa/kind-isolation.toml` that is higher
+# than it is at the base. An entry here is not a waiver: it names the exact dotted path, BOTH
+# numbers, and a reason, and it EXPIRES BY ITSELF — once the commit lands, the base carries the new
+# number, there is no rise left to describe, and the entry is refused as stale by the same row. So
+# the entry has to be struck by the commit after the one that needed it.
+
+# busbar-core's naming of the `unit` kind: 10 -> 16.
+#
+# WHAT ROSE, EXACTLY. Six hits, and they are two needles over three sites, not six couplings. The
+# matrix's `unit` vocabulary carries both `busbar-unit-admission` and the kind-qualified
+# `unit-admission`, and both match at every site, so each site the drain adds counts twice:
+# `crates/busbar-core/Cargo.toml` names the crate as the dependency KEY and again inside its `path`
+# (2 sites), and `crates/busbar-core/src/governance/mod.rs` names it once, in the single
+# `use busbar_unit_admission as admission;` the whole module is reached through (1 site). 3 x 2 = 6.
+# There is no fourth site and the module is deliberately written so there cannot be one: everything
+# below that line spells `admission::`, which is not a needle.
+#
+# WHY IT IS A RISE AND NOT A DRAIN FAILURE. This is the legacy drain's first governance step, and
+# the direction of travel is core going to zero. The engine held a second, character-for-character
+# copy of the window vocabulary that `busbar-unit-admission` owns — `budget_window`, `window_end`,
+# the five window words and both civil-date helpers — and a request has to be CHECKED against the
+# bucket it is CHARGED to whichever copy computed the epoch. The copy is deleted against the unit
+# rather than kept in step by a test, which is what makes this a delete and not a move: the unit's
+# production lines do not change. What the deletion costs is the edge, and the edge is the thing
+# `qa/kind-isolation.toml`'s standing `[[transitional]] busbar-core -> busbar-unit-*` row exists to
+# hold on the clock — `kind-isolation-ship` is RED for it while busbar-core still exists.
+#
+# WHAT TAKES IT BACK DOWN. Not an edit: the `governance/` module moving out of busbar-core. Its
+# readers of `budget_window` are `governance/state.rs`, `cost.rs`, `metrics.rs` and `admin/`, and
+# every one of them moves with it. On that commit both sites go and this cell returns to 10 before
+# it goes to 0 with the crate.
+[gate.ceiling_raises."cell.74.count"]
+file = "qa/kind-isolation.toml"
+from = 10
+to = 16
+because = "the legacy drain's first governance step: busbar-core deletes its second copy of the admission unit's window vocabulary against the unit that owns it, and names that unit in a Cargo dependency and one `use` alias. Six hits = two matrix needles (`busbar-unit-admission`, `unit-admission`) over three sites (the dependency key, its path, the single alias). Held on the clock by the standing [[transitional]] busbar-core -> busbar-unit-* row; returns to 10 when governance/ leaves the crate."

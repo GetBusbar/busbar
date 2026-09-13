@@ -1679,7 +1679,7 @@ count = "2145"
 [[cell]]
 crate = "busbar-core"
 kind = "unit"
-count = "10"
+count = "16"
 
 [[cell]]
 crate = "busbar-export-example-plugin"
@@ -3729,6 +3729,16 @@ verdict = "not-allowed"
 cite    = "ARCHITECTURE.md 1.2 \"Core -> plugin. Never plugin -> core.\" / ARCHITECTURE.md 1.1 the three axes are blind to each other. The retiring 1.5.x crates fuse plane+core+transport in one name."
 why     = "busbar-core names busbar-timing: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
 drain   = "delete the busbar-timing dependency from busbar-core's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
+
+[[dep]]
+from    = "busbar-core"
+to      = "busbar-unit-admission"
+half    = "shipped"
+count   = "1"
+verdict = "not-allowed"
+cite    = "ARCHITECTURE.md 1.1 the three axes are blind to each other / qa/kind-isolation.toml [[transitional]] busbar-core -> busbar-unit-* (owner ruling 2026-09-08: \"while busbar-core drains, it MAY depend on unit crates ... the row must be a NAMED TRANSITIONAL EXEMPTION that is empty on the ship sha\")."
+why     = "busbar-core names busbar-unit-admission: 1 declaration(s) at this commit, and the drain is what put it there. The verdict is NOT-ALLOWED, like every other edge out of this crate — what makes it landable is the standing [[transitional]] busbar-core -> busbar-unit-* exemption, which is scored RED on the ship sha if busbar-core still exists; the edge is not granted, it is on the clock. The engine held a second, character-for-character copy of the window vocabulary the admission unit owns - `budget_window`, `window_end`, the five window words and both civil-date helpers - and a request has to land in the same bucket whichever copy computed it. The copy is deleted against the unit rather than kept in step by a test. The engine reaches the unit through exactly ONE alias (governance/mod.rs), so what this edge costs is one import to delete."
+drain   = "delete the busbar-unit-admission dependency from busbar-core's Cargo.toml. It leaves when governance/ does: the readers of `budget_window` here are governance/state.rs, cost.rs, metrics.rs and admin/, and every one of them moves with the module. Until then the edge is the drain, not a fusion."
 
 [[dep]]
 from    = "busbar-export-example-plugin"

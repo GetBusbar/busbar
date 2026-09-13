@@ -30,17 +30,25 @@ pub(crate) use busbar_substrate::governance::SECS_PER_DAY;
 
 // ── Window sentinel tokens (nouns; matched in `budget_window`). The SAME strings are the
 // `groups:` config vocabulary (`per: minute|hour|day|month|total`), the ledger-bucket window
-// suffix, and the metrics/error dimension - one vocabulary everywhere. ─────────────────────────────
-/// The "all-time" window sentinel: a single window from epoch 0.
-pub(crate) const WINDOW_TOTAL: &str = "total";
-/// The "day" window sentinel: resets at UTC midnight.
-pub(crate) const WINDOW_DAY: &str = "day";
-/// The "month" window sentinel: resets at UTC first-of-month.
-pub(crate) const WINDOW_MONTH: &str = "month";
-/// The "minute" window sentinel: resets each UTC minute.
-pub(crate) const WINDOW_MINUTE: &str = "minute";
-/// The "hour" window sentinel: resets each UTC hour.
-pub(crate) const WINDOW_HOUR: &str = "hour";
+// suffix, and the metrics/error dimension - one vocabulary everywhere, and "everywhere" now
+// includes the admission unit, which is where the vocabulary LIVES. These five were declared a
+// second time here; they are re-exported BY IDENTITY from their owner instead, so a word added to
+// or struck from the vocabulary can only be added or struck once. ──────────────────────────────
+//
+// Measured on the way through: `WINDOW_TOTAL` is the only one of the five this crate's PRODUCTION
+// code ever spells. The other four reach `budget_window` as config strings off a bucket's `window`
+// field and are named by literal only in tests, so they are re-exported under `cfg(test)` rather
+// than declared as engine vocabulary they are not.
+//
+// The whole module is reached through ONE alias, deliberately. `kind-isolation:matrix` counts how
+// often this crate names a unit crate, and that count is the size of the coupling the drain has to
+// undo: spelling the crate once and the vocabulary through it is the difference between one edge
+// to delete and a dozen.
+use busbar_unit_admission as admission;
+
+pub(crate) use self::admission::window::WINDOW_TOTAL;
+#[cfg(test)]
+pub(crate) use self::admission::window::{WINDOW_DAY, WINDOW_HOUR, WINDOW_MINUTE, WINDOW_MONTH};
 
 // ── Virtual-key / bearer-secret formats ──────────────────────────────────────────────────────────
 /// The `"vk_"` prefix prepended to the 16-hex-char hash prefix to form a virtual-key id.
@@ -271,9 +279,12 @@ impl BudgetCell {
 
 /// Saturating sum of every count in a name-keyed unit map — the scalar "total tokens" view over the
 /// dissolved reserved-four-plus-opens ledger.
-fn units_total(units: &std::collections::BTreeMap<String, u64>) -> u64 {
-    units.values().fold(0u64, |acc, v| acc.saturating_add(*v))
-}
+///
+/// Re-exported BY IDENTITY from the admission unit's pricing module, which owns it: the same fold
+/// over the same map type stood here character for character. The saturation is the load-bearing
+/// part — a total that wrapped would read as a cap that had not been reached — and it is now
+/// decided in one place for both the door's cell and this module's.
+use self::admission::price::units_total;
 
 /// Why an admission was refused by the group limit chain - carried to ingress so the rejection
 /// NAMES the exact blocking bucket (group + metric + window). Built only on the rejection path
@@ -895,71 +906,35 @@ pub(crate) fn pool_allowed(key: &VirtualKey, pool: &str) -> bool {
 
 /// The epoch start of the window containing `now` for a given window word (nouns): `total` = a
 /// single all-time window (0); `day` = UTC midnight; `month` = UTC first-of-month.
+///
+/// The arithmetic is the admission unit's `window::budget_window` and only its — this module
+/// held a character-for-character second copy, civil-date helpers and all, and it is deleted. What
+/// stays here is the one thing the unit deliberately cannot do: a unit has no logger, so it
+/// exposes the corrupt-row case as the predicate `is_known_window` and leaves the reporting to its
+/// caller. This engine reports it, as it always did, with the same diagnostic and the same text.
+///
+/// An unrecognized window word can only arise from a corrupt/foreign store row (config parse
+/// rejects it). Both this wrapper and the unit fall SAFE to the all-time window (0), the tightest
+/// enforcement, never wider.
 pub(crate) fn budget_window(period: &str, now: u64) -> u64 {
-    match period {
-        WINDOW_MINUTE => now / 60 * 60,
-        WINDOW_HOUR => now / 3600 * 3600,
-        WINDOW_DAY => now / SECS_PER_DAY * SECS_PER_DAY,
-        WINDOW_MONTH => {
-            let days = (now / SECS_PER_DAY) as i64;
-            let (y, m, _) = civil_from_days(days);
-            (days_from_civil(y, m, 1) as u64) * SECS_PER_DAY
-        }
-        WINDOW_TOTAL => 0, // explicit all-time window (the documented sentinel)
-        // An unrecognized window word can only arise from a corrupt/foreign store row (config
-        // parse rejects it). Fail SAFE to the all-time window (0), the tightest enforcement,
-        // never wider, with a diagnostic so the corruption is visible instead of silent.
-        other => {
-            diag_warn!(
-                LIMIT_WINDOW_UNRECOGNIZED,
-                window = other,
-                "unrecognized limit window; enforcing as all-time ('total') window"
-            );
-            0
-        }
+    if !admission::window::is_known_window(period) {
+        diag_warn!(
+            LIMIT_WINDOW_UNRECOGNIZED,
+            window = period,
+            "unrecognized limit window; enforcing as all-time ('total') window"
+        );
     }
+    admission::window::budget_window(period, now)
 }
 
 /// The epoch at which `period`'s window containing `now` ROLLS to the next window - the
 /// `Retry-After` source for a windowed-limit rejection. `None` for `total` (never rolls) and for
-/// an unrecognized word (backstopped to `total` above).
-pub(crate) fn window_end(period: &str, now: u64) -> Option<u64> {
-    match period {
-        WINDOW_MINUTE => Some(now / 60 * 60 + 60),
-        WINDOW_HOUR => Some(now / 3600 * 3600 + 3600),
-        WINDOW_DAY => Some(now / SECS_PER_DAY * SECS_PER_DAY + SECS_PER_DAY),
-        WINDOW_MONTH => {
-            let days = (now / SECS_PER_DAY) as i64;
-            let (y, m, _) = civil_from_days(days);
-            let (ny, nm) = if m == 12 { (y + 1, 1) } else { (y, m + 1) };
-            Some((days_from_civil(ny, nm, 1) as u64) * SECS_PER_DAY)
-        }
-        _ => None,
-    }
-}
-
-// Public-domain civil-date algorithms (same approach as sigv4); self-contained, no date crate.
-fn civil_from_days(z: i64) -> (i64, i64, i64) {
-    let z = z + 719_468;
-    let era = (if z >= 0 { z } else { z - 146_096 }) / 146_097;
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    (if m <= 2 { y + 1 } else { y }, m, d)
-}
-
-fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
-    let y = if m <= 2 { y - 1 } else { y };
-    let era = (if y >= 0 { y } else { y - 399 }) / 400;
-    let yoe = y - era * 400;
-    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    era * 146_097 + doe - 719_468
-}
+/// an unrecognized word (backstopped to `total` by `budget_window` above).
+///
+/// Re-exported BY IDENTITY from the admission unit. Unlike `budget_window` there is nothing to
+/// report here: the unrecognized word has already been diagnosed on the checking path that reached
+/// this one, and repeating it would double every corrupt-row line.
+pub(crate) use self::admission::window::window_end;
 
 // `Store` and `VirtualKey` were re-exported `pub` for the extracted A2A plane's in-test store
 // doubles and the relocated LLM engine's pool-credential lowering. Neither reaches this path any

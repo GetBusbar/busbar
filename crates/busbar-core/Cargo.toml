@@ -40,6 +40,21 @@ smallvec = { workspace = true }
 # a profiling build with `--features busbar-timing/timing`. Method timers nest inside `profile.rs`.
 busbar-timing = { path = "../busbar-timing" }
 busbar-store-memory = { path = "../store-memory" }
+# THE WINDOW VOCABULARY, so this crate does not restate it. A cap is always "N per something", and
+# the word plus the current second has to become the same epoch on every path that touches the
+# counters: the check, the charge, the hydrate, the refund, the metrics scrape and the retry hint.
+# The admission unit's `window` module owns that arithmetic — it is 1.5.5's function, moved — and this
+# crate carried a second, character-for-character copy of it (`budget_window`, `window_end`, the
+# five window words and both civil-date helpers). Two copies of a window computation that must
+# agree exactly is how a request comes to be CHECKED against one bucket and CHARGED to another.
+# Naming the crate that owns the vocabulary is what makes them one arithmetic instead of two that
+# a test has to keep in step.
+#
+# Declared transitional: `qa/kind-isolation.toml` names the legacy drain's edge into the unit
+# family, and this is the drain's first governance step. The edge leaves when the governance
+# module does. The engine reaches the unit through exactly ONE alias (`governance/mod.rs`), so the
+# coupling this buys is one import to delete, not a dozen.
+busbar-unit-admission = { path = "../busbar-unit-admission" }
 # The HOT-lane plugin/plane ABI (`busbar_plugin::hot`): the `#[repr(C)] PlaneHostVtable` and its POD
 # types. Consumed HOST-side by `src/plane_host` — the construction point + lifecycle arena the Phase-2
 # capability fan-out fills in. Additive: nothing in the engine calls the plane seam yet.
