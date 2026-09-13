@@ -655,8 +655,19 @@ git -C "$bare" update-ref refs/heads/integration/oracle-phase0 "$BASE"
 # THE TIP. For a pre-proof TIP==BASE (the picks are applied on the runner by the engine); otherwise
 # the tip must be reachable on origin — a no-context proof reconstructs the tip from base+picks, so a
 # local-only assembled tip cannot travel this way and is refused loudly rather than proven as base.
+#
+# AND ITS HISTORY DOWN TO THE BASE, NOT JUST THE TIP COMMIT. `--depth 1` grafts the tip parentless,
+# and the history ratchets (kind-isolation reads `HEAD~1` to show an edge/row pre-dates the branch)
+# then red for want of a parent that a pack-path runner HAS — lk_stage_repo's `+tip:refs/heads/tip`
+# transfers the tip's ancestors down to this shallow clone's boundary, which is the base. A LANDING
+# tip already carries its picks (nothing is cherry-picked on the runner), so its `HEAD~1` must
+# resolve on arrival; `--shallow-exclude=$BASE` fetches the tip's history to the base as its boundary
+# (the base itself arrives under its own ref above), reproducing exactly the pack path's ancestry.
+# The reconstructed TREE is unchanged either way — `git archive tip` reads only the tip's tree — so
+# byte-identity is preserved; this only restores the history the ratchets walk.
 if [ "$TIP" != "$BASE" ]; then
-  git -C "$bare" -c protocol.version=2 fetch -q --depth 1 "$URL" "$TIP:refs/heads/tip" \
+  git -C "$bare" -c protocol.version=2 fetch -q --shallow-exclude "$BASE" "$URL" "$TIP:refs/heads/tip" 2>/dev/null \
+    || git -C "$bare" -c protocol.version=2 fetch -q --depth 1 "$URL" "$TIP:refs/heads/tip" \
     || { echo "prove-latchkey nocontext: RED — tip $TIP not fetchable from origin (a no-context proof rebuilds the tip from base+picks; a local-only tip cannot travel)"; exit 2; }
 fi
 git -C "$bare" update-ref refs/heads/tip "$TIP"
