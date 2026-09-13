@@ -24,11 +24,17 @@
 #              self-minting token endpoints SUB-5 moved) and route.failover (whose ATTEMPT-1 arm
 #              names a guard verdict as a definitive strike).
 #   tests    — the packages whose test binaries the sharded legs must include by name.
-#              `busbar-unit-trust` owns the surviving copy; `busbar-substrate` owns the dying one;
-#              `busbar-core` re-exports the survivor at the historical `net_guard` path and holds
-#              the async resolve-then-pin door; `busbar-mcp`, `busbar-a2a` and `busbar-voice` are
-#              the remaining readers; `busbar` is the binary and carries the extraction-parity
-#              test; `xtask` is the gate runner whose kind-isolation and construction selftests
-#              judge every ledger row this line moves.
+#              `busbar-unit-trust` owns the copy that survives; `busbar-substrate` owned the one
+#              this branch DELETED; `busbar-core` re-exports the survivor at the historical
+#              `net_guard` path and holds the async resolve-then-pin door; `busbar-mcp`,
+#              `busbar-a2a` and `busbar-voice` are the three plugins re-pointed onto the unit, each
+#              keeping its own socket and its own refusal wording; `busbar` is the binary. The
+#              extraction-parity test is NOT in this list because it is gone: it existed to hold two
+#              copies together and there is one.
+#
+#              `xtask` is deliberately ABSENT. The gate runner's selftests judge the ledger, not the
+#              build, and they are proven on the laptop at every prefix of this line; a proof runner
+#              that packs the tree and shards test BINARIES has nothing to add to them, and naming
+#              it here only lengthens the rented leg.
 families = '^(llm|mcp|a2a|voice|neutrality|admin\.ops|boot|auth\.lifecycle|route\.failover)([|.]|$)'
-tests = ["busbar-unit-trust", "busbar-substrate", "busbar-core", "busbar-mcp", "busbar-a2a", "busbar-voice", "busbar", "xtask"]
+tests = ["busbar-unit-trust", "busbar-substrate", "busbar-core", "busbar-mcp", "busbar-a2a", "busbar-voice", "busbar"]
