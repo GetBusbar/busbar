@@ -1417,3 +1417,9 @@ file = "qa/kind-isolation.toml"
 from = 335
 to = 336
 because = "dropped: crate retires this release (rule 4); vocabulary is the crate's own. busbar-voice x dialect 335 -> 336: `busbar-voice` is one of the five LEGACY crates (kind_isolation.rs LEGACY_CRATES) and 1.6.0 deletes it whole, so this rise is the crate's own dialect words in its own feature text and its own tests, with nothing to rename behind them. The number is the tree's measurement, the picks stay, and the row dies with the crate -- kind-isolation-ship is RED while busbar-voice exists at all. Ordinal 353 is the busbar-voice x dialect row -- this tree's raises() cannot key an array of tables by identity, and the row carries the same note beside its count."
+
+[gate.ceiling_raises."cell.225.count"]
+file = "qa/kind-isolation.toml"
+from = 1140
+to = 1141
+because = "dropped: crate retires this release (rule 4); vocabulary is the crate's own. busbar-substrate x transport 1140 -> 1141: `busbar-substrate` is a crate 1.6.0 RETIRES -- it is named on the release's retiring list beside the five LEGACY_CRATES, its construction row is substrate-frozen, and the work that survives it is re-targeted at busbar-substrate-values. The single risen hit is `webpki_roots::TLS_SERVER_ROOTS` in this crate's own egress trust store: the transport kind's own word in the crate's own code, with no comment and no test text behind it to reword. The two prose rises this crate DID carry were drained in place at net zero lines; this one is code, and the only drain left would hoist a shared root store through a frozen crate to buy a number in a file the release deletes. The number is the tree's measurement, the pick stays, and the row dies with the crate. Ordinal 225 is the busbar-substrate x transport row -- this tree's raises() cannot key an array of tables by identity, and the row carries the same note beside its count."

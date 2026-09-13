@@ -1604,7 +1604,7 @@ count = "3"
 [[cell]]
 crate = "busbar-auth-admin-tokens"
 kind = "control"
-count = "49"
+count = "48"
 
 [[cell]]
 crate = "busbar-auth-static-plugin"
@@ -2424,7 +2424,7 @@ count = "2"
 [[cell]]
 crate = "busbar-plugin-pack"
 kind = "plugin-tooling"
-count = "31"
+count = "22"
 
 [[cell]]
 crate = "busbar-plugin-pack"
@@ -2634,7 +2634,17 @@ count = "3"
 [[cell]]
 crate = "busbar-substrate"
 kind = "transport"
-count = "1140"
+# DROPPED. 1140 -> 1141, set to the tree's measurement and declared in qa/construction.toml's
+# [gate.ceiling_raises] as `cell.225.count` with the drop's reason. `busbar-substrate` is a crate
+# THIS RELEASE RETIRES -- named on the retiring list beside the five LEGACY_CRATES, frozen by its
+# own construction row, with the surviving work re-targeted at busbar-substrate-values. The one
+# risen hit is `webpki_roots::TLS_SERVER_ROOTS` in this crate's own egress trust store: the
+# transport kind's own word in the crate's own CODE, not a comment or a test name, so there is
+# nothing to reword. Plan rule 4, 'drop, don't drain': the number moves, the pick stays, and the
+# whole row dies with the crate. The key is an ORDINAL because that is the only key this tree's
+# `ceilings.rs::raises()` can resolve against an array-of-tables; ordinal 225 IS this row
+# (busbar-substrate x transport), and no [[cell]] row is added or removed so none move.
+count = "1141"
 
 [[cell]]
 crate = "busbar-substrate-values"
@@ -2809,7 +2819,7 @@ count = "7"
 [[cell]]
 crate = "busbar-transport-tls"
 kind = "contract-transport"
-count = "33"
+count = "26"
 
 [[cell]]
 crate = "busbar-transport-tls"
@@ -2824,7 +2834,7 @@ count = "1"
 [[cell]]
 crate = "busbar-transport-tls"
 kind = "transport"
-count = "63"
+count = "54"
 
 [[cell]]
 crate = "busbar-transport-tls"
@@ -2844,7 +2854,7 @@ count = "2"
 [[cell]]
 crate = "busbar-transport-ws"
 kind = "transport"
-count = "165"
+count = "155"
 
 [[cell]]
 crate = "busbar-unit-admission"
@@ -5828,7 +5838,7 @@ count = "336"
 [[cell]]
 crate = "busbar-voice-codec"
 kind = "dialect"
-count = "257"
+count = "248"
 
 [[edge]]
 from = "api"
