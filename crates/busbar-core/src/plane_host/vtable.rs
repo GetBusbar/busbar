@@ -248,22 +248,6 @@ extern "C-unwind" fn govern_admit(host: HostCtx, facts: *const Facts) -> Decisio
     .unwrap_or(Decision::Deny) // fail-closed: a panicked admit denies.
 }
 
-/// Copy up to `cap` of `bytes` into the caller's `buf` (tolerating a null/zero-cap slot), returning
-/// the number of bytes written. The `egress_poll` variable-length copy: a caller sizes `buf` and
-/// learns the written length from [`GovRefusal::reason_len`].
-///
-/// # Safety
-/// `buf`, when non-null, is a writable range of at least `cap` bytes for the call.
-unsafe fn write_reason(buf: *mut u8, cap: usize, bytes: &[u8]) -> usize {
-    if buf.is_null() || cap == 0 {
-        return 0;
-    }
-    let n = bytes.len().min(cap);
-    // SAFETY: `bytes[..n]` is initialized and `buf[..n]` is a writable range (n ≤ cap, caller ABI).
-    unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), buf, n) };
-    n
-}
-
 /// Write the [`GovRefusal`] out-param (tolerating a null slot): the recovery floor + the rendered
 /// reason length.
 ///
@@ -316,8 +300,9 @@ extern "C-unwind" fn govern_admit_reason(
             Ok(()) => Decision::Admit,
             Err(blocked) => {
                 // SAFETY: `reason_buf`/`reason_cap` are a writable range (or null) per the ABI.
-                let written =
-                    unsafe { write_reason(reason_buf, reason_cap, blocked.reason.as_bytes()) };
+                let written = unsafe {
+                    busbar_plugin::write_capped(reason_buf, reason_cap, blocked.reason.as_bytes())
+                };
                 // SAFETY: as above.
                 unsafe { write_gov_refusal(out, blocked.retry_after_secs, written) };
                 Decision::Deny

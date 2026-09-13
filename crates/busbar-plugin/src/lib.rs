@@ -277,6 +277,83 @@ pub unsafe fn write_out<T>(out: *mut MaybeUninit<T>, value: T) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
+// 4. The borrowed-range read discipline and the capped out-buffer write. Shared by both lanes.
+//
+// A hot host-call moves variable-length material two ways, and neither is a `Vec`: IN as a borrowed
+// `(ptr, len)` range a POD field names, OUT as bytes copied into a caller-owned `(buf, cap)`. Both
+// directions have exactly one correct reading of "absent" — a null pointer or a zero length — and
+// exactly one correct behaviour on a short out-buffer, and they belong to the ABI, not to any one
+// slot: the rules are dictated by the POD field docs, not by what the callee does with the bytes.
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+/// Copy `bytes` into a caller-owned out-buffer, CAPPED, and report how many bytes landed — the value
+/// a POD's paired `*_len` field is filled from. A short buffer TRUNCATES rather than refusing:
+/// out-buffer material is advisory (a refusal reason, a gate message), so the status class carries the
+/// answer and these bytes only explain it. A null `buf` or a zero `cap` is the caller declining the
+/// bytes: nothing is written and `0` is reported, never a dereference.
+///
+/// # Safety
+/// When `buf` is non-null it must point to a writable range of at least `cap` bytes for the call.
+#[inline]
+pub unsafe fn write_capped(buf: *mut u8, cap: usize, bytes: &[u8]) -> usize {
+    if buf.is_null() || cap == 0 {
+        return 0;
+    }
+    let n = bytes.len().min(cap);
+    // SAFETY: `bytes[..n]` is initialized and `buf[..n]` is a writable range (n ≤ cap, caller ABI).
+    unsafe { core::ptr::copy_nonoverlapping(bytes.as_ptr(), buf, n) };
+    n
+}
+
+/// Borrow an ABI `(ptr, len)` byte range for the call. A null pointer or zero length is an EMPTY
+/// slice (a legitimately absent range), never a dereference.
+///
+/// # Safety
+/// A non-null `ptr`/`len` MUST describe a live, initialized byte range for the call (ABI discipline).
+#[inline]
+#[must_use]
+pub unsafe fn borrow_bytes<'a>(ptr: *const u8, len: usize) -> &'a [u8] {
+    if ptr.is_null() || len == 0 {
+        &[]
+    } else {
+        // SAFETY: by the ABI, a non-null range is live and initialized for the call.
+        unsafe { core::slice::from_raw_parts(ptr, len) }
+    }
+}
+
+/// Borrow an ABI `(ptr, len)` range as UTF-8, REFUSING anything else. `None` when the range is absent
+/// (null/empty) or not valid UTF-8 — both drive the caller's fail-closed path. This is the reading for
+/// material a decision is made ON (an identifier the host matches, a method name it routes by): a
+/// substituted replacement character there would silently change what was asked.
+///
+/// # Safety
+/// Same contract as [`borrow_bytes`].
+#[inline]
+#[must_use]
+pub unsafe fn borrow_str<'a>(ptr: *const u8, len: usize) -> Option<&'a str> {
+    if ptr.is_null() || len == 0 {
+        return None;
+    }
+    // SAFETY: by the ABI, a non-null range is live and initialized for the call.
+    let bytes = unsafe { core::slice::from_raw_parts(ptr, len) };
+    core::str::from_utf8(bytes).ok()
+}
+
+/// Read an ABI `(ptr, len)` range into an owned `String`, SUBSTITUTING on non-UTF-8. A null pointer or
+/// zero length reads as empty — the ABI's "not present" encoding for a borrowed field. This is the
+/// reading for material that is merely RECORDED (a metering attribution, a pool label): dropping the
+/// whole row because one byte was malformed loses the record, so the bytes are made legible instead.
+///
+/// # Safety
+/// Same contract as [`borrow_bytes`].
+#[inline]
+#[must_use]
+pub unsafe fn borrow_string_lossy(ptr: *const u8, len: usize) -> String {
+    // SAFETY: forwarded verbatim — the caller's obligation on `(ptr, len)` is unchanged.
+    String::from_utf8_lossy(unsafe { borrow_bytes(ptr, len) }).into_owned()
+}
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
 // Test-only instrument: a per-thread counting allocator, THE ALLOC-GATE PROOF.
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 

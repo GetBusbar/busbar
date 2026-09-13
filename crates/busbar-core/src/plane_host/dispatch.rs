@@ -32,6 +32,7 @@ use busbar_plugin::hot::{
     CallerRef, ContentChunk, GateDecision, GateSubjectRef, GateVerdictOut, OpDesc, OpResult,
     StatusClass, TargetRef, WorkHandleDesc, WorkHandleId, POD_VERSION,
 };
+use busbar_plugin::{borrow_bytes, borrow_str};
 use core::mem::MaybeUninit;
 use std::collections::HashMap;
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -363,22 +364,6 @@ fn run_content_gate(
 // gate_decide — fire the operator's request-admission hook gates (fail-closed to a 403 reject).
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 
-/// Copy up to `cap` of `bytes` into the caller's `buf` (tolerating a null/zero-cap slot), returning the
-/// number of bytes written — the `govern_admit_reason` variable-length copy-out, used for the gate's
-/// `message` and `hook` strings alike.
-///
-/// # Safety
-/// `buf`, when non-null, is a writable range of at least `cap` bytes for the call.
-unsafe fn write_reason(buf: *mut u8, cap: usize, bytes: &[u8]) -> usize {
-    if buf.is_null() || cap == 0 {
-        return 0;
-    }
-    let n = bytes.len().min(cap);
-    // SAFETY: `bytes[..n]` is initialized and `buf[..n]` is a writable range (n ≤ cap, caller ABI).
-    unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), buf, n) };
-    n
-}
-
 /// Write the [`GateVerdictOut`] out-param (tolerating a null slot): the verdict + clamped status + the
 /// rendered `message`/`hook` lengths.
 ///
@@ -535,9 +520,10 @@ pub(crate) extern "C-unwind" fn gate_decide(
                 hook,
             } => {
                 // SAFETY: the buffers are writable ranges (or null) per the ABI.
-                let m = unsafe { write_reason(msg_buf, msg_cap, message.as_bytes()) };
+                let m =
+                    unsafe { busbar_plugin::write_capped(msg_buf, msg_cap, message.as_bytes()) };
                 // SAFETY: as above.
-                let h = unsafe { write_reason(hook_buf, hook_cap, hook.as_bytes()) };
+                let h = unsafe { busbar_plugin::write_capped(hook_buf, hook_cap, hook.as_bytes()) };
                 // SAFETY: ABI out-param discipline.
                 unsafe { write_gate_verdict(out, 0, status, m as u32, h as u32) };
             }
@@ -545,38 +531,6 @@ pub(crate) extern "C-unwind" fn gate_decide(
         StatusClass::Ok
     }))
     .unwrap_or(StatusClass::Fault) // caught panic → Fault; `out` already holds the fail-closed reject.
-}
-
-// ─────────────────────────────────────────────────────────────────────────────────────────────
-// Shared borrow helpers — validate an ABI `(ptr, len)` range into a Rust view.
-// ─────────────────────────────────────────────────────────────────────────────────────────────
-
-/// Borrow an ABI `(ptr, len)` byte range for the call. A null pointer or zero length is an EMPTY
-/// slice (a legitimately absent range), never a dereference.
-///
-/// # Safety
-/// A non-null `ptr`/`len` MUST describe a live, initialized byte range for the call (ABI discipline).
-unsafe fn borrow_bytes<'a>(ptr: *const u8, len: usize) -> &'a [u8] {
-    if ptr.is_null() || len == 0 {
-        &[]
-    } else {
-        // SAFETY: by the ABI, a non-null range is live and initialized for the call.
-        unsafe { std::slice::from_raw_parts(ptr, len) }
-    }
-}
-
-/// Borrow an ABI `(ptr, len)` range as UTF-8. `None` when the range is absent (null/empty) or not
-/// valid UTF-8 — both drive the caller's fail-closed path.
-///
-/// # Safety
-/// Same contract as [`borrow_bytes`].
-unsafe fn borrow_str<'a>(ptr: *const u8, len: usize) -> Option<&'a str> {
-    if ptr.is_null() || len == 0 {
-        return None;
-    }
-    // SAFETY: by the ABI, a non-null range is live and initialized for the call.
-    let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
-    std::str::from_utf8(bytes).ok()
 }
 
 #[cfg(test)]

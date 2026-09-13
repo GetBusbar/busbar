@@ -27,7 +27,7 @@ use crate::plane::cost::{CostAmount, CostBreakdown, CostComponent};
 use busbar_plugin::hot::{
     AuthQuery, AuthResolved, Decision, Facts, MeterOutcome, Usage, UsageComponent, POD_VERSION,
 };
-use busbar_plugin::read_sized_field;
+use busbar_plugin::{borrow_string_lossy, read_sized_field};
 
 /// Nanodollars per micro-currency unit — the projection from a [`Usage`]'s `unit_cost_micros` money
 /// scalar into the engine's nanodollar ledger unit ([`CostAmount`]). Mirrors `cost::NANOS_PER_MICRO`
@@ -87,7 +87,9 @@ fn grant_for_blocked(state: &HostState, facts: &Facts) -> Result<AdmitGrant, Lim
     let Some(gov) = state.app.governance.as_ref() else {
         return Ok(AdmitGrant::default());
     };
-    let pool = borrowed_str(facts.pool_name_ptr, facts.pool_name_len);
+    // SAFETY: per the ABI borrow discipline a non-null `(ptr, len)` on a live POD is an initialized
+    // byte range for the duration of the host call (see the POD field docs on `Facts`/`Usage`/`AuthQuery`).
+    let pool = unsafe { borrow_string_lossy(facts.pool_name_ptr, facts.pool_name_len) };
     // Resolve the caller's admission identity from the `Facts` tail: `try_admit`/`chain_for` read
     // ONLY the key's `id` (its attribution `total` bucket) and its `group` (the enforcement chain up
     // the parent tree), so a `VirtualKey` reconstructed from just those two fields drives the SAME
@@ -154,7 +156,9 @@ pub(super) fn admit_reason(state: &HostState, facts: &Facts) -> Result<(), GovBl
 fn resolved_key(facts: &Facts) -> Option<busbar_api::VirtualKey> {
     let id_ptr = read_sized_field!(facts, facts.size, Facts, identity_id_ptr)?;
     let id_len = read_sized_field!(facts, facts.size, Facts, identity_id_len)?;
-    let id = borrowed_str(id_ptr, id_len);
+    // SAFETY: per the ABI borrow discipline a non-null `(ptr, len)` on a live POD is an initialized
+    // byte range for the duration of the host call (see the POD field docs on `Facts`/`Usage`/`AuthQuery`).
+    let id = unsafe { borrow_string_lossy(id_ptr, id_len) };
     if id.is_empty() {
         return None; // no resolved identity → the synth fallback (pre-enrichment behaviour).
     }
@@ -164,7 +168,11 @@ fn resolved_key(facts: &Facts) -> Option<busbar_api::VirtualKey> {
         read_sized_field!(facts, facts.size, Facts, group_ptr),
         read_sized_field!(facts, facts.size, Facts, group_len),
     ) {
-        (Some(ptr), Some(len)) if !ptr.is_null() && len != 0 => Some(borrowed_str(ptr, len)),
+        // SAFETY: per the ABI borrow discipline a non-null `(ptr, len)` on a live POD is an initialized
+        // byte range for the duration of the host call (see the POD field docs on `Facts`/`Usage`/`AuthQuery`).
+        (Some(ptr), Some(len)) if !ptr.is_null() && len != 0 => {
+            Some(unsafe { borrow_string_lossy(ptr, len) })
+        }
         _ => None,
     };
     Some(virtual_key(id, group))
@@ -257,7 +265,9 @@ pub(super) fn charge(state: &HostState, usage: &Usage) -> MeterOutcome {
 fn resolved_attribution(usage: &Usage) -> Option<(String, String, String)> {
     let key_ptr = read_sized_field!(usage, usage.size, Usage, key_id_ptr)?;
     let key_len = read_sized_field!(usage, usage.size, Usage, key_id_len)?;
-    let key_id = borrowed_str(key_ptr, key_len);
+    // SAFETY: per the ABI borrow discipline a non-null `(ptr, len)` on a live POD is an initialized
+    // byte range for the duration of the host call (see the POD field docs on `Facts`/`Usage`/`AuthQuery`).
+    let key_id = unsafe { borrow_string_lossy(key_ptr, key_len) };
     if key_id.is_empty() {
         return None; // no resolved attribution → the synthetic fallback (pre-enrichment behaviour).
     }
@@ -265,14 +275,18 @@ fn resolved_attribution(usage: &Usage) -> Option<(String, String, String)> {
         read_sized_field!(usage, usage.size, Usage, model_ptr),
         read_sized_field!(usage, usage.size, Usage, model_len),
     ) {
-        (Some(ptr), Some(len)) => borrowed_str(ptr, len),
+        // SAFETY: per the ABI borrow discipline a non-null `(ptr, len)` on a live POD is an initialized
+        // byte range for the duration of the host call (see the POD field docs on `Facts`/`Usage`/`AuthQuery`).
+        (Some(ptr), Some(len)) => unsafe { borrow_string_lossy(ptr, len) },
         _ => String::new(),
     };
     let provider = match (
         read_sized_field!(usage, usage.size, Usage, provider_ptr),
         read_sized_field!(usage, usage.size, Usage, provider_len),
     ) {
-        (Some(ptr), Some(len)) => borrowed_str(ptr, len),
+        // SAFETY: per the ABI borrow discipline a non-null `(ptr, len)` on a live POD is an initialized
+        // byte range for the duration of the host call (see the POD field docs on `Facts`/`Usage`/`AuthQuery`).
+        (Some(ptr), Some(len)) => unsafe { borrow_string_lossy(ptr, len) },
         _ => String::new(),
     };
     Some((key_id, model, provider))
@@ -317,7 +331,9 @@ pub(super) fn resolve_auth(_state: &HostState, query: &AuthQuery) -> Option<Auth
     }
     // Establish the caller principal through the real `AuthPrincipal` primitive (anonymous unless the
     // query's audience scopes it) — the seam a Phase-2 credential-store lookup resolves through.
-    let audience = borrowed_str(query.audience_ptr, query.audience_len);
+    // SAFETY: per the ABI borrow discipline a non-null `(ptr, len)` on a live POD is an initialized
+    // byte range for the duration of the host call (see the POD field docs on `Facts`/`Usage`/`AuthQuery`).
+    let audience = unsafe { borrow_string_lossy(query.audience_ptr, query.audience_len) };
     let principal = if audience.is_empty() {
         crate::auth::AuthPrincipal(None)
     } else {
@@ -345,22 +361,6 @@ pub(super) fn resolve_auth(_state: &HostState, query: &AuthQuery) -> Option<Auth
         resolved_ref,
         expires_unix,
     })
-}
-
-// ─────────────────────────────────────────────────────────────────────────────────────────────
-// Shared POD helpers.
-// ─────────────────────────────────────────────────────────────────────────────────────────────
-
-/// Read a borrowed `(ptr, len)` byte range from a POD into an owned `String` (lossy on non-UTF-8). A
-/// null pointer or zero length reads as empty — the ABI's "not present" encoding for a borrowed field.
-fn borrowed_str(ptr: *const u8, len: usize) -> String {
-    if ptr.is_null() || len == 0 {
-        return String::new();
-    }
-    // SAFETY: per the ABI borrow discipline a non-null `(ptr, len)` is a live, initialized byte range
-    // for the duration of the host call (see the POD field docs on `Facts`/`AuthQuery`).
-    let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
-    String::from_utf8_lossy(bytes).into_owned()
 }
 
 #[cfg(test)]

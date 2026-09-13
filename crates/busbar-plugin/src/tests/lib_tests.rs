@@ -164,3 +164,83 @@ fn sized_field_guard_reads_a_buffer_shorter_than_the_struct() {
     // SAFETY: as above — the hidden tail means the decoder yields an empty map without a read.
     assert!(unsafe { decode_usage_units(p) }.is_empty());
 }
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// The borrowed-range read discipline and the capped out-buffer write.
+//
+// Every host-call slot that takes an ABI `(ptr, len)` or fills a caller `(buf, cap)` obeys the same
+// four rules, and until now each slot kept its own copy of them. These cells assert the rules on the
+// ONE definition, which is what makes the copies deletable.
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+/// A capped write NEVER writes past `cap`, and reports what it actually wrote — the length a POD's
+/// `*_len` field is filled from. A short buffer TRUNCATES rather than refusing, because the reason is
+/// advisory: the status class is the answer, the bytes are the explanation.
+#[test]
+fn write_capped_truncates_at_the_cap_and_reports_what_it_wrote() {
+    let mut buf = [0u8; 4];
+    // SAFETY: `buf` is a live writable range of exactly `cap` bytes.
+    let n = unsafe { write_capped(buf.as_mut_ptr(), buf.len(), b"abcdefgh") };
+    assert_eq!(n, 4);
+    assert_eq!(&buf, b"abcd");
+
+    let mut exact = [0u8; 8];
+    // SAFETY: as above.
+    let n = unsafe { write_capped(exact.as_mut_ptr(), exact.len(), b"abcdefgh") };
+    assert_eq!(n, 8);
+    assert_eq!(&exact, b"abcdefgh");
+}
+
+/// A null out-buffer, or a zero cap, writes NOTHING and reports zero — the ABI's "the caller does not
+/// want the bytes" encoding. A slot that dereferenced either would fault on a caller who legitimately
+/// asked only for the status.
+#[test]
+fn write_capped_tolerates_a_null_buffer_and_a_zero_cap() {
+    // SAFETY: a null buffer is the tolerated absent-slot encoding; nothing is dereferenced.
+    assert_eq!(
+        unsafe { write_capped(core::ptr::null_mut(), 16, b"abc") },
+        0
+    );
+    let mut buf = [0u8; 4];
+    // SAFETY: `buf` is live; a zero cap means no byte of it may be touched.
+    assert_eq!(unsafe { write_capped(buf.as_mut_ptr(), 0, b"abc") }, 0);
+    assert_eq!(
+        &buf, b"\0\0\0\0",
+        "a zero cap wrote into the caller's buffer"
+    );
+}
+
+/// An absent borrowed range — null pointer OR zero length — is an EMPTY view, never a dereference.
+/// This is the rule that lets a POD spell an optional field as `(null, 0)`.
+#[test]
+fn an_absent_borrowed_range_is_empty_and_never_dereferenced() {
+    // SAFETY: both forms are the absent encoding; neither pointer is read.
+    unsafe {
+        assert!(borrow_bytes(core::ptr::null(), 16).is_empty());
+        assert!(borrow_bytes(b"abc".as_ptr(), 0).is_empty());
+        assert_eq!(borrow_str(core::ptr::null(), 16), None);
+        assert_eq!(borrow_str(b"abc".as_ptr(), 0), None);
+        assert_eq!(borrow_string_lossy(core::ptr::null(), 16), "");
+        assert_eq!(borrow_string_lossy(b"abc".as_ptr(), 0), "");
+    }
+}
+
+/// The two string readings of a live range are DELIBERATELY different, and the difference is the
+/// caller's fail-closed posture: `borrow_str` REFUSES non-UTF-8 (`None` drives the slot's refusal),
+/// `borrow_string_lossy` SUBSTITUTES (a metering label or a pool name is recorded, never dropped).
+/// A slot that picked the wrong one would either refuse a legal call or admit an illegal one.
+#[test]
+fn the_two_string_readings_split_on_invalid_utf8() {
+    let good = b"pool-a";
+    let bad = [0xffu8, 0xfe, 0xfd];
+    // SAFETY: both are live, initialized ranges for the call.
+    unsafe {
+        assert_eq!(borrow_str(good.as_ptr(), good.len()), Some("pool-a"));
+        assert_eq!(borrow_string_lossy(good.as_ptr(), good.len()), "pool-a");
+        assert_eq!(borrow_str(bad.as_ptr(), bad.len()), None);
+        assert_eq!(
+            borrow_string_lossy(bad.as_ptr(), bad.len()),
+            "\u{fffd}\u{fffd}\u{fffd}"
+        );
+    }
+}

@@ -90,7 +90,8 @@ pub(crate) fn guard_url(
             Err((class, reason)) => (1u8, class, reason),
         };
         // SAFETY: `reason_buf`/`reason_cap` are a writable range (or null) per the ABI.
-        let reason_len = unsafe { write_reason(reason_buf, reason_cap, reason.as_bytes()) };
+        let reason_len =
+            unsafe { busbar_plugin::write_capped(reason_buf, reason_cap, reason.as_bytes()) };
         let out_pod = GuardVerdict {
             size: core::mem::size_of::<GuardVerdict>() as u32,
             version: busbar_plugin::hot::POD_VERSION,
@@ -106,22 +107,6 @@ pub(crate) fn guard_url(
         StatusClass::Ok
     }))
     .unwrap_or(StatusClass::Fault) // caught panic → the distinct fault class, never `Ok`.
-}
-
-/// Copy up to `cap` of `bytes` into the caller's `buf` (tolerating a null/zero-cap slot), returning
-/// the number of bytes written — the offending-host read-back, sized by the caller exactly as the
-/// `egress_fault` cause buffer is.
-///
-/// # Safety
-/// `buf`, when non-null, is a writable range of at least `cap` bytes for the call.
-unsafe fn write_reason(buf: *mut u8, cap: usize, bytes: &[u8]) -> usize {
-    if buf.is_null() || cap == 0 {
-        return 0;
-    }
-    let n = bytes.len().min(cap);
-    // SAFETY: `bytes[..n]` is initialized and `buf[..n]` is a writable range (n ≤ cap, caller ABI).
-    unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), buf, n) };
-    n
 }
 
 /// THE STRUCTURAL JUDGEMENT: the `http(s)` scheme allowlist, then the host. `extract_normalized_host`
