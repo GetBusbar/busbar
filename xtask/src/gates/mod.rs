@@ -399,7 +399,7 @@ const TAKEN_RECUT: &str = "2026-09-11 0063bc20d";
 /// rather than folding it back into `TAKEN_RECUT`, is the fix for the failure this doc-comment
 /// spent a paragraph forbidding: it does not touch `kind-isolation`'s own `TAKEN_RECUT` entry,
 /// which this re-take neither re-ran nor re-verified.
-const TAKEN_RECUT_CONSTRUCTION: &str = "2026-09-11 4faf099ba";
+const TAKEN_RECUT_CONSTRUCTION: &str = "2026-09-12 f1115a9ea";
 
 // THE MEASUREMENTS. Each is `work units at --jobs 1` on the tree named in [`TAKEN`], read off the
 // self-test's own cost line. Constants rather than literals inside the table so that a re-baseline
@@ -416,7 +416,28 @@ const MEASURED_STRUCTURE_LINT: f64 = 7_938.0; // 39 cases, 88.4 s
 // 890.6 s, 63 125 work units, 59 cases, 0 skipped. `TAKEN_RECUT_CONSTRUCTION` is a SEPARATE
 // constant from `TAKEN_RECUT` on purpose — see its own doc comment — so this re-take does not
 // imply anything about whether `kind-isolation`'s figure below is still attributed correctly.
-const MEASURED_CONSTRUCTION: f64 = 63_125.0; // 59 cases, 890.6 s at --jobs 1
+// RE-TAKEN A THIRD TIME: 63 125 -> 82 652, BY HAND AND ON A RED, for the reason the
+// `kind-isolation` note below gives for its own hand re-take — a budget that is twelve cases stale
+// is a budget measuring the wrong battery. The 63 125 was an honest reading OF A 59-CASE BATTERY.
+// This one carries 71: GATES-7 (`ac79922ab`) added the six minted-rule cases to the twelve that
+// preceded them, and `ts-reads-the-clock` adds two rules that every one of the 71 now runs.
+//
+// AND THE ENTRY WAS NOT MERELY STALE, IT WAS UNREACHABLE. `allowed` is `measured * BUDGET_SLACK`,
+// so 63 125 bought 101 000 — which over a battery that actually costs 82 652 serially is 1.222x of
+// headroom. The ruler's OWN measured spread between `--jobs 1` and the harness's default job count
+// is 1.43x (see [`BUDGET_SLACK`]), so the guard was firing on the parallelism it was explicitly
+// denominated in work units to survive, on any box, for any branch. Measured here: 104 563 units
+// at `--jobs 18` against 82 652 at `--jobs 1` — a spread of 1.265x, INSIDE the declared 1.43x.
+// Nothing regressed. The battery got bigger and its measurement did not follow it.
+//
+// Re-run in full, serially, on `f1115a9ea` (this branch's tip, actually carrying 71 cases):
+// `cargo xtask selftest construction --jobs 1` measured 939.4 s, 82 652 work units, 71 cases,
+// 0 skipped, the gate proven RED-able. `XTASK_SELFTEST_CEILING_SECS=0` was set for that run and
+// for that run only, because the 30-minute [`DEFAULT_SELFTEST_CEILING`] is a ceiling on the whole
+// PROCESS: the parallel pass spends wall clock first and the `--jobs 1` re-take `cli.rs` starts
+// after a red inherits what is left of it, which for this battery is not enough to finish.
+// The new allowance is 132 243.
+const MEASURED_CONSTRUCTION: f64 = 82_652.0; // 71 cases, 939.4 s at --jobs 1
 
 // RE-TAKEN 128 034 -> 132 539 (GATES-2, `--jobs 1`, on the fleet box in `TAKEN_RECUT`'s tree at a
 // 1-minute load of 5.0 on 32 cores, 2 182.8 s of wall clock, 175 cases, the battery GREEN and
