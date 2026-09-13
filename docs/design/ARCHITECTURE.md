@@ -82,7 +82,11 @@ them). Each axis is blind to the other two; only the kernel composes them.
   `src/tests/`; the proofs (overlap totality over the selector-form pairs, the lint symbol lists, the
   compile-fail fixtures and their positive companions, the honesty tables) are not surface and live
   in each crate's `tests/` or `fixtures/`. Measured and gated by `scripts/loc-surface.py`
-  (`--ceiling busbar-contract,busbar-caps=3665`), which the construction gate runs as
+  (`--ceiling busbar-contract,busbar-caps=3895`, the figure this integration line MEASURES: the pair's two
+  unlanded stacks each declared their own face against their own base — MCP-I's `Verdict::reason` on one
+  side, `busbar_contract::plane::registry`'s 216 on the other — and 3895 is the first measurement taken
+  with both in one tree, which is the sum of the two declarations and not a third raise), which the
+  construction gate runs as
   `surface-ceiling:contract+caps`. The figure is the PIN, not a budget: it is held at zero
   slack against today's measurement, and it moves up only when a new-architecture face lands
   with a declared raise (`[gate.ceiling_raises]` in `qa/construction.toml`) that names the face
