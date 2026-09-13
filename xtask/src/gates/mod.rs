@@ -945,8 +945,14 @@ pub fn default_jobs() -> usize {
     {
         return n;
     }
+    // The work-unit budgets and the calibration ruler are measured at --jobs 18 (see TAKEN and
+    // BUDGET); above that the ruler under-normalises contention and a battery reads spuriously over
+    // budget on a box with more cores (measured: construction 33k units at 18-way, 54k at 32-way for
+    // the same work). Cap the DEFAULT at the calibrated width so an unattended `cargo xtask selftest`
+    // on a 32-core fleet box runs in the ruler's valid range; an explicit --jobs N still overrides.
+    const CALIBRATED_JOBS: usize = 18;
     std::thread::available_parallelism()
-        .map(|n| n.get())
+        .map(|n| n.get().min(CALIBRATED_JOBS))
         .unwrap_or(1)
 }
 
