@@ -354,6 +354,50 @@ pub unsafe fn borrow_string_lossy(ptr: *const u8, len: usize) -> String {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
+// 5. The length-prefixed record framing. Shared by both lanes AND by both SIDES of the ABI.
+//
+// Several POD tails carry a variable number of variable-length items in one borrowed block, and they
+// all use the same shape: a little-endian `u32` count of bytes, then exactly that many bytes,
+// repeated to the end of the block. `EgressDesc`'s argv and its child environment, and `Usage`'s
+// unit-count tail, are all written this way by a plane and read back this way by a host.
+//
+// The shape is the ABI's, so the reader is too. What matters is not the arithmetic but the FAILURE
+// RULE: a truncated record — a length word that runs off the end, or a length that claims more bytes
+// than remain — stops the read and yields what was decoded so far, and NEVER reads past the block.
+// A sender at a newer minor that appends a record this reader does not understand is truncation by
+// another name, which is why stopping (rather than refusing the whole block) is the correct answer
+// and why the rule belongs here beside the sized-struct guard rather than in each reader.
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+/// Read a little-endian `u32` at `*i` and advance `*i` by 4 — the length word every record in a
+/// framed block starts with. `None` when fewer than 4 bytes remain, which is the block's end or a
+/// truncated tail; either way the caller stops.
+#[inline]
+#[must_use]
+pub fn read_u32_le(bytes: &[u8], i: &mut usize) -> Option<usize> {
+    let end = i.checked_add(4)?;
+    let word = bytes.get(*i..end)?;
+    *i = end;
+    Some(u32::from_le_bytes(word.try_into().ok()?) as usize)
+}
+
+/// Read one whole length-prefixed record at `*i` — the `u32` length word, then exactly that many
+/// bytes — advancing `*i` past both and borrowing the body. `None` on ANY truncation (a partial
+/// length word, or a length claiming more bytes than the block holds), which is the caller's signal
+/// to stop reading the block. The index is advanced ONLY on a complete record, so a `None` leaves
+/// `*i` on the malformed boundary rather than somewhere past the end.
+#[inline]
+#[must_use]
+pub fn read_len_prefixed<'a>(bytes: &'a [u8], i: &mut usize) -> Option<&'a [u8]> {
+    let mut probe = *i;
+    let n = read_u32_le(bytes, &mut probe)?;
+    let end = probe.checked_add(n)?;
+    let body = bytes.get(probe..end)?;
+    *i = end;
+    Some(body)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
 // Test-only instrument: a per-thread counting allocator, THE ALLOC-GATE PROOF.
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 

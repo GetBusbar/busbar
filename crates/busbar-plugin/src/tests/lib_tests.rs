@@ -244,3 +244,85 @@ fn the_two_string_readings_split_on_invalid_utf8() {
         );
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// The length-prefixed record framing.
+//
+// This shape was decoded in four places — `EgressDesc`'s argv, its child environment, `Usage`'s unit
+// tail — and the only rule that matters is what each does with a MALFORMED block. Three of the four
+// copies were on core's side of the ABI and were exercised only through it, so the rule is asserted
+// here, on the definition they now share.
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+/// Build a framed block: each item as a little-endian `u32` length then its bytes.
+fn framed(items: &[&[u8]]) -> Vec<u8> {
+    let mut out = Vec::new();
+    for it in items {
+        out.extend_from_slice(&(it.len() as u32).to_le_bytes());
+        out.extend_from_slice(it);
+    }
+    out
+}
+
+/// A well-formed block reads back every record in order and lands the index exactly on the end —
+/// which is how a caller's `while i < bytes.len()` loop terminates rather than spinning.
+#[test]
+fn a_framed_block_reads_back_every_record_and_lands_on_the_end() {
+    let bytes = framed(&[b"/usr/bin/env", b"-i", b"", b"prog"]);
+    let mut i = 0usize;
+    let mut got: Vec<&[u8]> = Vec::new();
+    while i < bytes.len() {
+        got.push(read_len_prefixed(&bytes, &mut i).expect("well-formed record"));
+    }
+    assert_eq!(
+        got,
+        vec![&b"/usr/bin/env"[..], &b"-i"[..], &b""[..], &b"prog"[..]]
+    );
+    assert_eq!(i, bytes.len(), "the index must land exactly on the end");
+    // An empty record is a legitimate zero-length value, NOT the end of the block: the third item
+    // above is empty and the fourth still read back.
+}
+
+/// A PARTIAL LENGTH WORD stops the read. The index is left on the malformed boundary, never advanced
+/// past the end — a caller that kept reading would otherwise walk off the block.
+#[test]
+fn a_partial_length_word_stops_the_read_without_advancing() {
+    let mut bytes = framed(&[b"ok"]);
+    bytes.extend_from_slice(&[0x01, 0x00]); // two bytes of a four-byte length word
+    let mut i = 0usize;
+    assert_eq!(read_len_prefixed(&bytes, &mut i), Some(&b"ok"[..]));
+    let at_tail = i;
+    assert_eq!(read_len_prefixed(&bytes, &mut i), None);
+    assert_eq!(i, at_tail, "a refused read must not advance the index");
+}
+
+/// A LENGTH THAT CLAIMS MORE BYTES THAN REMAIN stops the read — the truncation that matters, because
+/// it is what a sender at a newer minor looks like, and what a hostile sender would write to make a
+/// host read past the block it was handed.
+#[test]
+fn a_length_claiming_more_than_the_block_holds_is_refused() {
+    let mut bytes = (9u32).to_le_bytes().to_vec();
+    bytes.extend_from_slice(b"only4"); // claims 9, holds 5
+    let mut i = 0usize;
+    assert_eq!(read_len_prefixed(&bytes, &mut i), None);
+    assert_eq!(i, 0, "a refused read must not advance the index");
+
+    // The same refusal at the arithmetic extreme: a length word near `usize::MAX` must not wrap.
+    let mut huge = (u32::MAX).to_le_bytes().to_vec();
+    huge.extend_from_slice(b"x");
+    let mut j = 0usize;
+    assert_eq!(read_len_prefixed(&huge, &mut j), None);
+}
+
+/// The bare length word reads independently and advances by exactly four — the arm `EgressDesc`'s
+/// environment block uses, where a record is `name_len, name, value_len, value` and the lengths are
+/// read before their bodies.
+#[test]
+fn the_bare_length_word_advances_by_exactly_four() {
+    let bytes = [0x2a, 0x00, 0x00, 0x00, 0xff];
+    let mut i = 0usize;
+    assert_eq!(read_u32_le(&bytes, &mut i), Some(42));
+    assert_eq!(i, 4);
+    assert_eq!(read_u32_le(&bytes, &mut i), None, "one byte is not a word");
+    assert_eq!(i, 4, "a refused read must not advance the index");
+}

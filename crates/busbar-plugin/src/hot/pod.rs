@@ -1085,18 +1085,22 @@ pub unsafe fn decode_usage_units(usage: *const Usage) -> std::collections::BTree
     // block live for the `&Usage` we hold.
     let bytes = unsafe { core::slice::from_raw_parts(ptr, len) };
     let mut i = 0usize;
-    while i + 4 <= bytes.len() {
-        let klen =
-            u32::from_le_bytes([bytes[i], bytes[i + 1], bytes[i + 2], bytes[i + 3]]) as usize;
-        i += 4;
-        let Some(key_end) = i.checked_add(klen) else {
+    loop {
+        // The key arm is the shared length-prefixed record; `None` is the block's end or a truncated
+        // record, and both stop the read (see `read_len_prefixed`).
+        let mut probe = i;
+        let Some(key_bytes) = crate::read_len_prefixed(bytes, &mut probe) else {
             break;
         };
-        if key_end > bytes.len() || key_end + 8 > bytes.len() {
+        // The count arm is this tail's own: a bare `u64` following the key, NOT length-prefixed.
+        let Some(count_end) = probe.checked_add(8) else {
+            break;
+        };
+        if count_end > bytes.len() {
             break; // truncated record — fail-safe stop.
         }
-        let key = String::from_utf8_lossy(&bytes[i..key_end]).into_owned();
-        i = key_end;
+        let key = String::from_utf8_lossy(key_bytes).into_owned();
+        i = probe;
         let count = u64::from_le_bytes([
             bytes[i],
             bytes[i + 1],

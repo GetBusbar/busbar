@@ -149,13 +149,7 @@ unsafe fn decode_command(ptr: *const u8, len: usize) -> Option<(String, Vec<Stri
     let mut tokens: Vec<String> = Vec::new();
     let mut i = 0usize;
     while i < bytes.len() {
-        let end = i.checked_add(4)?;
-        let word = bytes.get(i..end)?;
-        i = end;
-        let n = u32::from_le_bytes(word.try_into().ok()?) as usize;
-        let tok_end = i.checked_add(n)?;
-        let tok = bytes.get(i..tok_end)?;
-        i = tok_end;
+        let tok = busbar_plugin::read_len_prefixed(bytes, &mut i)?;
         tokens.push(String::from_utf8_lossy(tok).into_owned());
     }
     let mut it = tokens.into_iter();
@@ -198,14 +192,14 @@ unsafe fn resolve_child_env(ptr: *const u8, len: usize) -> EnvOutcome {
     let mut out: Vec<(String, String)> = Vec::new();
     let mut i = 0usize;
     while i < bytes.len() {
-        let Some(name) = read_len_prefixed(bytes, &mut i) else {
+        let Some(name) = busbar_plugin::read_len_prefixed(bytes, &mut i) else {
             return EnvOutcome::Refuse;
         };
         let Some(&kind) = bytes.get(i) else {
             return EnvOutcome::Refuse;
         };
         i += 1;
-        let Some(value_bytes) = read_len_prefixed_bytes(bytes, &mut i) else {
+        let Some(value_bytes) = busbar_plugin::read_len_prefixed(bytes, &mut i) else {
             return EnvOutcome::Refuse;
         };
         let value = match kind {
@@ -229,24 +223,6 @@ unsafe fn resolve_child_env(ptr: *const u8, len: usize) -> EnvOutcome {
         out.push((String::from_utf8_lossy(name).into_owned(), value));
     }
     EnvOutcome::Ready(out)
-}
-
-/// Read a `u32 len` (LE) then `len` bytes as a borrowed slice, advancing `*i`; `None` on truncation.
-fn read_len_prefixed_bytes<'a>(bytes: &'a [u8], i: &mut usize) -> Option<&'a [u8]> {
-    let end = i.checked_add(4)?;
-    let word = bytes.get(*i..end)?;
-    *i = end;
-    let n = u32::from_le_bytes(word.try_into().ok()?) as usize;
-    let tok_end = i.checked_add(n)?;
-    let slice = bytes.get(*i..tok_end)?;
-    *i = tok_end;
-    Some(slice)
-}
-
-/// As [`read_len_prefixed_bytes`], but the name arm — kept a distinct helper for the read site's
-/// readability (a record reads its name, its kind, then its value).
-fn read_len_prefixed<'a>(bytes: &'a [u8], i: &mut usize) -> Option<&'a [u8]> {
-    read_len_prefixed_bytes(bytes, i)
 }
 
 /// Read the subprocess working directory off the [`EgressDesc`] tail: `Some(dir)` when a non-empty cwd

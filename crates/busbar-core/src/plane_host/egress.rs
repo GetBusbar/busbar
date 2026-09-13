@@ -391,11 +391,11 @@ unsafe fn parse_headers(ptr: *const u8, len: usize) -> Vec<(String, String)> {
     let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
     let mut out = Vec::new();
     let mut i = 0usize;
-    while let Some(name_len) = read_u32(bytes, &mut i) {
+    while let Some(name_len) = busbar_plugin::read_u32_le(bytes, &mut i) {
         let Some(name) = read_str(bytes, &mut i, name_len) else {
             break;
         };
-        let Some(value_len) = read_u32(bytes, &mut i) else {
+        let Some(value_len) = busbar_plugin::read_u32_le(bytes, &mut i) else {
             break;
         };
         let Some(value) = read_str(bytes, &mut i, value_len) else {
@@ -404,14 +404,6 @@ unsafe fn parse_headers(ptr: *const u8, len: usize) -> Vec<(String, String)> {
         out.push((name, value));
     }
     out
-}
-
-/// Read a little-endian `u32` at `*i`, advancing `*i` by 4; `None` when fewer than 4 bytes remain.
-fn read_u32(bytes: &[u8], i: &mut usize) -> Option<usize> {
-    let end = i.checked_add(4)?;
-    let word = bytes.get(*i..end)?;
-    *i = end;
-    Some(u32::from_le_bytes(word.try_into().ok()?) as usize)
 }
 
 /// Read `n` bytes at `*i` as a lossy UTF-8 string, advancing `*i` by `n`; `None` when fewer than `n`
@@ -1459,10 +1451,10 @@ fn decode_head_headers(bytes: &[u8]) -> (Option<String>, Option<String>) {
     let mut content_type = None;
     let mut location = None;
     let mut i = 0usize;
-    while let Some(name) = read_u32(bytes, &mut i)
+    while let Some(name) = busbar_plugin::read_u32_le(bytes, &mut i)
         .and_then(|nl| read_str(bytes, &mut i, nl))
         .and_then(|name| {
-            let vl = read_u32(bytes, &mut i)?;
+            let vl = busbar_plugin::read_u32_le(bytes, &mut i)?;
             let value = read_str(bytes, &mut i, vl)?;
             Some((name, value))
         })
