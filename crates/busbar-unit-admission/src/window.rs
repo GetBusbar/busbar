@@ -81,7 +81,13 @@ pub fn window_end(period: &str, now: u64) -> Option<u64> {
 }
 
 // Public-domain civil-date algorithms; self-contained, no date crate.
-fn civil_from_days(z: i64) -> (i64, i64, i64) {
+//
+// `pub(crate)` rather than private for one reason: the month window is the only arm of either
+// function above that reaches these, and a table-driven test of the month arm can only pin the
+// handful of dates a window computation happens to visit. The algorithm's own hard cases — the
+// negative-epoch branch, the non-leap century, the leap century — are reachable only by calling
+// it directly, and the suite that does so is this crate's `tests/window.rs`.
+pub(crate) fn civil_from_days(z: i64) -> (i64, i64, i64) {
     let z = z + 719_468;
     let era = (if z >= 0 { z } else { z - 146_096 }) / 146_097;
     let doe = z - era * 146_097;
@@ -94,7 +100,7 @@ fn civil_from_days(z: i64) -> (i64, i64, i64) {
     (if m <= 2 { y + 1 } else { y }, m, d)
 }
 
-fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
+pub(crate) fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
     let y = if m <= 2 { y - 1 } else { y };
     let era = (if y >= 0 { y } else { y - 399 }) / 400;
     let yoe = y - era * 400;

@@ -24,6 +24,7 @@ mod hold;
 mod leases;
 mod ported;
 mod price;
+mod window;
 
 /// Which counter a limit caps.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
