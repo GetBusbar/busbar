@@ -13,21 +13,30 @@
 # request, and the engine's egress half is about to move into it (L2 MOVE 7); a move onto the money
 # path with the whole mid-stream arm unrecorded is a move that cannot be proven byte-identical.
 #
-# WHY IT IS A SCRIPT CELL AND NOT SIX MORE `llm|<d>|<d>|request|...` ROWS. It was meant to be: the
-# corpus has declared `llm|<d>|<d>|request|stream_upstream_error` with `mock_control:
-# {"stream-error": true}` since the day the mock grew the verb. Under the PINNED recorder those six
-# rows cannot record what they name, for two independent reasons, and both fail SILENTLY GREEN:
-#   1. record.sh's built-in `llm` driver writes the mock control for exactly one outcome
-#      (`if [ "$outcome" = upstream_down ]` -> "down"). A cell's own `mock_control` is honoured by
-#      the `http` and `concurrent` drivers only, so on an llm cell it is dead: the mock serves the
-#      HEALTHY answer.
-#   2. build-request.py decides streaming by `oc in ("ok_stream", "ok_stream_array")`. `stream_
-#      upstream_error` is in neither, so the request it builds is BUFFERED -- not a stream at all.
-# Measured, not argued: recording those six against 1.5.5 with `needs_fixture` lifted yields
-# `usage Δ {"requests":1,"spend_cents":250,"tokens":18}` and a buffered `chat.completion` body --
-# the happy path, frozen under the name of the failure, identically on both binaries. So those rows
-# stay `needs_fixture` (a NAMED gap, owed to a tool release that teaches the llm driver
-# `mock_control`), and the behaviour is pinned HERE, in the half of the harness busbar owns.
+# WHY IT IS A SCRIPT CELL AND NOT SIX MORE `llm|<d>|<d>|request|...` ROWS. The six
+# `llm|<d>|<d>|request|stream_upstream_error` rows exist and ARE recorded now -- the recorder gap
+# that made them unrecordable (record.sh's llm driver wrote the mock control for `upstream_down`
+# alone; build-request.py streamed only for ok_stream / ok_stream_array, so a cell ordering a
+# mid-stream fault was posted BUFFERED and recorded the happy path under the name of the failure)
+# closed in busbar-oracle v0.3.14 and v0.3.15, and this tree's v0.3.20 pin carries both. What those
+# six rows still CANNOT carry is the reason this family stays a script cell, and it is a property of
+# the built-in driver rather than of the mock:
+#   1. THE BUILT-IN llm DRIVER RECORDS NO `effects.stream_fault`. It records status, headers, the
+#      body, egress, metrics and the usage delta -- and nothing about the CALLER's side of a stream
+#      that died: no client transport verdict (curl's rc: 0 = the door closed cleanly, 18/56 = the
+#      caller's socket died too), no frame count, no byte length of the body as recorded, and no
+#      second usage read after a settle pause, so a late or doubled posting is silence there.
+#      Measured on the same pin: `llm|openai|openai|request|stream_upstream_error` has effects
+#      {audit, egress, metrics, usage}; `llm.stream|openai|stream-error` has those plus
+#      `stream_fault` {body_bytes, body_frames, client_curl_rc, dialect, fault,
+#      usage_delta_after_settle_pause}.
+#   2. THE ONLY MID-STREAM FAULT THE DECLARED AXIS CAN NAME IS `stream-error`. An outcome is one
+#      word on a cell id, and the recorder builds the request from it; `cut` -- headers, one frame,
+#      then the socket dies with no error at all -- has no outcome spelling there, so the reset arm
+#      would be unrecordable on that axis even with the driver taught.
+# Both are TOOL items, owed to a busbar-oracle release and named as such, never worked around here.
+# Until they land, the two fault shapes are pinned HERE, in the half of the harness busbar owns, and
+# the six declared rows pin what the CALLER was told on the `stream-error` arm.
 #
 # WHAT THE CELL PINS, on the SAME baseline config, the SAME mock and the SAME request bytes the
 # `ok_stream` golden already carries for this dialect (build-request.py, outcome `ok_stream`) -- so
