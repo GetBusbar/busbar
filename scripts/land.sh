@@ -1652,6 +1652,14 @@ prove_tree() {
   # thing the selftest can actually catch getting wrong. Everything above and below this point (the
   # picking, the resetting, the halving, the outcome book-keeping) runs for real.
   if [ -n "${LAND_SELFTEST_ROOT:-}" ]; then
+    # A SECOND FUNCTION OF THE TREE: `NONE` is a no-verdict, in the transport's own words and with
+    # the transport's own exit code. It is here because 75 is not red and never was — landq4.sh
+    # scores the whole batch `NONE:cap` off the sentence below — and the bisect (either ladder) has
+    # to be provably unable to turn one into a park.
+    if [ -e "$here/NONE" ]; then
+      echo "land-latchkey: NONE:cap — shard union exceeded the 7200s ceiling; the cap is this shard plan's, never these picks'" >&2
+      return 75
+    fi
     if [ -e "$here/POISON" ]; then
       echo "land.sh: RED — [$label] selftest prover: POISON is on the tree" >&2; return 1
     fi
@@ -4205,6 +4213,175 @@ EOF
   _st "M3: a plain comment line is still ignored" 0 env LAND_SELFTEST_ROOT="$repo" LAND_DONE="$root/done-M.txt" \
       bash "$0" --batch "$bm5"
   _stgrep "M3: the commented batch landed its one line" "$bm5.result" "^GREEN.*$c1"
+
+  # ── CASE MF — THE BISECT FAN: A ROUND OF RUNGS, PROVEN AT ONCE, READ IN ORDER ─────────────────
+  # The width first, because it is the whole of what decides which ladder runs. It is
+  # LATCHKEY_PREFIX_FAN, bounded by landq4.sh's own proc bound (LATCHKEY_MAX_JOBS ÷
+  # LATCHKEY_JOBS_PER_PROOF) and by the backend: a fleet proof holds a box's slot for its whole run,
+  # so the fleet path never fans and is the serial ladder this engine has always climbed.
+  echo "land.sh selftest: the bisect fan's width, and what bounds it"
+  _t2 "MF: the default fan is 6, bounded by the default proc bound (12/3)" 4 \
+     "$(LAND_BACKEND=latchkey LAND_PREFIX_FAN=6 LATCHKEY_MAX_JOBS=12 LATCHKEY_JOBS_PER_PROOF=3 land_prefix_fan_width)"
+  _t2 "MF:   ...a cap of 40 lets the whole 6 through" 6 \
+     "$(LAND_BACKEND=latchkey LAND_PREFIX_FAN=6 LATCHKEY_MAX_JOBS=40 LATCHKEY_JOBS_PER_PROOF=3 land_prefix_fan_width)"
+  _t2 "MF:   ...a narrow knob is never widened by a wide cap" 3 \
+     "$(LAND_BACKEND=latchkey LAND_PREFIX_FAN=3 LATCHKEY_MAX_JOBS=40 LATCHKEY_JOBS_PER_PROOF=3 land_prefix_fan_width)"
+  _t2 "MF:   ...a cap of 6 bounds the fan to 2, not 6" 2 \
+     "$(LAND_BACKEND=latchkey LAND_PREFIX_FAN=6 LATCHKEY_MAX_JOBS=6 LATCHKEY_JOBS_PER_PROOF=3 land_prefix_fan_width)"
+  _t2 "MF:   ...a cap of ZERO is the serial ladder, never 'unbounded'" 1 \
+     "$(LAND_BACKEND=latchkey LAND_PREFIX_FAN=6 LATCHKEY_MAX_JOBS=0 LATCHKEY_JOBS_PER_PROOF=3 land_prefix_fan_width)"
+  _t2 "MF:   ...the fleet backend never fans" 1 \
+     "$(LAND_BACKEND=fleet LAND_PREFIX_FAN=6 LATCHKEY_MAX_JOBS=40 LATCHKEY_JOBS_PER_PROOF=3 land_prefix_fan_width)"
+  _t2 "MF:   ...and nonsense in either knob is a default, never an arithmetic error" 4 \
+     "$(LAND_BACKEND=latchkey LAND_PREFIX_FAN=six LATCHKEY_MAX_JOBS=twelve LATCHKEY_JOBS_PER_PROOF=three land_prefix_fan_width)"
+
+  # A TEN-LINE UNIT, on this repository, with the culprit planted at a known position. Twelve
+  # commits that touch twelve different files, so every rung of the ladder is a real cherry-pick and
+  # a real tree, and the prover is still a function of the tree alone.
+  echo "land.sh selftest: the bisect fan — one round lands the green prefix and parks the culprit"
+  git -C "$repo" checkout -q -b fansrc "$integ"
+  local fh="" fx=1 h
+  while [ "$fx" -le 12 ]; do
+    printf '%s\n' "$fx" >"$repo/f$fx.txt"; git -C "$repo" add -A; git -C "$repo" commit -qm "f$fx"
+    fh="$fh $(git -C "$repo" rev-parse HEAD)"; fx=$((fx + 1))
+  done
+  # THE CULPRIT, and it is a property of the TREE: a commit that puts POISON on it.
+  : >"$repo/POISON"; git -C "$repo" add -A; git -C "$repo" commit -qm fan-poison
+  local fp; fp="$(git -C "$repo" rev-parse HEAD)"
+  # AND A NO-VERDICT, the same way: a commit that puts NONE on the tree. 75, not 1.
+  git -C "$repo" checkout -q -b fannone "$integ"
+  : >"$repo/NONE"; git -C "$repo" add -A; git -C "$repo" commit -qm fan-none
+  local fn; fn="$(git -C "$repo" rev-parse HEAD)"
+  git -C "$repo" checkout -q integ
+  # shellcheck disable=SC2086
+  set -- $fh
+  local f1="$1" f2="$2" f3="$3" f5="$5" f6="$6" f7="$7" f8="$8" f9="$9"
+  shift 9; local f10="$1"
+
+  # MF1 — TEN LINES, CULPRIT AT POSITION 4, FAN 6. ONE ROUND: rungs 1..6 go out together, rungs
+  # 1..3 come back green and land, rung 4 is the first red so line 4 is the culprit, and rungs 5
+  # and 6 are discarded UNREAD because both of them carry line 4.
+  local bf1="$root/batchMF1.txt"
+  { echo "--prove $f1"; for h in "$f2" "$f3" "$fp" "$f5" "$f6" "$f7" "$f8" "$f9" "$f10"; do
+      echo "#UNIT 1"; echo "--prove $h"; done; } >"$bf1"
+  git -C "$repo" checkout -q integ; git -C "$repo" reset -q --hard "$integ"
+  _st "MF1: a ten-line unit with the culprit at 4 exits 1" 1 \
+      env LAND_SELFTEST_ROOT="$repo" LAND_DONE="$root/done-MF.txt" BUSBAR_LAND_BACKEND=latchkey \
+          LATCHKEY_PREFIX_FAN=6 LATCHKEY_MAX_JOBS=40 LATCHKEY_JOBS_PER_PROOF=3 \
+          LAND_TMP="$root/fantmp" bash "$0" --batch "$bf1"
+  _stgrep "MF1: it is still the PREFIX bisect"      "$ST_OUT" 'bisecting BY PREFIX \(root; root\+1; root\+2'
+  _stgrep "MF1: ONE round, six rungs, concurrently" "$ST_OUT" 'bisect ROUND 1: 6 prefix\(es\) proven CONCURRENTLY'
+  _stno   "MF1: and there is no second round"       "$ST_OUT" 'bisect ROUND 2'
+  _stgrep "MF1: line 1 GREEN"  "$bf1.result" "^GREEN.*$f1"
+  _stgrep "MF1: line 2 GREEN"  "$bf1.result" "^GREEN.*$f2"
+  _stgrep "MF1: line 3 GREEN"  "$bf1.result" "^GREEN.*$f3"
+  _stgrep "MF1: line 4 RED — the culprit"           "$bf1.result" "^RED.*$fp"
+  _stgrep "MF1: the culprit is named as such"       "$ST_OUT" 'RED line 4 — the first prefix that turns red; it is the culprit'
+  _stgrep "MF1: rungs past the culprit are DISCARDED UNREAD" "$ST_OUT" '2 prefix\(es\) of round 1 are DISCARDED UNREAD'
+  _stgrep "MF1: ...and it says why they cannot be read" "$ST_OUT" 'every one of them carries line 4'
+  _stgrep "MF1: three lines landed in the one round" "$ST_OUT" 'round 1 landed 3 line\(s\); W is at'
+  local mfh=0
+  for h in "$f5" "$f6" "$f7" "$f8" "$f9" "$f10"; do
+    grep -qE "^HELD.*$h" "$bf1.result" || mfh=1
+    grep -qE "^RED.*$h"  "$bf1.result" && mfh=1
+  done
+  [ "$mfh" = 0 ] && printf '  ok   %-46s\n' "MF1: lines 5..10 are HELD, none of them RED" \
+    || { printf '  FAIL %-46s\n' "MF1: lines 5..10 are HELD, none of them RED"; fails=$((fails + 1)); }
+  for f in f1.txt f2.txt f3.txt; do
+    [ -f "$repo/$f" ] && printf '  ok   %-46s\n' "MF1: $f landed" \
+      || { printf '  FAIL %-46s\n' "MF1: $f landed"; fails=$((fails + 1)); }
+  done
+  [ -e "$repo/POISON" ] && { printf '  FAIL %-46s\n' "MF1: the culprit is backed out"; fails=$((fails + 1)); } \
+    || printf '  ok   %-46s\n' "MF1: the culprit is backed out"
+  [ -f "$repo/f5.txt" ] && { printf '  FAIL %-46s\n' "MF1: the held lines' picks are NOT on the tree"; fails=$((fails + 1)); } \
+    || printf '  ok   %-46s\n' "MF1: the held lines' picks are NOT on the tree"
+  # THE SCRATCH CHECKOUTS ARE THE FAN'S ALONE, and they do not outlive the round.
+  _t2 "MF1: no scratch checkout is left behind"      0 \
+     "$(git -C "$repo" worktree list 2>/dev/null | grep -c 'land-prefix-')"
+  # ...AND W'S HEAD MOVED ONLY ONCE, onto the last green rung's tree: three picks and no fourth.
+  _t2 "MF1: W carries exactly the three landed picks" 3 \
+     "$(git -C "$repo" log --oneline "$integ"..HEAD 2>/dev/null | grep -c '^')"
+
+  # MF2 — THE CULPRIT AT POSITION 8, FAN 6: TWO ROUNDS. Round 1 is all green and lands its whole
+  # width; round 2 starts at rung 7, ON THE TREE ROUND 1 LANDED, and finds the culprit at 8.
+  echo "land.sh selftest: the bisect fan — a culprit past the first round's width takes two rounds"
+  local bf2="$root/batchMF2.txt"
+  { echo "--prove $f1"; for h in "$f2" "$f3" "$f5" "$f6" "$f7" "$f8" "$fp" "$f9" "$f10"; do
+      echo "#UNIT 1"; echo "--prove $h"; done; } >"$bf2"
+  git -C "$repo" checkout -q integ; git -C "$repo" reset -q --hard "$integ"
+  _st "MF2: the culprit at 8 exits 1"               1 \
+      env LAND_SELFTEST_ROOT="$repo" LAND_DONE="$root/done-MF.txt" BUSBAR_LAND_BACKEND=latchkey \
+          LATCHKEY_PREFIX_FAN=6 LATCHKEY_MAX_JOBS=40 LATCHKEY_JOBS_PER_PROOF=3 \
+          LAND_TMP="$root/fantmp" bash "$0" --batch "$bf2"
+  _stgrep "MF2: round 1 is six rungs"               "$ST_OUT" 'bisect ROUND 1: 6 prefix\(es\) proven CONCURRENTLY'
+  _stgrep "MF2: round 1 lands its whole width"      "$ST_OUT" 'round 1 landed 6 line\(s\)'
+  _stgrep "MF2: round 2 takes what is left (4)"     "$ST_OUT" 'bisect ROUND 2: 4 prefix\(es\) proven CONCURRENTLY'
+  _stno   "MF2: and there is no third round"        "$ST_OUT" 'bisect ROUND 3'
+  _stgrep "MF2: line 7 GREEN (round 2's first rung)" "$bf2.result" "^GREEN.*$f8"
+  _stgrep "MF2: line 8 RED — the culprit"           "$bf2.result" "^RED.*$fp"
+  _stgrep "MF2: line 9 HELD"                        "$bf2.result" "^HELD.*$f9"
+  _stgrep "MF2: line 10 HELD"                       "$bf2.result" "^HELD.*$f10"
+  _t2 "MF2: seven lines are GREEN"                  7 "$(grep -c '^GREEN' "$bf2.result")"
+  # ROUND 2 IS PROVEN ON WHAT ROUND 1 LANDED, not on the unit's base: its rungs carry seven picks.
+  _stgrep "MF2: round 2's rungs are the whole prefix, not its slice" "$ST_OUT" 'proving prefix 1,2,3,4,5,6,7 at'
+
+  # MF3 — A NO-VERDICT IN THE FAN. 75 is not a red and never was: the rung's own words go on the
+  # landing's log in ladder order, which is what landq4.sh reads to score the batch NONE:cap, and
+  # the rungs behind it are discarded unread exactly as they are behind a red.
+  echo "land.sh selftest: the bisect fan — a NONE in the round is the transport's words, in order"
+  local bf3="$root/batchMF3.txt"
+  { echo "--prove $f1"; for h in "$fn" "$f2" "$f3" "$f5" "$f6"; do echo "#UNIT 1"; echo "--prove $h"; done; } >"$bf3"
+  git -C "$repo" checkout -q integ; git -C "$repo" reset -q --hard "$integ"
+  _st "MF3: a NONE in the fan exits 1 (the batch is not green)" 1 \
+      env LAND_SELFTEST_ROOT="$repo" LAND_DONE="$root/done-MF.txt" BUSBAR_LAND_BACKEND=latchkey \
+          LATCHKEY_PREFIX_FAN=6 LATCHKEY_MAX_JOBS=40 LATCHKEY_JOBS_PER_PROOF=3 \
+          LAND_TMP="$root/fantmp" bash "$0" --batch "$bf3"
+  _stgrep "MF3: the rung's NONE sentence reaches the landing's log" "$ST_OUT" 'NONE:cap — shard union exceeded the 7200s ceiling'
+  _stgrep "MF3: it is the WORD landq4 scores on"    "$ST_OUT" 'land-latchkey: NONE:cap'
+  _stgrep "MF3: line 1 still landed"                "$bf3.result" "^GREEN.*$f1"
+  _stgrep "MF3: the rungs behind it are discarded unread" "$ST_OUT" 'DISCARDED UNREAD'
+  _stgrep "MF3: line 3 is HELD, never parked red"   "$bf3.result" "^HELD.*$f2"
+  _stno   "MF3: ...and nothing after the no-verdict is RED" "$bf3.result" "^RED.*$f3"
+
+  # MF4 — FAN 1 IS THE SERIAL LADDER, UNCHANGED. Same batch as MF1, same verdicts, same landed
+  # tree — and not one round, because there are no rounds on that path.
+  echo "land.sh selftest: the bisect fan — fan 1 is the serial ladder, byte for byte"
+  git -C "$repo" checkout -q integ; git -C "$repo" reset -q --hard "$integ"
+  _st "MF4: the same unit at fan 1 exits 1"         1 \
+      env LAND_SELFTEST_ROOT="$repo" LAND_DONE="$root/done-MF.txt" BUSBAR_LAND_BACKEND=latchkey \
+          LATCHKEY_PREFIX_FAN=1 LATCHKEY_MAX_JOBS=40 LATCHKEY_JOBS_PER_PROOF=3 \
+          LAND_TMP="$root/fantmp" bash "$0" --batch "$bf1"
+  _stno   "MF4: no round was opened"                "$ST_OUT" 'bisect ROUND'
+  _stno   "MF4: nothing was discarded unread"       "$ST_OUT" 'DISCARDED UNREAD'
+  _stgrep "MF4: the ladder is climbed rung by rung" "$ST_OUT" 'proving prefix 1,2,3,4 at'
+  _stgrep "MF4: line 3 GREEN, as at fan 6"          "$bf1.result" "^GREEN.*$f3"
+  _stgrep "MF4: line 4 RED, as at fan 6"            "$bf1.result" "^RED.*$fp"
+  _stgrep "MF4: line 5 HELD, as at fan 6"           "$bf1.result" "^HELD.*$f5"
+  _t2 "MF4: and the same three picks are on W"      3 \
+     "$(git -C "$repo" log --oneline "$integ"..HEAD 2>/dev/null | grep -c '^')"
+
+  # MF5 — THE FAN IS BOUNDED BY THE PROC BOUND ON A REAL RUN, not only in the width function: the
+  # same ten-line unit under a cap of 6 takes rounds of TWO.
+  echo "land.sh selftest: the bisect fan — the proc bound is what a real round is measured against"
+  git -C "$repo" checkout -q integ; git -C "$repo" reset -q --hard "$integ"
+  _st "MF5: a cap of 6 still lands the green prefix" 1 \
+      env LAND_SELFTEST_ROOT="$repo" LAND_DONE="$root/done-MF.txt" BUSBAR_LAND_BACKEND=latchkey \
+          LATCHKEY_PREFIX_FAN=6 LATCHKEY_MAX_JOBS=6 LATCHKEY_JOBS_PER_PROOF=3 \
+          LAND_TMP="$root/fantmp" bash "$0" --batch "$bf1"
+  _stgrep "MF5: the round is two rungs, not six"    "$ST_OUT" 'bisect ROUND 1: 2 prefix\(es\) proven CONCURRENTLY on .* \(fan 2\)'
+  _stgrep "MF5: round 2 is two as well"             "$ST_OUT" 'bisect ROUND 2: 2 prefix\(es\) proven CONCURRENTLY'
+  _stgrep "MF5: and the culprit is still line 4"    "$bf1.result" "^RED.*$fp"
+  _stgrep "MF5: line 3 still GREEN"                 "$bf1.result" "^GREEN.*$f3"
+  _stno   "MF5: line 5 is not red"                  "$bf1.result" "^RED.*$f5"
+
+  # THE CLOSING PROPERTIES. W's HEAD is moved by the fan in exactly ONE place, and it is the reset
+  # onto a LANDED rung; and the rungs are packed from their own checkouts, never from W.
+  _t2 "MF: the fan moves W in exactly one place"    1 \
+     "$(sed -n '/^land_unit_prefix_fan() {/,/^}$/p' "$LAND_SRC" | grep -c 'git -C "\$save_here" reset')"
+  _t2 "MF:   ...and it is the only reset it does"   1 \
+     "$(sed -n '/^land_unit_prefix_fan() {/,/^}$/p' "$LAND_SRC" | grep -c 'reset -q --hard')"
+  _t2 "MF:   ...every rung names the tree it packs" 1 \
+     "$(grep -c 'LAND_LATCHKEY_REPO="\$here" bash "\$lkt"' "$LAND_SRC")"
 
   # ── CASE N — THE PLUGIN CDYLIBS THE TEST HARNESSES dlopen ─────────────────────────────────────
   # The batteries in busbar-core do not skip when the artifact is missing and do not judge when it
