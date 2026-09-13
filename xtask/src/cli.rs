@@ -471,6 +471,17 @@ fn run_selftest(gate: &dyn gates::Gate, cx: &Ctx) -> i32 {
     // disarmed the ceiling over exactly the work it exists to bound. This is that read.
     let _ = report.cases();
     drop(watchdog);
+    if std::env::var("XTASK_SELFTEST_TIMING").is_ok() {
+        let mut rows = report.timings();
+        rows.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
+        for (name, took, units, prepaid) in &rows {
+            eprintln!(
+                "TIMING {units:8.1}u {:7.2}s (prepaid {:6.2}s)  {name}",
+                took.as_secs_f64(),
+                prepaid.as_secs_f64()
+            );
+        }
+    }
     for case in report.cases() {
         let got = match &case.got {
             gates::Expect::Green => "GREEN",

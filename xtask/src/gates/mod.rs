@@ -1157,6 +1157,19 @@ impl<'a> Report<'a> {
             .map(|(c, t)| (c.name.as_str(), *t))
     }
 
+    /// Per-case timing rows `(name, took, units, prepaid)` for `XTASK_SELFTEST_TIMING`,
+    /// the diagnostic that surfaces which case is spending the self-test's work-unit budget.
+    pub fn timings(&self) -> Vec<(String, std::time::Duration, f64, std::time::Duration)> {
+        let t = self.resolve();
+        t.cases
+            .iter()
+            .zip(t.took.iter())
+            .zip(t.units.iter())
+            .zip(t.prepaid.iter())
+            .map(|(((c, d), u), p)| (c.name.clone(), *d, *u, *p))
+            .collect()
+    }
+
     pub fn note_infra_failure(&mut self, msg: impl Into<String>) {
         self.infra.push(msg.into());
     }
