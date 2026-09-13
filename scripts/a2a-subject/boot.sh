@@ -686,6 +686,40 @@ reason to run those checks anyway."
 principals. Every scoping check would then be comparing an identity with itself and would pass \
 vacuously."
 
+  # ── A THIRD PRINCIPAL, AND IT IS THE ONE THAT REACHES NO AGENT. ──
+  #
+  # A and B are both UNSCOPED keys (`allowed_pools` omitted = every pool), so both of them see every
+  # fronted registration this deployment approved. That makes them ONE path as far as the catalogue
+  # is concerned: `select` finds the promoted agent for either. The catalogue's REFUSAL -- "no agent
+  # this key may reach can serve this shape of task", raised before any answer is computed -- has no
+  # caller here at all, and a capture taken with A and B alone is silent about it.
+  #
+  # This key is minted with an EXPLICIT EMPTY `allowed_pools`, which the admin API documents on its
+  # own field as "NO pools" and which is the most ordinary narrowing an operator writes. Nothing
+  # about the deployment is relaxed or tightened to produce it; it is a third key, minted by the same
+  # verb, differing only in its scope. What it buys is a caller for whom the catalogue is EMPTY while
+  # the same deployment, the same agent and the same approval stand untouched for A.
+  #
+  # MINTED FOR EVERY BOOT, for the reason B is: a credential that exists only when one leg runs is a
+  # credential nobody notices has stopped working.
+  local plain_c
+  plain_c=$(curl -s --max-time 15 -X POST "http://127.0.0.1:$admin_port/api/v1/admin/keys" \
+              -H "authorization: Bearer $admin_token" -H 'content-type: application/json' \
+              -d '{"name":"a2a-conformance-subject-unscoped-nothing","allowed_pools":[]}' \
+            | python3 -c 'import json,sys
+d = sys.stdin.read()
+try:
+    t = json.loads(d)["token"]
+except Exception:
+    sys.exit("the admin API did not return a third token: %s" % d)
+sys.stdout.write(t)') \
+    || die "the admin API did not mint a THIRD, SCOPE-NARROWED key. Without one there is no caller \
+this deployment's catalogue is empty for, and every capture taken here would be evidence about the \
+served path only."
+  local bound_c
+  bound_c=$(node "$minter" "$dir/signing.key" "$plain_c" "$canonical") \
+    || die "could not mint the third principal's audience-bound token."
+
   # ── THE REGISTRATION IS PROMOTED, by the operator verbs, before anything is measured. ──
   subject_promote "$admin_port" "$admin_token" "$dir"
   subject_await_serving "$direct" "$bound"
@@ -743,6 +777,10 @@ busbar nobody probed."
   SUBJECT_TOKEN="$bound"
   # shellcheck disable=SC2034
   SUBJECT_TOKEN_B="$bound_b"
+  # THE CALLER THE CATALOGUE IS EMPTY FOR. Same audience, same issuer, same deployment; scoped to no
+  # pool, so it holds no agent and `select` refuses it.
+  # shellcheck disable=SC2034
+  SUBJECT_TOKEN_C="$bound_c"
   # THE OPERATOR SURFACE OF THIS BOOT. Loopback-only and ephemeral (the token is 24 CSPRNG bytes
   # regenerated every boot), exported so that a check about busbar's role as a CARD VERIFIER can
   # drive the same operator verbs a human drives -- `PUT /agents/{name}` then `connect`. That is
@@ -1043,6 +1081,7 @@ leg_probe() {
     say "   HOLDING (A2A_SUBJECT_HOLD is set). Artefacts in: $SUBJECT_DIR"
     say "   token A: $SUBJECT_TOKEN"
     say "   token B: ${SUBJECT_TOKEN_B:-}"
+    say "   token C: ${SUBJECT_TOKEN_C:-}"
     say "   issuer key: ${SUBJECT_ISSUER_KEY:-<none>}"
     while true; do sleep 3600; done
   fi
