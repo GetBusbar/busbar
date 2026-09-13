@@ -42,14 +42,22 @@
 //!   the design makes the lookup key can finally be spelled; without the claim half, a native plane
 //!   had no way to be scoped at all.
 //!
-//! The hook-veto seat is still absent: it reaches into the hook seat machinery, which this crate
-//! does not depend on. A veto composes with the check here the way the design says — this runs
-//! first, and a veto after it wins regardless of what it returned.
+//! The hook-veto seat is now here as a kind-neutral face: [`VetoSeat`], a `// contract:` trait the
+//! integrator registers seats behind, and [`approve_gated`], which runs the scope check FIRST and
+//! then consults the seats in order with THE FIRST VETO WINNING. A veto composes with the scope
+//! check exactly as the design says — the scope check runs first, and a veto after it wins
+//! regardless of what it returned, carrying the hook's closed [`busbar_contract::VetoCode`] reason.
+//! What is still
+//! deliberately absent is the machinery that PRODUCES the seats (the hook seat host) and the plane's
+//! resource-locator half — both reach into the plane host, which this crate does not depend on.
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
 use busbar_contract::{ClaimKey, OpClassId};
+
+mod gate;
+pub use gate::{approve_gated, Refused, VetoSeat};
 
 /// The built-in authorization scopes — a strict two-rung chain: `ReadOnly` at the bottom, `Full` at
 /// the top. Authorization is checked on the PRINCIPAL per endpoint and is NEVER derived from the
@@ -337,16 +345,6 @@ const fn op(method: &'static str, path: &'static str, scope: Scope) -> AdminOper
         path,
         scope,
     }
-}
-
-/// Why the APPROVE step refused a unit.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Refused {
-    /// The principal's held [`Grants`] do not satisfy the required [`Scope`].
-    InsufficientScope {
-        /// The scope that would have sufficed.
-        needed: Scope,
-    },
 }
 
 /// Where the required scope for a claim's operation class is read from.

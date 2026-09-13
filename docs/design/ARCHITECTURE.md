@@ -1598,6 +1598,18 @@ cross-product of the thirteen selector forms — 169 pairs — with no catch-all
 loop's step order is carried by types: ten step markers, and twelve token types that name the step or
 the unit they entitle. Totality and type-level step order are what the surface costs.
 
+**2026-09-12 — unit-gaps seat (b): the hook-veto seat's unit rise, a declared FACE.** The kind-neutral
+APPROVE veto seat (`busbar_unit_scope::VetoSeat` + `approve_gated`, first-veto-wins, carrying the
+contract's own closed `VetoCode`) adds real surface to `busbar-unit-scope`. It carries no NEW
+plugin-visible contract surface — the veto reason is the pre-existing `busbar_contract::VetoCode` and
+the seat itself is a `// contract:` face on the unit, so the caps-contract pair ceiling is untouched.
+The rise is the unit's own: `loc-ceilings:unit-total` re-pinned **14369 → 14395** (by 26) and
+`loc-ceilings:union` **23228 → 23250** (by 22), both still under the base ceilings (14476 / 23335), so
+`ceiling-rose` holds and no §1.1 arch number moves. Seat (a)'s arity types were relocated OUT of the
+contract into the egress unit for the same reason (unit-internal pick logic no plane reads is not
+plugin surface); the kernel name-match ceiling stays under its pin by keeping each seat's new code in
+non-reachable files (`pool.rs`, `gate.rs`).
+
 ### Decisions 2026-09-06 (owner)
 
 - **Planes and transports are plugins like every other plugin.** Store, hook, auth, secret, export,

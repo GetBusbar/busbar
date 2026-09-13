@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use super::*;
+use busbar_contract::VetoCode;
 
 /// The authorization matrix, ported from 1.5.5's `required_scope_matrix` test: reads (+ the two
 /// dry-run POSTs) are read-only, every mutation is full, unknown methods fail closed to full.
@@ -220,5 +221,100 @@ fn a_claims_operation_class_is_scoped_through_the_policy() {
         ),
         None,
         "an operation nobody wrote a policy entry for has not been authorized"
+    );
+}
+
+// ── the hook-veto seat (seat b) ──────────────────────────────────────────────────────────────────
+
+/// A test seat with a fixed answer, for the composition proof.
+struct FixedSeat(Option<VetoCode>);
+
+impl VetoSeat for FixedSeat {
+    fn veto(&self, _claim: ClaimKey, _op: OpClassId) -> Option<VetoCode> {
+        self.0
+    }
+}
+
+fn claim_op() -> (ClaimKey, OpClassId) {
+    (ClaimKey::new("chat"), OpClassId::new("completion"))
+}
+
+#[test]
+fn no_seats_proceeds_when_scope_admits() {
+    let (c, o) = claim_op();
+    assert_eq!(
+        approve_gated(Grants::of(Scope::Full), Scope::Full, c, o, &[]),
+        Ok(()),
+        "an empty seat list is not a special case: the unit proceeds unit-for-unit"
+    );
+}
+
+#[test]
+fn a_seated_gate_vetoes_after_scope_admission_carrying_its_reason() {
+    let (c, o) = claim_op();
+    let seat = FixedSeat(Some(VetoCode::PolicyRefused));
+    assert_eq!(
+        approve_gated(Grants::of(Scope::Full), Scope::Full, c, o, &[&seat]),
+        Err(Refused::Vetoed {
+            code: VetoCode::PolicyRefused,
+            seat: 0,
+        }),
+        "the refusal carries the hook's own closed reason and the seat that stopped it"
+    );
+}
+
+#[test]
+fn the_scope_check_runs_first_and_a_refused_unit_is_never_handed_to_a_gate() {
+    let (c, o) = claim_op();
+    // The scope is insufficient AND a seat would veto; the scope refusal must win, because a unit
+    // the principal may not perform is refused before any gate is asked.
+    let seat = FixedSeat(Some(VetoCode::NotPermitted));
+    assert_eq!(
+        approve_gated(Grants::of(Scope::ReadOnly), Scope::Full, c, o, &[&seat]),
+        Err(Refused::InsufficientScope {
+            needed: Scope::Full
+        }),
+        "scope admission runs before the veto seat"
+    );
+}
+
+#[test]
+fn the_first_veto_wins_and_a_later_seat_is_not_consulted() {
+    let (c, o) = claim_op();
+    let pass = FixedSeat(None);
+    let first = FixedSeat(Some(VetoCode::ContentRefused));
+    let second = FixedSeat(Some(VetoCode::RateRefused));
+    // A pass then a veto lands on the vetoing seat's position.
+    assert_eq!(
+        approve_gated(Grants::of(Scope::Full), Scope::Full, c, o, &[&pass, &first]),
+        Err(Refused::Vetoed {
+            code: VetoCode::ContentRefused,
+            seat: 1,
+        })
+    );
+    // Two vetoing seats: the FIRST wins; the second is never asked.
+    assert_eq!(
+        approve_gated(
+            Grants::of(Scope::Full),
+            Scope::Full,
+            c,
+            o,
+            &[&first, &second]
+        ),
+        Err(Refused::Vetoed {
+            code: VetoCode::ContentRefused,
+            seat: 0,
+        })
+    );
+}
+
+#[test]
+fn a_silent_seat_proceeds() {
+    let (c, o) = claim_op();
+    let seat = FixedSeat(None);
+    assert_eq!(
+        approve_gated(Grants::of(Scope::Full), Scope::Full, c, o, &[&seat]),
+        Ok(()),
+        "a seat that returns None does not stop the unit"
     );
 }
