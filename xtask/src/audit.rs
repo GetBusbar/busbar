@@ -393,7 +393,7 @@ impl Git {
     /// fresh `Git` per overlay — re-ran this whole-history walk a dozen times and drifted over its
     /// budget whenever the box was loaded.
     pub fn reachable(&self) -> &BTreeSet<String> {
-        &**self.reachable.get_or_init(|| {
+        self.reachable.get_or_init(|| {
             let pins = self.audit_pins();
             let head = self.head().unwrap_or_default();
             let key = format!(
