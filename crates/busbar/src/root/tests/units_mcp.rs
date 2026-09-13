@@ -1860,7 +1860,7 @@ impl LegNode {
                 Door::new(InMemoryCells::new()),
                 Pricer::flat(0),
                 crate::root::policy::build(&crate::root::policy::MeterPolicyConfig::default()),
-                Mutex::new(memory_durability()),
+                std::sync::Arc::new(Mutex::new(memory_durability())),
                 Kernel::new().origin(busbar_caps::OriginKind::Client),
                 // THE NODE'S ONE BREAKER, shared with the egress port the same way the root shares
                 // it: the readiness this plane's seal is judged by is this unit's answer, not a

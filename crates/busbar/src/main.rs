@@ -705,10 +705,29 @@ fn register_planes() {
     // The A2A plane, now its own crate (`busbar-a2a`, PLANE-ONLY — no PROTO_DECL). Same slot and
     // reason as the MCP row: `--validate` reads the plane list, so the axis is installed before any
     // reader. Present only under `plane-a2a`; a build with A2A compiled out pushes nothing.
-    #[cfg(feature = "plane-a2a")]
+    // WITHOUT `root-a2a`, the plane's own declaration, unchanged.
+    #[cfg(all(feature = "plane-a2a", not(feature = "root-a2a")))]
     installed.push((
         &busbar_plane_a2a::meta::PLANE_DECLARATION,
         &busbar_a2a::PLANE_DECL,
+    ));
+    // WITH IT, THE ROOT'S OWN DECLARATION, COMPOSED OVER THE PLANE'S. Every field copied by
+    // identity; `routes` replaced by a root function that calls the plane's own and swaps the
+    // HANDLER of the rows whose classes have moved. `(path, method, auth)` pass through verbatim, so
+    // the `CoreRouteTable` row and the auth middleware's `required_scope` are recorded from the same
+    // values by the same act — the security invariant the neutral route seam exists to preserve.
+    // The plane's declaration is never edited, and a method no class has moved is answered by the
+    // plane's own handler, which the swap kept by `Arc`.
+    //
+    // It is composed HERE, before any configuration is read, because the plane axis is installed
+    // before any reader — `--validate` is one. The NODE cannot exist this early (it needs the store
+    // open, the keys hydrated and the rate card resolved), so the serving entry reaches it through a
+    // cell the mount fills in at boot; with no node installed every method delegates, which is the
+    // serving path this deployment already had.
+    #[cfg(all(feature = "plane-a2a", feature = "root-a2a"))]
+    installed.push((
+        &busbar_plane_a2a::meta::PLANE_DECLARATION,
+        root::node_a2a::composed_decl(),
     ));
     // The VOICE plane (Plane 4), now its own crate (`busbar-voice`). Same slot and reason as the A2A
     // row: `--validate` reads the plane list, so the axis is installed before any reader. Present
@@ -889,6 +908,124 @@ fn compose_voice_governed_calls() {
         origin: root::kernel::new_kernel().origin(busbar_caps::OriginKind::Client),
     }));
     busbar_voice::mount::install_governed_calls(std::sync::Arc::new(NodeCalls::new(node)));
+}
+
+/// THE TWO CONFIGURED FIGURES AND THE CONFIGURED CHAIN THE A2A NODE IS COMPOSED OVER, read off the
+/// deployment before the configuration is consumed by the engine build.
+///
+/// It is a struct rather than three arguments because they are ONE reading: the chain, the card and
+/// the fee are the same `auth:`/`rate_card:`/`per_request_fee:` the engine's own cost model resolves,
+/// taken at the same instant, so a mount composed from them cannot be composed from a mixture of two
+/// configurations.
+#[cfg(all(feature = "plane-a2a", feature = "root-a2a"))]
+struct A2aNodeMoney {
+    /// The data-plane chain the operator configured, as `resolve_auth` resolved it.
+    chain: Vec<busbar_substrate::config::auth::AuthChainEntry>,
+    /// The card's lanes in the NEUTRAL raw view — the same projection the engine's cost model and
+    /// the root's rate-card history are built from.
+    lanes: Vec<(String, busbar_substrate::billing::RawTierRates)>,
+    /// The flat per-request fee, in abstract cents.
+    fee_cents: i64,
+    /// Whether a `rate_card:` is configured at all. Absent is not empty: absent prices every class
+    /// at nothing and still charges the fee.
+    card_present: bool,
+}
+
+/// **MOUNT THE A2A PLANE ON THE COMPOSITION'S NODE.**
+///
+/// The composition root's whole statement about this plane's serving path, in one place: the plane
+/// is mounted on the node every plane's leg bindings are resolved out of, and that node is installed
+/// as the one the composed declaration's serving entry reaches.
+///
+/// ## Every half is the deployment's, and none of them is a default
+///
+/// The book and the store are the PROCESS'S, handed in — a book of this node's own would post onto a
+/// set nothing serves and serve a set nothing posts to, and both halves look healthy because an
+/// empty ledger reconciles. The breaker is this node's one unit and the only thing in the tree that
+/// keys this plane's lanes. The group table is the operator's own `groups:` tree, read AFTER the
+/// overlay merge so the caps this node enforces are the ones the API writes as well as the ones the
+/// file declares.
+///
+/// **The chain and the pricer are paid up front.** The chain is the one the operator CONFIGURED, and
+/// a deployment whose chain this composition has no unit-side arm for does NOT mount: an empty
+/// `AuthChain` is not an inert placeholder, it is `is_open()` — the open front door — so composing
+/// one for a deployment that authenticates would be this root quietly admitting every caller. The
+/// pricer is projected from the same two configured figures the engine's cost model and the root's
+/// rate-card history read, through the pricing law's own rounding; a deployment with no `rate_card:`
+/// gets `flat(fee)` and not `flat(0)`, because an absent card prices every class at nothing and
+/// STILL charges the configured flat fee.
+///
+/// Not mounting is not a failure and not a degradation: with no class moved onto the node, the
+/// serving path is the plane's own either way. It is stated rather than logged because the commit
+/// that moves the first class is the commit that owes a ruling on it.
+#[cfg(all(feature = "plane-a2a", feature = "root-a2a"))]
+fn mount_root_a2a(
+    store: &std::sync::Arc<dyn busbar_api::Store>,
+    book: &root::durability::NodeBook,
+    money: &A2aNodeMoney,
+    groups: &std::collections::BTreeMap<String, busbar_substrate::config::groups::GroupCfg>,
+) {
+    /// HOW LONG A TASK'S CAPABILITIES MAY OUTLIVE ITS LAST MOVE.
+    ///
+    /// Named here rather than read off the deployment because no class this node serves mints one
+    /// today: the bound belongs to the push callback token, and the class that mints that token is
+    /// the class that must read the operator's own figure rather than inherit this one.
+    const TASK_CAPABILITY_TTL_SECS: u64 = 3_600;
+
+    let Some(chain) = root::node_a2a::compose_chain(&money.chain) else {
+        return;
+    };
+    let pricer = root::node_a2a::compose_pricer(
+        money.lanes.iter().map(|(lane, raw)| (lane.as_str(), *raw)),
+        money.fee_cents,
+        money.card_present,
+    );
+    // THE GROUP NAMES, interned through the root's own vocabulary: the door records a lease per
+    // capped `concurrent` group on the unit's slot, and a lease name has to outlive every request.
+    let mut vocab = root::vocabulary::Vocabulary::new();
+    let lease_ids: std::collections::BTreeMap<String, &'static str> = groups
+        .keys()
+        .map(|name| (name.clone(), vocab.key(name)))
+        .collect();
+    vocab.seal();
+
+    let bindings = root::bindings::Node::over(
+        busbar_unit_auth::Auth::new(chain),
+        root::kernel::auth_bindings::AuthBindings::without_directory(),
+        busbar_unit_admission::Door::new(busbar_unit_admission::InMemoryCells::new()),
+        pricer,
+        root::policy::build(&root::policy::MeterPolicyConfig::default()),
+        std::sync::Arc::clone(&book.durability),
+        root::kernel::new_kernel().origin(busbar_caps::OriginKind::Client),
+        std::sync::Arc::new(busbar_unit_breaker::BreakerUnit::with_diagnostics(
+            root::adapters::root_diagnostics(),
+        )),
+    )
+    .mounting(
+        busbar_a2a::PLANE_DECL.key,
+        root::bindings::MountedPlane {
+            records: root::store::PlaneRecords::of(
+                &root::store::node_adapter(std::sync::Arc::clone(store)),
+                busbar_plane_a2a::records::operations_for,
+            ),
+            // EVERY class, because the scope unit reads silence as a denial.
+            scope_policy: root::units_a2a::scope_policy(root::policy::ScopePolicy::new()),
+            // No lane is registered until a class that DIALS moves onto this node; the classes below
+            // the hop line reach this plane's own records and carry no lane at all.
+            lanes: 0,
+        },
+    );
+    // LEAKED, once, at boot: the serving entry takes a `&'static` because it is reached from every
+    // frame for the life of the process, and a node behind an `Arc` would be a refcount bump on a
+    // value that is never dropped.
+    let node: &'static root::node_a2a::A2aNode =
+        Box::leak(Box::new(root::node_a2a::A2aNode::over(
+            bindings,
+            root::policy::group_table(groups, &lease_ids),
+            root::units_a2a::RecordLegs::new(std::sync::Arc::clone(store)),
+            TASK_CAPABILITY_TTL_SECS,
+        )));
+    root::node_a2a::install(node);
 }
 
 fn main() {
@@ -1279,6 +1416,31 @@ async fn run(data_workers: usize) {
     if let Some(doc) = overlay_doc {
         config::overlay::merge_into(&mut cfg, doc);
     }
+    // THE GROUP TREE THE A2A NODE'S DOOR WALKS, cloned once, AFTER the overlay merge — so the caps
+    // this node enforces are the ones the operator's API writes as well as the ones the file
+    // declares. The boot reading and not a live one, which is the same property every other node's
+    // table has: a group added by a later apply is a group the next boot's door knows about.
+    #[cfg(all(feature = "plane-a2a", feature = "root-a2a"))]
+    let a2a_groups = cfg.groups.clone();
+    // THE CHAIN AND THE TWO MONEY FIGURES THE A2A NODE IS COMPOSED OVER, taken HERE — after the
+    // overlay merge, off the same resolved configuration the engine's own cost model is about to be
+    // built from, and before that build consumes it.
+    #[cfg(all(feature = "plane-a2a", feature = "root-a2a"))]
+    let a2a_money = A2aNodeMoney {
+        chain: cfg
+            .auth
+            .as_ref()
+            .map(|a| a.chain.clone())
+            .unwrap_or_default(),
+        lanes: cfg
+            .rate_card
+            .iter()
+            .flat_map(|card| card.iter())
+            .map(|(lane, entry)| (lane.clone(), entry.raw_tier_rates()))
+            .collect(),
+        fee_cents: cfg.per_request_fee,
+        card_present: cfg.rate_card.is_some(),
+    };
 
     // Metadata-SSRF protection status (discoverability). When the nuclear `allow_all_metadata` is set
     // the guard is OFF — that is a security-relevant degradation, so WARN. Otherwise report the count
@@ -1501,7 +1663,11 @@ async fn run(data_workers: usize) {
     // healthy, because an empty ledger reconciles. It is memory-buffered and reads no data
     // directory, so nothing appears beside a configuration that asked for none, and it is built
     // before either listener binds because the first accepted connection can settle.
-    #[cfg(any(feature = "root-admin", feature = "root-llm"))]
+    #[cfg(any(
+        feature = "root-admin",
+        feature = "root-llm",
+        all(feature = "plane-a2a", feature = "root-a2a")
+    ))]
     let book = root::durability::node_book();
 
     // THE ROOT-DRIVEN LLM PLANE'S EXIT ARM, bound to that book. The loop already ended every unit
@@ -1612,6 +1778,15 @@ async fn run(data_workers: usize) {
     // Fatal if an A2A outbound client identity does not resolve, exactly as before — the refusal text
     // is the plane hook's, propagated through `start_planes`.
     busbar_core::boot::start_planes(&app_handle).unwrap_or_else(|e| die(e));
+
+    // **THE A2A PLANE'S NODE**, mounted here and nowhere else. AFTER `start_planes`, because what it
+    // is mounted over is a product of the plane's own boot; and BEFORE any transport can serve a
+    // frame, because a class that has left the plane's own dispatch is answered by this node or by
+    // nothing.
+    #[cfg(all(feature = "plane-a2a", feature = "root-a2a"))]
+    if let Some(gov) = app_handle.load().governance.clone() {
+        mount_root_a2a(&gov.store(), &book, &a2a_money, &a2a_groups);
+    }
 
     // THE STDIO SERVE MODE (`--mcp-stdio`). The SAME boot ran above — config load, plugin
     // preflight, governance, the flusher and the refresh jobs — and the SAME dispatch will serve

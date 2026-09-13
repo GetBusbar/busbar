@@ -98,7 +98,12 @@ pub struct Node {
     /// What the usage unit folds against.
     pub meter_policy: crate::root::policy::MeterPolicyHandle,
     /// The journal, the ledger and the two audit chains. THE PROCESS'S ONE BOOK.
-    pub durability: Mutex<crate::root::durability::Durability>,
+    ///
+    /// BY HANDLE, never by value. A node that owned a book would post onto a set of books nothing
+    /// serves and serve a set nothing posts to — and both halves look healthy, because an empty
+    /// ledger reconciles. The caller keeps the same handle it passes here, so what every plane's
+    /// exit arm settles onto is what the administrative views read.
+    pub durability: Arc<Mutex<crate::root::durability::Durability>>,
     /// The sealed origin an audit record is written under.
     pub origin: busbar_caps::Origin,
     /// THE NODE'S ONE BREAKER. Every plane's lanes are cells in this unit and nowhere else, which
@@ -149,7 +154,7 @@ impl Node {
         door: Door<InMemoryCells>,
         pricer: Pricer,
         meter_policy: crate::root::policy::MeterPolicyHandle,
-        durability: Mutex<crate::root::durability::Durability>,
+        durability: Arc<Mutex<crate::root::durability::Durability>>,
         origin: busbar_caps::Origin,
         breaker: Arc<RootBreakerUnit>,
     ) -> Self {

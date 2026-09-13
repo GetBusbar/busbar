@@ -73,6 +73,9 @@ pub mod migration;
 /// The composition root's one write into the plane axis, moved verbatim out of
 /// `busbar-core::plane::registry` once the plane list became contract data.
 pub mod plane_install;
+
+#[cfg(all(feature = "plane-a2a", feature = "root-a2a"))]
+pub mod node_a2a;
 pub mod policy;
 /// The composition root's one write into both protocol seams, moved verbatim out of
 /// `busbar-core::proto::registry`: the boot installers belong to the root that calls them.
