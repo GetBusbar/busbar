@@ -200,6 +200,8 @@ impl ConstructionGate {
             "secret-carrier-debug",
             "no-escaped-newline-doc-comment",
             "unit-no-wall-clock",
+            "ts-reads-the-clock",
+            "ts-reads-the-clock:default-derive",
             "unit-no-finding-ids",
             "plane-no-money",
             "one-pricing-site",
@@ -426,6 +428,11 @@ impl ConstructionGate {
         take(
             "unit-no-wall-clock",
             rules2::unit_no_wall_clock(&tree, &cfg),
+            &mut rows,
+        );
+        take(
+            "ts-reads-the-clock",
+            rules2::ts_reads_the_clock(&tree, &cfg),
             &mut rows,
         );
         take(

@@ -1235,7 +1235,11 @@ async fn tools_call_via_gauntlet(
         gov: ctx.gov,
         destination: string_param(params, "name").unwrap_or(""),
         correlation_id: 0,
-        charged_at: 0,
+        // THE METERING WINDOW BASE, read off the node's clock at arrival beside `started` — the wall
+        // reading that dates the request, where `started` is the monotonic one that times it. Zero
+        // would not be an epoch: it is 1970, so every request would key the same budget window and
+        // a window that never rolls is a limit that never resets.
+        charged_at: ctx.host.clock_now_secs(),
         started: std::time::Instant::now(),
     };
     ctx.host

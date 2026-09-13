@@ -758,6 +758,25 @@ fn strip_raises(text: &str) -> String {
     out
 }
 
+/// One ceilings-file text with every `[[minted_rule]]` row struck.
+///
+/// THE SAME HAZARD [`strip_raises`] EXISTS FOR, over the other self-emptying table. A declared
+/// raise and a minted-rule admission are both paperwork the tree carries only until the landing
+/// they describe is history, and both of these families plant a BASE copy made out of the
+/// committed text. Leave a live `[[minted_rule]]` row in that copy and the base it fabricates
+/// carries `[rules.<name>]` AND the row admitting it — which is the SECOND-MINT shape
+/// `rule_admissions` refuses by design, so every case in the family goes red on a door that is
+/// working exactly as written. Measured, on the commit that minted `ts-reads-the-clock`: eight of
+/// them did. The row cannot reach these cases at all now, and the rule table itself is left in
+/// place on BOTH copies, where it needs no admission because it is not born between them.
+fn strip_minted_rules(text: &str) -> String {
+    let mut out = text.to_string();
+    while let Some(next) = ceilings::strike_minted_rule(&out, 1) {
+        out = next;
+    }
+    out
+}
+
 /// THE DECLARED RAISE: an array of deltas per ceiling, summed against the rise, self-expiring.
 ///
 /// THE PLANT IS THIS FAMILY'S OWN, NEVER THE COMMITTED FILE'S. The `[[gate.ceiling_raises]]`
@@ -803,7 +822,7 @@ fn declared_raise_cases<'a>(
     // name. Measured, on the commit that added two: six of these cases went red on a mechanism
     // that was working exactly as written. So the family's text is the committed file with every
     // `[[gate.ceiling_raises]]` struck, and what the tree carries cannot reach these cases at all.
-    let text = &strip_raises(text);
+    let text = &strip_minted_rules(&strip_raises(text));
     let (table, key) = ("rules.legacy-reach", "ceiling");
     let Some(now) = cfg.doc.table(table).and_then(|t| t.int_of(key)) else {
         r.note_infra_failure(format!(
@@ -1269,7 +1288,7 @@ fn transition_arms_present_cases<'a>(
     cfg: &Cfg,
 ) -> Report<'a> {
     let mut r = Report::new();
-    let text = &strip_raises(ceilings_text);
+    let text = &strip_minted_rules(&strip_raises(ceilings_text));
 
     // ARM ONE: `read_pair`'s acceptance of the retired `from`/`to` header.
     let (table, key) = ("rules.legacy-reach", "ceiling");
@@ -2253,13 +2272,61 @@ fn vocabulary_cases<'a>(gate: &'a dyn Gate, cx: &'a Ctx, base: &Overlay) -> Repo
         ],
     ));
 
+    // ── WHO READ THE CLOCK, AND WHAT GOT STAMPED ───────────────────────────────────────────────
+    //
+    // Four rows, ONE plant, because they are one subject: a clock read that should not have
+    // happened here, and a timestamp field that never read one at all. Grouping them is this
+    // file's own convention — the plants are grouped by family so a family costs ONE whole-tree
+    // scan rather than four — and it is not a weaker proof for it: `prove_red` requires EVERY
+    // covered row to be red, so a rule that stopped counting turns this case green and the
+    // self-test says so.
+    //
+    // THERE IS NO FIFTH ROW. `ts_reads_the_clock` (see `rules2.rs`) emits exactly two row ids —
+    // `ts-reads-the-clock` and `ts-reads-the-clock:default-derive` — and `unit_no_wall_clock`
+    // emits exactly one, `unit-no-wall-clock`; a `ts-reads-the-clock:second-clock` id named in
+    // `covers` would match no row `evidence_for` ever sees, and `prove_red`'s `narrowed_got`
+    // treats a covered id with no evidence as `Expect::Green` for the WHOLE case — which is silent
+    // rather than loud: the case would report Green no matter how red the four real rows went.
+    //
+    // The planted clock file earns two of the four by itself: `SystemTime::now()` inside a unit
+    // crate is that crate reading a clock it may not read (`unit-no-wall-clock`), and the PB-1/
+    // CG-2 citation in its own leading comment is a finding id nothing may cite (`unit-no-finding-
+    // ids`).
+    //
+    // THE TWO FIELD-NAME ROWS ARE PLANTED NAME BY NAME, for the reason [`plant_each`] gives: a
+    // plant that exercised two of the eight `timestamp_fields` would leave the other six deletable
+    // from the ceilings file with the case still red. So the plant is DERIVED from that list — a
+    // name added there arrives with its own proof, and a name dropped is one this case stops
+    // planting.
+    let ts_fields = ConstructionGate::cfg(cx)
+        .ok()
+        .and_then(|c| {
+            c.rule("ts-reads-the-clock")
+                .ok()
+                .map(|t| t.list_of("timestamp_fields"))
+        })
+        .unwrap_or_default();
+    if ts_fields.is_empty() {
+        r.note_infra_failure(
+            "[rules.ts-reads-the-clock] names no `timestamp_fields`, so the zero-stamp and \
+             Default-derive rows are unproven here rather than passing",
+        );
+    }
     let units = dirs_for_globs(cx, &strings(&["crates/busbar-unit-*"]));
     let target = units
         .iter()
         .map(|d| crate_name_of_dir(d))
         .find(|n| n != "busbar-unit-ledger");
+    let name = "a clock read where none may happen, a cited finding id, a timestamp field stamped \
+                zero, and another left to Default";
+    let covers = strings(&[
+        "unit-no-wall-clock",
+        "unit-no-finding-ids",
+        "ts-reads-the-clock",
+        "ts-reads-the-clock:default-derive",
+    ]);
     match target {
-        Some(unit) => {
+        Some(unit) if !ts_fields.is_empty() => {
             let mut ov = on(base);
             ov.set(
                 format!("crates/{unit}/src/zz_planted_clock.rs"),
@@ -2267,18 +2334,33 @@ fn vocabulary_cases<'a>(gate: &'a dyn Gate, cx: &'a Ctx, base: &Overlay) -> Repo
                  planted_clock() {\n    let _ = SystemTime::now();\n    let _ = \
                  Instant::now();\n}\n",
             );
-            r.push(prove_red(
-                cx,
-                gate,
-                "a unit crate reads the clock and cites a finding identifier",
-                &["unit-no-wall-clock", "unit-no-finding-ids"],
-                ov,
-                &["zz_planted_clock.rs"],
-            ));
+            let mut named = vec!["zz_planted_clock.rs".to_string()];
+            for (i, field) in ts_fields.iter().enumerate() {
+                let zero = format!("crates/{unit}/src/zz_planted_ts_zero_{i}.rs");
+                ov.set(
+                    &zero,
+                    format!(
+                        "pub fn planted_ts_zero_{i}() {{\n    let _ = PlantedRow {{\n        \
+                         {field}: 0,\n    }};\n}}\n"
+                    ),
+                );
+                named.push(zero);
+                let derive = format!("crates/{unit}/src/zz_planted_ts_default_{i}.rs");
+                ov.set(
+                    &derive,
+                    format!(
+                        "#[derive(Debug, Default)]\npub struct ZzPlantedTsDefault{i} {{\n    pub \
+                         {field}: u64,\n}}\n"
+                    ),
+                );
+                named.push(derive);
+            }
+            let naming: Vec<&str> = named.iter().map(String::as_str).collect();
+            r.push(prove_red(cx, gate, name, &refs(&covers), ov, &naming));
         }
-        None => r.push(Case {
-            name: "a unit crate reads the clock and cites a finding identifier".to_string(),
-            covers: strings(&["unit-no-wall-clock", "unit-no-finding-ids"]),
+        _ => r.push(Case {
+            name: name.to_string(),
+            covers,
             expected: Expect::Red { naming: vec![] },
             got: Expect::Skipped,
         }),

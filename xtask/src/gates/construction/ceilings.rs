@@ -1110,6 +1110,17 @@ pub fn strike(text: &str, ordinal: usize) -> Option<String> {
     splice(text, &format!("[[{RAISES}]]"), ordinal, "")
 }
 
+/// The ceilings-file text with the `ordinal`th `[[minted_rule]]` row (counting from 1) struck —
+/// the same block edit [`strike`] performs, over the admission header. `--write` strikes a SPENT
+/// row through this door (see [`struck_text`]); the self-test strikes EVERY row through it, for
+/// the reason that family's own text gives: a plant whose base copy is this tree's committed file
+/// would carry the tree's live admission into the base, where a row that admits a table the base
+/// now has reads as a SECOND MINT and refuses. A door proving itself must not be handed the
+/// tree's own paperwork.
+pub fn strike_minted_rule(text: &str, ordinal: usize) -> Option<String> {
+    splice(text, "[[minted_rule]]", ordinal, "")
+}
+
 /// The ceilings-file text with the retired `[gate.ceiling_raises."<key>"]` header STRUCK — the
 /// same block edit [`strike`] performs, over the other header. Used when the base already carries
 /// the entry, so nothing has to be written in its place.
