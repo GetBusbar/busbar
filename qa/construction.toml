@@ -1295,3 +1295,125 @@ file = "qa/kind-isolation.toml"
 from = 175
 to = 176
 because = "busbar x dialect: the composition root composes what it mounts on this axis -- one more spelling of a dialect the root's llm wiring names. This is the root spelling the kind it owns the wiring for, in the one crate ARCHITECTURE 1.2 allows to name every kind; no other crate's cell rises to pay for it. Ordinal 330 is the busbar x dialect row -- this tree's raises() cannot key an array of tables by identity, and the row carries the same note beside its count."
+
+# ------------------------------------------------------------------------------------------------
+# [gate.ceiling_raises] -- THE RETIRING CRATES' CELLS, RECORDED AS DROPPED (plan rule 4)
+# ------------------------------------------------------------------------------------------------
+#
+# Seventeen risen cells belong to the five LEGACY crates -- busbar-core, busbar-llm, busbar-mcp,
+# busbar-a2a, busbar-voice -- and this release DELETES all five. Every one of the rises is that
+# crate's own kind vocabulary in its own feature text and its own tests: `a2a` in busbar-a2a, the
+# dialect words in busbar-llm's ingress batteries, `stdio` and the method names in busbar-mcp. There
+# is nothing to rename, because in a crate that IS the feature the vocabulary IS the feature.
+#
+# So the rise is RECORDED AS DROPPED rather than excused. The number moves to what the tree
+# measures, the picks STAY, and the row dies with the crate -- `kind-isolation-ship` is RED for any
+# [[transitional]] row whose `from` crate still exists, which is the same expiry. A dropped record
+# is NOT a waiver: it is exact, it names both numbers, and it is refused as stale the moment the
+# base carries the figure, exactly like the root's eleven above.
+#
+# What this is NOT: a licence for a legacy crate to grow. It says only that THIS landing's hits are
+# in code the release removes whole, so draining them buys a cleaner number in a file that is about
+# to be deleted and costs the fix that came with them.
+
+[gate.ceiling_raises."cell.23.count"]
+file = "qa/kind-isolation.toml"
+from = 2758
+to = 2761
+because = "dropped: crate retires this release (rule 4); vocabulary is the crate's own. busbar-a2a x plane 2758 -> 2761: `busbar-a2a` is one of the five LEGACY crates (kind_isolation.rs LEGACY_CRATES) and 1.6.0 deletes it whole, so this rise is the crate's own plane words in its own feature text and its own tests, with nothing to rename behind them. The number is the tree's measurement, the picks stay, and the row dies with the crate -- kind-isolation-ship is RED while busbar-a2a exists at all. Ordinal 23 is the busbar-a2a x plane row -- this tree's raises() cannot key an array of tables by identity, and the row carries the same note beside its count."
+
+[gate.ceiling_raises."cell.63.count"]
+file = "qa/kind-isolation.toml"
+from = 94
+to = 104
+because = "dropped: crate retires this release (rule 4); vocabulary is the crate's own. busbar-core x auth 94 -> 104: `busbar-core` is one of the five LEGACY crates (kind_isolation.rs LEGACY_CRATES) and 1.6.0 deletes it whole, so this rise is the crate's own auth words in its own feature text and its own tests, with nothing to rename behind them. The number is the tree's measurement, the picks stay, and the row dies with the crate -- kind-isolation-ship is RED while busbar-core exists at all. Ordinal 63 is the busbar-core x auth row -- this tree's raises() cannot key an array of tables by identity, and the row carries the same note beside its count."
+
+[gate.ceiling_raises."cell.65.count"]
+file = "qa/kind-isolation.toml"
+from = 5521
+to = 5579
+because = "dropped: crate retires this release (rule 4); vocabulary is the crate's own. busbar-core x control 5521 -> 5579: `busbar-core` is one of the five LEGACY crates (kind_isolation.rs LEGACY_CRATES) and 1.6.0 deletes it whole, so this rise is the crate's own control words in its own feature text and its own tests, with nothing to rename behind them. The number is the tree's measurement, the picks stay, and the row dies with the crate -- kind-isolation-ship is RED while busbar-core exists at all. Ordinal 65 is the busbar-core x control row -- this tree's raises() cannot key an array of tables by identity, and the row carries the same note beside its count."
+
+[gate.ceiling_raises."cell.67.count"]
+file = "qa/kind-isolation.toml"
+from = 3067
+to = 3069
+because = "dropped: crate retires this release (rule 4); vocabulary is the crate's own. busbar-core x plane 3067 -> 3069: `busbar-core` is one of the five LEGACY crates (kind_isolation.rs LEGACY_CRATES) and 1.6.0 deletes it whole, so this rise is the crate's own plane words in its own feature text and its own tests, with nothing to rename behind them. The number is the tree's measurement, the picks stay, and the row dies with the crate -- kind-isolation-ship is RED while busbar-core exists at all. Ordinal 67 is the busbar-core x plane row -- this tree's raises() cannot key an array of tables by identity, and the row carries the same note beside its count."
+
+[gate.ceiling_raises."cell.69.count"]
+file = "qa/kind-isolation.toml"
+from = 337
+to = 346
+because = "dropped: crate retires this release (rule 4); vocabulary is the crate's own. busbar-core x secret 337 -> 346: `busbar-core` is one of the five LEGACY crates (kind_isolation.rs LEGACY_CRATES) and 1.6.0 deletes it whole, so this rise is the crate's own secret words in its own feature text and its own tests, with nothing to rename behind them. The number is the tree's measurement, the picks stay, and the row dies with the crate -- kind-isolation-ship is RED while busbar-core exists at all. Ordinal 69 is the busbar-core x secret row -- this tree's raises() cannot key an array of tables by identity, and the row carries the same note beside its count."
+
+[gate.ceiling_raises."cell.73.count"]
+file = "qa/kind-isolation.toml"
+from = 2145
+to = 2153
+because = "dropped: crate retires this release (rule 4); vocabulary is the crate's own. busbar-core x transport 2145 -> 2153: `busbar-core` is one of the five LEGACY crates (kind_isolation.rs LEGACY_CRATES) and 1.6.0 deletes it whole, so this rise is the crate's own transport words in its own feature text and its own tests, with nothing to rename behind them. The number is the tree's measurement, the picks stay, and the row dies with the crate -- kind-isolation-ship is RED while busbar-core exists at all. Ordinal 73 is the busbar-core x transport row -- this tree's raises() cannot key an array of tables by identity, and the row carries the same note beside its count."
+
+[gate.ceiling_raises."cell.335.count"]
+file = "qa/kind-isolation.toml"
+from = 1196
+to = 1201
+because = "dropped: crate retires this release (rule 4); vocabulary is the crate's own. busbar-core x dialect 1196 -> 1201: `busbar-core` is one of the five LEGACY crates (kind_isolation.rs LEGACY_CRATES) and 1.6.0 deletes it whole, so this rise is the crate's own dialect words in its own feature text and its own tests, with nothing to rename behind them. The number is the tree's measurement, the picks stay, and the row dies with the crate -- kind-isolation-ship is RED while busbar-core exists at all. Ordinal 335 is the busbar-core x dialect row -- this tree's raises() cannot key an array of tables by identity, and the row carries the same note beside its count."
+
+[gate.ceiling_raises."cell.88.count"]
+file = "qa/kind-isolation.toml"
+from = 301
+to = 302
+because = "dropped: crate retires this release (rule 4); vocabulary is the crate's own. busbar-llm x api 301 -> 302: `busbar-llm` is one of the five LEGACY crates (kind_isolation.rs LEGACY_CRATES) and 1.6.0 deletes it whole, so this rise is the crate's own api words in its own feature text and its own tests, with nothing to rename behind them. The number is the tree's measurement, the picks stay, and the row dies with the crate -- kind-isolation-ship is RED while busbar-llm exists at all. Ordinal 88 is the busbar-llm x api row -- this tree's raises() cannot key an array of tables by identity, and the row carries the same note beside its count."
+
+[gate.ceiling_raises."cell.96.count"]
+file = "qa/kind-isolation.toml"
+from = 300
+to = 301
+because = "dropped: crate retires this release (rule 4); vocabulary is the crate's own. busbar-llm x plane 300 -> 301: `busbar-llm` is one of the five LEGACY crates (kind_isolation.rs LEGACY_CRATES) and 1.6.0 deletes it whole, so this rise is the crate's own plane words in its own feature text and its own tests, with nothing to rename behind them. The number is the tree's measurement, the picks stay, and the row dies with the crate -- kind-isolation-ship is RED while busbar-llm exists at all. Ordinal 96 is the busbar-llm x plane row -- this tree's raises() cannot key an array of tables by identity, and the row carries the same note beside its count."
+
+[gate.ceiling_raises."cell.100.count"]
+file = "qa/kind-isolation.toml"
+from = 1206
+to = 1208
+because = "dropped: crate retires this release (rule 4); vocabulary is the crate's own. busbar-llm x transport 1206 -> 1208: `busbar-llm` is one of the five LEGACY crates (kind_isolation.rs LEGACY_CRATES) and 1.6.0 deletes it whole, so this rise is the crate's own transport words in its own feature text and its own tests, with nothing to rename behind them. The number is the tree's measurement, the picks stay, and the row dies with the crate -- kind-isolation-ship is RED while busbar-llm exists at all. Ordinal 100 is the busbar-llm x transport row -- this tree's raises() cannot key an array of tables by identity, and the row carries the same note beside its count."
+
+[gate.ceiling_raises."cell.337.count"]
+file = "qa/kind-isolation.toml"
+from = 3208
+to = 3211
+because = "dropped: crate retires this release (rule 4); vocabulary is the crate's own. busbar-llm x dialect 3208 -> 3211: `busbar-llm` is one of the five LEGACY crates (kind_isolation.rs LEGACY_CRATES) and 1.6.0 deletes it whole, so this rise is the crate's own dialect words in its own feature text and its own tests, with nothing to rename behind them. The number is the tree's measurement, the picks stay, and the row dies with the crate -- kind-isolation-ship is RED while busbar-llm exists at all. Ordinal 337 is the busbar-llm x dialect row -- this tree's raises() cannot key an array of tables by identity, and the row carries the same note beside its count."
+
+[gate.ceiling_raises."cell.108.count"]
+file = "qa/kind-isolation.toml"
+from = 135
+to = 140
+because = "dropped: crate retires this release (rule 4); vocabulary is the crate's own. busbar-mcp x api 135 -> 140: `busbar-mcp` is one of the five LEGACY crates (kind_isolation.rs LEGACY_CRATES) and 1.6.0 deletes it whole, so this rise is the crate's own api words in its own feature text and its own tests, with nothing to rename behind them. The number is the tree's measurement, the picks stay, and the row dies with the crate -- kind-isolation-ship is RED while busbar-mcp exists at all. Ordinal 108 is the busbar-mcp x api row -- this tree's raises() cannot key an array of tables by identity, and the row carries the same note beside its count."
+
+[gate.ceiling_raises."cell.114.count"]
+file = "qa/kind-isolation.toml"
+from = 3345
+to = 3360
+because = "dropped: crate retires this release (rule 4); vocabulary is the crate's own. busbar-mcp x plane 3345 -> 3360: `busbar-mcp` is one of the five LEGACY crates (kind_isolation.rs LEGACY_CRATES) and 1.6.0 deletes it whole, so this rise is the crate's own plane words in its own feature text and its own tests, with nothing to rename behind them. The number is the tree's measurement, the picks stay, and the row dies with the crate -- kind-isolation-ship is RED while busbar-mcp exists at all. Ordinal 114 is the busbar-mcp x plane row -- this tree's raises() cannot key an array of tables by identity, and the row carries the same note beside its count."
+
+[gate.ceiling_raises."cell.118.count"]
+file = "qa/kind-isolation.toml"
+from = 1111
+to = 1114
+because = "dropped: crate retires this release (rule 4); vocabulary is the crate's own. busbar-mcp x transport 1111 -> 1114: `busbar-mcp` is one of the five LEGACY crates (kind_isolation.rs LEGACY_CRATES) and 1.6.0 deletes it whole, so this rise is the crate's own transport words in its own feature text and its own tests, with nothing to rename behind them. The number is the tree's measurement, the picks stay, and the row dies with the crate -- kind-isolation-ship is RED while busbar-mcp exists at all. Ordinal 118 is the busbar-mcp x transport row -- this tree's raises() cannot key an array of tables by identity, and the row carries the same note beside its count."
+
+[gate.ceiling_raises."cell.339.count"]
+file = "qa/kind-isolation.toml"
+from = 119
+to = 122
+because = "dropped: crate retires this release (rule 4); vocabulary is the crate's own. busbar-mcp x dialect 119 -> 122: `busbar-mcp` is one of the five LEGACY crates (kind_isolation.rs LEGACY_CRATES) and 1.6.0 deletes it whole, so this rise is the crate's own dialect words in its own feature text and its own tests, with nothing to rename behind them. The number is the tree's measurement, the picks stay, and the row dies with the crate -- kind-isolation-ship is RED while busbar-mcp exists at all. Ordinal 339 is the busbar-mcp x dialect row -- this tree's raises() cannot key an array of tables by identity, and the row carries the same note beside its count."
+
+[gate.ceiling_raises."cell.321.count"]
+file = "qa/kind-isolation.toml"
+from = 811
+to = 813
+because = "dropped: crate retires this release (rule 4); vocabulary is the crate's own. busbar-voice x plane 811 -> 813: `busbar-voice` is one of the five LEGACY crates (kind_isolation.rs LEGACY_CRATES) and 1.6.0 deletes it whole, so this rise is the crate's own plane words in its own feature text and its own tests, with nothing to rename behind them. The number is the tree's measurement, the picks stay, and the row dies with the crate -- kind-isolation-ship is RED while busbar-voice exists at all. Ordinal 321 is the busbar-voice x plane row -- this tree's raises() cannot key an array of tables by identity, and the row carries the same note beside its count."
+
+[gate.ceiling_raises."cell.353.count"]
+file = "qa/kind-isolation.toml"
+from = 335
+to = 336
+because = "dropped: crate retires this release (rule 4); vocabulary is the crate's own. busbar-voice x dialect 335 -> 336: `busbar-voice` is one of the five LEGACY crates (kind_isolation.rs LEGACY_CRATES) and 1.6.0 deletes it whole, so this rise is the crate's own dialect words in its own feature text and its own tests, with nothing to rename behind them. The number is the tree's measurement, the picks stay, and the row dies with the crate -- kind-isolation-ship is RED while busbar-voice exists at all. Ordinal 353 is the busbar-voice x dialect row -- this tree's raises() cannot key an array of tables by identity, and the row carries the same note beside its count."

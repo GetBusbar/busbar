@@ -1504,7 +1504,17 @@ count = "60"
 [[cell]]
 crate = "busbar-a2a"
 kind = "plane"
-count = "2758"
+# DROPPED. 2758 -> 2761, set to the tree's measurement and declared in qa/construction.toml's
+# [gate.ceiling_raises] as `cell.23.count` with the drop's reason. `busbar-a2a` is a LEGACY crate
+# (kind_isolation.rs LEGACY_CRATES) and THIS RELEASE DELETES IT: the rise is this crate's own
+# `plane` vocabulary, in its own feature text and its own tests, and there is nothing to rename
+# because the vocabulary IS the feature. Plan rule 4, 'drop, don't drain': a rise a retiring
+# crate cannot be drained of is RECORDED as dropped rather than excused -- the number moves, the
+# picks stay, and the whole row dies with the crate. `kind-isolation-ship` is RED while this
+# crate exists at all, which is where this figure expires. The key is an ORDINAL because that is
+# the only key this tree's `ceilings.rs::raises()` can resolve against an array-of-tables;
+# ordinal 23 IS this row (busbar-a2a x plane), and no [[cell]] row is added or removed so none move.
+count = "2761"
 
 [[cell]]
 crate = "busbar-a2a"
@@ -1704,7 +1714,17 @@ count = "610"
 [[cell]]
 crate = "busbar-core"
 kind = "auth"
-count = "94"
+# DROPPED. 94 -> 104, set to the tree's measurement and declared in qa/construction.toml's
+# [gate.ceiling_raises] as `cell.63.count` with the drop's reason. `busbar-core` is a LEGACY crate
+# (kind_isolation.rs LEGACY_CRATES) and THIS RELEASE DELETES IT: the rise is this crate's own
+# `auth` vocabulary, in its own feature text and its own tests, and there is nothing to rename
+# because the vocabulary IS the feature. Plan rule 4, 'drop, don't drain': a rise a retiring
+# crate cannot be drained of is RECORDED as dropped rather than excused -- the number moves, the
+# picks stay, and the whole row dies with the crate. `kind-isolation-ship` is RED while this
+# crate exists at all, which is where this figure expires. The key is an ORDINAL because that is
+# the only key this tree's `ceilings.rs::raises()` can resolve against an array-of-tables;
+# ordinal 63 IS this row (busbar-core x auth), and no [[cell]] row is added or removed so none move.
+count = "104"
 
 [[cell]]
 crate = "busbar-core"
@@ -1714,7 +1734,17 @@ count = "4"
 [[cell]]
 crate = "busbar-core"
 kind = "control"
-count = "5521"
+# DROPPED. 5521 -> 5579, set to the tree's measurement and declared in qa/construction.toml's
+# [gate.ceiling_raises] as `cell.65.count` with the drop's reason. `busbar-core` is a LEGACY crate
+# (kind_isolation.rs LEGACY_CRATES) and THIS RELEASE DELETES IT: the rise is this crate's own
+# `control` vocabulary, in its own feature text and its own tests, and there is nothing to rename
+# because the vocabulary IS the feature. Plan rule 4, 'drop, don't drain': a rise a retiring
+# crate cannot be drained of is RECORDED as dropped rather than excused -- the number moves, the
+# picks stay, and the whole row dies with the crate. `kind-isolation-ship` is RED while this
+# crate exists at all, which is where this figure expires. The key is an ORDINAL because that is
+# the only key this tree's `ceilings.rs::raises()` can resolve against an array-of-tables;
+# ordinal 65 IS this row (busbar-core x control), and no [[cell]] row is added or removed so none move.
+count = "5579"
 
 [[cell]]
 crate = "busbar-core"
@@ -1724,7 +1754,17 @@ count = "46"
 [[cell]]
 crate = "busbar-core"
 kind = "plane"
-count = "3067"
+# DROPPED. 3067 -> 3069, set to the tree's measurement and declared in qa/construction.toml's
+# [gate.ceiling_raises] as `cell.67.count` with the drop's reason. `busbar-core` is a LEGACY crate
+# (kind_isolation.rs LEGACY_CRATES) and THIS RELEASE DELETES IT: the rise is this crate's own
+# `plane` vocabulary, in its own feature text and its own tests, and there is nothing to rename
+# because the vocabulary IS the feature. Plan rule 4, 'drop, don't drain': a rise a retiring
+# crate cannot be drained of is RECORDED as dropped rather than excused -- the number moves, the
+# picks stay, and the whole row dies with the crate. `kind-isolation-ship` is RED while this
+# crate exists at all, which is where this figure expires. The key is an ORDINAL because that is
+# the only key this tree's `ceilings.rs::raises()` can resolve against an array-of-tables;
+# ordinal 67 IS this row (busbar-core x plane), and no [[cell]] row is added or removed so none move.
+count = "3069"
 
 [[cell]]
 crate = "busbar-core"
@@ -1734,7 +1774,17 @@ count = "266"
 [[cell]]
 crate = "busbar-core"
 kind = "secret"
-count = "337"
+# DROPPED. 337 -> 346, set to the tree's measurement and declared in qa/construction.toml's
+# [gate.ceiling_raises] as `cell.69.count` with the drop's reason. `busbar-core` is a LEGACY crate
+# (kind_isolation.rs LEGACY_CRATES) and THIS RELEASE DELETES IT: the rise is this crate's own
+# `secret` vocabulary, in its own feature text and its own tests, and there is nothing to rename
+# because the vocabulary IS the feature. Plan rule 4, 'drop, don't drain': a rise a retiring
+# crate cannot be drained of is RECORDED as dropped rather than excused -- the number moves, the
+# picks stay, and the whole row dies with the crate. `kind-isolation-ship` is RED while this
+# crate exists at all, which is where this figure expires. The key is an ORDINAL because that is
+# the only key this tree's `ceilings.rs::raises()` can resolve against an array-of-tables;
+# ordinal 69 IS this row (busbar-core x secret), and no [[cell]] row is added or removed so none move.
+count = "346"
 
 [[cell]]
 crate = "busbar-core"
@@ -1754,7 +1804,17 @@ count = "9"
 [[cell]]
 crate = "busbar-core"
 kind = "transport"
-count = "2145"
+# DROPPED. 2145 -> 2153, set to the tree's measurement and declared in qa/construction.toml's
+# [gate.ceiling_raises] as `cell.73.count` with the drop's reason. `busbar-core` is a LEGACY crate
+# (kind_isolation.rs LEGACY_CRATES) and THIS RELEASE DELETES IT: the rise is this crate's own
+# `transport` vocabulary, in its own feature text and its own tests, and there is nothing to rename
+# because the vocabulary IS the feature. Plan rule 4, 'drop, don't drain': a rise a retiring
+# crate cannot be drained of is RECORDED as dropped rather than excused -- the number moves, the
+# picks stay, and the whole row dies with the crate. `kind-isolation-ship` is RED while this
+# crate exists at all, which is where this figure expires. The key is an ORDINAL because that is
+# the only key this tree's `ceilings.rs::raises()` can resolve against an array-of-tables;
+# ordinal 73 IS this row (busbar-core x transport), and no [[cell]] row is added or removed so none move.
+count = "2153"
 
 [[cell]]
 crate = "busbar-core"
@@ -1829,7 +1889,17 @@ count = "4"
 [[cell]]
 crate = "busbar-llm"
 kind = "api"
-count = "301"
+# DROPPED. 301 -> 302, set to the tree's measurement and declared in qa/construction.toml's
+# [gate.ceiling_raises] as `cell.88.count` with the drop's reason. `busbar-llm` is a LEGACY crate
+# (kind_isolation.rs LEGACY_CRATES) and THIS RELEASE DELETES IT: the rise is this crate's own
+# `api` vocabulary, in its own feature text and its own tests, and there is nothing to rename
+# because the vocabulary IS the feature. Plan rule 4, 'drop, don't drain': a rise a retiring
+# crate cannot be drained of is RECORDED as dropped rather than excused -- the number moves, the
+# picks stay, and the whole row dies with the crate. `kind-isolation-ship` is RED while this
+# crate exists at all, which is where this figure expires. The key is an ORDINAL because that is
+# the only key this tree's `ceilings.rs::raises()` can resolve against an array-of-tables;
+# ordinal 88 IS this row (busbar-llm x api), and no [[cell]] row is added or removed so none move.
+count = "302"
 
 [[cell]]
 crate = "busbar-llm"
@@ -1869,7 +1939,17 @@ count = "79"
 [[cell]]
 crate = "busbar-llm"
 kind = "plane"
-count = "300"
+# DROPPED. 300 -> 301, set to the tree's measurement and declared in qa/construction.toml's
+# [gate.ceiling_raises] as `cell.96.count` with the drop's reason. `busbar-llm` is a LEGACY crate
+# (kind_isolation.rs LEGACY_CRATES) and THIS RELEASE DELETES IT: the rise is this crate's own
+# `plane` vocabulary, in its own feature text and its own tests, and there is nothing to rename
+# because the vocabulary IS the feature. Plan rule 4, 'drop, don't drain': a rise a retiring
+# crate cannot be drained of is RECORDED as dropped rather than excused -- the number moves, the
+# picks stay, and the whole row dies with the crate. `kind-isolation-ship` is RED while this
+# crate exists at all, which is where this figure expires. The key is an ORDINAL because that is
+# the only key this tree's `ceilings.rs::raises()` can resolve against an array-of-tables;
+# ordinal 96 IS this row (busbar-llm x plane), and no [[cell]] row is added or removed so none move.
+count = "301"
 
 [[cell]]
 crate = "busbar-llm"
@@ -1889,7 +1969,17 @@ count = "12"
 [[cell]]
 crate = "busbar-llm"
 kind = "transport"
-count = "1206"
+# DROPPED. 1206 -> 1208, set to the tree's measurement and declared in qa/construction.toml's
+# [gate.ceiling_raises] as `cell.100.count` with the drop's reason. `busbar-llm` is a LEGACY crate
+# (kind_isolation.rs LEGACY_CRATES) and THIS RELEASE DELETES IT: the rise is this crate's own
+# `transport` vocabulary, in its own feature text and its own tests, and there is nothing to rename
+# because the vocabulary IS the feature. Plan rule 4, 'drop, don't drain': a rise a retiring
+# crate cannot be drained of is RECORDED as dropped rather than excused -- the number moves, the
+# picks stay, and the whole row dies with the crate. `kind-isolation-ship` is RED while this
+# crate exists at all, which is where this figure expires. The key is an ORDINAL because that is
+# the only key this tree's `ceilings.rs::raises()` can resolve against an array-of-tables;
+# ordinal 100 IS this row (busbar-llm x transport), and no [[cell]] row is added or removed so none move.
+count = "1208"
 
 [[cell]]
 crate = "busbar-llm"
@@ -1929,7 +2019,17 @@ count = "615"
 [[cell]]
 crate = "busbar-mcp"
 kind = "api"
-count = "135"
+# DROPPED. 135 -> 140, set to the tree's measurement and declared in qa/construction.toml's
+# [gate.ceiling_raises] as `cell.108.count` with the drop's reason. `busbar-mcp` is a LEGACY crate
+# (kind_isolation.rs LEGACY_CRATES) and THIS RELEASE DELETES IT: the rise is this crate's own
+# `api` vocabulary, in its own feature text and its own tests, and there is nothing to rename
+# because the vocabulary IS the feature. Plan rule 4, 'drop, don't drain': a rise a retiring
+# crate cannot be drained of is RECORDED as dropped rather than excused -- the number moves, the
+# picks stay, and the whole row dies with the crate. `kind-isolation-ship` is RED while this
+# crate exists at all, which is where this figure expires. The key is an ORDINAL because that is
+# the only key this tree's `ceilings.rs::raises()` can resolve against an array-of-tables;
+# ordinal 108 IS this row (busbar-mcp x api), and no [[cell]] row is added or removed so none move.
+count = "140"
 
 [[cell]]
 crate = "busbar-mcp"
@@ -1959,7 +2059,17 @@ count = "57"
 [[cell]]
 crate = "busbar-mcp"
 kind = "plane"
-count = "3345"
+# DROPPED. 3345 -> 3360, set to the tree's measurement and declared in qa/construction.toml's
+# [gate.ceiling_raises] as `cell.114.count` with the drop's reason. `busbar-mcp` is a LEGACY crate
+# (kind_isolation.rs LEGACY_CRATES) and THIS RELEASE DELETES IT: the rise is this crate's own
+# `plane` vocabulary, in its own feature text and its own tests, and there is nothing to rename
+# because the vocabulary IS the feature. Plan rule 4, 'drop, don't drain': a rise a retiring
+# crate cannot be drained of is RECORDED as dropped rather than excused -- the number moves, the
+# picks stay, and the whole row dies with the crate. `kind-isolation-ship` is RED while this
+# crate exists at all, which is where this figure expires. The key is an ORDINAL because that is
+# the only key this tree's `ceilings.rs::raises()` can resolve against an array-of-tables;
+# ordinal 114 IS this row (busbar-mcp x plane), and no [[cell]] row is added or removed so none move.
+count = "3360"
 
 [[cell]]
 crate = "busbar-mcp"
@@ -1979,7 +2089,17 @@ count = "57"
 [[cell]]
 crate = "busbar-mcp"
 kind = "transport"
-count = "1111"
+# DROPPED. 1111 -> 1114, set to the tree's measurement and declared in qa/construction.toml's
+# [gate.ceiling_raises] as `cell.118.count` with the drop's reason. `busbar-mcp` is a LEGACY crate
+# (kind_isolation.rs LEGACY_CRATES) and THIS RELEASE DELETES IT: the rise is this crate's own
+# `transport` vocabulary, in its own feature text and its own tests, and there is nothing to rename
+# because the vocabulary IS the feature. Plan rule 4, 'drop, don't drain': a rise a retiring
+# crate cannot be drained of is RECORDED as dropped rather than excused -- the number moves, the
+# picks stay, and the whole row dies with the crate. `kind-isolation-ship` is RED while this
+# crate exists at all, which is where this figure expires. The key is an ORDINAL because that is
+# the only key this tree's `ceilings.rs::raises()` can resolve against an array-of-tables;
+# ordinal 118 IS this row (busbar-mcp x transport), and no [[cell]] row is added or removed so none move.
+count = "1114"
 
 [[cell]]
 crate = "busbar-mcp-codec"
@@ -2994,7 +3114,17 @@ count = "11"
 [[cell]]
 crate = "busbar-voice"
 kind = "plane"
-count = "811"
+# DROPPED. 811 -> 813, set to the tree's measurement and declared in qa/construction.toml's
+# [gate.ceiling_raises] as `cell.321.count` with the drop's reason. `busbar-voice` is a LEGACY crate
+# (kind_isolation.rs LEGACY_CRATES) and THIS RELEASE DELETES IT: the rise is this crate's own
+# `plane` vocabulary, in its own feature text and its own tests, and there is nothing to rename
+# because the vocabulary IS the feature. Plan rule 4, 'drop, don't drain': a rise a retiring
+# crate cannot be drained of is RECORDED as dropped rather than excused -- the number moves, the
+# picks stay, and the whole row dies with the crate. `kind-isolation-ship` is RED while this
+# crate exists at all, which is where this figure expires. The key is an ORDINAL because that is
+# the only key this tree's `ceilings.rs::raises()` can resolve against an array-of-tables;
+# ordinal 321 IS this row (busbar-voice x plane), and no [[cell]] row is added or removed so none move.
+count = "813"
 
 [[cell]]
 crate = "busbar-voice"
@@ -5563,7 +5693,17 @@ count = "14"
 [[cell]]
 crate = "busbar-core"
 kind = "dialect"
-count = "1196"
+# DROPPED. 1196 -> 1201, set to the tree's measurement and declared in qa/construction.toml's
+# [gate.ceiling_raises] as `cell.335.count` with the drop's reason. `busbar-core` is a LEGACY crate
+# (kind_isolation.rs LEGACY_CRATES) and THIS RELEASE DELETES IT: the rise is this crate's own
+# `dialect` vocabulary, in its own feature text and its own tests, and there is nothing to rename
+# because the vocabulary IS the feature. Plan rule 4, 'drop, don't drain': a rise a retiring
+# crate cannot be drained of is RECORDED as dropped rather than excused -- the number moves, the
+# picks stay, and the whole row dies with the crate. `kind-isolation-ship` is RED while this
+# crate exists at all, which is where this figure expires. The key is an ORDINAL because that is
+# the only key this tree's `ceilings.rs::raises()` can resolve against an array-of-tables;
+# ordinal 335 IS this row (busbar-core x dialect), and no [[cell]] row is added or removed so none move.
+count = "1201"
 
 [[cell]]
 crate = "busbar-hooks-ranking"
@@ -5573,7 +5713,17 @@ count = "2"
 [[cell]]
 crate = "busbar-llm"
 kind = "dialect"
-count = "3208"
+# DROPPED. 3208 -> 3211, set to the tree's measurement and declared in qa/construction.toml's
+# [gate.ceiling_raises] as `cell.337.count` with the drop's reason. `busbar-llm` is a LEGACY crate
+# (kind_isolation.rs LEGACY_CRATES) and THIS RELEASE DELETES IT: the rise is this crate's own
+# `dialect` vocabulary, in its own feature text and its own tests, and there is nothing to rename
+# because the vocabulary IS the feature. Plan rule 4, 'drop, don't drain': a rise a retiring
+# crate cannot be drained of is RECORDED as dropped rather than excused -- the number moves, the
+# picks stay, and the whole row dies with the crate. `kind-isolation-ship` is RED while this
+# crate exists at all, which is where this figure expires. The key is an ORDINAL because that is
+# the only key this tree's `ceilings.rs::raises()` can resolve against an array-of-tables;
+# ordinal 337 IS this row (busbar-llm x dialect), and no [[cell]] row is added or removed so none move.
+count = "3211"
 
 [[cell]]
 crate = "busbar-llm-codec"
@@ -5583,7 +5733,17 @@ count = "11200"
 [[cell]]
 crate = "busbar-mcp"
 kind = "dialect"
-count = "119"
+# DROPPED. 119 -> 122, set to the tree's measurement and declared in qa/construction.toml's
+# [gate.ceiling_raises] as `cell.339.count` with the drop's reason. `busbar-mcp` is a LEGACY crate
+# (kind_isolation.rs LEGACY_CRATES) and THIS RELEASE DELETES IT: the rise is this crate's own
+# `dialect` vocabulary, in its own feature text and its own tests, and there is nothing to rename
+# because the vocabulary IS the feature. Plan rule 4, 'drop, don't drain': a rise a retiring
+# crate cannot be drained of is RECORDED as dropped rather than excused -- the number moves, the
+# picks stay, and the whole row dies with the crate. `kind-isolation-ship` is RED while this
+# crate exists at all, which is where this figure expires. The key is an ORDINAL because that is
+# the only key this tree's `ceilings.rs::raises()` can resolve against an array-of-tables;
+# ordinal 339 IS this row (busbar-mcp x dialect), and no [[cell]] row is added or removed so none move.
+count = "122"
 
 [[cell]]
 crate = "busbar-mcp-codec"
@@ -5653,7 +5813,17 @@ count = "7"
 [[cell]]
 crate = "busbar-voice"
 kind = "dialect"
-count = "335"
+# DROPPED. 335 -> 336, set to the tree's measurement and declared in qa/construction.toml's
+# [gate.ceiling_raises] as `cell.353.count` with the drop's reason. `busbar-voice` is a LEGACY crate
+# (kind_isolation.rs LEGACY_CRATES) and THIS RELEASE DELETES IT: the rise is this crate's own
+# `dialect` vocabulary, in its own feature text and its own tests, and there is nothing to rename
+# because the vocabulary IS the feature. Plan rule 4, 'drop, don't drain': a rise a retiring
+# crate cannot be drained of is RECORDED as dropped rather than excused -- the number moves, the
+# picks stay, and the whole row dies with the crate. `kind-isolation-ship` is RED while this
+# crate exists at all, which is where this figure expires. The key is an ORDINAL because that is
+# the only key this tree's `ceilings.rs::raises()` can resolve against an array-of-tables;
+# ordinal 353 IS this row (busbar-voice x dialect), and no [[cell]] row is added or removed so none move.
+count = "336"
 
 [[cell]]
 crate = "busbar-voice-codec"
