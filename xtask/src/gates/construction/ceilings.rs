@@ -417,6 +417,7 @@ pub fn ceiling_rose(cx: &Ctx) -> Vec<CRow> {
     let declared = raises(cx, &base);
     let mints = mints_in(&cx.read(KIND_CEILINGS).unwrap_or_default());
     let deps = dep_admissions_in(&cx.read(KIND_CEILINGS).unwrap_or_default());
+    let minted_rules = minted_rules_in(&cx.read(CEILINGS).unwrap_or_default());
     let mut risen: Vec<String> = declared.refused.clone();
     let mut allowed: Vec<String> = Vec::new();
     let mut unreadable: Vec<String> = Vec::new();
@@ -425,7 +426,7 @@ pub fn ceiling_rose(cx: &Ctx) -> Vec<CRow> {
     // is left afterwards is an entry describing a rise that did not happen.
     let mut judged: BTreeSet<usize> = BTreeSet::new();
 
-    let (rose, unread, unadmitted) = rose(cx, &base, &mints, &deps);
+    let (rose, unread, unadmitted, born) = rose(cx, &base, &mints, &deps, &minted_rules);
     unreadable.extend(unread);
     risen.extend(unadmitted);
     for (key, (before, after, minted)) in &rose {
@@ -542,7 +543,20 @@ pub fn ceiling_rose(cx: &Ctx) -> Vec<CRow> {
             expired.join("; ")
         )
     };
-    let carried = format!("{carried}{warned}{spent}");
+    // A RULE BORN THIS BRANCH, ADMITTED IN FULL, IS NEVER A RISE — `rose()` only inserts a key
+    // into its map when `after > before`, and a minted rule's `before` IS its admission, so a rule
+    // landing at exactly what it is admitted for prints nothing anywhere else in this row. `born`
+    // is that one line `--report` needs to say a rule was minted at all.
+    let born_line = if born.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "; {} rule(s) BORN this branch: {}",
+            born.len(),
+            born.join("; ")
+        )
+    };
+    let carried = format!("{carried}{warned}{spent}{born_line}");
     let detail = if ok && allowed.is_empty() {
         format!(
             "no ceiling in {CEILINGS} or {KIND_CEILINGS} is higher than it is at the base \
@@ -590,16 +604,25 @@ pub fn ceiling_rose(cx: &Ctx) -> Vec<CRow> {
 /// that is NOT in this map has expired, and a strike derived from a second reading of the same
 /// comparison is a strike that can disagree with the row that reported it.
 ///
-/// Also answered: the files that could not be compared, and the keys the base does not carry that
-/// no `[[minted]]` row admits (see [`minted_before`]).
+/// Also answered: the files that could not be compared, the keys the base does not carry that no
+/// `[[minted]]`/`[[minted_rule]]` row admits (see [`minted_before`]), and one line per key a
+/// `[[minted_rule]]` row DID admit — `ceiling-rose` itself never reports a mint that stayed under
+/// its admission, so `--report` reads this line to say a rule was born at all.
 #[allow(clippy::type_complexity)]
 fn rose(
     cx: &Ctx,
     base: &str,
     mints: &Mints,
     deps: &DepAdmissions,
-) -> (BTreeMap<String, (i64, i64, bool)>, Vec<String>, Vec<String>) {
-    let (mut out, mut unreadable, mut unadmitted) = (BTreeMap::new(), Vec::new(), Vec::new());
+    minted_rules: &BTreeMap<String, MintedRule>,
+) -> (
+    BTreeMap<String, (i64, i64, bool)>,
+    Vec<String>,
+    Vec<String>,
+    Vec<String>,
+) {
+    let (mut out, mut unreadable, mut unadmitted, mut born) =
+        (BTreeMap::new(), Vec::new(), Vec::new(), Vec::new());
     for file in [CEILINGS, KIND_CEILINGS] {
         let now = match cx.read(file) {
             Ok(t) => t,
@@ -625,27 +648,48 @@ fn rose(
                 continue;
             }
         };
+        // THE MINTED-RULE DOOR is validated once per file pass, here, rather than inside the
+        // per-key loop below — see [`rule_admissions`]. `was_rules`/`rule_admits` are empty (and
+        // free) for `KIND_CEILINGS`, whose own minted-row door is `mints`/`deps` above.
+        let (was_rules, rule_admits) = if file == CEILINGS {
+            let was_rules = rule_names_of(&was);
+            let (admits, refused) = rule_admissions(cx, minted_rules, &was_rules, &now);
+            unadmitted.extend(refused);
+            for (rule, keys) in &admits {
+                for (key, ceiling) in keys {
+                    born.push(format!(
+                        "{CEILINGS} rules.{rule}.{key}: born : minted at ceiling {ceiling}"
+                    ));
+                }
+            }
+            (was_rules, admits)
+        } else {
+            (BTreeSet::new(), BTreeMap::new())
+        };
         for (path, after) in &now {
             // A KEY THE BASE DOES NOT CARRY IS A CEILING MINTED ON THIS BRANCH, and until now this
             // comparison walked the BASE's keys and never saw one. See [`minted_before`]: its
-            // `before` is what a `[[minted]]` / `[[minted_kind]]` row admits it at, or nothing.
+            // `before` is what a `[[minted]]` / `[[minted_kind]]` / `[[minted_rule]]` row admits
+            // it at, or nothing.
             let minted = !was.contains_key(path);
             let before = match was.get(path) {
                 Some(b) => *b,
-                None => match minted_before(cx, mints, deps, file, path) {
-                    Ok(b) => b,
-                    Err(why) => {
-                        unadmitted.push(format!("{file} {path} = {after}: {why}"));
-                        continue;
+                None => {
+                    match minted_before(cx, mints, deps, &rule_admits, &was_rules, file, path) {
+                        Ok(b) => b,
+                        Err(why) => {
+                            unadmitted.push(format!("{file} {path} = {after}: {why}"));
+                            continue;
+                        }
                     }
-                },
+                }
             };
             if *after > before {
                 out.insert(format!("{file}:{path}"), (before, *after, minted));
             }
         }
     }
-    (out, unreadable, unadmitted)
+    (out, unreadable, unadmitted, born)
 }
 
 const ROSE_TITLE: &str = "no ceiling in a qa ceilings file is higher than it is at the base";
@@ -1144,7 +1188,8 @@ pub fn struck_text(cx: &Ctx) -> Result<(String, Vec<Raise>, Vec<Raise>), String>
     let declared = raises(cx, &base);
     let mints = mints_in(&cx.read(KIND_CEILINGS).unwrap_or_default());
     let deps = dep_admissions_in(&cx.read(KIND_CEILINGS).unwrap_or_default());
-    let (rose, _, _) = rose(cx, &base, &mints, &deps);
+    let minted_rules = minted_rules_in(&cx.read(CEILINGS).unwrap_or_default());
+    let (rose, _, _, _) = rose(cx, &base, &mints, &deps, &minted_rules);
     // WHAT `--write` STRIKES: every entry the base already carries (its face landed), and every
     // live entry naming a ceiling that did not rise (it has EXPIRED — see [`ceiling_rose`]'s
     // expiry arm, where the same comparison reports it as a warning rather than a red).
@@ -1202,13 +1247,38 @@ pub fn struck_text(cx: &Ctx) -> Result<(String, Vec<Raise>, Vec<Raise>), String>
             )
         })?;
     }
+    // AND EVERY SPENT `[[minted_rule]]` ROW. A rule's opening is admitted ONCE, on the branch that
+    // mints the table; the moment that branch lands, the base carries `[rules.<name>]` and the row
+    // is a second mint — which [`rule_admissions`] refuses, forever, on every branch cut after it.
+    // So the strike is not a tidy-up: a row left behind by its own landing would red the next
+    // landing and every one after. This is the same discipline the carried-raise arm above keeps,
+    // and `--write` is the same place it is kept.
+    //
+    // HIGHEST ORDINAL FIRST, for the reason the array edits above are: each strike moves the rows
+    // beneath it. The `[[{RAISES}]]` edits cannot disturb these ordinals and these cannot disturb
+    // those — `splice` counts blocks of ONE header — so the two groups are independent.
+    let base_rules = rule_names_of(&ints_of(&cx.git_show(&base, CEILINGS)?)?);
+    let mut spent_rules: Vec<(&String, &MintedRule)> = minted_rules
+        .iter()
+        .filter(|(rule, _)| base_rules.contains(*rule))
+        .collect();
+    spent_rules.sort_by_key(|(_, mr)| std::cmp::Reverse(mr.ordinal));
+    for (rule, mr) in spent_rules {
+        out = splice(&out, "[[minted_rule]]", mr.ordinal, "").ok_or_else(|| {
+            format!(
+                "{CEILINGS} has no [[minted_rule]] #{} to strike (spent mint of `[rules.{rule}]`)",
+                mr.ordinal
+            )
+        })?;
+    }
     Ok((out, expired, migrated))
 }
 
 /// THE TABLES WHOSE INTEGERS ARE NOT CEILINGS. See [`ints_of`]: `[[minted]] cells`,
-/// `[[minted_kind]] cells`/`edges` and both rows' `ceiling` are numbers ABOUT the ceilings, and a
-/// comparison that read them as ceilings would refuse the very admission it was asked to honour.
-const NOT_CEILINGS: &[&str] = &["minted", "minted_kind"];
+/// `[[minted_kind]] cells`/`edges`, `[[minted_rule]]`'s own opening figures, and all three rows'
+/// `ceiling` are numbers ABOUT the ceilings, and a comparison that read them as ceilings would
+/// refuse the very admission it was asked to honour.
+const NOT_CEILINGS: &[&str] = &["minted", "minted_kind", "minted_rule"];
 
 /// THE ARRAY-OF-TABLES ROWS WHOSE NAME IS THEIR IDENTITY, and the fields that spell it.
 ///
@@ -1291,17 +1361,53 @@ fn ordinal_form(key: &str) -> Option<&'static (&'static str, &'static [&'static 
 /// minted ledger key with no covering row — or with one that carries no `ceiling` — is RED, and
 /// the message names the row that would admit it.
 ///
-/// A NEW CEILING IN `qa/construction.toml` IS DIFFERENT and is left to the ordinary mechanism: that
-/// file is the owner's rule table, a new rule arrives with its own figure, and the figure is small
-/// enough to declare outright. Its `before` is 0, so the whole of it is a declared raise — which is
-/// what "the FIRST gating figure of a row that was not gating before" has always meant here.
+/// A NEW *KEY* IN `qa/construction.toml` IS DIFFERENT and is left to the ordinary mechanism when
+/// the rule it belongs to already exists at the base: that file is the owner's rule table, one new
+/// figure in an existing rule arrives on its own, and the figure is small enough to declare
+/// outright. Its `before` is 0, so the whole of it is a declared raise — which is what "the FIRST
+/// gating figure of a row that was not gating before" has always meant here.
+///
+/// A NEW *RULE* — a whole `[rules.<name>]` TABLE the base carries no key of at all — is the same
+/// hole `[[minted]]`/`[[minted_kind]]` closed for `qa/kind-isolation.toml`, ported: a rule can open
+/// with several ceilings at once (a `loc-ceilings`-shaped rule opens five in one commit), and
+/// declaring each as its own `[[gate.ceiling_raises]]` 0 -> N entry is paperwork describing a birth
+/// as a sequence of raises it never had. `[[minted_rule]]` admits the whole table in one row, the
+/// same door as the crate/kind mints reads through [`mints_in`]'s sibling [`minted_rules_in`]: see
+/// [`rule_admissions`] for the three ways such a row admits nothing, and every key of a minted rule
+/// that row does not name is undeclared — RED — exactly as an unadmitted `[[cell]]` is.
 fn minted_before(
     cx: &Ctx,
     mints: &Mints,
     deps: &DepAdmissions,
+    rule_admits: &BTreeMap<String, BTreeMap<String, i64>>,
+    was_rules: &BTreeSet<String>,
     file: &str,
     path: &str,
 ) -> Result<i64, String> {
+    if file == CEILINGS {
+        if let Some(rest) = path.strip_prefix("rules.") {
+            if let Some((rule, key)) = rest.split_once('.') {
+                if !was_rules.contains(rule) {
+                    return rule_admits
+                        .get(rule)
+                        .and_then(|m| m.get(key))
+                        .copied()
+                        .ok_or_else(|| {
+                            format!(
+                                "a ceiling MINTED on this branch under `[rules.{rule}]` — \
+                                 {CEILINGS} at the base carries no such table — and no \
+                                 `[[minted_rule]] rule = \"{rule}\"` row admits `{key}`. A table \
+                                 that did not exist is a whole rule born at once, never a 0 -> N \
+                                 raise of one number, and it is admitted by the row that names it, \
+                                 carrying every key it opens. Add `{key} = \"<the figure this \
+                                 ceiling is born at>\"` to `[[minted_rule]] rule = \"{rule}\"`"
+                            )
+                        });
+                }
+            }
+        }
+        return Ok(0);
+    }
     if file != KIND_CEILINGS {
         return Ok(0);
     }
@@ -1468,6 +1574,172 @@ pub fn mints_in(text: &str) -> Mints {
         }
     }
     out
+}
+
+/// One `[[minted_rule]]` row: the whole `[rules.<name>]` table it admits, and the figure each of
+/// its keys is born at. `commit` is the landing that minted the table — the reference this row's
+/// own figures are checked against in [`rule_admissions`], never taken on faith the way a
+/// `[[minted]]` row's `ceiling` is: a rule table can carry several ceilings in one commit, and a
+/// row that could assert any figure for any of them would be a bypass with a TOML header.
+#[derive(Debug, Clone, Default)]
+pub struct MintedRule {
+    pub commit: Option<String>,
+    pub ceilings: BTreeMap<String, i64>,
+    /// Which `[[minted_rule]]` block this is, counting from 1 — the handle [`struck_text`] strikes
+    /// the row by once its rule has landed and the row is spent. A row keyed by its rule name
+    /// alone could not be removed from the text without re-serialising a document whose comments
+    /// are half its content.
+    pub ordinal: usize,
+}
+
+/// The `[[minted_rule]]` rows of `qa/construction.toml`'s OWN text — the same document
+/// `ceiling-rose` ratchets, so this door reads no second file. `rule` and `commit` are not
+/// ceilings (see [`NOT_CEILINGS`]); every other field of the row is one of the figures the rule
+/// opens at, read the same way [`mints_in`] reads `ceiling` — a bare TOML integer or a quoted one.
+pub fn minted_rules_in(text: &str) -> BTreeMap<String, MintedRule> {
+    let mut out = BTreeMap::new();
+    let Ok(doc) = crate::toml_doc::parse_str(text) else {
+        return out;
+    };
+    for (i, t) in doc.array_of_tables("minted_rule").into_iter().enumerate() {
+        let ordinal = i + 1;
+        let Some(rule) = t.str_of("rule") else {
+            continue;
+        };
+        let commit = t.str_of("commit").map(str::to_string);
+        let mut ceilings = BTreeMap::new();
+        for key in t.keys() {
+            if key == "rule" || key == "commit" {
+                continue;
+            }
+            if let Some(v) = t
+                .int_of(key)
+                .or_else(|| t.str_of(key).and_then(|s| s.trim().parse::<i64>().ok()))
+            {
+                ceilings.insert(key.clone(), v);
+            }
+        }
+        out.insert(
+            rule.to_string(),
+            MintedRule {
+                commit,
+                ceilings,
+                ordinal,
+            },
+        );
+    }
+    out
+}
+
+/// Every `[rules.<name>]` TABLE this text's dotted-path map ([`ints_of`]'s shape) carries — the
+/// NAME half of a minted-rule admission, read off the same paths `minted_before` splits on. A rule
+/// with no integer ceiling in it carries no path here, and needs no admission: there is nothing
+/// for `ceiling-rose` to ratchet.
+fn rule_names_of(ints: &BTreeMap<String, i64>) -> BTreeSet<String> {
+    ints.keys()
+        .filter_map(|k| k.strip_prefix("rules."))
+        .filter_map(|rest| rest.split_once('.').map(|(rule, _)| rule.to_string()))
+        .collect()
+}
+
+/// Every ceiling key `[rules.<rule>]` carries in this dotted-path map, `key -> value`.
+fn rule_keys_of(ints: &BTreeMap<String, i64>, rule: &str) -> BTreeMap<String, i64> {
+    let prefix = format!("rules.{rule}.");
+    ints.iter()
+        .filter_map(|(k, v)| {
+            k.strip_prefix(prefix.as_str())
+                .map(|rest| (rest.to_string(), *v))
+        })
+        .collect()
+}
+
+/// THE MINTED-RULE DOOR'S OWN ADMISSION. Validated once per `[[minted_rule]]` row, here, rather
+/// than per key: a row that fails one of these three tests admits nothing at all, and every key
+/// under the rule it names falls straight through to `minted_before`'s generic refusal.
+///
+/// * SECOND-MINT — the base already carries a key of `[rules.<rule>]`: the table's opening was
+///   declared once and is HISTORY now, so this row admits nothing. A rule mints its ceilings on
+///   the branch that creates it; every figure after that moves through `ceiling-rose`, in a commit
+///   that says which number went up.
+/// * UNLANDED-RULE-MINT — this tree carries no ceiling under `[rules.<rule>]` at all: the row
+///   admits a table that does not exist.
+/// * MINT-MISMATCH — per key: either the row names a key `[rules.<rule>]` does not carry on this
+///   tree, or (when the row's `commit` can be read) the figure the row names for a key is not what
+///   that commit's own copy of `qa/construction.toml` actually carried there. A row can name the
+///   figure a rule was born at; it cannot assert one of its own choosing. A row with no readable
+///   `commit` is trusted on its keys' presence alone, the same as a `[[minted]]` row is trusted on
+///   its `ceiling` — there is no third file to check it against here, only the row's own history.
+///
+/// Returns the admitted figures by rule and key, and the refusal for every row that admits
+/// nothing or admits only part of what it names.
+fn rule_admissions(
+    cx: &Ctx,
+    minted_rules: &BTreeMap<String, MintedRule>,
+    was_rules: &BTreeSet<String>,
+    now_ints: &BTreeMap<String, i64>,
+) -> (BTreeMap<String, BTreeMap<String, i64>>, Vec<String>) {
+    let mut admits: BTreeMap<String, BTreeMap<String, i64>> = BTreeMap::new();
+    let mut refused = Vec::new();
+    for (rule, mr) in minted_rules {
+        if was_rules.contains(rule) {
+            refused.push(format!(
+                "[[minted_rule]] rule = \"{rule}\": the base already carries `[rules.{rule}]` — \
+                 its opening was declared once and is HISTORY now, so this row admits nothing. A \
+                 rule mints its ceilings on the branch that creates it; every figure after that \
+                 moves through `ceiling-rose`, in a commit that says which number went up. The \
+                 row is SPENT: `cargo xtask gate construction --write` strikes it"
+            ));
+            continue;
+        }
+        let now_keys = rule_keys_of(now_ints, rule);
+        if now_keys.is_empty() {
+            refused.push(format!(
+                "[[minted_rule]] rule = \"{rule}\": this tree carries no ceiling under \
+                 `[rules.{rule}]`, so the row admits a table that does not exist"
+            ));
+            continue;
+        }
+        let born_ints = mr
+            .commit
+            .as_deref()
+            .and_then(|c| cx.git_show(c, CEILINGS).ok())
+            .and_then(|t| ints_of(&t).ok());
+        let mut mismatched = Vec::new();
+        let mut kept = BTreeMap::new();
+        for (key, declared) in &mr.ceilings {
+            if !now_keys.contains_key(key) {
+                mismatched.push(format!(
+                    "`{key}` is not a ceiling `[rules.{rule}]` carries on this tree"
+                ));
+                continue;
+            }
+            if let Some(born_ints) = &born_ints {
+                let actual = born_ints.get(&format!("rules.{rule}.{key}"));
+                if actual != Some(declared) {
+                    mismatched.push(format!(
+                        "`{key} = {declared}` does not match what `{}` actually carried at \
+                         `rules.{rule}.{key}` ({})",
+                        mr.commit.as_deref().unwrap_or(""),
+                        actual
+                            .map(|v| v.to_string())
+                            .unwrap_or_else(|| "nothing".to_string())
+                    ));
+                    continue;
+                }
+            }
+            kept.insert(key.clone(), *declared);
+        }
+        if !mismatched.is_empty() {
+            refused.push(format!(
+                "[[minted_rule]] rule = \"{rule}\": {}",
+                mismatched.join("; ")
+            ));
+        }
+        if !kept.is_empty() {
+            admits.insert(rule.clone(), kept);
+        }
+    }
+    (admits, refused)
 }
 
 /// One `[[dep]]` row's OWN admission, as the minted-dep door needs it: the `ceiling` it is born

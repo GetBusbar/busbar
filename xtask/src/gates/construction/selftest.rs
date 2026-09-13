@@ -582,6 +582,7 @@ fn ceiling_ratchet_cases<'a>(
         gate, cx, base, &based, &text, cfg,
     ));
     r.append(minted_ceiling_cases(gate, cx, base, &based, &text));
+    r.append(minted_rule_cases(gate, cx, base, &based, &text));
     r.append(dep_admission_cases(gate, cx, base, &based));
     r.append(dep_admission_transitional_cases(gate, cx, base, &based));
 
@@ -1458,6 +1459,203 @@ fn minted_ceiling_cases<'a>(
             ),
         ),
     ));
+    r
+}
+
+/// THE MINTED-RULE DOOR: a whole `[rules.<name>]` TABLE the base does not carry has to be ADMITTED
+/// by a `[[minted_rule]]` row, the same way a `[[cell]]` row born on a branch is admitted by
+/// `[[minted]]` — see `ceilings::rule_admissions`. The plant never touches the real base at all:
+/// the rule name is synthetic, so the real merge-base's copy of `qa/construction.toml` already has
+/// no key of it, and "minted on this branch" is true without a single `git-show` mock — except for
+/// the SECOND-MINT case, which needs the base to carry the rule to prove the refusal, and the
+/// MINT-MISMATCH case, which needs a specific commit's own copy to check the row against.
+fn minted_rule_cases<'a>(
+    gate: &'a dyn Gate,
+    cx: &'a Ctx,
+    base: &Overlay,
+    based: &str,
+    ceilings_text: &str,
+) -> Report<'a> {
+    let mut r = Report::new();
+    let rule = "gates-7-selftest";
+    let key = "widget_ceiling";
+    let table_header = format!("[rules.{rule}]");
+    let path = format!("rules.{rule}.{key}");
+    let rule_block = |value: i64| format!("\n{table_header}\n{key} = {value}\n");
+    let mint_row = |field: Option<i64>, commit: Option<&str>| -> String {
+        let commit_line = commit
+            .map(|c| format!("commit = \"{c}\"\n"))
+            .unwrap_or_default();
+        let field_line = field
+            .map(|v| format!("{key} = \"{v}\"\n"))
+            .unwrap_or_default();
+        format!("\n[[minted_rule]]\nrule = \"{rule}\"\n{commit_line}{field_line}")
+    };
+
+    // 1. A whole table minted on this branch, admitted by no `[[minted_rule]]` row at all, is
+    //    refused — the same shape as an unadmitted `[[cell]]` row, ported to this file.
+    let mut ov = on(base);
+    ov.set(CEILINGS, format!("{ceilings_text}{}", rule_block(5)));
+    r.push(prove_rows_red(
+        cx,
+        gate,
+        "a whole rule table minted on this branch, admitted by no `[[minted_rule]]` row, is \
+         refused",
+        &[ceilings::ROW_ROSE],
+        ov,
+        &[
+            "MINTED on this branch",
+            &format!("rule = \"{rule}\""),
+            &path,
+        ],
+    ));
+
+    // 2. SECOND-MINT — the base already carries the rule, so a `[[minted_rule]]` row for it
+    //    admits nothing: its opening is HISTORY, and only the ordinary raise mechanism can move it
+    //    from here.
+    let mut ov = on(base);
+    ov.set_command(
+        format!("git-show:{based}:{CEILINGS}"),
+        format!("{ceilings_text}{}", rule_block(3)),
+    );
+    ov.set(
+        CEILINGS,
+        format!(
+            "{ceilings_text}{}{}",
+            rule_block(5),
+            mint_row(Some(5), None)
+        ),
+    );
+    r.push(prove_rows_red(
+        cx,
+        gate,
+        "a `[[minted_rule]]` row for a rule the base already carries a key of is a second mint, \
+         and admits nothing",
+        &[ceilings::ROW_ROSE],
+        ov,
+        &[
+            &format!("rule = \"{rule}\""),
+            "already carries",
+            "HISTORY now",
+        ],
+    ));
+
+    // 3. UNLANDED-RULE-MINT — the row names a rule this tree carries no ceiling under at all.
+    let mut ov = on(base);
+    ov.set(
+        CEILINGS,
+        format!("{ceilings_text}{}", mint_row(Some(5), None)),
+    );
+    r.push(prove_rows_red(
+        cx,
+        gate,
+        "a `[[minted_rule]]` row for a rule this tree carries no ceiling under admits a table \
+         that does not exist",
+        &[ceilings::ROW_ROSE],
+        ov,
+        &[&format!("rule = \"{rule}\""), "does not exist"],
+    ));
+
+    // 4. MINT-MISMATCH — the row's own `commit` is readable, and that commit's copy of this same
+    //    file did not carry the figure the row declares: a row names the figure a rule was born
+    //    at, never one of its own choosing.
+    let commit = "gates-7-selftest-commit";
+    let mut ov = on(base);
+    ov.set_command(
+        format!("git-show:{commit}:{CEILINGS}"),
+        format!("{ceilings_text}{}", rule_block(5)),
+    );
+    ov.set(
+        CEILINGS,
+        format!(
+            "{ceilings_text}{}{}",
+            rule_block(5),
+            mint_row(Some(9), Some(commit))
+        ),
+    );
+    r.push(prove_rows_red(
+        cx,
+        gate,
+        "a `[[minted_rule]]` row whose declared figure does not match what its own `commit` \
+         actually carried is a mint-mismatch, and admits nothing",
+        &[ceilings::ROW_ROSE],
+        ov,
+        &[&format!("rule = \"{rule}\""), "does not match what"],
+    ));
+
+    // 5. A `[[minted_rule]]` row that names exactly the table and figure the branch minted admits
+    //    it in full: the row is green, and `--report` names the rule BORN rather than printing
+    //    nothing, which is what a mint that stays under its own admission would otherwise do.
+    let mut ov = on(base);
+    ov.set(
+        CEILINGS,
+        format!(
+            "{ceilings_text}{}{}",
+            rule_block(5),
+            mint_row(Some(5), None)
+        ),
+    );
+    r.push(prove_row_pass_naming(
+        cx,
+        gate,
+        "a `[[minted_rule]]` row naming exactly the table and figure minted admits it, and \
+         `--report` names the rule as born",
+        ceilings::ROW_ROSE,
+        ov,
+        &[&format!("{path}: born : minted at ceiling 5")],
+    ));
+
+    // 6. THE ROW IS SPENT THE MOMENT ITS RULE LANDS, and `--write` strikes it — the counterpart of
+    //    case 2. Case 2 proves the refusal a second mint earns; this proves the refusal is not a
+    //    trap. A row left behind by its own landing would red the NEXT branch's `ceiling-rose` and
+    //    every one after it, because from then on the base carries `[rules.<name>]` and nothing
+    //    else would ever remove the row.
+    let mut ov = on(base);
+    ov.set_command(
+        format!("git-show:{based}:{CEILINGS}"),
+        format!("{ceilings_text}{}", rule_block(5)),
+    );
+    ov.set(
+        CEILINGS,
+        format!(
+            "{ceilings_text}{}{}",
+            rule_block(5),
+            mint_row(Some(5), None)
+        ),
+    );
+    let planted = cx.with_overlay(ov);
+    let got = match ceilings::struck_text(&planted) {
+        Ok((after, _, _)) => {
+            if ceilings::minted_rules_in(&after).contains_key(rule) {
+                Expect::Red {
+                    naming: vec![format!(
+                        "`--write` left `[[minted_rule]] rule = \"{rule}\"` in {CEILINGS} after the base \
+                         began carrying `[rules.{rule}]`; a spent mint row reds every branch cut \
+                         after the one that landed it"
+                    )],
+                }
+            } else if !after.contains(&table_header) {
+                Expect::Red {
+                    naming: vec![format!(
+                        "`--write` struck `{table_header}` itself, not just the spent \
+                         `[[minted_rule]]` row that admitted it"
+                    )],
+                }
+            } else {
+                Expect::Green
+            }
+        }
+        Err(e) => Expect::Red {
+            naming: vec![format!("--write could not derive its strike: {e}")],
+        },
+    };
+    r.push(Case {
+        name: "`--write` strikes a spent `[[minted_rule]]` row, not the rule table it admitted"
+            .into(),
+        covers: vec![ceilings::ROW_ROSE.to_string()],
+        expected: Expect::Green,
+        got,
+    });
     r
 }
 

@@ -194,6 +194,66 @@ door's. The cases are gated at construction time on `kind_isolation::dep_class_v
 `tcb` for the pair and push nothing when it does not, so they neither fail today nor need a second
 change once E1b's grant lands beneath this branch.
 
+### The minted-rule door
+
+The minted-dep door above closes the hole for `qa/kind-isolation.toml`. `qa/construction.toml` has
+the same hole in a different shape, and it was measured the same way — by a line that could not
+land. `ceiling-rose` compares the branch's ceilings against the base's, and until GATES-6 it walked
+the BASE's key map, so a key the base did not carry was never visited at all. GATES-6 turned the
+walk around; what it then found is this: a whole **rule** born on the branch — a `[rules.<name>]`
+table the base carries no key of — has no `before` anywhere, and no honest `0 -> N` declaration to
+write for it either. A rule opens with several ceilings at once (a `loc-ceilings`-shaped rule opens
+five in one commit), and declaring each as its own `[[gate.ceiling_raises]]` entry is paperwork
+describing a birth as a sequence of raises it never had. Worse, such an entry can never be marked
+*used* — `raises()` marks a declaration used only when the diff loop flagged its path as risen, and
+a path the base has no value for is not a rise — so the entry sits in the file forever failing its
+own expiry check, which is `ceiling-rose`'s stale-waiver refusal. That is the RED that struck TS-1's
+declaration and parked its line.
+
+So the rule table gets the admission the crate and the column already have. The ledger entry lives
+in `qa/construction.toml` itself — the same document `ceiling-rose` ratchets, so the door reads no
+second file — and its form is:
+
+```toml
+[[minted_rule]]
+rule = "the-rule-name"          # the `[rules.<name>]` table this row admits, once
+commit = "<sha>"                # the landing that minted the table (optional, and checked)
+<ceiling_key> = "<figure>"      # one line per ceiling the table opens, at the figure it opens at
+```
+
+`rule` and `commit` are not ceilings (they are in `NOT_CEILINGS`, beside `[[minted]]`'s and
+`[[minted_kind]]`'s own figures); **every other field of the row is one of the rule's opening
+ceilings**, read as a bare TOML integer or a quoted one, exactly as `[[minted]]` reads its
+`ceiling`. The door admits the declared opening value ONCE, base to tip — never a chain of deltas —
+and a ceiling of the rule the row does not name is undeclared, and RED, exactly as an unadmitted
+`[[cell]]` is. A rule table carrying two integer ceilings needs both lines; a rule whose table has
+no integer in it needs no row at all, because there is nothing for `ceiling-rose` to ratchet.
+
+A row admits nothing at all in three cases, each refused by name:
+
+* **second mint** — the base already carries a key of `[rules.<name>]`. The table's opening was
+  declared once and is history; every figure after that moves through `ceiling-rose`, in a commit
+  that says which number went up.
+* **unlanded rule mint** — this tree carries no ceiling under `[rules.<name>]`, so the row admits a
+  table that does not exist.
+* **mint mismatch** — the row names a key the table does not carry on this tree, or (when `commit`
+  can be read) the figure it declares is not what that commit's own copy of `qa/construction.toml`
+  actually carried at `rules.<name>.<key>`. A row may name the figure a rule was born at; it may not
+  assert one of its own choosing, or the ledger becomes the authority on its own history instead of
+  a record of it. A row with no readable `commit` is trusted on its keys' presence alone, the same
+  as a `[[minted]]` row is trusted on its `ceiling`.
+
+**The row is spent the moment its rule lands**, and `cargo xtask gate construction --write` strikes
+it — the same discipline `--write` keeps for a declared raise the base has come to carry. This is
+not tidying. From the landing onward every base carries `[rules.<name>]`, so the row is a second
+mint by the rule above; left in the file it would red `ceiling-rose` on the next branch and every
+branch after it. The strike and the refusal are one mechanism read from two sides.
+
+One line of `--report` exists only for this door: `ceiling-rose` reports a *rise*, and a rule landing
+at exactly what it is admitted for is not one, so a mint that stayed under its admission would
+otherwise print nothing anywhere. The `N rule(s) BORN this branch` line is how the report says a
+rule was minted at all.
+
 `ship-ready:standing-reds` is the one row that reads a posture. The standing-red list is a *dev-line
 convenience*: construction rows that are known red, written down, and deliberately not blocking the
 integration line while they are drained. That is reasonable to have and unreasonable to promote —
