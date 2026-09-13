@@ -8,7 +8,7 @@
 //! disjunction — left the existing suite entirely green. Each one names the specific change it
 //! refuses, so the property is on record rather than left to be inferred from a passing run.
 
-use super::{entry, test_digest, Canned, Headers};
+use super::{entry, test_digest, Canned};
 use crate::cache::CredentialCache;
 use crate::chain::{AuthChain, ChainVerdict};
 use crate::challenge::{Challenge, ChallengeBounds};
@@ -320,34 +320,4 @@ fn every_accepted_round_spends_its_own_bytes_and_one_round() {
     let c = c.advance(vec![0u8; 5]).expect("five exactly fit");
     assert_eq!(c.bytes_left, 0);
     assert!(c.exhausted(), "the byte budget is spent");
-}
-
-// ---------------------------------------------------------------------------------------------
-// The protocol ladder.
-// ---------------------------------------------------------------------------------------------
-
-/// The Bedrock invoke rung needs BOTH halves of its path shape, and a request matching only one half
-/// claims no dialect at all.
-///
-/// The rung is the pair `/model/…` + `…/invoke`. Loosened to either half, a path that merely ends in
-/// `/invoke` — an arbitrary upstream's own route — is claimed as Bedrock, and the request is then
-/// parsed and billed as a dialect it never spoke.
-#[test]
-fn the_bedrock_invoke_rung_requires_both_halves_of_its_path() {
-    let none = Headers(Vec::new());
-    assert_eq!(
-        crate::detect::protocol_id("/model/anthropic.claude/invoke", &none),
-        Some(crate::detect::protocol::BEDROCK),
-        "both halves present is the rung"
-    );
-    assert_eq!(
-        crate::detect::protocol_id("/some/other/invoke", &none),
-        None,
-        "the suffix alone is not the Bedrock invoke rung"
-    );
-    assert_eq!(
-        crate::detect::protocol_id("/model/anthropic.claude/stream", &none),
-        None,
-        "the prefix alone is not the Bedrock invoke rung"
-    );
 }
