@@ -1190,6 +1190,18 @@ ledger|amend|refused-unsigned	PASS	HTTP 404; usage Δ {}
 ledger|currency|minor-unit-rounding	PASS	HTTP 200; usage Δ {}	
 ledger|currency|native	PASS	HTTP 400; usage Δ {}	
 ledger|rate-history|as-of	PASS	HTTP 200; usage Δ {}	
+llm.stream|anthropic|cut	PASS	script llm-stream-fault.sh: status 200	
+llm.stream|anthropic|stream-error	PASS	script llm-stream-fault.sh: status 200	
+llm.stream|bedrock|cut	PASS	script llm-stream-fault.sh: status 200	
+llm.stream|bedrock|stream-error	PASS	script llm-stream-fault.sh: status 200	
+llm.stream|cohere|cut	PASS	script llm-stream-fault.sh: status 200	
+llm.stream|cohere|stream-error	PASS	script llm-stream-fault.sh: status 200	
+llm.stream|gemini|cut	PASS	script llm-stream-fault.sh: status 200	
+llm.stream|gemini|stream-error	PASS	script llm-stream-fault.sh: status 200	
+llm.stream|openai|cut	PASS	script llm-stream-fault.sh: status 200	
+llm.stream|openai|stream-error	PASS	script llm-stream-fault.sh: status 200	
+llm.stream|responses|cut	PASS	script llm-stream-fault.sh: status 200	
+llm.stream|responses|stream-error	PASS	script llm-stream-fault.sh: status 200	
 llm|anthropic|anthropic|request|malformed	PASS	HTTP 400; usage Δ {}	
 llm|anthropic|anthropic|request|ok	PASS	HTTP 200; usage Δ {"requests":1,"spend_cents":250,"tokens":18}	
 llm|anthropic|anthropic|request|ok_stream	PASS	HTTP 200; usage Δ {"requests":1,"spend_cents":250,"tokens":18}	
