@@ -27,7 +27,6 @@ use futures::channel::mpsc::{channel as bounded, unbounded, Receiver, UnboundedS
 use futures::{SinkExt, StreamExt};
 
 use crate::ingress::byte_duplex::{serve_messages, DuplexPlane};
-use crate::plane_host::{run_gauntlet_session, GauntletPlane, GauntletRequest};
 
 /// How many inbound frames one accepted socket may hold for a reader that has not taken them yet. The
 /// queue is what stands between a client's write rate and this node's memory: unbounded, every frame a
@@ -230,62 +229,18 @@ where
     })
 }
 
-/// ACCEPT a WS-upgrade only AFTER the open-pass gauntlet admits it — the governed sibling of [`accept`].
-///
-/// A live session must be admitted by [`run_gauntlet_session`] (verify STRICTLY before any charge)
-/// BEFORE the socket is bound to anything: the HTTP→WS handshake is the point of no return, so running
-/// the destination verify first is what keeps a refused session from ever reaching the pump. This runs
-/// the gauntlet SYNCHRONOUSLY (its `verify_destination` is sync) and, on `Refuse`, returns the plane's
-/// OWN finished refusal `Response` WITHOUT calling `on_upgrade` — so a refused session upgrades no
-/// socket, spawns no task and charges nothing. Only on `Proceed` is the upgrade accepted and the split
-/// socket handed to `on_socket`. This is the seam a plane's WS-accept arrival uses instead of a bare
-/// `on_upgrade`, which would bind the socket before the gauntlet could reject it.
-///
-/// (`result_large_err` on the inner gate: the refusal is the plane's own by-value `Response`, carried
-/// verbatim so its shaping matches [`run_gauntlet_session`]'s.)
-#[allow(clippy::result_large_err)]
-pub fn accept_gauntlet<F, Fut>(
-    upgrade: WebSocketUpgrade,
-    req: GauntletRequest<'_>,
-    plane: Box<dyn GauntletPlane + '_>,
-    on_socket: F,
-) -> Response
-where
-    F: FnOnce(Receiver<Vec<u8>>, UnboundedSender<Vec<u8>>) -> Fut + Send + 'static,
-    Fut: std::future::Future<Output = ()> + Send + 'static,
-{
-    match run_gauntlet_session(req, plane) {
-        // The gauntlet refused the destination: return its finished refusal, bind no socket.
-        Err(refusal) => refusal,
-        // Admitted: only now accept the upgrade and hand the split socket to the plane.
-        Ok(_admitted) => accept(upgrade, on_socket),
-    }
-}
-
-/// SERVE one inbound WS session on the neutral pump, gated by the open-pass gauntlet — the governed
-/// sibling of [`serve`]. Runs [`run_gauntlet_session`] (verify STRICTLY before any charge) and, only on
-/// `Proceed`, accepts the upgrade and drives `plane` over the socket through
-/// [`serve_messages`](crate::ingress::byte_duplex::serve_messages); on `Refuse` it returns the gauntlet
-/// plane's finished refusal and never binds the socket. The one-call path a plane whose whole socket IS
-/// its session uses when that session must be admitted before it is served.
-#[allow(clippy::result_large_err)]
-pub fn serve_gauntlet<P>(
-    upgrade: WebSocketUpgrade,
-    req: GauntletRequest<'_>,
-    gate: Box<dyn GauntletPlane + '_>,
-    plane: Arc<P>,
-) -> Response
-where
-    P: DuplexPlane,
-{
-    accept_gauntlet(upgrade, req, gate, move |stream, sink| async move {
-        serve_messages(stream, sink, plane).await;
-    })
-}
+// (removed: `accept_gauntlet` / `serve_gauntlet` — the per-transport session-accept gauntlet wrappers.
+//  A duplex session is no longer admitted by a plane-run gauntlet wrapped around the upgrade: EVERY
+//  session is opened by the ROOT's owning-Held driver through the ONE kernel session seam, which draws
+//  the session's one node slot + in-flight lease ONCE, uniformly for every transport. The root's
+//  arrival (`crates/busbar/src/root/ws_arrival.rs`) reaches the socket through the bare [`accept_coded`]
+//  only AFTER `SessionLoopDriver::open` has admitted the session on that seam — so the socket still
+//  binds strictly after admission, but through the single root-composed seam rather than a
+//  per-transport gauntlet.)
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 // THE INBOUND WS-ACCEPT ARRIVAL SEAM — the neutral, substrate-owned vocabulary a plane DECLARES an
-// inbound gauntlet-gated WS-accept route through, and the process registry the composition root
+// inbound WS-accept route through, and the process registry the composition root
 // installs those declarations into for the core router to drain. The plane names only this neutral
 // seam; the CORE-side `mount_ws_arrivals` (behind `duplex-ws`) mounts a real WS-accept route per
 // spec and hands the plane's accept fn a [`WsArrival`] by value. NONE of this is a `PlaneReqCtx` /
@@ -297,13 +252,15 @@ where
 /// THE SUBSTRATE-OWNED NEWTYPE the WS upgrade rides on across the accept boundary — NEVER
 /// `Box<dyn Any>`. Single-compiled in substrate, so its type identity is the same in both dual-
 /// compiled core instances (no downcast, no `TypeId` to diverge). Carries the upgrade BY VALUE plus
-/// the verbatim per-request facts the plane's accept fn needs to build its `GauntletRequest` and open
-/// its session — sourced from the SAME extractors the non-WS adapter reads, but assembled by the WS-
+/// the verbatim per-request facts the root's arrival needs to open its session on the session seam —
+/// sourced from the SAME extractors the non-WS adapter reads, but assembled by the WS-
 /// aware core mount. The only type-erased field is `slot`, the already-proven-safe plane-slot crossing
 /// the non-WS `PlaneReqCtx::slot` already uses.
 pub struct WsArrival {
-    /// The axum WS-upgrade extractor the route received. The ONLY way to consume it into a live socket
-    /// is [`serve_gauntlet`] / [`accept_gauntlet`]; a plane's accept fn never calls a bare `on_upgrade`.
+    /// The axum WS-upgrade extractor the route received. It is consumed into a live socket ONLY by the
+    /// root's arrival (`crates/busbar/src/root/ws_arrival.rs`) through [`accept_coded`], and ONLY after
+    /// `SessionLoopDriver::open` has admitted the session on the ONE kernel session seam — so the socket
+    /// binds strictly after admission, never through a bare `on_upgrade`.
     pub upgrade: WebSocketUpgrade,
     /// The middleware-resolved governance request context (`None` on a `RouteAuth::None` route).
     pub gov: Option<busbar_api::PlaneRequestCtx>,
@@ -333,11 +290,12 @@ pub struct WsArrival {
 pub type WsAcceptFuture = std::pin::Pin<Box<dyn std::future::Future<Output = Response> + Send>>;
 
 /// ONE PLANE'S WS-ACCEPT HANDLER: a neutral fn that receives a [`WsArrival`] BY VALUE and returns a
-/// finished axum [`Response`] (as a [`WsAcceptFuture`]). It MUST reach [`serve_gauntlet`] /
-/// [`accept_gauntlet`] internally (the only path that consumes the upgrade into a live socket); it never
-/// sees a bare `on_upgrade`. `Arc` so the core mount clones it into the per-request axum closure it
-/// wires. ASYNC so the plane runs its pre-upgrade admission (operator hooks + the destination gauntlet)
-/// before any socket binds — a hook/gauntlet refusal resolves to a pre-upgrade refusal Response.
+/// finished axum [`Response`] (as a [`WsAcceptFuture`]). It consumes the upgrade into a live socket ONLY
+/// through [`accept_coded`], and ONLY after opening the session on the ONE kernel session seam (the
+/// root's `SessionLoopDriver::open`); it never sees a bare `on_upgrade`. `Arc` so the core mount clones
+/// it into the per-request axum closure it wires. ASYNC so the plane runs its pre-upgrade admission
+/// (operator hooks) before any socket binds — a hook or a refused open resolves to a pre-upgrade
+/// refusal Response.
 pub type WsAcceptFn = Arc<dyn Fn(WsArrival) -> WsAcceptFuture + Send + Sync>;
 
 /// ONE WS-ACCEPT ARRIVAL a plane DECLARES: the exact path, the admission bar recorded VERBATIM in the

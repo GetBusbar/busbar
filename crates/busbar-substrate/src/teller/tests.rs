@@ -3,12 +3,10 @@
 
 //! Tests for the Teller loop in `crates/busbar-substrate/src/teller/`: the step order the loop
 //! enforces, which Audit door a refusal reaches, the one posting per unit, and the gauntlet
-//! adapter reproducing the older `run_gauntlet` / `run_gauntlet_session` outcomes.
+//! adapter reproducing the request-response `run_gauntlet` outcome.
 
 use super::*;
-use crate::plane_host::{
-    run_gauntlet, run_gauntlet_session, GauntletPlane, GauntletRequest, VerifyOutcome,
-};
+use crate::plane_host::{run_gauntlet, GauntletPlane, GauntletRequest, VerifyOutcome};
 use axum::response::Response;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -472,38 +470,4 @@ async fn adapter_run_gauntlet_drives_on_proceed_and_returns_the_refusal_on_refus
     .await;
     assert_eq!(out.status(), 429, "the plane's refusal comes back verbatim");
     assert!(!drove.load(Ordering::SeqCst), "refuse never drives");
-}
-
-#[test]
-fn adapter_run_gauntlet_session_admits_without_driving_and_refuses_before_any_charge() {
-    let gov = busbar_api::PlaneRequestCtx::default();
-
-    let drove = Arc::new(AtomicBool::new(false));
-    let admitted = run_gauntlet_session(
-        gauntlet_req(&gov),
-        Box::new(StubPlane {
-            refuse: false,
-            drove: Arc::clone(&drove),
-            seen_correlation: Arc::new(AtomicUsize::new(0)),
-        }),
-    )
-    .expect("proceed admits");
-    assert_eq!(admitted.correlation_id, 77);
-    assert!(
-        !drove.load(Ordering::SeqCst),
-        "the session opener never drives"
-    );
-
-    let drove = Arc::new(AtomicBool::new(false));
-    let refused = run_gauntlet_session(
-        gauntlet_req(&gov),
-        Box::new(StubPlane {
-            refuse: true,
-            drove: Arc::clone(&drove),
-            seen_correlation: Arc::new(AtomicUsize::new(0)),
-        }),
-    )
-    .expect_err("refuse denies the session");
-    assert_eq!(refused.status(), 429);
-    assert!(!drove.load(Ordering::SeqCst));
 }

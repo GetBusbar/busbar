@@ -211,18 +211,6 @@ pub trait GauntletPlane: Send + Sync {
     async fn drive(self: Box<Self>, req: GauntletRequest<'_>) -> axum::response::Response;
 }
 
-/// The successful OPEN-PASS ADMISSION result of [`admit_open`] — the request cleared the verify-before-
-/// charge gate. Carries the per-request `correlation_id` so a SESSION opener ([`run_gauntlet_session`])
-/// can join its own later durable/audit rows on it. A one-shot [`run_gauntlet`] discards it and proceeds
-/// straight to `drive`; a session opener returns it to the plane, which then reserves/binds/opens its
-/// live carrier AFTER (nothing charged before the gate cleared).
-#[cfg_attr(not(any(feature = "dispatch", feature = "relay")), allow(dead_code))]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Admitted {
-    /// The per-request correlation id the caller threads into its stage-6 / durable-session record.
-    pub correlation_id: u64,
-}
-
 /// The gauntlet's seat on the Teller loop: a [`GauntletPlane`] expressed as a [`TellerPlane`]
 /// (`crate::teller`), so the older two-stage sequence rides the ONE loop without changing what any
 /// plane sees. Verify is the plane's `verify_destination`; Route is the plane's `drive`; every other
@@ -375,39 +363,15 @@ fn gauntlet_unit<'a>(req: &GauntletRequest<'a>) -> crate::teller::Unit<'a> {
         .with_correlation(req.correlation_id)
 }
 
-/// THE ONE OPEN-PASS ADMISSION GATE both gauntlet siblings share — the Teller loop's steps up to and
-/// including the door ([`crate::teller::open_unit`] over the [`GauntletAdapter`]), which puts the
-/// plane's `verify_destination` in its verify-STRICTLY-before-charge position, so NOTHING may reject
-/// an already-charged request. Returns [`Admitted`] on a pass, or the plane's OWN finished,
-/// protocol-native refusal (returned verbatim so refusal shaping stays byte-identical to the plane's
-/// in-place rejection). The plane's OWN govern/breaker/charge stay inside its `drive`
-/// ([`run_gauntlet`]) or its post-admit reserve/bind/open (the session) — this gate owns only the
-/// ORDER.
-///
-/// (`result_large_err`: the `Err` is the plane's OWN finished refusal `Response`, carried BY VALUE so
-/// refusal shaping stays byte-identical to [`run_gauntlet`]'s verbatim return — the same type that path
-/// returns un-boxed. Boxing it here to shrink the cold refuse path would diverge the two siblings.)
-#[allow(clippy::result_large_err)]
-fn admit_open(
-    req: &GauntletRequest<'_>,
-    plane: Box<dyn GauntletPlane + '_>,
-) -> Result<Admitted, axum::response::Response> {
-    let unit = gauntlet_unit(req);
-    let mut adapter = GauntletAdapter { plane: Some(plane) };
-    match crate::teller::open_unit(&mut adapter, &unit) {
-        // The adapter's hold is empty (the door is still inside `drive` for these planes); the
-        // session plane closes its own admission later, as before.
-        Ok(hold) => {
-            let (_admit, _downgraded, _charged) = hold.into_parts();
-            Ok(Admitted {
-                correlation_id: unit.correlation(),
-            })
-        }
-        Err(resp) => Err(resp),
-    }
-}
+// (removed: the session-opener admission gate `admit_open` + `run_gauntlet_session` + `Admitted`.
+//  A duplex session is no longer admitted by a plane-run gauntlet: EVERY session is opened by the
+//  ROOT's owning-Held driver through the ONE kernel session seam, which draws the session's one node
+//  slot + in-flight lease ONCE. A plane declares session posture as DATA on its binding face and
+//  screens its own destinations in-plane; it never runs an admission gate. The one-shot request path
+//  `run_gauntlet` below is unaffected — it drives a `Response` and is still shared by every
+//  request-response protocol plane.)
 
-/// THE SHARED GAUNTLET SEQUENCE — the ONE request path every protocol plane rides, now the Teller
+/// THE GAUNTLET SEQUENCE — the ONE request-response path every protocol plane rides, now the Teller
 /// loop ([`crate::teller::run_unit`]) over the [`GauntletAdapter`]. Stage 1 identity is already
 /// resolved (threaded via `req.gov`); the loop runs the plane's `verify_destination` at Verify, in
 /// the correct PRE-ADMISSION position, and only if it proceeds the plane's `drive` at Route (its own
@@ -420,28 +384,6 @@ pub async fn run_gauntlet(
 ) -> axum::response::Response {
     let unit = gauntlet_unit(&req);
     crate::teller::run_unit(GauntletAdapter { plane: Some(plane) }, unit).await
-}
-
-/// THE SESSION SIBLING of [`run_gauntlet`] — the OPEN-PASS admission for a live, session-oriented plane
-/// (voice/duplex) that has no one-shot `drive`-shaped Response to return. It runs the SAME shared
-/// [`admit_open`] gate (verify STRICTLY before any charge) and returns the [`Admitted`] result instead of
-/// driving a request: the plane's own reserve/bind/open + socket bind proceed only on `Ok`, so a `Refuse`
-/// costs ZERO bytes and ZERO charge (nothing opened before the gate cleared). Distinct from
-/// [`run_gauntlet`] (one Response) but a TRUE sibling — they share `admit_open`, so a refactor can neither
-/// inline nor foreclose this opener, and both enforce the one verify-before-charge order.
-///
-/// Synchronous: the admission gate is `verify_destination` (sync), so a session opener (a sync
-/// `begin_session`) calls this directly — there is no async `drive` leg on the session path.
-///
-/// (`result_large_err`: the `Err` is the plane's OWN finished refusal `Response`, carried BY VALUE so
-/// refusal shaping stays byte-identical to [`run_gauntlet`]'s verbatim return — boxing it would diverge
-/// the two siblings on the type they carry a refusal in.)
-#[allow(clippy::result_large_err)]
-pub fn run_gauntlet_session(
-    req: GauntletRequest<'_>,
-    plane: Box<dyn GauntletPlane + '_>,
-) -> Result<Admitted, axum::response::Response> {
-    admit_open(&req, plane)
 }
 
 /// The `plane_slots` companion key under which a plane's ALWAYS-PRESENT per-generation runtime object
@@ -1491,11 +1433,3 @@ pub trait ContainerGateSink: PlaneSlots {
         section_hooks: &[String],
     );
 }
-
-// ─────────────────────────────────────────────────────────────────────────────────────────────
-// D3 WITNESS — the gauntlet siblings COEXIST and share ONE `admit_open` gate. (That `begin_session`
-// actually CALLS `run_gauntlet_session` at its call site is pinned in busbar-voice's topology tests.)
-// ─────────────────────────────────────────────────────────────────────────────────────────────
-#[cfg(test)]
-#[path = "tests/gauntlet_session_tests.rs"]
-mod gauntlet_session_tests;
