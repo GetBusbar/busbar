@@ -743,3 +743,82 @@ GREEN batch=<stamp> log=<path> repin=<sha> advisory=base-standing oracle reds ca
 so the ledger — and not somebody's memory — is where "those rows are the tool's" lives. The row
 extractor is byte-for-byte `landq4.sh`'s `lq_oracle_fail_detail`, because one of them writes the
 base-red set the sweep remembers and the other reads the same shape out of a landing's shard log.
+
+## 17. A 75 is no verdict — on any rung, on either ladder
+
+**MEASURED (`--smoke-latchkey --bisect`, 2026-09-13, during the live Latchkey vCPU outage.)** The
+bisect round's FIRST rung never ran:
+
+```
+[latchkey] job cli-090280bb… never started (launch_failed: VcpuLimitExceeded) — the runner
+          script did not run, so there is no verdict: 75
+land-latchkey: NO VERDICT — nothing about these picks was learned (exit 75)
+land.sh: === RED line 1 — the first prefix that turns red; it is the culprit, backed out
+```
+
+Both prefix ladders — the serial one and the fan — tested the proof with `if prove_tree …; then
+GREEN else RED`, so **every** non-zero exit was a red. `75` is not a red; it is the absence of a
+verdict (§ the LK-9 ruling: the line stays LIVE and unmarked and is swept again). AWS capacity on
+somebody else's fleet was being written into this queue as a line's own fault, and during an outage
+that parks good lines wholesale — each park citing a proof that never ran.
+
+**The rule now, on either ladder.** A rung that exits 75:
+
+* is **not** the culprit, and **nothing is parked** — `BL_out` never gets a `RED` out of a 75;
+* holds **its own line too**, and everything behind it. `land_prefix_noverdict_hold` starts **AT**
+  the rung, where `land_prefix_hold` starts **after** the culprit: a rung that came back 75 has no
+  verdict about its own line either, so `HELD — the round returned NO VERDICT about it` is the
+  honest row, and a HELD line stays live and is re-swept;
+* discards the rungs behind it **unread**, exactly as a red does — they carry the same line;
+* opens **no next round**: there is nothing to continue *from*;
+* **does not cost the round its earlier greens.** Each rung is proven on a tree of its own, those
+  proofs are real, and they land. One move of `W`, as always.
+
+The batch's own exit code is unchanged and is still about reds: a round that learned nothing and
+parked nobody is not a failed batch. What keeps those lines alive is the `HELD` row, not the code.
+
+### The give-up path returns 75 all the way out
+
+`prove-latchkey.sh`'s poller is bounded, and a poller that gave up has **stopped looking**, not
+measured a failure. The caller's retry is keyed on 75 and on nothing else, so any other code — a
+`2` from `lkdie`, a `1` from a red — turns a capacity blip into a hard failure. This is now driven
+end-to-end in `--selftest` against a stub CLI that never finishes a job, because the thing under
+test is the **exit code of the whole script** and no unit can see that: the run exits 75, every
+shard is `NONE:no-verdict`, not one `RED` is printed, and **no `<batch>.result` is written at all**
+— a partial verdict assembled from the shards that did answer is a verdict nobody chose.
+
+Two `lkdie` exit-2s do exist, one step earlier, and they are refusals *before* anything is
+submitted rather than give-ups: a tree with no integration ref **and** no parent for its tip, and a
+tip-mode proof whose base resolved to the tip. A caller retrying on 75 alone will not retry either.
+
+**The oracle shard waits longer.** `oracle` records a candidate and then diffs it cell by cell, and
+on a wide family expression it is the longest leg in the fan by a distance — long enough that the
+poller has given up on a job that was still working, costing the sweep a verdict it had already
+paid runner-minutes for. The window is per shard (`lk_poll_window`): `LATCHKEY_POLL_MAX_ORACLE`,
+default the job ceiling + 3600 s, against the common ceiling + 1800 s. The job's own timeout still
+outranks it — this only decides how long the script keeps asking.
+
+## 18. The diff base of a tree somebody else picked onto
+
+**FOUND BY `--smoke-latchkey --bisect`, first real run.** A union carrying a deliberately
+misformatted `.rs` came back **GREEN** off a rented runner, and said why in its own words:
+
+```
+land.sh: picked 0 commit(s); tip 0d5c6363
+land.sh: nothing was named — falling back to the workspace floor (build + clippy)
+land.sh: proven by: … rustfmt on 0 picked .rs file(s); …
+```
+
+Every diff-scoped leg — rustfmt over the picked `.rs` files, the crate selection the test and clippy
+legs read, the `gatefiles` fallback — asks `git diff <base> HEAD`, and on a landing that does its
+own cherry-picking `<base>` is HEAD before the picks. **A Latchkey landing is not that shape:** the
+laptop picks, pushes the tip, and the runner proves the tip with `--prove` and NO hashes. So
+`base == HEAD`, the diff is empty, and the picks' formatting and the picks' crate tests were proven
+**over the empty set — on every Latchkey landing.**
+
+The transport already knew the answer and already exported it (`LAND_BASE_SHA`, for
+`land_base_check`). `land_diff_base` reads it under three guards, so the only tree it can speak for
+is one nobody picked onto here: this invocation applies **no picks of its own**, the sha **resolves
+in this tree**, and it is a **real ancestor of HEAD** (never HEAD itself). A hand landing, and the
+fleet box — which picks on the box, and whose base *is* HEAD before it does — keep exactly today's
+answer. The rescoping is announced on the log, never silent.
