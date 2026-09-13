@@ -2642,7 +2642,7 @@ count = "3"
 [[cell]]
 crate = "busbar-substrate"
 kind = "api"
-count = "134"
+count = "129"
 
 [[cell]]
 crate = "busbar-substrate"
@@ -2657,7 +2657,7 @@ count = "352"
 [[cell]]
 crate = "busbar-substrate"
 kind = "dialect"
-count = "26"
+count = "24"
 
 [[cell]]
 crate = "busbar-substrate"
@@ -2672,7 +2672,7 @@ count = "298"
 [[cell]]
 crate = "busbar-substrate"
 kind = "plane"
-count = "764"
+count = "762"
 
 [[cell]]
 crate = "busbar-substrate"
@@ -2702,7 +2702,7 @@ count = "3"
 [[cell]]
 crate = "busbar-substrate"
 kind = "transport"
-count = "1149"
+count = "1112"
 
 [[cell]]
 crate = "busbar-substrate-values"
@@ -3192,7 +3192,7 @@ count = "37"
 [[cell]]
 crate = "busbar-voice"
 kind = "api"
-count = "49"
+count = "48"
 
 [[cell]]
 crate = "busbar-voice"
@@ -3207,7 +3207,7 @@ count = "17"
 [[cell]]
 crate = "busbar-voice"
 kind = "dialect"
-count = "703"
+count = "701"
 
 [[cell]]
 crate = "busbar-voice"
@@ -3217,7 +3217,7 @@ count = "11"
 [[cell]]
 crate = "busbar-voice"
 kind = "plane"
-count = "825"
+count = "822"
 
 [[cell]]
 crate = "busbar-voice"
@@ -3232,7 +3232,7 @@ count = "1"
 [[cell]]
 crate = "busbar-voice"
 kind = "transport"
-count = "201"
+count = "197"
 
 [[cell]]
 crate = "busbar-voice-codec"
