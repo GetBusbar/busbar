@@ -601,3 +601,59 @@ a tip declared **measured with an empty red set** is worse than an unmeasured on
 later line's identical test red is then scored as its own and a line is parked for a test it cannot
 have touched — which is the defect `lq_red_is_base_test` exists to prevent, arrived at through the
 front door. An unmeasured tip is an honest outcome; a measured-clean tip that is not clean is not.
+
+## 14. `prove-latchkey.sh`'s own slot-side semaphore — bounding what a SLOT submits
+
+**MEASURED 17:40:** twelve slots' `prove-latchkey.sh` were each running their own `latchkey run`
+concurrently, against Latchkey's shared 20-job workspace cap — a cap CI's `keep-proof.yml` draws
+from too. The engine's own sweep (`LATCHKEY_MAX_JOBS=12`) got `latchkey created no job` and its
+sweep starved for twelve minutes. `lq_latchkey_proc_bound` (§13) already bounds how many jobs the
+**engine's own sweep** dispatches at once; nothing on the laptop bounded how many jobs every
+**slot**, each running its own `prove-latchkey.sh`, drew from the same cap at the same time. One
+script bounding its own dispatch cannot protect a cap five other copies of the same script are
+also drawing on.
+
+`prove-latchkey.sh` now takes one of `LATCHKEY_SLOT_JOBS` (default 6) slots from a pool of
+`mkdir`-locked directories under `LATCHKEY_SLOT_DIR` (default `~/.busbar-engine/latchkey-slots`)
+**before every real `latchkey run`** — inside `lk_submit`, which every caller (a plain proof, and
+every shard of a sharded pre-proof) goes through. `mkdir` is the lock: atomic across processes, no
+lockfile to race. A slot's directory carries the PID that took it (this *script's* `$$`, not
+`$BASHPID` — see below) and when it was taken.
+
+* **A full pool waits, and never spins.** `prove-latchkey: waiting for a slot (N of M in use)` is
+  logged once per wait, then a bounded backoff: 30 s, doubling, capped at 5 minutes.
+* **A stale slot is taken, never waited behind.** A slot whose PID is no longer alive — its holder
+  exited without releasing, a `kill -9` no trap catches — is reclaimed by the next acquirer at
+  once.
+* **The engine's own jobs bypass the pool entirely.** `LATCHKEY_ENGINE=1` is the marker (set by
+  `land-latchkey.run.sh` / `landq4`, a separate line's work); its absence is *read* here, never
+  assumed, so the marker is honoured the day it lands with no change on this side. The pool exists
+  to protect the engine's own share of the cap from every slot — the engine is not another
+  consumer of the thing it is being protected from.
+* **Released on exit, however it happens** — a normal completion, a `kill`, an interrupted poll —
+  from the same `trap … EXIT INT TERM` that already cleans up the packed tree. A sharded pre-proof
+  fans out into several `latchkey run` calls, each inside its own `$(cd "$PACK" && lk_submit …)`
+  *subshell*, whose writes to an ordinary variable never reach the caller; the slots a script
+  holds are therefore never tracked in a variable, but found by the PID they carry — `$$` is
+  unchanged across those subshells in bash (unlike `$BASHPID`), so a scan by PID from the exit
+  trap finds every slot the process took, wherever in the run it took it.
+
+Proven by `scripts/prove-latchkey.sh --selftest`, against the real pool functions over a scratch
+`LATCHKEY_SLOT_DIR`: the engine bypass, a stale PID reclaimed, a full pool that waits (the log
+sentence, not a spin) and proceeds the moment a slot frees, and a slot released on a real `SIGTERM`
+to a real killed process.
+
+### The oracle compare leg is scoped like the record leg, or a scoped slot can only read red
+
+**MEASURED (K12g):** a slot's shadow-oracle leg — `./bin/oracle record --filter "$FAMILIES"` then
+a compare — recorded a candidate scoped to `$FAMILIES` and then compared it against **every** one
+of the golden's 915 cells. Every golden cell outside that scope has no matching candidate cell (a
+scoped record leg never touched it) and reads as `missing.candidate`: 646 of 648 "failures" on one
+run were exactly this, not a real divergence. `replay.sh` forwards only `--family` to the differ
+(a regex over the cell's *family field*, not its id) and has no `--id-filter` of its own; land.sh's
+own landing gate already asks the differ directly (`bin/oracle diff … --id-filter "$families"
+--strict`, the same regex domain record.sh's own `--filter` uses) for exactly this reason, so
+`prove-latchkey.sh`'s onbox oracle leg now makes the identical call rather than a second, narrower
+reading of `replay.sh`'s one flag. The verdict line names its own scope:
+`N of M in scope (families: <regex>), D diverging` — never a bare failure count against cells a
+scoped run was never asked to prove.

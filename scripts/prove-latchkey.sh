@@ -88,6 +88,20 @@ LK_POLL_SECS="${LATCHKEY_POLL_SECS:-30}"
 LK_POLL_MAX="${LATCHKEY_POLL_MAX:-$(( LK_TIMEOUT + 1800 ))}"
 LK_BIN="${LATCHKEY_BIN:-latchkey}"
 LK_ENVFILE="${LATCHKEY_ENV_FILE:-$HOME/.busbar-engine/latchkey.env}"
+# ── THE SLOT-SIDE SEMAPHORE ──────────────────────────────────────────────────────────────────────
+# MEASURED 17:40: twelve slots' prove-latchkey.sh jobs were submitting `latchkey run` at once,
+# against Latchkey's shared 20-job workspace cap — a cap CI also draws from — and the engine's own
+# sweep (LATCHKEY_MAX_JOBS=12) got "latchkey created no job" and its sweep starved: the cap was
+# never the engine's alone to share, and nothing on the laptop bounded how many slots drew on it at
+# once. LK_SLOT_JOBS (default 6) is how many `latchkey run` submissions THIS LAPTOP allows in
+# flight at a time, across every slot; the pool lives under LK_SLOT_DIR so every prove-latchkey.sh
+# process, in every slot's own worktree, is bounding itself against the same count.
+LK_SLOT_JOBS="${LATCHKEY_SLOT_JOBS:-6}"
+LK_SLOT_DIR="${LATCHKEY_SLOT_DIR:-$HOME/.busbar-engine/latchkey-slots}"
+# The backoff ladder a waiter climbs rather than spinning: 30s, doubling, capped at 5 minutes.
+# LATCHKEY_SLOT_WAIT_INITIAL exists so a selftest can drive the real loop without a real 30s wait.
+LK_SLOT_WAIT_INITIAL="${LATCHKEY_SLOT_WAIT_INITIAL:-30}"
+LK_SLOT_WAIT_MAX="${LATCHKEY_SLOT_WAIT_MAX:-300}"
 # The integration line the ceilings are measured against — the same two names land-remote.sh uses,
 # so "the base" means one thing across both transports.
 LAND_BASE_REF="${LAND_BASE_REF:-refs/remotes/origin/integration/oracle-phase0}"
@@ -572,8 +586,33 @@ else
     mkdir -p target/oracle/recordings/candidate
     ./bin/oracle record --plane all --bin target/release/busbar \
        --filter "$FAMILIES" --out target/oracle/recordings/candidate || exit 1
-    ./bin/oracle replay --golden testing/shadow-oracle/golden/1.5.5 \
-       --candidate target/oracle/recordings/candidate --out target/oracle/reports/prove || exit 1
+    # ── THE COMPARE LEG IS SCOPED LIKE THE RECORD LEG, OR IT CAN ONLY READ RED ──────────────────
+    # MEASURED (K12g, job cli-…): 646 of 648 "failures" were missing.candidate. The record leg
+    # above only ever produces cells inside `$FAMILIES` — that is what `--filter` on record.sh IS,
+    # a regex over the cell ID — but `oracle replay` was called with no scope at all, so it compared
+    # the candidate against EVERY one of the golden's 915 cells. Every golden cell outside this
+    # run's own scope has no matching candidate cell (nothing recorded it) and reads as
+    # `missing.candidate`: a scoped slot run could only ever be red, on cells it was never asked to
+    # prove. `replay.sh` only forwards `--family` to the differ — a regex over the cell's FAMILY
+    # field, a different domain — and has no `--id-filter` of its own at all; land.sh's own gate
+    # (the thing that actually judges a landing on a subset) calls `bin/oracle diff` — diff-cells.py
+    # directly — with `--id-filter "$families" --strict` for exactly this reason, so that is the
+    # same call made here rather than a second, narrower reading of `replay.sh`'s one flag.
+    ./bin/oracle diff --golden testing/shadow-oracle/golden/1.5.5 \
+       --candidate target/oracle/recordings/candidate --out target/oracle/reports/prove \
+       --cells testing/shadow-oracle/cells.json \
+       --accepted testing/shadow-oracle/accepted-differences.json \
+       --id-filter "$FAMILIES" --strict || exit 1
+    # THE VERDICT NAMES ITS OWN SCOPE. `corpus-ids.txt` is every cell in cells.json, `selected-ids.txt`
+    # is the part of it `--id-filter` let through — the same in-scope/out-of-scope split
+    # replay.sh's own owed-baseline check draws (its `out_of_scope_reason`) — and `diverging.txt` is
+    # real divergences within that scope. Printed so a scoped run's log reads "27 of 27 in scope, 0
+    # diverging" rather than "612 failed" against cells it was never asked to prove.
+    _orep=target/oracle/reports/prove
+    _osel="$(wc -l <"$_orep/selected-ids.txt" 2>/dev/null | tr -d ' ')"; _osel="${_osel:-0}"
+    _otot="$(wc -l <"$_orep/corpus-ids.txt" 2>/dev/null | tr -d ' ')"; _otot="${_otot:-0}"
+    _odiv="$(wc -l <"$_orep/diverging.txt" 2>/dev/null | tr -d ' ')"; _odiv="${_odiv:-0}"
+    echo "prove-latchkey: shadow oracle — ${_osel} of ${_otot} in scope (families: $FAMILIES), ${_odiv} diverging"
   else
     echo "   (no ./bin/oracle in this tree — the oracle leg is NOT part of this verdict)"
   fi
@@ -643,6 +682,88 @@ lk_load_token() {
   [ -n "${LATCHKEY_TOKEN:-}" ]
 }
 
+# ── THE POOL ITSELF: mkdir IS THE LOCK ──────────────────────────────────────────────────────────
+# LK_SLOT_JOBS numbered directories under LK_SLOT_DIR, one per `latchkey run` in flight. `mkdir` is
+# atomic across processes — no lockfile, no PID file race — and the directory that wins carries an
+# `info` file: this SCRIPT's pid ($$, line 1 — never $BASHPID, see lk_slot_release_all below) and
+# when it was taken (line 2, unread by anything here today; kept for an operator's `cat`).
+#
+# THE ENGINE'S OWN JOBS BYPASS THE POOL ENTIRELY. The pool exists to stop SLOTS from starving the
+# cap the engine's own sweep needs (LATCHKEY_MAX_JOBS) — the engine is the thing being protected,
+# never another consumer of it. LATCHKEY_ENGINE=1 is the marker; land-latchkey.run.sh / landq4 set
+# it (a separate line's work). Its absence is READ here, never assumed — a marker that lands later
+# is honoured the day it lands, with no change on this side.
+lk_slot_is_engine() { [ "${LATCHKEY_ENGINE:-}" = 1 ]; }
+
+# 0 (taken) when slot $1 was free, or held by a pid that is no longer alive (stale, reclaimed);
+# 1 (busy) when a live process holds it.
+lk_slot_try() { # $1 = slot number
+  local dir="$LK_SLOT_DIR/slot-$1" pid
+  if mkdir "$dir" 2>/dev/null; then
+    printf '%s\n%s\n' "$$" "$(date -u +%s)" >"$dir/info" 2>/dev/null || true
+    return 0
+  fi
+  pid="$(sed -n '1p' "$dir/info" 2>/dev/null)"
+  # A STALE SLOT IS TAKEN, NEVER WAITED BEHIND. Its holder exited without releasing — a `kill -9`,
+  # which no trap catches — and a corpse is not a reason to hold up a proof.
+  if [ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null; then
+    rm -rf "$dir" 2>/dev/null || true
+    if mkdir "$dir" 2>/dev/null; then
+      printf '%s\n%s\n' "$$" "$(date -u +%s)" >"$dir/info" 2>/dev/null || true
+      return 0
+    fi
+  fi
+  return 1
+}
+lk_slot_in_use() { # prints how many of the pool's directories currently exist (for the wait log)
+  local n=0 d
+  for d in "$LK_SLOT_DIR"/slot-*; do [ -d "$d" ] && n=$(( n + 1 )); done
+  printf '%s' "$n"
+}
+# ── ACQUIRE: BOUNDED BACKOFF, NEVER A SPIN ──────────────────────────────────────────────────────
+# Prints the slot number taken; prints nothing when the engine bypassed the pool. A full pool logs
+# once per wait and sleeps rather than polling tight — the sentence is grepped in the selftest and
+# is the one an operator reads live: `prove-latchkey: waiting for a slot (N of M in use)`.
+lk_slot_acquire() {
+  lk_slot_is_engine && return 0
+  mkdir -p "$LK_SLOT_DIR" 2>/dev/null || true
+  local wait="$LK_SLOT_WAIT_INITIAL" i
+  while :; do
+    i=1
+    while [ "$i" -le "$LK_SLOT_JOBS" ]; do
+      if lk_slot_try "$i"; then printf '%s' "$i"; return 0; fi
+      i=$(( i + 1 ))
+    done
+    lklog "prove-latchkey: waiting for a slot ($(lk_slot_in_use) of $LK_SLOT_JOBS in use)"
+    sleep "$wait"
+    wait=$(( wait * 2 )); [ "$wait" -gt "$LK_SLOT_WAIT_MAX" ] && wait="$LK_SLOT_WAIT_MAX"
+  done
+}
+# Releases ONE named slot — used when a submission that took it made no job, so nothing is left
+# holding a place for a job that does not exist. $1 empty (the engine-bypass case) is a no-op.
+lk_slot_release() { # $1 = slot number
+  [ -n "${1:-}" ] || return 0
+  local dir="$LK_SLOT_DIR/slot-$1" pid
+  pid="$(sed -n '1p' "$dir/info" 2>/dev/null)"
+  [ "$pid" = "$$" ] && rm -rf "$dir" 2>/dev/null
+}
+# ── RELEASE ON EXIT, HOWEVER IT HAPPENS ─────────────────────────────────────────────────────────
+# A sharded pre-proof fans out into several `latchkey run` calls, each inside its own
+# `$(cd "$PACK" && lk_submit …)` COMMAND SUBSTITUTION — a subshell whose writes to an ordinary
+# variable never reach the caller. So the slots this script holds are not tracked in a variable;
+# they are found by the pid each carries, and $$ is UNCHANGED across those subshells in bash
+# (unlike $BASHPID), so a scan by pid from the main script's trap finds every slot it took,
+# wherever in the run it took them. Called from the same `trap … EXIT INT TERM` that already
+# cleans up the packed tree, so a kill that is caught at all releases both.
+lk_slot_release_all() {
+  local d pid
+  for d in "$LK_SLOT_DIR"/slot-*; do
+    [ -d "$d" ] || continue
+    pid="$(sed -n '1p' "$d/info" 2>/dev/null)"
+    [ "$pid" = "$$" ] && rm -rf "$d" 2>/dev/null
+  done
+}
+
 # ── AND A REFUSAL SAYS WHY, IN THE CLI'S OWN WORDS ──────────────────────────────────────────────
 # MEASURED (the sharded smoke, 2026-09-12 13:03): a submission took four minutes and came back with
 # no job id, and this script said "the workspace's runner cap is shared with CI" — which was a
@@ -656,10 +777,21 @@ lk_load_token() {
 # path is this process's alone (its pid) and the caller reads it with lk_submit_err.
 LK_SUBMIT_ERRFILE="$LAND_TMP/lk-submit-err.$$"
 lk_submit() { # $1 = the bash line; prints the job id; writes the CLI's own words when there is none
-  local id
+  local id slot
   : >"$LK_SUBMIT_ERRFILE" 2>/dev/null || true
+  # THE SLOT IS TAKEN BEFORE THIS `latchkey run`, AND ONLY THIS ONE. A sharded pre-proof calls
+  # lk_submit once per shard, so each shard's job holds its own slot for as long as this script
+  # runs — never released early by a sibling shard's failure (lk_slot_release below names its own
+  # slot number, not every slot this process holds).
+  slot="$(lk_slot_acquire)"
   id="$("$LK_BIN" run --size "$LK_SIZE" --timeout "$LK_TIMEOUT" --quiet --detach "$1" 2>>"$LK_SUBMIT_ERRFILE" | tr -d '[:space:]')"
-  case "$id" in cli-*) : >"$LK_SUBMIT_ERRFILE" 2>/dev/null || true ;; esac
+  case "$id" in
+    cli-*) : >"$LK_SUBMIT_ERRFILE" 2>/dev/null || true ;;
+    # NO JOB WAS CREATED: the slot held a place for nothing, and is freed at once rather than at
+    # exit — a fan of shards that cancels the rest (lk_cancel_all) must not starve the pool for the
+    # whole run over a submission that never became a job.
+    *) lk_slot_release "$slot" ;;
+  esac
   printf '%s' "$id"
 }
 lk_submit_err() { # prints the last thing the CLI said about a submission that made no job
@@ -1512,6 +1644,143 @@ SHEOF
     && say PASS "a line carrying a bracketed family regex merges by its raw bytes" \
     || say FAIL "a family regex was mangled by the merge ($(cat "$root/mout4"))"
 
+  # ── THE SLOT-SIDE SEMAPHORE (LATCHKEY_SLOT_JOBS / LATCHKEY_SLOT_DIR) ─────────────────────────────
+  # MEASURED 17:40: twelve slots' `latchkey run` submissions at once against the shared 20-job
+  # workspace cap starved the engine's own sweep. Driven against the real pool functions, over real
+  # mkdir-locked directories under a scratch $LK_SLOT_DIR — never the real ~/.busbar-engine one.
+  echo "== the slot-side semaphore =="
+  [ "$(grep -c '^LK_SLOT_JOBS="\${LATCHKEY_SLOT_JOBS:-6}"$' "${BASH_SOURCE[0]}")" = 1 ] \
+    && say PASS "the pool defaults to 6 slots, named once" \
+    || say FAIL "LATCHKEY_SLOT_JOBS's default is not declared exactly once as 6"
+  [ "$(grep -c '^LK_SLOT_DIR="\${LATCHKEY_SLOT_DIR:-\$HOME/\.busbar-engine/latchkey-slots}"$' "${BASH_SOURCE[0]}")" = 1 ] \
+    && say PASS "  ...under \$HOME/.busbar-engine/latchkey-slots by default" \
+    || say FAIL "LATCHKEY_SLOT_DIR's default path is not declared as documented"
+  grep -qF 'slot="$(lk_slot_acquire)"' "${BASH_SOURCE[0]}" \
+    && say PASS "a slot is acquired inside lk_submit, before the real \`latchkey run\`" \
+    || say FAIL "lk_submit does not acquire a slot before submitting"
+  grep -qF 'cleanup() { rm -rf "$PACK"; lk_slot_release_all; }' "${BASH_SOURCE[0]}" \
+    && say PASS "every slot this process holds is released from the same trap that cleans the pack" \
+    || say FAIL "lk_slot_release_all is not wired into the exit trap"
+
+  # engine bypass: LATCHKEY_ENGINE=1 never touches the pool at all.
+  _esd="$root/slots-engine"; mkdir -p "$_esd/slot-1"
+  printf '424242\n0\n' >"$_esd/slot-1/info"
+  got="$(LK_SLOT_DIR="$_esd" LK_SLOT_JOBS=1 LATCHKEY_ENGINE=1 lk_slot_acquire)"
+  [ -z "$got" ] && say PASS "the engine's own jobs (LATCHKEY_ENGINE=1) bypass the pool entirely" \
+    || say FAIL "LATCHKEY_ENGINE=1 still took a slot ($got)"
+  [ "$(sed -n '1p' "$_esd/slot-1/info" 2>/dev/null)" = 424242 ] \
+    && say PASS "  ...and never touches the pool's own bookkeeping" \
+    || say FAIL "the bypass path wrote to the pool anyway"
+
+  # a slot held by a pid that is no longer alive is stale, and taken rather than waited behind.
+  _ssd="$root/slots-stale"; mkdir -p "$_ssd/slot-1"
+  printf '999999999\n0\n' >"$_ssd/slot-1/info"
+  got="$(LK_SLOT_DIR="$_ssd" LK_SLOT_JOBS=1 lk_slot_acquire)"
+  [ "$got" = 1 ] && say PASS "a slot held by a pid that is no longer alive is stale, and taken" \
+    || say FAIL "a stale slot was not taken (got '$got')"
+  [ "$(sed -n '1p' "$_ssd/slot-1/info" 2>/dev/null)" = "$$" ] \
+    && say PASS "  ...and now records this process as the holder" \
+    || say FAIL "the reclaimed slot does not record the new holder"
+
+  # pool full: waits (logging the sentence, not spinning), and proceeds once the slot frees.
+  _fsd="$root/slots-full"; mkdir -p "$_fsd/slot-1"
+  sleep 6 & _holder=$!
+  printf '%s\n%s\n' "$_holder" "$(date -u +%s)" >"$_fsd/slot-1/info"
+  ( LK_SLOT_DIR="$_fsd" LK_SLOT_JOBS=1 LK_SLOT_WAIT_INITIAL=1 lk_slot_acquire >"$root/acq.out" 2>"$root/acq.err" ) &
+  _acqpid=$!
+  sleep 1.5
+  grep -q 'waiting for a slot (1 of 1 in use)' "$root/acq.err" 2>/dev/null \
+    && say PASS "a full pool logs 'waiting for a slot (N of M in use)' rather than spinning" \
+    || say FAIL "no waiting line was logged while the pool was full"
+  kill "$_holder" 2>/dev/null; wait "$_holder" 2>/dev/null
+  rm -rf "$_fsd/slot-1" 2>/dev/null   # what the holder's own release does when it frees
+  wait "$_acqpid" 2>/dev/null
+  [ "$(cat "$root/acq.out" 2>/dev/null)" = 1 ] \
+    && say PASS "  ...and proceeds as soon as the slot frees, without spinning tight" \
+    || say FAIL "the waiter never acquired the freed slot (got '$(cat "$root/acq.out" 2>/dev/null)')"
+
+  # release on exit, however it happens: a normal EXIT and a SIGTERM both free the slot they hold.
+  _ksd="$root/slots-kill"; mkdir -p "$_ksd"
+  ( LK_SLOT_DIR="$_ksd" LK_SLOT_JOBS=1
+    lk_slot_acquire >/dev/null
+    trap 'lk_slot_release_all' EXIT TERM INT
+    sleep 30
+  ) &
+  _kpid=$!
+  sleep 0.5
+  kill -TERM "$_kpid" 2>/dev/null
+  wait "$_kpid" 2>/dev/null
+  [ ! -d "$_ksd/slot-1" ] \
+    && say PASS "a slot is released on exit via trap, including a kill (SIGTERM)" \
+    || say FAIL "a killed holder left its slot behind ($_ksd/slot-1 still exists)"
+  rm -rf "$_esd" "$_ssd" "$_fsd" "$_ksd" 2>/dev/null
+
+  # ── THE ORACLE COMPARE LEG IS SCOPED LIKE THE RECORD LEG (K12g's defect) ─────────────────────────
+  # MEASURED (K12g, job cli-…): 646 of 648 "failures" were missing.candidate. The record leg only
+  # ever produces cells inside `$FAMILIES` (record.sh's `--filter`, a regex over the cell ID) but
+  # the compare leg used to ask about every golden cell — so a scoped slot run could only ever be
+  # red, on cells it was never asked to prove. Driven against the REAL `bin/oracle diff`
+  # (diff-cells.py), over a two-family fixture: famA is the candidate's whole scope (what a
+  # `--filter famA` record leg would have produced), famB is not in it at all.
+  echo "== the oracle compare leg is scoped like the record leg (K12g's defect) =="
+  _ofx="$root/oracle-fixture"; mkdir -p "$_ofx/golden/cells" "$_ofx/candidate/cells"
+  cat >"$_ofx/cells.json" <<'JSON'
+{"cells": [
+  {"id": "famA.one", "family": "famA"},
+  {"id": "famA.two", "family": "famA"},
+  {"id": "famB.one", "family": "famB"},
+  {"id": "famB.two", "family": "famB"}
+]}
+JSON
+  printf '{"accepted": []}\n' >"$_ofx/accepted.json"
+  printf '{"version": "busbar 0.0.0-selftest", "harness_rev": "r1"}\n' >"$_ofx/golden/meta.json"
+  printf '{"version": "busbar 0.0.0-selftest", "harness_rev": "r1"}\n' >"$_ofx/candidate/meta.json"
+  printf 'famA.one\tPASS\t\t\nfamA.two\tPASS\t\t\nfamB.one\tPASS\t\t\nfamB.two\tPASS\t\t\n' >"$_ofx/golden/ledger.tsv"
+  printf 'famA.one\tPASS\t\t\nfamA.two\tPASS\t\t\n' >"$_ofx/candidate/ledger.tsv"
+  for c in famA.one famA.two famB.one famB.two; do printf '{"v":1}\n' >"$_ofx/golden/cells/$c.json"; done
+  # THE CANDIDATE NEVER RECORDED famB — exactly what a `--filter famA` record leg leaves behind.
+  for c in famA.one famA.two; do printf '{"v":1}\n' >"$_ofx/candidate/cells/$c.json"; done
+  if [ -x ./bin/oracle ]; then
+    ./bin/oracle diff --golden "$_ofx/golden" --candidate "$_ofx/candidate" --out "$_ofx/report-unscoped" \
+         --cells "$_ofx/cells.json" --accepted "$_ofx/accepted.json" --allow-harness-skew --strict \
+         >/dev/null 2>&1 \
+      && say FAIL "an unscoped compare over a scope-recorded candidate did not red on the cells never recorded" \
+      || say PASS "an unscoped compare over a scope-recorded candidate reds — K12g's defect, reproduced"
+    [ "$(grep -c . "$_ofx/report-unscoped/diverging.txt" 2>/dev/null || true)" = 2 ] \
+      && say PASS "  ...and both reds are the two famB cells nothing recorded (missing.candidate)" \
+      || say FAIL "the unscoped compare's diverging count is not 2 ($(cat "$_ofx/report-unscoped/diverging.txt" 2>/dev/null))"
+    ./bin/oracle diff --golden "$_ofx/golden" --candidate "$_ofx/candidate" --out "$_ofx/report-scoped" \
+         --cells "$_ofx/cells.json" --accepted "$_ofx/accepted.json" --allow-harness-skew \
+         --id-filter '^famA' --strict >"$_ofx/scoped.out" 2>&1 \
+      && say PASS "the SAME compare, scoped to the record leg's own filter, is green" \
+      || say FAIL "a scoped compare over a scope-matched candidate still reds ($(cat "$_ofx/scoped.out"))"
+    [ "$(grep -c . "$_ofx/report-scoped/selected-ids.txt" 2>/dev/null || true)" = 2 ] \
+      && say PASS "  ...selecting exactly the two famA cells the record leg produced, never famB's" \
+      || say FAIL "the scoped compare selected the wrong cell count"
+    [ "$(grep -c . "$_ofx/report-scoped/diverging.txt" 2>/dev/null || true)" = 0 ] \
+      && say PASS "  ...0 diverging, not 646-of-648" \
+      || say FAIL "the scoped compare still reports a divergence"
+  else
+    say PASS "(no ./bin/oracle in this checkout — the fixture cases are skipped)"
+  fi
+  rm -rf "$_ofx" 2>/dev/null
+
+  # THE ONBOX SCRIPT ITSELF CARRIES THE FIX — read out of the real emitter, not a copy of its text.
+  _oemit="$(lk_onbox_script tip br dev)"
+  case "$_oemit" in
+    *'oracle diff --golden'*'--id-filter "$FAMILIES" --strict'*) \
+      say PASS "the onbox oracle leg scopes the compare with --id-filter, the record leg's own domain" ;;
+    *) say FAIL "the onbox oracle leg does not scope the compare with --id-filter" ;;
+  esac
+  case "$_oemit" in
+    *'oracle replay --golden'*) say FAIL "the onbox oracle leg still calls the unscoped \`oracle replay\`" ;;
+    *) say PASS "  ...and no longer calls the unscoped \`oracle replay\`" ;;
+  esac
+  case "$_oemit" in
+    *'in scope (families: $FAMILIES)'*) say PASS "  ...and the verdict line names its own scope" ;;
+    *) say FAIL "the verdict line does not name its scope" ;;
+  esac
+
   # ── --tree ────────────────────────────────────────────────────────────────────────────────────
   case "$argv_src" in *"--tree"*) say PASS "the argument parser handles --tree" ;;
     *) say FAIL "the argument parser does not handle --tree" ;; esac
@@ -1664,7 +1933,7 @@ STAGE="$PACK/.latchkey"
 RUNNER=".lk-run.sh"
 # THE EXPORT GOES WHATEVER HAPPENS. It is 3,580 files and a 23 MB repository; left behind by a
 # killed poller it is the next sweep's disk.
-cleanup() { rm -rf "$PACK"; }
+cleanup() { rm -rf "$PACK"; lk_slot_release_all; }
 trap cleanup EXIT INT TERM
 lk_stage_repo "$REPO" "$STAGE" "$TIP" "$BASE" $PICKS || lkdie "could not stage the history into $STAGE"
 lklog "packed from $PACK ($(find "$PACK" -type f | grep -c . || true) file(s)); history $(du -sh "$STAGE/git" 2>/dev/null | cut -f1), $(printf '%s' "$PICKS" | grep -c . || true) pick(s)"
