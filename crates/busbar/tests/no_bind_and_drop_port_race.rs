@@ -6,7 +6,7 @@
 //! expression, before a child process gets a chance to bind that number.
 //!
 //! Nine files (`no_data_dir_neutrality`, `boot_lines_neutrality`, `thread_per_core_serves`,
-//! `scrape_shape_1_5_5`, `mcp_open_front_door`, `ledger_identity`, `inbound_concurrency_shed`,
+//! `scrape_shape_1_5_5`, the front-door auth test, `ledger_identity`, `inbound_concurrency_shed`,
 //! `metrics_scrape_boot_window`, and the `hook_path` bench) each carried a copy of exactly this
 //! shape:
 //!

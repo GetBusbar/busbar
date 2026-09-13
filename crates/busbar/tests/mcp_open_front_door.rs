@@ -137,13 +137,13 @@ fn assert_names_both_keys(where_: &str, text: &str) {
 fn an_mcp_config_with_no_auth_chain_fails_validate_naming_both_keys() {
     let dir = fixture_dir("validate");
     let data_reserved = ReservedPort::reserve();
-    let admin_reserved = ReservedPort::reserve();
-    let cfg = write_config(&dir, data_reserved.port(), admin_reserved.port(), AUTH_OPEN);
+    let mgmt_reserved = ReservedPort::reserve();
+    let cfg = write_config(&dir, data_reserved.port(), mgmt_reserved.port(), AUTH_OPEN);
     // `--validate` refuses this config before it ever binds, but the reservations are still held
     // through config-writing and released only right before the spawn, for the same reason every
     // other conversion in this crate does it (see `ReservedPort`'s doc).
     data_reserved.release();
-    admin_reserved.release();
+    mgmt_reserved.release();
     let out = busbar(&cfg, &["--validate"]).output().expect("run busbar");
     let text = format!(
         "{}{}",
@@ -162,12 +162,12 @@ fn an_mcp_config_with_no_auth_chain_fails_validate_naming_both_keys() {
 fn an_mcp_config_with_no_auth_chain_does_not_boot() {
     let dir = fixture_dir("boot");
     let data_reserved = ReservedPort::reserve();
-    let admin_reserved = ReservedPort::reserve();
-    let cfg = write_config(&dir, data_reserved.port(), admin_reserved.port(), AUTH_OPEN);
+    let mgmt_reserved = ReservedPort::reserve();
+    let cfg = write_config(&dir, data_reserved.port(), mgmt_reserved.port(), AUTH_OPEN);
     // No `--validate`: this is the REAL boot path, which is a different code path in `main.rs` from
     // the one above and is the one that would actually serve the plane.
     data_reserved.release();
-    admin_reserved.release();
+    mgmt_reserved.release();
     let mut child = busbar(&cfg, &[])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -229,9 +229,9 @@ fn an_mcp_config_with_no_auth_chain_does_not_boot() {
 fn the_control_an_mcp_config_with_a_closed_chain_still_boots() {
     let dir = fixture_dir("control");
     let data_reserved = ReservedPort::reserve();
-    let admin_reserved = ReservedPort::reserve();
+    let mgmt_reserved = ReservedPort::reserve();
     let data_port = data_reserved.port();
-    let cfg = write_config(&dir, data_port, admin_reserved.port(), AUTH_CLOSED);
+    let cfg = write_config(&dir, data_port, mgmt_reserved.port(), AUTH_CLOSED);
 
     // `--validate` first: the cheap half of the control, and the one that localises a failure. If
     // this is red the fixture is wrong, not the guard.
@@ -250,7 +250,7 @@ fn the_control_an_mcp_config_with_a_closed_chain_still_boots() {
     // run above (which never binds) and released only right before this final spawn — the one that
     // actually needs the numbers.
     data_reserved.release();
-    admin_reserved.release();
+    mgmt_reserved.release();
     let mut child = busbar(&cfg, &[])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

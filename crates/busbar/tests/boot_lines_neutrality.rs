@@ -190,9 +190,9 @@ fn blank_volatile(line: &str) -> String {
 fn boot_lines_match_1_5_5_shape() {
     let dir = fixture_dir();
     let data_reserved = ReservedPort::reserve();
-    let admin_reserved = ReservedPort::reserve();
+    let mgmt_reserved = ReservedPort::reserve();
     let data_port = data_reserved.port();
-    let admin_port = admin_reserved.port();
+    let admin_port = mgmt_reserved.port();
     // `write_configs` shells out to `busbar --generate-signing-key` — real, measurable work between
     // "the ports are free" and "the child needs them" — so the reservations stay open across it.
     write_configs(&dir, data_port, admin_port);
@@ -204,7 +204,7 @@ fn boot_lines_match_1_5_5_shape() {
     // Everything the child needs is on disk; release the reservations immediately before the spawn
     // that binds these numbers (see `ReservedPort`'s doc for why this ordering is the fix).
     data_reserved.release();
-    admin_reserved.release();
+    mgmt_reserved.release();
     let mut child = Command::new(env!("CARGO_BIN_EXE_busbar"))
         .env("BUSBAR_CONFIG", dir.join("config.yaml"))
         .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))

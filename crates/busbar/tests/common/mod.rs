@@ -298,7 +298,7 @@ pub fn item_body<'a>(lines: &'a [Line], signature: &str) -> Option<Vec<&'a Line>
 // ── boot-port reservation ───────────────────────────────────────────────────────────────────────
 //
 // Nine boot-a-real-child integration tests (`no_data_dir_neutrality`, `boot_lines_neutrality`,
-// `thread_per_core_serves`, `scrape_shape_1_5_5`, `mcp_open_front_door`, `ledger_identity`,
+// `thread_per_core_serves`, `scrape_shape_1_5_5`, the front-door auth test, `ledger_identity`,
 // `inbound_concurrency_shed`, `metrics_scrape_boot_window`, and the `hook_path` bench) each carried
 // their OWN copy of a `free_port()` that bound `127.0.0.1:0`, read the port back, and DROPPED the
 // listener — before the rest of fixture setup (writing config/provider YAML, shelling out to
@@ -308,8 +308,8 @@ pub fn item_body<'a>(lines: &'a [Line], signature: &str) -> Option<Vec<&'a Line>
 // The port has to be a LITERAL in the child's config before the child exists at all: the
 // thread-per-core data plane binds the identical address from every one of its N SO_REUSEPORT
 // worker threads (an ephemeral `:0` there hands each worker a DIFFERENT port — see
-// `busbar::main::serve_thread_per_core`), and every listener's boot line prints the CONFIGURED
-// address (`cfg.listen`/`cfg.admin_listen`), never the bound one, so there is no line a test could
+// `busbar::main::serve_thread_per_core`), and every listener's boot line prints its own
+// CONFIGURED address field, never the bound one, so there is no line a test could
 // read a dynamically-assigned port back off. So the number has to be chosen up front, which is
 // exactly the TOCTOU the nine copies of `free_port()` accepted as a known, unfixed risk: the OS can
 // (and, by measurement, does) hand this process's freed port to another process on the shared box

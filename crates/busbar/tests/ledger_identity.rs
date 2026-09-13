@@ -575,11 +575,11 @@ impl Rig {
         // — so the window between "the OS says these are free" and "our own children bind them" is
         // as small as the ordering below can make it (see `common::ReservedPort`'s doc).
         let data_reserved = ReservedPort::reserve();
-        let admin_reserved = ReservedPort::reserve();
+        let mgmt_reserved = ReservedPort::reserve();
         let mock_reserved = ReservedPort::reserve();
         let ports = Ports {
             data: data_reserved.port(),
-            admin: admin_reserved.port(),
+            admin: mgmt_reserved.port(),
             mock: mock_reserved.port(),
         };
 
@@ -629,7 +629,7 @@ impl Rig {
         // Same treatment for busbar's own two: released right before this spawn, after config
         // writing (and the mock's own boot, which needed no bind of theirs) are already done.
         data_reserved.release();
-        admin_reserved.release();
+        mgmt_reserved.release();
         let child = Command::new(env!("CARGO_BIN_EXE_busbar"))
             .env("BUSBAR_CONFIG", dir.join("config.yaml"))
             .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))

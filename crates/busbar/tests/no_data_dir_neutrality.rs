@@ -117,9 +117,9 @@ const LEDGER_BOOT_WORDS: &[&str] = &[
 fn no_ledger_series_and_no_keyset_lines_without_data_dir() {
     let dir = fixture_dir();
     let data_reserved = ReservedPort::reserve();
-    let admin_reserved = ReservedPort::reserve();
+    let mgmt_reserved = ReservedPort::reserve();
     let data_port = data_reserved.port();
-    let admin_port = admin_reserved.port();
+    let admin_port = mgmt_reserved.port();
     write_configs(&dir, data_port, admin_port);
 
     let log_path = dir.join("out.log");
@@ -139,7 +139,7 @@ fn no_ledger_series_and_no_keyset_lines_without_data_dir() {
     // Fixture setup is done; release the reservations immediately before the child that binds these
     // numbers is spawned (see `ReservedPort`'s doc for why this ordering is the fix).
     data_reserved.release();
-    admin_reserved.release();
+    mgmt_reserved.release();
     let mut child = Command::new(env!("CARGO_BIN_EXE_busbar"))
         // The directory the assertion below reads is only the directory a stray file lands in if
         // it is also the directory the node was started in: a journal opened at a RELATIVE path

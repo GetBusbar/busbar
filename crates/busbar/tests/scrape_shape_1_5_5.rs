@@ -187,9 +187,9 @@ fn expand_alternation(pattern: &str) -> Vec<String> {
 fn a_1_5_5_shaped_config_exposes_no_plane_series_with_every_plane_compiled_in() {
     let dir = fixture_dir();
     let data_reserved = ReservedPort::reserve();
-    let admin_reserved = ReservedPort::reserve();
+    let mgmt_reserved = ReservedPort::reserve();
     let data_port = data_reserved.port();
-    let admin_port = admin_reserved.port();
+    let admin_port = mgmt_reserved.port();
     write_configs(&dir, data_port, admin_port);
 
     let log_path = dir.join("out.log");
@@ -198,7 +198,7 @@ fn a_1_5_5_shaped_config_exposes_no_plane_series_with_every_plane_compiled_in() 
     // Release the reservations immediately before the spawn that binds these numbers (see
     // `ReservedPort`'s doc for why this ordering is the fix).
     data_reserved.release();
-    admin_reserved.release();
+    mgmt_reserved.release();
     let mut child = Command::new(env!("CARGO_BIN_EXE_busbar"))
         .env("BUSBAR_CONFIG", dir.join("config.yaml"))
         .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))

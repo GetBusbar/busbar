@@ -102,9 +102,9 @@ struct Scrape {
 fn metrics_scrape_is_never_a_200_with_an_empty_body() {
     let dir = fixture_dir();
     let data_reserved = ReservedPort::reserve();
-    let admin_reserved = ReservedPort::reserve();
+    let mgmt_reserved = ReservedPort::reserve();
     let data_port = data_reserved.port();
-    let admin_port = admin_reserved.port();
+    let admin_port = mgmt_reserved.port();
     write_configs(&dir, data_port, admin_port);
 
     let log_path = dir.join("out.log");
@@ -114,7 +114,7 @@ fn metrics_scrape_is_never_a_200_with_an_empty_body() {
     // `ReservedPort`'s doc for why this ordering is the fix) — this cell races the boot window
     // itself starting the instant the child exists, so the gap must be closed right up to the spawn.
     data_reserved.release();
-    admin_reserved.release();
+    mgmt_reserved.release();
     let mut child = Command::new(env!("CARGO_BIN_EXE_busbar"))
         .env("BUSBAR_CONFIG", dir.join("config.yaml"))
         .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
