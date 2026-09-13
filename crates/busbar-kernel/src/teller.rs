@@ -761,7 +761,7 @@ pub async fn run_unit_async<U: Units, R: RouteAwait>(
             // the arrival principal the design names: anonymous, with no bucket.
             let (principal, challenge) = match authenticated {
                 // The arrival subject is spelled where it is used: a constructor on the contract
-                // id would be a second home for a name `busbar-unit-auth` already owns.
+                // id would be a second home for a name the verifier crate already owns.
                 Authenticated::Challenge(_) => (PrincipalId::new("anonymous"), true),
                 Authenticated::Principal(principal) => (principal, false),
             };
