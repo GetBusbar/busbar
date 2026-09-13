@@ -1677,6 +1677,45 @@ pub fn selftest(
         crate::ctx::Overlay::new(),
     ));
 
+    // TWO SOURCES, ONE MINTED ROW. `busbar-core-policy` is carved out of `busbar-core` (the policy
+    // engine) AND out of `busbar-llm` (the neutral hook runner, MOVE 3), so its `moved_from` names
+    // both and each entry is read on its own terms. The green arm is the real tree, where the
+    // second source admits `busbar-llm × core` — the drained crate naming the kind it drained into.
+    // The red arm takes busbar-llm back OUT of the list: the `[[transitional]]` drain row is still
+    // there, the cell is still measured, and it admits nothing, which is the proof that the LIST is
+    // what carries the admission and not the drain row alone.
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "a source left off the [[minted]] list admits no cell in that source, drain row or not",
+        &[ROW_MATRIX],
+        ledger_with(
+            cx,
+            "moved_from = \"busbar-core, busbar-llm\"",
+            "moved_from = \"busbar-core\"",
+        ),
+        &[
+            "minted-row",
+            "busbar-llm \u{d7} core",
+            "this branch MINTED it",
+        ],
+    ));
+    // AND A HOLE IN THE LIST IS THE EMPTY VALUE WEARING A COMMA. An entry that names no crate
+    // contributes nothing to the sum `mint-over-source` reads, so it is slack nobody reviewed —
+    // refused where the row is read, with the same finding the empty value always had.
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "a `moved_from` list with an empty entry is refused where the row is read",
+        &[ROW_MATRIX],
+        ledger_with(
+            cx,
+            "moved_from = \"busbar-core, busbar-llm\"",
+            "moved_from = \"busbar-core, , busbar-llm\"",
+        ),
+        &["empty-field", "moved_from"],
+    ));
+
     // A RENAMED CRATE MINTS AGAINST THE NAME THE BASE ANNOUNCED. The base announced
     // `busbar-core-hooks`; the crate landed as `busbar-core-policy` under a `[[renamed]]` row, and
     // its `[[minted]]` row is read through that translation. The green arm is the real tree; the
