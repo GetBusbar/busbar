@@ -147,11 +147,44 @@ sup_archive() { # $1 = sha, $2 = repo; replaces $CURRENT with scripts/ at that s
 # ──────────────────────────────────────────────────────────────────────────────────────────────────
 # THE DECISION — ONE WORD PER EXIT STATUS, AND NOTHING ELSE DECIDES
 # ──────────────────────────────────────────────────────────────────────────────────────────────────
+# ── AND `locked` IS A FACT ABOUT THE LOCK FILE, NEVER ABOUT AN EXIT CODE ────────────────────────
+# MEASURED, LIVE (2026-09-12 17:28): the runner exited 2 because a PROOF LIBRARY died —
+# ci-remote-lib's "no on-demand box in ~/.busbar-fleet … the fleet needs an on-demand floor", on a
+# fleet that is empty by design. Exit 2 meant "another runner holds the host lock" to this
+# function, so the supervisor logged "another runner holds the host lock — this supervisor exits
+# rather than race it" and EXITED. No runner, no supervisor, no page, and nobody knew for an hour.
+#
+# 2 IS NOT A SENTENCE ANY LIBRARY IN THIS ENGINE HAS AGREED TO RESERVE. `landq4.sh` exits 2 when it
+# is refused the lock, and so does every `set -e` death in anything it sources; the two cannot be
+# told apart from a number. They CAN be told apart from the lock file, which is the actual fact:
+# `lq_lock_acquire` writes the holder's pid on line 1 and the start time it read for that pid on
+# line 3, and refuses only when that process is still alive and still the process that took it.
+# So the supervisor asks the same question of the same file, and an exit 2 with NO live holder is
+# what it always was for every other code — an infrastructure exit, restarted on the ladder.
+sup_lock_holder() { # prints the pid of the LIVE holder of the runner's host lock, or nothing
+  local f="${LANDQ_LOCK:-$HOME/.busbar-landq4.lock}" pid rec now
+  [ -f "$f" ] || return 1
+  pid="$(head -n1 "$f" 2>/dev/null | tr -d '[:space:]')"
+  case "$pid" in ''|*[!0-9]*) return 1 ;; esac
+  # IT IS NOT ME, AND IT IS NOT MY RUNNER. A supervisor whose own child wrote that lock and then
+  # died leaves the file behind; reading it as "somebody else is running" is the same exit with an
+  # extra step.
+  [ "$pid" = "$$" ] && return 1
+  kill -0 "$pid" 2>/dev/null || return 1
+  # THE START TIME, so a recycled pid is not a runner (landq4.sh's lq_lock_stale, same rule).
+  rec="$(sed -n 3p "$f" 2>/dev/null)"
+  if [ -n "$rec" ]; then
+    now="$(ps -o lstart= -p "$pid" 2>/dev/null | sed 's/^ *//;s/ *$//')"
+    [ -n "$now" ] || return 1
+    [ "$now" = "$rec" ] || return 1
+  fi
+  printf '%s\n' "$pid"
+}
 sup_decision() { # $1 = the runner's exit status
   case "${1:-}" in
     0) printf 'stop\n' ;;
     1) printf 'page-head-conflict-twice\n' ;;
-    2) printf 'locked\n' ;;
+    2) if sup_lock_holder >/dev/null; then printf 'locked\n'; else printf 'restart\n'; fi ;;
     3) printf 'page-tree-moved\n' ;;
     *) printf 'restart\n' ;;
   esac
@@ -414,7 +447,7 @@ sup_loop() {
           return 0
         fi ;;
       locked)
-        sup_log "another runner holds the host lock — this supervisor exits rather than race it"
+        sup_log "another runner (pid $(sup_lock_holder)) holds the host lock ${LANDQ_LOCK:-$HOME/.busbar-landq4.lock} — this supervisor exits rather than race it"
         sup_status_merge "{\"state\":\"locked\",\"starts\":$starts,\"last_exit\":$rc,\"paged\":false,\"engine_sha\":\"$(sup_current_sha)\"}"
         return 0 ;;
       page-head-conflict-twice|page-tree-moved)
@@ -511,7 +544,25 @@ sup_selftest() {
   echo "supervisor selftest: the decision, one per exit status of the contract"
   _t "0 is a stop, and the supervisor stops too"  stop                     "$(sup_decision 0)"
   _t "1 is HALT head-conflict-twice: a page"      page-head-conflict-twice "$(sup_decision 1)"
-  _t "2 is another runner's lock: not a fault"    locked                   "$(sup_decision 2)"
+  # ── 2 IS ONLY A LOCK WHEN A LIVE RUNNER REALLY HOLDS ONE (the 17:28 double death) ─────────────
+  # An exit 2 out of a proof library — ci-remote-lib's hard refusal on an empty fleet — was read as
+  # "another runner holds the lock" and the supervisor exited, leaving nothing running at all.
+  local _sl="$root/holderlock"
+  _t "2 with NO lock file at all is a restart"    restart \
+     "$(LANDQ_LOCK="$root/nosuch.lock"; rm -f "$LANDQ_LOCK"; sup_decision 2)"
+  _t "2 with a lock held by a DEAD pid is a restart" restart \
+     "$(LANDQ_LOCK="$_sl"; printf '999999\n/tmp\nwhenever\n' >"$_sl"; sup_decision 2)"
+  _t "2 with a lock whose START TIME differs is a restart" restart \
+     "$(LANDQ_LOCK="$_sl"; printf '%s\n/tmp\nnot when this started\n' "$$" >"$_sl"; sup_decision 2)"
+  _t "2 with a LIVE holder really is locked"      locked \
+     "$(LANDQ_LOCK="$_sl"
+        ( sleep 30 ) & _hp=$!
+        printf '%s\n/tmp\n%s\n' "$_hp" "$(ps -o lstart= -p "$_hp" 2>/dev/null | sed 's/^ *//;s/ *$//')" >"$_sl"
+        sup_decision 2
+        kill "$_hp" 2>/dev/null)"
+  _t "  ...and the supervisor's OWN pid is not another runner" restart \
+     "$(LANDQ_LOCK="$_sl"; printf '%s\n/tmp\n%s\n' "$$" "$(ps -o lstart= -p $$ 2>/dev/null | sed 's/^ *//;s/ *$//')" >"$_sl"; sup_decision 2)"
+  rm -f "$_sl"
   _t "3 is HALT tree-moved: a page"               page-tree-moved          "$(sup_decision 3)"
   _t "75 (the box went away) is a restart"        restart                  "$(sup_decision 75)"
   _t "70 (the harness gave up) is a restart"      restart                  "$(sup_decision 70)"

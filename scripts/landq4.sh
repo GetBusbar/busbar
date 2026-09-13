@@ -232,9 +232,22 @@ lq_latchkey_slot_free() {
 # resource the backend exists to stop using — six boxes' worth of lines out of a queue of a hundred
 # and twenty, on a backend with twelve slots. The empty string means "no box", and the dispatcher
 # reads it as "there is nothing to fall back to".
+# ── AND ON THE LATCHKEY BACKEND THE ANSWER IS *NEVER*, FREE SLOT OR NOT ────────────────────────
+# MEASURED, LIVE (2026-09-12 17:28 — the runner DIED and took the supervisor with it): with the
+# fleet at zero boxes by design, a line whose Latchkey job was refused asked the allocator for a
+# box, and ci-remote-lib answered
+#   ERROR: no on-demand box in ~/.busbar-fleet for a proof to run on (0 box(es) in the file, none
+#   of them ondemand) — the fleet needs an on-demand floor
+# and the runner exited 2. The supervisor read 2 as "another runner holds the lock" and exited too.
+# One refused job, and the whole engine was down.
+#
+# AN EMPTY FLEET IS NOT AN ERROR. It is the goal. So on the latchkey backend this returns "no box"
+# unconditionally — not "no box while a slot is free". A line with no free runner slot is a line
+# nobody is proving THIS sweep, which is exactly what it is when the fleet is short, and it is
+# handled the way that has always been handled: no verdict, still live, swept again next loop. The
+# fleet allocator is not asked, so its opinion about an empty fleet is never consulted.
 lq_preprove_needs_box() { # $1 = tree (default $W)
   [ "$(lq_preprove_backend)" = latchkey ] \
-    && lq_latchkey_slot_free \
     && [ -n "$(lq_latchkey_script "${1:-$W}")" ] \
     && return 1
   return 0
@@ -259,7 +272,16 @@ lq_dispatch_preprove() { # $1 = tree, $2 = host ('' = none), $3 = batch file; re
       env -u LAND_SELFTEST_SHARDS bash "$lkscript" --preprove --batch "$bf" </dev/null
       rc=$?
       [ "$rc" != 75 ] && return "$rc"
-      lq_log "pre-prove: latchkey created no job for $(basename "$bf") (the workspace cap is shared with CI) — falling back to a box"
+      # ── A REFUSED JOB IS NOT A REASON TO WAKE A BOX ─────────────────────────────────────────
+      # This used to fall back to the fleet, and on 2026-09-12 17:28 that fall-back KILLED THE
+      # RUNNER: the fleet is empty by design now, ci-remote-lib's allocator treats an empty fleet
+      # as a hard ERROR and exits 2, and the supervisor read the 2 as a held lock and exited as
+      # well. The cap is a fact about Latchkey's workspace, shared with CI, and it passes: the
+      # honest outcome is NO VERDICT — 75, the line stays live and unmarked and is swept again on
+      # the next loop, exactly as `NONE:cap` is. Nothing about anybody's picks has been learned,
+      # and nothing about the tree needs a box to be started to learn it.
+      lq_log "pre-prove: latchkey created no job for $(basename "$bf") (the workspace cap is shared with CI) — NONE:cap, the line stays LIVE and is swept again; there is no fall-back to the fleet on this backend"
+      return 75
     fi
   fi
   [ -n "$host" ] || { lq_log "pre-prove: no box to fall back to for $(basename "$bf") — no verdict, and no red either"; return 75; }
@@ -4653,9 +4675,12 @@ lq_selftest() {
   _t "  ...and its RED is the line's red, not a fallback"    "1 latchkey" "$(_bk latchkey i-0stub 1)"
   # 75 IS "NO JOB WAS CREATED", WHICH IS NOT A VERDICT. The workspace's 20-runner cap is shared with
   # CI and was measured full for seven consecutive submissions; a line that met a full account has
-  # learned NOTHING about its tree, so it goes to a box rather than being scored.
-  _t "a latchkey 75 overflows onto the box the sweep holds"  "0 latchkey,fleet" "$(_bk latchkey i-0stub 75)"
-  _t "  ...and with NO box to fall back to it is an honest 75" "75 latchkey" "$(_bk latchkey '' 75)"
+  # learned NOTHING about its tree — and, since 2026-09-12 17:28, it does not go to a box for it.
+  # A box was HANDED to this dispatch and it still does not use it: the fleet is empty by design,
+  # and the one time this fell back it asked an empty allocator, got its hard ERROR, and exited 2
+  # under a supervisor that read 2 as "another runner holds the lock".
+  _t "a latchkey 75 does NOT overflow onto a box it was handed" "75 latchkey" "$(_bk latchkey i-0stub 75)"
+  _t "  ...and with no box either it is the same honest 75"     "75 latchkey" "$(_bk latchkey '' 75)"
   # THE CAP. Twelve, not twenty, so the CI this is replacing still has runners.
   _t "the latchkey job cap defaults to twelve"               12 "$(LATCHKEY_MAX_JOBS="${LATCHKEY_MAX_JOBS:-12}"; echo "$LATCHKEY_MAX_JOBS")"
   # ── AND IT BOUNDS JOBS, NOT PRE-PROOFS (the sharded pre-proof's fan) ────────────────────────────
@@ -4673,13 +4698,29 @@ lq_selftest() {
      "$(LATCHKEY_MAX_JOBS=0 LATCHKEY_JOBS_PER_PROOF=3 lq_latchkey_proc_bound)"
   _t "  ...and a fan that is not a number is read as three"  4 \
      "$(LATCHKEY_MAX_JOBS=12; LATCHKEY_JOBS_PER_PROOF=three; case "$LATCHKEY_JOBS_PER_PROOF" in ''|*[!0-9]*) LATCHKEY_JOBS_PER_PROOF=3 ;; esac; lq_latchkey_proc_bound)"
-  _t "a full cap takes a box instead of a runner"            "0 fleet" "$(LATCHKEY_MAX_JOBS=0 _bk latchkey i-0stub 0)"
+  # A FULL CAP STILL DISPATCHES TO A BOX IT WAS HANDED — the dispatcher uses what it is GIVEN. What
+  # changed is that the sweep no longer GOES AND GETS one (lq_preprove_needs_box above), so on the
+  # latchkey backend `$2` is the empty string and this arm is unreachable from a sweep.
+  _t "a full cap uses a box it was handed"                  "0 fleet" "$(LATCHKEY_MAX_JOBS=0 _bk latchkey i-0stub 0)"
+  _t "  ...and with none it is an honest 75, never an ERROR" "75 nobody" "$(LATCHKEY_MAX_JOBS=0 _bk latchkey '' 0)"
   # AND A FULL CAP ASKS THE ALLOCATOR FOR ONE, where a free slot does not.
   # THE TREE IS AN ARGUMENT, because the answer depends on whether THAT tree has a staged transport
   # — the second half of the live defect. $bt is the stub tree, and it has one.
   _t "a free latchkey slot needs no fleet box"               1 "$(LANDQ_PROVE_BACKEND=latchkey LATCHKEY_MAX_JOBS=12 lq_preprove_needs_box "$bt"; echo $?)"
-  _t "  ...a full cap does"                                  0 "$(LANDQ_PROVE_BACKEND=latchkey LATCHKEY_MAX_JOBS=0 lq_preprove_needs_box "$bt"; echo $?)"
+  # ── AND A FULL CAP DOES NOT EITHER (the 17:28 runner death) ───────────────────────────────────
+  # This case used to want a box when the cap was full, and that fall-back is what asked an EMPTY
+  # fleet for one, got ci-remote-lib's hard ERROR and exit 2, and took the runner and its
+  # supervisor down together. The fleet is empty by design; a full cap is a line nobody proves this
+  # sweep, which is the same outcome a short fleet has always had.
+  _t "  ...and a FULL cap does not either — the fleet is never asked" 1 \
+     "$(LANDQ_PROVE_BACKEND=latchkey LATCHKEY_MAX_JOBS=0 lq_preprove_needs_box "$bt"; echo $?)"
   _t "  ...and the fleet backend always does"                0 "$(LANDQ_PROVE_BACKEND=fleet lq_preprove_needs_box "$bt"; echo $?)"
+  _t "  ...but a home with NO transport still takes a box"   0 \
+     "$(LANDQ_PROVE_BACKEND=latchkey lq_preprove_needs_box "$root/no-such-tree"; echo $?)"
+  _t "a refused latchkey job never falls back to a box"      0 \
+     "$(grep -c 'falling back to a box' "$LQ_SRC")"
+  _t "  ...it is NONE:cap and the line stays live"           1 \
+     "$(grep -c 'NONE:cap, the line stays LIVE and is swept again; there is no fall-back to the fleet' "$LQ_SRC")"
 
   # ── THE TRANSPORT COMES FROM THE ENGINE HOME, NOT FROM THE TREE (live defect, 18:09) ──────────
   # The first live latchkey sweep ran `bash "$tree/scripts/prove-latchkey.sh"` and the runner tree
