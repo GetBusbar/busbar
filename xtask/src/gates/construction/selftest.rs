@@ -1095,9 +1095,20 @@ fn kind_row_identity_cases<'a>(
         return r;
     };
     let identity = format!("cell.{krate}.{kind}.count");
+    // THE SAME HERMETIC PLANT AS `declared_raise_cases`, for the same reason and over the other
+    // ceilings file. One declared-raise table excuses rises in BOTH files, so a plant that moves a
+    // `[[cell]]` while leaving the committed table and the committed ceilings in the comparison is
+    // judged on this branch's ceiling arithmetic as well as on its own. The entries are stripped,
+    // and the base's copy of the construction ceilings is this tree's copy, so the ONE movement in
+    // the plant is the cell this case lowered at the base.
+    let ceilings_text = &ceilings::strip_raises(ceilings_text);
     let plant = |declaration: &str| -> Overlay {
         let mut ov = on(base);
         ov.set_command(format!("git-show:{based}:{file}"), base_kinds.clone());
+        ov.set_command(
+            format!("git-show:{based}:{CEILINGS}"),
+            ceilings_text.clone(),
+        );
         ov.set(file, struck.clone());
         ov.set(CEILINGS, format!("{ceilings_text}{declaration}"));
         ov

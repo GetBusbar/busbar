@@ -1234,7 +1234,11 @@ mod tests {
              key = \"rules.loc-ceilings.union_ceiling\"\nby = 5\nbecause = \"{BECAUSE}\"\n\n\
              [rules.y]\nm = 2\n"
         );
-        assert_eq!(raises_in(&text).0.len(), 2, "the fixture carries two entries");
+        assert_eq!(
+            raises_in(&text).0.len(),
+            2,
+            "the fixture carries two entries"
+        );
         let out = strip_raises(&text);
         assert!(raises_in(&out).0.is_empty(), "{out}");
         assert_eq!(out, format!("{DOC}\n[rules.y]\nm = 2\n"));
