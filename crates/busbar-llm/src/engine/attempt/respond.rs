@@ -131,109 +131,142 @@ pub(super) fn deliver<'a>(
             return resp;
         }
 
-        // Streaming (or same-protocol non-stream): the first-byte-tracking wrapper. ONE
-        // registry-resolved translator factory: same-protocol SSE builds the verbatim re-emit with the
-        // usage tap, cross-protocol SSE the reframing translator, anything else `None` (raw passthrough).
-        // Named directly from this crate rather than through the installable pointer: an uninstalled
-        // pointer would silently drop both the reframing and the stream-end metering.
-        let translate = crate::proto_stream::new_stream_translator(
-            hop.ingress_protocol,
-            hop.egress_name,
-            is_sse,
-        );
-        // The upstream stream always carries a trailing usage chunk (busbar injected the opt-in); the
-        // framing surfaces it to the client ONLY when the client itself opted in.
-        let translate = translate.map(|mut t| {
-            t.set_client_include_usage(hop.client_include_usage);
-            // The live-stream twin of the buffered-path `apply_request_echo` above: a dialect whose
-            // response spec requires certain members to MIRROR the request (OpenAI Responses) reads
-            // this off the writer it holds for the life of the stream (`response.created`/
-            // `response.completed` each carry a full `response` object). Every other ingress writer's
-            // override is a no-op.
-            if let Some(body) = ingress_request_body.as_ref() {
-                t.set_request_echo(body);
-            }
-            t
-        });
-        let json_array = (hop.gemini_json_array && is_sse)
-            .then(|| {
-                busbar_substrate::proto::decl_for(hop.ingress_protocol)
-                    .and_then(|d| d.dialect())
-                    .and_then(|dc| dc.make_array_stream_framer())
-            })
-            .flatten();
-        // The stream wrapper owns the refund decision from here (via `budget_spent`).
-        budget_guard.disarm();
         drop(_rb_pre);
-        let _rb_body = busbar_substrate::profile::start(busbar_substrate::profile::Stage::RbBody);
-        let _rb_new = busbar_substrate::profile::start(busbar_substrate::profile::Stage::RbNew);
-        let upstream_stream = {
-            use http_body_util::BodyExt;
-            r.into_body().into_data_stream()
-        };
-        let guarded_body = FirstByteBody::new(
-            upstream_stream,
-            is_sse,
-            hop.ingress_protocol,
-            hop.op,
-            permit,
+        build_stream_response(
+            hop,
+            r,
+            status,
             read_deadline,
-            host.clone(),
-            rt.clone(),
-            i,
-            hop.breaker_cfg.clone(),
-            pool,
-            translate,
-            json_array,
-            usage_sink.take(),
+            permit,
+            usage_sink,
+            budget_guard,
             budget_spent,
-            tap.clone(),
-        );
-        let axum_body = guarded_body.into_body();
-        drop(_rb_new);
-        let _rb_finish =
-            busbar_substrate::profile::start(busbar_substrate::profile::Stage::RbFinish);
-        let _rbf_build =
-            busbar_substrate::profile::start(busbar_substrate::profile::Stage::RbfBuild);
-        let mut rb = Response::builder().status(status);
-        // Cross-protocol streaming reframes the body to the client's format, so the CT must be the
-        // ingress client's; same-protocol keeps the upstream CT verbatim.
-        if hop.gemini_json_array && is_sse {
-            rb = rb.header(CONTENT_TYPE, APPLICATION_JSON);
-        } else {
-            match (cross_protocol && is_sse)
-                .then(|| ingress_stream_content_type(hop.ingress_protocol))
-                .flatten()
-            {
-                Some(client_ct) => {
-                    rb = rb.header(CONTENT_TYPE, client_ct);
-                }
-                None => {
-                    if let Some(ct) = ct {
-                        rb = rb.header(CONTENT_TYPE, ct);
-                    }
+            ct,
+            is_sse,
+            cross_protocol,
+            ingress_request_body,
+            upstream_relay_id,
+            tap,
+        )
+        .await
+    }
+}
+
+/// The STREAMING (or same-protocol non-stream) delivery: wrap the upstream body in the
+/// first-byte-tracking stream wrapper that owns the permit, the mid-stream breaker recording, the
+/// usage tap and the budget refund from here on, then build the client response (client CT on a
+/// cross-protocol reframe, upstream CT verbatim same-protocol; relayed/synthesized request id; route
+/// policy header). The `TapCell` rides out EMPTY and fills when the body ends. `budget_guard` is
+/// disarmed here — the stream wrapper owns the refund decision from this point (via `budget_spent`).
+#[allow(clippy::too_many_arguments)]
+async fn build_stream_response(
+    hop: &Hop<'_>,
+    r: http::Response<hyper::body::Incoming>,
+    status: StatusCode,
+    read_deadline: tokio::time::Instant,
+    permit: Permit,
+    usage_sink: &mut Option<UsageSink>,
+    mut budget_guard: BudgetSpendGuard<'_>,
+    budget_spent: bool,
+    ct: Option<http::HeaderValue>,
+    is_sse: bool,
+    cross_protocol: bool,
+    ingress_request_body: Option<Value>,
+    upstream_relay_id: Option<String>,
+    tap: TapCell,
+) -> Response {
+    let (host, rt, i, pool) = (hop.host, hop.rt, hop.lane, hop.pool_cell);
+    // Streaming (or same-protocol non-stream): the first-byte-tracking wrapper. ONE
+    // registry-resolved translator factory: same-protocol SSE builds the verbatim re-emit with the
+    // usage tap, cross-protocol SSE the reframing translator, anything else `None` (raw passthrough).
+    // Named directly from this crate rather than through the installable pointer: an uninstalled
+    // pointer would silently drop both the reframing and the stream-end metering.
+    let translate =
+        crate::proto_stream::new_stream_translator(hop.ingress_protocol, hop.egress_name, is_sse);
+    // The upstream stream always carries a trailing usage chunk (busbar injected the opt-in); the
+    // framing surfaces it to the client ONLY when the client itself opted in.
+    let translate = translate.map(|mut t| {
+        t.set_client_include_usage(hop.client_include_usage);
+        // The live-stream twin of the buffered-path `apply_request_echo` above: a dialect whose
+        // response spec requires certain members to MIRROR the request (OpenAI Responses) reads
+        // this off the writer it holds for the life of the stream (`response.created`/
+        // `response.completed` each carry a full `response` object). Every other ingress writer's
+        // override is a no-op.
+        if let Some(body) = ingress_request_body.as_ref() {
+            t.set_request_echo(body);
+        }
+        t
+    });
+    let json_array = (hop.gemini_json_array && is_sse)
+        .then(|| {
+            busbar_substrate::proto::decl_for(hop.ingress_protocol)
+                .and_then(|d| d.dialect())
+                .and_then(|dc| dc.make_array_stream_framer())
+        })
+        .flatten();
+    // The stream wrapper owns the refund decision from here (via `budget_spent`).
+    budget_guard.disarm();
+    let _rb_body = busbar_substrate::profile::start(busbar_substrate::profile::Stage::RbBody);
+    let _rb_new = busbar_substrate::profile::start(busbar_substrate::profile::Stage::RbNew);
+    let upstream_stream = {
+        use http_body_util::BodyExt;
+        r.into_body().into_data_stream()
+    };
+    let guarded_body = FirstByteBody::new(
+        upstream_stream,
+        is_sse,
+        hop.ingress_protocol,
+        hop.op,
+        permit,
+        read_deadline,
+        host.clone(),
+        rt.clone(),
+        i,
+        hop.breaker_cfg.clone(),
+        pool,
+        translate,
+        json_array,
+        usage_sink.take(),
+        budget_spent,
+        tap.clone(),
+    );
+    let axum_body = guarded_body.into_body();
+    drop(_rb_new);
+    let _rb_finish = busbar_substrate::profile::start(busbar_substrate::profile::Stage::RbFinish);
+    let _rbf_build = busbar_substrate::profile::start(busbar_substrate::profile::Stage::RbfBuild);
+    let mut rb = Response::builder().status(status);
+    // Cross-protocol streaming reframes the body to the client's format, so the CT must be the
+    // ingress client's; same-protocol keeps the upstream CT verbatim.
+    if hop.gemini_json_array && is_sse {
+        rb = rb.header(CONTENT_TYPE, APPLICATION_JSON);
+    } else {
+        match (cross_protocol && is_sse)
+            .then(|| ingress_stream_content_type(hop.ingress_protocol))
+            .flatten()
+        {
+            Some(client_ct) => {
+                rb = rb.header(CONTENT_TYPE, client_ct);
+            }
+            None => {
+                if let Some(ct) = ct {
+                    rb = rb.header(CONTENT_TYPE, ct);
                 }
             }
         }
-        drop(_rbf_build);
-        let _rbf_attach =
-            busbar_substrate::profile::start(busbar_substrate::profile::Stage::RbfAttach);
-        rb = maybe_attach_response_request_id(
-            rb,
-            hop.ingress_protocol,
-            upstream_relay_id.as_deref(),
-        );
-        // Which routing policy chose this target (a no-op on the default path / when none did).
-        rb = maybe_attach_route_policy(rb, hop.chosen_policy_name, &hop.lane_row().model);
-        drop(_rbf_attach);
-        let _rbf_body = busbar_substrate::profile::start(busbar_substrate::profile::Stage::RbfBody);
-        let mut resp = rb
-            .body(axum_body)
-            .unwrap_or_else(|_| status.into_response());
-        // The cell rides out EMPTY here and stays empty until the body ends: a stream is served on
-        // its headers and its figures do not exist yet. That is the point — the Route step returns
-        // while this is still in flight, and the cell is what lets the tap answer it afterwards.
-        resp.extensions_mut().insert(tap);
-        resp
     }
+    drop(_rbf_build);
+    let _rbf_attach = busbar_substrate::profile::start(busbar_substrate::profile::Stage::RbfAttach);
+    rb = maybe_attach_response_request_id(rb, hop.ingress_protocol, upstream_relay_id.as_deref());
+    // Which routing policy chose this target (a no-op on the default path / when none did).
+    rb = maybe_attach_route_policy(rb, hop.chosen_policy_name, &hop.lane_row().model);
+    drop(_rbf_attach);
+    let _rbf_body = busbar_substrate::profile::start(busbar_substrate::profile::Stage::RbfBody);
+    let mut resp = rb
+        .body(axum_body)
+        .unwrap_or_else(|_| status.into_response());
+    // The cell rides out EMPTY here and stays empty until the body ends: a stream is served on
+    // its headers and its figures do not exist yet. That is the point — the Route step returns
+    // while this is still in flight, and the cell is what lets the tap answer it afterwards.
+    resp.extensions_mut().insert(tap);
+    resp
 }
