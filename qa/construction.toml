@@ -113,62 +113,6 @@ busbar-voice = ["busbar-voice-codec"]
 # and an entry that describes no rise is refused as stale. It cannot be left behind, and it cannot
 # cover the next raise of the same ceiling.
 
-[gate.ceiling_raises."gate.surface_ceilings.contract_caps"]
-from = 3478
-to = 3543
-because = """The SURFACE-measured twin of the one owner ruling that raises \
-`rules.loc-ceilings.caps_contract_ceiling`, pinned at the figure `scripts/loc-surface.py` MEASURES on \
-this tree and not at a round number above it: 3478 + 65 surface lines, every one of them the upstream \
-status table — `upstream.rs` (64: the nine-row `StatusClass` and four-row `Disposition` tables and the \
-two macros that make them data) and one `lib.rs` module line. The two rows are one decision counted \
-two ways, and raising one without the other leaves the pair capped at whichever is smaller."""
-
-[gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"]
-from = 3480
-to = 3545
-because = """THE UPSTREAM STATUS TABLE, at its MEASURED size. \
-`busbar_contract::upstream::{StatusClass, Disposition}` (65 lines): the nine-way reading of an \
-upstream's answer, which a plane's dialect reads off vendor bytes and renders back in its own words, \
-and the four-way disposition the egress walk and the breaker act on. A unit may name only the \
-contract and the capabilities, and a plane or a dialect only the contract, so the one crate both \
-sides can point at is this one — and the table was being declared THREE times \
-(busbar-substrate-values, busbar-unit-breaker, and the transport wire's own four-way copy) because \
-it had no owner both could name. It is a TABLE: rows are data, the token, the label and the \
-disposition are columns, one match site each, so a tenth class fails to compile at every renderer at \
-once. Zero slack; the next face declares its own raise."""
-
-[gate.ceiling_raises."rules.loc-ceilings.union_ceiling"]
-from = 23335
-to = 23347
-because = """The union row is kernel + caps/contract + unit-*. Across this line's two loc-ceilings \
-commits the caps/contract term rose by 65 (the upstream status table) and the unit term fell by 53 \
-(busbar-unit-breaker and busbar-unit-egress stopped declaring their own copies of the class and the \
-disposition and now name the one table), a net rise of 12 (5379 + 3545 + 14423 = 23347). \
-`ceiling-rose` compares this declaration against the real base, not against either commit's own \
-intermediate figure, so this entry (the one that survives to the tip) is keyed base -> tip: \
-23335 -> 23347. RE-KEYED on cherry-pick onto 143db6db6: the line was cut against a base whose \
-union_ceiling read 23465 (unit_total 14606), landing its own two intermediate values (23465->23477 \
-via 23400->23347 in this worktree's replay) that no longer match 143db6db6's actual union_ceiling of \
-23335 (unit_total 14476, independently lowered by LK-ALL's landed commits before this line reached \
-the tip). The net delta the line measures across both commits (+65, then -53, i.e. +12 overall) is \
-exact and unchanged; it is re-applied directly onto the real base: 23335 + 12 = 23347. \
-`unit_total_ceiling` itself is NOT re-keyed by an amount that changes here: its own commit-local \
-delta (-53) is applied on top of whatever `unit_total_ceiling` reads at that commit in the replay \
-(14476 -> 14423, see the value below), which is a plain ratchet with no base-comparison of its own; \
-only `union_ceiling`, which `ceiling-rose` checks directly, needed this re-key."""
-
-[gate.ceiling_raises."cell.338.count"]
-file = "qa/kind-isolation.toml"
-from = 11200
-to = 11204
-because = """busbar-llm-codec x dialect. The six golden parity cells this commit adds call the very \
-renderers they pin, and four of those calls spell a pre-split dialect's own function name — \
-`bedrock_stream_exception_for`, `gemini_stream_error_code_status`, `openai_writer`, \
-`responses_error_code`. A cell that pins a renderer's bytes has to call the renderer, so these four \
-hits are the cell existing at all and not new coupling: no production line changes here and the crate \
-gains no dependency. The cells' own names carry no vendor word — each already sits in its dialect's \
-own module — which is why the rise is four and not nine. Pinned at the measurement, exactly."""
-
 # NO ENTRY STANDS HERE TODAY, and an empty list is this mechanism working rather than resting.
 # `rules.legacy-reach.prefixes.busbar_substrate.figure` carried the one-time 26 -> 47 calibration
 # while the commit that needed it was in flight. That commit LANDED: the base now carries 47, the
