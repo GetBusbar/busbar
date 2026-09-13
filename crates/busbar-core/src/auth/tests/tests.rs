@@ -182,33 +182,6 @@ fn test_constant_time_eq_one_char_diff() {
     assert!(!AuthMiddleware::constant_time_eq("secret1", "secret2"));
 }
 
-#[test]
-fn test_extract_bearer_token_valid() {
-    let token = AuthMiddleware::extract_bearer_token("Bearer mytoken123");
-    assert_eq!(token, Some("mytoken123".to_string()));
-}
-
-#[test]
-fn test_extract_bearer_token_case_insensitive() {
-    let token = AuthMiddleware::extract_bearer_token("BEARER mytoken123");
-    assert_eq!(token, Some("mytoken123".to_string()));
-}
-
-#[test]
-fn test_extract_bearer_token_no_bearer() {
-    let token = AuthMiddleware::extract_bearer_token("mytoken123");
-    assert_eq!(token, None);
-}
-
-#[test]
-fn test_extract_bearer_token_malformed_no_panic() {
-    // A multibyte char in the scheme position must not panic (was a `h[..7]` UTF-8 boundary bug).
-    assert_eq!(AuthMiddleware::extract_bearer_token("Béarer x"), None);
-    assert_eq!(AuthMiddleware::extract_bearer_token("🔑🔑🔑"), None);
-    assert_eq!(AuthMiddleware::extract_bearer_token("Bearer "), None); // empty token
-    assert_eq!(AuthMiddleware::extract_bearer_token("Basic abc"), None);
-}
-
 /// A configured chain module that recognizes the credential IDENTIFIES: the verdict carries BOTH
 /// the identifying module name and the principal (the struct variant), because role_bindings are
 /// nested by module and policy resolution needs both halves.
@@ -465,7 +438,7 @@ fn test_synth_key_reserved_id_prefixes_refused() {
     }
 }
 
-/// Helper: build a request with a single header set, for `extract_client_token` unit tests.
+/// Helper: build a request with a single header set.
 fn req_with(name: &str, value: &str) -> Request<Body> {
     Request::builder()
         .uri("/v1/messages")
@@ -474,37 +447,19 @@ fn req_with(name: &str, value: &str) -> Request<Body> {
         .expect("test request must build")
 }
 
+/// THE ENGINE'S HEADER ADAPTER, end to end over a real axum request.
+///
+/// The carriers and their precedence belong to `busbar_unit_auth::carrier` and are pinned there,
+/// over a fixture header list. What that fixture cannot pin is the ONE thing core still owns:
+/// `auth::RequestHeaders`, the adapter that shows the engine's own header map to the unit through
+/// its `HeaderView`. A name that the adapter looked up with the wrong case, or a value it dropped
+/// because it read it as bytes, would leave every unit test green and every real request
+/// unauthenticated. So this drives all three carriers through an actual `Request<Body>`, in
+/// precedence order and then with the winner removed.
 #[test]
-fn test_extract_client_token_authorization_bearer() {
-    let req = req_with("authorization", "Bearer tok-abc");
-    assert_eq!(
-        AuthMiddleware::extract_client_token(&req),
-        Some("tok-abc".to_string())
-    );
-}
+fn the_axum_header_adapter_reads_every_carrier_in_precedence_order() {
+    use crate::auth::{extract_client_token, RequestHeaders};
 
-#[test]
-fn test_extract_client_token_x_api_key() {
-    // Anthropic SDK carrier: raw token, no scheme prefix.
-    let req = req_with("x-api-key", "tok-anthropic");
-    assert_eq!(
-        AuthMiddleware::extract_client_token(&req),
-        Some("tok-anthropic".to_string())
-    );
-}
-
-#[test]
-fn test_extract_client_token_x_goog_api_key() {
-    // Gemini SDK carrier: raw token, no scheme prefix.
-    let req = req_with("x-goog-api-key", "tok-gemini");
-    assert_eq!(
-        AuthMiddleware::extract_client_token(&req),
-        Some("tok-gemini".to_string())
-    );
-}
-
-#[test]
-fn test_extract_client_token_precedence_is_authorization_first() {
     // Authorization wins over x-api-key, which wins over x-goog-api-key.
     let req = Request::builder()
         .uri("/v1/messages")
@@ -512,9 +467,9 @@ fn test_extract_client_token_precedence_is_authorization_first() {
         .header("x-api-key", "from-x-api-key")
         .header("x-goog-api-key", "from-goog")
         .body(Body::empty())
-        .unwrap();
+        .expect("test request must build");
     assert_eq!(
-        AuthMiddleware::extract_client_token(&req),
+        extract_client_token(&RequestHeaders(req.headers())),
         Some("from-auth".to_string())
     );
 
@@ -524,85 +479,29 @@ fn test_extract_client_token_precedence_is_authorization_first() {
         .header("x-api-key", "from-x-api-key")
         .header("x-goog-api-key", "from-goog")
         .body(Body::empty())
-        .unwrap();
+        .expect("test request must build");
     assert_eq!(
-        AuthMiddleware::extract_client_token(&req),
+        extract_client_token(&RequestHeaders(req.headers())),
         Some("from-x-api-key".to_string())
     );
-}
 
-#[test]
-fn test_extract_client_token_empty_carrier_falls_through() {
-    // A present-but-blank x-api-key must not mask a token in x-goog-api-key.
+    // And with neither, the last carrier — reached only if the adapter looked up all three names.
     let req = Request::builder()
         .uri("/v1/messages")
-        .header("x-api-key", "")
-        .header("x-goog-api-key", "tok-gemini")
-        .body(Body::empty())
-        .unwrap();
-    assert_eq!(
-        AuthMiddleware::extract_client_token(&req),
-        Some("tok-gemini".to_string())
-    );
-}
-
-#[test]
-fn test_extract_client_token_none_when_no_carrier() {
-    let req = Request::builder()
-        .uri("/v1/messages")
-        .body(Body::empty())
-        .unwrap();
-    assert_eq!(AuthMiddleware::extract_client_token(&req), None);
-}
-
-#[test]
-fn test_extract_client_token_non_bearer_authorization_falls_through_to_x_api_key() {
-    // A PRESENT but non-Bearer Authorization header (AWS SigV4, or Basic) must NOT short-circuit
-    // extract_client_token to None: extract_bearer_token returns None for these schemes, so the
-    // code must FALL THROUGH to x-api-key. This is the bedrock-SigV4-plus-vendor-key shape the
-    // multi-scheme design targets (a client signs the upstream request with SigV4 in
-    // Authorization while carrying the busbar token in x-api-key). A regression that made any
-    // present Authorization header short-circuit would silently break those clients yet pass
-    // every bearer-only / carrier-only test.
-    for non_bearer in [
-        "AWS4-HMAC-SHA256 Credential=AKIA.../20240101/us-east-1/bedrock/aws4_request, \
-             SignedHeaders=host;x-amz-date, Signature=deadbeef",
-        "Basic dXNlcjpwYXNz",
-    ] {
-        let req = Request::builder()
-            .uri("/v1/messages")
-            .header("authorization", non_bearer)
-            .header("x-api-key", "tok")
-            .body(Body::empty())
-            .expect("test request must build");
-        assert_eq!(
-            AuthMiddleware::extract_client_token(&req),
-            Some("tok".to_string()),
-            "a non-bearer Authorization ('{non_bearer}') must fall through to x-api-key"
-        );
-    }
-}
-
-#[test]
-fn test_extract_client_token_non_bearer_authorization_falls_through_to_x_goog_api_key() {
-    // Symmetric to the x-api-key case: a present-but-non-bearer Authorization must fall through
-    // PAST the (empty/absent) x-api-key carrier all the way to x-goog-api-key, locking the full
-    // multi-scheme chain. A regression short-circuiting on the non-bearer Authorization, or one
-    // that stopped after x-api-key, would be caught here.
-    let req = Request::builder()
-        .uri("/v1/messages")
-        .header(
-            "authorization",
-            "AWS4-HMAC-SHA256 Credential=AKIA.../bedrock/aws4_request",
-        )
-        .header("x-goog-api-key", "goog-tok")
+        .header("x-goog-api-key", "from-goog")
         .body(Body::empty())
         .expect("test request must build");
     assert_eq!(
-        AuthMiddleware::extract_client_token(&req),
-        Some("goog-tok".to_string()),
-        "a non-bearer Authorization must fall through to x-goog-api-key"
+        extract_client_token(&RequestHeaders(req.headers())),
+        Some("from-goog".to_string())
     );
+
+    // No carrier at all is no token, not a panic and not an empty string.
+    let req = Request::builder()
+        .uri("/v1/messages")
+        .body(Body::empty())
+        .expect("test request must build");
+    assert_eq!(extract_client_token(&RequestHeaders(req.headers())), None);
 }
 
 /// The dialect an auth-failure envelope is shaped in for `path`, on a deployment with NO plane

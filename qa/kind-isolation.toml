@@ -1679,7 +1679,7 @@ count = "2144"
 [[cell]]
 crate = "busbar-core"
 kind = "unit"
-count = "26"
+count = "32"
 
 [[cell]]
 crate = "busbar-export-example-plugin"
@@ -5485,7 +5485,7 @@ count = "14"
 [[cell]]
 crate = "busbar-core"
 kind = "dialect"
-count = "1193"
+count = "1178"
 
 [[cell]]
 crate = "busbar-hooks-ranking"
