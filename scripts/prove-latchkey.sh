@@ -661,13 +661,15 @@ git -C "$bare" update-ref refs/heads/integration/oracle-phase0 "$BASE"
 # then red for want of a parent that a pack-path runner HAS — lk_stage_repo's `+tip:refs/heads/tip`
 # transfers the tip's ancestors down to this shallow clone's boundary, which is the base. A LANDING
 # tip already carries its picks (nothing is cherry-picked on the runner), so its `HEAD~1` must
-# resolve on arrival; `--shallow-exclude=$BASE` fetches the tip's history to the base as its boundary
-# (the base itself arrives under its own ref above), reproducing exactly the pack path's ancestry.
-# The reconstructed TREE is unchanged either way — `git archive tip` reads only the tip's tree — so
-# byte-identity is preserved; this only restores the history the ratchets walk.
+# resolve on arrival. The base was fetched just above (shallow, its own ref), so a fetch of the tip
+# with NO --depth negotiates the base as a "have" AND stops at it as the shallow boundary: exactly
+# the tip..base range lk_stage_repo's push carries, base still the boundary, nothing below it — the
+# same three-commit repository, verified byte-identical (write-tree, archive) and with HEAD~1 and
+# merge-base resolving on arrival. (A SHA cannot be a `--shallow-exclude` argument — GitHub answers
+# `expected 'packfile'` — which is why the base is used as a present boundary, not as an exclude.)
+# The reconstructed TREE is unchanged either way; this only restores the history the ratchets walk.
 if [ "$TIP" != "$BASE" ]; then
-  git -C "$bare" -c protocol.version=2 fetch -q --shallow-exclude "$BASE" "$URL" "$TIP:refs/heads/tip" 2>/dev/null \
-    || git -C "$bare" -c protocol.version=2 fetch -q --depth 1 "$URL" "$TIP:refs/heads/tip" \
+  git -C "$bare" -c protocol.version=2 fetch -q "$URL" "$TIP:refs/heads/tip" \
     || { echo "prove-latchkey nocontext: RED — tip $TIP not fetchable from origin (a no-context proof rebuilds the tip from base+picks; a local-only tip cannot travel)"; exit 2; }
 fi
 git -C "$bare" update-ref refs/heads/tip "$TIP"
