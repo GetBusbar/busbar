@@ -854,11 +854,25 @@ pub fn hold_discipline(cx: &Ctx, tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, St
     }
 
     // (e) a cancellation-token check before every `.await` in the route step.
+    //
+    // The route step's real awaiting implementation is neither the kernel's nor a unit's: the kernel
+    // DECLARES `RouteAwait::route_leg` and its blocking wrapper hands back a leg that is ready on its
+    // first poll, and a unit crate's `route` returns a boxed future it does not itself await. The one
+    // production `route_leg` that actually DIALS an upstream — and so actually holds an `.await` — is
+    // the plane composition root's (`crates/busbar/src/root/units_llm.rs`). So this check, alone among
+    // the five, extends its scan set to the crates named in `route_step_scope_crates`, where that impl
+    // sits; the other four stay scoped to the kernel and the unit crates.
     let cancel_rx = Regex::new(need_str(c, "cancel_check_pattern", "hold-discipline")?)?;
     let route_fns = c.list_of("route_step_functions");
+    let mut route_crates = crates.clone();
+    route_crates.extend(c.list_of("route_step_scope_crates"));
+    let route_files: Vec<String> = route_crates
+        .iter()
+        .flat_map(|cr| tree.crate_files(cr))
+        .collect();
     let mut uncancellable = Vec::new();
     let mut any_route_await = false;
-    for rel in &files {
+    for rel in &route_files {
         for f in tree.fns.get(rel).into_iter().flat_map(|v| v.iter()) {
             if f.intest || !route_fns.contains(&f.name) {
                 continue;

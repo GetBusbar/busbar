@@ -646,7 +646,12 @@ production code, each reported only where its subject exists (a crate that has n
 yet is a vacuous PASS, not a lie): no `?` or early `return` between a HoldCell take and its settle; \
 no identifier typed `Hold` closed over by a `catch_unwind` closure; no `JoinHandle::abort`; no \
 `mem::forget`/`drop(...)` of a value whose name says it is a hold; and a cancellation-token check \
-before every `.await` inside the route step, wherever the route step is async."""
+before every `.await` inside the route step, wherever the route step is async. The first four proxies \
+scan busbar-kernel and busbar-unit-* only; the fifth reaches further BY DESIGN — the one production \
+route step that actually awaits an upstream is `RouteAwait::route_leg` in the plane composition root \
+(`crates/busbar/src/root/units_llm.rs`), not the kernel's ready-leg wrapper nor a unit's boxed \
+`route`, so the cancellation check adds that root to its scan set via `route_step_scope_crates`; \
+without it the fifth proxy would be a check with no awaiting subject to read and so a vacuous RED."""
 scope_crates_kernel = ["busbar-kernel"]
 scope_crate_glob = "busbar-unit-*"
 take_pattern = '\.take\('
@@ -655,7 +660,13 @@ catch_unwind_pattern = 'catch_unwind'
 hold_word = "Hold"
 abort_pattern = '\.abort\('
 forget_or_drop_pattern = '(?:mem::forget|drop)\(\s*&?\s*[A-Za-z_][A-Za-z0-9_]*[Hh]old[A-Za-z0-9_]*'
-route_step_functions = ["route"]
+# `route` is the synchronous unit-trait step; `route_leg` is the async seam the loop awaits. Only the
+# latter carries a real `.await`, and its one production impl lives outside kernel/unit-* scope — see
+# `route_step_scope_crates`.
+route_step_functions = ["route", "route_leg"]
+# The cancellation check ALONE extends here: the composition root that holds the awaiting `route_leg`.
+# The other four hold-discipline proxies stay scoped to busbar-kernel + busbar-unit-*.
+route_step_scope_crates = ["busbar"]
 cancel_check_pattern = 'is_cancelled|cancellation'
 max_early_exit = 0
 max_catch_unwind_capture = 0
