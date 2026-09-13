@@ -19,9 +19,10 @@
 //! ## Five routes, two dialects, and what is live
 //!
 //! Every route MOUNTS, is AUDIENCE-CHECKED (`RouteAuth::Key`, under the plane's one audience) and, on
-//! arrival, runs the governed session-open through [`crate::topology::begin_session`] /
-//! [`crate::topology::telephony::begin_telephony`] — which go through `run_gauntlet_session`
-//! (verify-strictly-before-charge). The two one-shot HTTP passes (`ek_` mint, SDP broker) reach the
+//! arrival, runs the governed session-open through [`crate::topology::begin_session`] — which screens
+//! its own destination denial set in-plane (verify-strictly-before-charge); the SESSION's own
+//! admission (its one node slot + in-flight lease) is drawn ONCE by the root's owning-Held driver when
+//! the session is served. The two one-shot HTTP passes (`ek_` mint, SDP broker) reach the
 //! provider once the deployment's own catalog resolved one for the model the section pins; the
 //! browser-sideband WS accept is
 //! control-only by design (media is peer-to-peer, see `crate::topology::webrtc`); the telephony and
@@ -350,8 +351,8 @@ pub fn voice_hydrate(ctx: &dyn PlaneBootCtx) -> Result<(), String> {
 }
 
 /// [`PlaneDecl::start`] — the post-listener boot step. Voice opens no background boot task: a live
-/// session is admitted and served per WS-accept ARRIVAL (through `run_gauntlet_session`, one governed
-/// pass per connection), each running its own supervised pump that parks on the carrier's hard-close —
+/// session is admitted and served per WS-accept ARRIVAL (opened ONCE on the root-composed session
+/// seam, one governed pass per connection), each running its own supervised pump that parks on the carrier's hard-close —
 /// there is no process-wide sweep loop to spawn here (unlike the A2A start, which resolves outbound
 /// client identities once). The one thing that DOES run on a timer, the governed tool-call sweep
 /// ([`crate::runtime::serve_with_sweep`]), rides each session's own pump and ends with it, which is
@@ -365,8 +366,8 @@ pub fn voice_hydrate(ctx: &dyn PlaneBootCtx) -> Result<(), String> {
 /// through it rather than gaining a new seam.
 pub fn voice_start(_ctx: &dyn PlaneBootCtx) -> Result<(), String> {
     tracing::debug!(
-        "voice: started — sessions are admitted and served per WS-accept arrival (one \
-         run_gauntlet_session pass each); no process-wide background task is spawned"
+        "voice: started — sessions are admitted and served per WS-accept arrival (opened once on the \
+         root-composed session seam); no process-wide background task is spawned"
     );
     Ok(())
 }
@@ -554,8 +555,8 @@ pub fn voice_routes(slot: &dyn Any) -> Vec<PlaneRouteSpec> {
 }
 
 /// WHICH ingress a route drives — the topology-shaping fact a handler carries into the shared governed
-/// open. Both arms funnel through [`crate::topology::begin_session`] (so through
-/// `run_gauntlet_session`); they differ only in the locked config the topology binds.
+/// open. Both arms funnel through [`crate::topology::begin_session`] (so through the same in-plane
+/// destination screen); they differ only in the locked config the topology binds.
 ///
 /// TWO ARMS, NOT FIVE. `Sideband`, `Telephony` and `Gemini` were the three DUPLEX legs, and they are
 /// gone with the accept they named: a duplex session is served by the composition's own mounted
@@ -599,9 +600,9 @@ pub(crate) struct GovernedOpen<'a> {
 ///    gate and BEFORE the credential is leased. A committed rewrite REPLACES the locked session params
 ///    the mint/dial then carries; an abstaining chain (or no attached rewrite) leaves them
 ///    byte-identical.
-/// 3. **the governed open** — [`crate::topology::begin_session`] /
-///    [`crate::topology::telephony::begin_telephony`] runs `run_gauntlet_session`
-///    (verify-strictly-before-charge): a denied destination refuses `403` before any lease/durable open.
+/// 3. **the governed open** — [`crate::topology::begin_session`] screens its own destination denial set
+///    in-plane (verify-strictly-before-charge): a denied destination refuses `403` before any
+///    lease/durable open.
 /// 4. **the serving leg** — for `Mint`, the `ek_` is minted through [`HttpsTokenMinter`] over the
 ///    configured provider and returned as JSON; for `Sdp`, the offer is brokered upstream, the
 ///    `rtc_<call_id>` correlation key is stamped onto the durable row, and the answer + `Location`

@@ -233,7 +233,7 @@ pub const PLANE_DECL: busbar_substrate::plane::registry::PlaneDecl =
         // MOUNTED (behind `runtime`): the plane builds its dispatch slot from `public_url`, claims TWO
         // audience-checked bases — `/v1/realtime` (OpenAI) and `/v1/realtime/gemini` (Gemini Live) —
         // under the SAME bound audience, and mounts the five ingress routes across both dialects, whose
-        // handlers open governed sessions through `run_gauntlet_session` (see `crate::mount`).
+        // handlers open governed sessions with an in-plane destination screen (see `crate::mount`).
         // Off-feature these stay empty/`None` (the byte-unchanged default decl). A plane installed at
         // boot is installed under `plane-voice` (⇒ `busbar-voice/runtime`), so it always both mounts and
         // admits — the ratchet's "mounted ⇒ admitted" holds by construction.

@@ -573,8 +573,9 @@ fn mount_plane_route(
 /// assembles a substrate-owned [`busbar_substrate::ingress::duplex_ws::WsArrival`] from the SAME
 /// sources `mount_plane_route` reads (minus the body — a WS GET carries none), carrying the upgrade
 /// BY VALUE and the plane's live slot (resolved from `plane_slots` under the spec's `slot_key`, so an
-/// unconfigured plane mounts nothing), and hands it to the plane's neutral accept fn — which reaches
-/// `serve_gauntlet`/`accept_gauntlet` internally and never a bare `on_upgrade`.
+/// unconfigured plane mounts nothing), and hands it to the plane's neutral accept fn — which opens the
+/// session on the ONE root-composed session seam (SessionLoopDriver::open) and only then reaches
+/// `accept_coded`, never a bare `on_upgrade`.
 #[cfg(feature = "duplex-ws")]
 fn mount_ws_arrivals(
     router: crate::core_routes::CoreRouter,

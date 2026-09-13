@@ -3,9 +3,9 @@
 
 //! MOUNT TESTS (behind `runtime`): the voice plane's data-route mount is STRUCTURAL — the four routes
 //! MOUNT, the claim + admission BIND the plane's RFC 8707 audience from `public_url`, and a route's
-//! arrival runs the governed session-open through `run_gauntlet_session` (verify-before-charge). No
-//! live provider is called: a denied destination is refused at the gate, a clean open answers `501`
-//! (governed, but the live serving leg is the deployment's to compose).
+//! arrival screens its own destination denial set in-plane (verify-before-charge) before any
+//! lease/durable open. No live provider is called: a denied destination is refused, a clean open
+//! answers `501` (governed, but the live serving leg is the deployment's to compose).
 
 use super::{
     voice_admission, voice_build, voice_claims, voice_hydrate, voice_routes, voice_start,
@@ -288,10 +288,10 @@ fn governed_open<'a>(
 
 #[cfg(feature = "test-support")]
 #[tokio::test]
-async fn arrival_runs_run_gauntlet_session_refusing_a_denied_destination_before_charge() {
-    // ARRIVAL runs `run_gauntlet_session`: a denied destination is REFUSED at the open-pass gate before
-    // any lease/durable open — the governed open returns the gate's `403`, proving the gate ran. This
-    // is the D3 call-site invariant at the ROUTE layer: no byte, no charge on a refused destination.
+async fn arrival_screens_the_destination_refusing_a_denied_destination_before_charge() {
+    // ARRIVAL screens its OWN destination denial set in-plane: a denied destination is REFUSED before
+    // any lease/durable open — the governed open returns `403`, proving the screen ran. This is the D3
+    // call-site invariant at the ROUTE layer: no byte, no charge on a refused destination.
     let host = busbar_substrate::testkit::fixture_host::FixtureHost::new().into_host();
     let denied = runtime_for("blocked-model", &["blocked-model"]);
     // Mint is a live `open_governed` production ingress (the browser `ek_` pass); the three duplex WS
@@ -308,7 +308,7 @@ async fn arrival_runs_run_gauntlet_session_refusing_a_denied_destination_before_
     assert_eq!(
         refused.status(),
         axum::http::StatusCode::FORBIDDEN,
-        "a denied destination is refused at the gate (run_gauntlet_session ran, verify-before-charge)"
+        "a denied destination is refused (in-plane destination screen ran, verify-before-charge)"
     );
 
     // A non-denied destination proceeds PAST the gate and opens the governed session; with no provider
@@ -388,10 +388,10 @@ fn hydrate_rehydrates_the_durable_session_working_set() {
     );
 }
 
-// THE IN-PROCESS DUPLEX SESSION — the cell MOVED with the body it drove. `begin_telephony` opened
-// the session through `run_gauntlet_session`; the telephony WS leg is now served by the ROOT-mounted
-// streams driver, so the claim (hydrate, then a served session relays both directions through the
-// gauntlet) is made by `busbar --test streams_served_session`.
+// THE IN-PROCESS DUPLEX SESSION — the cell MOVED with the body it drove. The telephony WS leg is now
+// served by the ROOT-mounted streams driver, opened ONCE on the kernel session seam, so the claim
+// (hydrate, then a served session relays both directions and is admitted on that seam) is made by
+// `busbar --test streams_served_session`.
 
 // THE PROVIDER CREDENTIAL DOES NOT REACH THE LOG — the cell MOVED with the body it drove. The
 // Gemini leg's dial URL was composed here by `provider_ws_url`, which died with the plane's own
