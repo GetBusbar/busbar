@@ -83,13 +83,20 @@ fn non_matching_credentials_of_any_shape_never_identify() {
     }
 }
 
-/// A mismatched credential presented against a configured token must specifically `Reject`
-/// (a credential WAS presented, it's just wrong) — never silently `Pass`, which would make a wrong
-/// credential indistinguishable from "no credential", and never `Identify`.
+/// A mismatched credential THIS ARM OWNS must specifically `Reject` (a credential WAS presented,
+/// it's just wrong) — never silently `Pass`, which would make a wrong credential indistinguishable
+/// from "no credential", and never `Identify`.
+///
+/// OWNERSHIP IS THE PRECONDITION, and it is the one thing this battery must not assume away. A
+/// candidate carrying another issuer's minted form is NOT this arm's to refuse — it defers so the
+/// next arm of the chain is asked — so the fixtures here are all forms no other issuer mints. The
+/// three-non-empty-base64url-segment compact serialization is therefore deliberately absent, and
+/// its NEAR-misses stand in its place: a trailing `=` is padding the serialization forbids, so it
+/// is attributable to nobody and stays terminal.
 #[test]
 fn wrong_credential_of_any_shape_rejects_not_passes() {
     let h = hash("secret");
-    for cred in ["", "wrong", "a.b.c", "\0\x01garbage"] {
+    for cred in ["", "wrong", "a.b.c=", "\0\x01garbage"] {
         assert_eq!(
             authenticate_admin_tokens(Some(&h), Some(cred), None),
             AuthOutcome::Reject,

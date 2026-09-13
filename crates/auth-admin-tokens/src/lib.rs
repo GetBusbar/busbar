@@ -33,9 +33,10 @@ pub const ADMIN_TOKENS_PRINCIPAL_ID: &str = "admin";
 /// THREE ANSWERS, not two. A chain arm owes the chain three: `Identify` (mine and valid), `Reject`
 /// (mine and wrong — stop, nobody else was asked for this), and `Pass` (NOT MINE — ask the next
 /// arm). This module used to collapse the last two, answering a terminal `Reject` for any credential
-/// that did not match. With `admin_auth: [admin-tokens, corp-oidc]` that made the second arm
-/// unreachable: an OIDC bearer JWT was refused here before `corp-oidc` was ever asked, and the arm
-/// was silently dead. The miss path now splits on [`is_foreign_credential_form`].
+/// that did not match. With this arm standing first and an OIDC arm configured behind it, the
+/// second arm was unreachable: an OIDC bearer JWT was refused here before it was ever asked, and a
+/// resolved, booted arm was silently dead. The miss path now splits on
+/// [`is_foreign_credential_form`].
 ///
 /// ORDER MATTERS, and it is validation FIRST: an operator token that matches identifies whatever it
 /// looks like. The form test only ever runs on the miss path, so no shape rule can turn a valid
@@ -79,18 +80,18 @@ pub fn authenticate_admin_tokens(
     }
 }
 
-/// Is this candidate PROVABLY another issuer's credential, and therefore not an operator admin
-/// token this arm should refuse on behalf of the whole chain?
+/// Is this candidate PROVABLY another issuer's credential, and therefore not an operator token
+/// this arm should refuse on behalf of the whole chain?
 ///
 /// The test has to run in this direction, because the other direction has no answer. There is no
-/// minted admin-token form to match against: the operator admin token is an opaque secret the
-/// DEPLOYMENT supplies through a `token:` reference, and the only thing the boot path ever asserts
-/// about its value is that it is not blank (`resolve_admin_token`). Nothing in the binary generates
-/// one, so it has no prefix, no length and no charset — the shipped configs and docs carry only
-/// `{ env: BUSBAR_ADMIN_TOKEN }` and placeholders like `your-admin-token`. This module also
-/// deliberately declines to look at an admin candidate's length or charset at all (see the timing
-/// stance above). So "is this an admin token by shape" is a question no code here could answer
-/// honestly, and answering it by guess would refuse real operator credentials.
+/// minted form to match against: the operator token is an opaque secret the DEPLOYMENT supplies
+/// through a `token:` reference, and the only thing the boot path ever asserts about its value is
+/// that it is not blank (`resolve_admin_token`). Nothing in the binary generates one, so it has no
+/// prefix, no length and no charset — the shipped configs and docs carry only
+/// `{ env: BUSBAR_ADMIN_TOKEN }` and a placeholder. This module also deliberately declines to look
+/// at a candidate's length or charset at all (see the timing stance above). So "is this the
+/// operator's token by shape" is a question no code here could answer honestly, and answering it by
+/// guess would refuse real operator credentials.
 ///
 /// What DOES have an answer is "does this candidate carry a form some other issuer mints". The one
 /// such form this chain actually meets is the JWS Compact Serialization an OIDC / AD arm is handed
@@ -102,7 +103,7 @@ pub fn authenticate_admin_tokens(
 ///
 /// FAIL-CLOSED DIRECTION. Anything this cannot positively attribute elsewhere stays MINE, so a wrong
 /// credential is still the terminal `Reject` it was in 1.5.5 and only a provably-foreign one defers.
-/// An operator who chose a JWT-shaped admin secret loses nothing either: it still matches and still
+/// An operator who chose a JWT-shaped secret loses nothing either: it still matches and still
 /// identifies (validation runs first), and if it is presented WRONG the chain refuses anyway — later
 /// instead of here.
 ///
