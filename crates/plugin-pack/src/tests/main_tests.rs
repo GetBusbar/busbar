@@ -4,6 +4,9 @@
 //! Tests for `crates/plugin-pack/src/main.rs`.
 
 use super::*;
+// ONE spelling of the signing crate for the whole battery. Twelve fully-qualified paths taught
+// this crate its sibling's package name twelve times over and said nothing the import does not.
+use busbar_plugin_sign::{evaluate, validate_structure, TrustPolicy, Verdict, HOST_IDENTITY};
 
 /// `pack`-equivalent flow: a signed manifest packaged here unpacks + verifies as trusted under
 /// the matching public key (the exact artifact contract the engine consumes).
@@ -34,20 +37,20 @@ fn packed_tarball_verifies_end_to_end() {
         host: None,
     };
     let signed = sign(&key, m, lib);
-    busbar_plugin_sign::validate_structure(
+    validate_structure(
         &signed,
         lib,
         &busbar_plugin_loader::supported_abi,
-        busbar_plugin_sign::HOST_IDENTITY,
+        HOST_IDENTITY,
     )
     .expect("structural");
     let tarball = busbar_plugin_loader::tarball::package(&signed, "lib.so", lib).unwrap();
     let up = busbar_plugin_loader::tarball::unpack(&tarball).unwrap();
-    let mut policy = busbar_plugin_sign::TrustPolicy::default();
+    let mut policy = TrustPolicy::default();
     policy.publishers.insert("acme".into(), key.verifying_key());
     assert!(matches!(
-        busbar_plugin_sign::evaluate(&up.lib_bytes, &up.manifest, &policy).unwrap(),
-        busbar_plugin_sign::Verdict::Trusted { .. }
+        evaluate(&up.lib_bytes, &up.manifest, &policy).unwrap(),
+        Verdict::Trusted { .. }
     ));
 }
 
@@ -162,24 +165,24 @@ fn packed_hook_needs_prompt_rw_is_signed() {
     };
     let signed = sign(&key, m, lib);
     assert_eq!(signed.needs.prompt, NeedLevel::Rw);
-    busbar_plugin_sign::validate_structure(
+    validate_structure(
         &signed,
         lib,
         &busbar_plugin_loader::supported_abi,
-        busbar_plugin_sign::HOST_IDENTITY,
+        HOST_IDENTITY,
     )
     .expect("structural");
     // Tampering the declared intent after signing breaks verification (needs is signed).
     let tarball = busbar_plugin_loader::tarball::package(&signed, "lib.so", lib).unwrap();
     let up = busbar_plugin_loader::tarball::unpack(&tarball).unwrap();
-    let policy = busbar_plugin_sign::TrustPolicy {
+    let policy = TrustPolicy {
         first_party_key: Some(key.verifying_key()),
         binary_version: "1.5.0".into(),
         ..Default::default()
     };
     assert!(matches!(
-        busbar_plugin_sign::evaluate(&up.lib_bytes, &up.manifest, &policy).unwrap(),
-        busbar_plugin_sign::Verdict::Trusted { .. }
+        evaluate(&up.lib_bytes, &up.manifest, &policy).unwrap(),
+        Verdict::Trusted { .. }
     ));
 
     // The line above is only half the claim, and on its own it is the half that proves nothing: it
@@ -190,7 +193,7 @@ fn packed_hook_needs_prompt_rw_is_signed() {
     let mut raised = up.manifest.clone();
     assert_eq!(raised.needs.prompt, NeedLevel::Rw);
     raised.needs.user = NeedLevel::Rw;
-    let verdict = busbar_plugin_sign::evaluate(&up.lib_bytes, &raised, &policy);
+    let verdict = evaluate(&up.lib_bytes, &raised, &policy);
     assert!(
         verdict.is_err(),
         "raising `needs` after signing must break verification; got {verdict:?}"
@@ -201,7 +204,7 @@ fn packed_hook_needs_prompt_rw_is_signed() {
     let mut lowered = up.manifest.clone();
     lowered.needs.prompt = NeedLevel::No;
     assert!(
-        busbar_plugin_sign::evaluate(&up.lib_bytes, &lowered, &policy).is_err(),
+        evaluate(&up.lib_bytes, &lowered, &policy).is_err(),
         "lowering `needs` after signing must break verification too"
     );
 }

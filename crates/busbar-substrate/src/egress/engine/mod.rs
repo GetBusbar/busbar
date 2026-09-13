@@ -374,7 +374,7 @@ pub fn webpki_client_config() -> Result<std::sync::Arc<rustls::ClientConfig>, St
     Ok(std::sync::Arc::new(
         rustls::ClientConfig::builder_with_provider(provider)
             .with_safe_default_protocol_versions()
-            .map_err(|e| format!("the crypto provider refused the default TLS versions: {e}"))?
+            .map_err(|e| format!("the crypto provider refused the default protocol versions: {e}"))?
             .with_root_certificates(roots)
             .with_no_client_auth(),
     ))

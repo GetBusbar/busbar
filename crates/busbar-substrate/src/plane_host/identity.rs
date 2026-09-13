@@ -18,7 +18,7 @@
 //! ## A GENERATION IS THE LIFETIME OF THE KEYS IN IT
 //!
 //! A registry that only ever grows is a registry of private keys that only ever grows. Every config
-//! apply resolves an operator's client certificates again, so a deployment with N mTLS-pinned agents
+//! apply resolves an operator's client certificates again, so a deployment with N cert-pinned agents
 //! reloaded M times used to leave N×M parsed private keys resident for the life of the process —
 //! including the ones the operator had already retired from the config, still resolvable through any
 //! ref that had been handed out.
@@ -26,8 +26,8 @@
 //! So a registration is not process-wide any more: it belongs to an [`IdentityGeneration`], and the
 //! generation is a VALUE ITS INSTALLER OWNS. Dropping it retires every ref it minted — the entries
 //! go, the key material is zeroized where this registry held the last copy, and [`resolve`] on a
-//! retired ref fails CLOSED (`None`, the hop presents no certificate and an mTLS peer refuses it
-//! itself, exactly as for a ref that never existed).
+//! retired ref fails CLOSED (`None`, the hop presents no certificate and a peer that requires one
+//! refuses it itself, exactly as for a ref that never existed).
 //!
 //! OWNERSHIP, not a global "newest wins", is deliberate. The apply that builds the new generation is
 //! not always the apply whose transports the plane goes on using (a plane that carries its

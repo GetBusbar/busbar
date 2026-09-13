@@ -270,8 +270,8 @@ fn jwt_claims_json(
 ///
 /// The failure message deliberately does NOT render `credential`. On this branch the argument is a
 /// PATH only by assumption — the sole thing that distinguishes the two forms is a leading `{`, so an
-/// operator who pasted the key body, or a secret ref that resolved to key material rather than to a
-/// filename, lands here holding the SIGNING KEY. This error is not a swallowed one: `--validate`
+/// operator who pasted the key body, or a configured reference resolving to key material rather than
+/// to a filename, lands here holding the SIGNING KEY. This error is not a swallowed one: `--validate`
 /// prints it and the boot path panics with it, so interpolating the argument would publish the key
 /// to a terminal, a CI log and a crash report in one step. Both callers already name the lane and
 /// the secret's configured source, so what this layer owes is the io failure and nothing else.

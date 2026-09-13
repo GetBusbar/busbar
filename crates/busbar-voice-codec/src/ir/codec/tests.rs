@@ -1156,7 +1156,7 @@ fn session_created_adopts_both_negotiated_formats() {
 fn the_tool_argument_ceiling_bounds_what_is_actually_held() {
     // THE CEILING IS ON MEMORY, so it must be measured on the bytes KEPT. Fragments are stored
     // lossily-converted, and every invalid byte becomes a three-byte replacement character: measured
-    // on the wire fragment instead, a peer streams the ceiling in invalid bytes and the plane holds
+    // on the wire fragment instead, a peer sends the ceiling in invalid bytes and the plane holds
     // three times it.
     let mut st = DecodeState::default();
     let call = st.ref_for_call_id("call_bloat");
