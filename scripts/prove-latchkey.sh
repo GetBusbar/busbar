@@ -86,6 +86,23 @@ LK_POLL_SECS="${LATCHKEY_POLL_SECS:-30}"
 # The ceiling on how long this script will WAIT, distinct from the job's own timeout: a poller that
 # outlives the job it watches is how a sweep slot is held by a job that has already been reaped.
 LK_POLL_MAX="${LATCHKEY_POLL_MAX:-$(( LK_TIMEOUT + 1800 ))}"
+# ── THE ORACLE SHARD WAITS LONGER, BECAUSE IT TAKES LONGER ──────────────────────────────────────
+# MEASURED: the `oracle` shard records a candidate and then diffs it cell by cell, and on a wide
+# family expression that is the longest leg in the fan by a distance — long enough that the poller
+# has given up on a job that was still working, which costs the whole sweep a verdict it had
+# already paid the runner minutes for. A give-up is honest (75, nothing learned) but it is not
+# free, and a window tuned to the SHORTEST shard is the wrong window for the longest.
+#
+# So the window is per shard, and the default for `oracle` is the job's own ceiling plus a full
+# hour rather than half of one. The job's timeout still outranks it — this only decides how long
+# THIS script is prepared to keep asking.
+LK_POLL_MAX_ORACLE="${LATCHKEY_POLL_MAX_ORACLE:-$(( LK_TIMEOUT + 3600 ))}"
+lk_poll_window() { # $1 = shard name; prints the seconds this script will wait on it
+  case "${1:-}" in
+    oracle) printf '%s\n' "$LK_POLL_MAX_ORACLE" ;;
+    *)      printf '%s\n' "$LK_POLL_MAX" ;;
+  esac
+}
 LK_BIN="${LATCHKEY_BIN:-latchkey}"
 LK_ENVFILE="${LATCHKEY_ENV_FILE:-$HOME/.busbar-engine/latchkey.env}"
 # ── THE SLOT-SIDE SEMAPHORE ──────────────────────────────────────────────────────────────────────
@@ -896,9 +913,10 @@ lk_runner_secs() { # $1 = job id; prints seconds, or nothing when the job never 
 
 # BOUNDED. Every $LK_POLL_SECS, never a watcher process, and it gives up rather than waiting for a
 # job that has been reaped — a poller that outlives its job holds a sweep slot for nothing.
-lk_poll() { # $1 = job id; prints the terminal state, returns 1 on running out of patience
-  local id="$1" waited=0 st
-  while [ "$waited" -lt "$LK_POLL_MAX" ]; do
+lk_poll() { # $1 = job id; $2 = shard name (optional); prints the terminal state, returns 1 on
+            # running out of patience
+  local id="$1" waited=0 st max; max="$(lk_poll_window "${2:-}")"
+  while [ "$waited" -lt "$max" ]; do
     st="$(lk_state "$id")"
     case "$st" in
       succeeded|failed|cancelled|expired) printf '%s\n' "$st"; return 0 ;;
@@ -1124,6 +1142,69 @@ if [ "${1:-}" = "--selftest" ]; then
   lk_parse_result "$root/without.log" >/dev/null 2>&1 \
     && say FAIL "a log with no result block was read as a verdict" \
     || say PASS "a log with NO result block is no verdict, not an empty one"
+
+  # ── THE GIVE-UP PATH IS 75, AND IT IS 75 ALL THE WAY OUT ──────────────────────────────────────
+  # A poller that runs out of patience has NOT measured a failure — it has stopped looking. The
+  # caller's retry is keyed on 75 and on nothing else, so any other code here (2 from lkdie, 1 from
+  # a red, 127 from a missing command) turns a capacity blip into a hard failure and, upstream, into
+  # a parked line. Driven end to end against a stub CLI that never finishes a job, because the thing
+  # under test is the EXIT CODE of the whole script and no unit can see that.
+  echo "== prove-latchkey SELF-TEST (a poller that gave up exits 75, never 2) =="
+  [ "$(lk_poll_window oracle)" = "$LK_POLL_MAX_ORACLE" ] \
+    && say PASS "the oracle shard has a poll window of its own" \
+    || say FAIL "the oracle shard does not get LK_POLL_MAX_ORACLE"
+  [ "$(lk_poll_window build)" = "$LK_POLL_MAX" ] \
+    && say PASS "  ...and every other shard keeps the common one" \
+    || say FAIL "a non-oracle shard did not get LK_POLL_MAX"
+  [ "$LK_POLL_MAX_ORACLE" -gt "$LK_POLL_MAX" ] \
+    && say PASS "  ...and it is the LONGER of the two" \
+    || say FAIL "the oracle window is not longer than the common one"
+  gu="$root/giveup"; mkdir -p "$gu/bin" "$gu/slots" "$gu/tmp"
+  {
+    echo '#!/usr/bin/env bash'
+    echo 'case "$1" in'
+    echo '  run)    echo "cli-selftest-0000-0000-0000-$RANDOM$RANDOM" ;;'
+    echo '  status) echo "State: running"; echo "Exit code: -" ;;'
+    echo '  logs)   echo "the job is still going" ;;'
+    echo '  *)      exit 0 ;;'
+    echo 'esac'
+  } >"$gu/bin/latchkey"
+  chmod +x "$gu/bin/latchkey"
+  # A tree with a real delta, so nothing refuses the proof before it ever submits.
+  gr="$gu/repo"; mkdir -p "$gr"
+  git -C "$gr" init -q; git -C "$gr" config user.email g@u; git -C "$gr" config user.name g
+  mkdir -p "$root/nohooks"; git -C "$gr" config core.hooksPath "$root/nohooks"
+  git -C "$gr" config commit.gpgsign false
+  # TWO commits: lk_base_sha falls back to the tip's own parent when a repository has no
+  # integration ref, and a single-commit tree has no parent — which is its own exit 2, and not the
+  # one under test here.
+  printf 'one\n' >"$gr/f"; git -C "$gr" add -A; git -C "$gr" commit -qm one
+  printf 'two\n' >>"$gr/f"; git -C "$gr" add -A; git -C "$gr" commit -qm two
+  printf '%s\n' "--prove --tests xtask" >"$gu/batch.txt"
+  gout="$gu/out.txt"; grc=0
+  env LATCHKEY_TOKEN=selftest LATCHKEY_BIN="$gu/bin/latchkey" \
+      LATCHKEY_POLL_SECS=1 LATCHKEY_POLL_MAX=2 LATCHKEY_POLL_MAX_ORACLE=2 \
+      LATCHKEY_SLOT_DIR="$gu/slots" LATCHKEY_SLOT_JOBS=6 \
+      LAND_TMP="$gu/tmp" LATCHKEY_LOG_DIR="$gu/logs" \
+      bash "$0" --tree "$gr" --batch "$gu/batch.txt" >"$gout" 2>&1 || grc=$?
+  [ "$grc" = 75 ] \
+    && say PASS "a proof whose jobs never finish exits 75" \
+    || say FAIL "the give-up path exited $grc, not 75 (see $gout)"
+  grep -q 'gave up waiting on' "$gout" \
+    && say PASS "  ...having actually given up, not having been refused before it submitted" \
+    || say FAIL "the run never reached the poller (see $gout)"
+  grep -q 'this is 75, never a red' "$gout" \
+    && say PASS "  ...and it says so, in the words the caller retries on" \
+    || say FAIL "the give-up sentence does not name the 75"
+  grep -q 'NONE:no-verdict' "$gout" \
+    && say PASS "  ...every shard is NONE:no-verdict, never RED" \
+    || say FAIL "a shard that was never polled to completion was not NONE:no-verdict"
+  grep -q '^RED' "$gout" \
+    && say FAIL "a give-up produced a RED" \
+    || say PASS "  ...and not one RED is printed anywhere in the run"
+  [ -f "$gu/batch.txt.result" ] \
+    && say FAIL "a give-up wrote a result file; a partial verdict is a verdict nobody chose" \
+    || say PASS "  ...and no <batch>.result is written at all"
 
   echo "== prove-latchkey SELF-TEST (a healed retry is never GREEN) =="
   printf 'all fine\n' >"$root/clean.log"
@@ -1922,7 +2003,7 @@ case "$SCOPE_TESTS" in
   '')  lklog "test packages:   <the whole workspace — the scope names none; this is the 94-minute path>" ;;
   *)   lklog "test packages:   $SCOPE_TESTS" ;;
 esac
-lklog "runner:          $LK_SIZE, timeout ${LK_TIMEOUT}s, polled every ${LK_POLL_SECS}s"
+lklog "runner:          $LK_SIZE, timeout ${LK_TIMEOUT}s, polled every ${LK_POLL_SECS}s (waiting up to ${LK_POLL_MAX}s, ${LK_POLL_MAX_ORACLE}s on the oracle shard)"
 
 # ── STAGE THE TREE ──────────────────────────────────────────────────────────────────────────────
 # Everything the job needs goes INSIDE the directory being packed, and comes out again on the way
@@ -1991,7 +2072,7 @@ for JOB in $SH_IDS; do
   NAME="$1"; shift
   NSH=$(( NSH + 1 ))
   LOG="$REPO/target/land-latchkey-$REF-$NAME.log"
-  if STATE="$(lk_poll "$JOB")"; then
+  if STATE="$(lk_poll "$JOB" "$NAME")"; then
     "$LK_BIN" logs "$JOB" >"$LOG" 2>&1 || true
     mkdir -p "$LK_LOGDIR" 2>/dev/null && cp "$LOG" "$LK_LOGDIR/$JOB.log" 2>/dev/null \
       && lklog "log kept: $LK_LOGDIR/$JOB.log" \
@@ -2002,7 +2083,7 @@ for JOB in $SH_IDS; do
   else
     # A POLLER THAT GAVE UP HAS NOT MEASURED A TIMEOUT, it has stopped looking. The job is cancelled
     # so it stops billing, and the outcome is the honest "no verdict", never the cap and never a red.
-    lklog "gave up waiting on $JOB after ${LK_POLL_MAX}s — no verdict"
+    lklog "gave up waiting on $JOB after $(lk_poll_window "$NAME")s — no verdict (shard $NAME); this is 75, never a red"
     "$LK_BIN" cancel "$JOB" >/dev/null 2>&1 || true
     STATE=unpolled; JRC=75; VERDICT="NONE:no-verdict"; RSECS=""
   fi
