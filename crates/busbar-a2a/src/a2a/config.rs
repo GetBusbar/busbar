@@ -241,7 +241,7 @@ pub struct AgentDefCfg {
     ///
     /// WHAT IT NEVER PERMITS, and this is the half that makes the knob safe to have: a
     /// CLOUD-METADATA endpoint. `169.254.169.254` and its family are refused whether this is set or
-    /// not — see [`busbar_substrate::net_guard::ip_is_cloud_metadata`], whose own doc gives the reason: an
+    /// not — see [`busbar_unit_trust::net::ip_is_cloud_metadata`], whose own doc gives the reason: an
     /// `allow_private` that reached IMDS would be a configuration flag that hands out cloud
     /// credentials.
     ///

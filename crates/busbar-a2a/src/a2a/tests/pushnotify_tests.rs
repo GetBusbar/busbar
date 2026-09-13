@@ -49,7 +49,7 @@ fn every_internal_range_is_refused() {
         ("IETF protocol 192.0.0/24", v4(192, 0, 0, 8)),
         ("benchmarking 198.18/15", v4(198, 19, 0, 1)),
         // AZURE WIRESERVER AND THE DOCUMENTATION BLOCK were missing from this plane's private copy
-        // of the predicate while the shared one in `net_guard` had them. `168.63.129.16` is the
+        // of the predicate while the shared one in the unit's `net` had them. `168.63.129.16` is the
         // whole point: it is a PUBLIC address, so every range check in the copy missed it, and a
         // caller could register it as a push callback and have busbar fetch Azure's platform
         // metadata on its behalf. The copy's own doc claimed to cover "a cloud metadata address".

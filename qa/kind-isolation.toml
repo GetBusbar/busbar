@@ -94,6 +94,17 @@ reason = "legacy drain"
 ceiling = "26"
 drain = "the edge dies with the crate. busbar-mcp is a retiring 1.5.x plugin whose plane half is busbar-plane-mcp; when the client door moves onto the plane's step list it reaches the unit through the step list rather than by naming it, and this row goes with the dependency."
 
+# And the same again for the A2A card fetch. `busbar-a2a`'s guarded hop ran the network-address
+# judgement through busbar-substrate's copy of the guard; there is one copy now and it is the trust
+# unit's, so the plugin names the unit. a2a needs no door of its own: it drives the unit's SYNC
+# `resolve_and_pin` over its own `Resolver` seam, which is how its suite injects answers.
+[[transitional]]
+from = "busbar-a2a"
+to = "busbar-unit-*"
+reason = "legacy drain"
+ceiling = "44"
+drain = "the edge dies with the crate. busbar-a2a is a retiring 1.5.x plugin; when its guarded hop moves onto its plane's step list it reaches the unit through the step list rather than by naming it, and this row goes with the dependency."
+
 # ------------------------------------------------------------------------------------------------
 # [[announced]] — CRATES THAT ARE LANDING
 # ------------------------------------------------------------------------------------------------
@@ -4013,6 +4024,16 @@ why     = "busbar-mcp names busbar-substrate: declared normal in the shipped gra
 drain   = "delete the busbar-substrate dependency from busbar-mcp's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
 
 [[dep]]
+from    = "busbar-a2a"
+to      = "busbar-unit-trust"
+half    = "shipped"
+count   = "1"
+verdict = "not-allowed"
+cite    = "the [[transitional]] row `busbar-a2a -> busbar-unit-*` at the head of this file — the legacy drain. The row is what makes the edge admissible; this row is the census entry that records it, and a census entry grants nothing."
+why     = "busbar-a2a names busbar-unit-trust: declared normal in the shipped graph, 1 declaration(s) at this commit. The card fetch's resolve-then-pin used to run through busbar-substrate's copy of the network-address control — the second copy, kept honest by a parity test. There is one copy now and it is the unit's. The count is TODAY'S MEASUREMENT, exact in both directions."
+drain   = "the edge dies with the crate. busbar-a2a is a retiring 1.5.x plugin; when its guarded hop moves onto its plane's step list it reaches the unit through the step list rather than by naming it, and this row goes with the dependency."
+
+[[dep]]
 from    = "busbar-mcp"
 to      = "busbar-unit-trust"
 half    = "shipped"
@@ -5639,6 +5660,11 @@ count = "257"
 crate = "busbar-mcp"
 kind = "unit"
 count = "26"
+
+[[cell]]
+crate = "busbar-a2a"
+kind = "unit"
+count = "44"
 
 [[edge]]
 from = "api"

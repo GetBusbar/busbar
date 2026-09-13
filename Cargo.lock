@@ -412,6 +412,7 @@ dependencies = [
  "busbar-secret-ref",
  "busbar-store-memory",
  "busbar-substrate",
+ "busbar-unit-trust",
  "bytes",
  "ed25519-dalek",
  "futures",

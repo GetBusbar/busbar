@@ -10,7 +10,7 @@
 //! shape is a body the official TCK rejects by schema.
 //!
 //! That split — **a caller keeps its refusal VOCABULARY, not its DECISION** — is
-//! `busbar_substrate::net_guard`'s rule, stated for a second concern. It is why `mcp/envelope.rs` and this
+//! `busbar_unit_trust::net`'s rule, stated for a second concern. It is why `mcp/envelope.rs` and this
 //! file can say completely different things about the same refusal without either of them deciding
 //! when it happens.
 

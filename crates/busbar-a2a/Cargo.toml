@@ -41,6 +41,13 @@ busbar-core = { path = "../busbar-core", default-features = false, features = ["
 # diagnostics macros, the config-section split, the task-reader / hostless-egress / admin-envelope
 # seams. Carries `plane-a2a` so the plane-gated items are present in this crate's own default build.
 busbar-substrate = { path = "../busbar-substrate", features = ["plane-a2a"] }
+# THE NETWORK-ADDRESS JUDGEMENT, as a unit. This plugin's outbound guard reads
+# `busbar_unit_trust::net` — the one surviving copy of the SSRF control — rather than the frozen
+# substrate's dying second copy. A `[[transitional]]` row in qa/kind-isolation.toml names the edge:
+# it is the 1.5.x drain pointed at the kind that replaces this crate's guard, and it dies with the
+# crate like every other row there.
+busbar-unit-trust = { path = "../busbar-unit-trust" }
+
 # The plugin contracts crate, named ahead of use per owner ruling R-E (see header).
 busbar-api = { path = "../api" }
 # THE WIRE VOCABULARY. The pure half of this plugin, split out so `busbar-plane-a2a` can name the
