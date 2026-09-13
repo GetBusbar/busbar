@@ -1117,7 +1117,7 @@ impl McpResource {
     /// `busbar_substrate::ingress::protocol::origin_admitted`, made once for every JSON-RPC plane, because
     /// DNS-rebinding is not a fact about MCP: A2A had no `Origin` check at all for as long as this
     /// one was a method here. The plane keeps the DATA and core keeps the verdict, which is
-    /// `busbar_substrate::net_guard`'s rule stated for a second concern — a caller keeps its refusal
+    /// `busbar_unit_trust::net`'s rule stated for a second concern — a caller keeps its refusal
     /// VOCABULARY, not its DECISION.
     ///
     /// The empty allowlist admits no browser origin, which is the documented default; loopback is

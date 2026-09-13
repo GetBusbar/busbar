@@ -66,7 +66,7 @@
 //!   argument, so the rule does not transfer and is not applied.
 
 use super::ssrf::SsrfPolicy;
-use busbar_substrate::net_guard::{
+use busbar_unit_trust::net::{
     extract_normalized_host, host_is_private_or_loopback, is_alternate_ipv4_encoding, scheme_is,
     ssrf_blocked_host,
 };
@@ -365,7 +365,7 @@ fn judge_absolute(url: &str, policy: SsrfPolicy) -> Result<(), ArgWhy> {
 ///
 /// Order is load-bearing. Metadata first and unconditionally, so an `allow_private` server cannot
 /// reach the one endpoint whose whole value to an attacker is that it hands out credentials.
-/// Obfuscated encodings next and also unconditionally, matching `busbar_substrate::net_guard::judge_host_name`
+/// Obfuscated encodings next and also unconditionally, matching `busbar_unit_trust::net::judge_host_name`
 /// as `super::ssrf::precheck` does: a value
 /// spelled so the check cannot read it is refused rather than guessed at. Internal addressing last,
 /// because that is the one an operator can legitimately opt into.

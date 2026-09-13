@@ -35,7 +35,7 @@
 //! credential is already on the wire.
 
 use super::ssrf::{SsrfPolicy, SsrfRefusal};
-use busbar_substrate::net_guard::PinnedTarget;
+use busbar_unit_trust::net::PinnedTarget;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 

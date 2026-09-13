@@ -220,9 +220,9 @@ fn default_ports_are_derived_from_the_scheme() {
 
 // ── THE IPv6-EMBEDDED METADATA BYPASS ────────────────────────────────────────────────────────────
 //
-// `net_guard.rs` documents this exact hazard and names this exact literal, then says why it uses
+// `net.rs` documents this exact hazard and names this exact literal, then says why it uses
 // `to_ipv4()` and not `to_ipv4_mapped()`: the former is the SUPERSET that also covers the
-// IPv4-COMPATIBLE form. This module imported three atoms from `net_guard` and kept its own
+// IPv4-COMPATIBLE form. This module imported three atoms from the unit's `net` and kept its own
 // composite, and the composite used the narrower call — so `[::169.254.169.254]` matched no v6
 // mask, unwrapped to nothing, and was connected to. Unconditionally: not gated on `allow_private`,
 // because the cloud-metadata arm is supposed to refuse before `allow_private` is ever consulted.
@@ -273,7 +273,7 @@ fn the_ipv4_mapped_form_of_imds_is_refused() {
 }
 
 /// Azure WireServer and OCI IMDS are ORDINARY-LOOKING addresses in no reserved range, so a guard
-/// built from range predicates misses them entirely. `net_guard::ipv4_is_internal` names both.
+/// built from range predicates misses them entirely. `busbar_unit_trust::net::ipv4_is_internal` names both.
 #[test]
 fn azure_wireserver_and_oci_imds_are_refused() {
     for lit in ["168.63.129.16:80", "192.0.0.192:80"] {

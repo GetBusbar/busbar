@@ -706,6 +706,7 @@ dependencies = [
  "busbar-secret-ref",
  "busbar-store-memory",
  "busbar-substrate",
+ "busbar-unit-trust",
  "bytes",
  "futures",
  "getrandom 0.3.4",

@@ -44,6 +44,11 @@ busbar-core = { path = "../busbar-core", default-features = false, features = ["
 # `plane-mcp` so the plane-gated items (the `HostlessEgress` seam, the relocated leaves) are present
 # in this crate's own default build.
 busbar-substrate = { path = "../busbar-substrate", features = ["plane-mcp"] }
+# THE NETWORK-ADDRESS JUDGEMENT, as a unit. The plugin's SSRF door reads `busbar_unit_trust::net`
+# — the one surviving copy of the control — rather than the substrate's dying second copy. A
+# `[[transitional]]` row in qa/kind-isolation.toml names this edge: it is the 1.5.x drain pointed at
+# the kind that replaces this crate's guard, and it dies with the crate like every other row there.
+busbar-unit-trust = { path = "../busbar-unit-trust" }
 # THE CODEC. The pure half of this plugin, split out so `busbar-plane-mcp` can name the protocol
 # declaration, the JSON-RPC dialect, the two operation cells and the record vocabulary without
 # pulling this crate's axum routes, stdio serve loop and tokio transports into a pure kind's
