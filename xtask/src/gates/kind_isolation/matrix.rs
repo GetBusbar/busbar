@@ -1707,7 +1707,7 @@ pub fn selftest(
         cx,
         gate,
         "a `moved_from` list with an empty entry is refused where the row is read",
-        &[ROW_MATRIX],
+        &[super::ROW_REGISTRY],
         ledger_with(
             cx,
             "moved_from = \"busbar-core, busbar-llm\"",
