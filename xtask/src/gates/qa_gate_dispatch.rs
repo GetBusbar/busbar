@@ -513,20 +513,30 @@ impl Gate for QaGateDispatchGate {
                 // The gate is built FOR THIS CASE — a promotion arm the registry does not carry —
                 // so the case owns it rather than borrowing a temporary that dies at this `;`.
                 let arm = QaGateDispatchGate::judging_as("qa", DEFAULT_BRANCH_REF, Some(&base));
-                report.push(crate::gates::CasePlan::new(move || {
-                    prove_red(
-                        cx,
-                        &arm,
-                        "on qa an unpromoted run-graph change is red against the default branch",
-                        &[ROW_DEFAULT_BRANCH],
-                        ov,
-                        &[
-                            "differs STRUCTURALLY from the one on origin/main",
-                            "jobs.slow.needs",
+                report.push(crate::gates::CasePlan::new(
+                    "on qa an unpromoted run-graph change is red against the default branch",
+                    crate::gates::Expect::Red {
+                        naming: vec![
+                            "differs STRUCTURALLY from the one on origin/main".to_string(),
+                            "jobs.slow.needs".to_string(),
                         ],
-                    )
-                    .take()
-                }));
+                    },
+                    move || {
+                        prove_red(
+                            cx,
+                            &arm,
+                            "on qa an unpromoted run-graph change is red against the default \
+                             branch",
+                            &[ROW_DEFAULT_BRANCH],
+                            ov,
+                            &[
+                                "differs STRUCTURALLY from the one on origin/main",
+                                "jobs.slow.needs",
+                            ],
+                        )
+                        .take()
+                    },
+                ));
             }
             Err(e) => report.note_infra_failure(format!(
                 "the promotion-arm fixture did not parse, so the qa arm is unproven here: {e}"
@@ -540,17 +550,26 @@ impl Gate for QaGateDispatchGate {
             "refs/heads/no-such-ref-for-the-qa-gate-dispatch-selftest",
             None,
         );
-        report.push(crate::gates::CasePlan::new(move || {
-            prove_red(
-                cx,
-                &unreadable_default,
-                "on main an unreadable default branch is a failure, never a pass",
-                &[ROW_DEFAULT_BRANCH],
-                Overlay::new(),
-                &["could not read", "Unknown is not green"],
-            )
-            .take()
-        }));
+        report.push(crate::gates::CasePlan::new(
+            "on main an unreadable default branch is a failure, never a pass",
+            crate::gates::Expect::Red {
+                naming: vec![
+                    "could not read".to_string(),
+                    "Unknown is not green".to_string(),
+                ],
+            },
+            move || {
+                prove_red(
+                    cx,
+                    &unreadable_default,
+                    "on main an unreadable default branch is a failure, never a pass",
+                    &[ROW_DEFAULT_BRANCH],
+                    Overlay::new(),
+                    &["could not read", "Unknown is not green"],
+                )
+                .take()
+            },
+        ));
 
         report
     }

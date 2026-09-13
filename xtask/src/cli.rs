@@ -19,6 +19,7 @@ usage:
   cargo xtask gate --all [--format=tsv]
   cargo xtask gate <name> --parity -- <legacy argv...>
   cargo xtask selftest [<name>] [--jobs N]
+  cargo xtask selftest --list
   cargo xtask denylist [--selftest] [--format=tsv]
   cargo xtask teller-steps [--root-legs] [--root-legs-gating]
   cargo xtask ledger {sync|status|next|record|fixed} | --check
@@ -546,6 +547,47 @@ fn run_selftest(gate: &dyn gates::Gate, cx: &Ctx) -> i32 {
     }
 }
 
+/// THE CLAIM, WITHOUT THE BATTERY: every registered gate's selftest PLAN, printed by reading each
+/// gate's pushed cases rather than taking any of them.
+///
+/// `cargo xtask selftest` proves every registered gate can go RED by actually planting the
+/// violation and running the gate over it — real work, and for the two dearest batteries a lot of
+/// it. That is exactly right for the `selftest` CI leg, which exists to spend that time. It is the
+/// wrong tool for a unit test that only needs to know the CLAIM holds — every registered gate has
+/// at least one case that EXPECTS red — because `Gate::selftest` builds that claim into every
+/// `CasePlan` before it ever runs one: see [`gates::Report::plan`].
+///
+/// So this never calls `run_selftest`, never arms a [`gates::Watchdog`], and never touches
+/// `SELFTEST_BUDGETS` — the budget is a fact about the BATTERY that runs the plan for real, not
+/// about the plan, and it stays read only by [`gates::verify_report`] on that leg.
+fn selftest_list_cmd(cx: &Ctx) -> i32 {
+    let mut missing = Vec::new();
+    for reg in gates::REGISTRY {
+        let gate = (reg.build)();
+        let plan = gate.selftest(cx).plan();
+        for (name, expected) in &plan {
+            println!("{:<28} {:<7} {name}", reg.name, format!("{expected:?}"));
+        }
+        if !gates::plan_has_red(&plan) {
+            missing.push(reg.name);
+        }
+    }
+    if missing.is_empty() {
+        println!(
+            "\ncargo xtask selftest --list: {} registered gate(s), every one's plan names a \
+             red-proof case",
+            gates::REGISTRY.len()
+        );
+        0
+    } else {
+        eprintln!(
+            "\ncargo xtask selftest --list: gate(s) with no red-proof case in their plan: {}",
+            missing.join(", ")
+        );
+        1
+    }
+}
+
 fn selftest_cmd(args: &[String]) -> i32 {
     if let Some(n) = jobs_arg(args) {
         gates::set_selftest_jobs(n);
@@ -554,6 +596,10 @@ fn selftest_cmd(args: &[String]) -> i32 {
         Ok(cx) => cx,
         Err(code) => return code,
     };
+
+    if args.iter().any(|a| a == "--list") {
+        return selftest_list_cmd(&cx);
+    }
 
     let named = args
         .iter()

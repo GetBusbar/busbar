@@ -49,9 +49,28 @@ fn list_and_a_named_gate_run_and_all_reaches_a_verdict_over_the_real_tree() {
     );
 }
 
+/// THE CLAIM STAYS "every registered gate has a red proof and the selftest runs it" — proved
+/// WITHOUT taking the whole battery.
+///
+/// `run(&["selftest"])` used to sit here, driving every registered gate's real selftest as a
+/// subprocess of `cargo test -p xtask`. Measured at 4 686s on a Latchkey large runner, and on a
+/// laptop its own wall-clock budget read red at random (47 889s one run, 60 094s the next, against
+/// 52 954 allowed) — which killed every proof whose tests leg names `xtask` (`cargo test --locked
+/// $args || exit 1` runs before the gates and oracle legs) before anything past it ever ran, while
+/// the job already runs `cargo xtask selftest` for real as its own later leg.
+///
+/// `--list` reads exactly the same claim off every registered gate's plan — the `CasePlan`s
+/// `Gate::selftest` pushes — without taking a single one of them: see `gates::Report::plan` and
+/// `gates::plan_has_red`. The wall-clock budget stays where it belongs, read by the battery that
+/// actually runs (`SELFTEST_BUDGETS`, checked in `gates::verify_report`), not by this test.
 #[test]
 fn selftest_runs_every_registered_gates_red_proof() {
-    assert_eq!(run(&["selftest"]), 0);
+    assert_eq!(run(&["selftest", "--list"]), 0);
+
+    // ONE CHEAP SMOKE: `segregation` is small by construction (it never appears on
+    // `SELFTEST_BUDGETS`, whose entries are exactly the dear batteries), so driving its real
+    // selftest end to end here still catches a break in the RUNNER itself, not merely in the
+    // `--list` dispatch, at a cost this test can afford.
     assert_eq!(run(&["selftest", "segregation"]), 0);
     assert_eq!(run(&["gate", "segregation", "--selftest"]), 0);
 }

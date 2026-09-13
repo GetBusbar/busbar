@@ -48,7 +48,10 @@ fn table_case<'a>(
     let name = name.to_string();
     let covers: Vec<String> = covers.iter().map(|s| (*s).to_string()).collect();
     let naming: Vec<String> = naming.iter().map(|s| (*s).to_string()).collect();
-    crate::gates::CasePlan::new(move || {
+    let expected = crate::gates::Expect::Red {
+        naming: naming.clone(),
+    };
+    crate::gates::CasePlan::new(name.clone(), expected, move || {
         let planted = StructureLintGate::with_tables(tables);
         let covers: Vec<&str> = covers.iter().map(String::as_str).collect();
         let naming: Vec<&str> = naming.iter().map(String::as_str).collect();

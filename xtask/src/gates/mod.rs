@@ -856,14 +856,28 @@ pub struct CasePlan<'a> {
     /// a case that was taken eagerly — the run itself. Measured by [`Report::push`] between two
     /// pushes, which is where that work happens.
     prepaid: Duration,
+    /// THE PREVIEW: this plan's name and its EXPECTED verdict, known at push time because every
+    /// `prove_*` constructor is handed both before it ever builds the closure that takes them.
+    /// [`Report::plan`] reads only this pair, from every plan in the list, without calling a
+    /// single one of them — which is what lets a battery be LISTED without being RUN.
+    name: String,
+    expected: Expect,
 }
 
 impl<'a> CasePlan<'a> {
-    /// A plan from the work itself.
-    pub fn new(take: impl FnOnce() -> Case + Send + 'a) -> CasePlan<'a> {
+    /// A plan from the work itself, and the name and expected verdict that work will prove — known
+    /// up front because the `prove_*` family always has both before it moves anything into the
+    /// closure.
+    pub fn new(
+        name: impl Into<String>,
+        expected: Expect,
+        take: impl FnOnce() -> Case + Send + 'a,
+    ) -> CasePlan<'a> {
         CasePlan {
             take: Box::new(take),
             prepaid: Duration::ZERO,
+            name: name.into(),
+            expected,
         }
     }
 
@@ -876,18 +890,37 @@ impl<'a> CasePlan<'a> {
 
     /// Edit the case this plan will produce, WITHOUT taking it now. The shape a gate needs when it
     /// wants `prove_red`'s proof and one field of the resulting case changed.
+    ///
+    /// THE PREVIEW IS NOT RE-DERIVED HERE: `f` runs only when the plan is taken, so a `map` that
+    /// changes `name` or `expected` is invisible to [`Report::plan`] until then. Nothing in this
+    /// registry uses `map` for either field today — it exists to touch `covers` and `got` — and a
+    /// case that starts doing so should stop going through `map` for it.
     pub fn map(self, f: impl FnOnce(Case) -> Case + Send + 'a) -> CasePlan<'a> {
         let take = self.take;
         CasePlan {
             take: Box::new(move || f(take())),
             prepaid: self.prepaid,
+            name: self.name,
+            expected: self.expected,
         }
+    }
+
+    /// This plan's name and expected verdict, read without taking it.
+    fn preview(&self) -> (String, Expect) {
+        (self.name.clone(), self.expected.clone())
     }
 }
 
 impl<'a> From<Case> for CasePlan<'a> {
     fn from(case: Case) -> CasePlan<'a> {
-        CasePlan::new(move || case)
+        let name = case.name.clone();
+        let expected = case.expected.clone();
+        CasePlan {
+            take: Box::new(move || case),
+            prepaid: Duration::ZERO,
+            name,
+            expected,
+        }
     }
 }
 
@@ -1163,6 +1196,35 @@ impl<'a> Report<'a> {
 
     pub fn cases(&self) -> &[Case] {
         &self.resolve().cases
+    }
+
+    /// EVERY PUSHED CASE'S NAME AND EXPECTED VERDICT, IN PUSH ORDER, WITHOUT TAKING ANY OF THEM.
+    ///
+    /// [`cases`](Report::cases) answers "what did the battery find" and pays for finding it — it
+    /// resolves every plan, which for a gate like `kind-isolation` means driving the whole gate
+    /// over a 660k-line tree once per case. This answers a narrower question — "what does this
+    /// gate CLAIM it will prove" — and it is answerable for free: every `prove_*` constructor is
+    /// handed a case's name and its `Expect::Red { .. }` (or `Green`) before it ever builds the
+    /// closure that would go earn that answer for real, and [`CasePlan::preview`] is exactly that
+    /// pair read back off the plan.
+    ///
+    /// A report already resolved reads no differently — the same two fields live on the taken
+    /// [`Case`], so a plan asked for after the battery ran is the same list it would have been
+    /// before.
+    pub fn plan(&self) -> Vec<(String, Expect)> {
+        if let Some(taken) = self.taken.get() {
+            return taken
+                .cases
+                .iter()
+                .map(|c| (c.name.clone(), c.expected.clone()))
+                .collect();
+        }
+        self.plans
+            .lock()
+            .expect("the plan list is never held across a panic")
+            .iter()
+            .map(CasePlan::preview)
+            .collect()
     }
 
     pub fn skipped(&self) -> usize {
@@ -1513,6 +1575,19 @@ pub fn execute_with_skips(gate: &dyn Gate, cx: &Ctx, skip_allow: &[&str]) -> Ver
 /// The single exception is DECLARED, NAMED and stale-checked: [`Gate::informational`] rows are
 /// PASS by construction, so they are held to being exercised rather than to going red, and a
 /// declaration that no longer names an owed row is itself refused.
+/// THE CHEAP HALF OF "A GATE WITHOUT A RED PROOF IS NOT A GATE" — [`verify_report`]'s own refusal,
+/// read off a [`Report::plan`] instead of [`Report::cases`], so the question "does this gate's
+/// selftest even CLAIM a red case" is answerable without taking a single one of them.
+///
+/// This is not a substitute for `verify_report`'s check: that one reads the EXECUTED cases, so a
+/// case that claims RED and comes back GREEN is still caught only there, on the leg that actually
+/// runs the battery. This is what a caller with no time to spend running gates — `cargo xtask
+/// selftest --list`, and the CLI test that consumes it — asks instead.
+pub fn plan_has_red(plan: &[(String, Expect)]) -> bool {
+    plan.iter()
+        .any(|(_, expected)| matches!(expected, Expect::Red { .. }))
+}
+
 pub fn verify_report(gate: &dyn Gate, report: &Report<'_>) -> Result<(), Vec<String>> {
     let mut errs = report.failures();
 
@@ -1665,14 +1740,17 @@ pub fn prove_red<'a>(
     let covers: Vec<String> = covers.iter().map(|s| (*s).to_string()).collect();
     let naming: Vec<String> = naming.iter().map(|s| (*s).to_string()).collect();
     let cx = cx.clone();
-    CasePlan::new(move || {
+    let expected = Expect::Red {
+        naming: naming.clone(),
+    };
+    CasePlan::new(name.clone(), expected.clone(), move || {
         let planted = cx.with_overlay(plant.build());
         let verdict = execute(gate, &planted);
         let got = narrowed_got(&verdict, &refs(&covers));
         Case {
             name,
             covers,
-            expected: Expect::Red { naming },
+            expected,
             got,
         }
     })
@@ -1724,7 +1802,7 @@ pub fn prove_rows_green<'a>(
     let name = name.into();
     let covers: Vec<String> = covers.iter().map(|s| (*s).to_string()).collect();
     let cx = cx.clone();
-    CasePlan::new(move || {
+    CasePlan::new(name.clone(), Expect::Green, move || {
         let planted = cx.with_overlay(plant.build());
         let verdict = execute(gate, &planted);
         let offenders: Vec<String> = verdict
@@ -1776,7 +1854,7 @@ pub fn prove_rows_red_at<'a>(
     let covers: Vec<String> = covers.iter().map(|s| (*s).to_string()).collect();
     let fixture_abs = cx.abs(fixture_rel);
     let scratch = cx.scratch().to_path_buf();
-    CasePlan::new(move || {
+    CasePlan::new(name.clone(), expected.clone(), move || {
         let Ok(fixture_cx) = Ctx::at(fixture_abs, scratch) else {
             return Case {
                 name,
@@ -1807,7 +1885,7 @@ pub fn prove_green<'a>(
     let name = name.into();
     let covers: Vec<String> = covers.iter().map(|s| (*s).to_string()).collect();
     let cx = cx.clone();
-    CasePlan::new(move || {
+    CasePlan::new(name.clone(), Expect::Green, move || {
         let verdict = execute(gate, &cx);
         Case {
             name,
@@ -2230,10 +2308,11 @@ mod parallel_tests {
     fn the_case_list_is_push_order_not_finish_order() {
         let mut report = Report::new().with_jobs(4);
         for (i, delay) in [40u64, 20, 10, 0].into_iter().enumerate() {
-            report.push(CasePlan::new(move || {
+            let name = format!("case {i}");
+            report.push(CasePlan::new(name.clone(), Expect::Green, move || {
                 std::thread::sleep(Duration::from_millis(delay));
                 Case {
-                    name: format!("case {i}"),
+                    name,
                     covers: vec!["r".to_string()],
                     expected: Expect::Green,
                     got: Expect::Green,
@@ -2297,16 +2376,73 @@ mod parallel_tests {
     #[test]
     fn an_unresolved_report_is_never_read_as_an_empty_one() {
         let mut report = Report::new();
-        report.push(CasePlan::new(|| Case {
-            name: "a case nobody asked to take".to_string(),
-            covers: vec!["r".to_string()],
-            expected: Expect::Green,
-            got: Expect::Red {
-                naming: vec!["r went red".to_string()],
+        report.push(CasePlan::new(
+            "a case nobody asked to take",
+            Expect::Green,
+            || Case {
+                name: "a case nobody asked to take".to_string(),
+                covers: vec!["r".to_string()],
+                expected: Expect::Green,
+                got: Expect::Red {
+                    naming: vec!["r went red".to_string()],
+                },
             },
-        }));
+        ));
         assert_eq!(report.cases().len(), 1);
         assert!(!report.ok(), "the case failed, and the report says so");
+    }
+
+    /// `Report::plan` reads the PREVIEW, never the closure — a plan that would panic if taken must
+    /// still be listed cleanly, which is the property that lets `cargo xtask selftest --list` (and
+    /// the CLI test built on it) answer "does this gate's selftest claim a red case" without
+    /// spending the battery's own cost to find out.
+    #[test]
+    fn plan_reads_the_preview_without_taking_any_case() {
+        let mut report = Report::new();
+        report.push(CasePlan::new(
+            "would explode if taken",
+            Expect::Red {
+                naming: vec!["x".to_string()],
+            },
+            || panic!("Report::plan must never take a case"),
+        ));
+        let plan = report.plan();
+        assert_eq!(
+            plan,
+            vec![(
+                "would explode if taken".to_string(),
+                Expect::Red {
+                    naming: vec!["x".to_string()]
+                }
+            )]
+        );
+        assert!(plan_has_red(&plan));
+    }
+
+    /// RED-FIRST: a plan with no `Expect::Red` case must fail the check `--list` and the CLI test
+    /// both run — planted here rather than against the real registry, because every registered
+    /// gate DOES carry one and the point is to prove the checker would catch it if one did not.
+    #[test]
+    fn a_plan_with_no_red_case_fails_the_red_proof_check() {
+        let all_green = vec![("only case".to_string(), Expect::Green)];
+        assert!(
+            !plan_has_red(&all_green),
+            "a plan naming no RED case must not pass the red-proof check"
+        );
+
+        let mixed = vec![
+            ("green case".to_string(), Expect::Green),
+            (
+                "red case".to_string(),
+                Expect::Red {
+                    naming: vec!["offender".to_string()],
+                },
+            ),
+        ];
+        assert!(
+            plan_has_red(&mixed),
+            "a plan naming a RED case must pass the red-proof check"
+        );
     }
 }
 
