@@ -58,11 +58,13 @@ const SURFACE: WireSurface = WireSurface {
             name: ENVELOPE,
             transport: "http",
             mounts: &["/rpc", "/rpc/"],
+            ..BindingDecl::RELEASED
         },
         BindingDecl {
             name: ROUTED,
             transport: "http",
             mounts: &[],
+            ..BindingDecl::RELEASED
         },
     ],
     operations: &[
@@ -203,6 +205,7 @@ fn a_binding_whose_rows_are_all_open_reads_as_open() {
             name: ENVELOPE,
             transport: "http",
             mounts: &["/open"],
+            ..BindingDecl::RELEASED
         }],
         operations: &[Operation {
             op: "ping",

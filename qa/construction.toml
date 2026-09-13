@@ -126,9 +126,9 @@ busbar-voice = ["busbar-voice-codec"]
 # a green baseline value for a scratch copy; the checked-in numbers below never move except by the
 # owner's own hand.
 [gate.surface_ceilings]
-contract_caps = 3485
+contract_caps = 3479
 grammar = 388
-contract_transport = 845
+contract_transport = 860
 
 # ── 1. one-attempt-seam ──────────────────────────────────────────────────────────────────────────
 [rules.one-attempt-seam]
@@ -376,12 +376,12 @@ kernel_crate = "busbar-kernel"
 kernel_ceiling = 5661
 caps_crate = "busbar-caps"
 contract_crate = "busbar-contract"
-caps_contract_ceiling = 3487
+caps_contract_ceiling = 3481
 unit_crate_glob = "busbar-unit-*"
 unit_total_ceiling = 14606
 verbs_crate = "busbar-unit-verbs"
 verbs_ceiling = 1428
-union_ceiling = 23754
+union_ceiling = 23748
 # Files (by basename, wherever they sit under busbar-kernel/src) whose bodies seed the call-graph
 # name-match: every identifier called from one of these files, that busbar-kernel does not itself
 # define, is looked up by name against every busbar-unit-* file.
@@ -1339,34 +1339,61 @@ busbar-unit-* file entered or left the call-graph name-match."""
 
 [gate.ceiling_raises."rules.loc-ceilings.union_ceiling"]
 from = 23465
-to = 23754
+to = 23748
 because = """23,465 -> 23,679 is the stage profiler's rise, declared at a25de0386 beneath this \
-branch. 23,679 -> 23,754 is this landing: the kernel's own 68 lines carried into the union \
-arithmetic unchanged, plus the 7 that `SessionPosture` adds to `busbar-contract`. The \
-`busbar-unit-*` union did not move a line on this landing."""
+branch. 23,679 -> 23,748 is this landing: the kernel's own 68 lines carried into the union \
+arithmetic unchanged, plus the ONE line `busbar-contract` moves by — the posture's name joining the \
+transport-facing re-export list, because the DECLARATION itself lives on the binding in \
+`busbar-contract-transport` and not here. The `busbar-unit-*` union did not move a line on this \
+landing."""
 
 [gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"]
 from = 3480
-to = 3487
-because = """THE DECLARED HOLD POSTURE, and it is 7 lines of DATA. `SessionPosture` is a two-variant \
-enum on a binding's declaration — `Release`, the default and what every binding has always had, and \
-`Hold`, which says the admitted unit keeps the node's request slot and in-flight lease for the life \
-of the session it opened. It is declared here rather than implemented anywhere because a plane must \
-not be able to vary it: the kernel reads the declaration at the door and serves both postures through \
-the one seam, and two bindings of two different planes that declared the same posture are opened, \
-held and settled by identical bytes. Section 1.1 declares the face in this commit. The section 1.1 \
-design figure for the contract pair does not move."""
+to = 3481
+because = """ONE LINE, and it is a re-export. The hold posture is declared ON THE BINDING — \
+`BindingDecl.session`, in `busbar-contract-transport`, beside the `transport` the same declarer \
+writes on the same binding — so the type itself is not in this pair at all. What this pair gains is \
+the name: `busbar_contract::SessionPosture` is re-exported at the root beside the rest of the \
+transport-facing vocabulary, because the kernel reads the posture at the door and a plugin author \
+declares it, and one name for both readers is the whole point. The section 1.1 design figure for the \
+contract pair does not move."""
 
 [gate.ceiling_raises."gate.surface_ceilings.contract_caps"]
 from = 3478
-to = 3485
-because = """THE SAME 7 LINES, counted the other way: `surface-ceiling:contract+caps` counts \
-plugin-visible SURFACE rather than file lines, and `SessionPosture` is surface — a plugin author \
-declaring a binding reads it. It is the section 1.1 FACE this commit declares: the hold posture of \
-one binding, as DATA, with `Release` (the default, and what every binding has always had) and `Hold` \
-(the admitted unit keeps the node's request slot and in-flight lease for the life of the session it \
-opened, and settles at that session's end). Seven lines is the whole of the author-facing cost, and \
-it buys the thing a plane must NOT be allowed to implement for itself: the kernel reads the \
-declaration at the door and serves both postures through the one seam, so two bindings of two \
-different planes that declared the same posture are admitted, held and settled by identical bytes. \
-The section 1.1 design figure for the contract pair (3.5k) does not move and is not close."""
+to = 3479
+because = """THE SAME ONE LINE, counted the other way: `surface-ceiling:contract+caps` counts \
+plugin-visible SURFACE rather than file lines, and a re-exported name is surface. The declaration it \
+names is `BindingDecl.session`, which is counted against the transport-facing contract below."""
+
+[gate.ceiling_raises."gate.surface_ceilings.contract_transport"]
+from = 845
+to = 860
+because = """THE DECLARED HOLD POSTURE, and it is 15 lines of DATA on the binding declaration. \
+`BindingDecl` already says which transport carries it; it now says the other thing a mount cannot \
+work out for itself — what a unit admitted on it KEEPS, and until when. `SessionPosture` is the \
+two-value vocabulary for that (`Release`, the default and what DECLARING NOTHING means, and `Hold`, \
+which says the admitted unit keeps the node's request slot and in-flight lease for the life of the \
+session it opened and settles at that session's end), `BindingDecl.session` is the field, and \
+`BindingDecl::RELEASED` is the hole a `const` declaration with no opinion fills itself with, so no \
+binding written before the field existed changes what it means. It is DECLARED here rather than \
+implemented anywhere because a plane must not be able to vary it: the kernel reads the declaration \
+at the door and serves both postures through the one seam, and two bindings of two different planes \
+that declared the same posture are admitted, held and settled by identical bytes. Section 1.1 \
+declares the face in this commit. The section 1.1 design figure for the transport-facing contract \
+does not move."""
+
+# The matrix moved with the same landing, and it moved because the FACE put the posture where the
+# face says it goes: ON THE BINDING, beside the transport the same declarer writes on the same
+# binding. A declaration that sits beside `transport` names `transport`, and the cell that counts how
+# much the transport-facing contract names the transport kind reads six more hits for it. No other
+# cell in the matrix moved in either direction.
+[gate.ceiling_raises."cell.61.count"]
+file = "qa/kind-isolation.toml"
+from = 183
+to = 189
+because = """`BindingDecl.session` and the `SessionPosture` it is typed by — the hold posture, \
+declared beside the binding's `transport` because it is the same kind of fact and has the same \
+declarer — plus the two cells that read the declaration back off a surface whose duplex binding says \
+`ws` and whose document binding says `http`. Six hits, all of them the word the face is ABOUT: the \
+posture is declared next to the transport, so it names it. Section 1.1 declares the face in this \
+commit."""

@@ -38,6 +38,7 @@ const SURFACE: WireSurface = WireSurface {
         name: SVC,
         transport: "grpc",
         mounts: &[],
+        ..BindingDecl::RELEASED
     }],
     operations: &[
         Operation {
@@ -127,6 +128,7 @@ fn a_surface_with_no_framed_row_declares_no_call() {
             name: "tgt",
             transport: "http",
             mounts: &[],
+            ..BindingDecl::RELEASED
         }],
         operations: &[Operation {
             op: "only",

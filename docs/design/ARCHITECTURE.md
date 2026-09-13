@@ -82,8 +82,9 @@ them). Each axis is blind to the other two; only the kernel composes them.
   answered BEFORE it and the wire work then runs per leg on that one answer. It is SESSION-NEUTRAL:
   the kernel names no plane, dialect, transport or modality, and any arrival long-lived enough to
   want an opening opens through it. **And WHAT A UNIT KEEPS, and until when, is DECLARED DATA on the
-  binding rather than behaviour a plane implements**: `busbar_contract::SessionPosture` is `Release`
-  (the default and what every binding has always had — the unit settles at its own exit) or `Hold`
+  binding rather than behaviour a plane implements**: `BindingDecl.session` sits beside the
+  `transport` the same declarer writes on the same binding, and `busbar_contract::SessionPosture` is
+  `Release` (the default, and what DECLARING NOTHING means — the unit settles at its own exit) or `Hold`
   (the admitted unit keeps the node's request slot and its in-flight lease for the life of the session
   it opened, and settles once, at that session's end). The kernel READS the posture at the door and
   answers it as `Held::settles_at`, and it serves both postures through the one seam. A duplex binding

@@ -49,7 +49,8 @@ pub use busbar_contract_transport::registry::{
 pub use busbar_contract_transport::surface;
 pub use busbar_contract_transport::surface::{
     binding_at, check_surface, match_target, resolve_document, resolve_service, resolve_target,
-    Answering, Bar, BindingDecl, Capture, Dispatch, Operation, SurfaceError, WireSurface,
+    Answering, Bar, BindingDecl, Capture, Dispatch, Operation, SessionPosture, SurfaceError,
+    WireSurface,
 };
 
 /// The seam a transport hands an arrival across, and the closed vocabulary it gets back.
