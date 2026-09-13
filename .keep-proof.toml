@@ -1,24 +1,10 @@
-# WHAT THIS HAND-BACK ASKS keep-proof TO PROVE.
+# What this hand-back asks keep-proof / prove-latchkey to prove.
 #
-# .keep-proof.toml is read by .github/workflows/keep-proof.yml at the root of a `keep-*` branch. It
-# scopes the two expensive legs of the run to what the branch actually touched, so a verdict says
-# something specific instead of "everything, slowly". The INTEGRATION tree carries no such file —
-# it is a keep-branch artefact, and this branch is a keep branch.
-#
-#   families — a regex handed to the shadow oracle's `--id-filter`. The oracle replays this build
-#              against the published 1.5.5 binary and reports divergences; unfiltered that is the
-#              better part of half an hour. This branch is the pre-existing-reds branch: it works
-#              on the tree's frozen PARSE SURFACE (a limit's three refusal sentences) and on the
-#              gates that read the tree as data, so the honest scope is the boot / config /
-#              documented families — the cells that read what the binary PRINTS when it refuses a
-#              document, which is exactly what the first item here moved back to 1.5.5's words.
-#              boot.refusal|BOOT-P20|validate, BOOT-P29 and BOOT-P30 are the three cells that must
-#              turn byte-identical; the rest of the boot/config families are the blast radius of
-#              touching a deserializer every section's parse runs through.
-#   tests    — the packages whose test binaries the sharded legs must include by name.
-#              `busbar-substrate` holds the limit grammar itself; `busbar-core` re-exports it at
-#              the historical config path and owns the pre-pass that sets the frozen-list rule;
-#              `busbar` is the binary whose --validate the boot cells drive; `xtask` is the gate
-#              runner whose own selftests are on this branch's list.
-families = '^(boot|config|documented)([|.]|$)'
-tests = ["busbar-core", "busbar-substrate", "xtask", "busbar"]
+# families — the two families the OR-PIN-1 measurement is about: the three standing-red rows this
+#            hand-back is measuring (neutrality|routes|admin-openapi-paths, admin.ops|GetOpenapiJson,
+#            admin.ops|DeleteOverlaySection) all live inside `neutrality` and `admin.ops`. No product
+#            code changed on this branch — only testing/shadow-oracle/oracle.pin (the tool pin) — so
+#            no other family is in scope.
+# tests    — empty: this branch is a data-only oracle-pin move, no Rust changed.
+families = '^(neutrality|admin\.ops)([|.]|$)'
+tests = []
