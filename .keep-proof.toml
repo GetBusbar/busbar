@@ -7,18 +7,32 @@
 #
 #   families — a regex handed to the shadow oracle's `--id-filter`. The oracle replays this build
 #              against the published 1.5.5 binary and reports divergences; unfiltered that is the
-#              better part of half an hour. This branch is the pre-existing-reds branch: it works
-#              on the tree's frozen PARSE SURFACE (a limit's three refusal sentences) and on the
-#              gates that read the tree as data, so the honest scope is the boot / config /
-#              documented families — the cells that read what the binary PRINTS when it refuses a
-#              document, which is exactly what the first item here moved back to 1.5.5's words.
-#              boot.refusal|BOOT-P20|validate, BOOT-P29 and BOOT-P30 are the three cells that must
-#              turn byte-identical; the rest of the boot/config families are the blast radius of
-#              touching a deserializer every section's parse runs through.
+#              better part of half an hour.
+#
+#              THIS BRANCH DELETES A WINDOW COMPUTATION AGAINST THE UNIT THAT OWNS IT. A window
+#              start is the SECOND HALF OF EVERY BUCKET ID the ledger writes: a bucket is
+#              (scope, window-epoch, metric), and the epoch is what `budget_window` returns. So the
+#              honest blast radius is not "governance" — it is the MONEY PATH, end to end, and it
+#              is named that way rather than narrowed to the module that changed:
+#                billing  — the fee and the price on the request that was admitted;
+#                ledger   — the rows the bucket ids key, which are the thing that would silently
+#                           move if the epoch moved: a request CHECKED against one bucket and
+#                           CHARGED to another is exactly the failure two copies of this
+#                           arithmetic can produce, and nothing smaller than the ledger cells
+#                           would see it;
+#                teller   — the settle/ordering leg that reads those rows back;
+#                admin.ops— the operator-facing reads over the same buckets (the usage views);
+#                boot     — the config parse that produces the `per: minute|hour|day|month|total`
+#                           words in the first place, since the five sentinels are re-exported
+#                           from the unit now and a word the parser accepts must be a word
+#                           `budget_window` has an arm for;
+#                neutrality— the kind-neutrality cells, because the change is a legacy->unit edge.
+#              ZERO DIVERGING IN billing|ledger IS THE BAR. Anything else on this branch is a STOP.
 #   tests    — the packages whose test binaries the sharded legs must include by name.
-#              `busbar-substrate` holds the limit grammar itself; `busbar-core` re-exports it at
-#              the historical config path and owns the pre-pass that sets the frozen-list rule;
-#              `busbar` is the binary whose --validate the boot cells drive; `xtask` is the gate
-#              runner whose own selftests are on this branch's list.
-families = '^(boot|config|documented)([|.]|$)'
-tests = ["busbar-core", "busbar-substrate", "xtask", "busbar"]
+#              `busbar-core` is the crate the copy was deleted from and carries the engine-side
+#              window cells that had to keep answering what they answered; `busbar-unit-admission`
+#              is the owner the arithmetic was deleted against and carries the ported suite;
+#              `busbar-kernel` and `busbar-unit-ledger` read the bucket ids the window keys;
+#              `busbar` is the binary the whole thing is composed in.
+families = '^(billing|ledger|teller|admin\.ops|boot|neutrality)([|.]|$)'
+tests = ["busbar-core", "busbar-kernel", "busbar-caps", "busbar-unit-ledger", "busbar"]
