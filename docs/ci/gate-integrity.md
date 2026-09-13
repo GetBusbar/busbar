@@ -84,9 +84,85 @@ and the mutant SURVIVES.
 that only moves a ceiling still has to prove the rule reading it is held, because moving a number is
 exactly how a rule stops biting.
 
-**Sharding.** One full four-gate self-proof is roughly half an hour, so the mutants are fanned across
-24 shards of the `busbar-xl` fleet (`--shard k/n`, round-robin). Wall clock is one baseline plus
-however many mutants land on the busiest shard; a landing-sized diff puts about one on each.
+**Sharding.** One full four-gate self-proof is roughly half an hour, so the mutants are fanned
+across 24 shards, on Latchkey (`--shard k/n`, round-robin) — the EC2 `busbar-xl` fleet this used to
+shard across is decommissioned (LK-5). Wall clock is one baseline plus however many mutants land on
+the busiest shard; a landing-sized diff puts about one on each.
+
+### The wall clock, measured
+
+Everything about this job's cost is one number repeated: **the test command**, which a shard pays
+once for its baseline and once for every mutant it holds. Measured on this tree
+(`XTASK_GATE_CEILING_SECS=3600`, one gate at a time, nothing else running):
+
+| leg of the test command | cases | measured |
+| --- | --- | --- |
+| `cargo xtask gate kind-isolation --selftest` | 107 | **975s** (16m15) |
+| `cargo xtask gate kind-isolation-ship --selftest` | 86 | **975s** (16m15) |
+| `cargo xtask gate construction --selftest` | 35 | **367s** (6m07) |
+| `cargo xtask gate design-bindings --selftest` | 10 | **13s** |
+| `cargo test -p xtask --lib` | 176 | **53s** |
+| all four gates + the lib suite | | **2383s (39m43)** |
+
+So a shard running the unnarrowed command over a diff that lands one mutant on it costs
+`build + 39m43 + build + 39m43` — **over eighty minutes for one mutant**, and the job's original
+55-minute shard timeout could not have held it. That is not a fan-out problem; twenty-four shards
+do not make a single shard's baseline cheaper.
+
+**The lever that works is not running proofs the stub could not fail.** `kind-isolation --selftest`
+executes no line of `gates/construction/`, so against a construction mutant it is 16 minutes spent
+establishing that the mutant is not somewhere it could not be. `scripts/gate-mutants.sh --gates`
+computes the list from the diff and `XTASK_GATE_MUTATION_GATES` carries it into the harness; the
+baseline job reads the same flag, because a baseline proving a wider command than the shards run is
+a baseline about a different command.
+
+| the diff touches | test command | one shard, one mutant |
+| --- | --- | --- |
+| `gates/design_bindings/**` only | 13s + 53s = **66s** | ~2m + builds |
+| `gates/construction/**` only | 6m07 + 53s = **7m00** | **~14m** + builds |
+| `gates/kind_isolation/**` only | 16m15 + 16m15 + 53s = **33m23** | **~67m** + builds |
+| anything shared (`mod.rs`, `manifest.rs`, `scan.rs`, `ctx.rs`, an unmapped path) | **39m43** | ~80m + builds |
+
+**Two of those four fit the 40-minute target and two do not, and pretending otherwise would be the
+same kind of comfortable number this whole document exists to refuse.** A construction- or
+design-bindings-scoped push now finishes well inside it. A kind-isolation-scoped push does not: its
+two self-proofs are 32 minutes between them and the shard pays that twice. The shard timeout is
+raised to 120 minutes so that case reports a verdict instead of a timeout — a timeout is red, but it
+is red about the clock rather than about the tree, which is the least useful red there is.
+
+**Levers considered and not taken.**
+
+*A baseline cache keyed on the tree hash, shared inside the run.* The 24 shards start together, so
+there is no first finisher for the others to wait on; a cache written by shard 3 at minute 40 is
+read by nobody. Making them wait serialises the fan-out, which costs more than it saves.
+
+*Hoisting the baseline out of the shards again.* Refused, and see the section above for what it cost
+the last time — the baseline is the only observation of the environment a mutant is actually tested
+in.
+
+*More shards.* Wall clock is `baseline + (mutants on the busiest shard) x (test command)`. At a
+landing-sized diff the busiest shard already holds one mutant, so the second term is already minimal
+and every extra shard adds another whole baseline to the fleet's bill for nothing.
+
+*A bare `cargo test -p xtask` as the command.* `xtask/tests/cli.rs` carries two cases —
+`selftest_runs_every_registered_gates_red_proof` and
+`the_registry_and_the_workflow_still_name_the_same_gates` — that re-run **every** registered gate's
+self-proof, 45 minutes of it. Naming `--lib` and `--test gate_mutation_proof` explicitly is what
+keeps that out of every baseline and every mutant. Adding a test target here adds its cost to every
+mutant in the campaign.
+
+
+That fan-out is why the trigger stops at `integration/**`, `dev`, `qa`, `main` and pull requests, and
+no longer includes `keep-*`. The workflow's `concurrency:` cancels a branch's *own* superseded run,
+which is no help when the load is ~15 distinct hand-back branches each claiming a shard at once: the
+integration tip's proof queued behind slot work it had nothing to do with (`docs/ci/self-hosted-
+runners.md`, the old EC2-fleet-sizing doc, predicted exactly this before it was retired with the
+fleet itself — LK-5).
+So for a slot branch the 24-shard proof runs in two places instead: **locally**, as
+`scripts/gate-mutants.sh --shard 1/1` (one shard, every mutant, same script and same test command),
+by any slot whose diff enters the mutation scope, stated in the hand-back; and **at landing**, on
+the integration branch, where the required check is actually read from. `ship-ready:gate-mutants`
+already falls back to the merge-base's verdict when a commit carries no run of its own.
 
 **Two things the job refuses to treat as green.**
 

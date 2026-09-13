@@ -10,6 +10,13 @@ being wrong:
 | 2 | The landing engine's **sweep pre-proofs** | Latchkey, `BUSBAR_PROVE_BACKEND=latchkey` | this section |
 | 3 | The **landing** itself (`land-remote.sh`) | Latchkey | not started; go/stop below |
 
+**Update (LK-5):** `docs/ci/self-hosted-runners.md` and the `scripts/ci-runners-*.sh` /
+`scripts/ci-remote-lib.sh` / `scripts/land-remote.sh` / `scripts/prove-remote.sh` fleet scripts
+the earlier draft of this section pointed at are deleted — the EC2 fleet they ran is
+decommissioned. Phase 3's row above still names `land-remote.sh` as the mechanism because that
+phase has not started; when it does, it lands on whatever landing-side script Latchkey phase 3
+actually uses, not that deleted file.
+
 > Phase 1's section is written on `keep-ci-latchkey` and arrives at this file by landing, not by
 > being restated here. If the queue pops that line after this one the two sections merge; they do
 > not overlap.
