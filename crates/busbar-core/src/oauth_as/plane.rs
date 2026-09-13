@@ -225,11 +225,12 @@ pub(crate) fn spawn_sweeper(server: Arc<AsServer>, every: std::time::Duration) {
             // Reset on any successful sweep so a future outage re-warns.
             static SWEEP_FAILED_WARNED: std::sync::atomic::AtomicBool =
                 std::sync::atomic::AtomicBool::new(false);
-            match server
-                .store()
-                .sweep_expired(std::time::SystemTime::now())
-                .await
-            {
+            // The one production wall clock, in the SystemTime shape this external trait's
+            // signature takes rather than the u64 seconds every other reading on this path
+            // returns — not a second implementation of "what time is it".
+            let now = std::time::UNIX_EPOCH
+                + std::time::Duration::from_secs(busbar_substrate::store::now());
+            match server.store().sweep_expired(now).await {
                 Ok(0) => {
                     SWEEP_FAILED_WARNED.store(false, std::sync::atomic::Ordering::Relaxed);
                 }

@@ -465,25 +465,13 @@ where
             if core.carrier().is_closed() {
                 return;
             }
-            core.sweep_expired(now_ms());
+            core.sweep_expired(busbar_substrate::store::now_ms());
         }
     };
     futures::pin_mut!(pump);
     futures::pin_mut!(sweep);
     // The sweep never completes on its own, so this ends when — and only when — the pump does.
     futures::future::select(pump, sweep).await;
-}
-
-/// Wall-clock milliseconds, for the sweep's "which deadlines have passed" question.
-///
-/// The reading is handed to the node's table rather than compared here: which calls are past their
-/// deadline is the table's judgement, and a clock read on this side that the table then re-derived
-/// would be two clocks deciding one deadline.
-fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
-        .unwrap_or(0)
 }
 
 /// THE UPSTREAM-FACING PLANE — bound to the socket busbar holds to the provider (OpenAI Realtime). The
