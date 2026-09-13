@@ -1083,7 +1083,12 @@ scope_globs = ["crates/busbar/src/root/*.rs", "crates/busbar/src/main.rs"]
 # one symbol of the root's reach moved. This is the raise the mechanism documents — the same one
 # `busbar_substrate` 26 -> 47 took when its row stopped being informational — and it is declared
 # below as `[[gate.ceiling_raises]]`, not written by hand. It ratchets down from here.
-ceiling = 97
+#
+# 97 -> 98: the admin mount and the root's audit clock (`RootWallClock`) each stopped hand-rolling
+# `SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, ...)` and now read the one production wall
+# clock, `busbar_substrate::store::now`, a symbol the root did not name before. One new distinct
+# symbol, declared below as `[[gate.ceiling_raises]]`.
+ceiling = 98
 
 # Each sub-row below GATES, in both directions. `figure` is the per-crate count PINNED TO TODAY'S
 # MEASUREMENT: above it is that row's own FAIL, below it is `ceiling-slack`. It was informational --
@@ -1116,7 +1121,11 @@ because = "the substrate seams the root installs; each moves onto the ABI as the
 # regression: nothing ever held this number. So it is calibrated ONCE, to what the tree measures
 # today, and it ratchets down from here like every other figure in this file. It may only go down;
 # `ceiling-slack` holds it from below and this row holds it from above.
-figure = 47
+#
+# 47 -> 48: `busbar_substrate::store::now`, named for the first time by the admin mount and the
+# root's audit clock (`RootWallClock`) in place of each's own `SystemTime::now()` read. Declared
+# below as `[[gate.ceiling_raises]]`.
+figure = 48
 
 # THE TWO MOUNTED LEGS' ENGINES, ADDED AS SUB-ROWS BY MEASUREMENT (GATES-2, 2026-09-11). The root
 # reaches into `busbar_mcp::` and `busbar_a2a::` exactly as it reaches into `busbar_llm::`, and
@@ -1372,6 +1381,16 @@ because = "the first gating figure of a sub-row that was not gating before: the 
 key = "rules.legacy-reach.prefixes.busbar_a2a.figure"
 by = 2
 because = "the first gating figure of a sub-row that was not gating before: the root names two distinct busbar_a2a:: symbols (DIAGNOSTICS, PLANE_DECL) and nothing counted them until this commit"
+
+[[gate.ceiling_raises]]
+key = "rules.legacy-reach.ceiling"
+by = 1
+because = "the admin mount and the root's audit clock (RootWallClock) each stopped hand-rolling SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, ...) and now read busbar_substrate::store::now, a symbol the root did not name before; one new distinct symbol, so the sum rises by exactly one"
+
+[[gate.ceiling_raises]]
+key = "rules.legacy-reach.prefixes.busbar_substrate.figure"
+by = 1
+because = "busbar_substrate::store::now, named for the first time by the admin mount and the root's audit clock in place of each's own SystemTime::now() read"
 
 # ── THE ADMISSION FOR THE RULE THIS COMMIT MINTS ─────────────────────────────────────────────────
 #
