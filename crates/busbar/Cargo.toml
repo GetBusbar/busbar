@@ -249,7 +249,13 @@ root-llm = ["proto-llm", "busbar-llm?/teller-waist"]
 # It carries no config key, no environment variable and no boot line, which is what keeps the
 # neutrality cells answering the same on both legs. The leg stays switchable — off, it costs one
 # unbuilt module and nothing else.
-root-a2a = []
+# The root-side A2A composition: the scope policy this plane's classes are approved under, and the
+# node the composed declaration's serving entry reaches. It CARRIES `plane-a2a`, because a root-side
+# composition for a plane this build does not link is not a configuration — the node names the
+# plane's own declaration, and a build that composed one without a plane to compose it over would be
+# a mount with nothing mounted. The plane-deletion gate never enables this feature, which is what
+# keeps the plane deletable with the edge declared.
+root-a2a = ["plane-a2a"]
 # THE MCP PLANE'S KERNEL BINDINGS, DEFAULT ON. Not a second MCP switch: `plane-mcp` above still
 # decides whether this binary speaks the protocol at all. This one decides whether the MCP plane's
 # bindings to the fourteen units are compiled and sealed at boot, which is the step BEFORE any byte
