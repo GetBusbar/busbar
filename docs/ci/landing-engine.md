@@ -601,3 +601,89 @@ a tip declared **measured with an empty red set** is worse than an unmeasured on
 later line's identical test red is then scored as its own and a line is parked for a test it cannot
 have touched — which is the defect `lq_red_is_base_test` exists to prevent, arrived at through the
 front door. An unmeasured tip is an honest outcome; a measured-clean tip that is not clean is not.
+
+## 14. The bisect fan — a red unit's prefix ladder, a round of rungs at a time
+
+**MEASURED, live, 2026-09-12.** A 32-line big batch's union went RED in seconds — the gate runner
+would not build — and `land.sh`'s prefix ladder then proved prefix 1, then 1..2, then 1..3 …
+**serially, ~10 minutes a rung, with three Latchkey jobs in flight against a workspace cap of 20**.
+That is ~6 lines an hour against a queue of 250, on a machine rented by the minute.
+
+The rungs of the ladder depend on each other's **trees**, never on each other's **verdicts**, and
+every tree of a round is knowable the moment the round starts: it is the round's base plus a prefix
+of the same pick list. So on the `latchkey` backend the ladder is climbed a **fan** of rungs at a
+time.
+
+### The rule, in six lines
+
+1. The round's **base** is W's HEAD — the unit's base on the first round, the last **landed** rung's
+   tree on every round after it. **W's HEAD moves when a prefix lands and at no other moment.**
+2. Each rung *k* of the round is staged into a **scratch checkout of its own** at that base
+   (`git worktree add --detach` under `$LAND_TMP`), with the round's picks up to *k* cherry-picked
+   into it. W's working copy is never the subject of a proof in flight, and no two rungs share a
+   directory. The rung's own re-pin (`gate --write`) runs in the rung, on the rung's tree.
+3. Every staged rung is dispatched **concurrently** — its own `prove_tree`, its own fan of Latchkey
+   jobs (union + oracle buckets + base replay) — and the round waits for them **together**.
+4. The verdicts are read **in order**. Every rung green up to the first red **lands**: W is reset
+   onto the last green rung's tree, which carries every pick and every re-pin of the round in order.
+   The batch's push is unchanged — one push, at the end.
+5. The first red rung's **last line is the culprit** — the rung below it was green — and it is RED,
+   backed out, parked exactly as the serial ladder parks it. A `NONE` (a 7200 s cap, an unmeasurable
+   base) keeps its own semantics: the rung's own words are replayed onto the landing's log in ladder
+   order, which is what `landq4.sh` scores `NONE:cap` / `NONE:base-test` on, and nothing is parked.
+6. Every rung **past the first red is discarded unread** — it carries the culprit, so its verdict is
+   about a tree the queue will never land. Its poller is stopped and its scratch checkout removed.
+   The lines past the culprit are **HELD**, live, never RED — as on the serial ladder.
+
+A round that is all green lands its whole width and the next round starts at the rung after it.
+
+### The width
+
+```
+LATCHKEY_PREFIX_FAN=6          # the knob; 1 is the serial ladder, which is also the fleet backend's
+```
+
+bounded by the engine's own proof bound — `LATCHKEY_MAX_JOBS ÷ LATCHKEY_JOBS_PER_PROOF`, the same
+arithmetic as `landq4.sh`'s `lq_latchkey_proc_bound`. At the shipped `12 / 3` the width is **4**; at
+the owner's raised Latchkey cap of `40 / 3` it is the full **6**. A fan wider than the cap does not
+go faster — the extra jobs are refused `concurrency_limit`, come back 75, and a 75 is not a verdict.
+`LATCHKEY_MAX_JOBS=0` means the serial ladder, never "unbounded". The fleet backend never fans: a
+fleet proof holds a box's proof slot for its whole run, and the fleet transport ships a *batch*.
+
+At fan 6 a ten-line unit with the culprit at position 4 is resolved in **one round** (~10 min, three
+lines landed and the culprit parked) instead of four serial rungs (~40 min).
+
+## 15. The oracle leg is judged on the DELTA against the base replay
+
+**MEASURED, live, 2026-09-12 — the landing deadlock.** Big-batch prefix 1's **union was GREEN** and
+its oracle shard and its base shard were red on the **same three rows with the identical
+divergence**: `HookView/description` and `DeleteOverlaySection` content-length, the oracle tool's own
+`~1`-escaping limitation, which no busbar line can repair until the tool pin lands. `land.sh` said,
+correctly, *"the same rows are red at the base; this is the tip's standing state, not these picks'"*
+— and then returned RED, the landing was scored `NONE:base-test`, and the line went back **live**.
+For ever: every line whose families include one of those rows could never land, on any tip, by
+construction.
+
+**A standing red is not a verdict on picks that did not cause it.** So:
+
+| at the tip | at the base | verdict |
+|---|---|---|
+| diverges | diverges **identically** (same cell id, same class list, same first-divergence text) | the **base's** — carried, named in an advisory, **not this landing's red** |
+| diverges | does not diverge, or diverges **differently** | the **line's RED**, exactly as before |
+| green | diverges | the line **fixed** it — green, and the advisory does **not** name it |
+| any | **no base verdict at all** | **`NONE:base-test`** — nothing learned, exit 75, re-take |
+
+`NONE:base-test` from the landing transport now means that last row and nothing else: not "the rows
+matched", but "there was nothing to match them against". `landq4.sh` reads the sentence through
+`LQ_LK_BASE_UNMEASURED_RE`, and the 7200 s ceiling still outranks it (a capped shard measured
+neither).
+
+The rows a green landing **carried** are written onto every row of its `land-done.txt` batch:
+
+```
+GREEN batch=<stamp> log=<path> repin=<sha> advisory=base-standing oracle reds carried: documented|HookView|description,documented|DeleteOverlaySection|validate --prove …
+```
+
+so the ledger — and not somebody's memory — is where "those rows are the tool's" lives. The row
+extractor is byte-for-byte `landq4.sh`'s `lq_oracle_fail_detail`, because one of them writes the
+base-red set the sweep remembers and the other reads the same shape out of a landing's shard log.

@@ -2019,6 +2019,13 @@ lq_lk_capped() { # $1 = log path
   [ -n "${1:-}" ] && [ -f "$1" ] || return 1
   grep -qE "$LQ_LK_CAP_RE" "$1" 2>/dev/null
 }
+# THE TRANSPORT SAID THE BASE WAS UNMEASURED. One reader, beside lq_lk_capped, because the verdict
+# and the fault class must not disagree about what an unmeasurable oracle red is.
+LQ_LK_BASE_UNMEASURED_RE='land-latchkey: NONE:base-test'
+lq_lk_base_unmeasured() { # $1 = log path
+  [ -n "${1:-}" ] && [ -f "$1" ] || return 1
+  grep -qE "$LQ_LK_BASE_UNMEASURED_RE" "$1" 2>/dev/null
+}
 lq_rc_is_harness() { # $1 = rc; 0 when the code is the harness's, never a tree's
   case "${1:-}" in 126|127|70) return 0 ;; esac
   return 1
@@ -2032,6 +2039,11 @@ lq_preproof_verdict() { # $1 = rc ('' = never reported), $2 = log, $3 = per-line
   # mid-leg: it wrote no per-line outcome file, so nothing above this could have answered, and every
   # rule below would fall through to RED — which is exactly the defect (see LQ_LK_CAP_RE).
   if lq_lk_capped "$2"; then echo "NONE:cap"; return 0; fi
+  # …AND THE TRANSPORT'S OWN `NONE:base-test`, for the same reason. land-latchkey.sh judges the
+  # oracle leg on the DELTA against the base replay; when the base produced NO oracle verdict there
+  # is no delta to take, and it says so and exits 75. That 75 is not a reclaimed box and must not be
+  # read as one — the word is the transport's and it is scored as the word.
+  if lq_lk_base_unmeasured "$2"; then echo "NONE:base-test"; return 0; fi
   # BEFORE EVERY OTHER RULE, because the others all read a log a harness failure never wrote.
   if lq_rc_is_harness "$1"; then echo "NONE:harness"; return 0; fi
   # …and only then the box: a proof that finished and reported GREEN before the box was reclaimed
@@ -2073,6 +2085,7 @@ lq_chain_preproof_verdict() { # $1 = rc, $2 = log, $3 = per-line outcome file, $
     # it: a box reclaimed mid-proof and a harness that gave up are no more a verdict on a chained
     # line than on a single one (the bisect attributes rows it never got to judge to nobody).
     RED|RED-*) if lq_lk_capped "$2"; then echo "NONE:cap"
+               elif lq_lk_base_unmeasured "$2"; then echo "NONE:base-test"
                elif lq_rc_is_harness "$1"; then echo "NONE:harness"
                elif lq_box_gone "$1" "$2"; then echo "NONE:box"
                elif lq_harness_gave_up "$2"; then echo "NONE:harness"
@@ -4797,6 +4810,22 @@ lq_selftest() {
      "$(printf 'RED%sDEEP\n' "$TAB" >"$root/caprow.result"; lq_chain_preproof_verdict 1 "$cl" "$root/caprow.result" DEEP)"
   local lcl="$root/cap-land.log"
   printf 'land-latchkey: NONE:cap — shard(s) fam-2 exceeded the 7200s ceiling\n' >"$lcl"
+  # ── AND THE OTHER WORD THE LANDING TRANSPORT SAYS: AN ORACLE RED WITH NO BASE TO SUBTRACT ──────
+  # land-latchkey.sh judges the oracle leg on the DELTA against the base replay. With no base
+  # verdict there is no delta, it says NONE:base-test and exits 75 — and that 75 must not be read
+  # as a reclaimed box, because the disposition is the same but the NEXT MOVE is not: re-measure
+  # the base, then judge. (The landing deadlock of 2026-09-12: three rows red identically at the
+  # tip and the base, scored NONE for ever, and every line carrying those families stuck live.)
+  local bum="$root/bum.log"
+  printf 'land-latchkey: NONE:base-test — shard(s) fam-1 are red and the base is UNMEASURED; nothing about these picks was learned (exit 75)\n' >"$bum"
+  _t "an unmeasurable oracle red is NONE:base-test"           "NONE:base-test" "$(lq_preproof_verdict 75 "$bum")"
+  _t "  ...and not NONE:box, whatever the exit code"          "NONE:base-test" "$(lq_preproof_verdict 1 "$bum")"
+  _t "  ...a chained rung reads the same word"                "NONE:base-test" \
+     "$(printf 'RED\t--prove x\n' >"$root/bum.result"; lq_chain_preproof_verdict 75 "$bum" "$root/bum.result" '--prove x')"
+  _t "  ...and a log without the sentence is untouched"       1 "$(lq_lk_base_unmeasured "$lcl"; echo $?)"
+  # The cap still outranks it: a capped shard measured nothing at all, base or tip.
+  printf 'land-latchkey: NONE:cap — shard(s) fam-2 exceeded the 7200s ceiling\nland-latchkey: NONE:base-test — ...\n' >"$root/bum2.log"
+  _t "  ...and the ceiling still outranks it"                 "NONE:cap" "$(lq_preproof_verdict 75 "$root/bum2.log")"
   _t "the LANDING backend's ceiling says it the same way"    "cap"      "$(lq_fault_class 1 "$lcl")"
   # …AND AN ORDINARY LATCHKEY LOG IS NOT A CAP. A rule that matched the word would swallow every red.
   local ncl="$root/nocap.log"
