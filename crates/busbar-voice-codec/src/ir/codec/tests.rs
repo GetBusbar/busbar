@@ -13,6 +13,9 @@ use crate::ir::media::UpDown;
 
 // ── helpers ──────────────────────────────────────────────────────────────────────────────────────
 
+/// The dialect under test, named once. Every cell below binds it rather than respelling it.
+const CODEC: OpenAiRealtimeCodec = OpenAiRealtimeCodec;
+
 fn wire(s: &str) -> WireEvent {
     WireEvent(Bytes::from(s.as_bytes().to_vec()))
 }
@@ -43,7 +46,7 @@ fn down<W: DuplexWriter>(codec: &W, ev: IrServerEvent) -> WireEvent {
 
 /// Decode one client wire event, re-encode it, and assert the JSON is stable.
 fn roundtrip_up(src: &Value) -> Vec<IrClientEvent> {
-    let codec = OpenAiRealtimeCodec;
+    let codec = CODEC;
     let mut st = DecodeState::default();
     let ir = codec.read_up(wire(&src.to_string()), &mut st);
     assert_eq!(ir.len(), 1, "expected exactly one IR event from {src}");
@@ -54,7 +57,7 @@ fn roundtrip_up(src: &Value) -> Vec<IrClientEvent> {
 
 /// Decode one server wire event, re-encode it, and assert the JSON is stable.
 fn roundtrip_down(src: &Value) -> Vec<IrServerEvent> {
-    let codec = OpenAiRealtimeCodec;
+    let codec = CODEC;
     let mut st = DecodeState::default();
     let ir = codec.read_down(wire(&src.to_string()), &mut st);
     assert_eq!(ir.len(), 1, "expected exactly one IR event from {src}");
@@ -156,7 +159,7 @@ fn session_update_semantic_vad_roundtrips() {
 /// Decode one `session.update` and hand back the configured session plus the decode state, so a test
 /// can read both the surviving config and the dropped-field diagnostics.
 fn session_update_of(session: Value) -> (SessionConfig, DecodeState) {
-    let codec = OpenAiRealtimeCodec;
+    let codec = CODEC;
     let mut st = DecodeState::default();
     let src = json!({ "type": "session.update", "session": session });
     let ir = codec.read_up(wire(&src.to_string()), &mut st);
@@ -231,7 +234,7 @@ fn an_unknown_turn_detection_type_drops_that_field_only() {
 fn an_unmodelled_output_format_leaves_the_negotiated_format_alone() {
     // The truncate math measures against the LAST format the plane actually negotiated; an unmodelled
     // one neither adopts nor silently resets it.
-    let codec = OpenAiRealtimeCodec;
+    let codec = CODEC;
     let mut st = DecodeState::default();
     st.set_output_format(AudioFormat::G711Ulaw);
     let src = json!({
@@ -294,7 +297,7 @@ fn turn_detection_keeps_absent_null_and_value_apart_in_both_directions() {
 
 #[test]
 fn session_update_sets_decode_output_format() {
-    let codec = OpenAiRealtimeCodec;
+    let codec = CODEC;
     let mut st = DecodeState::default();
     assert_eq!(st.output_format(), AudioFormat::Pcm16);
     let _ = codec.read_up(wire(&ga_session_server_vad().to_string()), &mut st);
@@ -339,7 +342,7 @@ fn uplink_audio_append_decodes_base64_and_frames_up() {
 
 #[test]
 fn uplink_seq_is_monotonic_across_frames() {
-    let codec = OpenAiRealtimeCodec;
+    let codec = CODEC;
     let mut st = DecodeState::default();
     let mk = |n: u8| {
         wire(&json!({ "type": "input_audio_buffer.append", "audio": b64(&[n]) }).to_string())
@@ -358,7 +361,7 @@ fn uplink_seq_is_monotonic_across_frames() {
 
 #[test]
 fn downlink_audio_delta_frames_down_tracks_playback_and_bumps_seq() {
-    let codec = OpenAiRealtimeCodec;
+    let codec = CODEC;
     let mut st = DecodeState::default();
     st.set_output_format(AudioFormat::Pcm16); // 48 bytes/ms
     let payload = vec![0u8; 96]; // 96 bytes -> 2 ms
@@ -408,7 +411,7 @@ fn a_downlink_audio_delta_says_which_item_it_is_part_of() {
 fn a_downlink_audio_delta_from_a_dialect_that_names_no_item_invents_none() {
     // Gemini's `modelTurn` audio carries no item correlation at all; the writer must not fabricate
     // one — an id nobody issued is worse than an absent id.
-    let codec = OpenAiRealtimeCodec;
+    let codec = CODEC;
     let w = down(
         &codec,
         IrServerEvent::AudioFrame(IrAudioFrame {
@@ -426,7 +429,7 @@ fn a_downlink_audio_delta_from_a_dialect_that_names_no_item_invents_none() {
 
 #[test]
 fn downlink_audio_delta_legacy_alias_decodes() {
-    let codec = OpenAiRealtimeCodec;
+    let codec = CODEC;
     let mut st = DecodeState::default();
     let src = json!({ "type": "response.audio.delta", "delta": b64(b"x") });
     let ir = codec.read_down(wire(&src.to_string()), &mut st);
@@ -494,7 +497,7 @@ fn flush_playback_returns_heard_ms_and_resets() {
 fn playback_position_resets_at_the_item_boundary_so_turns_do_not_accumulate() {
     // Two model turns, the second barged into: the truncate point must be the position within the
     // CURRENT item, not the running total since the session opened.
-    let codec = OpenAiRealtimeCodec;
+    let codec = CODEC;
     let mut st = DecodeState::default();
     st.set_output_format(AudioFormat::Pcm16); // 48 bytes/ms
     let delta = |ms: usize| {
@@ -537,7 +540,7 @@ fn playback_position_resets_at_the_item_boundary_so_turns_do_not_accumulate() {
 fn a_new_function_call_item_does_not_zero_the_playing_item() {
     // A `function_call` output item can be added WHILE an audio item is still playing; it is not the
     // audio item's boundary, so it must not move the truncate point.
-    let codec = OpenAiRealtimeCodec;
+    let codec = CODEC;
     let mut st = DecodeState::default();
     st.set_output_format(AudioFormat::Pcm16);
     let _ = codec.read_down(
@@ -593,7 +596,7 @@ fn item_truncate_roundtrips_end_ms() {
 /// is the field's own documented default (`0`), reached deliberately rather than by wrap-around.
 #[test]
 fn an_out_of_range_content_index_falls_back_to_the_documented_default() {
-    let codec = OpenAiRealtimeCodec;
+    let codec = CODEC;
     let mut st = DecodeState::default();
     for (wire_value, expect) in [(4_294_967_296u64, 0u32), (u64::MAX, 0), (7, 7)] {
         let ir = codec.read_up(
@@ -651,7 +654,7 @@ fn usage_totals_saturate_rather_than_wrap() {
 /// already gives (`BadPayload` rather than an empty payload).
 #[test]
 fn an_undecodable_audio_payload_emits_no_frame() {
-    let codec = OpenAiRealtimeCodec;
+    let codec = CODEC;
     let mut st = DecodeState::default();
     let up = codec.read_up(
         wire(&json!({ "type": "input_audio_buffer.append", "audio": "!!!!" }).to_string()),
@@ -766,7 +769,7 @@ fn the_held_tool_argument_table_is_capped_and_evicts_the_oldest() {
 
 #[test]
 fn tool_call_loop_correlates_by_call_id() {
-    let codec = OpenAiRealtimeCodec;
+    let codec = CODEC;
     let mut st = DecodeState::default();
 
     let open = codec.read_down(
@@ -859,7 +862,7 @@ fn tool_call_loop_correlates_by_call_id() {
 #[test]
 fn function_call_output_authoring_roundtrips() {
     // The plane authors a result (client->server) and it re-frames to function_call_output.
-    let codec = OpenAiRealtimeCodec;
+    let codec = CODEC;
     let result = IrClientEvent::Tool(IrDuplexTool::CallResult {
         call_ref: CallRef(0),
         call_id: "call_abc".into(),
@@ -890,7 +893,7 @@ fn function_call_output_authoring_roundtrips() {
 
 #[test]
 fn response_done_usage_extracts_split_token_classes() {
-    let codec = OpenAiRealtimeCodec;
+    let codec = CODEC;
     let mut st = DecodeState::default();
     let src = json!({
         "type": "response.done",
@@ -922,7 +925,7 @@ fn cached_input_tokens_are_not_billed_twice() {
     // `prompt_tokens_details.cached_tokens` inside `prompt_tokens`. So the billing fold must bill the
     // UNCACHED remainder as `input` and the cached portion as `cache_read` — never the full input
     // figure alongside the cache figure, which would charge the cached tokens on both lanes.
-    let codec = OpenAiRealtimeCodec;
+    let codec = CODEC;
     let mut st = DecodeState::default();
     let src = json!({
         "type": "response.done",
@@ -999,7 +1002,7 @@ fn audio_done_and_error_roundtrip() {
 
 #[test]
 fn error_event_maps_to_error_ir() {
-    let codec = OpenAiRealtimeCodec;
+    let codec = CODEC;
     let mut st = DecodeState::default();
     let ir = codec.read_down(
         wire(&json!({ "type": "error", "error": { "code": "x", "message": "boom" } }).to_string()),
@@ -1014,7 +1017,7 @@ fn error_event_maps_to_error_ir() {
 
 #[test]
 fn malformed_or_unknown_frames_yield_empty_vec() {
-    let codec = OpenAiRealtimeCodec;
+    let codec = CODEC;
     let mut st = DecodeState::default();
     assert!(codec.read_up(wire("not json"), &mut st).is_empty());
     assert!(codec.read_down(wire("{ broken"), &mut st).is_empty());
@@ -1035,7 +1038,7 @@ fn malformed_or_unknown_frames_yield_empty_vec() {
 #[test]
 fn usage_extraction_survives_reencode() {
     // Usage is extraction-only, but the writer can still frame a canonical response.done.
-    let codec = OpenAiRealtimeCodec;
+    let codec = CODEC;
     let u = IrDuplexUsage {
         audio_in: 3,
         audio_out: 4,
@@ -1065,10 +1068,10 @@ fn a_ulaw_downlink_does_not_mute_the_pcm16_uplink() {
     // THE CALLER MUST STILL BE HEARD. The uplink's format is the INPUT one; labelling the caller's
     // audio with the OUTPUT format makes a µ-law downlink (which this dialect has no mime for) drop
     // every uplink frame, and a session where nobody upstream ever hears the caller.
-    let openai = OpenAiRealtimeCodec;
-    let gemini = super::gemini::GeminiLiveCodec;
+    let reader = CODEC;
+    let writer = super::gemini::GeminiLiveCodec;
     let mut st = DecodeState::default();
-    let cfg = openai.read_up(wire(&ga_session_ulaw_out_pcm_in().to_string()), &mut st);
+    let cfg = reader.read_up(wire(&ga_session_ulaw_out_pcm_in().to_string()), &mut st);
     assert_eq!(cfg.len(), 1, "the session config is one IR event");
     assert_eq!(st.output_format(), AudioFormat::G711Ulaw);
     assert_eq!(
@@ -1077,12 +1080,12 @@ fn a_ulaw_downlink_does_not_mute_the_pcm16_uplink() {
         "the uplink carries what the CLIENT captures, not what the model synthesizes"
     );
     for chunk in [&b"caller-a"[..], b"caller-b", b"caller-c"] {
-        let ir = openai.read_up(
+        let ir = reader.read_up(
             wire(&json!({ "type": "input_audio_buffer.append", "audio": b64(chunk) }).to_string()),
             &mut st,
         );
         let frame = ir.first().expect("the append decodes to an audio frame");
-        let w = gemini
+        let w = writer
             .write_up(frame.clone(), &mut st)
             .expect("uplink audio must reach the model, whatever the downlink format is");
         let v = as_value(&w);
@@ -1101,10 +1104,10 @@ fn a_ulaw_uplink_is_dropped_rather_than_labelled_as_pcm() {
     // THE REVERSE PAIR, and the reverse harm: µ-law UP with a pcm16 downlink. Gemini has no µ-law
     // mode at all, so the honest answer is the drop the caller can see (`None`) — never a
     // `audio/pcm` label over 8 kHz µ-law bytes, which the peer would play as PCM.
-    let openai = OpenAiRealtimeCodec;
-    let gemini = super::gemini::GeminiLiveCodec;
+    let reader = CODEC;
+    let writer = super::gemini::GeminiLiveCodec;
     let mut st = DecodeState::default();
-    openai.read_up(
+    reader.read_up(
         wire(
             &json!({
                 "type": "session.update",
@@ -1116,7 +1119,7 @@ fn a_ulaw_uplink_is_dropped_rather_than_labelled_as_pcm() {
     );
     assert_eq!(st.input_format(), AudioFormat::G711Ulaw);
     assert_eq!(st.output_format(), AudioFormat::Pcm16);
-    let ir = openai.read_up(
+    let ir = reader.read_up(
         wire(&json!({ "type": "input_audio_buffer.append", "audio": b64(b"ulaw") }).to_string()),
         &mut st,
     );
@@ -1125,7 +1128,7 @@ fn a_ulaw_uplink_is_dropped_rather_than_labelled_as_pcm() {
         .expect("the append decodes to an audio frame")
         .clone();
     assert!(
-        gemini.write_up(frame, &mut st).is_none(),
+        writer.write_up(frame, &mut st).is_none(),
         "µ-law uplink has no Gemini mime; the drop is the warn, a pcm label is a lie"
     );
     // And the downlink math still measures against the format the model actually synthesizes.
@@ -1136,7 +1139,7 @@ fn a_ulaw_uplink_is_dropped_rather_than_labelled_as_pcm() {
 #[test]
 fn session_created_adopts_both_negotiated_formats() {
     // The server's own `session.created` is the other place the negotiated formats are read.
-    let codec = OpenAiRealtimeCodec;
+    let codec = CODEC;
     let mut st = DecodeState::default();
     codec.read_down(
         wire(

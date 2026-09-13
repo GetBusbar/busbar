@@ -39,16 +39,10 @@ use busbar_contract::{
     TransportConfigView, TransportKeyHandle, TransportMeta,
 };
 use busbar_contract_transport::registry::facts as tfacts;
-use busbar_contract_transport::wire::ArrivalRecord;
-use busbar_contract_transport::wire::CertFacts;
-use busbar_contract_transport::wire::CloseReason;
-use busbar_contract_transport::wire::Conn;
-use busbar_contract_transport::wire::ConnHandle;
-use busbar_contract_transport::wire::Direction;
-use busbar_contract_transport::wire::FrameMeta;
-use busbar_contract_transport::wire::Listener;
-use busbar_contract_transport::wire::ListenerHandle;
-use busbar_contract_transport::wire::TransportError;
+use busbar_contract_transport::wire::{
+    ArrivalRecord, CertFacts, CloseReason, Conn, ConnHandle, Direction, FrameMeta, Listener,
+    ListenerHandle, TransportError,
+};
 use futures::Stream;
 use rustls_pki_types::ServerName;
 use tokio::io::{AsyncReadExt, AsyncWriteExt, ReadHalf, WriteHalf};
