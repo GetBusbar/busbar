@@ -1731,6 +1731,19 @@ lq_base_test_learn() { # $1 = tip, $2 = the log of a proof taken AT that tip wit
   # `#measured` off the back of it would excuse every future test red at this tip on no evidence —
   # which is the `base-unmeasured` defect with the sign flipped, and far worse.
   grep -qE '^land\.sh: \[.*\] (tests|plan):|^== tests|running [0-9]+ tests?$' "$log" 2>/dev/null || return 1
+  # ── AND A TEST LEG THAT WENT RED WITHOUT NAMING A TEST HAS MEASURED NOTHING EITHER ────────────
+  # MEASURED (`--smoke-latchkey --sweep`, 2026-09-12): the base replay's own log said
+  # `land.sh: RED — tests failed in: xtask` and carried NOT ONE `test …::… FAILED` line — on a
+  # rented runner the per-test detail is in land.sh's nested log, which does not travel. Recording
+  # `#measured` off that is the WORST available reading: the tip is declared measured with an EMPTY
+  # red set, every later line's identical test red is then scored as its OWN, and a line is parked
+  # for a test it cannot have touched — which is the exact defect lq_red_is_base_test exists to
+  # prevent, arrived at through the front door. An unmeasured tip is an honest outcome; a
+  # measured-clean tip that is not clean is not.
+  if grep -qE '^land[.]sh: RED — tests failed in:' "$log" 2>/dev/null && [ -z "$(lq_test_reds "$log")" ]; then
+    lq_log "base state: $(printf '%.9s' "$tip") — the test leg is RED at the tip but the log names no failing test; the tip stays test-UNMEASURED rather than recorded clean (log: $log)"
+    return 1
+  fi
   lq_base_test_known "$tip" && return 0
   mkdir -p "$(dirname "$BASETEST")"
   printf '%s%s#measured\n' "$tip" "$TAB" >>"$BASETEST"
@@ -6510,6 +6523,16 @@ lq_selftest() {
   # recording `#measured` off a log whose test leg never ran would excuse every future test red.
   _t "an unmeasured tip is not measured"             1 "$(lq_base_test_known "$btip"; echo $?)"
   _t "  ...so the red stays the line's"              1 "$(lq_red_is_base_test "$btip" "$blog"; echo $?)"
+  # A TEST LEG THAT WENT RED AND NAMED NO TEST HAS MEASURED NOTHING — the smoke's finding, and the
+  # `#measured`-with-an-empty-set reading is worse than no measurement at all.
+  _t "a RED test leg that names no test teaches nothing" 1 \
+     "$(printf 'running 187 tests\nland.sh: RED — tests failed in: xtask  (log: /home/runner/.latchkey-job-X/workspace/target/land-1.log)\n' >"$root/bt-noname.log"; \
+        lq_base_test_learn "$btip" "$root/bt-noname.log" >/dev/null 2>&1; echo $?)"
+  _t "  ...and records no #measured row for that tip"   1 "$(lq_base_test_known "$btip"; echo $?)"
+  _t "  ...while a RED leg that DOES name one teaches it" 0 \
+     "$(printf 'running 187 tests\ntest %s ... FAILED\nland.sh: RED — tests failed in: xtask\n' "$T1" >"$root/bt-named.log"; \
+        BASETEST="$root/bt-named.txt"; : >"$BASETEST"; lq_base_test_learn "$btip" "$root/bt-named.log" >/dev/null 2>&1; echo $?)"
+  BASETEST="$root/basetest.txt"
   _t "a log with NO test leg teaches nothing"        1 \
      "$(printf 'land.sh: RED — clippy\n' >"$root/bt-not.log"; lq_base_test_learn "$btip" "$root/bt-not.log"; echo $?)"
   _t "  ...and writes no #measured row"              1 "$(lq_base_test_known "$btip"; echo $?)"

@@ -557,8 +557,29 @@ sweep: fleet demand 0 — no EC2 box is started or reserved (prove backend latch
 pre-prove: this sweep reaches no box, so it opens no ssh wrapper and probes no fleet table
 ```
 
-The second line is the same rule one step further out: `remote_wrapper` and `fleet_table_open` are
-the fleet's transport — a generated ssh wrapper that *refuses outright* on a host without
+### An empty fleet is not an error path
+
+Ruled after the 17:28 double death (2026-09-12): the runner exited 2 because a line whose Latchkey
+job was refused fell back to the fleet, and `ci-remote-lib`'s allocator treats a fleet file with no
+on-demand box as a hard `ERROR` — on a fleet that is empty **by design**. The supervisor then read
+that 2 as "another runner holds the host lock" and exited too. One refused job, and nothing was
+running.
+
+* On the `latchkey` pre-proof backend `lq_preprove_needs_box` answers **no box, unconditionally** —
+  not "no box while a runner slot is free". The allocator is never asked, so its opinion about an
+  empty fleet is never consulted.
+* A `75` from `prove-latchkey.sh` ("no job was created; the workspace cap is shared with CI") is
+  **no verdict**. The line stays LIVE and unmarked and is swept again on the next loop, exactly as a
+  short fleet has always been handled. There is no fall-back to a box.
+* `landq-supervisor.sh` classifies `locked` from the **lock file's live owner**, never from an exit
+  code: `sup_lock_holder` asks the question `lq_lock_acquire` asks — a pid that is alive and is
+  still the process that took the lock, and never the supervisor's own. An exit 2 with no live
+  holder is an infrastructure exit and is restarted on the 60/120/240/480/900 s ladder.
+  `HALT head-conflict-twice` (1) and `HALT tree-moved` (3) are untouched: those are facts about the
+  tree and they still page.
+
+The second line above is the same rule one step further out: `remote_wrapper` and `fleet_table_open`
+are the fleet's transport — a generated ssh wrapper that *refuses outright* on a host without
 `session-manager-plugin`, and an ssh round over every instance. A sweep with nothing to say to the
 fleet opens neither. A runner that can no longer reach EC2 at all is precisely where the owner's
 goal ends.
@@ -571,3 +592,12 @@ legs' output is in the job logs, which it names by path. So each dispatch folds 
 names back into the proof's own log (`lq_absorb_shard_logs`) before anything is scored. Without it a
 base replay on Latchkey would run perfectly and measure **nothing**, and `NONE:base-test` /
 `NONE:base` would quietly stop being sayable. A fleet proof names no shard logs and it is a no-op.
+
+And one thing the shard logs still do **not** carry: the per-test `test …::… FAILED` lines. On the
+rented runner those live in `land.sh`'s own nested log, which does not travel — the job log says
+`land.sh: RED — tests failed in: xtask` and no more. `lq_base_test_learn` therefore refuses to
+record `#measured` for a test leg that went red and named no test. That refusal is the whole rule:
+a tip declared **measured with an empty red set** is worse than an unmeasured one, because every
+later line's identical test red is then scored as its own and a line is parked for a test it cannot
+have touched — which is the defect `lq_red_is_base_test` exists to prevent, arrived at through the
+front door. An unmeasured tip is an honest outcome; a measured-clean tip that is not clean is not.
