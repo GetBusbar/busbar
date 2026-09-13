@@ -1,4 +1,15 @@
 # WHAT THIS HAND-BACK ASKS keep-proof TO PROVE.
+# ── VT-12 (the session seam rebased onto this lineage) UPDATES THE SCOPE ─────────────────────────
+# This branch now also carries the kernel's ONE session-opening seam (open_unit / serve_held /
+# BindingDecl.session = Hold|Release, Release the default) cherry-picked onto VT-11's R3 MOUNT, and
+# the three streams duplex bindings declare `Hold`. That reaches the money path — the request slot
+# and the in-flight lease a held session draws once and settles once — so the families gain
+# `teller` (the loop that reads the posture at the door), `billing` and `ledger` (the slot/fee a
+# Hold binding moves), and the packages gain `busbar-kernel`, `busbar-substrate`, `busbar-plane-voice`
+# and `busbar-contract-transport` (where the seam and the declaration live) in place of the dialect
+# crates, whose own rows this branch does not move. The prose below is VT-11's and still true of the
+# families it names.
+#
 #
 # .keep-proof.toml is read by .github/workflows/keep-proof.yml at the root of a `keep-*` branch, and
 # by scripts/prove-remote.sh, which runs the SAME legs on a fleet box. It scopes the two expensive
@@ -32,7 +43,7 @@
 #   tests    — the plane, its three dialect crates, the composition root that registers them, and
 #              the retiring crate whose codec half the dialects still reach. Every cell this branch
 #              wrote or moved is in one of those binaries.
-families = '^(voice|streams|boot|neutrality)([|.]|$)'
+families = '^(voice|streams|teller|billing|ledger|boot|neutrality)([|.]|$)'
 # ONE LINE, and it has to be: both readers of this file — .github/workflows/keep-proof.yml and
 # scripts/prove-remote.sh:67 — take the array with a single-line `sed`, so a pretty-printed
 # multi-line array is read as NO packages and the run silently widens to the whole workspace. That
@@ -41,4 +52,4 @@ families = '^(voice|streams|boot|neutrality)([|.]|$)'
 # `0ba0134d9` (the `agent_defs` -> `plane_sections` drain left that cell behind) and which this
 # branch does not touch, and the run stops at the first red leg before the ORACLE leg — the one leg
 # that answers the only question this branch has to answer.
-tests = ["busbar", "busbar-voice", "busbar-plane-streams", "busbar-plane-streams-openai", "busbar-plane-streams-gemini", "busbar-plane-streams-twilio"]
+tests = ["busbar", "busbar-kernel", "busbar-substrate", "busbar-voice", "busbar-plane-voice", "busbar-contract-transport"]
