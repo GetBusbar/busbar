@@ -18,10 +18,10 @@
 
 use crate::topology::{dial_provider, stream_breaker_key, DialProviderError};
 use busbar_substrate::breaker::{CanonicalSignal, StatusClass};
-use busbar_substrate::net_guard::GuardPolicy;
 use busbar_substrate::plane_host::BreakerHost;
 use busbar_substrate::store::BreakerState;
 use busbar_substrate::testkit::fixture_host::FixtureHost;
+use busbar_unit_trust::net::GuardPolicy;
 
 /// A canonical hard-down signal — the disposition a definitive provider failure (auth/billing, or a
 /// busbar-side guard refusal) folds to, which OPENS the cell on the first record.

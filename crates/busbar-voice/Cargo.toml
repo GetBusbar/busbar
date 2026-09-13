@@ -52,6 +52,13 @@ required-features = ["runtime", "test-support"]
 # and protocol registry descriptors (`PlaneDecl`, `ProtocolDecl`), the diagnostics namespace, the
 # proxy/egress constants the `ProtocolDecl` fields carry.
 busbar-substrate = { path = "../busbar-substrate" }
+# THE NETWORK-ADDRESS JUDGEMENT, as a unit. This plugin's outbound guard reads
+# `busbar_unit_trust::net` — the one surviving copy of the SSRF control — rather than the frozen
+# substrate's dying second copy. A `[[transitional]]` row in qa/kind-isolation.toml names the edge:
+# it is the 1.5.x drain pointed at the kind that replaces this crate's guard, and it dies with the
+# crate like every other row there.
+busbar-unit-trust = { path = "../busbar-unit-trust" }
+
 # THE CODECS. The pure half of this plugin, split out so `busbar-plane-voice` can name the duplex IR
 # and the dialect grammars without pulling this crate's axum mount, WebSocket accept, tokio session
 # tasks and telephony dial into a pure kind's closure. Every module that moved is re-exported from

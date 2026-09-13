@@ -1952,10 +1952,10 @@ fn probe_provider_dial() -> (&'static str, String) {
 
         let host = AlwaysAdmitBreakerHost;
         let url = format!("ws://{addr}");
-        let policy = busbar_substrate::net_guard::GuardPolicy {
+        let policy = busbar_unit_trust::net::GuardPolicy {
             allow_private: true,
             allow_plaintext: true,
-            ..busbar_substrate::net_guard::GuardPolicy::default()
+            ..busbar_unit_trust::net::GuardPolicy::default()
         };
         let (mut provider_in, _provider_out) = match busbar_voice::topology::dial_provider(
             &host,
@@ -2140,7 +2140,7 @@ fn probe_route_failover() -> (&'static str, String) {
     tokio_rt.block_on(async move {
         let host = FixtureHost::new();
         let pool = "stream:conform-route-failover";
-        let policy = busbar_substrate::net_guard::GuardPolicy::default();
+        let policy = busbar_unit_trust::net::GuardPolicy::default();
 
         // ATTEMPT 1 — breaker CLOSED: a real dial to a target the default fail-closed guard refuses (a
         // plaintext `ws://` loopback address, `allow_plaintext: false` by default) genuinely fails,

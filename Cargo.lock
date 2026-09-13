@@ -1245,6 +1245,7 @@ dependencies = [
  "busbar-plane-voice",
  "busbar-plugin",
  "busbar-substrate",
+ "busbar-unit-trust",
  "busbar-voice-codec",
  "bytes",
  "futures",

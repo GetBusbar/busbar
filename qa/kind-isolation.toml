@@ -105,6 +105,17 @@ reason = "legacy drain"
 ceiling = "44"
 drain = "the edge dies with the crate. busbar-a2a is a retiring 1.5.x plugin; when its guarded hop moves onto its plane's step list it reaches the unit through the step list rather than by naming it, and this row goes with the dependency."
 
+# And the third reader of the dying copy: the voice dial. `busbar-voice` resolves and pins its
+# provider endpoint before it dials, and that judgement is the trust unit's. The SOCKET is the
+# plugin's own — `topology::resolve_and_pin_async` is this crate's async door at the point it dials,
+# composed from the unit's atoms and restating none of its judgement.
+[[transitional]]
+from = "busbar-voice"
+to = "busbar-unit-*"
+reason = "legacy drain"
+ceiling = "24"
+drain = "the edge dies with the crate. busbar-voice is a retiring 1.5.x plugin; when its guarded dial moves onto its plane's step list it reaches the unit through the step list rather than by naming it, and this row goes with the dependency."
+
 # ------------------------------------------------------------------------------------------------
 # [[announced]] — CRATES THAT ARE LANDING
 # ------------------------------------------------------------------------------------------------
@@ -4034,6 +4045,16 @@ why     = "busbar-a2a names busbar-unit-trust: declared normal in the shipped gr
 drain   = "the edge dies with the crate. busbar-a2a is a retiring 1.5.x plugin; when its guarded hop moves onto its plane's step list it reaches the unit through the step list rather than by naming it, and this row goes with the dependency."
 
 [[dep]]
+from    = "busbar-voice"
+to      = "busbar-unit-trust"
+half    = "shipped"
+count   = "1"
+verdict = "not-allowed"
+cite    = "the [[transitional]] row `busbar-voice -> busbar-unit-*` at the head of this file — the legacy drain. The row is what makes the edge admissible; this row is the census entry that records it, and a census entry grants nothing."
+why     = "busbar-voice names busbar-unit-trust: declared normal in the shipped graph, 1 declaration(s) at this commit. The provider dial's resolve-then-pin used to run through busbar-substrate's copy of the network-address control — the second copy, kept honest by a parity test. There is one copy now and it is the unit's. The count is TODAY'S MEASUREMENT, exact in both directions."
+drain   = "the edge dies with the crate. busbar-voice is a retiring 1.5.x plugin; when its guarded dial moves onto its plane's step list it reaches the unit through the step list rather than by naming it, and this row goes with the dependency."
+
+[[dep]]
 from    = "busbar-mcp"
 to      = "busbar-unit-trust"
 half    = "shipped"
@@ -5665,6 +5686,11 @@ count = "26"
 crate = "busbar-a2a"
 kind = "unit"
 count = "44"
+
+[[cell]]
+crate = "busbar-voice"
+kind = "unit"
+count = "24"
 
 [[edge]]
 from = "api"

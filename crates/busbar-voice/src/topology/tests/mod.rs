@@ -31,9 +31,9 @@ use busbar_substrate::ingress::byte_duplex::{CallRef, DuplexHandle, DuplexPlane}
 #[cfg(feature = "test-support")]
 use busbar_substrate::ingress::duplex_ws as ws_ingress;
 #[cfg(feature = "test-support")]
-use busbar_substrate::net_guard::GuardPolicy;
-#[cfg(feature = "test-support")]
 use busbar_substrate::testkit::fixture_host::FixtureHost;
+#[cfg(feature = "test-support")]
+use busbar_unit_trust::net::GuardPolicy;
 #[cfg(feature = "test-support")]
 use futures::SinkExt;
 

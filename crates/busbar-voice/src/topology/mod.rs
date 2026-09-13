@@ -23,6 +23,36 @@ pub mod telephony;
 pub use busbar_voice_codec::topology::twilio;
 pub mod webrtc;
 
+/// RESOLVE THEN PIN on this plane's dial path, through the runtime's own resolver.
+///
+/// THE JUDGEMENT IS THE UNIT'S and is not restated: the structural name refusals
+/// ([`net::judge_host_name`]) first, so a hostile name never reaches the resolver; then EXACTLY ONE
+/// resolution; then every answered address judged and the survivor pinned by [`net::pin_answer`],
+/// which is where `judge_addresses` lives. What is HERE, and the only reason this door exists at
+/// all, is the SOCKET: a unit holds none, and this plane's dial must not block a runtime worker on
+/// `getaddrinfo`. An IP LITERAL is its own answer — asking a resolver about it is one more thing
+/// that could disagree with the judgement.
+async fn resolve_and_pin_async(
+    host: &str,
+    port: u16,
+    https: bool,
+    policy: GuardPolicy,
+) -> Result<net::PinnedTarget, AddressRefusal> {
+    net::judge_host_name(host, policy)?;
+    if let Ok(addr) = host.parse::<std::net::IpAddr>() {
+        return net::pin_answer(host, port, https, &[addr], policy);
+    }
+    let addrs: Vec<std::net::IpAddr> = tokio::net::lookup_host((host, port))
+        .await
+        .map_err(|e| AddressRefusal::Unresolvable {
+            host: host.to_string(),
+            reason: e.to_string(),
+        })?
+        .map(|sa| sa.ip())
+        .collect();
+    net::pin_answer(host, port, https, &addrs, policy)
+}
+
 #[cfg(test)]
 mod tests;
 
@@ -34,12 +64,12 @@ use crate::runtime::session::SessionCore;
 use crate::runtime::{LeaseCloseGuard, VoiceRuntime};
 use busbar_substrate::breaker::{CanonicalSignal, StatusClass};
 use busbar_substrate::egress::duplex_ws::{self, DialError};
-use busbar_substrate::net_guard::{self, GuardPolicy, GuardRefusal};
 use busbar_substrate::plane::handle_engine::HandleEngineError;
 use busbar_substrate::plane_host::{
     run_gauntlet_session, BreakerHost, DispatchScope, GauntletPlane, GauntletRequest, VerifyOutcome,
 };
 use busbar_substrate::transport::{Transport, UpstreamWireKind};
+use busbar_unit_trust::net::{self, AddressRefusal, GuardPolicy};
 use futures::{Sink, Stream};
 use std::sync::Arc;
 
@@ -69,7 +99,7 @@ pub enum DialProviderError {
     /// refusal fact is unchanged, and so is what a reader sees — `Guard(<refusal>)`, exactly what a
     /// `{:?}` of the dialer's old variant printed. The failure has already been recorded into the
     /// breaker cell.
-    Guard(GuardRefusal),
+    Guard(AddressRefusal),
     /// The dial itself failed (URL / connect / TLS / handshake). The failure has already been
     /// recorded into the breaker cell.
     Dial(DialError),
@@ -204,7 +234,7 @@ pub async fn dial_provider(
             return Err(DialProviderError::Dial(e));
         }
     };
-    let pinned = match net_guard::resolve_and_pin_async(&host_name, port, secure, policy).await {
+    let pinned = match resolve_and_pin_async(&host_name, port, secure, policy).await {
         Ok(pinned) => pinned,
         Err(refusal) => {
             host.breaker_record_signal(pool, lane, &guard_signal());

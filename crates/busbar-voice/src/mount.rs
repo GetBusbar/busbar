@@ -48,7 +48,6 @@ use busbar_substrate::ingress::byte_duplex::serve_messages;
 use busbar_substrate::ingress::duplex_ws::{
     accept_gauntlet, WsAcceptFuture, WsArrival, WsArrivalSpec,
 };
-use busbar_substrate::net_guard::GuardPolicy;
 use busbar_substrate::plane::handle_engine::DurableHandleEngine;
 use busbar_substrate::plane::observe::Counted;
 use busbar_substrate::plane::registry::{BuildCtx, PlaneBootCtx};
@@ -56,6 +55,7 @@ use busbar_substrate::plane::PlaneAdmission;
 use busbar_substrate::plane_host::{EngineHost, GateOutcome, TransformVerdict};
 use busbar_substrate::plane_host::{GauntletPlane, GauntletRequest};
 use busbar_substrate::plane_routes::PlaneRouteSpec;
+use busbar_unit_trust::net::GuardPolicy;
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full};
 use std::any::Any;
