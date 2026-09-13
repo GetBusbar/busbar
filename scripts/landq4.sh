@@ -2742,10 +2742,10 @@ EOF
 # process group through the same ssh the poll loop uses (see remote_cancel).
 lq_cancel_slot() { # $1 = sweep dir, $2 = slot number, $3 = tree (default $W, IGNORED — LK-5b, kept so callers do not shift positions)
   local dir="$1" m="$2" pid
-  # RETIRED (LK-5b): a box's proof used to be stopped over land-remote.sh's own `--cancel <host>
-  # <ref>` channel; that script is deleted (LK-5) and was never staged again (lq_stage_engine no
-  # longer copies it), so `-x target/gate/land-remote.sh` could never be true here. A rented
-  # Latchkey job has no remote cancel of its own — killing the driver is the whole of it.
+  # RETIRED (LK-5b): a box's proof used to be stopped over the deleted fleet transport's own
+  # `--cancel <host> <ref>` channel (LK-5); that script was never staged again either
+  # (lq_stage_engine no longer copies it), so the old executable-file check here could never have
+  # been true. A rented Latchkey job has no remote cancel of its own — killing the driver is all of it.
   lq_log "pre-prove: slot $m has no remote cancel any more (EC2 decommissioned, LK-5); only its driver is stopped"
   pid="$(cat "$dir/line-$m.driver" 2>/dev/null || true)"
   lq_kill_tree "$pid"
@@ -2855,9 +2855,9 @@ lq_sweep_slot_demand() { # $1 = live lines, $2 = chained holds, $3 = base replay
 # ── DELETED (LK-5b): lq_sweep_fleet_demand, "how many of the slots above are FLEET slots" ────────
 # It had exactly one caller ever — its own selftest — and the sweep's own log line
 # ("sweep: fleet demand 0 — no EC2 box is started or reserved …") is a hard-coded 0, not this
-# function's output: there is no `--ensure-slots` call site left anywhere in this file for its
-# result to reach (grep this file for `ensure-slots` — the only hits are historical prose). Keeping
-# a function nothing calls, to compute a number nothing reads, is not a demand anybody has.
+# function's output: the power switch this number used to be handed to is deleted (LK-5) and there
+# is no call site left anywhere in this file for its result to reach. Keeping a function nothing
+# calls, to compute a number nothing reads, is not a demand anybody has.
 
 lq_preprove_sweep() { # $1 = tree to prove FROM (default $W), $2 = the sha rows are keyed by (default that tree's HEAD), $3 = the batch in flight (optional)
   local tree="${1:-$W}" inflight="${3:-}"
@@ -4455,10 +4455,10 @@ lq_selftest() {
   echo "landq4 selftest: the fleet-table allocator is gone, not merely idle (LK-5b)"
   # CALL SYNTAX, NOT BARE NAMES — this file's own RETIRED-note prose names these functions too, and
   # a grep for the bare word would count its own explanation as a hit.
-  _t "no fleet table is opened"                    0 "$(grep -c 'fleet_table_open (\|fleet_table_open "' "$0")"
-  _t "  ...or closed"                              0 "$(grep -c '^  fleet_table_close$\|fleet_table_close;' "$0")"
-  _t "  ...or asked for a host"                    0 "$(grep -c 'fleet_pick_host \$\|fleet_pick_host)' "$LQ_SRC")"
-  _t "  ...or dropped from"                        0 "$(grep -c 'fleet_table_drop "' "$0")"
+  _t "no fleet table is opened"                    0 "$(grep -c 'fleet_table_ope[n] (\|fleet_table_ope[n] "' "$0")"
+  _t "  ...or closed"                              0 "$(grep -c '^  fleet_table_clos[e]$\|fleet_table_clos[e];' "$0")"
+  _t "  ...or asked for a host"                    0 "$(grep -c 'fleet_pick_hos[t] \$\|fleet_pick_hos[t])' "$LQ_SRC")"
+  _t "  ...or dropped from"                        0 "$(grep -c 'fleet_table_dro[p] "' "$0")"
   # …AND THE WORD `latchkey` IS WRITTEN INSTEAD OF A BOX ID. The status file's question is "where is
   # this line being proven", and on the latchkey backend the honest answer is not a box id; an empty
   # file would read as "nowhere", which is the one thing it was never.
@@ -4499,7 +4499,7 @@ lq_selftest() {
   # call is deleted along with the fleet it addressed; a non-empty host now falls to an
   # unconditional NO VERDICT instead.
   _t "  ...and the fleet leg is not launched from anywhere"   0 \
-     "$(grep -c 'land.run.sh" --preprove --remote' "$0")"
+     "$(grep -c 'land.run.s[h]" --preprove --remote' "$0")"
   _t "the sweep never launches \$SCRIPTS/land.sh"              0 "$(grep -c 'bash "\$SCRIPTS/land.sh" --preprove' "$0")"
 
   # ── BUSBAR_PROVE_BACKEND, DRIVEN OVER A STUBBED `latchkey` ────────────────────────────────────
@@ -6124,7 +6124,7 @@ lq_selftest() {
   # RETIRED (LK-5b): the power-switch-before-probe ordering, and staging ci-fleet-power.sh with the
   # engine, are both gone along with the allocator and the power switch (LK-5) — regression guards,
   # not behaviour, so a re-introduction of either is caught here rather than assumed impossible.
-  _t "no power switch is asked for slots"               0 "$(grep -c 'ensure-slots' "$LQ_SRC")"
+  _t "no power switch is asked for slots"               0 "$(grep -c '" --ensure-slots' "$LQ_SRC")"
   _t "the power switch is not staged with the engine"   0 \
      "$(grep -c 'cp "\$SCRIPTS/ci-fleet-power.sh"' "$LQ_SRC")"
   _t "  ...and records each slot's root and driver" 2 \
@@ -6159,7 +6159,7 @@ lq_selftest() {
      "$( LANDQ_PROVE_BACKEND=fleet LATCHKEY_MAX_JOBS=12 lq_base_replay_reserve tipLK9 "$lk9line" "$lk9" )"
   _t "  ...no box, either way"                            0 \
      "$( LANDQ_PROVE_BACKEND=fleet LATCHKEY_MAX_JOBS=12 lq_base_replay_reserve tipLK9 "$lk9line" "$lk9" >/dev/null; echo $? )"
-  _t "there is no fleet_pick_host left to call"           0 "$(grep -c 'fleet_pick_host' "$LQ_SRC")"
+  _t "there is no fleet_pick_host left to call"           0 "$(grep -c 'fleet_pick_hos[t] \$\|fleet_pick_hos[t])' "$LQ_SRC")"
   _t "  ...a tip already measured is replayed on neither" 1 \
      "$( printf 'tipLK9%s#measured\n' "$TAB" >>"$BASERED"
         LANDQ_PROVE_BACKEND=latchkey lq_base_replay_reserve tipLK9 "$lk9line" "$lk9" >/dev/null 2>&1; echo $? )"
