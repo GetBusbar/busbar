@@ -379,12 +379,14 @@ fn certified_key(material: &TlsMaterial) -> Result<Arc<CertifiedKey>, String> {
     let certs = load_cert_chain(&material.cert_pem, &material.cert_source)?;
     let key = load_private_key(&material.key_pem, &material.key_source)?;
     let provider = rustls::crypto::ring::default_provider();
-    CertifiedKey::from_der(certs, key, &provider).map(Arc::new).map_err(|e| {
-        format!(
-            "TLS cert/key are not a valid pair (cert {}, key {}): {e}",
-            material.cert_source, material.key_source
-        )
-    })
+    CertifiedKey::from_der(certs, key, &provider)
+        .map(Arc::new)
+        .map_err(|e| {
+            format!(
+                "TLS cert/key are not a valid pair (cert {}, key {}): {e}",
+                material.cert_source, material.key_source
+            )
+        })
 }
 
 /// Build the client-cert verifier for a named-SNI listener's shared mTLS setting. Kept apart from

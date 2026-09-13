@@ -64,12 +64,12 @@ use busbar_core::{admin, config, config_validate, export, metrics, observability
 // `serve`/`serve_plain`) moved by identity to `root::listener`; cert/key parsing now lives in
 // `busbar_unit_transport_key` (named directly at its two call sites below), with `root::listener::
 // build_server_config` bridging a resolved `TlsCfg` to that unit's `TlsMaterial`.
-use root::listener;
 use busbar_core::{
     build_app_from_config, build_split_routers_with_limits, load_config_from_disk,
     preflight_plugins_and_secrets, validate_builtin_secrets_resolve, LoadedConfig,
     DEFAULT_CONFIG_PATH, ENV_CONFIG, ENV_PROVIDERS,
 };
+use root::listener;
 // Read only by the jemalloc idle-purge fallback below, which is itself
 // `#[cfg(not(target_env = "msvc"))]` — windows-msvc has no jemalloc, so importing this
 // unconditionally is an unused-import error there under `-D warnings`.
@@ -1761,10 +1761,11 @@ fn serve_thread_per_core(
     );
     // The connection-placement balancer (see `listener::ConnBalancer`): one handle per worker, fixing
     // SO_REUSEPORT's few-connection imbalance at ACCEPT time (placement only, never migration).
-    let mut balancers: Vec<Option<listener::ConnBalancer>> = listener::ConnBalancer::build(cores.len())
-        .into_iter()
-        .map(Some)
-        .collect();
+    let mut balancers: Vec<Option<listener::ConnBalancer>> =
+        listener::ConnBalancer::build(cores.len())
+            .into_iter()
+            .map(Some)
+            .collect();
     let mut handles = Vec::with_capacity(cores.len());
     for (i, core_id) in cores.into_iter().enumerate() {
         let router = data_router.clone();
@@ -1908,7 +1909,8 @@ async fn serve_listener(
             } else {
                 tracing::debug!(listen = %label, "busbar listening");
             }
-            if let Err(e) = self::listener::serve_plain(listener, router, shutdown, balancer).await {
+            if let Err(e) = self::listener::serve_plain(listener, router, shutdown, balancer).await
+            {
                 die(format!("server error on '{label}': {e}"));
             }
         }
@@ -1928,7 +1930,9 @@ async fn serve_listener(
             } else {
                 tracing::debug!(listen = %label, mtls, "busbar listening (TLS)");
             }
-            if let Err(e) = self::listener::serve(listener, router, server_config, shutdown, balancer).await {
+            if let Err(e) =
+                self::listener::serve(listener, router, server_config, shutdown, balancer).await
+            {
                 die(format!("server error on '{label}': {e}"));
             }
         }
