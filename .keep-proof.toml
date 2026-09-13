@@ -1,24 +1,53 @@
 # WHAT THIS HAND-BACK ASKS keep-proof TO PROVE.
 #
-# .keep-proof.toml is read by .github/workflows/keep-proof.yml at the root of a `keep-*` branch. It
-# scopes the two expensive legs of the run to what the branch actually touched, so a verdict says
-# something specific instead of "everything, slowly". The INTEGRATION tree carries no such file —
-# it is a keep-branch artefact, and this branch is a keep branch.
+# .keep-proof.toml is read by .github/workflows/keep-proof.yml at the root of a `keep-*` branch, and
+# by scripts/prove-latchkey.sh before it rents a runner. It scopes the two expensive legs of the run
+# to what the branch actually touched, so a verdict says something specific instead of "everything,
+# slowly". The INTEGRATION tree carries no such file — it is a keep-branch artefact, and this branch
+# is a keep branch.
+#
+# THIS BRANCH IS THE DRAINED RE-CUT of the five #RED-DRAIN lines: 118 picks re-taken against the
+# integration base, plus the drains, the composition root's eleven identity declarations and the
+# eighteen cells of the retiring crates recorded as dropped. Its blast radius is therefore not a
+# theme but a CRATE SET — every crate the 118 picks touch — and the scope below is exactly that set,
+# with no crate in it that a pick does not reach and none left out that one does.
 #
 #   families — a regex handed to the shadow oracle's `--id-filter`. The oracle replays this build
 #              against the published 1.5.5 binary and reports divergences; unfiltered that is the
-#              better part of half an hour. This branch is the pre-existing-reds branch: it works
-#              on the tree's frozen PARSE SURFACE (a limit's three refusal sentences) and on the
-#              gates that read the tree as data, so the honest scope is the boot / config /
-#              documented families — the cells that read what the binary PRINTS when it refuses a
-#              document, which is exactly what the first item here moved back to 1.5.5's words.
-#              boot.refusal|BOOT-P20|validate, BOOT-P29 and BOOT-P30 are the three cells that must
-#              turn byte-identical; the rest of the boot/config families are the blast radius of
-#              touching a deserializer every section's parse runs through.
-#   tests    — the packages whose test binaries the sharded legs must include by name.
-#              `busbar-substrate` holds the limit grammar itself; `busbar-core` re-exports it at
-#              the historical config path and owns the pre-pass that sets the frozen-list rule;
-#              `busbar` is the binary whose --validate the boot cells drive; `xtask` is the gate
-#              runner whose own selftests are on this branch's list.
-families = '^(boot|config|documented)([|.]|$)'
-tests = ["busbar-core", "busbar-substrate", "xtask", "busbar"]
+#              better part of half an hour. Three alternations, one per theme the picks carry: the
+#              control/ledger surfaces (the admin arm's third answer, the billing and ledger cells),
+#              the plane and routing surfaces (the llm dialects, failover, hooks, the teller), and
+#              the plugin/hazard/claims surfaces the packing and signing picks move.
+#   tests    — the packages whose test binaries the sharded legs must include by name. `xtask` is
+#              deliberately ABSENT: it is the gate runner, it is proved by `cargo xtask selftest`
+#              and by the gate legs themselves, and naming it here would run the gate harness as a
+#              test binary rather than as the gate.
+families = '^(admin\.ops|auth|billing|ledger|boot|config|cli)[|.]|^(llm|route\.failover|hooks|teller)[|]|^(plugins|hazard|documented|neutrality)[|]'
+tests = [
+  "busbar",
+  "busbar-a2a",
+  "busbar-api",
+  "busbar-auth-admin-tokens",
+  "busbar-caps",
+  "busbar-contract",
+  "busbar-contract-transport",
+  "busbar-core",
+  "busbar-kernel",
+  "busbar-llm",
+  "busbar-mcp",
+  "busbar-plugin-loader",
+  "busbar-plugin-pack",
+  "busbar-plugin-sign",
+  "busbar-plugin-testkit",
+  "busbar-substrate",
+  "busbar-substrate-values",
+  "busbar-timing",
+  "busbar-transport-tcp",
+  "busbar-transport-tls",
+  "busbar-transport-ws",
+  "busbar-unit-egress",
+  "busbar-unit-ledger",
+  "busbar-unit-verbs",
+  "busbar-voice",
+  "busbar-voice-codec",
+]
