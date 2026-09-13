@@ -1559,7 +1559,7 @@ pub fn selftest(
         &[ROW_MATRIX],
         ledger_with(
             cx,
-            "[[minted]]\ncrate = \"busbar-core-policy\"\ncommit = \"5fe28f82a\"\ncells = \"4\"\nmoved_from = \"busbar-core\"\n",
+            "[[minted]]\ncrate = \"busbar-core-policy\"\ncommit = \"5fe28f82a\"\ncells = \"4\"\nmoved_from = \"busbar-core, busbar-llm\"\n",
             "",
         ),
         &["minted-row", "[[edge]] core \u{d7} control"],
@@ -1662,7 +1662,7 @@ pub fn selftest(
         gate,
         "a [[minted]] row that was not moved out of the source admits no cell in the source",
         &[ROW_MATRIX],
-        ledger_with(cx, "moved_from = \"busbar-core\"\n", ""),
+        ledger_with(cx, "moved_from = \"busbar-core, busbar-llm\"\n", ""),
         &[
             "minted-row",
             "busbar-core \u{d7} core",
