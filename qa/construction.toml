@@ -2510,3 +2510,92 @@ key = "cell.busbar.caps.count"
 file = "qa/kind-isolation.toml"
 by = 1
 because = "the capability vocabulary the seal cell drives the verify step through: the kernel seal that mints the step's own tokens, which is the only way to obtain the trust token a sealed destination is sealed with. A cell that reached the sealed set without one would be proving a step that cannot run, because sealing a destination is not something a caller can do unaided."
+
+# ── THE A2A NODE AND THE ROOT'S COMPOSED DECLARATION, DECLARED BY IDENTITY ───────────────────────
+#
+# THE COMPOSITION'S OWN WAY IN FOR THE A2A PLANE, and the node behind it:
+# `crates/busbar/src/root/node_a2a.rs` and the cells beside it
+# (`crates/busbar/src/root/tests/node_a2a.rs`), mounted at `main.rs`'s node store and bound onto the
+# units `root/units_a2a.rs` already declared.
+#
+# Before this, `root::units_a2a` was TWELVE ARMS NOTHING DROVE, and — unlike MCP — there was no way
+# in at all: this plane's surface is eighteen `PlaneRouteSpec` rows returned by a PLANE-OWNED `fn` on
+# `busbar_a2a::PLANE_DECL`, and the root pushed it wholesale. So the root now composes ITS OWN
+# declaration: every one of the thirty-three fields copied BY IDENTITY (each is `Copy`, so `..*plane`
+# is a copy and not a restatement), with `routes` replaced by a root function that calls the plane's
+# own and swaps the HANDLER of the rows whose classes have moved. `(path, method, auth)` pass through
+# VERBATIM, so the `CoreRouteTable` row and the auth middleware's `required_scope` are recorded from
+# the same values by the same act. The plane's declaration is never edited, and the swap keeps an
+# `Arc` of the plane's own handler that every unmoved method is delegated to.
+#
+# WHY THESE NINE ARE A DECLARATION AND NOT A COUPLING. Every word counted is the ROOT NAMING WHAT IT
+# MOUNTS. ARCHITECTURE.md 1.1 is the grant and it is the whole grant: the three axes are blind to each
+# other and the composition root is the ONE place they are allowed to see each other, because
+# composing them is what a composition root IS. A node cannot mount a plane without naming the plane,
+# drive a kernel loop without naming the kernel, or hand a step to a unit without naming the unit. The
+# root has no LOC ceiling for the same reason: what it holds is the wiring, and wiring is measured by
+# what it wires. The landed precedent is the same shape and was declared the same way — the MCP node's
+# ten `cell.busbar.*.count` entries above.
+#
+# WHAT IS NOT DECLARED HERE. Nothing in a LEGACY crate rises on a new body. `busbar-a2a` is untouched
+# by this landing — no production line added, none deleted, and the two `busbar × legacy` words are
+# the MOUNT (`busbar_core` and `busbar_a2a` named in `main.rs` where the composed declaration is
+# installed), not a shim built beside the plane.
+#
+# EXPIRY. Each entry rides in the commit that lands the seam; once that commit is in the base,
+# `gate construction --write` strikes it. The figures stay pinned to the measurement by
+# `ceiling-slack` — a declaration moves the ratchet, it does not loosen it.
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.api.count"
+file = "qa/kind-isolation.toml"
+by = 5
+because = "THE A2A NODE's reach onto the neutral ABI: `busbar_api::{VirtualKey, AuthPrincipal, Store}` — the caller's resolved key as the serving seam hands it over, the anonymous actor spelling an ungoverned deployment resolves, and the store handle the plane's record legs are bound over. A plane may not hold a key directory or a store, so the mapping from an arrived credential to the identity the loop's steps judge belongs to the composition and to nothing else."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.caps.count"
+file = "qa/kind-isolation.toml"
+by = 14
+because = "THE A2A NODE's capability vocabulary: `busbar_caps::{ArrivalRecord, PrincipalId, ReasonCode, StepName, TrustToken, KernelSeal, Canary, UnitKey, OriginKind, Origin, Outcome}` — the arrival record the node builds for the transport that named the claim, the principal the authenticate step settles on, the seal a verified destination is minted under, and the step-and-reason a refused ending carries back to the caller. Minting the evidence a step is judged against is the kernel seal's; reaching it is the composition's, because a plane that built its own ArrivalRecord would be a plane deciding what arrived."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.control.count"
+file = "qa/kind-isolation.toml"
+by = 6
+because = "THE A2A NODE's `admin` spellings, read where the node's audit rows are landed and where the mount states which configuration it read (the operator's own `auth.chain:` and `groups:` tree, taken after the overlay merge so the caps this node enforces are the ones the operator's API writes as well as the ones the file declares). The node names the scope and never the surface: there is no new plane-admin edge in this landing."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.kernel.count"
+file = "qa/kind-isolation.toml"
+by = 17
+because = "THE A2A NODE's kernel: `busbar_kernel::{teller::{Kernel, run_unit, Run, UnitCtx, AccrualMeter, Ended}, inflight::{InFlight, Enter, arrival_hold}, slice::ConcurrencyGauge, registry::Generation}` — the loop itself, the in-flight table it admits into, the gauge that bounds it, the hold whose lifetime is the unit's, and the ending the exit arm settles from. Driving the Teller loop is what makes this a serving path rather than a function call, and the ONE kind entitled to drive it is the composition that built it."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.legacy.count"
+file = "qa/kind-isolation.toml"
+by = 1
+because = "THE A2A NODE's MOUNT POINT, which is still in the retiring crate: `busbar_a2a` named in `main.rs` where the root's composed declaration is installed in the plane's place, and where the node is mounted after `start_planes`. It is the mount and not a new body — `busbar-a2a`'s own non-test line count is UNCHANGED by this landing — and it goes to zero with the crate: `legacy-reach` is the ratchet that watches it and the drain is `git rm -r`, never an edit."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.plane.count"
+file = "qa/kind-isolation.toml"
+by = 117
+because = "THE ROOT'S COMPOSED DECLARATION, which cannot exist without naming the plane it is composed over: `busbar_a2a::PLANE_DECL` copied field by field, `busbar_plane_a2a::{ops, records}` for the operation class and the record schema a unit of this plane is judged and routed under, and the plane's own registry key read off the declaration rather than spelled. The rule counts a plane's instance name in identifiers, string literals, comments and doc comments alike, and this landing's two files are a composition root SAYING WHAT IT MOUNTS at every line — which is the one kind entitled to say it. Nothing plane-specific entered core, kernel, units or the substrate."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.substrate.count"
+file = "qa/kind-isolation.toml"
+by = 1
+because = "THE A2A NODE's one substrate spelling: `busbar_substrate_values::store::now_ms`, the wall clock a unit's arrival is read from — ONCE per unit, at the top, because a second read is a second arrival and the table would then stamp the unit in one window while the books billed it in another."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.transport.count"
+file = "qa/kind-isolation.toml"
+by = 10
+because = "THE A2A NODE's transport vocabulary: the composed stack a request arrived over, bottom layer first (`tcp`, `tls`, `http`), carried onto the arrival record the verify step reads. What is under a surface and what is over it is what the COMPOSITION wired, so the chain is stated here and nowhere else; the node opens no socket and names no carrier."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.unit.count"
+file = "qa/kind-isolation.toml"
+by = 58
+because = "THE A2A NODE's units, which is the whole of what a node is: `busbar_unit_auth::{Auth, AuthChain}` (the deployment's OWN chain, composed up front — an empty one is `is_open()`, the open front door, and would have been a stand-in shipped in front of a plane the operator authenticates), `busbar_unit_admission::{Door, Pricer, GroupTable, InMemoryCells, RateNanos, ChainWalk}` (the deployment's own rate card and flat fee, projected through the pricing law's own rounding — never `flat(0)`), `busbar_unit_trust::{Trust, PoolView, KindFacts, Resolver, GuardPolicy, Denylist, BreakerQuery}`, `busbar_unit_scope::{Grants, Scope}`, `busbar_unit_breaker::BreakerUnit` and the journal's `busbar_unit_wal`/`busbar_unit_ledger` halves. Handing a step to a unit is naming the unit, and the composition root is the one kind that may."

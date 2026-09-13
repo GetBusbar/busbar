@@ -945,6 +945,7 @@ struct A2aNodeMoney {
 /// that moves the first class is the commit that owes a ruling on it.
 #[cfg(all(feature = "plane-a2a", feature = "root-a2a"))]
 fn mount_root_a2a(
+    directory: std::sync::Arc<dyn busbar_contract::VirtualKeyDirectory>,
     store: &std::sync::Arc<dyn busbar_api::Store>,
     book: &root::durability::NodeBook,
     money: &A2aNodeMoney,
@@ -976,7 +977,13 @@ fn mount_root_a2a(
 
     let bindings = root::bindings::Node::over(
         busbar_unit_auth::Auth::new(chain),
-        root::kernel::auth_bindings::AuthBindings::without_directory(),
+        // THE DEPLOYMENT'S OWN GOVERNANCE STATE, behind the credential cache, the signed-key
+        // verifier and the revocation denylist — ONE directory behind all three, so there is no
+        // second opinion about which state this node's credentials are judged against. Unbound, the
+        // chain's keys arm would have nothing to verify against and nothing to revoke through: a
+        // credential this node had revoked would be admitted at authenticate and refused, if at all,
+        // several steps later by something that had never heard of the revocation.
+        root::kernel::auth_bindings::AuthBindings::new(directory),
         busbar_unit_admission::Door::new(busbar_unit_admission::InMemoryCells::new()),
         pricer,
         root::policy::build(&root::policy::MeterPolicyConfig::default()),
@@ -1768,7 +1775,11 @@ async fn run(data_workers: usize) {
     // nothing.
     #[cfg(all(feature = "plane-a2a", feature = "root-a2a"))]
     if let Some(gov) = app_handle.load().governance.clone() {
-        mount_root_a2a(&gov.store(), &book, &a2a_money, &a2a_groups);
+        let directory: std::sync::Arc<dyn busbar_contract::VirtualKeyDirectory> =
+            std::sync::Arc::new(root::kernel::auth_bindings::GovernanceDirectory::new(
+                std::sync::Arc::clone(&gov),
+            ));
+        mount_root_a2a(directory, &gov.store(), &book, &a2a_money, &a2a_groups);
     }
 
     // THE STDIO SERVE MODE (`--mcp-stdio`). The SAME boot ran above — config load, plugin
