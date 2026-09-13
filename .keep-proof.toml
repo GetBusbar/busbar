@@ -12,26 +12,48 @@
 # classes onto a root-side node, so the scope must name the crates that hold the moved code AND the
 # composition root that mounts it.
 #
-# THE SCOPE IS THE UNION OF TWO LINES, because this branch is cut ON TOP of the plane-declaration
-# line: the declaration this root composes is `busbar_contract::plane` data, and this branch's own
-# MOVE takes the route-mount vocabulary out of the retiring substrate. So the crates that line
-# names (`busbar-contract`, `busbar-substrate`, `busbar-substrate-values`, `busbar-core`) are named
-# here too, and `config` joins the families — a section must still resolve to its plane.
-#
 #   tests    — `busbar` FIRST and non-negotiably: the composition root is where the node lives, and
 #              the real-binary batteries that drive a mounted leg are root test binaries. Then the
 #              plane and legacy crates the classes move out of (`busbar-plane-a2a`, `busbar-a2a`,
 #              `busbar-a2a-codec`), the kind-neutral units a class meets on its way through the
 #              gauntlet (`busbar-unit-admission`, `busbar-unit-auth`, `busbar-unit-breaker` — the
 #              admit/approve/verify steps the legacy arm never asked about, which is where the risk
-#              of this line actually is), the crates the route-mount MOVE crosses, and `xtask` for
-#              the gates.
+#              of this line actually is), and the crates the route-mount re-path crosses.
+#
+#              THE SCOPE IS THE UNION OF TWO LINES, because this branch is cut ON TOP of the
+#              plane-declaration line: the declaration this root composes is `busbar_contract::plane`
+#              data, and this branch re-spells four moved substrate modules at their definition site
+#              in `busbar-substrate-values`. So the crates that line names -- `busbar-contract`,
+#              `busbar-substrate`, `busbar-substrate-values`, `busbar-core` -- are named here too,
+#              and `config` joins the families: a section must still resolve to its plane.
+#
+#              `xtask` IS DELIBERATELY NOT HERE, and taking it out STRENGTHENS this proof rather
+#              than narrowing it. MEASURED, on Latchkey job cli-adb5e58e: a run whose `tests` array
+#              names `xtask` spends 4,686 seconds inside ONE case -- `xtask/tests/cli.rs`'s
+#              `selftest_runs_every_registered_gates_red_proof` -- and then FAILS it with
+#              "unproven gate(s): construction, design-bindings, kind-isolation". ~85 billed
+#              runner-minutes, verdict RED.
+#
+#              The verdict is the smaller half of the problem. The legs run in order -- build, fmt,
+#              clippy, TESTS, then the gates, then the shadow oracle -- and the test leg is
+#              `cargo test --locked $args || exit 1`. So a red there ABORTS THE JOB BEFORE A SINGLE
+#              GATE OR ORACLE FAMILY RUNS. That job proved nothing about kind-isolation, about
+#              construction, or about any recorded family, because it never reached them.
+#
+#              And the coverage was never real to begin with: the job ALREADY runs
+#              `cargo run -p xtask -- selftest` as its OWN leg, after the gates. Naming `xtask`
+#              under `tests` adds no check -- it runs that same selftest a second time, an hour
+#              earlier, in the one position where failing it costs the rest of the proof. This is
+#              the stale-scope trap inverted: not a scope too narrow to catch anything, but one so
+#              wide it never reaches the legs that matter. The owed fix is LK-6's sharding (or the
+#              gate selftests as their own job); until that lands, the honest scope is the crates
+#              this branch touches, and the gates are left to the legs that exist to run them.
 #   families — the recorded-cell families a moved class can disturb: `a2a` itself, `boot` (a node is
 #              wired at boot and a composition that disagrees with itself refuses to bind),
-#              `config` (a section still resolves to its plane), `neutrality` (the routes cells read
-#              the A2A-shaped surface), `admin.ops` (the A2A plane contributes admin verbs), and
-#              `billing`/`ledger` — because the rule this line is held to is that the money path
-#              stays byte-identical, and a family that is not replayed cannot testify to that.
+#              `neutrality` (the routes cells read the A2A-shaped surface), `admin.ops` (the A2A
+#              plane contributes admin verbs), and `billing`/`ledger` — because the rule this line
+#              is held to is that the money path stays byte-identical, and a family that is not
+#              replayed cannot testify to that.
 families = '^(a2a|boot|config|neutrality|admin\.ops|billing|ledger)([|.]|$)'
 tests = [
     "busbar",
@@ -45,5 +67,4 @@ tests = [
     "busbar-substrate",
     "busbar-substrate-values",
     "busbar-core",
-    "xtask",
 ]
