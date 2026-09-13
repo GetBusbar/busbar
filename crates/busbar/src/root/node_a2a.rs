@@ -706,7 +706,7 @@ pub fn compose_chain(
 /// deployment.
 #[must_use]
 pub fn compose_pricer<'r>(
-    lanes: impl IntoIterator<Item = (&'r str, busbar_substrate::billing::RawTierRates)>,
+    lanes: impl IntoIterator<Item = (&'r str, busbar_substrate_values::billing::RawTierRates)>,
     per_request_fee: i64,
     present: bool,
 ) -> Pricer {

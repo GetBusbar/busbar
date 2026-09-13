@@ -151,7 +151,7 @@ fn handle_cli_flags() -> Option<i32> {
                                 "warning: {code}: config at {config_path} did not parse; printing the \
                                  built-in metadata denylist only (security.blocked_metadata_hosts \
                                  skipped). Run busbar normally to see the parse error.",
-                                code = busbar_substrate::diagnostics::CLI_METADATA_BLOCKLIST_CONFIG_UNREADABLE.banner()
+                                code = busbar_substrate_values::diagnostics::CLI_METADATA_BLOCKLIST_CONFIG_UNREADABLE.banner()
                             );
                             }
                         }
@@ -165,7 +165,7 @@ fn handle_cli_flags() -> Option<i32> {
                             "warning: {code}: config at {config_path} failed to interpolate; printing \
                              the built-in metadata denylist only (security.blocked_metadata_hosts \
                              skipped). Run busbar normally to see the interpolation error.",
-                            code = busbar_substrate::diagnostics::CLI_METADATA_BLOCKLIST_CONFIG_UNREADABLE.banner()
+                            code = busbar_substrate_values::diagnostics::CLI_METADATA_BLOCKLIST_CONFIG_UNREADABLE.banner()
                         );
                     }
                 }
@@ -300,7 +300,7 @@ fn validate_config_command() -> i32 {
         Err(e) => {
             eprintln!(
                 "[error] {}: {e}",
-                busbar_substrate::diagnostics::CLI_VALIDATE_CONFIG_INVALID.banner()
+                busbar_substrate_values::diagnostics::CLI_VALIDATE_CONFIG_INVALID.banner()
             );
             return 1;
         }
@@ -320,7 +320,7 @@ fn validate_config_command() -> i32 {
         Err(errs) => {
             eprintln!(
                 "[error] {}: config errors:\n  - {}",
-                busbar_substrate::diagnostics::CLI_VALIDATE_CONFIG_INVALID.banner(),
+                busbar_substrate_values::diagnostics::CLI_VALIDATE_CONFIG_INVALID.banner(),
                 errs.join("\n  - ")
             );
             return 1;
@@ -334,7 +334,7 @@ fn validate_config_command() -> i32 {
     if let Err(errs) = config_validate::validate_with_unset(&cfg, &unset_env_vars) {
         eprintln!(
             "[error] {}: config validation failed:\n  - {}",
-            busbar_substrate::diagnostics::CLI_VALIDATE_CONFIG_INVALID.banner(),
+            busbar_substrate_values::diagnostics::CLI_VALIDATE_CONFIG_INVALID.banner(),
             errs.join("\n  - ")
         );
         return 1;
@@ -349,7 +349,7 @@ fn validate_config_command() -> i32 {
         Err(e) => {
             eprintln!(
                 "[error] {}: {e}",
-                busbar_substrate::diagnostics::CLI_VALIDATE_PLUGIN_PREFLIGHT_FAILED.banner()
+                busbar_substrate_values::diagnostics::CLI_VALIDATE_PLUGIN_PREFLIGHT_FAILED.banner()
             );
             return 1;
         }
@@ -361,7 +361,7 @@ fn validate_config_command() -> i32 {
     if let Err(e) = validate_builtin_secrets_resolve(&cfg) {
         eprintln!(
             "[error] {}: {e}",
-            busbar_substrate::diagnostics::CLI_VALIDATE_CONFIG_INVALID.banner()
+            busbar_substrate_values::diagnostics::CLI_VALIDATE_CONFIG_INVALID.banner()
         );
         return 1;
     }
@@ -426,7 +426,7 @@ fn list_plugins_command() -> i32 {
         Err(e) => {
             eprintln!(
                 "[warn] {}: config not readable ({e}); using the default plugins block",
-                busbar_substrate::diagnostics::CLI_LIST_PLUGINS_CONFIG_UNREADABLE.banner()
+                busbar_substrate_values::diagnostics::CLI_LIST_PLUGINS_CONFIG_UNREADABLE.banner()
             );
             (
                 config::PluginsCfg::default(),
@@ -439,7 +439,7 @@ fn list_plugins_command() -> i32 {
         Err(e) => {
             eprintln!(
                 "[error] {}: plugins.trust is invalid: {e}",
-                busbar_substrate::diagnostics::CLI_LIST_PLUGINS_TRUST_INVALID.banner()
+                busbar_substrate_values::diagnostics::CLI_LIST_PLUGINS_TRUST_INVALID.banner()
             );
             return 1;
         }
@@ -496,7 +496,7 @@ fn list_plugins_command() -> i32 {
 fn die(msg: impl std::fmt::Display) -> ! {
     eprintln!(
         "[error] {}: {msg}",
-        busbar_substrate::diagnostics::BOOT_FATAL_ERROR.banner()
+        busbar_substrate_values::diagnostics::BOOT_FATAL_ERROR.banner()
     );
     std::process::exit(1);
 }
@@ -532,7 +532,7 @@ fn worker_threads_from_env(name: &str) -> Option<usize> {
                 eprintln!(
                     "[warn] {code}: {name}={v:?} is not a positive integer; ignoring it and using \
                      the default worker-thread count",
-                    code = busbar_substrate::diagnostics::WORKER_THREADS_INVALID.banner()
+                    code = busbar_substrate_values::diagnostics::WORKER_THREADS_INVALID.banner()
                 );
                 None
             }
@@ -561,7 +561,7 @@ fn worker_threads_from_config() -> Option<usize> {
             // it goes to STDERR like the other boot diagnostics.
             eprintln!(
                 "[warn] {}: {msg}",
-                busbar_substrate::diagnostics::WORKER_THREADS_INVALID.banner()
+                busbar_substrate_values::diagnostics::WORKER_THREADS_INVALID.banner()
             );
             None
         }
@@ -603,7 +603,7 @@ fn register_protocols() {
     // `mut` is used only under the protocol features below; with every protocol compiled out
     // (`--no-default-features`) nothing pushes, so the binding is legitimately unmutated there.
     #[allow(unused_mut)]
-    let mut installed: Vec<&'static busbar_substrate::proto::ProtocolDecl> = Vec::new();
+    let mut installed: Vec<&'static busbar_substrate_values::proto::ProtocolDecl> = Vec::new();
     // THE SECOND SEAM, FOLDED IN (Batch C-6): a path-model dialect's arrival split off `ProtocolDecl`
     // when the decl relocated to `busbar-substrate`, so each protocol crate contributes its
     // `(name, arrival)` pairs BESIDE its declarations here — the ONE composition-root write into both
@@ -666,7 +666,7 @@ fn register_protocols() {
     // does. Both engine forward paths name the concrete factory directly today, so this line changes
     // no bytes on the wire; it makes the seam's production installer exist (set-once, first writer wins).
     #[cfg(feature = "proto-llm")]
-    busbar_substrate::proto::install_stream_translator_factory(
+    busbar_substrate_values::proto::install_stream_translator_factory(
         busbar_llm::proto_stream::new_stream_translator,
     );
 }
@@ -757,7 +757,7 @@ fn register_planes() {
 }
 
 /// REGISTER THE LINKED PLANES' DIAGNOSTICS — the composition root's one write into the diagnostics
-/// axis (`busbar_substrate::diagnostics::install_diagnostics`), exactly `register_planes`' shape on
+/// axis (`busbar_substrate_values::diagnostics::install_diagnostics`), exactly `register_planes`' shape on
 /// the diagnostics axis. Each extracted plane crate OWNS its `Diagnostic` consts and exposes them as
 /// `DIAGNOSTICS`; core carries no plane-specific diagnostic (the neutral catalog is the plane-agnostic
 /// half). The neutral `REGISTRY ∪ installed` fold makes these codes resolve through `by_code` and land
@@ -769,14 +769,14 @@ fn register_planes() {
 #[allow(clippy::vec_init_then_push)]
 fn register_diagnostics() {
     #[allow(unused_mut)]
-    let mut installed: Vec<&'static busbar_substrate::diagnostics::Diagnostic> = Vec::new();
+    let mut installed: Vec<&'static busbar_substrate_values::diagnostics::Diagnostic> = Vec::new();
     #[cfg(feature = "plane-mcp")]
     installed.extend_from_slice(busbar_mcp::DIAGNOSTICS);
     #[cfg(feature = "plane-a2a")]
     installed.extend_from_slice(busbar_a2a::DIAGNOSTICS);
     #[cfg(feature = "plane-voice")]
     installed.extend_from_slice(busbar_voice::DIAGNOSTICS);
-    busbar_substrate::diagnostics::install_diagnostics(installed.leak());
+    busbar_substrate_values::diagnostics::install_diagnostics(installed.leak());
 }
 
 /// REGISTER THE LINKED DUPLEX PLANES' INBOUND WS-ACCEPT ARRIVALS — the composition root's one write
@@ -923,7 +923,7 @@ struct A2aNodeMoney {
     chain: Vec<busbar_substrate::config::auth::AuthChainEntry>,
     /// The card's lanes in the NEUTRAL raw view — the same projection the engine's cost model and
     /// the root's rate-card history are built from.
-    lanes: Vec<(String, busbar_substrate::billing::RawTierRates)>,
+    lanes: Vec<(String, busbar_substrate_values::billing::RawTierRates)>,
     /// The flat per-request fee, in abstract cents.
     fee_cents: i64,
     /// Whether a `rate_card:` is configured at all. Absent is not empty: absent prices every class
@@ -1402,7 +1402,7 @@ async fn run(data_workers: usize) {
         // `resolve_backend` already warned with the remediation; repeat the posture here so the one
         // line an operator greps for ("config is ...") never claims a durability busbar does not have.
         tracing::warn!(
-            diag = %busbar_substrate::diagnostics::CONFIG_OVERLAY_NOT_WRITABLE.banner(),
+            diag = %busbar_substrate_values::diagnostics::CONFIG_OVERLAY_NOT_WRITABLE.banner(),
             "config is READ-ONLY (the overlay backend is not writable): busbar serves traffic \
              normally, but admin-API config mutations are refused. Set `config.locked: true` to \
              declare this deliberately, or give `config.overlay.file` a writable path."
@@ -1455,7 +1455,7 @@ async fn run(data_workers: usize) {
     // flag that dumps the full list.
     if cfg.allow_all_metadata {
         tracing::warn!(
-            diag = %busbar_substrate::diagnostics::METADATA_PROTECTION_DISABLED.banner(),
+            diag = %busbar_substrate_values::diagnostics::METADATA_PROTECTION_DISABLED.banner(),
             "metadata protection DISABLED — all cloud-metadata endpoints reachable"
         );
     } else {
@@ -2175,7 +2175,7 @@ async fn shutdown_signal() {
     let ctrl_c = async {
         if let Err(e) = tokio::signal::ctrl_c().await {
             tracing::warn!(
-                diag = %busbar_substrate::diagnostics::SHUTDOWN_SIGNAL_HANDLER_INSTALL_FAILED.banner(),
+                diag = %busbar_substrate_values::diagnostics::SHUTDOWN_SIGNAL_HANDLER_INSTALL_FAILED.banner(),
                 error = %e, "failed to install ctrl_c handler; SIGINT shutdown disabled"
             );
             std::future::pending::<()>().await;
@@ -2190,7 +2190,7 @@ async fn shutdown_signal() {
             }
             Err(e) => {
                 tracing::warn!(
-                    diag = %busbar_substrate::diagnostics::SHUTDOWN_SIGNAL_HANDLER_INSTALL_FAILED.banner(),
+                    diag = %busbar_substrate_values::diagnostics::SHUTDOWN_SIGNAL_HANDLER_INSTALL_FAILED.banner(),
                     error = %e, "failed to install SIGTERM handler; SIGTERM shutdown disabled"
                 );
                 std::future::pending::<()>().await;
@@ -2221,7 +2221,7 @@ async fn shutdown_signal() {
                 }
                 Err(e) => {
                     tracing::warn!(
-                        diag = %busbar_substrate::diagnostics::SHUTDOWN_SIGNAL_HANDLER_INSTALL_FAILED.banner(),
+                        diag = %busbar_substrate_values::diagnostics::SHUTDOWN_SIGNAL_HANDLER_INSTALL_FAILED.banner(),
                         error = %e, "failed to install ctrl_close handler; CTRL_CLOSE shutdown disabled"
                     );
                     std::future::pending::<()>().await;
@@ -2235,7 +2235,7 @@ async fn shutdown_signal() {
                 }
                 Err(e) => {
                     tracing::warn!(
-                        diag = %busbar_substrate::diagnostics::SHUTDOWN_SIGNAL_HANDLER_INSTALL_FAILED.banner(),
+                        diag = %busbar_substrate_values::diagnostics::SHUTDOWN_SIGNAL_HANDLER_INSTALL_FAILED.banner(),
                         error = %e, "failed to install ctrl_shutdown handler; CTRL_SHUTDOWN shutdown disabled"
                     );
                     std::future::pending::<()>().await;
@@ -2299,7 +2299,7 @@ fn spawn_jemalloc_idle_purge_fallback() {
                     eprintln!(
                         "[warn] {}: jemalloc idle-purge fallback disabled: could not read \
                          opt.dirty_decay_ms ({e})",
-                        busbar_substrate::diagnostics::JEMALLOC_IDLE_PURGE_FALLBACK_UNAVAILABLE
+                        busbar_substrate_values::diagnostics::JEMALLOC_IDLE_PURGE_FALLBACK_UNAVAILABLE
                             .banner()
                     );
                     return;
@@ -2328,7 +2328,7 @@ fn spawn_jemalloc_idle_purge_fallback() {
     if let Err(e) = spawned {
         eprintln!(
             "[warn] {}: could not spawn the jemalloc idle-purge fallback thread ({e})",
-            busbar_substrate::diagnostics::JEMALLOC_IDLE_PURGE_FALLBACK_UNAVAILABLE.banner()
+            busbar_substrate_values::diagnostics::JEMALLOC_IDLE_PURGE_FALLBACK_UNAVAILABLE.banner()
         );
     }
 }
@@ -2508,7 +2508,7 @@ fn generate_signing_key_command() -> i32 {
         Err(e) => {
             eprintln!(
                 "busbar: {}: could not generate a signing key: {e}",
-                busbar_substrate::diagnostics::SIGNING_KEY_GENERATION_FAILED.banner()
+                busbar_substrate_values::diagnostics::SIGNING_KEY_GENERATION_FAILED.banner()
             );
             return 1;
         }

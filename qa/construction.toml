@@ -149,10 +149,17 @@ busbar-voice = ["busbar-voice-codec"]
 # `busbar_substrate::ingress::arrival::install_path_ingress`. The same commit takes the root's reach
 # into the legacy core DOWN by two and its total legacy reach DOWN by one, so the retirement is net
 # forward and this single name is the sideways step that paid for it.
+# STRUCK: this entry declared a +1 on `rules.legacy-reach.prefixes.busbar_substrate.figure`, and
+# that figure FELL on this line (49 -> 33, the twenty-two re-paths onto the definition site). A
+# declaration of a rise on a ceiling that did not rise is stale by the gate's own words — "strike
+# the entry" — so it is struck here, in the commit that lowers the figure, rather than left to
+# refuse.
+
 [[gate.ceiling_raises]]
-key = "rules.legacy-reach.prefixes.busbar_substrate.figure"
-by = 1
-because = "moved verbatim from busbar-core/src/proto/registry.rs (52 lines): the composition root owns the boot installers. kind-isolation cell crate `busbar`, kind `substrate`. The root's busbar_core:: prefix falls 27 -> 25 and its total legacy reach falls 91 -> 90 in the same commit."
+key = "cell.busbar.substrate.count"
+file = "qa/kind-isolation.toml"
+by = 33
+because = "RE-PATH, not a new coupling, and the falls that mirror it are in this same commit. The composition root spelled twenty-two symbols of four WHOLE MODULES (diagnostics, billing, handlers, proto) through `busbar_substrate::`, which is a `pub use busbar_substrate_values::…` re-export: the modules had already moved to the surviving pure half and the root was reading them through the RETIRING crate's historical path, against the rule its own manifest states. Re-spelled at the definition site: no type renamed, no line moved, no behaviour changed. `legacy-reach:busbar_substrate` 54 -> 33 (figure re-pinned DOWN to 33), `legacy-reach` 96 -> 75 (ceiling re-pinned DOWN to 75), `busbar x legacy` 99 -> 98. The root names the crate that survives instead of the one being deleted."
 
 # THE SIXTH MINT: `busbar_kernel::teller::Kernel::trust_token()` (crates/busbar-kernel/src/teller.rs,
 # 3 measured lines: the signature, the mint, the brace), declared beside the five siblings it joins —
@@ -1318,7 +1325,9 @@ while the total falls is that intermediate step, visible and not fatal."""
 scope_globs = ["crates/busbar/src/root/*.rs", "crates/busbar/src/main.rs"]
 # THE ONE GATING FIGURE: distinct symbols named through every prefix below, summed. Calibrated to
 # the tree it was written against; it may only go down.
-ceiling = 91
+# 91 -> 75: the twenty-two re-paths recorded under `prefixes.busbar_substrate` below, re-pinned to
+# today's measurement in the commit that makes them. Down only, and this is down.
+ceiling = 75
 
 # Each sub-row below GATES, in both directions. `figure` is the per-crate count PINNED TO TODAY'S
 # MEASUREMENT: above it is that row's own FAIL, below it is `ceiling-slack`. It was informational --
@@ -1357,7 +1366,19 @@ because = "the substrate seams the root installs; each moves onto the ABI as the
 # that the root had never spelled before is `busbar_substrate::ingress::arrival::install_path_ingress`.
 # The move is why the TOTAL fell (91 -> 90) and core's own prefix fell (27 -> 25) in the same commit:
 # this is the sideways step the per-crate rows exist to make visible, not a regression.
-figure = 49
+#
+# 49 -> 33, BY RE-PATH AND NOT BY DRAIN, and the policy it obeys is written in the root's OWN
+# manifest: "The composition root names the definition site rather than the re-export, so the
+# surface `busbar-substrate` still has to carry into the kernel is the part that genuinely lives
+# there and not a name that already moved." `diagnostics`, `billing`, `handlers` and `proto` are
+# `pub use busbar_substrate_values::…` in busbar-substrate's lib.rs — four whole modules that
+# ALREADY moved — and the root was still spelling twenty-two of their symbols through the retiring
+# crate's historical path. Re-spelling them at their definition site renames no type, moves no line
+# and changes no behaviour; what it changes is what this row MEASURES, which was over-reporting the
+# root's reach into the retiring crate by twenty-two names that are not in it. Precedent: the
+# duplex-ws landing paid the same way ("a MOVE-by-identity re-path of diagnostics onto
+# substrate-values"). Re-pinned to today's measurement, downward, and it ratchets from here.
+figure = 33
 
 # ── 31. no-test-doubles-in-production ────────────────────────────────────────────────────────────
 [rules.no-test-doubles-in-production]
@@ -1555,10 +1576,11 @@ key = "gate.surface_ceilings.contract_caps"
 by = 31
 because = "31 = the face's 33 less the 2 lines the pair had already given back beneath it on this line. FACE busbar_contract::limits — the same 33 lines, on the surface line as well as the LOC line because a vocabulary shared across a crate boundary IS surface. It is the configured half of a subject the contract already owns the resolved half of (ids::BucketRef, ids::BucketScope, ids::BucketChain): a limit is what a unit is judged against, and the section that declares it and the buckets it resolves to are one subject read at two moments. Nothing is added to what a PLUGIN must read to be written — no trait takes these types and no plugin is handed one; they are the relay's two ends."
 
-[[gate.ceiling_raises]]
-key = "rules.legacy-reach.prefixes.busbar_substrate.figure"
-by = 1
-because = "FACE busbar_contract::limits: the composition root names busbar_substrate::config::groups::group_specs, the ONE relay, where it used to carry its own 39-line copy of it. One symbol in the root's mouth in place of a duplicate projection of the money topology — the root's policy.rs falls by 39 lines in the same commit, and the copy that could disagree with the engine's is gone rather than moved."
+# STRUCK: this entry declared a +1 on `rules.legacy-reach.prefixes.busbar_substrate.figure`, and
+# that figure FELL on this line (49 -> 33, the twenty-two re-paths onto the definition site). A
+# declaration of a rise on a ceiling that did not rise is stale by the gate's own words — "strike
+# the entry" — so it is struck here, in the commit that lowers the figure, rather than left to
+# refuse.
 
 # SEAM busbar_unit_admission::ChainWalk read from busbar-core (keep-core-delete-5). The retiring
 # engine's cost model carried a SECOND resolved group topology (its own GroupBucket, GroupRuntime and

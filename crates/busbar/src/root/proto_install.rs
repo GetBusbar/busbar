@@ -16,7 +16,9 @@
 //! replaced. Nothing new is asserted, nothing new is logged.
 
 use busbar_substrate::ingress::arrival::{install_path_ingress, PathIngress};
-use busbar_substrate::proto::{first_path_model_without_arrival, install_protocols, ProtocolDecl};
+use busbar_substrate_values::proto::{
+    first_path_model_without_arrival, install_protocols, ProtocolDecl,
+};
 
 /// THE COMPOSITION ROOT'S ONE WRITE INTO BOTH PROTOCOL SEAMS — the declarations AND their path-model
 /// arrivals, registered together so the second seam [`install_protocols`] gained when `path_ingress`

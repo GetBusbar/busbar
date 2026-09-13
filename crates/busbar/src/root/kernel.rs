@@ -331,7 +331,7 @@ pub static ROOT_CARD: LazyLock<RootHistory> = LazyLock::new(RootHistory::default
 /// node's money in" in a file that has no business deciding, and the two answers would be free to
 /// drift.
 pub(crate) fn card_from_config<'r>(
-    rates: impl IntoIterator<Item = (&'r str, busbar_substrate::billing::RawTierRates)>,
+    rates: impl IntoIterator<Item = (&'r str, busbar_substrate_values::billing::RawTierRates)>,
     per_request_fee: i64,
     present: bool,
     currency: busbar_unit_cost::CurrencyCode,

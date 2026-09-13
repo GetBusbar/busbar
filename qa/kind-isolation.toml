@@ -1317,6 +1317,24 @@ cite = "none. ARCHITECTURE.md 1.1 — three blind axes, one small kernel: a crat
 why = "crates of kind unit naming unit vocabulary: unit package names in any spelling, the kind-qualified id (unit-<id>), and — where unit is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
 drain = "delete the unit name from the unit crate: a unit reaches unit through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
 
+# RE-PINNED 10 -> 43 by A2A-NODE (1.6.0), and it is a RE-PATH rather than a new coupling. The
+# composition root was spelling twenty-two symbols of four WHOLE MODULES — `diagnostics`, `billing`,
+# `handlers` and `proto` — through `busbar_substrate::`, which is a `pub use
+# busbar_substrate_values::…` line in that crate's lib.rs: the modules moved to the surviving pure
+# half long ago and the root was still reading them through the RETIRING crate's historical path.
+# The root's own manifest already states the rule it was breaking: "The composition root names the
+# definition site rather than the re-export, so the surface `busbar-substrate` still has to carry
+# into the kernel is the part that genuinely lives there and not a name that already moved."
+#
+# So the same twenty-two names are re-spelled at their definition site. No type is renamed, no line
+# moves, no behaviour changes; what changes is WHICH CRATE the root is measured as naming, and the
+# gating instrument for that says so in the same commit: `legacy-reach:busbar_substrate` falls
+# 54 -> 33 and its figure is re-pinned DOWN to 33, `legacy-reach` total falls 96 -> 75 and its
+# ceiling is re-pinned DOWN to 75, and `busbar × legacy` falls 99 -> 98 here. The rise on this row
+# is the mirror of those falls: the root names the crate that SURVIVES instead of the crate that is
+# being deleted, which is the direction of travel (ARCHITECTURE.md 1.1 — the composition root names
+# what it mounts, and the substrate is frozen and dissolves into its pure half).
+
 # RAISED by ROOT COMPOSITION (A2A-NODE, 1.6.0): `root/node_a2a.rs` is the composition's own
 # declaration for the A2A plane and the node its serving entry reaches — every field of
 # `busbar_a2a::PLANE_DECL` copied by identity, `routes` replaced by a root fn that swaps the served
@@ -1333,7 +1351,7 @@ drain = "delete the unit name from the unit crate: a unit reaches unit through t
 # cells switched onto both. See the declarations in qa/construction.toml.
 crate = "busbar"
 kind = "api"
-count = "166"
+count = "167"
 
 [[cell]]
 crate = "busbar"
@@ -1360,7 +1378,7 @@ count = "25"
 # cells switched onto both. See the declarations in qa/construction.toml.
 crate = "busbar"
 kind = "caps"
-count = "332"
+count = "330"
 
 [[cell]]
 crate = "busbar"
@@ -1389,7 +1407,7 @@ count = "18"
 [[cell]]
 crate = "busbar"
 kind = "control"
-count = "1107"
+count = "1113"
 
 [[cell]]
 crate = "busbar"
@@ -1416,7 +1434,7 @@ count = "5"
 # cells switched onto both. See the declarations in qa/construction.toml.
 crate = "busbar"
 kind = "kernel"
-count = "183"
+count = "184"
 
 # RAISED by ROOT COMPOSITION (A2A-NODE, 1.6.0): `root/node_a2a.rs` is the composition's own
 # declaration for the A2A plane and the node its serving entry reaches — every field of
@@ -1434,7 +1452,7 @@ count = "183"
 # cells switched onto both. See the declarations in qa/construction.toml.
 crate = "busbar"
 kind = "legacy"
-count = "99"
+count = "98"
 
 # RAISED by ROOT COMPOSITION (MCP-T, 1.6.0): root/units_mcp.rs gains McpDraft/McpBindings/McpUnits and
 # the `impl Units` behind them, so an MCP request enters the Teller loop and the seven steps are served
@@ -1459,7 +1477,7 @@ count = "99"
 # cells switched onto both. See the declarations in qa/construction.toml.
 crate = "busbar"
 kind = "plane"
-count = "2117"
+count = "2182"
 
 [[cell]]
 # RAISED by ROOT COMPOSITION (BIND-1, 1.6.0): the node's ONE store handle, bound by the root
@@ -1489,7 +1507,7 @@ count = "29"
 [[cell]]
 crate = "busbar"
 kind = "substrate"
-count = "10"
+count = "43"
 
 # RAISED by ROOT COMPOSITION (MCP-T, 1.6.0): root/units_mcp.rs gains McpDraft/McpBindings/McpUnits and
 # the `impl Units` behind them, so an MCP request enters the Teller loop and the seven steps are served
@@ -1772,7 +1790,7 @@ count = "183"
 [[cell]]
 crate = "busbar-core"
 kind = "api"
-count = "433"
+count = "438"
 
 [[cell]]
 crate = "busbar-core"
@@ -1787,7 +1805,7 @@ count = "4"
 [[cell]]
 crate = "busbar-core"
 kind = "control"
-count = "5040"
+count = "5362"
 
 [[cell]]
 crate = "busbar-core"
@@ -1797,7 +1815,7 @@ count = "46"
 [[cell]]
 crate = "busbar-core"
 kind = "plane"
-count = "2846"
+count = "2869"
 
 [[cell]]
 crate = "busbar-core"
@@ -1827,7 +1845,7 @@ count = "9"
 [[cell]]
 crate = "busbar-core"
 kind = "transport"
-count = "2113"
+count = "2141"
 
 [[cell]]
 crate = "busbar-core"
@@ -2557,7 +2575,7 @@ count = "296"
 [[cell]]
 crate = "busbar-substrate"
 kind = "plane"
-count = "767"
+count = "769"
 
 [[cell]]
 crate = "busbar-substrate"
@@ -5758,7 +5776,7 @@ count = "11200"
 [[cell]]
 crate = "busbar-mcp"
 kind = "dialect"
-count = "119"
+count = "120"
 
 [[cell]]
 crate = "busbar-mcp-codec"

@@ -671,7 +671,7 @@ impl LlmNode {
 /// from the billable count the report carries, which is what keeps one configured fee to one place.
 fn usage_record(
     token: &busbar_caps::UsageToken,
-    usage: &busbar_substrate::billing::Usage,
+    usage: &busbar_substrate_values::billing::Usage,
 ) -> busbar_caps::Usage {
     let lines = [
         busbar_api::UNIT_INPUT,
@@ -1646,7 +1646,7 @@ async fn body_arrival(proto: &'static str, a: ArrivalRequest) -> Response {
         headers,
         body,
     } = a;
-    let Some(operation) = busbar_substrate::handlers::request_handler(proto)
+    let Some(operation) = busbar_substrate_values::handlers::request_handler(proto)
         .and_then(|rh| rh.resolve_operation(uri.path(), &body))
     else {
         return host.fallback_not_found(
