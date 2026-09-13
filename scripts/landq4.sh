@@ -2934,12 +2934,14 @@ lq_preprove_sweep() { # $1 = tree to prove FROM (default $W), $2 = the sha rows 
   lq_log "pre-prove: this dispatch is $work proof slot(s) of work, none of it fleet-bound; no ssh wrapper is opened and no fleet table is probed"
   # THE BASE REPLAY TAKES ITS SLOT FIRST (see lq_base_replay_reserve). It is what makes every other
   # verdict in this sweep readable — an unmeasured tip turns the oracle's rows into a line's own red
-  # with no evidence — so it is never what the sweep spends its leftovers on. The reserved box is in
-  # `hosts` from the start, so no line can be handed it.
+  # with no evidence — so it is never what the sweep spends its leftovers on. RETIRED (LK-5b): the
+  # reserved box used to be tracked in a `hosts` accumulator so `fleet_pick_host $hosts` never
+  # handed the same box to a line — there is no allocator left to hand anything to, so `basehost` is
+  # never anything but empty and there is nothing left to accumulate.
   local basehost basewant=0
   basehost="$(lq_base_replay_reserve "$key" "$lines
 $chained" "$tree")" && basewant=1
-  local i=0 line hosts="$basehost" cand
+  local i=0 line cand
   if [ "$basewant" = 1 ] && [ -n "$basehost" ]; then
     lq_log "base state: $basehost reserved for the base replay at $(printf '%.9s' "$key") BEFORE any line was dispatched"
   elif [ "$basewant" = 1 ]; then
@@ -6330,9 +6332,10 @@ lq_selftest() {
      "$(grep -c 'BEFORE any line was dispatched' "$LQ_SRC")"
   _t "  ...and on latchkey it reserves no box at all" 2 \
      "$(grep -c 'is a LATCHKEY job — no EC2 box is reserved or started for it' "$LQ_SRC")"
-  _t "  ...and the reserved box is in hosts from the start" 1 \
-     "$(grep -cF 'local i=0 line hosts="$basehost" cand' "$LQ_SRC")"
-  _t "  ...the old after-the-lines pick is GONE" 0 "$(grep -c 'fleet_pick_host \$taken' "$LQ_SRC")"
+  # RETIRED (LK-5b): the `hosts` accumulator that used to keep the reserved box out of
+  # `fleet_pick_host`'s picks is gone with the allocator it fed — regression guards, not behaviour.
+  _t "  ...there is no hosts accumulator left"    0 "$(grep -c 'hosts="\$basehost"' "$LQ_SRC")"
+  _t "  ...the old after-the-lines pick is GONE" 0 "$(grep -c 'fleet_pick_hos[t] \$taken' "$LQ_SRC")"
   _t "  ...and the old sentence with it"       0 \
      "$(grep -v '^#' "$LQ_SRC" | grep -c 'no free box for the base replay' || true)"
 
