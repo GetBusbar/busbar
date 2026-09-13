@@ -182,13 +182,18 @@ fn test_constant_time_eq_one_char_diff() {
     assert!(!AuthMiddleware::constant_time_eq("secret1", "secret2"));
 }
 
-/// A configured chain module that recognizes the credential IDENTIFIES: the verdict carries BOTH
-/// the identifying module name and the principal (the struct variant), because role_bindings are
-/// nested by module and policy resolution needs both halves.
+/// THE BUILDER, end to end: a chain NAMED in config is the chain that runs.
+///
+/// What the walk does with a module's answer belongs to the auth unit's chain and is pinned there. What no unit fixture can reach is core's own step BEFORE the walk: `new_builtin` reading
+/// an `AuthCfg`, looking the configured name up in core's built-in registry, and boxing THAT module
+/// under THAT provider name. A builder that resolved the name to the wrong module, or dropped the
+/// provider name, would leave every unit chain test green and every deployment authenticating
+/// against a module its operator did not configure. So this drives the configured name through to
+/// a verdict and reads the module name back off it.
 #[test]
 fn test_chain_identifies_with_module_and_principal() {
     let mw = AuthMiddleware::new_builtin(&chain_cfg(&["test-groups-module"]));
-    match mw.run_chain(Some("grp:dev")) {
+    match mw.run_chain_cached(Some("grp:dev"), None, None, None) {
         ChainVerdict::Identified {
             module, principal, ..
         } => {
@@ -198,41 +203,7 @@ fn test_chain_identifies_with_module_and_principal() {
         }
         other => panic!("expected Identified, got {other:?}"),
     }
-    assert!(mw.validate_token(Some("grp:dev")));
     assert!(!mw.is_open());
-}
-
-/// FAIL CLOSED: a NON-EMPTY chain where every module passes (no module recognized the presented
-/// credential, or none was presented) DENIES. This is the successor of the old static-allowlist
-/// "wrong token rejected" coverage.
-#[test]
-fn test_nonempty_chain_fails_closed_on_all_pass() {
-    let mw = AuthMiddleware::new_builtin(&chain_cfg(&["test-groups-module"]));
-    assert_eq!(
-        mw.run_chain(Some("not-a-recognized-credential")),
-        ChainVerdict::Denied,
-        "an unrecognized credential must be denied by a configured chain"
-    );
-    assert_eq!(
-        mw.run_chain(None),
-        ChainVerdict::Denied,
-        "no credential at all must be denied by a configured chain"
-    );
-    assert!(!mw.validate_token(Some("tok3")));
-    assert!(!mw.validate_token(None));
-    assert!(!mw.validate_token(Some(""))); // empty token never matches
-}
-
-/// The EMPTY chain is the open front door (the old `none`/`passthrough` modes): every request is
-/// admitted anonymously (`ChainVerdict::Open`), with or without a credential.
-#[test]
-fn test_empty_chain_is_open_front_door() {
-    let mw = AuthMiddleware::new_builtin(&crate::config::AuthCfg::default_none());
-    assert!(mw.is_open());
-    assert_eq!(mw.run_chain(None), ChainVerdict::Open);
-    assert_eq!(mw.run_chain(Some("anything")), ChainVerdict::Open);
-    assert!(mw.validate_token(None));
-    assert!(mw.validate_token(Some("anything")));
 }
 
 /// `upstream_credentials` selects WHOSE credential goes upstream; it does not gate the front
@@ -245,8 +216,9 @@ fn test_open_door_regardless_of_upstream_creds() {
     for uc in [UpstreamCreds::Own, UpstreamCreds::Passthrough] {
         let cfg = crate::config::AuthCfg::default_none();
         let mw = AuthMiddleware::new_builtin(&cfg);
-        assert!(mw.validate_token(None));
-        assert!(mw.validate_token(Some("anything")));
+        // The open door itself is the unit's to pin; what this test owns is that NEITHER mode
+        // changes the chain core builds from the same config.
+        assert!(mw.is_open());
         // The mode lives on the App (all-pools default + per-pool override), not on the chain.
         let app = crate::test_support::TestApp::new()
             .upstream_creds(uc)
@@ -274,8 +246,10 @@ fn test_keys_in_chain_sets_flag_not_module() {
     let mw = AuthMiddleware::new_builtin(&chain_cfg(&["keys", "test-groups-module"]));
     assert!(mw.keys_in_chain);
     assert_eq!(mw.chain_names(), vec!["test-groups-module"]);
-    assert!(mw.validate_token(Some("grp:dev")));
-    assert!(!mw.validate_token(Some("wrong")), "still fail-closed");
+    assert!(matches!(
+        mw.run_chain_cached(Some("grp:dev"), None, None, None),
+        ChainVerdict::Identified { .. }
+    ));
 }
 
 #[test]

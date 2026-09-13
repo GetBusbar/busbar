@@ -436,15 +436,6 @@ impl AuthMiddleware {
         self.chain.is_empty()
     }
 
-    /// Run the auth chain over the presented candidate credential. Empty chain -> admit with NO
-    /// principal (the `none`/`passthrough` open front door — anonymous). Otherwise the first
-    /// `Identify` admits with its [`Principal`], a `Reject` denies, and all-`Pass` (no module
-    /// matched a presented credential) denies — fail-closed for a configured chain. Constant-time
-    /// within each module; the loop order is config order.
-    pub(crate) fn run_chain(&self, candidate: Option<&str>) -> ChainVerdict {
-        self.run_chain_cached(candidate, None, None, None)
-    }
-
     /// [`run_chain`] with the CREDENTIAL CACHE consulted around each `cacheable()` module.
     /// The cache stores the module's RAW verdict; the `allowed_groups:`
     /// intersection is applied AFTER retrieval, so a config change to the caps takes effect
@@ -669,17 +660,6 @@ impl AuthMiddleware {
     /// fn so engine call sites are unchanged.
     pub(crate) fn constant_time_eq(a: &str, b: &str) -> bool {
         busbar_api::constant_time_eq(a, b)
-    }
-
-    /// Validate the request's token by running the AUTH CHAIN. `token` accepts a credential extracted
-    /// from ANY supported carrier (see `extract_client_token`); the comparison is identical and
-    /// constant-time regardless of which header carried it. No `AuthMode` branch here — the front-door
-    /// policy is entirely encoded in the chain shape (`[]` admits, `[tokens]` validates).
-    // Thin admit/deny view over `run_chain` — kept for tests and callers that don't need the
-    // principal. The middleware itself calls `run_chain` (it attaches the principal).
-    #[allow(dead_code)]
-    pub(crate) fn validate_token(&self, token: Option<&str>) -> bool {
-        !matches!(self.run_chain(token), ChainVerdict::Denied)
     }
 }
 

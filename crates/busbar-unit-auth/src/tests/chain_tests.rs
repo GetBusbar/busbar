@@ -22,7 +22,10 @@ fn test_chain_identifies_with_module_and_principal() {
                 "second",
                 Box::new(Canned::new(
                     "mod-b",
-                    AuthOutcome::Identify(Principal::from_id("alice")),
+                    AuthOutcome::Identify(Principal {
+                        roles: vec!["dev".to_string()],
+                        ..Principal::from_id("alice")
+                    }),
                 )),
             ),
         ],
@@ -37,9 +40,16 @@ fn test_chain_identifies_with_module_and_principal() {
                 "the PROVIDER name identifies, not the module's own"
             );
             assert_eq!(principal.id, "alice");
+            // The ROLES ride the verdict out UNCHANGED. Policy resolution reads them nested under
+            // the identifying module, so a walk that dropped or re-ordered them would silently
+            // unbind every role binding while still admitting the caller.
+            assert_eq!(principal.roles, vec!["dev".to_string()]);
         }
         other => panic!("expected an identification, got {other:?}"),
     }
+    // A chain with modules in it is NOT the open front door, whatever any module answered.
+    assert!(!c.is_open());
+    assert!(c.validate_token(Some("cred")));
 }
 
 #[test]
@@ -107,7 +117,20 @@ fn test_nonempty_chain_fails_closed_on_all_pass() {
         ],
         false,
     );
-    assert_eq!(c.run_chain(Some("cred")), ChainVerdict::Denied);
+    assert_eq!(
+        c.run_chain(Some("cred")),
+        ChainVerdict::Denied,
+        "an unrecognized credential must be denied by a configured chain"
+    );
+    assert_eq!(
+        c.run_chain(None),
+        ChainVerdict::Denied,
+        "no credential at all must be denied by a configured chain"
+    );
+    assert!(!c.validate_token(Some("cred")));
+    assert!(!c.validate_token(None));
+    // An EMPTY credential is a presented credential that matches nothing — never a free pass.
+    assert!(!c.validate_token(Some("")));
 }
 
 #[test]
@@ -116,6 +139,9 @@ fn test_empty_chain_is_open_front_door() {
     assert_eq!(c.run_chain(None), ChainVerdict::Open);
     assert_eq!(c.run_chain(Some("anything")), ChainVerdict::Open);
     assert!(c.is_open());
+    // The admit-or-deny view agrees, with a credential and without one.
+    assert!(c.validate_token(None));
+    assert!(c.validate_token(Some("anything")));
 }
 
 #[test]
@@ -133,6 +159,31 @@ fn test_keys_in_chain_sets_flag_not_module() {
         ChainVerdict::Denied,
         "the arm is the terminal authenticator and fails closed with nothing presented"
     );
+
+    // A chain that does NOT name the arm must not claim it.
+    let plain = chain(Vec::new(), false);
+    assert!(!plain.keys_in_chain(), "an empty chain must not claim keys");
+
+    // The arm and a boxed module COEXIST: the flag is set, the module list holds only the module
+    // (the arm is never boxed into it), and the module still identifies and still fails closed.
+    let both = chain(
+        vec![entry(
+            "groups",
+            Box::new(Canned::new(
+                "mod-groups",
+                AuthOutcome::Identify(Principal::from_id("test:dev")),
+            )),
+        )],
+        true,
+    );
+    assert!(both.keys_in_chain());
+    assert!(!both.has_no_modules());
+    assert_eq!(
+        both.chain_names(),
+        vec!["mod-groups"],
+        "keys is engine-handled and is never a boxed module"
+    );
+    assert!(both.validate_token(Some("grp:dev")));
 }
 
 #[test]

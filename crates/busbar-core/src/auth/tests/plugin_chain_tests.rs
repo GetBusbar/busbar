@@ -373,7 +373,7 @@ fn auth_plugin_root_level_secret_marked_setting_resolves_and_authenticates() {
     // The PLAIN, resolved value (never the reference) is what open() actually stored as the
     // credential — authenticating with the RAW env value succeeds; the literal reference text
     // never authenticates anything (it was never delivered to the plugin at all).
-    match mw.run_chain(Some(raw_token)) {
+    match mw.run_chain_cached(Some(raw_token), None, None, None) {
         ChainVerdict::Identified { principal, .. } => assert_eq!(principal.id, "alice"),
         other => panic!(
             "the resolved plaintext token must authenticate — open() did not receive the plain \
@@ -381,7 +381,7 @@ fn auth_plugin_root_level_secret_marked_setting_resolves_and_authenticates() {
         ),
     }
     assert_eq!(
-        mw.run_chain(Some("{\"env\":\"irrelevant\"}")),
+        mw.run_chain_cached(Some("{\"env\":\"irrelevant\"}"), None, None, None),
         ChainVerdict::Denied,
         "the raw reference text itself was never delivered to the plugin as a credential"
     );
@@ -432,7 +432,7 @@ fn auth_plugin_loads_and_identifies_through_middleware() {
     assert_eq!(mw.chain_names(), vec!["static-auth"], "runtime module name");
 
     // Valid token → Identify with the configured id + roles.
-    match mw.run_chain(Some("sekret")) {
+    match mw.run_chain_cached(Some("sekret"), None, None, None) {
         ChainVerdict::Identified {
             module, principal, ..
         } => {
@@ -448,13 +448,13 @@ fn auth_plugin_loads_and_identifies_through_middleware() {
     }
     // Invalid credential → the module Passes → a non-empty chain fail-closed-DENIES.
     assert_eq!(
-        mw.run_chain(Some("wrong")),
+        mw.run_chain_cached(Some("wrong"), None, None, None),
         ChainVerdict::Denied,
         "bad token denies"
     );
     // Absent credential → likewise denied (never the open front door for a configured chain).
     assert_eq!(
-        mw.run_chain(None),
+        mw.run_chain_cached(None, None, None, None),
         ChainVerdict::Denied,
         "no credential denies"
     );
@@ -506,7 +506,7 @@ fn auth_plugin_role_binding_and_scope_cap_apply() {
     )
     .expect("load");
 
-    let principal = match mw.run_chain(Some("sekret")) {
+    let principal = match mw.run_chain_cached(Some("sekret"), None, None, None) {
         ChainVerdict::Identified { principal, .. } => principal,
         other => panic!("expected Identify, got {other:?}"),
     };
