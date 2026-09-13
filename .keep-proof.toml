@@ -5,19 +5,25 @@
 # something specific instead of "everything, slowly". The INTEGRATION tree carries no such file —
 # it is a keep-branch artefact, and this branch is a keep branch.
 #
-#   families — a regex handed to the shadow oracle's `--id-filter`. This branch is the DEPENDENCY
-#              side of the kind-isolation gate: one manifest reader, a census that walks the whole
-#              repository, an instance-level dependency ledger, three new rows and a `--write` arm.
-#              It changes no crate's behaviour, no wire byte and no plane/transport source — every
-#              edit is in `xtask/`, `qa/kind-isolation.toml`, `qa/construction.toml` and
-#              `docs/design/xtask-gates.md`. The honest scope is therefore `documented`: the claims
-#              the docs make about the gate, which is the one family this branch edits. `neutrality`
-#              is not in scope on purpose — this branch touches no plane and no transport source, so
-#              replaying that family would be a claim about code it did not change. An unfiltered
-#              replay is the better part of half an hour and would be a claim about twenty-six
-#              families this branch does not touch.
-#   tests    — `xtask` and nothing else. Every rule, every reader, every ledger row and all
-#              ninety-five self-test cases live in that package; no other crate's test binary
-#              contains a line this branch changed.
-families = '^documented([|.]|$)'
-tests = ["xtask"]
+#   families — a regex handed to the shadow oracle's `--id-filter`. This branch changes what gets
+#              STAMPED on the records four shipped paths write: the durable journal's retention
+#              stamp (`admin.ops` reads those rows and `boot` composes the seam that writes them),
+#              the A2A receive leg's metering window base (`a2a`), the MCP `tools/call` leg's
+#              (`mcp`), and the budget window every priced call keys off (`teller`, and `llm`
+#              because the LLM plane is the heaviest caller of it). Those six families are the
+#              claims a wrong stamp would break. `neutrality` and `documented` are NOT in scope:
+#              nothing here moves a plane, a transport byte or a documented gate contract.
+#   tests    — the four packages that carry a line this branch changed: `busbar-core` (the journal
+#              seam and its cells), `busbar` (the root's a2a retention cells), `busbar-a2a` and
+#              `busbar-mcp` (the two metering sites).
+#
+#              `xtask` IS DELIBERATELY ABSENT, and its absence is the point rather than an
+#              oversight. The construction gate's OWN self-test is proven by the `gate self-tests`
+#              leg of this same run, which takes the whole battery; putting `xtask` under `--tests`
+#              on top of that buys a second copy of it and, on this runner, buys the standing
+#              `selftest_runs_every_registered_gates_red_proof` red — two gates unproven for
+#              reasons that belong to DB-1 and to the kind-isolation ship twin, neither of them
+#              this branch's. A test package whose only new verdict is somebody else's standing
+#              red is a package this hand-back should not ask thirty runner-minutes for.
+families = '^(a2a|mcp|llm|admin\.ops|boot|teller)([|.]|$)'
+tests = ["busbar-core", "busbar", "busbar-a2a", "busbar-mcp"]
