@@ -68,13 +68,24 @@ them). Each axis is blind to the other two; only the kernel composes them.
   ceiling): `busbar-kernel`
   ≤ 8k — Teller loop 1.5k · pump/scheduler 1.5k · in-flight/sessions 1k · recovery 0.8k · slice/lease
   0.8k · registry + generations 0.8k · grammars incl. JSON span scanner 0.8k · Ticks/drain/fleet 0.5k ·
-  arena/masking 0.3k; `busbar-caps` + `busbar-contract` ≤ 3.5k **of plugin-visible SURFACE** —
-  non-blank, non-comment code lines under each crate's `src/`, excluding `#[cfg(test)]` modules and
-  `src/tests/`; the proofs (overlap totality over the selector-form pairs, the lint symbol lists, the
-  compile-fail fixtures and their positive companions, the honesty tables) are not surface and live
-  in each crate's `tests/` or `fixtures/`. Measured and gated by `scripts/loc-surface.py`
-  (`--ceiling busbar-contract,busbar-caps=3500`), which the construction gate runs as
-  `surface-ceiling:contract+caps`. Two crates carry their own surface ceilings beside it, because
+  arena/masking 0.3k; `busbar-caps` + `busbar-contract` ≤ **3,545** **of plugin-visible SURFACE**
+  (3,543 as `scripts/loc-surface.py` counts it, 3,545 as `loc-ceilings:caps-contract` does; the two
+  differ by two lines of counting rule and are pinned as one decision) — raised from 3.5k on
+  2026-09-10 for ONE face, pinned at its measured size, zero slack: THE UPSTREAM STATUS TABLE, 65
+  lines: `busbar_contract::upstream::{StatusClass, Disposition}`, the nine-way reading of an
+  upstream's answer a dialect reads off vendor bytes and renders back in its own words, and the
+  four-way disposition the egress walk and the breaker act on — one owner as a table (rows are data;
+  token, label and disposition are columns; one match site each), where three crates had each
+  declared it, because a unit may name only the contract and the capabilities and a plane or dialect
+  only the contract, so this is the one crate both sides can point at. A future face raises this
+  figure by its own declared, measured amount (`[gate.ceiling_raises]` in `qa/construction.toml`) and
+  amends this sentence; nothing else moves
+  it. Surface is non-blank, non-comment code lines under each crate's `src/`, excluding
+  `#[cfg(test)]` modules and `src/tests/`; the proofs (overlap totality over the selector-form
+  pairs, the lint symbol lists, the compile-fail fixtures and their positive companions, the honesty
+  tables) are not surface and live in each crate's `tests/` or `fixtures/`. Measured and gated by
+  `scripts/loc-surface.py` (`--ceiling busbar-contract,busbar-caps=3543`), which the construction
+  gate runs as `surface-ceiling:contract+caps`. Two crates carry their own surface ceilings beside it, because
   each is contract surface that a plugin author does not read and a ceiling nothing measures is a
   ceiling that has been abolished rather than met: `busbar-grammar` — the closed JSON span grammar,
   std-only, named by the kernel and re-exported as `busbar_contract::spans` — ≤ **0.5k**, gated as
@@ -1131,10 +1142,10 @@ export plugins; every hook/export content access is an `Access` entry.
 | `tcp-line` | line-delimited duplex | `tcp` | true / false / first line | `tls`; no `HANDSHAKE_TRIGGER` — the plane opens its handshake units | non-HTTP litmus |
 | `tls` | framed over TLS | `tcp` | inherits / true | — | keys via the transport-key unit |
 | `dtls` | datagrams over DTLS | `udp` | true / true / first handshake | — | |
-| `http` | request; response frames | `tcp`/`tls` | false / n/a / none | — | no session; carries the per-frame `StatusClass` at `FirstFrame` (the fee's kernel-derived leg); the egress client is 1.5.5's verbatim — `redirect: Policy::none()`, `connect_timeout` 10 s, `tcp_keepalive` 60 s, `tcp_nodelay`, the HTTP/2 keep-alive and adaptive-window settings, `pool_max_idle_per_host` / `pool_idle_timeout`, `advanced.upstream_http1_only` / `upstream_h2_prior_knowledge` (PB-56); active health probers per `health.mode` run as a kernel Tick (PB-55) |
-| `sse` | request + N response frames | `http` | false / n/a / none | — | inherits `http`'s per-frame `StatusClass` at `FirstFrame` (composed transports inherit the lower layer's status leg; `ws` frames after the upgrade carry none, so the plane's `finish` is the sole source there — stated) |
+| `http` | request; response frames | `tcp`/`tls` | false / n/a / none | — | no session; carries the per-frame `WireStatusClass` at `FirstFrame` (the fee's kernel-derived leg); the egress client is 1.5.5's verbatim — `redirect: Policy::none()`, `connect_timeout` 10 s, `tcp_keepalive` 60 s, `tcp_nodelay`, the HTTP/2 keep-alive and adaptive-window settings, `pool_max_idle_per_host` / `pool_idle_timeout`, `advanced.upstream_http1_only` / `upstream_h2_prior_knowledge` (PB-56); active health probers per `health.mode` run as a kernel Tick (PB-55) |
+| `sse` | request + N response frames | `http` | false / n/a / none | — | inherits `http`'s per-frame `WireStatusClass` at `FirstFrame` (composed transports inherit the lower layer's status leg; `ws` frames after the upgrade carry none, so the plane's `finish` is the sole source there — stated) |
 | `ws` | duplex message frames | `http` over `tls` | true / true / the upgrade | — | |
-| `grpc` | unary + multiplexed streams | `http` | true (streams) / true / first message | — | carries the per-frame `StatusClass` at `Terminal` (the `grpc-status` trailer) |
+| `grpc` | unary + multiplexed streams | `http` | true (streams) / true / first message | — | carries the per-frame `WireStatusClass` at `Terminal` (the `grpc-status` trailer) |
 | `stdio` | duplex framed | — | true / true / first message | — | |
 | `udp` | datagrams | — | true / false / first datagram | — | flow = open unit; decode failure is `Discard` |
 | `webrtc` | SDP over `http` (one-shot) with **handoff** to RTP media + SCTP data over `dtls`/`udp`, bound by the DTLS fingerprint in `TransportFacts`; ICE endpoints allow-listed; `DECODES_PAYLOAD = true` for RTP (units from timestamp deltas ÷ clock rate) | `http` → `dtls` | true / true after handoff / the SDP offer | — | a sans-I/O WebRTC crate (str0m-class) under `deny` |
@@ -1645,7 +1656,12 @@ about a kind boundary, this register and that spec win.)*
   plugin kinds — plane, dialect, transport, auth, egress-auth, store, secret, hook, export — plus
   the core `unit` row, which is never loadable. `loader` and `abi` are TCB crates, not kinds; "rate
   card" is config, not a kind. Enforced by `cargo xtask gate kind-isolation` (`PLUGIN-TREE.md`
-  Appendix G) with six rows: `:name :deps :vocab :registry :shape :testkit`.
+  Appendix G) with ten rows: `:name :deps :vocab :registry :plane-steps
+  :transport-registration :matrix` on every push, and `:shape :testkit :control-path` on the ship
+  twin. **The composition root is measured too**: `:matrix` counts, for every kind and every crate,
+  how many times that crate names that kind's vocabulary — `crates/busbar/src/root/**` and `main.rs`
+  included, comments and tests included — against per-cell ceilings in `qa/kind-isolation.toml` that
+  ratchet down only.
 - **Naming is `busbar-<kind>-<name>`,** kind first, always. A dialect's kind segment is
   `plane-<plane>` — `busbar-plane-<plane>-<dialect>` (`busbar-plane-llm-openai`,
   `busbar-plane-mcp-mcpv2`, `busbar-plane-streams-voice`) — which is the "dialect → own plane only"

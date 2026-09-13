@@ -14,11 +14,11 @@ use crate::selftest;
 
 const USAGE: &str = "\
 usage:
-  cargo xtask gate <name> [--selftest] [--report] [--strict] [--write] [--format=tsv]
+  cargo xtask gate <name> [--selftest] [--jobs N] [--report] [--strict] [--write] [--format=tsv]
   cargo xtask gate --list
   cargo xtask gate --all [--format=tsv]
   cargo xtask gate <name> --parity -- <legacy argv...>
-  cargo xtask selftest [<name>]
+  cargo xtask selftest [<name>] [--jobs N]
   cargo xtask denylist [--selftest] [--format=tsv]
   cargo xtask teller-steps [--root-legs] [--root-legs-gating]
   cargo xtask ledger {sync|status|next|record|fixed} | --check
@@ -94,6 +94,24 @@ fn gate(args: &[String]) -> i32 {
     let report_only = args.iter().any(|a| a == "--report");
     let want_selftest = args.iter().any(|a| a == "--selftest");
 
+    // AN UNCONSUMED `--selftest` IS AN ERROR, NOT A NO-OP.
+    //
+    // `--list` and `--all` both `return` before `want_selftest` is ever read, so
+    // `cargo xtask gate --all --selftest` printed every gate's ordinary verdict and exited on it
+    // while the caller believed they had just self-tested the whole registry. That is the worst
+    // possible shape for a flag: it reports success for a thing it did not do. The only "every
+    // gate" self-test is the bare `cargo xtask selftest` subcommand, and this says so.
+    if want_selftest && args.iter().any(|a| a == "--list" || a == "--all") {
+        eprintln!(
+            "xtask gate: --selftest cannot be combined with --list or --all — neither runs a \
+             self-test, and this used to be accepted and silently ignored, which reports a \
+             proof that was never taken."
+        );
+        eprintln!("  every gate's self-test:  cargo xtask selftest");
+        eprintln!("  one gate's self-test:    cargo xtask gate <name> --selftest");
+        return 2;
+    }
+
     if args.iter().any(|a| a == "--list") {
         for reg in gates::REGISTRY {
             println!(
@@ -117,18 +135,26 @@ fn gate(args: &[String]) -> i32 {
     if args.iter().any(|a| a == "--all") {
         let mut red = Vec::new();
         for reg in gates::REGISTRY {
-            let gate = (reg.build)();
-            let verdict = gates::execute(gate.as_ref(), &cx);
+            // EVERY ROW UNDER A WALL-CLOCK CEILING. A gate that wedges — the way one did against a
+            // `git cat-file --batch` child, for 43 minutes, at 4% CPU — is RED with `hung` in its
+            // rows and the remaining gates still run. See `gates::execute_within`.
+            let verdict = match gates::ceiling_from_env(reg.name) {
+                Some(ceiling) => gates::execute_within(reg.name, reg.build, &cx, ceiling),
+                None => gates::execute((reg.build)().as_ref(), &cx),
+            };
             if tsv {
                 gates::print_rows_tsv(&verdict.rows);
             } else {
                 gates::print_verdict(reg.name, &verdict);
             }
-            // A REPORT-ONLY gate is printed and not scored. It is still reconciled, still
-            // self-tested, and still exits non-zero when run by name; what it does not do is turn
-            // `--all` red on a fact CI deliberately does not count.
-            if verdict.red && reg.blocking() {
-                red.push(reg.name);
+            // A REPORT-ONLY gate is printed and not scored — but only while the fact its posture
+            // rests on still holds, and NEVER silently: the excuse that was applied is printed on
+            // the same run, so a red that was not counted is not a red that went unmentioned.
+            if verdict.red {
+                match gates::excused_from_all(reg.name, &cx, &verdict) {
+                    Some(why) => println!("EXCUSED  {:<46} {why}", reg.name),
+                    None => red.push(reg.name),
+                }
             }
         }
         if red.is_empty() {
@@ -139,7 +165,14 @@ fn gate(args: &[String]) -> i32 {
         return 1;
     }
 
-    let Some(name) = args.iter().find(|a| !a.starts_with("--")) else {
+    // `--jobs N` takes a value, so the N after it is NOT the gate name. Without this,
+    // `cargo xtask gate --selftest --jobs 8 construction` would look for a gate called `8`.
+    let Some(name) = args
+        .iter()
+        .enumerate()
+        .find(|(i, a)| !a.starts_with("--") && !(*i > 0 && args[i - 1] == "--jobs"))
+        .map(|(_, a)| a)
+    else {
         eprintln!("xtask gate: no gate named");
         eprintln!("{USAGE}");
         return 2;
@@ -187,10 +220,20 @@ fn gate(args: &[String]) -> i32 {
             g = g.require_version(v);
         }
         Box::new(g)
+    } else if cx.env().write && reg.name == "kind-isolation" {
+        // `kind-isolation --write` RE-PINS ITS EXACT COUNTS DOWNWARD, and refuses wholesale if any
+        // would rise. It is a separate CONSTRUCTION rather than a flag the gate reads out of the
+        // context, because `owed` is what the reconciliation is written against and this run emits
+        // one row: the re-pin's own. Built HERE rather than in the write branch below, so
+        // `--write --selftest` proves the arm it is about to run rather than a different one.
+        Box::new(crate::gates::kind_isolation::KindIsolationGate::write())
     } else {
         (reg.build)()
     };
     if want_selftest {
+        if let Some(n) = jobs_arg(args) {
+            gates::set_selftest_jobs(n);
+        }
         return run_selftest(gate.as_ref(), &cx);
     }
 
@@ -198,11 +241,37 @@ fn gate(args: &[String]) -> i32 {
     // a check that repairs what it is checking has not checked anything, and a caller that wanted
     // both would be asking a gate to make itself pass.
     if cx.env().write {
-        if reg.name != "design-bindings" {
-            eprintln!("xtask gate {name}: this gate has nothing to write");
-            return 2;
+        // `kind-isolation --write` RE-PINS ITS EXACT COUNTS DOWNWARD — the `[[cell]]`, `[[dep]]`
+        // and `[[face]]` numbers — and refuses WHOLESALE if any would rise. It answers through the
+        // ledger rather than through a `Result<String, _>` like its two neighbours, and that is
+        // deliberate: the arm is a GATE RUN whose owed set is its own row, so `execute` reconciles
+        // it exactly as it reconciles a judging run, and the refusal arrives as a FAIL row a
+        // reader can diff rather than as a message on stderr.
+        //
+        // `inventory-coverage --write` is the same shape and for the same reason: it regenerates
+        // qa/inventory-coverage.json, qa/inventory-gaps.json and the behaviour-doc coverage matrix,
+        // and REFUSES — as rows, not as stderr — when a family has dropped below its recorded floor
+        // or when the regeneration would ADD an id to the gaps file that is not accepted by name.
+        // A refusal a reader can diff is the whole point of routing it through the ledger.
+        if matches!(reg.name, "kind-isolation" | "inventory-coverage") {
+            let verdict = gates::execute(gate.as_ref(), &cx);
+            gates::print_verdict(reg.name, &verdict);
+            return i32::from(verdict.red);
         }
-        return match crate::gates::design_bindings::DesignBindingsGate::write(&cx) {
+        let written = match reg.name {
+            "design-bindings" => crate::gates::design_bindings::DesignBindingsGate::write(&cx),
+            // The construction gate's write arm RE-PINS ITS CEILINGS TO WHAT THEY MEASURE, and
+            // only downward — see `gates::construction::ceilings`. It is the same derivation the
+            // `ceiling-slack` row reports, so the arm that repairs and the arm that judges cannot
+            // disagree about what the tree measures; what the flag changes is whether the answer
+            // is printed or committed.
+            "construction" => crate::gates::construction::ceilings::rewrite(&cx),
+            _ => {
+                eprintln!("xtask gate {name}: this gate has nothing to write");
+                return 2;
+            }
+        };
+        return match written {
             Ok(msg) => {
                 println!("{msg}");
                 0
@@ -268,11 +337,17 @@ fn gate(args: &[String]) -> i32 {
 
     // `--strict` REFUSES THE GATE'S OWN SKIP ALLOWLIST. A named gap is a reported gap in the plain
     // form and a red one here, which is what makes "DONE means no gap" a claim rather than a hope.
+    // UNDER THE WALL-CLOCK CEILING, like every other gate run. This arm builds the gate with
+    // flags a `fn()` pointer cannot carry, so it cannot hand the gate to a worker thread the way
+    // `--all` does; the watchdog prints the hung rows and takes the process down instead. Either
+    // way the answer is a refusal that NAMES the gate, never a job timeout that names nothing.
+    let watchdog = gates::Watchdog::arm(reg.name, gate.owed(), gates::ceiling_from_env(reg.name));
     let verdict = if args.iter().any(|a| a == "--strict") {
         gates::execute_strict(gate.as_ref(), &cx)
     } else {
         gates::execute(gate.as_ref(), &cx)
     };
+    drop(watchdog);
     if tsv {
         gates::print_rows_tsv(&verdict.rows);
     } else {
@@ -286,12 +361,133 @@ fn gate(args: &[String]) -> i32 {
     if cx.env().report_only {
         return 0;
     }
+    // `--posture` SCORES THE GATE AGAINST ITS REPORT-ONLY ENTRY INSTEAD OF AGAINST ZERO REDS.
+    //
+    // This is the arm CI needs and did not have. The construction gate is RED BY DESIGN on HEAD, so
+    // its job was `continue-on-error: true` and its verdict was excluded from both umbrellas'
+    // RESULTS — four independent downgrades, and between them a NEW construction red could not
+    // redden anything. "Green" was not available and "red" carried no information.
+    //
+    // `--posture` gives the third answer: exit 0 when the gate is red on exactly the rows
+    // [`gates::REPORT_ONLY`] names and nothing else, and exit 1 the moment a red appears that the
+    // list does not name — or a named row goes green and the list is stale. It is the SAME
+    // `excused_from_all` the `--all` run applies, so the posture CI enforces and the posture
+    // `--all` prints cannot drift apart, and the standing reds are written down in exactly one
+    // place in Rust rather than pasted into two workflows.
+    //
+    // A gate with no posture entry has nothing to score against and says so rather than passing.
+    if args.iter().any(|a| a == "--posture") {
+        if !reg.has_posture() {
+            eprintln!(
+                "xtask gate {name} --posture: `{name}` has no entry in REPORT_ONLY, so there is no \
+                 standing-red list to score it against and this flag would be a green nobody \
+                 defined. Run it plainly."
+            );
+            return 2;
+        }
+        if !verdict.red {
+            println!("{name} --posture: green outright");
+            return 0;
+        }
+        return match gates::excused_from_all(reg.name, &cx, &verdict) {
+            Some(why) => {
+                println!("{name} --posture: EXCUSED — {why}");
+                0
+            }
+            None => {
+                eprintln!(
+                    "xtask gate {name} --posture: RED beyond its standing list (the lines above \
+                     name what changed). Either fix it, or move the row onto \
+                     CONSTRUCTION_STANDING_REDS in xtask/src/gates/mod.rs in a diff somebody reads."
+                );
+                1
+            }
+        };
+    }
     i32::from(verdict.red)
+}
+
+/// `--jobs N` / `--jobs=N`: how many of a battery's cases are taken at once. Unknown or absent
+/// leaves the default, which is the box's own parallelism.
+fn jobs_arg(args: &[String]) -> Option<usize> {
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        let raw = if let Some(v) = a.strip_prefix("--jobs=") {
+            Some(v.to_string())
+        } else if a == "--jobs" {
+            it.next().cloned()
+        } else {
+            None
+        };
+        if let Some(raw) = raw {
+            return raw.trim().parse::<usize>().ok().filter(|n| *n > 0);
+        }
+    }
+    None
+}
+
+/// ONE BATTERY, AND A RED ONE RE-TAKEN SERIALLY BEFORE IT IS BELIEVED.
+///
+/// The cases are taken across the cores, and a case is isolated by construction — an [`Overlay`]
+/// is per-plant and `with_overlay` never touches the base context. That is an argument, and the
+/// harness's own `two_cases_planted_at_the_same_path_never_see_each_other` is the proof of it. But
+/// a runner reading a red row cannot re-derive either, and "it only fails when the box is busy" is
+/// how a gate earns a `|| true`. So a battery that goes red at more than one job is TAKEN AGAIN AT
+/// ONE, and BOTH answers are printed: a finding that survives the serial run is the gate's, and a
+/// finding that does not is named as what it is — a defect in this harness, not in the gate.
+/// THE SERIAL FRACTION OF A BATTERY, PRINTED BESIDE ITS TOTAL.
+///
+/// Every case's gate run is taken across the cores; the plant it is driven over is built where the
+/// case is pushed, on one thread, because that is where the argument was written. So this number is
+/// the part of the battery that more cores cannot touch — and, when it is a large share, the name
+/// of the case that owns most of it is the next thing to make lazy. It is printed rather than
+/// derived from two runs because deriving it needs a serial run, which is the thing nobody wants to
+/// wait for.
+fn planting(report: &gates::Report<'_>) -> String {
+    let planting = report.planting();
+    if planting.as_secs_f64() < 0.05 {
+        return String::new();
+    }
+    let dearest = report
+        .dearest_plant()
+        .filter(|(_, t)| t.as_secs_f64() >= 0.05)
+        .map(|(n, t)| format!(", dearest plant {:.1}s ({n})", t.as_secs_f64()))
+        .unwrap_or_default();
+    format!(
+        ", {:.1}s of that PLANTING on one thread{dearest}",
+        planting.as_secs_f64()
+    )
 }
 
 fn run_selftest(gate: &dyn gates::Gate, cx: &Ctx) -> i32 {
     println!("xtask selftest {}", gate.name());
+    // A SELFTEST GETS THE SAME CEILING AS A RUN. It plants fixtures and executes the gate over
+    // each one, so every way a gate can wedge is a way a selftest can wedge — and it was a
+    // `--selftest` sitting at seven minutes that made the deadlock visible in the first place.
+    // THE BATTERY'S OWN CEILING, not one gate run's. See `gates::DEFAULT_SELFTEST_CEILING`.
+    let watchdog = gates::Watchdog::arm(
+        gate.name(),
+        gate.owed(),
+        gates::selftest_ceiling_from_env(gate.name()),
+    );
     let report = gate.selftest(cx);
+    let jobs = report.jobs();
+    // TAKEN UNDER THE WATCHDOG, NOT AFTER IT. A case is a plan now, and a plan is taken on the
+    // first read of the report — so reading the cases after the watchdog was dropped would have
+    // disarmed the ceiling over exactly the work it exists to bound. This is that read.
+    let _ = report.cases();
+    drop(watchdog);
+    if std::env::var("XTASK_SELFTEST_TIMING").is_ok() {
+        let mut rows = report.timings();
+        rows.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
+        for (name, took, units, prepaid) in &rows {
+            eprintln!(
+                "TIMING {units:8.1}u {:7.2}s (prepaid {:6.2}s)  {name}",
+                took.as_secs_f64(),
+                prepaid.as_secs_f64()
+            );
+        }
+    }
     for case in report.cases() {
         let got = match &case.got {
             gates::Expect::Green => "GREEN",
@@ -302,17 +498,65 @@ fn run_selftest(gate: &dyn gates::Gate, cx: &Ctx) -> i32 {
     }
     match gates::verify_report(gate, &report) {
         Ok(()) => {
+            let slowest = report
+                .slowest()
+                .map(|(n, t)| format!(", slowest {:.1}s ({n})", t.as_secs_f64()))
+                .unwrap_or_default();
             println!(
-                "  {} case(s), {} skipped — the gate is proven RED-able",
+                "  {} case(s), {} skipped, {:.1}s / {:.0} work units{slowest}{} — the gate is proven RED-able",
                 report.cases().len(),
-                report.skipped()
+                report.skipped(),
+                report.total().as_secs_f64(),
+                report.units(),
+                planting(&report),
             );
             0
         }
         Err(errs) => {
+            // WHAT A RED BATTERY COST IS PRINTED TOO. It used to be printed only on the green
+            // path, so the one run a reader most needs to attribute — the slow one that also
+            // failed — was the one that said nothing about where its minutes went.
+            println!(
+                "  {} case(s), {} skipped, {:.1}s / {:.0} work units{} at --jobs {jobs}",
+                report.cases().len(),
+                report.skipped(),
+                report.total().as_secs_f64(),
+                report.units(),
+                report
+                    .slowest()
+                    .map(|(n, t)| format!(", slowest {:.1}s ({n})", t.as_secs_f64()))
+                    .unwrap_or_default(),
+            );
+            println!("  {}", planting(&report).trim_start_matches(", "));
             println!("xtask selftest {} FAILED:", gate.name());
             for e in &errs {
                 println!("  - {e}");
+            }
+            if jobs > 1 {
+                println!(
+                    "  ...re-taking the battery at --jobs 1, to tell a real RED from a race in \
+                     the harness:"
+                );
+                gates::set_selftest_jobs(1);
+                let serial = gate.selftest(cx);
+                let _ = serial.cases();
+                let again = gates::verify_report(gate, &serial)
+                    .err()
+                    .unwrap_or_default();
+                gates::set_selftest_jobs(jobs);
+                if again.is_empty() {
+                    println!(
+                        "  - EVERY finding above went away at --jobs 1 over {} case(s). That is a \
+                         defect in the SELFTEST HARNESS, not in `{}`: the cases are supposed to be \
+                         isolated by construction and one of them is not.",
+                        serial.cases().len(),
+                        gate.name()
+                    );
+                } else {
+                    for e in &again {
+                        println!("  - (also at --jobs 1) {e}");
+                    }
+                }
             }
             1
         }
@@ -320,12 +564,20 @@ fn run_selftest(gate: &dyn gates::Gate, cx: &Ctx) -> i32 {
 }
 
 fn selftest_cmd(args: &[String]) -> i32 {
+    if let Some(n) = jobs_arg(args) {
+        gates::set_selftest_jobs(n);
+    }
     let cx = match open_ctx() {
         Ok(cx) => cx,
         Err(code) => return code,
     };
 
-    if let Some(name) = args.iter().find(|a| !a.starts_with("--")) {
+    let named = args
+        .iter()
+        .enumerate()
+        .find(|(i, a)| !a.starts_with("--") && !(*i > 0 && args[i - 1] == "--jobs"))
+        .map(|(_, a)| a);
+    if let Some(name) = named {
         let Some(reg) = gates::find(name) else {
             eprintln!("xtask selftest: no registered gate `{name}`");
             eprintln!("registered gates: {}", gates::names().join(", "));

@@ -77,7 +77,7 @@ jobs:
   # ── Which version, and which platforms it owes (matrix DERIVED from the contract) ──────────────
   resolve:
     name: resolve (version + platform matrix)
-    runs-on: ubuntu-latest
+    runs-on: latchkey-small
     timeout-minutes: 10
     outputs:
       version: ${{ steps.r.outputs.version }}
@@ -228,7 +228,7 @@ jobs:
   docker:
     name: docker (registries + the image actually boots)
     needs: resolve
-    runs-on: ubuntu-latest
+    runs-on: latchkey-large
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -252,7 +252,7 @@ jobs:
   channels:
     name: channels (release · helm · terraform · brew · install.sh · site · plugins)
     needs: resolve
-    runs-on: ubuntu-latest
+    runs-on: latchkey-large
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -278,7 +278,7 @@ jobs:
   fleet:
     name: fleet (the busbar-headroom bundle rebuilt on this release)
     needs: resolve
-    runs-on: ubuntu-latest
+    runs-on: latchkey-xlarge
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -304,7 +304,7 @@ jobs:
     name: release gate
     needs: [resolve, platform, docker, channels, fleet]
     if: always()
-    runs-on: ubuntu-latest
+    runs-on: latchkey-small
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4

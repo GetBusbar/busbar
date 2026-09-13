@@ -49,5 +49,5 @@ pub use surface::{
 pub use wire::{
     ArrivalRecord, CertFacts, CloseReason, Conn, ConnHandle, Decode, Direction, DiscardCode,
     Encode, FrameMeta, Framing, Handoff, HandshakeTrigger, Listener, ListenerHandle, RawIo,
-    RawStream, StatusAt, StatusClass, TransportError, Unit0Trigger, WireStatus,
+    RawStream, StatusAt, TransportError, Unit0Trigger, WireStatus, WireStatusClass,
 };

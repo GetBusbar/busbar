@@ -111,7 +111,7 @@ docker run -d -p 8080:8080 \
   getbusbar/busbar
 ```
 
-The provider catalog ships inside the image at `/etc/busbar/providers.yaml`, so you only mount `config.yaml` (written in [Step 2](#step-2-write-a-minimal-config)). Pin an exact version (`getbusbar/busbar:1.5.3`) or ride `latest`. **On 64-bit ARM the same two-build choice applies as for the binary** (see the table above): the multi-arch image's `linux/arm64` entry is the default (ARMv8.1+) build, right for every cloud ARM host and the Raspberry Pi 5 — and for Raspberry Pi 4-class boards there is a first-class compat image under the `armv8.0` tag: `getbusbar/busbar:armv8.0` (or pin `getbusbar/busbar:X.Y.Z-armv8.0`). If you use a durable store, give it a writable volume (e.g. `-v busbar-data:/var/lib/busbar` with `store.settings.db_path: /var/lib/busbar/governance.db`).
+The provider catalog ships inside the image at `/etc/busbar/providers.yaml`, so you only mount `config.yaml` (written in [Step 2](#step-2-write-a-minimal-config)). Pin an exact version (`getbusbar/busbar:1.5.3`) or ride `latest`. **On 64-bit ARM the same two-build choice applies as for the binary** (see the table above): the multi-arch image's `linux/arm64` entry is the default (ARMv8.1+) build, right for every cloud ARM host and the Raspberry Pi 5 — and for Raspberry Pi 4-class boards there is a first-class compat image under the `armv8.0` tag: `getbusbar/busbar:armv8.0` (or pin `getbusbar/busbar:X.Y.Z-armv8.0`). **If you want keys/usage/ledgers/audit to survive a restart, "a writable volume" is not the whole recipe** — see [Durable store: giving persistence a writable volume](#durable-store-giving-persistence-a-writable-volume) below for the complete four-key config plus the plugin tarball.
 
 The `:ro` on that mount is deliberate, and it has one consequence worth knowing up front: Busbar keeps admin-API config changes in an overlay file written next to `config.yaml`, so a read-only config directory means there is nowhere to persist them. Busbar starts and serves traffic normally, logs a warning saying so, and refuses admin-API config mutations rather than applying a change that would silently revert on the next restart. That is the right default for a container you deploy from a file you version-control. If you want to drive this Busbar through the admin API instead, give the overlay a writable path:
 
@@ -389,6 +389,81 @@ Prometheus scrape exposition. Like `/stats`, `/metrics` is subject to the auth m
 ---
 
 ## Common setup variations
+
+### Durable store: giving persistence a writable volume
+
+**The default store is in-memory.** With no `store:` block, keys, usage counters, ledgers and the
+audit trail all live in RAM and are gone on restart — Busbar logs one WARN at boot saying so. The
+admin-API config overlay (Step 1's `busbar-overlay.json`) is a *separate* thing and persists on its
+own writable path; it does not make keys/usage/ledgers durable.
+
+A durable store ships as a **signed plugin**, not code baked into the binary or the Docker image —
+`sqlite`, `postgres`, `mysql` and `valkey` are each a separate release from their own repo
+(`GetBusbar/store-sqlite`, `GetBusbar/store-postgres`, `GetBusbar/store-mysql`,
+`GetBusbar/store-valkey` — the full list, with each plugin's alias and crate name, is
+[`plugins.yaml`](../plugins.yaml) at the repo root). "Give it a writable volume" is necessary but
+not sufficient; the complete recipe has **four** parts:
+
+1. **`plugins.enabled: true`** — the plugin subsystem's master switch. Default is `false`, and with
+   it off a tarball sitting in the plugins directory is inert: `store.module: sqlite` refuses boot
+   rather than silently falling back to memory (see the refusal table below).
+2. **An ABSOLUTE `plugins.dir`.** The default, `plugins`, is a *relative* string — in the `FROM
+   scratch` image (no `WORKDIR`, so the process's cwd is `/`) that resolves to `/plugins`, which is
+   almost never where you meant to mount the volume. Set it explicitly to an absolute path, e.g.
+   `/etc/busbar/plugins`.
+3. **`store.module` + `store.settings`** naming the plugin and its own config, e.g. for sqlite:
+   `store.module: sqlite` with `store.settings.db_path: /var/lib/busbar/governance.db` — and
+   `db_path`'s directory must already exist on a writable volume (the plugin does not create it).
+4. **The signed plugin tarball actually in `plugins.dir`.** Two ways to get it there:
+   - **Mount it yourself**: download the release asset and bind-mount (or bake into a derived
+     image) the `.tar.gz` into `plugins.dir`. `plugins.dir` itself only needs to be *readable* for
+     this path.
+   - **`plugins.fetch`**: let Busbar download it at boot. One entry, `{ github: "org/repo@tag" }`,
+     resolves to the exact GitHub release-asset URL
+     `https://github.com/{org}/{repo}/releases/download/{tag}/{repo}.tar.gz` — for sqlite that is
+     `https://github.com/GetBusbar/store-sqlite/releases/download/v1.0.0/store-sqlite.tar.gz`
+     (pin whatever tag you actually want; `v1.0.0` here is illustrative). Because this path
+     *writes* the downloaded tarball into `plugins.dir`, that directory must be **writable**, not
+     merely mounted — a read-only `plugins.dir` fails the download, not just the load.
+
+Put together, a config that persists across restarts:
+
+```yaml
+plugins:
+  enabled: true
+  dir: /etc/busbar/plugins          # ABSOLUTE — the default ("plugins") resolves to /plugins in the image
+  fetch:
+    - github: "GetBusbar/store-sqlite@v1.0.0"   # or omit `fetch` and mount the tarball yourself
+
+store:
+  module: sqlite
+  settings:
+    db_path: /var/lib/busbar/governance.db      # directory must exist on the volume below
+```
+
+```bash
+docker run -d -p 8080:8080 \
+  -e ANTHROPIC_KEY -e BUSBAR_ADMIN_TOKEN \
+  -v "$PWD/config.yaml:/etc/busbar/config.yaml:ro" \
+  -v busbar-plugins:/etc/busbar/plugins \
+  -v busbar-data:/var/lib/busbar \
+  getbusbar/busbar
+```
+
+See [`docker/docker-compose.yml`](../docker/docker-compose.yml) for the same thing wired end to
+end, and [`docs/plugins.md`](plugins.md) for the full plugin-subsystem reference (trust,
+anti-downgrade floors, `busbar --list-plugins`).
+
+#### What the log says when it is wrong
+
+Every message below is copied verbatim from the code that emits it — nothing here is paraphrased.
+
+| Symptom | Exact message | Source |
+| --- | --- | --- |
+| `plugins.enabled` is still `false` (the default) | `store.module: 'sqlite' requires the plugin subsystem, but plugins.enabled is false (the default). Set plugins.enabled: true and place the signed 'sqlite' store plugin tarball in the plugins directory ('plugins'), or set store.module: memory.` | `crates/busbar-core/src/preflight.rs`; reproduced verbatim by golden cell `boot.refusal__BOOT-130__boot` |
+| `plugins.enabled: true` but no plugin named `sqlite` is actually in `plugins.dir` (wrong path, relative `plugins.dir` resolving somewhere unexpected, or the tarball never landed) | `no plugin matching store.module: 'sqlite' is installed in '<dir>' (plugins ARE enabled; loadable: [<names>]). Two things to check: is the plugin subsystem enabled? (it is) — and is the signed tarball actually IN the folder? Add it to plugins.fetch or drop the signed tarball in the directory, or set store.module: memory.` | `crates/busbar-core/src/preflight.rs`; same wording (auth-plugin variant) verified live by golden cell `boot.refusal__BOOT-137c__boot` |
+| `db_path`'s directory does not exist on the mounted volume | `store 'busbar-store-sqlite-plugin' plugin load failed: plugin 'busbar-store-sqlite-plugin' open failed: unable to open database file: <path>` | `crates/busbar-core/src/preflight.rs` (store plugin open, called from `main.rs`); verified live by golden cell `boot.refusal__BOOT-171__boot` |
+| The tarball is signed but built against an ABI this binary no longer speaks (too old or too new) | `manifest abi_version <n> is not supported for kind '<kind>' by this binary (supported range v<floor>..=v<max>)` | `crates/plugin-sign/src/lib.rs` (`verify_and_load`'s ABI-range check; covered by `crates/plugin-sign/src/tests/lib_tests.rs`) |
 
 ### auth: none (local dev, open relay)
 

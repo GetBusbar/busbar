@@ -81,7 +81,9 @@ jobs:
   bolt:
     name: BOLT rewrite (${{ inputs.arch }})
     # Native runner for the chosen arch — the execution verification depends on it (see the input).
-    runs-on: ${{ inputs.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
+    # LK-7: the amd64 leg moves to a Latchkey label; arm64 stays ubuntu-24.04-arm (Latchkey has no
+    # arm64 offering, and execution-verification on this job depends on a native runner).
+    runs-on: ${{ inputs.arch == 'arm64' && 'ubuntu-24.04-arm' || 'latchkey-large' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 

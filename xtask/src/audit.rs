@@ -37,9 +37,7 @@
 //!    commit a record names, the anti-forgery rule is RED, never silent — see [`audited_tree_hash`].
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::io::Write;
 use std::path::Path;
-use std::process::{Command, Stdio};
 
 use crate::json_lite::{self, Json, Obj};
 use crate::sha256::Sha256;
@@ -208,11 +206,16 @@ pub const UNCOVERED_BY_DESIGN: &[(&str, &str)] = &[
 /// The git reads the register rests on, always `-C <repo>` and never a `cd`.
 pub struct Git {
     repo: std::path::PathBuf,
+    /// See [`Git::reachable`]. Resolved at most once, and never from anything an overlay can move.
+    reachable: std::sync::OnceLock<BTreeSet<String>>,
 }
 
 impl Git {
     pub fn new(repo: impl Into<std::path::PathBuf>) -> Git {
-        Git { repo: repo.into() }
+        Git {
+            repo: repo.into(),
+            reachable: std::sync::OnceLock::new(),
+        }
     }
 
     pub fn repo(&self) -> &Path {
@@ -250,6 +253,94 @@ impl Git {
         Ok(table)
     }
 
+    /// THE TWO PIN NAMESPACES.
+    ///
+    /// `refs/audit-pins/*` is where a pin is written locally. `refs/backup/audit-pins/*` is where
+    /// the mirror is PUSHED, and it is therefore the only one of the two that exists on a runner.
+    pub const PIN_NAMESPACES: [&'static str; 2] = ["refs/audit-pins/", "refs/backup/audit-pins/"];
+
+    /// THE AUDIT PINS, from BOTH namespaces.
+    ///
+    /// A round may legitimately name a commit that is not on the current line — a reading taken on
+    /// a branch, a reading taken before a rebase — and the way to keep such a reading honest is to
+    /// PIN the commit so it survives and is visible in `git for-each-ref`. A commit reachable from
+    /// nowhere at all is a commit that will be garbage-collected, and a record whose tree can be
+    /// collected is a record whose claim cannot be re-checked by anybody.
+    ///
+    /// THIS USED TO READ `refs/audit-pins/*` ONLY, AND THAT NAMESPACE IS LOCAL-ONLY. Neither
+    /// `git clone` nor `actions/checkout` carries anything outside `refs/heads/*` and `refs/tags/*`
+    /// — `git ls-remote origin 'refs/audit-pins/*'` returns nothing — so on the runner the pin set
+    /// was EMPTY and `reachable()` degenerated to "an ancestor of HEAD". Measured on this base: 13
+    /// of the 23 `audited_at` commits are not ancestors of HEAD and were green only because of pin
+    /// refs that exist in one working copy on one laptop. In `ci.yml`'s blocking audit-ledger job
+    /// all 13 would have been RED. The mirror was being pushed to `refs/backup/audit-pins/*`, a
+    /// namespace this function never read.
+    ///
+    /// Reading both is half the fix; the other half is the workflows fetching the backup namespace
+    /// before the job runs, which is why `ci.yml` and `keep-proof.yml` now carry
+    /// `git fetch origin '+refs/backup/audit-pins/*:refs/audit-pins/*'`.
+    pub fn audit_pins(&self) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        for ns in Self::PIN_NAMESPACES {
+            if let Ok(text) = self.run(&["for-each-ref", "--format=%(refname)", ns]) {
+                out.extend(
+                    text.lines()
+                        .map(str::trim)
+                        .filter(|l| !l.is_empty())
+                        .map(str::to_string),
+                );
+            }
+        }
+        out.sort();
+        out.dedup();
+        out
+    }
+
+    /// Is `commit` an ancestor of `of` (or the same commit)?
+    ///
+    /// A commit git cannot resolve is NOT an ancestor, and that is the same answer for the same
+    /// reason: the tree it names cannot be produced from this repository. The two are distinguished
+    /// in the finding's wording, never in the verdict.
+    /// EVERY COMMIT REACHABLE FROM HEAD OR FROM AN AUDIT PIN, as one set, resolved ONCE per
+    /// process.
+    ///
+    /// The obvious spelling -- `merge-base --is-ancestor` per record, then once per pin when that
+    /// says no -- is one git process per question, and the self-test asks the whole register's
+    /// worth of questions again for every planted case. With thirteen pins that is hundreds of
+    /// processes per case and thousands per run, and it showed: `audit-ledger --selftest` spent
+    /// eight seconds a case, almost all of it forking.
+    ///
+    /// One `rev-list` answers all of them. The set is memoised for the life of the process because
+    /// its two inputs -- HEAD and the pin refs -- are exactly what an overlay CANNOT change: a
+    /// plant may rewrite the register, which is the file this gate judges, but it cannot rewrite
+    /// the repository's refs. A memo keyed on something a plant could move would be a stale
+    /// reading rather than a fast one.
+    pub fn reachable(&self) -> &BTreeSet<String> {
+        self.reachable.get_or_init(|| {
+            let mut argv: Vec<String> = vec!["rev-list".to_string(), "HEAD".to_string()];
+            argv.extend(self.audit_pins());
+            let refs: Vec<&str> = argv.iter().map(String::as_str).collect();
+            self.run(&refs)
+                .map(|out| out.lines().map(str::trim).map(str::to_string).collect())
+                .unwrap_or_default()
+        })
+    }
+
+    pub fn is_ancestor(&self, commit: &str, of: &str) -> bool {
+        self.run(&["merge-base", "--is-ancestor", commit, of])
+            .is_ok()
+    }
+
+    pub fn resolves(&self, commit: &str) -> bool {
+        self.run(&[
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &format!("{commit}^{{commit}}"),
+        ])
+        .is_ok()
+    }
+
     pub fn commits_between(&self, old: &str, new: &str) -> Option<u64> {
         self.run(&["rev-list", "--count", &format!("{old}..{new}")])
             .ok()
@@ -259,61 +350,72 @@ impl Git {
     /// LOC per blob, through ONE `git cat-file --batch` process rather than one per file.
     ///
     /// A final unterminated line counts as a line, which is what `wc -l` does not do and what the
-    /// Python does. An oid that is not a blob would desync the stream, so a record that does not
-    /// parse ends the read rather than shifting every later count by one file.
+    /// Python does.
+    ///
+    /// **STREAMED, IN LOCKSTEP WITH THE WRITER**, through [`crate::gitp::ask`]. `cat-file --batch`
+    /// answers while it is still being asked, and this call asks about EVERY TRACKED BLOB IN THE
+    /// TREE at once: thousands of oids of requests and megabytes of file bodies of answers, in
+    /// both directions, through pipes that hold 64 KiB on Linux and 16 KiB on macOS. Writing the
+    /// whole request list and only then reading — which is what this did — wedged the parent and
+    /// the child against each other's full pipe, at 4% CPU, indefinitely. It is the reason
+    /// `cargo xtask gate --all` did not finish.
+    ///
+    /// Reading record by record also keeps MEMORY bounded: only one file's bytes are held at a
+    /// time, and only long enough to count newlines in them, rather than a copy of the repository.
+    ///
+    /// TWO KINDS OF ODD RECORD, told apart on purpose. `<oid> missing` (and `<oid> ambiguous`) is
+    /// a complete two-field answer git gives for an object it cannot resolve: the stream is still
+    /// in sync, so it is SKIPPED and the rest of the batch is still counted. Anything else that
+    /// does not parse means the stream itself is no longer where this thinks it is, and continuing
+    /// would attribute one file's count to another file — so that ends the read.
     pub fn line_counts(&self, oids: &BTreeSet<String>) -> BTreeMap<String, usize> {
         let mut out = BTreeMap::new();
         if oids.is_empty() {
             return out;
         }
-        let mut child = match Command::new("git")
-            .arg("-C")
-            .arg(&self.repo)
-            .arg("cat-file")
-            .arg("--batch")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .spawn()
-        {
-            Ok(c) => c,
-            Err(_) => return out,
-        };
-        let feed: String = oids
+        let requests: Vec<u8> = oids
             .iter()
-            .map(String::as_str)
-            .collect::<Vec<_>>()
-            .join("\n")
-            + "\n";
-        if let Some(mut stdin) = child.stdin.take() {
-            let _ = stdin.write_all(feed.as_bytes());
-        }
-        let Ok(done) = child.wait_with_output() else {
-            return out;
-        };
-        let buf = done.stdout;
-        let mut i = 0usize;
-        while i < buf.len() {
-            let Some(nl) = buf[i..].iter().position(|b| *b == b'\n') else {
-                break;
-            };
-            let header = String::from_utf8_lossy(&buf[i..i + nl]).into_owned();
-            i += nl + 1;
-            let mut cols = header.split_whitespace();
-            let (Some(oid), Some(_kind), Some(size)) = (cols.next(), cols.next(), cols.next())
-            else {
-                break;
-            };
-            let Ok(size) = size.parse::<usize>() else {
-                break;
-            };
-            if i + size > buf.len() {
-                break;
+            .flat_map(|o| o.bytes().chain(std::iter::once(b'\n')))
+            .collect();
+
+        let answered = crate::gitp::ask(&self.repo, &["cat-file", "--batch"], requests, |r| {
+            let mut counts = BTreeMap::new();
+            let mut header = String::new();
+            loop {
+                header.clear();
+                match r.read_line(&mut header) {
+                    Ok(0) | Err(_) => break,
+                    Ok(_) => {}
+                }
+                let mut cols = header.split_whitespace();
+                let (Some(oid), rest) = (cols.next(), (cols.next(), cols.next())) else {
+                    break;
+                };
+                let (Some(_kind), Some(size)) = rest else {
+                    // "<oid> missing" — a whole answer, not a desync. Ask about the next one.
+                    if matches!(rest.0, Some("missing") | Some("ambiguous")) {
+                        continue;
+                    }
+                    break;
+                };
+                let Ok(size) = size.parse::<usize>() else {
+                    break;
+                };
+                // The body, plus the newline git writes after every record.
+                let mut body = vec![0u8; size + 1];
+                if r.read_exact(&mut body).is_err() {
+                    break;
+                }
+                let body = &body[..size];
+                let lines = body.iter().filter(|b| **b == b'\n').count()
+                    + usize::from(!body.is_empty() && body.last() != Some(&b'\n'));
+                counts.insert(oid.to_string(), lines);
             }
-            let body = &buf[i..i + size];
-            let lines = body.iter().filter(|b| **b == b'\n').count()
-                + usize::from(!body.is_empty() && body.last() != Some(&b'\n'));
-            out.insert(oid.to_string(), lines);
-            i += size + 1; // the record's trailing newline
+            counts
+        });
+
+        if let Ok(answered) = answered {
+            out = answered.value;
         }
         out
     }
@@ -1082,6 +1184,74 @@ pub fn production(rows: &[RowView]) -> Vec<&RowView> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// THE PIN ARM, PROVEN IN A THROWAWAY REPOSITORY.
+    ///
+    /// `audit-ledger:audited-at-reachable` accepts a commit an audit pin reaches. That arm cannot
+    /// be planted through the gate's register overlay — an overlay can change what the register
+    /// SAYS, not what refs the repository HAS — and creating a ref to plant against would be
+    /// writing into the tree the developer is standing in. So the two git reads the rule is built
+    /// out of are proven here instead, over a repository this test makes and owns: a commit on no
+    /// branch is not an ancestor of HEAD, and pinning it under `refs/audit-pins/` is what makes it
+    /// one.
+    #[test]
+    fn a_pinned_commit_is_reachable_and_an_unpinned_one_is_not() {
+        let root = std::env::temp_dir().join(format!("xtask-audit-pins-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("the scratch repository directory is creatable");
+        let git = Git::new(&root);
+        let hooks = root.join("nohooks");
+        std::fs::create_dir_all(&hooks).expect("the empty hooks directory is creatable");
+        for args in [
+            vec!["init", "-q"],
+            vec!["config", "user.email", "audit@selftest"],
+            vec!["config", "user.name", "audit"],
+            vec!["config", "commit.gpgsign", "false"],
+            vec![
+                "config",
+                "core.hooksPath",
+                hooks.to_str().expect("utf-8 path"),
+            ],
+        ] {
+            git.run(&args)
+                .expect("the scratch repository is configurable");
+        }
+        std::fs::write(root.join("f.txt"), "base\n").expect("the scratch file is writable");
+        git.run(&["add", "-A"]).expect("add");
+        git.run(&["commit", "-qm", "base"]).expect("commit");
+        let base = git.head().expect("HEAD resolves");
+
+        // A commit made on a side branch and then abandoned: real, resolvable, on no branch the
+        // line can see.
+        git.run(&["checkout", "-q", "-b", "side"]).expect("branch");
+        std::fs::write(root.join("g.txt"), "side\n").expect("the scratch file is writable");
+        git.run(&["add", "-A"]).expect("add");
+        git.run(&["commit", "-qm", "side"]).expect("commit");
+        let side = git.head().expect("HEAD resolves");
+        git.run(&["checkout", "-q", "master"])
+            .or_else(|_| git.run(&["checkout", "-q", "main"]))
+            .expect("back to the initial branch");
+        git.run(&["branch", "-qD", "side"])
+            .expect("the side branch is deleted");
+
+        assert!(git.resolves(&side), "the abandoned commit still resolves");
+        assert!(
+            !git.is_ancestor(&side, &base),
+            "and it is reachable from the line by nothing, which is the finding"
+        );
+        assert!(git.audit_pins().is_empty(), "no pin has been written yet");
+
+        git.run(&["update-ref", "refs/audit-pins/reading-1", &side])
+            .expect("the pin is writable");
+        let pins = git.audit_pins();
+        assert_eq!(pins, vec!["refs/audit-pins/reading-1".to_string()]);
+        assert!(
+            pins.iter().any(|p| git.is_ancestor(&side, p)),
+            "a pinned commit is reachable, which is the whole of what the pin is for"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     const HASH: &str = "aaaa";
     const OLD: &str = "bbbb";

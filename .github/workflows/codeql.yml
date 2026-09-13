@@ -54,7 +54,7 @@ jobs:
   # .github/required-status-checks.md under the qa full tier.
   analyze:
     name: CodeQL (rust)
-    runs-on: ubuntu-latest
+    runs-on: latchkey-xlarge
     # A hang is a failure. The database build plus query run is single-digit-to-low-double-digit
     # minutes on this workspace; 90 is real headroom over that without letting a wedged extractor
     # sit for the six hours GitHub would otherwise allow.

@@ -340,8 +340,10 @@ Each row also owes its `plugin-testkit` battery (§3) and its `<KIND>_ABI` const
 ## Appendix G — `cargo xtask gate kind-isolation` (implement verbatim)
 
 Register as `Registration { name: "kind-isolation", batch: 2, tier: Tier::Fast, … }` in
-`xtask/src/gates/mod.rs`; copy the shape of `xtask/src/gates/plane_transport_neutrality.rs`. Six
-rows; `owed()` returns all six; each has a RED self-test case planted as an `Overlay`.
+`xtask/src/gates/mod.rs`; copy the shape of `xtask/src/gates/plane_transport_neutrality.rs`. The
+seven rows below, plus the three the 2026-09-08 control ruling added (`:plane-steps`,
+`:transport-registration`, `:control-path`); `owed()` returns them all, and each has a RED self-test
+case planted as an `Overlay`.
 
 | Row | Asserts | RED case (`Expect::Red`) |
 |---|---|---|
@@ -351,6 +353,7 @@ rows; `owed()` returns all six; each has a RED self-test case planted as an `Ove
 | `kind-isolation:registry` | Every registration record's `Kind` equals the crate's `Plugin::kind()` and its name segment; every kind with at least one crate has a `<KIND>_ABI` constant and every crate's `abi()` meets its kind's floor; no duplicate `(kind, KEY)`; no plugin feature in `crates/busbar/Cargo.toml` pulls a crate of a different kind. | Overlay `crates/busbar/Cargo.toml` with `plane-mcp = ["dep:busbar-transport-grpc"]` → the row names the feature and the two kinds. |
 | `kind-isolation:shape` | Every plugin crate has `src/lib.rs` exporting exactly one public plugin type, `src/meta.rs`, and `src/tests/conformance.rs`; it implements exactly one kind trait; no `mount`/`serve`/`bind`/`on_upgrade` symbol on its public surface. | Overlay a plugin crate with a second `impl Store for …` beside its `impl Hook` → the row names the crate and both traits. Second RED: delete `src/tests/conformance.rs` from one sibling → the row names the missing module. |
 | `kind-isolation:testkit` | Every kind with ≥ 1 crate has a `plugin-testkit` battery function; every crate of that kind calls it from `src/tests/conformance.rs`. A kind whose battery is absent is reported, not skipped. | Overlay a plugin crate whose `conformance.rs` omits the `testkit_battery` test → the row names the crate and the battery it did not call. |
+| `kind-isolation:matrix` | For EVERY kind `K` and EVERY crate `C` under `crates/`, how many times `C` names `K`'s derived vocabulary — `K`'s member package names, their kind-qualified ids, and (for the plane and transport families, the two the kind table itself calls instance vocabularies) their bare ids — in every `.rs` and `.toml` under the crate, WHOLE TEXT: identifiers, string literals, doc comments, ordinary comments, `cfg` attributes, Cargo dependency and feature names, and the file's own path. Tests are NOT excluded. **The composition root is measured too.** Two independent scanners (a segment stream and a raw bounded window); the scored count is the HIGHER, and a cell where they disagree is RED unless a `[[disagreement]]` row records it. Ceilings per `(crate, kind)` in `qa/kind-isolation.toml`'s `[[cell]]` table, exact in both directions — above is a raised coupling, below is stale slack. The `[[edge]]` table carries each kind → kind class's ARCHITECTURE citation, its sentence and the line that deletes it; a cell above zero with no class is an unlisted edge. Ship twin: 0 everywhere, and it does not read the tables. | Overlay `crates/busbar/src/root/voice_serve.rs` with the head of the real file (`keep-streams-3` `dd96a04f3`) → the row names `busbar × plane`, `RAISED`, and the heaviest root files. Second RED: the `[[cell]]` row for `busbar × plane` set to `count = "0"` → the same finding with the hand-wired per-plane files named. Third RED: a ceiling left above its count → `STALE SLACK`. |
 
 Ratchets: `:vocab` and `:deps` carry per-crate ratchet counts seeded from the §9 answer table so the
 gate can be turned on RED-free and closed row by row; every other row is `max_hits = 0` from day one.

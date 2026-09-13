@@ -6,7 +6,6 @@
 mod cache_tests;
 mod carrier_tests;
 mod chain_tests;
-mod detect_tests;
 mod exchange_tests;
 mod unit_tests;
 
@@ -113,20 +112,11 @@ pub(crate) fn test_digest(bytes: &[u8]) -> String {
     out
 }
 
-/// Headers as a plain list of pairs, for the carrier and ladder tests.
+/// Headers as a plain list of pairs, for the carrier tests.
 pub(crate) struct Headers(pub(crate) Vec<(&'static str, &'static str)>);
 
 impl crate::carrier::HeaderView for Headers {
     fn header(&self, name: &str) -> Option<&str> {
-        self.0.iter().find(|(n, _)| *n == name).map(|(_, v)| *v)
-    }
-}
-
-impl crate::detect::HeaderProbe for Headers {
-    fn has(&self, name: &str) -> bool {
-        self.0.iter().any(|(n, _)| *n == name)
-    }
-    fn value(&self, name: &str) -> Option<&str> {
         self.0.iter().find(|(n, _)| *n == name).map(|(_, v)| *v)
     }
 }

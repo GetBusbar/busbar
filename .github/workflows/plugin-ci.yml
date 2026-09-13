@@ -90,7 +90,7 @@ jobs:
   # up to date with the engine (the steady state) this is free.
   refs:
     name: resolve the busbar refs this plugin must be proven against
-    runs-on: ubuntu-latest
+    runs-on: latchkey-small
     outputs:
       matrix: ${{ steps.build.outputs.matrix }}
     steps:
@@ -132,7 +132,7 @@ jobs:
       # the sibling leg on the first failure destroys exactly that signal.
       fail-fast: false
       matrix: ${{ fromJSON(needs.refs.outputs.matrix) }}
-    runs-on: ubuntu-latest
+    runs-on: latchkey-xlarge
     services:
     # SERVICE IMAGES ARE DIGEST-PINNED. A floating tag means a third party can change what this
     # workflow tests against, overnight, with no commit here. That matters more in THIS file than
@@ -866,7 +866,7 @@ jobs:
     name: coverage (llvm-cov · codecov)
     if: github.event_name == 'push'
     continue-on-error: true
-    runs-on: ubuntu-latest
+    runs-on: latchkey-large
     steps:
       - name: Checkout the plugin
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7

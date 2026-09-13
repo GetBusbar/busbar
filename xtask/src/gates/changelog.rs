@@ -146,6 +146,23 @@ impl ChangelogGate {
     }
 }
 
+/// THE VERSION BEING TAGGED, and the ways it can lack notes: the case name, the version the
+/// release arm is asked for, and the string the report must name. A `const` rather than a literal
+/// inside the selftest because each row builds a gate of its own, and those gates are built above
+/// the report that holds the cases naming them.
+const VERSION_CASES: &[(&str, &str, &str)] = &[
+    (
+        "the version being released has no section at all",
+        "1.5.5",
+        "has NO `## [1.5.5]",
+    ),
+    (
+        "the version being released is not the newest entry",
+        "1.5.3",
+        "BELOW 1.5.4",
+    ),
+];
+
 impl Gate for ChangelogGate {
     fn name(&self) -> &'static str {
         "changelog"
@@ -250,9 +267,32 @@ impl Gate for ChangelogGate {
         Verdict::of(rows)
     }
 
-    fn selftest(&self, cx: &Ctx) -> Report {
-        let mut report = Report::new();
+    fn selftest<'a>(&'a self, cx: &'a Ctx) -> Report<'a> {
+        // EVERY GATE THIS SELFTEST BUILDS IS BUILT HERE, ABOVE THE REPORT. The release arms are
+        // `ChangelogGate` with a flag the registry does not carry, so the cases that prove them
+        // name a gate this function owns; a case is taken on whichever thread reaches it, so the
+        // gate it names has to outlive the report that holds the case, and declaration order is
+        // what says so.
         let branch = ChangelogGate::new().with_today(self.today.clone());
+        let release = ChangelogGate::new()
+            .with_today(self.today.clone())
+            .require_dated_top();
+        let versioned: Vec<(&str, &str, ChangelogGate)> = VERSION_CASES
+            .iter()
+            .map(|(name, version, naming)| {
+                (
+                    *name,
+                    *naming,
+                    ChangelogGate::new()
+                        .with_today(self.today.clone())
+                        .require_version(*version),
+                )
+            })
+            .collect();
+        let newest_not_a_release = ChangelogGate::new()
+            .with_today(self.today.clone())
+            .require_version("1.5.4");
+        let mut report = Report::new();
         let owed: Vec<String> = branch.owed();
         let owed_refs: Vec<&str> = owed.iter().map(String::as_str).collect();
 
@@ -391,9 +431,6 @@ impl Gate for ChangelogGate {
             &[ROW_RELEASE_TOP_DATED],
         ));
 
-        let release = ChangelogGate::new()
-            .with_today(self.today.clone())
-            .require_dated_top();
         report.push(prove_red(
             cx,
             &release,
@@ -411,36 +448,19 @@ impl Gate for ChangelogGate {
         ));
 
         // -- THE VERSION BEING TAGGED, three ways it can lack notes, and the twin -----------------
-        for (name, version, naming) in [
-            (
-                "the version being released has no section at all",
-                "1.5.5",
-                "has NO `## [1.5.5]",
-            ),
-            (
-                "the version being released is not the newest entry",
-                "1.5.3",
-                "BELOW 1.5.4",
-            ),
-        ] {
-            let gate = ChangelogGate::new()
-                .with_today(self.today.clone())
-                .require_version(version);
+        for (name, naming, gate) in &versioned {
             report.push(prove_red(
                 cx,
-                &gate,
-                name,
+                gate,
+                *name,
                 &[ROW_VERSION_HAS_NOTES],
                 plant(GOOD),
                 &[ROW_VERSION_HAS_NOTES, naming],
             ));
         }
-        let gate = ChangelogGate::new()
-            .with_today(self.today.clone())
-            .require_version("1.5.4");
         report.push(prove_red(
             cx,
-            &gate,
+            &newest_not_a_release,
             "a file whose newest heading is not a release at all",
             &[ROW_VERSION_HAS_NOTES],
             plant(&GOOD.replace("## [1.5.4], 2026-08-14", "## [Unreleased] but stale")),
@@ -448,12 +468,12 @@ impl Gate for ChangelogGate {
         ));
         report.push(prove_green(
             &cx.with_overlay(plant(GOOD)),
-            &gate,
+            &newest_not_a_release,
             "the newest entry IS the version being released",
             &[ROW_VERSION_HAS_NOTES],
         ));
 
-        report
+        report.sealed()
     }
 
     /// THE PARITY PROBES, one per rule the ordinary (branch) invocation of the legacy lint can
@@ -1141,7 +1161,9 @@ mod tests {
     #[test]
     fn the_selftest_report_is_accepted_by_the_framework() {
         let gate = gate();
-        if let Err(errs) = verify_report(&gate, &gate.selftest(&cx())) {
+        let cx = cx();
+        let report = gate.selftest(&cx);
+        if let Err(errs) = verify_report(&gate, &report) {
             panic!("selftest report refused: {errs:#?}");
         }
     }
@@ -1153,7 +1175,9 @@ mod tests {
             .require_version("1.6.0");
         assert!(gate.owed().iter().any(|o| o == ROW_RELEASE_TOP_DATED));
         assert!(gate.owed().iter().any(|o| o == ROW_VERSION_HAS_NOTES));
-        if let Err(errs) = verify_report(&gate, &gate.selftest(&cx())) {
+        let cx = cx();
+        let report = gate.selftest(&cx);
+        if let Err(errs) = verify_report(&gate, &report) {
             panic!("selftest report refused: {errs:#?}");
         }
     }

@@ -3,10 +3,20 @@
 # this file actionlint reports every `runs-on: [self-hosted, linux, x64, busbar-xl]` in the repo as
 # an unknown label, and a lint that cries wolf on 32 correct lines is a lint nobody reads.
 #
+# `latchkey-small|medium|large|xlarge` are Latchkey's runner-size labels (latchkey.dev), used by
+# ci.yml, keep-proof.yml and gate-mutants.yml's `runs-on:` lines now that those three workflows are
+# migrated off the EC2 fleet. Without declaring them here actionlint reports each one as an unknown
+# label — 37 findings measured on this migration (LK-4) — for the same reason `busbar-xl` needed
+# declaring: they are real, fleet-issued (Latchkey-issued) labels, not typos.
+#
 # Declaring it here is not a way of silencing the check; it is the check working as designed. The
-# list below is the ONLY custom label the fleet issues, so a typo (`busbar-x1`, a label no runner
-# actually carries) is still caught — the job would otherwise sit queued forever, and actionlint
-# says so before it is pushed.
+# list below is the ONLY custom labels the fleets issue, so a typo (`busbar-x1`, `latchkey-xlage`, a
+# label no runner actually carries) is still caught — the job would otherwise sit queued forever,
+# and actionlint says so before it is pushed.
 self-hosted-runner:
   labels:
     - busbar-xl
+    - latchkey-small
+    - latchkey-medium
+    - latchkey-large
+    - latchkey-xlarge

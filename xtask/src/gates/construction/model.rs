@@ -35,41 +35,15 @@ impl CRow {
     }
 }
 
-/// `rules.py::row`. An informational rule is always PASS and its title is prefixed `WARN ` — the
-/// prefix is in the ledger text, so it is not decoration this port may drop.
-#[allow(clippy::too_many_arguments)]
-pub fn row(
-    id: impl Into<String>,
-    ok: bool,
-    title: impl Into<String>,
-    detail: impl Into<String>,
-    current: i64,
-    threshold: i64,
-    offenders: Vec<String>,
-    informational: bool,
-) -> CRow {
-    let title = if informational {
-        format!("WARN {}", title.into())
-    } else {
-        title.into()
-    };
-    CRow {
-        id: id.into(),
-        status: if ok || informational {
-            Status::Pass
-        } else {
-            Status::Fail
-        },
-        title,
-        detail: detail.into(),
-        current,
-        threshold,
-        offenders,
-        informational,
-    }
-}
-
-/// A plain (non-informational) row, the shape all but three rules use.
+/// A GATING ROW: what it measured is compared, and a false comparison is a FAIL.
+///
+/// THE `ok` ARGUMENT AND THE `informational` FLAG NO LONGER MEET. They used to be two parameters of
+/// one constructor, and the constructor read `if ok || informational { Pass }` — so a rule written
+/// with `informational: true` and a real comparison had that comparison silently discarded, and the
+/// rule was a comment with the shape of a gate. `legacy-reach:<key>` was exactly that for as long as
+/// it existed: `current <= figure` evaluated every run and reached nothing. There is now no way to
+/// spell it. A row that compares something is built HERE and gates on the answer; a row that
+/// reports without judging is built by [`informational`], which takes no comparison at all.
 #[allow(clippy::too_many_arguments)]
 pub fn plain(
     id: impl Into<String>,
@@ -80,7 +54,43 @@ pub fn plain(
     threshold: i64,
     offenders: Vec<String>,
 ) -> CRow {
-    row(id, ok, title, detail, current, threshold, offenders, false)
+    CRow {
+        id: id.into(),
+        status: if ok { Status::Pass } else { Status::Fail },
+        title: title.into(),
+        detail: detail.into(),
+        current,
+        threshold,
+        offenders,
+        informational: false,
+    }
+}
+
+/// A REPORTING ROW: it measures, it prints, it never judges. Its title is prefixed `WARN ` — the
+/// prefix is in the ledger text, so it is not decoration this port may drop.
+///
+/// It takes no `ok`, which is the whole point: there is no comparison here for the constructor to
+/// throw away, so "informational" is a property of the ROW rather than a modifier that quietly
+/// unmakes the verdict the rule computed. A reporting row that should start gating becomes a
+/// [`plain`] call with the comparison written out, in a diff a reviewer reads as what it is.
+pub fn informational(
+    id: impl Into<String>,
+    title: impl Into<String>,
+    detail: impl Into<String>,
+    current: i64,
+    threshold: i64,
+    offenders: Vec<String>,
+) -> CRow {
+    CRow {
+        id: id.into(),
+        status: Status::Pass,
+        title: format!("WARN {}", title.into()),
+        detail: detail.into(),
+        current,
+        threshold,
+        offenders,
+        informational: true,
+    }
 }
 
 /// Python's `repr()` of a list of strings, which several details print verbatim.
@@ -196,10 +206,12 @@ mod tests {
         assert_eq!(py_dict(&[]), "{}");
     }
 
-    /// An informational row is PASS whatever it measured, and says WARN in its title.
+    /// An informational row is PASS whatever it measured, and says WARN in its title. It has no
+    /// `ok` argument to discard, which is what makes "an informational row with a real comparison
+    /// in it" unspellable rather than merely unusual.
     #[test]
     fn an_informational_row_never_fails_and_is_titled_warn() {
-        let r = row("x", false, "a thing", "detail", 9, 0, vec![], true);
+        let r = informational("x", "a thing", "detail", 9, 0, vec![]);
         assert_eq!(r.status, Status::Pass);
         assert_eq!(r.title, "WARN a thing");
         let g = plain("y", false, "a thing", "detail", 9, 0, vec![]);

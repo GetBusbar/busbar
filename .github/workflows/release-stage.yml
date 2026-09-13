@@ -136,7 +136,7 @@ jobs:
   # built.
   plan:
     name: plan (version, staging name, is this name still free)
-    runs-on: ubuntu-latest
+    runs-on: latchkey-small
     outputs:
       version: ${{ steps.p.outputs.version }}
       tag: ${{ steps.p.outputs.tag }}
@@ -334,7 +334,7 @@ jobs:
     name: gate 0 (refuse to stage from a red commit)
     needs: plan
     if: ${{ needs.plan.outputs.release == '1' }}
-    runs-on: ubuntu-latest
+    runs-on: latchkey-small
     # Bounded well above a normal CI run (the `check` job with its Postgres and Valkey service
     # containers is the long pole) and well below anything that would sit here all day. Running out
     # is a refusal, not a pass, so a generous bound costs waiting and never correctness.
@@ -473,7 +473,7 @@ jobs:
     # `branch-green` FIRST. Nothing is built for a release from a red commit, so the expensive part
     # of the pipeline never starts on one either.
     needs: [plan, branch-green]
-    runs-on: ubuntu-latest
+    runs-on: latchkey-xlarge
     services:
       # PINNED BY DIGEST, NOT BY TAG. `postgres:16` and `valkey/valkey:8` are MOVING tags: Docker Hub
       # re-points them at every patch, so the same commit gets different bytes on different days and
@@ -616,7 +616,7 @@ jobs:
   draft:
     name: draft the release (invisible, no tag, real assets)
     needs: [plan, gate]
-    runs-on: ubuntu-latest
+    runs-on: latchkey-small
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       # THE BODY NAMES WHAT CHANGED. `--generate-notes` alone produced a one-line compare link, so
@@ -699,7 +699,7 @@ jobs:
   sbom:
     needs: [plan, draft]
     name: sbom (cyclonedx)
-    runs-on: ubuntu-latest
+    runs-on: latchkey-large
     env:
       TAG: ${{ needs.plan.outputs.tag }}
     steps:
@@ -728,7 +728,7 @@ jobs:
   openapi:
     needs: [plan, draft]
     name: openapi (3.1 document)
-    runs-on: ubuntu-latest
+    runs-on: latchkey-large
     env:
       TAG: ${{ needs.plan.outputs.tag }}
     steps:
@@ -774,7 +774,7 @@ jobs:
   targets:
     name: release target matrix (single source of truth)
     needs: [plan, branch-green]
-    runs-on: ubuntu-latest
+    runs-on: latchkey-small
     outputs:
       matrix: ${{ steps.emit.outputs.matrix }}
       assets: ${{ steps.emit.outputs.assets }}
@@ -1000,7 +1000,7 @@ jobs:
   verify-assets:
     name: the draft owes every asset the manifest names
     needs: [plan, targets, upload-assets, sbom, openapi]
-    runs-on: ubuntu-latest
+    runs-on: latchkey-small
     # `!cancelled()` IS THE POINT OF THIS LINE, and it is the second half of the 1.5.3 defect.
     # `upload-assets` runs `fail-fast: false`, so when two of its five legs failed the JOB failed --
     # and a `needs:` on a failed job SKIPS the dependent by default. So the one guard that existed to
@@ -1211,7 +1211,7 @@ jobs:
   verify-set-equality:
     name: the set built and the set verified must be identical
     needs: [plan, targets, upload-assets, verify-artifact]
-    runs-on: ubuntu-latest
+    runs-on: latchkey-small
     if: ${{ !cancelled() && needs.plan.outputs.release == '1' }}
     steps:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
@@ -1448,7 +1448,7 @@ jobs:
   record-staged:
     name: record the staged digest (the promote's only input)
     needs: [plan, stage-image, verify-staged]
-    runs-on: ubuntu-latest
+    runs-on: latchkey-small
     steps:
       # -- PIN THE DRAFT'S BYTES, NOT JUST THE IMAGE'S ------------------------------------------
       #

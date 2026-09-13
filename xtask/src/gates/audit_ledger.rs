@@ -43,6 +43,15 @@ pub const ROW_MISSING: &str = "audit-ledger:missing-scopes";
 pub const ROW_READABLE: &str = "audit-ledger:readable";
 pub const ROW_INVALID: &str = "audit-ledger:invalid-result";
 pub const ROW_STAMPED: &str = "audit-ledger:hash-matches-commit";
+/// THE COMMIT A RECORD NAMES IS ONE THIS REPOSITORY STILL CARRIES.
+///
+/// [`ROW_STAMPED`] proves a record's `tree_hash` is what its commit's tree actually held, and it
+/// proves it by asking git to produce that tree today. That proof is only as durable as the commit:
+/// one reachable from no branch, no tag and no pin is one `git gc` away from not being producible
+/// at all, and every round stamped against it becomes a number nobody can recompute. The register
+/// is the tree's audit history, and a history citing commits the repository is free to discard is a
+/// history of nothing.
+pub const ROW_REACHABLE: &str = "audit-ledger:audited-at-reachable";
 pub const ROW_OWED: &str = "audit-ledger:fix-owes-confirmation";
 
 pub struct AuditLedgerGate;
@@ -55,7 +64,7 @@ fn row(problems: &[String], id: &str, ok: &str, bad: &str, ok_detail: String) ->
     }
 }
 
-/// The FIVE rows the gate owns. The two `--check`-only rules are deliberately absent; see the
+/// The SIX rows the gate owns. The two `--check`-only rules are deliberately absent; see the
 /// module note.
 pub fn rows_from(f: &CheckFindings) -> Vec<Row> {
     vec![
@@ -88,6 +97,13 @@ pub fn rows_from(f: &CheckFindings) -> Vec<Row> {
             format!("{} scope(s)", f.scopes),
         ),
         row(
+            &f.unreachable,
+            ROW_REACHABLE,
+            "every commit a record names is one this repository still carries",
+            "a record names a commit reachable from neither HEAD nor an audit pin",
+            format!("{} scope(s)", f.scopes),
+        ),
+        row(
             &f.owed,
             ROW_OWED,
             "every HIGH/MEDIUM finding stamped fixed carries a confirming round",
@@ -108,6 +124,7 @@ impl Gate for AuditLedgerGate {
             ROW_READABLE.to_string(),
             ROW_INVALID.to_string(),
             ROW_STAMPED.to_string(),
+            ROW_REACHABLE.to_string(),
             ROW_OWED.to_string(),
         ]
     }
@@ -152,7 +169,7 @@ impl Gate for AuditLedgerGate {
         }
     }
 
-    fn selftest(&self, cx: &Ctx) -> Report {
+    fn selftest<'a>(&'a self, cx: &'a Ctx) -> Report<'a> {
         let mut report = Report::new();
         report.push(prove_green(
             cx,
@@ -385,15 +402,36 @@ impl Gate for AuditLedgerGate {
             &["cannot be resolved"],
         );
 
+        // …AND THE SAME PLANT IS THE REACHABILITY ROW'S RED, because it goes down the same path.
+        // The rule asks `merge-base --is-ancestor` FIRST and only then asks whether the commit
+        // resolves at all, so a commit git cannot produce and a commit on no branch reach this row
+        // through one code path and differ only in the sentence it prints. That is deliberate: a
+        // plant that could only exercise the unresolvable arm would leave the arm that actually
+        // catches drift — a real commit on no ref — proven by nothing, and the honest way to avoid
+        // that is to give both arms the same body rather than to write an object into the
+        // developer's repository to plant against.
+        plant_rows(
+            cx,
+            self,
+            &mut report,
+            &planted,
+            "a record naming a commit no branch, tag or audit pin reaches",
+            ROW_REACHABLE,
+            &[
+                "reachable from neither HEAD nor an audit pin",
+                "does not resolve in this repository",
+            ],
+        );
+
         report
     }
 }
 
 /// Overlay a planted register and require THE COVERED ROW to go red naming every string given.
-fn plant_rows(
+fn plant_rows<'a>(
     cx: &Ctx,
-    gate: &dyn Gate,
-    report: &mut Report,
+    gate: &'a dyn Gate,
+    report: &mut Report<'a>,
     doc: &Json,
     label: &str,
     covers: &str,
@@ -536,6 +574,41 @@ mod tests {
     use super::*;
     use crate::gates::{execute, verify_report};
 
+    /// THE ENVIRONMENTAL INPUT THESE CASES ASSUME, SAID OUT LOUD BEFORE THEY FAIL ABOUT IT.
+    ///
+    /// `audited-at-reachable` asks git whether every commit the register names can still be
+    /// produced: an ancestor of HEAD, or of an audit pin. The pins live in `refs/audit-pins/*`,
+    /// which is a LOCAL namespace — neither `git clone` nor `actions/checkout` carries anything
+    /// outside `refs/heads/*` and `refs/tags/*`, and the mirror is pushed to
+    /// `refs/backup/audit-pins/*`. A checkout that has not fetched that mirror carries ZERO pins,
+    /// and on this register thirteen commits then read as unreachable for a reason that has nothing
+    /// to do with the register itself.
+    ///
+    /// This is what made every `gate-mutants` shard report BASELINE RED: the mutation workflow
+    /// fetched the branch's merge-base ref and not the pin mirror, so `cargo test -p xtask --lib`
+    /// was red on the runner — on the checkout AND inside `cargo-mutants`' scratch copy, which
+    /// faithfully carries whatever refs the checkout had. The scratch copy was never the difference.
+    ///
+    /// The assertions below are UNCHANGED and still fail. What this adds is the sentence naming the
+    /// missing input and the exact fetch that supplies it, instead of leaving a reader to infer it
+    /// from a wall of reachability findings. A test that depends on the environment must name the
+    /// dependency; what it must never do is quietly stop testing when the dependency is absent.
+    fn the_environment_this_case_assumes(cx: &Ctx) -> String {
+        let git = Git::new(cx.root());
+        if !git.audit_pins().is_empty() {
+            return String::new();
+        }
+        format!(
+            "\n\nTHIS CHECKOUT CARRIES NO AUDIT PINS. `for-each-ref` found nothing under {:?}, so \
+             `audited-at-reachable` can only call a commit reachable if it is an ancestor of HEAD. \
+             That is an environment fault, not a register fault, and it is the whole reason this \
+             case is red. Supply the input before running this suite — the fetch is spelled in \
+             .github/workflows/ci.yml and .github/workflows/gate-mutants.yml, into the local \
+             namespace from the pushed mirror.",
+            Git::PIN_NAMESPACES
+        )
+    }
+
     /// THE FIVE ROWS THE GATE OWNS ARE GREEN ON THE TREE IT SHIPS WITH. Every RED case below only
     /// proves the gate can fail; without this one, a gate that is simply broken would look proven.
     #[test]
@@ -544,8 +617,9 @@ mod tests {
         let verdict = execute(&AuditLedgerGate, &cx);
         assert!(
             !verdict.red,
-            "audit-ledger is red on the register it ships with: {:?}",
-            verdict.problems
+            "audit-ledger is red on the register it ships with: {:?}{}",
+            verdict.problems,
+            the_environment_this_case_assumes(&cx)
         );
     }
 
@@ -556,7 +630,10 @@ mod tests {
         let cx = Ctx::workspace().expect("workspace context");
         let report = AuditLedgerGate.selftest(&cx);
         if let Err(failures) = verify_report(&AuditLedgerGate, &report) {
-            panic!("audit-ledger selftest did not prove itself: {failures:#?}");
+            panic!(
+                "audit-ledger selftest did not prove itself: {failures:#?}{}",
+                the_environment_this_case_assumes(&cx)
+            );
         }
     }
 

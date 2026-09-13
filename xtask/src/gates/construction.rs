@@ -37,6 +37,8 @@
 //! still cannot be cited under a name the runner does not answer to — but only the flat one is the
 //! path a citation resolves to without a fallback, and four Appendix B bindings cite this gate.
 
+pub mod ceilings;
+pub mod census;
 pub mod external;
 pub mod model;
 pub mod rules;
@@ -116,18 +118,16 @@ impl ConstructionGate {
     /// change any file, and may add a file to a crate, but may not add or remove a CRATE — doing
     /// so would move the owed set out from under the run reconciling against it.
     /// The owed rows this gate REPORTS and does not judge — see [`Gate::informational`]. Derived
-    /// from the ceilings file rather than maintained beside it, so a prefix added to
-    /// `rules.legacy-reach.prefixes` brings its WARN sub-row with it, exactly as [`Self::ids`]
-    /// derives the owed set from the same table.
+    /// from the `forbid-unsafe` ratchet's own debt list rather than maintained beside it, so
+    /// closing a debt moves its crate back under the RED proof in the same edit.
+    ///
+    /// The three `legacy-reach:<crate>` rows USED TO BE HERE and are not any more: a per-crate
+    /// figure nothing could fail on let `busbar_substrate` sit twenty-one over it, passing, which
+    /// is the whole of what the exemption bought. They gate now, and `ceiling-slack` holds them to
+    /// the measurement from below.
     pub fn informational_ids(cx: &Ctx) -> Vec<String> {
         let mut ids = vec!["duplicate-dispatch".to_string()];
         if let Ok(cfg) = ConstructionGate::cfg(cx) {
-            ids.extend(
-                cfg.doc
-                    .children("rules.legacy-reach.prefixes")
-                    .into_iter()
-                    .map(|(k, _)| format!("legacy-reach:{k}")),
-            );
             for (kinds_key, missing_key, prefix) in UNSAFE_HALVES {
                 let (_, tracked) = ConstructionGate::unsafe_split(cx, &cfg, kinds_key, missing_key);
                 ids.extend(tracked.iter().map(|c| format!("{prefix}:{c}")));
@@ -205,6 +205,13 @@ impl ConstructionGate {
             "one-pricing-site",
             "one-pricing-site:fee-fields",
             "legacy-reach",
+            ceilings::ROW_ROSE,
+            ceilings::ROW_SLACK,
+            // UNCONDITIONAL, AND THAT IS THE ENTIRE POINT. Every id below this block is derived
+            // from the same `Cfg` the rules read, so deleting a rule table deletes the obligation
+            // to run it in the same edit. This one is a literal: `ceiling-census` is owed whatever
+            // the config says, and it is the row that counts the tables the others come from.
+            census::ROW_CENSUS,
             "no-test-doubles-in-production",
             "no-test-doubles-in-production:doubles",
         ]
@@ -444,6 +451,41 @@ impl ConstructionGate {
         );
 
         rows.extend(surface_rows(cx, &cfg));
+        // LAST, AND IN THIS ORDER. `ceiling-slack` reads the OTHER ROWS' measurements rather than
+        // re-deriving them, so it must see every row this run produced — including the three
+        // surface rows above, which are the ones a re-measurement would be most likely to disagree
+        // with, since they come from a subprocess.
+        // ── THE SCAN-SET FLOOR ───────────────────────────────────────────────────────────────────
+        // AN ABSENT SUBJECT IS RED, NOT PASS. Around eight rules print `vacuous: <path> does not
+        // exist yet` and return PASS, so every one of them is a rule that reports green precisely
+        // when it has nothing to read. That is the same shape as a glob narrowed to match nothing,
+        // and it is the shape `structure-lint` (CANDIDATE_FLOOR = 200) and `workspace-deps`
+        // (MIN_MEMBERS/MIN_INHERITED) each spend a floor to refuse.
+        //
+        // It is done HERE rather than at the ~18 sites so that a rule added tomorrow inherits it:
+        // the `vacuous: ` prefix is the declaration, and this is the one place that scores it. A
+        // row that legitimately has no subject must say so with a ceiling and a measurement, not by
+        // passing on absence.
+        //
+        // Zero rows on this tree are vacuous, measured 2026-09-09, so this costs nothing today and
+        // is entirely a guard on the direction of travel.
+        // An INFORMATIONAL row is PASS by construction and its title carries `WARN ` — it is a
+        // report, not a claim, so there is nothing for a floor to hold it to.
+        for r in &mut rows {
+            if r.detail.starts_with(model::VACUOUS)
+                && !r.informational
+                && r.status == crate::ledger::Status::Pass
+            {
+                r.status = crate::ledger::Status::Fail;
+            }
+        }
+
+        // THE CENSUS BEFORE THE ROSE. It counts the rule tables the rest of the gate was derived
+        // from, so a run that lost one says so next to the ceilings that went with it.
+        rows.extend(census::ceiling_census(cx, &cfg));
+        rows.extend(ceilings::ceiling_rose(cx));
+        let slack = ceilings::ceiling_slack(&cfg, &rows);
+        rows.extend(slack);
         Ok((rows, problems))
     }
 }
@@ -517,7 +559,7 @@ impl Gate for ConstructionGate {
         }
     }
 
-    fn selftest(&self, cx: &Ctx) -> Report {
+    fn selftest<'a>(&'a self, cx: &'a Ctx) -> Report<'a> {
         selftest::run(self, cx)
     }
 

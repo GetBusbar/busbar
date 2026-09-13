@@ -1,5 +1,13 @@
 name: Docker
 
+# LATCHKEY MIGRATION (phase 4, LK-7): `promote` and `publish` move to latchkey-small/latchkey-large
+# — both jobs already use docker/login-action + docker buildx + sigstore/cosign-installer, none of
+# which depend on anything GitHub-hosted-only provides (docker is present on Latchkey runners,
+# secrets are injected regardless of runner, and cosign-installer downloads its own binary). The
+# amd64 leg of `build-binaries` moves to latchkey-xlarge (a real cargo/musl build). The two arm64
+# legs of `build-binaries` and `verify-arm64-variants` STAY on `ubuntu-24.04-arm` — Latchkey has no
+# arm64 offering — and are otherwise unchanged.
+#
 # Build and publish the busbar container image (Docker Hub + GHCR) as a multi-arch
 # manifest (linux/amd64 + linux/arm64), FROM scratch over static musl binaries.
 #
@@ -175,7 +183,7 @@ jobs:
   promote:
     name: promote ${{ inputs.promote_from || inputs.promote_to }} -> ${{ inputs.promote_to }} + latest
     if: ${{ inputs.promote_to != '' }}
-    runs-on: ubuntu-latest
+    runs-on: latchkey-small
     steps:
       - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
       - name: Log in to Docker Hub
@@ -362,7 +370,7 @@ jobs:
         #             compat image build reuses — building them twice would just be slower.
         include:
           - arch: amd64
-            os: ubuntu-latest
+            os: latchkey-xlarge
             target: x86_64-unknown-linux-musl
             baseline: ""
             headroom: true
@@ -674,7 +682,7 @@ jobs:
   publish:
     name: build & push image
     needs: build-binaries
-    runs-on: ubuntu-latest
+    runs-on: latchkey-large
     outputs:
       digest: ${{ steps.push.outputs.digest }}
       digest_armv8: ${{ steps.push-armv8.outputs.digest }}

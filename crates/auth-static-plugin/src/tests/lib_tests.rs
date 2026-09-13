@@ -79,11 +79,10 @@ fn credential_is_compared_under_a_digest() {
     assert!(matches!(m.authenticate(None), AuthOutcome::Pass));
 }
 
-/// Mutation-hardening (cargo-mutants): `name()` returning `""` or any other literal instead of
-/// `"static-auth"` survived, because no test asserted the module's runtime name — only its
-/// behavior. The module's identity is what `role_bindings.<module>` / `auth.modules.<module>` key
-/// off, so a wrong name silently breaks policy wiring without changing any auth OUTCOME, which is
-/// why behavior-only tests missed it.
+/// Guards `name()` against returning `""` or any other literal instead of `"static-auth"`: no
+/// other test asserts the module's runtime name, only its behavior. The module's identity is what
+/// `role_bindings.<module>` / `auth.modules.<module>` key off, so a wrong name silently breaks
+/// policy wiring without changing any auth OUTCOME, which behavior-only tests would miss.
 #[test]
 fn module_name_is_static_auth() {
     let m = StaticModule {
@@ -94,10 +93,10 @@ fn module_name_is_static_auth() {
     assert_eq!(m.name(), "static-auth");
 }
 
-/// Mutation-hardening (cargo-mutants): `c.token.is_empty() || c.id.is_empty()` mutated to `&&`
-/// survived, because no test presented exactly ONE of `token`/`id` empty (only both-present and,
-/// implicitly, both-absent-is-a-parse-error cases existed). With `&&`, a config with an empty
-/// `token` but non-empty `id` (or vice versa) would incorrectly load instead of refusing.
+/// Guards `c.token.is_empty() || c.id.is_empty()` against being weakened to `&&`: no other test
+/// presents exactly ONE of `token`/`id` empty (only both-present and, implicitly,
+/// both-absent-is-a-parse-error cases exist). With `&&`, a config with an empty `token` but
+/// non-empty `id` (or vice versa) would incorrectly load instead of refusing.
 #[test]
 fn open_refuses_when_only_one_of_token_or_id_is_empty() {
     match open(r#"{"token":"","id":"alice"}"#) {

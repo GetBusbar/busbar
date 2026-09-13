@@ -5,6 +5,7 @@
 use super::*;
 use busbar_caps::KernelSeal;
 use busbar_contract::WireStatus;
+use busbar_unit_egress::ports::Disposition;
 
 /// A fresh `UnitToken<Route>` for one `observe`/`ready`/`cooldown_remaining` call — test-only,
 /// minted through the kernel seal exactly as CG-29 says a real deployment would
@@ -100,7 +101,7 @@ fn a_grpc_unavailable_is_recorded_against_the_destination_and_suppresses_the_lan
     let classified = breaker.classify(
         dest,
         UpstreamStatus {
-            class: Some(StatusClass::ServerError),
+            class: Some(WireStatusClass::ServerError),
             code: Some(WireStatus::new(
                 busbar_contract::transport::status_ns::GRPC,
                 14,
@@ -135,7 +136,7 @@ fn a_grpc_unavailable_is_recorded_against_the_destination_and_suppresses_the_lan
 fn the_adapter_carries_the_numbering_across_rather_than_the_digits() {
     use busbar_unit_breaker::port::UpstreamCode;
     let grpc = UpstreamStatus {
-        class: Some(StatusClass::ServerError),
+        class: Some(WireStatusClass::ServerError),
         code: Some(WireStatus::new(
             busbar_contract::transport::status_ns::GRPC,
             14,
@@ -143,7 +144,7 @@ fn the_adapter_carries_the_numbering_across_rather_than_the_digits() {
         retry_after: None,
     };
     let http = UpstreamStatus {
-        class: Some(StatusClass::ServerError),
+        class: Some(WireStatusClass::ServerError),
         code: Some(WireStatus::new(
             busbar_contract::transport::status_ns::HTTP,
             14,
@@ -151,7 +152,7 @@ fn the_adapter_carries_the_numbering_across_rather_than_the_digits() {
         retry_after: None,
     };
     let classless = UpstreamStatus {
-        class: Some(StatusClass::ServerError),
+        class: Some(WireStatusClass::ServerError),
         code: None,
         retry_after: None,
     };
@@ -335,7 +336,7 @@ fn a_coarse_transport_reading_stands_in_for_a_missing_status() {
     let out = breaker.classify(
         DestinationId::new(1),
         UpstreamStatus {
-            class: Some(StatusClass::ServerError),
+            class: Some(WireStatusClass::ServerError),
             code: None,
             retry_after: Some(5),
         },
@@ -353,15 +354,21 @@ fn a_coarse_transport_reading_stands_in_for_a_missing_status() {
 /// with the same case: there is no non-arbitrary number to invent for it.
 #[test]
 fn a_success_folds_to_no_status_at_all() {
-    assert_eq!(BreakerAdapter::fold_class(Some(StatusClass::Success)), None);
-    assert_eq!(BreakerAdapter::fold_class(Some(StatusClass::Other)), None);
+    assert_eq!(
+        BreakerAdapter::fold_class(Some(WireStatusClass::Success)),
+        None
+    );
+    assert_eq!(
+        BreakerAdapter::fold_class(Some(WireStatusClass::Other)),
+        None
+    );
     assert_eq!(BreakerAdapter::fold_class(None), None);
     assert_eq!(
-        BreakerAdapter::fold_class(Some(StatusClass::ClientError)),
+        BreakerAdapter::fold_class(Some(WireStatusClass::ClientError)),
         Some(400)
     );
     assert_eq!(
-        BreakerAdapter::fold_class(Some(StatusClass::ServerError)),
+        BreakerAdapter::fold_class(Some(WireStatusClass::ServerError)),
         Some(500)
     );
 }

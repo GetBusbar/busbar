@@ -99,10 +99,16 @@ on:
         type: string
         default: "latest"
       runner:
-        description: "Runner label. Must be NATIVE for the artifact under test (a downloaded aarch64 binary needs an arm runner)."
+        description: >-
+          Runner label. Must be NATIVE for the artifact under test (a downloaded aarch64 binary
+          needs an arm runner). Default is a Latchkey label (LK-7): this reusable workflow lives in
+          busbar and is called with an x86_64 artifact by default, so the default moves off
+          GitHub-hosted with everything else in this migration. An aarch64 (or other
+          Latchkey-unsupported architecture) caller MUST override this input explicitly — the input
+          stays a plain string for exactly that reason, never a hardcoded runs-on.
         required: false
         type: string
-        default: "ubuntu-latest"
+        default: "latchkey-xlarge"
       hook_sidecar:
         description: "hook kind only: 1 to wire a forwarding hook to a sidecar fixture and assert receipt; 0 for an in-process content-intent hook."
         required: false
@@ -154,6 +160,25 @@ jobs:
       - name: Install Rust (only when something is built from source)
         if: ${{ inputs.busbar_version == 'this-tree' || inputs.plugin_ref == 'this-tree' }}
         uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
+
+      # LK-7: this job's `cargo build` calls (busbar itself and/or the plugin cdylib, on the
+      # this-tree paths) had no cache at all before this migration. Latchkey Fast Cache, same
+      # restore/save form as ci.yml/keep-proof.yml, guarded by the same `if:` as the Rust install
+      # above so a pure release-artifact run (nothing built from source) never pays for it.
+      - name: Resolve cargo home (Latchkey image sets CARGO_HOME off $HOME)
+        uses: ./.github/actions/cargo-home
+      - name: Latchkey Fast Cache (cargo registry + target, restore)
+        if: ${{ inputs.busbar_version == 'this-tree' || inputs.plugin_ref == 'this-tree' }}
+        uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
+        with:
+          action: restore
+          key: cargo-${{ runner.os }}-plugin-functional-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-plugin-functional-
+          path: |
+            ${{ env.CARGO_HOME }}/registry
+            ${{ env.CARGO_HOME }}/git
+            target
 
       # ── Resolve the busbar binary. A failure here does NOT try to be clever: the probe step below
       # ── guards on the binary's presence and records `did not run`, which verdict.sh reports as RED.
@@ -300,3 +325,14 @@ jobs:
             *) kind_id="$PLUGIN_KIND" ;;
           esac
           EXPECTED_IDS="${kind_id}:${PLUGIN_ALIAS}" testing/fleet-fixtures/verdict.sh
+
+      - name: Latchkey Fast Cache (cargo registry + target, save)
+        if: ${{ always() && (inputs.busbar_version == 'this-tree' || inputs.plugin_ref == 'this-tree') }}
+        uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
+        with:
+          action: save
+          key: cargo-${{ runner.os }}-plugin-functional-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
+          path: |
+            ${{ env.CARGO_HOME }}/registry
+            ${{ env.CARGO_HOME }}/git
+            target

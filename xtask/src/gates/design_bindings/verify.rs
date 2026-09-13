@@ -417,9 +417,14 @@ pub fn binding_verdict(b: &J, ctx: &Ctx) -> (String, String, String) {
         .and_then(J::as_array)
         .unwrap_or(&empty)
         .iter()
-        .filter(|c| {
-            c.str_of("status") == Some("mapped") && !c.str_of("ref").unwrap_or("").is_empty()
-        })
+        // AN EMPTY REF IS A BROKEN CITATION, NOT AN ABSENT ONE. This filter used to drop the
+        // empty-ref checks as well, which sent a binding whose only citation claims `mapped` and
+        // names nothing down the `unmapped` path -- a NAMED gap, SKIP, allowed. It is not a gap:
+        // somebody wrote the citation down and left the ref blank. Dropping it here also made
+        // `check_verdict`'s own empty-ref arm unreachable, so the refusal existed, read well, and
+        // could never fire. The status test is the whole filter now and the ref is judged where
+        // every other ref is judged.
+        .filter(|c| c.str_of("status") == Some("mapped"))
         .collect();
     if mapped.is_empty() {
         let sug = b

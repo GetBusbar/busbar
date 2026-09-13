@@ -387,7 +387,7 @@ impl Gate for StructureLintGate {
         Some(self.translate(run))
     }
 
-    fn selftest(&self, cx: &Ctx) -> Report {
+    fn selftest<'a>(&'a self, cx: &'a Ctx) -> Report<'a> {
         selftest::run(self, cx)
     }
 }

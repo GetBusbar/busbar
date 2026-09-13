@@ -103,7 +103,7 @@ permissions:
 jobs:
   mirror:
     name: mirror the pinned CI service images into GHCR
-    runs-on: ubuntu-latest
+    runs-on: latchkey-large
     timeout-minutes: 20
     env:
       # How long the "ci.yml has not been repointed yet" NOTICE may stand before it becomes a

@@ -12,7 +12,7 @@
     "build": {
       "if": "github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' &&\n contains(fromJSON('[\"qa\"]'), github.event.workflow_run.head_branch))",
       "name": "build once (shared by every leg)",
-      "runs-on": "ubuntu-latest",
+      "runs-on": "latchkey-xlarge",
       "steps": [
         {
           "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
@@ -56,7 +56,7 @@
       "outputs": {
         "matrix": "${{ steps.matrix.outputs.matrix }}"
       },
-      "runs-on": "ubuntu-latest",
+      "runs-on": "latchkey-large",
       "steps": [
         {
           "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
@@ -100,7 +100,7 @@
         "build",
         "fast"
       ],
-      "runs-on": "ubuntu-latest",
+      "runs-on": "latchkey-large",
       "steps": [
         {
           "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
@@ -146,7 +146,7 @@
         "build",
         "fast"
       ],
-      "runs-on": "ubuntu-latest",
+      "runs-on": "latchkey-xlarge",
       "steps": [
         {
           "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
@@ -204,7 +204,7 @@
         "slow",
         "loader"
       ],
-      "runs-on": "ubuntu-latest",
+      "runs-on": "latchkey-small",
       "steps": [
         {
           "name": "Assert every tier reported green",

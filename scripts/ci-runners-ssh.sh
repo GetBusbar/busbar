@@ -79,15 +79,12 @@ cat > "$TMP" <<JSON
  "echo authorized_keys=\$(wc -l < /home/ubuntu/.ssh/authorized_keys)"
 ]}
 JSON
+# shellcheck disable=SC2086  # $IDS is a whitespace-separated id list and must word-split
 CMD_ID="$(aws ssm send-command --instance-ids $IDS --document-name AWS-RunShellScript \
   --comment "install the busbar fleet ssh key" --parameters "file://$TMP" \
   --query 'Command.CommandId' --output text)" || die "send-command failed"
 rm -f "$TMP"
-for _ in $(seq 1 30); do
-  sleep 6
-  st="$(aws ssm list-command-invocations --command-id "$CMD_ID" --query 'CommandInvocations[].Status' --output text)"
-  case "$st" in *Pending*|*InProgress*|*Delayed*) continue ;; *) log "ssm: $st"; break ;; esac
-done
+log "ssm: $(ssm_wait "$CMD_ID" 30 6)"
 
 # ── THE INGRESS THAT IS NOT THERE ───────────────────────────────────────────────────────────────
 # Revoked, not merely never added: an earlier iteration of this script opened 22 and 443 while the
@@ -107,15 +104,11 @@ if [ -n "$SG_ID" ] && [ "$SG_ID" != None ]; then
 fi
 
 # ── 3. The host list every remote entry point reads ─────────────────────────────────────────────
+# The writer lives in ci-runners-lib.sh, because ci-runners-reconcile.sh must rewrite this file on
+# every pass: it goes stale the moment a spot box is reclaimed, and a stale entry makes the
+# round-robin allocator hand an agent a host that no longer exists.
 FLEET_FILE="${BUSBAR_FLEET_FILE:-$HOME/.busbar-fleet}"
-{
-  echo "# busbar CI fleet — written by scripts/ci-runners-ssh.sh at $(date -u +%FT%TZ)"
-  echo "# <instance-id> <az> <private-ip>   (ssh reaches these over SSM; there is no public port)"
-  aws ec2 describe-instances \
-    --filters "Name=tag:Name,Values=$FLEET" "Name=instance-state-name,Values=running" \
-    --query 'Reservations[].Instances[].[InstanceId,Placement.AvailabilityZone,PrivateIpAddress]' \
-    --output text
-} > "$FLEET_FILE"
+write_fleet_file
 log "wrote $FLEET_FILE:"
 sed 's/^/  /' "$FLEET_FILE"
 
@@ -138,5 +131,5 @@ printed; only its path is named:
     ControlPersist 10m
     ProxyCommand aws ssm start-session --target %h --document-name AWS-StartSSHSession --parameters portNumber=%p --region $AWS_REGION
 
-Next:  ./scripts/prove-remote.sh --setup        # bare repo + warm checkout on every box
+Next:  ./scripts/ci-runners-reconcile.sh         # bare repo + warm checkout on every box
 EOF

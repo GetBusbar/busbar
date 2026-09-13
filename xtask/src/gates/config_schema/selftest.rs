@@ -39,7 +39,7 @@
 use serde_json::{json, Value};
 
 use crate::ctx::{Ctx, Overlay};
-use crate::gates::{prove_rows_green, prove_rows_red, Case, Gate, Report};
+use crate::gates::{prove_rows_green, prove_rows_red, Gate, Report};
 
 use super::schema;
 use super::{
@@ -50,7 +50,7 @@ use super::{
 /// which is the false green the shell gate was burned by; the shell pinned its floor at 68 across
 /// its classifier, generator and coverage arms, and the floor only ever rises. The generator and
 /// coverage arms live in `xtask/tests/config_schema.rs` and carry their own floor.
-pub const CASE_FLOOR: usize = 44;
+pub const CASE_FLOOR: usize = 46;
 
 // ── THE ANCHORS ──────────────────────────────────────────────────────────────────────────────────
 // Real types from the real frozen surface, chosen because the shell's own coverage assertions
@@ -123,7 +123,12 @@ fn drop_type(doc: &mut Value, key: &str) {
 /// THE REGISTER IS EMPTIED IN EVERY ONE OF THESE. The committed register's single line is stale
 /// against this branch's own `HEAD`, so leaving it in place would let a verdict about waivers decide
 /// a case that is not about waivers. The waiver cases plant their own register explicitly.
-fn additive_green(cx: &Ctx, gate: &dyn Gate, name: &str, f: impl Fn(&mut Value)) -> Case {
+fn additive_green<'a>(
+    cx: &'a Ctx,
+    gate: &'a dyn Gate,
+    name: &str,
+    f: impl Fn(&mut Value),
+) -> crate::gates::CasePlan<'a> {
     prove_rows_green(
         cx,
         gate,
@@ -134,13 +139,13 @@ fn additive_green(cx: &Ctx, gate: &dyn Gate, name: &str, f: impl Fn(&mut Value))
 }
 
 /// A red case for the additive rule, naming the path and the reason the report must carry.
-fn additive_red(
-    cx: &Ctx,
-    gate: &dyn Gate,
+fn additive_red<'a>(
+    cx: &'a Ctx,
+    gate: &'a dyn Gate,
     name: &str,
     naming: &[&str],
     f: impl Fn(&mut Value),
-) -> Case {
+) -> crate::gates::CasePlan<'a> {
     prove_rows_red(
         cx,
         gate,
@@ -151,7 +156,7 @@ fn additive_red(
     )
 }
 
-pub fn run(gate: &dyn Gate, cx: &Ctx) -> Report {
+pub fn run<'a>(gate: &'a dyn Gate, cx: &'a Ctx) -> Report<'a> {
     let mut report = Report::new();
 
     // ── THE CONTROLS. Every RED below is worth nothing unless the unplanted tree is green in the
@@ -263,6 +268,57 @@ pub fn run(gate: &dyn Gate, cx: &Ctx) -> Report {
         &[ROW_TRACKED_SOURCES],
         ov,
         &["unsupported"],
+    ));
+
+    // ── THE CORE-KIND ROOT CENSUS ────────────────────────────────────────────────────────────────
+    // The tracked set used to name ONE core crate by a hardcoded path. The config layer is being
+    // carved out of `busbar-core` into `busbar-core-config`, and under a hardcoded root every file
+    // that leaves takes its grammar out of the fingerprint with it: the fresh render loses the
+    // types, and the additive rule reads the loss as a BREAK. That is a MOVE being reported as a
+    // deletion, which is the one thing this gate must not say — the operator-visible grammar did
+    // not change by a byte.
+    //
+    // These two cases are a matched pair, and neither is worth anything without the other: the
+    // first says a type that MOVED between two core-kind roots is not a break, the second says a
+    // type that VANISHED from every core-kind root still is. A census that only knew how to say
+    // "fine" would pass both halves of that pair and gate nothing.
+    let moved = "crates/busbar-core/src/config/overlay.rs";
+    let manifest =
+        "[package]\nname = \"busbar-core-config\"\nversion = \"0.0.0\"\nedition = \"2021\"\n";
+
+    let mut ov = Overlay::new();
+    ov.set(
+        "Cargo.toml",
+        cx.read("Cargo.toml").unwrap_or_default().replace(
+            "\"crates/busbar-core\",",
+            "\"crates/busbar-core\",\n    \"crates/busbar-core-config\",",
+        ),
+    );
+    ov.set("crates/busbar-core-config/Cargo.toml", manifest);
+    ov.set(
+        "crates/busbar-core-config/src/overlay.rs",
+        cx.read(moved).unwrap_or_default(),
+    );
+    ov.remove(moved);
+    report.push(prove_rows_green(
+        cx,
+        gate,
+        "a grammar type that MOVED from busbar-core to another core-kind crate is NOT a break",
+        &[ROW_TRACKED_SOURCES, ROW_SNAPSHOT_DRIFT, ROW_ADDITIVE_ONLY],
+        ov,
+    ));
+
+    // THE SAME DELETION WITHOUT THE ARRIVAL. No second core crate, no re-home: the types are gone
+    // from the tracked set entirely. The census must not have turned a removal into a shrug.
+    let mut ov = baseline_with_waivers(cx, "# no waivers\n", |_| {});
+    ov.remove(moved);
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "a grammar type that VANISHED from every core-kind root is still a BREAK",
+        &[ROW_ADDITIVE_ONLY],
+        ov,
+        &["OverlayDoc"],
     ));
 
     // ══ :snapshot-drift ══════════════════════════════════════════════════════════════════════════

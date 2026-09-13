@@ -29,6 +29,7 @@ pub mod denylist_gate;
 pub mod design_bindings;
 pub mod duplex_ws_default_edge;
 pub mod field_inventory;
+pub mod inventory_coverage;
 pub mod inventory_ref;
 pub mod kernel_token_wire_purity;
 pub mod kind_isolation;
@@ -44,6 +45,7 @@ pub mod response_header;
 pub mod segregation;
 pub mod service_images;
 pub mod settings_leak;
+pub mod ship_ready;
 pub mod structure_lint;
 pub mod teller_steps;
 pub mod tracing;
@@ -51,6 +53,7 @@ pub mod workspace_deps;
 
 use std::collections::BTreeSet;
 use std::path::Path;
+use std::time::Duration;
 
 use crate::ctx::{Ctx, Overlay};
 use crate::ledger::{Reconcile, Row, Verdict};
@@ -75,31 +78,501 @@ pub struct Registration {
     pub summary: &'static str,
 }
 
-/// THE GATES WHOSE VERDICT IS PRINTED BUT NOT COUNTED BY `--all`, and why that is data here rather
-/// than a posture flag somebody remembers.
+/// THE GATES WHOSE VERDICT `--all` PRINTS AND DOES NOT COUNT, each with a written reason AND the
+/// fact that reason turns on.
 ///
-/// Exactly one gate is on this list today and it is not a loophole: the construction gate is RED BY
-/// DESIGN on HEAD — rows sit over ceilings the construction work in flight is driving down — and
-/// `ci.yml` has run it `continue-on-error` with the verdict printed by the umbrella since it was
-/// written, while `qa/full-gate.toml` names it in its skip list for the same reason. That posture
-/// existed in prose, in two files, with nothing in the runner that knew about it; a converted gate
-/// that simply joined `--all` would have turned the whole local gate red on a fact CI does not
-/// score. So it says out loud, next to the registry, what those two comments say: this one is
-/// reported, not counted, until it is flipped.
+/// THIS LIST WAS ONE NAME AND A COMMENT, AND THAT COST THE ONE SIGNAL IT PROTECTS.
+/// `cargo xtask gate --all` exited 1 on a clean tree — `RED in design-bindings,
+/// kind-isolation-ship` — because both are red on HEAD for reasons nothing here knew about.
+/// `.github/workflows/keep-proof.yml` runs exactly that command with no `continue-on-error`, and
+/// `ci.yml` does not run on `keep-**` at all, so keep-proof is the ONLY judge of an agent
+/// hand-back and its gate job was permanently red: a real regression on a keep branch was
+/// indistinguishable from the standing red. Two excuse vocabularies existed — this one, and
+/// `full_gate`'s [`crate::full_gate::REGISTRY_NOT_IN_CI`], which knew about `kind-isolation-ship`
+/// and checks its claim against the tree — and `--all` read the wrong one.
 ///
-/// A report-only gate is still fully reconciled, still self-tested and still exits non-zero when
-/// run BY NAME (`cargo xtask gate construction`), which is what the CI job captures. This governs
-/// one thing only: whether `--all` adds it to the red list.
-const REPORT_ONLY: &[&str] = &["construction"];
+/// So there is one vocabulary now, and every entry carries an [`Excused`] that is CHECKED on the
+/// run. An entry whose fact no longer holds excuses nothing: the gate is scored, exactly as if the
+/// entry had never been written. `--all` prints the excuse it applied on every run, so a red that
+/// was not counted is never a red that was not mentioned.
+///
+/// An excused gate is still fully reconciled, still self-tested, and still exits non-zero when run
+/// BY NAME (`cargo xtask gate construction`), which is what the CI job captures. This governs one
+/// thing: whether `--all` adds it to the red list.
+pub const REPORT_ONLY: &[Posture] = &[
+    Posture {
+        name: "construction",
+        why: "RED BY DESIGN on HEAD while the construction work it measures is in flight — but \
+              red about a NAMED, FINITE list of rows and nothing else",
+        excuse: Excused::OnlyRows(CONSTRUCTION_STANDING_REDS),
+    },
+    Posture {
+        name: "kind-isolation-ship",
+        why: "the SHIP-criterion twin of kind-isolation. Its enforceable rows run on every push \
+              under `kind-isolation`; the ones it adds are a claim about the SHIP SHA and are RED \
+              on HEAD by design. It is a release-time gate, and full_gate's own excuse table is \
+              where that claim is written down and checked.",
+        excuse: Excused::ReleaseTime,
+    },
+    Posture {
+        name: "ship-ready",
+        why: "THE SHIP CRITERION, and the integration line is not the ship SHA. Every one of its \
+              rows is a claim about a tree that is ready to promote — the twin at zero, the \
+              ceilings tight, nothing standing red, the mutants caught — and this tree is \
+              deliberately none of those things yet. It is a REQUIRED CHECK on `qa` and `main`, \
+              which is where the claim is meant to bite and where branch protection scores it; \
+              `--all` on the dev line is not. Same standing as the ship twin it reads.",
+        excuse: Excused::ReleaseTime,
+    },
+];
 
-impl Registration {
-    /// Does this gate's verdict COUNT under `--all`, or is it printed and not scored?
-    pub fn blocking(&self) -> bool {
-        !REPORT_ONLY.contains(&self.name)
+/// THE CONSTRUCTION GATE'S STANDING REDS, BY NAME.
+///
+/// `Excused::Whole` used to cover this gate: no fact-check, no expiry, no list. `gate --all` exited
+/// 0 however red construction got, and a real regression landing on a keep branch was
+/// indistinguishable from the standing red — which is the exact failure the header above this list
+/// describes happening once already, to `design-bindings` and `kind-isolation-ship`.
+///
+/// So the excuse names its rows. A construction red that is NOT on this list is scored like any
+/// other gate's, and a name on this list that is no longer red is STALE and also scores — otherwise
+/// the list would only ever grow, and a list that only grows is the blanket excuse it replaces.
+/// Draining a row means striking its name here in the same commit, which is the transaction the
+/// whole gate exists to force.
+///
+/// Keep in step with `land_construction_standing_reds` in scripts/land.sh, which subtracts the same
+/// rows so that every landing can run the gate over EVERY row instead of a caller-chosen few.
+///
+/// `ceiling-rose` is on this list for one reason only: the stale `[gate.ceiling_raises]` 26 -> 47
+/// entry in qa/construction.toml, which is being struck separately. STRIKE THIS NAME ON THE SAME
+/// COMMIT that strikes that entry — the stale-name check above will red until you do, which is the
+/// point.
+pub const CONSTRUCTION_STANDING_REDS: &[&str] = &[
+    // The scan-set floor added 2026-09-09 scores an absent subject RED instead of PASS, and this
+    // row is what it caught: a rule claiming "a cancellation-token check precedes every `.await` in
+    // the route step" that found no `.await` in scope at all, and passed on that basis.
+    "hold-discipline:cancellation-before-await",
+    "hold-escapes",
+    "kernel-seal-impls",
+    "one-pick-site",
+    "one-pricing-site:fee-fields",
+    "plane-no-money",
+    "ports-only-tests:busbar-llm",
+    "request-path-fn-size",
+    "terminal-doors-in-audit-step",
+];
+
+/// One entry of [`REPORT_ONLY`].
+pub struct Posture {
+    pub name: &'static str,
+    pub why: &'static str,
+    pub excuse: Excused,
+}
+
+/// The fact a posture rests on, checked on the run that relies on it.
+pub enum Excused {
+    /// The whole gate is reported, not scored, and the reason is about the gate rather than about
+    /// any one of its rows.
+    Whole,
+    /// It is a RELEASE-TIME claim, and [`crate::full_gate::REGISTRY_NOT_IN_CI`] is where that is
+    /// written down. The entry must still be there AND its own `Excuse` must still hold — a gate
+    /// whose release script stopped invoking it is a gate nothing runs, and excusing it here would
+    /// be the second vocabulary drifting from the first all over again.
+    ReleaseTime,
+    /// The gate is red about ONE known thing and nothing else. Every non-PASS row, and every
+    /// reconciliation problem, must name this needle; one that does not is a red this excuse was
+    /// not written for, and the gate is scored.
+    OnlyAbout(&'static str),
+    /// The gate is red about a NAMED, FINITE set of rows and nothing else.
+    ///
+    /// The `OnlyAbout` treatment for a gate whose standing reds have no single needle in common.
+    /// It fails the excuse in BOTH directions, and the second is the one that gives it an expiry:
+    ///
+    /// * a non-PASS row (or a reconciliation problem) this list does not name is a NEW red, and the
+    ///   gate is scored — which is the whole signal `Excused::Whole` threw away;
+    /// * a name on this list that is NOT red any more is a STALE entry, and the gate is scored for
+    ///   that too. Without it the list only ever grows and drifts back into being a blanket.
+    OnlyRows(&'static [&'static str]),
+}
+
+/// Why `--all` did not count this gate's red, or `None` if it must count it.
+///
+/// Called only when the verdict IS red, and it never softens a green.
+pub fn excused_from_all(name: &str, cx: &Ctx, verdict: &Verdict) -> Option<String> {
+    let p = REPORT_ONLY.iter().find(|p| p.name == name)?;
+    match &p.excuse {
+        Excused::Whole => Some(p.why.to_string()),
+        Excused::ReleaseTime => {
+            let (_, reason, excuse) = crate::full_gate::REGISTRY_NOT_IN_CI
+                .iter()
+                .find(|(n, _, _)| *n == name)?;
+            excuse.holds(cx).ok()?;
+            Some(format!(
+                "{} — full_gate's excuse still holds: {reason}",
+                p.why
+            ))
+        }
+        Excused::OnlyAbout(needle) => {
+            // THE ROWS FIRST, THEN THE RECONCILIATION'S OWN LINES. A reconciler problem is
+            // `"<id>: <what>"` and carries none of the row's detail, so matching the needle
+            // against its text would score every excused row a second time. A problem is explained
+            // exactly when the row it names is — and a problem about a row that emitted nothing at
+            // all (`DID NOT RUN`) names no explained id and is therefore never excused, which is
+            // the right answer: a rule that stopped running is not a rule that is red for a known
+            // reason.
+            let explained: BTreeSet<&str> = verdict
+                .rows
+                .iter()
+                .filter(|r| r.status != crate::ledger::Status::Pass && r.detail.contains(needle))
+                .map(|r| r.id.as_str())
+                .collect();
+            let mut unexplained: Vec<String> = verdict
+                .rows
+                .iter()
+                .filter(|r| r.status != crate::ledger::Status::Pass)
+                .filter(|r| !explained.contains(r.id.as_str()))
+                .map(|r| format!("{} {}", r.id, r.detail))
+                .collect();
+            unexplained.extend(
+                verdict
+                    .problems
+                    .iter()
+                    .filter(|t| !explained.iter().any(|id| t.starts_with(&format!("{id}: "))))
+                    .cloned(),
+            );
+            if unexplained.is_empty() {
+                Some(format!("{} — every red row names `{needle}`", p.why))
+            } else {
+                None
+            }
+        }
+        Excused::OnlyRows(named) => {
+            // A row that emitted nothing at all reaches the verdict as a reconciliation problem
+            // (`"<id>: … DID NOT RUN"`), never as a row, so the named ids are matched against both.
+            // A rule that stopped running is not a rule that is red for a known reason: a problem
+            // about an id this list does not name fails the excuse exactly like a new red row.
+            let red_now: BTreeSet<&str> = verdict
+                .rows
+                .iter()
+                .filter(|r| r.status != crate::ledger::Status::Pass)
+                .map(|r| r.id.as_str())
+                .collect();
+
+            let mut unexplained: Vec<String> = verdict
+                .rows
+                .iter()
+                .filter(|r| r.status != crate::ledger::Status::Pass)
+                .filter(|r| !named.contains(&r.id.as_str()))
+                .map(|r| format!("NEW RED {} {}", r.id, r.detail))
+                .collect();
+            unexplained.extend(
+                verdict
+                    .problems
+                    .iter()
+                    .filter(|t| !named.iter().any(|id| t.starts_with(&format!("{id}: "))))
+                    .map(|t| format!("NEW RED {t}")),
+            );
+            // THE EXPIRY. A named row that is green again is a list that has outlived its facts.
+            unexplained.extend(
+                named
+                    .iter()
+                    .filter(|id| {
+                        !red_now.contains(*id)
+                            && !verdict
+                                .problems
+                                .iter()
+                                .any(|t| t.starts_with(&format!("{id}: ")))
+                    })
+                    .map(|id| {
+                        format!(
+                            "STALE `{id}` is named as a standing red and is not red any more — \
+                             strike it from CONSTRUCTION_STANDING_REDS (and from \
+                             land_construction_standing_reds in scripts/land.sh)"
+                        )
+                    }),
+            );
+
+            if unexplained.is_empty() {
+                Some(format!(
+                    "{} — red on exactly the {} named standing row(s) and nothing else",
+                    p.why,
+                    named.len()
+                ))
+            } else {
+                for u in &unexplained {
+                    eprintln!("  construction posture: {u}");
+                }
+                None
+            }
+        }
     }
 }
 
-pub trait Gate {
+impl Registration {
+    /// Does this gate's verdict COUNT under `--all` WHATEVER it says? A gate with a posture entry
+    /// still counts unless the entry's fact holds on this run — see [`excused_from_all`].
+    pub fn has_posture(&self) -> bool {
+        REPORT_ONLY.iter().any(|p| p.name == self.name)
+    }
+}
+
+/// TWO GUARDS, ONE RUNNER, AND THEY ARE NOT THE SAME GUARD.
+///
+/// [`execute_within`] and [`Watchdog`] are the HANG guard: a wall-clock ceiling, five minutes by
+/// default, per gate RUN, tunable from the environment because the box that needs a bigger number
+/// is never the box the number was written on. Its finding says `hung: the gate did not finish
+/// within Ns`, and what it is about is a gate that has stopped making progress at all.
+///
+/// The budget below is the REGRESSION guard: it is about a self-test that still finishes and has
+/// quietly become ten times more expensive, which no ceiling can see because every individual run
+/// is still under it. Its finding says `spent N work units against a budget of M`. Neither
+/// subsumes the other — a hang blows the ceiling and never reaches the budget; a regression that
+/// triples the shard never blows the ceiling — so both are red, separately, with messages a reader
+/// can tell apart.
+///
+/// THE SELF-TEST BUDGET, AND WHY IT IS NOT MEASURED IN SECONDS.
+///
+/// `cargo test -p xtask` runs `xtask selftest`, which drives EVERY registered gate's cases. That is
+/// the only place several of these gates are ever proven RED-able, so the shard cannot simply be
+/// made smaller -- and it grew past fifty-one minutes, on a runner whose ssh session dies at about
+/// fifty and whose gate job was cancelled at twenty-five. Nothing measured it. A rule that grew a
+/// whole-tree scan per plant looked exactly like one that did not, right up to the point where the
+/// job was killed and the verdict was "cancelled", which is neither green nor red.
+///
+/// A WALL-CLOCK BUDGET WAS TRIED FIRST AND IS WRONG, and the measurement that says so was taken in
+/// this repository: `cargo test -p xtask` runs the lib tests and the integration tests
+/// CONCURRENTLY, and several of them drive whole gates, so a case that costs 4 seconds alone costs
+/// 23 under the shard's own contention. Fifty-four budgets fired, on a tree with no regression in
+/// it. A gate that is red because the machine was busy is a gate somebody deletes.
+///
+/// So the budget is denominated in WORK UNITS: [`work_unit`] times a fixed, deterministic piece of
+/// arithmetic once per process, and every budget is a multiple of that. A box four times slower, or
+/// four times more contended, produces a calibration four times slower too, and the ratio the
+/// budget is about survives both. It is not a perfect proxy -- the calibration is arithmetic and
+/// the gates are regex and I/O -- which is exactly why the multiples carry roughly twice the
+/// measured cost rather than a tight fit. The failure being caught is a factor of ten.
+///
+/// THE BUDGET IS ON THE GATE'S TOTAL, not on one case. A rule that grew a whole-tree scan makes
+/// EVERY case slower by the same factor, so a per-case limit would have to be set high enough to
+/// pass the slowest legitimate case and would then miss the uniform regression that actually costs
+/// the shard its hour. The slowest case is printed beside the total, because that is what a reader
+/// needs in order to act on it.
+/// Everything not named below. The most expensive gate that is NOT named measured 2 811 units, so
+/// this is about three times the dearest ordinary self-test in the registry.
+const DEFAULT_BUDGET_UNITS: f64 = 9000.0;
+
+/// The gates whose self-tests legitimately cost more, each with its MEASURED cost and the reason.
+/// An entry for a gate that is no longer registered is refused by `gates::posture_tests`.
+///
+/// Every number is about three times what the gate measured on the host this table was calibrated
+/// on. Three, not one-point-two, for two reasons: the ruler is arithmetic and the gates are regex
+/// and I/O, so the proxy drifts a little with the machine; and the failure being caught is a rule
+/// that grew a whole-tree scan per plant, which is a factor of ten. A budget tight enough to flap
+/// is a budget somebody raises without reading it.
+/// WHEN AND ON WHAT EVERY MEASUREMENT BELOW WAS TAKEN. One constant, because they were taken in one
+/// sitting on one tree — and because a re-baseline that moves the numbers and not the date is the
+/// failure this whole shape exists to make impossible.
+const TAKEN: &str = "2026-09-10 b6f66e929";
+
+// THE MEASUREMENTS. Each is `work units at --jobs 1` on the tree named in [`TAKEN`], read off the
+// self-test's own cost line. Constants rather than literals inside the table so that a re-baseline
+// is a diff a reviewer can read as a list of numbers that moved.
+const MEASURED_PLANE_PURITY: f64 = 27_923.0; // 16 cases, 298.0 s
+const MEASURED_PLANE_PURITY_STRICT: f64 = 19_435.0; // 12 cases, 202.1 s
+const MEASURED_STRUCTURE_LINT: f64 = 7_938.0; // 39 cases, 88.4 s
+const MEASURED_CONSTRUCTION: f64 = 33_096.0; // 36 cases, 352.4 s
+const MEASURED_KIND_ISOLATION: f64 = 128_034.0; // 152 cases, 1360.9 s
+const MEASURED_KIND_ISOLATION_SHIP: f64 = 120_208.0; // 122 cases, 1290.7 s
+
+// `audit-ledger` MEASURED 4 433 UNITS (14 cases, 46.5 s) AND NO LONGER HAS AN ENTRY. Its budget was
+// 22 000 against a note claiming 6 552; times the declared slack its measurement asks for 7 093,
+// which is BELOW `DEFAULT_BUDGET_UNITS`. An exception that no longer excuses anything is a line
+// nobody re-reads, so it is struck rather than re-baselined — the default covers it with room, and
+// if the gate grows back past 9 000 the default is what says so. This is the same stale-waiver rule
+// the tree applies to every other exception it carries.
+
+/// ONE BUDGETED SELF-TEST: WHAT IT MEASURED, WHEN, ON WHAT, AND WHAT IT IS ALLOWED.
+///
+/// A STRUCT AND NOT A TUPLE OF PROSE, because the thing that went wrong here was prose. The
+/// `construction` entry's note said "about 15 600 units"; the tree measured three times that, under
+/// a budget it was within seven per cent of blowing. A number a reader cannot check against a
+/// measurement is not a guard, it is a number — and every arm below is now checked by
+/// `every_budget_carries_the_measurement_it_was_set_from`.
+pub struct Budget {
+    /// The registered gate this is about.
+    pub gate: &'static str,
+    /// WHAT IT MEASURED, at `--jobs 1`, on the tree and date in `taken`. The entry IS this number;
+    /// `allowed` is derived from it.
+    pub measured: f64,
+    /// What the self-test may spend before it is RED: `measured` times [`BUDGET_SLACK`].
+    pub allowed: f64,
+    /// WHEN AND ON WHAT, as `YYYY-MM-DD <sha>` — so a reader can re-take the measurement on the
+    /// same tree, and so an entry whose tree is long gone is visibly old rather than quietly wrong.
+    pub taken: &'static str,
+    /// What the gate is doing with the time. Not the budget's justification — the slack is that,
+    /// and it is declared once for all of them — but what a reader needs in order to act on a
+    /// regression.
+    pub why: &'static str,
+}
+
+/// THE SLACK OVER THE MEASUREMENT, DECLARED ONCE AND MEASURED RATHER THAN GUESSED.
+///
+/// It used to be "about three times what the gate measured", for two reasons: the ruler drifts with
+/// the machine, and the failure being caught is a factor of ten. The first half is now a number
+/// instead of an adjective. With the ruler read on the worker between cases (see
+/// [`work_unit_here`]), `structure-lint` measured, on one box, in one sitting:
+///
+/// ```text
+/// jobs    summed     units    vs serial
+///    1     96.0 s     7934      1.00x
+///    4     99.1 s     7980      1.01x
+///    8    116.5 s     8330      1.05x
+///   12    142.1 s     9323      1.18x
+///   18    179.7 s    11367      1.43x
+/// ```
+///
+/// So the ruler's own spread, between the serial figure written into an entry and the worst reading
+/// the harness's DEFAULT job count produces, is 1.43x. THE SLACK IS 1.6x: that measured worst case
+/// with a little room, and nothing else. It still catches what the budget is for — a rule that grew
+/// a whole-tree scan per plant, a factor of ten — with a margin of six.
+///
+/// It is deliberately TIGHTER than the three it replaces. Three times a measurement that was itself
+/// three times stale is how `construction` came to sit at 93 per cent of a budget its own note said
+/// it used a third of.
+pub const BUDGET_SLACK: f64 = 1.6;
+
+// THE SLACK IS CHECKED WHERE IT IS WRITTEN, at compile time, because it is a constant and a
+// constant that is wrong should not build. Below the ruler's measured spread it would red a battery
+// for the box it ran on; at the size of the regression it is catching nothing.
+const _: () = assert!(BUDGET_SLACK >= 1.43);
+const _: () = assert!(BUDGET_SLACK < 10.0);
+
+/// The gates whose self-tests legitimately cost more than [`DEFAULT_BUDGET_UNITS`], each with the
+/// measurement it was set from. An entry for a gate that is no longer registered is refused by
+/// `gates::posture_tests`, and so is an entry whose `allowed` is not its `measured` times the
+/// declared slack, or whose measurement does not say when and on what it was taken.
+const SELFTEST_BUDGETS: &[Budget] = &[
+    Budget {
+        gate: "plane-purity",
+        measured: MEASURED_PLANE_PURITY,
+        allowed: MEASURED_PLANE_PURITY * BUDGET_SLACK,
+        taken: TAKEN,
+        why: "The dearest self-test in the registry after the two kind-isolation batteries, and a name on the shard's own drain list. Not analysed here; the entry is the measurement, written down so that a doubling is a red row rather than minutes nobody attributes.",
+    },
+    Budget {
+        gate: "plane-purity-strict",
+        measured: MEASURED_PLANE_PURITY_STRICT,
+        allowed: MEASURED_PLANE_PURITY_STRICT * BUDGET_SLACK,
+        taken: TAKEN,
+        why: "The ratcheted twin of plane-purity and the second name on the same drain list. Not analysed here either.",
+    },
+    Budget {
+        gate: "structure-lint",
+        measured: MEASURED_STRUCTURE_LINT,
+        allowed: MEASURED_STRUCTURE_LINT * BUDGET_SLACK,
+        taken: TAKEN,
+        why: "One gate over a dozen rule families, each with its own planted tree, and the census walks the whole workspace.",
+    },
+    Budget {
+        gate: "construction",
+        measured: MEASURED_CONSTRUCTION,
+        allowed: MEASURED_CONSTRUCTION * BUDGET_SLACK,
+        taken: TAKEN,
+        why: "Thirty-six rules over a 660k-line tree, the plants grouped by family so one case carries every edit a family needs. The file scan is memoised; what is left is the rules themselves. THIS IS THE ENTRY THAT PROVED THE OLD SHAPE WRONG: its note claimed `about 15 600 units` while the tree measured three times that, under a budget it was within seven per cent of blowing.",
+    },
+    Budget {
+        gate: "kind-isolation",
+        measured: MEASURED_KIND_ISOLATION,
+        allowed: MEASURED_KIND_ISOLATION * BUDGET_SLACK,
+        taken: TAKEN,
+        why: "The dearest battery in the registry: every case plants an overlay and drives the whole gate over a 660k-line tree. The per-file compiled set and the matrix scan are memoised on (path, bytes) and the merge-base is read once per process; what is left is the plants and the rules. A plant that ADDS OR REMOVES A CRATE changes the derived vocabulary and invalidates the matrix memo, which many cases do, because a census that walks the whole repository is proven by planting crates in it.",
+    },
+    Budget {
+        gate: "kind-isolation-ship",
+        measured: MEASURED_KIND_ISOLATION_SHIP,
+        allowed: MEASURED_KIND_ISOLATION_SHIP * BUDGET_SLACK,
+        taken: TAKEN,
+        why: "The ship twin of the battery above: the same shape held to a ceiling of zero, plus the derivations with a degenerate answer and the floors whose subject is the size of their own input.",
+    },
+];
+
+/// One WORK UNIT: how long THIS process takes to run a fixed piece of arithmetic, measured once.
+///
+/// Deterministic and dependency-free on purpose. It is not a benchmark of anything a gate does; it
+/// is a ruler that shrinks and stretches with the machine and its load, which is the only property
+/// a budget compared against it needs.
+pub fn work_unit() -> std::time::Duration {
+    static UNIT: std::sync::OnceLock<std::time::Duration> = std::sync::OnceLock::new();
+    *UNIT.get_or_init(ruler_once)
+}
+
+/// The fixed arithmetic, once, on this thread.
+fn ruler_once() -> std::time::Duration {
+    let t = std::time::Instant::now();
+    let buf: Vec<u8> = (0..1u32 << 16).map(|i| (i % 251) as u8).collect();
+    let mut acc: u64 = 0;
+    for round in 0..64u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        round.hash(&mut h);
+        buf.hash(&mut h);
+        acc = acc.wrapping_add(h.finish());
+    }
+    // The accumulator is fed to something the caller could observe, so the loop is not code the
+    // optimiser may delete: a ruler that compiles away measures nothing.
+    if acc == u64::MAX {
+        eprintln!("xtask: the calibration ruler measured {acc}");
+    }
+    t.elapsed().max(std::time::Duration::from_micros(1))
+}
+
+/// ONE WORK UNIT AS THE THREAD THAT JUST TOOK A CASE FINDS IT — the ruler for a battery taken
+/// across the cores.
+///
+/// THE BUG THIS EXISTS TO FIX, AND IT IS THE ONE THE BUDGET'S OWN DOCTRINE WARNED ABOUT. The cases
+/// are summed by WALL CLOCK, so taking eighteen at once inflates every one of them: they share
+/// memory bandwidth, caches and whatever else is on the machine. `construction` measured 68 063
+/// units against a budget of 50 000 AT `--jobs 18` AND WAS COMFORTABLY UNDER IT AT `--jobs 1`, on
+/// the same tree, in the same minute. A gate that is red because the box was busy is a gate
+/// somebody deletes -- which is exactly why the budget is denominated in work units and not in
+/// seconds in the first place.
+///
+/// The ruler was measured ONCE, ON ONE THREAD, so it did not stretch when the cases did. Here it
+/// does: the same fixed arithmetic is run on `jobs` threads AT THE SAME TIME and the unit is the
+/// mean of what each thread took. "Four times more contended produces a calibration four times
+/// slower too" was always the claim; this is what makes it true when the contention is the
+/// harness's own.
+///
+/// AND IT IS READ ON THE WORKER, BETWEEN CASES, NOT ONCE BEFORE THEM. Calibrating `jobs` threads of
+/// arithmetic up front does not work and the measurement says so: on eighteen cores that is one
+/// arithmetic thread per core and it barely stretches at all — `structure-lint`'s ruler moved from
+/// 11.0 ms to 11.6 ms while the cases it was measuring went from 85.7 s to 152.5 s. Pure arithmetic
+/// on an idle box is not what a battery does to a box.
+///
+/// So each worker reads the ruler immediately after the case it just took, WITH THE OTHER
+/// SEVENTEEN STILL SCANNING. It is then competing for cache and memory with the real work, which is
+/// the only condition under which the proxy tracks what it is a proxy for — and a case is scored
+/// against the ruler read on its own thread, in its own seconds, rather than against a number taken
+/// when the machine was quiet.
+///
+/// It costs one ruler per case: about 11 ms against cases that average a second, which is under one
+/// per cent of a battery and is the price of a budget that does not flap.
+fn work_unit_here() -> std::time::Duration {
+    ruler_once()
+}
+
+fn selftest_budget(gate: &str) -> f64 {
+    SELFTEST_BUDGETS
+        .iter()
+        .find(|b| b.gate == gate)
+        .map(|b| b.allowed)
+        .unwrap_or(DEFAULT_BUDGET_UNITS)
+}
+
+/// `Sync`, because a self-test's cases are taken across the cores and every one of them reaches
+/// its gate through `&dyn Gate`. Nothing here has interior mutability — the gates are unit structs
+/// and flag-carrying structs read through `&self` — so this is a bound that says what was already
+/// true rather than a constraint anything had to be changed to meet.
+pub trait Gate: Sync {
     fn name(&self) -> &'static str;
 
     /// Every ledger row id this gate can emit. THE OWED SET. Non-empty by construction: a gate
@@ -121,14 +594,17 @@ pub trait Gate {
     /// The narrow set of owed ids that are PASS BY CONSTRUCTION — a measurement the gate reports
     /// and does not judge. EMPTY BY DEFAULT, and it must stay that way for anything that is a rule.
     ///
-    /// One gate needs it. The construction gate reports four rows whose status is `Pass` however
-    /// they measure — `duplicate-dispatch` and the per-crate `legacy-reach:<crate>` figures, each
-    /// titled `WARN` — because the shell it was proven identical to reports them that way: the
-    /// gating claim is the TOTAL `legacy-reach` row, and these carry the breakdown a reader needs
-    /// to act on it. Demanding a RED case for a row that cannot be RED cannot be met honestly, and
-    /// the two dishonest ways to meet it — hand-writing the case's `got`, or making the row red and
-    /// losing parity with the instrument that licensed the conversion — are both worse than saying
-    /// which rows they are.
+    /// One gate needs it. The construction gate reports `duplicate-dispatch` and the
+    /// `forbid-unsafe:<crate>` rows of crates on its `known_missing_*` debt list as `Pass` however
+    /// they measure: the first is a shape report with no threshold, and a ratcheted `forbid-unsafe`
+    /// row measures 1 against a ceiling of 1, so no plant can drive it red. Demanding a RED case
+    /// for a row that cannot be RED cannot be met honestly, and the two dishonest ways to meet it —
+    /// hand-writing the case's `got`, or making the row judge something it does not — are both
+    /// worse than saying which rows they are.
+    ///
+    /// THE LIST ONLY EVER SHRINKS BY ARGUMENT. The three `legacy-reach:<crate>` rows were on it,
+    /// with a written reason, and the reason was wrong: it let one of them sit twenty-one over its
+    /// own figure, passing, for as long as the gating total held. They gate now.
     ///
     /// WHAT IS AND IS NOT GIVEN UP. This never touches a verdict: unlike [`Gate::skip_allow`] it is
     /// read only by [`verify_report`], so a declared row that somehow went FAIL would still turn
@@ -147,7 +623,7 @@ pub trait Gate {
 
     /// Proves the gate can still be RED, by planting violations into overlays and requiring the
     /// run to report them BY NAME.
-    fn selftest(&self, cx: &Ctx) -> Report;
+    fn selftest<'a>(&'a self, cx: &'a Ctx) -> Report<'a>;
 
     /// The planted trees `cargo xtask gate <name> --parity` drives BOTH implementations over.
     ///
@@ -347,27 +823,348 @@ impl Case {
     }
 }
 
-#[derive(Debug, Clone, Default)]
-pub struct Report {
-    cases: Vec<Case>,
-    /// Failures that are not about a single case — an unplantable fixture, an unreadable tree.
-    infra: Vec<String>,
+/// ONE CASE THE HARNESS HAS NOT TAKEN YET.
+///
+/// WHY A SELF-TEST CASE IS A PLAN AND NOT A RESULT. Every case here plants an overlay and drives
+/// the whole gate over the planted tree; the two dearest batteries do that a hundred and twenty
+/// times over a 660k-line tree, and taken one after another that is the slowest leg of the release.
+/// The work is embarrassingly parallel and always was — an [`Overlay`] is per-plant by
+/// construction, `with_overlay` returns a NEW `Ctx` and never mutates the base, so no case can
+/// observe another case's plant however many run at once — but a `prove_red` that returns a
+/// finished `Case` has already spent the time by the time the report sees it, and a report cannot
+/// spread work it was handed after the fact.
+///
+/// So the `prove_*` family returns the WORK rather than its answer, [`Report::push`] takes the plan
+/// in the case's own position in the list, and [`Report::resolve`] runs them across the cores and
+/// writes the answers back into those positions. The order the reader sees is the order they were
+/// pushed, whichever thread finished first, so the printed report is the same report either way.
+///
+/// A `Case` converts into a plan that simply hands it back, so a gate that builds a case by hand —
+/// or takes one and edits it — pushes it exactly as before.
+pub struct CasePlan<'a> {
+    take: Box<dyn FnOnce() -> Case + Send + 'a>,
+    /// What this case had already cost by the time it was pushed: the overlay it built, and — for
+    /// a case that was taken eagerly — the run itself. Measured by [`Report::push`] between two
+    /// pushes, which is where that work happens.
+    prepaid: Duration,
 }
 
-impl Report {
-    pub fn new() -> Report {
+impl<'a> CasePlan<'a> {
+    /// A plan from the work itself.
+    pub fn new(take: impl FnOnce() -> Case + Send + 'a) -> CasePlan<'a> {
+        CasePlan {
+            take: Box::new(take),
+            prepaid: Duration::ZERO,
+        }
+    }
+
+    /// Take the case NOW, on this thread. For a case whose gate or context is built inside the
+    /// plan itself — a gate constructed with a flag the registry does not carry — where the
+    /// `prove_*` call has to happen where those locals live.
+    pub fn take(self) -> Case {
+        (self.take)()
+    }
+
+    /// Edit the case this plan will produce, WITHOUT taking it now. The shape a gate needs when it
+    /// wants `prove_red`'s proof and one field of the resulting case changed.
+    pub fn map(self, f: impl FnOnce(Case) -> Case + Send + 'a) -> CasePlan<'a> {
+        let take = self.take;
+        CasePlan {
+            take: Box::new(move || f(take())),
+            prepaid: self.prepaid,
+        }
+    }
+}
+
+impl<'a> From<Case> for CasePlan<'a> {
+    fn from(case: Case) -> CasePlan<'a> {
+        CasePlan::new(move || case)
+    }
+}
+
+/// WHAT A CASE PLANTS, AND WHEN IT BUILDS IT.
+///
+/// An `Overlay` handed to `prove_*` was already BUILT by the time the plan was made, because Rust
+/// evaluates arguments where they are written. For most cases that is nothing — a map with one file
+/// in it. For the batteries that matter it is not: a plant that reads the ledger, lists `crates/`,
+/// re-renders a registry or formats a thousand lines of filler is real work, and doing it at the
+/// push is doing it ON ONE THREAD while seventeen sit idle.
+///
+/// THE MEASUREMENT THAT SAYS SO. `kind-isolation` took 1621 s serial and 201 s across eighteen
+/// cores. Solve those two for the serial fraction and it is about 117 s — which is to say that
+/// after the gate runs were spread across the box, MORE THAN HALF of what was left was the plants
+/// being built one after another.
+///
+/// So a plant may be given as the overlay OR as the closure that makes one, and the closure is
+/// called on the worker that takes the case. Both spellings are this one trait, so a case that
+/// plants a single file keeps reading exactly as it did and only the dear ones say `move ||`.
+pub trait Plant<'a>: Send + 'a {
+    fn build(self) -> Overlay;
+}
+
+/// The plant that is already built. Unchanged, and the right answer whenever building it is a map
+/// insert or two.
+impl<'a> Plant<'a> for Overlay {
+    fn build(self) -> Overlay {
+        self
+    }
+}
+
+/// The plant BUILT ON THE WORKER. `Overlay` is a local type and cannot implement `FnOnce`, which is
+/// what lets these two impls coexist.
+impl<'a, F: FnOnce() -> Overlay + Send + 'a> Plant<'a> for F {
+    fn build(self) -> Overlay {
+        self()
+    }
+}
+
+/// How many cases run at once when nothing says otherwise: the cores this box will admit to.
+///
+/// `XTASK_SELFTEST_JOBS` overrides it and `--jobs N` on the command line overrides that. `1` is
+/// the serial harness exactly as it was, which is what the two are for: a case that fails in
+/// parallel is re-run at `1` before it is believed, and the measurement that justifies any of this
+/// is `--jobs 1` against the default on the same box.
+pub fn default_jobs() -> usize {
+    let asked = SELFTEST_JOBS.load(std::sync::atomic::Ordering::SeqCst);
+    if asked > 0 {
+        return asked;
+    }
+    if let Some(n) = std::env::var("XTASK_SELFTEST_JOBS")
+        .ok()
+        .and_then(|s| s.trim().parse::<usize>().ok())
+        .filter(|n| *n > 0)
+    {
+        return n;
+    }
+    // The work-unit budgets and the calibration ruler are measured at --jobs 18 (see TAKEN and
+    // BUDGET); above that the ruler under-normalises contention and a battery reads spuriously over
+    // budget on a box with more cores (measured: construction 33k units at 18-way, 54k at 32-way for
+    // the same work). Cap the DEFAULT at the calibrated width so an unattended `cargo xtask selftest`
+    // on a 32-core fleet box runs in the ruler's valid range; an explicit --jobs N still overrides.
+    const CALIBRATED_JOBS: usize = 18;
+    std::thread::available_parallelism()
+        .map(|n| n.get().min(CALIBRATED_JOBS))
+        .unwrap_or(1)
+}
+
+/// What `--jobs N` asked for. `0` — the default — means nobody asked, and [`default_jobs`] then
+/// reads the environment and the box.
+///
+/// A PROCESS-WIDE SETTING BECAUSE A REPORT IS BUILT WHERE THE COMMAND LINE IS NOT. Every gate's
+/// selftest builds its own `Report` (and several build sub-reports and fold them in), so a flag
+/// carried down through forty `selftest` signatures would be forty diffs and a hole for the
+/// forty-first. Set once by the runner, before any gate runs.
+static SELFTEST_JOBS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// `cargo xtask ... --selftest --jobs N`. `1` is the serial harness exactly as it was.
+pub fn set_selftest_jobs(jobs: usize) {
+    SELFTEST_JOBS.store(jobs, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// What the cases cost, in the order they were pushed.
+struct Taken {
+    cases: Vec<Case>,
+    took: Vec<Duration>,
+    /// What each case cost IN WORK UNITS, scored against the ruler its own worker read right after
+    /// taking it. Kept per case rather than as one divisor because the machine is not the same from
+    /// one end of a battery to the other, and the whole point is that the ruler moves with it.
+    units: Vec<f64>,
+    /// The half of `took` that was spent BEFORE the case reached a worker — building the plant, on
+    /// the one thread that pushes. THE SERIAL FRACTION, itemised: it is the only part of a battery
+    /// that more cores cannot help, so it is the only part worth rewriting, and a number beats a
+    /// guess about which plants are dear.
+    prepaid: Vec<Duration>,
+}
+
+pub struct Report<'a> {
+    /// The cases not yet taken, in push order. Emptied by the first read.
+    plans: std::sync::Mutex<Vec<CasePlan<'a>>>,
+    /// The answers, in the SAME order. Filled once, by whichever reader asks first — a report can
+    /// be read through `&self` from four places and none of them may see a report with the cases
+    /// missing, because "0 cases, all green" is the one verdict this harness exists to refuse.
+    taken: std::sync::OnceLock<Taken>,
+    /// Failures that are not about a single case — an unplantable fixture, an unreadable tree.
+    infra: Vec<String>,
+    /// When the previous case was pushed. The work between two pushes is the next case's prepaid
+    /// cost: the overlay it built, and whatever a hand-built case did to produce itself.
+    mark: std::time::Instant,
+    jobs: usize,
+}
+
+impl Default for Report<'_> {
+    fn default() -> Self {
+        Report {
+            plans: std::sync::Mutex::new(Vec::new()),
+            taken: std::sync::OnceLock::new(),
+            infra: Vec::new(),
+            mark: std::time::Instant::now(),
+            jobs: default_jobs(),
+        }
+    }
+}
+
+impl<'a> Report<'a> {
+    pub fn new() -> Report<'a> {
         Report::default()
     }
 
-    pub fn push(&mut self, case: Case) {
-        self.cases.push(case);
+    /// The same report, run across `jobs` threads. `0` is read as `1`.
+    pub fn with_jobs(mut self, jobs: usize) -> Report<'a> {
+        self.jobs = jobs.max(1);
+        self
+    }
+
+    pub fn jobs(&self) -> usize {
+        self.jobs
+    }
+
+    pub fn push(&mut self, plan: impl Into<CasePlan<'a>>) {
+        let mut plan = plan.into();
+        plan.prepaid += self.mark.elapsed();
+        self.mark = std::time::Instant::now();
+        self.plans
+            .get_mut()
+            .expect("the plan list is never held across a panic")
+            .push(plan);
     }
 
     /// Fold another report's cases and infra failures into this one, for a gate whose selftest is
-    /// assembled from per-rule sub-reports rather than written as one list.
-    pub fn append(&mut self, other: Report) {
-        self.cases.extend(other.cases);
-        self.infra.extend(other.infra);
+    /// assembled from per-rule sub-reports rather than written as one list. The sub-report's cases
+    /// keep their order and land after this one's, taken or not.
+    pub fn append(&mut self, other: Report<'a>) {
+        let Report {
+            plans,
+            taken,
+            infra,
+            ..
+        } = other;
+        let mine = self
+            .plans
+            .get_mut()
+            .expect("the plan list is never held across a panic");
+        if let Some(Taken { cases, took, .. }) = taken.into_inner() {
+            for (case, took) in cases.into_iter().zip(took) {
+                let mut plan = CasePlan::from(case);
+                plan.prepaid = took;
+                mine.push(plan);
+            }
+        }
+        mine.extend(
+            plans
+                .into_inner()
+                .expect("the plan list is never held across a panic"),
+        );
+        self.infra.extend(infra);
+        self.mark = std::time::Instant::now();
+    }
+
+    /// TAKE EVERY CASE NOW AND HAND BACK A REPORT THAT BORROWS NOTHING.
+    ///
+    /// For a gate whose cases are proven through a gate IT BUILT — the changelog gate's release
+    /// arms are the same gate with a flag, and the flag cannot come from the registry — so the
+    /// `&dyn Gate` the plans name is a local. Sealing the report where that local still lives is
+    /// how those cases are taken in parallel like every other, rather than the whole family being
+    /// held serial by one borrow.
+    pub fn sealed<'b>(self) -> Report<'b> {
+        let taken = std::sync::OnceLock::new();
+        let _ = taken.set(match self.taken.into_inner() {
+            Some(already) => already,
+            None => take_all(
+                self.plans
+                    .into_inner()
+                    .expect("the plan list is never held across a panic"),
+                self.jobs,
+            ),
+        });
+        Report {
+            plans: std::sync::Mutex::new(Vec::new()),
+            taken,
+            infra: self.infra,
+            mark: self.mark,
+            jobs: self.jobs,
+        }
+    }
+
+    /// TAKE EVERY CASE, ACROSS THE CORES, AND WRITE THE ANSWERS BACK IN PUSH ORDER.
+    ///
+    /// The workers pull from one queue, so a battery whose cases differ by a factor of fifty in
+    /// cost still finishes in about the time of its longest case rather than in the time of its
+    /// slowest shard. Each answer is written into the slot its plan was pushed into, so the case
+    /// list — and therefore the printed report and every verdict read off it — does not depend on
+    /// which thread won.
+    ///
+    /// THE COST IS SUMMED PER CASE, NOT TAKEN OFF THE WALL CLOCK. [`selftest_budget`] is about a
+    /// rule that grew a whole-tree scan per plant, which is a property of the WORK; dividing the
+    /// work by the cores would hide exactly that regression behind a bigger box.
+    fn resolve(&self) -> &Taken {
+        self.taken.get_or_init(|| {
+            let plans = std::mem::take(
+                &mut *self
+                    .plans
+                    .lock()
+                    .expect("the plan list is never held across a panic"),
+            );
+            take_all(plans, self.jobs)
+        })
+    }
+
+    /// What this report cost, in [`work_unit`]s — each case scored against the ruler its own
+    /// worker read, never against one taken when the machine was quiet.
+    pub fn units(&self) -> f64 {
+        self.resolve().units.iter().sum()
+    }
+
+    /// The ruler this report's units worked out to, for the message that quotes one.
+    pub fn unit(&self) -> std::time::Duration {
+        let units = self.units();
+        if units <= 0.0 {
+            return work_unit();
+        }
+        std::time::Duration::from_secs_f64(self.total().as_secs_f64() / units)
+    }
+
+    pub fn total(&self) -> std::time::Duration {
+        self.resolve().took.iter().sum()
+    }
+
+    /// WHAT THIS BATTERY SPENT ON ONE THREAD, building its plants. The rest was spread across the
+    /// cores; this was not, and this is what a further speed-up has to come out of.
+    pub fn planting(&self) -> std::time::Duration {
+        self.resolve().prepaid.iter().sum()
+    }
+
+    /// The case whose PLANT cost the most — the first name on the list of plants worth making lazy.
+    pub fn dearest_plant(&self) -> Option<(&str, std::time::Duration)> {
+        let taken = self.resolve();
+        taken
+            .cases
+            .iter()
+            .zip(taken.prepaid.iter())
+            .max_by_key(|(_, t)| **t)
+            .map(|(c, t)| (c.name.as_str(), *t))
+    }
+
+    pub fn slowest(&self) -> Option<(&str, std::time::Duration)> {
+        let taken = self.resolve();
+        taken
+            .cases
+            .iter()
+            .zip(taken.took.iter())
+            .max_by_key(|(_, t)| **t)
+            .map(|(c, t)| (c.name.as_str(), *t))
+    }
+
+    /// Per-case timing rows `(name, took, units, prepaid)` for `XTASK_SELFTEST_TIMING`,
+    /// the diagnostic that surfaces which case is spending the self-test's work-unit budget.
+    pub fn timings(&self) -> Vec<(String, std::time::Duration, f64, std::time::Duration)> {
+        let t = self.resolve();
+        t.cases
+            .iter()
+            .zip(t.took.iter())
+            .zip(t.units.iter())
+            .zip(t.prepaid.iter())
+            .map(|(((c, d), u), p)| (c.name.clone(), *d, *u, *p))
+            .collect()
     }
 
     pub fn note_infra_failure(&mut self, msg: impl Into<String>) {
@@ -375,11 +1172,11 @@ impl Report {
     }
 
     pub fn cases(&self) -> &[Case] {
-        &self.cases
+        &self.resolve().cases
     }
 
     pub fn skipped(&self) -> usize {
-        self.cases
+        self.cases()
             .iter()
             .filter(|c| matches!(c.got, Expect::Skipped))
             .count()
@@ -387,12 +1184,84 @@ impl Report {
 
     pub fn failures(&self) -> Vec<String> {
         let mut out = self.infra.clone();
-        out.extend(self.cases.iter().filter_map(Case::failure));
+        out.extend(self.cases().iter().filter_map(Case::failure));
         out
     }
 
     pub fn ok(&self) -> bool {
         self.failures().is_empty()
+    }
+}
+
+/// Take `plans` on `jobs` threads and return the cases IN THE ORDER THE PLANS CAME IN.
+///
+/// Scoped threads rather than a pool with `'static` work: a plan borrows the `Ctx` and the `&dyn
+/// Gate` its gate's selftest was handed, and a scope is how that borrow is proven to outlive the
+/// threads instead of being asserted by a comment over an `unsafe impl Send`.
+fn take_all(plans: Vec<CasePlan<'_>>, jobs: usize) -> Taken {
+    let n = plans.len();
+    if n == 0 {
+        return Taken {
+            cases: Vec::new(),
+            took: Vec::new(),
+            units: Vec::new(),
+            prepaid: Vec::new(),
+        };
+    }
+    let mut queue: Vec<(usize, CasePlan<'_>)> = plans.into_iter().enumerate().collect();
+    // Popped from the back, so the cases start in push order.
+    queue.reverse();
+    let queue = std::sync::Mutex::new(queue);
+    #[allow(clippy::type_complexity)]
+    let out: Vec<std::sync::Mutex<Option<(Case, Duration, Duration, f64)>>> =
+        (0..n).map(|_| std::sync::Mutex::new(None)).collect();
+    let out = &out;
+    let queue = &queue;
+    let workers = jobs.max(1).min(n);
+    std::thread::scope(|scope| {
+        for _ in 0..workers {
+            scope.spawn(move || loop {
+                let next = queue
+                    .lock()
+                    .expect("the case queue is never held across a panic")
+                    .pop();
+                let Some((slot, plan)) = next else { return };
+                let prepaid = plan.prepaid;
+                let started = std::time::Instant::now();
+                let case = (plan.take)();
+                let spent = prepaid + started.elapsed();
+                // THE RULER, HERE, NOW — with the other workers still at their own cases. See
+                // [`work_unit_here`].
+                let unit = work_unit_here();
+                let units = spent.as_secs_f64() / unit.as_secs_f64();
+                *out[slot]
+                    .lock()
+                    .expect("a case slot is never held across a panic") =
+                    Some((case, spent, prepaid, units));
+            });
+        }
+    });
+
+    let mut cases = Vec::with_capacity(n);
+    let mut took = Vec::with_capacity(n);
+    let mut prepaid = Vec::with_capacity(n);
+    let mut units = Vec::with_capacity(n);
+    for slot in out {
+        let (case, spent, before, scored) = slot
+            .lock()
+            .expect("a case slot is never held across a panic")
+            .take()
+            .expect("every plan was taken: the queue is drained before the scope ends");
+        cases.push(case);
+        took.push(spent);
+        prepaid.push(before);
+        units.push(scored);
+    }
+    Taken {
+        cases,
+        took,
+        units,
+        prepaid,
     }
 }
 
@@ -403,6 +1272,223 @@ pub fn execute(gate: &dyn Gate, cx: &Ctx) -> Verdict {
     Reconcile::new(gate.owed())
         .allow_skip(gate.skip_allow())
         .verdict(verdict.rows)
+}
+
+// ---------------------------------------------------------------------------------------------
+// the wall-clock ceiling
+// ---------------------------------------------------------------------------------------------
+
+/// How long any one gate may take before the runner stops believing it.
+///
+/// FIVE MINUTES IS A CEILING, NOT A BUDGET. The slowest converted gate reads the whole tree and
+/// finishes in seconds; a gate that has been running for five minutes is not slow, it is stuck,
+/// and every minute after that is a minute the run spends proving nothing.
+pub const DEFAULT_GATE_CEILING: Duration = Duration::from_secs(300);
+
+/// The ceiling for one gate: the default, a global override, then a per-gate override. `None`
+/// means the ceiling is off, which `0` asks for.
+///
+/// It is read from the ENVIRONMENT rather than compiled in per gate, because the box that needs a
+/// bigger number is never the box the number was written on — a cold CI runner building from
+/// scratch is not a warm laptop. `XTASK_GATE_CEILING_SECS` moves them all;
+/// `XTASK_GATE_CEILING_SECS_<GATE>` (the gate's name, uppercased, `-` becoming `_`) moves one.
+///
+/// `env` is a parameter and not a direct `std::env::var` call so the precedence can be PROVEN
+/// without a test mutating the process environment out from under its neighbours.
+pub fn ceiling_for(name: &str, env: impl Fn(&str) -> Option<String>) -> Option<Duration> {
+    let key = format!(
+        "XTASK_GATE_CEILING_SECS_{}",
+        name.to_uppercase().replace(['-', '.', '/'], "_")
+    );
+    let raw = env(&key).or_else(|| env("XTASK_GATE_CEILING_SECS"));
+    match raw {
+        None => Some(DEFAULT_GATE_CEILING),
+        // An unreadable override is the DEFAULT, never "no ceiling": a typo in an environment
+        // variable must not be the thing that lets a hung gate hang forever again.
+        Some(s) => match s.trim().parse::<u64>() {
+            Ok(0) => None,
+            Ok(n) => Some(Duration::from_secs(n)),
+            Err(_) => Some(DEFAULT_GATE_CEILING),
+        },
+    }
+}
+
+/// The ceiling as the runner reads it, from the real process environment.
+pub fn ceiling_from_env(name: &str) -> Option<Duration> {
+    ceiling_for(name, |k| std::env::var(k).ok())
+}
+
+/// A BATTERY IS NOT A GATE RUN, AND MUST NOT BE HELD TO A GATE RUN'S CEILING.
+///
+/// `kind-isolation`'s self-test drives the whole gate over a planted tree ONE HUNDRED AND
+/// SEVENTY-SIX TIMES. Five minutes is the right number for "this gate has stopped making progress";
+/// it is plainly the wrong number for a hundred and seventy-six of them, and holding a battery to
+/// it means the ceiling fires on a self-test that is working perfectly — which is a runner killing
+/// the one job that would have told it what was wrong.
+///
+/// IT WAS ONLY EVER MASKED. Before the cases became plans, a battery ran inside `gate.selftest(cx)`
+/// with the watchdog armed over it, and a serial `construction --selftest` — 617 s measured — was
+/// killed at 300 s exactly like this. The lazy report hid it for one commit (the work happened
+/// after the watchdog was dropped) and resolving under the watchdog put it back. It is a real
+/// finding either way, and the answer is a ceiling that knows what it is bounding.
+///
+/// THIRTY MINUTES, and it is still a ceiling rather than a budget: the dearest battery in the
+/// registry takes about three and a half at the default job count, so this is an order of magnitude
+/// of headroom and anything that reaches it is wedged, not slow. The REGRESSION guard is
+/// [`selftest_budget`], which is denominated in work units and is the thing that notices a battery
+/// that merely grew. `XTASK_SELFTEST_CEILING_SECS` moves it; `0` disables it; an unreadable value
+/// is the default, never "no ceiling".
+pub const DEFAULT_SELFTEST_CEILING: Duration = Duration::from_secs(1800);
+
+/// The ceiling for one BATTERY, read from the environment the same way [`ceiling_for`] reads a
+/// gate's. A gate-specific `XTASK_GATE_CEILING_SECS_<GATE>` still wins, because a caller who named
+/// one gate meant that gate.
+pub fn selftest_ceiling_for(name: &str, env: impl Fn(&str) -> Option<String>) -> Option<Duration> {
+    let per_gate = format!(
+        "XTASK_GATE_CEILING_SECS_{}",
+        name.to_uppercase().replace(['-', '.', '/'], "_")
+    );
+    let raw = env(&per_gate).or_else(|| env("XTASK_SELFTEST_CEILING_SECS"));
+    match raw {
+        None => Some(DEFAULT_SELFTEST_CEILING),
+        Some(s) => match s.trim().parse::<u64>() {
+            Ok(0) => None,
+            Ok(n) => Some(Duration::from_secs(n)),
+            Err(_) => Some(DEFAULT_SELFTEST_CEILING),
+        },
+    }
+}
+
+/// The battery ceiling as the runner reads it, from the real process environment.
+pub fn selftest_ceiling_from_env(name: &str) -> Option<Duration> {
+    selftest_ceiling_for(name, |k| std::env::var(k).ok())
+}
+
+/// [`execute`], UNDER A WALL-CLOCK CEILING. A gate that exceeds it is RED, with `hung` in every
+/// owed row, and the run CONTINUES.
+///
+/// WHY THE RUNNER OWNS THIS. `cargo xtask gate --all` once sat for 43 minutes at 4% CPU: a gate
+/// had deadlocked against a `git cat-file --batch` child, and because the runner simply called the
+/// gate and waited, the whole gate set stopped at that row — not red, not green, not printed.
+/// SILENTLY PENDING IS THE WORST VERDICT A GATE RUNNER CAN GIVE, because it is indistinguishable
+/// from slow work and it is the one verdict nobody can act on. The particular deadlock is fixed in
+/// [`crate::gitp::ask`]; this is the guard that means the NEXT one costs a red row and five
+/// minutes instead of a night.
+///
+/// The gate is built and run on its own thread, so the ceiling is a real wall clock and not a
+/// cooperative check the hung gate would have to reach in order to notice. A gate that blows the
+/// ceiling is LEAKED: it is wedged in a syscall, there is nothing to cancel, and a `join` here
+/// would reintroduce exactly the hang this exists to end. It dies with the process.
+pub fn execute_within(
+    name: &str,
+    build: fn() -> Box<dyn Gate>,
+    cx: &Ctx,
+    ceiling: Duration,
+) -> Verdict {
+    let owed = build().owed();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mine = cx.clone();
+    std::thread::spawn(move || {
+        let gate = build();
+        let _ = tx.send(execute(gate.as_ref(), &mine));
+    });
+    match rx.recv_timeout(ceiling) {
+        Ok(v) => v,
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => hung(name, &owed, ceiling),
+        // The sender is gone without a verdict: the gate PANICKED. That is red too, and for the
+        // same reason — nobody may read a missing verdict as a passing one.
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Verdict::of(
+            owed.iter()
+                .map(|id| {
+                    Row::fail(
+                        id.clone(),
+                        format!("{name} panicked"),
+                        "the gate thread died without a verdict".to_string(),
+                    )
+                })
+                .collect(),
+        ),
+    }
+}
+
+/// Every owed row, RED, saying it hung. Not one summary row: a caller grepping the ledger for a
+/// row id must find that row failing rather than find nothing at all.
+fn hung(name: &str, owed: &[String], ceiling: Duration) -> Verdict {
+    let rows = owed
+        .iter()
+        .map(|id| {
+            Row::fail(
+                id.clone(),
+                format!("{name} hung"),
+                format!(
+                    "hung: the gate did not finish within {}s (XTASK_GATE_CEILING_SECS[_{}] \
+                     raises it, 0 disables it)",
+                    ceiling.as_secs(),
+                    name.to_uppercase().replace(['-', '.', '/'], "_")
+                ),
+            )
+        })
+        .collect();
+    Verdict::of(rows)
+}
+
+/// The ceiling for the paths that do not run the gate on a thread of their own — `gate <name>`
+/// and `gate <name> --selftest`, where the gate is built with flags a `fn()` pointer cannot carry.
+///
+/// It cannot return a verdict, because the thread that would print one is the wedged one. So it
+/// PRINTS the red rows and takes the process down with a non-zero status: a hung single-gate run
+/// ends in a refusal a human and a CI step both understand, rather than in a job timeout that
+/// names nothing. Dropping it disarms it.
+///
+/// IT IS OFF UNTIL THE BINARY TURNS IT ON, and that is not timidity. `cargo test -p xtask` calls
+/// [`crate::cli::main`] in-process, so an armed watchdog in a library caller would answer a slow
+/// gate by killing the TEST HARNESS — every other case in the binary lost, no report, exit 1 with
+/// nothing to read. A test process must report its own failures. `xtask`'s `main` calls
+/// [`enable_process_watchdog`]; nothing else does.
+pub struct Watchdog {
+    disarm: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+static PROCESS_WATCHDOG: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Let [`Watchdog::arm`] do anything at all. Called by the `xtask` BINARY and by nothing else.
+pub fn enable_process_watchdog() {
+    PROCESS_WATCHDOG.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+impl Watchdog {
+    pub fn arm(name: &str, owed: Vec<String>, ceiling: Option<Duration>) -> Watchdog {
+        let disarm = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let ceiling =
+            ceiling.filter(|_| PROCESS_WATCHDOG.load(std::sync::atomic::Ordering::SeqCst));
+        if let Some(ceiling) = ceiling {
+            let flag = std::sync::Arc::clone(&disarm);
+            let name = name.to_string();
+            std::thread::spawn(move || {
+                let deadline = std::time::Instant::now() + ceiling;
+                while std::time::Instant::now() < deadline {
+                    if flag.load(std::sync::atomic::Ordering::SeqCst) {
+                        return;
+                    }
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+                if flag.load(std::sync::atomic::Ordering::SeqCst) {
+                    return;
+                }
+                let verdict = hung(&name, &owed, ceiling);
+                print_verdict(&name, &verdict);
+                eprintln!("cargo xtask gate {name}: hung -- killed at its wall-clock ceiling");
+                std::process::exit(1);
+            });
+        }
+        Watchdog { disarm }
+    }
+}
+
+impl Drop for Watchdog {
+    fn drop(&mut self) {
+        self.disarm.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
 }
 
 /// The same, with the gate's own skip allowlist REFUSED. `cargo xtask gate <name> --strict` is
@@ -437,11 +1523,28 @@ pub fn execute_with_skips(gate: &dyn Gate, cx: &Ctx, skip_allow: &[&str]) -> Ver
 /// The single exception is DECLARED, NAMED and stale-checked: [`Gate::informational`] rows are
 /// PASS by construction, so they are held to being exercised rather than to going red, and a
 /// declaration that no longer names an owed row is itself refused.
-pub fn verify_report(gate: &dyn Gate, report: &Report) -> Result<(), Vec<String>> {
+pub fn verify_report(gate: &dyn Gate, report: &Report<'_>) -> Result<(), Vec<String>> {
     let mut errs = report.failures();
 
+    // THE BUDGET. See [`SELFTEST_BUDGETS`]: an unmeasured selftest is one that grows until the
+    // runner kills it, and a killed job is neither green nor red.
+    let budget = selftest_budget(gate.name());
+    let spent = report.units();
+    if spent > budget {
+        let slowest = report
+            .slowest()
+            .map(|(n, t)| format!(" Slowest case: `{n}`, {:.1}s.", t.as_secs_f64()))
+            .unwrap_or_default();
+        errs.push(format!(
+            "{}: this self-test spent {spent:.0} work units against a budget of {budget:.0} (one unit is {:.1}ms on this box right now, so {:.0}s of wall clock here). A self-test that grew a whole-tree scan per plant is how the xtask shard goes from minutes to an hour, and the runner that finds out is the one that cancels the job.{slowest}",
+            gate.name(),
+            report.unit().as_secs_f64() * 1000.0,
+            report.total().as_secs_f64()
+        ));
+    }
+
     if !report
-        .cases
+        .cases()
         .iter()
         .any(|c| matches!(c.expected, Expect::Red { .. }))
     {
@@ -453,13 +1556,13 @@ pub fn verify_report(gate: &dyn Gate, report: &Report) -> Result<(), Vec<String>
     }
 
     let covered: BTreeSet<String> = report
-        .cases
+        .cases()
         .iter()
         .filter(|c| matches!(c.expected, Expect::Red { .. }))
         .flat_map(|c| c.covers.iter().cloned())
         .collect();
     let exercised: BTreeSet<String> = report
-        .cases
+        .cases()
         .iter()
         .flat_map(|c| c.covers.iter().cloned())
         .collect();
@@ -560,25 +1663,34 @@ fn narrowed_got(verdict: &Verdict, covers: &[&str]) -> Expect {
 /// xtask selftest` still green. Now every id in `covers` must itself be red, which makes this
 /// function and [`prove_rows_red`] the same proof; the latter survives as the name that says so at
 /// the call site.
-pub fn prove_red(
+pub fn prove_red<'a>(
     cx: &Ctx,
-    gate: &dyn Gate,
+    gate: &'a dyn Gate,
     name: impl Into<String>,
     covers: &[&str],
-    overlay: Overlay,
+    plant: impl Plant<'a>,
     naming: &[&str],
-) -> Case {
-    let planted = cx.with_overlay(overlay);
-    let verdict = execute(gate, &planted);
-    let got = narrowed_got(&verdict, covers);
-    Case {
-        name: name.into(),
-        covers: covers.iter().map(|s| (*s).to_string()).collect(),
-        expected: Expect::Red {
-            naming: naming.iter().map(|s| (*s).to_string()).collect(),
-        },
-        got,
-    }
+) -> CasePlan<'a> {
+    let name = name.into();
+    let covers: Vec<String> = covers.iter().map(|s| (*s).to_string()).collect();
+    let naming: Vec<String> = naming.iter().map(|s| (*s).to_string()).collect();
+    let cx = cx.clone();
+    CasePlan::new(move || {
+        let planted = cx.with_overlay(plant.build());
+        let verdict = execute(gate, &planted);
+        let got = narrowed_got(&verdict, &refs(&covers));
+        Case {
+            name,
+            covers,
+            expected: Expect::Red { naming },
+            got,
+        }
+    })
+}
+
+/// The `&str` view of an owned `covers` list, for the readers that were written against `&[&str]`.
+fn refs(v: &[String]) -> Vec<&str> {
+    v.iter().map(String::as_str).collect()
 }
 
 /// The red arm, NARROWED TO THE ROWS THE CASE IS ABOUT — the counterpart of [`prove_rows_green`],
@@ -589,24 +1701,15 @@ pub fn prove_red(
 /// them, "the gate went red and something in the report said the word" is satisfiable by a row the
 /// case is not about. Reading only the covered rows makes the case say what it means: THIS rule
 /// went red, and it named the offender that was planted for it.
-pub fn prove_rows_red(
+pub fn prove_rows_red<'a>(
     cx: &Ctx,
-    gate: &dyn Gate,
+    gate: &'a dyn Gate,
     name: impl Into<String>,
     covers: &[&str],
-    overlay: Overlay,
+    plant: impl Plant<'a>,
     naming: &[&str],
-) -> Case {
-    let planted = cx.with_overlay(overlay);
-    let verdict = execute(gate, &planted);
-    Case {
-        name: name.into(),
-        covers: covers.iter().map(|s| (*s).to_string()).collect(),
-        expected: Expect::Red {
-            naming: naming.iter().map(|s| (*s).to_string()).collect(),
-        },
-        got: narrowed_got(&verdict, covers),
-    }
+) -> CasePlan<'a> {
+    prove_red(cx, gate, name, covers, plant, naming)
 }
 
 /// The green arm, NARROWED TO THE ROWS THE CASE IS ABOUT.
@@ -621,31 +1724,38 @@ pub fn prove_rows_red(
 /// So this reads the covered rows and nothing else. It is not a weaker proof of the same claim, it
 /// is the proof of a narrower and more honest one, and the row ids it reads are the same ones the
 /// case must declare in `covers` anyway.
-pub fn prove_rows_green(
+pub fn prove_rows_green<'a>(
     cx: &Ctx,
-    gate: &dyn Gate,
+    gate: &'a dyn Gate,
     name: impl Into<String>,
     covers: &[&str],
-    overlay: Overlay,
-) -> Case {
-    let planted = cx.with_overlay(overlay);
-    let verdict = execute(gate, &planted);
-    let offenders: Vec<String> = verdict
-        .rows
-        .iter()
-        .filter(|r| r.status != crate::ledger::Status::Pass && covers.contains(&r.id.as_str()))
-        .map(|r| format!("{} {} {}", r.id, r.title, r.detail))
-        .collect();
-    Case {
-        name: name.into(),
-        covers: covers.iter().map(|s| (*s).to_string()).collect(),
-        expected: Expect::Green,
-        got: if offenders.is_empty() {
-            Expect::Green
-        } else {
-            Expect::Red { naming: offenders }
-        },
-    }
+    plant: impl Plant<'a>,
+) -> CasePlan<'a> {
+    let name = name.into();
+    let covers: Vec<String> = covers.iter().map(|s| (*s).to_string()).collect();
+    let cx = cx.clone();
+    CasePlan::new(move || {
+        let planted = cx.with_overlay(plant.build());
+        let verdict = execute(gate, &planted);
+        let offenders: Vec<String> = verdict
+            .rows
+            .iter()
+            .filter(|r| {
+                r.status != crate::ledger::Status::Pass && covers.iter().any(|c| c == &r.id)
+            })
+            .map(|r| format!("{} {} {}", r.id, r.title, r.detail))
+            .collect();
+        Case {
+            name,
+            covers,
+            expected: Expect::Green,
+            got: if offenders.is_empty() {
+                Expect::Green
+            } else {
+                Expect::Red { naming: offenders }
+            },
+        }
+    })
 }
 
 /// The tree in which `crates/` is present, readable and holds a file, and NO plane declares its
@@ -661,52 +1771,67 @@ pub const PLANE_ROOT_MISSING_FIXTURE: &str = "xtask/fixtures/plane-root-missing"
 /// answer is not to hand-write the case's `got` — that is a case with the gate taken out of it,
 /// and it passes just as happily when the rule it names has been deleted. The answer is to point
 /// a whole `Ctx` at a tree where the subject really is absent and run `execute` there.
-pub fn prove_rows_red_at(
+pub fn prove_rows_red_at<'a>(
     cx: &Ctx,
-    gate: &dyn Gate,
+    gate: &'a dyn Gate,
     name: impl Into<String>,
     covers: &[&str],
     fixture_rel: &str,
     naming: &[&str],
-) -> Case {
+) -> CasePlan<'a> {
     let name = name.into();
     let expected = Expect::Red {
         naming: naming.iter().map(|s| (*s).to_string()).collect(),
     };
-    let covers_owned: Vec<String> = covers.iter().map(|s| (*s).to_string()).collect();
-    let Ok(fixture_cx) = Ctx::at(cx.abs(fixture_rel), cx.scratch()) else {
-        return Case {
-            name,
-            covers: covers_owned,
-            expected,
-            got: Expect::Skipped,
+    let covers: Vec<String> = covers.iter().map(|s| (*s).to_string()).collect();
+    let fixture_abs = cx.abs(fixture_rel);
+    let scratch = cx.scratch().to_path_buf();
+    CasePlan::new(move || {
+        let Ok(fixture_cx) = Ctx::at(fixture_abs, scratch) else {
+            return Case {
+                name,
+                covers,
+                expected,
+                got: Expect::Skipped,
+            };
         };
-    };
-    let verdict = execute(gate, &fixture_cx);
-    Case {
-        name,
-        covers: covers_owned,
-        expected,
-        got: narrowed_got(&verdict, covers),
-    }
+        let verdict = execute(gate, &fixture_cx);
+        let got = narrowed_got(&verdict, &refs(&covers));
+        Case {
+            name,
+            covers,
+            expected,
+            got,
+        }
+    })
 }
 
 /// The other arm: the unplanted tree must be GREEN, or every RED above proves only that the gate
 /// is broken.
-pub fn prove_green(cx: &Ctx, gate: &dyn Gate, name: impl Into<String>, covers: &[&str]) -> Case {
-    let verdict = execute(gate, cx);
-    Case {
-        name: name.into(),
-        covers: covers.iter().map(|s| (*s).to_string()).collect(),
-        expected: Expect::Green,
-        got: if verdict.red {
-            Expect::Red {
-                naming: reported_text(&verdict),
-            }
-        } else {
-            Expect::Green
-        },
-    }
+pub fn prove_green<'a>(
+    cx: &Ctx,
+    gate: &'a dyn Gate,
+    name: impl Into<String>,
+    covers: &[&str],
+) -> CasePlan<'a> {
+    let name = name.into();
+    let covers: Vec<String> = covers.iter().map(|s| (*s).to_string()).collect();
+    let cx = cx.clone();
+    CasePlan::new(move || {
+        let verdict = execute(gate, &cx);
+        Case {
+            name,
+            covers,
+            expected: Expect::Green,
+            got: if verdict.red {
+                Expect::Red {
+                    naming: reported_text(&verdict),
+                }
+            } else {
+                Expect::Green
+            },
+        }
+    })
 }
 
 fn reported_text(verdict: &Verdict) -> Vec<String> {
@@ -857,6 +1982,14 @@ pub static REGISTRY: &[Registration] = &[
         summary: "the repository does not open issues against itself, nor ask for the scope to",
     },
     Registration {
+        name: "ship-ready",
+        batch: 2,
+        tier: Tier::Full,
+        build: || Box::new(ship_ready::ShipReadyGate),
+        summary: "the ship criterion as a row: twin zero, ceilings tight, nothing standing red, \
+                  mutants caught",
+    },
+    Registration {
         name: "settings-leak",
         batch: 1,
         tier: Tier::Fast,
@@ -943,6 +2076,13 @@ pub static REGISTRY: &[Registration] = &[
             "the config grammar is frozen at 1.5.3: snapshot drift plus additive-only vs a git ref",
     },
     Registration {
+        name: "inventory-coverage",
+        batch: 2,
+        tier: Tier::Fast,
+        build: || Box::new(inventory_coverage::InventoryCoverageGate),
+        summary: "every docs/design/inventory/*.md id is a named coverage claim or a named gap",
+    },
+    Registration {
         name: "audit-ledger",
         batch: 2,
         tier: Tier::Fast,
@@ -1014,5 +2154,404 @@ pub fn print_verdict(name: &str, verdict: &Verdict) {
 pub fn print_rows_tsv(rows: &[Row]) {
     for row in rows {
         println!("{}", row.tsv());
+    }
+}
+
+#[cfg(test)]
+mod parallel_tests {
+    use super::*;
+    use crate::ledger::Row;
+
+    /// A gate that reports WHAT IT READ at one path, so a case's verdict names the bytes that case
+    /// planted and nothing else.
+    struct EchoGate;
+
+    const ECHO_ROW: &str = "echo:read";
+    const ECHO_PATH: &str = "qa/zz-selftest-parallel-echo.txt";
+
+    impl Gate for EchoGate {
+        fn name(&self) -> &'static str {
+            "echo"
+        }
+        fn owed(&self) -> Vec<String> {
+            vec![ECHO_ROW.to_string()]
+        }
+        fn run(&self, cx: &Ctx) -> Verdict {
+            let seen = cx
+                .read(ECHO_PATH)
+                .unwrap_or_else(|_| "<absent>".to_string());
+            // Long enough for a racing case to overwrite a shared plant, if plants were shared.
+            std::thread::sleep(Duration::from_millis(40));
+            let again = cx
+                .read(ECHO_PATH)
+                .unwrap_or_else(|_| "<absent>".to_string());
+            Verdict::of(vec![Row::fail(
+                ECHO_ROW.to_string(),
+                "echo".to_string(),
+                format!("{seen}|{again}"),
+            )])
+        }
+        fn selftest<'a>(&'a self, _cx: &'a Ctx) -> Report<'a> {
+            Report::new()
+        }
+    }
+
+    /// TWO CONFLICTING FIXTURES, PLANTED AT THE SAME PATH, TAKEN AT THE SAME TIME.
+    ///
+    /// This is the property the whole parallel harness rests on, and it is asserted rather than
+    /// argued: each case must see ITS OWN plant, twice, with the other case's plant live on
+    /// another thread in between. A harness that planted on disk — the shape
+    /// `scripts/construction-gate/plant.py` had, with its `TOUCHED` list and its restore step —
+    /// answers this test with one case reading the other's bytes, which is a green case that
+    /// proves nothing and a red case that names the wrong offender.
+    ///
+    /// The gate reads the path TWICE with a sleep between, so a case that merely won a race is not
+    /// mistaken for a case that was isolated.
+    #[test]
+    fn two_cases_planted_at_the_same_path_never_see_each_other() {
+        let cx = Ctx::workspace().expect("the workspace opens");
+        let gate = EchoGate;
+        let mut report = Report::new().with_jobs(2);
+        for mine in ["FIXTURE-A", "FIXTURE-B"] {
+            let mut ov = Overlay::new();
+            ov.set(ECHO_PATH, mine);
+            report.push(prove_red(
+                &cx,
+                &gate,
+                format!("the case that planted {mine}"),
+                &[ECHO_ROW],
+                ov,
+                &[&format!("{mine}|{mine}")],
+            ));
+        }
+        let failures = report.failures();
+        assert!(
+            failures.is_empty(),
+            "a case read a plant that was not its own — the cases are not isolated: {failures:#?}"
+        );
+        let names: Vec<&str> = report.cases().iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec![
+                "the case that planted FIXTURE-A",
+                "the case that planted FIXTURE-B"
+            ],
+            "the cases must be reported in the order they were pushed, whichever thread finished \
+             first"
+        );
+    }
+
+    /// The order is the PUSH order even when the later case finishes first, which is the only way
+    /// a parallel report can be read against a serial one.
+    #[test]
+    fn the_case_list_is_push_order_not_finish_order() {
+        let mut report = Report::new().with_jobs(4);
+        for (i, delay) in [40u64, 20, 10, 0].into_iter().enumerate() {
+            report.push(CasePlan::new(move || {
+                std::thread::sleep(Duration::from_millis(delay));
+                Case {
+                    name: format!("case {i}"),
+                    covers: vec!["r".to_string()],
+                    expected: Expect::Green,
+                    got: Expect::Green,
+                }
+            }));
+        }
+        let names: Vec<&str> = report.cases().iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names, vec!["case 0", "case 1", "case 2", "case 3"]);
+    }
+
+    /// A BATTERY GETS THE BATTERY'S CEILING, and a gate named on the command line still wins.
+    ///
+    /// Red first, in the shape that bit: a serial `construction --selftest` measured 617 s and the
+    /// gate-run ceiling is 300 s, so the runner killed a self-test that was working.
+    #[test]
+    fn a_battery_is_not_held_to_one_gate_runs_ceiling() {
+        let none = |_: &str| None;
+        assert_eq!(
+            selftest_ceiling_for("construction", none),
+            Some(DEFAULT_SELFTEST_CEILING),
+            "a battery's default ceiling is the battery's, not the gate run's"
+        );
+        assert!(
+            DEFAULT_SELFTEST_CEILING > Duration::from_secs(617),
+            "the measured serial `construction` battery must fit under it, or the ceiling is \
+             killing working self-tests"
+        );
+        assert_eq!(
+            ceiling_for("construction", none),
+            Some(DEFAULT_GATE_CEILING),
+            "one gate RUN keeps the five minutes it always had"
+        );
+
+        // The env forms, and the precedence between them.
+        let per_gate =
+            |k: &str| (k == "XTASK_GATE_CEILING_SECS_CONSTRUCTION").then(|| "42".to_string());
+        assert_eq!(
+            selftest_ceiling_for("construction", per_gate),
+            Some(Duration::from_secs(42)),
+            "a caller who named one gate meant that gate"
+        );
+        let all = |k: &str| (k == "XTASK_SELFTEST_CEILING_SECS").then(|| "7".to_string());
+        assert_eq!(
+            selftest_ceiling_for("construction", all),
+            Some(Duration::from_secs(7))
+        );
+        let off = |k: &str| (k == "XTASK_SELFTEST_CEILING_SECS").then(|| "0".to_string());
+        assert_eq!(selftest_ceiling_for("construction", off), None, "0 is off");
+        // AND A TYPO IS THE DEFAULT, NEVER "NO CEILING".
+        let typo = |k: &str| (k == "XTASK_SELFTEST_CEILING_SECS").then(|| "ten".to_string());
+        assert_eq!(
+            selftest_ceiling_for("construction", typo),
+            Some(DEFAULT_SELFTEST_CEILING),
+            "an unreadable override must not be the thing that lets a wedged battery hang forever"
+        );
+    }
+
+    /// A report whose cases were never taken must not read as a report with no cases. Every reader
+    /// goes through the same resolution, so "0 cases, all green" cannot be produced by forgetting
+    /// to run them.
+    #[test]
+    fn an_unresolved_report_is_never_read_as_an_empty_one() {
+        let mut report = Report::new();
+        report.push(CasePlan::new(|| Case {
+            name: "a case nobody asked to take".to_string(),
+            covers: vec!["r".to_string()],
+            expected: Expect::Green,
+            got: Expect::Red {
+                naming: vec!["r went red".to_string()],
+            },
+        }));
+        assert_eq!(report.cases().len(), 1);
+        assert!(!report.ok(), "the case failed, and the report says so");
+    }
+}
+
+#[cfg(test)]
+mod posture_tests {
+    use super::*;
+    use crate::ledger::Row;
+
+    fn verdict(rows: Vec<Row>) -> Verdict {
+        Verdict::of(rows)
+    }
+
+    /// DESIGN-BINDINGS HAS NO EXCUSE AT ALL ANY MORE, WHICH IS THE STRONGEST FORM OF THE OLD ONE.
+    ///
+    /// The entry that used to sit here excused the gate while every non-PASS row named
+    /// `scripts/inventory-coverage.sh` -- a file the tree did not have, cited by PB-0, because the
+    /// shell retired without its gate being converted. `cargo xtask gate inventory-coverage` is
+    /// registered and PB-0 cites it, so there is no standing red left to forgive and the entry is
+    /// struck rather than reworded. This test pins the consequence: the KNOWN red is now scored
+    /// exactly like the unknown one, because neither is excused.
+    #[test]
+    fn a_design_binding_that_breaks_is_scored_however_it_broke() {
+        let cx = Ctx::workspace().expect("the workspace opens");
+        let known = Row::fail(
+            "PB-0",
+            "PB-0 master rule",
+            "partly proven; a referenced check settles nothing: \
+             gate:scripts/inventory-coverage.sh",
+        );
+        assert!(
+            excused_from_all("design-bindings", &cx, &verdict(vec![known.clone()])).is_none(),
+            "the red the struck excuse was written for is scored like any other now that the \
+             check it named exists"
+        );
+        let fresh = Row::fail(
+            "PB-7",
+            "PB-7 something else",
+            "a binding cites nothing at all",
+        );
+        assert!(
+            excused_from_all("design-bindings", &cx, &verdict(vec![known, fresh])).is_none(),
+            "a red about anything else was never excused and still is not"
+        );
+    }
+
+    /// The release-time posture is not a name on a list here: it is a lookup into the table that
+    /// already knew, and that table's own claim is checked against the tree.
+    #[test]
+    fn the_release_time_posture_is_read_from_full_gate_and_expires_with_it() {
+        let cx = Ctx::workspace().expect("the workspace opens");
+        let red = verdict(vec![Row::fail("kind-isolation:shape", "t", "d")]);
+        assert!(
+            excused_from_all("kind-isolation-ship", &cx, &red).is_some(),
+            "verify-1.6.0-done.sh invokes it, which is what full_gate's excuse asserts"
+        );
+        let mut ov = Overlay::new();
+        ov.set(
+            "scripts/verify-1.6.0-done.sh",
+            "#!/usr/bin/env bash\n# the release script no longer runs it\n",
+        );
+        assert!(
+            excused_from_all("kind-isolation-ship", &cx.with_overlay(ov), &red).is_none(),
+            "an excuse whose fact stopped holding excuses nothing"
+        );
+    }
+
+    /// THE CONSTRUCTION POSTURE, WHICH USED TO BE `Excused::Whole` — no fact-check, no expiry, no
+    /// list. `gate --all` exited 0 however red construction got, so a real regression on a keep
+    /// branch was indistinguishable from the standing red. All three arms of the replacement:
+    #[test]
+    fn the_construction_posture_excuses_its_named_rows_and_nothing_else() {
+        let cx = Ctx::workspace().expect("the workspace opens");
+        let standing: Vec<Row> = CONSTRUCTION_STANDING_REDS
+            .iter()
+            .map(|id| Row::fail(*id, "t", "the standing red this list was written for"))
+            .collect();
+
+        // 1. Red on exactly the named rows: excused.
+        assert!(
+            excused_from_all("construction", &cx, &verdict(standing.clone())).is_some(),
+            "the standing reds are what the entry names, and naming them is the whole entry"
+        );
+
+        // 2. One more red about anything else: SCORED. This is the signal `Excused::Whole` threw
+        //    away, and the reason this gate can now be a blocking CI job.
+        let mut plus = standing.clone();
+        plus.push(Row::fail("plane-no-dialect", "t", "a brand new coupling"));
+        assert!(
+            excused_from_all("construction", &cx, &verdict(plus)).is_none(),
+            "a red the list does not name is a regression, and an excuse covering it would be a \
+             switch nobody could see was off"
+        );
+
+        // 3. A named row that went GREEN: also scored, because the list has gone stale. Without
+        //    this the list only ever grows and drifts back into being the blanket it replaced.
+        let mut drained = standing;
+        drained.pop();
+        assert!(
+            excused_from_all("construction", &cx, &verdict(drained)).is_none(),
+            "a name that is no longer red must be struck, in the commit that drained it"
+        );
+    }
+
+    /// A row that emitted nothing at all reaches the verdict as a reconciliation PROBLEM, never as
+    /// a row. A rule that stopped running is not a rule that is red for a known reason, so a
+    /// problem about an id the list does not name must fail the excuse like any new red.
+    #[test]
+    fn a_row_that_did_not_run_is_not_excused_by_the_standing_list() {
+        let cx = Ctx::workspace().expect("the workspace opens");
+        let mut v = verdict(
+            CONSTRUCTION_STANDING_REDS
+                .iter()
+                .map(|id| Row::fail(*id, "t", "standing"))
+                .collect(),
+        );
+        v.problems
+            .push("ceiling-census: owed but no row was recorded — DID NOT RUN".to_string());
+        v.red = true;
+        assert!(
+            excused_from_all("construction", &cx, &v).is_none(),
+            "a rule that vanished is not a rule that is red for a known reason"
+        );
+    }
+
+    #[test]
+    fn a_gate_with_no_posture_entry_is_always_scored() {
+        let cx = Ctx::workspace().expect("the workspace opens");
+        let red = verdict(vec![Row::fail("x", "t", "d")]);
+        assert!(excused_from_all("plane-purity", &cx, &red).is_none());
+    }
+
+    /// A budget for a gate that is not registered is a number nobody reads, and a reason too short
+    /// to be one is a number nobody argued for.
+    #[test]
+    fn every_selftest_budget_names_a_registered_gate_with_a_reason() {
+        for b in SELFTEST_BUDGETS {
+            let name = b.gate;
+            assert!(
+                find(name).is_some(),
+                "`{name}` has a self-test budget and is not a registered gate"
+            );
+            assert!(
+                b.allowed > DEFAULT_BUDGET_UNITS,
+                "`{name}`'s budget of {} units is not above the default; strike the entry",
+                b.allowed
+            );
+            assert!(
+                b.why.len() > 60,
+                "`{name}`'s budget reason is too short to be one"
+            );
+        }
+    }
+
+    /// A BUDGET WITHOUT A WRITTEN MEASUREMENT IS REFUSED, and so is one whose measurement no longer
+    /// explains it.
+    ///
+    /// THE BUG THIS IS THE FIX FOR. `construction`'s entry allowed 50 000 work units and its note
+    /// said the gate measured "about 15 600". The tree measured three times that — so the entry read
+    /// as a guard with two-thirds of its room to spare while it was in fact a few per cent from
+    /// firing, and the first thing that pushed it over would have been read as a regression in
+    /// whatever touched it last. A number whose written provenance is prose is a number nobody can
+    /// check.
+    ///
+    /// Every arm here is about that: the measurement is a NUMBER and not a sentence, the budget is
+    /// DERIVED from it by one declared slack rather than chosen per entry, and the date and the tree
+    /// it was taken on are written down so a reader can take it again.
+    #[test]
+    fn every_budget_carries_the_measurement_it_was_set_from() {
+        for b in SELFTEST_BUDGETS {
+            let name = b.gate;
+            assert!(
+                b.measured > 0.0,
+                "`{name}` has a budget and no measurement. The entry IS the measurement; a budget \
+                 set from nothing cannot be checked, re-taken, or argued with."
+            );
+            // THE BUDGET IS THE MEASUREMENT TIMES THE ONE DECLARED SLACK, not a number somebody
+            // liked. Compared with a tolerance because it is written as a product of two floats.
+            let want = b.measured * BUDGET_SLACK;
+            assert!(
+                (b.allowed - want).abs() < 1.0,
+                "`{name}`'s budget is {} against a measurement of {} — that is {:.2}x, and the \
+                 declared slack is {BUDGET_SLACK}x. A budget that drifted from its own measurement \
+                 is the shape `construction` was in when it sat a few per cent under a budget its \
+                 note said it used a third of.",
+                b.allowed,
+                b.measured,
+                b.allowed / b.measured
+            );
+            // WHEN, AND ON WHAT. `YYYY-MM-DD <sha>`, both halves present and both readable.
+            let (date, sha) = b
+                .taken
+                .split_once(' ')
+                .unwrap_or_else(|| panic!("`{name}`'s measurement does not say when it was taken"));
+            assert!(
+                date.len() == 10 && date.split('-').count() == 3,
+                "`{name}`'s measurement date `{date}` is not a YYYY-MM-DD"
+            );
+            assert!(
+                sha.len() >= 7 && sha.chars().all(|c| c.is_ascii_hexdigit()),
+                "`{name}`'s measurement names no tree: `{sha}` is not a commit sha, so nobody can \
+                 re-take it"
+            );
+        }
+    }
+
+    /// The ruler must be a ruler: measurable, and the same every time it is asked.
+    #[test]
+    fn the_work_unit_is_a_positive_memoised_measurement() {
+        let a = work_unit();
+        assert!(a > std::time::Duration::ZERO);
+        assert_eq!(a, work_unit());
+    }
+
+    /// Every posture names a registered gate. An entry for a gate that no longer exists is a
+    /// waiver that outlived what it excused.
+    #[test]
+    fn every_posture_names_a_registered_gate() {
+        for p in REPORT_ONLY {
+            assert!(
+                find(p.name).is_some(),
+                "`{}` is excused from --all and is not a registered gate",
+                p.name
+            );
+            assert!(
+                p.why.len() > 60,
+                "`{}`'s reason is too short to be one",
+                p.name
+            );
+        }
     }
 }

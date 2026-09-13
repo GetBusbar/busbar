@@ -294,7 +294,7 @@ jobs:
   # check (d) in the `verify` job, which does need a real image, deletes its local copy first.
   pointers:
     name: moving pointers (every default a user gets is the newest release)
-    runs-on: ubuntu-latest
+    runs-on: latchkey-large
     # NOT IN STAGING MODE. Every assertion in this job is "the default pointer resolves to the
     # NEWEST PUBLISHED release". Pre-promote the release under test is not published, so the honest
     # answer to every one of these is the PREVIOUS version and the job would fail on a release that
@@ -673,7 +673,7 @@ jobs:
           [ "$fail" = 0 ]
 
   verify:
-    runs-on: ubuntu-latest
+    runs-on: latchkey-large
     outputs:
       version: ${{ steps.ver.outputs.version }}
     # Every check below talks to a THIRD-PARTY host (registry-1.docker.io, ghcr.io,
@@ -1984,7 +1984,7 @@ jobs:
     if: >-
       ${{ always() && inputs.stage != 'staging' &&
           (needs.pointers.result == 'failure' || needs.verify.result == 'failure') }}
-    runs-on: ubuntu-latest
+    runs-on: latchkey-small
     timeout-minutes: 10
     permissions:
       contents: read

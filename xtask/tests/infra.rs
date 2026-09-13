@@ -743,7 +743,7 @@ impl Gate for RowNobodyOwes {
             Row::new(Status::Fail, "not-owed", "t", "d"),
         ])
     }
-    fn selftest(&self, _cx: &Ctx) -> Report {
+    fn selftest<'a>(&'a self, _cx: &'a Ctx) -> Report<'a> {
         Report::new()
     }
 }
@@ -802,14 +802,14 @@ impl Gate for DeclaresInformational {
     fn run(&self, _cx: &Ctx) -> Verdict {
         Verdict::of(vec![Row::new(Status::Pass, "owed:one", "t", "d")])
     }
-    fn selftest(&self, _cx: &Ctx) -> Report {
+    fn selftest<'a>(&'a self, _cx: &'a Ctx) -> Report<'a> {
         Report::new()
     }
 }
 
 /// A report with one RED case (so the gate has a red proof at all) and one GREEN case naming
 /// `owed:one`, which is exactly what a PASS-by-construction row can offer.
-fn report_covering_owed_one_green_only() -> Report {
+fn report_covering_owed_one_green_only<'a>() -> Report<'a> {
     let mut report = Report::new();
     report.push(Case {
         name: "some other rule goes red".to_string(),
@@ -975,7 +975,8 @@ fn segregation_is_green_over_the_real_tree() {
 #[test]
 fn segregation_reds_on_each_of_the_five_planted_violations() {
     let c = cx();
-    let report = segregation().selftest(&c);
+    let gate = segregation();
+    let report = gate.selftest(&c);
     assert!(report.ok(), "{:#?}", report.failures());
     assert!(
         report

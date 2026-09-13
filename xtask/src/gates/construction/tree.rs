@@ -26,6 +26,7 @@ use std::path::Path;
 use crate::ctx::Ctx;
 use crate::rx::Regex;
 
+#[derive(Clone)]
 pub struct Line {
     /// 1-based.
     pub no: usize,
@@ -343,11 +344,188 @@ pub fn find_fns(lx: &Lexer, path: &str, lines: &[Line]) -> Vec<Fnc> {
     out
 }
 
+/// THE PER-FILE SCAN MEMO, and the reason it exists is the SELF-TEST.
+///
+/// Every planted case re-runs the whole gate, and a plant edits one file. [`Tree::load`] lexes
+/// every `.rs` file under the scan roots — a 660k-line tree through a backtracking string-literal
+/// matcher — so forty plants paid for forty full lexes of a tree that differed from itself by one
+/// file. That is where the xtask test shard's wall clock went.
+///
+/// The key is a hash of everything the answer depends on: the file's absolute path (the
+/// test-classification reads it), its workspace-relative path (the function index records it), the
+/// test path fragments in force, and the file's bytes. `scan_text` and `find_fns` are pure
+/// functions of exactly those, so a hit is a memo and never a stale reading — a plant that changes
+/// a byte changes the key.
+type Scanned = (std::sync::Arc<Vec<Line>>, std::sync::Arc<Vec<Fnc>>);
+
+static SCAN_MEMO: std::sync::OnceLock<std::sync::Mutex<BTreeMap<u64, Scanned>>> =
+    std::sync::OnceLock::new();
+
+fn scan_file(
+    lexer: &Lexer,
+    abs: &str,
+    rel: &str,
+    text: &str,
+    test_fragments: &[String],
+) -> Scanned {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    abs.hash(&mut h);
+    rel.hash(&mut h);
+    test_fragments.hash(&mut h);
+    text.hash(&mut h);
+    let key = h.finish();
+    let memo = SCAN_MEMO.get_or_init(Default::default);
+    if let Some(found) = memo
+        .lock()
+        .expect("the scan memo mutex is never poisoned")
+        .get(&key)
+    {
+        return found.clone();
+    }
+    let lines = scan_text(lexer, abs, text, test_fragments);
+    let fns = find_fns(lexer, rel, &lines);
+    let entry = (std::sync::Arc::new(lines), std::sync::Arc::new(fns));
+    memo.lock()
+        .expect("the scan memo mutex is never poisoned")
+        .insert(key, entry.clone());
+    entry
+}
+
+/// THE WHOLE-TREE SCAN, HELD ONCE FOR THE WHOLE BATTERY, and the reason it exists is the SELF-TEST.
+///
+/// The per-file [`SCAN_MEMO`] above stops a plant from re-LEXING a file it did not touch. It does
+/// NOT stop [`Tree::load`] from re-READING and re-HASHING every one of them: the memo key is a hash
+/// of the file's bytes, so a full memo hit still costs one `read_to_string` and one hash of the
+/// whole tree PER PLANT. On a 660k-line tree that is thirty-six full reads and thirty-six full
+/// hashes for a battery that changes one file per case — a whole-tree scan per plant in everything
+/// but the lex, and where the xtask shard's wall clock went once the ceiling-rose cases stopped
+/// failing fast and every plant ran the gate to completion.
+///
+/// So the DISK tree — the one every plant shares, because a plant never edits the disk — is walked,
+/// read and scanned exactly once, keyed on what its contents depend on ([`Ctx::root`], the scan
+/// roots and the test-path fragments). A plant then starts from a clone of these maps (the values
+/// are `Arc`s, so the clone is a pointer per file, not a `Line` per line) and re-scans ONLY the
+/// paths its overlay actually touched. The one cold scan is the baseline case's; every case after
+/// it pays for its own plant and nothing else.
+struct BaseScan {
+    files: BTreeMap<String, std::sync::Arc<Vec<Line>>>,
+    fns: BTreeMap<String, std::sync::Arc<Vec<Fnc>>>,
+}
+
+static BASE_SCAN: std::sync::OnceLock<std::sync::Mutex<BTreeMap<u64, std::sync::Arc<BaseScan>>>> =
+    std::sync::OnceLock::new();
+
+/// The disk tree, scanned once and shared. Overlay-free by construction: it reads through
+/// `std::fs` rather than `cx.read`, because the thing being cached is precisely the tree BEFORE any
+/// plant, and a plant is the only thing an overlay carries.
+fn base_scan(
+    cx: &Ctx,
+    lexer: &Lexer,
+    scan_roots: &[String],
+    test_fragments: &[String],
+) -> Result<std::sync::Arc<BaseScan>, String> {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    cx.root().to_string_lossy().hash(&mut h);
+    scan_roots.hash(&mut h);
+    test_fragments.hash(&mut h);
+    let key = h.finish();
+
+    let cache = BASE_SCAN.get_or_init(Default::default);
+    if let Some(found) = cache
+        .lock()
+        .expect("the base-scan mutex is never poisoned")
+        .get(&key)
+    {
+        return Ok(found.clone());
+    }
+
+    let mut rels: Vec<String> = Vec::new();
+    for pattern in scan_roots {
+        for dir in glob_dirs(cx, pattern) {
+            collect_rs(cx, &dir, &mut rels);
+        }
+    }
+    rels.sort();
+    rels.dedup();
+
+    // SCAN THE COLD TREE ACROSS THE CORES. This is the one whole-tree lex of the battery — every
+    // plant after it reuses these maps — and it is the single dearest thing the self-test does: on
+    // a 660k-line tree, lexing every file through the backtracking literal matcher is most of the
+    // baseline case's wall clock. The files are independent and [`scan_file`] lexes OUTSIDE the memo
+    // lock, so this is embarrassingly parallel; splitting it over the box turns a minutes-long
+    // serial scan into a seconds-long one and drops it out of the shard's critical path.
+    //
+    // `read_to_string` reads through the filesystem, not the overlay: the base is the tree every
+    // plant shares. A `.rs` file the walk yielded but that will not read is a corrupt tree, and a
+    // corrupt tree is a load error here exactly as it was when this was one serial pass — never a
+    // file the scan quietly drops.
+    let workers = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1)
+        .min(rels.len().max(1));
+    let scanned: Vec<Result<Vec<(String, Scanned)>, String>> = std::thread::scope(|scope| {
+        let chunk = rels.len().div_ceil(workers.max(1));
+        let handles: Vec<_> = rels
+            .chunks(chunk.max(1))
+            .map(|chunk| {
+                // Workers get an explicit large stack, not std::thread::scope's default
+                // ~2 MiB: scan_file drives rx.rs's hand-rolled lexer, whose own docs note
+                // the general repeat path recurses per iteration and overflows a small
+                // stack on a long literal. The main thread has ~8 MiB; match it here so a
+                // worker fails exactly as the serial pass would, never with a stack abort.
+                std::thread::Builder::new()
+                    .stack_size(16 * 1024 * 1024)
+                    .spawn_scoped(scope, move || {
+                        let mut out = Vec::with_capacity(chunk.len());
+                        for rel in chunk {
+                            let abs = cx.abs(rel);
+                            let text =
+                                std::fs::read_to_string(&abs).map_err(|e| format!("{rel}: {e}"))?;
+                            let abs = abs.to_string_lossy().into_owned();
+                            out.push((
+                                rel.clone(),
+                                scan_file(lexer, &abs, rel, &text, test_fragments),
+                            ));
+                        }
+                        Ok(out)
+                    })
+                    .expect("spawn a base-scan worker thread")
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|h| h.join().expect("a base-scan worker never panics"))
+            .collect()
+    });
+
+    let mut files = BTreeMap::new();
+    let mut fns = BTreeMap::new();
+    for part in scanned {
+        for (rel, (lines, fns_of)) in part? {
+            fns.insert(rel.clone(), fns_of);
+            files.insert(rel, lines);
+        }
+    }
+
+    let scan = std::sync::Arc::new(BaseScan { files, fns });
+    cache
+        .lock()
+        .expect("the base-scan mutex is never poisoned")
+        .insert(key, scan.clone());
+    Ok(scan)
+}
+
 pub struct Tree {
     pub root: std::path::PathBuf,
     /// rel path (`/`-separated) -> lines, in sorted path order.
-    pub files: BTreeMap<String, Vec<Line>>,
-    pub fns: BTreeMap<String, Vec<Fnc>>,
+    ///
+    /// SHARED WITH THE SCAN MEMO rather than copied out of it: a plant edits one file, and deep
+    /// copying 660k `Line`s (two `String`s each) per case to hand a rule a `Vec` it only ever
+    /// reads was most of what the memo saved.
+    pub files: BTreeMap<String, std::sync::Arc<Vec<Line>>>,
+    pub fns: BTreeMap<String, std::sync::Arc<Vec<Fnc>>>,
     pub lexer: Lexer,
 }
 
@@ -359,39 +537,50 @@ impl Tree {
         test_fragments: &[String],
     ) -> Result<Tree, String> {
         let lexer = Lexer::new()?;
-        let mut rels: Vec<String> = Vec::new();
-        for pattern in scan_roots {
-            for dir in glob_dirs(cx, pattern) {
-                collect_rs(cx, &dir, &mut rels);
-            }
-        }
-        // The overlay may add a file under a root the real tree does not carry it under; a plant
-        // that the walk cannot see is a plant that proves nothing.
-        if let Some(ov) = cx.overlay() {
-            for p in ov.paths() {
-                let s = p.to_string_lossy().replace('\\', "/");
-                if s.ends_with(".rs")
-                    && cx.exists(&s)
-                    && !rels.contains(&s)
-                    && under_any(&s, scan_roots)
-                {
-                    rels.push(s);
-                }
-            }
-        }
-        rels.sort();
-        rels.dedup();
+        let base = base_scan(cx, &lexer, scan_roots, test_fragments)?;
 
-        let mut files = BTreeMap::new();
-        let mut fns = BTreeMap::new();
-        for rel in rels {
-            if !cx.exists(&rel) {
+        // NO OVERLAY, NO WORK: the base is exactly what this plant would scan, so it is handed back
+        // as the tree with only its `Arc` maps cloned. This is the read-only run's path too.
+        let Some(ov) = cx.overlay() else {
+            return Ok(Tree {
+                root: cx.root().to_path_buf(),
+                files: base.files.clone(),
+                fns: base.fns.clone(),
+                lexer,
+            });
+        };
+
+        // A plant differs from the disk tree by EXACTLY the paths its overlay carries. Everything
+        // else the base already scanned, so this re-reads and re-scans only those — the whole point
+        // of holding the base once. The maps are cloned first (a pointer per file), then the
+        // overlay's own `.rs` paths are applied over the clone.
+        let mut files = base.files.clone();
+        let mut fns = base.fns.clone();
+        for p in ov.paths() {
+            let rel = p.to_string_lossy().replace('\\', "/");
+            if !rel.ends_with(".rs") {
                 continue;
             }
+            let in_base = files.contains_key(&rel);
+            // A `.rs` path the overlay adds outside every scan root is a plant the walk would never
+            // have yielded, so it is no more part of the tree here than it was one pass ago.
+            if !in_base && !under_any(&rel, scan_roots) {
+                continue;
+            }
+            // An overlay that makes a file absent removes it from the tree, exactly as the old
+            // walk's `if !cx.exists { continue }` dropped it before scanning.
+            if !cx.exists(&rel) {
+                files.remove(&rel);
+                fns.remove(&rel);
+                continue;
+            }
+            // Content or unreadable. `cx.read` returns the planted bytes for the first and an error
+            // for the second; a corrupt plant is a load error here just as a corrupt disk file is,
+            // never a file the scan silently keeps at its base contents.
             let text = cx.read(&rel)?;
             let abs = cx.abs(&rel).to_string_lossy().into_owned();
-            let lines = scan_text(&lexer, &abs, &text, test_fragments);
-            fns.insert(rel.clone(), find_fns(&lexer, &rel, &lines));
+            let (lines, fns_of) = scan_file(&lexer, &abs, &rel, &text, test_fragments);
+            fns.insert(rel.clone(), fns_of);
             files.insert(rel, lines);
         }
         Ok(Tree {
@@ -414,7 +603,7 @@ impl Tree {
     /// The innermost function containing the line, or `None`.
     pub fn enclosing_fn(&self, rel: &str, lineno: usize) -> Option<&Fnc> {
         let mut best: Option<&Fnc> = None;
-        for f in self.fns.get(rel).into_iter().flatten() {
+        for f in self.fns.get(rel).into_iter().flat_map(|v| v.iter()) {
             if f.start <= lineno
                 && lineno <= f.end
                 && best.is_none_or(|b: &Fnc| f.lines() < b.lines())
@@ -428,7 +617,7 @@ impl Tree {
     pub fn find_fn_by_name(&self, name: &str) -> Vec<&Fnc> {
         self.fns
             .values()
-            .flatten()
+            .flat_map(|v| v.iter())
             .filter(|f| f.name == name && !f.intest)
             .collect()
     }
@@ -449,7 +638,7 @@ impl Tree {
             let Some((key, lines)) = self.files.get_key_value(&rel) else {
                 continue;
             };
-            for l in lines {
+            for l in lines.iter() {
                 if production_only && l.intest {
                     continue;
                 }
@@ -633,9 +822,15 @@ pub fn crate_name_of_dir(dir: &str) -> String {
         .to_string()
 }
 
-/// A deliberately small `[dependencies]` reader: the exact-name keys under `[dependencies]` only,
-/// never `[dev-dependencies]` or a target-cfg table. Both `name = { … }` and `[dependencies.name]`
-/// are handled. A missing file reads as no dependencies.
+/// THE SHIPPED DEPENDENCY NAMES OF ONE MANIFEST — every dependency table, in every spelling.
+///
+/// It was "a deliberately small `[dependencies]` reader: the exact-name keys under
+/// `[dependencies]` only, never `[dev-dependencies]` or a target-cfg table", and the shape it
+/// shared with `kind_isolation::deps_of` was the shape they were BOTH blind in: a red-team pass
+/// carried a plane into a transport through `[build-dependencies]`, through
+/// `[target.'cfg(unix)'.dependencies]` and through `package = "…"`, and the two gates that read the
+/// manifests were green in all three. Fixing one copy would have left the other, so there is now
+/// one reader: [`crate::manifest`]. A missing file still reads as no dependencies.
 pub fn read_cargo_deps(path: &Path) -> Vec<String> {
     let Ok(raw) = std::fs::read_to_string(path) else {
         return Vec::new();
@@ -644,30 +839,7 @@ pub fn read_cargo_deps(path: &Path) -> Vec<String> {
 }
 
 pub fn read_cargo_deps_text(raw: &str) -> Vec<String> {
-    let mut deps = Vec::new();
-    let mut section: Option<String> = None;
-    for line in raw.split('\n') {
-        let s = line.trim();
-        if s.starts_with('[') {
-            if s.starts_with("[dependencies.") && s.ends_with(']') {
-                section = Some("dependencies".to_string());
-                deps.push(s["[dependencies.".len()..s.len() - 1].trim().to_string());
-                continue;
-            }
-            section = Some(s.trim_matches(['[', ']']).to_string());
-            continue;
-        }
-        if section.as_deref() == Some("dependencies") && !s.is_empty() && !s.starts_with('#') {
-            let name: String = s
-                .chars()
-                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-')
-                .collect();
-            if !name.is_empty() && s[name.len()..].trim_start().starts_with('=') {
-                deps.push(name);
-            }
-        }
-    }
-    deps
+    crate::manifest::shipped_dep_names(raw)
 }
 
 #[cfg(test)]
@@ -765,16 +937,22 @@ trait T {
         assert!(glob_segment("busbar-unit-*", "busbar-unit-cost"));
     }
 
-    /// `[dev-dependencies]` and target-cfg tables are out of scope by design (they never ship in
-    /// the plugin binary the manifest allow-list protects). The `[dependencies.name]` long form
-    /// leaves the reader inside `dependencies`, so that table's own keys are read as names too —
-    /// a quirk of the Python this port keeps deliberately, because the allow-list is calibrated
-    /// against what that reader actually returns and "fixing" it here would move a ceiling.
+    /// EVERY SHIPPED TABLE, AND ONLY THE SHIPPED ONES. `[dev-dependencies]` stays out — a test edge
+    /// is not a shipped edge, and `kind-isolation:test-deps` is the row that scores it — while
+    /// `[build-dependencies]` and the per-target forms are in, because `cfg(unix)` is true in every
+    /// artifact this tree ships and a red-team pass carried a whole plane through that table.
+    ///
+    /// The `[dependencies.tracing]` long form used to leave the old reader inside `dependencies`,
+    /// so that sub-table's own keys came back as dependency names and `version` was reported as a
+    /// crate. It is a name no allow-list should ever have had to carry, and it is gone.
     #[test]
-    fn cargo_deps_reads_the_dependencies_table_the_way_the_allow_list_was_calibrated_against() {
+    fn cargo_deps_reads_every_shipped_table_and_no_test_one() {
         let deps = read_cargo_deps_text(
-            "[package]\nname = \"x\"\n\n[dependencies]\nserde = \"1\"\nbusbar-contract = { path = \"..\" }\n\n[dev-dependencies]\ntokio = \"1\"\n\n[dependencies.tracing]\nversion = \"0.1\"\n",
+            "[package]\nname = \"x\"\n\n[dependencies]\nserde = \"1\"\nbusbar-contract = { path = \"..\" }\n\n[dev-dependencies]\ntokio = \"1\"\n\n[dependencies.tracing]\nversion = \"0.1\"\n\n[build-dependencies]\ncc = \"1\"\n\n[target.'cfg(unix)'.dependencies]\nlibc = \"0.2\"\n",
         );
-        assert_eq!(deps, vec!["serde", "busbar-contract", "tracing", "version"]);
+        assert_eq!(
+            deps,
+            vec!["busbar-contract", "cc", "libc", "serde", "tracing"]
+        );
     }
 }

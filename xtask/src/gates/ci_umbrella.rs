@@ -195,7 +195,7 @@ impl Gate for CiUmbrellaGate {
         Verdict::of(rows)
     }
 
-    fn selftest(&self, cx: &Ctx) -> Report {
+    fn selftest<'a>(&'a self, cx: &'a Ctx) -> Report<'a> {
         let mut report = Report::new();
         report.push(prove_green(
             cx,
@@ -1017,17 +1017,17 @@ fn unplantable(name: &str, covers: &[&str], naming: &[&str], why: String) -> Cas
     }
 }
 
-fn plant(
-    cx: &Ctx,
-    gate: &dyn Gate,
+fn plant<'a>(
+    cx: &'a Ctx,
+    gate: &'a dyn Gate,
     name: &str,
     covers: &[&str],
     edit: Edit,
     naming: &[&str],
-) -> Case {
+) -> crate::gates::CasePlan<'a> {
     let mut ov = Overlay::new();
     if let Err(e) = edit.apply(cx, WORKFLOW, &mut ov) {
-        return unplantable(name, covers, naming, e);
+        return unplantable(name, covers, naming, e).into();
     }
     prove_red(cx, gate, name, covers, ov, naming)
 }
@@ -1035,18 +1035,18 @@ fn plant(
 /// The same, for a plant expressed as ONE substitution into the real `ci.yml`. A needle that is no
 /// longer in the file is an unplantable case, never a quiet no-op: a plant that planted nothing
 /// leaves its case green and proves the opposite of what it claims.
-fn plant_subst(
-    cx: &Ctx,
-    gate: &dyn Gate,
+fn plant_subst<'a>(
+    cx: &'a Ctx,
+    gate: &'a dyn Gate,
     name: &str,
     covers: &[&str],
     needle: &str,
     with: &str,
     naming: &[&str],
-) -> Case {
+) -> crate::gates::CasePlan<'a> {
     match subst_overlay(cx, needle, with) {
         Ok(ov) => prove_red(cx, gate, name, covers, ov, naming),
-        Err(e) => unplantable(name, covers, naming, e),
+        Err(e) => unplantable(name, covers, naming, e).into(),
     }
 }
 

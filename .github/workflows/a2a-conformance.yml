@@ -1,5 +1,9 @@
 name: A2A conformance
 
+# LATCHKEY MIGRATION (phase 4, LK-7): every ubuntu-latest job moved to a latchkey-* label
+# (latchkey-xlarge for every battery/control/probe leg, latchkey-small for the pure verdict
+# aggregator). No Windows or arm64 legs live in this file, so nothing here is left on GitHub.
+
 # TWO INDEPENDENT INSTRUMENTS, POINTED AT THE SAME PROTOCOL, PLUS A GOVERNANCE PROBE THAT IS
 # DELIBERATELY NOT PART OF EITHER VERDICT.
 #
@@ -81,7 +85,7 @@ jobs:
   # ---------------------------------------------------------------- the battery's own machinery
   harness-selftest:
     name: harness selftest (before believing any verdict)
-    runs-on: ubuntu-latest
+    runs-on: latchkey-xlarge
     # BOUNDED. Measured p95 0.3 min over the last 9 runs of this job; the
     # ceiling is the 10-minute floor of the `p95 x 1.5` rule ci.yml documents.
     # Unbounded, this job inherits the runner's six-hour default.
@@ -124,7 +128,7 @@ jobs:
   # -------------------------------------------------------- instrument 1: the independent battery
   control-a2a-go:
     name: control a2a-go (${{ matrix.binding }})
-    runs-on: ubuntu-latest
+    runs-on: latchkey-xlarge
     # BOUNDED. Measured p95 1.7 min over the last 9 runs of this job; the
     # ceiling is the 10-minute floor of the `p95 x 1.5` rule ci.yml documents.
     # Unbounded, this job inherits the runner's six-hour default.
@@ -184,7 +188,7 @@ jobs:
 
   control-a2a-python:
     name: control a2a-python (the second, independent oracle)
-    runs-on: ubuntu-latest
+    runs-on: latchkey-xlarge
     # A HANG IS A FAILURE, AND IT MUST LOOK LIKE ONE WITHIN MINUTES. The battery has no overall
     # deadline of its own: if a launched control never becomes ready, `--launch` waits, and the job
     # sits amber for hours. Amber is not a verdict, and a leg nobody can read the result of is the
@@ -257,7 +261,7 @@ jobs:
 
   negative-control:
     name: negative control (a broken peer MUST be red)
-    runs-on: ubuntu-latest
+    runs-on: latchkey-xlarge
     # BOUNDED. Measured p95 0.6 min over the last 9 runs of this job; the
     # ceiling is the 10-minute floor of the `p95 x 1.5` rule ci.yml documents.
     # Unbounded, this job inherits the runner's six-hour default.
@@ -407,7 +411,7 @@ jobs:
 
   swap-proof:
     name: swap proof (six states the gate must tell apart)
-    runs-on: ubuntu-latest
+    runs-on: latchkey-xlarge
     # BOUNDED. Measured p95 2.3 min over the last 9 runs of this job; the
     # ceiling is the 10-minute floor of the `p95 x 1.5` rule ci.yml documents.
     # Unbounded, this job inherits the runner's six-hour default.
@@ -430,7 +434,7 @@ jobs:
 
   tz-is-load-bearing:
     name: the timezone pin still changes the answer
-    runs-on: ubuntu-latest
+    runs-on: latchkey-xlarge
     # BOUNDED. Measured p95 1.7 min over the last 9 runs of this job; the
     # ceiling is the 10-minute floor of the `p95 x 1.5` rule ci.yml documents.
     # Unbounded, this job inherits the runner's six-hour default.
@@ -450,7 +454,7 @@ jobs:
   # ------------------------------------------------------------------- instrument 2: official TCK
   tck-control:
     name: official TCK vs control (${{ matrix.leg }})
-    runs-on: ubuntu-latest
+    runs-on: latchkey-xlarge
     # BOUNDED. Measured p95 0.9 min over the last 9 runs of this job; the
     # ceiling is the 10-minute floor of the `p95 x 1.5` rule ci.yml documents.
     # Unbounded, this job inherits the runner's six-hour default.
@@ -478,7 +482,7 @@ jobs:
   # --------------------------------------------------------------- the governance tier, separate
   governance-probe:
     name: governance probe (NOT a conformance result)
-    runs-on: ubuntu-latest
+    runs-on: latchkey-xlarge
     # BOUNDED. Measured p95 0.7 min over the last 9 runs of this job; the
     # ceiling is the 10-minute floor of the `p95 x 1.5` rule ci.yml documents.
     # Unbounded, this job inherits the runner's six-hour default.
@@ -528,7 +532,7 @@ jobs:
   # ------------------------------------------------------------------------------ the subject
   subject:
     name: subject (busbar, built from this commit — ARMED OR RED)
-    runs-on: ubuntu-latest
+    runs-on: latchkey-xlarge
     timeout-minutes: 45
     # PUBLISHED, not inferred. A job whose steps all skip still reports `success`, so the
     # aggregator cannot tell "armed and passed" from "unarmed and did nothing" by looking at the
@@ -644,7 +648,7 @@ jobs:
   # ----------------------------------------------------------------------------- the aggregator
   verdict:
     name: A2A conformance verdict
-    runs-on: ubuntu-latest
+    runs-on: latchkey-small
     # BOUNDED. Measured p95 0.1 min over the last 9 runs of this job; the
     # ceiling is the 10-minute floor of the `p95 x 1.5` rule ci.yml documents.
     # Unbounded, this job inherits the runner's six-hour default.

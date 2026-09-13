@@ -48,6 +48,24 @@ test_path_fragments = ["/tests/", "_tests.rs", "_test.rs", "/tests.rs"]
 #     correct by construction and is the cheap first half of kind-by-declaration.
 [gate.plugin_kinds]
 plane = ["crates/busbar-plane-*"]
+# THE THREE KINDS THIS TABLE DID NOT NAME, added 2026-09-09. ARCHITECTURE.md's kind list is
+# normative and names ten kinds plus the `unit` core row; this table named ten KEYS and three of the
+# eleven were missing from it -- `dialect`, `unit` and `control`. `cargo xtask gate kind-isolation`
+# cross-checked this table in ONE direction (a key here that maps onto no kind in its table was
+# refused), so a kind the design states and this file does not mention was invisible to both.
+# `kind-isolation:truths` compares the three vocabularies in both directions now.
+#
+# `dialect` has no crate yet: the pre-split dialects are the `*-codec` crates and the rename that
+# splits them into `busbar-plane-<plane>-<dialect>` is what creates the first one. The glob is
+# written for the shape it will have, and a kind whose glob matches nothing is a kind with no crate
+# rather than a rule switched off -- which is exactly the case `kind-isolation:truths` now watches.
+dialect = ["crates/busbar-plane-*-*"]
+# `control` is the tenth kind (owner ruling 2026-09-08). Its one member is `busbar-plane-admin`,
+# whose NAME says plane and which is not one; the R7 rename makes it `busbar-control-admin`. The
+# declaration lives in qa/kind-isolation.toml's [[registered]] row, which is where PLUGIN-TREE.md
+# has said it lives since it was written.
+control = ["crates/busbar-control-*"]
+unit = ["crates/busbar-unit-*"]
 hook = ["crates/hook*"]
 pure_auth = ["crates/auth-*"]
 egress_auth = ["crates/egress-auth-*"]
@@ -82,15 +100,44 @@ busbar-mcp = ["busbar-mcp-codec"]
 busbar-a2a = ["busbar-a2a-codec"]
 busbar-voice = ["busbar-voice-codec"]
 
+# ── DECLARED CEILING RAISES ──────────────────────────────────────────────────────────────────────
+#
+# `ceiling-rose` refuses any integer in this file or in qa/kind-isolation.toml that is higher than
+# it is at this branch's base. A ratchet with NO route through it is a ratchet somebody edits the
+# rule to get past, and there is one raise that is legitimate and cannot be avoided: the FIRST
+# gating figure of a row that was not gating before.
+#
+# A declaration is not a waiver. It names the exact dotted path and BOTH numbers, so it describes
+# one edit rather than a direction; it carries a reason long enough to be one; and it EXPIRES BY
+# ITSELF, because the moment its commit lands the base carries the new number, the rise disappears,
+# and an entry that describes no rise is refused as stale. It cannot be left behind, and it cannot
+# cover the next raise of the same ceiling.
+
+# NO ENTRY STANDS HERE TODAY, and an empty list is this mechanism working rather than resting.
+# `rules.legacy-reach.prefixes.busbar_substrate.figure` carried the one-time 26 -> 47 calibration
+# while the commit that needed it was in flight. That commit LANDED: the base now carries 47, the
+# rise the row was written to excuse no longer exists, and `ceiling-rose` refused the declaration as
+# stale -- which is the expiry working exactly as the paragraph above describes it. Striking it
+# returns `construction` to its eight standing FAILs, none of which is about a ceiling.
+
 # The surface ceilings from ARCHITECTURE.md section 1.1: what a PLUGIN AUTHOR has to read. These are
 # owner decisions, not ratchets that drift upward with the tree — the gate reads them
 # from here (rather than a literal in the rule table) purely so --selftest can also produce
 # a green baseline value for a scratch copy; the checked-in numbers below never move except by the
 # owner's own hand.
 [gate.surface_ceilings]
-contract_caps = 3500
-grammar = 500
-contract_transport = 1000
+# 3478 -> 3543 with `[rules.loc-ceilings].caps_contract_ceiling`, and in the same commit, because
+# the two rows are ONE owner decision measured two ways. Raising one and not the other would leave
+# the pair's ceiling at whichever number is smaller while the larger one reads as the ruling — a
+# ceiling that has been raised in name only. 3543 is what `scripts/loc-surface.py` measures with the
+# upstream status table in the tree, and the audit of what that face is lives beside the other
+# number; see `[rules.loc-ceilings]`. `grammar` and `contract_transport` are NOT part of the ruling
+# and keep the figures the integration line measured them at: the status table is contract surface,
+# and nothing it adds is grammar or transport surface, so raising those two would be spending a
+# ruling on rows it was not written for.
+contract_caps = 3543
+grammar = 388
+contract_transport = 845
 
 # ── 1. one-attempt-seam ──────────────────────────────────────────────────────────────────────────
 [rules.one-attempt-seam]
@@ -306,15 +353,30 @@ identical counting rule to busbar-caps + busbar-contract once their proof tables
 this rule's own `loc-ceilings:caps-contract` row is not that row and is not removed by it -- the two \
 are expected to converge once the move lands, not to be reconciled here."""
 kernel_crate = "busbar-kernel"
-kernel_ceiling = 8000
+kernel_ceiling = 5379
 caps_crate = "busbar-caps"
 contract_crate = "busbar-contract"
-caps_contract_ceiling = 3500
+# RAISED 3480 -> 3545 for the upstream status table's contract face, pinned at what it MEASURES
+# rather than at a round number above it: `ceiling-slack` says a ceiling above its measurement is
+# room nobody voted for. What the 65 lines are — the one owner of the upstream status class and its
+# disposition, which three crates had each declared — is written in the declared raise above. The
+# next face comes with its own declared raise naming its own measured lines, never out of this one.
+caps_contract_ceiling = 3545
 unit_crate_glob = "busbar-unit-*"
-unit_total_ceiling = 45000
+# RE-KEYED on cherry-pick onto 143db6db6: this commit's own delta is -53 (two units stopped
+# declaring their own copies), measured against whatever unit_total_ceiling read when the line was
+# cut (14606, via the prior commit's context). By the time this pick lands here the running base
+# (after the prior commit in this same pick sequence) is 14476, not 14606, because LK-ALL's landed
+# commits independently moved it; re-applying the same -53 delta gives 14476 - 53 = 14423.
+unit_total_ceiling = 14423
 verbs_crate = "busbar-unit-verbs"
-verbs_ceiling = 15000
-union_ceiling = 56000
+verbs_ceiling = 1428
+# 23400 -> 23347: the caps/contract term above is unchanged (raised in the prior commit of this
+# pick) and the unit term fell by 53, because two units stopped declaring their own copies of the
+# class and the disposition. Declared under `[gate.ceiling_raises]` with the pair. RE-KEYED for the
+# same reason as `unit_total_ceiling` above: running base 23400, not the 23477 this line was cut
+# against, because LK-ALL's landed commits moved the unit term underneath this pick sequence.
+union_ceiling = 23347
 # Files (by basename, wherever they sit under busbar-kernel/src) whose bodies seed the call-graph
 # name-match: every identifier called from one of these files, that busbar-kernel does not itself
 # define, is looked up by name against every busbar-unit-* file.
@@ -323,37 +385,37 @@ teller_files = ["teller.rs"]
 [rules.loc-ceilings.kernel_files.teller]
 label = "Teller loop"
 patterns = ["teller.rs"]
-ceiling = 1500
+ceiling = 606
 
 [rules.loc-ceilings.kernel_files.pump]
 label = "pump/scheduler"
 patterns = ["pump.rs"]
-ceiling = 1500
+ceiling = 453
 
 [rules.loc-ceilings.kernel_files.inflight]
 label = "in-flight/sessions"
 patterns = ["inflight.rs"]
-ceiling = 1000
+ceiling = 564
 
 [rules.loc-ceilings.kernel_files.recovery]
 label = "recovery"
 patterns = ["recovery.rs"]
-ceiling = 800
+ceiling = 177
 
 [rules.loc-ceilings.kernel_files.slice]
 label = "slice/lease"
 patterns = ["slice.rs"]
-ceiling = 800
+ceiling = 397
 
 [rules.loc-ceilings.kernel_files.registry]
 label = "registry + generations"
 patterns = ["registry.rs"]
-ceiling = 800
+ceiling = 313
 
 [rules.loc-ceilings.kernel_files.grammars]
 label = "grammars incl. JSON span scanner"
 patterns = ["grammar.rs"]
-ceiling = 800
+ceiling = 61
 
 [rules.loc-ceilings.kernel_files.ticks]
 # The file is `tick.rs`, singular, and always was. `ticks.rs`, `drain.rs` and `fleet.rs` matched no
@@ -365,12 +427,12 @@ ceiling = 800
 # grows this file is the line that has to justify itself.
 label = "tick: session tick, node tick and the drain sweep"
 patterns = ["tick.rs"]
-ceiling = 200
+ceiling = 193
 
 [rules.loc-ceilings.kernel_files.arena]
 label = "arena/masking"
 patterns = ["arena.rs", "masking.rs"]
-ceiling = 300
+ceiling = 178
 
 # ── 15. manifest-allowlist (ARCHITECTURE.md section 1.2) ────────────────────────────────────────────────────
 [rules.manifest-allowlist]
@@ -379,9 +441,15 @@ secret) may name `busbar-contract` and the closed grammar it is written on (`bus
 every other workspace crate it names is either an \
 automatic RED (busbar-kernel, busbar-caps, a busbar-unit-*, another plane, a transport — the \
 coupling the ABI exists to prevent, and no allow-list can excuse it) or must be on the reviewed \
-list below, named once with its reason. Parsed straight from each crate's `[dependencies]` table \
-(not `[dev-dependencies]` or target-cfg tables — a deliberate, honestly-stated narrowing: those \
-never ship in the plugin binary the manifest allow-list is protecting); `cargo metadata` is \
+list below, named once with its reason. Parsed out of every SHIPPED dependency table each crate \
+declares — `[dependencies]`, `[build-dependencies]` and the per-target forms of both, with \
+`package = "…"` and workspace renames resolved — through the one manifest reader (xtask \
+`manifest::shipped_dep_names`). It read `[dependencies]` alone until 2026-09-09, on the stated \
+ground that the other tables "never ship in the plugin binary": a `[target.'cfg(unix)'.dependencies]` \
+entry ships in every Linux artifact this tree builds, and a red-team pass carried a whole plane into \
+a transport through that table with every gate green. `[dev-dependencies]` is still out — a test \
+edge is not a shipped edge, and it is scored on `kind-isolation:test-deps` instead of here. \
+`cargo metadata` is \
 consulted when present to widen the same check to transitive path/workspace deps, and skipped \
 (noted, not failed) when cargo is unavailable, keeping this gate cargo-optional."""
 # Every dependency a plugin-kind crate may name beyond busbar-contract, with the review recorded in
@@ -407,6 +475,14 @@ reviewed_allowlist = ["busbar-api", "busbar-plugin-sdk", "serde", "serde_json", 
 # the workspace. This ratchet describes a tree that no longer exists and tells a reader the coupling
 # is still there. Delete it (PLUGIN-TREE.md section 9) — noted here, not done here, because a rule
 # change is not this commit's business.
+#
+# REVIEWED 2026-09-09, and it is the first dependency this rule could see: the manifest reader read
+# `[dependencies]` and nothing else, so a `[target.'cfg(unix)'.dependencies]` entry was invisible to
+# it — and `cfg(unix)` is true on every runner and every shipped Linux artifact this tree builds, so
+# what the narrowing excluded was a dependency that ships. `libc` here is the advisory whole-file
+# `flock` FileStore takes around its read-modify-write (crates/store-example-plugin/src/lib.rs,
+# FileLock), unix-only, in the fixture that models a fleet sharing one durable path.
+store-example-plugin = ["libc"]
 [rules.manifest-allowlist.known_red_deps]
 busbar-plane-llm = ["busbar-llm"]
 busbar-plane-a2a = ["busbar-a2a"]
@@ -452,11 +528,15 @@ words = [
   "audio", "image", "embedding", "model", "tool call", "sampling", "mail", "message queue",
   "tunnel",
 ]
-# Ratchet, not zero: busbar-unit-auth's carrier-detection ladder and busbar-unit-egress-auth's
-# per-scheme header decoration both name vendor headers/paths literally today (a real section 1.3 gap
-# this rule's first run found, not something this gate may edit — the fix is a registry lookup in
-# the unit crate, tracked as debt). Tightens to 0 once that lands.
-max_hits = 21
+# ZERO, and it got here the way the ratchet said it would. The 21 were busbar-unit-auth's
+# fourteen-rung dialect ladder and busbar-unit-egress-auth's forwarded-client-header table, both of
+# which named vendors literally inside a kind-neutral unit. Neither needed the "registry lookup in
+# the unit crate" this comment used to promise: both tables already existed, contributed, on the
+# plugin side of a face — the ladder as busbar-plane-llm's `claims.rs` declaration through the
+# contract's own `claims_from_ladder!`, the header table as busbar-llm's `engine/egress.rs` — so the
+# neutral copies were deleted rather than re-homed. This is a floor now, not a ceiling: a unit crate
+# that names an open-vocabulary word again is RED with no slack to hide in.
+max_hits = 0
 
 # ── 18. no-default-bodies (ARCHITECTURE.md section 3.7) ─────────────────────────────────────────────────────
 [rules.no-default-bodies]
@@ -930,15 +1010,19 @@ while the total falls is that intermediate step, visible and not fatal."""
 scope_globs = ["crates/busbar/src/root/*.rs", "crates/busbar/src/main.rs"]
 # THE ONE GATING FIGURE: distinct symbols named through every prefix below, summed. Calibrated to
 # the tree it was written against; it may only go down.
-ceiling = 92
+ceiling = 91
 
-# Each sub-row below is INFORMATIONAL. `figure` is the last calibrated per-crate count -- a drift
-# marker for the report, never a gate. Nothing fails on it.
+# Each sub-row below GATES, in both directions. `figure` is the per-crate count PINNED TO TODAY'S
+# MEASUREMENT: above it is that row's own FAIL, below it is `ceiling-slack`. It was informational --
+# a drift marker nothing could fail on -- and what that bought was `busbar_substrate` sitting
+# twenty-one over its figure, passing, for as long as the gating total held. The intermediate step
+# the WARN posture existed to permit (a symbol moving off one retiring crate onto another) is now a
+# re-pin of two figures in the commit that makes it, which is a diff a reviewer can read.
 [rules.legacy-reach.prefixes.busbar_core]
 prefix = "busbar_core::"
 exclude = []
 because = "the 1.5.5 engine being emptied; every symbol here is a piece of it the root still needs"
-figure = 49
+figure = 27
 
 [rules.legacy-reach.prefixes.busbar_llm]
 prefix = "busbar_llm::"
@@ -951,7 +1035,15 @@ figure = 17
 prefix = "busbar_substrate::"
 exclude = []
 because = "the substrate seams the root installs; each moves onto the ABI as the kernel takes them"
-figure = 26
+# ONE-TIME CALIBRATION, 26 -> 47 (integrator ruling, 2026-09-09). This figure was written when the
+# row was INFORMATIONAL -- PASS whatever it measured -- and the root's substrate reach grew to 47
+# underneath it while core's fell from 49 to 27, which is the retirement working as designed and is
+# exactly the sideways move the WARN posture existed to permit. The commit that makes the row GATE
+# cannot also be the commit that declares a twenty-one-symbol regression, because there was no
+# regression: nothing ever held this number. So it is calibrated ONCE, to what the tree measures
+# today, and it ratchets down from here like every other figure in this file. It may only go down;
+# `ceiling-slack` holds it from below and this row holds it from above.
+figure = 47
 
 # ── 31. no-test-doubles-in-production ────────────────────────────────────────────────────────────
 [rules.no-test-doubles-in-production]
@@ -1066,3 +1158,66 @@ file = "crates/busbar/src/root/harness.rs"
 symbol = "RecordingRows"
 verdict = "real"
 because = "a type alias over the rows the loop posted, and a reader of it; the name is spelled, nothing is constructed"
+
+# ------------------------------------------------------------------------------------------------
+# [gate.census] — THE RATCHET ON THE RATCHETS
+# ------------------------------------------------------------------------------------------------
+#
+# `ceiling-rose` stops a ceiling being RAISED. Nothing stopped a ceiling being DELETED TOGETHER WITH
+# THE RULE TABLE THAT HOLDS IT, because the construction gate's owed-row register is derived from
+# this very file: delete `[rules.loc-ceilings.kernel_files.arena]` and the check and the obligation
+# to run it vanish in the same edit. Measured, 2026-09-09: the gate went from 112 rows to 111 and
+# said nothing at all, and the kernel's arena/masking LOC ceiling stopped being measured.
+# `[rules.legacy-reach.prefixes.*]`, `gate.plane_crates` and every `[gate.plugin_kinds]` glob have
+# the same shape.
+#
+# So the COUNTS are pinned here, and `ceiling-census` is owed UNCONDITIONALLY — it is a literal in
+# the gate's id list rather than something derived from this file, which is the property every other
+# derived row lacks.
+#
+# EACH NUMBER IS A FLOOR, NOT AN EQUALITY. Adding a kernel file, a legacy prefix or a plane crate is
+# the ordinary direction of this work and needs no ceremony here; REMOVING one is the manoeuvre, and
+# `actual < pinned` is RED.
+#
+# AND THE FLOOR IS ITSELF PINNED AGAINST THE BASE. Lowering a number here is not something
+# `ceiling-rose` sees — that row watches numbers going UP — so `ceiling-census` compares every
+# number in this table against the base commit's copy, and a floor that WENT DOWN is RED. Without
+# that half, deleting a rule table and dropping its census number in one edit would be exactly as
+# silent as deleting the table alone was.
+[gate.census]
+loc_ceilings_kernel_files = 9
+legacy_reach_prefixes = 3
+plane_crates = 4
+
+# HOW MANY CRATE DIRECTORIES EACH KIND GLOB MATCHES.
+#
+# The failure this closes: `kind-isolation:truths` checks that a `[gate.plugin_kinds]` KEY exists,
+# never that its globs still match the crates that exist. Narrow `crates/busbar-plane-*` to
+# `crates/busbar-plane-llm` and the key is still present, still cross-checked in both directions,
+# and four crates silently stop being scanned by manifest-allowlist, source-denylist and
+# forbid-unsafe.
+#
+# A COUNT, NOT "AT LEAST ONE". The header above this file's `[gate.plugin_kinds]` records that a
+# glob matching no directory today is the intended state for a kind with no crate yet — `dialect`
+# and `control` are both legitimately 0, and `egress_auth` has no crate under its own glob. A
+# blanket "at least one" would red three documented zeros while still saying nothing about `plane`
+# going from five crates to one. The count catches the narrowing and leaves the intended zeros
+# alone; the day the codec split creates the first dialect crate, this number is raised with it.
+#
+# `plane` is 5 because `crates/busbar-plane-admin` matches the plane glob while being the `control`
+# kind — see the note above `[gate.plugin_kinds]`. Pinning the number the glob ACTUALLY matches is
+# the point: this table records what is scanned, not what ought to be.
+[gate.census.plugin_kinds]
+plane = 5
+dialect = 0
+control = 0
+unit = 14
+hook = 2
+pure_auth = 2
+egress_auth = 0
+secret = 2
+store = 2
+export = 1
+transport = 7
+loader = 1
+abi = 1

@@ -216,7 +216,7 @@ pub(crate) fn terminal_frame(stream_id: StreamId, status: Option<&Status>) -> Fr
         bytes: 0,
         transport_units: None,
         status: Some(status.map_or(
-            busbar_contract_transport::wire::StatusClass::Success,
+            busbar_contract_transport::wire::WireStatusClass::Success,
             map_status,
         )),
         // `as i32` is `grpc-status`'s own wire spelling, and every code it names is small and
@@ -248,12 +248,12 @@ pub(crate) fn terminal_frame(stream_id: StreamId, status: Option<&Status>) -> Fr
 }
 
 /// The transport's own honest reading of the `grpc-status` trailer, into the closed
-/// [`busbar_contract_transport::wire::StatusClass`] — never a judgement about what the RPC's bytes meant.
-pub(crate) fn map_status(status: &Status) -> busbar_contract_transport::wire::StatusClass {
-    use busbar_contract_transport::wire::StatusClass;
+/// [`busbar_contract_transport::wire::WireStatusClass`] — never a judgement about what the RPC's bytes meant.
+pub(crate) fn map_status(status: &Status) -> busbar_contract_transport::wire::WireStatusClass {
+    use busbar_contract_transport::wire::WireStatusClass;
     use tonic::Code;
     match status.code() {
-        Code::Ok => StatusClass::Success,
+        Code::Ok => WireStatusClass::Success,
         // The upstream blamed the request: the argument, the name, the credential, the state the
         // caller asked against, or a quota the caller has spent.
         Code::InvalidArgument
@@ -263,7 +263,7 @@ pub(crate) fn map_status(status: &Status) -> busbar_contract_transport::wire::St
         | Code::Unauthenticated
         | Code::FailedPrecondition
         | Code::OutOfRange
-        | Code::ResourceExhausted => StatusClass::ClientError,
+        | Code::ResourceExhausted => WireStatusClass::ClientError,
         // The upstream blamed ITSELF. The four that were falling to the catch-all belong here and
         // are named rather than left to it, because the two classes part company on money: only a
         // server-side failure is one this node retries elsewhere and holds the destination
@@ -282,12 +282,12 @@ pub(crate) fn map_status(status: &Status) -> busbar_contract_transport::wire::St
         | Code::Unimplemented
         | Code::Unknown
         | Code::DeadlineExceeded
-        | Code::Aborted => StatusClass::ServerError,
+        | Code::Aborted => WireStatusClass::ServerError,
         // Cancelled is the one code where NEITHER side is blamed: the call was called off, usually
         // by the caller itself, so `Other` is the honest reading. Named, with no catch-all behind
         // it: every code gRPC defines has a row here, so one added later stops this compiling
         // rather than quietly acquiring a class nobody chose.
-        Code::Cancelled => StatusClass::Other,
+        Code::Cancelled => WireStatusClass::Other,
     }
 }
 

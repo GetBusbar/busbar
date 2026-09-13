@@ -23,8 +23,20 @@
 #     -v "$PWD/config.yaml:/etc/busbar/config.yaml:ro" \
 #     getbusbar/busbar
 #
-# Governance (optional) needs a writable volume for the SQLite file, e.g.
-#   -v busbar-data:/var/lib/busbar   with store.settings.db_path: /var/lib/busbar/governance.db
+# Governance (optional) is a signed plugin, not code baked into this image — "a writable volume"
+# is necessary but not sufficient. The complete recipe is four things: (1) plugins.enabled: true
+# (default false = a hard boot refusal if store.module names a plugin); (2) an ABSOLUTE
+# plugins.dir (the default, "plugins", is relative and resolves to /plugins here, since this
+# image sets no WORKDIR); (3) store.module: sqlite + store.settings.db_path on a writable volume
+# (its directory must already exist); (4) the signed tarball actually IN plugins.dir — either
+# bind-mount it yourself, or let Busbar fetch it via
+# `plugins.fetch: [{ github: "GetBusbar/store-sqlite@vX" }]` (resolves to
+# https://github.com/GetBusbar/store-sqlite/releases/download/vX/store-sqlite.tar.gz), in which
+# case plugins.dir must itself be WRITABLE (the fetch downloads into it). Example:
+#   -v busbar-plugins:/etc/busbar/plugins -v busbar-data:/var/lib/busbar
+# See docs/getting-started.md#durable-store-giving-persistence-a-writable-volume for the full
+# walkthrough (including the exact refusal text for each way this goes wrong) and
+# docker/docker-compose.yml for a wired-up example.
 FROM scratch
 
 ARG TARGETARCH

@@ -103,8 +103,8 @@ Two more sit in the job but were named by the owner into later batches:
 | `mcp-fixture-absence-gate.sh` | `test_*` fixtures are not in a real build | wf:mcp-conformance, sh | yes | `fixture-absence` | 2 |
 | `field-inventory.py` | derives and writes `qa/field-inventory.json` | ci, sh | yes | `field-inventory` | 2 |
 | `method-inventory.py` | derives and writes `qa/method-inventory.json` | ci, sh | yes | `method-inventory` | 2 |
-| `inventory-coverage.py` | the honest scoreboard for the Appendix B parity claim; reads the oracle golden ledger as data | seg (reserved), sh | yes | `inventory-coverage` | 2 |
-| `inventory-coverage.sh` | 22-line wrapper so the gate is invocable like its `*-gate.sh` siblings | seg, sh | yes | **retire** — the wrapper's whole job (uniform entry point) is what `cargo xtask gate` *is* | — |
+| `inventory-coverage.py` | the honest scoreboard for the Appendix B parity claim; reads the oracle golden ledger as data | seg, sh | yes | `inventory-coverage` | 2 — **DONE.** Deleted at `c8272b166` ahead of its Rust; `cargo xtask gate inventory-coverage` now carries it, is invoked by `ci.yml` and by the (now `active`) `inventory-coverage` segment, and is what design binding PB-0 cites. The contract it had to reproduce is recorded in section 1.4 below |
+| `inventory-coverage.sh` | 22-line wrapper so the gate is invocable like its `*-gate.sh` siblings | seg, sh | yes | **retired** — the wrapper's whole job (uniform entry point) is what `cargo xtask gate` *is* | — (deleted at `c8272b166`; the `qa/segments.toml` segment, design binding PB-0 and `scripts/verify-1.6.0-done.sh` all named it while it was absent, and all three now name the gate) |
 | `public-hygiene-lint.py` | public-surface hygiene; also run against plugin repos by `plugin-ci.yml` | ci, wf:plugin-ci, sh | yes | `public-hygiene` | 2 |
 | `executable-config-lint.py` | every documented config key is executable against a real binary (`--busbar`, `--min-docs 40`) | ci, wf:plugin-ci, sh | yes | `executable-config` | 2 |
 | `verify-1.6.0-done.sh` | the 1.6.0 DONE-ORACLE: the release-time DONE claim, running the strict form of several gates | sh, docs | yes | `done-oracle` | 2 |
@@ -149,6 +149,7 @@ Two more sit in the job but were named by the owner into later batches:
 | --- | --- |
 | `land.sh` | replaced by `cargo xtask land` (section 3.4). Retires once `pr-queue.sh`'s line grammar is read by the Rust. |
 | `inventory-coverage.sh` | a 22-line wrapper whose only purpose is to give the Python gate a uniform bash entry point. `cargo xtask gate inventory-coverage` *is* that entry point. |
+| `inventory-coverage.py` | **RETIRED AHEAD OF ITS REPLACEMENT, AND SINCE REPLACED.** `c8272b166` deleted both files claiming `cargo xtask gate inventory-coverage` was "at parity"; for the whole window that followed no such gate was registered. It is registered now, and what it had to reproduce is this. What the deleted script actually did, so the port can be judged against it rather than against memory: (1) parsed every row id out of `docs/design/inventory/*.md`, counting only rows in a table whose header column is literally `id`, and took the id FAMILY to be the text before the first `-`; (2) read `testing/shadow-oracle/cells.json` READ-ONLY and asked, per id, "does any cell cite this?", accepting two citation styles — the id text appearing word-bounded anywhere in the cell's own fields, and, for the `ADM` family only, an `admin.ops` cell whose second id segment is the exact `operationId` the `ADM` row names; (3) read `testing/shadow-oracle/golden/1.5.5/ledger.tsv` for PASS/SKIP per cell and classified each id `covered` (some citing cell is PASS), `partial` (cited, but every citer is SKIP or `needs_fixture`) or `none` (uncited); (4) filled the 40-row `C1..O6` coverage matrix between the `coverage:begin`/`coverage:end` markers in `docs/design/1.5.5-BEHAVIOUR.md` — CELL / PARTIAL / UNMAPPED per row, a row spanning no id family being UNMAPPED; (5) wrote `qa/inventory-coverage.json` (per-id detail plus the per-family recorded totals that are the floor) and `qa/inventory-gaps.json` (every `none` id with a one-line reason). `--check` was RED when any uncovered id was NOT named in the gaps file, and when the gaps file was absent. `--write` REFUSED wholesale if any family's discovered row count sat below its recorded floor, and REFUSED to ADD an id to the gaps file unless that id was accepted by name — a gaps file that grows on its own converts a coverage regression into a record of itself. `--selftest` proved: dropping every PASSing citer of a covered id turns it `none`; a named gap stays out of the `--check` failure list; the real tree sits at or above its floor; dropping a whole family is refused; losing ONE row of a family is refused; a family shrinking while another grows by the same amount is refused BY NAME (the whole-inventory total does not move); a family that grows is accepted; and every `partial` id is in the owed set. |
 | `changelog-register-check.sh` | same shape — a 19-line wrapper over the `.py`. The gate name survives; the file does not. |
 | `preflight.sh` | "mirrors ci.yml EXACTLY" by hand. That is the drift `full-gate.sh` was written to make impossible, and `cargo xtask gate full` makes it structurally impossible. Nothing calls it. |
 | `pr-land-selftest.sh`, `pr-queue-selftest.sh`, `promote-selftest.sh` | sibling-file self-tests, invoked only via their parent's `--selftest`. They become `#[test]` functions in the `xtask` crate and `cargo xtask selftest <name>` cases. |
@@ -179,9 +180,9 @@ exception that matters, and section 2.5 says how its semantics survive.
 ### 2.1 One subcommand, one registry
 
 ```
-cargo xtask gate <name> [--selftest] [--check|--report] [--format=tsv]
+cargo xtask gate <name> [--selftest [--jobs N]] [--check|--report] [--format=tsv]
 cargo xtask gate --list
-cargo xtask selftest [<name>]
+cargo xtask selftest [<name>] [--jobs N]
 cargo xtask land [--tests …] [--families …] [--gate …] [--prove] <hash>…
 cargo xtask qa <verb> …
 cargo xtask release <verb> …
@@ -249,6 +250,179 @@ bash step names use — becomes a type, not a convention.
 `Report::failures` non-empty ⇒ exit 1. `Verdict::red` ⇒ exit 1. Infrastructure failure (unwritable
 scratch dir, missing `git`) ⇒ **exit 3**, keeping `full-gate.sh`'s distinction between "the gate failed"
 and "the gate could not run".
+
+### 2.2a The self-test batteries run their cases ACROSS THE CORES
+
+`cargo xtask selftest` is the slowest leg of the release, and it was slow for a reason that had
+nothing to do with what any case proves: the cases were taken ONE AT A TIME. Each one plants an
+overlay and drives the whole gate over the planted tree — over a 660k-line tree, a hundred and
+twenty times for `kind-isolation` — on a single thread, while the other thirty-one sat idle.
+
+**THE WORK WAS ALWAYS EMBARRASSINGLY PARALLEL, AND THE PLANT MECHANISM IS WHY.** A case does not
+copy the tree, and it does not write a fixture onto it either. It builds an [`Overlay`] and calls
+`Ctx::with_overlay`, which returns a NEW `Ctx` and never mutates the base — the property section
+3.5 was written around when `scripts/construction-gate/plant.py` (428 lines of saboteur, a `tar`
+of the tree into scratch, a `TOUCHED` list, a restore step and a `mktemp` race) was deleted rather
+than ported. So no case can observe another case's plant however many run at once, and no scratch
+copy of the tree is needed to make that true. **THE COPY STRATEGY IS THAT THERE IS NO COPY**: the
+per-case cost of isolation is one `Arc<Overlay>` and a `BTreeMap` of the paths that case edits,
+which is bytes, not the 2.8 GB a tree copy would be and not the seconds a `cp -al` would be.
+
+That is an argument, and an argument is not a proof, so the harness's own unit tests carry
+`two_cases_planted_at_the_same_path_never_see_each_other`: two conflicting fixtures at the SAME
+path, taken concurrently, against a gate that reads the path twice with a sleep in between, and
+each case must see only its own bytes both times. Run against a harness that plants on the tree in
+place it fails exactly as it should — the case that planted `FIXTURE-A` reports `FIXTURE-B`.
+
+**HOW IT IS WIRED, in three pieces.**
+
+* `prove_red` / `prove_rows_red` / `prove_rows_green` / `prove_rows_red_at` / `prove_green` return
+  a `CasePlan` — THE WORK — instead of a finished `Case`. Nothing at the three hundred-odd call
+  sites changed: `report.push(prove_rows_red(cx, self, …))` reads the same, and a `Case` built by
+  hand still pushes, because `Case: Into<CasePlan>`.
+* `Report::resolve` takes the plans across a worker pool that pulls from ONE queue — so a battery
+  whose cases differ by a factor of fifty in cost finishes near its longest case rather than near
+  its slowest shard — and writes each answer back into the slot its plan was pushed into. **THE
+  CASE LIST IS PUSH ORDER, NEVER FINISH ORDER**, so the printed report, the coverage
+  reconciliation and the verdict do not depend on which thread won. Resolution happens on the
+  first read, through `OnceLock`, so there is no way to read a report whose cases were never taken
+  and see "0 cases, all green".
+* `Gate: Sync`, because a case reaches its gate through `&dyn Gate` from another thread. Nothing
+  had to change to meet it: the gates are unit structs and flag-carrying structs read through
+  `&self`.
+
+**THE COST IS SUMMED PER CASE, NOT TAKEN OFF THE WALL CLOCK.** `SELFTEST_BUDGETS` is about a rule
+that grew a whole-tree scan per plant, which is a property of the WORK; dividing by the cores would
+hide exactly that regression behind a bigger box. So a battery's `work units` figure means the same
+thing at `--jobs 1` and at `--jobs 32`, up to the contention the ruler (`work_unit`) also feels.
+
+**`--jobs N`.** `cargo xtask gate <name> --selftest --jobs N` and `cargo xtask selftest [<name>]
+--jobs N`; `XTASK_SELFTEST_JOBS` is the environment form; the default is the box's own
+`available_parallelism`. `--jobs 1` is the serial harness exactly as it was, and it is not there
+for nostalgia: **A BATTERY THAT GOES RED AT MORE THAN ONE JOB IS TAKEN AGAIN AT ONE, AND BOTH
+ANSWERS ARE PRINTED.** A finding that survives the serial run is the gate's; a finding that does
+not is named as what it is — a defect in this harness, not in the gate — because "it only fails
+when the box is busy" is how a gate earns a `|| true`.
+
+**WHAT IT MEASURED**, on an 18-core laptop with other fleet agents on the same box (one reading, not
+a benchmark suite — the ratio is the point, and a contended host understates it). The figures below
+were re-taken on the tree this change actually landed on, so the case counts are that tree's:
+
+| battery | cases | `--jobs 1` | `--jobs N` | summed case cost | speed-up |
+|---|---|---|---|---|---|
+| `kind-isolation` | 152 | 1360.9 s | **153.3 s** (18) | 2405.5 s | **8.88×** |
+| `construction` | 36 | 346.3 s | **55.7 s** (18) | 504.2 s | **6.22×** |
+| `structure-lint` | 39 | 80.7 s | **13.5 s** (18) | 129.9 s | **5.99×** |
+
+All three batteries are GREEN both ways on this tree. The case count is the same both ways and the
+printed case list — every name, every GREEN/RED/SKIPPED beside it — diffs BYTE-IDENTICAL between the
+serial and parallel runs of `structure-lint`, which is the cheap one and so the one a reader can
+re-take in under two minutes.
+
+THE FIGURE THIS TABLE OWED — `kind-isolation` at `--jobs 1` — HAS BEEN TAKEN: **1360.9 s**, 152
+cases, 128 034 work units, on `b6f66e929`. The battery is 8.88× faster across eighteen cores than on
+one. Note that this is BELOW the `summed case cost` of 2405.5 s in the next column, and the gap is
+the thing that column was a stand-in for: summed cost is measured with the cases contending, so it
+over-states what one thread would have taken. The wall clock is the honest figure and it is the one
+to quote.
+
+**READ THE PARALLEL FIGURE OFF THE BATTERY, NOT OFF THE PROCESS.** A red battery is re-taken
+serially, so `time cargo xtask gate kind-isolation --selftest` on a red tree reports the parallel
+battery PLUS a whole serial one (1234.97 s, of which 201.01 s is the battery). The numbers above are
+the battery: the wall clock from process start to the first printed case, which is the point the
+report resolves.
+
+**AND THE PLANT MAY BE THE CLOSURE THAT MAKES ONE.** Rust evaluates arguments where they are
+written, so an `Overlay` handed to `prove_*` is built ON THE PUSH THREAD. For most cases that is a
+map insert; for the dear ones it is a walk of `crates/`, a census, or a re-rendered registry. Solve
+`kind-isolation`'s two readings (1621 s serial, 201 s across eighteen cores) for the serial fraction
+and it was about 117 s — after the gate runs were spread across the box, more than half of what was
+left was plants being built one after another. A plant is therefore either an `Overlay` or a
+`FnOnce() -> Overlay`, both through one `Plant` trait (possible because `Overlay` is a local type
+and cannot implement `FnOnce`), and the closure is called on the worker. `kind-isolation`'s eleven
+whole-tree plants took it from ~117 s to **22.7 s measured**, and what is left is one shared
+derivation — `kind_landing`, 22.4 s of the 22.7 s — which is not a plant but an input four cases
+share.
+
+**WHAT A BATTERY SPENT PLANTING IS PRINTED BESIDE ITS TOTAL**, with the case that owns most of it.
+The serial fraction is the only part a bigger box cannot help, so it is the only part worth
+rewriting, and a number beats a guess.
+
+**AND EVERY WORK-UNIT BUDGET IS NOW THE MEASUREMENT IT WAS SET FROM.** The entries used to be a
+number and a paragraph of prose; `construction`'s said the gate measured "about 15 600 units" under
+a budget of 50 000, and the tree measured three times the note — the entry read as a guard with
+two-thirds of its room to spare while it was a few per cent from firing. A number whose provenance is
+prose is a number nobody can check. So a `Budget` is now a record: the `measured` figure at
+`--jobs 1`, the `allowed` figure DERIVED from it by one declared slack, and `taken` — the date and
+the tree sha, so a reader can take it again. All seven were re-taken on `b6f66e929` in one sitting:
+
+| gate | cases | `--jobs 1` | measured | budget (×1.6) | old budget |
+|---|---|---|---|---|---|
+| `kind-isolation` | 152 | 1360.9 s | 128 034 | 204 854 | 310 000 |
+| `kind-isolation-ship` | 122 | 1290.7 s | 120 208 | 192 333 | 320 000 |
+| `construction` | 36 | 352.4 s | 33 096 | 52 954 | 50 000 |
+| `plane-purity` | 16 | 298.0 s | 27 923 | 44 677 | 80 000 |
+| `plane-purity-strict` | 12 | 202.1 s | 19 435 | 31 096 | 45 000 |
+| `structure-lint` | 39 | 88.4 s | 7 938 | 12 701 | 22 000 |
+| `audit-ledger` | 14 | 46.5 s | 4 433 | *(entry struck)* | 22 000 |
+
+`audit-ledger` no longer has an entry at all: times the slack its measurement asks for 7 093, which
+is below `DEFAULT_BUDGET_UNITS`. An exception that no longer excuses anything is a line nobody
+re-reads, so it is struck rather than re-baselined — the default covers it, and if the gate grows
+back past 9 000 the default is what says so. Five of the remaining six budgets came DOWN, some by
+half; `construction` went up by six per cent, which is the one that was actually tight.
+
+THE SLACK IS 1.6× AND IT IS MEASURED, not chosen. It used to be "about three times", justified by the
+ruler drifting with the machine and by the regression being a factor of ten. The first half is now a
+number: the ruler's own spread between the serial figure written into an entry and the worst reading
+the DEFAULT job count produces is 1.43× (the table below). 1.6 is that with a little room. It still
+catches a whole-tree scan per plant — a factor of ten — with a margin of six, and it is deliberately
+tighter than the three it replaces, because three times a measurement that was itself three times
+stale is how `construction` got where it was. A budget entry without a written measurement, or whose
+budget has drifted from its own measurement, or whose measurement does not say when and on what tree
+it was taken, is refused by `every_budget_carries_the_measurement_it_was_set_from`.
+
+**THE BUDGET'S RULER IS READ ON THE WORKER, BETWEEN CASES.** Cases are summed by wall clock, so
+taking N at once inflates every one of them while a ruler measured once on one thread does not —
+`construction` measured 68 063 units against a budget of 50 000 at `--jobs 18` and was under it at
+`--jobs 1`, on the same tree, in the same minute. That is a gate red because the box was busy, the
+exact failure work units exist to avoid. Calibrating N arithmetic threads up front does not fix it
+(`structure-lint`'s ruler moved 11.0 → 11.6 ms while its cases went 85.7 → 152.5 s: arithmetic on a
+quiet box is not what a battery does to a box). So each worker reads the ruler immediately after the
+case it took, with the others still scanning, and each case is scored against the ruler read on its
+own thread:
+
+| jobs | summed | units | vs serial |
+|---|---|---|---|
+| 1 | 96.0 s | 7934 | 1.00× |
+| 4 | 99.1 s | 7980 | 1.01× |
+| 8 | 116.5 s | 8330 | 1.05× |
+| 12 | 142.1 s | 9323 | 1.18× |
+| 18 | 179.7 s | 11367 | 1.43× |
+
+Flat to eight — up to there the box really is doing the same work — and past it the residual is
+oversubscription this ruler still cannot see.
+
+**A BATTERY IS NOT A GATE RUN, AND GETS ITS OWN WALL-CLOCK CEILING.** `kind-isolation`'s self-test
+drives the whole gate 176 times; five minutes is right for "this gate has stopped making progress"
+and plainly wrong for 176 of them. A serial `construction --selftest` takes 617 s and was being
+killed at 300 s with `construction hung`; a `kind-isolation --selftest` was killed at 300.03 s on a
+contended box. It was never new — a battery always ran under that watchdog — it was MASKED for one
+commit by the lazy report (the work happened after the watchdog was dropped), and resolving under
+the watchdog put it back. `DEFAULT_SELFTEST_CEILING` is thirty minutes, still a ceiling and not a
+budget; `XTASK_SELFTEST_CEILING_SECS` moves it, `0` disables it, a gate-specific
+`XTASK_GATE_CEILING_SECS_<GATE>` still wins, and an unreadable value is the default.
+
+**IT COMPOSES WITH SHARDING RATHER THAN COMPETING WITH IT.** The two axes are orthogonal and stay
+that way: a shard partitions the CASE LIST across boxes, and `--jobs` takes one box's share across
+that box's cores. A shard selector filters what is pushed; `--jobs` decides how what was pushed is
+taken. Neither reads the other's setting, and both preserve push order within what they run.
+
+**Two gates build the gate their cases are proven through** — `changelog` and `changelog-register`
+have release arms that are the same gate with a flag the registry does not carry. Their gates are
+built ABOVE the report, and their reports are `sealed()` (taken where those locals still live)
+before being returned, so those families are taken in parallel like every other rather than being
+held serial by one borrow.
 
 ### 2.3 `Ctx` — the shared context and the repo walk
 
@@ -402,6 +576,35 @@ gates and the proof-manifest collator key off step names, and a rename is a chan
 (`plane-grep`, `secret-hygiene`, `plane-config-noun`, `plane-noun`). The `GREP_GATE_REPORT_ONLY=1` /
 `SECRET_GATE_REPORT_ONLY=1` env switches become `--report`, and the env vars keep working for one
 release so `qa/segments.toml` rows can migrate independently.
+
+### `--posture`: the third answer, for a gate that is red by design
+
+A gate whose tree is legitimately red today has only two useful exit codes and neither is true.
+"Green" is a lie; "red" is true and carries no information, so it gets a `continue-on-error` and
+stops meaning anything. That is how the construction gate ended up with **four** independent
+downgrades on it — `Excused::Whole` in `REPORT_ONLY`, `continue-on-error` in `ci.yml`,
+`continue-on-error` plus `|| true` in `keep-proof.yml`, and exclusion from both umbrellas' scored
+`RESULTS` — and between them a NEW red could not redden anything.
+
+`cargo xtask gate <name> --posture` scores the gate against its `REPORT_ONLY` entry instead of
+against zero reds:
+
+* **exit 0** while the gate is red on exactly the rows the entry names, and nothing else;
+* **exit 1** the moment a row appears that the list does not name — a regression;
+* **exit 1** when a NAMED row goes green — the list is stale and must be struck in the commit that
+  drained the row. Without this half a standing-red list only ever grows, which is the blanket
+  excuse it replaces.
+
+It runs the same `gates::excused_from_all` that `gate --all` prints, so the posture CI enforces and
+the posture `--all` reports cannot drift, and the standing reds are written down in exactly one
+place (`gates::CONSTRUCTION_STANDING_REDS`) rather than pasted into two workflows. A gate with no
+`REPORT_ONLY` entry has nothing to score against and `--posture` is an argument error there, not a
+free green.
+
+`--selftest` is refused in combination with `--all` and `--list`: both of those branches return
+before the flag is read, so `gate --all --selftest` used to print ordinary verdicts while the caller
+believed the whole registry had just self-tested. The only every-gate self-test is
+`cargo xtask selftest`.
 
 The `structure-lint` job needs one new setup step ahead of the gates:
 
@@ -854,6 +1057,15 @@ legacy had no equivalent, and each is a named FAIL with its own selftest case:
   wrong reason and one nobody can act on.
 * Every gate's walk carries a `min_files` floor and every gate's unreadable-input path emits FAIL
   rows rather than reporting a clean tree.
+* `one-pricing-site:fee-fields` treats **zero reads of every spelling in `fee_fields`, anywhere in
+  the scanned tree** as a named FAIL, independent of `max_fee_readers`. The row is keyed on field
+  spellings, so a rename that retires every one of them leaves the grep with nothing to find — and
+  the legacy shape (and this row, before this fix) read that as "outside-crate reads: 0, under
+  ceiling" and reported the same plausible PASS or FAIL it always had, with no signal that it had
+  gone blind. Zero total hits now means "the rule cannot see the fee" and fails naming the spellings
+  it looked for, never "the fee is priced nowhere" — a real zero (no card-fee read exists in the
+  tree at all) and a blind zero (the field was renamed out from under the rule) are otherwise the
+  same number.
 
 ### 6.4 What parity does NOT cover
 
@@ -991,3 +1203,263 @@ reconstructed from what it printed:
 
 **`STRUCTURE_LINT_CANDIDATE_FLOOR` is gone.** Floors are `const`s and there is no environment
 override: the only way to lower one is a reviewable source edit.
+
+## 8. `kind-isolation:matrix` — the composition root is measured too
+
+The `kind-isolation` gate landed with six rows and all six measured the WIRES. `:vocab` proves a
+transport never says `a2a` and a plane never says `hyper`; `:deps` proves the kind-to-kind edges in
+the manifests are the ones already measured; `:name` proves no crate name fuses a kind with another
+kind's instance. Not one of them looked at `crates/busbar` — the composition root — where the tree
+hand-wires one file per plane (`root/units_llm.rs`, `units_mcp.rs`, `units_a2a.rs`,
+`units_voice.rs`, `units_admin/admin_mount.rs`) and where a plane-named accept loop
+(`root/voice_serve.rs`, behind a `root-voice-serve` feature) was landed on a sibling branch. All of
+it was green, because nothing counted it. **A gate that measures the wires and not the place the
+wires are joined reports the tidy half of the tree.**
+
+`:matrix` measures the whole matrix: for every kind `K` in the kind table and every crate `C` under
+`crates/`, how many times `C` names `K`'s vocabulary.
+
+**The vocabulary is derived, on every run.** It comes off the same census the other five rows use —
+`K`'s member package names, their kind-qualified ids (`store-memory`, `plane-llm`), and, for the
+plane and transport families, their bare instance ids (`llm`, `mcp`, `voice`/`streams`, `http`,
+`ws`). Registering a plane teaches this row a new word in every other crate on the same commit,
+which is the only way a vocabulary rule survives a growing tree. **Bare ids are limited to the two
+families that HAVE an instance vocabulary, and that is the kind table's own word for it**:
+`Family::Neutral` is defined in `kind_isolation.rs` as "a kind with no instance vocabulary of its
+own", and it is already load-bearing in `:name` and `:vocab`. A neutral kind's members are named for
+the step of the loop they run — `cost`, `wal`, `ledger`, `memory`, `usage` — which are words the
+whole tree shares; counting them would report the Teller loop talking about money as the cost unit
+leaking into the ledger unit.
+
+**Nothing is stripped.** Every `.rs` and every `.toml` under the crate, whole text: identifiers,
+string literals, doc comments, ordinary comments, `#[cfg(feature = …)]` attributes, Cargo dependency
+names, Cargo feature names — plus the file's own path, so `root/voice_serve.rs` is a hit before a
+byte of it is read. Tests are not excluded; a transport's own fixture that names a plane is that
+transport naming a plane.
+
+**Two independent scanners, and the higher number wins.** One reduces a line to a stream of
+lowercase alphanumeric segments (splitting at every non-alphanumeric byte and at both camel-case
+transitions) and matches a needle's segment run. The other walks the raw characters, compares
+case-insensitively, and accepts a window only between boundaries. They share the needles and nothing
+else. The scored count is the HIGHER of the two, never the lower, and a cell where they disagree is
+RED unless the cell records the disagreement and why — a spelling one scanner cannot see is exactly
+the leak that must not pass at the lower number. Twenty cells record one today, all of them the same
+two shapes: `gRPC`, which splits at its own camel joint for the segment scanner and reads whole for
+the window scanner, and `A2AService`, which is the mirror case.
+
+**Why a boundary rule and not a raw byte substring.** The owner's ruling is "I'd rather have it
+false-fail than not", and the boundary rule is the stricter reading of it, not the weaker one. `sse`
+is a transport instance and also the middle of `assert`; `ws` is a transport instance and also the
+middle of `rows`. A raw substring scan of this tree answers 35 306 for `sse` and 5 671 for `ws`,
+numbers made almost entirely of English, and a ceiling pinned to them moves whenever somebody writes
+an assertion. That is not a stricter gate, it is a line counter wearing one — and a gate that reds
+for a reason unrelated to its rule is how a runner earns a `|| true`. The boundary rule keeps every
+spelling a human would recognise as the name (`a2a_session`, `mcpFrame`, `root-voice-serve`,
+`busbar_transport_http`, `VoiceServe`, the filename, the feature, the comment) and refuses the ones
+that are not names at all.
+
+**`qa/kind-isolation.toml` is the whole allowance, and it is read by ONE reader.** There is no
+allow-list in the source, and no second parser either: these rows go through the same hand reader
+`parse_registry` already runs over `[[transitional]]`, `[[registered]]` and `[[announced]]`, on the
+same terms — a missing, empty or unknown field is REFUSED AT LOAD rather than skipped, and two rows
+naming one cell are reported as two answers rather than resolved by file order. Three tables, and
+the split is the same one `:deps` already makes: the SENTENCES belong to the kind-to-kind class,
+because that is what a reader is reading, and the NUMBER belongs to the crate, because that is what
+the ratchet moves.
+
+```toml
+[[edge]]
+from = "root"
+to = "plane"
+cite = "none. ARCHITECTURE.md 1.1 gives the composition root a REGISTRY to assemble from …"
+why = "crates of kind root naming plane vocabulary: …"
+drain = "delete the per-plane wiring from crates/busbar/src/root/** and crates/busbar/src/main.rs …"
+
+[[cell]]
+crate = "busbar"
+kind = "plane"
+count = "1798"
+
+[[disagreement]]                                       # only when the two scanners differ
+crate = "busbar"
+kind = "plane"
+note = "segment scanner 1798, window scanner 1797. …"
+```
+
+**The ratchet is exact in both directions.** A count above its row is the landing that grew the
+coupling. A count BELOW its row is stale slack, and stale slack is how drift hides: the number comes
+down on the commit that drained it, or the gate is red. A row whose cell measures zero is a dead
+allowance and must be struck; a class no crate exercises any more is struck likewise. A cell above
+zero with no row at all is an UNLISTED EDGE, refused whatever `ARCHITECTURE.md` may or may not
+grant, because an edge nobody wrote down is an edge nobody reviewed.
+
+**The ship twin owes zero everywhere and does not read the file.** What is written in
+`qa/kind-isolation.toml` is what 1.6.0 still has to delete, not a shape the tag is allowed to keep.
+
+`--report` prints the whole matrix (crate × kind → count, with both scanners' totals) and then the
+DRAIN LIST: every hit, `file:line`, grouped by cell. The integrator hands each file its deleting
+line rather than re-deriving it.
+
+**The self-test opens with the incident.** The head of the real `crates/busbar/src/root/voice_serve.rs`
+(from `keep-streams-3` `dd96a04f3`) is planted back into the root — the plane named in the path, in
+the `#![cfg(feature = "root-voice-serve")]`, in the module header's prose and in the
+`use busbar_plane_voice::…` — and the row goes RED; its green twin is the same tree with the file
+absent. Then: the root held to the zero a registry-driven root would measure (the finding names
+`root/units_voice.rs` and the other heaviest files by hit count), a ceiling left with slack, a plane
+named in a transport, the same name in that transport's own TESTS, a transport named in a plane, a
+store named in the kernel, a plane named in nothing but a comment in the kernel, the two scanners
+disagreeing, an edge class with no row, a second `[[cell]]` row for one cell, and the ledger absent.
+A class whose citation is emptied needs no case of its own: it is refused by the shared reader's
+`take_row`, which the registry row already self-tests, and the class then reads as unlisted.
+
+**Where it runs.** `land.sh`'s `kind-isolation` token is unconditional and runs the gate whole,
+without a row filter, so a landing that raises a ceiling is red on the runner. `qa/full-gate.toml`
+and `full_gate.rs` invoke `cargo xtask gate kind-isolation`, which owes the row. `keep-proof.yml`'s
+gate job runs `cargo xtask gate --all`, which walks the registry and therefore includes it.
+
+## 9. The DEPENDENCY side of the gate — every manifest, every table, every edge instance
+
+Section 8 measured the composition root's vocabulary. This section is the other half of the same
+ruling — "core is core, plugins are plugins, transport, everything" — applied to what the MANIFESTS
+say and to the ways into a crate that are not a `use` line at all. Three red-team passes over the
+gate found fourteen ways to carry a plane into a transport with every gate in the tree green, and
+they reduce to five root causes, each closed here.
+
+**One manifest reader, and it reads every table.** `deps_of` looked for the literal section name
+`dependencies` and recorded the manifest KEY. `construction::tree::read_cargo_deps_text` had the
+identical shape, so fixing one would have left the other. There is now one reader,
+`xtask::manifest`, and both gates call it. It reads `[dependencies]`, `[dev-dependencies]`,
+`[build-dependencies]` and the per-target forms of all three, and it resolves the PACKAGE each
+declaration reaches: `foo = { package = "busbar-plane-llm", … }` is an edge to the plane, not to a
+crate called `foo`, and `foo = { workspace = true }` under a `[workspace.dependencies]` entry that
+renames it is the same edge stated one file away. Every one of those five spellings was planted in
+the real tree and left every gate green. Widening `construction`'s reader made it see one dependency
+it never could — a `[target.'cfg(unix)'.dependencies] libc` that ships in every Linux artefact this
+tree builds — which is now reviewed in `qa/construction.toml` rather than re-narrowed.
+
+**The test graph is scored, on its own row.** `[dev-dependencies]` was read by the battery rule and
+by nothing else, on the sentence "a test edge is not a shipped edge". That is true, and it is not a
+reason to leave it unmeasured: a plane declared in a transport's `[dev-dependencies]` is a plane
+compiled into that transport's test binary. `kind-isolation:test-deps` holds it against its own half
+of the ledger, because folding it into `:deps` would grant the shipped artefact the same edge.
+
+**The census is every `Cargo.toml` in the repository.** It read `crates/<dir>/Cargo.toml` and
+nothing else, under its own comment "a manifest one level deeper belongs to a fixture" — and that
+comment was the hole. A plane-kind crate at `vendor/busbar-plane-shim/`, path-depended from a
+transport, was invisible; so was the same crate at `crates/busbar-transport-tcp/internal/shim/`; and
+striking a crate from `[workspace.members]` dropped it out of every `--workspace` test, clippy and
+deny run with `workspace-deps:set-equality` still PASS, because that row compared the members it
+INSPECTED — derived from the declared list — against the declared list itself. Where a manifest sits
+is now a finding: `off-tree-crate`, `nested-crate`, `unmembered`. The exemption is one reviewed
+table, `OFF_TREE_MANIFESTS` — the runner, the gate fixtures, the standalone documentation example —
+and each entry is RED the day the path it names is gone. `workspace-deps` reads that same table
+rather than keeping a second one, and gained the third set its own row was missing: what is on disk.
+
+**The ratchet moves one EDGE INSTANCE at a time.** `MEASURED_EDGES` was a table of kind-to-kind
+CLASSES, and a class ratchet has unlimited slack inside a class: `transport -> unit` was one line, so
+a second transport growing a dependency on a unit was green, and so was a third. An audit of all 220
+workspace-internal edges found 105 the architecture grants, 87 it does not, 15 in the loader/tooling
+trusted base and 13 it never rules on at all — all held by 38 lines recording which pairs of kind
+WORDS had ever appeared together. So `qa/kind-isolation.toml` gained a row per (from-crate, to-crate)
+pair, per half, read by the same hand reader the `[[cell]]` rows use and refused at load on a missing
+field, an empty one, an unknown one or a duplicate row:
+
+```toml
+[[dep]]
+from    = "busbar-transport-tls"
+to      = "busbar-unit-transport-key"
+half    = "shipped"
+count   = "1"
+verdict = "not-allowed"
+cite    = "ARCHITECTURE.md 1.1 \"A transport cannot name a plane or a unit.\" …"
+why     = "…"
+drain   = "delete the busbar-unit-transport-key dependency from …"
+```
+
+exact in both directions, on the same terms `[[cell]]` already lives under: above is the landing that
+grew the coupling, below is stale slack, a row whose edge is gone is a dead allowance, and an edge
+with no row is refused whatever the architecture may grant — an edge nobody wrote down is an edge
+nobody reviewed.
+
+**A row may not grant itself an edge.** `verdict` is one of `allowed`, `tcb`, `not-allowed`,
+`owner-ruling-pending`, and the first two are READINGS of `ARCHITECTURE.md` rather than opinions the
+ledger is entitled to hold: the class tables `ARCHITECTURE_ALLOWED` and `ARCHITECTURE_TCB` live in
+`xtask/src/gates/kind_isolation.rs`, and a row claiming an edge the architecture withholds is refused
+as an unsupported verdict. The thirteen edges the architecture never rules on are
+`owner-ruling-pending` and each carries a `[[question]]` row with the full question, so a ruling can
+be given by reading the file and nothing else. `UNSCORED_SOURCES` and `SPEC_SINK` are gone: the
+composition root and the retiring legacy crates are scored like everything else and their edges are
+rows.
+
+**The ship twin owes the architecture's graph, not yesterday's measurement.** It does not read the
+ledger at all. Only the classes `ARCHITECTURE_ALLOWED` names are permitted; `tcb`, `not-allowed` and
+`owner-ruling-pending` are all refused, because the criterion for a tag is not "no worse than the
+last commit". The legacy drain's expiry moved to its own ship-only row,
+`kind-isolation:legacy-drain`, because "the drain finished" and "the graph is the architecture's" are
+two claims and neither could be proven while they shared a verdict.
+
+### 9.1 `kind-isolation:build-inputs` — the ways in that are not a dependency
+
+Every other row reads a dependency table or a `use` line. Five plants used neither:
+`#[path = "../../busbar-plane-llm/src/meta.rs"]`, `[lib] path = "../busbar-plane-llm/src/lib.rs"`,
+`include_str!` of another crate's source in a `build.rs`, a `Cargo.lock` naming an edge no manifest
+has, and `[features] llm-serve = []` in a transport. The `#[path]` and `include_str!` paths are read
+off the RAW line — `:vocab` blanks literals before it reads, which is exactly why they were invisible
+there — and every path is resolved against the file that wrote it and asked one question: does it
+leave the crate's own directory?
+
+Two narrowings, both the rule rather than a softening of it. A path landing outside every crate is
+not this row's subject: a test pinning a table against `qa/method-inventory.json` is reading a
+repository artefact and there is no kind on the other end of it. And a path into a crate this one
+already DEPENDS on is an edge that is written down, at its exact count, with its verdict. What is
+left is the reach with no edge at all. A `[lib]` target is refused either way, because it does not
+LINK the other crate — it compiles its source as this crate's own body.
+
+The composition root's `root-*` features are the written exemption, with a green case beside the red
+one, and it is an exemption with a NUMBER attached: `:matrix` counts every one of those words against
+`[[cell]] busbar / plane` at an exact ceiling. `plugins.yaml`'s kind words are the tree's third kind
+vocabulary, mapped once here; an entry whose crate name resolves to a kind other than the one it is
+filed under is `registry-kind-mismatch`, because the registry is what the loader believes.
+
+### 9.2 `kind-isolation:faces` — no crate implements another kind's entry face
+
+A crate's kind is a claim about what it is; a trait implementation is the same claim made to the
+COMPILER, and when the two disagree the compiler's is the one that runs. `:shape` counts a crate's
+implementations of ITS OWN kind's trait, so `impl Plane for Wire` inside a transport and
+`impl Transport for P` inside a plane left that row byte-identical in both directions. `:faces` asks
+the other question, per-push rather than at release, because a wire that implements `Plane` is a
+plane on the commit that lands it. `impl_trait_on` now reads the qualified spelling
+(`impl busbar_contract::Plane for X`), which was a one-keystroke bypass of anything written on it.
+
+Four crates implement a foreign face today; each is a `[[face]]` row at its exact count with its
+citation and the line that deletes it, and the ship twin owes zero.
+
+### 9.3 `--write` re-pins DOWN, and refuses if anything would rise
+
+An exact ratchet taxes the landing that does the right thing: a cut that removes two of a crate's
+plane hits leaves the row three too high and the gate is red until somebody edits a number by hand.
+`cargo xtask gate kind-isolation --write` lowers every `[[cell]]`, `[[dep]]` and `[[face]]` count to
+what the tree measures, so a landing that drains a coupling re-pins it in the same landing.
+
+It REFUSES WHOLESALE if any count would rise, naming every row that would: a run that grew a coupling
+is a landing that has to be read, and a tool that quietly re-pinned the falls in the same breath
+would hand it a file that looks reviewed. The write is a line-by-line rewrite of one number per row
+rather than a re-render, because this file is written by hand and its comments ARE the reasoning.
+
+### 9.4 The self-test, and the sub-checks that had no plant
+
+Every red-team case is a named case. Beyond them, eight arms of `:registry` had no plant of their
+own — `dead-kind`, `kind-arrived`, `alias-retired`, `no-construction-kinds`, `unmapped-kind`,
+`unreadable`, and the two floors — and an audit proved what that costs: gutting the `unmapped-kind`
+arm left `kind-isolation: green` and `17 case(s), 0 skipped — the gate is proven RED-able` in the
+same breath, because the row was still red-able through its neighbours. Each of the eight now has a
+fixture that only it rejects, and the two floors fail apart: four manifests is under the census floor
+and nowhere near the source floor, and four sources are the mirror.
+
+One cost note, because it is what makes the battery runnable at all. `--selftest` re-runs the WHOLE
+gate once per planted case, and this branch adds thirty of them, so the per-case cost is the whole
+budget. A profile of one run put 85% of it inside `:transport-registration`, which lexed every source
+file once PER WIRE for an answer that does not depend on which wire is being looked for; the wire
+scan's memo (`the xtask shard: the wire scan is memoised`) is what removed it. The battery needs
+`XTASK_GATE_CEILING_SECS` raised above the 300s per-gate default — `land.sh` and CI give the two long
+self-tests their own hang ceiling for exactly this.

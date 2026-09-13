@@ -121,7 +121,7 @@ pub enum Outcome {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct UpstreamStatus {
     /// The transport's own reading of the frame, where it carries one.
-    pub class: Option<busbar_contract_transport::wire::StatusClass>,
+    pub class: Option<busbar_contract_transport::wire::WireStatusClass>,
     /// The upstream's numeric status AND the numbering that spelled it, where the transport
     /// reports one — carried across from the frame exactly as the transport named it, never
     /// flattened to a bare number on the way.
@@ -130,22 +130,11 @@ pub struct UpstreamStatus {
     pub retry_after: Option<u64>,
 }
 
-/// Where a classified failure sends the request next.
-///
-/// This is the walk's own vocabulary, and it is exhaustive on purpose: a new disposition breaks
-/// the build here rather than falling through some default arm on the request path.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Disposition {
-    /// The caller's own bad input. The destination is not penalised and the answer is relayed.
-    ClientFault,
-    /// A transient upstream failure. The walk fails over.
-    TransientUpstream,
-    /// A definitive signal about the shared destination.
-    HardDown,
-    /// The request is too large for this destination's window. The destination is healthy; the
-    /// walk excludes every member that shares or undercuts the limit and fails over.
-    ContextLength,
-}
+/// Where a classified failure sends the request next: the contract's disposition, which the
+/// breaker unit answers in and this walk acts on. Exhaustive on purpose — a new disposition breaks
+/// the build here rather than falling through some default arm on the request path — and one
+/// type on both sides of the [`Breaker`] port, so the integrator no longer re-spells it.
+pub use busbar_contract::upstream::Disposition;
 
 /// What the classifier made of one upstream answer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -447,16 +436,19 @@ pub trait Telemetry: Send + Sync {
 /// The disposition labels, verbatim.
 ///
 /// These are metric label values, so they are part of the observable surface and reworded only
-/// with the dashboards that read them.
+/// with the dashboards that read them. Three are the contract's disposition table's own; the
+/// per-attempt cap is not a disposition — it fires before the upstream has answered — and is
+/// spelled here.
 pub mod disposition {
+    use busbar_contract::upstream::Disposition;
     /// A transient upstream failure.
-    pub const TRANSIENT: &str = "transient_upstream";
+    pub const TRANSIENT: &str = Disposition::TransientUpstream.label();
     /// The per-attempt cap fired before response headers arrived.
     pub const ATTEMPT_TIMEOUT: &str = "attempt_timeout";
     /// A definitive signal about the shared destination.
-    pub const HARD_DOWN: &str = "hard_down";
+    pub const HARD_DOWN: &str = Disposition::HardDown.label();
     /// The request was too large for this destination's window.
-    pub const CONTEXT_LENGTH: &str = "context_length";
+    pub const CONTEXT_LENGTH: &str = Disposition::ContextLength.label();
 }
 
 /// The network failure labels the breaker records against, verbatim.
