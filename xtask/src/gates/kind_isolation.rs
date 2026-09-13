@@ -801,13 +801,37 @@ struct Announced {
 ///   so its cells are the old crate's cells under a new name — and a minted cell may not exceed the
 ///   same-kind count the base pinned for the crate it was moved from. A move cannot raise the union
 ///   of the two rows; if it does, it is not a move.
+///
+///   A crate may be carved out of MORE THAN ONE source, and the hook policy engine is: the engine
+///   itself came out of `busbar-core`, and the neutral hook RUNNER — the projection / rewrite /
+///   decision-mapping half of the routing engine's hook seam — came out of `busbar-llm`. The field
+///   therefore reads as a COMMA-SEPARATED LIST of source crates, and the word "union" in the
+///   paragraph above is meant literally: the ceiling over a minted cell is the SUM of what the base
+///   pinned for EACH source at that kind, because that is exactly the vocabulary the move carried
+///   in. Listing a source is not a licence — every source must itself be drained, which is what the
+///   `[[transitional]]` row over in `matrix` requires before the MOVE form admits anything. A
+///   single name is the one-element list, so nothing about a one-source carve-out changes.
 #[derive(Debug, Clone)]
 struct Minted {
     krate: String,
     commit: String,
     cells: i64,
-    /// The crate this one was carved out of, when it was carved out of one.
+    /// The crate(s) this one was carved out of, when it was carved out of any — comma-separated.
     moved_from: Option<String>,
+}
+
+impl Minted {
+    /// The source crates this one was carved out of, in the order the row lists them. Empty when
+    /// the crate was written rather than carved.
+    fn sources(&self) -> Vec<&str> {
+        self.moved_from
+            .as_deref()
+            .into_iter()
+            .flat_map(|v| v.split(','))
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .collect()
+    }
 }
 
 /// One `[[renamed]]` row: A CRATE THAT IS THE SAME CRATE UNDER A NEW NAME.
@@ -1181,7 +1205,13 @@ fn push_row(reg: &mut KindRegistry, table: &str, fields: &[(String, String)], at
                 .iter()
                 .find(|(k, _)| k == "moved_from")
                 .map(|(_, v)| v.clone());
-            if moved_from.as_deref() == Some("") {
+            // A list with a hole in it (`"busbar-core,"`, `"a,,b"`) is the empty value wearing a
+            // comma: the entry names no crate, so it carries no ceiling, and the ceiling over the
+            // minted cells is the SUM of the entries — a silent hole is slack nobody reviewed.
+            if moved_from
+                .as_deref()
+                .is_some_and(|v| v.is_empty() || v.split(',').any(|s| s.trim().is_empty()))
+            {
                 reg.errors.push(format!(
                     "empty-field\t{REGISTRY_FILE}:{at}\t`[[minted]]` declares `moved_from` with an \
                      empty value; a carve-out that names no source crate has no ceiling over it"

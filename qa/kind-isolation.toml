@@ -218,11 +218,18 @@ reason = "the configuration surface being carved out of busbar-core; core kind, 
 # not created. control 20 (≤ 5200), hooks 2 (≤ 46), plane 36 (≤ 3033), secret 17 (≤ 319),
 # transport 2 (≤ 2117). The eight `× legacy` comment mentions it landed with were DRAINED (M4c):
 # the engine's prose says 'the engine crate' and never the retiring crate's name.
+#
+# TWO SOURCES, BECAUSE TWO CRATES WERE DRAINED INTO IT. The policy ENGINE was carved out of
+# `busbar-core`; the neutral hook RUNNER — the projection / rewrite / decision-mapping half of the
+# routing engine's hook seam, 751 lines — was carved out of `busbar-llm` by identity (MOVE 3). Both
+# halves are vocabulary that MOVED rather than vocabulary that was written, and each has its own
+# `[[transitional]]` drain row above; `moved_from` therefore lists both, and the ceiling over every
+# minted cell is what the base pinned for the two of them together.
 [[minted]]
 crate = "busbar-core-policy"
 commit = "5fe28f82a"
 cells = "4"
-moved_from = "busbar-core"
+moved_from = "busbar-core, busbar-llm"
 
 # ------------------------------------------------------------------------------------------------
 # [[edge]] / [[cell]] / [[disagreement]] — THE KIND × CRATE VOCABULARY MATRIX
@@ -1859,7 +1866,7 @@ count = "88"
 [[cell]]
 crate = "busbar-llm"
 kind = "core"
-count = "8"
+count = "10"
 
 [[cell]]
 crate = "busbar-llm"

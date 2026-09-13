@@ -11,8 +11,8 @@
 //! candidate tap that never arrives was seated after it.
 use crate::test_support::{LaneSpec, TestApp};
 use busbar_api::{
-    Candidate, PolicyResult, RewriteReply, RoutingContext, RoutingDecision, RoutingPolicy,
-    RoutingRequest, TransformOutcome,
+    operation::Operation, Candidate, PolicyResult, RewriteReply, RoutingContext, RoutingDecision,
+    RoutingPolicy, RoutingRequest, TransformOutcome,
 };
 use busbar_substrate::hooks::ResolvedPolicy;
 use busbar_substrate::testkit::engine_kit::{EngineTestKit as _, TestAppKit};
@@ -32,6 +32,9 @@ struct SeatProbe {
     reject: Option<(u16, &'static str)>,
     /// Tap seats: the last delivered projection.
     last_payload: Mutex<Option<Vec<u8>>>,
+    /// Gate seats: the `(message_count, has_tools, total_chars)` shape of the request the seat was
+    /// handed, recorded every time it is asked. The LENGTH is how many times the seat fired.
+    shapes: Mutex<Vec<(usize, bool, usize)>>,
 }
 
 impl SeatProbe {
@@ -42,6 +45,7 @@ impl SeatProbe {
             requests_now: None,
             reject: None,
             last_payload: Mutex::new(None),
+            shapes: Mutex::new(Vec::new()),
         }
     }
 }
@@ -50,12 +54,16 @@ impl SeatProbe {
 impl RoutingPolicy for SeatProbe {
     async fn decide(
         &self,
-        _req: &RoutingRequest<'_>,
+        req: &RoutingRequest<'_>,
         _candidates: &[Candidate<'_>],
         _ctx: &RoutingContext<'_>,
         _budget: std::time::Duration,
     ) -> PolicyResult {
         self.log.lock().unwrap().push(self.seat.to_string());
+        self.shapes
+            .lock()
+            .unwrap()
+            .push((req.message_count, req.has_tools, req.total_chars));
         Ok(match self.reject {
             Some((status, message)) => RoutingDecision::Reject {
                 status,
@@ -123,6 +131,7 @@ struct Rig {
     log: Arc<Mutex<Vec<String>>>,
     request_tap: Arc<SeatProbe>,
     candidate_tap: Arc<SeatProbe>,
+    gate: Arc<SeatProbe>,
     _serve: tokio::task::JoinHandle<()>,
     _server: crate::test_support::MockServer,
 }
@@ -211,6 +220,7 @@ async fn rig(reject_at_gate: bool) -> (Rig, Arc<dyn Fn() -> Ledger + Send + Sync
     if reject_at_gate {
         gate_probe.reject = Some((451, "the gate says no"));
     }
+    let gate_probe = Arc::new(gate_probe);
 
     let a = Arc::get_mut(&mut app).expect("sole owner");
     a.rewrite_hooks = vec![(std::time::Duration::from_millis(500), Arc::new(rewrite))];
@@ -219,7 +229,8 @@ async fn rig(reject_at_gate: bool) -> (Rig, Arc<dyn Fn() -> Ledger + Send + Sync
     a.tap_hooks = vec![(std::time::Duration::from_millis(500), true, rt, Vec::new())];
     let ct: Arc<dyn RoutingPolicy> = candidate_tap.clone();
     a.tap_hooks_candidate = vec![(std::time::Duration::from_millis(500), false, ct, Vec::new())];
-    a.global_gates = vec![(0u16, gate(Arc::new(gate_probe)))];
+    let gp: Arc<dyn RoutingPolicy> = gate_probe.clone();
+    a.global_gates = vec![(0u16, gate(gp))];
 
     let router = busbar_substrate::testkit::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -232,6 +243,7 @@ async fn rig(reject_at_gate: bool) -> (Rig, Arc<dyn Fn() -> Ledger + Send + Sync
             log,
             request_tap,
             candidate_tap,
+            gate: gate_probe,
             _serve: serve,
             _server: server,
         },
@@ -340,5 +352,78 @@ async fn candidate_tap_fires_after_an_abstaining_gate_and_a_served_request_bills
         (spend, row_billable),
         (1, 1),
         "a served request keeps its one billable request (1-cent flat fee)"
+    );
+}
+
+/// THE CELL FOR MOVE 3: a hook registered on a served request fires ONCE per request, at the SAME
+/// seat, and the code that projects the request it is handed is the `runner` module of the policy
+/// engine — the crate the neutral half of this seam moved into, named ONCE below and only in code.
+///
+/// WHY THIS IS THE CELL AND NOT A RESTATEMENT OF THE MOVE. The move is by identity, so a test that
+/// only asserted BEHAVIOUR would have passed at the merge-base too and proven nothing about WHERE
+/// the code is. This cell asserts both halves at once:
+///
+///   * THE SEAT — two served requests through one registered gate produce exactly two fires, and
+///     the projection the gate is handed is a STATED LITERAL rather than an equality with itself.
+///     Not zero (the hook is wired and reached), not more (the seam projects and fires once on the
+///     path, however many times the body is read — the "one read per seam" note in the runner is
+///     exactly the shape that could regress into a re-read);
+///   * THE ADDRESS — the same shape is computed a second time by calling
+///     `read_hook_facts` DIRECTLY, through the moved crate's own path, on the same bytes the seat
+///     saw; the two must be ONE answer. Nothing of this crate's hook module is named here, so the
+///     only thing that can make it pass is the served path running the moved code rather than a
+///     copy left behind.
+///
+/// At the merge-base that module does not exist and this file does not compile. That is the red,
+/// and no rewrite of the assertions turns it green.
+#[tokio::test]
+async fn a_hook_fires_once_per_served_request_at_the_projection_the_moved_runner_reads() {
+    const SERVED: usize = 2;
+    let (rig, _read) = rig(false).await;
+    for i in 0..SERVED {
+        assert_eq!(send(&rig).await, 200, "request {i} must be SERVED");
+    }
+
+    // ONCE PER SERVED REQUEST.
+    let shapes = rig.gate.shapes.lock().unwrap().clone();
+    assert_eq!(
+        shapes.len(),
+        SERVED,
+        "a registered hook fires exactly once per served request; saw {shapes:?}"
+    );
+    let served = shapes[0];
+    assert!(
+        shapes.iter().all(|s| *s == served),
+        "every served request projects the same shape; saw {shapes:?}"
+    );
+
+    // THE SAME SEAT, AND IT IS THE MOVED RUNNER'S. The gate sits after the global rewrite, so the
+    // bytes it was projected from are the REWRITTEN request — the same bytes handed here to the
+    // runner's own entrypoint, through its own crate path.
+    let body = serde_json::json!({"model": "p", "max_tokens": 16,
+        "messages": [{"role": "user", "content": REWRITTEN}]});
+    let bytes = body.to_string().into_bytes();
+    let direct = busbar_core_policy::runner::read_hook_facts(
+        &body,
+        &bytes,
+        busbar_substrate::proxy::APPLICATION_JSON,
+        crate::proto_codec::PROTO_ANTHROPIC,
+        Some(Operation::CHAT),
+    )
+    .expect("the runner reads this body")
+    .shape();
+    assert_eq!(
+        served,
+        (direct.turn_count, direct.has_tools, direct.text_chars),
+        "the served seat's projection IS the moved runner's projection of the same bytes — one \
+         answer, in one crate"
+    );
+    // AND IT IS THE RIGHT ANSWER, stated as a literal. Without this the assertion above is
+    // satisfied by a runner that projects NOTHING, since both sides would read the same empty
+    // shape out of the same broken function.
+    assert_eq!(
+        served,
+        (1, false, REWRITTEN.chars().count()),
+        "the projection the hook is handed is the request that was actually sent"
     );
 }

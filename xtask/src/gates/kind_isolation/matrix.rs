@@ -925,6 +925,12 @@ fn minted_rows(cx: &Ctx, reg: &super::KindRegistry) -> Vec<String> {
     // (`:deps`), the destination has to be a crate this very branch admits out of this very
     // source, the cell is scored exactly like every other cell, and a glob does not qualify,
     // because a glob names a family and a source drains into a crate.
+    //
+    // A crate may be carved out of MORE THAN ONE source — the hook policy engine took its engine
+    // from `busbar-core` and its neutral RUNNER from `busbar-llm` — so `moved_from` reads as a list
+    // and each entry is checked ONE AT A TIME against its own `[[transitional]]` row. Naming a
+    // second source admits nothing by itself: the drain row is still the thing that admits the
+    // cell, and a source with no drain row still fails this test.
     let kind_of = |name: &str| -> Option<String> {
         reg.registered
             .iter()
@@ -939,7 +945,7 @@ fn minted_rows(cx: &Ctx, reg: &super::KindRegistry) -> Vec<String> {
         }
         let minted_out_of_from = admits
             .get(t.to.as_str())
-            .is_some_and(|m| m.moved_from.as_deref() == Some(t.from.as_str()));
+            .is_some_and(|m| m.sources().contains(&t.from.as_str()));
         if !minted_out_of_from {
             continue;
         }
@@ -1046,25 +1052,35 @@ fn minted_rows(cx: &Ctx, reg: &super::KindRegistry) -> Vec<String> {
         // and the base's own pinned count for the source crate is the ceiling over it. Without
         // this, a carve-out is a laundry: move one hit, mint a row for fifty, and `ceiling-rose`
         // sees only a number going DOWN in the crate that was drained.
-        let Some(from) = m.moved_from.as_deref() else {
+        let sources = m.sources();
+        if sources.is_empty() {
             continue;
-        };
+        }
+        let from = sources.join(", ");
         for (krate, kind) in minted {
             let n = listed.get(&(krate.as_str(), kind.as_str())).copied();
-            let ceiling = at_base
-                .cells
-                .get(&(from.to_string(), kind.clone()))
-                .copied()
-                .unwrap_or(0);
+            // THE UNION, LITERALLY. Each source brought in whatever the base pinned IT at for this
+            // kind, so the ceiling over the minted cell is the SUM across the sources — no more,
+            // and no less than what was actually carried across.
+            let ceiling: i64 = sources
+                .iter()
+                .map(|src| {
+                    at_base
+                        .cells
+                        .get(&((*src).to_string(), kind.clone()))
+                        .copied()
+                        .unwrap_or(0)
+                })
+                .sum();
             if n.unwrap_or(0) > ceiling {
                 out.push(format!(
                     "mint-over-source\t[[cell]] {krate} × {kind} = {}\tthe `[[minted]]` row says \
-                     `moved_from = \"{from}\"`, and the merge-base {short} pins `{from}` × {kind} \
-                     at {ceiling}. A move carries vocabulary across, it does not create it: a \
-                     minted cell above the count its source crate was pinned at is a raise wearing \
-                     a move's clothes, and the only thing `ceiling-rose` would see is `{from}` \
-                     going DOWN. Move the hits, or raise `{from}`'s ceiling on the integration line \
-                     first and say why.",
+                     `moved_from = \"{from}\"`, and the merge-base {short} pins that source (those \
+                     sources, summed) × {kind} at {ceiling}. A move carries vocabulary across, it \
+                     does not create it: a minted cell above the count its source crates were \
+                     pinned at is a raise wearing a move's clothes, and the only thing \
+                     `ceiling-rose` would see is the sources going DOWN. Move the hits, or raise a \
+                     source's ceiling on the integration line first and say why.",
                     n.unwrap_or(0)
                 ));
             }
