@@ -843,10 +843,13 @@ async fn drive(
         .response
         .into_response();
     }
-    let hold = match admitted.decision.into_result(seal) {
-        Ok(Admission::Own(hold)) => Some(hold),
+    // The admission variant is still checked — a client unit holds its OWN admission — but the
+    // reservation never reaches the Meter step: it stays in the kernel's cell from the door to the
+    // exit, and the plane prices and settles nothing.
+    let _admission = match admitted.decision.into_result(seal) {
+        Ok(Admission::Own(_hold)) => (),
         Ok(Admission::Accrual(_)) => panic!("a client unit holds its own admission"),
-        Ok(Admission::ZeroHold) => None,
+        Ok(Admission::ZeroHold) => (),
         Err(_) => unreachable!("a refusal carries its rendered bytes and returned above"),
     };
 
@@ -899,19 +902,11 @@ async fn drive(
     // The half the walk handed BACK where it never dispatched, and the reader's copy where it did.
     let meter_sink = meter_sink.or(meter_half);
     let ctx = meter::MeterCtx::bind(host, meter_sink.as_ref(), lane, &facts, charged);
-    // The rehearsal drives this plane's steps and keeps no books, so what a report is worth is a
-    // question it cannot answer: it holds no card, and inventing one here would be this crate
-    // deciding what a lane's rates are. It answers nothing, and the hold below reaches no exit
-    // path anyway. What the money actually comes to is the composition root's, and it is proven
-    // where the card is.
-    let metered = meter::meter(
-        &UnitToken::mint(seal),
-        &UsageToken::mint(seal),
-        &ctx,
-        hold,
-        &Outcome::Completed,
-        &|_| 0,
-    );
+    // The rehearsal drives this plane's steps and keeps no books, and it does not need to: the step
+    // names no price and asks for none. It assembles what the unit consumed and hands the report
+    // over. What the money actually comes to is the composition root's, and it is proven where the
+    // card is.
+    let metered = meter::meter(&UnitToken::mint(seal), &UsageToken::mint(seal), &ctx, &Outcome::Completed);
     metering.reached = true;
     // The accrual arm's own report of itself. `row` is filled whether the step posted or only
     // sealed, so it cannot be the instrument here: one-posting-per-unit is what this pins.
@@ -925,9 +920,8 @@ async fn drive(
         split(facts.usage.as_ref()),
         facts.billing_failed,
     );
-    // The hold reaches no exit path in this rehearsal: the exit is the kernel's, and there is no
-    // plane-side settle. Held to the end of the unit so the accounting is not silently dropped.
-    let _hold = metered.hold;
+    // No hold and no money ride out of the step: the reservation is the kernel's, there is no
+    // plane-side settle, and the report is priced by the root rather than here.
     let _usage = metered.decision;
 
     // ---- STEP 7, AUDIT ----------------------------------------------------------------------
@@ -1388,23 +1382,19 @@ async fn the_walks_tap_and_the_meter_step_make_one_posting_between_them() {
 /// admission's meter half into its taps, and `route_parts` hands the half back on exactly one arm —
 /// the candidate miss, where no lane answered and `lane` is therefore `None`. So on every unit that
 /// reached a lane the step was bound with `sink = None`, and the arm was unreachable in the shipped
-/// binary: no metering row, no report, and nothing handed to the holder of the card. The [`Worth`]
-/// seam the root supplies was never invoked on a production unit, because the only `worth(..)` call
-/// sat inside a `hold.map(..)` and this loop keeps the unit's reservation in the kernel's cell from
-/// the door to the exit — so the step is handed `None` and the closure never ran.
+/// binary: no metering row and no report, so nothing for the composition root to price. The report
+/// the root prices is assembled on this arm and nowhere else.
 ///
 /// # What this pins
 ///
-/// A delivered unit, driven through the real carry: the card IS asked, exactly once; what it is
-/// asked about is the SERVING lane, its provider and the tap's own tier split; and the step SEALS
-/// rather than posts, so the one accrual is still the walk's tap's and the money is unmoved. The
-/// money identity itself is [`the_walks_tap_and_the_meter_step_make_one_posting_between_them`] and
+/// A delivered unit, driven through the real carry: the step assembles the report and KEEPS it —
+/// naming the SERVING lane, its provider, the billable count and the tap's own tier split — and the
+/// step SEALS rather than posts, so the one accrual is still the walk's tap's and the money is
+/// unmoved. The plane names no price; the money identity itself is
+/// [`the_walks_tap_and_the_meter_step_make_one_posting_between_them`] and
 /// [`the_chain_leaves_the_money_where_the_legacy_plane_leaves_it`]; this is the reachability.
-///
-/// [`Worth`]: crate::unit::meter::Worth
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_live_carry_hands_the_meter_step_the_meter_half_the_walk_took() {
-    use std::sync::atomic::{AtomicUsize, Ordering};
 
     // THE ONE DELIVERED END WHOSE FIGURES EXIST AT STEP 6 — see the fixture's own doc. A
     // same-protocol relay's tap fills while the CLIENT drains the body, which is after the unit has
@@ -1484,34 +1474,18 @@ async fn the_live_carry_hands_the_meter_step_the_meter_half_the_walk_took() {
         "the fixture delivers, so the step below is bound to a lane that answered"
     );
 
-    // THE HOLDER OF THE CARD, standing where the composition root stands. It counts its own calls,
-    // which is the whole instrument: a seam that is never invoked answers zero and a seam that is
-    // invoked twice answers one report two ways.
-    let asked = AtomicUsize::new(0);
-    let seen: std::sync::Mutex<Option<crate::unit::walk::LateReport>> = std::sync::Mutex::new(None);
-    const WORTH: u64 = 4_242;
-    let decision = walk.meter(
-        &UnitToken::mint(&seal),
-        &UsageToken::mint(&seal),
-        &|report| {
-            asked.fetch_add(1, Ordering::SeqCst);
-            *seen.lock().expect("no panic on this path") = Some(report.clone());
-            WORTH
-        },
-    );
+    // THE STEP RUNS ON THE REAL CARRY. The plane names no price and is asked for none: it assembles
+    // the report and keeps it, and reading it back off the carry is the whole instrument — a report
+    // that is never built is the arm that was unreachable.
+    let decision = walk.meter(&UnitToken::mint(&seal), &UsageToken::mint(&seal));
     assert!(decision.into_result(&seal).is_ok(), "the step proceeds");
 
-    assert_eq!(
-        asked.load(Ordering::SeqCst),
-        1,
-        "the Meter step asks the holder of the card what this unit is worth, exactly once — a zero \
-         here is the step bound with no meter half, which is the arm that was unreachable"
-    );
-    let report = seen
-        .lock()
-        .expect("no panic on this path")
-        .clone()
-        .expect("the ask carries the report it is about");
+    let report = walk
+        .reported_at_step()
+        .expect(
+            "the step assembles the report it consumed — a None here is the arm that was \
+             unreachable, bound with no meter half",
+        );
     assert_eq!(
         (report.lane.as_str(), report.provider.as_str()),
         (LANE, "test"),
@@ -1538,14 +1512,9 @@ async fn the_live_carry_hands_the_meter_step_the_meter_half_the_walk_took() {
         "and the split is the tap's own, not a figure the step invented"
     );
 
-    // WHAT THE CARRY KEPT. The step's products used to be dropped on the floor here, which is what
-    // made the dead arm indistinguishable from a live one.
-    assert_eq!(
-        walk.reported_at_step().as_ref(),
-        Some(&report),
-        "the carry keeps the reading the card was asked about"
-    );
-    assert_eq!(walk.priced_at_step(), WORTH, "and the answer it was given");
+    // The carry keeping the report is what this whole test rests on — `report` above was read back
+    // off it, so an arm that dropped it on the floor would have failed at the `expect` there, which
+    // is what used to make the dead arm indistinguishable from a live one.
 
     // ONE ACCRUAL. The walk's tap made it; the step sealed it. Making the arm reachable must not
     // make it POST — that would be this unit's tokens on the ledger twice.

@@ -1377,24 +1377,13 @@ impl Units for LlmUnit<'_> {
         // figure read here would be zero on every delivered unit and a meter accruing it would be
         // accruing a zero it could not tell from a free request.
         //
-        // WHAT THIS LINE ADDS IS THE PRICING, and it is here because the history is here. The step
-        // assembles what the unit consumed and asks; this closure answers, against the SNAPSHOT this
-        // unit was admitted under and at the instant it arrived — the same snapshot and the same
-        // instant the late reading is resolved at, through the same one expression — and the step
-        // spends the answer against the hold it was handed. A build with no history pinned answers
-        // nothing, which is the honest figure for a node that can price nothing rather than a rate
-        // it invented for itself.
-        //
-        // THE SNAPSHOT TRAVELS, NOT A CARD. Handing this closure one card would have thrown away the
-        // instant: it would price whatever the report said at whatever card the door happened to
-        // hold, and a unit whose price changed underneath it would settle at the wrong entry with
-        // nothing on the record saying so.
-        self.walk.meter(token, usage, &|report| {
-            self.history
-                .as_ref()
-                .map(|history| priced_amount(history, self.arrived, usage, report))
-                .unwrap_or(0)
-        })
+        // THE PRICING IS NOT HERE EITHER, and this step names no amount. The Meter step assembles
+        // what the unit consumed and hands the report over; the one side that holds a card prices it,
+        // once, and that is the late accrual below ([`LateAccrual::post`]) — resolved against the
+        // SNAPSHOT this unit was admitted under and at the instant it arrived, through the same
+        // `priced_amount` expression, so one report is never priced two ways. There is nothing for
+        // this step to spend and no card for it to read.
+        self.walk.meter(token, usage)
     }
 
     fn audit(
