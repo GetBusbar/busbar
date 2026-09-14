@@ -130,7 +130,7 @@ unsafe fn write_reason(buf: *mut u8, cap: usize, bytes: &[u8]) -> usize {
 /// of that here would be a second copy of a guard that already exists. `Ok(())` is admissible; `Err`
 /// carries the refusal class and the offending host/url.
 fn judge_url(url: &str, allow_private: bool) -> Result<(), (GuardClass, String)> {
-    if !scheme_is(url, "http") && !scheme_is(url, "https") {
+    if !scheme_is(url, crate::transport::Transport::Http.name()) && !scheme_is(url, "https") {
         return Err((GuardClass::Scheme, url.to_string()));
     }
     let host = extract_normalized_host(url).ok_or_else(|| (GuardClass::NoHost, url.to_string()))?;

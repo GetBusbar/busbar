@@ -812,7 +812,7 @@ pub async fn serve_plain(
                         None => (stream, peer, None),
                     }
                 }
-                Err(e) => { backoff.absorb("http", &e).await; continue; }
+                Err(e) => { backoff.absorb(crate::transport::Transport::Http.name(), &e).await; continue; }
             },
         };
 

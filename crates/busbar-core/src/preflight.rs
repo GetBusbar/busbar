@@ -898,7 +898,7 @@ pub(crate) fn plugin_fetch_downloader_with_cap(
                 .as_deref()
                 .map(config_validate::host_is_private_or_loopback)
                 .unwrap_or(false);
-            if !(config_validate::scheme_is(url, "http") && host_local) {
+            if !(config_validate::scheme_is(url, transport::Transport::Http.name()) && host_local) {
                 return Err(format!(
                     "plugins.fetch url must use https for a public host (got '{url}')"
                 ));
