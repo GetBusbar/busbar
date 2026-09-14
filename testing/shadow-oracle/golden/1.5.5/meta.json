@@ -3,7 +3,7 @@
   "version": "busbar 1.5.5",
   "recorded": 915,
   "binary_sha256": "84bde0a047fe368b661e9f6f14b2916390c40b71a6d91cdff1dbfa350aaf80e7",
-  "harness_rev": "341deed093238697bef03133f47acad4c70937bbea2f20d49974cda932c9da5a",
+  "harness_rev": "e185b0ba8eeb755ac4c79410c11ece1e72303a89c88b371d471b4c0df6da31f6",
   "host_triple": "x86_64-unknown-linux-gnu",
   "at": "2026-09-07T22:16:53Z",
   "provenance_history": {
@@ -99,6 +99,11 @@
         "from": "43aa24706e3350fa56dda206ace37b895d22dcc7617facf41b6b983cc86f0716",
         "to": "341deed093238697bef03133f47acad4c70937bbea2f20d49974cda932c9da5a",
         "why": "2026-09-12 documentation-only (keep-oracle-base-reds), CORRECTING THE PRIOR STAMP: the two `/paths/...` entries the previous stamp claimed (the overlay-delete `summary` and its `responses/400/description`) do not load — `resolve_json_pointer` splits on every `/` with no JSON-Pointer `~1` escaping, so it can never resolve a leaf under a `paths` object whose own keys are full URL paths containing literal `/`; `replay.sh` refused to run at all under the previous harness_rev. Both entries are removed from `description_corrections` and folded into the rationale's already-open list of leaves left RED for the owner (alongside the `409` response's new clause and the `NamedDefView.required` shrink), noting the tool limitation. No cell re-recorded, no cell byte changed."
+      },
+      {
+        "from": "341deed093238697bef03133f47acad4c70937bbea2f20d49974cda932c9da5a",
+        "to": "e185b0ba8eeb755ac4c79410c11ece1e72303a89c88b371d471b4c0df6da31f6",
+        "why": "2026-09-13 documentation-only (keep-oracle-restamp-current): accepted-differences.json is a harness_rev file, and the F-011 openapi entry's `rationale` prose gained a SIXTH-LEAF paragraph (commit 68b442bb7) recording that the `NamedDefView.required` shrink the prior stamp left RED for the owner was resolved AT THE ROOT rather than waived here — `module` now always serializes (`#[serde(skip_serializing_if = \"String::is_empty\")]` removed in crates/busbar-substrate/src/api.rs, `agents:` entries write `module: \"\"`), `required` is `[\"name\", \"module\", \"settings_keys\"]` byte-for-byte with 1.5.5, and openapi.json{,.gz} were regenerated. Only the human `rationale` string changed in this harness_rev file; the machine-read fields the differ keys a verdict on (`kind`, `description_corrections`, path selectors) are byte-identical, and the tool reads `rationale` only to echo into its report, never to decide a line. No normalize.py / capture.py / cells.json / driver / scripts file moved; the pin is still busbar-oracle v0.3.7. No cell re-recorded, no cells/*.json byte changed."
       }
     ]
   },
