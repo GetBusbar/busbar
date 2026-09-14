@@ -2167,11 +2167,13 @@ pub(crate) async fn put_auth(
         // test-only stand-in exists in test builds only. An unknown name can never silently drop
         // auth.
         for name in &req.admin_auth {
-            let known = name == "admin-tokens" || (cfg!(test) && name == "test-scope-module");
+            let known = name == crate::config::ADMIN_TOKENS_MODULE
+                || (cfg!(test) && name == "test-scope-module");
             if !known {
                 return Err(AdminError::Validation(format!(
                     "admin_auth names unknown module '{name}'; the built-in admin module is \
-                     `admin-tokens` (external admin modules are registered at compile time)"
+                     `{}` (external admin modules are registered at compile time)",
+                    crate::config::ADMIN_TOKENS_MODULE
                 )));
             }
         }

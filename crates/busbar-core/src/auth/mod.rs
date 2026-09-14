@@ -926,7 +926,7 @@ fn run_admin_chain(
     for name in &app.admin_chain {
         // The built-in admin-tokens module is in-process and NEVER cached (caching a microsecond
         // compare only widens the rotation window); external admin modules are the cache's case.
-        let cacheable = name != "admin-tokens";
+        let cacheable = name != crate::config::ADMIN_TOKENS_MODULE;
         if let Some(cred) = composite.as_deref().filter(|_| cacheable) {
             if let Some(outcome) = app.credential_cache.get(name, cred, now) {
                 match outcome {
@@ -948,14 +948,16 @@ fn run_admin_chain(
         }
         let outcome = match name.as_str() {
             #[cfg(feature = "auth-admin-tokens")]
-            "admin-tokens" => busbar_auth_admin_tokens::authenticate_admin_tokens(
-                app.governance
-                    .as_ref()
-                    .and_then(|g| g.admin_token_hash())
-                    .as_deref(),
-                bearer,
-                header,
-            ),
+            crate::config::ADMIN_TOKENS_MODULE => {
+                busbar_auth_admin_tokens::authenticate_admin_tokens(
+                    app.governance
+                        .as_ref()
+                        .and_then(|g| g.admin_token_hash())
+                        .as_deref(),
+                    bearer,
+                    header,
+                )
+            }
             // TEST-ONLY external-module stand-in: lets the e2e suite exercise group-mapped,
             // NON-full principals (unreachable with admin-tokens alone). Credential grammar:
             // `grp:<group>` identifies as a principal carrying exactly that group. Compiled out
@@ -1111,7 +1113,7 @@ fn module_admin_scope_cap(
     module: &str,
 ) -> Option<crate::admin::v1::contract::Scope> {
     use crate::admin::v1::contract::Scope;
-    if module == "admin-tokens" {
+    if module == crate::config::ADMIN_TOKENS_MODULE {
         return None;
     }
     Some(
