@@ -908,7 +908,7 @@ fn migrate_governance(root: &mut Mapping, changes: &mut Vec<String>, todos: &mut
         store.insert("module".into(), module.clone().into());
         let mut settings = Mapping::new();
         match (module.as_str(), db_path) {
-            ("memory", _) => {}
+            (crate::config::GOVERNANCE_STORE_MEMORY, _) => {}
             ("sqlite", Some(p)) => {
                 settings.insert("db_path".into(), p.into());
             }
@@ -1288,7 +1288,7 @@ fn migrate_auth(
                     }
                     _ => None,
                 })
-                .filter(|m| m != "keys" && m != "tokens" && m != "admin-tokens")
+                .filter(|m| m != "keys" && m != "tokens" && m != crate::config::ADMIN_TOKENS_MODULE)
                 .collect()
         })
         .unwrap_or_default();

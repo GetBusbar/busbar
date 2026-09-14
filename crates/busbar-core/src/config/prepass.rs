@@ -48,11 +48,16 @@ use crate::plane::config::{AgentsSection, McpEndpointSection, StreamsSection, To
 /// frozen struct's field set. Adding a 1.6.0 top-level key means adding it HERE and giving the
 /// carrier field a serde-skipped declaration — never a plain field.
 ///
+/// The frozen top-level wire KEY for the MCP upstream registry — the one spelling
+/// [`LIFTED_TOP_LEVEL_KEYS`] and [`LiftedSeed::deserialize`] both read, so the wire key and the
+/// carrier-type dispatch below it cannot drift into two different spellings of "mcp".
+pub(crate) const KEY_MCP: &str = "mcp"; // plane-purity: frozen-wire the ONE spelling of the frozen wire KEY
+
 /// In order: busbar's OWN endpoint as an OAuth 2.1 resource server; busbar AS an OAuth 2.1
 /// authorization server; the MCP upstream registry; the A2A agent registry; the live-voice
 /// session section.
 pub(crate) const LIFTED_TOP_LEVEL_KEYS: &[&str] =
-    &["mcp", "oauth_as", "tools", "agents", "streams"]; // plane-purity: frozen-wire the frozen top-level wire KEYS this pass lifts
+    &[KEY_MCP, "oauth_as", "tools", "agents", "streams"]; // plane-purity: frozen-wire the frozen top-level wire KEYS this pass lifts
 
 /// The keys lifted out of the `auth:` block. `policy:` is a 1.6.0 addition (token-mint caps); the
 /// five keys around it are 1.5.5's and stay in the frozen struct.
@@ -140,7 +145,7 @@ impl<'de> DeserializeSeed<'de> for LiftedSeed {
     fn deserialize<D: Deserializer<'de>>(self, de: D) -> Result<Self::Value, D::Error> {
         Ok(match self.0 {
             // plane-purity: frozen-wire routes the frozen wire KEY to its frozen carrier TYPE
-            "mcp" => LiftedValue::Mcp(McpEndpointSection::deserialize(de)?),
+            KEY_MCP => LiftedValue::Mcp(McpEndpointSection::deserialize(de)?),
             "oauth_as" => LiftedValue::OauthAs(Option::deserialize(de)?),
             "tools" => LiftedValue::Tools(ToolsSection::deserialize(de)?),
             "agents" => LiftedValue::Agents(AgentsSection::deserialize(de)?),
