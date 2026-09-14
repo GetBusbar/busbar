@@ -89,12 +89,14 @@ pub fn validate_credential(credential: &str) -> Result<(), String> {
 fn validate_token_url(token_url: &str, ssrf: &super::MetadataSsrfPolicy) -> Result<(), String> {
     use crate::net_guard::{
         extract_normalized_host, host_is_private_or_loopback, scheme_is, ssrf_blocked_host,
+        SCHEME_HTTP, SCHEME_HTTPS,
     };
     let host_private = extract_normalized_host(token_url)
         .as_deref()
         .map(host_is_private_or_loopback)
         .unwrap_or(false);
-    if !(scheme_is(token_url, "https") || (host_private && scheme_is(token_url, "http"))) {
+    if !(scheme_is(token_url, SCHEME_HTTPS) || (host_private && scheme_is(token_url, SCHEME_HTTP)))
+    {
         return Err(format!(
             "oauth-client-credentials token_url must use https for a public host (got '{token_url}'); it receives the client_id/client_secret, so plaintext http is permitted only for a private/loopback endpoint"
         ));

@@ -123,12 +123,14 @@ pub fn validate_credential(
 fn validate_token_uri(token_uri: &str, ssrf: &super::MetadataSsrfPolicy) -> Result<(), String> {
     use crate::net_guard::{
         extract_normalized_host, host_is_private_or_loopback, scheme_is, ssrf_blocked_host,
+        SCHEME_HTTP, SCHEME_HTTPS,
     };
     let host_private = extract_normalized_host(token_uri)
         .as_deref()
         .map(host_is_private_or_loopback)
         .unwrap_or(false);
-    if !(scheme_is(token_uri, "https") || (host_private && scheme_is(token_uri, "http"))) {
+    if !(scheme_is(token_uri, SCHEME_HTTPS) || (host_private && scheme_is(token_uri, SCHEME_HTTP)))
+    {
         return Err(format!(
             "service-account token_uri must use https for a public host (got '{token_uri}'); it receives the signed JWT assertion, so plaintext http is permitted only for a private/loopback endpoint"
         ));

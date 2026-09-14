@@ -745,7 +745,7 @@ mod tunnel {
         };
         let parsed = url::Url::parse(&url)
             .map_err(|e| format!("proxy env value {v:?} is not a valid URL: {e}"))?;
-        if parsed.scheme() != "http" {
+        if parsed.scheme() != crate::net_guard::SCHEME_HTTP {
             return Err(format!(
                 "proxy env value {v:?} uses scheme {:?}: only plain http:// CONNECT proxies are \
                  supported (an https:// proxy would need TLS-to-proxy, which this tunnel does not \

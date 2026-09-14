@@ -208,14 +208,14 @@ impl Transport {
     /// served card advertises one vocabulary instead of three that agree today.
     pub fn name(self) -> &'static str {
         match self {
-            Transport::Http => "http",
+            Transport::Http => crate::plane::WIRE_HTTP,
             Transport::JsonRpc => crate::plane::WIRE_JSONRPC,
             Transport::HttpJson => crate::plane::WIRE_HTTP_JSON,
             // The A2A card's `protocolBinding` for this leg is `GRPC` and the plane's wire-format
             // name is `grpc`; one lower-case spelling, so a per-transport conformance number read
             // off busbar's telemetry and one read off the TCK's own stdout name the same leg.
             Transport::Grpc => crate::plane::WIRE_GRPC,
-            Transport::Stdio => "stdio",
+            Transport::Stdio => crate::plane::WIRE_STDIO,
             Transport::WebSocket => "websocket",
         }
     }

@@ -861,6 +861,16 @@ pub fn refuse_oversized_body(
 //    `busbar-core`. `busbar_core::config_validate` re-exports them so every in-core caller is
 //    unchanged. Behavior is byte-identical to the pre-move definitions.
 
+/// THE PLAINTEXT URL SCHEME, named once so the proxy-scheme check
+/// ([`crate::egress::engine::parse_proxy`]) and the token-endpoint https-requirement checks
+/// (`egress_auth::jwt_bearer::validate_token_uri`, `egress_auth::oauth_client_credentials::validate_token_url`)
+/// read the same spelling `scheme_is` compares against, instead of each restating the literal.
+pub const SCHEME_HTTP: &str = "http";
+
+/// THE ENCRYPTED URL SCHEME, named once for the same reason as [`SCHEME_HTTP`]: the token-endpoint
+/// https-requirement checks compare against this rather than a literal spelled at each call site.
+pub const SCHEME_HTTPS: &str = "https";
+
 pub fn scheme_is(url: &str, scheme: &str) -> bool {
     url.split_once("://")
         .is_some_and(|(s, _)| s.eq_ignore_ascii_case(scheme))

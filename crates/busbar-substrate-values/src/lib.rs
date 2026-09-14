@@ -63,6 +63,16 @@ pub mod plane {
     /// — so the card cannot claim a binding the plane does not list, which is the whole reason that
     /// function reads this list rather than writing one of its own.
     pub const WIRE_GRPC: &str = "grpc";
+
+    /// THE HTTP TRANSPORT'S WIRE-FORMAT NAME, read by [`crate::transport::Transport::name`] so the
+    /// metric label matches the same vocabulary the other transports draw from, rather than a literal
+    /// spelled again at that call site.
+    pub const WIRE_HTTP: &str = "http";
+
+    /// THE STDIO TRANSPORT'S WIRE-FORMAT NAME, read by [`crate::transport::Transport::name`] for the
+    /// same reason as [`WIRE_HTTP`]: one spelling shared by the metric label and anything else that
+    /// names this leg, instead of a second literal.
+    pub const WIRE_STDIO: &str = "stdio";
 }
 
 // The value families the money path is written in.

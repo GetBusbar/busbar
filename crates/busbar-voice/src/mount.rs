@@ -789,7 +789,7 @@ fn finish(mut resp: axum::response::Response) -> axum::response::Response {
     let outcome = busbar_substrate::telemetry::outcome_of(resp.status().as_u16());
     metrics::counter!(
         PLANE_REQUESTS_TOTAL,
-        "plane" => "voice",
+        "plane" => crate::PLANE_DECL.key,
         "ingress_protocol" => crate::OPENAI_REALTIME,
         "pool" => FRONT_DOOR_POOL,
         "outcome" => outcome,
