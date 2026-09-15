@@ -239,54 +239,23 @@ pub(crate) async fn translate_response_cross_protocol(
     // parses but whose shape is unmodeled falls through to the ingress-native 500 and bills nothing).
     let body_json = busbar_substrate::json::parse::<Value>(&bytes);
     if body_json.is_err() {
-        if let Some(eh) = egress_op {
-            match eh.translate_response(
-                busbar_substrate::handlers::TranslateRespInput::Opaque(&bytes),
-                ingress_op.is_some(),
-                ingress_protocol,
-                &EngineTables::new(rt).lanes()[i].model,
-                now(),
-                false,
-                None,
-                ingress_request_body.as_ref(),
-            ) {
-                Err(ref e) => {
-                    diag_debug!(
-                        CROSSPROTO_BINARY_CODEC_FAILED,
-                        ingress = %ingress_protocol,
-                        egress = %egress_name,
-                        error = ?e,
-                        degraded,
-                        "cross-protocol binary response failed the egress codec (read_response); returning ingress-native 500",
-                    );
-                }
-                Ok((usage, delivered)) => {
-                    if let busbar_substrate::wire::TranslatedResponse::Typed(wire) = delivered {
-                        // Delivered: bill and keep the lane unit (never refund out from under an
-                        // already-billed request).
-                        // THE REPORT-BACK, on the opaque delivery: the whole answer is in hand and
-                        // is about to be relayed, so the tap knows all four figures before the
-                        // client has any of them. Read from the SAME `usage` the accrual is made
-                        // from, before it moves.
-                        tap.report(TapReport {
-                            lane: i,
-                            usage: token_usage_of(&usage),
-                            billing_failed: false,
-                            finish: TapFinish::Complete,
-                        });
-                        record_resp_usage(
-                            host,
-                            usage,
-                            &usage_sink,
-                            EngineTables::new(rt).lanes().get(i),
-                        );
-                        budget_guard.disarm();
-                        return delivery.respond(wire.content_type, wire.bytes);
-                    }
-                    // `Untranslatable`: no client body could be written — fall through to the 500,
-                    // unbilled, guard left armed so the budget unit is refunded.
-                }
-            }
+        if let Some(resp) = deliver_opaque_body(
+            host,
+            &delivery,
+            egress_op,
+            ingress_op.is_some(),
+            &bytes,
+            &usage_sink,
+            budget_guard,
+            ingress_protocol,
+            egress_name,
+            rt,
+            i,
+            degraded,
+            ingress_request_body.as_ref(),
+            tap,
+        ) {
+            return resp;
         }
     }
     if let (Ok(rv), Some(eh)) = (&body_json, egress_op) {
@@ -312,9 +281,39 @@ pub(crate) async fn translate_response_cross_protocol(
             }
         }
     }
-    // Not translatable (non-JSON / unexpected-but-valid shape / unknown ingress). Relaying the
-    // upstream body verbatim would leak the egress provider's native wire format to a
-    // different-protocol client, so return an ingress-native 500 instead.
+    respond_untranslatable(
+        host,
+        rt,
+        pool,
+        i,
+        ingress_protocol,
+        egress_name,
+        status,
+        breaker_cfg,
+        degraded,
+        tap,
+    )
+}
+
+/// The terminal NOT-TRANSLATABLE exit (non-JSON / unexpected-but-valid shape / unknown ingress).
+/// Relaying the upstream body verbatim would leak the egress provider's native wire format to a
+/// different-protocol client, so return an ingress-native 500 instead — and, because an undecodable
+/// body is as much a lane fault as a transport failure, record a compensating transient (letting the
+/// still-armed guard refund the budget unit). Extracted verbatim from
+/// `translate_response_cross_protocol`.
+#[allow(clippy::too_many_arguments)]
+fn respond_untranslatable(
+    host: &Arc<dyn EngineHost>,
+    rt: &Arc<NativeRuntime>,
+    pool: &str,
+    i: usize,
+    ingress_protocol: &str,
+    egress_name: &str,
+    status: StatusCode,
+    breaker_cfg: &busbar_substrate::store::BreakerCfg,
+    degraded: bool,
+    tap: &TapCell,
+) -> Response {
     if degraded {
         diag_debug!(
             CROSSPROTO_RESPONSE_NOT_TRANSLATABLE_DEGRADED,
@@ -342,13 +341,94 @@ pub(crate) async fn translate_response_cross_protocol(
     if tripped {
         emit_breaker_trip(host, rt, pool, i);
     }
-    tap.report(failed_transfer());
+    // The same failed-transfer end the four other non-delivery exits report: nothing of the answer
+    // was ever relayed, so the record seals `Error` and bills zero.
+    tap.report(TapReport {
+        lane: i,
+        usage: None,
+        billing_failed: true,
+        finish: TapFinish::Error,
+    });
     ingress_error(
         ingress_protocol,
         StatusCode::INTERNAL_SERVER_ERROR,
         KIND_API_ERROR,
         GENERIC_RESPONSE_ERROR_DETAIL,
     )
+}
+
+/// The OPAQUE (non-JSON egress body — binary speech audio) delivery: bridge the bytes through the
+/// egress operation codec and, on a `Typed` result, bill and hand the client the wire body.
+/// `Some(response)` only when a body is actually delivered; `None` (codec error, `Untranslatable`,
+/// or no egress handler) falls back to the caller's JSON path / ingress-native 500. Extracted
+/// verbatim from `translate_response_cross_protocol` — same values, same order, same effects.
+#[allow(clippy::too_many_arguments)]
+fn deliver_opaque_body(
+    host: &Arc<dyn EngineHost>,
+    delivery: &Delivery<'_>,
+    egress_op: Option<&dyn busbar_substrate::handlers::OperationHandler>,
+    ingress_serves_op: bool,
+    bytes: &Bytes,
+    usage_sink: &Option<UsageSink>,
+    budget_guard: &mut BudgetSpendGuard<'_>,
+    ingress_protocol: &str,
+    egress_name: &str,
+    rt: &Arc<NativeRuntime>,
+    i: usize,
+    degraded: bool,
+    ingress_request_body: Option<&Value>,
+    tap: &TapCell,
+) -> Option<Response> {
+    let eh = egress_op?;
+    match eh.translate_response(
+        busbar_substrate::handlers::TranslateRespInput::Opaque(bytes),
+        ingress_serves_op,
+        ingress_protocol,
+        &EngineTables::new(rt).lanes()[i].model,
+        now(),
+        false,
+        None,
+        ingress_request_body,
+    ) {
+        Err(ref e) => {
+            diag_debug!(
+                CROSSPROTO_BINARY_CODEC_FAILED,
+                ingress = %ingress_protocol,
+                egress = %egress_name,
+                error = ?e,
+                degraded,
+                "cross-protocol binary response failed the egress codec (read_response); returning ingress-native 500",
+            );
+            None
+        }
+        Ok((usage, delivered)) => {
+            if let busbar_substrate::wire::TranslatedResponse::Typed(wire) = delivered {
+                // Delivered: bill and keep the lane unit (never refund out from under an
+                // already-billed request).
+                // THE REPORT-BACK, on the opaque delivery: the whole answer is in hand and
+                // is about to be relayed, so the tap knows all four figures before the
+                // client has any of them. Read from the SAME `usage` the accrual is made
+                // from, before it moves.
+                tap.report(TapReport {
+                    lane: i,
+                    usage: token_usage_of(&usage),
+                    billing_failed: false,
+                    finish: TapFinish::Complete,
+                });
+                record_resp_usage(
+                    host,
+                    usage,
+                    usage_sink,
+                    EngineTables::new(rt).lanes().get(i),
+                );
+                budget_guard.disarm();
+                return Some(delivery.respond(wire.content_type, wire.bytes));
+            }
+            // `Untranslatable`: no client body could be written — fall through to the 500,
+            // unbilled, guard left armed so the budget unit is refunded.
+            None
+        }
+    }
 }
 
 /// The JSON-body delivery: translate, bill on a delivering variant, and build the client response.
