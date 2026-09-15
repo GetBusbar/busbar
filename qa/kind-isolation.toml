@@ -1749,7 +1749,7 @@ count = "4"
 [[cell]]
 crate = "busbar-llm"
 kind = "api"
-count = "301"
+count = "299"
 
 [[cell]]
 crate = "busbar-llm"
@@ -1759,7 +1759,7 @@ count = "3"
 [[cell]]
 crate = "busbar-llm"
 kind = "caps"
-count = "47"
+count = "43"
 
 [[cell]]
 crate = "busbar-llm"

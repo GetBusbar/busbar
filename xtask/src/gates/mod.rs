@@ -152,7 +152,6 @@ pub const CONSTRUCTION_STANDING_REDS: &[&str] = &[
     // the route step" that found no `.await` in scope at all, and passed on that basis.
     "hold-discipline:cancellation-before-await",
     "one-pick-site",
-    "plane-no-money",
     "ports-only-tests:busbar-llm",
     "request-path-fn-size",
     "terminal-doors-in-audit-step",

@@ -1377,24 +1377,12 @@ impl Units for LlmUnit<'_> {
         // figure read here would be zero on every delivered unit and a meter accruing it would be
         // accruing a zero it could not tell from a free request.
         //
-        // WHAT THIS LINE ADDS IS THE PRICING, and it is here because the history is here. The step
-        // assembles what the unit consumed and asks; this closure answers, against the SNAPSHOT this
-        // unit was admitted under and at the instant it arrived — the same snapshot and the same
-        // instant the late reading is resolved at, through the same one expression — and the step
-        // spends the answer against the hold it was handed. A build with no history pinned answers
-        // nothing, which is the honest figure for a node that can price nothing rather than a rate
-        // it invented for itself.
-        //
-        // THE SNAPSHOT TRAVELS, NOT A CARD. Handing this closure one card would have thrown away the
-        // instant: it would price whatever the report said at whatever card the door happened to
-        // hold, and a unit whose price changed underneath it would settle at the wrong entry with
-        // nothing on the record saying so.
-        self.walk.meter(token, usage, &|report| {
-            self.history
-                .as_ref()
-                .map(|history| priced_amount(history, self.arrived, usage, report))
-                .unwrap_or(0)
-        })
+        // THE STEP NAMES NO PRICE, and the pricing is not here either. The step assembles what the
+        // unit consumed and hands it back on its report; the amount is worked out where the report
+        // and the card already meet — the LATE reading, against the snapshot this unit was admitted
+        // under and at the instant it arrived, which is the one expression a delivered answer's
+        // figures are ever priced through on this plane.
+        self.walk.meter(token, usage)
     }
 
     fn audit(
