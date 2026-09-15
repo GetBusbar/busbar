@@ -97,7 +97,7 @@ pub const MESSAGE_NAMES_SENTINEL: &str = "__busbar_openai_message_names";
 /// specifically with `context`/`token limit`. The caller supplies its own lowercased source
 /// (openai scans `error.message`; responses scans the whole body) and applies the
 /// `oversized_status` (400/413) GATE itself — that gate is NOT part of this helper.
-pub fn openai_context_length_prose_scan(text: &str) -> bool {
+pub fn context_length_prose_scan(text: &str) -> bool {
     text.contains("maximum context length")
         || text.contains("context length exceeded")
         || text.contains("reduce the length")
@@ -167,13 +167,13 @@ pub fn openai_classify(status: http::StatusCode, body: &[u8]) -> crate::breaker:
     // structured `code: "context_length_exceeded"` path is NOT gated (it is unambiguous).
     //
     // The scan itself is the shared one and not a clause of its own: production runs all four
-    // phrasings through `openai_context_length_prose_scan`, and a copy here that carried only the
+    // phrasings through `context_length_prose_scan`, and a copy here that carried only the
     // first was a mirror that showed a different picture. Every test proving oversized-request
     // failover through this function was then proving behaviour production does not have, for three
     // of the four phrasings the providers actually send.
     let oversized = status == StatusCode::BAD_REQUEST || status == StatusCode::PAYLOAD_TOO_LARGE;
     let prose_is_context = oversized
-        && openai_context_length_prose_scan(&String::from_utf8_lossy(body).to_lowercase());
+        && context_length_prose_scan(&String::from_utf8_lossy(body).to_lowercase());
     if code_is_context || prose_is_context {
         return crate::breaker::CanonicalSignal {
             class: StatusClass::ContextLength,

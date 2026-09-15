@@ -76,7 +76,7 @@ impl ProtocolReader for OpenAiReader {
                 .and_then(|m| m.as_str())
                 .unwrap_or("")
                 .to_lowercase();
-            if openai_context_length_prose_scan(&message) {
+            if context_length_prose_scan(&message) {
                 Some(busbar_substrate_values::proxy::PROVIDER_CODE_CONTEXT_LENGTH.to_string())
             } else {
                 None

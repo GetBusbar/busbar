@@ -3,7 +3,7 @@
 
 //! DIMENSION-1 LEAKAGE GATE (dialect axis) — the neutral ABI crate `busbar-substrate` must name NO
 //! LLM dialect. The `plane-purity` DIALECT scanner matches WHOLE-WORD tokens (`openai`, `bedrock`, …),
-//! so a dialect-PREFIXED snake_case identifier (`openai_context_length_prose_scan`) slips through it
+//! so a dialect-PREFIXED snake_case identifier (`openai_classify`) slips through it
 //! uncaught — the exact blind spot the plane-extraction audit found. This gate closes it: it scans
 //! `busbar-substrate`'s production source for any `<dialect>_<snake>` identifier and fails RED unless
 //! it is in the ALLOWLIST of the currently-tracked residue.
@@ -22,7 +22,7 @@ const DIALECT_PREFIXES: &[&str] = &["openai_", "bedrock_", "gemini_", "cohere_",
 /// The CURRENTLY-TRACKED LLM-ABI purity residue — OpenAI-family helpers awaiting relocation into
 /// `busbar-llm`. This allowlist may only SHRINK. A dialect-prefixed identifier NOT listed here is a
 /// NEW leak and reds the gate.
-const TRACKED_RESIDUE: &[&str] = &["openai_context_length_prose_scan", "openai_classify"];
+const TRACKED_RESIDUE: &[&str] = &["openai_classify"];
 
 /// BOTH HALVES OF THE NEUTRAL ABI CRATE. The substrate was split in two — `busbar-substrate-values`
 /// carries the pure value families (including `proto`, where the tracked residue lives) and
@@ -64,7 +64,7 @@ fn production_rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
 }
 
 /// Extract dialect-prefixed snake_case identifiers on `line`, excluding line/doc comments. Returns each
-/// full identifier (e.g. `openai_context_length_prose_scan`) so it can be checked against the allowlist.
+/// full identifier (e.g. `openai_classify`) so it can be checked against the allowlist.
 fn dialect_identifiers(line: &str) -> Vec<String> {
     let trimmed = line.trim_start();
     if trimmed.starts_with("//") || trimmed.starts_with('*') || trimmed.starts_with("/*") {

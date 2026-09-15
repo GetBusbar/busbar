@@ -5,9 +5,9 @@
 
 use crate::ir::{IrStreamEvent, IrUsage};
 use http::{header::HeaderValue, HeaderName, StatusCode};
-// The openai-family error helpers (`bearer_error_code`/`openai_context_length_prose_scan`) now live
+// The openai-family error helpers (`bearer_error_code`/`context_length_prose_scan`) now live
 // in the neutral substrate; name them there so this plugin reaches no `busbar-core` path for them.
-use busbar_substrate_values::proto::{bearer_error_code, openai_context_length_prose_scan};
+use busbar_substrate_values::proto::{bearer_error_code, context_length_prose_scan};
 // The neutral canonical error-type vocabulary lives in the substrate; read it there, not via core's
 // re-export, so this plugin names no `busbar-core` implementation path for it.
 #[cfg(test)]

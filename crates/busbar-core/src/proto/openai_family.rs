@@ -6,7 +6,7 @@
 //! live here so they are single-sourced rather than copy-pasted (and risking drift).
 
 // The OpenAI-family error helpers (`CODE_INVALID_API_KEY`, `PROVIDER_SIGNAL_CONTEXT_LENGTH`,
-// `MESSAGE_NAMES_SENTINEL`, `openai_context_length_prose_scan`, `bearer_error_code`,
+// `MESSAGE_NAMES_SENTINEL`, `context_length_prose_scan`, `bearer_error_code`,
 // `openai_classify`) RELOCATED DOWN to the neutral `busbar_substrate::proto` leaf so the
 // `busbar-llm` OpenAI-family dialects name them without reaching into `busbar-core`. Re-exported here
 // at their historical `proto::openai_family::…` paths so every existing in-core / plugin caller
@@ -14,7 +14,7 @@
 // named six core-only `proxy::KIND_*` aliases before the move; it now names the byte-identical
 // substrate `ERR_TYPE_*` consts directly.)
 pub use busbar_substrate::proto::{
-    bearer_error_code, openai_context_length_prose_scan, CODE_INVALID_API_KEY,
+    bearer_error_code, context_length_prose_scan, CODE_INVALID_API_KEY,
     MESSAGE_NAMES_SENTINEL,
 };
 #[cfg(any(test, feature = "test-support"))]

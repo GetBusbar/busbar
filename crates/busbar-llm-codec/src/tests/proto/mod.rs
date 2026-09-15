@@ -51,7 +51,7 @@ pub use crate::openai_responses::{ResponsesReader, ResponsesWriter};
 // `Protocol` &c.).
 pub use busbar_substrate_values::proto::{
     array_stream_shim_key_for, array_stream_shim_keys, bearer_auth_headers, bearer_error_code,
-    find_frame_terminator, known_protocols, lane_protocol_name, openai_context_length_prose_scan,
+    find_frame_terminator, known_protocols, lane_protocol_name, context_length_prose_scan,
     parse_sse_frame, sse_event_type, streaming_content_types, strip_top_level_usage_member,
     write_sse_frame, IrError, BASE62_ALPHABET, HDR_AUTHORIZATION, SIGNAL_IR_PARSE, SSE_DONE_FRAME,
     SSE_DONE_SENTINEL,

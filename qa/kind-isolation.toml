@@ -5485,7 +5485,7 @@ count = "14"
 [[cell]]
 crate = "busbar-core"
 kind = "dialect"
-count = "1194"
+count = "1192"
 
 [[cell]]
 crate = "busbar-hooks-ranking"
@@ -5500,7 +5500,7 @@ count = "3208"
 [[cell]]
 crate = "busbar-llm-codec"
 kind = "dialect"
-count = "11204"
+count = "11196"
 
 [[cell]]
 crate = "busbar-mcp"
@@ -5530,12 +5530,12 @@ count = "2"
 [[cell]]
 crate = "busbar-substrate"
 kind = "dialect"
-count = "90"
+count = "89"
 
 [[cell]]
 crate = "busbar-substrate-values"
 kind = "dialect"
-count = "252"
+count = "249"
 
 [[cell]]
 crate = "busbar-transport-sse"

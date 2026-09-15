@@ -72,7 +72,7 @@ impl ProtocolReader for ResponsesReader {
                 return None;
             }
             let lower = String::from_utf8_lossy(body).to_lowercase();
-            if busbar_substrate_values::proto::openai_context_length_prose_scan(&lower) {
+            if busbar_substrate_values::proto::context_length_prose_scan(&lower) {
                 Some(busbar_substrate_values::proxy::PROVIDER_CODE_CONTEXT_LENGTH.to_string())
             } else {
                 None
