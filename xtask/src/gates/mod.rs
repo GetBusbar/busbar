@@ -383,12 +383,19 @@ const MEASURED_CONSTRUCTION: f64 = 33_096.0; // 36 cases, 352.4 s
 const MEASURED_KIND_ISOLATION: f64 = 128_034.0; // 152 cases, 1360.9 s
 const MEASURED_KIND_ISOLATION_SHIP: f64 = 120_208.0; // 122 cases, 1290.7 s
 
-// `audit-ledger` MEASURED 4 433 UNITS (14 cases, 46.5 s) AND NO LONGER HAS AN ENTRY. Its budget was
-// 22 000 against a note claiming 6 552; times the declared slack its measurement asks for 7 093,
-// which is BELOW `DEFAULT_BUDGET_UNITS`. An exception that no longer excuses anything is a line
-// nobody re-reads, so it is struck rather than re-baselined — the default covers it with room, and
-// if the gate grows back past 9 000 the default is what says so. This is the same stale-waiver rule
-// the tree applies to every other exception it carries.
+// `audit-ledger` MEASURED 4 433 UNITS (14 cases, 46.5 s) at 2026-09-10 b6f66e929 and was struck as
+// below the default. It has since GROWN BACK PAST 9 000 — 8 779 units, the SAME 14 cases, 99.4 s, at
+// 2026-09-15 abf8e9ce8 — which is exactly the "if the gate grows back past 9 000 the default is what
+// says so" trigger the struck note named. Re-examined: no case was added; the growth is the 1.6.0
+// register itself. The `audited-at-reachable` case asks git to reach EVERY commit the register names,
+// and the register gained the whole 1.6.0 drain — so the same 14 cases now scan a bigger history. It
+// is NOT the per-plant disk rescan `construction` had (d0117d2cb): each case plants a DIFFERENT
+// register, so the reachability answer differs per case and is not memoisable across them. Isolated
+// it is still under the default (8 779), but the battery runs under `cargo test`'s own ~1.4x
+// contention where it crosses it — the same reason every other whole-tree battery here carries the
+// 1.6x slack. Re-baselined below with that slack; a FUTURE doubling (past ~14 000) is still a red row
+// rather than minutes nobody attributes.
+const MEASURED_AUDIT_LEDGER: f64 = 8_779.0; // 14 cases, 99.4 s
 
 /// ONE BUDGETED SELF-TEST: WHAT IT MEASURED, WHEN, ON WHAT, AND WHAT IT IS ALLOWED.
 ///
@@ -492,6 +499,13 @@ const SELFTEST_BUDGETS: &[Budget] = &[
         allowed: MEASURED_KIND_ISOLATION_SHIP * BUDGET_SLACK,
         taken: TAKEN,
         why: "The ship twin of the battery above: the same shape held to a ceiling of zero, plus the derivations with a degenerate answer and the floors whose subject is the size of their own input.",
+    },
+    Budget {
+        gate: "audit-ledger",
+        measured: MEASURED_AUDIT_LEDGER,
+        allowed: MEASURED_AUDIT_LEDGER * BUDGET_SLACK,
+        taken: "2026-09-15 abf8e9ce8",
+        why: "The `audited-at-reachable` case asks git to reach every commit the register names, and the 1.6.0 register gained the whole drain, so the same 14 cases now scan a bigger history. Isolated it is under the default, but under `cargo test`'s contention it crosses it, so it carries the standard whole-tree-battery slack; struck when it was cheap, re-baselined now that it grew back.",
     },
 ];
 
