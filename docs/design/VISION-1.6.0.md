@@ -68,8 +68,31 @@ not the vision**. Consequences:
 
 ## Rejected (do not resurrect)
 - **D36 "dialect as a plugin kind" / per-dialect crates** (`busbar-plane-<plane>-<dialect>`). A
-  dialect is not a kind and gets no crate of its own (Law 5). There is no contract-level `Dialect`
-  trait / `DialectMeta` / `DIALECT_ABI` / `Kind::Dialect`. Removed in the commit that added this doc.
+  dialect is not a plugin kind and gets no crate of its own (Law 5). No crate is ever kind "dialect".
+- **The contract-level `Dialect` trait / `DialectMeta` / `DIALECT_ABI`** — an over-abstraction the
+  contract imposed on every plane, inert besides. **Removed** in the commit that added this doc.
+
+### Kept on purpose — do not confuse with the above
+- The purity gate's **"dialect" vocabulary axis** (the `× dialect` matrix column and the vendor list
+  `openai/gemini/anthropic/bedrock/cohere/responses`) STAYS. It is the mechanism that enforces
+  **Law 1**: a neutral/core crate must name no vendor instance; a plane may name its own. It is a
+  vocabulary scan, not a claim that any crate is a dialect plugin.
+- The inert `Kind::Dialect` enum variant + its PENDING-kind gate scaffolding are **not** removed yet:
+  excising them is deep gate + design-doc surgery with real thrash risk and **zero done-oracle
+  benefit** (nothing reds because of them). Tracked as a **post-green cleanup**, not release work.
+
+## Why the oracle / turnstile exists
+The oracle (byte-identity vs the published 1.5.5) and the purity gates, run by the turnstile engine
+on **every commit**, exist to guarantee two things:
+
+1. **The laws hold on every commit** — no commit may introduce an instance-branch in core, a lateral
+   plugin edge, or a vendor name in a neutral crate. The gates are the per-commit proof of Laws 0–2.
+2. **1.6.0 + the LLM plane is indistinguishable from 1.5.5 — to the user.** Install 1.6.0, configure
+   only the LLM plane, and it must **look, act, and feel identical to 1.5.5**: same config schema,
+   same wire bytes, same behavior — provably, cell by cell, against the published 1.5.5 binary. The
+   new planes (MCP, A2A, streams) are **purely additive and off by default**; a user turns them on in
+   config — "config mcp/a2a/streams and boom, new features" — and nothing about the existing money
+   path changes. That byte-identity is non-negotiable and is the reason the oracle is never waived.
 
 ## How "done" is proven
 - Quality is proven by the **byte-identity oracle** (money path vs the 1.5.5 golden), the crate's own
