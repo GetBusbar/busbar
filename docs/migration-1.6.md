@@ -115,7 +115,7 @@ gains no endpoint and no route, and the migrator adds none of them.
 | `mcp:` | Busbar as an MCP server: canonical URI, identity provider, OAuth 2.1 discovery | [MCP](mcp.md) |
 | `tools:` | Registered upstream MCP servers Busbar governs (`transport: stdio` for local ones) | [MCP](mcp.md), [Tool and agent trust](tool-and-agent-trust.md) |
 | `agents:` | Registered A2A agents, served over JSON-RPC, HTTP+JSON and gRPC | [A2A](a2a.md) |
-| `streams:` | The live-voice plane: full-duplex realtime sessions over one IR | the grammar at the head of `crates/busbar-voice/src/config.rs` until the operator guide lands |
+| `streams:` | The live-voice plane: full-duplex realtime sessions over one IR | [Voice](voice.md) |
 | `oauth_as:` | The embedded OAuth 2.1 authorization server the MCP door can use | [MCP](mcp.md) |
 
 Two things about them are worth knowing before you write one. An `mcp:` block with an empty
@@ -196,6 +196,53 @@ wrong would silently disarm a provider that does need one.
 
 ---
 
+## 7. Money is priced as of a dated rate-card history
+
+**What changed.** 1.5.5 stored raw token quantities and derived each row's spend AT READ TIME from
+the CURRENT cost model, so a `PUT /api/v1/admin/config/settings` rate-card edit re-priced every past
+row with no restart and no boundary — `GET /admin/usage` totals recalculated the moment the card
+changed. 1.6.0 keeps quantities as the stored truth and keeps deriving the amount at read time, but
+derives it against the card in force AT THE POSTING'S INSTANT, read from an append-only dated
+rate-card history. **A card edit prices only what happens AFTER it; past usage is not retroactively
+repriced.**
+
+- A window with **no** mid-window card change answers **byte-identically** to 1.5.5: a single-entry
+  history effective from instant 0 is that card — same rates, same order, same rounding.
+- A window that **had** a mid-window edit now answers with the money each request was actually earned
+  under, rather than re-pricing the whole window at the newest rates.
+
+These are the D-3 (`1.6.0 Changed: a rate-card edit prices what happens after it…`) and D-4
+(`The 1.6.0 ledger endpoints read money as of a rate-card history snapshot`) entries in
+[the changelog](../CHANGELOG.md#breaking).
+
+**Native currencies.** A rate card prices in one or more currencies natively, with no pivot and no
+conversion.
+
+**New, additive ledger surface.** No 1.5.5 path, field or byte is touched — the committed
+`openapi.json` is unchanged, and the 1.6.0 operations are described at
+`docs/openapi-1.6.0-additive.json`, reached by name at `GET /api/v1/admin/ledger/openapi.json`.
+
+- `GET /api/v1/admin/ledger/rate-history` and `GET /api/v1/admin/ledger/repricings` — new reads.
+- The existing ledger reads gain optional `?as_of=<history_seq>` and `?currency=<CCY>`, and echo
+  `history_seq`, `head`, `currency` and the adjusting entries.
+- `POST /api/v1/admin/ledger/amend-rate-history` — a new **operator-signed** write.
+
+**Back-dating is still available, and now attributable.** The signed `amend-rate-history` verb
+appends a dated entry and emits one journaled, operator-signed repricing record per affected
+`(window, bucket)` carrying the old and new card, the quantities, both amounts and the delta. The
+original line and the correction are both visible forever, and no booked line is rewritten.
+
+**What to do if you relied on `/usage` totals recalculating.**
+
+- If you relied on `GET /admin/usage` totals recalculating after a rate-card change, they no longer
+  do — a card edit prices only subsequent usage. To correct usage that is already booked, post an
+  attributed correction with the new `amend-rate-history` verb instead.
+- On the legacy `/usage` endpoint, `?as_of=<history_seq>` is now honoured. 1.5.5 ignored the
+  parameter silently, returned the current-card reprice, and reported its own `as_of` as `0`
+  (contradicting the URL); 1.6.0 reads money as of the history point you name.
+
+---
+
 ## Quick checklist
 
 - [ ] Install 1.6.0, `busbar --validate`, start. That is the whole upgrade.
@@ -209,4 +256,8 @@ wrong would silently disarm a provider that does need one.
 - [ ] Deprecated env vars: none need moving today; each warns with BUSBAR-3021 until you do.
 - [ ] Hooks spelled `plugin:` or `at:` in config.yaml: run `busbar --migrate-config` once
       (overlays migrate themselves at boot).
+- [ ] If a dashboard or reconciliation relied on `GET /admin/usage` totals recalculating after a
+      rate-card edit: they no longer do (a card prices only what follows it). Post a signed
+      `amend-rate-history` correction for booked usage, and pass `?as_of=<history_seq>` to read money
+      as of a past history point ([§7](#7-money-is-priced-as-of-a-dated-rate-card-history)).
 - [ ] Want MCP, A2A or voice? Add the section; see the guide in the table above.

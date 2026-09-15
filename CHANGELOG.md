@@ -22,8 +22,7 @@ does not exist.
   gRPC) in front of registered agents (`agents:`). See [the A2A guide](docs/a2a.md).
 - **Voice.** A `streams:` block declares the live-voice plane: full-duplex realtime sessions
   (OpenAI Realtime and Gemini Live dialects over one IR) metered by the same ledger as everything
-  else. The grammar is documented at the head of `crates/busbar-voice/src/config.rs` until the
-  operator guide lands.
+  else. See [the voice guide](docs/voice.md).
 
 Each plane is inert until its section is written. An `mcp:` block with an empty `auth.chain`
 refuses to start, because an anonymous MCP request is never narrowed by a key and would run with
@@ -351,6 +350,9 @@ from the hook view, one refusal that now comes out of the resolver rather than t
 key-rotate endpoint that now refuses an overlong id like its siblings, one where a rate-card
 edit stops repricing history it should not touch, and one provider credential that no longer
 degrades to an empty key.
+(A ninth register entry, F-003, is also of kind `breaking` — the CLI `--help`/`--version` text is a
+parseable contract surface — but it is caller-additive and so is presented above under Improvements
+rather than here; a reader counting `kind: breaking` rows in the register will find nine, not eight.)
 Everything else that touches a 1.5.5 config, request or plugin is named above
 as an improvement or does not exist: a config written for 1.5.5 boots, validates and migrates
 identically, and every 1.5.5 key and minted secret carries over.
