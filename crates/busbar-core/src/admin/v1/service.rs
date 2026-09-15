@@ -915,7 +915,7 @@ impl AdminService {
     /// status is an additive follow-up.
     pub(crate) async fn list_pools(&self) -> Result<Page<PoolView>, AdminError> {
         let view = self.app.engine_tables_view();
-        let mut pools: Vec<PoolView> = view
+        let mut pool_views: Vec<PoolView> = view
             .pools()
             .iter()
             .map(|(name, _)| PoolView {
@@ -930,8 +930,8 @@ impl AdminService {
                     .collect(),
             })
             .collect();
-        pools.sort_by(|a, b| a.name.cmp(&b.name));
-        Ok(Page::single(pools))
+        pool_views.sort_by(|a, b| a.name.cmp(&b.name));
+        Ok(Page::single(pool_views))
     }
 
     /// `GET /api/v1/admin/pools/{name}` — the LIVE per-member status of one pool (breaker/concurrency/
@@ -999,13 +999,13 @@ impl AdminService {
     /// Same row shape as `GET /pools/{name}` via the shared projection. Sorted by name.
     pub(crate) async fn list_pools_detailed(&self) -> Result<Page<PoolDetailView>, AdminError> {
         let view = self.app.engine_tables_view();
-        let mut pools: Vec<PoolDetailView> = view
+        let mut pool_views: Vec<PoolDetailView> = view
             .pools()
             .iter()
             .map(|(name, _)| self.pool_detail(name, &view.pool_members(name)))
             .collect();
-        pools.sort_by(|a, b| a.name.cmp(&b.name));
-        Ok(Page::single(pools))
+        pool_views.sort_by(|a, b| a.name.cmp(&b.name));
+        Ok(Page::single(pool_views))
     }
 
     /// `GET /api/v1/admin/models` — every model lane + its upstream provider. Read scope. Sorted by

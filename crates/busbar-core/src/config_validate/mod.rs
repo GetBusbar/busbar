@@ -1697,14 +1697,14 @@ fn validate_unified_pool_names(cfg: &RootCfg, errors: &mut Vec<String>) {
     // plane compiled out the seam holds a `RawPlaneSection`, whose `def_names` is empty (a present
     // section is refused at resolve), so no name resolves there — the same answer the per-plane
     // feature gate gave, without naming a plane.
-    let tools: BTreeSet<&str> = cfg.tool_defs.def_names().into_iter().collect();
-    let agents: BTreeSet<&str> = cfg.agent_defs.def_names().into_iter().collect();
+    let tool_names: BTreeSet<&str> = cfg.tool_defs.def_names().into_iter().collect();
+    let agent_names: BTreeSet<&str> = cfg.agent_defs.def_names().into_iter().collect();
 
     // (1) No name may be defined in two nouns — the kind of a bare member must be decidable by name.
     for (a, b, name_a, name_b) in [
-        (&models, &tools, "models", "tools"),
-        (&models, &agents, "models", "agents"),
-        (&tools, &agents, "tools", "agents"),
+        (&models, &tool_names, "models", "tools"),
+        (&models, &agent_names, "models", "agents"),
+        (&tool_names, &agent_names, "tools", "agents"),
     ] {
         for dup in a.intersection(b) {
             errors.push(format!(
@@ -1724,7 +1724,7 @@ fn validate_unified_pool_names(cfg: &RootCfg, errors: &mut Vec<String>) {
         .chain(cfg.tool_pools.keys())
         .chain(cfg.agent_pools.keys())
     {
-        for (set, noun) in [(&tools, "tools"), (&agents, "agents")] {
+        for (set, noun) in [(&tool_names, "tools"), (&agent_names, "agents")] {
             if set.contains(pool_name.as_str()) {
                 errors.push(format!(
                     "pool name '{pool_name}' conflicts with a `{noun}:` registration of the same \

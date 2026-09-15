@@ -492,7 +492,7 @@ step "plane-config-noun-gate --selftest" bash scripts/plane-config-noun-gate.sh 
 # THE FLOOR, as measured on this tree: pools 8 · tools 5 · streams 6 = 19 distinct core parse-target
 # lines. Lower this number the moment a section is evicted; a fall is reported as a fall and tells you
 # what to lower it to.
-CONFIG_NOUN_FLOOR=19
+CONFIG_NOUN_FLOOR=16
 config_noun_residual() {
   local out rc line count
   out="$(GREP_GATE_REPORT_ONLY=0 bash scripts/plane-config-noun-gate.sh --check 2>&1)"; rc=$?

@@ -333,7 +333,7 @@ impl ProjectedRecord {
 pub(crate) fn resolve_projection(
     name: &str,
     module: &str,
-    streams: Option<&[String]>,
+    stream_tokens: Option<&[String]>,
     fields: Option<&[String]>,
     durable: bool,
     errors: &mut Vec<String>,
@@ -354,7 +354,7 @@ pub(crate) fn resolve_projection(
 
     // ── streams: ────────────────────────────────────────────────────────────────────────────────
     let module_carries = module_streams(module);
-    let subscribed: Vec<ExportStream> = match streams {
+    let subscribed: Vec<ExportStream> = match stream_tokens {
         None => {
             // Absent ⇒ the module's own streams. NOT "nothing": an instance that subscribed to
             // nothing would be a sink that validates and receives nothing, which is the shape this

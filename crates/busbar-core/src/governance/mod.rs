@@ -748,15 +748,15 @@ pub(crate) fn synthesize_principal_key(
     // (`None` in the runtime encoding too); an explicit list contributes its entries; an explicit
     // `[]` contributes nothing. An all-bindings-empty union = the EMPTY SET = no data-plane access
     // (fail closed: no key at all - nothing to admit).
-    let mut pools: Vec<String> = Vec::new();
+    let mut pool_names: Vec<String> = Vec::new();
     let mut all_pools = false;
     for b in &granting {
         match b.allowed_pools.as_deref() {
             None => all_pools = true,
             Some(list) => {
                 for p in list {
-                    if !pools.contains(p) {
-                        pools.push(p.clone());
+                    if !pool_names.contains(p) {
+                        pool_names.push(p.clone());
                     }
                 }
             }
@@ -764,11 +764,11 @@ pub(crate) fn synthesize_principal_key(
     }
     let allowed_pools = if all_pools {
         None // any omitted grant widens the union to ALL pools
-    } else if pools.is_empty() {
+    } else if pool_names.is_empty() {
         // Every granting binding said `allowed_pools: []` - the empty set. No access.
         return None;
     } else {
-        Some(pools)
+        Some(pool_names)
     };
     // The bound group (first in role order). Group limits are enforced through the group chain;
     // the key itself carries NO inline caps (keys are pure auth).

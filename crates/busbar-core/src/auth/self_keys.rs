@@ -357,21 +357,21 @@ pub(crate) fn resolve_exchange<'a>(
             // union yields `Some(vec![])`, the SAME "no pools" encoding `GovState::issue_self`/
             // `refresh_self` already special-case ("C6 intent carried intact: None = all pools;
             // Some([]) = none"), so the minted key exists but grants no data-plane pool.
-            let mut pools: Vec<String> = Vec::new();
+            let mut pool_names: Vec<String> = Vec::new();
             let mut all_pools = false;
             for b in &granting {
                 match b.allowed_pools.as_deref() {
                     None => all_pools = true,
                     Some(list) => {
                         for p in list {
-                            if !pools.contains(p) {
-                                pools.push(p.clone());
+                            if !pool_names.contains(p) {
+                                pool_names.push(p.clone());
                             }
                         }
                     }
                 }
             }
-            let allowed_pools = if all_pools { None } else { Some(pools) };
+            let allowed_pools = if all_pools { None } else { Some(pool_names) };
             Ok((principal, team, allowed_pools))
         }
         // No identity established (all-Pass default, or an explicit Reject) → 401.
