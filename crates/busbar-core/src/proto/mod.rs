@@ -241,7 +241,6 @@ pub use busbar_substrate::proto::write_sse_frame;
 // `ProtocolDecl` vtable and names none of them.
 /// Wire-dialect detection: `protocol_id(path, headers)` sniffs which protocol a request speaks.
 pub(crate) mod detect;
-pub mod openai_family;
 /// THE REGISTRY: `ProtocolDecl`, the built-in declaration table, and the by-name lookup that
 /// replaced `protocol_for`'s match.
 pub mod registry;

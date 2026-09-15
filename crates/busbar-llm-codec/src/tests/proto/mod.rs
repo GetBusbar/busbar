@@ -64,7 +64,7 @@ pub use busbar_core::proto::{
     decl_for, DEFAULT_MAX_TOKENS, PROTO_ANTHROPIC, PROTO_BEDROCK, PROTO_COHERE, PROTO_GEMINI,
     PROTO_OPENAI, PROTO_RESPONSES,
 };
-pub use busbar_core::proto::{openai_family, registry};
+pub use busbar_core::proto::registry;
 
 // Substrate atoms the suites name bare (breaker signal + the neutral framing seam types).
 pub use busbar_substrate_values::breaker::{CanonicalSignal, StatusClass};
