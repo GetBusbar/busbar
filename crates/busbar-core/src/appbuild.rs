@@ -1288,7 +1288,7 @@ pub fn build_app_from_config(
     // out the section is the raw carrier that answers empty containers/section-hooks, so `resolve_
     // container_gates` yields the same empty map the former `#[cfg(not)]` branch built by hand — no
     // plane feature named.
-    let mcp_server_gates = {
+    let tools_gates = {
         let g = cfg.tool_defs.container_gates();
         hooks::resolve_container_gates(
             g.containers
@@ -1300,7 +1300,7 @@ pub fn build_app_from_config(
             app_config_version,
         )
     };
-    let a2a_agent_gates = {
+    let agents_gates = {
         let g = cfg.agent_defs.container_gates();
         hooks::resolve_container_gates(
             g.containers
@@ -1315,7 +1315,7 @@ pub fn build_app_from_config(
     // THE TAP/TRANSFORM twins of the two gate maps above: each plane's per-container `prompt: rw`
     // rewrite chains, resolved once per generation exactly like the gates. Empty on every deployment
     // that attaches no rewrite hook, so the transform firing sites stay zero-cost / byte-identical.
-    let mcp_server_rewrites = {
+    let tools_rewrites = {
         let g = cfg.tool_defs.container_gates();
         hooks::resolve_container_rewrites(
             g.containers
@@ -1327,7 +1327,7 @@ pub fn build_app_from_config(
             app_config_version,
         )
     };
-    let a2a_agent_rewrites = {
+    let agents_rewrites = {
         let g = cfg.agent_defs.container_gates();
         hooks::resolve_container_rewrites(
             g.containers
@@ -1697,23 +1697,23 @@ pub fn build_app_from_config(
         pool_decision_gates,
         pool_rewrite_chains,
         // The GENERIC per-plane per-container submission-gate map, keyed by each plane's stable decl
-        // key — in place of the former per-plane `mcp_server_gates`/`a2a_agent_gates` fields. Each
+        // key — in place of the former per-plane `tools_gates`/`agents_gates` fields. Each
         // plane's resolved gate map (built above, empty when its feature is off) goes under its key.
         plane_gates: {
             // Keyed by each owning plane's DECL KEY, resolved from the registry rather than named as a
-            // literal: the `tools:` section's plane takes `mcp_server_gates`, the `agents:` section's
-            // plane takes `a2a_agent_gates`. A compiled-out plane has no decl for its section, so its
+            // literal: the `tools:` section's plane takes `tools_gates`, the `agents:` section's
+            // plane takes `agents_gates`. A compiled-out plane has no decl for its section, so its
             // (empty) gate map is simply not inserted — byte-identical to the former empty-value entry.
             let mut m = std::collections::BTreeMap::new();
             if let Some(decl) = crate::plane::registry::plane_decl_for_config_section(
                 busbar_substrate::plane::config::NAMED_MAP_SECTIONS[2],
             ) {
-                m.insert(decl.key, mcp_server_gates);
+                m.insert(decl.key, tools_gates);
             }
             if let Some(decl) = crate::plane::registry::plane_decl_for_config_section(
                 busbar_substrate::plane::config::NAMED_MAP_SECTIONS[3],
             ) {
-                m.insert(decl.key, a2a_agent_gates);
+                m.insert(decl.key, agents_gates);
             }
             m
         },
@@ -1724,12 +1724,12 @@ pub fn build_app_from_config(
             if let Some(decl) = crate::plane::registry::plane_decl_for_config_section(
                 busbar_substrate::plane::config::NAMED_MAP_SECTIONS[2],
             ) {
-                m.insert(decl.key, mcp_server_rewrites);
+                m.insert(decl.key, tools_rewrites);
             }
             if let Some(decl) = crate::plane::registry::plane_decl_for_config_section(
                 busbar_substrate::plane::config::NAMED_MAP_SECTIONS[3],
             ) {
-                m.insert(decl.key, a2a_agent_rewrites);
+                m.insert(decl.key, agents_rewrites);
             }
             m
         },
