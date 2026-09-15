@@ -1424,7 +1424,7 @@ count = "60"
 [[cell]]
 crate = "busbar-a2a"
 kind = "plane"
-count = "2758"
+count = "2757"
 
 [[cell]]
 crate = "busbar-a2a"
@@ -1644,7 +1644,7 @@ count = "46"
 [[cell]]
 crate = "busbar-core"
 kind = "plane"
-count = "3067"
+count = "3063"
 
 [[cell]]
 crate = "busbar-core"
@@ -2404,7 +2404,7 @@ count = "298"
 [[cell]]
 crate = "busbar-substrate"
 kind = "plane"
-count = "770"
+count = "768"
 
 [[cell]]
 crate = "busbar-substrate"
