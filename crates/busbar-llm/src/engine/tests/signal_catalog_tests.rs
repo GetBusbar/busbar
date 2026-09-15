@@ -184,7 +184,7 @@ async fn admin_registered_hook_signals_take_effect_on_the_next_request() {
         "no hook declared a signal at boot; the bag must start empty"
     );
 
-    let registered = crate::test_support::build_with_hook(
+    let registered = busbar_core::admin::v1::service::build_with_hook(
         &app,
         "declarer",
         declaring_hook(vec![Signal::CandidateBreakerState]),
@@ -204,7 +204,7 @@ async fn admin_registered_hook_signals_take_effect_on_the_next_request() {
 
     // ...and the mask closes again when the last declaring hook is deleted, so the engine stops
     // computing a signal nobody asked for.
-    let deleted = crate::test_support::build_without_hook(&registered, "declarer")
+    let deleted = busbar_core::admin::v1::service::build_without_hook(&registered, "declarer")
         .expect("deleting the hook must succeed");
     assert!(
         deleted.requested_signals.is_empty(),

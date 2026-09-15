@@ -51,7 +51,7 @@ pub use crate::openai_responses::{ResponsesReader, ResponsesWriter};
 // `Protocol` &c.).
 pub use busbar_substrate_values::proto::{
     array_stream_shim_key_for, array_stream_shim_keys, bearer_auth_headers, bearer_error_code,
-    context_length_prose_scan, find_frame_terminator, known_protocols, lane_protocol_name,
+    find_frame_terminator, known_protocols, lane_protocol_name, context_length_prose_scan,
     parse_sse_frame, sse_event_type, streaming_content_types, strip_top_level_usage_member,
     write_sse_frame, IrError, BASE62_ALPHABET, HDR_AUTHORIZATION, SIGNAL_IR_PARSE, SSE_DONE_FRAME,
     SSE_DONE_SENTINEL,
@@ -60,11 +60,11 @@ pub use busbar_substrate_values::proto::{
 // module) and the two test-only vocabularies core still owns: the six dialect-name fixtures
 // (`PROTO_*`) and the translation-boundary `max_tokens` fallback. These are core's own items (not
 // re-exports), so they are the one reach this prelude keeps into core.
-pub use busbar_core::proto::registry;
 pub use busbar_core::proto::{
     decl_for, DEFAULT_MAX_TOKENS, PROTO_ANTHROPIC, PROTO_BEDROCK, PROTO_COHERE, PROTO_GEMINI,
     PROTO_OPENAI, PROTO_RESPONSES,
 };
+pub use busbar_core::proto::registry;
 
 // Substrate atoms the suites name bare (breaker signal + the neutral framing seam types).
 pub use busbar_substrate_values::breaker::{CanonicalSignal, StatusClass};

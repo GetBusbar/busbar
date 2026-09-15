@@ -28,11 +28,11 @@
 //! `prev_hash` to `hash`, which is also the only way to prove the refusal was not written onto a
 //! second chain of its own.
 
-use crate::test_support::proxy::reqlog::{
+use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
+use busbar_core::proxy::reqlog::{
     RequestRecord, OUTCOME_DISPATCHED, OUTCOME_REFUSED, PRINCIPAL_UNGOVERNED, REASON_NOT_GRANTED,
     REQUESTS,
 };
-use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
 use busbar_store_memory::MemoryStore;
 use busbar_substrate::testkit::engine_kit::EngineTestKit as _;
 use serde_json::json;

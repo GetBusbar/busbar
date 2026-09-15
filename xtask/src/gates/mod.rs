@@ -154,6 +154,7 @@ pub const CONSTRUCTION_STANDING_REDS: &[&str] = &[
     "one-pick-site",
     "one-pricing-site:fee-fields",
     "plane-no-money",
+    "ports-only-tests:busbar-llm",
     "terminal-doors-in-audit-step",
 ];
 
