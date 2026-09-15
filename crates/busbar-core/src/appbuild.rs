@@ -132,17 +132,18 @@ pub fn inert_durable_keys_banner(
 /// in-flight TASK state lives only in the resolved store, so on the RAM store it is dropped on
 /// restart and any task that was mid-flight breaks on its next request. This returns a sharper warn
 /// NAMING that consequence — but ONLY when the RAM store is resolved AND a stateful plane is actually
-/// configured (`mcp_stateful` = an MCP server or tool-pool is present; `a2a_stateful` = an A2A agent
-/// or agent-pool is present). An LLM-only deployment is STATELESS — a restart costs it nothing — so
+/// configured (`tools_stateful` = a `tools:` server or tool-pool is present; `agents_stateful` = an
+/// `agents:` agent or agent-pool is present — the config sections, named here rather than the planes
+/// they feed). An LLM-only deployment is STATELESS — a restart costs it nothing — so
 /// it gets only the generic notice: a sharper warn there would be noise that trains operators to
 /// ignore warnings. This is a WARN, never a boot-block: a durable store is opt-in and RAM is the
 /// convenience default, so busbar does not refuse to start.
 pub fn stateful_plane_ephemeral_store_warn(
     store_is_memory: bool,
-    mcp_stateful: bool,
-    a2a_stateful: bool,
+    tools_stateful: bool,
+    agents_stateful: bool,
 ) -> Option<&'static str> {
-    if store_is_memory && (mcp_stateful || a2a_stateful) {
+    if store_is_memory && (tools_stateful || agents_stateful) {
         Some(
             "Stateful plane task state will NOT survive a restart — in-flight tasks will break on the next \
              request. Configure a durable store (sqlite/postgres).",
@@ -1096,8 +1097,8 @@ pub fn build_app_from_config(
         // Data-driven: `tool_defs`/`agent_defs` are always the neutral `Box<dyn PlaneCfg>`; with the
         // owning plane compiled out the section is the raw carrier whose `def_names()` is empty, so
         // these read identically to the former per-feature branches without naming a plane feature.
-        let mcp_stateful = !cfg.tool_defs.def_names().is_empty() || !cfg.tool_pools.is_empty();
-        let a2a_stateful = !cfg.agent_defs.def_names().is_empty() || !cfg.agent_pools.is_empty();
+        let tools_stateful = !cfg.tool_defs.def_names().is_empty() || !cfg.tool_pools.is_empty();
+        let agents_stateful = !cfg.agent_defs.def_names().is_empty() || !cfg.agent_pools.is_empty();
         let store: Arc<dyn governance::Store> = if g.module
             == crate::config::GOVERNANCE_STORE_MEMORY
         {
@@ -1110,7 +1111,7 @@ pub fn build_app_from_config(
             // and A2A task state also lives only in this RAM store. Fire the specific warn (naming
             // the consequence) ONLY when a stateful plane is configured — an LLM-only deploy keeps
             // just the generic notice. Additive to, not a replacement for, the notice above.
-            if let Some(msg) = stateful_plane_ephemeral_store_warn(true, mcp_stateful, a2a_stateful)
+            if let Some(msg) = stateful_plane_ephemeral_store_warn(true, tools_stateful, agents_stateful)
             {
                 diag_warn!(STATEFUL_PLANE_EPHEMERAL_STORE, "{msg}");
             }
