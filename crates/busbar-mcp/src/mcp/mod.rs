@@ -602,7 +602,7 @@ pub(crate) fn mcp_hydrate(
     // gate exists to stop). Both take the plane-narrowed store off the one wrapper.
     // Attach both write-through sinks through the core-side BootCtx convenience, so this hook names no
     // `App` sink field: the ledger/record and the store are all core-owned and stay core-side.
-    ctx.attach_mcp_durable_sinks();
+    ctx.attach_durable_sinks();
     // The demotion boot-replay reads the durable rows and the bound-snapshot runtime off a host minted
     // over the freshly-built app — a snapshot-only mint (no live handle at hydrate), which is correct:
     // hydration reads exactly the generation it is restoring into.

@@ -127,7 +127,7 @@ impl PlaneBootCtx for FakeBootCtx {
     fn restore_call_log(&self) -> Result<RestoredSummary, String> {
         Ok(RestoredSummary::default())
     }
-    fn attach_mcp_durable_sinks(&self) {}
+    fn attach_durable_sinks(&self) {}
     fn plane_store(&self) -> Option<Arc<dyn PlaneStore>> {
         self.store.clone()
     }

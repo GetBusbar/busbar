@@ -148,7 +148,7 @@ impl PlaneBootCtx for BootCtx {
     /// core `PlaneStore`, so neither crosses the plane seam. A no-op unless BOTH the freshly-built app
     /// (hydrate phase) and a configured store are present — byte-identical to the old inline
     /// `app.spent_token_ledger.set_sink(store.clone()); app.demotion_record.set_sink(store)`.
-    fn attach_mcp_durable_sinks(&self) {
+    fn attach_durable_sinks(&self) {
         if let (Some(app), Some(store)) = (self.app.as_ref(), &self.store) {
             app.spent_token_ledger.set_sink(store.clone());
             app.demotion_record.set_sink(store.clone());

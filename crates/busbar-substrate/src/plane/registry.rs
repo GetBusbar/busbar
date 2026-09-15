@@ -135,10 +135,10 @@ pub trait PlaneBootCtx {
     /// without naming a core-live type. The `Err` is the store error's Display string.
     fn restore_call_log(&self) -> Result<RestoredSummary, String>;
 
-    /// ATTACH THE MCP PLANE'S DURABLE WRITE-THROUGH SINKS — the spent-approval ledger and the
+    /// ATTACH THE CALLING PLANE'S DURABLE WRITE-THROUGH SINKS (today only the MCP plane has durable task state to attach) — the spent-approval ledger and the
     /// upstream-demotion record — to the plane-narrowed store, in the hydrate phase. A no-op unless
     /// BOTH the freshly-built app and a configured store are present.
-    fn attach_mcp_durable_sinks(&self);
+    fn attach_durable_sinks(&self);
 
     /// THE PLANE-NARROWED DURABLE STORE for this deployment, or `None` under `store: memory`. A plane
     /// that OWNS its durable subsystem (the A2A task set) drives its own `PlaneRecord` reads/writes off
