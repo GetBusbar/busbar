@@ -171,7 +171,7 @@ pub(crate) fn wire_for(transport: busbar_substrate::transport::Transport) -> &'s
             transport.name()
         ),
         None => unreachable!(
-            "transport `{}` is an A2A ingress binding and is never an MCP client leg; \
+            "transport `{}` is another plane's ingress binding and is never an MCP client leg; \
              mcp/config.rs refuses any other `transport:` value at boot",
             transport.name()
         ),
