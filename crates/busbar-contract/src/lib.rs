@@ -12,7 +12,6 @@
 
 pub mod bounded;
 pub mod dest;
-pub mod dialect;
 pub mod grammar;
 pub mod ids;
 pub mod kinds;
@@ -36,7 +35,6 @@ pub use dest::{
     EgressBody, Leg, OnEmpty, Permutation, RoutePlan, SecretOnce, SecretSlot, TransportKeyHandle,
     UpstreamAddress, VerifiedDestination, VetoCode,
 };
-pub use dialect::{Dialect, DialectMeta, DIALECT_ABI};
 pub use grammar::{
     ArrivalLocation, Claim, Idempotency, Location, MaskKind, PathSeg, ReplayMatch, Selector,
     SelectorFamily, SelectorForm, SignedOver,

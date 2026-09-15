@@ -14,7 +14,6 @@ use busbar_contract::dest::{
     AuthDecoration, DestinationFacts, EgressBody, RoutePlan, TransportKeyHandle,
     VerifiedDestination,
 };
-use busbar_contract::dialect::Dialect;
 use busbar_contract::grammar::ArrivalLocation;
 use busbar_contract::ids::{
     AdminVerbId, LaneId, MeterClassDecl, OpClassId, PrincipalId, RecordSchemaId, SchemeKey,
@@ -51,7 +50,6 @@ const _STORE: Option<&dyn Store> = None;
 const _SECRET: Option<&dyn Secret> = None;
 const _HOOK: Option<&dyn Hook> = None;
 const _EXPORT: Option<&dyn Export> = None;
-const _DIALECT: Option<&dyn Dialect> = None;
 const _ANCHOR: Option<&dyn Anchor> = None;
 const _PLUGIN: Option<&dyn Plugin> = None;
 const _SIGNER: Option<&dyn Signer> = None;
