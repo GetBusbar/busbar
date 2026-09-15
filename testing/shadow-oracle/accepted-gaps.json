@@ -7,16 +7,38 @@
     "Coverage GROWING (a new id owed that was not in the baseline) needs no entry here — it is",
     "always allowed and just printed; only a SHRINK needs to be named.",
     "Nothing has been dropped from the 1.5.5 golden since owed-baseline.txt was generated from",
-    "golden/1.5.5/ledger.tsv's PASS rows. The one entry below is a cell that has never been owed:",
-    "it is named here so the reason it is not recorded is written down and owned, and so the entry",
-    "is already in place the day the cell is baselined and then re-loses its fixture."
+    "golden/1.5.5/ledger.tsv's PASS rows. The entries below are cells that have NEVER been owed:",
+    "each is a `needs_fixture` SKIP that carries an accepted-differences.json entry naming a",
+    "deliberate 1.6.0 improvement over 1.5.5, so recording it would produce a divergence the",
+    "improvement register cannot forgive without an owner decision (a usage/status class ->",
+    "kind=breaking) OR needs a capability the oracle may not build for itself (a pinned-mock verb,",
+    "a concurrent-window-roll driver). They are named here so the reason each is not recorded is",
+    "written down and owned, and so the entry is already in place the day the cell is baselined and",
+    "then re-loses its fixture. Two of the five dormant accepted-differences ids reviewed alongside",
+    "these carry NO cell to name and stay documented solely in accepted-differences.json: PR2-D5",
+    "(route.failover|fb|member-slow does not exist -- closing it needs a fallback-pool member",
+    "override in oracle-config.sh, a new cell, and a fresh 1.5.5 recording) and S-14 (no gemini",
+    "speech/TTS cell exists -- every llm cell is op=chat, and a speech leaf needs a fixture, a",
+    "pinned-mock speech verb, and the product's refusal-envelope decision)."
   ],
   "accepted": [
     {
       "id": "gemini-tool-use-token-term",
       "cells": "^llm\\|gemini\\|gemini\\|request\\|ok_tool_use_tokens$",
       "owner": "llm-plane",
-      "rationale": "needs a tool-use verb in the pinned mock; product decision on the six-dialect tool-use response shape. The cell declared a mock_control the mock resolves to no verb, and an unresolvable control is served as a healthy 200 — so the cell would have recorded the tool-less happy path while claiming to pin usageMetadata.toolUsePromptTokenCount. The control is removed and the cell stays needs_fixture (SKIP) until the mock can answer with the tool-use token term and the product decides what that answer looks like in each of the six dialects; inventing either here would put the oracle's own guess into the golden."
+      "rationale": "needs a tool-use verb in the pinned mock; product decision on the six-dialect tool-use response shape. The cell declared a mock_control the mock resolves to no verb, and an unresolvable control is served as a healthy 200 — so the cell would have recorded the tool-less happy path while claiming to pin usageMetadata.toolUsePromptTokenCount. The control is removed and the cell stays needs_fixture (SKIP) until the mock can answer with the tool-use token term and the product decides what that answer looks like in each of the six dialects; inventing either here would put the oracle's own guess into the golden. Twin of accepted-differences.json 'G-1': that register would forgive `body` when the cell records, but the same recording also moves `effects.usage` (1.5.5 bills 190, 1.6.0 bills 222), which an improvement entry may not waive — so recording is blocked on the owner promoting G-1 to kind=breaking, a product decision, not silence here."
+    },
+    {
+      "id": "refund-across-window",
+      "cells": "^billing\\|key-usage\\|refund-across-window$",
+      "owner": "billing",
+      "rationale": "twin of accepted-differences.json 'M-1 refund reaches the cell the charge reached'. The cell exists and is the ONE cell M-1 is allowed to forgive, but it is needs_fixture (SKIP): recording it requires the recorder to drive a CONCURRENT window straddle — a request pinned to window M whose charge lands on a cell a concurrent admission has already rolled to M+1 — which is a harness/timing capability the pinned mock and driver do not provide, not a mock verb or an in-tree fixture. And the divergence it would produce is effects.usage (a failed straddling request keeps/refunds its flat fee), a class M-1's improvement entry may not waive, so recording also waits on the owner promoting M-1 to kind=breaking. Both blockers are out of the oracle's hands; the cell stays a named gap until a straddle driver exists AND the owner rules on the class."
+    },
+    {
+      "id": "stream-upstream-error",
+      "cells": "^llm\\|[a-z_]+\\|[a-z_]+\\|request\\|stream_upstream_error$",
+      "owner": "llm-plane",
+      "rationale": "twin of accepted-differences.json 'M-2 a mid-stream upstream failure is not billed as a completion'. The six diagonal cells (one per streaming backend) exist and carry mock_control {\"stream-error\": true}, but stay needs_fixture (SKIP): the pinned mock answers stream-error for the OpenAI-compatible arm (openai_chat_stream_error emits the inline `data: {\"error\":...}` chunk M-2 shape (1) names) but NOT for the terminal `finish_reason: \"ERROR\"` Cohere shape (2), so recording all six needs a mock verb the oracle may not add here. And when they record, 1.6.0 diverges from 1.5.5 on `status` and `effects.usage` (the failed stream stops being billed as a completion), classes M-2's body-only improvement entry may not waive; per M-2's own rationale the entry deliberately stays fail-closed (an UNACCEPTED divergence is RED) until the owner rescopes it — its `cells` regex still names the stale outcome token `mid-stream-error`, and widening it is the owner's call, never an auditor's. Named here so the SKIP is an owned decision while it waits on both."
     }
   ]
 }
