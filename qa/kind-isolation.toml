@@ -5480,7 +5480,7 @@ count = "2"
 [[cell]]
 crate = "busbar-contract"
 kind = "dialect"
-count = "15"
+count = "14"
 
 [[cell]]
 crate = "busbar-core"

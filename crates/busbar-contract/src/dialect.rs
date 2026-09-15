@@ -40,7 +40,7 @@ pub trait DialectMeta {
     const SCHEME_ALT: Option<&'static str>;
     /// The wire scheme this dialect's egress is written under, where it names one distinctly.
     const EGRESS_SCHEME: Option<&'static str>;
-    /// The content type this dialect's streaming responses carry, where it names one.
+    /// The content type this dialect's streaming replies carry, where it names one.
     const STREAMING_CONTENT_TYPE: Option<&'static str>;
     /// The envelope header keys this dialect reads off an arriving frame.
     const HEAD_KEYS: &'static [&'static str];
