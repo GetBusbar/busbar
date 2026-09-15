@@ -147,7 +147,7 @@ impl PlaneBootCtx for FakeBootCtx {
 fn slot_from_public_url(public_url: Option<&str>) -> Option<Arc<dyn std::any::Any + Send + Sync>> {
     let unit = ();
     let ctx = BuildCtx {
-        mcp_slot: None,
+        endpoint_slot: None,
         agent_defs: &unit,
         public_url,
         prior: None,

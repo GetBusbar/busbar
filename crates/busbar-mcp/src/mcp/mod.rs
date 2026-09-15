@@ -153,10 +153,10 @@ pub const PLANE_DECL: busbar_substrate::plane::registry::PlaneDecl =
         },
         // THE MCP SLOT: the validated resource is already built by config resolution
         // (`McpResource::from_cfg`, run once at `RootCfg` construction) AND already type-erased at the
-        // composition root into the neutral `BuildCtx::mcp_slot`, so `build` here is a CLONE of that
+        // composition root into the neutral `BuildCtx::endpoint_slot`, so `build` here is a CLONE of that
         // ONE opaque `Arc` — not a second construction and not a re-erasure. `None` exactly when
         // `cfg.mcp` is `None`, matching `App::mcp`'s own absence.
-        build: |ctx| ctx.mcp_slot.clone(),
+        build: |ctx| ctx.endpoint_slot.clone(),
         // S4a Option A: the MCP plane's data routes are contributed NEUTRALLY through `routes`, so
         // its handlers no longer extract `axum::State<Arc<AppHandle>>`.
         routes: Some(mcp_routes),

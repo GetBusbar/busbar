@@ -122,7 +122,7 @@ async fn streams_hooks_reject_all_refuses_a_session_open() {
 fn a_slot() -> Arc<dyn std::any::Any + Send + Sync> {
     let unit = ();
     let ctx = busbar_substrate::plane::registry::BuildCtx {
-        mcp_slot: None,
+        endpoint_slot: None,
         agent_defs: &unit,
         public_url: Some("https://voice.example"),
         prior: None,

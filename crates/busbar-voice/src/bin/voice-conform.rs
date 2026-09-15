@@ -1760,7 +1760,7 @@ fn probe_session_scope() -> (&'static str, String) {
 fn probe_gemini_live_route() -> (&'static str, String) {
     let unit = ();
     let ctx = busbar_substrate::plane::registry::BuildCtx {
-        mcp_slot: None,
+        endpoint_slot: None,
         agent_defs: &unit,
         public_url: Some("https://gw.conform.example.com"),
         prior: None,

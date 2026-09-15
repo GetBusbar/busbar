@@ -1406,7 +1406,7 @@ pub fn build_app_from_config(
             // plane owns the endpoint door) — so the slot is a CLONE of that one opaque `Arc`, not a
             // re-erasure, and names no plane resource type. `None` when the block is absent or the
             // owning plane is compiled out (resolve produced no resource then).
-            mcp_slot: cfg
+            endpoint_slot: cfg
                 .endpoint_resources
                 .get(busbar_substrate::plane::config::NAMED_MAP_SECTIONS[2])
                 .cloned(),

@@ -43,7 +43,7 @@ pub struct BuildCtx<'a> {
     /// `mcp:` is absent, matching `App::mcp`'s own absence. Erasing at the composition root instead of
     /// in the plane's `build` is what removes the one concrete-type name this struct used to carry
     /// into the eventual MCP extraction — the neutral analogue of how the LLM dialects left core.
-    pub mcp_slot: Option<std::sync::Arc<dyn std::any::Any + Send + Sync>>,
+    pub endpoint_slot: Option<std::sync::Arc<dyn std::any::Any + Send + Sync>>,
     // The A2A registry the A2A plane's `build` lowers, TYPE-ERASED so this seam names no `crate::a2a`
     // config type — reached through `RootCfg::agent_defs`'s neutral `PlaneCfg::as_any` (`AgentsCfg`
     // with the plane compiled in, the raw capture without it). The A2A `build` closure downcasts it
