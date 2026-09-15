@@ -992,17 +992,16 @@ fn main() {
             Ok(true) => true, // enabled — RSS falls back to idle; nothing to report
             Ok(false) => {
                 eprintln!(
-                    "[info] jemalloc background purge thread not enabled on this build (static-musl \
-                     compiles it out; foreground-only decay) — EXPECTED, not an error; busbar's \
-                     idle-purge fallback keeps RSS returning to idle after a load burst"
+                    "[warn] jemalloc background purge thread did NOT enable on this target (no \
+                     background-thread support); enabling busbar's idle purge fallback so RSS still \
+                     returns to idle after a load burst"
                 );
                 false
             }
             Err(e) => {
                 eprintln!(
-                    "[info] jemalloc background purge thread unavailable on this target ({e}) — \
-                     EXPECTED on macOS, which has no background-thread mallctl; busbar's idle-purge \
-                     fallback keeps RSS returning to idle after a load burst"
+                    "[warn] could not enable jemalloc background purge thread ({e}); enabling \
+                     busbar's idle purge fallback so RSS still returns to idle after a load burst"
                 );
                 false
             }

@@ -942,8 +942,13 @@ pub(crate) fn plugin_fetch_downloader_with_cap(
                     let resp = client
                         .request(request)
                         .await
-                        .map_err(|e| {
-                            format!("GET {url}: {}", busbar_substrate::egress::with_cause(&e))
+                        // 1.5.5-faithful wording, formatted IN-HOUSE so it does not track the
+                        // egress client's version-specific error text: the older client rendered
+                        // every send failure as `error sending request for url (URL)` — the url,
+                        // and no flattened cause chain. Reproduced verbatim here rather than via
+                        // `with_cause(&e)`, whose output follows the newer client's spelling.
+                        .map_err(|_e| {
+                            format!("GET {url}: error sending request for url ({url})")
                         })?;
                     let status = resp.status();
                     if !status.is_success() {
