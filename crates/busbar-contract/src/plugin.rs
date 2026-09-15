@@ -34,6 +34,8 @@ pub enum Kind {
     Hook,
     /// Ships journal entries, content facts or segments off the node.
     Export,
+    /// Translates bytes to and from one plane's semantic IR (D36 dialect kind).
+    Dialect,
 }
 
 impl Kind {
@@ -63,6 +65,7 @@ impl fmt::Display for Kind {
             Self::Secret => "secret",
             Self::Hook => "hook",
             Self::Export => "export",
+            Self::Dialect => "dialect",
         };
         f.write_str(s)
     }
@@ -118,6 +121,9 @@ pub mod markers {
     marker!(
         /// Marker for the export kind.
         ExportKind => Export);
+    marker!(
+        /// Marker for the dialect kind (D36).
+        DialectKind => Dialect);
 }
 
 /// The native plugin interface generation a plugin was built against.
