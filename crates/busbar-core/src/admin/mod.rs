@@ -380,9 +380,9 @@ mod parse_duration_secs_tests;
 /// included — is an [`AdminError`] projected by `key_err`/`err_json` (design D route 2). The
 /// `internal_error`/`conflict_error`/`version_conflict_error` tokens that used to be re-mapped onto
 /// the frozen `code` enum in a second place are gone with it.
-pub(crate) const ERR_TYPE_NOT_FOUND: &str = crate::proto::openai_family::ERR_TYPE_NOT_FOUND;
+pub(crate) const ERR_TYPE_NOT_FOUND: &str = busbar_substrate::proto::ERR_TYPE_NOT_FOUND;
 pub(crate) const ERR_TYPE_INVALID_REQUEST: &str =
-    crate::proto::openai_family::ERR_TYPE_INVALID_REQUEST;
+    busbar_substrate::proto::ERR_TYPE_INVALID_REQUEST;
 
 /// Maximum byte lengths for admin-API path / body fields (defense-in-depth DB/log-bloat guards).
 /// A real minted key id is `vk_` + 16 hex chars (19 chars); 64 is generous headroom.

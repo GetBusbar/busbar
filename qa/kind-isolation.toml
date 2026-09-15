@@ -5485,7 +5485,7 @@ count = "14"
 [[cell]]
 crate = "busbar-core"
 kind = "dialect"
-count = "1196"
+count = "1194"
 
 [[cell]]
 crate = "busbar-hooks-ranking"
