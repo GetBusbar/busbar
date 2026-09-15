@@ -12,6 +12,7 @@
 
 pub mod bounded;
 pub mod dest;
+pub mod dialect;
 pub mod grammar;
 pub mod ids;
 pub mod kinds;
