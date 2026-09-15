@@ -1002,7 +1002,7 @@ impl TestApp {
     /// fold. `None` when no governance / no card key — core exposes only the neutral value, never its
     /// `pub` governance accessor.
     pub fn card_issuer(&self) -> Option<busbar_substrate::plane::registry::CardIssuer> {
-        self.governance.as_ref().and_then(|g| g.a2a_card_issuer())
+        self.governance.as_ref().and_then(|g| g.card_issuer())
     }
 
     /// THE PLANE INSTALL SEAM. Install a pre-built, type-erased plane runtime under its plane decl
