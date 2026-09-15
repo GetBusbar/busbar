@@ -55,6 +55,15 @@ plugin — the design is wrong, not the invariant. Every law below is a corollar
    the **rate card the user registered**. Units rarely change — a frozen schema — which is what keeps
    the money path byte-identical to 1.5.5.
 
+7. **Config-gated loading — every plugin is off until its config verb is used.** Core loads a plugin
+   **iff** its configuration section is present. No verb configured → that plugin is never loaded.
+   This holds for **all** kinds, not just planes: don't configure a SQL store → it is never loaded;
+   don't configure the plane verbs (`pools` = LLM, `tools` = MCP, `agents` = A2A, `streams` = voice)
+   → those planes are never loaded. This is the *mechanism* behind "LLM-only ≡ 1.5.5": with only
+   `pools` configured, only the LLM plane loads and the bytes are identical to 1.5.5; add `tools` /
+   `agents` / `streams` and the MCP / A2A / streams planes load — purely additive, nothing else
+   changes. A plugin that loads (or costs anything) without its verb configured is a bug.
+
 ## What this means for the gates
 The purity gates (`plane-purity`, `kind-isolation`) exist to **enforce Laws 1 and 2**: no plugin
 instance named in core/neutral crates, no lateral plugin naming. They are **servants of the vision,
