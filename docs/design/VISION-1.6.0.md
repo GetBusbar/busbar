@@ -103,6 +103,23 @@ on **every commit**, exist to guarantee two things:
    config — "config mcp/a2a/streams and boom, new features" — and nothing about the existing money
    path changes. That byte-identity is non-negotiable and is the reason the oracle is never waived.
 
+## Definition of Done — the checklist (owner-set; do not lose to compaction)
+"Done" is **dev-green 1.6.0 with nothing outstanding, deferred, or niggling** — the point where the
+architect can honestly say *"there is nothing left to do; it is perfection until users test it."*
+Concretely, ALL of:
+1. `scripts/verify-1.6.0-done.sh` exits 0 on one SHA, and dev CI is green on it.
+2. **Construction standing-reds are EMPTY** — `ship-ready` green, not merely `--posture`-tolerated.
+   The LLM-engine rebuild is done (no 1117-line request-path fn; terminal doors only in the Audit
+   step; the price named only where the card lives; one pick site; ports-only tests; holds clean).
+3. **Every accepted 1.5.5 deviation is revisited and re-signed-off.** Walk
+   `testing/shadow-oracle/accepted-differences.json` entry by entry: each is a crack in "LLM-only ≡
+   1.5.5". Eliminate the ones that can be eliminated (make the bytes match); for any that genuinely
+   must remain, re-confirm the justification consciously — no deviation is inherited unexamined.
+4. The laws (0–7) hold on the SHA: purity/kind-isolation/plane-delete green, byte-identity (parity)
+   green, config-gated loading verified, additive planes conform.
+5. Nothing niggling: no dead scaffolding worth removing left behind (e.g. finish or excise the inert
+   `Kind::Dialect` remnant), docs + version bump landed, changelog complete.
+
 ## How "done" is proven
 - Quality is proven by the **byte-identity oracle** (money path vs the 1.5.5 golden), the crate's own
   **tests**, **clippy**, and **`/codeaudit` looped to two consecutive zero-finding reports** — not by
