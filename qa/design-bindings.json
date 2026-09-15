@@ -24,7 +24,7 @@
    "lint": 5,
    "oracle-cell": 58,
    "oracle-family": 5,
-   "test": 453
+   "test": 452
   }
  },
  "owner_decisions": {
@@ -2840,17 +2840,10 @@
      "proves": "the behavioural half on the http/sse plane's own admission path: an over-budget request is a Decision::refuse at StepName::Admit carrying ReasonCode::OverBudget, charging nothing and leaving the ledger untouched -- a door, not an end",
      "source": "hand",
      "status": "mapped"
-    },
-    {
-     "kind": "test",
-     "ref": "crates/busbar-llm/src/unit/tests/meter.rs::a_spend_past_the_reservation_is_carried_out_as_an_overdraft",
-     "proves": "the same plane's ADMITTED unit that spends past its reservation carries the excess out as an overdraft on the hold rather than being ended for it",
-     "source": "hand",
-     "status": "mapped"
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "test:crates/busbar-kernel/tests/loop_battery.rs::running_past_the_reservation_posts_the_overdraft_rather_than_refusing, test:crates/busbar-kernel/tests/slices_and_leases.rs::running_out_mid_unit_carries_rather_than_refusing, test:crates/busbar-kernel/tests/slices_and_leases.rs::only_the_dimensions_that_accrue_mid_unit_can_overdraw, test:crates/busbar-kernel/tests/loop_battery.rs::the_leases_go_back_on_every_end_whatever_it_was, test:crates/busbar/tests/money_never_ends_an_admitted_unit.rs::no_abort_the_shipped_kernel_can_raise_carries_a_money_reason, test:crates/busbar/tests/money_never_ends_an_admitted_unit.rs::overdraft_ceiling_and_stale_slice_are_refusal_reasons_nothing_refuses_with, test:crates/busbar/tests/money_never_ends_an_admitted_unit.rs::the_overdraft_ceiling_is_a_verdict_no_shipped_path_branches_on, test:crates/busbar-llm/src/unit/tests/admit.rs::over_budget_refuses_with_no_charge_and_nothing_to_refund, test:crates/busbar-llm/src/unit/tests/meter.rs::a_spend_past_the_reservation_is_carried_out_as_an_overdraft"
+   "verdict_detail": "test:crates/busbar-kernel/tests/loop_battery.rs::running_past_the_reservation_posts_the_overdraft_rather_than_refusing, test:crates/busbar-kernel/tests/slices_and_leases.rs::running_out_mid_unit_carries_rather_than_refusing, test:crates/busbar-kernel/tests/slices_and_leases.rs::only_the_dimensions_that_accrue_mid_unit_can_overdraw, test:crates/busbar-kernel/tests/loop_battery.rs::the_leases_go_back_on_every_end_whatever_it_was, test:crates/busbar/tests/money_never_ends_an_admitted_unit.rs::no_abort_the_shipped_kernel_can_raise_carries_a_money_reason, test:crates/busbar/tests/money_never_ends_an_admitted_unit.rs::overdraft_ceiling_and_stale_slice_are_refusal_reasons_nothing_refuses_with, test:crates/busbar/tests/money_never_ends_an_admitted_unit.rs::the_overdraft_ceiling_is_a_verdict_no_shipped_path_branches_on, test:crates/busbar-llm/src/unit/tests/admit.rs::over_budget_refuses_with_no_charge_and_nothing_to_refund"
   },
   {
    "id": "PB-59",
