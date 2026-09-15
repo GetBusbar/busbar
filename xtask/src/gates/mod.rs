@@ -151,8 +151,6 @@ pub const CONSTRUCTION_STANDING_REDS: &[&str] = &[
     // row is what it caught: a rule claiming "a cancellation-token check precedes every `.await` in
     // the route step" that found no `.await` in scope at all, and passed on that basis.
     "hold-discipline:cancellation-before-await",
-    "hold-escapes",
-    "kernel-seal-impls",
     "one-pick-site",
     "one-pricing-site:fee-fields",
     "plane-no-money",

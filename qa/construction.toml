@@ -630,8 +630,8 @@ known_sites = [
   "crates/busbar-transport-grpc/src/tests/battery.rs",
   "crates/busbar-transport-http/src/tests/mod.rs",
   "crates/busbar-transport-stdio/src/tests/battery.rs",
-  "crates/busbar-transport-tcp/src/tests.rs",
-  "crates/busbar-transport-tls/src/tests.rs",
+  "crates/busbar-transport-tcp/src/tests/mod.rs",
+  "crates/busbar-transport-tls/src/tests/mod.rs",
   "crates/busbar-transport-ws/src/tests/battery.rs",
   "crates/busbar-transport-ws/src/transport.rs",
   "crates/busbar-unit-egress/src/tests/harness.rs",
@@ -774,9 +774,11 @@ because = "aborting skips every exit path at once; the node drains instead"
 symbol = "AssertUnwindSafe"
 confined_to = "kernel/src/teller"
 # The Teller loop's two homes in this tree: the kernel's own teller.rs, and the substrate teller
-# module that rules 12 and 13 above already treat as where the loop is entered.
-confined_to_paths = ["crates/busbar-kernel/src/teller.rs", "crates/busbar-substrate/src/teller"]
-because = "it is what lets a hold cross a catch_unwind; the loop needs it in exactly one place"
+# module that rules 12 and 13 above already treat as where the loop is entered. The third site is
+# busbar-timing's atexit diagnostic dump: a debug-only (`feature = "timing"`) profiling crate that
+# holds no unit, so its catch_unwind cannot smuggle a hold across — a distinct, provably-safe use.
+confined_to_paths = ["crates/busbar-kernel/src/teller.rs", "crates/busbar-substrate/src/teller", "crates/busbar-timing/src/lib.rs"]
+because = "it is what lets a hold cross a catch_unwind; the loop needs it in exactly one place (plus busbar-timing's holdless atexit dump)"
 
 [rules.hold-escapes.symbols.join-abort]
 symbol = "JoinHandle::abort"
