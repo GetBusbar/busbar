@@ -5,14 +5,14 @@
 use crate::engine::AppEngineExt as _;
 use crate::engine::WeightedLane;
 use crate::native_ingress::{affinity_header_for, operation_ingress_inner};
+use crate::test_support::ingress::{
+    admit_check, finish, finish_admitted, finish_rejected, governance_guard, ingress_error,
+    not_found_message, percent_decode, pool_authorized, pool_label,
+};
 use crate::test_support::BuiltApp as App;
 use axum::body::Bytes;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
-use busbar_core::ingress::{
-    admit_check, finish, finish_admitted, finish_rejected, governance_guard, ingress_error,
-    not_found_message, percent_decode, pool_authorized, pool_label,
-};
 use serde_json::Value;
 use std::sync::Arc;
 use std::time::Instant;
@@ -2152,9 +2152,9 @@ async fn test_role_bound_principal_governed_like_a_virtual_key() {
         )
         .pool("gpool-a", &[(0, 1)])
         .pool("gpool-b", &[(0, 1)])
-        .auth(StdArc::new(busbar_core::auth::AuthMiddleware::new_builtin(
-            &auth_cfg,
-        )))
+        .auth(StdArc::new(
+            crate::test_support::AuthMiddleware::new_builtin(&auth_cfg),
+        ))
         .governance_kit(gov)
         // The old GovState carried fee 0; keep the no-charge semantics under the CostModel.
         .cost_kit(crate::test_support::engine_kit::CORE_ENGINE_KIT.cost_flat(0))

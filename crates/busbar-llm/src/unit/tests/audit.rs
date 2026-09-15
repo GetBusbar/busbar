@@ -4,11 +4,11 @@
 
 use super::*;
 use crate::engine::POOL_LABEL_UNRESOLVED;
+use crate::test_support::proxy::reqlog::{RequestRecord, REQUESTS};
 use crate::test_support::{LaneSpec, TestApp};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use busbar_caps::KernelSeal;
-use busbar_core::proxy::reqlog::{RequestRecord, REQUESTS};
 use busbar_store_memory::MemoryStore;
 use busbar_substrate::testkit::engine_kit::EngineTestKit as _;
 

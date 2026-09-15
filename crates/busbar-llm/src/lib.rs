@@ -161,6 +161,25 @@ pub mod unit;
 pub mod test_support {
     pub use busbar_core::test_support::*;
 
+    // THE CORE SEAMS THE RELOCATED SUITES REACH, NAMED ONCE HERE (the plane's test-support port).
+    // The engine/unit tests moved into this crate hold a handful of `busbar-core` fixtures and
+    // core-internal handlers by value (the auth middleware, the reqlog/proxy banks, the ingress
+    // handlers, the runtime `App`/`CurrentApp`, the breaker-store snapshots, the config/cost value
+    // families and their validator, the admin hook-registration service). Rather than each suite
+    // spelling `busbar_core::…` directly, they reach these through `crate::test_support::…` — one
+    // audited port into core for the whole test binary, mirroring how the plane's PRODUCTION code
+    // names core only through the substrate/api ABI. `cfg(test)` only: core is a dev-dependency, so
+    // nothing outside this crate's own test binary sees these.
+    pub use busbar_core::admin::v1::service::{build_with_hook, build_without_hook};
+    pub use busbar_core::auth::AuthMiddleware;
+    pub use busbar_core::config::{RateEntryCfg, RootCfg};
+    pub use busbar_core::config_validate::validate;
+    pub use busbar_core::cost::CostModel;
+    pub use busbar_core::plane::config::{AgentsSection, ToolsSection};
+    pub use busbar_core::state::{App, CurrentApp};
+    pub use busbar_core::store::{HealthState, LaneData};
+    pub use busbar_core::{ingress, proxy};
+
     /// THE CHAT DISPATCH CELL the money-path tests hold by value — `frame(Http, CHAT, ChatOperation)`
     /// over THIS crate's real openai chat codec. It USED to live in core's `handlers/tests/chat_fixture`
     /// (a `#[cfg(test)]` file that named `busbar_llm::chat_handle::ChatOperation` across the dev-dep

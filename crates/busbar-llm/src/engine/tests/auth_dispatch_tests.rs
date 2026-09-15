@@ -8,9 +8,9 @@
 //! one and downcast by the other cannot match — these must run in the plugin's single-`busbar-core`
 //! binary. The pure-auth (401/verification) tests that never reach dispatch stay in core.
 
+use crate::test_support::AuthMiddleware;
 use axum::http::header::AUTHORIZATION;
 use busbar_api::ScopeRef;
-use busbar_core::auth::AuthMiddleware;
 use busbar_substrate::sigv4::{
     sha256_hex, sign_v4, uri_encode_path, X_AMZ_CONTENT_SHA256, X_AMZ_DATE,
 };

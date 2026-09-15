@@ -9,11 +9,11 @@ use axum::body::Bytes;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
 
+use crate::test_support::proxy::reqlog::REQUESTS;
 use busbar_caps::{
     Admission, AdmitToken, Approve, Audit, Authenticate, KernelSeal, OpClassId, Outcome,
     PrincipalId, Route, TrustToken, UnitToken, UsageToken, VerifiedDestination, Verify,
 };
-use busbar_core::proxy::reqlog::REQUESTS;
 use busbar_substrate::plane_host::EngineTablesView;
 use busbar_substrate::testkit::engine_kit::EngineTestKit as _;
 
