@@ -87,7 +87,7 @@ pub const PROVIDER_SIGNAL_CONTEXT_LENGTH: &str = "context_length";
 /// Value shape: an object keyed by the message's index in `IrRequest.messages` (as a decimal string)
 /// → the name. Keyed by index rather than positional array so a request where only message 7 has a
 /// name costs one entry, and so the writer's lookup cannot be thrown off by a `null` hole.
-pub const MESSAGE_NAMES_SENTINEL: &str = "__busbar_openai_message_names";
+pub const MESSAGE_NAMES_SENTINEL: &str = "__busbar_message_names";
 
 /// Precise context-length prose scan shared by `OpenAiReader::extract_error` and
 /// `ResponsesReader::extract_error` — the message scan was duplicated. The scan must be PRECISE:

@@ -5535,7 +5535,7 @@ count = "89"
 [[cell]]
 crate = "busbar-substrate-values"
 kind = "dialect"
-count = "249"
+count = "248"
 
 [[cell]]
 crate = "busbar-transport-sse"
