@@ -332,7 +332,7 @@ pub static ROOT_CARD: LazyLock<RootHistory> = LazyLock::new(RootHistory::default
 /// drift.
 pub(crate) fn card_from_config<'r>(
     rates: impl IntoIterator<Item = (&'r str, busbar_substrate::billing::RawTierRates)>,
-    per_request_fee: i64,
+    flat_minor: i64,
     present: bool,
     currency: busbar_unit_cost::CurrencyCode,
 ) -> busbar_unit_cost::RateCard {
@@ -351,7 +351,10 @@ pub(crate) fn card_from_config<'r>(
             )
         })
     });
-    busbar_unit_cost::RateCard::from_config_in(currency, lanes, per_request_fee)
+    // The flat figure crosses as a NEUTRAL minor-unit value; the cost unit's constructor is the one
+    // that reads it AS the per-request fee (clamps it, bills it), so no plane and no root file spells
+    // a fee — the read lives where the card lives.
+    busbar_unit_cost::RateCard::from_config_in(currency, lanes, flat_minor)
 }
 
 /// The root, answering the engine's rate-apply seam.
@@ -372,7 +375,7 @@ impl busbar_substrate::rate_apply::RateApply for CardRepricer {
         ROOT_CARD.apply(
             card_from_config(
                 rates.lanes.iter().map(|(lane, r)| (lane.as_str(), *r)),
-                rates.fee_cents,
+                rates.flat_minor,
                 rates.present,
                 node_currency(),
             ),

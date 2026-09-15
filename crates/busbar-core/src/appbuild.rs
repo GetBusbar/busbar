@@ -606,7 +606,7 @@ pub fn build_app_from_config(
             .flat_map(|card| card.iter())
             .map(|(lane, entry)| (lane.clone(), entry.raw_tier_rates()))
             .collect::<Vec<_>>(),
-        fee_cents: cfg.per_request_fee,
+        flat_minor: cfg.per_request_fee,
         present: cfg.rate_card.is_some(),
     });
 

@@ -20,16 +20,23 @@ use crate::billing::RawTierRates;
 
 /// The configured rates, as the neutral view a holder rebuilds its card from.
 ///
-/// One entry per configured lane in the deployment's own order, plus the flat per-request fee, plus
-/// whether a rate card was configured AT ALL. The third is not the emptiness of the first: an ABSENT
-/// card prices every class at nothing and still charges the fee, and a PRESENT card that happens to
-/// name no lane is a different statement. Collapsing them would silently turn one deployment's
-/// configuration into another's.
+/// One entry per configured lane in the deployment's own order, plus the flat per-request figure,
+/// plus whether a rate card was configured AT ALL. The third is not the emptiness of the first: an
+/// ABSENT card prices every class at nothing and still carries the flat figure, and a PRESENT card
+/// that happens to name no lane is a different statement. Collapsing them would silently turn one
+/// deployment's configuration into another's.
+///
+/// The flat figure is carried NEUTRALLY. This seam is a rate-carrier and nothing more: it names the
+/// number, not what it means. Reading that number AS a per-request fee — the clamp, the billing
+/// semantics — is the holder's, on the card it builds, because a fee read outside the crate that owns
+/// the card is a price derived where nobody can see it. So the seam spells a flat minor-unit figure
+/// and leaves the word "fee" to the crate entitled to say it.
 pub struct RawRates<'r> {
     /// `(lane, its four raw micro-per-token tier rates)`, as configured.
     pub lanes: &'r [(String, RawTierRates)],
-    /// The flat per-request fee, in abstract minor units.
-    pub fee_cents: i64,
+    /// The flat per-request figure, in abstract minor units — a neutral rate-carrier value the
+    /// holder reads as the per-request fee. Never interpreted here.
+    pub flat_minor: i64,
     /// Whether the deployment configured a rate card at all.
     pub present: bool,
 }
