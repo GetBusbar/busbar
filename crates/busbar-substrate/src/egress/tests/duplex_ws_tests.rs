@@ -295,8 +295,8 @@ async fn the_dialer_queues_no_more_upstream_frames_than_its_bound() {
 
     let flood = crate::egress::duplex_ws::MAX_QUEUED_UPSTREAM_FRAMES * 8;
 
-    // An upstream that talks unprompted, as a realtime provider does: it pushes its whole output at
-    // the socket without waiting to be asked.
+    // An upstream that talks unprompted: it pushes its whole output at the socket without waiting to
+    // be asked.
     async fn ws_route(
         axum::extract::State(flood): axum::extract::State<usize>,
         upgrade: axum::extract::ws::WebSocketUpgrade,
@@ -336,7 +336,7 @@ async fn the_dialer_queues_no_more_upstream_frames_than_its_bound() {
 }
 
 /// AN UPSTREAM THAT HAS STOPPED ACCEPTING BYTES: every write pends forever, which is what a wedged
-/// provider, a peer that stopped reading, or a socket a middlebox is holding open looks like from this
+/// upstream, a peer that stopped reading, or a socket a middlebox is holding open looks like from this
 /// side. Reads pend too, so the session stays up — the stall is the whole point, not a disconnect.
 struct StalledUpstreamIo;
 

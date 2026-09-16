@@ -37,11 +37,12 @@ tokio::task_local! {
     pub static UPSTREAM_RTT_US: std::sync::Arc<std::sync::atomic::AtomicU64>;
 }
 
-/// Build ONE egress client shard on the LLM-lane posture. An infallible shim over the engine's
-/// fallible builder ([`crate::egress::engine::build_client`], where the parity ledger lives): the
-/// LLM posture carries no extra trust root and no client identity — the only arms a build can fail
-/// on — so the panic path here is unreachable by construction. Lives HERE so a plane crate builds its
-/// egress client without reaching into `busbar-core`; core's `proxy` re-exports it.
+/// Build ONE egress client shard from a caller-supplied [`EngineSpec`](crate::egress::engine::EngineSpec).
+/// An infallible shim over the engine's fallible builder ([`crate::egress::engine::build_client`],
+/// where the parity ledger lives): every spec a resident plane actually passes here carries no extra
+/// trust root and no client identity — the only arms a build can fail on — so the panic path here is
+/// unreachable by construction. Lives HERE so a plane crate builds its egress client without reaching
+/// into `busbar-core`; core's `proxy` re-exports it.
 pub fn build_egress_client(
     spec: &crate::egress::engine::EngineSpec,
 ) -> crate::egress::engine::EngineClient {

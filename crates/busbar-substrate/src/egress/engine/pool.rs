@@ -4,7 +4,7 @@
 //! THE OWNED CONNECTION POOL with dial coalescing — the machinery that replaces
 //! `hyper_util::client::legacy::Client`'s shared-mutex pool and its checkout/connect race.
 //!
-//! One pool per built client (= per worker shard on the LLM lanes). Per authority, ONE invariant
+//! One pool per built client (= per worker shard under the pooled posture). Per authority, ONE invariant
 //! governs establishment: `inflight_dials == min(waiters.len(), dial_bound)` whenever waiters
 //! exist — dials are started only by [`ensure_dials`], never by a waiter directly, and every dial
 //! task is a DETACHED spawn no cancellation can abort. A completed dial's socket is always
@@ -209,7 +209,8 @@ impl AuthorityState {
 
 /// The error [`super::EngineClient::request`] yields — the owned replacement for
 /// `hyper_util::client::legacy::Error`, same consumer contracts:
-/// * [`EngineError::is_connect`] — substrate's `HopError` Connect-vs-Io split (MCP/A2A planes);
+/// * [`EngineError::is_connect`] — substrate's `HopError` Connect-vs-Io split, the neutral
+///   vocabulary a plane's own error classification maps onto;
 /// * [`std::error::Error::source`] — the cause chain carried as ERROR OBJECTS end-to-end (never
 ///   stringified), so core's `EgressSendError::is_timeout()` downcast walk finds the
 ///   `ConnectDeadline`'s `io::ErrorKind::TimedOut` and classifies ERR_NET_TIMEOUT;
@@ -389,8 +390,8 @@ pub(crate) async fn checkout(
                 // unbounded redial storm for one logical request: under TLS 1.3 an mTLS server
                 // that refuses the client's certificate does so AFTER the client's handshake
                 // completes, so every dial "succeeds", can be delivered, die on arrival, and
-                // re-enter checkout — the a2a mtls isolation test caught its peer taking two
-                // handshakes for one GET (dev CI run 33275270894), and widening the
+                // re-enter checkout — a downstream consumer's mTLS isolation test caught its peer
+                // taking two handshakes for one GET (dev CI run 33275270894), and widening the
                 // delivery-to-liveness-check window turns that into hundreds.
                 if conn.is_live() || !conn.reused() {
                     return Ok(conn);

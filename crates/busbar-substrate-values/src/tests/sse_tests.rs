@@ -168,9 +168,9 @@ fn test_feed_drain_work_is_linear_in_bytes_fed() {
 }
 
 /// A frame that was framed by a bare-CR terminator must still split into fields on a bare-CR line
-/// break — `str::lines()` only splits on LF/CRLF, so a bare-CR frame yielded NO data at all (the
-/// A2A relay then answered 502), and a multi-field bare-CR frame swallowed later fields into the
-/// first value.
+/// break — `str::lines()` only splits on LF/CRLF, so a bare-CR frame yielded NO data at all (any
+/// caller relaying real SSE traffic got nothing back and had to fail the exchange upstream), and a
+/// multi-field bare-CR frame swallowed later fields into the first value.
 #[test]
 fn test_sse_data_splits_on_bare_cr() {
     assert_eq!(

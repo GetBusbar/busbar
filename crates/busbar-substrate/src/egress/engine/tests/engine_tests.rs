@@ -427,11 +427,12 @@ async fn connect_gate_bounds_per_authority_establishment() {
     );
 }
 
-/// The reqwest-parity userinfo move on the plane-facing assembly: `user:pass@` leaves the URI
-/// (so it can never sit in hyper's per-authority pool key, which hyper traces at debug level) and
-/// becomes an `Authorization: Basic` header marked sensitive — unless the caller set its own
-/// Authorization, which wins. The LLM `egress_request` path is deliberately untouched by this
-/// (lane URIs are boot-validated; the forward path keeps zero per-request branches).
+/// The reqwest-parity userinfo move on the general request builder used for operator-spelled
+/// URLs: `user:pass@` leaves the URI (so it can never sit in hyper's per-authority pool key,
+/// which hyper traces at debug level) and becomes an `Authorization: Basic` header marked
+/// sensitive — unless the caller set its own Authorization, which wins. The boot-validated
+/// forward-path `egress_request` is deliberately untouched by this (its URI is validated at
+/// boot with no userinfo possible, so the forward path keeps zero per-request branches).
 #[test]
 fn request_moves_url_userinfo_into_a_sensitive_basic_auth_header() {
     use base64::Engine as _;

@@ -40,8 +40,8 @@ pub trait ResolveNames: Send + Sync {
 /// second connector type.
 #[derive(Clone)]
 pub enum EgressResolver {
-    /// `getaddrinfo` — reqwest's default and `HttpConnector`'s default. The LLM lanes (their
-    /// destination is operator config, guarded at apply) and cold conveniences.
+    /// `getaddrinfo` — reqwest's default and `HttpConnector`'s default. The pooled posture
+    /// (destinations are operator config, guarded at apply) and cold conveniences.
     System(GaiResolver),
     /// THE PIN. Answers exactly one name with exactly one address; refuses every other name with
     /// the doctrine message, verbatim. Note there is deliberately NO IP-literal special case:
@@ -82,7 +82,7 @@ impl Iterator for ResolvedAddrs {
 }
 
 /// The resolver's future — an enum rather than a box because the System arm runs per fresh
-/// connection on the LLM lanes and the pinned arm is always immediate.
+/// connection on the pooled posture and the pinned arm is always immediate.
 pub enum ResolveFuture {
     Gai(GaiFuture),
     Ready(Option<Result<ResolvedAddrs, BoxError>>),

@@ -232,7 +232,7 @@ fn dial_bound_resolution_pinned_undivided_sharded_divided() {
 // ── Config-off zero cost ─────────────────────────────────────────────────────────────────────────
 
 /// A fresh client has an empty authority map and NO background task: the reaper spawns on first
-/// idle insertion, authority entries on first request — an unbuilt/unused plane costs nothing.
+/// idle insertion, authority entries on first request — an unbuilt/unused client costs nothing.
 #[tokio::test]
 async fn a_fresh_client_holds_no_state_and_runs_no_tasks() {
     let script = ScriptedDial::new(|_| DialScript::Block);
@@ -1131,8 +1131,8 @@ async fn a_dead_on_arrival_delivery_re_enters_checkout() {
 /// ACCEPTS the connect and then kills the conn that was an UNBOUNDED redial loop for one logical
 /// request: under TLS 1.3 an mTLS server that refuses the client certificate does so after the
 /// client's own handshake completes, so every dial "succeeds", can be delivered, die on arrival,
-/// and re-enter checkout for another full handshake. The a2a mtls isolation test caught its peer
-/// recording TWO refused handshakes for one GET (dev CI run 33275270894, `[Ok(1), Err, Err]`
+/// and re-enter checkout for another full handshake. A downstream consumer's mTLS isolation test
+/// caught its peer recording TWO refused handshakes for one GET (dev CI run 33275270894, `[Ok(1), Err, Err]`
 /// where the shape pins `[Ok(1), Err]`); widening the delivery-to-liveness-check window by 2ms
 /// turned that into hundreds. Only the REUSED arm re-checks out (the test above), which is what
 /// makes the checkout-level retry terminate structurally.

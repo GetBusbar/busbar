@@ -42,7 +42,7 @@ pub fn digest_arguments(arguments: &serde_json::Value) -> String {
 ///
 /// Pure `getrandom` + `hex` (no core reach), relocated here beside the seal so a plane crate mints a
 /// nonce without naming `busbar_core::plane::approvals`; core re-exports it, so
-/// `crate::plane::approvals::nonce` still resolves for the tests and the extracted MCP plane.
+/// `crate::plane::approvals::nonce` still resolves for the tests and the extracted plane crate.
 pub fn nonce() -> Result<String, getrandom::Error> {
     let mut b = [0u8; 16];
     getrandom::fill(&mut b)?;

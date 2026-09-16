@@ -7,22 +7,24 @@
 //! output.
 //!
 //! - [`MediaBlob`] — AUDIO. A single representation (bytes OR base64 OR uri), enforced by a one-of
-//!   enum. Carries optional PCM parameters because headerless raw PCM (`audio/L16`, OpenAI `pcm`)
-//!   keeps sample-rate / channels / bit-depth in the model contract, not the bytes.
+//!   enum. Carries optional PCM parameters because headerless raw PCM (`audio/L16` and similar
+//!   codec-only formats) keeps sample-rate / channels / bit-depth in the operation's contract, not
+//!   the bytes.
 //! - [`ImageOutput`] — IMAGE. ADDITIVE: a single image may legitimately return base64 AND a url/uri
-//!   at once (dall-e URL, Vertex `gcsUri`, everyone-else base64), and losslessness requires keeping
-//!   every form present — so optionals, never a one-of.
+//!   at once (upstreams vary — some return only a URL, some a bucket URI, some base64), and
+//!   losslessness requires keeping every form present — so optionals, never a one-of.
 //!
 //! Foundation types for the operations rebuild; wired into the IR as `MediaBlob`/`ImageOutput`
-//! payloads throughout the handlers (e.g. `handlers/gemini.rs`, `ir/audio.rs`).
+//! payloads by whichever plane's operation handlers produce media (e.g. transcription/speech,
+//! image generation).
 
 use bytes::Bytes;
 
 const B64_ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
 /// Standard base64 (RFC 4648 §4, with `=` padding). Audio cells cross the JSON/binary boundary
-/// (Gemini inline_data is base64; OpenAI speech is raw bytes), so encode/decode live with the blob
-/// types rather than pulling in a `base64` crate.
+/// (some upstreams inline audio as base64 in JSON; others return raw bytes), so encode/decode live
+/// with the blob types rather than pulling in a `base64` crate.
 pub fn base64_encode(input: &[u8]) -> String {
     let mut out = String::with_capacity(input.len().div_ceil(3) * 4);
     for chunk in input.chunks(3) {
@@ -60,7 +62,7 @@ const B64_REVERSE: [u8; 256] = {
 };
 
 /// Decode standard base64 (padding optional; whitespace ignored). Returns `None` on any invalid byte
-/// so a malformed provider payload fails loud rather than silently truncating audio.
+/// so a malformed upstream payload fails loud rather than silently truncating audio.
 pub fn base64_decode(input: &str) -> Option<Bytes> {
     let val = &B64_REVERSE;
     let mut bits: u32 = 0;
@@ -68,7 +70,7 @@ pub fn base64_decode(input: &str) -> Option<Bytes> {
     let mut out = Vec::with_capacity(input.len() / 4 * 3);
     // Padding is TERMINAL: `=` ends the encoded data, and only whitespace may follow it. Skipping
     // `=` wherever it appeared let a concatenation of two padded blobs (`QQ==QQ==`) decode as one
-    // longer payload, silently accepting a corrupt provider payload the fail-loud contract exists to
+    // longer payload, silently accepting a corrupt upstream payload the fail-loud contract exists to
     // reject.
     let mut padded = false;
     for &b in input.as_bytes() {
@@ -103,15 +105,16 @@ pub fn base64_decode(input: &str) -> Option<Bytes> {
 }
 
 /// Audio payload — exactly ONE representation, enforced. `B64` is the lossless common denominator
-/// across providers; `Bytes` is the raw OpenAI binary response.
+/// across upstreams; `Bytes` is a raw binary response body.
 #[derive(Debug, Clone, PartialEq)]
 pub enum MediaPayload {
     Bytes(Bytes),
     B64(String),
 }
 
-/// Sample parameters for headerless raw PCM (`audio/L16;codec=pcm;rate=24000`, OpenAI `pcm`), where
-/// the wire bytes carry no container header. `None` on `MediaBlob.pcm` for self-describing formats.
+/// Sample parameters for headerless raw PCM (`audio/L16;codec=pcm;rate=24000` and similar codec-only
+/// MIME types), where the wire bytes carry no container header. `None` on `MediaBlob.pcm` for
+/// self-describing formats.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PcmParams {
     pub sample_rate: u32,
@@ -130,9 +133,10 @@ pub struct MediaBlob {
 
 impl MediaBlob {
     /// Well-formedness: PCM parameters are present iff the MIME type denotes headerless raw PCM.
-    /// Guards against an OperationHandler that forgets the params on `audio/L16`/`pcm` (silently lossy) or attaches
-    /// them to a self-describing container (meaningless). No runtime path currently calls this; the
-    /// invariant is documented and self-tested but not enforced on real data.
+    /// Guards against an OperationHandler that forgets the params on a codec-only MIME type (silently
+    /// lossy) or attaches them to a self-describing container (meaningless). No runtime path
+    /// currently calls this; the invariant is documented and self-tested but not enforced on real
+    /// data.
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn is_well_formed(&self) -> bool {
         let raw_pcm = self.mime_type.contains("L16")
@@ -143,8 +147,8 @@ impl MediaBlob {
 }
 
 /// A single generated image. ADDITIVE: `b64` and `url` may BOTH be present and both are
-/// kept. `b64` is the common path; `url`/`uri` are additive (dall-e URL, Vertex `gcsUri`). The other
-/// fields are provider-specific extras kept for lossless round-trip.
+/// kept. `b64` is the common path; `url`/`uri` are additive (some upstreams return a URL, others a
+/// bucket URI). The other fields are upstream-specific extras kept for lossless round-trip.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ImageOutput {
     pub b64: Option<String>,

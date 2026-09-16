@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for `crates/busbar-core/src/egress_auth/bearer_token.rs`.
+//! Tests for `crates/busbar-substrate/src/egress_auth/bearer_token.rs`.
 
 use super::*;
 

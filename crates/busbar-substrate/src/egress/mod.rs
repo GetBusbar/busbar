@@ -10,9 +10,9 @@
 //! a socket, a resolver, or the vocabulary of the wire round trip.
 //!
 //! The types here are deliberately protocol-blind. There is nowhere in [`Response`] to record which
-//! plane made the hop, and that absence is the point: the same buffered round trip serves an A2A
-//! card fetch, an A2A task relay and an MCP dispatch, and a field that named one of them would be a
-//! field the other two had to leave meaningless.
+//! plane made the hop, and that absence is the point: the same buffered round trip serves any plane's
+//! outbound hop, and a field that named one plane would be a field every other plane had to leave
+//! meaningless.
 
 // The neutral INPUT to the host-mediated fetch adapter: the `HopSpec` pure-data hop description a
 // plane builds without naming a core type. The adapter DRIVERS that consume it stay in
@@ -45,9 +45,9 @@ pub mod fixtures;
 /// `Default` is the empty response — status `0`, no location, no body, no observed identity — used
 /// by a fixture that answers without a socket.
 ///
-/// Gated to `plane-a2a`: the A2A card-fetch/relay path is its consumer today. The MCP dispatch path
-/// keeps its own `TransportResponse` projection, and the plugin egress vtable projects onto the ABI
-/// PODs — so a no-plane build carries no unused return vocabulary.
+/// Gated to the `relay` feature: the buffered fetch/relay path is its consumer today. A dispatch path
+/// keeps its own response projection, and the plugin egress vtable projects onto the ABI
+/// PODs — so a build without that consumer carries no unused return vocabulary.
 #[cfg(feature = "relay")]
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Response {
@@ -83,7 +83,7 @@ pub struct Response {
 ///
 /// The status is knowable before the first chunk because a caller that has already written bytes to
 /// its own consumer cannot then change its mind and answer an error — so the decision "is this a
-/// stream at all" is made on the head. Gated to `plane-a2a`, its consumer (see [`Response`]).
+/// stream at all" is made on the head. Gated to the `relay` feature, its consumer (see [`Response`]).
 #[cfg(feature = "relay")]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StreamHead {
@@ -100,8 +100,8 @@ pub struct StreamHead {
 
 /// What a chunk sink says about continuing. A sink whose consumer has gone away asks the hop to
 /// STOP rather than being written to forever: a caller that disconnected mid-stream must not leave
-/// busbar holding a thread against an upstream that is happy to keep talking. Gated to `plane-a2a`,
-/// its consumer (see [`Response`]).
+/// busbar holding a thread against an upstream that is happy to keep talking. Gated to the `relay`
+/// feature, its consumer (see [`Response`]).
 #[cfg(feature = "relay")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ChunkFlow {
@@ -270,14 +270,14 @@ pub fn build_pinned_client(
 ///
 /// The owner supplies the client BUILD closure, so a per-registration identity or a test trust
 /// anchor stays a property of the owner and never has to enter this key — where a pool serves ONE
-/// owner's fixed posture (the MCP dispatch pool), only the destination varies. The host-side
+/// owner's fixed posture (a single-owner dispatch pool), only the destination varies. The host-side
 /// vtable pool is the exception the KEY TYPE parameter exists for: it serves MANY registrations
 /// through one chokepoint, so its key carries the identity/anchor refs alongside the destination —
 /// two registrations with different identities against one address must not share a connection.
 ///
 /// The value is the engine client ([`engine::EngineClient`]) — a cheap-clone handle over a shared
 /// connection pool; dropping the last clone closes its idle sockets, so whole-entry eviction keeps
-/// its meaning. Its production consumers are the MCP dispatch/token-exchange pool and the host
+/// its meaning. Its production consumers are a single-owner dispatch/token-exchange pool and the host
 /// egress chokepoint's per-registration pool.
 pub struct PinnedClientPool<K = (String, SocketAddr)> {
     clients: Mutex<Pooled<K>>,

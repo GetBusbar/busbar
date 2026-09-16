@@ -26,11 +26,11 @@ fn mint_then_verify_roundtrips() {
     assert_eq!(claims.kid, DEFAULT_KID);
 }
 
-/// THE PLANE BOUNDARY (1.6.0): an AUDIENCE-BOUND token
-/// (the shape the MCP authorization server mints, wire claim `a`) must be REJECTED by the
+/// THE AUDIENCE BOUNDARY (1.6.0): an AUDIENCE-BOUND token
+/// (the shape an authorization-server mint produces, wire claim `a`) must be REJECTED by the
 /// plain data-plane verify. Before the boundary existed, serde ignored the unknown claim and
 /// the token verified everywhere a busbar key does (`/stats`, `/v1/models`, every
-/// `RouteAuth::Key` route): an MCP-scoped token was silently a full data-plane key.
+/// `RouteAuth::Key` route): an audience-scoped token was silently a full data-plane key.
 #[test]
 fn audience_bound_token_is_rejected_on_the_plain_verify_path() {
     let s = signer();

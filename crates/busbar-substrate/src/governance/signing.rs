@@ -61,15 +61,17 @@ pub struct TokenClaims {
     /// `GovState::binding_generation_matches`), never against a rotated one.
     #[serde(default, rename = "g", skip_serializing_if = "Option::is_none")]
     pub generation: Option<String>,
-    /// The AUDIENCE this token is bound to (wire name `a`), 1.6.0: the MCP plane boundary.
-    /// `None` = a plain data-plane busbar key (every token
-    /// minted before 1.6.0, and every `/auth/token` key after it). `Some(uri)` = an MCP
-    /// authorization-server access token bound to the operator-configured canonical MCP URI.
+    /// The AUDIENCE this token is bound to (wire name `a`), 1.6.0: a substrate-owned, plane-neutral
+    /// scoping claim. `None` = a plain data-plane busbar key (every token minted before 1.6.0, and
+    /// every `/auth/token` key after it). `Some(uri)` = a token bound to whatever operator-configured
+    /// audience URI the minting caller passed to [`SigningKey::mint_for_audience`] — the substrate
+    /// names no specific plane here; it is whichever ingress that caller scoped the token to.
     /// Enforcement lives in the VERIFIER ([`TokenVerifier::verify`]), never in a handler, so a
     /// route added later cannot forget it: the data plane verifies with expected-audience `None`
-    /// and REJECTS any token carrying an audience; the MCP ingress verifies with `Some(uri)` and
-    /// rejects a token whose audience is absent or different. Same additive fleet-compat shape as
-    /// `generation`/`g`: old tokens carry no `a` and keep verifying on the data plane.
+    /// and REJECTS any token carrying an audience; an audience-checked ingress verifies with
+    /// `Some(uri)` and rejects a token whose audience is absent or different. Same additive
+    /// fleet-compat shape as `generation`/`g`: old tokens carry no `a` and keep verifying on the
+    /// data plane.
     #[serde(default, rename = "a", skip_serializing_if = "Option::is_none")]
     pub aud: Option<String>,
     /// The OAuth CLIENT id this token was minted through (wire name `cid`), for per-client
@@ -95,9 +97,9 @@ pub enum VerifyError {
     BadSignature,
     /// The token is past its `exp`.
     Expired,
-    /// The token's audience claim does not match the plane it was presented on: an
-    /// audience-bound (MCP) token on the plain data plane, a plain token on an audience-checked
-    /// (MCP) ingress, or a different audience URI. The 1.6.0 plane boundary; fail-closed.
+    /// The token's audience claim does not match the boundary it was presented on: an
+    /// audience-bound token on the plain data plane, a plain token on an audience-checked
+    /// ingress, or a different audience URI. The 1.6.0 audience boundary; fail-closed.
     AudienceMismatch,
 }
 
@@ -230,16 +232,16 @@ impl TokenSigner {
         })
     }
 
-    /// Mint an AUDIENCE-BOUND token (1.6.0, the MCP authorization-server mint): identical to
-    /// [`Self::mint`] plus the `aud` plane-boundary claim and the optional `cid` client
-    /// attribution. Such a token verifies ONLY where the verifier expects exactly this audience
-    /// (the MCP ingress); the plain data-plane verify rejects it (see [`TokenClaims::aud`]).
+    /// Mint an AUDIENCE-BOUND token (1.6.0, the substrate's generic audience-scoped mint): identical
+    /// to [`Self::mint`] plus the `aud` scoping claim and the optional `cid` client attribution. Such
+    /// a token verifies ONLY where the verifier expects exactly this audience; the plain data-plane
+    /// verify rejects it (see [`TokenClaims::aud`]).
     ///
-    /// `cfg(test)` until the authorization-server mint path (OAuth Unit D) lands and becomes its
+    /// `cfg(test)` until an authorization-server mint path (OAuth Unit D) lands and becomes its
     /// production caller - per the house rule against shipping dead code behind a live-looking
     /// surface. The boundary tests below exercise it against the real verifier today. Gated on
-    /// `test-support` too so the crates whose test binaries link this one (core, and the mcp/a2a
-    /// plane tests dual-compiled into core) can name it — the same cross-crate test-only seam the
+    /// `test-support` too so the crates whose test binaries link this one (core, and any plane
+    /// tests dual-compiled into core) can name it — the same cross-crate test-only seam the
     /// metrics initializer uses.
     #[cfg(any(test, feature = "test-support"))]
     pub fn mint_for_audience(
@@ -292,9 +294,9 @@ impl TokenVerifier {
     /// the caller pairs this with a `sub`-denylist read (kept separate so the crypto is pure and
     /// testable and the revocation read is the only state touched). `now` is Unix seconds.
     ///
-    /// `expected_aud` is the PLANE the token is being presented on (1.6.0): `None` = the plain
+    /// `expected_aud` is the BOUNDARY the token is being presented on (1.6.0): `None` = the plain
     /// data plane, which rejects a token
-    /// carrying ANY audience; `Some(uri)` = an audience-checked ingress (the MCP endpoint), which
+    /// carrying ANY audience; `Some(uri)` = an audience-checked ingress, which
     /// rejects a token whose audience is absent or different. Enforced HERE in the verifier, not
     /// per handler, so a route added later cannot forget the boundary.
     ///
@@ -340,14 +342,14 @@ impl TokenVerifier {
             return Err(VerifyError::Expired);
         }
 
-        // THE PLANE BOUNDARY (fail-closed, both directions): a token is admissible exactly on the
-        // plane whose audience it carries. No arm falls through.
+        // THE AUDIENCE BOUNDARY (fail-closed, both directions): a token is admissible exactly on the
+        // boundary whose audience it carries. No arm falls through.
         match (expected_aud, claims.aud.as_deref()) {
             // Plain data-plane token on the plain data plane.
             (None, None) => {}
             // Audience-bound token on the ingress expecting exactly that audience.
             (Some(expected), Some(aud)) if expected == aud => {}
-            // Everything else: an MCP token on the data plane, a plain token on an
+            // Everything else: an audience-bound token on the data plane, a plain token on an
             // audience-checked ingress, or a different audience URI.
             _ => return Err(VerifyError::AudienceMismatch),
         }

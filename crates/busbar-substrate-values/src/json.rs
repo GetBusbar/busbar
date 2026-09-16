@@ -4,7 +4,7 @@
 //! The single seam where the JSON library is named.
 //!
 //! Every hot request/response body parse and serialize on the translate path goes through here, so
-//! the implementation (today: sonic-rs, SIMD on the large string-heavy bodies LLM traffic carries)
+//! the implementation (today: sonic-rs, SIMD on the large string-heavy bodies plugin traffic carries)
 //! lives in ONE place instead of being scattered as `sonic_rs::`/`serde_json::` across the request
 //! path. Swapping the parser/serializer — or, later, eliminating the `serde_json::Value` intermediate
 //! in favour of parsing straight into the IR — becomes a change to this module, not a hunt across
@@ -14,8 +14,8 @@
 //! it directly); replacing it with a native value, or swapping the engine, is a change to THIS module.
 
 /// Maximum JSON nesting depth accepted at any parse boundary. Matches `serde_json`'s long-standing
-/// default of 128 — generous for real LLM payloads (object → messages → content → block → tool-schema
-/// is a handful of levels) while bounding the recursion below. This is a SECURITY floor, not an
+/// default of 128 — generous for real plugin payloads (a deeply nested structured body is still only
+/// a handful of levels) while bounding the recursion below. This is a SECURITY floor, not an
 /// operational tunable: `sonic-rs` parses nesting ITERATIVELY into a `serde_json::Value` (no depth
 /// limit on that path, unlike `serde_json::from_slice` which rejects past 128), but the resulting
 /// `Value` is then recursively re-serialized (`to_vec` on the injected body) and recursively dropped —

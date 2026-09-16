@@ -24,8 +24,8 @@ use rustls_pki_types::{CertificateDer, PrivateKeyDer};
 
 /// What the engine trusts on a posture.
 pub enum Trust {
-    /// The compiled-in webpki (Mozilla) roots — the LLM-lane trust story, byte-identical to
-    /// reqwest's `rustls-tls`.
+    /// The compiled-in webpki (Mozilla) roots — the pooled posture's trust story, byte-identical
+    /// to reqwest's `rustls-tls`.
     Webpki,
     /// The webpki roots PLUS these extra roots (DER; parsed from PEM at registration, so a
     /// garbage root fails at parse time exactly as `reqwest::Certificate::from_pem` did).
