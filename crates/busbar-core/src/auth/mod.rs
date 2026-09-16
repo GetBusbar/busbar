@@ -762,7 +762,7 @@ fn vendor_auth_failure_message(proto: &str) -> &'static str {
 ///
 /// This function holds NO protocol-specific knowledge itself; the default (401,
 /// "authentication_error") is what an unknown or standard protocol gets. A registry-resolved
-/// per-protocol writer may override that default to match its own genuine auth-failure shape (a
+/// per-protocol writer may override that default to match its own genuine failure shape (a
 /// different status code, a different `kind`, or both) — that mapping lives entirely in the writer
 /// vtable, outside this crate, so a new protocol is onboarded there without touching this agnostic
 /// function.
@@ -777,7 +777,7 @@ fn vendor_auth_failure_message(proto: &str) -> &'static str {
 // historical path are unchanged.
 pub use busbar_substrate::proxy::auth_failure_status_and_kind;
 
-/// Build an auth-failure response carrying the inferred ingress protocol's NATIVE error envelope.
+/// Build an unauthorized-request response carrying the inferred ingress protocol's NATIVE error envelope.
 /// Auth runs before routing, so the protocol is inferred from the request path. A native SDK
 /// hitting busbar in `token`/governance mode with a bad credential gets that protocol's own JSON
 /// error shape (`application/json`) instead of a bare `text/plain` 401 — removing a deterministic
@@ -792,7 +792,7 @@ pub use busbar_substrate::proxy::auth_failure_status_and_kind;
 ///
 /// Status and the writer `kind` are protocol-shaped too (see `auth_failure_status_and_kind`): a
 /// registry-resolved per-protocol writer may override the default (401, "authentication_error") to
-/// match that protocol's own genuine auth-failure status/headers/shape — for example, a protocol
+/// match that protocol's own genuine failure status/headers/shape — for example, a protocol
 /// whose auth is inbound AWS SigV4 request-signing genuinely rejects with HTTP 403 and carries its
 /// own error-type/request-id headers, not the generic 401 pair. That per-protocol knowledge lives
 /// entirely in the writer, not in this crate.
@@ -1270,7 +1270,7 @@ fn rate_limited_response() -> Response {
 /// request body is unparsed at the auth stage, so the shape is the zeroed default bucket with the
 /// path-inferred protocol. The tap's `status` MUST be the client-visible HTTP status, which is
 /// PROTOCOL-NATIVE for an auth failure — the default is 401, but a registry-resolved per-protocol
-/// writer may override it to match that protocol's own genuine auth-failure status (see
+/// writer may override it to match that protocol's own genuine failure status (see
 /// `auth_failure_status_and_kind`). Hardcoding 401 made a tap watching an ingress denial on one of
 /// those overriding protocols contradict the response the client actually got.
 fn unauthorized_with_completion_taps(

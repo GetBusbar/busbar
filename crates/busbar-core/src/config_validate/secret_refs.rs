@@ -20,8 +20,8 @@ use super::RootCfg;
 /// and `--validate` printed `ok: config valid` for a config whose credential could not resolve.
 /// That was not hypothetical. `identity-providers.<name>.browser_login.client_secret` (a confidential
 /// client secret the core itself presents during a code-to-token exchange) had been
-/// absent from the list since the block was introduced, so a deployment whose auth secret env var was
-/// unset was told its config was good and then failed every hosted login at runtime.
+/// absent from the list since the block was introduced, so a deployment whose confidential-client
+/// secret env var was unset was told its config was good and then failed every hosted login at runtime.
 ///
 /// TWO LAYERS NOW MAKE OMISSION IMPOSSIBLE RATHER THAN REMEMBERED, because each layer catches a
 /// different way of introducing one:
