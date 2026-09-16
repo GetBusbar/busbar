@@ -341,6 +341,7 @@ dependencies = [
  "busbar-kernel",
  "busbar-llm",
  "busbar-mcp",
+ "busbar-oauth2",
  "busbar-plane-a2a",
  "busbar-plane-admin",
  "busbar-plane-llm",
@@ -740,6 +741,27 @@ dependencies = [
  "http",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "busbar-oauth2"
+version = "1.6.0"
+dependencies = [
+ "axum",
+ "base64 0.23.1",
+ "busbar-core",
+ "busbar-plugin-loader",
+ "busbar-substrate",
+ "bytes",
+ "http",
+ "http-body-util",
+ "oauth-as",
+ "reqwest 0.12.28",
+ "ring",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

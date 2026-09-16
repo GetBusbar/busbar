@@ -31,6 +31,15 @@ busbar-substrate = { path = "../busbar-substrate" }
 # site rather than the re-export, so the surface `busbar-substrate` still has to carry into the
 # kernel is the part that genuinely lives there and not a name that already moved.
 busbar-substrate-values = { path = "../busbar-substrate-values" }
+# THE OAUTH 2.1 AUTHORIZATION-SERVER PLANE (`oauth_as:`), a NORMAL (non-optional) dependency — it
+# carries no feature flag, unlike the protocol crates below, because `oauth-as` (the underlying
+# crate) was always a normal dependency of the engine and 1.6.0's extraction did not change that:
+# the plane costs nothing until `oauth_as:` is configured. The composition root (`main`) calls
+# `busbar_oauth2::install()` once, registering this crate's seam implementation into
+# `busbar_core::oauth_as::seam` — core cannot name this crate directly (one-way dependency; core
+# depends on nothing here), so the registration is the one place the binary's own manifest and
+# `main.rs` have to know this plane exists.
+busbar-oauth2 = { path = "../busbar-oauth2" }
 # THE PROTOCOL CRATES — the composition root's knowledge, per the manifest header above. ONE CRATE
 # PER PROTOCOL: `busbar-llm` carries the LLM protocol's six dialects together (an operator picks LLM
 # coverage or none, never a subset), and `busbar-mcp` is a different protocol and therefore a

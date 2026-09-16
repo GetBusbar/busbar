@@ -52,7 +52,7 @@ use oauth_as::scope::ScopeSet;
 use oauth_as::store::{MemoryStorage, RevocationWindow, Storage, StorageError, WriteOutcome};
 use oauth_as::token::{IssuedToken, RefreshTokenRecord};
 
-use crate::net_guard::{self, GuardPolicy};
+use busbar_core::net_guard::{self, GuardPolicy};
 
 /// The body ceiling for one metadata document. A few kilobytes IS the document class; anything
 /// larger is either not a metadata document or an allocation the URL's owner chose the size of.

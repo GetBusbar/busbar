@@ -796,10 +796,13 @@ pub struct TestApp {
     login_methods: Option<crate::auth::token::LoginMethods>,
     /// busbar's public base origin (`public_url:`) for the built App.
     public_url: Option<String>,
-    /// The built authorization server (`oauth_as:`). `None` (the default) = this deployment is not
-    /// one, which is what every pre-existing test expects and what the gating proof in
-    /// `oauth_as::tests::mount_tests` asserts costs nothing.
-    oauth_as: Option<std::sync::Arc<crate::oauth_as::plane::AsPlane>>,
+    /// The built authorization server (`oauth_as:`), type-erased. `None` (the default) = this
+    /// deployment is not one, which is what every pre-existing test expects and what the gating
+    /// proof in `busbar-oauth2`'s `tests::mount_tests` asserts costs nothing. Set through
+    /// [`Self::oauth_as_plane`] — busbar-core itself never builds the concrete `AsPlane` (that type
+    /// now lives one-way-dependent in `busbar-oauth2`); `busbar-oauth2`'s own `TestAppOauthExt`
+    /// extension trait builds one and hands it in here type-erased.
+    oauth_as: Option<std::sync::Arc<dyn std::any::Any + Send + Sync>>,
     mcp_durable_store: Option<std::sync::Arc<dyn busbar_api::Store>>,
     role_bindings: Option<crate::config::RoleBindings>,
     /// The resolved token-mint policy (`auth.policy:`) for the built App. `None` (default) = the empty
@@ -1270,21 +1273,16 @@ impl TestApp {
         self
     }
 
-    /// Make the built App an OAuth 2.1 AUTHORIZATION SERVER, from the same `oauth_as:` config shape
-    /// an operator writes.
+    /// Install a pre-built authorization-server plane object, type-erased.
     ///
-    /// Takes the CONFIG and runs the real `AsIdentity::from_cfg` validation and the real
-    /// `AsPlane::build`, for the same reason [`TestApp::mcp`] does: a test that hand-assembled the
-    /// plane could mount a combination boot refuses, and would then be asserting against a
-    /// deployment that cannot exist. The signing key is left unset, so the plane generates the
-    /// ephemeral one — the tests that use this builder assert about the MOUNTED SURFACE, and the
-    /// surface does not depend on which key signs.
-    pub fn oauth_as(mut self, cfg: &crate::oauth_as::config::OauthAsCfg) -> Self {
-        let identity = crate::oauth_as::config::AsIdentity::from_cfg(cfg)
-            .expect("test oauth_as config must be valid");
-        let plane = crate::oauth_as::plane::AsPlane::build(identity, None, Vec::new())
-            .expect("test oauth_as plane must build");
-        self.oauth_as = Some(std::sync::Arc::new(plane));
+    /// The convenience `.oauth_as(cfg)` builder that used to live here (running the real
+    /// `AsIdentity::from_cfg` + `AsPlane::build`, for the same reason [`TestApp::mcp`] takes a
+    /// config rather than a hand-assembled resource) moved to `busbar-oauth2`'s own
+    /// `testkit::TestAppOauthExt` extension trait, because `AsPlane` lives there now and
+    /// busbar-core cannot name it. This is the seam that extension builds against: it constructs
+    /// the real plane, then calls this to hand it in.
+    pub fn oauth_as_plane(mut self, plane: std::sync::Arc<dyn std::any::Any + Send + Sync>) -> Self {
+        self.oauth_as = Some(plane);
         self
     }
 

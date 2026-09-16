@@ -334,7 +334,7 @@ pub(crate) fn base_data_router(
         &'static str,
         std::sync::Arc<dyn std::any::Any + Send + Sync>,
     >,
-    oauth_as: Option<&std::sync::Arc<crate::oauth_as::plane::AsPlane>>,
+    oauth_as: Option<&std::sync::Arc<dyn std::any::Any + Send + Sync>>,
 ) -> (
     Router<std::sync::Arc<state::AppHandle>>,
     crate::core_routes::CoreRouteTable,
@@ -455,8 +455,15 @@ pub(crate) fn base_data_router(
     let router = mount_ws_arrivals(router, plane_slots);
     // THE AUTHORIZATION SERVER'S ROUTES, or none of them. Same posture as the two planes above: a
     // deployment that is not an authorization server carries no `/authorize`, no `/token`, no
-    // metadata document and nothing in the route table.
-    let router = crate::oauth_as::routes::mount(router, oauth_as);
+    // metadata document and nothing in the route table. Mounted through the seam
+    // (`crate::oauth_as::seam`) rather than a direct `crate::oauth_as::routes::mount` call: the
+    // real mount lives in the sibling `busbar-oauth2` crate, which core cannot name. An
+    // unregistered seam (only busbar-core's own test binary) behaves exactly as `None` did before
+    // the extraction — this binary never configures `oauth_as:` either, so the two states agree.
+    let router = match crate::oauth_as::seam::seam() {
+        Some(seam) => (seam.mount)(router, oauth_as),
+        None => router,
+    };
     // PLUGIN HTTP ROUTES: the collision-checked, namespace-confined `none`/`key`-auth
     // routes an export/hook plugin declared. Reserved HERE — BEFORE the catch-all fallback below —
     // because `ingress::protocol_dispatch` claims every unclaimed path by construction, so a plugin

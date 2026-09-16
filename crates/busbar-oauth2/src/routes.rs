@@ -28,16 +28,29 @@
 use std::sync::Arc;
 
 use axum::response::{IntoResponse, Response};
+use busbar_core::core_routes::CoreRouter;
+use busbar_core::state::AppHandle;
 use busbar_plugin_loader::{RouteAuth, RouteMethod};
 
-use crate::core_routes::CoreRouter;
-use crate::state::AppHandle;
+/// The seam-typed mount (`busbar_core::oauth_as::seam::AsPlaneSeam::mount`): downcasts the
+/// type-erased plane object core hands in and defers to [`mount`]. Core cannot call [`mount`]
+/// directly — it would have to name `AsPlane`, the reverse edge Cargo refuses — so this is the
+/// function pointer `busbar_oauth2::install` actually registers.
+pub(crate) fn seam_mount(
+    router: CoreRouter,
+    plane: Option<&Arc<dyn std::any::Any + Send + Sync>>,
+) -> CoreRouter {
+    mount(
+        router,
+        plane.and_then(|p| p.downcast_ref::<super::plane::AsPlane>()),
+    )
+}
 
 /// Mount the authorization server's routes, or none of them.
 ///
 /// `None` returns the router untouched — no route, no table entry, nothing for the auth middleware
 /// to consult. That is the zero-cost-when-off property at the routing layer.
-pub(crate) fn mount(router: CoreRouter, plane: Option<&Arc<super::plane::AsPlane>>) -> CoreRouter {
+pub(crate) fn mount(router: CoreRouter, plane: Option<&super::plane::AsPlane>) -> CoreRouter {
     let Some(plane) = plane else {
         return router;
     };
@@ -91,6 +104,15 @@ pub(crate) fn mount(router: CoreRouter, plane: Option<&Arc<super::plane::AsPlane
         )
 }
 
+/// Downcast the `App`'s type-erased authorization-server slot back to the concrete plane, for the
+/// three request handlers below. The ONLY place outside [`seam_mount`] this crate downcasts
+/// `App::oauth_as_any()` — every other reach in this file already holds a `&AsPlane` (from `mount`
+/// or from a handler that already called this once).
+fn as_plane(app: &busbar_core::state::App) -> Option<&super::plane::AsPlane> {
+    app.oauth_as_any()
+        .and_then(|p| p.downcast_ref::<super::plane::AsPlane>())
+}
+
 /// Hand one request to `oauth-as` and return what it answers, unchanged.
 ///
 /// The whole of busbar's OAuth wire surface is this function. Nothing is inspected, rewritten or
@@ -98,10 +120,10 @@ pub(crate) fn mount(router: CoreRouter, plane: Option<&Arc<super::plane::AsPlane
 /// that "improves" one of them is a gateway that fails a conformance suite for a reason nobody can
 /// find.
 async fn forward(
-    crate::state::CurrentApp(app): crate::state::CurrentApp,
+    busbar_core::state::CurrentApp(app): busbar_core::state::CurrentApp,
     request: axum::extract::Request,
 ) -> Response {
-    let Some(plane) = app.oauth_as.as_ref() else {
+    let Some(plane) = as_plane(&app) else {
         // Unreachable while the mount and the config are created in the same act, and a clean
         // refusal rather than an unwrap because this is a request path.
         return not_found();
@@ -122,10 +144,10 @@ async fn forward(
 /// be: a second opinion about who an operator is, held by the authorization server, is the exact
 /// duplication this plane was built not to have.
 async fn consent_screen(
-    crate::state::CurrentApp(app): crate::state::CurrentApp,
+    busbar_core::state::CurrentApp(app): busbar_core::state::CurrentApp,
     axum::extract::Query(query): axum::extract::Query<ConsentQuery>,
 ) -> Response {
-    let Some(plane) = app.oauth_as.as_ref() else {
+    let Some(plane) = as_plane(&app) else {
         return not_found();
     };
     let Some(target) = query.return_to.as_deref().filter(|t| is_local_path(t)) else {
@@ -195,7 +217,10 @@ async fn consent_screen(
 /// `Path={issuer}/` is the same mistake wearing a prefix. Two cookies of one name at two disjoint
 /// paths is unambiguous by construction: no request path can match both, so no request ever carries
 /// two of them, and [`super::consent::session_id`] never has to choose.
-pub(super) fn session_cookies(identity: &super::config::AsIdentity, id: &str) -> [String; 2] {
+pub(super) fn session_cookies(
+    identity: &busbar_core::oauth_as::config::AsIdentity,
+    id: &str,
+) -> [String; 2] {
     // `Secure` follows the ISSUER'S SCHEME rather than being unconditional. Unconditional would be
     // the stricter-looking choice and it would break the `http://` deployment outright — a browser
     // discards a `Secure` cookie arriving over plain HTTP, so the flow would fail exactly as it did
@@ -234,11 +259,11 @@ pub(super) fn session_cookies(identity: &super::config::AsIdentity, id: &str) ->
 /// rather than from the form: a form field naming the scope would be a value the browser could
 /// change between being shown one thing and approving another.
 async fn consent_submit(
-    crate::state::CurrentApp(app): crate::state::CurrentApp,
+    busbar_core::state::CurrentApp(app): busbar_core::state::CurrentApp,
     headers: axum::http::HeaderMap,
     axum::extract::Form(form): axum::extract::Form<ConsentForm>,
 ) -> Response {
-    let Some(plane) = app.oauth_as.as_ref() else {
+    let Some(plane) = as_plane(&app) else {
         return not_found();
     };
     let Some(target) = form.return_to.as_deref().filter(|t| is_local_path(t)) else {

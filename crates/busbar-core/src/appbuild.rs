@@ -1590,20 +1590,23 @@ pub fn build_app_from_config(
                 .map(|adm| adm.audience)
                 .into_iter()
                 .collect();
-            let plane = crate::oauth_as::plane::AsPlane::build(
-                identity.clone(),
+            // Built through the seam (`crate::oauth_as::seam`), not `crate::oauth_as::plane::AsPlane`
+            // directly: the concrete plane type lives in the sibling `busbar-oauth2` crate, which
+            // core cannot name (the one-way dependency runs the other direction). The seam's `build`
+            // also spawns the plane's own expired-record sweeper — the same "how do I come alive"
+            // act this call site used to perform inline (`Storage::sweep_expired` is the only thing
+            // that reclaims anything in `oauth-as`, and it runs when it is called and never
+            // otherwise; spawned once per generation).
+            let seam = crate::oauth_as::seam::seam().ok_or_else(|| {
+                "oauth_as: configured, but the authorization-server plane (busbar-oauth2) is not \
+                 linked into this binary"
+                    .to_string()
+            })?;
+            Some((seam.build)(
+                identity,
                 key_material.as_deref(),
                 protected_resources,
-            )
-            .map_err(|e| e.to_string())?;
-            let plane = Arc::new(plane);
-            // `Storage::sweep_expired` is the only thing that reclaims anything in `oauth-as`, and
-            // it runs when it is called and never otherwise. Spawned here, once per generation.
-            crate::oauth_as::plane::spawn_sweeper(
-                Arc::clone(plane.server()),
-                std::time::Duration::from_secs(60),
-            );
-            Some(plane)
+            )?)
         }
     };
 

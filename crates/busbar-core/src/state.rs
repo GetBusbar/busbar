@@ -388,7 +388,14 @@ pub struct App {
     /// `None` is the whole zero-cost-when-off property: nothing is constructed, nothing is
     /// allocated, no signing key exists, no sweeper runs and no route is mounted. See
     /// `crate::oauth_as`.
-    pub(crate) oauth_as: Option<Arc<crate::oauth_as::plane::AsPlane>>,
+    ///
+    /// TYPE-ERASED (`Arc<dyn Any + Send + Sync>`, not `Arc<busbar_oauth2::plane::AsPlane>`): the
+    /// concrete plane object lives in the sibling `busbar-oauth2` crate, which depends on
+    /// busbar-core ONE-WAY — core naming `busbar_oauth2::plane::AsPlane` here would be the reverse
+    /// edge Cargo refuses as a cycle. The real type is built and downcast on the `busbar-oauth2`
+    /// side of the seam (`crate::oauth_as::seam`); core only carries the opaque handle and knows
+    /// `Some`/`None`.
+    pub(crate) oauth_as: Option<Arc<dyn std::any::Any + Send + Sync>>,
     // ONE CONTAINER PLANE'S PER-GENERATION CLIENT-DIRECTION RUNTIME (which also carries its own
     // verify-on-call coalescer, formerly a dedicated flat field) is no longer a flat `App` field: it
     // lives in `plane_slots` under `runtime_slot_key(<that plane's decl key>)`, reached by the plane
@@ -568,6 +575,17 @@ impl App {
             (Some(viewer), Some(slot)) => viewer(slot.as_ref()),
             _ => &busbar_substrate::plane_host::EMPTY_VIEW,
         }
+    }
+
+    /// THE AUTHORIZATION-SERVER PLANE OBJECT, type-erased — `pub` (not test-gated) because the
+    /// `busbar-oauth2` plane's OWN route handlers (`forward`/`consent_screen`/`consent_submit`,
+    /// reached through the `CurrentApp` extractor exactly like every other core route) need it on
+    /// the real request path, not only in tests. Mirrors [`Self::engine_tables_view`]'s downcast
+    /// seam: core hands back the opaque `&Arc<dyn Any + Send + Sync>` and the plane crate — the only
+    /// side that names the concrete `AsPlane` type — downcasts it. `None` when this deployment is
+    /// not an authorization server.
+    pub fn oauth_as_any(&self) -> Option<&Arc<dyn std::any::Any + Send + Sync>> {
+        self.oauth_as.as_ref()
     }
 }
 

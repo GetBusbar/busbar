@@ -37,8 +37,10 @@
 
 use std::sync::Arc;
 
-use crate::oauth_as::config::{AsIdentity, OauthAsCfg};
-use crate::test_support::TestApp;
+use busbar_core::oauth_as::config::{AsIdentity, OauthAsCfg};
+use busbar_core::test_support::TestApp;
+
+use crate::testkit::{oauth_as_plane, TestAppOauthExt};
 
 /// The issuer every test here configures. An origin root rather than a tenant path, because the
 /// path-prefixed derivation already has its own coverage in `config_tests` and repeating it here
@@ -98,12 +100,15 @@ fn inventory(id: &AsIdentity) -> Vec<String> {
 ///
 /// `base_data_router` rather than a hand-rolled router: a table assembled here could describe a
 /// surface no deployment serves, and then every assertion below would be about a fiction.
-fn served_paths(app: &crate::state::App) -> std::collections::BTreeSet<String> {
-    crate::base_data_router(&app.plugin_routes, &app.plane_slots, app.oauth_as.as_ref())
-        .1
-        .routes()
-        .iter()
-        .map(|r| r.path.clone())
+fn served_paths(app: &busbar_core::state::App) -> std::collections::BTreeSet<String> {
+    // `base_data_route_table_view`, not a hand reach into `app.plugin_routes`/`app.plane_slots`/
+    // `app.oauth_as` (those fields are `pub(crate)` to busbar-core and this crate is outside it):
+    // the curated `pub` test-support seam built for exactly this — an extracted plane's own ingress
+    // tests reading the mounted surface through the SAME `router::base_data_router` production
+    // calls, without core widening its sealed router types.
+    busbar_core::base_data_route_table_view(app)
+        .into_iter()
+        .map(|(path, _auth)| path)
         .collect()
 }
 
@@ -115,10 +120,10 @@ fn served_paths(app: &crate::state::App) -> std::collections::BTreeSet<String> {
 /// absent.
 #[test]
 fn without_the_config_block_the_plane_serves_nothing() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let app = TestApp::new().build();
     assert!(
-        app.oauth_as.is_none(),
+        oauth_as_plane(&app).is_none(),
         "the default TestApp must not be an authorization server"
     );
     let served = served_paths(&app);
@@ -152,13 +157,13 @@ fn without_the_config_block_the_plane_serves_nothing() {
 /// gone and the gating assertion is passing for the wrong reason.
 #[test]
 fn the_inventory_is_exactly_what_the_mount_registers() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let without = served_paths(&TestApp::new().build());
 
     let block = cfg();
     let app = TestApp::new().oauth_as(&block).build();
     assert!(
-        app.oauth_as.is_some(),
+        oauth_as_plane(&app).is_some(),
         "the config block was given, so the plane must exist"
     );
     let with = served_paths(&app);
@@ -198,10 +203,10 @@ fn the_inventory_is_exactly_what_the_mount_registers() {
 /// config is where the block is either present or absent.
 #[test]
 fn an_absent_block_resolves_to_no_authorization_server() {
-    let deploy: crate::config::DeployCfg =
+    let deploy: busbar_core::config::DeployCfg =
         serde_json::from_value(serde_json::json!({"providers": {}, "models": {}}))
             .expect("a minimal deploy config parses");
-    let resolved = crate::config::resolve(&deploy, &std::collections::HashMap::new())
+    let resolved = busbar_core::config::resolve(&deploy, &std::collections::HashMap::new())
         .expect("a minimal config resolves");
     assert!(
         resolved.oauth_as.is_none(),
@@ -214,14 +219,14 @@ fn an_absent_block_resolves_to_no_authorization_server() {
     // block's absence rather than about `resolve` having quietly stopped reading the field at all.
     // Through the document entry point: `oauth_as:` is a 1.6.0-additive key, LIFTED off the
     // document before the frozen structs parse, so a bare `from_value` never sees it.
-    let deploy: crate::config::DeployCfg =
-        crate::config::deploy_from_deserializer(serde_json::json!({
+    let deploy: busbar_core::config::DeployCfg =
+        busbar_core::config::deploy_from_deserializer(serde_json::json!({
             "providers": {},
             "models": {},
             "oauth_as": { "issuer": ISSUER },
         }))
         .expect("a deploy config carrying `oauth_as:` parses");
-    let resolved = crate::config::resolve(&deploy, &std::collections::HashMap::new())
+    let resolved = busbar_core::config::resolve(&deploy, &std::collections::HashMap::new())
         .expect("a config carrying a well-formed `oauth_as:` resolves");
     let identity = resolved
         .oauth_as
@@ -234,10 +239,10 @@ fn an_absent_block_resolves_to_no_authorization_server() {
 /// disagree with the state it was built from.
 #[test]
 fn the_mounted_surface_and_the_app_state_cannot_disagree() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let app = TestApp::new().oauth_as(&cfg()).build();
-    let plane: &Arc<crate::oauth_as::plane::AsPlane> =
-        app.oauth_as.as_ref().expect("configured, so present");
+    let plane: Arc<crate::plane::AsPlane> =
+        oauth_as_plane(&app).expect("configured, so present");
     let served = served_paths(&app);
     for path in inventory(plane.identity()) {
         assert!(

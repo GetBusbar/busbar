@@ -18,8 +18,9 @@
 
 use oauth_as::registration::{ClientMetadata, RegistrationFailure};
 
-use crate::oauth_as::config::{AsIdentity, OauthAsCfg};
-use crate::oauth_as::plane::AsPlane;
+use busbar_core::oauth_as::config::{AsIdentity, OauthAsCfg};
+
+use crate::plane::AsPlane;
 
 /// A plane with the operator's ceiling set to `grant`. Registration needs no turning on: the
 /// 1.6.0 ruling is that it is on whenever the plane is.

@@ -31,7 +31,12 @@ const MIGRATED_FILES: &[&str] = &[
     // that emits coded diagnostics) RELOCATED to `busbar-substrate` with the whole egress_auth module;
     // substrate carries its own uncoded-diagnostic floor, so core no longer scans it here.
     "src/trust/verify.rs",
-    "src/oauth_as/plane.rs",
+    // `oauth_as/plane.rs` RELOCATED to the sibling `busbar-oauth2` crate with the rest of the AS
+    // plane's runtime (the extraction that left only `oauth_as::config`/`oauth_as::seam` in core).
+    // Core does NOT scan a plane crate's tree (the plane-purity lint forbids core naming a plane
+    // path), so it is no longer listed here — mirroring the `handlers/mod.rs`/`egress_auth` notes
+    // above. `busbar-oauth2` has no coverage-lint twin of its own yet; it still calls `diag_warn!`/
+    // `diag_debug!` (coded), unchanged by the move.
     // `sigv4` / `eventstream` (and the other neutral utils) RELOCATED to `busbar-substrate`; each
     // carries its own uncoded-diagnostic floor in that crate, so core no longer scans them here.
     "src/governance/mod.rs",

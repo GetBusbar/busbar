@@ -688,6 +688,12 @@ fn register_planes() {
     installed.push(&busbar_voice::PLANE_DECL);
     busbar_core::plane::registry::install_planes(installed.leak());
 
+    // THE AUTHORIZATION-SERVER PLANE'S SEAM, registered UNCONDITIONALLY (no feature flag — see the
+    // manifest note on the `busbar-oauth2` dependency above), before any config loads. Mirrors
+    // `install_planes` immediately above for the same reason: one composition root, one
+    // registration, before the first `App` is built.
+    busbar_oauth2::install();
+
     // THE MCP PLANE'S KERNEL BINDINGS, SEALED. Behind `root-mcp`, which is default-ON: the bindings
     // are built and checked against the real unit traits before any byte is served through them, so
     // this reads the plane's own declarations and compares them against each other and against

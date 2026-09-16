@@ -25,8 +25,10 @@ use oauth_as::client::{Client, ClientAuth, ClientId};
 use oauth_as::grant::GrantType;
 use oauth_as::scope::ScopeSet;
 
-use crate::oauth_as::config::OauthAsCfg;
-use crate::test_support::TestApp;
+use busbar_core::oauth_as::config::OauthAsCfg;
+use busbar_core::test_support::TestApp;
+
+use crate::testkit::{oauth_as_plane, TestAppOauthExt};
 
 /// The client's redirect URI. Never fetched — the flow ends at the 302 that carries the code.
 const REDIRECT_URI: &str = "http://127.0.0.1:9999/cb";
@@ -238,7 +240,7 @@ fn location(headers: &reqwest::header::HeaderMap, origin: &str) -> String {
 /// The admin chain is what the consent route's `RouteAuth::Admin` consults, and it is emptied here
 /// deliberately: the property under test is the cookie's reach, and an operator credential in the
 /// middle of it would only add a second way for the test to fail.
-async fn serve() -> (String, Arc<crate::state::App>) {
+async fn serve() -> (String, Arc<busbar_core::state::App>) {
     serve_with_admin_chain(Vec::new()).await
 }
 
@@ -248,8 +250,8 @@ async fn serve() -> (String, Arc<crate::state::App>) {
 /// route only refuses when there is something to refuse, so a test of that refusal needs a chain
 /// that actually demands one. Every other test here passes an empty chain and gets the open posture
 /// described above.
-async fn serve_with_admin_chain(admin_chain: Vec<String>) -> (String, Arc<crate::state::App>) {
-    crate::metrics::init();
+async fn serve_with_admin_chain(admin_chain: Vec<String>) -> (String, Arc<busbar_core::state::App>) {
+    busbar_core::metrics::init();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind");
@@ -269,9 +271,7 @@ async fn serve_with_admin_chain(admin_chain: Vec<String>) -> (String, Arc<crate:
         .build();
 
     let scopes = ScopeSet::from_tokens([SCOPE]).expect("scope");
-    app.oauth_as
-        .as_ref()
-        .expect("configured")
+    oauth_as_plane(&app).expect("configured")
         .server()
         .register_client(Client {
             client_id: ClientId::new(CLIENT_ID),
@@ -286,7 +286,7 @@ async fn serve_with_admin_chain(admin_chain: Vec<String>) -> (String, Arc<crate:
         .await
         .expect("register client");
 
-    let router = crate::build_router(Arc::clone(&app));
+    let router = busbar_core::build_router(Arc::clone(&app));
     tokio::spawn(async move {
         axum::serve(listener, router).await.expect("serve");
     });
@@ -355,8 +355,8 @@ fn the_jar_refuses_to_send_a_cookie_to_a_sibling_path() {
 /// "`/authorize` gets it" would pass just as happily against `Path=/`.
 #[test]
 fn the_session_cookie_carries_exactly_the_attributes_it_should() {
-    use crate::oauth_as::config::AsIdentity;
-    use crate::oauth_as::routes::session_cookies;
+    use busbar_core::oauth_as::config::AsIdentity;
+    use crate::routes::session_cookies;
 
     for (issuer, secure_expected) in [
         ("https://as.example.com", true),
@@ -423,7 +423,7 @@ fn the_session_cookie_carries_exactly_the_attributes_it_should() {
             assert!(
                 c.contains(&format!(
                     "; Max-Age={}",
-                    crate::oauth_as::consent::SESSION_TTL.as_secs()
+                    crate::consent::SESSION_TTL.as_secs()
                 )),
                 "the cookie's lifetime is the SESSION's lifetime, from the same constant: {c}"
             );
@@ -560,10 +560,7 @@ async fn the_authorization_code_flow_mints_and_exchanges_a_code() {
 
     // 6. The token is USABLE: the server that minted it knows it, for the client and the subject
     //    and the scope the operator actually approved. A token the AS cannot introspect is a string.
-    let record = app
-        .oauth_as
-        .as_ref()
-        .expect("configured")
+    let record = oauth_as_plane(&app).expect("configured")
         .server()
         .introspect(&access)
         .await
@@ -580,8 +577,8 @@ async fn the_authorization_code_flow_mints_and_exchanges_a_code() {
     // And the audience binding busbar's own resource half reads off a bearer holds, which is what
     // makes the token usable at a busbar plane rather than merely well-formed.
     assert_eq!(
-        crate::auth::audience::inspect_bearer(&access, &origin),
-        crate::auth::audience::Binding::Bound,
+        busbar_core::auth::audience::inspect_bearer(&access, &origin),
+        busbar_core::auth::audience::Binding::Bound,
         "the access token must carry this deployment's audience"
     );
 
@@ -727,10 +724,7 @@ async fn dynamic_client_registration_admits_a_client_end_to_end() {
         .to_string();
 
     let access = mint_access_token(&origin, &client_id).await;
-    let record = app
-        .oauth_as
-        .as_ref()
-        .expect("configured")
+    let record = oauth_as_plane(&app).expect("configured")
         .server()
         .introspect(&access)
         .await
@@ -748,7 +742,7 @@ const CIMD_CLIENT_ID: &str = "https://client.example/oauth-client";
 /// `client_id` and not to "any HTTPS URL fetches something".
 struct StubDocumentHost(serde_json::Value);
 
-impl crate::oauth_as::cimd::CimdFetch for StubDocumentHost {
+impl crate::cimd::CimdFetch for StubDocumentHost {
     fn fetch<'a>(
         &'a self,
         url: &'a str,
@@ -770,9 +764,7 @@ impl crate::oauth_as::cimd::CimdFetch for StubDocumentHost {
 #[tokio::test]
 async fn a_client_id_metadata_document_admits_a_client_end_to_end() {
     let (origin, app) = serve().await;
-    app.oauth_as
-        .as_ref()
-        .expect("configured")
+    oauth_as_plane(&app).expect("configured")
         .server()
         .store()
         .set_fetcher(Arc::new(StubDocumentHost(serde_json::json!({
@@ -784,10 +776,7 @@ async fn a_client_id_metadata_document_admits_a_client_end_to_end() {
         }))));
 
     let access = mint_access_token(&origin, CIMD_CLIENT_ID).await;
-    let record = app
-        .oauth_as
-        .as_ref()
-        .expect("configured")
+    let record = oauth_as_plane(&app).expect("configured")
         .server()
         .introspect(&access)
         .await
@@ -852,9 +841,7 @@ const OFFSITE_REDIRECT_URI: &str = "https://client.example/cb";
 async fn the_consent_screen_names_the_client_and_the_redirect_host() {
     let (origin, app) = serve().await;
     let scopes = ScopeSet::from_tokens([SCOPE]).expect("scope");
-    app.oauth_as
-        .as_ref()
-        .expect("configured")
+    oauth_as_plane(&app).expect("configured")
         .server()
         .register_client(Client {
             client_id: ClientId::new(OFFSITE_CLIENT_ID),

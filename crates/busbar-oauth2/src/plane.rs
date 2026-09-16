@@ -24,9 +24,9 @@ use std::sync::Arc;
 use oauth_as::server::{AuthorizationServer, ServerConfig, SystemClock};
 use oauth_as::store::MemoryStorage;
 
-use crate::diagnostics::{diag_debug, diag_warn, OAUTH_AS_SWEEP_FAILED};
+use busbar_core::diagnostics::{diag_debug, diag_warn, OAUTH_AS_SWEEP_FAILED};
+use busbar_core::oauth_as::config::AsIdentity;
 
-use super::config::AsIdentity;
 use super::signer::{RingEs256Key, RingEs256Verifier};
 
 /// The store this plane runs on: [`MemoryStorage`] behind the ONE changed read that serves Client
@@ -201,6 +201,26 @@ impl AsPlane {
     pub(crate) fn sessions(&self) -> &Arc<super::consent::Sessions> {
         &self.sessions
     }
+}
+
+/// THE SEAM-TYPED BUILDER (`busbar_core::oauth_as::seam::AsPlaneSeam::build`): builds the plane AND
+/// spawns its sweeper — the whole "how do I come alive" act `appbuild.rs` used to perform inline
+/// before the extraction — and hands back the type-erased object `App::oauth_as` stores. This is
+/// the function pointer `busbar_oauth2::install` actually registers; core cannot call
+/// [`AsPlane::build`] directly, since that would name this crate's type from busbar-core.
+pub(crate) fn seam_build(
+    identity: &AsIdentity,
+    key_material: Option<&str>,
+    protected_resources: Vec<String>,
+) -> Result<Arc<dyn std::any::Any + Send + Sync>, String> {
+    let plane =
+        AsPlane::build(identity.clone(), key_material, protected_resources).map_err(|e| e.to_string())?;
+    let plane = Arc::new(plane);
+    // `Storage::sweep_expired` is the only thing that reclaims anything in `oauth-as`, and it runs
+    // when it is called and never otherwise. Spawned here, once per generation — unchanged from the
+    // inline call `appbuild.rs` made before this moved behind the seam.
+    spawn_sweeper(Arc::clone(plane.server()), std::time::Duration::from_secs(60));
+    Ok(plane as Arc<dyn std::any::Any + Send + Sync>)
 }
 
 /// SWEEP EXPIRED RECORDS, forever, on busbar's own timer.
