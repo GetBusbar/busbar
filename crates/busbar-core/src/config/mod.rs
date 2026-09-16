@@ -2051,6 +2051,57 @@ fn hook_cfg_from_def(def: &HookDefCfg) -> Result<HookCfg, String> {
     })
 }
 
+/// THE CORE-RESIDENT FALLBACK for `PlaneDecl::resolve_provider` (1.6.0 pools stage-B) — byte-identical
+/// to `busbar_llm::engine::build_runtime::resolve_provider`, kept here for the build with no plane
+/// implementing the hook. `providers:`/`pools:` are `CORE_OWNED_CONCRETE_SECTIONS` and are parsed and
+/// merged UNCONDITIONALLY (never gated on plane presence, unlike `tools:`/`agents:`/`mcp:`), so an
+/// llm-plane-absent build must keep merging providers exactly as every prior release has rather than
+/// silently dropping configured providers out of `RootCfg::providers`. See
+/// `crate::plane::registry::CORE_OWNED_CONCRETE_SECTIONS`'s doc for why this section never evicts.
+fn merge_provider_fallback(def: &ProviderDef, deploy_cfg: &ProviderDeploy) -> ProviderCfg {
+    // Merge error_map: def's map with deployment override taking precedence
+    let mut error_map = def.error_map.clone();
+    if let Some(override_map) = &deploy_cfg.error_map {
+        for (code, class) in override_map {
+            error_map.insert(code.clone(), class.clone());
+        }
+    }
+    ProviderCfg {
+        // Apply overrides from deployment (rarely used)
+        protocol: deploy_cfg
+            .protocol
+            .clone()
+            .unwrap_or_else(|| def.protocol.clone()),
+        base_url: deploy_cfg
+            .base_url
+            .clone()
+            .unwrap_or_else(|| def.base_url.clone()),
+        api_key: deploy_cfg.api_key.clone(),
+        // Deployment health config wins over the catalog default (mirrors path/auth), so
+        // the `health:` block documented in config.yaml actually takes effect.
+        health: deploy_cfg.health.clone().or_else(|| def.health.clone()),
+        error_map,
+        // deployment override wins over the catalog default
+        path: deploy_cfg.path.clone().or_else(|| def.path.clone()),
+        path_base: deploy_cfg
+            .path_base
+            .clone()
+            .or_else(|| def.path_base.clone()),
+        token_url: deploy_cfg
+            .token_url
+            .clone()
+            .or_else(|| def.token_url.clone()),
+        scope: deploy_cfg.scope.clone().or_else(|| def.scope.clone()),
+        subject: deploy_cfg.subject.clone().or_else(|| def.subject.clone()),
+        auth: deploy_cfg.auth.or(def.auth),
+        // deployment override (Some) replaces the catalog default
+        allow_metadata_hosts: deploy_cfg
+            .allow_metadata_hosts
+            .clone()
+            .unwrap_or_else(|| def.allow_metadata_hosts.clone()),
+    }
+}
+
 #[cold] // boot/admin-only — keeps hot text dense (never inlined into a warm path)
 #[inline(never)]
 pub fn resolve(
@@ -2083,6 +2134,17 @@ pub fn resolve(
     }
     let mut resolved_providers: HashMap<String, ProviderCfg> = HashMap::new();
 
+    // THE PLANE HOOK (1.6.0 pools stage-B): the per-provider catalog/deployment MERGE is the LLM
+    // plane's own logic (`PlaneDecl::resolve_provider`), resolved ONCE here — not per-provider — since
+    // it is a pure fn pointer and every iteration of the loop below reads the identical value. `None`
+    // when no plane implements the hook (an llm-plane-absent build): `providers:`/`pools:` are
+    // `CORE_OWNED_CONCRETE_SECTIONS` (never gated on plane presence, unlike `tools:`/`agents:`/`mcp:`),
+    // so a build compiled without the LLM plane must keep merging providers exactly as every prior
+    // release has — `merge_provider_fallback` is core's own byte-identical copy of the same merge,
+    // kept for exactly that build.
+    let resolve_provider_hook = crate::plane::registry::plane_decl_for(crate::plane::fallback_key())
+        .and_then(|d| d.resolve_provider);
+
     for (deploy_name, deploy_cfg) in &deploy.providers {
         // Look up the provider definition by name
         let def = match defs.get(deploy_name) {
@@ -2096,54 +2158,11 @@ pub fn resolve(
             }
         };
 
-        // Apply overrides from deployment (rarely used)
-        let protocol = deploy_cfg
-            .protocol
-            .clone()
-            .unwrap_or_else(|| def.protocol.clone());
-        let base_url = deploy_cfg
-            .base_url
-            .clone()
-            .unwrap_or_else(|| def.base_url.clone());
-
-        // Merge error_map: def's map with deployment override taking precedence
-        let mut error_map = def.error_map.clone();
-        if let Some(override_map) = &deploy_cfg.error_map {
-            for (code, class) in override_map {
-                error_map.insert(code.clone(), class.clone());
-            }
-        }
-
-        resolved_providers.insert(
-            deploy_name.clone(),
-            ProviderCfg {
-                protocol,
-                base_url,
-                api_key: deploy_cfg.api_key.clone(),
-                // Deployment health config wins over the catalog default (mirrors path/auth), so
-                // the `health:` block documented in config.yaml actually takes effect.
-                health: deploy_cfg.health.clone().or_else(|| def.health.clone()),
-                error_map,
-                // deployment override wins over the catalog default
-                path: deploy_cfg.path.clone().or_else(|| def.path.clone()),
-                path_base: deploy_cfg
-                    .path_base
-                    .clone()
-                    .or_else(|| def.path_base.clone()),
-                token_url: deploy_cfg
-                    .token_url
-                    .clone()
-                    .or_else(|| def.token_url.clone()),
-                scope: deploy_cfg.scope.clone().or_else(|| def.scope.clone()),
-                subject: deploy_cfg.subject.clone().or_else(|| def.subject.clone()),
-                auth: deploy_cfg.auth.or(def.auth),
-                // deployment override (Some) replaces the catalog default
-                allow_metadata_hosts: deploy_cfg
-                    .allow_metadata_hosts
-                    .clone()
-                    .unwrap_or_else(|| def.allow_metadata_hosts.clone()),
-            },
-        );
+        let merged = match resolve_provider_hook {
+            Some(f) => f(def, deploy_cfg),
+            None => merge_provider_fallback(def, deploy_cfg),
+        };
+        resolved_providers.insert(deploy_name.clone(), merged);
     }
 
     // 1.5.3 NAMED-HOOKS: build the runtime hook registry from the top-level `hooks:` DEFINITION map

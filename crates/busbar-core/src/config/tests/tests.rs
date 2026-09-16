@@ -1517,6 +1517,45 @@ fn test_resolve_provider_from_def() {
     );
 }
 
+/// THE HOOK-PATH / FALLBACK-PATH EQUIVALENCE (1.6.0 pools stage-B). `resolve`'s provider merge now
+/// runs through `PlaneDecl::resolve_provider` when the LLM plane is installed (the shipped default —
+/// core's own `#[cfg(test)]` binary always registers it, so `test_resolve_provider_from_def` above
+/// already exercises this path) and through core's own `merge_provider_fallback` when no plane
+/// implements the hook. This test proves the two produce the IDENTICAL `ProviderCfg` for the same
+/// inputs, so an llm-plane-absent build's merge is byte-identical to the shipped one — the guarantee
+/// `merge_provider_fallback`'s doc comment claims.
+#[test]
+fn resolve_provider_hook_and_core_fallback_agree() {
+    let mut def = provider_def(DEFAULT_PROTOCOL, "https://api.z.ai/api/model-1");
+    def.error_map
+        .insert("1113".to_string(), "billing".to_string());
+    def.error_map
+        .insert("1302".to_string(), "rate_limit".to_string());
+    let deploy_cfg = provider_deploy("ZAI_KEY");
+
+    let hook = busbar_llm::PLANE_DECL
+        .resolve_provider
+        .expect("the LLM plane declares `resolve_provider`");
+    let via_hook = hook(&def, &deploy_cfg);
+    let via_fallback = merge_provider_fallback(&def, &deploy_cfg);
+
+    assert_eq!(via_hook.protocol, via_fallback.protocol);
+    assert_eq!(via_hook.base_url, via_fallback.base_url);
+    assert_eq!(via_hook.api_key.env_var(), via_fallback.api_key.env_var());
+    assert_eq!(via_hook.error_map, via_fallback.error_map);
+    assert_eq!(via_hook.health.is_some(), via_fallback.health.is_some());
+    assert_eq!(via_hook.path, via_fallback.path);
+    assert_eq!(via_hook.path_base, via_fallback.path_base);
+    assert_eq!(via_hook.token_url, via_fallback.token_url);
+    assert_eq!(via_hook.scope, via_fallback.scope);
+    assert_eq!(via_hook.subject, via_fallback.subject);
+    assert_eq!(via_hook.auth, via_fallback.auth);
+    assert_eq!(
+        via_hook.allow_metadata_hosts,
+        via_fallback.allow_metadata_hosts
+    );
+}
+
 /// A provider credential is a SECRET REFERENCE, never an inline literal. A plain-string
 /// `api_key:` (the pre-1.0 inline-key shape) is REJECTED AT PARSE (SecretRef deserializes only
 /// from a map), and the removed `api_key_env:` spelling is an unknown-field error.

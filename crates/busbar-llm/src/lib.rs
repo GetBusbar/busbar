@@ -270,6 +270,11 @@ pub const PLANE_DECL: busbar_substrate::plane::registry::PlaneDecl =
         default_section: None,
         // config-seam stage 1: the registry starts EMPTY — nothing has moved out of core yet.
         owned_config_sections: &[],
+        // 1.6.0 pools stage-B: the providers/models/pools LOGIC seam. `providers`/`pools` stay
+        // CORE-OWNED-CONCRETE (never listed in `owned_config_sections` — see that field's doc), but
+        // the per-provider catalog/deployment MERGE logic now lives here; core calls it at the exact
+        // point the old inline merge ran.
+        resolve_provider: Some(crate::engine::build_runtime::resolve_provider),
     };
 
 /// SPAWN THE ACTIVE HEALTH PROBERS for a freshly-built/-swapped snapshot — the relocated

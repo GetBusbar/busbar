@@ -187,6 +187,7 @@ pub const PLANE_DECL: busbar_substrate::plane::registry::PlaneDecl =
         default_section: Some(mcp_default_section),
         // config-seam stage 1: the registry starts EMPTY — nothing has moved out of core yet.
         owned_config_sections: &[],
+        resolve_provider: None,
     };
 
 /// VALIDATE ONE `tools:` NAMED-DEFINITION DOCUMENT — the MCP plane's half of
