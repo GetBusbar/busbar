@@ -6,7 +6,7 @@
 //! The `MintPolicy`/`RoleCeiling`/`MintRequest`/`apply_mint_ttl_ceiling` unit tests that used to
 //! live here RELOCATED to `governance/tests/mint_policy_tests.rs` alongside the type itself (1.6.0
 //! de-alias, stage 2a). Only the `parse_duration_secs` unit tests remain — they exercise
-//! `crate::config::parse::parse_duration_secs`, re-imported into `admin::mod` for the mint-time
+//! `busbar_core::config::parse::parse_duration_secs`, re-imported into `admin::mod` for the mint-time
 //! `expires_in` parse, not admin-surface vocabulary.
 
 use super::parse_duration_secs;

@@ -4,8 +4,8 @@
 //! Tests for `crates/busbar-core/src/admin/v1/json/handlers.rs`.
 
 use super::merge_group_patch;
-use crate::config::groups::{ChildDefault, LimitMetric, LimitWindow};
-use crate::config::{GroupCfg, LimitCfg};
+use busbar_core::config::groups::{ChildDefault, LimitMetric, LimitWindow};
+use busbar_core::config::{GroupCfg, LimitCfg};
 
 fn budget(cents: u64) -> LimitCfg {
     LimitCfg {

@@ -65,7 +65,7 @@ type CacheKey = (String, String);
 /// Because the token is a distinct TYPE that only [`CredentialCache::generation`] can produce, a
 /// future call site cannot insert without having captured one.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) struct CacheGeneration(u64);
+pub struct CacheGeneration(u64);
 
 /// The mutex-protected cache state. Held together under ONE lock on purpose: the flush counter has
 /// to move in the same critical section that clears the map, or `put`'s "has the generation moved?"
@@ -78,12 +78,18 @@ struct CacheState {
     flush_gen: u64,
 }
 
-pub(crate) struct CredentialCache {
+pub struct CredentialCache {
     state: Mutex<CacheState>,
 }
 
+impl Default for CredentialCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl CredentialCache {
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             state: Mutex::new(CacheState {
                 entries: HashMap::new(),
@@ -97,7 +103,7 @@ impl CredentialCache {
     /// [`CredentialCache::put`] afterwards: any flush that lands in between moves the counter, and
     /// the `put` is then dropped rather than resurrecting a pre-flush allow verdict. See
     /// [`CacheGeneration`].
-    pub(crate) fn generation(&self) -> CacheGeneration {
+    pub fn generation(&self) -> CacheGeneration {
         CacheGeneration(self.lock().flush_gen)
     }
 
@@ -107,7 +113,7 @@ impl CredentialCache {
 
     /// Look up a cached verdict for `(module, credential)` at time `now`. `None` = miss (expired
     /// entries are treated as misses and removed).
-    pub(crate) fn get(&self, module: &str, credential: &str, now: u64) -> Option<AuthOutcome> {
+    pub fn get(&self, module: &str, credential: &str, now: u64) -> Option<AuthOutcome> {
         let key = (
             module.to_string(),
             crate::sigv4::sha256_hex(credential.as_bytes()),
@@ -135,7 +141,7 @@ impl CredentialCache {
     /// If a flush landed in between, the generation has moved and this insert is DROPPED: an
     /// admin-ordered revocation must not be undone by a verdict that predates it. The check runs
     /// under the same lock the flush clears the map under, so the two cannot interleave.
-    pub(crate) fn put(
+    pub fn put(
         &self,
         module: &str,
         credential: &str,
@@ -199,7 +205,7 @@ impl CredentialCache {
     /// GLOBAL rather than per-module on purpose: the cost of dropping a concurrent OTHER module's
     /// insert is one cache miss, while the cost of getting the partitioning wrong is a missed
     /// revocation.
-    pub(crate) fn flush_module(&self, module: &str) -> usize {
+    pub fn flush_module(&self, module: &str) -> usize {
         let mut guard = self.lock();
         guard.flush_gen += 1;
         let before = guard.entries.len();
@@ -211,7 +217,7 @@ impl CredentialCache {
     /// cached-allow window). Bumps the flush generation for the reason [`CredentialCache::flush_module`]
     /// documents: without it this endpoint reported `200 {"flushed": N}` while an authentication in
     /// flight put its PRE-flush allow verdict straight back.
-    pub(crate) fn flush_all(&self) -> usize {
+    pub fn flush_all(&self) -> usize {
         let mut guard = self.lock();
         guard.flush_gen += 1;
         let n = guard.entries.len();

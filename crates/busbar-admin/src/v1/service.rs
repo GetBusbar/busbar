@@ -14,21 +14,21 @@ use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
-use crate::diagnostics::{
+use busbar_core::diagnostics::{
     diag_debug, diag_error, diag_warn, ADMIN_STORE_OPERATION_FAILED, GROUP_DELETE_KEY_READ_FAILED,
     PLUGINS_DIR_FINGERPRINT_FAILED, PLUGIN_CATALOG_BLOCKING_TASK_FAILED,
     PLUGIN_CATALOG_SCAN_GATE_TIMEOUT, USAGE_BLOCKING_TASK_JOIN_FAILED,
 };
-use crate::state::App;
+use busbar_core::state::App;
 
-use super::contract::{
+use busbar_core::admin::v1::contract::{
     AdminAuthView, AdminError, AuthView, BuildInfo, ConfigValidateView, EffectiveConfigView,
     GroupView, HookHealthView, HookTransportView, HookView, InfoView, KeyUsageView, ModelUsageView,
     ModelView, NamedDefView, Page, PluginView, PoolDetailView, PoolMemberStatusView,
     PoolMemberView, PoolView, ProviderView, TopologyInfo, UsageBreakdown, UsageView, UsageWindow,
 };
-use crate::config::named_map::NamedMapSection;
-use crate::config::{
+use busbar_core::config::named_map::NamedMapSection;
+use busbar_core::config::{
     DeployCfg, HookCfg, HookKind, HookStage, PromptAccess, ProviderDef, UserAccess,
 };
 
@@ -98,7 +98,7 @@ use super::named_def_views::{export_def_view, identity_provider_view, unparseabl
 /// correction changes historical figures on the next read; tokens are the stored truth). Metering
 /// rows attribute by the CONFIGURED model name, so the rate lookup goes through the
 /// `upstream_model` alias resolution.
-fn derive_spend_micros_row(cost: &crate::cost::CostModel, model: &str, b: &UsageBreakdown) -> i64 {
+fn derive_spend_micros_row(cost: &busbar_core::cost::CostModel, model: &str, b: &UsageBreakdown) -> i64 {
     // Project the metering row's flat tier fields (its OWN JSON-contract names, unchanged) onto the
     // name-keyed unit map the pricer now consumes. `tokens_cache_creation` is the row's field name;
     // it maps onto the canonical `cache_write` unit key.
@@ -347,9 +347,9 @@ mod catalog_scan_test_hooks {
 /// removable default-on feature.
 fn auth_modules_compiled_in() -> Vec<&'static str> {
     [
-        crate::config::KEYS_MODULE,
+        busbar_core::config::KEYS_MODULE,
         #[cfg(feature = "auth-admin-tokens")]
-        crate::config::ADMIN_TOKENS_MODULE,
+        busbar_core::config::ADMIN_TOKENS_MODULE,
     ]
     .to_vec()
 }
@@ -414,7 +414,7 @@ fn validate_plugin_filename(file: &str) -> Result<String, AdminError> {
 /// reason when it does not.
 async fn probe_transport(
     cfg: &HookCfg,
-    env: &crate::hooks::HookEnv,
+    env: &busbar_core::hooks::HookEnv,
 ) -> (Option<bool>, Option<String>) {
     match env.registry.resolve(&cfg.plugin) {
         Some(p) if p.manifest.kind == "hook" => (Some(true), None),
@@ -455,16 +455,16 @@ pub(crate) const MAX_SETTINGS_KEYS: usize = 256;
 /// Upper bound on a hook name (a registry key persisted to the config overlay + every audit row).
 /// Generous headroom over any real hook name; guards the durable-state/audit/reconnect path.
 pub(crate) const MAX_HOOK_NAME_LEN: usize = 256;
-/// `build_with_group` RELOCATED to `crate::governance::group_provision` (1.6.0 de-alias, stage 2a);
+/// `build_with_group` RELOCATED to `busbar_core::governance::group_provision` (1.6.0 de-alias, stage 2a);
 /// re-exported here so every existing call site in this module tree (`handlers.rs`'s group routes)
 /// is unchanged.
-pub(crate) use crate::governance::group_provision::build_with_group;
+pub(crate) use busbar_core::governance::group_provision::build_with_group;
 /// Upper bound on a group name, relocated alongside `build_with_group`. Only this module's OWN test
 /// harness (`build_with_group_name_length_boundary_is_exact`) still names it bare via `use
 /// super::*`, so a non-test lib build sees no live use of the re-export — allowed, not removed, so
 /// production code names no admin-namespaced spelling for a core constant.
 #[cfg_attr(not(test), allow(unused_imports))]
-pub(crate) use crate::governance::group_provision::MAX_GROUP_NAME_LEN;
+pub(crate) use busbar_core::governance::group_provision::MAX_GROUP_NAME_LEN;
 
 /// Fail-closed size check for a hook's `settings` map — see the cap rationale above.
 pub(crate) fn validate_hook_settings_size(
@@ -487,7 +487,7 @@ pub(crate) fn validate_hook_settings_size(
     Ok(())
 }
 
-// `pool_known` RELOCATED to `crate::governance::group_provision` (1.6.0 de-alias, stage 2a)
+// `pool_known` RELOCATED to `busbar_core::governance::group_provision` (1.6.0 de-alias, stage 2a)
 // alongside `build_with_group`, its one remaining caller in this file (`build_without_group`,
 // below). Named at its call site instead of re-imported under its bare name, to keep this file's
 // import list from growing for a single-use helper.
@@ -518,7 +518,7 @@ pub fn build_with_hook(current: &App, name: &str, cfg: HookCfg) -> Result<App, A
     // runtime-registered hook can neither shadow a built-in nor collide with an `on_error` terminal
     // word (which would make the on_error string union ambiguous for every consumer). Previously
     // only the boot/apply path checked this — the register API was the one write path missing it.
-    if crate::config::RESERVED_HOOK_NAMES.contains(&name) {
+    if busbar_core::config::RESERVED_HOOK_NAMES.contains(&name) {
         return Err(AdminError::Validation(format!(
             "hook name `{name}` is reserved (a built-in ranking strategy, auth module, or on_error \
              terminal); pick another name"
@@ -603,8 +603,8 @@ pub fn build_without_hook(current: &App, name: &str) -> Result<App, AdminError> 
     Ok(next)
 }
 
-// `build_with_group` RELOCATED to `crate::governance::group_provision` (1.6.0 de-alias, stage 2a) —
-// re-imported above (`pub(crate) use crate::governance::group_provision::{build_with_group,
+// `build_with_group` RELOCATED to `busbar_core::governance::group_provision` (1.6.0 de-alias, stage 2a) —
+// re-imported above (`pub(crate) use busbar_core::governance::group_provision::{build_with_group,
 // MAX_GROUP_NAME_LEN};`) so every call site in this module tree is unchanged.
 
 /// Build the next `App` snapshot with `name` REMOVED from the group registry — the pure core of
@@ -672,9 +672,9 @@ pub(crate) fn build_without_group(
     // as a state CONFLICT (something still references this group) so the caller distinguishes it from
     // a malformed request.
     let mut errors = Vec::new();
-    crate::config::groups::validate_groups(
+    busbar_core::config::groups::validate_groups(
         &groups,
-        &|p| crate::governance::group_provision::pool_known(current, p),
+        &|p| busbar_core::governance::group_provision::pool_known(current, p),
         &mut errors,
     );
     if !errors.is_empty() {
@@ -823,7 +823,7 @@ fn manifest_schema_url_and_error(
     };
     let url = Some(format!(
         "{}/plugins/{name}/schema",
-        crate::admin::v1::contract::ADMIN_PREFIX
+        busbar_core::admin::v1::contract::ADMIN_PREFIX
     ));
     match serde_json::from_str::<serde_json::Value>(s) {
         Ok(_) => (url, None),
@@ -1067,7 +1067,7 @@ impl AdminService {
         // but NOT live (dropped at each rebuild), and listing them here is what makes that
         // discoverable to an operator inspecting state rather than boot logs. A name that is live
         // wins — the registry only ever holds names the applier actually dropped.
-        for (name, entry) in crate::config::overlay::unparseable_named_map_entries(
+        for (name, entry) in busbar_core::config::overlay::unparseable_named_map_entries(
             self.app.overlay_path.as_deref(),
             section,
         ) {
@@ -1105,7 +1105,7 @@ impl AdminService {
             // A stored-but-unparseable overlay entry answers the FLAGGED view rather than a 404: a
             // 404 for a name that is sitting in the operator's own overlay is precisely the silent
             // drop this surfaces.
-            crate::config::overlay::unparseable_named_map_entries(
+            busbar_core::config::overlay::unparseable_named_map_entries(
                 self.app.overlay_path.as_deref(),
                 section,
             )
@@ -1140,7 +1140,7 @@ impl AdminService {
         let items: Vec<GroupView> = all.into_iter().skip(start).take(limit).collect();
         let end = start.saturating_add(items.len());
         let next_cursor =
-            (end < total).then(|| crate::admin::v1::contract::encode_offset_cursor(end));
+            (end < total).then(|| busbar_core::admin::v1::contract::encode_offset_cursor(end));
         Ok(Page { items, next_cursor })
     }
 
@@ -1160,8 +1160,8 @@ impl AdminService {
     pub(crate) async fn get_group_usage(
         &self,
         name: &str,
-    ) -> Result<crate::admin::v1::contract::GroupUsageView, AdminError> {
-        use crate::admin::v1::contract::{GroupBucketUsageView, GroupUsageView};
+    ) -> Result<busbar_core::admin::v1::contract::GroupUsageView, AdminError> {
+        use busbar_core::admin::v1::contract::{GroupBucketUsageView, GroupUsageView};
         let Some(rt) = self.app.cost.group_named(name) else {
             return Err(AdminError::not_found(format!("group `{name}`")));
         };
@@ -1176,8 +1176,8 @@ impl AdminService {
                     // budget, so operators saw more headroom than the enforcer actually allows.
                     .derived_bucket_usage(&self.app.cost, &b.bucket_id, b.window, true, now)
                     .map_err(|e| {
-                        crate::diagnostics::diag_error!(
-                            crate::diagnostics::GROUP_USAGE_READ_FAILED,
+                        busbar_core::diagnostics::diag_error!(
+                            busbar_core::diagnostics::GROUP_USAGE_READ_FAILED,
                             group = name, bucket = %b.bucket_id, err = %e,
                             "group usage read failed"
                         );
@@ -1228,9 +1228,9 @@ impl AdminService {
                 // ADMIN chain, and anything else is a boxed data-plane chain module.
                 let chain = self.app.auth.chain_names();
                 for name in auth_modules_compiled_in() {
-                    let active = if name == crate::config::KEYS_MODULE {
+                    let active = if name == busbar_core::config::KEYS_MODULE {
                         self.app.auth.keys_in_chain
-                    } else if name == crate::config::ADMIN_TOKENS_MODULE {
+                    } else if name == busbar_core::config::ADMIN_TOKENS_MODULE {
                         self.app.admin_chain.iter().any(|m| m == name)
                     } else {
                         chain.contains(&name)
@@ -1676,7 +1676,7 @@ impl AdminService {
         &self,
         file: &str,
         tarball: &[u8],
-    ) -> Result<crate::admin::v1::contract::PluginInstallView, AdminError> {
+    ) -> Result<busbar_core::admin::v1::contract::PluginInstallView, AdminError> {
         use busbar_plugin_sign::{evaluate, validate_structure, Verdict, HOST_IDENTITY};
 
         // ── 1. filename sanity: a bare tarball filename ──
@@ -1770,14 +1770,14 @@ impl AdminService {
         // temp on EVERY error path. The pid+seq temp naming supersedes the bespoke pid+now stamp with
         // the same per-call-uniqueness property.
         let dir = &self.app.plugins_dir;
-        crate::durable::create_dir_all(dir)
+        busbar_core::durable::create_dir_all(dir)
             .map_err(|e| AdminError::Validation(format!("cannot create plugins dir: {e}")))?;
         let final_path = dir.join(&file);
-        crate::durable::write(&final_path, tarball).map_err(|e| {
+        busbar_core::durable::write(&final_path, tarball).map_err(|e| {
             AdminError::Validation(format!("cannot publish plugin into plugins dir: {e}"))
         })?;
 
-        Ok(crate::admin::v1::contract::PluginInstallView {
+        Ok(busbar_core::admin::v1::contract::PluginInstallView {
             file,
             name: manifest.name.clone(),
             interface_version: manifest.abi_version,
@@ -1895,7 +1895,7 @@ impl AdminService {
     pub(crate) fn remove_store_plugin(
         &self,
         file: &str,
-    ) -> Result<crate::admin::v1::contract::PluginRemoveView, AdminError> {
+    ) -> Result<busbar_core::admin::v1::contract::PluginRemoveView, AdminError> {
         let file = validate_plugin_filename(file)?;
         let lib_path = self.app.plugins_dir.join(&file);
         if !lib_path.is_file() {
@@ -1905,9 +1905,9 @@ impl AdminService {
         // the new artifact's directory entry survives a power loss, and a removal that skipped it was
         // the asymmetric half -- a crash right after a delete could resurrect the artifact and load
         // it on the next boot.
-        crate::durable::remove(&lib_path)
+        busbar_core::durable::remove(&lib_path)
             .map_err(|e| AdminError::Validation(format!("cannot remove plugin: {e}")))?;
-        Ok(crate::admin::v1::contract::PluginRemoveView {
+        Ok(busbar_core::admin::v1::contract::PluginRemoveView {
             file,
             removed: true,
         })
@@ -1920,7 +1920,7 @@ impl AdminService {
     /// next store (re)load, not as a hot swap.
     pub(crate) fn reload_store_plugins(
         &self,
-    ) -> Result<crate::admin::v1::contract::PluginReloadView, AdminError> {
+    ) -> Result<busbar_core::admin::v1::contract::PluginReloadView, AdminError> {
         // Reuse the store catalog projection, dropping the compiled-in `memory` head (reload reports
         // only the on-disk dynamic set it reconciled).
         let plugins: Vec<PluginView> = self
@@ -1928,7 +1928,7 @@ impl AdminService {
             .into_iter()
             .filter(|p| p.loader == "dynamic-library")
             .collect();
-        Ok(crate::admin::v1::contract::PluginReloadView {
+        Ok(busbar_core::admin::v1::contract::PluginReloadView {
             plugins,
             note:
                 "hot-reloaded the plugin layer LIVE: a new plugin registry and new kind:hook \
@@ -2040,11 +2040,11 @@ impl AdminService {
     ) -> Result<ConfigValidateView, AdminError> {
         // Resolve first (cross-references config.yaml providers against providers.yaml defs); if that
         // fails there is no RootCfg to hand to the semantic validator, so return the resolve errors.
-        let root = match crate::config::resolve(&deploy, &defs) {
+        let root = match busbar_core::config::resolve(&deploy, &defs) {
             Ok(root) => root,
             Err(errors) => return Ok(ConfigValidateView { ok: false, errors }),
         };
-        if let Err(errors) = crate::config_validate::validate(&root) {
+        if let Err(errors) = busbar_core::config_validate::validate(&root) {
             return Ok(ConfigValidateView { ok: false, errors });
         }
         // SECURITY (R3-B): the pre-flight below SCANS `plugins.dir` — `fs::read_dir` plus a read of
@@ -2064,7 +2064,7 @@ impl AdminService {
         // does not resolve, a `secrets:` entry naming no `kind: secret` plugin, a secret REFERENCE
         // whose module is neither built-in nor installed -- so an operator could dry-run a config
         // green here and then watch boot fail on it. Manifest-only: nothing is `dlopen`ed.
-        if let Err(e) = crate::preflight_plugins_and_secrets(&deploy, &root) {
+        if let Err(e) = busbar_core::preflight_plugins_and_secrets(&deploy, &root) {
             return Ok(ConfigValidateView {
                 ok: false,
                 errors: vec![e],
@@ -2101,14 +2101,14 @@ impl AdminService {
     /// future); `None` = the current bucket. The response shape is pinned: always one bucket.
     pub(crate) async fn get_usage(&self, window: Option<u64>) -> Result<UsageView, AdminError> {
         let now = busbar_substrate::store::now();
-        let current = crate::governance::metering_bucket(now);
+        let current = busbar_core::governance::metering_bucket(now);
         let bucket = match window {
             None => current,
             Some(w) => {
-                if w % crate::governance::METERING_BUCKET_SECS != 0 {
+                if w % busbar_core::governance::METERING_BUCKET_SECS != 0 {
                     return Err(AdminError::Validation(format!(
                         "window must be a UTC-day bucket start (a multiple of {}); got {w}",
-                        crate::governance::METERING_BUCKET_SECS
+                        busbar_core::governance::METERING_BUCKET_SECS
                     )));
                 }
                 if w > current {
@@ -2119,7 +2119,7 @@ impl AdminService {
         };
         let window = UsageWindow {
             start: bucket,
-            end: bucket + crate::governance::METERING_BUCKET_SECS,
+            end: bucket + busbar_core::governance::METERING_BUCKET_SECS,
         };
         let empty = || UsageView {
             window,
@@ -2135,10 +2135,10 @@ impl AdminService {
             return Ok(empty());
         };
         type Fetched = (
-            Vec<crate::governance::MeteringRow>,
+            Vec<busbar_core::governance::MeteringRow>,
             std::collections::HashMap<String, String>,
         );
-        type UsageFetchError = (&'static str, crate::governance::StoreError);
+        type UsageFetchError = (&'static str, busbar_core::governance::StoreError);
         let joined = tokio::task::spawn_blocking(move || -> Result<Fetched, UsageFetchError> {
             let rows = gov
                 .metering_for(bucket)
@@ -2279,8 +2279,8 @@ impl AdminService {
         Ok(AuthView {
             chain: self.app.auth.chain_names(),
             upstream_credentials: match self.app.upstream_creds() {
-                crate::auth::UpstreamCreds::Own => "own",
-                crate::auth::UpstreamCreds::Passthrough => "passthrough",
+                busbar_core::auth::UpstreamCreds::Own => "own",
+                busbar_core::auth::UpstreamCreds::Passthrough => "passthrough",
             },
             open: self.app.auth.is_open(),
         })
@@ -2391,52 +2391,52 @@ pub(crate) fn project_hook_view(name: &str, cfg: &HookCfg, global_hooks: &[Strin
 /// chain stays empty. With the set named once, adding a derived field to `main.rs`'s `App`
 /// construction has exactly one other place to touch, and `hook_derived_fields_follow_the_registry`
 /// asserts the two agree.
-fn rebuild_hook_derived(next: &mut crate::state::App) {
+fn rebuild_hook_derived(next: &mut busbar_core::state::App) {
     // ── the config-generation SCALARS derived from the registry ──
     // The IR compute gate follows the registry it is derived from: a newly registered `prompt: ro`
     // hook must be able to see content on the very next request.
-    next.any_content_hook = crate::hooks::any_content_hook(&next.hook_registry);
+    next.any_content_hook = busbar_core::hooks::any_content_hook(&next.hook_registry);
     // The declared-signal bitmask follows it for the identical reason, and `HookCfg::signals`'s own
     // contract states it outright: declaring a signal is "necessary AND sufficient for it to start
     // being computed + projected; nothing else is required". A runtime register IS a config apply.
-    next.requested_signals = crate::hooks::requested_signals(&next.hook_registry);
+    next.requested_signals = busbar_core::hooks::requested_signals(&next.hook_registry);
 
     // ── the RESOLVED transports the request path fires ──
-    next.rewrite_hooks = crate::hooks::resolve_rewrite_hooks(
+    next.rewrite_hooks = busbar_core::hooks::resolve_rewrite_hooks(
         &next.hook_registry,
         &next.global_hooks,
         &next.hook_env,
         next.config_version,
     );
-    next.tap_hooks = crate::hooks::resolve_tap_hooks(
+    next.tap_hooks = busbar_core::hooks::resolve_tap_hooks(
         &next.hook_registry,
         &next.global_hooks,
         &next.hook_env,
         next.config_version,
-        crate::config::HookStage::Request,
+        busbar_core::config::HookStage::Request,
     );
-    next.tap_hooks_candidate = crate::hooks::resolve_tap_hooks(
+    next.tap_hooks_candidate = busbar_core::hooks::resolve_tap_hooks(
         &next.hook_registry,
         &next.global_hooks,
         &next.hook_env,
         next.config_version,
-        crate::config::HookStage::Candidate,
+        busbar_core::config::HookStage::Candidate,
     );
-    next.tap_hooks_routing = crate::hooks::resolve_tap_hooks(
+    next.tap_hooks_routing = busbar_core::hooks::resolve_tap_hooks(
         &next.hook_registry,
         &next.global_hooks,
         &next.hook_env,
         next.config_version,
-        crate::config::HookStage::Routing,
+        busbar_core::config::HookStage::Routing,
     );
-    next.tap_hooks_response = crate::hooks::resolve_tap_hooks(
+    next.tap_hooks_response = busbar_core::hooks::resolve_tap_hooks(
         &next.hook_registry,
         &next.global_hooks,
         &next.hook_env,
         next.config_version,
-        crate::config::HookStage::Response,
+        busbar_core::config::HookStage::Response,
     );
-    next.global_gates = crate::hooks::resolve_gate_hooks(
+    next.global_gates = busbar_core::hooks::resolve_gate_hooks(
         &next.hook_registry,
         &next.global_hooks,
         &next.hook_env,
@@ -2448,8 +2448,8 @@ fn rebuild_hook_derived(next: &mut crate::state::App) {
 // Each plane re-resolves its OWN per-registration hook gates through the `reresolve_gates` seam, so
 // this fold names no plane registry type. A plane with no per-registration gates declares `None` and
 // is skipped, exactly as the old plane-gated blocks skipped a compiled-out plane.
-fn reresolve_plane_gates(next: &mut crate::state::App) {
-    for decl in crate::plane::registry::plane_decls() {
+fn reresolve_plane_gates(next: &mut busbar_core::state::App) {
+    for decl in busbar_core::plane::registry::plane_decls() {
         if let Some(reresolve) = decl.reresolve_gates {
             reresolve(next);
         }
@@ -2459,8 +2459,8 @@ fn reresolve_plane_gates(next: &mut crate::state::App) {
 /// Project a plane section's registrations onto the shared view through the plane's `named_def_list`
 /// seam — resolved by config section, so the admin read path names no plane view type. Empty for a
 /// section whose plane is compiled out (no decl) or is not a named-definition map.
-fn plane_named_def_list(section: NamedMapSection, app: &crate::state::App) -> Vec<NamedDefView> {
-    crate::plane::registry::plane_decl_for_config_section(section.key())
+fn plane_named_def_list(section: NamedMapSection, app: &busbar_core::state::App) -> Vec<NamedDefView> {
+    busbar_core::plane::registry::plane_decl_for_config_section(section.key())
         .and_then(|d| d.named_def_list)
         .map_or_else(Vec::new, |f| {
             f(app as &dyn busbar_substrate::plane_host::PlaneSlots)
@@ -2471,10 +2471,10 @@ fn plane_named_def_list(section: NamedMapSection, app: &crate::state::App) -> Ve
 /// plane has no such entry, is compiled out, or is not a named-definition map.
 fn plane_named_def_get(
     section: NamedMapSection,
-    app: &crate::state::App,
+    app: &busbar_core::state::App,
     name: &str,
 ) -> Option<NamedDefView> {
-    crate::plane::registry::plane_decl_for_config_section(section.key())
+    busbar_core::plane::registry::plane_decl_for_config_section(section.key())
         .and_then(|d| d.named_def_get)
         .and_then(|f| f(app as &dyn busbar_substrate::plane_host::PlaneSlots, name))
 }

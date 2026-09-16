@@ -9,7 +9,7 @@
 /// The `<n><unit>` duration parser lives in the neutral substrate (`busbar_substrate::duration`) so
 /// the plane crates name it without reaching into busbar-core; re-exported here so every
 /// `crate::config::parse::parse_duration_secs` caller is unchanged.
-pub(crate) use busbar_substrate::duration::parse_duration_secs;
+pub use busbar_substrate::duration::parse_duration_secs;
 
 use busbar_contract::authz::Scope;
 
@@ -30,7 +30,7 @@ use busbar_contract::authz::Scope;
 /// gateway then refused to BOOT on the next restart with "unknown max_admin_scope". A successful
 /// admin write that leaves the deployment unbootable is the failure mode a second copy of the
 /// accepted-value list buys you; there is now only one copy.
-pub(crate) fn parse_ceiling(subject: &str, token: &str) -> Result<Scope, String> {
+pub fn parse_ceiling(subject: &str, token: &str) -> Result<Scope, String> {
     Scope::parse(token).ok_or_else(|| {
         format!(
             "{subject} has unknown max_admin_scope '{token}': expected read-only or full. \

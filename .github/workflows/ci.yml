@@ -949,7 +949,7 @@ jobs:
   # if the committed `openapi.json` — the file the runtime serves via `include_str!` — no longer
   # matches what the code generates, and the COVERAGE LOCK proves every operation has a typed body.
   # Regenerate a stale file with:
-  #   UPDATE_OPENAPI=1 cargo test -p busbar -p busbar-core --features openapi-schema openapi_json_matches_committed_file
+  #   UPDATE_OPENAPI=1 cargo test -p busbar -p busbar-core -p busbar-admin --features openapi-schema openapi_json_matches_committed_file
       - name: Latchkey Fast Cache (cargo registry + target, save)
         uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
         with:
@@ -986,7 +986,7 @@ jobs:
             ${{ env.CARGO_HOME }}/git
             target
       - name: Clippy (--features openapi-schema)
-        run: cargo clippy -p busbar -p busbar-core --all-targets --features openapi-schema --locked -- -D warnings
+        run: cargo clippy -p busbar -p busbar-core -p busbar-admin --all-targets --features openapi-schema --locked -- -D warnings
       - name: OpenAPI tests (drift guard + coverage lock)
         run: |
           set -euo pipefail
@@ -994,7 +994,7 @@ jobs:
           # prints "running 0 tests / test result: ok" and EXITS 0. The floor is not 1 — this step
           # claims to run the drift guard AND the coverage lock AND their neighbours, so a filter
           # that quietly collapsed to a single surviving test would still be a coverage hole.
-          out="$(cargo test -p busbar -p busbar-core --features openapi-schema --locked openapi -- --nocapture 2>&1 | tee /dev/stderr)"
+          out="$(cargo test -p busbar -p busbar-core -p busbar-admin --features openapi-schema --locked openapi -- --nocapture 2>&1 | tee /dev/stderr)"
           n="$(echo "$out" | sed -nE 's/^test result: ok\. ([0-9]+) passed.*/\1/p' | awk '{s+=$1} END{print s+0}')"
           if [ "$n" -lt 8 ]; then
             echo "::error::the OpenAPI suite ran only ${n} tests, expected >= 8."

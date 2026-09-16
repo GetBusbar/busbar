@@ -9,7 +9,7 @@
 //! by construction rather than by each projection remembering. Keeping them together is what makes
 //! that rule checkable by reading one file; a new section's projection lands here beside the others.
 
-use super::contract::NamedDefView;
+use busbar_core::admin::v1::contract::NamedDefView;
 use super::service::settings_keys;
 
 /// Project one `identity-providers:` DEFINITION onto the shared named-map view. The `token:` secret
@@ -17,7 +17,7 @@ use super::service::settings_keys;
 /// places a secret could leak, closed by construction.
 pub(super) fn identity_provider_view(
     name: &str,
-    cfg: &crate::config::IdentityProviderCfg,
+    cfg: &busbar_core::config::IdentityProviderCfg,
 ) -> NamedDefView {
     NamedDefView {
         name: name.to_string(),
@@ -37,7 +37,7 @@ pub(super) fn identity_provider_view(
 /// trust ceiling nor a credential FIELD, so those are omitted from the body entirely — but its
 /// `settings:` bag routinely carries one (a `generic-webhook`'s `auth_header.value`), so the bag is
 /// projected as KEY NAMES exactly as the identity-provider view projects it.
-pub(super) fn export_def_view(name: &str, cfg: &crate::config::ExportDefCfg) -> NamedDefView {
+pub(super) fn export_def_view(name: &str, cfg: &busbar_core::config::ExportDefCfg) -> NamedDefView {
     NamedDefView {
         name: name.to_string(),
         module: cfg.module.clone(),
@@ -64,7 +64,7 @@ pub(super) fn export_def_view(name: &str, cfg: &crate::config::ExportDefCfg) -> 
 /// the no-secret-in-a-read-scope rule holds even for a document that failed to parse).
 pub(super) fn unparseable_def_view(
     name: &str,
-    entry: &crate::config::overlay::UnparseableNamedDef,
+    entry: &busbar_core::config::overlay::UnparseableNamedDef,
 ) -> NamedDefView {
     NamedDefView {
         name: name.to_string(),

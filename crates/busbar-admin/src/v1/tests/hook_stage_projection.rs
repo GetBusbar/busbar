@@ -12,8 +12,8 @@
 //! spelling. These tests pin the projection: the `phase:` list is echoed, and the RESOLVED set is
 //! projected beside it through the same predicate the firing path uses.
 
-use crate::admin::v1::service::project_hook_view;
-use crate::config::{
+use crate::v1::service::project_hook_view;
+use busbar_core::config::{
     HookCfg, HookKind, HookStage, PromptAccess, UserAccess, ALL_HOOK_STAGES, CORE_HOOK_PHASES,
 };
 

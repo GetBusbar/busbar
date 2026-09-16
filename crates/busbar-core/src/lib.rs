@@ -223,7 +223,7 @@ pub mod proxy;
 /// Per-principal admin MUTATION rate limits (`MutationLimiter`), relocated out of `admin::` (1.6.0
 /// de-vocab): it is core's own auth-middleware infrastructure — gating every request in
 /// `auth_middleware` before any handler runs — not part of the admin HTTP API service.
-pub(crate) mod ratelimit;
+pub mod ratelimit;
 pub mod session;
 /// The wire error-type taxonomy (`ERR_TYPE_*`), relocated out of `admin::` (1.6.0 de-vocab): the
 /// constant string VALUES (the wire error-type tokens) are byte-identical; only their Rust binding
@@ -255,9 +255,8 @@ pub mod trust;
 #[path = "tests/alarm_silence_tests.rs"]
 mod alarm_silence_tests;
 pub mod appbuild;
-#[cfg(test)]
-#[path = "tests/key_revoke_tombstone_tests.rs"]
-mod key_revoke_tombstone_tests;
+// `key_revoke_tombstone_tests` drives the admin key-revoke HTTP surface; it moved to `busbar-admin`
+// with the service (`busbar_admin::tests::key_revoke_tombstone_tests`).
 pub mod preflight;
 pub mod router;
 #[cfg(test)]

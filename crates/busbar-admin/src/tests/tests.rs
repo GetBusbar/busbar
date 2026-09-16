@@ -1,6 +1,5 @@
-use crate::governance::{GovState, MemoryStore, NewKeySpec};
-use crate::test_support::warn_capture::WarnCapture;
-use crate::test_support::TestApp;
+use busbar_core::governance::{GovState, MemoryStore, NewKeySpec};
+use busbar_core::test_support::warn_capture::WarnCapture;
 use std::sync::Arc;
 
 /// Build a `GovState` that CAN mint 1.5.0 signed-token keys: it carries a deterministic
@@ -9,16 +8,16 @@ use std::sync::Arc;
 /// HTTP) builds its gov through this so the signer is always present; a read-only test could stay on
 /// `GovState::new`, but giving them all a signer keeps the fixtures uniform and future-proof.
 fn gov_with_signer(
-    store: Arc<dyn crate::governance::Store>,
+    store: Arc<dyn busbar_core::governance::Store>,
     admin_token: Option<String>,
 ) -> Arc<GovState> {
     Arc::new(
         GovState::new_with_signer(
             store,
             admin_token,
-            Some(crate::governance::signing::TokenSigner::from_secret_bytes(
+            Some(busbar_core::governance::signing::TokenSigner::from_secret_bytes(
                 &[9u8; 32],
-                crate::governance::signing::DEFAULT_KID,
+                busbar_core::governance::signing::DEFAULT_KID,
             )),
         )
         .unwrap(),
@@ -28,7 +27,7 @@ fn gov_with_signer(
 /// Build a router whose App has governance enabled with a known admin token, returning the
 /// listen address + the live server handle.
 async fn serve_with_gov(gov: Arc<GovState>) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
-    let app = TestApp::new().governance(gov).build();
+    let app = crate::new_test_app().governance(gov).build();
     let router = crate::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -43,7 +42,7 @@ async fn serve_with_gov(gov: Arc<GovState>) -> (std::net::SocketAddr, tokio::tas
 /// v1 surface answers.
 #[tokio::test]
 async fn test_admin_v1_info_reports_version_features_and_topology() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let (addr, handle) = serve_with_gov(gov).await;
@@ -109,17 +108,17 @@ async fn test_admin_v1_info_reports_version_features_and_topology() {
 /// so the provider aggregation + pool membership are observable.
 #[tokio::test]
 async fn test_admin_v1_topology_reads_pools_models_providers() {
-    use crate::test_support::LaneSpec;
-    crate::metrics::init();
+    use busbar_core::test_support::LaneSpec;
+    busbar_core::metrics::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
 
-    let app = TestApp::new()
+    let app = crate::new_test_app()
         .governance(gov)
         .lane(
             LaneSpec::new(
                 "model-a",
-                crate::proto::PROTO_ANTHROPIC,
+                busbar_core::proto::PROTO_ANTHROPIC,
                 "http://127.0.0.1:1/",
             )
             .provider("prov-x"),
@@ -127,7 +126,7 @@ async fn test_admin_v1_topology_reads_pools_models_providers() {
         .lane(
             LaneSpec::new(
                 "model-b",
-                crate::proto::PROTO_ANTHROPIC,
+                busbar_core::proto::PROTO_ANTHROPIC,
                 "http://127.0.0.1:1/",
             )
             .provider("prov-y"),
@@ -192,10 +191,10 @@ async fn test_admin_v1_topology_reads_pools_models_providers() {
 /// which previously fell through to the proxied request path's vendor-shaped error output (`error.type`).
 #[tokio::test]
 async fn test_api_root_unmatched_paths_speak_the_admin_envelope() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let app = TestApp::new().governance(gov).build();
+    let app = crate::new_test_app().governance(gov).build();
     let router = crate::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -240,8 +239,8 @@ async fn test_api_root_unmatched_paths_speak_the_admin_envelope() {
 /// actionable message (previously everything was 404, making `not_found` mean two things).
 #[tokio::test]
 async fn test_keys_surface_governance_disabled_semantics() {
-    crate::metrics::init();
-    let mut app = TestApp::new().build(); // NO governance
+    busbar_core::metrics::init();
+    let mut app = crate::new_test_app().build(); // NO governance
     {
         // Open admin posture (explicit empty chain) — this test probes HANDLER semantics, not
         // auth; with governance off there is no admin token for the default chain to accept.
@@ -299,14 +298,14 @@ async fn test_keys_surface_governance_disabled_semantics() {
 
 #[tokio::test]
 async fn test_admin_v1_pool_detail_live_status() {
-    use crate::test_support::LaneSpec;
-    crate::metrics::init();
+    use busbar_core::test_support::LaneSpec;
+    busbar_core::metrics::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let app = TestApp::new()
+    let app = crate::new_test_app()
         .governance(gov)
         .lane(
-            LaneSpec::new("m1", crate::proto::PROTO_ANTHROPIC, "http://127.0.0.1:1/").provider("p"),
+            LaneSpec::new("m1", busbar_core::proto::PROTO_ANTHROPIC, "http://127.0.0.1:1/").provider("p"),
         )
         .pool("mypool", &[(0, 5)])
         .build();
@@ -406,14 +405,14 @@ async fn test_admin_v1_pool_detail_live_status() {
 /// `usable: true` (any-cell) even though routing in that exact pool will skip the member.
 #[tokio::test]
 async fn test_admin_v1_pool_detail_reports_the_per_pool_breaker_cell() {
-    use crate::test_support::LaneSpec;
-    crate::metrics::init();
+    use busbar_core::test_support::LaneSpec;
+    busbar_core::metrics::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let mut app = TestApp::new()
+    let mut app = crate::new_test_app()
         .governance(gov)
         .lane(
-            LaneSpec::new("m1", crate::proto::PROTO_ANTHROPIC, "http://127.0.0.1:1/").provider("p"),
+            LaneSpec::new("m1", busbar_core::proto::PROTO_ANTHROPIC, "http://127.0.0.1:1/").provider("p"),
         )
         .pool("fast", &[(0, 1)])
         .pool("cheap", &[(0, 1)])
@@ -489,10 +488,10 @@ async fn test_admin_v1_pool_detail_reports_the_per_pool_breaker_cell() {
 /// is `configured: true` with the `admin-token` module. Never a secret.
 #[tokio::test]
 async fn test_admin_v1_admin_auth_read() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let app = TestApp::new().governance(gov).build();
+    let app = crate::new_test_app().governance(gov).build();
     let router = crate::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -523,8 +522,8 @@ async fn test_admin_v1_admin_auth_read() {
 /// unknown id. Fills the single-key read gap on the legacy key surface.
 #[tokio::test]
 async fn test_admin_v1_get_single_key() {
-    use crate::governance::NewKeySpec;
-    crate::metrics::init();
+    use busbar_core::governance::NewKeySpec;
+    busbar_core::metrics::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let (minted, minted_secret) = gov
@@ -539,7 +538,7 @@ async fn test_admin_v1_get_single_key() {
             busbar_substrate::store::now(),
         )
         .unwrap();
-    let app = TestApp::new().governance(gov).build();
+    let app = crate::new_test_app().governance(gov).build();
     let router = crate::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -585,24 +584,24 @@ async fn test_admin_v1_get_single_key() {
 /// header. Never leaks the secret (id/name only).
 #[tokio::test]
 async fn test_admin_v1_usage_meters_by_model_and_key() {
-    use crate::governance::NewKeySpec;
-    crate::metrics::init();
+    use busbar_core::governance::NewKeySpec;
+    busbar_core::metrics::init();
     let store = Arc::new(MemoryStore::new());
     // Prices: 1 cent/request + a rate card of 500 micro-units/token on every tier (the same
     // blended 50 cents/1k tokens the pre-rate-card assertions were derived from). Spend is now
     // DERIVED at read time from ledger x rate card, so the CostModel is the derivation input.
     let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let rate = crate::config::RateEntryCfg {
+    let rate = busbar_core::config::RateEntryCfg {
         input_utok: 500.0,
         output_utok: 500.0,
         cache_read_utok: 500.0,
         cache_write_utok: 500.0,
     };
-    let rate_card: std::collections::BTreeMap<String, crate::config::RateEntryCfg> =
+    let rate_card: std::collections::BTreeMap<String, busbar_core::config::RateEntryCfg> =
         [("model-1".to_string(), rate), ("model-2".to_string(), rate)]
             .into_iter()
             .collect();
-    let cost = crate::cost::CostModel::resolve_parts(
+    let cost = busbar_core::cost::CostModel::resolve_parts(
         Some(&rate_card),
         1,
         &std::collections::BTreeMap::new(),
@@ -621,7 +620,7 @@ async fn test_admin_v1_usage_meters_by_model_and_key() {
         )
         .unwrap();
     // Two responses metered against one model (split preserved), one against another model.
-    let usage = crate::billing::TokenUsage {
+    let usage = busbar_core::billing::TokenUsage {
         input: 700,
         output: 200,
         cache_read: Some(100),
@@ -634,7 +633,7 @@ async fn test_admin_v1_usage_meters_by_model_and_key() {
     gov.record_metering(&minted.id, "model-1", "vendor-a", Some(&usage), now);
     gov.record_metering(&minted.id, "model-2", "acme", None, now);
     gov.flush_metering();
-    let app = TestApp::new().governance(gov).cost(cost).build();
+    let app = crate::new_test_app().governance(gov).cost(cost).build();
     let router = crate::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -723,8 +722,8 @@ async fn test_admin_v1_usage_meters_by_model_and_key() {
 /// DlopenPolicy configure unit level.)
 #[tokio::test]
 async fn test_admin_v1_hook_settings_patch_commit_on_ack_and_schema() {
-    crate::metrics::init();
-    let Some(env) = crate::test_support::test_hook_env(&["test-hook"], Default::default()) else {
+    busbar_core::metrics::init();
+    let Some(env) = busbar_core::test_support::test_hook_env(&["test-hook"], Default::default()) else {
         eprintln!("skip: hook cdylib not built (run under --workspace)");
         return;
     };
@@ -733,7 +732,7 @@ async fn test_admin_v1_hook_settings_patch_commit_on_ack_and_schema() {
     // Kept for the readiness wait below — `HookEnv` clones share one `Arc<PluginRegistry>`, which is
     // what the resolution is keyed on, so this really is the env the handler will resolve against.
     let env_for_warm = env.clone();
-    let app = TestApp::new().governance(gov).hook_env(env).build();
+    let app = crate::new_test_app().governance(gov).hook_env(env).build();
     let router = crate::build_router(app);
     let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = l.local_addr().unwrap();
@@ -763,12 +762,12 @@ async fn test_admin_v1_hook_settings_patch_commit_on_ack_and_schema() {
     // same hook name, same post-PATCH settings — so the assertion stops racing the dynamic linker.
     // See `hooks::resolution` for why that race was real (a 5.9 s median load under a full test run)
     // and why widening the deadline was the wrong answer.
-    let warm: crate::config::HookCfg = serde_json::from_value(serde_json::json!({
+    let warm: busbar_core::config::HookCfg = serde_json::from_value(serde_json::json!({
         "kind": "gate", "module": "test-hook", "settings": {"ratio": 0.4}
     }))
     .expect("hook cfg");
     assert!(
-        crate::hooks::await_transport_published("cfg-hook", &warm, &env_for_warm).await,
+        busbar_core::hooks::await_transport_published("cfg-hook", &warm, &env_for_warm).await,
         "the loader must publish a transport for the hook the PATCH is about to configure"
     );
     let patched = admin(client.patch(format!(
@@ -827,13 +826,13 @@ async fn test_admin_v1_hook_settings_patch_commit_on_ack_and_schema() {
 #[cfg(unix)]
 #[tokio::test]
 async fn test_admin_v1_plugin_schema_falls_back_to_manifest_when_describe_answers_null() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let manifest_schema = serde_json::json!({
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {"order": {"type": "array"}},
     });
-    let Some(env) = crate::test_support::test_hook_env_with_schema(
+    let Some(env) = busbar_core::test_support::test_hook_env_with_schema(
         &["test-hook-fallback"],
         Default::default(),
         Some(&manifest_schema.to_string()),
@@ -845,7 +844,7 @@ async fn test_admin_v1_plugin_schema_falls_back_to_manifest_when_describe_answer
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     // See the sibling test: kept so the readiness wait below resolves against the SAME registry.
     let env_for_warm = env.clone();
-    let app = TestApp::new().governance(gov).hook_env(env).build();
+    let app = crate::new_test_app().governance(gov).hook_env(env).build();
     let router = crate::build_router(app);
     let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = l.local_addr().unwrap();
@@ -873,12 +872,12 @@ async fn test_admin_v1_plugin_schema_falls_back_to_manifest_when_describe_answer
     // Readiness signal, not a wider deadline — see the sibling test above. The same published
     // resolution serves both the PATCH's `configure` and the `/schema` read that follows it, since
     // the committed settings are the ones warmed here.
-    let warm: crate::config::HookCfg = serde_json::from_value(serde_json::json!({
+    let warm: busbar_core::config::HookCfg = serde_json::from_value(serde_json::json!({
         "kind": "gate", "module": "test-hook-fallback", "settings": {"empty_management": true}
     }))
     .expect("hook cfg");
     assert!(
-        crate::hooks::await_transport_published("fallback-hook", &warm, &env_for_warm).await,
+        busbar_core::hooks::await_transport_published("fallback-hook", &warm, &env_for_warm).await,
         "the loader must publish a transport for the hook the PATCH is about to configure"
     );
     let patched = admin(client.patch(format!(
@@ -919,13 +918,13 @@ async fn test_admin_v1_plugin_schema_falls_back_to_manifest_when_describe_answer
 /// If-Match is a 409 that changes nothing.
 #[tokio::test]
 async fn test_admin_v1_config_apply_body_swaps_and_carries_health() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let mut app = TestApp::new()
-        .lane(crate::test_support::LaneSpec::new(
+    let mut app = crate::new_test_app()
+        .lane(busbar_core::test_support::LaneSpec::new(
             "m0",
-            crate::proto::PROTO_ANTHROPIC,
+            busbar_core::proto::PROTO_ANTHROPIC,
             "http://127.0.0.1:1/",
         ))
         .pool("p", &[(0, 1)])
@@ -1016,7 +1015,7 @@ async fn test_admin_v1_config_apply_body_swaps_and_carries_health() {
 /// changing nothing.
 #[tokio::test]
 async fn test_admin_v1_config_reload_swaps_disk_truth_and_carries_health() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let dir = std::env::temp_dir().join(format!("busbar-reload-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let providers_path = dir.join("providers.yaml");
@@ -1055,10 +1054,10 @@ pools:
 
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let mut app = TestApp::new()
-        .lane(crate::test_support::LaneSpec::new(
+    let mut app = crate::new_test_app()
+        .lane(busbar_core::test_support::LaneSpec::new(
             "m0",
-            crate::proto::PROTO_ANTHROPIC,
+            busbar_core::proto::PROTO_ANTHROPIC,
             "http://127.0.0.1:1/",
         ))
         .pool("p", &[(0, 1)])
@@ -1174,10 +1173,10 @@ providers: {}
 /// attempts count (these are all 404s — anti-enumeration).
 #[tokio::test]
 async fn test_admin_v1_mutation_rate_limit_config_class() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let app = TestApp::new().governance(gov).build();
+    let app = crate::new_test_app().governance(gov).build();
     let router = crate::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -1223,17 +1222,17 @@ async fn test_admin_v1_mutation_rate_limit_config_class() {
 /// a DIFFERENT module earns nothing here; the operator token stays full.
 #[tokio::test]
 async fn test_admin_v1_scope_ladder_e2e_with_group_mapped_principals() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let mut app = TestApp::new().governance(gov).build();
+    let mut app = crate::new_test_app().governance(gov).build();
     {
         let inner = Arc::get_mut(&mut app).expect("sole owner");
         inner.admin_chain = vec!["test-scope-module".to_string(), "admin-tokens".to_string()];
         let mut table = std::collections::BTreeMap::new();
         table.insert(
             "viewers".to_string(),
-            crate::config::RoleBindingCfg {
+            busbar_core::config::RoleBindingCfg {
                 admin_scope: Some("read-only".to_string()),
                 ..Default::default()
             },
@@ -1241,7 +1240,7 @@ async fn test_admin_v1_scope_ladder_e2e_with_group_mapped_principals() {
         // A role BOUND full — with the module ceiling lifted to full it mutates.
         table.insert(
             "admins".to_string(),
-            crate::config::RoleBindingCfg {
+            busbar_core::config::RoleBindingCfg {
                 admin_scope: Some("full".to_string()),
                 ..Default::default()
             },
@@ -1254,7 +1253,7 @@ async fn test_admin_v1_scope_ladder_e2e_with_group_mapped_principals() {
         let mut other = std::collections::BTreeMap::new();
         other.insert(
             "sneaky".to_string(),
-            crate::config::RoleBindingCfg {
+            busbar_core::config::RoleBindingCfg {
                 admin_scope: Some("full".to_string()),
                 ..Default::default()
             },
@@ -1382,10 +1381,10 @@ async fn test_admin_v1_scope_ladder_e2e_with_group_mapped_principals() {
 /// (which carries a once-shown secret). Two full principals, same key value, distinct results.
 #[tokio::test]
 async fn test_admin_v1_idempotency_key_is_principal_scoped() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let mut app = TestApp::new().governance(gov).build();
+    let mut app = crate::new_test_app().governance(gov).build();
     {
         let inner = Arc::get_mut(&mut app).expect("sole owner");
         inner.admin_chain = vec!["test-scope-module".to_string(), "admin-tokens".to_string()];
@@ -1393,7 +1392,7 @@ async fn test_admin_v1_idempotency_key_is_principal_scoped() {
         let mut table = std::collections::BTreeMap::new();
         table.insert(
             "admins".to_string(),
-            crate::config::RoleBindingCfg {
+            busbar_core::config::RoleBindingCfg {
                 admin_scope: Some("full".to_string()),
                 ..Default::default()
             },
@@ -1447,17 +1446,17 @@ async fn test_admin_v1_idempotency_key_is_principal_scoped() {
 /// built-in operator token is NEVER cached (flush finds nothing after operator calls).
 #[tokio::test]
 async fn test_admin_v1_credential_cache_and_flush_endpoint() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let mut app = TestApp::new().governance(gov).build();
+    let mut app = crate::new_test_app().governance(gov).build();
     {
         let inner = Arc::get_mut(&mut app).expect("sole owner");
         inner.admin_chain = vec!["test-scope-module".to_string(), "admin-tokens".to_string()];
         let mut table = std::collections::BTreeMap::new();
         table.insert(
             "viewers".to_string(),
-            crate::config::RoleBindingCfg {
+            busbar_core::config::RoleBindingCfg {
                 admin_scope: Some("read-only".to_string()),
                 ..Default::default()
             },
@@ -1548,10 +1547,10 @@ async fn test_admin_v1_credential_cache_and_flush_endpoint() {
 /// unknown modules and a stale If-Match reject.
 #[tokio::test]
 async fn test_admin_v1_put_auth_dry_run_guard() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let mut app = TestApp::new().governance(gov).build();
+    let mut app = crate::new_test_app().governance(gov).build();
     {
         let inner = Arc::get_mut(&mut app).expect("sole owner");
         // Chain starts as BOTH modules (so both credentials work); a role binding + an explicit
@@ -1560,7 +1559,7 @@ async fn test_admin_v1_put_auth_dry_run_guard() {
         let mut table = std::collections::BTreeMap::new();
         table.insert(
             "admins".to_string(),
-            crate::config::RoleBindingCfg {
+            busbar_core::config::RoleBindingCfg {
                 admin_scope: Some("full".to_string()),
                 ..Default::default()
             },
@@ -1700,10 +1699,10 @@ async fn test_admin_v1_put_auth_dry_run_guard() {
 /// restart opt-in only.
 #[tokio::test]
 async fn test_admin_v1_put_auth_refuses_empty_chain() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let app = TestApp::new().governance(gov).build();
+    let app = crate::new_test_app().governance(gov).build();
     let router = crate::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -1748,11 +1747,11 @@ async fn test_admin_v1_put_auth_refuses_empty_chain() {
 /// locked config; the guard makes it a `400`.
 #[tokio::test]
 async fn test_admin_v1_put_auth_refused_on_locked_config() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     // `.no_overlay()` = a LOCKED config (the only supported way to reach `overlay_path: None`).
-    let app = TestApp::new().governance(gov).no_overlay().build();
+    let app = crate::new_test_app().governance(gov).no_overlay().build();
     let router = crate::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -1791,13 +1790,13 @@ async fn test_admin_v1_put_auth_refused_on_locked_config() {
 /// on a locked config; the guard makes it a `400`.
 #[tokio::test]
 async fn test_admin_v1_config_apply_refused_on_locked_config() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let app = TestApp::new()
-        .lane(crate::test_support::LaneSpec::new(
+    let app = crate::new_test_app()
+        .lane(busbar_core::test_support::LaneSpec::new(
             "m0",
-            crate::proto::PROTO_ANTHROPIC,
+            busbar_core::proto::PROTO_ANTHROPIC,
             "http://127.0.0.1:1/",
         ))
         .pool("p", &[(0, 1)])
@@ -1849,10 +1848,10 @@ async fn test_admin_v1_config_apply_refused_on_locked_config() {
 /// If-Match is a 409 that changes nothing; a fresh If-Match succeeds.
 #[tokio::test]
 async fn test_admin_v1_key_idempotent_mint_and_if_match() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let app = TestApp::new().governance(gov).build();
+    let app = crate::new_test_app().governance(gov).build();
     let router = crate::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -1930,10 +1929,10 @@ async fn test_admin_v1_key_idempotent_mint_and_if_match() {
 /// subsequent valid retry under the SAME key mints normally (not a spurious 409/replay).
 #[tokio::test]
 async fn test_admin_v1_idempotency_reservation_frees_on_failure() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let app = TestApp::new().governance(gov).build();
+    let app = crate::new_test_app().governance(gov).build();
     let router = crate::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -1999,14 +1998,14 @@ async fn test_admin_v1_idempotency_reservation_frees_on_failure() {
 /// turns that into a bounded, legible failure instead of a hung suite. Nothing in a passing run ever
 /// waits on it.
 struct GatedKeyStore {
-    inner: Arc<dyn crate::governance::Store>,
+    inner: Arc<dyn busbar_core::governance::Store>,
     entered: tokio::sync::mpsc::Sender<()>,
     release: std::sync::Mutex<Option<std::sync::mpsc::Receiver<()>>>,
     landed: tokio::sync::mpsc::Sender<()>,
     fired: std::sync::atomic::AtomicBool,
 }
-impl crate::governance::Store for GatedKeyStore {
-    fn put_key(&self, key: &busbar_api::VirtualKey) -> crate::governance::StoreResult<()> {
+impl busbar_core::governance::Store for GatedKeyStore {
+    fn put_key(&self, key: &busbar_api::VirtualKey) -> busbar_core::governance::StoreResult<()> {
         if self.fired.swap(true, std::sync::atomic::Ordering::SeqCst) {
             return self.inner.put_key(key);
         }
@@ -2024,20 +2023,20 @@ impl crate::governance::Store for GatedKeyStore {
         let _ = self.landed.try_send(());
         out
     }
-    fn get_key(&self, id: &str) -> crate::governance::StoreResult<Option<busbar_api::VirtualKey>> {
+    fn get_key(&self, id: &str) -> busbar_core::governance::StoreResult<Option<busbar_api::VirtualKey>> {
         self.inner.get_key(id)
     }
-    fn list_keys(&self) -> crate::governance::StoreResult<Vec<busbar_api::VirtualKey>> {
+    fn list_keys(&self) -> busbar_core::governance::StoreResult<Vec<busbar_api::VirtualKey>> {
         self.inner.list_keys()
     }
-    fn delete_key(&self, id: &str) -> crate::governance::StoreResult<()> {
+    fn delete_key(&self, id: &str) -> busbar_core::governance::StoreResult<()> {
         self.inner.delete_key(id)
     }
     fn get_usage(
         &self,
         bucket_id: &str,
         window_start: u64,
-    ) -> crate::governance::StoreResult<busbar_api::UsageLedger> {
+    ) -> busbar_core::governance::StoreResult<busbar_api::UsageLedger> {
         self.inner.get_usage(bucket_id, window_start)
     }
     fn put_usage(
@@ -2045,19 +2044,19 @@ impl crate::governance::Store for GatedKeyStore {
         bucket_id: &str,
         window_start: u64,
         ledger: &busbar_api::UsageLedger,
-    ) -> crate::governance::StoreResult<()> {
+    ) -> busbar_core::governance::StoreResult<()> {
         self.inner.put_usage(bucket_id, window_start, ledger)
     }
     fn add_metering(
         &self,
-        delta: &crate::governance::MeteringDelta,
-    ) -> crate::governance::StoreResult<()> {
+        delta: &busbar_core::governance::MeteringDelta,
+    ) -> busbar_core::governance::StoreResult<()> {
         self.inner.add_metering(delta)
     }
     fn list_metering(
         &self,
         bucket: u64,
-    ) -> crate::governance::StoreResult<Vec<crate::governance::MeteringRow>> {
+    ) -> busbar_core::governance::StoreResult<Vec<busbar_core::governance::MeteringRow>> {
         self.inner.list_metering(bucket)
     }
 }
@@ -2067,33 +2066,33 @@ impl crate::governance::Store for GatedKeyStore {
 /// a rotate's, but not the mint's that precedes it) so a concurrent request can be landed
 /// deterministically inside the slowed call's window.
 struct SlowNthPutKeyStore {
-    inner: Arc<dyn crate::governance::Store>,
+    inner: Arc<dyn busbar_core::governance::Store>,
     delay: std::time::Duration,
     calls: std::sync::atomic::AtomicUsize,
     slow_on_call: usize,
 }
-impl crate::governance::Store for SlowNthPutKeyStore {
-    fn put_key(&self, key: &busbar_api::VirtualKey) -> crate::governance::StoreResult<()> {
+impl busbar_core::governance::Store for SlowNthPutKeyStore {
+    fn put_key(&self, key: &busbar_api::VirtualKey) -> busbar_core::governance::StoreResult<()> {
         let n = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         if n == self.slow_on_call {
             std::thread::sleep(self.delay);
         }
         self.inner.put_key(key)
     }
-    fn get_key(&self, id: &str) -> crate::governance::StoreResult<Option<busbar_api::VirtualKey>> {
+    fn get_key(&self, id: &str) -> busbar_core::governance::StoreResult<Option<busbar_api::VirtualKey>> {
         self.inner.get_key(id)
     }
-    fn list_keys(&self) -> crate::governance::StoreResult<Vec<busbar_api::VirtualKey>> {
+    fn list_keys(&self) -> busbar_core::governance::StoreResult<Vec<busbar_api::VirtualKey>> {
         self.inner.list_keys()
     }
-    fn delete_key(&self, id: &str) -> crate::governance::StoreResult<()> {
+    fn delete_key(&self, id: &str) -> busbar_core::governance::StoreResult<()> {
         self.inner.delete_key(id)
     }
     fn get_usage(
         &self,
         bucket_id: &str,
         window_start: u64,
-    ) -> crate::governance::StoreResult<busbar_api::UsageLedger> {
+    ) -> busbar_core::governance::StoreResult<busbar_api::UsageLedger> {
         self.inner.get_usage(bucket_id, window_start)
     }
     fn put_usage(
@@ -2101,19 +2100,19 @@ impl crate::governance::Store for SlowNthPutKeyStore {
         bucket_id: &str,
         window_start: u64,
         ledger: &busbar_api::UsageLedger,
-    ) -> crate::governance::StoreResult<()> {
+    ) -> busbar_core::governance::StoreResult<()> {
         self.inner.put_usage(bucket_id, window_start, ledger)
     }
     fn add_metering(
         &self,
-        delta: &crate::governance::MeteringDelta,
-    ) -> crate::governance::StoreResult<()> {
+        delta: &busbar_core::governance::MeteringDelta,
+    ) -> busbar_core::governance::StoreResult<()> {
         self.inner.add_metering(delta)
     }
     fn list_metering(
         &self,
         bucket: u64,
-    ) -> crate::governance::StoreResult<Vec<crate::governance::MeteringRow>> {
+    ) -> busbar_core::governance::StoreResult<Vec<busbar_core::governance::MeteringRow>> {
         self.inner.list_metering(bucket)
     }
 }
@@ -2134,12 +2133,12 @@ impl crate::governance::Store for SlowNthPutKeyStore {
 /// could not do: it had no way to tell a disconnect mid-mint from a disconnect after one.
 #[tokio::test]
 async fn an_idempotency_key_survives_a_client_disconnect_mid_mint() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let inner = Arc::new(MemoryStore::new());
     let (entered_tx, mut entered_rx) = tokio::sync::mpsc::channel::<()>(1);
     let (landed_tx, mut landed_rx) = tokio::sync::mpsc::channel::<()>(1);
     let (release_tx, release_rx) = std::sync::mpsc::sync_channel::<()>(1);
-    let gated_store: Arc<dyn crate::governance::Store> = Arc::new(GatedKeyStore {
+    let gated_store: Arc<dyn busbar_core::governance::Store> = Arc::new(GatedKeyStore {
         inner,
         entered: entered_tx,
         release: std::sync::Mutex::new(Some(release_rx)),
@@ -2147,7 +2146,7 @@ async fn an_idempotency_key_survives_a_client_disconnect_mid_mint() {
         fired: std::sync::atomic::AtomicBool::new(false),
     });
     let gov = gov_with_signer(gated_store, Some("admintok".to_string()));
-    let app = TestApp::new().governance(gov).build();
+    let app = crate::new_test_app().governance(gov).build();
     let router = crate::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -2288,10 +2287,10 @@ async fn an_idempotency_key_survives_a_client_disconnect_mid_mint() {
 /// stable total.
 #[tokio::test]
 async fn test_admin_v1_key_rotate_and_pagination() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let app = TestApp::new().governance(gov.clone()).build();
+    let app = crate::new_test_app().governance(gov.clone()).build();
     let router = crate::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -2421,7 +2420,7 @@ async fn test_admin_v1_key_rotate_and_pagination() {
 /// of them, breaking replay entirely.
 #[tokio::test]
 async fn test_admin_v1_rotate_idempotent_replay_survives_the_ttl_sweep() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let (addr, handle) = serve_with_gov(gov).await;
@@ -2477,19 +2476,19 @@ async fn test_admin_v1_rotate_idempotent_replay_survives_the_ttl_sweep() {
 /// back a bogus `200` whose body is the raw `null` sentinel instead of a real rotated key.
 #[tokio::test]
 async fn test_admin_v1_rotate_idempotency_in_flight_is_not_replayed_as_complete() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let inner = Arc::new(MemoryStore::new());
     // Slow the SECOND `put_key` call (the rotate's write) so a concurrent second request lands
     // while the first rotation is still in flight; the mint's own `put_key` (the first call) stays
     // fast so key creation itself isn't delayed.
-    let slow_store: Arc<dyn crate::governance::Store> = Arc::new(SlowNthPutKeyStore {
+    let slow_store: Arc<dyn busbar_core::governance::Store> = Arc::new(SlowNthPutKeyStore {
         inner,
         delay: std::time::Duration::from_millis(500),
         calls: std::sync::atomic::AtomicUsize::new(0),
         slow_on_call: 1,
     });
     let gov = gov_with_signer(slow_store, Some("admintok".to_string()));
-    let app = TestApp::new().governance(gov).build();
+    let app = crate::new_test_app().governance(gov).build();
     let router = crate::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -2557,10 +2556,10 @@ async fn test_admin_v1_rotate_idempotency_in_flight_is_not_replayed_as_complete(
 /// 409 for a grant change (immutability) and for a stale If-Match.
 #[tokio::test]
 async fn test_admin_v1_put_hook_replaces_live_with_guards() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let app = TestApp::new().governance(gov).build();
+    let app = crate::new_test_app().governance(gov).build();
     let router = crate::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -2671,10 +2670,10 @@ async fn test_admin_v1_put_hook_replaces_live_with_guards() {
 /// and a stale If-Match conflicts.
 #[tokio::test]
 async fn test_admin_v1_config_versions_rollback_and_diff() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let app = TestApp::new().governance(gov).build();
+    let app = crate::new_test_app().governance(gov).build();
     let router = crate::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -2773,10 +2772,10 @@ async fn test_admin_v1_config_versions_rollback_and_diff() {
 
 #[tokio::test]
 async fn test_admin_v1_register_hook_takes_effect_live() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let app = TestApp::new().governance(gov).build();
+    let app = crate::new_test_app().governance(gov).build();
     let router = crate::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -2945,10 +2944,10 @@ async fn test_admin_v1_register_hook_takes_effect_live() {
 /// other concurrent tests may add entries — assert the specific action appears, not an exact count.)
 #[tokio::test]
 async fn test_admin_v1_audit_records_mutations() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let app = TestApp::new().governance(gov).build();
+    let app = crate::new_test_app().governance(gov).build();
     let router = crate::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -3031,10 +3030,10 @@ async fn test_admin_v1_audit_records_mutations() {
 /// principal probe which hook names exist by response code alone, with no trail.
 #[tokio::test]
 async fn test_admin_v1_hook_mutation_404_is_audited() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let app = TestApp::new().governance(gov).build();
+    let app = crate::new_test_app().governance(gov).build();
     let router = crate::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -3104,8 +3103,8 @@ async fn test_admin_v1_hook_mutation_404_is_audited() {
 /// returns just that key; a non-matching prefix returns none; `?enabled=true` includes a fresh key.
 #[tokio::test]
 async fn test_admin_v1_list_keys_filters() {
-    use crate::governance::NewKeySpec;
-    crate::metrics::init();
+    use busbar_core::governance::NewKeySpec;
+    busbar_core::metrics::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let (minted, _secret) = gov
@@ -3120,7 +3119,7 @@ async fn test_admin_v1_list_keys_filters() {
             busbar_substrate::store::now(),
         )
         .unwrap();
-    let app = TestApp::new().governance(gov).build();
+    let app = crate::new_test_app().governance(gov).build();
     let router = crate::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -3170,8 +3169,8 @@ async fn test_admin_v1_list_keys_filters() {
 /// what an operator hunts). Composes with `?enabled=`.
 #[tokio::test]
 async fn test_admin_v1_list_keys_group_filter() {
-    use crate::governance::NewKeySpec;
-    crate::metrics::init();
+    use busbar_core::governance::NewKeySpec;
+    busbar_core::metrics::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let mint = |name: &str, group: Option<&str>| {
@@ -3260,7 +3259,7 @@ async fn test_admin_v1_list_keys_group_filter() {
 /// for the marquee feature (catches integration breaks the per-feature tests miss).
 #[tokio::test]
 async fn test_admin_v1_config_plane_golden_path() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("t".to_string()));
     let overlay = std::env::temp_dir().join(format!(
@@ -3269,7 +3268,7 @@ async fn test_admin_v1_config_plane_golden_path() {
         busbar_substrate::store::now()
     ));
     let _ = std::fs::remove_file(&overlay);
-    let app = TestApp::new()
+    let app = crate::new_test_app()
         .governance(gov)
         .overlay_path(overlay.clone())
         .build();
@@ -3329,7 +3328,7 @@ async fn test_admin_v1_config_plane_golden_path() {
         .any(|h| h["name"] == name));
     assert_eq!(get("/api/v1/admin/info".into()).await["config_version"], 1);
     assert_eq!(get("/api/v1/admin/config".into()).await["version"], 1);
-    assert!(crate::config::overlay::read(&overlay)
+    assert!(busbar_core::config::overlay::read(&overlay)
         .unwrap()
         .hooks
         .contains_key(name));
@@ -3360,7 +3359,7 @@ async fn test_admin_v1_config_plane_golden_path() {
         0
     );
     assert_eq!(get("/api/v1/admin/info".into()).await["config_version"], 2);
-    assert!(!crate::config::overlay::read(&overlay)
+    assert!(!busbar_core::config::overlay::read(&overlay)
         .unwrap()
         .hooks
         .contains_key(name));
@@ -3374,7 +3373,7 @@ async fn test_admin_v1_config_plane_golden_path() {
 /// the hook — so a runtime-registered hook survives a restart.
 #[tokio::test]
 async fn test_admin_v1_hook_register_persists_to_overlay() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let overlay = std::env::temp_dir().join(format!(
@@ -3383,7 +3382,7 @@ async fn test_admin_v1_hook_register_persists_to_overlay() {
         busbar_substrate::store::now()
     ));
     let _ = std::fs::remove_file(&overlay);
-    let app = TestApp::new()
+    let app = crate::new_test_app()
         .governance(gov)
         .overlay_path(overlay.clone())
         .build();
@@ -3411,16 +3410,16 @@ async fn test_admin_v1_hook_register_persists_to_overlay() {
     assert_eq!(created.status().as_u16(), 201);
 
     // The overlay file now holds the hook.
-    let doc = crate::config::overlay::read(&overlay).expect("overlay written");
+    let doc = busbar_core::config::overlay::read(&overlay).expect("overlay written");
     assert!(doc.hooks.contains_key("persisted_gate"));
     assert!(doc.global_hooks.iter().any(|g| g == "persisted_gate"));
 
     // "Restart": merge the overlay onto a fresh RESOLVED base config → the hook is restored.
-    let fresh_deploy: crate::config::DeployCfg =
+    let fresh_deploy: busbar_core::config::DeployCfg =
         serde_json::from_value(serde_json::json!({"providers": {}, "models": {}})).unwrap();
-    let mut fresh = crate::config::resolve(&fresh_deploy, &std::collections::HashMap::new())
+    let mut fresh = busbar_core::config::resolve(&fresh_deploy, &std::collections::HashMap::new())
         .expect("minimal config resolves");
-    crate::config::overlay::merge_into(&mut fresh, doc);
+    busbar_core::config::overlay::merge_into(&mut fresh, doc);
     assert!(
         fresh.hooks.contains_key("persisted_gate"),
         "the runtime-registered hook survives a restart via the overlay"
@@ -3437,7 +3436,7 @@ async fn test_admin_v1_hook_register_persists_to_overlay() {
 /// the next unrelated group mutation then persisted the truncated registry over the file.
 #[tokio::test]
 async fn test_admin_v1_config_apply_preserves_the_persisted_overlay() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let overlay = std::env::temp_dir().join(format!(
@@ -3446,7 +3445,7 @@ async fn test_admin_v1_config_apply_preserves_the_persisted_overlay() {
         busbar_substrate::store::now()
     ));
     let _ = std::fs::remove_file(&overlay);
-    let app = TestApp::new()
+    let app = crate::new_test_app()
         .governance(gov)
         .overlay_path(overlay.clone())
         .build();
@@ -3507,7 +3506,7 @@ async fn test_admin_v1_config_apply_preserves_the_persisted_overlay() {
 
     // ON DISK: a later, unrelated mutation must not clobber it out of the overlay.
     assert_eq!(create_group("second_team").await, 201);
-    let doc = crate::config::overlay::read(&overlay).expect("overlay still readable");
+    let doc = busbar_core::config::overlay::read(&overlay).expect("overlay still readable");
     assert!(
         doc.groups.contains_key("api_team"),
         "the next group write must not erase the earlier one from the overlay"
@@ -3525,10 +3524,10 @@ async fn test_admin_v1_config_apply_preserves_the_persisted_overlay() {
 /// `key.create` / `applied` with the new key's id.
 #[tokio::test]
 async fn test_admin_v1_audit_records_key_mutations() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let app = TestApp::new().governance(gov).build();
+    let app = crate::new_test_app().governance(gov).build();
     let router = crate::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -3576,14 +3575,14 @@ async fn test_admin_v1_audit_records_key_mutations() {
 /// matching the guard other verbs enforce.
 #[tokio::test]
 async fn test_admin_v1_base_hook_is_read_only_via_api() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let base: crate::config::HookCfg = serde_json::from_value(serde_json::json!({
+    let base: busbar_core::config::HookCfg = serde_json::from_value(serde_json::json!({
         "kind": "gate", "module": "test-hook", "prompt": "no", "global": true
     }))
     .unwrap();
-    let app = TestApp::new()
+    let app = crate::new_test_app()
         .governance(gov)
         .base_hook("pii-guard", base)
         .build();
@@ -3650,14 +3649,14 @@ async fn test_admin_v1_base_hook_is_read_only_via_api() {
 /// both before and after this fix.
 #[tokio::test]
 async fn base_hook_delete_conflict_outranks_a_stale_if_match() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let base: crate::config::HookCfg = serde_json::from_value(serde_json::json!({
+    let base: busbar_core::config::HookCfg = serde_json::from_value(serde_json::json!({
         "kind": "gate", "module": "test-hook", "prompt": "no", "global": true
     }))
     .unwrap();
-    let app = TestApp::new()
+    let app = crate::new_test_app()
         .governance(gov)
         .base_hook("pii-guard", base)
         .build();
@@ -3686,10 +3685,10 @@ async fn base_hook_delete_conflict_outranks_a_stale_if_match() {
 /// GET /hooks/{name} 404. Deleting an unregistered hook is 404.
 #[tokio::test]
 async fn test_admin_v1_delete_hook_takes_effect_live() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let app = TestApp::new().governance(gov).build();
+    let app = crate::new_test_app().governance(gov).build();
     let router = crate::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -3752,17 +3751,17 @@ async fn test_admin_v1_delete_hook_takes_effect_live() {
 /// secret. Built on a fixture with one global gate.
 #[tokio::test]
 async fn test_admin_v1_hooks_read_surface() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
 
-    let gate = crate::config::HookCfg {
-        kind: crate::config::HookKind::Gate,
+    let gate = busbar_core::config::HookCfg {
+        kind: busbar_core::config::HookKind::Gate,
         plugin: "test-hook".to_string(),
         timeout_ms: 25,
         on_error: "reject".to_string(),
-        prompt: crate::config::PromptAccess::Rw,
-        user: crate::config::UserAccess::Ro,
+        prompt: busbar_core::config::PromptAccess::Rw,
+        user: busbar_core::config::UserAccess::Ro,
         priority: 7,
         settings: serde_json::Map::new(),
         at: None,
@@ -3773,7 +3772,7 @@ async fn test_admin_v1_hooks_read_surface() {
         groups: Vec::new(),
         phase: Vec::new(),
     };
-    let app = TestApp::new()
+    let app = crate::new_test_app()
         .governance(gov)
         .hook("compress", gate)
         .global_hook("compress")
@@ -3838,16 +3837,16 @@ async fn test_admin_v1_hooks_read_surface() {
 /// nonexistent path reports `reachable: false`. Never fires the hook.
 #[tokio::test]
 async fn test_admin_v1_hook_health_best_effort() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let mk = |plugin: &str| crate::config::HookCfg {
-        kind: crate::config::HookKind::Gate,
+    let mk = |plugin: &str| busbar_core::config::HookCfg {
+        kind: busbar_core::config::HookKind::Gate,
         plugin: plugin.to_string(),
         timeout_ms: 5,
         on_error: "weighted".to_string(),
-        prompt: crate::config::PromptAccess::No,
-        user: crate::config::UserAccess::No,
+        prompt: busbar_core::config::PromptAccess::No,
+        user: busbar_core::config::UserAccess::No,
         priority: 0,
         settings: serde_json::Map::new(),
         at: None,
@@ -3858,7 +3857,7 @@ async fn test_admin_v1_hook_health_best_effort() {
         groups: Vec::new(),
         phase: Vec::new(),
     };
-    let app = TestApp::new()
+    let app = crate::new_test_app()
         .governance(gov)
         .hook("web", mk("web-hook-plugin"))
         .hook("sock", mk("sock-hook-plugin"))
@@ -3917,16 +3916,16 @@ async fn test_admin_v1_hook_health_best_effort() {
 /// unknown/absent type with the stable `invalid_request` code.
 #[tokio::test]
 async fn test_admin_v1_plugins_catalog_by_type() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let gate = crate::config::HookCfg {
-        kind: crate::config::HookKind::Gate,
+    let gate = busbar_core::config::HookCfg {
+        kind: busbar_core::config::HookKind::Gate,
         plugin: "test-hook".to_string(),
         timeout_ms: 5,
         on_error: "weighted".to_string(),
-        prompt: crate::config::PromptAccess::No,
-        user: crate::config::UserAccess::No,
+        prompt: busbar_core::config::PromptAccess::No,
+        user: busbar_core::config::UserAccess::No,
         priority: 0,
         settings: serde_json::Map::new(),
         at: None,
@@ -3937,7 +3936,7 @@ async fn test_admin_v1_plugins_catalog_by_type() {
         groups: Vec::new(),
         phase: Vec::new(),
     };
-    let app = TestApp::new().governance(gov).hook("myhook", gate).build();
+    let app = crate::new_test_app().governance(gov).hook("myhook", gate).build();
     let router = crate::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -4010,10 +4009,10 @@ async fn test_admin_v1_plugins_catalog_by_type() {
 /// governance-only fixture (no explicit auth chain) is the open front door.
 #[tokio::test]
 async fn test_admin_v1_auth_read() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let app = TestApp::new().governance(gov).build();
+    let app = crate::new_test_app().governance(gov).build();
     let router = crate::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -4043,10 +4042,10 @@ async fn test_admin_v1_auth_read() {
 /// absent from the defs) returns 200 with `ok:false` and the resolution errors — never mutating.
 #[tokio::test]
 async fn test_admin_v1_config_validate_dry_run() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let app = TestApp::new().governance(gov).build();
+    let app = crate::new_test_app().governance(gov).build();
     let router = crate::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -4142,17 +4141,17 @@ async fn test_admin_v1_config_validate_dry_run() {
 /// field (client tokens, provider keys) appears anywhere in the serialized body.
 #[tokio::test]
 async fn test_admin_v1_config_effective_snapshot_no_secrets() {
-    use crate::test_support::LaneSpec;
-    crate::metrics::init();
+    use busbar_core::test_support::LaneSpec;
+    busbar_core::metrics::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let gate = crate::config::HookCfg {
-        kind: crate::config::HookKind::Gate,
+    let gate = busbar_core::config::HookCfg {
+        kind: busbar_core::config::HookKind::Gate,
         plugin: "test-hook".to_string(),
         timeout_ms: 5,
         on_error: "weighted".to_string(),
-        prompt: crate::config::PromptAccess::No,
-        user: crate::config::UserAccess::No,
+        prompt: busbar_core::config::PromptAccess::No,
+        user: busbar_core::config::UserAccess::No,
         priority: 0,
         settings: serde_json::Map::new(),
         at: None,
@@ -4163,10 +4162,10 @@ async fn test_admin_v1_config_effective_snapshot_no_secrets() {
         groups: Vec::new(),
         phase: Vec::new(),
     };
-    let app = TestApp::new()
+    let app = crate::new_test_app()
         .governance(gov)
         .lane(
-            LaneSpec::new("m", crate::proto::PROTO_ANTHROPIC, "http://127.0.0.1:1/")
+            LaneSpec::new("m", busbar_core::proto::PROTO_ANTHROPIC, "http://127.0.0.1:1/")
                 .provider("prov"),
         )
         .pool("p", &[(0, 1)])
@@ -4232,10 +4231,10 @@ async fn test_admin_v1_config_effective_snapshot_no_secrets() {
 /// endpoint in the discovery contract). Also asserts the stable error `code` enum is present.
 #[tokio::test]
 async fn test_admin_v1_openapi_paths_all_resolve() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let app = TestApp::new().governance(gov).build();
+    let app = crate::new_test_app().governance(gov).build();
     let router = crate::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -4273,8 +4272,8 @@ async fn test_admin_v1_openapi_paths_all_resolve() {
     // DRIFT GUARD: every documented GET path is both listed in the doc AND actually mounted.
     // V1_GET_PATHS entries are RELATIVE; the wire path derives from the contract prefix (whose
     // literal value is pinned by its own golden test in contract.rs).
-    for (rel, _) in crate::admin::v1::json::V1_GET_PATHS {
-        let path = format!("{}{rel}", crate::admin::v1::contract::ADMIN_PREFIX);
+    for (rel, _) in crate::v1::json::V1_GET_PATHS {
+        let path = format!("{}{rel}", busbar_core::admin::v1::contract::ADMIN_PREFIX);
         assert!(
             doc["paths"][&path]["get"].is_object(),
             "documented path {path} missing from openapi doc"
@@ -4303,10 +4302,10 @@ async fn test_admin_v1_openapi_paths_all_resolve() {
 /// first GET); the gzip client costs zero inflation, the identity client a per-request inflate.
 #[tokio::test]
 async fn test_admin_v1_openapi_gzip_negotiation() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let app = TestApp::new().governance(gov).build();
+    let app = crate::new_test_app().governance(gov).build();
     let router = crate::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -4383,18 +4382,18 @@ async fn test_admin_v1_openapi_gzip_negotiation() {
 /// automatically covered.
 #[tokio::test]
 async fn test_admin_v1_all_reads_require_admin_token() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let app = TestApp::new().governance(gov).build();
+    let app = crate::new_test_app().governance(gov).build();
     let router = crate::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
     let client = reqwest::Client::new();
 
-    for (rel, _) in crate::admin::v1::json::V1_GET_PATHS {
-        let path = format!("{}{rel}", crate::admin::v1::contract::ADMIN_PREFIX);
+    for (rel, _) in crate::v1::json::V1_GET_PATHS {
+        let path = format!("{}{rel}", busbar_core::admin::v1::contract::ADMIN_PREFIX);
         // No token → 401, in the FROZEN v1 envelope (code `unauthorized`) — the most frequent
         // error a tooling consumer hits must branch on the same code seam as every other
         // (previously a protocol-shaped body).
@@ -4434,7 +4433,7 @@ async fn test_admin_v1_all_reads_require_admin_token() {
 async fn test_create_key_with_aws_credential_returns_secret_once_and_hides_on_reads() {
     // Minting with `issue_aws_credential: true` returns the AccessKeyId AND the secret access key
     // ONCE at creation; neither the AWS secret nor the generation_hash is ever returned by a later read.
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let (addr, handle) = serve_with_gov(gov).await;
@@ -4510,7 +4509,7 @@ async fn test_create_list_usage_roundtrip_through_spawn_blocking() {
     // Exercises the create_key / list_keys / key_usage handlers end-to-end after they were moved
     // onto spawn_blocking: a slow store call must not block a Tokio worker, and the offloaded
     // handlers must still return the same responses (no secret/hash leak; usage resolves).
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let (addr, handle) = serve_with_gov(gov).await;
@@ -4579,7 +4578,7 @@ async fn test_create_key_rejects_removed_budget_period_field() {
     // struct is `#[serde(deny_unknown_fields)]`, so a body carrying the removed field is a loud 400
     // (invalid_request), never silently accepted. The premise of the old test (a typo'd period
     // degrading to `total`) no longer exists: there is no period on a key at all.
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let (addr, handle) = serve_with_gov(gov).await;
@@ -4633,7 +4632,7 @@ async fn test_create_key_rejects_removed_budget_period_field() {
 /// the whole /metrics exposition can't be broken by one key. A well-formed label set still mints.
 #[tokio::test]
 async fn test_create_key_rejects_unsafe_labels() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let (addr, handle) = serve_with_gov(gov).await;
@@ -4733,7 +4732,7 @@ async fn test_create_key_rejects_unsafe_labels() {
 /// length itself or admit names arbitrarily longer than the documented cap.
 #[tokio::test]
 async fn test_create_key_name_length_boundary_is_exact() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let (addr, handle) = serve_with_gov(gov).await;
@@ -4788,7 +4787,7 @@ async fn test_create_key_name_length_boundary_is_exact() {
 /// so axum's stock `Json<T>` rejection — which echoes the raw serde `Display` — must NOT be used.
 #[tokio::test]
 async fn test_admin_malformed_body_returns_generic_400_no_input_fragment() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let (addr, handle) = serve_with_gov(gov).await;
@@ -4806,7 +4805,7 @@ async fn test_admin_malformed_body_returns_generic_400_no_input_fragment() {
         };
         let resp = req
             .header("x-admin-token", "admintok")
-            .header("content-type", crate::proxy::APPLICATION_JSON)
+            .header("content-type", busbar_core::proxy::APPLICATION_JSON)
             .body(malformed.clone())
             .send()
             .await
@@ -4850,7 +4849,7 @@ async fn test_create_key_rejects_removed_max_budget_cents_field() {
     // the mint struct is `#[serde(deny_unknown_fields)]`. The old test's premise (a negative cap
     // slipping past serde into a silent over-budget DoS) is gone: the field no longer exists on the
     // key surface, so ANY body carrying it - negative, zero, or positive - is a loud 400.
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let (addr, handle) = serve_with_gov(gov).await;
@@ -4899,7 +4898,7 @@ async fn test_create_key_rejects_removed_max_budget_cents_field() {
 async fn test_patch_key_enables_disables_and_validates_at_create_parity() {
     // PATCH /admin/keys/:id can disable a key (without DELETE destroying its history) and
     // adjust caps; it is admin-gated and rejects the same invalid values create() does.
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let (addr, handle) = serve_with_gov(gov).await;
@@ -4976,7 +4975,7 @@ async fn test_create_key_rejects_removed_rate_limit_fields() {
     // enforcement flows through the bound group), and the mint struct is
     // `#[serde(deny_unknown_fields)]`. The old test's premise (a `0` limit slipping past serde into
     // a permanently-dead key) is gone: ANY body naming these fields is a loud 400.
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let (addr, handle) = serve_with_gov(gov).await;
@@ -5034,19 +5033,19 @@ async fn test_patch_key_three_state_group_and_enabled() {
     // existence validation). The removed 1.4.x cap fields (rpm_limit/tpm_limit/max_budget_cents)
     // are UNKNOWN fields now and must 400 - PATCH cannot be a back door to a limit surface that
     // no longer exists (limits live on groups).
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     // The rebind target must EXIST: give the App a cost model carrying group "eng".
     let groups = std::collections::BTreeMap::from([(
         "eng".to_string(),
-        crate::config::GroupCfg {
+        busbar_core::config::GroupCfg {
             parent: None,
             enabled: true,
-            limits: vec![crate::config::groups::LimitCfg {
-                metric: crate::config::groups::LimitMetric::Requests,
+            limits: vec![busbar_core::config::groups::LimitCfg {
+                metric: busbar_core::config::groups::LimitMetric::Requests,
                 amount: 100,
-                per: Some(crate::config::groups::LimitWindow::Minute),
+                per: Some(busbar_core::config::groups::LimitWindow::Minute),
                 scope: None,
                 on_exhaust: None,
                 downgrade_to: None,
@@ -5058,7 +5057,7 @@ async fn test_patch_key_three_state_group_and_enabled() {
     // rebind existence check now reads `groups_registry` — the authoritative registry the group
     // DELETE guard also uses — so cost and registry must AGREE, exactly as every real config apply
     // keeps them (`groups_tree` does this; a bare `.cost(...)` left the registry empty).
-    let app = crate::test_support::TestApp::new()
+    let app = crate::new_test_app()
         .governance(gov)
         .groups_tree(groups)
         .build();
@@ -5182,14 +5181,14 @@ fn test_create_key_unconfigured_allowed_pool_is_nonfatal_and_quiet() {
     // different thread, out of the subscriber's reach).
     use tracing_subscriber::layer::SubscriberExt as _;
 
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     // App has exactly one configured pool, "smart" (lane 0). "smrt" is the typo'd sibling.
-    let app = TestApp::new()
-        .lane(crate::test_support::LaneSpec::new(
+    let app = crate::new_test_app()
+        .lane(busbar_core::test_support::LaneSpec::new(
             "m",
-            crate::proto::PROTO_ANTHROPIC,
+            busbar_core::proto::PROTO_ANTHROPIC,
             "http://127.0.0.1:0",
         ))
         .pool("smart", &[(0, 1)])
@@ -5213,10 +5212,10 @@ fn test_create_key_unconfigured_allowed_pool_is_nonfatal_and_quiet() {
                 })
                 .to_string(),
             );
-            let handle = std::sync::Arc::new(crate::state::AppHandle::new(app.clone()));
+            let handle = std::sync::Arc::new(busbar_core::state::AppHandle::new(app.clone()));
             let r1 = super::create_key(
                 axum::extract::State(handle.clone()),
-                axum::Extension(crate::auth::AuthPrincipal(None)),
+                axum::Extension(busbar_core::auth::AuthPrincipal(None)),
                 axum::http::HeaderMap::new(),
                 body1,
             )
@@ -5233,7 +5232,7 @@ fn test_create_key_unconfigured_allowed_pool_is_nonfatal_and_quiet() {
             );
             let r2 = super::create_key(
                 axum::extract::State(handle),
-                axum::Extension(crate::auth::AuthPrincipal(None)),
+                axum::Extension(busbar_core::auth::AuthPrincipal(None)),
                 axum::http::HeaderMap::new(),
                 body2,
             )
@@ -5276,10 +5275,10 @@ fn test_create_key_unconfigured_allowed_pool_is_nonfatal_and_quiet() {
 /// role's allowed-mode set, so the ceiling — not some other guard — is what admits or refuses.
 #[tokio::test]
 async fn proof_role_binding_mode_ceiling_bounds_a_delegated_admin() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
 
     // A delegated app-admin identity holding the role the ceiling keys off.
-    let principal = crate::auth::Principal {
+    let principal = busbar_core::auth::Principal {
         id: "delegated-admin".to_string(),
         name: None,
         roles: vec!["app-admin".to_string()],
@@ -5289,7 +5288,7 @@ async fn proof_role_binding_mode_ceiling_bounds_a_delegated_admin() {
     // Mint ONE keyless key under a policy whose `app-admin` ceiling permits exactly `allowed_modes`;
     // return (HTTP status, count of live key rows in the store after the attempt).
     async fn mint_under(
-        principal: &crate::auth::Principal,
+        principal: &busbar_core::auth::Principal,
         allowed_modes: Vec<String>,
     ) -> (u16, usize) {
         let store = Arc::new(MemoryStore::new());
@@ -5297,27 +5296,27 @@ async fn proof_role_binding_mode_ceiling_bounds_a_delegated_admin() {
         let mut ceilings = std::collections::BTreeMap::new();
         ceilings.insert(
             "app-admin".to_string(),
-            crate::governance::mint_policy::RoleCeiling {
+            busbar_core::governance::mint_policy::RoleCeiling {
                 max_ttl_secs: None,
                 allowed_pools: None,
                 binding_modes: Some(allowed_modes),
             },
         );
-        let policy = crate::governance::mint_policy::MintPolicy {
+        let policy = busbar_core::governance::mint_policy::MintPolicy {
             self_mint: None,
             block_max_ttl_secs: None,
             block_binding_modes: None,
             ceilings,
         };
-        let app = TestApp::new()
+        let app = crate::new_test_app()
             .governance(gov.clone())
             .mint_policy(policy)
             .build();
-        let handle = Arc::new(crate::state::AppHandle::new(app));
+        let handle = Arc::new(busbar_core::state::AppHandle::new(app));
         let body = axum::body::Bytes::from(serde_json::json!({ "name": "svc" }).to_string());
         let resp = super::create_key(
             axum::extract::State(handle),
-            axum::Extension(crate::auth::AuthPrincipal(Some(principal.clone()))),
+            axum::Extension(busbar_core::auth::AuthPrincipal(Some(principal.clone()))),
             axum::http::HeaderMap::new(),
             body,
         )
@@ -5358,27 +5357,27 @@ async fn proof_role_binding_mode_ceiling_bounds_a_delegated_admin() {
 /// — not the default path — is what produced it: without the ceiling the default mint outlives the cap.
 #[tokio::test]
 async fn proof_max_ttl_ceiling_refuses_overask_and_clamps_default() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     const CEIL: u64 = 24 * 3600; // auth.policy.max_ttl = "24h"
 
     // Mint through the real handler under a 24h block ceiling; return (status, gov, expires_at).
     async fn mint(body: serde_json::Value) -> (u16, Arc<GovState>, Option<u64>) {
         let store = Arc::new(MemoryStore::new());
         let gov = gov_with_signer(store, Some("admintok".to_string()));
-        let policy = crate::governance::mint_policy::MintPolicy {
+        let policy = busbar_core::governance::mint_policy::MintPolicy {
             self_mint: None,
             block_max_ttl_secs: Some(CEIL),
             block_binding_modes: None,
             ceilings: Default::default(),
         };
-        let app = TestApp::new()
+        let app = crate::new_test_app()
             .governance(gov.clone())
             .mint_policy(policy)
             .build();
-        let handle = Arc::new(crate::state::AppHandle::new(app));
+        let handle = Arc::new(busbar_core::state::AppHandle::new(app));
         let resp = super::create_key(
             axum::extract::State(handle),
-            axum::Extension(crate::auth::AuthPrincipal(None)),
+            axum::Extension(busbar_core::auth::AuthPrincipal(None)),
             axum::http::HeaderMap::new(),
             axum::body::Bytes::from(body.to_string()),
         )
@@ -5426,7 +5425,7 @@ async fn proof_max_ttl_ceiling_refuses_overask_and_clamps_default() {
     );
     // Strictly below the 90-day default: the clamp produced this exp, not the default TTL path.
     assert!(
-        exp < t0 + crate::governance::mint_policy::DEFAULT_KEY_TTL_SECS,
+        exp < t0 + busbar_core::governance::mint_policy::DEFAULT_KEY_TTL_SECS,
         "the clamped exp is strictly below the unclamped 90-day default"
     );
 }
@@ -5439,11 +5438,11 @@ async fn proof_max_ttl_ceiling_refuses_overask_and_clamps_default() {
 /// handler under the SAME role ceiling, so the ceiling — not another guard — admits or refuses.
 #[tokio::test]
 async fn proof_role_mint_ceiling_bounds_a_delegated_admin() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     const ROLE_TTL: u64 = 3600; // the app-admin role may mint at most 1h
 
     // A delegated app-admin identity holding the role the ceiling keys off.
-    let principal = crate::auth::Principal {
+    let principal = busbar_core::auth::Principal {
         id: "delegated-admin".to_string(),
         name: None,
         roles: vec!["app-admin".to_string()],
@@ -5453,7 +5452,7 @@ async fn proof_role_mint_ceiling_bounds_a_delegated_admin() {
     // Mint through the real handler under an `app-admin` ceiling of {pools: [pool-ok], max_ttl: 1h};
     // return (HTTP status, count of live key rows after the attempt).
     async fn mint_under(
-        principal: &crate::auth::Principal,
+        principal: &busbar_core::auth::Principal,
         body: serde_json::Value,
     ) -> (u16, usize) {
         let store = Arc::new(MemoryStore::new());
@@ -5461,26 +5460,26 @@ async fn proof_role_mint_ceiling_bounds_a_delegated_admin() {
         let mut ceilings = std::collections::BTreeMap::new();
         ceilings.insert(
             "app-admin".to_string(),
-            crate::governance::mint_policy::RoleCeiling {
+            busbar_core::governance::mint_policy::RoleCeiling {
                 max_ttl_secs: Some(ROLE_TTL),
                 allowed_pools: Some(vec!["pool-ok".to_string()]),
                 binding_modes: None,
             },
         );
-        let policy = crate::governance::mint_policy::MintPolicy {
+        let policy = busbar_core::governance::mint_policy::MintPolicy {
             self_mint: None,
             block_max_ttl_secs: None,
             block_binding_modes: None,
             ceilings,
         };
-        let app = TestApp::new()
+        let app = crate::new_test_app()
             .governance(gov.clone())
             .mint_policy(policy)
             .build();
-        let handle = Arc::new(crate::state::AppHandle::new(app));
+        let handle = Arc::new(busbar_core::state::AppHandle::new(app));
         let resp = super::create_key(
             axum::extract::State(handle),
-            axum::Extension(crate::auth::AuthPrincipal(Some(principal.clone()))),
+            axum::Extension(busbar_core::auth::AuthPrincipal(Some(principal.clone()))),
             axum::http::HeaderMap::new(),
             axum::body::Bytes::from(body.to_string()),
         )
@@ -5539,7 +5538,7 @@ async fn proof_role_mint_ceiling_bounds_a_delegated_admin() {
 
 #[tokio::test]
 async fn test_delete_existing_key_returns_200() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let (key, _secret) = gov
@@ -5573,7 +5572,7 @@ async fn test_delete_existing_key_returns_200() {
 
 #[tokio::test]
 async fn test_delete_missing_key_returns_404() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
 
@@ -5620,28 +5619,28 @@ impl CountingStore {
             .store(0, std::sync::atomic::Ordering::SeqCst);
     }
 }
-impl crate::governance::Store for CountingStore {
-    fn put_key(&self, key: &busbar_api::VirtualKey) -> crate::governance::StoreResult<()> {
+impl busbar_core::governance::Store for CountingStore {
+    fn put_key(&self, key: &busbar_api::VirtualKey) -> busbar_core::governance::StoreResult<()> {
         self.inner.put_key(key)
     }
-    fn get_key(&self, id: &str) -> crate::governance::StoreResult<Option<busbar_api::VirtualKey>> {
+    fn get_key(&self, id: &str) -> busbar_core::governance::StoreResult<Option<busbar_api::VirtualKey>> {
         self.get_key_calls
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         self.inner.get_key(id)
     }
-    fn list_keys(&self) -> crate::governance::StoreResult<Vec<busbar_api::VirtualKey>> {
+    fn list_keys(&self) -> busbar_core::governance::StoreResult<Vec<busbar_api::VirtualKey>> {
         self.list_keys_calls
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         self.inner.list_keys()
     }
-    fn delete_key(&self, id: &str) -> crate::governance::StoreResult<()> {
+    fn delete_key(&self, id: &str) -> busbar_core::governance::StoreResult<()> {
         self.inner.delete_key(id)
     }
     fn get_usage(
         &self,
         bucket_id: &str,
         window_start: u64,
-    ) -> crate::governance::StoreResult<busbar_api::UsageLedger> {
+    ) -> busbar_core::governance::StoreResult<busbar_api::UsageLedger> {
         self.inner.get_usage(bucket_id, window_start)
     }
     fn put_usage(
@@ -5649,25 +5648,25 @@ impl crate::governance::Store for CountingStore {
         bucket_id: &str,
         window_start: u64,
         ledger: &busbar_api::UsageLedger,
-    ) -> crate::governance::StoreResult<()> {
+    ) -> busbar_core::governance::StoreResult<()> {
         self.inner.put_usage(bucket_id, window_start, ledger)
     }
     fn add_metering(
         &self,
-        delta: &crate::governance::MeteringDelta,
-    ) -> crate::governance::StoreResult<()> {
+        delta: &busbar_core::governance::MeteringDelta,
+    ) -> busbar_core::governance::StoreResult<()> {
         self.inner.add_metering(delta)
     }
     fn list_metering(
         &self,
         bucket: u64,
-    ) -> crate::governance::StoreResult<Vec<crate::governance::MeteringRow>> {
+    ) -> busbar_core::governance::StoreResult<Vec<busbar_core::governance::MeteringRow>> {
         self.inner.list_metering(bucket)
     }
-    fn add_denylist(&self, sub: &str, reason: &str) -> crate::governance::StoreResult<()> {
+    fn add_denylist(&self, sub: &str, reason: &str) -> busbar_core::governance::StoreResult<()> {
         self.inner.add_denylist(sub, reason)
     }
-    fn list_denylist(&self) -> crate::governance::StoreResult<Vec<String>> {
+    fn list_denylist(&self) -> busbar_core::governance::StoreResult<Vec<String>> {
         self.inner.list_denylist()
     }
 }
@@ -5679,7 +5678,7 @@ impl crate::governance::Store for CountingStore {
 /// id by hand.
 #[tokio::test]
 async fn test_single_key_reads_use_get_key_not_list_keys() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let store = Arc::new(CountingStore::new());
     let gov = gov_with_signer(store.clone(), Some("admintok".to_string()));
     let (key_a, _) = gov
@@ -5805,7 +5804,7 @@ async fn test_single_key_reads_use_get_key_not_list_keys() {
 /// the one unavoidable refresh-driven `list_keys` call remains.
 #[tokio::test]
 async fn test_single_key_writes_use_get_key_for_their_existence_check() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let store = Arc::new(CountingStore::new());
     let gov = gov_with_signer(store.clone(), Some("admintok".to_string()));
     let (key_a, _) = gov
@@ -5890,7 +5889,7 @@ async fn test_single_key_writes_use_get_key_for_their_existence_check() {
 async fn test_delete_key_is_not_idempotent_204() {
     // After a successful delete, a second delete of the same id must 404 (proves the 204 was a
     // real revocation, not a no-op masquerading as success).
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let (key, _secret) = gov
@@ -5931,7 +5930,7 @@ async fn test_concurrent_delete_returns_exactly_one_204() {
     // both observe the key and both return 204 (which would imply two revocations of one row in
     // an audit trail). The delete handler serializes its lookup→delete critical section, so the
     // winner returns 204 and every loser returns 404. Fire a burst and assert exactly one 204.
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let (key, _secret) = gov
@@ -5992,7 +5991,7 @@ async fn test_patch_after_delete_404s_and_does_not_recreate_key() {
     // so re-INSERTs a missing row). Serializing `update_key`'s lookup→put behind the same gate as
     // DELETE closes the window. This sequential case (DELETE fully precedes PATCH) proves the base
     // contract: PATCH on a deleted key 404s and leaves it deleted (a later GET/usage stays 404).
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let (key, _secret) = gov
@@ -6080,8 +6079,8 @@ struct BarrierStore {
     release: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
 }
 
-impl crate::governance::Store for BarrierStore {
-    fn put_key(&self, key: &crate::governance::VirtualKey) -> crate::governance::StoreResult<()> {
+impl busbar_core::governance::Store for BarrierStore {
+    fn put_key(&self, key: &busbar_core::governance::VirtualKey) -> busbar_core::governance::StoreResult<()> {
         // Disarm atomically so only the first put after arming pauses (and never the setup put).
         if self.armed.swap(false, std::sync::atomic::Ordering::SeqCst) {
             let _ = self.entered.send(());
@@ -6093,20 +6092,20 @@ impl crate::governance::Store for BarrierStore {
     fn get_key(
         &self,
         id: &str,
-    ) -> crate::governance::StoreResult<Option<crate::governance::VirtualKey>> {
+    ) -> busbar_core::governance::StoreResult<Option<busbar_core::governance::VirtualKey>> {
         self.inner.get_key(id)
     }
-    fn list_keys(&self) -> crate::governance::StoreResult<Vec<crate::governance::VirtualKey>> {
+    fn list_keys(&self) -> busbar_core::governance::StoreResult<Vec<busbar_core::governance::VirtualKey>> {
         self.inner.list_keys()
     }
-    fn delete_key(&self, id: &str) -> crate::governance::StoreResult<()> {
+    fn delete_key(&self, id: &str) -> busbar_core::governance::StoreResult<()> {
         self.inner.delete_key(id)
     }
     fn get_usage(
         &self,
         bucket_id: &str,
         window_start: u64,
-    ) -> crate::governance::StoreResult<busbar_api::UsageLedger> {
+    ) -> busbar_core::governance::StoreResult<busbar_api::UsageLedger> {
         self.inner.get_usage(bucket_id, window_start)
     }
     fn put_usage(
@@ -6114,28 +6113,28 @@ impl crate::governance::Store for BarrierStore {
         bucket_id: &str,
         window_start: u64,
         ledger: &busbar_api::UsageLedger,
-    ) -> crate::governance::StoreResult<()> {
+    ) -> busbar_core::governance::StoreResult<()> {
         self.inner.put_usage(bucket_id, window_start, ledger)
     }
     fn add_metering(
         &self,
-        delta: &crate::governance::MeteringDelta,
-    ) -> crate::governance::StoreResult<()> {
+        delta: &busbar_core::governance::MeteringDelta,
+    ) -> busbar_core::governance::StoreResult<()> {
         self.inner.add_metering(delta)
     }
     fn list_metering(
         &self,
         bucket: u64,
-    ) -> crate::governance::StoreResult<Vec<crate::governance::MeteringRow>> {
+    ) -> busbar_core::governance::StoreResult<Vec<busbar_core::governance::MeteringRow>> {
         self.inner.list_metering(bucket)
     }
     // Forward the denylist (1.5.0): DELETE revokes-then-deletes, so a store double that did not
     // forward add_denylist would make revoke error and abort the delete (the default trait no-op
     // errors) - breaking the resurrection-race tests. Forward to the inner MemoryStore.
-    fn add_denylist(&self, sub: &str, reason: &str) -> crate::governance::StoreResult<()> {
+    fn add_denylist(&self, sub: &str, reason: &str) -> busbar_core::governance::StoreResult<()> {
         self.inner.add_denylist(sub, reason)
     }
-    fn list_denylist(&self) -> crate::governance::StoreResult<Vec<String>> {
+    fn list_denylist(&self) -> busbar_core::governance::StoreResult<Vec<String>> {
         self.inner.list_denylist()
     }
 }
@@ -6148,7 +6147,7 @@ async fn test_patch_interleaved_with_delete_never_resurrects_key() {
     // deterministically: the PATCH's `put_key` pauses between the existence check and the write
     // while the DELETE runs. Holding `EXISTENCE_GATE` across lookup→put is what makes the DELETE
     // run strictly after the PATCH's put, so the row is removed last and ends up ABSENT.
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let (entered_tx, entered_rx) = std::sync::mpsc::sync_channel::<()>(1);
     let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
     let store = Arc::new(BarrierStore {
@@ -6242,7 +6241,7 @@ async fn test_patch_interleaved_with_delete_never_resurrects_key() {
 /// (attacker-usable) secret. Same deterministic `BarrierStore` interleaving as the PATCH test.
 #[tokio::test]
 async fn test_rotate_interleaved_with_delete_never_resurrects_key() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let (entered_tx, entered_rx) = std::sync::mpsc::sync_channel::<()>(1);
     let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
     let store = Arc::new(BarrierStore {
@@ -6359,7 +6358,7 @@ async fn test_cancelled_patch_keeps_gate_held_for_full_store_mutation() {
     // - Fixed code (gate locked inside the still-running blocking closure): the DELETE blocks on
     // the gate until the PATCH's `put_key` finishes -> the DELETE is STILL PENDING in the
     // window -> this test PASSES. Releasing the barrier then lets both drain.
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let (entered_tx, entered_rx) = std::sync::mpsc::sync_channel::<()>(1);
     let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
     let store = Arc::new(BarrierStore {
@@ -6466,18 +6465,18 @@ async fn serve_with_plugins_dir(
     // The lifecycle test installs an UNSIGNED plugin tarball, so opt in to unsigned plugins (the
     // trust DEFAULT rejects unsigned artifacts). The trust-default behavior itself is covered by
     // the dedicated trust tests; this test is about the install/list/reload/remove lifecycle.
-    let mut plugins_cfg = crate::config::PluginsCfg::default();
+    let mut plugins_cfg = busbar_core::config::PluginsCfg::default();
     plugins_cfg.trust.allow_unsigned = true;
-    let app = TestApp::new()
+    let app = crate::new_test_app()
         .governance(gov)
         .plugins_dir(dir)
         .plugins_cfg(plugins_cfg)
         .build();
-    let (router, _handle) = crate::build_router_with_limits(
+    let (router, _handle) = busbar_core::build_router_with_limits(
         app,
         256 * 1024 * 1024,
         0,
-        crate::config::DEFAULT_RESPONSE_HEADERS_SERVER_TIMING,
+        busbar_core::config::DEFAULT_RESPONSE_HEADERS_SERVER_TIMING,
     );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -6491,23 +6490,23 @@ async fn serve_with_plugins_dir(
 /// `plugins_dir` (that field only feeds the filesystem-scanning install/list/remove/reload paths).
 async fn serve_with_plugins_dir_and_hook_env(
     dir: std::path::PathBuf,
-    hook_env: crate::hooks::HookEnv,
+    hook_env: busbar_core::hooks::HookEnv,
 ) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let mut plugins_cfg = crate::config::PluginsCfg::default();
+    let mut plugins_cfg = busbar_core::config::PluginsCfg::default();
     plugins_cfg.trust.allow_unsigned = true;
-    let app = TestApp::new()
+    let app = crate::new_test_app()
         .governance(gov)
         .plugins_dir(dir)
         .plugins_cfg(plugins_cfg)
         .hook_env(hook_env)
         .build();
-    let (router, _handle) = crate::build_router_with_limits(
+    let (router, _handle) = busbar_core::build_router_with_limits(
         app,
         256 * 1024 * 1024,
         0,
-        crate::config::DEFAULT_RESPONSE_HEADERS_SERVER_TIMING,
+        busbar_core::config::DEFAULT_RESPONSE_HEADERS_SERVER_TIMING,
     );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -6555,7 +6554,7 @@ fn admin_test_tarball_versioned(name: &str, alias: &str, version: &str) -> Vec<u
 #[tokio::test]
 async fn test_admin_v1_plugin_install_list_reload_remove() {
     use base64::Engine as _;
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let tarball = admin_test_tarball("acme-store-junk", "junkstore");
     let file = "acme-store-junk.tar.gz";
     let dir =
@@ -6713,7 +6712,7 @@ fn admin_test_tarball_kind(name: &str, alias: &str, kind: &str) -> Vec<u8> {
 #[tokio::test]
 async fn test_admin_v1_plugins_type_secret_lists_secret_kind_only() {
     use base64::Engine as _;
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let dir = std::env::temp_dir().join(format!(
         "busbar-admin-plugins-secret-{}",
         std::process::id()
@@ -6809,7 +6808,7 @@ async fn test_admin_v1_plugins_type_secret_lists_secret_kind_only() {
 /// `settings_schema` gets `schema_url: null` (absence, not an empty string or omitted field).
 #[tokio::test]
 async fn test_admin_v1_plugins_list_row_carries_schema_url() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let dir = std::env::temp_dir().join(format!(
         "busbar-admin-plugins-schemaurl-{}",
         std::process::id()
@@ -6856,9 +6855,9 @@ async fn test_admin_v1_plugins_list_row_carries_schema_url() {
         ..Default::default()
     };
     let registry = busbar_plugin_loader::scan_and_validate(&dir, &policy).unwrap();
-    let hook_env = crate::hooks::HookEnv::new(
+    let hook_env = busbar_core::hooks::HookEnv::new(
         std::sync::Arc::new(registry),
-        std::sync::Arc::new(crate::config::secret::SecretResolver::builtins_only()),
+        std::sync::Arc::new(busbar_core::config::secret::SecretResolver::builtins_only()),
     );
     let (addr, handle) = serve_with_plugins_dir_and_hook_env(dir.clone(), hook_env).await;
     let client = reqwest::Client::new();
@@ -6918,7 +6917,7 @@ async fn test_admin_v1_plugins_list_row_carries_schema_url() {
 /// WITHOUT one, and the compiled-in `memory` row (no backing artifact at all).
 #[tokio::test]
 async fn test_admin_v1_plugins_list_row_carries_file_and_has_schema() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let dir = std::env::temp_dir().join(format!(
         "busbar-admin-plugins-file-hasschema-{}",
         std::process::id()
@@ -6996,9 +6995,9 @@ async fn test_admin_v1_plugins_list_row_carries_file_and_has_schema() {
         ..Default::default()
     };
     let registry = busbar_plugin_loader::scan_and_validate(&dir, &policy).unwrap();
-    let hook_env = crate::hooks::HookEnv::new(
+    let hook_env = busbar_core::hooks::HookEnv::new(
         std::sync::Arc::new(registry),
-        std::sync::Arc::new(crate::config::secret::SecretResolver::builtins_only()),
+        std::sync::Arc::new(busbar_core::config::secret::SecretResolver::builtins_only()),
     );
     let (addr, handle) = serve_with_plugins_dir_and_hook_env(dir.clone(), hook_env).await;
     let client = reqwest::Client::new();
@@ -7090,7 +7089,7 @@ async fn test_admin_v1_plugins_list_row_carries_file_and_has_schema() {
 #[tokio::test]
 async fn test_admin_v1_plugins_inspect_previews_without_installing() {
     use base64::Engine as _;
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let dir = std::env::temp_dir().join(format!(
         "busbar-admin-plugins-inspect-{}",
         std::process::id()
@@ -7194,7 +7193,7 @@ async fn test_admin_v1_plugins_inspect_previews_without_installing() {
 /// absence is a valid, common state (most plugins today have none), not a fault.
 #[tokio::test]
 async fn test_admin_v1_plugin_schema_round_trips_from_manifest() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let schema = serde_json::json!({
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
@@ -7242,9 +7241,9 @@ async fn test_admin_v1_plugin_schema_round_trips_from_manifest() {
         ..Default::default()
     };
     let registry = busbar_plugin_loader::scan_and_validate(&dir, &policy).unwrap();
-    let hook_env = crate::hooks::HookEnv::new(
+    let hook_env = busbar_core::hooks::HookEnv::new(
         std::sync::Arc::new(registry),
-        std::sync::Arc::new(crate::config::secret::SecretResolver::builtins_only()),
+        std::sync::Arc::new(busbar_core::config::secret::SecretResolver::builtins_only()),
     );
     let (addr, handle) = serve_with_plugins_dir_and_hook_env(dir.clone(), hook_env).await;
     let client = reqwest::Client::new();
@@ -7277,9 +7276,9 @@ async fn test_admin_v1_plugin_schema_round_trips_from_manifest() {
     let no_schema_tarball = admin_test_tarball("acme-store-junk", "junkstore");
     std::fs::write(dir.join("acme-store-junk.tar.gz"), &no_schema_tarball).unwrap();
     let registry2 = busbar_plugin_loader::scan_and_validate(&dir, &policy).unwrap();
-    let hook_env2 = crate::hooks::HookEnv::new(
+    let hook_env2 = busbar_core::hooks::HookEnv::new(
         std::sync::Arc::new(registry2),
-        std::sync::Arc::new(crate::config::secret::SecretResolver::builtins_only()),
+        std::sync::Arc::new(busbar_core::config::secret::SecretResolver::builtins_only()),
     );
     let (addr2, handle2) = serve_with_plugins_dir_and_hook_env(dir.clone(), hook_env2).await;
     let got2: serde_json::Value = client
@@ -7344,9 +7343,9 @@ async fn test_admin_v1_plugin_schema_round_trips_from_manifest() {
     std::fs::create_dir_all(&bad_dir).unwrap();
     std::fs::write(bad_dir.join("acme-store-badschema.tar.gz"), &bad_tarball).unwrap();
     let bad_registry = busbar_plugin_loader::scan_and_validate(&bad_dir, &policy).unwrap();
-    let bad_hook_env = crate::hooks::HookEnv::new(
+    let bad_hook_env = busbar_core::hooks::HookEnv::new(
         std::sync::Arc::new(bad_registry),
-        std::sync::Arc::new(crate::config::secret::SecretResolver::builtins_only()),
+        std::sync::Arc::new(busbar_core::config::secret::SecretResolver::builtins_only()),
     );
     let (bad_addr, bad_handle) =
         serve_with_plugins_dir_and_hook_env(bad_dir.clone(), bad_hook_env).await;
@@ -7389,7 +7388,7 @@ async fn test_admin_v1_plugin_schema_round_trips_from_manifest() {
 #[tokio::test]
 async fn test_admin_v1_plugin_install_same_name_different_file_is_409() {
     use base64::Engine as _;
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let dir = std::env::temp_dir().join(format!("busbar-admin-plugins-h2-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
@@ -7451,7 +7450,7 @@ async fn test_admin_v1_plugin_install_same_name_different_file_is_409() {
 #[tokio::test]
 async fn test_admin_v1_plugin_install_corrupt_existing_tarball_blocks_publish() {
     use base64::Engine as _;
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let dir = std::env::temp_dir().join(format!("busbar-admin-plugins-m7-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
@@ -7497,7 +7496,7 @@ async fn test_admin_v1_plugin_install_corrupt_existing_tarball_blocks_publish() 
 #[tokio::test]
 async fn test_admin_v1_plugin_install_rejections() {
     use base64::Engine as _;
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let dir = std::env::temp_dir().join(format!("busbar-admin-plugins-rej-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
@@ -7544,16 +7543,16 @@ async fn test_admin_v1_plugin_install_rejections() {
         ));
         let _ = std::fs::remove_dir_all(&strict_dir);
         std::fs::create_dir_all(&strict_dir).unwrap();
-        let app = TestApp::new()
+        let app = crate::new_test_app()
             .governance(gov)
             .plugins_dir(strict_dir.clone())
-            .plugins_cfg(crate::config::PluginsCfg::default())
+            .plugins_cfg(busbar_core::config::PluginsCfg::default())
             .build();
-        let (router, _h) = crate::build_router_with_limits(
+        let (router, _h) = busbar_core::build_router_with_limits(
             app,
             256 * 1024 * 1024,
             0,
-            crate::config::DEFAULT_RESPONSE_HEADERS_SERVER_TIMING,
+            busbar_core::config::DEFAULT_RESPONSE_HEADERS_SERVER_TIMING,
         );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let strict_addr = listener.local_addr().unwrap();
@@ -7596,20 +7595,20 @@ async fn test_admin_v1_plugin_install_rejections() {
 #[tokio::test]
 #[allow(clippy::field_reassign_with_default)]
 async fn test_create_key_budget_group_and_labels_roundtrip_and_missing_group_400() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     // An App whose cost model KNOWS the "growth" group; "ghost" stays unconfigured.
     let cost = {
         let groups = std::collections::BTreeMap::from([(
             "growth".to_string(),
-            crate::config::GroupCfg {
+            busbar_core::config::GroupCfg {
                 parent: None,
                 enabled: true,
-                limits: vec![crate::config::groups::LimitCfg {
-                    metric: crate::config::groups::LimitMetric::Budget,
+                limits: vec![busbar_core::config::groups::LimitCfg {
+                    metric: busbar_core::config::groups::LimitMetric::Budget,
                     amount: 1_000_000,
-                    per: Some(crate::config::groups::LimitWindow::Month),
+                    per: Some(busbar_core::config::groups::LimitWindow::Month),
                     scope: None,
                     on_exhaust: None,
                     downgrade_to: None,
@@ -7617,9 +7616,9 @@ async fn test_create_key_budget_group_and_labels_roundtrip_and_missing_group_400
                 ..Default::default()
             },
         )]);
-        crate::cost::CostModel::resolve_parts(None, 0, &groups)
+        busbar_core::cost::CostModel::resolve_parts(None, 0, &groups)
     };
-    let app = TestApp::new().governance(gov).cost(cost).build();
+    let app = crate::new_test_app().governance(gov).cost(cost).build();
     let router = crate::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -7689,11 +7688,11 @@ async fn test_create_key_budget_group_and_labels_roundtrip_and_missing_group_400
 // ── self-service mint: auto-provision + delegated mint scope + max_keys_per_principal ────────────
 
 /// A `budget` limit for a group tree (helper to keep the test trees readable).
-fn budget_limit(cents: u64) -> crate::config::groups::LimitCfg {
-    crate::config::groups::LimitCfg {
-        metric: crate::config::groups::LimitMetric::Budget,
+fn budget_limit(cents: u64) -> busbar_core::config::groups::LimitCfg {
+    busbar_core::config::groups::LimitCfg {
+        metric: busbar_core::config::groups::LimitMetric::Budget,
         amount: cents,
-        per: Some(crate::config::groups::LimitWindow::Month),
+        per: Some(busbar_core::config::groups::LimitWindow::Month),
         scope: None,
         on_exhaust: None,
         downgrade_to: None,
@@ -7706,31 +7705,31 @@ fn budget_limit(cents: u64) -> crate::config::groups::LimitCfg {
 /// wins, so the leaf gets the team's per-head default. Also: `group_provisioned: true` is echoed.
 #[tokio::test]
 async fn test_mint_auto_provisions_leaf_from_child_default() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     // acme (org) → team-payments (team, child_default $20/mo per head). No user leaf yet.
     let groups = std::collections::BTreeMap::from([
         (
             "acme".to_string(),
-            crate::config::GroupCfg {
+            busbar_core::config::GroupCfg {
                 limits: vec![budget_limit(5_000_000)],
                 ..Default::default()
             },
         ),
         (
             "team-payments".to_string(),
-            crate::config::GroupCfg {
+            busbar_core::config::GroupCfg {
                 parent: Some("acme".to_string()),
                 limits: vec![budget_limit(2_000_000)],
-                child_default: Some(crate::config::groups::ChildDefault {
+                child_default: Some(busbar_core::config::groups::ChildDefault {
                     limits: vec![budget_limit(2000)],
                 }),
                 ..Default::default()
             },
         ),
     ]);
-    let app = TestApp::new().governance(gov).groups_tree(groups).build();
+    let app = crate::new_test_app().governance(gov).groups_tree(groups).build();
     let router = crate::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -7832,34 +7831,34 @@ async fn test_mint_auto_provisions_leaf_from_child_default() {
 /// CORRECT parent (or none) binds fine.
 #[tokio::test]
 async fn test_mint_parent_mismatch_is_409() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let groups = std::collections::BTreeMap::from([
         (
             "team-a".to_string(),
-            crate::config::GroupCfg {
+            busbar_core::config::GroupCfg {
                 limits: vec![budget_limit(1_000_000)],
                 ..Default::default()
             },
         ),
         (
             "team-b".to_string(),
-            crate::config::GroupCfg {
+            busbar_core::config::GroupCfg {
                 limits: vec![budget_limit(1_000_000)],
                 ..Default::default()
             },
         ),
         (
             "user:bob".to_string(),
-            crate::config::GroupCfg {
+            busbar_core::config::GroupCfg {
                 parent: Some("team-a".to_string()),
                 limits: vec![budget_limit(3000)],
                 ..Default::default()
             },
         ),
     ]);
-    let app = TestApp::new().governance(gov).groups_tree(groups).build();
+    let app = crate::new_test_app().governance(gov).groups_tree(groups).build();
     let router = crate::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -7904,26 +7903,26 @@ async fn test_mint_parent_mismatch_is_409() {
 /// (default, tested elsewhere) is unlimited.
 #[tokio::test]
 async fn test_max_keys_per_principal_cap_trips() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let groups = std::collections::BTreeMap::from([
         (
             "capped".to_string(),
-            crate::config::GroupCfg {
+            busbar_core::config::GroupCfg {
                 limits: vec![budget_limit(1_000_000)],
                 ..Default::default()
             },
         ),
         (
             "other".to_string(),
-            crate::config::GroupCfg {
+            busbar_core::config::GroupCfg {
                 limits: vec![budget_limit(1_000_000)],
                 ..Default::default()
             },
         ),
     ]);
-    let mut app = TestApp::new().governance(gov).groups_tree(groups).build();
+    let mut app = crate::new_test_app().governance(gov).groups_tree(groups).build();
     {
         let inner = Arc::get_mut(&mut app).expect("sole owner");
         inner.max_keys_per_principal = 2;
@@ -7977,17 +7976,17 @@ async fn test_max_keys_per_principal_cap_trips() {
 /// the two calls and confirm the SAME Idempotency-Key mints on retry.
 #[tokio::test]
 async fn test_admin_v1_idempotency_reservation_frees_on_at_cap_refusal() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let groups = std::collections::BTreeMap::from([(
         "capped".to_string(),
-        crate::config::GroupCfg {
+        busbar_core::config::GroupCfg {
             limits: vec![budget_limit(1_000_000)],
             ..Default::default()
         },
     )]);
-    let mut app = TestApp::new().governance(gov).groups_tree(groups).build();
+    let mut app = crate::new_test_app().governance(gov).groups_tree(groups).build();
     {
         let inner = Arc::get_mut(&mut app).expect("sole owner");
         inner.max_keys_per_principal = 1;
@@ -8078,8 +8077,8 @@ async fn test_admin_v1_idempotency_reservation_frees_on_at_cap_refusal() {
 /// of 1). Only in that shape does `!was_counted` vs `was_counted` change the outcome.
 #[tokio::test]
 async fn test_admin_v1_patch_no_op_on_an_already_counted_key_is_not_an_admission() {
-    use crate::governance::NewKeySpec;
-    crate::metrics::init();
+    use busbar_core::governance::NewKeySpec;
+    busbar_core::metrics::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let mint = |name: &str| {
@@ -8101,12 +8100,12 @@ async fn test_admin_v1_patch_no_op_on_an_already_counted_key_is_not_an_admission
 
     let groups = std::collections::BTreeMap::from([(
         "capped".to_string(),
-        crate::config::GroupCfg {
+        busbar_core::config::GroupCfg {
             limits: vec![budget_limit(1_000_000)],
             ..Default::default()
         },
     )]);
-    let mut app = TestApp::new().governance(gov).groups_tree(groups).build();
+    let mut app = crate::new_test_app().governance(gov).groups_tree(groups).build();
     {
         let inner = Arc::get_mut(&mut app).expect("sole owner");
         // Tightened to 1 AFTER both `a` and `b` already exist — the bucket is now over cap even
@@ -8157,26 +8156,26 @@ async fn test_admin_v1_patch_no_op_on_an_already_counted_key_is_not_an_admission
 /// It also asserts the audit consequence: every one of these refusals writes a `rejected` row —
 /// a refused mint is an attempt to issue a credential, and it must leave a trace.
 async fn drive_key_cap_and_delegation_errors() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let groups = std::collections::BTreeMap::from([
         (
             "capped".to_string(),
-            crate::config::GroupCfg {
+            busbar_core::config::GroupCfg {
                 limits: vec![budget_limit(1_000_000)],
                 ..Default::default()
             },
         ),
         (
             "roomy".to_string(),
-            crate::config::GroupCfg {
+            busbar_core::config::GroupCfg {
                 limits: vec![budget_limit(1_000_000)],
                 ..Default::default()
             },
         ),
     ]);
-    let mut app = TestApp::new().governance(gov).groups_tree(groups).build();
+    let mut app = crate::new_test_app().governance(gov).groups_tree(groups).build();
     {
         let inner = Arc::get_mut(&mut app).expect("sole owner");
         inner.max_keys_per_principal = 2;
@@ -8336,17 +8335,17 @@ async fn key_cap_and_delegation_refusals_are_reachable_declared_and_audited() {
 /// EXACTLY one succeeds (fills the last slot) and the rest 409, and the group ends at EXACTLY the cap.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_max_keys_per_principal_atomic_under_concurrent_mint() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let groups = std::collections::BTreeMap::from([(
         "capped".to_string(),
-        crate::config::GroupCfg {
+        busbar_core::config::GroupCfg {
             limits: vec![budget_limit(1_000_000)],
             ..Default::default()
         },
     )]);
-    let mut app = TestApp::new()
+    let mut app = crate::new_test_app()
         .governance(gov.clone())
         .groups_tree(groups)
         .build();
@@ -8422,7 +8421,7 @@ async fn test_max_keys_per_principal_atomic_under_concurrent_mint() {
 /// token string appears nowhere in the read body. The token is the credential, shown exactly once.
 #[tokio::test]
 async fn test_signed_mint_returns_token_and_expiry_never_stored() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let (addr, handle) = serve_with_gov(gov).await;
@@ -8481,7 +8480,7 @@ async fn test_signed_mint_returns_token_and_expiry_never_stored() {
 /// verbatim; both together is a 400; a past `expires_at` is a 400; a malformed duration is a 400.
 #[tokio::test]
 async fn test_signed_mint_expiry_parsing_matrix() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let (addr, handle) = serve_with_gov(gov).await;
@@ -8556,7 +8555,7 @@ async fn test_signed_mint_expiry_parsing_matrix() {
 /// binding is gone - revoke-then-delete). `is_revoked(sub)` becomes true.
 #[tokio::test]
 async fn test_signed_mint_verify_then_delete_denies() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let (addr, handle) = serve_with_gov(gov.clone()).await;
@@ -8609,7 +8608,7 @@ async fn test_signed_mint_verify_then_delete_denies() {
 /// idempotent (a second revoke is still 200).
 #[tokio::test]
 async fn test_signed_revoke_denylists_without_deleting() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let (addr, handle) = serve_with_gov(gov.clone()).await;
@@ -8681,7 +8680,7 @@ async fn test_signed_revoke_denylists_without_deleting() {
 /// `GET /keys/{id}` now reports a DISTINCT `state`.
 #[tokio::test]
 async fn test_key_state_distinguishes_disable_revoke_and_tombstone() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let (addr, handle) = serve_with_gov(gov.clone()).await;
@@ -8797,7 +8796,7 @@ async fn test_key_state_distinguishes_disable_revoke_and_tombstone() {
 /// the default (omitted) list is unaffected.
 #[tokio::test]
 async fn test_list_keys_include_tombstoned() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let (addr, handle) = serve_with_gov(gov.clone()).await;
@@ -8880,7 +8879,7 @@ async fn test_list_keys_include_tombstoned() {
 /// binding), while an explicit `[]` binds NO pools.
 #[tokio::test]
 async fn test_signed_mint_group_none_and_pool_acl_matrix() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let (addr, handle) = serve_with_gov(gov.clone()).await;
@@ -8938,7 +8937,7 @@ async fn test_signed_mint_group_none_and_pool_acl_matrix() {
 /// (`revoke_all: true`), and is admin-gated.
 #[tokio::test]
 async fn test_signing_key_rotate_reports_kid_and_revoke_all() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let (addr, handle) = serve_with_gov(gov).await;
@@ -8963,7 +8962,7 @@ async fn test_signing_key_rotate_reports_kid_and_revoke_all() {
     let body: serde_json::Value = r.json().await.unwrap();
     assert_eq!(
         body["current_kid"],
-        crate::governance::signing::DEFAULT_KID,
+        busbar_core::governance::signing::DEFAULT_KID,
         "reports the current signing-key id: {body}"
     );
     assert_eq!(body["revoke_all"], true, "rotation is revoke-all by design");
@@ -8978,15 +8977,15 @@ async fn test_signing_key_rotate_reports_kid_and_revoke_all() {
     // emits that action against this resource, and a large concurrent audit-writing burst could in
     // principle evict this test's own `signing_key.report` row before the read. Latent; accepted —
     // bracketing by seq would narrow the window but not defeat eviction.
-    let rows = crate::audit_ring::AUDIT.list_filtered(
+    let rows = busbar_core::audit_ring::AUDIT.list_filtered(
         0,
-        crate::audit_ring::MAX_AUDIT_ENTRIES,
+        busbar_core::audit_ring::MAX_AUDIT_ENTRIES,
         None,
         Some("signing-key"),
     );
     assert!(
         rows.iter().any(|e| e.action == "signing_key.report"
-            && e.outcome == crate::audit_ring::OUTCOME_APPLIED),
+            && e.outcome == busbar_core::audit_ring::OUTCOME_APPLIED),
         "the report is recorded under a verb that does not claim a mutation"
     );
     assert!(
@@ -9052,18 +9051,18 @@ groups:
 /// The overlay file's groups section is cleared while the (empty) hooks section is preserved.
 #[tokio::test]
 async fn test_admin_v1_overlay_reset_groups_reverts_to_base() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let (dir, config_path, providers_path) = write_reset_fixture("groups");
     let overlay = dir.join("overlay.json");
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let mut app = TestApp::new()
+    let mut app = crate::new_test_app()
         .governance(gov)
         .overlay_path(overlay.clone())
         // The live App starts consistent with disk: `team` is a base group.
         .group(
             "team",
-            crate::config::GroupCfg {
+            busbar_core::config::GroupCfg {
                 limits: vec![serde_yaml::from_str("{ budget: 20000, per: month }").unwrap()],
                 ..Default::default()
             },
@@ -9112,7 +9111,7 @@ async fn test_admin_v1_overlay_reset_groups_reverts_to_base() {
         "the runtime group is live before the reset"
     );
     assert!(
-        crate::config::overlay::read(&overlay)
+        busbar_core::config::overlay::read(&overlay)
             .expect("overlay written")
             .groups
             .contains_key("user:alice"),
@@ -9161,7 +9160,7 @@ async fn test_admin_v1_overlay_reset_groups_reverts_to_base() {
     );
 
     // The overlay's groups section is cleared on disk (the durable half survives a restart).
-    let doc = crate::config::overlay::read(&overlay).expect("overlay still present");
+    let doc = busbar_core::config::overlay::read(&overlay).expect("overlay still present");
     assert!(
         doc.groups.is_empty() && doc.deleted_groups.is_empty(),
         "the overlay groups section is cleared"
@@ -9214,12 +9213,12 @@ async fn test_admin_v1_overlay_reset_groups_reverts_to_base() {
 /// after the reset and the base (disk) hook surface is what remains.
 #[tokio::test]
 async fn test_admin_v1_overlay_reset_hooks_reverts_to_base() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let (dir, config_path, providers_path) = write_reset_fixture("hooks");
     let overlay = dir.join("overlay.json");
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let mut app = TestApp::new()
+    let mut app = crate::new_test_app()
         .governance(gov)
         .overlay_path(overlay.clone())
         .build();
@@ -9250,7 +9249,7 @@ async fn test_admin_v1_overlay_reset_hooks_reverts_to_base() {
         .unwrap();
     assert_eq!(created.status().as_u16(), 201, "{:?}", created.text().await);
     assert!(
-        crate::config::overlay::read(&overlay)
+        busbar_core::config::overlay::read(&overlay)
             .expect("overlay written")
             .hooks
             .contains_key("runtime_gate"),
@@ -9280,7 +9279,7 @@ async fn test_admin_v1_overlay_reset_hooks_reverts_to_base() {
         hooks["items"].as_array().unwrap().is_empty(),
         "the runtime hook is discarded, base hooks restored: {hooks}"
     );
-    let doc = crate::config::overlay::read(&overlay).expect("overlay present");
+    let doc = busbar_core::config::overlay::read(&overlay).expect("overlay present");
     assert!(
         doc.hooks.is_empty() && doc.global_hooks.is_empty() && doc.deleted.is_empty(),
         "the overlay hooks section is cleared"
@@ -9294,17 +9293,17 @@ async fn test_admin_v1_overlay_reset_hooks_reverts_to_base() {
 /// optimistic-concurrency guard every config-plane mutation honors.
 #[tokio::test]
 async fn test_admin_v1_overlay_reset_stale_if_match_conflicts() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let (dir, config_path, providers_path) = write_reset_fixture("ifmatch");
     let overlay = dir.join("overlay.json");
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let mut app = TestApp::new()
+    let mut app = crate::new_test_app()
         .governance(gov)
         .overlay_path(overlay.clone())
         .group(
             "team",
-            crate::config::GroupCfg {
+            busbar_core::config::GroupCfg {
                 limits: vec![serde_yaml::from_str("{ budget: 20000, per: month }").unwrap()],
                 ..Default::default()
             },
@@ -9365,10 +9364,10 @@ async fn test_admin_v1_overlay_reset_stale_if_match_conflicts() {
 /// An unknown section name is a `400 invalid_request` — only `groups`|`hooks` are valid.
 #[tokio::test]
 async fn test_admin_v1_overlay_reset_unknown_section_400() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let app = TestApp::new().governance(gov).build();
+    let app = crate::new_test_app().governance(gov).build();
     let router = crate::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -9397,7 +9396,7 @@ async fn test_admin_v1_overlay_reset_unknown_section_400() {
 /// ⇒ every section is definitionally already at base).
 #[tokio::test]
 async fn test_admin_v1_overlay_reset_empty_section_is_idempotent_noop() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let overlay = std::env::temp_dir().join(format!(
@@ -9406,7 +9405,7 @@ async fn test_admin_v1_overlay_reset_empty_section_is_idempotent_noop() {
         busbar_substrate::store::now()
     ));
     let _ = std::fs::remove_file(&overlay);
-    let app = TestApp::new()
+    let app = crate::new_test_app()
         .governance(gov)
         .overlay_path(overlay.clone())
         .build();
@@ -9464,10 +9463,10 @@ async fn test_admin_v1_overlay_reset_empty_section_is_idempotent_noop() {
 /// admin-guarded (an unauthenticated caller never even reaches the scope check).
 #[tokio::test]
 async fn test_admin_v1_overlay_reset_requires_full_scope() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let app = TestApp::new().governance(gov).build();
+    let app = crate::new_test_app().governance(gov).build();
     let router = crate::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -9477,7 +9476,7 @@ async fn test_admin_v1_overlay_reset_requires_full_scope() {
     // The scope matrix requires `full` for DELETE /overlay/{section} — a read-only (or
     // hooks-register) principal cannot pass it.
     for section in ["groups", "hooks"] {
-        let scope = crate::admin::v1::contract::required_scope(
+        let scope = busbar_core::admin::v1::contract::required_scope(
             &axum::http::Method::DELETE,
             &format!("/api/v1/admin/overlay/{section}"),
         );
@@ -9529,7 +9528,7 @@ async fn test_admin_v1_overlay_reset_named_map_section_reverts_to_base() {
         .unwrap();
     assert_eq!(r.status().as_u16(), 200, "{:?}", r.text().await);
     assert!(
-        crate::config::overlay::read(&overlay)
+        busbar_core::config::overlay::read(&overlay)
             .expect("overlay written")
             .named_maps
             .get("export")
@@ -9568,7 +9567,7 @@ async fn test_admin_v1_overlay_reset_named_map_section_reverts_to_base() {
     );
     // The durable half: the section is cleared on disk, so the revert survives a restart.
     assert!(
-        crate::config::overlay::read(&overlay).is_none_or(|d| !d.named_maps.contains_key("export")),
+        busbar_core::config::overlay::read(&overlay).is_none_or(|d| !d.named_maps.contains_key("export")),
         "the overlay `export` section is cleared on disk"
     );
     // A SIBLING named-map section is untouched by another section's reset.
@@ -9665,14 +9664,14 @@ async fn settings_test_app(
     std::net::SocketAddr, // server addr
     tokio::task::JoinHandle<()>,
 ) {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     // A per-test tag keeps parallel `/config/settings` tests on DISTINCT temp dirs (the fixture dir
     // is keyed on pid + coarse timestamp, which collides for same-second parallel starts).
     let (dir, config_path, providers_path) = write_reset_fixture(&format!("settings-{tag}"));
     let overlay = dir.join("overlay.json");
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let mut app = TestApp::new()
+    let mut app = crate::new_test_app()
         .governance(gov)
         .overlay_path(overlay.clone())
         .build();
@@ -9738,7 +9737,7 @@ async fn test_admin_v1_config_settings_round_trip_survives_reload() {
     );
 
     // The overlay `root` section is on disk (the durable half).
-    let doc = crate::config::overlay::read(&overlay).expect("overlay written");
+    let doc = busbar_core::config::overlay::read(&overlay).expect("overlay written");
     let root = doc.root.expect("root section present");
     assert_eq!(root.per_request_fee, Some(7));
 
@@ -9763,21 +9762,21 @@ async fn test_admin_v1_config_settings_round_trip_survives_reload() {
     {
         let config_path = dir.join("config.yaml");
         let providers_path = dir.join("providers.yaml");
-        let mut loaded = crate::load_config_from_disk(
+        let mut loaded = busbar_core::load_config_from_disk(
             &config_path,
             Some(&providers_path),
             false,
-            crate::config::EnvSubst::Strict,
+            busbar_core::config::EnvSubst::Strict,
         )
         .expect("disk reload");
         // Simulate the env-derived overlay read (boot reads it via BUSBAR_CONFIG_OVERLAY).
-        loaded.overlay_doc = crate::config::overlay::read(&overlay);
+        loaded.overlay_doc = busbar_core::config::overlay::read(&overlay);
         assert_eq!(
             loaded.deploy.per_request_fee, 0,
             "base config.yaml has no fee (the override lives only in the overlay)"
         );
         if let Some(doc) = loaded.overlay_doc.as_ref() {
-            crate::config::overlay::apply_root_to_deploy(&mut loaded.deploy, doc);
+            busbar_core::config::overlay::apply_root_to_deploy(&mut loaded.deploy, doc);
         }
         assert_eq!(
             loaded.deploy.per_request_fee, 7,
@@ -9821,14 +9820,14 @@ async fn test_admin_v1_config_settings_round_trip_survives_reload() {
 /// `overlay_doc` is absent and the `per_request_fee` assertion fails.
 #[tokio::test]
 async fn test_admin_v1_config_settings_survives_a_real_boot_reload_at_default_overlay() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let (dir, config_path, providers_path) = write_reset_fixture("boot-default-overlay");
     // The App persists to the SAME path `load_config_from_disk` resolves by default (no `config.overlay`
     // in config.yaml, no `BUSBAR_CONFIG_OVERLAY`): `busbar-overlay.json` next to config.yaml.
     let default_overlay = dir.join("busbar-overlay.json");
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let mut app = TestApp::new()
+    let mut app = crate::new_test_app()
         .governance(gov)
         .overlay_path(default_overlay.clone())
         .build();
@@ -9854,11 +9853,11 @@ async fn test_admin_v1_config_settings_survives_a_real_boot_reload_at_default_ov
 
     // A FRESH boot disk-load — no `overlay_doc` hand-substitution. It must resolve the default overlay
     // path ITSELF and read back the mutation the running App just persisted there.
-    let loaded = crate::load_config_from_disk(
+    let loaded = busbar_core::load_config_from_disk(
         &config_path,
         Some(&providers_path),
         false,
-        crate::config::EnvSubst::Strict,
+        busbar_core::config::EnvSubst::Strict,
     )
     .expect("fresh boot disk-load");
     assert_eq!(
@@ -9924,7 +9923,7 @@ async fn test_admin_v1_config_settings_process_level_flagged_reload_to_apply() {
         "the note explains the reload-to-apply split"
     );
     // But they ARE durably stored (the overlay carries the new listen).
-    let doc = crate::config::overlay::read(&overlay).expect("overlay written");
+    let doc = busbar_core::config::overlay::read(&overlay).expect("overlay written");
     assert_eq!(
         doc.root.unwrap().listen.as_deref(),
         Some("127.0.0.1:0"),
@@ -10114,7 +10113,7 @@ async fn test_admin_v1_config_settings_unresolvable_store_secret_warns_not_rejec
     );
 
     // And it is persisted, so the next restart uses it — which is the point of staging.
-    let doc = crate::config::overlay::read(&overlay).expect("overlay written");
+    let doc = busbar_core::config::overlay::read(&overlay).expect("overlay written");
     assert!(
         doc.root
             .as_ref()
@@ -10202,7 +10201,7 @@ async fn test_admin_v1_config_settings_reset_reverts_to_base() {
         .await
         .unwrap();
     assert!(
-        crate::config::overlay::read(&overlay)
+        busbar_core::config::overlay::read(&overlay)
             .and_then(|d| d.root)
             .is_some(),
         "root override present before reset"
@@ -10222,7 +10221,7 @@ async fn test_admin_v1_config_settings_reset_reverts_to_base() {
 
     // Root section cleared on disk; GET reflects base (empty overrides).
     assert!(
-        crate::config::overlay::read(&overlay)
+        busbar_core::config::overlay::read(&overlay)
             .and_then(|d| d.root)
             .is_none(),
         "the overlay root section is cleared"
@@ -10277,7 +10276,7 @@ async fn test_admin_v1_config_settings_reset_refuses_when_overlay_is_corrupt() {
     // so a concurrently-running sibling's legitimate APPLIED reset can land between this test's own
     // two REJECTED rows and fail the "never APPLIED" assertion. Same pattern as
     // `test_admin_v1_restart_refuses_when_it_cannot_restart`'s baseline_seq bracketing.
-    let baseline_seq = crate::audit_ring::AUDIT
+    let baseline_seq = busbar_core::audit_ring::AUDIT
         .list(1)
         .first()
         .map(|e| e.seq)
@@ -10290,7 +10289,7 @@ async fn test_admin_v1_config_settings_reset_refuses_when_overlay_is_corrupt() {
         .await
         .unwrap();
     assert!(
-        crate::config::overlay::read(&overlay)
+        busbar_core::config::overlay::read(&overlay)
             .and_then(|d| d.root)
             .is_some(),
         "root override present before corrupting the overlay"
@@ -10309,10 +10308,10 @@ async fn test_admin_v1_config_settings_reset_refuses_when_overlay_is_corrupt() {
         reset.text().await
     );
 
-    let rows: Vec<_> = crate::audit_ring::AUDIT
+    let rows: Vec<_> = busbar_core::audit_ring::AUDIT
         .list_filtered(
             0,
-            crate::audit_ring::MAX_AUDIT_ENTRIES,
+            busbar_core::audit_ring::MAX_AUDIT_ENTRIES,
             None,
             Some("overlay:root"),
         )
@@ -10322,14 +10321,14 @@ async fn test_admin_v1_config_settings_reset_refuses_when_overlay_is_corrupt() {
     assert!(
         rows.iter()
             .any(|e| e.action == "overlay.reset"
-                && e.outcome == crate::audit_ring::OUTCOME_REJECTED),
+                && e.outcome == busbar_core::audit_ring::OUTCOME_REJECTED),
         "the corrupt-overlay reset must be audited as REJECTED, never APPLIED: {rows:?}"
     );
     assert!(
         !rows
             .iter()
             .any(|e| e.action == "overlay.reset"
-                && e.outcome == crate::audit_ring::OUTCOME_APPLIED),
+                && e.outcome == busbar_core::audit_ring::OUTCOME_APPLIED),
         "a corrupt-overlay reset must never be recorded as a successful apply: {rows:?}"
     );
 
@@ -10360,7 +10359,7 @@ async fn test_admin_v1_config_settings_reset_refuses_when_overlay_is_too_new() {
         .unwrap();
     let mut doc: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&overlay).unwrap()).unwrap();
-    doc["version"] = serde_json::json!(crate::config::overlay::OVERLAY_VERSION + 1);
+    doc["version"] = serde_json::json!(busbar_core::config::overlay::OVERLAY_VERSION + 1);
     std::fs::write(&overlay, serde_json::to_vec(&doc).unwrap()).unwrap();
 
     let reset = admin(client.delete(format!("http://{addr}/api/v1/admin/overlay/root")))
@@ -10390,7 +10389,7 @@ async fn test_admin_v1_config_settings_reset_refuses_when_overlay_is_too_new() {
 /// file `load_for_rmw` refuses to read-modify-write).
 #[tokio::test]
 async fn test_admin_v1_config_settings_persist_failure_does_not_rotate_gov_credentials() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let dir = std::env::temp_dir().join(format!(
         "busbar-settings-gov-rotate-persist-fail-{}-{}",
         std::process::id(),
@@ -10443,7 +10442,7 @@ auth:
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok-v1".to_string()));
     let before_hash = gov.admin_token_hash();
-    let mut app = TestApp::new()
+    let mut app = crate::new_test_app()
         .governance(gov.clone())
         .overlay_path(overlay.clone())
         .build();
@@ -10512,7 +10511,7 @@ fn test_get_config_settings_warns_when_overlay_is_unreadable() {
 
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let mut app = TestApp::new()
+    let mut app = crate::new_test_app()
         .governance(gov)
         .overlay_path(overlay.clone())
         .build();
@@ -10521,7 +10520,7 @@ fn test_get_config_settings_warns_when_overlay_is_unreadable() {
         inner.config_path = None;
         inner.providers_path = None;
     }
-    let handle = std::sync::Arc::new(crate::state::AppHandle::new(app));
+    let handle = std::sync::Arc::new(busbar_core::state::AppHandle::new(app));
 
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -10531,7 +10530,7 @@ fn test_get_config_settings_warns_when_overlay_is_unreadable() {
     let subscriber = tracing_subscriber::registry().with(cap.clone());
 
     let resp = tracing::subscriber::with_default(subscriber, || {
-        rt.block_on(crate::admin::v1::json::get_config_settings(
+        rt.block_on(crate::v1::json::get_config_settings(
             axum::extract::State(handle),
         ))
     });
@@ -10616,11 +10615,11 @@ async fn settings_test_app_no_overlay(
     std::net::SocketAddr,
     tokio::task::JoinHandle<()>,
 ) {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let (dir, config_path, providers_path) = write_reset_fixture(&format!("settings-no-ov-{tag}"));
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let mut app = TestApp::new().governance(gov).no_overlay().build();
+    let mut app = crate::new_test_app().governance(gov).no_overlay().build();
     {
         let inner = Arc::get_mut(&mut app).expect("sole owner");
         inner.config_path = Some(config_path.clone());
@@ -10713,7 +10712,7 @@ async fn test_admin_v1_config_settings_put_with_persist_true_still_persists_when
         .await
         .unwrap();
     assert_eq!(put.status().as_u16(), 200, "{:?}", put.text().await);
-    let on_disk = crate::config::overlay::read(&overlay)
+    let on_disk = busbar_core::config::overlay::read(&overlay)
         .and_then(|d| d.root)
         .expect("root section persisted");
     assert_eq!(
@@ -10791,9 +10790,9 @@ async fn test_admin_v1_config_settings_put_still_rejects_an_unknown_field_includ
 /// it passes only once the lying no-op branch is gone.
 #[test]
 fn test_persist_root_without_an_overlay_errs() {
-    let result = crate::config::overlay::persist_root(
+    let result = busbar_core::config::overlay::persist_root(
         None,
-        &crate::config::overlay::RootSettings::default(),
+        &busbar_core::config::overlay::RootSettings::default(),
     );
     assert!(
         result.is_err(),
@@ -10813,20 +10812,20 @@ fn test_persist_root_without_an_overlay_errs() {
 fn test_config_settings_scope_matrix() {
     use axum::http::Method;
     assert_eq!(
-        crate::admin::v1::contract::required_scope(&Method::PUT, "/api/v1/admin/config/settings")
+        busbar_core::admin::v1::contract::required_scope(&Method::PUT, "/api/v1/admin/config/settings")
             .as_str(),
         "full",
         "PUT /config/settings is a full-scope mutation"
     );
     assert_eq!(
-        crate::admin::v1::contract::required_scope(&Method::GET, "/api/v1/admin/config/settings")
+        busbar_core::admin::v1::contract::required_scope(&Method::GET, "/api/v1/admin/config/settings")
             .as_str(),
         "read-only",
         "GET /config/settings is read-only"
     );
     // And `root` is a valid reset section requiring full scope.
     assert_eq!(
-        crate::admin::v1::contract::required_scope(&Method::DELETE, "/api/v1/admin/overlay/root")
+        busbar_core::admin::v1::contract::required_scope(&Method::DELETE, "/api/v1/admin/overlay/root")
             .as_str(),
         "full",
         "a root reset is a full-scope mutation"
@@ -10870,7 +10869,7 @@ struct KeysErrCase {
 /// The committed byte-for-byte snapshot of the keys error wire.
 const KEYS_ERROR_GOLDEN: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/src/admin/tests/keys_error_wire.json"
+    "/src/tests/keys_error_wire.json"
 );
 
 /// Serve one fixture, returning its address, the server task, and the id of a live key (empty for
@@ -10878,26 +10877,26 @@ const KEYS_ERROR_GOLDEN: &str = concat!(
 async fn serve_keys_fixture(
     fixture: KeysFixture,
 ) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>, String) {
-    let store: Arc<dyn crate::governance::Store> = Arc::new(MemoryStore::new());
+    let store: Arc<dyn busbar_core::governance::Store> = Arc::new(MemoryStore::new());
     let app = match fixture {
         KeysFixture::Signing => {
             let gov = gov_with_signer(store, Some("admintok".to_string()));
-            TestApp::new().governance(gov).build()
+            crate::new_test_app().governance(gov).build()
         }
         KeysFixture::NoSigner => {
             let gov = Arc::new(GovState::new(store, Some("admintok".to_string())).unwrap());
-            TestApp::new().governance(gov).build()
+            crate::new_test_app().governance(gov).build()
         }
         // Governance OFF: there is no governance to hold an operator token, so the fixture uses
         // the explicit `admin_auth: []` OPEN posture (the documented dev posture) to authenticate.
         // Otherwise every case would 401 in the middleware and never reach a keys handler.
         KeysFixture::Off => {
-            let cfg = crate::config::AuthCfg {
+            let cfg = busbar_core::config::AuthCfg {
                 admin_auth: Vec::new(),
-                ..crate::config::AuthCfg::default_none()
+                ..busbar_core::config::AuthCfg::default_none()
             };
-            TestApp::new()
-                .auth(Arc::new(crate::auth::AuthMiddleware::new_builtin(&cfg)))
+            crate::new_test_app()
+                .auth(Arc::new(busbar_core::auth::AuthMiddleware::new_builtin(&cfg)))
                 .admin_chain(Vec::new())
                 .build()
         }
@@ -10943,7 +10942,7 @@ async fn keys_error_surface_is_byte_stable() {
 /// out of the `#[tokio::test]` so the class-level over-claim test can RUN it (and collect its
 /// emissions) without depending on test ordering.
 async fn drive_keys_error_surface() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     // A 65-character id (the cap is 64) and an id that cannot exist.
     const OVERLONG: &str = "vk_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     const MISSING: &str = "vk_0000000000000000";
@@ -11385,11 +11384,11 @@ async fn admin_error_surface_witnesses_every_declared_response() {
 async fn admin_error_fixture() -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let app = TestApp::new()
+    let app = crate::new_test_app()
         .governance(gov)
         .group(
             "team",
-            crate::config::GroupCfg {
+            busbar_core::config::GroupCfg {
                 parent: None,
                 enabled: true,
                 limits: vec![],
@@ -11398,13 +11397,13 @@ async fn admin_error_fixture() -> (std::net::SocketAddr, tokio::task::JoinHandle
         )
         .base_hook(
             "basehook",
-            crate::config::HookCfg {
-                kind: crate::config::HookKind::Gate,
+            busbar_core::config::HookCfg {
+                kind: busbar_core::config::HookKind::Gate,
                 plugin: "test-hook".to_string(),
                 timeout_ms: 25,
                 on_error: "reject".to_string(),
-                prompt: crate::config::PromptAccess::No,
-                user: crate::config::UserAccess::No,
+                prompt: busbar_core::config::PromptAccess::No,
+                user: busbar_core::config::UserAccess::No,
                 priority: 0,
                 settings: serde_json::Map::new(),
                 at: None,
@@ -11447,7 +11446,7 @@ async fn admin_error_fixture() -> (std::net::SocketAddr, tokio::task::JoinHandle
 
 /// See the test above. Split out so the class-level over-claim test can drive it directly.
 async fn drive_admin_error_surface() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     // A syntactically valid but WRONG config-plane ETag — the stale guard, not the parser.
     const STALE: &str = "\"999999\"";
     const BAD_ETAG: &str = "not-an-etag";
@@ -12182,7 +12181,7 @@ async fn drive_admin_error_surface() {
             // `restart::with_forced_unsupervised`'s doc comment for why this is thread-local, not
             // an env var.
             let resp = if *label == "restart_no_supervisor" {
-                crate::admin::restart::with_forced_unsupervised(|| req.send()).await
+                crate::restart::with_forced_unsupervised(|| req.send()).await
             } else {
                 req.send().await
             }
@@ -12218,7 +12217,7 @@ async fn plugin_reload_reports_an_unrebuildable_disk_config() {
 
 /// See the test above. Split out so the class-level over-claim test can drive it directly.
 async fn drive_plugin_reload_errors() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     // `pid` alone collides: this helper is called from TWO `#[tokio::test]`s in the same binary
     // (`plugin_reload_reports_an_unrebuildable_disk_config` and
     // `declared_error_set_is_exactly_what_the_handlers_emit`), which can run concurrently and would
@@ -12240,7 +12239,7 @@ async fn drive_plugin_reload_errors() {
     std::fs::write(&providers, "providers: {}\n").unwrap();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let app = TestApp::new()
+    let app = crate::new_test_app()
         .governance(gov)
         .plugins_dir(dir.clone())
         .disk_paths(config, providers)
@@ -12268,7 +12267,7 @@ async fn drive_plugin_reload_errors() {
 
 /// See the test above. Split out so the class-level over-claim test can drive it directly.
 async fn drive_plugin_rollback_errors() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     // Same per-call collision as `drive_plugin_reload_errors` above (two callers, same pid) — see
     // that function's comment.
     static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -12287,10 +12286,10 @@ async fn drive_plugin_rollback_errors() {
     std::fs::write(dir.join(file), &tarball).unwrap();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let app = TestApp::new()
+    let app = crate::new_test_app()
         .governance(gov)
         .plugins_dir(dir.clone())
-        .plugins_cfg(crate::config::PluginsCfg::default())
+        .plugins_cfg(busbar_core::config::PluginsCfg::default())
         .overlay_path(overlay)
         .build();
     let router = crate::build_router(app);
@@ -12405,7 +12404,7 @@ async fn drive_plugin_rollback_errors() {
 /// so `declared_error_set_is_exactly_what_the_handlers_emit` witnesses the emission through the v1
 /// router's recording layer without depending on test order.
 async fn drive_plugin_inspect_errors() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let dir = std::env::temp_dir().join(format!(
         "busbar-admin-inspect-witness-{}-{}",
@@ -12417,10 +12416,10 @@ async fn drive_plugin_inspect_errors() {
     let overlay = dir.join("overlay.yaml");
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let app = TestApp::new()
+    let app = crate::new_test_app()
         .governance(gov)
         .plugins_dir(dir.clone())
-        .plugins_cfg(crate::config::PluginsCfg::default())
+        .plugins_cfg(busbar_core::config::PluginsCfg::default())
         .overlay_path(overlay)
         .build();
     let router = crate::build_router(app);
@@ -12460,14 +12459,14 @@ async fn drive_plugin_inspect_errors() {
 /// cannot be left behind once its emission starts naming its condition, or its declaration is
 /// deleted). The list can only shrink.
 const COND_WITNESS_DEBT: &[(
-    crate::admin::v1::contract::taxonomy::MethodTag,
+    busbar_core::admin::v1::contract::taxonomy::MethodTag,
     &str,
-    crate::admin::v1::contract::taxonomy::ErrKind,
-    crate::admin::v1::contract::taxonomy::Cond,
+    busbar_core::admin::v1::contract::taxonomy::ErrKind,
+    busbar_core::admin::v1::contract::taxonomy::Cond,
 )] = {
-    use crate::admin::v1::contract::taxonomy::Cond::*;
-    use crate::admin::v1::contract::taxonomy::ErrKind::*;
-    use crate::admin::v1::contract::taxonomy::MethodTag::*;
+    use busbar_core::admin::v1::contract::taxonomy::Cond::*;
+    use busbar_core::admin::v1::contract::taxonomy::ErrKind::*;
+    use busbar_core::admin::v1::contract::taxonomy::MethodTag::*;
     &[
         (Delete, "/groups/{name}", Conflict, BaseDefined),
         (Delete, "/groups/{name}", Conflict, BoundKeys),
@@ -12546,7 +12545,7 @@ const COND_WITNESS_DEBT: &[(
 /// machine set-comparison over every operation at once. There is no endpoint left to be next.
 #[tokio::test]
 async fn declared_error_set_is_exactly_what_the_handlers_emit() {
-    use crate::admin::v1::contract::taxonomy::declared_errors;
+    use busbar_core::admin::v1::contract::taxonomy::declared_errors;
     // Drive every error path the declaration claims. (Other tests contribute to the same registry;
     // calling the drivers here makes the assertion independent of whether they ran.)
     drive_admin_error_surface().await;
@@ -12563,7 +12562,7 @@ async fn declared_error_set_is_exactly_what_the_handlers_emit() {
     // witness obligation is the same obligation.
     busbar_a2a::a2a::verbs::adminverbs_tests::drive_a2a_verb_errors().await;
 
-    let witnessed = crate::admin::v1::contract::taxonomy::observed::snapshot();
+    let witnessed = busbar_core::admin::v1::contract::taxonomy::observed::snapshot();
     // Every (operation, ErrKind) the suite has actually produced, and every (operation, ErrKind,
     // Cond) TRIPLE for the emissions that named their condition. Keyed on the NEUTRAL string form the
     // process-wide substrate ledger stores (so a witness produced through EITHER copy of busbar-core —
@@ -12689,9 +12688,9 @@ async fn declared_error_set_is_exactly_what_the_handlers_emit() {
 /// fails the build the moment it drifts) and every path in it is proven mounted
 /// (`test_admin_v1_openapi_paths_all_resolve`), so keying off it closes the loop: router → doc →
 /// this audit.
-fn documented_operations() -> Vec<(String, crate::admin::v1::contract::taxonomy::MethodTag)> {
-    use crate::admin::v1::contract::taxonomy::MethodTag;
-    let doc: serde_json::Value = serde_json::from_str(&crate::admin::v1::json::openapi_json())
+fn documented_operations() -> Vec<(String, busbar_core::admin::v1::contract::taxonomy::MethodTag)> {
+    use busbar_core::admin::v1::contract::taxonomy::MethodTag;
+    let doc: serde_json::Value = serde_json::from_str(&crate::v1::json::openapi_json())
         .expect("the committed openapi.json parses");
     let paths = doc["paths"]
         .as_object()
@@ -12699,7 +12698,7 @@ fn documented_operations() -> Vec<(String, crate::admin::v1::contract::taxonomy:
     let mut ops = Vec::new();
     for (abs, item) in paths {
         let rel = abs
-            .strip_prefix(crate::admin::v1::contract::ADMIN_PREFIX)
+            .strip_prefix(busbar_core::admin::v1::contract::ADMIN_PREFIX)
             .unwrap_or(abs);
         for key in item.as_object().into_iter().flatten().map(|(k, _)| k) {
             // `x-*` specification extensions share the path-item object with real operations.
@@ -12726,11 +12725,11 @@ fn documented_operations() -> Vec<(String, crate::admin::v1::contract::taxonomy:
 /// `declared_error_set_is_exactly_what_the_handlers_emit`.
 #[test]
 fn rate_limit_doc_table_matches_classifier() {
-    use crate::admin::v1::contract::taxonomy::MethodTag;
+    use busbar_core::admin::v1::contract::taxonomy::MethodTag;
 
     // The doc's `config` row, parsed straight out of the committed file — not retyped here — so
     // editing the row is the only step needed to change what this test expects.
-    let doc = include_str!("../../../../../docs/admin-api.md");
+    let doc = include_str!("../../../../docs/admin-api.md");
     let row = doc
         .lines()
         .find(|l| l.trim_start().starts_with("| config | 10/min |"))
@@ -12764,8 +12763,8 @@ fn rate_limit_doc_table_matches_classifier() {
             matches!(
                 method,
                 MethodTag::Post | MethodTag::Put | MethodTag::Patch | MethodTag::Delete
-            ) && crate::ratelimit::classify_mutation(rel)
-                == crate::ratelimit::MutationClass::Config
+            ) && busbar_core::ratelimit::classify_mutation(rel)
+                == busbar_core::ratelimit::MutationClass::Config
         })
         .collect();
 
@@ -12790,9 +12789,13 @@ fn rate_limit_doc_table_matches_classifier() {
 /// section the doc claims but the parser rejects fails too.
 #[test]
 fn overlay_reset_doc_row_matches_the_section_set() {
-    use crate::config::overlay::OverlaySection;
+    use busbar_core::config::overlay::OverlaySection;
+    // Register the plane config sections (`tools`/`agents`) so `OverlaySection::all()`/`parse` see
+    // them — busbar-core's own `cfg(test)` binary has them as builtins; here the plane testkits must
+    // be installed first (this test builds no `App`, so nothing else triggers the install).
+    crate::ensure_seam();
 
-    let doc = include_str!("../../../../../docs/admin-api.md");
+    let doc = include_str!("../../../../docs/admin-api.md");
     let row = doc
         .lines()
         .find(|l| {
@@ -12854,12 +12857,12 @@ fn overlay_reset_doc_row_matches_the_section_set() {
 /// restart, so a refusal is never audited as a restart that then failed.
 #[tokio::test]
 async fn test_admin_v1_restart_refuses_when_it_cannot_restart() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     // Bracket by seq, not just by action: `AUDIT` is a process-wide ring every admin mutation in
     // the binary writes to, unscoped by principal (every admin-token test shares the SAME fixed
     // operator principal id, so scoping by principal would not distinguish this test's rows from a
     // concurrent sibling's). Rows from THIS test's own restart attempts are bracketed by seq.
-    let baseline_seq = crate::audit_ring::AUDIT
+    let baseline_seq = busbar_core::audit_ring::AUDIT
         .list(1)
         .first()
         .map(|e| e.seq)
@@ -12889,7 +12892,7 @@ async fn test_admin_v1_restart_refuses_when_it_cannot_restart() {
     // rather than gated on an env-var guess -- CI runners were found to genuinely set INVOCATION_ID
     // themselves, which silently skipped this whole assertion block under the old `if unsupervised`
     // env check.
-    let resp = crate::admin::restart::with_forced_unsupervised(|| admin(client.post(&url)).send())
+    let resp = crate::restart::with_forced_unsupervised(|| admin(client.post(&url)).send())
         .await
         .unwrap();
     assert_eq!(
@@ -12938,7 +12941,7 @@ async fn test_admin_v1_restart_refuses_when_it_cannot_restart() {
 
     // Every refusal is audited — the operator's only evidence, since a real restart takes the
     // connection that would have carried the response.
-    let entries = crate::audit_ring::AUDIT.list(crate::audit_ring::MAX_AUDIT_ENTRIES);
+    let entries = busbar_core::audit_ring::AUDIT.list(busbar_core::audit_ring::MAX_AUDIT_ENTRIES);
     let restarts: Vec<_> = entries
         .iter()
         .filter(|e| e.action == "admin.restart" && e.seq > baseline_seq)
@@ -12950,7 +12953,7 @@ async fn test_admin_v1_restart_refuses_when_it_cannot_restart() {
     assert!(
         restarts
             .iter()
-            .all(|e| e.outcome == crate::audit_ring::OUTCOME_REJECTED),
+            .all(|e| e.outcome == busbar_core::audit_ring::OUTCOME_REJECTED),
         "a refused restart must never be recorded as applied: {restarts:?}"
     );
 }
@@ -12962,10 +12965,10 @@ async fn test_admin_v1_restart_refuses_when_it_cannot_restart() {
 /// `page_cursor`) and `list_keys` (its own match arm, a different code path to the same hole).
 #[tokio::test]
 async fn limit_zero_does_not_produce_a_self_referential_cursor() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let app = TestApp::new().governance(gov).build();
+    let app = crate::new_test_app().governance(gov).build();
     let router = crate::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -13008,7 +13011,7 @@ async fn limit_zero_does_not_produce_a_self_referential_cursor() {
         match next {
             None => {} // no further page — fine
             Some(c) => {
-                let decoded = crate::admin::v1::contract::decode_offset_cursor(c)
+                let decoded = busbar_core::admin::v1::contract::decode_offset_cursor(c)
                     .unwrap_or_else(|| panic!("{label}: cursor did not decode: {c}"));
                 assert!(
                     decoded > 0,
@@ -13183,7 +13186,7 @@ async fn named_map_app_opts(
     std::net::SocketAddr,
     tokio::task::JoinHandle<()>,
 ) {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     busbar_mcp::testkit::install_test_seams();
     busbar_a2a::testkit::install_test_seams();
     let (dir, config_path, providers_path) =
@@ -13192,10 +13195,10 @@ async fn named_map_app_opts(
     // resolves for a config with no explicit `config.overlay` block. A named-map mutation rebuilds
     // from disk truth PLUS the on-disk overlay, so a fixture whose live overlay path differed from
     // the resolved one would silently lose every prior API-applied definition on the next mutation.
-    let overlay = dir.join(crate::config::overlay::DEFAULT_OVERLAY_FILENAME);
+    let overlay = dir.join(busbar_core::config::overlay::DEFAULT_OVERLAY_FILENAME);
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let mut builder = TestApp::new()
+    let mut builder = crate::new_test_app()
         .governance(gov)
         .overlay_path(overlay.clone())
         .disk_paths(config_path, providers_path)
@@ -13228,7 +13231,7 @@ async fn named_map_app_opts(
             .unwrap(),
         );
         builder.install_plane_runtime(
-            crate::state::runtime_slot_key("mcp"),
+            busbar_core::state::runtime_slot_key("mcp"),
             busbar_mcp::testkit::mcp_runtime_with_servers(tools),
         );
     }
@@ -13386,7 +13389,7 @@ async fn test_admin_v1_named_maps_list_get_and_put_round_trip() {
 
         // … and DURABLE: the raw definition is in the overlay's `named_maps` section, so a restart
         // replays exactly the document that was PUT.
-        let doc = crate::config::overlay::read(&overlay).expect("overlay written");
+        let doc = busbar_core::config::overlay::read(&overlay).expect("overlay written");
         assert_eq!(
             doc.named_maps[*section][&name], *def,
             "the overlay stores the definition VERBATIM"
@@ -13404,10 +13407,10 @@ async fn test_admin_v1_named_maps_list_get_and_put_round_trip() {
 /// BOTH sections and on BOTH the list and the single read, since one generic handler serves all four.
 #[tokio::test]
 async fn test_admin_v1_named_map_reads_project_settings_keys_never_values() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let app = TestApp::new()
+    let app = crate::new_test_app()
         .governance(gov)
         .identity_provider(
             "corp-oidc",
@@ -13537,10 +13540,10 @@ async fn test_admin_v1_named_map_put_honors_expected_version() {
 /// never from the body, so no definition a caller sends can talk its way past it.
 #[tokio::test]
 async fn test_admin_v1_named_map_rejects_an_under_scoped_caller() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let mut app = TestApp::new()
+    let mut app = crate::new_test_app()
         .governance(gov)
         .export_def(
             "base-metrics",
@@ -13556,7 +13559,7 @@ async fn test_admin_v1_named_map_rejects_an_under_scoped_caller() {
         let mut table = std::collections::BTreeMap::new();
         table.insert(
             "viewers".to_string(),
-            crate::config::RoleBindingCfg {
+            busbar_core::config::RoleBindingCfg {
                 admin_scope: Some("read-only".to_string()),
                 ..Default::default()
             },
@@ -14422,10 +14425,10 @@ async fn drive_named_map_errors() {
     // field on `App`, so a fresh fixture is a fresh budget; raising the limit instead would have
     // made the test pass by weakening the thing it shares with production.
     for section in ["identity-providers", "export", "tools", "agents"] {
-        crate::metrics::init();
+        busbar_core::metrics::init();
         let store = Arc::new(MemoryStore::new());
         let gov = gov_with_signer(store, Some("admintok".to_string()));
-        let app = TestApp::new().governance(gov).build();
+        let app = crate::new_test_app().governance(gov).build();
         let router = crate::build_router(app);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -14718,10 +14721,10 @@ async fn test_admin_v1_named_map_read_flags_an_unparseable_overlay_entry() {
 /// `NamedDefView` had to retract.
 #[tokio::test]
 async fn test_admin_v1_hook_reads_project_settings_keys_never_values() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let mut cfg: crate::config::HookCfg = serde_json::from_value(serde_json::json!({
+    let mut cfg: busbar_core::config::HookCfg = serde_json::from_value(serde_json::json!({
         "kind": "gate",
         "module": "test-hook",
         "timeout_ms": 5,
@@ -14735,7 +14738,7 @@ async fn test_admin_v1_hook_reads_project_settings_keys_never_values() {
     .as_object()
     .unwrap()
     .clone();
-    let app = TestApp::new().governance(gov).hook("baa-gate", cfg).build();
+    let app = crate::new_test_app().governance(gov).hook("baa-gate", cfg).build();
     let router = crate::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();

@@ -63,9 +63,9 @@ pub struct AuditEntry {
     pub principal: String,
     /// The preceding entry's `hash` (empty for the first entry of the process, or the oldest retained
     /// entry whose predecessor was pruned).
-    pub(crate) prev_hash: String,
+    pub prev_hash: String,
     /// `sha256(prev_hash | seq | ts | action | resource | outcome | principal)`: the tamper-evidence digest.
-    pub(crate) hash: String,
+    pub hash: String,
     /// TRUE only for entries THIS process appended live (via `record_by` on this ring, or the seam's
     /// live emit). Seeded entries — restored from the durable store — are FALSE. `#[serde(skip)]` gives
     /// the right default (false) on the encoded/store-seeding paths; the live-append sites set it true
@@ -77,19 +77,19 @@ pub struct AuditEntry {
     /// seam↔ring provenance marker those witnesses assert on.
     #[serde(skip)]
     #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) recorded_here: bool,
+    pub recorded_here: bool,
 }
 
 /// The fields a caller supplies for one admin audit entry. `seq`, `prev_hash` and `hash` are NOT
 /// here: they are the chain's own business, allocated under the ring lock and sealed by
 /// [`crate::audit::seal`], so no call site can supply a sequence number or a link of its own
 /// choosing.
-pub(crate) struct AuditInput {
-    pub(crate) ts: u64,
-    pub(crate) action: String,
-    pub(crate) resource: String,
-    pub(crate) outcome: String,
-    pub(crate) principal: String,
+pub struct AuditInput {
+    pub ts: u64,
+    pub action: String,
+    pub resource: String,
+    pub outcome: String,
+    pub principal: String,
 }
 
 /// THE SCOPE OF THIS CHAIN: the whole log. Other chains elsewhere key their scope per PRINCIPAL or
@@ -255,7 +255,7 @@ impl AuditLog {
     /// restart-simulation seam the ring tests drive. Replaces the current contents and resumes the
     /// sequence AFTER the highest restored seq, so post-restart entries chain on without seq reuse.
     #[cfg(test)]
-    pub(crate) fn load(&self, mut entries: Vec<AuditEntry>) {
+    pub fn load(&self, mut entries: Vec<AuditEntry>) {
         // `load` IS the seeding path by definition: whatever it is handed came from OUTSIDE this
         // process's live append stream, even when the `Vec` was produced by this process's OWN
         // `export()`. `#[serde(skip)]` only clears provenance on an encoded round-trip; this path
@@ -276,7 +276,7 @@ impl AuditLog {
     /// entry's `prev_hash` may point at a digest that has been pruned and only its self-digest can
     /// be checked. Returns `true` if intact.
     #[cfg(test)]
-    pub(crate) fn verify(&self) -> bool {
+    pub fn verify(&self) -> bool {
         let q = self.entries.lock().unwrap_or_else(|e| e.into_inner());
         let window: Vec<AuditEntry> = q.iter().cloned().collect();
         crate::audit::verify_window(&window).is_ok()
@@ -289,7 +289,7 @@ impl AuditLog {
     /// seam's [`crate::plane::auditlog::AUDIT_LOG`]. This in-process ring's `list_filtered`/`list`
     /// remain the direct-ring read the audit unit tests still assert on.
     #[allow(dead_code)]
-    pub(crate) fn list_filtered(
+    pub fn list_filtered(
         &self,
         offset: usize,
         limit: usize,
@@ -308,8 +308,8 @@ impl AuditLog {
     }
 
     /// The most-recent `limit` entries, newest first (unfiltered).
-    #[cfg(test)]
-    pub(crate) fn list(&self, limit: usize) -> Vec<AuditEntry> {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn list(&self, limit: usize) -> Vec<AuditEntry> {
         self.list_filtered(0, limit, None, None)
     }
 }

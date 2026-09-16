@@ -171,7 +171,7 @@ pub(crate) struct ExitPath {
 #[cfg(feature = "root-admin")]
 impl Drop for ExitPath {
     fn drop(&mut self) {
-        busbar_core::admin::restart::UnitDrain::of_unit(self.unit).release();
+        busbar_admin::restart::UnitDrain::of_unit(self.unit).release();
     }
 }
 
@@ -411,7 +411,7 @@ impl RouterDispatch {
                     // handler, which knows nothing about the composition it is answering under —
                     // so the composition says, here, which unit the handler's ask belongs to.
                     let unit = request.unit;
-                    let answer = busbar_core::admin::restart::UnitDrain::of_unit(unit)
+                    let answer = busbar_admin::restart::UnitDrain::of_unit(unit)
                         .scoping(call(inner, &request))
                         .await;
                     let _ = reply.send(answer);
@@ -586,7 +586,7 @@ pub fn mount(
     // response — the restart — hands that effect to it instead of starting it mid-flight. Declared
     // here because this is where the loop is put in front of the surface: the operation's own
     // surface is unchanged and does not know which composition it is answering under.
-    busbar_core::admin::restart::drain_released_at_exit();
+    busbar_admin::restart::drain_released_at_exit();
     let dispatch: Arc<dyn AdminDispatch> = Arc::new(RouterDispatch::new(inner.clone(), &runtime));
     let node = Arc::new(AdminNode::new(kernel, build_units(dispatch)));
 

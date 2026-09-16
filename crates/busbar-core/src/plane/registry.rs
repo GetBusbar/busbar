@@ -109,7 +109,7 @@ pub struct BootCtx {
 impl BootCtx {
     /// THE HYDRATE-PHASE CONTEXT: the plane-narrowed store and the freshly-built app. No listener
     /// exists yet, so there is no handle, no shutdown broadcast and no card-issuer key to publish.
-    pub(crate) fn for_hydrate(
+    pub fn for_hydrate(
         store: Option<std::sync::Arc<dyn crate::plane::store::PlaneStore>>,
         app: &std::sync::Arc<crate::state::App>,
     ) -> Self {
@@ -123,7 +123,7 @@ impl BootCtx {
 
     /// THE START-PHASE CONTEXT: the live handle and the PUBLIC card-issuer key (computed core-side;
     /// the seed never crosses). A start hook restores nothing, so no store.
-    pub(crate) fn for_start(
+    pub fn for_start(
         handle: &std::sync::Arc<crate::state::AppHandle>,
         card_issuer: Option<CardIssuer>,
     ) -> Self {
@@ -245,7 +245,7 @@ impl PlaneBootCtx for BootCtx {
 impl BootCtx {
     /// A ctx carrying no phase context, for the boot-hook FOLD tests (R2-boot): a hook that only
     /// returns `Err` — or a `None`-hook plane — reads nothing off it.
-    pub(crate) fn stub() -> BootCtx {
+    pub fn stub() -> BootCtx {
         BootCtx {
             store: None,
             app: None,
@@ -280,12 +280,12 @@ static BUILTIN_PLANE_DECLS: &[&PlaneDecl] = &[];
 /// a loader will do differently. Empty in production and under `test-support`; under core's own
 /// `#[cfg(test)]` binary it is the test-module list, so no plane crate is named in neutral source.
 #[cfg(not(test))]
-pub(crate) fn builtin_plane_decls() -> &'static [&'static PlaneDecl] {
+pub fn builtin_plane_decls() -> &'static [&'static PlaneDecl] {
     BUILTIN_PLANE_DECLS
 }
 
 #[cfg(test)]
-pub(crate) fn builtin_plane_decls() -> &'static [&'static PlaneDecl] {
+pub fn builtin_plane_decls() -> &'static [&'static PlaneDecl] {
     registry_tests::TEST_BUILTIN_PLANE_DECLS
 }
 
@@ -295,7 +295,7 @@ pub(crate) fn builtin_plane_decls() -> &'static [&'static PlaneDecl] {
 /// the neutral-purity lint excludes, so the plane crate's name that builds it stays OFF this neutral
 /// source.
 #[cfg(test)]
-pub(crate) fn default_mcp_test_runtime() -> std::sync::Arc<dyn std::any::Any + Send + Sync> {
+pub fn default_mcp_test_runtime() -> std::sync::Arc<dyn std::any::Any + Send + Sync> {
     registry_tests::default_mcp_test_runtime()
 }
 
@@ -310,7 +310,7 @@ static INSTALLED: std::sync::OnceLock<&'static [&'static PlaneDecl]> = std::sync
 
 /// INSTALL PLANE DECLARATIONS — the composition root's one write into the plane axis, and the seam
 /// an extracted plane crate registers through. Exactly `crate::proto::registry::install_protocols`'
-/// shape and contract, on the plane axis. `pub`, not `pub(crate)`: the `busbar` binary crate is the
+/// shape and contract, on the plane axis. `pub`, not `pub`: the `busbar` binary crate is the
 /// composition root and calls this from `main` (`register_planes`), before any config load or
 /// validation touches a plane.
 ///
@@ -347,7 +347,7 @@ pub fn install_planes(decls: &'static [&'static PlaneDecl]) {
 /// registrations skipped audibly. Split from [`plane_decls`]' `OnceLock` so its order and skip
 /// semantics are a function a test can drive — the process singleton can only ever be initialised
 /// once per test binary, which would leave these rules provable only by booting binaries.
-pub(crate) fn merged_boot_plane_decls(
+pub fn merged_boot_plane_decls(
     installed: &[&'static PlaneDecl],
     builtins: &[&'static PlaneDecl],
 ) -> Vec<&'static PlaneDecl> {
@@ -417,7 +417,7 @@ pub(crate) fn merged_boot_plane_decls(
 /// edits are one change, so at no instant is a section either owned by nobody or claimed by two. Per
 /// the reconciled-audit scope, `pools` and `providers` stay neutral in core and are NEVER removed
 /// here; only `rate_card`, `limits` and `models`-capabilities are evictable in later stages.
-pub(crate) const CORE_OWNED_CONCRETE_SECTIONS: &[&str] =
+pub const CORE_OWNED_CONCRETE_SECTIONS: &[&str] =
     &["providers", "models", "pools", "rate_card", "limits"];
 
 /// THE OPERATOR-VISIBLE LAYERING ORDER of the planes, by key — the order `config_sections` reports
@@ -447,7 +447,7 @@ fn canonical_key_order(
 
 /// The process plane list, in fold order. One acquire-load once initialised.
 #[cfg(not(any(test, feature = "test-support")))]
-pub(crate) fn plane_decls() -> &'static [&'static PlaneDecl] {
+pub fn plane_decls() -> &'static [&'static PlaneDecl] {
     PLANES.get_or_init(|| {
         let installed = INSTALLED.get().copied().unwrap_or(&[]);
         merged_boot_plane_decls(installed, builtin_plane_decls())
@@ -482,7 +482,7 @@ static TEST_MEMO: std::sync::Mutex<Option<TestMemoEntry>> = std::sync::Mutex::ne
 pub use busbar_substrate::plane::registry::register_test_plane;
 
 #[cfg(any(test, feature = "test-support"))]
-pub(crate) fn plane_decls() -> &'static [&'static PlaneDecl] {
+pub fn plane_decls() -> &'static [&'static PlaneDecl] {
     let reg = busbar_substrate::plane::registry::test_registered_planes();
     let installed = INSTALLED.get().copied().unwrap_or(&[]);
     let want = (installed.len(), reg.len());
@@ -507,7 +507,7 @@ pub(crate) fn plane_decls() -> &'static [&'static PlaneDecl] {
 /// resolved back to the key string via [`plane_key_at`]. This is the "registration index → key"
 /// assignment the plane ABI keys on, in place of a hard-coded `0`/`1` numbering: core spells no plane
 /// token; the number is only a position in the process registry.
-pub(crate) fn plane_key_index(key: &str) -> u8 {
+pub fn plane_key_index(key: &str) -> u8 {
     plane_decls()
         .iter()
         .position(|d| d.key == key)
@@ -528,7 +528,7 @@ pub(crate) fn plane_key_index(key: &str) -> u8 {
 /// kind up by one so a `pool` grant would wrongly resolve a different plane's scope kind (entitlement
 /// escalation). Folding a re-declared base onto its existing index 0 keeps each grant target mapped to
 /// the RIGHT plane's kind.
-pub(crate) fn scope_kind_at(idx: u32) -> Option<&'static str> {
+pub fn scope_kind_at(idx: u32) -> Option<&'static str> {
     // `"pool"` is the neutral base kind (not a plane token); the plane kinds follow it as data,
     // de-duplicated in first-seen order so a re-declared base does not create a phantom index.
     let mut seen: Vec<&'static str> = Vec::new();
@@ -554,7 +554,7 @@ pub(crate) fn scope_kind_at(idx: u32) -> Option<&'static str> {
 /// entitlement escalation closed: if the encode side and the [`scope_kind_at`] decode side computed
 /// the base-first dedup independently they could drift, and a `pool` grant could resolve a
 /// different plane's scope-kind target. Fail-closed (`None`) for a kind no registered plane declares.
-pub(crate) fn scope_kind_index(kind: &str) -> Option<u32> {
+pub fn scope_kind_index(kind: &str) -> Option<u32> {
     // The identical sequence `scope_kind_at` indexes: the neutral base kind first, then each plane's
     // declared kinds, de-duplicated in first-seen order. `position` over it is the inverse of `nth`.
     let mut seen: Vec<&'static str> = Vec::new();
@@ -579,7 +579,7 @@ pub(crate) fn scope_kind_index(kind: &str) -> Option<u32> {
 /// the inverse of [`plane_key_index`], so a host vtable slot that received the opaque numeric handle
 /// resolves it back to the key string it looks its gate set / `ingress_protocol` label up by, naming
 /// no plane token.
-pub(crate) fn plane_key_at(idx: u8) -> Option<&'static str> {
+pub fn plane_key_at(idx: u8) -> Option<&'static str> {
     plane_decls().get(idx as usize).map(|d| d.key)
 }
 
@@ -590,7 +590,7 @@ pub(crate) fn plane_key_at(idx: u8) -> Option<&'static str> {
 /// resolution in busbar, and a second one is a second answer to which protocols exist". That rule
 /// is right and is not weakened to make room for this: plane resolution is a different axis and
 /// says so in its name, so the census keeps meaning what it means.
-pub(crate) fn plane_decl_for(key: &str) -> Option<&'static PlaneDecl> {
+pub fn plane_decl_for(key: &str) -> Option<&'static PlaneDecl> {
     plane_decls().iter().copied().find(|d| d.key == key)
 }
 
@@ -599,7 +599,7 @@ pub(crate) fn plane_decl_for(key: &str) -> Option<&'static PlaneDecl> {
 /// without naming the plane. Resolves through [`plane_decls`] (installed + built-ins, canonically
 /// ordered) rather than the built-ins alone, so an EXTRACTED plane the composition root installed
 /// is found on the same footing as a still-built-in one.
-pub(crate) fn plane_decl_for_config_section(section: &str) -> Option<&'static PlaneDecl> {
+pub fn plane_decl_for_config_section(section: &str) -> Option<&'static PlaneDecl> {
     plane_decls()
         .iter()
         .copied()
@@ -624,7 +624,7 @@ pub(crate) fn plane_decl_for_config_section(section: &str) -> Option<&'static Pl
 ///   admission would serve an audience-less — hence unauthenticated — resource. That is refused here
 ///   with a named error rather than mounted, so a future plane cannot lower its own bar to nothing by
 ///   omitting an admission.
-pub(crate) fn build_dispatch(
+pub fn build_dispatch(
     decls: &[&'static PlaneDecl],
     slots: &std::collections::BTreeMap<&'static str, &dyn std::any::Any>,
 ) -> Result<super::PlaneDispatch, String> {

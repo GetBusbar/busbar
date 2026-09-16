@@ -61,9 +61,8 @@ const MIGRATED_FILES: &[&str] = &[
     "src/plane/approvals.rs",
     "src/plane/quarantine.rs",
     "src/calllog.rs",
-    "src/admin/mod.rs",
-    "src/admin/v1/service.rs",
-    "src/admin/v1/json/handlers.rs",
+    // `admin/mod.rs`, `admin/v1/service.rs`, `admin/v1/json/handlers.rs` were extracted to the
+    // `busbar-admin` crate (1.6.0); their uncoded-diagnostic floor is enforced there now.
     "src/store/planes.rs",
     "src/store/in_memory/mod.rs",
     "src/store/in_memory/breaker.rs",

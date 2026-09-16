@@ -24,23 +24,23 @@ use crate::diagnostics::{
 /// Production modules that need it where layering prohibits the import (e.g. `sigv4.rs`) keep a
 /// private copy, as before.
 ///
-/// The re-export is `pub(crate)`: the canonical public spelling is the substrate's own, and a
+/// The re-export is `pub`: the canonical public spelling is the substrate's own, and a
 /// caller outside this crate names it there. Nothing outside busbar-core reaches this path.
-pub(crate) use busbar_substrate::governance::SECS_PER_DAY;
+pub use busbar_substrate::governance::SECS_PER_DAY;
 
 // ── Window sentinel tokens (nouns; matched in `budget_window`). The SAME strings are the
 // `groups:` config vocabulary (`per: minute|hour|day|month|total`), the ledger-bucket window
 // suffix, and the metrics/error dimension - one vocabulary everywhere. ─────────────────────────────
 /// The "all-time" window sentinel: a single window from epoch 0.
-pub(crate) const WINDOW_TOTAL: &str = "total";
+pub const WINDOW_TOTAL: &str = "total";
 /// The "day" window sentinel: resets at UTC midnight.
-pub(crate) const WINDOW_DAY: &str = "day";
+pub const WINDOW_DAY: &str = "day";
 /// The "month" window sentinel: resets at UTC first-of-month.
-pub(crate) const WINDOW_MONTH: &str = "month";
+pub const WINDOW_MONTH: &str = "month";
 /// The "minute" window sentinel: resets each UTC minute.
-pub(crate) const WINDOW_MINUTE: &str = "minute";
+pub const WINDOW_MINUTE: &str = "minute";
 /// The "hour" window sentinel: resets each UTC hour.
-pub(crate) const WINDOW_HOUR: &str = "hour";
+pub const WINDOW_HOUR: &str = "hour";
 
 // ── Virtual-key / bearer-secret formats ──────────────────────────────────────────────────────────
 /// The `"vk_"` prefix prepended to the 16-hex-char hash prefix to form a virtual-key id.
@@ -58,36 +58,36 @@ const SK_SECRET_PREFIX: &str = "sk-bb-";
 /// a token's `generation` claim (`generation_matches`) so a rotation can be detected. Every live key
 /// is a signed-token binding (1.5.0 retired the legacy hashed-secret credential shape entirely — see
 /// `docs/migration-1.5.md`), so this is the only `generation_hash` shape that exists.
-pub(crate) const BINDING_MARKER_PREFIX: &str = "binding:";
+pub const BINDING_MARKER_PREFIX: &str = "binding:";
 
 /// The `group:`-less GROUP NAMESPACE for a SELF-SERVE (browser/token-exchange) key: every key a
 /// principal mints for itself via `POST /auth/token` is bound to `user:<sub>`. Kept distinct so the
 /// anti-sprawl `check_key_cap` can EXCLUDE self-serve keys (a principal always has exactly one — the
 /// mint is an idempotent upsert on the current epoch — so it must never consume an admin key cap),
 /// and so the deterministic subject id derives under a stable, non-attacker-chosen prefix.
-pub(crate) const SELF_KEY_GROUP_PREFIX: &str = "user:";
+pub const SELF_KEY_GROUP_PREFIX: &str = "user:";
 
 /// The [`busbar_api::VirtualKey::binding_mode`] recorded on a SELF-SERVE (personal) key: it is the
 /// PERSONAL user-bound token (records the IdP subject for attribution, short-lived). Matches the
 /// `auth.policy` `BindingMode::UserBound` wire spelling (`"user-bound"`). App/service tokens minted
 /// through the admin API carry a different (or absent) mode.
-pub(crate) const SELF_KEY_BINDING_MODE: &str = "user-bound";
+pub const SELF_KEY_BINDING_MODE: &str = "user-bound";
 
 /// The [`busbar_api::VirtualKey::binding_mode`] recorded on an ADMIN-minted APP/service token: it is
 /// TIME-BOUND (bounded by its `exp`, no IdP-subject tie), the app-token lifecycle that deliberately
 /// OUTLIVES its minter (review H2/H3). Matches the `auth.policy` `BindingMode::TimeBound` wire
 /// spelling (`"time-bound"`). Named `_APP` to contrast the self-serve personal `user-bound` key.
-pub(crate) const SELF_KEY_BINDING_MODE_APP: &str = "time-bound";
+pub const SELF_KEY_BINDING_MODE_APP: &str = "time-bound";
 
 /// The `generation_hash` marker for a signed-token binding at a given rotation generation.
-pub(crate) fn binding_marker(id: &str, generation: &str) -> String {
+pub fn binding_marker(id: &str, generation: &str) -> String {
     format!("{BINDING_MARKER_PREFIX}{id}:{generation}")
 }
 
 /// The rotation GENERATION carried by a binding row's `generation_hash` marker, if any. `None` for a
 /// pre-generation binding marker (`binding:<id>`, minted before rotation carried a generation) —
 /// only a token likewise carrying no generation may verify against it.
-pub(crate) fn binding_generation(generation_hash: &str) -> Option<&str> {
+pub fn binding_generation(generation_hash: &str) -> Option<&str> {
     generation_hash
         .strip_prefix(BINDING_MARKER_PREFIX)?
         .split_once(':')
@@ -98,7 +98,7 @@ pub(crate) fn binding_generation(generation_hash: &str) -> Option<&str> {
 /// the rotation gate on the signed-token verify path. Exact equality including the `None` case:
 /// a pre-generation token (`None`) verifies only against a pre-generation binding (`None`), so a
 /// rotation can never be defeated by simply omitting the claim.
-pub(crate) fn generation_matches(generation_hash: &str, presented: Option<&str>) -> bool {
+pub fn generation_matches(generation_hash: &str, presented: Option<&str>) -> bool {
     binding_generation(generation_hash) == presented
 }
 
@@ -317,7 +317,7 @@ pub struct AdmitGrant {
 impl AdmitGrant {
     /// TEST-ONLY: how many gauges this grant holds.
     #[cfg(test)]
-    pub(crate) fn held(&self) -> usize {
+    pub fn held(&self) -> usize {
         self.gauges.len()
     }
 }
@@ -346,9 +346,9 @@ impl std::fmt::Debug for AdmitGrant {
 /// vocabulary a plane reads it back through. `crate::governance::DerivedUsage` resolves to the very
 /// same type it always did.
 ///
-/// The re-export is `pub(crate)`: the canonical public spelling is the substrate's own, and a
+/// The re-export is `pub`: the canonical public spelling is the substrate's own, and a
 /// caller outside this crate names it there. Nothing outside busbar-core reaches this path.
-pub(crate) use busbar_substrate::governance::DerivedUsage;
+pub use busbar_substrate::governance::DerivedUsage;
 
 /// THE REVOCATION STALENESS WINDOW (seconds). The in-memory denylist is a CACHE of the durable
 /// store's revocation set, not the truth: every auth path re-reads the store denylist when its copy
@@ -370,7 +370,7 @@ pub(crate) use busbar_substrate::governance::DerivedUsage;
 /// closes. It is deliberately a CONSTANT, not a knob: an operator cannot accidentally widen a
 /// security window, and there is no deployment for which "revocation lands within 5 seconds" is
 /// wrong.
-pub(crate) const REVOCATION_SYNC_TTL_SECS: u64 = 5;
+pub const REVOCATION_SYNC_TTL_SECS: u64 = 5;
 
 /// Number of shards for the per-key enforcement maps (`rate`, `budget`, `token_spend_carry`). A
 /// power of two so `hash & (N-1)` selects the shard with a mask (no modulo). 64 keeps lock
@@ -518,7 +518,7 @@ struct GovCaches {
 /// [`GovCaches::by_credential`]'s doc for the shape's reasoning. Named so clippy's
 /// `type_complexity` lint (and every future reader) sees one name instead of the raw nested type
 /// at every call site.
-pub(crate) type CredentialIndex = HashMap<(String, String), (Arc<VirtualKey>, CredentialSecret)>;
+pub type CredentialIndex = HashMap<(String, String), (Arc<VirtualKey>, CredentialSecret)>;
 
 /// Per-instance governance runtime: the durable `Store` plus an in-memory key cache (hashed-secret
 /// → key) so validation on the hot path is a map lookup, not a DB round-trip. Held in `App`
@@ -614,7 +614,7 @@ pub struct GovState {
 /// The busbar signing key as ONE unit: the mint-side signer and the verify-side keyset derived
 /// from it. Swapped atomically by `GovState::set_signing_key`, so a reload can never leave the
 /// engine minting under one key while verifying under another.
-pub(crate) struct SigningMaterial {
+pub struct SigningMaterial {
     signer: crate::governance::signing::TokenSigner,
     verifier: crate::governance::signing::TokenVerifier,
 }
@@ -633,38 +633,38 @@ impl SigningMaterial {
 /// exactly one bearer-credential shape — a signed token — so rotation has exactly one outcome; the
 /// legacy hashed-secret rotation arm this type used to carry was removed with the legacy verify
 /// path itself.)
-pub(crate) struct RotatedCredential {
-    pub(crate) key: VirtualKey,
-    pub(crate) token: String,
-    pub(crate) exp: u64,
+pub struct RotatedCredential {
+    pub key: VirtualKey,
+    pub token: String,
+    pub exp: u64,
 }
 
 // The mint-parameter struct (`NewKeySpec`) — pure auth data, no `App`/`Store` — moved to the neutral
 // substrate so a plane crate names it without reaching into busbar-core; re-exported here so every
-// `crate::governance::NewKeySpec` construction site is unchanged. `pub(crate)`: the canonical
+// `crate::governance::NewKeySpec` construction site is unchanged. `pub`: the canonical
 // public spelling is the substrate's own, and nothing outside busbar-core reaches this path.
-pub(crate) use busbar_substrate::governance::NewKeySpec;
+pub use busbar_substrate::governance::NewKeySpec;
 
-pub(crate) mod revocation;
+pub mod revocation;
 // The RESOLVED runtime mint policy (`auth.policy:`) — de-aliased out of `admin` (1.6.0, stage 2a):
 // core governance/config infrastructure read on the hot mint path, not admin-API surface.
-pub(crate) mod mint_policy;
+pub mod mint_policy;
 // Group auto-provisioning (`plan_mint_group`/`persist_provisioned_group`/`build_with_group`) — the
 // config-apply-transaction's governance-group-provisioning LOGIC, de-aliased out of `admin` (1.6.0,
 // stage 2a) so `auth::self_keys` (core) no longer reaches into the admin namespace to provision a
 // self-serve key's personal budget group.
-pub(crate) mod group_provision;
+pub mod group_provision;
 // The busbar-SIGNED token crypto (signer, stateless verifier, claims, prefix/kid constants) lives
 // in the neutral substrate. This crate held a one-line `signing.rs` that re-exported it `pub`; the
-// module itself is re-exported here instead, `pub(crate)`, so every in-core
+// module itself is re-exported here instead, `pub`, so every in-core
 // `crate::governance::signing::…` path resolves to exactly the same items and nothing outside
 // busbar-core reaches them through this crate.
-pub(crate) use busbar_substrate::governance::signing;
+pub use busbar_substrate::governance::signing;
 mod state;
 
 /// Which self-serve mint operation [`mint_self_offloaded`] should run on the blocking pool.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SelfMintOp {
+pub enum SelfMintOp {
     Issue,
     Refresh,
 }
@@ -687,7 +687,7 @@ pub(crate) enum SelfMintOp {
 /// `GovState::refresh_self` directly from an `async fn` on the reactor. This is NOT for the hot
 /// data-plane proxy path: that path performs no per-request store I/O (metering is write-behind,
 /// flushed on its own `spawn_blocking` tick), so it must never be wrapped in `spawn_blocking`.
-pub(crate) async fn mint_self_offloaded(
+pub async fn mint_self_offloaded(
     gov: Arc<GovState>,
     op: SelfMintOp,
     user_sub: String,
@@ -719,7 +719,7 @@ pub(crate) async fn mint_self_offloaded(
 /// Pool semantics: a binding that OMITS `allowed_pools` grants ALL pools; lists union.
 /// Limits come ONLY from the bound `group:` (keys/principals carry no inline caps); with several
 /// bound groups the first in role order wins (one group per principal - the chain is a tree).
-pub(crate) fn synthesize_principal_key(
+pub fn synthesize_principal_key(
     principal: &crate::auth::Principal,
     bindings: Option<&std::collections::BTreeMap<String, crate::config::RoleBindingCfg>>,
 ) -> Option<Arc<VirtualKey>> {
@@ -809,9 +809,9 @@ pub(crate) fn synthesize_principal_key(
 /// so an extracted plane crate names it without a path back to core; re-exported here so every
 /// in-core call site (`governance::PlaneRequestCtx`, and the [`GovCtx`] alias) is unchanged.
 ///
-/// The re-export is `pub(crate)`: the canonical public spelling is `busbar_api::PlaneRequestCtx`,
+/// The re-export is `pub`: the canonical public spelling is `busbar_api::PlaneRequestCtx`,
 /// and a caller outside this crate names it there. Nothing outside busbar-core reaches this path.
-pub(crate) use busbar_api::PlaneRequestCtx;
+pub use busbar_api::PlaneRequestCtx;
 
 /// The name core uses internally for the resolved governance context. Core owns the governance
 /// concept and keeps its own spelling; a plane names [`busbar_api::PlaneRequestCtx`] instead so an
@@ -897,13 +897,13 @@ fn generate_aws_secret_access_key() -> Result<String, getrandom::Error> {
 
 /// Whether `key` may target `pool` (an OMITTED grant = all pools; an explicit list is
 /// exhaustive; an explicit `[]` = NO pools). Delegates to the contract crate's encoding.
-pub(crate) fn pool_allowed(key: &VirtualKey, pool: &str) -> bool {
+pub fn pool_allowed(key: &VirtualKey, pool: &str) -> bool {
     key.scope_allowed("pool", pool)
 }
 
 /// The epoch start of the window containing `now` for a given window word (nouns): `total` = a
 /// single all-time window (0); `day` = UTC midnight; `month` = UTC first-of-month.
-pub(crate) fn budget_window(period: &str, now: u64) -> u64 {
+pub fn budget_window(period: &str, now: u64) -> u64 {
     match period {
         WINDOW_MINUTE => now / 60 * 60,
         WINDOW_HOUR => now / 3600 * 3600,
@@ -931,7 +931,7 @@ pub(crate) fn budget_window(period: &str, now: u64) -> u64 {
 /// The epoch at which `period`'s window containing `now` ROLLS to the next window - the
 /// `Retry-After` source for a windowed-limit rejection. `None` for `total` (never rolls) and for
 /// an unrecognized word (backstopped to `total` above).
-pub(crate) fn window_end(period: &str, now: u64) -> Option<u64> {
+pub fn window_end(period: &str, now: u64) -> Option<u64> {
     match period {
         WINDOW_MINUTE => Some(now / 60 * 60 + 60),
         WINDOW_HOUR => Some(now / 3600 * 3600 + 3600),
@@ -973,43 +973,43 @@ fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
 // relocated plane's credential lowering. Neither reaches this path any
 // more — every caller outside busbar-core names `busbar_api::{Store, VirtualKey}` directly — so the
 // two join the crate-internal list below rather than standing as a second public name for one type.
-pub(crate) use busbar_api::{
+pub use busbar_api::{
     CredentialMeta, CredentialSecret, MeteringDelta, MeteringRow, SecretForm, Store, StoreError,
     StoreResult, UsageDelta, VirtualKey,
 };
 // The full-ledger record is consumed only by TEST assertions (production reads go through the
 // derived views); scoping the re-export keeps the release build warning-free.
 #[cfg(test)]
-pub(crate) use busbar_api::UsageLedger;
+pub use busbar_api::UsageLedger;
 // `ScopeRef` is constructed directly via `busbar_api::ScopeRef` on every production call site
 // (cost.rs, config/groups.rs, governance/state.rs); this re-export exists only so test code that
 // does `use super::*` from within `governance::tests` can name it unqualified, same reasoning as
 // `UsageLedger` above.
 #[cfg(test)]
-pub(crate) use busbar_api::ScopeRef;
+pub use busbar_api::ScopeRef;
 
 // The metering-bucket time base (`METERING_BUCKET_SECS` + the `metering_bucket` floor fn below) is
 // pure arithmetic — moved to the neutral substrate so a plane crate names it without reaching into
 // busbar-core; both re-exported here so every `crate::governance::…` caller is unchanged.
-// `pub(crate)`: the canonical public spelling is the substrate's own, and nothing outside
+// `pub`: the canonical public spelling is the substrate's own, and nothing outside
 // busbar-core reaches this path.
-pub(crate) use busbar_substrate::governance::{metering_bucket, METERING_BUCKET_SECS};
+pub use busbar_substrate::governance::{metering_bucket, METERING_BUCKET_SECS};
 
 /// One `pending_metering` entry: the same five counters `MeteringDelta` carries, accumulated
 /// in-memory across every `record_metering` call that lands on this key before the next flush.
 #[derive(Default, Clone, Copy)]
-pub(crate) struct MeterCounts {
-    pub(crate) requests: u64,
-    pub(crate) tokens_input: u64,
-    pub(crate) tokens_output: u64,
-    pub(crate) tokens_cache_read: u64,
-    pub(crate) tokens_cache_write: u64,
+pub struct MeterCounts {
+    pub requests: u64,
+    pub tokens_input: u64,
+    pub tokens_output: u64,
+    pub tokens_cache_read: u64,
+    pub tokens_cache_write: u64,
 }
 
 impl MeterCounts {
     /// Accumulate `other` into `self`, saturating each counter — the one place metering cells are
     /// merged, so accrual and flush-retry both add usage the same way and neither can wrap.
-    pub(crate) fn merge(&mut self, other: MeterCounts) {
+    pub fn merge(&mut self, other: MeterCounts) {
         self.requests = self.requests.saturating_add(other.requests);
         self.tokens_input = self.tokens_input.saturating_add(other.tokens_input);
         self.tokens_output = self.tokens_output.saturating_add(other.tokens_output);
@@ -1025,7 +1025,7 @@ impl MeterCounts {
 /// The upsert key every metering cell is aggregated under: `(key_id, bucket, model, provider)`, the
 /// store's own metering key. Named so the accumulator and its flush read as one type, not a raw tuple
 /// repeated at every call site.
-pub(crate) type MeterKey = (String, u64, String, String);
+pub type MeterKey = (String, u64, String, String);
 
 /// The cap on how many distinct [`MeterKey`] cells may sit unflushed in `pending_metering` at once.
 ///
@@ -1035,24 +1035,24 @@ pub(crate) type MeterKey = (String, u64, String, String);
 /// `record_metering` keeps adding new ones: without a cap that grows without bound. The bound is
 /// generous so a real key population never hits it; overflow past it is a degraded-mode signal, not a
 /// steady state.
-pub(crate) const MAX_PENDING_METERING: usize = 262_144;
+pub const MAX_PENDING_METERING: usize = 262_144;
 
 /// The per-SHARD slice of [`MAX_PENDING_METERING`]. The accumulator is sharded [`GOV_SHARDS`] ways
 /// (see [`PendingMetering`]), and each shard bounds itself independently, so the whole-map bound is
 /// this times the shard count — i.e. back to `MAX_PENDING_METERING` (plus at most one overflow
 /// sentinel per shard per bucket). Splitting the cap per shard keeps the aggregate bound unchanged
 /// while letting every shard enforce it under its own lock alone.
-pub(crate) const MAX_PENDING_METERING_PER_SHARD: usize = MAX_PENDING_METERING / GOV_SHARDS;
+pub const MAX_PENDING_METERING_PER_SHARD: usize = MAX_PENDING_METERING / GOV_SHARDS;
 
 /// The `key_id` an OVERFLOW cell is coalesced under when the accumulator is at [`MAX_PENDING_METERING`].
 /// A sentinel, not a real key: its purpose is to preserve the day's billable TOTALS when per-key
-/// attribution can no longer be held in memory, never to masquerade as a customer key. `pub(crate)`
+/// attribution can no longer be held in memory, never to masquerade as a customer key. `pub`
 /// so the flush and the tests can name it.
-pub(crate) const METERING_OVERFLOW_KEY_ID: &str = "__busbar_pending_overflow__";
+pub const METERING_OVERFLOW_KEY_ID: &str = "__busbar_pending_overflow__";
 
 /// The model/provider label an overflow cell carries — deliberately not a real model or provider, so
 /// the sentinel row is unmistakable in a usage read.
-pub(crate) const METERING_OVERFLOW_LABEL: &str = "__aggregated__";
+pub const METERING_OVERFLOW_LABEL: &str = "__aggregated__";
 
 /// Accrue `add` into the metering cell for `key`, holding the accumulator BOUNDED at
 /// [`MAX_PENDING_METERING`] distinct cells.
@@ -1066,7 +1066,7 @@ pub(crate) const METERING_OVERFLOW_LABEL: &str = "__aggregated__";
 /// path) and `flush_metering`'s failure re-queue call, so both bound the map identically. `cap` is
 /// the bound for THIS map — the whole map for the single-lock case, or one shard's slice
 /// ([`MAX_PENDING_METERING_PER_SHARD`]) when called under a shard lock.
-pub(crate) fn accrue_pending(
+pub fn accrue_pending(
     pending: &mut HashMap<MeterKey, MeterCounts>,
     key: MeterKey,
     add: MeterCounts,
@@ -1116,7 +1116,7 @@ pub(crate) fn accrue_pending(
 /// shards so nothing is stranded. Accrual and drain on the same shard serialize on that shard's lock,
 /// so an accrual is either wholly before a drain (flushed this tick) or wholly after (next tick),
 /// never split.
-pub(crate) struct PendingMetering {
+pub struct PendingMetering {
     shards: Box<[std::sync::Mutex<HashMap<MeterKey, MeterCounts>>]>,
 }
 
@@ -1127,7 +1127,7 @@ impl Default for PendingMetering {
 }
 
 impl PendingMetering {
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         let mut shards = Vec::with_capacity(GOV_SHARDS);
         shards.resize_with(GOV_SHARDS, || std::sync::Mutex::new(HashMap::new()));
         Self {
@@ -1145,7 +1145,7 @@ impl PendingMetering {
     /// Accrue on the hot path: lock ONLY the shard owning `key.0`, bounded to that shard's slice of
     /// the cap. Poison-recovering — a panic under some other holder must not wedge accrual for a whole
     /// shard of keys (the cells' invariant is re-established per call).
-    pub(crate) fn accrue(&self, key: MeterKey, add: MeterCounts) {
+    pub fn accrue(&self, key: MeterKey, add: MeterCounts) {
         let mut map = self
             .shard_for(&key.0)
             .lock()
@@ -1157,7 +1157,7 @@ impl PendingMetering {
     /// concurrent accrual either landed before this shard's swap (drained now) or lands after
     /// (next tick). Iterating every shard is what makes the sharding invisible to the flush's
     /// exactly-once accounting.
-    pub(crate) fn drain(&self) -> Vec<(MeterKey, MeterCounts)> {
+    pub fn drain(&self) -> Vec<(MeterKey, MeterCounts)> {
         let mut out = Vec::new();
         for shard in self.shards.iter() {
             let mut map = shard.lock().unwrap_or_else(|e| e.into_inner());
@@ -1170,7 +1170,7 @@ impl PendingMetering {
 
     /// TEST-ONLY: total unflushed cell count and their SUMMED counts, across every shard.
     #[cfg(test)]
-    pub(crate) fn totals(&self) -> (usize, MeterCounts) {
+    pub fn totals(&self) -> (usize, MeterCounts) {
         let mut len = 0usize;
         let mut sum = MeterCounts::default();
         for shard in self.shards.iter() {

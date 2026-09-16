@@ -23,11 +23,11 @@ use crate::state::App;
 
 /// Upper bound on a group name — a registry key persisted to the overlay + every audit row.
 /// Generous over any real `org/dept/team/user:<sub>` name.
-pub(crate) const MAX_GROUP_NAME_LEN: usize = 256;
+pub const MAX_GROUP_NAME_LEN: usize = 256;
 
 /// Whether `p` names a live pool, read through the NEUTRAL pool label space (`EngineTablesView`) so
 /// this core group-validator names no plane table type. The `validate_groups` `pool_exists` predicate.
-pub(crate) fn pool_known(app: &App, p: &str) -> bool {
+pub fn pool_known(app: &App, p: &str) -> bool {
     app.engine_tables_view()
         .pools()
         .iter()
@@ -42,7 +42,7 @@ pub(crate) fn pool_known(app: &App, p: &str) -> bool {
 /// `CostModel::with_groups` (reusing the rate card + fee unchanged) so the new limits are live after
 /// the swap; the governance LEDGER survives (it is Arc-shared, not rebuilt), so past accrual is
 /// preserved across the change.
-pub(crate) fn build_with_group(
+pub fn build_with_group(
     current: &App,
     name: &str,
     cfg: crate::config::GroupCfg,
@@ -96,7 +96,7 @@ pub(crate) fn build_with_group(
 /// mint had to re-acquire and re-verify the group by hand; there is nothing left to re-verify
 /// because the lock is never released between the check and the bind. `parent` is capped at
 /// `MAX_GROUP_NAME_LEN` (a registry key / audit row).
-pub(crate) fn plan_mint_group(
+pub fn plan_mint_group(
     current: &Arc<App>,
     group: &str,
     parent: Option<&str>,
@@ -195,7 +195,7 @@ pub(crate) fn plan_mint_group(
 
 /// The overlay persist a mint's auto-provisioned group leaf commits (PERSIST-then-SWAP, fail-closed
 /// — the same discipline and the same wording as an explicit `POST /groups`).
-pub(crate) fn persist_provisioned_group(
+pub fn persist_provisioned_group(
     installed: Arc<App>,
     group: String,
     actor: String,

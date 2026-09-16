@@ -69,11 +69,11 @@ use super::{
     config_transaction, err_json, err_json_cond, if_match_version, respond, stale_if_match,
     with_config_etag, Outcome,
 };
-use crate::audit_ring as audit;
-use crate::admin::v1::contract::taxonomy::Cond;
-use crate::admin::v1::contract::AdminError;
-use crate::config::named_map::NamedMapSection;
-use crate::state::{App, AppHandle};
+use busbar_core::audit_ring as audit;
+use busbar_core::admin::v1::contract::taxonomy::Cond;
+use busbar_core::admin::v1::contract::AdminError;
+use busbar_core::config::named_map::NamedMapSection;
+use busbar_core::state::{App, AppHandle};
 
 /// Mount the five routes of EVERY named-map section. Driven by `NamedMapSection::ALL`, so a new
 /// section's routes appear here the moment its variant exists — there is no per-section handler,
@@ -94,7 +94,7 @@ pub(crate) fn routes() -> Router<Arc<AppHandle>> {
                 })
                 .put(
                     move |state: State<Arc<AppHandle>>,
-                          principal: axum::Extension<crate::auth::AuthPrincipal>,
+                          principal: axum::Extension<busbar_core::auth::AuthPrincipal>,
                           path: Path<String>,
                           headers: axum::http::HeaderMap,
                           body: axum::body::Bytes| {
@@ -103,7 +103,7 @@ pub(crate) fn routes() -> Router<Arc<AppHandle>> {
                 )
                 .delete(
                     move |state: State<Arc<AppHandle>>,
-                          principal: axum::Extension<crate::auth::AuthPrincipal>,
+                          principal: axum::Extension<busbar_core::auth::AuthPrincipal>,
                           path: Path<String>,
                           headers: axum::http::HeaderMap| {
                         delete(state, principal, path, headers, s)
@@ -114,7 +114,7 @@ pub(crate) fn routes() -> Router<Arc<AppHandle>> {
                 &format!("{}/{{name}}/settings", s.path_root()),
                 patch(
                     move |state: State<Arc<AppHandle>>,
-                          principal: axum::Extension<crate::auth::AuthPrincipal>,
+                          principal: axum::Extension<busbar_core::auth::AuthPrincipal>,
                           path: Path<String>,
                           headers: axum::http::HeaderMap,
                           body: axum::body::Bytes| {
@@ -188,7 +188,7 @@ impl Mutation {
 /// struct, so a typo is the same loud reject the file would give.
 async fn put(
     State(handle): State<Arc<AppHandle>>,
-    axum::Extension(principal): axum::Extension<crate::auth::AuthPrincipal>,
+    axum::Extension(principal): axum::Extension<busbar_core::auth::AuthPrincipal>,
     Path(name): Path<String>,
     headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
@@ -226,7 +226,7 @@ async fn put(
 /// config, so the rebuild-and-swap IS the acknowledgement.
 async fn patch_settings(
     State(handle): State<Arc<AppHandle>>,
-    axum::Extension(principal): axum::Extension<crate::auth::AuthPrincipal>,
+    axum::Extension(principal): axum::Extension<busbar_core::auth::AuthPrincipal>,
     Path(name): Path<String>,
     headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
@@ -271,7 +271,7 @@ pub(crate) struct NamedSettingsReq {
 /// would otherwise take the whole config down at the next resolve.
 async fn delete(
     State(handle): State<Arc<AppHandle>>,
-    axum::Extension(principal): axum::Extension<crate::auth::AuthPrincipal>,
+    axum::Extension(principal): axum::Extension<busbar_core::auth::AuthPrincipal>,
     Path(name): Path<String>,
     headers: axum::http::HeaderMap,
     section: NamedMapSection,
@@ -297,7 +297,7 @@ type Rejection = (AdminError, Cond);
 /// on both outcomes.
 async fn apply(
     handle: Arc<AppHandle>,
-    principal: crate::auth::AuthPrincipal,
+    principal: busbar_core::auth::AuthPrincipal,
     section: NamedMapSection,
     name: String,
     headers: axum::http::HeaderMap,
@@ -340,7 +340,7 @@ async fn apply(
     if current.overlay_path.is_none() {
         audit::AUDIT.record_by(&action, &resource, audit::OUTCOME_REJECTED, &actor);
         return err_json(&AdminError::Validation(
-            crate::config::overlay::NO_WRITABLE_OVERLAY_MSG.to_string(),
+            busbar_core::config::overlay::NO_WRITABLE_OVERLAY_MSG.to_string(),
         ));
     }
     // EXISTENCE before the concurrency guard — the same status precedence the hooks surface
@@ -360,7 +360,7 @@ async fn apply(
     if let Mutation::Settings(settings) = &mutation {
         // Bound the settings map on EVERY write path (the same caps the hooks settings push uses):
         // it is persisted verbatim into the config overlay, so an unbounded map bloats durable state.
-        if let Err(e) = crate::admin::v1::service::validate_hook_settings_size(settings) {
+        if let Err(e) = crate::v1::service::validate_hook_settings_size(settings) {
             return reject(&e, Cond::InvalidConfig, &actor);
         }
     }
@@ -379,11 +379,11 @@ async fn apply(
         // Everything below reads config files + the overlay and re-runs the boot pipeline, so it is
         // queued onto `spawn_blocking` — under the mutation guard, off the reactor.
         Ok(txn.read_store(move || {
-            let mut loaded = crate::load_config_from_disk(
+            let mut loaded = busbar_core::load_config_from_disk(
                 &config_path,
                 Some(&providers_path),
                 false,
-                crate::config::EnvSubst::Strict,
+                busbar_core::config::EnvSubst::Strict,
             )
             .map_err(AdminError::Validation)?;
             // BASE-CONFIG PROTECTION: an entry declared in `config.yaml` is operator file config and
@@ -496,15 +496,15 @@ async fn apply(
             // the post-resolve hooks/groups overlay sections merge on — exactly the reload mechanism.
             loaded.overlay_doc = Some(doc.clone());
             let built = (|| {
-                crate::config::overlay::apply_root_to_deploy(&mut loaded.deploy, &doc);
-                let mut cfg = crate::config::resolve(&loaded.deploy, &loaded.defs)
+                busbar_core::config::overlay::apply_root_to_deploy(&mut loaded.deploy, &doc);
+                let mut cfg = busbar_core::config::resolve(&loaded.deploy, &loaded.defs)
                     .map_err(|errs| format!("config errors:\n  - {}", errs.join("\n  - ")))?;
                 let base_hook_names: std::collections::HashSet<String> =
                     cfg.hooks.keys().cloned().collect();
                 let base_group_names: std::collections::HashSet<String> =
                     cfg.groups.keys().cloned().collect();
-                crate::config::overlay::merge_into(&mut cfg, doc);
-                crate::build_app_from_config(
+                busbar_core::config::overlay::merge_into(&mut cfg, doc);
+                busbar_core::build_app_from_config(
                     cfg,
                     loaded.deploy.plugins.clone(),
                     // Preserve the LIVE overlay path (not the env-derived one the disk load
@@ -531,7 +531,7 @@ async fn apply(
             // pre-mutation one is still in hand: a mutation that introduces a plugin-route PATH the
             // router never mounted at boot is stored and live on the snapshot, but the path itself
             // keeps 404ing until a restart. Carried out of the transaction so the response can SAY so.
-            let awaiting_restart = crate::plugin_routes::paths_awaiting_restart(
+            let awaiting_restart = busbar_core::plugin_routes::paths_awaiting_restart(
                 &installed.plugin_routes,
                 &snapshot.plugin_routes,
                 &installed.boot_route_paths,
@@ -545,7 +545,7 @@ async fn apply(
             Ok(Outcome::commit_then(
                 installed.clone(),
                 move || {
-                    crate::config::overlay::persist_named_map(
+                    busbar_core::config::overlay::persist_named_map(
                         p.overlay_path.as_deref(),
                         txn_section,
                         &persist_name,
@@ -624,7 +624,7 @@ async fn apply(
 #[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
 pub(crate) struct MutatedDefView {
     #[serde(flatten)]
-    def: crate::admin::v1::contract::NamedDefView,
+    def: busbar_core::admin::v1::contract::NamedDefView,
     /// The plugin-route PATHS this mutation declared that the process cannot serve until it restarts,
     /// because the axum router registers each path once, at boot, and a config apply swaps only
     /// `Arc<App>`. Empty (and omitted) for every mutation that adds no such path — including every
@@ -638,7 +638,7 @@ pub(crate) struct MutatedDefView {
 
 impl MutatedDefView {
     /// Wrap one stored definition with the restart signal, if any.
-    fn new(def: crate::admin::v1::contract::NamedDefView, awaiting_restart: Vec<String>) -> Self {
+    fn new(def: busbar_core::admin::v1::contract::NamedDefView, awaiting_restart: Vec<String>) -> Self {
         let note = (!awaiting_restart.is_empty()).then(|| {
             format!(
                 "stored and applied, EXCEPT the newly declared route(s) {} — each plugin route path \
@@ -665,7 +665,7 @@ fn section_contains(app: &App, section: NamedMapSection, name: &str) -> bool {
         // A plane section answers membership through the plane's `registry_contains` seam, so this
         // read names no plane registry type; a plane compiled out has no decl and answers `false`.
         NamedMapSection::Plane(_) => {
-            crate::plane::registry::plane_decl_for_config_section(section.key())
+            busbar_core::plane::registry::plane_decl_for_config_section(section.key())
                 .and_then(|d| d.registry_contains)
                 .is_some_and(|f| f(app, name))
         }
@@ -689,12 +689,12 @@ fn validate_definition(
             section.singular()
         )));
     }
-    if name.len() > crate::admin::v1::service::MAX_HOOK_NAME_LEN {
+    if name.len() > crate::v1::service::MAX_HOOK_NAME_LEN {
         return Err(AdminError::Validation(format!(
             "{} name is {} chars; must be <= {}",
             section.singular(),
             name.len(),
-            crate::admin::v1::service::MAX_HOOK_NAME_LEN
+            crate::v1::service::MAX_HOOK_NAME_LEN
         )));
     }
     let Some(obj) = def.as_object() else {
@@ -728,7 +728,7 @@ fn validate_definition(
         )));
     }
     if let Some(serde_json::Value::Object(settings)) = obj.get("settings") {
-        crate::admin::v1::service::validate_hook_settings_size(settings)?;
+        crate::v1::service::validate_hook_settings_size(settings)?;
     }
     Ok(())
 }
@@ -753,7 +753,7 @@ fn check_trust_ceiling(
     name: &str,
     def: &serde_json::Value,
 ) -> Result<(), Rejection> {
-    use crate::admin::v1::contract::Scope;
+    use busbar_core::admin::v1::contract::Scope;
     if !section.has_trust_ceiling() {
         return Ok(());
     }
@@ -778,7 +778,7 @@ fn check_trust_ceiling(
              admin API: the trust ceiling caps the admin authority obtainable through this identity \
              provider, so raising it is a privilege escalation this API does not perform. Lower it \
              here, or raise it in config.yaml (current ceiling: `{}`)",
-            requested_token.unwrap_or(crate::config::DEFAULT_MAX_ADMIN_SCOPE),
+            requested_token.unwrap_or(busbar_core::config::DEFAULT_MAX_ADMIN_SCOPE),
             live.as_str()
         )),
         Cond::TrustCeilingRaise,

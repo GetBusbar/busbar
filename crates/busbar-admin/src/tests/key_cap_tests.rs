@@ -3,14 +3,14 @@
 
 //! Tests for `crates/busbar-core/src/admin/mod.rs`.
 
-use crate::governance::{GovState, MemoryStore, NewKeySpec};
+use busbar_core::governance::{GovState, MemoryStore, NewKeySpec};
 use std::sync::Arc;
 
 fn gov() -> Arc<GovState> {
     Arc::new(GovState::new(Arc::new(MemoryStore::new()), Some("t".into())).unwrap())
 }
 
-fn mint(gov: &GovState, name: &str, group: Option<&str>) -> crate::governance::VirtualKey {
+fn mint(gov: &GovState, name: &str, group: Option<&str>) -> busbar_core::governance::VirtualKey {
     gov.create_key(
         NewKeySpec {
             name: name.into(),

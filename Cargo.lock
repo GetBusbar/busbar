@@ -334,6 +334,7 @@ dependencies = [
  "axum",
  "base64 0.23.1",
  "busbar-a2a",
+ "busbar-admin",
  "busbar-api",
  "busbar-caps",
  "busbar-contract",
@@ -448,6 +449,39 @@ dependencies = [
  "busbar-api",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "busbar-admin"
+version = "1.6.0"
+dependencies = [
+ "axum",
+ "base64 0.23.1",
+ "busbar-a2a",
+ "busbar-api",
+ "busbar-core",
+ "busbar-llm",
+ "busbar-mcp",
+ "busbar-plugin-loader",
+ "busbar-plugin-sign",
+ "busbar-store-memory",
+ "busbar-substrate",
+ "bytes",
+ "flate2",
+ "hex",
+ "http",
+ "http-body-util",
+ "reqwest 0.12.28",
+ "ring",
+ "schemars",
+ "serde",
+ "serde_json",
+ "serde_urlencoded",
+ "serde_yaml_ng",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "url",
 ]
 
 [[package]]

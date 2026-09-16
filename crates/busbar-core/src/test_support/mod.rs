@@ -775,6 +775,34 @@ type PlaneContainerHooks =
 /// (`&dyn EngineHost`) or [`busbar_substrate::testkit::BuiltAppSeam`) instead.
 pub type BuiltApp = crate::state::App;
 
+/// The MCP plane's default-test-runtime factory, registered by an EXTERNAL `test-support` consumer
+/// (a crate whose test binary registered the MCP plane, e.g. `busbar-admin`). busbar-core's OWN
+/// `cfg(test)` binary uses the `tests/`-path helper directly and never touches this slot.
+#[cfg(all(not(test), feature = "test-support"))]
+static MCP_TEST_RUNTIME_FACTORY: std::sync::OnceLock<
+    fn() -> std::sync::Arc<dyn std::any::Any + Send + Sync>,
+> = std::sync::OnceLock::new();
+
+/// Register the MCP plane's default-test-runtime factory (first-wins). A `test-support` consumer that
+/// registers the MCP plane in the process registry MUST also call this so every `TestApp` seeds the
+/// plane's always-present runtime slot — the analogue of busbar-core's own `cfg(test)` seeding.
+#[cfg(all(not(test), feature = "test-support"))]
+pub fn install_test_mcp_runtime_factory(
+    factory: fn() -> std::sync::Arc<dyn std::any::Any + Send + Sync>,
+) {
+    let _ = MCP_TEST_RUNTIME_FACTORY.set(factory);
+}
+
+/// The MCP default runtime for the current build surface, if available.
+#[cfg(test)]
+fn default_test_mcp_runtime() -> Option<std::sync::Arc<dyn std::any::Any + Send + Sync>> {
+    Some(crate::plane::registry::default_mcp_test_runtime())
+}
+#[cfg(all(not(test), feature = "test-support"))]
+fn default_test_mcp_runtime() -> Option<std::sync::Arc<dyn std::any::Any + Send + Sync>> {
+    MCP_TEST_RUNTIME_FACTORY.get().map(|f| f())
+}
+
 #[allow(dead_code)]
 pub struct TestApp {
     lanes: Vec<LaneSpec>,
@@ -1569,13 +1597,20 @@ impl TestApp {
         // registry (a built-in under `cfg(test)`), never spelled as a literal, and its default runtime
         // factory is reached through the `tests/`-file helper (which alone names `busbar_mcp`), so this
         // neutral source names no MCP token nor a plane symbol.
-        #[cfg(test)]
+        // Seed the MCP plane's always-present default runtime for every `TestApp`. In THIS crate's
+        // own `cfg(test)` binary the factory comes from the `tests/`-path helper; an EXTERNAL
+        // `test-support` consumer that registered the MCP plane (e.g. `busbar-admin`'s test binary)
+        // supplies the factory through [`install_test_mcp_runtime_factory`] instead — same slot, same
+        // object, so admin mutations that walk the plane runtimes do not fault under either surface.
+        #[cfg(any(test, feature = "test-support"))]
         if let Some(decl) = crate::plane::registry::plane_decl_for_config_section(
             busbar_substrate::plane::config::NAMED_MAP_SECTIONS[2],
         ) {
-            plane_slots
-                .entry(crate::state::runtime_slot_key(decl.key))
-                .or_insert_with(crate::plane::registry::default_mcp_test_runtime);
+            if let Some(rt) = default_test_mcp_runtime() {
+                plane_slots
+                    .entry(crate::state::runtime_slot_key(decl.key))
+                    .or_insert(rt);
+            }
         }
         // THE NEUTRAL DISPATCH TABLE, described by each plane's test-kit through the `mount_plane` /
         // `admit_plane` seams (neutral `&str` paths + substrate `PlaneAdmission`), so a router-walking

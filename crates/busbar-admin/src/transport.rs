@@ -25,7 +25,7 @@ use std::sync::Arc;
 
 use axum::Router;
 
-use crate::state::AppHandle;
+use busbar_core::state::AppHandle;
 
 /// The port a wire format implements to expose a native API surface. `name()` labels the transport
 /// for logs/negotiation (e.g. `"json/v1"`); `version()`/`area()` place it in the mount grammar; and
@@ -57,7 +57,7 @@ pub(crate) fn mount<T: AdminTransport>(
 ) -> Router<Arc<AppHandle>> {
     let prefix = format!(
         "{}/{}/{}",
-        crate::admin::v1::contract::API_ROOT,
+        busbar_core::admin::v1::contract::API_ROOT,
         transport.version(),
         transport.area()
     );

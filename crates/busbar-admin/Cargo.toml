@@ -1,0 +1,83 @@
+# busbar-admin — the ADMIN API SERVICE (`/api/v1/admin/*`), extracted out of busbar-core into its own
+# sibling crate (1.6.0).
+#
+# ONE-WAY DEPENDENCY (Cargo-enforced): this crate depends on busbar-core (to reach `App`/`AppHandle`,
+# `CoreRouter`, the `governance`/`config`/`hooks`/`auth` engine internals the handlers call, and the
+# `admin::v1::contract` frozen surface + the `admin::v1::json` envelope primitives that STAYED in
+# core). busbar-core depends on NOTHING here — naming this crate from core would be a dependency
+# cycle, which Cargo refuses outright. Core reaches this crate's router only through the small seam in
+# `busbar_core::admin::seam` (`AdminMountSeam`), registered once by the composition root
+# (`crates/busbar`), exactly the way `oauth_as::seam` mounts the authorization-server plane.
+#
+# MANDATORY, NON-OPTIONAL sibling crate — NOT a plugin. Always compiled into the shipped binary;
+# runtime-optional only through the control/admin listener seam.
+[package]
+name = "busbar-admin"
+version = "1.6.0"
+publish = false            # internal workspace crate; never goes to crates.io
+edition = "2021"
+rust-version = "1.97"
+description = "The busbar admin API service (`/api/v1/admin/*`). Depends one-way on busbar-core."
+license = "Apache-2.0"
+
+[lib]
+name = "busbar_admin"
+path = "src/lib.rs"
+
+[dependencies]
+busbar-core = { path = "../busbar-core", default-features = false }
+busbar-substrate = { path = "../busbar-substrate" }
+busbar-plugin-loader = { path = "../plugin-loader" }
+busbar-plugin-sign = { path = "../plugin-sign" }
+busbar-api = { path = "../api" }
+axum = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_urlencoded = { workspace = true }
+bytes = { workspace = true }
+http = { workspace = true }
+http-body-util = { workspace = true }
+tokio = { workspace = true, features = ["rt", "time", "sync"] }
+tracing = { workspace = true }
+base64 = { workspace = true }
+ring = { workspace = true }
+hex = { workspace = true }
+flate2 = { workspace = true }
+url = { workspace = true }
+schemars = { workspace = true, optional = true }
+
+[features]
+default = ["auth-admin-tokens", "hooks-ranking", "plane-mcp", "plane-a2a"]
+# The moved v1 service has a `#[cfg(feature = "hooks-ranking")]` site; declare the feature (forwarded
+# to busbar-core) so the cfg is recognized, mirroring busbar-core's own default.
+hooks-ranking = ["busbar-core/hooks-ranking"]
+# Forwards to busbar-core's own feature: the admin e2e tests authenticate through the `admin-tokens`
+# module, and the drift-audit test module is gated on it. A `--no-default-features` build compiles
+# the admin-token module OUT, disabling the admin API wholesale, exactly as it did in-core.
+auth-admin-tokens = ["busbar-core/auth-admin-tokens"]
+plane-mcp = ["busbar-core/plane-mcp"]
+plane-a2a = ["busbar-core/plane-a2a"]
+# Pulls busbar-core's `test-support` so a SIBLING crate can build an admin-configured `TestApp`, and
+# so this crate's own dev-deps resolve the fixtures.
+test-support = ["busbar-core/test-support"]
+# The openapi-schema derive: the moved admin-view types derive `schemars::JsonSchema` under this
+# feature, mirroring busbar-core/busbar-a2a. Forwards to busbar-core/openapi-schema so the shared
+# schema surface resolves in lock-step.
+openapi-schema = ["dep:schemars", "busbar-core/openapi-schema"]
+
+[dev-dependencies]
+busbar-core = { path = "../busbar-core", default-features = false, features = ["test-support", "auth-admin-tokens", "plane-mcp", "plane-a2a"] }
+# The moved cross-plane drift test drives the MCP and A2A plane trust-verb error surfaces. Their
+# testkits register the plane decls + the self-enveloping admin-verb backing (core's
+# `CorePlaneAdminEnvelope`, which STAYED in busbar-core). NOTE: do NOT enable busbar-admin/test-support
+# on these edges.
+busbar-llm = { path = "../busbar-llm", features = ["test-support"] }
+busbar-mcp = { path = "../busbar-mcp", features = ["test-support", "auth-admin-tokens"] }
+busbar-a2a = { path = "../busbar-a2a", features = ["test-support", "auth-admin-tokens"] }
+busbar-store-memory = { path = "../store-memory" }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time", "sync", "io-util", "test-util"] }
+axum = { workspace = true, features = ["http1"] }
+reqwest = { workspace = true, features = ["json"] }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+tracing-subscriber = { workspace = true }

@@ -40,7 +40,7 @@ use std::time::Duration;
 
 use axum::Router;
 
-use busbar_core::{admin, config, config_validate, export, metrics, observability, tls};
+use busbar_core::{config, config_validate, export, metrics, observability, tls};
 use busbar_core::{
     build_app_from_config, build_split_routers_with_limits, load_config_from_disk,
     preflight_plugins_and_secrets, validate_builtin_secrets_resolve, LoadedConfig,
@@ -693,6 +693,11 @@ fn register_planes() {
     // `install_planes` immediately above for the same reason: one composition root, one
     // registration, before the first `App` is built.
     busbar_oauth2::install();
+    // Register the admin API service's mount seam (`busbar_core::admin::seam`) — the composition
+    // root is the one place entitled to name `busbar-admin`, exactly as it names `busbar-oauth2`
+    // above. Unconditional: the admin surface carries no feature flag at this layer; core mounts it
+    // through the seam whenever this (mandatory) sibling is linked, which is every real build.
+    busbar_admin::install();
 
     // THE MCP PLANE'S KERNEL BINDINGS, SEALED. Behind `root-mcp`, which is default-ON: the bindings
     // are built and checked against the real unit traits before any byte is served through them, so
@@ -1234,7 +1239,7 @@ async fn run(data_workers: usize) {
         );
     }
     // Stamp process start for the `GET /api/v1/admin/info` uptime read.
-    admin::mark_start();
+    busbar_admin::mark_start();
 
     // Resolve deployment + definitions into resolved RootCfg (semantic validation runs inside
     // build_app_from_config — the one construction path).
@@ -1515,7 +1520,7 @@ async fn run(data_workers: usize) {
     // Publish the sender so `POST /admin/restart` can trigger the SAME drain a signal does. A
     // process-global is the honest home: restarting is a process-wide act, not a property of an
     // `App` snapshot, and `AppHandle` is built before this channel exists.
-    busbar_core::admin::restart::publish_shutdown(shutdown_tx.clone());
+    busbar_admin::restart::publish_shutdown(shutdown_tx.clone());
     {
         let shutdown_tx = shutdown_tx.clone();
         tokio::spawn(async move {

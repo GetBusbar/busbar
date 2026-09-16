@@ -13,12 +13,12 @@ use std::collections::HashMap;
 /// Fixed mutation-rate window length (seconds). Also the `Retry-After` value `auth.rs`'s
 /// `rate_limited_response` advertises on a 429 — derived from this const so the advertised
 /// back-off always equals the real window.
-pub(crate) const MUTATION_RATE_WINDOW_SECS: u64 = 60;
+pub const MUTATION_RATE_WINDOW_SECS: u64 = 60;
 
 /// The mutation classes with distinct budgets. `Config` = apply/rollback (the blast-radius class);
 /// `Crud` = everything else that mutates (hooks, keys).
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) enum MutationClass {
+pub enum MutationClass {
     Config,
     Crud,
     /// `POST /plugins/inspect`'s OWN dedicated budget — NOT the shared 60/min CRUD bucket
@@ -49,7 +49,7 @@ impl MutationClass {
     }
 
     /// Audit-facing label.
-    pub(crate) fn label(self) -> &'static str {
+    pub fn label(self) -> &'static str {
         match self {
             MutationClass::Config => "config",
             MutationClass::Crud => "crud",
@@ -105,7 +105,7 @@ const CONFIG_CLASS_RULES: &[PathRule] = &[
 /// not contend with the CONFIG budget despite living under `/config/`, and `/plugins/inspect` is a
 /// read-only archive preview that must not contend with EITHER the CONFIG or the shared CRUD budget
 /// — it gets its own dedicated [`MutationClass::PluginInspect`] bucket.
-pub(crate) fn classify_mutation(rel: &str) -> MutationClass {
+pub fn classify_mutation(rel: &str) -> MutationClass {
     if rel == crate::admin::v1::contract::PATH_CONFIG_VALIDATE {
         return MutationClass::Crud;
     }
@@ -148,7 +148,7 @@ type Window = (u64, u32, u32);
 /// shed path — whose whole job is to stop doing work — would do unbounded work. One record per
 /// principal per class per window says everything the log needs to.
 #[derive(Debug, PartialEq, Eq)]
-pub(crate) enum RateCheck {
+pub enum RateCheck {
     Admitted,
     Denied { first_in_window: bool },
 }
@@ -165,7 +165,7 @@ pub(crate) struct MutationLimiter {
 }
 
 impl MutationLimiter {
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             windows: std::sync::Mutex::new(None),
         }
@@ -174,7 +174,7 @@ impl MutationLimiter {
     /// Spend one attempt from `principal`'s budget for `class` at time `now` (unix seconds).
     /// Returns `false` when the budget for the current window is exhausted (the caller responds
     /// 429 and audits). Never panics (poisoned lock recovered).
-    pub(crate) fn check(&self, principal: &str, class: MutationClass, now: u64) -> RateCheck {
+    pub fn check(&self, principal: &str, class: MutationClass, now: u64) -> RateCheck {
         let window = now - (now % MUTATION_RATE_WINDOW_SECS);
         let mut guard = self.windows.lock().unwrap_or_else(|e| e.into_inner());
         let map = guard.get_or_insert_with(HashMap::new);

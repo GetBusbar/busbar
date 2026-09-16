@@ -309,7 +309,7 @@ pub fn build_router_with_limits(
     // mounts admin on its OWN router served on a separate listener. Both planes' plugin routes are
     // mounted here (the combined router IS both listeners).
     let (router, core_routes) = base_data_router(&plugin_routes, &plane_slots, oauth_as.as_ref());
-    let router = admin::transport::mount(router, &admin::JsonV1);
+    let router = crate::admin::seam::mount_admin(router);
     let router = crate::plugin_routes::mount_plugin_routes(router, &plugin_routes, true);
     let router = apply_common_layers(
         router,
@@ -786,7 +786,7 @@ pub fn build_split_routers_with_limits(
             endpoints::healthz,
         )
         .into_parts();
-    let admin = admin::transport::mount(admin, &admin::JsonV1);
+    let admin = crate::admin::seam::mount_admin(admin);
     let admin = crate::plugin_routes::mount_plugin_routes(admin, &plugin_routes, true);
     let admin = apply_common_layers(
         admin,

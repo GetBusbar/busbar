@@ -1,6 +1,6 @@
 use super::*;
 
-use crate::diagnostics::{
+use busbar_core::diagnostics::{
     diag_error, diag_warn, ADMIN_AUTH_CHAIN_EMPTY, PLUGIN_ROLLBACK_PIN_PERSIST_FAILED,
     PLUGIN_ROLLBACK_REVERT_FAILED,
 };
@@ -83,8 +83,8 @@ pub(crate) async fn list_groups(
     let limit = q
         .get("limit")
         .and_then(|s| s.parse::<usize>().ok())
-        .unwrap_or(crate::admin::v1::contract::LIST_LIMIT_DEFAULT)
-        .clamp(1, crate::admin::v1::contract::LIST_LIMIT_MAX);
+        .unwrap_or(busbar_core::admin::v1::contract::LIST_LIMIT_DEFAULT)
+        .clamp(1, busbar_core::admin::v1::contract::LIST_LIMIT_MAX);
     let start = match cursor_offset(&q) {
         Ok(n) => n,
         Err(resp) => return resp,
@@ -161,7 +161,7 @@ pub(crate) struct InstallPluginReq {
 /// not as a hot swap. Every attempt (success AND failure) is audited.
 pub(crate) async fn install_plugin(
     State(handle): State<Arc<AppHandle>>,
-    axum::Extension(principal): axum::Extension<crate::auth::AuthPrincipal>,
+    axum::Extension(principal): axum::Extension<busbar_core::auth::AuthPrincipal>,
     body: axum::body::Bytes,
 ) -> Response {
     use base64::Engine as _;
@@ -272,7 +272,7 @@ pub(crate) async fn inspect_plugin(
 /// Content` on success. A currently-loaded store keeps running until the next store (re)load.
 pub(crate) async fn remove_plugin(
     State(handle): State<Arc<AppHandle>>,
-    axum::Extension(principal): axum::Extension<crate::auth::AuthPrincipal>,
+    axum::Extension(principal): axum::Extension<busbar_core::auth::AuthPrincipal>,
     Path(file): Path<String>,
 ) -> Response {
     let actor = principal.actor_id().to_string();
@@ -317,7 +317,7 @@ pub(crate) async fn remove_plugin(
 /// dedicated store swap (the ledger cannot be silently re-hydrated under load). See the view `note`.
 pub(crate) async fn reload_plugins(
     State(handle): State<Arc<AppHandle>>,
-    axum::Extension(principal): axum::Extension<crate::auth::AuthPrincipal>,
+    axum::Extension(principal): axum::Extension<busbar_core::auth::AuthPrincipal>,
 ) -> Response {
     let actor = principal.actor_id().to_string();
     // Serialize against config applies/reloads AND against plugin install/remove — they all touch
@@ -430,7 +430,7 @@ pub(crate) struct PluginRollbackReq {
 /// does (via the persisted pin) — so a silent replay of an old artifact is still refused.
 pub(crate) async fn rollback_plugin(
     State(handle): State<Arc<AppHandle>>,
-    axum::Extension(principal): axum::Extension<crate::auth::AuthPrincipal>,
+    axum::Extension(principal): axum::Extension<busbar_core::auth::AuthPrincipal>,
     headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
 ) -> Response {
@@ -463,13 +463,13 @@ pub(crate) async fn rollback_plugin(
         // record the operator's decision, and a restart would silently re-upgrade. Refuse loudly.
         let Some(overlay_path) = current.overlay_path.clone() else {
             return Err(AdminError::Validation(
-                crate::config::overlay::NO_WRITABLE_OVERLAY_MSG.to_string(),
+                busbar_core::config::overlay::NO_WRITABLE_OVERLAY_MSG.to_string(),
             ));
         };
         let snapshot = current.clone();
         Ok(txn.store_write(move || {
             // The current persisted pins (empty if none) — the base we merge this rollback onto.
-            let prior_pins = match crate::config::overlay::read(&overlay_path) {
+            let prior_pins = match busbar_core::config::overlay::read(&overlay_path) {
                 Some(doc) => doc.plugin_versions,
                 None => std::collections::BTreeMap::new(),
             };
@@ -487,7 +487,7 @@ pub(crate) async fn rollback_plugin(
             // lowered floor, so a non-persisted pin would rebuild against the wrong floor. Use the
             // Result-returning variant and FAIL CLOSED (nothing swapped) if it did not land.
             if let Err(e) =
-                crate::config::overlay::try_persist_plugin_versions(Some(&overlay_path), &pins)
+                busbar_core::config::overlay::try_persist_plugin_versions(Some(&overlay_path), &pins)
             {
                 diag_error!(PLUGIN_ROLLBACK_PIN_PERSIST_FAILED, plugin = %audit_resource, error = %e, "plugin rollback: persisting the version pin failed; nothing swapped");
                 return Err(AdminError::Validation(format!(
@@ -506,7 +506,7 @@ pub(crate) async fn rollback_plugin(
                     // restart would honor — contradicting the running engine. Surface that as a
                     // distinct, louder error so the operator knows disk is out of sync and can fix
                     // the overlay before restarting.
-                    if let Err(revert_err) = crate::config::overlay::try_persist_plugin_versions(
+                    if let Err(revert_err) = busbar_core::config::overlay::try_persist_plugin_versions(
                         Some(&overlay_path),
                         &prior_pins,
                     ) {
@@ -550,7 +550,7 @@ pub(crate) async fn rollback_plugin(
             with_config_etag(
                 ok_json(
                     StatusCode::OK,
-                    &crate::admin::v1::contract::PluginRollbackView {
+                    &busbar_core::admin::v1::contract::PluginRollbackView {
                         name: manifest.name,
                         file: req.file,
                         version: manifest.version,
@@ -629,14 +629,14 @@ pub(crate) async fn get_config(State(handle): State<Arc<AppHandle>>) -> Response
 #[derive(serde::Deserialize)]
 pub(crate) struct RegisterHookReq {
     name: String,
-    config: crate::config::HookCfg,
+    config: busbar_core::config::HookCfg,
 }
 
 /// The `PUT /api/v1/admin/hooks/{name}` body: the replacement definition (the name rides the path;
 /// optimistic concurrency rides `If-Match`).
 #[derive(serde::Deserialize)]
 pub(crate) struct PutHookReq {
-    config: crate::config::HookCfg,
+    config: busbar_core::config::HookCfg,
 }
 
 /// The `POST /api/v1/admin/groups` request body: the group name + its definition (a `GroupCfg`
@@ -645,14 +645,14 @@ pub(crate) struct PutHookReq {
 #[derive(serde::Deserialize)]
 pub(crate) struct RegisterGroupReq {
     name: String,
-    config: crate::config::GroupCfg,
+    config: busbar_core::config::GroupCfg,
 }
 
 /// The `PUT /api/v1/admin/groups/{name}` body: the replacement definition (name rides the path;
 /// optimistic concurrency rides `If-Match`).
 #[derive(serde::Deserialize)]
 pub(crate) struct PutGroupReq {
-    config: crate::config::GroupCfg,
+    config: busbar_core::config::GroupCfg,
 }
 
 /// The `PATCH /api/v1/admin/groups/{name}` body: a PARTIAL update — only the fields present are
@@ -669,9 +669,9 @@ pub(crate) struct GroupPatchReq {
     #[serde(default)]
     enabled: Option<bool>,
     #[serde(default)]
-    limits: Option<Vec<crate::config::LimitCfg>>,
+    limits: Option<Vec<busbar_core::config::LimitCfg>>,
     #[serde(default)]
-    child_default: Option<crate::config::groups::ChildDefault>,
+    child_default: Option<busbar_core::config::groups::ChildDefault>,
 }
 
 /// `POST /api/v1/admin/hooks` — register (or replace) a hook at RUNTIME. Validates the definition, builds
@@ -681,7 +681,7 @@ pub(crate) struct GroupPatchReq {
 /// preserved. This is the first API-driven config mutation.
 pub(crate) async fn register_hook(
     State(handle): State<Arc<AppHandle>>,
-    axum::Extension(principal): axum::Extension<crate::auth::AuthPrincipal>,
+    axum::Extension(principal): axum::Extension<busbar_core::auth::AuthPrincipal>,
     headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
 ) -> Response {
@@ -741,7 +741,7 @@ pub(crate) async fn register_hook(
             Ok(Outcome::commit(
                 installed.clone(),
                 move || {
-                    crate::config::overlay::persist(
+                    busbar_core::config::overlay::persist(
                         p.overlay_path.as_deref(),
                         &p.hook_registry,
                         &p.global_hooks,
@@ -799,7 +799,7 @@ pub(crate) async fn register_hook(
 /// `build_with_hook`). Audited + versioned + overlay-persisted like every mutation.
 pub(crate) async fn put_hook(
     State(handle): State<Arc<AppHandle>>,
-    axum::Extension(principal): axum::Extension<crate::auth::AuthPrincipal>,
+    axum::Extension(principal): axum::Extension<busbar_core::auth::AuthPrincipal>,
     Path(name): Path<String>,
     headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
@@ -843,7 +843,7 @@ pub(crate) async fn put_hook(
             Ok(Outcome::commit(
                 installed.clone(),
                 move || {
-                    crate::config::overlay::persist(
+                    busbar_core::config::overlay::persist(
                         p.overlay_path.as_deref(),
                         &p.hook_registry,
                         &p.global_hooks,
@@ -892,7 +892,7 @@ pub(crate) async fn put_hook(
 /// PUT/PATCH; edit config.yaml to remove one). `204 No Content` on success.
 pub(crate) async fn delete_hook(
     State(handle): State<Arc<AppHandle>>,
-    axum::Extension(principal): axum::Extension<crate::auth::AuthPrincipal>,
+    axum::Extension(principal): axum::Extension<busbar_core::auth::AuthPrincipal>,
     Path(name): Path<String>,
     headers: axum::http::HeaderMap,
 ) -> Response {
@@ -937,7 +937,7 @@ pub(crate) async fn delete_hook(
             Ok(Outcome::commit(
                 installed.clone(),
                 move || {
-                    crate::config::overlay::persist(
+                    busbar_core::config::overlay::persist(
                         p.overlay_path.as_deref(),
                         &p.hook_registry,
                         &p.global_hooks,
@@ -981,13 +981,13 @@ pub(crate) async fn delete_hook(
 }
 
 // `plan_mint_group`/`persist_provisioned_group` RELOCATED to
-// `crate::governance::group_provision` (1.6.0 de-alias, stage 2a): the config-apply-transaction's
+// `busbar_core::governance::group_provision` (1.6.0 de-alias, stage 2a): the config-apply-transaction's
 // governance-group-provisioning LOGIC, now called directly by `auth::self_keys` (core) instead of
 // through this admin module. Re-exported below so every existing call site in this module tree
 // (and `admin/mod.rs`'s `POST /keys` handler) is unchanged; `plan_mint_group` now returns
-// `crate::config::transaction::TxnError` (`AdminError: From<TxnError>` converts it 1:1 at every
+// `busbar_core::config::transaction::TxnError` (`AdminError: From<TxnError>` converts it 1:1 at every
 // `?`/`match` site — byte-identical wire error).
-pub(crate) use crate::governance::group_provision::{plan_mint_group, persist_provisioned_group};
+pub(crate) use busbar_core::governance::group_provision::{plan_mint_group, persist_provisioned_group};
 
 /// `POST /api/v1/admin/groups` — create (or replace) a group at RUNTIME. Validate-at-the-door: the
 /// mutated tree is re-validated (parent exists, acyclic, depth) — an invalid tree is a `400` that
@@ -997,7 +997,7 @@ pub(crate) use crate::governance::group_provision::{plan_mint_group, persist_pro
 /// survives restart. Full scope (the `/groups` mutation fallthrough).
 pub(crate) async fn register_group(
     State(handle): State<Arc<AppHandle>>,
-    axum::Extension(principal): axum::Extension<crate::auth::AuthPrincipal>,
+    axum::Extension(principal): axum::Extension<busbar_core::auth::AuthPrincipal>,
     headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
 ) -> Response {
@@ -1040,7 +1040,7 @@ pub(crate) async fn register_group(
         Ok(txn.commit(
             installed.clone(),
             move || {
-                crate::config::overlay::persist_groups(
+                busbar_core::config::overlay::persist_groups(
                     p.overlay_path.as_deref(),
                     &p.groups_registry,
                     None,
@@ -1086,7 +1086,7 @@ pub(crate) async fn register_group(
 /// `If-Match`, `400` if the replacement breaks the tree. Audited + versioned + overlay-persisted.
 pub(crate) async fn put_group(
     State(handle): State<Arc<AppHandle>>,
-    axum::Extension(principal): axum::Extension<crate::auth::AuthPrincipal>,
+    axum::Extension(principal): axum::Extension<busbar_core::auth::AuthPrincipal>,
     Path(name): Path<String>,
     headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
@@ -1127,7 +1127,7 @@ pub(crate) async fn put_group(
         Ok(txn.commit(
             installed.clone(),
             move || {
-                crate::config::overlay::persist_groups(
+                busbar_core::config::overlay::persist_groups(
                     p.overlay_path.as_deref(),
                     &p.groups_registry,
                     None,
@@ -1168,7 +1168,7 @@ pub(crate) async fn put_group(
 /// PUT (unknown name / base group / stale `If-Match`). Audited + versioned + overlay-persisted.
 pub(crate) async fn patch_group(
     State(handle): State<Arc<AppHandle>>,
-    axum::Extension(principal): axum::Extension<crate::auth::AuthPrincipal>,
+    axum::Extension(principal): axum::Extension<busbar_core::auth::AuthPrincipal>,
     Path(name): Path<String>,
     headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
@@ -1218,7 +1218,7 @@ pub(crate) async fn patch_group(
         Ok(txn.commit(
             installed.clone(),
             move || {
-                crate::config::overlay::persist_groups(
+                busbar_core::config::overlay::persist_groups(
                     p.overlay_path.as_deref(),
                     &p.groups_registry,
                     None,
@@ -1258,7 +1258,7 @@ pub(crate) async fn patch_group(
 /// the name is tombstoned so the deletion survives a restart.
 pub(crate) async fn delete_group(
     State(handle): State<Arc<AppHandle>>,
-    axum::Extension(principal): axum::Extension<crate::auth::AuthPrincipal>,
+    axum::Extension(principal): axum::Extension<busbar_core::auth::AuthPrincipal>,
     Path(name): Path<String>,
     headers: axum::http::HeaderMap,
 ) -> Response {
@@ -1297,7 +1297,7 @@ pub(crate) async fn delete_group(
         // "blocking under the async lock" a compile-time impossibility rather than a convention.
         let snapshot = current.clone();
         Ok(txn.read_store(move || {
-            let bound = crate::admin::v1::service::count_keys_bound_to(&snapshot, &txn_name)?;
+            let bound = crate::v1::service::count_keys_bound_to(&snapshot, &txn_name)?;
             let installed = Arc::new(build_without_group(&snapshot, &txn_name, bound)?);
             // PERSIST-then-SWAP, fail-closed. Tombstone this name (arg `Some(&name)`) so the
             // deletion survives a restart (the overlay is additive otherwise).
@@ -1305,7 +1305,7 @@ pub(crate) async fn delete_group(
             Ok(Outcome::commit(
                 installed.clone(),
                 move || {
-                    crate::config::overlay::persist_groups(
+                    busbar_core::config::overlay::persist_groups(
                         p.overlay_path.as_deref(),
                         &p.groups_registry,
                         Some(&txn_name),
@@ -1372,11 +1372,11 @@ pub(crate) async fn delete_group(
 /// there, exactly like `config/reload`.
 pub(crate) async fn reset_overlay_section(
     State(handle): State<Arc<AppHandle>>,
-    axum::Extension(principal): axum::Extension<crate::auth::AuthPrincipal>,
+    axum::Extension(principal): axum::Extension<busbar_core::auth::AuthPrincipal>,
     Path(section): Path<String>,
     headers: axum::http::HeaderMap,
 ) -> Response {
-    use crate::config::overlay::OverlaySection;
+    use busbar_core::config::overlay::OverlaySection;
     let actor = principal.actor_id().to_string();
     // Validate the section name BEFORE the If-Match parse so an unknown section is always a plain
     // 400 (never masked by a header error). Unknown → invalid_request (the taxonomy's 400).
@@ -1411,9 +1411,9 @@ pub(crate) async fn reset_overlay_section(
             // pipeline. This reads the overlay FILE, which is why it lives on the blocking side.
             let overlay_empty = match snapshot.overlay_path.as_deref() {
                 None => true,
-                Some(p) => match crate::config::overlay::read_state(p) {
-                    crate::config::overlay::OverlayReadState::Absent => true,
-                    crate::config::overlay::OverlayReadState::Loaded(doc) => {
+                Some(p) => match busbar_core::config::overlay::read_state(p) {
+                    busbar_core::config::overlay::OverlayReadState::Absent => true,
+                    busbar_core::config::overlay::OverlayReadState::Loaded(doc) => {
                         doc.section_is_empty(section)
                     }
                     // A corrupt or too-new overlay is NOT "no overlay state". Reporting
@@ -1421,7 +1421,7 @@ pub(crate) async fn reset_overlay_section(
                     // App may still carry it, and would skip the fail-closed `clear_section`
                     // entirely (the asymmetry `rollback_plugin` and every persist path already
                     // refuse on).
-                    crate::config::overlay::OverlayReadState::Unreadable => {
+                    busbar_core::config::overlay::OverlayReadState::Unreadable => {
                         return Err(AdminError::Validation(format!(
                             "the config overlay at '{}' is present but unreadable/corrupt; refusing \
                              to reset section `{}` (a reset probe over corrupt state cannot tell \
@@ -1431,7 +1431,7 @@ pub(crate) async fn reset_overlay_section(
                             section.as_str()
                         )));
                     }
-                    crate::config::overlay::OverlayReadState::VersionTooNew(v) => {
+                    busbar_core::config::overlay::OverlayReadState::VersionTooNew(v) => {
                         return Err(AdminError::Validation(format!(
                             "the config overlay at '{}' was written by a NEWER busbar (version {v}) \
                              than this one; refusing to reset section `{}` rather than silently \
@@ -1458,11 +1458,11 @@ pub(crate) async fn reset_overlay_section(
                         .into(),
                 ));
             };
-            let loaded_base = crate::load_config_from_disk(
+            let loaded_base = busbar_core::load_config_from_disk(
                 &config_path,
                 Some(&providers_path),
                 false,
-                crate::config::EnvSubst::Strict,
+                busbar_core::config::EnvSubst::Strict,
             )
             .map_err(AdminError::Validation)?;
             // REFERENTIAL INTEGRITY, the bulk twin of the per-entry DELETE's dangling guard. A
@@ -1519,9 +1519,9 @@ pub(crate) async fn reset_overlay_section(
                 // Pre-resolve half: apply the (post-clear) root overrides onto the base DeployCfg,
                 // so the limits projection + admin-mTLS boot-guard re-derive over the merged shape.
                 if let Some(doc) = cleared_doc.as_ref() {
-                    crate::config::overlay::apply_root_to_deploy(&mut loaded.deploy, doc);
+                    busbar_core::config::overlay::apply_root_to_deploy(&mut loaded.deploy, doc);
                 }
-                let mut cfg = crate::config::resolve(&loaded.deploy, &loaded.defs)
+                let mut cfg = busbar_core::config::resolve(&loaded.deploy, &loaded.defs)
                     .map_err(|errs| format!("config errors:\n  - {}", errs.join("\n  - ")))?;
                 let base_hook_names: std::collections::HashSet<String> =
                     cfg.hooks.keys().cloned().collect();
@@ -1530,9 +1530,9 @@ pub(crate) async fn reset_overlay_section(
                 // Post-resolve half: merge the (post-clear) hooks + groups sections onto the
                 // resolved config.
                 if let Some(doc) = cleared_doc {
-                    crate::config::overlay::merge_into(&mut cfg, doc);
+                    busbar_core::config::overlay::merge_into(&mut cfg, doc);
                 }
-                crate::build_app_from_config(
+                busbar_core::build_app_from_config(
                     cfg,
                     loaded.deploy.plugins.clone(),
                     // Preserve the LIVE overlay path (not the env-derived one
@@ -1569,7 +1569,7 @@ pub(crate) async fn reset_overlay_section(
             Ok(Outcome::commit_then(
                 installed.clone(),
                 move || {
-                    crate::config::overlay::clear_section(p.overlay_path.as_deref(), section).map_err(
+                    busbar_core::config::overlay::clear_section(p.overlay_path.as_deref(), section).map_err(
                         |e| {
                             format!(
                                 "overlay section reset could not be persisted: {e}; nothing was \
@@ -1646,12 +1646,12 @@ pub(crate) async fn reset_overlay_section(
 /// PRESERVES. `limits`/`child_default` replace their whole list (a list can't be field-merged). The
 /// pure, testable core of `patch_group`.
 fn merge_group_patch(
-    mut base: crate::config::GroupCfg,
+    mut base: busbar_core::config::GroupCfg,
     parent: Option<String>,
     enabled: Option<bool>,
-    limits: Option<Vec<crate::config::LimitCfg>>,
-    child_default: Option<crate::config::groups::ChildDefault>,
-) -> crate::config::GroupCfg {
+    limits: Option<Vec<busbar_core::config::LimitCfg>>,
+    child_default: Option<busbar_core::config::groups::ChildDefault>,
+) -> busbar_core::config::GroupCfg {
     if let Some(p) = parent {
         base.parent = Some(p);
     }
@@ -1671,7 +1671,7 @@ fn merge_group_patch(
 /// hook surface (its rollback scope today); a group change still bumps `config_version` and lands an
 /// audited, timestamped version row (so `GET /config/versions` shows the event honestly). The
 /// snapshot does not yet carry groups, so `config/rollback` cannot restore them.
-fn record_group_version(installed: &Arc<crate::state::App>, actor: &str, summary: &str) {
+fn record_group_version(installed: &Arc<busbar_core::state::App>, actor: &str, summary: &str) {
     installed.versions.record(
         installed.config_version,
         actor,
@@ -1690,8 +1690,8 @@ pub(crate) async fn get_audit(
     let limit = q
         .get("limit")
         .and_then(|s| s.parse::<usize>().ok())
-        .unwrap_or(crate::admin::v1::contract::LIST_LIMIT_DEFAULT)
-        .clamp(1, crate::admin::v1::contract::LIST_LIMIT_MAX);
+        .unwrap_or(busbar_core::admin::v1::contract::LIST_LIMIT_DEFAULT)
+        .clamp(1, busbar_core::admin::v1::contract::LIST_LIMIT_MAX);
     let start = match cursor_offset(&q) {
         Ok(n) => n,
         Err(resp) => return resp,
@@ -1704,7 +1704,7 @@ pub(crate) async fn get_audit(
     // `audit::AUDIT` ring stays as a belt-and-suspenders dual-write (BUSBAR-1002), but the seam is the
     // read source, byte-identical (same fields, same order) to the ring it replaces.
     let mut entries =
-        crate::plane::auditlog::AUDIT_LOG.list_filtered(start, limit + 1, action, resource);
+        busbar_core::plane::auditlog::AUDIT_LOG.list_filtered(start, limit + 1, action, resource);
     let next_cursor = page_cursor(&mut entries, start, limit);
     ok_json(
         StatusCode::OK,
@@ -1721,8 +1721,8 @@ pub(crate) async fn list_config_versions(
     let limit = q
         .get("limit")
         .and_then(|s| s.parse::<usize>().ok())
-        .unwrap_or(crate::admin::v1::contract::VERSIONS_LIMIT_DEFAULT)
-        .clamp(1, crate::admin::v1::contract::LIST_LIMIT_MAX);
+        .unwrap_or(busbar_core::admin::v1::contract::VERSIONS_LIMIT_DEFAULT)
+        .clamp(1, busbar_core::admin::v1::contract::LIST_LIMIT_MAX);
     let start = match cursor_offset(&q) {
         Ok(n) => n,
         Err(resp) => return resp,
@@ -1759,7 +1759,7 @@ pub(crate) async fn get_config_version(
                 .map(|(name, cfg)| {
                     (
                         name,
-                        crate::admin::v1::service::project_hook_view(name, cfg, &cv.global_hooks),
+                        crate::v1::service::project_hook_view(name, cfg, &cv.global_hooks),
                     )
                 })
                 .collect();
@@ -1884,7 +1884,7 @@ pub(crate) struct RollbackReq {
 /// back never rewrites it), audited and overlay-persisted.
 pub(crate) async fn rollback_config(
     State(handle): State<Arc<AppHandle>>,
-    axum::Extension(principal): axum::Extension<crate::auth::AuthPrincipal>,
+    axum::Extension(principal): axum::Extension<busbar_core::auth::AuthPrincipal>,
     headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
 ) -> Response {
@@ -1931,7 +1931,7 @@ pub(crate) async fn rollback_config(
             Ok(Outcome::commit(
                 installed.clone(),
                 move || {
-                    crate::config::overlay::persist(
+                    busbar_core::config::overlay::persist(
                         p.overlay_path.as_deref(),
                         &p.hook_registry,
                         &p.global_hooks,
@@ -2000,7 +2000,7 @@ pub(crate) async fn rollback_config(
 /// live until the next reload/restart returns to disk truth — persist by updating config.yaml.
 pub(crate) async fn put_auth(
     State(handle): State<Arc<AppHandle>>,
-    axum::Extension(principal): axum::Extension<crate::auth::AuthPrincipal>,
+    axum::Extension(principal): axum::Extension<busbar_core::auth::AuthPrincipal>,
     headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
 ) -> Response {
@@ -2026,7 +2026,7 @@ pub(crate) async fn put_auth(
         // when locked.)
         if current.overlay_path.is_none() {
             return Err(AdminError::Validation(
-                crate::config::overlay::NO_WRITABLE_OVERLAY_MSG.to_string(),
+                busbar_core::config::overlay::NO_WRITABLE_OVERLAY_MSG.to_string(),
             ));
         }
         // Known-module validation (mirrors the boot rule): `admin-tokens` is the built-in; the
@@ -2073,14 +2073,14 @@ pub(crate) async fn put_auth(
         let bearer = headers
             .get(axum::http::header::AUTHORIZATION)
             .and_then(|v| v.to_str().ok())
-            .and_then(crate::auth::AuthMiddleware::extract_bearer_token);
+            .and_then(busbar_core::auth::AuthMiddleware::extract_bearer_token);
         let header_tok = headers
-            .get(crate::auth::X_ADMIN_TOKEN)
+            .get(busbar_core::auth::X_ADMIN_TOKEN)
             .and_then(|v| v.to_str().ok())
             .filter(|t| !t.is_empty())
             .map(str::to_string);
-        let survives = crate::auth::dry_run_admin_scope(&next, bearer.as_deref(), header_tok.as_deref())
-            .contains(crate::admin::v1::contract::Scope::Full);
+        let survives = busbar_core::auth::dry_run_admin_scope(&next, bearer.as_deref(), header_tok.as_deref())
+            .contains(busbar_core::admin::v1::contract::Scope::Full);
         if !survives {
             return Err(AdminError::Conflict(
                 "the new admin_auth chain would not grant THIS caller full scope — refusing to lock \
@@ -2146,7 +2146,7 @@ pub(crate) async fn put_auth(
 /// never cached); this closes the Identify window when a directory changes NOW.
 pub(crate) async fn flush_credential_cache(
     State(handle): State<Arc<AppHandle>>,
-    axum::Extension(principal): axum::Extension<crate::auth::AuthPrincipal>,
+    axum::Extension(principal): axum::Extension<busbar_core::auth::AuthPrincipal>,
     body: axum::body::Bytes,
 ) -> Response {
     let app = handle.load();
@@ -2196,8 +2196,8 @@ pub(crate) async fn flush_credential_cache(
 #[cold] // boot/admin-only — keeps hot text dense (never inlined into a warm path)
 #[inline(never)]
 pub(crate) fn rebuild_app_from_disk(
-    current: &Arc<crate::state::App>,
-) -> Result<(crate::state::App, Option<crate::GovCredentialRotation>), String> {
+    current: &Arc<busbar_core::state::App>,
+) -> Result<(busbar_core::state::App, Option<busbar_core::GovCredentialRotation>), String> {
     let (Some(config_path), Some(providers_path)) =
         (current.config_path.clone(), current.providers_path.clone())
     else {
@@ -2207,27 +2207,27 @@ pub(crate) fn rebuild_app_from_disk(
                 .into(),
         );
     };
-    let mut loaded = crate::load_config_from_disk(
+    let mut loaded = busbar_core::load_config_from_disk(
         &config_path,
         Some(&providers_path),
         false,
-        crate::config::EnvSubst::Strict,
+        busbar_core::config::EnvSubst::Strict,
     )?;
     // 1.5.0 full-config coverage: apply the overlay's `root` section (single-value config) AND the
     // `plugin_versions` rollback pins onto the base `DeployCfg` BEFORE resolve, so the limits
     // projection + admin-mTLS boot-guard + the plugin trust FLOORS re-derive over the merged shape —
     // exactly as boot does. The hooks/groups sections merge POST-resolve below.
     if let Some(doc) = loaded.overlay_doc.as_ref() {
-        crate::config::overlay::apply_root_to_deploy(&mut loaded.deploy, doc);
+        busbar_core::config::overlay::apply_root_to_deploy(&mut loaded.deploy, doc);
     }
-    let mut cfg = crate::config::resolve(&loaded.deploy, &loaded.defs)
+    let mut cfg = busbar_core::config::resolve(&loaded.deploy, &loaded.defs)
         .map_err(|errs| format!("config errors:\n  - {}", errs.join("\n  - ")))?;
     // Base hook + group names = the config-defined registry, pre-overlay (the admin API refuses
     // to PUT-replace / DELETE one); then merge the persisted overlay onto the resolved registry.
     let base_hook_names: std::collections::HashSet<String> = cfg.hooks.keys().cloned().collect();
     let base_group_names: std::collections::HashSet<String> = cfg.groups.keys().cloned().collect();
     if let Some(doc) = loaded.overlay_doc {
-        crate::config::overlay::merge_into(&mut cfg, doc);
+        busbar_core::config::overlay::merge_into(&mut cfg, doc);
     }
     // `build_app_from_config` hands back any governance-credential rotation UNAPPLIED (it
     // must not mutate the shared, process-lifetime `GovState` until the caller's own transaction is
@@ -2236,7 +2236,7 @@ pub(crate) fn rebuild_app_from_disk(
     // `apply()` (`txn.rs`), via `Outcome::commit_then` — that knows the transaction actually
     // committed (persist AND swap both done). A caller of `rebuild_app_from_disk` must never fire
     // this before that.
-    crate::build_app_from_config(
+    busbar_core::build_app_from_config(
         cfg,
         loaded.deploy.plugins.clone(),
         loaded.overlay_path,
@@ -2249,7 +2249,7 @@ pub(crate) fn rebuild_app_from_disk(
 
 pub(crate) async fn reload_config(
     State(handle): State<Arc<AppHandle>>,
-    axum::Extension(principal): axum::Extension<crate::auth::AuthPrincipal>,
+    axum::Extension(principal): axum::Extension<busbar_core::auth::AuthPrincipal>,
 ) -> Response {
     let actor = principal.actor_id().to_string();
     // The whole rebuild is DISK I/O (config.yaml + providers.yaml + the overlay, then resolve +
@@ -2338,7 +2338,7 @@ pub(crate) struct RestartReq {
 /// Responds BEFORE the drain begins. The drain closes the connection carrying this request, so an
 /// operator who got no response could not tell a restart from a crash.
 pub(crate) async fn restart(
-    axum::Extension(principal): axum::Extension<crate::auth::AuthPrincipal>,
+    axum::Extension(principal): axum::Extension<busbar_core::auth::AuthPrincipal>,
     body: axum::body::Bytes,
 ) -> Response {
     let actor = principal.actor_id().to_string();
@@ -2357,7 +2357,7 @@ pub(crate) async fn restart(
         }
     };
 
-    let supervised = crate::admin::restart::supervisor_detected();
+    let supervised = crate::restart::supervisor_detected();
     if !supervised && !req.confirm {
         audit::AUDIT.record_by("admin.restart", "process", audit::OUTCOME_REJECTED, &actor);
         return err_json_cond(
@@ -2369,7 +2369,7 @@ pub(crate) async fn restart(
         );
     }
 
-    if !crate::admin::restart::can_restart() {
+    if !crate::restart::can_restart() {
         audit::AUDIT.record_by("admin.restart", "process", audit::OUTCOME_REJECTED, &actor);
         return err_json_cond(
             &AdminError::Conflict("this process cannot restart itself".into()),
@@ -2380,7 +2380,7 @@ pub(crate) async fn restart(
     // Record the INTENT before draining: this entry is the operator's only durable evidence of who
     // asked and when, and the drain is about to take the connection that would have carried it.
     audit::AUDIT.record_by("admin.restart", "process", audit::OUTCOME_APPLIED, &actor);
-    crate::admin::restart::begin_drain();
+    crate::restart::begin_drain();
 
     ok_json(
         StatusCode::ACCEPTED,
@@ -2398,11 +2398,11 @@ pub(crate) async fn restart(
 #[derive(serde::Deserialize)]
 pub(crate) struct ApplyConfigReq {
     /// The deploy config (operator-owned `config.yaml` shape).
-    config: crate::config::DeployCfg,
+    config: busbar_core::config::DeployCfg,
     /// The provider definitions (`providers.yaml` shape). Optional — empty validates/fails loudly
     /// on dangling references.
     #[serde(default)]
-    providers: std::collections::HashMap<String, crate::config::ProviderDef>,
+    providers: std::collections::HashMap<String, busbar_core::config::ProviderDef>,
 }
 
 /// `POST /api/v1/admin/config/apply` — apply a FULL config carried in the request body, atomically:
@@ -2413,7 +2413,7 @@ pub(crate) struct ApplyConfigReq {
 /// next reload/restart returns to disk truth (+overlay); the response says so.
 pub(crate) async fn apply_config(
     State(handle): State<Arc<AppHandle>>,
-    axum::Extension(principal): axum::Extension<crate::auth::AuthPrincipal>,
+    axum::Extension(principal): axum::Extension<busbar_core::auth::AuthPrincipal>,
     headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
 ) -> Response {
@@ -2443,7 +2443,7 @@ pub(crate) async fn apply_config(
         // (A mutable config always has a writable overlay here, so this only fires when locked.)
         if current.overlay_path.is_none() {
             return Err(AdminError::Validation(
-                crate::config::overlay::NO_WRITABLE_OVERLAY_MSG.to_string(),
+                busbar_core::config::overlay::NO_WRITABLE_OVERLAY_MSG.to_string(),
             ));
         }
         // Resolve + build reads plugin artifacts off disk, so it is queued onto `spawn_blocking`
@@ -2457,18 +2457,18 @@ pub(crate) async fn apply_config(
             let overlay_doc = snapshot
                 .overlay_path
                 .as_deref()
-                .and_then(crate::config::overlay::read);
+                .and_then(busbar_core::config::overlay::read);
             let ApplyConfigReq {
                 config: mut deploy,
                 providers,
             } = req;
             if let Some(doc) = overlay_doc.as_ref() {
-                crate::config::overlay::apply_root_to_deploy(&mut deploy, doc);
+                busbar_core::config::overlay::apply_root_to_deploy(&mut deploy, doc);
                 // Without this an apply re-validates against the BASE floors and silently reverts a
                 // live audited plugin rollback until the next restart re-applies the pin.
-                crate::config::overlay::apply_plugin_versions_to_deploy(&mut deploy, doc);
+                busbar_core::config::overlay::apply_plugin_versions_to_deploy(&mut deploy, doc);
             }
-            let next = crate::config::resolve(&deploy, &providers)
+            let next = busbar_core::config::resolve(&deploy, &providers)
                 .map_err(|errs| format!("config errors:\n  - {}", errs.join("\n  - ")))
                 .and_then(|mut cfg| {
                     // Base names are the APPLIED config's own registry, taken pre-merge so an
@@ -2478,9 +2478,9 @@ pub(crate) async fn apply_config(
                     let base_group_names: std::collections::HashSet<String> =
                         cfg.groups.keys().cloned().collect();
                     if let Some(doc) = overlay_doc {
-                        crate::config::overlay::merge_into(&mut cfg, doc);
+                        busbar_core::config::overlay::merge_into(&mut cfg, doc);
                     }
-                    crate::build_app_from_config(
+                    busbar_core::build_app_from_config(
                         cfg,
                         deploy.plugins.clone(),
                         snapshot.overlay_path.clone(),
@@ -2564,10 +2564,10 @@ pub(crate) async fn apply_config(
 /// `RootSettings` cannot be silently dropped from the merge — which would make a `PUT` naming it
 /// return 200 while storing nothing.
 fn merge_root_settings(
-    mut base: crate::config::overlay::RootSettings,
-    req: crate::config::overlay::RootSettings,
-) -> crate::config::overlay::RootSettings {
-    let crate::config::overlay::RootSettings {
+    mut base: busbar_core::config::overlay::RootSettings,
+    req: busbar_core::config::overlay::RootSettings,
+) -> busbar_core::config::overlay::RootSettings {
+    let busbar_core::config::overlay::RootSettings {
         listen,
         tls,
         admin_listen,
@@ -2633,7 +2633,7 @@ fn merge_root_settings(
 /// takes effect on the next RESTART. Every OTHER field (`rate_card`/`per_request_fee`/`security`/
 /// `limits`/…) applies live on the swap. Keyed on the REQUEST (only fields the operator just changed
 /// are flagged), so a subsequent live-only edit does not re-flag an already-restart-pending bind.
-fn reload_to_apply_fields(req: &crate::config::overlay::RootSettings) -> Vec<String> {
+fn reload_to_apply_fields(req: &busbar_core::config::overlay::RootSettings) -> Vec<String> {
     // DRIFT GUARD, TOP LEVEL. Until 1.5.4 this function opened on a HAND-MAINTAINED list of six
     // `req.<field>.is_some()` pushes with no destructure of `RootSettings` at all — precisely the
     // bug class the nested `LimitsPatch`/`AdvancedPatch` guards below were added to close ("a
@@ -2641,7 +2641,7 @@ fn reload_to_apply_fields(req: &crate::config::overlay::RootSettings) -> Vec<Str
     // This is an EXHAUSTIVE destructure with NO `..`: a field added to `RootSettings` must be
     // classified BOOT-FROZEN (pushed) or GENUINELY LIVE (bound `_`, with a one-line reason) before
     // this crate builds. The compiler forces the decision instead of defaulting it to "live".
-    let crate::config::overlay::RootSettings {
+    let busbar_core::config::overlay::RootSettings {
         // BOOT-FROZEN — bound to a socket / read once in `main()`; see this function's doc comment.
         listen,
         tls,
@@ -2699,7 +2699,7 @@ fn reload_to_apply_fields(req: &crate::config::overlay::RootSettings) -> Vec<Str
     // from a hand-maintained push list. A new boot-frozen field can no longer go unflagged by
     // omission; the compiler forces a decision.
     if let Some(limits) = limits.as_ref() {
-        let crate::config::patch::LimitsPatch {
+        let busbar_core::config::patch::LimitsPatch {
             upstream_request_timeout_secs,
             pool_max_idle_per_host,
             pool_idle_timeout_secs,
@@ -2759,7 +2759,7 @@ fn reload_to_apply_fields(req: &crate::config::overlay::RootSettings) -> Vec<Str
     // (`proxy::configure_route_policy_headers`). DRIFT GUARD, same idiom as above: an EXHAUSTIVE
     // destructure of `AdvancedPatch` (no `..`).
     if let Some(advanced) = advanced.as_ref() {
-        let crate::config::patch::AdvancedPatch {
+        let busbar_core::config::patch::AdvancedPatch {
             response_headers,
             // GENUINELY LIVE — read fresh on every call via the `INSTALLED` `LimitsResolved` snapshot
             // refreshed on every apply (see `LimitsResolved::from_sections`). Not boot-captured.
@@ -2783,35 +2783,35 @@ fn reload_to_apply_fields(req: &crate::config::overlay::RootSettings) -> Vec<Str
 fn current_root_settings(
     overlay_path: Option<&std::path::Path>,
     endpoint: &str,
-) -> crate::config::overlay::RootSettings {
+) -> busbar_core::config::overlay::RootSettings {
     let Some(p) = overlay_path else {
-        return crate::config::overlay::RootSettings::default();
+        return busbar_core::config::overlay::RootSettings::default();
     };
-    match crate::config::overlay::read_state(p) {
-        crate::config::overlay::OverlayReadState::Absent => {
-            crate::config::overlay::RootSettings::default()
+    match busbar_core::config::overlay::read_state(p) {
+        busbar_core::config::overlay::OverlayReadState::Absent => {
+            busbar_core::config::overlay::RootSettings::default()
         }
-        crate::config::overlay::OverlayReadState::Loaded(doc) => doc.root.unwrap_or_default(),
-        crate::config::overlay::OverlayReadState::Unreadable => {
-            crate::diagnostics::diag_warn!(
-                crate::diagnostics::CONFIG_SETTINGS_OVERLAY_UNREADABLE,
+        busbar_core::config::overlay::OverlayReadState::Loaded(doc) => doc.root.unwrap_or_default(),
+        busbar_core::config::overlay::OverlayReadState::Unreadable => {
+            busbar_core::diagnostics::diag_warn!(
+                busbar_core::diagnostics::CONFIG_SETTINGS_OVERLAY_UNREADABLE,
                 endpoint,
                 path = %p.display(),
                 "{endpoint} read the config overlay while it was unreadable/corrupt; reporting NO \
                  root overrides, which may not reflect what is actually stored on disk"
             );
-            crate::config::overlay::RootSettings::default()
+            busbar_core::config::overlay::RootSettings::default()
         }
-        crate::config::overlay::OverlayReadState::VersionTooNew(v) => {
-            crate::diagnostics::diag_warn!(
-                crate::diagnostics::CONFIG_SETTINGS_OVERLAY_VERSION_TOO_NEW,
+        busbar_core::config::overlay::OverlayReadState::VersionTooNew(v) => {
+            busbar_core::diagnostics::diag_warn!(
+                busbar_core::diagnostics::CONFIG_SETTINGS_OVERLAY_VERSION_TOO_NEW,
                 endpoint,
                 path = %p.display(),
                 overlay_version = v,
                 "{endpoint} read the config overlay while it was from a NEWER busbar; reporting NO \
                  root overrides, which may not reflect what is actually stored on disk"
             );
-            crate::config::overlay::RootSettings::default()
+            busbar_core::config::overlay::RootSettings::default()
         }
     }
 }
@@ -2850,8 +2850,8 @@ pub(crate) async fn get_config_settings(State(handle): State<Arc<AppHandle>>) ->
         // sibling `config_transaction` path and surface it as a 500 — NEVER a fabricated empty-settings
         // 200, which would misreport "the operator has set no overrides" when the read never completed.
         Err(e) => {
-            crate::diagnostics::diag_error!(
-                crate::diagnostics::CONFIG_SETTINGS_READ_TASK_JOIN_FAILED,
+            busbar_core::diagnostics::diag_error!(
+                busbar_core::diagnostics::CONFIG_SETTINGS_READ_TASK_JOIN_FAILED,
                 error = %e,
                 "GET /config/settings overlay read task failed to join"
             );
@@ -2866,7 +2866,7 @@ pub(crate) async fn get_config_settings(State(handle): State<Arc<AppHandle>>) ->
     // it handed any read-only admin the governance ledger's credential (keys, budgets, the
     // hash-chained audit log) out of band of busbar.
     let mut settings = serde_json::to_value(&root).unwrap_or_else(|_| json!({}));
-    crate::admin::v1::service::redact_settings_bags(&mut settings);
+    crate::v1::service::redact_settings_bags(&mut settings);
     with_config_etag(
         ok_json(
             StatusCode::OK,
@@ -2910,7 +2910,7 @@ const PERSIST_FIELD: &str = "persist";
 
 pub(crate) async fn put_config_settings(
     State(handle): State<Arc<AppHandle>>,
-    axum::Extension(principal): axum::Extension<crate::auth::AuthPrincipal>,
+    axum::Extension(principal): axum::Extension<busbar_core::auth::AuthPrincipal>,
     headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
 ) -> Response {
@@ -2937,7 +2937,7 @@ pub(crate) async fn put_config_settings(
             )))
         }
     };
-    let req: crate::config::overlay::RootSettings = match serde_json::from_value(raw) {
+    let req: busbar_core::config::overlay::RootSettings = match serde_json::from_value(raw) {
         Ok(r) => r,
         Err(e) => {
             return err_json(&AdminError::Validation(format!(
@@ -2960,7 +2960,7 @@ pub(crate) async fn put_config_settings(
         let _ = requested_persist;
         if current.overlay_path.is_none() {
             return Err(AdminError::Validation(
-                crate::config::overlay::NO_WRITABLE_OVERLAY_MSG.to_string(),
+                busbar_core::config::overlay::NO_WRITABLE_OVERLAY_MSG.to_string(),
             ));
         }
         // Everything below reads the overlay file and re-runs the disk-load pipeline, so it is
@@ -2988,11 +2988,11 @@ pub(crate) async fn put_config_settings(
             // then merge the CURRENT hooks/groups overlay sections POST-resolve — exactly the reload
             // mechanism, with the root section coming from the just-merged desired state rather than
             // the on-disk overlay.
-            let next = crate::load_config_from_disk(
+            let next = busbar_core::load_config_from_disk(
                 &config_path,
                 Some(&providers_path),
                 false,
-                crate::config::EnvSubst::Strict,
+                busbar_core::config::EnvSubst::Strict,
             )
             .and_then(|mut loaded| {
                 merged_for_build.apply_to_deploy(&mut loaded.deploy);
@@ -3002,18 +3002,18 @@ pub(crate) async fn put_config_settings(
                 // the BASE floors and re-loads the newer artifact, silently reverting a live audited
                 // rollback until the next restart re-applies the persisted pin.
                 if let Some(doc) = loaded.overlay_doc.as_ref() {
-                    crate::config::overlay::apply_pre_resolve_sections(&mut loaded.deploy, doc);
+                    busbar_core::config::overlay::apply_pre_resolve_sections(&mut loaded.deploy, doc);
                 }
-                let mut cfg = crate::config::resolve(&loaded.deploy, &loaded.defs)
+                let mut cfg = busbar_core::config::resolve(&loaded.deploy, &loaded.defs)
                     .map_err(|errs| format!("config errors:\n  - {}", errs.join("\n  - ")))?;
                 let base_hook_names: std::collections::HashSet<String> =
                     cfg.hooks.keys().cloned().collect();
                 let base_group_names: std::collections::HashSet<String> =
                     cfg.groups.keys().cloned().collect();
                 if let Some(doc) = loaded.overlay_doc {
-                    crate::config::overlay::merge_into(&mut cfg, doc);
+                    busbar_core::config::overlay::merge_into(&mut cfg, doc);
                 }
-                crate::build_app_from_config(
+                busbar_core::build_app_from_config(
                     cfg,
                     loaded.deploy.plugins.clone(),
                     snapshot.overlay_path.clone(),
@@ -3038,7 +3038,7 @@ pub(crate) async fn put_config_settings(
             Ok(Outcome::commit_then(
                 installed.clone(),
                 move || {
-                    crate::config::overlay::persist_root(p.overlay_path.as_deref(), &to_persist)
+                    busbar_core::config::overlay::persist_root(p.overlay_path.as_deref(), &to_persist)
                         .map_err(|e| {
                             format!(
                                 "config settings could not be persisted to the overlay: {e}; \
@@ -3085,7 +3085,7 @@ pub(crate) async fn put_config_settings(
             // this resource on both verbs — a reader of the schema does not have to learn that the
             // PUT echo is shaped differently from the GET.
             let mut settings = serde_json::to_value(&merged).unwrap_or_else(|_| json!({}));
-            crate::admin::v1::service::redact_settings_bags(&mut settings);
+            crate::v1::service::redact_settings_bags(&mut settings);
             with_config_etag(
                 ok_json(
                     StatusCode::OK,
@@ -3132,7 +3132,7 @@ pub(crate) struct PatchSettingsReq {
 /// future (re)connection, so a restarted hook never runs blind.
 pub(crate) async fn patch_hook_settings(
     State(handle): State<Arc<AppHandle>>,
-    axum::Extension(principal): axum::Extension<crate::auth::AuthPrincipal>,
+    axum::Extension(principal): axum::Extension<busbar_core::auth::AuthPrincipal>,
     Path(name): Path<String>,
     headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
@@ -3155,7 +3155,7 @@ pub(crate) async fn patch_hook_settings(
     // overlay size and per-reconnect wire traffic. Cap the serialized size and the key count as
     // defense-in-depth (admin-gated, but a compromised hooks-register token should not be able to
     // bloat the durable state / reconnect path). The caps are far past any real hook's settings.
-    if let Err(e) = crate::admin::v1::service::validate_hook_settings_size(&req.settings) {
+    if let Err(e) = crate::v1::service::validate_hook_settings_size(&req.settings) {
         return err_json(&e);
     }
     let current = handle.load();
@@ -3189,7 +3189,7 @@ pub(crate) async fn patch_hook_settings(
     // never leaves the running hook ahead of committed config. The hook plugin env is captured here;
     // the load() that feeds the actual swap is re-taken AFTER the await, under the mutation lock.
     let hook_env = current.hook_env.clone();
-    if let Err(e) = crate::hooks::push_configure(&updated, &name, settings_version, &hook_env).await
+    if let Err(e) = busbar_core::hooks::push_configure(&updated, &name, settings_version, &hook_env).await
     {
         // The hook NACKed / timed out: nothing was pushed-and-acked, so nothing is live and nothing
         // committed — the running hook keeps its old settings. Reject cleanly, no compensation needed.
@@ -3223,7 +3223,7 @@ pub(crate) async fn patch_hook_settings(
             Ok(Outcome::commit(
                 installed.clone(),
                 move || {
-                    crate::config::overlay::persist(
+                    busbar_core::config::overlay::persist(
                         p.overlay_path.as_deref(),
                         &p.hook_registry,
                         &p.global_hooks,
@@ -3272,7 +3272,7 @@ pub(crate) async fn patch_hook_settings(
             // debug rather than escalated (the committed config — the source of truth — is unchanged).
             let committed = handle.load();
             if let Some(committed_hook) = committed.hook_registry.get(&name) {
-                if let Err(re) = crate::hooks::push_configure(
+                if let Err(re) = busbar_core::hooks::push_configure(
                     committed_hook,
                     &name,
                     committed.config_version,
@@ -3320,7 +3320,7 @@ pub(crate) async fn plugin_schema(
     // and truly had nothing to fall back to (no resolvable manifest either).
     if let Some(hook) = current.hook_registry.get(&name) {
         let described =
-            crate::hooks::fetch_schema(&name, hook, current.config_version, &current.hook_env)
+            busbar_core::hooks::fetch_schema(&name, hook, current.config_version, &current.hook_env)
                 .await;
         // The manifest baseline lives under the PLUGIN's name/alias (`hook.plugin`), not the
         // hook's own config-registry name — the two are commonly different strings (a hook is
@@ -3421,7 +3421,7 @@ pub(crate) async fn hook_schema(
         return err_json(&AdminError::not_found(format!("hook `{name}`")));
     };
     let schema =
-        crate::hooks::fetch_schema(&name, hook, current.config_version, &current.hook_env).await;
+        busbar_core::hooks::fetch_schema(&name, hook, current.config_version, &current.hook_env).await;
     ok_json(StatusCode::OK, &json!({ "name": name, "schema": schema }))
 }
 
@@ -3453,7 +3453,7 @@ pub(crate) async fn hook_status(
     };
     let desired_version = current.config_version;
     let reported =
-        crate::hooks::fetch_status(&name, hook, desired_version, &current.hook_env).await;
+        busbar_core::hooks::fetch_status(&name, hook, desired_version, &current.hook_env).await;
     let as_of = busbar_substrate::store::now();
     let body = match reported {
         Some(r) => {
@@ -3461,14 +3461,14 @@ pub(crate) async fn hook_status(
             // changed in its observed settings (extra self-managed keys are NOT drift). The
             // comparison happens inside `hooks::settings_drift_keys` and yields KEY NAMES ONLY —
             // see that function for why NEITHER bag's values may be served here.
-            let drift_keys = crate::hooks::settings_drift_keys(hook, r.settings.as_ref());
+            let drift_keys = busbar_core::hooks::settings_drift_keys(hook, r.settings.as_ref());
             let settings_drift = !drift_keys.is_empty();
             let version_drift = r.settings_version.is_some_and(|v| v != desired_version);
             let metrics = r
                 .metrics
                 .as_ref()
                 .map(|m| {
-                    crate::hooks::wire::parse_status_metrics(m)
+                    busbar_core::hooks::wire::parse_status_metrics(m)
                         .into_iter()
                         .map(|metric| {
                             let mut entry =
@@ -3498,11 +3498,11 @@ pub(crate) async fn hook_status(
             json!({
                 "name": name,
                 "desired": {
-                    "settings_keys": crate::admin::v1::service::settings_keys(&hook.settings),
+                    "settings_keys": crate::v1::service::settings_keys(&hook.settings),
                     "settings_version": desired_version,
                 },
                 "reported": {
-                    "settings_keys": r.settings.as_ref().map(crate::admin::v1::service::settings_keys),
+                    "settings_keys": r.settings.as_ref().map(crate::v1::service::settings_keys),
                     "settings_version": r.settings_version,
                 },
                 "drift": settings_drift || version_drift,
@@ -3517,7 +3517,7 @@ pub(crate) async fn hook_status(
         None => json!({
             "name": name,
             "desired": {
-                "settings_keys": crate::admin::v1::service::settings_keys(&hook.settings),
+                "settings_keys": crate::v1::service::settings_keys(&hook.settings),
                 "settings_version": desired_version,
             },
             "reported": serde_json::Value::Null,
@@ -3856,7 +3856,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
     // documents exactly the surface `JsonV1::router` mounts from the same `plane_decls()` list. The
     // typed success-body schemas for these paths are attached below by the shared `typed!`/`body!`
     // pass, which looks each path up by the key inserted here.
-    for decl in crate::plane::registry::plane_decls() {
+    for decl in busbar_core::plane::registry::plane_decls() {
         if let Some(openapi) = decl.openapi {
             if let Some(obj) = openapi().as_object() {
                 for (path, item) in obj {
@@ -4052,7 +4052,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
     // The section enum + the summary are DERIVED from `OverlaySection::all()`. Hand-written, they
     // stated a four-value set as COMPLETE for the whole life of the `named_maps` section, so the
     // reference documentation asserted a shipped functional gap was not one.
-    let overlay_section_names: Vec<&'static str> = crate::config::overlay::OverlaySection::all()
+    let overlay_section_names: Vec<&'static str> = busbar_core::config::overlay::OverlaySection::all()
         .iter()
         .map(|s| s.as_str())
         .collect();
@@ -4095,7 +4095,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
     );
 
     // Virtual-key management (mounted in the v1 router like everything else; handlers live in
-    // crate::admin while they migrate into the service). The secret is shown ONCE at create/rotate
+    // busbar_core::admin while they migrate into the service). The secret is shown ONCE at create/rotate
     // and never read back.
     paths.insert(
         ap("/keys"),
@@ -4197,7 +4197,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         }),
     );
 
-    use crate::admin::v1::contract::taxonomy;
+    use busbar_core::admin::v1::contract::taxonomy;
 
     // ── THE 4xx RESPONSE SET IS A PROJECTION, NOT PROSE (design D) ────────────────────────────
     // Every body-specific 400 / 403-escalation / 404 / 409 is ENUMERATED from the ONE declaration
@@ -4213,7 +4213,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
             continue;
         };
         let rel = path
-            .strip_prefix(crate::admin::v1::contract::ADMIN_PREFIX)
+            .strip_prefix(busbar_core::admin::v1::contract::ADMIN_PREFIX)
             .unwrap_or(path)
             .to_string();
         for (method, op) in obj.iter_mut() {
@@ -4246,7 +4246,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                     _ => continue,
                 };
                 if let Some(op) = op.as_object_mut() {
-                    let scope = crate::admin::v1::contract::required_scope(&m, path);
+                    let scope = busbar_core::admin::v1::contract::required_scope(&m, path);
                     op.insert("x-busbar-required-scope".to_string(), json!(scope.as_str()));
                     // Both accepted credential carriers, on every op.
                     op.insert(
@@ -4420,7 +4420,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         .iter()
         .map(|(p, m)| ((*p).to_string(), *m))
         .collect();
-    for section in crate::config::named_map::NamedMapSection::sections() {
+    for section in busbar_core::config::named_map::NamedMapSection::sections() {
         let root = section.path_root();
         if_match_guarded.push((format!("{root}/{{name}}"), "put"));
         if_match_guarded.push((format!("{root}/{{name}}"), "delete"));
@@ -4455,7 +4455,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
     // response shapes always match what serde serializes. Driven by a table keyed on
     // (relative-path, method, status); `attach` resolves the type to a `#/components/schemas/<T>`
     // ref, records it in `gen`, and writes the `content` block.
-    use crate::admin::v1::contract::schema as sview;
+    use busbar_core::admin::v1::contract::schema as sview;
     let mut gen = schemars::generate::SchemaSettings::draft2020_12()
         .with(|s| {
             // OpenAPI 3.1 keeps component schemas under `#/components/schemas`; strip the per-schema
@@ -4561,7 +4561,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         }};
     }
 
-    use crate::admin::v1::contract::{
+    use busbar_core::admin::v1::contract::{
         AdminAuthView, AuthView, ConfigValidateView, EffectiveConfigView, GroupView,
         HookHealthView, HookView, InfoView, ModelView, NamedDefView, Page, PluginInstallView,
         PluginReloadView, PluginView, PoolDetailView, PoolView, ProviderView, UsageView,
@@ -4588,7 +4588,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
     // inline `typed!`/`body!` calls used to, and this document is byte-identical while this function
     // names no plane-specific view type. Folded in `plane_decls()` order, matching the source order
     // those calls had.
-    for decl in crate::plane::registry::plane_decls() {
+    for decl in busbar_core::plane::registry::plane_decls() {
         if let Some(schemas) = decl.openapi_schemas {
             schemas(&mut gen, &mut req_gen, &mut paths);
         }
@@ -4606,7 +4606,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         "/groups/{name}/usage",
         "get",
         "200",
-        crate::admin::v1::contract::GroupUsageView
+        busbar_core::admin::v1::contract::GroupUsageView
     );
     // Auth & credentials.
     typed!("/auth", "get", "200", AuthView);
@@ -4632,7 +4632,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         "/plugins/rollback",
         "post",
         "200",
-        crate::admin::v1::contract::PluginRollbackView
+        busbar_core::admin::v1::contract::PluginRollbackView
     );
     typed!("/usage", "get", "200", UsageView);
     typed!("/config", "get", "200", EffectiveConfigView);
@@ -4734,8 +4734,8 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
     body!("/config/rollback", "post", RollbackReq);
     body_optional!("/restart", "post", RestartReq);
     body!("/hooks/{name}/settings", "patch", PatchSettingsReq);
-    body!("/keys", "post", crate::admin::CreateKeyReq);
-    body!("/keys/{id}", "patch", crate::admin::UpdateKeyReq);
+    body!("/keys", "post", crate::keys::CreateKeyReq);
+    body!("/keys/{id}", "patch", crate::keys::UpdateKeyReq);
 
     // The config-carrying bodies are declared by HAND, deliberately.
     //
@@ -4860,7 +4860,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
     // The GENERIC named-DEFINITION maps: response views, request bodies and the `name` path
     // parameter, all emitted from the SAME `NamedMapSection::ALL` loop the router and the path items
     // come from. A new section is documented in full without touching this block.
-    for section in crate::config::named_map::NamedMapSection::sections() {
+    for section in busbar_core::config::named_map::NamedMapSection::sections() {
         let root = section.path_root();
         let item = format!("{root}/{{name}}");
         let settings = format!("{root}/{{name}}/settings");
@@ -4944,7 +4944,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         },
         "components": {
             "securitySchemes": {
-                "adminToken": {"type": "apiKey", "in": "header", "name": crate::auth::X_ADMIN_TOKEN},
+                "adminToken": {"type": "apiKey", "in": "header", "name": busbar_core::auth::X_ADMIN_TOKEN},
                 "bearerAuth": {"type": "http", "scheme": "bearer",
                                "description": "The same operator credential via Authorization: Bearer"}
             },
@@ -5059,7 +5059,7 @@ pub(crate) async fn openapi(headers: axum::http::HeaderMap) -> Response {
         (
             StatusCode::OK,
             [
-                (CONTENT_TYPE, crate::proxy::APPLICATION_JSON),
+                (CONTENT_TYPE, busbar_core::proxy::APPLICATION_JSON),
                 (axum::http::header::CONTENT_ENCODING, "gzip"),
                 VARY,
             ],
@@ -5069,7 +5069,7 @@ pub(crate) async fn openapi(headers: axum::http::HeaderMap) -> Response {
     } else {
         (
             StatusCode::OK,
-            [(CONTENT_TYPE, crate::proxy::APPLICATION_JSON), VARY],
+            [(CONTENT_TYPE, busbar_core::proxy::APPLICATION_JSON), VARY],
             openapi_json(),
         )
             .into_response()
@@ -5081,12 +5081,12 @@ pub(crate) async fn openapi(headers: axum::http::HeaderMap) -> Response {
 #[derive(serde::Deserialize)]
 pub(crate) struct ValidateConfigReq {
     /// The deploy config (operator-owned `config.yaml` shape).
-    config: crate::config::DeployCfg,
+    config: busbar_core::config::DeployCfg,
     /// The provider definitions (`providers.yaml` shape), keyed by provider name. Optional: a config
     /// that references no providers.yaml entries validates against an empty def set (and reports the
     /// dangling references as errors).
     #[serde(default)]
-    providers: std::collections::HashMap<String, crate::config::ProviderDef>,
+    providers: std::collections::HashMap<String, busbar_core::config::ProviderDef>,
 }
 
 /// `POST /api/v1/admin/config/validate` — dry-run validate a proposed config. A malformed body is an

@@ -3681,7 +3681,9 @@ fn export_named_map_allows_two_instances_of_one_module() {
 #[test]
 fn root_settings_doc_lists_only_fields_that_exist() {
     let src = include_str!("../overlay.rs");
-    let anchor = "pub(crate) struct RootSettings {";
+    // `RootSettings` (and its fields) were promoted `pub(crate)` → `pub` when the admin service was
+    // extracted to `busbar-admin`, which reads them; the doc/code-drift check is unchanged.
+    let anchor = "pub struct RootSettings {";
     let at = src.find(anchor).expect("RootSettings struct");
 
     // The struct's real field set.
@@ -3689,7 +3691,7 @@ fn root_settings_doc_lists_only_fields_that_exist() {
     let body = &body[..body.find("\n}").expect("struct end")];
     let fields: Vec<&str> = body
         .lines()
-        .filter_map(|l| l.trim().strip_prefix("pub(crate) "))
+        .filter_map(|l| l.trim().strip_prefix("pub "))
         .filter_map(|l| l.split(':').next())
         .collect();
     assert!(

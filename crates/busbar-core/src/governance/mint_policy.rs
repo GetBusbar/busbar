@@ -27,7 +27,7 @@
 ///
 /// Returns the (possibly clamped) TTL in seconds, or an error message naming the ceiling for the 4xx.
 /// The per-role `mint_ceilings` narrowing composes ABOVE this by lowering `ceiling` before the call.
-pub(crate) fn apply_mint_ttl_ceiling(
+pub fn apply_mint_ttl_ceiling(
     requested_ttl_secs: u64,
     explicit: bool,
     ceiling_secs: Option<u64>,
@@ -47,62 +47,62 @@ pub(crate) fn apply_mint_ttl_ceiling(
 /// The default signed-token lifetime when the mint body specifies neither `expires_in` nor
 /// `expires_at`: 90 days. Long enough that routine use does not churn, short enough that a leaked
 /// token is not valid forever (the 1.x posture: keys never expired).
-pub(crate) const DEFAULT_KEY_TTL_SECS: u64 = 90 * 86_400;
+pub const DEFAULT_KEY_TTL_SECS: u64 = 90 * 86_400;
 
 /// One role's RESOLVED mint ceiling (`auth.policy.mint_ceilings.<role>`), durations pre-parsed at
 /// boot. All fields optional; a `None` is "no restriction from this role for that dimension".
 #[derive(Debug, Clone, Default, PartialEq)]
-pub(crate) struct RoleCeiling {
+pub struct RoleCeiling {
     /// Longest TTL (secs) this role may mint. `None` = no per-role TTL cap (block cap still applies).
-    pub(crate) max_ttl_secs: Option<u64>,
+    pub max_ttl_secs: Option<u64>,
     /// Pools this role may mint against — 3-state (`None` = all / `Some([])` = none / `Some(list)`).
-    pub(crate) allowed_pools: Option<Vec<String>>,
+    pub allowed_pools: Option<Vec<String>>,
     /// Binding modes (wire spellings) this role may mint. `None` = no per-role mode restriction.
-    pub(crate) binding_modes: Option<Vec<String>>,
+    pub binding_modes: Option<Vec<String>>,
 }
 
 /// The RESOLVED runtime mint policy (`auth.policy:`), built once at boot from [`AuthCfg`] and read on
 /// every mint. The config half of the config-vs-store split, projected onto the App snapshot beside
 /// `self_key_ttl_secs`. `Default` = the empty policy (no caps) ⇒ byte-identical pre-1.6.0 behavior.
 #[derive(Debug, Clone, Default, PartialEq)]
-pub(crate) struct MintPolicy {
+pub struct MintPolicy {
     /// SELF-SERVE mint switch (`auth.policy.self_mint`). `None` ⇒ today's behavior (the `POST
     /// /auth/token` self-serve path is available whenever an IdP is configured); `Some(true)` makes
     /// that intent explicit; `Some(false)` DISABLES the self-serve mint path (the exchange refuses,
     /// 403). Read only by the self-serve exchange (`resolve_exchange`), never by the admin mint.
-    pub(crate) self_mint: Option<bool>,
+    pub self_mint: Option<bool>,
     /// Deployment-wide TTL ceiling (`auth.policy.max_ttl`). A hard cap: a per-role ceiling narrows
     /// BELOW it, never above it.
-    pub(crate) block_max_ttl_secs: Option<u64>,
+    pub block_max_ttl_secs: Option<u64>,
     /// Deployment-wide allowed binding modes (`auth.policy.binding_modes`, wire spellings). `None` =
     /// all modes allowed. Applies when the caller holds no role that restricts modes further.
-    pub(crate) block_binding_modes: Option<Vec<String>>,
+    pub block_binding_modes: Option<Vec<String>>,
     /// Per-role ceilings (`auth.policy.mint_ceilings.<role>`).
-    pub(crate) ceilings: std::collections::BTreeMap<String, RoleCeiling>,
+    pub ceilings: std::collections::BTreeMap<String, RoleCeiling>,
 }
 
 /// A mint's ceiling-relevant shape, checked by [`MintPolicy::check_mint`].
-pub(crate) struct MintRequest<'a> {
+pub struct MintRequest<'a> {
     /// The caller's asserted roles (`Principal::roles`) — the delegated-admin identity the per-role
     /// ceiling keys off.
-    pub(crate) roles: &'a [String],
+    pub roles: &'a [String],
     /// The pools this mint requests — 3-state, as given (`None` = all).
-    pub(crate) requested_pools: Option<&'a [String]>,
+    pub requested_pools: Option<&'a [String]>,
     /// The resolved token lifetime in seconds.
-    pub(crate) requested_ttl_secs: u64,
+    pub requested_ttl_secs: u64,
     /// Whether the operator NAMED the lifetime (`expires_in`/`expires_at`) — an explicit over-ask is
     /// refused, a default is clamped (see [`apply_mint_ttl_ceiling`]).
-    pub(crate) explicit_ttl: bool,
+    pub explicit_ttl: bool,
     /// The binding mode this mint requests (wire spelling), if any. `None` = no mode named (the admin
     /// mint path today), so the mode ceiling is not exercised.
-    pub(crate) requested_mode: Option<&'a str>,
+    pub requested_mode: Option<&'a str>,
 }
 
 impl MintPolicy {
     /// Build the resolved policy from config. Durations were already proven to parse by
     /// `config_validate`; a stray unparseable value falls back to `None` (no cap) rather than
     /// fabricating a ceiling.
-    pub(crate) fn from_auth(auth: Option<&crate::config::AuthCfg>) -> Self {
+    pub fn from_auth(auth: Option<&crate::config::AuthCfg>) -> Self {
         let Some(policy) = auth.map(|a| &a.policy) else {
             return Self::default();
         };
@@ -199,7 +199,7 @@ impl MintPolicy {
     ///   allowed, and the empty set is always allowed.
     /// - Mode: if a mode is requested and the effective allowed set is a finite list, it must be a
     ///   member.
-    pub(crate) fn check_mint(&self, req: &MintRequest<'_>) -> Result<u64, String> {
+    pub fn check_mint(&self, req: &MintRequest<'_>) -> Result<u64, String> {
         let role = self.effective_role_ceiling(req.roles);
 
         // TTL ceiling: the tighter of block and (if present) the role cap.

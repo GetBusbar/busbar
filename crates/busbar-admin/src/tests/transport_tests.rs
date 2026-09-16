@@ -11,12 +11,12 @@ use super::*;
 /// authorization matrix doesn't recognize.
 #[test]
 fn json_v1_mount_prefix_matches_contract_const() {
-    let t = crate::admin::JsonV1;
+    let t = crate::v1::json::JsonV1;
     let computed = format!(
         "{}/{}/{}",
-        crate::admin::v1::contract::API_ROOT,
+        busbar_core::admin::v1::contract::API_ROOT,
         t.version(),
         t.area()
     );
-    assert_eq!(computed, crate::admin::v1::contract::ADMIN_PREFIX);
+    assert_eq!(computed, busbar_core::admin::v1::contract::ADMIN_PREFIX);
 }

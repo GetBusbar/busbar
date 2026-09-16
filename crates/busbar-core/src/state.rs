@@ -19,13 +19,13 @@ use busbar_substrate::store::LaneRuntime;
 // (1.6.0 App-retype WEDGE 3-PREP) so the plane crates reach the neutral worker-count / worker-id
 // process facts and the per-worker-sharded upstream client without naming `busbar-core`. The
 // store-striping readers (`worker_stripes`/`worker_stripe`) still resolve their historical
-// `crate::state::…` path and keep the `pub(crate)` visibility they had before the move.
+// `crate::state::…` path and keep the `pub` visibility they had before the move.
 //
 // `set_data_workers`, `set_worker_id` and `UpstreamClients` are no longer re-exported: the
 // composition root's boot publish now targets `busbar_substrate::topology::…` directly, which left
 // the three `busbar_core::state::…` spellings with no caller at all bar one `engine_facade`
 // re-export line, itself repointed here. Nothing outside core names them.
-pub(crate) use busbar_substrate::topology::{worker_stripe, worker_stripes};
+pub use busbar_substrate::topology::{worker_stripe, worker_stripes};
 
 /// The subset of resolved limits that FEEDS the upstream reqwest client build — every setting
 /// whose change must produce a different client. On a config apply the prior client is reused (for
@@ -41,18 +41,18 @@ pub struct UpstreamClientSettings {
     /// a looser timeout is a resource-exhaustion surface, so a change here MUST rebuild.
     pub upstream_request_timeout_secs: u64,
     /// Per-host idle keep-alive socket budget (`limits.pool_max_idle_per_host`).
-    pub(crate) pool_max_idle_per_host: usize,
+    pub pool_max_idle_per_host: usize,
     /// Idle keep-alive lifetime (`limits.pool_idle_timeout_secs`).
-    pub(crate) pool_idle_timeout_secs: u64,
+    pub pool_idle_timeout_secs: u64,
     /// Pin to HTTP/1.1 (`advanced.upstream_http1_only`).
-    pub(crate) upstream_http1_only: bool,
+    pub upstream_http1_only: bool,
     /// Force cleartext h2 prior-knowledge (`advanced.upstream_h2_prior_knowledge`).
-    pub(crate) upstream_h2_prior_knowledge: bool,
+    pub upstream_h2_prior_knowledge: bool,
 }
 
 impl UpstreamClientSettings {
     /// Project the client-affecting subset out of the fully-resolved limits.
-    pub(crate) fn from_limits(limits: &crate::config::LimitsResolved) -> Self {
+    pub fn from_limits(limits: &crate::config::LimitsResolved) -> Self {
         Self {
             upstream_request_timeout_secs: limits.upstream_request_timeout_secs,
             pool_max_idle_per_host: limits.pool_max_idle_per_host,
@@ -75,24 +75,24 @@ pub use busbar_substrate::plane_host::runtime_slot_key;
 
 /// One plane's per-container resolved submission-gate map: container name → resolved
 /// `(hook_id, ResolvedPolicy)` gate list. The value half of [`App::plane_gates`].
-pub(crate) type ContainerGateMap = HashMap<String, Vec<(u16, crate::hooks::ResolvedPolicy)>>;
+pub type ContainerGateMap = HashMap<String, Vec<(u16, crate::hooks::ResolvedPolicy)>>;
 
 /// THE GENERIC per-plane submission-gate map, keyed by each plane's stable decl key (the opaque
 /// registry key) — the registry-keyed structure that replaced the former plane-named gate
 /// fields, so core names no plane vocabulary in its field types.
-pub(crate) type PlaneGateMap = std::collections::BTreeMap<&'static str, ContainerGateMap>;
+pub type PlaneGateMap = std::collections::BTreeMap<&'static str, ContainerGateMap>;
 
 /// One plane's per-container resolved REWRITE (`prompt: rw`) chain map: container name → resolved
 /// `(per-hook deadline, transport)` list. The tap/transform twin of [`ContainerGateMap`], the value
 /// half of [`App::plane_rewrites`].
 #[allow(clippy::type_complexity)]
-pub(crate) type ContainerRewriteMap =
+pub type ContainerRewriteMap =
     HashMap<String, Vec<(std::time::Duration, Arc<dyn crate::hooks::RoutingPolicy>)>>;
 
 /// THE GENERIC per-plane rewrite-chain map, keyed by each plane's stable decl key — the tap/transform
 /// twin of [`PlaneGateMap`], so the TAP half of the hook surface reaches every registered plane's
 /// payloads through the same registry-keyed structure the GATE half already uses.
-pub(crate) type PlaneRewriteMap = std::collections::BTreeMap<&'static str, ContainerRewriteMap>;
+pub type PlaneRewriteMap = std::collections::BTreeMap<&'static str, ContainerRewriteMap>;
 
 /// `Clone` is the config-apply enabler: cloning an `App` shares the live-state `Arc`s (store, auth,
 /// governance, client — the things that must SURVIVE a config change) and deep-copies the
@@ -115,7 +115,7 @@ pub struct App {
     /// single cheap `plane_slots` lookup + ONE downcast, never the interning `runtime_slot_key` call.
     /// An ABSENT slot — the featureless binary boots with no fallback plane configured, so none was
     /// inserted — reads as the substrate-resident empty view, never a panic. Neutral: names no dialect.
-    pub(crate) llm_runtime_key: &'static str,
+    pub llm_runtime_key: &'static str,
     pub store: Arc<dyn LaneRuntime>,
     /// THE CONTAINER PLANES' BREAKER CELLS — the degenerate single-member cell per registered
     /// container-plane member (the breaker-all-planes audit's closing design). Live state, shared by
@@ -129,7 +129,7 @@ pub struct App {
     /// (today the gate's cleared-scan set; tomorrow any tenant) must survive a config swap or every
     /// apply would forget every live session. Present unconditionally (an empty bounded map is cheap);
     /// whether the gate hot path CONSULTS it is the operator opt-in `incremental_scan`.
-    pub(crate) session_store: Arc<crate::session::SessionStore>,
+    pub session_store: Arc<crate::session::SessionStore>,
     /// Operator opt-in (env `BUSBAR_INCREMENTAL_SCAN`) for the gate's incremental-scan tenant. `false`
     /// (the default) ⇒ every gate screens the full projection every turn, byte-identical to 1.5.4; the
     /// firing sites pass `incremental: None`. Env-driven, not config, so activating it does not touch
@@ -137,7 +137,7 @@ pub struct App {
     // Read only by the plane request gate's incremental-scan tenant; with BOTH planes compiled out
     // nothing fires that gate, so the field goes unread in that config alone.
     #[allow(dead_code)]
-    pub(crate) incremental_scan: bool,
+    pub incremental_scan: bool,
     /// A single container plane's failover pools — operator-declared interchangeable member sets,
     /// carried resolved-verbatim onto the snapshot so that plane's own dispatch route builder
     /// reads the SAME generation the request was admitted on. Empty ⇒ every
@@ -157,7 +157,7 @@ pub struct App {
     // Read on a plane's route/admission path; with one plane's feature off (and another's on) it is
     // never read.
     #[allow(dead_code)]
-    pub(crate) plane_pools: std::collections::BTreeMap<
+    pub plane_pools: std::collections::BTreeMap<
         &'static str,
         std::collections::BTreeMap<String, crate::failover::CandidatePoolCfg>,
     >,
@@ -208,11 +208,11 @@ pub struct App {
     /// byte-identical objects (the SAME resolution `hooks::resolve_pool_*` produced), read via the
     /// facade instead of stored across the plane seam. Absent pool ⇒ the zero-cost default (no
     /// policy / empty chain).
-    pub(crate) pool_orderings: std::collections::HashMap<String, crate::hooks::ResolvedPolicy>,
-    pub(crate) pool_decision_gates:
+    pub pool_orderings: std::collections::HashMap<String, crate::hooks::ResolvedPolicy>,
+    pub pool_decision_gates:
         std::collections::HashMap<String, Vec<(u16, crate::hooks::ResolvedPolicy)>>,
     #[allow(clippy::type_complexity)]
-    pub(crate) pool_rewrite_chains: std::collections::HashMap<
+    pub pool_rewrite_chains: std::collections::HashMap<
         String,
         Vec<(
             std::time::Duration,
@@ -230,7 +230,7 @@ pub struct App {
     // Read on the plane dispatch/admission gate paths; with BOTH planes compiled out nothing fires a
     // gate, so the map goes unread in that config alone.
     #[allow(dead_code)]
-    pub(crate) plane_gates: PlaneGateMap,
+    pub plane_gates: PlaneGateMap,
     /// THE PER-PLANE PER-CONTAINER REWRITE (`prompt: rw`) CHAINS, keyed by the plane's stable decl key —
     /// the TAP/observe-transform twin of [`Self::plane_gates`]. Each plane's entry maps container →
     /// resolved `(deadline, transport)` rewrite list (`<section>.hooks:` ∪ `<section>.<container>.hooks:`,
@@ -241,7 +241,7 @@ pub struct App {
     // Read on the plane transform/tap paths only; with BOTH planes compiled out nothing fires a tap, so
     // the map goes unread in that config alone.
     #[allow(dead_code)]
-    pub(crate) plane_rewrites: PlaneRewriteMap,
+    pub plane_rewrites: PlaneRewriteMap,
     /// The raw `hooks:` registry (name → definition) as configured, for the Admin API v1 hooks READ
     /// surface (`GET /api/v1/admin/hooks`). This is the DEFINITION set, distinct
     /// from the RESOLVED transports in `rewrite_hooks`/`tap_hooks` (which the request path fires). Empty
@@ -289,7 +289,7 @@ pub struct App {
     /// Hook names defined in the BASE config file (pre-overlay). `PUT /api/v1/admin/hooks/{name}` on a
     /// base hook is a 409 (edit the file, don't shadow it); API-registered (overlay) hooks replace
     /// freely. Immutable after boot.
-    pub(crate) base_hook_names: std::collections::HashSet<String>,
+    pub base_hook_names: std::collections::HashSet<String>,
     /// The raw `groups:` registry (name → definition) as the EFFECTIVE config resolves it (base +
     /// overlay), for the Admin API v1 groups READ + MUTATION surface (`GET/POST/PUT/DELETE
     /// /api/v1/admin/groups`). This is the source-of-truth `GroupCfg` map — distinct from the LOSSY
@@ -303,17 +303,17 @@ pub struct App {
     /// freely. Immutable after boot — mirrors `base_hook_names`.
     // Read by the groups-CRUD PUT/DELETE base-shadow guard.
     #[allow(dead_code)]
-    pub(crate) base_group_names: std::collections::HashSet<String>,
+    pub base_group_names: std::collections::HashSet<String>,
     /// The EFFECTIVE `identity-providers:` NAMED-DEFINITION map (base `config.yaml` + the overlay's
     /// API-applied entries). The READ side of the generic named-map admin CRUD
     /// (`GET /api/v1/admin/identity-providers[/{name}]`); the WRITE side never mutates this in place
     /// — it rewrites the overlay section and rebuilds a whole `App` from disk, exactly as
     /// `PUT /config/settings` does, because an IdP change re-resolves the auth + admin chains.
-    pub(crate) identity_providers: crate::config::IdentityProviders,
+    pub identity_providers: crate::config::IdentityProviders,
     /// The EFFECTIVE `export:` NAMED-DEFINITION map — the exporter twin of `identity_providers`,
     /// serving `GET /api/v1/admin/export[/{name}]`. The lowered runtime projection lives in the
     /// recorder / plugin-route table, never here.
-    pub(crate) export_defs: crate::config::ExportDefs,
+    pub export_defs: crate::config::ExportDefs,
     /// The EFFECTIVE NAMED-DEFINITION map for one container plane's own top-level config section,
     /// serving that plane's own admin named-definition read endpoint. Operator INTENT only:
     /// everything that accumulates about a registered member (observed state, drift tracking,
@@ -329,7 +329,7 @@ pub struct App {
     // With that plane's feature off, its module (this field's only reader) is compiled out, so the
     // field is set at build and never read — allow it dead in exactly that config.
     #[allow(dead_code)]
-    pub(crate) agent_defs: Arc<dyn std::any::Any + Send + Sync>,
+    pub agent_defs: Arc<dyn std::any::Any + Send + Sync>,
     // THE RUNNING PLANE — the registry this field lowers to, plus everything accumulated against it —
     // has NO typed `App` field. Like every other registered plane it lives ONLY in the type-erased
     // `plane_slots` map, and the owning plane's own accessor downcasts that slot back to its runtime
@@ -355,7 +355,7 @@ pub struct App {
     /// NOT replay another principal's response (which carries a once-shown secret) — the header is
     /// a client-chosen string, not a cross-principal handle.
     #[allow(clippy::type_complexity)]
-    pub(crate) idempotency_cache: Arc<
+    pub idempotency_cache: Arc<
         std::sync::Mutex<std::collections::HashMap<(String, String), (u64, serde_json::Value)>>,
     >,
     /// Config VERSION HISTORY — every successful config-plane mutation records its snapshot here.
@@ -364,14 +364,14 @@ pub struct App {
     pub versions: Arc<crate::admin::versions::VersionLog>,
     /// The ADMIN auth chain (`admin_auth:` module names, default `[admin-tokens]`) — executed by
     /// the auth middleware for `/admin` paths. Empty = the explicit OPEN admin posture (dev).
-    pub(crate) admin_chain: Vec<String>,
+    pub admin_chain: Vec<String>,
     /// The RESOLVED external admin auth PLUGINS — every non-builtin `admin_auth:` entry opened over
     /// the signed `kind: auth` ABI (1.5.2 admin-plane OIDC). Keyed by the config module name (the
     /// same string `admin_chain` names and `role_bindings.<module>` binds). `admin-tokens` is NOT
     /// here (it is an engine arm, dispatched by name in `run_admin_chain`). `has_plugin` gates the
     /// off-reactor offload of the admin chain (a plugin can do blocking JWKS/introspection I/O).
     /// Rebuilt on boot AND reload (`build_app_from_config`), Arc-shared so `App::clone` is cheap.
-    pub(crate) admin_modules: Arc<crate::auth::AdminAuthChain>,
+    pub admin_modules: Arc<crate::auth::AdminAuthChain>,
     /// The RESOLVED hosted-login methods (`auth.methods:`, 1.5.2) — each opened as a login
     /// capable `kind: auth` plugin over ABI v2, keyed by the config method/module name (insertion
     /// order = login-page button order). Carries the CORE-only confidential-client secret and the
@@ -382,7 +382,7 @@ pub struct App {
     /// page builds its `/auth/token` authorize/redirect links from and shows devs as their BYOK
     /// `base_url` (verbatim, no `/v1`). `None` ⇒ no hosted login (config_validate requires it when
     /// any `browser_login` method is configured). Rebuilt on every apply/reload.
-    pub(crate) public_url: Option<String>,
+    pub public_url: Option<String>,
     /// THE AUTHORIZATION SERVER (`oauth_as:`), or `None` when this deployment is not one.
     ///
     /// `None` is the whole zero-cost-when-off property: nothing is constructed, nothing is
@@ -395,7 +395,7 @@ pub struct App {
     /// edge Cargo refuses as a cycle. The real type is built and downcast on the `busbar-oauth2`
     /// side of the seam (`crate::oauth_as::seam`); core only carries the opaque handle and knows
     /// `Some`/`None`.
-    pub(crate) oauth_as: Option<Arc<dyn std::any::Any + Send + Sync>>,
+    pub oauth_as: Option<Arc<dyn std::any::Any + Send + Sync>>,
     // ONE CONTAINER PLANE'S PER-GENERATION CLIENT-DIRECTION RUNTIME (which also carries its own
     // verify-on-call coalescer, formerly a dedicated flat field) is no longer a flat `App` field: it
     // lives in `plane_slots` under `runtime_slot_key(<that plane's decl key>)`, reached by the plane
@@ -436,30 +436,30 @@ pub struct App {
     ///
     /// Absent from this map is the same fact as an unconfigured plane: a plane the operator did not
     /// configure contributes no slot (see [`crate::plane::registry::PlaneDecl::build`]).
-    pub(crate) plane_slots:
+    pub plane_slots:
         std::collections::BTreeMap<&'static str, Arc<dyn std::any::Any + Send + Sync>>,
     /// The credential cache — Arc-shared ACROSS config swaps (like the
     /// mutation limiter): an apply/reload must not silently re-open every cached-allow window.
-    pub(crate) credential_cache: Arc<crate::auth_cache::CredentialCache>,
+    pub credential_cache: Arc<crate::auth_cache::CredentialCache>,
     /// Per-module `max_admin_scope:` ceilings (from the auth chain entries) - consulted at admin
     /// scope resolution.
-    pub(crate) auth_scope_caps: std::collections::HashMap<String, String>,
+    pub auth_scope_caps: std::collections::HashMap<String, String>,
     /// `auth.role_bindings:` - module -> role -> operator policy (nested by module). Read by
     /// the admin authorization resolution and the governance re-key; an unbound role grants
     /// nothing (fail closed).
     pub role_bindings: crate::config::RoleBindings,
     /// The config.yaml path busbar booted from — `POST /api/v1/admin/config/reload` re-runs the boot
     /// disk-load pipeline against it. `None` (tests / ephemeral) ⇒ reload is `invalid_request`.
-    pub(crate) config_path: Option<std::path::PathBuf>,
+    pub config_path: Option<std::path::PathBuf>,
     /// The providers.yaml path (same role as `config_path`).
-    pub(crate) providers_path: Option<std::path::PathBuf>,
+    pub providers_path: Option<std::path::PathBuf>,
     /// The config-overlay backend path, resolved from the `config.overlay` block (1.5.3). `Some` = a
     /// MUTABLE config: an API-applied change is written here so it survives a restart (re-merged onto
     /// base config at boot). `None` = a LOCKED config (`config.locked: true`): admin-API config
     /// mutations are refused (a persist against `None` errors — see `overlay::NO_WRITABLE_OVERLAY_MSG`).
     /// The boot invariant guarantees a mutable config always has a writable backend here. Carried on
     /// `App` (not a global) so it is testable + survives config swaps (`App::clone` copies it).
-    pub(crate) overlay_path: Option<std::path::PathBuf>,
+    pub overlay_path: Option<std::path::PathBuf>,
     /// Monotonic config version — `0` at boot, incremented by each API config apply (the swap builds
     /// the next snapshot with `config_version + 1`). Exposed on `GET /api/v1/admin/info` so drift-detection
     /// tooling can tell whether the running config changed since a prior read. Process-local (resets on
@@ -469,13 +469,13 @@ pub struct App {
     /// Because a `user:<sub>` leaf IS the principal, this is effectively "max keys per principal".
     /// `0` = unlimited (default). Enforced at `POST /keys`; carried on the snapshot so a config apply
     /// can change it (survives `App::clone`).
-    pub(crate) max_keys_per_principal: usize,
+    pub max_keys_per_principal: usize,
     /// Anti-sprawl cap on the NUMBER of groups a mint may AUTO-PROVISION
     /// (`limits.max_auto_provisioned_groups`). The key cap bounds a group's contents; this bounds
     /// the tree's SHAPE, which a `mint`-scope credential could otherwise grow without bound
     /// `0` = unlimited (default). Carried on the snapshot for the same reason as
     /// `max_keys_per_principal`.
-    pub(crate) max_auto_provisioned_groups: usize,
+    pub max_auto_provisioned_groups: usize,
     /// governance runtime (virtual keys + budgets/limits store). `None` = disabled.
     pub governance: Option<std::sync::Arc<crate::governance::GovState>>,
     /// The SECRET RESOLVER seam: resolves a config [`crate::config::SecretRef`] to bytes via
@@ -491,12 +491,12 @@ pub struct App {
     /// on the snapshot so the Admin API plugin catalog (`GET /api/v1/admin/plugins?type=store`) and
     /// the install/remove/reload endpoints operate on the SAME directory the boot store-load
     /// resolves against — one source of truth, and it survives config swaps (`App::clone` copies it).
-    pub(crate) plugins_dir: std::path::PathBuf,
+    pub plugins_dir: std::path::PathBuf,
     /// The whole `plugins.*` block (master switch + trust + floors) — re-used at admin-install to
     /// RE-VERIFY an uploaded plugin server-side (the client is never trusted) and to project each
     /// catalog entry's trust verdict. Carried on the snapshot (not a global) so it is testable and
     /// survives swaps.
-    pub(crate) plugins_cfg: crate::config::PluginsCfg,
+    pub plugins_cfg: crate::config::PluginsCfg,
     // The cross-protocol translation seam's global fallback max-output-tokens and effort→budget table
     // no longer live on `App`: they are plane-specific vocabulary and now ride that plane's own
     // per-generation runtime object, populated from the neutral `PlaneBuildInput` carrier `appbuild`
@@ -505,12 +505,12 @@ pub struct App {
     /// (`parse_duration_secs`, default [`crate::governance::mint_policy::DEFAULT_KEY_TTL_SECS`] = 90d). This is where
     /// the Step-1 `auth.key_ttl` field is finally READ: `POST /auth/token` mints every self key with
     /// `exp = now + self_key_ttl_secs`. Rebuilt on every apply/reload with the rest of the snapshot.
-    pub(crate) self_key_ttl_secs: u64,
+    pub self_key_ttl_secs: u64,
     /// The RESOLVED mint policy (`auth.policy:`, 1.6.0), built once at boot from the config and read
     /// on every mint: the deployment-wide TTL ceiling (`max_ttl`) + allowed binding modes + the
     /// per-role `mint_ceilings` (the delegated-app-admin caps, review H2/H3). `Default` (empty) = no
     /// policy ⇒ byte-identical pre-1.6.0 behavior. See [`crate::governance::mint_policy::MintPolicy`].
-    pub(crate) mint_policy: std::sync::Arc<crate::governance::mint_policy::MintPolicy>,
+    pub mint_policy: std::sync::Arc<crate::governance::mint_policy::MintPolicy>,
     /// Per-request correlation-id generator: `fetch_add(1, Relaxed)` stamps a fresh `u64` on every
     /// inbound request (see [`App::next_request_id`]), so a routing DECISION (the hook seam) can be
     /// joined to its OUTCOME (the response tap) and per-request log lines are correlatable — a
@@ -527,14 +527,14 @@ pub struct App {
     /// across a config reload the way `versions`/`mutation_limiter` already do — and it is
     /// constructible per-test (no hidden global), matching this file's existing "no global mutable
     /// state" convention for live per-process counters (see `QueuedDepth`, `VersionLog`).
-    pub(crate) request_id_counter: Arc<std::sync::atomic::AtomicU64>,
+    pub request_id_counter: Arc<std::sync::atomic::AtomicU64>,
     /// The live PLUGIN HTTP ROUTE TABLE: the collision-checked, namespace-confined
     /// `{path, method}` → owning-plugin index behind every registered plugin route (`/metrics`, a
     /// hook's `/feedback`). Carried on the snapshot (Arc-shared for cheap `App::clone`) so the mounted
     /// route handler resolves the CURRENT owner on every request — a hot-swapped telemetry plugin never
     /// leaves a stale route. Empty until an export/hook plugin declares a route; an empty table
     /// is inert (no mounts, `declared_auth` returns `None`, so the auth middleware is unaffected).
-    pub(crate) plugin_routes: Arc<crate::plugin_routes::PluginRouteTable>,
+    pub plugin_routes: Arc<crate::plugin_routes::PluginRouteTable>,
     /// The plugin-route PATHS this PROCESS can actually serve: the [`plugin_routes`] table's path set
     /// as it stood at BOOT, carried forward byte-identical through every rebuild
     /// (`build_app_from_config` inherits it from `prior`; only a fresh boot, `prior == None`, seeds it).
@@ -546,7 +546,7 @@ pub struct App {
     /// until a restart. This is the only thing that knows the difference, and it is what lets a config
     /// mutation tell the operator "restart required" instead of silently no-opping
     /// ([`crate::plugin_routes::paths_awaiting_restart`]).
-    pub(crate) boot_route_paths: Arc<std::collections::HashSet<String>>,
+    pub boot_route_paths: Arc<std::collections::HashSet<String>>,
 }
 
 impl App {
@@ -560,7 +560,7 @@ impl App {
     /// [`EMPTY_VIEW`](busbar_substrate::plane_host::EMPTY_VIEW) (an empty projection), so a scrape or
     /// discovery probe on a plane-less binary reads empty tables rather than panicking. Cold path: one
     /// `plane_slots` lookup + one downcast, then the neutral (allocating) projections.
-    pub(crate) fn engine_tables_view(&self) -> &dyn busbar_substrate::plane_host::EngineTablesView {
+    pub fn engine_tables_view(&self) -> &dyn busbar_substrate::plane_host::EngineTablesView {
         // THE PIVOT (1.6.0 money-path Phase 3-4 C): the runtime type now lives in the fallback plane's
         // own crate, so core no longer names it. Project the plane's opaque runtime slot into the
         // neutral view through the fallback plane decl's `viewer` fn-pointer (the plane downcasts its
@@ -658,7 +658,7 @@ impl App {
     /// plane-named field. The dispatch/admission gate paths read it; `None` and an empty inner map are
     /// both "no gate attached" (the zero-cost `Proceed` early-out).
     #[allow(dead_code)]
-    pub(crate) fn plane_gates(&self, plane_key: &str) -> Option<&ContainerGateMap> {
+    pub fn plane_gates(&self, plane_key: &str) -> Option<&ContainerGateMap> {
         self.plane_gates.get(plane_key)
     }
 
@@ -667,7 +667,7 @@ impl App {
     /// [`App::plane_gates`](Self::plane_gates). The transform firing site reads it; `None` and an empty
     /// inner map are both "no rewrite attached" (the zero-cost / byte-identical no-op).
     #[allow(dead_code)]
-    pub(crate) fn plane_rewrites(&self, plane_key: &str) -> Option<&ContainerRewriteMap> {
+    pub fn plane_rewrites(&self, plane_key: &str) -> Option<&ContainerRewriteMap> {
         self.plane_rewrites.get(plane_key)
     }
 
@@ -710,7 +710,7 @@ impl App {
     /// when the plane declared no pools this generation — a pure [`App::plane_pools`](Self::plane_pools)
     /// map read, reached through the key instead of a plane-named field.
     #[allow(dead_code)]
-    pub(crate) fn plane_pools(
+    pub fn plane_pools(
         &self,
         plane_key: &str,
     ) -> Option<&std::collections::BTreeMap<String, crate::failover::CandidatePoolCfg>> {
@@ -869,7 +869,7 @@ impl busbar_substrate::plane_host::ContainerGateSink for App {
 /// boot unix-nanos on the (practically unreachable — see the `getrandom::fill` call sites elsewhere
 /// in this crate, e.g. `auth::token`) case the OS entropy source errors, rather than panicking boot
 /// over a cosmetic collision-avoidance seed.
-pub(crate) fn seed_request_id_counter() -> u64 {
+pub fn seed_request_id_counter() -> u64 {
     let mut buf = [0u8; 8];
     match getrandom::fill(&mut buf) {
         Ok(()) => u64::from_le_bytes(buf),
@@ -1018,7 +1018,7 @@ impl AppHandle {
     /// REVERTED the operator's applied change. `plugin.rollback` already used this discipline
     /// (persist-then-swap, fail-closed) because its rebuild re-reads the overlay; routing every mutation
     /// through here makes that discipline uniform rather than a rollback-only special case.
-    pub(crate) fn commit_and_swap(
+    pub fn commit_and_swap(
         &self,
         next: Arc<App>,
         persist: impl FnOnce() -> Result<(), String>,

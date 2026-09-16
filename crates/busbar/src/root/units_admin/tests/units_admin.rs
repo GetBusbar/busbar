@@ -115,12 +115,12 @@ fn an_answer_survives_the_round_trip_through_the_verbs_seam() {
 #[cfg(feature = "root-admin")]
 #[tokio::test]
 async fn a_walk_dropped_before_its_answer_still_releases_the_drain_it_asked_for() {
-    busbar_core::admin::restart::drain_released_at_exit();
+    busbar_admin::restart::drain_released_at_exit();
     let unit = a_fresh_unit();
     // The operation's body asks, from inside its own unit, exactly as the restart handler does.
-    busbar_core::admin::restart::UnitDrain::of_unit(unit)
+    busbar_admin::restart::UnitDrain::of_unit(unit)
         .scoping(async {
-            busbar_core::admin::restart::begin_drain();
+            busbar_admin::restart::begin_drain();
         })
         .await;
 
@@ -129,7 +129,7 @@ async fn a_walk_dropped_before_its_answer_still_releases_the_drain_it_asked_for(
     drop(exit);
 
     assert!(
-        !busbar_core::admin::restart::UnitDrain::of_unit(unit).release(),
+        !busbar_admin::restart::UnitDrain::of_unit(unit).release(),
         "the drop released the ask, so there is nothing left for a later exit to release — \
          which is the leak: without the guard this would still be standing"
     );

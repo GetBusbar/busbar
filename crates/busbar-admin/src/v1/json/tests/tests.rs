@@ -22,7 +22,7 @@ async fn parts(resp: Response) -> (StatusCode, String, serde_json::Value) {
 async fn err_json_uses_stable_envelope() {
     let (status, ct, body) = parts(err_json(&AdminError::not_found("hook"))).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
-    assert_eq!(ct, crate::proxy::APPLICATION_JSON);
+    assert_eq!(ct, busbar_core::proxy::APPLICATION_JSON);
     assert_eq!(body["error"]["code"], "not_found");
     assert!(
         body["error"]["message"]
@@ -47,7 +47,7 @@ async fn ok_json_serializes_view_with_given_status() {
     }
     let (status, ct, body) = parts(ok_json(StatusCode::CREATED, &View { name: "x", n: 7 })).await;
     assert_eq!(status, StatusCode::CREATED);
-    assert_eq!(ct, crate::proxy::APPLICATION_JSON);
+    assert_eq!(ct, busbar_core::proxy::APPLICATION_JSON);
     assert_eq!(body, json!({"name": "x", "n": 7}));
 }
 
@@ -78,7 +78,7 @@ fn openapi_doc_is_31_and_v1_prefixed() {
         "discovery doc is OpenAPI 3.1"
     );
     assert_eq!(doc["info"]["version"], env!("CARGO_PKG_VERSION"));
-    let prefix = format!("{}/", crate::admin::v1::contract::ADMIN_PREFIX);
+    let prefix = format!("{}/", busbar_core::admin::v1::contract::ADMIN_PREFIX);
     for path in doc["paths"].as_object().unwrap().keys() {
         assert!(
             path.starts_with(&prefix),
@@ -123,7 +123,7 @@ fn openapi_paths_annotate_required_scope() {
     // and enforces the auth middleware, so comparing the annotation against a call to that same
     // function is a tautology: editing the matrix moves both sides together and can never fail.
     fn expected_scope(method: &str, path: &str) -> &'static str {
-        use crate::admin::v1::contract::{
+        use busbar_core::admin::v1::contract::{
             ADMIN_PREFIX, PATH_CONFIG_VALIDATE, PATH_PLUGINS_INSPECT,
         };
         if method == "get" || method == "head" {
@@ -286,7 +286,7 @@ fn openapi_error_enum_matches_admin_error_codes() {
         AdminError::not_found(""),
         AdminError::Unauthorized,
         AdminError::Forbidden {
-            needed: crate::admin::v1::contract::Scope::Full,
+            needed: busbar_core::admin::v1::contract::Scope::Full,
         },
         AdminError::MethodNotAllowed,
         AdminError::Validation(String::new()),
@@ -330,7 +330,7 @@ fn openapi_hook_escalation_endpoints_document_403() {
 #[cfg(feature = "openapi-schema")]
 const COMMITTED_OPENAPI_PATH: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/src/admin/v1/json/openapi.json"
+    "/src/v1/json/openapi.json"
 );
 
 /// Serialize the doc the way it is committed: pretty-printed + a trailing newline (POSIX text file).
@@ -349,6 +349,11 @@ fn render_committed_openapi() -> String {
 #[cfg(feature = "openapi-schema")]
 #[test]
 fn openapi_json_matches_committed_file() {
+    // Register the plane decls so `openapi_doc()` includes each plane's admin trust-verb operations
+    // and `openapi_schemas` — busbar-core's own `cfg(test)` binary had them as builtins; a
+    // test-support consumer must install the plane testkits first, or the generated document drops
+    // the `tools:`/`agents:` operations the committed file has.
+    crate::ensure_seam();
     let fresh = render_committed_openapi();
     if std::env::var("UPDATE_OPENAPI").is_ok_and(|v| v == "1") {
         std::fs::write(COMMITTED_OPENAPI_PATH, &fresh)
@@ -476,7 +481,7 @@ fn openapi_every_operation_has_a_typed_response_schema() {
 /// enum can no longer be right while a per-endpoint response set is wrong.
 #[test]
 fn err_kind_bridges_every_admin_error_variant() {
-    use crate::admin::v1::contract::taxonomy::{err_kind_of, ErrKind};
+    use busbar_core::admin::v1::contract::taxonomy::{err_kind_of, ErrKind};
     let declarable = [
         (AdminError::not_found(""), ErrKind::NotFound),
         (AdminError::Validation(String::new()), ErrKind::Validation),
@@ -487,7 +492,7 @@ fn err_kind_bridges_every_admin_error_variant() {
         (AdminError::Conflict(String::new()), ErrKind::Conflict),
         (
             AdminError::Forbidden {
-                needed: crate::admin::v1::contract::Scope::Full,
+                needed: busbar_core::admin::v1::contract::Scope::Full,
             },
             ErrKind::Forbidden,
         ),
@@ -526,9 +531,9 @@ fn err_kind_bridges_every_admin_error_variant() {
 #[cfg(feature = "openapi-schema")]
 #[test]
 fn declared_errors_is_total_and_well_formed() {
-    use crate::admin::v1::contract::taxonomy::{declared_errors, declared_responses, MethodTag};
+    use busbar_core::admin::v1::contract::taxonomy::{declared_errors, declared_responses, MethodTag};
     let doc = openapi_doc();
-    let prefix = crate::admin::v1::contract::ADMIN_PREFIX;
+    let prefix = busbar_core::admin::v1::contract::ADMIN_PREFIX;
     for (path, methods) in doc["paths"].as_object().expect("paths") {
         let rel = path.strip_prefix(prefix).unwrap_or(path);
         for (key, op) in methods.as_object().expect("methods") {

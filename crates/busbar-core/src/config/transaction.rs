@@ -90,7 +90,7 @@ static CONFIG_MUTATION_LOCK: std::sync::LazyLock<Arc<tokio::sync::Mutex<()>>> =
 /// converts FROM this via `E: From<TxnError>`, so each call site's wire error is exactly what it was
 /// before this module was generic (e.g. `AdminError::Validation`/`AdminError::Internal`).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum TxnError {
+pub enum TxnError {
     /// A `commit_and_swap` persist step failed; `String` is the final operator-facing message the
     /// site's own `Persist` closure produced.
     Validation(String),
@@ -106,7 +106,7 @@ impl TxnError {
     /// three shapes exactly (`Validation`/`Conflict` carry their own wording; `Internal` reads
     /// "internal error"), so a caller mapping this straight to a `String` (e.g.
     /// `auth::self_keys`'s mint-failure boundary) gets byte-identical text to the admin transport's.
-    pub(crate) fn message(&self) -> String {
+    pub fn message(&self) -> String {
         match self {
             TxnError::Validation(msg) => msg.clone(),
             TxnError::Conflict(msg) => msg.clone(),
@@ -119,17 +119,17 @@ impl TxnError {
 /// operator-facing message on failure (each site keeps its own wording), which
 /// [`config_transaction`] converts to `E::from(TxnError::Validation(..))` — the exact shape the
 /// hand-rolled sites returned before this module existed.
-pub(crate) type Persist = Box<dyn FnOnce() -> Result<(), String> + Send>;
+pub type Persist = Box<dyn FnOnce() -> Result<(), String> + Send>;
 
 /// A deferred blocking step: store I/O, disk I/O, tarball writes. Run on `spawn_blocking`, still
 /// under the guard. It returns another [`Outcome`], so a read → decide → write op is ONE atomic
 /// section (the count and the mint share the same critical region) while never touching the reactor.
-pub(crate) type Deferred<T, E> = Box<dyn FnOnce() -> Result<Outcome<T, E>, E> + Send>;
+pub type Deferred<T, E> = Box<dyn FnOnce() -> Result<Outcome<T, E>, E> + Send>;
 
 /// The PLAN a transaction body declares. The body returns one of these instead of applying anything
 /// itself; `config_transaction` is the sole application site, so "forgot to swap" is a no-op
 /// (fail-closed) and "swapped twice" is unrepresentable.
-pub(crate) enum Outcome<T, E> {
+pub enum Outcome<T, E> {
     /// Read-only, or a decision already complete: nothing to persist, nothing to swap.
     Value(T),
     /// Mutate: PERSIST-then-SWAP through `AppHandle::commit_and_swap`, fail-closed. A persist error
@@ -147,7 +147,7 @@ pub(crate) enum Outcome<T, E> {
 /// that must land AFTER the config change and inside the SAME guard — the mint-with-auto-provision
 /// shape: provision the group leaf (persist + swap), then bind the key to it without ever releasing
 /// the lock, so a concurrent group DELETE can neither slip between them nor observe a half state.
-pub(crate) enum Then<T, E> {
+pub enum Then<T, E> {
     Value(T),
     Blocking(Deferred<T, E>),
 }
@@ -155,7 +155,7 @@ pub(crate) enum Then<T, E> {
 impl<T, E> Outcome<T, E> {
     /// Declare the persist-then-swap plan. `next` is the candidate snapshot; `persist` writes the
     /// DESIRED state to disk and must return the final operator-facing message on failure.
-    pub(crate) fn commit<P>(next: Arc<App>, persist: P, value: T) -> Self
+    pub fn commit<P>(next: Arc<App>, persist: P, value: T) -> Self
     where
         P: FnOnce() -> Result<(), String> + Send + 'static,
     {
@@ -169,7 +169,7 @@ impl<T, E> Outcome<T, E> {
     /// Declare a persist-then-swap plan followed by MORE blocking work, all under the one guard.
     /// Used where a config change and a store write must be atomic with each other (`POST /keys`
     /// auto-provisioning a group leaf and then binding the key to it).
-    pub(crate) fn commit_then<P, F>(next: Arc<App>, persist: P, then: F) -> Self
+    pub fn commit_then<P, F>(next: Arc<App>, persist: P, then: F) -> Self
     where
         P: FnOnce() -> Result<(), String> + Send + 'static,
         F: FnOnce() -> Result<Outcome<T, E>, E> + Send + 'static,
@@ -185,13 +185,13 @@ impl<T, E> Outcome<T, E> {
     /// `config/reload`, `plugins/reload`, `PUT /admin-auth` — each documented as "live until the
     /// next reload/restart returns to disk truth"). Still routed through `commit_and_swap`, with a
     /// no-op persist, so there is exactly one swap site.
-    pub(crate) fn swap(next: Arc<App>, value: T) -> Self {
+    pub fn swap(next: Arc<App>, value: T) -> Self {
         Outcome::commit(next, || Ok(()), value)
     }
 
     /// Defer to a blocking thread. Constructed by [`Txn::read_store`] / [`Txn::store_write`] on the
     /// async side, and used directly inside an already-blocking step when it needs a further phase.
-    pub(crate) fn blocking<F>(f: F) -> Self
+    pub fn blocking<F>(f: F) -> Self
     where
         F: FnOnce() -> Result<Outcome<T, E>, E> + Send + 'static,
     {
@@ -204,7 +204,7 @@ impl<T, E> Outcome<T, E> {
 /// It deliberately exposes no `AppHandle` (so a body cannot swap out of band, above), no
 /// `&dyn Store` and no `&GovState` (so a body cannot run a blocking round-trip on the async
 /// thread), and no second snapshot (so a body cannot read a stale pre-lock config).
-pub(crate) struct Txn<'a> {
+pub struct Txn<'a> {
     /// The FRESH, post-lock snapshot. The only config the body can read.
     app: &'a Arc<App>,
 }
@@ -212,7 +212,7 @@ pub(crate) struct Txn<'a> {
 impl<'a> Txn<'a> {
     /// The fresh post-lock snapshot. There is no other config accessor in scope, so every read a
     /// body performs is coherent with the lock it is holding — by construction, not by discipline.
-    pub(crate) fn app(&self) -> &'a Arc<App> {
+    pub fn app(&self) -> &'a Arc<App> {
         self.app
     }
 
@@ -223,7 +223,7 @@ impl<'a> Txn<'a> {
     /// The closure captures OWNED values (it is `'static`), so it cannot smuggle `txn.app()` out —
     /// a body that needs the snapshot on the blocking side clones the `Arc` into the closure, which
     /// is the same snapshot, still frozen by the same lock.
-    pub(crate) fn read_store<T, E, F>(&self, f: F) -> Outcome<T, E>
+    pub fn read_store<T, E, F>(&self, f: F) -> Outcome<T, E>
     where
         F: FnOnce() -> Result<Outcome<T, E>, E> + Send + 'static,
     {
@@ -234,7 +234,7 @@ impl<'a> Txn<'a> {
     /// Same execution site and same guarantees as [`Txn::read_store`]; named separately so a call
     /// site reads as what it is. Fail-closed: an error from the closure aborts the transaction and
     /// nothing is swapped.
-    pub(crate) fn store_write<T, E, F>(&self, f: F) -> Outcome<T, E>
+    pub fn store_write<T, E, F>(&self, f: F) -> Outcome<T, E>
     where
         F: FnOnce() -> Result<Outcome<T, E>, E> + Send + 'static,
     {
@@ -242,7 +242,7 @@ impl<'a> Txn<'a> {
     }
 
     /// Declare the persist-then-swap plan (see [`Outcome::commit`]).
-    pub(crate) fn commit<T, E, P>(&self, next: Arc<App>, persist: P, value: T) -> Outcome<T, E>
+    pub fn commit<T, E, P>(&self, next: Arc<App>, persist: P, value: T) -> Outcome<T, E>
     where
         P: FnOnce() -> Result<(), String> + Send + 'static,
     {
@@ -253,7 +253,7 @@ impl<'a> Txn<'a> {
     /// `live_swap`, not `swap`, so the structure lint can ban the bare `.swap(` receiver form
     /// OUTRIGHT outside `txn.rs`/`state.rs` instead of carving out an exception for whichever
     /// variable name a transaction body happens to bind the `Txn` to.
-    pub(crate) fn live_swap<T, E>(&self, next: Arc<App>, value: T) -> Outcome<T, E> {
+    pub fn live_swap<T, E>(&self, next: Arc<App>, value: T) -> Outcome<T, E> {
         Outcome::swap(next, value)
     }
 
@@ -262,7 +262,7 @@ impl<'a> Txn<'a> {
     #[cfg_attr(not(test), allow(dead_code))]
     /// Finish with a value and NO mutation (an idempotent no-op, or a decision that changed
     /// nothing). Fail-closed by construction: no plan ⇒ no swap.
-    pub(crate) fn done<T, E>(&self, value: T) -> Outcome<T, E> {
+    pub fn done<T, E>(&self, value: T) -> Outcome<T, E> {
         Outcome::Value(value)
     }
 }
@@ -292,7 +292,7 @@ impl<'a> Txn<'a> {
 /// It also takes `commit_and_swap` off the reactor. Its persist step is real disk work — an overlay
 /// read-modify-write plus two fsyncs — which the previous shape ran inline on a Tokio worker while
 /// the lock was held, the same class of stall defers store reads to avoid.
-pub(crate) async fn config_transaction<F, T, E>(handle: &Arc<AppHandle>, body: F) -> Result<T, E>
+pub async fn config_transaction<F, T, E>(handle: &Arc<AppHandle>, body: F) -> Result<T, E>
 where
     // NOTE: SYNC. The body cannot `.await`, so it cannot hold the lock across a network await and
     // cannot inline a blocking store call that would park a worker under the lock.
@@ -345,9 +345,10 @@ where
     }
 }
 
-#[cfg(test)]
-#[path = "tests/txn_tests.rs"]
-mod txn_tests;
+// `txn_tests` (the config-transaction behavior suite) drives the admin mutation HANDLERS
+// (`create_key`/`update_key`/`register_hook`/`delete_group`/`install_plugin`) to exercise the
+// transaction, so it MOVED to `busbar-admin` with the service (`busbar_admin::tests::txn_tests`) —
+// busbar-core cannot name those handlers any more (one-way dependency).
 
 // THE COMPILE FENCE — a module that must NOT type-check. Behind the `txn_fence_red` cfg (a
 // rustc `--cfg`, deliberately NOT a cargo feature: features are additive by contract, and a
