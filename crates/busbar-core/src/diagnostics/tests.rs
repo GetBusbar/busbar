@@ -14,7 +14,7 @@
 
 /// Paths relative to `crates/busbar-core` (this crate's manifest dir).
 const MIGRATED_FILES: &[&str] = &[
-    "src/admin/audit.rs",
+    "src/audit_ring.rs",
     // The forward-engine sources (`proxy/response_body.rs`, `proxy/usage.rs`, `proxy/hooks.rs`,
     // `proxy/engine/{mod,walk}.rs`) RELOCATED to an out-of-tree plugin crate's `src/engine/` with the
     // money-path pivot (1.6.0 money-path Phase 3-4 C). Core does NOT scan a plane crate's tree — the
@@ -31,7 +31,12 @@ const MIGRATED_FILES: &[&str] = &[
     // that emits coded diagnostics) RELOCATED to `busbar-substrate` with the whole egress_auth module;
     // substrate carries its own uncoded-diagnostic floor, so core no longer scans it here.
     "src/trust/verify.rs",
-    "src/oauth_as/plane.rs",
+    // `oauth_as/plane.rs` RELOCATED to the sibling `busbar-oauth2` crate with the rest of the AS
+    // plane's runtime (the extraction that left only `oauth_as::config`/`oauth_as::seam` in core).
+    // Core does NOT scan a plane crate's tree (the plane-purity lint forbids core naming a plane
+    // path), so it is no longer listed here — mirroring the `handlers/mod.rs`/`egress_auth` notes
+    // above. `busbar-oauth2` has no coverage-lint twin of its own yet; it still calls `diag_warn!`/
+    // `diag_debug!` (coded), unchanged by the move.
     // `sigv4` / `eventstream` (and the other neutral utils) RELOCATED to `busbar-substrate`; each
     // carries its own uncoded-diagnostic floor in that crate, so core no longer scans them here.
     "src/governance/mod.rs",
@@ -56,9 +61,8 @@ const MIGRATED_FILES: &[&str] = &[
     "src/plane/approvals.rs",
     "src/plane/quarantine.rs",
     "src/calllog.rs",
-    "src/admin/mod.rs",
-    "src/admin/v1/service.rs",
-    "src/admin/v1/json/handlers.rs",
+    // `admin/mod.rs`, `admin/v1/service.rs`, `admin/v1/json/handlers.rs` were extracted to the
+    // `busbar-admin` crate (1.6.0); their uncoded-diagnostic floor is enforced there now.
     "src/store/planes.rs",
     "src/store/in_memory/mod.rs",
     "src/store/in_memory/breaker.rs",

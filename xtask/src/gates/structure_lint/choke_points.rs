@@ -184,20 +184,20 @@ pub fn table(a: &Addresses) -> Vec<ChokeRow> {
         ChokeRow {
             id: "C-config-mutation".into(),
             tag: "MUTATION-BYPASS".into(),
-            owner: format!("{core}/admin/v1/json/txn.rs (config_transaction)"),
-            class_test: format!("{core}/admin/v1/json/tests/txn_tests.rs::concurrent_transactions_never_lose_a_swap"),
-            remedy: "route through json::txn::config_transaction".into(),
+            owner: format!("{core}/config/transaction.rs (config_transaction)"),
+            class_test: format!("{core}/config/tests/txn_tests.rs::concurrent_transactions_never_lose_a_swap"),
+            remedy: "route through config::transaction::config_transaction".into(),
             rules: vec![
                 BanRule::new(
                     "CONFIG_MUTATION_LOCK",
                     "names the config mutation lock",
-                    &[format!("{core}/admin/v1/json/txn.rs")],
+                    &[format!("{core}/config/transaction.rs")],
                 ),
                 BanRule::new(
                     r"commit_and_swap\(",
                     "direct commit_and_swap outside a transaction",
                     &[
-                        format!("{core}/admin/v1/json/txn.rs"),
+                        format!("{core}/config/transaction.rs"),
                         format!("{core}/state.rs"),
                     ],
                 ),
@@ -205,7 +205,7 @@ pub fn table(a: &Addresses) -> Vec<ChokeRow> {
                     r"\.swap\(",
                     "direct swap on an AppHandle outside a transaction",
                     &[
-                        format!("{core}/admin/v1/json/txn.rs"),
+                        format!("{core}/config/transaction.rs"),
                         format!("{core}/state.rs"),
                     ],
                 )
@@ -214,7 +214,7 @@ pub fn table(a: &Addresses) -> Vec<ChokeRow> {
                     r"AppHandle::swap\(",
                     "direct AppHandle::swap outside a transaction",
                     &[
-                        format!("{core}/admin/v1/json/txn.rs"),
+                        format!("{core}/config/transaction.rs"),
                         format!("{core}/state.rs"),
                         format!("{core}/test_support/engine_kit.rs"),
                     ],

@@ -33,3 +33,12 @@ futures = { workspace = true }
 # on. Test-only: nothing here reaches the library.
 [dev-dependencies]
 futures = { workspace = true }
+
+[features]
+# The two NEUTRAL capability features that gate the `Transport`/`UpstreamWireKind` wire-selection
+# axis (`transport.rs`), relocated here from `busbar-substrate-values` 1.6.0. Both empty here — they
+# gate `#[cfg]` sites only — and must stay DECLARED or `unexpected_cfgs` fires under `-D warnings`.
+# `busbar-substrate-values` forwards its own same-named features to these so the gated surface arms
+# in lock-step, exactly as before the move.
+dispatch = []
+runtime = []

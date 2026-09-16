@@ -19,6 +19,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use busbar_substrate::config::providers::{ProviderCfg, ProviderDef, ProviderDeploy};
 use busbar_substrate::plane_host::{AuthStyleInput, OnExhaustedInput, PlaneBuildInput, PlaneSlots};
 
 use busbar_substrate::egress_auth::{self, MetadataSsrfPolicy};
@@ -28,6 +29,41 @@ use crate::engine::{
     build_egress_targets, host_from_base, Lane, MemberMeta, NativeRuntime, PoolRuntime,
     QueuedDepth, WeightedLane,
 };
+
+/// THE `PlaneDecl::resolve_provider` FN-POINTER for the LLM plane (1.6.0 pools stage-B) — merge one
+/// provider's catalog definition (`providers.yaml`) with its operator deployment (`config.yaml`'s
+/// `providers:` entry) into the resolved [`ProviderCfg`] a lane is built from.
+///
+/// Byte-identical to the pre-seam inline merge in `busbar_core::config::resolve`: a deployment
+/// override REPLACES the catalog default field-by-field (`protocol`/`base_url`/`health`/`path`/
+/// `path_base`/`token_url`/`scope`/`subject`/`auth`/`allow_metadata_hosts`), `error_map` UNIONS the
+/// two (deployment entries win on key collision), and `api_key` carries the deployment's secret
+/// reference verbatim (a provider's credential is deployment-only; the catalog never carries one).
+pub(crate) fn resolve_provider(def: &ProviderDef, deploy: &ProviderDeploy) -> ProviderCfg {
+    let mut error_map = def.error_map.clone();
+    if let Some(override_map) = &deploy.error_map {
+        for (code, class) in override_map {
+            error_map.insert(code.clone(), class.clone());
+        }
+    }
+    ProviderCfg {
+        protocol: deploy.protocol.clone().unwrap_or_else(|| def.protocol.clone()),
+        base_url: deploy.base_url.clone().unwrap_or_else(|| def.base_url.clone()),
+        api_key: deploy.api_key.clone(),
+        health: deploy.health.clone().or_else(|| def.health.clone()),
+        error_map,
+        path: deploy.path.clone().or_else(|| def.path.clone()),
+        path_base: deploy.path_base.clone().or_else(|| def.path_base.clone()),
+        token_url: deploy.token_url.clone().or_else(|| def.token_url.clone()),
+        scope: deploy.scope.clone().or_else(|| def.scope.clone()),
+        subject: deploy.subject.clone().or_else(|| def.subject.clone()),
+        auth: deploy.auth.or(def.auth),
+        allow_metadata_hosts: deploy
+            .allow_metadata_hosts
+            .clone()
+            .unwrap_or_else(|| def.allow_metadata_hosts.clone()),
+    }
+}
 
 /// Map the neutral [`AuthStyleInput`] back to the core `Option<ProviderAuth>` the sync
 /// `egress_auth::resolve` reads (the OAuth styles never route through `resolve` — they mint at boot).

@@ -24,7 +24,7 @@
 
 use super::*;
 
-use crate::admin::audit::{AuditEntry, AuditInput, OUTCOME_REJECTED};
+use crate::audit_ring::{AuditEntry, AuditInput, OUTCOME_REJECTED};
 use crate::audit::{verify_chain, Chain};
 
 // ══ THE THIRD PLANE ══════════════════════════════════════════════════════════════════════════════

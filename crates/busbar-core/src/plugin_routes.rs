@@ -80,7 +80,7 @@ fn reserved_exact_paths() -> [&'static str; 6] {
 /// The plugin KIND that declared a route — drives namespace confinement (a hook is confined more
 /// tightly than an export sink, which alone may claim the well-known `/metrics`).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) enum RouteKind {
+pub enum RouteKind {
     /// A `kind: export` sink (may claim `/metrics`; otherwise `/exports/<name>/*`).
     Export,
     /// A `kind: hook` policy (confined to `/hooks/<name>/*`).
@@ -116,7 +116,7 @@ pub trait PluginHttpDispatch: Send + Sync {
 /// Constructed once an export plugin is loaded INTO the App snapshot (a later wave); until then the
 /// live table is empty and this bridge is exercised only by the route-dispatch tests.
 #[allow(dead_code)]
-pub(crate) struct ExportDispatch(pub(crate) Arc<busbar_plugin_loader::DynExport>);
+pub struct ExportDispatch(pub Arc<busbar_plugin_loader::DynExport>);
 
 impl PluginHttpDispatch for ExportDispatch {
     fn handle_http(&self, req: &EndpointRequest) -> EndpointResponse {
@@ -132,15 +132,15 @@ impl PluginHttpDispatch for ExportDispatch {
 }
 
 /// One plugin's route registration input, BEFORE collision + confinement resolution.
-pub(crate) struct RouteDecl {
+pub struct RouteDecl {
     /// The declaring plugin's config name (the namespace root for confinement + the collision owner).
-    pub(crate) owner: String,
+    pub owner: String,
     /// The declaring plugin's kind (drives the confinement rule).
-    pub(crate) kind: RouteKind,
+    pub kind: RouteKind,
     /// The declared route.
-    pub(crate) route: Route,
+    pub route: Route,
     /// The live dispatcher for the owning plugin (resolved per request from the App snapshot).
-    pub(crate) dispatch: Arc<dyn PluginHttpDispatch>,
+    pub dispatch: Arc<dyn PluginHttpDispatch>,
 }
 
 /// A registered, collision-checked, confinement-validated route entry.
@@ -155,7 +155,7 @@ struct Registered {
 /// collision-checked declaration set; empty when no plugin declared a route (the production default
 /// until export/hook plugins are wired into the App snapshot).
 #[derive(Default)]
-pub(crate) struct PluginRouteTable {
+pub struct PluginRouteTable {
     /// Keyed by PATH with the (one- or two-entry) method list inline, NOT by `(String, RouteMethod)`
     /// pair: the pair key forced every per-request lookup ([`declared_auth`] from the auth
     /// middleware, [`dispatch`] from the mounted handler) to allocate a fresh `String` just to
@@ -170,7 +170,7 @@ impl PluginRouteTable {
     /// builds the table from the built-in exporters (`crate::export::route_decls`), so this is
     /// test-only now.
     #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn empty() -> Self {
+    pub fn empty() -> Self {
         Self::default()
     }
 
@@ -201,13 +201,13 @@ impl PluginRouteTable {
     /// on: [`mount_plugin_routes`] registers one `.route(path, …)` per path (both planes mount from
     /// the same table), so this set — captured from the BOOT table onto [`crate::state::App`] as
     /// `boot_route_paths` — is exactly the set of plugin paths the running router can serve.
-    pub(crate) fn paths(&self) -> std::collections::HashSet<String> {
+    pub fn paths(&self) -> std::collections::HashSet<String> {
         self.by_path.keys().cloned().collect()
     }
 
     /// The declared auth level for `(path, method)`, or `None` if not a registered plugin route. Read
     /// by the auth middleware to enforce the route's bar through the existing chain.
-    pub(crate) fn declared_auth(&self, path: &str, method: &Method) -> Option<RouteAuth> {
+    pub fn declared_auth(&self, path: &str, method: &Method) -> Option<RouteAuth> {
         let rm = route_method_of(method)?;
         self.by_path
             .get(path)?
@@ -291,7 +291,7 @@ fn confine(kind: RouteKind, owner: &str, path: &str) -> Result<(), String> {
 /// order, first-to-claim owns, and a second claim of the same `{path, method}` fails LOUD naming the
 /// owning plugin. The SAME logic backs [`build_route_table`] (which additionally carries the live
 /// dispatchers), so `--validate` and boot cannot diverge from what actually mounts.
-pub(crate) fn preflight_route_collisions(
+pub fn preflight_route_collisions(
     decls: &[(String, RouteKind, Route)],
 ) -> Result<(), String> {
     let mut owned: HashMap<(String, RouteMethod), String> = HashMap::new();
@@ -317,7 +317,7 @@ pub(crate) fn preflight_route_collisions(
 /// [`preflight_route_collisions`] is the manifest-only mirror that runs at `--validate` and boot with
 /// the identical confinement + first-to-claim rules, so the two can never diverge.
 #[allow(dead_code)]
-pub(crate) fn build_route_table(decls: Vec<RouteDecl>) -> Result<PluginRouteTable, String> {
+pub fn build_route_table(decls: Vec<RouteDecl>) -> Result<PluginRouteTable, String> {
     let mut by_path: HashMap<String, Vec<(RouteMethod, Registered)>> = HashMap::new();
     for decl in decls {
         confine(decl.kind, &decl.owner, &decl.route.path)?;
@@ -357,7 +357,7 @@ pub(crate) fn build_route_table(decls: Vec<RouteDecl>) -> Result<PluginRouteTabl
 /// `handlers::reload_to_apply_fields` uses in keying on the REQUEST: only a mutation that ITSELF
 /// introduces an unmountable path is flagged, so a later unrelated edit does not re-flag an
 /// already-restart-pending route. Sorted, so the reported list is stable.
-pub(crate) fn paths_awaiting_restart(
+pub fn paths_awaiting_restart(
     installed: &PluginRouteTable,
     previous: &PluginRouteTable,
     boot_mounted: &std::collections::HashSet<String>,
@@ -383,7 +383,7 @@ pub(crate) fn paths_awaiting_restart(
 /// reachable-in-principle and saved only by the dispatcher's matching gap), while the dispatcher 405'd
 /// a request axum had already routed to the plugin. One arm closes both halves together, which is the
 /// only safe way to close either.
-pub(crate) fn route_method_of(method: &Method) -> Option<RouteMethod> {
+pub fn route_method_of(method: &Method) -> Option<RouteMethod> {
     match *method {
         Method::GET | Method::HEAD => Some(RouteMethod::Get),
         Method::POST => Some(RouteMethod::Post),
@@ -395,7 +395,7 @@ pub(crate) fn route_method_of(method: &Method) -> Option<RouteMethod> {
 }
 
 /// The axum [`MethodFilter`] for a declared [`RouteMethod`].
-pub(crate) fn method_filter_of(m: RouteMethod) -> MethodFilter {
+pub fn method_filter_of(m: RouteMethod) -> MethodFilter {
     match m {
         RouteMethod::Get => MethodFilter::GET,
         RouteMethod::Post => MethodFilter::POST,
@@ -409,7 +409,7 @@ pub(crate) fn method_filter_of(m: RouteMethod) -> MethodFilter {
 /// routes (data listener, called from [`crate::base_data_router`] BEFORE the catch-all fallback);
 /// `admin == true` mounts the `admin`-auth routes (admin listener). Each path's declared methods are
 /// combined into one [`MethodRouter`] so a wrong-method hit still yields axum's native 405.
-pub(crate) fn mount_plugin_routes(
+pub fn mount_plugin_routes(
     mut router: axum::Router<Arc<crate::state::AppHandle>>,
     table: &PluginRouteTable,
     admin: bool,

@@ -46,7 +46,7 @@ use crate::config::named_map::{NamedMapSection, NamedMapShape};
 /// `AdminError` variant is added without a decision here.
 #[cfg(any(test, feature = "openapi-schema", feature = "test-support"))]
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
-pub(crate) enum ErrKind {
+pub enum ErrKind {
     /// A named resource does not exist (`not_found`, 404).
     NotFound,
     /// The request is structurally invalid (`invalid_request`, 400).
@@ -82,12 +82,12 @@ impl ErrKind {
     }
 
     /// The FROZEN stable code for this kind (reuses `AdminError::code`).
-    pub(crate) fn code(self) -> &'static str {
+    pub fn code(self) -> &'static str {
         self.as_admin_error().code()
     }
 
     /// The HTTP status for this kind (reuses `AdminError::http_status`).
-    pub(crate) fn status(self) -> u16 {
+    pub fn status(self) -> u16 {
         self.as_admin_error().http_status()
     }
 }
@@ -102,7 +102,7 @@ impl ErrKind {
 // `any(test, feature = "test-support")` surface so the extracted plane crates' admin-verb drivers
 // (a `test-support` build of THIS crate as their dependency) stamp and witness their emissions too.
 #[cfg(any(test, feature = "test-support"))]
-pub(crate) fn err_kind_of(e: &AdminError) -> Option<ErrKind> {
+pub fn err_kind_of(e: &AdminError) -> Option<ErrKind> {
     match e {
         AdminError::NotFound { .. } => Some(ErrKind::NotFound),
         AdminError::Validation(_) => Some(ErrKind::Validation),
@@ -137,7 +137,7 @@ pub(crate) fn err_kind_of(e: &AdminError) -> Option<ErrKind> {
     allow(dead_code)
 )]
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
-pub(crate) enum Cond {
+pub enum Cond {
     StaleIfMatch,
     MalformedIfMatch,
     UnknownResource,
@@ -188,7 +188,7 @@ impl Cond {
     /// The single canonical human phrasing for this condition — written ONCE. Every endpoint that
     /// declares a `(kind, cond)` renders identically.
     #[cfg(feature = "openapi-schema")]
-    pub(crate) fn phrase(self) -> &'static str {
+    pub fn phrase(self) -> &'static str {
         match self {
             Cond::StaleIfMatch => "stale `If-Match` (re-read and retry)",
             Cond::MalformedIfMatch => "malformed `If-Match` header",
@@ -270,15 +270,15 @@ impl Cond {
 /// into prose that contradicts the code.
 #[cfg(any(test, feature = "openapi-schema", feature = "test-support"))]
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
-pub(crate) struct DocErr {
-    pub(crate) kind: ErrKind,
-    pub(crate) cond: Cond,
+pub struct DocErr {
+    pub kind: ErrKind,
+    pub cond: Cond,
 }
 
 /// Method tag for the `declared_errors` match (the doc dimension only cares about the verb).
 #[cfg(any(test, feature = "openapi-schema", feature = "test-support"))]
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
-pub(crate) enum MethodTag {
+pub enum MethodTag {
     Get,
     Post,
     Put,
@@ -292,12 +292,12 @@ pub(crate) enum MethodTag {
 // feature — see its `mod tests;` gate). Plain `cfg(test)` alone is NOT a real caller: under
 // `--no-default-features` (auth-admin-tokens off) that left this compiled but unreachable,
 // tripping `-D dead-code` in CI.
-#[cfg(any(feature = "openapi-schema", all(test, feature = "auth-admin-tokens")))]
+#[cfg(any(feature = "openapi-schema", all(any(test, feature = "test-support"), feature = "auth-admin-tokens")))]
 impl MethodTag {
     /// Parse an OpenAPI operation key (`"get"`, `"post"`, …) back into a tag. `None` for the `x-*`
     /// specification extensions that share the path-item object with real operations. Called from
     /// `openapi_doc`'s own body, so it is reachable under `feature = "openapi-schema"` alone.
-    pub(crate) fn from_op_key(key: &str) -> Option<MethodTag> {
+    pub fn from_op_key(key: &str) -> Option<MethodTag> {
         Some(match key {
             "get" => MethodTag::Get,
             "post" => MethodTag::Post,
@@ -314,7 +314,7 @@ impl MethodTag {
 // from openapi_doc's own body — so it needs no feature alternative.
 #[cfg(any(test, feature = "test-support"))]
 impl MethodTag {
-    pub(crate) fn as_str(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             MethodTag::Get => "get",
             MethodTag::Post => "post",
@@ -329,7 +329,7 @@ impl MethodTag {
 /// such a request can only be the router's 405 fallback, which is algorithmic, not declarable. Only
 /// reached from the test-only recording layer (`json/mod.rs::record_declared_error`).
 #[cfg(any(test, feature = "test-support"))]
-pub(crate) fn method_tag(m: &axum::http::Method) -> Option<MethodTag> {
+pub fn method_tag(m: &axum::http::Method) -> Option<MethodTag> {
     use axum::http::Method;
     Some(match *m {
         Method::GET => MethodTag::Get,
@@ -354,7 +354,7 @@ pub(crate) fn method_tag(m: &axum::http::Method) -> Option<MethodTag> {
 /// removed the only per-endpoint `Forbidden` declaration — the hook-escalation refusal — since a
 /// non-`full` caller can no longer reach a hook mutation at all.)
 #[cfg(any(test, feature = "openapi-schema", feature = "test-support"))]
-pub(crate) fn declared_errors(method: MethodTag, rel: &str) -> &'static [DocErr] {
+pub fn declared_errors(method: MethodTag, rel: &str) -> &'static [DocErr] {
     use Cond::*;
     use ErrKind::*;
     use MethodTag::*;
@@ -695,7 +695,7 @@ fn named_map_declared_errors(
 /// This is the ONLY producer of 4xx response text in the document. `openapi_doc()` calls it and
 /// writes the result verbatim; there is no per-endpoint prose left to drift.
 #[cfg(feature = "openapi-schema")]
-pub(crate) fn declared_responses(method: MethodTag, rel: &str) -> Vec<(String, String)> {
+pub fn declared_responses(method: MethodTag, rel: &str) -> Vec<(String, String)> {
     let declared = declared_errors(method, rel);
     // Status → ordered list of (code, phrase), de-duplicated, in declaration order.
     let mut by_status: Vec<(u16, Vec<(&'static str, &'static str)>)> = Vec::new();
@@ -745,18 +745,18 @@ pub(crate) fn declared_responses(method: MethodTag, rel: &str) -> Vec<(String, S
 /// - **over-claim** needs a witness, so every observed `(rel, method, kind, cond?)` is accumulated
 ///   here and the class test asserts each declared entry was seen at least once.
 #[cfg(any(test, feature = "test-support"))]
-pub(crate) mod observed {
+pub mod observed {
     use super::{Cond, ErrKind, MethodTag};
-    #[cfg(all(test, feature = "auth-admin-tokens"))]
+    #[cfg(all(any(test, feature = "test-support"), feature = "auth-admin-tokens"))]
     use std::collections::BTreeSet;
 
     /// The tag `err_json` stamps onto an error response so the recording layer (which knows the
     /// matched route, which `err_json` does not) can attribute it to an operation. `cond` is set at
     /// the shared seams that name their condition; a handler-body error leaves it `None`.
     #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-    pub(crate) struct Tag {
-        pub(crate) kind: ErrKind,
-        pub(crate) cond: Option<Cond>,
+    pub struct Tag {
+        pub kind: ErrKind,
+        pub cond: Option<Cond>,
     }
 
     /// One witnessed emission as NEUTRAL strings: `(rel, method, kind, cond)`. Neutral because the
@@ -764,8 +764,8 @@ pub(crate) mod observed {
     /// stable string forms of the taxonomy enums rather than the enums themselves. Only the
     /// crate-under-test build reads it back (through [`snapshot`]); the plane crates' `test-support`
     /// dependency copy only ever WRITES, through `record`.
-    #[cfg(all(test, feature = "auth-admin-tokens"))]
-    pub(crate) type Emission = (String, String, String, Option<String>);
+    #[cfg(all(any(test, feature = "test-support"), feature = "auth-admin-tokens"))]
+    pub type Emission = (String, String, String, Option<String>);
 
     /// The stable string form of an [`ErrKind`] — its `Debug` name, which is frozen alongside the enum.
     fn kind_str(kind: ErrKind) -> String {
@@ -781,15 +781,15 @@ pub(crate) mod observed {
     /// BOTH copies of `busbar-core` in the test binary (the crate-under-test and the plane crates'
     /// dependency copy) contribute. Its only caller is the `auth-admin-tokens`-gated taxonomy-drift
     /// audit in `admin::tests`.
-    #[cfg(all(test, feature = "auth-admin-tokens"))]
-    pub(crate) fn snapshot() -> BTreeSet<Emission> {
+    #[cfg(all(any(test, feature = "test-support"), feature = "auth-admin-tokens"))]
+    pub fn snapshot() -> BTreeSet<Emission> {
         busbar_substrate::admin_witness::snapshot()
     }
 
     /// Record one observed emission (called by the router's recording layer) into the process-wide
     /// substrate ledger, so a witness produced through EITHER copy of `busbar-core` is visible to the
     /// audit that reads [`snapshot`].
-    pub(crate) fn record(rel: &str, method: MethodTag, tag: Tag) {
+    pub fn record(rel: &str, method: MethodTag, tag: Tag) {
         busbar_substrate::admin_witness::record(
             rel,
             method.as_str(),

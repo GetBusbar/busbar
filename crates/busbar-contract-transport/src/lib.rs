@@ -28,6 +28,7 @@ pub mod dest;
 pub mod driver;
 pub mod registry;
 pub mod surface;
+pub mod transport;
 pub mod wire;
 
 /// A plugin kind's native interface generation.

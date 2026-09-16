@@ -39,7 +39,7 @@ pub(crate) async fn protocol_dispatch(
             &app.planes,
             &path,
             StatusCode::NOT_FOUND,
-            crate::admin::ERR_TYPE_NOT_FOUND,
+            crate::taxonomy::ERR_TYPE_NOT_FOUND,
             "the requested resource was not found",
         );
     };
@@ -49,7 +49,7 @@ pub(crate) async fn protocol_dispatch(
             &app.planes,
             &path,
             StatusCode::METHOD_NOT_ALLOWED,
-            crate::admin::ERR_TYPE_INVALID_REQUEST,
+            crate::taxonomy::ERR_TYPE_INVALID_REQUEST,
             "method not allowed for this resource",
         );
     }
@@ -140,7 +140,7 @@ pub(crate) async fn protocol_dispatch(
         &app.planes,
         &path,
         StatusCode::NOT_FOUND,
-        crate::admin::ERR_TYPE_NOT_FOUND,
+        crate::taxonomy::ERR_TYPE_NOT_FOUND,
         "the requested resource was not found",
     )
 }

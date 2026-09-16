@@ -25,6 +25,12 @@ pub mod seam;
 // per the one-egress-stack ruling. Core re-exports every name from its old `crate::proxy::` paths.
 pub mod engine;
 
+// THE FULL-FIDELITY NEUTRAL EGRESS INTERFACE — `EgressEngine`, implemented by `engine` as a thin
+// pass-through, so a later stage can route native (in-process) consumers off `egress::engine::*`
+// without the fidelity loss `egress::seam`'s buffered projection would cost them. Additive only:
+// nothing is moved onto it yet. See the module's own doc for the full rationale.
+pub mod interface;
+
 // THE NEUTRAL FULL-DUPLEX WS EGRESS DIALER — dial an upstream `wss://` THROUGH `net_guard`
 // (resolve→pin→guard, then TCP to the pinned address, then TLS with the URL host for SNI, then the WS
 // handshake) and hand back the `Stream`/`Sink<Vec<u8>>` pair `byte_duplex::serve_messages` consumes.

@@ -42,7 +42,7 @@ pub use busbar_substrate::admin_verbs::{registered, PlaneTrust, PlaneVerbError};
 /// The action word and the resource are DERIVED from the plane and the verb rather than spelled out
 /// per plane, so a new verb cannot invent a spelling and a new plane cannot invent a naming scheme.
 /// The shape is the established one: `<kind>.<verb>` acting on `<kind>:<name>`.
-pub(crate) fn audit(
+pub fn audit(
     plane: &'static str,
     verb: &str,
     name: &str,
@@ -50,7 +50,7 @@ pub(crate) fn audit(
     principal: &crate::auth::AuthPrincipal,
 ) {
     let audit_kind = crate::plane::plane_decl(plane).audit_kind;
-    crate::admin::audit::AUDIT.record_by(
+    crate::audit_ring::AUDIT.record_by(
         &format!("{audit_kind}.{verb}"),
         &format!("{audit_kind}:{name}"),
         outcome,
@@ -63,7 +63,7 @@ pub(crate) fn audit(
 /// `"<subject_noun> `<name>`"` phrasing is reconstructed HERE from the plane decl, so it stays in one
 /// place and reads identically on every plane. `Validation` carries its human message verbatim;
 /// `Internal`'s diagnostic string is dropped (the wire message is core's generic one).
-pub(crate) fn to_admin_error(plane: &'static str, name: &str, err: PlaneVerbError) -> AdminError {
+pub fn to_admin_error(plane: &'static str, name: &str, err: PlaneVerbError) -> AdminError {
     match err {
         PlaneVerbError::NotFound => AdminError::not_found(format!(
             "{} `{name}`",

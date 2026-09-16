@@ -271,7 +271,7 @@ fn list_models_dialect(
     }
 }
 
-pub(crate) async fn healthz(crate::state::CurrentApp(app): crate::state::CurrentApp) -> Response {
+pub async fn healthz(crate::state::CurrentApp(app): crate::state::CurrentApp) -> Response {
     let t = now();
     // Side-effect-FREE readiness check: `/healthz` is unauthenticated and high-frequency (k8s
     // liveness, load balancers), so it must NOT transition expired-Open lanes to HalfOpen or steal

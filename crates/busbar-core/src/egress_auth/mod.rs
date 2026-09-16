@@ -10,12 +10,12 @@
 //!
 //! Mirrors the sibling `gate` submodule, which relocated the same way in Phase-B B1: the real
 //! content lives in `busbar_substrate::egress_auth`, and the local `pub mod gate;` below keeps
-//! core's own gate shim (which hosts the gate tests that name `crate::admin::audit`). The glob's
+//! core's own gate shim (which hosts the gate tests that name `crate::audit_ring`). The glob's
 //! `gate` is shadowed by that explicit declaration.
 
 pub use busbar_substrate::egress_auth::*;
 
-// Core's gate re-export shim (hosts the core-only `gate_tests`, which name `crate::admin::audit` /
+// Core's gate re-export shim (hosts the core-only `gate_tests`, which name `crate::audit_ring` /
 // `crate::audit`). Explicitly declared so it shadows the glob's `gate`.
 pub mod gate;
 

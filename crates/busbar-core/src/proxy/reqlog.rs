@@ -311,7 +311,7 @@ pub struct RequestLog {
 }
 
 /// THE PROCESS-WIDE PER-REQUEST LOG FOR THIS PLANE. Process state, not config-derived state, so it lives as a
-/// global rather than on the swappable `App` snapshot — exactly like [`crate::admin::audit::AUDIT`]
+/// global rather than on the swappable `App` snapshot — exactly like [`crate::audit_ring::AUDIT`]
 /// and [`crate::calllog::CALLS`], and for the same reason: a config apply must not reset the
 /// chain positions, because doing so would open a SECOND chain at seq 1 under a principal that
 /// already has one, and two chains that each verify and together describe nothing is strictly worse

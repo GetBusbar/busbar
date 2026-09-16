@@ -41,7 +41,8 @@ pub(crate) struct IssuedKey {
 
 /// The self-serve key scheme, isolated behind a trait so the exchange endpoint is scheme-agnostic.
 /// ASYNC because the ONE production impl auto-provisions the personal budget group through the
-/// async config-mutation choke point (`json::txn::config_transaction`) before it mints.
+/// async config-mutation choke point (`crate::config::transaction::config_transaction`) before it
+/// mints.
 #[async_trait]
 pub(crate) trait SelfServeKeys: Send + Sync {
     /// Issue the ONE key for `principal` (idempotent: a re-login returns the same key, only the
@@ -54,7 +55,8 @@ pub(crate) trait SelfServeKeys: Send + Sync {
 /// AUTO-PROVISION the personal budget bucket a self-serve key charges through. Behind a trait so the
 /// mint seam stays free of the config/cost machinery (and so tests can drive a fake): the ONE concrete
 /// impl ([`HandleProvisioner`]) mirrors the admin auto-provision path exactly (`plan_mint_group` →
-/// `persist_provisioned_group`), routed through the SAME `json::txn::config_transaction` choke point
+/// `persist_provisioned_group`), routed through the SAME `config::transaction::config_transaction`
+/// choke point
 /// the admin mint uses — so there is one lock, one fresh snapshot, one persist-then-swap for EVERY
 /// config mutation in the tree (a self-mint provision and a concurrent admin `config/apply` serialize
 /// against each other, no lost update).
@@ -180,7 +182,7 @@ impl SelfServeKeys for DeterministicEd25519Keys {
 /// (`plan_mint_group` builds the leaf from the team's `child_default`; `persist_provisioned_group`
 /// commits it PERSIST-then-SWAP, rebuilding the cost model so the new bucket is enforceable on the
 /// next request and durable across restart) — but routed through the ONE config-mutation choke point
-/// [`crate::admin::v1::json::config_transaction`], exactly as the admin mint is. That is the single
+/// [`crate::config::transaction::config_transaction`], exactly as the admin mint is. That is the single
 /// serialization point for EVERY config mutation, so this no longer needs (or has) its own lock: the
 /// transaction's `CONFIG_MUTATION_LOCK` serializes a first-login provision against a concurrent admin
 /// `config/apply`, closing the lost-update the previous ad-hoc `SELF_PROVISION_LOCK` could not.
@@ -202,11 +204,15 @@ impl SelfGroupProvisioner for HandleProvisioner {
         // lock, hands the body a FRESH post-lock snapshot, and applies the plan as a single
         // persist-then-swap. No `commit_and_swap` by hand, no second lock — the same door the admin
         // mint (`create_key` auto-provision) walks through, so the two cannot lose a swap to each
-        // other. `AdminError` is mapped to the mint's `String` failure at the boundary.
+        // other. Both `config_transaction` and the group-provisioning logic are neutral core
+        // (`crate::config::transaction`, `crate::governance::group_provision` — 1.6.0 de-alias,
+        // stage 2a), so this seam no longer reaches into `admin::` at all. `TxnError` is mapped to
+        // the mint's `String` failure at the boundary, byte-identical to the prior `AdminError`
+        // mapping (`TxnError::message()` mirrors `AdminError::message()`).
         let leaf = leaf.to_string();
         let parent = parent.to_string();
         let actor = self.actor.clone();
-        crate::admin::v1::json::config_transaction(&self.handle, move |txn| {
+        crate::config::transaction::config_transaction(&self.handle, move |txn| {
             let current = txn.app();
             // IDEMPOTENT no-op: the leaf is already a live enforcement bucket (the steady-state
             // re-login path — no swap, no overlay churn, no usage reset).
@@ -215,8 +221,12 @@ impl SelfGroupProvisioner for HandleProvisioner {
             }
             // Same plan the admin mint runs: build the leaf under `parent` from the nearest-ancestor
             // `child_default`, validated at the door (cost rebuilt in the candidate snapshot).
-            let Some(installed) =
-                crate::admin::v1::json::plan_mint_group(current, &leaf, Some(&parent), &actor)?
+            let Some(installed) = crate::governance::group_provision::plan_mint_group(
+                current,
+                &leaf,
+                Some(&parent),
+                &actor,
+            )?
             else {
                 // `plan_mint_group` returns `None` only when the group already exists (a race with
                 // the `group_named` check above lost) — nothing to commit.
@@ -224,7 +234,7 @@ impl SelfGroupProvisioner for HandleProvisioner {
             };
             // PERSIST-then-SWAP the new leaf, fail-closed — routed through `commit_and_swap` by the
             // transaction's sole apply site, never by hand here.
-            let persist = crate::admin::v1::json::persist_provisioned_group(
+            let persist = crate::governance::group_provision::persist_provisioned_group(
                 installed.clone(),
                 leaf.clone(),
                 actor.clone(),
@@ -232,7 +242,7 @@ impl SelfGroupProvisioner for HandleProvisioner {
             Ok(txn.commit(installed, persist, ()))
         })
         .await
-        .map_err(|e| e.message())
+        .map_err(|e: crate::config::transaction::TxnError| e.message())
     }
 }
 

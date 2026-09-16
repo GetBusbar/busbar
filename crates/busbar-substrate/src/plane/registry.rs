@@ -534,6 +534,33 @@ pub struct PlaneDecl {
     /// boot where two planes claim the same section OR a plane claims a section core still owns
     /// concretely — the invariant that makes the later section moves safe.
     pub owned_config_sections: &'static [&'static str],
+
+    /// MERGE ONE PROVIDER'S CATALOG DEFINITION (`providers.yaml`, [`crate::config::providers::ProviderDef`])
+    /// WITH ITS OPERATOR DEPLOYMENT (`config.yaml`'s `providers:` entry,
+    /// [`crate::config::providers::ProviderDeploy`]) INTO THE RESOLVED
+    /// [`crate::config::providers::ProviderCfg`] a lane is built from — the providers/models/pools
+    /// LOGIC seam (1.6.0 pools stage-B). `busbar_core::config::resolve` calls this at the EXACT point
+    /// the per-deployment merge always ran (right after the catalog lookup, itself unconditional core
+    /// orchestration — "provider referenced but not found in providers.yaml" stays a core error), so
+    /// the merged fields and their precedence (deployment override wins, catalog default otherwise)
+    /// are byte-identical to the pre-seam inline merge. Pure — no I/O, no `errors` side channel, so it
+    /// cannot itself reorder or add a validation error.
+    ///
+    /// `providers`/`pools` are `CORE_OWNED_CONCRETE_SECTIONS` and are NEVER evicted from
+    /// `DeployCfg`/`RootCfg` (see that constant's doc) — unlike `tools:`/`agents:`/`mcp:`, a
+    /// `providers:` entry is parsed and merged UNCONDITIONALLY, whether or not any plane is
+    /// installed. So `None` (no plane implements the hook — an llm-plane-absent build) is not an
+    /// "absent config section" refusal the way it is for a container plane's endpoint block: `resolve`
+    /// falls back to its OWN byte-identical copy of this same merge, so a build compiled without the
+    /// LLM plane keeps merging providers exactly as every prior release has, rather than silently
+    /// dropping configured providers out of `RootCfg::providers`.
+    #[allow(clippy::type_complexity)]
+    pub resolve_provider: Option<
+        fn(
+            &crate::config::providers::ProviderDef,
+            &crate::config::providers::ProviderDeploy,
+        ) -> crate::config::providers::ProviderCfg,
+    >,
 }
 
 /// THE DUP-CLAIM GUARD for the plane-owned-config seam (1.6.0 config-seam, stage 1). Judges the

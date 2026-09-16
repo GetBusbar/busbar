@@ -19,7 +19,7 @@
 //! `RwLock` read) and, when that set is stale, *schedules* the refresh. This is the same discipline
 //! the rest of the engine already applies to every other store toucher: the write-behind budget
 //! flusher (`governance/mod.rs`), the metrics exporter (`metrics.rs`), `gate_transport_offloaded`
-//! (`hooks/mod.rs`), and the whole `config_transaction` design (`admin/v1/json/txn.rs`).
+//! (`hooks/mod.rs`), and the whole `config_transaction` design (`config/transaction.rs`).
 //!
 //! ## The three properties that make the offload safe
 //!

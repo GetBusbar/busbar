@@ -87,6 +87,6 @@ impl ArrivalHost for CoreArrivalHost {
     }
 
     fn err_type_not_found(&self) -> &'static str {
-        crate::admin::ERR_TYPE_NOT_FOUND
+        crate::taxonomy::ERR_TYPE_NOT_FOUND
     }
 }

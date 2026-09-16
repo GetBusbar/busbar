@@ -68,7 +68,7 @@ impl SecretResolver {
 
     /// A resolver whose non-built-in modules resolve through `plugin` (a `kind: secret` plugin
     /// loader). Built-ins still short-circuit to the inline `env` / `file` path.
-    pub(crate) fn with_plugin(plugin: PluginResolveFn) -> Self {
+    pub fn with_plugin(plugin: PluginResolveFn) -> Self {
         Self {
             plugin: Some(plugin),
         }

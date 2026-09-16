@@ -11,7 +11,7 @@
 //! [`crate::audit::Chain`]: an in-RAM per-scope POSITION CACHE, a bounded LRU over it, a store-resume
 //! of an evicted tail, a write-through SINK, and the WRITE-ORDERING invariant that a position is
 //! committed only after the durable append succeeds. That machinery belongs to neither plugin — it
-//! is the same answer to "make a hash-chained stream survive a restart" that [`crate::admin::audit`]
+//! is the same answer to "make a hash-chained stream survive a restart" that [`crate::audit_ring`]
 //! gives for admin mutations, and by the owner's ruling (see [`crate::audit`]) auditing is CORE. So
 //! it lives here, once, generic over the record type, and a plugin supplies only its RECORD (which
 //! fields, which framing — [`crate::audit::ChainedRecord`]) plus the neutral store envelope its rows

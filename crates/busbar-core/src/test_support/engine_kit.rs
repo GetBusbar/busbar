@@ -110,7 +110,7 @@ impl EngineTestKit for CoreEngineKit {
     }
 
     fn audit_high_water_seq(&self) -> u64 {
-        crate::admin::audit::AUDIT
+        crate::audit_ring::AUDIT
             .export()
             .iter()
             .map(|e| e.seq)
@@ -124,7 +124,7 @@ impl EngineTestKit for CoreEngineKit {
 
     fn audit_entries(&self) -> Vec<AuditRecord> {
         crate::plane::auditlog::AUDIT_LOG
-            .list_filtered(0, crate::admin::audit::MAX_AUDIT_ENTRIES, None, None)
+            .list_filtered(0, crate::audit_ring::MAX_AUDIT_ENTRIES, None, None)
             .into_iter()
             .map(|e| AuditRecord {
                 seq: e.seq,
@@ -141,8 +141,8 @@ impl EngineTestKit for CoreEngineKit {
 
     fn admin_required_scope(&self, method: &axum::http::Method, path: &str) -> AdminScope {
         match crate::admin::v1::contract::required_scope(method, path) {
-            crate::admin::v1::contract::Scope::ReadOnly => AdminScope::ReadOnly,
-            crate::admin::v1::contract::Scope::Full => AdminScope::Full,
+            busbar_contract::authz::Scope::ReadOnly => AdminScope::ReadOnly,
+            busbar_contract::authz::Scope::Full => AdminScope::Full,
         }
     }
 

@@ -40,9 +40,9 @@ fn policy_timeout(timeout_ms: u64) -> std::time::Duration {
 /// THE PROTOCOL-BLIND REQUEST GATE — the seam that fires a hook for a request the pipeline knows
 /// only as an [`crate::ir::facts::IrFacts`]. The MCP and A2A firing sites call it; the model plane's
 /// own phase-2 reconcile (which also has a candidate set to reconcile) stays in `proxy::engine`.
-pub(crate) mod gate;
-pub(crate) mod plugin;
-pub(crate) mod scrape;
+pub mod gate;
+pub mod plugin;
+pub mod scrape;
 pub mod wire;
 
 // The HOOK CONTRACT — the `RoutingPolicy` trait and the read-only projections it is invoked with
@@ -88,7 +88,7 @@ pub use busbar_substrate::hooks::RequestedSignals;
 /// every admin snapshot that rewrites that registry) — never per request. A config with no hook declaring any
 /// `signals:` (the overwhelming default, and every config that predates the catalog) yields the
 /// all-zero mask, so every `requested.wants(_)` check downstream is `false` for that generation.
-pub(crate) fn requested_signals(
+pub fn requested_signals(
     hooks: &std::collections::HashMap<String, crate::config::HookCfg>,
 ) -> RequestedSignals {
     let mut mask = RequestedSignals::default();
@@ -118,7 +118,7 @@ pub(crate) fn requested_signals(
 /// hooks that actually fire: a granted hook that no pool wires still reads `true`. The one-sided
 /// direction is deliberate — over-reporting costs an unused IR build, under-reporting would hand a
 /// content-granted hook a view the request was never parsed into.
-pub(crate) fn any_content_hook(
+pub fn any_content_hook(
     hooks: &std::collections::HashMap<String, crate::config::HookCfg>,
 ) -> bool {
     hooks.values().any(|h| h.prompt.sends_prompt())
@@ -131,12 +131,12 @@ pub(crate) fn any_content_hook(
 /// `Arc`-backed); replaces the old `&reqwest::Client` the retired webhook transport needed.
 #[derive(Clone)]
 pub struct HookEnv {
-    pub(crate) registry: std::sync::Arc<busbar_plugin_loader::PluginRegistry>,
-    pub(crate) projectors: std::sync::Arc<busbar_plugin_loader::hook::HookProjectors>,
+    pub registry: std::sync::Arc<busbar_plugin_loader::PluginRegistry>,
+    pub projectors: std::sync::Arc<busbar_plugin_loader::hook::HookProjectors>,
     /// The secret resolver used to turn any SecretRef-typed hook setting (e.g. a `licenseKey`) into
     /// its raw value BEFORE the settings cross the ABI at open/configure (ADR-0010). Shared with the
     /// store/auth open paths; the same fail-closed resolver.
-    pub(crate) secret_resolver: std::sync::Arc<crate::config::secret::SecretResolver>,
+    pub secret_resolver: std::sync::Arc<crate::config::secret::SecretResolver>,
     /// Names of hooks that have already emitted the loud [`hook_inert_gate_banner`] THIS build. A
     /// gate named in several pools' `hooks:` lists (and/or `global_hooks`) resolves once per
     /// reference — `resolve_pool_rewrites` runs once per pool, `resolve_rewrite_hooks` once for
@@ -152,7 +152,7 @@ pub struct HookEnv {
 impl HookEnv {
     /// Bundle a registry + the shared projectors + the secret resolver into the resolution
     /// environment.
-    pub(crate) fn new(
+    pub fn new(
         registry: std::sync::Arc<busbar_plugin_loader::PluginRegistry>,
         secret_resolver: std::sync::Arc<crate::config::secret::SecretResolver>,
     ) -> Self {
@@ -188,7 +188,7 @@ impl HookEnv {
     ///
     /// Returns `Err` naming the offending hook on the first unresolvable secret. Called once from
     /// `build_app_from_config` before any `resolve_*` consumes the hooks.
-    pub(crate) fn preresolve_hook_secrets(
+    pub fn preresolve_hook_secrets(
         &self,
         hooks: &std::collections::HashMap<String, crate::config::HookCfg>,
     ) -> Result<(), String> {
@@ -221,7 +221,7 @@ impl HookEnv {
     /// Opening here is consistent with the transport model (every `gate_transport_named` opens a
     /// fresh instance; `fetch_status`/`push_configure` open per call), so this pre-open does not
     /// leak a live instance — the constructed policy is dropped at the end of the iteration.
-    pub(crate) fn preopen_gate_hooks(
+    pub fn preopen_gate_hooks(
         &self,
         hooks: &std::collections::HashMap<String, crate::config::HookCfg>,
     ) -> Result<(), String> {
@@ -278,7 +278,7 @@ pub use busbar_substrate::hooks::{FallbackHook, ResolvedPolicy};
 /// fire in the phase-2 decision reconcile — a gate's `order` overrides the base; its abstain falls
 /// through to the base. The resolved base is stored on `PoolRuntime::policy` and consumed
 /// per-request by `proxy::decide_policy_order`.
-pub(crate) fn resolve_policy(cfg: &crate::config::PoolCfg) -> Option<ResolvedPolicy> {
+pub fn resolve_policy(cfg: &crate::config::PoolCfg) -> Option<ResolvedPolicy> {
     // `weighted` ⇒ the zero-cost default path (no policy object, inline SWRR) — byte-identical to
     // 1.2.1's `route: weighted` — so `native_name()` returns `None` here and we take the `?`
     // short-circuit BELOW regardless of the ranking feature.
@@ -310,7 +310,7 @@ pub(crate) fn resolve_policy(cfg: &crate::config::PoolCfg) -> Option<ResolvedPol
 
 /// The name of the registered `default: true` hook, if any — the base ordering that pools which named
 /// none inherit. At most one exists (config_validate enforces it), so `find` is unambiguous.
-pub(crate) fn default_hook_name(
+pub fn default_hook_name(
     hooks: &std::collections::HashMap<String, crate::config::HookCfg>,
 ) -> Option<&str> {
     hooks
@@ -326,7 +326,7 @@ pub(crate) fn default_hook_name(
 /// GATES are orthogonal — they fire in the phase-2 reconcile ON TOP of whatever base resolves here.
 /// When no `default:` hook is registered, this is exactly `resolve_policy` (the compiled-in
 /// backstop). Called once per pool at startup.
-pub(crate) fn resolve_pool_ordering(
+pub fn resolve_pool_ordering(
     cfg: &crate::config::PoolCfg,
     hooks: &std::collections::HashMap<String, crate::config::HookCfg>,
     env: &HookEnv,
@@ -364,7 +364,7 @@ pub(crate) fn resolve_pool_ordering(
 /// silently vanish: `HookEnv::preopen_gate_hooks` (a fail-closed pre-build pass in
 /// `build_app_from_config`) opens every referenced gate and ABORTS boot/reload on failure, so by the
 /// time this runs a present gate either opens or the boot already failed.
-pub(crate) fn resolve_pool_gates(
+pub fn resolve_pool_gates(
     cfg: &crate::config::PoolCfg,
     hooks: &std::collections::HashMap<String, crate::config::HookCfg>,
     env: &HookEnv,
@@ -404,7 +404,7 @@ pub(crate) fn resolve_pool_gates(
 /// internally priority-ordered; globals always precede pool rewrites). The EFFECTIVE rw access —
 /// operator grant MEET signed-manifest `needs.prompt` ([`admits_rewrite`]) — is the admission
 /// ticket, enforced here at resolution exactly as in `resolve_rewrite_hooks`.
-pub(crate) fn resolve_pool_rewrites(
+pub fn resolve_pool_rewrites(
     cfg: &crate::config::PoolCfg,
     hooks: &std::collections::HashMap<String, crate::config::HookCfg>,
     env: &HookEnv,
@@ -1049,7 +1049,7 @@ mod resolution {
 
     /// Is a resolution for `key` PUBLISHED right now? The observable readiness signal a caller can
     /// poll on, rather than betting a wall clock on the dynamic linker.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub(super) fn published(key: u64) -> bool {
         let (lock, _) = state();
         let inner = lock.lock().unwrap_or_else(|p| p.into_inner());
@@ -1058,7 +1058,7 @@ mod resolution {
 
     /// Is a resolution for `key` STILL RUNNING? Tells a caller whose deadline elapsed apart from one
     /// whose hook genuinely does not resolve — the same `None` reaches both.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub(super) fn in_flight(key: u64) -> bool {
         let (lock, _) = state();
         let inner = lock.lock().unwrap_or_else(|p| p.into_inner());
@@ -1110,7 +1110,7 @@ const CONFIGURE_TIMEOUT_MS: u64 = 5000;
 
 /// PUSH a settings map to a hook over its transport and wait for the ack (the
 /// `PATCH /api/v1/admin/hooks/{name}/settings` core). `Ok` = acked (commit); `Err` = NOT committed.
-pub(crate) async fn push_configure(
+pub async fn push_configure(
     hook: &crate::config::HookCfg,
     name: &str,
     settings_version: u64,
@@ -1259,8 +1259,8 @@ async fn gate_transport_offloaded(
 /// `false` means the hook resolved to nothing (an unloadable plugin) or is not eligible for
 /// publication at all — a hook carrying a `SecretRef` is resolved fresh every time by design, so
 /// there is no readiness to wait on and the caller should just proceed.
-#[cfg(test)]
-pub(crate) async fn await_transport_published(
+#[cfg(any(test, feature = "test-support"))]
+pub async fn await_transport_published(
     name: &str,
     hook: &crate::config::HookCfg,
     env: &HookEnv,
@@ -1314,7 +1314,7 @@ pub(crate) async fn await_transport_published(
 /// readers of the SAME hook+settings+registry and no further — see [`resolution`], and note in
 /// particular that a hook carrying a `SecretRef` is still resolved fresh on every one of these
 /// reads, so a rotated credential is picked up on the next scrape exactly as before.
-pub(crate) async fn fetch_status(
+pub async fn fetch_status(
     name: &str,
     hook: &crate::config::HookCfg,
     settings_version: u64,
@@ -1362,7 +1362,7 @@ pub(crate) async fn fetch_status(
 /// unwrapped exactly as the configure push unwraps it) are compared value-for-value, only DESIRED
 /// keys are compared (extra self-managed keys the hook reports are not drift), and a hook that
 /// reports no settings at all is not drift (it may simply not implement the echo).
-pub(crate) fn settings_drift_keys(
+pub fn settings_drift_keys(
     hook: &crate::config::HookCfg,
     reported: Option<&serde_json::Map<String, serde_json::Value>>,
 ) -> Vec<String> {
@@ -1385,7 +1385,7 @@ pub(crate) fn settings_drift_keys(
 
 /// Fetch a hook's self-described settings schema over its transport
 /// (`GET /api/v1/admin/hooks/{name}/schema`). `None` = the hook/transport doesn't answer describe.
-pub(crate) async fn fetch_schema(
+pub async fn fetch_schema(
     name: &str,
     hook: &crate::config::HookCfg,
     settings_version: u64,
@@ -1475,7 +1475,7 @@ fn gate_on_empty(hook: &crate::config::HookCfg) -> crate::config::PolicyOnError 
 /// plugin is skipped (fail-open safety net); an `open()`-time FAILURE of a present rewrite gate is
 /// caught by `HookEnv::preopen_gate_hooks`, which aborts boot/reload (so a redaction/rewrite gate
 /// can never silently vanish while boot succeeds).
-pub(crate) fn resolve_rewrite_hooks(
+pub fn resolve_rewrite_hooks(
     hooks: &std::collections::HashMap<String, crate::config::HookCfg>,
     global_hooks: &[String],
     env: &HookEnv,
@@ -1527,7 +1527,7 @@ pub use busbar_substrate::hooks::TapEntry;
 /// request-time caller filter. Taps are fire-and-forget so order is irrelevant, but a stable priority
 /// sort keeps startup deterministic. Unresolvable transports are skipped (config_validate surfaces
 /// them at boot).
-pub(crate) fn resolve_tap_hooks(
+pub fn resolve_tap_hooks(
     hooks: &std::collections::HashMap<String, crate::config::HookCfg>,
     global_hooks: &[String],
     env: &HookEnv,
@@ -1577,7 +1577,7 @@ pub(crate) fn resolve_tap_hooks(
 /// plugin is skipped (fail-open safety net); an `open()`-time FAILURE of a present decision gate is
 /// caught by `HookEnv::preopen_gate_hooks`, which aborts boot/reload (so a Reject/restrict gate can
 /// never silently vanish while boot reports success).
-pub(crate) fn resolve_gate_hooks(
+pub fn resolve_gate_hooks(
     hooks: &std::collections::HashMap<String, crate::config::HookCfg>,
     global_hooks: &[String],
     env: &HookEnv,

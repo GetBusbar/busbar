@@ -629,7 +629,7 @@ impl busbar_substrate::plane_host::JournalHost for EngineHostImpl {
         // sealed record onto the durable hostless journal — the superset of `audit_emit`'s durable-only
         // path. The egress audit-and-allow trail reads this ring, so a dropped cross-dialect control
         // lands here byte-identically to the pre-flip `AUDIT.record_by(...)` reach.
-        crate::admin::audit::AUDIT.record_by(action, resource, outcome, principal);
+        crate::audit_ring::AUDIT.record_by(action, resource, outcome, principal);
     }
 
     fn call_log_emit(&self, principal: &str, input: busbar_substrate::plane::calllog::CallInput) {

@@ -28,18 +28,18 @@ const X_API_KEY: &str = "x-api-key";
 const X_GOOG_API_KEY: &str = "x-goog-api-key";
 
 /// The header name for the operator admin token carrier (busbar-proprietary surface).
-pub(crate) const X_ADMIN_TOKEN: &str = "x-admin-token";
+pub const X_ADMIN_TOKEN: &str = "x-admin-token";
 /// The Bearer auth-scheme token (case-insensitive match in `extract_bearer_token`).
 const AUTH_SCHEME_BEARER: &str = "bearer";
 /// The liveness-probe path, mounted `RouteAuth::None` on every router that serves it (see
 /// [`crate::core_routes`]). One constant so the mount and the reserved-path list cannot drift.
-pub(crate) const HEALTHZ_PATH: &str = "/healthz";
+pub const HEALTHZ_PATH: &str = "/healthz";
 /// The exact `/api` path (the native-API root — every busbar-own surface mounts under it;
-/// see `admin::v1::contract::API_ROOT`). `pub(crate)` so the config validator derives its
+/// see `admin::v1::contract::API_ROOT`). `pub` so the config validator derives its
 /// reserved-name segment from THIS constant rather than a copied literal (see
 /// `config_validate::reserved_admin_name`), which is what keeps the reserved name and the
 /// middleware's `is_admin` boundary from drifting apart.
-pub(crate) const ADMIN_PATH: &str = "/api";
+pub const ADMIN_PATH: &str = "/api";
 /// The `/api/` prefix that all native-API sub-routes share. A path must match ADMIN_PATH exactly
 /// OR start with ADMIN_PATH_PREFIX to be treated as an admin-plane request — preventing sibling
 /// paths like `/apix/…` from being mis-classified. The WHOLE `/api/` root is admin-classified
@@ -50,7 +50,7 @@ const ADMIN_PATH_PREFIX: &str = "/api/";
 /// full HMAC verification so the timing is indistinguishable from a bad-signature rejection
 /// (no AccessKeyId-enumeration oracle). The `crate::sigv4` test module references this via
 /// `crate::auth::DUMMY_SECRET` rather than maintaining a separate copy.
-pub(crate) const DUMMY_SECRET: &str = "AWS4-DUMMY-SECRET-FOR-CONSTANT-TIME-REJECT-PATH";
+pub const DUMMY_SECRET: &str = "AWS4-DUMMY-SECRET-FOR-CONSTANT-TIME-REJECT-PATH";
 
 // The UPSTREAM-credential mode (`upstream_credentials:`) now lives in the neutral contracts crate
 // so a plane names it without reaching into busbar-core; re-exported here so every
@@ -67,7 +67,7 @@ pub use busbar_api::CallerToken;
 // The auth CONTRACT — [`Principal`], [`AuthOutcome`], the [`AuthModule`] trait, and the
 // constant-time credential primitives — lives in the `busbar-api` crate (the one crate both the
 // engine and every plugin build against). Re-exported here so engine-internal paths are unchanged.
-pub(crate) use busbar_api::{AuthModule, AuthOutcome, Principal};
+pub use busbar_api::{AuthModule, AuthOutcome, Principal};
 
 /// The whole CHAIN's verdict for one request: admitted-with-identity, admitted-anonymously (the
 /// empty-chain open front door), or denied. Distinct from the per-module [`AuthOutcome`] so the
@@ -76,7 +76,7 @@ pub(crate) use busbar_api::{AuthModule, AuthOutcome, Principal};
 /// NOT `Eq`: the engine-only `resolved` `VirtualKey` is `PartialEq` but not `Eq` (its `Debug` is a
 /// hand-written, credential-redacting impl in `busbar-api`).
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) enum ChainVerdict {
+pub enum ChainVerdict {
     /// Admitted with identity: the IDENTITY PROVIDER that identified + the principal.
     ///
     /// 1.5.3: `module` carries the PROVIDER NAME (the `identity-providers:` key), not the backing
@@ -114,7 +114,7 @@ pub struct AuthMiddleware {
     /// Whether the config chain names the built-in `keys` signed-key verifier. The actual
     /// verification rides the governance virtual-key path (the signed-token verifier is separate);
     /// this flag records the operator's intent for validation and reporting.
-    pub(crate) keys_in_chain: bool,
+    pub keys_in_chain: bool,
     /// The AUTH CHAIN — the ordered `auth.chain` modules. `validate_token` runs it: the first module
     /// to `Identify` admits, a `Reject` denies, and if every module `Pass`es (no usable credential
     /// matched) a NON-EMPTY chain denies (fail-closed). An EMPTY chain admits unconditionally — the
@@ -177,11 +177,11 @@ static ADMIN_OFFLOAD_PERMITS: std::sync::LazyLock<tokio::sync::Semaphore> =
 /// chain and store/secret plugins). Keyed by the config module name — the SAME string
 /// `App::admin_chain` names and `role_bindings.<module>` binds. `admin-tokens` is deliberately
 /// absent (it is an engine arm dispatched inline). Held behind an `Arc` on the `App` snapshot.
-pub(crate) struct AdminAuthChain {
-    pub(crate) modules: std::collections::HashMap<String, Box<dyn AuthModule>>,
+pub struct AdminAuthChain {
+    pub modules: std::collections::HashMap<String, Box<dyn AuthModule>>,
     /// Whether ANY resolved admin module is a loaded plugin — i.e. whether running the admin chain
     /// can block (FFI/JWKS/introspection). Decided once at build; gates the off-reactor offload.
-    pub(crate) has_plugin: bool,
+    pub has_plugin: bool,
 }
 
 impl fmt::Debug for AdminAuthChain {
@@ -210,7 +210,7 @@ impl AdminAuthChain {
     /// inline in `run_admin_chain`). SecretRef-typed settings resolve BEFORE the config crosses the
     /// ABI (ADR-0010). FAIL-CLOSED: a configured admin module that cannot load is a HARD boot/reload
     /// error, never a silently-dropped module. Runs at boot AND reload (inside `build_app_from_config`).
-    pub(crate) fn build(
+    pub fn build(
         cfg: &AuthCfg,
         registry: &busbar_plugin_loader::PluginRegistry,
         secret_resolver: &crate::config::secret::SecretResolver,
@@ -277,7 +277,7 @@ impl AuthMiddleware {
     /// a store/secret plugin's `settings:`). The chain module's RUNTIME identity is `module.name()`
     /// (the name the loaded plugin reports over the ABI), which is what `role_bindings.<module>` and
     /// `auth.modules.<module>` caps key off — not the config alias.
-    pub(crate) fn new(
+    pub fn new(
         cfg: &AuthCfg,
         registry: &busbar_plugin_loader::PluginRegistry,
         secret_resolver: &crate::config::secret::SecretResolver,
@@ -362,13 +362,13 @@ impl AuthMiddleware {
     /// The ordered names of the auth chain's modules (`module.name()` for each). For the Admin API
     /// v1 plugin catalog — reporting which compiled-in/external auth modules are ACTIVE (in the
     /// chain). Never a secret: a module name is a plugin identifier, not a credential.
-    pub(crate) fn chain_names(&self) -> Vec<&'static str> {
+    pub fn chain_names(&self) -> Vec<&'static str> {
         self.chain.iter().map(|(_, m)| m.name()).collect()
     }
 
     /// Whether the front door is OPEN — an empty auth chain admits every request unconditionally
     /// (the old `none`/`passthrough`). Governance, when enabled, supersedes this.
-    pub(crate) fn is_open(&self) -> bool {
+    pub fn is_open(&self) -> bool {
         self.chain.is_empty()
     }
 
@@ -377,7 +377,7 @@ impl AuthMiddleware {
     /// `Identify` admits with its [`Principal`], a `Reject` denies, and all-`Pass` (no module
     /// matched a presented credential) denies — fail-closed for a configured chain. Constant-time
     /// within each module; the loop order is config order.
-    pub(crate) fn run_chain(&self, candidate: Option<&str>) -> ChainVerdict {
+    pub fn run_chain(&self, candidate: Option<&str>) -> ChainVerdict {
         self.run_chain_cached(candidate, None, None, None)
     }
 
@@ -391,7 +391,7 @@ impl AuthMiddleware {
     /// `Some(uri)` for an audience-bound ingress (which rejects a token whose audience is absent or
     /// different). It is threaded here rather than read from a handler because the check belongs to
     /// the VERIFIER: a route added to an audience-bound plane later inherits it and cannot forget.
-    pub(crate) fn run_chain_cached(
+    pub fn run_chain_cached(
         &self,
         candidate: Option<&str>,
         cache: Option<&crate::auth_cache::CredentialCache>,
@@ -502,7 +502,7 @@ impl AuthMiddleware {
     ///
     /// FAIL-CLOSED at every failure: a panicking plugin (join error) and an offload that cannot be
     /// started are both `Denied`, never an admit.
-    pub(crate) async fn run_chain_on_request_path(
+    pub async fn run_chain_on_request_path(
         auth: &std::sync::Arc<AuthMiddleware>,
         cache: &std::sync::Arc<crate::auth_cache::CredentialCache>,
         candidate: Option<String>,
@@ -602,14 +602,14 @@ impl AuthMiddleware {
     /// Constant-time string comparison — the single timing-safe primitive, now provided by the
     /// `busbar-api` contract crate (plugins compare with the SAME primitive). Kept as an associated
     /// fn so engine call sites are unchanged.
-    pub(crate) fn constant_time_eq(a: &str, b: &str) -> bool {
+    pub fn constant_time_eq(a: &str, b: &str) -> bool {
         busbar_api::constant_time_eq(a, b)
     }
 
     /// Extract the token from an `Authorization: Bearer <token>` header (scheme match is
     /// case-insensitive). Splits on the first space rather than byte-slicing, so a malformed header
     /// with a multibyte character in the scheme position can't panic on a UTF-8 boundary.
-    pub(crate) fn extract_bearer_token(auth_header: &str) -> Option<String> {
+    pub fn extract_bearer_token(auth_header: &str) -> Option<String> {
         let (scheme, token) = auth_header.split_once(' ')?;
         if scheme.eq_ignore_ascii_case(AUTH_SCHEME_BEARER) && !token.is_empty() {
             Some(token.to_string())
@@ -635,7 +635,7 @@ impl AuthMiddleware {
     /// `crate::sigv4`). On a successful verify the same `GovCtx` a bearer auth attaches is attached,
     /// so a SigV4-signing ingress now receives full virtual-key governance under `token`/governance
     /// mode — it no longer requires `passthrough`. This token path itself is unchanged.
-    pub(crate) fn extract_client_token(req: &Request<Body>) -> Option<String> {
+    pub fn extract_client_token(req: &Request<Body>) -> Option<String> {
         let header_str = |name: &str| {
             req.headers()
                 .get(name)
@@ -667,7 +667,7 @@ impl AuthMiddleware {
     // Thin admit/deny view over `run_chain` — kept for tests and callers that don't need the
     // principal. The middleware itself calls `run_chain` (it attaches the principal).
     #[allow(dead_code)]
-    pub(crate) fn validate_token(&self, token: Option<&str>) -> bool {
+    pub fn validate_token(&self, token: Option<&str>) -> bool {
         !matches!(self.run_chain(token), ChainVerdict::Denied)
     }
 }
@@ -839,7 +839,7 @@ fn extract_admin_header_token(req: &Request<Body>) -> Option<String> {
 /// Request-extension carrier for the authenticated [`Principal`]. Relocated to `busbar-api` in
 /// Phase-B B0-a (beside [`Principal`]) so an extracted plane crate names it without a path back to
 /// core; re-exported here so every in-core call site (`crate::auth::AuthPrincipal`) is unchanged.
-/// Its `actor_id()` accessor and tuple field were promoted from `pub(crate)` to `pub` in the move —
+/// Its `actor_id()` accessor and tuple field were promoted from `pub` to `pub` in the move —
 /// the type is now cross-crate, but it still never carries the credential.
 pub use busbar_api::AuthPrincipal;
 
@@ -897,7 +897,7 @@ fn run_admin_chain(
     app: &crate::state::App,
     bearer: Option<&str>,
     header: Option<&str>,
-) -> (ChainVerdict, Option<crate::admin::v1::contract::Scope>) {
+) -> (ChainVerdict, Option<busbar_contract::authz::Scope>) {
     if app.admin_chain.is_empty() {
         return (ChainVerdict::Open, None);
     }
@@ -951,7 +951,7 @@ fn run_admin_chain(
             // NON-full principals (unreachable with admin-tokens alone). Credential grammar:
             // `grp:<group>` identifies as a principal carrying exactly that group. Compiled out
             // of release binaries entirely.
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             "test-scope-module" => match bearer.or(header).and_then(|t| t.strip_prefix("grp:")) {
                 Some(group) => {
                     let mut p = Principal::from_id(format!("test:{group}"));
@@ -1019,7 +1019,7 @@ async fn run_admin_chain_maybe_offloaded(
     app: &std::sync::Arc<crate::state::App>,
     bearer: Option<String>,
     header: Option<String>,
-) -> (ChainVerdict, Option<crate::admin::v1::contract::Scope>) {
+) -> (ChainVerdict, Option<busbar_contract::authz::Scope>) {
     if !app.admin_modules.has_plugin {
         // No blocking admin plugin: run inline (admin-tokens + any compiled-in test stand-in).
         return run_admin_chain(app, bearer.as_deref(), header.as_deref());
@@ -1100,8 +1100,8 @@ async fn run_admin_chain_maybe_offloaded(
 fn module_admin_scope_cap(
     app: &crate::state::App,
     module: &str,
-) -> Option<crate::admin::v1::contract::Scope> {
-    use crate::admin::v1::contract::Scope;
+) -> Option<busbar_contract::authz::Scope> {
+    use busbar_contract::authz::Scope;
     if module == "admin-tokens" {
         return None;
     }
@@ -1119,11 +1119,11 @@ fn module_admin_scope_cap(
 /// anything. Empty `Grants` = denied / no grant. `PUT /api/v1/admin/auth` runs the CALLER through
 /// the CANDIDATE chain with this before committing — a chain that would lock the caller out is
 /// rejected instead of applied (restart remains the backstop).
-pub(crate) fn dry_run_admin_scope(
+pub fn dry_run_admin_scope(
     app: &crate::state::App,
     bearer: Option<&str>,
     header: Option<&str>,
-) -> crate::admin::v1::contract::Grants {
+) -> busbar_contract::authz::Grants {
     // An EMPTY admin chain is the anonymous, full-authority OPEN posture — a property of the CHAIN,
     // not a grant THIS caller earned. Letting it fall through (`run_admin_chain` → `Open` → the
     // `None`-principal arm of `admin_scope_for`) would report `Grants::of(Full)`, INDISTINGUISHABLE
@@ -1139,7 +1139,7 @@ pub(crate) fn dry_run_admin_scope(
              full-authority) dev posture earns THIS caller no credential-based scope and is \
              reported as no-grant, never full"
         );
-        return crate::admin::v1::contract::Grants::default();
+        return busbar_contract::authz::Grants::default();
     }
     let (verdict, cap) = run_admin_chain(app, bearer, header);
     let (module, principal) = match verdict {
@@ -1149,8 +1149,8 @@ pub(crate) fn dry_run_admin_scope(
         // Unreachable given the empty-chain early return above (an empty chain is `run_admin_chain`'s
         // ONLY producer of `Open`), but were it ever reached it is the open posture — no earned
         // grant, never Full, so it can never mask a fail-open here.
-        ChainVerdict::Open => return crate::admin::v1::contract::Grants::default(),
-        ChainVerdict::Denied => return crate::admin::v1::contract::Grants::default(),
+        ChainVerdict::Open => return busbar_contract::authz::Grants::default(),
+        ChainVerdict::Denied => return busbar_contract::authz::Grants::default(),
     };
     let grants = admin_scope_for(module.as_deref(), principal.as_ref(), &app.role_bindings);
     match cap {
@@ -1172,8 +1172,8 @@ fn admin_scope_for(
     module: Option<&str>,
     principal: Option<&Principal>,
     role_bindings: &crate::config::RoleBindings,
-) -> crate::admin::v1::contract::Grants {
-    use crate::admin::v1::contract::{Grants, Scope};
+) -> busbar_contract::authz::Grants {
+    use busbar_contract::authz::{Grants, Scope};
     let Some(p) = principal else {
         return Grants::of(Scope::Full);
     };
@@ -1228,7 +1228,7 @@ fn admin_unauthorized_response() -> Response {
         .expect("static unauthorized response")
 }
 
-fn forbidden_response(needed: crate::admin::v1::contract::Scope) -> Response {
+fn forbidden_response(needed: busbar_contract::authz::Scope) -> Response {
     let body = serde_json::json!({
         "error": {
             "code": "forbidden",
@@ -1257,7 +1257,7 @@ fn rate_limited_response() -> Response {
     Response::builder()
         .header(
             axum::http::header::RETRY_AFTER,
-            crate::admin::rate::MUTATION_RATE_WINDOW_SECS.to_string(),
+            crate::ratelimit::MUTATION_RATE_WINDOW_SECS.to_string(),
         )
         .status(StatusCode::TOO_MANY_REQUESTS)
         .header(axum::http::header::CONTENT_TYPE, "application/json")
@@ -1469,17 +1469,17 @@ pub(crate) async fn auth_middleware(
                 .as_ref()
                 .map(|p| p.id.as_str())
                 .unwrap_or("anonymous");
-            if let crate::admin::rate::RateCheck::Denied {
+            if let crate::ratelimit::RateCheck::Denied {
                 first_in_window: true,
             } = app.mutation_limiter.check(
                 actor,
-                crate::admin::rate::MutationClass::Forbidden,
+                crate::ratelimit::MutationClass::Forbidden,
                 busbar_substrate::store::now(),
             ) {
-                crate::admin::audit::AUDIT.record_by(
+                crate::audit_ring::AUDIT.record_by(
                     "admin.forbidden",
                     &path,
-                    crate::admin::audit::OUTCOME_REJECTED,
+                    crate::audit_ring::OUTCOME_REJECTED,
                     actor,
                 );
             } else {
@@ -1502,18 +1502,18 @@ pub(crate) async fn auth_middleware(
             // admin auth chain itself. Everything else that mutates (hooks, keys, cache flush) is
             // the CRUD class (60/min). Matched RELATIVE to the one contract prefix so this gate
             // can never drift from the mount grammar. Classification itself lives in
-            // `admin::rate::classify_mutation`, driven by a const table rather than an inline
+            // `ratelimit::classify_mutation`, driven by a const table rather than an inline
             // predicate, so it can be enumerated and cross-checked against
             // `docs/admin-api.md`'s rate-limit table (see that table's doc comment).
             let rel = path
                 .strip_prefix(crate::admin::v1::contract::ADMIN_PREFIX)
                 .unwrap_or(&path);
-            let class = crate::admin::rate::classify_mutation(rel);
+            let class = crate::ratelimit::classify_mutation(rel);
             let actor = principal
                 .as_ref()
                 .map(|p| p.id.as_str())
                 .unwrap_or("anonymous");
-            if let crate::admin::rate::RateCheck::Denied { first_in_window } = app
+            if let crate::ratelimit::RateCheck::Denied { first_in_window } = app
                 .mutation_limiter
                 .check(actor, class, busbar_substrate::store::now())
             {
@@ -1522,10 +1522,10 @@ pub(crate) async fn auth_middleware(
                 // attempt would let a client that ignores its 429s drive unbounded blocking work
                 // through the limiter whose entire purpose is to stop doing work.
                 if first_in_window {
-                    crate::admin::audit::AUDIT.record_by(
+                    crate::audit_ring::AUDIT.record_by(
                         "admin.rate_limited",
                         &format!("{}:{path}", class.label()),
-                        crate::admin::audit::OUTCOME_REJECTED,
+                        crate::audit_ring::OUTCOME_REJECTED,
                         actor,
                     );
                 }
@@ -1781,7 +1781,7 @@ pub use busbar_api::IdentityRefusal;
 ///   (`key: None`), exactly as the old static/inert path did
 ///   (`test_chain_accepts_all_carriers_and_native_401`); a plain vkey (`resolved: Some`) or a
 ///   ROLELESS principal never trips the guard.
-pub(crate) fn resolve_data_plane_identity(
+pub fn resolve_data_plane_identity(
     app: &crate::state::App,
     verdict: ChainVerdict,
 ) -> Result<(AuthPrincipal, crate::governance::GovCtx), IdentityRefusal> {
@@ -2049,7 +2049,7 @@ impl AuthMiddleware {
     /// `chain` entries are `(provider NAME, module)`: the name is the `identity-providers:` key that
     /// chain position referenced, and is what a successful `Identify` reports as
     /// [`ChainVerdict::Identified::module`].
-    pub(crate) fn from_chain_for_test(
+    pub fn from_chain_for_test(
         chain: Vec<(String, Box<dyn AuthModule>)>,
         has_plugin_module: bool,
     ) -> Self {
@@ -2074,17 +2074,17 @@ pub use busbar_substrate::auth::challenge;
 
 /// The self-serve key SEAM (1.5.2 token-exchange): `SelfServeKeys` trait + the deterministic
 /// GovState-backed impl, and the verdict→mint decision the `POST /auth/token` handler drives.
-pub(crate) mod self_keys;
+pub mod self_keys;
 
 /// The `POST /auth/token` data-plane exchange handler (identity from the verified chain, mint via
 /// the [`self_keys`] seam).
-pub(crate) mod exchange;
+pub mod exchange;
 
 /// The `GET /auth/token` hosted browser-login page (1.5.2): the chooser / begin / callback
 /// sub-states, PKCE + state + nonce, the core-executed token-exchange hop (client_secret injected by
 /// the CORE only), and the render of the key-issued page — all issuing through the SAME [`self_keys`]
 /// seam as the headless `POST`.
-pub(crate) mod token;
+pub mod token;
 
 #[cfg(test)]
 #[path = "tests/tests.rs"]

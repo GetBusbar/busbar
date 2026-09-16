@@ -29,6 +29,10 @@ busbar-plugin = { path = "../busbar-plugin" }
 # (`busbar_contract::upstream`), which this crate's breaker taxonomy used to declare a second copy
 # of. Std-only closure (contract-transport: serde, futures) -- opens nothing.
 busbar-contract = { path = "../busbar-contract" }
+# THE `Transport`/`UpstreamWireKind` wire-selection axis, relocated here in 1.6.0 (the non-core
+# transport hand-over). A leaf crate — serde + futures only, opens nothing — so this edge adds no
+# new closure. `transport.rs` re-exports the axis at its historical path.
+busbar-contract-transport = { path = "../busbar-contract-transport" }
 # The bare HTTP vocabulary (`HeaderMap`/`HeaderName`/`HeaderValue`/`StatusCode`) the protocol
 # declarations, the breaker's `Retry-After` parse and the wire types name. These are the SAME types
 # `axum::http::…` resolves to — axum re-exports this crate — so the move off the `axum::` spelling
@@ -74,13 +78,13 @@ tracing-subscriber = { workspace = true, optional = true }
 tracing-subscriber = { workspace = true }
 
 [features]
-# The two NEUTRAL capability features the parent crate gates its plane-consumed items on. Both are
-# empty here — they gate `#[cfg]` sites in `transport` only — and must stay DECLARED or
-# `unexpected_cfgs` fires under `-D warnings`. `busbar-substrate` forwards its own same-named
-# features to these so the gated surface arms in lock-step, exactly as before the split.
-dispatch = []
+# The two NEUTRAL capability features the parent crate gates its plane-consumed items on. They gate
+# `#[cfg]` sites in `transport` — RELOCATED to `busbar-contract-transport` in 1.6.0, so `dispatch` and
+# `runtime` forward to that crate's same-named features to keep the gated surface arming in
+# lock-step. `busbar-substrate` forwards its own same-named features to these in turn.
+dispatch = ["busbar-contract-transport/dispatch"]
 relay = []
-runtime = []
+runtime = ["busbar-contract-transport/runtime"]
 # Reveals the test-only protocol-registry seeding (`proto::register_test_protocol`) and the
 # `testkit::warn_capture` layer to a DEPENDENT crate's test binary, mirroring the parent crate's own
 # `test-support`, which forwards to this one.

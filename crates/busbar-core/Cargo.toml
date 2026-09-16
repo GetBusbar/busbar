@@ -31,6 +31,12 @@ busbar-api = { path = "../api" }
 # and the capped upstream-body read) DOWN into this crate; core re-exports each unchanged so the
 # in-core call sites keep naming `crate::…`. Substrate never depends back on core.
 busbar-substrate = { path = "../busbar-substrate" }
+# The plugin-visible contract. Core names it directly for the GENERIC authorization lattice
+# (`busbar_contract::authz::{Scope, Grants}`) — the admin-worded ceiling/error/path vocabulary
+# stays on the admin surface; only the neutral scope model lives here, so a non-admin core
+# consumer (router, the chain-verification module, config, config_validate) never has to name
+# "admin" to check a scope.
+busbar-contract = { path = "../busbar-contract" }
 # Inline-capacity vectors for the per-request lane-selection working set (`proxy::select`): a
 # typical pool has a handful of members, so the candidate view, the SWRR scratch and the tried-set
 # live on the stack instead of costing three heap allocations per pick. Workspace-pinned.

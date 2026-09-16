@@ -11,12 +11,12 @@ use crate::diagnostics::{
 /// tombstone committed but the full cache reconcile did not. A stable, greppable marker so an
 /// operator (and the admin surface, and the tests) can tell "the revocation IS durable, only the
 /// cache reconcile is behind" apart from a plain failure that means nothing happened.
-pub(crate) const REVOCATION_DURABLE_MARKER: &str = "REVOCATION APPLIED (cache reconcile degraded)";
+pub const REVOCATION_DURABLE_MARKER: &str = "REVOCATION APPLIED (cache reconcile degraded)";
 
 /// The [`GovState::rotate_key`] twin of [`REVOCATION_DURABLE_MARKER`]: the store IS rotated (the
 /// previous credential is dead) but the newly-minted secret could not be returned, so the correct
 /// operator response is RE-ROTATE, not "retry, nothing happened".
-pub(crate) const ROTATION_DURABLE_MARKER: &str = "ROTATION APPLIED (new secret not returned)";
+pub const ROTATION_DURABLE_MARKER: &str = "ROTATION APPLIED (new secret not returned)";
 
 impl GovState {
     /// Production never constructs a `GovState` this way -- `appbuild` always resolves a signer and
@@ -94,7 +94,7 @@ impl GovState {
     }
 
     /// Whether signed-token minting is available (a signing key was resolved at boot).
-    pub(crate) fn signing_enabled(&self) -> bool {
+    pub fn signing_enabled(&self) -> bool {
         self.signing_material().is_some()
     }
 
@@ -161,7 +161,7 @@ impl GovState {
     /// Resolve a policy binding by its subject id (the key id / token `sub`). O(1) index read — the
     /// `by_id` index (keyed by id, since 1.5.0 has exactly one credential shape for bearer keys and
     /// there is no longer a separate hashed-secret index to derive it from).
-    pub(crate) fn lookup_by_sub(&self, sub: &str) -> Option<Arc<VirtualKey>> {
+    pub fn lookup_by_sub(&self, sub: &str) -> Option<Arc<VirtualKey>> {
         self.caches_read().by_id.get(sub).cloned()
     }
 
@@ -245,7 +245,7 @@ impl GovState {
 
     /// [`GovState::is_revoked`] against an explicit clock — the staleness guard needs a `now`, and
     /// the tests need it deterministic. Production callers use `is_revoked`.
-    pub(crate) fn is_revoked_at(&self, sub: &str, now: u64) -> bool {
+    pub fn is_revoked_at(&self, sub: &str, now: u64) -> bool {
         self.sync_revocations_if_stale(now);
         self.denylist.contains(sub)
     }
@@ -310,7 +310,7 @@ impl GovState {
     /// MinIO/S3-compatible model). Persists the binding + AWS credential atomically and issues the
     /// signed token. Returns `(binding, token, aws_access_key_id, aws_secret_access_key)` - the
     /// token and the AWS secret are shown ONCE. See `mint_signed` for the binding shape.
-    pub(crate) fn mint_signed_with_aws(
+    pub fn mint_signed_with_aws(
         &self,
         spec: NewKeySpec,
         exp: u64,
@@ -376,7 +376,7 @@ impl GovState {
     }
 
     /// The signing key id (`kid`) this node stamps into minted tokens, if signing is enabled.
-    pub(crate) fn signing_kid(&self) -> Option<String> {
+    pub fn signing_kid(&self) -> Option<String> {
         self.signing_material().map(|m| m.signer.kid().to_string())
     }
 
@@ -395,7 +395,7 @@ impl GovState {
     /// second place the signing key lives that a rotation has to remember to invalidate, and
     /// `set_signing_key` swapping the material underneath a stale card signer is exactly the
     /// mint-under-one-key-verify-under-another failure the material is held together to prevent.
-    pub(crate) fn card_issuer(&self) -> Option<crate::plane::registry::CardIssuer> {
+    pub fn card_issuer(&self) -> Option<crate::plane::registry::CardIssuer> {
         let decl = crate::plane::registry::plane_decl_for_config_section("agents")?;
         let domain = decl.card_signing_domain?;
         let prefix = decl.card_kid_prefix?;
@@ -416,7 +416,7 @@ impl GovState {
     // domain wires; with no such plane installed this has no caller. Unconditional allow — the neutral
     // host names no plane feature; the card-signing domain is resolved from the registry.
     #[allow(dead_code)]
-    pub(crate) fn card_sign(&self, signing_input: &[u8]) -> Option<[u8; 64]> {
+    pub fn card_sign(&self, signing_input: &[u8]) -> Option<[u8; 64]> {
         let domain =
             crate::plane::registry::plane_decl_for_config_section("agents")?.card_signing_domain?;
         let m = self.signing_material()?;
@@ -440,7 +440,7 @@ impl GovState {
     // plane seals caller-facing state; with no such plane installed it has no caller. Unconditional
     // allow — the neutral seam names no plane feature.
     #[allow(dead_code)]
-    pub(crate) fn signing_secret(&self) -> Option<[u8; 32]> {
+    pub fn signing_secret(&self) -> Option<[u8; 32]> {
         self.signing_material().map(|m| m.signer.secret_bytes())
     }
 
@@ -602,7 +602,7 @@ impl GovState {
     /// is REUSED verbatim (same id + generation) and only a fresh-`exp` token is re-minted over it —
     /// so N logins produce exactly ONE binding row. Otherwise a fresh binding is minted at epoch 0.
     /// `exp` is the token expiry (Unix secs); `now` the mint time.
-    pub(crate) fn issue_self(
+    pub fn issue_self(
         &self,
         user_sub: &str,
         allowed_pools: Option<Vec<String>>,
@@ -668,7 +668,7 @@ impl GovState {
     /// TOMBSTONE the prior one. The prior id no longer re-derives and its binding is disabled, so
     /// every token minted before the refresh stops verifying (`verify_token` → `None`) — the
     /// existing generation gate, reached through a normal delete. Returns the new (binding, token).
-    pub(crate) fn refresh_self(
+    pub fn refresh_self(
         &self,
         user_sub: &str,
         allowed_pools: Option<Vec<String>>,
@@ -900,7 +900,7 @@ impl GovState {
     /// so a test asserts BOTH that the cell count stays capped AND that the summed totals still equal
     /// everything accrued (coalescing moves counts, it never loses them).
     #[cfg(test)]
-    pub(crate) fn pending_metering_totals(&self) -> (usize, MeterCounts) {
+    pub fn pending_metering_totals(&self) -> (usize, MeterCounts) {
         self.pending_metering.totals()
     }
 
@@ -1091,7 +1091,7 @@ impl GovState {
     /// rotating the underlying secret and reloading actually changes the accepted credential — the
     /// digest used to be frozen at construction and `GovState` is reused across applies, so it never
     /// did. Only the digest is retained; the plaintext is dropped here.
-    pub(crate) fn set_admin_token(&self, token: Option<&str>) {
+    pub fn set_admin_token(&self, token: Option<&str>) {
         let hash = token.map(|t| crate::sigv4::sha256_hex(t.as_bytes()));
         *self
             .admin_token_hash
@@ -1104,7 +1104,7 @@ impl GovState {
     /// `auth.signing_key`. Rotating the key invalidates every outstanding token by design — that is
     /// what a signing-key rotation MEANS — and until this existed a reload could not perform one at
     /// all.
-    pub(crate) fn set_signing_key(&self, signer: Option<crate::governance::signing::TokenSigner>) {
+    pub fn set_signing_key(&self, signer: Option<crate::governance::signing::TokenSigner>) {
         let next = signer.map(|s| Arc::new(SigningMaterial::new(s)));
         *self.signing.write().unwrap_or_else(|e| e.into_inner()) = next;
     }
@@ -1247,7 +1247,7 @@ impl GovState {
     /// (rather than let `put_key` overwrite an unrelated key's row). An `id` that is free, or that
     /// already holds the SAME `generation_hash` (an idempotent re-mint of the identical secret), is allowed.
     #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn ensure_id_free_for_hash(&self, id: &str, hash: &str) -> StoreResult<()> {
+    pub fn ensure_id_free_for_hash(&self, id: &str, hash: &str) -> StoreResult<()> {
         if let Some(existing) = self.store.get_key(id)? {
             if existing.generation_hash != hash {
                 return Err(StoreError(format!(
@@ -1346,7 +1346,7 @@ impl GovState {
     /// the amortized sweep exempts a cell that still backs an enforced cap, and nothing ever removed
     /// the ones that stopped backing one. With SSO auto-provisioning creating a group per subject,
     /// that is a monotonic leak that no admin read (`groups_registry.len()` included) can see.
-    pub(crate) fn reclaim_group_cells(&self, group: &str) -> usize {
+    pub fn reclaim_group_cells(&self, group: &str) -> usize {
         let mut dropped = 0usize;
         for mut shard in self.budget.write_all() {
             let before = shard.len();
@@ -1395,7 +1395,7 @@ impl GovState {
     ///
     /// FAIL-CLOSED: rotating a signed-token binding with no signer configured is an error rather
     /// than a silent fallback to the legacy secret.
-    pub(crate) fn rotate_key(&self, id: &str, exp: u64) -> StoreResult<Option<RotatedCredential>> {
+    pub fn rotate_key(&self, id: &str, exp: u64) -> StoreResult<Option<RotatedCredential>> {
         let Some(mut key) = self.store.get_key(id)? else {
             return Ok(None);
         };
@@ -1619,7 +1619,7 @@ impl GovState {
     /// SCRAPE-TIME view of one bucket's per-(model, tier) token counters for its CURRENT window:
     /// the authoritative cell when live, else the durable ledger. Off the hot path (the /metrics
     /// scrape); allocation here is fine.
-    pub(crate) fn bucket_model_tokens(
+    pub fn bucket_model_tokens(
         &self,
         bucket_id: &str,
         budget_period: &str,
@@ -1714,7 +1714,7 @@ impl GovState {
 
     /// TEST-ONLY: the current in-flight count for a group's `concurrent` gauge.
     #[cfg(test)]
-    pub(crate) fn concurrent_in_flight(&self, group: &str) -> i64 {
+    pub fn concurrent_in_flight(&self, group: &str) -> i64 {
         self.concurrent
             .read()
             .unwrap_or_else(|p| p.into_inner())
@@ -2047,7 +2047,7 @@ impl GovState {
     /// OLDER than this request's window is a no-op: that is a window already left behind rather
     /// than one this request reached.
     /// Floored at 0 - a refund can never drive a counter negative.
-    pub(crate) fn refund_request(
+    pub fn refund_request(
         &self,
         cost: &crate::cost::CostModel,
         key: &VirtualKey,
@@ -2246,7 +2246,7 @@ impl GovState {
     /// once, at load/refresh time, is what makes a deleted key's outstanding tokens stop
     /// authenticating: `verify_token` never sees the row at all, rather than seeing it and having
     /// to remember to check `deleted_at` on every lookup.
-    pub(crate) fn load(store: &dyn Store) -> StoreResult<HashMap<String, Arc<VirtualKey>>> {
+    pub fn load(store: &dyn Store) -> StoreResult<HashMap<String, Arc<VirtualKey>>> {
         // Wrap each key in `Arc` at load time so the per-request `lookup_by_sub` on the hot path is
         // a refcount bump, not a deep clone; the values are immutable until the next `refresh` swap.
         Ok(store
@@ -2264,7 +2264,7 @@ impl GovState {
     /// (`CredentialMeta::is_live`, checking `revoked_at`/`expires_at`), is SKIPPED — it can never
     /// authenticate, so it has no business occupying a cache slot. `(kind, public_id)` is
     /// `UNIQUE` at the store layer, so entries are unique.
-    pub(crate) fn load_by_credential(
+    pub fn load_by_credential(
         store: &dyn Store,
         by_id: &HashMap<String, Arc<VirtualKey>>,
         now: u64,
@@ -2291,7 +2291,7 @@ impl GovState {
     /// unknown pair — the verify path is written so an unknown identifier and a bad signature reject
     /// indistinguishably (no enumeration oracle): on the `None` branch the caller still runs a
     /// constant-time signature comparison against a dummy secret before rejecting.
-    pub(crate) fn lookup_credential(
+    pub fn lookup_credential(
         &self,
         kind: &str,
         public_id: &str,
@@ -2313,10 +2313,10 @@ impl GovState {
     /// snapshot so the two indices can never drift (a key disabled/deleted/re-minted, or a
     /// credential revoked/rotated, is reflected in both).
     ///
-    /// `pub(crate)`: every caller is inside this crate -- `revoke`/`create_key`/`update_key`/
+    /// `pub`: every caller is inside this crate -- `revoke`/`create_key`/`update_key`/
     /// `delete_key`/`rotate_key` below, and this crate's own tests. Nothing outside busbar-core
     /// names it, so the cache-reload door is not part of the engine's public surface.
-    pub(crate) fn refresh(&self) -> StoreResult<()> {
+    pub fn refresh(&self) -> StoreResult<()> {
         // Serialize the whole load→swap so a slow refresh can't clobber a newer one's cache with
         // strictly-older store state (lost-update guard; see `refresh_lock`). A later refresh's
         // `load` cannot begin until an earlier refresh has swapped, so its snapshot is never older.

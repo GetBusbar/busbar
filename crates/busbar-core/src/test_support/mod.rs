@@ -775,6 +775,34 @@ type PlaneContainerHooks =
 /// (`&dyn EngineHost`) or [`busbar_substrate::testkit::BuiltAppSeam`) instead.
 pub type BuiltApp = crate::state::App;
 
+/// The MCP plane's default-test-runtime factory, registered by an EXTERNAL `test-support` consumer
+/// (a crate whose test binary registered the MCP plane, e.g. `busbar-admin`). busbar-core's OWN
+/// `cfg(test)` binary uses the `tests/`-path helper directly and never touches this slot.
+#[cfg(all(not(test), feature = "test-support"))]
+static MCP_TEST_RUNTIME_FACTORY: std::sync::OnceLock<
+    fn() -> std::sync::Arc<dyn std::any::Any + Send + Sync>,
+> = std::sync::OnceLock::new();
+
+/// Register the MCP plane's default-test-runtime factory (first-wins). A `test-support` consumer that
+/// registers the MCP plane in the process registry MUST also call this so every `TestApp` seeds the
+/// plane's always-present runtime slot — the analogue of busbar-core's own `cfg(test)` seeding.
+#[cfg(all(not(test), feature = "test-support"))]
+pub fn install_test_mcp_runtime_factory(
+    factory: fn() -> std::sync::Arc<dyn std::any::Any + Send + Sync>,
+) {
+    let _ = MCP_TEST_RUNTIME_FACTORY.set(factory);
+}
+
+/// The MCP default runtime for the current build surface, if available.
+#[cfg(test)]
+fn default_test_mcp_runtime() -> Option<std::sync::Arc<dyn std::any::Any + Send + Sync>> {
+    Some(crate::plane::registry::default_mcp_test_runtime())
+}
+#[cfg(all(not(test), feature = "test-support"))]
+fn default_test_mcp_runtime() -> Option<std::sync::Arc<dyn std::any::Any + Send + Sync>> {
+    MCP_TEST_RUNTIME_FACTORY.get().map(|f| f())
+}
+
 #[allow(dead_code)]
 pub struct TestApp {
     lanes: Vec<LaneSpec>,
@@ -796,15 +824,18 @@ pub struct TestApp {
     login_methods: Option<crate::auth::token::LoginMethods>,
     /// busbar's public base origin (`public_url:`) for the built App.
     public_url: Option<String>,
-    /// The built authorization server (`oauth_as:`). `None` (the default) = this deployment is not
-    /// one, which is what every pre-existing test expects and what the gating proof in
-    /// `oauth_as::tests::mount_tests` asserts costs nothing.
-    oauth_as: Option<std::sync::Arc<crate::oauth_as::plane::AsPlane>>,
+    /// The built authorization server (`oauth_as:`), type-erased. `None` (the default) = this
+    /// deployment is not one, which is what every pre-existing test expects and what the gating
+    /// proof in `busbar-oauth2`'s `tests::mount_tests` asserts costs nothing. Set through
+    /// [`Self::oauth_as_plane`] — busbar-core itself never builds the concrete `AsPlane` (that type
+    /// now lives one-way-dependent in `busbar-oauth2`); `busbar-oauth2`'s own `TestAppOauthExt`
+    /// extension trait builds one and hands it in here type-erased.
+    oauth_as: Option<std::sync::Arc<dyn std::any::Any + Send + Sync>>,
     mcp_durable_store: Option<std::sync::Arc<dyn busbar_api::Store>>,
     role_bindings: Option<crate::config::RoleBindings>,
     /// The resolved token-mint policy (`auth.policy:`) for the built App. `None` (default) = the empty
     /// policy (no caps). Set by tests that exercise `MintPolicy` enforcement at the mint site.
-    mint_policy: Option<crate::admin::MintPolicy>,
+    mint_policy: Option<crate::governance::mint_policy::MintPolicy>,
     governance: Option<std::sync::Arc<crate::governance::GovState>>,
     cost: Option<std::sync::Arc<crate::cost::CostModel>>,
     failover_cfg: Option<crate::config::FailoverCfg>,
@@ -1270,21 +1301,16 @@ impl TestApp {
         self
     }
 
-    /// Make the built App an OAuth 2.1 AUTHORIZATION SERVER, from the same `oauth_as:` config shape
-    /// an operator writes.
+    /// Install a pre-built authorization-server plane object, type-erased.
     ///
-    /// Takes the CONFIG and runs the real `AsIdentity::from_cfg` validation and the real
-    /// `AsPlane::build`, for the same reason [`TestApp::mcp`] does: a test that hand-assembled the
-    /// plane could mount a combination boot refuses, and would then be asserting against a
-    /// deployment that cannot exist. The signing key is left unset, so the plane generates the
-    /// ephemeral one — the tests that use this builder assert about the MOUNTED SURFACE, and the
-    /// surface does not depend on which key signs.
-    pub fn oauth_as(mut self, cfg: &crate::oauth_as::config::OauthAsCfg) -> Self {
-        let identity = crate::oauth_as::config::AsIdentity::from_cfg(cfg)
-            .expect("test oauth_as config must be valid");
-        let plane = crate::oauth_as::plane::AsPlane::build(identity, None, Vec::new())
-            .expect("test oauth_as plane must build");
-        self.oauth_as = Some(std::sync::Arc::new(plane));
+    /// The convenience `.oauth_as(cfg)` builder that used to live here (running the real
+    /// `AsIdentity::from_cfg` + `AsPlane::build`, for the same reason [`TestApp::mcp`] takes a
+    /// config rather than a hand-assembled resource) moved to `busbar-oauth2`'s own
+    /// `testkit::TestAppOauthExt` extension trait, because `AsPlane` lives there now and
+    /// busbar-core cannot name it. This is the seam that extension builds against: it constructs
+    /// the real plane, then calls this to hand it in.
+    pub fn oauth_as_plane(mut self, plane: std::sync::Arc<dyn std::any::Any + Send + Sync>) -> Self {
+        self.oauth_as = Some(plane);
         self
     }
 
@@ -1377,7 +1403,7 @@ impl TestApp {
     /// exercise the group re-key (an IdP/test principal whose role binds a group grant).
     /// Set the resolved token-mint policy (`auth.policy:`) on the built `App` (default: empty, no
     /// caps). Used by tests exercising `MintPolicy::check_mint` enforcement at `POST /keys`.
-    pub fn mint_policy(mut self, policy: crate::admin::MintPolicy) -> Self {
+    pub fn mint_policy(mut self, policy: crate::governance::mint_policy::MintPolicy) -> Self {
         self.mint_policy = Some(policy);
         self
     }
@@ -1571,13 +1597,20 @@ impl TestApp {
         // registry (a built-in under `cfg(test)`), never spelled as a literal, and its default runtime
         // factory is reached through the `tests/`-file helper (which alone names `busbar_mcp`), so this
         // neutral source names no MCP token nor a plane symbol.
-        #[cfg(test)]
+        // Seed the MCP plane's always-present default runtime for every `TestApp`. In THIS crate's
+        // own `cfg(test)` binary the factory comes from the `tests/`-path helper; an EXTERNAL
+        // `test-support` consumer that registered the MCP plane (e.g. `busbar-admin`'s test binary)
+        // supplies the factory through [`install_test_mcp_runtime_factory`] instead — same slot, same
+        // object, so admin mutations that walk the plane runtimes do not fault under either surface.
+        #[cfg(any(test, feature = "test-support"))]
         if let Some(decl) = crate::plane::registry::plane_decl_for_config_section(
             busbar_substrate::plane::config::NAMED_MAP_SECTIONS[2],
         ) {
-            plane_slots
-                .entry(crate::state::runtime_slot_key(decl.key))
-                .or_insert_with(crate::plane::registry::default_mcp_test_runtime);
+            if let Some(rt) = default_test_mcp_runtime() {
+                plane_slots
+                    .entry(crate::state::runtime_slot_key(decl.key))
+                    .or_insert(rt);
+            }
         }
         // THE NEUTRAL DISPATCH TABLE, described by each plane's test-kit through the `mount_plane` /
         // `admit_plane` seams (neutral `&str` paths + substrate `PlaneAdmission`), so a router-walking
@@ -1874,7 +1907,7 @@ impl TestApp {
             identity_providers: self.identity_providers,
             export_defs: self.export_defs,
             versions: std::sync::Arc::new(crate::admin::versions::VersionLog::new()),
-            mutation_limiter: std::sync::Arc::new(crate::admin::rate::MutationLimiter::new()),
+            mutation_limiter: std::sync::Arc::new(crate::ratelimit::MutationLimiter::new()),
             idempotency_cache: std::sync::Arc::new(std::sync::Mutex::new(
                 std::collections::HashMap::new(),
             )),
@@ -1939,7 +1972,7 @@ impl TestApp {
                 .plugins_dir
                 .unwrap_or_else(|| std::path::PathBuf::from("plugins")),
             plugins_cfg: self.plugins_cfg.unwrap_or_default(),
-            self_key_ttl_secs: crate::admin::DEFAULT_KEY_TTL_SECS,
+            self_key_ttl_secs: crate::governance::mint_policy::DEFAULT_KEY_TTL_SECS,
             mint_policy: std::sync::Arc::new(self.mint_policy.unwrap_or_default()),
             request_id_counter: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(
                 crate::state::seed_request_id_counter(),

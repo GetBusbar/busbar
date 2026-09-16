@@ -281,6 +281,7 @@ pub const PLANE_DECL: busbar_substrate::plane::registry::PlaneDecl =
         // `CORE_OWNED_CONCRETE_SECTIONS` (providers/models/pools/rate_card/limits), so the dup-claim
         // guard admits this claim; a second claimant of `streams` is refused by construction.
         owned_config_sections: &["streams"],
+        resolve_provider: None,
     };
 
 /// THE VOICE PLANE'S PROTOCOL DECLARATION — a `ProtocolDecl` with `codec: None`, re-exported at the

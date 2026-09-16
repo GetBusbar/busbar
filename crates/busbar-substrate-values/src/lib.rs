@@ -36,34 +36,15 @@ pub mod lossless;
 pub mod media;
 pub mod sigv4;
 
-/// The three WIRE-FORMAT NAMES the transport axis and the plane declaration share. The CUT: the rest
-/// of `plane` is the declaration/registry surface, which names the host seams and the route mount and
-/// therefore stays with them in `busbar-substrate` — but [`transport::Transport::name`] reads these
-/// three constants (that is the whole point of them: one spelling for the metric label, the plane's
-/// wire-format list and the served card's `protocolBinding`), so they crossed with the axis.
+/// The three WIRE-FORMAT NAMES the transport axis and the plane declaration share. RELOCATED to
+/// `busbar-contract-transport` (1.6.0 non-core transport hand-over) alongside [`transport::Transport`]
+/// — [`transport::Transport::name`] reads these three constants (that is the whole point of them:
+/// one spelling for the metric label, the plane's wire-format list and the served card's
+/// `protocolBinding`), so they crossed with the axis. The rest of `plane` (the declaration/registry
+/// surface, which names the host seams and the route mount) stays in `busbar-substrate`.
 /// `busbar-substrate`'s own `plane` re-exports all three, so `busbar_substrate::plane::WIRE_JSONRPC`
 /// and its siblings resolve unchanged.
-pub mod plane {
-    /// THE WIRE FORMAT both mounted planes speak: JSON-RPC 2.0. Named once, here, because it is read
-    /// twice as a `wire_format_names` entry and once more by the error-shaping boundary, which
-    /// decides that a refusal on a mounted plane is a JSON-RPC error object rather than a vendor
-    /// envelope. A literal spelled per site is how those two answers start to differ.
-    pub const WIRE_JSONRPC: &str = "jsonrpc";
-
-    /// THE SECOND WIRE FORMAT THE A2A PLANE SPEAKS: A2A's HTTP+JSON binding, where the REQUEST LINE
-    /// names the operation rather than a body member. Named once, here, because it is read three ways
-    /// and all three must agree — as a `wire_format_names` entry, as the
-    /// `busbar_core::transport::Transport::HttpJson` label, and (upper-cased by
-    /// `a2a::serve::servable_bindings`) as the `protocolBinding` a served agent card advertises. The
-    /// card spelling is `HTTP+JSON`, so this is that string lower-cased and nothing else.
-    pub const WIRE_HTTP_JSON: &str = "http+json";
-
-    /// The A2A specification's gRPC binding, as a wire-format name. Lower-case here and upper-cased
-    /// once, by `busbar_core::a2a::serve::servable_bindings`, into the `GRPC` an agent card advertises
-    /// — so the card cannot claim a binding the plane does not list, which is the whole reason that
-    /// function reads this list rather than writing one of its own.
-    pub const WIRE_GRPC: &str = "grpc";
-}
+pub use busbar_contract_transport::transport::plane;
 
 // The value families the money path is written in.
 pub mod billing;

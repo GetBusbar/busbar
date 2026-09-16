@@ -20,21 +20,21 @@ use std::collections::HashMap;
 /// transports, grants, deadlines).
 #[derive(Clone, Serialize)]
 #[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
-pub(crate) struct ConfigVersion {
+pub struct ConfigVersion {
     /// The `App.config_version` this snapshot corresponds to (monotonic per process).
-    pub(crate) version: u64,
+    pub version: u64,
     /// Unix seconds when the mutation committed.
-    pub(crate) ts: u64,
+    pub ts: u64,
     /// The acting principal (audit attribution, same handle as the audit log).
-    pub(crate) principal: String,
+    pub principal: String,
     /// Human summary of the mutation that produced this version (e.g. `hook.register hook:x`).
-    pub(crate) summary: String,
+    pub summary: String,
     /// The hook registry at this version (the rollback payload).
     #[serde(skip)]
-    pub(crate) hook_registry: HashMap<String, crate::config::HookCfg>,
+    pub hook_registry: HashMap<String, crate::config::HookCfg>,
     /// The global wiring at this version.
     #[serde(skip)]
-    pub(crate) global_hooks: Vec<String>,
+    pub global_hooks: Vec<String>,
 }
 
 /// Bounded version history (`max_config_versions` — the spec default 100): FIFO prune of the
@@ -82,13 +82,13 @@ impl VersionLog {
     /// A page of version metadata, most-recent-first (the LIST projection — snapshots omitted): skip
     /// `offset`, then take `limit`. The transport fetches `limit + 1` to detect a further page for the
     /// cursor envelope.
-    pub(crate) fn list(&self, offset: usize, limit: usize) -> Vec<ConfigVersion> {
+    pub fn list(&self, offset: usize, limit: usize) -> Vec<ConfigVersion> {
         let q = self.entries.lock().unwrap_or_else(|e| e.into_inner());
         q.iter().rev().skip(offset).take(limit).cloned().collect()
     }
 
     /// One full version (with its snapshot), if retained.
-    pub(crate) fn get(&self, version: u64) -> Option<ConfigVersion> {
+    pub fn get(&self, version: u64) -> Option<ConfigVersion> {
         let q = self.entries.lock().unwrap_or_else(|e| e.into_inner());
         q.iter().find(|v| v.version == version).cloned()
     }

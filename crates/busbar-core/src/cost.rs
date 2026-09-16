@@ -64,7 +64,7 @@ const NANOS_PER_MICRO: u128 = 1_000;
 /// config multiplier resolves to integer basis points (×10_000) at load; the one pricer applies it
 /// as `× bp / 10_000` in integer, so no per-key float drift compounds (§7/§10 of `billing-unified.md`).
 #[cfg_attr(not(test), allow(dead_code))]
-pub(crate) const STANDARD_TIER_BP: u32 = 10_000;
+pub const STANDARD_TIER_BP: u32 = 10_000;
 
 /// The OPEN-key nano-rate table for one model: `open key → nano-units per unit`. Rides a separate
 /// `Arc<BTreeMap>` on the rate card (never inside the `Copy` [`RateNanos`]), looked up ONLY when a
@@ -72,7 +72,7 @@ pub(crate) const STANDARD_TIER_BP: u32 = 10_000;
 /// allocates nothing (`billing-unified.md` §9.1). In 1.6.0 M1 the pricer accepts this table; config population of the
 /// per-model open rates is a designed later-milestone residual (today callers pass an empty table).
 #[cfg_attr(not(test), allow(dead_code))]
-pub(crate) type ExtraRates = std::collections::BTreeMap<String, u64>;
+pub type ExtraRates = std::collections::BTreeMap<String, u64>;
 
 /// The prefix namespacing GROUP bucket ids in the store, so a group named like a key id can never
 /// collide with a real key's bucket. Key buckets use the bare key id. A group's per-window buckets
@@ -83,7 +83,7 @@ pub(crate) type ExtraRates = std::collections::BTreeMap<String, u64>;
 /// the traffic dispatched through that scope. (Generic-admission-topology generalization: the
 /// scheme was `#<pool>` before this widened to carry the kind; safe to change with no migration
 /// since no store persists this literal string durably yet.)
-pub(crate) const GROUP_BUCKET_PREFIX: &str = "group:";
+pub const GROUP_BUCKET_PREFIX: &str = "group:";
 
 /// Whether `bucket_id` is a bucket of the group named `group` — an EXACT structural match against
 /// the construction `project_groups` uses, NOT a prefix test.
@@ -100,7 +100,7 @@ pub(crate) const GROUP_BUCKET_PREFIX: &str = "group:";
 /// `@` + one of the five [`crate::config::groups::LimitWindow`] spellings + an optional `#<scope>`.
 /// `group:user:alice@corp.com@total` therefore does NOT belong to `user:alice` (the window token
 /// would have to be `corp.com`), and DOES belong to `user:alice@corp.com`.
-pub(crate) fn is_bucket_of_group(bucket_id: &str, group: &str) -> bool {
+pub fn is_bucket_of_group(bucket_id: &str, group: &str) -> bool {
     let Some(tail) = bucket_id
         .strip_prefix(GROUP_BUCKET_PREFIX)
         .and_then(|rest| rest.strip_prefix(group))
@@ -119,11 +119,11 @@ pub(crate) fn is_bucket_of_group(bucket_id: &str, group: &str) -> bool {
 /// One model's per-token rates in integer NANO-units per token (config micro-units x 1000, rounded
 /// once at resolve). All hot-path math is integer over these.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub(crate) struct RateNanos {
-    pub(crate) input: u64,
-    pub(crate) output: u64,
-    pub(crate) cache_read: u64,
-    pub(crate) cache_write: u64,
+pub struct RateNanos {
+    pub input: u64,
+    pub output: u64,
+    pub cache_read: u64,
+    pub cache_write: u64,
 }
 
 impl RateNanos {
@@ -132,7 +132,7 @@ impl RateNanos {
     /// the ONE projection: config micro-units × 1000, rounded once, with the defense-in-depth clamp.
     /// Core reads rates through this NEUTRAL view so the projection names no plane config type; the
     /// arithmetic (and thus every derived figure) is byte-identical to the pre-seam `from_cfg`.
-    pub(crate) fn from_raw(raw: &busbar_substrate::billing::RawTierRates) -> Self {
+    pub fn from_raw(raw: &busbar_substrate::billing::RawTierRates) -> Self {
         // Config values are validated finite + >= 0; the clamp here is defense-in-depth so a NaN
         // or negative that slipped past validation becomes 0, never a huge/garbage integer rate.
         fn nanos(utok: f64) -> u64 {
@@ -155,14 +155,14 @@ impl RateNanos {
     /// [`from_raw`](Self::from_raw). A thin BYTE-IDENTICAL adapter kept while the `rate_card:` grammar
     /// still lives in core (S2a): the map values ARE the raw micro-floats. Once the grammar relocates
     /// to the owning plane (S2b) this adapter goes and callers hand [`from_raw`] the plane-filled view.
-    pub(crate) fn from_cfg(r: &crate::config::RateEntryCfg) -> Self {
+    pub fn from_cfg(r: &crate::config::RateEntryCfg) -> Self {
         Self::from_raw(&r.raw_tier_rates())
     }
 
     /// The nano rate for one RESERVED tier key (0 for a non-reserved key — opens price via the
     /// separate `ExtraRates` table, never here).
     #[inline]
-    pub(crate) fn reserved_rate(&self, unit: &str) -> u64 {
+    pub fn reserved_rate(&self, unit: &str) -> u64 {
         match unit {
             UNIT_INPUT => self.input,
             UNIT_OUTPUT => self.output,
@@ -178,7 +178,7 @@ impl RateNanos {
     /// here (they need the per-model `ExtraRates`); the enforcement/derive summation prices only the
     /// reserved four, exactly as before M1b.
     #[inline]
-    pub(crate) fn reserved_nanos(&self, units: &BTreeMap<String, u64>) -> u128 {
+    pub fn reserved_nanos(&self, units: &BTreeMap<String, u64>) -> u128 {
         RESERVED_UNITS.iter().fold(0u128, |acc, u| {
             let n = units.get(*u).copied().unwrap_or(0);
             acc + (n as u128) * (self.reserved_rate(u) as u128)
@@ -205,7 +205,7 @@ impl RateNanos {
 /// labels are namespaced ([`OPEN_LABEL_PREFIX`]) so an adversarial open name can never collide with a
 /// reserved/surcharge label and fail the whole breakdown (fix 2b).
 #[cfg_attr(not(test), allow(dead_code))]
-pub(crate) fn price(
+pub fn price(
     rate: &RateNanos,
     extras: &ExtraRates,
     tier_bp: u32,
@@ -298,80 +298,80 @@ pub(crate) fn price(
 /// ledger cell. The three windowed metrics are independent caps on the same cell's counters
 /// (requests / total tokens / derived spend).
 #[derive(Debug, Clone)]
-pub(crate) struct GroupBucket {
+pub struct GroupBucket {
     /// The store/ledger bucket id: `group:<name>@<window>`, or `group:<name>@<window>#<pool>`
     /// for a pool-scoped bucket.
-    pub(crate) bucket_id: String,
+    pub bucket_id: String,
     /// The window word (`minute` | `hour` | `day` | `month` | `total`) - the `budget_window`
     /// period sentinel AND the metrics/error vocabulary.
-    pub(crate) window: &'static str,
+    pub window: &'static str,
     /// Request-count cap per window (`{ requests: N, per: <window> }`), if any.
-    pub(crate) requests_cap: Option<u64>,
+    pub requests_cap: Option<u64>,
     /// Total-token cap per window (`{ tokens: N, per: <window> }`), if any. Best-effort: tokens
     /// land post-response, so the cap blocks the NEXT request once crossed.
-    pub(crate) tokens_cap: Option<u64>,
+    pub tokens_cap: Option<u64>,
     /// Per-tier token caps (`{ tokens_input: N, per: <window> }` etc.), each best-effort exactly
     /// like `tokens_cap`. Mirror the cost tiers: `tokens_input` = uncached input, `tokens_output`
     /// = output, `tokens_cache_read`, `tokens_cache_write` = cache creation.
-    pub(crate) tokens_input_cap: Option<u64>,
-    pub(crate) tokens_output_cap: Option<u64>,
-    pub(crate) tokens_cache_read_cap: Option<u64>,
-    pub(crate) tokens_cache_write_cap: Option<u64>,
+    pub tokens_input_cap: Option<u64>,
+    pub tokens_output_cap: Option<u64>,
+    pub tokens_cache_read_cap: Option<u64>,
+    pub tokens_cache_write_cap: Option<u64>,
     /// Spend cap per window (`{ budget: N, per: <window> }`) in abstract cents, if any. Derived at
     /// check time from the cell's token ledger x the current rate card (+ the flat per-request
     /// fee x requests).
-    pub(crate) budget_cap: Option<i64>,
+    pub budget_cap: Option<i64>,
     /// `Some(scope)` = this bucket accounts ONLY traffic dispatched through that scope (limits
     /// carrying `pool: <name>`, i.e. `kind: "pool"`); `None` = group-wide (every request through
     /// the group).
-    pub(crate) scope: Option<ScopeRef>,
+    pub scope: Option<ScopeRef>,
     /// Where BUDGET-exhausted traffic goes instead of a rejection (`on_exhaust: downgrade,
     /// downgrade_to: <pool>` on the governing budget limit). `None` = block (the default). When
     /// several budget limits merge into this bucket, the MOST RESTRICTIVE (minimum) cap's
     /// behavior governs - it is the one that actually blocks.
-    pub(crate) downgrade_to: Option<ScopeRef>,
+    pub downgrade_to: Option<ScopeRef>,
 }
 
 /// One resolved group: its enabled flag, in-flight cap, per-window enforcement buckets, and parent
 /// (by index, so the chain walk is index-chasing with zero hashing).
 #[derive(Debug, Clone)]
-pub(crate) struct GroupRuntime {
-    pub(crate) name: String,
+pub struct GroupRuntime {
+    pub name: String,
     /// `false` FREEZES the group: every request charging through it (its own keys AND every
     /// descendant's) is rejected while history is kept.
-    pub(crate) enabled: bool,
+    pub enabled: bool,
     /// The instantaneous in-flight cap (`{ concurrent: N }` - no window), if any.
-    pub(crate) concurrent_cap: Option<u64>,
+    pub concurrent_cap: Option<u64>,
     /// The group's windowed enforcement buckets, one per distinct window its limits use (config
     /// order of first use). Empty for a group with only a `concurrent` limit (or none).
-    pub(crate) buckets: Vec<GroupBucket>,
-    pub(crate) parent: Option<usize>,
+    pub buckets: Vec<GroupBucket>,
+    pub parent: Option<usize>,
 }
 
 /// One bucket of a resolved enforcement chain (borrowed views into the key / the `CostModel`).
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct ChainBucket<'a> {
     /// The store/ledger bucket id (the key id, or `group:<name>@<window>[#<pool>]`).
-    pub(crate) bucket_id: &'a str,
+    pub bucket_id: &'a str,
     /// The operator-facing group name for diagnostics; `None` for the key's own bucket.
-    pub(crate) group_name: Option<&'a str>,
+    pub group_name: Option<&'a str>,
     /// The bucket's window word - the `budget_window` period sentinel (`total` for the key's own
     /// attribution bucket). `'static`: both sources (the group buckets and the key's `total`) are
     /// compile-time sentinels.
-    pub(crate) window: &'static str,
-    pub(crate) requests_cap: Option<u64>,
-    pub(crate) tokens_cap: Option<u64>,
-    pub(crate) tokens_input_cap: Option<u64>,
-    pub(crate) tokens_output_cap: Option<u64>,
-    pub(crate) tokens_cache_read_cap: Option<u64>,
-    pub(crate) tokens_cache_write_cap: Option<u64>,
-    pub(crate) budget_cap: Option<i64>,
+    pub window: &'static str,
+    pub requests_cap: Option<u64>,
+    pub tokens_cap: Option<u64>,
+    pub tokens_input_cap: Option<u64>,
+    pub tokens_output_cap: Option<u64>,
+    pub tokens_cache_read_cap: Option<u64>,
+    pub tokens_cache_write_cap: Option<u64>,
+    pub budget_cap: Option<i64>,
     /// `Some(scope)` = the bucket is scope-qualified: it checks/charges/accrues ONLY when the
     /// request was dispatched through that scope (today, always `kind: "pool"`). `None` = applies
     /// to every request through the group.
-    pub(crate) scope: Option<&'a ScopeRef>,
+    pub scope: Option<&'a ScopeRef>,
     /// The budget limit's `downgrade_to` scope, when it declared `on_exhaust: downgrade`.
-    pub(crate) downgrade_to: Option<&'a ScopeRef>,
+    pub downgrade_to: Option<&'a ScopeRef>,
 }
 
 impl ChainBucket<'_> {
@@ -382,7 +382,7 @@ impl ChainBucket<'_> {
     /// deliberately - THIS call site is the one that knows it is checking pool admission (see
     /// `ScopeRef`'s doc: each admission site names the kind it expects, `ScopeRef` itself stays
     /// kind-agnostic).
-    pub(crate) fn applies_to_pool(&self, pool: &str) -> bool {
+    pub fn applies_to_pool(&self, pool: &str) -> bool {
         self.scope
             .is_none_or(|s| s.kind == "pool" && s.value == pool)
     }
@@ -400,16 +400,16 @@ pub(crate) struct Chain<'a> {
 }
 
 impl<'a> Chain<'a> {
-    pub(crate) fn iter(&self) -> impl Iterator<Item = &ChainBucket<'a>> {
+    pub fn iter(&self) -> impl Iterator<Item = &ChainBucket<'a>> {
         self.buckets.iter()
     }
 
-    pub(crate) fn len(&self) -> usize {
+    pub fn len(&self) -> usize {
         self.buckets.len()
     }
 
     /// The `CostModel::groups()` indices of the chain's groups, innermost first.
-    pub(crate) fn group_indices(&self) -> &[usize] {
+    pub fn group_indices(&self) -> &[usize] {
         &self.groups
     }
 }
@@ -460,7 +460,7 @@ impl CostModel {
     /// The Admin-API group-mutation seam (`build_with_group` / `build_without_group`): a runtime
     /// group change must reproject enforcement buckets WITHOUT re-parsing the rate card (which the
     /// mutation never touched). Pure — assumes the caller already re-ran `validate_groups`.
-    pub(crate) fn with_groups(
+    pub fn with_groups(
         &self,
         groups_cfg: &std::collections::BTreeMap<String, crate::config::GroupCfg>,
     ) -> Self {
@@ -497,7 +497,7 @@ impl CostModel {
     /// Whether `bucket_id` is, RIGHT NOW, the id of a live bucket that still enforces at least one
     /// windowed cap. Pure identity: the id either is one the live model produces or it is not, so
     /// no assumption about `@`/`#` being delimiters (or a group name avoiding them) exists here.
-    pub(crate) fn bucket_enforces_a_cap(&self, bucket_id: &str) -> bool {
+    pub fn bucket_enforces_a_cap(&self, bucket_id: &str) -> bool {
         self.capped_bucket_ids.contains(bucket_id)
     }
 
@@ -636,7 +636,7 @@ impl CostModel {
     /// Resolve a CONFIGURED name to its rate-card key. Today the rate card is keyed by the
     /// caller-supplied name itself, so this is the identity - kept as the one seam every
     /// consumer resolves through, so a future re-aliasing lands in one place.
-    pub(crate) fn resolve_model_alias<'a>(&'a self, model: &'a str) -> &'a str {
+    pub fn resolve_model_alias<'a>(&'a self, model: &'a str) -> &'a str {
         model
     }
 
@@ -650,15 +650,15 @@ impl CostModel {
         self.rates.is_some()
     }
 
-    pub(crate) fn price_per_request_cents(&self) -> i64 {
+    pub fn price_per_request_cents(&self) -> i64 {
         self.price_per_request_cents
     }
 
-    pub(crate) fn groups(&self) -> &[GroupRuntime] {
+    pub fn groups(&self) -> &[GroupRuntime] {
         &self.groups
     }
 
-    pub(crate) fn group_named(&self, name: &str) -> Option<&GroupRuntime> {
+    pub fn group_named(&self, name: &str) -> Option<&GroupRuntime> {
         self.group_idx.get(name).map(|&i| &self.groups[i])
     }
 
@@ -670,7 +670,7 @@ impl CostModel {
     ///   unpriced passthrough model, and the derive paths price it at 0 with a warn (it can only
     ///   arise from ledger rows written before a config change).
     #[inline]
-    pub(crate) fn rate_for(&self, model: &str) -> Option<RateNanos> {
+    pub fn rate_for(&self, model: &str) -> Option<RateNanos> {
         match &self.rates {
             None => Some(RateNanos::default()),
             Some(table) => table.get(model).copied(),
@@ -689,7 +689,7 @@ impl CostModel {
     /// caller fails closed on an unpriced passthrough model). Only the reserved four price here — the
     /// carrier maps its own unit classes onto the reserved keys before calling, so no open-key
     /// `ExtraRates` lookup (and thus no `CostBreakdown`) is involved.
-    pub(crate) fn price_usage_nanos(
+    pub fn price_usage_nanos(
         &self,
         model: &str,
         usage: &busbar_substrate::billing::Usage,
@@ -725,7 +725,7 @@ impl CostModel {
     /// A model with no rate (card present, entry missing - only possible for ledger rows written
     /// under a previous config) derives at 0; the mismatch is the operator's rate-card edit
     /// taking effect retroactively, which is the designed behavior.
-    pub(crate) fn derive_spend_cents<'m>(
+    pub fn derive_spend_cents<'m>(
         &self,
         models: impl Iterator<Item = (&'m str, &'m BTreeMap<String, u64>)>,
         fee_requests: u64,
@@ -753,7 +753,7 @@ impl CostModel {
     }
 
     /// As [`Self::derive_spend_cents`] but in MICRO-units, for the hook seam / admin projections.
-    pub(crate) fn derive_spend_micros<'m>(
+    pub fn derive_spend_micros<'m>(
         &self,
         models: impl Iterator<Item = (&'m str, &'m BTreeMap<String, u64>)>,
         fee_requests: u64,
