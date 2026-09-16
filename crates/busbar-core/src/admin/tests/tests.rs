@@ -5297,13 +5297,13 @@ async fn proof_role_binding_mode_ceiling_bounds_a_delegated_admin() {
         let mut ceilings = std::collections::BTreeMap::new();
         ceilings.insert(
             "app-admin".to_string(),
-            crate::admin::RoleCeiling {
+            crate::governance::mint_policy::RoleCeiling {
                 max_ttl_secs: None,
                 allowed_pools: None,
                 binding_modes: Some(allowed_modes),
             },
         );
-        let policy = crate::admin::MintPolicy {
+        let policy = crate::governance::mint_policy::MintPolicy {
             self_mint: None,
             block_max_ttl_secs: None,
             block_binding_modes: None,
@@ -5365,7 +5365,7 @@ async fn proof_max_ttl_ceiling_refuses_overask_and_clamps_default() {
     async fn mint(body: serde_json::Value) -> (u16, Arc<GovState>, Option<u64>) {
         let store = Arc::new(MemoryStore::new());
         let gov = gov_with_signer(store, Some("admintok".to_string()));
-        let policy = crate::admin::MintPolicy {
+        let policy = crate::governance::mint_policy::MintPolicy {
             self_mint: None,
             block_max_ttl_secs: Some(CEIL),
             block_binding_modes: None,
@@ -5426,7 +5426,7 @@ async fn proof_max_ttl_ceiling_refuses_overask_and_clamps_default() {
     );
     // Strictly below the 90-day default: the clamp produced this exp, not the default TTL path.
     assert!(
-        exp < t0 + crate::admin::DEFAULT_KEY_TTL_SECS,
+        exp < t0 + crate::governance::mint_policy::DEFAULT_KEY_TTL_SECS,
         "the clamped exp is strictly below the unclamped 90-day default"
     );
 }
@@ -5461,13 +5461,13 @@ async fn proof_role_mint_ceiling_bounds_a_delegated_admin() {
         let mut ceilings = std::collections::BTreeMap::new();
         ceilings.insert(
             "app-admin".to_string(),
-            crate::admin::RoleCeiling {
+            crate::governance::mint_policy::RoleCeiling {
                 max_ttl_secs: Some(ROLE_TTL),
                 allowed_pools: Some(vec!["pool-ok".to_string()]),
                 binding_modes: None,
             },
         );
-        let policy = crate::admin::MintPolicy {
+        let policy = crate::governance::mint_policy::MintPolicy {
             self_mint: None,
             block_max_ttl_secs: None,
             block_binding_modes: None,

@@ -807,7 +807,7 @@ pub struct TestApp {
     role_bindings: Option<crate::config::RoleBindings>,
     /// The resolved token-mint policy (`auth.policy:`) for the built App. `None` (default) = the empty
     /// policy (no caps). Set by tests that exercise `MintPolicy` enforcement at the mint site.
-    mint_policy: Option<crate::admin::MintPolicy>,
+    mint_policy: Option<crate::governance::mint_policy::MintPolicy>,
     governance: Option<std::sync::Arc<crate::governance::GovState>>,
     cost: Option<std::sync::Arc<crate::cost::CostModel>>,
     failover_cfg: Option<crate::config::FailoverCfg>,
@@ -1375,7 +1375,7 @@ impl TestApp {
     /// exercise the group re-key (an IdP/test principal whose role binds a group grant).
     /// Set the resolved token-mint policy (`auth.policy:`) on the built `App` (default: empty, no
     /// caps). Used by tests exercising `MintPolicy::check_mint` enforcement at `POST /keys`.
-    pub fn mint_policy(mut self, policy: crate::admin::MintPolicy) -> Self {
+    pub fn mint_policy(mut self, policy: crate::governance::mint_policy::MintPolicy) -> Self {
         self.mint_policy = Some(policy);
         self
     }
@@ -1937,7 +1937,7 @@ impl TestApp {
                 .plugins_dir
                 .unwrap_or_else(|| std::path::PathBuf::from("plugins")),
             plugins_cfg: self.plugins_cfg.unwrap_or_default(),
-            self_key_ttl_secs: crate::admin::DEFAULT_KEY_TTL_SECS,
+            self_key_ttl_secs: crate::governance::mint_policy::DEFAULT_KEY_TTL_SECS,
             mint_policy: std::sync::Arc::new(self.mint_policy.unwrap_or_default()),
             request_id_counter: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(
                 crate::state::seed_request_id_counter(),

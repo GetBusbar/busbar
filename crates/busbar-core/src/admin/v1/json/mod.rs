@@ -267,8 +267,11 @@ pub use busbar_substrate::api::ap;
 /// inside `txn::config_transaction`, which owns the (file-private) mutation lock, hands the body a
 /// FRESH post-lock snapshot, forces store/disk work onto `spawn_blocking`, and applies the resulting
 /// plan through `AppHandle::commit_and_swap`. See `txn.rs` for the four guarantees.
-mod txn;
-pub(crate) use txn::{config_transaction, Outcome};
+// The config-mutation choke point RELOCATED to `crate::config::transaction` (1.6.0 de-alias, stage
+// 2a): core infrastructure, not admin-surface vocabulary. Re-exported here so every existing
+// `config_transaction`/`Outcome` call site in this module tree is unchanged; `E` resolves to
+// `AdminError` by inference at every one of them (their bodies construct `AdminError::…` directly).
+pub(crate) use crate::config::transaction::{config_transaction, Outcome};
 
 /// The GENERIC named-DEFINITION map CRUD (`/identity-providers`, `/export`; further sections land
 /// additively as planes register them). One handler set for every section of the universal config

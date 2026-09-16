@@ -502,15 +502,15 @@ pub struct App {
     // per-generation runtime object, populated from the neutral `PlaneBuildInput` carrier `appbuild`
     // fills. The engine reads them off its own runtime, not off a neutral `App`/`PlaneHost` method.
     /// The self-serve (token-exchange) key lifetime in seconds, resolved from `auth.key_ttl`
-    /// (`parse_duration_secs`, default [`crate::admin::DEFAULT_KEY_TTL_SECS`] = 90d). This is where
+    /// (`parse_duration_secs`, default [`crate::governance::mint_policy::DEFAULT_KEY_TTL_SECS`] = 90d). This is where
     /// the Step-1 `auth.key_ttl` field is finally READ: `POST /auth/token` mints every self key with
     /// `exp = now + self_key_ttl_secs`. Rebuilt on every apply/reload with the rest of the snapshot.
     pub(crate) self_key_ttl_secs: u64,
     /// The RESOLVED mint policy (`auth.policy:`, 1.6.0), built once at boot from the config and read
     /// on every mint: the deployment-wide TTL ceiling (`max_ttl`) + allowed binding modes + the
     /// per-role `mint_ceilings` (the delegated-app-admin caps, review H2/H3). `Default` (empty) = no
-    /// policy ⇒ byte-identical pre-1.6.0 behavior. See [`crate::admin::MintPolicy`].
-    pub(crate) mint_policy: std::sync::Arc<crate::admin::MintPolicy>,
+    /// policy ⇒ byte-identical pre-1.6.0 behavior. See [`crate::governance::mint_policy::MintPolicy`].
+    pub(crate) mint_policy: std::sync::Arc<crate::governance::mint_policy::MintPolicy>,
     /// Per-request correlation-id generator: `fetch_add(1, Relaxed)` stamps a fresh `u64` on every
     /// inbound request (see [`App::next_request_id`]), so a routing DECISION (the hook seam) can be
     /// joined to its OUTCOME (the response tap) and per-request log lines are correlatable — a

@@ -278,7 +278,7 @@ async fn cap_is_read_from_the_post_lock_snapshot() {
     let lowering = {
         let handle = handle.clone();
         tokio::spawn(async move {
-            config_transaction(&handle, |txn| {
+            config_transaction::<_, _, AdminError>(&handle, |txn| {
                 let current = txn.app().clone();
                 Ok(txn.read_store(move || {
                     // Hold the section long enough for the mint below to queue behind it.
@@ -460,7 +460,7 @@ async fn plugin_install_is_serialized_by_the_mutation_domain() {
     let holder = {
         let handle = handle.clone();
         tokio::spawn(async move {
-            config_transaction(&handle, |txn| {
+            config_transaction::<_, _, AdminError>(&handle, |txn| {
                 Ok(txn.read_store(move || {
                     std::thread::sleep(hold);
                     Ok(Outcome::Value(()))
@@ -505,9 +505,10 @@ async fn plugin_install_is_serialized_by_the_mutation_domain() {
 async fn a_txn_that_declares_no_plan_swaps_nothing() {
     let handle = handle_for(TestApp::new().build());
     let before = handle.load().config_version;
-    let seen: u64 = config_transaction(&handle, |txn| Ok(txn.done(txn.app().config_version)))
-        .await
-        .expect("read-only txn succeeds");
+    let seen: u64 =
+        config_transaction::<_, _, AdminError>(&handle, |txn| Ok(txn.done(txn.app().config_version)))
+            .await
+            .expect("read-only txn succeeds");
     assert_eq!(seen, before, "the body reads the post-lock snapshot");
     assert_eq!(handle.load().config_version, before, "no plan ⇒ no swap");
 }
@@ -547,7 +548,7 @@ async fn concurrent_transactions_never_lose_a_swap() {
     for _ in 0..16 {
         let handle = handle.clone();
         tasks.push(tokio::spawn(async move {
-            config_transaction(&handle, |txn| {
+            config_transaction::<_, _, AdminError>(&handle, |txn| {
                 let current = txn.app();
                 let mut next = (**current).clone();
                 next.config_version = current.config_version.wrapping_add(1);
@@ -595,7 +596,7 @@ async fn cancelling_a_handler_future_does_not_release_the_mutation_domain() {
     let victim = {
         let (handle, finished) = (handle.clone(), finished.clone());
         tokio::spawn(async move {
-            config_transaction(&handle, move |txn| {
+            config_transaction::<_, _, AdminError>(&handle, move |txn| {
                 Ok(txn.store_write(move || {
                     entered_tx.send(()).expect("test still listening");
                     release_rx.recv().expect("test releases the deferred step");
@@ -617,7 +618,7 @@ async fn cancelling_a_handler_future_does_not_release_the_mutation_domain() {
 
     // THE ASSERTION: the domain is still held. A second mutation must NOT be able to acquire it
     // while the abandoned section's deferred work is still running.
-    let contender = config_transaction(&handle, |txn| Ok(txn.done(())));
+    let contender = config_transaction::<_, _, AdminError>(&handle, |txn| Ok(txn.done(())));
     assert!(
         tokio::time::timeout(Duration::from_millis(500), contender)
             .await
@@ -635,7 +636,7 @@ async fn cancelling_a_handler_future_does_not_release_the_mutation_domain() {
     release_tx.send(()).expect("deferred step still parked");
     tokio::time::timeout(
         Duration::from_secs(10),
-        config_transaction(&handle, |txn| Ok(txn.done(()))),
+        config_transaction::<_, _, AdminError>(&handle, |txn| Ok(txn.done(()))),
     )
     .await
     .expect("the domain is released once the deferred work finishes")

@@ -3,6 +3,18 @@
 
 //! The ONE config-mutation choke point — `config_transaction`.
 //!
+//! RELOCATED out of `admin/v1/json/txn.rs` (1.6.0 de-alias, stage 2a): this is core config-apply
+//! infrastructure, not admin-surface vocabulary — `auth::self_keys` (core, the self-serve
+//! token-exchange seam) routes its personal-budget-group auto-provision through this SAME choke
+//! point the admin mint uses, and a core module reaching into `admin::` to do that was the last
+//! core→admin edge this stage exists to cut. GENERICIZED over the error type `E` (was hard-coded to
+//! `admin::v1::contract::AdminError`) so this module names no admin type: every admin call site
+//! still resolves `E = AdminError` by ordinary type inference (its closures construct
+//! `AdminError::…` directly), and `auth::self_keys` resolves `E` to its own neutral error. The two
+//! error constructions this module makes ITSELF (a `commit_and_swap` persist failure, and a
+//! `spawn_blocking` join failure) go through [`TxnError`] + `E: From<TxnError>`, so every existing
+//! call site's wire error is byte-identical (`AdminError` implements that conversion 1:1).
+//!
 //! Every admin operation that mutates the live config plane (hooks, groups, auth chain, settings,
 //! overlay, plugins) runs inside `config_transaction`. Before this module the pattern was a raw
 //! `CONFIG_MUTATION_LOCK.lock().await` followed by arbitrary handler code, and each of the ~17
@@ -20,7 +32,7 @@
 //!    `handle.load()`. The body receives a [`Txn`] and nothing else — no `AppHandle`, no extractor
 //!    `Arc<App>`. `txn.app()` IS the post-lock snapshot, so a pre-lock read cannot be performed
 //!    inside the section: there is no other snapshot in scope.
-//! 2. **The body is SYNCHRONOUS.** `F: FnOnce(&Txn) -> Result<Outcome<T>, AdminError>` has no
+//! 2. **The body is SYNCHRONOUS.** `F: FnOnce(&Txn) -> Result<Outcome<T, E>, E>` has no
 //!    `async`, so it cannot `.await`. The "never hold the lock across a network await" contract is
 //!    now a type, not a comment — a configure-ack push physically cannot move inside the section.
 //! 3. **Blocking work is structurally deferred.** The body never gets a `&dyn Store`, a
@@ -53,7 +65,6 @@
 
 use std::sync::Arc;
 
-use crate::admin::v1::contract::AdminError;
 use crate::state::{App, AppHandle};
 
 /// Serializes config-plane MUTATIONS so each `read current → build next → persist → swap → record`
@@ -72,21 +83,53 @@ use crate::state::{App, AppHandle};
 static CONFIG_MUTATION_LOCK: std::sync::LazyLock<Arc<tokio::sync::Mutex<()>>> =
     std::sync::LazyLock::new(|| Arc::new(tokio::sync::Mutex::new(())));
 
+/// The two error shapes `config_transaction`'s OWN machinery can produce (never a call site's own
+/// domain error, which rides the generic `E` untouched): a durable-persist failure
+/// (`commit_and_swap`, message pre-formatted by the site's own `Persist` closure) and a
+/// `spawn_blocking` join failure (a panic in the apply phase). Every instantiating error type `E`
+/// converts FROM this via `E: From<TxnError>`, so each call site's wire error is exactly what it was
+/// before this module was generic (e.g. `AdminError::Validation`/`AdminError::Internal`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum TxnError {
+    /// A `commit_and_swap` persist step failed; `String` is the final operator-facing message the
+    /// site's own `Persist` closure produced.
+    Validation(String),
+    /// A TERMINAL state conflict surfaced by the extracted governance logic that shares this
+    /// machinery (e.g. group auto-provisioning's re-home/base-shadow guards).
+    Conflict(String),
+    /// The apply phase's `spawn_blocking` task panicked (a `JoinError`) rather than returning.
+    Internal,
+}
+
+impl TxnError {
+    /// The plain human-facing message — mirrors `AdminError::message()`'s treatment of the same
+    /// three shapes exactly (`Validation`/`Conflict` carry their own wording; `Internal` reads
+    /// "internal error"), so a caller mapping this straight to a `String` (e.g.
+    /// `auth::self_keys`'s mint-failure boundary) gets byte-identical text to the admin transport's.
+    pub(crate) fn message(&self) -> String {
+        match self {
+            TxnError::Validation(msg) => msg.clone(),
+            TxnError::Conflict(msg) => msg.clone(),
+            TxnError::Internal => "internal error".to_string(),
+        }
+    }
+}
+
 /// A durable-persist step, run by `commit_and_swap` BEFORE the swap. It returns the FINAL
 /// operator-facing message on failure (each site keeps its own wording), which
-/// [`config_transaction`] projects as `AdminError::Validation` — the exact shape the hand-rolled
-/// sites returned.
+/// [`config_transaction`] converts to `E::from(TxnError::Validation(..))` — the exact shape the
+/// hand-rolled sites returned before this module existed.
 pub(crate) type Persist = Box<dyn FnOnce() -> Result<(), String> + Send>;
 
 /// A deferred blocking step: store I/O, disk I/O, tarball writes. Run on `spawn_blocking`, still
 /// under the guard. It returns another [`Outcome`], so a read → decide → write op is ONE atomic
 /// section (the count and the mint share the same critical region) while never touching the reactor.
-pub(crate) type Deferred<T> = Box<dyn FnOnce() -> Result<Outcome<T>, AdminError> + Send>;
+pub(crate) type Deferred<T, E> = Box<dyn FnOnce() -> Result<Outcome<T, E>, E> + Send>;
 
 /// The PLAN a transaction body declares. The body returns one of these instead of applying anything
 /// itself; `config_transaction` is the sole application site, so "forgot to swap" is a no-op
 /// (fail-closed) and "swapped twice" is unrepresentable.
-pub(crate) enum Outcome<T> {
+pub(crate) enum Outcome<T, E> {
     /// Read-only, or a decision already complete: nothing to persist, nothing to swap.
     Value(T),
     /// Mutate: PERSIST-then-SWAP through `AppHandle::commit_and_swap`, fail-closed. A persist error
@@ -94,22 +137,22 @@ pub(crate) enum Outcome<T> {
     Commit {
         next: Arc<App>,
         persist: Persist,
-        then: Then<T>,
+        then: Then<T, E>,
     },
     /// Blocking work to run on `spawn_blocking` (under the guard), yielding the next `Outcome`.
-    Blocking(Deferred<T>),
+    Blocking(Deferred<T, E>),
 }
 
 /// What follows a commit. `Value` finishes the transaction; `Blocking` continues with store work
 /// that must land AFTER the config change and inside the SAME guard — the mint-with-auto-provision
 /// shape: provision the group leaf (persist + swap), then bind the key to it without ever releasing
 /// the lock, so a concurrent group DELETE can neither slip between them nor observe a half state.
-pub(crate) enum Then<T> {
+pub(crate) enum Then<T, E> {
     Value(T),
-    Blocking(Deferred<T>),
+    Blocking(Deferred<T, E>),
 }
 
-impl<T> Outcome<T> {
+impl<T, E> Outcome<T, E> {
     /// Declare the persist-then-swap plan. `next` is the candidate snapshot; `persist` writes the
     /// DESIRED state to disk and must return the final operator-facing message on failure.
     pub(crate) fn commit<P>(next: Arc<App>, persist: P, value: T) -> Self
@@ -129,7 +172,7 @@ impl<T> Outcome<T> {
     pub(crate) fn commit_then<P, F>(next: Arc<App>, persist: P, then: F) -> Self
     where
         P: FnOnce() -> Result<(), String> + Send + 'static,
-        F: FnOnce() -> Result<Outcome<T>, AdminError> + Send + 'static,
+        F: FnOnce() -> Result<Outcome<T, E>, E> + Send + 'static,
     {
         Outcome::Commit {
             next,
@@ -150,7 +193,7 @@ impl<T> Outcome<T> {
     /// async side, and used directly inside an already-blocking step when it needs a further phase.
     pub(crate) fn blocking<F>(f: F) -> Self
     where
-        F: FnOnce() -> Result<Outcome<T>, AdminError> + Send + 'static,
+        F: FnOnce() -> Result<Outcome<T, E>, E> + Send + 'static,
     {
         Outcome::Blocking(Box::new(f))
     }
@@ -180,9 +223,9 @@ impl<'a> Txn<'a> {
     /// The closure captures OWNED values (it is `'static`), so it cannot smuggle `txn.app()` out —
     /// a body that needs the snapshot on the blocking side clones the `Arc` into the closure, which
     /// is the same snapshot, still frozen by the same lock.
-    pub(crate) fn read_store<T, F>(&self, f: F) -> Outcome<T>
+    pub(crate) fn read_store<T, E, F>(&self, f: F) -> Outcome<T, E>
     where
-        F: FnOnce() -> Result<Outcome<T>, AdminError> + Send + 'static,
+        F: FnOnce() -> Result<Outcome<T, E>, E> + Send + 'static,
     {
         Outcome::blocking(f)
     }
@@ -191,15 +234,15 @@ impl<'a> Txn<'a> {
     /// Same execution site and same guarantees as [`Txn::read_store`]; named separately so a call
     /// site reads as what it is. Fail-closed: an error from the closure aborts the transaction and
     /// nothing is swapped.
-    pub(crate) fn store_write<T, F>(&self, f: F) -> Outcome<T>
+    pub(crate) fn store_write<T, E, F>(&self, f: F) -> Outcome<T, E>
     where
-        F: FnOnce() -> Result<Outcome<T>, AdminError> + Send + 'static,
+        F: FnOnce() -> Result<Outcome<T, E>, E> + Send + 'static,
     {
         Outcome::blocking(f)
     }
 
     /// Declare the persist-then-swap plan (see [`Outcome::commit`]).
-    pub(crate) fn commit<T, P>(&self, next: Arc<App>, persist: P, value: T) -> Outcome<T>
+    pub(crate) fn commit<T, E, P>(&self, next: Arc<App>, persist: P, value: T) -> Outcome<T, E>
     where
         P: FnOnce() -> Result<(), String> + Send + 'static,
     {
@@ -210,7 +253,7 @@ impl<'a> Txn<'a> {
     /// `live_swap`, not `swap`, so the structure lint can ban the bare `.swap(` receiver form
     /// OUTRIGHT outside `txn.rs`/`state.rs` instead of carving out an exception for whichever
     /// variable name a transaction body happens to bind the `Txn` to.
-    pub(crate) fn live_swap<T>(&self, next: Arc<App>, value: T) -> Outcome<T> {
+    pub(crate) fn live_swap<T, E>(&self, next: Arc<App>, value: T) -> Outcome<T, E> {
         Outcome::swap(next, value)
     }
 
@@ -219,7 +262,7 @@ impl<'a> Txn<'a> {
     #[cfg_attr(not(test), allow(dead_code))]
     /// Finish with a value and NO mutation (an idempotent no-op, or a decision that changed
     /// nothing). Fail-closed by construction: no plan ⇒ no swap.
-    pub(crate) fn done<T>(&self, value: T) -> Outcome<T> {
+    pub(crate) fn done<T, E>(&self, value: T) -> Outcome<T, E> {
         Outcome::Value(value)
     }
 }
@@ -249,15 +292,13 @@ impl<'a> Txn<'a> {
 /// It also takes `commit_and_swap` off the reactor. Its persist step is real disk work — an overlay
 /// read-modify-write plus two fsyncs — which the previous shape ran inline on a Tokio worker while
 /// the lock was held, the same class of stall defers store reads to avoid.
-pub(crate) async fn config_transaction<F, T>(
-    handle: &Arc<AppHandle>,
-    body: F,
-) -> Result<T, AdminError>
+pub(crate) async fn config_transaction<F, T, E>(handle: &Arc<AppHandle>, body: F) -> Result<T, E>
 where
     // NOTE: SYNC. The body cannot `.await`, so it cannot hold the lock across a network await and
     // cannot inline a blocking store call that would park a worker under the lock.
-    F: FnOnce(&Txn<'_>) -> Result<Outcome<T>, AdminError>,
+    F: FnOnce(&Txn<'_>) -> Result<Outcome<T, E>, E>,
     T: Send + 'static,
+    E: From<TxnError> + Send + 'static,
 {
     // (1) the ONLY lock site in the tree. Owned, so the guard can outlive this future.
     let guard = Arc::clone(&CONFIG_MUTATION_LOCK).lock_owned().await;
@@ -271,13 +312,16 @@ where
         apply(&handle, outcome)
     })
     .await
-    .map_err(|_| AdminError::Internal)?
+    .map_err(|_| E::from(TxnError::Internal))?
 }
 
 /// Drive a plan to a value. Entirely synchronous: `commit_and_swap` and every deferred step are
 /// blocking calls, and this runs on the blocking thread `config_transaction` hands the guard to, so
 /// the whole section is one uninterruptible unit of work.
-fn apply<T>(handle: &Arc<AppHandle>, mut outcome: Outcome<T>) -> Result<T, AdminError> {
+fn apply<T, E>(handle: &Arc<AppHandle>, mut outcome: Outcome<T, E>) -> Result<T, E>
+where
+    E: From<TxnError>,
+{
     loop {
         match outcome {
             Outcome::Value(value) => return Ok(value),
@@ -288,7 +332,7 @@ fn apply<T>(handle: &Arc<AppHandle>, mut outcome: Outcome<T>) -> Result<T, Admin
             } => {
                 handle
                     .commit_and_swap(next, persist)
-                    .map_err(AdminError::Validation)?;
+                    .map_err(|msg| E::from(TxnError::Validation(msg)))?;
                 match then {
                     Then::Value(value) => return Ok(value),
                     // Same guard, same thread: the follow-on store write cannot interleave with any

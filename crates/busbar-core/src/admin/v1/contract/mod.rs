@@ -238,6 +238,21 @@ impl AdminError {
     }
 }
 
+/// Convert the neutral [`crate::config::transaction::TxnError`] `config_transaction`'s own
+/// machinery raises (a persist failure or a `spawn_blocking` join panic) into this transport's
+/// wire error — the EXACT mapping the hand-coded `AdminError::Validation`/`AdminError::Internal`
+/// construction made before `config_transaction` was generic (1.6.0 de-alias, stage 2a). Byte-
+/// identical: same variant, same message, same `code`/status.
+impl From<crate::config::transaction::TxnError> for AdminError {
+    fn from(e: crate::config::transaction::TxnError) -> Self {
+        match e {
+            crate::config::transaction::TxnError::Validation(msg) => AdminError::Validation(msg),
+            crate::config::transaction::TxnError::Conflict(msg) => AdminError::Conflict(msg),
+            crate::config::transaction::TxnError::Internal => AdminError::Internal,
+        }
+    }
+}
+
 /// The compiled-in plugin catalog + topology + uptime returned by `GET /api/v1/admin/info`. Powers
 /// version negotiation for tooling AND the compliance-by-compilation proof: `auth_modules`/`hook_plugins` reflect
 /// the ACTUAL binary (feature-gated at compile time), not config, so `--no-default-features` shows a

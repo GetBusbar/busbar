@@ -1410,7 +1410,7 @@ fn build_with_group_rejects_dangling_parent() {
         panic!("dangling parent must be rejected");
     };
     assert!(
-        matches!(&err, AdminError::Validation(m) if m.contains("orphan")),
+        matches!(&err, crate::config::transaction::TxnError::Validation(m) if m.contains("orphan")),
         "dangling parent is a validation error: {err:?}"
     );
 }
@@ -1421,7 +1421,10 @@ fn build_with_group_rejects_empty_name() {
     let Err(err) = build_with_group(&app, "   ", GroupCfg::default()) else {
         panic!("empty name must be rejected");
     };
-    assert!(matches!(err, AdminError::Validation(_)));
+    assert!(matches!(
+        err,
+        crate::config::transaction::TxnError::Validation(_)
+    ));
 }
 
 /// Deleting a leaf removes it from the registry and the rebuilt cost model.

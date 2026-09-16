@@ -25,7 +25,7 @@
 
 use std::sync::Arc;
 
-use super::super::{config_transaction, Outcome};
+use super::{config_transaction, Outcome};
 use crate::admin::v1::contract::AdminError;
 use crate::state::AppHandle;
 

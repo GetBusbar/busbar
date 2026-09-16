@@ -1875,12 +1875,17 @@ pub fn build_app_from_config(
             .auth
             .as_ref()
             .and_then(|a| a.key_ttl.as_deref())
-            .map(|s| config::parse::parse_duration_secs(s).unwrap_or(admin::DEFAULT_KEY_TTL_SECS))
-            .unwrap_or(admin::DEFAULT_KEY_TTL_SECS),
+            .map(|s| {
+                config::parse::parse_duration_secs(s)
+                    .unwrap_or(governance::mint_policy::DEFAULT_KEY_TTL_SECS)
+            })
+            .unwrap_or(governance::mint_policy::DEFAULT_KEY_TTL_SECS),
         // Where `auth.policy:` is finally READ: the resolved mint policy (block TTL/mode ceiling +
         // per-role `mint_ceilings`). Config-validate already proved the durations parse; a stray bad
         // value falls back to no cap rather than fabricating a ceiling nobody wrote.
-        mint_policy: std::sync::Arc::new(admin::MintPolicy::from_auth(cfg.auth.as_ref())),
+        mint_policy: std::sync::Arc::new(governance::mint_policy::MintPolicy::from_auth(
+            cfg.auth.as_ref(),
+        )),
         // Arc-shared like `versions`/`mutation_limiter`: a REBUILD carries the SAME counter forward
         // (ids stay monotonic across a config reload) while a fresh boot seeds it once from OS
         // entropy (see `state::seed_request_id_counter`) so restarts don't restamp `0, 1, 2, …`.

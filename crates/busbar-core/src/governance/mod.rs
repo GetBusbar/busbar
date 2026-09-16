@@ -646,6 +646,14 @@ pub(crate) struct RotatedCredential {
 pub(crate) use busbar_substrate::governance::NewKeySpec;
 
 pub(crate) mod revocation;
+// The RESOLVED runtime mint policy (`auth.policy:`) — de-aliased out of `admin` (1.6.0, stage 2a):
+// core governance/config infrastructure read on the hot mint path, not admin-API surface.
+pub(crate) mod mint_policy;
+// Group auto-provisioning (`plan_mint_group`/`persist_provisioned_group`/`build_with_group`) — the
+// config-apply-transaction's governance-group-provisioning LOGIC, de-aliased out of `admin` (1.6.0,
+// stage 2a) so `auth::self_keys` (core) no longer reaches into the admin namespace to provision a
+// self-serve key's personal budget group.
+pub(crate) mod group_provision;
 // The busbar-SIGNED token crypto (signer, stateless verifier, claims, prefix/kid constants) lives
 // in the neutral substrate. This crate held a one-line `signing.rs` that re-exported it `pub`; the
 // module itself is re-exported here instead, `pub(crate)`, so every in-core

@@ -455,9 +455,16 @@ pub(crate) const MAX_SETTINGS_KEYS: usize = 256;
 /// Upper bound on a hook name (a registry key persisted to the config overlay + every audit row).
 /// Generous headroom over any real hook name; guards the durable-state/audit/reconnect path.
 pub(crate) const MAX_HOOK_NAME_LEN: usize = 256;
-/// Upper bound on a group name — same rationale as the hook cap (a registry key persisted to the
-/// overlay + every audit row). Generous over any real `org/dept/team/user:<sub>` name.
-pub(crate) const MAX_GROUP_NAME_LEN: usize = 256;
+/// `build_with_group` RELOCATED to `crate::governance::group_provision` (1.6.0 de-alias, stage 2a);
+/// re-exported here so every existing call site in this module tree (`handlers.rs`'s group routes)
+/// is unchanged.
+pub(crate) use crate::governance::group_provision::build_with_group;
+/// Upper bound on a group name, relocated alongside `build_with_group`. Only this module's OWN test
+/// harness (`build_with_group_name_length_boundary_is_exact`) still names it bare via `use
+/// super::*`, so a non-test lib build sees no live use of the re-export — allowed, not removed, so
+/// production code names no admin-namespaced spelling for a core constant.
+#[cfg_attr(not(test), allow(unused_imports))]
+pub(crate) use crate::governance::group_provision::MAX_GROUP_NAME_LEN;
 
 /// Fail-closed size check for a hook's `settings` map — see the cap rationale above.
 pub(crate) fn validate_hook_settings_size(
@@ -480,14 +487,10 @@ pub(crate) fn validate_hook_settings_size(
     Ok(())
 }
 
-/// Whether `p` names a live pool, read through the NEUTRAL pool label space (`EngineTablesView`) so
-/// this core group-validator names no plane table type. The `validate_groups` `pool_exists` predicate.
-fn pool_known(app: &App, p: &str) -> bool {
-    app.engine_tables_view()
-        .pools()
-        .iter()
-        .any(|(n, _)| *n == p)
-}
+// `pool_known` RELOCATED to `crate::governance::group_provision` (1.6.0 de-alias, stage 2a)
+// alongside `build_with_group`, its one remaining caller in this file (`build_without_group`,
+// below). Named at its call site instead of re-imported under its bare name, to keep this file's
+// import list from growing for a single-use helper.
 
 /// The lane at `idx`'s model name projected through the neutral view; empty if the handle is stale.
 fn lane_model(view: &dyn busbar_substrate::plane_host::EngineTablesView, idx: usize) -> String {
@@ -600,47 +603,9 @@ pub fn build_without_hook(current: &App, name: &str) -> Result<App, AdminError> 
     Ok(next)
 }
 
-/// Build the next `App` snapshot with `name` created-or-replaced in the group registry — the pure
-/// core of `POST`/`PUT /api/v1/admin/groups`. VALIDATE-AT-THE-DOOR: the mutated registry is run
-/// through the SAME `validate_groups` boot uses (parent references exist, the parent chain is
-/// acyclic — any depth, the cycle check is the bound), so a bad group (dangling/cyclic parent) is a `400` that
-/// changes nothing. On success the enforcement projection is rebuilt via `CostModel::with_groups`
-/// (reusing the rate card + fee unchanged) so the new limits are live after the swap; the governance
-/// LEDGER survives (it is Arc-shared, not rebuilt), so past accrual is preserved across the change.
-pub(crate) fn build_with_group(
-    current: &App,
-    name: &str,
-    cfg: crate::config::GroupCfg,
-) -> Result<App, AdminError> {
-    if name.trim().is_empty() {
-        return Err(AdminError::Validation(
-            "group name must not be empty".into(),
-        ));
-    }
-    if name.len() > MAX_GROUP_NAME_LEN {
-        return Err(AdminError::Validation(format!(
-            "group name is {} chars; must be <= {MAX_GROUP_NAME_LEN}",
-            name.len()
-        )));
-    }
-    // Build the candidate registry and validate it WHOLE before mutating the snapshot — a group's
-    // legality (parent exists, chain acyclic) is a property of the tree, not the single entry.
-    let mut groups = current.groups_registry.clone();
-    groups.insert(name.to_string(), cfg);
-    let mut errors = Vec::new();
-    crate::config::groups::validate_groups(&groups, &|p| pool_known(current, p), &mut errors);
-    if !errors.is_empty() {
-        return Err(AdminError::Validation(format!(
-            "invalid group `{name}`: {}",
-            errors.join("; ")
-        )));
-    }
-    let mut next = current.clone();
-    next.config_version = current.config_version.wrapping_add(1);
-    next.cost = std::sync::Arc::new(next.cost.with_groups(&groups));
-    next.groups_registry = groups;
-    Ok(next)
-}
+// `build_with_group` RELOCATED to `crate::governance::group_provision` (1.6.0 de-alias, stage 2a) —
+// re-imported above (`pub(crate) use crate::governance::group_provision::{build_with_group,
+// MAX_GROUP_NAME_LEN};`) so every call site in this module tree is unchanged.
 
 /// Build the next `App` snapshot with `name` REMOVED from the group registry — the pure core of
 /// `DELETE /api/v1/admin/groups/{name}`. `not_found` if unknown. RE-VALIDATES the reduced tree: if
@@ -707,7 +672,11 @@ pub(crate) fn build_without_group(
     // as a state CONFLICT (something still references this group) so the caller distinguishes it from
     // a malformed request.
     let mut errors = Vec::new();
-    crate::config::groups::validate_groups(&groups, &|p| pool_known(current, p), &mut errors);
+    crate::config::groups::validate_groups(
+        &groups,
+        &|p| crate::governance::group_provision::pool_known(current, p),
+        &mut errors,
+    );
     if !errors.is_empty() {
         return Err(AdminError::Conflict(format!(
             "cannot delete group `{name}`: {} (re-parent or remove the referencing group first)",

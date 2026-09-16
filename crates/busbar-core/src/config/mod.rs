@@ -26,6 +26,11 @@ pub(crate) mod patch;
 /// 1.5.5-shaped structs parse the remainder, so their `expected one of` lists never move.
 pub mod prepass;
 pub mod secret;
+/// The ONE config-mutation choke point (`config_transaction`), relocated out of
+/// `admin::v1::json::txn` (1.6.0 de-alias, stage 2a): core config-apply infrastructure that
+/// `auth::self_keys` (core) now calls directly instead of reaching into `admin::`. See the module
+/// doc.
+pub(crate) mod transaction;
 
 pub use prepass::{deploy_from_deserializer, deploy_from_yaml_str, deploy_from_yaml_value};
 
