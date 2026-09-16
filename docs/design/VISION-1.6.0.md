@@ -89,6 +89,12 @@ not the vision**. Consequences:
 - The inert `Kind::Dialect` enum variant + its PENDING-kind gate scaffolding are **not** removed yet:
   excising them is deep gate + design-doc surgery with real thrash risk and **zero done-oracle
   benefit** (nothing reds because of them). Tracked as a **post-green cleanup**, not release work.
+- The `× dialect` column itself is a **neutral-only tripwire**: its ceiling is armed at 0 for every
+  `Family::Neutral` crate, and it is deliberately **NOT measured** for plane/dialect crates
+  (`xtask/src/gates/kind_isolation/matrix.rs:528-536` — the one column with no owner to strike
+  itself out, because the plane crate *is* where the vendor names live until the split lands). Its
+  sole purpose is catching a vendor name leaking into a neutral crate, not policing a plane's own
+  dialects.
 
 ## Why the oracle / turnstile exists
 The oracle (byte-identity vs the published 1.5.5) and the purity gates, run by the turnstile engine
@@ -111,6 +117,16 @@ Concretely, ALL of:
 2. **Construction standing-reds are EMPTY** — `ship-ready` green, not merely `--posture`-tolerated.
    The LLM-engine rebuild is done (no 1117-line request-path fn; terminal doors only in the Audit
    step; the price named only where the card lives; one pick site; ports-only tests; holds clean).
+   **The hard clause:** every `Family::Neutral` crate — `kernel`, `core`, `caps`, `contract`,
+   `contract-transport`, `grammar`, `substrate`, `api`, `timing`, `plugin-abi`/`plugin-tooling`,
+   `unit`, `store`, `auth`, `secret`, `hooks`, `export`, **and the composition root** — names
+   **ZERO** `plane`/`control`/`transport`/`dialect` instance vocabulary in source: ceiling 0,
+   ARMED (the `law0-neutral-instance` class in `xtask/src/gates/kind_isolation/matrix.rs`), and no
+   `[[cell]]` ratchet row in `qa/kind-isolation.toml` can raise it. Cargo.toml manifest names are
+   excepted (manifest edges are already governed by `kind-isolation:deps`). A plane/kind-home crate
+   naming its **own** kind's vocabulary is correct (Law 5) and is never measured by this class.
+   "Done" means source count == 0 for every neutral × `{plane, control, transport, dialect}` cell —
+   not "held flat" at whatever count it measures today.
 3. **Every accepted 1.5.5 deviation is revisited and re-signed-off.** Walk
    `testing/shadow-oracle/accepted-differences.json` entry by entry: each is a crack in "LLM-only ≡
    1.5.5". Eliminate the ones that can be eliminated (make the bytes match); for any that genuinely
