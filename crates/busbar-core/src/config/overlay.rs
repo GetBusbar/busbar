@@ -4,7 +4,7 @@
 //! The busbar-owned config OVERLAY — the persistence substrate that lets an API-applied hook survive
 //! a restart. Effective config = base (`config.yaml`, hand-written, NEVER touched) + overlay
 //! (busbar-owned). Today the overlay carries the runtime hook registry; it grows as more of the config
-//! plane becomes API-mutable.
+//! surface becomes API-mutable.
 //!
 //! This module is the PURE substrate (read/write/merge) — unit-tested in isolation. The wiring (write
 //! on apply, read + merge at boot, gated by the overlay path) is layered on top. `write` is atomic

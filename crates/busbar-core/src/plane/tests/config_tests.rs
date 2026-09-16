@@ -69,11 +69,12 @@ fn the_section_list_is_derived_from_the_config_grammar_rather_than_written() {
 fn every_section_the_grammar_declares_is_refused_on_both_planes() {
     // Both planes' validators judge a hook reference against the PROCESS section registry, read through
     // the neutral `plane_sections` provider seam — so every plane must be registered for them to
-    // recognise every OTHER plane's declared section as a cross-plane reach. MCP and A2A register their
-    // own decls (and bind the provider) through their test-kits; the LLM plane's declaration lives in
-    // `busbar-core` (its `pools:` section predates the extracted-crate shape), so it has no crate
-    // test-kit to register it and must be registered here. Without this the provider would omit `pools:`
-    // and the A2A validator would refuse `pools.some-hook` as merely not-bare rather than a cross-plane
+    // recognise every OTHER plane's declared section as a cross-plane reach. Two of the planes under
+    // test register their own decls (and bind the provider) through their test-kits; one plane's
+    // declaration still lives in `busbar-core` (its declared config section key predates the
+    // extracted-crate shape), so it has no crate test-kit to register it and must be registered here.
+    // Without this the provider would omit that plane's declared section key and its sibling's
+    // validator would refuse a reference onto it as merely not-bare rather than a cross-plane
     // reach. Registration is idempotent by key, so this is a no-op past the first run.
     busbar_mcp::testkit::install_test_seams();
     busbar_a2a::testkit::install_test_seams();

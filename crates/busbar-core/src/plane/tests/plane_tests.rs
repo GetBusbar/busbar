@@ -7,9 +7,9 @@ use super::*;
 
 /// WARM THE SHARED PROTOCOL REGISTRY across BOTH `busbar-core` instances this test binary links.
 ///
-/// A handful of plane tests read the LLM plane's wire formats through `busbar_llm::PLANE_DECL`'s
+/// A handful of plane tests read the fallback plane's wire formats through a fixture plugin decl's
 /// `wire_format_names` fn pointer, which resolves to the OTHER core instance's `known_protocols`
-/// (the plain `test-support` lib the `busbar-llm` dev-dep was built against — see the two-instance
+/// (the plain `test-support` lib the fixture plugin dev-dep was built against — see the two-instance
 /// note in `the_llm_planes_dialects_are_the_registrys…`). That instance's built-in table is empty;
 /// it is populated by the SHARED substrate test registry, which the `cfg(test)` instance publishes
 /// into the first time ITS registry is read (see `proto::registry::registry`). Reading this instance's
@@ -60,7 +60,7 @@ fn plane_identity_strings_never_collide_across_planes() {
     assert_eq!(kinds.len(), before, "two planes claim one scope kind");
 
     // THE AUDIT RESOURCE KIND is on the same footing, and for the same reason: it is the `kind`
-    // half of every `kind:name` audit resource the plane's admin verbs record, and the prefix of
+    // half of every `kind:name` audit resource the plane's action verbs record, and the prefix of
     // every action word. Two planes sharing one would make an audit query for one plane's history
     // answer with the other's.
     let mut audit: Vec<&str> = plane_keys().map(|k| plane_decl(k).audit_kind).collect();
@@ -101,18 +101,18 @@ fn a_plane_earns_a_superset_ir_at_two_wire_formats_and_not_before() {
     }
 }
 
-/// Today, and only as a consequence of the rule above. LLM has one because it translates between
-/// the six dialects busbar speaks. MCP has exactly one wire format, so a "superset" there would be a
-/// representation with one protocol on each side, which is a data model and not an intermediate
-/// representation.
+/// Today, and only as a consequence of the rule above, expressed on three example fixture planes: one
+/// that translates between several dialects (so it has earned a superset IR), one that declares
+/// exactly one wire format (so a "superset" there would be a representation with one protocol on
+/// each side, which is a data model and not an intermediate representation), and one whose declared
+/// binding list grew from one entry to several.
 ///
-/// **A2A EARNED ONE WHEN ITS SECOND BINDING ARMED, and this line moving is the rule working rather
-/// than a test being relaxed.** The threshold was written down before either extra binding existed,
-/// derived from a list rather than from a `matches!`, precisely so that the promotion would fire
-/// MECHANICALLY on the day the list grew and nobody would have to remember it was owed. HTTP+JSON
-/// was that day and gRPC followed it; `a2a-mcp-on-official-sdks.md` §4 says to expect exactly this
-/// and not to suppress it. Nothing suppresses it: the promotion is what
-/// the A2A decl's `&[WIRE_JSONRPC, WIRE_HTTP_JSON, WIRE_GRPC]` wire-format list means.
+/// **THE THIRD FIXTURE EARNED ITS IR WHEN ITS SECOND BINDING ARMED, and this line moving is the rule
+/// working rather than a test being relaxed.** The threshold was written down before either extra
+/// binding existed, derived from a list rather than from a `matches!`, precisely so that the
+/// promotion would fire MECHANICALLY on the day the list grew and nobody would have to remember it
+/// was owed. Nothing suppresses it: the promotion is what
+/// its declared wire-format list means.
 #[test]
 fn the_llm_and_a2a_planes_have_earned_an_ir_today() {
     warm_shared_protocol_registry();
@@ -126,8 +126,9 @@ fn the_llm_and_a2a_planes_have_earned_an_ir_today() {
     );
 }
 
-/// The LLM plane's wire-format count is DERIVED from the real protocol registry, never a literal.
-/// A seventh dialect must not require anyone to remember to bump a number here.
+/// The fallback plane's wire-format count is DERIVED from the real protocol registry, never a
+/// literal. An additional registered protocol must not require anyone to remember to bump a number
+/// here.
 #[test]
 fn the_llm_wire_format_count_comes_from_the_protocol_registry() {
     warm_shared_protocol_registry();
@@ -138,10 +139,10 @@ fn the_llm_wire_format_count_comes_from_the_protocol_registry() {
     );
 }
 
-/// A transport is NOT a wire format. MCP runs over stdio, streamable HTTP and SSE, and every one of
-/// them carries the same JSON-RPC message shape. Counting transports would hand MCP an IR it has
-/// not earned, and an IR with nothing to translate between is a lossless-translation bug waiting for
-/// somewhere to happen.
+/// A transport is NOT a wire format: a plane can carry several transports for one wire format, and
+/// counting transports would hand it an IR it has not earned, which is an IR with nothing to
+/// translate between — a lossless-translation bug waiting for somewhere to happen. Pinned on an
+/// example fixture plane declared with one wire format.
 #[test]
 fn transports_do_not_count_as_wire_formats() {
     assert_eq!(

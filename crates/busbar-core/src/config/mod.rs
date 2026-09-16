@@ -411,7 +411,7 @@ pub struct RootCfg {
     /// Derived and refused at boot by `crate::oauth_as::config::AsIdentity::from_cfg`, so nothing
     /// downstream re-parses the issuer or re-derives an endpoint path.
     pub oauth_as: Option<crate::oauth_as::config::AsIdentity>,
-    /// The `tools:` MCP server registry, carried through `resolve` VERBATIM.
+    /// The `tools:` named-definition registry — its owning plane's config section, carried through `resolve` VERBATIM.
     ///
     /// Verbatim on purpose: this is operator INTENT (owner ruling 3), and the only derivation that
     /// happens to it is building the catalogue snapshot, which is a separate value with its own
@@ -495,19 +495,19 @@ pub struct RootCfg {
     /// the admin API serves DEFINITIONS, not the lowered per-module runtime shape.
     pub export_defs: ExportDefs,
     /// The `agents:` NAMED-DEFINITION map, carried through resolve VERBATIM, for the same reason
-    /// `identity_providers` and `export_defs` are: the admin API serves DEFINITIONS, and the A2A
-    /// control plane derives its runtime `AgentRegistration` from this plus what the store has
+    /// `identity_providers` and `export_defs` are: the admin API serves DEFINITIONS, and the owning
+    /// plane derives its runtime registration state from this plus what the store has
     /// accumulated. Nothing here is accumulation.
-    // Neutral capture when the A2A plane is compiled out: the resolved registry type does not exist
-    // then, and a non-empty `agents:` section is refused at `resolve` (the raw capture is carried
-    // through unchanged, as `RootCfg` for `mcp:`/`tools:` is when `plane-mcp` is off).
+    // Neutral capture when this section's owning plane is compiled out: the resolved registry type
+    // does not exist then, and a non-empty `agents:` section is refused at `resolve` (the raw capture
+    // is carried through unchanged, as `RootCfg` is for any plane section whose plane is off).
     pub agent_defs: Box<dyn crate::plane::config::PlaneCfg>,
-    /// The `tool_pools:` MCP failover pools, carried through `resolve` VERBATIM — operator intent,
-    /// like `tool_defs` beside it, projected onto `state::App::tool_pools` at build. Empty ⇒ no
-    /// MCP failover.
+    /// The `tool_pools:` failover pools for this section's owning plane, carried through `resolve`
+    /// VERBATIM — operator intent, like `tool_defs` beside it, projected onto
+    /// `state::App::tool_pools` at build. Empty ⇒ no failover on that plane.
     pub tool_pools: std::collections::BTreeMap<String, crate::failover::CandidatePoolCfg>,
-    /// The `agent_pools:` A2A failover pools, carried through `resolve` VERBATIM onto
-    /// `state::App::agent_pools`. Empty ⇒ no A2A failover.
+    /// The `agent_pools:` failover pools for this section's owning plane, carried through `resolve`
+    /// VERBATIM onto `state::App::agent_pools`. Empty ⇒ no failover on that plane.
     pub agent_pools: std::collections::BTreeMap<String, crate::failover::CandidatePoolCfg>,
 }
 
@@ -830,10 +830,11 @@ pub use busbar_substrate::config::providers::{
     ProviderDeploy, DEFAULT_PROTOCOL,
 };
 
-// ABI-purity CONFIG-ENUMS: the per-provider auth-style selector is an LLM-runtime config value
-// concept; it moved DOWN to `busbar_substrate::config` (serde `Deserialize` + the `#[serde(rename)]`
-// wire strings VERBATIM, byte-identical) so a plane names it via the ABI. Re-exported here at its
-// historical `config::ProviderAuth` path so the frozen providers.yaml grammar parse is unchanged.
+// ABI-purity CONFIG-ENUMS: the per-provider auth-style selector is a plane-owned runtime config
+// value concept; it moved DOWN to `busbar_substrate::config` (serde `Deserialize` + the
+// `#[serde(rename)]` wire strings VERBATIM, byte-identical) so a plane names it via the ABI.
+// Re-exported here at its historical `config::ProviderAuth` path so the frozen providers.yaml
+// grammar parse is unchanged.
 pub use busbar_substrate::config::ProviderAuth;
 
 // ABI-purity CONFIG-ENUM: the resolved on_error/on_empty TERMINAL moved to
@@ -1117,12 +1118,12 @@ pub struct DeployCfg {
     /// default; required once a `browser_login` method or `/auth/token` link generation is in play.
     #[serde(default)]
     pub public_url: Option<String>,
-    /// Optional native inbound TLS / mTLS. Absent ⇒ plain HTTP (unchanged default).
+    /// Optional native inbound TLS / mTLS. Absent ⇒ the unencrypted transport (unchanged default).
     #[serde(default)]
     pub(crate) tls: Option<TlsCfg>,
-    /// SEPARATE listen address for the admin API (`/api/v1/admin/*`). The admin surface ALWAYS runs
-    /// here and is NEVER mounted on the data `listen` — the management plane stays isolated so it can
-    /// carry its own TLS/mTLS, bind, and firewall posture independent of public LLM traffic. Defaults
+    /// SEPARATE listen address for the management surface (`/api/v1/admin/*`). That surface ALWAYS
+    /// runs here and is NEVER mounted on the data `listen` — it stays isolated so it can carry its
+    /// own TLS/mTLS, bind, and firewall posture independent of the data plane's own traffic. Defaults
     /// to loopback (`127.0.0.1:8081`); set an exposed address (+ `admin_tls`) to manage off-host.
     #[serde(default = "default_admin_listen")]
     pub(crate) admin_listen: String,
@@ -1138,13 +1139,13 @@ pub struct DeployCfg {
     /// references.
     #[serde(default)]
     pub(crate) providers_file: Option<String>,
-    /// The top-level `mcp:` block (1.6.0): busbar's own MCP endpoint, as an OAuth 2.1 resource
-    /// server. Its PRESENCE is what mounts the MCP plane — absent, the deployment carries no MCP
-    /// ingress and no `.well-known` document, and nothing joins the route table. See
-    /// `crate::mcp::McpCfg`.
+    /// The top-level `mcp:` block (1.6.0): this section's owning plane's own endpoint, as an OAuth 2.1
+    /// resource server. Its PRESENCE is what mounts that plane's endpoint — absent, the deployment
+    /// carries no ingress for it and no `.well-known` document, and nothing joins the route table.
+    /// See that plane's own endpoint config type.
     // Type-erased through the neutral `McpEndpointSection` seam: the `mcp:` block deserializes into
-    // the MCP plane's own endpoint config behind `dyn PlaneEndpointCfg`, so `DeployCfg` names no
-    // `crate::mcp` endpoint type. The plane compiled out captures it raw and refuses a present block
+    // its owning plane's own endpoint config behind `dyn PlaneEndpointCfg`, so `DeployCfg` names no
+    // plane-specific endpoint type. The plane compiled out captures it raw and refuses a present block
     // at `resolve` (the deletion-gate leg).
     ///
     /// A CARRIER, not a parsed field: the key is lifted off the document by
@@ -1159,34 +1160,34 @@ pub struct DeployCfg {
     /// A lifted CARRIER, exactly as `mcp:` above is.
     #[serde(skip)]
     pub(crate) oauth_as: Option<crate::oauth_as::config::OauthAsCfg>,
-    /// The top-level `tools:` NAMED-DEFINITION map (1.6.0) — THE MCP PLANE's registry: server name →
+    /// The top-level `tools:` NAMED-DEFINITION map (1.6.0) — its owning plane's registry: entry name →
     /// `{url, pin, tools_allow, …}`. Sibling of `pools:` and `agents:` with the same shape and the
     /// same two reserved section keys; there is no `plane:`/`bind:`/`target:` selector, because the
-    /// section an entry is written in IS which plane it is on: a `tools:` entry is an MCP server
-    /// and an `agents:` entry is an A2A agent, so there is no second declaration that could
-    /// disagree with the first.
+    /// section an entry is written in IS which plane it is on: a `tools:` entry belongs to the plane
+    /// that owns that section, and an `agents:` entry belongs to a different plane, so there is no
+    /// second declaration that could disagree with the first.
     ///
-    /// Distinct from `mcp:` above and the pair is not redundant: `mcp:` is busbar's OWN endpoint as
-    /// a resource server (the door), `tools:` is the set of upstreams whose capabilities that door
+    /// Distinct from `mcp:` above and the pair is not redundant: `mcp:` is that plane's OWN endpoint
+    /// as a resource server (the door), `tools:` is the set of upstreams whose capabilities that door
     /// exposes (the rooms). A deployment may configure either without the other.
     // Type-erased through the neutral `ToolsSection` seam: the `tools:` registry deserializes into
-    // the MCP plane's own `ToolsCfg` behind `dyn PlaneCfg`, so `DeployCfg` names no `crate::mcp`
+    // its owning plane's own config type behind `dyn PlaneCfg`, so `DeployCfg` names no plane-specific
     // registry type. The plane compiled out captures it raw and refuses a present section at
     // `resolve`.
     ///
     /// A lifted CARRIER, exactly as `mcp:` above is.
     #[serde(skip)]
     pub(crate) tools: ToolsSection,
-    /// TLS/mTLS for the admin listener (only meaningful with `admin_listen`). Its own cert + optional
-    /// `client_ca_file`, so admin can require client certificates without forcing them on data-plane
-    /// clients. A network-exposed `admin_listen` REQUIRES `client_ca_file` here unless
-    /// `admin_require_mtls: false`.
+    /// TLS/mTLS for the management-surface listener (only meaningful with `admin_listen`). Its own
+    /// cert + optional `client_ca_file`, so the management surface can require client certificates
+    /// without forcing them on data-plane clients. A network-exposed `admin_listen` REQUIRES
+    /// `client_ca_file` here unless `admin_require_mtls: false`.
     #[serde(default)]
     pub(crate) admin_tls: Option<TlsCfg>,
-    /// TOP-LEVEL boot-policy flag: does a network-exposed admin plane REQUIRE mTLS?
+    /// TOP-LEVEL boot-policy flag: does a network-exposed management surface REQUIRE mTLS?
     /// `true` (the DEFAULT) ⇒ a non-loopback `admin_listen` without `admin_tls.client_ca` REFUSES to
-    /// boot. `false` ⇒ the operator deliberately accepts a token-only admin plane on an exposed
-    /// address (mTLS terminated upstream by a mesh). Loopback binds are exempt either way.
+    /// boot. `false` ⇒ the operator deliberately accepts a token-only management surface on an
+    /// exposed address (mTLS terminated upstream by a mesh). Loopback binds are exempt either way.
     ///
     /// 1.5.3 BREAKING: this INVERTS and replaces the retired `admin_insecure:` boolean, so the safe
     /// posture is what an omitted key gives you. It lives at the TOP LEVEL, not under `admin_tls:`,
@@ -1247,34 +1248,34 @@ pub struct DeployCfg {
     /// `observability:` LOUD-FAILS with the `--migrate-config` breadcrumb.
     #[serde(default)]
     pub export: ExportDefs,
-    /// The top-level `agents:` NAMED-DEFINITION map (1.6.0): agent NAME →
-    /// [`crate::a2a::config::AgentDefCfg`]. THE A2A plane. Sibling in shape to `pools:` and
-    /// `tools:`, carrying the same two reserved section words, and no entry on it may reference an
-    /// entry on another plane. Absent ⇒ no agent is registered and nothing can be delegated to.
+    /// The top-level `agents:` NAMED-DEFINITION map (1.6.0): entry NAME → its owning plane's
+    /// definition type. Sibling in shape to `pools:` and `tools:`, carrying the same two reserved
+    /// section words, and no entry on it may reference an entry on another plane. Absent ⇒ no
+    /// registration exists and nothing can be delegated to.
     // Type-erased through the neutral `AgentsSection` seam: the `agents:` registry deserializes into
-    // the A2A plane's own `AgentsCfg` behind `dyn PlaneCfg`, so `DeployCfg` names no `crate::a2a`
+    // its owning plane's own config type behind `dyn PlaneCfg`, so `DeployCfg` names no plane-specific
     // registry type. The plane compiled out captures it raw and refuses a present section at
     // `resolve`.
     ///
     /// A lifted CARRIER, exactly as `mcp:` above is.
     #[serde(skip)]
     pub(crate) agents: AgentsSection,
-    /// The top-level `streams:` section (1.6.0) — THE VOICE PLANE's owned config: the locked session
+    /// The top-level `streams:` section (1.6.0) — its owning plane's own config: the locked session
     /// defaults (media/VAD/`SessionConfig`) plus the three session ceilings (wall-clock, context
-    /// window, per-response output tokens). SINGULAR typed section (one live-voice posture per
+    /// window, per-response output tokens). SINGULAR typed section (one live-session posture per
     /// deployment), NOT a named-definition map, so it carries no reserved section words and no
     /// registrations.
-    // Type-erased through the neutral `StreamsSection` seam: `streams:` deserializes into the voice
-    // plane's own `StreamsCfg` behind `dyn PlaneCfg`, so `DeployCfg` names no `busbar_voice` type. The
-    // plane compiled out (voice off-default) captures it RAW and refuses a present section at
+    // Type-erased through the neutral `StreamsSection` seam: `streams:` deserializes into its owning
+    // plane's own config type behind `dyn PlaneCfg`, so `DeployCfg` names no plane-specific type. The
+    // plane compiled out (off by default) captures it RAW and refuses a present section at
     // `resolve`, exactly as `tools:`/`agents:` do — so no `#[cfg]` guards the field itself.
     ///
     /// A lifted CARRIER, exactly as `mcp:` above is.
     #[serde(skip)]
     pub(crate) streams: StreamsSection,
     // 1.6.0 UNIFIED POOLS: the separate `tool_pools:` and `agent_pools:` sections are GONE. There is
-    // ONE neutral top-level `pools:` (above); a pool's kind is INFERRED from its members and MCP/A2A
-    // pools are projected to their plane carriers in `resolve`. A 1.5.4/1.6.0-dev config still
+    // ONE neutral top-level `pools:` (above); a pool's kind is INFERRED from its members and each
+    // plane's pools are projected to their own carriers in `resolve`. A 1.5.4/1.6.0-dev config still
     // carrying `tool_pools:`/`agent_pools:` LOUD-FAILS here (unknown field) with the
     // `--migrate-config` breadcrumb, exactly as the retired `observability:` block does — the
     // migrator folds them into `pools:`.
@@ -2155,9 +2156,10 @@ pub fn resolve(
     }
     // ── UNIFIED `pools:` KIND INFERENCE (1.6.0). The single neutral `pools:` map holds pools of
     // every plane; a pool's KIND is INFERRED from its members (never declared), and the pool is
-    // routed to the plane that owns those members. LLM pools stay in `pools` (their rich members and
-    // routing knobs are read by the model plane exactly as before — byte-identical); MCP and A2A
-    // pools are projected to the neutral `CandidatePoolCfg` carriers the two non-LLM planes already
+    // routed to the plane that owns those members. Pools whose members resolve to the residual
+    // (`models:`) fallback kind stay in `pools` (their rich members and routing knobs are read by
+    // that fallback plane exactly as before — byte-identical); pools belonging to any other
+    // registered plane are projected to the neutral `CandidatePoolCfg` carriers those planes already
     // consume. HOMOGENEITY is enforced here (a pool whose members span two nouns is refused), which
     // is the check the design puts before resolution so that a clean `--validate` is a clean boot.
     // An UNRESOLVABLE member is deliberately NOT refused here — see the `None` arm below for the
@@ -2175,7 +2177,7 @@ pub fn resolve(
         // A pool's KIND discriminant is its members' shared CONFIG SECTION — the plane-declared
         // grammar key, used as OPAQUE DATA. The router never names a plane: `tools:` routes to the
         // tool-pool projection, `agents:` to the agent-pool one, and the residual `models:` section
-        // stays on the LLM lane. Reading the discriminant off the frozen named-map mirror (rather
+        // stays on the fallback lane. Reading the discriminant off the frozen named-map mirror (rather
         // than a hard-coded plane key) is what lets a registered plane's pools route with nothing
         // about that plane written here.
         let tools_section = busbar_substrate::plane::config::NAMED_MAP_SECTIONS[2];
@@ -2224,8 +2226,8 @@ pub fn resolve(
                     // THE MEMBER CANNOT ESCAPE, because taking no plane from it leaves exactly two
                     // roads and both end in a refusal that runs before any config is served (boot,
                     // `--validate` and admin apply all resolve, then validate):
-                    //   * the pool's other members give it no plane either, so it STAYS on the LLM
-                    //     lane in `pools` — where `config_validate`'s pool loop refuses the member
+                    //   * the pool's other members give it no plane either, so it STAYS on the
+                    //     fallback lane in `pools` — where `config_validate`'s pool loop refuses the member
                     //     by name, in 1.5.5's words (`pool '<p>' references unknown model '<m>'`);
                     //   * or the other members DO name a plane, the pool is projected to
                     //     `tool_pools_derived` / `agent_pools_derived`, and `check_failover_pool`
@@ -2272,23 +2274,25 @@ pub fn resolve(
                     );
                     non_llm.push(pool_name.clone());
                 }
-                // LLM pools — and an all-unresolvable pool, which `config_validate` refuses member
-                // by member once it is resolved — stay in `pools`.
+                // Fallback-lane pools — and an all-unresolvable pool, which `config_validate` refuses
+                // member by member once it is resolved — stay in `pools`.
                 _ => {}
             }
         }
-        // A pool that is NOT an LLM pool must not remain in the LLM `pools` map (its bare members do
-        // not resolve to `models:` and would fail the model-lane build). Remove the projected ones.
+        // A pool that is NOT a fallback-lane pool must not remain in the fallback `pools` map (its
+        // bare members do not resolve to `models:` and would fail the fallback-lane build). Remove
+        // the projected ones.
         for name in non_llm {
             pools.remove(&name);
         }
     }
-    // NEUTRAL POOL-LEVEL ROUTING KNOBS → members (1.6.0, LLM plane). `weights:`/`tier:`/
+    // NEUTRAL POOL-LEVEL ROUTING KNOBS → members (1.6.0, fallback plane). `weights:`/`tier:`/
     // `attempt_timeout_ms:` on the pool refine any member that did NOT state the value inline (an
     // inline per-member value WINS, for byte-identity with 1.5.4 rich-member configs). This lets a
-    // uniform bare-name LLM pool carry weights/tier/timeouts without per-member rich objects. On the
-    // MCP/A2A planes these knobs are carried on the pool but their ordered-failover engines do not yet
-    // read `weights:` — the projection to `CandidatePoolCfg` above is deliberately behaviour-neutral.
+    // uniform bare-name fallback-lane pool carry weights/tier/timeouts without per-member rich
+    // objects. On other planes these knobs are carried on the pool but their ordered-failover
+    // engines do not yet read `weights:` — the projection to `CandidatePoolCfg` above is
+    // deliberately behaviour-neutral.
     for pool in pools.values_mut() {
         for m in pool.members.iter_mut() {
             if let Some(&w) = pool.weights.get(&m.model) {
@@ -2306,8 +2310,8 @@ pub fn resolve(
             }
         }
     }
-    // THE A2A PLANE'S SECTION-LEVEL ATTACH, judged by the same rule its per-agent lists are. The
-    // per-agent lists are checked at parse (`a2a::config::validate_agent`); the section list has no
+    // THE `agents:` PLANE'S SECTION-LEVEL ATTACH, judged by the same rule its per-agent lists are. The
+    // per-agent lists are checked at parse by that plane's own validator; the section list has no
     // per-entry parse to hang off, so it is checked here, where every other cross-reference is.
     // `` `agents.hooks` `` is this plane's own WORDING for the site; the rule and the sentence are
     // `plane::config`'s, shared with the `tools:` plane below.
@@ -2347,12 +2351,12 @@ pub fn resolve(
     // agent named in a tool pool fails here rather than at dispatch — and the message says which
     // section the name actually lives in, because "not found" would send an operator looking for a
     // typo they did not make.
-    // Whether `m` names an MCP `tools:` server. Always false when the MCP plane is compiled out:
-    // there is no `tools:` registry then, and no pool is inferred onto the MCP plane, so
+    // Whether `m` names a `tools:` entry. Always false when that entry's owning plane is compiled
+    // out: there is no `tools:` registry then, and no pool is inferred onto that plane, so
     // `tool_pools_derived` is empty and the first loop below never iterates.
     let is_tool_member = |m: &str| -> bool { deploy.tools.0.contains_def(m) };
-    // Whether `m` names an A2A `agents:` registration. Always false when the A2A plane is compiled
-    // out: there is no `agents:` registry then, and no pool is inferred onto the A2A plane, so
+    // Whether `m` names an `agents:` registration. Always false when that entry's owning plane is
+    // compiled out: there is no `agents:` registry then, and no pool is inferred onto that plane, so
     // `agent_pools_derived` is empty and the second loop below never iterates.
     let is_agent_member = |m: &str| -> bool { deploy.agents.0.contains_def(m) };
     for (pool, def) in &tool_pools_derived {
@@ -2455,12 +2459,13 @@ pub fn resolve(
     }
 
     // THE `tools:` PLANE's PUBLISHED-NAME UNIQUENESS, and it has to run HERE rather than inside
-    // `validate_server` because it is the one MCP rule that is not about one server: a
+    // `validate_server` because it is the one registry rule that is not about one entry: a
     // `publish_as:` override on one registration can collide with the `{server}_{tool}` default of
     // another, and neither server can see the other. `resolve` is where the whole EFFECTIVE registry
-    // exists — file base plus whatever the admin API applied — and it is the single point boot,
-    // `--validate`, the admin config-apply rebuild and the admin dry-run validate endpoint all pass
-    // through, so a config that boots is exactly the config that validates.
+    // exists — file base plus whatever the management surface applied — and it is the single point
+    // boot, `--validate`, the management-surface config-apply rebuild and the management-surface
+    // dry-run validate endpoint all pass through, so a config that boots is exactly the config that
+    // validates.
     // `validate_registry` runs through the always-present seam; a compiled-out `RawPlaneSection`
     // answers `Ok(())`, so this is a no-op when the plane is absent.
     if let Err(e) = deploy.tools.0.validate_registry() {
@@ -2492,13 +2497,14 @@ pub fn resolve(
             ));
         }
     }
-    // The VOICE plane's `streams:` section is SINGULAR (one live-voice posture per deployment), so it
-    // is NOT a `NamedMapSection` and not in the mirror above — it is checked the same way in its own
-    // right: a present `streams:` block with no registered voice plane (the default, voice-off build)
-    // names a section this build cannot serve and is refused at resolve, byte-identical to a present
-    // `tools:`/`agents:` naming a compiled-out plane. With voice registered the decl is present and
-    // this never fires; with it compiled out the `RawPlaneSection` reports `is_present()` for a
-    // section the operator wrote, and there is no decl for it.
+    // The `streams:` section's owning plane's section is SINGULAR (one live session posture per
+    // deployment), so it is NOT a `NamedMapSection` and not in the mirror above — it is checked the
+    // same way in its own right: a present `streams:` block with no registered owning plane (the
+    // default, off build) names a section this build cannot serve and is refused at resolve,
+    // byte-identical to a present `tools:`/`agents:` naming a compiled-out plane. With that plane
+    // registered the decl is present and this never fires; with it compiled out the
+    // `RawPlaneSection` reports `is_present()` for a section the operator wrote, and there is no
+    // decl for it.
     if deploy.streams.0.is_present()
         && crate::plane::registry::plane_decl_for_config_section("streams").is_none()
     {
@@ -2550,16 +2556,17 @@ pub fn resolve(
         |a| a.admin_auth.iter().map(|e| e.name.clone()).collect(),
     );
 
-    // The `mcp:` block is validated HERE, into `errors`, rather than at first request: an MCP plane
-    // whose canonical URI is malformed would advertise one audience in its metadata document and
-    // expect another in its verifier, and every correctly-behaved client in the world would obtain a
-    // token this server then refuses. A boot refusal names the field and what to type; a runtime one
-    // is discovered by an agent that cannot connect and cannot say why.
+    // The `mcp:` block is validated HERE, into `errors`, rather than at first request: its owning
+    // plane's endpoint, whose canonical URI is malformed, would advertise one audience in its
+    // metadata document and expect another in its verifier, and every correctly-behaved client in
+    // the world would obtain a token this server then refuses. A boot refusal names the field and
+    // what to type; a runtime one is discovered by a caller that cannot connect and cannot say why.
     // The `mcp:` endpoint is LOWERED through the plane seam into its validated resource, type-erased
-    // as `Option<Arc<dyn Any>>` — so `RootCfg` names no `crate::mcp` resource type. The plane's
-    // `lower_endpoint` hook returns the SAME `McpCfgError` `Display` string boot produced, collected
-    // verbatim. With the MCP plane compiled out there is no hook: a PRESENT `mcp:` block names a plane
-    // this build does not carry, so it is refused (the config deletion-gate leg) with the same wording.
+    // as `Option<Arc<dyn Any>>` — so `RootCfg` names no plane-specific resource type. The plane's
+    // `lower_endpoint` hook returns the SAME `Display` string boot produced for that error type,
+    // collected verbatim. With that plane compiled out there is no hook: a PRESENT `mcp:` block
+    // names a plane this build does not carry, so it is refused (the config deletion-gate leg) with
+    // the same wording.
     // plane-purity: frozen-wire deploy.mcp is the frozen mcp: wire field on DeployCfg
     let endpoint_block = deploy.mcp.0.as_ref();
     let lowered_endpoint: Option<std::sync::Arc<dyn std::any::Any + Send + Sync>> =

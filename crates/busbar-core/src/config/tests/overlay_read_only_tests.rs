@@ -7,7 +7,7 @@
 //! config read-only:
 //!
 //! ```text
-//! docker run -d -p 8080:8080 -e ANTHROPIC_KEY \
+//! docker run -d -p 8080:8080 -e UPSTREAM_API_KEY \
 //!   -v "$PWD/config.yaml:/etc/busbar/config.yaml:ro" getbusbar/busbar
 //! ```
 //!

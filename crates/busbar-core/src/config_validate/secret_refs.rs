@@ -18,9 +18,9 @@ use super::RootCfg;
 /// THIS FUNCTION USED TO FAIL OPEN. It was a hand-written list of config paths, and a secret-bearing
 /// field that nobody remembered to add here was SILENTLY SKIPPED: no compile error, no test failure,
 /// and `--validate` printed `ok: config valid` for a config whose credential could not resolve.
-/// That was not hypothetical. `identity-providers.<name>.browser_login.client_secret` (the OAuth
-/// confidential-client secret the core itself presents during the code-to-token exchange) had been
-/// absent from the list since the block was introduced, so a deployment whose OIDC secret env var was
+/// That was not hypothetical. `identity-providers.<name>.browser_login.client_secret` (a confidential
+/// client secret the core itself presents during a code-to-token exchange) had been
+/// absent from the list since the block was introduced, so a deployment whose auth secret env var was
 /// unset was told its config was good and then failed every hosted login at runtime.
 ///
 /// TWO LAYERS NOW MAKE OMISSION IMPOSSIBLE RATHER THAN REMEMBERED, because each layer catches a
@@ -44,24 +44,24 @@ pub(crate) fn secret_refs(cfg: &RootCfg) -> Vec<(String, &crate::config::SecretR
 /// Whether `api_key: none` — the declaration that there is NO credential at all — is MEANINGFUL at
 /// the config path `what`, which is one of the paths [`walk_secret_refs`] mints.
 ///
-/// True for a provider `api_key` and nothing else. A keyless upstream is a real thing: a local
-/// ollama or vLLM takes no credential, and since an unresolvable reference now refuses boot, the
-/// operator needs a way to say that on purpose. Every OTHER secret here protects something that has
-/// no credential-free mode — a TLS cert, `auth.signing_key`, the authorization server's ES256 key,
-/// an admin token, an OIDC client secret, a plane's outbound delegation credential. Accepting
-/// `none` on one of those would not configure anything; it would silently disarm the thing the
-/// secret exists to protect, which is the same class of quiet failure the degrade this replaces
-/// used to cause.
+/// True for the credential field on a `providers.<name>` entry and nothing else. A keyless upstream
+/// is a real thing: some upstreams take no credential at all, and since an unresolvable reference now
+/// refuses boot, the operator needs a way to say that on purpose. Every OTHER secret here protects
+/// something that has no credential-free mode — a TLS cert, `auth.signing_key`, the authorization
+/// server's ES256 key, an operator token, a confidential-client secret, a plane's outbound delegation
+/// credential. Accepting `none` on one of those would not configure anything; it would silently
+/// disarm the thing the secret exists to protect, which is the same class of quiet failure the
+/// degrade this replaces used to cause.
 ///
 /// Written as a predicate over the PATH, and deliberately kept in this file: `providers.<name>.api_key`
-/// is minted by the provider loop a few lines below, so the shape this matches and the shape that
-/// exists are written within sight of each other. `tests::keyless_is_accepted_on_provider_api_keys_alone`
+/// is minted by the loop over `providers` a few lines below, so the shape this matches and the shape
+/// that exists are written within sight of each other. `tests::keyless_is_accepted_on_provider_api_keys_alone`
 /// drives it over the full walk of a fully-populated config, so a new secret-bearing path is
 /// classified by the test rather than by anyone remembering to look here.
 pub(crate) fn keyless_credential_allowed(what: &str) -> bool {
-    // A provider name may itself contain dots (`providers.my.local.llama.api_key`), so this is a
-    // prefix/suffix test, not a segment count. It cannot over-match: no other path this walk mints
-    // both starts under `providers.` and ends in `.api_key`.
+    // A `providers.<name>` entry name may itself contain dots (`providers.my.local.llama.api_key`),
+    // so this is a prefix/suffix test, not a segment count. It cannot over-match: no other path this
+    // walk mints both starts under `providers.` and ends in `.api_key`.
     what.starts_with("providers.") && what.ends_with(".api_key")
 }
 
@@ -103,7 +103,7 @@ fn walk_secret_refs(cfg: &RootCfg, tokens: TokenRefs) -> Vec<(String, &crate::co
         providers,
         identity_providers,
         // ── ADDRESSES, NAMES AND REFERENCES: strings the operator types in the clear. A listen
-        // address, a public URL, a module name or a bare provider/hook/group name is not a
+        // address, a public URL, a module name or a bare hook/group/definition name is not a
         // credential and has no `SecretRef` anywhere beneath it. ──
         listen: _,
         public_url: _,
@@ -137,7 +137,7 @@ fn walk_secret_refs(cfg: &RootCfg, tokens: TokenRefs) -> Vec<(String, &crate::co
         // `models` names a provider and a model id; the credential lives on the provider.
         models: _,
         pools: _,
-        // The per-plane ENDPOINT RESOURCES carry NO credential, and the reason is checkable rather
+        // The per-section ENDPOINT RESOURCES carry NO credential, and the reason is checkable rather
         // than asserted: an endpoint resource's fields — its canonical URI, authorization servers,
         // supported scopes, allowed origins — are published VERBATIM in the RFC 9728 protected-resource
         // metadata document, which is served to unauthenticated callers by design. A secret cannot live
@@ -150,21 +150,22 @@ fn walk_secret_refs(cfg: &RootCfg, tokens: TokenRefs) -> Vec<(String, &crate::co
         // COMPILE until someone decided, and that is the whole value of the exhaustive destructure.
         endpoint_resources: _,
         // `oauth_as:` DOES carry a `SecretRef` — the ES256 signing key — and it is walked below
-        // rather than declined here. It is the one secret on that plane, and it is the highest-value
+        // rather than declined here. It is the one secret on that section, and it is the highest-value
         // one in the process: whoever holds it forges every token this deployment will ever issue.
         oauth_as,
-        // `tool_defs` (the MCP `tools:` plane) DOES carry credentials — the RFC 8693 token-exchange
-        // subject token and a stdio child's `env:` references — but they are NO LONGER walked here.
-        // The exhaustive destructure that forces the secret/not-secret decision on every MCP field
-        // now lives in `ToolsCfg`'s `PlaneCfg::secret_refs` impl, beside the fields it guards, and
-        // this binding is handed to that impl by the plane loop below. It stays NAMED (not `_`) so a
-        // new TOP-LEVEL `RootCfg` field is still a compile error somebody has to answer.
+        // `tool_defs` (one plane's own named-definition section) DOES carry credentials — a
+        // token-exchange subject token and a launched child's environment references — but they are
+        // NO LONGER walked here. The exhaustive destructure that forces the secret/not-secret decision
+        // on every field of that section now lives in `ToolsCfg`'s `PlaneCfg::secret_refs` impl,
+        // beside the fields it guards, and this binding is handed to that impl by the loop below. It
+        // stays NAMED (not `_`) so a new TOP-LEVEL `RootCfg` field is still a compile error somebody
+        // has to answer.
         tool_defs,
-        // `agent_defs` (the A2A `agents:` plane) DOES carry credentials — each agent's leased outbound
-        // delegation secret and both halves of its outbound client identity — but, like `tool_defs`,
-        // they are gathered by the plane's own `AgentsCfg::secret_refs` impl through the loop below,
-        // not walked here. Bound by name for the same reason: the RootCfg destructure keeps forcing a
-        // decision on a new top-level field.
+        // `agent_defs` (another plane's own named-definition section) DOES carry credentials — each
+        // definition's leased outbound delegation secret and both halves of its outbound client
+        // identity — but, like `tool_defs`, they are gathered by that section's own
+        // `AgentsCfg::secret_refs` impl through the loop below, not walked here. Bound by name for the
+        // same reason: the RootCfg destructure keeps forcing a decision on a new top-level field.
         agent_defs,
         // THE TWO FAILOVER POOL MAPS hold BARE NAMES and nothing else: a `members:` list of
         // registrations defined elsewhere, and a `repeatable:` list of operation names. Both are
@@ -324,8 +325,8 @@ fn walk_secret_refs(cfg: &RootCfg, tokens: TokenRefs) -> Vec<(String, &crate::co
     }
 
     // ── THE PLANE SECTIONS, each asked for its OWN secret references. The exhaustive no-`..`
-    // destructure that forces a secret/not-secret decision on every new MCP / A2A field has moved
-    // OUT of this walk and INTO each plane's `PlaneCfg::secret_refs` impl, beside the fields it
+    // destructure that forces a secret/not-secret decision on every new field of either section has
+    // moved OUT of this walk and INTO each plane's `PlaneCfg::secret_refs` impl, beside the fields it
     // guards (`ToolsCfg`, `AgentsCfg`). Core no longer names the plane's credential-bearing types —
     // `McpServerDefCfg`, `TokenExchangeCfg`, `AgentDefCfg`, `OutboundCredential`, `ClientIdentityCfg`
     // — to enumerate them; it loops the trait over the section bindings the RootCfg destructure
@@ -405,11 +406,11 @@ pub(crate) const SECRET_BEARING_TYPES: &[(&str, SecretBearing)] = &[
     // `tools.<name>.token_exchange.subject_token` — busbar's OWN token, the SUBJECT of an RFC 8693
     // exchange, never the caller's.
     ("TokenExchangeCfg", SecretBearing::Walked),
-    // The A2A plane's LEASED outbound delegation credential. Reached from `RootCfg` through
+    // That plane's LEASED outbound delegation credential. Reached from `RootCfg` through
     // `agent_defs -> agents.<name>.upstream_credential`.
     ("OutboundCredential", SecretBearing::Walked),
-    // The A2A plane's OUTBOUND CLIENT CERTIFICATE — busbar's own end of a mutual handshake with a
-    // registered agent. Reached from `RootCfg` through `agent_defs -> agents.<name>.client_identity`.
+    // That plane's OUTBOUND CLIENT CERTIFICATE — busbar's own end of a mutual handshake with a
+    // registered peer. Reached from `RootCfg` through `agent_defs -> agents.<name>.client_identity`.
     ("ClientIdentityCfg", SecretBearing::Walked),
     // The authorization server's ES256 signing key — the highest-value secret in the process, since
     // whoever holds it forges every token this deployment will ever issue. Reached from `RootCfg`

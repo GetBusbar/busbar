@@ -45,7 +45,7 @@ pub(crate) fn base_deploy() -> DeployCfg {
         agents: Default::default(),
         streams: Default::default(),
         listen: DEFAULT_LISTEN_ADDR.into(),
-        // Not an MCP server.
+        // Left at its type default (unset).
         mcp: Default::default(),
         oauth_as: None,
         public_url: None,
@@ -468,7 +468,7 @@ fn test_provider_path_override_resolves() {
 
 #[test]
 fn bind_is_loopback_classification() {
-    // Loopback binds: safe for a token-only admin plane.
+    // Loopback binds: safe for a token-only guarded listener.
     assert!(bind_is_loopback("127.0.0.1:8081"));
     assert!(bind_is_loopback("localhost:8081"));
     assert!(bind_is_loopback("LocalHost:8081")); // case-insensitive
@@ -482,7 +482,7 @@ fn bind_is_loopback_classification() {
     assert!(!bind_is_loopback("admin.internal:8081")); // hostname: fail closed (exposed)
 }
 
-/// The admin-plane boot-guard: a network-exposed `admin_listen` refuses to boot without mTLS,
+/// The `admin_listen` boot-guard: a network-exposed listener refuses to boot without mTLS,
 /// unless deliberately waived. Loopback binds and mTLS-equipped exposed binds resolve cleanly.
 #[test]
 fn admin_plane_boot_guard() {
@@ -511,17 +511,17 @@ fn admin_plane_boot_guard() {
         resolve(&deploy, &defs)
     }
 
-    // DEFAULT: the zero-config admin listener is loopback, so it boots with no mTLS. Note the
+    // DEFAULT: the zero-config `admin_listen` is loopback, so it boots with no mTLS. Note the
     // argument: 1.5.3's DEFAULT is `admin_require_mtls: true` — the guard is ON unless waived.
     assert!(
         build(DEFAULT_ADMIN_LISTEN_ADDR, None, true).is_ok(),
         "the default loopback admin_listen must resolve"
     );
-    // Loopback admin plane is safe without mTLS (unreachable off-host).
+    // A loopback `admin_listen` is safe without mTLS (unreachable off-host).
     assert!(build("127.0.0.1:8081", None, true).is_ok());
     assert!(build("[::1]:8081", None, true).is_ok());
     assert!(build("localhost:8081", None, true).is_ok());
-    // EXPOSED admin plane without mTLS and without waiver: REFUSE TO BOOT.
+    // An EXPOSED `admin_listen` without mTLS and without waiver: REFUSE TO BOOT.
     let err = build("0.0.0.0:8081", None, true)
         .expect_err("exposed admin without mTLS must refuse to boot");
     let joined = err.join("\n");
@@ -531,9 +531,9 @@ fn admin_plane_boot_guard() {
         joined.contains("admin_require_mtls: false"),
         "the guard must name the 1.5.3 waiver spelling (not the retired `admin_insecure`): {joined}"
     );
-    // Exposed admin WITH client-cert mTLS: allowed.
+    // Exposed `admin_listen` WITH client-cert mTLS: allowed.
     assert!(build("0.0.0.0:8081", Some("client-ca.pem"), true).is_ok());
-    // Exposed admin with the explicit `admin_require_mtls: false` waiver: allowed (deliberate).
+    // Exposed `admin_listen` with the explicit `admin_require_mtls: false` waiver: allowed (deliberate).
     assert!(build("0.0.0.0:8081", None, false).is_ok());
 }
 
@@ -3255,8 +3255,8 @@ advanced:
 /// FREEZE BLOCKER — the hook-name namespace is CLOSED.
 ///
 /// `RESERVED_HOOK_NAMES` and the bare strategy keywords accepted in a pool's `hooks:` list share ONE
-/// word space. Adding a bare terminal later — a new `on_error` word, a new ranking strategy, the MCP
-/// bounded-default floor — would retroactively invalidate a config that is LEGAL TODAY: an operator's
+/// word space. Adding a bare terminal later — a new `on_error` word, a new ranking strategy, a new
+/// plugin-defined bounded-default floor — would retroactively invalidate a config that is LEGAL TODAY: an operator's
 /// hook named `least_bad` boots fine in 1.5.3 and would become a boot failure (or, worse, silently
 /// rebind to the new built-in) the moment the word were reserved.
 ///
@@ -3323,9 +3323,9 @@ fn reserved_hook_names_are_frozen() {
 
 /// FREEZE BLOCKER — an OMITTED `phase:` means THE FOUR CORE STAGES, not "all stages ever".
 ///
-/// If omission meant "all stages", an MCP tool-invocation stage added in 1.6.0 (or an A2A delegation
-/// stage in 1.6.0) would retroactively make every already-deployed unscoped hook start firing at
-/// brand-new points in a brand-new plane — a silent widening of what the operator signed off on, with
+/// If omission meant "all stages", a new plugin-defined invocation stage added in 1.6.0 (or a new
+/// delegation stage in 1.6.0) would retroactively make every already-deployed unscoped hook start firing at
+/// brand-new points in a brand-new plugin kind — a silent widening of what the operator signed off on, with
 /// no config change and no diagnostic. Pinning the default to a FROZEN list makes a later stage
 /// strictly additive: to fire there, a hook must NAME it.
 ///

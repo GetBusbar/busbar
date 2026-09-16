@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The shared pools/tools/agents container: one code object, three sibling sections, and a
-//! resolver that REFUSES a cross-plane reference by name.
+//! The shared cross-plane sections container: one code object, several sibling sections keyed by
+//! plane, and a resolver that REFUSES a cross-plane reference by name.
 
 use super::*;
 
@@ -78,8 +78,9 @@ fn a_name_from_another_plane_never_resolves() {
 }
 
 /// The refusal DIAGNOSES rather than merely denying: it names the plane the entry actually lives on,
-/// so the operator is told "that is an agent, referenced from a tools entry" instead of "unknown
-/// name". A bare not-found here sends someone hunting for a typo that is not there.
+/// so the operator is told "that entry is defined on a different plane, referenced from this one"
+/// instead of "unknown name". A bare not-found here sends someone hunting for a typo that is not
+/// there.
 #[test]
 fn a_cross_plane_reference_names_the_plane_the_entry_lives_on() {
     let s = sections();

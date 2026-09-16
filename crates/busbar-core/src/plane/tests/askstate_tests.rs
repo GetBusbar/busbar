@@ -187,7 +187,7 @@ fn state_cannot_be_spent_on_a_different_request_than_it_was_minted_for() {
         ),
         Err(Rejected::WrongRequest)
     );
-    // A different CAPABILITY: one tool's ask spent on another tool.
+    // A different CAPABILITY: one capability's ask spent on another capability.
     assert_eq!(
         opened.matches("vk_caller_a", "tools/call", "test_other", &honest_digest, 4),
         Err(Rejected::WrongRequest)

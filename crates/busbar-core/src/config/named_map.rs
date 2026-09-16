@@ -10,12 +10,12 @@
 //! config sites reference a name.
 //!
 //! Everything that serves the pattern is parameterized by [`NamedMapSection`] rather than written per
-//! kind: the admin router mounts its five routes in a loop, the OpenAPI generator emits its path
+//! kind: the management-surface router mounts its five routes in a loop, the OpenAPI generator emits its path
 //! items in a loop, the error taxonomy declares one set per route SHAPE, and the config overlay
-//! stores every section in one `section → name → raw definition` map. Adding `tools:` (1.6.0 MCP) or
-//! `agents:` (1.6.0 A2A) is therefore a ONE-VARIANT addition here plus its two accessors below — no
-//! new route handler, no new overlay type, no new taxonomy arm, and no breaking change to anything
-//! already shipped.
+//! stores every section in one `section → name → raw definition` map. Adding a new registered
+//! plane's named-definition map (e.g. `tools:` or `agents:`, 1.6.0) is therefore a ONE-VARIANT
+//! addition here plus its two accessors below — no new route handler, no new overlay type, no new
+//! taxonomy arm, and no breaking change to anything already shipped.
 //!
 //! `hooks:` and `store:` are deliberately NOT here: `hooks:` predates the generic path and keeps its
 //! own richer surface (health/schema/status probes, grant immutability, the configure-ack settings
@@ -26,8 +26,8 @@ use super::{DeployCfg, ExportDefCfg, IdentityProviderCfg};
 /// One 1.5.3 named-DEFINITION map section. The variant set is the ONLY thing a new section adds.
 ///
 /// The two 1.5.3-native sections are in-core NAMES ([`NamedMapSection::IdentityProviders`],
-/// [`NamedMapSection::Export`]). Every PLANE-owned named-map section — `tools:` (MCP), `agents:`
-/// (A2A), and any registered plane's own named-definition map — is a single [`NamedMapSection::Plane`]
+/// [`NamedMapSection::Export`]). Every PLANE-owned named-map section — e.g. `tools:` or `agents:`
+/// (1.6.0), and any registered plane's own named-definition map — is a single [`NamedMapSection::Plane`]
 /// carrying its plane-declared config-section key: core's generic named-map machinery names NO plane
 /// noun, and a section joins by its plane registering a decl whose `named_def_list` is set, not by a
 /// new variant here. See [`NamedMapSection::sections`].
@@ -41,14 +41,14 @@ pub enum NamedMapSection {
     Export,
     /// A PLANE-OWNED named-definition map, carrying the owning plane's declared config-section key
     /// ([`PlaneDecl::config_section`](crate::plane::registry::PlaneDecl::config_section)) as OPAQUE
-    /// DATA. `tools:` (server NAME → `{url, pin, tools_allow, …}`, the MCP plane) and `agents:`
-    /// (agent NAME → `{url, pin, reverify_ttl, …}`, the A2A plane) are its two 1.6.0 instances, and a
-    /// registered plane declaring a `named_def_list` is another. The config key is LOCKED to the
-    /// plane's section — its mere existence is what declares the plane, the way `pools:` declares the
-    /// LLM plane — and [`NamedMapSection::key`] is both the config key and the admin path segment, so
-    /// the API mirrors the config grammar exactly. Core spells no `tools`/`agents` literal to build
-    /// this: a plane's section reaches the chassis through [`NamedMapSection::sections`], folded from
-    /// the plane registry.
+    /// DATA. `tools:` (server NAME → `{url, pin, tools_allow, …}`) and `agents:`
+    /// (agent NAME → `{url, pin, reverify_ttl, …}`) are its two 1.6.0 instances, each declared by a
+    /// different registered plane, and a registered plane declaring a `named_def_list` is another. The
+    /// config key is LOCKED to the plane's section — its mere existence is what declares the plane, the
+    /// way `pools:` declares its owning plane — and [`NamedMapSection::key`] is both the config key and
+    /// the management-surface path segment, so the API mirrors the config grammar exactly. Core spells
+    /// no `tools`/`agents` literal to build this: a plane's section reaches the chassis through
+    /// [`NamedMapSection::sections`], folded from the plane registry.
     Plane(&'static str),
 }
 
@@ -58,9 +58,9 @@ impl NamedMapSection {
     ///
     /// FOLDED, not fixed: the two in-core sections ([`NamedMapSection::IdentityProviders`],
     /// [`NamedMapSection::Export`]) followed by one [`NamedMapSection::Plane`] per registered plane
-    /// whose decl declares a `named_def_list` (its named-definition-map admin surface), in the
-    /// registry's canonical layering order. So `tools:`/`agents:` appear here exactly when their
-    /// planes are compiled in, and a registered plane's own named map joins with nothing written
+    /// whose decl declares a `named_def_list` (its named-definition-map management surface), in the
+    /// registry's canonical layering order. So a plane's named-map section appears here exactly when
+    /// that plane is compiled in, and a registered plane's own named map joins with nothing written
     /// here. Under the default/test/openapi feature set the fold is
     /// `[identity-providers, export, tools, agents]` — the frozen 1.5.3 order.
     ///
@@ -78,7 +78,7 @@ impl NamedMapSection {
         out
     }
 
-    /// The config key AND the admin path segment — they are deliberately the same string, so the API
+    /// The config key AND the management-surface path segment — they are deliberately the same string, so the API
     /// mirrors the config grammar exactly (`export:` ⇄ `/export`).
     pub fn key(self) -> &'static str {
         match self {
@@ -122,25 +122,25 @@ impl NamedMapSection {
     /// Whether a definition in this section is a PLUGIN INSTANCE, and therefore must name a backing
     /// `module:`.
     ///
-    /// Every 1.5.3 section was one, so the generic write path simply demanded `module:`. The two
-    /// PLANE sections are the ones that are NOT: a `tools:` entry and an `agents:` entry each
-    /// describe a REMOTE ENDPOINT that somebody else runs, and there is no plugin behind either to
-    /// name. That both planes landed on the same exception independently is the argument for it
-    /// living here: the requirement is a per-section property in this table rather than a hardcoded
-    /// rule in the handler, for the same reason [`NamedMapSection::has_trust_ceiling`] is — the
-    /// handler stays generic and the asymmetry stays visible where a reader can find it.
+    /// Every 1.5.3 section was one, so the generic write path simply demanded `module:`. The
+    /// PLANE sections are the ones that are NOT: each of their entries describes a REMOTE ENDPOINT
+    /// that somebody else runs, and there is no plugin behind it to name. That the plane sections
+    /// landed on the same exception independently is the argument for it living here: the requirement
+    /// is a per-section property in this table rather than a hardcoded rule in the handler, for the
+    /// same reason [`NamedMapSection::has_trust_ceiling`] is — the handler stays generic and the
+    /// asymmetry stays visible where a reader can find it.
     pub fn requires_module(self) -> bool {
         !matches!(self, NamedMapSection::Plane(_))
     }
 
     /// Whether this section's definitions carry a `max_admin_scope` TRUST CEILING — the one
     /// security-relevant asymmetry between the sections, kept as a predicate so the generic handler
-    /// stays generic (see `admin::v1::json::named_map`'s ceiling guard).
+    /// stays generic (see `crate::admin::v1::json::named_map`'s ceiling guard).
     pub fn has_trust_ceiling(self) -> bool {
         matches!(self, NamedMapSection::IdentityProviders)
     }
 
-    /// Parse a RELATIVE admin path into `(section, shape)` — the seam the error taxonomy and the
+    /// Parse a RELATIVE management-surface path into `(section, shape)` — the seam the error taxonomy and the
     /// OpenAPI/doc audits key off, so none of them hand-writes the five path strings per section.
     // Consumed by the error taxonomy + the doc audits, both of which are `test`/`openapi-schema`
     // gated; genuinely absent from a shipped build, so allow it there rather than deleting the seam.
@@ -261,18 +261,18 @@ impl NamedMapSection {
             NamedMapSection::Export => serde_json::from_value(def.clone())
                 .map(NamedDef::Export)
                 .map_err(|e| format!("invalid `export.{name}` definition: {e}")),
-            // A PLANE REGISTRY SECTION (`tools:`/`agents:`), routed through the OWNING PLANE's
+            // A PLANE REGISTRY SECTION, routed through the OWNING PLANE's
             // `config_validate` seam resolved by config section — so the write path enforces exactly
             // the grammar boot enforces (the plane's own `Deserialize`/boot reaches the identical
-            // function) and core names no `crate::mcp`/`crate::a2a` validate function. Without this an
-            // `unpinned` server carrying key material, a `stdio` transport nothing implements, or a
-            // `jws_issuer_key` pin with nothing to verify against would be persisted and then refused
-            // by boot. The typed parse that builds the object the overlay installs is deferred to
-            // `install`'s `PlaneCfg::insert_def`, so core names no plane entry type here.
+            // function) and core names no plane-specific validate function. Without this a definition
+            // carrying an entry-level value rule the plane refuses (a dangling key pin, an
+            // unimplemented option, key material with nothing to verify it against) would be persisted
+            // and then refused by boot. The typed parse that builds the object the overlay installs is
+            // deferred to `install`'s `PlaneCfg::insert_def`, so core names no plane entry type here.
             //
             // With the section's owning plane compiled out there is no registered decl: a definition
             // then names a plane this build does not carry, refused HERE exactly as `resolve` refuses
-            // a present `tools:`/`agents:` section — naming the SECTION (its plane-declared grammar
+            // a present plane section — naming the SECTION (its plane-declared grammar
             // key), not a hard-coded plane.
             NamedMapSection::Plane(_) => {
                 if crate::plane::registry::plane_decl_for_config_section(self.key()).is_none() {
@@ -303,8 +303,8 @@ impl NamedMapSection {
     /// fail later with a less actionable message.
     ///
     /// `export:` names are referenced from nowhere in 1.5.3 (an exporter is a leaf), so it returns
-    /// empty — the check is not skipped for it, it simply has nothing to find. `tools:`/`agents:`
-    /// will add their own reference sites here.
+    /// empty — the check is not skipped for it, it simply has nothing to find. A plane section that
+    /// gains its own reference sites will add them here.
     pub(crate) fn referents(self, deploy: &DeployCfg, name: &str) -> Vec<String> {
         let mut out = Vec::new();
         match self {
@@ -323,13 +323,13 @@ impl NamedMapSection {
                 }
             }
             NamedMapSection::Export => {}
-            // A plane-owned registration is referenced from nowhere else in config. An MCP server
-            // (`tools:`) is a leaf like an exporter: it IS named by a caller's `mcp_server`/`mcp_tool`
-            // key GRANTS, but a grant lives on a key in the store, not in this config document, and a
-            // dangling grant is fail-closed by construction (`scope_allowed` matches nothing) rather
-            // than a boot error. An agent (`agents:`) catalogue is derived from the registry rather
-            // than named from it, and cross-plane reference is refused outright. So there is nothing
-            // to find here — which is not the same as not looking.
+            // A plane-owned registration is referenced from nowhere else in config. A `tools:` entry
+            // is a leaf like an exporter: it IS named by a caller's key GRANTS, but a grant lives on a
+            // key in the store, not in this config document, and a dangling grant is fail-closed by
+            // construction (`scope_allowed` matches nothing) rather than a boot error. An `agents:`
+            // catalogue is derived from the registry rather than named from it, and cross-plane
+            // reference is refused outright. So there is nothing to find here — which is not the same
+            // as not looking.
             NamedMapSection::Plane(_) => {}
         }
         out
@@ -355,8 +355,8 @@ impl NamedMapSection {
 
 /// Validate a named-definition write through the OWNING PLANE's
 /// [`config_validate`](crate::plane::registry::PlaneDecl::config_validate) seam, resolved by config
-/// section — so core routes a `tools:`/`agents:` write to the plane's own validator without naming a
-/// `crate::mcp`/`crate::a2a` validate function. A section whose plane declares no validator (none of
+/// section — so core routes a plane-section write to the plane's own validator without naming a
+/// plane-specific validate function. A section whose plane declares no validator (none of
 /// the sections that reach this helper) validates vacuously; a section whose plane is compiled out is
 /// refused by the caller before it reaches here.
 fn plane_config_validate(
@@ -379,11 +379,11 @@ pub(crate) enum NamedDef {
     IdentityProvider(IdentityProviderCfg),
     Export(ExportDefCfg),
     // A PLANE SECTION'S entry, kept as the VALIDATED RAW document rather than the plane's typed config
-    // — so core names no `crate::mcp`/`crate::a2a` entry type. `parse_def` has already run the plane's
+    // — so core names no plane-specific entry type. `parse_def` has already run the plane's
     // `config_validate` value rules (and its `deny_unknown_fields` parse) on `def`; `install` hands it
     // straight back to the section's `PlaneCfg::insert_def`, which does the typed parse and insert
-    // byte-identically. Absent when NEITHER plane is compiled in (nothing parses a `tools:`/`agents:`
-    // definition then — `parse_def` refuses with a compiled-out message before constructing this).
+    // byte-identically. Absent when no plane owning a named-map section is compiled in (nothing parses
+    // such a definition then — `parse_def` refuses with a compiled-out message before constructing this).
     Plane {
         section: NamedMapSection,
         def: serde_json::Value,

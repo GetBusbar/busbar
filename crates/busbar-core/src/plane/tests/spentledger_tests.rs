@@ -17,8 +17,8 @@
 //!   one logical exchange span requests different nodes serve. Sharing the key shares the SEAL. With
 //!   the ledger unshared, one approval was redeemable once PER NODE, and the second redemption is
 //!   not a race or a timing trick — it is an ordinary sequential request that a load balancer sends
-//!   somewhere else. On a tool an operator gated because it moves money, that is the defect the gate
-//!   exists to stop, multiplied by the size of the fleet.
+//!   somewhere else. On a capability an operator gated because it moves money, that is the defect the
+//!   gate exists to stop, multiplied by the size of the fleet.
 //!
 //! ## Judged through the real decision, and through the real plugin
 //!
@@ -65,7 +65,7 @@ fn bind() -> Bind<'static> {
     }
 }
 
-/// ONE ROUND: the operator gating a money-moving tool behind a confirmation. This is the whole
+/// ONE ROUND: the operator gating a money-moving capability behind a confirmation. This is the whole
 /// scenario the single-use property exists for.
 fn confirm_round() -> Vec<AskRoundCfg> {
     let mut m = AskRoundCfg::new();

@@ -360,8 +360,8 @@ pub fn migrate_config(raw: &str) -> Result<MigrateOutput, String> {
     migrate_pools(&mut root, &mut changes, &mut todos);
     // 1.6.0 UNIFIED POOLS: fold the unreleased 1.6.0-dev `tool_pools:`/`agent_pools:` sections into
     // the ONE neutral `pools:` map. Runs AFTER `migrate_pools` so any name-collision todo it raises
-    // is against the settled LLM pool names. LLM pool members themselves are left exactly as
-    // written — the 1.5.5 member grammar is the 1.6.0 grammar.
+    // is against the settled pool names already in the unified map. Members of those existing pools
+    // are left exactly as written — the 1.5.5 member grammar is the 1.6.0 grammar.
     migrate_unified_pools(&mut root, &mut changes, &mut todos);
     // 1.5.3 HARD rename of the tap `at:` vocabulary. Runs AFTER migrate_hooks_block (which builds
     // the inline-ref lists carrying the `at:` field) so every hook ref exists to rewrite.
@@ -395,9 +395,9 @@ pub fn migrate_config(raw: &str) -> Result<MigrateOutput, String> {
     // last so `migrate_governance`'s `governance.store:` -> `store:` lift has already produced the
     // 1.5.x `store:` block a 1.4.x config's Valkey backend would land in.
     migrate_store_module(&mut root, &mut changes, &mut todos);
-    // 1.6.0 verify-on-call: the per-MCP-server `refresh_ttl:` (a background sweep cadence, default 6h)
-    // becomes `verify_ttl:` (max verification staleness on the `tools/call` path, default 5s). A pure
-    // key rename, but the SEMANTICS changed, so it carries a loud warning per occurrence.
+    // 1.6.0 verify-on-call: the per-entry `refresh_ttl:` in the `tools:` section (a background sweep
+    // cadence, default 6h) becomes `verify_ttl:` (max verification staleness on the `tools/call` path,
+    // default 5s). A pure key rename, but the SEMANTICS changed, so it carries a loud warning per occurrence.
     migrate_tools_verify_ttl(&mut root, &mut changes, &mut warnings);
 
     let body = serde_yaml::to_string(&Value::Mapping(root))
@@ -1733,9 +1733,9 @@ fn migrate_hooks_block(root: &mut Mapping, changes: &mut Vec<String>, todos: &mu
 /// the ONE neutral `pools:` section. A pool-name collision across the three sections is left for the
 /// operator (a todo) — it is a real ambiguity, not something the tool may silently pick.
 ///
-/// LLM pool members are deliberately NOT rewritten here. The 1.5.5 member grammar (a rich
+/// Rich-member `pools:` entries are deliberately NOT rewritten here. The 1.5.5 member grammar (a rich
 /// `{ model, weight, ... }` object) is still the 1.6.0 grammar, and the 1.6.0 config is the 1.5.5
-/// config unchanged plus new sections for the new planes. Rewriting members to bare names would
+/// config unchanged plus new top-level sections. Rewriting members to bare names would
 /// make this migrator's output diverge from what the 1.5.5 binary emitted for the same input, and
 /// a released config must migrate byte-for-byte the same way across the two versions.
 fn migrate_unified_pools(root: &mut Mapping, changes: &mut Vec<String>, todos: &mut Vec<String>) {

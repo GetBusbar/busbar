@@ -10,7 +10,7 @@
 //! Two ergonomic SUGAR spellings desugar to the built-ins so the common cases stay one-liners:
 //!
 //! ```yaml
-//! api_key: { env: ANTHROPIC_API_KEY }          # ⇒ { module: env,  settings: { key: ANTHROPIC_API_KEY } }
+//! api_key: { env: SOME_API_KEY }               # ⇒ { module: env,  settings: { key: SOME_API_KEY } }
 //! cert:    { file: /run/secrets/tls-cert.pem } # ⇒ { module: file, settings: { path: /run/secrets/tls-cert.pem } }
 //! ```
 //!

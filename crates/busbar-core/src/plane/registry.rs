@@ -16,9 +16,9 @@
 //! `match self` tables hanging off it (`key`, `config_section`, `scope_kinds`, `subject_noun`,
 //! `audit_kind`, `wire_format_names`), and an enum is the same object as a match: a plane that is
 //! not one of the three variants cannot exist, no matter who links what. `git grep PlaneDecl`
-//! returned nothing before this file. That is the whole reason the A2A extraction could not
-//! proceed the way the anthropic control did — A2A has no `ProtocolDecl` and appears in no
-//! `BUILTIN_DECLS`, because A2A is not a protocol, it is a PLANE.
+//! returned nothing before this file. That is the whole reason a plane extraction could not
+//! proceed the way an earlier protocol extraction did — a plane has no `ProtocolDecl` and appears in
+//! no `BUILTIN_DECLS`, because a plane is not a protocol, it is a PLANE.
 //!
 //! ## The invariants, and they are deliberately the control's
 //!
@@ -82,10 +82,10 @@ pub use busbar_substrate::plane::registry::{
 /// A plane's boot hook is handed this as the NEUTRAL [`PlaneBootCtx`] trait object (this struct
 /// IMPLEMENTS it), so an extracted plane crate's hook names none of the core-live types below. The
 /// `app`/`handle` phase fields hold their `Arc` OWNED (a boot-time refcount bump, byte-identical to
-/// the borrow they replaced) so this struct is `'static` and an in-core plane twin (A2A) can recover
+/// the borrow they replaced) so this struct is `'static` and an in-core plane twin can recover
 /// it through [`PlaneBootCtx::as_any`] to reach those fields.
 pub struct BootCtx {
-    /// The PLANE-NARROWED durable store — task / mcp-call / demotion / spent methods only, never the
+    /// The PLANE-NARROWED durable store — task / call / demotion / spent methods only, never the
     /// audit-carrying `Store`. `Some` in the hydrate phase whenever governance configured a store;
     /// `None` in the start phase (a start hook restores nothing).
     pub store: Option<std::sync::Arc<dyn crate::plane::store::PlaneStore>>,
@@ -141,9 +141,9 @@ impl PlaneBootCtx for BootCtx {
         self.store.is_some()
     }
 
-    /// ATTACH THE MCP PLANE'S DURABLE WRITE-THROUGH SINKS — the spent-approval ledger and the
+    /// ATTACH A PLANE'S DURABLE WRITE-THROUGH SINKS — the spent-approval ledger and the
     /// upstream-demotion record — to the plane-narrowed store, in the hydrate phase. Named HERE, core
-    /// side, so `crate::mcp::mcp_hydrate` attaches them without its own code naming an `App` field:
+    /// side, so the plane's own hydrate hook attaches them without its own code naming an `App` field:
     /// the sink fields (`spent_token_ledger`, `demotion_record`) are core-owned and the store is the
     /// core `PlaneStore`, so neither crosses the plane seam. A no-op unless BOTH the freshly-built app
     /// (hydrate phase) and a configured store are present — byte-identical to the old inline
@@ -155,9 +155,9 @@ impl PlaneBootCtx for BootCtx {
         }
     }
 
-    /// REGISTER THE MCP PLANE'S DURABLE `call` STREAM with the host, in the hydrate phase — the first
+    /// REGISTER A PLANE'S DURABLE `call` STREAM with the host, in the hydrate phase — the first
     /// boot step of the per-call log, before the rehydrate. Named HERE, core side, so
-    /// `crate::mcp::mcp_hydrate` registers the stream without its own code naming
+    /// the plane's own hydrate hook registers the stream without its own code naming
     /// `crate::calllog` or an `App` field: the `with_dispatch_scope`/`HostCtx` mint the register
     /// does stays wholly inside `calllog::register_call_stream` (minted synchronously, never across an
     /// `.await`), and the app it reads is the core-owned hydrate-phase `App`. A no-op unless the
@@ -169,13 +169,13 @@ impl PlaneBootCtx for BootCtx {
         }
     }
 
-    /// REHYDRATE THE MCP PLANE'S DURABLE `call` CHAIN from the plane-narrowed store, in the hydrate
+    /// REHYDRATE A PLANE'S DURABLE `call` CHAIN from the plane-narrowed store, in the hydrate
     /// phase — the boot rehydrate, run AFTER [`Self::register_call_stream`]. Returns the NEUTRAL
     /// [`RestoredSummary`] rather than the core-live `calllog::Restored` (which carries
     /// `audit::ChainBreak`), so the hook logs the outcome without naming a core-live type. The
     /// `with_dispatch_scope`/`HostCtx` mint stays wholly inside `calllog::restore_from_store_over`
     /// (minted synchronously, never across an `.await`). The `Err` is mapped to the store error's
-    /// Display string so the hook's `MCP_CALLLOG_UNREAD` warning reads byte-identically. A no-op-shaped
+    /// Display string so the hook's unread-call-log warning reads byte-identically. A no-op-shaped
     /// panic guards the impossible None-app/None-store hydrate call (the hook reaches here only past its
     /// store guard, in the phase that supplies the app) — byte-identical to the old inline
     /// `busbar_core::calllog::restore_from_store_over(app, store)`.
@@ -200,7 +200,7 @@ impl PlaneBootCtx for BootCtx {
     /// MINT THE NEUTRAL ENGINE HOST over the freshly-built app, in the hydrate phase — the
     /// snapshot-only mint a hydrate hook drives its durable boot-replay off (no live handle yet at
     /// hydration, which is correct: hydration reads exactly the generation it is restoring into). Named
-    /// HERE so `crate::mcp::mcp_hydrate` mints its host without naming `crate::plane_host::engine_host`
+    /// HERE so a plane's own hydrate hook mints its host without naming `crate::plane_host::engine_host`
     /// or an `App`: the returned `Arc<dyn EngineHost>` is the neutral substrate seam and the app it
     /// wraps is the core-owned hydrate-phase `App`.
     fn engine_host(&self) -> std::sync::Arc<dyn busbar_substrate::plane_host::EngineHost> {
@@ -223,19 +223,19 @@ impl PlaneBootCtx for BootCtx {
         self.card_issuer.clone()
     }
 
-    /// THE PLANE-NARROWED DURABLE STORE, or `None` under `store: memory` — the generic handle the A2A
-    /// plane drives its own task-set boot (sink attach + rehydrate) off, so no A2A boot logic lives in
-    /// this core seam. Just clones the phase-carried `Option<Arc<dyn PlaneStore>>`.
+    /// THE PLANE-NARROWED DURABLE STORE, or `None` under `store: memory` — the generic handle a
+    /// plane drives its own task-set boot (sink attach + rehydrate) off, so no plane-specific boot
+    /// logic lives in this core seam. Just clones the phase-carried `Option<Arc<dyn PlaneStore>>`.
     fn plane_store(
         &self,
     ) -> Option<std::sync::Arc<dyn busbar_substrate::plane::store::PlaneStore>> {
         self.store.clone()
     }
 
-    /// THE RECOVERY HATCH for an in-core plane twin (A2A). `BootCtx` is `'static` (its `app`/`handle`
+    /// THE RECOVERY HATCH for an in-core plane twin. `BootCtx` is `'static` (its `app`/`handle`
     /// `Arc`s are owned), so a hook handed the neutral `&dyn PlaneBootCtx` downcasts back to the
     /// concrete `BootCtx` here to reach the phase fields (`app`, `handle`, `card_issuer`) that name
-    /// core-live types. An extracted plane (MCP) never calls this.
+    /// core-live types. An extracted plane never calls this.
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }
@@ -266,8 +266,8 @@ impl BootCtx {
 /// through [`install_planes`]. Naming a plane crate's `PLANE_DECL` here would be a plane-crate symbol
 /// reference in neutral source — a side channel around the ABI — so this stays empty.
 ///
-/// Core's OWN test binary still needs the shipped `[llm, mcp, a2a]` process list (the plane crates are
-/// dev-dependencies there), but that list names `busbar_{llm,mcp,a2a}::PLANE_DECL`, which belongs OFF
+/// Core's OWN test binary still needs the shipped process list of the plane crates it ships against
+/// (dev-dependencies there), but that list names each plane crate's `PLANE_DECL`, which belongs OFF
 /// the neutral source. It is therefore defined in the test module (`registry_tests`, a `tests/` file
 /// the neutral-purity lint excludes) and reached ONLY through [`builtin_plane_decls`]. An EXTERNAL
 /// `test-support` consumer (the plane suites, core's integration target) has `cfg(test)` false and
@@ -289,10 +289,11 @@ pub(crate) fn builtin_plane_decls() -> &'static [&'static PlaneDecl] {
     registry_tests::TEST_BUILTIN_PLANE_DECLS
 }
 
-/// THE MCP PLANE'S DEFAULT per-generation runtime, type-erased — the object core's `cfg(test)` fixture
-/// seeds under the MCP runtime-slot companion for every `TestApp` (the plane is a built-in of core's
-/// own test process). Delegates to the `tests/registry_tests.rs` helper, the one `tests/`-file the
-/// neutral-purity lint excludes, so the `busbar_mcp` name that builds it stays OFF this neutral source.
+/// ONE PLANE'S DEFAULT per-generation runtime, type-erased — the object core's `cfg(test)` fixture
+/// seeds under that plane's runtime-slot companion for every `TestApp` (the plane is a built-in of
+/// core's own test process). Delegates to the `tests/registry_tests.rs` helper, the one `tests/`-file
+/// the neutral-purity lint excludes, so the plane crate's name that builds it stays OFF this neutral
+/// source.
 #[cfg(test)]
 pub(crate) fn default_mcp_test_runtime() -> std::sync::Arc<dyn std::any::Any + Send + Sync> {
     registry_tests::default_mcp_test_runtime()
@@ -425,7 +426,7 @@ pub(crate) const CORE_OWNED_CONCRETE_SECTIONS: &[&str] =
 /// the installed ones, deduped. The built-in rows (a plane's own `&PLANE_DECL`, `#[cfg(test)]`) fix
 /// the canonical positions under the test/test-support surface; in production the built-ins compile
 /// out and the composition root installs the planes in layering order, so the install order IS the
-/// canonical order. Core spells no `"llm"/"mcp"/"a2a"` here — the order leaves with the decls.
+/// canonical order. Core spells no specific plane's key here — the order leaves with the decls.
 ///
 /// `merged_boot_plane_decls` sorts its survivors by each key's index in this list (tail for a key not
 /// present — an unknown/registered-later plane sorts stably after the canonical set rather than
@@ -521,11 +522,12 @@ pub(crate) fn plane_key_index(key: &str) -> u8 {
 /// plane's kind token. `None` (fail-closed) for an index past the registered kinds.
 ///
 /// The index is a bijection over the DISTINCT kinds, base first: a plane that also declares the
-/// neutral base kind (the LLM plane grants over `"pool"`, which `busbar_api` already treats as the
+/// neutral base kind (one plane grants over `"pool"`, which `busbar_api` already treats as the
 /// unconditional `BUILTIN_POOL_KIND`) must NOT re-count it. Without this dedup the base `"pool"` and
-/// the LLM decl's `"pool"` would occupy indices 0 AND 1, shifting every later plane's kind up by one
-/// so a `pool` grant would wrongly resolve an `mcp_server` target (entitlement escalation). Folding a
-/// re-declared base onto its existing index 0 keeps each grant target mapped to the RIGHT plane's kind.
+/// that plane's own `"pool"` declaration would occupy indices 0 AND 1, shifting every later plane's
+/// kind up by one so a `pool` grant would wrongly resolve a different plane's scope kind (entitlement
+/// escalation). Folding a re-declared base onto its existing index 0 keeps each grant target mapped to
+/// the RIGHT plane's kind.
 pub(crate) fn scope_kind_at(idx: u32) -> Option<&'static str> {
     // `"pool"` is the neutral base kind (not a plane token); the plane kinds follow it as data,
     // de-duplicated in first-seen order so a re-declared base does not create a phantom index.
@@ -548,10 +550,10 @@ pub(crate) fn scope_kind_at(idx: u32) -> Option<&'static str> {
 
 /// THE ABI SCOPE-KIND INDEX for a kind string — the exact INVERSE of [`scope_kind_at`], sharing its
 /// first-seen dedup so the two can never skew. Any encoder that must stamp a `TargetRef.scope_kind`
-/// routes through here rather than re-deriving the numbering, which is what keeps the pool↛mcp_server
+/// routes through here rather than re-deriving the numbering, which is what keeps the base-kind
 /// entitlement escalation closed: if the encode side and the [`scope_kind_at`] decode side computed
-/// the base-first dedup independently they could drift, and a `pool` grant could resolve an
-/// `mcp_server` target. Fail-closed (`None`) for a kind no registered plane declares.
+/// the base-first dedup independently they could drift, and a `pool` grant could resolve a
+/// different plane's scope-kind target. Fail-closed (`None`) for a kind no registered plane declares.
 pub(crate) fn scope_kind_index(kind: &str) -> Option<u32> {
     // The identical sequence `scope_kind_at` indexes: the neutral base kind first, then each plane's
     // declared kinds, de-duplicated in first-seen order. `position` over it is the inverse of `nth`.
@@ -596,7 +598,7 @@ pub(crate) fn plane_decl_for(key: &str) -> Option<&'static PlaneDecl> {
 /// the named-definition write path and the config parse/lower path cross to reach a plane's hooks
 /// without naming the plane. Resolves through [`plane_decls`] (installed + built-ins, canonically
 /// ordered) rather than the built-ins alone, so an EXTRACTED plane the composition root installed
-/// (the MCP plane after B2) is found on the same footing as a still-built-in one.
+/// is found on the same footing as a still-built-in one.
 pub(crate) fn plane_decl_for_config_section(section: &str) -> Option<&'static PlaneDecl> {
     plane_decls()
         .iter()

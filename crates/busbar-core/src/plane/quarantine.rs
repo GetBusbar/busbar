@@ -8,8 +8,8 @@
 //! A drift quarantine is DERIVED, never stored: `crate::trust::Approval::state` compares the
 //! operator's standing approval against the last observation, and a state nobody stores is a state
 //! nothing can leave stale. That is the right design and it has one consequence — the observation is
-//! in process memory, so a restarted process has none, and a server with no observation answers
-//! `crate::mcp::client::catalogue::LiveDigest::Unsighted`, which dispatches against the digest the
+//! in process memory, so a restarted process has none, and a server with no observation answers the
+//! owning plane's "unsighted" digest state, which dispatches against the digest the
 //! operator WROTE IN CONFIG.
 //!
 //! That fallback is correct and must stay: a deployment that never runs a refresh has only the
@@ -27,8 +27,8 @@
 //! [`crate::trust::Sighting::Demoted`], the derivation runs unchanged on top of it, and the
 //! quarantine falls out of the same comparison it always did. Nothing acquires a stored trust state.
 //!
-//! The boot replay itself — `crate::mcp::demotion::hydrate` — stays in the MCP plane for now,
-//! because it reaches into `crate::mcp::client` to seed the live sightings cache. This module holds
+//! The boot replay itself — the owning plane's own hydration routine — stays on that plane for now,
+//! because it reaches into that plane's own client to seed the live sightings cache. This module holds
 //! only the pure core state: the row store and the one settle rule.
 //!
 //! Two things follow, and both are deliberate:
@@ -190,7 +190,7 @@ impl DemotionRecord {
 
 /// SETTLE the durable record against what an observation just derived. THE ONE RULE, written once.
 ///
-/// Both things that take a live observation of an MCP upstream call this — the unattended sweep and
+/// Both things that take a live observation of an upstream call this — the unattended sweep and
 /// the operator's `connect` verb — and they call it rather than each deciding for itself, because
 /// two copies of this rule is how one of them comes to record a demotion the other never clears. An
 /// operator who works a remedy through `connect` and sees `approved` must not find the upstream

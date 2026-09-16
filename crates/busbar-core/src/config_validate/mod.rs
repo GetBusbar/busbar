@@ -78,10 +78,10 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
     );
 
     // The reasoning effort table drives word<->number projection at the egress seam (the
-    // cross-protocol thinking carry). A zero entry would project thinking budgets below every
-    // provider minimum (Anthropic floors at 1024) and a non-ascending table makes bucketization
-    // non-monotonic (a LARGER numeric budget mapping back to a SMALLER effort word). Reject both
-    // at boot rather than ship a table that silently corrupts the mapping.
+    // cross-protocol thinking carry). A zero entry would project thinking budgets below the floor
+    // some downstream consumers enforce on their own minimum, and a non-ascending table makes
+    // bucketization non-monotonic (a LARGER numeric budget mapping back to a SMALLER effort word).
+    // Reject both at boot rather than ship a table that silently corrupts the mapping.
     {
         let b = cfg.limits.reasoning_effort_budgets;
         if b.minimal == 0 || b.low == 0 || b.medium == 0 || b.high == 0 {
@@ -1021,28 +1021,28 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
         }
     }
 
-    // AN MCP DEPLOYMENT MAY NOT HAVE AN OPEN FRONT DOOR. Refused at BOOT, in one place, because
+    // AN ENDPOINT PLANE MAY NOT HAVE AN OPEN FRONT DOOR. Refused at BOOT, in one place, because
     // the alternative — a check on the request path — is a second opinion about admission on a
     // plane that already has exactly one owner.
     //
     // What goes wrong is worse than "the endpoint is unauthenticated", and both halves go at once.
     // An empty `auth.chain` is the open front door: `run_chain` returns `Open`, admitting with NO
-    // principal. The MCP plane's ENTIRE authorization model is that a caller sees and may call only
-    // what its key's grant permits — `tools_for(&grant)`, `resolve(&grant, …)` — and a request that
-    // carries no key is never NARROWED by one, so the grant predicate answers `true` for every
-    // (kind, value) pair it is asked about. That is not "no access", it is WILDCARD access: every
-    // registered server, every approved tool, to anyone who can reach the port.
+    // principal. A registered endpoint plane's authorization model is that a caller sees and may
+    // act only within what its key's grant permits, and a request that carries no key is never
+    // NARROWED by one, so the grant predicate answers `true` for every (kind, value) pair it is
+    // asked about. That is not "no access", it is WILDCARD access: every registered resource,
+    // every approved capability, to anyone who can reach the port.
     //
-    // The second half is the transitive one. `upstream::authorise` binds the OUTBOUND credential
-    // busbar spends to the INBOUND principal's grant — that binding is the confused-deputy defence
-    // for the client direction. With no inbound principal there is no grant to bind to, so the
-    // defence has nothing to hold onto and busbar will spend its own upstream credentials on behalf
-    // of an anonymous caller.
+    // The second half is the transitive one. The plane's outbound-authorization seam binds the
+    // OUTBOUND credential busbar spends to the INBOUND principal's grant — that binding is the
+    // confused-deputy defence for the client direction. With no inbound principal there is no
+    // grant to bind to, so the defence has nothing to hold onto and busbar will spend its own
+    // upstream credentials on behalf of an anonymous caller.
     //
     // Both properties are therefore vacuous in exactly the configuration where nobody is watching,
     // and neither failure is visible from the outside: the deployment answers every request
-    // perfectly, which is the problem. So `mcp:` present and no data-plane chain is a config ERROR
-    // and the process does not start.
+    // perfectly, which is the problem. So an endpoint plane present with no data-plane chain is a
+    // config ERROR and the process does not start.
     //
     // NOT "serve anonymous callers an empty catalogue". That looks safe and is not: it is safe only
     // for as long as nothing ever grants by default, and the day a default grant is introduced —
@@ -1050,8 +1050,8 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
     // about the CONFIGURATION being unstatable, which does not decay.
     // An endpoint plane present with no data-plane auth chain is refused. Read the endpoint through
     // the neutral SECTION-KEYED accessor and name the plane from its REGISTERED decl (`subject_noun`),
-    // so this neutral rule carries no plane token: the concrete noun ("MCP server", …) is
-    // registry-supplied at runtime, never a literal here.
+    // so this neutral rule carries no plane token: the concrete noun is registry-supplied at
+    // runtime, never a literal here.
     let endpoint_section = busbar_substrate::plane::config::NAMED_MAP_SECTIONS[2];
     if cfg.endpoint_resource(endpoint_section).is_some()
         && cfg.auth.as_ref().is_none_or(|a| a.chain.is_empty())
@@ -1152,7 +1152,8 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
         // `upstream_credentials: passthrough` with a NON-EMPTY configured api_key on a provider is a
         // configuration foot-gun: under passthrough the configured key is NEVER forwarded - the
         // caller's own credential (or an empty one) goes upstream. WARN (not hard-reject): a legit
-        // Bedrock-ingress passthrough provider signs per-request via SigV4 and needs no static key.
+        // passthrough provider may sign per-request via its own request-signing scheme and need no
+        // static key at all.
         // 1.5.3: the mode moved off `auth:` onto the `pools:` section — the all-pools
         // default plus any per-pool override. The warning fires if ANY of them is `passthrough`.
         let any_passthrough = cfg.upstream_credentials == crate::auth::UpstreamCreds::Passthrough
@@ -1685,7 +1686,7 @@ fn reserved_legacy_admin_name(name: &str) -> bool {
 /// 1. A name defined in TWO nouns (`models:`/`tools:`/`agents:`) — kind inference could not decide
 ///    which plane a member of that name belongs to, and the router would silently pick one.
 /// 2. A POOL name that collides with a member/registration name on the same keyspace — already
-///    partly covered for models above; here it is extended to the MCP/A2A nouns.
+///    partly covered for models above; here it is extended to the other registered nouns.
 ///
 /// (Homogeneity — all of a pool's members being one noun — and unresolvable members are enforced at
 /// resolution, in `config::resolve`, where the members are still visible before projection; this
@@ -1885,9 +1886,9 @@ fn validate_providers_with(
                 .any(|u| !u.is_empty() && v.contains(u.as_str()))
     };
     // Rule 4: Validate error_map values on every provider. An EMPTY error_map is valid — a provider
-    // may have no provider-specific JSON error codes and rely on HTTP-status classification (the
-    // circuit breaker), exactly like the shipped `anthropic` catalog entry. Only the entries that
-    // ARE present must name a known StatusClass.
+    // may have no provider-specific JSON error codes and rely on status classification (the
+    // circuit breaker), exactly like the shipped built-in catalog entries that carry none. Only the
+    // entries that ARE present must name a known StatusClass.
     for (provider_name, provider_cfg) in &cfg.providers {
         // The provider's `protocol` selects a declared `Protocol` from the registry at lane
         // construction. An unknown protocol used to escape this multi-error collection entirely and
@@ -2013,9 +2014,9 @@ fn validate_providers_with(
         // (`format!("{base}{wire_path}")` in proxy engine), and the composed string is then parsed by
         // reqwest's `url` crate to choose the connect host. base_url validation alone is therefore
         // NOT sufficient: a `path` that does not begin with `/` FUSES into the authority — e.g.
-        // base_url `https://api.openai.com` + path `.evil.com/v1` yields
-        // `https://api.openai.com.evil.com/v1`, whose host is `api.openai.com.evil.com`, redirecting
-        // the lane's signed (API-key-bearing) traffic to an attacker host (credential-relay SSRF).
+        // base_url `https://api.example.com` + path `.evil.com/v1` yields
+        // `https://api.example.com.evil.com/v1`, whose host is `api.example.com.evil.com`, redirecting
+        // the lane's signed (credential-bearing) traffic to an attacker host (credential-relay SSRF).
         // Likewise a `path` smuggling a `@` / `//` / `\` could re-home the authority. Defend in two
         // layers: (1) require a leading `/` so the override can only ever extend the PATH, never the
         // authority; (2) re-run the COMPOSED url through the same ssrf_blocked_host guard so any host

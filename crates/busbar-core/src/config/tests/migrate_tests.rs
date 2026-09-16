@@ -1775,11 +1775,11 @@ fn migrate_records_the_deletion_of_a_malformed_retired_block() {
     );
 }
 
-/// THE DEDUPE MUST NOT EAT A PLANE'S SETTINGS. One module configured on BOTH auth
-/// planes with DIFFERENT settings (the data chain against one OIDC issuer, the admin chain against
-/// another) was deduped into ONE definition carrying only the FIRST plane's settings — so the
+/// THE DEDUPE MUST NOT EAT A CHAIN'S SETTINGS. One module configured on BOTH auth
+/// chains with DIFFERENT settings (the data chain against one OIDC issuer, the admin chain against
+/// another) was deduped into ONE definition carrying only the FIRST chain's settings — so the
 /// migrated config authenticated admins against the wrong issuer. Two definitions is the honest
-/// outcome: `<module>-admin` carries the admin plane's settings and `auth.admin_auth` references it.
+/// outcome: `<module>-admin` carries the admin chain's settings and `auth.admin_auth` references it.
 ///
 /// Pre-fix the migrated doc has ONE `oidc` definition whose `settings.issuer` is
 /// `data.example.com`, `auth.admin_auth` is `[oidc]`, and `admin.example.com` appears nowhere.
@@ -2464,7 +2464,7 @@ fn migrate_folds_tool_and_agent_pools_into_pools() {
     );
 }
 
-/// Rich LLM pool members (`{ model, weight, ... }`) are the 1.5.5 grammar AND the 1.6.0 grammar, so
+/// Rich pool members (`{ model, weight, ... }`) are the 1.5.5 grammar AND the 1.6.0 grammar, so
 /// the migrator leaves them exactly as written: no bare-name rewrite, no lifted `weights:` map, no
 /// change line, no todo. This pins the byte-for-byte agreement with what the 1.5.5 binary emitted
 /// for the same input.
@@ -2536,7 +2536,7 @@ fn migrate_rewrites_a_lingering_at_key_on_a_named_hook_def() {
 }
 
 /// END-TO-END, 1.6.0: a COMPLETE 1.5.x-shaped config that uses EVERY deprecated spelling at once —
-/// a hook written with the retired `plugin:` key AND the retired single-stage `at:` key, an LLM pool
+/// a hook written with the retired `plugin:` key AND the retired single-stage `at:` key, a model pool
 /// with rich weighted members (still the 1.6.0 grammar, carried through unchanged), and the
 /// unreleased `tool_pools:`/`agent_pools:` sections — runs through `busbar --migrate-config` and the
 /// output (a) parses into the 1.6.0 `DeployCfg`, (b) `config::resolve` + `config_validate::validate`
@@ -2630,8 +2630,8 @@ agent_pools:
         .unwrap_or_else(|e| panic!("migrated config must validate clean on 1.6.0: {e:?}"));
 
     // The tool/agent pools folded into the ONE neutral `pools:` map and resolve by INFERRED kind:
-    // `search` (tool members) onto the MCP failover plane, `planner` (agent members) onto the A2A
-    // plane, and the LLM pool `fast` onto the model plane.
+    // `search` (tool members) onto the tool-kind pool map, `planner` (agent members) onto the
+    // agent-kind pool map, and the model pool `fast` onto the model-kind pool map.
     assert!(
         cfg.tool_pools.contains_key("search"),
         "the folded tool pool resolves onto the MCP failover plane: {:?}",
@@ -2648,7 +2648,7 @@ agent_pools:
     );
 }
 
-/// 1.6.0 verify-on-call: the per-MCP-server `refresh_ttl:` is renamed to `verify_ttl:`, the value is
+/// 1.6.0 verify-on-call: the per-server `refresh_ttl:` under `tools:` is renamed to `verify_ttl:`, the value is
 /// carried over, and a loud WARNING names the server and the semantics change (a former sweep cadence
 /// is now a drift-serving window on the call path).
 #[test]

@@ -49,8 +49,9 @@ use crate::plane::config::{AgentsSection, McpEndpointSection, StreamsSection, To
 /// carrier field a serde-skipped declaration — never a plain field.
 ///
 /// In order: busbar's OWN endpoint as an OAuth 2.1 resource server; busbar AS an OAuth 2.1
-/// authorization server; the MCP upstream registry; the A2A agent registry; the live-voice
-/// session section.
+/// authorization server; then, one per registered plane that declares a top-level config section
+/// of its own — a remote-endpoint registry, a named-definition registry, and a session-policy
+/// section.
 pub(crate) const LIFTED_TOP_LEVEL_KEYS: &[&str] =
     &["mcp", "oauth_as", "tools", "agents", "streams"]; // plane-purity: frozen-wire the frozen top-level wire KEYS this pass lifts
 
@@ -405,13 +406,14 @@ pub fn deploy_from_yaml_str(text: &str) -> Result<DeployCfg, serde_yaml::Error> 
 }
 
 /// The format-agnostic form of [`deploy_from_yaml_str`] — the lift is a property of the DOCUMENT,
-/// not of YAML, so the JSON-shaped paths (an admin config document) get it too.
+/// not of YAML, so the JSON-shaped paths (a config document built by the management surface) get
+/// it too.
 pub fn deploy_from_deserializer<'de, D: Deserializer<'de>>(de: D) -> Result<DeployCfg, D::Error> {
     SplitDocument::deserialize(de).map(|d| d.0)
 }
 
 /// The [`serde_yaml::Value`] twin of [`deploy_from_yaml_str`], for the paths that have already
-/// built a document in memory (the admin overlay merge). Source positions are gone by then, so no
+/// built a document in memory (the management-surface overlay merge). Source positions are gone by then, so no
 /// error can carry one — the text entry point above is the one boot uses.
 pub fn deploy_from_yaml_value(value: serde_yaml::Value) -> Result<DeployCfg, serde_yaml::Error> {
     deploy_from_deserializer(value)
