@@ -1414,7 +1414,7 @@ pub struct EgressDesc {
     /// (minor-16) The plane's ALREADY-JUDGED pinned address for this hop (Design A). When
     /// [`resolved_addr_kind`](Self::resolved_addr_kind) is non-zero the host connects to THIS address
     /// and does NOT resolve the URL host itself — preserving a plane that resolves-then-pins plane-side
-    /// and hands the host the surviving address (the a2a card-fetch/relay posture) byte-for-byte. The
+    /// and hands the host the surviving address (a plane's own resolve-then-pin posture) byte-for-byte. The
     /// URL host is still used for SNI / certificate-name / mTLS. A v4 address occupies the first 4
     /// bytes; a v6 address occupies all 16. NEVER a name — the host performs no lookup on this path.
     pub resolved_addr: [u8; 16],
@@ -1779,8 +1779,8 @@ pub struct VerifyQuery {
 /// A one-time-approval REDEMPTION query — the input to the richer `approval_redeem_q` slot (added
 /// append-only alongside the original `approval_redeem`). It carries the sealed-state nonce PLUS the
 /// seal's own `expires_at` and the caller's `now`, so the host spends against the ledger with the
-/// EXACT expiry the seal minted rather than recomputing a default TTL — the behavior-identity the
-/// call site (`mcp::callerask`) requires.
+/// EXACT expiry the seal minted rather than recomputing a default TTL — the behavior-identity a
+/// plane's own approval call site requires.
 ///
 /// # Safety / discipline
 /// `key_ptr`/`key_len`, when non-null, borrow live bytes for the call.

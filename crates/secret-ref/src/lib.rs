@@ -12,7 +12,7 @@
 //! built-ins:
 //!
 //! ```yaml
-//! api_key: { env: ANTHROPIC_API_KEY }          # ⇒ { module: env,  settings: { key: ANTHROPIC_API_KEY } }
+//! api_key: { env: MY_API_KEY }                 # ⇒ { module: env,  settings: { key: MY_API_KEY } }
 //! cert:    { file: /run/secrets/tls-cert.pem } # ⇒ { module: file, settings: { path: /run/secrets/tls-cert.pem } }
 //! ```
 //!
@@ -48,8 +48,9 @@ pub const SECRET_MODULE_FILE: &str = "file";
 /// "this upstream takes NO credential".
 ///
 /// It exists because a secret reference that fails to resolve now REFUSES BOOT instead of degrading
-/// to an empty credential, and a keyless local upstream (ollama, vLLM) needs a way to say so on
-/// purpose rather than by pointing at a variable it knows is unset. It names no source and carries
+/// to an empty credential, and a keyless upstream (one that legitimately requires no credential at
+/// all) needs a way to say so on purpose rather than by pointing at a variable it knows is unset. It
+/// names no source and carries
 /// no settings, so it resolves to NOTHING: a resolver asked for its bytes is a hard error, and only
 /// a call site that genuinely permits an absent credential may accept it.
 pub const SECRET_MODULE_NONE: &str = "none";
