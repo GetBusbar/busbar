@@ -332,7 +332,7 @@ fn test_validate_rejects_empty_upstream_model() {
     models.insert("badmodel".to_string(), bad);
     // A real override (and the unset None default) must NOT error.
     let mut ok = make_model("myprovider", 10);
-    ok.upstream_model = Some("anthropic.claude-3-5-sonnet-20241022-v2:0".to_string());
+    ok.upstream_model = Some("acme.model-3-5-20241022-v2:0".to_string());
     models.insert("okmodel".to_string(), ok);
 
     let cfg = make_root_cfg(providers, models, HashMap::new());
@@ -407,7 +407,7 @@ fn test_validate_token_url_ssrf_and_scheme() {
     // requirement (case-INSENSITIVELY) and the SSRF/metadata denylist — same as base_url.
     let build = |token_url: &str| -> Vec<String> {
         let mut providers = HashMap::new();
-        let mut entra = make_provider("openai", "https://myres.openai.azure.com", "API_KEY");
+        let mut entra = make_provider("openai", "https://myres.vendor-a.azure.example.com", "API_KEY");
         entra.token_url = Some(token_url.to_string());
         entra.scope = Some("api://x/.default".into());
         entra.auth = Some(config::ProviderAuth::OAuthClientCredentials);
@@ -543,22 +543,22 @@ fn test_validate_heterogeneous_pool_is_ok() {
     let mut providers = HashMap::new();
     // Two different protocols.
     providers.insert(
-        "anthropic_provider".to_string(),
-        make_provider("anthropic", "https://api.anthropic.com", "ANTHROPIC_KEY"),
+        "acme_provider".to_string(),
+        make_provider("anthropic", "https://api.acme.example.com", "ACME_KEY"),
     );
     providers.insert(
-        "openai_provider".to_string(),
-        make_provider("openai", "https://api.openai.com", "OPENAI_KEY"),
+        "vendor_a_provider".to_string(),
+        make_provider("openai", "https://api.vendor-a.example.com", "VENDOR_A_KEY"),
     );
 
     let mut models = HashMap::new();
     models.insert(
-        "anthropic_model".to_string(),
-        make_model("anthropic_provider", 10),
+        "acme_model".to_string(),
+        make_model("acme_provider", 10),
     );
     models.insert(
-        "openai_model".to_string(),
-        make_model("openai_provider", 10),
+        "vendor_a_model".to_string(),
+        make_model("vendor_a_provider", 10),
     );
 
     let mut pools = HashMap::new();
@@ -566,8 +566,8 @@ fn test_validate_heterogeneous_pool_is_ok() {
     pools.insert(
         "mixedpool".to_string(),
         make_pool(vec![
-            make_member("anthropic_model"),
-            make_member("openai_model"),
+            make_member("acme_model"),
+            make_member("vendor_a_model"),
         ]),
     );
 
@@ -1953,11 +1953,11 @@ auth:
   token: "stale-legacy-secret"
   client_tokens: ["real-secret"]
 providers:
-  anthropic:
-    api_key: { env: ANTHROPIC_KEY }
+  acme:
+    api_key: { env: ACME_KEY }
 models:
-  claude:
-    provider: anthropic
+  model-1:
+    provider: acme
     max_concurrent: 10
 "#;
     let err = serde_yaml::from_str::<crate::config::DeployCfg>(yaml)
@@ -1978,11 +1978,11 @@ models:
     let yaml2 = r#"
 listen: "0.0.0.0:8080"
 providers:
-  anthropic:
-    api_key_env: ANTHROPIC_KEY
+  acme:
+    api_key_env: ACME_KEY
 models:
-  claude:
-    provider: anthropic
+  model-1:
+    provider: acme
 "#;
     let err2 = serde_yaml::from_str::<crate::config::DeployCfg>(yaml2)
         .expect_err("the removed api_key_env key must fail to parse");
@@ -2001,31 +2001,31 @@ fn test_validate_passthrough_warns_on_nonempty_configured_key() {
     // passthrough the configured `api_key` is NEVER forwarded: it is inert dead config. Its presence
     // means the operator likely wanted static-key gating (`upstream_credentials: own`) but wired
     // passthrough. validate() must emit a prominent boot WARNING for any provider whose `api_key_env`
-    // resolves to a NON-EMPTY value while auth.mode=passthrough. A legit Bedrock-ingress passthrough
-    // provider authenticates per-request via SigV4 and resolves an EMPTY key, so it must NOT warn -
-    // that is the second half of this test.
+    // resolves to a NON-EMPTY value while auth.mode=passthrough. A legit signature-auth passthrough
+    // provider authenticates per-request (no static key ever resolves) and resolves an EMPTY key, so
+    // it must NOT warn - that is the second half of this test.
     use tracing_subscriber::layer::SubscriberExt as _;
 
     // Unique env-var names so parallel tests cannot clobber the values we set/read here.
     let leak_env = "BUSBAR_T_R22_PASSTHROUGH_LEAK_KEY";
-    let bedrock_env = "BUSBAR_T_R22_PASSTHROUGH_BEDROCK_KEY";
+    let vendor_b_env = "BUSBAR_T_R22_PASSTHROUGH_VENDOR_B_KEY";
     std::env::set_var(leak_env, "sk-busbar-secret-should-not-leak");
-    std::env::remove_var(bedrock_env); // Bedrock passthrough: no static key (SigV4 per-request)
+    std::env::remove_var(vendor_b_env); // signature-auth passthrough: no static key (per-request signing)
 
-    // Provider WITH a non-empty resolved key (the leak case) + Bedrock-style provider whose key
-    // env is unset (the legit case). Both providers need a model so validate() has full context.
+    // Provider WITH a non-empty resolved key (the leak case) + signature-auth-style provider whose
+    // key env is unset (the legit case). Both providers need a model so validate() has full context.
     let mut providers = HashMap::new();
     providers.insert(
         "leaky".to_string(),
         make_provider("anthropic", "https://api.example.com", leak_env),
     );
     providers.insert(
-        "bedrock".to_string(),
-        make_provider("bedrock", "https://bedrock.example.com", bedrock_env),
+        "vendor-b".to_string(),
+        make_provider("bedrock", "https://vendor-b.example.com", vendor_b_env),
     );
     let mut models = HashMap::new();
     models.insert("leakymodel".to_string(), make_model("leaky", 10));
-    models.insert("bedrockmodel".to_string(), make_model("bedrock", 10));
+    models.insert("vendorbmodel".to_string(), make_model("vendor-b", 10));
     let mut cfg = make_root_cfg(providers, models, HashMap::new());
     cfg.auth = Some(make_auth_chain(
         &[],
@@ -2055,11 +2055,12 @@ fn test_validate_passthrough_warns_on_nonempty_configured_key() {
             .any(|m| m.contains("inert dead config") && m.contains("leaky")),
         "expected a passthrough inert-configured-key warning naming the 'leaky' provider; got: {msgs:?}"
     );
-    // The Bedrock-style provider with an EMPTY resolved key must NOT trip the warning — otherwise
-    // a legit SigV4 passthrough deployment is spammed with a false-positive credential-leak alert.
+    // The signature-auth-style provider with an EMPTY resolved key must NOT trip the warning —
+    // otherwise a legit per-request-signing passthrough deployment is spammed with a false-positive
+    // credential-leak alert.
     assert!(
-            !msgs.iter().any(|m| m.contains("bedrock")),
-            "a provider whose api_key_env resolves empty must NOT warn (legit SigV4 passthrough); got: {msgs:?}"
+            !msgs.iter().any(|m| m.contains("vendor-b")),
+            "a provider whose api_key_env resolves empty must NOT warn (legit signature-auth passthrough); got: {msgs:?}"
         );
 }
 
@@ -2287,7 +2288,7 @@ fn test_reject_cidr_metadata_entries() {
     let mut providers = HashMap::new();
     providers.insert(
         "p".to_string(),
-        make_provider("openai", "https://api.openai.com", "API_KEY"),
+        make_provider("openai", "https://api.vendor-a.example.com", "API_KEY"),
     );
     let cfg = make_root_cfg_with_blocked(providers, vec!["169.254.0.0/16".to_string()]);
     let errs =
@@ -2304,7 +2305,7 @@ fn test_reject_cidr_metadata_entries() {
     let mut providers = HashMap::new();
     providers.insert(
         "p".to_string(),
-        make_provider("openai", "https://api.openai.com", "API_KEY"),
+        make_provider("openai", "https://api.vendor-a.example.com", "API_KEY"),
     );
     let mut cfg = make_root_cfg(providers, HashMap::new(), HashMap::new());
     cfg.allow_metadata_hosts = vec!["10.0.0.0/8".to_string()];
@@ -2319,7 +2320,7 @@ fn test_reject_cidr_metadata_entries() {
     let mut providers = HashMap::new();
     providers.insert(
         "prov".to_string(),
-        make_provider_allow_hosts("https://api.openai.com", &["169.254.169.254/32"]),
+        make_provider_allow_hosts("https://api.vendor-a.example.com", &["169.254.169.254/32"]),
     );
     let cfg = make_root_cfg(providers, HashMap::new(), HashMap::new());
     let errs = validate(&cfg)
@@ -2336,7 +2337,7 @@ fn test_reject_cidr_metadata_entries() {
     let mut providers = HashMap::new();
     providers.insert(
         "p".to_string(),
-        make_provider("openai", "https://api.openai.com", "API_KEY"),
+        make_provider("openai", "https://api.vendor-a.example.com", "API_KEY"),
     );
     let mut cfg = make_root_cfg(providers, HashMap::new(), HashMap::new());
     cfg.blocked_metadata_hosts = vec!["169.254.169.254".to_string()];
@@ -2664,8 +2665,8 @@ fn test_validate_accepts_positive_weight_member() {
 fn test_ssrf_blocked_host_allows_public_targets() {
     // Public hostnames and public IPs must NOT be flagged.
     for ok in [
-        "https://api.anthropic.com/v1/messages",
-        "https://api.openai.com",
+        "https://api.acme.example.com/v1/messages",
+        "https://api.vendor-a.example.com",
         "https://example.com:8443/v1",
         "https://8.8.8.8/",
         "https://[2606:4700:4700::1111]/",
@@ -3850,8 +3851,8 @@ fn test_blocked_metadata_hosts_extends_denylist() {
 fn test_public_targets_unaffected() {
     // A normal public https provider validates and the guard allows it regardless of the flag.
     for base in [
-        "https://api.openai.com",
-        "https://api.anthropic.com/v1/messages",
+        "https://api.vendor-a.example.com",
+        "https://api.acme.example.com/v1/messages",
         "https://8.8.8.8/",
     ] {
         assert!(ssrf_blocked_host(base, &[], false, &[]).is_none());
@@ -4531,15 +4532,17 @@ fn test_validate_secret_module_resolvability() {
 // ---- --validate == boot: validation runs on the RESOLVED RootCfg ----
 
 /// Resolve a DeployCfg yaml through `config::resolve` (the boot path) with a minimal catalog
-/// containing the `anthropic` provider def.
+/// containing the `acme` provider def. The catalog KEY (`acme`) is an arbitrary operator-chosen
+/// provider name; the `protocol:` value inside the def must stay a REAL compiled-in protocol
+/// (the crate's own test binary links the shipped dialect set), so it is left as `anthropic`.
 fn resolve_yaml(yaml: &str) -> Result<RootCfg, Vec<String>> {
     let deploy: config::DeployCfg =
         serde_yaml::from_str(yaml).expect("the test DeployCfg yaml must parse");
     let def: config::ProviderDef = serde_yaml::from_str(
-        "protocol: anthropic\nbase_url: https://api.anthropic.com\nerror_map:\n  \"400\": client_error\n",
+        "protocol: anthropic\nbase_url: https://api.acme.example.com\nerror_map:\n  \"400\": client_error\n",
     )
     .unwrap();
-    let defs = HashMap::from([("anthropic".to_string(), def)]);
+    let defs = HashMap::from([("acme".to_string(), def)]);
     config::resolve(&deploy, &defs)
 }
 
@@ -4561,11 +4564,11 @@ auth:
         allowed_pools: [main]
         group: eng
 providers:
-  anthropic:
-    api_key: { env: ANTHROPIC_API_KEY }
+  acme:
+    api_key: { env: ACME_API_KEY }
 models:
   claude:
-    provider: anthropic
+    provider: acme
 pools:
   main:
     members:
@@ -4647,11 +4650,11 @@ fn test_validate_accepts_plugin_backed_secret_module_config() {
     let yaml = r#"
 listen: "0.0.0.0:8080"
 providers:
-  anthropic:
-    api_key: { module: acme-vault, settings: { path: "secret/data/anthropic#key" } }
+  acme:
+    api_key: { module: acme-vault, settings: { path: "secret/data/acme#key" } }
 models:
   claude:
-    provider: anthropic
+    provider: acme
 pools:
   main:
     members:
@@ -4661,7 +4664,7 @@ store:
 "#;
     let cfg = resolve_yaml(yaml).expect("the vault-api_key config must resolve");
     assert_eq!(
-        cfg.providers.get("anthropic").unwrap().api_key.module,
+        cfg.providers.get("acme").unwrap().api_key.module,
         "acme-vault",
         "the plugin-backed secret module survived resolution"
     );
@@ -4686,13 +4689,13 @@ auth:
       platform:
         group: ghost-group
 providers:
-  anthropic:
-    api_key: { env: ANTHROPIC_API_KEY }
+  acme:
+    api_key: { env: ACME_API_KEY }
 models:
   claude:
-    provider: anthropic
+    provider: acme
   haiku:
-    provider: anthropic
+    provider: acme
 pools:
   main:
     members:
@@ -5530,7 +5533,7 @@ fn test_validate_rejects_empty_canonical_builtin_secret_ref() {
     );
 
     let mut providers = HashMap::new();
-    let mut p = make_provider("anthropic", "https://api.anthropic.com", "IGNORED");
+    let mut p = make_provider("anthropic", "https://api.acme.example.com", "IGNORED");
     p.api_key = empty_env;
     providers.insert("acme".to_string(), p);
     let errs = validate(&make_root_cfg(providers, HashMap::new(), HashMap::new()))
@@ -5547,7 +5550,7 @@ fn test_validate_rejects_empty_canonical_builtin_secret_ref() {
         serde_yaml::from_str("{ module: file, settings: { path: \"\" } }")
             .expect("canonical empty-path file ref deserializes");
     let mut providers = HashMap::new();
-    let mut p = make_provider("anthropic", "https://api.anthropic.com", "IGNORED");
+    let mut p = make_provider("anthropic", "https://api.acme.example.com", "IGNORED");
     p.api_key = empty_file;
     providers.insert("acme".to_string(), p);
     let errs = validate(&make_root_cfg(providers, HashMap::new(), HashMap::new()))
@@ -5565,7 +5568,7 @@ fn test_validate_rejects_empty_canonical_builtin_secret_ref() {
         serde_yaml::from_str("{ module: env, settings: { key: REAL_KEY } }")
             .expect("canonical non-empty env ref deserializes");
     let mut providers = HashMap::new();
-    let mut p = make_provider("anthropic", "https://api.anthropic.com", "IGNORED");
+    let mut p = make_provider("anthropic", "https://api.acme.example.com", "IGNORED");
     p.api_key = good;
     providers.insert("acme".to_string(), p);
     let errs = validate(&make_root_cfg(providers, HashMap::new(), HashMap::new()))

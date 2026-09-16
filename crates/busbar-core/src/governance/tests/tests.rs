@@ -428,7 +428,7 @@ fn test_metering_accumulates_split_per_key_model_and_bucket() {
         key_id: "vk_a".into(),
         bucket: day,
         model: model.into(),
-        provider: "openai".into(),
+        provider: "acme".into(),
         tokens_input: input,
         tokens_output: output,
         tokens_cache_read: 7,
@@ -453,7 +453,7 @@ fn test_metering_accumulates_split_per_key_model_and_bucket() {
     rows.sort_by(|a, b| a.model.cmp(&b.model));
     assert_eq!(rows.len(), 2, "two models in this bucket: {rows:?}");
     let x = &rows[0];
-    assert_eq!((x.model.as_str(), x.provider.as_str()), ("gpt-x", "openai"));
+    assert_eq!((x.model.as_str(), x.provider.as_str()), ("gpt-x", "acme"));
     assert_eq!(
         (x.tokens_input, x.tokens_output, x.requests),
         (150, 30, 2),
@@ -487,15 +487,15 @@ fn test_record_metering_from_ir_usage_and_flat() {
         cache_creation: None,
         ..Default::default()
     };
-    gov.record_metering("vk_m", "claude-z", "anthropic", Some(&usage), now);
-    gov.record_metering("vk_m", "claude-z", "anthropic", None, now); // flat-fee op
+    gov.record_metering("vk_m", "model-z", "acme", Some(&usage), now);
+    gov.record_metering("vk_m", "model-z", "acme", None, now); // flat-fee op
     gov.flush_metering();
     let rows = gov.metering_for(metering_bucket(now)).unwrap();
     assert_eq!(rows.len(), 1);
     let r = &rows[0];
     assert_eq!(
         (r.key_id.as_str(), r.model.as_str(), r.provider.as_str()),
-        ("vk_m", "claude-z", "anthropic")
+        ("vk_m", "model-z", "acme")
     );
     assert_eq!(
         (
@@ -555,7 +555,7 @@ fn test_create_key_with_aws_issues_and_resolves_credential() {
     let (key, _bearer, akid, secret) = gov
         .create_key_with_aws(
             NewKeySpec {
-                name: "bedrock-key".to_string(),
+                name: "vendor-a-key".to_string(),
                 allowed_pools: Some(vec!["prod".to_string()]),
                 group: None,
                 labels: std::collections::BTreeMap::new(),
@@ -2923,7 +2923,7 @@ mod signed_token {
         use crate::governance::signing::TokenVerifier;
 
         let g = gov();
-        let mcp = "https://busbar.example.com/mcp";
+        let plane_x = "https://busbar.example.com/plane-x";
         let (binding, plain) = g
             .mint_signed(spec("agent", None, Some(vec!["fast"])), 2_000, 1_000)
             .expect("mint");
@@ -2936,7 +2936,7 @@ mod signed_token {
             .verify(&plain, 1_000, None)
             .expect("plain claims")
             .generation;
-        let bound = signer.mint_for_audience(&binding.id, 2_000, generation.as_deref(), mcp, None);
+        let bound = signer.mint_for_audience(&binding.id, 2_000, generation.as_deref(), plane_x, None);
 
         // The plain token admits on the data plane; the bound one must not.
         assert!(g.verify_token(&plain, 1_000, None).is_some());
@@ -2945,9 +2945,9 @@ mod signed_token {
             "an audience-bound token must be rejected on the data plane even with a valid binding"
         );
         // The bound token admits exactly on its own plane; the plain one must not.
-        assert!(g.verify_token(&bound, 1_000, Some(mcp)).is_some());
+        assert!(g.verify_token(&bound, 1_000, Some(plane_x)).is_some());
         assert!(
-            g.verify_token(&plain, 1_000, Some(mcp)).is_none(),
+            g.verify_token(&plain, 1_000, Some(plane_x)).is_none(),
             "a plain data-plane key must be rejected on an audience-checked ingress"
         );
     }
@@ -5216,7 +5216,7 @@ fn proof_minted_key_verifies_locally_and_never_calls_the_idp() {
             "the plain token verifies on the plain data plane (expected_aud = None)"
         );
         assert!(
-            gov.verify_token(&token, now, Some("mcp://example/canonical"))
+            gov.verify_token(&token, now, Some("plane-x://example/canonical"))
                 .is_none(),
             "audience gate: a plain token is refused where a specific audience is required (local)"
         );

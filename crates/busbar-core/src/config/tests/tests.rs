@@ -415,19 +415,19 @@ fn test_config_without_pools_parses() {
     let yaml = r#"
 listen: "0.0.0.0:8080"
 providers:
-  anthropic:
-    api_key: { env: ANTHROPIC_KEY }
+  acme:
+    api_key: { env: ACME_KEY }
 models:
-  claude:
-    provider: anthropic
+  widget:
+    provider: acme
     max_concurrent: 10
 "#;
     let deploy: DeployCfg = serde_yaml::from_str(yaml).expect("config without pools must parse");
     assert!(deploy.pools.pools.is_empty());
-    assert!(deploy.models.contains_key("claude"));
+    assert!(deploy.models.contains_key("widget"));
     assert_eq!(
-        deploy.providers["anthropic"].api_key.env_var(),
-        Some("ANTHROPIC_KEY")
+        deploy.providers["acme"].api_key.env_var(),
+        Some("ACME_KEY")
     );
 }
 
@@ -436,7 +436,7 @@ models:
 #[test]
 fn test_provider_path_override_resolves() {
     let mut defs = HashMap::new();
-    let mut def = provider_def("openai", "https://api.z.ai/api/paas/v4");
+    let mut def = provider_def("acme", "https://api.z.ai/api/paas/v4");
     def.path = Some("/chat/completions".to_string());
     defs.insert("zai-payg".to_string(), def);
 
@@ -495,7 +495,7 @@ fn admin_plane_boot_guard() {
         let mut defs = HashMap::new();
         defs.insert(
             "p".to_string(),
-            provider_def("openai", "https://api.example.com/v1"),
+            provider_def("acme", "https://api.example.com/v1"),
         );
         let mut deploy = base_deploy();
         deploy
@@ -809,16 +809,16 @@ fn test_hook_definition_unknown_key_rejected() {
 #[test]
 fn test_pool_member_model_key_and_removed_keys() {
     let m: PoolMember =
-        serde_yaml::from_str("model: claude\nweight: 3\ntier: large\ntags: [opus]\n")
+        serde_yaml::from_str("model: widget\nweight: 3\ntier: large\ntags: [opus]\n")
             .expect("member with model: parses");
-    assert_eq!(m.model, "claude");
+    assert_eq!(m.model, "widget");
     assert_eq!(m.weight, 3);
     assert_eq!(m.tier.as_deref(), Some("large"));
     assert_eq!(m.tags, ["opus"]);
 
     for (yaml, key) in [
-        ("target: claude\n", "target"),
-        ("model: claude\ncost_per_mtok: 15\n", "cost_per_mtok"),
+        ("target: widget\n", "target"),
+        ("model: widget\ncost_per_mtok: 15\n", "cost_per_mtok"),
     ] {
         let e = serde_yaml::from_str::<PoolMember>(yaml)
             .expect_err("a removed member key must be rejected");
@@ -1486,7 +1486,7 @@ fn test_resolve_provider_from_def() {
     // DeployCfg referencing z.ai + providers.yaml def -> resolved ProviderCfg has
     // protocol/base_url/error_map from def
     let mut defs = HashMap::new();
-    let mut def = provider_def(DEFAULT_PROTOCOL, "https://api.z.ai/api/anthropic");
+    let mut def = provider_def(DEFAULT_PROTOCOL, "https://api.z.ai/api/model-1");
     def.error_map
         .insert("1113".to_string(), "billing".to_string());
     def.error_map
@@ -1505,7 +1505,7 @@ fn test_resolve_provider_from_def() {
         .get("z.ai")
         .expect("z.ai should be in resolved providers");
     assert_eq!(provider_cfg.protocol, DEFAULT_PROTOCOL);
-    assert_eq!(provider_cfg.base_url, "https://api.z.ai/api/anthropic");
+    assert_eq!(provider_cfg.base_url, "https://api.z.ai/api/model-1");
     assert_eq!(provider_cfg.api_key.env_var(), Some("ZAI_KEY"));
     assert_eq!(
         provider_cfg.error_map.get("1113"),
@@ -1579,7 +1579,7 @@ fn test_resolve_override_wins() {
     let mut override_error_map = HashMap::new();
     override_error_map.insert("9999".to_string(), "client_error".to_string());
     let mut dep = provider_deploy("CUSTOM_KEY");
-    dep.protocol = Some("openai".to_string()); // Override protocol
+    dep.protocol = Some("acme".to_string()); // Override protocol
     dep.base_url = Some("https://override.example.com".to_string()); // Override base_url
     dep.error_map = Some(override_error_map); // Override error_map
 
@@ -1593,7 +1593,7 @@ fn test_resolve_override_wins() {
         .get("custom")
         .expect("custom should be in resolved providers");
     assert_eq!(
-        provider_cfg.protocol, "openai",
+        provider_cfg.protocol, "acme",
         "protocol override should win"
     );
     assert_eq!(
@@ -1774,11 +1774,11 @@ fn test_limits_absent_block_yields_historical_defaults() {
     let yaml = r#"
 listen: "0.0.0.0:8080"
 providers:
-  anthropic:
-    api_key: { env: ANTHROPIC_KEY }
+  acme:
+    api_key: { env: ACME_KEY }
 models:
-  claude:
-    provider: anthropic
+  widget:
+    provider: acme
     max_concurrent: 10
 "#;
     let deploy: DeployCfg =
@@ -1873,11 +1873,11 @@ fn test_limits_set_value_overrides_default() {
     let yaml = r#"
 listen: "0.0.0.0:8080"
 providers:
-  anthropic:
-    api_key: { env: ANTHROPIC_KEY }
+  acme:
+    api_key: { env: ACME_KEY }
 models:
-  claude:
-    provider: anthropic
+  widget:
+    provider: acme
     max_concurrent: 10
 limits:
   upstream_request_timeout_secs: 42
@@ -1934,11 +1934,11 @@ fn test_request_body_size_couples_ingress_and_translate() {
     let yaml = r#"
 listen: "0.0.0.0:8080"
 providers:
-  anthropic:
-    api_key: { env: ANTHROPIC_KEY }
+  acme:
+    api_key: { env: ACME_KEY }
 models:
-  claude:
-    provider: anthropic
+  widget:
+    provider: acme
     max_concurrent: 10
 limits:
   request_body_max_bytes: 5242880
@@ -2570,7 +2570,7 @@ store:
     db_path: /var/lib/busbar/gov.db
     busy_timeout_ms: 250
 rate_card:
-  claude:
+  widget:
     input_utok: 3.0
     output_utok: 15.0
 per_request_fee: 2
@@ -2603,12 +2603,12 @@ advanced:
         Some(250)
     );
     let rc = deploy.rate_card.as_ref().expect("rate_card");
-    let claude = rc.get("claude").expect("claude rate entry");
-    assert_eq!(claude.input_utok, 3.0);
-    assert_eq!(claude.output_utok, 15.0);
-    assert_eq!(claude.cache_read_utok, 0.0, "omitted tier prices at 0");
+    let widget = rc.get("widget").expect("widget rate entry");
+    assert_eq!(widget.input_utok, 3.0);
+    assert_eq!(widget.output_utok, 15.0);
+    assert_eq!(widget.cache_read_utok, 0.0, "omitted tier prices at 0");
     // The routing scalar is the blended (input + output) / 2.
-    assert_eq!(rate_entry_per_mtok(claude), 9.0);
+    assert_eq!(rate_entry_per_mtok(widget), 9.0);
     assert_eq!(deploy.per_request_fee, 2);
     assert_eq!(deploy.groups.len(), 2);
     assert_eq!(deploy.groups["eng-batch"].parent.as_deref(), Some("eng"));

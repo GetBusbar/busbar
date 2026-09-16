@@ -369,7 +369,7 @@ fn projection_union_is_the_compute_gate() {
 fn produced_logs_fields_match_the_request_log_producer() {
     // A projection granting EVERY documented logs field: whatever the producer writes, gets through.
     let all_logs = Projection::for_test(&[ExportStream::Logs], ExportStream::Logs.default_fields());
-    let payload = crate::export::build_request_log(all_logs, 1, "openai", "p", "ok", 5);
+    let payload = crate::export::build_request_log(all_logs, 1, "acme", "p", "ok", 5);
     let mut written: Vec<&str> = payload
         .as_object()
         .expect("an object")

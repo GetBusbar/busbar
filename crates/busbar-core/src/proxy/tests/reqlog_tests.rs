@@ -25,7 +25,7 @@ const NOW: u64 = 1_770_000_000;
 fn an_input(status: u16) -> RequestInput {
     RequestInput {
         ts: NOW,
-        ingress_protocol: "anthropic".to_string(),
+        ingress_protocol: "widget-plane".to_string(),
         pool: "fast".to_string(),
         outcome: OUTCOME_DISPATCHED,
         reason: "",
@@ -99,7 +99,7 @@ fn the_outcome_words_follow_the_terminal_and_the_unguessable_reason_stays_empty(
     assert_eq!(
         outcome_of(Terminal::Rejected, 400),
         (OUTCOME_REFUSED, ""),
-        "400 is a malformed body on one path and Bedrock's quota shape on another; a reason \
+        "400 is a malformed body on one path and a vendor's quota shape on another; a reason \
          inferred from it would send an operator somewhere wrong"
     );
 }

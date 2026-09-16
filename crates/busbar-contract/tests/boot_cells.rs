@@ -22,8 +22,8 @@ fn ladder() -> Vec<Rung> {
         Rung {
             what: "a named upstream's own path space",
             selector: Selector::PathPattern(&[PathSeg::Var, PathSeg::Lit("v1"), PathSeg::Tail]),
-            takes: Selector::ExactPath("/openai/v1/chat/completions"),
-            leaves: Selector::ExactPath("/openai/v2/chat/completions"),
+            takes: Selector::ExactPath("/widget/v1/chat/completions"),
+            leaves: Selector::ExactPath("/widget/v2/chat/completions"),
         },
         Rung {
             what: "an upstream and a named model",
@@ -58,8 +58,8 @@ fn ladder() -> Vec<Rung> {
         },
         Rung {
             what: "the version header of one dialect",
-            selector: Selector::HeaderPresent("anthropic-version"),
-            takes: Selector::HeaderExact("anthropic-version", "2023-06-01"),
+            selector: Selector::HeaderPresent("x-acme-version"),
+            takes: Selector::HeaderExact("x-acme-version", "2023-06-01"),
             leaves: Selector::HeaderExact("x-goog-api-key", "abc"),
         },
         Rung {
@@ -167,16 +167,16 @@ fn every_rung_is_a_claim_that_a_boot_would_check() {
 fn overlapping_rungs_within_one_plane_are_an_ordering_question_not_a_refusal() {
     let general = Selector::PathPattern(&[PathSeg::Var, PathSeg::Lit("v1"), PathSeg::Tail]);
     let specific =
-        Selector::PathPattern(&[PathSeg::Lit("openai"), PathSeg::Lit("v1"), PathSeg::Tail]);
+        Selector::PathPattern(&[PathSeg::Lit("widget"), PathSeg::Lit("v1"), PathSeg::Tail]);
     assert!(general.overlaps(&specific));
 
-    let request = Selector::ExactPath("/openai/v1/chat/completions");
+    let request = Selector::ExactPath("/widget/v1/chat/completions");
     assert!(general.overlaps(&request));
     assert!(specific.overlaps(&request));
 
     // Most specific wins: the literal-headed pattern is the narrower of the two, and it is the
     // one that does not accept a request the other does.
-    let other = Selector::ExactPath("/anthropic/v1/messages");
+    let other = Selector::ExactPath("/gadget/v1/messages");
     assert!(general.overlaps(&other));
     assert!(!specific.overlaps(&other));
 }
@@ -192,7 +192,7 @@ fn a_registration_interns_a_configured_key_exactly_once() {
     let mut reg = busbar_contract::ids::Registration::new();
     assert!(reg.is_empty());
 
-    let lane = String::from("openai-frontier");
+    let lane = String::from("acme-frontier");
     let first = reg
         .key(&lane)
         .expect("the vocabulary is open and far from its ceiling");
@@ -200,7 +200,7 @@ fn a_registration_interns_a_configured_key_exactly_once() {
         .key(&lane)
         .expect("a key already registered always resolves");
 
-    assert_eq!(first, "openai-frontier");
+    assert_eq!(first, "acme-frontier");
     assert_eq!(first, second);
     // The SAME name, not an equal one: interning twice leaks once.
     assert!(std::ptr::eq(first, second));
@@ -208,7 +208,7 @@ fn a_registration_interns_a_configured_key_exactly_once() {
 
     // A different key is a second entry, and the fixed term is readable from the count.
     let other = reg
-        .key("anthropic-frontier")
+        .key("gadget-frontier")
         .expect("the vocabulary is open");
     assert_ne!(first, other);
     assert_eq!(reg.len(), 2);

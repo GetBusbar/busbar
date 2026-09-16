@@ -31,19 +31,19 @@ governance:
   rate_sweep_interval: 128
   usage_flush_interval_ms: 50
   rate_card:
-    claude: { input_utok: 3.0, output_utok: 15.0 }
+    widget: { input_utok: 3.0, output_utok: 15.0 }
   budget_groups:
     acme: { max_budget_cents: 1000000, budget_period: monthly }
     growth: { max_budget_cents: 200000, budget_period: daily, parent: acme }
 providers:
-  anthropic:
-    api_key_env: ANTHROPIC_KEY
+  vendor-a:
+    api_key_env: VENDOR_A_KEY
 models:
-  claude: { provider: anthropic }
+  widget: { provider: vendor-a }
 pools:
   fast:
     members:
-      - { target: claude, weight: 1, cost_per_mtok: 4 }
+      - { target: widget, weight: 1, cost_per_mtok: 4 }
     hooks: [cheapest, pii-screen]
     breaker:
       base_cooldown_secs: 15
@@ -148,7 +148,7 @@ fn migrate_14x_round_trips_into_deploy_cfg() {
         Some(128)
     );
     assert_eq!(
-        get(&["rate_card", "claude", "input_utok"]).as_f64(),
+        get(&["rate_card", "widget", "input_utok"]).as_f64(),
         Some(3.0)
     );
     // budget_groups -> groups with window nouns (daily -> day, monthly -> month).
@@ -190,8 +190,8 @@ fn migrate_14x_round_trips_into_deploy_cfg() {
     assert_eq!(limits.len(), 3, "rpm + tpm + budget -> three limits");
     // api_key_env -> secret ref.
     assert_eq!(
-        get(&["providers", "anthropic", "api_key", "env"]).as_str(),
-        Some("ANTHROPIC_KEY")
+        get(&["providers", "vendor-a", "api_key", "env"]).as_str(),
+        Some("VENDOR_A_KEY")
     );
     // target -> model; cost off members; alias renames. The member stays a rich object (the 1.5.5
     // member grammar is the 1.6.0 grammar): `target` is renamed to `model` in place and
@@ -204,7 +204,7 @@ fn migrate_14x_round_trips_into_deploy_cfg() {
         member
             .get(serde_yaml::Value::from("model"))
             .and_then(|v| v.as_str()),
-        Some("claude"),
+        Some("widget"),
         "`target:` was renamed to `model:` in place"
     );
     for retired in ["target", "cost_per_mtok"] {
@@ -621,7 +621,7 @@ providers: {}
 models: {}
 pools:
   fast:
-    members: [ { target: claude, weight: 1 } ]
+    members: [ { target: widget, weight: 1 } ]
     policy: cheapest
 "#;
     let out = migrate_config(raw).expect("migrates");
@@ -851,13 +851,13 @@ auth:
     minter:
       admin_scope: mint
 providers:
-  anthropic: { api_key_env: KEY }
+  vendor-a: { api_key_env: KEY }
 models:
-  claude: { provider: anthropic }
+  widget: { provider: vendor-a }
 pools:
   fast:
     members:
-      - { target: claude, weight: 1 }
+      - { target: widget, weight: 1 }
 "#;
     let out = migrate_config(raw).expect("migrates");
     let doc: serde_yaml::Value = serde_yaml::from_str(&out.yaml).expect("output is valid YAML");
@@ -2429,7 +2429,7 @@ fn migrate_export_flags_the_retired_audit_stream() {
 /// section keys disappear.
 #[test]
 fn migrate_folds_tool_and_agent_pools_into_pools() {
-    let raw = "providers: {}\nmodels: {}\npools:\n  fast:\n    members: [claude, gpt]\n\
+    let raw = "providers: {}\nmodels: {}\npools:\n  fast:\n    members: [widget, gizmo]\n\
                tool_pools:\n  search:\n    members: [search-eu, search-us]\n    repeatable: [find]\n\
                agent_pools:\n  planner:\n    members: [planner-eu, planner-us]\n";
     let (out, doc) = migrate_to_value(raw);
@@ -2470,12 +2470,12 @@ fn migrate_folds_tool_and_agent_pools_into_pools() {
 /// for the same input.
 #[test]
 fn migrate_leaves_rich_pool_members_untouched() {
-    let raw = "providers: {}\nmodels: {}\npools:\n  gpt4o:\n    members:\n\
-               \x20     - { model: gpt4o-openai, weight: 3 }\n\
-               \x20     - { model: gpt4o-azure, weight: 1 }\n\
-               \x20     - { model: gpt4o-eu, tier: large }\n";
+    let raw = "providers: {}\nmodels: {}\npools:\n  model1:\n    members:\n\
+               \x20     - { model: model1-a, weight: 3 }\n\
+               \x20     - { model: model1-b, weight: 1 }\n\
+               \x20     - { model: model1-eu, tier: large }\n";
     let (out, doc) = migrate_to_value(raw);
-    let members = dig(&doc, &["pools", "gpt4o", "members"])
+    let members = dig(&doc, &["pools", "model1", "members"])
         .unwrap()
         .as_sequence()
         .unwrap();
@@ -2487,7 +2487,7 @@ fn migrate_leaves_rich_pool_members_untouched() {
         );
     }
     assert_eq!(
-        dig(&doc, &["pools", "gpt4o", "members"])
+        dig(&doc, &["pools", "model1", "members"])
             .and_then(|v| v.as_sequence())
             .and_then(|s| s[0].get("weight"))
             .and_then(|v| v.as_u64()),
@@ -2495,7 +2495,7 @@ fn migrate_leaves_rich_pool_members_untouched() {
         "the member-level weight is carried in place"
     );
     assert!(
-        dig(&doc, &["pools", "gpt4o", "weights"]).is_none(),
+        dig(&doc, &["pools", "model1", "weights"]).is_none(),
         "no pool-level `weights:` map is invented"
     );
     assert!(
@@ -2548,13 +2548,13 @@ fn end_to_end_a_full_legacy_config_migrates_validates_and_drops_every_deprecated
     let raw = r#"
 listen: "0.0.0.0:8080"
 providers:
-  openai:
-    api_key: { env: BUSBAR_T_E2E_OPENAI }
+  acme:
+    api_key: { env: BUSBAR_T_E2E_ACME }
 models:
   fast-a:
-    provider: openai
+    provider: acme
   fast-b:
-    provider: openai
+    provider: acme
 hooks:
   audit:
     kind: gate
@@ -2622,7 +2622,7 @@ agent_pools:
 
     // (b) It resolves and validates clean on 1.6.0.
     let defs: std::collections::HashMap<String, crate::config::ProviderDef> =
-        serde_yaml::from_str("openai:\n  protocol: openai\n  base_url: https://api.openai.com\n")
+        serde_yaml::from_str("acme:\n  protocol: anthropic\n  base_url: https://api.acme.example\n")
             .expect("provider defs parse");
     let cfg = crate::config::resolve(&deploy, &defs)
         .unwrap_or_else(|e| panic!("migrated config must resolve on 1.6.0: {e:?}"));
@@ -2709,11 +2709,11 @@ tools:
 /// `api_key_env` it can SEE and otherwise leaves the field absent, so the operator has to decide.
 #[test]
 fn migrate_never_invents_a_keyless_api_key() {
-    let raw = "providers:\n  anthropic: { api_key_env: ANTHROPIC_KEY }\n  local: { base_url: 'http://127.0.0.1:11434' }\n";
+    let raw = "providers:\n  vendor-a: { api_key_env: VENDOR_A_KEY }\n  local: { base_url: 'http://127.0.0.1:11434' }\n";
     let (_out, doc) = migrate_to_value(raw);
     assert_eq!(
-        dig(&doc, &["providers", "anthropic", "api_key", "env"]).and_then(|v| v.as_str()),
-        Some("ANTHROPIC_KEY"),
+        dig(&doc, &["providers", "vendor-a", "api_key", "env"]).and_then(|v| v.as_str()),
+        Some("VENDOR_A_KEY"),
         "a visible api_key_env still converts to the secret reference"
     );
     assert!(

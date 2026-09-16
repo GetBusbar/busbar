@@ -165,13 +165,13 @@ fn build_request_log_shape() {
     let p = crate::export::build_request_log(
         test_logs_projection(),
         1_700_000_000,
-        "anthropic",
+        "acme",
         "prod",
         "ok",
         42,
     );
     assert_eq!(p["ts"], 1_700_000_000_u64);
-    assert_eq!(p["ingress_protocol"], "anthropic");
+    assert_eq!(p["ingress_protocol"], "acme");
     assert_eq!(p["pool"], "prod");
     assert_eq!(p["outcome"], "ok");
     assert_eq!(p["latency_ms"], 42_u64);
@@ -198,7 +198,7 @@ async fn deliver_logs_is_noop_when_unconfigured() {
 
     let facts = crate::export::RequestLogFacts {
         ts: 0,
-        ingress_protocol: "openai",
+        ingress_protocol: "vendor-a",
         pool: "p",
         outcome: "ok",
         latency_ms: 1,

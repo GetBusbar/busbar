@@ -1644,7 +1644,7 @@ count = "46"
 [[cell]]
 crate = "busbar-core"
 kind = "plane"
-count = "3027"
+count = "3021"
 
 [[cell]]
 crate = "busbar-core"
@@ -5480,12 +5480,12 @@ count = "2"
 [[cell]]
 crate = "busbar-contract"
 kind = "dialect"
-count = "14"
+count = "4"
 
 [[cell]]
 crate = "busbar-core"
 kind = "dialect"
-count = "1166"
+count = "1033"
 
 [[cell]]
 crate = "busbar-hooks-ranking"
@@ -5530,12 +5530,12 @@ count = "2"
 [[cell]]
 crate = "busbar-substrate"
 kind = "dialect"
-count = "89"
+count = "87"
 
 [[cell]]
 crate = "busbar-substrate-values"
 kind = "dialect"
-count = "248"
+count = "213"
 
 [[cell]]
 crate = "busbar-transport-sse"

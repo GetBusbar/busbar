@@ -599,7 +599,7 @@ async fn test_admin_v1_usage_meters_by_model_and_key() {
         cache_write_utok: 500.0,
     };
     let rate_card: std::collections::BTreeMap<String, crate::config::RateEntryCfg> =
-        [("gpt-x".to_string(), rate), ("claude-z".to_string(), rate)]
+        [("model-1".to_string(), rate), ("model-2".to_string(), rate)]
             .into_iter()
             .collect();
     let cost = crate::cost::CostModel::resolve_parts(
@@ -630,9 +630,9 @@ async fn test_admin_v1_usage_meters_by_model_and_key() {
     };
     // `record_metering` only accumulates into `pending_metering` (write-behind); an explicit
     // `flush_metering()` is required so the GET below deterministically sees them in the store.
-    gov.record_metering(&minted.id, "gpt-x", "openai", Some(&usage), now);
-    gov.record_metering(&minted.id, "gpt-x", "openai", Some(&usage), now);
-    gov.record_metering(&minted.id, "claude-z", "anthropic", None, now);
+    gov.record_metering(&minted.id, "model-1", "vendor-a", Some(&usage), now);
+    gov.record_metering(&minted.id, "model-1", "vendor-a", Some(&usage), now);
+    gov.record_metering(&minted.id, "model-2", "acme", None, now);
     gov.flush_metering();
     let app = TestApp::new().governance(gov).cost(cost).build();
     let router = crate::build_router(app);
@@ -677,13 +677,13 @@ async fn test_admin_v1_usage_meters_by_model_and_key() {
     // Per-model attribution (the FinOps unit): each row carries the same split shape.
     let by_model = body["by_model"].as_array().unwrap();
     assert_eq!(by_model.len(), 2, "{by_model:?}");
-    let x = by_model.iter().find(|m| m["model"] == "gpt-x").unwrap();
-    assert_eq!(x["provider"], "openai");
+    let x = by_model.iter().find(|m| m["model"] == "model-1").unwrap();
+    assert_eq!(x["provider"], "vendor-a");
     assert_eq!(x["requests"], 2);
     assert_eq!(x["tokens_input"], 1400);
     // 2 req x 10_000 micro + 2000 tokens x 500 utok = 1_020_000 micro-units
     assert_eq!(x["spend_micros"], 1_020_000);
-    let z = by_model.iter().find(|m| m["model"] == "claude-z").unwrap();
+    let z = by_model.iter().find(|m| m["model"] == "model-2").unwrap();
     assert_eq!(
         z["requests"], 1,
         "a flat (zero-token) response still counts"
@@ -1811,7 +1811,7 @@ async fn test_admin_v1_config_apply_refused_on_locked_config() {
     let client = reqwest::Client::new();
     let body = serde_json::json!({
         "providers": {
-            "test-provider": {"protocol": "anthropic", "base_url": "http://127.0.0.1:1/", "api_key_env": "BUSBAR_TEST_LOCKED_APPLY_NO_KEY"}
+            "test-provider": {"protocol": "acme", "base_url": "http://127.0.0.1:1/", "api_key_env": "BUSBAR_TEST_LOCKED_APPLY_NO_KEY"}
         },
         "config": {
             "listen": "127.0.0.1:0",
@@ -4067,11 +4067,11 @@ async fn test_admin_v1_config_validate_dry_run() {
     let body: serde_json::Value = bad.json().await.unwrap();
     assert_eq!(body["error"]["code"], "invalid_request");
 
-    // Well-formed body, invalid config: deploy references provider "openai" but the defs are empty
+    // Well-formed body, invalid config: deploy references provider "acme" but the defs are empty
     // → resolve fails with a dangling-provider error → 200 ok:false.
     let proposed = serde_json::json!({
         "config": {
-            "providers": { "openai": { "api_key": { "env": "OPENAI_KEY" } } },
+            "providers": { "acme": { "api_key": { "env": "ACME_KEY" } } },
             "models": {}
         },
         "providers": {}
@@ -4092,7 +4092,7 @@ async fn test_admin_v1_config_validate_dry_run() {
     assert!(
         errors
             .iter()
-            .any(|e| e.as_str().unwrap_or("").contains("openai")),
+            .any(|e| e.as_str().unwrap_or("").contains("acme")),
         "the dangling provider is named in an error: {errors:?}"
     );
 
@@ -4443,7 +4443,7 @@ async fn test_create_key_with_aws_credential_returns_secret_once_and_hides_on_re
     let created = client
         .post(format!("http://{addr}/api/v1/admin/keys"))
         .header("x-admin-token", "admintok")
-        .json(&serde_json::json!({"name": "bedrock-key", "issue_aws_credential": true}))
+        .json(&serde_json::json!({"name": "acme-key", "issue_aws_credential": true}))
         .send()
         .await
         .unwrap();
