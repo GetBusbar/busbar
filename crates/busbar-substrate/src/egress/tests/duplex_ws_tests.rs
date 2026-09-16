@@ -654,7 +654,7 @@ fn ws_arrival_spec_installs_and_drains_verbatim() {
     use crate::ingress::duplex_ws::{
         install_ws_arrivals, take_ws_arrivals, WsArrival, WsArrivalSpec,
     };
-    use busbar_plugin::cold::http_endpoint::RouteAuth;
+    use busbar_plugin::cold::endpoint::RouteAuth;
 
     let spec = WsArrivalSpec {
         path: "/v1/duplex/{id}".to_string(),

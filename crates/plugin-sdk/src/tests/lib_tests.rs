@@ -425,9 +425,9 @@ impl ExportHandler for RoutedExport {
             auth: RouteAuth::None,
         }]
     }
-    fn handle_http(&self, req: &HttpEndpointRequest) -> HttpEndpointResponse {
+    fn handle_http(&self, req: &EndpointRequest) -> EndpointResponse {
         assert_eq!(req.path, "/metrics");
-        HttpEndpointResponse {
+        EndpointResponse {
             status: 200,
             headers: vec![("content-type".into(), "text/plain".into())],
             body: b"busbar_up 1\n".to_vec(),
@@ -435,7 +435,8 @@ impl ExportHandler for RoutedExport {
     }
 }
 
-/// EXPORT glue: `dispatch_export` maps `Routes` to the declared routes and `HttpEndpoint` to
+/// EXPORT glue: `dispatch_export` maps `Routes` to the declared routes and `Endpoint` (wire op
+/// `http_endpoint`) to
 /// `handle_http`, relaying the plugin's response — the additive route-registration + dispatch wire.
 #[test]
 fn export_dispatch_routes_and_http() {
@@ -449,8 +450,8 @@ fn export_dispatch_routes_and_http() {
     }
     match dispatch_export(
         &RoutedExport,
-        ExportRequest::HttpEndpoint {
-            request: HttpEndpointRequest {
+        ExportRequest::Endpoint {
+            request: EndpointRequest {
                 method: "GET".into(),
                 path: "/metrics".into(),
                 query: String::new(),
@@ -459,7 +460,7 @@ fn export_dispatch_routes_and_http() {
             },
         },
     ) {
-        ExportResponse::Http(resp) => {
+        ExportResponse::Endpoint(resp) => {
             assert_eq!(resp.status, 200);
             assert_eq!(resp.body, b"busbar_up 1\n");
         }
@@ -477,7 +478,7 @@ fn export_default_handle_http_is_404() {
         }
     }
     assert!(Bare.routes().is_empty());
-    let resp = Bare.handle_http(&HttpEndpointRequest {
+    let resp = Bare.handle_http(&EndpointRequest {
         method: "GET".into(),
         path: "/whatever".into(),
         query: String::new(),

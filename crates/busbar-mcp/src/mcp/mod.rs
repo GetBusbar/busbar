@@ -686,7 +686,7 @@ pub(crate) fn mcp_admin_routes(
     _slot: &dyn std::any::Any,
 ) -> Vec<busbar_substrate::admin_verbs::AdminRouteSpec> {
     use crate::mcp::admin_view::McpServers;
-    use busbar_plugin::cold::http_endpoint::RouteMethod;
+    use busbar_plugin::cold::endpoint::RouteMethod;
     use busbar_substrate::admin_verbs::{
         connect_reply, AdminReplyFuture, AdminReqCtx, AdminRouteSpec, AdminScope, AdminVerbKind,
     };

@@ -30,7 +30,7 @@ use std::sync::Arc;
 
 use axum::body::Bytes;
 use axum::http::HeaderMap;
-use busbar_plugin::cold::http_endpoint::{RouteAuth, RouteMethod};
+use busbar_plugin::cold::endpoint::{RouteAuth, RouteMethod};
 
 /// A plane route's response — an ordinary `axum` response, returned verbatim by the core adapter.
 /// `axum::response::Response` is already a substrate-visible type (the JSON-RPC ingress returns it),

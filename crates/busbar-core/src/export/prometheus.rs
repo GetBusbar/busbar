@@ -14,7 +14,7 @@
 
 use crate::plugin_routes::{PluginHttpDispatch, RouteDecl, RouteKind};
 use busbar_plugin_loader::{
-    HttpEndpointRequest, HttpEndpointResponse, Route, RouteAuth, RouteMethod,
+    EndpointRequest, EndpointResponse, Route, RouteAuth, RouteMethod,
 };
 use std::sync::Arc;
 
@@ -32,7 +32,7 @@ impl PluginHttpDispatch for PrometheusExport {
     /// The app-less arm (never reached in production — the route table always dispatches WITH the app
     /// via `handle_http_with_app` below). Renders the registry without a fresh gauge refresh; see
     /// [`render_or_refuse`] for why an uninstalled recorder is refused rather than rendered empty.
-    fn handle_http(&self, _req: &HttpEndpointRequest) -> HttpEndpointResponse {
+    fn handle_http(&self, _req: &EndpointRequest) -> EndpointResponse {
         render_or_refuse()
     }
 
@@ -43,8 +43,8 @@ impl PluginHttpDispatch for PrometheusExport {
     fn handle_http_with_app(
         &self,
         app: &crate::state::App,
-        _req: &HttpEndpointRequest,
-    ) -> HttpEndpointResponse {
+        _req: &EndpointRequest,
+    ) -> EndpointResponse {
         // Refresh (and render) ONLY once the recorder is installed — see `render_or_refuse` for why
         // an uninstalled recorder must REFUSE rather than render an empty gauge-less exposition.
         if !crate::metrics::recorder_installed() {
@@ -69,7 +69,7 @@ impl PluginHttpDispatch for PrometheusExport {
 /// would reasonably read that as "the endpoint has nothing to say" rather than "not ready yet, retry".
 /// Refusing makes the two states distinguishable on the wire, matching the module contract that a
 /// scrape is either FULL or REFUSED, never an empty success.
-fn render_or_refuse() -> HttpEndpointResponse {
+fn render_or_refuse() -> EndpointResponse {
     if !crate::metrics::recorder_installed() {
         return refused();
     }
@@ -80,8 +80,8 @@ fn render_or_refuse() -> HttpEndpointResponse {
 /// sub-second background step (or, far more rarely, has permanently failed — logged at install
 /// time), so a short retry is the correct operator action either way. No body: there is no
 /// exposition to show, and a real one is not being padded.
-fn refused() -> HttpEndpointResponse {
-    HttpEndpointResponse {
+fn refused() -> EndpointResponse {
+    EndpointResponse {
         status: 503,
         headers: vec![("retry-after".to_string(), "1".to_string())],
         body: Vec::new(),
@@ -122,8 +122,8 @@ pub(crate) fn route_owner(cfg: &crate::config::ExportCfg) -> Option<(String, Rou
 }
 
 /// A `200 OK` Prometheus text exposition with the canonical content type.
-fn ok_exposition(body: String) -> HttpEndpointResponse {
-    HttpEndpointResponse {
+fn ok_exposition(body: String) -> EndpointResponse {
+    EndpointResponse {
         status: 200,
         headers: vec![(
             "content-type".to_string(),

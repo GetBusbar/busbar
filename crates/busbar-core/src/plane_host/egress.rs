@@ -11,7 +11,7 @@
 //!
 //! ## What is wired here, and what is a faithful Phase-2 note
 //!
-//! * [`EgressKind::Http`] — FULLY wired for the request/READ round trip: the outbound request is
+//! * [`EgressKind::OneShot`] — FULLY wired for the request/READ round trip: the outbound request is
 //!   built from the [`EgressDesc`] outbound tail (the `verb`, the packed header set, and the one-shot
 //!   request `body`), the credential is INJECTED host-side (the resolved credential the plane named by
 //!   ref, never plaintext the plane held — see [`inject_credential`]), then resolve-then-pin over
@@ -21,7 +21,7 @@
 //!   [`EgressHead`], a background streaming task that pumps `resp.chunk().await` into a bounded
 //!   channel, and an arena [`Closer`](super::scope::DispatchScope::register_egress) that tears the
 //!   whole thing down on close / dispatch-drop / cancellation.
-//! * [`EgressKind::Http`] STREAMED request-body duplex ([`egress_write`]) — a Phase-2 note. The
+//! * [`EgressKind::OneShot`] STREAMED request-body duplex ([`egress_write`]) — a Phase-2 note. The
 //!   one-shot request body rides [`EgressDesc::body_ptr`] at open; a CLIENT-STREAMED (chunk-by-chunk)
 //!   request body still needs HTTP/2 `Body::wrap_stream`, so `egress_write` stays `Unsupported` for
 //!   the HTTP kind.
@@ -519,7 +519,7 @@ pub(crate) fn egress_open(
             // decision, and no operator config wires a per-plane egress scope over the FFI seam today,
             // so the effective scope is `0` (default-deny): a plane asking for a private/loopback or
             // plaintext hop is REFUSED by the guard. Public HTTPS (which needs no privilege) still opens.
-            EgressKind::Http => open_http(state.scope, d, 0, out),
+            EgressKind::OneShot => open_http(state.scope, d, 0, out),
             // Phase 2: a governed RAW duplex byte channel. It SHARES the subprocess pipe shape
             // (`pipe_read`/`pipe_write` keyed by a `PipeId`); only the channel differs — a pinned
             // socket rather than a child's stdio. The governance path is identical (resolve-then-pin,
@@ -1258,7 +1258,7 @@ unsafe fn egress_poll_body(
 
 /// Write a request-body / duplex chunk to a governed egress.
 ///
-/// Phase 2 for [`EgressKind::Http`]: the shipped hop is a bodyless streaming REQUEST, so there is no
+/// Phase 2 for [`EgressKind::OneShot`]: the shipped hop is a bodyless streaming REQUEST, so there is no
 /// client-streamed body to write — a duplex request body needs HTTP/2 `Body::wrap_stream` and a
 /// method/body field on [`EgressDesc`] that the ABI does not yet carry. A known egress is answered
 /// `Unsupported` (the capability is real but not wired for this kind); an unknown one is `Gone`.
@@ -1327,7 +1327,7 @@ pub(crate) fn egress_open_scoped(
             // The hostless entry's `EgressDesc` is CORE-AUTHORED (built by `crate::egress::seam` from a
             // host-side `HopSpec`), so its `allowlist_scope` IS host authority — passed through as the
             // judged scope. This is the trusted twin of the FFI slot's `0` (see `egress_open`).
-            EgressKind::Http => open_http(scope, d, d.allowlist_scope, out),
+            EgressKind::OneShot => open_http(scope, d, d.allowlist_scope, out),
             // The hostless in-core egress entry serves HTTP; raw/subprocess remain a HostCtx-slot path.
             EgressKind::RawConn | EgressKind::Subprocess => StatusClass::Unsupported,
         }

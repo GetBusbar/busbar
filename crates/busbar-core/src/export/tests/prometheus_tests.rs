@@ -68,7 +68,7 @@ fn metrics_served_via_endpoint_registration() {
 #[test]
 fn dispatch_renders_prometheus_exposition() {
     crate::metrics::init();
-    let req = HttpEndpointRequest {
+    let req = EndpointRequest {
         method: "GET".into(),
         path: "/metrics".into(),
         query: String::new(),

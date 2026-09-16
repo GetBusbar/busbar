@@ -20,7 +20,7 @@
 //!   carried as an opaque [`serde_json::Value`] the engine built; the export ABI adds the envelope,
 //!   never a second copy of the batch semantics.
 
-use crate::cold::http_endpoint::{HttpEndpointRequest, HttpEndpointResponse, Route};
+use crate::cold::endpoint::{EndpointRequest, EndpointResponse, Route};
 use serde::{Deserialize, Serialize};
 
 /// The export-plugin PAYLOAD schema version (the signed manifest's `abi_version` for `kind: export`).
@@ -468,16 +468,21 @@ pub enum ExportRequest {
         payload: serde_json::Value,
     },
     /// `routes` — asked ONCE at load: which HTTP [`Route`]s does this instance serve? The engine
-    /// collision-checks + namespace-confines the answer, then mounts them (see the `http_endpoint`
+    /// collision-checks + namespace-confines the answer, then mounts them (see the `endpoint`
     /// module doc). Reply: [`ExportResponse::Routes`]. ADDITIVE: an older sink that cannot decode this
     /// op declares no routes (the loader treats the undecodable-variant signal as "no HTTP surface").
     Routes,
     /// `http_endpoint` — dispatch one inbound HTTP request matched to a registered route of THIS
     /// plugin. Fires only for a matched plugin route, off the data-plane hot path; the engine already
-    /// enforced the route's declared auth. Reply: [`ExportResponse::Http`].
-    HttpEndpoint {
+    /// enforced the route's declared auth. Reply: [`ExportResponse::Endpoint`].
+    ///
+    /// `#[serde(rename = "http_endpoint")]` pins the wire op tag to its ORIGINAL spelling — the Rust
+    /// identifier is neutralized (`Endpoint`, not `HttpEndpoint`) but the byte on the wire is
+    /// unchanged, so no plugin (any language) sees a break.
+    #[serde(rename = "http_endpoint")]
+    Endpoint {
         /// The host-built inbound request (bounded headers, no raw `Authorization`).
-        request: HttpEndpointRequest,
+        request: EndpointRequest,
     },
 }
 
@@ -497,7 +502,13 @@ pub enum ExportResponse {
     /// `routes` — the HTTP routes this instance serves (collected once at load).
     Routes(Vec<Route>),
     /// `http_endpoint` — the plugin's response to a dispatched inbound request, relayed verbatim.
-    Http(HttpEndpointResponse),
+    ///
+    /// `#[serde(rename = "Http")]` pins the externally-tagged wire key to its ORIGINAL spelling (this
+    /// type carries no `#[serde(...)]` container attribute, so the default tag is the bare variant
+    /// name — renaming the Rust identifier to `Endpoint` would otherwise flip the wire key from
+    /// `"Http"` to `"Endpoint"`).
+    #[serde(rename = "Http")]
+    Endpoint(EndpointResponse),
 }
 
 #[cfg(test)]

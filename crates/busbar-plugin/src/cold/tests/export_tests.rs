@@ -173,11 +173,11 @@ fn export_abi_version_is_two() {
 /// additive wire behind plugin route registration + dispatch.
 #[test]
 fn http_endpoint_ops_roundtrip_and_tags() {
-    use crate::cold::http_endpoint::{HttpEndpointRequest, RouteAuth, RouteMethod};
+    use crate::cold::endpoint::{EndpointRequest, RouteAuth, RouteMethod};
     let reqs = vec![
         ExportRequest::Routes,
-        ExportRequest::HttpEndpoint {
-            request: HttpEndpointRequest {
+        ExportRequest::Endpoint {
+            request: EndpointRequest {
                 method: "GET".into(),
                 path: "/metrics".into(),
                 query: String::new(),
@@ -196,8 +196,8 @@ fn http_endpoint_ops_roundtrip_and_tags() {
         "routes"
     );
     assert_eq!(
-        serde_json::to_value(ExportRequest::HttpEndpoint {
-            request: HttpEndpointRequest {
+        serde_json::to_value(ExportRequest::Endpoint {
+            request: EndpointRequest {
                 method: "GET".into(),
                 path: "/metrics".into(),
                 query: String::new(),
@@ -216,7 +216,7 @@ fn http_endpoint_ops_roundtrip_and_tags() {
             method: RouteMethod::Get,
             auth: RouteAuth::None,
         }]),
-        ExportResponse::Http(HttpEndpointResponse {
+        ExportResponse::Endpoint(EndpointResponse {
             status: 200,
             headers: vec![],
             body: b"ok".to_vec(),
@@ -226,4 +226,20 @@ fn http_endpoint_ops_roundtrip_and_tags() {
         let back: ExportResponse = serde_json::from_slice(&j).unwrap();
         assert_eq!(serde_json::to_vec(&back).unwrap(), j);
     }
+    // The externally-tagged Response wire key must still be "Http", byte-identical, despite the
+    // Rust variant being renamed Http -> Endpoint.
+    assert_eq!(
+        serde_json::to_value(ExportResponse::Endpoint(EndpointResponse {
+            status: 200,
+            headers: vec![],
+            body: b"ok".to_vec(),
+        }))
+        .unwrap()
+        .as_object()
+        .unwrap()
+        .keys()
+        .next()
+        .unwrap(),
+        "Http"
+    );
 }

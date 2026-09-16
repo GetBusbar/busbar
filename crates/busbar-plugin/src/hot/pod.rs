@@ -344,8 +344,11 @@ impl From<UsageComponent> for RawUsageComponent {
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EgressKind {
-    /// A one-shot HTTP request over the host's pinned client.
-    Http = 0,
+    /// A one-shot request/response hop over the host's pinned client (the plugin's business is
+    /// which transport rides it — HTTP today). Discriminant `0` is the wire-stable byte a plane
+    /// writes into [`RawEgressKind`]; renaming this Rust identifier from `Http` to `OneShot` does
+    /// NOT change it.
+    OneShot = 0,
     /// A governed raw duplex byte channel (host opens a pinned, SSRF-checked, metered socket).
     RawConn = 1,
     /// A governed child process, framed over stdio as a raw byte channel (NOT a separate capability).
@@ -361,7 +364,7 @@ impl TryFrom<u8> for EgressKind {
     #[inline]
     fn try_from(v: u8) -> Result<Self, u8> {
         match v {
-            0 => Ok(EgressKind::Http),
+            0 => Ok(EgressKind::OneShot),
             1 => Ok(EgressKind::RawConn),
             2 => Ok(EgressKind::Subprocess),
             other => Err(other),

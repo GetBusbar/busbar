@@ -13,7 +13,7 @@
 use super::engine_kit::CoreEngineKit;
 use super::TestApp;
 use busbar_api::SecretResolve;
-use busbar_plugin::cold::http_endpoint::RouteAuth;
+use busbar_plugin::cold::endpoint::RouteAuth;
 use busbar_substrate::plane::PlaneAdmission;
 use busbar_substrate::testkit::engine_kit_plus::{
     AppBuilder, EngineAppPlus, EngineTestKitPlus, NamedMapSectionFacts, TestAppKitPlus,
@@ -33,7 +33,7 @@ impl EngineTestKitPlus for CoreEngineKit {
     fn scrape_exposition(&self) -> (u16, String) {
         use crate::plugin_routes::PluginHttpDispatch;
         let resp = crate::export::prometheus::PrometheusExport.handle_http(
-            &busbar_plugin_loader::HttpEndpointRequest {
+            &busbar_plugin_loader::EndpointRequest {
                 method: "GET".into(),
                 path: "/metrics".into(),
                 query: String::new(),

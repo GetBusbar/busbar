@@ -8,7 +8,7 @@
 use super::*;
 use axum::Router;
 use busbar_plugin_loader::{
-    HttpEndpointRequest, HttpEndpointResponse, Route, RouteAuth, RouteMethod,
+    EndpointRequest, EndpointResponse, Route, RouteAuth, RouteMethod,
 };
 use std::sync::Arc;
 
@@ -18,8 +18,8 @@ struct FakeDispatch {
     label: &'static str,
 }
 impl PluginHttpDispatch for FakeDispatch {
-    fn handle_http(&self, req: &HttpEndpointRequest) -> HttpEndpointResponse {
-        HttpEndpointResponse {
+    fn handle_http(&self, req: &EndpointRequest) -> EndpointResponse {
+        EndpointResponse {
             status: 200,
             headers: vec![("x-served-by".into(), self.label.into())],
             body: format!("{} {} {}", self.label, req.method, req.path).into_bytes(),
@@ -595,7 +595,7 @@ fn over_cap_response_headers_are_rejected_not_silently_truncated() {
     let headers: Vec<(String, String)> = (0..100)
         .map(|i| (format!("x-resp-{i}"), "v".to_string()))
         .collect();
-    let resp = HttpEndpointResponse {
+    let resp = EndpointResponse {
         status: 200,
         headers,
         body: b"hello".to_vec(),
@@ -612,7 +612,7 @@ fn over_cap_response_headers_are_rejected_not_silently_truncated() {
 /// The under-cap case relays exactly as before: status + all headers + body pass through unchanged.
 #[test]
 fn under_cap_response_headers_relay_unchanged() {
-    let resp = HttpEndpointResponse {
+    let resp = EndpointResponse {
         status: 201,
         headers: vec![("x-a".into(), "1".into()), ("x-b".into(), "2".into())],
         body: b"ok".to_vec(),

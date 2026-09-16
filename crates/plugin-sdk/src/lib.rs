@@ -755,8 +755,8 @@ pub trait HookHandler: Send + Sync {
         Vec::new()
     }
     /// Serve one inbound HTTP request matched to a declared route. Default: `404`.
-    fn handle_http(&self, _req: &HttpEndpointRequest) -> HttpEndpointResponse {
-        HttpEndpointResponse {
+    fn handle_http(&self, _req: &EndpointRequest) -> EndpointResponse {
+        EndpointResponse {
             status: 404,
             headers: Vec::new(),
             body: Vec::new(),
@@ -814,7 +814,7 @@ pub fn dispatch_hook(
         HookRequest::Describe => HookReply::Reply(handler.describe()),
         HookRequest::Status => HookReply::Reply(handler.status()),
         HookRequest::Routes => HookReply::Routes(handler.routes()),
-        HookRequest::HttpEndpoint { request } => HookReply::Http(handler.handle_http(&request)),
+        HookRequest::Endpoint { request } => HookReply::Endpoint(handler.handle_http(&request)),
     }
 }
 
@@ -847,11 +847,11 @@ pub unsafe fn hook_dispatch(handle: *mut c_void, bytes: &[u8]) -> BoundaryOutcom
 /// without a direct `busbar-plugin` dependency, mirroring the hook/auth re-export path.
 pub use busbar_plugin::cold::export::{ExportField, ExportRequest, ExportResponse, ExportStream};
 
-/// Re-export the HTTP-endpoint wire types (plugin route registration + dispatch) so an export/hook
-/// author names `busbar_plugin_sdk::Route` / `HttpEndpointRequest` (etc.) without a direct
+/// Re-export the endpoint wire types (plugin route registration + dispatch) so an export/hook
+/// author names `busbar_plugin_sdk::Route` / `EndpointRequest` (etc.) without a direct
 /// `busbar-plugin` dependency.
-pub use busbar_plugin::cold::http_endpoint::{
-    HttpEndpointRequest, HttpEndpointResponse, Route, RouteAuth, RouteMethod,
+pub use busbar_plugin::cold::endpoint::{
+    EndpointRequest, EndpointResponse, Route, RouteAuth, RouteMethod,
 };
 
 /// The sync contract a `kind: export` plugin author implements. [`streams`](ExportHandler::streams)
@@ -874,8 +874,8 @@ pub trait ExportHandler: Send + Sync {
     /// Serve one inbound HTTP request matched to a declared route. Fires only for a matched route (the
     /// engine already enforced the route's auth). Default: `404` — the fallback for a sink that
     /// declared no routes / a partial impl.
-    fn handle_http(&self, _req: &HttpEndpointRequest) -> HttpEndpointResponse {
-        HttpEndpointResponse {
+    fn handle_http(&self, _req: &EndpointRequest) -> EndpointResponse {
+        EndpointResponse {
             status: 404,
             headers: Vec::new(),
             body: Vec::new(),
@@ -909,8 +909,8 @@ pub fn dispatch_export(handler: &dyn ExportHandler, req: ExportRequest) -> Expor
             ExportResponse::Delivered
         }
         ExportRequest::Routes => ExportResponse::Routes(handler.routes()),
-        ExportRequest::HttpEndpoint { request } => {
-            ExportResponse::Http(handler.handle_http(&request))
+        ExportRequest::Endpoint { request } => {
+            ExportResponse::Endpoint(handler.handle_http(&request))
         }
     }
 }

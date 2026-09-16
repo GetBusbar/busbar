@@ -48,12 +48,12 @@ pub use auth::DynAuth;
 /// Re-export the HTTP-endpoint wire types (plugin route registration + dispatch) so the engine
 /// (`crates/busbar`) names `busbar_plugin_loader::{Route, RouteAuth, ...}` without a direct
 /// `busbar-plugin` dependency — mirroring how it already reaches the loader's typed seams.
-pub use busbar_plugin::cold::http_endpoint::{
-    HttpEndpointRequest, HttpEndpointResponse, Route, RouteAuth, RouteMethod,
+pub use busbar_plugin::cold::endpoint::{
+    EndpointRequest, EndpointResponse, Route, RouteAuth, RouteMethod,
 };
 pub use export::{load_export_from_bytes, DynExport};
 // The export PROJECTION vocabulary (the frozen `streams:` / `fields:` word-space). Re-exported for
-// the same reason the http_endpoint types above are: the engine names these through the loader
+// the same reason the endpoint types above are: the engine names these through the loader
 // rather than taking a second, direct dependency on the ABI crate.
 pub use busbar_plugin::cold::export::{ExportField, ExportStream};
 pub use fetch::{fetch_plugins, FetchOutcome, FetchSpec};

@@ -102,7 +102,7 @@ fn out_of_range_signal_class_settles_as_fault() {
 /// answers `Unsupported` instead of dispatching on a discriminant that does not exist.
 #[test]
 fn out_of_range_egress_kind_decodes_to_none() {
-    assert_eq!(RawEgressKind(0).kind(), Some(EgressKind::Http));
+    assert_eq!(RawEgressKind(0).kind(), Some(EgressKind::OneShot));
     assert_eq!(RawEgressKind(2).kind(), Some(EgressKind::Subprocess));
     assert_eq!(RawEgressKind(3).kind(), None);
     assert_eq!(RawEgressKind(255).kind(), None);

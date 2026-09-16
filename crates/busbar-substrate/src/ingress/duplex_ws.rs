@@ -269,7 +269,7 @@ pub struct WsArrivalSpec {
     /// The exact axum path pattern this WS-accept route is mounted at.
     pub path: String,
     /// The admission bar the core auth middleware enforces BEFORE the accept fn runs.
-    pub auth: busbar_plugin::cold::http_endpoint::RouteAuth,
+    pub auth: busbar_plugin::cold::endpoint::RouteAuth,
     /// The plane's registry decl key — the core mount looks the live runtime slot up under it and,
     /// when absent (the plane is unconfigured this generation), mounts nothing, exactly as the non-WS
     /// route loop skips a plane with no slot.
