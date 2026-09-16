@@ -4,6 +4,8 @@ use super::*;
 // re-forks the policy. `tracing::instrument`'s `level = <path>` form rejects a leading `crate`
 // keyword segment (it parses a bare `Ident`/`Path`, and `crate` is not one), so the constant is
 // imported here and referenced unqualified at each instrument site instead.
+use axum::http::HeaderName;
+use busbar_api::VirtualKey;
 use busbar_substrate::observability::HOTPATH_LEVEL;
 // The single neutral translate entrypoint (G6 step 4): the non-stream cross-protocol response arm
 // routes its read→prepare_for_ingress→write core through `TranslateCodec::translate_response`.
@@ -84,7 +86,7 @@ mod test_forward_entry {
         cands: Vec<WeightedLane>,
         body: Bytes,
         caller_token: Option<&str>,
-        resolved_gov_key: Option<&std::sync::Arc<busbar_api::VirtualKey>>,
+        resolved_gov_key: Option<&std::sync::Arc<VirtualKey>>,
         pool_name: &str,
         affinity_key: Option<&str>,
         ingress_protocol: &str,
@@ -92,7 +94,7 @@ mod test_forward_entry {
         usage_sink: Option<UsageSink>,
         // The allowlisted client beta/version headers to forward (opt-in). A test entry that exercises
         // the forwarding path passes a collected set; every other test passes an empty Vec.
-        client_fwd: Vec<(axum::http::HeaderName, axum::http::HeaderValue)>,
+        client_fwd: Vec<(HeaderName, axum::http::HeaderValue)>,
     ) -> Response {
         // Mint the neutral host/rt the production path threads (see the module note).
         let host = busbar_substrate::testkit::engine_host(app);
@@ -168,7 +170,7 @@ pub(crate) fn forward_with_pool_parsed<'a>(
     mut v: Option<LazyBody>,
     req_content_type: &'a str,
     caller_token: Option<&'a str>,
-    resolved_gov_key: Option<&'a std::sync::Arc<busbar_api::VirtualKey>>,
+    resolved_gov_key: Option<&'a std::sync::Arc<VirtualKey>>,
     pool_name: &'a str,
     affinity_key: Option<&'a str>,
     ingress_protocol: &'a str,
@@ -177,7 +179,7 @@ pub(crate) fn forward_with_pool_parsed<'a>(
     // The allowlisted client beta/version headers the caller ACTUALLY SENT (captured at ingress by the
     // neutral `busbar_substrate::proxy::collect_client_headers`), threaded to the egress assembly sites
     // where they are forwarded scoped to the matching egress dialect. Empty ⇒ byte-identical egress.
-    client_fwd: Vec<(axum::http::HeaderName, axum::http::HeaderValue)>,
+    client_fwd: Vec<(HeaderName, axum::http::HeaderValue)>,
 ) -> impl std::future::Future<Output = Response> + 'a {
     use tracing::Instrument;
     let span = tracing::span!(
@@ -306,7 +308,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
     caller_token: Option<&str>,
     // The key the auth layer already resolved/synthesized for this caller (`GovCtx.key`) — used as
     // the routing-signal source when the token is not a virtual-key secret (group/SSO principals).
-    resolved_gov_key: Option<&std::sync::Arc<busbar_api::VirtualKey>>,
+    resolved_gov_key: Option<&std::sync::Arc<VirtualKey>>,
     pool_name: &str,
     affinity_key: Option<&str>,
     ingress_protocol: &str,
@@ -328,7 +330,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
     // `forwardable_client_header_names()` set. Stored on `RequestCtx` below so BOTH the hot path here
     // and the degraded exhaustion paths read the same set for the whole failover walk. Empty ⇒
     // nothing forwarded (byte-identical egress).
-    client_fwd: Vec<(axum::http::HeaderName, axum::http::HeaderValue)>,
+    client_fwd: Vec<(HeaderName, axum::http::HeaderValue)>,
 ) -> Response {
     // Stage profiler: PREPARE spans all pre-dispatch bookkeeping (op-support filter, wants_stream +
     // affinity derivation, failover/breaker config) up to the failover loop. Zero cost when
@@ -620,7 +622,7 @@ async fn decide_routing(
     op: busbar_substrate::handlers::Op,
     wants_stream: bool,
     caller_token: Option<&str>,
-    resolved_gov_key: Option<&std::sync::Arc<busbar_api::VirtualKey>>,
+    resolved_gov_key: Option<&std::sync::Arc<VirtualKey>>,
 ) -> Result<(Option<Vec<usize>>, Option<&'static str>), Response> {
     let gate_order = reconcile_phase2_gates(
         host,
@@ -685,7 +687,7 @@ async fn run_failover_loop(
     policy_order: Option<Vec<usize>>,
     chosen_policy_name: Option<&'static str>,
     caller_token: Option<&str>,
-    resolved_gov_key: Option<&std::sync::Arc<busbar_api::VirtualKey>>,
+    resolved_gov_key: Option<&std::sync::Arc<VirtualKey>>,
     _prep: Option<busbar_substrate::profile::Timer>,
 ) -> Response {
     let body_is_json = v.is_some();
@@ -1043,7 +1045,7 @@ fn fire_request_ir_and_taps(
     ingress_protocol: &str,
     wants_stream: bool,
     request_id: u64,
-    resolved_gov_key: Option<&std::sync::Arc<busbar_api::VirtualKey>>,
+    resolved_gov_key: Option<&std::sync::Arc<VirtualKey>>,
 ) {
     if host.any_content_hook() {
         if let Some(lazy) = v.as_mut() {
@@ -1100,7 +1102,7 @@ fn prepare_failover_ctx(
     cands: &mut Vec<WeightedLane>,
     pool_name: &str,
     request_id: u64,
-    client_fwd: Vec<(axum::http::HeaderName, axum::http::HeaderValue)>,
+    client_fwd: Vec<(HeaderName, axum::http::HeaderValue)>,
 ) -> (
     RequestCtx,
     std::sync::Arc<busbar_substrate::store::BreakerCfg>,
@@ -1152,7 +1154,7 @@ async fn reconcile_phase2_gates(
     op: busbar_substrate::handlers::Op,
     wants_stream: bool,
     caller_token: Option<&str>,
-    resolved_gov_key: Option<&std::sync::Arc<busbar_api::VirtualKey>>,
+    resolved_gov_key: Option<&std::sync::Arc<VirtualKey>>,
 ) -> Result<Option<(Vec<usize>, &'static str)>, Response> {
     let pool_gates: &[(u16, busbar_substrate::hooks::ResolvedPolicy)] = host.pool_gates(pool_name);
     let mut gate_order: Option<(Vec<usize>, &'static str)> = None;
@@ -1399,7 +1401,7 @@ async fn resolve_base_policy(
     op: busbar_substrate::handlers::Op,
     wants_stream: bool,
     caller_token: Option<&str>,
-    resolved_gov_key: Option<&std::sync::Arc<busbar_api::VirtualKey>>,
+    resolved_gov_key: Option<&std::sync::Arc<VirtualKey>>,
     gate_order: Option<(Vec<usize>, &'static str)>,
 ) -> Result<(Option<Vec<usize>>, Option<&'static str>), Response> {
     let mut chosen_policy_name: Option<&'static str> = None;
@@ -1652,7 +1654,7 @@ fn capture_candidate_taps<'a>(
     wants_stream: bool,
     request_id: u64,
     cands_len: usize,
-    resolved_gov_key: Option<&std::sync::Arc<busbar_api::VirtualKey>>,
+    resolved_gov_key: Option<&std::sync::Arc<VirtualKey>>,
 ) -> Option<StageShape<'a>> {
     let stage_shape =
         if host.tap_hooks_candidate().is_empty() && host.tap_hooks_routing().is_empty() {
@@ -1706,7 +1708,7 @@ fn fire_routing_tap(
     i: usize,
     attempt_no: usize,
     last_failure: Option<&'static str>,
-    resolved_gov_key: Option<&std::sync::Arc<busbar_api::VirtualKey>>,
+    resolved_gov_key: Option<&std::sync::Arc<VirtualKey>>,
 ) {
     if let Some(shape) = stage_shape {
         let remaining = cands
@@ -1805,7 +1807,7 @@ async fn dispatch_hop(
     gemini_json_array: bool,
     caller_token: Option<&str>,
     upstream_creds: busbar_api::UpstreamCreds,
-    resolved_gov_key: Option<&Arc<busbar_api::VirtualKey>>,
+    resolved_gov_key: Option<&Arc<VirtualKey>>,
     request_ctx: &RequestCtx,
     breaker_cfg: &Arc<busbar_substrate::store::BreakerCfg>,
     chosen_policy_name: Option<&'static str>,
@@ -1910,7 +1912,7 @@ async fn run_hop(
     gemini_json_array: bool,
     caller_token: Option<&str>,
     upstream_creds: busbar_api::UpstreamCreds,
-    resolved_gov_key: Option<&Arc<busbar_api::VirtualKey>>,
+    resolved_gov_key: Option<&Arc<VirtualKey>>,
     request_ctx: &mut RequestCtx,
     breaker_cfg: &Arc<busbar_substrate::store::BreakerCfg>,
     chosen_policy_name: Option<&'static str>,

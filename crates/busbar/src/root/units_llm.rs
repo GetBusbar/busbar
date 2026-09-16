@@ -88,6 +88,7 @@ use busbar_caps::{
 use busbar_contract::{LaneId, Registration, UnitKey};
 use busbar_kernel::slice::GroupLeaseSlip;
 use busbar_kernel::teller::{AccrualMeter, Evidence, FeeEvidence, UnitCtx, Units};
+use busbar_llm::arrival::PathArrivalFacts;
 use busbar_llm::unit::walk::{LateReport, Tap, Walk, WalkArrival};
 use busbar_llm::unit::{admit, approve, arrival, audit, authenticate, decode, verify};
 use busbar_substrate::ingress::arrival::{Arrival as ArrivalRequest, ArrivalPayload};
@@ -1710,11 +1711,17 @@ async fn path_arrival(
     headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
 ) -> Response {
-    use busbar_llm::arrival::PathArrivalFacts;
     // The URL's facts, the operation they resolved to, and the routing hint a body-model shape
     // carries. Exactly one of the first and the last is ever set.
     let (facts, operation, model_hint) = match parsed {
+        // A pre-rendered fallback 404 (a different terminal): return its bytes unchanged.
         PathArrivalFacts::Refused(resp) => return resp,
+        // A NAMED pre-routing refusal is rendered and posted through the rejected door at the
+        // dialect's own path arrival on the loop, which holds the arrival host and the pinned epoch —
+        // BEFORE the loop this function drives — so it never reaches here.
+        PathArrivalFacts::RefusedNeutral { .. } => {
+            unreachable!("a named path-arrival refusal is posted at the arrival, before the loop")
+        }
         PathArrivalFacts::BodyModel {
             operation,
             model_hint,
@@ -1757,16 +1764,34 @@ fn gemini_path_arrival(
     let started = Instant::now();
     let charged_at = busbar_substrate_values::store::now();
     let rest = busbar_llm::arrival::gemini_rest(&a.host, &a.path);
-    let parsed = busbar_llm::arrival::gemini_path_parse(
-        &a.host, &a.ctx, &rest, &a.uri, &a.body, started, charged_at,
-    );
-    Box::pin(path_arrival(
-        busbar_llm::proto_codec::PROTO_GEMINI,
-        parsed,
-        a.ctx,
-        a.headers,
-        a.body,
-    ))
+    let parsed = busbar_llm::arrival::gemini_path_parse(&a.host, &a.ctx, &rest, &a.uri, &a.body);
+    match parsed {
+        // A NAMED pre-routing refusal: render it at the audit terminal and post it through the
+        // rejected door on this dialect's own arrival host — byte- and accounting-identical to the
+        // finish the parse used to spell inline, pinned against the epoch pinned above.
+        PathArrivalFacts::RefusedNeutral {
+            envelope_proto,
+            outcome,
+        } => {
+            let resp = audit::finish_rejected_via_audit_arrival(
+                &a.host,
+                &a.ctx,
+                envelope_proto,
+                POOL_LABEL_UNRESOLVED,
+                started,
+                charged_at,
+                audit::render_refusal(envelope_proto, &outcome),
+            );
+            Box::pin(async move { resp })
+        }
+        other => Box::pin(path_arrival(
+            busbar_llm::proto_codec::PROTO_GEMINI,
+            other,
+            a.ctx,
+            a.headers,
+            a.body,
+        )),
+    }
 }
 
 /// BEDROCK'S PATH ARRIVAL, ON THE LOOP. Three shapes under one model path, and the native 404 for
@@ -1776,16 +1801,35 @@ fn bedrock_path_arrival(
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Response> + Send>> {
     let started = Instant::now();
     let charged_at = busbar_substrate_values::store::now();
-    let parsed = busbar_llm::arrival::bedrock_path_parse(
-        &a.host, &a.ctx, &a.path, &a.uri, &a.body, started, charged_at,
-    );
-    Box::pin(path_arrival(
-        busbar_llm::proto_codec::PROTO_BEDROCK,
-        parsed,
-        a.ctx,
-        a.headers,
-        a.body,
-    ))
+    let parsed =
+        busbar_llm::arrival::bedrock_path_parse(&a.host, &a.ctx, &a.path, &a.uri, &a.body);
+    match parsed {
+        // A NAMED pre-routing refusal: render it at the audit terminal and post it through the
+        // rejected door on this dialect's own arrival host — byte- and accounting-identical to the
+        // finish the parse used to spell inline, pinned against the epoch pinned above.
+        PathArrivalFacts::RefusedNeutral {
+            envelope_proto,
+            outcome,
+        } => {
+            let resp = audit::finish_rejected_via_audit_arrival(
+                &a.host,
+                &a.ctx,
+                envelope_proto,
+                POOL_LABEL_UNRESOLVED,
+                started,
+                charged_at,
+                audit::render_refusal(envelope_proto, &outcome),
+            );
+            Box::pin(async move { resp })
+        }
+        other => Box::pin(path_arrival(
+            busbar_llm::proto_codec::PROTO_BEDROCK,
+            other,
+            a.ctx,
+            a.headers,
+            a.body,
+        )),
+    }
 }
 
 /// THE PATH-MODEL ARRIVALS, ON THE LOOP — the switched-over twin of the plane's own `PATH_INGRESS`.

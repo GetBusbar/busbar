@@ -1789,7 +1789,7 @@ count = "79"
 [[cell]]
 crate = "busbar-llm"
 kind = "plane"
-count = "300"
+count = "298"
 
 [[cell]]
 crate = "busbar-llm"
@@ -5495,7 +5495,7 @@ count = "2"
 [[cell]]
 crate = "busbar-llm"
 kind = "dialect"
-count = "3208"
+count = "3203"
 
 [[cell]]
 crate = "busbar-llm-codec"
