@@ -3,8 +3,8 @@
 //! reverse — no kernel, capability, unit, plane or transport type is named here.
 //!
 //! No default bodies, feature-invariant, and bounded (except the candidate set and its
-//! permutation, which track unbounded configured pools). See `docs/design/contract-notes.md` for
-//! the full rationale.
+//! permutation, which track deployment-time configuration whose size is not fixed by this crate).
+//! See `docs/design/contract-notes.md` for the full rationale.
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]

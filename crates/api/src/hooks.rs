@@ -108,8 +108,8 @@ pub struct CallerIdentity {
     pub key_id: Option<String>,
     /// Governance virtual-key display name.
     pub key_name: Option<String>,
-    /// The request body's end-user identifier (`user` in OpenAI dialect, `metadata.user_id` in
-    /// Anthropic dialect), if the caller supplied one.
+    /// The request body's end-user identifier, in whatever field name the calling protocol uses
+    /// for it, if the caller supplied one.
     pub user: Option<String>,
 }
 

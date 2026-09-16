@@ -1094,7 +1094,7 @@ fn an_outstanding_accrual_becomes_a_hold_of_its_own_at_the_parents_exit() {
         .accrue_child(&who("acct-1"), 250, &admit)
         .expect("an open parent takes the child's spend");
 
-    // Sized at the child's maximum provider push, drawn synchronously: whatever the child goes on
+    // Sized at the child's maximum reported push, drawn synchronously: whatever the child goes on
     // to spend, there is a reservation behind it, which is what makes the exposure a bound.
     let converted = accrual.convert_at_parent_exit(1_000, &admit);
     assert_eq!(converted.reserved(), 1_000);

@@ -179,8 +179,8 @@ pub struct BindingDecl {
     /// by a document member ([`Dispatch::Document`]).
     ///
     /// A LIST, not one path, because a mount routinely has more than one accepted spelling and every
-    /// one of them has to answer. An HTTP client handed `http://host/a2a` as a BASE resolves a
-    /// request for `/` against it and sends `/a2a/`, so a mount declared only without the separator
+    /// one of them has to answer. An HTTP client handed `http://host/mount` as a BASE resolves a
+    /// request for `/` against it and sends `/mount/`, so a mount declared only without the separator
     /// leaves the single most likely spelling of its own endpoint answering 404. Declaring the set
     /// is what makes that a data question rather than a route somebody has to remember to add.
     ///
@@ -397,7 +397,7 @@ pub fn check_surface(surface: &WireSurface) -> Result<(), SurfaceError> {
     for binding in surface.bindings {
         for mount in binding.mounts {
             // A mount is a literal target and carries no captures, so the template grammar holds
-            // with the stricter reading: `/a2a/` ends in an empty segment and is a legitimate
+            // with the stricter reading: `/mount/` ends in an empty segment and is a legitimate
             // spelling of a mount, which is exactly the case a template may not have.
             if !mount.starts_with('/') || mount.contains('{') || mount.contains('}') {
                 return Err(SurfaceError::MalformedTemplate { path: mount });

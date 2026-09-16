@@ -302,8 +302,8 @@ pub struct Estimate {
 /// linked against its own copy of this crate, which gets its own statics and therefore its own
 /// vocabulary. In each of those the freeze never happens, and this ceiling is the whole bound.
 ///
-/// Sized for configuration, not for traffic: it is lanes plus pools plus models plus hosts plus
-/// dialects plus agents plus tool servers plus plugin keys, for a deployment far larger than any
+/// Sized for configuration, not for traffic: it is every open-vocabulary category a plugin may
+/// declare against, summed across every kind of plugin key, for a deployment far larger than any
 /// that has been configured. A node that reaches it has a defect, not a big configuration.
 pub const MAX_VOCABULARY: usize = 4096;
 
@@ -321,10 +321,11 @@ static FROZEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::ne
 ///
 /// Every identifier on this surface is a borrowed static string, because the declarations that
 /// carry them are associated constants and a constant cannot own a heap allocation. But lanes,
-/// hosts, dialects and models are CONFIGURED: they are read at boot, and a value read at boot is
-/// not static on its own. Something has to bridge those two facts, and until now nothing named
-/// what — so four planes coped with a const table the composition root was expected to seal
-/// somehow, and one transport leaked a fresh string on every dial, which is a leak per request.
+/// hosts, dialects and other plugin-declared identifiers are CONFIGURED: they are read at boot,
+/// and a value read at boot is not static on its own. Something has to bridge those two facts, and
+/// until now nothing named what — so every plane coped with a const table the composition root was
+/// expected to seal somehow, and one transport leaked a fresh string on every dial, which is a leak
+/// per request.
 ///
 /// This is that bridge, and it is the composition root's. The root builds one of these at boot,
 /// interns every config-derived open-vocabulary key through it, and hands the resulting static
