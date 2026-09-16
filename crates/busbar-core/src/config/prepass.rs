@@ -41,6 +41,68 @@ use serde::Deserialize;
 use super::DeployCfg;
 use crate::plane::config::{AgentsSection, McpEndpointSection, StreamsSection, ToolsSection}; // plane-purity: frozen-wire the carrier TYPE names recorded verbatim in config-schema.snapshot.json
 
+/// One lifted key's parse-and-bank step: deserialize the key's value straight into `Target` on the
+/// live (monomorphic) deserializer — never via a rebuilt `serde_yaml::Value` — then bank it into the
+/// [`Lifted`] buffer.
+///
+/// This is the extension seam: adding a lifted key later is implementing this trait for the new
+/// carrier type and adding one arm to [`LiftedSeed::deserialize`] (and one field to [`Lifted`]) —
+/// never widening a fixed value enum. `KEY` must read as the SAME literal that names the key in
+/// [`LIFTED_TOP_LEVEL_KEYS`] / [`LIFTED_AUTH_KEYS`] — those stay literal string arrays (rather than
+/// being assembled from `KEY`) because `cargo xtask gate config-schema` recovers the lifted-key set
+/// by scanning this file's source text for `const LIFTED_*KEYS` string literals, not by evaluating
+/// Rust; a non-literal array would read to that scanner as an empty lift list.
+trait LiftableSection: for<'de> Deserialize<'de> {
+    /// The wire key this section is lifted from.
+    const KEY: &'static str;
+
+    /// Bank the parsed value into the buffer that [`Lifted::install`] later applies to the frozen
+    /// struct.
+    fn bank(self, into: &mut Lifted);
+}
+
+impl LiftableSection for McpEndpointSection {
+    const KEY: &'static str = "mcp";
+    fn bank(self, into: &mut Lifted) {
+        into.mcp = Some(self); // plane-purity: frozen-wire banks the frozen carrier value
+    }
+}
+
+impl LiftableSection for Option<crate::oauth_as::config::OauthAsCfg> {
+    const KEY: &'static str = "oauth_as";
+    fn bank(self, into: &mut Lifted) {
+        into.oauth_as = Some(self);
+    }
+}
+
+impl LiftableSection for ToolsSection {
+    const KEY: &'static str = "tools";
+    fn bank(self, into: &mut Lifted) {
+        into.tools = Some(self);
+    }
+}
+
+impl LiftableSection for AgentsSection {
+    const KEY: &'static str = "agents";
+    fn bank(self, into: &mut Lifted) {
+        into.agents = Some(self);
+    }
+}
+
+impl LiftableSection for StreamsSection {
+    const KEY: &'static str = "streams";
+    fn bank(self, into: &mut Lifted) {
+        into.streams = Some(self);
+    }
+}
+
+impl LiftableSection for crate::config::AuthPolicyCfg {
+    const KEY: &'static str = "policy";
+    fn bank(self, into: &mut Lifted) {
+        into.auth_policy = Some(self);
+    }
+}
+
 /// The TOP-LEVEL keys that exist only in 1.6.0 and must never reach the frozen top-level struct.
 ///
 /// This list is the authoritative enumeration of the 1.6.0-additive top-level grammar: every entry
@@ -107,46 +169,36 @@ impl Lifted {
     }
 }
 
-/// One lifted key's parsed value. Deserializing straight into the destination type (rather than
-/// into a generic value that is re-parsed afterwards) is what keeps a malformed 1.6.0 section's
-/// error message positioned and path-prefixed exactly like every other section's.
-enum LiftedValue {
-    Mcp(McpEndpointSection), // plane-purity: frozen-wire the frozen carrier TYPE for one lifted key
-    OauthAs(Option<crate::oauth_as::config::OauthAsCfg>),
-    Tools(ToolsSection),
-    Agents(AgentsSection),
-    Streams(StreamsSection),
-    AuthPolicy(crate::config::AuthPolicyCfg),
+/// Deserialize the value of one lifted key straight into its destination type (rather than into a
+/// generic value that is re-parsed afterwards) — this is what keeps a malformed 1.6.0 section's
+/// error message positioned and path-prefixed exactly like every other section's — then bank it.
+///
+/// The key-to-type routing is the one place this module still matches on the key string; every arm
+/// is otherwise identical (`Type::deserialize(de)?.bank(self.lifted)`), so a new [`LiftableSection`]
+/// impl is registered by adding one such arm, never by widening a value enum.
+struct LiftedSeed<'a> {
+    key: &'static str,
+    lifted: &'a mut Lifted,
 }
 
-impl LiftedValue {
-    fn store(self, into: &mut Lifted) {
-        match self {
-            LiftedValue::Mcp(v) => into.mcp = Some(v), // plane-purity: frozen-wire banks the frozen carrier value
-            LiftedValue::OauthAs(v) => into.oauth_as = Some(v),
-            LiftedValue::Tools(v) => into.tools = Some(v),
-            LiftedValue::Agents(v) => into.agents = Some(v),
-            LiftedValue::Streams(v) => into.streams = Some(v),
-            LiftedValue::AuthPolicy(v) => into.auth_policy = Some(v),
-        }
-    }
-}
-
-/// Deserialize the value of one lifted key into its own type, chosen by the key.
-struct LiftedSeed(&'static str);
-
-impl<'de> DeserializeSeed<'de> for LiftedSeed {
-    type Value = LiftedValue;
+impl<'de> DeserializeSeed<'de> for LiftedSeed<'_> {
+    type Value = ();
 
     fn deserialize<D: Deserializer<'de>>(self, de: D) -> Result<Self::Value, D::Error> {
-        Ok(match self.0 {
+        match self.key {
             // plane-purity: frozen-wire routes the frozen wire KEY to its frozen carrier TYPE
-            "mcp" => LiftedValue::Mcp(McpEndpointSection::deserialize(de)?),
-            "oauth_as" => LiftedValue::OauthAs(Option::deserialize(de)?),
-            "tools" => LiftedValue::Tools(ToolsSection::deserialize(de)?),
-            "agents" => LiftedValue::Agents(AgentsSection::deserialize(de)?),
-            "streams" => LiftedValue::Streams(StreamsSection::deserialize(de)?),
-            "policy" => LiftedValue::AuthPolicy(crate::config::AuthPolicyCfg::deserialize(de)?),
+            k if k == McpEndpointSection::KEY => {
+                McpEndpointSection::deserialize(de)?.bank(self.lifted)
+            }
+            k if k == <Option<crate::oauth_as::config::OauthAsCfg> as LiftableSection>::KEY => {
+                Option::<crate::oauth_as::config::OauthAsCfg>::deserialize(de)?.bank(self.lifted)
+            }
+            k if k == ToolsSection::KEY => ToolsSection::deserialize(de)?.bank(self.lifted),
+            k if k == AgentsSection::KEY => AgentsSection::deserialize(de)?.bank(self.lifted),
+            k if k == StreamsSection::KEY => StreamsSection::deserialize(de)?.bank(self.lifted),
+            k if k == crate::config::AuthPolicyCfg::KEY => {
+                crate::config::AuthPolicyCfg::deserialize(de)?.bank(self.lifted)
+            }
             other => {
                 // Unreachable while the two key lists and this match agree; a hard error rather
                 // than a silent drop so they cannot drift apart unnoticed.
@@ -154,7 +206,8 @@ impl<'de> DeserializeSeed<'de> for LiftedSeed {
                     "internal: no lift destination for the key `{other}`"
                 )));
             }
-        })
+        }
+        Ok(())
     }
 }
 
@@ -256,9 +309,10 @@ impl<'de, M: MapAccess<'de>> MapAccess<'de> for LiftingMap<'_, M> {
                 }
                 Some(KeyOutcome::Lift(returned)) => {
                     let key = lifted.expect("a lifted key always names itself");
-                    self.inner
-                        .next_value_seed(LiftedSeed(key))?
-                        .store(self.lifted);
+                    self.inner.next_value_seed(LiftedSeed {
+                        key,
+                        lifted: &mut *self.lifted,
+                    })?;
                     seed = returned;
                 }
             }
