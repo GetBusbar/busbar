@@ -1,15 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The fixed audit record: the same shape for every plane, with no exceptions.
+//! The fixed audit record: the same shape for every caller, with no exceptions.
 //!
 //! ## Why "fixed" is the point
 //!
-//! An audit whose shape varies by protocol is an audit an auditor cannot read. Somebody asking "what
-//! happened at 14:32" gets a different set of fields depending on which door the request came in
-//! through, and comparing two of them means reading two schemas. So the record is one shape, and a
-//! plane contributes exactly TWO IDENTIFIERS to it: what kind of operation this was, and how it
-//! finished. Everything else is the same for everybody.
+//! An audit whose shape varies by the door it came in through is an audit an auditor cannot read.
+//! Somebody asking "what happened at 14:32" gets a different set of fields depending on which door
+//! the request came in through, and comparing two of them means reading two schemas. So the record
+//! is one shape, and a caller contributes exactly TWO IDENTIFIERS to it: what kind of operation this
+//! was, and how it finished. Everything else is the same for everybody.
 //!
 //! ## Six groups, because they answer six different questions
 //!
@@ -45,7 +45,7 @@ pub enum Subject {
     Aggregate,
 }
 
-/// An identifier a plane supplies for the kind of operation performed.
+/// An identifier a caller supplies for the kind of operation performed.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct OpClassId(String);
 
@@ -61,7 +61,7 @@ impl OpClassId {
     }
 }
 
-/// How a unit finished, as the plane sees it. The second and last thing a plane contributes.
+/// How a unit finished, as the caller sees it. The second and last thing a caller contributes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FinishClass {
     /// Everything asked for was delivered.
@@ -79,7 +79,7 @@ pub enum FinishClass {
 pub struct What {
     /// Which unit.
     pub unit_key: UnitKey,
-    /// What kind of operation, as the plane names it.
+    /// What kind of operation, as the caller names it.
     pub op_class: OpClassId,
     /// Where it went, once the trust unit had judged the destination. Absent when the unit never
     /// left the node.
@@ -99,7 +99,7 @@ pub struct OutcomeFacts {
     pub unit_end: Outcome,
     /// Which step it ended at, when it ended somewhere in particular.
     pub step: Option<StepName>,
-    /// How it finished, as the plane classifies it.
+    /// How it finished, as the caller classifies it.
     pub finish: FinishClass,
     /// Whether a hook failed during the unit.
     pub hook_failed: bool,
@@ -173,7 +173,7 @@ pub struct Controls {
     pub children: Vec<UnitKey>,
 }
 
-/// One audit record: the same shape for every plane.
+/// One audit record: the same shape for every caller.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AuditRecord {
     /// WHO.
@@ -238,7 +238,7 @@ mod sealed {
 
 /// The audit unit: it seals records, and it is the only thing that can.
 ///
-/// The token is the point. A plane can say what it saw and a hook can say what it did, but turning
+/// The token is the point. A caller can say what it saw and a hook can say what it did, but turning
 /// either into a record that goes on the chain takes the audit step's own token, which the loop
 /// hands out for the length of one call. So a record on the chain is a record the audit unit made.
 ///
@@ -332,7 +332,7 @@ impl AuditChain {
     pub fn digest_of(record: &AuditRecord) -> String {
         let mut d = crate::legacy::Digest::new(crate::legacy::Framing::LengthPrefixed);
         // Length-prefixed, because this record is NEW. Every field here can hold arbitrary text —
-        // a bucket chain reference, an operation class a plane named — and a separator-joined digest
+        // a bucket chain reference, an operation class a caller named — and a separator-joined digest
         // is only safe while no field can contain the separator. Length prefixes make the boundary
         // unforgeable whatever the fields hold.
         d.text(&record.prev_hash);
@@ -633,7 +633,7 @@ pub(crate) fn outcome_tag(outcome: Outcome) -> String {
     }
 }
 
-/// The frozen text for how a plane classified the finish.
+/// The frozen text for how a caller classified the finish.
 pub(crate) fn finish_tag(finish: FinishClass) -> &'static str {
     match finish {
         FinishClass::Complete => "Complete",

@@ -10,7 +10,7 @@ fn lane(api_key: &str) -> LaneInput {
     LaneInput {
         model: "m".to_string(),
         provider: "p".to_string(),
-        protocol: "openai".to_string(),
+        protocol: "widget".to_string(),
         base_url: "https://example.invalid".to_string(),
         path: None,
         path_base: None,
@@ -47,7 +47,7 @@ fn the_build_carrier_cannot_print_the_provider_credential() {
         "the lane carrier printed the credential: {shown}"
     );
     assert!(shown.contains("[REDACTED]"), "and says so: {shown}");
-    assert!(shown.contains("openai"), "the lane is still identifiable");
+    assert!(shown.contains("widget"), "the lane is still identifiable");
 
     let nested = format!("{:?}", vec![lane(SECRET)]);
     assert!(!nested.contains(SECRET), "nested print leaked: {nested}");

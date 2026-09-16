@@ -33,9 +33,9 @@ use crate::admin::transport::AdminTransport;
 use crate::state::AppHandle;
 
 /// The OpenAPI response-object key (`"responses"`). Named here ONCE and assembled from fragments so
-/// this neutral admin source carries no bare `responses` token: the OpenAPI keyword collides with the
-/// LLM `responses` dialect name the plane-purity lint (`scripts/plane-purity-lint.sh`) reserves, and
-/// the neutral crates must name no plane/dialect vocabulary. `concat!` folds to the identical
+/// this neutral admin source carries no bare `responses` token: the OpenAPI keyword collides with a
+/// reserved dialect token the plane-purity lint (`scripts/plane-purity-lint.sh`) bans as vendor-API
+/// vocabulary, and the neutral crates must name no plane/dialect vocabulary. `concat!` folds to the identical
 /// `"responses"` &'static str at compile time, so every emitted OpenAPI document is byte-for-byte
 /// unchanged — this is a naming refactor, not a wire change. Only the OpenAPI document builders
 /// (`openapi-schema`) reference it, so it is gated to that feature to stay dead-code-clean elsewhere.
@@ -86,15 +86,15 @@ impl AdminTransport for JsonV1 {
             // The 1.5.3 named-DEFINITION maps, mounted in ONE loop over `NamedMapSection::ALL` so
             // the admin surface mirrors the config grammar and a future section is additive.
             .merge(named_map::routes());
-        // THE PLANES' TRUST VERBS, contributed through the registry rather than named here: the
-        // operator verbs a plane adds ON TOP of its generic named-definition CRUD (MCP's
-        // `connect`/`changes`/`health`, A2A's `connect`/`approve`). Each plane's `admin_routes`
-        // owns the operator's standing decision about the upstream behind a registration; the
-        // generic handler still owns the DEFINITION. Merged in DECLARATION ORDER (MCP before A2A),
-        // so the two planes' operator surfaces are read together and the route order is stable.
-        // Without these the `agents:`/`tools:` surfaces are CRUD only and no sequence of operator
-        // actions can make a fronted agent or MCP server serve. The `admin_routes` fns are granted
-        // only the router — never a `Store`/`GovCtx`/audit handle.
+        // EACH PLANE'S TRUST VERBS, contributed through the registry rather than named here: whatever
+        // operator verbs a plane adds ON TOP of its generic named-definition CRUD (e.g. a verb that
+        // moves a registration's upstream between a declared and a standing state). Each plane's
+        // `admin_routes` owns the operator's standing decision about the upstream behind a
+        // registration; the generic handler still owns the DEFINITION. Merged in the registry's
+        // DECLARATION ORDER, so every plane's operator surface is read together and the route order
+        // is stable. Without these a named-definition section is CRUD only and no sequence of
+        // operator actions can make a registered upstream actually serve. The `admin_routes` fns are
+        // granted only the router — never a `Store`/`GovCtx`/audit handle.
         let router = mount_plane_admin_routes(router);
         let router = router
             // Groups — the `groups:` limit-tree CRUD: runtime-mutable groups
@@ -270,16 +270,16 @@ pub use busbar_substrate::api::ap;
 mod txn;
 pub(crate) use txn::{config_transaction, Outcome};
 
-/// The GENERIC named-DEFINITION map CRUD (`/identity-providers`, `/export`; `tools`/`agents` land
-/// additively in 1.6.0). One handler set for every section of the 1.5.3 universal config
+/// The GENERIC named-DEFINITION map CRUD (`/identity-providers`, `/export`; further sections land
+/// additively as planes register them). One handler set for every section of the universal config
 /// pattern — see the module header.
 pub(crate) mod named_map;
 
 // ── The plane admin-verb route-mount adapter (ADMIN-3) ───────────────────────────────────────────
 
 /// MOUNT EVERY PLANE'S ADMIN TRUST VERBS onto the admin router — the ADMIN-3 mirror of the data
-/// plane's `router::mount_plane_routes`. Iterates the plane decls in DECLARATION ORDER (MCP before
-/// A2A, preserving the operator-visible route order), asks each for its neutral
+/// plane's `router::mount_plane_routes`. Iterates the plane decls in the registry's DECLARATION
+/// ORDER, preserving the operator-visible route order, asks each for its neutral
 /// [`busbar_substrate::admin_verbs::AdminRouteSpec`] list, and registers each spec at its VERBATIM
 /// `(method, path)` so the auth middleware's `required_scope(method, path)` is byte-identical.
 ///
@@ -539,7 +539,7 @@ fn with_config_etag(mut resp: Response, version: u64) -> Response {
 
 mod handlers;
 pub(crate) use handlers::*;
-// The extracted MCP plane (`busbar-mcp`) contributes its trust verbs' typed response schemas through
+// An extracted plane contributes its trust verbs' typed response schemas through
 // this exact helper (`admin_view::openapi_schemas`). It is relocated to the neutral substrate
 // (`busbar_substrate::api::set_response_schema`) so the plane names it directly; re-exported here at
 // its old path, gated the same as the helper itself, so in-core callers are unchanged.

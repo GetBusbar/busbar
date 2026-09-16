@@ -333,8 +333,8 @@ impl<J: JournalSink, D: Diagnostics> BreakerUnit<J, D> {
         }
     }
 
-    /// Declare (or replace) `destination`'s operator `error_map` override: the same
-    /// provider-code/structured-type → status-class table 1.5.5 read from `ModelCfg::error_map`.
+    /// Declare (or replace) `destination`'s operator `error_map` override: the
+    /// provider-code/structured-type → status-class table keyed per destination.
     /// Calling this again for the same destination replaces its map wholesale (a config-apply
     /// rebuild, not a per-request merge), matching [`Self::set_budget`]'s own replace semantics.
     pub fn set_error_map(&self, destination: DestinationId, error_map: HashMap<String, String>) {

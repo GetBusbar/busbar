@@ -44,7 +44,7 @@ fn every_section_round_trips_its_three_route_shapes() {
 
 /// F2 — BYTE-IDENTITY PIN. `sections()` is folded from the plane registry, so its ORDER is what the
 /// router mounts and the OpenAPI generator emits in. Under the default/test/openapi-generating
-/// feature set (mcp + a2a compiled in) it MUST equal the frozen 1.5.3 order
+/// build's set of registered planes it MUST equal the frozen 1.5.3 order
 /// `[identity-providers, export, tools, agents]` — anything else drifts `openapi.json`. `streams:`
 /// is a SINGULAR plane section (no `named_def_list`), so it never joins this named-map list.
 #[test]

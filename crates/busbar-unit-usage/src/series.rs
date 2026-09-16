@@ -4,7 +4,7 @@
 //! The metering fold: raw per-cell consumption, kept for observability and never for enforcement.
 //!
 //! This is deliberately separate from the settlement above. A metering cell is a running total of
-//! what a key consumed against a model in a window; nothing enforces against it, so it is a plain
+//! what a key consumed in a window; nothing enforces against it, so it is a plain
 //! accumulation with two properties that matter — a response ALWAYS counts its request, even when
 //! it consumed nothing, and coalescing several responses into one write must carry the real count
 //! rather than inventing a single increment.
@@ -26,7 +26,7 @@ impl MeterCounts {
     /// Fold one delivered response into the cell.
     ///
     /// A response with NO usage at all — a flat-fee operation — still counts its request. Consumers
-    /// count requests per model even when nothing else bills, and dropping the request because the
+    /// count requests even when nothing else bills, and dropping the request because the
     /// quantities were empty would make the two disagree.
     pub fn accrue_response(&mut self, usage: Option<&Usage>) {
         self.requests = self.requests.saturating_add(1);

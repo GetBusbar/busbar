@@ -164,7 +164,7 @@ fn req() -> RoutingRequest<'static> {
     RoutingRequest {
         request_id: 7,
         pool: "p",
-        ingress_protocol: "anthropic",
+        ingress_protocol: "acme",
         requested_model: None,
         message_count: 2,
         tool_count: 0,

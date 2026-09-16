@@ -278,9 +278,9 @@ pub struct CandidateIdx(pub u16);
 /// An order over the verified set.
 ///
 /// A ranking hook returns one of these and the failover walk takes it as-is. Candidate sets are
-/// unbounded because configured pools are unbounded, so this is one of the few places the contract
-/// does not impose a ceiling — imposing one would refuse a configuration the previous release
-/// accepted.
+/// unbounded because the deployment's configured candidate space is unbounded, so this is one of
+/// the few places the contract does not impose a ceiling — imposing one would refuse a
+/// configuration the previous release accepted.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Permutation {
     /// The candidates, in the order they should be walked.

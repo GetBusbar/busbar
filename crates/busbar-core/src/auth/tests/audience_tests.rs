@@ -27,7 +27,8 @@ fn jwt(claims: serde_json::Value) -> String {
 
 /// A busbar-minted token is DEFERRED, never judged here. It is not a JWT — it is
 /// `bbk_<payload>.<sig>` — so reading it as one would find no `aud` and refuse every valid busbar
-/// token presented on the MCP plane, which is a total outage dressed as a security control.
+/// token presented on an audience-bound plane, which is a total outage dressed as a security
+/// control.
 #[test]
 fn a_busbar_token_is_deferred_to_the_verifier() {
     let tok = format!(

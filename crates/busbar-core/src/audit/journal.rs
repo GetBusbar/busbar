@@ -4,18 +4,18 @@
 //! THE GENERIC SCOPE-KEYED JOURNAL — the durable seq-authority state machine, in core, naming no
 //! plane.
 //!
-//! ## What this is, and why it is here and not in a plane
+//! ## What this is, and why it is here and not in a plugin
 //!
-//! Two of busbar's evidence streams — the MCP per-call log and the A2A per-task provenance chain —
-//! each grew their OWN copy of the same durable-log machinery around [`crate::audit::Chain`]: an
-//! in-RAM per-scope POSITION CACHE, a bounded LRU over it, a store-resume of an evicted tail, a
-//! write-through SINK, and the WRITE-ORDERING invariant that a position is committed only after the
-//! durable append succeeds. That machinery is not MCP's and it is not A2A's — it is the same answer
-//! to "make a hash-chained stream survive a restart" that [`crate::admin::audit`] gives for admin
-//! mutations, and by the owner's ruling (see [`crate::audit`]) auditing is CORE. So it lives here,
-//! once, generic over the record type, and a plane supplies only its RECORD (which fields, which
-//! framing — [`crate::audit::ChainedRecord`]) plus the neutral store envelope its rows cross the seam
-//! in ([`JournalRecord::to_plane_record`]).
+//! Two of busbar's evidence streams — a per-call log and a per-task provenance chain, each owned by
+//! a separate downstream plugin — each grew their OWN copy of the same durable-log machinery around
+//! [`crate::audit::Chain`]: an in-RAM per-scope POSITION CACHE, a bounded LRU over it, a store-resume
+//! of an evicted tail, a write-through SINK, and the WRITE-ORDERING invariant that a position is
+//! committed only after the durable append succeeds. That machinery belongs to neither plugin — it
+//! is the same answer to "make a hash-chained stream survive a restart" that [`crate::admin::audit`]
+//! gives for admin mutations, and by the owner's ruling (see [`crate::audit`]) auditing is CORE. So
+//! it lives here, once, generic over the record type, and a plugin supplies only its RECORD (which
+//! fields, which framing — [`crate::audit::ChainedRecord`]) plus the neutral store envelope its rows
+//! cross the seam in ([`JournalRecord::to_plane_record`]).
 //!
 //! It names no plane noun: the type parameter is `R`, the scope is a `&str`, and the store is the
 //! narrow [`PlaneStore`] seam. A plane's record type implements [`JournalRecord`] plane-side, so the
@@ -40,12 +40,12 @@
 //! REPORTED and still resumed from its tail (via [`Chain::from_persisted_unverified`]): refusing to
 //! restore a tamper-detected chain would convert a detection control into a deletion primitive.
 
-// The MCP call log (`calllog`, `plane-mcp`) and the A2A task store (`plane::taskstore`,
-// `plane-a2a`) both wire this in production. But with BOTH planes compiled out
-// (`--no-default-features`) nothing instantiates a `Journal`, so every method here is dead on that
-// configuration — exactly as the plane modules themselves are, which carry the same blanket. Hence
-// the module-wide allow rather than per-item: the "dead" set is the whole module under one cfg and
-// fully live under another, so a per-item list would be noise that says nothing a reader can act on.
+// Two downstream plugins each wire this in production for their own evidence stream. But with both
+// of those plugins compiled out (`--no-default-features`) nothing instantiates a `Journal`, so every
+// method here is dead on that configuration — exactly as the plugin modules themselves are, which
+// carry the same blanket. Hence the module-wide allow rather than per-item: the "dead" set is the
+// whole module under one cfg and fully live under another, so a per-item list would be noise that
+// says nothing a reader can act on.
 #![cfg_attr(not(test), allow(dead_code))]
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -61,8 +61,8 @@ use busbar_api::{PlaneDisposition, PlaneRecord, PlaneSelector, StoreError, Store
 /// the generic journal cannot know: which neutral store `kind` its rows are tagged with, and how one
 /// sealed record becomes the neutral [`PlaneRecord`] envelope it crosses the store seam in.
 ///
-/// Implemented PLANE-SIDE (`impl JournalRecord for McpCallRecord` in `calllog`, and likewise
-/// for the A2A event row), so the plane→core coupling points at core and the journal names no plane.
+/// Implemented PLUGIN-SIDE (each downstream plugin's own chained record type implements this for
+/// its own row), so the plugin→core coupling points at core and the journal names no plugin.
 pub(crate) trait JournalRecord: ChainedRecord + Clone + serde::de::DeserializeOwned {
     /// The neutral store kind these rows are tagged with (`call`, `task_event`, …) — the tag
     /// [`PlaneStore::list_plane_records`] and friends branch on. Its VALUE is a plane's business;
@@ -163,8 +163,8 @@ impl<R: ChainedRecord> Journal<R> {
     }
 
     /// The attached durable sink, if any. `pub(crate)` because a stream may persist OTHER durable
-    /// state beside its journaled chain (the A2A task table upserts a `task` row next to its
-    /// `task_event` chain) and must reach the same backend — the journal owns the one sink handle so
+    /// state beside its journaled chain (a downstream task table upserts its own status row next to
+    /// its event chain) and must reach the same backend — the journal owns the one sink handle so
     /// there is not a second to keep in sync.
     pub(crate) fn sink(&self) -> Option<Arc<dyn PlaneStore>> {
         self.sink
@@ -304,10 +304,11 @@ impl<R: ChainedRecord> Journal<R> {
     }
 
     /// SEED one scope's position from records the CALLER already read. For a rehydrate that drives its
-    /// own row loop rather than the whole-store enumeration [`Journal::restore_from_store`] does — the
-    /// A2A task table walks `task` rows and loads only the ACTIVE ones' event chains, so it hands each
-    /// active scope's events here instead of letting the journal enumerate (and cache) every terminal
-    /// task's chain too. Verifies and REPORTS a break exactly as `restore_from_store` does (the broken
+    /// own row loop rather than the whole-store enumeration [`Journal::restore_from_store`] does — a
+    /// downstream task table walks its own status rows and loads only the ACTIVE ones' event chains,
+    /// so it hands each active scope's events here instead of letting the journal enumerate (and
+    /// cache) every terminal task's chain too. Verifies and REPORTS a break exactly as
+    /// `restore_from_store` does (the broken
     /// chain still resumes from its tail via [`Chain::from_persisted_unverified`]); returns the break
     /// for the caller to log in its own vocabulary, or `None` when the chain verifies.
     pub(crate) fn seed_position(&self, scope: &str, records: &[R]) -> Option<ChainBreak> {
@@ -526,7 +527,7 @@ impl<R: NeutralRecord> Journal<R> {
             // coded diagnostic (the peer of the chain-break report below), so a silently lost
             // evidence row is never invisible; `unreadable` still carries the count back for the
             // wrapper's aggregate. This is the one place this "reports, does not judge" journal
-            // speaks in a coded word — mirroring the a2a task store's per-row skip report.
+            // speaks in a coded word — mirroring a downstream task store's per-row skip report.
             let raw = store.list_plane_records(kind, &PlaneSelector::Parent(scope.clone()))?;
             // Whether the store literally returned NOTHING for this scope, decided BEFORE decoding:
             // an enumerated-but-empty scope (a wholesale deletion of one scope's evidence) is a

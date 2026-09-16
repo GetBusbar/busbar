@@ -68,7 +68,7 @@ pub(crate) const CARD_SIGNING_DOMAIN: &str = "a2a/agent-card-signing/v1";
 /// Prefixed rather than reused bare, because a `kid` that read `k1` on both a token and a card
 /// would tell an operator that one key signs both — which is exactly the thing the derivation
 /// exists to make untrue. Declared on this plane's `PlaneDecl` (`card_kid_prefix`) so the host builds
-/// the published issuer `kid` (`GovState::a2a_card_issuer`) from it without naming this plane.
+/// the published issuer `kid` (`GovState::card_issuer`) from it without naming this plane.
 pub(crate) const CARD_KID_PREFIX: &str = "busbar-a2a-card-";
 
 /// Why a card could not be signed.

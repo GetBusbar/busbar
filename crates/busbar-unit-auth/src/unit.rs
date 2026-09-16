@@ -14,14 +14,14 @@ use crate::principal::Principal;
 pub struct AuthRequest<'a> {
     /// The credential the carriers presented, if any.
     pub candidate: Option<&'a str>,
-    /// The scheme the claim declared, narrowed by the plane. A plane may only narrow WITHIN the
+    /// The scheme the claim declared, narrowed by the caller. A caller may only narrow WITHIN the
     /// claim's declared alternatives; narrowing to something the claim never declared is refused,
-    /// because a plane that could invent a scheme could choose the weakest one.
+    /// because a caller that could invent a scheme could choose the weakest one.
     pub scheme: Option<&'a str>,
     /// The alternatives the claim declared.
     pub declared_schemes: &'a [&'a str],
-    /// The audience this plane requires of a signed token. `None` on the residual plane, which
-    /// rejects any token that carries one.
+    /// The audience the caller requires of a signed token. `None` when the caller requires none,
+    /// and then a token that carries an audience is rejected.
     pub expected_aud: Option<&'a str>,
     /// Whether this is a handshake unit — the only shape a challenge may be answered in.
     pub in_handshake: bool,
@@ -51,7 +51,7 @@ impl Auth {
     ///
     /// The order of the checks is the order of the reasons they can refuse for, and it is fixed:
     ///
-    /// 1. The plane's narrowing is checked FIRST, before any credential is looked at. A plane that
+    /// 1. The caller's narrowing is checked FIRST, before any credential is looked at. A caller that
     ///    narrowed outside the claim's declared alternatives has already broken the contract, and no
     ///    answer computed under a scheme the claim never offered is worth having.
     /// 2. The chain runs. An open door yields the anonymous principal — which is an admission, not a
@@ -73,7 +73,7 @@ impl Auth {
         pending: Option<Challenge>,
         token: &UnitToken<Authenticate>,
     ) -> Decision<Authenticate> {
-        // 1. The plane may only narrow within what the claim declared.
+        // 1. The caller may only narrow within what the claim declared.
         if let Some(scheme) = req.scheme {
             if !req.declared_schemes.contains(&scheme) {
                 return Decision::refuse(token, Refusal::new(ReasonCode::SchemeNotDeclared));

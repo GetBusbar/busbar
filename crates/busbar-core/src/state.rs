@@ -78,8 +78,8 @@ pub use busbar_substrate::plane_host::runtime_slot_key;
 pub(crate) type ContainerGateMap = HashMap<String, Vec<(u16, crate::hooks::ResolvedPolicy)>>;
 
 /// THE GENERIC per-plane submission-gate map, keyed by each plane's stable decl key (the opaque
-/// registry key) — the registry-keyed structure that replaced the former per-plane
-/// `mcp_server_gates`/`a2a_agent_gates` fields, so core names no plane vocabulary in its field types.
+/// registry key) — the registry-keyed structure that replaced the former plane-named gate
+/// fields, so core names no plane vocabulary in its field types.
 pub(crate) type PlaneGateMap = std::collections::BTreeMap<&'static str, ContainerGateMap>;
 
 /// One plane's per-container resolved REWRITE (`prompt: rw`) chain map: container name → resolved
@@ -90,8 +90,8 @@ pub(crate) type ContainerRewriteMap =
     HashMap<String, Vec<(std::time::Duration, Arc<dyn crate::hooks::RoutingPolicy>)>>;
 
 /// THE GENERIC per-plane rewrite-chain map, keyed by each plane's stable decl key — the tap/transform
-/// twin of [`PlaneGateMap`], so the TAP half of the hook surface reaches MCP/A2A payloads through the
-/// same registry-keyed structure the GATE half already uses.
+/// twin of [`PlaneGateMap`], so the TAP half of the hook surface reaches every registered plane's
+/// payloads through the same registry-keyed structure the GATE half already uses.
 pub(crate) type PlaneRewriteMap = std::collections::BTreeMap<&'static str, ContainerRewriteMap>;
 
 /// `Clone` is the config-apply enabler: cloning an `App` shares the live-state `Arc`s (store, auth,
@@ -108,22 +108,21 @@ pub struct App {
     /// slots, so counts accumulate monotonically across generations. Observation only — THE RULE:
     /// enforcement counts never go through the bank.
     pub(crate) tslots: Arc<crate::telemetry::AppSlots>,
-    /// THE LLM DATA-PLANE RUNTIME'S SLOT KEY — the interned `runtime_slot_key(<llm plane key>)` under
-    /// which THIS config generation's [`NativeRuntime`] rides in [`App::plane_slots`], the same opaque
-    /// slot MCP/A2A already carry their runtimes in (R3/R4 sub-phase B — the LLM runtime moved off the
-    /// flat `llm_runtime` field it was bundled into by sub-phase A). Resolved ONCE at build
-    /// (`appbuild` / the test fixture) so the money-path read ([`App::engine_tables`] →
-    /// [`App::llm_runtime`]) is a single cheap `plane_slots` lookup + ONE downcast, never the interning
-    /// `runtime_slot_key` call. An ABSENT slot — the featureless binary boots with no LLM plane, so
-    /// none was inserted — reads as an empty default (the same emptiness the always-present-but-empty
-    /// flat field encoded), never a panic. Neutral: names no dialect.
+    /// THE FALLBACK PLANE'S RUNTIME SLOT KEY — the interned `runtime_slot_key(fallback_key())` under
+    /// which THIS config generation's runtime object rides in [`App::plane_slots`], the same opaque
+    /// slot every other registered plane carries its own runtime object in. Resolved ONCE at build
+    /// (`appbuild` / the test fixture) so the money-path read ([`App::engine_tables_view`]) is a
+    /// single cheap `plane_slots` lookup + ONE downcast, never the interning `runtime_slot_key` call.
+    /// An ABSENT slot — the featureless binary boots with no fallback plane configured, so none was
+    /// inserted — reads as the substrate-resident empty view, never a panic. Neutral: names no dialect.
     pub(crate) llm_runtime_key: &'static str,
     pub store: Arc<dyn LaneRuntime>,
-    /// THE NON-LLM PLANES' BREAKER CELLS — the degenerate single-member cell per registered MCP
-    /// server / A2A agent (the breaker-all-planes audit's closing design). Live state, shared by every
-    /// clone-derived snapshot and REUSED across `build_app_from_config` applies exactly like
+    /// THE CONTAINER PLANES' BREAKER CELLS — the degenerate single-member cell per registered
+    /// container-plane member (the breaker-all-planes audit's closing design). Live state, shared by
+    /// every clone-derived snapshot and REUSED across `build_app_from_config` applies exactly like
     /// `store`: learned reliability must survive a snapshot swap, or every apply un-trips every
-    /// dead upstream. See [`crate::store::PlaneBreakers`] for why it is not the LLM store itself.
+    /// dead upstream. See [`crate::store::PlaneBreakers`] for why it is not the fallback plane's own
+    /// store.
     pub plane_breakers: Arc<crate::store::PlaneBreakers>,
     /// THE NEUTRAL PER-SESSION SUBSTRATE ([`crate::session::SessionStore`]) — PROCESS-LIFETIME, reused
     /// across `build_app_from_config` applies exactly like `plane_breakers`, because a session's state
@@ -139,23 +138,24 @@ pub struct App {
     // nothing fires that gate, so the field goes unread in that config alone.
     #[allow(dead_code)]
     pub(crate) incremental_scan: bool,
-    /// The `tool_pools:` failover pools — operator-declared interchangeable MCP server sets,
-    /// carried resolved-verbatim onto the snapshot so the dispatch path's route builder
-    /// (`mcp::reroute`) reads the SAME generation the request was admitted on. Empty ⇒ every
-    /// server keeps its degenerate single-member cell and no reroute exists to be had.
-    // MCP-only: read by the MCP dispatch route builder (`mcp::reroute`); with `plane-mcp` off (and
-    // A2A on) it is carried on the snapshot but never read.
+    /// A single container plane's failover pools — operator-declared interchangeable member sets,
+    /// carried resolved-verbatim onto the snapshot so that plane's own dispatch route builder
+    /// reads the SAME generation the request was admitted on. Empty ⇒ every
+    /// member keeps its degenerate single-member cell and no reroute exists to be had.
+    // Owned by, and read only through, that one plane's own dispatch route builder; with that plane's
+    // feature off (and another plane's on) it is carried on the snapshot but never read.
     #[allow(dead_code)]
     pub tool_pools: std::collections::BTreeMap<String, crate::failover::CandidatePoolCfg>,
     /// THE PER-PLANE FAILOVER POOL MAPS reached through the GENERIC pool-member seam
     /// ([`busbar_substrate::plane_host::LanePoolHost::plane_pool_members`]), keyed by the plane's stable
     /// decl key (the opaque registry key) — a registry-keyed map in place of the former plane-named
-    /// `agent_pools` field, so core carries no plane vocabulary in its own field names. Each plane's
-    /// entry is its `<section>.pools:` set (member selection derives lanes from member position). Read
-    /// on the plane's submission/route path through [`App::plane_pools`]. (The MCP `tool_pools:` set
-    /// keeps its own dedicated field + 3-tuple `pool_members_repeatable` seam, which also carries the pool's
-    /// `repeatable:` list.)
-    // Read on a plane's route/admission path; with `plane-a2a` off (and MCP on) it is never read.
+    /// pool field, so core carries no plane vocabulary in its own field names. Each plane's
+    /// entry is its own resolved pool-member set (member selection derives lanes from member position).
+    /// Read on the plane's submission/route path through [`App::plane_pools`]. (The other container
+    /// plane's own dedicated pool field above keeps its own 3-tuple `pool_members_repeatable` seam,
+    /// which also carries that pool's repeatable-member list.)
+    // Read on a plane's route/admission path; with one plane's feature off (and another's on) it is
+    // never read.
     #[allow(dead_code)]
     pub(crate) plane_pools: std::collections::BTreeMap<
         &'static str,
@@ -199,14 +199,15 @@ pub struct App {
     /// priority so the merge's stable sort keeps globals-first on ties.
     pub global_gates: Vec<(u16, crate::hooks::ResolvedPolicy)>,
     /// THE PER-POOL ROUTING POLICY / DECISION GATES / REWRITE CHAINS, resolved ONCE at config apply
-    /// (money-path Phase 3-4 C — the RATIFIED pool-hook facade). These USED to live on the LLM plane's
-    /// `PoolRuntime`, but their resolved values are the core-owned `ResolvedPolicy` / `Arc<dyn
-    /// RoutingPolicy>` (an Arc over a dlopen plugin), which the plane's `build_runtime` cannot resolve
-    /// (no `hook_env`, no usable current-`&App`). So they stay resolved-and-read CORE-SIDE, keyed by
-    /// pool, and the relocated engine reaches them through the [`App::pool_policy`] / [`App::pool_gates`]
-    /// / [`App::pool_rewrites`] down-facades — byte-identical objects (the SAME resolution
-    /// `hooks::resolve_pool_*` produced), read via the facade instead of stored across the plane seam.
-    /// Absent pool ⇒ the zero-cost default (no policy / empty chain).
+    /// (money-path Phase 3-4 C — the RATIFIED pool-hook facade). These USED to live on the relocated
+    /// plane's own per-pool runtime object, but their resolved values are the core-owned
+    /// `ResolvedPolicy` / `Arc<dyn RoutingPolicy>` (an Arc over a dlopen plugin), which the plane's
+    /// `build_runtime` cannot resolve (no `hook_env`, no usable current-`&App`). So they stay
+    /// resolved-and-read CORE-SIDE, keyed by pool, and the relocated plane reaches them through the
+    /// [`App::pool_policy`] / [`App::pool_gates`] / [`App::pool_rewrites`] down-facades —
+    /// byte-identical objects (the SAME resolution `hooks::resolve_pool_*` produced), read via the
+    /// facade instead of stored across the plane seam. Absent pool ⇒ the zero-cost default (no
+    /// policy / empty chain).
     pub(crate) pool_orderings: std::collections::HashMap<String, crate::hooks::ResolvedPolicy>,
     pub(crate) pool_decision_gates:
         std::collections::HashMap<String, Vec<(u16, crate::hooks::ResolvedPolicy)>>,
@@ -218,19 +219,9 @@ pub struct App {
             std::sync::Arc<dyn crate::hooks::RoutingPolicy>,
         )>,
     >,
-    /// THE MCP DISPATCH GATES, per registered server: `tools.hooks:` ∪ `tools.<server>.hooks:`,
-    /// resolved to their transports ONCE per config generation and keyed by server name.
-    ///
-    /// Keyed by CONTAINER rather than held as one list because the grammar is per-container and
-    /// additive: a hook attached to one server must not fire for another. A server with no attached
-    /// hook has NO ENTRY (not an empty vector), so the dispatch path's lookup answers `None` and the
-    /// firing site costs one hash lookup on the default deployment.
-    ///
-    /// Resolved here, at config apply, for the reason every other hook list is: resolution `dlopen`s
-    /// the plugin, and doing that per request would put a library load on the dispatch path.
     /// THE PER-PLANE PER-CONTAINER SUBMISSION GATES, keyed by the plane's stable decl key (the opaque
     /// registry key) — one generic registry-keyed map in place of the former per-plane
-    /// `mcp_server_gates`/`a2a_agent_gates` fields, so core carries no plane vocabulary in its own
+    /// gate fields, so core carries no plane vocabulary in its own
     /// field names. Each plane's entry maps container → resolved `(hook_id, ResolvedPolicy)` gate list
     /// (`<section>.hooks:` ∪ `<section>.<container>.hooks:`), same combine rule and zero-cost absence
     /// as before. Composed at config apply by `appbuild` (and re-resolved on swap through
@@ -323,34 +314,37 @@ pub struct App {
     /// serving `GET /api/v1/admin/export[/{name}]`. The lowered runtime projection lives in the
     /// recorder / plugin-route table, never here.
     pub(crate) export_defs: crate::config::ExportDefs,
-    /// The EFFECTIVE `agents:` NAMED-DEFINITION map — THE A2A plane, serving
-    /// `GET /api/v1/admin/agents[/{name}]`. Operator INTENT only: everything that accumulates about
-    /// a registered agent (observed cards, the drift queue, anomaly counters, task rows) is store
-    /// state and is deliberately not reachable from a config snapshot.
-    // TYPE-ERASED so `App` names no `crate::a2a` config type — the same opaque-plane-state shape the
-    // MCP registry rides (`crate::mcp::runtime`'s slot). It carries the resolved `AgentsCfg` when the
-    // A2A plane is compiled in and the neutral `RawPlaneSection` raw capture when it is not; either
-    // way the type here is `Arc<dyn Any>`, so this field survives the A2A extraction unchanged. The
-    // A2A plane downcasts it back inside its own module (`crate::a2a::agent_cfg`), and no core reader
-    // outside `crate::a2a` reads it. Erasing rather than reparsing keeps the exact resolved object, so
-    // the admin view and gate resolution are byte-identical to the typed field this replaced.
-    // With `plane-a2a` off the whole A2A module (its only reader) is compiled out, so the field is set
-    // at build and never read — allow it dead in exactly that config.
+    /// The EFFECTIVE NAMED-DEFINITION map for one container plane's own top-level config section,
+    /// serving that plane's own admin named-definition read endpoint. Operator INTENT only:
+    /// everything that accumulates about a registered member (observed state, drift tracking,
+    /// anomaly counters, task rows) is store state and is deliberately not reachable from a config
+    /// snapshot.
+    // TYPE-ERASED so `App` names no plane-specific config type — the same opaque-plane-state shape
+    // every registered container plane's registry rides. It carries the plane's own resolved config
+    // type when that plane is compiled in and the neutral `RawPlaneSection` raw capture when it is
+    // not; either way the type here is `Arc<dyn Any>`, so this field survives that plane's extraction
+    // unchanged. The owning plane downcasts it back inside its own module, and no core reader outside
+    // that module reads it. Erasing rather than reparsing keeps the exact resolved object, so the
+    // admin view and gate resolution are byte-identical to the typed field this replaced.
+    // With that plane's feature off, its module (this field's only reader) is compiled out, so the
+    // field is set at build and never read — allow it dead in exactly that config.
     #[allow(dead_code)]
     pub(crate) agent_defs: Arc<dyn std::any::Any + Send + Sync>,
-    // THE RUNNING A2A PLANE — the registry `agent_defs` lowers to, plus everything accumulated against
-    // it — has NO typed `App` field. Like its MCP sibling it lives ONLY in the type-erased
-    // `plane_slots` map, and `crate::a2a::runtime(app)`/`runtime_arc(app)` downcast that slot back to
-    // `A2aPlane` inside the a2a module. So `App` names no `crate::a2a` type for the runtime object, and
-    // its absence — no `agents:` this generation, the gate for "is this an A2A plane?" — is read
-    // straight off the slot the same way MCP reads its own, not off a typed field or a flag.
+    // THE RUNNING PLANE — the registry this field lowers to, plus everything accumulated against it —
+    // has NO typed `App` field. Like every other registered plane it lives ONLY in the type-erased
+    // `plane_slots` map, and the owning plane's own accessor downcasts that slot back to its runtime
+    // type inside its own module. So `App` names no plane-specific type for the runtime object, and
+    // its absence — no config for this generation, the gate for "is this plane active?" — is read
+    // straight off the slot the same way every other plane reads its own, not off a typed field or a
+    // flag.
     //
-    // THE A2A VERIFY-ON-CALL GATE and the boot-resolved CARD-FETCH TRANSPORTS likewise have NO `App`
-    // field any more: they moved ONTO the `A2aPlane` runtime object (`A2aPlane::verify` / `::cards`),
-    // exactly as MCP holds `verify` on `McpRuntime`. Verify-on-call reads them off the plane slot, and
-    // `carried_a2a_gates` carries both `Arc`s across a config apply off the prior generation's plane —
-    // so the coalescing epochs and the boot-set transports survive an apply without a shared-`App`
-    // field, and are dropped whole when the `agents:` block is removed (no plane, no delegation).
+    // THE VERIFY-ON-CALL GATE and the boot-resolved fetch TRANSPORTS for this plane likewise have NO
+    // `App` field any more: they moved ONTO the plane's own runtime object, exactly as another
+    // container plane holds its own verify state on its own runtime object. Verify-on-call reads them
+    // off the plane slot, and the carried gate set carries both `Arc`s across a config apply off the
+    // prior generation's plane — so the coalescing epochs and the boot-set transports survive an
+    // apply without a shared-`App` field, and are dropped whole when this plane's config block is
+    // removed (no plane, no delegation).
     /// Per-principal ADMIN MUTATION rate limiter. Arc-shared across apply snapshots so the
     /// windows survive every swap.
     pub(crate) mutation_limiter: Arc<crate::admin::rate::MutationLimiter>,
@@ -395,11 +389,11 @@ pub struct App {
     /// allocated, no signing key exists, no sweeper runs and no route is mounted. See
     /// `crate::oauth_as`.
     pub(crate) oauth_as: Option<Arc<crate::oauth_as::plane::AsPlane>>,
-    // THE MCP PLANE'S PER-GENERATION CLIENT-DIRECTION RUNTIME (`crate::mcp::McpRuntime`, which now also
-    // carries the verify-on-call coalescer that was the former flat `mcp_verify` field) is no longer a
-    // flat `App` field: it lives in `plane_slots` under `runtime_slot_key(<mcp decl key>)`, reached by the plane
-    // through `crate::mcp::runtime` (which downcasts the slot inside the plane), so this `App` names no
-    // `crate::mcp` runtime type and holds no plane-specific runtime field for it.
+    // ONE CONTAINER PLANE'S PER-GENERATION CLIENT-DIRECTION RUNTIME (which also carries its own
+    // verify-on-call coalescer, formerly a dedicated flat field) is no longer a flat `App` field: it
+    // lives in `plane_slots` under `runtime_slot_key(<that plane's decl key>)`, reached by the plane
+    // through its own accessor (which downcasts the slot inside the plane), so this `App` names no
+    // plane-specific runtime type and holds no plane-specific runtime field for it.
     /// APPROVALS ALREADY SPENT — the record that makes an operator-configured confirmation
     /// single-use.
     ///
@@ -423,16 +417,15 @@ pub struct App {
     /// is told to go. Consulted by the auth middleware on every request, which is why it is a
     /// prebuilt table rather than a per-request derivation.
     pub planes: Arc<crate::plane::PlaneDispatch>,
-    /// THE TYPE-ERASED PLANE SLOT MAP, keyed by plane key (`"mcp"`, `"a2a"`, …) — the app-state seam
+    /// THE TYPE-ERASED PLANE SLOT MAP, keyed by each plane's stable decl key — the app-state seam
     /// an extracted plane crate contributes its runtime object through, without core naming that
     /// object's type. `PlaneDecl::claims`/`admission` already read a plane's object through exactly
     /// this kind of erasure (`&dyn Any`), and this map generalises it to an owned, `App`-carried slot.
     ///
-    /// The MCP plane reads its runtime object ONLY through this map: `App::mcp` was deleted and
-    /// `crate::mcp::resource(app)` downcasts this slot inside the plane, so nothing OUTSIDE the mcp
-    /// module names `McpResource`. The A2A plane reads its own object the SAME way — `App::a2a` was
-    /// deleted too, and `crate::a2a::runtime(app)` downcasts this map's `"a2a"` slot inside the a2a
-    /// module (the D4 step, now complete, mirrored the MCP one).
+    /// Every registered plane reads its runtime object ONLY through this map: each plane's own typed
+    /// `App` field was deleted, and that plane's own accessor downcasts its slot inside its own
+    /// module, so nothing OUTSIDE that module names its runtime type. Every extracted plane follows
+    /// the same pattern (the D4 step, now complete, mirrors this across every registered plane).
     ///
     /// Absent from this map is the same fact as an unconfigured plane: a plane the operator did not
     /// configure contributes no slot (see [`crate::plane::registry::PlaneDecl::build`]).
@@ -498,10 +491,9 @@ pub struct App {
     /// survives swaps.
     pub(crate) plugins_cfg: crate::config::PluginsCfg,
     // The cross-protocol translation seam's global fallback max-output-tokens and effort→budget table
-    // no longer live on `App`: they are LLM-plane vocabulary and now ride the LLM plane's own
-    // per-generation runtime (`busbar-llm`'s `NativeRuntime`, populated from the neutral
-    // `PlaneBuildInput` carrier `appbuild` fills). The engine reads them off `rt`, not off a neutral
-    // `App`/`PlaneHost` method — see busbar-llm `engine/wire.rs`.
+    // no longer live on `App`: they are plane-specific vocabulary and now ride that plane's own
+    // per-generation runtime object, populated from the neutral `PlaneBuildInput` carrier `appbuild`
+    // fills. The engine reads them off its own runtime, not off a neutral `App`/`PlaneHost` method.
     /// The self-serve (token-exchange) key lifetime in seconds, resolved from `auth.key_ttl`
     /// (`parse_duration_secs`, default [`crate::admin::DEFAULT_KEY_TTL_SECS`] = 90d). This is where
     /// the Step-1 `auth.key_ttl` field is finally READ: `POST /auth/token` mints every self key with
@@ -553,19 +545,20 @@ pub struct App {
 impl App {
     /// Borrow this snapshot's data-plane routing tables through the NEUTRAL [`EngineTablesView`]
     /// (`busbar_substrate::plane_host`) read seam — the projection the core-resident scrape/discovery
-    /// readers (`/metrics`, `/v1/models`, telemetry label bank) name so they need not relocate when the
-    /// tables move into `busbar-llm` (1.6.0 money-path Phase 3-4 B). This commit still SOURCES the view
-    /// by downcasting the in-core `NativeRuntime` slot (the pivot swaps this for the plane's viewer
-    /// fn-pointer); an ABSENT slot — the featureless zero-plane boot — yields the substrate-resident
-    /// [`EMPTY_VIEW`](busbar_substrate::plane_host::EMPTY_VIEW) (zero pools/models), so a scrape or
+    /// readers (`/metrics`, `/v1/models`, telemetry label bank) name so they need not know which plane
+    /// crate the routing tables actually live in. The view is sourced by projecting the fallback
+    /// plane's opaque runtime slot through that plane decl's `viewer` fn-pointer (the plane downcasts
+    /// its OWN runtime type inside, so core never names it); an ABSENT slot — the featureless
+    /// zero-plane boot, or a decl with no viewer — yields the substrate-resident
+    /// [`EMPTY_VIEW`](busbar_substrate::plane_host::EMPTY_VIEW) (an empty projection), so a scrape or
     /// discovery probe on a plane-less binary reads empty tables rather than panicking. Cold path: one
     /// `plane_slots` lookup + one downcast, then the neutral (allocating) projections.
     pub(crate) fn engine_tables_view(&self) -> &dyn busbar_substrate::plane_host::EngineTablesView {
-        // THE PIVOT (1.6.0 money-path Phase 3-4 C): the runtime type now lives in `busbar-llm`, so core
-        // no longer names it. Project the plane's opaque runtime slot into the neutral view through the
-        // fallback plane decl's `viewer` fn-pointer (the plane downcasts its OWN runtime inside). An
-        // absent slot — the featureless zero-plane boot, or a decl with no viewer — yields the
-        // substrate-resident EMPTY_VIEW (zero pools/models).
+        // THE PIVOT (1.6.0 money-path Phase 3-4 C): the runtime type now lives in the fallback plane's
+        // own crate, so core no longer names it. Project the plane's opaque runtime slot into the
+        // neutral view through the fallback plane decl's `viewer` fn-pointer (the plane downcasts its
+        // OWN runtime inside). An absent slot — the featureless zero-plane boot, or a decl with no
+        // viewer — yields the substrate-resident EMPTY_VIEW (an empty projection).
         let key = self.llm_runtime_key;
         match (
             crate::plane::registry::plane_decl_for(crate::plane::fallback_key())
@@ -589,9 +582,9 @@ impl App {
     /// the right one only where there IS no pool (direct/ad-hoc model routes, health probes).
     pub fn upstream_creds(&self) -> crate::auth::UpstreamCreds {
         // The plane runtime relocated out of core (money-path Phase 3-4 C), so this pool-less default
-        // is read through the NEUTRAL view seam rather than by downcasting the plane's `NativeRuntime`.
-        // Byte-identical: the view projects the same `upstream_credentials` field, and the zero-plane
-        // EMPTY_VIEW returns the type default the always-present-but-empty runtime carried.
+        // is read through the NEUTRAL view seam rather than by downcasting the plane's own runtime
+        // object. Byte-identical: the view projects the same `upstream_credentials` field, and the
+        // zero-plane EMPTY_VIEW returns the type default the always-present-but-empty runtime carried.
         self.engine_tables_view().upstream_creds()
     }
 
@@ -609,19 +602,19 @@ impl App {
     /// configure it (see `App::plane_slots`) — the same absence a typed field's `None`/no-entry
     /// already means, reached through the key instead of the field name.
     ///
-    /// THE SEAM BOTH PLANES READ THROUGH: the MCP plane reads its runtime object through this accessor
-    /// (`crate::mcp::resource`) and the A2A plane through it too (`crate::a2a::runtime`), each having
-    /// deleted its typed `App::mcp` / `App::a2a` field in the D4 step.
+    /// THE SEAM EVERY PLANE READS THROUGH: each container plane reads its runtime object through
+    /// this accessor via its own module-local downcast, having deleted its own typed `App` field in
+    /// the D4 step.
     // Reached unconditionally through the `PlaneSlots` trait impl below (`App::plane_slot`), so the
-    // inherent fn is never truly dead; the `allow(dead_code)` gate is legacy from when MCP was its
-    // only direct reader.
+    // inherent fn is never truly dead; the `allow(dead_code)` gate is legacy from when only one plane
+    // was its only direct reader.
     #[allow(dead_code)]
     pub fn plane_slot(&self, key: &str) -> Option<&Arc<dyn std::any::Any + Send + Sync>> {
         self.plane_slots.get(key)
     }
 
-    /// MUTABLE plane-slot access for in-place TEST mutation — the successor to the deleted inherent
-    /// `App::llm_runtime_mut`, now that the plane's runtime type lives in the plane crate and core
+    /// MUTABLE plane-slot access for in-place TEST mutation — the successor to a deleted inherent
+    /// per-plane accessor, now that each plane's runtime type lives in the plane crate and core
     /// names none of it. A plane's relocated tests reach their own runtime through this neutral seam:
     /// `Arc::get_mut(app.plane_slot_mut(key)?).downcast_mut::<TheirRuntime>()`. Returns the slot's
     /// `Arc` mutably so the caller can `Arc::get_mut` it (uniquely-owned in a sole-owner test `App`).
@@ -633,10 +626,10 @@ impl App {
         self.plane_slots.get_mut(key)
     }
 
-    /// The INTERNED runtime-slot key for the fallback (LLM) plane, precomputed ONCE at build
+    /// The INTERNED runtime-slot key for the fallback plane, precomputed ONCE at build
     /// (`runtime_slot_key(fallback_key())`). The relocated engine reads its runtime slot through this
     /// cached `&'static str` rather than re-`runtime_slot_key`-ing (a `format!` + mutex-guarded intern)
-    /// on every `engine_tables()`/`llm_runtime()` call — the hot-path allocation the alloc gate pins.
+    /// on every own-runtime accessor call — the hot-path allocation the alloc gate pins.
     pub fn llm_runtime_key(&self) -> &'static str {
         self.llm_runtime_key
     }
@@ -660,7 +653,7 @@ impl App {
         self.plane_rewrites.get(plane_key)
     }
 
-    // THE POOL-HOOK DOWN-FACADES (money-path Phase 3-4 C). The relocated LLM engine reads each pool's
+    // THE POOL-HOOK DOWN-FACADES (money-path Phase 3-4 C). The relocated fallback-plane engine reads each pool's
     // resolved routing policy / decision gates / rewrite chain through these instead of off the plane's
     // `PoolRuntime` (which no longer stores them — the resolved `ResolvedPolicy`/`Arc<dyn RoutingPolicy>`
     // cannot cross the `build_runtime` downcast). Byte-identical: the SAME objects `appbuild` resolved
@@ -711,8 +704,8 @@ impl App {
     /// extracted plane hands its neutral `(container, own-hooks)` inputs + the reserved section attach
     /// list across, and gets back the keyed gate map to store in its own gate field, so the plane
     /// names no `crate::hooks::resolve_container_gates`. Same resolution as `appbuild`'s build-time
-    /// pass and the in-core A2A twin.
-    // Called only from a container plane's gate rebuild (MCP/A2A); with BOTH planes compiled out it
+    /// pass.
+    // Called only from a container plane's gate rebuild; with every container plane compiled out it
     // has no caller, exactly like the `crate::hooks::resolve_container_gates` it wraps.
     #[allow(dead_code)]
     pub fn resolve_container_gates<'a>(
@@ -751,15 +744,15 @@ impl App {
     }
 
     /// Resolve a POOL's base ordering against THIS snapshot's hook registry, env and config version —
-    /// the core-side of the LLM plane's per-pool base-ordering resolution. The MONEY-PATH twin of
-    /// [`App::resolve_container_gates`]: the extracted LLM plane hands the neutral `(&PoolCfg,
-    /// default_hook)` inputs across and gets back the resolved policy to store in busbar-llm's
-    /// `PoolRuntime`, so the plane names no `crate::hooks::resolve_pool_ordering` and never constructs
+    /// the core-side of the fallback plane's per-pool base-ordering resolution. The MONEY-PATH twin of
+    /// [`App::resolve_container_gates`]: the extracted fallback plane hands the neutral `(&PoolCfg,
+    /// default_hook)` inputs across and gets back the resolved policy to store in its own per-pool
+    /// runtime object, so the plane names no `crate::hooks::resolve_pool_ordering` and never constructs
     /// a `HookEnv`. Byte-identical to `appbuild`'s build-time `hooks::resolve_pool_ordering` pass
     /// (`self.hook_registry` == the built `cfg.hooks`, `self.hook_env` == the built env,
     /// `self.config_version` == the build's `app_config_version`).
-    // Called only from the extracted LLM plane's pool lowering (Commit C); with the plane compiled out
-    // it has no caller, exactly like the `crate::hooks::resolve_pool_ordering` it wraps.
+    // Called only from the extracted fallback plane's pool lowering (Commit C); with the plane
+    // compiled out it has no caller, exactly like the `crate::hooks::resolve_pool_ordering` it wraps.
     #[allow(dead_code)]
     pub fn resolve_pool_ordering(
         &self,
@@ -777,8 +770,9 @@ impl App {
 
     /// Resolve a POOL's decision GATES against THIS snapshot — the money-path twin of
     /// [`App::resolve_container_gates`] for the priority-carrying phase-2 gate chain. Byte-identical to
-    /// `appbuild`'s `hooks::resolve_pool_gates` pass; the plane stores the returned rank in busbar-llm's
-    /// `PoolRuntime` without naming `crate::hooks::resolve_pool_gates` or building a `HookEnv`.
+    /// `appbuild`'s `hooks::resolve_pool_gates` pass; the plane stores the returned rank in its own
+    /// per-pool runtime object without naming `crate::hooks::resolve_pool_gates` or building a
+    /// `HookEnv`.
     #[allow(dead_code)]
     pub fn resolve_pool_gates(
         &self,
@@ -794,8 +788,8 @@ impl App {
 
     /// Resolve a POOL's phase-1 REWRITE gates against THIS snapshot — the money-path twin of
     /// [`App::resolve_container_gates`] for the pool rewrite chain. Byte-identical to `appbuild`'s
-    /// `hooks::resolve_pool_rewrites` pass; the plane stores the returned chain in busbar-llm's
-    /// `PoolRuntime` without naming `crate::hooks::resolve_pool_rewrites` or building a `HookEnv`.
+    /// `hooks::resolve_pool_rewrites` pass; the plane stores the returned chain in its own per-pool
+    /// runtime object without naming `crate::hooks::resolve_pool_rewrites` or building a `HookEnv`.
     #[allow(dead_code)]
     pub fn resolve_pool_rewrites(
         &self,
@@ -812,8 +806,8 @@ impl App {
 
 /// THE NEUTRAL SLOT-READ SEAM the plane `PlaneDecl` callbacks name instead of `&App`. A thin delegate
 /// to the inherent [`App::plane_slot`]; [`as_any`](busbar_substrate::plane_host::PlaneSlots::as_any)
-/// hands the concrete snapshot back to the in-core A2A twin for the field (`agent_defs`) that is not
-/// a `plane_slots` entry.
+/// hands the concrete snapshot back to the owning plane's own reader for the field (`agent_defs`)
+/// that is not a `plane_slots` entry.
 impl busbar_substrate::plane_host::PlaneSlots for App {
     fn plane_slot(&self, key: &str) -> Option<&Arc<dyn std::any::Any + Send + Sync>> {
         App::plane_slot(self, key)
@@ -936,14 +930,15 @@ impl AppHandle {
     /// unchanged (before 1.4.0 only reload/apply re-spawned; the six hook/auth-mutation swaps did not).
     /// Doing it in `swap` itself makes it impossible for a future swap site to forget.
     /// Also lets each PLANE carry its engine-owned live state across the apply, through the plane's
-    /// own [`PlaneDecl::on_swap`](crate::plane::registry::PlaneDecl::on_swap) hook. Today the MCP
-    /// plane is the only one with such state: it RETIRES every stdio MCP child whose registration is
-    /// gone from `next`. Same reasoning as the probers, one plane over: an MCP connection pool
-    /// deliberately outlives an apply, so deleting a `tools:` entry would otherwise leave its child
-    /// process running forever — unreferenced, unreachable, and with nothing on any surface an
-    /// operator reads to say so. Doing it here, once, over the registered decls rather than by naming
-    /// each plane's concrete types makes it impossible for a future swap site to forget AND keeps this
-    /// method free of any one plane's types — the reconciliation lives beside the plane it belongs to.
+    /// own [`PlaneDecl::on_swap`](crate::plane::registry::PlaneDecl::on_swap) hook. Today exactly one
+    /// registered plane has such state: it RETIRES every out-of-process member connection whose
+    /// registration is gone from `next`. Same reasoning as the probers, one plane over: that plane's
+    /// connection pool deliberately outlives an apply, so removing a registered member would otherwise
+    /// leave its child process running forever — unreferenced, unreachable, and with nothing on any
+    /// surface an operator reads to say so. Doing it here, once, over the registered decls rather than
+    /// by naming each plane's concrete types makes it impossible for a future swap site to forget AND
+    /// keeps this method free of any one plane's types — the reconciliation lives beside the plane it
+    /// belongs to.
     pub fn swap(&self, next: Arc<App>) {
         // WRITER SERIALIZATION IS A CONVENTION, NOT A TYPE GUARANTEE (audit F9): `ArcSwap` made
         // reads lock-free, but unlike the old `RwLock` write lock, nothing here mutually excludes
@@ -969,7 +964,7 @@ impl AppHandle {
             );
                 Guard(&self.swapping)
             };
-        // The snapshot being replaced, so a plane that must DIFF the two generations can; the MCP
+        // The snapshot being replaced, so a plane that must DIFF the two generations can; that plane's
         // hook reconciles only `next` (its pool is Arc-carried onto `next` already).
         let prior = self.load();
         for decl in crate::plane::registry::plane_decls() {
@@ -987,8 +982,8 @@ impl AppHandle {
         // probe a retired snapshot — the SAME no-strong-ref-across-reload guarantee the old `Weak<App>`
         // gave, now anchored on the host holder. We re-bind the host for `next` so the invariant "the
         // handle owns a host per current generation" holds; RE-SPAWNING the probers against `next` is
-        // the LLM plane's own concern (its `PlaneDecl::on_swap` seam — wired in the wedge-3 engine
-        // thread), so core still names no `crate::health::spawn_probers`.
+        // the fallback plane's own concern (its `PlaneDecl::on_swap` seam — wired in the wedge-3
+        // engine thread), so core still names no `crate::health::spawn_probers`.
         self.set_snapshot_host(crate::plane_host::engine_host(&next));
     }
 

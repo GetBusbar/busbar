@@ -492,14 +492,14 @@ impl<V> Sharded<V> {
 /// `lookup_by_sub` (the signed-token verify hot path — 1.5.0 has exactly one bearer-credential
 /// shape, so this is the only key index needed — bearer auth is never represented in
 /// `by_credential`, see that field's doc). `by_credential` is the ROW-LOOKED-UP credential index
-/// (today: SigV4 only) for inbound resolution on the Bedrock-ingress hot path, generalized from the
+/// (today: SigV4 only) for inbound resolution on the SigV4-credential verify hot path, generalized from the
 /// old AWS-specific `by_access_key_id`/`AwsKeyEntry` — see [`busbar_api::CredentialMeta`]'s doc for
 /// why a kind belongs here at all. Both are rebuilt by `refresh` from the SAME store snapshot, so a
 /// disabled/deleted/re-minted key or revoked credential is reflected in both — visible to readers
 /// atomically (the one lock guarantees no reader sees a half-applied swap).
 struct GovCaches {
     /// Subject id (the key id / token `sub`) → key. Values are `Arc<VirtualKey>` so the per-request
-    /// signed-token resolution (on the chat hot path) is a REFCOUNT BUMP rather than a deep clone of
+    /// signed-token resolution (on the request hot path) is a REFCOUNT BUMP rather than a deep clone of
     /// a multi-`String` `VirtualKey` under the read lock — the resolved key is immutable for the
     /// life of the request and threaded read-only through governance/routing, so sharing it via
     /// `Arc` is exact.
@@ -748,15 +748,15 @@ pub(crate) fn synthesize_principal_key(
     // (`None` in the runtime encoding too); an explicit list contributes its entries; an explicit
     // `[]` contributes nothing. An all-bindings-empty union = the EMPTY SET = no data-plane access
     // (fail closed: no key at all - nothing to admit).
-    let mut pools: Vec<String> = Vec::new();
+    let mut pool_names: Vec<String> = Vec::new();
     let mut all_pools = false;
     for b in &granting {
         match b.allowed_pools.as_deref() {
             None => all_pools = true,
             Some(list) => {
                 for p in list {
-                    if !pools.contains(p) {
-                        pools.push(p.clone());
+                    if !pool_names.contains(p) {
+                        pool_names.push(p.clone());
                     }
                 }
             }
@@ -764,11 +764,11 @@ pub(crate) fn synthesize_principal_key(
     }
     let allowed_pools = if all_pools {
         None // any omitted grant widens the union to ALL pools
-    } else if pools.is_empty() {
+    } else if pool_names.is_empty() {
         // Every granting binding said `allowed_pools: []` - the empty set. No access.
         return None;
     } else {
-        Some(pools)
+        Some(pool_names)
     };
     // The bound group (first in role order). Group limits are enforced through the group chain;
     // the key itself carries NO inline caps (keys are pure auth).
@@ -796,7 +796,7 @@ pub(crate) fn synthesize_principal_key(
 }
 
 /// The per-request context a plane handler receives: the resolved caller identity attached to each
-/// request by the auth middleware, in a form a plane (llm / a2a / mcp) can name without reaching for
+/// request by the auth middleware, in a form any plane crate can name without reaching for
 /// a core-private governance type. Relocated to `busbar-api` in Phase-B B0-a (beside [`VirtualKey`])
 /// so an extracted plane crate names it without a path back to core; re-exported here so every
 /// in-core call site (`governance::PlaneRequestCtx`, and the [`GovCtx`] alias) is unchanged.
@@ -961,8 +961,8 @@ fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
     era * 146_097 + doe - 719_468
 }
 
-// `Store` and `VirtualKey` were re-exported `pub` for the extracted A2A plane's in-test store
-// doubles and the relocated LLM engine's pool-credential lowering. Neither reaches this path any
+// `Store` and `VirtualKey` were re-exported `pub` for extracted-plane in-test store doubles and a
+// relocated plane's credential lowering. Neither reaches this path any
 // more — every caller outside busbar-core names `busbar_api::{Store, VirtualKey}` directly — so the
 // two join the crate-internal list below rather than standing as a second public name for one type.
 pub(crate) use busbar_api::{

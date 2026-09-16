@@ -107,6 +107,24 @@ pub const LEDGER: &str = "qa/kind-isolation.toml";
 /// whose extension is not on [`BINARY_EXTS`], which is 1 707 of them today.
 const MIN_SCANNED: usize = 600;
 
+/// LAW 0/1: the plugin-INSTANCE vocabularies a NEUTRAL crate may name ZERO times.
+/// `codec`/`legacy` are the pre-split dialect halves and retiring crates — they drain
+/// on the ordinary ratchet; when the rename lands `codec` folds into `dialect`.
+const INSTANCE_VOCAB_KINDS: &[&str] = &["plane", "control", "transport", "dialect"];
+
+/// LAW 0/1 readiness: the neutral crates ENFORCED at ceiling 0 in the EVERYDAY
+/// (`ship: false`) gate. Starts empty. A crate belongs here the moment its measured
+/// `source_count` for every `INSTANCE_VOCAB_KINDS` cell reaches 0 — adding it PINS that
+/// crate at 0 permanently: from then on the everyday gate reds again the instant the
+/// count rises above zero, even though the ordinary `[[cell]]` ratchet would otherwise
+/// let it float back up. A neutral crate NOT yet listed here still drains through the
+/// ordinary ratchet above (raised/stale-slack against its `[[cell]]` row) — this list
+/// does not exempt it, it just does not yet BLOCK the push gate on it, so crates still
+/// draining do not brick every other push. The ship twin (`ship: true`) ignores this
+/// list entirely and enforces EVERY neutral crate unconditionally, because the ship SHA
+/// owes zero everywhere regardless of what the everyday gate has caught up to.
+const LAW0_ENFORCED_NEUTRAL_CRATES: &[&str] = &[];
+
 // ------------------------------------------------------------------------------------------------
 // the vocabulary, derived
 // ------------------------------------------------------------------------------------------------
@@ -428,6 +446,11 @@ fn count_by_windows(chars: &[char], needle: &[String]) -> usize {
 struct Cell {
     /// The HIGHEST of the scanners, never the lowest.
     count: usize,
+    /// The slice of `count` that landed inside a `Cargo.toml`. Manifest edges are already
+    /// governed by `kind-isolation:deps`; `count - manifest` is the SOURCE-only count the
+    /// law0-neutral-instance class measures, so a dependency name does not double-count
+    /// against a ceiling that dependency scanning already owns.
+    manifest: usize,
     by_segments: usize,
     by_windows: usize,
     /// The third scanner: the line as the COMPILER sees it, escapes decoded and adjacent literals
@@ -557,6 +580,9 @@ fn measure(cx: &Ctx, crates: &[CrateInfo]) -> Result<Measured, String> {
             cell.by_decoded += h.by_decoded;
             let n = h.by_segments.max(h.by_windows).max(h.by_decoded);
             cell.count += n;
+            if rel.ends_with("Cargo.toml") {
+                cell.manifest += n;
+            }
             let mut mark = String::new();
             if h.by_segments != h.by_windows {
                 mark.push_str("\t[scanners disagree]");
@@ -1177,6 +1203,42 @@ fn minted_rows(cx: &Ctx) -> Vec<String> {
     out
 }
 
+/// THE LAW 0/1 ARMED CLASS — evaluated UNCONDITIONALLY of the `[[cell]]` ledger: a NEUTRAL
+/// crate's ceiling against `INSTANCE_VOCAB_KINDS` is 0, and no ratchet row can raise it.
+/// Cargo.toml is excepted (`cell.manifest`) because a manifest edge is already governed by
+/// `kind-isolation:deps`; arming it here too would double-count the same dependency name.
+///
+/// `enforced` is the readiness gate: `None` means every `Family::Neutral` crate is checked
+/// (the ship twin, which owes zero everywhere unconditionally); `Some(list)` restricts the
+/// findings to crates named in `list` (the everyday push gate, gated on
+/// [`LAW0_ENFORCED_NEUTRAL_CRATES`] so crates still draining do not brick the push gate).
+fn law0_offenders(matrix: &Matrix, crates: &[CrateInfo], enforced: Option<&[&str]>) -> Vec<String> {
+    let mut offenders = Vec::new();
+    for ((krate, kind), cell) in matrix {
+        let is_neutral = crates
+            .iter()
+            .any(|c| &c.name == krate && c.family == Family::Neutral);
+        if !is_neutral || !INSTANCE_VOCAB_KINDS.contains(kind) {
+            continue;
+        }
+        let source_count = cell.count - cell.manifest; // Cargo-exempt
+        if source_count == 0 {
+            continue;
+        }
+        if let Some(list) = enforced {
+            if !list.contains(&krate.as_str()) {
+                continue;
+            }
+        }
+        offenders.push(format!(
+            "law0-neutral-instance\t{krate} \u{d7} {kind}\t{source_count} source hit(s) (Cargo.toml \
+             excluded). A NEUTRAL crate may name NO plugin-instance vocabulary: ceiling 0, ARMED — \
+             no [[cell]] row raises it. Drain the names, or the crate is not neutral."
+        ));
+    }
+    offenders
+}
+
 pub fn rule_matrix(cx: &Ctx, crates: &[CrateInfo], reg: &super::KindRegistry, ship: bool) -> Row {
     let (matrix, scanned, skipped) = match measure(cx, crates) {
         Ok(m) => m,
@@ -1207,13 +1269,21 @@ pub fn rule_matrix(cx: &Ctx, crates: &[CrateInfo], reg: &super::KindRegistry, sh
             .iter()
             .map(|((k, kind), c)| format!("{k} × {kind} = {}", c.count))
             .collect();
+        // THE ARMED LAW 0/1 CLASS, UNCONDITIONALLY, over every `Family::Neutral` crate — the
+        // ship twin does not consult [`LAW0_ENFORCED_NEUTRAL_CRATES`], it owes zero everywhere.
+        let law0 = law0_offenders(&matrix, crates, None);
         return Row::fail(
             ROW_MATRIX,
             "a crate still names another kind's vocabulary",
             format!(
-                "ship-ceiling 0: {total} hit(s) over {} cell(s): {}",
+                "ship-ceiling 0: {total} hit(s) over {} cell(s): {}{}",
                 matrix.len(),
-                worst.join(" | ")
+                worst.join(" | "),
+                if law0.is_empty() {
+                    String::new()
+                } else {
+                    format!(" || {}", law0.join(" || "))
+                }
             ),
         );
     }
@@ -1356,6 +1426,14 @@ pub fn rule_matrix(cx: &Ctx, crates: &[CrateInfo], reg: &super::KindRegistry, sh
             ));
         }
     }
+
+    // LAW 0/1, EVERYDAY BRANCH: armed unconditionally of the `[[cell]]` ledger, but BLOCKING
+    // only for the crates [`LAW0_ENFORCED_NEUTRAL_CRATES`] has caught up to — the readiness
+    // gate that lets the list ratchet down to 0 and STAY there without bricking the push gate
+    // on neutral crates still draining. A crate not yet listed still shows up on the ordinary
+    // ratchet above (raised / stale-slack against its `[[cell]]` row); it is only exempt from
+    // being blocked TWICE for the same hits.
+    offenders.extend(law0_offenders(&matrix, crates, Some(LAW0_ENFORCED_NEUTRAL_CRATES)));
 
     let headline = format!(
         "{total} hit(s) over {} cell(s), {scanned} file(s) scanned",

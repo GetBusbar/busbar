@@ -7,8 +7,8 @@
 //! A plane that selects [`crate::transport::Transport::WebSocket`] resolves the axis to
 //! [`crate::transport::UpstreamWireKind::Duplex`] and dials the upstream here. The dialer hands back a
 //! message [`Stream`]`<Item = Vec<u8>>` + [`Sink`]`<Vec<u8>>` pair — EXACTLY the shape
-//! [`crate::ingress::byte_duplex::serve_messages`] consumes — so the plane composes session/media
-//! logic on top and never holds a socket, a resolver, or the WS framing.
+//! [`crate::ingress::byte_duplex::serve_messages`] consumes — so the plane composes whatever session
+//! logic it needs on top and never holds a socket, a resolver, or the WS framing.
 //!
 //! ## THE GUARD IS NOT OPTIONAL (the egress-audit finding this closes)
 //!
@@ -33,12 +33,12 @@ use crate::net_guard::{self, GuardPolicy, GuardRefusal};
 /// the inbound acceptor's queue is bounded by, pointed the other way: an upstream that emits faster
 /// than this side consumes would otherwise have its whole output rate charged to this node's memory.
 /// At the bound the dialer's reader stops taking messages off the socket, so the backlog is held by
-/// the upstream's transport. Deep enough that ordinary jitter in a media relay never reaches it.
+/// the upstream's transport. Deep enough that ordinary jitter in a duplex session never reaches it.
 const MAX_QUEUED_UPSTREAM_FRAMES: usize = 64;
 
 /// How many frames the PLANE may have in flight ahead of the socket that has to write them. The
 /// inbound bound above holds a fast upstream off this node's heap; this one holds a fast PLANE off it
-/// when the upstream is the slow side — a wedged provider, a peer that stopped reading, a socket a
+/// when the upstream is the slow side — a wedged upstream, a peer that stopped reading, a socket a
 /// middlebox is holding open. Unbounded, the writer task's backlog grows for as long as the stall
 /// lasts and one session's memory cost is set by the producer alone; bounded, the producer's own
 /// `send` waits for capacity, so the stall is charged back to whoever is causing it. A relay has two

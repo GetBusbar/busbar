@@ -2,24 +2,23 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE ADMIN AUDIT CHAIN, ON THE NEUTRAL JOURNAL SEAM: the admin-mutation log's hash-chained records
-//! written through the SAME store-backed [`crate::plane_host::journal`] the MCP call log and the A2A
-//! task provenance chain use, addressed by a registered `kind_id`.
+//! written through the SAME store-backed [`crate::plane_host::journal`] every other registered stream
+//! (each plane's own call/event log) uses, addressed by a registered `kind_id`.
 //!
 //! ## Why the record shape lives here and not in the seam
 //!
 //! Core owns the ONE chain — one append, one digest, one verifier ([`crate::audit`]). What a stream
 //! still owns is its RECORD: which fields it carries, which framing they digest under, and the decode
 //! bridge that turns a stored body back into a chain record. This file is that ownership for the admin
-//! audit stream, exactly as [`crate::calllog`] is for the MCP call stream and
-//! [`crate::plane::taskstore`] is for the A2A task-event stream. Unlike those two it is NOT a plane —
-//! the admin audit chain is core (owner's ruling: auditing is core) — so nothing here is feature-gated
-//! away; the stream is always registered and always available.
+//! audit stream, exactly as each plane owns its own stream's record shape in its own module. Unlike
+//! those it is NOT a plane — the admin audit chain is core (owner's ruling: auditing is core) — so
+//! nothing here is feature-gated away; the stream is always registered and always available.
 //!
-//! ## THE ONE DIVERGENCE FROM THE OTHER TWO STREAMS: the scope is NOT in the digest
+//! ## THE ONE DIVERGENCE FROM A PLANE'S OWN STREAM: the scope is NOT in the digest
 //!
 //! The admin audit chain has exactly ONE scope (the whole log, the constant `admin`), so its digest
 //! never distinguished a scope and its persisted records were sealed WITHOUT one in the digest input.
-//! The MCP call chain digests the principal and the A2A task chain digests the task id; this stream
+//! A plane's own stream typically digests a per-scope key (a principal, a task id, …); this stream
 //! registers with `digests_scope = FALSE`. The prelude the host frames is then exactly
 //! `frame_prelude(PipeSeparated, prev_hash, None, seq)` = `prev_hash|seq`, and the plane's suffix
 //! `|ts|action|resource|outcome|principal` byte-concatenates onto it to reproduce the legacy
@@ -50,13 +49,14 @@ use busbar_plugin::hot::{
 use core::mem::MaybeUninit;
 
 /// The host-assigned `kind_id` the admin `audit` durable stream is registered under and addressed by
-/// on every scoped op. Process-global, distinct from the A2A `task_event` stream's id (1) and the MCP
-/// `call` stream's id (2).
+/// on every scoped op. Process-global, distinct from each plane's own registered stream ids (e.g. a
+/// task-event stream's id (1) and a call stream's id (2)).
 pub(crate) const KIND_ID_AUDIT: u32 = 3;
 
-/// THE ONE SCOPE OF THIS CHAIN: the whole admin log. The MCP call chain scopes per principal and the
-/// A2A chain per task; the admin log is one operator-rate sequence for the whole process, so its scope
-/// is a constant — and the scope is deliberately NOT in the digest (see the module header).
+/// THE ONE SCOPE OF THIS CHAIN: the whole admin log. A plane's own stream typically scopes per
+/// principal or per some other per-request key; the admin log is one operator-rate sequence for the
+/// whole process, so its scope is a constant — and the scope is deliberately NOT in the digest (see
+/// the module header).
 const ADMIN_LOG: &str = "admin";
 
 /// The admin audit stream's framing facts, held here (the record's, not the seam's). `PipeSeparated`
@@ -98,8 +98,8 @@ extern "C-unwind" fn reframe_audit_ffi(
 /// REGISTER the admin `audit` durable stream with the host (once, at boot, before the migration):
 /// `PipeSeparated` framing with the scope OUT of the digest (`digests_scope = 0`), under
 /// [`KIND_ID_AUDIT`]. The admin log has one scope, so its position cache is bounded by construction —
-/// it registers uncapped through the ABI `journal_register`, exactly as the A2A task table does. The
-/// host attaches the durable sink from `app.governance` at register time.
+/// it registers uncapped through the ABI `journal_register`, exactly as a plane's own multi-scope
+/// stream does. The host attaches the durable sink from `app.governance` at register time.
 pub(crate) fn register_audit_stream(app: &Arc<crate::state::App>) {
     register_audit_stream_as(KIND_ID_AUDIT, app);
 }
@@ -651,11 +651,11 @@ pub(crate) fn emit_admin_hostless(
     }
 }
 
-/// THE NEUTRAL, HOSTLESS ADMIN-AUDIT EMIT for plane call sites. Reads `busbar_substrate::store::now()` ONCE for
+/// THE NEUTRAL, HOSTLESS AUDIT EMIT for plane call sites. Reads `busbar_substrate::store::now()` ONCE for
 /// this event and delegates to [`emit_admin_hostless`] with that single timestamp — the same one clock
 /// read per event `record_by` performs, so the seam and any legacy read never diverge by a clock tick.
 /// This neutral `(action, resource, outcome, principal)` shape IS the future ABI-slot signature: the
-/// plane bodies call it without ever naming `crate::admin::audit`, so the admin↔plane seam can be cut.
+/// plane bodies call it without ever naming `crate::admin::audit`, so the core-audit↔plane seam can be cut.
 /// Fire-and-forget, loudly, exactly like [`emit_admin_hostless`]: a store write failure NEVER fails the
 /// mutation it records.
 #[allow(dead_code)] // called from the plane-gated audit sites; no caller with every plane compiled out
@@ -685,8 +685,8 @@ pub(crate) fn mirror(
 // ── TEST HARNESS — the chain position is host-side now, so a test drives it over a host ────────────
 
 /// TEST ONLY: a fresh, process-unique `audit` stream id, well above the production ids (1/2/3) and the
-/// `plane_host::journal` test range (base 10_000), the A2A `task_event` range (100_000) and the MCP
-/// `call` range (200_000).
+/// `plane_host::journal` test range (base 10_000) and each plane's own reserved test-id ranges
+/// (100_000, 200_000, …).
 #[cfg(test)]
 pub(crate) fn fresh_test_kind_id() -> u32 {
     static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(300_000);

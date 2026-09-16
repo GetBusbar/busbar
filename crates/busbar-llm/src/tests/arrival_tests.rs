@@ -148,16 +148,14 @@ fn bedrock_body() -> Bytes {
     Bytes::from_static(br#"{"messages":[{"role":"user","content":[{"text":"hi"}]}]}"#)
 }
 
-fn now() -> (Instant, u64) {
-    (Instant::now(), busbar_substrate::store::now())
-}
-
 /// The path-model facts a URL resolves to; anything else is this fixture naming the wrong URL.
 fn facts(parsed: PathArrivalFacts) -> super::PathModelFacts {
     match parsed {
         PathArrivalFacts::PathModel(f) => f,
         PathArrivalFacts::BodyModel { .. } => panic!("this URL names its stream intent"),
-        PathArrivalFacts::Refused(_) => panic!("this URL is a request"),
+        PathArrivalFacts::Refused(_) | PathArrivalFacts::RefusedNeutral { .. } => {
+            panic!("this URL is a request")
+        }
     }
 }
 
@@ -165,7 +163,6 @@ fn facts(parsed: PathArrivalFacts) -> super::PathModelFacts {
 #[test]
 fn the_gemini_parse_reads_its_own_url_space() {
     let (host, ctx) = parse_host();
-    let (started, charged_at) = now();
     let read = |path: &str, query: &str| {
         let full = if query.is_empty() {
             path.to_string()
@@ -174,15 +171,7 @@ fn the_gemini_parse_reads_its_own_url_space() {
         };
         let uri: Uri = full.parse().expect("a fixture uri parses");
         let rest = gemini_rest(&host, path);
-        gemini_path_parse(
-            &host,
-            &ctx,
-            &rest,
-            &uri,
-            &gemini_body(),
-            started,
-            charged_at,
-        )
+        gemini_path_parse(&host, &ctx, &rest, &uri, &gemini_body())
     };
 
     // Buffered: the model, no stream, no framing shim, and gemini's own versioned miss copy.
@@ -227,15 +216,15 @@ fn the_gemini_parse_reads_its_own_url_space() {
         .as_deref()
         .is_some_and(|m| m.contains("API version v1,")));
 
-    // An action this surface does not proxy is not a request at all.
+    // An action this surface does not proxy is not a request at all: a NAMED pre-routing refusal.
     assert!(matches!(
         read("/v1beta/models/p:countTokens", ""),
-        PathArrivalFacts::Refused(_)
+        PathArrivalFacts::RefusedNeutral { .. }
     ));
     // And neither is a colon-less path.
     assert!(matches!(
         read("/v1beta/models/p", ""),
-        PathArrivalFacts::Refused(_)
+        PathArrivalFacts::RefusedNeutral { .. }
     ));
 }
 
@@ -243,10 +232,9 @@ fn the_gemini_parse_reads_its_own_url_space() {
 #[test]
 fn the_bedrock_parse_reads_its_own_url_space() {
     let (host, ctx) = parse_host();
-    let (started, charged_at) = now();
     let read_with = |path: &str, body: &Bytes| {
         let uri: Uri = path.parse().expect("a fixture uri parses");
-        bedrock_path_parse(&host, &ctx, path, &uri, body, started, charged_at)
+        bedrock_path_parse(&host, &ctx, path, &uri, body)
     };
     let read = |path: &str| read_with(path, &bedrock_body());
 
@@ -270,12 +258,14 @@ fn the_bedrock_parse_reads_its_own_url_space() {
         PathArrivalFacts::BodyModel { model_hint, .. } => assert_eq!(model_hint, "p"),
         _ => panic!("invoke leaves the operation to the body"),
     }
+    // A body naming no supported operation is a NAMED pre-routing refusal (the dialect's own 400).
     assert!(matches!(
         read("/model/p/invoke"),
-        PathArrivalFacts::Refused(_)
+        PathArrivalFacts::RefusedNeutral { .. }
     ));
 
-    // Anything else under the model path is not a request this dialect answers.
+    // Anything else under the model path is not a request this dialect answers: the pre-rendered
+    // fallback 404, which stays a `Refused(Response)` (a different terminal from the counted door).
     assert!(matches!(
         read("/model/p/invoke-with-response-stream"),
         PathArrivalFacts::Refused(_)
@@ -296,7 +286,6 @@ fn the_bedrock_parse_reads_its_own_url_space() {
 #[test]
 fn the_url_facts_drive_the_two_steps_to_the_live_paths_answer() {
     let (host, ctx) = parse_host();
-    let (started, charged_at) = now();
     let cases: [(&str, &str, Bytes); 2] = [
         (
             crate::proto_codec::PROTO_GEMINI,
@@ -313,9 +302,9 @@ fn the_url_facts_drive_the_two_steps_to_the_live_paths_answer() {
         let uri: Uri = path.parse().expect("a fixture uri parses");
         let parsed = if proto == crate::proto_codec::PROTO_GEMINI {
             let rest = gemini_rest(&host, path);
-            gemini_path_parse(&host, &ctx, &rest, &uri, &body, started, charged_at)
+            gemini_path_parse(&host, &ctx, &rest, &uri, &body)
         } else {
-            bedrock_path_parse(&host, &ctx, path, &uri, &body, started, charged_at)
+            bedrock_path_parse(&host, &ctx, path, &uri, &body)
         };
         let f = facts(parsed);
 

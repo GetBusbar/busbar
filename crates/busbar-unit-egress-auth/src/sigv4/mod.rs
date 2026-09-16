@@ -11,7 +11,7 @@
 //! it checks a signature a CLIENT computed against busbar, not one busbar computes for an upstream —
 //! and stays where the ingress auth chain lives; porting it into the egress-auth unit would have
 //! mixed two different steps of the loop into one crate for no reason. `// contract:` if a future
-//! Bedrock-facing ingress plane needs it here too, it is a second, explicit dependency, not a
+//! SigV4-verifying ingress path needs it here too, it is a second, explicit dependency, not a
 //! silent inheritance.
 
 use hmac::digest::KeyInit;

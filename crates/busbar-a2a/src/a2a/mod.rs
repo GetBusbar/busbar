@@ -477,7 +477,7 @@ pub(crate) fn a2a_start(
 pub(crate) fn admin_routes(
     _slot: &dyn std::any::Any,
 ) -> Vec<busbar_substrate::admin_verbs::AdminRouteSpec> {
-    use busbar_plugin::cold::http_endpoint::RouteMethod;
+    use busbar_plugin::cold::endpoint::RouteMethod;
     use busbar_substrate::admin_verbs::{
         connect_reply, AdminReplyFuture, AdminReqCtx, AdminRouteSpec, AdminScope, AdminVerbKind,
     };

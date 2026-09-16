@@ -76,7 +76,7 @@ impl ProtocolReader for OpenAiReader {
                 .and_then(|m| m.as_str())
                 .unwrap_or("")
                 .to_lowercase();
-            if openai_context_length_prose_scan(&message) {
+            if context_length_prose_scan(&message) {
                 Some(busbar_substrate_values::proxy::PROVIDER_CODE_CONTEXT_LENGTH.to_string())
             } else {
                 None
@@ -94,8 +94,8 @@ impl ProtocolReader for OpenAiReader {
     #[cfg(test)]
     fn classify(&self, status: StatusCode, body: &[u8]) -> CanonicalSignal {
         // Identical to ResponsesReader::classify — both emit the same OpenAI error envelope, so the
-        // mapping is single-sourced in `busbar_substrate_values::proto::openai_classify`.
-        busbar_substrate_values::proto::openai_classify(status, body)
+        // mapping is single-sourced in `super::openai_classify` (the OpenAI dialect's codec home).
+        super::openai_classify(status, body)
     }
 
     fn read_request(&self, body: &serde_json::Value) -> Result<crate::ir::IrRequest, IrError> {

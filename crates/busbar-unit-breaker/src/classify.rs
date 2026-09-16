@@ -222,7 +222,7 @@ impl RawUpstreamError {
     }
 }
 
-/// The wire literal 1.5.5 and every provider integration recognize for a context-length rejection.
+/// The wire literal upstream APIs recognize for a context-length rejection.
 /// Kept here (not owned by a wire/dialect crate) because [`normalize_raw_error`]'s built-in
 /// recognition names it directly; a dialect crate importing this constant, rather than
 /// hand-copying the literal, is how the spelling stays single-sourced.

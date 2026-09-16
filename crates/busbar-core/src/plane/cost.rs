@@ -6,13 +6,12 @@
 //!
 //! # Why this is neutral
 //!
-//! Core prices nothing and interprets no label. A plane (the LLM plane, an MCP plane, a future
-//! protocol) computes what a unit of work cost and reports it as a [`CostBreakdown`]: a `total`
-//! plus a list of labeled [`CostComponent`]s. The labels — `"Prompt"`, `"Cache write"`,
-//! `"Output"`, or whatever a future protocol invents — are OPAQUE plugin strings; core records and
-//! surfaces them (in response headers, next to the total) without knowing that "Cache write" is an
-//! LLM concept. The same ledger and header machinery reports a future protocol's own labels
-//! unchanged.
+//! Core prices nothing and interprets no label. Any registered plane computes what a unit of work
+//! cost and reports it as a [`CostBreakdown`]: a `total` plus a list of labeled
+//! [`CostComponent`]s. The labels — `"Prompt"`, `"Cache write"`, `"Output"`, or whatever a plane
+//! invents — are OPAQUE plugin strings; core records and surfaces them (in response headers, next
+//! to the total) without knowing that any one of them is a concept specific to some plane's own
+//! protocol. The same ledger and header machinery reports any plane's own labels unchanged.
 //!
 //! # The one thing core DOES enforce
 //!

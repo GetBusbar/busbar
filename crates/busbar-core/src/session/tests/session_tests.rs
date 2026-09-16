@@ -62,7 +62,7 @@ fn the_lru_unpinned_slot_is_evicted_when_over_capacity() {
 #[test]
 fn a_pinned_slot_is_never_evicted_even_over_capacity_or_past_ttl() {
     let s = SessionStore::new(1, Some(100));
-    // Pin a durable tenant (e.g. an A2A live task).
+    // Pin a durable tenant (e.g. another plane's live task).
     s.put(SessionKey(1), "a2a.task", Arc::new(1u8), 0, true, None);
     // Push well past capacity with unpinned slots and past any TTL.
     s.put(SessionKey(2), GATE, Arc::new(2u8), 1_000, false, None);

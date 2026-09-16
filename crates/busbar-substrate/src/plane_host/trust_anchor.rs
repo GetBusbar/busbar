@@ -11,7 +11,7 @@
 //! pinned client at the host egress chokepoint. The certificate bytes cross the seam in NEITHER direction.
 //!
 //! PER-REGISTRATION, not host-wide: trust anchors are a property of ONE registration exactly as a
-//! client identity is a property of one agent. The a2a `transport_pin` / `transport_tests` fixtures
+//! client identity is a property of one registration. The a2a `transport_pin` / `transport_tests` fixtures
 //! present a `trusting_root` WITHOUT any client identity, so the extra roots cannot ride the
 //! `client_identity_ref`; they get their own ref. A host-wide set would trust one registration's CA on
 //! every hop — precisely the blast radius a per-registration ref avoids.

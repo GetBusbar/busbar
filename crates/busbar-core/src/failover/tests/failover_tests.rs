@@ -16,7 +16,7 @@ use busbar_substrate::store::{BreakerCfg, LaneRuntime};
 
 use crate::store::HealthState;
 
-/// A store with `n` lanes and nothing else. `make_lane_data_with_weight` is the model plane's own
+/// A store with `n` lanes and nothing else. `make_lane_data_with_weight` is a plane's own
 /// test lane constructor, reused verbatim: the LANE TABLE is the same table, which is half the reason
 /// the breaker below is provably the same breaker.
 fn store_with(n: usize) -> HealthState {
@@ -26,10 +26,11 @@ fn store_with(n: usize) -> HealthState {
     HealthState::new(lanes)
 }
 
-// ══ THE MCP CANDIDATE ════════════════════════════════════════════════════════════════════════════
+// ══ THE FIRST EXAMPLE CANDIDATE ══════════════════════════════════════════════════════════════════
 //
-// One MCP server, deployed twice. `pin` is the APPROVED SCHEMA DIGEST of the tool being called on
-// that server — a value busbar already computes and stores; nothing here is a new artifact.
+// One example upstream server, deployed twice. `pin` is the APPROVED SCHEMA DIGEST of the operation
+// being called on that server — a value busbar already computes and stores; nothing here is a new
+// artifact.
 
 struct ToolServer {
     name: &'static str,
@@ -49,10 +50,10 @@ impl Candidate for ToolServer {
     }
 }
 
-// ══ THE A2A CANDIDATE ════════════════════════════════════════════════════════════════════════════
+// ══ THE SECOND EXAMPLE CANDIDATE ═════════════════════════════════════════════════════════════════
 //
-// Two registrations of the same agent, verified against the same card. `pin` is the approved
-// canonical CARD FINGERPRINT — again, a value that already exists.
+// Two registrations of the same example deployment, verified against the same registration record.
+// `pin` is the approved canonical fingerprint of that record — again, a value that already exists.
 
 struct AgentReg {
     name: &'static str,
@@ -108,9 +109,9 @@ fn two_agent_regions() -> Vec<AgentReg> {
 
 // ══ PROOF 1 — A DEAD UPSTREAM FAILS FAST AND IS NAMED, ON BOTH PLANES ════════════════════════════
 
-/// MCP. The primary's breaker cell is Open with a cooldown that has NOT expired, and there is nothing
-/// else in the pool. The seam does not hang, does not dispatch, and NAMES the candidate and the
-/// reason.
+/// The first example plane. The primary's breaker cell is Open with a cooldown that has NOT expired,
+/// and there is nothing else in the pool. The seam does not hang, does not dispatch, and NAMES the
+/// candidate and the reason.
 #[test]
 fn mcp_a_dead_upstream_fails_fast_and_is_named() {
     let store = store_with(2);
@@ -155,8 +156,8 @@ fn mcp_a_dead_upstream_fails_fast_and_is_named() {
     assert_eq!(err.reason(), crate::audit::vocab::REASON_NO_UPSTREAM_LEFT);
 }
 
-/// A2A, through the identical call. Same seam, same breaker, a different candidate type and nothing
-/// else — which is the claim the whole unit rests on.
+/// The second example plane, through the identical call. Same seam, same breaker, a different
+/// candidate type and nothing else — which is the claim the whole unit rests on.
 #[test]
 fn a2a_a_dead_upstream_fails_fast_and_is_named() {
     let store = store_with(2);
@@ -206,8 +207,8 @@ fn the_seam_and_the_model_plane_share_one_breaker_cell() {
     const POOL: &str = "mcp/pool:search";
     store.force_open_in(POOL, 0, now + 45);
 
-    // The model plane's queue-dispatch admission, called exactly as `proxy/engine/walk.rs:275` calls
-    // it, on the cell the seam is about to consult.
+    // A plane's own queue-dispatch admission calls this exact method, on the cell the seam is about
+    // to consult.
     let direct = store.try_admit_breaker(POOL, 0, now);
     assert!(
         matches!(direct, Err(busbar_substrate::store::Unavailable::BreakerOpen { until }) if until == now + 45),
@@ -244,8 +245,8 @@ fn the_seam_and_the_model_plane_share_one_breaker_cell() {
 
 // ══ PROOF 2 — REROUTE ════════════════════════════════════════════════════════════════════════════
 
-/// **THE SENTENCE THIS UNIT EXISTS TO MAKE TRUE:** your search MCP server, deployed in two regions;
-/// one goes down mid-run, the call completes on the other, and the agent never learns it happened.
+/// **THE SENTENCE THIS UNIT EXISTS TO MAKE TRUE:** your search server, deployed in two regions;
+/// one goes down mid-run, the call completes on the other, and the caller never learns it happened.
 ///
 /// The EU deployment's breaker is Open. Nothing has been sent. The seam reroutes to the US
 /// deployment, and the caller receives an `Admitted` — not an error, not a degraded answer, not a
@@ -292,7 +293,7 @@ fn your_search_server_in_two_regions_one_dies_and_the_agent_never_learns() {
     );
 
     // No client-visible error: the caller got a candidate, and the successful outcome closes the
-    // cell it was admitted on, exactly as any model-plane dispatch would.
+    // cell it was admitted on, exactly as any plane's dispatch would.
     record_success(&store, POOL, cand);
     assert_eq!(
         store.breaker_state_in(POOL, 1),
@@ -300,8 +301,8 @@ fn your_search_server_in_two_regions_one_dies_and_the_agent_never_learns() {
     );
 }
 
-/// The A2A analogue, which is the same shape and therefore the same test: two registrations of one
-/// agent verified against one card.
+/// The second example plane's analogue, which is the same shape and therefore the same test: two
+/// registrations of one deployment verified against one registration record.
 #[test]
 fn two_registrations_of_one_agent_reroute_the_same_way() {
     let store = store_with(2);
@@ -458,7 +459,7 @@ fn a_non_repeatable_call_is_not_retried_by_default() {
 }
 
 /// The safe half, so the rule is a rule and not a ban. A READ is declared repeatable by the operator
-/// who vouched for the tool, and it does move to the second deployment after a failed dispatch.
+/// who vouched for the operation, and it does move to the second deployment after a failed dispatch.
 #[test]
 fn a_declared_repeatable_read_is_retried_after_a_failed_dispatch() {
     let store = store_with(2);
@@ -507,10 +508,10 @@ fn the_first_selection_is_never_a_repeat() {
 
 // ══ PROOF 5 — INTERCHANGEABILITY IS CHECKED, NOT CLAIMED ═════════════════════════════════════════
 
-/// Two DIFFERENT servers that both offer a tool called `search`. The operator put them in one pool.
-/// Their approved digests differ, so busbar refuses to move a request between them and says exactly
-/// which fingerprints disagreed — rather than routing an agent's call to a tool carrying different
-/// instructions.
+/// Two DIFFERENT servers that both offer an operation called `search`. The operator put them in one
+/// pool. Their approved digests differ, so busbar refuses to move a request between them and says
+/// exactly which fingerprints disagreed — rather than routing a caller's request to an upstream
+/// carrying different instructions.
 #[test]
 fn two_different_servers_are_refused_however_the_operator_declared_them() {
     let store = store_with(2);
@@ -629,8 +630,8 @@ fn an_empty_pool_is_an_operator_error_and_says_so() {
 // file would not compile without them.
 
 /// A plane busbar does not have: a satellite ground-station link. Two dishes pointed at the same
-/// bird, which is the same "one deployment, two places" shape MCP and A2A have — and the only thing
-/// this plane has to say about it.
+/// bird, which is the same "one deployment, two places" shape the two example planes above have —
+/// and the only thing this plane has to say about it.
 struct GroundStation {
     name: &'static str,
     lane: usize,
@@ -768,8 +769,8 @@ fn a_third_plane_costs_a_candidate_type_and_nothing_else() {
 
 // ══ THE DISPOSITION IS CAUSE-ATTRIBUTED, on these planes too ═════════════════════════════════════
 
-/// A CALLER'S BAD ARGUMENTS DO NOT PENALISE AN UPSTREAM. This is the property the model plane has had
-/// since ADR-0002 and the one an MCP plane most needs: a client looping on a malformed `tools/call`
+/// A CALLER'S BAD ARGUMENTS DO NOT PENALISE AN UPSTREAM. This is a property core has held since
+/// ADR-0002, and it matters most for a plane whose caller can loop on malformed input: such a loop
 /// would otherwise trip a healthy server out of the pool.
 #[test]
 fn a_client_fault_never_trips_a_plane_upstream() {

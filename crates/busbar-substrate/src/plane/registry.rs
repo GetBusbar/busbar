@@ -43,7 +43,7 @@ pub struct BuildCtx<'a> {
     /// `mcp:` is absent, matching `App::mcp`'s own absence. Erasing at the composition root instead of
     /// in the plane's `build` is what removes the one concrete-type name this struct used to carry
     /// into the eventual MCP extraction — the neutral analogue of how the LLM dialects left core.
-    pub mcp_slot: Option<std::sync::Arc<dyn std::any::Any + Send + Sync>>,
+    pub endpoint_slot: Option<std::sync::Arc<dyn std::any::Any + Send + Sync>>,
     // The A2A registry the A2A plane's `build` lowers, TYPE-ERASED so this seam names no `crate::a2a`
     // config type — reached through `RootCfg::agent_defs`'s neutral `PlaneCfg::as_any` (`AgentsCfg`
     // with the plane compiled in, the raw capture without it). The A2A `build` closure downcasts it
@@ -135,10 +135,10 @@ pub trait PlaneBootCtx {
     /// without naming a core-live type. The `Err` is the store error's Display string.
     fn restore_call_log(&self) -> Result<RestoredSummary, String>;
 
-    /// ATTACH THE MCP PLANE'S DURABLE WRITE-THROUGH SINKS — the spent-approval ledger and the
+    /// ATTACH THE CALLING PLANE'S DURABLE WRITE-THROUGH SINKS (today only the MCP plane has durable task state to attach) — the spent-approval ledger and the
     /// upstream-demotion record — to the plane-narrowed store, in the hydrate phase. A no-op unless
     /// BOTH the freshly-built app and a configured store are present.
-    fn attach_mcp_durable_sinks(&self);
+    fn attach_durable_sinks(&self);
 
     /// THE PLANE-NARROWED DURABLE STORE for this deployment, or `None` under `store: memory`. A plane
     /// that OWNS its durable subsystem (the A2A task set) drives its own `PlaneRecord` reads/writes off
@@ -353,7 +353,7 @@ pub struct PlaneDecl {
     /// card key: `GovState::card_sign` reads it off this decl, derives the subkey from the core token
     /// signer (`TokenSigner::sign_with_card_subkey`) and signs HOST-side, so no signing material ever
     /// reaches the plane (invariant (a)). `None` for every plane that does not sign cards, so
-    /// `GovState::a2a_card_issuer`/`card_sign` return `None` with the A2A plane compiled out and
+    /// `GovState::card_issuer`/`card_sign` return `None` with the A2A plane compiled out and
     /// `governance/state.rs` names no `crate::a2a` type.
     #[cfg_attr(not(feature = "relay"), allow(dead_code))]
     pub card_signing_domain: Option<&'static str>,
@@ -361,7 +361,7 @@ pub struct PlaneDecl {
     /// THE `kid` PREFIX this plane stamps on its card signatures, prepended to the token signer's own
     /// `kid` so a caller can SEE that the card key is not the token key. A `&'static str` constant for
     /// the same reason [`Self::card_signing_domain`] is: the host builds the published issuer `kid`
-    /// (`GovState::a2a_card_issuer`) from this and the token `kid` without naming the plane. `None` for
+    /// (`GovState::card_issuer`) from this and the token `kid` without naming the plane. `None` for
     /// a plane that signs no cards.
     #[cfg_attr(not(feature = "relay"), allow(dead_code))]
     pub card_kid_prefix: Option<&'static str>,

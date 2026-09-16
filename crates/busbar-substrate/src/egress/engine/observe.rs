@@ -46,8 +46,8 @@ pub fn peer_spki<B>(resp: &http::Response<B>) -> Option<&str> {
     resp.extensions().get::<PeerSpki>().map(|p| p.0.as_ref())
 }
 
-/// The observing connector layer. `observe: false` (the LLM lanes) skips the certificate walk and
-/// pin hash per connect; the [`ObservedIo`] wrapper stays in the connector TYPE either way, so
+/// The observing connector layer. `observe: false` (the pooled posture) skips the certificate walk
+/// and pin hash per connect; the [`ObservedIo`] wrapper stays in the connector TYPE either way, so
 /// both postures share one concrete connector and the difference is a branch at connect time,
 /// never a type split.
 #[derive(Clone)]

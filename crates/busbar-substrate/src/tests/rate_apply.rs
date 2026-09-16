@@ -17,7 +17,7 @@ impl RateApply for Recorder {
         self.0
             .lock()
             .unwrap()
-            .push((rates.lanes.to_vec(), rates.fee_cents, rates.present));
+            .push((rates.lanes.to_vec(), rates.flat_minor, rates.present));
     }
 }
 
@@ -37,7 +37,7 @@ fn the_seam_is_silent_until_a_holder_installs_and_then_delivers_the_view_verbati
     );
     rates_applied(&RawRates {
         lanes: &[],
-        fee_cents: 7,
+        flat_minor: 7,
         present: false,
     });
 
@@ -61,7 +61,7 @@ fn the_seam_is_silent_until_a_holder_installs_and_then_delivers_the_view_verbati
     let lanes = [("fast".to_string(), fast), ("slow".to_string(), slow)];
     rates_applied(&RawRates {
         lanes: &lanes,
-        fee_cents: 11,
+        flat_minor: 11,
         present: true,
     });
 
@@ -78,7 +78,7 @@ fn the_seam_is_silent_until_a_holder_installs_and_then_delivers_the_view_verbati
     // all, and collapsing the two would turn one deployment's configuration into another's.
     rates_applied(&RawRates {
         lanes: &[],
-        fee_cents: 11,
+        flat_minor: 11,
         present: true,
     });
     let seen = recorder.0.lock().unwrap().clone();

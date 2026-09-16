@@ -897,9 +897,9 @@ pub enum PlaneDisposition {
 /// [`PlaneRecord::body`] is opaque (the protocol-specific row, serialized by the caller); every other
 /// field is a TYPED sidecar column so the store can index, order and retention-sweep without ever
 /// decoding the body. This is the retention-landmine fix: `{ kind, id, parent, seq, ts, disposition }`
-/// stay typed even though the body is bytes, so `purge_plane_records_before` can honor the
-/// terminal-only-vs-all-older distinction the named `purge_tasks_before`/`purge_mcp_calls_before`
-/// split encoded structurally.
+/// stay typed even though the body is bytes, so `purge_plane_records_before` can honor a
+/// terminal-only-vs-all-older distinction per kind that the pre-collapse, per-method API encoded
+/// structurally.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct PlaneRecord {
     /// The record's KIND — `"task"`, `"task_event"`, `"call"`, `"demotion"`, … — the tag that
@@ -909,7 +909,7 @@ pub struct PlaneRecord {
     /// The record's identity within its kind (a `task_id`, an upstream `server`, …). Upsert keys on
     /// `(kind, id)`; append-only kinds carry the child id here.
     pub id: String,
-    /// The PARENT this record hangs off, for append-only child kinds (a `task_event`'s task, an MCP
+    /// The PARENT this record hangs off, for append-only child kinds (a `task_event`'s task, a
     /// `call`'s principal). `None` for top-level kinds (`task`, `demotion`).
     pub parent: Option<String>,
     /// Monotonic sequence within `parent`, oldest-first ordering for append-only kinds. `0` for
@@ -925,14 +925,13 @@ pub struct PlaneRecord {
     pub body: Vec<u8>,
 }
 
-/// How [`Store::list_plane_records`] narrows a kind's records — the neutral form of "list_tasks
-/// (everything) vs list_task_events (one parent's chain)".
+/// How [`Store::list_plane_records`] narrows a kind's records — the neutral form of "everything of
+/// this kind" vs "one parent's chain of this kind".
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum PlaneSelector {
-    /// EVERY record of the kind, unfiltered (the neutral `list_tasks` / `list_mcp_demotions`).
+    /// EVERY record of the kind, unfiltered.
     All,
-    /// Only records whose [`PlaneRecord::parent`] equals this value, oldest-first by `seq` (the
-    /// neutral `list_task_events` / `list_mcp_calls`).
+    /// Only records whose [`PlaneRecord::parent`] equals this value, oldest-first by `seq`.
     Parent(String),
 }
 
@@ -1269,41 +1268,38 @@ pub trait Store: Send + Sync + 'static {
     // ── THE NEUTRAL KIND-TAGGED PLANE-RECORD VERBS (1.6.0) ────────────────────────────────────
     //
     // Eight kind-tagged verbs that SUBSUME the fourteen protocol-named durable methods this trait
-    // once carried (put_task/…/redeem_ask_state, deleted in the 1.6.0 14→8 collapse). Every core
-    // consumer and every backend now speaks these; the `kind` string names what a protocol method
-    // named in its identifier (`upsert_plane_record(kind: "task", …)` is the old `put_task`), one
-    // row of the 14→8 table in the 1.6.0 design. Each is DEFAULTED to accept-and-keep-nothing so a
-    // backend that keeps no durable rows behaves exactly as the shipped RAM default does.
+    // once carried, collapsed in 1.6.0 into one generic surface. Every core consumer and every
+    // backend now speaks these; the `kind` string names what a caller-specific method used to name
+    // in its identifier. Each is DEFAULTED to accept-and-keep-nothing so a backend that keeps no
+    // durable rows behaves exactly as the shipped RAM default does.
 
-    /// UPSERT one plane record by `(record.kind, record.id)` — the neutral `put_task` (kind `task`)
-    /// and `put_mcp_demotion` (kind `demotion`). Takes the full [`PlaneRecord`] so the typed sidecar
-    /// (`ts`/`disposition`/…) is on the write path where retention needs it.
+    /// UPSERT one plane record by `(record.kind, record.id)`, for any registered record kind.
+    /// Takes the full [`PlaneRecord`] so the typed sidecar (`ts`/`disposition`/…) is on the write
+    /// path where retention needs it.
     ///
-    /// DEFAULTED to `Ok(())` — accept and keep nothing, matching [`Store::put_task`] /
-    /// [`Store::put_mcp_demotion`]. The return value is worthless as evidence of durability; the
-    /// engine learns what its backend kept by reading it back.
+    /// DEFAULTED to `Ok(())` — accept and keep nothing. The return value is worthless as evidence
+    /// of durability; the engine learns what its backend kept by reading it back.
     fn upsert_plane_record(&self, _record: &PlaneRecord) -> StoreResult<()> {
         Ok(())
     }
 
-    /// The opaque `body` of the record identified by `(kind, id)`, or `None` when absent — the
-    /// neutral `get_task`. DEFAULTED to `Ok(None)`, matching [`Store::get_task`].
+    /// The opaque `body` of the record identified by `(kind, id)`, or `None` when absent.
+    /// DEFAULTED to `Ok(None)`.
     fn get_plane_record(&self, _kind: &str, _id: &str) -> StoreResult<Option<Vec<u8>>> {
         Ok(None)
     }
 
-    /// APPEND one child plane record within `record.parent`, keyed and ordered by `record.seq` — the
-    /// neutral `append_task_event` (kind `task_event`) and `append_mcp_call` (kind `call`). The store
-    /// persists the opaque body verbatim and never recomputes any digest inside it.
+    /// APPEND one child plane record within `record.parent`, keyed and ordered by `record.seq`. The
+    /// store persists the opaque body verbatim and never recomputes any digest inside it.
     ///
-    /// DEFAULTED to `Ok(())`, matching [`Store::append_task_event`] / [`Store::append_mcp_call`].
+    /// DEFAULTED to `Ok(())`.
     fn append_plane_record(&self, _record: &PlaneRecord) -> StoreResult<()> {
         Ok(())
     }
 
-    /// The opaque bodies of a kind's records, narrowed by `selector` — the neutral `list_tasks` /
-    /// `list_mcp_demotions` ([`PlaneSelector::All`]) and `list_task_events` / `list_mcp_calls`
-    /// ([`PlaneSelector::Parent`], oldest-first by `seq`). DEFAULTED to empty, matching those four.
+    /// The opaque bodies of a kind's records, narrowed by `selector` — every record of the kind
+    /// ([`PlaneSelector::All`]) or every child record of one parent, oldest-first by `seq`
+    /// ([`PlaneSelector::Parent`]). DEFAULTED to empty.
     fn list_plane_records(
         &self,
         _kind: &str,
@@ -1312,34 +1308,30 @@ pub trait Store: Send + Sync + 'static {
         Ok(Vec::new())
     }
 
-    /// Every distinct [`PlaneRecord::parent`] with at least one record of `kind` — the neutral
-    /// `list_mcp_call_principals` (the boot enumeration). DEFAULTED to empty, matching
-    /// [`Store::list_mcp_call_principals`].
+    /// Every distinct [`PlaneRecord::parent`] with at least one record of `kind` (the boot
+    /// enumeration). DEFAULTED to empty.
     fn list_plane_record_parents(&self, _kind: &str) -> StoreResult<Vec<String>> {
         Ok(Vec::new())
     }
 
-    /// RETENTION: drop records of `kind` older than `before`, returning how many went — the neutral
-    /// `purge_tasks_before` (kind `task`, drop only [`PlaneDisposition::Terminal`] rows) and
-    /// `purge_mcp_calls_before` (kind `call`, drop ALL older rows). WHICH predicate applies is part
-    /// of the kind's contract, which is exactly why the `disposition` sidecar is a typed column: the
-    /// backend reads it to honor the terminal-only split without decoding the opaque body.
+    /// RETENTION: drop records of `kind` older than `before`, returning how many went. WHICH
+    /// predicate applies (terminal-only vs. all older rows) is part of the kind's own contract,
+    /// which is exactly why the `disposition` sidecar is a typed column: the backend reads it to
+    /// honor a terminal-only split without decoding the opaque body.
     ///
-    /// DEFAULTED to `Ok(0)`, matching [`Store::purge_tasks_before`] / [`Store::purge_mcp_calls_before`].
+    /// DEFAULTED to `Ok(0)`.
     fn purge_plane_records_before(&self, _kind: &str, _before: u64) -> StoreResult<u64> {
         Ok(0)
     }
 
-    /// DELETE the record identified by `(kind, id)`; absent is a no-op — the neutral
-    /// `clear_mcp_demotion`. DEFAULTED to `Ok(())`, matching [`Store::clear_mcp_demotion`].
+    /// DELETE the record identified by `(kind, id)`; absent is a no-op. DEFAULTED to `Ok(())`.
     fn delete_plane_record(&self, _kind: &str, _id: &str) -> StoreResult<()> {
         Ok(())
     }
 
     /// TEST-AND-SET one single-use token of `kind`, valid until `expires_at`; `true` means THIS call
-    /// was the first redemption — the neutral `redeem_ask_state` (kind `ask`). `now` lets a backend
-    /// drop lapsed rows in the same call. DEFAULTED to `Ok(true)` ("this store keeps no ledger"),
-    /// matching [`Store::redeem_ask_state`].
+    /// was the first redemption. `now` lets a backend drop lapsed rows in the same call. DEFAULTED
+    /// to `Ok(true)` ("this store keeps no ledger").
     fn redeem_plane_token(
         &self,
         _kind: &str,
@@ -1358,12 +1350,12 @@ pub trait Store: Send + Sync + 'static {
     /// asking twice answers the same both times, because the capability this expresses is "the work
     /// this token names is still in flight", not "nobody has used this yet".
     ///
-    /// The A2A push callback is the case it exists for. A backend agent calls Busbar's own
-    /// `/a2a/push` several times for one task — `working`, then `input-required`, then `completed` —
-    /// so a token spent by the first call would refuse every honest call after it, and a `redeem`
-    /// that answered `true` every time would let a captured token replay forever. The honest verb is
-    /// this one: live until the task reaches a terminal state (which flips the record's disposition)
-    /// or until its deadline passes, and refused from that moment on.
+    /// A repeated, out-of-band callback against one long-running task is the case it exists for: a
+    /// remote party calls back several times for one task — an in-progress update, then another,
+    /// then a terminal one — so a token spent by the first call would refuse every honest call after
+    /// it, and a `redeem` that answered `true` every time would let a captured token replay forever.
+    /// The honest verb is this one: live until the task reaches a terminal state (which flips the
+    /// record's disposition) or until its deadline passes, and refused from that moment on.
     ///
     /// # The default is FAIL-CLOSED, and that is the whole point
     ///
@@ -1385,8 +1377,8 @@ pub trait Store: Send + Sync + 'static {
 }
 
 /// The per-request context a plane handler receives: the resolved caller identity attached to each
-/// request by the auth middleware, in a form a plane (llm / a2a / mcp) can name without reaching for
-/// a core-private governance type. `key` is `None` when governance is disabled (so downstream
+/// request by the auth middleware, in a form any plane can name without reaching for a
+/// core-private governance type. `key` is `None` when governance is disabled (so downstream
 /// enforcement is a no-op). This is a request-scoped, in-process value — not a plugin-ABI type — so
 /// it is `pub` purely so an out-of-tree plane can name it; the one field it carries is the
 /// already-public [`VirtualKey`].

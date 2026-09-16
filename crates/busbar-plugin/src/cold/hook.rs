@@ -27,7 +27,7 @@
 //! operator grant (AND the signed-manifest declared intent) allow it — the plugin has no say and
 //! cannot cause content to be sent. This ABI just carries whatever the core chose to project.
 
-use crate::cold::http_endpoint::{HttpEndpointRequest, HttpEndpointResponse, Route};
+use crate::cold::endpoint::{EndpointRequest, EndpointResponse, Route};
 use serde::{Deserialize, Serialize};
 
 /// The hook-plugin PAYLOAD schema version (the signed manifest's `abi_version` for `kind: hook`).
@@ -69,10 +69,15 @@ pub enum HookRequest {
     /// an older hook that cannot decode this op declares no routes.
     Routes,
     /// `http_endpoint` — dispatch one inbound HTTP request matched to a registered route of THIS hook.
-    /// Fires only for a matched plugin route, off the data-plane hot path. Reply: [`HookReply::Http`].
-    HttpEndpoint {
+    /// Fires only for a matched plugin route, off the data-plane hot path. Reply: [`HookReply::Endpoint`].
+    ///
+    /// `#[serde(rename = "http_endpoint")]` pins the wire op tag to its ORIGINAL spelling — the Rust
+    /// identifier is neutralized (`Endpoint`, not `HttpEndpoint`) but the byte on the wire is
+    /// unchanged, so no plugin (any language) sees a break.
+    #[serde(rename = "http_endpoint")]
+    Endpoint {
         /// The host-built inbound request (bounded headers, no raw `Authorization`).
-        request: HttpEndpointRequest,
+        request: EndpointRequest,
     },
 }
 
@@ -138,7 +143,13 @@ pub enum HookReply {
     /// pinned by `hook_reply_json_encoding_is_pinned`.
     Routes(Vec<Route>),
     /// An `http_endpoint` reply: the hook's response to a dispatched inbound request. ADDITIVE.
-    Http(HttpEndpointResponse),
+    ///
+    /// `#[serde(rename = "Http")]` pins the externally-tagged wire key to its ORIGINAL spelling (this
+    /// type carries no `#[serde(...)]` container attribute, so the default tag is the bare variant
+    /// name — renaming the Rust identifier to `Endpoint` would otherwise flip the wire key from
+    /// `"Http"` to `"Endpoint"`).
+    #[serde(rename = "Http")]
+    Endpoint(EndpointResponse),
     /// The hook could not answer: its own dependency failed, timed out, or returned something it
     /// refuses to act on. ADDITIVE, same reasoning as `Routes`/`Http`.
     ///

@@ -78,7 +78,7 @@ fn is_alternate_ipv4_encoding_flags_obfuscated_forms() {
 // through (structure-lint choke point `H-net-guard`). Its table therefore has to be the UNION of
 // what every plane-local copy ever checked, because the tear-out of a copy is only safe if the
 // shared predicate already covers everything that copy covered. Two of the rows below arrived here
-// exactly that way — from `a2a::pushnotify`'s private copy, which checked ranges this one did not.
+// exactly that way — from a duplicate private copy, which checked ranges this one did not.
 //
 // The floor at the end is what stops the table quietly shrinking: a row deleted with the range it
 // guarded is the failure mode this whole exercise exists to prevent.
@@ -100,11 +100,11 @@ fn the_shared_internal_predicate_covers_every_range_any_plane_ever_checked() {
         ("Azure WireServer (a PUBLIC address)", "168.63.129.16"),
         ("OCI IMDS (a PUBLIC-shaped address)", "192.0.0.192"),
         ("unspecified", "0.0.0.0"),
-        // FROM `a2a::pushnotify`'s copy: 0.0.0.0/8 is "this network", and several stacks route the
+        // FROM A DUPLICATE COPY: 0.0.0.0/8 is "this network", and several stacks route the
         // whole block to the local host — so `is_unspecified()` alone (which is only 0.0.0.0) left
-        // 0.1.2.3 reachable on every plane that used this predicate.
+        // 0.1.2.3 reachable on every path that used this predicate.
         ("this-network 0/8", "0.1.2.3"),
-        // FROM `a2a::pushnotify`'s copy: 192.0.0.0/24 IETF protocol assignments (the /24 OCI's
+        // FROM A DUPLICATE COPY: 192.0.0.0/24 IETF protocol assignments (the /24 OCI's
         // 192.0.0.192 sits inside) and 198.18.0.0/15 benchmarking. Neither is a legitimate
         // destination and both are reachable inside some fabrics.
         ("IETF protocol assignments 192.0.0/24", "192.0.0.8"),

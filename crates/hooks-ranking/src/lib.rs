@@ -216,8 +216,9 @@ impl RoutingPolicy for LeastBusyPolicy {
 }
 
 /// `usage` — prefer the candidate with the most rate-limit HEADROOM: the largest fraction of the
-/// request's governance rate budget (the tighter of the caller key's RPM / TPM limit) still available
-/// this window, so traffic steers away from a candidate about to hit a provider 429. Ranks DESCENDING
+/// request's governance rate budget (the tighter of the caller key's request-rate / volume-rate
+/// limit) still available this window, so traffic steers away from a candidate about to exceed its
+/// rate limit. Ranks DESCENDING
 /// by `Candidate.rate_headroom` (most headroom first); candidates with no headroom signal (`None`) are
 /// demoted to last but stay reachable. Abstains when EVERY candidate lacks the signal (no rate limit
 /// in play → fall through to the default SWRR). Proof-of-completeness for the `rate_headroom` signal.

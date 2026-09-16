@@ -1,15 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE ENGINE→CORE FACADE — the one, narrow, `pub` re-export surface the extracted LLM engine reaches
-//! DOWN into `busbar-core` through once it lives in `busbar-llm`.
+//! THE PLANE→CORE FACADE — the one, narrow, `pub` re-export surface a plane's own extracted engine
+//! reaches DOWN into `busbar-core` through once it lives in its own plane crate.
 //!
 //! ## Why this module exists (1.6.0 money-path relocation, Phase 0)
 //!
-//! The LLM proxy money path (the egress engine, the ingress-native finish/audit tail, the failover
+//! A money-metered proxy path (the egress engine, the ingress-native finish/audit tail, the failover
 //! disposition halves, the breaker admission FSM) still physically lives in `busbar-core`, but it is
-//! being relocated into `busbar-llm`. Once relocated, the engine calls DOWN into core across the
-//! crate boundary — the ALLOWED plane→core edge (`busbar-llm` normal-depends on `busbar-core`). For
+//! being relocated into its own plane crate. Once relocated, the engine calls DOWN into core across the
+//! crate boundary — the ALLOWED plane→core edge (a plane crate normal-depends on `busbar-core`). For
 //! that edge to compile, the neutral primitives the engine drives must be reachable as `pub`.
 //!
 //! Rather than blanket-`pub` those internal types (which would widen the whole crate's API surface and
@@ -34,7 +34,7 @@
 pub use busbar_substrate::store::{Admit, LaneRuntime};
 
 // ── the failover disposition halves the engine records through (failover) ────────────────────────
-// The LLM-shaped halves that stay over `crate::store::LaneRuntime` + `crate::breaker`: the
+// The plane-shaped halves that stay over `crate::store::LaneRuntime` + `crate::breaker`: the
 // breaker-only `walk` spelling and the `record_outcome` / `record_success` disposition writers. The
 // candidate/stage/refusal/order/walk_with FAMILY is already `pub` at `busbar_substrate::failover`.
 pub use crate::failover::{record_outcome, record_success, walk};
@@ -53,23 +53,23 @@ pub use crate::proxy::{
     EgressConnector, EgressError,
 };
 
-// ── the money-path lowering primitives the LLM plane drives DOWN (1.6.0 money-path Phase 3-4 A) ────
-// The lane/pool lowering that relocates into `busbar-llm` in Commit C builds the egress leg from these
-// neutral primitives. Each keeps its declared visibility (`pub`, lifted from `pub(crate)` in Commit A)
-// and is surfaced here so the plane→core edge names ONE facade path. None carries dialect vocabulary,
-// so the plane-grep meter is unmoved. NOTHING in core consumes this section — the engine has not moved
-// (wire the seam in place, THEN relocate).
+// ── the money-path lowering primitives a plane drives DOWN (1.6.0 money-path Phase 3-4 A) ────
+// The routing lowering that relocates into its own plane crate in Commit C builds the egress leg from
+// these neutral primitives. Each keeps its declared visibility (`pub`, lifted from `pub(crate)` in
+// Commit A) and is surfaced here so the plane→core edge names ONE facade path. None carries dialect
+// vocabulary, so the plane-grep meter is unmoved. NOTHING in core consumes this section — the engine
+// has not moved (wire the seam in place, THEN relocate).
 //
 // ── the boot egress-client build (proxy) ─────────────────────────────────────────────────────────
-// `build_egress_targets`/`host_from_base`/`EgressTarget` RELOCATED with the engine into `busbar-llm`
-// (1.6.0 money-path Phase 3-4 C): the lane/pool lowering that names them now lives in-plane, so core
-// no longer surfaces them on the DOWN facade.
+// `build_egress_targets`/`host_from_base`/`EgressTarget` RELOCATED with the engine into its own plane
+// crate (1.6.0 money-path Phase 3-4 C): the routing lowering that names them now lives in-plane, so
+// core no longer surfaces them on the DOWN facade.
 pub use crate::proxy::build_egress_client;
 // ── the outbound credential resolve + boot prebuild + SSRF posture (egress_auth) ─────────────────
 pub use crate::egress_auth::{prebuild_auth, resolve, CredentialProvider, MetadataSsrfPolicy};
 // ── the per-shard upstream client fan-out (state) ────────────────────────────────────────────────
-// `ProbeSchedule` (the active-probe schedule) RELOCATED with the engine + `health.rs` into
-// `busbar-llm` (1.6.0 money-path Phase 3-4 C): the plane names its OWN schedule, so core no longer
+// `ProbeSchedule` (the active-probe schedule) RELOCATED with the engine + `health.rs` into its own
+// plane crate (1.6.0 money-path Phase 3-4 C): the plane names its OWN schedule, so core no longer
 // surfaces it on the DOWN facade.
 // R5-store: named from `busbar_substrate::topology`, its defining module since the WEDGE 3-PREP
 // relocation, rather than through core's `crate::state::…` shim.

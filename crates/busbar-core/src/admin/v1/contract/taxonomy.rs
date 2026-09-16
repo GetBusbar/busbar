@@ -395,7 +395,7 @@ pub(crate) fn declared_errors(method: MethodTag, rel: &str) -> &'static [DocErr]
             Conflict / SettingsPush,
             VersionConflict / StaleIfMatch,
         ],
-        // ── The MCP trust verbs ───────────────────────────────────────────────────────────────
+        // ── The `tools` named-map's trust verbs ───────────────────────────────────────────────
         //
         // `connect` reaches an operator-named endpoint, so it has one refusal the reads do not: a
         // registration whose credential posture an operator-driven refresh cannot honour
@@ -405,7 +405,7 @@ pub(crate) fn declared_errors(method: MethodTag, rel: &str) -> &'static [DocErr]
         (Post, "/tools/{name}/connect") => {
             de![Validation / InvalidConfig, NotFound / UnknownResource,]
         }
-        // ── The A2A trust verbs ───────────────────────────────────────────────────────────────
+        // ── The `agents` named-map's trust verbs ──────────────────────────────────────────────
         //
         // `connect` is a PREVIEW and takes no body, so its only refusal is the unknown name: a card
         // that will not fetch or will not verify is a 200 carrying `state: error` and the reason,

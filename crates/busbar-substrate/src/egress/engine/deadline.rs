@@ -6,9 +6,9 @@
 //! Closes a parity gap: reqwest's `connect_timeout(10s)` bounds TCP PLUS the TLS handshake, while
 //! hyper's `set_connect_timeout` bounds TCP only and hyper-rustls's handshake is unbounded — so a
 //! black-holing TLS peer (SYN-ACKs, then silence) would wedge the connect until the request
-//! deadline. On the pinned postures this layer IS reqwest parity; on the LLM lanes it is a strict
-//! tightening of that latent gap — the one deliberate deviation there, applied to both postures
-//! (the design's Q2 default) and changing nothing on any successful path.
+//! deadline. On the pinned postures this layer IS reqwest parity; on the pooled posture it is a
+//! strict tightening of that latent gap — the one deliberate deviation there, applied to both
+//! postures (the design's Q2 default) and changing nothing on any successful path.
 
 use std::pin::Pin;
 use std::task::{Context, Poll};

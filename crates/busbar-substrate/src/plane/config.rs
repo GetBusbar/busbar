@@ -65,9 +65,10 @@ pub trait PlaneCfg: std::any::Any + Send + Sync + std::fmt::Debug {
     /// gates without naming the plane's registry type. See [`ContainerGateInputs`].
     fn container_gates(&self) -> ContainerGateInputs;
 
-    /// The plane's own SECTION-WIDE registry rules, run at resolve — today the MCP plane's
-    /// published-name uniqueness, which is the one rule that is not about a single registration. A
-    /// section with no cross-registration rule returns `Ok(())`.
+    /// The plane's own SECTION-WIDE registry rules, run at resolve — the one kind of rule that
+    /// spans every registration in the section rather than judging one entry alone (a global
+    /// name-uniqueness constraint is the shape of it). A section with no cross-registration rule
+    /// returns `Ok(())`.
     fn validate_registry(&self) -> Result<(), String>;
 
     /// True when the operator actually wrote CONTENT for this section (a non-empty registry). Read by
@@ -103,9 +104,10 @@ pub struct ContainerGateInputs {
     pub containers: Vec<(String, Vec<String>)>,
 }
 
-/// A PLANE'S TOP-LEVEL ENDPOINT SECTION (the MCP plane's `mcp:` block — busbar's own resource-server
-/// door), captured through the neutral seam so `DeployCfg` names no `busbar_mcp` endpoint type. The
-/// twin of [`PlaneCfg`] for the one plane section that is an ENDPOINT rather than a registry.
+/// A PLANE'S TOP-LEVEL ENDPOINT SECTION — the shape a plane's config takes when its top-level block
+/// describes a single endpoint rather than a named-entry registry — captured through the neutral
+/// seam so `DeployCfg` names no plane-owned endpoint type. The twin of [`PlaneCfg`] for that one
+/// section shape.
 pub trait PlaneEndpointCfg: std::any::Any + Send + Sync + std::fmt::Debug {
     /// True when the operator wrote CONTENT for this endpoint block — read by the config
     /// deletion-gate leg to refuse a present `mcp:` block that names a compiled-out plane.

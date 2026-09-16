@@ -19,7 +19,7 @@
 //!
 //! | cell | config | what it means |
 //! |---|---|---|
-//! | **C1** | same-protocol (openai→openai), **NO hook configured** | **the regression gate.** A deployment that runs no content hook must pay EXACTLY NOTHING. If C1 moves, the boot-time fast path is not gating and the design is not built as specified — stop and fix the seam. |
+//! | **C1** | same-protocol in and out, **NO hook configured** | **the regression gate.** A deployment that runs no content hook must pay EXACTLY NOTHING. If C1 moves, the boot-time fast path is not gating and the design is not built as specified — stop and fix the seam. |
 //! | **C2** | same-protocol, ONE `prompt: ro` tap that returns immediately | **the accepted cost.** This is the number that gets published. |
 //!
 //! C1 is the one with teeth, and it has teeth in a specific, planned way: the unit that lands the
@@ -163,7 +163,8 @@ fn read_log(p: &Path) -> String {
 /// upstream's own body-size cost is held constant and kept negligible.
 const UPSTREAM_REPLY: &str = r#"{"id":"chatcmpl-bench","object":"chat.completion","created":1,"model":"stub-model","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":9,"completion_tokens":2,"total_tokens":11}}"#;
 
-/// A stub OpenAI-protocol upstream, answering from memory on its own runtime thread. Never returns
+/// A stub upstream speaking the fixture's chosen wire protocol, answering from memory on its own
+/// runtime thread. Never returns
 /// (the process exit tears it down), which is what a bench fixture wants: one upstream for the whole
 /// run, so no cell pays another cell's startup.
 fn spawn_stub_upstream() -> u16 {
@@ -269,11 +270,11 @@ impl Drop for Deployment {
     }
 }
 
-/// Boot the REAL binary on a same-protocol openai→openai deployment pointed at the stub upstream.
+/// Boot the REAL binary on a same-protocol deployment (in and out) pointed at the stub upstream.
 ///
-/// `hooks` is spliced in verbatim: empty for C1, a `prompt: ro` tap for C2. Everything else — the
-/// listen addresses, the provider, the model, the pool — is identical between the two cells, so the
-/// difference between their numbers is the hook seam and nothing else.
+/// `hooks` is spliced in verbatim: empty for C1, a `prompt: ro` tap for C2. Everything else about
+/// the deployment's shape is identical between the two cells, so the difference between their
+/// numbers is the hook seam and nothing else.
 fn boot(tag: &str, upstream_port: u16, with_hook: bool) -> Deployment {
     let dir = fixture_dir(tag);
     let data_port = free_port();
@@ -306,9 +307,9 @@ fn boot(tag: &str, upstream_port: u16, with_hook: bool) -> Deployment {
         (String::new(), String::new())
     };
 
-    // The RESERVED all-pools attach key, not the pool's own `hooks:` list: a pool's list carries
-    // gates (fire-and-wait, they influence routing) and REFUSES a tap at config validation. A tap
-    // attaches once, for every pool, here.
+    // The RESERVED attach-everywhere key, not a per-group `hooks:` list: a group's own list carries
+    // gates (fire-and-wait, they influence selection) and REFUSES a tap at config validation. A tap
+    // attaches once, for every group, here.
     let pool_hooks = if with_hook {
         "  hooks: [bench-tap]\n"
     } else {
@@ -386,7 +387,7 @@ models:
     }
 }
 
-/// The request body a cell sends: a same-protocol OpenAI chat completion with real prompt text, so a
+/// The request body a cell sends: a same-protocol chat completion with real prompt text, so a
 /// `prompt: ro` grant has something to project, at `turns` conversation turns.
 ///
 /// **Body size is a parameter and not a constant on purpose.** The projection's cost is per-turn,

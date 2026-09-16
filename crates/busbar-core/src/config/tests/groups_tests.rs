@@ -6,7 +6,7 @@
 use super::*;
 
 /// A group round-trips through YAML (deserialize -> serialize -> deserialize) unchanged. This is
-/// the property the config OVERLAY relies on: an Admin-API-applied group budget must re-parse
+/// the property the config OVERLAY relies on: a group budget written through the overlay must re-parse
 /// identically at boot. Exercises every limit shape: windowed metrics, the windowless `concurrent`,
 /// a per-pool budget (future `pool:` qualifier is additive; this covers today's shape), and the
 /// parent chain.

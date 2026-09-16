@@ -11,9 +11,9 @@
 //!           |
 //!        PLANE DISPATCH        <- decides which plane an inbound request belongs to
 //!        /      |      \
-//!      LLM     MCP     A2A     <- each plane owns ONE canonical type
+//!    plane   plane   plane    <- each plane owns ONE canonical type
 //!       |
-//!      IR                      <- only LLM has a superset IR, because only LLM needs one
+//!      IR                      <- only a plane with more than one wire format needs one
 //!       |
 //!     wire protocols
 //! ```
@@ -36,34 +36,34 @@
 //! So [`has_superset_ir`] is derived from [`wire_formats`] rather than written as
 //! `matches!(key, FALLBACK_KEY)`. That makes it a RULE rather than a fact about today's planes: the
 //! day a second dialect lands on some plane, that plane earns an IR and the test says so. And the
-//! LLM count is read off the real protocol registry, so a seventh dialect does not depend on
-//! anyone remembering to bump a literal here.
+//! fallback plane's dialect count is read off the real protocol registry, so a new dialect does not
+//! depend on anyone remembering to bump a literal here.
 //!
-//! A TRANSPORT IS NOT A WIRE FORMAT. MCP runs over stdio, streamable HTTP and SSE, and every one of
-//! them carries the same JSON-RPC message shape. Counting transports would hand MCP an IR it has
-//! not earned.
+//! A TRANSPORT IS NOT A WIRE FORMAT. A plane can be reachable over several transports while every
+//! one of them carries the same message shape. Counting transports would hand a single-dialect
+//! plane an IR it has not earned.
 //!
 //! ## Each plane still owns ONE canonical type
 //!
 //! Even without a superset, every plane has one canonical internal type, so the architecture reads
 //! the same everywhere: protocol in, canonical type, protocol out. For a single-wire-format plane
 //! that canonical type IS the protocol's own model, MIRRORED IN OUR STRUCTS rather than adopted
-//! from a third party's generated ones. MCP is versioned and moving; if the internal representation
-//! were somebody's generated types, a spec revision would ripple through the engine, the registry,
-//! the catalogue cache and the audit records instead of staying contained to the reader and writer
-//! at the edge.
+//! from a third party's generated ones. A protocol that is versioned and moving must not let its
+//! internal representation be somebody's generated types; if it were, a spec revision would ripple
+//! through the engine, the registry, the catalogue cache and the audit records instead of staying
+//! contained to the reader and writer at the edge.
 
 // THE SPINE IS NOW LOAD-BEARING, which is what it was landed ahead of a caller for. FOUR
 // production callers, none of them written per plane:
 //
 //   * [`observe`], the plane ingress boundary — asks `PlaneDispatch::mounted_plane_of` which plane
-//     a request arrived on and labels that request's metrics with `Plane::key`. Before it, MCP and
-//     A2A traffic appeared in no Prometheus series at all.
+//     a request arrived on and labels that request's metrics with `Plane::key`. Before it, non-fallback
+//     plane traffic appeared in no Prometheus series at all.
 //   * verify-on-call (`crate::trust::verify`), which carries `Plane` as its diagnostic label.
 //   * the admin trust verb surface (`crate::admin::planeverbs`), which reads `Plane::subject_noun`
 //     for its one `404` and `Plane::audit_kind` for its audit action and resource.
 //
-// The last two REPLACED a pair of plane-local copies — a scheduler and an admin verb set written
+// The last two REPLACED a pair of plane-local copies — a scheduler and a control-verb set written
 // twice, discovered when ten branches merged and the structural lint saw both halves at once for
 // the first time. That is precisely what landing the spine first was meant to prevent, and it is
 // worth recording that the spine existing did not prevent it: two authors each wrote a plane-local
@@ -73,19 +73,19 @@
 //     answers "which plane, and in which wire dialect, is this path spoken". Every site that must
 //     shape an answer from a path alone (the `413` reshape, the `404`/`405` fallbacks, the
 //     auth-time `401`) reads it, so an oversized POST to a mounted plane is now refused in that
-//     plane's own dialect instead of in a vendor envelope its client cannot decode.
+//     plane's own dialect instead of in another plane's envelope its client cannot decode.
 //   * the CARD-PUBLISHING boundary, and the first caller to read the wire-format LIST rather than
-//     its length: `a2a::serve::servable_bindings` decides which
+//     its length: one plane's own serve-layer binding-advertiser decides which
 //     `supportedInterfaces[].protocolBinding` busbar may publish on a card pointing at busbar's own
-//     address. That was previously a literal in the rewrite, and it published a gRPC interface at an
-//     address busbar does not serve gRPC on.
+//     address. That was previously a literal in the rewrite, and it published a binding at an
+//     address busbar does not serve it on.
 //
 // STILL WITHOUT A PRODUCTION CALLER, and named rather than left to be discovered: `PlaneSections`
-// and `has_superset_ir`. The candidate projection and the shared pools/tools/agents container are
+// and `has_superset_ir`. The candidate projection and the shared sibling-section container are
 // the dependants those are waiting on, so the attribute stays until they land.
 //
 // `wire_formats` is NOT in that list, and has two callers rather than one: `sole_wire_format` reads
-// its length on the request path, and `servable_bindings` reads its contents to decide which
+// its length on the request path, and the card-publishing boundary reads its contents to decide which
 // bindings a served card may advertise. Both are named here because this header, not the call
 // sites, is what states whether a member of this module is reachable.
 #![cfg_attr(not(test), allow(dead_code))]
@@ -98,7 +98,7 @@ pub(crate) mod observe;
 pub(crate) mod quarantine;
 pub mod registry;
 // `store` is a core-internal plane primitive. Its module is widened to `pub` ONLY under the
-// test-support surface so the extracted A2A plane's own test binary can name the durable-body
+// test-support surface so an extracted plane's own test binary can name the durable-body
 // helpers it exercises (`StoreNamedTestExt`, `KIND_TASK_EVENT`, `task_event_row_from_body`); the
 // tamper-critical `encode` stays `pub(crate)` regardless (see `store::encode`), so widening the
 // module does NOT hand any out-of-crate caller the row-forging primitive.
@@ -106,37 +106,38 @@ pub mod registry;
 pub(crate) mod store;
 #[cfg(any(test, feature = "test-support"))]
 pub mod store;
-// The A2A durable task set (`TASKS`/`TaskRegistry`) and its per-task provenance chain were RELOCATED
-// wholesale to `busbar-a2a` (`busbar_a2a::taskstore`) in the 1.7.0 plane extraction: a task is a
-// SINGLE-plane mechanism, so it lives on the plane that owns it, backed by the generic neutral
-// `PlaneRecord` store. Core names none of it.
+// A durable task set and its per-task provenance chain were RELOCATED wholesale to a plane crate
+// in the 1.7.0 plane extraction: a task is a SINGLE-plane mechanism, so it lives on the plane that
+// owns it, backed by the generic neutral `PlaneRecord` store. Core names none of it.
 
 // THE WIRE FORMAT NAMES the mounted planes speak moved DOWN into the neutral `busbar-substrate`
 // crate in Phase-B B0-b, so a plane crate can name them without reaching into core. They are the
 // same three canonical spellings, re-exported here unchanged so every `crate::plane::WIRE_*` call
 // site is untouched:
 //
-//   WIRE_JSONRPC   — JSON-RPC 2.0, the wire format both mounted planes speak. Read twice as a
+//   WIRE_JSONRPC   — the wire format multiple mounted planes may speak. Read twice as a
 //                    `wire_format_names` entry and once by the error-shaping boundary, which decides
-//                    a refusal on a mounted plane is a JSON-RPC error object rather than a vendor
-//                    envelope. A literal spelled per site is how those two answers start to differ.
-//   WIRE_HTTP_JSON — the A2A HTTP+JSON binding, where the REQUEST LINE names the operation rather
-//                    than a body member. Read three ways that must agree: a `wire_format_names`
-//                    entry, the `crate::transport::Transport::HttpJson` label, and (upper-cased by
-//                    `a2a::serve::servable_bindings`) the `protocolBinding` a served agent card
-//                    advertises. The card spelling is `HTTP+JSON`; this is that lower-cased.
-//   WIRE_GRPC      — the A2A gRPC binding as a wire-format name. Lower-case here and upper-cased
-//                    once, by `crate::a2a::serve::servable_bindings`, into the `GRPC` an agent card
-//                    advertises — so the card cannot claim a binding the plane does not list.
+//                    a refusal on a mounted plane is shaped as this wire format's error object rather
+//                    than another wire format's envelope. A literal spelled per site is how those two
+//                    answers start to differ.
+//   WIRE_HTTP_JSON — a request-line-addressed binding, where the REQUEST LINE names the operation
+//                    rather than a body member. Read three ways that must agree: a `wire_format_names`
+//                    entry, the `crate::transport::Transport::HttpJson` label, and (upper-cased by the
+//                    owning plane's own serve-layer binding-advertiser) the `protocolBinding` a served
+//                    card advertises. The card spelling is upper-cased; this is that lower-cased.
+//   WIRE_GRPC      — a second binding a plane may declare as a wire-format name. Lower-case here and
+//                    upper-cased once, by the owning plane's own serve-layer binding-advertiser, into
+//                    the spelling a served card advertises — so the card cannot claim a binding the
+//                    plane does not list.
 pub use busbar_substrate::plane::{WIRE_GRPC, WIRE_HTTP_JSON, WIRE_JSONRPC};
 
 /// The FALLBACK plane's registry key — DERIVED from the plane registry rather than a hard-coded
-/// `"llm"` literal: the ONE built-in plane whose decl declares [`registry::PlaneDecl::fallback`]
-/// (the LLM plane). Read by the fallback guard (`PlaneDispatch::mount`/`admit` no-op) and the
-/// model-plane telemetry branch so core names no dialect. The composition root (`register_planes`)
-/// installs the LLM plane before any reader runs, and core's own test binary carries it in
-/// `registry::builtin_plane_decls`, so exactly one fallback is always present. Core expresses "which
-/// plane handles unmatched routes" by ASKING the declared fallback plane, never by naming the LLM.
+/// literal: the ONE built-in plane whose decl declares [`registry::PlaneDecl::fallback`]. Read by
+/// the fallback guard (`PlaneDispatch::mount`/`admit` no-op) and the fallback-plane telemetry branch
+/// so core names no dialect. The composition root (`register_planes`) installs the fallback plane
+/// before any reader runs, and core's own test binary carries it in `registry::builtin_plane_decls`,
+/// so exactly one fallback is always present. Core expresses "which plane handles unmatched routes"
+/// by ASKING the declared fallback plane, never by hard-coding which plane that is.
 pub(crate) fn fallback_key() -> &'static str {
     let decls = registry::plane_decls();
     // The fallback is FIRST-WINS: with two fallback decls the `find` below would silently pick one
@@ -146,12 +147,12 @@ pub(crate) fn fallback_key() -> &'static str {
         "more than one registered plane declares itself the fallback catch-all — it must be \
          unique or `fallback_key`/`is_fallback` first-win nondeterministically"
     );
-    // Prefer the plane that DECLARES itself the fallback (the LLM plane, always present in a
-    // production or core-`cfg(test)` build). Fall back to the BASE (first-layered) registered plane
-    // for the one build where no fallback is flagged: the `test-support`-only dependency-copy of core
-    // the plane crates link, whose built-in plane rows are empty and which registers only the plane
-    // under test (MCP/A2A) — a TestApp built there has no model plane, so this key labels an empty
-    // telemetry bank and is never emitted. Never a hard-coded `"llm"` literal, so core names no dialect.
+    // Prefer the plane that DECLARES itself the fallback (always present in a production or
+    // core-`cfg(test)` build). Fall back to the BASE (first-layered) registered plane for the one
+    // build where no fallback is flagged: the `test-support`-only dependency-copy of core the plane
+    // crates link, whose built-in plane rows are empty and which registers only the plane under
+    // test — a TestApp built there has no fallback plane, so this key labels an empty telemetry
+    // bank and is never emitted. Never a hard-coded literal, so core names no dialect.
     decls
         .iter()
         .find(|d| d.fallback)
@@ -161,12 +162,13 @@ pub(crate) fn fallback_key() -> &'static str {
 }
 
 /// Whether `key` names THE FALLBACK plane — the non-panicking predicate the fallback GUARDS read
-/// (`PlaneDispatch::mount`/`admit` no-op; the model-plane telemetry branch). Distinct from
+/// (`PlaneDispatch::mount`/`admit` no-op; the fallback-plane telemetry branch). Distinct from
 /// [`fallback_key`]: it answers "is THIS key the fallback" WITHOUT requiring a fallback to be
-/// registered, so it is safe in a build where the fallback (LLM) plane's decl is absent — the
+/// registered, so it is safe in a build where the fallback plane's decl is absent — the
 /// dependency-copy of core the plane crates link, whose built-in plane rows are empty and which only
-/// ever asks this about a mounted plane's OWN key (never the LLM key). `fallback_key`, by contrast,
-/// is read only on paths (App build, request telemetry family) where the fallback is always present.
+/// ever asks this about a mounted plane's OWN key (never the fallback's key). `fallback_key`, by
+/// contrast, is read only on paths (App build, request telemetry family) where the fallback is
+/// always present.
 pub(crate) fn is_fallback(key: &str) -> bool {
     registry::plane_decls()
         .iter()
@@ -177,12 +179,11 @@ pub(crate) fn is_fallback(key: &str) -> bool {
 /// validator and the candidate projection, so a plane absent from here is a plane that silently
 /// does not exist.
 ///
-/// Driven off [`registry::builtin_plane_decls`], which is itself cfg-gated: the MCP key is present
-/// only when the MCP plane is compiled in (`plane-mcp`) and the A2A key only under `plane-a2a`,
-/// because with the plane off it has no built-in declaration, so it must not be iterated here —
-/// every [`plane_decl`] on it would fault. This is the successor to the old `Plane::ALL`, and
-/// the source of the LAYERING iteration order `[llm, mcp, a2a]` every map walk must borrow rather
-/// than reinvent from a map's own key order.
+/// Driven off [`registry::builtin_plane_decls`], which is itself cfg-gated: each non-fallback
+/// plane's key is present only when that plane is compiled in, because with the plane off it has
+/// no built-in declaration, so it must not be iterated here — every [`plane_decl`] on it would
+/// fault. This is the successor to the old `Plane::ALL`, and the source of the LAYERING iteration
+/// order every map walk must borrow rather than reinvent from a map's own key order.
 pub(crate) fn plane_keys() -> impl Iterator<Item = &'static str> {
     registry::plane_decls().iter().map(|d| d.key)
 }
@@ -200,8 +201,8 @@ pub(crate) fn plane_decl(key: &str) -> &'static registry::PlaneDecl {
 ///
 /// These strings are the `ingress_protocol` metric-label vocabulary: a label that means "which
 /// dialect spoke to us" has to be spelled the same way on every plane or a dashboard cannot
-/// compare them, and two planes agreeing by coincidence is how the LLM plane's `openai` and some
-/// other plane's `openai` end up in one series meaning two things.
+/// compare them, and two planes agreeing by coincidence is how one plane's dialect spelling and
+/// another plane's dialect spelling end up in one series meaning two things.
 pub fn wire_format_names(key: &str) -> &'static [&'static str] {
     (plane_decl(key).wire_format_names)()
 }
@@ -211,10 +212,10 @@ pub fn wire_format_names(key: &str) -> &'static [&'static str] {
 /// COMPUTED, like [`has_superset_ir`], and for the same reason. A plane with a single dialect can
 /// be labelled with it at the ingress BOUNDARY, before any handler has read a byte of the body,
 /// because there is nothing to decide. A plane with several cannot: which dialect spoke is a fact
-/// only its reader knows, so that plane labels its own requests from inside (the LLM plane does
-/// exactly this, in `ingress::finish_inner`). Derived from the format list it is a RULE, and the
-/// day MCP speaks a second dialect the boundary stops labelling it and the rule says so rather
-/// than a stale literal quietly lying.
+/// only its reader knows, so that plane labels its own requests from inside (the fallback plane
+/// does exactly this, in `ingress::finish_inner`). Derived from the format list it is a RULE, and
+/// the day a plane speaks a second dialect the boundary stops labelling it and the rule says so
+/// rather than a stale literal quietly lying.
 pub(crate) fn sole_wire_format(key: &str) -> Option<&'static str> {
     sole_of(wire_format_names(key))
 }
@@ -234,12 +235,12 @@ pub(crate) fn has_superset_ir(key: &str) -> bool {
 }
 
 /// The `sole_wire_format` DERIVATION, split from the registry read so the ZERO-dialect case is
-/// a case a test can drive. The LLM plane's list is `known_protocols()`, and the core split
-/// (step 3.7) is what makes an EMPTY registry reachable — from step 4 a protocol is a
-/// dependency edge, and a build with every LLM edge removed is a legal build the deletion gate
-/// constructs on purpose. Before this arm existed, empty fell into the same `_ => None` as
-/// "several", so the plane silently stopped being labelled at the ingress boundary with no
-/// statement that anyone had decided that. The answer is STILL `None` — a plane with no
+/// a case a test can drive. The fallback plane's list is its own registered dialect set, and the
+/// core split (step 3.7) is what makes an EMPTY registry reachable — from step 4 a protocol is a
+/// dependency edge, and a build with every fallback-plane edge removed is a legal build the
+/// deletion gate constructs on purpose. Before this arm existed, empty fell into the same
+/// `_ => None` as "several", so the plane silently stopped being labelled at the ingress boundary
+/// with no statement that anyone had decided that. The answer is STILL `None` — a plane with no
 /// dialect has nothing to label a request with — but it is now a signed decision with a test
 /// (`plane/tests/`), not a match arm's accident. Same for `has_superset_ir` above: zero wire
 /// formats have earned nothing, so `superset_of(0)` is `false` BY DECISION.
@@ -259,43 +260,44 @@ pub(crate) fn superset_of(wire_formats: usize) -> bool {
 
 /// PLANE DISPATCH: which plane an inbound request belongs to.
 ///
-/// The LLM plane is the FALLBACK and is never mounted. That mirrors the router, where the protocol
+/// The fallback plane is never mounted. That mirrors the router, where the protocol
 /// catch-all claims every unclaimed path by construction, and it means there is exactly one door
 /// per plane rather than a precedence question with no good answer.
 ///
-/// A non-LLM plane claims a path only when the operator has MOUNTED it. A deployment that never
-/// enabled MCP cannot have a request routed onto the MCP plane by URL shape alone: a plane exists
+/// A non-fallback plane claims a path only when the operator has MOUNTED it. A deployment that
+/// never enabled that plane cannot have a request routed onto it by URL shape alone: a plane exists
 /// because it is configured, not because its name appears in a path.
 ///
 /// ## WHY A PLANE MAY CLAIM MORE THAN ONE PATH
 ///
 /// A plane's paths used to be one `Option<String>` each, which was right while every plane spoke one
-/// binding over one channel. A2A's gRPC binding broke that, and not by preference: a gRPC client
-/// derives the request path from the `.proto`'s package and service name and can be handed nothing
-/// else — `grpc.insecure_channel` takes an AUTHORITY, never a path prefix — so busbar's gRPC A2A
-/// binding is served at `/lf.a2a.v1.A2AService/*` and cannot be served under `/a2a`. (The HTTP+JSON
-/// binding needed no second claim: its paths hang UNDER `/a2a`, which the first claim already
-/// covers at a segment boundary.)
+/// binding over one channel. A plane with a second binding broke that, and not by preference: a
+/// client for that second binding derives the request path from its own service description and
+/// can be handed nothing else — it takes an AUTHORITY, never a path prefix — so that binding is
+/// served at its own dedicated path and cannot be served under the plane's primary mount. (The
+/// primary binding needed no second claim: its paths hang under the plane's own mount, which the
+/// first claim already covers at a segment boundary.)
 ///
 /// The alternative was to leave that path unclaimed, and it is worth naming what that would have
 /// cost, because it is a security property rather than a tidiness one: [`Self::admission_for`]
 /// resolves the RFC 8707 audience THROUGH this table, so an unclaimed path is a path where no
-/// token's `aud` is checked. The gRPC binding would then have admitted a token minted for any other
-/// resource — the exact confused-deputy hole the mount-side audience exists to close. A plane claims
-/// every path it answers on, or its door is only as strong as its narrowest binding.
+/// token's `aud` is checked. A second binding left unclaimed would then admit a token minted for
+/// any other resource — the exact confused-deputy hole the mount-side audience exists to close. A
+/// plane claims every path it answers on, or its door is only as strong as its narrowest binding.
 ///
 /// The FIRST claim is the plane's CANONICAL mount ([`Self::mount_of`]) — the one an audience is
 /// derived from and the one a handler means when it asks for "its own path".
 ///
 /// ## Why the table is keyed by plane KEY rather than by a typed field per plane
 ///
-/// It used to be four fields — `mcp`, `a2a`, and an admission each — and that was the same closed
-/// set the `Plane` enum is: a plane not named here could not be dispatched, no matter who linked
-/// what. The claims and admission a plane contributes are now DATA, folded in from each plane's
-/// [`registry::PlaneDecl`] against that plane's own runtime object, so a plane extracted to a crate
-/// registers its door the same way it registers its vocabulary. The map is keyed by the plane's
-/// its registry key — the one stable string every other plane surface is already keyed by — so a
-/// registered plane with no enum variant still has exactly one row here and exactly one audience.
+/// It used to be a fixed set of typed fields, one per plane plus an admission each, and that was
+/// the same closed set the `Plane` enum is: a plane not named here could not be dispatched, no
+/// matter who linked what. The claims and admission a plane contributes are now DATA, folded in
+/// from each plane's [`registry::PlaneDecl`] against that plane's own runtime object, so a plane
+/// extracted to a crate registers its door the same way it registers its vocabulary. The map is
+/// keyed by the plane's own registry key — the one stable string every other plane surface is
+/// already keyed by — so a registered plane with no enum variant still has exactly one row here
+/// and exactly one audience.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PlaneDispatch {
     /// The paths each plane answers on, keyed by plane key, canonical claim first. A key is present
@@ -318,11 +320,12 @@ pub struct PlaneDispatch {
 /// have their own door can answer it at the door; one whose bindings share a door cannot, and says so
 /// by declaring its CANONICAL format on that claim.
 ///
-/// The A2A plane is both at once, which is why this is a per-claim fact and not a per-plane one:
-/// `/a2a` answers JSON-RPC and HTTP+JSON, so its claim names `jsonrpc` (the canonical one, and the
-/// one a door refusal's body is shaped in) and `a2a::receive::invoke` labels those requests itself
-/// with the leg it actually read; `/lf.a2a.v1.A2AService` answers gRPC and nothing else, so its
-/// claim names `grpc` and the boundary can label it before any handler runs.
+/// A plane with two bindings can be both at once, which is why this is a per-claim fact and not a
+/// per-plane one: its primary mount can answer more than one dialect on a shared door, so its claim
+/// names the canonical one (the one a door refusal's body is shaped in) and the plane's own receive
+/// path labels those requests itself with the dialect it actually read; a secondary, dedicated mount
+/// answers exactly one dialect and nothing else, so its claim names that dialect and the boundary
+/// can label it before any handler runs.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Claim {
     /// The normalised mount path, matched at a segment boundary.
@@ -339,8 +342,8 @@ struct Claim {
 ///
 /// Both fields are RFC values, not busbar inventions, and neither names a plane — which is the
 /// point. An audience-bound ingress is a general shape (OAuth 2.1 resource servers all have one);
-/// MCP is merely the first plane to mount one, and A2A will mount a second with different strings
-/// and no new code here. Phase-C config-seam relocated this POD to the neutral
+/// one plane is merely the first to mount one, and another plane will mount a second with different
+/// strings and no new code here. Phase-C config-seam relocated this POD to the neutral
 /// [`busbar_substrate::plane::PlaneAdmission`] so a plane crate contributes its admission across the
 /// mount seam without naming a core type; core re-exports it here so its own call sites are unchanged.
 pub use busbar_substrate::plane::PlaneAdmission;
@@ -350,13 +353,13 @@ impl PlaneDispatch {
     /// in either order, but WITHOUT a mount this is inert: [`Self::admission_for`] resolves a path
     /// through the mount first, so admission facts alone never claim a path.
     ///
-    /// The fallback LLM plane takes none. It is not an audience-bound resource: a plain data-plane
+    /// The fallback plane takes none. It is not an audience-bound resource: a plain data-plane
     /// busbar key carries no audience at all, and the verifier rejects any token that does
     /// (`governance::signing`, the 1.6.0 plane boundary). Handing the fallback an audience here
     /// would quietly make every unclaimed path an OAuth resource server.
     pub(crate) fn admit(self, key: &'static str, admission: PlaneAdmission) -> Self {
         // The fallback takes none — see the doc: an audience on an unmounted plane is inert, and one
-        // on the LLM plane would quietly make every unclaimed path an OAuth resource server.
+        // on the fallback plane would quietly make every unclaimed path an OAuth resource server.
         if is_fallback(key) {
             return self;
         }
@@ -373,21 +376,21 @@ impl PlaneDispatch {
     }
 
     /// The admission facts governing `path`, or `None` when `path` is not under an audience-bound
-    /// mount — which includes every path on the fallback LLM plane.
+    /// mount — which includes every path on the fallback plane.
     ///
     /// Resolved through [`Self::mounted_plane_of`], so it inherits the segment-boundary match:
-    /// `/mcpx` is NOT under a `/mcp` mount and therefore is not audience-checked. That is
-    /// deliberate in both directions — a sibling path must neither inherit the plane's grants nor
-    /// its refusals.
+    /// a sibling path is NOT under a mount that only shares a name prefix, and therefore is not
+    /// audience-checked. That is deliberate in both directions — a sibling path must neither
+    /// inherit the plane's grants nor its refusals.
     pub fn admission_for(&self, path: &str) -> Option<&PlaneAdmission> {
         // Resolve the plane by MOUNT first — the fallback is never mounted, so it never claims a
         // path and never reaches the admission map — then read that plane's bound audience by key.
         self.admissions.get(self.mounted_plane_of(path)?)
     }
-    /// Mount `plane` at `path`. Mounting the fallback LLM plane ([`fallback_key`]) is a no-op.
+    /// Mount `plane` at `path`. Mounting the fallback plane ([`fallback_key`]) is a no-op.
     ///
-    /// The path is NORMALISED to a leading slash with no trailing slash, so `/mcp`, `/mcp/`, `mcp`
-    /// and `mcp/` all dispatch identically. The alternative is a deployment whose plane silently
+    /// The path is NORMALISED to a leading slash with no trailing slash, so equivalent path
+    /// spellings all dispatch identically. The alternative is a deployment whose plane silently
     /// answers nothing because of a trailing slash.
     ///
     /// Called more than once for one plane, it ADDS a claim rather than replacing the previous one —
@@ -408,7 +411,7 @@ impl PlaneDispatch {
     /// [`Self::mount`], keyed by plane key rather than by [`Plane`]. The seam
     /// [`registry::build_dispatch`] folds each plane's declared claims in through, so a registered
     /// plane claims a path the same way a built-in does. The fallback guard lives on [`Self::mount`];
-    /// a plane's decl claims no path for the fallback, so it never reaches here for the LLM plane.
+    /// a plane's decl claims no path for the fallback, so it never reaches here for the fallback plane.
     pub(crate) fn mount_key(mut self, key: &'static str, path: &str, wire: &'static str) -> Self {
         let normalised = normalise_mount(path);
         if normalised.is_empty() {
@@ -425,7 +428,7 @@ impl PlaneDispatch {
     }
 
     /// This plane's CANONICAL mount, or `None` when it is not mounted (always `None` for the
-    /// fallback LLM plane). Read by the router to mount the right handler, and by an inbound
+    /// fallback plane). Read by the router to mount the right handler, and by an inbound
     /// audience check that needs to know its own canonical path.
     ///
     /// The canonical mount is the FIRST claimed, never "the one that matched": a plane's identity —
@@ -441,8 +444,9 @@ impl PlaneDispatch {
     /// This is the `ingress_protocol` label for a request at a plane's door, and it is read off the
     /// CLAIM rather than off the plane so a plane with several bindings is still labellable. Before
     /// claims carried a format, the boundary asked the plane and got `None` the moment a second
-    /// dialect landed — which would have silently stopped counting every A2A request on the day the
-    /// gRPC binding armed, and a metric that stops is indistinguishable from traffic that stopped.
+    /// dialect landed — which would have silently stopped counting every request on that plane the
+    /// day a second binding armed, and a metric that stops is indistinguishable from traffic that
+    /// stopped.
     pub(crate) fn wire_format_of(&self, path: &str) -> Option<&'static str> {
         self.claims.keys().copied().find_map(|key| {
             self.claims_of(key)
@@ -457,7 +461,7 @@ impl PlaneDispatch {
     /// plane's own path" ([`Self::mount_of`]), and handing out the list would invite a third reading.
     fn claims_of(&self, key: &str) -> &[Claim] {
         // The fallback is never mounted, so its key is never present and this is the empty slice —
-        // the same answer the old per-plane `Plane::Llm => &[]` arm gave, now by construction.
+        // the same answer the old per-plane fallback-variant arm gave, now by construction.
         self.claims.get(key).map_or(&[], Vec::as_slice)
     }
 
@@ -475,37 +479,37 @@ impl PlaneDispatch {
     ///
     /// ## Why this is one function and not two
     ///
-    /// There were two: this table's `plane_of`, and `proto::proto_for_path`, a path-shape
-    /// classifier that knew nothing of mounts and ended in `else { openai }`. Both answered "what
-    /// is this path", and on a mounted plane they answered DIFFERENTLY: `/mcp` was the MCP plane to
-    /// one and an OpenAI endpoint to the other. That is not a cosmetic disagreement — it shipped as
-    /// a defect. An oversized POST to `/mcp` was refused with `{"error":{"type":
-    /// "request_too_large"}}`, a vendor envelope no JSON-RPC client can decode, on a path the
-    /// operator had explicitly mounted as something else. Two readers of one fact will eventually
-    /// disagree, and the disagreement surfaces at the error path, where nobody is looking.
+    /// There were two: this table's `plane_of`, and a separate path-shape classifier that knew
+    /// nothing of mounts and fell back to one hard-coded dialect. Both answered "what is this
+    /// path", and on a mounted plane they answered DIFFERENTLY: one path was a mounted plane to
+    /// one and a fallback-dialect endpoint to the other. That is not a cosmetic disagreement — it
+    /// shipped as a defect. An oversized POST to that path was refused in the fallback dialect's
+    /// envelope, which the mounted plane's own client cannot decode, on a path the operator had
+    /// explicitly mounted as something else. Two readers of one fact will eventually disagree, and
+    /// the disagreement surfaces at the error path, where nobody is looking.
     ///
     /// So the order of resolution is now stated once, here, and it is the only order that respects
     /// what a mount MEANS: **the mount table first, the path shape only for what is left over.**
     ///
     /// ## Matching is on a SEGMENT BOUNDARY, never a bare prefix
     ///
-    /// A mount at `/mcp` claims `/mcp` and `/mcp/...` and does not claim `/mcpx`. This is the same
-    /// over-match the admin `/api` check guards, and getting it wrong here would hand a sibling
-    /// path to a plane whose grants are meant to be inadmissible everywhere else — and, in the
-    /// other direction, hand it that plane's REFUSALS, which is how a caller learns the shape of a
-    /// door it was never at.
+    /// A mount claims its own path and everything beneath it, and does not claim a sibling path that
+    /// merely shares a prefix. This is the same over-match the admin surface's own path check
+    /// guards, and getting it wrong here would hand a sibling path to a plane whose grants are
+    /// meant to be inadmissible everywhere else — and, in the other direction, hand it that plane's
+    /// REFUSALS, which is how a caller learns the shape of a door it was never at.
     ///
     /// ## A plane claims a path only when the operator MOUNTED it
     ///
     /// The fallback is reached by falling THROUGH the mount table, never by naming it, so a
-    /// deployment that never enabled MCP has no MCP plane and `/mcp` is an ordinary unclaimed path.
-    /// Nothing here lets a plane claim a path by URL shape.
+    /// deployment that never enabled a given plane has no door for it and that plane's usual path is
+    /// an ordinary unclaimed path. Nothing here lets a plane claim a path by URL shape.
     pub(crate) fn ingress_of(&self, path: &str) -> Ingress {
         match self.mounted_plane_of(path) {
             Some(key) => Ingress::Mounted(key),
             // THE FALLBACK ARM, and the only place a path SHAPE decides anything. It answers
             // `None` for a path that names no dialect — an honest answer the old classifier could
-            // not give, because it spent that case on `openai`.
+            // not give, because it always spent that case on one hard-coded dialect.
             None => Ingress::Fallback(crate::proto::residual_dialect_for_path(path)),
         }
     }
@@ -517,13 +521,14 @@ impl PlaneDispatch {
     /// `plane_of` deliberately does not. [`super::observe`] needs that distinction and does not
     /// want a plane comparison to get it: the plane ingress boundary emits a request's metrics only
     /// for a plane that has a DOOR of its own, because the fallback labels its own requests from
-    /// inside its handler, where the dialect it spoke is known. Written as `if plane == Plane::Llm`
-    /// that would be a plane branch standing in for a property the mount table already knows — and
-    /// it would be wrong the day a fourth plane is added as a fallback sibling.
+    /// inside its handler, where the dialect it spoke is known. Written as a direct comparison
+    /// against the fallback's variant that would be a plane branch standing in for a property the
+    /// mount table already knows — and it would be wrong the day a further plane is added as a
+    /// fallback sibling.
     ///
-    /// The walk covers every claimed key rather than a hand-listed `[Mcp, A2a]`: the fallback has no
-    /// mount, so it is skipped by construction rather than by being left off a list a new plane
-    /// would have to remember to join.
+    /// The walk covers every claimed key rather than a hand-listed set of plane names: the fallback
+    /// has no mount, so it is skipped by construction rather than by being left off a list a new
+    /// plane would have to remember to join.
     pub(crate) fn mounted_plane_of(&self, path: &str) -> Option<&'static str> {
         self.claims.keys().copied().find(|key| {
             self.claims_of(key)
@@ -557,7 +562,7 @@ impl PlaneDispatch {
 pub(crate) enum Ingress {
     /// A path a plane CLAIMS BY MOUNT, at a segment boundary, named by its registry key.
     Mounted(&'static str),
-    /// The fallback LLM plane. `Some(dialect)` when the path shape names one of the registered LLM
+    /// The fallback plane. `Some(dialect)` when the path shape names one of the registered fallback
     /// dialects; `None` when it names none — a bare `/`, a typo, a probe. `None` is a real answer
     /// and not a failure: what to SAY to a caller whose dialect is unknown is a decision for the
     /// site composing the reply, not for the resolver, which would otherwise have to invent a
@@ -569,8 +574,8 @@ impl Ingress {
     /// The WIRE FORMAT spoken on this path, or `None` when the path names none.
     ///
     /// This is the `ingress_protocol` metric-label vocabulary (see [`wire_format_names`]),
-    /// so a mounted plane labels as its own dialect rather than as whichever LLM dialect its path
-    /// happens to resemble.
+    /// so a mounted plane labels as its own dialect rather than as whichever fallback dialect its
+    /// path happens to resemble.
     pub(crate) fn wire_format(self) -> Option<&'static str> {
         match self {
             // A plane with several dialects cannot be labelled from the boundary — which dialect
@@ -589,18 +594,18 @@ impl Ingress {
     /// a plane with several: nobody at the door knows yet. That is exactly right for a metric label,
     /// where guessing invents a fact. It is exactly wrong for an ERROR BODY, where `None` is not an
     /// option — some bytes have to go back — and the caller of `envelope_dialect` had one fallback
-    /// for both cases: OpenAI's envelope.
+    /// for both cases: a single hard-coded dialect's envelope.
     ///
-    /// That fallback was harmless while every mounted plane spoke one dialect. The moment the A2A
-    /// plane spoke two, `wire_format()` started answering `None` for it and every door-level refusal
-    /// on a MOUNTED, audience-bound plane would have been shaped, labelled and messaged as OPENAI —
-    /// the precise defect the merged resolver was built to end, re-entering through the fallback
-    /// rather than through a second classifier.
+    /// That fallback was harmless while every mounted plane spoke one dialect. The moment a plane
+    /// spoke two, `wire_format()` started answering `None` for it and every door-level refusal
+    /// on a MOUNTED, audience-bound plane would have been shaped, labelled and messaged as that one
+    /// hard-coded dialect — the precise defect the merged resolver was built to end, re-entering
+    /// through the fallback rather than through a second classifier.
     ///
-    /// So a mounted plane answers its FIRST wire format. Not an arbitrary pick: `supportedInterfaces`
-    /// is an ORDERED list whose first entry is the preferred binding, busbar's own card publishes
-    /// these in this order, and a refusal that cannot know which binding the caller intended is owed
-    /// the one the card names first.
+    /// So a mounted plane answers its FIRST wire format. Not an arbitrary pick: the card's advertised
+    /// interface list is an ORDERED list whose first entry is the preferred binding, busbar's own
+    /// card publishes these in this order, and a refusal that cannot know which binding the caller
+    /// intended is owed the one the card names first.
     pub(crate) fn shaping_wire_format(self) -> Option<&'static str> {
         match self {
             Ingress::Mounted(key) => wire_format_names(key).first().copied(),
@@ -609,7 +614,8 @@ impl Ingress {
     }
 }
 
-/// `/mcp/` -> `/mcp`, `mcp` -> `/mcp`, `/` -> `` (which mounts nothing).
+/// A trailing-slash or bare-key path spelling normalises to a leading slash with no trailing slash;
+/// an empty or root path normalises to the empty string (which mounts nothing).
 fn normalise_mount(path: &str) -> String {
     let trimmed = path.trim().trim_matches('/');
     if trimmed.is_empty() {
@@ -627,23 +633,25 @@ fn path_is_under(path: &str, mount: &str) -> bool {
     }
 }
 
-/// THE SHARED CONTAINER for the three sibling plane sections: `pools:`, `tools:` and `agents:` are
-/// ONE code object with three namespaces, not three types that happen to look alike.
+/// THE SHARED CONTAINER for a plane's sibling config sections: several independent, per-plane
+/// namespaces are ONE code object with N namespaces, not N types that happen to look alike.
 ///
 /// ## Siblings, and therefore no cross-references
 ///
-/// The sections are INDEPENDENT namespaces. One name may exist in all three and each means a
+/// The sections are INDEPENDENT namespaces. One name may exist in all of them and each means a
 /// different thing, so a name is not globally unique and must never be treated as if it were.
 ///
-/// The rule that follows, and the reason this type exists rather than three maps: a name is
-/// resolved ONLY within the plane doing the referencing. A `tools:` entry naming an agent is not a
-/// clever shortcut, it is a plane boundary violation, and the resolver REFUSES it.
+/// The rule that follows, and the reason this type exists rather than one map per section: a name
+/// is resolved ONLY within the plane doing the referencing. An entry in one section naming an entry
+/// in a sibling section is not a clever shortcut, it is a plane boundary violation, and the resolver
+/// REFUSES it.
 ///
 /// ## The refusal DIAGNOSES rather than merely denying
 ///
 /// [`RefError::CrossPlane`] names the plane the entry actually lives on, so the operator reads
-/// "that is an agent, referenced from a tools entry". A bare not-found would send someone hunting
-/// for a typo that is not there, which is why an unknown name is a genuinely different error.
+/// "that is defined on a different section of this plane". A bare not-found would send someone
+/// hunting for a typo that is not there, which is why an unknown name is a genuinely different
+/// error.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct PlaneSections<T> {
     /// One section per plane, keyed by plane registry key. An absent key is an EMPTY section, read

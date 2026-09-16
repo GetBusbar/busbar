@@ -6,7 +6,7 @@
 //!
 //! [`busbar_api::Store`] is ONE trait that carries two unrelated authorities at once: the durable
 //! governance AUDIT CHAIN (`append_audit`/`list_audit`/`list_audit_tail`) and the per-plane durable
-//! state (the A2A task table, the MCP per-call log, the MCP demotion record, the spent-approval
+//! state (one plane's task table, another plane's per-call log and demotion record, the spent-approval
 //! ledger). Handing a plane an `Arc<dyn Store>` to persist its rows would, by the same handle, let it
 //! append audit records and forge a record's `prev_hash`/`hash` — the one thing the chain exists to
 //! make impossible.
@@ -49,16 +49,16 @@ pub use busbar_substrate::plane::store::{PlaneStore, PlaneStoreView};
 // `store-example-plugin` verbatim. A plane crate mirrors the constant it owns (e.g. `busbar_mcp`'s
 // `KIND_CALL`, `busbar_a2a`'s `KIND_TASK`) so the tag it writes and the tag core reads agree.
 
-/// The A2A task row kind.
+/// One plane's task row kind.
 pub const KIND_TASK: &str = "task";
-/// The A2A per-task provenance event kind.
+/// That same plane's per-task provenance event kind.
 pub const KIND_TASK_EVENT: &str = "task_event";
-/// The MCP per-call log record kind.
+/// Another plane's per-call log record kind.
 pub const KIND_CALL: &str = "call";
-/// The admin AUDIT chain record kind — the neutral store tag the admin mutation log's durable journal
-/// seam persists its hash-chained records under.
+/// The administrative AUDIT chain record kind — the neutral store tag the administrative mutation
+/// log's durable journal seam persists its hash-chained records under.
 pub const KIND_AUDIT: &str = "audit";
-/// The MCP demotion record kind.
+/// That same plane's demotion record kind.
 pub(crate) const KIND_DEMOTION: &str = "demotion";
 /// The spent-approval ledger kind (a single-use token).
 pub(crate) const KIND_ASK: &str = "ask";

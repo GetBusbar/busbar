@@ -64,9 +64,11 @@ pub const CODE_INVALID_API_KEY: &str = "invalid_api_key";
 
 /// Busbar-internal `provider_signal` label for a context-length result (the LANE label, not the
 /// OpenAI wire code). Distinct from `proxy::PROVIDER_CODE_CONTEXT_LENGTH` ("context_length_exceeded"),
-/// which is the provider-facing code extracted from the request body. Gated the same as
-/// [`openai_classify`], its only referent, a test-only single-source mirror of the production
-/// classifier — visible to a dependent crate's test builds too via the `test-support` feature.
+/// which is the provider-facing code extracted from the request body. Its referent, the OpenAI-family
+/// classifier test mirror, relocated to the LLM plane's `openai_chat` wire module
+/// (`openai_classify`); this const stays here (neutral — it names no vendor) and that classifier
+/// reaches it at this substrate path, visible to a dependent crate's test builds too via the
+/// `test-support` feature.
 #[cfg(any(test, feature = "test-support"))]
 pub const PROVIDER_SIGNAL_CONTEXT_LENGTH: &str = "context_length";
 
@@ -87,7 +89,7 @@ pub const PROVIDER_SIGNAL_CONTEXT_LENGTH: &str = "context_length";
 /// Value shape: an object keyed by the message's index in `IrRequest.messages` (as a decimal string)
 /// → the name. Keyed by index rather than positional array so a request where only message 7 has a
 /// name costs one entry, and so the writer's lookup cannot be thrown off by a `null` hole.
-pub const MESSAGE_NAMES_SENTINEL: &str = "__busbar_openai_message_names";
+pub const MESSAGE_NAMES_SENTINEL: &str = "__busbar_message_names";
 
 /// Precise context-length prose scan shared by `OpenAiReader::extract_error` and
 /// `ResponsesReader::extract_error` — the message scan was duplicated. The scan must be PRECISE:
@@ -97,7 +99,7 @@ pub const MESSAGE_NAMES_SENTINEL: &str = "__busbar_openai_message_names";
 /// specifically with `context`/`token limit`. The caller supplies its own lowercased source
 /// (openai scans `error.message`; responses scans the whole body) and applies the
 /// `oversized_status` (400/413) GATE itself — that gate is NOT part of this helper.
-pub fn openai_context_length_prose_scan(text: &str) -> bool {
+pub fn context_length_prose_scan(text: &str) -> bool {
     text.contains("maximum context length")
         || text.contains("context length exceeded")
         || text.contains("reduce the length")
@@ -137,87 +139,6 @@ pub fn bearer_error_code(error_type: &str) -> serde_json::Value {
             let _ = other;
             serde_json::Value::Null
         }
-    }
-}
-
-/// Canonical OpenAI-family error classification, shared verbatim by `OpenAiReader::classify` and
-/// `ResponsesReader::classify` (the two were word-for-word identical). Both surfaces emit the same
-/// OpenAI error envelope, so the mapping — context-length-exceeded (fail over without penalty) first,
-/// then 429→RateLimit, 401/403→Auth, 5xx→ServerError, other 4xx→ClientError — is single-sourced here.
-#[cfg(any(test, feature = "test-support"))]
-pub fn openai_classify(status: http::StatusCode, body: &[u8]) -> crate::breaker::CanonicalSignal {
-    use crate::breaker::StatusClass;
-    use http::StatusCode;
-    // context-length-exceeded — the lane is healthy; this must fail over (to a larger-context
-    // model), not penalize the breaker. Detect by OpenAI code/message first.
-    let code_is_context = crate::json::parse::<serde_json::Value>(body)
-        .ok()
-        .and_then(|j| {
-            j.get("error")
-                .and_then(|e| e.get("code"))
-                .and_then(|c| c.as_str())
-                .map(|s| s.to_string())
-        })
-        .as_deref()
-        == Some(crate::proxy::PROVIDER_CODE_CONTEXT_LENGTH);
-    // Mirror production `extract_error`: the prose message scan is GATED to the HTTP statuses an
-    // oversized request actually uses (400 invalid_request_error; 413 payload-too-large). Without the
-    // gate a 401/429/5xx whose prose happens to contain "maximum context length" would reclassify as
-    // ContextLength — letting a genuine auth/rate-limit/server failure escape fault attribution. The
-    // structured `code: "context_length_exceeded"` path is NOT gated (it is unambiguous).
-    //
-    // The scan itself is the shared one and not a clause of its own: production runs all four
-    // phrasings through `openai_context_length_prose_scan`, and a copy here that carried only the
-    // first was a mirror that showed a different picture. Every test proving oversized-request
-    // failover through this function was then proving behaviour production does not have, for three
-    // of the four phrasings the providers actually send.
-    let oversized = status == StatusCode::BAD_REQUEST || status == StatusCode::PAYLOAD_TOO_LARGE;
-    let prose_is_context = oversized
-        && openai_context_length_prose_scan(&String::from_utf8_lossy(body).to_lowercase());
-    if code_is_context || prose_is_context {
-        return crate::breaker::CanonicalSignal {
-            class: StatusClass::ContextLength,
-            provider_signal: Some(PROVIDER_SIGNAL_CONTEXT_LENGTH.to_string()),
-            retry_after: None,
-        };
-    }
-
-    if status == StatusCode::TOO_MANY_REQUESTS {
-        return crate::breaker::CanonicalSignal {
-            class: StatusClass::RateLimit,
-            provider_signal: Some("429".to_string()),
-            retry_after: None,
-        };
-    }
-
-    if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN {
-        return crate::breaker::CanonicalSignal {
-            class: StatusClass::Auth,
-            provider_signal: Some("auth".to_string()),
-            retry_after: None,
-        };
-    }
-
-    if status.is_server_error() {
-        return crate::breaker::CanonicalSignal {
-            class: StatusClass::ServerError,
-            provider_signal: Some("5xx".to_string()),
-            retry_after: None,
-        };
-    }
-
-    if status.is_client_error() {
-        return crate::breaker::CanonicalSignal {
-            class: StatusClass::ClientError,
-            provider_signal: Some(format!("{}", status.as_u16())),
-            retry_after: None,
-        };
-    }
-
-    crate::breaker::CanonicalSignal {
-        class: StatusClass::ClientError,
-        provider_signal: None,
-        retry_after: None,
     }
 }
 
@@ -924,6 +845,65 @@ pub struct ProtocolDecl {
 }
 
 impl ProtocolDecl {
+    /// A NAME-ONLY DECLARATION: this key, and the neutral zero for every other field.
+    ///
+    /// The declaration has forty-odd fields and almost every one of them is "no". A caller that
+    /// needs a decl in order to exercise a fold over `name`/`has_model_in_url` had to write all
+    /// forty out, and two copies of that literal already existed — one here, one on the crate that
+    /// holds the fold. Two copies of a struct literal is two places a NEW field has to be added,
+    /// and the second one is the one that gets missed.
+    ///
+    /// So the neutral row is written ONCE, beside the struct whose fields it names, and a caller
+    /// states only what is true of its own case:
+    ///
+    /// ```ignore
+    /// static URL_MODEL: ProtocolDecl = ProtocolDecl { has_model_in_url: true, ..ProtocolDecl::named("telex") };
+    /// ```
+    ///
+    /// `const`, so it composes into a `static` without a lock or a lazy cell.
+    pub const fn named(name: &'static str) -> Self {
+        Self {
+            name,
+            codec: None,
+            handler: None,
+            verbs: &[],
+            head_keys: &[],
+            streaming_content_type: None,
+            array_stream_shim_key: None,
+            native_tool_id_prefix: None,
+            ingress_auth: IngressAuth::Bearer,
+            egress_auth_headers: None,
+            egress_auth_lane_constant: false,
+            stream_usage_requires_opt_in: false,
+            requires_max_tokens: false,
+            stop_sequence_cap: None,
+            cache_markers_model_gated: false,
+            fills_thought_signature: false,
+            frame_after_message_start: None,
+            reshapes_body_at_path_base: false,
+            max_cache_control_breakpoints: None,
+            quota_exceeded_status: http::StatusCode::TOO_MANY_REQUESTS,
+            ingress_is_eventstream: false,
+            emits_sse_done_terminator: false,
+            max_citations_per_delta: None,
+            egress_user_agent: crate::proxy::EGRESS_UA_DEFAULT,
+            has_model_in_url: false,
+            auth_failure_status_and_kind: (http::StatusCode::UNAUTHORIZED, ERR_TYPE_AUTHENTICATION),
+            ingress_relays_amzn_headers: false,
+            ingress_relayed_response_header_names: &[],
+            auth_failure_message: "authentication failed",
+            uses_array_stream_shim: false,
+            has_native_path_not_found: false,
+            egress_stream_accept: crate::proxy::TEXT_EVENT_STREAM,
+            models_list_envelope: None,
+            claims: None,
+            residual_claims: None,
+            residual_default: false,
+            vendor_response_metadata: None,
+            list_models_fingerprint_headers: &[],
+        }
+    }
+
     /// True when this protocol authenticates INBOUND requests with AWS SigV4 rather than a bearer
     /// token. The auth layer's one consumer of [`ProtocolDecl::ingress_auth`], kept as a predicate
     /// so the front door reads a QUESTION rather than comparing an enum it would then have to

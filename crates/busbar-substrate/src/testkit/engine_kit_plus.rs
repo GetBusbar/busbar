@@ -23,7 +23,7 @@ use super::TestAppSeam;
 use crate::plane::registry::CardIssuer;
 use crate::plane::PlaneAdmission;
 use busbar_api::SecretResolve;
-use busbar_plugin::cold::http_endpoint::RouteAuth;
+use busbar_plugin::cold::endpoint::RouteAuth;
 use std::any::Any;
 use std::sync::Arc;
 

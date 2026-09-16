@@ -379,8 +379,8 @@ fn a_window_still_catches_a_tamper_after_its_first_record() {
 
 /// `Chain::default()` MUST equal `Chain::new()`. A derived `Default` gives `next_seq: 0`, which is
 /// not a valid sequence, and it is exactly what a clippy suggestion to replace
-/// `or_insert_with(Chain::new)` with `or_default()` once produced on the MCP call log. There is now
-/// ONE `Default` for every stream, so this pins the hazard for all of them at once.
+/// `or_insert_with(Chain::new)` with `or_default()` once produced on a downstream per-call log.
+/// There is now ONE `Default` for every stream, so this pins the hazard for all of them at once.
 #[test]
 fn the_default_chain_is_the_new_chain_because_a_derived_default_starts_at_zero() {
     assert_eq!(Chain::<Nonsense>::default(), Chain::<Nonsense>::new());

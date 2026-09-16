@@ -12,9 +12,9 @@
 //! Two things about this shape are load-bearing and easy to lose in a rewrite. First, the
 //! principal's own bucket carries no caps: it is there so every posting is attributed, and it is
 //! charged on every admission even though it can never block. Second, a pool-qualified bucket
-//! participates only when the request's effective pool EQUALS its scope — lane membership is never
-//! consulted, so a pool that happens to share a member lane with another pool never triggers that
-//! other pool's bucket.
+//! participates only when the request's effective pool EQUALS its scope — the match is exact string
+//! equality, never set membership, so a bucket scoped to one pool never triggers on a different pool
+//! that merely resembles or overlaps it.
 
 // contract: BucketChain, and the resolved group topology behind it, are types the contract crate
 // owns. They are declared here so the decision has something to walk while the crates land side by

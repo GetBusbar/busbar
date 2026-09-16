@@ -284,15 +284,14 @@ fn disposition_table_matches_the_classify_match() {
 
 // ── Not ported ───────────────────────────────────────────────────────────────────────────────────
 //
-// `crates/busbar-llm/src/engine/tests/{forward_once_pool_cell,probe_guard,probe_release_owner}_tests.rs`:
-// every test in those three files dispatches through the LLM engine's `forward_once` (live HTTP
-// mocking, pool config parsing, the routing walk) to reach the breaker assertion at the end. None
-// of that harness exists in this crate — it is the egress unit's and the LLM plane's, not the
+// Some upstream suites reach a breaker assertion only after dispatching through a full routing
+// walk (live transport mocking, config parsing, member selection). None of that harness exists in
+// this crate — the routing, selection, and transport scaffolding is another unit's, not the
 // breaker unit's — so there is nothing to port the SCAFFOLDING into; only the state-machine
 // assertions they end on are reproduced, directly against `BreakerCell`/`BreakerUnit`, below and in
-// `cell.rs`'s doc-derived arithmetic. Concretely not reproduced: the mock-HTTP-server setup, the
-// `PoolConfig`/`ModelCfg` parsing, and any assertion about the SWRR selection order or the
-// concurrency semaphore (egress unit scope).
+// `cell.rs`'s doc-derived arithmetic. Concretely not reproduced: the mock transport setup, the
+// config parsing, and any assertion about the selection order or the concurrency semaphore
+// (another unit's scope).
 
 // ── New: state-machine behavior the task calls for ──────────────────────────────────────────────
 

@@ -100,9 +100,9 @@ pub trait GovKit: Any + Send + Sync {
         exp: u64,
         now: u64,
     ) -> Result<(VirtualKey, String), String>;
-    /// Mint a key that ALSO carries a generated AWS SigV4 credential (the Bedrock-native auth
-    /// shape): the persisted key, its plaintext bearer secret, and the credential's access-key id
-    /// and secret access key. What a test needs to sign a SigV4 request against its own fixture.
+    /// Mint a key that ALSO carries a generated AWS SigV4 credential: the persisted key, its
+    /// plaintext bearer secret, and the credential's access-key id and secret access key. What a
+    /// test needs to sign a SigV4 request against its own fixture.
     fn create_key_with_aws(
         &self,
         spec: NewKeySpec,

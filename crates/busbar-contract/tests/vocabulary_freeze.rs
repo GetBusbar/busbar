@@ -31,7 +31,7 @@ fn a_registration_built_after_the_freeze_resolves_but_never_interns() {
         .key("lane-configured-at-boot")
         .expect("the vocabulary is open while the root fills it");
     let configured_lane = boot
-        .lane("gpt-4o")
+        .lane("model-1")
         .expect("the vocabulary is open while the root fills it");
     let after_boot = Registration::interned();
     Registration::freeze();
@@ -46,7 +46,7 @@ fn a_registration_built_after_the_freeze_resolves_but_never_interns() {
         Some(configured),
         "a key the root registered resolves to the same static name from anywhere"
     );
-    assert_eq!(plugin_side.lane("gpt-4o"), Some(configured_lane));
+    assert_eq!(plugin_side.lane("model-1"), Some(configured_lane));
 
     // A name that arrived with the request is refused, not leaked.
     assert_eq!(

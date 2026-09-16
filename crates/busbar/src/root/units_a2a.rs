@@ -997,8 +997,6 @@ impl<'r, S: CellStore> A2aUnits<'r, S> {
             },
             // The two clocks, and they are two READINGS: the wall epoch dates the record and the
             // monotonic reading orders it. Both pinned at arrival, so a unit is stamped once.
-            // The two clocks, and they are two READINGS: the wall epoch dates the record and the
-            // monotonic reading orders it. Both pinned at arrival, so a unit is stamped once.
             wall: self.bindings.now,
             mono: self.bindings.mono,
             origin: self.bindings.origin,

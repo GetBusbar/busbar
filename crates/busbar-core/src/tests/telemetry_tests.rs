@@ -31,7 +31,7 @@ fn test_bank_multithread_adds_sum_exactly_under_concurrent_scrape() {
     let slot = counter_slot(
         crate::metrics::REQUESTS_TOTAL,
         &[
-            ("ingress_protocol", "openai"),
+            ("ingress_protocol", "acme"),
             ("pool", "tel-bank-mt-pool"),
             ("outcome", "ok"),
         ],
@@ -80,7 +80,7 @@ fn test_reregistration_same_labels_resolves_same_slot() {
     let b = counter_slot(crate::metrics::FAILOVERS_TOTAL, &labels);
     assert_eq!(a, b, "identical counter label sets must share a slot");
 
-    let hlabels = [("ingress_protocol", "openai"), ("pool", "tel-rereg-pool")];
+    let hlabels = [("ingress_protocol", "acme"), ("pool", "tel-rereg-pool")];
     let h1 = histogram_slot(crate::metrics::REQUEST_DURATION_SECONDS, &hlabels);
     let h2 = histogram_slot(crate::metrics::REQUEST_DURATION_SECONDS, &hlabels);
     assert_eq!(h1, h2, "identical histogram label sets must share a slot");
@@ -264,10 +264,10 @@ fn test_histogram_bank_drains_all_thread_samples() {
     crate::metrics::init();
     let slot = histogram_slot(
         crate::metrics::REQUEST_DURATION_SECONDS,
-        &[("ingress_protocol", "openai"), ("pool", "tel-hist-mt-pool")],
+        &[("ingress_protocol", "acme"), ("pool", "tel-hist-mt-pool")],
     );
     assert!(slot.is_valid());
-    let labels = [("ingress_protocol", "openai"), ("pool", "tel-hist-mt-pool")];
+    let labels = [("ingress_protocol", "acme"), ("pool", "tel-hist-mt-pool")];
     let before = metric_sum("busbar_request_duration_seconds_count", &labels);
 
     let writers: Vec<_> = (0..4)
@@ -395,7 +395,7 @@ fn measure_on_a_fresh_thread() {
     let slot = histogram_slot(
         crate::metrics::REQUEST_DURATION_SECONDS,
         &[
-            ("ingress_protocol", "openai"),
+            ("ingress_protocol", "acme"),
             ("pool", "tel-unscraped-recovery-pool"),
         ],
     );
@@ -516,7 +516,7 @@ fn test_off_metrics_never_materializes_the_histogram_chunk() {
     let slot = histogram_slot(
         crate::metrics::REQUEST_DURATION_SECONDS,
         &[
-            ("ingress_protocol", "openai"),
+            ("ingress_protocol", "acme"),
             ("pool", "tel-off-no-materialize-pool"),
         ],
     );
@@ -575,7 +575,7 @@ fn test_off_metrics_retains_effectively_nothing_below_the_drain_threshold() {
     let slot = histogram_slot(
         crate::metrics::REQUEST_DURATION_SECONDS,
         &[
-            ("ingress_protocol", "openai"),
+            ("ingress_protocol", "acme"),
             ("pool", "tel-off-retention-pool"),
         ],
     );
@@ -588,7 +588,7 @@ fn test_off_metrics_retains_effectively_nothing_below_the_drain_threshold() {
     let warmup_slot = histogram_slot(
         crate::metrics::REQUEST_DURATION_SECONDS,
         &[
-            ("ingress_protocol", "openai"),
+            ("ingress_protocol", "acme"),
             ("pool", "tel-off-retention-warmup-pool"),
         ],
     );

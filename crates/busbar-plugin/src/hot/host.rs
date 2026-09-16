@@ -18,7 +18,7 @@
 //! ## Metering-lease seam (minor-19) + the extension point
 //!
 //! Metering `cost_reserve`/`cost_settle` (a reserve-then-settle `CostHold`) is the continuous-metering
-//! counterpart of the one-shot `meter_charge`, for a HIGH-RATE carrier (a live voice/stream session) a
+//! counterpart of the one-shot `meter_charge`, for a HIGH-RATE carrier (a live long-running session) a
 //! plane cannot price after the fact. It was added as two trailing slots + a minor bump (never a
 //! reshape) — the pattern every future capability follows: append at the TAIL, bump the airlock MINOR,
 //! re-seed the layout golden. The slots stay `None` in the wired host until the carrier that needs them
@@ -250,8 +250,8 @@ pub type JournalRestoreFn = extern "C-unwind" fn(
     out: *mut MaybeUninit<RestoredHdr>,
 ) -> StatusClass;
 /// SEED one scope's position from a packed set of already-read stored bodies (a `u32` count, then per
-/// body a `u32` little-endian length + bytes) — the caller-driven rehydrate the A2A task table uses
-/// for its active tasks. Writes a [`ChainBreakHdr`] (reporting a broken-but-resumed chain) on Ok.
+/// body a `u32` little-endian length + bytes) — the caller-driven rehydrate a plane's own record table
+/// uses for its active entries. Writes a [`ChainBreakHdr`] (reporting a broken-but-resumed chain) on Ok.
 pub type JournalSeedFn = extern "C-unwind" fn(
     host: HostCtx,
     kind_id: u32,
@@ -328,9 +328,9 @@ pub type ApprovalRedeemQFn =
 /// signing input (`<protected>.<payload>`) and passes its bytes as `(input_ptr, input_len)`; the host
 /// derives its domain-separated signing subkey, signs, and writes the 64-byte Ed25519 signature into
 /// `out` (a caller-provided 64-byte buffer) on [`StatusClass::Ok`]. The signing SECRET is derived and
-/// held host-side and NEVER crosses to the plane. (The a2a plane uses this to sign its agent cards,
-/// but the capability is named for what it does — sign a caller-framed input with a host subkey —
-/// not for any one protocol's document.) [`StatusClass::Refused`] when the host holds no signing
+/// held host-side and NEVER crosses to the plane. (A plane may use this to sign its own protocol-specific
+/// documents, but the capability is named for what it does — sign a caller-framed input with a host
+/// subkey — not for any one protocol's document.) [`StatusClass::Refused`] when the host holds no signing
 /// subkey (nothing to sign with); [`StatusClass::Fault`] on a caught panic — `out` is left untouched
 /// on any non-`Ok` return.
 pub type SubkeySignFn = extern "C-unwind" fn(
@@ -391,7 +391,7 @@ pub type GateDecideFn = extern "C-unwind" fn(
     hook_cap: usize,
     out: *mut MaybeUninit<GateVerdictOut>,
 ) -> StatusClass;
-/// Open a reserve-then-settle metering LEASE for a high-rate carrier (a live voice/stream session the
+/// Open a reserve-then-settle metering LEASE for a high-rate carrier (a live long-running session the
 /// plane cannot price after the fact). The plane hands ALREADY-PRICED money in nanodollars — core
 /// prices NOTHING: `reserve_nanos` is the coarse over-estimate the host debits against the grant NOW,
 /// `flat_fee_nanos` a once-per-lease session fee (`0` = none), and `cap_nanos` the TRUE budget ceiling
@@ -540,11 +540,12 @@ pub struct PlaneHostVtable {
     pub journal_compact: Option<JournalCompactFn>,
     /// Verify one scope's persisted chain (writes a verify report).
     pub journal_verify_scoped: Option<JournalVerifyScopedFn>,
-    // ── APPENDED (minor-10, the SUBKEY-SIGN seam): the host-owned subkey signer (the a2a plane uses
-    //    it to sign agent cards). The plane frames the RFC 7515 signing input and passes the bytes; the
-    //    host derives the domain-separated signing subkey, signs, and returns the 64-byte Ed25519
-    //    signature — so the signing SECRET is derived and held host-side and never crosses to the
-    //    plane. Trailing slot, append-only, same sized/versioned discipline (the minor-10 bump). ──────
+    // ── APPENDED (minor-10, the SUBKEY-SIGN seam): the host-owned subkey signer (a plane may use it
+    //    to sign its own protocol-specific documents). The plane frames the RFC 7515 signing input
+    //    and passes the bytes; the host derives the domain-separated signing subkey, signs, and
+    //    returns the 64-byte Ed25519 signature — so the signing SECRET is derived and held host-side
+    //    and never crosses to the plane. Trailing slot, append-only, same sized/versioned discipline
+    //    (the minor-10 bump). ──────────────────────────────────────────────────────────────────────
     /// Sign a caller-framed signing input with the host-owned signing subkey (writes 64 signature bytes).
     pub subkey_sign: Option<SubkeySignFn>,
     // ── APPENDED (minor-12, the URL-GUARD seam): the host-owned structural SSRF/URL guard for a
@@ -569,7 +570,7 @@ pub struct PlaneHostVtable {
     //    Trailing slot, append-only, same sized/versioned discipline (the minor-18 bump). ────────────────
     /// Fire the operator's request-admission hook gates over a neutral subject (writes a verdict).
     pub gate_decide: Option<GateDecideFn>,
-    // ── APPENDED (minor-19, the METERING-LEASE seam): a high-rate carrier (a live voice/stream
+    // ── APPENDED (minor-19, the METERING-LEASE seam): a high-rate carrier (a live long-running
     //    session) cannot be priced after the fact the way a one-shot `meter_charge` prices a
     //    completed call. These two slots open a host-owned reserve-then-settle `CostHold` and settle
     //    EXACT increments against it, reading back exhaustion so the plane hard-closes the carrier

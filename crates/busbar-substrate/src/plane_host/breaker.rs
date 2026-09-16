@@ -17,8 +17,8 @@ use busbar_plugin::hot::{FaultClass, RawFault, RawStatus, Signal, StatusClass};
 /// The inverse of the host `classify`'s fine [`FaultClass`] → [`BreakerClass`] table: the plane's own
 /// canonical class back to the ABI fine class the settle carries. Total — every [`BreakerClass`] maps
 /// to exactly one [`FaultClass`], so a settle built here round-trips through the host `classify`.
-// Built only by the MCP and A2A plane settle paths (via `failure_signal`), so it reads dead when both
-// planes are compiled out; live with either on.
+// Built only by the plane settle paths behind the `dispatch`/`relay` features (via `failure_signal`),
+// so it reads dead when both are compiled out; live with either on.
 #[cfg_attr(not(any(feature = "dispatch", feature = "relay")), allow(dead_code))]
 fn fault_of(class: BreakerClass) -> FaultClass {
     match class {
@@ -43,8 +43,8 @@ fn fault_of(class: BreakerClass) -> FaultClass {
 /// `fault_class` is what the host reads.
 ///
 /// The returned `Signal` BORROWS `cs.provider_signal`; it MUST NOT outlive `cs`.
-// Built only by the MCP and A2A plane settle paths, so it reads dead when both planes are compiled
-// out; live with either on.
+// Built only by the plane settle paths behind the `dispatch`/`relay` features, so it reads dead when
+// both are compiled out; live with either on.
 #[cfg_attr(not(any(feature = "dispatch", feature = "relay")), allow(dead_code))]
 #[must_use]
 pub fn failure_signal(cs: &CanonicalSignal) -> Signal {
@@ -75,8 +75,8 @@ pub fn failure_signal(cs: &CanonicalSignal) -> Signal {
 
 /// The ABI [`Signal`] a host settle carries for a SUCCESS — the host `classify` maps `Ok` straight to
 /// `record_success`, closing the half-open probe exactly as the plane's own success record does.
-// Built only by the MCP and A2A plane settle paths, so it reads dead when both planes are compiled
-// out; live with either on.
+// Built only by the plane settle paths behind the `dispatch`/`relay` features, so it reads dead when
+// both are compiled out; live with either on.
 #[cfg_attr(not(any(feature = "dispatch", feature = "relay")), allow(dead_code))]
 #[must_use]
 pub fn success_signal() -> Signal {
@@ -101,8 +101,8 @@ pub fn success_signal() -> Signal {
 /// the host `classify` maps `Refused` to `RecordNothing`, so settling this RELEASES the half-open probe
 /// without recording, exactly as dropping the raw `PlaneAdmission` did (the "record nothing"
 /// disposition: a busbar-side refusal / a not-transmitted leg).
-// Built only by the MCP plane leg (`mcp::tasks`/`mcp::reroute`) — the A2A relay never carries the
-// "record nothing" outcome — so it reads dead whenever the MCP plane is compiled out.
+// Built only by the settle leg behind the `dispatch` feature — the `relay` settle path never carries
+// the "record nothing" outcome — so it reads dead whenever `dispatch` is compiled out.
 #[cfg_attr(not(feature = "dispatch"), allow(dead_code))]
 #[must_use]
 pub fn refused_signal() -> Signal {

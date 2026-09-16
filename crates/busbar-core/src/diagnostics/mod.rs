@@ -28,9 +28,9 @@ pub use busbar_substrate::diagnostics::*;
 mod tests;
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
-// Emit macros. `#[macro_export]` (was crate-internal): the relocated LLM engine (`busbar-llm`) names
-// these at `busbar_core::diagnostics::{diag_warn, diag_debug, diag_error}` on its money-path, so they
-// must cross the crate boundary — the one mechanism a `macro_rules!` has for that is `#[macro_export]`
+// Emit macros. `#[macro_export]` (was crate-internal): an out-of-tree plugin crate relocated off
+// core names these at `busbar_core::diagnostics::{diag_warn, diag_debug, diag_error}` on its own hot
+// path, so they must cross the crate boundary — the one mechanism a `macro_rules!` has for that is `#[macro_export]`
 // (which also surfaces them at the crate root). The `pub use` below re-exports them at their
 // historical `crate::diagnostics::…` path so every in-crate `use crate::diagnostics::diag_warn;`
 // caller is unchanged. Sites in this crate use `use crate::diagnostics::diag_warn;`.

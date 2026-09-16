@@ -35,7 +35,7 @@ use axum::http::{HeaderMap, Method, StatusCode, Uri};
 use axum::response::Response;
 use axum::routing::{on, MethodFilter, MethodRouter};
 use busbar_plugin_loader::{
-    HttpEndpointRequest, HttpEndpointResponse, Route, RouteAuth, RouteMethod,
+    EndpointRequest, EndpointResponse, Route, RouteAuth, RouteMethod,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -92,7 +92,7 @@ pub(crate) enum RouteKind {
 /// implementor wraps a loader `DynExport`/hook handle; tests supply a fake.
 pub trait PluginHttpDispatch: Send + Sync {
     /// Serve one inbound request the engine already auth-gated + matched to this plugin's route.
-    fn handle_http(&self, req: &HttpEndpointRequest) -> HttpEndpointResponse;
+    fn handle_http(&self, req: &EndpointRequest) -> EndpointResponse;
 
     /// The app-aware serve arm: BUILT-IN export/hook dispatchers that need the LIVE `App` snapshot
     /// (the built-in `prometheus` exporter's scrape-time gauge refresh) override this; a
@@ -103,8 +103,8 @@ pub trait PluginHttpDispatch: Send + Sync {
     fn handle_http_with_app(
         &self,
         _app: &crate::state::App,
-        req: &HttpEndpointRequest,
-    ) -> HttpEndpointResponse {
+        req: &EndpointRequest,
+    ) -> EndpointResponse {
         self.handle_http(req)
     }
 }
@@ -119,10 +119,10 @@ pub trait PluginHttpDispatch: Send + Sync {
 pub(crate) struct ExportDispatch(pub(crate) Arc<busbar_plugin_loader::DynExport>);
 
 impl PluginHttpDispatch for ExportDispatch {
-    fn handle_http(&self, req: &HttpEndpointRequest) -> HttpEndpointResponse {
+    fn handle_http(&self, req: &EndpointRequest) -> EndpointResponse {
         match self.0.handle_http(req) {
             Ok(resp) => resp,
-            Err(msg) => HttpEndpointResponse {
+            Err(msg) => EndpointResponse {
                 status: 502,
                 headers: Vec::new(),
                 body: msg.into_bytes(),
@@ -225,8 +225,8 @@ impl PluginRouteTable {
         path: &str,
         method: RouteMethod,
         app: &crate::state::App,
-        req: &HttpEndpointRequest,
-    ) -> Option<(String, HttpEndpointResponse)> {
+        req: &EndpointRequest,
+    ) -> Option<(String, EndpointResponse)> {
         self.by_path
             .get(path)?
             .iter()
@@ -447,7 +447,7 @@ async fn plugin_route_dispatch(
         return StatusCode::METHOD_NOT_ALLOWED.into_response_stub();
     };
     let path = uri.path().to_string();
-    let ep_req = HttpEndpointRequest {
+    let ep_req = EndpointRequest {
         method: rm.as_str().to_string(),
         path: path.clone(),
         query: uri.query().unwrap_or("").to_string(),
@@ -519,7 +519,7 @@ fn project_request_headers(headers: &HeaderMap) -> Vec<(String, String)> {
     projected
 }
 
-/// Relay a plugin's [`HttpEndpointResponse`] as an axum [`Response`], dropping any header name/value
+/// Relay a plugin's [`EndpointResponse`] as an axum [`Response`], dropping any header name/value
 /// that is not a valid HTTP header (a plugin cannot smuggle a malformed header onto the response path).
 ///
 /// Over-cap headers are REJECTED WHOLE (a 502, never a truncated relay): this response reaches an
@@ -529,7 +529,7 @@ fn project_request_headers(headers: &HeaderMap) -> Vec<(String, String)> {
 /// is guaranteed to understand. `busbar_plugin_response_headers_rejected_total` counts the rejection and
 /// an error log names the offending plugin/route, so an operator can tell a hostile/buggy plugin from a
 /// cap that needs raising.
-fn relay_response(owner: &str, path: &str, resp: HttpEndpointResponse) -> Response {
+fn relay_response(owner: &str, path: &str, resp: EndpointResponse) -> Response {
     use axum::http::{HeaderName, HeaderValue};
     if resp.headers.len() > MAX_PLUGIN_HEADERS {
         metrics::counter!(crate::metrics::PLUGIN_RESPONSE_HEADERS_REJECTED_TOTAL).increment(1);

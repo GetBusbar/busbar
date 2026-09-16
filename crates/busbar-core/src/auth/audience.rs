@@ -15,7 +15,7 @@
 //! plane. RFC 8707 exists so a resource server can refuse a token that some authorization server
 //! legitimately issued FOR SOMEBODY ELSE. If busbar delegates that judgement to a plugin, then any
 //! token from a configured IdP — a token minted for the operator's wiki, their CI, their internal
-//! API — is spendable against busbar's MCP plane, its pools, its budget and its upstream
+//! API — is spendable against an audience-bound plane, its pools, its budget and its upstream
 //! credentials. That is the confused-deputy attack, and it is not hypothetical: it is the default
 //! outcome of a correctly-implemented OIDC plugin doing exactly its job, which is to say "yes, our
 //! IdP signed this".
@@ -43,9 +43,9 @@
 //! establish that such a token was minted for busbar, and the honest answer to "I cannot tell" on a
 //! confused-deputy defence is refusal, not admission. So an opaque bearer is [`Binding::Opaque`] and
 //! an audience-bound plane refuses it. Supporting those IdPs needs token introspection, which is a
-//! separate unit; until it exists, an operator whose IdP issues opaque tokens cannot serve the MCP
-//! plane, and finds that out from a clear refusal rather than from an audience check that silently
-//! was not happening.
+//! separate unit; until it exists, an operator whose IdP issues opaque tokens cannot serve an
+//! audience-bound plane, and finds that out from a clear refusal rather than from an audience check
+//! that silently was not happening.
 
 use base64::Engine as _;
 
@@ -63,8 +63,8 @@ pub use busbar_substrate::plane_host::AudienceBinding as Binding;
 /// `expected_aud` is compared for EQUALITY against each entry of the `aud` claim. RFC 7519 allows
 /// `aud` to be a single string or an array of them, and both forms are accepted — but neither is
 /// matched as a prefix, a suffix, or case-insensitively. A resource indicator is an opaque
-/// identifier; treating it as a namespace is how `https://gw.example.com/mcp` begins admitting
-/// tokens minted for `https://gw.example.com/mcp-staging`.
+/// identifier; treating it as a namespace is how `https://gw.example.com/resource` begins admitting
+/// tokens minted for `https://gw.example.com/resource-staging`.
 pub fn inspect_bearer(token: &str, expected_aud: &str) -> Binding {
     if token.starts_with(crate::governance::signing::TOKEN_PREFIX) {
         return Binding::Deferred;

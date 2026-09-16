@@ -1516,7 +1516,7 @@ fn dreq(text: &str) -> RoutingRequest<'static> {
     RoutingRequest {
         request_id: 1,
         pool: "p",
-        ingress_protocol: "anthropic",
+        ingress_protocol: "acme",
         requested_model: None,
         message_count: 1,
         tool_count: 0,

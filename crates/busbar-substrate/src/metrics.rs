@@ -417,7 +417,11 @@ pub fn init_with(buffer: Duration) {
             // inventing label values, which the cardinality contract above forbids. The
             // labeled gauges appear on the first scrape via `refresh_scrape_gauges`.
             metrics::counter!(BILLING_TRUNCATED_TOTAL).absolute(0);
-            metrics::counter!(METERING_PENDING_COALESCED_TOTAL).absolute(0);
+            // NOT pre-registered: unlike BILLING_TRUNCATED_TOTAL (a 1.5.5 series), the
+            // write-behind coalesce sentinel must not appear on `/metrics` until it is actually
+            // incremented (a sustained store outage overflowed the accumulator). Pre-touching it
+            // at 0 would expose the series on an idle 1.5.5-style config, which 1.5.5 never did;
+            // it is still described (below) and rendered with HELP/TYPE the moment it fires.
             spawn_maintenance(bucket);
             Some(handle)
         }

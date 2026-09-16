@@ -3,47 +3,51 @@
 
 //! THE APPEND-ONLY HASH CHAIN — one mechanism, in core, for every stream of evidence busbar keeps.
 //!
-//! ## Why this is core and not a plane's
+//! ## Why this is core and not a plugin's
 //!
-//! Owner's ruling, 2026-08-13: *"auditing is core. nothing auditing wise should be mcp a2a or llm
-//! specific. thats how audits break."* It is exact, and the reason is the product claim rather than
-//! tidiness. busbar sells TAMPER-EVIDENCE: a chain detects an altered, reordered, inserted or
-//! deleted record after the fact. THREE chain implementations mean three answers to "what happened",
-//! and an auditor reads whichever one was wired last. A per-plane audit does not merely duplicate
-//! code — it falsifies the property the code exists to provide.
+//! Owner's ruling, 2026-08-13 (paraphrased): auditing is core; nothing about it should be specific
+//! to any one plugin. That's how audits break. It is exact, and the reason is the product claim
+//! rather than tidiness. busbar sells TAMPER-EVIDENCE: a chain detects an altered, reordered,
+//! inserted or deleted record after the fact. Several independent chain implementations mean
+//! several answers to "what happened", and an auditor reads whichever one was wired last. A
+//! per-plugin audit does not merely duplicate code — it falsifies the property the code exists to
+//! provide.
 //!
 //! So there is ONE append ([`Chain::append`]/[`seal`]), ONE digest ([`digest`]) and ONE verifier
-//! ([`verify_chain`]/[`verify_window`]), and they live here. A plane supplies the RECORD; it never
+//! ([`verify_chain`]/[`verify_window`]), and they live here. A plugin supplies the RECORD; it never
 //! supplies the mechanism. [`crate::trust`] is the precedent this copies rather than a new idea: it
-//! owns the trust lifecycle while a plane supplies only the artifact, and `a2a/pin.rs` says so in
-//! its own header — *"A2A supplies an artifact; it does not supply a second state machine."*
+//! owns the trust lifecycle while a plugin supplies only the artifact, and a downstream plugin
+//! integration's own header states the same rule for its own domain: a plugin supplies an
+//! artifact; it does not supply a second state machine.
 //!
 //! ## ONE MECHANISM IS NOT ONE STREAM, and conflating them would be a different defect
 //!
-//! Three chains run on this one mechanism and they stay SEPARATE:
+//! Several chains can run on this one mechanism and they stay SEPARATE:
 //!
 //! | stream | scope of a chain | rate |
 //! |---|---|---|
 //! | [`crate::admin::audit`] — admin MUTATIONS | one chain, process-wide | operator-rate |
-//! | [`crate::calllog`] — MCP tool CALLS | one chain per PRINCIPAL | request-rate |
-//! | [`crate::provenance`] — A2A task EVENTS | one chain per TASK | task-rate |
+//! | a per-caller request log kept by a downstream plugin | one chain per PRINCIPAL | request-rate |
+//! | a per-task event log kept by a downstream plugin | one chain per TASK | task-rate |
 //!
-//! `mcp/calllog.rs`'s own header records why the per-call event was moved OFF the admin ring: an
-//! admin mutation is operator-rate and a tool call is REQUEST-rate, so sharing one bounded ring
-//! means a busy afternoon evicts every admin record, silently. Unifying the MECHANISM must not
-//! re-merge the STREAMS, and it does not: [`ChainedRecord::scope_of`] is what keeps them apart, and
-//! the verifier REFUSES a record whose scope is not the chain's ([`ChainBreakKind::ForeignScope`]),
-//! so one caller's evidence can never be made to depend on another caller's rows. store-mysql had a
-//! real cross-principal read defect of exactly that shape (a case-insensitive collation let one key
-//! id read another's chain), and the scope check is the engine-side half of not repeating it.
+//! One such downstream stream's own header records why its per-call event was moved OFF the admin
+//! ring: an admin mutation is operator-rate and a per-call event is REQUEST-rate, so sharing one
+//! bounded ring means a busy afternoon evicts every admin record, silently. Unifying the MECHANISM
+//! must not re-merge the STREAMS, and it does not: [`ChainedRecord::scope_of`] is what keeps them
+//! apart, and the verifier REFUSES a record whose scope is not the chain's
+//! ([`ChainBreakKind::ForeignScope`]), so one caller's evidence can never be made to depend on
+//! another caller's rows. store-mysql had a real cross-principal read defect of exactly that shape
+//! (a case-insensitive collation let one key id read another's chain), and the
+//! scope check is the engine-side half of not repeating it.
 //!
-//! ## WHAT A PLANE STILL OWNS: which fields the digest covers
+//! ## WHAT A PLUGIN STILL OWNS: which fields the digest covers
 //!
-//! The three digests cover different fields, and that difference is legitimate — an admin mutation
-//! has an `action` and a `resource`, a tool call has a `tool` and a pin generation, a task event has
-//! a state. So [`ChainedRecord::digest_fields`] is the ONE thing a record type supplies about the
-//! digest: which fields, in which order. Everything else — the sequence allocation, the `prev_hash`
-//! linkage, the canonicalisation, the hash function and the verification walk — is here, once.
+//! Different streams cover different fields, and that difference is legitimate — an admin mutation
+//! has an `action` and a `resource`, while a plugin-defined event may have entirely different
+//! fields of its own. So [`ChainedRecord::digest_fields`] is the ONE thing a record type supplies
+//! about the digest: which fields, in which order. Everything else — the sequence allocation, the
+//! `prev_hash` linkage, the canonicalisation, the hash function and the verification walk — is
+//! here, once.
 //!
 //! ADDING A FOURTH STREAM COSTS A RECORD TYPE AND NOTHING ELSE. That is the acceptance test for this
 //! seam, and `tests/chain_tests.rs` writes a throwaway fourth record type and chains and verifies it
@@ -82,7 +86,8 @@ pub(crate) enum Framing {
     /// property of today's fields rather than of the code.
     LengthPrefixed,
     /// Fields joined by `|`, integers in decimal. The legacy framing of the admin audit chain and
-    /// the A2A task provenance chain, kept byte-for-byte because their records are already on disk.
+    /// one other stream's provenance chain, kept byte-for-byte because their records are already on
+    /// disk.
     PipeSeparated,
 }
 
@@ -181,7 +186,7 @@ pub(crate) fn frame_prelude(
 /// without the error type having to be generic over the record.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ChainLabels {
-    /// Written as it should read mid-sentence, e.g. "the MCP per-call chain".
+    /// Written as it should read mid-sentence, e.g. "the per-call chain".
     pub(crate) chain: &'static str,
     /// The noun for what one chain is scoped TO: "principal", "task", "log".
     pub(crate) scope: &'static str,
@@ -275,9 +280,10 @@ pub(crate) struct Chain<R> {
 /// valid sequence — the first record of a chain is `seq` 1 — and the derive would hand a silently
 /// zero-based chain to every `entry().or_default()` that reaches it. That is not hypothetical: it is
 /// exactly what a clippy suggestion to replace `or_insert_with(Chain::new)` with `or_default()`
-/// produced on the MCP call log, and it went undetected by that module's own focused run because the
-/// two constructors were only distinguishable through the SUITE. Now there is one `Default` for
-/// every stream instead of one per plane, so the hazard is closed in one place. Pinned by
+/// produced on a downstream per-call log, and it went undetected by that module's own focused run
+/// because the two constructors were only distinguishable through the SUITE. Now there is one
+/// `Default` for every stream instead of one per plugin, so the hazard is closed in one place.
+/// Pinned by
 /// `the_default_chain_is_the_new_chain_because_a_derived_default_starts_at_zero`.
 impl<R> Default for Chain<R> {
     fn default() -> Self {

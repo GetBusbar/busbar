@@ -5,9 +5,9 @@
 //!
 //! ## Why it is the trust unit's and not a transport's
 //!
-//! This check was written three times over — once for a dispatch path, once for a card fetch, once
-//! for an authorization server's metadata fetch — and the second copy was already borrowing the
-//! first's vocabulary in its own comments. Two implementations of one security control is the shape
+//! This check was written three times over — once on each fetch path that reached out to a
+//! configured URL — and the second copy was already borrowing the first's vocabulary in its own
+//! comments. Two implementations of one security control is the shape
 //! that produces a metadata bypass: somebody hardens one and the other keeps the hole.
 //!
 //! It lived in a neutral leaf for exactly that reason, and it is here now for one more: a transport
@@ -64,7 +64,7 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 ///
 /// The `localhost` family is deliberately NOT here: it is a SEPARATE arm in
 /// [`dns_name_is_internal`], because [`ssrf_blocked_host`] allows `localhost` (a legitimate
-/// local-model upstream) while the webhook, OTLP and A2A-card guards block it. Keeping the two
+/// loopback upstream) while other fetch guards block it. Keeping the two
 /// lists apart is what lets one guard opt out of the localhost arm without also opting out of the
 /// metadata one.
 ///
@@ -87,8 +87,8 @@ pub const METADATA_HOSTS: &[&str] = &[
 /// one of those ranges (Azure WireServer, and OCI IMDS via the `192.0.0.0/24` it sits inside),
 /// which the range predicates would otherwise miss entirely.
 ///
-/// This is the predicate `observability::host_is_internal` was written around, hoisted here so the
-/// A2A card fetch (`a2a::fetch`) reuses it rather than growing a fourth copy. Duplicated SECURITY
+/// This is the predicate the internal-host check was written around, hoisted here so every other
+/// fetch path reuses it rather than growing a fourth copy. Duplicated SECURITY
 /// logic is the one place a documented divergence does not neutralize drift: a contributor
 /// hardening one guard against a new range would silently miss the others.
 pub fn ipv4_is_internal(v4: &Ipv4Addr) -> bool {
@@ -101,16 +101,16 @@ pub fn ipv4_is_internal(v4: &Ipv4Addr) -> bool {
         || v4.is_unspecified()
         || v4.is_broadcast()
         || *v4 == AZURE_WIRESERVER
-        // MULTICAST and DOCUMENTATION arrived here from the MCP client's own copy when the two were
-        // unified. The copy had them and this one did not, so the A2A card fetch — which already
-        // used this predicate — was the weaker of the two without anyone deciding that. Neither is
+        // MULTICAST and DOCUMENTATION were unified in from a duplicate copy of this predicate. One
+        // copy had them and this one did not, so the path using this copy was the weaker of the two
+        // without anyone deciding that. Neither is
         // a plausible destination for an upstream a caller nominates, and `224.0.0.1` reaches every
         // host on the local segment.
         || v4.is_multicast()
         || v4.is_documentation()
-        // ── THE THREE ROWS BELOW ARRIVED FROM `a2a::pushnotify`'s PRIVATE COPY when that copy was
+        // ── THE THREE ROWS BELOW WERE UNIFIED IN FROM A DUPLICATE PRIVATE COPY when that copy was
         //    torn out. The tear-out is only safe if this predicate already covers everything the
-        //    copy covered, and it did not: a plane that stopped using its own table and started
+        //    copy covered, and it did not: a path that stopped using its own table and started
         //    using this one would have SILENTLY WIDENED what it accepts. That is the drift this
         //    module exists to prevent, arriving in the shape of a cleanup.
         //
@@ -324,8 +324,8 @@ pub struct GuardPolicy {
     /// admits plaintext too — an operator pointing busbar at `http://127.0.0.1` has made ONE
     /// decision, and making them write two flags would teach that the second one is harmless.
     pub allow_plaintext: bool,
-    /// How many redirects may be FOLLOWED. Zero is a legitimate setting and is the MCP dispatch
-    /// path's: a 3xx there is a URL nobody validated, arriving when the credential is already sent.
+    /// How many redirects may be FOLLOWED. Zero is a legitimate setting: a 3xx is a URL nobody
+    /// validated, arriving when the credential is already sent.
     pub max_redirects: u8,
     /// Largest body accepted, in bytes. An unbounded read from an upstream is an unbounded
     /// allocation whose size the upstream chooses.
@@ -360,9 +360,9 @@ impl GuardPolicy {
 ///
 /// Every arm names the URL, host or address that caused it, because a refusal an operator cannot
 /// diagnose is a refusal an operator disables. Callers with an established vocabulary convert this
-/// into their own refusal type so an operator reading a log still sees "MCP upstream" or "agent
-/// card"; callers without one render it with the [`std::fmt::Display`] below. What no caller does is
-/// re-derive the DECISION, which is the whole reason this enum is here and not there.
+/// into their own refusal type so an operator reading a log still sees the caller's own name for
+/// the destination; callers without one render it with the [`std::fmt::Display`] below. What no
+/// caller does is re-derive the DECISION, which is the whole reason this enum is here and not there.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AddressRefusal {
     /// The URL had no `http`/`https` scheme, or no scheme at all. Everything else — `file:`,
@@ -912,8 +912,8 @@ fn percent_decode_host(host: &str) -> Cow<'_, str> {
 /// is worse still, because the padding hides the SCHEME rather than the host:
 /// `" http://169.254.169.254/"` splits on `://` into the scheme `" http"`, which matches neither
 /// `http` nor `https`, so `strip_scheme` returns `None` and the URL is waved through without any
-/// host ever being examined. This matters most at the token endpoints, which POST the operator's
-/// `client_id`/`client_secret` to the configured URL verbatim — a metadata host the guard failed to
+/// host ever being examined. This matters most where the operator's credentials are POSTed to the
+/// configured URL verbatim — a metadata host the guard failed to
 /// recognize is a metadata host that receives those credentials.
 ///
 /// Both halves are borrowing where there is nothing to do: an ordinary configured URL carries no
@@ -1035,12 +1035,13 @@ fn normalize_authority(rest: &str) -> Option<String> {
 }
 
 /// True when `host` (already normalized by [`extract_normalized_host`]) is a private, loopback, or
-/// link-local target — the legitimate LOCAL-MODEL destinations (Ollama / vLLM / LM Studio on
-/// `localhost`, `127.0.0.1`, RFC-1918, or a Tailscale CGNAT address). Used to KEY THE SCHEME RULE:
-/// plaintext `http://` is permitted to these (a local model rarely terminates TLS and there is no
-/// off-box wiretap), while a PUBLIC host must use `https://` (cleartext would leak the API key on the
-/// wire). This is NOT the SSRF decision — under the metadata-denylist model these hosts are ALLOWED
-/// as upstreams; this predicate only governs whether plaintext is acceptable for the hop.
+/// link-local target — the legitimate private destinations (`localhost`,
+/// `127.0.0.1`, RFC-1918, or a Tailscale CGNAT address). Used to KEY THE SCHEME RULE:
+/// plaintext `http://` is permitted to these (a loopback or private-network peer rarely terminates
+/// TLS and there is no
+/// off-box wiretap), while a PUBLIC host must use `https://` (cleartext would leak the credential on
+/// the wire). This is NOT the SSRF decision — under the metadata-denylist model these hosts are
+/// ALLOWED as upstreams; this predicate only governs whether plaintext is acceptable for the hop.
 pub fn host_is_private_or_loopback(host: &str) -> bool {
     use std::net::IpAddr;
 
@@ -1269,12 +1270,12 @@ pub fn expand_alternate_ipv4(host: &str) -> Option<std::net::Ipv4Addr> {
 /// Return `Some(host)` if the given URL targets a CLOUD-METADATA endpoint that must be blocked, else
 /// `None`. This is the SSRF guard under the metadata-denylist model.
 ///
-/// Threat model: a client can NEVER influence a provider `base_url` — it picks a model NAME, which
-/// maps through an operator pool to an operator-configured URL. So there is no client-driven SSRF.
-/// The ONLY real risk is an operator typo / templated-config accidentally pointing a key-bearing lane
-/// at a credential-leaking metadata service. Therefore: block a comprehensive metadata DENYLIST and
-/// ALLOW EVERYTHING ELSE — loopback, RFC-1918, CGNAT, and public are all legitimate upstreams (local
-/// Ollama/vLLM "just works" with no flag).
+/// Threat model: a caller can NEVER influence a destination's configured URL — it names a route,
+/// which maps through an operator pool to an operator-configured URL. So there is no caller-driven
+/// SSRF. The ONLY real risk is an operator typo / templated-config accidentally pointing a
+/// key-bearing lane at a credential-leaking metadata service. Therefore: block a comprehensive
+/// metadata DENYLIST and ALLOW EVERYTHING ELSE — loopback, RFC-1918, CGNAT, and public are all
+/// legitimate upstreams (a local loopback upstream "just works" with no flag).
 ///
 /// The hardcoded denylist:
 /// * link-local `169.254.0.0/16` — catches IMDS `169.254.169.254`, AWS ECS task-creds
@@ -1297,7 +1298,7 @@ pub fn expand_alternate_ipv4(host: &str) -> Option<std::net::Ipv4Addr> {
 ///
 /// * `allow_all` is `security.allow_all_metadata` — the nuclear override; when `true` the guard is
 ///   fully disabled and the function always returns `None`.
-/// * `allow_overrides` is the UNION of the provider's `allow_metadata_hosts` and the global
+/// * `allow_overrides` is the UNION of a destination's `allow_metadata_hosts` and the global
 ///   `security.allow_metadata_hosts` — a surgical carve-out. An entry is matched with the SAME
 ///   canonicalization as the block check (an IP entry unblocks all its obfuscated spellings —
 ///   decimal-int, IPv4-mapped/compatible IPv6, trailing-dot — mirroring how a block entry blocks
@@ -1435,7 +1436,7 @@ pub struct Denylist {
 impl Denylist {
     /// State a deployment's additions, carve-outs and override, canonicalizing both lists once.
     ///
-    /// `blocked` is `security.blocked_metadata_hosts`, `allowed` is the union of the provider's
+    /// `blocked` is `security.blocked_metadata_hosts`, `allowed` is the union of a destination's
     /// `allow_metadata_hosts` and the global one, and `allow_all` is `security.allow_all_metadata`.
     #[must_use]
     pub fn new(blocked: &[String], allowed: &[String], allow_all: bool) -> Self {

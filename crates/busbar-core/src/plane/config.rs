@@ -6,18 +6,19 @@
 //!
 //! ## Why the whole rule lives here and not on a plane
 //!
-//! It was written twice — `a2a/config.rs` and `mcp/config.rs` each carried a
+//! It was written twice — two separate plane-local `config.rs` files each carried a
 //! `refuse_cross_plane_reference` and a `validate_section_hooks`, and the two were byte-identical
-//! down to the sentence an operator reads. Two of them included the same HARDCODED section list,
-//! `["pools", "tools", "agents", "export", "identity-providers"]`, in two protocol-local files that
-//! no compiler links. Nothing made them agree; they agreed because one was copied from the other.
+//! down to the sentence an operator reads. Two of them included the same HARDCODED section list, a
+//! literal list of every plane section spelling plus the named-definition maps, in two plane-local
+//! files that no compiler links. Nothing made them agree; they agreed because one was copied from
+//! the other.
 //!
 //! That list is the part that rots. It is a fact about the top-level config grammar, and the config
 //! grammar is declared in two tables that already exist: the plane registry keys name the plane sections and
 //! [`NamedMapSection::ALL`] names the 1.5.3 named-definition maps. A plane or a section added to
 //! either table used to leave both copies of the literal behind, and a section missing from the
-//! literal is not a loud failure — it is `agents.planner` being accepted as a bare hook name,
-//! resolving to nothing, and an operator believing a control is attached that is not.
+//! literal is not a loud failure — it is a dotted reference into some section being accepted as a
+//! bare hook name, resolving to nothing, and an operator believing a hook is attached that is not.
 //!
 //! So the list is DERIVED ([`config_sections`]) and passed in as a PARAMETER rather than written.
 //! The judgement takes the sections it is judging against, which is also what lets a plane busbar
@@ -40,51 +41,52 @@
 //! [`super::RefError::CrossPlane`]. It is a SECOND, STRUCTURAL check and not a duplicate of this
 //! one. They answer different questions at different moments:
 //!
-//!   * THIS one runs at PARSE time, on a STRING, before anything is known to exist. It refuses
-//!     `agents.planner` written where a bare name belongs — a SHAPE that names a plane, whether or
-//!     not any `planner` exists anywhere.
+//!   * THIS one runs at PARSE time, on a STRING, before anything is known to exist. It refuses a
+//!     dotted reference like `sectionname.entryname` written where a bare name belongs — a SHAPE
+//!     that names a plane, whether or not any entry by that name exists anywhere.
 //!   * [`super::PlaneSections::resolve`] runs at RESOLVE time, on a name that EXISTS. It refuses a
-//!     bare `planner` that resolves on a sibling plane — a name whose shape is legal and whose
+//!     bare name that resolves on a sibling plane — a name whose shape is legal and whose
 //!     BINDING crosses the boundary.
 //!
 //! Neither subsumes the other: this one fires on a name nothing defines, and that one fires on a
 //! name with no dot in it. Collapsing them would not deduplicate a check, it would delete one.
 //!
-//! ## THE SECTION SPLIT, and why it is here rather than three times
+//! ## THE SECTION SPLIT, and why it is here rather than once per plane
 //!
-//! `pools:`, `tools:` and `agents:` are SIBLINGS OF ONE SHAPE — that is the sentence every one of
-//! the three section modules opens with — and the shape is: a map whose keys are registrations,
-//! except for the two words reserved at the section level on EVERY plane
+//! Every plane's named-definition section is a SIBLING OF ONE SHAPE — that is the sentence every one
+//! of the plane-local section modules opens with — and the shape is: a map whose keys are
+//! registrations, except for the two words reserved at the section level on EVERY plane
 //! ([`busbar_substrate::plane::config::RESERVED_SECTION_KEYS`]), which are lifted out first as the
 //! all-plane `hooks:` attach (a LIST, so ADDITIVE) and the all-plane `upstream_credentials:` default
 //! (a SCALAR, so OVERRIDE).
 //!
-//! That shape was READ THREE TIMES — `config/mod.rs`'s `PoolsCfg`, `mcp/config.rs`'s `ToolsCfg` and
-//! `a2a/config.rs`'s `AgentsCfg` each carried its own `Deserialize` doing the same six steps in the
+//! That shape was READ ONCE PER PLANE — this crate's own top-level registry section and each
+//! plane-local section type each carried its own `Deserialize` doing the same six steps in the
 //! same order: refuse a reserved key holding a MAPPING before the typed lifts (so the operator reads
 //! "that name is reserved" instead of "expected a sequence"), lift `hooks`, lift
 //! `upstream_credentials`, then walk the remainder refusing a reserved NAME, parse each value and
-//! run the plane's value rules. Three copies of a parse ORDER is the shape this repo's plane ledger
-//! calls DEBT, and it is the dangerous kind: the pre-lift refusal is the step a fourth plane would
-//! be likeliest to omit, and omitting it does not fail — it produces a confusing type error on a
-//! config that should have been named.
+//! run the plane's value rules. One copy of a parse ORDER per plane is the shape this repo's plane
+//! ledger calls DEBT, and it is the dangerous kind: the pre-lift refusal is the step a new plane
+//! would be likeliest to omit, and omitting it does not fail — it produces a confusing type error on
+//! a config that should have been named.
 //!
 //! So [`split_section`] owns the ORDER and every SENTENCE, and a plane supplies the only three
 //! things that genuinely differ: WHICH plane it is (the section word and the noun an operator reads
-//! back both come off [`Plane`], so there is no second vocabulary to keep in step), the TYPE one
-//! registration parses into, and its own VALUE RULES. Everything a plane keeps after that is a rule
-//! about ITS OWN values — which is why `mcp/config.rs` and `a2a/config.rs` share a filename and
-//! nothing else.
+//! back both come off the plane's own decl, so there is no second vocabulary to keep in step), the
+//! TYPE one registration parses into, and its own VALUE RULES. Everything a plane keeps after that
+//! is a rule about ITS OWN values — which is why each plane-local section module shares this
+//! module's shape and nothing else.
 
 use serde::Deserialize;
 
 // Phase-C config-seam: the NEUTRAL config-seam contracts moved to `busbar_substrate::plane::config`
 // (they name only `busbar_api::SecretRef` + `serde_json`/`std`). Core re-exports them so its own call
 // sites — and every `crate::plane::config::{PlaneCfg, PlaneEndpointCfg, ContainerGateInputs,
-// refuse_cross_plane_reference}` reach in `config/mod.rs`, `a2a/`, `registry.rs` — are unchanged. The
-// neutral section-map split (`split_section`, its `Section`, the reserved-key literal) ALSO moved to
-// substrate; core keeps only the thin `split_section` WRAPPER below that turns a plane key into the
-// section/noun words via `super::registry`, plus `config_sections`, which reaches that registry.
+// refuse_cross_plane_reference}` reach in `config/mod.rs`, a plane crate's own config module,
+// `registry.rs` — are unchanged. The neutral section-map split (`split_section`, its `Section`, the
+// reserved-key literal) ALSO moved to substrate; core keeps only the thin `split_section` WRAPPER
+// below that turns a plane key into the section/noun words via `super::registry`, plus
+// `config_sections`, which reaches that registry.
 pub use busbar_substrate::plane::config::{
     refuse_cross_plane_reference, ContainerGateInputs, PlaneCfg, PlaneEndpointCfg,
 };
@@ -97,13 +99,13 @@ pub(crate) use busbar_substrate::plane::config::{judge_hook_ref, HookRefError};
 /// A PLANE'S TOP-LEVEL CONFIG SECTION, CAPTURED RAW — the neutral carrier `DeployCfg`/`RootCfg` use
 /// for a plane's section in a build where the plane that would LOWER it is compiled out.
 ///
-/// The MCP plane's `tools:`/`mcp:` sections and the A2A plane's `agents:` section deserialize into
-/// `crate::mcp::config::ToolsCfg` / `crate::mcp::McpCfg` / `crate::a2a::config::AgentsCfg` — types
-/// that do not exist when their plane is compiled out (`plane-mcp` / `plane-a2a`). So in that build
-/// the field is typed `RawPlaneSection` instead (behind `#[cfg(not(feature = "plane-<x>"))]`), which
-/// captures whatever the operator wrote without naming a plane type. A section that carries CONTENT
-/// in such a build names a plane that is not present; `resolve` REFUSES it (see the config
-/// deletion-gate leg), exactly as the protocol registry refuses a config naming a deleted dialect.
+/// A declared-definition section and its paired endpoint block (when the plane has one) deserialize
+/// into that plane's own config types — types that do not exist when their plane is compiled out
+/// (each gated by its own `plane-<x>` feature). So in that build the field is typed `RawPlaneSection`
+/// instead (behind `#[cfg(not(feature = "plane-<x>"))]`), which captures whatever the operator wrote
+/// without naming a plane type. A section that carries CONTENT in such a build names a plane that is
+/// not present; `resolve` REFUSES it (see the config deletion-gate leg), exactly as the protocol
+/// registry refuses a config naming a deleted dialect.
 ///
 /// This type lives OUTSIDE `config/` on purpose: `cargo xtask gate config-schema` fingerprints the
 /// `config/` directory, and the `#[cfg(feature = "plane-<x>")]` twin field (declared LAST) is what
@@ -179,9 +181,9 @@ impl PlaneCfg for RawPlaneSection {
     }
 }
 
-// The `mcp:` ENDPOINT carrier when the MCP plane is compiled out: a present `mcp:` block names a
-// plane this build cannot serve, refused at resolve (the deletion-gate leg) exactly as a present
-// `tools:` section is.
+// The `mcp:` ENDPOINT carrier when the plane that owns it is compiled out: a present `mcp:` block
+// names a plane this build cannot serve, refused at resolve (the deletion-gate leg) exactly as a
+// present `tools:` section is.
 impl PlaneEndpointCfg for RawPlaneSection {
     fn is_present(&self) -> bool {
         RawPlaneSection::is_present(self)
@@ -241,7 +243,7 @@ where
     }
 }
 
-/// Deserialize this plane's top-level ENDPOINT block (the MCP plane's `mcp:` door) through its
+/// Deserialize this plane's top-level ENDPOINT block (the owning plane's `mcp:` door) through its
 /// `parse_endpoint` seam hook — the twin of [`deserialize_plane_section`] for the one plane section
 /// that is an endpoint rather than a registry. Compiled out ⇒ raw capture, refused at `resolve`.
 fn deserialize_plane_endpoint<'de, D>(
@@ -263,9 +265,9 @@ where
     }
 }
 
-/// THE `tools:` MCP SERVER REGISTRY as it lands in `DeployCfg`, type-erased behind [`PlaneCfg`] — the
-/// neutral seam the MCP plane's `ToolsCfg` deserializes through, so `DeployCfg` names no `crate::mcp`
-/// type. Absent ⇒ the plane's `Default` (an empty registry).
+/// THE `tools:` REGISTRY SECTION as it lands in `DeployCfg`, type-erased behind [`PlaneCfg`] — the
+/// neutral seam the owning plane's own registry-config type deserializes through, so `DeployCfg`
+/// names no plane-local type. Absent ⇒ the plane's `Default` (an empty registry).
 #[derive(Debug)]
 pub struct ToolsSection(pub Box<dyn PlaneCfg>);
 
@@ -289,8 +291,9 @@ impl<'de> serde::Deserialize<'de> for ToolsSection {
     }
 }
 
-/// THE `agents:` A2A REGISTRY as it lands in `DeployCfg`, type-erased behind [`PlaneCfg`] — the
-/// neutral seam the A2A plane's `AgentsCfg` deserializes through. Absent ⇒ an empty registry.
+/// THE `agents:` REGISTRY SECTION as it lands in `DeployCfg`, type-erased behind [`PlaneCfg`] — the
+/// neutral seam the owning plane's own registry-config type deserializes through. Absent ⇒ an empty
+/// registry.
 #[derive(Debug)]
 pub struct AgentsSection(pub Box<dyn PlaneCfg>);
 
@@ -314,15 +317,15 @@ impl<'de> serde::Deserialize<'de> for AgentsSection {
     }
 }
 
-/// THE `streams:` VOICE-PLANE SECTION as it lands in `DeployCfg`, type-erased behind [`PlaneCfg`] —
-/// the neutral seam the voice plane's `StreamsCfg` deserializes through, so `DeployCfg` names no
-/// `busbar_voice` type. Absent ⇒ the plane's `Default` (the empty `streams:`).
+/// THE `streams:` SECTION as it lands in `DeployCfg`, type-erased behind [`PlaneCfg`] — the neutral
+/// seam the owning plane's own config type deserializes through, so `DeployCfg` names no plane-local
+/// type. Absent ⇒ the plane's `Default` (the empty `streams:`).
 ///
-/// `streams` is a SINGULAR typed section (one live-voice posture per deployment), NOT a
-/// named-definition map, so it is keyed by the bare `"streams"` config-section literal rather than a
-/// `NamedMapSection` index — the generic seam resolves the voice decl by that config section. The
-/// plane compiled out (voice off, the default build) captures it RAW and refuses a present section at
-/// `resolve`, exactly as `tools:`/`agents:` are.
+/// `streams` is a SINGULAR typed section (one posture per deployment), NOT a named-definition map, so
+/// it is keyed by the bare `"streams"` config-section literal rather than a `NamedMapSection` index —
+/// the generic seam resolves the owning plane's decl by that config section. The plane compiled out
+/// (the default build) captures it RAW and refuses a present section at `resolve`, exactly as
+/// `tools:`/`agents:` are.
 #[derive(Debug)]
 pub struct StreamsSection(pub Box<dyn PlaneCfg>);
 
@@ -341,8 +344,8 @@ impl<'de> serde::Deserialize<'de> for StreamsSection {
 }
 
 /// THE `mcp:` ENDPOINT BLOCK as it lands in `DeployCfg`, type-erased behind [`PlaneEndpointCfg`] — the
-/// neutral seam the MCP plane's `McpCfg` deserializes through. Absent/null ⇒ `None` (not an MCP
-/// server), byte-identical to the pre-seam `Option<McpCfg>::default()`.
+/// neutral seam the owning plane's own endpoint-config type deserializes through. Absent/null ⇒
+/// `None` (endpoint not configured), byte-identical to the pre-seam typed field's `Default`.
 #[derive(Debug, Default)]
 pub(crate) struct McpEndpointSection(pub(crate) Option<Box<dyn PlaneEndpointCfg>>); // plane-purity: frozen-wire McpEndpointSection is recorded verbatim in config-schema.snapshot.json as the mcp: field type
 
@@ -403,7 +406,7 @@ pub(crate) fn config_sections_from(
 
 /// A whole attach list, judged by the same rule one entry is — the SECTION-level `hooks:` list has
 /// no per-entry parse to hang off, and a looser rule there would be a hole in exactly the place an
-/// operator attaches a control to everything.
+/// operator attaches a hook to everything.
 pub fn validate_section_hooks(
     at: &str,
     hooks: &[String],
@@ -419,7 +422,8 @@ pub fn validate_section_hooks(
 // (the neutral half — the reserved-key refusals + the two typed lifts, taking its section/noun WORDS
 // as params so it names no plane registry). Re-exported here so `crate::plane::config::Section` still
 // resolves; the core `split_section` below is the thin wrapper that supplies the words from the plane
-// registry so core's own callers (`config/mod.rs` pools, `a2a/config.rs`) pass a plane KEY unchanged.
+// registry so core's own callers (this crate's own top-level registry section) pass a plane KEY
+// unchanged.
 pub use busbar_substrate::plane::config::Section;
 
 /// THE SECTION-MAP SPLIT for core's callers: turn a plane KEY into the section/noun WORDS via the
@@ -427,11 +431,12 @@ pub use busbar_substrate::plane::config::Section;
 ///
 /// `plane_key` supplies the WORDS (its decl's `config_section` and `subject_noun`) so no caller
 /// carries a second vocabulary for its own section; `validate` is the plane's VALUE RULES, run on
-/// each entry as it is parsed, so the file and the admin write path refuse the same definitions —
-/// the ONE GRAMMAR, TWO PATHS rule. A plane with no value rules passes `|_, _| Ok(())`.
+/// each entry as it is parsed, so the file and the write path that mutates config at runtime refuse
+/// the same definitions — the ONE GRAMMAR, TWO PATHS rule. A plane with no value rules passes
+/// `|_, _| Ok(())`.
 ///
-/// The extracted MCP plane crate skips this wrapper and calls the substrate split directly with its
-/// OWN `PLANE_DECL.config_section` / `subject_noun` consts — it holds no plane registry to look up.
+/// An extracted plane crate skips this wrapper and calls the substrate split directly with its OWN
+/// `PLANE_DECL.config_section` / `subject_noun` consts — it holds no plane registry to look up.
 pub fn split_section<'de, D, T>(
     deserializer: D,
     plane_key: &'static str,

@@ -231,7 +231,7 @@ fn two_nodes_do_not_digest_the_same() {
 
 #[test]
 fn a_plane_contributes_exactly_two_identifiers() {
-    // The claim the fixed record is FOR. A plane says what kind of operation this was and how it
+    // The claim the fixed record is FOR. A caller says what kind of operation this was and how it
     // finished; every other field is the same shape whichever door the request came in through.
     let mut chain = AuditChain::new();
     let mut other_plane = inputs(1);

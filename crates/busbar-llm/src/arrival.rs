@@ -25,6 +25,10 @@ use busbar_substrate::ingress::arrival::{Arrival, ArrivalCtx, ArrivalHost};
 use busbar_substrate::proxy::POOL_LABEL_UNRESOLVED;
 
 use crate::proto_codec::{PROTO_BEDROCK, PROTO_GEMINI};
+// The terminal's neutral half, named one level up (see `unit/mod.rs`) rather than by the audit
+// step's own module path — the kind-isolation matrix counts that path as the plane growing its
+// coupling to the teller steps, and a pre-routing refusal is this dialect's own to name.
+use crate::unit::{finish_rejected_via_audit_arrival, render_refusal, RefusalOutcome};
 
 type Fut = Pin<Box<dyn Future<Output = Response> + Send>>;
 
@@ -103,8 +107,10 @@ impl std::fmt::Debug for PathModelFacts {
 
 /// WHAT A PATH-MODEL DIALECT'S URL PARSE ANSWERS WITH.
 ///
-/// Three answers and there is no fourth: the URL named a model and a stream intent, or it named a
-/// model and left the operation to the body, or it is not a request this dialect answers at all.
+/// Four answers: the URL named a model and a stream intent; or it named a model and left the
+/// operation to the body; or it is not a request this dialect answers at all and its own already-
+/// shaped fallback bytes stand; or it is a NAMED pre-routing refusal the terminal still has to render
+/// and post.
 pub enum PathArrivalFacts {
     /// The URL named the model AND the stream intent — the path-model surfaces proper.
     PathModel(PathModelFacts),
@@ -116,10 +122,25 @@ pub enum PathArrivalFacts {
         /// The model the URL named.
         model_hint: String,
     },
-    /// Not a request this dialect answers. The bytes are the dialect's own — already shaped, and
-    /// already accounted wherever the dialect accounts them — so both drivers of this surface return
-    /// them unchanged rather than each deciding again what a bad URL looks like.
+    /// Not a request this dialect answers, and its bytes are the dialect's own FALLBACK 404
+    /// (`fallback_not_found`) — a different terminal from the counted pre-routing turn-away: already
+    /// shaped, and NOT posted through the metrics/webhook door. Both drivers of this surface return it
+    /// unchanged; routing it through the audit door would change its bytes and add accounting it does
+    /// not carry, so it stays a pre-rendered `Response` rather than a named outcome.
     Refused(Response),
+    /// A NAMED pre-routing refusal — a malformed path, an unsupported action, a body that resolves to
+    /// no operation. It is not bytes yet: the envelope dialect it is shaped in, and the dialect-neutral
+    /// outcome (status, kind word, sentence). The consumer renders it at the audit terminal
+    /// ([`render_refusal`]) and posts it through the rejected door — the one place
+    /// a named refusal on this plane becomes bytes. This is the shape the pre-routing `finish_rejected`
+    /// sites used to build inline; naming it here and posting it at the terminal is what keeps the door
+    /// call off this file.
+    RefusedNeutral {
+        /// The dialect the refusal envelope is shaped in — the same value the site read off the host.
+        envelope_proto: &'static str,
+        /// The named refusal: status, dialect-neutral kind word, and the sentence the client reads.
+        outcome: RefusalOutcome,
+    },
 }
 
 /// GEMINI'S PATH-MODEL ARRIVAL, as it is DECLARED on `crate::gemini::DECL` / registered via
@@ -152,9 +173,27 @@ async fn gemini_ingress(
     // `finish_rejected` — the same pre-routing observability invariant the body/path cores enforce.
     let started = Instant::now();
     let charged_at = busbar_substrate::store::now();
-    let facts = match gemini_path_parse(&host, &ctx, &rest, &uri, &body, started, charged_at) {
+    let facts = match gemini_path_parse(&host, &ctx, &rest, &uri, &body) {
         PathArrivalFacts::PathModel(facts) => facts,
+        // A pre-rendered fallback 404 (a different terminal): return its bytes unchanged.
         PathArrivalFacts::Refused(resp) => return resp,
+        // A NAMED pre-routing refusal: render it at the audit terminal and post it through the
+        // rejected door — the same not-charged finish, and the same bytes, the inline site produced,
+        // now spelled at the one place the door is called.
+        PathArrivalFacts::RefusedNeutral {
+            envelope_proto,
+            outcome,
+        } => {
+            return finish_rejected_via_audit_arrival(
+                &host,
+                &ctx,
+                envelope_proto,
+                POOL_LABEL_UNRESOLVED,
+                started,
+                charged_at,
+                render_refusal(envelope_proto, &outcome),
+            )
+        }
         // Gemini's parse never leaves the operation to the body: every action it answers is named in
         // the URL. Answered rather than unreachable-panicked, because an arm that cannot be taken
         // still has to say something if it is.
@@ -189,17 +228,16 @@ async fn gemini_ingress(
 /// GEMINI'S URL PARSE, as a value.
 ///
 /// Everything `gemini_ingress` used to decide before it forwarded, and nothing it decided after. The
-/// rejections it can answer with are built here, through the same `finish_rejected` the inline arms
-/// used, because a pre-routing rejection is accounted where it is DECIDED — a caller that had to
-/// re-account it would be a caller that could account it differently.
+/// rejections it can answer with are NAMED here — status, kind word, sentence, and the envelope
+/// dialect they are shaped in — and RENDERED-and-posted by the consumer at the audit terminal. The
+/// parse decides the refusal; the terminal turns it into bytes and counts it, which is the one place
+/// a named refusal on this plane becomes a posted record.
 pub fn gemini_path_parse(
     host: &Arc<dyn ArrivalHost>,
     ctx: &ArrivalCtx,
     rest: &str,
     uri: &Uri,
     body: &Bytes,
-    started: Instant,
-    charged_at: u64,
 ) -> PathArrivalFacts {
     // The native Gemini error envelope echoes the API version the client actually used in its path.
     let api_version = gemini_api_version(uri.path());
@@ -219,37 +257,27 @@ pub fn gemini_path_parse(
                 .decl(envelope_proto)
                 .is_some_and(|d| d.has_native_path_not_found)
             {
-                return PathArrivalFacts::Refused(host.finish_rejected(
-                    ctx,
+                return PathArrivalFacts::RefusedNeutral {
                     envelope_proto,
-                    POOL_LABEL_UNRESOLVED,
-                    started,
-                    charged_at,
-                    host.ingress_error(
-                        envelope_proto,
+                    outcome: RefusalOutcome::new(
                         StatusCode::NOT_FOUND,
                         host.kind_not_found(),
-                        &format!(
+                        format!(
                 "Invalid resource path: models/{rest} is not found for API version {api_version}."
             ),
                     ),
-                ));
+                };
             }
             // Non-Gemini (ambiguous `/v1/models/...` without a Gemini action suffix): emit the
             // canonical OpenAI-shaped 404 the fallback handler uses for this path.
-            return PathArrivalFacts::Refused(host.finish_rejected(
-                ctx,
+            return PathArrivalFacts::RefusedNeutral {
                 envelope_proto,
-                POOL_LABEL_UNRESOLVED,
-                started,
-                charged_at,
-                host.ingress_error(
-                    envelope_proto,
+                outcome: RefusalOutcome::new(
                     StatusCode::NOT_FOUND,
                     host.kind_not_found(),
                     "the requested resource was not found",
                 ),
-            ));
+            };
         }
     };
 
@@ -270,36 +298,26 @@ pub fn gemini_path_parse(
                 .decl(envelope_proto)
                 .is_some_and(|d| d.has_native_path_not_found)
             {
-                return PathArrivalFacts::Refused(host.finish_rejected(
-                    ctx,
+                return PathArrivalFacts::RefusedNeutral {
                     envelope_proto,
-                    POOL_LABEL_UNRESOLVED,
-                    started,
-                    charged_at,
-                    host.ingress_error(
-                        envelope_proto,
+                    outcome: RefusalOutcome::new(
                         StatusCode::NOT_FOUND,
                         host.kind_not_found(),
-                        &format!(
+                        format!(
                             "models/{model} is not found for API version {api_version}, \
                              or is not supported for {other}."
                         ),
                     ),
-                ));
+                };
             }
-            return PathArrivalFacts::Refused(host.finish_rejected(
-                ctx,
+            return PathArrivalFacts::RefusedNeutral {
                 envelope_proto,
-                POOL_LABEL_UNRESOLVED,
-                started,
-                charged_at,
-                host.ingress_error(
-                    envelope_proto,
+                outcome: RefusalOutcome::new(
                     StatusCode::NOT_FOUND,
                     host.kind_not_found(),
                     "the requested resource was not found",
                 ),
-            ));
+            };
         }
     };
 
@@ -311,19 +329,14 @@ pub fn gemini_path_parse(
     // `operation` is Some here (a None already returned the unsupported-action envelope above); bail
     // with the standard no-handler 404 rather than assume any operation.
     let Some(operation) = operation else {
-        return PathArrivalFacts::Refused(host.finish_rejected(
-            ctx,
-            PROTO_GEMINI,
-            POOL_LABEL_UNRESOLVED,
-            started,
-            charged_at,
-            host.ingress_error(
-                PROTO_GEMINI,
+        return PathArrivalFacts::RefusedNeutral {
+            envelope_proto: PROTO_GEMINI,
+            outcome: RefusalOutcome::new(
                 StatusCode::NOT_FOUND,
                 host.kind_not_found(),
                 crate::engine::DETAIL_ENDPOINT_UNSUPPORTED_OPERATION,
             ),
-        ));
+        };
     };
     PathArrivalFacts::PathModel(PathModelFacts {
         model: model.to_string(),
@@ -359,13 +372,31 @@ pub fn bedrock_arrival(a: Arrival) -> Fut {
     // against is pinned before the parse rather than after it.
     let started = Instant::now();
     let charged_at = busbar_substrate::store::now();
-    match bedrock_path_parse(&host, &ctx, &path, &uri, &body, started, charged_at) {
+    match bedrock_path_parse(&host, &ctx, &path, &uri, &body) {
         PathArrivalFacts::PathModel(facts) => Box::pin(bedrock_converse(ctx, facts, headers, body)),
         PathArrivalFacts::BodyModel {
             operation,
             model_hint,
         } => Box::pin(bedrock_invoke(ctx, model_hint, operation, headers, body)),
+        // A pre-rendered fallback 404 (a different terminal): return its bytes unchanged.
         PathArrivalFacts::Refused(resp) => Box::pin(async move { resp }),
+        // A NAMED pre-routing refusal: render it at the audit terminal and post it through the
+        // rejected door — byte- and accounting-identical to the inline finish the site once spelled.
+        PathArrivalFacts::RefusedNeutral {
+            envelope_proto,
+            outcome,
+        } => {
+            let resp = finish_rejected_via_audit_arrival(
+                &host,
+                &ctx,
+                envelope_proto,
+                POOL_LABEL_UNRESOLVED,
+                started,
+                charged_at,
+                render_refusal(envelope_proto, &outcome),
+            );
+            Box::pin(async move { resp })
+        }
     }
 }
 
@@ -390,28 +421,19 @@ pub fn bedrock_path_parse(
     path: &str,
     uri: &Uri,
     body: &Bytes,
-    started: Instant,
-    charged_at: u64,
 ) -> PathArrivalFacts {
     let model_id = bedrock_path_model(host, path);
     // The reject arms below are provably unreachable today (bedrock `resolve_operation` returns
     // `Some(CHAT)` unconditionally for a converse path — see `handler.rs`), but routing them
     // consistently means a future resolver that CAN yield `None` accounts for the rejection instead
     // of silently `ingress_error`-ing it, matching every other pre-routing reject in this file.
-    let unsupported = || {
-        PathArrivalFacts::Refused(host.finish_rejected(
-            ctx,
-            PROTO_BEDROCK,
-            POOL_LABEL_UNRESOLVED,
-            started,
-            charged_at,
-            host.ingress_error(
-                PROTO_BEDROCK,
-                StatusCode::NOT_FOUND,
-                host.kind_not_found(),
-                crate::engine::DETAIL_ENDPOINT_UNSUPPORTED_OPERATION,
-            ),
-        ))
+    let unsupported = || PathArrivalFacts::RefusedNeutral {
+        envelope_proto: PROTO_BEDROCK,
+        outcome: RefusalOutcome::new(
+            StatusCode::NOT_FOUND,
+            host.kind_not_found(),
+            crate::engine::DETAIL_ENDPOINT_UNSUPPORTED_OPERATION,
+        ),
     };
     // Bedrock never uses the gemini JSON-array framing, and a model-not-found 404 uses the canonical
     // (non-gemini) message, so no api_version is threaded.
@@ -447,19 +469,14 @@ pub fn bedrock_path_parse(
         let Some(operation) =
             request_handler(PROTO_BEDROCK).and_then(|rh| rh.resolve_operation(uri.path(), body))
         else {
-            return PathArrivalFacts::Refused(host.finish_rejected(
-                ctx,
-                PROTO_BEDROCK,
-                POOL_LABEL_UNRESOLVED,
-                started,
-                charged_at,
-                host.ingress_error(
-                    PROTO_BEDROCK,
+            return PathArrivalFacts::RefusedNeutral {
+                envelope_proto: PROTO_BEDROCK,
+                outcome: RefusalOutcome::new(
                     StatusCode::BAD_REQUEST,
                     host.kind_invalid_request(),
                     "InvokeModel body is not a supported operation (expected inputText or textToImageParams).",
                 ),
-            ));
+            };
         };
         return PathArrivalFacts::BodyModel {
             operation,

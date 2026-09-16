@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The **HTTP endpoint** wire (kind = [`crate::cold::kind::EXPORT`] / [`crate::cold::kind::HOOK`]) that rides the
-//! kind-neutral `call`: plugin HTTP route registration ([`Route`]) and the inbound-request dispatch
-//! pair ([`HttpEndpointRequest`] / [`HttpEndpointResponse`]).
+//! The **endpoint** wire (kind = [`crate::cold::kind::EXPORT`] / [`crate::cold::kind::HOOK`]) that rides the
+//! kind-neutral `call`: plugin route registration ([`Route`]) and the inbound-request dispatch
+//! pair ([`EndpointRequest`] / [`EndpointResponse`]).
 //!
 //! ## Why a general primitive, not a metrics special-case
 //!
@@ -12,7 +12,7 @@
 //! the plugin, its response relayed. This module is that one primitive. A plugin DECLARES its routes at
 //! load ([`Route`], queried once, exactly like an export sink's `streams`), busbar reserves + collision-
 //! checks them against the real route table, and a matched inbound request is dispatched to the plugin
-//! via the [`HttpEndpointRequest`]/[`HttpEndpointResponse`] pair.
+//! via the [`EndpointRequest`]/[`EndpointResponse`] pair.
 //!
 //! ## Off the data-plane hot path
 //!
@@ -93,7 +93,7 @@ pub struct Route {
 /// the axum request AFTER the declared [`RouteAuth`] passed; `headers` is a BOUNDED, pre-filtered set
 /// (never the raw `Authorization` header — busbar enforced the grant before forwarding).
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct HttpEndpointRequest {
+pub struct EndpointRequest {
     /// The uppercase HTTP method (`"GET"` | `"POST"` | …), validated host-side against the DECLARED
     /// method before dispatch.
     pub method: String,
@@ -107,10 +107,10 @@ pub struct HttpEndpointRequest {
     pub body: Vec<u8>,
 }
 
-/// A plugin's response to a dispatched [`HttpEndpointRequest`], relayed verbatim by busbar (subject to
+/// A plugin's response to a dispatched [`EndpointRequest`], relayed verbatim by busbar (subject to
 /// the same response-body-size and header-count caps every other proxied response respects).
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct HttpEndpointResponse {
+pub struct EndpointResponse {
     /// The HTTP status code the plugin chose.
     pub status: u16,
     /// The response headers the plugin set (bounded host-side on relay).
@@ -137,7 +137,7 @@ pub fn safe_relay_status(status: u16) -> u16 {
     }
 }
 
-impl HttpEndpointResponse {
+impl EndpointResponse {
     /// The plugin-chosen [`status`](Self::status), VALIDATED via [`safe_relay_status`] — a real HTTP
     /// status code, or `502` when the plugin returned an out-of-range value. THE conversion a host
     /// relay must use instead of `StatusCode::from_u16(self.status).unwrap()`.
@@ -148,5 +148,5 @@ impl HttpEndpointResponse {
 }
 
 #[cfg(test)]
-#[path = "tests/http_endpoint_tests.rs"]
+#[path = "tests/endpoint_tests.rs"]
 mod tests;

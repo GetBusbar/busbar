@@ -144,7 +144,7 @@ reasons! {
     Revoked => "revoked", Revoked,
     /// The principal lacks the scope the operation requires.
     ScopeDenied => "scope_denied", ScopeMissing,
-    /// The principal is not permitted to reach the pool it named. Distinct from a plain scope
+    /// The principal is not permitted to reach the bucket it named. Distinct from a plain scope
     /// denial: the ladder answers this one before it asks about pricing at all, and the two carry
     /// different statuses on the wire, so collapsing them would make two refusals indistinguishable
     /// to anything reading the record.
@@ -184,7 +184,7 @@ reasons! {
     DestinationUnreachable => "destination_unreachable", DestinationUnreachable,
     /// Two evidence sources for the same unit disagree.
     MeterDisputed => "meter_disputed", MeterDisputed,
-    /// A layer offered a handoff the layer adopting it does not compose over, or handed up a stream
+    /// A layer offered a handoff the layer adopting it does not compose over, or handed up a body
     /// it cannot adopt. Its own reason rather than a framing failure: nothing was wrong with the
     /// bytes, the two legs simply did not agree on what they were doing.
     HandoffMismatch => "handoff_mismatch", HandoffMismatch,

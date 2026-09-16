@@ -52,11 +52,11 @@ fn test_format_amz_time_known_dates_table() {
 }
 
 #[test]
-fn test_uri_encode_path_bedrock_model() {
-    // Bedrock model IDs contain ':' and '.' — must encode ':' as %3A, keep '.' and '/'.
+fn test_uri_encode_path_dotted_colon_model_id() {
+    // Vendor-style model IDs contain ':' and '.' — must encode ':' as %3A, keep '.' and '/'.
     assert_eq!(
-        uri_encode_path("/model/anthropic.claude-3:0/converse"),
-        "/model/anthropic.claude-3%3A0/converse"
+        uri_encode_path("/model/acme.model-1:0/converse"),
+        "/model/acme.model-1%3A0/converse"
     );
 }
 
@@ -187,7 +187,7 @@ fn signed_fixture(
     let headers = vec![
         (
             "host".to_string(),
-            "bedrock-runtime.amazonaws.com".to_string(),
+            "acme-svc.amazonaws.com".to_string(),
         ),
         (X_AMZ_CONTENT_SHA256.to_string(), payload_hash.clone()),
         (X_AMZ_DATE.to_string(), amzdate.to_string()),
@@ -197,7 +197,7 @@ fn signed_fixture(
         region,
         service,
         "POST",
-        "/model/anthropic.claude/converse",
+        "/model/acme.model-1/converse",
         "",
         &headers,
         &payload_hash,
@@ -222,7 +222,7 @@ fn inbound<'a>(
 ) -> InboundRequest<'a> {
     InboundRequest {
         method: "POST",
-        canonical_uri: "/model/anthropic.claude/converse",
+        canonical_uri: "/model/acme.model-1/converse",
         canonical_querystring: "",
         headers,
         payload_hash,
@@ -232,13 +232,13 @@ fn inbound<'a>(
 
 #[test]
 fn test_parse_authorization_header_roundtrip() {
-    let v = "AWS4-HMAC-SHA256 Credential=AKID/20150830/us-east-1/bedrock/aws4_request, \
+    let v = "AWS4-HMAC-SHA256 Credential=AKID/20150830/us-east-1/acme-svc/aws4_request, \
                  SignedHeaders=host;x-amz-content-sha256;x-amz-date, Signature=abc123";
     let p = parse_authorization_header(v).expect("must parse");
     assert_eq!(p.access_key_id, "AKID");
     assert_eq!(p.datestamp, "20150830");
     assert_eq!(p.region, "us-east-1");
-    assert_eq!(p.service, "bedrock");
+    assert_eq!(p.service, "acme-svc");
     assert_eq!(p.signed_headers, "host;x-amz-content-sha256;x-amz-date"); // golden wire-contract literal (kept bare on purpose)
     assert_eq!(p.signature, "abc123");
 }
@@ -256,12 +256,12 @@ fn test_parse_authorization_header_rejections() {
     );
     // AWS4 but structurally broken → malformed.
     for bad in [
-            "AWS4-HMAC-SHA256 Credential=AKID/20150830/us-east-1/bedrock, SignedHeaders=host, Signature=x", // scope not aws4_request (4 parts)
+            "AWS4-HMAC-SHA256 Credential=AKID/20150830/us-east-1/acme-svc, SignedHeaders=host, Signature=x", // scope not aws4_request (4 parts)
             "AWS4-HMAC-SHA256 SignedHeaders=host, Signature=x", // no Credential
-            "AWS4-HMAC-SHA256 Credential=AKID/20150830/us-east-1/bedrock/aws4_request, Signature=x", // no SignedHeaders
-            "AWS4-HMAC-SHA256 Credential=AKID/20150830/us-east-1/bedrock/aws4_request, SignedHeaders=host", // no Signature
-            "AWS4-HMAC-SHA256 Credential=//us-east-1/bedrock/aws4_request, SignedHeaders=host, Signature=x", // empty akid/date
-            "AWS4-HMAC-SHA256 Credential=AKID/20150830/us-east-1/bedrock/aws4_request, SignedHeaders=, Signature=x", // empty signed headers
+            "AWS4-HMAC-SHA256 Credential=AKID/20150830/us-east-1/acme-svc/aws4_request, Signature=x", // no SignedHeaders
+            "AWS4-HMAC-SHA256 Credential=AKID/20150830/us-east-1/acme-svc/aws4_request, SignedHeaders=host", // no Signature
+            "AWS4-HMAC-SHA256 Credential=//us-east-1/acme-svc/aws4_request, SignedHeaders=host, Signature=x", // empty akid/date
+            "AWS4-HMAC-SHA256 Credential=AKID/20150830/us-east-1/acme-svc/aws4_request, SignedHeaders=, Signature=x", // empty signed headers
         ] {
             assert_eq!(
                 parse_authorization_header(bad),
@@ -396,7 +396,7 @@ fn test_verify_inbound_sigv4_roundtrip_accepts() {
     let secret = "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY";
     let amzdate = "20150830T123600Z";
     let now = parse_amz_date(amzdate).unwrap();
-    let (parsed, headers, ph) = signed_fixture(secret, "us-east-1", "bedrock", amzdate, "20150830");
+    let (parsed, headers, ph) = signed_fixture(secret, "us-east-1", "acme-svc", amzdate, "20150830");
     let req = inbound(&headers, &ph, amzdate);
     assert_eq!(verify_inbound_sigv4(&parsed, &req, secret, now), Ok(()));
 }
@@ -494,7 +494,7 @@ fn test_verify_inbound_sigv4_wrong_secret_rejected() {
     let (parsed, headers, ph) = signed_fixture(
         "the-real-secret",
         "us-east-1",
-        "bedrock",
+        "acme-svc",
         amzdate,
         "20150830",
     );
@@ -511,7 +511,7 @@ fn test_verify_inbound_sigv4_tampered_signature_rejected() {
     let amzdate = "20150830T123600Z";
     let now = parse_amz_date(amzdate).unwrap();
     let (mut parsed, headers, ph) =
-        signed_fixture(secret, "us-east-1", "bedrock", amzdate, "20150830");
+        signed_fixture(secret, "us-east-1", "acme-svc", amzdate, "20150830");
     // Flip the last hex nibble of the signature.
     let mut sig = parsed.signature.clone();
     let last = sig.pop().unwrap();
@@ -532,7 +532,7 @@ fn test_verify_inbound_sigv4_tampered_body_payload_hash_rejected() {
     let amzdate = "20150830T123600Z";
     let now = parse_amz_date(amzdate).unwrap();
     let (parsed, mut headers, _ph) =
-        signed_fixture(secret, "us-east-1", "bedrock", amzdate, "20150830");
+        signed_fixture(secret, "us-east-1", "acme-svc", amzdate, "20150830");
     // Tamper the content-sha256 header (and the payload_hash input) to a DIFFERENT body's hash.
     let tampered = sha256_hex(b"{\"evil\":true}");
     for h in headers.iter_mut() {
@@ -552,7 +552,7 @@ fn test_verify_inbound_sigv4_expired_date_rejected() {
     let secret = "the-real-secret";
     let amzdate = "20150830T123600Z";
     let signed_epoch = parse_amz_date(amzdate).unwrap();
-    let (parsed, headers, ph) = signed_fixture(secret, "us-east-1", "bedrock", amzdate, "20150830");
+    let (parsed, headers, ph) = signed_fixture(secret, "us-east-1", "acme-svc", amzdate, "20150830");
     let req = inbound(&headers, &ph, amzdate);
     // `now` is 10 minutes after the signature — outside the ±5min window.
     let now = signed_epoch + CLOCK_SKEW_SECS + 60;
@@ -576,7 +576,7 @@ fn test_verify_inbound_sigv4_signed_header_missing_rejected() {
     let secret = "the-real-secret";
     let amzdate = "20150830T123600Z";
     let now = parse_amz_date(amzdate).unwrap();
-    let (parsed, headers, ph) = signed_fixture(secret, "us-east-1", "bedrock", amzdate, "20150830");
+    let (parsed, headers, ph) = signed_fixture(secret, "us-east-1", "acme-svc", amzdate, "20150830");
     // Drop x-amz-date from the request's headers — it is in SignedHeaders, so reconstruction fails.
     let pruned: Vec<(String, String)> = headers
         .into_iter()
@@ -604,7 +604,7 @@ fn test_verify_inbound_sigv4_host_must_be_signed() {
     let (sig, signed_headers) = sign_v4(
         secret,
         "us-east-1",
-        "bedrock",
+        "acme-svc",
         "POST",
         "/x",
         "",
@@ -617,7 +617,7 @@ fn test_verify_inbound_sigv4_host_must_be_signed() {
         access_key_id: "AKID".to_string(),
         datestamp: "20150830".to_string(),
         region: "us-east-1".to_string(),
-        service: "bedrock".to_string(),
+        service: "acme-svc".to_string(),
         signed_headers,
         signature: sig,
     };
@@ -642,7 +642,7 @@ fn test_verify_inbound_sigv4_datestamp_must_match_amzdate() {
     let amzdate = "20150830T123600Z";
     let now = parse_amz_date(amzdate).unwrap();
     let (mut parsed, headers, ph) =
-        signed_fixture(secret, "us-east-1", "bedrock", amzdate, "20150830");
+        signed_fixture(secret, "us-east-1", "acme-svc", amzdate, "20150830");
     parsed.datestamp = "20150831".to_string(); // off by a day
     let req = inbound(&headers, &ph, amzdate);
     assert_eq!(
@@ -705,7 +705,7 @@ fn test_verify_inbound_sigv4_unknown_key_dummy_secret_is_signature_mismatch() {
     let (parsed, headers, ph) = signed_fixture(
         "a-real-tenant-secret",
         "us-east-1",
-        "bedrock",
+        "acme-svc",
         amzdate,
         "20150830",
     );
@@ -722,14 +722,14 @@ fn test_verify_inbound_sigv4_unknown_key_dummy_secret_is_signature_mismatch() {
 fn test_parse_authorization_header_skips_unknown_sections() {
     // An UNKNOWN section (AWS clients may emit extras) is SKIPPED, not rejected — as long as
     // the three mandatory sections are present and well-formed.
-    let v = "AWS4-HMAC-SHA256 Credential=AKID/20150830/us-east-1/bedrock/aws4_request, \
+    let v = "AWS4-HMAC-SHA256 Credential=AKID/20150830/us-east-1/acme-svc/aws4_request, \
                  SignedHeaders=host;x-amz-date, Signature=abc123, X-Future-Extension=whatever";
     let p = parse_authorization_header(v).expect("unknown section must be skipped, not rejected");
     assert_eq!(p.access_key_id, "AKID");
     assert_eq!(p.signed_headers, "host;x-amz-date"); // golden wire-contract literal (kept bare on purpose)
     assert_eq!(p.signature, "abc123");
     // But a MISSING mandatory section (Signature) with an unknown one present still fails.
-    let missing_sig = "AWS4-HMAC-SHA256 Credential=AKID/20150830/us-east-1/bedrock/aws4_request, \
+    let missing_sig = "AWS4-HMAC-SHA256 Credential=AKID/20150830/us-east-1/acme-svc/aws4_request, \
                            SignedHeaders=host, X-Extra=1";
     assert_eq!(
         parse_authorization_header(missing_sig),
@@ -746,7 +746,7 @@ fn test_parse_authorization_header_rejects_five_part_credential_with_wrong_termi
     // accepted, since `parts.len() != 5` is false and short-circuits the `&&`. This is
     // distinct from the existing "scope not aws4_request (4 parts)" rejection case, which
     // only exercises the `parts.len() != 5` half.
-    let v = "AWS4-HMAC-SHA256 Credential=AKID/20150830/us-east-1/bedrock/aws4_bogus, \
+    let v = "AWS4-HMAC-SHA256 Credential=AKID/20150830/us-east-1/acme-svc/aws4_bogus, \
                  SignedHeaders=host, Signature=x";
     assert_eq!(
         parse_authorization_header(v),
@@ -763,7 +763,7 @@ fn test_verify_inbound_sigv4_signed_headers_claim_stripped_rejected() {
     let amzdate = "20150830T123600Z";
     let now = parse_amz_date(amzdate).unwrap();
     let (mut parsed, headers, ph) =
-        signed_fixture(secret, "us-east-1", "bedrock", amzdate, "20150830");
+        signed_fixture(secret, "us-east-1", "acme-svc", amzdate, "20150830");
     // Strip x-amz-content-sha256 from the SignedHeaders claim (host still present so the host check
     // passes and we reach the signature/headers compare). The signature was computed over all three.
     parsed.signed_headers = "host;x-amz-date".to_string();
@@ -783,7 +783,7 @@ fn test_verify_inbound_sigv4_signed_headers_wrong_sort_rejected() {
     let amzdate = "20150830T123600Z";
     let now = parse_amz_date(amzdate).unwrap();
     let (mut parsed, headers, ph) =
-        signed_fixture(secret, "us-east-1", "bedrock", amzdate, "20150830");
+        signed_fixture(secret, "us-east-1", "acme-svc", amzdate, "20150830");
     // Reverse-sorted order (still contains host, so it passes the host-present gate).
     parsed.signed_headers = "x-amz-date;x-amz-content-sha256;host".to_string();
     let req = inbound(&headers, &ph, amzdate);
@@ -801,7 +801,7 @@ fn test_verify_inbound_sigv4_exact_skew_boundary_accepted() {
     let secret = "the-real-secret";
     let amzdate = "20150830T123600Z";
     let signed_epoch = parse_amz_date(amzdate).unwrap();
-    let (parsed, headers, ph) = signed_fixture(secret, "us-east-1", "bedrock", amzdate, "20150830");
+    let (parsed, headers, ph) = signed_fixture(secret, "us-east-1", "acme-svc", amzdate, "20150830");
     let req = inbound(&headers, &ph, amzdate);
     // Exactly at the boundary (both directions) must verify.
     assert_eq!(
@@ -828,11 +828,11 @@ fn test_verify_inbound_sigv4_missing_date_rejected() {
     let secret = "the-real-secret";
     let amzdate = "20150830T123600Z";
     let now = parse_amz_date(amzdate).unwrap();
-    let (parsed, headers, ph) = signed_fixture(secret, "us-east-1", "bedrock", amzdate, "20150830");
+    let (parsed, headers, ph) = signed_fixture(secret, "us-east-1", "acme-svc", amzdate, "20150830");
     // Build an InboundRequest carrying an UNPARSEABLE amzdate.
     let req = InboundRequest {
         method: "POST",
-        canonical_uri: "/model/anthropic.claude/converse",
+        canonical_uri: "/model/acme.model-1/converse",
         canonical_querystring: "",
         headers: &headers,
         payload_hash: &ph,

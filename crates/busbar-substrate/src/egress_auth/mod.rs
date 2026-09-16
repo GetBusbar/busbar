@@ -7,15 +7,14 @@
 //! (`lane.credential.headers_for(...)`) instead of branching.
 //!
 //! "Protocol is post-auth": auth answers *who am I to this upstream* (headers / signature); the
-//! protocol answers *how do I shape this payload*. They compose through [`SigningContext`] — a signer
-//! (SigV4) consumes the protocol's already-written body + path — but auth no longer lives on the
-//! `ProtocolWriter`. The per-scheme logic lives in `pub(crate)` free functions co-located with each
-//! protocol's constants (`proto::bearer_auth_headers`, `proto::anthropic::anthropic_auth_headers`,
-//! and, for an EXTRACTED dialect, a builder the dialect DECLARES on
-//! `ProtocolDecl::egress_auth_headers` — `busbar-llm`'s Bedrock module hands in its SigV4 signer
-//! that way, and this module wraps it in `DeclaredCredential` without ever naming the dialect).
-//! This module owns the *dispatch*. Those same free functions
-//! are what the byte-pinning auth tests call, so a credential and its test can never diverge.
+//! protocol answers *how do I shape this payload*. They compose through [`SigningContext`] — a
+//! request-signing scheme reads the protocol's already-written body + path — but auth no longer
+//! lives on the `ProtocolWriter`. The per-scheme logic for a scheme this module still owns lives in
+//! `pub(crate)` free functions co-located with the shared constants (`proto::bearer_auth_headers`);
+//! an EXTRACTED dialect instead DECLARES its own builder on `ProtocolDecl::egress_auth_headers`, and
+//! this module wraps that builder in `DeclaredCredential` without ever naming the dialect. This
+//! module owns the *dispatch*. The shared free functions are what the byte-pinning auth tests call,
+//! so a credential and its test can never diverge.
 
 use crate::proto::SigningContext;
 use axum::http::{HeaderName, HeaderValue};
@@ -240,9 +239,8 @@ pub fn resolve(
             });
         }
     }
-    // Every protocol this build serves declares its native egress scheme on its `ProtocolDecl`
-    // (`egress_auth_headers`), resolved and returned BEFORE this point — anthropic and openai chat
-    // (bearer), gemini (`x-goog-api-key`), cohere / responses (bearer), bedrock (SigV4). No dialect
+    // Every protocol a real deployment registers declares its own native egress scheme on its
+    // `ProtocolDecl` (`egress_auth_headers`), resolved and returned BEFORE this point. No dialect
     // literal remains in this neutral resolver. Config validation refuses an unknown protocol name
     // before a lane ever reaches here, so this is a defensive, fail-closed fallback that emits no
     // auth header (upstream 401) — not a live scheme for any protocol this build actually serves.

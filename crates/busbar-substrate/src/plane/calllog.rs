@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The NEUTRAL per-call record INPUT — the fields a plane supplies for one MCP call-log record.
+//! The NEUTRAL per-call record INPUT — the fields a plane supplies for one call-log record.
 //!
 //! This is a pure POD: it names no core type, only `std`. It lives in the substrate so a plane crate
 //! builds a [`CallInput`] and hands it to the `EngineHost::call_log_emit` / `call_log_emit_hostless`

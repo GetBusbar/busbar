@@ -92,16 +92,16 @@ fn build_with_hook_demotes_global_false_removes_wiring() {
     );
 }
 
-/// A hook registered through the ADMIN API must become live on the OTHER TWO PLANES too, not only
-/// on the pool plane.
+/// A hook registered through the ADMIN API must become live on every OTHER compiled-in plane too,
+/// not only on the pool-scoped hooks.
 ///
-/// The failure this pins is specific and silent: an operator writes `tools.<server>.hooks: [screen]`
-/// in the file and registers the `screen` DEFINITION later through the API. At boot the name
+/// The failure this pins is specific and silent: an operator writes an MCP server's `hooks: [screen]`
+/// attach in the file and registers the `screen` DEFINITION later through the API. At boot the name
 /// resolved to nothing (no definition yet), so the server's gate chain was empty — and without
 /// `reresolve_plane_gates` the register would answer `200 OK` while that chain stayed empty
-/// forever, leaving the operator believing a control is attached that is not. The pool plane's own
-/// three `resolve_*` calls exist for exactly this reason; this is the same fail-open on the two
-/// planes that gained firing sites in 1.6.0.
+/// forever, leaving the operator believing a control is attached that is not. The pool-scoped hooks'
+/// own three `resolve_*` calls exist for exactly this reason; this test exercises that same
+/// fail-open for a plane-owned attach, using MCP as the concrete plane under test.
 #[test]
 fn build_with_hook_makes_an_mcp_attach_live() {
     let Some(env) = crate::test_support::test_hook_env(&["test-hook"], Default::default()) else {

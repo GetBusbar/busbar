@@ -58,7 +58,7 @@ const _: () = assert!(
 );
 /// Default idle keep-alive lifetime (seconds) for pooled upstream connections.
 ///
-/// EXPLICIT 300s, replacing reqwest's implicit 90s default: under a bursty LLM workload the warm
+/// EXPLICIT 300s, replacing reqwest's implicit 90s default: under a bursty upstream workload the warm
 /// working set (`pool_max_idle_per_host` sockets, each carrying an amortized TCP+TLS handshake and
 /// — on h2 — an established multiplexed session) should SURVIVE inter-burst gaps of a few minutes
 /// instead of being reaped at 90s and re-paid as cold handshakes on the hot path when the next

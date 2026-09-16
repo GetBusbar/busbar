@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for `crates/plugin-abi/src/http_endpoint.rs`.
+//! Tests for `crates/busbar-plugin/src/cold/endpoint.rs`.
 
 use super::*;
 
@@ -49,7 +49,7 @@ fn route_json_roundtrip() {
 /// The request/response dispatch pair round-trips through JSON unchanged (the wire is stable).
 #[test]
 fn request_response_json_roundtrip() {
-    let req = HttpEndpointRequest {
+    let req = EndpointRequest {
         method: "GET".into(),
         path: "/metrics".into(),
         query: "format=prometheus".into(),
@@ -57,16 +57,16 @@ fn request_response_json_roundtrip() {
         body: Vec::new(),
     };
     let j = serde_json::to_vec(&req).unwrap();
-    let back: HttpEndpointRequest = serde_json::from_slice(&j).unwrap();
+    let back: EndpointRequest = serde_json::from_slice(&j).unwrap();
     assert_eq!(serde_json::to_vec(&back).unwrap(), j);
 
-    let resp = HttpEndpointResponse {
+    let resp = EndpointResponse {
         status: 200,
         headers: vec![("content-type".into(), "text/plain".into())],
         body: b"busbar_up 1\n".to_vec(),
     };
     let j = serde_json::to_vec(&resp).unwrap();
-    let back: HttpEndpointResponse = serde_json::from_slice(&j).unwrap();
+    let back: EndpointResponse = serde_json::from_slice(&j).unwrap();
     assert_eq!(serde_json::to_vec(&back).unwrap(), j);
 }
 
@@ -82,7 +82,7 @@ fn out_of_range_plugin_status_maps_to_502() {
             502,
             "status {bad} must clamp to 502"
         );
-        let resp = HttpEndpointResponse {
+        let resp = EndpointResponse {
             status: bad,
             headers: Vec::new(),
             body: Vec::new(),

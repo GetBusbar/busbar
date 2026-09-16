@@ -77,13 +77,12 @@ fn hard_down_is_hard_down() {
     assert_eq!(label, label::HARD_DOWN);
 }
 
-// ── classify_upstream: error_map precedence over the HTTP-status table, verbatim values from
-//    `busbar-llm/src/engine/tests/forward_pool_integration_tests.rs` (codes 1113 → billing,
+// ── classify_upstream: error_map precedence over the HTTP-status table (codes 1113 → billing,
 //    1302 → rate_limit) ────────────────────────────────────────────────────────────────────
 
 #[test]
 fn error_map_code_wins_over_http_status() {
-    // Bedrock-shaped: code "1113" carries no intrinsic meaning in the HTTP-status table; the
+    // Code "1113" carries no intrinsic meaning in the HTTP-status table; the
     // operator's error_map is what turns it into a hard-down billing signal.
     let map = err_map(&[("1113", "billing")]);
     let out = classify_upstream(

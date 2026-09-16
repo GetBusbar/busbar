@@ -193,7 +193,7 @@ fn a_hold_never_settled_refunds_the_whole_reserve() {
     assert_eq!(s.refund, CostAmount(525));
 }
 
-// ── CostHold: exhaustion (the mid-stream hard-stop signal) ──────────────────────────────────────
+// ── CostHold: exhaustion (the hard-stop signal partway through settlement) ────────────────────────
 
 #[test]
 fn an_uncapped_lease_is_never_exhausted_and_has_no_finite_remaining() {

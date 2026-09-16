@@ -28,7 +28,7 @@
 //!   absolute-form URI and re-runs checkout — and terminates structurally because a fresh conn's
 //!   failure is never retried. Anything the dispatcher accepted (headers flushed then RST, body
 //!   partially written) yields no message back and propagates: the anti-duplicate boundary for
-//!   non-idempotent LLM billing POSTs.
+//!   non-idempotent outbound POSTs.
 
 use std::future::Future;
 use std::pin::Pin;

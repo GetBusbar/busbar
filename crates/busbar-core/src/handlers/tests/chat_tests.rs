@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for `crates/busbar/src/handlers/chat.rs`.
+//! Tests for the chat dispatch cell (`super::CHAT` / `chat_fixture`), which frames the real chat
+//! codec pulled in as a test-only dev-dependency now that the codec itself lives outside this crate.
 
 use super::*;
 

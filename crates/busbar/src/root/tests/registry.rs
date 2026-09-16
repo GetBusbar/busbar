@@ -610,7 +610,7 @@ fn the_operators_body_cap_reaches_every_mounted_planes_transport() {
 /// The ws transport refuses a secure target over a cleartext lower layer rather than put a
 /// plain upgrade on a wire the caller was told was encrypted. That refusal is right, and with a
 /// single `ws` instance composed over `http` it also means every `wss://` upstream this
-/// deployment has — OpenAI Realtime, Gemini Live — is refused at the dial. So the root composes
+/// deployment dials is refused at the dial. So the root composes
 /// the key twice: the ingress instance over `http`, which is what an in-band upgrade arrives
 /// on, and a dial-side instance over `tls`, which is the only composition under which `wss` is
 /// honest. A `ws://` destination still resolves to the ingress instance, so nothing that worked

@@ -130,9 +130,9 @@ impl AppSlots {
     /// NEUTRAL LABEL PROJECTION inputs (money-path Phase 3-4 B): `pools` is each pool label paired
     /// with its member lane indices, `by_model` is the direct-model index (model label → lane index),
     /// and `lane_model` resolves a lane index to its model-string label. Expressed this way, banking
-    /// one plane's bounded label space names no `Lane`/`WeightedLane`, so telemetry need not relocate
-    /// when the routing tables move into `busbar-llm`. Byte-identical banking to the prior
-    /// table-typed form — the SAME pool/model/lane label sets.
+    /// one plane's bounded label space names no `Lane`/`WeightedLane`, so telemetry did not need to
+    /// relocate along with the routing tables now that they live in the model plane's own crate.
+    /// Byte-identical banking to the prior table-typed form — the SAME pool/model/lane label sets.
     pub(crate) fn build<'a>(
         pools: &[(&'a str, Vec<usize>)],
         by_model: &[(&'a str, usize)],
@@ -269,9 +269,9 @@ impl AppSlots {
 /// `ingress::finish_inner` and every mounted plane calls it from `plane::observe`.
 ///
 /// TWO SERIES, split so the model plane stays v1.5.4-identical. The MODEL plane
-/// (`plane == Plane::Llm`) emits `busbar_requests_total` / `busbar_request_duration_seconds` with
-/// exactly the v1.5.4 label set `{ingress_protocol, pool, outcome}` — NO `plane` label — so a
-/// pure-LLM `/metrics` scrape is byte-identical to v1.5.4. The MOUNTED planes (MCP, A2A) emit the
+/// (`crate::plane::is_fallback(plane)`) emits `busbar_requests_total` / `busbar_request_duration_seconds`
+/// with exactly the v1.5.4 label set `{ingress_protocol, pool, outcome}` — NO `plane` label — so a
+/// pure-model-plane `/metrics` scrape is byte-identical to v1.5.4. Every OTHER mounted plane emits the
 /// parallel `busbar_plane_requests_total` / `busbar_plane_request_duration_seconds` families, which
 /// carry the extra `plane` label so `sum by (plane)` compares them — without ever altering the
 /// label identity of the two pre-existing model-plane families.
@@ -309,8 +309,8 @@ pub(crate) fn request_finished(
 }
 
 // `upstream_attempt_on` / `upstream_failure_on` — THE EMIT for this family, on EVERY plane — MOVED
-// DOWN to the neutral substrate (`busbar_substrate::telemetry`) so the synchronous client legs
-// (`mcp::client::wire`, `a2a::relay`) name them without reaching into core. They take NO `&App` and
+// DOWN to the neutral substrate (`busbar_substrate::telemetry`) so a plane's own synchronous client
+// leg can name them without reaching into core. They take NO `&App` and
 // never did (both labels are operator-configured and bounded, so the emit is a pure `metrics` write);
 // that is exactly what let them relocate. Re-exported here so core's own `App`-holding wrappers
 // ([`upstream_attempt`]/[`upstream_failure`], which resolve the lane label out of `app.lanes`) and

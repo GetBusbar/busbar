@@ -146,82 +146,32 @@ pub(crate) async fn translate_response_cross_protocol(
     tap: &TapCell,
 ) -> Response {
     let egress_name = EngineTables::new(rt).lanes()[i].protocol;
-    // Every exit below that is NOT a delivery is a transfer that FAILED after the upstream's 2xx
-    // headers, and every one of them bills zero (the not-billed arms the older release already had).
-    // The client is handed an ingress-native error and no completion at all, so the end is `Error`
-    // rather than `Partial`: nothing of the answer was ever relayed. Named once so the four failure
-    // exits report one end rather than four spellings of it.
-    let failed_transfer = || TapReport {
-        lane: i,
-        usage: None,
-        billing_failed: true,
-        finish: TapFinish::Error,
-    };
 
     // Size-capped buffer under the COMPLETION cap (a legitimate 2xx can far exceed the error-body
-    // cap and must be buffered WHOLE to parse+translate). `truncated` distinguishes "too large to
-    // translate" from "genuinely unparseable". Bounded by the caller's deadline; expiry is a failed
-    // transfer, compensated exactly like a mid-body cut.
-    let (bytes, read_end) = {
-        use http_body_util::BodyExt;
-        let read = read_capped(
-            r.into_body().into_data_stream(),
-            max_translated_body_bytes(),
-        );
-        match tokio::time::timeout_at(read_deadline, read).await {
-            Ok(pair) => pair,
-            Err(_elapsed) => (Bytes::new(), ReadEnd::TransportError),
-        }
+    // cap and must be buffered WHOLE to parse+translate). Bounded by the caller's deadline; a
+    // transport failure or an over-cap truncation is handled inside `read_capped_body` — either
+    // exit reports the tap and returns the ingress-native error, so here we only ever see a fully
+    // buffered body.
+    let bytes = match read_capped_body(
+        host,
+        rt,
+        i,
+        pool,
+        ingress_protocol,
+        egress_name,
+        breaker_cfg,
+        r,
+        read_deadline,
+        permit,
+        budget_guard,
+        upstream_started,
+        tap,
+    )
+    .await
+    {
+        Ok(bytes) => bytes,
+        Err(resp) => return resp,
     };
-    // Re-record the upstream RTT now that the WHOLE body has arrived: on this buffered path busbar
-    // awaits the entire upstream response before it can translate, so the download is upstream cost.
-    record_upstream_rtt(upstream_started.elapsed());
-    drop(permit);
-    if read_end == ReadEnd::TransportError {
-        // The 2xx headers optimistically recorded a success and spent the budget, but the body never
-        // arrived intact: charge no tokens, record a compensating transient failure, and let the
-        // still-armed guard refund the request budget unit.
-        diag_debug!(
-            CROSSPROTO_NONSTREAM_MIDTRANSFER_FAILED,
-            ingress = %ingress_protocol,
-            egress = %egress_name,
-            "cross-protocol non-stream upstream body failed mid-transfer; \
-             not recording success/usage, refunding budget, returning ingress-native error"
-        );
-        let tripped =
-            host.lane_store()
-                .record_transient_in(pool, i, ERR_NET_TRANSPORT, breaker_cfg, None);
-        if tripped {
-            emit_breaker_trip(host, rt, pool, i);
-        }
-        tap.report(failed_transfer());
-        return ingress_error(
-            ingress_protocol,
-            StatusCode::BAD_GATEWAY,
-            KIND_API_ERROR,
-            GENERIC_RESPONSE_ERROR_DETAIL,
-        );
-    }
-    if read_end == ReadEnd::Truncated {
-        // OUR translation cap, not an upstream fault: no tokens charged (the client receives no
-        // completion), but the optimistic success stands and the budget unit is kept.
-        diag_debug!(
-            CROSSPROTO_TRANSLATION_CAP_EXCEEDED,
-            ingress = %ingress_protocol,
-            egress = %egress_name,
-            cap = max_translated_body_bytes(),
-            "cross-protocol non-stream success body exceeded the translation cap; \
-             cannot translate, not charging tokens, returning ingress-native error"
-        );
-        budget_guard.disarm();
-        tap.report(failed_transfer());
-        return ingress_error(
-            ingress_protocol,
-            StatusCode::INTERNAL_SERVER_ERROR,
-            KIND_API_ERROR,
-            GENERIC_RESPONSE_ERROR_DETAIL,
-        );
-    }
     let egress_op = busbar_substrate::handlers::request_handler(egress_name)
         .and_then(|rh| rh.operation_handler(op.operation));
     let ingress_op = busbar_substrate::handlers::request_handler(ingress_protocol)
@@ -315,6 +265,140 @@ pub(crate) async fn translate_response_cross_protocol(
     // Not translatable (non-JSON / unexpected-but-valid shape / unknown ingress). Relaying the
     // upstream body verbatim would leak the egress provider's native wire format to a
     // different-protocol client, so return an ingress-native 500 instead.
+    not_translatable(
+        host,
+        rt,
+        i,
+        pool,
+        ingress_protocol,
+        egress_name,
+        breaker_cfg,
+        status,
+        degraded,
+        tap,
+    )
+}
+
+/// Every exit that is NOT a delivery is a transfer that FAILED after the upstream's 2xx headers,
+/// and every one bills zero. The client is handed an ingress-native error and no completion at all,
+/// so the end is `Error` rather than `Partial`: nothing of the answer was ever relayed. Named once
+/// so the failure exits report one end rather than several spellings of it.
+fn failed_transfer(i: usize) -> TapReport {
+    TapReport {
+        lane: i,
+        usage: None,
+        billing_failed: true,
+        finish: TapFinish::Error,
+    }
+}
+
+/// Phases 2-4: buffer the whole 2xx body under the translation cap, then take the two failure exits
+/// that a buffered read can end in. `Ok(bytes)` is a fully-buffered body ready to translate; `Err`
+/// is the ingress-native error a transport failure or an over-cap truncation returns (each having
+/// already reported the tap and recorded the compensating breaker/budget outcome). Pure extraction
+/// of the capped-read block of [`translate_response_cross_protocol`]; `permit` is consumed (dropped
+/// once the body is in hand) exactly where the inline code dropped it.
+#[allow(clippy::too_many_arguments)]
+async fn read_capped_body(
+    host: &Arc<dyn EngineHost>,
+    rt: &Arc<NativeRuntime>,
+    i: usize,
+    pool: &str,
+    ingress_protocol: &str,
+    egress_name: &str,
+    breaker_cfg: &busbar_substrate::store::BreakerCfg,
+    r: axum::http::Response<hyper::body::Incoming>,
+    read_deadline: tokio::time::Instant,
+    permit: Permit,
+    budget_guard: &mut BudgetSpendGuard<'_>,
+    upstream_started: std::time::Instant,
+    tap: &TapCell,
+) -> Result<Bytes, Response> {
+    // `truncated` distinguishes "too large to translate" from "genuinely unparseable". Bounded by
+    // the caller's deadline; expiry is a failed transfer, compensated exactly like a mid-body cut.
+    let (bytes, read_end) = {
+        use http_body_util::BodyExt;
+        let read = read_capped(
+            r.into_body().into_data_stream(),
+            max_translated_body_bytes(),
+        );
+        match tokio::time::timeout_at(read_deadline, read).await {
+            Ok(pair) => pair,
+            Err(_elapsed) => (Bytes::new(), ReadEnd::TransportError),
+        }
+    };
+    // Re-record the upstream RTT now that the WHOLE body has arrived: on this buffered path busbar
+    // awaits the entire upstream response before it can translate, so the download is upstream cost.
+    record_upstream_rtt(upstream_started.elapsed());
+    drop(permit);
+    if read_end == ReadEnd::TransportError {
+        // The 2xx headers optimistically recorded a success and spent the budget, but the body never
+        // arrived intact: charge no tokens, record a compensating transient failure, and let the
+        // still-armed guard refund the request budget unit.
+        diag_debug!(
+            CROSSPROTO_NONSTREAM_MIDTRANSFER_FAILED,
+            ingress = %ingress_protocol,
+            egress = %egress_name,
+            "cross-protocol non-stream upstream body failed mid-transfer; \
+             not recording success/usage, refunding budget, returning ingress-native error"
+        );
+        let tripped =
+            host.lane_store()
+                .record_transient_in(pool, i, ERR_NET_TRANSPORT, breaker_cfg, None);
+        if tripped {
+            emit_breaker_trip(host, rt, pool, i);
+        }
+        tap.report(failed_transfer(i));
+        return Err(ingress_error(
+            ingress_protocol,
+            StatusCode::BAD_GATEWAY,
+            KIND_API_ERROR,
+            GENERIC_RESPONSE_ERROR_DETAIL,
+        ));
+    }
+    if read_end == ReadEnd::Truncated {
+        // OUR translation cap, not an upstream fault: no tokens charged (the client receives no
+        // completion), but the optimistic success stands and the budget unit is kept.
+        diag_debug!(
+            CROSSPROTO_TRANSLATION_CAP_EXCEEDED,
+            ingress = %ingress_protocol,
+            egress = %egress_name,
+            cap = max_translated_body_bytes(),
+            "cross-protocol non-stream success body exceeded the translation cap; \
+             cannot translate, not charging tokens, returning ingress-native error"
+        );
+        budget_guard.disarm();
+        tap.report(failed_transfer(i));
+        return Err(ingress_error(
+            ingress_protocol,
+            StatusCode::INTERNAL_SERVER_ERROR,
+            KIND_API_ERROR,
+            GENERIC_RESPONSE_ERROR_DETAIL,
+        ));
+    }
+    Ok(bytes)
+}
+
+/// Phase 8: the not-translatable tail (non-JSON / unexpected-but-valid shape / unknown ingress).
+/// Relaying the upstream body verbatim would leak the egress provider's native wire format to a
+/// different-protocol client, so record the lane fault (an undecodable body is as much a lane fault
+/// as a transport failure — without this a lane returning undecodable 200s forever never trips),
+/// report the failed transfer, and return an ingress-native 500. The guard is still armed, so the
+/// caller's return refunds the headers-time budget unit. Pure extraction of the tail of
+/// [`translate_response_cross_protocol`].
+#[allow(clippy::too_many_arguments)]
+fn not_translatable(
+    host: &Arc<dyn EngineHost>,
+    rt: &Arc<NativeRuntime>,
+    i: usize,
+    pool: &str,
+    ingress_protocol: &str,
+    egress_name: &str,
+    breaker_cfg: &busbar_substrate::store::BreakerCfg,
+    status: StatusCode,
+    degraded: bool,
+    tap: &TapCell,
+) -> Response {
     if degraded {
         diag_debug!(
             CROSSPROTO_RESPONSE_NOT_TRANSLATABLE_DEGRADED,
@@ -333,16 +417,13 @@ pub(crate) async fn translate_response_cross_protocol(
              instead of leaking the upstream's native body"
         );
     }
-    // An undecodable body is exactly as much a lane fault as a transport failure: without this a
-    // lane returning undecodable 200s forever never trips. The guard is still armed, so the return
-    // refunds the headers-time budget unit.
     let tripped =
         host.lane_store()
             .record_transient_in(pool, i, "untranslatable-2xx", breaker_cfg, None);
     if tripped {
         emit_breaker_trip(host, rt, pool, i);
     }
-    tap.report(failed_transfer());
+    tap.report(failed_transfer(i));
     ingress_error(
         ingress_protocol,
         StatusCode::INTERNAL_SERVER_ERROR,

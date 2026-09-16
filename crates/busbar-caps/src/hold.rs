@@ -558,7 +558,7 @@ impl HoldAccrual {
     ///
     /// This is what makes the late-accrual exposure a mechanism rather than an assertion. When a
     /// parent exits with a child still running, the child's accrual becomes a hold of its own,
-    /// sized at the child's maximum provider push and drawn synchronously — so the child cannot
+    /// sized at the child's maximum reported push and drawn synchronously — so the child cannot
     /// afterwards post late with no reservation behind it, whatever it goes on to spend.
     pub fn convert_at_parent_exit<S: Step>(self, sized: u64, token: &AdmitToken<S>) -> Hold {
         Hold::open(token, self.principal, sized)
@@ -568,8 +568,8 @@ impl HoldAccrual {
     /// [`Posted::settle_late`].
     ///
     /// The same shape as a child's missed accrual and for the same reason, which is why it is this
-    /// type rather than a new one: by the time the figure exists the reservation is gone. A streamed
-    /// or deferred body reports what it consumed when it DRAINS, and the exit sealed the end and
+    /// type rather than a new one: by the time the figure exists the reservation is gone. An incrementally
+    /// delivered or deferred body reports what it consumed when it DRAINS, and the exit sealed the end and
     /// released the slot before the first byte of it reached the client — so there is nothing held
     /// back for this amount, whoever asks. `overdraft` is the whole amount because there was never a
     /// reservation for any part of it; `settle_late` says the same thing in the two figures the
@@ -612,7 +612,7 @@ impl PostingFlags {
     pub const VOIDED: PostingFlags = PostingFlags(1 << 5);
     /// Value was delivered but the settle record was lost; it is retained and re-appended.
     pub const UNPOSTED: PostingFlags = PostingFlags(1 << 6);
-    /// The unit was served from a pool it was downgraded into.
+    /// The unit was served from a bucket it was downgraded into.
     pub const DOWNGRADED: PostingFlags = PostingFlags(1 << 7);
 
     /// Whether every flag in `other` is set here.

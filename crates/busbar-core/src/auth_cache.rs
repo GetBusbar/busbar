@@ -55,9 +55,9 @@ type CacheKey = (String, String);
 /// of the cached-allow window, and it returns `200 {"flushed": N}`. But an authentication already
 /// IN FLIGHT across the flush computed its allow verdict BEFORE the flush and inserted it AFTER —
 /// so the flush returned success having revoked nothing, and the pre-flush verdict kept serving for
-/// up to `MAX_IDENTIFY_TTL_SECS` (an hour). The window is real and wide, not theoretical: the
-/// shipped OIDC module does a blocking JWKS HTTPS round-trip with a 10-second timeout, and an admin
-/// plugin chain runs on the blocking pool with its own multi-second budget.
+/// up to `MAX_IDENTIFY_TTL_SECS` (an hour). The window is real and wide, not theoretical: an
+/// external auth module can do a blocking network round-trip with a multi-second timeout, and an
+/// admin plugin chain runs on the blocking thread pool with its own multi-second budget.
 ///
 /// THE FIX is the pattern this codebase already uses twice — `RevocationSync`'s union-never-replace
 /// and `GovState::refresh_lock`'s serialize-the-swap: capture the generation BEFORE the module call

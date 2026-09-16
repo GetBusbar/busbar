@@ -21,9 +21,9 @@
 //!   budget window. Useful for token-cost dashboards.
 //! * **`busbar_lane_state`** — per-(pool, lane) health gauge: 0 = healthy/closed, 1 =
 //!   half-open (cooling but at least one cell admits), 2 = tripped (all cells Open or hard-down).
-//!   Labels use ONLY configured pool names and lane MODEL strings (matching the proxy engine counter
-//!   sites so gauge and counters PromQL-join on `lane`) — both bounded by operator config, never
-//!   client-supplied values.
+//!   Labels use ONLY configured pool names and lane MODEL strings (matching the request-counter
+//!   emission sites below so gauge and counters PromQL-join on `lane`) — both bounded by operator
+//!   config, never client-supplied values.
 //!
 //! ## Cardinality invariant
 //!
@@ -34,8 +34,9 @@
 //! * `lane` — the lane's configured MODEL string (bounded by the count of configured lanes, a
 //!   startup constant). Identical on the LANE_STATE gauge and every counter that carries `lane`, so
 //!   they can be PromQL-joined on the label.
-//! * `plane` — the governance plane the request arrived on (`crate::plane::Plane::key`): `llm`,
-//!   `mcp` or `a2a`. Three values, and a fourth only if the codebase grows a fourth plane.
+//! * `plane` — the key of the plane the request arrived on (the primary/fallback plane's own key,
+//!   or a mounted plane consumer's registered key). Bounded by the small, fixed set of plane
+//!   consumers a build can mount.
 //! * Fixed enumerations (`outcome`, `disposition`, `reason`, `from`, `to`, `ingress_protocol`).
 //!
 //! Client-supplied values (raw model strings from request bodies, user-facing key secrets, etc.)
@@ -131,9 +132,9 @@ const CACHE_KEY_SEP: char = '\u{1f}';
 
 static REQUESTS_HANDLES: OnceLock<RwLock<HashMap<Box<str>, metrics::Counter>>> = OnceLock::new();
 static DURATION_HANDLES: OnceLock<RwLock<HashMap<Box<str>, metrics::Histogram>>> = OnceLock::new();
-// The mounted-plane (MCP/A2A) families keep their OWN caches: the `plane` label makes their key
-// space distinct from the model series above, and keeping them separate is what lets the model
-// series stay label-identical to v1.5.4.
+// The mounted plane consumers' families keep their OWN caches: the `plane` label makes their key
+// space distinct from the primary-plane series above, and keeping them separate is what lets the
+// primary-plane series stay label-identical to v1.5.4.
 static PLANE_REQUESTS_HANDLES: OnceLock<RwLock<HashMap<Box<str>, metrics::Counter>>> =
     OnceLock::new();
 static PLANE_DURATION_HANDLES: OnceLock<RwLock<HashMap<Box<str>, metrics::Histogram>>> =
@@ -142,9 +143,9 @@ static PLANE_DURATION_HANDLES: OnceLock<RwLock<HashMap<Box<str>, metrics::Histog
 /// Increment `REQUESTS_TOTAL` for `(ingress_protocol, pool, outcome)` via a CACHED counter handle —
 /// no registry lookup and no per-request `Label`/`Key` construction on the steady-state path. Falls
 /// back to the plain macro until the recorder is installed (see the cache-module note above).
-/// Byte-for-byte the same series and value the macro produced. This is the MODEL plane's family and
-/// carries NO `plane` label, so its exposition is identical to v1.5.4 (`incr_plane_requests_total`
-/// is the mounted-plane counterpart).
+/// Byte-for-byte the same series and value the macro produced. This is the primary plane's family
+/// and carries NO `plane` label, so its exposition is identical to v1.5.4 (`incr_plane_requests_total`
+/// is the mounted-plane-consumer counterpart).
 pub(crate) fn incr_requests_total(ingress_protocol: &str, pool: &str, outcome: &'static str) {
     // This `!recorder_installed()` branch is real (it exists so pre-install traffic never caches a
     // handle bound to the no-op recorder), but it is NOT practically unit-testable in this crate
@@ -198,9 +199,10 @@ pub(crate) fn incr_requests_total(ingress_protocol: &str, pool: &str, outcome: &
         .or_insert(handle);
 }
 
-/// Increment `PLANE_REQUESTS_TOTAL` for `(plane, ingress_protocol, pool, outcome)` — the mounted-plane
-/// (MCP/A2A) counterpart of [`incr_requests_total`]. SEPARATE family and SEPARATE cache so the model
-/// series stays label-identical to v1.5.4; same cached-handle contract otherwise.
+/// Increment `PLANE_REQUESTS_TOTAL` for `(plane, ingress_protocol, pool, outcome)` — the
+/// mounted-plane-consumer counterpart of [`incr_requests_total`]. SEPARATE family and SEPARATE cache
+/// so the primary-plane series stays label-identical to v1.5.4; same cached-handle contract
+/// otherwise.
 pub(crate) fn incr_plane_requests_total(
     plane: &str,
     ingress_protocol: &str,
@@ -246,8 +248,9 @@ pub(crate) fn incr_plane_requests_total(
 }
 
 /// Record a `REQUEST_DURATION_SECONDS` observation for `(ingress_protocol, pool)` via a CACHED
-/// histogram handle. Same caching contract as [`incr_requests_total`]; the model plane's family,
-/// with NO `plane` label (see [`record_plane_request_duration`] for the mounted-plane counterpart).
+/// histogram handle. Same caching contract as [`incr_requests_total`]; the primary plane's family,
+/// with NO `plane` label (see [`record_plane_request_duration`] for the mounted-plane-consumer
+/// counterpart).
 pub(crate) fn record_request_duration(ingress_protocol: &str, pool: &str, seconds: f64) {
     if !recorder_installed() {
         metrics::histogram!(
@@ -282,7 +285,7 @@ pub(crate) fn record_request_duration(ingress_protocol: &str, pool: &str, second
 }
 
 /// Record a `PLANE_REQUEST_DURATION_SECONDS` observation for `(plane, ingress_protocol, pool)` — the
-/// mounted-plane (MCP/A2A) counterpart of [`record_request_duration`], in a SEPARATE family/cache.
+/// mounted-plane-consumer counterpart of [`record_request_duration`], in a SEPARATE family/cache.
 pub(crate) fn record_plane_request_duration(
     plane: &str,
     ingress_protocol: &str,
@@ -509,8 +512,8 @@ pub fn refresh_scrape_gauges(app: &App) {
     // For each configured pool, iterate the pool's lane members. The lane state is derived from
     // the lane snapshot (dead flag, aggregate usability, aggregate cooldown remaining), which are
     // pure atomic reads — no FSM transitions are triggered. The `lane` label value is the lane's
-    // MODEL string (matching the proxy engine counters; bounded one-per-configured-lane, a startup
-    // constant), not a numeric index.
+    // MODEL string (matching the request-counter emission sites above; bounded
+    // one-per-configured-lane, a startup constant), not a numeric index.
     //
     // State derivation (3-state: 0=healthy, 1=half-open, 2=tripped):
     //   dead || (!usable && cooldown > 0) → 2 (hard-down or all cells Open)
@@ -527,7 +530,7 @@ pub fn refresh_scrape_gauges(app: &App) {
     // The routing tables through the NEUTRAL read seam (money-path Phase 3-4 B): the scrape reads pool
     // label spaces, per-pool member lane indices, a lane's model string, and the per-pool queue depth
     // as neutral projections, so `/metrics` names no `Lane`/`WeightedLane` and need not relocate when
-    // the tables move into `busbar-llm`. Cold scrape path — the projections may allocate.
+    // the tables move into an out-of-tree plugin crate. Cold scrape path — the projections may allocate.
     let view = app.engine_tables_view();
     for (pool_name, member_idxs) in view.pools() {
         // Render the LIVE per-pool `on_exhausted: queue` park depth. `queued_depth` is the
@@ -551,8 +554,9 @@ pub fn refresh_scrape_gauges(app: &App) {
                 0.0 // Closed / healthy
             };
             // The `lane` label is the lane's MODEL string (NOT a numeric index), matching the
-            // counter sites in proxy engine so the gauge and counters can be PromQL-joined on `lane`.
-            // It is bounded one-per-configured-lane (a startup constant), so cardinality stays safe.
+            // request-counter emission sites above so the gauge and counters can be PromQL-joined on
+            // `lane`. It is bounded one-per-configured-lane (a startup constant), so cardinality
+            // stays safe.
             let lane_label = view
                 .lane_view(lane_idx)
                 .expect("pool member lane index is in range")
@@ -573,7 +577,7 @@ pub fn refresh_scrape_gauges(app: &App) {
 
     // Direct-model lanes (reachable via `by_model` routing, no pool required) get a lane-state
     // gauge too, labeled with the model name as `pool` — the same convention the counters use
-    // for model-routed traffic (`proxy::metric_pool_label`: empty pool name → model string),
+    // for model-routed traffic (empty pool name → model string),
     // so gauge and counters PromQL-join. Cardinality: bounded by |configured models|, a startup
     // constant. Without this, a pool-less config (the docs' minimal getting-started config)
     // exposes NO lane gauges at all — a fresh boot rendered an empty /metrics (harness finding,

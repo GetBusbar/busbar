@@ -1,36 +1,36 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE DURABLE PER-CALL LOG: one hash-chained record per MCP tool call, written through to the
+//! THE DURABLE PER-CALL LOG: one hash-chained record per recorded call, written through to the
 //! configured governance store, read back at boot, and verifiable.
 //!
 //! ## The CHAIN is not this file's, and that is the point
 //!
 //! This module used to carry its own `compute_hash`, `CallChain`, `ChainBreak`, `ChainBreakKind` and
-//! `verify_chain` — a second copy of what `a2a/provenance.rs` had and a third of what
-//! `admin/audit.rs` had. Owner's ruling, 2026-08-13: *"auditing is core. nothing auditing wise
-//! should be mcp a2a or llm specific. thats how audits break."* Three chains give three answers to
+//! `verify_chain` — a second copy of what other planes' provenance chains had and a third of what
+//! the admin audit log had. Owner's ruling, 2026-08-13: auditing is core; nothing audit-wise
+//! should be plane-specific — that is how audits break. Three chains give three answers to
 //! "what happened", and an auditor reads whichever was wired last.
 //!
 //! So the mechanism is [`crate::audit`]'s: one append, one digest, one verifier. What stays here is
 //! the RECORD (which fields a call carries and which of them the digest covers — the `call_suffix`
 //! pre-framing built plane-side) and the SINK (attaching the store, rehydrating at boot, writing
-//! through the neutral journal seam). MCP supplies a record shape; it does not supply a second chain.
+//! through the neutral journal seam). A plane supplies a record shape; it does not supply a second chain.
 //!
 //! ## Why this is not the admin audit log
 //!
 //! The per-call event used to ride [`crate::admin::audit::AUDIT`]. That log is admin-MUTATION-only
 //! and its engine-side working set is a bounded ring of
-//! [`crate::admin::audit::MAX_AUDIT_ENTRIES`] entries. An admin mutation is operator-rate; a tool
-//! call is REQUEST-rate. Sharing the ring means one busy afternoon of tool calls evicts every admin
+//! [`crate::admin::audit::MAX_AUDIT_ENTRIES`] entries. An admin mutation is operator-rate; a
+//! recorded call is REQUEST-rate. Sharing the ring means one busy afternoon of calls evicts every admin
 //! row from it, so "who changed this registration" stops being answerable at exactly the moment an
 //! incident makes somebody ask — and the loss is silent, because a ring that pruned looks identical
 //! to a ring that was never written to. Two populations that churn at different rates do not share
 //! one bounded buffer.
 //!
-//! ## The shape is the A2A task store's, deliberately
+//! ## The shape is a durable task store's, deliberately
 //!
-//! [`crate::a2a`]'s durable substrate settled this same problem — "make a stateful thing survive a
+//! A plane's durable task substrate settled this same problem — "make a stateful thing survive a
 //! restart without breaking every already-signed store plugin" — and this is that shape:
 //!
 //! - the [`busbar_api::Store`] methods are DEFAULTED, so a plugin built before they existed keeps
@@ -68,28 +68,28 @@
 // tested, and nothing wrote a record. It is wired now, and the exact extent of the wiring is stated
 // here rather than left to be discovered:
 //
-//   WRITTEN — every inbound `tools/call` that reaches `mcp::method::tools_call`, at every terminal:
+//   WRITTEN — every inbound call that reaches a plane's call verb, at every terminal:
 //   the dispatched result, every refusal (admission, dispatch-time re-validation, header mismatch,
 //   the tasks gate, the caller-ask gate, the budget, the egress gate, the upstream's own refusal,
 //   and the terminal ask assertion), and the creation of an asynchronous task.
 //
 //   NOT WRITTEN — three things, each for a stated reason:
-//     * `prompts/get` and `resources/read`. the call record `tool` is the tool routing key and the
-//       chain is documented as one record per TOOL CALL; widening it to every capability is a
-//       schema decision, not a wiring decision, and inventing a `tool` value for a prompt would put
-//       a name in that field that no `mcp_tool:` grant can ever name.
-//     * The ROUND STRUCTURE of a multi-round exchange. One `tools/call` request produces one
-//       record. A caller-ask round that returns `InputRequiredResult` records the round as refused
+//     * Capability invocations that are not calls (e.g. metadata or resource fetches). the call
+//       record `tool` is the call routing key and the chain is documented as one record per CALL;
+//       widening it to every capability is a schema decision, not a wiring decision, and inventing a
+//       `tool` value for a non-call would put a name in that field that no grant can ever name.
+//     * The ROUND STRUCTURE of a multi-round exchange. One call request produces one
+//       record. A caller-ask round that returns an input-required result records the round as refused
 //       with `caller_ask_pending`, and the retry that follows is its own inbound request and its
 //       own record; the upstream input-required rounds inside a single dispatch are NOT individually
 //       recorded. The log answers "who called what, and did it go out", not "how many round trips it
 //       took".
-//     * The task's OWN upstream leg. A `tools/call` answered with a task records `task_created` at
+//     * The task's OWN upstream leg. A call answered with a task records `task_created` at
 //       the moment the task is created and admitted; the runner's later dispatch, retries and
-//       terminal status are the A2A-shaped task provenance chain's business (`mcp::tasks`), not a
+//       terminal status are the task provenance chain's business (a plane's task subsystem), not a
 //       second per-call record under a request that has already been answered.
 //
-// The sink is attached at boot in `main.rs`, beside the durable audit and the A2A task table, and
+// The sink is attached at boot in `main.rs`, beside the durable audit and a plane's task table, and
 // with no durable store configured the log keeps chain positions in RAM and persists nothing — the
 // documented `store: memory` behaviour, and the reason `restore_from_store` reports what it found
 // rather than assuming.
@@ -122,11 +122,11 @@ use busbar_plugin::hot::{
 };
 use core::mem::MaybeUninit;
 
-/// The host-assigned `kind_id` the MCP `call` durable stream is registered under and addressed by on
-/// every scoped op. Distinct from the A2A `task_event` stream's id (1); process-global.
+/// The host-assigned `kind_id` the `call` durable stream is registered under and addressed by on
+/// every scoped op. Distinct from the `task_event` stream's id (1); process-global.
 pub(crate) const KIND_ID_CALL: u32 = 2;
 
-/// The MCP `call` stream's FFI reframe slot: delegates the raw-buffer work to the audited
+/// The `call` stream's FFI reframe slot: delegates the raw-buffer work to the audited
 /// [`crate::plane_host::journal::reframe_bridge`] (so this file stays `deny(unsafe)`) over the native
 /// [`reframe_call`] decode of the neutral journal body.
 extern "C-unwind" fn reframe_call_ffi(
@@ -156,7 +156,7 @@ extern "C-unwind" fn reframe_call_ffi(
     )
 }
 
-/// REGISTER the MCP `call` durable stream with the host (once, at boot, before the rehydrate):
+/// REGISTER the `call` durable stream with the host (once, at boot, before the rehydrate):
 /// `LengthPrefixed` framing with the principal in the digest, under [`KIND_ID_CALL`], bounded at
 /// [`MAX_TRACKED_PRINCIPALS`] positions. Uses the WITHIN-CORE capped register (the ABI descriptor
 /// carries no LRU cap, and this crate must not touch the hot ABI); the host attaches the durable sink
@@ -214,14 +214,14 @@ fn pack_bodies(bodies: &[Vec<u8>]) -> Vec<u8> {
 }
 
 /// The outcome and reason tokens THIS stream uses, re-exported from the ONE audit vocabulary in
-/// [`crate::audit::vocab`]. They are core's, not MCP's: the ruling promoted the richer set of words
-/// this plane got right (`not_granted` / `egress_denied` / `upstream_failed`, distinguishable where
+/// [`crate::audit::vocab`]. They are core's, not any plane's: the ruling promoted the richer set of
+/// words a plane got right (`not_granted` / `egress_denied` / `upstream_failed`, distinguishable where
 /// the admin log has a single "refused") to the shared vocabulary rather than flattening to the
 /// weakest of the three. The re-export exists so the call sites keep one import path; the
 /// definitions, and the reasoning about each word, live in core.
-// MCP-only re-export: these tokens name the MCP call stream's outcomes; the A2A relay uses its own
-// subset, so with `plane-mcp` off (and A2A on) this path re-exports them with no local user.
-// MCP-only re-export of the hook-gate refusal reason (definition relocated to
+// These tokens name the call stream's outcomes; another plane may use only a subset, so a build with
+// this consumer disabled re-exports them with no local user.
+// Re-export of the hook-gate refusal reason (definition relocated to
 // `busbar_substrate::audit::vocab` alongside the rest of the audit vocabulary, so a plane names it
 // without reaching into `busbar_core::calllog`); re-exported here so in-core call sites and
 // the legacy `busbar_core::calllog::REASON_HOOK_REJECTED` path are unchanged.
@@ -237,16 +237,16 @@ pub use crate::audit::vocab::{
 // business, supplied by [`crate::audit::Chain::append`].
 pub use busbar_substrate::plane::calllog::{CallInput, CallRecorded};
 
-// ── THE DURABLE JOURNAL SEAM — the MCP call chain's framing, held PLANE-SIDE ─────────────────────
+// ── THE DURABLE JOURNAL SEAM — the call chain's framing, held PLANE-SIDE ─────────────────────
 //
 // The per-principal chain is the NEUTRAL store-backed journal (`Journal<PlaneJournalRecord>`) — the
 // SAME seq-authority, position cache, LRU, write-ordering and store-resume the shipped streams use,
-// over a record shape that names no MCP type. Core's durable path carries NONE of the MCP call
+// over a record shape that names no plane type. Core's durable path carries NONE of the call
 // stream's framing facts; they ride each record/input across the seam via the pre-framed content
-// suffix built here. This file keeps that framing (it moves out with the mcp/ relocation), exactly as
-// `plane::taskstore` keeps the A2A event framing.
+// suffix built here. This file keeps that framing (it moves out with its plane's relocation), exactly as
+// `plane::taskstore` keeps its event framing.
 
-/// The MCP per-call stream's framing (see the call stream framing): every field self-delimits, so
+/// The per-call stream's framing (see the call stream framing): every field self-delimits, so
 /// the prelude and the plane's suffix byte-concatenate with no separator.
 const CALL_FRAMING: Framing = Framing::LengthPrefixed;
 /// The principal (the chain SCOPE) participates in the digest — the call digest fields feeds
@@ -254,7 +254,7 @@ const CALL_FRAMING: Framing = Framing::LengthPrefixed;
 /// when `digests_scope` is set.
 const CALL_DIGESTS_SCOPE: bool = true;
 
-/// The MCP call's pre-framed content SUFFIX: the chained fields AFTER the prelude
+/// The call's pre-framed content SUFFIX: the chained fields AFTER the prelude
 /// (`prev_hash`/`principal`/`seq`), framed LengthPrefixed EXACTLY as [`crate::audit::Digest`] frames
 /// them, so `frame_prelude(prev_hash, principal, seq) ⧺ suffix` reproduces the call record's digest
 /// byte stream byte-for-byte. Every field is `len:u64-be ⧺ bytes`; a `num`
@@ -501,26 +501,26 @@ impl std::fmt::Display for CallLogError {
 /// store owns the records — so it can be bounded without losing anything: a principal evicted here is
 /// resumed from the store on its next call (see [`PlaneCallLog::resume_missing`]), so the chain stays
 /// contiguous with the persisted tail exactly as a boot rehydrate would make it. Without a bound the
-/// map grew one entry per DISTINCT principal ever seen and was never evicted — an MCP tool call is
+/// map grew one entry per DISTINCT principal ever seen and was never evicted — a recorded call is
 /// request-rate and a principal is a caller identity, so a deployment serving many short-lived
 /// principals leaked memory unboundedly. The eviction is least-recently-USED (a still-active
 /// principal is kept resident and never pays a readback), and the cap is generous enough that any
 /// realistic working set of concurrently-active callers fits without a single eviction.
 const MAX_TRACKED_PRINCIPALS: usize = 16_384;
 
-/// THE PER-CALL LOG. A thin MCP-facing wrapper over the generic core [`Journal`]: the principal-keyed
+/// THE PER-CALL LOG. A thin plane-facing wrapper over the generic core [`Journal`]: the principal-keyed
 /// position cache, the LRU bound, the store-resume of an evicted tail, the write-through sink and the
 /// write-ordering invariant all live in [`crate::audit::journal`] now — this file keeps only the
-/// MCP RECORD (the call record), the MCP operator vocabulary (the diagnostics its restore emits), and
+/// RECORD (the call record), the operator vocabulary (the diagnostics its restore emits), and
 /// the read surface. No `Debug`: the journal holds a `dyn PlaneStore`, which is deliberately not
 /// `Debug` (a backend must not be obliged to render itself, where a credential could surface in a log).
 pub struct PlaneCallLog {
     /// The host-side durable stream this log's per-principal chain is addressed by. Production is
-    /// always [`KIND_ID_CALL`] (one process, one MCP call stream); a TEST constructs a log over a
+    /// always [`KIND_ID_CALL`] (one process, one call stream); a TEST constructs a log over a
     /// FRESH id (see [`PlaneCallLog::with_kind_id`]) so parallel tests never share one process-global
     /// chain. The chain's seq-authority, position cache, LRU bound ([`MAX_TRACKED_PRINCIPALS`]) and
     /// store-resume all live host-side in the registered DurableStream now; this wrapper keeps only the
-    /// MCP RECORD (the call record), the operator vocabulary, and the read surface.
+    /// RECORD (the call record), the operator vocabulary, and the read surface.
     kind_id: u32,
 }
 
@@ -555,7 +555,7 @@ impl PlaneCallLog {
     /// BOOT REHYDRATE. Enumerate the principals the store holds records for, resume each chain from
     /// its persisted tail HOST-SIDE, and REPORT what was found.
     ///
-    /// This wrapper owns the MCP OPERATOR VOCABULARY — it emits the MCP diagnostics for the two
+    /// This wrapper owns the OPERATOR VOCABULARY — it emits the diagnostics for the two
     /// findings that are bad news. It drives the enumeration itself (rather than the whole-store
     /// `journal_restore`) so it can recompute the RICH [`ChainBreak`] locally on a break — the neutral
     /// seam header carries only counts. An empty chain and a chain break are each REPORTED rather than
@@ -668,7 +668,7 @@ impl PlaneCallLog {
         Ok(verify_chain(&records).err())
     }
 
-    /// RECORD one tool call: mint the seq/prev_hash/hash through the ONE core chain (host-side, under
+    /// RECORD one call: mint the seq/prev_hash/hash through the ONE core chain (host-side, under
     /// [`KIND_ID_CALL`]), persist the neutral body under the journal's write-ordering invariant, and
     /// return the TYPED record. A cache MISS is resolved host-side by the journal's resume: a first-seen
     /// principal opens at seq 1, an LRU-evicted one is resumed from the store's persisted tail (via the
@@ -715,7 +715,7 @@ impl PlaneCallLog {
         })
     }
 
-    /// RECORD one call WITHOUT a host — the deferred MCP client-leg path (`mcp::client::issue`), which
+    /// RECORD one call WITHOUT a host — the deferred client-leg path (a plane's async client verb), which
     /// is `async` (a `HostCtx` is `!Send`) and reaches no `App` to open one. Same chain, same store,
     /// same typed record as [`PlaneCallLog::record`]; only the host-recovery step (which the append
     /// never uses) is skipped. This is the hostless in-core emit the cleave keeps for that one site.
@@ -847,7 +847,7 @@ impl PlaneCallLog {
 ///
 /// [`PlaneCallLog::record`] surfaces a durable-write failure precisely so the CALLER can decide, and
 /// this is that decision, made once and in one place. A store hiccup must not turn into a refused
-/// tool call: the log is EVIDENCE, not ADMISSION, and a gateway whose data plane stops when its
+/// call: the log is EVIDENCE, not ADMISSION, and a gateway whose data plane stops when its
 /// audit backend blinks has converted an observability dependency into an availability dependency.
 /// The same call the durable audit log makes, for the same reason.
 ///
@@ -920,8 +920,8 @@ pub fn emit(host: HostCtx, principal: &str, input: CallInput) {
     }
 }
 
-/// THE DEFERRED-SITE EMITTER: the hostless twin of [`emit`] for `mcp::client::issue` — the MCP
-/// client-leg verb path that has no `HostCtx` to open (see [`PlaneCallLog::record_hostless`]). It
+/// THE DEFERRED-SITE EMITTER: the hostless twin of [`emit`] for a plane's client-leg verb path
+/// that has no `HostCtx` to open (see [`PlaneCallLog::record_hostless`]). It
 /// swallows a durable-write failure the same way [`emit`] does (evidence, not admission), so the
 /// deferred path's behaviour matches the production emitter but for the host it never had.
 pub fn emit_hostless(principal: &str, input: CallInput) {
@@ -949,7 +949,7 @@ pub fn emit_hostless(principal: &str, input: CallInput) {
 // ── TEST HARNESS — the per-principal chain is host-side now, so a test drives it over a host ──────
 
 /// TEST ONLY: a fresh, process-unique `call` stream id, well above the production ids (1/2) and the
-/// `plane_host::journal` test range (base 10_000) and the A2A `task_event` test range (base 100_000).
+/// `plane_host::journal` test range (base 10_000) and the `task_event` test range (base 100_000).
 #[cfg(test)]
 pub(crate) fn fresh_test_kind_id() -> u32 {
     static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(200_000);
@@ -1039,7 +1039,7 @@ fn global_call_host_app() -> &'static Arc<crate::state::App> {
 }
 
 /// TEST ONLY: ensure the process-wide `call` stream is registered ONCE (no-sink) — for a front-door
-/// integration harness whose app is not booted through `mcp_hydrate`. Idempotent (never re-registers).
+/// integration harness whose app is not booted through a plane's hydrate hook. Idempotent (never re-registers).
 #[cfg(any(test, feature = "test-support"))]
 pub fn ensure_global_call_stream_registered() {
     let _ = global_call_host_app();

@@ -12,7 +12,7 @@ use busbar_contract::dest::ClientMode;
 use busbar_contract::ids::{CorrelationRef, CorrelationValue, UnitKey};
 use busbar_kernel::reply::{AwaitingReplies, NotWaiting, OwnedCorrelation};
 
-/// The fact key the voice plane declares its tool-call correlation under.
+/// The fact key a plane declares its call correlation under.
 const CALL_ID: &str = "call_id";
 
 /// A leg as the plane plans one: it names the key and nothing else.

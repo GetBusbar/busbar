@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The NEUTRAL proxy vocabulary that STAYS in `busbar-core` once the LLM engine moves to the
-//! `busbar-llm` plane (1.6.0 money-path Phase 3-4 C). Everything here is dialect-blind: the capped
+//! The NEUTRAL proxy vocabulary that STAYS in `busbar-core` once a plane's engine moves out to its own
+//! `busbar-llm` crate (1.6.0 money-path Phase 3-4 C). Everything here is dialect-blind: the capped
 //! upstream-body read, the tight upstream-buffer cap, the hook-content ceiling knob, the fire-and-
 //! forget STAGE usage-tap primitives, and the agnostic ingress-error shaper. Core's own staying call
 //! sites (`egress_auth`, `egress::seam`, `preflight`, `auth`, `config`, `appbuild`) name these at
@@ -40,7 +40,7 @@ pub use busbar_substrate::proxy::{
 pub use busbar_substrate::proxy::proxy_vocab::StageShape;
 
 // App-retype WEDGE 3 (THE FLIP): core's `fire_stage_taps` + `spawn_bounded_tap` (and their
-// `AdmissionGate`-backed 1024-permit `tap_inflight` cap) are RETIRED. Every tap fan-out — the LLM
+// `AdmissionGate`-backed 1024-permit `tap_inflight` cap) are RETIRED. Every tap fan-out — a plane
 // engine's stage/global taps AND core's own auth-denial tap — now fires through the neutral
 // `busbar_substrate::proxy::proxy_vocab::{fire_stage_taps, spawn_bounded_tap}`, which owns the ONE
 // shared 1024-permit gate. Keeping a second core-side gate would split the cap into two independent
@@ -60,5 +60,5 @@ pub use busbar_substrate::proxy::proxy_vocab::{gate_rejected, GateRejected};
 // through the neutral ABI); re-exported here at their historical `crate::proxy::{ingress_error,
 // agnostic_error_envelope}` paths so every in-core caller is unchanged. They name no dialect —
 // `proto::decl_for` reads whatever registry the resident planes populated — and the fallback is
-// neutral, so both survive the LLM plane being dropped from the build.
+// neutral, so both survive any one plane being dropped from the build.
 pub use busbar_substrate::proxy::{agnostic_error_envelope, ingress_error};

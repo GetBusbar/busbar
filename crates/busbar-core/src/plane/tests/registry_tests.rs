@@ -965,9 +965,9 @@ fn dup_claim_guard_fires_when_a_plane_claims_a_core_owned_section() {
     );
 }
 
-/// The VOICE plane's real claim, mirrored on the [`WIDGET_PLANE`] template — `streams` ∉
-/// `CORE_OWNED_CONCRETE_SECTIONS`, so a lone claimant is admitted (this is what
-/// `busbar_voice::PLANE_DECL` does at M5).
+/// An example future plane's real claim, mirrored on the [`WIDGET_PLANE`] template — `streams` ∉
+/// `CORE_OWNED_CONCRETE_SECTIONS`, so a lone claimant is admitted (this is the shape a plugin
+/// declaring `streams` as its owned section will take once one exists).
 static ONE_CLAIMS_STREAMS: PlaneDecl = PlaneDecl {
     key: "one",
     owned_config_sections: &["streams"],
@@ -983,7 +983,7 @@ static TWO_CLAIMS_STREAMS: PlaneDecl = PlaneDecl {
 
 #[test]
 fn dup_claim_guard_admits_streams_alone_and_refuses_a_streams_collision() {
-    // M5: `streams` is NOT in `CORE_OWNED_CONCRETE_SECTIONS`, so voice's lone claim is ADMITTED.
+    // `streams` is NOT in `CORE_OWNED_CONCRETE_SECTIONS`, so the lone claim is ADMITTED.
     crate::plane::registry::check_owned_config_claims(
         &[&ONE_CLAIMS_STREAMS],
         crate::plane::registry::CORE_OWNED_CONCRETE_SECTIONS,

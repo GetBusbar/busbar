@@ -19,8 +19,8 @@
 //! process-wide `OnceLock`, not one per worker, so the only way to observe the real boot-window
 //! race is to race the real boot of the real process across its real SO_REUSEPORT sockets.
 #![cfg(unix)]
-// The fixture boots a REAL busbar with an LLM provider; a `--no-default-features` build has no
-// wire codec compiled in and fails closed at boot, which is correct product behavior, not the
+// The fixture boots a REAL busbar with a configured provider; a `--no-default-features` build has
+// no wire codec compiled in and fails closed at boot, which is correct product behavior, not the
 // seam under test here.
 #![cfg(feature = "proto-llm")]
 

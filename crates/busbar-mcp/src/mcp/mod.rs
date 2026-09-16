@@ -153,10 +153,10 @@ pub const PLANE_DECL: busbar_substrate::plane::registry::PlaneDecl =
         },
         // THE MCP SLOT: the validated resource is already built by config resolution
         // (`McpResource::from_cfg`, run once at `RootCfg` construction) AND already type-erased at the
-        // composition root into the neutral `BuildCtx::mcp_slot`, so `build` here is a CLONE of that
+        // composition root into the neutral `BuildCtx::endpoint_slot`, so `build` here is a CLONE of that
         // ONE opaque `Arc` — not a second construction and not a re-erasure. `None` exactly when
         // `cfg.mcp` is `None`, matching `App::mcp`'s own absence.
-        build: |ctx| ctx.mcp_slot.clone(),
+        build: |ctx| ctx.endpoint_slot.clone(),
         // S4a Option A: the MCP plane's data routes are contributed NEUTRALLY through `routes`, so
         // its handlers no longer extract `axum::State<Arc<AppHandle>>`.
         routes: Some(mcp_routes),
@@ -602,7 +602,7 @@ pub(crate) fn mcp_hydrate(
     // gate exists to stop). Both take the plane-narrowed store off the one wrapper.
     // Attach both write-through sinks through the core-side BootCtx convenience, so this hook names no
     // `App` sink field: the ledger/record and the store are all core-owned and stay core-side.
-    ctx.attach_mcp_durable_sinks();
+    ctx.attach_durable_sinks();
     // The demotion boot-replay reads the durable rows and the bound-snapshot runtime off a host minted
     // over the freshly-built app — a snapshot-only mint (no live handle at hydrate), which is correct:
     // hydration reads exactly the generation it is restoring into.
@@ -686,7 +686,7 @@ pub(crate) fn mcp_admin_routes(
     _slot: &dyn std::any::Any,
 ) -> Vec<busbar_substrate::admin_verbs::AdminRouteSpec> {
     use crate::mcp::admin_view::McpServers;
-    use busbar_plugin::cold::http_endpoint::RouteMethod;
+    use busbar_plugin::cold::endpoint::RouteMethod;
     use busbar_substrate::admin_verbs::{
         connect_reply, AdminReplyFuture, AdminReqCtx, AdminRouteSpec, AdminScope, AdminVerbKind,
     };

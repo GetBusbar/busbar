@@ -9,15 +9,15 @@
 //!
 //! ## The ladder is DATA now, and it lives with the protocols
 //!
-//! This once held a hand-ordered `if`-ladder that named every dialect (`anthropic-version` →
-//! anthropic, `AWS4-HMAC-SHA256` → bedrock, …). That ladder was the single biggest reason
-//! `busbar-core` failed the deletion test: a neutral crate cannot name a protocol it must be able to
-//! ship without. So the ladder became DATA — each protocol states the rungs it claims on its own
-//! [`crate::proto::ProtocolDecl::claims`] predicate (a `(headers, path) -> Option<ClaimStrength>`),
-//! and [`crate::proto::registry::detect_protocol`] folds those predicates in registration order,
-//! keeping the tightest claim. The result is BYTE-IDENTICAL to the old ladder — the claim strengths
-//! ARE the ladder positions — but core names no dialect and a build with no protocol plugin simply
-//! claims nothing. The per-dialect rungs, and the tests that pin them, live in `busbar-llm`.
+//! This once held a hand-ordered `if`-ladder that named every dialect by its own header/path shape.
+//! That ladder was the single biggest reason `busbar-core` failed the deletion test: a neutral crate
+//! cannot name a protocol it must be able to ship without. So the ladder became DATA — each protocol
+//! states the rungs it claims on its own [`crate::proto::ProtocolDecl::claims`] predicate (a
+//! `(headers, path) -> Option<ClaimStrength>`), and [`crate::proto::registry::detect_protocol`] folds
+//! those predicates in registration order, keeping the tightest claim. The result is BYTE-IDENTICAL to
+//! the old ladder — the claim strengths ARE the ladder positions — but core names no dialect and a
+//! build with no protocol plugin simply claims nothing. The per-dialect rungs, and the tests that pin
+//! them, live with the protocol plugin that declares each dialect.
 //!
 //! NB: this is `router` (protocol identification), distinct from `routing` (load-balancing policy).
 
@@ -32,4 +32,4 @@ pub(crate) fn protocol_id(path: &str, h: &HeaderMap) -> Option<&'static str> {
 
 // NOTE: operation resolution deliberately does NOT live here. The Router identifies the protocol;
 // the chosen `RequestHandler::resolve_operation(path, body)` decides the operation (it may need the
-// body — Gemini's generateContent and Bedrock's InvokeModel are body-disambiguated).
+// body — some dialects need the body itself to disambiguate which operation a request names).

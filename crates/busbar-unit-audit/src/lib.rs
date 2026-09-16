@@ -22,10 +22,10 @@
 //!
 //! ## The new fixed audit record, beside it
 //!
-//! [`record`] holds it: one shape, for every plane, with no exceptions. A plane contributes exactly
-//! two identifiers — what kind of operation this was and how it finished — and everything else is
-//! the same whichever door the request came in through. An audit whose shape varies by protocol is
-//! an audit nobody can compare two rows of.
+//! [`record`] holds it: one shape, for every caller, with no exceptions. A caller contributes
+//! exactly two identifiers — what kind of operation this was and how it finished — and everything
+//! else is the same whichever door the request came in through. An audit whose shape varies by the
+//! door it came in through is an audit nobody can compare two rows of.
 //!
 //! ## And the amendments
 //!
@@ -44,7 +44,7 @@
 //!
 //! ## What a token buys here
 //!
-//! Sealing a record, or appending an amendment, takes the audit step's token. A plane can say what
+//! Sealing a record, or appending an amendment, takes the audit step's token. A caller can say what
 //! it saw and a hook can say what it did; turning either into something on a chain is the audit
 //! unit's act. Evidence anybody could add is evidence nobody can rely on.
 

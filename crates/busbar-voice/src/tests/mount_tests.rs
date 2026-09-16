@@ -25,7 +25,7 @@ use crate::runtime::{EchoToolExecutor, LocalMeteringPort, SessionHandle, VoiceRu
 use crate::topology::telephony::{begin_telephony, g711_config};
 use crate::topology::SessionBudget;
 use busbar_api::{PlaneRecord, PlaneSelector, StoreResult};
-use busbar_plugin::cold::http_endpoint::{RouteAuth, RouteMethod};
+use busbar_plugin::cold::endpoint::{RouteAuth, RouteMethod};
 use busbar_substrate::plane::handle_engine::DurableHandleEngine;
 use busbar_substrate::plane::registry::{BuildCtx, CardIssuer, PlaneBootCtx, RestoredSummary};
 use busbar_substrate::plane::store::PlaneStore;
@@ -127,7 +127,7 @@ impl PlaneBootCtx for FakeBootCtx {
     fn restore_call_log(&self) -> Result<RestoredSummary, String> {
         Ok(RestoredSummary::default())
     }
-    fn attach_mcp_durable_sinks(&self) {}
+    fn attach_durable_sinks(&self) {}
     fn plane_store(&self) -> Option<Arc<dyn PlaneStore>> {
         self.store.clone()
     }
@@ -147,7 +147,7 @@ impl PlaneBootCtx for FakeBootCtx {
 fn slot_from_public_url(public_url: Option<&str>) -> Option<Arc<dyn std::any::Any + Send + Sync>> {
     let unit = ();
     let ctx = BuildCtx {
-        mcp_slot: None,
+        endpoint_slot: None,
         agent_defs: &unit,
         public_url,
         prior: None,

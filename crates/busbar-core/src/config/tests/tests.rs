@@ -45,7 +45,7 @@ pub(crate) fn base_deploy() -> DeployCfg {
         agents: Default::default(),
         streams: Default::default(),
         listen: DEFAULT_LISTEN_ADDR.into(),
-        // Not an MCP server.
+        // Left at its type default (unset).
         mcp: Default::default(),
         oauth_as: None,
         public_url: None,
@@ -415,19 +415,19 @@ fn test_config_without_pools_parses() {
     let yaml = r#"
 listen: "0.0.0.0:8080"
 providers:
-  anthropic:
-    api_key: { env: ANTHROPIC_KEY }
+  acme:
+    api_key: { env: ACME_KEY }
 models:
-  claude:
-    provider: anthropic
+  widget:
+    provider: acme
     max_concurrent: 10
 "#;
     let deploy: DeployCfg = serde_yaml::from_str(yaml).expect("config without pools must parse");
     assert!(deploy.pools.pools.is_empty());
-    assert!(deploy.models.contains_key("claude"));
+    assert!(deploy.models.contains_key("widget"));
     assert_eq!(
-        deploy.providers["anthropic"].api_key.env_var(),
-        Some("ANTHROPIC_KEY")
+        deploy.providers["acme"].api_key.env_var(),
+        Some("ACME_KEY")
     );
 }
 
@@ -436,7 +436,7 @@ models:
 #[test]
 fn test_provider_path_override_resolves() {
     let mut defs = HashMap::new();
-    let mut def = provider_def("openai", "https://api.z.ai/api/paas/v4");
+    let mut def = provider_def("acme", "https://api.z.ai/api/paas/v4");
     def.path = Some("/chat/completions".to_string());
     defs.insert("zai-payg".to_string(), def);
 
@@ -468,7 +468,7 @@ fn test_provider_path_override_resolves() {
 
 #[test]
 fn bind_is_loopback_classification() {
-    // Loopback binds: safe for a token-only admin plane.
+    // Loopback binds: safe for a token-only guarded listener.
     assert!(bind_is_loopback("127.0.0.1:8081"));
     assert!(bind_is_loopback("localhost:8081"));
     assert!(bind_is_loopback("LocalHost:8081")); // case-insensitive
@@ -482,7 +482,7 @@ fn bind_is_loopback_classification() {
     assert!(!bind_is_loopback("admin.internal:8081")); // hostname: fail closed (exposed)
 }
 
-/// The admin-plane boot-guard: a network-exposed `admin_listen` refuses to boot without mTLS,
+/// The `admin_listen` boot-guard: a network-exposed listener refuses to boot without mTLS,
 /// unless deliberately waived. Loopback binds and mTLS-equipped exposed binds resolve cleanly.
 #[test]
 fn admin_plane_boot_guard() {
@@ -495,7 +495,7 @@ fn admin_plane_boot_guard() {
         let mut defs = HashMap::new();
         defs.insert(
             "p".to_string(),
-            provider_def("openai", "https://api.example.com/v1"),
+            provider_def("acme", "https://api.example.com/v1"),
         );
         let mut deploy = base_deploy();
         deploy
@@ -511,17 +511,17 @@ fn admin_plane_boot_guard() {
         resolve(&deploy, &defs)
     }
 
-    // DEFAULT: the zero-config admin listener is loopback, so it boots with no mTLS. Note the
+    // DEFAULT: the zero-config `admin_listen` is loopback, so it boots with no mTLS. Note the
     // argument: 1.5.3's DEFAULT is `admin_require_mtls: true` — the guard is ON unless waived.
     assert!(
         build(DEFAULT_ADMIN_LISTEN_ADDR, None, true).is_ok(),
         "the default loopback admin_listen must resolve"
     );
-    // Loopback admin plane is safe without mTLS (unreachable off-host).
+    // A loopback `admin_listen` is safe without mTLS (unreachable off-host).
     assert!(build("127.0.0.1:8081", None, true).is_ok());
     assert!(build("[::1]:8081", None, true).is_ok());
     assert!(build("localhost:8081", None, true).is_ok());
-    // EXPOSED admin plane without mTLS and without waiver: REFUSE TO BOOT.
+    // An EXPOSED `admin_listen` without mTLS and without waiver: REFUSE TO BOOT.
     let err = build("0.0.0.0:8081", None, true)
         .expect_err("exposed admin without mTLS must refuse to boot");
     let joined = err.join("\n");
@@ -531,9 +531,9 @@ fn admin_plane_boot_guard() {
         joined.contains("admin_require_mtls: false"),
         "the guard must name the 1.5.3 waiver spelling (not the retired `admin_insecure`): {joined}"
     );
-    // Exposed admin WITH client-cert mTLS: allowed.
+    // Exposed `admin_listen` WITH client-cert mTLS: allowed.
     assert!(build("0.0.0.0:8081", Some("client-ca.pem"), true).is_ok());
-    // Exposed admin with the explicit `admin_require_mtls: false` waiver: allowed (deliberate).
+    // Exposed `admin_listen` with the explicit `admin_require_mtls: false` waiver: allowed (deliberate).
     assert!(build("0.0.0.0:8081", None, false).is_ok());
 }
 
@@ -809,16 +809,16 @@ fn test_hook_definition_unknown_key_rejected() {
 #[test]
 fn test_pool_member_model_key_and_removed_keys() {
     let m: PoolMember =
-        serde_yaml::from_str("model: claude\nweight: 3\ntier: large\ntags: [opus]\n")
+        serde_yaml::from_str("model: widget\nweight: 3\ntier: large\ntags: [opus]\n")
             .expect("member with model: parses");
-    assert_eq!(m.model, "claude");
+    assert_eq!(m.model, "widget");
     assert_eq!(m.weight, 3);
     assert_eq!(m.tier.as_deref(), Some("large"));
     assert_eq!(m.tags, ["opus"]);
 
     for (yaml, key) in [
-        ("target: claude\n", "target"),
-        ("model: claude\ncost_per_mtok: 15\n", "cost_per_mtok"),
+        ("target: widget\n", "target"),
+        ("model: widget\ncost_per_mtok: 15\n", "cost_per_mtok"),
     ] {
         let e = serde_yaml::from_str::<PoolMember>(yaml)
             .expect_err("a removed member key must be rejected");
@@ -1486,7 +1486,7 @@ fn test_resolve_provider_from_def() {
     // DeployCfg referencing z.ai + providers.yaml def -> resolved ProviderCfg has
     // protocol/base_url/error_map from def
     let mut defs = HashMap::new();
-    let mut def = provider_def(DEFAULT_PROTOCOL, "https://api.z.ai/api/anthropic");
+    let mut def = provider_def(DEFAULT_PROTOCOL, "https://api.z.ai/api/model-1");
     def.error_map
         .insert("1113".to_string(), "billing".to_string());
     def.error_map
@@ -1505,7 +1505,7 @@ fn test_resolve_provider_from_def() {
         .get("z.ai")
         .expect("z.ai should be in resolved providers");
     assert_eq!(provider_cfg.protocol, DEFAULT_PROTOCOL);
-    assert_eq!(provider_cfg.base_url, "https://api.z.ai/api/anthropic");
+    assert_eq!(provider_cfg.base_url, "https://api.z.ai/api/model-1");
     assert_eq!(provider_cfg.api_key.env_var(), Some("ZAI_KEY"));
     assert_eq!(
         provider_cfg.error_map.get("1113"),
@@ -1579,7 +1579,7 @@ fn test_resolve_override_wins() {
     let mut override_error_map = HashMap::new();
     override_error_map.insert("9999".to_string(), "client_error".to_string());
     let mut dep = provider_deploy("CUSTOM_KEY");
-    dep.protocol = Some("openai".to_string()); // Override protocol
+    dep.protocol = Some("acme".to_string()); // Override protocol
     dep.base_url = Some("https://override.example.com".to_string()); // Override base_url
     dep.error_map = Some(override_error_map); // Override error_map
 
@@ -1593,7 +1593,7 @@ fn test_resolve_override_wins() {
         .get("custom")
         .expect("custom should be in resolved providers");
     assert_eq!(
-        provider_cfg.protocol, "openai",
+        provider_cfg.protocol, "acme",
         "protocol override should win"
     );
     assert_eq!(
@@ -1774,11 +1774,11 @@ fn test_limits_absent_block_yields_historical_defaults() {
     let yaml = r#"
 listen: "0.0.0.0:8080"
 providers:
-  anthropic:
-    api_key: { env: ANTHROPIC_KEY }
+  acme:
+    api_key: { env: ACME_KEY }
 models:
-  claude:
-    provider: anthropic
+  widget:
+    provider: acme
     max_concurrent: 10
 "#;
     let deploy: DeployCfg =
@@ -1873,11 +1873,11 @@ fn test_limits_set_value_overrides_default() {
     let yaml = r#"
 listen: "0.0.0.0:8080"
 providers:
-  anthropic:
-    api_key: { env: ANTHROPIC_KEY }
+  acme:
+    api_key: { env: ACME_KEY }
 models:
-  claude:
-    provider: anthropic
+  widget:
+    provider: acme
     max_concurrent: 10
 limits:
   upstream_request_timeout_secs: 42
@@ -1934,11 +1934,11 @@ fn test_request_body_size_couples_ingress_and_translate() {
     let yaml = r#"
 listen: "0.0.0.0:8080"
 providers:
-  anthropic:
-    api_key: { env: ANTHROPIC_KEY }
+  acme:
+    api_key: { env: ACME_KEY }
 models:
-  claude:
-    provider: anthropic
+  widget:
+    provider: acme
     max_concurrent: 10
 limits:
   request_body_max_bytes: 5242880
@@ -2570,7 +2570,7 @@ store:
     db_path: /var/lib/busbar/gov.db
     busy_timeout_ms: 250
 rate_card:
-  claude:
+  widget:
     input_utok: 3.0
     output_utok: 15.0
 per_request_fee: 2
@@ -2603,12 +2603,12 @@ advanced:
         Some(250)
     );
     let rc = deploy.rate_card.as_ref().expect("rate_card");
-    let claude = rc.get("claude").expect("claude rate entry");
-    assert_eq!(claude.input_utok, 3.0);
-    assert_eq!(claude.output_utok, 15.0);
-    assert_eq!(claude.cache_read_utok, 0.0, "omitted tier prices at 0");
+    let widget = rc.get("widget").expect("widget rate entry");
+    assert_eq!(widget.input_utok, 3.0);
+    assert_eq!(widget.output_utok, 15.0);
+    assert_eq!(widget.cache_read_utok, 0.0, "omitted tier prices at 0");
     // The routing scalar is the blended (input + output) / 2.
-    assert_eq!(rate_entry_per_mtok(claude), 9.0);
+    assert_eq!(rate_entry_per_mtok(widget), 9.0);
     assert_eq!(deploy.per_request_fee, 2);
     assert_eq!(deploy.groups.len(), 2);
     assert_eq!(deploy.groups["eng-batch"].parent.as_deref(), Some("eng"));
@@ -3255,8 +3255,8 @@ advanced:
 /// FREEZE BLOCKER — the hook-name namespace is CLOSED.
 ///
 /// `RESERVED_HOOK_NAMES` and the bare strategy keywords accepted in a pool's `hooks:` list share ONE
-/// word space. Adding a bare terminal later — a new `on_error` word, a new ranking strategy, the MCP
-/// bounded-default floor — would retroactively invalidate a config that is LEGAL TODAY: an operator's
+/// word space. Adding a bare terminal later — a new `on_error` word, a new ranking strategy, a new
+/// plugin-defined bounded-default floor — would retroactively invalidate a config that is LEGAL TODAY: an operator's
 /// hook named `least_bad` boots fine in 1.5.3 and would become a boot failure (or, worse, silently
 /// rebind to the new built-in) the moment the word were reserved.
 ///
@@ -3323,9 +3323,9 @@ fn reserved_hook_names_are_frozen() {
 
 /// FREEZE BLOCKER — an OMITTED `phase:` means THE FOUR CORE STAGES, not "all stages ever".
 ///
-/// If omission meant "all stages", an MCP tool-invocation stage added in 1.6.0 (or an A2A delegation
-/// stage in 1.6.0) would retroactively make every already-deployed unscoped hook start firing at
-/// brand-new points in a brand-new plane — a silent widening of what the operator signed off on, with
+/// If omission meant "all stages", a new plugin-defined invocation stage added in 1.6.0 (or a new
+/// delegation stage in 1.6.0) would retroactively make every already-deployed unscoped hook start firing at
+/// brand-new points in a brand-new plugin kind — a silent widening of what the operator signed off on, with
 /// no config change and no diagnostic. Pinning the default to a FROZEN list makes a later stage
 /// strictly additive: to fire there, a hook must NAME it.
 ///

@@ -6,7 +6,7 @@
 //! `AdminTransport` is transport-AGNOSTIC: the trait every wire format plugs into. Given the shared
 //! `AdminService`, an adapter builds whatever it needs to expose the frozen operations. The JSON-REST
 //! family (`super::json`, versioned by submodule — `json::v1::JsonV1`) is the first transport; a
-//! GraphQL, gRPC, or MCP adapter later is a NEW `AdminTransport` impl calling the SAME `AdminService`
+//! GraphQL or gRPC adapter later is a NEW `AdminTransport` impl calling the SAME `AdminService`
 //! methods and reusing the SAME `contract` views/errors — no operation logic is ever duplicated per
 //! transport (or per version).
 //!
@@ -34,7 +34,7 @@ use crate::state::AppHandle;
 /// per-request `AdminService`, so reads reflect a config apply and the mutation path swaps through
 /// the handle.
 pub(crate) trait AdminTransport {
-    /// The stable wire name of this transport+version (`"json/v1"`, `"graphql/v1"`, `"mcp/v1"`, …).
+    /// The stable wire name of this transport+version (`"json/v1"`, `"graphql/v1"`, …).
     fn name(&self) -> &'static str;
 
     /// The API version segment of the mount (`"v1"`, later `"v2"`).

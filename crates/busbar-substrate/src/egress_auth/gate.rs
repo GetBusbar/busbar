@@ -1,58 +1,55 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE EGRESS GATE — one gate, in core, for every plane that spends busbar's own credential on an
-//! inbound caller's behalf.
+//! THE EGRESS GATE — one gate, shared by every consumer that spends this substrate's own
+//! credential on an inbound caller's behalf.
 //!
-//! ## Why this is core and not a plane's
+//! ## Why this lives once, here, rather than once per consumer
 //!
-//! Owner's ruling: *"core needs to be the core. if its used 2x or could be, its core"*, and
-//! *"nothing auditing wise should be mcp a2a or llm specific. thats how audits break."* The gate
-//! below was written twice — once at `mcp/client/egress.rs`'s credential-selection site and once at
-//! `a2a/creds.rs`'s lease mint — and the two copies had already diverged: one checked that the
-//! caller's key was still LIVE and the other did not, and nobody decided that. Two implementations
-//! of one authorisation control is the shape this tree's the `structure-lint` gate ledger calls DEBT,
-//! because the copy that is hardened and the copy that is not are indistinguishable from the
-//! outside.
+//! The check below used to be written independently at each consumer's own credential-selection
+//! site, and the copies had already diverged: one checked that the caller's key was still LIVE and
+//! the other did not, and nobody decided that. Two implementations of one authorisation control is
+//! the shape this tree's `structure-lint` gate ledger calls DEBT, because the copy that is hardened
+//! and the copy that is not are indistinguishable from the outside.
 //!
-//! **What core owns:** the liveness judgement, the grant walk, the ORDER of the checks, the
-//! fail-closed default, the refusal it produces and the witness it hands back. **What a plane owns:**
-//! its GRANT KIND ([`EgressSubject`]) and its refusal WORDING (a total `From<EgressRefusal<_>>`).
-//! A plane keeps its vocabulary because "holds no `mcp_server` grant" and "holds no `agent:` grant"
-//! are different sentences to an operator reading a denial; it does not keep its own decision.
+//! **What this module owns:** the liveness judgement, the grant walk, the ORDER of the checks, the
+//! fail-closed default, the refusal it produces and the witness it hands back. **What a consumer
+//! owns:** its GRANT KIND ([`EgressSubject`]) and its refusal WORDING (a total
+//! `From<EgressRefusal<_>>`). A consumer keeps its own vocabulary for the reason a caller was
+//! refused — two different missing-grant kinds should read as two different sentences to an
+//! operator reading a denial — but it does not keep its own decision about whether to refuse.
 //!
 //! [`crate::trust`] is the precedent this copies rather than a new idea, and [`crate::audit`] is the
-//! nearer one: core owns the lifecycle, the plane supplies the artifact.
+//! nearer one: this module owns the lifecycle, the consumer supplies the artifact.
 //!
 //! ## THE CONFUSED DEPUTY, which is the only reason this gate exists
 //!
-//! busbar is BOTH directions at once. An authenticated inbound call can cause busbar to spend its
-//! OWN standing upstream credential on a backend the caller was never entitled to reach — every byte
-//! of that hop is busbar's own, so "the caller's key never leaves" is satisfied while the caller has
-//! just gained reach it does not hold. A client-only gateway cannot have this bug, because it has no
-//! inbound principal to be confused about. The gate binds the OUTBOUND credential to the INBOUND
-//! principal's grant, and it is the same rule on every plane because the deputy is a property of the
-//! bundle rather than of a protocol.
+//! An egress-capable substrate is BOTH directions at once. An authenticated inbound call can cause
+//! it to spend its OWN standing outbound credential on a destination the caller was never entitled
+//! to reach — every byte of that hop is the substrate's own, so "the caller's key never leaves" is
+//! satisfied while the caller has just gained reach it does not hold. A client-only gateway cannot
+//! have this bug, because it has no inbound principal to be confused about. The gate binds the
+//! OUTBOUND credential to the INBOUND principal's grant, and it is the same rule for every consumer
+//! because the deputy is a property of the bundle rather than of a protocol.
 //!
 //! ## THE WITNESS IS A TYPE, so forgetting the gate is a COMPILE error
 //!
 //! [`authorise`] is the only way to obtain an [`EgressGrant`]: its field is private to this module,
-//! so nothing else in the crate can build one, and a plane's mint takes one by reference. A future
-//! delegating call site that skipped the check does not compile — which matters because the caller
-//! that will forget is the one that does not exist yet. The subject the check was made AGAINST is
-//! carried ON the witness rather than passed beside it, so "authorise against `planner`, mint against
-//! `payments`" is unexpressible rather than merely discouraged.
+//! so nothing else in the crate can build one, and a consumer's mint takes one by reference. A
+//! future delegating call site that skipped the check does not compile — which matters because the
+//! caller that will forget is the one that does not exist yet. The subject the check was made
+//! AGAINST is carried ON the witness rather than passed beside it, so "authorise against `planner`,
+//! mint against `payments`" is unexpressible rather than merely discouraged.
 //!
-//! ## ADDING A THIRD PLANE COSTS A GRANT KIND AND NOTHING ELSE
+//! ## ADDING A NEW CONSUMER COSTS A GRANT KIND AND NOTHING ELSE
 //!
-//! That is the acceptance test for this seam, and `tests/gate_tests.rs` writes a throwaway grant kind
-//! for a plane busbar does not have and shows it is gated, refused and audited with NO gate, NO
-//! refusal enum and NO error type written for it.
+//! That is the acceptance test for this seam, and `tests/gate_tests.rs` writes a throwaway grant
+//! kind for a consumer this crate does not otherwise know about and shows it is gated, refused and
+//! audited with NO gate, NO refusal enum and NO error type written for it.
 
-// Shared plane infrastructure: this gate serves the MCP and A2A egress paths and nothing else. With
-// BOTH planes compiled out the whole gate is vestigial, so its items read dead — scoped to exactly
-// that config so a real single-plane build still lints every item its plane leaves unused (those
-// carry their own per-plane attrs below).
+// Shared infrastructure: with every consumer feature compiled out the whole gate is vestigial, so
+// its items read dead — scoped to exactly that config so a real single-consumer build still lints
+// every item its own consumer leaves unused (those carry their own per-consumer attrs below).
 #![cfg_attr(not(any(feature = "dispatch", feature = "relay")), allow(dead_code))]
 
 use busbar_api::VirtualKey;
@@ -60,10 +57,10 @@ use busbar_api::VirtualKey;
 /// ONE GRANT THAT MUST PASS: which check this is, the scope KIND it is asked under, and the VALUE
 /// looked up in the caller's grant list.
 ///
-/// `grant` is the plane's own marker for the check, so a plane's `From` conversion can give each
-/// check its own sentence without matching on a string. `scope_kind` is `&'static str` because a
-/// scope kind is a vocabulary constant (`"mcp_server"`, `"agent"`), never a runtime value — a
-/// computed kind would be a caller choosing which grant list it is checked against.
+/// `grant` is the consumer's own marker for the check, so a consumer's `From` conversion can give
+/// each check its own sentence without matching on a string. `scope_kind` is `&'static str` because
+/// a scope kind is a vocabulary constant fixed by the consumer's own grant taxonomy, never a runtime
+/// value — a computed kind would be a caller choosing which grant list it is checked against.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Requirement<G> {
     pub grant: G,
@@ -71,24 +68,23 @@ pub struct Requirement<G> {
     pub value: String,
 }
 
-/// WHAT A PLANE SUPPLIES: the grants an egress on this subject requires, and whether the plane's
-/// key-liveness rule applies. Everything else is [`authorise`]'s business.
+/// WHAT A CONSUMER SUPPLIES: the grants an egress on this subject requires, and whether the
+/// consumer's key-liveness rule applies. Everything else is [`authorise`]'s business.
 pub trait EgressSubject {
-    /// The plane's own enumeration of the checks — ONE variant per requirement. An enum rather than
-    /// a string so the plane's refusal conversion is exhaustive over its own checks: a plane that
-    /// grows a third requirement gets a compile error at its wording, not a nearby arm silently
-    /// reused.
+    /// The consumer's own enumeration of the checks — ONE variant per requirement. An enum rather
+    /// than a string so the consumer's refusal conversion is exhaustive over its own checks: a
+    /// consumer that grows a third requirement gets a compile error at its wording, not a nearby arm
+    /// silently reused.
     type Grant: Copy + std::fmt::Debug;
 
     /// Whether the caller's KEY must still be live (not tombstoned, enabled, not expired) for this
-    /// plane's egress.
+    /// consumer's egress.
     ///
-    /// A CONST rather than a runtime flag, because it is a property of the plane and not of the
-    /// request. The two planes disagree TODAY — the A2A lease mint checks it, the MCP credential
-    /// selection does not — and this const is where that divergence is stated rather than being an
-    /// accident of which file a reader opens. Unifying the gate did not change either answer: a gate
-    /// that quietly started refusing more on one plane, or less, would be a behaviour change wearing
-    /// a refactor's clothes.
+    /// A CONST rather than a runtime flag, because it is a property of the consumer and not of the
+    /// request. Different consumers can legitimately disagree on this, and this const is where that
+    /// divergence is stated rather than being an accident of which file a reader opens. Unifying the
+    /// gate does not force either answer: a gate that quietly started refusing more for one
+    /// consumer, or less, would be a behaviour change wearing a refactor's clothes.
     const REQUIRE_LIVE_KEY: bool;
 
     /// EVERY grant that must pass, IN THE ORDER THEY ARE CHECKED. All of them must pass; the first
@@ -141,20 +137,20 @@ impl<G> std::fmt::Display for EgressRefusal<G> {
     }
 }
 
-// NOT MOUNTED YET, deliberately named rather than omitted. The two live planes each audit their own
-// egress refusal at their ingress with their own resource spelling; those two call sites are what
-// these methods exist to replace, and the replacement is a separate change because it edits an
-// ingress module. Present now because the audit VOCABULARY is the part the owner's ruling is about
-// ("nothing auditing wise should be mcp a2a or llm specific"), and a plane that arrives later must
-// find it here rather than invent a third spelling. Exercised by `tests/gate_tests.rs`.
+// NOT MOUNTED YET, deliberately named rather than omitted. Existing consumers each audit their own
+// egress refusal at their ingress with their own resource spelling; those call sites are what these
+// methods exist to replace, and the replacement is a separate change because it edits an ingress
+// module. Present now because the audit VOCABULARY is the part that needs to be shared, and a
+// consumer that arrives later must find it here rather than invent a third spelling. Exercised by
+// `tests/gate_tests.rs`.
 #[cfg_attr(not(test), allow(dead_code))]
 impl<G> EgressRefusal<G> {
     /// The refused destination in the vocabulary the AUDIT ring speaks: `<scope kind>:<value>`, or
     /// the key itself when the refusal is about the key rather than the destination.
     ///
-    /// Here rather than on a plane because an audit row that is spelled one way for MCP and another
-    /// for A2A is an audit an auditor cannot read across — which is the failure mode the owner names:
-    /// *"nothing auditing wise should be mcp a2a or llm specific."*
+    /// Here rather than on each consumer because an audit row that is spelled one way per consumer
+    /// is an audit an auditor cannot read across — a single shared spelling keeps the audit trail
+    /// legible no matter which consumer produced the refusal.
     pub fn audit_resource(&self) -> String {
         match self {
             EgressRefusal::KeyNotLive { caller } => format!("key:{caller}"),
@@ -187,8 +183,9 @@ pub struct EgressGrant<S> {
 
 impl<S> EgressGrant<S> {
     /// The subject this grant was taken against.
-    // A2A-only accessor: the A2A mint reads the subject back off the witness, the MCP path does not,
-    // so with `plane-a2a` off (and MCP on) it has no caller.
+    // Used only by consumers built under the `relay` feature: they read the subject back off the
+    // witness at mint time, while other consumers do not — so with `relay` off this accessor has no
+    // caller.
     #[cfg_attr(not(feature = "relay"), allow(dead_code))]
     pub fn subject(&self) -> &S {
         &self.subject

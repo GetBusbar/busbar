@@ -16,7 +16,7 @@ fn test_render_exposes_emitted_counter() {
     init();
     metrics::counter!(
         REQUESTS_TOTAL,
-        "ingress_protocol" => "anthropic",
+        "ingress_protocol" => "acme",
         "pool" => "default",
         "outcome" => "ok"
     )

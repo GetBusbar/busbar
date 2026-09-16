@@ -83,7 +83,7 @@ fn http_desc(url: &[u8]) -> EgressDesc {
     EgressDesc {
         size: std::mem::size_of::<EgressDesc>() as u32,
         version: POD_VERSION,
-        kind: busbar_plugin::hot::RawEgressKind::of(EgressKind::Http),
+        kind: busbar_plugin::hot::RawEgressKind::of(EgressKind::OneShot),
         _reserved: 0,
         allowlist_scope: SCOPE_ALLOW_PRIVATE | SCOPE_ALLOW_PLAINTEXT,
         _reserved2: 0,

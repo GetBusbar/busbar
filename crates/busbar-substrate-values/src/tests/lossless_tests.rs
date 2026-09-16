@@ -8,12 +8,12 @@ use super::*;
 #[test]
 fn source_scoped_extra_namespaces_by_protocol() {
     let mut e: SourceScopedExtra = BTreeMap::new();
-    e.entry("openai".into())
+    e.entry("widget".into())
         .or_default()
         .insert("logprobs".into(), Value::Bool(true));
-    assert!(e["openai"].contains_key("logprobs"));
+    assert!(e["widget"].contains_key("logprobs"));
     assert!(
-        !e.contains_key("anthropic"),
+        !e.contains_key("gadget"),
         "a foreign protocol's namespace is absent, not merged"
     );
 }

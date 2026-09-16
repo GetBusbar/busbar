@@ -332,7 +332,7 @@ fn test_validate_rejects_empty_upstream_model() {
     models.insert("badmodel".to_string(), bad);
     // A real override (and the unset None default) must NOT error.
     let mut ok = make_model("myprovider", 10);
-    ok.upstream_model = Some("anthropic.claude-3-5-sonnet-20241022-v2:0".to_string());
+    ok.upstream_model = Some("acme.model-3-5-20241022-v2:0".to_string());
     models.insert("okmodel".to_string(), ok);
 
     let cfg = make_root_cfg(providers, models, HashMap::new());
@@ -407,7 +407,7 @@ fn test_validate_token_url_ssrf_and_scheme() {
     // requirement (case-INSENSITIVELY) and the SSRF/metadata denylist — same as base_url.
     let build = |token_url: &str| -> Vec<String> {
         let mut providers = HashMap::new();
-        let mut entra = make_provider("openai", "https://myres.openai.azure.com", "API_KEY");
+        let mut entra = make_provider("openai", "https://myres.vendor-a.azure.example.com", "API_KEY");
         entra.token_url = Some(token_url.to_string());
         entra.scope = Some("api://x/.default".into());
         entra.auth = Some(config::ProviderAuth::OAuthClientCredentials);
@@ -543,22 +543,22 @@ fn test_validate_heterogeneous_pool_is_ok() {
     let mut providers = HashMap::new();
     // Two different protocols.
     providers.insert(
-        "anthropic_provider".to_string(),
-        make_provider("anthropic", "https://api.anthropic.com", "ANTHROPIC_KEY"),
+        "acme_provider".to_string(),
+        make_provider("anthropic", "https://api.acme.example.com", "ACME_KEY"),
     );
     providers.insert(
-        "openai_provider".to_string(),
-        make_provider("openai", "https://api.openai.com", "OPENAI_KEY"),
+        "vendor_a_provider".to_string(),
+        make_provider("openai", "https://api.vendor-a.example.com", "VENDOR_A_KEY"),
     );
 
     let mut models = HashMap::new();
     models.insert(
-        "anthropic_model".to_string(),
-        make_model("anthropic_provider", 10),
+        "acme_model".to_string(),
+        make_model("acme_provider", 10),
     );
     models.insert(
-        "openai_model".to_string(),
-        make_model("openai_provider", 10),
+        "vendor_a_model".to_string(),
+        make_model("vendor_a_provider", 10),
     );
 
     let mut pools = HashMap::new();
@@ -566,8 +566,8 @@ fn test_validate_heterogeneous_pool_is_ok() {
     pools.insert(
         "mixedpool".to_string(),
         make_pool(vec![
-            make_member("anthropic_model"),
-            make_member("openai_model"),
+            make_member("acme_model"),
+            make_member("vendor_a_model"),
         ]),
     );
 
@@ -625,7 +625,8 @@ fn test_validate_model_without_provider_error() {
     assert!(errs[0].contains("references unknown provider"));
 }
 
-/// An `AuthCfg` with the given DATA-PLANE chain provider names (bare built-in entries).
+/// An `AuthCfg` with the given serving-path `auth.chain` module names (bare built-in entries),
+/// as opposed to the separate `admin_auth` chain.
 /// The 1.4.x `make_auth(mode, client_tokens)` helper is gone with `client_tokens`/`modules`;
 /// chain semantics replace the mode string: `[keys]` = signed-key auth, `[]` = open front door.
 /// 1.5.3: `upstream` is no longer part of `auth:` at all (it moved to the `pools:` section)
@@ -638,10 +639,10 @@ fn make_auth_chain(modules: &[&str], _upstream: crate::auth::UpstreamCreds) -> c
         .map(|m| config::AuthChainEntry::bare(*m))
         .collect();
     // 1.5.1: the built-in `keys` verifier REQUIRES a signing key (config_validate fails closed
-    // otherwise). 1.5.2: it also requires a USABLE ADMIN MINT PATH — a vkey can only be minted
-    // through an admin endpoint, so `[keys]` with nothing that can mint one is a boot error. Attach
-    // a signing-key ref and an explicit OPEN admin (`admin_auth: []`) — the one structural mint path
-    // that validates under BOTH the default build and `--no-default-features` (where the
+    // otherwise). 1.5.2: it also requires a USABLE MINT PATH via `admin_auth` — a vkey can only be
+    // minted through that privileged chain, so `[keys]` with nothing that can mint one is a boot
+    // error. Attach a signing-key ref and an explicit open `admin_auth: []` — the one structural
+    // mint path that validates under BOTH the default build and `--no-default-features` (where the
     // `admin-tokens` module is compiled out and a configured admin token would itself be rejected).
     if modules.contains(&crate::config::KEYS_MODULE) {
         auth.signing_key = Some(config::SecretRef::env("BUSBAR_SIGNING_KEY"));
@@ -1078,9 +1079,9 @@ fn test_validate_rejects_pool_name_equals_model_name() {
 #[test]
 fn test_validate_rejects_pool_named_api() {
     // A pool named `api` is reached at `/api/v1/messages`, whose first segment the auth middleware
-    // intercepts as the native-API operator surface — making the pool unreachable to clients and
+    // intercepts as a reserved routing prefix — making the pool unreachable to clients and
     // (in governance mode) bypassing per-pool enforcement. Must fail loud at boot. The name is
-    // `api`, not `admin`, because the admin boundary is `ADMIN_PATH = /api`; the validator derives
+    // `api`, not `admin`, because the reserved segment is `ADMIN_PATH = /api`; the validator derives
     // the reserved segment from that constant, so this and the middleware cannot drift.
     let (providers, models, _) = valid_maps();
     let mut pools = HashMap::new();
@@ -1115,8 +1116,9 @@ fn test_validate_rejects_provider_named_api() {
 #[test]
 fn test_validate_rejects_model_named_api() {
     // Regression: a MODEL named `api` is reached at `/api/v1/messages`, whose first segment the
-    // auth middleware intercepts as the native-API surface — unreachable to clients and (in
-    // governance mode) a per-model `allowed_pools` bypass via the GovCtx::default() admin branch.
+    // auth middleware intercepts as a reserved routing prefix — unreachable to clients and (in
+    // governance mode) a per-model `allowed_pools` bypass via the GovCtx::default() no-key
+    // (governance-disabled) branch.
     // The model loop previously skipped the reserved-name check the pool/provider loops run. Must
     // fail loud at boot, symmetric with the pool and provider cases.
     let (mut providers, mut models, pools) = valid_maps();
@@ -1133,9 +1135,9 @@ fn test_validate_rejects_model_named_api() {
     );
 }
 
-/// The three `admin` refusals earlier releases enforced, pinned by their exact message text: the
-/// reverse-compatibility oracle compares this output byte-for-byte against the published binary,
-/// so the wording is part of the contract, not just the verdict.
+/// The three refusals of the reserved name `admin` that earlier releases enforced, pinned by their
+/// exact message text: the reverse-compatibility oracle compares this output byte-for-byte against
+/// the published binary, so the wording is part of the contract, not just the verdict.
 #[test]
 fn test_validate_rejects_pool_named_admin_with_legacy_message() {
     let (providers, models, _) = valid_maps();
@@ -1187,7 +1189,7 @@ fn test_validate_allows_api_prefixed_but_boundary_safe_names() {
     // The reserved check mirrors the auth middleware's PATH-BOUNDARY-SAFE `is_admin` test: only
     // the exact `api` segment collides. `apix` and friends are normal routes (proven by
     // test_admin_prefix_is_boundary_safe in auth.rs) and must NOT be rejected. `adminx` is a normal
-    // lane for the same reason; bare `admin` is refused separately by the legacy rule below.
+    // name for the same reason; bare `admin` is refused separately by the legacy rule below.
     for name in ["apix", "api-pool", "api_portal", "adminx"] {
         assert!(
             !reserved_admin_name(name),
@@ -1550,10 +1552,10 @@ fn validate_admin_scope_mint_now_errors() {
     );
 }
 
-/// 1.5.2: a NON-BUILTIN admin auth module name (an external `kind: auth` admin plugin) is no longer
-/// statically rejected by config_validate — it resolves at LOAD, exactly as a data-plane
-/// `auth.chain` plugin name does. So `admin_auth: [oidc-admin]` must NOT produce an "unknown module"
-/// error here.
+/// 1.5.2: a NON-BUILTIN module name in `admin_auth` (an external `kind: auth` plugin backing the
+/// privileged mint path) is no longer statically rejected by config_validate — it resolves at LOAD,
+/// exactly as a module name in `auth.chain` does. So `admin_auth: [oidc-admin]` must NOT produce an
+/// "unknown module" error here.
 #[test]
 fn validate_admin_auth_plugin_name_no_longer_rejected() {
     let (providers, models, pools) = valid_maps();
@@ -1641,7 +1643,7 @@ fn test_validate_admin_tokens_secret_module_checked() {
     })
     .expect_err("an env secret ref without settings.key must fail validation");
     // The path is the DOTTED config path down to the individual chain entry
-    // (`auth.<plane>.<entry-name>.token`). It used to be the prose label "auth.admin_auth
+    // (e.g. `auth.admin_auth.admin-tokens.token`). It used to be the prose label "auth.admin_auth
     // admin-tokens token", which could only ever describe ONE entry, because `secret_refs` only ever
     // reported one: it called `AuthCfg::admin_token_ref`, which returns the FIRST `admin-tokens`
     // entry it finds and stops. Every entry is enumerated now, so each one names itself.
@@ -1662,7 +1664,8 @@ fn test_validate_admin_tokens_secret_module_checked() {
 }
 
 /// FEATURELESS counterpart: a configured admin token in a binary WITHOUT the `admin-tokens`
-/// module is a loud boot error (a silently-disabled admin API is a lockout, never acceptable).
+/// module is a loud boot error (silently ignoring a configured credential would be a lockout,
+/// never acceptable).
 #[cfg(not(feature = "auth-admin-tokens"))]
 #[test]
 fn test_validate_rejects_admin_token_without_module() {
@@ -1784,10 +1787,10 @@ fn test_validate_chain_unknown_module_rejected_keys_accepted() {
     );
 }
 
-/// 1.5.2: `auth.chain: [keys]` with a signing key but NO usable admin MINT
-/// PATH (default `admin_auth: [admin-tokens]` carrying no `token:`) is a BOOT ERROR — a vkey can
-/// only be minted through an admin endpoint, so nothing could ever mint one and the data plane
-/// would reject every request. Before 1.5.2 no mint-path rule existed, so this config validated
+/// 1.5.2: `auth.chain: [keys]` with a signing key but NO usable MINT PATH via `admin_auth`
+/// (default `admin_auth: [admin-tokens]` carrying no `token:`) is a BOOT ERROR — a vkey can
+/// only be minted through the `admin_auth` chain, so nothing could ever mint one and every
+/// request would be rejected. Before 1.5.2 no mint-path rule existed, so this config validated
 /// clean (and booted as a silent sealed relay).
 #[test]
 fn test_1_5_2_keys_chain_without_mint_path_is_boot_error() {
@@ -1809,11 +1812,11 @@ fn test_1_5_2_keys_chain_without_mint_path_is_boot_error() {
     );
 }
 
-/// 1.5.1+: `auth.chain: [keys]` with a usable admin mint path but NO
+/// 1.5.1+: `auth.chain: [keys]` with a usable mint path via `admin_auth` but NO
 /// `auth.signing_key` is a BOOT ERROR — busbar no longer auto-generates a signing key, so the
-/// built-in `keys` verifier has nothing to verify busbar-signed tokens with and the data plane
-/// would reject every request. Isolates the signing-key rule from the mint-path rule by supplying a
-/// usable mint path: an explicit OPEN admin (`admin_auth: []`), the one structural mint path that
+/// built-in `keys` verifier has nothing to verify busbar-signed tokens with and every request
+/// would be rejected. Isolates the signing-key rule from the mint-path rule by supplying a
+/// usable mint path: an explicit empty `admin_auth: []`, the one structural mint path that
 /// validates under BOTH the default build and `--no-default-features` (where the `admin-tokens`
 /// module is compiled out, so a configured admin token would itself be a second, unrelated error —
 /// see `make_auth_chain`). Setting `signing_key` clears the error. Before 1.5.1 busbar
@@ -1823,7 +1826,7 @@ fn test_keys_chain_without_signing_key_is_boot_error() {
     let (providers, models, pools) = valid_maps();
     let mut cfg = make_root_cfg(providers, models, pools);
 
-    // RED: keys verifier + a usable mint path (open admin) but NO signing_key.
+    // RED: keys verifier + a usable mint path (empty admin_auth) but NO signing_key.
     let mut auth = crate::config::AuthCfg::default_none();
     auth.chain = vec![crate::config::AuthChainEntry::bare(
         crate::config::KEYS_MODULE,
@@ -1841,7 +1844,7 @@ fn test_keys_chain_without_signing_key_is_boot_error() {
         "expected the signing-key requirement boot error; got: {errs:?}"
     );
 
-    // GREEN: setting auth.signing_key clears it (open-admin mint path already present).
+    // GREEN: setting auth.signing_key clears it (empty-admin_auth mint path already present).
     let mut auth_ok = crate::config::AuthCfg::default_none();
     auth_ok.chain = vec![crate::config::AuthChainEntry::bare(
         crate::config::KEYS_MODULE,
@@ -1856,7 +1859,7 @@ fn test_keys_chain_without_signing_key_is_boot_error() {
     );
 }
 
-/// 1.5.2: an IdP chain (`[oidc]`, a plugin) needs NO admin mint path — its
+/// 1.5.2: an IdP chain (`[oidc]`, a plugin) needs NO mint path via `admin_auth` — its
 /// identities are EXTERNALLY issued, so the mint-path rule must NOT fire. Boots clean with no
 /// spurious mint-path error even when `admin_auth` grants no mint capability.
 #[test]
@@ -1871,11 +1874,11 @@ fn test_1_5_2_oidc_chain_needs_no_mint_path() {
     );
 }
 
-/// 1.5.2, the github/ldap gap. `auth.chain: [keys]` whose ONLY admin path is an
-/// EXTERNAL admin IdP (github/ldap) is a usable mint path ONLY if that module declares
-/// `max_admin_scope: full`; otherwise nothing can mint a vkey through the admin API and the data
-/// plane rejects EVERY request. This is the exact config that cost a cycle: the gate's Phase B
-/// github/ldap arms named the admin module but did NOT grant it `max_admin_scope: full`, so `keys`
+/// 1.5.2, the github/ldap gap. `auth.chain: [keys]` whose ONLY entry in `admin_auth` is an
+/// EXTERNAL IdP module (github/ldap) is a usable mint path ONLY if that module declares
+/// `max_admin_scope: full`; otherwise nothing can mint a vkey and EVERY request is rejected.
+/// This is the exact config that cost a cycle: the gate's Phase B github/ldap arms named the
+/// module in `admin_auth` but did NOT grant it `max_admin_scope: full`, so `keys`
 /// failed to validate with "no admin credential can mint one" — deep in a phase, hard to read.
 /// This locks that in as a fast, obvious boot error. Isolates the EXTERNAL-module branch of
 /// `AuthCfg::usable_mint_path` (the earlier mint-path test covers only the `admin-tokens` branch);
@@ -1886,8 +1889,8 @@ fn test_1_5_2_keys_chain_external_admin_needs_full_scope_to_mint() {
     let (providers, models, pools) = valid_maps();
     let mut cfg = make_root_cfg(providers, models, pools);
 
-    // RED: keys verifier + signing_key, but the only admin module (an external github/ldap IdP)
-    // does NOT declare max_admin_scope: full ⇒ NO usable mint path ⇒ boot error.
+    // RED: keys verifier + signing_key, but the only entry in admin_auth (an external github/ldap
+    // IdP module) does NOT declare max_admin_scope: full ⇒ NO usable mint path ⇒ boot error.
     let mut auth = crate::config::AuthCfg::default_none();
     auth.chain = vec![crate::config::AuthChainEntry::bare(
         crate::config::KEYS_MODULE,
@@ -1903,8 +1906,8 @@ fn test_1_5_2_keys_chain_external_admin_needs_full_scope_to_mint() {
         "expected the mint-path boot error for the github/ldap gap; got: {errs:?}"
     );
 
-    // GREEN: the SAME external admin module, now declaring max_admin_scope: full, IS a usable mint
-    // path — an admin IdP can mint — so the config validates clean.
+    // GREEN: the SAME external module in admin_auth, now declaring max_admin_scope: full, IS a
+    // usable mint path — an external IdP can mint — so the config validates clean.
     let mut auth_ok = crate::config::AuthCfg::default_none();
     auth_ok.chain = vec![crate::config::AuthChainEntry::bare(
         crate::config::KEYS_MODULE,
@@ -1953,11 +1956,11 @@ auth:
   token: "stale-legacy-secret"
   client_tokens: ["real-secret"]
 providers:
-  anthropic:
-    api_key: { env: ANTHROPIC_KEY }
+  acme:
+    api_key: { env: ACME_KEY }
 models:
-  claude:
-    provider: anthropic
+  model-1:
+    provider: acme
     max_concurrent: 10
 "#;
     let err = serde_yaml::from_str::<crate::config::DeployCfg>(yaml)
@@ -1978,11 +1981,11 @@ models:
     let yaml2 = r#"
 listen: "0.0.0.0:8080"
 providers:
-  anthropic:
-    api_key_env: ANTHROPIC_KEY
+  acme:
+    api_key_env: ACME_KEY
 models:
-  claude:
-    provider: anthropic
+  model-1:
+    provider: acme
 "#;
     let err2 = serde_yaml::from_str::<crate::config::DeployCfg>(yaml2)
         .expect_err("the removed api_key_env key must fail to parse");
@@ -2001,31 +2004,31 @@ fn test_validate_passthrough_warns_on_nonempty_configured_key() {
     // passthrough the configured `api_key` is NEVER forwarded: it is inert dead config. Its presence
     // means the operator likely wanted static-key gating (`upstream_credentials: own`) but wired
     // passthrough. validate() must emit a prominent boot WARNING for any provider whose `api_key_env`
-    // resolves to a NON-EMPTY value while auth.mode=passthrough. A legit Bedrock-ingress passthrough
-    // provider authenticates per-request via SigV4 and resolves an EMPTY key, so it must NOT warn -
-    // that is the second half of this test.
+    // resolves to a NON-EMPTY value while auth.mode=passthrough. A legit signature-auth passthrough
+    // provider authenticates per-request (no static key ever resolves) and resolves an EMPTY key, so
+    // it must NOT warn - that is the second half of this test.
     use tracing_subscriber::layer::SubscriberExt as _;
 
     // Unique env-var names so parallel tests cannot clobber the values we set/read here.
     let leak_env = "BUSBAR_T_R22_PASSTHROUGH_LEAK_KEY";
-    let bedrock_env = "BUSBAR_T_R22_PASSTHROUGH_BEDROCK_KEY";
+    let vendor_b_env = "BUSBAR_T_R22_PASSTHROUGH_VENDOR_B_KEY";
     std::env::set_var(leak_env, "sk-busbar-secret-should-not-leak");
-    std::env::remove_var(bedrock_env); // Bedrock passthrough: no static key (SigV4 per-request)
+    std::env::remove_var(vendor_b_env); // signature-auth passthrough: no static key (per-request signing)
 
-    // Provider WITH a non-empty resolved key (the leak case) + Bedrock-style provider whose key
-    // env is unset (the legit case). Both providers need a model so validate() has full context.
+    // Provider WITH a non-empty resolved key (the leak case) + signature-auth-style provider whose
+    // key env is unset (the legit case). Both providers need a model so validate() has full context.
     let mut providers = HashMap::new();
     providers.insert(
         "leaky".to_string(),
         make_provider("anthropic", "https://api.example.com", leak_env),
     );
     providers.insert(
-        "bedrock".to_string(),
-        make_provider("bedrock", "https://bedrock.example.com", bedrock_env),
+        "vendor-b".to_string(),
+        make_provider("bedrock", "https://vendor-b.example.com", vendor_b_env),
     );
     let mut models = HashMap::new();
     models.insert("leakymodel".to_string(), make_model("leaky", 10));
-    models.insert("bedrockmodel".to_string(), make_model("bedrock", 10));
+    models.insert("vendorbmodel".to_string(), make_model("vendor-b", 10));
     let mut cfg = make_root_cfg(providers, models, HashMap::new());
     cfg.auth = Some(make_auth_chain(
         &[],
@@ -2055,11 +2058,12 @@ fn test_validate_passthrough_warns_on_nonempty_configured_key() {
             .any(|m| m.contains("inert dead config") && m.contains("leaky")),
         "expected a passthrough inert-configured-key warning naming the 'leaky' provider; got: {msgs:?}"
     );
-    // The Bedrock-style provider with an EMPTY resolved key must NOT trip the warning — otherwise
-    // a legit SigV4 passthrough deployment is spammed with a false-positive credential-leak alert.
+    // The signature-auth-style provider with an EMPTY resolved key must NOT trip the warning —
+    // otherwise a legit per-request-signing passthrough deployment is spammed with a false-positive
+    // credential-leak alert.
     assert!(
-            !msgs.iter().any(|m| m.contains("bedrock")),
-            "a provider whose api_key_env resolves empty must NOT warn (legit SigV4 passthrough); got: {msgs:?}"
+            !msgs.iter().any(|m| m.contains("vendor-b")),
+            "a provider whose api_key_env resolves empty must NOT warn (legit signature-auth passthrough); got: {msgs:?}"
         );
 }
 
@@ -2287,7 +2291,7 @@ fn test_reject_cidr_metadata_entries() {
     let mut providers = HashMap::new();
     providers.insert(
         "p".to_string(),
-        make_provider("openai", "https://api.openai.com", "API_KEY"),
+        make_provider("openai", "https://api.vendor-a.example.com", "API_KEY"),
     );
     let cfg = make_root_cfg_with_blocked(providers, vec!["169.254.0.0/16".to_string()]);
     let errs =
@@ -2304,7 +2308,7 @@ fn test_reject_cidr_metadata_entries() {
     let mut providers = HashMap::new();
     providers.insert(
         "p".to_string(),
-        make_provider("openai", "https://api.openai.com", "API_KEY"),
+        make_provider("openai", "https://api.vendor-a.example.com", "API_KEY"),
     );
     let mut cfg = make_root_cfg(providers, HashMap::new(), HashMap::new());
     cfg.allow_metadata_hosts = vec!["10.0.0.0/8".to_string()];
@@ -2319,7 +2323,7 @@ fn test_reject_cidr_metadata_entries() {
     let mut providers = HashMap::new();
     providers.insert(
         "prov".to_string(),
-        make_provider_allow_hosts("https://api.openai.com", &["169.254.169.254/32"]),
+        make_provider_allow_hosts("https://api.vendor-a.example.com", &["169.254.169.254/32"]),
     );
     let cfg = make_root_cfg(providers, HashMap::new(), HashMap::new());
     let errs = validate(&cfg)
@@ -2336,7 +2340,7 @@ fn test_reject_cidr_metadata_entries() {
     let mut providers = HashMap::new();
     providers.insert(
         "p".to_string(),
-        make_provider("openai", "https://api.openai.com", "API_KEY"),
+        make_provider("openai", "https://api.vendor-a.example.com", "API_KEY"),
     );
     let mut cfg = make_root_cfg(providers, HashMap::new(), HashMap::new());
     cfg.blocked_metadata_hosts = vec!["169.254.169.254".to_string()];
@@ -2664,8 +2668,8 @@ fn test_validate_accepts_positive_weight_member() {
 fn test_ssrf_blocked_host_allows_public_targets() {
     // Public hostnames and public IPs must NOT be flagged.
     for ok in [
-        "https://api.anthropic.com/v1/messages",
-        "https://api.openai.com",
+        "https://api.acme.example.com/v1/messages",
+        "https://api.vendor-a.example.com",
         "https://example.com:8443/v1",
         "https://8.8.8.8/",
         "https://[2606:4700:4700::1111]/",
@@ -3850,8 +3854,8 @@ fn test_blocked_metadata_hosts_extends_denylist() {
 fn test_public_targets_unaffected() {
     // A normal public https provider validates and the guard allows it regardless of the flag.
     for base in [
-        "https://api.openai.com",
-        "https://api.anthropic.com/v1/messages",
+        "https://api.vendor-a.example.com",
+        "https://api.acme.example.com/v1/messages",
         "https://8.8.8.8/",
     ] {
         assert!(ssrf_blocked_host(base, &[], false, &[]).is_none());
@@ -4531,15 +4535,17 @@ fn test_validate_secret_module_resolvability() {
 // ---- --validate == boot: validation runs on the RESOLVED RootCfg ----
 
 /// Resolve a DeployCfg yaml through `config::resolve` (the boot path) with a minimal catalog
-/// containing the `anthropic` provider def.
+/// containing the `acme` provider def. The catalog KEY (`acme`) is an arbitrary operator-chosen
+/// provider name; the `protocol:` value inside the def must stay a REAL compiled-in protocol
+/// (the crate's own test binary links the shipped dialect set), so it is left as `anthropic`.
 fn resolve_yaml(yaml: &str) -> Result<RootCfg, Vec<String>> {
     let deploy: config::DeployCfg =
         serde_yaml::from_str(yaml).expect("the test DeployCfg yaml must parse");
     let def: config::ProviderDef = serde_yaml::from_str(
-        "protocol: anthropic\nbase_url: https://api.anthropic.com\nerror_map:\n  \"400\": client_error\n",
+        "protocol: anthropic\nbase_url: https://api.acme.example.com\nerror_map:\n  \"400\": client_error\n",
     )
     .unwrap();
-    let defs = HashMap::from([("anthropic".to_string(), def)]);
+    let defs = HashMap::from([("acme".to_string(), def)]);
     config::resolve(&deploy, &defs)
 }
 
@@ -4561,11 +4567,11 @@ auth:
         allowed_pools: [main]
         group: eng
 providers:
-  anthropic:
-    api_key: { env: ANTHROPIC_API_KEY }
+  acme:
+    api_key: { env: ACME_API_KEY }
 models:
   claude:
-    provider: anthropic
+    provider: acme
 pools:
   main:
     members:
@@ -4647,11 +4653,11 @@ fn test_validate_accepts_plugin_backed_secret_module_config() {
     let yaml = r#"
 listen: "0.0.0.0:8080"
 providers:
-  anthropic:
-    api_key: { module: acme-vault, settings: { path: "secret/data/anthropic#key" } }
+  acme:
+    api_key: { module: acme-vault, settings: { path: "secret/data/acme#key" } }
 models:
   claude:
-    provider: anthropic
+    provider: acme
 pools:
   main:
     members:
@@ -4661,7 +4667,7 @@ store:
 "#;
     let cfg = resolve_yaml(yaml).expect("the vault-api_key config must resolve");
     assert_eq!(
-        cfg.providers.get("anthropic").unwrap().api_key.module,
+        cfg.providers.get("acme").unwrap().api_key.module,
         "acme-vault",
         "the plugin-backed secret module survived resolution"
     );
@@ -4686,13 +4692,13 @@ auth:
       platform:
         group: ghost-group
 providers:
-  anthropic:
-    api_key: { env: ANTHROPIC_API_KEY }
+  acme:
+    api_key: { env: ACME_API_KEY }
 models:
   claude:
-    provider: anthropic
+    provider: acme
   haiku:
-    provider: anthropic
+    provider: acme
 pools:
   main:
     members:
@@ -5530,7 +5536,7 @@ fn test_validate_rejects_empty_canonical_builtin_secret_ref() {
     );
 
     let mut providers = HashMap::new();
-    let mut p = make_provider("anthropic", "https://api.anthropic.com", "IGNORED");
+    let mut p = make_provider("anthropic", "https://api.acme.example.com", "IGNORED");
     p.api_key = empty_env;
     providers.insert("acme".to_string(), p);
     let errs = validate(&make_root_cfg(providers, HashMap::new(), HashMap::new()))
@@ -5547,7 +5553,7 @@ fn test_validate_rejects_empty_canonical_builtin_secret_ref() {
         serde_yaml::from_str("{ module: file, settings: { path: \"\" } }")
             .expect("canonical empty-path file ref deserializes");
     let mut providers = HashMap::new();
-    let mut p = make_provider("anthropic", "https://api.anthropic.com", "IGNORED");
+    let mut p = make_provider("anthropic", "https://api.acme.example.com", "IGNORED");
     p.api_key = empty_file;
     providers.insert("acme".to_string(), p);
     let errs = validate(&make_root_cfg(providers, HashMap::new(), HashMap::new()))
@@ -5565,7 +5571,7 @@ fn test_validate_rejects_empty_canonical_builtin_secret_ref() {
         serde_yaml::from_str("{ module: env, settings: { key: REAL_KEY } }")
             .expect("canonical non-empty env ref deserializes");
     let mut providers = HashMap::new();
-    let mut p = make_provider("anthropic", "https://api.anthropic.com", "IGNORED");
+    let mut p = make_provider("anthropic", "https://api.acme.example.com", "IGNORED");
     p.api_key = good;
     providers.insert("acme".to_string(), p);
     let errs = validate(&make_root_cfg(providers, HashMap::new(), HashMap::new()))

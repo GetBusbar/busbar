@@ -4,7 +4,7 @@
 //! THE UNIFIED EGRESS BACKEND'S OWN PROOFS: the pool keyed by the pinned address, and the resolver
 //! that refuses a second lookup. Every plane's real-network transport is built on these two, so the
 //! properties are asserted HERE once rather than re-proven per plane. The plane-level suites (the
-//! a2a real-TLS / body-cap / zero-second-lookup harness) then exercise the same machinery end to end.
+//! real-TLS / body-cap / zero-second-lookup harnesses) then exercise the same machinery end to end.
 
 use super::engine::{build_client, EngineClient, EngineSpec};
 use super::{PinnedClientPool, RefuseSecondLookup};

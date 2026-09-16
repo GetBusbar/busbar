@@ -24,8 +24,11 @@
 //! `per`; the three windowed metrics REQUIRE one (a windowless cap is ambiguous - fail loudly).
 //!
 //! A windowed limit may additionally carry `pool: <name>` - the limit then accounts and enforces
-//! per `(group, pool)` instead of group-wide, which is how a budget splits across model tiers
-//! (`{ budget: 5000, per: month, pool: frontier }` + `{ budget: 5000, per: month, pool: value }`).
+//! per `(group, pool)` instead of group-wide, splitting one budget across multiple named pools
+//! (`{ budget: 5000, per: month, pool: frontier }` + `{ budget: 5000, per: month, pool: value }`
+//! caps two pools independently under the same group). `pool` is the first scope kind under the
+//! generic-admission-topology generalization (see [`LimitCfg::scope`]); the substrate does not
+//! interpret what a pool IS, only that it names an entry in the config's registered `pools:` universe.
 //! The named pool must exist (validated at boot / `--validate` / Admin API). `concurrent` takes no
 //! `pool` (the in-flight gauge is per group).
 //!

@@ -13,8 +13,8 @@
 
 use crate::{stage, wire_up_raw, RawPlugin};
 use busbar_plugin::cold::{
+    endpoint::{EndpointRequest, EndpointResponse, Route},
     export::{ExportRequest, ExportResponse, ExportStream},
-    http_endpoint::{HttpEndpointRequest, HttpEndpointResponse, Route},
     kind as abi_kind,
 };
 
@@ -47,16 +47,16 @@ impl DynExport {
     /// transport failure or an unexpected response variant is an `Err` naming the plugin.
     pub fn handle_http(
         &self,
-        request: &HttpEndpointRequest,
-    ) -> Result<HttpEndpointResponse, String> {
-        let req = ExportRequest::HttpEndpoint {
+        request: &EndpointRequest,
+    ) -> Result<EndpointResponse, String> {
+        let req = ExportRequest::Endpoint {
             request: request.clone(),
         };
         match self
             .raw
             .transport_call::<ExportRequest, ExportResponse>(&req)?
         {
-            ExportResponse::Http(resp) => Ok(resp),
+            ExportResponse::Endpoint(resp) => Ok(resp),
             other => Err(format!(
                 "export plugin '{}' returned an unexpected response to http_endpoint: {other:?}",
                 self.raw.path

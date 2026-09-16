@@ -7,8 +7,8 @@
 //! [`classify`] answers ONLY the disposition (Stage 2 of the two-stage pipeline).
 //! The egress port needs one step further: what the classified answer means to THIS unit's own
 //! state machine (an [`Outcome`]) and the metric label a caller's dashboard reads. That fold is
-//! [`outcome_and_label`] below, ported as data (not as HTTP/telemetry plumbing) from the four-way
-//! split in 1.5.5's `classify_error` (`busbar-llm/src/engine/attempt/classify.rs:213-289`):
+//! [`outcome_and_label`] below, ported as data (not as HTTP/telemetry plumbing) from 1.5.5's
+//! four-way split:
 //! `ClientFault` records nothing and relays; `TransientUpstream` carries the upstream's own
 //! `Retry-After` through as the cooldown floor; `HardDown` trips every pool cell for the
 //! destination; `ContextLength` records nothing and fails over. [`classify_upstream`] composes that

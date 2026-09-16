@@ -17,7 +17,7 @@ fn writable_dir(tag: &str) -> std::path::PathBuf {
 
 /// (a) DURABLE-BY-DEFAULT: with NOTHING specified (default `ConfigMgmtCfg`) and NO
 /// `BUSBAR_CONFIG_OVERLAY` env var, a mutable config resolves to a writable overlay next to
-/// config.yaml, and an admin mutation persisted there SURVIVES a simulated restart (a fresh read).
+/// config.yaml, and a mutation persisted there SURVIVES a simulated restart (a fresh read).
 ///
 /// Pre-1.5.3 an unset `BUSBAR_CONFIG_OVERLAY` meant RAM-only — there was no
 /// default backend, so this durable round-trip had nowhere to land and `read` would find nothing.

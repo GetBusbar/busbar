@@ -1,6 +1,5 @@
-//! The per-destination LIFETIME request budget (1.5.5's `ModelCfg.max_requests`): a `total`-window
-//! cap scoped to the destination, not the principal. Moved byte-identical from
-//! `busbar-core::store::in_memory::availability::{spend_budget, refund_budget}`.
+//! The per-destination LIFETIME request budget: a `total`-window cap scoped to the destination, not
+//! the principal.
 //!
 //! Spent AFTER the upstream's 2xx response headers (never on the client-facing status), and
 //! reversed only when the response body then fails to transfer intact — a compensating refund, not

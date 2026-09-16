@@ -399,13 +399,13 @@ impl Arena for LeakArena {
 /// every declared pointer would make them indistinguishable to every reader downstream.
 #[test]
 fn only_the_declared_pointers_the_body_carries_reach_the_table() {
-    let body = br#"{"model":"gpt-4o"}"#;
+    let body = br#"{"model":"model-1"}"#;
     let table = busbar_contract::spans::resolve(body, &["/model", "/stream"], &ARENA)
         .expect("the arena has room");
 
     assert_eq!(table.len(), 1, "one of the two pointers resolved");
     assert_eq!(table[0].0, "/model");
-    assert_eq!(table[0].1.of(body), br#""gpt-4o""#);
+    assert_eq!(table[0].1.of(body), br#""model-1""#);
     assert!(
         !table.iter().any(|(name, _)| *name == "/stream"),
         "a pointer the body does not carry has no row at all"

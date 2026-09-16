@@ -141,7 +141,7 @@ fn now_for_test() -> u64 {
 // only so the in-memory breaker engine in `in_memory/` keeps its bare-name use through `use super::*`
 // (`impl LaneRuntime for HealthState`, the FSM, the `/stats` and `/metrics` snapshot shapes). Every
 // reader outside this module — `endpoints`, `metrics`, `failover`, `appbuild`, `plane_host`, and the
-// one `busbar-llm` test — names `busbar_substrate::store::…`, the crate that defines them.
+// one out-of-tree plugin crate's test — names `busbar_substrate::store::…`, the crate that defines them.
 //
 // Four names were dropped outright rather than repointed, having no reader at either the
 // `crate::store::…` or the `busbar_core::store::…` path: `AT_CAPACITY_RECOVERY_FLOOR_MS` and

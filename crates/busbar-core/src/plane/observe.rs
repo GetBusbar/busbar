@@ -7,18 +7,18 @@
 //! ## What was wrong
 //!
 //! `busbar_requests_total` and `busbar_request_duration_seconds` were emitted from
-//! `ingress::finish_inner`, and `finish_inner` is the MODEL plane's ingress. A tool call and an
-//! agent task therefore produced NOTHING on `/metrics` — not an under-labelled series, no series.
-//! Governance already spans the three planes (one key, one budget tree) and so does audit; metrics
-//! did not, so an operator watching a dashboard saw model traffic and had no signal at all that the
-//! tool or agent plane was refusing every request.
+//! `ingress::finish_inner`, and `finish_inner` is the FALLBACK plane's ingress. A request on any
+//! other mounted plane therefore produced NOTHING on `/metrics` — not an under-labelled series, no
+//! series. Governance already spans every plane (one key, one budget tree) and so does audit; metrics
+//! did not, so an operator watching a dashboard saw fallback-plane traffic and had no signal at all
+//! that another mounted plane was refusing every request.
 //!
 //! ## Why a layer on the door rather than a call in each handler
 //!
-//! `mcp::envelope::invoke` and `a2a::receive::invoke` each have upwards of a dozen `return`s — envelope
+//! Each mounted plane's own receive entry point can have upwards of a dozen `return`s — envelope
 //! defects, header mismatches, governance refusals, egress-gate refusals. A call at the bottom of
-//! each handler would miss every one of them, and a call at each `return` is thirty call sites two
-//! planes have to keep in agreement. Worse, either shape needs a per-plane symbol to hang itself
+//! each handler would miss every one of them, and a call at each `return` is thirty call sites every
+//! plane has to keep in agreement. Worse, either shape needs a per-plane symbol to hang itself
 //! on, and a concern that grows one implementation per plane is the exact shape that produced this
 //! release's duplicated hash chains and duplicated SSRF guards.
 //!
@@ -36,12 +36,12 @@
 //!
 //! * *Which dialect was spoken?* — [`super::PlaneDispatch::wire_format_of`], off the CLAIM the path
 //!   matched. A plane whose binding has a door of its own is labelled here with that binding's name
-//!   whatever else the plane speaks, because the door declares what is spoken at it. The LLM plane
-//!   still cannot be labelled here: not "it is the LLM plane", but "it has no door at all" — it is
-//!   the fallback, it claims no path, and it labels its own requests from inside its handler.
+//!   whatever else the plane speaks, because the door declares what is spoken at it. The fallback
+//!   plane still cannot be labelled here: not "it is the fallback plane" by comparison, but "it has
+//!   no door at all" — it claims no path, and it labels its own requests from inside its handler.
 //! * *Did this request's own handler already label it?* — [`Counted`], a marker the handler puts on
-//!   the response it is labelling. Needed as well as the claim, because two of the A2A plane's three
-//!   bindings SHARE the `/a2a` door: the claim can say `jsonrpc` there, and only the reader knows
+//!   the response it is labelling. Needed as well as the claim, because two of one plane's three
+//!   bindings can SHARE one door: the claim can say `jsonrpc` there, and only the reader knows
 //!   whether the request line or a body member named the operation. See below.
 //! * *Which plane is this?* — [`super::PlaneDispatch::mounted_plane_of`], off the mount table the
 //!   router was built from.
@@ -53,7 +53,7 @@
 //! This layer used to skip any plane whose `sole_wire_format` was `None`, on the reasoning that a
 //! plane with several dialects cannot be labelled before its reader has decided which one spoke.
 //! That reasoning is right about the LABEL and wrong about the SKIP, and the difference only became
-//! visible when the A2A plane armed its second binding: the plane's handler could then label the
+//! visible when a plane armed its second binding: the plane's handler could then label the
 //! requests it handles, but a refusal issued BEFORE any handler — the audience-bound `401`, the
 //! `413` reshape, a `404` — reaches no reader at all, so skipping the plane here meant those stopped
 //! being counted entirely. That is precisely the hole this whole file was written to close, re-opened
@@ -64,10 +64,11 @@
 //! the same answer `ingress::native` shapes its body in, so a door refusal's metric label and its
 //! envelope name the same binding rather than disagreeing.
 //!
-//! The two mechanisms are not alternatives and the A2A plane needs both. Its gRPC binding has a door
-//! of its own, so a `401` there is counted `grpc` from the claim without any handler running; its
-//! JSON-RPC and HTTP+JSON bindings share `/a2a`, where no claim can say which spoke, so their
-//! requests are labelled by `a2a::receive::invoke` and marked [`Counted`] so this layer stands down.
+//! The two mechanisms are not alternatives and a plane with several bindings needs both. One binding
+//! can have a door of its own, so a `401` there is counted under that binding's own name from the
+//! claim without any handler running; two others can share one door, where no claim can say which
+//! spoke, so their requests are labelled by that plane's own receive entry point and marked
+//! [`Counted`] so this layer stands down.
 
 use crate::state::AppHandle;
 use axum::extract::{Request, State};
@@ -94,17 +95,17 @@ pub(crate) use busbar_substrate::plane::observe::Counted;
 /// Emit `busbar_plane_requests_total` + `busbar_plane_request_duration_seconds` for one request
 /// served by a MOUNTED plane, labelled with the plane it arrived on.
 ///
-/// The same `outcome` vocabulary and the same emit helper the model plane uses
-/// (`crate::telemetry::request_finished`), but a SEPARATE, plane-labelled family: the model plane's
+/// The same `outcome` vocabulary and the same emit helper the fallback plane uses
+/// (`crate::telemetry::request_finished`), but a SEPARATE, plane-labelled family: the fallback plane's
 /// `busbar_requests_total` / `busbar_request_duration_seconds` stay byte-identical to v1.5.4 (no
 /// `plane` label), and the mounted planes answer `sum by (plane) (rate(busbar_plane_requests_total[5m]))`
-/// without ever changing the model series' label identity.
+/// without ever changing the fallback series' label identity.
 ///
 /// A path on the FALLBACK plane passes straight through: `/healthz`, `/metrics`, `/stats`, the
 /// admin surface and every protocol endpoint. The protocol endpoints emit their own, richer
 /// labelling from `ingress::finish_inner` — which also owns the non-2xx flat-fee REFUND and so
 /// cannot simply be replaced by this — and double-counting them here would silently double every
-/// number on every existing model-plane dashboard.
+/// number on every existing fallback-plane dashboard.
 pub(crate) async fn observe(
     State(handle): State<Arc<AppHandle>>,
     req: Request,
@@ -123,7 +124,7 @@ pub(crate) async fn observe(
     // second decision: either this boundary can label the request or it cannot.
     //
     // The dialect comes off the CLAIM, not off the plane. A plane that speaks one dialect answers
-    // the same either way; a plane that speaks several — A2A, since HTTP+JSON and gRPC armed — is
+    // the same either way; a plane that speaks several — once a second binding is armed — is
     // still labelled here, with the binding the DOOR declares. Asking the plane would answer `None`
     // for exactly those planes and silently stop counting them. Where several bindings share one
     // door the claim names the canonical one, which is also the binding `ingress::native` shapes a
@@ -145,14 +146,14 @@ pub(crate) async fn observe(
         &app,
         plane,
         wire,
-        // The plane's routing TARGET is not resolved at the door. On the model plane that
-        // resolution happens in the handler, and the sentinel is exactly the value the model plane
+        // The plane's routing TARGET is not resolved at the door. On the fallback plane that
+        // resolution happens in the handler, and the sentinel is exactly the value the fallback plane
         // already stamps when a request never resolved one (`ingress::pool_label`) — so this is the
         // established spelling for "no target resolved", not a new one. Handing a plane's raw,
         // client-supplied target through here instead would be an unbounded label: one valid
-        // credential could mint a new time series per distinct tool name, which is the
+        // credential could mint a new time series per distinct target name, which is the
         // memory-exhaustion DoS `pool_label` exists to close. Narrowing this to the configured
-        // tool-server / agent name is the next step and it belongs where the target is resolved.
+        // target's own name is the next step and it belongs where the target is resolved.
         crate::proxy::POOL_LABEL_UNRESOLVED,
         crate::telemetry::outcome_of(resp.status().as_u16()),
         started.elapsed().as_secs_f64(),

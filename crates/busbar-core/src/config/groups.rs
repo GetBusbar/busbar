@@ -24,10 +24,10 @@
 //! `per`; the three windowed metrics REQUIRE one (a windowless cap is ambiguous - fail loudly).
 //!
 //! A windowed limit may additionally carry `pool: <name>` - the limit then accounts and enforces
-//! per `(group, pool)` instead of group-wide, which is how a budget splits across model tiers
-//! (`{ budget: 5000, per: month, pool: frontier }` + `{ budget: 5000, per: month, pool: value }`).
-//! The named pool must exist (validated at boot / `--validate` / Admin API). `concurrent` takes no
-//! `pool` (the in-flight gauge is per group).
+//! per `(group, pool)` instead of group-wide, which is how a budget splits across named pools
+//! (`{ budget: 5000, per: month, pool: tier-a }` + `{ budget: 5000, per: month, pool: tier-b }`).
+//! The named pool must exist (validated at boot / `--validate` / the live config-apply path).
+//! `concurrent` takes no `pool` (the in-flight gauge is per group).
 //!
 //! The SHAPES (the serde structs/enums, their `Default`s and their pure accessors) live in
 //! `busbar_substrate::config::groups` and are re-exported below at this historical path, so no
@@ -46,8 +46,8 @@ pub use busbar_substrate::config::groups::{
 
 /// Validate the whole `groups:` tree: parents exist, acyclic, and every `pool:`
 /// qualifier on a limit (own `limits` and `child_default.limits` alike) names a pool that exists.
-/// `pool_exists` abstracts the pool namespace so boot (`cfg.pools`), `--validate`, and the Admin
-/// API (`App.pools`) share this verbatim and cannot drift. Returns paste-ready errors in the
+/// `pool_exists` abstracts the pool namespace so boot (`cfg.pools`), `--validate`, and the live
+/// config-apply path share this verbatim and cannot drift. Returns paste-ready errors in the
 /// config_validate style.
 pub(crate) fn validate_groups(
     groups: &std::collections::BTreeMap<String, GroupCfg>,
@@ -125,7 +125,7 @@ pub(crate) fn validate_groups(
 /// Config reaching here is validated ACYCLIC, so the walk terminates on its own; the `groups.len()`
 /// bound is a principled backstop (a distinct-node walk cannot exceed the number of groups without
 /// revisiting one, i.e. a cycle) — deliberately NOT the arbitrary depth policy constant.
-// Wired by the mint auto-provision path (`admin::v1::json::handlers::resolve_mint_group`).
+// Wired by the self-mint auto-provisioning path that binds a freshly issued key to a new leaf group.
 pub(crate) fn resolve_child_default<'a>(
     groups: &'a BTreeMap<String, GroupCfg>,
     parent: &str,
@@ -148,7 +148,7 @@ pub(crate) fn resolve_child_default<'a>(
 /// (`overlay::persist_groups`) and binds the new key to it; the enforcement chain then caps the leaf by
 /// `leaf ∩ parent ∩ ...`. Pure: does not mutate `groups`. `child_default` on the leaf itself is left
 /// unset (a per-user leaf is not itself a template source).
-// Wired by the mint auto-provision path (`admin::v1::json::handlers::resolve_mint_group`).
+// Wired by the self-mint auto-provisioning path that binds a freshly issued key to a new leaf group.
 pub(crate) fn provision_child(groups: &BTreeMap<String, GroupCfg>, parent: &str) -> GroupCfg {
     let limits = resolve_child_default(groups, parent)
         .map(|cd| cd.limits.clone())

@@ -3,15 +3,15 @@
 
 //! THE EGRESS ENGINE — the OWNED connection pool with dial coalescing (`pool.rs`/`client.rs`)
 //! over a rustls/webpki connector: the ONE owned outbound HTTP stack (owner-ruled), relocated
-//! here from `busbar-core::proxy::egress_client` so every plane (LLM/model, MCP, A2A) builds its
-//! clients from one neutral home. Core re-exports every name from its old `crate::proxy::`
-//! paths. The pool was `hyper_util::client::legacy::Client` until the owned-pool step: hyper
-//! (the protocol library) and the whole connector stack stay; only the legacy client's pool —
-//! whose checkout raced a fresh dial per request and dropped the losers post-SYN — went, replaced
-//! by the coalescing invariant in `pool.rs`.
+//! here from `busbar-core::proxy::egress_client` so every plane builds its clients from one
+//! neutral home. Core re-exports every name from its old `crate::proxy::` paths. The pool was
+//! `hyper_util::client::legacy::Client` until the owned-pool step: hyper (the protocol library)
+//! and the whole connector stack stay; only the legacy client's pool — whose checkout raced a
+//! fresh dial per request and dropped the losers post-SYN — went, replaced by the coalescing
+//! invariant in `pool.rs`.
 //!
-//! Born as the LLM forward-path client, replacing reqwest there. What it buys per request:
-//! the send consumes the lane's boot-precomputed `http::Uri` directly (reqwest re-parsed its
+//! Replaces reqwest as the client every plane's egress builds through. What it buys per request:
+//! the send consumes a caller's boot-precomputed `http::Uri` directly (reqwest re-parsed its
 //! `Url` to a `Uri` through the full WHATWG parser at EVERY send), the request is hand-assembled
 //! from the prebuilt header map (no `RequestBuilder` machinery, no redirect-policy hook, no
 //! wrapper allocations), and the response is consumed as bare `http` parts + `Incoming` body.
@@ -100,13 +100,13 @@ pub struct EngineSpec {
     pub pool_idle_timeout_secs: u64,
     pub http1_only: bool,
     pub h2_prior_knowledge: bool,
-    /// Destination pinning. `None` = the LLM lanes (their destination is operator config,
+    /// Destination pinning. `None` = the pooled posture (destinations are operator config,
     /// guarded at apply). `Some` makes DNS structural: the resolver becomes the pin itself
     /// ([`EgressResolver::Pinned`]) and `dns` below is never consulted.
     pub pin: Option<PinnedDest>,
     /// DNS when unpinned.
     pub dns: Dns,
-    /// Peer-certificate observation for SPKI pinning ([`observe`]). Off on the LLM lanes (no
+    /// Peer-certificate observation for SPKI pinning ([`observe`]). Off on the pooled posture (no
     /// walk, no hash per connect); on for every pinned posture.
     pub observe_spki: bool,
     /// Trust source ([`tls::Trust`]): the compiled-in webpki roots, optionally joined by
@@ -120,24 +120,24 @@ pub struct EngineSpec {
     /// stack's silent proxy-env bypass of the pin was a latent guard bypass, not behaviour to
     /// preserve (the design's second sanctioned deviation; no known deployment sets a proxy env).
     pub proxy: ProxyPosture,
-    /// h2 keep-alive interval/timeout + adaptive window: `Some` on the LLM lanes, `None` on the
-    /// pinned postures (reqwest set none — parity).
+    /// h2 keep-alive interval/timeout + adaptive window: `Some` on the pooled posture, `None` on
+    /// the pinned postures (reqwest set none — parity).
     pub h2_keepalive: Option<H2KeepAlive>,
-    /// TCP keepalive: LLM `Some(60s)`; pinned `None` (reqwest default — parity). nodelay is
+    /// TCP keepalive: pooled `Some(60s)`; pinned `None` (reqwest default — parity). nodelay is
     /// unconditional (both stacks set it).
     pub tcp_keepalive: Option<Duration>,
 }
 
 /// CONNECT-tunnel posture (see [`EngineSpec::proxy`]).
 pub enum ProxyPosture {
-    /// Honor the proxy env resolved at boot (`install_proxy_tunnel_if_configured`) — the LLM
-    /// lanes' reqwest-parity posture.
+    /// Honor the proxy env resolved at boot (`install_proxy_tunnel_if_configured`) — the pooled
+    /// posture's reqwest-parity behavior.
     BootEnv,
     /// Never tunnel: the tunnel arm is structurally absent (`TunnelConnector::new(http, None)`).
     Direct,
 }
 
-/// The h2 keep-alive posture the LLM lanes carry (reqwest's pinned clients set none).
+/// The h2 keep-alive setting the pooled posture carries (reqwest's pinned clients set none).
 #[derive(Clone, Copy)]
 pub struct H2KeepAlive {
     pub interval: Duration,
@@ -226,7 +226,7 @@ impl EngineSpec {
 // ── ESTABLISHMENT TOPOLOGY, published once by the composition root ──────────────────────────────
 // The connect gate (tunnel module below) sizes each shard's establishment share as a constant
 // GLOBAL budget divided by the number of client shards the process runs — one gate per built
-// client, one client per data worker on the LLM lanes. That worker count is a core/binary
+// client, one client per data worker under the pooled posture. That worker count is a core/binary
 // topology fact and substrate cannot name core (the dependency points the other way), so the
 // fact is PUBLISHED down: core's `set_data_workers` forwards the same number here in the same
 // boot act, one composition-root call with two subscribers. Unpublished honestly means ONE
@@ -254,7 +254,7 @@ pub fn establishment_shards_or_one() -> usize {
 
 /// The per-client dial bound, THE single source both the owned pool's coalescing
 /// invariant and the ConnectGate's permit count read (bound == permits is what composes the two
-/// into one mechanism). Worker-sharded clients (the LLM lanes) take the per-shard share of the
+/// into one mechanism). Worker-sharded clients (the pooled posture) take the per-shard share of the
 /// global establishment budget; a pinned single-client posture (`EngineSpec::pinned`) IS its
 /// authority's whole budget — one client, not N shards, so the divide-by-N would leave N−1
 /// shares permanently unused. The 64-per-authority-process-wide envelope holds in both cases.
@@ -271,7 +271,7 @@ pub(crate) fn dial_bound_for(pin: Option<&PinnedDest>) -> usize {
 
 /// Build ONE engine client per the spec's posture. Fallible by SIGNATURE for the postures the
 /// migration adds (a private extra root or client identity that does not parse must fail the
-/// build loudly); the LLM-lane posture has no failing arm, which is what lets core's infallible
+/// build loudly); the pooled posture has no failing arm, which is what lets core's infallible
 /// `build_egress_client` shim stand over this without a panic path in practice.
 pub fn build_client(spec: &EngineSpec) -> Result<EngineClient, String> {
     // THE RESOLVER IS THE PIN (see `resolve`): a pinned spec installs the one-name table and the
@@ -321,7 +321,7 @@ pub fn build_client(spec: &EngineSpec) -> Result<EngineClient, String> {
     };
     // One wall-clock bound over the WHOLE connect — TCP + tunnel + TLS handshake (see
     // `deadline`; reqwest's connect_timeout parity on the pinned postures, a strict tightening
-    // of the latent black-hole-TLS gap on the LLM lanes). Then the peer-identity observation,
+    // of the latent black-hole-TLS gap on the pooled posture). Then the peer-identity observation,
     // a per-connect branch that is pass-through when `observe_spki` is off.
     let https: EngineConnector = SpkiObserve::new(
         ConnectDeadline::new(https, super::EGRESS_CONNECT_TIMEOUT),
@@ -329,7 +329,7 @@ pub fn build_client(spec: &EngineSpec) -> Result<EngineClient, String> {
     );
 
     // The OWNED pool over the connector stack: the same knobs the legacy builder took, resolved
-    // into the pool's config. h2 keep-alive is the LLM lanes' posture (pinned postures set NONE
+    // into the pool's config. h2 keep-alive is the pooled posture's setting (pinned postures set NONE
     // — reqwest parity); the cleartext h2c opt-in forces h2 without ALPN and h1-only wins over
     // it, preserving the old builder's apply-order (the pool reads the pair the same way).
     Ok(EngineClient::assemble(
@@ -354,7 +354,7 @@ pub fn build_client(spec: &EngineSpec) -> Result<EngineClient, String> {
 fn rustls_client_config(spec: &EngineSpec) -> Result<rustls::ClientConfig, String> {
     // ONE base root store and ONE crypto provider, shared by refcount across every client shard
     // (`ClientConfig` holds both behind `Arc`s, and both builder seams take `Into<Arc<_>>`).
-    // The LLM builder runs ONCE PER DATA WORKER (one client shard each, `appbuild`'s
+    // The pooled-posture builder runs ONCE PER DATA WORKER (one client shard each, `appbuild`'s
     // `make_one`), and `TLS_SERVER_ROOTS.to_vec()` materializes the ~150-anchor trust store on
     // the heap — N private copies of identical, immutable data was pure idle RSS scaling with
     // core count. Same anchors, same provider, same cipher-suite story; only the duplication is
@@ -466,10 +466,10 @@ fn strip_userinfo_into_basic_auth(uri: http::Uri, headers: &mut http::HeaderMap)
     http::Uri::from_parts(parts).expect("removing userinfo keeps the URI well-formed")
 }
 
-/// Assemble one LLM egress request from the boot-precomputed parts, POST (the one method the
-/// forward path speaks). Deliberately NOT [`request`]: the lane's `http::Uri` was validated at
-/// boot (no userinfo can survive config validation), so the forward path keeps zero per-request
-/// branches — byte-for-byte the assembly it has always been.
+/// Assemble one egress request from boot-precomputed parts, POST (the one method this
+/// fixed-destination forward path speaks). Deliberately NOT [`request`]: the caller's `http::Uri`
+/// was validated at boot (no userinfo can survive config validation), so this path keeps zero
+/// per-request branches — byte-for-byte the assembly it has always been.
 pub fn egress_request(
     uri: http::Uri,
     headers: http::HeaderMap,

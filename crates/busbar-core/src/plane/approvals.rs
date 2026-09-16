@@ -38,7 +38,8 @@
 //!
 //! The upstream-facing loop ([`super::inputreq`]) is in-process, so its counter is a local variable
 //! and the bound is per dispatch by construction. The caller-facing loop is not: it is spread across
-//! INDEPENDENT HTTP requests, with no session, because this revision has none. A counter held in
+//! INDEPENDENT requests over a stateless transport, with no session, because this revision has none.
+//! A counter held in
 //! memory between them would be a session by another name — the same objection
 //! `client/jsonrpc.rs` already makes about `InputRequiredLoop`. So the count rides inside the
 //! integrity-protected payload, where the caller can neither read it nor rewind it. Without that,
@@ -62,19 +63,20 @@
 // D3 Phase-C: the ask-state seal PODs + crypto (`AskState`, `Rejected`, `Sealer`, mint/open, and the
 // `DERIVE_DOMAIN`/`MAC_DOMAIN`/`HmacSha256` they need) now live in the neutral substrate so a plane
 // holds the seal without naming core. Re-exported here so every in-core call site (`ask_state_sealer`
-// below, `crate::mcp::callerask`, the tests) is unchanged. The key DERIVATION stays core:
-// `ask_state_sealer` reaches `GovState`'s crate-private signing seed and calls `Sealer::derive`.
+// below, the sibling-crate caller that decides an ask, the tests) is unchanged. The key DERIVATION
+// stays core: `ask_state_sealer` reaches `GovState`'s crate-private signing seed and calls
+// `Sealer::derive`.
 //
 // The neutral ask-state helpers `DEFAULT_TTL_SECS` (the short replay window) and `digest_arguments`
 // (the salient-parameter digest) relocated to the substrate seal beside the PODs — pure `mrtr` data +
 // `sha2`/`hex`, no core reach — and are re-exported here so `crate::plane::approvals::{DEFAULT_TTL_SECS,
-// digest_arguments}` still resolves for the tests and `crate::mcp::callerask`.
+// digest_arguments}` still resolves for the tests and for that sibling-crate caller.
 pub use busbar_substrate::plane::approvals::{
     digest_arguments, nonce, AskState, Rejected, Sealer, DEFAULT_TTL_SECS,
 };
 
 /// SEAM: derive this deployment's ask-state [`Sealer`] from governance's fleet-shared signing
-/// secret, WITHOUT the raw secret ever leaving core. The MCP plane holds no governance key material
+/// secret, WITHOUT the raw secret ever leaving core. The owning plane holds no governance key material
 /// — it asks core for a sealer, and core derives it here from the `pub(crate)` signing seed
 /// ([`crate::governance::GovState::signing_secret`], which stays crate-private). `None` when
 /// governance is disabled (no key), matching the pre-split behaviour where the plane derived the
@@ -92,7 +94,7 @@ pub fn ask_state_sealer(gov: &crate::governance::GovState) -> Option<Sealer> {
 /// inside the blob, because a caller presenting the identical blob a second time presents an
 /// identical, perfectly valid blob. The only thing that can tell the second presentation from the
 /// first is a RECORD THAT THE FIRST HAPPENED — and until this existed there was none, so an operator
-/// who gated a money-moving tool behind a confirmation got confirm-once-execute-many.
+/// who gated a money-moving action behind a confirmation got confirm-once-execute-many.
 ///
 /// ## Keyed on the nonce, and only the terminal redemption is recorded
 ///
@@ -109,7 +111,7 @@ pub fn ask_state_sealer(gov: &crate::governance::GovState) -> Option<Sealer> {
 ///
 /// - **A RESTART** empties the map, and a state that has not lapsed is still openable, so the most a
 ///   restart used to restore was the unredeemed remainder of one [`DEFAULT_TTL_SECS`] window. Small,
-///   bounded, self-closing — and on a tool that moves money, one redemption is the whole defect.
+///   bounded, self-closing — and on an action that moves money, one redemption is the whole defect.
 /// - **A FLEET** never shared it. Two nodes of one deployment share `auth.signing_key`, because that
 ///   is what lets one logical exchange span requests that different nodes serve; sharing the key
 ///   means sharing the SEAL, so an approval minted on node A opens on node B. Sharing the seal

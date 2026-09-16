@@ -166,7 +166,7 @@ client = boto3.client("bedrock-runtime", region_name="us-east-1",
 client.converse(modelId="fast", messages=[{"role": "user", "content": [{"text": "Hi"}]}])
 ```
 
-Every one of these was run against Busbar 1.5.3 while writing this file. Full route and auth reference: [Protocols](https://getbusbar.com/docs/protocols/).
+Every one of these was run against Busbar 1.6.0 while writing this file. Full route and auth reference: [Protocols](https://getbusbar.com/docs/protocols/).
 
 </details>
 
@@ -298,7 +298,7 @@ spec:
     spec:
       containers:
         - name: busbar
-          image: getbusbar/busbar:1.5.3
+          image: getbusbar/busbar:1.6.0
           env:
             - { name: BUSBAR_CONFIG, value: /etc/busbar/config.yaml }
           envFrom:

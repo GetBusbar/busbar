@@ -3,7 +3,7 @@
 
 //! THE RECORD ITSELF, ACROSS THE REAL PLUGIN ABI — written by one handle, read by the next.
 //!
-//! `quarantine_boot_tests.rs` judges the property from OUTSIDE: a real `tools/call` against a real
+//! `quarantine_boot_tests.rs` judges the property from OUTSIDE: a real request against a real
 //! upstream, refused after a restart. That is the case that matters and it is where the claim is
 //! made. This file is the seam underneath it, and it exists for two things that an outside-in case
 //! cannot reach without contorting:

@@ -31,7 +31,7 @@ fn test_openai_classify() {
 /// The classifier must run the SHARED prose scan, not a clause of its own.
 ///
 /// It is documented as mirroring production `extract_error`, and production runs all four phrasings
-/// through `openai_context_length_prose_scan`. A copy carrying only the first phrasing classified
+/// through `context_length_prose_scan`. A copy carrying only the first phrasing classified
 /// `"please reduce the length of the messages"` — an ordinary oversized-request body — as a
 /// `ClientError`, so every test proving oversized-request failover through `classify` was proving
 /// behaviour production does not have: the lane takes a breaker penalty for a healthy lane instead
@@ -73,7 +73,7 @@ fn every_context_length_phrasing_the_shared_scan_knows_classifies_as_context_len
 /// body fail over (to a larger-context model) instead of penalizing the lane's breaker.
 #[test]
 fn context_length_prose_scan_fires_on_canonical_phrases() {
-    use super::openai_context_length_prose_scan as scan;
+    use super::context_length_prose_scan as scan;
     // Caller lowercases before calling; assert on already-lowercased inputs.
     assert!(scan("this model's maximum context length is 8192 tokens"));
     assert!(scan("context length exceeded for this request"));
@@ -89,7 +89,7 @@ fn context_length_prose_scan_fires_on_canonical_phrases() {
 /// real rate-limit/quota failure escape breaker penalty by "failing over" instead.
 #[test]
 fn context_length_prose_scan_precise_no_false_positive() {
-    use super::openai_context_length_prose_scan as scan;
+    use super::context_length_prose_scan as scan;
     assert!(
         !scan("you have reached the maximum number of tokens allowed per day"),
         "a per-day quota body is a rate-limit, not context-length"

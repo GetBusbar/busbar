@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for `crates/busbar-core/src/proxy/reqlog.rs` — the model plane's RECORD.
+//! Tests for `crates/busbar-core/src/proxy/reqlog.rs` — a plane's RECORD.
 //!
 //! ## What is deliberately NOT here
 //!
@@ -12,8 +12,9 @@
 //! What is here is the record's own two decisions — which fields the digest covers, and which
 //! outcome word a terminal earns — plus the retention bound. **None of it proves the plane is
 //! chained**: a test that calls `REQUESTS.record` itself proves the substrate and says nothing about
-//! whether a customer's model request ever reaches it, which is exactly the shape the MCP call log
-//! sat in for a whole release (a complete, tested, verified subsystem with no production call site).
+//! whether a customer's request on this plane ever reaches it, which is exactly the shape the call
+//! log sat in for a whole release (a complete, tested, verified subsystem with no production call
+//! site).
 //! The claim that the plane reaches this is made in `tests/reqlog_dispatch_tests.rs`, which drives a
 //! real request through the real router and then looks.
 
@@ -25,7 +26,7 @@ const NOW: u64 = 1_770_000_000;
 fn an_input(status: u16) -> RequestInput {
     RequestInput {
         ts: NOW,
-        ingress_protocol: "anthropic".to_string(),
+        ingress_protocol: "widget-plane".to_string(),
         pool: "fast".to_string(),
         outcome: OUTCOME_DISPATCHED,
         reason: "",
@@ -99,7 +100,7 @@ fn the_outcome_words_follow_the_terminal_and_the_unguessable_reason_stays_empty(
     assert_eq!(
         outcome_of(Terminal::Rejected, 400),
         (OUTCOME_REFUSED, ""),
-        "400 is a malformed body on one path and Bedrock's quota shape on another; a reason \
+        "400 is a malformed body on one path and a vendor's quota shape on another; a reason \
          inferred from it would send an operator somewhere wrong"
     );
 }

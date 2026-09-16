@@ -9,7 +9,7 @@
 //! What stays in core is the part that names a core type: the `GovState`-facing standing-permission
 //! primitive ([`validate::Standing`]). The verify-on-call gate ([`verify::VerifyGate`]) has since
 //! moved DOWN into substrate too — it depends only on the neutral `reverify` arithmetic and the
-//! substrate diagnostics — and is re-exported below so its in-core (A2A) call sites are unchanged. The
+//! substrate diagnostics — and is re-exported below so its in-core call sites are unchanged. The
 //! dependency is one-directional: substrate never names a core type.
 
 // NO PRODUCTION CALLER for some of these yet (the standing-permission `Snapshot::PinnedTo` is
@@ -37,14 +37,15 @@ pub mod validate;
 // matches the visibility of the substrate `verify` module the glob above re-exports.
 pub mod verify;
 
-/// The verify-on-call gate type, re-exported so an EXTRACTED plane crate (busbar-mcp) names
-/// `busbar_substrate::trust::VerifyGate` while the in-core A2A plane keeps `crate::trust::verify::
-/// VerifyGate`. Each plane OWNS its own coalescer on its per-generation runtime object (MCP folds it
-/// into `busbar_mcp::mcp::McpRuntime`, reached via `ctx.slot`; A2A rides it on the `App`).
+/// The verify-on-call gate type, re-exported so an out-of-tree plugin crate names
+/// `busbar_substrate::trust::VerifyGate` directly while an in-core plane consumer keeps naming
+/// `crate::trust::verify::VerifyGate`. Each plane consumer owns its own coalescer on its own
+/// per-generation runtime object, reached however that consumer threads its per-generation state.
 pub use verify::VerifyGate;
 
 /// THE RE-VERIFICATION CADENCE — relocated to substrate in Phase-B B1. A thin core module (`trust/
 /// reverify.rs`, rather than a bare `use`) so `crate::trust::reverify::*` resolves unchanged AND the
-/// core-only re-verification tests, which name `busbar_a2a::a2a::pin`, keep their home in core. An
-/// explicit `mod reverify` shadows the glob-imported substrate `reverify` above.
+/// core-only re-verification tests, which exercise an in-core plane consumer's registration/pin
+/// call site, keep their home in core. An explicit `mod reverify` shadows the glob-imported
+/// substrate `reverify` above.
 pub mod reverify;

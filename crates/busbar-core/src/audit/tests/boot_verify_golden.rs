@@ -24,15 +24,18 @@
 //! a constant produced by a past build, not a value this build recomputes, so it cannot drift with
 //! the code the way a parallel formula can.
 //!
-//! ## Coverage — all three framings, plus the two landmines
+//! ## Coverage — two framings, plus the genesis landmine
 //!
 //! - **MCP per-call** (`LengthPrefixed`, scope in the digest) — the CLEAN cleave-first target.
-//! - **A2A task provenance** (`PipeSeparated`, scope in the digest) — carries the PipeSeparated
-//!   GENESIS LANDMINE: the first event's `prev_hash` is empty, and the leading `|` before `task_id`
-//!   that the empty-but-present `prev_hash` produces is load-bearing. A cleave that dropped it would
-//!   shift every A2A digest by one separator.
 //! - **Admin audit** (`PipeSeparated`, NO scope in the digest) — the `digests_scope = false` shape,
-//!   proving the generic prelude framing omits the scope for exactly the streams that omit it.
+//!   proving the generic prelude framing omits the scope for exactly the streams that omit it. This
+//!   fixture also carries the PipeSeparated GENESIS LANDMINE: the first record's `prev_hash` is
+//!   empty, and the leading `|` before the next field that the empty-but-present `prev_hash`
+//!   produces is load-bearing. A cleave that dropped it would shift every digest by one separator.
+//!
+//! A third stream's task-provenance golden (`PipeSeparated`, scope in the digest) used to live here
+//! too; it RELOCATED to that stream's own crate when its plugin was extracted — see the note near
+//! the admin-audit test below.
 //!
 //! Every fixture is a two-record chain: record 1 is GENESIS (empty `prev_hash`), record 2 LINKS it,
 //! so both the genesis anchor and the inter-record linkage are exercised. DO NOT REGENERATE these

@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The `providers:` / `models:` config SHAPES: the catalog definition (`ProviderDef`, from
-//! providers.yaml), the operator deployment (`ProviderDeploy`, from config.yaml), the resolved
-//! provider the runtime reads (`ProviderCfg`), the active-health block and the per-model entry.
-//! Plain serde data; the catalog/deployment MERGE that produces a `ProviderCfg` stays in
-//! busbar-core's `resolve`, which re-exports every item here at its historical `config::` path.
+//! A plane's config-section SHAPES, housed in the neutral substrate for now (slated to move to the
+//! owning plane crate) and carried as opaque serde data the substrate never interprets: the catalog
+//! definition (`ProviderDef`, from providers.yaml), the operator deployment (`ProviderDeploy`, from
+//! config.yaml), the resolved section the runtime reads (`ProviderCfg`), the active-health block and
+//! the per-entry config (`ModelCfg`). The catalog/deployment MERGE that produces a `ProviderCfg`
+//! stays in busbar-core's `resolve`, which re-exports every item here at its historical `config::`
+//! path.
 
 use std::collections::HashMap;
 

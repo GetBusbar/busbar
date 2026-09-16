@@ -56,7 +56,7 @@ fn describe_renders_env_file_and_module_forms() {
 
 /// `none` — the EXPLICIT keyless declaration — parses from the bare scalar and from the canonical
 /// `{ module: none }`, and `describe()` renders it as the word itself, so a diagnostic about a
-/// keyless provider reads naturally while still naming no source.
+/// keyless credential reads naturally while still naming no source.
 ///
 /// The near-misses matter as much as the hit: `none` is a reserved WORD, so anything that is not
 /// exactly it must still take the non-echoing inline-literal refusal, and the `{ none: … }` map

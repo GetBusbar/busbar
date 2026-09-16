@@ -116,7 +116,7 @@ fn a_null_patch_unsets_a_field_the_base_config_set() {
 
 /// BACK-COMPAT, and it is what makes this change safe to ship over existing overlays: for a name
 /// with NO base entry, merging a whole document onto nothing is byte-identical to the replace that
-/// used to happen. Every overlay on disk today is exactly this case, because the admin API refuses
+/// used to happen. Every overlay on disk today is exactly this case, because the overlay writer refuses
 /// to write an entry that shadows a base one.
 #[test]
 fn a_full_document_for_an_unshadowed_name_lands_exactly_as_it_used_to() {

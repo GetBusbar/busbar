@@ -60,8 +60,9 @@ pub(crate) async fn exchange(
         app.governance.clone(),
         // `/auth/token` is a DATA-PLANE route and mints data-plane keys, so the expected audience is
         // `None` — which makes the verifier reject any audience-bound token presented here. That is
-        // the plane boundary doing its job in the direction people forget: an MCP token must not be
-        // able to mint itself a plain busbar key and step off the plane it was confined to.
+        // the plane boundary doing its job in the direction people forget: a token scoped to an
+        // audience-bound plane must not be able to mint itself a plain busbar key and step off the
+        // plane it was confined to.
         None,
     )
     .await;

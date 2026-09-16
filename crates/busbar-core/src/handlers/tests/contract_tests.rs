@@ -15,13 +15,13 @@ impl OperationHandler for NoopModeration {
     }
 }
 
-struct OpenAiLike;
-impl RequestHandler for OpenAiLike {
+struct WidgetLike;
+impl RequestHandler for WidgetLike {
     fn protocol_name(&self) -> &'static str {
-        "openai"
+        "widget"
     }
     fn operation_handler(&self, op: Operation) -> Option<&dyn OperationHandler> {
-        // openai serves moderation; not, say, chat-on-a-moderation-only stub → None = no-handler 404.
+        // widget serves moderation; not, say, chat-on-a-moderation-only stub → None = no-handler 404.
         match op {
             Operation::MODERATION => Some(&NoopModeration),
             _ => None,
@@ -41,13 +41,13 @@ impl RequestHandler for OpenAiLike {
 
 #[test]
 fn no_handler_lookup_returns_none_for_unsupported_op() {
-    let h = OpenAiLike;
+    let h = WidgetLike;
     assert!(h.operation_handler(Operation::MODERATION).is_some());
     assert!(
         h.operation_handler(Operation::CHAT).is_none(),
         "an absent OperationHandler IS the no-handler 404"
     );
-    assert_eq!(h.protocol_name(), "openai");
+    assert_eq!(h.protocol_name(), "widget");
 }
 
 #[test]

@@ -112,23 +112,25 @@ pub enum BreakerState {
     HalfOpen,
 }
 
-/// The MCP plane's breaker-cell key for one registered tool server: the `tool:` prefix is the
-/// plane-qualified keyspace rule (LLM pools keep bare names, so a `tool_pools:` can never collide
-/// with an LLM pool, and `tool:`/`agent:` cannot collide with each other), the id is the operator's
-/// registration id which is what every refusal names. Lives here (not only on core's `PlaneBreakers`)
-/// so the MCP plane builds the key without reaching into `busbar-core`; core's `PlaneBreakers::tool_key`
-/// delegates to it so the ONE spelling of the prefix stays single-sourced.
+/// A namespaced breaker-cell key for one caller-registered id, fixed-prefixed with `tool:` so a
+/// registration keyed this way can never collide with a bare-name key another caller uses directly,
+/// nor with a key built under a different fixed prefix (e.g. [`agent_key`]'s `agent:`). The id is
+/// the caller's own registration id, which is what every refusal names. Lives here (not only on
+/// core's `PlaneBreakers`) so a plane crate builds the key without reaching into `busbar-core`;
+/// core's `PlaneBreakers::tool_key` delegates to it so the ONE spelling of the prefix stays
+/// single-sourced.
 #[cfg_attr(not(feature = "dispatch"), allow(dead_code))]
 pub fn tool_key(server: &str) -> String {
     format!("tool:{server}")
 }
 
-/// The A2A plane's breaker-cell key for one registered agent: the `agent:` prefix is the
-/// plane-qualified keyspace rule (LLM pools keep bare names, so an `agent_pools:` can never collide
-/// with an LLM pool, and `tool:`/`agent:` cannot collide with each other), the id is the operator's
-/// registration id which is what every refusal names. Lives here (not only on core's `PlaneBreakers`)
-/// so the A2A plane builds the key without reaching into `busbar-core`; core's `PlaneBreakers::agent_key`
-/// delegates to it so the ONE spelling of the prefix stays single-sourced.
+/// A namespaced breaker-cell key for one caller-registered id, fixed-prefixed with `agent:` so a
+/// registration keyed this way can never collide with a bare-name key another caller uses directly,
+/// nor with a key built under a different fixed prefix (e.g. [`tool_key`]'s `tool:`). The id is
+/// the caller's own registration id, which is what every refusal names. Lives here (not only on
+/// core's `PlaneBreakers`) so a plane crate builds the key without reaching into `busbar-core`;
+/// core's `PlaneBreakers::agent_key` delegates to it so the ONE spelling of the prefix stays
+/// single-sourced.
 #[cfg_attr(not(feature = "relay"), allow(dead_code))]
 pub fn agent_key(agent: &str) -> String {
     format!("agent:{agent}")
@@ -168,10 +170,11 @@ pub fn fnv1a_u64(s: &str) -> u64 {
 /// enforced exactly, at any configured value. A lane with `max_concurrent` OMITTED is unbounded:
 /// there is nothing to enforce, so nothing is counted — `Unbounded` touches no shared state at all.
 ///
-/// Neutral (pure `tokio::sync` + no config/serde coupling), so it lives HERE in the substrate: the
-/// LLM plane's `walk` mints `Permit::Bounded(owned)` and core's `LaneRuntime::try_admit` returns it,
-/// both naming the ONE type without the plane reaching into `busbar-core`. Core's `store` re-exports
-/// it at its historical `crate::store::Permit` path.
+/// Neutral (pure `tokio::sync` + no config/serde coupling), so it lives HERE in the substrate: a
+/// plane's queued-dispatch path can mint `Permit::Bounded(owned)` directly off a lane's own semaphore
+/// (see [`LaneRuntime::lane_semaphore`]) and core's `LaneRuntime::try_admit` returns it, both naming
+/// the ONE type without the plane reaching into `busbar-core`. Core's `store` re-exports it at its
+/// historical `crate::store::Permit` path.
 #[must_use]
 pub enum Permit {
     // The permit is never READ — it exists to be HELD (its Drop returns the slot).
