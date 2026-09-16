@@ -64,9 +64,11 @@ pub const CODE_INVALID_API_KEY: &str = "invalid_api_key";
 
 /// Busbar-internal `provider_signal` label for a context-length result (the LANE label, not the
 /// OpenAI wire code). Distinct from `proxy::PROVIDER_CODE_CONTEXT_LENGTH` ("context_length_exceeded"),
-/// which is the provider-facing code extracted from the request body. Gated the same as
-/// [`openai_classify`], its only referent, a test-only single-source mirror of the production
-/// classifier — visible to a dependent crate's test builds too via the `test-support` feature.
+/// which is the provider-facing code extracted from the request body. Its referent, the OpenAI-family
+/// classifier test mirror, relocated to the LLM plane's `openai_chat` wire module
+/// (`openai_classify`); this const stays here (neutral — it names no vendor) and that classifier
+/// reaches it at this substrate path, visible to a dependent crate's test builds too via the
+/// `test-support` feature.
 #[cfg(any(test, feature = "test-support"))]
 pub const PROVIDER_SIGNAL_CONTEXT_LENGTH: &str = "context_length";
 
@@ -137,87 +139,6 @@ pub fn bearer_error_code(error_type: &str) -> serde_json::Value {
             let _ = other;
             serde_json::Value::Null
         }
-    }
-}
-
-/// Canonical OpenAI-family error classification, shared verbatim by `OpenAiReader::classify` and
-/// `ResponsesReader::classify` (the two were word-for-word identical). Both surfaces emit the same
-/// OpenAI error envelope, so the mapping — context-length-exceeded (fail over without penalty) first,
-/// then 429→RateLimit, 401/403→Auth, 5xx→ServerError, other 4xx→ClientError — is single-sourced here.
-#[cfg(any(test, feature = "test-support"))]
-pub fn openai_classify(status: http::StatusCode, body: &[u8]) -> crate::breaker::CanonicalSignal {
-    use crate::breaker::StatusClass;
-    use http::StatusCode;
-    // context-length-exceeded — the lane is healthy; this must fail over (to a larger-context
-    // model), not penalize the breaker. Detect by OpenAI code/message first.
-    let code_is_context = crate::json::parse::<serde_json::Value>(body)
-        .ok()
-        .and_then(|j| {
-            j.get("error")
-                .and_then(|e| e.get("code"))
-                .and_then(|c| c.as_str())
-                .map(|s| s.to_string())
-        })
-        .as_deref()
-        == Some(crate::proxy::PROVIDER_CODE_CONTEXT_LENGTH);
-    // Mirror production `extract_error`: the prose message scan is GATED to the HTTP statuses an
-    // oversized request actually uses (400 invalid_request_error; 413 payload-too-large). Without the
-    // gate a 401/429/5xx whose prose happens to contain "maximum context length" would reclassify as
-    // ContextLength — letting a genuine auth/rate-limit/server failure escape fault attribution. The
-    // structured `code: "context_length_exceeded"` path is NOT gated (it is unambiguous).
-    //
-    // The scan itself is the shared one and not a clause of its own: production runs all four
-    // phrasings through `context_length_prose_scan`, and a copy here that carried only the
-    // first was a mirror that showed a different picture. Every test proving oversized-request
-    // failover through this function was then proving behaviour production does not have, for three
-    // of the four phrasings the providers actually send.
-    let oversized = status == StatusCode::BAD_REQUEST || status == StatusCode::PAYLOAD_TOO_LARGE;
-    let prose_is_context = oversized
-        && context_length_prose_scan(&String::from_utf8_lossy(body).to_lowercase());
-    if code_is_context || prose_is_context {
-        return crate::breaker::CanonicalSignal {
-            class: StatusClass::ContextLength,
-            provider_signal: Some(PROVIDER_SIGNAL_CONTEXT_LENGTH.to_string()),
-            retry_after: None,
-        };
-    }
-
-    if status == StatusCode::TOO_MANY_REQUESTS {
-        return crate::breaker::CanonicalSignal {
-            class: StatusClass::RateLimit,
-            provider_signal: Some("429".to_string()),
-            retry_after: None,
-        };
-    }
-
-    if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN {
-        return crate::breaker::CanonicalSignal {
-            class: StatusClass::Auth,
-            provider_signal: Some("auth".to_string()),
-            retry_after: None,
-        };
-    }
-
-    if status.is_server_error() {
-        return crate::breaker::CanonicalSignal {
-            class: StatusClass::ServerError,
-            provider_signal: Some("5xx".to_string()),
-            retry_after: None,
-        };
-    }
-
-    if status.is_client_error() {
-        return crate::breaker::CanonicalSignal {
-            class: StatusClass::ClientError,
-            provider_signal: Some(format!("{}", status.as_u16())),
-            retry_after: None,
-        };
-    }
-
-    crate::breaker::CanonicalSignal {
-        class: StatusClass::ClientError,
-        provider_signal: None,
-        retry_after: None,
     }
 }
 

@@ -1357,6 +1357,94 @@ impl OpenAiWriter {
     }
 }
 
+/// Canonical OpenAI-family error classification, shared verbatim by `OpenAiReader::classify` and
+/// `ResponsesReader::classify` (the two were word-for-word identical). Both surfaces emit the same
+/// OpenAI error envelope, so the mapping — context-length-exceeded (fail over without penalty) first,
+/// then 429→RateLimit, 401/403→Auth, 5xx→ServerError, other 4xx→ClientError — is single-sourced here.
+///
+/// RELOCATED from `busbar_substrate_values::proto::openai_classify`: this is real OpenAI-vendor
+/// dialect-classification logic, and Law 5 (dialects belong to the plane) says it belongs at the
+/// OpenAI dialect's codec home, not in the neutral substrate. It is test-only (the production
+/// classification path is `OpenAiReader::extract_error` / `ResponsesReader::extract_error`, which this
+/// mirrors for the confinement/parity test suite), so it stays `#[cfg(test)]` here exactly as it was
+/// `#[cfg(any(test, feature = "test-support"))]` in the substrate — no other crate named it.
+#[cfg(test)]
+pub(crate) fn openai_classify(status: StatusCode, body: &[u8]) -> CanonicalSignal {
+    // context-length-exceeded — the lane is healthy; this must fail over (to a larger-context
+    // model), not penalize the breaker. Detect by OpenAI code/message first.
+    let code_is_context = busbar_substrate_values::json::parse::<serde_json::Value>(body)
+        .ok()
+        .and_then(|j| {
+            j.get("error")
+                .and_then(|e| e.get("code"))
+                .and_then(|c| c.as_str())
+                .map(|s| s.to_string())
+        })
+        .as_deref()
+        == Some(busbar_substrate_values::proxy::PROVIDER_CODE_CONTEXT_LENGTH);
+    // Mirror production `extract_error`: the prose message scan is GATED to the HTTP statuses an
+    // oversized request actually uses (400 invalid_request_error; 413 payload-too-large). Without the
+    // gate a 401/429/5xx whose prose happens to contain "maximum context length" would reclassify as
+    // ContextLength — letting a genuine auth/rate-limit/server failure escape fault attribution. The
+    // structured `code: "context_length_exceeded"` path is NOT gated (it is unambiguous).
+    //
+    // The scan itself is the shared one and not a clause of its own: production runs all four
+    // phrasings through `context_length_prose_scan`, and a copy here that carried only the
+    // first was a mirror that showed a different picture. Every test proving oversized-request
+    // failover through this function was then proving behaviour production does not have, for three
+    // of the four phrasings the providers actually send.
+    let oversized = status == StatusCode::BAD_REQUEST || status == StatusCode::PAYLOAD_TOO_LARGE;
+    let prose_is_context = oversized
+        && context_length_prose_scan(&String::from_utf8_lossy(body).to_lowercase());
+    if code_is_context || prose_is_context {
+        return CanonicalSignal {
+            class: StatusClass::ContextLength,
+            provider_signal: Some(
+                busbar_substrate_values::proto::PROVIDER_SIGNAL_CONTEXT_LENGTH.to_string(),
+            ),
+            retry_after: None,
+        };
+    }
+
+    if status == StatusCode::TOO_MANY_REQUESTS {
+        return CanonicalSignal {
+            class: StatusClass::RateLimit,
+            provider_signal: Some("429".to_string()),
+            retry_after: None,
+        };
+    }
+
+    if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN {
+        return CanonicalSignal {
+            class: StatusClass::Auth,
+            provider_signal: Some("auth".to_string()),
+            retry_after: None,
+        };
+    }
+
+    if status.is_server_error() {
+        return CanonicalSignal {
+            class: StatusClass::ServerError,
+            provider_signal: Some("5xx".to_string()),
+            retry_after: None,
+        };
+    }
+
+    if status.is_client_error() {
+        return CanonicalSignal {
+            class: StatusClass::ClientError,
+            provider_signal: Some(format!("{}", status.as_u16())),
+            retry_after: None,
+        };
+    }
+
+    CanonicalSignal {
+        class: StatusClass::ClientError,
+        provider_signal: None,
+        retry_after: None,
+    }
+}
+
 #[cfg(test)]
 #[path = "tests/tests.rs"]
 mod tests;

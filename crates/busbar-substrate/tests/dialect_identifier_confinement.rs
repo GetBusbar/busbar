@@ -22,7 +22,10 @@ const DIALECT_PREFIXES: &[&str] = &["openai_", "bedrock_", "gemini_", "cohere_",
 /// The CURRENTLY-TRACKED LLM-ABI purity residue — OpenAI-family helpers awaiting relocation into
 /// `busbar-llm`. This allowlist may only SHRINK. A dialect-prefixed identifier NOT listed here is a
 /// NEW leak and reds the gate.
-const TRACKED_RESIDUE: &[&str] = &["openai_classify"];
+///
+/// `openai_classify` relocated to `busbar-llm-codec::openai_chat::openai_classify` (the OpenAI
+/// dialect's codec home) — the neutral crate no longer names it, so the allowlist is empty.
+const TRACKED_RESIDUE: &[&str] = &[];
 
 /// BOTH HALVES OF THE NEUTRAL ABI CRATE. The substrate was split in two — `busbar-substrate-values`
 /// carries the pure value families (including `proto`, where the tracked residue lives) and

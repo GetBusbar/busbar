@@ -4140,7 +4140,7 @@ fn test_extract_error_oversized_phrase_on_non_oversized_status_not_synthesized()
     );
 }
 
-/// `ResponsesReader::classify` delegates to `super::openai_family::openai_classify`
+/// `ResponsesReader::classify` delegates to `openai_chat::openai_classify`
 /// (single-sourced after dedup). Every other reader has a direct `classify` test, but the Responses delegate was only
 /// ever exercised through OpenAi's copy — this guards the delegation directly, mirroring
 /// `test_openai_classify`. 429 → RateLimit.
