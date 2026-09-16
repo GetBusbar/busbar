@@ -297,7 +297,7 @@ fn tokens_input_cap_blocks_on_input_tier_only() {
 }
 
 /// CACHED-READ tokens live in the `cache_read` tier, NOT the input tier: they must never count
-/// against a `tokens_input` cap (matching the cost-tier semantics — a cached prompt read is billed
+/// against a `tokens_input` cap (matching the cost-tier semantics — a cache-read unit is billed
 /// as cache_read, not uncached input).
 #[test]
 fn cached_read_tokens_do_not_count_against_tokens_input() {

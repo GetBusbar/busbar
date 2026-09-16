@@ -28,9 +28,9 @@ pub(crate) mod schema;
 // and the emission recorder tags responses with it in a test build.
 pub(crate) mod taxonomy;
 
-/// The root every busbar-NATIVE API surface mounts under (`/api/<version>/<area>/…`). The data
-/// plane (the six mimicked SDK wire protocols) is deliberately OUTSIDE this root — its paths are
-/// dictated by the upstream SDKs, not by busbar.
+/// The root every busbar-NATIVE API surface mounts under (`/api/<version>/<area>/…`). A plane's own
+/// mimicked wire surface is deliberately OUTSIDE this root — its paths are dictated by whatever
+/// external protocol it mimics, not by busbar.
 pub(crate) const API_ROOT: &str = "/api";
 
 /// The frozen Admin API v1 path prefix — relocated to the neutral substrate (`busbar_substrate::api`)
@@ -385,7 +385,7 @@ impl AdminError {
 /// The compiled-in plugin catalog + topology + uptime returned by `GET /api/v1/admin/info`. Powers
 /// version negotiation for tooling AND the compliance-by-compilation proof: `auth_modules`/`hook_plugins` reflect
 /// the ACTUAL binary (feature-gated at compile time), not config, so `--no-default-features` shows a
-/// provably smaller surface. No LLM content, ever.
+/// provably smaller surface. No plugin-instance business content, ever.
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
 pub(crate) struct InfoView {
@@ -452,7 +452,7 @@ pub(crate) struct PoolMemberView {
 /// The LIVE per-pool detail read (`GET /api/v1/admin/pools/{name}`), the reliability/capacity dashboard
 /// data: each member's breaker state, concurrency headroom, in-flight
 /// count, latency EWMA, and success/error tallies, read from the SAME store signals the routing seam
-/// ranks on. No LLM content, no credentials.
+/// ranks on. No plugin-instance business content, no credentials.
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
 pub(crate) struct PoolDetailView {

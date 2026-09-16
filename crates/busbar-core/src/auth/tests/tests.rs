@@ -628,7 +628,7 @@ fn test_residual_dialect_inference() {
     );
     // The stable `v1` Gemini alias the router also registers (`/v1/models/*rest`). A colon
     // `:<action>` in the final segment is the Gemini generateContent/streamGenerateContent shape
-    // → gemini (mirrors main.rs::proto_for_path so the two classifiers cannot drift).
+    // → gemini (pins the single resolver's classification of this path shape so it cannot drift).
     assert_eq!(
         residual_dialect("/v1/models/gemini-pro:generateContent"),
         "gemini"
@@ -683,7 +683,7 @@ fn decode_body(resp: Response) -> serde_json::Value {
 fn test_unauthorized_response_is_json_with_native_envelope() {
     // Every supported ingress protocol must get its DISTINCTIVE native error SHAPE, not just
     // `application/json` — a wrong-shaped 401 is a deterministic proxy tell a native SDK
-    // would choke on. One assertion per `proto_for_path` arm.
+    // would choke on. One assertion per ingress-dialect classification arm.
 
     // Gemini → {"error":{"code":400,"message":..,"status":"INVALID_ARGUMENT"}}, HTTP 400. The
     // genuine Generative Language API does NOT return 401/UNAUTHENTICATED for a bad API key; it
@@ -910,12 +910,13 @@ fn test_vendor_auth_failure_message_is_plausible_per_proto() {
 
 #[test]
 fn test_every_router_ingress_path_maps_to_non_fallback_proto() {
-    // Coupling guard (router route table ↔ proto_for_path ↔ protocol_for). Each real
-    // ingress path the router registers must resolve to a SPECIFIC proto, not the unknown-path
-    // `openai` fallback applied via the final `else`. If a future route is added without
-    // updating proto_for_path, callers on that protocol would silently get an OpenAI-shaped 401
-    // — a partial defeat of the indistinguishability promise. We assert the expected mapping
-    // explicitly (a sample path per registered ingress family), so a regression is caught.
+    // Coupling guard (router route table ↔ the residual dialect resolver ↔ `protocol_for`). Each
+    // real ingress path the router registers must resolve to a SPECIFIC proto, not the
+    // unknown-path `openai` fallback applied via the final `else`. If a future route is added
+    // without updating the residual classifier's path-shape arms, callers on that protocol would
+    // silently get an OpenAI-shaped 401 — a partial defeat of the indistinguishability promise. We
+    // assert the expected mapping explicitly (a sample path per registered ingress family), so a
+    // regression is caught.
     let cases = [
         ("/v1/messages", "anthropic"),
         ("/somepool/v1/messages", "anthropic"),
@@ -923,7 +924,7 @@ fn test_every_router_ingress_path_maps_to_non_fallback_proto() {
         ("/v2/chat", "cohere"),
         ("/v1/responses", "responses"),
         ("/v1beta/models/gemini-1.5:generateContent", "gemini"),
-        // BOTH Gemini ingress prefixes the router registers (main.rs) must resolve to a
+        // BOTH Gemini ingress prefixes the router registers must resolve to a
         // non-fallback proto. The stable `v1` alias was previously omitted here, masking the
         // missing `/v1/models/` arm in the residual classifier (a `:`-action path mis-shaped
         // as openai).
@@ -1129,8 +1130,9 @@ async fn test_bedrock_ingress_wrong_token_is_403_native_envelope() {
 /// AND the stable `v1` alias (`/v1/models/<id>:generateContent`) — must be rejected with the
 /// Gemini-native bad-key envelope: HTTP 400, `error.code == 400`, `error.status ==
 /// "INVALID_ARGUMENT"` (a real Generative Language API bad key is 400 INVALID_ARGUMENT, NOT
-/// 401/UNAUTHENTICATED). The stable-v1 path was previously mis-shaped as an OpenAI 401 because
-/// `proto_for_path` had no `/v1/models/` arm — this exercises both prefixes through the full stack.
+/// 401/UNAUTHENTICATED). The stable-v1 path was previously mis-shaped as an OpenAI 401 because the
+/// residual dialect classifier had no `/v1/models/` arm — this exercises both prefixes through the
+/// full stack.
 #[tokio::test]
 async fn test_gemini_ingress_wrong_token_is_native_bad_key_envelope() {
     use crate::test_support::{LaneSpec, MockServer, MockServerState, TestApp};
@@ -1852,13 +1854,14 @@ async fn test_admin_token_not_acceptable_via_vendor_carriers() {
     handle.abort();
 }
 
-/// THE MCP PLANE BOUNDARY end-to-end through the real router + `auth_middleware` in GOVERNANCE
-/// mode (1.6.0): an AUDIENCE-BOUND token whose `sub` is a
-/// fully valid enabled binding must be rejected 401 on the data plane - both a proxy ingress
-/// route (`/pa/v1/messages`) and a chain-verdict-only route (`/stats`, which admits on the chain
-/// verdict alone and so shows the blast radius is EVERY key-authenticated route, not just the
-/// proxy ones) - while the sibling PLAIN token for the same binding is admitted. Before the boundary,
-/// serde ignored the unknown `a` claim and the MCP token was silently a full data-plane key.
+/// THE AUDIENCE-BOUND PLANE BOUNDARY end-to-end through the real router + `auth_middleware` in
+/// GOVERNANCE mode (1.6.0): an AUDIENCE-BOUND token whose `sub` is a
+/// fully valid enabled binding must be rejected 401 on the residual data plane - both a proxy
+/// ingress route (`/pa/v1/messages`) and a chain-verdict-only route (`/stats`, which admits on the
+/// chain verdict alone and so shows the blast radius is EVERY key-authenticated route, not just
+/// the proxy ones) - while the sibling PLAIN token for the same binding is admitted. Before the
+/// boundary, serde ignored the unknown `a` claim and an audience-bound token was silently a full
+/// data-plane key.
 /// (The full router-table-enumerated ratchet lands with the P2 core route-auth table, which is
 /// what makes every mounted route enumerable; these two routes pin the two admission shapes.)
 #[tokio::test]

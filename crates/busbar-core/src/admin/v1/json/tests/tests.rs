@@ -194,16 +194,17 @@ fn openapi_operations_carry_stable_operation_ids() {
             checked += 1;
         }
     }
-    // 81 = 66 + the five generic named-map routes EACH plane section adds: `tools:`
-    // (1.6.0 MCP) and `agents:` (1.6.0 A2A) + the THREE MCP trust verbs on `tools:`
-    // (`POST .../connect`, `GET .../changes`, `GET .../health`) + the TWO A2A trust verbs on
-    // `agents:` (`POST .../connect`, `POST .../approve`), which are specific to their section
-    // rather than part of the generic named-map shape. The count is a FLOOR-and-CEILING
-    // on purpose: a route added without a stable `operationId`, and a route silently removed,
-    // both land here.
+    // 81 = 66 + the five generic named-map routes EACH of the two compiled-in plane sections adds
+    // (`tools:` and `agents:`) + the plane-specific trust verbs each section layers on top of the
+    // generic named-map shape: three trust verbs on one section (`POST .../connect`,
+    // `GET .../changes`, `GET .../health`) and two on the other (`POST .../connect`,
+    // `POST .../approve`), which are specific to their section rather than part of the generic
+    // named-map shape. The count is a FLOOR-and-CEILING on purpose: a route added without a stable
+    // `operationId`, and a route silently removed, both land here.
     //
-    // This assertion is why the two planes could not land on `dev` independently without one of
-    // them noticing the other: 76 was correct for either plane alone and wrong for both together.
+    // This assertion is why the two plane sections could not land on `dev` independently without
+    // one of them noticing the other: 76 was correct for either section alone and wrong for both
+    // together.
     assert_eq!(checked, 81, "expected exactly 81 admin operations");
     // Spot-check the exact naming scheme against a few representative paths.
     assert_eq!(
@@ -597,15 +598,16 @@ fn openapi_every_mutating_operation_declares_a_request_body() {
         ("delete", "/api/v1/admin/export/{name}"),
         ("delete", "/api/v1/admin/tools/{name}"),
         ("delete", "/api/v1/admin/agents/{name}"),
-        // The MCP trust verb. It is a pure command in the same sense as the deletes above: the
-        // server to re-observe rides the path, and the handler takes `State`, `Extension` and
-        // `Path` — no body extractor. There is nothing a caller could put in a body that would
-        // change what it does, so documenting one would describe a parameter that does not exist.
+        // The `tools:` section's connect trust verb. It is a pure command in the same sense as the
+        // deletes above: the entry to re-observe rides the path, and the handler takes `State`,
+        // `Extension` and `Path` — no body extractor. There is nothing a caller could put in a body
+        // that would change what it does, so documenting one would describe a parameter that does
+        // not exist.
         ("post", "/api/v1/admin/tools/{name}/connect"),
-        // The A2A plane's PREVIEW verb, bodyless for the same reason: the agent to look at rides
-        // the path, and there is nothing a caller could put in a body that would change what it
-        // does. Its sibling `POST /agents/{name}/approve` is NOT here — that one carries the
-        // fingerprint the operator is attesting they saw, which is the whole trust root.
+        // The `agents:` section's PREVIEW trust verb, bodyless for the same reason: the entry to
+        // look at rides the path, and there is nothing a caller could put in a body that would
+        // change what it does. Its sibling `POST /agents/{name}/approve` is NOT here — that one
+        // carries the fingerprint the operator is attesting they saw, which is the whole trust root.
         ("post", "/api/v1/admin/agents/{name}/connect"),
     ];
 

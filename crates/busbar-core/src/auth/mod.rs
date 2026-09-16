@@ -88,7 +88,8 @@ pub(crate) enum ChainVerdict {
         module: String,
         principal: Principal,
         /// ENGINE-ONLY resolved governance key. Populated ONLY by engine arms (the built-in `keys`
-        /// verifier and the Bedrock SigV4 pre-step), which authenticate a busbar-MINTED credential
+        /// verifier and the ingress-protocol AWS SigV4 request-signing pre-step), which authenticate
+        /// a busbar-MINTED credential
         /// and can therefore hand back the enforced [`VirtualKey`]. ALWAYS `None` for a plugin
         /// module: the plugin ABI ([`AuthOutcome`]) can only `Identify(Principal)` — it can never
         /// construct a `VirtualKey`. When `Some`, enforcement rides it directly and the role-binding
@@ -624,15 +625,16 @@ impl AuthMiddleware {
     /// does not mask a token in a lower-precedence carrier. The returned token is validated
     /// identically and in constant time regardless of which header carried it.
     ///
-    /// Bedrock SDKs authenticate with inbound AWS SigV4, NOT a bearer-style token, so this extractor
-    /// deliberately does NOT read any `x-amz-*` / SigV4 `Authorization` header — a non-Bearer
-    /// `Authorization` (AWS4-HMAC-SHA256 or Basic) falls through to the vendor carriers and otherwise
-    /// yields `None` here. Inbound SigV4 is now handled SEPARATELY, under governance, by
-    /// `verify_sigv4_ingress_credential` (the MinIO/S3-compatible model: an AWS-style access-key-id + secret
-    /// access key issued per virtual key, whose signature busbar verifies via `crate::sigv4`). On a
-    /// successful verify the same `GovCtx` a bearer auth attaches is attached, so Bedrock ingress now
-    /// receives full virtual-key governance under `token`/governance mode — it no longer requires
-    /// `passthrough`. This token path itself is unchanged.
+    /// An ingress protocol whose auth is inbound AWS SigV4 request-signing (a real pre-step, not a
+    /// fork on the dialect classifier) authenticates with that signature, NOT a bearer-style token,
+    /// so this extractor deliberately does NOT read any `x-amz-*` / SigV4 `Authorization` header — a
+    /// non-Bearer `Authorization` (AWS4-HMAC-SHA256 or Basic) falls through to the header carriers
+    /// above and otherwise yields `None` here. Inbound SigV4 is now handled SEPARATELY, under
+    /// governance, by `verify_sigv4_ingress_credential` (the MinIO/S3-compatible model: an AWS-style
+    /// access-key-id + secret access key issued per virtual key, whose signature busbar verifies via
+    /// `crate::sigv4`). On a successful verify the same `GovCtx` a bearer auth attaches is attached,
+    /// so a SigV4-signing ingress now receives full virtual-key governance under `token`/governance
+    /// mode — it no longer requires `passthrough`. This token path itself is unchanged.
     pub(crate) fn extract_client_token(req: &Request<Body>) -> Option<String> {
         let header_str = |name: &str| {
             req.headers()
@@ -695,9 +697,10 @@ fn keys_arm_verdict(
         return ChainVerdict::Denied;
     };
     // THE PLANE BOUNDARY, enforced in the verifier (1.6.0 P1). `expected_aud` is `None` on the
-    // residual data plane, and the verifier then rejects any token that CARRIES an audience — an
-    // MCP token is inadmissible on the LLM plane. On an audience-bound ingress it is that plane's
-    // canonical URI, and the verifier rejects a token whose audience is absent or different: the
+    // residual data plane, and the verifier then rejects any token that CARRIES an audience — a
+    // token minted for an audience-bound plane is inadmissible on the residual data plane. On an
+    // audience-bound ingress it is that plane's canonical URI, and the verifier rejects a token
+    // whose audience is absent or different: the
     // RFC 8707 confused-deputy defence, which is what stops a token an agent legitimately obtained
     // for some other resource from being spendable against busbar's pools and budget.
     match gov.verify_token(token, now, expected_aud) {
@@ -712,8 +715,8 @@ fn keys_arm_verdict(
 
 /// The data-plane [`Principal`] for a resolved [`VirtualKey`]: id = the stable key id, name = its
 /// label, no roles (a vkey is a direct grant, not a group membership resolved through
-/// role_bindings). Shared by the bearer `keys` arm and the Bedrock SigV4 pre-step so both attach an
-/// identical principal.
+/// role_bindings). Shared by the bearer `keys` arm and the ingress-protocol AWS SigV4
+/// request-signing pre-step so both attach an identical principal.
 fn principal_from_vkey(key: &crate::governance::VirtualKey) -> Principal {
     Principal {
         id: key.id.clone(),
@@ -730,99 +733,87 @@ fn principal_from_vkey(key: &crate::governance::VirtualKey) -> Principal {
 /// A THIN delegation to the CANONICAL `crate::plane::PlaneDispatch::ingress_of`, which is the ONE
 /// resolver: a private copy here (there was one, and before that a wire-identical duplicate of the
 /// path classifier) is the exact indistinguishability tell where one handler shapes `/model/foo/bar`
-/// as bedrock and another as openai — or where auth answers a MOUNTED MCP path in an OpenAI
-/// envelope because it could not see the mount.
+/// in one dialect and another handler shapes it in a different dialect — or where auth answers a
+/// MOUNTED, audience-bound path in the residual plane's envelope because it could not see the mount.
 fn ingress_for_path(app: &crate::state::App, path: &str) -> crate::plane::Ingress {
     app.planes.ingress_of(path)
 }
 
 /// The auth-failure wire message for an inferred ingress protocol — a THIN delegation to the
 /// CANONICAL `crate::proto::vendor_auth_failure_message` so the auth path and any other site that
-/// shapes a native bad-credential body cannot drift on the vendor copy. The string lands verbatim in
-/// the native error body (`error.message` for anthropic/openai/gemini/responses, the bare top-level
-/// `message` for cohere, the `message` field alongside `__type` for bedrock — every writer echoes
-/// it unchanged), so it MUST read like the copy the REAL vendor returns for a bad/missing credential
-/// and carry NO busbar-internal vocabulary ("virtual key", "client token", "allowlist", "disabled",
-/// "passthrough", …). The wording is chosen PURELY from the inferred protocol and is deliberately
-/// independent of WHY auth failed (missing token vs. wrong token vs. disabled virtual key vs.
-/// admin-token mismatch) — surfacing that distinction on the wire is itself an oracle. Call sites
-/// therefore pass no reason string.
+/// shapes a native bad-credential body cannot drift on the protocol's own copy. The string lands
+/// verbatim in the native error body — the exact field it lands in (and any wrapping shape) is a
+/// registry-resolved per-protocol writer's concern, not core's — so it MUST read like the copy the
+/// REAL protocol returns for a bad/missing credential and carry NO busbar-internal vocabulary
+/// ("virtual key", "client token", "allowlist", "disabled", "passthrough", …). The wording is chosen
+/// PURELY from the inferred protocol and is deliberately independent of WHY auth failed (missing
+/// token vs. wrong token vs. disabled virtual key vs. admin-token mismatch) — surfacing that
+/// distinction on the wire is itself an oracle. Call sites therefore pass no reason string.
 fn vendor_auth_failure_message(proto: &str) -> &'static str {
     crate::proto::vendor_auth_failure_message(proto)
 }
 
 /// The HTTP status and protocol-agnostic error `kind` a bad/missing credential yields for an
-/// inferred ingress protocol. The pair is chosen to MATCH what the genuine vendor returns for a
+/// inferred ingress protocol. The pair is chosen to MATCH what the genuine protocol returns for a
 /// bad API key, because the status code and the writer-mapped `error.type`/`error.status` are both
-/// deterministic protocol tells a native SDK keys its typed exception off:
-/// - bedrock → HTTP 403 + "auth": a real SigV4 rejection is 403 AccessDenied (NOT 401).
-/// - gemini  → HTTP 400 + "invalid_request_error": the Generative Language API does NOT return
-///   401/UNAUTHENTICATED for a bad API key; it returns HTTP 400 with `error.status:
-/// "INVALID_ARGUMENT"` (google.rpc.Code; the gemini writer maps `invalid_request_error` →
-///   INVALID_ARGUMENT and echoes `code: 400`). A 401/UNAUTHENTICATED body would be a tell the
-///   google-genai SDK never sees from real Google on the bad-key path.
-/// - openai / responses → HTTP 401 + "authentication_error": the genuine OpenAI/Responses bad-key
-///   401 body carries `error.code: "invalid_api_key"`, and the official SDKs surface that value as
-///   `AuthenticationError.code`. Emitting `code: null` is a deterministic proxy tell a native SDK
-///   keys its typed-exception comparison off. The openai/responses writers pair
-///   `code: "invalid_api_key"` ONLY with `error.type: "authentication_error"` (see
-///   `proto::openai_family::bearer_error_code`); the alternate `invalid_request_error` type maps
-///   to `code: null`. We therefore pass `authentication_error` here so the wire body carries the
-///   real `code: "invalid_api_key"` pairing — matching the modern OpenAI bad-key shape the writers
-///   document — rather than the `code: null` tell.
-/// - anthropic / cohere / unknown → HTTP 401 + "authentication_error": the standard
-///   bad-credential shape for those vendors.
+/// deterministic protocol tells a native SDK keys its typed exception off — a native SDK's
+/// typed-exception match is often keyed off the exact status/error-shape pairing, so a mismatched
+/// pair (e.g. the right status with the wrong error code) is itself a deterministic proxy tell.
 ///
-/// Not a disposition/breaker match, so an unknown future proto falls back to the Anthropic-family
+/// This function holds NO protocol-specific knowledge itself; the default (401,
+/// "authentication_error") is what an unknown or standard protocol gets. A registry-resolved
+/// per-protocol writer may override that default to match its own genuine auth-failure shape (a
+/// different status code, a different `kind`, or both) — that mapping lives entirely in the writer
+/// vtable, outside this crate, so a new protocol is onboarded there without touching this agnostic
+/// function.
+///
+/// Not a disposition/breaker match, so an unknown future proto falls back to the standard
 /// 401 authentication_error, keeping the request path panic-free.
 ///
 /// Thin wrapper: dispatches through `ProtocolWriter::auth_failure_status_and_kind` so the
-/// per-protocol decision lives in the writer vtable, not in this agnostic function. `BedrockWriter`
-/// overrides to (403, "auth"); `GeminiWriter` to (400, "invalid_request_error"); all others use the
-/// default (401, "authentication_error"). An unknown future proto falls back to the default.
+/// per-protocol decision lives in the writer vtable, not in this agnostic function.
 // RELOCATED to `busbar_substrate::proxy::auth_failure_status_and_kind` (registry-resolved, neutral).
 // Re-exported here by-identity so every in-core caller (`auth::auth_failure_status_and_kind`) and the
 // historical path are unchanged.
 pub use busbar_substrate::proxy::auth_failure_status_and_kind;
 
 /// Build an auth-failure response carrying the inferred ingress protocol's NATIVE error envelope.
-/// Auth runs before routing, so the protocol is inferred from the request path. A native vendor SDK
-/// hitting busbar in `token`/governance mode with a bad credential gets the vendor's JSON error
-/// shape (`application/json`) instead of a bare `text/plain` 401 — removing a deterministic proxy
-/// tell. Falls back to the generic envelope for an unknown path.
+/// Auth runs before routing, so the protocol is inferred from the request path. A native SDK
+/// hitting busbar in `token`/governance mode with a bad credential gets that protocol's own JSON
+/// error shape (`application/json`) instead of a bare `text/plain` 401 — removing a deterministic
+/// proxy tell. Falls back to the generic envelope for an unknown path.
 ///
-/// The wire `message` comes from `vendor_auth_failure_message(proto)` — vendor-plausible copy keyed
-/// solely off the inferred protocol — NOT from the call site. Callers must never thread a
+/// The wire `message` comes from `vendor_auth_failure_message(proto)` — protocol-plausible copy
+/// keyed solely off the inferred protocol — NOT from the call site. Callers must never thread a
 /// busbar-internal reason ("invalid or disabled virtual key", "unauthorized", "admin unauthorized")
 /// onto the wire: that vocabulary is a protocol tell and an auth-model disclosure, and the
 /// invalid-vs-disabled / missing-vs-wrong distinction is itself an oracle. A caller may still log
 /// the real reason server-side; it just never reaches the client body.
 ///
-/// Status and the writer `kind` are protocol-shaped too (see `auth_failure_status_and_kind`): a real
-/// AWS Bedrock SigV4 auth failure returns HTTP 403 (not 401) and carries `x-amzn-ErrorType` /
-/// `x-amzn-RequestId`; a real Gemini bad-key returns HTTP 400 INVALID_ARGUMENT (not 401
-/// UNAUTHENTICATED); the other vendors use 401 authentication_error. (Bedrock ingress is documented
-/// as unsupported under token/governance mode, so that branch is only reachable under a
-/// misconfiguration — but when it is reached, the envelope must still match native AWS.)
+/// Status and the writer `kind` are protocol-shaped too (see `auth_failure_status_and_kind`): a
+/// registry-resolved per-protocol writer may override the default (401, "authentication_error") to
+/// match that protocol's own genuine auth-failure status/headers/shape — for example, a protocol
+/// whose auth is inbound AWS SigV4 request-signing genuinely rejects with HTTP 403 and carries its
+/// own error-type/request-id headers, not the generic 401 pair. That per-protocol knowledge lives
+/// entirely in the writer, not in this crate.
 ///
 /// No unwrap / expect / panic on this request path: `ingress_error` degrades a serialization failure
 /// to a generic JSON object internally.
 ///
 /// The envelope is built by `crate::ingress::native::native_error`, the single source of truth for
 /// shaping an answer from a resolved ingress: on the residual it selects the protocol writer, sets
-/// `application/json` and attaches the Bedrock `x-amzn-RequestId` / `x-amzn-errortype` headers via
-/// the `ProtocolWriter::attach_error_response_headers` vtable method; on a MOUNTED plane it answers
-/// in that plane's own dialect instead of handing a JSON-RPC client a vendor envelope. Using the
-/// shared builder means the auth path, the forward path, and the route/fallback path CANNOT diverge
-/// on error shape or headers. Bedrock's auth-failure modeled exception is `AccessDeniedException`;
-/// the header attach derives the same `x-amzn-errortype` from the `kind` we pass
-/// (`auth` → `AccessDeniedException`), so the wire body `__type` and the header agree.
+/// `application/json` and attaches any protocol-specific error headers via the
+/// `ProtocolWriter::attach_error_response_headers` vtable method; on a MOUNTED, audience-bound plane
+/// it answers in that plane's own dialect instead of handing a JSON-RPC client the residual plane's
+/// envelope. Using the shared builder means the auth path, the forward path, and the route/fallback
+/// path CANNOT diverge on error shape or headers — each protocol writer keeps its own error `kind`,
+/// status, and any header attach it needs consistent with each other, all outside this crate.
 fn unauthorized_response(app: &crate::state::App, path: &str) -> Response {
     let ingress = ingress_for_path(app, path);
-    // The dialect names the VENDOR whose bad-credential status, `kind` and copy a client expects. A
-    // mounted plane names its own wire format, which has no vendor writer, so both lookups take
-    // their neutral defaults (401 + `authentication_error`) and the body is JSON-RPC's — the same
-    // two facts a plane-specific 401 would have had to restate.
+    // The dialect names the PROTOCOL whose bad-credential status, `kind` and copy a client expects.
+    // A mounted, audience-bound plane names its own wire format, which has no registered protocol
+    // writer, so both lookups take their neutral defaults (401 + `authentication_error`) and the
+    // body is that plane's own — the same two facts a plane-specific 401 would have had to restate.
     let dialect = crate::ingress::native::envelope_dialect(ingress);
     let message = vendor_auth_failure_message(dialect);
     let (status, kind) = auth_failure_status_and_kind(dialect);
@@ -1223,7 +1214,7 @@ fn admin_scope_for(
 /// naming the scope that WOULD have sufficed — never any other principal's data.
 /// A 401 in the frozen admin error envelope — no/invalid admin credential. The admin plane's
 /// most-frequent error must carry the SAME `{error:{code,message}}` shape tooling branches on;
-/// the data plane keeps vendor-native 401 shaping (`unauthorized_response`).
+/// the data plane keeps protocol-native 401 shaping (`unauthorized_response`).
 fn admin_unauthorized_response() -> Response {
     let e = crate::admin::v1::contract::AdminError::Unauthorized;
     let body = serde_json::json!({
@@ -1278,17 +1269,18 @@ fn rate_limited_response() -> Response {
 /// denial — so audit taps see auth denials, not just served traffic. The
 /// request body is unparsed at the auth stage, so the shape is the zeroed default bucket with the
 /// path-inferred protocol. The tap's `status` MUST be the client-visible HTTP status, which is
-/// PROTOCOL-NATIVE for an auth failure — 401 for anthropic/openai/responses/cohere, 403 for Bedrock
-/// (SigV4 → AccessDenied), 400 for Gemini (INVALID_ARGUMENT). Hardcoding 401 made a tap watching a
-/// gemini/bedrock ingress denial contradict the response the client actually got.
+/// PROTOCOL-NATIVE for an auth failure — the default is 401, but a registry-resolved per-protocol
+/// writer may override it to match that protocol's own genuine auth-failure status (see
+/// `auth_failure_status_and_kind`). Hardcoding 401 made a tap watching an ingress denial on one of
+/// those overriding protocols contradict the response the client actually got.
 fn unauthorized_with_completion_taps(
     app: &std::sync::Arc<crate::state::App>,
     path: &str,
 ) -> Response {
     // The `ingress_protocol` label is the resolved ingress's own WIRE FORMAT, so a denial on a
-    // mounted plane is tapped as that plane's dialect rather than as whichever LLM dialect its path
-    // happens to resemble; a residual path that names none is labelled with the dialect its answer
-    // is shaped in, so the tap and the response can never disagree.
+    // mounted plane is tapped as that plane's dialect rather than as whichever residual-plane
+    // dialect its path happens to resemble; a residual path that names none is labelled with the
+    // dialect its answer is shaped in, so the tap and the response can never disagree.
     let proto = crate::ingress::native::envelope_dialect(ingress_for_path(app, path));
     if !app.tap_hooks_response.is_empty() {
         // An auth denial never reaches `forward_with_pool_parsed` (no `RequestCtx` is ever built for
@@ -1420,8 +1412,8 @@ pub(crate) async fn auth_middleware(
     req.extensions_mut()
         .insert(CallerToken(client_token.clone()));
 
-    // THE PLANE'S ADMISSION FACTS. `None` for every path on the residual LLM plane, which is every
-    // path in a deployment that is not also an MCP server — one `Option` test, then nothing below
+    // THE PLANE'S ADMISSION FACTS. `None` for every path on the residual data plane, which is every
+    // path in a deployment that has no mounted, audience-bound plane — one `Option` test, then nothing below
     // this point costs anything. `Some` means this path is an OAuth 2.1 protected resource: a token
     // presented here must be bound to this resource's canonical URI, and a refusal owes the caller
     // a machine-readable challenge naming where to go and get one.
@@ -1429,7 +1421,7 @@ pub(crate) async fn auth_middleware(
 
     // the /admin management API is gated by the ADMIN AUTH CHAIN (`admin_auth:`, default
     // `[admin-tokens]` — the single operator token, Bearer or X-Admin-Token) — NOT a virtual key,
-    // and NOT the vendor-SDK carriers (admin is a busbar operator surface, not a native SDK
+    // and NOT the native-SDK carriers (admin is a busbar operator surface, not a native SDK
     // ingress). The chain authenticates (WHO); the principal's admin SCOPE then authorizes against
     // the endpoint's required scope (WHAT) — the matrix, checked here at the one chokepoint
     // every /admin path crosses. Extract the admin Bearer separately so the multi-scheme
@@ -1452,7 +1444,7 @@ pub(crate) async fn auth_middleware(
             // The ADMIN plane 401 speaks the frozen v1 envelope ({error:{code:"unauthorized"}}) —
             // the most frequent error a tooling consumer hits (setup/rotation) must branch on the
             // SAME `code` seam as every other admin error, never a protocol-shaped body (the
-            // vendor-native shaping below is for the DATA plane, whose SDKs must parse it).
+            // protocol-native shaping below is for the DATA plane, whose SDKs must parse it).
             ChainVerdict::Denied => return Err(admin_unauthorized_response()),
         };
         // AUTHORIZATION: resolve the principal's admin scope (module-intrinsic for the operator
@@ -1585,15 +1577,15 @@ pub(crate) async fn auth_middleware(
         });
     }
 
-    // BEDROCK INGRESS via inbound AWS SigV4 is a real INGRESS-PROTOCOL PRE-STEP (not a fork on the
-    // admin token): it needs the BUFFERED BODY to bind the payload hash, which the chain ABI cannot
-    // take. It runs ONLY when the running chain names `keys` (a busbar-minted SigV4 credential IS a
-    // `keys` credential) AND the ingress protocol authenticates with SigV4 AND the request actually
-    // carries an `AWS4-HMAC-SHA256` Authorization header. Gating on `keys_in_chain` keeps an OPEN
-    // `chain:[]` open even for a SigV4-shaped request (pure anonymous). On success it yields the same
-    // `Identified { resolved: Some(key) }` the bearer keys arm produces, feeding the SINGLE match
-    // below. The "which protocol uses SigV4" decision is a DECLARED protocol fact
-    // (`ProtocolDecl::ingress_auth`), NOT a `proto == "bedrock"` name-branch — and reading it no
+    // INGRESS via inbound AWS SigV4 request-signing is a real INGRESS-PROTOCOL PRE-STEP (not a fork
+    // on the admin token): it needs the BUFFERED BODY to bind the payload hash, which the chain ABI
+    // cannot take. It runs ONLY when the running chain names `keys` (a busbar-minted SigV4 credential
+    // IS a `keys` credential) AND the ingress protocol authenticates with SigV4 AND the request
+    // actually carries an `AWS4-HMAC-SHA256` Authorization header. Gating on `keys_in_chain` keeps an
+    // OPEN `chain:[]` open even for a SigV4-shaped request (pure anonymous). On success it yields the
+    // same `Identified { resolved: Some(key) }` the bearer keys arm produces, feeding the SINGLE
+    // match below. The "which protocol uses SigV4" decision is a DECLARED protocol fact
+    // (`ProtocolDecl::ingress_auth`), NOT a name-branch on any one protocol — and reading it no
     // longer costs the reader/writer pair the old vtable predicate had to allocate to ask.
     let ingress_uses_sigv4 = crate::proto::decl_for(crate::ingress::native::envelope_dialect(
         ingress_for_path(&app, &path),
@@ -1602,8 +1594,9 @@ pub(crate) async fn auth_middleware(
     // The SigV4 pre-step is CONFINED TO THE RESIDUAL PLANE (`admission.is_none()`). An
     // audience-bound plane admits bearer tokens only: SigV4 signs a request with a busbar key's
     // secret and produces an identity with no audience anywhere in it, so allowing it here would be
-    // a second door into the MCP plane that the RFC 8707 check does not stand behind. MCP has no
-    // SigV4 dialect to be compatible with, so nothing is lost by closing it.
+    // a second door into an audience-bound plane that the RFC 8707 check does not stand behind. An
+    // audience-bound plane has no SigV4 dialect to be compatible with, so nothing is lost by closing
+    // it.
     let verdict = if admission.is_none()
         && app.auth.keys_in_chain
         && ingress_uses_sigv4
@@ -1727,7 +1720,7 @@ pub(crate) async fn auth_middleware(
             req.extensions_mut().insert(gov);
         }
         Err(IdentityRefusal::Denied) => {
-            // On an audience-bound plane the refusal is an RFC 6750 challenge, not a vendor-shaped
+            // On an audience-bound plane the refusal is an RFC 6750 challenge, not a protocol-shaped
             // envelope: the caller is an OAuth client, and the `WWW-Authenticate` header is the only
             // place the discovery loop's next step was ever going to come from. `Absent` (no
             // credential at all) and `invalid_token` (one was presented and failed) are different
@@ -1860,7 +1853,7 @@ fn canonical_query_string(query: Option<&str>) -> String {
         .join("&")
 }
 
-/// Verify an inbound Bedrock SigV4 request against the governance virtual-key store. On success
+/// Verify an inbound AWS SigV4 request-signing credential against the governance virtual-key store. On success
 /// returns the resolved, ENABLED `VirtualKey` (so the caller attaches its `GovCtx`); on ANY failure
 /// returns `Err(())` — the SINGLE opaque failure the caller maps to the native auth error, with no
 /// distinction reaching the wire (the specific `VerifyError` is logged here for operators only).

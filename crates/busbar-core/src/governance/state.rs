@@ -106,8 +106,8 @@ impl GovState {
     /// surfaced (no enumeration oracle - the auth path maps every `None` to one opaque 401).
     ///
     /// `expected_aud` is the PLANE boundary (1.6.0 P1): the data plane passes `None`, meaning a
-    /// token carrying ANY audience is rejected here; the MCP ingress passes its canonical URI and
-    /// rejects a token whose audience is absent or different. Enforced inside
+    /// token carrying ANY audience is rejected here; an audience-scoped plane's ingress passes its
+    /// canonical URI and rejects a token whose audience is absent or different. Enforced inside
     /// [`TokenVerifier::verify`](super::signing::TokenVerifier::verify), never per handler.
     pub fn verify_token(
         &self,
@@ -385,10 +385,10 @@ impl GovState {
     ///
     /// A DERIVED SUBKEY, never the token signer itself — see
     /// [`crate::governance::signing::TokenSigner::derived_subkey_seed`] for the blast radius that
-    /// buys. Derived through the A2A plane's `card_signer` seam rather than by naming that plane's
-    /// signer type, so this file names no `crate::a2a` type; the plane reduces the signer to these
-    /// PUBLIC halves core-side. `None` when this node has no signing key at all (the governance-off
-    /// path) or the A2A plane is compiled out (no plane declares a `card_signer`).
+    /// buys. Derived through a registered plane's `card_signer` seam rather than by naming that
+    /// plane's signer type, so this file names no specific plane's type; the plane reduces the signer
+    /// to these PUBLIC halves core-side. `None` when this node has no signing key at all (the
+    /// governance-off path) or no plane declaring a `card_signer` is compiled in.
     ///
     /// Built per call rather than cached, and cheap enough to be: one SHA-256 and one ed25519 key
     /// expansion, on a card read rather than on the request hot path. A cached copy would be a
@@ -408,7 +408,7 @@ impl GovState {
 
     /// SIGN a plane-framed card signing-input with the deployment's DOMAIN-DERIVED card subkey — the
     /// host side of the plane `card_sign` seam. Resolves the card-signing domain from the built-in
-    /// plane declaration for the `agents` section (so this file names no `crate::a2a` type), derives
+    /// plane declaration for the `agents` section (so this file names no specific plane's type), derives
     /// the subkey and signs. The subkey secret is derived and used entirely here; the caller receives
     /// only the 64 signature bytes. `None` when no signing key is configured or no plane declares a
     /// card-signing domain.
@@ -428,7 +428,7 @@ impl GovState {
     /// is read.
     ///
     /// Deliberately returns the secret rather than a ready-made HMAC, so this module keeps knowing
-    /// nothing about what any consumer seals: the MCP ask-state codec
+    /// nothing about what any consumer seals: a plane's ask-state codec
     /// ([`crate::plane::approvals::Sealer::derive`]) does its own domain-separated derivation, which is
     /// what keeps its blobs and this module's virtual-key tokens unable to verify as one another.
     /// Secret-equivalent: never log it, never put it in a `Debug`.
@@ -1917,7 +1917,7 @@ impl GovState {
             // Per-tier token counters (`tokens_input`/…): read the matching cell tier ONLY when its
             // cap is set — same best-effort post-paid shape as `tokens_cap`, mirroring the cost
             // tiers. `tokens_input` reads `total_input()` (uncached input; cache_read is a separate
-            // tier), so a cached prompt read never counts against the input cap.
+            // tier), so a cache-read unit never counts against the input cap.
             let (requests, tokens, t_input, t_output, t_cache_read, t_cache_write, derived) =
                 match map.get(bucket.bucket_id) {
                     Some(cell) if cell.window_start >= window => (
@@ -2287,7 +2287,7 @@ impl GovState {
     /// Resolve a wire-supplied `(kind, public_id)` pair (SigV4: `kind = "sigv4"`, `public_id` = the
     /// AccessKeyId parsed in plaintext from the `Credential=` field of the `Authorization` header)
     /// to the owning virtual key plus the resolved credential secret. Used ONLY by the
-    /// Bedrock-ingress SigV4 verify path (today's sole row-looked-up kind). Returns `None` for an
+    /// SigV4-credential verify path (today's sole row-looked-up kind). Returns `None` for an
     /// unknown pair — the verify path is written so an unknown identifier and a bad signature reject
     /// indistinguishably (no enumeration oracle): on the `None` branch the caller still runs a
     /// constant-time signature comparison against a dummy secret before rejecting.

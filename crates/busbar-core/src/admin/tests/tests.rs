@@ -189,7 +189,7 @@ async fn test_admin_v1_topology_reads_pools_models_providers() {
 /// inflight/tallies) from the store; 404s an unknown pool.
 /// EVERY response under the native-API root speaks the frozen envelope —
 /// including unmatched paths (404 `not_found`) and wrong methods (405 `method_not_allowed`),
-/// which previously fell through to the data plane's vendor-native shaping (`error.type`).
+/// which previously fell through to the proxied request path's vendor-shaped error output (`error.type`).
 #[tokio::test]
 async fn test_api_root_unmatched_paths_speak_the_admin_envelope() {
     crate::metrics::init();

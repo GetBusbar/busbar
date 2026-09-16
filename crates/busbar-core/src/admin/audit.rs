@@ -6,9 +6,9 @@
 //!
 //! ## ONE STREAM, on the CORE chain
 //!
-//! The hash chain here is [`crate::audit`]'s: one append, one digest, one verifier, shared with the
-//! MCP per-call log and the A2A task provenance chain. This file used to own a third copy of that
-//! machinery. What it owns now is the RECORD, via `impl ChainedRecord for AuditEntry`, plus a bounded
+//! The hash chain here is [`crate::audit`]'s: one append, one digest, one verifier, shared with other
+//! chains elsewhere in the codebase that log their own request-rate activity. This file used to own a
+//! third copy of that machinery. What it owns now is the RECORD, via `impl ChainedRecord for AuditEntry`, plus a bounded
 //! IN-PROCESS ring of the recent tail — a hot cache, never the system of record.
 //!
 //! ## Where durability lives — the ONE durable path
@@ -92,11 +92,11 @@ pub(crate) struct AuditInput {
     pub(crate) principal: String,
 }
 
-/// THE SCOPE OF THIS CHAIN: the whole log. The MCP call log chains per PRINCIPAL and the A2A
-/// provenance chain per TASK, because those streams are request-rate and multi-tenant; the admin
-/// mutation log is one operator-rate sequence for the whole process, so its scope is a constant and
-/// the mechanism's foreign-scope check can never fire on it. Naming it anyway is what lets ONE
-/// verifier walk all three.
+/// THE SCOPE OF THIS CHAIN: the whole log. Other chains elsewhere key their scope per PRINCIPAL or
+/// per TASK, because those streams are request-rate and multi-tenant; the admin mutation log is one
+/// operator-rate sequence for the whole process, so its scope is a constant and the mechanism's
+/// foreign-scope check can never fire on it. Naming it anyway is what lets ONE verifier walk every
+/// such chain.
 const ADMIN_LOG: &str = "admin";
 
 impl ChainedRecord for AuditEntry {

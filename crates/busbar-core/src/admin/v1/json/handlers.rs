@@ -3728,7 +3728,7 @@ pub(crate) const V1_GET_PATHS: &[(&str, &str)] = &[
 ];
 
 // `set_request_body` (the write verb's request-body schema attach) relocated to the neutral
-// `busbar_substrate::api::set_request_body` beside `set_response_schema` — its one caller is the A2A
+// `busbar_substrate::api::set_request_body` beside `set_response_schema` — its one caller is a
 // plane's `openapi_schemas` contributor, which names the substrate twin directly.
 
 #[cfg(feature = "openapi-schema")]
@@ -3985,11 +3985,11 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         }),
     );
     // ── THE PLANES' TRUST VERBS, contributed through the registry rather than named here. Each
-    // plane's `openapi` fragment carries the ABSOLUTE admin paths its verbs answer on (MCP's
-    // `tools/{name}/connect|changes|health`, A2A's `agents/{name}/connect|approve`), merged in
-    // DECLARATION ORDER so this document documents exactly the surface `JsonV1::router` mounts from
-    // the same `plane_decls()` list. The typed success-body schemas for these paths are attached
-    // below by the shared `typed!`/`body!` pass, which looks each path up by the key inserted here.
+    // plane's `openapi` fragment carries the ABSOLUTE admin paths its own trust verbs answer on
+    // (each plane names its own section's verb paths), merged in DECLARATION ORDER so this document
+    // documents exactly the surface `JsonV1::router` mounts from the same `plane_decls()` list. The
+    // typed success-body schemas for these paths are attached below by the shared `typed!`/`body!`
+    // pass, which looks each path up by the key inserted here.
     for decl in crate::plane::registry::plane_decls() {
         if let Some(openapi) = decl.openapi {
             if let Some(obj) = openapi().as_object() {
@@ -4716,11 +4716,12 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
     typed!("/hooks/{name}/settings", "patch", "200", HookView);
     typed!("/hooks/{name}/health", "get", "200", HookHealthView);
     // THE PLANES' TRUST-VERB SCHEMAS, contributed through the registry rather than named here. Each
-    // plane attaches its own typed success-body (and, for A2A, request-body) schemas onto the paths
-    // its `openapi()` fragment inserted above, using the SAME shared `gen`/`req_gen` — so the plane
-    // types register into `#/components/schemas` exactly as the inline `typed!`/`body!` calls used to,
-    // and this document is byte-identical while this function names no `busbar_mcp::mcp`/`busbar_a2a::a2a` view
-    // type. Folded in `plane_decls()` order (MCP then A2A), matching the source order those calls had.
+    // plane attaches its own typed success-body (and, for the planes that need one, request-body)
+    // schemas onto the paths its `openapi()` fragment inserted above, using the SAME shared
+    // `gen`/`req_gen` — so the plane types register into `#/components/schemas` exactly as the
+    // inline `typed!`/`body!` calls used to, and this document is byte-identical while this function
+    // names no plane-specific view type. Folded in `plane_decls()` order, matching the source order
+    // those calls had.
     for decl in crate::plane::registry::plane_decls() {
         if let Some(schemas) = decl.openapi_schemas {
             schemas(&mut gen, &mut req_gen, &mut paths);

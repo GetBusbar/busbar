@@ -113,8 +113,8 @@ pub(crate) struct CreateKeyReq {
     /// Token expiry as an absolute Unix-seconds timestamp. Mutually exclusive with `expires_in`.
     #[serde(default)]
     expires_at: Option<u64>,
-    /// When true, ALSO issue an AWS-style access-key-id + secret access key (the MinIO/S3-compatible
-    /// model) so a Bedrock-SDK client can authenticate via inbound SigV4. Both are returned ONCE.
+    /// When true, ALSO issue an AWS-style access-key-id + secret access key so a client can
+    /// authenticate via inbound SigV4. Both are returned ONCE.
     #[serde(default)]
     issue_aws_credential: bool,
 }
@@ -372,8 +372,9 @@ pub use busbar_substrate::duration::parse_duration_secs;
 #[path = "tests/parse_duration_secs_tests.rs"]
 mod parse_duration_secs_tests;
 
-/// Error-type taxonomy strings shared with the forward/OpenAI-family DATA-plane vocabulary, aliased
-/// from their canonical home in `proto::openai_family` so the banks cannot drift. `main.rs`
+/// Error-type taxonomy strings aliased from their one canonical home,
+/// `busbar_substrate::proto`, so every caller of the admin surface and every plugin's error
+/// surface draw from the same vocabulary instead of each keeping its own copy. `main.rs`
 /// references them via `crate::admin::ERR_TYPE_*`.
 ///
 /// The admin API itself no longer has an error vocabulary of its own: every admin error — keys

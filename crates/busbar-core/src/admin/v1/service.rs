@@ -2398,14 +2398,14 @@ pub(crate) fn project_hook_view(name: &str, cfg: &HookCfg, global_hooks: &[Strin
     }
 }
 
-/// RE-RESOLVE THE OTHER TWO PLANES' PER-CONTAINER GATES after a hook-registry mutation.
+/// RE-RESOLVE EVERY COMPILED-IN PLANE'S PER-CONTAINER GATES after a hook-registry mutation.
 ///
-/// The registry is what a `tools.<server>.hooks:` / `agents.<agent>.hooks:` NAME resolves against,
+/// The registry is what each plane's own container-level `hooks:` attach NAME resolves against,
 /// so a definition registered (or deleted, or re-pointed) through this API changes what those
 /// attaches resolve to — and a snapshot that carried the old resolution forward would answer `200
 /// OK` to registering a gate that never fires, or keep firing one the operator just deleted. That is
-/// the same fail-open the three `resolve_*` calls above exist to close on the pool plane, and the
-/// registrations themselves are untouched here: only the attach's RESOLUTION is recomputed.
+/// the same fail-open the three `resolve_*` calls above exist to close on the pool-scoped hooks, and
+/// the registrations themselves are untouched here: only the attach's RESOLUTION is recomputed.
 /// REBUILD EVERY `App` FIELD DERIVED FROM `hook_registry` — the ONE place that knows what those
 /// fields are.
 ///
@@ -2477,8 +2477,8 @@ fn rebuild_hook_derived(next: &mut crate::state::App) {
 }
 
 // Each plane re-resolves its OWN per-registration hook gates through the `reresolve_gates` seam, so
-// this fold names no plane registry type. A plane with no per-registration gates (the LLM plane)
-// declares `None` and is skipped, exactly as the old plane-gated blocks skipped a compiled-out plane.
+// this fold names no plane registry type. A plane with no per-registration gates declares `None` and
+// is skipped, exactly as the old plane-gated blocks skipped a compiled-out plane.
 fn reresolve_plane_gates(next: &mut crate::state::App) {
     for decl in crate::plane::registry::plane_decls() {
         if let Some(reresolve) = decl.reresolve_gates {
