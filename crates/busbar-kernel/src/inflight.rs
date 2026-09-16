@@ -73,9 +73,15 @@ pub enum Progression {
     Ended,
 }
 
+// Out-of-range sentinels for the atomic byte `StepState` packs `Progression` into. `StepName::ALL`
+// is short, so any index at or above 200 is unreachable as a real step and the two values below
+// can never collide with one; that gap is what lets `StepState` hold three states in one byte
+// with no separate discriminant.
 const SUPERSEDED: u8 = 200;
 const ENDED: u8 = 201;
 
+// The index a real step is packed at: its position in `StepName::ALL`. Falls back to zero for a
+// step the table does not know, which only matters if `StepName::ALL` and its callers ever drift.
 fn step_index(step: StepName) -> u8 {
     StepName::ALL
         .iter()
@@ -83,6 +89,8 @@ fn step_index(step: StepName) -> u8 {
         .unwrap_or_default() as u8
 }
 
+// The inverse of `step_index`: only ever called with a byte this module itself produced, so the
+// index is always in range.
 fn step_at(index: u8) -> StepName {
     StepName::ALL[index as usize]
 }
