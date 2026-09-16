@@ -10,6 +10,7 @@
 #![deny(missing_docs)]
 #![deny(missing_debug_implementations)]
 
+pub mod authz;
 pub mod bounded;
 pub mod dest;
 pub mod grammar;

@@ -897,7 +897,7 @@ fn run_admin_chain(
     app: &crate::state::App,
     bearer: Option<&str>,
     header: Option<&str>,
-) -> (ChainVerdict, Option<crate::admin::v1::contract::Scope>) {
+) -> (ChainVerdict, Option<busbar_contract::authz::Scope>) {
     if app.admin_chain.is_empty() {
         return (ChainVerdict::Open, None);
     }
@@ -1019,7 +1019,7 @@ async fn run_admin_chain_maybe_offloaded(
     app: &std::sync::Arc<crate::state::App>,
     bearer: Option<String>,
     header: Option<String>,
-) -> (ChainVerdict, Option<crate::admin::v1::contract::Scope>) {
+) -> (ChainVerdict, Option<busbar_contract::authz::Scope>) {
     if !app.admin_modules.has_plugin {
         // No blocking admin plugin: run inline (admin-tokens + any compiled-in test stand-in).
         return run_admin_chain(app, bearer.as_deref(), header.as_deref());
@@ -1100,8 +1100,8 @@ async fn run_admin_chain_maybe_offloaded(
 fn module_admin_scope_cap(
     app: &crate::state::App,
     module: &str,
-) -> Option<crate::admin::v1::contract::Scope> {
-    use crate::admin::v1::contract::Scope;
+) -> Option<busbar_contract::authz::Scope> {
+    use busbar_contract::authz::Scope;
     if module == "admin-tokens" {
         return None;
     }
@@ -1123,7 +1123,7 @@ pub(crate) fn dry_run_admin_scope(
     app: &crate::state::App,
     bearer: Option<&str>,
     header: Option<&str>,
-) -> crate::admin::v1::contract::Grants {
+) -> busbar_contract::authz::Grants {
     // An EMPTY admin chain is the anonymous, full-authority OPEN posture — a property of the CHAIN,
     // not a grant THIS caller earned. Letting it fall through (`run_admin_chain` → `Open` → the
     // `None`-principal arm of `admin_scope_for`) would report `Grants::of(Full)`, INDISTINGUISHABLE
@@ -1139,7 +1139,7 @@ pub(crate) fn dry_run_admin_scope(
              full-authority) dev posture earns THIS caller no credential-based scope and is \
              reported as no-grant, never full"
         );
-        return crate::admin::v1::contract::Grants::default();
+        return busbar_contract::authz::Grants::default();
     }
     let (verdict, cap) = run_admin_chain(app, bearer, header);
     let (module, principal) = match verdict {
@@ -1149,8 +1149,8 @@ pub(crate) fn dry_run_admin_scope(
         // Unreachable given the empty-chain early return above (an empty chain is `run_admin_chain`'s
         // ONLY producer of `Open`), but were it ever reached it is the open posture — no earned
         // grant, never Full, so it can never mask a fail-open here.
-        ChainVerdict::Open => return crate::admin::v1::contract::Grants::default(),
-        ChainVerdict::Denied => return crate::admin::v1::contract::Grants::default(),
+        ChainVerdict::Open => return busbar_contract::authz::Grants::default(),
+        ChainVerdict::Denied => return busbar_contract::authz::Grants::default(),
     };
     let grants = admin_scope_for(module.as_deref(), principal.as_ref(), &app.role_bindings);
     match cap {
@@ -1172,8 +1172,8 @@ fn admin_scope_for(
     module: Option<&str>,
     principal: Option<&Principal>,
     role_bindings: &crate::config::RoleBindings,
-) -> crate::admin::v1::contract::Grants {
-    use crate::admin::v1::contract::{Grants, Scope};
+) -> busbar_contract::authz::Grants {
+    use busbar_contract::authz::{Grants, Scope};
     let Some(p) = principal else {
         return Grants::of(Scope::Full);
     };
@@ -1228,7 +1228,7 @@ fn admin_unauthorized_response() -> Response {
         .expect("static unauthorized response")
 }
 
-fn forbidden_response(needed: crate::admin::v1::contract::Scope) -> Response {
+fn forbidden_response(needed: busbar_contract::authz::Scope) -> Response {
     let body = serde_json::json!({
         "error": {
             "code": "forbidden",

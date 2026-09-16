@@ -141,8 +141,8 @@ impl EngineTestKit for CoreEngineKit {
 
     fn admin_required_scope(&self, method: &axum::http::Method, path: &str) -> AdminScope {
         match crate::admin::v1::contract::required_scope(method, path) {
-            crate::admin::v1::contract::Scope::ReadOnly => AdminScope::ReadOnly,
-            crate::admin::v1::contract::Scope::Full => AdminScope::Full,
+            busbar_contract::authz::Scope::ReadOnly => AdminScope::ReadOnly,
+            busbar_contract::authz::Scope::Full => AdminScope::Full,
         }
     }
 
