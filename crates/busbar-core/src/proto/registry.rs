@@ -5,7 +5,7 @@
 //! on its name.
 //!
 //! WHAT THIS REPLACED, and why the shape matters more than the saving. Until this module existed,
-//! resolving a protocol was `match name { "anthropic" => …, "openai" => …, _ => None }` in
+//! resolving a protocol was `match name { "<dialect-1>" => …, "<dialect-2>" => …, _ => None }` in
 //! `proto/mod.rs`, with a second copy of the same match in `handlers::request_handler` and a third
 //! in `ProtocolRegistry::with_builtins`. Every other axis in busbar is already a plugin — store,
 //! auth, hooks, export — and the protocol axis was the last place where adding a capability meant
@@ -18,7 +18,7 @@
 //!
 //! THE REGISTRY RUNTIME RELOCATED DOWN to the neutral `busbar_substrate::proto` (the reverse-edge
 //! rule): `Registry`, the process singleton, `decl_for`, the detection folds
-//! and `known_protocols` now live on the substrate so an extracted protocol crate (`busbar-llm`)
+//! and `known_protocols` now live on the substrate so an extracted protocol crate
 //! resolves them through the neutral ABI rather than reaching BACK into `busbar-core`. This module
 //! re-exports every one of them at its historical `busbar_core::proto::registry::…` path so every
 //! in-core / plugin caller compiles unchanged and the values are byte-identical. What STAYS here is
@@ -36,13 +36,14 @@
 
 // WHICH INBOUND AUTH SCHEME a protocol's clients present. DECLARED metadata, never a branch: the
 // verification itself stays in the auth layer. Relocated to the neutral `busbar_substrate::proto`
-// leaf (Batch A) so `busbar-mcp` names it without depending on `busbar-core`; re-exported here so
-// `registry::IngressAuth`, the `ProtocolDecl` field, and every plugin caller are unchanged.
+// leaf (Batch A) so an extracted protocol plugin names it without depending on `busbar-core`;
+// re-exported here so `registry::IngressAuth`, the `ProtocolDecl` field, and every plugin caller are
+// unchanged.
 pub use busbar_substrate::proto::IngressAuth;
 
 // `ProtocolDecl` and its `EgressAuthHeaders` builder type RELOCATED DOWN to the neutral
-// `busbar_substrate::proto` leaf (Batch C-6) so an extracted protocol crate (`busbar-mcp`, the
-// `busbar-llm` dialects) names the declaration WITHOUT reaching into `busbar-core`. Re-exported here
+// `busbar_substrate::proto` leaf (Batch C-6) so extracted protocol plugin crates name the declaration
+// WITHOUT reaching into `busbar-core`. Re-exported here
 // at their historical `busbar_core::proto::registry::{ProtocolDecl, EgressAuthHeaders}` paths so the
 // built-in table, and every core / plugin caller, are unchanged.
 pub use busbar_substrate::proto::{EgressAuthHeaders, ProtocolDecl};
@@ -70,7 +71,7 @@ pub use busbar_substrate::proto::{merged_boot_decls, Registry};
 /// reference in neutral source — a side channel around the ABI — so this stays empty.
 ///
 /// Core's OWN test binary still needs the shipped protocol set; the plugin crates are dev-dependencies
-/// there. That list names `busbar_llm::DECLS` and `busbar_mcp::PROTO_DECL`, which belong OFF the
+/// there. That list names each plugin crate's own declaration table, which belongs OFF the
 /// neutral source, so it is defined in the test module ([`test_builtins`], a `tests/` file the
 /// neutral-purity lint excludes) and handed to the substrate registry through its
 /// [`busbar_substrate::proto::set_test_builtins`] hook by the `cfg(test)` accessors below.
@@ -84,8 +85,8 @@ pub fn builtin_decls() -> &'static [&'static ProtocolDecl] {
     BUILTIN_DECLS
 }
 
-/// The extracted-dialect built-in list for core's OWN test binary — `busbar_llm::DECLS` and
-/// `busbar_mcp::PROTO_DECL`, named in a `tests/` file the neutral-purity lint excludes so the neutral
+/// The extracted-dialect built-in list for core's OWN test binary — each shipped plugin crate's own
+/// declaration table, named in a `tests/` file the neutral-purity lint excludes so the neutral
 /// source spells no protocol crate.
 #[cfg(test)]
 #[path = "tests/registry_builtins.rs"]
@@ -103,8 +104,9 @@ pub fn builtin_decls() -> &'static [&'static ProtocolDecl] {
 // core-test built-in hook with [`builtin_decls`] — idempotent, allocation-free, and self-healing
 // (seeding GROWS the memo's target size so a registry already folded without the tail re-folds WITH
 // it on the next read regardless of call order). `known_protocols` MUST be a direct re-export in every
-// build so `busbar_llm::PLANE_DECL.wire_format_names` and `busbar_core::proto::known_protocols` are the
-// SAME fn pointer (the plane-decl identity pin); it seeds nothing and relies on the accessors below
+// build so a model-serving plane's `PLANE_DECL.wire_format_names` and
+// `busbar_core::proto::known_protocols` are the SAME fn pointer (the plane-decl identity pin); it
+// seeds nothing and relies on the accessors below
 // (read on essentially every request path) having seeded the hook first.
 #[cfg(not(test))]
 pub use busbar_substrate::proto::registry;

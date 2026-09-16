@@ -143,8 +143,8 @@ pub(crate) async fn stats(
     Json(json!({ "pools": pools, "lanes": lanes })).into_response()
 }
 
-/// `GET /v1/models` — the OpenAI list-models surface. This is the first call an OpenAI SDK
-/// (`client.models.list()`) or a self-hosted UI (Open WebUI, LibreChat) makes to populate a
+/// `GET /v1/models` — a list-models discovery surface. This is often the first call an SDK
+/// (`client.models.list()`) or a self-hosted UI makes to populate a
 /// model picker, so busbar answers it with every name a client can put in a request body:
 /// configured model entries AND pool names (a pool is a routable model from the client's
 /// point of view).
@@ -160,7 +160,7 @@ pub(crate) async fn list_models(
     list_models_dialect(app, gov, &headers, false)
 }
 
-/// `GET /v1beta/models` — the same list in Gemini's dialect (their SDK's discovery path).
+/// `GET /v1beta/models` — the same list under a second dialect's discovery path.
 pub(crate) async fn list_models_v1beta(
     crate::state::CurrentApp(app): crate::state::CurrentApp,
     Extension(gov): Extension<GovCtx>,
@@ -169,16 +169,13 @@ pub(crate) async fn list_models_v1beta(
     list_models_dialect(app, gov, &headers, true)
 }
 
-/// Three protocols put their list-models endpoint on the same noun, each with its own
-/// envelope: OpenAI and Anthropic share `GET /v1/models` outright, and Gemini lists at
-/// `GET /v1(beta)/models`. Primary (POST) surfaces are disjoint by path, so this is the
-/// one place busbar disambiguates callers by PROTOCOL FINGERPRINT instead:
-///
-/// - `anthropic-version` header — the Anthropic API requires it, so their SDK always
-///   sends it -> Anthropic envelope
-/// - `x-goog-api-key` header or the /v1beta path -> Gemini envelope
-/// - otherwise -> OpenAI envelope (the compatible ecosystem's default; Cohere's SDK
-///   carries no reliable fingerprint and receives this shape, documented)
+/// Multiple registered dialects can put their list-models endpoint on the same noun, each with its
+/// own envelope: this build's dialects may share `GET /v1/models` outright, and a dialect may
+/// instead list at `GET /v1(beta)/models`. Primary (POST) surfaces are disjoint by path, so this is
+/// the one place busbar disambiguates callers by PROTOCOL FINGERPRINT instead: each dialect
+/// declares its own fingerprint headers (see `ProtocolDecl::list_models_fingerprint_headers`) or
+/// relies on the `/v1beta` path convention, the first dialect whose fingerprint matches renders the
+/// envelope, and anything left unmatched falls to the registry's residual default dialect.
 ///
 /// The list itself is the same data in every dialect: the names a client may put in a
 /// request body. No privileged protocol - the data is one, the rendering is the caller's.
@@ -233,16 +230,17 @@ fn list_models_dialect(
     names.dedup();
 
     // Neutral dispatch: core resolves WHICH dialect answers from the request fingerprint, then hands
-    // that dialect's declaration the visible name list and lets IT shape the envelope. The three
-    // list-models envelope shapes (OpenAI's `{object:"list",data}`, Anthropic's paginated `{data,
-    // has_more,…}`, Gemini's `{models}`) are LLM-specific and now live with the dialects in
-    // `busbar-llm` behind `ProtocolDecl::models_list_envelope` — core names none of them here.
-    // The dialect selection is the generic detection fold, restricted to the two fingerprints this
-    // shared noun disambiguates on (the Anthropic version header, the Gemini key header / `/v1beta`
-    // path) and defaulting to the registry's residual dialect — so core spells NO dialect name here.
-    // Restricting the sniff to those two headers (rather than the full router headers) keeps this
-    // byte-identical to the prior three-arm `if`: an incidental `x-api-key`/SigV4 on a models-list
-    // GET must not steer the envelope, only the two fingerprints the SDKs actually send here do.
+    // that dialect's declaration the visible name list and lets IT shape the envelope. Each
+    // registered dialect's list-models envelope shape is plugin-specific and lives with that
+    // dialect behind `ProtocolDecl::models_list_envelope` — core names no dialect's envelope shape
+    // here.
+    // The dialect selection is the generic detection fold, restricted to the fingerprint headers
+    // each dialect declares (plus the `/v1beta` path convention) and defaulting to the registry's
+    // residual dialect — so core spells NO dialect name here.
+    // Restricting the sniff to those declared fingerprint headers (rather than the full router
+    // headers) keeps this byte-identical to prior behavior: an incidental, unrelated header on a
+    // models-list GET must not steer the envelope, only the fingerprints the dialects actually
+    // declare here do.
     let mut sniff = axum::http::HeaderMap::new();
     for &name in crate::proto::known_protocols() {
         let Some(decl) = crate::proto::decl_for(name) else {
@@ -266,9 +264,9 @@ fn list_models_dialect(
         .and_then(|d| d.models_list_envelope)
     {
         Some(build) => Json(build(&names)).into_response(),
-        // Unreachable while the LLM protocols are installed (they always declare this builder). If a
-        // build ships without them, `/v1/models` still resolves but has no dialect to render for — an
-        // empty JSON object names no protocol and leaks no shape.
+        // Unreachable while any dialect declaring this builder is installed (they always declare
+        // it). If a build ships without one, `/v1/models` still resolves but has no dialect to
+        // render for — an empty JSON object names no protocol and leaks no shape.
         None => Json(json!({})).into_response(),
     }
 }

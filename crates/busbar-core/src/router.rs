@@ -32,7 +32,8 @@ pub(crate) const NO_UPSTREAM_RTT: u64 = u64::MAX;
 ///
 /// `planes` is the mount table, and it is a parameter rather than something inferred here because
 /// a mount is a fact about the deployment: no amount of looking at the path reveals it, and the
-/// version of this function that tried shipped an OpenAI envelope onto the MCP plane.
+/// version of this function that tried shipped one dialect's envelope onto a different plane's own
+/// mounted path.
 pub fn fallback_error_response(
     planes: &crate::plane::PlaneDispatch,
     path: &str,
@@ -55,10 +56,10 @@ pub fn fallback_error_response(
             return crate::admin::v1::json::err_json(&e);
         }
     }
-    // ONE resolver, ONE shaping seam. The provider-specific response headers (Bedrock
+    // ONE resolver, ONE shaping seam. Each dialect's own vendor-pinned response headers (Bedrock
     // `x-amzn-RequestId`/`x-amzn-errortype`; Anthropic `request-id`) come with it, dispatched
     // through the writer vtable inside `proxy::ingress_error`, so this handler matches the shape
-    // the hot path produces and carries no provider name-branch of its own.
+    // the hot path produces and carries no dialect name-branch of its own.
     crate::ingress::native::native_error(planes.ingress_of(path), status, kind, message)
 }
 
@@ -92,7 +93,7 @@ pub(crate) async fn method_not_allowed_handler(
 /// axum 0.8 the equality gate NEVER matched and the whole reshape was dead code in production:
 /// every oversized request, admin and data plane alike, answered with a bare `text/plain` body.
 /// That broke the admin surface's frozen `{error:{code}}` envelope (tooling that branches on `code`
-/// throws on parse) and handed official OpenAI/Anthropic/Bedrock SDKs a router tell instead of the
+/// throws on parse) and handed real dialect-native client SDKs a router tell instead of the
 /// vendor-native JSON envelope.
 ///
 /// Matching the inner error's own words survives that wrapping. The residual risk — a relayed
@@ -120,9 +121,9 @@ pub(crate) const AXUM_BODY_LIMIT_413_MARKER: &[u8] = b"length limit exceeded";
 ///
 /// The envelope is the one the PATH's resolved ingress speaks, which is why this layer takes the
 /// swappable app handle: a body cap fires OUTSIDE routing and OUTSIDE auth, so the mount table is
-/// the only thing that can tell it whether `/mcp` is an MCP plane or an unclaimed residual path.
-/// Before it had one, every oversized POST — mounted plane or not — was answered in an OpenAI
-/// envelope.
+/// the only thing that can tell it whether a given path is a mounted plane's own door or an
+/// unclaimed residual path. Before it had one, every oversized POST — mounted plane or not — was
+/// answered in the residual-default dialect's envelope.
 pub(crate) async fn reshape_body_limit_413(
     axum::extract::State(handle): axum::extract::State<std::sync::Arc<state::AppHandle>>,
     req: axum::http::Request<axum::body::Body>,
@@ -376,7 +377,8 @@ pub(crate) fn base_data_router(
     let router = router
         // busbar's OWN API keeps explicit routes (it is not a protocol dialect): discovery,
         // health/metrics/stats above, and the named/adhoc conveniences below.
-        // OpenAI list-models: SDKs call `models.list()` first; UIs build pickers from it.
+        // A model-listing convenience route: client SDKs commonly probe it first for discovery;
+        // UIs build pickers from it.
         // Governance-scoped like /stats (restricted keys see only their reachable names).
         // Token exchange (1.5.2): a verified IdP identity mints its own self-serve key. DATA plane
         // only, and declared `RouteAuth::None` because the handler runs the auth chain ITSELF (it
@@ -421,13 +423,14 @@ pub(crate) fn base_data_router(
         );
     // THE PLANES' DATA ROUTES, contributed through the registry rather than named here. For every
     // registered plane with a `mount` fn AND a runtime object this generation (its slot), the plane's
-    // own `mount` mounts its routes from that slot — the MCP door when `mcp:` is configured, the A2A
-    // door when `agents:`+`public_url` is. A plane the operator did not configure has no slot and is
-    // skipped, exactly as the old typed-`Option` guards skipped it: a deployment that is not an MCP
-    // (or A2A) server carries none of those routes, so "is this deployment an MCP server?" stays a
-    // question the mounted surface answers rather than a config flag someone has to trust. The mount
-    // fns are granted only the router and their own `&dyn Any` slot — never a `Store`/`GovCtx`/audit
-    // handle. Declaration order (MCP before A2A) is preserved, so the route order is stable.
+    // own `mount` mounts its routes from that slot, each door opening only when that plane's own
+    // config section is present. A plane the operator did not configure has no slot and is
+    // skipped, exactly as the old typed-`Option` guards skipped it: a deployment that did not
+    // configure a given plane carries none of its routes, so "is this deployment running that
+    // plane?" stays a question the mounted surface answers rather than a config flag someone has to
+    // trust. The mount fns are granted only the router and their own `&dyn Any` slot — never a
+    // `Store`/`GovCtx`/audit handle. Registration order (fixed by the plane registry) is preserved,
+    // so the route order is stable.
     let mut router = router;
     for decl in crate::plane::registry::plane_decls() {
         let Some(slot) = plane_slots.get(decl.key) else {
@@ -705,7 +708,7 @@ pub(crate) fn apply_common_layers(
     // request. Plane mounts are fixed at boot (`plane::registry::install_planes` registers once,
     // before the first request), so `has_mounts()` cannot change under a config apply and omitting
     // the layer is behaviour-identical to running its no-op arm. This is the plugins-cost-nothing
-    // contract made structural: a deployment that configured no MCP/A2A plane carries NONE of the
+    // contract made structural: a deployment that configured no plane carries NONE of the
     // plane machinery on its request path.
     let router = if handle.load().planes.has_mounts() {
         router.layer(axum::middleware::from_fn_with_state(

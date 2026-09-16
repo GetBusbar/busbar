@@ -307,8 +307,8 @@ pub(crate) struct GroupBucket {
     pub(crate) window: &'static str,
     /// Request-count cap per window (`{ requests: N, per: <window> }`), if any.
     pub(crate) requests_cap: Option<u64>,
-    /// Total-token cap per window (`{ tokens: N, per: <window> }`), if any. Best-effort like the
-    /// old TPM: tokens land post-response, so the cap blocks the NEXT request once crossed.
+    /// Total-token cap per window (`{ tokens: N, per: <window> }`), if any. Best-effort: tokens
+    /// land post-response, so the cap blocks the NEXT request once crossed.
     pub(crate) tokens_cap: Option<u64>,
     /// Per-tier token caps (`{ tokens_input: N, per: <window> }` etc.), each best-effort exactly
     /// like `tokens_cap`. Mirror the cost tiers: `tokens_input` = uncached input, `tokens_output`
@@ -439,8 +439,8 @@ impl CostModel {
         per_request_fee: i64,
         groups_cfg: &std::collections::BTreeMap<String, crate::config::GroupCfg>,
     ) -> Self {
-        // rate_card is the ONLY cost source - the 1.4.x pool-member tiered-override loop is
-        // GONE (cost lives on no pool member; routing derives its scalar from the card).
+        // rate_card is the ONLY cost source: no per-entry cost override lives anywhere else in
+        // config.
         let rates = rate_card.map(|card| {
             card.iter()
                 .map(|(model, r)| (model.clone(), RateNanos::from_cfg(r)))
@@ -633,9 +633,8 @@ impl CostModel {
         }
     }
 
-    /// Resolve a CONFIGURED model name to its rate-card key. 1.5.0: the rate card is keyed by the
-    /// CONFIG model name itself (two providers serving one upstream model are two `models:`
-    /// entries with two card entries), so this is the identity - kept as the one seam every
+    /// Resolve a CONFIGURED name to its rate-card key. Today the rate card is keyed by the
+    /// caller-supplied name itself, so this is the identity - kept as the one seam every
     /// consumer resolves through, so a future re-aliasing lands in one place.
     pub(crate) fn resolve_model_alias<'a>(&'a self, model: &'a str) -> &'a str {
         model
@@ -663,7 +662,7 @@ impl CostModel {
         self.group_idx.get(name).map(|&i| &self.groups[i])
     }
 
-    /// The effective rate for `model` (post-`upstream_model` resolution). Semantics of the three
+    /// The effective rate for `model` (the resolved rate-card key). Semantics of the three
     /// outcomes:
     /// - card absent: `Some(zero)` - every model prices at 0.
     /// - card present, model priced: `Some(rate)`.
@@ -680,10 +679,10 @@ impl CostModel {
 
     /// PRICE a neutral [`busbar_substrate::billing::Usage`] for `model` into nanodollars — the host-side
     /// entry point the [`MeteringHost::price_usage`](busbar_substrate::plane_host::MeteringHost::price_usage)
-    /// seam a live carrier (voice) drives folds through. Byte-for-byte the SAME arithmetic the
+    /// seam a live carrier drives folds through. Byte-for-byte the SAME arithmetic the
     /// enforcement/derive summation uses ([`Self::rate_for`] → [`RateNanos::reserved_nanos`], exactly as
     /// [`Self::derive_spend_cents`]/[`derive_spend_micros`](Self::derive_spend_micros) price each model),
-    /// so this is a new READER over the existing pricer — the LLM money path is untouched.
+    /// so this is a new READER over the existing pricer — the existing money path is untouched.
     ///
     /// The three `rate_for` outcomes carry straight through: card absent ⇒ `Some(0)` (every model prices
     /// at 0); card present + model priced ⇒ `Some(nanos)`; card present + model UNKNOWN ⇒ `None` (the
@@ -700,7 +699,7 @@ impl CostModel {
     }
 
     /// Whether a request for `model` must be REJECTED because the rate card is present but has no
-    /// entry (an arbitrary passthrough model string not in any configured lane). Fail-closed and
+    /// entry (an arbitrary passthrough model string not in the configured rate card). Fail-closed and
     /// consistent with the completeness rule: you either price nothing or price everything.
     ///
     /// `pub` (was crate-private): the second of the pricing guard's two questions, answered for a

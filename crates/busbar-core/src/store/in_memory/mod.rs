@@ -581,8 +581,8 @@ pub(crate) fn make_lane_data_with_weight(id: usize, max_permits: usize) -> (Lane
 
 // The RESOLVED runtime breaker cfg (`BreakerCfg`/`TripConfig`/`TripMode`) is neutral DATA and now
 // lives in `busbar_substrate::store` (re-exported below via `pub use in_memory::*` from the parent
-// `store` module) so the LLM plane names it without reaching into `busbar-core`. Its `Default`,
-// `to_llm`, and `from_llm` move WITH it; only the config->runtime lowering stays here (core owns the
+// `store` module) so an out-of-tree plugin crate names it without reaching into `busbar-core`. Its
+// conversion helpers move WITH it; only the config->runtime lowering stays here (core owns the
 // `config::BreakerCfg` grammar), rehomed from a `From` impl (orphan-rule blocked once the target type
 // is foreign) to an inherent `to_runtime` method on the config type — the same shape `config`'s
 // `on_exhausted`/`OnExhausted` lowering already uses.
@@ -616,7 +616,7 @@ pub(crate) fn breaker_cfg_to_runtime(cfg: &crate::config::BreakerCfg) -> Breaker
         max_cooldown_secs: cfg.max_cooldown_secs,
         honor_retry_after: true,
         trip,
-        // `pools.<pool>.breaker:` is the LLM plane's only breaker surface, and that plane walks
+        // `pools.<pool>.breaker:` is the primary plane's only breaker surface, and that plane walks
         // its members. The plane cells do not parse config (see `PlaneBreakers::new`).
         bench_below_trip_threshold: true,
     }
@@ -828,9 +828,9 @@ impl HealthState {
     }
 
     // Production callers: the test-only `record_hard_down`/`record_hard_down_in` trait wrappers, and
-    // `store::planes::PlaneBreakers::record_signal` — the non-LLM planes' hard-down is PER CELL by
-    // design (their degenerate cells share one lane index, so the all-cells primitive would trip
-    // every other tool server and agent).
+    // `store::planes::PlaneBreakers::record_signal` — a secondary plane consumer's hard-down is PER
+    // CELL by design (their degenerate cells share one lane index, so the all-cells primitive would
+    // trip every other registered target).
     // With BOTH planes compiled out `PlaneBreakers` is vestigial, leaving only the test-only
     // wrappers, so this reads dead in a non-test both-off build alone.
     #[allow(dead_code)]
@@ -961,7 +961,7 @@ impl HealthState {
 
 // Test-only helpers: release code records outcomes via the cell-core fns; these give the unit
 // tests a lane-indexed handle to seed the default cell's outcome window directly. `allow(dead_code)`:
-// this is a test-support surface whose money-path callers relocated to the `busbar-llm` plugin's
+// this is a test-support surface whose money-path callers relocated to an out-of-tree plugin's
 // test binary (1.6.0 money-path Phase 3-4 C) — the helpers stay for core's own store tests + any
 // test-support consumer, so the whole test-only impl is exempt from the dead-code lint.
 #[cfg(any(test, feature = "test-support"))]

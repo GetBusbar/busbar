@@ -9,8 +9,8 @@
 //! A caller names a thing and asks to start — or to stop — being told when it changes. That is the
 //! whole operation, and it is two directions of ONE shape rather than two shapes: the name is the
 //! same name, the answer is the same acknowledgement, and the only difference is which way the
-//! registration moves. MCP spells the pair `resources/subscribe` and `resources/unsubscribe`; A2A
-//! spells it as the push-notification-configuration verbs. They are the same request.
+//! registration moves. One plane spells the pair as its own subscribe/unsubscribe verbs; another
+//! spells it as its own push-notification-configuration verbs. They are the same request.
 //!
 //! ## THE SUBJECT IS THE REGISTRATION, NEVER THE EVENTS
 //!
@@ -28,8 +28,9 @@
 //!
 //! ## THE ANSWER CARRIES NOTHING, AND THAT IS A FACT ABOUT THE PROTOCOL
 //!
-//! MCP answers both verbs with an empty result: the acknowledgement IS the content. Other protocols
-//! answer the same shape with the registration record they just stored. [`SubscribeResp`] therefore
+//! One plane answers both verbs with an empty result: the acknowledgement IS the content. Other
+//! protocols answer the same shape with the registration record they just stored.
+//! [`SubscribeResp`] therefore
 //! carries an OPTIONAL record rather than pretending every peer returns one, so a cell never has to
 //! invent a body its own wire does not have.
 

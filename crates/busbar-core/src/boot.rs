@@ -13,13 +13,14 @@
 use std::sync::Arc;
 
 /// DURABLE-STATE HYDRATION, whole and in order: the audit ring FIRST (core, the append-only chain),
-/// then every registered plane's own durable state through its [`PlaneDecl::hydrate`] hook — the A2A
-/// task table, the MCP per-call log, and the MCP demotion + spent-approval records. Called ONCE from
+/// then every registered plane's own durable state through its [`PlaneDecl::hydrate`] hook — each
+/// plane's own task/call-log/demotion/spent-approval records, whatever shape a given plane keeps.
+/// Called ONCE from
 /// `run()`, BEFORE a listener is bound, so every restored quarantine and spent approval is in force
 /// for the first request. A plane hook returning `Err` REFUSES BOOT (propagated with `?`): a plane
 /// that cannot restore its durable state must not go on to serve half of it.
 ///
-/// The plane loop replaces four hand-written blocks that each named `crate::mcp::`/`crate::a2a::`
+/// The plane loop replaces four hand-written blocks that each named a specific plane's module
 /// directly. The blocks did not change — they MOVED, each into its plane's own `hydrate` hook beside
 /// the code it restores — and this function now names no plane: it folds over [`plane_decls`] and
 /// calls the hook each plane declared. What each hook may touch of the durable home is narrowed at the
@@ -45,7 +46,7 @@ pub fn hydrate_all(app: &Arc<crate::state::App>) -> Result<(), String> {
     // THE PLANE HYDRATION FOLD. Each plane restores its OWN durable state through the `hydrate` hook
     // it declared, in plane-list order (the audit ring, above, already went first). The store handed
     // to every hook is NARROWED to the plane surface at the seam: an `Arc<dyn PlaneStore>` (task /
-    // provenance / mcp-call / demotion / spent methods only), never the `Arc<dyn Store>` that also
+    // provenance / call-log / demotion / spent methods only), never the `Arc<dyn Store>` that also
     // carries `append_audit`. It is `None` when governance configured no store — the same
     // `if let Some(gov)` gate the four blocks used to have, hoisted to one narrowing here — so a hook
     // then skips its restore and the plane's durable state is ephemeral BY DESIGN, exactly as the
@@ -75,17 +76,17 @@ pub(crate) fn run_hydrate_hooks(
     Ok(())
 }
 
-/// START EVERY REGISTERED PLANE'S BACKGROUND WORK, AFTER the listeners are built — the MCP tool-list
-/// refresh sweep and the A2A re-verification job — by folding over [`plane_decls`] and calling each
-/// plane's [`PlaneDecl::start`] hook in plane-list order (MCP before A2A, the order these two jobs
-/// have always started in). A hook returning `Err` REFUSES BOOT (propagated with `?`): an A2A
+/// START EVERY REGISTERED PLANE'S BACKGROUND WORK, AFTER the listeners are built — e.g. a periodic
+/// refresh sweep or a re-verification job — by folding over [`plane_decls`] and calling each
+/// plane's [`PlaneDecl::start`] hook in plane-list order (the fixed plane-registry order these jobs
+/// have always started in). A hook returning `Err` REFUSES BOOT (propagated with `?`): an
 /// outbound client identity that does not resolve is a startup failure naming its source, never a
-/// warning — a deployment that re-verifies nothing for an agent while reading as though mutual TLS
+/// warning — a deployment that re-verifies nothing for a peer while reading as though mutual TLS
 /// were configured is exactly what booting past it would produce.
 ///
 /// This function names no plane. Each plane's job MOVED into its own `start` hook beside the code it
 /// starts; the live-fetch transport and the identity resolver all stay `pub(crate)` in their planes.
-/// The one capability the A2A hook needs without reaching into the engine is handed on the
+/// The one capability a plane's start hook may need without reaching into the engine is handed on the
 /// [`BootCtx`]: busbar's PUBLIC card-issuer key (its `kid` and SPKI, computed core-side HERE — the
 /// signing seed never crosses the seam, invariant (a)). Verify-on-call replaced the background sweep,
 /// so no reverify-loop spawner crosses this seam any more.
@@ -94,9 +95,9 @@ pub fn start_planes(app_handle: &Arc<crate::state::AppHandle>) -> Result<(), Str
     // PUBLIC halves before it crosses the seam. The signer (and the seed it derives from) never
     // leaves core; a start hook receives only the `kid` and the base64 SPKI it publishes for callers
     // to pin busbar by. `None` when this deployment mints no card-issuer key.
-    // The card-issuer key exists only to feed the A2A `start` hook (the sole consumer of the SPKI a
-    // caller pins busbar by). `card_issuer` derives it through the A2A plane's `card_signer` seam
-    // and reduces it to its PUBLIC halves core-side; with the A2A plane compiled out no plane derives
+    // The card-issuer key exists only to feed a plane's `start` hook (the sole consumer of the SPKI a
+    // caller pins busbar by). `card_issuer` derives it through that plane's `card_signer` seam
+    // and reduces it to its PUBLIC halves core-side; with that plane compiled out no plane derives
     // one and it is `None` — no plane's `start` hook reads it — so no `#[cfg]` is needed here.
     let card_issuer = app_handle
         .load()
@@ -110,7 +111,7 @@ pub fn start_planes(app_handle: &Arc<crate::state::AppHandle>) -> Result<(), Str
 /// THE START FOLD. Split from [`start_planes`] and taking its decl list by argument, exactly as
 /// [`run_hydrate_hooks`] is, so R2-boot — a plane whose `start` returns `Err` REFUSES BOOT — is
 /// drivable over an injected decl without the process plane `OnceLock` and without booting real
-/// listeners. A hook's `Err` aborts the fold with `?`, which is how an A2A outbound identity that
+/// listeners. A hook's `Err` aborts the fold with `?`, which is how a plane's outbound identity that
 /// does not resolve stops the boot rather than yielding a deployment that re-verifies nothing.
 pub(crate) fn run_start_hooks(
     decls: &[&'static crate::plane::registry::PlaneDecl],

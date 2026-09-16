@@ -41,9 +41,9 @@ use std::sync::Arc;
 pub(crate) struct CoreRoute {
     /// The axum path pattern this route is mounted at (`/stats`, `/{name}/v1/messages`, …).
     ///
-    /// OWNED rather than `&'static str`, because not every core route's path is a literal: the MCP
-    /// ingress mounts at the path component of the operator's `mcp.canonical_uri`, and its RFC 9728
-    /// metadata document at `/.well-known/oauth-protected-resource` with that path appended. Those
+    /// OWNED rather than `&'static str`, because not every core route's path is a literal: a plane's
+    /// ingress can mount at a path component derived from operator config (a canonical URI), plus a
+    /// companion metadata document at a well-known path with that path appended. Those
     /// are knowable at mount time and nowhere earlier. The alternative — leaking a `String` to get a
     /// `'static` — would leak once per config apply, forever, to satisfy a lifetime nothing needs;
     /// the alternative to THAT (a prefix exemption under `/.well-known/`) would hand a free pass to

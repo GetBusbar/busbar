@@ -5,8 +5,8 @@
 // content flattening. That second implementation is gone: the hook projection reads the IR the
 // protocol's own reader produced, so nothing under `proxy/` names a dialect to decide what a
 // request SAYS any more.
-// The NEUTRAL proxy vocabulary that stays in core once the LLM engine moved to `busbar-llm`. Core's
-// own staying call sites name these at `crate::proxy::*` via the re-export below; the relocated
+// The NEUTRAL proxy vocabulary that stays in core once a plane's engine moved out to its own crate.
+// Core's own staying call sites name these at `crate::proxy::*` via the re-export below; the relocated
 // engine names them across the crate boundary as `busbar_core::proxy::*`.
 pub mod proxy_vocab;
 pub use proxy_vocab::{
@@ -50,7 +50,7 @@ pub use busbar_substrate::proxy::{
 
 // Network-transient `err_type` values passed to `record_transient_in` (the *category* of network
 // failure recorded in the breaker store), and the failure-DISPOSITION metric-label values. RELOCATED
-// DOWN to `busbar_substrate::proxy` so the relocated LLM engine names them without reaching into
+// DOWN to `busbar_substrate::proxy` so a relocated plane engine names them without reaching into
 // `busbar-core`; re-exported here for core's own call sites.
 pub use busbar_substrate::proxy::{
     DISPOSITION_ATTEMPT_TIMEOUT, DISPOSITION_CONTEXT_LENGTH, DISPOSITION_HARD_DOWN,
@@ -63,7 +63,7 @@ pub use busbar_substrate::proxy::{
 // core's own `proxy::UPSTREAM_RTT_US` call sites (`router.rs`).
 pub use busbar_substrate::proxy::UPSTREAM_RTT_US;
 
-// THE MODEL PLANE'S CONTRIBUTION TO THE ONE AUDIT CHAIN — a record type, nothing more. `pub(crate)`
+// A PLANE'S CONTRIBUTION TO THE ONE AUDIT CHAIN — a record type, nothing more. `pub(crate)`
 // because the append happens at the plane's single terminal (`ingress::finish_inner`), which is
 // where the plane's metrics and its refund decision are already made.
 pub mod reqlog;
@@ -79,7 +79,7 @@ pub use busbar_substrate::egress::engine::{
     EngineConnector as EgressConnector, EngineError as EgressError, EngineSpec as EgressClientSpec,
 };
 
-// The infallible LLM-lane egress-client shim now lives in the neutral substrate
+// The infallible per-lane egress-client shim now lives in the neutral substrate
 // (`busbar_substrate::proxy::build_egress_client`) so a plane crate builds its egress client without
 // reaching into `busbar-core`; re-exported here for core's own `crate::proxy::build_egress_client`
 // call sites (`preflight`, `auth::token`, `egress_auth`, `export::webhook`, `engine_facade`).

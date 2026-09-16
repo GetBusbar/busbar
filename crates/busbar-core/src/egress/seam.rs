@@ -7,21 +7,21 @@
 //!
 //! ## Why this exists and what it does NOT change
 //!
-//! The A2A card-fetch/relay and the MCP dispatch each own a small amount of logic ON TOP of one
-//! outbound hop: the card-fetch redirect loop, the body-cap decision, the SSE frame parse. NONE of
-//! that moves here. What moves is the hop itself — the socket, the pinned client, the peer
-//! certificate, the streamed body — which the host already owns behind the egress vtable. This module
-//! is the thin translation between the host's poll seam and the planes' existing
-//! [`Response`](super::Response) / [`StreamHead`](super::StreamHead) vocabulary, so those callers read
-//! unchanged.
+//! A protocol plane owns a small amount of logic on top of one outbound hop: a redirect loop, a
+//! body-cap decision, a streaming frame parse. NONE of that moves here. What moves is the hop itself —
+//! the socket, the pinned client, the peer certificate, the streamed body — which the host already owns
+//! behind the egress vtable. This module is the thin translation between the host's poll seam and a
+//! plane's existing [`Response`](super::Response) / [`StreamHead`](super::StreamHead) vocabulary, so
+//! those callers read unchanged.
 //!
 //! ## Byte-identity, by construction
 //!
-//! The wire bytes are the host's `build_pinned_client` reqwest codec — the SAME one the planes' own
-//! transports used — so status/body/headers/ALPN are unchanged by moving the hop host-side. The peer
-//! SPKI pin is decoded from the bytes [`crate::plane_host::spki::pin`] produced, which is the EXACT
-//! function a plane's `peer_spki_of` calls (`a2a::spki::spki_pin` re-exports it), so the pin string is
-//! byte-identical. The body cap / `ReadEnd` classification is re-expressed over the poll seam to match
+//! The wire bytes are the host's `build_pinned_client` reqwest codec — the SAME one a plane's own
+//! transport used — so status/body/headers/ALPN are unchanged by moving the hop host-side. The peer
+//! SPKI pin is decoded from the same observed-identity bytes the neutral
+//! `busbar_substrate::plane_host::spki` pin walk produces, which a plane's own transport calls to
+//! compute its pin, so the pin string is byte-identical. The body cap / `ReadEnd` classification is
+//! re-expressed over the poll seam to match
 //! [`crate::proxy::read_capped`] exactly (Ok-0 = Complete, Fault = TransportError, an over-cap probe =
 //! Truncated). A byte-identity CONFORMANCE test drives this adapter and a direct reqwest hop against
 //! the same fixture and asserts the two agree.
@@ -186,8 +186,8 @@ fn read_capped_over(
 }
 
 /// Open a governed hop and read its body to `cap`, returning the neutral [`Buffered`] projection — the
-/// buffered round trip the A2A card fetch/relay and the MCP dispatch both build their own return type
-/// over. On an open refusal/fault, `Err` carries the neutral [`EgressFaultInfo`] the plane composes
+/// buffered round trip a protocol plane builds its own return type over. On an open refusal/fault,
+/// `Err` carries the neutral [`EgressFaultInfo`] the plane composes
 /// its operator string over (the cause and url are kept SEPARATE). The egress is closed before return.
 pub fn buffered(
     scope: &DispatchScope,
@@ -221,17 +221,17 @@ pub fn buffered(
     })
 }
 
-// ── The STREAMING relay adapter (A2A `post_stream`). ────────────────────────────────────────────
+// ── The STREAMING relay adapter. ─────────────────────────────────────────────────────────────────
 //
-// The A2A stream relay reads the head, then either buffers a non-stream reply whole (a non-2xx or a
+// A streaming plane relay reads the head, then either buffers a non-stream reply whole (a non-2xx or a
 // non-`text/event-stream` answer is NOT a stream) or drives the body chunk-by-chunk into the caller's
 // sink. This adapter splits that into `stream_head` (the head + the buffer-or-stream decision, the
-// non-stream body already read) and `pump` (drive the live stream). The A2A caller calls `stream_head`
+// non-stream body already read) and `pump` (drive the live stream). The caller calls `stream_head`
 // and, on a live stream, `pump`, then returns the head — the same StreamHead the relay driver reads.
 
 /// The outcome of opening a stream relay hop: a non-stream reply buffered whole, or a live event-stream
-/// to [`pump`]. Gated on the neutral `egress-stream` capability marker (enabled only by the plane whose
-/// relay is its one consumer); truth value of the former `plane-a2a` gate.
+/// to [`pump`]. Gated on the neutral `egress-stream` capability marker, enabled only by whichever plane
+/// feature's relay is its one consumer.
 #[cfg(feature = "egress-stream")]
 pub enum StreamOutcome {
     /// A non-2xx or non-event-stream reply, read whole to the cap. The [`StreamHead`](super::StreamHead)
@@ -247,8 +247,8 @@ pub enum StreamOutcome {
 
 /// Open a stream relay hop and read its head. A non-2xx / non-`text/event-stream` reply is read whole
 /// to `cap` (a [`StreamOutcome::Buffered`]); a real event-stream returns [`StreamOutcome::Streaming`]
-/// with the egress left open for [`pump`]. `content_type` is lower-cased into the head exactly as the
-/// A2A relay does. On an open refusal/fault, `Err` carries the neutral fault.
+/// with the egress left open for [`pump`]. `content_type` is lower-cased into the head exactly as a
+/// plane's own relay does. On an open refusal/fault, `Err` carries the neutral fault.
 #[cfg(feature = "egress-stream")]
 pub fn stream_head(
     scope: &DispatchScope,
@@ -302,7 +302,8 @@ pub enum PumpEnd {
     Done,
     /// The stream failed mid-body; carries the neutral fault (the FLATTENED cause the host stashed on
     /// the poll — `with_cause(&e)` — so the relay reports the SAME operator line its own path did).
-    // Read by the a2a `post_stream` converter (sub-commit 3c-ii); unread until that lands.
+    // Read by [`CoreHostlessEgress::stream`] below, which maps a `Failed` pump into the `Err` its
+    // caller composes a message from.
     Failed(#[allow(dead_code)] EgressFaultInfo),
 }
 
@@ -359,7 +360,7 @@ impl HostlessEgress for CoreHostlessEgress {
         on_chunk: &mut (dyn FnMut(&[u8]) -> super::ChunkFlow + Send),
     ) -> Result<super::StreamHead, EgressFaultInfo> {
         // ONE hostless scope spans the head AND the pump, so the streaming egress stays open between
-        // `stream_head` and `pump` — byte-identical to how `a2a::transport::post_stream` drives it,
+        // `stream_head` and `pump` — byte-identical to how a plane's own streaming transport drives it,
         // save that the neutral fault is surfaced whole (the caller maps it to its own message).
         with_hostless(|scope| match stream_head(scope, spec, cap)? {
             StreamOutcome::Buffered(head) => Ok(head),

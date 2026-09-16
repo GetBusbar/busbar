@@ -2,11 +2,12 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 //
 // busbar-core — the busbar engine LIBRARY. Everything a request touches lives here: the protocol
-// registry and dialects, the MCP/A2A planes, the admin plane and its transaction choke point, the
-// config load/validate pipeline, the proxy engine, auth, governance, trust, audit, the durability
-// sink, hooks, ingress, the IR, TLS termination and the router builders. The `busbar` BINARY is a
-// thin composition root over this crate: argument parsing, config location, process lifecycle and
-// (from step 4 of 1.6.0) protocol registration. See docs/code-layout.md and the split plan.
+// registry and dialects, the generic plugin/plane host and its FFI seam, the admin plane and its
+// transaction choke point, the config load/validate pipeline, the proxy engine, auth, governance,
+// trust, audit, the durability sink, hooks, ingress, the IR, TLS termination and the router
+// builders. The `busbar` BINARY is a thin composition root over this crate: argument parsing,
+// config location, process lifecycle and (from step 4 of 1.6.0) protocol registration. See
+// docs/code-layout.md and the split plan.
 //
 // VISIBILITY DOCTRINE: `pub` here is the lib/bin seam, not an API promise (`publish = false`; the
 // manifest header says the same). Security-relevant internals — the audit chain's sink, the token
@@ -38,13 +39,14 @@ extern crate self as busbar_core;
 // The allocator is WRAPPED in `CountingJemalloc`, a zero-overhead-in-production (test-only) shim
 // that DELEGATES every operation to `tikv_jemallocator::Jemalloc` — so jemalloc's own mallctl
 // counters the telemetry tests read stay byte-accurate — while incrementing a PER-THREAD counter on
-// each allocation. That counter is the instrument behind the ALLOCATION-COUNT PERF GATE
-// (`src/proxy/tests/alloc_gate.rs`): it drives one openai>openai passthrough request through the
-// real forward path and asserts the heap-allocation count has not regressed past a committed bound,
-// so a stray per-request allocation (the "FIX-9" class — a redundant `Box::new` on the hot path)
-// turns CI red. Per-thread (a `const`-init `Cell`, no heap, no destructor) so concurrent
-// `cargo test` threads never inflate the measured thread's count, and so `.with()` is safe to call
-// from inside `GlobalAlloc` (jemalloc never re-enters this shim). See the alloc gate for the design.
+// each allocation. That counter is the instrument behind an ALLOCATION-COUNT PERF GATE: a test drives
+// one request through a plugin's real forward path and asserts the heap-allocation count has not
+// regressed past a committed bound, so a stray per-request allocation (the "FIX-9" class — a
+// redundant `Box::new` on the hot path) turns CI red. That gate itself now lives with the extracted
+// engine plane (see the `count`/`reset` doc below); this counting seam stays wired here so it keeps
+// measuring accurately if a gate is ever re-added to core. Per-thread (a `const`-init `Cell`, no
+// heap, no destructor) so concurrent `cargo test` threads never inflate the measured thread's count,
+// and so `.with()` is safe to call from inside `GlobalAlloc` (jemalloc never re-enters this shim).
 #[cfg(all(test, not(target_env = "msvc")))]
 pub(crate) use alloc_gate_instrument::CountingJemalloc;
 
@@ -71,9 +73,10 @@ mod alloc_gate_instrument {
 
     impl CountingJemalloc {
         /// Allocations observed on THIS thread since process start (or last `reset`).
-        // The alloc-count PERF gate that read these moved to `busbar-llm` (see `proxy/mod.rs`), so the
-        // read APIs are now unexercised in core's own test binary while the `#[global_allocator]`
-        // counting seam stays wired for parity; keep the seam intact rather than delete it.
+        // The alloc-count PERF gate that read these moved to the extracted engine plane's own crate
+        // (see `proxy/mod.rs`), so the read APIs are now unexercised in core's own test binary while
+        // the `#[global_allocator]` counting seam stays wired for parity; keep the seam intact rather
+        // than delete it.
         #[allow(dead_code)]
         pub(crate) fn count() -> u64 {
             ALLOC_COUNT.with(|c| c.get())
@@ -116,14 +119,14 @@ mod alloc_gate_instrument {
     }
 }
 
-// THE A2A + MCP PLANES are NO LONGER dual-compiled into this crate's test binary. Their sources live
-// in `crates/busbar-a2a/src/a2a` and `crates/busbar-mcp/src/mcp` and are exercised by this crate's own
-// integration tests through the REAL, externally-linked crates (added as `[dev-dependencies]` with
-// `test-support`), and by each plane crate's OWN `--lib` tests under `feature = "test-support"`. Core
-// names NO plane type: `test_support::TestApp` installs type-erased plane runtimes through its neutral
+// PLUGIN PLANE SOURCES are NO LONGER dual-compiled into this crate's test binary. Each plane's source
+// lives in its own plane crate and is exercised by this crate's own integration tests through the
+// REAL, externally-linked crates (added as `[dev-dependencies]` with `test-support`), and by each
+// plane crate's OWN `--lib` tests under `feature = "test-support"`. Core names NO plane type:
+// `test_support::TestApp` installs type-erased plane runtimes through its neutral
 // `install_plane_runtime` seam, and each plane's `testkit` builds+installs its own. The former
-// `#[path = "../../busbar-*/src/*/mod.rs"] pub mod a2a|mcp;` shims (and the `busbar_*_native`
-// build-script cfgs that gated them) are GONE — the engine no longer reaches into its plugins' source.
+// per-plane `#[path = "../../busbar-*/src/*/mod.rs"] pub mod` source shims (and the build-script
+// cfgs that gated them) are GONE — the engine no longer reaches into its plugins' source.
 pub mod admin;
 /// THE APPEND-ONLY HASH CHAIN, in core. One append, one digest, one verifier, for every stream of
 /// evidence busbar keeps — a plane supplies the record type and nothing else. `admin::audit` is the
@@ -135,8 +138,8 @@ pub mod billing;
 /// THE BOOT SEAM: one entry point per boot action, so the internals each action composes stay
 /// crate-private. See the module header.
 pub mod boot;
-/// THE DURABLE PER-CALL LOG: one hash-chained record per MCP tool call. A plane-specific RECORD
-/// SHAPE for core's one audit chain — named honestly at the crate root rather than under the
+/// THE DURABLE PER-CALL LOG: one hash-chained record per recorded call. A plane supplies the RECORD
+/// SHAPE for core's one audit chain — named at the crate root rather than under the
 /// neutral `plane::` namespace. See the module header.
 pub mod calllog;
 pub use busbar_substrate::breaker;
@@ -150,28 +153,26 @@ pub mod diagnostics;
 // (plugins.fetch cache write) can route through the SAME primitive. Re-exported here so every
 // existing `crate::durable::*` call site in this binary resolves unchanged.
 pub use busbar_api::durable;
-// The host-owned neutral outbound backend, shared across protocol planes AND the plugin egress
-// vtable — always compiled, like `net_guard`, because the host owns every outbound byte whether or
-// not a protocol plane is built. The pooled client + the neutral return surface it hands back are
-// gated INSIDE the module to their consumers (the pool to either plane; the A2A return types to A2A).
+// The host-owned outbound surface: the neutral SSRF-pinned client (re-exported wholesale from
+// busbar-substrate) plus the host-mediated `seam` adapter that drives egress through the
+// `plane_host` FFI vtable, gated behind the neutral `egress-seam` capability feature rather than
+// any one plane. Always compiled, like `net_guard`, because the host owns every outbound byte
+// whether or not a plane needing the seam is built. See the module header.
 pub mod egress;
 pub mod egress_auth;
 pub mod endpoints;
-// The narrow, `pub` re-export facade the extracted LLM engine reaches DOWN into core through once it
-// lives in busbar-llm (1.6.0 money-path relocation, Phase 0). Pure visibility lift — see the module.
+// The narrow, `pub` re-export facade a plane's own extracted engine reaches DOWN into core through
+// once it lives in its own plane crate (1.6.0 money-path relocation, Phase 0). Pure visibility lift
+// — see the module.
 pub mod engine_facade;
-// wt2/neutral-utils: relocated DOWN to busbar-substrate (the neutral crate busbar-llm may name) so
-// the LLM plane reaches the AWS EventStream framing codec via the ABI, not `busbar_core::`. Core
-// re-exports it here so `crate::eventstream::…` call sites are unchanged.
+// wt2/neutral-utils: relocated DOWN to busbar-substrate (the neutral crate a plane's own extracted
+// crate may name) so a plane reaches the AWS EventStream framing codec via the ABI, not
+// `busbar_core::`. Core re-exports it here so `crate::eventstream::…` call sites are unchanged.
 pub use busbar_substrate::eventstream;
 pub mod export;
 pub mod failover;
 pub mod governance;
 pub mod handlers;
-// `health` (the active-probe schedule + prober loop) RELOCATED into `busbar-llm/src/engine/health.rs`
-// with the money-path engine (1.6.0 money-path Phase 3-4 C): the probers read the plane's own
-// `Lane`/`NativeRuntime` tables, so they moved in-plane. Core no longer names a `ProbeSchedule`; the
-// LLM plane spawns its probers off its own runtime through the plane `on_swap` seam.
 pub mod hooks;
 pub mod ingress;
 pub mod ir;
@@ -191,8 +192,9 @@ pub mod observability;
 // `operation` is the neutral operation vocabulary (`Operation`, `OpShape`), re-exported wholesale
 // from `busbar-api` so `crate::operation::Operation` and `busbar_core::operation::*` are unchanged
 // for every existing user. THE ONE GAUNTLET (`run`, the single canonical resolved-operation entry
-// every arrival converges on) RELOCATED with the LLM engine into `busbar-llm`; core reaches it only
-// through the neutral body-arrival seam, so this is now a plain re-export of the neutral vocabulary.
+// every arrival converges on) RELOCATED with the extracted engine plane into its own crate; core
+// reaches it only through the neutral body-arrival seam, so this is now a plain re-export of the
+// neutral vocabulary.
 pub mod operation {
     pub use busbar_api::operation::*;
 }
@@ -207,9 +209,9 @@ pub mod plane;
 #[allow(unsafe_code)]
 pub mod plane_host;
 pub mod plugin_routes;
-// A′ (ABI-purity P4): the hot-path stage profiler relocated DOWN to busbar-substrate so the
-// busbar-llm engine names it via the ABI. Re-exported here so `crate::profile::…` (the auth/ingress
-// stage spans) is unchanged and byte-identical.
+// A′ (ABI-purity P4): the hot-path stage profiler relocated DOWN to busbar-substrate so a plane's
+// own extracted engine names it via the ABI. Re-exported here so `crate::profile::…` (the
+// auth/ingress stage spans) is unchanged and byte-identical.
 pub use busbar_substrate::profile;
 pub mod proto;
 pub mod proxy;
@@ -263,7 +265,7 @@ pub use router::{
 // build sees them as unused — allowed, with the reason written down rather than widened away.
 #[allow(unused_imports)]
 pub(crate) use router::base_data_router;
-// `build_router_with_limits` is a curated `pub` test-support seam (the extracted MCP plane's own
+// `build_router_with_limits` is a curated `pub` test-support seam (an extracted plane's own
 // subscribe/ingress tests build a limited router directly); production keeps it crate-internal.
 #[cfg(not(any(test, feature = "test-support")))]
 #[allow(unused_imports)]
@@ -274,7 +276,7 @@ pub use router::build_router_with_limits;
 /// TEST-SUPPORT ROUTER-SURFACE VIEW: the `(path, declared admission bar)` pairs the base data router
 /// mounts for `app`, built through the very same `router::base_data_router` production calls (off the
 /// App's neutral slots). Exposed as a curated `pub` seam — over PUBLIC types (`String`,
-/// [`busbar_plugin_loader::RouteAuth`]) — ONLY under the test-support surface, so the extracted A2A
+/// [`busbar_plugin_loader::RouteAuth`]) — ONLY under the test-support surface, so an extracted
 /// plane's own ingress tests can assert the mounted surface (which paths appear, at which bar) WITHOUT
 /// core widening the `pub(crate)` router fn or the `CoreRouteTable`/`CoreRoute` types to `pub`.
 #[cfg(any(test, feature = "test-support"))]

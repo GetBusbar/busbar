@@ -15,7 +15,7 @@ use crate::state::App;
 
 // PRODUCTION / `test-support`: the body-model arrival catch-all resolves straight off the installed
 // table (the composition root wrote it via `install_body_ingress`; a `test-support` consumer seeds the
-// hook through `busbar_llm::testkit`).
+// hook through the dialect crate's testkit).
 #[cfg(not(test))]
 pub(crate) use busbar_substrate::ingress::arrival::body_ingress_for;
 
@@ -32,8 +32,9 @@ pub(crate) fn body_ingress_for(
     busbar_substrate::ingress::arrival::body_ingress_for(name)
 }
 
-/// The extracted-dialect body arrival list for core's OWN test binary — `busbar_llm::BODY_INGRESS`,
-/// named in a `tests/` file the neutral-purity lint excludes so the neutral source spells no crate.
+/// The extracted-dialect body arrival list for core's OWN test binary — the shipped dialect crate's
+/// `BODY_INGRESS`, named in a `tests/` file the neutral-purity lint excludes so the neutral source
+/// spells no crate.
 #[cfg(test)]
 #[path = "tests/body_ingress_builtins.rs"]
 mod test_body_ingress;
@@ -340,11 +341,10 @@ pub fn admit_check(
 /// and — when `effective_pool` is `Some` — DISPATCHES through that pool instead of the requested
 /// one (a budget `on_exhaust: downgrade` fired; the charge already landed on the effective pool's
 /// buckets, so routing must follow the accounting).
-// `pub` (was module-private): the relocated LLM convenience handlers (`named`/`adhoc`, now in
-// `busbar-llm`) reach the stage-2 (destination) + stage-4 (budget door) pair through this wrapper —
-// the allowed plane→core edge. Its `gov`/return name the still-crate-private `GovCtx`/`AdmitGrant`
-// carriers, so the same narrow `private_interfaces` allow the other stay-stages carry keeps them
-// `pub(crate)`.
+// `pub` (was module-private): a mounted plane's engine reaches the stage-2 (destination) + stage-4
+// (budget door) pair through this wrapper — the allowed plane→core edge. Its `gov`/return name the
+// still-crate-private `GovCtx`/`AdmitGrant` carriers, so the same narrow `private_interfaces` allow
+// the other stay-stages carry keeps them `pub(crate)`.
 #[allow(private_interfaces)]
 pub fn governance_guard(
     app: &Arc<App>,
@@ -356,14 +356,14 @@ pub fn governance_guard(
 ) -> Result<(Option<crate::governance::AdmitGrant>, Option<String>), Box<Response>> {
     // The gauntlet's stage-2 (destination) then stage-4 (budget door) run in this fixed order — the
     // pre-admission checks MUST all fire before the door charges (nothing may reject an
-    // already-charged request). The named/adhoc convenience handlers reach the pair through this
-    // wrapper; `operation::run` (the LLM gauntlet) drives the same two halves as a plane hook + the
-    // shared budget door, so all three callers share one implementation and cannot drift.
+    // already-charged request). A plane's engine reaches the pair through this public wrapper,
+    // driving the same two halves as the plane-hook + shared-budget-door split the other stay-stage
+    // callers use, so every caller shares one implementation and cannot drift.
     destination_guard(app, gov, proto, pool, started, charged_at)?;
     admission_door(app, gov, proto, pool, started, charged_at)
 }
 
-/// STAGE 2 (the LLM plane's `verify_destination`) — the PRE-ADMISSION destination
+/// STAGE 2 (a mounted plane's pre-forward destination check) — the PRE-ADMISSION destination
 /// verification: the requested pool ACL (`pool_authorized`), every reachable fallback pool's ACL
 /// (`fallback_pools_authorized`), and the fail-closed unpriced-model gate. Every check that can
 /// reject fires here, BEFORE the budget door, so no rejection can ever land after a charge. `Ok(())`
@@ -371,10 +371,10 @@ pub fn governance_guard(
 /// through `finish_rejected` (so it still emits REQUESTS_TOTAL / the duration histogram / the
 /// request-log webhook). The raw client-supplied `pool` is mapped to the bounded metric label BEFORE
 /// it reaches `finish` — passing it raw was an unbounded-cardinality DoS vector.
-// `pub` (was module-private): the LLM plane's `NativePlane::verify_destination` (relocated to
-// `busbar-llm`) calls DOWN into this neutral pre-admission gauntlet stage — the allowed plane→core
-// edge. Its `gov: &crate::governance::GovCtx` names the still-crate-private carrier, so the same
-// narrow `private_interfaces` allow `finish_admitted` carries keeps `GovCtx` `pub(crate)`.
+// `pub` (was module-private): a mounted plane's engine calls DOWN into this neutral pre-admission
+// gauntlet stage — the allowed plane→core edge. Its `gov: &crate::governance::GovCtx` names the
+// still-crate-private carrier, so the same narrow `private_interfaces` allow `finish_admitted`
+// carries keeps `GovCtx` `pub(crate)`.
 #[allow(private_interfaces)]
 pub fn destination_guard(
     app: &Arc<App>,
@@ -436,8 +436,8 @@ pub fn destination_guard(
 /// charged → `finish_rejected` (no refund). On admission the returned grant reports whether the
 /// charge LANDED (`Some` = refund on non-2xx) and holds the `concurrent` in-flight gauges;
 /// `effective_pool` is `Some` when a budget `on_exhaust: downgrade` re-pooled the admission.
-// `pub` (was module-private): the LLM plane's relocated `NativePlane::drive` calls DOWN into this
-// single budget-admission door — the allowed plane→core edge. Same `GovCtx` privacy allow as
+// `pub` (was module-private): a mounted plane's engine calls DOWN into this single budget-admission
+// door — the allowed plane→core edge. Same `GovCtx` privacy allow as
 // `finish_admitted`/`destination_guard`.
 #[allow(private_interfaces)]
 pub fn admission_door(
@@ -520,7 +520,7 @@ pub fn finish(
 /// at admission (`charged`, from `governance_guard`). Admitting a request WITHOUT charging (store-
 /// error fail-open, or governance off) and then refunding on a non-2xx would blind-decrement OTHER
 /// requests' spend/count in the same window — so those requests must finish with `charged = false`.
-// `pub` (was module-private): the charged-admission finish/audit terminal the relocated LLM engine's
+// `pub` (was module-private): the charged-admission finish/audit terminal a mounted plane's engine's
 // native drive path ends on — surfaced through `crate::engine_facade` (Phase-0 visibility lift; pure
 // visibility). Its `gov: &crate::governance::GovCtx` arg names a still-crate-private carrier, so a
 // narrow `#[allow(private_interfaces)]` keeps `GovCtx` `pub(crate)` (reversible in Phase 6).
@@ -604,14 +604,15 @@ fn finish_inner(
     // no registry probe. The scrape-time aggregator folds the cells into the recorder, so the
     // rendered series/values are identical to the macro emission. Unregistered label values (e.g.
     // a bare test `App`) fall back to the cached-handle helpers in `metrics.rs` inside the helper.
-    // The MODEL plane labels its own requests from in here rather than at the plane ingress
+    // This plane labels its own requests from in here rather than at the plane ingress
     // boundary (`plane::observe`), and that is a consequence of the spine's rule rather than a
-    // carve-out: this plane speaks six dialects, so `ingress_protocol` is a fact only its reader
+    // carve-out: this plane speaks several dialects, so `ingress_protocol` is a fact only its reader
     // knows (`Plane::sole_wire_format` is `None` for it). This is the v1.5.4 request path: it emits
     // `busbar_requests_total` / `busbar_request_duration_seconds` with the exact 1.5.4 label set
-    // `{ingress_protocol, pool, outcome}` and NO `plane` label, so a pure-LLM `/metrics` scrape is
-    // byte-identical to 1.5.4. The mounted planes (MCP/A2A) emit their own `busbar_plane_*` families
-    // from `plane::observe` instead — same helper, same `outcome` vocabulary, one family apart.
+    // `{ingress_protocol, pool, outcome}` and NO `plane` label, so a deployment with only this plane's
+    // `/metrics` scrape is byte-identical to 1.5.4. Other mounted planes emit their own
+    // `busbar_plane_*` families from `plane::observe` instead — same helper, same `outcome`
+    // vocabulary, one family apart.
     let elapsed = started.elapsed();
     crate::telemetry::request_finished(
         app,
@@ -707,10 +708,10 @@ pub fn ingress_error(proto: &str, status: StatusCode, kind: &str, message: &str)
     crate::proxy::ingress_error(proto, status, kind, message)
 }
 
-// THE PLANE-NEUTRAL JSON-RPC ENVELOPE READER, shared by the MCP server plane and the A2A receiving
-// plane. It lives under `ingress/` because that is the shared owner `structure-lint`'s plane
-// ledger already names for the ingress concern: "one plane-neutral admission in ingress/, with the
-// plane supplying its wire reader". This is the envelope half of that.
+// THE PLANE-NEUTRAL JSON-RPC ENVELOPE READER, shared by every JSON-RPC-fronted mounted plane. It
+// lives under `ingress/` because that is the shared owner `structure-lint`'s plane ledger already
+// names for the ingress concern: "one plane-neutral admission in ingress/, with the plane supplying
+// its wire reader". This is the envelope half of that.
 pub mod jsonrpc {
     pub use busbar_substrate::ingress::jsonrpc::*;
 }
@@ -727,11 +728,11 @@ pub mod dispatch;
 // `protocol_dispatch` is the axum catch-all fallback the core router mounts and nothing outside core
 // names, so it stays crate-private — keeping the confidential `CallerToken` it takes off the public
 // seam. (The universal resolved-op ingress it used to hold — `operation_resolved`/`operation_ingress`
-// — RELOCATED into the LLM plane; core reaches it only through the neutral body-arrival seam.)
+// — RELOCATED into the plane that owns it; core reaches it only through the neutral body-arrival seam.)
 pub(crate) use dispatch::protocol_dispatch;
 /// CORE'S IMPL of the neutral [`busbar_substrate::ingress::arrival::ArrivalHost`] — the request-pipeline
-/// seam a path-model dialect (gemini/bedrock, now in `busbar-llm`) calls back through. Core owns the
-/// resolution/forward/error-shaping; the dialect owns its URL parsing.
+/// seam a path-model dialect crate (one that parses its model out of the URL, living outside core)
+/// calls back through. Core owns the resolution/forward/error-shaping; the dialect owns its URL parsing.
 pub mod arrival_host;
 /// THE PATH-MODEL ARRIVAL SIDE-REGISTRATION — the protocol-name-keyed table the composition root
 /// installs a URL-model dialect's arrival through. RELOCATED to the neutral `busbar-substrate`
@@ -744,12 +745,12 @@ pub use path_ingress::PathIngress;
 
 /// Build the human-readable message for a model/pool-miss 404. `model_not_found_message` is a
 /// dialect's PRE-SHAPED body in its own native vocabulary — built by the arrival that owns the request
-/// (a path-model dialect whose real API uses a different not-found string than the OpenAI-style copy),
-/// and used VERBATIM when present. `None` for every caller that shares the canonical OpenAI-style copy
-/// (the OpenAI/Responses/Cohere/Anthropic surfaces), so this fn names no dialect: core emits the
-/// neutral copy and a dialect that wants otherwise supplies its own shaped body.
-// `pub` (was module-private): the relocated LLM `NativePlane::drive` shapes its model-miss 404 body
-// through this neutral helper — the allowed plane→core edge (names only `&str`).
+/// (a path-model dialect whose real API uses a different not-found string than the canonical default
+/// copy), and used VERBATIM when present. `None` for every caller that shares the canonical default
+/// copy, so this fn names no dialect: core emits the neutral copy and a dialect that wants otherwise
+/// supplies its own shaped body.
+// `pub` (was module-private): a mounted plane's engine shapes its model-miss 404 body through this
+// neutral helper — the allowed plane→core edge (names only `&str`).
 // RELOCATED (1.6.0 KEYSTONE) to `busbar_substrate::ingress::not_found_message` — a pure `&str`→`String`
 // shaper with no `App`/dialect — so the plane names it there; re-exported here byte-identically so
 // every core `crate::ingress::not_found_message` call site resolves unchanged.
@@ -759,9 +760,10 @@ pub use busbar_substrate::ingress::not_found_message;
 /// escapes as UTF-8; on any malformed escape it leaves the bytes as-is.
 ///
 /// No longer on the request path: axum percent-decodes `Path` params before the handler runs, so
-/// `bedrock_ingress` uses the already-decoded segment directly (decoding twice corrupts ids whose
-/// first decode yields a literal `%XX`). Retained as a `#[cfg(test)]` helper documenting the
-/// decode semantics and guarding against accidental reintroduction of a double-decode.
+/// a path-model dialect's arrival handler uses the already-decoded segment directly (decoding twice
+/// corrupts ids whose first decode yields a literal `%XX`). Retained as a `#[cfg(test)]` helper
+/// documenting the decode semantics and guarding against accidental reintroduction of a
+/// double-decode.
 #[cfg(any(test, feature = "test-support"))]
 pub fn percent_decode(s: &str) -> String {
     let bytes = s.as_bytes();
@@ -784,10 +786,10 @@ pub fn percent_decode(s: &str) -> String {
 }
 
 // POST /<name>/v1/messages — name resolves to a pool (weighted) or a single model. The pool/model
-// routing + chat forward reads the LLM routing tables and RELOCATED into the LLM plane; this core
-// shell mints the neutral arrival (reconstructing the URL the convenience route pinned) and hands it
-// to the plane's universal body-arrival, exactly as `protocol_dispatch` does for a body-model hit.
-// Core names no LLM type; no plane linked → the honest no-handler 404.
+// routing + forward logic RELOCATED into the plane that owns it; this core shell mints the neutral
+// arrival (reconstructing the URL the convenience route pinned) and hands it to the plane's
+// universal body-arrival, exactly as `protocol_dispatch` does for a body-model hit. Core names no
+// plane-specific type; no plane linked → the honest no-handler 404.
 #[tracing::instrument(level = "debug", name = "named", skip_all, fields(pool = %name))]
 pub(crate) async fn named(
     crate::state::CurrentApp(app): crate::state::CurrentApp,
@@ -817,10 +819,10 @@ pub(crate) async fn named(
 }
 
 /// Mint the neutral body-model arrival for a convenience surface (`named`/`adhoc`) and hand it to the
-/// LLM plane's relocated universal body-arrival, resolved by protocol name — mirroring
-/// [`dispatch::protocol_dispatch`]'s body-model arm. The pool/model routing + chat forward the
-/// surface used to run inline reads the LLM routing tables and now lives in `busbar-llm`; core
-/// threads its `App`/`GovCtx`/caller-token back opaquely through the
+/// owning plane's universal body-arrival, resolved by protocol name — mirroring
+/// [`dispatch::protocol_dispatch`]'s body-model arm. The pool/model routing + forward logic the
+/// surface used to run inline now lives in the extracted plane crate; core threads its
+/// `App`/`GovCtx`/caller-token back opaquely through the
 /// [`arrival_host::ArrivalPayload`]. No plane linked → the honest no-handler 404.
 #[allow(clippy::too_many_arguments)]
 async fn delegate_body_arrival(
@@ -872,7 +874,7 @@ pub async fn adhoc(
     body: Bytes,
 ) -> Response {
     // The dialect the `/v1/messages` convenience surface speaks, resolved from the registry (see
-    // `named`); `""` when no LLM dialect is registered.
+    // `named`); `""` when no such dialect is registered.
     let proto = crate::proto::residual_dialect_for_path("/v1/messages").unwrap_or("");
     // ADHOC PROVIDER MATCH (pre-relocation `adhoc`'s Some(i)-wrong-provider arm): the path names BOTH a
     // provider and a model, and a configured model reached under the WRONG provider is a client error,

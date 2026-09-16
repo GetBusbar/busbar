@@ -5,17 +5,18 @@
 //!
 //! # What this is, and why it is CORE
 //!
-//! A neutral correlation+causation id joining a *triggering* request (say an LLM completion) with the
-//! sub-requests it *induces* in other planes (an MCP tool-call, an MCP→core→LLM sampling completion,
-//! an A2A task step) into one causal tree — **without any plane naming another.** It generalizes the
-//! `u64` request id core already mints and threads; a root/parent pair turns a flat id into a tree.
+//! A neutral correlation+causation id joining a *triggering* request in one plane with the
+//! sub-requests it *induces* in other planes (a nested call into a second plane, a call that plane
+//! routes back through core into a third plane, a step of a multi-step task in a fourth plane) into
+//! one causal tree — **without any plane naming another.** It generalizes the `u64` request id core
+//! already mints and threads; a root/parent pair turns a flat id into a tree.
 //!
 //! It is core **by definition**: lineage is cross-plane. No single plugin can own "the request that
 //! caused me was in another plane." By the decision rule this is unambiguously a core primitive.
 //!
 //! # What it unlocks
 //!
-//! Cost *trees* (spend-by-LLM-request, not just per-tool-call), full request tracing, latency
+//! Cost *trees* (spend attributed to the whole induced chain, not just the leaf sub-request), full request tracing, latency
 //! attribution, induced-spend / amplification caps, and incident forensics — all from one neutral id
 //! threaded across plane boundaries and joinable in the ledger. This is a *different axis* from the
 //! internal span tree (export `TraceId/SpanId`): those describe execution spans; this describes which

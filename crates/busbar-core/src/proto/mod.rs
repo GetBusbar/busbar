@@ -15,15 +15,16 @@ pub use crate::breaker::StatusClass;
 
 // Import types needed for response/stream IR
 // Consumed via `use super::*` by the proto test modules only, since the dialect that used them in
-// production moved out with the anthropic extraction.
+// production moved out to its own plugin crate.
 
-// Neutral protocol atoms RELOCATED DOWN to `busbar-substrate` (`busbar_substrate::proto`) so the
-// `busbar-llm` dialect crate names them without reaching into `busbar-core` (the reverse-edge rule).
+// Neutral protocol atoms RELOCATED DOWN to `busbar-substrate` (`busbar_substrate::proto`) so an
+// extracted dialect crate names them without reaching into `busbar-core` (the reverse-edge rule).
 // Re-exported here at their historical `busbar_core::proto::…` paths so every
 // in-core / plugin / witness-build caller compiles unchanged; the values are byte-identical.
 //
 // - `SIGNAL_IR_PARSE`     — busbar-internal IR-parse `provider_signal` label.
-// - `SSE_DONE_SENTINEL` / `SSE_DONE_FRAME` — the OpenAI-style SSE terminator (bare token + framed bytes).
+// - `SSE_DONE_SENTINEL` / `SSE_DONE_FRAME` — the bare-token / framed-byte forms of the SSE stream
+//   terminator a dialect's writer emits.
 // - `HDR_AUTHORIZATION`   — the canonical lowercase `Authorization` header name.
 // - `IrError`             — the IR-level error alias (`breaker::CanonicalSignal`).
 // - `bearer_auth_headers` — the shared `Authorization: Bearer <key>` builder (warn+OMIT on bad bytes).
@@ -32,25 +33,23 @@ pub use busbar_substrate::proto::{
     SSE_DONE_SENTINEL,
 };
 
-/// Signal the RESPONSE-side provider metadata that this egress dialect carries and no ingress
-/// dialect can express, so it does not vanish from a translated response with nothing in the logs.
+/// Signal the RESPONSE-side dialect-specific metadata that an egress protocol carries and no ingress
+/// protocol can express, so it does not vanish from a translated response with nothing in the logs.
 ///
 /// The request side has had this since `IrReq::prepare_for_egress` started naming every cleared
-/// `extra` key; the response side had no equivalent, so a Gemini backend's `safetyRatings` and a
-/// Bedrock backend's guardrail `trace` disappeared on every cross-protocol hop in silence. That
-/// mattered most for the Bedrock trace: an operator running Bedrock Guardrails for COMPLIANCE
-/// EVIDENCE got no assessment record back and nothing said it had been dropped.
+/// `extra` key; the response side had no equivalent, so a cross-protocol hop could silently drop a
+/// backend's response-only metadata (for example a compliance/guardrail assessment) with nothing
+/// recording that it had happened.
 ///
-/// These are true target-protocol limits, not unmodelled IR gaps: a guardrail assessment is an AWS
-/// account artifact and a Gemini harm-category rating uses Google's own category vocabulary — no
-/// other protocol in the matrix has a field of that shape to receive them. So the fix is the signal,
-/// not a carrier. (Gemini's OTHER response-side metadata, `groundingMetadata`, IS expressible
-/// everywhere — it is citations — and is now read into `IrCitation`s rather than named here.)
+/// These are true target-protocol limits, not unmodelled IR gaps: each such field is shaped by its own
+/// protocol's account model or category vocabulary — no other protocol in the matrix has a field of
+/// that shape to receive it. So the fix is the signal, not a carrier. (Metadata that IS expressible
+/// everywhere — citations, for instance — is read into the IR instead of named here.)
 ///
 /// Called ONLY from the cross-protocol response seam, so a same-protocol route — where every one of
 /// these fields survives byte-for-byte — never logs a word about them.
-// RELOCATED DOWN to `busbar_substrate::proto` (the cross-protocol response seam lives in `busbar-llm`,
-// which now names the substrate fn directly); re-exported here at its historical
+// RELOCATED DOWN to `busbar_substrate::proto` (the cross-protocol response seam lives in the extracted
+// dialect plugin, which now names the substrate fn directly); re-exported here at its historical
 // `busbar_core::proto::warn_untranslatable_response_metadata` path so core's call sites are unchanged.
 pub use busbar_substrate::proto::warn_untranslatable_response_metadata;
 
@@ -61,17 +60,17 @@ pub use busbar_substrate::proto::warn_untranslatable_response_metadata;
 pub use busbar_substrate::config::limits::DEFAULT_MAX_TOKENS;
 
 /// Mixed-case base62 alphabet (digits + lowercase + uppercase, no `-`/`_`) and the rejection-sampling
-/// threshold used when synthesizing opaque ids for protocols whose native ids are flat random tokens
-/// (Gemini `responseId`, Responses `msg_`/`fc_`/`resp_` suffixes). Hoisted here as the single source
-/// of truth so the two id generators cannot drift on the character set or the bias-elimination cutoff
+/// threshold used when synthesizing opaque ids for protocols whose native ids are flat random tokens.
+/// Hoisted here as the single source of truth so the id generators cannot drift on the character set
+/// or the bias-elimination cutoff
 /// — `REJECT_THRESHOLD` is the largest multiple of 62 that fits in a `u8` (62 × 4 = 248); a draw in
 /// `0..248` maps uniformly via `% 62`, a draw `>= 248` is rejected and redrawn.
 // Relocated DOWN to `busbar_substrate::proto`; re-exported here (see the neutral-atoms block above).
 pub use busbar_substrate::proto::{BASE62_ALPHABET, BASE62_REJECT_THRESHOLD};
 
-// `STREAM_ABORT_DETAIL` RELOCATED DOWN to `busbar_substrate::proto` (the `busbar-llm`
-// Bedrock-eventstream reassembler emits it without reaching into core); re-exported here at its
-// historical `busbar_core::proto::STREAM_ABORT_DETAIL` path so core's proxy-engine caller is unchanged.
+// `STREAM_ABORT_DETAIL` RELOCATED DOWN to `busbar_substrate::proto` (a dialect's own stream
+// reassembler emits it without reaching into core); re-exported here at its historical
+// `busbar_core::proto::STREAM_ABORT_DETAIL` path so core's proxy-engine caller is unchanged.
 pub use busbar_substrate::proto::STREAM_ABORT_DETAIL;
 
 /// THE RESIDUAL ARM of the ingress resolver: which wire dialect a path names, from its shape alone.
@@ -83,9 +82,10 @@ pub use busbar_substrate::proto::STREAM_ABORT_DETAIL;
 /// reaches only AFTER the mount table has declined the path. That ordering is the fix for a shipped
 /// defect: while this was the canonical classifier, it was consulted for paths a plane had been
 /// MOUNTED on, knew nothing of mounts, and answered a dialect for every one of them — so an oversized
-/// POST to `/mcp` came back in an LLM envelope an MCP client cannot decode. A path shape can only ever
-/// answer for the residual, because a mount is a fact about the deployment and no amount of looking at
-/// a URL will reveal it. `ingress_of` is therefore the only caller.
+/// request to one plane's mount path came back in a DIFFERENT plane's wire envelope, one its own
+/// client could not decode. A path shape can only ever answer for the residual, because a mount is a
+/// fact about the deployment and no amount of looking at a URL will reveal it. `ingress_of` is
+/// therefore the only caller.
 ///
 /// ## There is no `else { <default dialect> }` any more, and that is the point
 ///
@@ -99,9 +99,9 @@ pub use busbar_substrate::proto::STREAM_ABORT_DETAIL;
 ///
 /// This once held a hand-ordered `if`-ladder naming every dialect; it is now a fold over the
 /// registered protocols' own [`ProtocolDecl::residual_claims`] predicates
-/// ([`registry::residual_protocol_for_path`]), so each dialect owns its arm (the `/v1/models/{id}`
-/// colon disambiguation, the `/model/…/converse[-stream]` Bedrock guard, …) and core spells none of
-/// them. Byte-identical to the old ladder — the claim strengths ARE the ladder positions.
+/// ([`registry::residual_protocol_for_path`]), so each dialect owns its arm (its own path-shape
+/// quirks and disambiguation rules) and core spells none of them. Byte-identical to the old ladder —
+/// the claim strengths ARE the ladder positions.
 pub fn residual_dialect_for_path(path: &str) -> Option<&'static str> {
     registry::residual_protocol_for_path(path)
 }
@@ -156,7 +156,7 @@ pub use busbar_substrate::proto::rewrite_text_pairs;
 
 // `ArrayStreamFramer` (the streaming JSON-array reframer the SSE seam drives) and `DialectCodec` (the
 // 4th neutral per-PROTOCOL computed-codec seam the operation-blind driver reads) RELOCATED to
-// `busbar-substrate` (`busbar_substrate::proto`) so the `busbar-llm` dialect crate implements them
+// `busbar-substrate` (`busbar_substrate::proto`) so an extracted dialect crate implements them
 // without reaching into `busbar-core`; re-exported here at their historical `busbar_core::proto::…`
 // paths so core's call sites and the netted dual-compile test build are unchanged. Both name only the
 // neutral surface (bytes / `Value` / `bool` / `TokenUsage` / `RawUpstreamError` / `CanonicalSignal`),
@@ -170,7 +170,7 @@ pub use busbar_substrate::proto::{ArrayStreamFramer, DialectCodec};
 // RELOCATED DOWN to `busbar_substrate::proto`; re-exported here at its historical path.
 pub use busbar_substrate::proto::streaming_content_types;
 
-/// The set of array-stream shim keys across every declared protocol (only Gemini declares one).
+/// The set of array-stream shim keys across every declared protocol (most declare none).
 /// The same aggregate, from `ProtocolDecl::array_stream_shim_key`, and the reason
 /// `proxy::strip_router_shim_keys` can remove every protocol's marker while naming none of them.
 // RELOCATED DOWN to `busbar_substrate::proto`; re-exported here at its historical path.
@@ -187,8 +187,8 @@ pub use busbar_substrate::proto::array_stream_shim_key_for;
 pub(crate) mod stream_translator;
 pub use stream_translator::install_stream_translator_factory;
 pub use stream_translator::new_stream_translator;
-/// Core's OWN test binary routes the streaming-translator seam straight to the `busbar-llm` concrete
-/// factory through this `tests/` fixture (the neutral-purity lint excludes it), so the streaming
+/// Core's OWN test binary routes the streaming-translator seam straight to the extracted dialect
+/// plugin's concrete factory through this `tests/` fixture (the neutral-purity lint excludes it), so the streaming
 /// suites that drive `new_stream_translator` standalone keep working after the `#[path]` witness of the
 /// concrete translator was deleted — with no plugin symbol in neutral source and no `install_*` call.
 #[cfg(test)]
@@ -199,17 +199,17 @@ mod stream_factory_fixture;
 pub use busbar_substrate::proto::StreamTranslator;
 
 // THE EXTRACTED CONCRETE STREAM TRANSLATOR (`StreamTranslate`) and WIRE-CODEC SURFACE
-// (`ProtocolReader`/`ProtocolWriter`/`Protocol`/`protocol_for`/…) live wholly in the `busbar-llm`
-// plugin (`proto_stream.rs`/`proto_codec.rs`) — they name the concrete LLM IR types. Their `#[path]`
+// (`ProtocolReader`/`ProtocolWriter`/`Protocol`/`protocol_for`/…) live wholly in the extracted dialect
+// plugin crate (`proto_stream.rs`/`proto_codec.rs`) — they name the concrete IR types. Their `#[path]`
 // witness re-includes (and the `pub use stream::*` / `pub use proto_codec::*` glob re-exports that
 // let the pre-extraction fixture surface reach them at `crate::proto::…`) were DELETED once Phase 1.6
 // drained core's own suite of any dependence on the witnessed codec: the concrete-codec tests moved
-// beside the types they exercise (`busbar-llm/src/tests/proto/`), where they name
+// beside the types they exercise, in the plugin crate's own test tree, where they name
 // `crate::proto_codec::…` in the plugin. Production core drives translation through the neutral
 // `DialectCodec` seam + the installed `StreamTranslator` factory and names none of these.
 
-// `find_frame_terminator` and `parse_sse_frame` RELOCATED DOWN to `busbar_substrate::proto` (the
-// `busbar-llm` stream translator + gemini reassembler drive them); re-exported here at their
+// `find_frame_terminator` and `parse_sse_frame` RELOCATED DOWN to `busbar_substrate::proto` (a
+// dialect's stream translator and reassembler drive them); re-exported here at their
 // historical `busbar_core::proto::…` paths so every in-core caller is unchanged.
 pub use busbar_substrate::proto::{find_frame_terminator, parse_sse_frame};
 
@@ -217,7 +217,7 @@ pub use busbar_substrate::proto::{find_frame_terminator, parse_sse_frame};
 /// consumer that only needs the event TYPE to decide whether a frame is worth parsing at all.
 /// [`parse_sse_frame`] pays three heap allocations per call (the event-type `String`, the
 /// `data:`-line `Vec`, the joined-payload `String`), which is exactly what a skip decision must
-/// not. Returns `""` when the frame carries no `event:` line (OpenAI style) or the name is not
+/// not. Returns `""` when the frame carries no `event:` line (some dialects omit it) or the name is not
 /// UTF-8 — the same value `parse_sse_frame` reports for those shapes — and, like it, the LAST
 /// `event:` line wins when a frame illegally carries several.
 // Relocated DOWN to `busbar_substrate::proto`; re-exported here (see the neutral-atoms block above).
@@ -227,31 +227,30 @@ pub use busbar_substrate::proto::sse_event_type;
 // `busbar_substrate::proto`; re-exported here at its historical path.
 pub use busbar_substrate::proto::strip_top_level_usage_member;
 
-// `write_sse_frame` RELOCATED DOWN to `busbar_substrate::proto` (the `busbar-llm` stream translator
+// `write_sse_frame` RELOCATED DOWN to `busbar_substrate::proto` (a dialect's own stream translator
 // emits through it); re-exported here at its historical `busbar_core::proto::write_sse_frame` path.
 pub use busbar_substrate::proto::write_sse_frame;
 
-// THE SIX EXTRACTED LLM DIALECTS (anthropic, bedrock, cohere, gemini, openai_chat, openai_responses)
-// live wholly in the `busbar-llm` plugin crate. Their `#[path]` witness re-includes into core (which
-// existed only so the pre-extraction fixture surface could reach the real codecs from inside core's
-// own test binary, back when a `ProtocolDecl` was a `busbar-core` type an external crate could not
-// hand to the registry) were DELETED: `ProtocolDecl` now lives in `busbar-substrate`, so core's test
-// binary reads `busbar_llm::DECLS` directly (dev-dependency) and the dialect suites moved to
-// `busbar-llm/src/tests/`. Production core drives every dialect through the registry's
-// `ProtocolDecl` vtable and names none of them.
+// THE EXTRACTED WIRE DIALECTS live wholly in their own plugin crates. Their `#[path]` witness
+// re-includes into core (which existed only so the pre-extraction fixture surface could reach the
+// real codecs from inside core's own test binary, back when a `ProtocolDecl` was a `busbar-core` type
+// an external crate could not hand to the registry) were DELETED: `ProtocolDecl` now lives in
+// `busbar-substrate`, so core's test binary reads the plugin crates' declaration tables directly
+// (dev-dependency) and the dialect suites moved into those plugin crates. Production core drives
+// every dialect through the registry's `ProtocolDecl` vtable and names none of them.
 /// Wire-dialect detection: `protocol_id(path, headers)` sniffs which protocol a request speaks.
 pub(crate) mod detect;
 /// THE REGISTRY: `ProtocolDecl`, the built-in declaration table, and the by-name lookup that
 /// replaced `protocol_for`'s match.
 pub mod registry;
 
-// THE EXTRACTED PER-DIALECT CODEC HELPERS — `usage_tail`, `synth_rng`, `openai_annotations`,
-// `ir_encode`, `leaf_codec`, `chat_handle` (the `ChatOperation` cell) and `leaf_handles` — live wholly
-// in the `busbar-llm` plugin crate. Their `#[path]` witness re-includes into core, and the bare-name
-// `use <dialect>::{Reader,Writer}` scaffolding imports the netted fixtures needed, were DELETED with
-// the dialects: Phase 1.6 drained core's own suite of any dependence on the witnessed codec, so the
-// suites that named these moved to `busbar-llm/src/tests/`, where they resolve the helpers at their
-// plugin paths. Production core drives every codec through the registry's `ProtocolDecl` vtable.
+// THE EXTRACTED PER-DIALECT CODEC HELPERS — the per-dialect encode/decode and id-synthesis helpers,
+// plus the per-operation handle cell — live wholly in the extracted dialect plugin crate. Their
+// `#[path]` witness re-includes into core, and the bare-name `use <dialect>::{Reader,Writer}`
+// scaffolding imports the netted fixtures needed, were DELETED with the dialects: Phase 1.6 drained
+// core's own suite of any dependence on the witnessed codec, so the suites that named these moved into
+// the plugin crate, where they resolve the helpers at their plugin paths. Production core drives every
+// codec through the registry's `ProtocolDecl` vtable.
 
 // The declaration vocabulary, re-exported at `crate::proto::…` so every protocol module (each of
 // which does `use super::*`) can state its `DECL` without importing the registry by path.
@@ -262,10 +261,10 @@ pub use registry::{
 
 /// Canonical protocol-id vocabulary — now TEST-ONLY FIXTURES. PRODUCTION core no longer names a
 /// dialect: every request-path site reads the name off the protocol registry instead — the URL-model
-/// arrivals live in `busbar-llm` (gemini/bedrock), the `/v1/messages` convenience surface resolves its
+/// arrivals live with their own dialect plugins, the `/v1/messages` convenience surface resolves its
 /// dialect through [`residual_dialect_for_path`], the error-shaping fallback through
 /// [`residual_default_dialect`], and the frozen config lane-default is a frozen-wire literal in
-/// `config`. What remains is core's OWN test binary's fixtures, which name the six dialects by
+/// `config`. What remains is core's OWN test binary's fixtures, which name the shipped dialects by
 /// convention (golden-value checks) — so these consts are confined to test / `test-support` scope,
 /// where a neutral crate naming a dialect is expected, and the neutral PRODUCTION source spells none.
 #[cfg(any(test, feature = "test-support"))]
@@ -282,11 +281,10 @@ pub use dialect_test_names::{
     PROTO_ANTHROPIC, PROTO_BEDROCK, PROTO_COHERE, PROTO_GEMINI, PROTO_OPENAI, PROTO_RESPONSES,
 };
 
-// The LLM chat dialects' shared head-key set (`model`/`stream`/`stream_options`/`system`) RELOCATED
-// to the LLM plugin (`busbar_llm::proto_codec::LLM_CHAT_HEAD_KEYS`) — it is LLM vocabulary, so it
-// belongs with the dialects that declare it, not in this neutral crate. Core unions whatever
-// `ProtocolDecl::head_keys` each registered protocol declares (see `registry::Registry::new`) and
-// names none of the keys itself.
+// A shared head-key set some dialects declare in common RELOCATED to the plugin crate that groups
+// those dialects — it is dialect-specific vocabulary, so it belongs with the dialects that declare it,
+// not in this neutral crate. Core unions whatever `ProtocolDecl::head_keys` each registered protocol
+// declares (see `registry::Registry::new`) and names none of the keys itself.
 
 /// Every protocol name busbar ships a wire CODEC for — the set a provider's `protocol:` may name,
 /// and what the config validator rejects against so an unknown protocol is COLLECTED with every
@@ -311,37 +309,36 @@ pub use dialect_test_names::{
 /// operator config on it names that cause once rather than refusing every provider with an empty
 /// "must be one of:" tail. `registry_tests::the_derived_protocol_list_is_not_empty` pins the other
 /// half.
-// RELOCATED DOWN to `busbar_substrate::proto::known_protocols` with the registry runtime (the LLM
-// `PLANE_DECL.wire_format_names` now names the substrate fn directly, so the plane crate reaches the
-// registry aggregate through the neutral ABI, not back into `busbar-core`). Re-exported here at its
+// RELOCATED DOWN to `busbar_substrate::proto::known_protocols` with the registry runtime (a plane's
+// own `PLANE_DECL.wire_format_names` now names the substrate fn directly, so the plane crate reaches
+// the registry aggregate through the neutral ABI, not back into `busbar-core`). Re-exported here at its
 // historical `busbar_core::proto::known_protocols` path — as the SAME fn pointer, which is what the
-// plane-decl identity pin (`busbar-llm`'s `the_llm_plane_reads_the_registry_it_does_not_restate_it`)
-// asserts — so every in-core caller is unchanged. Still a pure read of the registry aggregate; no
-// protocol vocabulary crosses here, only the neutral derived list.
+// plane-decl identity pin in the plane's own test suite asserts — so every in-core caller is
+// unchanged. Still a pure read of the registry aggregate; no protocol vocabulary crosses here, only the
+// neutral derived list.
 pub use busbar_substrate::proto::known_protocols;
 
-// THE LLM PLANE'S VOCABULARY DECLARATION RELOCATED to the `busbar-llm` plugin (`busbar_llm::PLANE_DECL`)
-// — it is the LLM plane's statement about ITSELF, so it leaves core with the plane exactly as the MCP
-// and A2A `PLANE_DECL`s live in their own crates. The composition root installs it via
-// `register_planes` (`crates/busbar/src/main.rs`, behind `proto-llm`); core's own test binary names it
-// through the `#[cfg(test)]` row in `plane::registry::BUILTIN_PLANE_DECLS` (the honest crate boundary,
-// the plane's PUBLIC decl), so both shapes boot the same `[llm, mcp, a2a]` plane list. Its
-// `wire_format_names` field still points at [`known_protocols`] here (now `pub`) — the model plane's
-// wire formats ARE the registered codec protocols, wherever the declaration itself lives.
+// EACH PLANE'S VOCABULARY DECLARATION lives wholly in that plane's own plugin crate — it is the
+// plane's statement about ITSELF, so it leaves core with the plane. The composition root installs it
+// via `register_planes` (`crates/busbar/src/main.rs`); core's own test binary names it through the
+// `#[cfg(test)]` row in `plane::registry::BUILTIN_PLANE_DECLS` (the honest crate boundary, the plane's
+// PUBLIC decl), so both shapes boot the same plane list. A model-serving plane's `wire_format_names`
+// field still points at [`known_protocols`] here (now `pub`) — its wire formats ARE the registered
+// codec protocols, wherever the declaration itself lives.
 
 /// Resolve a provider's configured protocol NAME to the registry's interned `&'static str` for the
-/// lane-build path, or `None` for an unknown name or one that declares no wire codec (MCP/A2A are not
-/// lane protocols). Post-G6-A4b a lane stores this name, not a constructed `Protocol` (the concrete
+/// lane-build path, or `None` for an unknown name or one that declares no wire codec (some registered
+/// protocols carry no lane codec at all). Post-G6-A4b a lane stores this name, not a constructed `Protocol` (the concrete
 /// codec lives in the plugin and core reaches it via `decl_for(name).dialect()`), so the old
 /// `ProtocolRegistry` `Arc<Protocol>` cache is gone — this is the whole of what lane-build needed from it.
 // RELOCATED DOWN to `busbar_substrate::proto`; re-exported here at their historical paths.
 pub use busbar_substrate::proto::{convert_headers, lane_protocol_name};
 
 // THE CODEC/IR TEST SUITES that used to live here (`tests/tests.rs`, `registry_tests`,
-// `stream_fanout_tests`, `stream_translate_tests`, `same_proto_fidelity_tests`, `gemini_tests`,
-// `context_length_tests`, `gemini_integration_tests`, `response_format_matrix_tests`,
+// `stream_fanout_tests`, `stream_translate_tests`, `same_proto_fidelity_tests`, per-dialect
+// unit and integration tests, `context_length_tests`, `response_format_matrix_tests`,
 // `stop_reason_matrix_tests`, `image_source_matrix_tests`, `translate_parity_golden_tests`,
 // `translate_parity_cross_pairs_tests`, `roundtrip_fidelity_tests`, `adversarial_tests`) were
-// RELOCATED to `busbar-llm/src/tests/proto/`: they name the dialects
+// RELOCATED to the extracted dialect plugin crate's own test tree: they name the dialects
 // and the concrete wire codecs, which a neutral crate's tests must not, so they live beside the
 // types they exercise. The dialect/IR SOURCE `#[path]` witnesses above remain until Phase 2's flip.

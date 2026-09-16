@@ -16,9 +16,9 @@
 const MIGRATED_FILES: &[&str] = &[
     "src/admin/audit.rs",
     // The forward-engine sources (`proxy/response_body.rs`, `proxy/usage.rs`, `proxy/hooks.rs`,
-    // `proxy/engine/{mod,walk}.rs`) RELOCATED to the `busbar-llm` plugin's `src/engine/` with the
+    // `proxy/engine/{mod,walk}.rs`) RELOCATED to an out-of-tree plugin crate's `src/engine/` with the
     // money-path pivot (1.6.0 money-path Phase 3-4 C). Core does NOT scan a plane crate's tree — the
-    // plane-purity lint forbids core naming a plane path — and `busbar-llm` carries its own
+    // plane-purity lint forbids core naming a plane path — and that plugin crate carries its own
     // uncoded-diagnostic floor, so these are no longer listed here (mirroring the substrate/plane note).
     "src/handlers/mod.rs",
     "src/metrics.rs",
@@ -45,10 +45,10 @@ const MIGRATED_FILES: &[&str] = &[
     "src/config/overlay.rs",
     "src/config/mod.rs",
     "src/config_validate/mod.rs",
-    // The A2A and MCP plane sources moved to the sibling `busbar-a2a` / `busbar-mcp` crates (the plane
-    // extraction). Core does NOT scan a plane crate's tree — a neutral crate must name no plane path
-    // (the plane-purity lint enforces this); each plane crate enforces its own uncoded-diagnostic floor. So neither the
-    // A2A nor the MCP sources are listed here.
+    // The plane sources moved to sibling out-of-tree plugin crates (the plane extraction). Core does
+    // NOT scan a plane crate's tree — a neutral crate must name no plane path (the plane-purity lint
+    // enforces this); each plane crate enforces its own uncoded-diagnostic floor. So none of those
+    // plugin sources are listed here.
     "src/export/webhook.rs",
     "src/export/file.rs",
     "src/ir/mod.rs",

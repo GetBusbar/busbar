@@ -8,7 +8,8 @@
 
 use std::sync::OnceLock;
 
-// SSRF obfuscation-defense primitives shared with the provider-base-URL guard in `config_validate`.
+// SSRF obfuscation-defense primitives shared with the analogous operator-configured-upstream-URL
+// guard in `config_validate`.
 // Here they are a defense-in-depth parity mirror (the webhook/OTLP URL is already
 // `url::Url::parse`-normalized, so the canonical `parse::<IpAddr>()` path does the real
 // blocking); keeping the byte-identical atoms in one tested leaf stops the two guards drifting.
@@ -204,8 +205,8 @@ fn scheme_is(url: &str, scheme: &str) -> bool {
 ///   - LOCALHOST (a deliberate divergence, NOT just code shape): this webhook guard BLOCKS the
 ///     `localhost`/`*.localhost` family in the DNS arm of `host_is_internal` — no request-log
 ///     webhook should POST to a co-located loopback process. `ssrf_blocked_host`, by contrast,
-///     ALLOWS `localhost`: it is a metadata-denylist guard for provider base-URLs, and `localhost`
-///     is a legitimate local-model upstream (e.g. Ollama on `http://localhost:11434`). So the two
+///     ALLOWS `localhost`: it is a metadata-denylist guard for operator-configured upstream URLs, and
+///     `localhost` is a legitimate loopback upstream for such a URL. So the two
 ///     guards do NOT block the same set on the localhost family — they intentionally differ.
 ///
 /// `None` (webhook disabled) is always valid. Pure, so it is unit-testable without touching the
@@ -243,8 +244,8 @@ pub(crate) fn validate_webhook_url(url: Option<String>) -> Result<Option<String>
 /// literals (they resolve, at connect time, to the IMDS family). This holds ONLY the two metadata
 /// names; the `localhost` / `*.localhost` family is blocked separately in the `Err(_)` DNS arm of
 /// `host_is_internal`. NOTE the deliberate divergence: `config_validate::ssrf_blocked_host` (the
-/// provider-base-URL guard) does NOT block `localhost` — it ALLOWS it as a legitimate local-model
-/// upstream — so this const overlaps `ssrf_blocked_host`'s metadata denylist only on the shared
+/// operator-configured-upstream-URL guard) does NOT block `localhost` — it ALLOWS it as a legitimate
+/// loopback upstream — so this const overlaps `ssrf_blocked_host`'s metadata denylist only on the shared
 /// cloud-metadata names; the two guards block DIFFERENT sets on the localhost family.
 const METADATA_HOSTS: &[&str] = &["metadata.google.internal", "metadata.internal"];
 
@@ -253,8 +254,8 @@ const METADATA_HOSTS: &[&str] = &["metadata.google.internal", "metadata.internal
 /// `169.254.169.254` IMDS endpoint), RFC1918 private, RFC6598 CGNAT, unspecified, and broadcast.
 fn is_internal_v4(v4: &std::net::Ipv4Addr) -> bool {
     // THE PREDICATE ITSELF LIVES IN `net_guard` and is called, not copied. It used to be spelled
-    // out here, and the A2A card-fetch guard would have been the THIRD copy of the same range list
-    // (Azure WireServer and OCI IMDS in particular sit on public addresses that every range
+    // out here, and another SSRF guard elsewhere in the codebase would have been the THIRD copy of the
+    // same range list (Azure WireServer and OCI IMDS in particular sit on public addresses that every range
     // predicate misses, so a copy that forgets them looks correct). Hoisted rather than duplicated:
     // a contributor hardening one guard against a new range must not be able to miss the others.
     net_guard_ipv4_is_internal(v4)
@@ -276,8 +277,8 @@ fn is_internal_v4(v4: &std::net::Ipv4Addr) -> bool {
 /// `url::Url::parse`d URL, while `ssrf_blocked_host` hand-parses and percent-decodes the raw
 /// config string; (2) broadcast: this guard ALSO blocks `255.255.255.255`, which `ssrf_blocked_host`
 /// does not; (3) LOCALHOST: this guard BLOCKS `localhost`/`*.localhost` (matched in the `Err(_)`
-/// DNS arm below), whereas `ssrf_blocked_host` deliberately ALLOWS it as a local-model upstream — so
-/// the blocked SETS differ on the localhost family (as well as on the broadcast literal). Full
+/// DNS arm below), whereas `ssrf_blocked_host` deliberately ALLOWS it as a legitimate loopback
+/// upstream — so the blocked SETS differ on the localhost family (as well as on the broadcast literal). Full
 /// DNS-rebinding is out of scope for a startup-validated,
 /// operator-supplied URL. Returns `true` (reject) when the host is missing entirely.
 fn host_is_internal(url: &url::Url) -> bool {
@@ -359,16 +360,16 @@ static TRACER_PROVIDER: OnceLock<opentelemetry_sdk::trace::SdkTracerProvider> = 
 ///
 /// Deliberately `DEBUG`, not the `tracing::Level::TRACE` variant: `log_levels()` below is the other
 /// half of the one-spot policy — it floors the OTLP export filter at DEBUG specifically so an
-/// operator who points `observability.otlp_endpoint` at a collector gets the request-path spans
-/// (`forward`, `gemini_ingress`, `bedrock_converse`, `named`, `adhoc`, ...) WITHOUT also having to
+/// operator who points `observability.otlp_endpoint` at a collector gets every request-path span
+/// (this crate's own `named`/`adhoc` ingress spans among them) WITHOUT also having to
 /// set `RUST_LOG=debug` and flood stderr with every debug line in the process (see the doc comment
 /// on `log_levels`). If `HOTPATH_LEVEL` were `TRACE` instead, that OTLP floor would need to move to
 /// TRACE too — losing the "OTLP get the hot path, stderr stays at its own level" split the two-filter
 /// design exists for. Both stay OFF at the default `RUST_LOG=info` filter either way: `DEBUG` is
 /// less verbose than `TRACE`, so nothing about the "off by default" contract changes with this
 /// choice.
-// A′ (ABI-purity P4): the hot-path tracing floor relocated DOWN to busbar-substrate so the
-// busbar-llm engine names it via the ABI (`busbar_substrate::observability::HOTPATH_LEVEL`). A pure
+// A′ (ABI-purity P4): the hot-path tracing floor relocated DOWN to busbar-substrate so a plane crate
+// can name it via the ABI (`busbar_substrate::observability::HOTPATH_LEVEL`). A pure
 // compile-time `const` (no registry, no dual-compile concern). Re-exported here so `crate::
 // observability::HOTPATH_LEVEL` and every in-core reference stay unchanged and byte-identical.
 pub use busbar_substrate::observability::HOTPATH_LEVEL;
@@ -387,8 +388,8 @@ pub use busbar_substrate::observability::HOTPATH_LEVEL;
 /// stderr takes `RUST_LOG` (a bare level word, e.g. `debug`), default `info`. Full `EnvFilter`
 /// directive syntax (`busbar=debug,hyper=warn`) would require the `env-filter` feature.
 ///
-/// OTLP floors at DEBUG (== `HOTPATH_LEVEL` above), because every request-path span (`forward`,
-/// `gemini_ingress`, `bedrock_converse`, `named`, `adhoc`) is emitted at debug so it costs nothing on the stderr path
+/// OTLP floors at DEBUG (== `HOTPATH_LEVEL` above), because every request-path span (including this
+/// crate's own `named`/`adhoc` ingress spans) is emitted at debug so it costs nothing on the stderr path
 /// at the default level. Exporting at the stderr level meant an operator who configured a collector
 /// received no request trace at all — only the one span that happens to default to INFO, orphaned
 /// from the parent that was never created. The two must be independent: turning traces on must not
@@ -413,10 +414,10 @@ fn log_levels() -> (
     )
 }
 
-/// `stdout_reserved`: the MCP STDIO SERVE MODE's one logging requirement. In `--mcp-stdio` the
-/// process's stdout IS the protocol channel — `STDIO.STDOUT-ONLY-MCP` forbids anything on it that
-/// is not a JSON-RPC message — so every log line moves to stderr, which is where the transport
-/// spec sends a server's diagnostics anyway. The listener modes keep stdout, unchanged.
+/// `stdout_reserved`: set by a caller whose transport uses this process's own stdout as its wire
+/// channel — the framed protocol on stdout forbids any byte that is not one of its own messages —
+/// so every log line moves to stderr instead, which is where such a transport's spec sends a
+/// server's diagnostics anyway. The listener modes keep stdout, unchanged.
 pub fn init_logging(otlp_endpoint: Option<&str>, stdout_reserved: bool) {
     use tracing_subscriber::fmt::writer::BoxMakeWriter;
     use tracing_subscriber::layer::SubscriberExt as _;
@@ -435,7 +436,7 @@ pub fn init_logging(otlp_endpoint: Option<&str>, stdout_reserved: bool) {
 
     // SSRF-validate the OTLP endpoint BEFORE building the exporter, so a config pointing at cloud
     // metadata / an internal service (e.g. `https://169.254.169.254/v1/traces`) is rejected and OTLP
-    // left disabled — span data carries key_ids, pool names, and governance decisions, so the export
+    // left disabled — span data carries key_ids and other governance-relevant request details, so the export
     // sink must be SSRF-safe (parity with the request-log webhook; loopback collectors are allowed).
     let validated_otlp = match validate_otlp_endpoint(otlp_endpoint) {
         Ok(v) => v,
@@ -501,7 +502,7 @@ pub fn shutdown_tracing() {
 ///      target, because the standard OTLP collector deployment is a co-located
 ///      `http://localhost:4318` (or a sidecar) — a plaintext loopback hop never leaves the host, so
 ///      it carries no exfiltration risk. Plaintext `http://` to a NON-loopback (remote) collector is
-///      rejected: span data carries key_ids, pool names, and governance decisions, so a remote sink
+///      rejected: span data carries key_ids and other governance-relevant request details, so a remote sink
 ///      MUST use `https://` to avoid sending traces in cleartext over the network. Any other scheme
 ///      is rejected.
 ///   2. LOOPBACK: a loopback / `localhost` target is ALLOWED (it IS the standard collector pattern),
@@ -539,8 +540,8 @@ fn validate_otlp_endpoint(endpoint: Option<&str>) -> Result<Option<String>, Stri
     // RESOLVE the host too, not just read its literal text. `otlp_host_is_blocked` above stops
     // `https://169.254.169.254/v1/traces` and every alternate spelling of it — the misconfiguration
     // and copy-paste case — but a NAME pointed at an internal address passes it, because a name is
-    // not an address until something resolves it. Span data carries key_ids, pool names and
-    // governance decisions, so the export sink has to be checked as an address, not as a string.
+    // not an address until something resolves it. Span data carries key_ids and other
+    // governance-relevant request details, so the export sink has to be checked as an address, not as a string.
     //
     // Safe to do here: this runs from `init_logging` on the RUNTIME boot path only. `--validate`
     // documents that it performs no network I/O and reaches the OTLP endpoint through
@@ -553,7 +554,7 @@ fn validate_otlp_endpoint(endpoint: Option<&str>) -> Result<Option<String>, Stri
         ));
     }
     // The `http://` carve-out is ONLY for the co-located loopback collector. A plaintext hop to a
-    // REMOTE collector would put span data (key_ids, pool names, governance decisions) on the wire in
+    // REMOTE collector would put span data (key_ids and other governance-relevant request details) on the wire in
     // cleartext, so require `https://` for any non-loopback host. (`scheme_is` is case-insensitive,
     // matching the scheme check above; the host already passed `otlp_host_is_blocked`, so a
     // non-loopback host here is an allowed EXTERNAL collector — which must be reached over TLS.)

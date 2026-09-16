@@ -131,7 +131,7 @@ pub fn install_crypto_provider() {
 ///
 /// The ONE turn-a-`SecretRef`-into-TLS-PEM function now lives NEUTRALLY in
 /// [`busbar_substrate::tls::read_pem`] and is re-exported here so this crate's inbound-listener call
-/// sites (`load_cert_chain`/`load_private_key`/`load_client_roots`) are unchanged — and so the A2A
+/// sites (`load_cert_chain`/`load_private_key`/`load_client_roots`) are unchanged — and so a
 /// plane's OUTBOUND client identity resolver names the neutral home rather than reaching into core.
 /// One place in the tree turns a `SecretRef` into TLS PEM; a second would be a second place for the
 /// "never echo what you read" rule to be forgotten.
@@ -757,7 +757,7 @@ impl hyper::service::Service<hyper::Request<hyper::body::Incoming>> for BodyTime
 /// then trickles request headers one byte at a time would otherwise hold the connection task + FD
 /// indefinitely — `DefaultBodyLimit` only applies AFTER headers are fully received, so it does not
 /// help here. `header_read_timeout` bounds ONLY the header phase, so it never truncates a
-/// legitimately long response stream (an LLM completion can stream for minutes). 30s is far longer
+/// legitimately long response stream (a streamed response can run for minutes). 30s is far longer
 /// than any real client needs to send its request line + headers, so it cannot false-positive on a
 /// healthy connection. `header_read_timeout` requires a `Timer` (hyper panics otherwise), so the
 /// Tokio timer is wired to drive it from the runtime clock.

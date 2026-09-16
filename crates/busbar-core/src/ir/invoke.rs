@@ -6,16 +6,17 @@
 //!
 //! Named `ToolCall` through 1.5. `Invoke` is the same shape — a caller names a target, hands it
 //! arguments, and gets content or an error back — under a name that does not belong to one protocol:
-//! it carries A2A `message/send` and MCP `completion/complete` alongside MCP `tools/call`, and an
-//! MCP-flavoured name would be a protocol branch waiting to happen at every site that reads it.
+//! it carries one plane's `message/send` and a second plane's `completion/complete` alongside that
+//! same second plane's `tools/call`, and a name flavoured after any one of them would be a protocol
+//! branch waiting to happen at every site that reads it.
 //!
 //! ## WHY THIS IS AN OPERATION AND NOT A PLANE
 //!
-//! MCP was first built as a parallel ingress path BESIDE the pipeline: 13,069 implementation lines
-//! under `mcp/`, with **zero** `ProtocolReader`/`ProtocolWriter` implementations and **zero**
-//! occurrences of `IrBlock`. Every concern the core already owned — the guarded fetch, the ingress
-//! admission, the outbound credential, the hash-chained audit, the config section container — was
-//! written a second time inside that directory, which is what `structure-lint`'s plane ledger has
+//! One plane was first built as a parallel ingress path BESIDE the pipeline: 13,069 implementation
+//! lines under its own directory, with **zero** `ProtocolReader`/`ProtocolWriter` implementations and
+//! **zero** occurrences of `IrBlock`. Every concern the core already owned — the guarded fetch, the
+//! ingress admission, the outbound credential, the hash-chained audit, the config section container —
+//! was written a second time inside that directory, which is what `structure-lint`'s plane ledger has
 //! been counting.
 //!
 //! The corrective is not a better plane. It is to stop having one: a tool call is an OPERATION, in

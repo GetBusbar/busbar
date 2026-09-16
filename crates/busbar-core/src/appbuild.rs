@@ -128,16 +128,16 @@ pub fn inert_durable_keys_banner(
 /// Return the STATEFUL-PLANE ephemeral-store WARN to emit, or `None` when no sharper warn applies.
 ///
 /// The generic [`crate::diagnostics::GOVERNANCE_STORE_EPHEMERAL`] notice beside the store resolution
-/// speaks to GOVERNANCE state (keys / usage / ledgers). MCP and A2A are ALSO stateful planes: their
+/// speaks to GOVERNANCE state (keys / usage / ledgers). A container plane is ALSO stateful: its
 /// in-flight TASK state lives only in the resolved store, so on the RAM store it is dropped on
 /// restart and any task that was mid-flight breaks on its next request. This returns a sharper warn
 /// NAMING that consequence — but ONLY when the RAM store is resolved AND a stateful plane is actually
 /// configured (`tools_stateful` = a `tools:` server or tool-pool is present; `agents_stateful` = an
 /// `agents:` agent or agent-pool is present — the config sections, named here rather than the planes
-/// they feed). An LLM-only deployment is STATELESS — a restart costs it nothing — so
-/// it gets only the generic notice: a sharper warn there would be noise that trains operators to
-/// ignore warnings. This is a WARN, never a boot-block: a durable store is opt-in and RAM is the
-/// convenience default, so busbar does not refuse to start.
+/// they feed). A deployment with no container plane configured is STATELESS — a restart costs it
+/// nothing — so it gets only the generic notice: a sharper warn there would be noise that trains
+/// operators to ignore warnings. This is a WARN, never a boot-block: a durable store is opt-in and
+/// RAM is the convenience default, so busbar does not refuse to start.
 pub fn stateful_plane_ephemeral_store_warn(
     store_is_memory: bool,
     tools_stateful: bool,
@@ -154,7 +154,7 @@ pub fn stateful_plane_ephemeral_store_warn(
 }
 
 /// Map a provider's `Option<config::ProviderAuth>` to the NEUTRAL [`AuthStyleInput`] the carrier holds
-/// (`None` ⇒ the protocol's native auth). The LLM plane maps it back to drive `egress_auth::*`.
+/// (`None` ⇒ the protocol's native auth). The fallback plane maps it back to drive `egress_auth::*`.
 fn auth_style_of(auth: Option<config::ProviderAuth>) -> AuthStyleInput {
     match auth {
         None => AuthStyleInput::Default,
@@ -718,10 +718,10 @@ pub fn build_app_from_config(
     let model_context_max = resolve_model_context_max(&cfg.pools)?;
 
     // Every lane, flattened into the NEUTRAL `LaneInput` carrier (1.6.0 money-path Phase 3-4 C):
-    // the LLM plane's `build_runtime` reconstructs the concrete `Lane` (egress targets, resolved
-    // credential, prebuilt auth) FROM these scalars — the `proxy::build_egress_targets` /
+    // the fallback plane's `build_runtime` reconstructs its own concrete lane object (egress targets,
+    // resolved credential, prebuilt auth) FROM these scalars — the `proxy::build_egress_targets` /
     // `egress_auth::*` calls that used to run here moved in-plane (the allowed plane→core edge), so
-    // core names no `Lane`/`EgressTarget`/`CredentialProvider`. This loop keeps only the NEUTRAL work:
+    // core names no plane-owned lane/egress-target/credential-provider type. This loop keeps only the NEUTRAL work:
     // resolve+validate the protocol name, carry the pre-resolved api-key plaintext, and mirror the
     // provider's config into neutral scalars.
     let mut lane_inputs: Vec<LaneInput> = Vec::new();
@@ -731,10 +731,10 @@ pub fn build_app_from_config(
         let provider_cfg = lane_provider_cfgs[idx];
         let Some(protocol) = crate::proto::lane_protocol_name(&provider_cfg.protocol) else {
             // The "supported:" roster is DERIVED from the registry (`known_protocols()`), not a
-            // hand-maintained literal that names the six LLM dialects core no longer owns: the codec
-            // protocols are whatever the linked plane crates registered, so a build with the LLM plane
-            // compiled out names only what it actually serves (and a build with a seventh dialect names
-            // it) — the deletion-test property at the vocabulary level. Empty roster is a real answer.
+            // hand-maintained literal: the codec dialects are whatever the linked plane crates
+            // registered, so a build with the fallback plane compiled out names only what it actually
+            // serves (and a build with a new dialect names it) — the deletion-test property at the
+            // vocabulary level. Empty roster is a real answer.
             return Err(format!(
                 "provider '{}' uses unknown protocol '{}' (supported: {})",
                 ld.provider,
@@ -921,10 +921,11 @@ pub fn build_app_from_config(
     };
 
     // The global default failover config, the fallback-pool routing table, and the upstream HTTP
-    // client (with its warm-pool carry-over) are all part of the LLM data-plane runtime bundle now —
-    // rebuilt IN-PLANE by the LLM plane's `build_runtime` from the neutral `PlaneBuildInput` carrier
-    // (1.6.0 money-path Phase 3-4 C). Core no longer names `FailoverCfg`/`UpstreamClients`/the moved
-    // egress-client builders here; it carries only the neutral client-affecting scalars below.
+    // client (with its warm-pool carry-over) are all part of the fallback plane's runtime bundle now —
+    // rebuilt IN-PLANE by that plane's `build_runtime` from the neutral `PlaneBuildInput` carrier
+    // (1.6.0 money-path Phase 3-4 C). Core no longer names the plane's own failover-config/
+    // upstream-clients types or the moved egress-client builders here; it carries only the neutral
+    // client-affecting scalars below.
 
     // The client-affecting subset of the resolved limits (timeout, pool sizing, protocol posture).
     // Carried onto `App` so the NEXT apply can compare; the `redirect: none` SSRF posture and every
@@ -1011,8 +1012,8 @@ pub fn build_app_from_config(
     hook_env.preopen_gate_hooks(&cfg.hooks)?;
 
     // The per-pool runtime bundle (member metadata + resolved failover/affinity/breaker), the
-    // any-pool-override fast-path flag, and the per-pool `on_exhausted:` table are all part of the LLM
-    // data-plane runtime now — rebuilt IN-PLANE by the LLM plane's `build_runtime` from the neutral
+    // any-pool-override fast-path flag, and the per-pool `on_exhausted:` table are all part of the
+    // fallback plane's runtime now — rebuilt IN-PLANE by that plane's `build_runtime` from the neutral
     // `PoolInput` members of the carrier (1.6.0 money-path Phase 3-4 C). The pool ROUTING POLICIES
     // (`resolve_pool_{ordering,gates,rewrites}`) stay resolved-and-read core-side behind the
     // `App::resolve_pool_*` down-facade (their value is the core-owned `ResolvedPolicy`, which must not
@@ -1087,13 +1088,13 @@ pub fn build_app_from_config(
         // (resolved by alias or canonical name from the validated registry — the engine sees only the
         // returned `dyn Store`, exactly like a compiled-in backend).
         let g = cfg.store.clone().unwrap_or_default();
-        // Is a STATEFUL plane (MCP / A2A) actually configured? Those planes carry per-task state that
-        // the RAM store drops on restart. "Configured" = any MCP server / A2A agent OR any MCP
-        // tool-pool / A2A agent-pool; the pool maps are always typed (present regardless of which
-        // planes are compiled in), while the def sections are only typed when their plane is compiled
+        // Is a STATEFUL container plane actually configured? Those planes carry per-task state that
+        // the RAM store drops on restart. "Configured" = any `tools:` server / `agents:` agent OR any
+        // tool-pool / agent-pool; the pool maps are always typed (present regardless of which planes
+        // are compiled in), while the def sections are only typed when their plane is compiled
         // in. A bare `tools:`/`agents:` entry (the common case, no failover pool) is just as stateful
         // as a pooled one, so both are checked. Computed here so the sharper warn below can fire only
-        // for a stateful deployment — never for an LLM-only (stateless) one.
+        // for a stateful deployment — never for a deployment with no container plane configured.
         // Data-driven: `tool_defs`/`agent_defs` are always the neutral `Box<dyn PlaneCfg>`; with the
         // owning plane compiled out the section is the raw carrier whose `def_names()` is empty, so
         // these read identically to the former per-feature branches without naming a plane feature.
@@ -1107,10 +1108,11 @@ pub fn build_app_from_config(
                 "store: in-memory (ephemeral) - keys, groups' usage, and ledgers reset on \
                      restart; configure a durable store plugin for persistence"
             );
-            // SHARPER, CONDITIONAL warn: the generic notice above is about governance state; MCP
-            // and A2A task state also lives only in this RAM store. Fire the specific warn (naming
-            // the consequence) ONLY when a stateful plane is configured — an LLM-only deploy keeps
-            // just the generic notice. Additive to, not a replacement for, the notice above.
+            // SHARPER, CONDITIONAL warn: the generic notice above is about governance state; a
+            // container plane's task state also lives only in this RAM store. Fire the specific warn
+            // (naming the consequence) ONLY when a stateful plane is configured — a deploy with no
+            // container plane configured keeps just the generic notice. Additive to, not a
+            // replacement for, the notice above.
             if let Some(msg) = stateful_plane_ephemeral_store_warn(true, tools_stateful, agents_stateful)
             {
                 diag_warn!(STATEFUL_PLANE_EPHEMERAL_STORE, "{msg}");
@@ -1245,8 +1247,8 @@ pub fn build_app_from_config(
 
     // THE PER-POOL ROUTING POLICY / DECISION GATES / REWRITE CHAINS — resolved HERE, core-side, keyed
     // by pool (money-path Phase 3-4 C — the RATIFIED pool-hook facade). They USED to be built into the
-    // LLM plane's `PoolRuntime`, but their resolved values (`ResolvedPolicy` / `Arc<dyn RoutingPolicy>`,
-    // an Arc over a dlopen plugin) cannot cross the `build_runtime` downcast, so they stay here and the
+    // fallback plane's own pool-runtime type, but their resolved values (`ResolvedPolicy` /
+    // `Arc<dyn RoutingPolicy>`, an Arc over a dlopen plugin) cannot cross the `build_runtime` downcast, so they stay here and the
     // engine reads them through `App::pool_{policy,gates,rewrites}`. Byte-identical to the old inline
     // `PoolRuntime` resolution: the SAME `hooks::resolve_pool_*` calls, same inputs, same order.
     let default_hook = hooks::default_hook_name(&cfg.hooks).map(str::to_string);
@@ -1274,7 +1276,7 @@ pub fn build_app_from_config(
         }
     }
 
-    // THE OTHER TWO PLANES' GATES, resolved by the SAME function, from the SAME registry, on the
+    // THE CONTAINER PLANES' GATES, resolved by the SAME function, from the SAME registry, on the
     // same generation — which is the point. `tools.hooks:` / `agents.hooks:` and the per-entry
     // lists have parsed and validated since 1.5.3 and fired nothing, because nothing resolved them
     // and nothing called them. These two lines and their two firing sites are the whole of what was
@@ -1282,9 +1284,9 @@ pub fn build_app_from_config(
     //
     // Empty on every deployment that attaches nothing, which is every deployment that does not
     // spell the key — so the dispatch paths' lookups cost one hash probe against an empty map.
-    // The MCP `tools:` per-server gates read the typed `tools:` registry, which exists only when
-    // the plane is compiled in. With `plane-mcp` off there is no registry, so the map is empty.
-    // Data-driven: `container_gates()` is a neutral `PlaneCfg` method; with the owning plane compiled
+    // The `tools:` per-container gates read the typed `tools:` registry, which exists only when
+    // the owning plane is compiled in. With that plane compiled out there is no registry, so the
+    // map is empty. Data-driven: `container_gates()` is a neutral `PlaneCfg` method; with the owning plane compiled
     // out the section is the raw carrier that answers empty containers/section-hooks, so `resolve_
     // container_gates` yields the same empty map the former `#[cfg(not)]` branch built by hand — no
     // plane feature named.
@@ -1352,10 +1354,10 @@ pub fn build_app_from_config(
     // has succeeded, never before.
 
     // The active-probe schedule (live state, carried across an apply only when the lane set is
-    // identical) is part of the LLM data-plane runtime now — its lane-indexed deadlines + the
-    // prior-runtime carry-over compare move IN-PLANE to the LLM plane's `build_runtime`, which reads
+    // identical) is part of the fallback plane's runtime now — its lane-indexed deadlines + the
+    // prior-runtime carry-over compare move IN-PLANE to that plane's `build_runtime`, which reads
     // the prior generation's runtime through the neutral `PlaneSlots` seam. Core no longer names
-    // `health::ProbeSchedule` here.
+    // the plane's own probe-schedule type here.
 
     // Plugin HTTP routes: the BUILT-IN exporters (`crate::export`) declare their routes
     // into the snapshot — today the `prometheus` exporter's `GET /metrics` when `export.prometheus` is
@@ -1383,12 +1385,12 @@ pub fn build_app_from_config(
     // THE PLANE SLOT MAP (Step 2.3's app-state seam): every registered plane's runtime object for
     // THIS config generation, built ONCE via its own decl's `build` fn and type-erased into
     // `Arc<dyn Any + Send + Sync>`. Built here, ahead of the `App` literal below. Each plane's object
-    // lives ONLY in this map now — the typed `App::mcp` / `App::a2a` fields were deleted in the D4
+    // lives ONLY in this map now — the former typed `App` fields per plane were deleted in the D4
     // step — and every reader downcasts the SAME `Arc` out of the slot rather than building a second
-    // one that could disagree. The MCP plane's object is already validated
-    // (`McpResource::from_cfg` ran at `RootCfg` construction), so its `build` fn is a wrap, not a
-    // second parse; the A2A plane's object is lowered here for the first time, exactly where
-    // `A2aPlane::from_config` used to be called directly — it is still lowered ONCE, now through the
+    // one that could disagree. One container plane's object is already validated (its resource-from-cfg
+    // step ran at `RootCfg` construction), so its `build` fn is a wrap, not a second parse; the other
+    // container plane's object is lowered here for the first time, exactly where its own
+    // from-config constructor used to be called directly — it is still lowered ONCE, now through the
     // decl instead of by name, and read from `plane_slots` everywhere below (the dispatch table's
     // admission facts and the registry the re-verification job sweeps).
     let mut plane_slots: std::collections::BTreeMap<
@@ -1396,10 +1398,10 @@ pub fn build_app_from_config(
         Arc<dyn std::any::Any + Send + Sync>,
     > = {
         let ctx = crate::plane::registry::BuildCtx {
-            // The MCP resource is TYPE-ERASED here, at the composition root, rather than inside the
-            // plane's `build` fn — so the `BuildCtx` seam carries an opaque slot and names no
-            // `crate::mcp` type. It is the SAME `Arc` the plane clones into `plane_slots` and
-            // `crate::mcp::resource` downcasts back out inside the plane, so the "one lowering, one
+            // The `tools:` container plane's resource is TYPE-ERASED here, at the composition root,
+            // rather than inside the plane's `build` fn — so the `BuildCtx` seam carries an opaque
+            // slot and names no plane-owned resource type. It is the SAME `Arc` the plane clones into
+            // `plane_slots` and downcasts back out inside its own module, so the "one lowering, one
             // Arc" invariant holds — the plane's own module is the only reader, through the slot.
             // The endpoint resource is ALREADY validated and erased as `Option<Arc<dyn Any>>` by
             // config resolution, read here through the neutral SECTION-KEYED accessor (the `tools:`
@@ -1411,13 +1413,15 @@ pub fn build_app_from_config(
                 .get(busbar_substrate::plane::config::NAMED_MAP_SECTIONS[2])
                 .cloned(),
             // The neutral registry section, erased as `&dyn Any` via `PlaneCfg::as_any` so `BuildCtx`
-            // names no `crate::a2a` type; the A2A `build` closure downcasts it back to `AgentsCfg`.
+            // names no plane-owned config type; the `agents:` container plane's `build` closure
+            // downcasts it back to its own typed config.
             agent_defs: cfg.agent_defs.as_any(),
             public_url: cfg.public_url.as_deref(),
             // THE PRIOR GENERATION'S SLOTS, so a plane's `build` can CARRY accumulated coordination
-            // off its own prior runtime object across this apply (the A2A plane carries its
-            // verify-on-call gate and boot-resolved card transports off the prior `A2aPlane`) — the
-            // same neutral `&dyn PlaneSlots` the MCP runtime's `build_runtime` receives below.
+            // off its own prior runtime object across this apply (the `agents:` container plane
+            // carries its verify-on-call gate and boot-resolved card transports off its own prior
+            // runtime object) — the same neutral `&dyn PlaneSlots` a container plane's `build_runtime`
+            // receives below.
             prior: prior.map(|p| p as &dyn busbar_substrate::plane_host::PlaneSlots),
         };
         crate::plane::registry::plane_decls()
@@ -1426,19 +1430,19 @@ pub fn build_app_from_config(
             .collect()
     };
 
-    // THE MCP PLANE'S PER-GENERATION RUNTIME, carried in `plane_slots` under its ALWAYS-PRESENT
-    // companion key (`runtime_slot_key(<mcp decl key>)`), distinct from the plane's decl key,
-    // whose slot is config-conditional and drives the dispatch door. Built ONCE through the plane's
-    // own type-erasing `build_runtime` seam (from the neutral `tool_defs` section, erased via
-    // `PlaneCfg::as_any`) so this composition names no `crate::mcp` runtime type. It bundles the
+    // THE `tools:` CONTAINER PLANE'S PER-GENERATION RUNTIME, carried in `plane_slots` under its
+    // ALWAYS-PRESENT companion key (`runtime_slot_key(<its decl key>)`), distinct from the plane's decl
+    // key, whose slot is config-conditional and drives the dispatch door. Built ONCE through the
+    // plane's own type-erasing `build_runtime` seam (from the neutral `tool_defs` section, erased via
+    // `PlaneCfg::as_any`) so this composition names no plane-owned runtime type. It bundles the
     // catalogue snapshot (which takes the next PIN GENERATION on construction, so every config apply —
     // even one that changes nothing about `tools:` — moves the generation and a call admitted under the
     // previous one is refused at dispatch), the `tools:` registry, the fresh connection pool, the
     // CARRIED-ACROSS-APPLY sightings / roots-epochs / sampling-spend and the verify-on-call coalescer
-    // (all accumulated evidence, not intent — see `McpRuntime::build`). Composing it beside the `App`
-    // keeps the swap atomic: the whole `Arc<App>` is replaced under one lock, so the catalogue and the
-    // config that produced it never disagree. With `plane-mcp` off there is no built-in decl, so no
-    // slot is inserted and nothing downcasts it (no MCP accessor exists then).
+    // (all accumulated evidence, not intent — see that plane's own `build` fn). Composing it beside the
+    // `App` keeps the swap atomic: the whole `Arc<App>` is replaced under one lock, so the catalogue and
+    // the config that produced it never disagree. With that plane compiled out there is no built-in
+    // decl, so no slot is inserted and nothing downcasts it (no accessor exists then).
     if let Some((slot_key, runtime_slot)) = crate::plane::registry::plane_decl_for_config_section(
         busbar_substrate::plane::config::NAMED_MAP_SECTIONS[2],
     )
@@ -1458,17 +1462,18 @@ pub fn build_app_from_config(
         plane_slots.insert(slot_key, runtime_slot);
     }
 
-    // THE LLM DATA-PLANE RUNTIME for this config generation — the pool/lane/failover/egress bundle,
-    // carried in `plane_slots` under its ALWAYS-PRESENT companion key (`runtime_slot_key(<llm plane
-    // key>)`), the SAME opaque slot MCP/A2A ride, now composed through the LLM plane's OWN type-erasing
-    // `build_runtime` seam (1.6.0 money-path Phase 3-4 C — THE PIVOT): core populates the neutral
-    // `PlaneBuildInput` carrier from the resolved config and hands it across the `&dyn Any` seam; the
-    // plane rebuilds its `Lane`/`WeightedLane`/`PoolRuntime`/`NativeRuntime` tables IN-PLANE. Core names
-    // no plane runtime type here, exactly as it composes the MCP runtime above.
+    // THE FALLBACK PLANE'S RUNTIME for this config generation — the pool/lane/failover/egress bundle,
+    // carried in `plane_slots` under its ALWAYS-PRESENT companion key (`runtime_slot_key(<fallback
+    // plane key>)`), the SAME opaque slot the container planes ride, now composed through the fallback
+    // plane's OWN type-erasing `build_runtime` seam (1.6.0 money-path Phase 3-4 C — THE PIVOT): core
+    // populates the neutral `PlaneBuildInput` carrier from the resolved config and hands it across the
+    // `&dyn Any` seam; the plane rebuilds its own lane/pool/runtime tables IN-PLANE. Core names no
+    // plane runtime type here, exactly as it composes a container plane's runtime above.
     //
     // NEUTRAL telemetry label projections (money-path Phase 3-4 B): pool→member-idx list, the
     // direct-model index, and a lane-idx→model resolver — banked into `AppSlots::build` from the neutral
-    // carrier's `lane_inputs`/`pool_inputs`/`by_model`, so core's label bank names no `Lane`/`WeightedLane`.
+    // carrier's `lane_inputs`/`pool_inputs`/`by_model`, so core's label bank names no plane-owned lane
+    // or pool type.
     let ts_pools: Vec<(&str, Vec<usize>)> = pool_inputs
         .iter()
         .map(|p| {
@@ -1500,16 +1505,16 @@ pub fn build_app_from_config(
         blocked_metadata_hosts: cfg.blocked_metadata_hosts.clone(),
         client_settings: llm_client_settings,
         // The cross-protocol translation seam's GLOBAL fallback max-output-tokens and effort→budget
-        // table — LLM-plane vocabulary, carried through the neutral carrier so the plane's
-        // `build_runtime` stamps them onto its own `NativeRuntime` (they no longer live on `App`).
+        // table — fallback-plane vocabulary, carried through the neutral carrier so the plane's
+        // `build_runtime` stamps them onto its own runtime object (they no longer live on `App`).
         global_default_max_tokens: cfg.limits.default_max_tokens,
         reasoning_budgets: {
             let b = cfg.limits.reasoning_effort_budgets;
             [b.minimal, b.low, b.medium, b.high]
         },
         // The FIXED global-default failover (production has no operator knob for it) — carried so the
-        // plane's `build_runtime` sets `NativeRuntime.failover_cfg` identically to the pre-pivot inline
-        // lowering, and so the test fixture can override the whole-App deadline.
+        // plane's `build_runtime` sets its own runtime object's failover config identically to the
+        // pre-pivot inline lowering, and so the test fixture can override the whole-App deadline.
         default_failover: Some(busbar_substrate::plane_host::FailoverInput {
             timeout_secs: crate::config::DEFAULT_FAILOVER_DEADLINE_SECS,
             exclusions: None,
@@ -1518,15 +1523,16 @@ pub fn build_app_from_config(
     };
 
     let llm_runtime_key = crate::state::runtime_slot_key(crate::plane::fallback_key());
-    // Compose the LLM runtime slot through the fallback plane's OWN `build_runtime` fn-pointer, exactly
-    // as the MCP runtime is composed above — passing the neutral carrier erased to `&dyn Any` and the
-    // prior generation's snapshot through the neutral `PlaneSlots` seam (for the warm-client /
-    // probe-schedule carry-over the plane now owns). GATED on a genuine fallback (LLM) plane existing —
-    // NOT merely on `fallback_key()` resolving — because `fallback_key()` degrades to the FIRST
-    // registered plane's key when no plane flags itself fallback (the plane suites' dependency-copy of
-    // core, which registers only MCP/A2A); writing the slot then would clobber that sibling's runtime.
-    // With the LLM plane's `build_runtime` still `None` (pre-M3b) no slot is inserted and
-    // `App::llm_runtime` reads the empty default — byte-identical to the featureless zero-plane boot.
+    // Compose the fallback plane's runtime slot through that plane's OWN `build_runtime` fn-pointer,
+    // exactly as a container plane's runtime is composed above — passing the neutral carrier erased to
+    // `&dyn Any` and the prior generation's snapshot through the neutral `PlaneSlots` seam (for the
+    // warm-client / probe-schedule carry-over the plane now owns). GATED on a genuine fallback plane
+    // existing — NOT merely on `fallback_key()` resolving — because `fallback_key()` degrades to the
+    // FIRST registered plane's key when no plane flags itself fallback (the plane suites'
+    // dependency-copy of core, which registers only container planes); writing the slot then would
+    // clobber that sibling's runtime. With the fallback plane's `build_runtime` still `None` no slot is
+    // inserted and `App::llm_runtime` reads the empty default — byte-identical to the featureless
+    // zero-plane boot.
     if crate::plane::is_fallback(crate::plane::fallback_key()) {
         if let Some(f) = crate::plane::registry::plane_decl_for(crate::plane::fallback_key())
             .and_then(|d| d.build_runtime)
@@ -1567,11 +1573,11 @@ pub fn build_app_from_config(
                         .map_err(|e| format!("oauth_as.signing_key: {e}"))?,
                 ),
             };
-            // busbar's OWN protected resource is its MCP endpoint's canonical URI, read back through
-            // the mcp plane's `admission` seam — a `PlaneAdmission::audience` IS that canonical URI —
-            // so appbuild names no `crate::mcp` resource type. Empty when `mcp:` is absent or the MCP
-            // plane is compiled out (no built-in decl, hence no admission, so the deployment protects
-            // no MCP audience).
+            // busbar's OWN protected resource is a container plane's ingress canonical URI, read back
+            // through that plane's `admission` seam — a `PlaneAdmission::audience` IS that canonical
+            // URI — so appbuild names no plane-owned resource type. Empty when the `tools:` section is
+            // absent or its owning plane is compiled out (no built-in decl, hence no admission, so the
+            // deployment protects no such audience).
             let protected_resources: Vec<String> = cfg
                 .endpoint_resources
                 .get(busbar_substrate::plane::config::NAMED_MAP_SECTIONS[2])
@@ -1608,17 +1614,17 @@ pub fn build_app_from_config(
 
     let app = App {
         // Telemetry-bank slot table for this generation (built above as a local, BEFORE the
-        // config-derived collections moved into the LLM runtime bundle so its `&lanes`/`&pools`/
-        // `&by_model` borrows ran first). Identical label sets across applies re-intern to the same
+        // config-derived collections moved into the fallback plane's runtime bundle so its
+        // `&lanes`/`&pools`/`&by_model` borrows ran first). Identical label sets across applies re-intern to the same
         // slots, so hot-path counters accumulate monotonically across config generations.
         tslots,
-        // THE LLM DATA-PLANE RUNTIME'S SLOT KEY (R3/R4 sub-phase B): the bundle itself was composed
-        // above into `plane_slots` under this interned key through the LLM plane's `build_runtime`
+        // THE FALLBACK PLANE'S RUNTIME SLOT KEY (R3/R4 sub-phase B): the bundle itself was composed
+        // above into `plane_slots` under this interned key through that plane's `build_runtime`
         // seam; the snapshot names only the `&'static str` key, and `App::llm_runtime` downcasts the
         // slot on the money path. Absent slot (featureless build) reads the empty default.
         llm_runtime_key,
         store,
-        // The non-LLM planes' breaker cells: PROCESS-LIFETIME, reused across an apply/reload the
+        // The container planes' breaker cells: PROCESS-LIFETIME, reused across an apply/reload the
         // way the HTTP client pool and governance state are — a config swap must not un-trip a
         // dead tool server or agent. Boot starts fresh (reliability is never persisted; the
         // store-or-RAM rule).
@@ -1629,8 +1635,9 @@ pub fn build_app_from_config(
         // process). A PROVISIONED prior is always reused (learned reliability survives every apply,
         // including one that removes the last plane section); an inert prior is upgraded HERE — at
         // apply, boot-only work — the first time plane content appears, losing nothing (an inert
-        // handle never recorded anything). Note the `runtime_slot_key(<mcp decl key>)` companion slot is inserted on
-        // every MCP-compiled build, so the gate reads the DECL keys (config-conditional), never it.
+        // handle never recorded anything). Note the `runtime_slot_key(<its decl key>)` companion slot
+        // is inserted on every build with that container plane compiled in, so the gate reads the
+        // DECL keys (config-conditional), never it.
         plane_breakers: {
             let planes_configured = crate::plane::registry::plane_decls()
                 .iter()
@@ -1668,8 +1675,9 @@ pub fn build_app_from_config(
         // The failover pools, resolved-verbatim per generation (the CELLS above are process-
         // lifetime; the pool DECLARATIONS are config like any other).
         tool_pools: cfg.tool_pools.clone(),
-        // The GENERIC per-plane failover pool map, keyed by each plane's stable decl key (the A2A
-        // relay's `agent_pools:` set; the MCP `tool_pools:` set keeps its own dedicated field above).
+        // The GENERIC per-plane failover pool map, keyed by each plane's stable decl key (the
+        // `agents:` container plane's `agent_pools:` set; the `tools:` container plane's
+        // `tool_pools:` set keeps its own dedicated field above).
         plane_pools: {
             // Keyed by the DECL KEY of the plane that owns the `agents:` section — resolved from the
             // registry, never spelled as a literal — so this composition names no plane. A compiled-out
@@ -1691,8 +1699,8 @@ pub fn build_app_from_config(
         tap_hooks_routing,
         tap_hooks_response,
         global_gates,
-        // The per-pool routing policy / decision gates / rewrite chains, read by the relocated LLM
-        // engine through `App::pool_{policy,gates,rewrites}` (the pool-hook facade).
+        // The per-pool routing policy / decision gates / rewrite chains, read by the fallback plane's
+        // relocated engine through `App::pool_{policy,gates,rewrites}` (the pool-hook facade).
         pool_orderings,
         pool_decision_gates,
         pool_rewrite_chains,
@@ -1745,19 +1753,19 @@ pub fn build_app_from_config(
         // resolved config (the EFFECTIVE base+overlay shape).
         identity_providers: cfg.identity_providers.clone(),
         export_defs: cfg.export_defs.clone(),
-        // TYPE-ERASED into `App` so it names no `crate::a2a` config type — the SAME resolved object
-        // (a clone, not a reparse), so the admin view and gates are byte-identical. The A2A plane
-        // downcasts it back in `crate::a2a::agent_cfg`.
+        // TYPE-ERASED into `App` so it names no plane-owned config type — the SAME resolved object
+        // (a clone, not a reparse), so the admin view and gates are byte-identical. The `agents:`
+        // container plane downcasts it back inside its own module.
         agent_defs: cfg.agent_defs.clone_arc_any(),
-        // THE A2A PLANE, built only when `agents:` defines one, is NOT mirrored into a typed `App`
-        // field any more: it lives solely in its `plane_slots` entry (built once by `PlaneDecl::build`),
-        // and every reader reaches it through `crate::a2a::runtime(app)`/`runtime_arc(app)`, which
-        // downcast that slot inside the a2a module. So there is no `a2a:` initializer here and `App`
-        // names no `crate::a2a` type for the runtime object. The A2A verify-on-call GATE and the
-        // boot-resolved CARD transports moved ONTO that same `A2aPlane` runtime object too (like MCP's
-        // `McpRuntime::verify`): they are carried across this apply INSIDE the plane's `build` (through
-        // `carried_a2a_gates`, off `BuildCtx::prior`), so `App` carries no `a2a_verify`/`a2a_cards`
-        // field for them either.
+        // THE `agents:` CONTAINER PLANE, built only when `agents:` defines one, is NOT mirrored into a
+        // typed `App` field any more: it lives solely in its `plane_slots` entry (built once by
+        // `PlaneDecl::build`), and every reader reaches it through that plane's own runtime accessors,
+        // which downcast that slot inside the plane's module. So there is no dedicated initializer here
+        // and `App` names no plane-owned type for the runtime object. That plane's verify-on-call GATE
+        // and boot-resolved CARD transports moved ONTO that same runtime object too (like the `tools:`
+        // container plane's own verify coalescer): they are carried across this apply INSIDE the
+        // plane's `build` (through its own carried-gates field, off `BuildCtx::prior`), so `App`
+        // carries no dedicated field for them either.
         // History + rate windows are Arc-shared across applies (process-lifetime state).
         versions: prior.map_or_else(
             || Arc::new(admin::versions::VersionLog::new()),
@@ -1776,26 +1784,26 @@ pub fn build_app_from_config(
         admin_modules,
         login_methods,
         public_url: cfg.public_url.clone(),
-        // The MCP plane, and the dispatch table that governs it, are built from ONE validated
+        // One container plane, and the dispatch table that governs it, are built from ONE validated
         // object in ONE act: the resource that mounts the ingress is the same resource whose
-        // canonical URI becomes the audience the middleware enforces there. Absent `mcp:`, the
-        // dispatch table is empty and `admission_for` answers `None` for every path, so the
+        // canonical URI becomes the audience the middleware enforces there. Absent its config section,
+        // the dispatch table is empty and `admission_for` answers `None` for every path, so the
         // audience check costs one `Option` test on the hot path and changes nothing.
         //
-        // THE SECOND CONSUMER. A2A mounts and admits through the very same two verbs, with its own
-        // strings and no new code in `plane/` — which is the claim that module's own doc made when
-        // it was written for a consumer that did not exist yet. A2A admits only when it has a
-        // RECEIVING side (`A2aPlane::admission` answers `None` without a `public_url`), so a
+        // THE SECOND CONSUMER. The other container plane mounts and admits through the very same two
+        // verbs, with its own strings and no new code in `plane/` — which is the claim that module's
+        // own doc made when it was written for a consumer that did not exist yet. It admits only when
+        // it has a RECEIVING side (its own `admission` fn answers `None` without a `public_url`), so a
         // delegation-only deployment claims no path and binds no audience.
         // THE DISPATCH TABLE, folded from the registered plane declarations rather than a hardcoded
         // block per plane. Each plane's runtime object is handed to its decl (type-erased as
         // `&dyn Any`), and the decl computes the plane's claims and admission from it — the same
-        // strings the hardcoded MCP/A2A blocks used to compute, now stated beside the plane they
-        // describe so an extracted plane crate contributes its own door. `build_dispatch` refuses the
-        // boot if any plane claims a path but binds no audience (ratchet R2).
+        // strings the former hardcoded per-plane blocks used to compute, now stated beside the plane
+        // they describe so an extracted plane crate contributes its own door. `build_dispatch` refuses
+        // the boot if any plane claims a path but binds no audience (ratchet R2).
         //
         // The slot lookup reads `plane_slots` (built above, once, via each decl's `build` fn) rather
-        // than naming `crate::mcp`/`crate::a2a` directly — the CLAIMS and ADMISSION logic, and now
+        // than naming either container plane's crate directly — the CLAIMS and ADMISSION logic, and now
         // the object the two are computed from, are all reached through the decl.
         planes: Arc::new({
             let ref_slots: std::collections::BTreeMap<&'static str, &dyn std::any::Any> =
@@ -1809,14 +1817,14 @@ pub fn build_app_from_config(
             )?
         }),
         // THE TYPE-ERASED SLOT MAP ITSELF (Step 2.3). Moved in last: every typed field above that
-        // reads a plane's object does so by cloning out of this map first, so `plane_slots` and
-        // (e.g.) `mcp`/`a2a` are guaranteed to agree — there is no second `build` call anywhere that
+        // reads a plane's object does so by cloning out of this map first, so `plane_slots` and any
+        // per-plane accessor are guaranteed to agree — there is no second `build` call anywhere that
         // could disagree with what is stored here.
-        // THE MCP PLANE'S PER-GENERATION RUNTIME (and the verify-on-call coalescer folded into it) is
-        // no longer a flat `App` field: it was inserted into `plane_slots` above under
-        // `runtime_slot_key(<mcp decl key>)`, through the plane's own `build_runtime` seam. `plane_slots`
-        // is moved into `App` on the line just above; the MCP plane reads its runtime back through
-        // `crate::mcp::runtime`, which downcasts that slot inside the plane.
+        // A CONTAINER PLANE'S PER-GENERATION RUNTIME (and the verify-on-call coalescer folded into it)
+        // is no longer a flat `App` field: it was inserted into `plane_slots` above under
+        // `runtime_slot_key(<its decl key>)`, through the plane's own `build_runtime` seam. `plane_slots`
+        // is moved into `App` on the line just above; each plane reads its runtime back through its own
+        // runtime accessor, which downcasts that slot inside the plane.
         plane_slots,
         oauth_as: oauth_as_plane.clone(),
         // CARRIED ACROSS THE APPLY for the same reason, and it is the same class of mistake: an
@@ -1890,7 +1898,7 @@ pub fn build_app_from_config(
     // carry path, with the live registration set of each plane: a pruned subject is one no delegation
     // can name, so dropping its coalescing state and latch cannot race a verify (fail-closed intact).
     // Each plane prunes its OWN verify-on-call gate through its `retain_verify_gates` seam, so this
-    // composition names no `crate::mcp`/`crate::a2a` runtime type. UNCONDITIONAL per the hooks' own
+    // composition names no plane-owned runtime type. UNCONDITIONAL per the hooks' own
     // contract: when the operator REMOVES a plane's block the live subject set is EMPTY, so retain
     // drops every carried flight/latch instead of leaking one per removed subject. The two hooks touch
     // disjoint gates (each plane's own runtime `verify`), so the registry iteration order is not observable.

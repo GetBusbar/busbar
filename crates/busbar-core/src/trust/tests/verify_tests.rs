@@ -7,9 +7,9 @@
 //! shared `last_checked_ms`), because the properties under test are the freshness bound and the
 //! single-flight coalescing — neither of which is a protocol fact. The fail-closed REFUSAL is a plane
 //! integration property (a failed fetch records `Failed`, which the plane's own gate refuses) and is
-//! proven on the MCP and A2A request paths; here we prove the load-lever the spec turns on: a stale
-//! snapshot triggers exactly one fetch no matter how many callers hit it together, and a fresh one
-//! triggers none.
+//! proven on each plane consumer's own request path; here we prove the load-lever the spec turns on: a
+//! stale snapshot triggers exactly one fetch no matter how many callers hit it together, and a fresh
+//! one triggers none.
 
 use std::sync::atomic::{AtomicU64, Ordering::SeqCst};
 use std::sync::Arc;
@@ -265,7 +265,8 @@ async fn distinct_subjects_each_fetch() {
 }
 
 /// RESOURCE: the per-subject coordination is pruned to the live registration set on the carry path,
-/// so an operator retiring a server/agent does not leak its `flights`/`drift_latch` entry forever.
+/// so an operator retiring a registered subject does not leak its `flights`/`drift_latch` entry
+/// forever.
 ///
 /// RED, WATCHED: without `VerifyGate::retain`, both assertions on the retired subject below fail — its
 /// flight and its latch remain tracked across the (simulated) apply.

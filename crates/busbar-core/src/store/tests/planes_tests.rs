@@ -3,9 +3,8 @@
 
 //! The degenerate-cell semantics of [`PlaneBreakers`], on the mocked clock: trip on the core
 //! thresholds, per-cell hard-down isolation, single-flight half-open recovery, owner-checked
-//! probe release. The PLANES' call sites are proven in their own batteries
-//! (`mcp/tests/breaker_fastfail_tests.rs`, `a2a/tests/breaker_fastfail_tests.rs`); this file pins
-//! the store-side contract those batteries stand on.
+//! probe release. Each plane consumer's own call sites are proven in their own batteries; this
+//! file pins the store-side contract those batteries stand on.
 
 use super::super::planes::PlaneBreakers;
 use super::super::{set_now_for_test, BreakerState, Unavailable};
@@ -46,7 +45,7 @@ fn transient_failures_trip_and_fast_fail() {
 
 /// An Auth signal (401/403) is a HARD DOWN: the cell trips on the FIRST failure — and ONLY that
 /// cell. The isolation half is the whole reason `record_signal` uses the per-cell hard-down: every
-/// plane target shares lane 0, so an all-cells write would trip every other server and agent.
+/// plane target shares lane 0, so an all-cells write would trip every other target.
 #[test]
 fn hard_down_trips_immediately_and_only_its_own_cell() {
     set_now_for_test(2_000);
@@ -66,8 +65,8 @@ fn hard_down_trips_immediately_and_only_its_own_cell() {
     assert!(b.try_admit(&agent, 0).is_ok());
 }
 
-/// The two plane prefixes cannot collide: a tool server and an agent that happen to share a bare
-/// name have DISTINCT cells.
+/// The two plane prefixes cannot collide: a target registered under one plane prefix and one
+/// registered under the other that happen to share a bare name have DISTINCT cells.
 #[test]
 fn tool_and_agent_keys_never_collide() {
     set_now_for_test(3_000);
@@ -182,12 +181,12 @@ fn retry_after_is_the_exact_cooldown() {
 }
 
 /// THE SUB-THRESHOLD RULE, AT THE CELL. A transient failure that did NOT breach the trip predicate
-/// leaves the cell Closed AND ADMITTING — the tightest statement of the defect that had the
-/// in-house MCP conformance battery red for five commits.
+/// leaves the cell Closed AND ADMITTING — the tightest statement of the defect that had an
+/// out-of-tree plugin's conformance battery red for five commits.
 ///
-/// The LLM plane's identical FSM benches a lane here on purpose, because the walk then prefers a
+/// The primary plane's identical FSM benches a lane here on purpose, because the walk then prefers a
 /// sibling and the caller is still served. On this plane the walk only has somewhere to go when the
-/// operator declared a `tool_pools:`/`agent_pools:` set, and the UNPOOLED single registration is
+/// operator declared a pool, and the UNPOOLED single registration is
 /// the canonical case — so benching the only member is a 15-120s outage for every caller, bought
 /// with one blip and announced as "open after repeated failures". `bench_below_trip_threshold` is
 /// a per-breaker setting, so a pooled cell inherits the conservative answer and is routed around on

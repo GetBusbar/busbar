@@ -1,42 +1,43 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE MODEL PLANE'S PER-REQUEST CHAIN: one hash-chained record per inbound model request, scoped to
+//! A PLANE'S PER-REQUEST CHAIN: one hash-chained record per inbound request on that plane, scoped to
 //! the presenting key, on the ONE chain mechanism in [`crate::audit`].
 //!
 //! ## Why this file exists at all, stated as the defect it closes
 //!
-//! `grep crate::audit` over `proxy/` and `handlers/` returned ZERO production hits. Model traffic
-//! landed in billing (`governance`), in telemetry (`/metrics`) and in the request-log export, and in
-//! NO tamper-evident chain — while the MCP plane chained every `tools/call` (`calllog`) and the
-//! A2A plane chained every task event (`provenance`). The owner's ruling is that auditing is
-//! core functionality and *"LLM == MCP == A2A — just different protocols, not a different pathway
-//! through the engine at all"*, so the flagship plane being the unaudited one is the doctrine
-//! inverted. Billing is not auditing: a usage counter answers "how much", it is a mutable aggregate,
-//! and an edited row leaves the total looking exactly like a total.
+//! `grep crate::audit` over `proxy/` and `handlers/` returned ZERO production hits. This plane's
+//! traffic landed in billing (`governance`), in telemetry (`/metrics`) and in the request-log export,
+//! and in NO tamper-evident chain — while other planes already chained every call they made
+//! (`calllog`) and every task event they raised (`provenance`). The owner's ruling is that auditing is
+//! core functionality and every plane's traffic deserves the same chain — different protocols are not
+//! a different pathway through the engine — so a flagship plane being the unaudited one was the
+//! doctrine inverted. Billing is not auditing: a usage counter answers "how much", it is a mutable
+//! aggregate, and an edited row leaves the total looking exactly like a total.
 //!
 //! ## The mechanism is NOT this file's, and that is the whole design
 //!
-//! Owner's ruling, 2026-08-13: *"auditing is core. nothing auditing wise should be mcp a2a or llm
-//! specific. thats how audits break."* Three chain implementations mean three answers to "what
-//! happened". So there is no `compute_hash`, no `verify`, no `Chain` here: this file supplies a
-//! RECORD — which fields a model request carries and which of them the digest covers — and inherits
-//! the append, the digest, the linkage and the verifier from [`crate::audit`]. The module header
-//! there states the acceptance test for its own seam ("adding a fourth stream costs a record type
-//! and nothing else"); this is that fourth stream, and it cost a record type and nothing else.
+//! Owner's ruling, 2026-08-13: auditing is core, and nothing about auditing should be tied to any
+//! one plane's identity — that coupling is how audits break. Three chain implementations mean three
+//! answers to "what happened". So there is no `compute_hash`, no `verify`, no `Chain` here: this file
+//! supplies a RECORD — which fields a request on this plane carries and which of them the digest
+//! covers — and inherits the append, the digest, the linkage and the verifier from [`crate::audit`].
+//! The module header there states the acceptance test for its own seam ("adding a fourth stream costs
+//! a record type and nothing else"); this is that fourth stream, and it cost a record type and nothing
+//! else.
 //!
 //! ## ONE MECHANISM IS NOT ONE STREAM
 //!
-//! This stream stays SEPARATE from the admin ring, the MCP call log and the A2A task chain, for the
-//! reason `mcp/calllog.rs` records: an admin mutation is operator-rate and a model request is
+//! This stream stays SEPARATE from the admin ring and the other planes' own chains, for the
+//! reason `calllog.rs` records: an admin mutation is operator-rate and a request on this plane is
 //! REQUEST-rate, so sharing one bounded ring means a busy afternoon evicts every admin record,
 //! silently. [`crate::audit`]'s verifier refuses a record whose scope is not the chain's, so one
 //! caller's evidence can never be made to depend on another caller's rows.
 //!
 //! ## Scoped to the PRINCIPAL, like the call log and unlike the task chain
 //!
-//! A model request has no durable object of its own to be scoped to — there is no task — so the
-//! bounded unit is the presenting key, exactly as `calllog` is. That is also the unit an
+//! A request on this plane has no durable object of its own to be scoped to — there is no task — so
+//! the bounded unit is the presenting key, exactly as `calllog` is. That is also the unit an
 //! auditor asks about ("what did this key do"), and it means one caller's chain is verifiable
 //! without possessing any other caller's records.
 //!
@@ -47,16 +48,17 @@
 //!
 //! ## ── WHAT IS WIRED, AND WHAT IS HONESTLY NOT ────────────────────────────────────────────────
 //!
-//! WRITTEN — every inbound model request, at the ONE terminal every one of them passes through
-//! (`ingress::finish_inner`, which is also where the plane's metrics and its refund decision are
-//! made). Dispatches and refusals alike: a governance refusal is evidence, and it is the half a log
-//! that only records successes cannot provide.
+//! WRITTEN — every inbound request on this plane, at the ONE terminal every one of them passes
+//! through (`ingress::finish_inner`, which is also where the plane's metrics and its refund decision
+//! are made). Dispatches and refusals alike: a governance refusal is evidence, and it is the half a
+//! log that only records successes cannot provide.
 //!
-//! NOT WRITTEN — durability. `busbar_api::Store` carries no model-request method, and adding one is
-//! a plugin-ABI change fanned out to four external store repositories; it is deliberately not made
-//! here. So this chain is a bounded IN-MEMORY window and A RESTART LOSES IT. That is the same floor
-//! `a2a::pushdeliver`'s pin map and `calllog` under `store: memory` are documented with, it is
-//! stated here rather than discovered, and NOTHING may describe this stream as durable until a
+//! NOT WRITTEN — durability. `busbar_api::Store` carries no per-request method for this stream, and
+//! adding one is a plugin-ABI change fanned out to four external store repositories; it is
+//! deliberately not made here. So this chain is a bounded IN-MEMORY window and A RESTART LOSES IT.
+//! That is the same floor `a2a::pushdeliver`'s pin map and `calllog` under `store: memory` are
+//! documented with, it is stated here rather than discovered, and NOTHING may describe this stream
+//! as durable until a
 //! store method exists. What IS true of it today: within one process lifetime the window is
 //! append-only, hash-linked and verifiable, so an in-process edit of a retained record is detected.
 //!
@@ -95,7 +97,7 @@ pub const PRINCIPAL_UNGOVERNED: &str = "ungoverned";
 
 /// How many records the process keeps, across every principal.
 ///
-/// ONE ring rather than one per principal, and the argument `mcp/calllog.rs` makes against a shared
+/// ONE ring rather than one per principal, and the argument `calllog.rs` makes against a shared
 /// ring does NOT apply: that one was about mixing an operator-rate population with a request-rate
 /// one, where the fast population silently evicts the slow one's entire history. Every record here
 /// is the same population at the same rate, so oldest-first eviction across the whole ring means
@@ -134,11 +136,11 @@ const MAX_TRACKED_PRINCIPALS: usize = 16_384;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RequestInput {
     pub(crate) ts: u64,
-    /// The dialect the request ARRIVED on (`anthropic`, `openai`, `gemini`, …). The plane speaks
-    /// six, so which one a caller used is a fact about the request rather than about the build.
+    /// The dialect the request ARRIVED on. A plane can speak several, so which one a caller used is
+    /// a fact about the request rather than about the build.
     pub(crate) ingress_protocol: String,
-    /// The BOUNDED pool label (`ingress::pool_label`), never the raw caller-supplied model string —
-    /// the same unbounded-cardinality reasoning the metric label is bounded for.
+    /// The BOUNDED pool label (`ingress::pool_label`), never the raw caller-supplied routing-target
+    /// string — the same unbounded-cardinality reasoning the metric label is bounded for.
     pub(crate) pool: String,
     pub(crate) outcome: &'static str,
     pub(crate) reason: &'static str,
@@ -147,9 +149,9 @@ pub(crate) struct RequestInput {
     pub(crate) status: u16,
 }
 
-/// ONE MODEL REQUEST, as evidence. Lives in core rather than in `busbar_api` precisely because it is
-/// NOT persisted (see the header): a type in the plugin ABI that no store method takes would be an
-/// invitation to believe a durable path exists.
+/// ONE REQUEST ON THIS PLANE, as evidence. Lives in core rather than in `busbar_api` precisely
+/// because it is NOT persisted (see the header): a type in the plugin ABI that no store method takes
+/// would be an invitation to believe a durable path exists.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RequestRecord {
     pub principal: String,
@@ -232,11 +234,11 @@ impl ChainedRecord for RequestRecord {
 
 /// WHICH TERMINAL A REQUEST REACHED, as the engine knows it rather than as a status code implies.
 ///
-/// A status alone cannot answer it: the same 400 is a malformed body on one path and a vendor's
-/// quota shape on another (`ingress::admit_check` maps an exhausted budget to the writer's
-/// `quota_exceeded_status`, which is 400 for Bedrock), and a 200 that never left the process would
-/// be indistinguishable from one that did. So the terminal is passed down explicitly by the three
-/// `finish` forms, each of which already knows which of the two it is.
+/// A status alone cannot answer it: the same 400 is a malformed body on one path and a registered
+/// writer's own quota shape on another (`ingress::admit_check` maps an exhausted budget to that
+/// writer's declared `quota_exceeded_status`, which some writers declare as 400), and a 200 that
+/// never left the process would be indistinguishable from one that did. So the terminal is passed
+/// down explicitly by the three `finish` forms, each of which already knows which of the two it is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Terminal {
     /// The request passed every governance guard and was dispatched — [`OUTCOME_DISPATCHED`],
@@ -259,8 +261,8 @@ pub(crate) enum Terminal {
 /// about. The rest chain the STATUS, which is the most specific true thing this terminal knows,
 /// with an empty reason.
 ///
-/// THE NAMED GAP: the pre-routing refusals (malformed body, unresolved model, unsupported action)
-/// and the vendor-shaped quota statuses know their own reason at the site and do not yet hand it
+/// THE NAMED GAP: the pre-routing refusals (malformed body, unresolved routing target, unsupported
+/// action) and the vendor-shaped quota statuses know their own reason at the site and do not yet hand it
 /// down. Threading it is a change to every `finish_rejected` call site; until it is made, this
 /// function does not pretend to know.
 pub(crate) fn outcome_of(terminal: Terminal, status: u16) -> (&'static str, &'static str) {
@@ -308,7 +310,7 @@ pub struct RequestLog {
     state: Mutex<LogState>,
 }
 
-/// THE PROCESS-WIDE MODEL REQUEST LOG. Process state, not config-derived state, so it lives as a
+/// THE PROCESS-WIDE PER-REQUEST LOG FOR THIS PLANE. Process state, not config-derived state, so it lives as a
 /// global rather than on the swappable `App` snapshot — exactly like [`crate::admin::audit::AUDIT`]
 /// and [`crate::calllog::CALLS`], and for the same reason: a config apply must not reset the
 /// chain positions, because doing so would open a SECOND chain at seq 1 under a principal that
@@ -339,7 +341,7 @@ impl RequestLog {
     pub(crate) fn record(&self, principal: &str, input: RequestInput) {
         let mut state = self.state();
         // `RequestChain::default()` IS SAFE HERE, and it is worth saying why because it is the
-        // same line that once opened a zero-based chain on the MCP call log. A DERIVED `Default` would
+        // same line that once opened a zero-based chain on the call log. A DERIVED `Default` would
         // give `next_seq: 0`, which is not a valid sequence; `crate::audit::Chain` therefore
         // hand-writes its `Default` to be its `new`, and pins the two against each other
         // (`the_default_chain_is_the_new_chain_because_a_derived_default_starts_at_zero`). The
