@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 //
-// busbar — the composition root binary. It is the one place that names every transport, every
+// busbar — the composition root binary. It is the one place that names every wire, every
 // compiled-in plane, and every unit the kernel runs, and wires them together at boot; see
-// `src/root/mod.rs` for the three-axis shape (transport / plane / unit) this crate composes.
+// `src/root/mod.rs` for the three-axis shape (wire / plane / unit) this crate composes.
 //
 // The protocol, routing, and plane-specific behavior this binary boots are each owned by their own
-// crate (busbar-core and the individual plane crates) and are not this file's concern — see the
+// crate (the engine core and the individual plane crates) and are not this file's concern — see the
 // linked crates' own docs and the README for what a running deployment answers on the wire and the
 // `--help` output above for the CLI surface this binary exposes.
 //
