@@ -5,8 +5,8 @@
 //! refusal.
 //!
 //! A scheme that cannot settle who is calling from the credential alone asks the client something.
-//! That only happens inside a handshake unit — one the plane opened by saying so, or the transport
-//! opened with its own native trigger — because a challenge needs a leg to be delivered on, and a
+//! That only happens inside a handshake unit — one the caller opened by declaring it, or one a
+//! native handshake trigger opened — because a challenge needs a leg to be delivered on, and a
 //! handshake unit is the shape that has one: the challenge goes out as the unit's delivery leg, and
 //! the proof arrives as the next handshake frames.
 //!

@@ -60,16 +60,15 @@ pub struct EgressBody<'a> {
 /// cache elsewhere and hand `decorate` an already-minted bearer value).
 #[derive(Debug, Clone)]
 pub enum Scheme {
-    /// `Authorization: Bearer <key>` — OpenAI, `/v1/responses`, Cohere, Anthropic's non-native
-    /// case.
+    /// `Authorization: Bearer <key>` — a plain bearer credential in the standard header.
     Bearer,
-    /// A static custom header carrying the raw key verbatim: `api-key` (Azure OpenAI override) or
-    /// `x-goog-api-key` (Gemini).
+    /// A static custom header carrying the raw key verbatim: e.g. `api-key` or
+    /// `x-goog-api-key`, per the header name the scheme is configured with.
     ApiKeyHeader {
         /// The header name, lowercase.
         header: &'static str,
     },
-    /// Per-request AWS Signature Version 4 (Bedrock). `access_key_id` is not secret (it travels in
+    /// Per-request AWS Signature Version 4. `access_key_id` is not secret (it travels in
     /// plaintext in the `Authorization` header); the signing secret is passed to [`decorate`]
     /// separately, exactly like every other scheme.
     SigV4 {
@@ -77,7 +76,7 @@ pub enum Scheme {
         access_key_id: &'static str,
         /// The AWS region the request is scoped to.
         region: &'static str,
-        /// The AWS service name (`bedrock`).
+        /// The AWS service name this scheme is configured to sign for.
         service: &'static str,
     },
 }

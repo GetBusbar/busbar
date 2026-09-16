@@ -48,11 +48,11 @@ pub struct ResolvedKey {
 
 /// The built-in signed-key verifier, as the chain reaches it.
 ///
-/// The audience argument is the plane boundary: `None` on the residual plane, where the verifier
-/// rejects any token that CARRIES an audience; the plane's own canonical name on an audience-bound
-/// ingress, where it rejects a token whose audience is absent or different. Threading it through
-/// the verifier rather than a caller is what stops a route added to that plane later from forgetting
-/// the check.
+/// The audience argument fixes the audience boundary: `None` requires that a token carry NO
+/// audience, and the verifier rejects any token that CARRIES one; a concrete audience requires that
+/// exact name, and the verifier rejects a token whose audience is absent or different. Threading it
+/// through the verifier rather than leaving it to each caller is what stops a caller added later
+/// from forgetting the check.
 ///
 /// An implementation must check things in this order: **signature → `exp` → denylist → `by_id`
 /// generation**. Each step short-circuits the ones after it — an unsigned or expired token is never

@@ -1,37 +1,18 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 //
-// busbar — a native-protocol LLM gateway. It fronts many LLM providers and routes each request to
-// a model or to a weighted pool of models, translating losslessly between wire protocols and
-// protecting each backend with a circuit breaker. The name is electrical: a busbar takes one feed
-// and fans it out across many breakered circuits.
+// busbar — the composition root binary. It is the one place that names every transport, every
+// compiled-in plane, and every unit the kernel runs, and wires them together at boot; see
+// `src/root/mod.rs` for the three-axis shape (transport / plane / unit) this crate composes.
 //
-// Routing — all SIX ingress protocols are first-class; a native SDK can point its base URL at
-// busbar unmodified (clients append the protocol path themselves). Mirrors the `--help` ENDPOINTS
-// block and the README routing table:
-// POST /<model>/v1/messages              Anthropic-format ingress (single model)
-// POST /<pool>/v1/messages               a config-defined pool (weighted selection + failover)
-// POST /<provider>/<model>/v1/messages   ad-hoc: a specific configured provider+model
-// POST /v1/chat/completions              OpenAI-format ingress (model from the body)
-// POST /v2/chat                          Cohere-format ingress (model from the body)
-// POST /v1/responses                     OpenAI Responses-API ingress (model from the body)
-// POST /v1/models/<model>:<action>       Gemini-format ingress (stable v1 alias)
-// POST /v1beta/models/<model>:<action>   Gemini-format ingress (v1beta)
-// POST /model/<modelId>/converse[-stream] Bedrock Converse / ConverseStream ingress
-// GET  /v1/models  /v1beta/models        list models (dialect by protocol fingerprint)
-// GET  /stats  /healthz  /metrics
+// The protocol, routing, and plane-specific behavior this binary boots are each owned by their own
+// crate (busbar-core and the individual plane crates) and are not this file's concern — see the
+// linked crates' own docs and the README for what a running deployment answers on the wire and the
+// `--help` output above for the CLI surface this binary exposes.
 //
-// Each model is a "lane" with its own concurrency semaphore, optional lifetime request budget, and
-// per-(pool,lane) circuit-breaker health. A pool stacks its members' concurrency into one aggregate
-// and distributes via smooth weighted round-robin. Ingress and backend protocols may differ: the
-// request and response are translated through a superset intermediate representation (see
-// `proto`/`ir`), so e.g. an OpenAI-format client can drive a Gemini or Bedrock backend, or a native
-// Responses/Cohere/Gemini/Bedrock client can drive any configured backend.
-//
-// Failure handling (see `breaker`): transient upstream faults (5xx / overload / rate-limit /
-// timeout / network) arm an escalating cooldown; billing and auth faults open the breaker with a
-// long sticky cooldown; client-supplied 4xx are relayed verbatim and never penalize the lane; an
-// exhausted lifetime budget disables the lane. Tripped lanes recover via a half-open probe.
+// See `register_protocols`/`register_planes`/`register_diagnostics`/`register_ws_arrivals` below
+// for the composition root's one write into each axis: each linked crate contributes its own
+// declarations here, under its own Cargo feature, and nowhere else.
 
 // busbar contains ZERO `unsafe` code; enforce that as a compile-time guarantee so any future PR that
 // introduces an `unsafe` block fails to build rather than slipping in unreviewed.
@@ -1404,11 +1385,11 @@ async fn run(data_workers: usize) {
     // tamper evidence) moved with the code; see busbar-core/src/boot.rs. A plane whose durable
     // state cannot be restored REFUSES BOOT — `hydrate_all` propagates the plane hook's `Err`.
     busbar_core::boot::hydrate_all(&app).unwrap_or_else(|e| die(e));
-    // RELIABILITY STATE IS STATELESS (store-or-RAM rule): circuit breakers, cooldowns, latency EWMAs
-    // and hard-down latches live in RAM only and are RE-LEARNED after a restart (a lane that is down
-    // re-trips its breaker on request #1). Nothing is restored from disk — the durable config that
-    // makes "fix the config and restart" the recovery path lives in the config-overlay persistence,
-    // not in a health snapshot. The config version-history ring is likewise RAM-only, re-seeded here
+    // RELIABILITY STATE IS STATELESS (store-or-RAM rule): a plane's own in-memory health/backoff
+    // bookkeeping lives in RAM only and is RE-LEARNED after a restart — none of it is this crate's
+    // business, and nothing about it is restored from disk here. The durable config that makes "fix
+    // the config and restart" the recovery path lives in the config-overlay persistence, not in a
+    // health snapshot. The config version-history ring is likewise RAM-only, re-seeded here
     // at its boot floor (see `app.versions.record(0, …)` above); durable cross-restart rollback would
     // need a store seam, which does not exist over the plugin wire ABI today (see the 1.5.3 report).
     tracing::info!(

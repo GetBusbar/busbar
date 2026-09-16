@@ -14,7 +14,7 @@
 //! The upstream is a hand-rolled, deliberately SLOW HTTP server: the two admitted requests must be
 //! in flight (holding both permits) while the other six arrive, or there is no saturation to observe.
 #![cfg(unix)]
-// Needs a bootable server with an LLM route to send a real request through; a build without a wire
+// Needs a bootable server with a route to send a real request through; a build without a wire
 // codec fail-closes at boot. The shed layer itself is plane-independent.
 #![cfg(feature = "proto-llm")]
 

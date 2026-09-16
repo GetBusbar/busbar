@@ -12,7 +12,7 @@ fn trust_token() -> TrustToken {
     TrustToken::mint(&KernelSeal::acquire_for_kernel())
 }
 
-/// The destination the trust unit judged for the Bedrock lane: the sealed lane is what the
+/// The destination the trust unit judged for this lane: the sealed lane is what the
 /// envelope's host field must still carry after decoration.
 fn sealed_destination() -> VerifiedDestination {
     VerifiedDestination::seal(
@@ -74,7 +74,7 @@ fn bearer_scheme_omits_header_for_control_byte_key() {
     assert!(envelope.is_empty());
 }
 
-/// `api-key` (Azure OpenAI override): the raw key is substituted verbatim, with no `Bearer` prefix.
+/// `api-key`: the raw key is substituted verbatim, with no `Bearer` prefix.
 #[test]
 fn api_key_header_scheme_substitutes_raw_value() {
     let t = token();
@@ -95,7 +95,7 @@ fn api_key_header_scheme_substitutes_raw_value() {
 ///
 /// The bearer arm's guard has a test above it; the `ApiKeyHeader` arm's guard is its own `if` and
 /// had none, so deleting those three lines left the whole crate green. The value is substituted
-/// VERBATIM here — no `Bearer` prefix, no quoting — so an Azure or Gemini key that a config system
+/// VERBATIM here — no `Bearer` prefix, no quoting — so a raw-header key that a config system
 /// resolved to text containing CR/LF is a header-split request smuggled upstream: everything after
 /// the CRLF is read by the destination as a header of its own, or as the start of a second request.
 /// The decoration has to come back empty, exactly as the bearer arm's does, so the upstream answers
@@ -142,7 +142,7 @@ fn a_custom_header_scheme_omits_the_header_for_a_key_with_crlf_in_it() {
     );
 }
 
-/// `x-goog-api-key` (Gemini): same raw-substitution scheme, different header name — proves the two
+/// `x-goog-api-key`: same raw-substitution scheme, different header name — proves the two
 /// custom-header schemes cannot cross-contaminate each other's header name.
 #[test]
 fn x_goog_api_key_scheme_uses_its_own_header_name() {
@@ -164,7 +164,7 @@ fn x_goog_api_key_scheme_uses_its_own_header_name() {
 
 /// SigV4: `decorate` computes a full `Authorization` header (no slot — the wire value is a
 /// signature, not the secret) whose SignedHeaders/Signature match the hand-computed values against
-/// AWS's published worked example, given the same inputs busbar's Bedrock lane would present.
+/// AWS's published worked example, given the same shape of inputs a SigV4-signed lane would present.
 #[test]
 fn sigv4_scheme_matches_aws_worked_example_end_to_end() {
     let t = token();
@@ -213,7 +213,7 @@ fn sigv4_scheme_matches_aws_worked_example_end_to_end() {
     // query string, the payload hash and the timestamp into the right parameters. Transposing
     // `region` and `service` at the call site is the sharp case: `Credential=` is built separately
     // from the same two variables so it still reads `us-east-1/iam`, and `SignedHeaders` does not
-    // move, so both assertions above stay green while every Bedrock request 403s. The expectation
+    // move, so both assertions above stay green while every signed request 403s. The expectation
     // is therefore recomputed here from arguments written out in `sign_v4`'s own parameter order,
     // which is what a transposition inside `decorate` has to disagree with.
     let payload_hash = sigv4::sha256_hex(b"");

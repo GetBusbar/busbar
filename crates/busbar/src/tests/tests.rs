@@ -669,9 +669,9 @@ fn source_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
 /// without the feature must still compile, boot and serve the remaining planes. One unconditional
 /// call into a gated module takes that away, and takes it away SILENTLY — every default build is
 /// green, and only the deletion gates, which are not what a change is usually run against, go red.
-/// That is exactly how a root whose rate card was built through the LLM plane's unit file shipped:
-/// the card is the root's, every plane's exit prices against it, and no build without that one
-/// plane could compile it.
+/// That is exactly how a root whose shared rate card was built through one plane's unit file
+/// shipped: the card is the root's, every plane's exit prices against it, and no build without
+/// that one plane could compile it.
 ///
 /// So the rule is read off the source rather than trusted, and nothing here spells a plane: the
 /// gated module names and their features come from `root/mod.rs` itself, and every line in this

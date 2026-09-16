@@ -12,8 +12,8 @@
 //! Nothing of the kind exists in the tree today, so this is the tripwire: the first ledger series
 //! or boot line that leaks onto a plain 1.5.5 deployment turns it red.
 #![cfg(unix)]
-// The fixture boots a REAL busbar with an LLM provider; a `--no-default-features` build has no
-// wire codec compiled in and fail-closes at boot, which is correct product behaviour, not a
+// The fixture boots a REAL busbar with a configured provider; a `--no-default-features` build has
+// no wire codec compiled in and fail-closes at boot, which is correct product behaviour, not a
 // regression. Full-feature builds run it.
 #![cfg(feature = "proto-llm")]
 

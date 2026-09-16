@@ -144,7 +144,7 @@ pub fn priced(view: &dyn PoolView, name: &str, message: &'static str) -> Option<
 
 /// All three guards, in their fixed order.
 ///
-/// `unpriced_message` is the caller-facing text for the third guard, which names the model the
+/// `unpriced_message` is the caller-facing text for the third guard, which names the destination the
 /// caller asked for and is therefore built by the caller rather than stored here.
 pub fn destination_guard(
     view: &dyn PoolView,
