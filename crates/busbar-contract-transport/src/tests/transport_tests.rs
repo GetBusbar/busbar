@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for `crates/busbar-substrate/src/transport.rs`.
+//! Tests for `crates/busbar-contract-transport/src/transport.rs` (relocated from
+//! `busbar-substrate-values` 1.6.0).
 
 use super::*;
 

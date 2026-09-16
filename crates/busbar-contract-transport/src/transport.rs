@@ -1,0 +1,299 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
+//! The `Transport` axis — the CHANNEL a framed operation rides, and the third axis of the matrix.
+//!
+//! ```text
+//! codec   = matrix[protocol][operation]      // UNCHANGED — the codec never learns the transport
+//! framing = transport.frame(codec)           // this module, and deliberately thin
+//! ```
+//!
+//! ## WHY THERE IS AN AXIS HERE AT ALL
+//!
+//! The six LLM protocols are six DIALECTS over ONE channel, so transport never varied and was never
+//! modelled. A2A is ONE dialect over THREE (JSON-RPC, HTTP+JSON, gRPC), and gRPC is not the axum
+//! catch-all at all. MCP had the same question latent, and this release ANSWERED it by BUYING the
+//! arm rather than by subtraction: [`Transport::Stdio`] dispatches to a real child-process
+//! supervisor at `mcp/client/stdio.rs`, and the tokio `process` feature is back in
+//! `crates/busbar/Cargo.toml` with the argument its own comment used to demand — a caller.
+//!
+//! That history is worth keeping, because it is the axis earning its keep twice. The supervisor was
+//! written once, had NOTHING dispatch to it, and was deleted along with the `process` feature for
+//! exactly that reason. What brought it back was this axis: a place for the arm to hang. Without one
+//! it becomes a second dispatch path beside the matrix — which is precisely how `mcp/` came to hold
+//! 13,069 lines of a core that already existed.
+//!
+//! ## WHY IT IS A TOP-LEVEL MODULE, BESIDE `operation.rs`
+//!
+//! An axis of the matrix is not owned by any cell of it. `Operation` sits at `operation.rs` for the
+//! same reason, and the two files should be read as a pair: both are coarse, closed tags whose whole
+//! value is that adding a variant is a compile error at every site that must now decide something.
+//! Putting `Transport` under `proto/` would make it a protocol's property (it is not — that is the
+//! entire point of A2A's three bindings of ONE agent), and putting it under `handlers/` would make
+//! it a codec's property (it is not — the codec must never learn it).
+//!
+//! ## FIVE VARIANTS. THE FOUR NEW ONES WERE BOUGHT, NOT GUESSED.
+//!
+//! The paragraph below is kept as written because it recorded a decision, and the decision held:
+//! the axis landed with one variant, the shape was proven by the one that existed, and every later
+//! variant was added by driving a real request down it rather than by anticipating one. A2A's three
+//! bindings arrived on the commits that armed them. `Stdio` arrived the same way, and what it bought
+//! is [`Transport::upstream_wire`] — the ONE match on this axis in the tree — and the deleted
+//! `mcp/client/stdio.rs` supervisor coming back with a caller instead of an `#![allow(dead_code)]`.
+//!
+//! ## ONE VARIANT, ON PURPOSE
+//!
+//! The axis landed with ONE variant for what existed and nothing else, on the argument that an enum
+//! with speculative variants nobody has driven a request through is a design nobody has tested.
+//! A2A's three served bindings ride requests, which is the whole of why they are here — and each
+//! arrived on the commit that armed it, not ahead of it.
+//!
+//! What the extra variants BUY is the thing the one-variant step could only claim. A2A is one
+//! dialect over several channels, and the channels differ in ways no codec can be asked to know: an
+//! HTTP request body IS the codec's request wire, and a gRPC request body is a length-prefixed
+//! protobuf frame carrying a message whose canonical JSON mapping is that wire. That difference is
+//! FRAMING, it lives here, and the A2A codec below it never learns which channel spoke.
+//!
+//! ## THE QUESTION THE FIRST STEP DEFERRED, AND THE ANSWER THE INSTRUMENT GAVE
+//!
+//! A2A's spec calls JSON-RPC and HTTP+JSON two *transports* of one agent, but by the rule this tree
+//! already applies they differ only in which member names the operation — and `handlers/mcp.rs`
+//! states in its own header that a JSON-RPC envelope is the protocol's DIALECT, "exactly as
+//! `{"messages": […]}` is OpenAI's", carried by the codec. Both readings cannot be right. The first
+//! step did not settle it, and said exactly what would: *the TCK scores each armed leg separately,
+//! so if the legs must be LABELLED separately then [`Transport::Http`] splits at that point.*
+//!
+//! **They must, and it did.** The official A2A TCK reports `jsonrpc:` and `http_json:` as separate
+//! rows over ONE requirement set, and a requirement FAILS if any armed leg fails it. "Which leg did
+//! this request arrive on" is therefore a fact busbar's own telemetry has to be able to state, and
+//! one label covering both cannot state it. So [`Transport::Http`] split into itself plus
+//! [`Transport::JsonRpc`] and [`Transport::HttpJson`], and it cost what the first step predicted:
+//! the enum variants plus the sites the compiler named.
+//!
+//! **The split is not a rename of the old variant, and that distinction is load-bearing.**
+//! [`Transport::Http`] still carries the six LLM protocols' POSTs, unchanged and unrelabelled: no
+//! instrument scores them as separate legs of one requirement, which is the only thing that made
+//! A2A's two need separate names, and moving them would have changed a live metric label to prove a
+//! point about tidiness. What moved is the A2A plane, which had no `Transport` at all before this.
+//!
+//! **The names are the plane's wire-format names, not a second vocabulary.**
+//! [`Transport::JsonRpc`], [`Transport::HttpJson`] and [`Transport::Grpc`] answer `jsonrpc`,
+//! `http+json` and `grpc` — the three entries of `Plane::A2a.wire_format_names()`, read from the
+//! same three constants. That is what lets this plane label its own requests now that it no longer
+//! can be labelled from the PLANE at the ingress boundary (`Plane::sole_wire_format` answers `None`
+//! for a plane with several dialects), and it is why the label an operator reads in Prometheus is
+//! the same word the served agent card advertises.
+//!
+//! **Two of the three share a door and one has its own, and that is why both labelling mechanisms
+//! exist.** `jsonrpc` and `http+json` are both spoken at `/a2a`, so the boundary cannot tell them
+//! apart and `a2a::receive::invoke` labels them from inside with the leg it was handed. gRPC is
+//! spoken at `/lf.a2a.v1.A2AService`, a door of its own, so `PlaneDispatch::wire_format_of` can name
+//! it from the claim before any handler runs — which is what still counts a refusal that reaches no
+//! handler at all.
+//!
+//! ## RELOCATED HERE, 1.6.0
+//!
+//! Moved from `busbar-substrate-values` to `busbar-contract-transport`: the enum's derive carries
+//! no `Serialize`/`Deserialize` and no `repr` — it is NOT on the wire — only [`Transport::name`]'s
+//! returned strings are frozen (`"http"`/`"websocket"`/`"stdio"` plus the three `WIRE_*` constants
+//! below), so the move changes no byte a caller reads. `busbar-substrate-values` re-exports this
+//! module at its historical path (`transport::{Transport, UpstreamWireKind}` and
+//! `plane::{WIRE_JSONRPC, WIRE_HTTP_JSON, WIRE_GRPC}`), so `busbar_substrate::transport::Transport`
+//! and `busbar_substrate::plane::WIRE_*` still resolve, unchanged, for every existing caller.
+
+/// The three WIRE-FORMAT NAMES the transport axis and the plane declaration share. The CUT: the rest
+/// of `plane` is the declaration/registry surface, which names the host seams and the route mount and
+/// therefore stays with them in `busbar-substrate` — but [`Transport::name`] reads these three
+/// constants (that is the whole point of them: one spelling for the metric label, the plane's
+/// wire-format list and the served card's `protocolBinding`), so they crossed with the axis.
+/// `busbar-substrate-values` and `busbar-substrate` both re-export all three, so
+/// `busbar_substrate::plane::WIRE_JSONRPC` and its siblings resolve unchanged.
+pub mod plane {
+    /// THE WIRE FORMAT both mounted planes speak: JSON-RPC 2.0. Named once, here, because it is read
+    /// twice as a `wire_format_names` entry and once more by the error-shaping boundary, which
+    /// decides that a refusal on a mounted plane is a JSON-RPC error object rather than a vendor
+    /// envelope. A literal spelled per site is how those two answers start to differ.
+    pub const WIRE_JSONRPC: &str = "jsonrpc";
+
+    /// THE SECOND WIRE FORMAT THE A2A PLANE SPEAKS: A2A's HTTP+JSON binding, where the REQUEST LINE
+    /// names the operation rather than a body member. Named once, here, because it is read three ways
+    /// and all three must agree — as a `wire_format_names` entry, as the
+    /// `busbar_core::transport::Transport::HttpJson` label, and (upper-cased by
+    /// `a2a::serve::servable_bindings`) as the `protocolBinding` a served agent card advertises. The
+    /// card spelling is `HTTP+JSON`, so this is that string lower-cased and nothing else.
+    pub const WIRE_HTTP_JSON: &str = "http+json";
+
+    /// The A2A specification's gRPC binding, as a wire-format name. Lower-case here and upper-cased
+    /// once, by `busbar_core::a2a::serve::servable_bindings`, into the `GRPC` an agent card advertises
+    /// — so the card cannot claim a binding the plane does not list, which is the whole reason that
+    /// function reads this list rather than writing one of its own.
+    pub const WIRE_GRPC: &str = "grpc";
+}
+
+/// The channels busbar's framed operations ride. Closed set — adding one is a compile error at
+/// every exhaustive match and at every site that builds a framed cell.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Transport {
+    /// ONE HTTP request in, ONE HTTP response out — the exchange every cell in the tree uses
+    /// today: the six LLM protocols' POSTs and `handlers/mcp.rs`'s streamable-HTTP `/mcp`. The
+    /// response may be buffered, SSE-framed or binary event-stream framed; that choice belongs to
+    /// the codec and the ingress writer, not here, which is why one variant covers all six cells.
+    Http,
+    /// A2A'S JSON-RPC BINDING — one HTTP POST carrying a `{jsonrpc, id, method, params}` envelope,
+    /// where A BODY MEMBER names the operation. The `JSONRPC` entry of an agent card's
+    /// `supportedInterfaces[]`, and the leg the TCK scores as `jsonrpc:`.
+    JsonRpc,
+    /// A2A'S HTTP+JSON BINDING — the same HTTP exchange, with THE REQUEST LINE naming the operation
+    /// instead of a body member. `POST /message:send` rather than `{"method":"SendMessage"}`,
+    /// `GET /tasks/{id}` rather than `{"method":"GetTask","params":{"id":…}}`.
+    ///
+    /// A separate variant rather than a flag on [`Transport::JsonRpc`] because the specification
+    /// models the two as distinct bindings of ONE agent and the conformance instrument scores each
+    /// as its own leg of every requirement. What rides them is otherwise IDENTICAL: A2A section 11.3
+    /// makes the REST request body the JSON-RPC `params` VERBATIM and the REST success body the
+    /// `result` VERBATIM. That is why arming this one is re-framing rather than translation, and
+    /// why the cell below it never learns which of the two it is being spoken over.
+    HttpJson,
+    /// ONE gRPC call in, one message or one message STREAM out — the A2A specification's third
+    /// binding, served at the path the `.proto`'s own package and service name dictate
+    /// (`/lf.a2a.v1.A2AService/*`) rather than at any path busbar chose.
+    ///
+    /// It is a variant rather than a flavour of [`Transport::Http`] even though it rides HTTP/2,
+    /// because the two differ in exactly the thing this axis exists to name: the FRAMING. On
+    /// `Http` the request body is the codec's request wire; here it is a length-prefixed protobuf
+    /// frame whose message must be transcoded to that wire before any codec sees it, and the reply
+    /// must be transcoded back and terminated with a `grpc-status` trailer rather than an HTTP
+    /// status. Nothing below this line knows that, which is the property being bought.
+    Grpc,
+    /// A CHILD PROCESS with a pipe on each side of it: newline-delimited JSON-RPC on its stdin and
+    /// stdout, which is what MCP's stdio transport is. OUTBOUND ONLY in this build — busbar is the
+    /// parent and the MCP server is the child; busbar is never itself launched as one. See
+    /// `mcp/client/stdio.rs` for why that direction and not the other.
+    ///
+    /// The variant that makes the axis earn its keep. Everything [`Transport::Http`] gets for free
+    /// from the shared `reqwest` pool — a destination, a connection, a resolver to SSRF-check, a
+    /// peer that was already running — is absent here, and a channel with none of those properties
+    /// is precisely the thing that would have become a second dispatch path if it had nowhere to
+    /// hang.
+    Stdio,
+    /// A FULL-DUPLEX FRAMED CONNECTION — one long-lived socket carrying framed messages in BOTH
+    /// directions at once, rather than the one-request-one-response exchange [`Transport::Http`]
+    /// models. The byte-duplex carrier that `busbar_substrate::ingress::byte_duplex` pumps: a
+    /// message `Stream`/`Sink<Vec<u8>>` pair served until the stream ends, with each side free to send
+    /// a frame at any time without a prior request from the other.
+    ///
+    /// A variant rather than a flavour of [`Transport::Http`] because the two differ in exactly the
+    /// thing this axis names — the FRAMING. `Http` frames one buffered or streamed reply behind one
+    /// request; here the channel is symmetric and open-ended, so "which frame answers which" is not a
+    /// property the transport can assume. ARMED under the `runtime` capability: the neutral WS
+    /// transport is real on both legs — the ingress WS-upgrade acceptor (`crate::ingress::duplex_ws`)
+    /// presents an upgraded socket as the `serve_messages` channel, and the egress WS dialer
+    /// (`crate::egress::duplex_ws`) dials an upstream `wss://` THROUGH `net_guard` and hands back the
+    /// same channel. A duplex caller selects this variant and lets the transport open the socket.
+    WebSocket,
+}
+
+/// THE TWO MCP CLIENT WIRES a [`Transport`] can select — the neutral hand-off
+/// [`Transport::upstream_wire`] returns so the transport axis answers "which channel" without naming
+/// the MCP plane's wire vtable, which the plane maps to `&dyn McpWire` on its own side
+/// (`mcp/client/wire.rs`). A closed core enum rather than the plane's types, so the axis names no MCP
+/// plane type while the wire TYPES stay in the plane that owns them.
+// Read on the MCP client leg (`dispatch`) AND on the full-duplex leg (`runtime`, the duplex plane's
+// WS dialer): both resolve "which upstream wire" off this axis. With BOTH capabilities compiled out
+// there is no upstream wire to select, so it is gated exactly as [`Transport::upstream_wire`] is.
+#[cfg(any(feature = "dispatch", feature = "runtime"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UpstreamWireKind {
+    /// The streamable-HTTP POST wire (`mcp/client/transport.rs`'s `HttpTransport`).
+    StreamableHttp,
+    /// The child-process stdin/stdout wire (`mcp/client/stdio.rs`'s `StdioWire`).
+    Stdio,
+    /// A BIDIRECTIONAL FRAMED BYTE WIRE — the full-duplex channel shape [`Transport::WebSocket`]
+    /// selects, distinct from the two request/response wires above because bytes flow both ways over
+    /// one open connection. ARMED under the `runtime` capability: the neutral WS egress dialer
+    /// (`crate::egress::duplex_ws`) is the site that maps this discriminant to a real guarded socket,
+    /// so a duplex caller that selects `Transport::WebSocket` resolves the axis to a live wire. The
+    /// MCP client leg (`mcp/client/wire.rs`) still has no `Duplex` arm — it never selects it.
+    Duplex,
+}
+
+impl Transport {
+    /// Every transport, so a site that must cover all of them cannot silently cover some. The same
+    /// role `Plane::ALL` plays for its axis: a variant absent from here is a variant nothing
+    /// enumerates.
+    ///
+    /// Its readers are TESTS today, and that is stated rather than hidden behind a production use
+    /// invented to justify it. What it buys is that the axis is ENUMERABLE — the label-uniqueness
+    /// check and the "these legs are the A2A plane's wire formats" check both walk it, so adding a
+    /// variant with a duplicate or off-vocabulary name is a failing test rather than a metric label
+    /// nobody notices is wrong.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub const ALL: &'static [Transport] = &[
+        Transport::Http,
+        Transport::JsonRpc,
+        Transport::HttpJson,
+        Transport::Grpc,
+        Transport::Stdio,
+        Transport::WebSocket,
+    ];
+
+    /// Stable identifier — a bounded metric/tracing label, exactly like [`Operation::name`]. It is
+    /// the label that says WHICH LEG a request arrived on, which is what makes a per-transport
+    /// conformance number readable from busbar's own telemetry now that a second transport is armed.
+    ///
+    /// The three A2A legs answer their PLANE'S wire-format names, read from the same three constants
+    /// `Plane::A2a.wire_format_names()` is built from, rather than from strings spelled again here.
+    /// That is what makes the metric label, the plane's dialect list and the `protocolBinding` a
+    /// served card advertises one vocabulary instead of three that agree today.
+    pub fn name(self) -> &'static str {
+        match self {
+            Transport::Http => "http",
+            Transport::JsonRpc => plane::WIRE_JSONRPC,
+            Transport::HttpJson => plane::WIRE_HTTP_JSON,
+            // The A2A card's `protocolBinding` for this leg is `GRPC` and the plane's wire-format
+            // name is `grpc`; one lower-case spelling, so a per-transport conformance number read
+            // off busbar's telemetry and one read off the TCK's own stdout name the same leg.
+            Transport::Grpc => plane::WIRE_GRPC,
+            Transport::Stdio => "stdio",
+            Transport::WebSocket => "websocket",
+        }
+    }
+
+    /// THE MCP CLIENT LEG'S ARM — the one and only place the transport's identity is asked on the
+    /// path that calls an upstream MCP server, and the reason there is no second one.
+    ///
+    /// the `structure-lint` gate bans the agnostic core from comparing a transport, and this is what
+    /// replaces the comparison it bans: the axis answers "which channel" ONCE and hands back a
+    /// NEUTRAL discriminant, so `mcp/client/wire.rs` maps that to its own zero-sized vtable and
+    /// `mcp/upstream.rs` sends bytes without this axis naming the plane's wire types. A `match` in
+    /// the dispatcher instead would have forked selection, credential planning, timeout handling and
+    /// error reporting the moment the second arm landed — the shape the header calls "a second
+    /// dispatch path beside the matrix".
+    ///
+    /// The match on the transport axis stays HERE, where it is legitimate; only the mapping from this
+    /// discriminant to the plane's `&'static dyn McpWire` vtable moved into the plane, so the axis no
+    /// longer names an MCP plane type. `None` for the three A2A ingress bindings — they are never an
+    /// MCP client leg, and `mcp/config.rs` refuses any `transport:` that is not `streamable_http` or
+    /// `stdio` at boot, so a `None` here is a config-grammar defect the plane makes loud rather than a
+    /// silent wrong channel.
+    // Read by the MCP client leg (`mcp/client/wire.rs`, `dispatch`) AND by the full-duplex leg (the
+    // duplex plane's WS dialer, `runtime`): both resolve "which upstream wire" off the axis here. With
+    // BOTH capabilities compiled out it is dead, so it is gated on their union.
+    #[cfg(any(feature = "dispatch", feature = "runtime"))]
+    pub fn upstream_wire(self) -> Option<UpstreamWireKind> {
+        match self {
+            Transport::Http => Some(UpstreamWireKind::StreamableHttp),
+            Transport::Stdio => Some(UpstreamWireKind::Stdio),
+            // The full-duplex framed wire the axis names neutrally. ARMED under `runtime`: the neutral
+            // WS egress dialer (`crate::egress::duplex_ws`) maps this discriminant to a real guarded
+            // socket, so a duplex caller that selects `Transport::WebSocket` resolves the axis to a
+            // live wire rather than an unreachable. The MCP client leg never selects it.
+            Transport::WebSocket => Some(UpstreamWireKind::Duplex),
+            Transport::JsonRpc | Transport::HttpJson | Transport::Grpc => None,
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "tests/transport_tests.rs"]
+mod tests;
