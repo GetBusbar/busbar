@@ -129,9 +129,14 @@ mod alloc_gate_instrument {
 // cfgs that gated them) are GONE — the engine no longer reaches into its plugins' source.
 pub mod admin;
 /// THE APPEND-ONLY HASH CHAIN, in core. One append, one digest, one verifier, for every stream of
-/// evidence busbar keeps — a plane supplies the record type and nothing else. `admin::audit` is the
+/// evidence busbar keeps — a plane supplies the record type and nothing else. `audit_ring` is the
 /// admin-mutation STREAM that runs on it, not a second mechanism.
 pub mod audit;
+/// The admin-mutation audit RING: core's own security-audit infrastructure (hash-chained
+/// `AuditEntry`s, the process-wide `AUDIT` ring, `record_by`), relocated out of `admin::` (1.6.0
+/// de-vocab) since it is consumed by core's auth middleware and the plane-mutation spine, not the
+/// admin HTTP API. Runs on the append-only chain mechanism in [`audit`] above.
+pub mod audit_ring;
 pub mod auth;
 pub mod auth_cache;
 pub mod billing;
@@ -215,7 +220,16 @@ pub mod plugin_routes;
 pub use busbar_substrate::profile;
 pub mod proto;
 pub mod proxy;
+/// Per-principal admin MUTATION rate limits (`MutationLimiter`), relocated out of `admin::` (1.6.0
+/// de-vocab): it is core's own auth-middleware infrastructure — gating every request in
+/// `auth_middleware` before any handler runs — not part of the admin HTTP API service.
+pub(crate) mod ratelimit;
 pub mod session;
+/// The wire error-type taxonomy (`ERR_TYPE_*`), relocated out of `admin::` (1.6.0 de-vocab): the
+/// constant string VALUES (the wire error-type tokens) are byte-identical; only their Rust binding
+/// path moved, since `ingress::dispatch`/`ingress::arrival_host`/`router` consume them, not the
+/// admin HTTP API.
+pub(crate) mod taxonomy;
 // wt2/neutral-utils: the hand-rolled SigV4 signer relocated DOWN to busbar-substrate (neutral crypto,
 // verifies via `busbar_api::constant_time_eq`). Core re-exports it so `crate::sigv4::…` is unchanged.
 pub use busbar_substrate::sigv4;

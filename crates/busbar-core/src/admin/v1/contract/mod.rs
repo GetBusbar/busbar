@@ -71,35 +71,11 @@ pub(crate) const VERSIONS_LIMIT_DEFAULT: usize = 100;
 /// mint path is now the token-exchange seam (`POST /auth/token`), not a narrow admin scope.
 pub use busbar_contract::authz::{Grants, Scope};
 
-/// THE ONE `max_admin_scope:` CEILING-TOKEN CHECK, with the one error message. `subject` is the
-/// human path of the site that carries the token (`auth chain entry 'ad'`,
-/// `identity-providers.corp-ad`) — everything else is identical, because the accepted-value list
-/// must be.
-///
-/// ADMIN-WORDED (the error text names `max_admin_scope`/`admin_scope`/`admin authority`
-/// verbatim — WIRE-PINNED, byte-frozen) — this stays on the admin surface, unlike the generic
-/// `Scope`/`Grants` lattice above. `Scope::parse` itself is the only part this borrows from the
-/// neutral contract.
-///
-/// Both surfaces that can introduce a ceiling call THIS: `config_validate`'s chain-entry rule
-/// (boot / `--validate`) and the admin named-map write path (`NamedMapSection::parse_def`). They
-/// used to disagree — the API accepted any string (the write path only ran the `serde`
-/// type-check, and `Option<String>` accepts every string), persisted it, answered 200, and the
-/// gateway then refused to BOOT on the next restart with "unknown max_admin_scope". A successful
-/// admin write that leaves the deployment unbootable is the failure mode a second copy of the
-/// accepted-value list buys you; there is now only one copy.
-pub(crate) fn parse_ceiling(subject: &str, token: &str) -> Result<Scope, String> {
-    Scope::parse(token).ok_or_else(|| {
-        format!(
-            "{subject} has unknown max_admin_scope '{token}': expected read-only or full. \
-             There is no `none`: omit the key for the most restrictive default \
-             (`{}`), and to grant NO admin authority through this identity source grant no \
-             `admin_scope` under its `role_bindings:` — the ceiling caps what a grant can \
-             reach, it cannot express the absence of one.",
-            crate::config::DEFAULT_MAX_ADMIN_SCOPE
-        )
-    })
-}
+// `parse_ceiling` (the `max_admin_scope:` ceiling-token check) RELOCATED to
+// `crate::config::parse` (1.6.0 de-vocab): its callers — `config_validate`'s chain-entry rule and
+// `config::named_map`'s write path — are both neutral config surfaces, not the admin HTTP API.
+// Byte-identical rename: the admin-worded error TEXT is unchanged, only the Rust binding path
+// moved.
 
 /// The AUTHORIZATION MATRIX: the scope an admin endpoint requires, derived from METHOD + PATH —
 /// never from the body (a crafted request cannot escalate). A strict two-rung split (1.5.2 scope

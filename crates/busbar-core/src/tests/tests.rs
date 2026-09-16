@@ -463,7 +463,7 @@ fn test_fallback_bedrock_404_is_native_envelope_with_amzn_headers() {
         &residual_planes(),
         "/model/some.model/converse",
         axum::http::StatusCode::NOT_FOUND,
-        crate::admin::ERR_TYPE_NOT_FOUND,
+        crate::taxonomy::ERR_TYPE_NOT_FOUND,
         "missing",
     );
     assert_eq!(resp.status(), axum::http::StatusCode::NOT_FOUND);
@@ -493,7 +493,7 @@ async fn test_fallback_openai_404_is_json_no_amzn_headers() {
         axum::http::StatusCode::NOT_FOUND,
         // REGRESSION: the fallback 404 emits the CANONICAL `not_found_error` kind, so
         // an OpenAI-inferred 404 carries `{"error":{"type":"not_found_error"}}`, not `not_found`.
-        crate::admin::ERR_TYPE_NOT_FOUND,
+        crate::taxonomy::ERR_TYPE_NOT_FOUND,
         "missing",
     );
     assert_eq!(
@@ -515,7 +515,7 @@ async fn test_fallback_openai_404_is_json_no_amzn_headers() {
         &residual_planes(),
         "/v1/chat/completions",
         axum::http::StatusCode::NOT_FOUND,
-        crate::admin::ERR_TYPE_NOT_FOUND,
+        crate::taxonomy::ERR_TYPE_NOT_FOUND,
         "missing",
     );
     assert!(

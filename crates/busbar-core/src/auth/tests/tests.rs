@@ -1413,7 +1413,7 @@ async fn forbidden_admin_requests_audit_once_per_window() {
         );
     }
 
-    let n = crate::admin::audit::AUDIT
+    let n = crate::audit_ring::AUDIT
         .export()
         .iter()
         .filter(|e| e.action == "admin.forbidden" && e.principal == principal_id)

@@ -69,7 +69,7 @@ use super::{
     config_transaction, err_json, err_json_cond, if_match_version, respond, stale_if_match,
     with_config_etag, Outcome,
 };
-use crate::admin::audit;
+use crate::audit_ring as audit;
 use crate::admin::v1::contract::taxonomy::Cond;
 use crate::admin::v1::contract::AdminError;
 use crate::config::named_map::NamedMapSection;

@@ -3,7 +3,7 @@
 
 //! Re-export shim. THE EGRESS GATE moved DOWN into `busbar-substrate` in Phase-B B1; this module
 //! re-exports it (glob) so every `crate::egress_auth::gate::…` name resolves unchanged and hosts the
-//! core-only gate tests, which name `crate::admin::audit` and `crate::audit`.
+//! core-only gate tests, which name `crate::audit_ring` and `crate::audit`.
 
 // This outbound trust/egress auth gate is served only by a trust-fronting plane; with none such
 // compiled in the glob re-export names nothing any in-core caller uses, exactly as the pre-split

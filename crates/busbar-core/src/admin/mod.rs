@@ -32,6 +32,8 @@ where
 
 use crate::admin::v1::contract::taxonomy::Cond;
 use crate::admin::v1::contract::AdminError;
+use crate::audit_ring as audit;
+use crate::config::parse::parse_duration_secs;
 use crate::diagnostics::{
     diag_debug, diag_error, ADMIN_CREATEKEY_MALFORMED_BODY, ADMIN_STORE_OPERATION_FAILED,
     ADMIN_STORE_TASK_JOIN_FAILED, ADMIN_UPDATEKEY_MALFORMED_BODY, CREATEKEY_UNKNOWN_POOL,
@@ -363,27 +365,19 @@ impl MintPolicy {
     }
 }
 
-/// The `<n><unit>` duration parser now lives in the neutral substrate (`busbar_substrate::duration`)
-/// so the plane crates name it without reaching into busbar-core; re-exported here so every
-/// `crate::admin::parse_duration_secs` / `busbar_core::admin::parse_duration_secs` caller is unchanged.
-pub use busbar_substrate::duration::parse_duration_secs;
+// `parse_duration_secs` RELOCATED to `crate::config::parse` (1.6.0 de-vocab): it is a neutral
+// config-parsing helper (`config_validate`, `config::named_map`), not admin-surface vocabulary.
+// Imported below (`use crate::config::parse::parse_duration_secs;`) so the mint-TTL call sites in
+// this file are unchanged.
 
 #[cfg(test)]
 #[path = "tests/parse_duration_secs_tests.rs"]
 mod parse_duration_secs_tests;
 
-/// Error-type taxonomy strings aliased from their one canonical home,
-/// `busbar_substrate::proto`, so every caller of the admin surface and every plugin's error
-/// surface draw from the same vocabulary instead of each keeping its own copy. `main.rs`
-/// references them via `crate::admin::ERR_TYPE_*`.
-///
-/// The admin API itself no longer has an error vocabulary of its own: every admin error — keys
-/// included — is an [`AdminError`] projected by `key_err`/`err_json` (design D route 2). The
-/// `internal_error`/`conflict_error`/`version_conflict_error` tokens that used to be re-mapped onto
-/// the frozen `code` enum in a second place are gone with it.
-pub(crate) const ERR_TYPE_NOT_FOUND: &str = busbar_substrate::proto::ERR_TYPE_NOT_FOUND;
-pub(crate) const ERR_TYPE_INVALID_REQUEST: &str =
-    busbar_substrate::proto::ERR_TYPE_INVALID_REQUEST;
+// The `ERR_TYPE_NOT_FOUND`/`ERR_TYPE_INVALID_REQUEST` wire error-type tokens RELOCATED to
+// `crate::taxonomy` (1.6.0 de-vocab): they are core's own ingress error taxonomy, consumed by
+// `ingress::dispatch`/`ingress::arrival_host`/`router`, not the admin HTTP API. See the module doc
+// there. Byte-identical rename: the constant string VALUES are unchanged.
 
 /// Maximum byte lengths for admin-API path / body fields (defense-in-depth DB/log-bloat guards).
 /// A real minted key id is `vk_` + 16 hex chars (19 chars); 64 is generous headroom.
@@ -563,7 +557,6 @@ mod internal_error_tests;
 // v1 contract: the `{error:{code,message}}` envelope with the stable code enum. Keys
 // are a first-class v1 resource served by these handlers until they migrate into the versioned
 // service module.
-pub mod audit;
 /// THE PLANE TRUST VERB SURFACE, written once and parameterised by plane. Every plane that fronts a
 /// registered upstream resolves it, looks at it and audits what it found in the same order; that
 /// order lives here, and the plane supplies only the look.
@@ -576,7 +569,6 @@ pub mod audit;
 // unavoidable dead-code warnings.
 #[allow(dead_code)]
 pub mod planeverbs;
-pub(crate) mod rate;
 pub mod restart;
 pub(crate) mod transport;
 pub mod v1;

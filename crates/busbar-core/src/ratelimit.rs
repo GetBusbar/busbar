@@ -196,5 +196,5 @@ impl MutationLimiter {
 }
 
 #[cfg(test)]
-#[path = "tests/rate_tests.rs"]
+#[path = "tests/ratelimit_tests.rs"]
 mod tests;

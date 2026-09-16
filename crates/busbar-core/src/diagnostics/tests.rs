@@ -14,7 +14,7 @@
 
 /// Paths relative to `crates/busbar-core` (this crate's manifest dir).
 const MIGRATED_FILES: &[&str] = &[
-    "src/admin/audit.rs",
+    "src/audit_ring.rs",
     // The forward-engine sources (`proxy/response_body.rs`, `proxy/usage.rs`, `proxy/hooks.rs`,
     // `proxy/engine/{mod,walk}.rs`) RELOCATED to an out-of-tree plugin crate's `src/engine/` with the
     // money-path pivot (1.6.0 money-path Phase 3-4 C). Core does NOT scan a plane crate's tree — the

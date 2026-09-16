@@ -302,7 +302,7 @@ fn seam_write_then_reboot_restore_roundtrips_byte_identically() {
     // GET /audit output: the seeded ring, newest-first, BYTE-IDENTICAL to the legacy records.
     let ring = h2
         .log
-        .list_filtered(0, crate::admin::audit::MAX_AUDIT_ENTRIES, None, None);
+        .list_filtered(0, crate::audit_ring::MAX_AUDIT_ENTRIES, None, None);
     assert_eq!(
         ring.len(),
         2,
@@ -406,7 +406,7 @@ fn old_store_audit_only_in_legacy_table_boots_migrates_and_verifies() {
     // The ring `GET /audit` serves is byte-identical to the FROZEN bytes, newest-first.
     let ring = h
         .log
-        .list_filtered(0, crate::admin::audit::MAX_AUDIT_ENTRIES, None, None);
+        .list_filtered(0, crate::audit_ring::MAX_AUDIT_ENTRIES, None, None);
     assert_eq!(ring.len(), 2);
     assert_eq!(
         (
@@ -514,7 +514,7 @@ fn restore_reports_an_undecodable_audit_row_loudly_and_still_seeds_the_good_row(
     // The GOOD row still seeded the read model `GET /audit` serves.
     let ring = h2
         .log
-        .list_filtered(0, crate::admin::audit::MAX_AUDIT_ENTRIES, None, None);
+        .list_filtered(0, crate::audit_ring::MAX_AUDIT_ENTRIES, None, None);
     assert_eq!(
         ring.len(),
         1,

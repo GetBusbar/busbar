@@ -1257,7 +1257,7 @@ fn rate_limited_response() -> Response {
     Response::builder()
         .header(
             axum::http::header::RETRY_AFTER,
-            crate::admin::rate::MUTATION_RATE_WINDOW_SECS.to_string(),
+            crate::ratelimit::MUTATION_RATE_WINDOW_SECS.to_string(),
         )
         .status(StatusCode::TOO_MANY_REQUESTS)
         .header(axum::http::header::CONTENT_TYPE, "application/json")
@@ -1469,17 +1469,17 @@ pub(crate) async fn auth_middleware(
                 .as_ref()
                 .map(|p| p.id.as_str())
                 .unwrap_or("anonymous");
-            if let crate::admin::rate::RateCheck::Denied {
+            if let crate::ratelimit::RateCheck::Denied {
                 first_in_window: true,
             } = app.mutation_limiter.check(
                 actor,
-                crate::admin::rate::MutationClass::Forbidden,
+                crate::ratelimit::MutationClass::Forbidden,
                 busbar_substrate::store::now(),
             ) {
-                crate::admin::audit::AUDIT.record_by(
+                crate::audit_ring::AUDIT.record_by(
                     "admin.forbidden",
                     &path,
-                    crate::admin::audit::OUTCOME_REJECTED,
+                    crate::audit_ring::OUTCOME_REJECTED,
                     actor,
                 );
             } else {
@@ -1502,18 +1502,18 @@ pub(crate) async fn auth_middleware(
             // admin auth chain itself. Everything else that mutates (hooks, keys, cache flush) is
             // the CRUD class (60/min). Matched RELATIVE to the one contract prefix so this gate
             // can never drift from the mount grammar. Classification itself lives in
-            // `admin::rate::classify_mutation`, driven by a const table rather than an inline
+            // `ratelimit::classify_mutation`, driven by a const table rather than an inline
             // predicate, so it can be enumerated and cross-checked against
             // `docs/admin-api.md`'s rate-limit table (see that table's doc comment).
             let rel = path
                 .strip_prefix(crate::admin::v1::contract::ADMIN_PREFIX)
                 .unwrap_or(&path);
-            let class = crate::admin::rate::classify_mutation(rel);
+            let class = crate::ratelimit::classify_mutation(rel);
             let actor = principal
                 .as_ref()
                 .map(|p| p.id.as_str())
                 .unwrap_or("anonymous");
-            if let crate::admin::rate::RateCheck::Denied { first_in_window } = app
+            if let crate::ratelimit::RateCheck::Denied { first_in_window } = app
                 .mutation_limiter
                 .check(actor, class, busbar_substrate::store::now())
             {
@@ -1522,10 +1522,10 @@ pub(crate) async fn auth_middleware(
                 // attempt would let a client that ignores its 429s drive unbounded blocking work
                 // through the limiter whose entire purpose is to stop doing work.
                 if first_in_window {
-                    crate::admin::audit::AUDIT.record_by(
+                    crate::audit_ring::AUDIT.record_by(
                         "admin.rate_limited",
                         &format!("{}:{path}", class.label()),
-                        crate::admin::audit::OUTCOME_REJECTED,
+                        crate::audit_ring::OUTCOME_REJECTED,
                         actor,
                     );
                 }

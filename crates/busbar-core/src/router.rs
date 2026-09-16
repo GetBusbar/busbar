@@ -77,7 +77,7 @@ pub(crate) async fn method_not_allowed_handler(
         &app.planes,
         uri.path(),
         axum::http::StatusCode::METHOD_NOT_ALLOWED,
-        crate::admin::ERR_TYPE_INVALID_REQUEST,
+        crate::taxonomy::ERR_TYPE_INVALID_REQUEST,
         "method not allowed for this resource",
     )
 }

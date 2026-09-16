@@ -60,7 +60,7 @@ async fn revoke_on_an_already_tombstoned_key_answers_200_and_audits_applied() {
 
     // A unique marker so this test's own audit rows are distinguishable from any other test
     // sharing the process-global AUDIT ring.
-    let before = crate::admin::audit::AUDIT
+    let before = crate::audit_ring::AUDIT
         .export()
         .iter()
         .filter(|e| e.resource == format!("key:{id}") && e.action == "key.revoke")
@@ -92,13 +92,13 @@ async fn revoke_on_an_already_tombstoned_key_answers_200_and_audits_applied() {
     assert_eq!(body["revoked"], id.as_str());
 
     // A `key.revoke` / `applied` audit row landed for this key.
-    let after = crate::admin::audit::AUDIT
+    let after = crate::audit_ring::AUDIT
         .export()
         .iter()
         .filter(|e| {
             e.resource == format!("key:{id}")
                 && e.action == "key.revoke"
-                && e.outcome == crate::admin::audit::OUTCOME_APPLIED
+                && e.outcome == crate::audit_ring::OUTCOME_APPLIED
         })
         .count();
     assert!(

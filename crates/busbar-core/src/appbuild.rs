@@ -27,8 +27,8 @@ use crate::{
     admin, audit, auth, auth_cache, billing, breaker, catalogue, config, config_validate,
     core_routes, cost, durable, egress_auth, endpoints, eventstream, export, failover, governance,
     handlers, hooks, ingress, ir, json, limits, lossless, media, metrics, net_guard, oauth_as,
-    observability, operation, plane, plugin_routes, profile, proto, proxy, sigv4, state, store,
-    telemetry, tls, transport, trust,
+    observability, operation, plane, plugin_routes, profile, proto, proxy, ratelimit, sigv4, state,
+    store, telemetry, tls, transport, trust,
 };
 use busbar_substrate::plane_host::{
     AffinityInput, AuthStyleInput, ClientSettingsInput, FailoverInput, HealthInput,
@@ -1775,7 +1775,7 @@ pub fn build_app_from_config(
             |p| p.versions.clone(),
         ),
         mutation_limiter: prior.map_or_else(
-            || Arc::new(admin::rate::MutationLimiter::new()),
+            || Arc::new(ratelimit::MutationLimiter::new()),
             |p| p.mutation_limiter.clone(),
         ),
         idempotency_cache: prior.map_or_else(
@@ -1875,7 +1875,7 @@ pub fn build_app_from_config(
             .auth
             .as_ref()
             .and_then(|a| a.key_ttl.as_deref())
-            .map(|s| admin::parse_duration_secs(s).unwrap_or(admin::DEFAULT_KEY_TTL_SECS))
+            .map(|s| config::parse::parse_duration_secs(s).unwrap_or(admin::DEFAULT_KEY_TTL_SECS))
             .unwrap_or(admin::DEFAULT_KEY_TTL_SECS),
         // Where `auth.policy:` is finally READ: the resolved mint policy (block TTL/mode ceiling +
         // per-role `mint_ceilings`). Config-validate already proved the durations parse; a stray bad

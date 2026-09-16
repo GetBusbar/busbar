@@ -26,7 +26,7 @@
 //!
 //! | stream | scope of a chain | rate |
 //! |---|---|---|
-//! | [`crate::admin::audit`] — admin MUTATIONS | one chain, process-wide | operator-rate |
+//! | [`crate::audit_ring`] — admin MUTATIONS | one chain, process-wide | operator-rate |
 //! | a per-caller request log kept by a downstream plugin | one chain per PRINCIPAL | request-rate |
 //! | a per-task event log kept by a downstream plugin | one chain per TASK | task-rate |
 //!

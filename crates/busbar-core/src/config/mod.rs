@@ -16,6 +16,10 @@ pub(crate) mod migrate_export;
 /// The 1.5.3 named-DEFINITION map sections (`identity-providers:`, `export:`), described ONCE as
 /// data so every surface that serves the universal pattern is parameterized instead of copied.
 pub mod named_map;
+/// Neutral config-parsing helpers (`parse_duration_secs`, `parse_ceiling`), relocated out of
+/// `admin::`/`admin::v1::contract` (1.6.0 de-vocab): both are consumed by `config_validate` and
+/// `named_map`, not the admin HTTP API. See the module doc.
+pub(crate) mod parse;
 /// The secret-reference type: `{ module, settings }` + the `{env}`/`{file}` sugar.
 pub(crate) mod patch;
 /// The 1.6.0-only key PRE-PASS: lift the additive keys off a document before the frozen

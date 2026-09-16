@@ -445,7 +445,7 @@ pub(crate) struct ConfigDiffView {
 /// audit handler).
 #[derive(Serialize, JsonSchema)]
 pub(crate) struct AuditPageView {
-    pub(crate) items: Vec<crate::admin::audit::AuditEntry>,
+    pub(crate) items: Vec<crate::audit_ring::AuditEntry>,
     pub(crate) next_cursor: Option<String>,
 }
 

@@ -110,7 +110,7 @@ impl EngineTestKit for CoreEngineKit {
     }
 
     fn audit_high_water_seq(&self) -> u64 {
-        crate::admin::audit::AUDIT
+        crate::audit_ring::AUDIT
             .export()
             .iter()
             .map(|e| e.seq)
@@ -124,7 +124,7 @@ impl EngineTestKit for CoreEngineKit {
 
     fn audit_entries(&self) -> Vec<AuditRecord> {
         crate::plane::auditlog::AUDIT_LOG
-            .list_filtered(0, crate::admin::audit::MAX_AUDIT_ENTRIES, None, None)
+            .list_filtered(0, crate::audit_ring::MAX_AUDIT_ENTRIES, None, None)
             .into_iter()
             .map(|e| AuditRecord {
                 seq: e.seq,

@@ -19,9 +19,9 @@
 //!
 //! ## Why this is not the admin audit log
 //!
-//! The per-call event used to ride [`crate::admin::audit::AUDIT`]. That log is admin-MUTATION-only
+//! The per-call event used to ride [`crate::audit_ring::AUDIT`]. That log is admin-MUTATION-only
 //! and its engine-side working set is a bounded ring of
-//! [`crate::admin::audit::MAX_AUDIT_ENTRIES`] entries. An admin mutation is operator-rate; a
+//! [`crate::audit_ring::MAX_AUDIT_ENTRIES`] entries. An admin mutation is operator-rate; a
 //! recorded call is REQUEST-rate. Sharing the ring means one busy afternoon of calls evicts every admin
 //! row from it, so "who changed this registration" stops being answerable at exactly the moment an
 //! incident makes somebody ask — and the loss is silent, because a ring that pruned looks identical
@@ -531,7 +531,7 @@ impl Default for PlaneCallLog {
 }
 
 /// THE PROCESS-WIDE CALL LOG. Process state, not config-derived state, so it lives as a global
-/// rather than on the swappable `App` snapshot — exactly like [`crate::admin::audit::AUDIT`], and
+/// rather than on the swappable `App` snapshot — exactly like [`crate::audit_ring::AUDIT`], and
 /// for the same reason: a config apply must not reset the chain positions, because doing so would
 /// open a SECOND chain at seq 1 under a principal that already has one, and two chains that each
 /// verify and together describe nothing is strictly worse than no chain at all.

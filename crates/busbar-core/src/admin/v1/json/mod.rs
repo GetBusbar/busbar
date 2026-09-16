@@ -28,7 +28,7 @@ use super::service::{
     build_with_group, build_with_hook, build_with_registry, build_without_group,
     build_without_hook, AdminService,
 };
-use crate::admin::audit;
+use crate::audit_ring as audit;
 use crate::admin::transport::AdminTransport;
 use crate::state::AppHandle;
 

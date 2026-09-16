@@ -169,7 +169,7 @@ pub use crate::audit::vocab::{OUTCOME_APPLIED, OUTCOME_DEGRADED, OUTCOME_REJECTE
 /// How many entries the in-memory ring retains. Bounds RAM, not history — the durable seam keeps the
 /// full log. Relocated to the neutral substrate (`busbar_substrate::audit::MAX_AUDIT_ENTRIES`) so the
 /// admin ring and the plane audit-log ring name ONE cap; re-exported here so
-/// `crate::admin::audit::MAX_AUDIT_ENTRIES` (and the test asking for "every matching row that can
+/// `crate::audit_ring::MAX_AUDIT_ENTRIES` (and the test asking for "every matching row that can
 /// exist") still resolves.
 pub use busbar_substrate::audit::MAX_AUDIT_ENTRIES;
 
@@ -318,5 +318,5 @@ impl AuditLog {
 pub static AUDIT: AuditLog = AuditLog::new();
 
 #[cfg(test)]
-#[path = "tests/audit_tests.rs"]
+#[path = "tests/audit_ring_tests.rs"]
 mod tests;

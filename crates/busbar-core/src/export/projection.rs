@@ -58,7 +58,7 @@ use serde_json::Value;
 ///   default fields (see [`produced_fields`]).
 /// - `traces` — the OpenTelemetry span pipeline (`crate::observability`), exported by the `otlp`
 ///   module.
-/// - `events` — the hash-chained admin records in `crate::admin::audit` (`busbar_api::AuditRecord`:
+/// - `events` — the hash-chained admin records in `crate::audit_ring` (`busbar_api::AuditRecord`:
 ///   `seq`/`ts`/`action`/`resource`/`outcome`/`principal`/`prev_hash`/`hash`). PARTIAL: admin
 ///   mutations only; config applies, plugin loads/refusals, boot and shutdown are a later unit.
 ///

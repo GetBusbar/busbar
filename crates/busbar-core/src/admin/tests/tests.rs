@@ -8978,15 +8978,15 @@ async fn test_signing_key_rotate_reports_kid_and_revoke_all() {
     // emits that action against this resource, and a large concurrent audit-writing burst could in
     // principle evict this test's own `signing_key.report` row before the read. Latent; accepted —
     // bracketing by seq would narrow the window but not defeat eviction.
-    let rows = crate::admin::audit::AUDIT.list_filtered(
+    let rows = crate::audit_ring::AUDIT.list_filtered(
         0,
-        crate::admin::audit::MAX_AUDIT_ENTRIES,
+        crate::audit_ring::MAX_AUDIT_ENTRIES,
         None,
         Some("signing-key"),
     );
     assert!(
         rows.iter().any(|e| e.action == "signing_key.report"
-            && e.outcome == crate::admin::audit::OUTCOME_APPLIED),
+            && e.outcome == crate::audit_ring::OUTCOME_APPLIED),
         "the report is recorded under a verb that does not claim a mutation"
     );
     assert!(
@@ -10277,7 +10277,7 @@ async fn test_admin_v1_config_settings_reset_refuses_when_overlay_is_corrupt() {
     // so a concurrently-running sibling's legitimate APPLIED reset can land between this test's own
     // two REJECTED rows and fail the "never APPLIED" assertion. Same pattern as
     // `test_admin_v1_restart_refuses_when_it_cannot_restart`'s baseline_seq bracketing.
-    let baseline_seq = crate::admin::audit::AUDIT
+    let baseline_seq = crate::audit_ring::AUDIT
         .list(1)
         .first()
         .map(|e| e.seq)
@@ -10309,10 +10309,10 @@ async fn test_admin_v1_config_settings_reset_refuses_when_overlay_is_corrupt() {
         reset.text().await
     );
 
-    let rows: Vec<_> = crate::admin::audit::AUDIT
+    let rows: Vec<_> = crate::audit_ring::AUDIT
         .list_filtered(
             0,
-            crate::admin::audit::MAX_AUDIT_ENTRIES,
+            crate::audit_ring::MAX_AUDIT_ENTRIES,
             None,
             Some("overlay:root"),
         )
@@ -10322,14 +10322,14 @@ async fn test_admin_v1_config_settings_reset_refuses_when_overlay_is_corrupt() {
     assert!(
         rows.iter()
             .any(|e| e.action == "overlay.reset"
-                && e.outcome == crate::admin::audit::OUTCOME_REJECTED),
+                && e.outcome == crate::audit_ring::OUTCOME_REJECTED),
         "the corrupt-overlay reset must be audited as REJECTED, never APPLIED: {rows:?}"
     );
     assert!(
         !rows
             .iter()
             .any(|e| e.action == "overlay.reset"
-                && e.outcome == crate::admin::audit::OUTCOME_APPLIED),
+                && e.outcome == crate::audit_ring::OUTCOME_APPLIED),
         "a corrupt-overlay reset must never be recorded as a successful apply: {rows:?}"
     );
 
@@ -12718,7 +12718,7 @@ fn documented_operations() -> Vec<(String, crate::admin::v1::contract::taxonomy:
 
 /// `docs/admin-api.md`'s mutation rate-limit table names the CONFIG-class (10/min) endpoint set by
 /// hand. Until this test existed, nothing tied that prose list to
-/// `admin::rate::classify_mutation` — the classifier that actually decides which budget a request
+/// `ratelimit::classify_mutation` — the classifier that actually decides which budget a request
 /// spends from. This walks every mutation operation in the committed `openapi.json`
 /// (`documented_operations`, itself a projection nothing can silently drift from), classifies each
 /// one, and requires the resulting CONFIG set to equal the doc's `config` row EXACTLY — under- and
@@ -12764,8 +12764,8 @@ fn rate_limit_doc_table_matches_classifier() {
             matches!(
                 method,
                 MethodTag::Post | MethodTag::Put | MethodTag::Patch | MethodTag::Delete
-            ) && crate::admin::rate::classify_mutation(rel)
-                == crate::admin::rate::MutationClass::Config
+            ) && crate::ratelimit::classify_mutation(rel)
+                == crate::ratelimit::MutationClass::Config
         })
         .collect();
 
@@ -12773,7 +12773,7 @@ fn rate_limit_doc_table_matches_classifier() {
     let missing_from_code: Vec<_> = doc_config.difference(&code_config).collect();
     assert!(
         missing_from_doc.is_empty() && missing_from_code.is_empty(),
-        "docs/admin-api.md's config-class row has drifted from admin::rate::classify_mutation.\n\
+        "docs/admin-api.md's config-class row has drifted from ratelimit::classify_mutation.\n\
          In classifier's CONFIG class but not in the doc: {missing_from_doc:?}\n\
          In the doc but not classified CONFIG: {missing_from_code:?}"
     );
@@ -12859,7 +12859,7 @@ async fn test_admin_v1_restart_refuses_when_it_cannot_restart() {
     // the binary writes to, unscoped by principal (every admin-token test shares the SAME fixed
     // operator principal id, so scoping by principal would not distinguish this test's rows from a
     // concurrent sibling's). Rows from THIS test's own restart attempts are bracketed by seq.
-    let baseline_seq = crate::admin::audit::AUDIT
+    let baseline_seq = crate::audit_ring::AUDIT
         .list(1)
         .first()
         .map(|e| e.seq)
@@ -12938,7 +12938,7 @@ async fn test_admin_v1_restart_refuses_when_it_cannot_restart() {
 
     // Every refusal is audited — the operator's only evidence, since a real restart takes the
     // connection that would have carried the response.
-    let entries = crate::admin::audit::AUDIT.list(crate::admin::audit::MAX_AUDIT_ENTRIES);
+    let entries = crate::audit_ring::AUDIT.list(crate::audit_ring::MAX_AUDIT_ENTRIES);
     let restarts: Vec<_> = entries
         .iter()
         .filter(|e| e.action == "admin.restart" && e.seq > baseline_seq)
@@ -12950,7 +12950,7 @@ async fn test_admin_v1_restart_refuses_when_it_cannot_restart() {
     assert!(
         restarts
             .iter()
-            .all(|e| e.outcome == crate::admin::audit::OUTCOME_REJECTED),
+            .all(|e| e.outcome == crate::audit_ring::OUTCOME_REJECTED),
         "a refused restart must never be recorded as applied: {restarts:?}"
     );
 }

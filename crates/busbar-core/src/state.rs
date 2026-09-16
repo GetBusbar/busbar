@@ -347,7 +347,7 @@ pub struct App {
     // removed (no plane, no delegation).
     /// Per-principal ADMIN MUTATION rate limiter. Arc-shared across apply snapshots so the
     /// windows survive every swap.
-    pub(crate) mutation_limiter: Arc<crate::admin::rate::MutationLimiter>,
+    pub(crate) mutation_limiter: Arc<crate::ratelimit::MutationLimiter>,
     /// Idempotency-Key replay cache for key minting (bounded, ~10min TTL): a retried POST with the
     /// same key returns the FIRST response verbatim instead of double-creating. Arc-shared across
     /// swaps. Maps (principal id, Idempotency-Key) → (created_at, cached 201 body). The key is

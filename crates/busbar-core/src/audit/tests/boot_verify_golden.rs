@@ -237,7 +237,7 @@ fn admin_audit_chain_boot_verifies_from_frozen_bytes() {
     let head: AuditRecord = decode(AD_1).unwrap();
     let ring = h
         .log
-        .list_filtered(0, crate::admin::audit::MAX_AUDIT_ENTRIES, None, None);
+        .list_filtered(0, crate::audit_ring::MAX_AUDIT_ENTRIES, None, None);
     assert_eq!(
         ring.len(),
         2,

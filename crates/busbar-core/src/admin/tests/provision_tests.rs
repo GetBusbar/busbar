@@ -170,15 +170,15 @@ async fn mint_failure_after_the_provision_commit_still_records_the_committed_gro
     // AND IT IS RECORDED — at COMMIT time, so a mint that fails afterwards cannot erase the fact
     // that the config changed.
     assert!(
-        crate::admin::audit::AUDIT
+        crate::audit_ring::AUDIT
             .list_filtered(
                 0,
-                crate::admin::audit::MAX_AUDIT_ENTRIES,
+                crate::audit_ring::MAX_AUDIT_ENTRIES,
                 Some("group.provision"),
                 Some(PROVISION_FAIL_RESOURCE)
             )
             .iter()
-            .any(|e| e.outcome == crate::admin::audit::OUTCOME_APPLIED),
+            .any(|e| e.outcome == crate::audit_ring::OUTCOME_APPLIED),
         "the committed provision is in the audit trail"
     );
     let versions = live
@@ -208,10 +208,10 @@ async fn mint_failure_after_the_provision_commit_still_records_the_committed_gro
     // before the second read. Latent: nothing in this suite currently drives that many concurrent
     // audit writes. Accepted rather than bracketed by seq, which would narrow the window but not
     // defeat eviction.
-    let audit_rows_before = crate::admin::audit::AUDIT
+    let audit_rows_before = crate::audit_ring::AUDIT
         .list_filtered(
             0,
-            crate::admin::audit::MAX_AUDIT_ENTRIES,
+            crate::audit_ring::MAX_AUDIT_ENTRIES,
             Some("group.provision"),
             Some(PROVISION_FAIL_RESOURCE),
         )
@@ -219,10 +219,10 @@ async fn mint_failure_after_the_provision_commit_still_records_the_committed_gro
     let status = mint_with_parent(&handle, "k", PROVISION_FAIL_GROUP, "team").await;
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
     assert_eq!(
-        crate::admin::audit::AUDIT
+        crate::audit_ring::AUDIT
             .list_filtered(
                 0,
-                crate::admin::audit::MAX_AUDIT_ENTRIES,
+                crate::audit_ring::MAX_AUDIT_ENTRIES,
                 Some("group.provision"),
                 Some(PROVISION_FAIL_RESOURCE)
             )
@@ -238,16 +238,16 @@ const CEILING_ACTOR: &str = "test:ceiling-audit";
 
 /// `key.create`/rejected rows written by [`CEILING_ACTOR`] — this test's refusals and no others.
 fn ceiling_refusal_rows() -> usize {
-    crate::admin::audit::AUDIT
+    crate::audit_ring::AUDIT
         .list_filtered(
             0,
-            crate::admin::audit::MAX_AUDIT_ENTRIES,
+            crate::audit_ring::MAX_AUDIT_ENTRIES,
             Some("key.create"),
             Some(crate::admin::KEY_RESOURCE_NONE),
         )
         .iter()
         .filter(|e| {
-            e.outcome == crate::admin::audit::OUTCOME_REJECTED && e.principal == CEILING_ACTOR
+            e.outcome == crate::audit_ring::OUTCOME_REJECTED && e.principal == CEILING_ACTOR
         })
         .count()
 }

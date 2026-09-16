@@ -1872,7 +1872,7 @@ impl TestApp {
             identity_providers: self.identity_providers,
             export_defs: self.export_defs,
             versions: std::sync::Arc::new(crate::admin::versions::VersionLog::new()),
-            mutation_limiter: std::sync::Arc::new(crate::admin::rate::MutationLimiter::new()),
+            mutation_limiter: std::sync::Arc::new(crate::ratelimit::MutationLimiter::new()),
             idempotency_cache: std::sync::Arc::new(std::sync::Mutex::new(
                 std::collections::HashMap::new(),
             )),

@@ -50,7 +50,7 @@ pub(crate) fn audit(
     principal: &crate::auth::AuthPrincipal,
 ) {
     let audit_kind = crate::plane::plane_decl(plane).audit_kind;
-    crate::admin::audit::AUDIT.record_by(
+    crate::audit_ring::AUDIT.record_by(
         &format!("{audit_kind}.{verb}"),
         &format!("{audit_kind}:{name}"),
         outcome,

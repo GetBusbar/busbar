@@ -649,7 +649,7 @@ fn catalog_repeat_gets_reuse_the_cached_scan() {
 
 /// `list_plugins("store")`'s catalog read — the fingerprint I/O AND, on a cold cache, the full
 /// tarball scan — must not park the single worker of a `worker_threads = 1` multi-thread
-/// runtime. Mirrors `admin::audit`'s `valve_write_through_does_not_park_the_reactor` proof
+/// runtime. Mirrors `audit_ring`'s `valve_write_through_does_not_park_the_reactor` proof
 /// shape, with one deliberate difference: that precedent proves its point with a DETERMINISTIC
 /// delay (`SlowAuditStore` sleeps a fixed 500ms), not real I/O volume — this test originally
 /// relied on 2000 real signed tarballs being "genuinely slow… on ordinary hardware", but

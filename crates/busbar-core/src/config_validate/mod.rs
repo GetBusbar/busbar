@@ -862,7 +862,7 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
         // Rule (key_ttl): the admin-set default key lifetime must parse (fail boot on garbage rather
         // than silently falling back). Same grammar as the admin `expires_in` duration.
         if let Some(ttl) = auth.key_ttl.as_deref() {
-            if let Err(e) = crate::admin::parse_duration_secs(ttl) {
+            if let Err(e) = crate::config::parse::parse_duration_secs(ttl) {
                 errors.push(format!("auth.key_ttl '{ttl}' is not a valid duration: {e}"));
             }
         }
@@ -873,7 +873,7 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
         // isn't a policy). Duration strings share the admin `expires_in` grammar.
         let policy = &auth.policy;
         let parse_policy_ttl = |label: &str, ttl: &str, errors: &mut Vec<String>| -> Option<u64> {
-            match crate::admin::parse_duration_secs(ttl) {
+            match crate::config::parse::parse_duration_secs(ttl) {
                 Ok(secs) => Some(secs),
                 Err(e) => {
                     errors.push(format!("{label} '{ttl}' is not a valid duration: {e}"));
@@ -963,7 +963,7 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
             if let Some(scope) = entry.max_admin_scope.as_deref() {
                 // The SAME check the admin named-map write path runs (`parse_ceiling`), so
                 // the API can never accept a ceiling this rule would refuse to boot.
-                match crate::admin::v1::contract::parse_ceiling(
+                match crate::config::parse::parse_ceiling(
                     &format!("auth chain entry '{}'", entry.module),
                     scope,
                 ) {
