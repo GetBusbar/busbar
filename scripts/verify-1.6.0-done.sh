@@ -19,7 +19,7 @@
 #                    every filtered step declares its test count so a filter that selects nothing is
 #                    RED rather than vacuously green (see filtered_cargo_test).
 #   config-stability cargo xtask gate config-schema (config-schema.snapshot.json byte-stable).
-#   test             cargo test --workspace  +  cargo test -p busbar-voice --features runtime.
+#   test             cargo test --workspace  +  cargo test -p busbar-streaming --features runtime.
 #   conformance      the conformance rigs' selftests + verdict-covers-every-leg.py + the voice legs =ready.
 #   teller-steps     the H2 matrix holds on BOTH its columns: every rig cell id still resolves to the
 #                    scenario/script/leg/suite that owns it and the rigs behind them pass
@@ -452,7 +452,7 @@ end_group
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
 begin_group "TEST — full workspace + voice runtime"
 step "cargo test --workspace"                    cargo test --workspace --quiet
-step "cargo test -p busbar-voice --features runtime" cargo test -p busbar-voice --features runtime --quiet
+step "cargo test -p busbar-streaming --features runtime" cargo test -p busbar-streaming --features runtime --quiet
 end_group
 
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
@@ -467,10 +467,10 @@ fi
 if [ -f testing/verdict-covers-every-leg.py ]; then
   step "verdict-covers-every-leg.py --selftest" python3 testing/verdict-covers-every-leg.py --selftest
 fi
-if [ -f testing/voice-conformance/voice-conformance.sh ]; then
-  step "voice conformance selftest (anti-vacuity)" bash testing/voice-conformance/voice-conformance.sh --selftest
+if [ -f testing/streaming-conformance/streaming-conformance.sh ]; then
+  step "voice conformance selftest (anti-vacuity)" bash testing/streaming-conformance/streaming-conformance.sh --selftest
 else
-  absent_step "voice conformance selftest" "testing/voice-conformance/voice-conformance.sh — voice conformance rig not built yet"
+  absent_step "voice conformance selftest" "testing/streaming-conformance/streaming-conformance.sh — voice conformance rig not built yet"
 fi
 end_group
 
@@ -554,7 +554,7 @@ sys.exit(1 if m else 0)
 # set). The remaining "none" cells are the switch-over queue and are PRINTED, not fatal — the same
 # honest-ledger posture the missing set has.
 step "capability_equality gate, five legs on" \
-  cargo test -p busbar --features root-admin,root-mcp,root-a2a,root-voice,root-llm --quiet --test capability_equality
+  cargo test -p busbar --features root-admin,root-mcp,root-a2a,root-streaming,root-llm --quiet --test capability_equality
 step "every root-leg proof cell RUNS and passes" python3 scripts/capability-equality-summary.py --root-legs
 printf '  \033[36m[info]\033[0m '
 python3 scripts/capability-equality-summary.py 2>/dev/null | grep -E "^ROOT-EQUALITY:" || echo "root-equality count unavailable"

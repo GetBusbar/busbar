@@ -35,7 +35,7 @@ mod purity {
     /// `OnceLock`, ...) is `!Copy`, so a type that IS `Copy` structurally cannot hold one: this is
     /// a compile-time proof, not a convention, that the plane keeps no mutable state of its own
     /// across calls — everything that varies across a session lives in the kernel-held
-    /// `PlaneSessionState` instead (see `session::VoiceSessionState`).
+    /// `PlaneSessionState` instead (see `session::StreamingSessionState`).
     const fn assert_copy<T: Copy>() {}
     const _: () = assert_copy::<StreamingPlane>();
 

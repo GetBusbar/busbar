@@ -10,7 +10,7 @@
 //!
 //! * **The spellings that are not `::` and not CamelCase.** `extern crate busbar_mcp;`,
 //!   `use busbar_a2a as alias;`, `busbar_core :: internal`, `MCPCallRecord` / `OpenAIClient` /
-//!   `LLMRouter`, and `include!("…/busbar-voice/…")` each bind exactly the side channel the
+//!   `LLMRouter`, and `include!("…/busbar-streaming/…")` each bind exactly the side channel the
 //!   original patterns were written for, spelled so the original patterns could not see them.
 //! * **`include!` is decided ABOVE the pragma gate.** It used to fall through to the vocabulary
 //!   rules, which the frozen-wire pragma exempts — so one trailing comment spliced a plane's source
@@ -26,7 +26,7 @@ use crate::ctx::SourceFile;
 /// The plane keys as the scanner spells them in a crate/dir name (`busbar-<key>`) and in a crate
 /// identifier (`busbar_<key>`). Kept as literals rather than derived from [`crate::planes`]
 /// because these are the awk alternations' contents and drift between the two would be silent.
-pub const PLANE_ALTERNATION: [&str; 4] = ["llm", "mcp", "a2a", "voice"];
+pub const PLANE_ALTERNATION: [&str; 4] = ["llm", "mcp", "a2a", "streaming"];
 
 /// The six category names, in the fixed report order the shell prints and
 /// `qa/plane-purity-strict.toml` keys its `[categories]` table by.

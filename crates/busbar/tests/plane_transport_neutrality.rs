@@ -6,7 +6,7 @@
 //!
 //! Owner's ruling: the neutral crates (`busbar-core` / `busbar-substrate` / `busbar-api`) must never
 //! learn a protocol's TRANSPORT vocabulary. plane-purity-lint bans the plane KEYS (mcp/a2a/llm/voice)
-//! and the LLM dialects; the Plane-4 (busbar-voice) duplex/live-voice plane drags in a SECOND
+//! and the LLM dialects; the Plane-4 (busbar-streaming) duplex/live-voice plane drags in a SECOND
 //! vocabulary that plane-purity does not name — the transport/media nouns
 //! `rtc / sdp / webrtc / twilio / dtmf / rtp / sideband / realtime / audio / mulaw / g711 / barge`.
 //! A leak of any of them into a neutral crate is the forward-edge regression the plane ABI exists to
@@ -232,7 +232,7 @@ fn neutral_crates_name_no_voice_transport_noun() {
     assert!(
         leaks.is_empty(),
         "voice-transport/media noun(s) leaked into the NEUTRAL crates — the voice plane \
-         (busbar-voice) owns these; cross the ABI as an opaque PlaneRecord, never a transport noun:\n  {}",
+         (busbar-streaming) owns these; cross the ABI as an opaque PlaneRecord, never a transport noun:\n  {}",
         leaks.join("\n  ")
     );
 }

@@ -31,7 +31,7 @@
     "",
     "THE ROOT COLUMN (`root_legs` + every cell's `root`). The `test` above is the LEGACY path: the",
     "capability proven where the plane crate serves it. Every plane now also runs through the",
-    "composition root, behind root-llm / root-mcp / root-a2a / root-voice / root-admin, and a",
+    "composition root, behind root-llm / root-mcp / root-a2a / root-streaming / root-admin, and a",
     "capability that holds on the legacy path and is unwitnessed over the loop is a second, silent",
     "half of the same question. So each cell carries a SECOND verdict, over its plane's root leg:",
     "  proven          -- with `test`: a `<crates/busbar/src/root/units_*.rs>::<test fn>` cell that",
@@ -70,8 +70,8 @@
     "mcp-server": "busbar's MCP front door: inbound methods from clients and agents",
     "a2a-client": "busbar issuing A2A requests: the relay leg to backend agents (JsonRpc, HttpJson, Grpc -- one relay below the transport axis), originate, card fetch",
     "a2a-server": "busbar's A2A front door: inbound tasks/messages, plus this role's own outbound webhook push delivery",
-    "voice-client": "busbar's outbound duplex leg: the dialed WSS to the realtime voice provider (OpenAI Realtime / Gemini Live) and the telephony media egress (Twilio g711); one session is pinned to one provider socket for its whole lifetime",
-    "voice-server": "busbar's voice front door: inbound session-open ingress -- the browser sideband WebSocket and the telephony (Twilio) media-stream webhook -- that opens a governed duplex session"
+    "streaming-client": "busbar's outbound duplex leg: the dialed WSS to the realtime voice provider (OpenAI Realtime / Gemini Live) and the telephony media egress (Twilio g711); one session is pinned to one provider socket for its whole lifetime",
+    "streaming-server": "busbar's voice front door: inbound session-open ingress -- the browser sideband WebSocket and the telephony (Twilio) media-stream webhook -- that opens a governed duplex session"
   },
   "root_legs": {
     "root-llm": {
@@ -97,11 +97,11 @@
       ],
       "note": "the A2A plane's scope entries, its record-leg binding and its destination guard, assembled at boot; the serving path is still the plugin's"
     },
-    "root-voice": {
-      "file": "crates/busbar/src/root/tests/units_voice.rs",
+    "root-streaming": {
+      "file": "crates/busbar/src/root/tests/units_streaming.rs",
       "columns": [
-        "voice-client",
-        "voice-server"
+        "streaming-client",
+        "streaming-server"
       ],
       "note": "the voice plane switched over: a live session as a sequence of ordinary units -- the handshake, the per-frame turns and the metering lease"
     },
@@ -830,275 +830,275 @@
     },
     {
       "capability": "breaker-trip",
-      "plane": "voice-client",
+      "plane": "streaming-client",
       "state": "proven",
-      "test": "crates/busbar-voice/src/tests/breaker_tests.rs::a_hard_down_provider_records_into_the_core_cell_and_opens_it",
+      "test": "crates/busbar-streaming/src/tests/breaker_tests.rs::a_hard_down_provider_records_into_the_core_cell_and_opens_it",
       "root": {
         "state": "none",
-        "leg": "root-voice",
-        "reason": "the root-voice dial cell reads a cell that is already open; no cell on this leg records a failing provider dial into the breaker cell to make it open"
+        "leg": "root-streaming",
+        "reason": "the root-streaming dial cell reads a cell that is already open; no cell on this leg records a failing provider dial into the breaker cell to make it open"
       }
     },
     {
       "capability": "breaker-trip",
-      "plane": "voice-server",
+      "plane": "streaming-server",
       "state": "not-applicable",
-      "reason": "the voice front door is an inbound role; opening a session records no upstream target availability, so there is no core breaker cell to trip here -- the outbound provider dial a session triggers is the voice-client cell's subject, the same shape mcp-server/a2a-server breaker-trip are N/A under.",
+      "reason": "the voice front door is an inbound role; opening a session records no upstream target availability, so there is no core breaker cell to trip here -- the outbound provider dial a session triggers is the streaming-client cell's subject, the same shape mcp-server/a2a-server breaker-trip are N/A under.",
       "root": {
         "state": "not-applicable",
-        "leg": "root-voice"
+        "leg": "root-streaming"
       }
     },
     {
       "capability": "breaker-fastfail",
-      "plane": "voice-client",
+      "plane": "streaming-client",
       "state": "proven",
-      "test": "crates/busbar-voice/src/tests/breaker_tests.rs::a_tripped_provider_cell_refuses_before_the_dial",
+      "test": "crates/busbar-streaming/src/tests/breaker_tests.rs::a_tripped_provider_cell_refuses_before_the_dial",
       "root": {
         "state": "proven",
-        "leg": "root-voice",
-        "test": "crates/busbar/src/root/tests/units_voice.rs::a_refused_dial_ends_the_opening_unit"
+        "leg": "root-streaming",
+        "test": "crates/busbar/src/root/tests/units_streaming.rs::a_refused_dial_ends_the_opening_unit"
       }
     },
     {
       "capability": "breaker-fastfail",
-      "plane": "voice-server",
+      "plane": "streaming-server",
       "state": "not-applicable",
-      "reason": "the inbound session-open has no dispatch against an upstream to make fast; admission-before-dial against a tripped provider cell belongs to the voice-client dial leg, not the front door that merely accepts the session.",
+      "reason": "the inbound session-open has no dispatch against an upstream to make fast; admission-before-dial against a tripped provider cell belongs to the streaming-client dial leg, not the front door that merely accepts the session.",
       "root": {
         "state": "not-applicable",
-        "leg": "root-voice"
+        "leg": "root-streaming"
       }
     },
     {
       "capability": "failover-reroute",
-      "plane": "voice-client",
+      "plane": "streaming-client",
       "state": "not-applicable",
       "reason": "a duplex voice session is pinned to one provider socket for its whole lifetime, so there is no pre-first-byte candidate set to walk on the dial leg; a dropped session re-dials as a NEW session, never a mid-session reroute, so failover::walk has nothing to select over here.",
       "root": {
         "state": "not-applicable",
-        "leg": "root-voice"
+        "leg": "root-streaming"
       }
     },
     {
       "capability": "failover-reroute",
-      "plane": "voice-server",
+      "plane": "streaming-server",
       "state": "not-applicable",
-      "reason": "the front door is an inbound role with no candidate set to walk; failover selection over interchangeable provider members is the outbound voice-client leg's decision, exactly as a2a-server reroute is not-applicable on the receiving side.",
+      "reason": "the front door is an inbound role with no candidate set to walk; failover selection over interchangeable provider members is the outbound streaming-client leg's decision, exactly as a2a-server reroute is not-applicable on the receiving side.",
       "root": {
         "state": "not-applicable",
-        "leg": "root-voice"
+        "leg": "root-streaming"
       }
     },
     {
       "capability": "hooks-tap",
-      "plane": "voice-client",
+      "plane": "streaming-client",
       "state": "proven",
-      "test": "crates/busbar-voice/src/tests/hook_tap_tests.rs::a_rewrite_hook_edits_the_session_open_params_before_the_provider_dial",
+      "test": "crates/busbar-streaming/src/tests/hook_tap_tests.rs::a_rewrite_hook_edits_the_session_open_params_before_the_provider_dial",
       "root": {
         "state": "none",
-        "leg": "root-voice",
-        "reason": "no root-voice cell installs an observe or transform hook; the leg drives a session's stations and its lease, and no payload on it passes through a hook"
+        "leg": "root-streaming",
+        "reason": "no root-streaming cell installs an observe or transform hook; the leg drives a session's stations and its lease, and no payload on it passes through a hook"
       }
     },
     {
       "capability": "hooks-tap",
-      "plane": "voice-server",
+      "plane": "streaming-server",
       "state": "proven",
-      "test": "crates/busbar-voice/src/tests/hook_tap_tests.rs::a_rewrite_hook_edits_the_session_open_params_before_the_provider_dial",
+      "test": "crates/busbar-streaming/src/tests/hook_tap_tests.rs::a_rewrite_hook_edits_the_session_open_params_before_the_provider_dial",
       "root": {
         "state": "none",
-        "leg": "root-voice",
-        "reason": "no root-voice cell installs an observe or transform hook; the leg drives a session's stations and its lease, and no payload on it passes through a hook"
+        "leg": "root-streaming",
+        "reason": "no root-streaming cell installs an observe or transform hook; the leg drives a session's stations and its lease, and no payload on it passes through a hook"
       }
     },
     {
       "capability": "hooks-gate",
-      "plane": "voice-client",
+      "plane": "streaming-client",
       "state": "proven",
-      "test": "crates/busbar-voice/src/tests/hook_gate_tests.rs::a_reject_all_operator_gate_refuses_a_ws_accept_before_the_upgrade",
+      "test": "crates/busbar-streaming/src/tests/hook_gate_tests.rs::a_reject_all_operator_gate_refuses_a_ws_accept_before_the_upgrade",
       "root": {
         "state": "none",
-        "leg": "root-voice",
-        "reason": "the refusal a session meets on the root-voice leg is the scope unit's at approve; hooks::gate::decide is reached by no cell on this leg"
+        "leg": "root-streaming",
+        "reason": "the refusal a session meets on the root-streaming leg is the scope unit's at approve; hooks::gate::decide is reached by no cell on this leg"
       }
     },
     {
       "capability": "hooks-gate",
-      "plane": "voice-server",
+      "plane": "streaming-server",
       "state": "proven",
-      "test": "crates/busbar-voice/src/tests/hook_gate_tests.rs::a_reject_all_operator_gate_refuses_a_ws_accept_before_the_upgrade",
+      "test": "crates/busbar-streaming/src/tests/hook_gate_tests.rs::a_reject_all_operator_gate_refuses_a_ws_accept_before_the_upgrade",
       "root": {
         "state": "none",
-        "leg": "root-voice",
-        "reason": "the refusal a session meets on the root-voice leg is the scope unit's at approve; hooks::gate::decide is reached by no cell on this leg"
+        "leg": "root-streaming",
+        "reason": "the refusal a session meets on the root-streaming leg is the scope unit's at approve; hooks::gate::decide is reached by no cell on this leg"
       }
     },
     {
       "capability": "audit-chain",
-      "plane": "voice-client",
+      "plane": "streaming-client",
       "state": "proven",
-      "test": "crates/busbar-voice/src/tests/audit_chain_tests.rs::an_opened_voice_session_seals_a_genesis_event_and_survives_reattach_on_the_durable_chain",
+      "test": "crates/busbar-streaming/src/tests/audit_chain_tests.rs::an_opened_streaming_session_seals_a_genesis_event_and_survives_reattach_on_the_durable_chain",
       "root": {
         "state": "proven",
-        "leg": "root-voice",
-        "test": "crates/busbar/src/root/tests/units_voice.rs::the_opening_unit_seals_under_the_declared_operation_class"
+        "leg": "root-streaming",
+        "test": "crates/busbar/src/root/tests/units_streaming.rs::the_opening_unit_seals_under_the_declared_operation_class"
       }
     },
     {
       "capability": "audit-chain",
-      "plane": "voice-server",
+      "plane": "streaming-server",
       "state": "proven",
-      "test": "crates/busbar-voice/src/tests/audit_chain_tests.rs::an_inbound_session_open_lands_a_sealed_genesis_event_the_front_door_wrote",
+      "test": "crates/busbar-streaming/src/tests/audit_chain_tests.rs::an_inbound_session_open_lands_a_sealed_genesis_event_the_front_door_wrote",
       "root": {
         "state": "proven",
-        "leg": "root-voice",
-        "test": "crates/busbar/src/root/tests/units_voice.rs::unit_zero_runs_every_station_and_settles_exactly_once"
+        "leg": "root-streaming",
+        "test": "crates/busbar/src/root/tests/units_streaming.rs::unit_zero_runs_every_station_and_settles_exactly_once"
       }
     },
     {
       "capability": "governance-budget",
-      "plane": "voice-client",
+      "plane": "streaming-client",
       "state": "proven",
-      "test": "crates/busbar-voice/src/tests/governance_budget_tests.rs::a_session_lease_settled_past_its_cap_hard_closes_and_refuses_further_spend",
+      "test": "crates/busbar-streaming/src/tests/governance_budget_tests.rs::a_session_lease_settled_past_its_cap_hard_closes_and_refuses_further_spend",
       "root": {
         "state": "proven",
-        "leg": "root-voice",
-        "test": "crates/busbar/src/root/tests/units_voice.rs::a_detached_node_refuses_the_session_at_the_door"
+        "leg": "root-streaming",
+        "test": "crates/busbar/src/root/tests/units_streaming.rs::a_detached_node_refuses_the_session_at_the_door"
       }
     },
     {
       "capability": "governance-budget",
-      "plane": "voice-server",
+      "plane": "streaming-server",
       "state": "proven",
-      "test": "crates/busbar-voice/src/tests/governance_budget_tests.rs::the_session_lease_bills_the_presenting_key_and_refuses_past_the_cap_with_a_hard_close",
+      "test": "crates/busbar-streaming/src/tests/governance_budget_tests.rs::the_session_lease_bills_the_presenting_key_and_refuses_past_the_cap_with_a_hard_close",
       "root": {
         "state": "proven",
-        "leg": "root-voice",
-        "test": "crates/busbar/src/root/tests/units_voice.rs::the_handshake_draws_no_request_slot_and_posts_nothing"
+        "leg": "root-streaming",
+        "test": "crates/busbar/src/root/tests/units_streaming.rs::the_handshake_draws_no_request_slot_and_posts_nothing"
       }
     },
     {
       "capability": "disposition",
-      "plane": "voice-client",
+      "plane": "streaming-client",
       "state": "not-applicable",
       "reason": "disposition classifies a discrete upstream ANSWER (proto Stage 1 -> breaker::classify); a duplex frame stream has no per-hop answer to normalize -- a fatal provider frame closes the session rather than resolving into a Disposition, so Stage 2 has nothing to classify on the dial leg.",
       "root": {
         "state": "not-applicable",
-        "leg": "root-voice"
+        "leg": "root-streaming"
       }
     },
     {
       "capability": "disposition",
-      "plane": "voice-server",
+      "plane": "streaming-server",
       "state": "not-applicable",
       "reason": "disposition classifies an upstream's ANSWER; the inbound session-open has no upstream answer to normalize, so Stage-1/Stage-2 classification has no subject here -- the same argument mcp-server and a2a-server disposition are not-applicable under.",
       "root": {
         "state": "not-applicable",
-        "leg": "root-voice"
+        "leg": "root-streaming"
       }
     },
     {
       "capability": "metrics",
-      "plane": "voice-client",
+      "plane": "streaming-client",
       "state": "proven",
-      "test": "crates/busbar-voice/src/tests/metrics_tests.rs::a_voice_session_open_increments_the_plane_labelled_counter",
+      "test": "crates/busbar-streaming/src/tests/metrics_tests.rs::a_streaming_session_open_increments_the_plane_labelled_counter",
       "root": {
         "state": "proven",
-        "leg": "root-voice",
-        "test": "crates/busbar/src/root/tests/units_voice.rs::a_turn_meters_the_classes_the_plane_declares_with_text_split_by_direction"
+        "leg": "root-streaming",
+        "test": "crates/busbar/src/root/tests/units_streaming.rs::a_turn_meters_the_classes_the_plane_declares_with_text_split_by_direction"
       }
     },
     {
       "capability": "metrics",
-      "plane": "voice-server",
+      "plane": "streaming-server",
       "state": "proven",
-      "test": "crates/busbar-voice/src/tests/metrics_tests.rs::a_voice_session_open_increments_the_plane_labelled_counter",
+      "test": "crates/busbar-streaming/src/tests/metrics_tests.rs::a_streaming_session_open_increments_the_plane_labelled_counter",
       "root": {
         "state": "proven",
-        "leg": "root-voice",
-        "test": "crates/busbar/src/root/tests/units_voice.rs::a_class_with_nothing_to_report_produces_no_line"
+        "leg": "root-streaming",
+        "test": "crates/busbar/src/root/tests/units_streaming.rs::a_class_with_nothing_to_report_produces_no_line"
       }
     },
     {
       "capability": "trust-pinning",
-      "plane": "voice-client",
+      "plane": "streaming-client",
       "state": "not-applicable",
       "reason": "voice providers (OpenAI Realtime, Gemini Live) are operator-declared config endpoints, not peer-published artifacts; there is no upstream-authored schema digest or card to pin -- exactly the argument the llm dial cell is not-applicable under.",
       "root": {
         "state": "not-applicable",
-        "leg": "root-voice"
+        "leg": "root-streaming"
       }
     },
     {
       "capability": "trust-pinning",
-      "plane": "voice-server",
+      "plane": "streaming-server",
       "state": "not-applicable",
       "reason": "the browser-sideband and telephony callers that reach the front door publish no artifact (no schema digest, agent card, or SPKI) for the trust lifecycle to pin; there is no peer-authored object whose drift could be detected, unlike the a2a-server card-fingerprint cell.",
       "root": {
         "state": "not-applicable",
-        "leg": "root-voice"
+        "leg": "root-streaming"
       }
     },
     {
       "capability": "net-guard",
-      "plane": "voice-client",
+      "plane": "streaming-client",
       "state": "not-applicable",
       "reason": "the provider WSS is an operator-configured endpoint and no request-authored URL reaches the dial, so there is no SSRF surface on the outbound leg (the net_guard resolve->pin->guard at topology::dial_provider is defense-in-depth, not a request-URL guard); revisit if a T3 request-authored callback URL is ever dialed, like a2a-server push delivery.",
       "root": {
         "state": "not-applicable",
-        "leg": "root-voice"
+        "leg": "root-streaming"
       }
     },
     {
       "capability": "net-guard",
-      "plane": "voice-server",
+      "plane": "streaming-server",
       "state": "not-applicable",
-      "reason": "the inbound session listener derives no outbound destination of its own; the one outbound a session triggers is the provider dial, guarded (defense-in-depth) on the voice-client leg, so the front door has no request-authored egress to SSRF-guard.",
+      "reason": "the inbound session listener derives no outbound destination of its own; the one outbound a session triggers is the provider dial, guarded (defense-in-depth) on the streaming-client leg, so the front door has no request-authored egress to SSRF-guard.",
       "root": {
         "state": "not-applicable",
-        "leg": "root-voice"
+        "leg": "root-streaming"
       }
     },
     {
       "capability": "egress-auth",
-      "plane": "voice-client",
+      "plane": "streaming-client",
       "state": "proven",
-      "test": "crates/busbar-voice/src/tests/egress_tests.rs::the_provider_dial_carries_the_planned_credential_and_never_a_caller_token",
+      "test": "crates/busbar-streaming/src/tests/egress_tests.rs::the_provider_dial_carries_the_planned_credential_and_never_a_caller_token",
       "root": {
         "state": "none",
-        "leg": "root-voice",
-        "reason": "the root-voice dial cells compose the provider endpoint from borrowed names; the credential that endpoint is reached with is planned outside this leg and no cell witnesses the injection"
+        "leg": "root-streaming",
+        "reason": "the root-streaming dial cells compose the provider endpoint from borrowed names; the credential that endpoint is reached with is planned outside this leg and no cell witnesses the injection"
       }
     },
     {
       "capability": "egress-auth",
-      "plane": "voice-server",
+      "plane": "streaming-server",
       "state": "not-applicable",
-      "reason": "the front door's only outbound is the provider dial, whose credential injection is the voice-client egress-auth cell; the inbound caller's own bearer is authenticated by the Auth plugin, which is not egress credential planning -- the same split mcp-server egress-auth is not-applicable under.",
+      "reason": "the front door's only outbound is the provider dial, whose credential injection is the streaming-client egress-auth cell; the inbound caller's own bearer is authenticated by the Auth plugin, which is not egress credential planning -- the same split mcp-server egress-auth is not-applicable under.",
       "root": {
         "state": "not-applicable",
-        "leg": "root-voice"
+        "leg": "root-streaming"
       }
     },
     {
       "capability": "catalogue",
-      "plane": "voice-client",
+      "plane": "streaming-client",
       "state": "not-applicable",
       "reason": "the voice plane's config is the SINGULAR streams: section, not a named-definition map like tools:/agents:, so there are no per-item registrations for catalogue::entitled to walk and trust-gate; named_def_list and registry_contains are None by construction, so no caller-visible catalogue exists on this plane.",
       "root": {
         "state": "not-applicable",
-        "leg": "root-voice"
+        "leg": "root-streaming"
       }
     },
     {
       "capability": "catalogue",
-      "plane": "voice-server",
+      "plane": "streaming-server",
       "state": "not-applicable",
       "reason": "the voice plane declares the SINGULAR streams: section, not a named-definition map, so the front door exposes no per-item registry for catalogue::entitled to walk; named_def_list/registry_contains are None, so there is no caller-visible catalogue surface to trust-gate.",
       "root": {
         "state": "not-applicable",
-        "leg": "root-voice"
+        "leg": "root-streaming"
       }
     }
   ]

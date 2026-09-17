@@ -23,8 +23,8 @@ jobs:
       - name: a step label that quotes `cargo build --workspace` in prose
         run: |
           echo "next up: cargo test --workspace --locked"
-          cargo test -p busbar-voice --features runtime,test-support \
-                     -p busbar-voice-codec --features runtime \
+          cargo test -p busbar-streaming --features runtime,test-support \
+                     -p busbar-streaming-codec --features runtime \
                      --locked --verbose | tee "$RUNNER_TEMP/voice-test.log"
           echo "the voice runtime suite ran"
 

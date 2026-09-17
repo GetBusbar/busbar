@@ -70,12 +70,12 @@ busbar-mcp = { path = "../busbar-mcp", optional = true }
 # until the plane/codec code that a later step moves actually lands here.
 busbar-a2a = { path = "../busbar-a2a", optional = true }
 # THE VOICE PLANE-KIND CRATE (Plane 4), the analogue of busbar-a2a above. Optional behind
-# `plane-voice`, now IN `default` (voice ships default-ON + deletable, exactly like plane-mcp/
+# `plane-streaming`, now IN `default` (voice ships default-ON + deletable, exactly like plane-mcp/
 # plane-a2a). The LLM money path is unchanged (busbar-core's default carries no voice/duplex-ws
 # edge); the shipped binary gains the voice plane + its WS transport, and `--no-default` proves the
-# whole edge disappears with the crate (strong-form deletable). The `busbar-voice/runtime` edge is
+# whole edge disappears with the crate (strong-form deletable). The `busbar-streaming/runtime` edge is
 # carried by the feature (below), not here.
-busbar-voice = { path = "../busbar-voice", optional = true }
+busbar-streaming = { path = "../busbar-streaming", optional = true }
 # Boot-time plugin listing (`--plugins`) reads the registry the loader builds.
 busbar-plugin-loader = { path = "../plugin-loader" }
 
@@ -116,7 +116,7 @@ busbar-unit-wal = { path = "../busbar-unit-wal" }
 busbar-plane-llm = { path = "../busbar-plane-llm" }
 busbar-plane-mcp = { path = "../busbar-plane-mcp" }
 busbar-plane-a2a = { path = "../busbar-plane-a2a" }
-busbar-plane-voice = { path = "../busbar-plane-voice" }
+busbar-plane-streaming = { path = "../busbar-plane-streaming" }
 busbar-plane-admin = { path = "../busbar-plane-admin" }
 # The seven transports. Composition is an edge that does not exist as a Cargo dependency — a
 # transport may not name the layer beneath it — so the root supplies each composing transport its
@@ -128,7 +128,7 @@ busbar-transport-sse = { path = "../busbar-transport-sse" }
 # WebSocket, and the ONE transport that is optional: it is the voice plane's edge and nothing else
 # reaches it, so a build without voice must not carry it. Non-optional, `--no-default-features` still
 # pulled `tokio-tungstenite` through this line and voice stopped being strong-form deletable — the
-# exact leak `cargo xtask gate duplex-ws-default-edge` exists to catch. `plane-voice` carries the edge.
+# exact leak `cargo xtask gate duplex-ws-default-edge` exists to catch. `plane-streaming` carries the edge.
 busbar-transport-ws = { path = "../busbar-transport-ws", optional = true }
 busbar-transport-grpc = { path = "../busbar-transport-grpc" }
 busbar-transport-stdio = { path = "../busbar-transport-stdio" }
@@ -174,10 +174,10 @@ tikv-jemallocator = { workspace = true, features = ["disable_initial_exec_tls"] 
 [features]
 # Pure forwards: every `#[cfg(feature = ...)]` site lives in busbar-core, so the binary's features
 # are one-line re-exports of the core feature with the same name. Every protocol entry below is the
-# SAME default set the monolithic crate had; `root-admin`, `root-mcp`, `root-a2a`, `root-voice` and
+# SAME default set the monolithic crate had; `root-admin`, `root-mcp`, `root-a2a`, `root-streaming` and
 # `root-llm` are the additions, and all five are paths rather than surfaces — the operations, their
 # bytes and their features are unchanged.
-default = ["auth-admin-tokens", "hooks-ranking", "proto-llm", "plane-mcp", "plane-a2a", "plane-voice", "root-admin", "root-mcp", "root-a2a", "root-voice", "root-llm"]
+default = ["auth-admin-tokens", "hooks-ranking", "proto-llm", "plane-mcp", "plane-a2a", "plane-streaming", "root-admin", "root-mcp", "root-a2a", "root-streaming", "root-llm"]
 # A protocol crate: the dependency edge plus its registration line in main.rs. Dropping the
 # feature is the deletion test's level-1 build. There is no per-DIALECT feature and there must not
 # be one — "LLM coverage or not" is the choice this seam offers, and a `proto-gemini` knob would be
@@ -195,15 +195,15 @@ plane-mcp = ["dep:busbar-mcp", "busbar-core/plane-mcp", "busbar-admin/plane-mcp"
 # section when off, so `--no-default-features` drops the `busbar-a2a` edge and compiles the whole A2A
 # plane out while core still routes LLM + MCP (the plane-split deletion test).
 plane-a2a = ["dep:busbar-a2a", "busbar-core/plane-a2a", "busbar-admin/plane-a2a"]
-# THE VOICE PLANE, the busbar-voice crate, behind this switch. The analogue of `plane-a2a` — one
+# THE VOICE PLANE, the busbar-streaming crate, behind this switch. The analogue of `plane-a2a` — one
 # switch for the crate edge + the core/substrate forwards — EXCEPT it is deliberately absent from
-# `default`. `dep:busbar-voice` pulls the crate; `busbar-voice?/runtime` turns on its live-session
-# runtime (the same feature it would be under `busbar-voice/runtime`, since `dep:busbar-voice` here
+# `default`. `dep:busbar-streaming` pulls the crate; `busbar-streaming?/runtime` turns on its live-session
+# runtime (the same feature it would be under `busbar-streaming/runtime`, since `dep:busbar-streaming` here
 # enables the crate). The `?/` spelling is deliberate: it makes the forward an OPTIONAL-dep feature
 # reference, so the strong-form deletion gate (scripts/plane-delete-test.sh) strips it with the same
-# rule it strips `busbar-voice?/openapi-schema`, leaving voice byte-for-byte removable. Compiling the
+# rule it strips `busbar-streaming?/openapi-schema`, leaving voice byte-for-byte removable. Compiling the
 # runtime here gives the `build_runtime` body; the skeleton build leaves `build_runtime: None`.
-plane-voice = ["dep:busbar-voice", "dep:busbar-transport-ws", "busbar-voice?/runtime", "busbar-core/plane-voice"]
+plane-streaming = ["dep:busbar-streaming", "dep:busbar-transport-ws", "busbar-streaming?/runtime", "busbar-core/plane-streaming"]
 # THE VOICE PLANE, SERVED THROUGH THE COMPOSITION ROOT rather than through the previous release's
 # path, DEFAULT ON. `main()` seals the composition and mounts the voice plane's units at boot.
 # Default-off was the ordering, not the destination — the root is BUILT before any plane is SWITCHED
@@ -223,10 +223,10 @@ plane-voice = ["dep:busbar-voice", "dep:busbar-transport-ws", "busbar-voice?/run
 #
 # It carries no config key, no environment variable and no boot line. A deployment cannot turn it on
 # by editing a config file and cannot tell from the logs which way it was built, which is what keeps
-# the neutrality cells answering the same on both legs. It forwards to `plane-voice` because the
-# thing it mounts needs the plane's own crate edge to exist — and `plane-voice` is what carries the
+# the neutrality cells answering the same on both legs. It forwards to `plane-streaming` because the
+# thing it mounts needs the plane's own crate edge to exist — and `plane-streaming` is what carries the
 # WS transport edge, so `--no-default-features` still drops plane and transport together.
-root-voice = ["plane-voice"]
+root-streaming = ["plane-streaming"]
 # THE LLM PLANE THROUGH THE COMPOSITION ROOT, DEFAULT ON: the loop over the nine step files instead
 # of the shell over the engine. Same six dialects under the same six names. Default-off was the
 # ordering, not the destination — the root is BUILT before any plane is SWITCHED onto it — and the
@@ -241,8 +241,8 @@ root-voice = ["plane-voice"]
 # the neutrality cells answering the same on both legs. The leg stays switchable — off, the binary
 # is the shell over the engine again and nothing else changes.
 #
-# The plane-crate edge is written `busbar-llm?/…`, the same optional form `plane-voice` uses for
-# `busbar-voice?/runtime`: it turns the feature on when the crate is there, and says nothing when it
+# The plane-crate edge is written `busbar-llm?/…`, the same optional form `plane-streaming` uses for
+# `busbar-streaming?/runtime`: it turns the feature on when the crate is there, and says nothing when it
 # is not. `busbar-llm/teller-waist` (no `?`) would have re-declared the optional dependency, so the
 # line outlived the crate — `git rm -r crates/busbar-llm` left `root-llm` naming a dependency that no
 # longer exists and cargo refused to load the manifest before compiling a line. It costs nothing on
@@ -296,7 +296,7 @@ root-admin = ["dep:tower"]
 test-harness = []
 auth-admin-tokens = ["busbar-core/auth-admin-tokens", "busbar-admin/auth-admin-tokens"]
 hooks-ranking = ["busbar-core/hooks-ranking"]
-openapi-schema = ["busbar-core/openapi-schema", "busbar-admin/openapi-schema", "busbar-llm?/openapi-schema", "busbar-mcp?/openapi-schema", "busbar-a2a?/openapi-schema", "busbar-voice?/openapi-schema"]
+openapi-schema = ["busbar-core/openapi-schema", "busbar-admin/openapi-schema", "busbar-llm?/openapi-schema", "busbar-mcp?/openapi-schema", "busbar-a2a?/openapi-schema", "busbar-streaming?/openapi-schema"]
 loom-model = ["busbar-core/loom-model"]
 
 [dev-dependencies]
