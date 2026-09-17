@@ -586,6 +586,37 @@ impl Ctx {
         gitp::git(&self.root, args)
     }
 
+    /// Tracked paths a `.gitignore` rule of THIS TREE also matches — `git ls-files -ci
+    /// --exclude-standard`, the exact query that intersects "in the index" with "an ignore rule
+    /// would otherwise exclude it".
+    ///
+    /// THE HAZARD THIS NAMES is the one `kind_isolation`'s own selftest already carries in its
+    /// wording: "a compiled source in a walker-skipped, gitignored directory is source no rule has
+    /// read". That case is about a file the WALKER never lists; this is about a file GIT ITSELF
+    /// tracks despite an ignore rule that says nothing here should be — a distinct way for a path
+    /// to go blind to every scanner that trusts `.gitignore` to bound its own scan set, and the one
+    /// that put `.fix/*.orig` into a shipped commit in the first place. Tracking beats ignoring in
+    /// git's own precedence, so the file is live, reviewed and shipped; every gate that skips
+    /// ignored paths (or skips a directory `.gitignore` names) never looks at it.
+    ///
+    /// Overlay-answerable so a self-test can plant the FINDING without a real git index: proving
+    /// this for real would mean force-adding a fixture path under an ignored directory and
+    /// committing it, which is the exact hazard this rule exists to refuse ever landing again.
+    pub fn tracked_ignored(&self) -> Result<Vec<String>, String> {
+        let key = "git-ls-files-ci-exclude-standard";
+        if let Some(ov) = self.overlay() {
+            if let Some(out) = ov.commands.get(key) {
+                return Ok(out
+                    .lines()
+                    .map(str::trim)
+                    .filter(|l| !l.is_empty())
+                    .map(str::to_string)
+                    .collect());
+            }
+        }
+        self.git_lines(&["ls-files", "-ci", "--exclude-standard"])
+    }
+
     pub fn git_lines(&self, args: &[&str]) -> Result<Vec<String>, String> {
         gitp::git_lines(&self.root, args)
     }
