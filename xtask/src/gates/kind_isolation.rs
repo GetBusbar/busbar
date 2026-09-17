@@ -3898,11 +3898,84 @@ fn plane_owned_steps(cx: &Ctx) -> Result<Vec<String>, String> {
 /// nothing, which is what "unmetered" means when it is a fact rather than a policy.
 const DATA_PATH_STEPS: &[&str] = &["route", "meter"];
 
-/// The UPSTREAM vocabulary a control surface may not name at all — the words that only make sense
-/// when there is something on the other side of the request.
-const UPSTREAM_WORDS: &[&str] = &[
-    "egress", "pool", "routing", "failover", "breaker", "provider",
+/// THE PROVIDER-DIAL ENTRYPOINTS a control surface may not CALL — the functions that reach an
+/// upstream provider on the metered data path.
+///
+/// This is what the rule is actually about, and it is NOT a vocabulary. The old check scanned for
+/// the WORDS `egress`, `pool`, `routing`, `failover`, `breaker`, `provider` as whole words in any
+/// shipped line, and a whole word is not a data path: it matched `pool_max_idle_per_host` (a
+/// customer HTTP-client field served in `busbar-admin`'s OpenAPI document), the module PATH
+/// `busbar_substrate::egress::engine` in `busbar-oauth2`'s CIMD fetch, the `provider` in an
+/// "identity provider" error string, and `routing`/`provider`/`pool` identifiers all through
+/// `busbar-admin`'s authz and config code — fifty-odd lines that name a plane-ish word and reach no
+/// upstream. A rule that reports those is a rule somebody waives, and a waived rule is not a rule.
+///
+/// A control surface violates the boundary when it INVOKES the dial machinery, and dialing is a
+/// CALL, not a mention. The bounded-HTTP PRIMITIVE (`engine::build_client`, `engine::request`,
+/// `engine::send_bounded`) is deliberately NOT on this list: it is shared infrastructure a control
+/// surface legitimately uses for an out-of-band fetch that reaches no provider on the metered loop —
+/// `busbar-oauth2` pulls a CIMD document with it, `busbar-core` delivers a webhook and mints a token
+/// with it, `busbar-voice` mints an https topology with it. What ONLY the money data path calls are:
+///
+/// * `egress_request` — `busbar_substrate::egress::engine`'s POST-only, boot-precomputed request
+///   assembly, the zero-branch hot-path form used only by the `llm` plane's provider dial.
+/// * `send_pinned_buffered` / `send_pinned_stream` — `busbar_substrate::egress::seam`'s pinned
+///   provider hop, the send-to-upstream the `a2a` and `mcp` plane transports run.
+/// * `install_hostless_egress` — installs THE egress driver; only the composition host does this,
+///   and a control surface that does it is standing up a plane's egress.
+///
+/// None of these is called by any cleanliness crate today, and each is a genuine reach for a
+/// provider. The detector below reports a CALL to one of them and nothing else.
+const DIAL_FNS: &[&str] = &[
+    "egress_request",
+    "send_pinned_buffered",
+    "send_pinned_stream",
+    "install_hostless_egress",
 ];
+
+/// Does one blanked, lowercased production line CALL `name` — the function name as a whole word,
+/// immediately followed (past any spaces) by `(`?
+///
+/// A CALL, not a mention: `use …::send_pinned_buffered;` names it and ends in `;`, a bare
+/// `send_pinned_stream` identifier has no paren, and `busbar_substrate::egress::engine` is a module
+/// path with no function of any of these names on it — none of those satisfy the `(` and none trip.
+/// The literals are already blanked by the caller, so a `send_pinned_buffered(` inside a string or a
+/// doc example reads as blanks and does not match. The DEFINITION `fn send_pinned_buffered(` is
+/// refused too (the preceding word is `fn`), though no cleanliness crate defines these — the engine
+/// and the seam live in `busbar-substrate`, which is not a control surface.
+fn calls_dial_fn(lower: &str, name: &str) -> bool {
+    let b = lower.as_bytes();
+    let mut from = 0usize;
+    while let Some(p) = lower[from..].find(name) {
+        let at = from + p;
+        from = at + name.len();
+        // LEFT: a whole-word boundary, and not the `fn` of a definition.
+        if at > 0 {
+            let prev = b[at - 1];
+            if prev.is_ascii_alphanumeric() || prev == b'_' {
+                continue;
+            }
+        }
+        let before = lower[..at].trim_end();
+        if before.ends_with("fn") && (before.len() == 2 || !is_word_byte(before.as_bytes()[before.len() - 3])) {
+            continue;
+        }
+        // RIGHT: the call paren, past any spaces.
+        let mut j = at + name.len();
+        while j < b.len() && (b[j] == b' ' || b[j] == b'\t') {
+            j += 1;
+        }
+        if j < b.len() && b[j] == b'(' {
+            return true;
+        }
+    }
+    false
+}
+
+/// A byte that continues an identifier — the boundary test `calls_dial_fn` reads both ways.
+fn is_word_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_'
+}
 
 /// Every `fn <name>` in a crate's shipped source, with the file, line and the body's blanked text.
 struct FnBody {
@@ -4072,22 +4145,41 @@ fn rule_control(cx: &Ctx, crates: &[CrateInfo]) -> Row {
     }
     let mut offenders: Vec<String> = Vec::new();
     for c in &controls {
-        let bodies = fn_bodies(cx, &c.dir);
-        for step in DATA_PATH_STEPS {
-            if let Some(found) = bodies.get(*step) {
-                for b in found {
-                    offenders.push(format!(
-                        "data-path-step\t{}:{}\t{} is a CONTROL surface and implements `{step}`, a \
-                         data-path step. A control surface reaches no upstream and meters nothing; \
-                         the steps it runs are the control path (verify, admit, audit, answer)",
-                        b.file, b.line, c.name
-                    ));
-                }
-            }
-        }
         let Ok(files) = cx.walk(&WalkSpec::new([c.dir.as_str()]).ext("rs")) else {
             continue;
         };
+
+        // (a) A PLANE `route`/`meter` DATA-PATH IMPLEMENTATION. A control surface answers out of
+        // node state; a plane runs the loop. The two are told apart by the trait the crate
+        // implements, not by a function name in isolation: a cleanliness crate that implements
+        // `Plane` AND carries a `route`/`meter` body is running the data path, and one that merely
+        // has a helper spelled `route` is not. `busbar-plane-admin` still `impl Plane for
+        // AdminPlane` with both bodies — the R7 debt this ship criterion refuses the tag over.
+        let impls_plane = files.iter().any(|f| {
+            let rel = f.rel_str();
+            is_shipped_source(&rel) && impl_heads(&f.text).iter().any(|t| t == "Plane")
+        });
+        if impls_plane {
+            let bodies = fn_bodies(cx, &c.dir);
+            for step in DATA_PATH_STEPS {
+                if let Some(found) = bodies.get(*step) {
+                    for b in found {
+                        offenders.push(format!(
+                            "data-path-step\t{}:{}\t{} implements `Plane` and runs `{step}`, a \
+                             data-path step. A control surface reaches no upstream and meters \
+                             nothing; the steps it runs are the control path (verify, admit, \
+                             audit, answer)",
+                            b.file, b.line, c.name
+                        ));
+                    }
+                }
+            }
+        }
+
+        // (b) AN ACTUAL PROVIDER DIAL. Not the vocabulary of an upstream — the CALL that reaches
+        // one. See [`DIAL_FNS`]: a control surface may hold the bounded-HTTP primitive for an
+        // out-of-band fetch, but calling the metered egress assembly, the pinned provider hop, or
+        // the egress-driver install is the data path spelled as a function call.
         for f in &files {
             let rel = f.rel_str();
             if !is_shipped_source(&rel) {
@@ -4095,12 +4187,13 @@ fn rule_control(cx: &Ctx, crates: &[CrateInfo]) -> Row {
             }
             for (lineno, code) in scan::production_lines(&f.text) {
                 let lower = scan::blank_literals(&code).to_lowercase();
-                for w in UPSTREAM_WORDS {
-                    if word_ci(&lower, w) {
+                for name in DIAL_FNS {
+                    if calls_dial_fn(&lower, name) {
                         offenders.push(format!(
-                            "upstream\t{rel}:{lineno}\t{} names `{w}` — a control surface has no \
-                             upstream to reach, so the vocabulary of reaching one has no meaning \
-                             on this path",
+                            "upstream-dial\t{rel}:{lineno}\t{} calls `{name}` — the egress \
+                             provider-dial machinery. A control surface reaches no upstream and \
+                             meters nothing; dialing a provider on the metered path is the data \
+                             path, not the control path",
                             c.name
                         ));
                     }
@@ -4119,7 +4212,7 @@ fn rule_control(cx: &Ctx, crates: &[CrateInfo]) -> Row {
     }
     Row::fail(
         ROW_CONTROL,
-        "a control surface runs the data path or names an upstream",
+        "a control surface runs the data path or dials an upstream",
         format!(
             "{} finding(s) over {} control surface(s): {}",
             offenders.len(),
@@ -6968,17 +7061,36 @@ impl Gate for KindIsolationGate {
         );
         ov.set(
             "crates/busbar-control-planted/src/lib.rs",
-            "pub struct P;\nimpl P {\n    fn route(&self) -> u8 { 0 }\n}\n",
+            "pub struct P;\nimpl busbar_contract::plane::Plane for P {\n    fn route(&self) -> \
+             u8 { 0 }\n    fn meter(&self) -> u8 { 0 }\n}\n",
+        );
+        // A `[[registered]]` row is what makes the plant a CLEANLINESS crate — the same one-way the
+        // real `busbar-plane-admin` earns its kind. Appended to the live registry rather than
+        // replacing it, so busbar-plane-admin keeps its own row and the plant's finding stands NEXT
+        // to the R7 debt rather than in place of it.
+        ov.set(
+            REGISTRY_FILE,
+            format!(
+                "{}\n\n[[registered]]\ncrate = \"busbar-control-planted\"\nkind = \
+                 \"cleanliness\"\nreason = \"planted\"\n",
+                cx.read(REGISTRY_FILE).unwrap_or_default().trim_end()
+            ),
         );
         report.push(prove_rows_red(
             cx,
             self,
-            "a control surface implementing a data-path step",
+            "a control surface implementing a Plane data-path step",
             &[ROW_CONTROL],
             ov,
             &["data-path-step", "busbar-control-planted", "route"],
         ));
 
+        // A CONTROL SURFACE THAT ACTUALLY DIALS A PROVIDER IS STILL RED — the anti-vacuity heart of
+        // the tightened rule. The old case planted `pool`/`failover` as identifiers and proved only
+        // that a whole-word scan fires on a whole word; the fifty-odd findings that scan produced
+        // over `busbar-admin`'s customer fields and `busbar-oauth2`'s module paths were the reason
+        // it had to go. This plant CALLS the pinned provider hop — the send-to-upstream a plane
+        // transport runs — and the detector must catch the call, or it has become a rubber stamp.
         let mut ov = manifest_plant(
             "crates/busbar-control-planted",
             "busbar-control-planted",
@@ -6986,15 +7098,42 @@ impl Gate for KindIsolationGate {
         );
         ov.set(
             "crates/busbar-control-planted/src/lib.rs",
-            "pub fn pick(pool: u8) -> u8 { let failover = pool; failover }\n",
+            "pub fn reach(hop: &Hop, cap: usize) {\n    let _ = \
+             busbar_substrate::egress::seam::send_pinned_buffered(hop, cap);\n}\n",
+        );
+        ov.set(
+            REGISTRY_FILE,
+            format!(
+                "{}\n\n[[registered]]\ncrate = \"busbar-control-planted\"\nkind = \
+                 \"cleanliness\"\nreason = \"planted\"\n",
+                cx.read(REGISTRY_FILE).unwrap_or_default().trim_end()
+            ),
         );
         report.push(prove_rows_red(
             cx,
             self,
-            "a control surface naming the vocabulary of reaching an upstream",
+            "a control surface calling the egress provider-dial machinery",
             &[ROW_CONTROL],
             ov,
-            &["upstream", "busbar-control-planted", "pool"],
+            &["upstream-dial", "busbar-control-planted", "send_pinned_buffered"],
+        ));
+
+        // …AND GREEN WHEN NOTHING DIALS. Strike busbar-plane-admin — the R7 `Plane` debt that keeps
+        // this row red on the real tree — and the only cleanliness crates left are the REAL
+        // busbar-admin and busbar-oauth2, whose shipped source still spells `pool`, `provider`,
+        // `routing` and `egress` by the dozen (customer OpenAPI fields, module paths to the shared
+        // engine, "identity provider" error strings) and dials no provider on the metered path. The
+        // row is GREEN over exactly the fifty-odd lines the old whole-word scan reported RED. Without
+        // this case the two red plants above could not be told from a rule that is simply red for
+        // every cleanliness crate for ever.
+        let mut ov = Overlay::new();
+        ov.remove("crates/busbar-plane-admin/Cargo.toml");
+        report.push(prove_rows_green(
+            cx,
+            self,
+            "the real control surfaces dial nothing once the Plane debt is struck",
+            &[ROW_CONTROL],
+            ov,
         ));
 
         // A TRANSITIONAL ROW WHOSE CRATE IS STILL HERE AT SHIP TIME IS RED, and this is the real
@@ -7315,17 +7454,17 @@ impl Gate for KindIsolationGate {
             &["0 crate(s) reached the battery rule"],
         ));
 
-        // NO CONTROL SURFACE REACHED `:control-path`. The tree carries exactly one control crate —
-        // `busbar-plane-admin`, which is `control` by its `[[registered]]` row and not by its name —
-        // so the honest fixture for "this rule looked at no surface at all" is that row's crate out
-        // of the census. Zero surfaces run zero data-path steps and name zero upstreams, which reads
-        // exactly like a control kind that keeps to its own path.
+        // NO CONTROL SURFACE REACHED `:control-path`. The control surfaces are the `cleanliness`
+        // crates (DECISIONS #5: `busbar-admin`/`busbar-oauth2` by name, `busbar-plane-admin` by its
+        // `[[registered]]` row), so the honest fixture for "this rule looked at no surface at all" is
+        // that whole kind out of the census. Zero surfaces run zero data-path steps and dial zero
+        // upstreams, which reads exactly like a control kind that keeps to its own path.
         report.push(prove_rows_red(
             cx,
             self,
             "no control surface reached the control-path rule is refused, not read as clean",
             &[ROW_CONTROL],
-            move || kinds_gone(cx, &["control"]),
+            move || kinds_gone(cx, &["cleanliness"]),
             &["0 control crate(s)"],
         ));
 
