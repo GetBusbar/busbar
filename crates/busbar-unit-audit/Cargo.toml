@@ -28,10 +28,41 @@ path = "src/lib.rs"
 [dependencies]
 busbar-caps = { path = "../busbar-caps" }
 busbar-contract = { path = "../busbar-contract" }
+# The NEUTRAL SUBSTRATE — the `PlaneStore` seam the journal persists through
+# (`busbar_substrate::plane::store::PlaneStore`) and the diagnostics catalog + `diag_error!` the
+# neutral restore path names for its coded per-row skip report. Substrate never depends back on this
+# crate (checked), so this edge forms no cycle.
+busbar-substrate = { path = "../busbar-substrate" }
+# The neutral store envelope the journal's rows cross the seam in
+# (`PlaneRecord`/`PlaneSelector`/`PlaneDisposition`/`StoreError`/`StoreResult`). `busbar-api` depends
+# on neither this crate nor substrate, so no cycle.
+busbar-api = { path = "../api" }
 sha2 = { workspace = true }
 serde = { workspace = true }
+# The neutral durable body the store-backed journal persists (`NeutralBody`) and the throwaway record
+# rows are serialised with `serde_json` — the same thin `encode`/`decode` wrappers the journal moved
+# with. Was a dev-only edge (the legacy wire-shape test); the journal makes it a production edge.
+serde_json = { workspace = true }
+# The journal's per-scope position cache doubles as a bounded LRU via `IndexMap` insertion order.
+indexmap = { workspace = true }
+# The neutral restore path emits its one coded per-row diagnostic through `busbar_substrate::
+# diag_error!`, which expands to `::tracing::error!` in THIS crate — so `tracing` must be a direct
+# edge here even though the catalog itself lives in substrate.
+tracing = { workspace = true }
+
+[features]
+# Reveals `Journal::clear_sink_for_test` to a DEPENDENT crate's tests (busbar-core's plane-host
+# wiring calls it through `set_stream_sink_for_test`). Never on in a normal build; the dependent
+# enables it from its [dev-dependencies] edge, exactly as core does for `busbar-substrate`.
+test-support = []
 
 [dev-dependencies]
 # The wire shape of the previous release's record — eight fields, one of them skipped — is a claim
 # about what an encoder produces, so the test encodes it rather than reading the derive attributes.
+# ALSO the journal tests' mock store tampers rows through it.
 serde_json = { workspace = true }
+# The journal's neutral-restore test captures the coded `PLANE_JOURNAL_ROW_UNREADABLE` ERROR event
+# through a `tracing_subscriber` layer and asserts BUSBAR-2046 actually fired — a silent count is the
+# regression it pins.
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

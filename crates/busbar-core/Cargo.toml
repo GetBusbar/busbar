@@ -40,6 +40,12 @@ busbar-core-hooks = { path = "../busbar-core-hooks", default-features = false }
 # and the capped upstream-body read) DOWN into this crate; core re-exports each unchanged so the
 # in-core call sites keep naming `crate::…`. Substrate never depends back on core.
 busbar-substrate = { path = "../busbar-substrate" }
+# THE AUDIT UNIT — owner ruling 2026-09-08 (`busbar-unit-audit::journal`) moved the store-backed
+# seq-authority journal and the append-only chain MECHANISM here; core depends on IT (never the
+# reverse — that edge is the cycle Cargo refuses) and re-exports both at their historical
+# `crate::audit::…` / `crate::audit::journal::…` paths. The mechanism is the unit's own types, so a
+# plane's `ChainedRecord` impl and the relocated `Journal` agree by identity.
+busbar-unit-audit = { path = "../busbar-unit-audit" }
 # The plugin-visible contract. Core names it directly for the GENERIC authorization lattice
 # (`busbar_contract::authz::{Scope, Grants}`) — the admin-worded ceiling/error/path vocabulary
 # stays on the admin surface; only the neutral scope model lives here, so a non-admin core
@@ -270,6 +276,11 @@ busbar-llm = { path = "../busbar-llm", features = ["test-support"] }
 # the auth/governance/a2a tests and the mcp plane tests dual-compiled into this crate's test binary).
 # Feature unification means the one substrate instance carries it for the whole test build.
 busbar-substrate = { path = "../busbar-substrate", features = ["test-support"] }
+# The audit unit's `test-support` reveals `Journal::clear_sink_for_test`, which core's plane-host
+# `set_stream_sink_for_test` calls. The plain `cargo test -p busbar-core` build does not enable core's
+# own `test-support`, so — exactly as for `busbar-substrate` above — name the feature on this dev-dep
+# edge; feature unification carries it for the whole test build.
+busbar-unit-audit = { path = "../busbar-unit-audit", features = ["test-support"] }
 busbar-store-example-plugin = { path = "../store-example-plugin" }
 tokio = { workspace = true, features = ["test-util"] }
 reqwest = { workspace = true, features = ["json"] }

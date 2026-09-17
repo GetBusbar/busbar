@@ -53,6 +53,7 @@
 #![deny(rustdoc::broken_intra_doc_links)]
 
 pub mod amend;
+pub mod journal;
 pub mod legacy;
 pub mod record;
 
