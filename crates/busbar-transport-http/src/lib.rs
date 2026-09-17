@@ -88,11 +88,11 @@ use busbar_contract_transport::wire::WireStatus;
 use busbar_contract_transport::wire::WireStatusClass;
 use bytes::Bytes;
 use futures::Stream;
-use sha2::Digest as _;
 use http_body_util::{BodyExt, Full};
 use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::client::legacy::Client;
 use hyper_util::rt::TokioExecutor;
+use sha2::Digest as _;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::TcpListener;
@@ -484,10 +484,15 @@ impl rustls::client::danger::ServerCertVerifier for SpkiPinVerifier {
             ocsp_response,
             now,
         )?;
-        let spki = subject_public_key_info(end_entity.as_ref())
-            .ok_or_else(|| rustls::Error::General("peer certificate carries no readable key".into()))?;
+        let spki = subject_public_key_info(end_entity.as_ref()).ok_or_else(|| {
+            rustls::Error::General("peer certificate carries no readable key".into())
+        })?;
         let digest = sha2::Sha256::digest(spki);
-        if self.pins.iter().any(|pin| pin.as_slice() == digest.as_slice()) {
+        if self
+            .pins
+            .iter()
+            .any(|pin| pin.as_slice() == digest.as_slice())
+        {
             Ok(verified)
         } else {
             Err(rustls::Error::General(

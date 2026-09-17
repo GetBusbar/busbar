@@ -42,13 +42,13 @@ pub struct AbiVersion(pub u16);
 
 pub use dest::UpstreamAddress;
 pub use driver::{Answer, Arrival, Detached, Outcome, UnitDriver};
-pub use trust::{ClientIdentity, EgressTrust, InboundTrust};
 pub use registry::{check_composition, facts, CompositionError, Registered, TRANSPORT_ABI};
 pub use surface::{
     binding_at, check_surface, match_target, resolve_document, resolve_service, resolve_target,
     Answering, Bar, BindingDecl, Capture, Dispatch, Operation, SurfaceError, WireSurface,
     MAX_CAPTURES,
 };
+pub use trust::{ClientIdentity, EgressTrust, InboundTrust};
 pub use wire::{
     ArrivalRecord, CertFacts, CloseReason, Conn, ConnHandle, Decode, Direction, DiscardCode,
     Encode, FrameMeta, Framing, Handoff, HandshakeTrigger, Listener, ListenerHandle, RawIo,

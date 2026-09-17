@@ -63,7 +63,9 @@ impl EgressTrust {
     /// the unset case is provably unchanged.
     #[must_use]
     pub fn is_unset(&self) -> bool {
-        self.extra_anchors.is_empty() && self.pinned_spki.is_empty() && self.client_identity.is_none()
+        self.extra_anchors.is_empty()
+            && self.pinned_spki.is_empty()
+            && self.client_identity.is_none()
     }
 }
 

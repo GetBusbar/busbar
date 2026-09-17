@@ -195,9 +195,10 @@ fn refusal_render(reason: RefusalReason) -> (i64, &'static str) {
     match reason {
         // The caller's request was not one this node could read or take.
         RefusalReason::BodyTooLarge => (jsonrpc::CODE_INVALID_REQUEST, "the request is too large"),
-        RefusalReason::DecodeFailed => {
-            (jsonrpc::CODE_INVALID_REQUEST, "the request could not be read")
-        }
+        RefusalReason::DecodeFailed => (
+            jsonrpc::CODE_INVALID_REQUEST,
+            "the request could not be read",
+        ),
         RefusalReason::SchemeNotDeclared
         | RefusalReason::CredentialRejected
         | RefusalReason::SessionUnbound

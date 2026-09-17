@@ -1321,7 +1321,10 @@ impl DeployCfg {
     /// `Some`; the section KEYS are read off the frozen static
     /// [`busbar_substrate::plane::config::NAMED_MAP_SECTIONS`] mirror so this accessor spells no
     /// plane noun.
-    pub fn plane_section(&self, section: &str) -> Option<&dyn busbar_substrate::plane::config::PlaneCfg> {
+    pub fn plane_section(
+        &self,
+        section: &str,
+    ) -> Option<&dyn busbar_substrate::plane::config::PlaneCfg> {
         let mirror = busbar_substrate::plane::config::NAMED_MAP_SECTIONS;
         if section == mirror[2] {
             Some(&*self.tools.0)

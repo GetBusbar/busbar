@@ -2204,7 +2204,11 @@ fn the_spki_walk_lands_on_the_key() {
     let cert = tlv(0x30, &cert_contents);
 
     let found = subject_public_key_info(&cert).expect("the walk reaches the key");
-    assert_eq!(found, spki.as_slice(), "the whole SPKI element, header included");
+    assert_eq!(
+        found,
+        spki.as_slice(),
+        "the whole SPKI element, header included"
+    );
 }
 
 /// Non-DER and truncated inputs produce no pin rather than a wrong one.

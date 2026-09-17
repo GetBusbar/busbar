@@ -3255,7 +3255,9 @@ fn read_response_maps_forced_response_format_tool_use_back_to_text() {
         "stop_reason": "tool_use",
         "usage": {"input_tokens": 3, "output_tokens": 5}
     });
-    let resp = AnthropicReader.read_response(&body).expect("valid response");
+    let resp = AnthropicReader
+        .read_response(&body)
+        .expect("valid response");
     assert_eq!(resp.content.len(), 1, "one content block");
     match &resp.content[0] {
         crate::ir::IrBlock::Text { text, .. } => {
@@ -3282,7 +3284,9 @@ fn read_response_maps_forced_response_format_tool_use_back_to_text() {
         "stop_reason": "tool_use",
         "usage": {"input_tokens": 3, "output_tokens": 5}
     });
-    let resp = AnthropicReader.read_response(&native).expect("valid response");
+    let resp = AnthropicReader
+        .read_response(&native)
+        .expect("valid response");
     assert!(
         matches!(&resp.content[0], crate::ir::IrBlock::ToolUse { name, .. } if name == "get_weather"),
         "a native tool_use must be left as a ToolUse block"

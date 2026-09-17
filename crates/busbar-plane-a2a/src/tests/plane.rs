@@ -261,8 +261,5 @@ fn a_streamed_answer_ends_only_on_its_last_frame() {
         "a final:true frame ends the stream"
     );
     let err = br#"{"jsonrpc":"2.0","id":1,"error":{"code":-32001,"message":"no"}}"#;
-    assert!(
-        response_terminal(err, true),
-        "an error ends the stream too"
-    );
+    assert!(response_terminal(err, true), "an error ends the stream too");
 }

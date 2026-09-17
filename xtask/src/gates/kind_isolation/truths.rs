@@ -54,7 +54,13 @@ const PLUGIN_KINDS: &[&str] = &[
 /// vocabularies may name any of them: `control` and `dialect` are not kinds, and the auth kind has
 /// no separate `egress-auth` (the `pure_auth`/`egress_auth` construction split is collapsed into one
 /// `auth`). Each spelling the data files could carry is listed so the refusal names it.
-const FORBIDDEN_KINDS: &[&str] = &["control", "dialect", "egress-auth", "egress_auth", "pure_auth"];
+const FORBIDDEN_KINDS: &[&str] = &[
+    "control",
+    "dialect",
+    "egress-auth",
+    "egress_auth",
+    "pure_auth",
+];
 
 /// THE ROW. `table_kinds` is the gate's own kind table, handed in rather than read here so this
 /// module cannot drift from the table it is reconciling.
@@ -302,7 +308,9 @@ pub fn selftest<'a>(
         let mut ov = Overlay::new();
         ov.set(
             LEDGER,
-            format!("{text}\n[[cell]]\ncrate = \"busbar-admin\"\nkind = \"control\"\ncount = \"1\"\n"),
+            format!(
+                "{text}\n[[cell]]\ncrate = \"busbar-admin\"\nkind = \"control\"\ncount = \"1\"\n"
+            ),
         );
         report.push(prove_rows_red(
             cx,
@@ -421,19 +429,39 @@ mod tests {
     #[test]
     fn the_seven_plugin_kinds_are_the_decisions_3_taxonomy() {
         assert_eq!(PLUGIN_KINDS.len(), 7);
-        for k in ["store", "secret", "auth", "hooks", "export", "plane", "transport"] {
+        for k in [
+            "store",
+            "secret",
+            "auth",
+            "hooks",
+            "export",
+            "plane",
+            "transport",
+        ] {
             assert!(PLUGIN_KINDS.contains(&k), "{k} is a plugin kind");
         }
     }
 
     #[test]
     fn the_struck_kinds_are_forbidden_in_every_vocabulary() {
-        for k in ["control", "dialect", "egress-auth", "egress_auth", "pure_auth"] {
-            assert!(FORBIDDEN_KINDS.contains(&k), "{k} is struck (DECISIONS #3/#4/#5)");
+        for k in [
+            "control",
+            "dialect",
+            "egress-auth",
+            "egress_auth",
+            "pure_auth",
+        ] {
+            assert!(
+                FORBIDDEN_KINDS.contains(&k),
+                "{k} is struck (DECISIONS #3/#4/#5)"
+            );
         }
         // A plugin kind can never also be forbidden.
         for pk in PLUGIN_KINDS {
-            assert!(!FORBIDDEN_KINDS.contains(pk), "{pk} is both plugin and forbidden");
+            assert!(
+                !FORBIDDEN_KINDS.contains(pk),
+                "{pk} is both plugin and forbidden"
+            );
         }
     }
 

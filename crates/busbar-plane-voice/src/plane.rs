@@ -1093,7 +1093,10 @@ fn progress_from_server_event<'u>(
             let body_ir = match state.codec.take_call_args(call_ref) {
                 Some(args) => {
                     let bytes = serde_json::to_vec(&args).map_err(|_| Decode::Malformed)?;
-                    let arena = ctx.arena().alloc_bytes(&bytes).map_err(|_| Decode::Oversize)?;
+                    let arena = ctx
+                        .arena()
+                        .alloc_bytes(&bytes)
+                        .map_err(|_| Decode::Oversize)?;
                     view(arena.as_slice(), ctx)?
                 }
                 None => Ir::empty(),

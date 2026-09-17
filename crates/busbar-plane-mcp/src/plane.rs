@@ -357,9 +357,10 @@ fn refusal_render(reason: RefusalReason) -> (i64, &'static str) {
     // and each is listed explicitly so a new reason is a compile error, never a silent collapse.
     match reason {
         RefusalReason::BodyTooLarge => (jsonrpc::CODE_INVALID_REQUEST, "the request is too large"),
-        RefusalReason::DecodeFailed => {
-            (jsonrpc::CODE_INVALID_REQUEST, "the request could not be read")
-        }
+        RefusalReason::DecodeFailed => (
+            jsonrpc::CODE_INVALID_REQUEST,
+            "the request could not be read",
+        ),
         RefusalReason::SchemeNotDeclared
         | RefusalReason::CredentialRejected
         | RefusalReason::SessionUnbound

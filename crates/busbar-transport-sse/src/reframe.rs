@@ -112,13 +112,19 @@ mod tests {
     #[test]
     fn an_explicit_event_stream_at_equal_or_higher_weight_prefers_it() {
         assert!(prefers_event_stream("text/event-stream"));
-        assert!(prefers_event_stream("application/json;q=0.5, text/event-stream"));
-        assert!(prefers_event_stream("text/event-stream;q=1.0, application/json;q=1.0"));
+        assert!(prefers_event_stream(
+            "application/json;q=0.5, text/event-stream"
+        ));
+        assert!(prefers_event_stream(
+            "text/event-stream;q=1.0, application/json;q=1.0"
+        ));
     }
 
     #[test]
     fn a_down_weighted_event_stream_does_not_win() {
-        assert!(!prefers_event_stream("text/event-stream;q=0.1, application/json"));
+        assert!(!prefers_event_stream(
+            "text/event-stream;q=0.1, application/json"
+        ));
         assert!(!prefers_event_stream("text/event-stream;q=0"));
     }
 
