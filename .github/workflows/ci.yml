@@ -335,6 +335,34 @@ jobs:
         run: cargo xtask gate workspace-deps --selftest
       - name: Workspace-deps lint
         run: cargo xtask gate workspace-deps
+      # NO-TRACKED-IGNORED lint: no path git TRACKS may also match a `.gitignore` rule of this tree.
+      # A file that is both tracked and ignored is a trap — it stays in the tree while every `git
+      # status`, every `git add -A` and every tool that honours `.gitignore` pretends it is not
+      # there, so an edit to it is invisible and a `.gitignore` widened to cover a real source file
+      # silently stops anyone noticing changes to it. It was a fully-written, self-testing registered
+      # gate that NO workflow and NO script invoked — a gate nothing runs is a gate that cannot fail.
+      # It reads `git ls-files` and the ignore rules, so it costs a second; BLOCKING, and green on
+      # this tree. Self-test first, as everywhere else here.
+      - name: No-tracked-ignored self-test
+        run: cargo xtask gate no-tracked-ignored --selftest
+      - name: No-tracked-ignored lint (no tracked path matches a .gitignore rule)
+        run: cargo xtask gate no-tracked-ignored
+      # INSTANCE-NOUN-NEUTRALITY census, REPORT-ONLY. It is the whole-app kind-neutrality witness and
+      # it is RED BY DESIGN on HEAD: real cross-family couplings exist today (the composition root
+      # names every plane, auth schemes are DECISION #3 internal-unit debt in core, sibling planes
+      # reference one another), each recorded in qa/instance-noun-neutrality.toml as a KNOWN-DEBT
+      # burndown row, and it goes green only as those rows drain. A gate that is red every push is a
+      # gate somebody puts a `|| true` in front of, so it is NOT wired as a blocking step. `--report`
+      # is the arm for exactly this: every row is measured, reconciled and printed to the log, only
+      # the exit status is withheld — the report-only posture the construction gate carried before its
+      # `--posture` flip. It reads the census and the ledger, seconds, no build. The step exists so
+      # the gate registry vs this workflow set-equality below sees the gate RUN somewhere, without
+      # reddening CI over standing debt; drain the ledger and the day it is empty this becomes the
+      # blocking `cargo xtask gate instance-noun-neutrality`. Self-test first, as everywhere else.
+      - name: instance-noun-neutrality self-test (the census cannot be lied to)
+        run: cargo xtask gate instance-noun-neutrality --selftest
+      - name: instance-noun-neutrality census (REPORT-ONLY — red-by-design burndown, does not block)
+        run: cargo xtask gate instance-noun-neutrality --report
       # THE GATE SET ITSELF, checked against this file. Every step above runs ONE gate; nothing
       # asked whether the set of steps still covers the set of registered gates. That question lives
       # in `full-gate --selftest` — the registry-vs-ci.yml set equality, both directions, plus the

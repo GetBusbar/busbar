@@ -168,6 +168,16 @@ pub const CARGO_LOCAL: &[&str] = &[
     "cargo xtask gate structure-lint",
     "cargo xtask gate workspace-deps --selftest",
     "cargo xtask gate workspace-deps",
+    "cargo xtask gate no-tracked-ignored --selftest",
+    "cargo xtask gate no-tracked-ignored",
+    "cargo xtask gate instance-noun-neutrality --selftest",
+    // The REPORT-ONLY form, which is what ci.yml runs. instance-noun-neutrality is RED BY DESIGN on
+    // HEAD (the known-debt burndown in qa/instance-noun-neutrality.toml), so like construction's
+    // scored-against-zero form the bare `cargo xtask gate instance-noun-neutrality` is not run on
+    // the push path — `--report` measures and prints every census row and withholds the exit
+    // status, so it runs locally without redding the whole local gate on standing debt. Replace with
+    // the bare blocking form the day the ledger is empty.
+    "cargo xtask gate instance-noun-neutrality --report",
     "cargo xtask full-gate --selftest",
     "cargo xtask gate audit-ledger --selftest",
     "cargo xtask gate audit-ledger",
