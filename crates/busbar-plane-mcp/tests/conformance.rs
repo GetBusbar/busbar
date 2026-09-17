@@ -469,6 +469,51 @@ fn a_result_that_asks_for_something_is_a_turn() {
     }
 }
 
+/// An envelope with a real result is billed complete exactly once; one with neither result nor
+/// error is not billed complete.
+///
+/// This is a money boundary. A JSON-RPC answer carries exactly one of `result` or `error`; a
+/// document with NEITHER used to fall through to `Complete` and charge the caller for a full answer
+/// that never came. A genuine result closes the unit `Complete`; an empty envelope is `Partial`.
+#[test]
+fn only_a_real_result_bills_complete() {
+    let plane = McpPlane::EMPTY;
+    let scaffold = Scaffold::new("http");
+    let ctx = scaffold.ctx();
+
+    // A genuine result: complete, exactly once (one Terminal, one Complete).
+    let answer = br#"{"id":1,"jsonrpc":"2.0","result":{"resultType":"complete","tools":[]}}"#;
+    let frames = vec![response_frame(answer)];
+    let mut cursor = FrameCursor::new(&frames);
+    match plane
+        .decode_response(&mut cursor, &sealed_destination(), None, &ctx)
+        .expect("a real answer decodes")
+    {
+        Progress::Terminal { r, .. } => assert_eq!(
+            r.finish,
+            busbar_contract::unit::FinishClass::Complete,
+            "a real result must bill complete"
+        ),
+        other => panic!("a real result decoded as {other:?}"),
+    }
+
+    // An envelope with neither result nor error must NOT bill complete.
+    let empty = br#"{"id":1,"jsonrpc":"2.0"}"#;
+    let frames = vec![response_frame(empty)];
+    let mut cursor = FrameCursor::new(&frames);
+    match plane
+        .decode_response(&mut cursor, &sealed_destination(), None, &ctx)
+        .expect("an empty envelope decodes")
+    {
+        Progress::Terminal { r, .. } => assert_ne!(
+            r.finish,
+            busbar_contract::unit::FinishClass::Complete,
+            "an empty envelope must not bill complete"
+        ),
+        other => panic!("an empty envelope decoded as {other:?}"),
+    }
+}
+
 /// A refusal is rendered as this dialect's error envelope, with the caller's identifier.
 #[test]
 fn a_refusal_is_rendered_in_this_dialect() {

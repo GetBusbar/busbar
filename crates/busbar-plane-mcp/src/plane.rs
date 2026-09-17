@@ -661,9 +661,19 @@ impl Plane for McpPlane {
         }
         // A result whose discriminator says it is finished IS finished. One that asks the caller for
         // something, or hands back a task, is a turn rather than an ending: the exchange continues.
+        //
+        // COMPLETE IS EARNED, NOT ASSUMED. A JSON-RPC answer carries exactly one of `result` or
+        // `error`; a document with NEITHER is not a terminal answer at all. It used to fall through to
+        // the `else` and bill `Complete` — charging the caller for a full answer that never came, a
+        // money boundary crossed on an empty envelope. Complete now requires the `result` member to
+        // be present; an envelope with no result and no error is `Partial` (what arrived, arrived)
+        // and is billed as such, never as a completed turn.
+        let has_result = has(body, jsonrpc::PTR_RESULT);
         let kind = read_str(body, jsonrpc::PTR_RESULT_TYPE);
         let finish = if is_error {
             FinishClass::Error
+        } else if !has_result {
+            FinishClass::Partial
         } else if matches!(
             kind,
             Some(jsonrpc::RESULT_TYPE_INPUT_REQUIRED | jsonrpc::RESULT_TYPE_TASK)
