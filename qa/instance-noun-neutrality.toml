@@ -4550,6 +4550,14 @@ wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
 [[leak]]
 noun = "streaming"
 kind = "plane"
+file = "crates/busbar-core/benches/plane_host_vtable_perf.rs"
+count = 1
+category = "core"
+wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
+
+[[leak]]
+noun = "streaming"
+kind = "plane"
 file = "crates/busbar-core/src/egress/seam.rs"
 count = 3
 category = "core"
