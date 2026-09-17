@@ -259,7 +259,7 @@ struct Metadata {
     feature_defs: BTreeMap<String, BTreeMap<String, Vec<String>>>,
 }
 
-fn run_cargo_metadata(manifest_path: &Path) -> Value {
+fn run_cargo_metadata(manifest_path: &Path) -> Result<Value, String> {
     // OFFLINE FIRST, BUT NEVER OFFLINE-ONLY. The lockfile is already resolved (checked in) and a
     // denylist audit reads it, so the ordinary run has no reason to touch the network and a flaky
     // registry must not turn a source audit into a network-dependent step.
@@ -277,7 +277,13 @@ fn run_cargo_metadata(manifest_path: &Path) -> Value {
     // `--filter-platform` would silence the download by narrowing the audit to one platform, which
     // changes what "the transitive closure" means. So the closure stays whole and the fetch is
     // allowed exactly when the cache cannot answer.
-    let run = |offline: bool| {
+    // A CARGO THAT WOULD NOT ANSWER IS A REFUSAL THIS RUN DECLARES, NEVER A PROCESS IT ABORTS. These
+    // three used to `panic!` — a backtrace where the design (see `Report.defects`) asks for a red
+    // that names its subject and lets the rest of the gate report. "The measuring instrument did not
+    // answer" is exactly the claim `defects` exists to carry, so it is returned as an `Err` the
+    // shipped `run` turns into a defect. (The fixture-only `run_on` entries `.expect()` it instead:
+    // a broken fixture is a test-setup abort with no `Report` to carry a defect.)
+    let run = |offline: bool| -> Result<std::process::Output, String> {
         let mut cmd = Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".into()));
         cmd.arg("metadata").arg("--format-version=1");
         if offline {
@@ -286,21 +292,21 @@ fn run_cargo_metadata(manifest_path: &Path) -> Value {
         cmd.arg("--manifest-path")
             .arg(manifest_path)
             .output()
-            .unwrap_or_else(|e| panic!("xtask denylist: failed to run `cargo metadata`: {e}"))
+            .map_err(|e| format!("xtask denylist: failed to run `cargo metadata`: {e}"))
     };
-    let mut out = run(true);
+    let mut out = run(true)?;
     if !out.status.success() {
-        out = run(false);
+        out = run(false)?;
     }
     if !out.status.success() {
-        panic!(
+        return Err(format!(
             "xtask denylist: `cargo metadata` exited {}: {}",
             out.status,
             String::from_utf8_lossy(&out.stderr)
-        );
+        ));
     }
     serde_json::from_slice(&out.stdout)
-        .unwrap_or_else(|e| panic!("xtask denylist: cargo metadata produced invalid JSON: {e}"))
+        .map_err(|e| format!("xtask denylist: cargo metadata produced invalid JSON: {e}"))
 }
 
 fn parse_metadata(v: &Value) -> Metadata {
@@ -657,10 +663,10 @@ impl AllowEntry {
 /// The load-bearing allow-list check. Any `[[allow]]` entry missing `reason` or `owner` refuses the
 /// ENTIRE run rather than silently accepting a half-filled waiver. Whether each entry still has
 /// anything to waive is the other half, and is decided by [`stale_waivers`] once the hits are known.
-fn load_allowlist(root: &Path) -> Vec<AllowEntry> {
+fn load_allowlist(root: &Path) -> Result<Vec<AllowEntry>, String> {
     let path = root.join("qa/denylist-allow.toml");
     if !path.exists() {
-        return Vec::new();
+        return Ok(Vec::new());
     }
     let doc = toml_lite::parse(&path);
     let mut allowed = Vec::new();
@@ -675,11 +681,14 @@ fn load_allowlist(root: &Path) -> Vec<AllowEntry> {
         let reason = entry.get_one("reason").unwrap_or("").trim().to_string();
         let owner = entry.get_one("owner").unwrap_or("").trim().to_string();
         if reason.is_empty() || owner.is_empty() {
-            panic!(
+            // A malformed waiver is a REFUSAL THE RUN DECLARES, not a process it aborts. This used
+            // to `panic!`; a backtrace cannot be a ledger row and cannot let the rest of the gate
+            // report. The message already said "is a refusal, not a waiver" — now it refuses.
+            return Err(format!(
                 "qa/denylist-allow.toml: entry for crate={crate_name:?} dep/path={offender:?} is \
                  missing a reason and/or an owner — an allow-list entry without both is a refusal, \
                  not a waiver. Fix the entry or remove it."
-            );
+            ));
         }
         let via_raw = entry
             .get_one("via")
@@ -694,20 +703,20 @@ fn load_allowlist(root: &Path) -> Vec<AllowEntry> {
         });
         if let Some(v) = &via {
             if !is_dep_entry {
-                panic!(
+                return Err(format!(
                     "qa/denylist-allow.toml: entry for crate={crate_name:?} carries `via = {v:?}` \
                      on a `path` (own-src) waiver — `via` only narrows a `dep` (dependency-graph) \
                      waiver, since it is computed over the resolved dependency graph. Remove `via` \
                      or change this to a `dep` entry."
-                );
+                ));
             }
             if offender.contains("::") || offender.contains("(feature:") {
-                panic!(
+                return Err(format!(
                     "qa/denylist-allow.toml: entry for crate={crate_name:?} dep={offender:?} \
                      carries `via = {v:?}`, but {offender:?} is not a plain dependency-graph crate \
                      name — `via` is only meaningful for a `dep` entry that bans a crate name \
                      (e.g. `libc`), not a std-path or a `tokio (feature: ...)` offender."
-                );
+                ));
             }
         }
         allowed.push(AllowEntry {
@@ -716,7 +725,7 @@ fn load_allowlist(root: &Path) -> Vec<AllowEntry> {
             via,
         });
     }
-    allowed
+    Ok(allowed)
 }
 
 /// Is there a normal-dependency path from `root_id` to a node named `target_name` that never
@@ -864,7 +873,19 @@ pub fn run(cx: &Ctx) -> Report {
         }
     };
     let banned = banned_lists_of(&config);
-    let allowed = load_allowlist(root);
+    let allowed = match load_allowlist(root) {
+        Ok(a) => a,
+        // A malformed allow-list is a refusal the report DECLARES — a defect that reds it with no
+        // hits — never a panic that aborts the whole run.
+        Err(e) => {
+            return Report {
+                hits: Vec::new(),
+                crates_scanned: 0,
+                defects: vec![e],
+                stale_waivers: Vec::new(),
+            }
+        }
+    };
     let crates = match pure_crates(cx, &config) {
         Ok(crates) if crates.is_empty() => {
             // Every pure kind's glob matched nothing. On a tree that has planes, hooks and auth
@@ -892,7 +913,23 @@ pub fn run(cx: &Ctx) -> Report {
         }
     };
 
-    let meta_json = run_cargo_metadata(&root.join("Cargo.toml"));
+    let meta_json = match run_cargo_metadata(&root.join("Cargo.toml")) {
+        Ok(v) => v,
+        // The dependency-graph instrument did not answer. That is a refusal the run DECLARES — a
+        // defect that reds the report with no hits — never a panic that takes the process down and
+        // stops every other row from reporting.
+        Err(e) => {
+            return Report {
+                hits: Vec::new(),
+                crates_scanned: 0,
+                defects: vec![format!(
+                    "{e} — the dependency closure could not be resolved, so no crate's banned-crate \
+                     ban was proven; a scan that could not run is not a clean bill of health"
+                )],
+                stale_waivers: Vec::new(),
+            }
+        }
+    };
     let meta = parse_metadata(&meta_json);
     let fragments = config.table("gate").get_list("test_path_fragments");
 
@@ -952,7 +989,8 @@ pub fn run_on_with_allow(
     fragments: &[String],
     allow: Vec<(&str, &str, Option<&str>)>,
 ) -> Vec<Hit> {
-    let meta_json = run_cargo_metadata(manifest_path);
+    let meta_json = run_cargo_metadata(manifest_path)
+        .expect("cargo metadata over the fixture manifest (test-only entry point)");
     let meta = parse_metadata(&meta_json);
     let allowed: Vec<AllowEntry> = allow
         .into_iter()
@@ -994,7 +1032,8 @@ pub fn run_on(
     fragments: &[String],
 ) -> Vec<Hit> {
     let root = manifest_path.parent().unwrap();
-    let meta_json = run_cargo_metadata(manifest_path);
+    let meta_json = run_cargo_metadata(manifest_path)
+        .expect("cargo metadata over the fixture manifest (test-only entry point)");
     let meta = parse_metadata(&meta_json);
     let mut hits = Vec::new();
     for pc in &crates {
@@ -1133,4 +1172,67 @@ pub fn print_report(report: &Report) -> bool {
         );
     }
     false
+}
+
+#[cfg(test)]
+mod abort_vs_refuse_tests {
+    //! The two sites that used to ABORT THE PROCESS where the design says REFUSE. `Report.defects`
+    //! is the graceful-refusal channel — "the run could not be trusted", a red the report declares
+    //! that lets the rest of the gate report — and both of these used to `panic!` past it instead.
+    //! A panic cannot be a ledger row and cannot leave the other rows standing; each of these tests
+    //! PANICS on the pre-fix code (a panicking function is a failing test) and asserts an `Err` on
+    //! the fixed code.
+    use super::*;
+
+    fn scratch(tag: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!(
+            "xtask-denylist-{tag}-{}-{:?}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[test]
+    fn a_malformed_allowlist_entry_is_a_refusal_the_run_declares_not_a_panic() {
+        // An allow-list entry missing `reason`/`owner` is, in the file's own words, "a refusal, not
+        // a waiver". Pre-fix `load_allowlist` `panic!`ed on it; the fix returns `Err`, which `run`
+        // turns into a `defects` entry that reds the report with no hits.
+        let dir = scratch("allow");
+        std::fs::create_dir_all(dir.join("qa")).unwrap();
+        std::fs::write(
+            dir.join("qa/denylist-allow.toml"),
+            // no `reason`, no `owner`
+            "[[allow]]\ncrate = \"busbar-core\"\ndep = \"libc\"\n",
+        )
+        .unwrap();
+
+        match load_allowlist(&dir) {
+            Ok(_) => panic!("a waiver missing reason/owner must refuse (Err), never load"),
+            Err(e) => assert!(
+                e.contains("refusal"),
+                "the refusal must name itself as one: {e}"
+            ),
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn cargo_metadata_that_cannot_run_is_an_err_the_run_declares_not_a_panic() {
+        // A `cargo metadata` that will not run — here, over a manifest path that does not exist — is
+        // the dependency-graph instrument failing to answer. Pre-fix `run_cargo_metadata` `panic!`ed
+        // on the non-zero exit; the fix returns `Err`, which `run` turns into a defect.
+        let dir = scratch("meta");
+        let missing = dir.join("does-not-exist").join("Cargo.toml");
+        let got = run_cargo_metadata(&missing);
+        assert!(
+            got.is_err(),
+            "a cargo metadata that cannot run must be an Err the caller can declare, never a panic"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }

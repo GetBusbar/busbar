@@ -25,6 +25,40 @@ fn an_unknown_gate_is_an_argument_error_and_never_falls_through_into_running_som
 }
 
 #[test]
+fn a_mistyped_flag_is_an_argument_error_not_a_quietly_weaker_run() {
+    // RED BEFORE THE GUARD IN `gate()`: a transposed `--require-verison` missed every
+    // `strip_prefix("--require-version=")` test, so `require_version` stayed `None`, the changelog
+    // gate's ORDINARY arm ran and exited 0/1, and a release step believed it had asked for the
+    // version-pinned check it never got. A misspelt flag is an ARGUMENT error (2), never a run that
+    // quietly checked less — the same code `audit_cmd::parse` already returns for an unknown option.
+    assert_eq!(
+        run(&["gate", "changelog", "--require-verison=1.6.0"]),
+        2,
+        "a typo'd release flag must be refused, not fall through to the ordinary arm"
+    );
+    assert_eq!(run(&["gate", "segregation", "--reprot"]), 2);
+    assert_eq!(run(&["gate", "segregation", "--requiredated-top"]), 2);
+
+    // A KNOWN FLAG ON THE SAME GATE STILL RUNS. `--report` prints the verdict and withholds the
+    // score, so it reaches 0 — never the argument error the guard hands an unknown flag.
+    assert_eq!(
+        run(&["gate", "segregation", "--report"]),
+        0,
+        "a spelt-correctly flag must still reach a verdict, not trip the unknown-flag guard"
+    );
+
+    // THE `--parity` LEGACY COMMAND IS THE LEGACY TOOL'S TO PARSE. A `--foo` after `--` is an
+    // argument to the script being compared, not an unknown flag to `gate`; the guard stops at `--`.
+    // (No probes-less gate + a no-row legacy command is exit 3, proven elsewhere; here the point is
+    // only that the `--bogus` past `--` did not turn into a 2.)
+    assert_ne!(
+        run(&["gate", "segregation", "--parity", "--", "/usr/bin/true", "--bogus"]),
+        2,
+        "a flag after `--` belongs to the legacy command and must not trip the unknown-flag guard"
+    );
+}
+
+#[test]
 fn list_and_a_named_gate_run_and_all_reaches_a_verdict_over_the_real_tree() {
     assert_eq!(run(&["gate", "--list"]), 0);
     assert_eq!(run(&["gate", "segregation"]), 0);
@@ -90,6 +124,41 @@ fn the_registry_and_the_workflow_still_name_the_same_gates() {
 fn the_audit_register_is_judged_on_every_push() {
     assert_eq!(run(&["gate", "audit-ledger", "--selftest"]), 0);
     assert_eq!(run(&["gate", "audit-ledger"]), 0);
+}
+
+#[test]
+fn ledger_sync_refuses_to_overwrite_a_corrupt_register_and_never_exits_zero() {
+    // RED BEFORE THE FIX in `audit_cmd::read_scopes`: a register that EXISTS but will not parse
+    // used to `.ok()` / `unwrap_or_default()` to zero recorded scopes, so `sync --write` treated
+    // every derived scope as newly added, wrote a fresh record-less document over it, and exited
+    // 0 — the whole audit history erased by one bad byte behind a green exit. Point `--ledger` at
+    // a corrupt file of our own so the real register is never touched by this test.
+    let dir = std::env::temp_dir().join(format!(
+        "xtask-corrupt-register-{}-{:?}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let reg = dir.join("audit-ledger.json");
+    let corrupt: &[u8] = b"{ \"scopes\": [ this is not valid json";
+    std::fs::write(&reg, corrupt).unwrap();
+
+    let code = run(&["ledger", "sync", "--write", "--ledger", reg.to_str().unwrap()]);
+    assert_eq!(
+        code, 2,
+        "a corrupt register must be a hard error, never a silent overwrite at exit 0"
+    );
+    assert_eq!(
+        std::fs::read(&reg).unwrap(),
+        corrupt,
+        "sync must leave a register it could not read exactly as it found it, never rewrite it \
+         into a fresh record-less document"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]

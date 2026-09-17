@@ -3986,11 +3986,15 @@ struct FnBody {
 
 /// The shipped-source function bodies of one crate, keyed by function name. Brace-counted over
 /// BLANKED code, so a `}` inside a string or a comment does not end a body.
-fn fn_bodies(cx: &Ctx, dir: &str) -> BTreeMap<String, Vec<FnBody>> {
+fn fn_bodies(cx: &Ctx, dir: &str) -> Result<BTreeMap<String, Vec<FnBody>>, String> {
     let mut out: BTreeMap<String, Vec<FnBody>> = BTreeMap::new();
-    let Ok(files) = cx.walk(&WalkSpec::new([dir]).ext("rs")) else {
-        return out;
-    };
+    // A WALK THAT FAILED IS NOT A CRATE WITH NO FUNCTIONS. Returning an empty map on a missing root
+    // or an unreadable file made `rule_control` — which reads "no data-path step found" as clean —
+    // pass a control surface whose source was never scanned. The failure is surfaced so each caller
+    // decides what an unscannable crate means to its own rule; both treat it as a finding.
+    let files = cx
+        .walk(&WalkSpec::new([dir]).ext("rs"))
+        .map_err(|e| e.to_string())?;
     for f in &files {
         let rel = f.rel_str();
         if !is_shipped_source(&rel) {
@@ -4042,7 +4046,7 @@ fn fn_bodies(cx: &Ctx, dir: &str) -> BTreeMap<String, Vec<FnBody>> {
             });
         }
     }
-    out
+    Ok(out)
 }
 
 /// A body that states nothing. `todo!`, `unimplemented!` and `unreachable!` are the three ways a
@@ -4077,7 +4081,19 @@ fn rule_steps(cx: &Ctx, crates: &[CrateInfo]) -> Row {
 
     let mut offenders: Vec<String> = Vec::new();
     for c in &planes {
-        let bodies = fn_bodies(cx, &c.dir);
+        let bodies = match fn_bodies(cx, &c.dir) {
+            Ok(b) => b,
+            // A plane whose own source could not be scanned is a plane none of whose steps were
+            // proven present — the same red as a missing step, never a silent skip that reads as
+            // clean.
+            Err(e) => {
+                offenders.push(format!(
+                    "scan-unproven\t{}\t{} could not be scanned for its steps: {e}",
+                    c.dir, c.name
+                ));
+                continue;
+            }
+        };
         for step in &steps {
             let Some(found) = bodies.get(step) else {
                 offenders.push(format!(
@@ -4145,8 +4161,18 @@ fn rule_control(cx: &Ctx, crates: &[CrateInfo]) -> Row {
     }
     let mut offenders: Vec<String> = Vec::new();
     for c in &controls {
-        let Ok(files) = cx.walk(&WalkSpec::new([c.dir.as_str()]).ext("rs")) else {
-            continue;
+        let files = match cx.walk(&WalkSpec::new([c.dir.as_str()]).ext("rs")) {
+            Ok(files) => files,
+            // A control crate whose upstream-word scan could not run is not a control crate proven
+            // to name no upstream. The `else { continue; }` here skipped the whole scan silently and
+            // the row read as clean; a failed scan is a finding on the same row instead.
+            Err(e) => {
+                offenders.push(format!(
+                    "scan-unproven\t{}\t{} could not be scanned for upstream vocabulary: {e}",
+                    c.dir, c.name
+                ));
+                continue;
+            }
         };
 
         // (a) A PLANE `route`/`meter` DATA-PATH IMPLEMENTATION. A control surface answers out of
@@ -4160,7 +4186,19 @@ fn rule_control(cx: &Ctx, crates: &[CrateInfo]) -> Row {
             is_shipped_source(&rel) && impl_heads(&f.text).iter().any(|t| t == "Plane")
         });
         if impls_plane {
-            let bodies = fn_bodies(cx, &c.dir);
+            let bodies = match fn_bodies(cx, &c.dir) {
+                Ok(b) => b,
+                // A control surface that impls `Plane` but whose source could not be scanned has NOT
+                // been shown to keep to the control path — a failed scan is a finding, never a silent
+                // skip that reads as clean.
+                Err(e) => {
+                    offenders.push(format!(
+                        "scan-unproven\t{}\t{} could not be scanned for data-path steps: {e}",
+                        c.dir, c.name
+                    ));
+                    continue;
+                }
+            };
             for step in DATA_PATH_STEPS {
                 if let Some(found) = bodies.get(*step) {
                     for b in found {

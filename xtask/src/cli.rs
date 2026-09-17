@@ -89,7 +89,54 @@ fn open_ctx() -> Result<Ctx, i32> {
     }
 }
 
+/// Every `--` token `gate` knows. Kept beside `gate` so the two cannot drift: a flag `gate` reads
+/// with `.iter().any(|a| a == "--foo")` or `strip_prefix("--foo=")` and does not list here would be
+/// rejected as unknown, and a token listed here that nothing reads is dead. `--` is the `--parity`
+/// separator and everything after it is the legacy tool's to parse, so it is handled by the caller,
+/// not matched here.
+fn known_gate_flag(a: &str) -> bool {
+    const EXACT: [&str; 10] = [
+        "--report",
+        "--selftest",
+        "--list",
+        "--all",
+        "--write",
+        "--require-dated-top",
+        "--parity",
+        "--strict",
+        "--posture",
+        "--jobs",
+    ];
+    const PREFIX: [&str; 4] = [
+        "--format=",
+        "--require-version=",
+        "--root-flag=",
+        "--jobs=",
+    ];
+    EXACT.contains(&a) || PREFIX.iter().any(|p| a.starts_with(p))
+}
+
 fn gate(args: &[String]) -> i32 {
+    // A MISSPELT FLAG IS AN ARGUMENT ERROR, NEVER A QUIETLY WEAKER RUN. Every arm below tests for
+    // its flag with `.iter().any(|a| a == "--foo")` or `strip_prefix("--foo=")`, so a typo like
+    // `--require-verison=1.6.0` matched NONE of them and fell straight through to the ordinary arm,
+    // which ran and could exit 0 — a release step believing it had asked for a stricter check it
+    // never got. The release-arm doc below promised this refusal and nothing enforced it; here it
+    // is, exactly as `audit_cmd::parse` and `full_gate::main` already treat an unknown flag (exit
+    // 2). Everything after a `--` is the `--parity` legacy command and is not ours to judge.
+    let flag_end = args.iter().position(|a| a == "--").unwrap_or(args.len());
+    if let Some(bad) = args[..flag_end]
+        .iter()
+        .find(|a| a.starts_with("--") && !known_gate_flag(a))
+    {
+        eprintln!(
+            "xtask gate: unknown flag `{bad}` — a misspelt flag is an argument error, not a run \
+             that quietly checked less"
+        );
+        eprintln!("{USAGE}");
+        return 2;
+    }
+
     let tsv = args.iter().any(|a| a == "--format=tsv");
     let report_only = args.iter().any(|a| a == "--report");
     let want_selftest = args.iter().any(|a| a == "--selftest");

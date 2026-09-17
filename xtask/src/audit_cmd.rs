@@ -135,13 +135,26 @@ pub fn main(root: &std::path::Path, args: &[String]) -> i32 {
     }
 }
 
-fn read_scopes(register: &std::path::Path) -> Vec<Json> {
+fn read_scopes(register: &std::path::Path) -> Result<Vec<Json>, String> {
     // A MISSING REGISTER IS AN EMPTY ONE, and `sync` then reports every derived scope as added —
     // which is the honest reading, because nothing has been recorded about any of them.
-    audit::load(register)
-        .ok()
-        .and_then(|d| d.get("scopes").as_array().map(<[Json]>::to_vec))
-        .unwrap_or_default()
+    //
+    // A REGISTER THAT EXISTS AND WILL NOT PARSE IS NOT AN EMPTY ONE. This used to `.ok()` the load
+    // and `unwrap_or_default()` to an empty list, so a corrupt (truncated, hand-mangled, half-
+    // written) register read as zero recorded scopes — and `sync --write` then treated EVERY
+    // derived scope as newly added, wrote a fresh document with no round, no finding and no
+    // `fixed_at`, and exited 0. That is the whole audit history erased by a single bad byte, with
+    // a green exit to hide it. So the missing case is told apart from the corrupt case here: absent
+    // is empty, present-but-unreadable is a hard error the caller must surface.
+    if !register.exists() {
+        return Ok(Vec::new());
+    }
+    let doc = audit::load(register)?;
+    Ok(doc
+        .get("scopes")
+        .as_array()
+        .map(<[Json]>::to_vec)
+        .unwrap_or_default())
 }
 
 fn ids(scopes: &[Json]) -> Vec<String> {
@@ -153,7 +166,12 @@ fn ids(scopes: &[Json]) -> Vec<String> {
 
 fn cmd_sync(git: &Git, register: &std::path::Path, write: bool) -> i32 {
     let derived = audit::derive_scopes(git.repo());
-    let existing = read_scopes(register);
+    let existing = match read_scopes(register) {
+        Ok(scopes) => scopes,
+        // A register that exists and will not parse must STOP the sync, never let it overwrite the
+        // audit history with a fresh, record-less document at exit 0.
+        Err(e) => return die(format!("{e} -- refusing to sync over an unreadable register")),
+    };
     let derived_ids = ids(&derived);
     let existing_ids = ids(&existing);
 

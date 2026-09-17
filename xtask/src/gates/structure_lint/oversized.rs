@@ -33,6 +33,13 @@ pub const MAX_LINES_IMPL: usize = 2500;
 
 const EXCLUDE_TESTS: &str = "/tests/";
 
+/// The floor under the impl-file walk. The tree carries ~790 impl files; a scan that comes back
+/// with fewer than this many has not read the crates — a broken walk, a moved root, an ignore rule
+/// that swallowed the set — and an empty scan reads exactly like a tree with no monster in it. The
+/// floor is far below the real count so a legitimate shrink never trips it and far above zero so an
+/// empty or shrunken scan cannot pass as clean.
+const OVERSIZED_FLOOR: usize = 200;
+
 /// PRE-EXISTING DEBT, GRANDFATHERED. `admin/v1/service.rs` is the one entry that is not a moved
 /// file: it sat three lines under the cap and the 1.6.0 ABI-purity retype pushed it over, because
 /// the admin read path had to stop naming the plane's own types and project the NEUTRAL view
@@ -67,12 +74,25 @@ pub fn scan(cx: &Ctx, t: &Tables, f: &mut Findings) {
     // A SEPARATE WALK from the candidate corpus, and deliberately: `benches/` is exempt from the
     // choke-point registry because a bench is harness code, but a 4,000-line bench is exactly as
     // unnavigable as a 4,000-line module.
-    let Ok(files) = cx.walk(
+    let files = match cx.walk(
         &WalkSpec::new([super::roots::CRATES])
             .ext("rs")
-            .exclude([EXCLUDE_TESTS]),
-    ) else {
-        return;
+            .exclude([EXCLUDE_TESTS])
+            .min_files(OVERSIZED_FLOOR),
+    ) {
+        Ok(files) => files,
+        // A WALK THAT FAILED OR CAME BACK BELOW ITS FLOOR IS NOT A CLEAN TREE. The `else { return; }`
+        // here used to leave `f.oversized` empty, so `rows()` published "every impl file is under the
+        // cap" for a scan that never read a file — a monster impl file hidden behind a moved root, an
+        // unreadable file or a scan set an ignore rule swallowed. A scan that could not run is a
+        // finding, exactly like an oversized file, and it reddens the same row.
+        Err(e) => {
+            f.oversized.push(format!(
+                "OVERSIZED-SCAN UNPROVEN: the impl-file walk yielded no scan set to measure, so \
+                 nothing here proves a monster impl file is absent: {e}"
+            ));
+            return;
+        }
     };
     for s in files {
         let n = wc_l(&s.text);

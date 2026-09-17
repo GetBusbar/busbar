@@ -1429,6 +1429,71 @@ fn the_structure_lint_translator_refuses_output_it_recognised_nothing_in() {
     );
 }
 
+/// A WALK THAT COULD NOT RUN IS NOT A TREE WITH NO MONSTER IMPL FILE. `oversized::scan` used to
+/// `let Ok(files) = cx.walk(...) else { return; }`, leaving the finding set empty on a failed walk,
+/// so `structure-lint:oversized` published "every impl file is under the cap" for a scan that read
+/// no file. Plant one impl file that LISTS and will not READ — the overlay's third state, made for
+/// exactly this — so the walk returns `WalkError::Io`, and require the row to be RED.
+#[test]
+fn structure_lint_oversized_reds_when_its_impl_walk_cannot_run_instead_of_reading_clean() {
+    let mut ov = Overlay::new();
+    ov.unreadable(
+        "crates/busbar-core/src/planted_unreadable_for_the_oversized_walk.rs",
+        "planted unreadable so the impl-file walk fails",
+    );
+    let reg = gates::find("structure-lint").expect("the gate is registered");
+    let rows = gates::execute((reg.build)().as_ref(), &cx().with_overlay(ov)).rows;
+    let row = rows
+        .iter()
+        .find(|r| r.id == "structure-lint:oversized")
+        .expect("the oversized row is owed and must be emitted");
+    assert_eq!(
+        row.status,
+        Status::Fail,
+        "a walk that could not run must red the oversized row, not read as a tree with no monster: {}",
+        row.detail
+    );
+    assert!(
+        row.detail.contains("UNPROVEN"),
+        "the red must name the scan as unproven, not a file over the cap: {}",
+        row.detail
+    );
+}
+
+/// A CONTROL SURFACE WHOSE SOURCE COULD NOT BE SCANNED IS NOT A CONTROL SURFACE PROVEN CLEAN.
+/// `rule_control` read `fn_bodies`'s empty-on-failure map as "no data-path step found" and its own
+/// `let Ok(files) = cx.walk(...) else { continue; }` as "no upstream word found", so a control
+/// crate whose walk failed passed `kind-isolation:control-path`. Plant an unreadable `.rs` under a
+/// cleanliness crate (`busbar-admin`) so both scans of its dir fail, and require the row RED.
+/// (`rule_steps`, over PLANE crates, was already polarity-safe — an empty body map reads as every
+/// step missing — so the false-green this pins is specifically the control path.)
+#[test]
+fn kind_isolation_control_path_reds_when_a_control_crates_scan_cannot_run() {
+    let mut ov = Overlay::new();
+    ov.unreadable(
+        "crates/busbar-admin/src/planted_unreadable_for_the_control_walk.rs",
+        "planted unreadable so the control-surface scan fails",
+    );
+    // `kind-isolation:control-path` is the SHIP-criterion rule, owed by `kind-isolation-ship`.
+    let reg = gates::find("kind-isolation-ship").expect("the ship gate is registered");
+    let rows = gates::execute((reg.build)().as_ref(), &cx().with_overlay(ov)).rows;
+    let row = rows
+        .iter()
+        .find(|r| r.id == "kind-isolation:control-path")
+        .expect("the control-path row is owed and must be emitted");
+    assert_eq!(
+        row.status,
+        Status::Fail,
+        "a control crate whose scan could not run must red the control-path row, not pass as clean: {}",
+        row.detail
+    );
+    assert!(
+        row.detail.contains("scan-unproven"),
+        "the red must name the scan as unproven: {}",
+        row.detail
+    );
+}
+
 // ── no-deferral ─────────────────────────────────────────────────────────────────────────────────
 
 /// THE OVER- AND UNDER-COUNT ARMS, ON ONE TREE. This is the case the retired shell's `--parity`
