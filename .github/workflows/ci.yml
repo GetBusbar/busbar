@@ -1653,6 +1653,16 @@ jobs:
           - name: core duplex-ws
             features: busbar-core/duplex-ws
             tests: -p busbar-core
+          # admin/oauth2 test-support are non-default forwards no sibling edge enables (busbar-admin's
+          # dev-deps deliberately do NOT turn on its own test-support), so nothing builds the
+          # `cfg(all(not(test), feature = "test-support"))` surface behind them. Each row builds and
+          # tests the owning crate with the feature on, exactly like `mcp-codec test-support` above.
+          - name: admin test-support
+            features: busbar-admin/test-support
+            tests: -p busbar-admin
+          - name: oauth2 test-support
+            features: busbar-oauth2/test-support
+            tests: -p busbar-oauth2
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       # THE COMPILER CACHE — see "COMPILER CACHE (sccache)" at the top of this file. Installed in
@@ -1810,6 +1820,9 @@ jobs:
   # feature-covered: busbar-llm/test-support -- check -- unified in by a dev-dependency under --all-targets in that job
   # feature-covered: busbar-llm-codec/test-support -- check -- unified in by a dev-dependency under --all-targets in that job
   # feature-covered: busbar-plugin-testkit/store -- check -- unified in by a dev-dependency under --all-targets in that job
+  # feature-covered: busbar-admin/openapi-schema -- openapi-schema -- the job clippies and tests -p busbar-admin with the feature named
+  # feature-covered: busbar-contract-transport/dispatch -- check -- reached from busbar-substrate-values/dispatch in the workspace default build
+  # feature-covered: busbar-contract-transport/runtime -- check -- reached from busbar-substrate-values/runtime in the workspace default build
 
   # THE MECHANICAL DEFINITION OF "PLUGIN". Anything busbar calls a plugin must be 100% a plugin: make
   # it downloadable-only tomorrow, ship it uninstalled, and CORE MUST STILL WORK. If core stops
