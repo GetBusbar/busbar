@@ -228,7 +228,7 @@ impl Drop for QueueDepthGuard {
 /// the [`App::llm_runtime`] downcast (R3/R4 sub-phase B). Grouping them was sub-phase A's payoff (core
 /// carries no LLM-shaped FLAT state); sub-phase B then moved the bundle off its typed field into the
 /// SAME type-erased slot every other plane's runtime already rides, so `App` names one `&'static str`
-/// key ([`App::llm_runtime_key`]) instead of this type. `cost` deliberately stays OUTSIDE this (it is
+/// key ([`App::fallback_runtime_key`]) instead of this type. `cost` deliberately stays OUTSIDE this (it is
 /// NEUTRAL — MCP/A2A meter through it too). Still `Clone` (Phase 3 relocates the type to `busbar-llm`;
 /// today the apply-path `build_runtime` seam clones the freshly-lowered bundle into the shared slot).
 /// Neutral: names no dialect, adds no LLM type to core (the freeze witness stays 0).
