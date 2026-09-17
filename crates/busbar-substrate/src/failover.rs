@@ -128,6 +128,7 @@
 // dead-code allow saying so.
 
 use crate::audit::vocab;
+use crate::store::LaneRuntime;
 use crate::store::Unavailable;
 
 // ── The FAILOVER BUDGET numeric defaults/bounds. Plain scalars with no config grammar attached
@@ -560,4 +561,183 @@ pub fn walk_with<'a, C: Candidate, T>(
             })
             .collect(),
     })
+}
+
+/// ONE POOL OF INTERCHANGEABLE UPSTREAMS, as the operator writes it — the ENTIRE config vocabulary
+/// this feature adds, and it is CORE's rather than a plugin's.
+///
+/// ```yaml
+/// pool_name:                        # one upstream image, deployed twice
+///   members: [instance-a, instance-b]
+///   repeatable: [read_only_operation]  # operations safe to perform TWICE. Default: none.
+/// ```
+///
+/// ## Why it is ONE type shared by every plugin
+///
+/// A pool already means *"these members are interchangeable for this request; use whichever is
+/// healthy"*. That is the same sentence for every resident plugin, so an operator learns the concept
+/// ONCE — a member list keyed by a pool name, referenced by bare name, never crossing a plugin
+/// boundary. Plugin-local copies of this struct would be several grammars for one idea and would
+/// diverge the first time any one of them grew a key; there is one, in core, and each plugin's section
+/// merely says which registry the bare names are resolved against.
+///
+/// ## It is OPT-IN and the default is UNCHANGED
+///
+/// Owner's steer: *"maybe in a config we dont allow it or maybe we dont suggest it be done."* An
+/// absent section is no pools, which is exactly the behaviour of every deployment that exists today:
+/// one registration, one destination, no failover, nothing to reason about. Nothing here turns on by
+/// itself.
+///
+/// ## `repeatable:` is a LIST OF OPERATIONS and there is no key that disables the safety rule
+///
+/// The dangerous half of this feature is repeating a call that already went out, so the declaration
+/// is per OPERATION and enumerated by hand. There is deliberately NO `repeatable: all` and no
+/// `retry: always`: an operator who wants `send_email` repeated has to write `send_email` down next
+/// to the operations they thought about, which is a different act from flipping a switch. See [`Stage`].
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)] // a typo'd key must fail boot, not silently un-declare a safety rule.
+pub struct CandidatePoolCfg {
+    /// The interchangeable registrations, by bare name, resolved against whichever registry the
+    /// owning plugin keeps its own registrations in. ORDERED: the first is the
+    /// PRIMARY, and its approved fingerprint is the one every other member must match.
+    ///
+    /// Naming a member is NOT what makes two upstreams interchangeable — busbar checks the pins it
+    /// already computed and refuses the pool at dispatch if they disagree. The operator is asserting
+    /// *"these names are the same deployment"*, a claim busbar can and does verify.
+    #[serde(default)]
+    pub members: Vec<String>,
+    /// The operations that may be performed TWICE — reads, searches, queries. An operation not named
+    /// here is never repeated after a dispatch has gone out.
+    ///
+    /// EMPTY BY DEFAULT, which is the fail-safe posture: an operator who says nothing gets
+    /// reroute-before-first-byte (which duplicates nothing) and no retries at all.
+    // `pub` (was `pub(crate)` in busbar-core): busbar-core's config lowering constructs this carrier
+    // with the field set (`config::mod`'s `tool_pools`/`agent_pools` projection), so the field must be
+    // reachable from the crate that now merely re-exports the type. Byte-identical value; visibility
+    // widened for the relocation (FLAG: gate-visible surface change).
+    #[serde(default)]
+    pub repeatable: Vec<String>,
+}
+
+impl CandidatePoolCfg {
+    /// MAY THIS OPERATION BE PERFORMED TWICE? The one reader of `repeatable:`, so the default can
+    /// never be got wrong by a second caller spelling the lookup differently.
+    // Read only by the per-call dispatch path a protocol plane drives; a plane whose relay never
+    // repeats a dispatch has no caller here. Unconditional allow — the neutral seam names no plane
+    // feature.
+    #[allow(dead_code)]
+    pub fn repeatability(&self, operation: &str) -> Repeatable {
+        if self.repeatable.iter().any(|o| o == operation) {
+            Repeatable::Yes
+        } else {
+            Repeatable::No
+        }
+    }
+}
+
+/// THE SEAM'S SPELLING OF [`walk_with`]: the operator's `members:` order, admitted breaker-only.
+///
+/// A plugin's entry point when it wants breaker-only admission over its own declared order. It adds
+/// NO selection logic — it names the two things a plugin supplies ([`InOrder`] and
+/// [`LaneRuntime::try_admit_breaker`]) and hands them to the one loop.
+// No production caller now: both planes drive [`walk_with`] with the host `breaker_admit` seam
+// directly (CLUSTER-1), so the breaker-only spelling survives only for the failover unit tests, which
+// drive it under `#[cfg(test)]`.
+// `pub` (was `pub(crate)`): a disposition half a plane's relocating engine drives — surfaced through
+// `crate::engine_facade` (Phase-0 visibility lift; pure visibility). A `pub` fn is never dead, so the
+// `not(test)` dead-code allow is now a harmless no-op the Phase-6 tighten-back will drop.
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn walk<'a, C: Candidate>(
+    store: &dyn LaneRuntime,
+    pool: &str,
+    members: &'a [C],
+    attempt: &Attempt<'_>,
+    now: u64,
+) -> Result<Admitted<'a, C, Option<u64>>, Refusal> {
+    let mut order = InOrder::new(attempt.tried, members.len());
+    // These planes render their refusal from `Refusal` itself (which already carries every reason by
+    // name), so the positional buffer is local and dropped here.
+    let mut passed_over = Vec::new();
+    walk_with(
+        pool,
+        members,
+        attempt,
+        &mut order,
+        &mut passed_over,
+        &mut |_position, member| store.try_admit_breaker(pool, member.lane(), now),
+    )
+}
+
+/// RECORD WHAT THE UPSTREAM DID, through the ONE classifier and onto the ONE breaker cell.
+///
+/// [`crate::breaker::classify`] is protocol-agnostic already — it consumes a `CanonicalSignal` a
+/// per-protocol normalizer produced — so a plane hands its normalized signal here and inherits
+/// cause-attributed disposition verbatim: a caller's bad arguments never penalize an upstream, an
+/// auth or billing failure is a hard down rather than a slow bleed, and a transient failure is what
+/// eventually trips the cell so the NEXT request reroutes before its first byte.
+///
+/// Returns the [`crate::breaker::Disposition`] taken, so a plane can shape its own answer without
+/// re-deciding it.
+// `pub` (was `pub(crate)`): the disposition writer the relocated engine records through —
+// surfaced via `crate::engine_facade` (Phase-0). Its `cfg: &crate::store::BreakerCfg` arg names a
+// still-crate-private carrier the engine passes back verbatim, so a narrow `#[allow(private_interfaces)]`
+// keeps `BreakerCfg` `pub(crate)` (reversible in Phase 6).
+#[allow(private_interfaces)]
+#[cfg_attr(not(test), allow(dead_code))] // see the module note: the plane call sites record via
+                                         // `PlaneBreakers::record_signal` (per-cell hard-down).
+pub fn record_outcome<C: Candidate>(
+    store: &dyn LaneRuntime,
+    pool: &str,
+    candidate: &C,
+    signal: &crate::breaker::CanonicalSignal,
+    cfg: &crate::store::BreakerCfg,
+) -> crate::breaker::Disposition {
+    let disposition = crate::breaker::classify(signal);
+    let lane = candidate.lane();
+    match disposition {
+        crate::breaker::Disposition::ClientFault => store.record_client_fault(lane),
+        crate::breaker::Disposition::TransientUpstream => {
+            // Rate limits carry the upstream's own stated floor, so they go through the arm that
+            // honours `Retry-After`; every other transient is the plain transient arm. This split is a
+            // property of the signal itself, not of the protocol, so it holds for any plugin's signal.
+            if signal.class == crate::breaker::StatusClass::RateLimit {
+                store.record_rate_limit_in(
+                    pool,
+                    lane,
+                    crate::store::now(),
+                    cfg,
+                    signal.retry_after,
+                );
+            } else {
+                store.record_transient_in(
+                    pool,
+                    lane,
+                    signal.provider_signal.as_deref().unwrap_or("upstream"),
+                    cfg,
+                    signal.retry_after,
+                );
+            }
+        }
+        crate::breaker::Disposition::HardDown => {
+            // A hard down is a property of the SHARED upstream, not of one pool fronting it, so it is
+            // recorded across every cell for that lane rather than just the pool that observed it.
+            store.record_hard_down_all_cells(
+                lane,
+                signal.provider_signal.as_deref().unwrap_or("hard_down"),
+            );
+        }
+        // The LANE is healthy and the request was simply wrong for it. Record nothing; the caller
+        // fails over WITHOUT penalising anybody.
+        crate::breaker::Disposition::ContextLength => {}
+    }
+    disposition
+}
+
+/// The success half of [`record_outcome`], kept separate because a success closes a HalfOpen cell and
+/// resets its accumulator, and that is a different write from any failure.
+// `pub` (was `pub(crate)`): the success half of `record_outcome`, surfaced via `crate::engine_facade`
+// (Phase-0 visibility lift). Signature names only `pub`/neutral types, so no leak allow is needed.
+#[cfg_attr(not(test), allow(dead_code))] // twin of `record_outcome`'s allow, same argument.
+pub fn record_success<C: Candidate>(store: &dyn LaneRuntime, pool: &str, candidate: &C) {
+    store.record_success_in(pool, candidate.lane());
 }
