@@ -561,7 +561,6 @@ dependencies = [
  "busbar-contract",
  "busbar-core-config",
  "busbar-core-hooks",
- "busbar-hooks-ranking",
  "busbar-llm",
  "busbar-mcp",
  "busbar-plugin",
