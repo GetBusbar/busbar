@@ -1500,6 +1500,24 @@
    ]
   },
   {
+   "id": "crates/busbar-plane-mcp-host/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-plane-mcp-host/src"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-plane-mcp-host/src/tests"
+   ]
+  },
+  {
    "id": "crates/busbar-plane-streaming/src",
    "kind": "production",
    "paths": [
@@ -4459,40 +4477,6 @@
    ]
   },
   {
-   "id": "crates/busbar-mcp/src/tests",
-   "kind": "test",
-   "paths": [
-    "crates/busbar-mcp/src/tests"
-   ],
-   "tree_hash": "f4f41ce28815eec87fcb583eb5d60144b6139753dbb16044154480a222ddc22c",
-   "audited_at": "64b54387c4f177667ba688f7680877455579b293",
-   "round": 1,
-   "result": "findings",
-   "counts": {
-    "HIGH": 3,
-    "MEDIUM": 6,
-    "LOW": 5
-   },
-   "report": "busbar-landq-state/gate/audits/tests-legacy-planes.md",
-   "auditor": "opus-test-auditor-legacy-planes",
-   "fixed_at": null,
-   "rounds": [
-    {
-     "round": 1,
-     "result": "findings",
-     "auditor": "opus-test-auditor-legacy-planes",
-     "audited_at": "64b54387c4f177667ba688f7680877455579b293",
-     "tree_hash": "f4f41ce28815eec87fcb583eb5d60144b6139753dbb16044154480a222ddc22c",
-     "counts": {
-      "HIGH": 3,
-      "MEDIUM": 6,
-      "LOW": 5
-     },
-     "report": "busbar-landq-state/gate/audits/tests-legacy-planes.md"
-    }
-   ]
-  },
-  {
    "id": "crates/busbar-mcp-codec/src/tests",
    "kind": "test",
    "paths": [
@@ -4730,6 +4714,21 @@
      "report": "the only allocation gate calls no plane method at all, so nothing holds the per-frame relay path the arena reset is pinned for"
     }
    ]
+  },
+  {
+   "id": "crates/busbar-plane-mcp-host/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-plane-mcp-host/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
   },
   {
    "id": "crates/busbar-plane-streaming/src/tests",
