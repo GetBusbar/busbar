@@ -237,6 +237,17 @@ const STOP_TOOL_USE: &str = "tool_use";
 const STOP_PAUSE_TURN: &str = "pause_turn";
 const STOP_REFUSAL: &str = "refusal";
 
+/// Synthetic tool NAME used to translate a cross-protocol `response_format` (structured-output /
+/// JSON-schema) directive into Anthropic tool-forcing. Anthropic's Messages API has NO native
+/// `response_format` field; the idiomatic way to obtain schema-constrained JSON from a Claude model
+/// is to synthesize a single tool whose `input_schema` IS the requested JSON schema and pin
+/// `tool_choice` to it (see the Anthropic WRITER). The Anthropic RESPONSE reader recognizes this
+/// name and maps the forced `tool_use` back to a plain assistant text block carrying the JSON, so a
+/// caller that asked for `response_format` (not a tool) receives structured content and never sees
+/// the synthetic tool. Busbar-namespaced to avoid colliding with a caller's own tool, and valid
+/// under Anthropic's `^[a-zA-Z0-9_-]{1,64}$` tool-name constraint.
+const RESPONSE_FORMAT_TOOL_NAME: &str = "busbar_response_format";
+
 /// Anthropic content block `type` values not covered by the delta sub-type constants above.
 const BLOCK_TYPE_REDACTED_THINKING: &str = "redacted_thinking";
 

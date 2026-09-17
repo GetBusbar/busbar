@@ -3173,15 +3173,20 @@ fn write_request_downgrades_forced_tool_choice_to_auto_when_thinking_emitted() {
     );
 }
 
-/// response_format: a cross-protocol IR carrying `response_format` reaching the Anthropic
-/// writer must NOT silently lose it — Anthropic has no native `response_format` and tool-forcing
-/// is not implemented this pass, so the writer DROPS the directive but emits a `warn!` naming
-/// response_format so the divergence is observable. Asserts (a) the warn fires and (b) no
-/// `response_format` key leaks onto the egress (which would 400 the upstream).
+/// response_format → TOOL-FORCING (owner-reported bug fix). A cross-protocol IR carrying a
+/// `response_format` (structured-output / JSON-schema) directive reaching the Anthropic writer must
+/// be TRANSLATED to Anthropic tool-forcing — Anthropic's Messages API has no native
+/// `response_format`, so busbar synthesizes a tool whose `input_schema` IS the requested schema and
+/// pins `tool_choice` to it. Asserts (a) no bare `response_format` key leaks (would 400 the
+/// upstream), (b) a synthetic tool named `busbar_response_format` carries the schema, and (c)
+/// `tool_choice` forces that tool. DELIBERATE divergence from the 1.5.5 golden (which dropped it).
 #[test]
-fn write_request_warns_and_drops_response_format_on_cross_protocol_egress() {
-    use tracing_subscriber::layer::SubscriberExt as _;
-
+fn write_request_translates_response_format_to_anthropic_tool_forcing() {
+    let schema = serde_json::json!({
+        "type": "object",
+        "properties": {"answer": {"type": "string"}},
+        "required": ["answer"]
+    });
     let req = crate::ir::IrRequest {
         messages: vec![crate::ir::IrMessage {
             role: crate::ir::IrRole::User,
@@ -3191,10 +3196,10 @@ fn write_request_warns_and_drops_response_format_on_cross_protocol_egress() {
                 citations: Vec::new(),
             }],
         }],
-        max_tokens: Some(16),
+        max_tokens: Some(64),
         response_format: Some(crate::ir::IrResponseFormat {
             json: true,
-            schema: Some(serde_json::json!({"type": "object"})),
+            schema: Some(schema.clone()),
             name: Some("out".to_string()),
             strict: None,
             description: None,
@@ -3202,20 +3207,87 @@ fn write_request_warns_and_drops_response_format_on_cross_protocol_egress() {
         ..Default::default()
     };
 
-    let cap = WarnCapture::default();
-    let subscriber = tracing_subscriber::registry().with(cap.clone());
-    let out =
-        tracing::subscriber::with_default(subscriber, || anthropic_writer().write_request(&req));
+    let out = anthropic_writer().write_request(&req);
 
     assert!(
         !out.as_object().unwrap().contains_key("response_format"),
-        "Anthropic egress must NOT emit `response_format` (no native field); got {out}"
+        "Anthropic egress must NOT emit a bare `response_format` (no native field); got {out}"
     );
-    let msgs = cap.messages();
+    // (b) the synthetic tool carries the requested schema under `input_schema`.
+    let tools = out["tools"].as_array().expect("tools array emitted");
+    let forced = tools
+        .iter()
+        .find(|t| t["name"] == serde_json::json!("busbar_response_format"))
+        .unwrap_or_else(|| panic!("synthetic response_format tool must be present; got {out}"));
+    assert_eq!(
+        forced.pointer("/input_schema/properties/answer/type"),
+        Some(&serde_json::json!("string")),
+        "the synthetic tool's input_schema must be the requested JSON schema; got {out}"
+    );
+    // (c) tool_choice forces exactly that tool.
+    assert_eq!(
+        out.pointer("/tool_choice/type"),
+        Some(&serde_json::json!("tool")),
+        "tool_choice must be a forced (type:tool) choice; got {out}"
+    );
+    assert_eq!(
+        out.pointer("/tool_choice/name"),
+        Some(&serde_json::json!("busbar_response_format")),
+        "tool_choice must pin the synthetic response_format tool; got {out}"
+    );
+}
+
+/// response_format tool-forcing MAP-BACK. The Anthropic response reader must project a forced
+/// `tool_use` block named `busbar_response_format` back to a plain assistant TEXT block carrying the
+/// tool input as JSON (the structured output the caller expects), and normalize the `tool_use`
+/// stop_reason to `end_turn`. A genuine (non-sentinel) tool_use must be left untouched.
+#[test]
+fn read_response_maps_forced_response_format_tool_use_back_to_text() {
+    // Forced sentinel tool_use → structured text + end_turn.
+    let body = serde_json::json!({
+        "role": "assistant",
+        "content": [{
+            "type": "tool_use",
+            "id": "toolu_1",
+            "name": "busbar_response_format",
+            "input": {"answer": "42"}
+        }],
+        "stop_reason": "tool_use",
+        "usage": {"input_tokens": 3, "output_tokens": 5}
+    });
+    let resp = AnthropicReader.read_response(&body).expect("valid response");
+    assert_eq!(resp.content.len(), 1, "one content block");
+    match &resp.content[0] {
+        crate::ir::IrBlock::Text { text, .. } => {
+            let v: serde_json::Value = serde_json::from_str(text).expect("text is JSON");
+            assert_eq!(v.pointer("/answer"), Some(&serde_json::json!("42")));
+        }
+        other => panic!("forced tool_use must map back to a Text block; got {other:?}"),
+    }
+    assert_eq!(
+        resp.stop_reason,
+        Some(crate::ir::IrStopReason::EndTurn),
+        "a forced-response-format tool_use stop_reason must normalize to end_turn"
+    );
+
+    // Regression proof: a genuine, non-sentinel tool_use is NOT rewritten.
+    let native = serde_json::json!({
+        "role": "assistant",
+        "content": [{
+            "type": "tool_use",
+            "id": "toolu_2",
+            "name": "get_weather",
+            "input": {"city": "SF"}
+        }],
+        "stop_reason": "tool_use",
+        "usage": {"input_tokens": 3, "output_tokens": 5}
+    });
+    let resp = AnthropicReader.read_response(&native).expect("valid response");
     assert!(
-        msgs.iter().any(|m| m.contains("response_format")),
-        "a response_format-drop warning must fire on cross-protocol Anthropic egress; got {msgs:?}"
+        matches!(&resp.content[0], crate::ir::IrBlock::ToolUse { name, .. } if name == "get_weather"),
+        "a native tool_use must be left as a ToolUse block"
     );
+    assert_eq!(resp.stop_reason, Some(crate::ir::IrStopReason::ToolUse));
 }
 
 /// LOW (json-tool-result drop observability + no-leak): a Bedrock `tool_result_json` sentinel
