@@ -4,7 +4,7 @@
 //! SHADOW-COMPARE: the dormant A2A kernel-loop rider reproduces the substrate gauntlet
 //! BYTE-FOR-BYTE and MONEY-FOR-MONEY.
 //!
-//! The A2A analogue of `gauntlet_kernel`'s MCP-witness shadow (commit `0e2564d8`): drive one A2A
+//! The A2A analogue of `gauntlet_kernel`'s MCP-witness shadow: drive one A2A
 //! plane through BOTH loops — `leg_legacy` = `busbar_substrate::plane_host::run_gauntlet` (the
 //! shipped authority), `leg_loop` = the dormant `run_a2a_via_kernel` (→ `run_gauntlet_via_kernel`)
 //! — on the same input, and assert (1) byte-identical status/headers/body AND (2) identical

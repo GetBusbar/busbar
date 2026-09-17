@@ -673,7 +673,7 @@ pub const LEGACY_VERBS: &[LegacyVerbRow] = &[
 ];
 
 /// The 18 new 1.6.0 verbs: the seventeen money-governance verbs, plus `amend_rate_history` — the
-/// signed, back-dated rate-card correction the dated-history design (D38) adds to the irreducible set.
+/// signed, back-dated rate-card correction the dated-history design adds to the irreducible set.
 pub const NEW_VERBS: &[KernelVerb] = &[
     KernelVerb::Verify,
     KernelVerb::PlaneFacts,

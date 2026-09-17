@@ -93,7 +93,7 @@ phase-1 YAML edit.
 · test, `latchkey-xlarge`) ran cold — no cache hit, see §5 — from job start `23:45:37Z` to
 completion `23:58:30Z`: **12m53s.** It failed, but not on the build: every crate compiled clean
 (sccache invoked correctly once installed, see §5) and the tests ran; the failure was the R14
-pin-by-sha gate catching this migration's own unpinned action ref (§5, fixed in `fd447f6e5`). 12m53s
+pin-by-sha gate catching this migration's own unpinned action ref (§5, since fixed). 12m53s
 is therefore a real cold-build-and-test wall-clock figure on a 16-vCPU Latchkey box, not a number
 thrown out by the failure.
 
@@ -138,7 +138,7 @@ distribution — re-run before treating 79% as a stable margin.
    supposed to eliminate reappears in a different place.
 3. **`R14` (every third-party action pinned by commit sha) caught this migration's own mistake**,
    and did so within 6 minutes of the first push: `latchkey-dev/cache-action@v1` is a movable tag,
-   not a sha. Fixed in `fd447f6e5` (`@v1` → `@d0dd21912a57c7435649c77f689b68d348d8a662 # v1`,
+   not a sha. Repinned to a sha (`@v1` → `@d0dd21912a57c7435649c77f689b68d348d8a662 # v1`,
    resolved via `gh api repos/latchkey-dev/cache-action/git/refs/tags/v1`). Reported here as
    evidence the gate is doing its job on Latchkey, not as a Latchkey defect.
 4. **Self-healing has no per-job or per-workflow disable.** Per `latchkey.dev/documentation`'s
@@ -486,9 +486,9 @@ to force a dry run risks a real publish side effect for zero migration-relevant 
 
 `keep-proof.yml`'s own jobs — unchanged by this slot, already on Latchkey since LK-5 — ran on every
 push; `concurrency: cancel-in-progress` superseded most of them, but the second-to-last push's run
-(`34666870476`, commit `acf77ee20`) was still `queued`/`in_progress` when the doc-only final commit
+(run `34666870476`) was still `queued`/`in_progress` when the doc-only final commit
 landed and both runs completed rather than one cancelling cleanly. The **last push's run**
-(`34667344240`, commit `bcc9ab4bb`, the phase-4 doc commit — a docs-only change, so its code-path
+(run `34667344240`, the phase-4 doc commit — a docs-only change, so its code-path
 results are identical to `acf77ee20`'s) is this slot's real Latchkey execution evidence, read once
 per the coordinator's resume instruction (`gh run list --branch keep-ci-latchkey-all --limit 3`):
 

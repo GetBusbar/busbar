@@ -277,8 +277,8 @@ impl RootHistory {
             .unwrap_or(busbar_unit_cost::HistorySeq::OPENING)
     }
 
-    /// **THE SIGNED, BACK-DATED CORRECTION** — the effect half of the `amend_rate_history` verb
-    /// (D38). Append an [`busbar_unit_cost::Author::Amend`] entry over the window the operator named,
+    /// **THE SIGNED, BACK-DATED CORRECTION** — the effect half of the `amend_rate_history` verb.
+    /// Append an [`busbar_unit_cost::Author::Amend`] entry over the window the operator named,
     /// and return its number — or `None` when there is nothing to amend.
     ///
     /// Unlike [`RootHistory::apply`] this never invents a from-zero opening entry: an amendment

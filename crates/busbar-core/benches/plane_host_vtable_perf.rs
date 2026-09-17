@@ -4,13 +4,13 @@
 //! THE HOT-PATH PERF INSTRUMENT — the `<1µs` witness of
 //! `docs/design/1.6.0-plane-extraction-LOCKED.md` §8 ("Perf gate (<1µs): criterion,
 //! plugin-host-vtable vs direct-call baseline, delta<1µs p50 AND p99; a per-token host-call counter
-//! on the streaming path asserted == 0"), also owed by §11b's tests/benches 8→9 rise.
+//! on the streaming path asserted == 0"). It is owed alongside the alloc instrument.
 //!
 //! # What is measured, and against what
 //!
-//! §2's HOT tier is a `#[repr(C)]` fn-pointer vtable ([`PlaneHostVtable`]): a plane calls back into
+//! The HOT tier is a `#[repr(C)]` fn-pointer vtable ([`PlaneHostVtable`]): a plane calls back into
 //! the host through a `Option<extern "C-unwind" fn>` slot rather than through a monomorphised
-//! in-core call. §8's budget is that the CROSSING — the Option-unwrap plus the indirect call through
+//! in-core call. The budget is that the CROSSING — the Option-unwrap plus the indirect call through
 //! the slot — costs less than 1µs against the same function invoked directly, at BOTH the p50 and
 //! the p99 of the sample distribution. This file measures exactly that:
 //!
@@ -23,7 +23,7 @@
 //!
 //! # The per-token host-call counter
 //!
-//! §2/§8 forbid a per-token host crossing on the streaming path: governance is a per-REQUEST cost,
+//! The HOT tier forbids a per-token host crossing on the streaming path: governance is a per-REQUEST cost,
 //! not a per-TOKEN one, so a plane streaming N tokens must cross the host vtable ZERO times per
 //! token. [`PER_TOKEN_HOST_CALLS`] counts every host-vtable slot invocation; the streaming model
 //! below drives N tokens and asserts the counter is `== 0`. The `BUSBAR_PERF_STREAM_CROSS`
@@ -46,7 +46,7 @@
 //! ```
 //!
 //! The `cargo xtask gate hot-path-perf` gate enforces that this instrument keeps making every one of
-//! the §8 claims above; this file is what actually measures them.
+//! the perf claims above; this file is what actually measures them.
 
 use busbar_plugin::hot::host::{ClockNowFn, HostCtx, PlaneHostVtable};
 use busbar_plugin::AbiPreamble;
@@ -55,14 +55,14 @@ use std::hint::black_box;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
-/// §8's budget: the vtable crossing must cost under one microsecond over a direct call.
+/// The perf budget: the vtable crossing must cost under one microsecond over a direct call.
 const HOT_PATH_BUDGET_NANOS: u64 = 1_000;
 
-/// Every host-vtable slot invocation on the streaming path bumps this. §8 requires it to stay `0`
+/// Every host-vtable slot invocation on the streaming path bumps this. The contract requires it to stay `0`
 /// per token: a host crossing is a per-request cost, never a per-token one.
 static PER_TOKEN_HOST_CALLS: AtomicUsize = AtomicUsize::new(0);
 
-/// The host capability under measurement, in the exact shape §2's HOT tier mandates: an
+/// The host capability under measurement, in the exact shape the HOT tier mandates: an
 /// `extern "C-unwind"` POD-by-value clock read. Counted so the streaming model can prove it did NOT
 /// cross the seam per token.
 extern "C-unwind" fn host_clock_now(_host: HostCtx) -> u64 {
@@ -117,7 +117,7 @@ fn percentiles(mut f: impl FnMut()) -> (u64, u64) {
     (p50, p99)
 }
 
-/// THE BUDGET ASSERTION — §8's `delta < 1µs at p50 AND p99`, computed here rather than parsed out of
+/// THE BUDGET ASSERTION — `delta < 1µs at p50 AND p99`, computed here rather than parsed out of
 /// criterion's report so the bench binary EXITS NON-ZERO when the budget is blown (which is what
 /// makes it a gate and not a graph).
 fn assert_hot_path_delta_under_budget() {
@@ -141,17 +141,17 @@ fn assert_hot_path_delta_under_budget() {
         p50_delta_nanos < HOT_PATH_BUDGET_NANOS,
         "HOT-PATH PERF (p50): the vtable crossing cost {p50_delta_nanos}ns over the direct call \
          (budget {HOT_PATH_BUDGET_NANOS}ns). direct p50 {direct_p50}ns, vtable p50 {vtable_p50}ns. \
-         §8 requires delta < 1µs at p50."
+         the perf budget requires delta < 1µs at p50."
     );
     assert!(
         p99_delta_nanos < HOT_PATH_BUDGET_NANOS,
         "HOT-PATH PERF (p99): the vtable crossing cost {p99_delta_nanos}ns over the direct call \
          (budget {HOT_PATH_BUDGET_NANOS}ns). direct p99 {direct_p99}ns, vtable p99 {vtable_p99}ns. \
-         §8 requires delta < 1µs at p99."
+         the perf budget requires delta < 1µs at p99."
     );
 }
 
-/// THE PER-TOKEN CROSSING ASSERTION — §8's `per-token host-call counter == 0`.
+/// THE PER-TOKEN CROSSING ASSERTION — `per-token host-call counter == 0`.
 ///
 /// Models a plane streaming `n` tokens: the POD-fast path does its per-token work in-plane and
 /// crosses the host vtable NOT AT ALL. `BUSBAR_PERF_STREAM_CROSS` makes it cross per token, which is
@@ -170,7 +170,7 @@ fn assert_zero_per_token_host_calls() {
         // The POD-fast per-token work: pure in-plane arithmetic, no seam crossing.
         sink = sink.wrapping_add(i as u64);
         if cross_per_token {
-            // The RED shape: a host crossing PER TOKEN, which §8 forbids.
+            // The RED shape: a host crossing PER TOKEN, which the contract forbids.
             let f = vt.clock_now.expect("clock_now slot is armed");
             sink = sink.wrapping_add(f(null));
         }
@@ -181,7 +181,7 @@ fn assert_zero_per_token_host_calls() {
     assert_eq!(
         per_token_crossings, 0,
         "HOT-PATH PER-TOKEN: the streaming path crossed the host vtable {per_token_crossings} \
-         time(s) over {tokens} tokens; §8 requires 0. A host crossing is a per-request cost, never \
+         time(s) over {tokens} tokens; the contract requires 0. A host crossing is a per-request cost, never \
          a per-token one."
     );
 }

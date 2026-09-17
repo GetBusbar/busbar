@@ -628,7 +628,7 @@ impl busbar_unit_verbs::Governance for CoreGovernance {
         request: &[u8],
         operator: busbar_unit_verbs::OperatorState,
     ) -> Result<Vec<u8>, busbar_unit_verbs::GovernanceError> {
-        // `amend_rate_history` (D38) is the one new verb whose effect is NOT the mounted router's:
+        // `amend_rate_history` is the one new verb whose effect is NOT the mounted router's:
         // its correction lands on this root's own dated rate-card history, which no 1.5.5 handler
         // knows about. The scope, rate class, operator ceremony and dual control were already run by
         // the verbs unit before this seam was reached — the verb is in the irreducible set — so this
@@ -675,7 +675,7 @@ fn ledger_answer(body: Vec<u8>) -> AdminAnswer {
     }
 }
 
-/// The effect half of `amend_rate_history` (D38): decode the correction, validate its shape, append
+/// The effect half of `amend_rate_history`: decode the correction, validate its shape, append
 /// the signed back-dated entry to this root's dated rate-card history, and answer with the entry it
 /// sealed.
 ///

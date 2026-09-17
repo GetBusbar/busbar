@@ -402,7 +402,7 @@ const MEASURED_KIND_ISOLATION_SHIP: f64 = 120_208.0; // 122 cases, 1290.7 s
 // says so" trigger the struck note named. Re-examined: no case was added; the growth is the 1.6.0
 // register itself. The `audited-at-reachable` case asks git to reach EVERY commit the register names,
 // and the register gained the whole 1.6.0 drain — so the same 14 cases now scan a bigger history. It
-// is NOT the per-plant disk rescan `construction` had (d0117d2cb): each case plants a DIFFERENT
+// is NOT the per-plant disk rescan `construction` had: each case plants a DIFFERENT
 // register, so the reachability answer differs per case and is not memoisable across them. Isolated
 // it is still under the default (8 779), but the battery runs under `cargo test`'s own ~1.4x
 // contention where it crosses it — the same reason every other whole-tree battery here carries the
@@ -2107,7 +2107,7 @@ pub static REGISTRY: &[Registration] = &[
         batch: 1,
         tier: Tier::Fast,
         build: || Box::new(hot_path_perf::HotPathPerfGate),
-        summary: "the §8 perf instrument measures the vtable crossing < 1µs (p50+p99) and 0 per-token \
+        summary: "the perf instrument measures the vtable crossing < 1µs (p50+p99) and 0 per-token \
                   host calls",
     },
     Registration {
@@ -2115,7 +2115,7 @@ pub static REGISTRY: &[Registration] = &[
         batch: 1,
         tier: Tier::Fast,
         build: || Box::new(hot_path_alloc::HotPathAllocGate),
-        summary: "the §8 alloc instrument asserts 0 global allocations across the isolated POD \
+        summary: "the alloc instrument asserts 0 global allocations across the isolated POD \
                   host-call batch",
     },
     Registration {

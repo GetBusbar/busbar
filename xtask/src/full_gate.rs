@@ -311,7 +311,7 @@ pub const REGISTRY_NOT_IN_CI: &[(&str, &str, Excuse)] = &[
     ),
     (
         "hot-path-perf",
-        "the §8 perf witness, staged on integration/oracle-phase2 ahead of the keystone wave that \
+        "the perf witness, staged ahead of the keystone wave that \
          owns ci.yml (.github is off the plane-extraction touch surface). Its coverage is \
          `xtask/tests/hot_path_gates.rs`, which drives the gate through the dispatcher and pins its \
          verdict at green; that test runs under `cargo test --workspace --locked` on every push, \
@@ -321,7 +321,7 @@ pub const REGISTRY_NOT_IN_CI: &[(&str, &str, Excuse)] = &[
     ),
     (
         "hot-path-alloc",
-        "the §8 alloc witness, on the same footing as `hot-path-perf`: covered by \
+        "the alloc witness, on the same footing as `hot-path-perf`: covered by \
          `xtask/tests/hot_path_gates.rs`, which drives it through the dispatcher under \
          `cargo test --workspace --locked` on every push, and wired into ci.yml by name when the \
          keystone rider lands.",

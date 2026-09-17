@@ -16,7 +16,7 @@
 //!
 //! They are not three copies of one list — each is for something different — and that is exactly why
 //! they could drift. This row compares them, in both directions, against the CONCLUDED 7-kind model,
-//! and any disagreement is RED. The design doc (`ARCHITECTURE.md`) is owned elsewhere and is NOT a
+//! and any disagreement is RED. `ARCHITECTURE.md` is owned elsewhere and is NOT a
 //! left-hand side here: the code and its two data files must agree among themselves, on the decision
 //! DECISIONS #3 locked, without waiting on prose.
 //!

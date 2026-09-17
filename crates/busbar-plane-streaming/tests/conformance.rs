@@ -103,7 +103,7 @@ fn a_realtime_voice_session_reserves_takes_turns_and_settles() {
         "the turn carries the correlation an answer rides back on"
     );
 
-    // The admit step is where the money-book (S2) reserves a hold: the plane's `admit` names the lane,
+    // The admit step is where the money-book reserves a hold: the plane's `admit` names the lane,
     // the response ceiling and the priced input span the reservation is sized against. Proven to
     // answer here; the reservation itself is the cost unit's, on the far side of the kernel.
     let opened_unit = harness::unit(OpClassId::new("duplex_turn"), draft.body_ir, draft.facts);
@@ -217,7 +217,7 @@ fn a_realtime_voice_session_reserves_takes_turns_and_settles() {
     // ── SETTLE (END-OF-TURN) ────────────────────────────────────────────────────────────────────
     // The turn's `response.done` carries usage; the plane decodes it as the terminal frame and the
     // meter names every per-turn class with the reported quantity. This is the evidence the money-book
-    // (S2) settles the reserved hold against, once per completed turn (#23).
+    // settles the reserved hold against, once per completed turn (#23).
     let done = serde_json::to_vec(&json!({
         "type": "response.done",
         "response": {

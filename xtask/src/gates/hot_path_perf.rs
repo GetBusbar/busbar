@@ -1,11 +1,11 @@
-//! `cargo xtask gate hot-path-perf` — THE §8 HOT-PATH PERF WITNESS, ENFORCED.
+//! `cargo xtask gate hot-path-perf` — THE HOT-PATH PERF WITNESS, ENFORCED.
 //!
 //! `docs/design/1.6.0-plane-extraction-LOCKED.md` §8 owes a perf gate: "criterion,
 //! plugin-host-vtable vs direct-call baseline, delta<1µs p50 AND p99; a per-token host-call counter
-//! on the streaming path asserted == 0", and §11b counts it as one of the two criterion benches that
-//! raise the core-engine tests/benches dimension 8→9. The MEASUREMENT lives in the criterion
+//! on the streaming path asserted == 0". It is one of the two criterion benches. The MEASUREMENT
+//! lives in the criterion
 //! instrument `crates/busbar-core/benches/plane_host_vtable_perf.rs`; this gate is what keeps that
-//! instrument making every one of §8's claims, so a claim cannot be quietly dropped from the bench
+//! instrument making every one of the perf claims, so a claim cannot be quietly dropped from the bench
 //! without an owed row going missing.
 //!
 //! Five claims, five rows — the same shape as `duplex-ws-default-edge`:
@@ -21,7 +21,7 @@
 //! WHY A SOURCE GATE AND NOT A `cargo bench` RUNNER. `xtask` depends on no product crate (the
 //! `segregation` gate), and a Tier::Fast gate builds nothing; the microsecond measurement is the
 //! bench's job and runs in the perf lane. What this gate owns is the CONTRACT — that the instrument
-//! still constructs the vtable, still compares it to a direct call, and still asserts §8's exact
+//! still constructs the vtable, still compares it to a direct call, and still asserts the exact
 //! budget at both percentiles and a zero per-token crossing. Deleting an assertion from the bench is
 //! the drift this catches, and the bench's own `BUSBAR_PERF_STREAM_CROSS` knob is what proves those
 //! assertions can still fire.
@@ -96,7 +96,7 @@ fn instrument_row(cx: &Ctx) -> Row {
     if !cx.exists(BENCH_REL) {
         return Row::fail(
             ROW_INSTRUMENT,
-            "the §8 perf instrument is missing",
+            "the perf instrument is missing",
             format!("{BENCH_REL} does not exist — the perf gate has nothing to enforce"),
         );
     }
@@ -106,17 +106,17 @@ fn instrument_row(cx: &Ctx) -> Row {
     if registered {
         Row::pass(
             ROW_INSTRUMENT,
-            "the §8 perf instrument exists and is a registered criterion bench",
+            "the perf instrument exists and is a registered criterion bench",
             format!("{BENCH_REL}, registered harness = false in {MANIFEST_REL}"),
         )
     } else {
         Row::fail(
             ROW_INSTRUMENT,
-            "the §8 perf instrument is not a registered criterion bench",
+            "the perf instrument is not a registered criterion bench",
             format!(
                 "{MANIFEST_REL} does not register `name = \"{BENCH_NAME}\"` with `harness = false` \
                  — an unregistered criterion bench is built as a libtest harness and never runs the \
-                 §8 measurement"
+                 perf measurement"
             ),
         )
     }
@@ -137,7 +137,7 @@ fn claim_row(claim: &Claim, bench: &str) -> Row {
             claim.row,
             claim.bad,
             format!(
-                "{BENCH_REL} is missing {missing:?} — a §8 claim was dropped from the perf \
+                "{BENCH_REL} is missing {missing:?} — a claim was dropped from the perf \
                  instrument"
             ),
         )
@@ -180,7 +180,7 @@ impl Gate for HotPathPerfGate {
         report.push(prove_green(
             cx,
             self,
-            "the committed perf instrument makes every §8 claim",
+            "the committed perf instrument makes every claim",
             &self.owed().iter().map(String::as_str).collect::<Vec<_>>(),
         ));
 

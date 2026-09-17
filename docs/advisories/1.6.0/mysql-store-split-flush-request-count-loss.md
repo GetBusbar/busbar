@@ -84,7 +84,7 @@ satisfy.
 
 ## Evidence
 
-- Commit `5e3c13044` ("store contract: a usage ledger is ONE accounting record, and the request
+- The store-contract fix ("store contract: a usage ledger is ONE accounting record, and the request
   count was not in it"), 2026-09-11, `main`/`dev` line — full measurement (run counts, backend
   comparison, failing-row readback) is in the commit body; files touched: `crates/api/src/store.rs`,
   `crates/busbar-core/src/governance/tests/limits_tests.rs`,

@@ -52,8 +52,8 @@ name: keep-proof
 on:
   push:
     # Same branch set as ci.yml/gate-mutants.yml. `keep-*` (and `wip/*`, `slot-*`) WAS here and is
-    # not any more (LK-ALL-2) -- see the header comment above and §8 of
-    # docs/ci/latchkey-migration.md. This workflow now only auto-fires on the branches CI itself
+    # not any more (LK-ALL-2) -- see the header comment above and
+    # §8 of docs/ci/latchkey-migration.md. This workflow now only auto-fires on the branches CI itself
     # gates; a slot's own hand-back proof runs on the engine via `scripts/prove-remote.sh`, not here.
     branches: ['integration/**', 'dev', 'qa', 'main']
   workflow_dispatch:

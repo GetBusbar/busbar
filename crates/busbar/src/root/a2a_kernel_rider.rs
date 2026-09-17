@@ -3,8 +3,8 @@
 
 //! THE DORMANT A2A KERNEL-LOOP RIDER — the second WITNESS on the generic bridge, after MCP.
 //!
-//! This module onboards the A2A invoke plane onto the unified kernel loop the SAME way MCP did in
-//! commit `0e2564d8` (DECISIONS #28): as a THIN VERBATIM RIDER over the plane-neutral bridge
+//! This module onboards the A2A invoke plane onto the unified kernel loop the SAME way MCP did
+//! (DECISIONS #28): as a THIN VERBATIM RIDER over the plane-neutral bridge
 //! [`crate::root::gauntlet_kernel::run_gauntlet_via_kernel`]. [`run_a2a_via_kernel`] drives the SAME
 //! A2A `GauntletPlane` — the crate-private `A2aInvokePlane` in `busbar-a2a`'s `receive.rs`, whose
 //! `drive` is the whole of `invoke_inner` UNCHANGED — through `busbar_kernel::teller::run_unit_async`
