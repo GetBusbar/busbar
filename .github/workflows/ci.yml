@@ -1790,6 +1790,7 @@ jobs:
   # feature-covered: busbar-llm/openapi-schema -- openapi-schema -- pulled by the forward from busbar-core in that job's build
   # feature-covered: busbar-llm-codec/openapi-schema -- openapi-schema -- pulled by the forward from busbar-llm in that job's build
   # feature-covered: busbar-mcp/openapi-schema -- openapi-schema -- pulled by the forward from busbar-core in that job's build
+  # feature-covered: busbar-plane-mcp-host/openapi-schema -- openapi-schema -- reached through busbar-mcp's forward when the openapi-schema job builds it
   # feature-covered: busbar-substrate/openapi-schema -- openapi-schema -- pulled by the forward from every plane crate there
   # feature-covered: busbar-voice/openapi-schema -- openapi-schema -- pulled by the forward from busbar with the feature on
   # feature-covered: busbar-timing/timing -- check -- the Timing implementation tests step names -p busbar-timing --features timing
@@ -1817,6 +1818,8 @@ jobs:
   # feature-covered: busbar-a2a-codec/test-support -- check -- unified in by a dev-dependency under --all-targets in that job
   # feature-covered: busbar-mcp/test-support -- check -- unified in by a dev-dependency under --all-targets in that job
   # feature-covered: busbar-mcp/auth-admin-tokens -- check -- unified in by a dev-dependency under --all-targets in that job
+  # feature-covered: busbar-plane-mcp-host/test-support -- check -- reached through busbar-mcp's forward, unified in by a dev-dependency under --all-targets in that job
+  # feature-covered: busbar-plane-mcp-host/auth-admin-tokens -- check -- reached through busbar-mcp's forward, unified in by a dev-dependency under --all-targets in that job
   # feature-covered: busbar-llm/test-support -- check -- unified in by a dev-dependency under --all-targets in that job
   # feature-covered: busbar-llm-codec/test-support -- check -- unified in by a dev-dependency under --all-targets in that job
   # feature-covered: busbar-plugin-testkit/store -- check -- unified in by a dev-dependency under --all-targets in that job
