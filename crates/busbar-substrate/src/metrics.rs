@@ -56,7 +56,9 @@ pub const BILLING_TRUNCATED_TOTAL: &str = "busbar_billing_truncated_total"; // n
 // and the per-request handle caches) stays in core.
 
 use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
+use std::collections::HashMap;
 use std::sync::OnceLock;
+use std::sync::RwLock;
 use std::time::Duration;
 
 use crate::diag_error;
@@ -692,6 +694,494 @@ pub fn render() -> String {
             h.render()
         }
         _ => String::new(),
+    }
+}
+
+// ─── PER-REQUEST HANDLE CACHE (relocated from busbar-core, verbatim) ───────────────────────────────
+//
+// `finish_inner` emits exactly two metrics on EVERY served request: the `REQUESTS_TOTAL` counter and
+// the `REQUEST_DURATION_SECONDS` histogram. Emitting them through the `counter!`/`histogram!` macros
+// re-runs, per request: three owned-`String` label allocations (`plane` + `ingress_protocol` + `pool`), a `Key`
+// build, and a recorder registry hash+lookup — for a label set drawn from a FINITE, operator-bounded
+// space (`|protocols| × (|pools| + 1) × |outcomes|`). `metrics::Counter`/`Histogram` are cheap-to-
+// clone `Arc`-backed handles straight to the metric's storage that SURVIVE recorder swaps, so caching
+// one per label set turns the steady-state hot path into a lock-free map read + an atomic increment —
+// no per-request allocation and no registry lookup.
+//
+// These helpers name only the NEUTRAL metric-name consts above, `recorder_installed()`, and the
+// `metrics` macros — no `App`, no engine handle — so they live beside the recorder install they feed.
+// Core's `crate::metrics` re-exports each at its historical `crate::metrics::…` path, so the `&App`
+// telemetry wrappers (`crate::telemetry::request_finished`) call them unchanged and the emitted series
+// are byte-identical.
+//
+// Correctness vs. the recorder-install ordering the module contract calls out (a handle minted before
+// `init()` installs the recorder binds to the no-op recorder FOREVER): the cache is populated ONLY
+// once the recorder is installed (`HANDLE == Some(Some(_))`). Before that — `init()` not yet run, or
+// install failed — these helpers fall through to the plain macro (itself a no-op against the default
+// recorder), caching nothing.
+
+/// Unit separator joining label values into the compact cache key — a control byte that cannot occur
+/// in an ingress-protocol or pool name, so `"a\x1fb"` can never collide with `"a"` + `"\x1fb"`.
+const CACHE_KEY_SEP: char = '\u{1f}';
+
+static REQUESTS_HANDLES: OnceLock<RwLock<HashMap<Box<str>, metrics::Counter>>> = OnceLock::new();
+static DURATION_HANDLES: OnceLock<RwLock<HashMap<Box<str>, metrics::Histogram>>> = OnceLock::new();
+// The mounted plane consumers' families keep their OWN caches: the `plane` label makes their key
+// space distinct from the primary-plane series above, and keeping them separate is what lets the
+// primary-plane series stay label-identical to v1.5.4.
+static PLANE_REQUESTS_HANDLES: OnceLock<RwLock<HashMap<Box<str>, metrics::Counter>>> =
+    OnceLock::new();
+static PLANE_DURATION_HANDLES: OnceLock<RwLock<HashMap<Box<str>, metrics::Histogram>>> =
+    OnceLock::new();
+
+/// Increment `REQUESTS_TOTAL` for `(ingress_protocol, pool, outcome)` via a CACHED counter handle —
+/// no registry lookup and no per-request `Label`/`Key` construction on the steady-state path. Falls
+/// back to the plain macro until the recorder is installed (see the cache-module note above).
+/// Byte-for-byte the same series and value the macro produced. This is the primary plane's family
+/// and carries NO `plane` label, so its exposition is identical to v1.5.4 (`incr_plane_requests_total`
+/// is the mounted-plane-consumer counterpart).
+pub fn incr_requests_total(ingress_protocol: &str, pool: &str, outcome: &'static str) {
+    if !recorder_installed() {
+        // Pre-install: don't cache (would bind to the no-op recorder). The macro is itself a no-op.
+        metrics::counter!(
+            REQUESTS_TOTAL,
+            "ingress_protocol" => ingress_protocol.to_string(),
+            "pool" => pool.to_string(),
+            "outcome" => outcome
+        )
+        .increment(1);
+        return;
+    }
+    let cache = REQUESTS_HANDLES.get_or_init(|| RwLock::new(HashMap::new()));
+    let key = format!("{ingress_protocol}{CACHE_KEY_SEP}{pool}{CACHE_KEY_SEP}{outcome}");
+    // Fast path: shared-read hit (the common case — a bounded, quickly-saturated key set).
+    if let Some(h) = cache
+        .read()
+        .unwrap_or_else(|p| p.into_inner())
+        .get(key.as_str())
+    {
+        h.increment(1);
+        return;
+    }
+    // Cold path (first time this label set is seen): register the handle once, then cache it.
+    let handle = metrics::counter!(
+        REQUESTS_TOTAL,
+        "ingress_protocol" => ingress_protocol.to_string(),
+        "pool" => pool.to_string(),
+        "outcome" => outcome
+    );
+    handle.increment(1);
+    cache
+        .write()
+        .unwrap_or_else(|p| p.into_inner())
+        .entry(key.into_boxed_str())
+        .or_insert(handle);
+}
+
+/// Increment `PLANE_REQUESTS_TOTAL` for `(plane, ingress_protocol, pool, outcome)` — the
+/// mounted-plane-consumer counterpart of [`incr_requests_total`]. SEPARATE family and SEPARATE cache
+/// so the primary-plane series stays label-identical to v1.5.4; same cached-handle contract
+/// otherwise.
+pub fn incr_plane_requests_total(
+    plane: &str,
+    ingress_protocol: &str,
+    pool: &str,
+    outcome: &'static str,
+) {
+    if !recorder_installed() {
+        metrics::counter!(
+            PLANE_REQUESTS_TOTAL,
+            "plane" => plane.to_string(),
+            "ingress_protocol" => ingress_protocol.to_string(),
+            "pool" => pool.to_string(),
+            "outcome" => outcome
+        )
+        .increment(1);
+        return;
+    }
+    let cache = PLANE_REQUESTS_HANDLES.get_or_init(|| RwLock::new(HashMap::new()));
+    let key = format!(
+        "{plane}{CACHE_KEY_SEP}{ingress_protocol}{CACHE_KEY_SEP}{pool}{CACHE_KEY_SEP}{outcome}"
+    );
+    if let Some(h) = cache
+        .read()
+        .unwrap_or_else(|p| p.into_inner())
+        .get(key.as_str())
+    {
+        h.increment(1);
+        return;
+    }
+    let handle = metrics::counter!(
+        PLANE_REQUESTS_TOTAL,
+        "plane" => plane.to_string(),
+        "ingress_protocol" => ingress_protocol.to_string(),
+        "pool" => pool.to_string(),
+        "outcome" => outcome
+    );
+    handle.increment(1);
+    cache
+        .write()
+        .unwrap_or_else(|p| p.into_inner())
+        .entry(key.into_boxed_str())
+        .or_insert(handle);
+}
+
+/// Record a `REQUEST_DURATION_SECONDS` observation for `(ingress_protocol, pool)` via a CACHED
+/// histogram handle. Same caching contract as [`incr_requests_total`]; the primary plane's family,
+/// with NO `plane` label (see [`record_plane_request_duration`] for the mounted-plane-consumer
+/// counterpart).
+pub fn record_request_duration(ingress_protocol: &str, pool: &str, seconds: f64) {
+    if !recorder_installed() {
+        metrics::histogram!(
+            REQUEST_DURATION_SECONDS,
+            "ingress_protocol" => ingress_protocol.to_string(),
+            "pool" => pool.to_string()
+        )
+        .record(seconds);
+        return;
+    }
+    let cache = DURATION_HANDLES.get_or_init(|| RwLock::new(HashMap::new()));
+    let key = format!("{ingress_protocol}{CACHE_KEY_SEP}{pool}");
+    if let Some(h) = cache
+        .read()
+        .unwrap_or_else(|p| p.into_inner())
+        .get(key.as_str())
+    {
+        h.record(seconds);
+        return;
+    }
+    let handle = metrics::histogram!(
+        REQUEST_DURATION_SECONDS,
+        "ingress_protocol" => ingress_protocol.to_string(),
+        "pool" => pool.to_string()
+    );
+    handle.record(seconds);
+    cache
+        .write()
+        .unwrap_or_else(|p| p.into_inner())
+        .entry(key.into_boxed_str())
+        .or_insert(handle);
+}
+
+/// Record a `PLANE_REQUEST_DURATION_SECONDS` observation for `(plane, ingress_protocol, pool)` — the
+/// mounted-plane-consumer counterpart of [`record_request_duration`], in a SEPARATE family/cache.
+pub fn record_plane_request_duration(
+    plane: &str,
+    ingress_protocol: &str,
+    pool: &str,
+    seconds: f64,
+) {
+    if !recorder_installed() {
+        metrics::histogram!(
+            PLANE_REQUEST_DURATION_SECONDS,
+            "plane" => plane.to_string(),
+            "ingress_protocol" => ingress_protocol.to_string(),
+            "pool" => pool.to_string()
+        )
+        .record(seconds);
+        return;
+    }
+    let cache = PLANE_DURATION_HANDLES.get_or_init(|| RwLock::new(HashMap::new()));
+    let key = format!("{plane}{CACHE_KEY_SEP}{ingress_protocol}{CACHE_KEY_SEP}{pool}");
+    if let Some(h) = cache
+        .read()
+        .unwrap_or_else(|p| p.into_inner())
+        .get(key.as_str())
+    {
+        h.record(seconds);
+        return;
+    }
+    let handle = metrics::histogram!(
+        PLANE_REQUEST_DURATION_SECONDS,
+        "plane" => plane.to_string(),
+        "ingress_protocol" => ingress_protocol.to_string(),
+        "pool" => pool.to_string()
+    );
+    handle.record(seconds);
+    cache
+        .write()
+        .unwrap_or_else(|p| p.into_inner())
+        .entry(key.into_boxed_str())
+        .or_insert(handle);
+}
+
+// ─── SCRAPE-TIME GAUGE COMPOSITION (relocated from busbar-core behind a neutral trait) ─────────────
+//
+// `refresh_scrape_gauges` composes and emits every scrape-time gauge family (per-key spend/tokens,
+// group-bucket spend/remaining/tokens, and the per-(pool,lane) health/availability gauges). The BULK
+// — the label building, the gauge `set()` emits, the lane-state derivation, the pool/model loops and
+// `emit_lane_gauges` — needs only bounded SCALARS plus the two already-neutral engine/store views, so
+// it lives here behind the [`ScrapeSource`] seam. `busbar-core` keeps a THIN `impl ScrapeSource for
+// App` (the `App` field reads, the fallible governance/store projections, their diagnostics, and the
+// per-key gauge-limit cap) and a one-line `crate::metrics::refresh_scrape_gauges(app)` call site. No
+// plane/money TYPE crosses the boundary and the rendered `/metrics` bytes are unchanged.
+
+/// Per-(model) token tallies for the four fixed pricing tiers, projected off the token ledger by the
+/// [`ScrapeSource`] implementor so this crate never names `busbar_api::UNIT_*` or the ledger types.
+#[derive(Clone, Copy, Default)]
+pub struct TierTokens {
+    pub input: u64,
+    pub output: u64,
+    pub cache_read: u64,
+    pub cache_write: u64,
+}
+
+/// The four `(tier-label, value)` rows one [`TierTokens`] renders as `busbar_bucket_tokens` samples,
+/// in the historical emission order (`input`, `output`, `cache_read`, `cache_write`).
+fn tier_rows(t: &TierTokens) -> [(&'static str, u64); 4] {
+    [
+        ("input", t.input),
+        ("output", t.output),
+        ("cache_read", t.cache_read),
+        ("cache_write", t.cache_write),
+    ]
+}
+
+/// One virtual key's scrape identity: the operator-visible id + its mint-time labels. The spend/token
+/// SCALARS are fetched separately, per key, via [`ScrapeSource::key_usage`] so a key that vanished
+/// between listing and reading is skipped without a wasted projection.
+pub struct ScrapeKey {
+    pub id: String,
+    pub labels: Vec<(String, String)>,
+}
+
+/// Derived current-window usage scalars for one virtual key (`usage.spend_cents` / `usage.tokens`).
+pub struct KeyUsage {
+    pub spend_cents: i64,
+    pub tokens: u64,
+}
+
+/// One budget-group enforcement bucket's scrape identity: the ledger id, the group name, its window,
+/// and any budget cap. Spend + per-model tokens are fetched separately, per bucket.
+pub struct ScrapeGroupBucket {
+    pub bucket_id: String,
+    pub group_name: String,
+    pub window: &'static str,
+    pub budget_cap: Option<i64>,
+}
+
+/// The NEUTRAL scalar seam the scrape-time gauge machinery reads. The substrate NAMES this trait and
+/// composes/emits every gauge; `busbar-core` implements it as a thin set of `App` field reads
+/// (`impl ScrapeSource for App`). No plane/money TYPE crosses the boundary — only bounded scalar
+/// projections plus the two already-neutral engine/store views — so the composition lives here without
+/// a substrate→core cycle and the rendered `/metrics` bytes stay byte-identical.
+pub trait ScrapeSource {
+    /// Is governance enabled? Gates the per-key + group-bucket gauge families (was `app.governance`).
+    fn governance_enabled(&self) -> bool;
+    /// Every virtual key to emit a per-key gauge for, ALREADY BOUNDED to the per-key gauge limit and
+    /// diagnosed (an empty vec on a store error). The implementor owns the `key_gauge_limit` cap and
+    /// its warn-once latch, so this crate emits gauges for exactly the returned keys.
+    fn scrape_keys(&self) -> Vec<ScrapeKey>;
+    /// Derived spend/token scalars for one key. `None` = the key vanished or its read failed (logged
+    /// by the implementor) — the whole key is skipped, matching the pre-refactor `continue`.
+    fn key_usage(&self, id: &str, now: u64) -> Option<KeyUsage>;
+    /// Per-(model) all-time-window (`WINDOW_TOTAL`) token tallies for one key's attribution bucket.
+    fn key_model_tokens(&self, id: &str, now: u64) -> Vec<(String, TierTokens)>;
+    /// Every budget-group bucket to emit gauges for, flattened over `(group, bucket)`.
+    fn scrape_group_buckets(&self) -> Vec<ScrapeGroupBucket>;
+    /// DERIVED spend (cents, request fee included) for one group bucket in its window. `None` = the
+    /// ledger read failed (logged) — the bucket is skipped, matching the pre-refactor `continue`.
+    fn group_bucket_spend(&self, bucket_id: &str, window: &str, now: u64) -> Option<i64>;
+    /// Per-(model) token tallies for one group bucket in its window.
+    fn group_model_tokens(
+        &self,
+        bucket_id: &str,
+        window: &str,
+        now: u64,
+    ) -> Vec<(String, TierTokens)>;
+    /// The lane-health runtime (breaker snapshots, per-(pool,lane) classify/cooldown). Already a
+    /// neutral substrate trait object.
+    fn lane_runtime(&self) -> &dyn crate::store::LaneRuntime;
+    /// The data-plane routing tables (pool membership, model indices, queue depth, lane models).
+    /// Already a neutral substrate trait object.
+    fn engine_view(&self) -> &dyn crate::plane_host::EngineTablesView;
+}
+
+/// Refresh all scrape-time gauges from the [`ScrapeSource`]'s in-process reads. Called on every
+/// `/metrics` scrape (via core's `crate::metrics::refresh_scrape_gauges` wrapper) so values are
+/// current at observation time. Governance families are skipped when governance is disabled; pool and
+/// lane label spaces are bounded by operator configuration; virtual-key ids are bounded by the set of
+/// keys the admin created. No client-supplied label values are ever emitted.
+pub fn refresh_scrape_gauges<S: ScrapeSource + ?Sized>(src: &S) {
+    let now = crate::store::now();
+
+    // ── Governance: per-key spend, tokens, and per-(model,tier) bucket tokens ───────────────────
+    if src.governance_enabled() {
+        // The key list is ALREADY bounded to `key_gauge_limit` and diagnosed by the implementor.
+        for key in src.scrape_keys() {
+            // `None` = the key vanished between list and read, or the read failed (logged in core);
+            // skip the WHOLE key (spend, tokens, and its per-model bucket tokens).
+            let Some(usage) = src.key_usage(&key.id, now) else {
+                continue;
+            };
+            // key label = the operator-visible virtual-key id (`vk_<hex>`), never the bearer secret.
+            // The key's MINT-TIME labels are echoed onto every series so external Grafana can
+            // `sum by (team)` WITHOUT busbar knowing what "team" means.
+            let base_labels = |extra: &[(&'static str, String)]| -> Vec<metrics::Label> {
+                let mut labels: Vec<metrics::Label> =
+                    vec![metrics::Label::new("key", key.id.clone())];
+                for (k, v) in &key.labels {
+                    labels.push(metrics::Label::new(k.clone(), v.clone()));
+                }
+                for (k, v) in extra {
+                    labels.push(metrics::Label::new(*k, v.clone()));
+                }
+                labels
+            };
+            metrics::gauge!(KEY_SPEND_CENTS, base_labels(&[])).set(usage.spend_cents as f64);
+            metrics::gauge!(KEY_TOKENS_TOTAL, base_labels(&[])).set(usage.tokens as f64);
+            // Per-(bucket, model, tier) token gauges from the key bucket's all-time-window ledger.
+            for (model, tokens) in src.key_model_tokens(&key.id, now) {
+                for (tier, v) in tier_rows(&tokens) {
+                    let mut labels: Vec<metrics::Label> =
+                        vec![metrics::Label::new("bucket", key.id.clone())];
+                    for (k, val) in &key.labels {
+                        labels.push(metrics::Label::new(k.clone(), val.clone()));
+                    }
+                    labels.push(metrics::Label::new("model", model.clone()));
+                    labels.push(metrics::Label::new("tier", tier));
+                    metrics::gauge!(BUCKET_TOKENS, labels).set(v as f64);
+                }
+            }
+        }
+
+        // ── GROUP buckets: derived spend + remaining + per-(model, tier) tokens ─────────────────
+        for bucket in src.scrape_group_buckets() {
+            let Some(spend_cents) = src.group_bucket_spend(&bucket.bucket_id, bucket.window, now)
+            else {
+                continue;
+            };
+            let dims = |extra: &[(&'static str, String)]| -> Vec<metrics::Label> {
+                let mut labels = vec![
+                    metrics::Label::new("bucket", bucket.bucket_id.clone()),
+                    metrics::Label::new("group", bucket.group_name.clone()),
+                    metrics::Label::new("window", bucket.window),
+                ];
+                for (k, v) in extra {
+                    labels.push(metrics::Label::new(*k, v.clone()));
+                }
+                labels
+            };
+            metrics::gauge!(BUCKET_SPEND_CENTS, dims(&[])).set(spend_cents as f64);
+            // Budget-remaining: only for a bucket that carries a `budget` cap.
+            if let Some(cap) = bucket.budget_cap {
+                let remaining = cap.saturating_sub(spend_cents).max(0);
+                metrics::gauge!(BUCKET_BUDGET_REMAINING_CENTS, dims(&[])).set(remaining as f64);
+            }
+            for (model, tokens) in src.group_model_tokens(&bucket.bucket_id, bucket.window, now) {
+                for (tier, v) in tier_rows(&tokens) {
+                    metrics::gauge!(
+                        BUCKET_TOKENS,
+                        dims(&[("model", model.clone()), ("tier", tier.to_string())])
+                    )
+                    .set(v as f64);
+                }
+            }
+        }
+    }
+
+    // ── Lane health: per-(pool, lane-index) breaker state ──────────────────────────────────────
+    // Pure atomic reads (dead flag, aggregate usability, per-(pool,lane) cooldown/classify) — no FSM
+    // transitions triggered. The `lane` label value is the lane's MODEL string (matching the
+    // request-counter emission sites so gauge and counters PromQL-join), not a numeric index.
+    let store = src.lane_runtime();
+    let view = src.engine_view();
+    let mut snap_cache: std::collections::HashMap<usize, crate::store::LaneSnapshot> =
+        std::collections::HashMap::new();
+    for (pool_name, member_idxs) in view.pools() {
+        // Render the LIVE per-pool `on_exhausted: queue` park depth (0 when a pool never queues).
+        metrics::gauge!(POOL_QUEUED, "pool" => pool_name.to_string())
+            .set(view.queued_depth(pool_name) as f64);
+        for lane_idx in member_idxs {
+            let snap = snap_cache
+                .entry(lane_idx)
+                .or_insert_with(|| store.snapshot(lane_idx, now));
+            let pool_cooldown = store.cooldown_remaining_in(pool_name, lane_idx, now);
+            let state_val: f64 = if snap.dead || (pool_cooldown > 0 && !snap.usable) {
+                2.0 // hard-down or all cells Open/tripped
+            } else if pool_cooldown > 0 {
+                1.0 // HalfOpen: this cell has a non-zero cooldown but the lane still admits
+            } else {
+                0.0 // Closed / healthy
+            };
+            let lane_label = view
+                .lane_view(lane_idx)
+                .expect("pool member lane index is in range")
+                .model
+                .to_string();
+            metrics::gauge!(
+                LANE_STATE,
+                "pool" => pool_name.to_string(),
+                "lane" => lane_label.clone()
+            )
+            .set(state_val);
+            let avail = store.classify(pool_name, lane_idx, now);
+            emit_lane_gauges(pool_name, &lane_label, snap, &avail, now);
+        }
+    }
+
+    // Direct-model lanes (reachable via `by_model` routing, no pool required) get a lane-state gauge
+    // too, labeled with the model name as `pool` — the same convention the counters use for
+    // model-routed traffic — so gauge and counters PromQL-join.
+    for (model, lane_idx) in view.model_indices() {
+        let snap = snap_cache
+            .entry(lane_idx)
+            .or_insert_with(|| store.snapshot(lane_idx, now));
+        let cooldown = store.cooldown_remaining_in("", lane_idx, now);
+        let state_val: f64 = if snap.dead || (cooldown > 0 && !snap.usable) {
+            2.0
+        } else if cooldown > 0 {
+            1.0
+        } else {
+            0.0
+        };
+        let lane_model = view
+            .lane_view(lane_idx)
+            .expect("model-routed lane index is in range")
+            .model
+            .to_string();
+        metrics::gauge!(
+            LANE_STATE,
+            "pool" => model.to_string(),
+            "lane" => lane_model.clone()
+        )
+        .set(state_val);
+        let avail = store.classify("", lane_idx, now);
+        emit_lane_gauges(model, &lane_model, snap, &avail, now);
+    }
+}
+
+/// Emit the per-(pool, lane) availability + depth gauges. `avail` is the SAME
+/// `classify(pool, lane, now)` verdict routing dispatches on, so `busbar_lane_available` (1=Ok/0=Err)
+/// and `busbar_lane_recovery_hint_ms` (from `Unavailable::recovery_hint_ms`, 0 when available or no
+/// self-recovery basis) can never drift from behaviour. `busbar_lane_inflight` is always emitted;
+/// `busbar_lane_available_permits` only for BOUNDED lanes. Shared by the pool loop and the by_model
+/// loop so the two label conventions stay identical to `LANE_STATE`.
+fn emit_lane_gauges(
+    pool_label: &str,
+    lane_label: &str,
+    snap: &crate::store::LaneSnapshot,
+    avail: &Result<(), crate::store::Unavailable>,
+    now: u64,
+) {
+    let pool_l = metrics::Label::new("pool", pool_label.to_string());
+    let lane_l = metrics::Label::new("lane", lane_label.to_string());
+    metrics::gauge!(LANE_AVAILABLE, vec![pool_l.clone(), lane_l.clone()]).set(if avail.is_ok() {
+        1.0
+    } else {
+        0.0
+    });
+    // Honest recovery hint: 0 when available (Ok) or the reason has no self-recovery basis (None).
+    let hint_ms = avail
+        .as_ref()
+        .err()
+        .and_then(|u| u.recovery_hint_ms(now))
+        .unwrap_or(0);
+    metrics::gauge!(LANE_RECOVERY_HINT_MS, vec![pool_l.clone(), lane_l.clone()])
+        .set(hint_ms as f64);
+    metrics::gauge!(LANE_INFLIGHT, vec![pool_l.clone(), lane_l.clone()]).set(snap.inflight as f64);
+    if let Some(available) = snap.available {
+        metrics::gauge!(LANE_AVAILABLE_PERMITS, vec![pool_l, lane_l]).set(available as f64);
     }
 }
 
