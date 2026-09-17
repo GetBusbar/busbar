@@ -436,8 +436,7 @@ pub struct App {
     ///
     /// Absent from this map is the same fact as an unconfigured plane: a plane the operator did not
     /// configure contributes no slot (see [`crate::plane::registry::PlaneDecl::build`]).
-    pub plane_slots:
-        std::collections::BTreeMap<&'static str, Arc<dyn std::any::Any + Send + Sync>>,
+    pub plane_slots: std::collections::BTreeMap<&'static str, Arc<dyn std::any::Any + Send + Sync>>,
     /// The credential cache — Arc-shared ACROSS config swaps (like the
     /// mutation limiter): an apply/reload must not silently re-open every cached-allow window.
     pub credential_cache: Arc<crate::auth_cache::CredentialCache>,

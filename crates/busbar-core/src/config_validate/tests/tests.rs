@@ -407,7 +407,11 @@ fn test_validate_token_url_ssrf_and_scheme() {
     // requirement (case-INSENSITIVELY) and the SSRF/metadata denylist — same as base_url.
     let build = |token_url: &str| -> Vec<String> {
         let mut providers = HashMap::new();
-        let mut entra = make_provider("openai", "https://myres.vendor-a.azure.example.com", "API_KEY");
+        let mut entra = make_provider(
+            "openai",
+            "https://myres.vendor-a.azure.example.com",
+            "API_KEY",
+        );
         entra.token_url = Some(token_url.to_string());
         entra.scope = Some("api://x/.default".into());
         entra.auth = Some(config::ProviderAuth::OAuthClientCredentials);
@@ -552,10 +556,7 @@ fn test_validate_heterogeneous_pool_is_ok() {
     );
 
     let mut models = HashMap::new();
-    models.insert(
-        "acme_model".to_string(),
-        make_model("acme_provider", 10),
-    );
+    models.insert("acme_model".to_string(), make_model("acme_provider", 10));
     models.insert(
         "vendor_a_model".to_string(),
         make_model("vendor_a_provider", 10),

@@ -185,10 +185,7 @@ fn signed_fixture(
 ) -> (ParsedAuthHeader, Vec<(String, String)>, String) {
     let payload_hash = sha256_hex(b"{\"x\":1}");
     let headers = vec![
-        (
-            "host".to_string(),
-            "acme-svc.amazonaws.com".to_string(),
-        ),
+        ("host".to_string(), "acme-svc.amazonaws.com".to_string()),
         (X_AMZ_CONTENT_SHA256.to_string(), payload_hash.clone()),
         (X_AMZ_DATE.to_string(), amzdate.to_string()),
     ];
@@ -396,7 +393,8 @@ fn test_verify_inbound_sigv4_roundtrip_accepts() {
     let secret = "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY";
     let amzdate = "20150830T123600Z";
     let now = parse_amz_date(amzdate).unwrap();
-    let (parsed, headers, ph) = signed_fixture(secret, "us-east-1", "acme-svc", amzdate, "20150830");
+    let (parsed, headers, ph) =
+        signed_fixture(secret, "us-east-1", "acme-svc", amzdate, "20150830");
     let req = inbound(&headers, &ph, amzdate);
     assert_eq!(verify_inbound_sigv4(&parsed, &req, secret, now), Ok(()));
 }
@@ -552,7 +550,8 @@ fn test_verify_inbound_sigv4_expired_date_rejected() {
     let secret = "the-real-secret";
     let amzdate = "20150830T123600Z";
     let signed_epoch = parse_amz_date(amzdate).unwrap();
-    let (parsed, headers, ph) = signed_fixture(secret, "us-east-1", "acme-svc", amzdate, "20150830");
+    let (parsed, headers, ph) =
+        signed_fixture(secret, "us-east-1", "acme-svc", amzdate, "20150830");
     let req = inbound(&headers, &ph, amzdate);
     // `now` is 10 minutes after the signature — outside the ±5min window.
     let now = signed_epoch + CLOCK_SKEW_SECS + 60;
@@ -576,7 +575,8 @@ fn test_verify_inbound_sigv4_signed_header_missing_rejected() {
     let secret = "the-real-secret";
     let amzdate = "20150830T123600Z";
     let now = parse_amz_date(amzdate).unwrap();
-    let (parsed, headers, ph) = signed_fixture(secret, "us-east-1", "acme-svc", amzdate, "20150830");
+    let (parsed, headers, ph) =
+        signed_fixture(secret, "us-east-1", "acme-svc", amzdate, "20150830");
     // Drop x-amz-date from the request's headers — it is in SignedHeaders, so reconstruction fails.
     let pruned: Vec<(String, String)> = headers
         .into_iter()
@@ -801,7 +801,8 @@ fn test_verify_inbound_sigv4_exact_skew_boundary_accepted() {
     let secret = "the-real-secret";
     let amzdate = "20150830T123600Z";
     let signed_epoch = parse_amz_date(amzdate).unwrap();
-    let (parsed, headers, ph) = signed_fixture(secret, "us-east-1", "acme-svc", amzdate, "20150830");
+    let (parsed, headers, ph) =
+        signed_fixture(secret, "us-east-1", "acme-svc", amzdate, "20150830");
     let req = inbound(&headers, &ph, amzdate);
     // Exactly at the boundary (both directions) must verify.
     assert_eq!(
@@ -828,7 +829,8 @@ fn test_verify_inbound_sigv4_missing_date_rejected() {
     let secret = "the-real-secret";
     let amzdate = "20150830T123600Z";
     let now = parse_amz_date(amzdate).unwrap();
-    let (parsed, headers, ph) = signed_fixture(secret, "us-east-1", "acme-svc", amzdate, "20150830");
+    let (parsed, headers, ph) =
+        signed_fixture(secret, "us-east-1", "acme-svc", amzdate, "20150830");
     // Build an InboundRequest carrying an UNPARSEABLE amzdate.
     let req = InboundRequest {
         method: "POST",

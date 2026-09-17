@@ -15,10 +15,12 @@ fn gov_with_signer(
         GovState::new_with_signer(
             store,
             admin_token,
-            Some(busbar_core::governance::signing::TokenSigner::from_secret_bytes(
-                &[9u8; 32],
-                busbar_core::governance::signing::DEFAULT_KID,
-            )),
+            Some(
+                busbar_core::governance::signing::TokenSigner::from_secret_bytes(
+                    &[9u8; 32],
+                    busbar_core::governance::signing::DEFAULT_KID,
+                ),
+            ),
         )
         .unwrap(),
     )
@@ -305,7 +307,12 @@ async fn test_admin_v1_pool_detail_live_status() {
     let app = crate::new_test_app()
         .governance(gov)
         .lane(
-            LaneSpec::new("m1", busbar_core::proto::PROTO_ANTHROPIC, "http://127.0.0.1:1/").provider("p"),
+            LaneSpec::new(
+                "m1",
+                busbar_core::proto::PROTO_ANTHROPIC,
+                "http://127.0.0.1:1/",
+            )
+            .provider("p"),
         )
         .pool("mypool", &[(0, 5)])
         .build();
@@ -412,7 +419,12 @@ async fn test_admin_v1_pool_detail_reports_the_per_pool_breaker_cell() {
     let mut app = crate::new_test_app()
         .governance(gov)
         .lane(
-            LaneSpec::new("m1", busbar_core::proto::PROTO_ANTHROPIC, "http://127.0.0.1:1/").provider("p"),
+            LaneSpec::new(
+                "m1",
+                busbar_core::proto::PROTO_ANTHROPIC,
+                "http://127.0.0.1:1/",
+            )
+            .provider("p"),
         )
         .pool("fast", &[(0, 1)])
         .pool("cheap", &[(0, 1)])
@@ -723,7 +735,8 @@ async fn test_admin_v1_usage_meters_by_model_and_key() {
 #[tokio::test]
 async fn test_admin_v1_hook_settings_patch_commit_on_ack_and_schema() {
     busbar_core::metrics::init();
-    let Some(env) = busbar_core::test_support::test_hook_env(&["test-hook"], Default::default()) else {
+    let Some(env) = busbar_core::test_support::test_hook_env(&["test-hook"], Default::default())
+    else {
         eprintln!("skip: hook cdylib not built (run under --workspace)");
         return;
     };
@@ -2023,7 +2036,10 @@ impl busbar_core::governance::Store for GatedKeyStore {
         let _ = self.landed.try_send(());
         out
     }
-    fn get_key(&self, id: &str) -> busbar_core::governance::StoreResult<Option<busbar_api::VirtualKey>> {
+    fn get_key(
+        &self,
+        id: &str,
+    ) -> busbar_core::governance::StoreResult<Option<busbar_api::VirtualKey>> {
         self.inner.get_key(id)
     }
     fn list_keys(&self) -> busbar_core::governance::StoreResult<Vec<busbar_api::VirtualKey>> {
@@ -2079,7 +2095,10 @@ impl busbar_core::governance::Store for SlowNthPutKeyStore {
         }
         self.inner.put_key(key)
     }
-    fn get_key(&self, id: &str) -> busbar_core::governance::StoreResult<Option<busbar_api::VirtualKey>> {
+    fn get_key(
+        &self,
+        id: &str,
+    ) -> busbar_core::governance::StoreResult<Option<busbar_api::VirtualKey>> {
         self.inner.get_key(id)
     }
     fn list_keys(&self) -> busbar_core::governance::StoreResult<Vec<busbar_api::VirtualKey>> {
@@ -3936,7 +3955,10 @@ async fn test_admin_v1_plugins_catalog_by_type() {
         groups: Vec::new(),
         phase: Vec::new(),
     };
-    let app = crate::new_test_app().governance(gov).hook("myhook", gate).build();
+    let app = crate::new_test_app()
+        .governance(gov)
+        .hook("myhook", gate)
+        .build();
     let router = crate::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -4165,8 +4187,12 @@ async fn test_admin_v1_config_effective_snapshot_no_secrets() {
     let app = crate::new_test_app()
         .governance(gov)
         .lane(
-            LaneSpec::new("m", busbar_core::proto::PROTO_ANTHROPIC, "http://127.0.0.1:1/")
-                .provider("prov"),
+            LaneSpec::new(
+                "m",
+                busbar_core::proto::PROTO_ANTHROPIC,
+                "http://127.0.0.1:1/",
+            )
+            .provider("prov"),
         )
         .pool("p", &[(0, 1)])
         .hook("g", gate)
@@ -5623,7 +5649,10 @@ impl busbar_core::governance::Store for CountingStore {
     fn put_key(&self, key: &busbar_api::VirtualKey) -> busbar_core::governance::StoreResult<()> {
         self.inner.put_key(key)
     }
-    fn get_key(&self, id: &str) -> busbar_core::governance::StoreResult<Option<busbar_api::VirtualKey>> {
+    fn get_key(
+        &self,
+        id: &str,
+    ) -> busbar_core::governance::StoreResult<Option<busbar_api::VirtualKey>> {
         self.get_key_calls
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         self.inner.get_key(id)
@@ -6080,7 +6109,10 @@ struct BarrierStore {
 }
 
 impl busbar_core::governance::Store for BarrierStore {
-    fn put_key(&self, key: &busbar_core::governance::VirtualKey) -> busbar_core::governance::StoreResult<()> {
+    fn put_key(
+        &self,
+        key: &busbar_core::governance::VirtualKey,
+    ) -> busbar_core::governance::StoreResult<()> {
         // Disarm atomically so only the first put after arming pauses (and never the setup put).
         if self.armed.swap(false, std::sync::atomic::Ordering::SeqCst) {
             let _ = self.entered.send(());
@@ -6095,7 +6127,9 @@ impl busbar_core::governance::Store for BarrierStore {
     ) -> busbar_core::governance::StoreResult<Option<busbar_core::governance::VirtualKey>> {
         self.inner.get_key(id)
     }
-    fn list_keys(&self) -> busbar_core::governance::StoreResult<Vec<busbar_core::governance::VirtualKey>> {
+    fn list_keys(
+        &self,
+    ) -> busbar_core::governance::StoreResult<Vec<busbar_core::governance::VirtualKey>> {
         self.inner.list_keys()
     }
     fn delete_key(&self, id: &str) -> busbar_core::governance::StoreResult<()> {
@@ -7729,7 +7763,10 @@ async fn test_mint_auto_provisions_leaf_from_child_default() {
             },
         ),
     ]);
-    let app = crate::new_test_app().governance(gov).groups_tree(groups).build();
+    let app = crate::new_test_app()
+        .governance(gov)
+        .groups_tree(groups)
+        .build();
     let router = crate::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -7858,7 +7895,10 @@ async fn test_mint_parent_mismatch_is_409() {
             },
         ),
     ]);
-    let app = crate::new_test_app().governance(gov).groups_tree(groups).build();
+    let app = crate::new_test_app()
+        .governance(gov)
+        .groups_tree(groups)
+        .build();
     let router = crate::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -7922,7 +7962,10 @@ async fn test_max_keys_per_principal_cap_trips() {
             },
         ),
     ]);
-    let mut app = crate::new_test_app().governance(gov).groups_tree(groups).build();
+    let mut app = crate::new_test_app()
+        .governance(gov)
+        .groups_tree(groups)
+        .build();
     {
         let inner = Arc::get_mut(&mut app).expect("sole owner");
         inner.max_keys_per_principal = 2;
@@ -7986,7 +8029,10 @@ async fn test_admin_v1_idempotency_reservation_frees_on_at_cap_refusal() {
             ..Default::default()
         },
     )]);
-    let mut app = crate::new_test_app().governance(gov).groups_tree(groups).build();
+    let mut app = crate::new_test_app()
+        .governance(gov)
+        .groups_tree(groups)
+        .build();
     {
         let inner = Arc::get_mut(&mut app).expect("sole owner");
         inner.max_keys_per_principal = 1;
@@ -8105,7 +8151,10 @@ async fn test_admin_v1_patch_no_op_on_an_already_counted_key_is_not_an_admission
             ..Default::default()
         },
     )]);
-    let mut app = crate::new_test_app().governance(gov).groups_tree(groups).build();
+    let mut app = crate::new_test_app()
+        .governance(gov)
+        .groups_tree(groups)
+        .build();
     {
         let inner = Arc::get_mut(&mut app).expect("sole owner");
         // Tightened to 1 AFTER both `a` and `b` already exist — the bucket is now over cap even
@@ -8175,7 +8224,10 @@ async fn drive_key_cap_and_delegation_errors() {
             },
         ),
     ]);
-    let mut app = crate::new_test_app().governance(gov).groups_tree(groups).build();
+    let mut app = crate::new_test_app()
+        .governance(gov)
+        .groups_tree(groups)
+        .build();
     {
         let inner = Arc::get_mut(&mut app).expect("sole owner");
         inner.max_keys_per_principal = 2;
@@ -9567,7 +9619,8 @@ async fn test_admin_v1_overlay_reset_named_map_section_reverts_to_base() {
     );
     // The durable half: the section is cleared on disk, so the revert survives a restart.
     assert!(
-        busbar_core::config::overlay::read(&overlay).is_none_or(|d| !d.named_maps.contains_key("export")),
+        busbar_core::config::overlay::read(&overlay)
+            .is_none_or(|d| !d.named_maps.contains_key("export")),
         "the overlay `export` section is cleared on disk"
     );
     // A SIBLING named-map section is untouched by another section's reset.
@@ -10319,16 +10372,13 @@ async fn test_admin_v1_config_settings_reset_refuses_when_overlay_is_corrupt() {
         .filter(|e| e.seq > baseline_seq)
         .collect();
     assert!(
-        rows.iter()
-            .any(|e| e.action == "overlay.reset"
-                && e.outcome == busbar_core::audit_ring::OUTCOME_REJECTED),
+        rows.iter().any(|e| e.action == "overlay.reset"
+            && e.outcome == busbar_core::audit_ring::OUTCOME_REJECTED),
         "the corrupt-overlay reset must be audited as REJECTED, never APPLIED: {rows:?}"
     );
     assert!(
-        !rows
-            .iter()
-            .any(|e| e.action == "overlay.reset"
-                && e.outcome == busbar_core::audit_ring::OUTCOME_APPLIED),
+        !rows.iter().any(|e| e.action == "overlay.reset"
+            && e.outcome == busbar_core::audit_ring::OUTCOME_APPLIED),
         "a corrupt-overlay reset must never be recorded as a successful apply: {rows:?}"
     );
 
@@ -10530,9 +10580,9 @@ fn test_get_config_settings_warns_when_overlay_is_unreadable() {
     let subscriber = tracing_subscriber::registry().with(cap.clone());
 
     let resp = tracing::subscriber::with_default(subscriber, || {
-        rt.block_on(crate::v1::json::get_config_settings(
-            axum::extract::State(handle),
-        ))
+        rt.block_on(crate::v1::json::get_config_settings(axum::extract::State(
+            handle,
+        )))
     });
     assert_eq!(
         resp.status().as_u16(),
@@ -10812,21 +10862,30 @@ fn test_persist_root_without_an_overlay_errs() {
 fn test_config_settings_scope_matrix() {
     use axum::http::Method;
     assert_eq!(
-        busbar_core::admin::v1::contract::required_scope(&Method::PUT, "/api/v1/admin/config/settings")
-            .as_str(),
+        busbar_core::admin::v1::contract::required_scope(
+            &Method::PUT,
+            "/api/v1/admin/config/settings"
+        )
+        .as_str(),
         "full",
         "PUT /config/settings is a full-scope mutation"
     );
     assert_eq!(
-        busbar_core::admin::v1::contract::required_scope(&Method::GET, "/api/v1/admin/config/settings")
-            .as_str(),
+        busbar_core::admin::v1::contract::required_scope(
+            &Method::GET,
+            "/api/v1/admin/config/settings"
+        )
+        .as_str(),
         "read-only",
         "GET /config/settings is read-only"
     );
     // And `root` is a valid reset section requiring full scope.
     assert_eq!(
-        busbar_core::admin::v1::contract::required_scope(&Method::DELETE, "/api/v1/admin/overlay/root")
-            .as_str(),
+        busbar_core::admin::v1::contract::required_scope(
+            &Method::DELETE,
+            "/api/v1/admin/overlay/root"
+        )
+        .as_str(),
         "full",
         "a root reset is a full-scope mutation"
     );
@@ -10896,7 +10955,9 @@ async fn serve_keys_fixture(
                 ..busbar_core::config::AuthCfg::default_none()
             };
             crate::new_test_app()
-                .auth(Arc::new(busbar_core::auth::AuthMiddleware::new_builtin(&cfg)))
+                .auth(Arc::new(busbar_core::auth::AuthMiddleware::new_builtin(
+                    &cfg,
+                )))
                 .admin_chain(Vec::new())
                 .build()
         }
@@ -12688,7 +12749,10 @@ async fn declared_error_set_is_exactly_what_the_handlers_emit() {
 /// fails the build the moment it drifts) and every path in it is proven mounted
 /// (`test_admin_v1_openapi_paths_all_resolve`), so keying off it closes the loop: router → doc →
 /// this audit.
-fn documented_operations() -> Vec<(String, busbar_core::admin::v1::contract::taxonomy::MethodTag)> {
+fn documented_operations() -> Vec<(
+    String,
+    busbar_core::admin::v1::contract::taxonomy::MethodTag,
+)> {
     use busbar_core::admin::v1::contract::taxonomy::MethodTag;
     let doc: serde_json::Value = serde_json::from_str(&crate::v1::json::openapi_json())
         .expect("the committed openapi.json parses");
@@ -14738,7 +14802,10 @@ async fn test_admin_v1_hook_reads_project_settings_keys_never_values() {
     .as_object()
     .unwrap()
     .clone();
-    let app = crate::new_test_app().governance(gov).hook("baa-gate", cfg).build();
+    let app = crate::new_test_app()
+        .governance(gov)
+        .hook("baa-gate", cfg)
+        .build();
     let router = crate::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();

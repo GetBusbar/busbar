@@ -69,9 +69,9 @@ use super::{
     config_transaction, err_json, err_json_cond, if_match_version, respond, stale_if_match,
     with_config_etag, Outcome,
 };
-use busbar_core::audit_ring as audit;
 use busbar_core::admin::v1::contract::taxonomy::Cond;
 use busbar_core::admin::v1::contract::AdminError;
+use busbar_core::audit_ring as audit;
 use busbar_core::config::named_map::NamedMapSection;
 use busbar_core::state::{App, AppHandle};
 
@@ -638,7 +638,10 @@ pub(crate) struct MutatedDefView {
 
 impl MutatedDefView {
     /// Wrap one stored definition with the restart signal, if any.
-    fn new(def: busbar_core::admin::v1::contract::NamedDefView, awaiting_restart: Vec<String>) -> Self {
+    fn new(
+        def: busbar_core::admin::v1::contract::NamedDefView,
+        awaiting_restart: Vec<String>,
+    ) -> Self {
         let note = (!awaiting_restart.is_empty()).then(|| {
             format!(
                 "stored and applied, EXCEPT the newly declared route(s) {} — each plugin route path \

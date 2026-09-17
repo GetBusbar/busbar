@@ -9,8 +9,8 @@
 //! by construction rather than by each projection remembering. Keeping them together is what makes
 //! that rule checkable by reading one file; a new section's projection lands here beside the others.
 
-use busbar_core::admin::v1::contract::NamedDefView;
 use super::service::settings_keys;
+use busbar_core::admin::v1::contract::NamedDefView;
 
 /// Project one `identity-providers:` DEFINITION onto the shared named-map view. The `token:` secret
 /// REFERENCE is collapsed to a boolean here and the `settings:` bag to its KEY NAMES — the two

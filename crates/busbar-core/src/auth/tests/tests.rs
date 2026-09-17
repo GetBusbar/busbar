@@ -1311,7 +1311,6 @@ fn test_extract_admin_header_token_empty_filtered() {
     assert_eq!(extract_admin_header_token(&absent), None);
 }
 
-
 /// The `admin.forbidden` audit is bounded by the SAME per-(principal, window) counter
 /// the mutation rate limiter already uses, not written unconditionally. Drives 50 forbidden GETs
 /// (an UNBOUND role, so `admin_scope_for` returns `Grants::default()` and even a read is 403) from
@@ -1373,7 +1372,6 @@ async fn forbidden_admin_requests_audit_once_per_window() {
 
     handle.abort();
 }
-
 
 // ── 1.5.2 admin-plane OIDC: scope collapse authorization + external admin-module dispatch/offload ──
 
@@ -1630,7 +1628,6 @@ async fn admin_offload_does_not_stall_healthz() {
     );
     handle.abort();
 }
-
 
 /// THE AUDIENCE-BOUND PLANE BOUNDARY end-to-end through the real router + `auth_middleware` in
 /// GOVERNANCE mode (1.6.0): an AUDIENCE-BOUND token whose `sub` is a

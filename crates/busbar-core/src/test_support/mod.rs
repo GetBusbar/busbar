@@ -1309,7 +1309,10 @@ impl TestApp {
     /// `testkit::TestAppOauthExt` extension trait, because `AsPlane` lives there now and
     /// busbar-core cannot name it. This is the seam that extension builds against: it constructs
     /// the real plane, then calls this to hand it in.
-    pub fn oauth_as_plane(mut self, plane: std::sync::Arc<dyn std::any::Any + Send + Sync>) -> Self {
+    pub fn oauth_as_plane(
+        mut self,
+        plane: std::sync::Arc<dyn std::any::Any + Send + Sync>,
+    ) -> Self {
         self.oauth_as = Some(plane);
         self
     }

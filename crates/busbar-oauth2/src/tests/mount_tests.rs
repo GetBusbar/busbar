@@ -241,8 +241,7 @@ fn an_absent_block_resolves_to_no_authorization_server() {
 fn the_mounted_surface_and_the_app_state_cannot_disagree() {
     busbar_core::metrics::init();
     let app = TestApp::new().oauth_as(&cfg()).build();
-    let plane: Arc<crate::plane::AsPlane> =
-        oauth_as_plane(&app).expect("configured, so present");
+    let plane: Arc<crate::plane::AsPlane> = oauth_as_plane(&app).expect("configured, so present");
     let served = served_paths(&app);
     for path in inventory(plane.identity()) {
         assert!(

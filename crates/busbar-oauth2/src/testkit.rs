@@ -45,9 +45,9 @@ pub trait TestAppOauthExt {
 impl TestAppOauthExt for TestApp {
     fn oauth_as(self, cfg: &OauthAsCfg) -> Self {
         install_test_seam();
-        let identity =
-            AsIdentity::from_cfg(cfg).expect("test oauth_as config must be valid");
-        let plane = AsPlane::build(identity, None, Vec::new()).expect("test oauth_as plane must build");
+        let identity = AsIdentity::from_cfg(cfg).expect("test oauth_as config must be valid");
+        let plane =
+            AsPlane::build(identity, None, Vec::new()).expect("test oauth_as plane must build");
         self.oauth_as_plane(Arc::new(plane))
     }
 }

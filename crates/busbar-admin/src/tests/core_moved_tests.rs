@@ -5,8 +5,8 @@
 //! `/api/v1/admin/*` HTTP surface (mounted through the seam), which busbar-core's own test binary
 //! no longer serves. Behavior is byte-identical; only the crate they live in changed.
 
-use busbar_core::auth::X_ADMIN_TOKEN;
 use axum::Router;
+use busbar_core::auth::X_ADMIN_TOKEN;
 
 /// A present-but-blank `x-admin-token` must be rejected on
 /// the admin surface. Driven end-to-end through the real router + `auth_middleware` so the
@@ -17,7 +17,7 @@ use axum::Router;
 #[tokio::test]
 async fn test_admin_blank_header_token_rejected() {
     use busbar_core::governance::{GovState, MemoryStore};
-    
+
     use std::sync::Arc;
 
     busbar_core::metrics::init();
@@ -77,7 +77,7 @@ async fn test_admin_blank_header_token_rejected() {
 #[tokio::test]
 async fn test_admin_token_both_carriers_or_fold_no_short_circuit() {
     use busbar_core::governance::{GovState, MemoryStore};
-    
+
     use std::sync::Arc;
 
     busbar_core::metrics::init();
@@ -156,7 +156,7 @@ async fn test_admin_token_both_carriers_or_fold_no_short_circuit() {
 #[tokio::test]
 async fn test_admin_token_not_acceptable_via_vendor_carriers() {
     use busbar_core::governance::{GovState, MemoryStore};
-    
+
     use std::sync::Arc;
 
     busbar_core::metrics::init();
@@ -239,7 +239,6 @@ async fn test_admin_token_not_acceptable_via_vendor_carriers() {
 #[cfg(feature = "auth-admin-tokens")]
 #[tokio::test]
 async fn test_1_5_2_admin_path_bypasses_governance_and_mints() {
-    
     busbar_core::metrics::init();
     let (gov, _secret) = dp_gov_with_key();
     let app = crate::new_test_app().governance(gov).build();

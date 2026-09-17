@@ -1433,7 +1433,11 @@ pub fn rule_matrix(cx: &Ctx, crates: &[CrateInfo], reg: &super::KindRegistry, sh
     // on neutral crates still draining. A crate not yet listed still shows up on the ordinary
     // ratchet above (raised / stale-slack against its `[[cell]]` row); it is only exempt from
     // being blocked TWICE for the same hits.
-    offenders.extend(law0_offenders(&matrix, crates, Some(LAW0_ENFORCED_NEUTRAL_CRATES)));
+    offenders.extend(law0_offenders(
+        &matrix,
+        crates,
+        Some(LAW0_ENFORCED_NEUTRAL_CRATES),
+    ));
 
     let headline = format!(
         "{total} hit(s) over {} cell(s), {scanned} file(s) scanned",

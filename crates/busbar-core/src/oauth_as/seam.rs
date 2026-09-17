@@ -29,7 +29,8 @@ pub struct AsPlaneSeam {
     /// extraction — the seam owns the whole "how do I come alive" act, not just allocation.
     /// Returns the type-erased object `App::oauth_as` stores, or the plane's own build error
     /// rendered to a string (boot refuses with it exactly as it did when this call was inline).
-    pub build: fn(&AsIdentity, Option<&str>, Vec<String>) -> Result<Arc<dyn Any + Send + Sync>, String>,
+    pub build:
+        fn(&AsIdentity, Option<&str>, Vec<String>) -> Result<Arc<dyn Any + Send + Sync>, String>,
 
     /// Mount the plane's routes onto the router, or return it untouched when `plane` is `None` —
     /// the zero-cost-when-off property at the routing layer, preserved unchanged by this move.

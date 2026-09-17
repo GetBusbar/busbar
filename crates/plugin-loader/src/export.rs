@@ -45,10 +45,7 @@ impl DynExport {
     /// Dispatch one inbound HTTP request (matched to a registered route of this plugin) across the ABI.
     /// The engine has already enforced the route's declared auth; this just relays the exchange. A
     /// transport failure or an unexpected response variant is an `Err` naming the plugin.
-    pub fn handle_http(
-        &self,
-        request: &EndpointRequest,
-    ) -> Result<EndpointResponse, String> {
+    pub fn handle_http(&self, request: &EndpointRequest) -> Result<EndpointResponse, String> {
         let req = ExportRequest::Endpoint {
             request: request.clone(),
         };

@@ -47,8 +47,14 @@ pub(crate) fn resolve_provider(def: &ProviderDef, deploy: &ProviderDeploy) -> Pr
         }
     }
     ProviderCfg {
-        protocol: deploy.protocol.clone().unwrap_or_else(|| def.protocol.clone()),
-        base_url: deploy.base_url.clone().unwrap_or_else(|| def.base_url.clone()),
+        protocol: deploy
+            .protocol
+            .clone()
+            .unwrap_or_else(|| def.protocol.clone()),
+        base_url: deploy
+            .base_url
+            .clone()
+            .unwrap_or_else(|| def.base_url.clone()),
         api_key: deploy.api_key.clone(),
         health: deploy.health.clone().or_else(|| def.health.clone()),
         error_map,

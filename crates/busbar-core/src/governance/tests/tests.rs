@@ -2936,7 +2936,8 @@ mod signed_token {
             .verify(&plain, 1_000, None)
             .expect("plain claims")
             .generation;
-        let bound = signer.mint_for_audience(&binding.id, 2_000, generation.as_deref(), plane_x, None);
+        let bound =
+            signer.mint_for_audience(&binding.id, 2_000, generation.as_deref(), plane_x, None);
 
         // The plain token admits on the data plane; the bound one must not.
         assert!(g.verify_token(&plain, 1_000, None).is_some());

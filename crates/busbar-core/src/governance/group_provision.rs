@@ -48,9 +48,7 @@ pub fn build_with_group(
     cfg: crate::config::GroupCfg,
 ) -> Result<App, TxnError> {
     if name.trim().is_empty() {
-        return Err(TxnError::Validation(
-            "group name must not be empty".into(),
-        ));
+        return Err(TxnError::Validation("group name must not be empty".into()));
     }
     if name.len() > MAX_GROUP_NAME_LEN {
         return Err(TxnError::Validation(format!(

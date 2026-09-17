@@ -67,10 +67,12 @@ fn gov(store: Arc<dyn busbar_core::governance::Store>) -> Arc<GovState> {
         GovState::new_with_signer(
             store,
             None,
-            Some(busbar_core::governance::signing::TokenSigner::from_secret_bytes(
-                &[7u8; 32],
-                busbar_core::governance::signing::DEFAULT_KID,
-            )),
+            Some(
+                busbar_core::governance::signing::TokenSigner::from_secret_bytes(
+                    &[7u8; 32],
+                    busbar_core::governance::signing::DEFAULT_KID,
+                ),
+            ),
         )
         .expect("gov"),
     )

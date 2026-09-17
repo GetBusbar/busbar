@@ -213,13 +213,16 @@ pub(crate) fn seam_build(
     key_material: Option<&str>,
     protected_resources: Vec<String>,
 ) -> Result<Arc<dyn std::any::Any + Send + Sync>, String> {
-    let plane =
-        AsPlane::build(identity.clone(), key_material, protected_resources).map_err(|e| e.to_string())?;
+    let plane = AsPlane::build(identity.clone(), key_material, protected_resources)
+        .map_err(|e| e.to_string())?;
     let plane = Arc::new(plane);
     // `Storage::sweep_expired` is the only thing that reclaims anything in `oauth-as`, and it runs
     // when it is called and never otherwise. Spawned here, once per generation — unchanged from the
     // inline call `appbuild.rs` made before this moved behind the seam.
-    spawn_sweeper(Arc::clone(plane.server()), std::time::Duration::from_secs(60));
+    spawn_sweeper(
+        Arc::clone(plane.server()),
+        std::time::Duration::from_secs(60),
+    );
     Ok(plane as Arc<dyn std::any::Any + Send + Sync>)
 }
 

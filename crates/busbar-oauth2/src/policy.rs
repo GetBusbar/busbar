@@ -110,9 +110,7 @@ pub(crate) fn registration_config(
 /// deprecated mechanism and one that arrives by its replacement land on the SAME ceiling. Two
 /// spellings of "what a self-registered client gets" is exactly the drift that would make the
 /// adversarial test below true of one mechanism and false of the other.
-pub(crate) fn default_grant_scopes(
-    identity: &AsIdentity,
-) -> oauth_as::scope::ScopeSet {
+pub(crate) fn default_grant_scopes(identity: &AsIdentity) -> oauth_as::scope::ScopeSet {
     // `expect` is sound and is not a shortcut: `AsIdentity::from_cfg` already refused every entry
     // that is not an RFC 6749 section 3.3 scope token, at BOOT, naming the offending value. An
     // `unwrap_or_default()` here would silently turn a grammar this crate rejects into an EMPTY

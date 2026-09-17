@@ -98,7 +98,11 @@ use super::named_def_views::{export_def_view, identity_provider_view, unparseabl
 /// correction changes historical figures on the next read; tokens are the stored truth). Metering
 /// rows attribute by the CONFIGURED model name, so the rate lookup goes through the
 /// `upstream_model` alias resolution.
-fn derive_spend_micros_row(cost: &busbar_core::cost::CostModel, model: &str, b: &UsageBreakdown) -> i64 {
+fn derive_spend_micros_row(
+    cost: &busbar_core::cost::CostModel,
+    model: &str,
+    b: &UsageBreakdown,
+) -> i64 {
     // Project the metering row's flat tier fields (its OWN JSON-contract names, unchanged) onto the
     // name-keyed unit map the pricer now consumes. `tokens_cache_creation` is the row's field name;
     // it maps onto the canonical `cache_write` unit key.
@@ -2459,7 +2463,10 @@ fn reresolve_plane_gates(next: &mut busbar_core::state::App) {
 /// Project a plane section's registrations onto the shared view through the plane's `named_def_list`
 /// seam — resolved by config section, so the admin read path names no plane view type. Empty for a
 /// section whose plane is compiled out (no decl) or is not a named-definition map.
-fn plane_named_def_list(section: NamedMapSection, app: &busbar_core::state::App) -> Vec<NamedDefView> {
+fn plane_named_def_list(
+    section: NamedMapSection,
+    app: &busbar_core::state::App,
+) -> Vec<NamedDefView> {
     busbar_core::plane::registry::plane_decl_for_config_section(section.key())
         .and_then(|d| d.named_def_list)
         .map_or_else(Vec::new, |f| {
