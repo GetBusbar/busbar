@@ -1,81 +1,55 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! busbar-mcp — the Model Context Protocol, as ONE plugin crate.
+//! busbar-mcp — the Model Context Protocol plugin NAME, now a thin RE-EXPORT SHIM.
 //!
-//! WHAT THIS CRATE HOLDS TODAY. The MCP protocol codec — the [`codec`] module: the
-//! [`ProtocolDecl`](busbar_substrate::proto::ProtocolDecl) ([`PROTO_DECL`]), the JSON-RPC dialect, and
-//! the `tools/call` and subscription operation cells that core resolves through the support matrix.
-//! This is the whole of what `busbar-core/src/handlers/mcp.rs` was and what the standalone
-//! `busbar-proto-mcp` crate carried before it folded in here.
+//! The fat crate has drained (DECISIONS #19/#20/#21/#1). What `busbar-mcp` held splits four ways:
+//! the pure wire codec (`busbar-mcp-codec`), the shared transport crates, the purity-scanned
+//! contract adapter (`busbar-plane-mcp`), and the impure bridged-ABI host (`busbar-plane-mcp-host`) —
+//! which now holds the whole MCP plane: the substrate `PlaneDecl` (`PLANE_DECL`), the runtime slot
+//! (`McpResource`/`McpRuntime`), `serve_stdio`, the plane test-kit, the plane-contributed diagnostics,
+//! the money files and the engine glue.
 //!
-//! WHAT THIS CRATE ALSO HOLDS. The MCP plane (today's former `crates/busbar-core/src/mcp`, ~18k
-//! lines: the catalogue, the call log, the client pool and its transports, the config sections,
-//! boot hydration, the router mount and the admin API). MCP the protocol and MCP the plane are the
-//! same protocol, so they sit behind ONE on/off switch, not two — an operator's choice is "can
-//! this busbar speak MCP", never "can it speak the wire format but not run the plane behind it".
-//! The plane folded in beside the codec as a later step of the plane split; it lives in the
-//! [`mcp`] module below.
-//!
-//! ONE PLUGIN PER PROTOCOL, the same rule `busbar-llm` states for its six LLM dialects: nothing
-//! about the seam changes because this plugin happens to also carry a plane's worth of state.
-//! Everything the codec consumes from the engine comes through `busbar-core`'s public surface;
-//! nothing in `busbar-core` names this crate in production, and the `busbar` BINARY — the
-//! composition root — links it and hands [`PROTO_DECL`] to
-//! the substrate's protocol registry (`busbar_substrate::proto::install_protocols`) at boot.
+//! This crate keeps the NAME alive as a shim so every caller that spells `busbar_mcp::…` — the
+//! `busbar` binary's `busbar_mcp::PROTO_DECL` / `PLANE_DECL` / `DIAGNOSTICS` install sites, and the
+//! `busbar_mcp::mcp::…` / `busbar_mcp::testkit::…` / `busbar_mcp::codec::…` / `busbar_mcp::record::…`
+//! test references — resolves exactly what it always did. Every re-export below is a forward of the
+//! item's one definition in `busbar-plane-mcp-host` (or, for the codec, transitively in
+//! `busbar-mcp-codec`); no item changed shape, so the split is a MOVE. The name is deleted once every
+//! caller repoints onto `busbar-plane-mcp-host` directly.
 
-/// THE CODEC, THE RECORD VOCABULARY AND THE TWO PURE CONTENT PASSES, RE-EXPORTED FROM
-/// `busbar-mcp-codec`.
-///
-/// The protocol declaration, the JSON-RPC dialect and notification pair, the `tools/call` and
-/// subscription operation cells, the durable record types, the content sanitizer and the
-/// structured-output schema check all live in `busbar-mcp-codec` now — the pure half of this
-/// plugin, split out so `busbar-plane-mcp` can name the codec without linking this crate's axum
-/// routes, stdio serve loop and tokio transports. They are re-exported HERE, under their old names,
-/// so every caller that spells `busbar_mcp::codec::…` or `busbar_mcp::record::…` resolves exactly
-/// what it always did. The split is a MOVE: no item changed shape crossing it.
-pub use busbar_mcp_codec::{codec, outputschema, record, sanitize};
+/// THE CODEC, THE RECORD VOCABULARY AND THE TWO PURE CONTENT PASSES — forwarded from the host crate
+/// (which re-exports them from `busbar-mcp-codec`), so `busbar_mcp::codec::…` / `busbar_mcp::record::…`
+/// resolve exactly what they always did.
+pub use busbar_plane_mcp_host::{codec, outputschema, record, sanitize};
 
-/// THE MCP PLANE'S DIAGNOSTICS CATALOG, RE-EXPORTED FROM `busbar-plane-mcp-host`.
-///
-/// The `MCP_*` catalog entries and the `DIAGNOSTICS` slice moved into the plane's impure host crate
-/// (the first byte-safe step of the fat-crate collapse — DECISIONS #19/#20/#21). They are a
-/// self-contained leaf: they name nothing in this crate, so the move is a MOVE with no shape change,
-/// re-exported HERE under the old path so every `busbar_mcp::diagnostics::…` / `crate::diagnostics::…`
-/// caller resolves exactly what it always did.
+/// THE MCP PLANE'S DIAGNOSTICS CATALOG, re-exported from `busbar-plane-mcp-host` so every
+/// `busbar_mcp::diagnostics::…` caller resolves what it always did.
 pub use busbar_plane_mcp_host::diagnostics;
 
-pub mod mcp;
+/// THE MCP PLANE — the whole `mcp` module, re-exported from `busbar-plane-mcp-host` so every
+/// `busbar_mcp::mcp::…` caller (the config types, `McpResource`, `serve_stdio`, `admin_view`, the
+/// envelope constants) resolves what it always did.
+pub use busbar_plane_mcp_host::mcp;
 
-/// THE SDK-IDENTITY PIN FOR THE CODEC'S WIRE VOCABULARY. It lives here, not in the codec crate,
-/// because `rmcp` hard-depends on `tokio` and the codec crate is in a PURE plane kind's transitive
-/// closure — see the module header.
-#[cfg(test)]
-#[path = "tests/sdk_vocabulary_tests.rs"]
-mod sdk_vocabulary_tests;
+/// THE MCP PLANE'S OWN DURABLE RECORD TYPES, re-exported at the crate root so
+/// `busbar_mcp::McpCallRecord` / `busbar_mcp::McpDemotionRow` resolve.
+pub use busbar_plane_mcp_host::{McpCallRecord, McpDemotionRow};
 
-/// THE MCP PLANE'S OWN DURABLE RECORD TYPES — relocated here from `busbar-api` (1.7.0 plane
-/// extraction), then out again with the codec, re-exported at the crate root so
-/// `busbar_mcp::McpCallRecord` / `busbar_mcp::McpDemotionRow` resolve. The neutral crates name
-/// neither.
-pub use busbar_mcp_codec::{McpCallRecord, McpDemotionRow};
-
-/// THE MCP PLANE'S TEST-KIT (feature `test-support` only): the fixture builders that name MCP plane
-/// types, kept on the plane so busbar-core's neutral `test_support::TestApp` names none of them. This
-/// is the seam that lets core drop the `#[path]` dual-compile of `src/mcp` for its own tests.
+/// THE MCP PLANE'S TEST-KIT (feature `test-support` only), forwarded from the host crate so
+/// `busbar_mcp::testkit::…` resolves under the same feature it always did.
 #[cfg(feature = "test-support")]
-pub mod testkit;
+pub use busbar_plane_mcp_host::testkit;
 
-/// MCP'S PLANE DECLARATION — the `&'static PlaneDecl` the composition root installs at boot so the
-/// `busbar` binary names one stable path (`busbar_mcp::PLANE_DECL`). See [`mcp`] for the declaration.
-pub use mcp::PLANE_DECL;
+/// MCP'S PLANE DECLARATION — the `&'static PlaneDecl` the composition root installs at boot, forwarded
+/// so the `busbar` binary names one stable path (`busbar_mcp::PLANE_DECL`).
+pub use busbar_plane_mcp_host::PLANE_DECL;
 
 /// MCP'S PLANE-CONTRIBUTED DIAGNOSTICS — the `&'static [&'static Diagnostic]` the composition root
-/// hands to `busbar_substrate::diagnostics::install_diagnostics` at boot, re-exported at the crate
-/// root so the `busbar` binary names one stable path (`busbar_mcp::DIAGNOSTICS`). See [`diagnostics`].
-pub use diagnostics::DIAGNOSTICS;
+/// hands to `busbar_substrate::diagnostics::install_diagnostics` at boot, forwarded so the `busbar`
+/// binary names one stable path (`busbar_mcp::DIAGNOSTICS`).
+pub use busbar_plane_mcp_host::DIAGNOSTICS;
 
-/// MCP'S PROTOCOL DECLARATION — the `&'static ProtocolDecl` the composition root installs. Re-exported
-/// at the crate root so the `busbar` binary names one stable path (`busbar_mcp::PROTO_DECL`) and does
-/// not reach into the `codec` module for it. See [`codec::DECL`] for the declaration itself.
-pub use busbar_mcp_codec::PROTO_DECL;
+/// MCP'S PROTOCOL DECLARATION — the `&'static ProtocolDecl` the composition root installs, forwarded
+/// so the `busbar` binary names one stable path (`busbar_mcp::PROTO_DECL`).
+pub use busbar_plane_mcp_host::PROTO_DECL;
