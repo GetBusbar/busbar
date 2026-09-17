@@ -1860,6 +1860,68 @@ pub static BODY_INGRESS: &[(&str, busbar_substrate::ingress::arrival::BodyIngres
 ];
 
 // ---------------------------------------------------------------------------------------------
+// THE LLM-NATIVE RESOLVED-OP RIDER, DORMANT
+// ---------------------------------------------------------------------------------------------
+
+/// THE DORMANT KERNEL-LOOP SIBLING OF THE SHIPPED MONEY AUTHORITY, at the resolved-op entry.
+///
+/// `busbar_llm::native_ingress::run` (native_ingress.rs:592) is the LIVE money authority: from the
+/// same resolved-op arrival — a known `model`, the dialect's already-resolved `operation`, the
+/// caller's headers and body — it builds a `NativePlane`/`GauntletRequest` and settles per-token
+/// billing through `busbar_substrate::plane_host::run_gauntlet` (the SUBSTRATE loop), late-accruing
+/// against the admission-pinned `ROOT_CARD` snapshot. Every resolved-op arrival funnels through it:
+/// `operation_ingress` (once the body's model is read), `ingress_path_model` (once the URL's is), and
+/// the MCP-sampling re-entry `synthesize_completion`.
+///
+/// This is that SAME resolved-op arrival driven through the KERNEL loop instead —
+/// `answer_arriving_at` → `busbar_kernel::teller::run_unit_async` (units_llm.rs:471), settling onto
+/// the same Durability money-book the composition root bound via [`bind_book`] (main.rs:1460). The
+/// resolved `model` is carried as the loop's `model_hint`, exactly as `run()` carries its resolved
+/// `model`; `path: None`, because a native arrival's model rides its body.
+///
+/// IT IS DORMANT. Nothing mounts it, and it is NOT the shipped authority: the shipped `run()` still
+/// calls `run_gauntlet`. DECISION #28 unified the loop plane-neutrally; DECISION #29 gates the
+/// money-authority flip on the fleet-box oracle — the flip is thrown only once loop==legacy is proven
+/// byte-identical on that box (`bin/oracle` record+replay), never here. This entry exists so the
+/// entry-level shadow proof can drive it beside `run()` on the same fixtures and prove exactly that
+/// (see `the_loop_matches_native_ingress_run_at_the_resolved_op_entry`). When #29 authorizes the
+/// flip, this graduates — behind the `root-llm` composition-root switch — into the funnel `run()`'s
+/// three callers reach, replacing the `run_gauntlet` call at native_ingress.rs:592.
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn native_run_via_loop(
+    host: &Arc<dyn busbar_substrate::plane_host::EngineHost>,
+    gov: &busbar_api::PlaneRequestCtx,
+    proto: &'static str,
+    operation: busbar_api::operation::Operation,
+    model: &str,
+    headers: &axum::http::HeaderMap,
+    body: axum::body::Bytes,
+    caller_token: Option<&str>,
+    arrived: Arrived,
+) -> Response {
+    // The ONE value that crosses from the root into the plane per unit, built from the same
+    // resolved-op args `run()` receives.
+    let arrival = WalkArrival {
+        host: Arc::clone(host),
+        gov: busbar_api::PlaneRequestCtx {
+            key: gov.key.clone(),
+        },
+        proto,
+        operation,
+        caller_token: caller_token.map(str::to_string),
+        headers: headers.clone(),
+        body,
+        path: None,
+    };
+    // The process's ONE node, the arrival instant HANDED IN so the shadow can pin the same window
+    // the legacy leg is charged in — and `NATIVE_SEATS`, empty on every deployment, so the Approve
+    // step is the no-op the shipped path has no equivalent step for.
+    NODE.answer_arriving_at(arrival, Some(model.to_string()), NATIVE_SEATS, arrived)
+        .await
+}
+
+// ---------------------------------------------------------------------------------------------
 // THE SWITCH-OVER'S OWN PROOF
 // ---------------------------------------------------------------------------------------------
 

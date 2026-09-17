@@ -2418,3 +2418,180 @@ async fn the_route_seam_is_driven_once_by_a_served_unit_and_never_by_a_refused_o
         failures.join("\n")
     );
 }
+
+// ── THE ENTRY-LEVEL SHADOW: run_gauntlet vs the kernel loop, AT THE RESOLVED-OP FUNNEL ────────
+//
+// `native_ingress::run` (native_ingress.rs:554) is the resolved-op funnel every native arrival
+// reaches with a model and an operation in hand — `operation_ingress` once the body's model is read,
+// `ingress_path_model` once the URL's is, `synthesize_completion` at the MCP-sampling re-entry — and
+// at native_ingress.rs:592 it calls `run_gauntlet`, the LIVE money authority and the exact site #29's
+// flip lands on. LEG 1 drives that funnel through its public door `operation_ingress` (→ `run` →
+// `run_gauntlet`). LEG 2 drives the DORMANT kernel-loop sibling `native_run_via_loop` (the process
+// NODE, `answer_arriving_at`, over the nine step files). #29's flip is NOT thrown: `run()` still
+// calls `run_gauntlet`, and this proves the leg that would replace it is byte- and money-identical.
+
+/// The fixtures that REACH the resolved-op funnel. `Malformed` is refused at the arrival's own JSON
+/// parse — before a model exists and before `run` is ever entered — so it is the body-entry switch's
+/// fixture, not this one's. The other five all carry a valid JSON body and a resolvable model, which
+/// is the precondition every caller of `run` has already met by the time it funnels in.
+const RESOLVED_OP_CASES: [Fixture; 5] = [
+    Fixture::BufferedOk,
+    Fixture::StreamedOk,
+    Fixture::OverBudget,
+    Fixture::PoolAcl,
+    Fixture::UnknownModel,
+];
+
+/// LEG 1 — the SHIPPED path into the resolved-op funnel: the public native-ingress door
+/// `operation_ingress`, which reads the body's model, resolves the operation and its handler, parses
+/// the head, and funnels into `native_ingress::run` → `run_gauntlet` (the live money authority,
+/// native_ingress.rs:592). Entered at the public door rather than at `run` directly because `run`'s
+/// parsed-head argument is a crate-private engine type; the door builds it the way production does, so
+/// this leg is `run_gauntlet` reached with exactly the parsed head its production callers hand it.
+async fn leg_native_run(fixture: Fixture) -> Observed {
+    let rig = rig(fixture).await;
+    let ctx = busbar_substrate::ingress::arrival::ArrivalCtx::new(ArrivalPayload {
+        host: rig.host(),
+        gov: rig.gov(),
+        caller_token: None,
+    });
+    let resp = busbar_llm::native_ingress::operation_ingress(
+        &ctx,
+        json_headers(),
+        fixture.body(),
+        PROTO,
+        busbar_api::operation::Operation::CHAT,
+        None,
+    )
+    .await;
+    let observed = observe(&rig, resp).await;
+    rig.server.shutdown().await;
+    observed
+}
+
+/// LEG 2 — the DORMANT kernel-loop sibling `native_run_via_loop`, driven at the SAME funnel with the
+/// SAME resolved-op hands. The arrival instant is pinned to the rig's epoch so both legs are charged
+/// in one window — and pinning it (rather than letting the node read its clock) is what lets this
+/// leg's `ROOT_CARD` pin resolve against the same card in force at the same instant the legacy leg's
+/// late accrual prices against, which is the money identity asserted below.
+async fn leg_native_run_via_loop(fixture: Fixture) -> Observed {
+    let rig = rig(fixture).await;
+    let host = rig.host();
+    let arrived = Arrived::at(rig.charged_at * 1_000, 0);
+    assert_eq!(
+        arrived.secs(),
+        rig.charged_at,
+        "the pinned arrival lands in the window observe reads"
+    );
+    let resp = native_run_via_loop(
+        &host,
+        &rig.gov(),
+        PROTO,
+        busbar_api::operation::Operation::CHAT,
+        fixture.model(),
+        &json_headers(),
+        fixture.body(),
+        None,
+        arrived,
+    )
+    .await;
+    let observed = observe(&rig, resp).await;
+    rig.server.shutdown().await;
+    observed
+}
+
+/// THE ENTRY-LEVEL SWITCH. Same fixture into the resolved-op funnel, same bytes and same counters
+/// out — through the shipped `run_gauntlet` authority and through the dormant kernel loop.
+///
+/// Byte-identical Response, identical ledger/derived money, identical per-model metering rows. A
+/// divergence here is a divergence at the exact site #29 will one day flip, and the harness names the
+/// field, the fixture and both sides — which is the report the task asks for if the shadow ever moves.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_loop_matches_native_ingress_run_at_the_resolved_op_entry() {
+    let mut failures: Vec<String> = Vec::new();
+    for fixture in RESOLVED_OP_CASES {
+        let shipped = leg_native_run(fixture).await;
+        let looped = leg_native_run_via_loop(fixture).await;
+        compare(&format!("{fixture:?}"), &shipped, &looped, &mut failures);
+    }
+    assert!(
+        failures.is_empty(),
+        "{} divergence(s) at the resolved-op funnel across {} fixtures:\n{}",
+        failures.len(),
+        RESOLVED_OP_CASES.len(),
+        failures.join("\n")
+    );
+}
+
+/// THE MONEY, at the resolved-op funnel, spelled out rather than only compared — and ONE METER, not
+/// two. The dormant loop settles at its exit (`settle_end`) and accrues its per-token figure LATE,
+/// on the body's drain, against the pin taken at admission; the shipped leg does the same through
+/// `run_gauntlet`. If the loop double-counted against the late-accrual arm, this delivered unit would
+/// read two requests or twice the tokens on the one key's bucket. It reads exactly one of each.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_resolved_op_loop_leaves_the_money_where_run_gauntlet_leaves_it() {
+    // A DELIVERED unit: one request, one metering row, the tap's reported token split — once.
+    let shipped = leg_native_run(Fixture::BufferedOk).await;
+    let looped = leg_native_run_via_loop(Fixture::BufferedOk).await;
+    for f in ["ledger_requests", "ledger_tokens", "ledger_spend_cents", "metering_rows"] {
+        assert_eq!(
+            field(&shipped, f),
+            field(&looped, f),
+            "delivered: `{f}` differs between run_gauntlet and the loop"
+        );
+    }
+    assert_eq!(field(&looped, "ledger_requests"), "1", "one request, counted once");
+    assert_eq!(
+        field(&looped, "ledger_tokens"),
+        (INPUT + OUTPUT).to_string(),
+        "the reported split, accrued once — not doubled against the late-accrual arm"
+    );
+
+    // A STREAMED unit accrues at stream end rather than at the buffered tap: assert it in its own
+    // right so the identity is not green on a stream metering nothing.
+    let s_shipped = leg_native_run(Fixture::StreamedOk).await;
+    let s_looped = leg_native_run_via_loop(Fixture::StreamedOk).await;
+    for f in ["ledger_requests", "ledger_tokens", "metering_rows"] {
+        assert_eq!(
+            field(&s_shipped, f),
+            field(&s_looped, f),
+            "streamed: `{f}` differs between run_gauntlet and the loop"
+        );
+    }
+    assert_eq!(field(&s_looped, "ledger_tokens"), (INPUT + OUTPUT).to_string());
+
+    // The door refused (over budget): nothing charged on either leg — no phantom request the loop
+    // invented by entering the funnel.
+    let refused = leg_native_run_via_loop(Fixture::OverBudget).await;
+    assert_eq!(field(&refused, "ledger_requests"), "0");
+    assert_eq!(field(&refused, "metering_rows"), "");
+}
+
+/// THE `ROOT_CARD` PIN THE FUNNEL PRICES AGAINST DOES NOT MOVE across the shadow — so both legs of a
+/// delivered unit resolve their late accrual against the SAME card snapshot, which is what makes
+/// `ledger_spend_cents` an identity rather than a coincidence.
+///
+/// The card is the process holder `crate::root::kernel::ROOT_CARD`; a live config apply may append to
+/// it, but nothing in this test applies. Read its snapshot seq on both sides of the drive and assert
+/// it is unchanged, then assert the priced money matched — the pin the loop took at admission is the
+/// pin the legacy leg's late accrual took, and the money proves it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn both_legs_price_against_the_same_root_card_pin() {
+    // The snapshot seq on each side of the drive. `None` where no rate card is applied in-process
+    // (the bare test rig prices through the governance ledger, so the process holder is empty) — and
+    // `None == None` is still the identity this asserts: whatever the two legs pinned, they pinned
+    // the same thing, because nothing here appends to the history between them.
+    let before = crate::root::kernel::ROOT_CARD.pin().map(|p| p.seq());
+    let shipped = leg_native_run(Fixture::BufferedOk).await;
+    let looped = leg_native_run_via_loop(Fixture::BufferedOk).await;
+    let after = crate::root::kernel::ROOT_CARD.pin().map(|p| p.seq());
+    assert_eq!(
+        before, after,
+        "the rate-card history moved under the shadow, so the two legs did not price against one card"
+    );
+    assert_eq!(
+        field(&shipped, "ledger_spend_cents"),
+        field(&looped, "ledger_spend_cents"),
+        "the two legs priced the same unit to different money against one card pin"
+    );
+}
