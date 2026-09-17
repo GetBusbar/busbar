@@ -34,13 +34,20 @@ use crate::A2aPlane;
 
 /// The per-connection codec state this plane keeps.
 ///
-/// It holds a COUNT and nothing else. This protocol's framing is one document per frame, so there
-/// is no partial document to carry across a call; what a connection does need to remember is how far
-/// into a streamed answer it is, because a stream's last event is the one that ends the unit.
+/// This protocol's framing is one document per frame, so there is no partial document to carry
+/// across a call; what a connection does need to remember is how far into a streamed answer it is
+/// (a stream's last event is the one that ends the unit), and WHETHER the answer streams at all —
+/// a unary answer ends on its one result, a streamed one on the frame that says it is the last.
+/// The upstream half learns which it is at `encode_egress`, from the operation the request was, and
+/// `decode_response` reads it back to decide terminality.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Codec {
     /// How many event frames of a streamed answer this half has read.
     pub events_read: u32,
+    /// Whether the request this half carries expects a STREAMED answer. Set at `encode_egress` on
+    /// the upstream half from the request's operation; read at `decode_response`. A unary answer
+    /// ends on its result; a streamed one ends only on `final:true` (or an error).
+    pub streaming: bool,
 }
 
 /// The fact key the per-name projection reports the agent's own name under.
@@ -256,6 +263,27 @@ fn refusal_render(reason: RefusalReason) -> (i64, &'static str) {
             jsonrpc::CODE_INTERNAL,
             "the request could not be served at this time",
         ),
+    }
+}
+
+/// Whether one response frame ENDS its metering unit.
+///
+/// This is a money boundary: the frame this answers `true` for is the one that closes and bills the
+/// unit. It used to key on the ABSENCE of `/result/kind`, which was backwards — a real unary answer
+/// (a Task or Message) CARRIES a `kind`, so it read as non-terminal and its unit never closed, while
+/// an empty envelope carries none and read as terminal, billing `Complete` for nothing.
+///
+/// The honest predicate depends on the SHAPE of the exchange, which the wire alone cannot always
+/// tell (a streamed answer's first event can itself be a whole Task): a UNARY answer ends on its one
+/// answer — a `result` or an `error` — and an envelope carrying neither ends nothing; a STREAMED
+/// answer ends only when a frame says it is the last (`final:true`) or reports an error, so its
+/// intermediate events, `result` and all, are frames rather than endings.
+fn response_terminal(body: &[u8], streaming: bool) -> bool {
+    let is_error = has(body, jsonrpc::PTR_ERROR);
+    if streaming {
+        is_error || read_raw(body, jsonrpc::PTR_RESULT_FINAL) == Some(b"true".as_slice())
+    } else {
+        is_error || has(body, jsonrpc::PTR_RESULT)
     }
 }
 
@@ -485,10 +513,19 @@ impl Plane for A2aPlane {
         &self,
         u: &Unit<'u>,
         dest: &VerifiedDestination,
-        _st: Option<&mut PlaneSessionState>,
+        st: Option<&mut PlaneSessionState>,
         ctx: &Ctx<'u>,
     ) -> Result<EgressBody<'u>, Encode> {
         let body = u.body().body();
+        // Record on this upstream half whether the answer will STREAM, from the operation the request
+        // is. `decode_response` reads it back to end a unary answer on its result and a streamed one
+        // only on its last frame — the wire alone cannot always tell the two apart (a streamed
+        // answer's first event can itself be a whole Task).
+        if let Some(state) = st {
+            if let Some(codec) = state.get_mut::<Codec>() {
+                codec.streaming = Self::row_for_op(u.op()).is_some_and(|row| row.streaming);
+            }
+        }
         // The caller's envelope goes on unchanged unless a record leg came back saying the agent
         // knows this task by a different name. That is the ONE rewrite this protocol performs, and
         // it performs it for one reason: the identifier this node minted is not the identifier the
@@ -611,11 +648,14 @@ impl Plane for A2aPlane {
             }
         }
         let for_ = id.and_then(|raw| f::correlation_for(raw, ctx.arena()));
-        // An answer that says it is the last one is the last one. An answer carrying an error is
-        // also the last one, whatever it says about itself: an agent does not keep streaming after
-        // it has reported that it failed.
-        let final_event = read_raw(body, "/result/final") == Some(b"true".as_slice());
-        let terminal = is_error || final_event || !has(body, "/result/kind");
+        // Whether this exchange streams was decided when the request went out (`encode_egress` set
+        // it on this upstream half from the request's own operation). A unary answer ends on its one
+        // result; a streamed one ends on the frame that says it is the last. See `response_terminal`.
+        let streaming = st
+            .as_deref()
+            .and_then(PlaneSessionState::get::<Codec>)
+            .is_some_and(|codec| codec.streaming);
+        let terminal = response_terminal(body, streaming);
         if let Some(state) = st {
             if let Some(codec) = state.get_mut::<Codec>() {
                 codec.events_read = codec.events_read.saturating_add(1);
