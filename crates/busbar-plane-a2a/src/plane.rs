@@ -177,9 +177,20 @@ fn has(body: &[u8], pointer: &str) -> bool {
 /// must compare against the rig's recorded answers on the day it switches this plane on. That is
 /// stated here rather than left for someone to discover.
 fn refusal_render(reason: RefusalReason) -> (i64, &'static str) {
+    // THE MATCH IS TOTAL — there is no `_` arm. A2A's JSON-RPC binding names a small set of codes,
+    // so a busbar-specific condition rides the NEAREST defined binding with the real reason kept out
+    // of the words rather than a code the specification does not define (the rule the legacy plane's
+    // `rpcerror.rs` states: "a busbar-specific condition is mapped to the NEAREST binding ... rather
+    // than to a code the specification does not define"). The whole point of removing the catch-all
+    // is that a reason with no home is a COMPILE error here, never a silent collapse to an internal
+    // fault — the defect this exhaustive form exists to make impossible: a rate-limit, a breaker or a
+    // drain answered as "this node broke" tells the caller to retry the wrong thing.
     match reason {
-        // The caller's request was not one this node will take.
+        // The caller's request was not one this node could read or take.
         RefusalReason::BodyTooLarge => (jsonrpc::CODE_INVALID_REQUEST, "the request is too large"),
+        RefusalReason::DecodeFailed => {
+            (jsonrpc::CODE_INVALID_REQUEST, "the request could not be read")
+        }
         RefusalReason::SchemeNotDeclared
         | RefusalReason::CredentialRejected
         | RefusalReason::SessionUnbound
@@ -188,7 +199,10 @@ fn refusal_render(reason: RefusalReason) -> (i64, &'static str) {
             "the request did not carry usable authority",
         ),
         // The caller is known and may not do this.
-        RefusalReason::ScopeMissing | RefusalReason::Vetoed | RefusalReason::Revoked => (
+        RefusalReason::ScopeMissing
+        | RefusalReason::Vetoed
+        | RefusalReason::Revoked
+        | RefusalReason::PoolNotPermitted => (
             jsonrpc::CODE_UNSUPPORTED_OPERATION,
             "the caller may not perform this operation",
         ),
@@ -197,9 +211,48 @@ fn refusal_render(reason: RefusalReason) -> (i64, &'static str) {
             jsonrpc::CODE_INVALID_PARAMS,
             "no agent is reachable for this request",
         ),
-        // Everything else is this node saying no for a reason that is this node's own. A caller is
-        // told that it failed here, and is told nothing about the money, the buckets or the store.
-        _ => (
+        // Every busbar-specific admission / capacity / rate / budget / breaker / drain refusal. The
+        // A2A JSON-RPC binding defines no code of its own for any of these, so each rides the nearest
+        // one — `UnsupportedOperation`, which is how the legacy plane answers its own admission
+        // refusals too — with a neutral message that leaks nothing about the money, the buckets or
+        // the store. A caller learns it was refused here and nothing more.
+        RefusalReason::InFlightCap
+        | RefusalReason::CursorBudget
+        | RefusalReason::SessionBudget
+        | RefusalReason::OpenSlotBusy
+        | RefusalReason::OverBudget
+        | RefusalReason::GroupFrozen
+        | RefusalReason::Unpriced
+        | RefusalReason::OverdraftCeiling
+        | RefusalReason::StaleSlice
+        | RefusalReason::TierMismatch
+        | RefusalReason::SpillBudget
+        | RefusalReason::ArenaBudget
+        | RefusalReason::RateLimited
+        | RefusalReason::ChallengeExhausted
+        | RefusalReason::NoRate
+        | RefusalReason::Replayed
+        | RefusalReason::InFlight
+        | RefusalReason::DestinationBudgetExhausted
+        | RefusalReason::BreakerOpen
+        | RefusalReason::DestinationUnreachable
+        | RefusalReason::Drain
+        | RefusalReason::Superseded
+        | RefusalReason::ClientGone
+        | RefusalReason::DeadlineExceeded
+        | RefusalReason::Stalled => (
+            jsonrpc::CODE_UNSUPPORTED_OPERATION,
+            "the request could not be served at this time",
+        ),
+        // A genuine node-internal fault — this node did break, and the caller is owed that fact and
+        // not a false policy refusal. Listed explicitly (never a catch-all) so a new reason cannot
+        // join this arm by accident.
+        RefusalReason::DurabilityUnavailable
+        | RefusalReason::MeterDisputed
+        | RefusalReason::HandoffMismatch
+        | RefusalReason::PlanePanic
+        | RefusalReason::TaskLost
+        | RefusalReason::SecretPlaceholder => (
             jsonrpc::CODE_INTERNAL,
             "the request could not be served at this time",
         ),
