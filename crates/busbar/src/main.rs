@@ -799,6 +799,19 @@ fn mount_root_streaming(limits: &busbar_substrate::config::limits::LimitsResolve
                 );
                 std::process::exit(2);
             }
+            // The admin CONTROL surface registers on the control path, not the plane registry. A
+            // node that booted without it would have no admin surface at all — the same class of
+            // silent composition miss the voice check above guards against, one door over.
+            if !root::registry::control_surfaces()
+                .iter()
+                .any(|(key, _)| *key == busbar_control_admin::meta::KEY)
+            {
+                eprintln!(
+                    "busbar: the composition root did not seal: the admin control surface is not \
+                     registered on the control path"
+                );
+                std::process::exit(2);
+            }
         }
         Err(refusal) => {
             eprintln!("busbar: the composition root did not seal: {refusal}");

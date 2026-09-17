@@ -2291,10 +2291,10 @@ pub(crate) fn evidence(_ctx: &UnitCtx) -> busbar_kernel::teller::Evidence {
 
 /// The key the admin plane registers under.
 ///
-/// Its OWN key, taken from the plane's `PlaneMeta` rather than spelt a second time here, so the
-/// loop's registry names this plane with exactly the word the plane names itself with and the two
-/// can never drift. There is one string that says "admin" and it lives on the plane.
-pub const UNITS_KEY: &str = <busbar_control_admin::AdminPlane as busbar_contract::plane::PlaneMeta>::KEY;
+/// Its OWN key, taken from the control surface's own `KEY` constant rather than spelt a second time
+/// here, so the loop's registry names this surface with exactly the word it names itself with and the
+/// two can never drift. There is one string that says "admin" and it lives on the control surface.
+pub const UNITS_KEY: &str = busbar_control_admin::meta::KEY;
 
 /// The admin plane, registered onto the kernel's teller loop through the one seam every plane uses.
 ///

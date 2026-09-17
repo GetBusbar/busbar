@@ -8,7 +8,8 @@ use std::sync::Arc;
 
 use busbar_contract::bounded::{Arena, ArenaBudget, ArenaBytes, Labels};
 use busbar_contract::bounded::{SlabBytes, Span};
-use busbar_contract::plane::{Ingress, Plane, PlaneMeta};
+use busbar_contract::control::ControlSurface;
+use busbar_contract::plane::Ingress;
 use busbar_contract::unit::{Clock, ConfigView, Ctx, SessionView, TransportView};
 use busbar_contract::wire::{Direction, Frame, FrameCursor, FrameMeta};
 
@@ -472,12 +473,12 @@ fn admin_plane_carries_no_fields() {
     assert_eq!(std::mem::size_of::<AdminPlane>(), 0);
 }
 
-/// The registry only requires `SessionPlane` when a claimed transport declares itself session
-/// shaped; this plane's one claim is over `"http"`, and it implements `PlaneMeta` with a `CLAIMS`
-/// slice of length one, matching `claims::CLAIMS`.
+/// This control surface declares one claim, over `"http"`, of length one — its `claims::CLAIMS`,
+/// kept as the description of what it answers even though it no longer registers on the plane
+/// registry.
 #[test]
 fn declares_exactly_one_claim_over_http() {
-    let claims = <AdminPlane as PlaneMeta>::CLAIMS;
+    let claims = crate::claims::CLAIMS;
     assert_eq!(claims.len(), 1);
     assert_eq!(claims[0].transport, "http");
 }

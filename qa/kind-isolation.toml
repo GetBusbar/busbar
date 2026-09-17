@@ -1750,30 +1750,24 @@ crate = "busbar-control-admin"
 kind = "contract-transport"
 count = "1"
 
-[[cell]]
-crate = "busbar-control-admin"
-kind = "legacy"
-count = "8"
+# R7: legacy (was 8) and secret (was 1) fell to 0 when the plane trait impl, the `Plugin`/`PlaneMeta`
+# impls and the data-path steps (route/meter/encode_egress) were removed — the two cells are struck.
+# plane 3->2, transport 24->22 and unit 16->10 are the measured counts after the same removal.
 
 [[cell]]
 crate = "busbar-control-admin"
 kind = "plane"
-count = "3"
-
-[[cell]]
-crate = "busbar-control-admin"
-kind = "secret"
-count = "1"
+count = "2"
 
 [[cell]]
 crate = "busbar-control-admin"
 kind = "transport"
-count = "24"
+count = "22"
 
 [[cell]]
 crate = "busbar-control-admin"
 kind = "unit"
-count = "16"
+count = "10"
 
 [[cell]]
 crate = "busbar-plane-llm"
@@ -5112,14 +5106,6 @@ question = "OWNER RULING WANTED. busbar-transport-tls -> busbar-caps matches no 
 #   cite  — the clause, or the words that say none does.
 #   why   — what the number is made of.
 #   drain — the line that deletes it.
-
-[[face]]
-crate = "busbar-control-admin"
-face = "Plane"
-count = "1"
-cite = "none. ARCHITECTURE.md 1.4 makes `control` a kind of its own, and a control surface is not a metered plane; this crate is registered `control` by the [[registered]] row above and still carries the plane face."
-why = "the admin surface predates the control kind: it was written as a plane, it is registered as control, and the trait it implements has not moved yet. One implementation, in shipped source."
-drain = "R7: move busbar-control-admin off the Plane face onto the control face. kind-isolation:control-path is the ship criterion that refuses the tag until it lands."
 
 [[face]]
 crate = "busbar-a2a"

@@ -6,7 +6,7 @@ use super::*;
 use busbar_contract::grammar::{Claim, Selector};
 use busbar_kernel::registry::{check_claims, claims_overlap, ConflictReason, PluginKind};
 
-/// The sealed walk over the forty-eight declared claims, most specific first.
+/// The sealed walk over the forty-seven declared claims, most specific first.
 ///
 /// Pinned as text rather than as indices so that a diff of it reads as a routing change. See
 /// the test that reads it for what a change to this array means.
@@ -26,7 +26,6 @@ const SEALED_ORDER: &[&str] = &[
     "a2a ExactPath(\"/a2a\")",
     "a2a PathPattern([Lit(\"a2a\"), Lit(\"tasks\"), Var, Lit(\"pushNotificationConfigs\"), Var])",
     "a2a PathPattern([Lit(\"a2a\"), Lit(\"tasks\"), Var, Lit(\"pushNotificationConfigs\")])",
-    "admin PathPattern([Lit(\"api\"), Lit(\"v1\"), Lit(\"admin\"), Tail])",
     "llm PathPattern([Lit(\"model\"), Var, Lit(\"invoke\")])",
     "a2a PathPattern([Lit(\"a2a\"), Lit(\"tasks\"), Var])",
     "a2a PathPattern([Lit(\"a2a\"), Lit(\"agents\"), Var])",
@@ -69,23 +68,31 @@ const SEALED_ORDER: &[&str] = &[
 const STREAMING: bool = cfg!(feature = "plane-streaming");
 
 /// Every transport and every plane goes into one registry, and both counts are what the design
-/// says they are. This is the half of the seal that does not depend on the claims.
+/// says they are. This is the half of the seal that does not depend on the claims. Admin is NOT a
+/// registered plane: it is a control surface (see `control_surfaces`), so the plane count is one
+/// lower than the transport-and-plane era's five.
 #[test]
-fn seven_transports_and_five_planes_register() {
+fn seven_transports_and_four_planes_register() {
     let transports = compose_transports(ClientSettings::default());
     let registry = register_all(&transports).expect("nothing collides on a key");
     assert_eq!(
         registry.count(PluginKind::Transport),
         if STREAMING { 7 } else { 6 }
     );
-    assert_eq!(registry.count(PluginKind::Plane), if STREAMING { 5 } else { 4 });
+    assert_eq!(registry.count(PluginKind::Plane), if STREAMING { 4 } else { 3 });
     for key in ["tcp", "tls", "http", "sse", "grpc", "stdio"] {
         assert!(
             registry.resolve(PluginKind::Transport, key).is_some(),
             "transport `{key}` is not registered"
         );
     }
-    for key in ["llm", "mcp", "a2a", "admin"] {
+    // Admin is deliberately absent: it is a control surface, not a plane, and never enters the
+    // plane registry.
+    assert!(
+        registry.resolve(PluginKind::Plane, "admin").is_none(),
+        "admin must not be registered as a plane"
+    );
+    for key in ["llm", "mcp", "a2a"] {
         assert!(
             registry.resolve(PluginKind::Plane, key).is_some(),
             "plane `{key}` is not registered"
@@ -110,15 +117,16 @@ fn seven_transports_and_five_planes_register() {
 // because the numbers below are that composition's, not a subset of it.
 #[cfg(feature = "plane-streaming")]
 #[test]
-fn the_planes_declare_forty_eight_claims() {
+fn the_planes_declare_forty_seven_claims() {
     let claims = plane_claims();
     let count = |plane: &str| claims.iter().filter(|c| c.plane == plane).count();
     assert_eq!(count("llm"), 25);
     assert_eq!(count("mcp"), 4);
     assert_eq!(count("a2a"), 14);
     assert_eq!(count("streaming"), 4);
-    assert_eq!(count("admin"), 1);
-    assert_eq!(claims.len(), 48);
+    // Admin is a control surface, not a plane: it declares no plane claim in this seal.
+    assert_eq!(count("admin"), 0);
+    assert_eq!(claims.len(), 47);
 }
 
 /// The measured overlap, split the way the rule splits it. Both counts are pinned because both
@@ -130,12 +138,15 @@ fn the_planes_declare_forty_eight_claims() {
 /// are the half a tighter grammar moves: reading a suffix and a substring as the segment
 /// constraints they are, rather than as fragments that overlap anything, takes them from 119 to
 /// 65 without ever answering "disjoint" for a pair one arrival satisfies, and naming the audio
-/// surface one path at a time rather than as a prefix took it from 65 to 63.
+/// surface one path at a time rather than as a prefix took it from 65 to 63. Moving the admin
+/// surface off the plane registry (it is a control surface, not a plane) then removed its one
+/// tail-shaped `/api/v1/admin/**` claim, taking the same-family count from 63 to 44 and the tail
+/// class in particular from 23 to 4.
 // Pinned against the SHIPPED composition (voice on). Compiled out with the voice plane
 // because the numbers below are that composition's, not a subset of it.
 #[cfg(feature = "plane-streaming")]
 #[test]
-fn one_hundred_and_fifty_three_cross_plane_pairs_overlap() {
+fn one_hundred_and_twenty_nine_cross_plane_pairs_overlap() {
     use busbar_kernel::grammar::family;
 
     let claims = plane_claims();
@@ -153,11 +164,11 @@ fn one_hundred_and_fifty_three_cross_plane_pairs_overlap() {
             }
         }
     }
-    assert_eq!(cross_family, 90);
-    assert_eq!(same_family, 63);
+    assert_eq!(cross_family, 85);
+    assert_eq!(same_family, 44);
 }
 
-/// What the 63 path-family overlaps that remain actually ARE, one class at a time.
+/// What the 44 path-family overlaps that remain actually ARE, one class at a time.
 ///
 /// A count alone cannot say whether an overlap is a real shape or a gap in the reasoning, and
 /// that distinction is the whole reason to tighten a grammar rather than to relax a check. So
@@ -207,18 +218,18 @@ fn every_remaining_path_overlap_is_a_shape_and_not_a_gap() {
             }
         }
     }
-    assert_eq!(tail, 23);
+    assert_eq!(tail, 4);
     assert_eq!(variable, 24);
     assert_eq!(fragments, 16);
 }
 
-/// **The finding, answered.** Every one of those 153 overlaps is settled by the sealed order,
+/// **The finding, answered.** Every one of those 129 overlaps is settled by the sealed order,
 /// and none of them is a refusal.
 ///
 /// The resolved count is pinned against the overlap count above, so the two cannot drift apart
 /// silently: a pair that stops being resolved has either stopped overlapping or become a tie,
 /// and each of those is a different thing to have to explain. The refusal list is pinned empty,
-/// which is the whole claim of this file — the declared set of five planes seals.
+/// which is the whole claim of this file — the declared set of four planes seals.
 // Pinned against the SHIPPED composition (voice on). Compiled out with the voice plane
 // because the numbers below are that composition's, not a subset of it.
 #[cfg(feature = "plane-streaming")]
@@ -227,7 +238,7 @@ fn every_cross_plane_overlap_is_resolved_by_precedence_and_none_refuses() {
     let claims = plane_claims();
     let sealed = seal_claims(&claims);
 
-    assert_eq!(sealed.resolved.len(), 153);
+    assert_eq!(sealed.resolved.len(), 129);
     assert!(
         sealed.refused.is_empty(),
         "the declared claims do not seal: {:?}",
@@ -253,7 +264,7 @@ fn every_cross_plane_overlap_is_resolved_by_precedence_and_none_refuses() {
     }
 }
 
-/// The sealed order of the forty-eight, written out.
+/// The sealed order of the forty-seven, written out.
 ///
 /// A snapshot, and deliberately a verbose one: the walk every arriving connection is matched
 /// against is the thing this file produces, and a change to it is a change to which plane
@@ -264,7 +275,7 @@ fn every_cross_plane_overlap_is_resolved_by_precedence_and_none_refuses() {
 // because the numbers below are that composition's, not a subset of it.
 #[cfg(feature = "plane-streaming")]
 #[test]
-fn the_sealed_order_of_the_forty_eight_claims_is_pinned() {
+fn the_sealed_order_of_the_forty_seven_claims_is_pinned() {
     let claims = plane_claims();
     let sealed = seal_claims(&claims);
     let walk: Vec<String> = sealed
@@ -281,10 +292,12 @@ fn the_sealed_order_of_the_forty_eight_claims_is_pinned() {
 /// request.
 #[test]
 fn a_planted_equal_precedence_collision_refuses_at_boot() {
-    let admin = plane_claims()
-        .into_iter()
-        .find(|c| c.plane == "admin")
-        .expect("the admin plane claims one path");
+    // A representative one-path claim to plant the collision with. Admin no longer registers as a
+    // plane, so its claim is taken from the control surface's own `CLAIMS` rather than the seal.
+    let admin = PlaneClaim {
+        plane: "admin",
+        claim: busbar_control_admin::claims::CLAIMS[0],
+    };
     let impostor = PlaneClaim {
         plane: "impostor",
         claim: admin.claim,
@@ -302,10 +315,10 @@ fn a_planted_equal_precedence_collision_refuses_at_boot() {
 /// swallows it, so the order decides, the pair is recorded, and the boot goes on.
 #[test]
 fn a_planted_overlap_at_different_precedence_resolves_rather_than_refusing() {
-    let admin = plane_claims()
-        .into_iter()
-        .find(|c| c.plane == "admin")
-        .expect("the admin plane claims one path");
+    let admin = PlaneClaim {
+        plane: "admin",
+        claim: busbar_control_admin::claims::CLAIMS[0],
+    };
     let mut tighter = admin.claim;
     tighter.selector = Selector::ExactPath("/api/v1/admin/keys");
     let claims = vec![
@@ -391,10 +404,10 @@ fn the_precedence_order_is_most_specific_first() {
 /// named in the message an operator reads.
 #[test]
 fn the_one_answer_form_names_both_planes() {
-    let admin = plane_claims()
-        .into_iter()
-        .find(|c| c.plane == "admin")
-        .expect("the admin plane claims one path");
+    let admin = PlaneClaim {
+        plane: "admin",
+        claim: busbar_control_admin::claims::CLAIMS[0],
+    };
     let impostor = PlaneClaim {
         plane: "impostor",
         claim: admin.claim,
@@ -411,12 +424,10 @@ fn the_one_answer_form_names_both_planes() {
 /// specific route. Only the cross-plane case is a refusal.
 #[test]
 fn a_planes_own_claims_may_overlap() {
-    let claims = plane_claims();
-    let admin = claims
-        .iter()
-        .find(|c| c.plane == "admin")
-        .expect("the admin plane claims one path")
-        .clone();
+    let admin = PlaneClaim {
+        plane: "admin",
+        claim: busbar_control_admin::claims::CLAIMS[0],
+    };
     let doubled = vec![admin.clone(), admin];
     assert!(check_claims(&doubled).is_ok());
 }
@@ -543,8 +554,8 @@ fn a_claim_on_a_transport_with_no_crate_refuses_at_boot() {
 #[test]
 fn the_seal_answers_now_that_every_claim_names_a_registered_transport() {
     let sealed = seal(ClientSettings::default()).expect("every claim names a live transport");
-    assert_eq!(sealed.claims.len(), 48);
-    assert_eq!(sealed.precedence.len(), 48);
+    assert_eq!(sealed.claims.len(), 47);
+    assert_eq!(sealed.precedence.len(), 47);
 }
 
 /// The operator's request-body cap reaches every mounted plane's transport.

@@ -616,7 +616,7 @@ allowed_root = "crates/busbar-caps/src"
 max_sites = 0
 # Ratchet, NOT a review: each file below forges a seal today with a private type, and each is owned
 # by a change that is not this one. A new site anywhere else is held to the rule immediately.
-# busbar-plane-admin and busbar-plane-streaming are the awkward two: a PLANE crate may not name
+# busbar-control-admin and busbar-plane-streaming are the awkward two: a control/plane crate may not name
 # busbar-caps at all (section 1.2, and manifest-allowlist makes it an automatic RED), so their test
 # seals cannot move onto a token until the contract offers a seal a plane is allowed to name. That is
 # debt this rule now PINS rather than debt it hides.
@@ -1198,11 +1198,13 @@ plane_crates = 4
 # going from five crates to one. The count catches the narrowing and leaves the intended zeros
 # alone; the day the codec split creates the first dialect crate, this number is raised with it.
 #
-# `plane` is 5 because `crates/busbar-plane-admin` matches the plane glob while being the `control`
-# kind — see the note above `[gate.plugin_kinds]`. Pinning the number the glob ACTUALLY matches is
-# the point: this table records what is scanned, not what ought to be.
+# `plane` counts the `crates/busbar-plane-*` directories the glob actually matches. The admin surface
+# used to be one of them (`crates/busbar-plane-admin`) while being the `control`/cleanliness kind; R7
+# renamed it to `crates/busbar-control-admin`, which no longer matches the plane glob, so the count
+# drops by one. Pinning the number the glob ACTUALLY matches is the point: this table records what is
+# scanned, not what ought to be.
 [gate.census.plugin_kinds]
-plane = 5
+plane = 4
 dialect = 0
 control = 0
 unit = 14

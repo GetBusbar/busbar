@@ -1,23 +1,26 @@
-//! The `Plane` implementation: the codec itself.
+//! The [`ControlSurface`] implementation: the codec itself.
 //!
-//! Every method here is pure over its inputs and performs no I/O, matching the plane trait's own
-//! doc comment. The one piece of shared logic — "which of the table's verbs does this unit's body
-//! name" — is `identify`, and it runs exactly once, at `decode_ingress`, which writes the verb it
-//! resolved into the draft's fact map. Every later step that needs the verb (`verify`, `approve`,
-//! `content_facts`) reads it back off `Unit::draft_facts()`. Decode is the step that is entitled to
-//! read the bytes; a later step re-deriving the same answer from the same bytes is a second reading
-//! of one closed grammar, and two readings can drift.
+//! Every method here is pure over its inputs and performs no I/O. The one piece of shared logic —
+//! "which of the table's verbs does this unit's body name" — is `identify`, and it runs exactly
+//! once, at `decode_ingress`, which writes the verb it resolved into the draft's fact map. Every
+//! later step that needs the verb (`verify`, `approve`) reads it back off `Unit::draft_facts()`.
+//! Decode is the step that is entitled to read the bytes; a later step re-deriving the same answer
+//! from the same bytes is a second reading of one closed grammar, and two readings can drift.
+//!
+//! This is a CONTROL surface, not a plane: it carries only the entry behaviour (decode, authenticate,
+//! verify, approve, audit, encode response/refusal). It has no `route`/`meter`/`encode_egress` — an
+//! admin verb never dials an upstream and is never priced against a lane; its destination is always a
+//! `KernelVerb` the kernel executes on the far side of its own verb table.
 
 use busbar_contract::bounded::{ArenaBytes, FactValue, Facts, Ir, Span};
-use busbar_contract::dest::{DestinationFacts, EgressBody, RoutePlan, VerifiedDestination};
-use busbar_contract::ids::AdminVerbId;
-use busbar_contract::kinds::{ContentFacts, CredentialLocator, PlaneFacts};
-use busbar_contract::plane::{Ingress, Plane, PlaneSessionState, Progress, Response, UnitDraft};
+use busbar_contract::control::ControlSurface;
+use busbar_contract::dest::DestinationFacts;
+use busbar_contract::kinds::CredentialLocator;
+use busbar_contract::plane::{Ingress, PlaneSessionState, Response, UnitDraft};
 use busbar_contract::unit::{
-    AdmitFacts, AuditFacts, Ctx, FinishClass, Refusal, ResourceLocator, ScopeFacts, Unit, UnitEnd,
-    UsageLocators,
+    AuditFacts, Ctx, FinishClass, Refusal, ResourceLocator, ScopeFacts, Unit, UnitEnd,
 };
-use busbar_contract::wire::{Decode, Encode, Frame, FrameCursor};
+use busbar_contract::wire::{Decode, Encode, FrameCursor};
 
 use crate::meta::FACT_VERB;
 use crate::verbs::{self, VerbEntry, OP_READ, OP_WRITE, VERB_OPENAPI_JSON};
@@ -100,7 +103,7 @@ fn draft_verb(u: &Unit<'_>) -> Option<&'static str> {
     }
 }
 
-impl Plane for AdminPlane {
+impl ControlSurface for AdminPlane {
     fn decode_ingress<'u>(
         &self,
         frames: &mut FrameCursor<'u>,
@@ -168,46 +171,6 @@ impl Plane for AdminPlane {
         })))
     }
 
-    fn encode_egress<'u>(
-        &self,
-        _u: &Unit<'u>,
-        _dest: &VerifiedDestination,
-        _st: Option<&mut PlaneSessionState>,
-        _ctx: &Ctx<'u>,
-    ) -> Result<EgressBody<'u>, Encode> {
-        // An admin verb never dials an upstream: its destination is always `KernelVerb`, which the
-        // kernel itself executes (through `busbar-unit-verbs`) without opening a leg this plane
-        // would encode. This is a genuinely unreachable path for a correctly wired admin plane, not
-        // a lazy stub — `route` below never returns a leg, so nothing should ever call this.
-        Err(Encode::Unrepresentable)
-    }
-
-    fn encode_ingress_frame<'u>(
-        &self,
-        _u: &Unit<'u>,
-        _f: &Frame,
-        _dest: &VerifiedDestination,
-        _st: Option<&mut PlaneSessionState>,
-        _ctx: &Ctx<'u>,
-    ) -> Result<Option<ArenaBytes<'u>>, Encode> {
-        // Every admin unit is `OneShot` (see `decode_ingress`): there is no open unit whose later
-        // frames this method would relay onward to a destination. Unreachable for the same reason
-        // as `encode_egress`.
-        Err(Encode::Unrepresentable)
-    }
-
-    fn decode_response<'u>(
-        &self,
-        _frames: &mut FrameCursor<'u>,
-        _dest: &VerifiedDestination,
-        _st: Option<&mut PlaneSessionState>,
-        _ctx: &Ctx<'u>,
-    ) -> Result<Progress<'u>, Decode> {
-        // Nothing ever comes back from an upstream this plane dialled, because this plane dials
-        // none. Unreachable for the same reason as `encode_egress`/`encode_ingress_frame`.
-        Err(Decode::UnsupportedOperation)
-    }
-
     fn encode_response<'u>(
         &self,
         r: &Response<'u>,
@@ -261,18 +224,6 @@ impl Plane for AdminPlane {
             .map_err(|_| Encode::ArenaExhausted)
     }
 
-    fn encode_end<'u>(
-        &self,
-        _u: &Unit<'u>,
-        _end: &UnitEnd,
-        _st: Option<&mut PlaneSessionState>,
-        _ctx: &Ctx<'u>,
-    ) -> Result<Option<ArenaBytes<'u>>, Encode> {
-        // A one-shot request/response dialect has no ending frame of its own to write beyond the
-        // response or refusal already rendered; the kernel's own minimal ending covers it.
-        Ok(None)
-    }
-
     fn authenticate<'u>(&self, _u: &Unit<'u>, _ctx: &Ctx<'u>) -> CredentialLocator {
         // The admin credential travels on every request (a bearer token), never cached on a
         // session: the admin claim's transport is plain HTTP request/response, so there is no
@@ -309,24 +260,6 @@ impl Plane for AdminPlane {
         ScopeFacts { resources }
     }
 
-    fn admit<'u>(&self, _u: &Unit<'u>, _ctx: &Ctx<'u>) -> AdmitFacts {
-        // Admin verbs are not priced against a lane: no lane locator, no response ceiling to
-        // clamp, no priced input span.
-        AdmitFacts::default()
-    }
-
-    fn route<'u>(&self, _u: &Unit<'u>, _ctx: &Ctx<'u>) -> RoutePlan {
-        // The `KernelVerb` destination `verify` names IS the routing: the kernel dials its own verb
-        // table directly. This plane opens no leg of its own.
-        RoutePlan::default()
-    }
-
-    fn meter<'u>(&self, _u: &Unit<'u>, _r: &Response<'u>, _ctx: &Ctx<'u>) -> UsageLocators {
-        // This plane declares no meter classes (see `meta::METER_CLASSES`), so there is nothing to
-        // locate a quantity for.
-        UsageLocators::default()
-    }
-
     fn audit<'u>(&self, u: &Unit<'u>, out: &UnitEnd, _ctx: &Ctx<'u>) -> AuditFacts {
         // One mapping, written once in the contract and read by every plane, because the audit
         // record is the same record whichever door the request came in by.
@@ -335,35 +268,6 @@ impl Plane for AdminPlane {
             op_class: u.op(),
             finish,
         }
-    }
-
-    fn plane_facts<'u>(
-        &self,
-        _verb: AdminVerbId,
-        _subject: Option<&'u str>,
-        _ctx: &Ctx<'u>,
-    ) -> Result<PlaneFacts<'u>, Decode> {
-        // This plane declares no introspection verbs of its own (`meta::INTROSPECTION_VERBS` is empty; see
-        // its doc comment for the naming collision with the `KernelVerb` table), so every
-        // call here names a verb this plane does not declare.
-        Err(Decode::UnsupportedOperation)
-    }
-
-    fn content_facts<'u>(
-        &self,
-        u: &Unit<'u>,
-        r: &Response<'u>,
-        _ctx: &Ctx<'u>,
-    ) -> ContentFacts<'u> {
-        let mut facts = Facts::new();
-        let verb = match r.facts.get(FACT_VERB) {
-            Some(FactValue::Str(v)) => Some(v),
-            _ => draft_verb(u),
-        };
-        if let Some(verb) = verb {
-            let _ = facts.set(FACT_VERB, FactValue::Str(verb));
-        }
-        ContentFacts { facts }
     }
 }
 

@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The boot seal: seven transports, five planes, and the two checks that answer before a listener
-//! is bound.
+//! The boot seal: seven transports, four planes, and the two checks that answer before a listener
+//! is bound. (Admin is not among them: it is a control surface, registered on the control path — see
+//! `control_surfaces` — and served through its own listener, so it takes no part in this claim seal.)
 //!
 //! ## Why the claims travel separately
 //!
@@ -32,28 +33,30 @@
 //!
 //! ## The declared claim set seals, and this is where that is measured
 //!
-//! **153 of the cross-plane pairs overlap** — 90 across selector families and 63 within the path
+//! **129 of the cross-plane pairs overlap** — 85 across selector families and 44 within the path
 //! family. Both numbers follow from the overlap rule as the design writes it, and neither is a
 //! rounding of the other.
 //!
-//! The 90 are the conservative arm, and they are conservative because a request really does carry
+//! The 85 are the conservative arm, and they are conservative because a request really does carry
 //! both a path and a header: `HeaderPresent("x-api-key")` and `ExactPath("/mcp")` can be true of one
-//! arrival, so an overlap is the honest answer rather than a limitation. The 63 are what is left
+//! arrival, so an overlap is the honest answer rather than a limitation. The 44 are what is left
 //! inside the path family once the grammar reads a suffix and a substring as the segment
 //! constraints they are: a suffix pins a pattern's last segments, a substring carrying slashes asks
 //! for consecutive whole ones, and a pattern with a literal in the way cannot produce a path that
 //! satisfies either. That reading is what took the path-family count from 119 to 65, and naming the
 //! audio surface one path at a time rather than as a prefix — so that the two one-shot audio
 //! operations belong to the plane the inventory gives them to, instead of being described by two
-//! planes at once — took it from 65 to 63. Of the 63, 23 involve a pattern ending in a tail (which
-//! can supply whatever the fragment asks for), 24 are a fragment landing inside a pattern's
-//! variable segment, and 16 are two fragment forms that can be satisfied at once by writing a path
-//! with both. Every one of them is a real shape, not a gap in the reasoning.
+//! planes at once — took it from 65 to 63; moving the admin surface off the plane registry (a
+//! control surface has no plane claim) then dropped its one `/api/v1/admin/**` tail claim, and with
+//! it 19 tail overlaps, taking the path family from 63 to 44. Of the 44, 4 involve a pattern ending
+//! in a tail (which can supply whatever the fragment asks for), 24 are a fragment landing inside a
+//! pattern's variable segment, and 16 are two fragment forms that can be satisfied at once by
+//! writing a path with both. Every one of them is a real shape, not a gap in the reasoning.
 //!
-//! All 153 are settled by the sealed order, and none of them is a refusal. That is not the check
-//! being softened: every one of the 153 is a pair whose two claims sit at different precedence, so
+//! All 129 are settled by the sealed order, and none of them is a refusal. That is not the check
+//! being softened: every one of the 129 is a pair whose two claims sit at different precedence, so
 //! the order already says which plane takes bytes both describe, and the pair is recorded in
-//! `resolved` with its winner named. The tests below pin the count at 153, the refusal count at
+//! `resolved` with its winner named. The tests below pin the count at 129, the refusal count at
 //! zero and the sealed order itself, so a declaration change that turns a resolved pair into a tie —
 //! the shape nothing can decide — has to say so here. A root that skipped the check to get a node
 //! running would be choosing which plane owns a request by accident of registration order, which is
@@ -87,7 +90,6 @@ use busbar_contract::{
 };
 use busbar_kernel::registry::{seal_claims, ClaimConflict, PlaneClaim, Registry, ResolvedOverlap};
 use busbar_plane_a2a::A2aPlane;
-use busbar_control_admin::AdminPlane;
 use busbar_plane_llm::LlmPlane;
 use busbar_plane_mcp::McpPlane;
 #[cfg(feature = "plane-streaming")]
@@ -247,17 +249,33 @@ pub fn plane_claims() -> Vec<PlaneClaim> {
     }
 
     // Declaration order is what breaks precedence ties, so the planes are appended in the order the
-    // table has always read: llm, mcp, a2a, voice, admin. Voice's row is present exactly when its
-    // crate edge is — a claim from a plane this build does not register would name a plane, and a
-    // transport, that no request could ever reach.
+    // table has always read: llm, mcp, a2a, voice. Voice's row is present exactly when its crate edge
+    // is — a claim from a plane this build does not register would name a plane, and a transport, that
+    // no request could ever reach. Admin is NOT here: it is a control surface, not a plane, and it is
+    // served through its own listener (`units_admin::mount`) rather than the plane claim seal.
     let mut claims: Vec<PlaneClaim> = claims_of::<LlmPlane>()
         .chain(claims_of::<McpPlane>())
         .chain(claims_of::<A2aPlane>())
         .collect();
     #[cfg(feature = "plane-streaming")]
     claims.extend(claims_of::<StreamingPlane>());
-    claims.extend(claims_of::<AdminPlane>());
     claims
+}
+
+/// The control surfaces this node registers on the CONTROL PATH — never on the plane registry.
+///
+/// A control surface (`busbar-control-admin`'s `AdminPlane`, which implements
+/// [`busbar_contract::control::ControlSurface`], not `Plane`) is a compiled-in served surface with
+/// entry behaviour only: decode/authenticate/verify/approve/audit and encode response/refusal, no
+/// route/meter/egress. It is served through its own listener (`units_admin::mount`), so it takes no
+/// part in the plane claim seal above; this is the one place the composition root names it, paired
+/// with the key it is known by, exactly as `plane_claims` names the planes.
+#[must_use]
+pub fn control_surfaces() -> Vec<(&'static str, Box<dyn busbar_contract::control::ControlSurface>)> {
+    vec![(
+        busbar_control_admin::meta::KEY,
+        Box::new(busbar_control_admin::AdminPlane::new()),
+    )]
 }
 
 /// Build the seven transports, bottom-up, composing the two that are only serviceable composed.
@@ -461,7 +479,9 @@ fn register_all(transports: &ComposedTransports) -> Result<Registry, BootRefusal
     // mounting a plane whose claims name a layer this binary does not carry.
     #[cfg(feature = "plane-streaming")]
     planes.push(Arc::new(StreamingPlane::EMPTY) as Arc<dyn Plugin>);
-    planes.push(Arc::new(AdminPlane::new()) as Arc<dyn Plugin>);
+    // Admin is NOT pushed here: it is a control surface (busbar-control-admin implements
+    // `ControlSurface`, not `Plane`/`Plugin`), registered on the control path and served through its
+    // own listener, never on the plane registry.
     for plane in planes {
         registry.register(plane).map_err(BootRefusal::Registry)?;
     }
