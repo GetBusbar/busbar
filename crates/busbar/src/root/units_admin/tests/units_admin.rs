@@ -2862,3 +2862,187 @@ fn a_configured_name_cannot_break_out_of_the_document() {
     assert_eq!(parsed["rows"][0]["lane"], hostile);
     assert_eq!(parsed["rows"][0]["provider"], hostile);
 }
+
+// ── D38 `amend_rate_history` — the money-path verb's effect half ──────────────────────────────────
+
+/// A history seeded with one opening card, effective from instant zero, priced in USD.
+#[cfg(test)]
+fn a_seeded_history() -> crate::root::kernel::RootHistory {
+    let history = crate::root::kernel::RootHistory::default();
+    let opening = busbar_unit_cost::RateCard::from_micro_rates_in(
+        busbar_unit_cost::CurrencyCode::USD,
+        [(
+            busbar_unit_cost::LaneClass::new("gpt", busbar_unit_cost::CLASS_INPUT),
+            2.0,
+        )],
+        0,
+    );
+    history.apply(opening, 1_000);
+    history
+}
+
+/// A well-formed correction body: a signed, back-dated amendment of the `gpt`/`input` rate over a
+/// bounded window.
+#[cfg(test)]
+fn a_correction_body() -> Vec<u8> {
+    serde_json::to_vec(&serde_json::json!({
+        "effective_from": 4_000,
+        "effective_until": 9_000,
+        "currency": "USD",
+        "rates": [ { "lane": "gpt", "class": "input", "micro_per_unit": 1.0 } ],
+        "reason": "vendor corrected the March price sheet",
+        "operator_fingerprint": "op-key-7",
+        "signature": "sig-abc"
+    }))
+    .expect("the correction body serialises")
+}
+
+/// THE HAPPY PATH, AND THE PROOF IT REWRITES NOTHING. An amendment appends a signed, back-dated
+/// entry that out-ranks the one it corrects for the window it names — and the corrected entry, and
+/// every snapshot taken before the amendment, is byte-for-byte what it was. A bill already sent
+/// re-derives unchanged; only a recompute against the new head moves.
+#[test]
+fn amend_rate_history_appends_a_signed_back_dated_correction_and_rewrites_nothing() {
+    let history = a_seeded_history();
+    let instant = 5_000u64;
+
+    // Before: the opening entry (seq 0) prices the instant.
+    let before = history.pin().expect("the opening pinned");
+    let (before_seq, _) = before
+        .view()
+        .card_at(instant)
+        .expect("the opening prices the instant");
+    assert_eq!(before_seq, busbar_unit_cost::HistorySeq(0));
+
+    // The correction applies, arriving at second 6 (→ 6000 ms).
+    let packed = amend_rate_history_effect(&history, &a_correction_body(), 6)
+        .expect("the correction applies");
+    let answer = AdminAnswer::unpack(&packed).expect("the answer packs");
+    assert_eq!(answer.status, 200);
+    let doc: serde_json::Value = serde_json::from_slice(&answer.body).expect("the answer is JSON");
+    assert_eq!(doc["history_seq"], 1);
+    assert_eq!(doc["effective_from"], 4_000);
+    assert_eq!(doc["effective_until"], 9_000);
+    assert_eq!(doc["amended_at"], 6_000);
+    assert_eq!(doc["operator_fingerprint"], "op-key-7");
+    assert!(
+        doc["reason_sha256"].as_str().is_some_and(|s| s.len() == 64),
+        "the reason is sealed as its 32-byte SHA-256, hex-encoded"
+    );
+
+    // After: exactly one entry was appended, and the opening entry is untouched.
+    assert_eq!(history.len(), 2);
+    let after = history.pin().expect("pinned after");
+    let view = after.view();
+    let entries = view.entries();
+    assert_eq!(entries[0].seq(), busbar_unit_cost::HistorySeq(0));
+    assert_eq!(entries[0].effective_from(), 0);
+    assert!(matches!(
+        entries[0].author(),
+        busbar_unit_cost::Author::Config { .. }
+    ));
+    // The correction out-ranks the opening for the window it covers.
+    let (now_seq, _) = view
+        .card_at(instant)
+        .expect("the correction prices the instant");
+    assert_eq!(now_seq, busbar_unit_cost::HistorySeq(1));
+    match entries[1].author() {
+        busbar_unit_cost::Author::Amend {
+            operator_fingerprint,
+            ..
+        } => assert_eq!(operator_fingerprint, "op-key-7"),
+        other => panic!("the appended entry must be an amendment, got {other:?}"),
+    }
+
+    // AN INVOICE CUT BEFORE THE AMENDMENT RE-DERIVES UNCHANGED: an older snapshot never sees the
+    // correction, so money already booked stays booked.
+    let old =
+        crate::root::kernel::PinnedHistory::for_test_at(&after, busbar_unit_cost::HistorySeq(0));
+    let (old_seq, _) = old
+        .view()
+        .card_at(instant)
+        .expect("the old snapshot still prices the instant");
+    assert_eq!(old_seq, busbar_unit_cost::HistorySeq(0));
+}
+
+/// VALIDATION REFUSALS. Every malformed or empty correction is refused at its shape, before it can
+/// touch the history — and each leaves the history exactly as it was.
+#[test]
+fn amend_rate_history_refuses_a_correction_that_names_no_signer_window_or_price() {
+    let cases: &[serde_json::Value] = &[
+        // No signature.
+        serde_json::json!({ "effective_from": 1, "rates": [{"lane":"gpt","class":"input","micro_per_unit":1.0}], "reason": "r", "operator_fingerprint": "op" }),
+        // No operator fingerprint.
+        serde_json::json!({ "effective_from": 1, "rates": [{"lane":"gpt","class":"input","micro_per_unit":1.0}], "reason": "r", "signature": "s" }),
+        // No reason.
+        serde_json::json!({ "effective_from": 1, "rates": [{"lane":"gpt","class":"input","micro_per_unit":1.0}], "operator_fingerprint": "op", "signature": "s" }),
+        // Inverted window.
+        serde_json::json!({ "effective_from": 9, "effective_until": 1, "rates": [{"lane":"gpt","class":"input","micro_per_unit":1.0}], "reason": "r", "operator_fingerprint": "op", "signature": "s" }),
+        // Corrects no price: no rates and no fee.
+        serde_json::json!({ "effective_from": 1, "reason": "r", "operator_fingerprint": "op", "signature": "s" }),
+        // Missing effective_from.
+        serde_json::json!({ "rates": [{"lane":"gpt","class":"input","micro_per_unit":1.0}], "reason": "r", "operator_fingerprint": "op", "signature": "s" }),
+    ];
+    for case in cases {
+        let history = a_seeded_history();
+        let body = serde_json::to_vec(case).expect("serialises");
+        let err = amend_rate_history_effect(&history, &body, 6)
+            .expect_err("a malformed correction must be refused");
+        assert!(
+            matches!(err, busbar_unit_verbs::GovernanceError::Validation),
+            "{case} must refuse Validation, got {err:?}"
+        );
+        assert_eq!(
+            history.len(),
+            1,
+            "a refused correction appends nothing: {case}"
+        );
+    }
+    // A body that is not JSON at all is also a validation refusal.
+    let history = a_seeded_history();
+    assert!(matches!(
+        amend_rate_history_effect(&history, b"not json", 6),
+        Err(busbar_unit_verbs::GovernanceError::Validation)
+    ));
+    assert_eq!(history.len(), 1);
+}
+
+/// A history with no opening entry has nothing to correct: the correction is refused `NotFound`
+/// rather than sealing a card no configuration ever wrote.
+#[test]
+fn amend_rate_history_refuses_when_there_is_no_history_to_amend() {
+    let empty = crate::root::kernel::RootHistory::default();
+    let err = amend_rate_history_effect(&empty, &a_correction_body(), 6)
+        .expect_err("an empty history cannot be amended");
+    assert!(matches!(err, busbar_unit_verbs::GovernanceError::NotFound));
+    assert_eq!(empty.len(), 0);
+}
+
+/// EXISTING MONEY/LEDGER READS ARE UNTOUCHED WHEN THE VERB IS NOT CALLED — and the amendment lands
+/// only on the rate-card history, never on the ledger book. A ledger view rendered before an
+/// amendment is byte-for-byte the view rendered after it: the verb moves no ledger cell.
+#[test]
+fn amend_rate_history_leaves_the_ledger_views_byte_identical() {
+    use crate::root::ledger_identity::{LedgerRow, LedgerSnapshot, RowKey};
+
+    let mut rows = LedgerSnapshot::new();
+    rows.insert(
+        RowKey::new("team-a", A_DAY, "gpt", "openai"),
+        LedgerRow {
+            priced_nanos: 42,
+            fee_count: 1,
+        },
+    );
+    let totals_before = render_totals(&rows);
+
+    // Amend the rate-card history — an operation that never touches the ledger book.
+    let history = a_seeded_history();
+    amend_rate_history_effect(&history, &a_correction_body(), 6).expect("the correction applies");
+
+    // The ledger view is byte-for-byte what it was.
+    let totals_after = render_totals(&rows);
+    assert_eq!(
+        totals_before, totals_after,
+        "amending the rate-card history moves no ledger cell"
+    );
+}

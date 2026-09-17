@@ -622,10 +622,22 @@ impl busbar_unit_verbs::Governance for CoreGovernance {
 
     fn execute_new_verb(
         &self,
-        _verb: KernelVerb,
+        verb: KernelVerb,
         _admin: &busbar_caps::AdminToken,
-        _request: &[u8],
+        request: &[u8],
     ) -> Result<Vec<u8>, busbar_unit_verbs::GovernanceError> {
+        // `amend_rate_history` (D38) is the one new verb whose effect is NOT the mounted router's:
+        // its correction lands on this root's own dated rate-card history, which no 1.5.5 handler
+        // knows about. The scope, rate class, operator ceremony and dual control were already run by
+        // the verbs unit before this seam was reached — the verb is in the irreducible set — so this
+        // half speaks only to the correction's own shape and effect.
+        if verb == KernelVerb::AmendRateHistory {
+            return amend_rate_history_effect(
+                &crate::root::kernel::ROOT_CARD,
+                request,
+                self.request.at,
+            );
+        }
         Ok(self.run())
     }
 
@@ -657,6 +669,152 @@ fn ledger_answer(body: Vec<u8>) -> AdminAnswer {
         headers: vec![("content-type".to_string(), "application/json".to_string())],
         body,
     }
+}
+
+/// The effect half of `amend_rate_history` (D38): decode the correction, validate its shape, append
+/// the signed back-dated entry to this root's dated rate-card history, and answer with the entry it
+/// sealed.
+///
+/// The append is [`crate::root::kernel::RootHistory::amend`], which rewrites nothing: the entry the
+/// correction out-ranks stays exactly as booked, and recompute reprices the corrected window against
+/// the new entry. Every refusal here is a client-safe `GovernanceError`: a malformed body, a window
+/// that corrects nothing, or a correction that moves no price is `Validation` (400); a history with
+/// no opening entry to correct is `NotFound` (404). The verb's scope (`full`), rate class, operator
+/// ceremony and dual control ran before this seam — the verb is irreducible — so this half assumes an
+/// admitted call and adjudicates only the correction itself.
+///
+/// It names no figure on the wire. The corrected rates go into the card, never into the answer, so
+/// the control surface stays free of money vocabulary; the answer is the seq an invoice will cite,
+/// the window it corrected, who signed it and the digest of why.
+fn amend_rate_history_effect(
+    history: &crate::root::kernel::RootHistory,
+    body: &[u8],
+    arrival_secs: u64,
+) -> Result<Vec<u8>, busbar_unit_verbs::GovernanceError> {
+    use busbar_unit_verbs::GovernanceError;
+    use sha2::Digest as _;
+
+    let doc: serde_json::Value =
+        serde_json::from_slice(body).map_err(|_| GovernanceError::Validation)?;
+    let obj = doc.as_object().ok_or(GovernanceError::Validation)?;
+
+    // The window the correction prices. `effective_from` is required; `effective_until` is optional
+    // and, where present, must lie strictly after it — an empty or inverted window corrects nothing.
+    let effective_from = obj
+        .get("effective_from")
+        .and_then(serde_json::Value::as_u64)
+        .ok_or(GovernanceError::Validation)?;
+    let effective_until = match obj.get("effective_until") {
+        None | Some(serde_json::Value::Null) => None,
+        Some(v) => Some(v.as_u64().ok_or(GovernanceError::Validation)?),
+    };
+    if effective_until.is_some_and(|until| until <= effective_from) {
+        return Err(GovernanceError::Validation);
+    }
+
+    // The signer and the signature. `amend_rate_history` is `full` + operator signature, so a
+    // correction that names neither is refused at the shape, before it can touch the history.
+    let operator_fingerprint = obj
+        .get("operator_fingerprint")
+        .and_then(serde_json::Value::as_str)
+        .filter(|s| !s.is_empty())
+        .ok_or(GovernanceError::Validation)?
+        .to_string();
+    let signature_present = obj
+        .get("signature")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|s| !s.is_empty());
+    if !signature_present {
+        return Err(GovernanceError::Validation);
+    }
+
+    // The reason is free text and is not the record; its SHA-256 is, so the sealed entry is
+    // fixed-width and the text cannot be edited under it.
+    let reason = obj
+        .get("reason")
+        .and_then(serde_json::Value::as_str)
+        .filter(|s| !s.is_empty())
+        .ok_or(GovernanceError::Validation)?;
+    let reason_hash: [u8; 32] = sha2::Sha256::digest(reason.as_bytes()).into();
+
+    // The corrected card. The currency defaults to the one a 1.5.5 deployment's figures are read as;
+    // the fee defaults to zero. A correction must move at least one figure — a rate or the fee —
+    // because an amendment that changes no price is a history append and nothing else.
+    let currency = match obj.get("currency").and_then(serde_json::Value::as_str) {
+        Some(code) => {
+            busbar_unit_cost::CurrencyCode::new(code).ok_or(GovernanceError::Validation)?
+        }
+        None => busbar_unit_cost::CurrencyCode::USD,
+    };
+    let per_request_fee = match obj.get("per_request_fee") {
+        None | Some(serde_json::Value::Null) => None,
+        Some(v) => Some(v.as_i64().ok_or(GovernanceError::Validation)?),
+    };
+    let mut entries: Vec<(busbar_unit_cost::LaneClass, f64)> = Vec::new();
+    if let Some(rates) = obj.get("rates") {
+        for row in rates.as_array().ok_or(GovernanceError::Validation)? {
+            let r = row.as_object().ok_or(GovernanceError::Validation)?;
+            let lane = r
+                .get("lane")
+                .and_then(serde_json::Value::as_str)
+                .filter(|s| !s.is_empty())
+                .ok_or(GovernanceError::Validation)?;
+            let class = r
+                .get("class")
+                .and_then(serde_json::Value::as_str)
+                .filter(|s| !s.is_empty())
+                .ok_or(GovernanceError::Validation)?;
+            let micro = r
+                .get("micro_per_unit")
+                .and_then(serde_json::Value::as_f64)
+                .ok_or(GovernanceError::Validation)?;
+            if !micro.is_finite() || micro < 0.0 {
+                return Err(GovernanceError::Validation);
+            }
+            entries.push((busbar_unit_cost::LaneClass::new(lane, class), micro));
+        }
+    }
+    if entries.is_empty() && per_request_fee.is_none() {
+        return Err(GovernanceError::Validation);
+    }
+    let card = busbar_unit_cost::RateCard::from_micro_rates_in(
+        currency,
+        entries,
+        per_request_fee.unwrap_or(0),
+    );
+
+    // The append. Milliseconds, because the history dates every instant in them; a correction written
+    // "now" is written at the arrival it was admitted under, never a fresh clock read.
+    let appended_at_ms = arrival_secs.saturating_mul(1000);
+    let seq = history
+        .amend(
+            card,
+            effective_from,
+            effective_until,
+            appended_at_ms,
+            operator_fingerprint.clone(),
+            reason_hash,
+        )
+        .ok_or(GovernanceError::NotFound)?;
+
+    let mut out = String::new();
+    out.push_str("{\"history_seq\":");
+    out.push_str(&seq.get().to_string());
+    out.push_str(",\"effective_from\":");
+    out.push_str(&effective_from.to_string());
+    out.push_str(",\"effective_until\":");
+    match effective_until {
+        Some(until) => out.push_str(&until.to_string()),
+        None => out.push_str("null"),
+    }
+    out.push_str(",\"amended_at\":");
+    out.push_str(&appended_at_ms.to_string());
+    out.push_str(",\"operator_fingerprint\":");
+    json_string(&operator_fingerprint, &mut out);
+    out.push_str(",\"reason_sha256\":");
+    json_string(&hex::encode(reason_hash), &mut out);
+    out.push('}');
+    Ok(ledger_answer(out.into_bytes()).pack())
 }
 
 /// The bytes one ledger view answers with, or `None` for a verb that is not one.
@@ -1276,6 +1434,7 @@ fn verb_name(verb: KernelVerb) -> &'static str {
         KernelVerb::Adjust => "adjust",
         KernelVerb::ExportKeyset => "export_keyset",
         KernelVerb::Approve => "approve",
+        KernelVerb::AmendRateHistory => "amend_rate_history",
         KernelVerb::GetLedgerTotals => "get_ledger_totals",
         KernelVerb::GetLedgerCheckpoints => "get_ledger_checkpoints",
         KernelVerb::GetLedgerReconciliation => "get_ledger_reconciliation",

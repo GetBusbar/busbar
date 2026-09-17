@@ -319,6 +319,10 @@ pub enum KernelVerb {
     ExportKeyset,
     /// The maker-checker approval verb (checked, not itself dual-controlled).
     Approve,
+    /// `POST /api/v1/admin/ledger/amend-rate-history` — append a signed, back-dated correction to
+    /// the dated rate-card history (irreducible). It out-ranks the entry it corrects and rewrites
+    /// nothing; recompute reprices the corrected window against the new entry.
+    AmendRateHistory,
 
     // ---- 1.6.0 ledger views (5) ----
     /// `GET /api/v1/admin/ledger/totals` — what the ledger posted, per bucket, day, lane and
@@ -668,7 +672,8 @@ pub const LEGACY_VERBS: &[LegacyVerbRow] = &[
     ),
 ];
 
-/// The 17 new 1.6.0 verbs, in the order the architecture document names them.
+/// The 18 new 1.6.0 verbs: the seventeen money-governance verbs, plus `amend_rate_history` — the
+/// signed, back-dated rate-card correction the dated-history design (D38) adds to the irreducible set.
 pub const NEW_VERBS: &[KernelVerb] = &[
     KernelVerb::Verify,
     KernelVerb::PlaneFacts,
@@ -687,6 +692,7 @@ pub const NEW_VERBS: &[KernelVerb] = &[
     KernelVerb::Adjust,
     KernelVerb::ExportKeyset,
     KernelVerb::Approve,
+    KernelVerb::AmendRateHistory,
 ];
 
 /// The two of the seventeen the architecture document binds as `GET` — "POST for every mutating
@@ -746,6 +752,8 @@ pub const IRREDUCIBLE_VERBS: &[KernelVerb] = &[
     KernelVerb::ExportKeyset,
     KernelVerb::Adjust,
     KernelVerb::ResolveDispute,
+    // `amend_rate_history` rewrites what the past cost, so D38 seals it irreducible.
+    KernelVerb::AmendRateHistory,
 ];
 
 /// The two verbs admitted under `operator: unset` (every other irreducible verb is refused until

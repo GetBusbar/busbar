@@ -44,6 +44,12 @@ busbar-oauth2 = { path = "../busbar-oauth2" }
 # `main` registers its mount seam unconditionally. Feature-neutral defaults off — the binary's own
 # feature forwards below turn on `busbar-admin`'s features in lock-step with busbar-core's.
 busbar-admin = { path = "../busbar-admin", default-features = false }
+# `amend_rate_history` (D38) decodes the correction body and digests the operator's free-text reason
+# into the fixed-width `reason_hash` the dated rate-card history seals (the same SHA-256 the substrate
+# signs with). These are the composition root's, used only by the admin verb's effect half.
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
 # THE PROTOCOL CRATES — the composition root's knowledge, per the manifest header above. ONE CRATE
 # PER PROTOCOL: `busbar-llm` carries the LLM protocol's six dialects together (an operator picks LLM
 # coverage or none, never a subset), and `busbar-mcp` is a different protocol and therefore a

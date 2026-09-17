@@ -365,7 +365,13 @@ unit_crate_glob = "busbar-unit-*"
 # commits independently moved it; re-applying the same -53 delta gives 14476 - 53 = 14423.
 unit_total_ceiling = 14423
 verbs_crate = "busbar-unit-verbs"
-verbs_ceiling = 1428
+# RAISED 1428 -> 1431 for D38 `amend_rate_history`: a new closed-table admin verb costs exactly
+# three surface lines in this crate — the `KernelVerb::AmendRateHistory` variant, its `NEW_VERBS`
+# membership (which gives it `full` scope and posture-gating) and its `IRREDUCIBLE_VERBS` membership
+# (which gives it the operator-key ceremony gate). None is removable, so the closed table cannot gain
+# a verb without this ratchet. Pinned to today's measurement, per `ceiling-slack`; declared here in
+# its own line so `ceiling-rose` reports the raise for review rather than absorbing it.
+verbs_ceiling = 1431
 # 23400 -> 23347: the caps/contract term above is unchanged (raised in the prior commit of this
 # pick) and the unit term fell by 53, because two units stopped declaring their own copies of the
 # class and the disposition. Declared under `[gate.ceiling_raises]` with the pair. RE-KEYED for the

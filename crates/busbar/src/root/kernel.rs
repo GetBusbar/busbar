@@ -277,6 +277,59 @@ impl RootHistory {
             .unwrap_or(busbar_unit_cost::HistorySeq::OPENING)
     }
 
+    /// **THE SIGNED, BACK-DATED CORRECTION** — the effect half of the `amend_rate_history` verb
+    /// (D38). Append an [`busbar_unit_cost::Author::Amend`] entry over the window the operator named,
+    /// and return its number — or `None` when there is nothing to amend.
+    ///
+    /// Unlike [`RootHistory::apply`] this never invents a from-zero opening entry: an amendment
+    /// corrects a history that already has one, so an empty holder is a REFUSAL rather than a first
+    /// write — a node that has resolved no configuration has no entry a correction could out-rank,
+    /// and sealing a card no configuration wrote would be minting pricing out of an operator's
+    /// typo. It closes nothing and rewrites nothing: the entry it corrects stays exactly as booked,
+    /// every snapshot taken before this one still returns the old answer, and the resolution rule's
+    /// highest-covering-seq wins means this entry out-ranks the corrected one for
+    /// `[effective_from, effective_until)` from this seq forward. Recompute reprices exactly that
+    /// window against it; the stored nano-units are a cache the recompute corrects, which is why an
+    /// amendment moves money that was already booked without ever writing to a booked record.
+    ///
+    /// It does NOT bump the config-resolution epoch: an amendment is an operator's correction, not a
+    /// new generation of the deployment's configuration, and the entry records the operator's
+    /// fingerprint rather than a policy epoch for exactly that reason.
+    pub fn amend(
+        &self,
+        card: busbar_unit_cost::RateCard,
+        effective_from: u64,
+        effective_until: Option<u64>,
+        appended_at_ms: u64,
+        operator_fingerprint: String,
+        reason_hash: [u8; 32],
+    ) -> Option<busbar_unit_cost::HistorySeq> {
+        // Nothing to amend: no opening entry a correction could out-rank.
+        self.history.load_full()?;
+        let author = busbar_unit_cost::Author::Amend {
+            operator_fingerprint,
+            reason_hash,
+        };
+        // Read-copy-update for the same reason `apply` uses it: two appends landing together must not
+        // drop one on the floor. The closure may run more than once, so it clones its inputs each
+        // time rather than moving them.
+        self.history.rcu(|current| {
+            let mut next = match current {
+                Some(history) => busbar_unit_cost::History::clone(history),
+                None => busbar_unit_cost::History::new(),
+            };
+            next.append(busbar_unit_cost::CardEntryDraft {
+                effective_from,
+                effective_until,
+                card: card.clone(),
+                appended_at: appended_at_ms,
+                author: author.clone(),
+            });
+            Some(Arc::new(next))
+        });
+        self.history.load().as_ref().and_then(|h| h.head())
+    }
+
     /// How many entries stand on the history. A read for the tests and for the operator surface that
     /// reports the head; it is never on a pricing path.
     #[must_use]
