@@ -130,11 +130,19 @@ webpki-roots = { workspace = true }
 # `runtime` feature — OFF in a default/shipped build, so the transport-agnostic floor carries no WS
 # edge unless a caller (the duplex plane) arms it. `tokio-tungstenite` runs the CLIENT WS handshake
 # over a stream the dialer has already TLS-wrapped to the net-guard-pinned address (its own `connect`
-# is left OFF so no socket bypasses the guard); `tokio-rustls` is the SAME connector the egress engine
-# uses (it was a dev-only edge before — the WS egress dialer promotes it to an optional prod edge).
+# is left OFF so no socket bypasses the guard).
 tokio-tungstenite = { workspace = true, optional = true }
-tokio-rustls = { workspace = true, optional = true }
+# `tokio-rustls` is the SAME connector the egress engine's WS dialer uses (formerly optional behind
+# `runtime`), promoted to a FULL prod edge in 1.6.0 because the relocated INBOUND TLS listener
+# (`tls::serve` / `tls::serve_one`) wraps every accepted connection with `tokio_rustls::TlsAcceptor`
+# unconditionally. It was already in the composed binary's graph via busbar-core, which now re-exports
+# the listener instead of owning it (net zero for the shipped build).
+tokio-rustls = { workspace = true }
 http = { workspace = true }
+# `http_body::{Body, Frame, SizeHint}` — the relocated inbound listener's `TimeoutBody` wraps every
+# inbound request body to bound its slow-loris read time, implementing `http_body::Body` directly.
+# Moved DOWN with the listener from busbar-core; already in the composed binary's graph via core.
+http-body = { workspace = true }
 http-body-util = { workspace = true }
 # The tunnel connector implements `tower::Service<http::Uri>` — the same seam every connector in
 # the hyper_util stack speaks.
@@ -188,11 +196,8 @@ rcgen = { workspace = true }
 # suite) mint certificates; a dev edge so no feature is needed for `cargo test -p`. (`rustls` and
 # `rustls-pki-types` are full dependencies above — the engine owns them now.)
 tokio = { workspace = true, features = ["rt", "macros", "time", "io-util"] }
-# The owned-pool battery's ALPN-switch fixture (a TLS server that offers h2 to one connection and
-# h1-only to the next — the KnownProto transition pin) serves hyper conns over async TLS; the
-# crate is already in the shipped binary's graph via busbar-core, so this is a test-only edge to
-# an existing dependency, not a new one.
-tokio-rustls = { workspace = true }
+# (`tokio-rustls` is now a FULL dependency above — the inbound TLS listener owns it unconditionally —
+# so the owned-pool battery's ALPN-switch fixture reaches it with no separate dev edge.)
 
 # PLANE-PURITY: the neutral substrate names no concrete plane in its SOURCE. The relocated leaves
 # gate their plane-consumed items on two NEUTRAL capability features — `dispatch` (the server-side
@@ -220,7 +225,6 @@ relay = ["busbar-substrate-values/relay"]
 # caller resolves the axis without enabling the MCP dispatch capability.
 runtime = [
     "dep:tokio-tungstenite",
-    "dep:tokio-rustls",
     "axum/ws",
     "busbar-substrate-values/runtime",
 ]

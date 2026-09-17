@@ -58,15 +58,21 @@ fn get() -> Option<LimitsResolved> {
 // figure or an admission figure -- it is a transport body cap, so its home is the neutral values
 // leaf that already owns it, not a unit. This crate's four call sites now name that home.
 
-/// TLS handshake wall-clock bound (seconds), read per accepted connection in `tls::serve_one`.
+/// TLS handshake wall-clock bound (seconds). The inbound listener moved to `busbar_substrate::tls`
+/// in 1.6.0 and now reads the installed value inline from `busbar_substrate::config::limits`, so this
+/// twin accessor is live only in this crate's relocated TLS tests (which pin the uninstalled default
+/// through it); a non-test build has no caller, hence the `dead_code` allow.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn tls_handshake_timeout_secs() -> u64 {
     get()
         .map(|l| l.tls_handshake_timeout_secs)
         .unwrap_or(crate::config::DEFAULT_TLS_HANDSHAKE_TIMEOUT_SECS)
 }
 
-/// Inbound request-BODY inter-frame read bound (seconds), read per served connection in `tls`. Bounds
-/// a slow-loris that dribbles the request body after headers are complete.
+/// Inbound request-BODY inter-frame read bound (seconds). Like `tls_handshake_timeout_secs` above,
+/// the relocated `busbar_substrate::tls` listener now reads this inline from the substrate's installed
+/// limits, so this twin accessor is live only in this crate's relocated TLS tests; hence the allow.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn request_body_read_timeout_secs() -> u64 {
     get()
         .map(|l| l.request_body_read_timeout_secs)

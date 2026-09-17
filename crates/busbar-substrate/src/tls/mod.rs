@@ -25,3 +25,13 @@ pub fn read_pem(
         .resolve(secret)
         .map_err(|e| format!("cannot resolve TLS {what} ({}): {e}", secret.describe()))
 }
+
+/// Native inbound TLS termination (+ optional mutual-TLS) for the client↔Busbar hop — the listener,
+/// its rustls `ServerConfig` builder, the accept-error backoff, the slow-loris body bounds and the
+/// thread-per-core connection balancer. Relocated byte-for-byte out of `busbar-core`'s `tls` module
+/// (1.6.0 busbar-core dissolution) and re-exported at this module's root, so `busbar_core::tls::*`
+/// keeps resolving through core's re-export shim. It reads ONLY the neutral secret-resolver seam
+/// (`busbar_api::SecretResolve`, via [`read_pem`] above) — no App/money/plane coupling — which is
+/// what made the move byte-safe.
+pub mod listener;
+pub use listener::*;

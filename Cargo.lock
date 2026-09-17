@@ -1030,6 +1030,7 @@ dependencies = [
  "hex",
  "hmac",
  "http",
+ "http-body",
  "http-body-util",
  "httpdate",
  "hyper",

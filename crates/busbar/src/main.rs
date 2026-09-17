@@ -1764,7 +1764,7 @@ fn serve_thread_per_core(
     // reported exactly once and stop the boot (workers racing to `die` would each print it).
     if let Some(tls) = tls_cfg.as_ref() {
         tls::install_crypto_provider();
-        let _ = tls::build_server_config(tls, &secret_resolver)
+        let _ = tls::build_server_config(tls, &*secret_resolver)
             .unwrap_or_else(|e| die(format!("TLS configuration error for '{addr}': {e}")));
     }
     let core_ids = core_affinity::get_core_ids().unwrap_or_default();
@@ -1941,7 +1941,7 @@ async fn serve_listener(
             // freshly-built runtime `block_on`s — in both shapes this resolve parks a thread that
             // is not yet serving anything. It also completes before `tls::serve` below is reached,
             // so no connection on this listener can be waiting on it.
-            let server_config = tls::build_server_config(&tls, &secret_resolver)
+            let server_config = tls::build_server_config(&tls, &*secret_resolver)
                 .unwrap_or_else(|e| die(format!("TLS configuration error for '{label}': {e}")));
             let mtls = tls.client_ca.is_some();
             if log_at_info {
