@@ -12,12 +12,12 @@
 //!
 //! > **A REGISTRY WHOSE POPULATION IS A `match` IN CORE HAS NOT REMOVED THE MATCH, IT HAS MOVED IT.**
 //!
-//! The plane axis had not had that done to it. [`super::Plane`] is a CLOSED ENUM with six
+//! The plane axis had not had that done to it. `Plane` USED TO BE a CLOSED ENUM with six
 //! `match self` tables hanging off it (`key`, `config_section`, `scope_kinds`, `subject_noun`,
-//! `audit_kind`, `wire_format_names`), and an enum is the same object as a match: a plane that is
-//! not one of the three variants cannot exist, no matter who links what. `git grep PlaneDecl`
+//! `audit_kind`, `wire_format_names`), and an enum is the same object as a match: a plane that was
+//! not one of the three variants could not exist, no matter who linked what. `git grep PlaneDecl`
 //! returned nothing before this file. That is the whole reason a plane extraction could not
-//! proceed the way an earlier protocol extraction did — a plane has no `ProtocolDecl` and appears in
+//! proceed the way an earlier protocol extraction did — a plane had no `ProtocolDecl` and appeared in
 //! no `BUILTIN_DECLS`, because a plane is not a protocol, it is a PLANE.
 //!
 //! ## The invariants, and they are deliberately the control's
@@ -36,9 +36,11 @@
 //!   key. The later copy is skipped with a `tracing::info!`.
 //! * **INSTALL BEFORE FIRST READ.** A decl installed after another layer resolved against the
 //!   smaller set means two layers of one process disagree about which planes exist. Asserted.
-//! * **ONE SOURCE PER FACT.** [`super::Plane`]'s accessors now READ their decl rather than matching.
-//!   The enum survives as the in-core NAME for the three built-in planes (it is a `Copy` key in
-//!   dispatch tables); what it no longer is, is the place the facts live.
+//! * **ONE SOURCE PER FACT.** The plane accessors (`key`, `config_section`, `scope_kinds`,
+//!   `subject_noun`, `audit_kind`, `wire_format_names`) now READ their decl rather than matching a
+//!   closed enum. The three built-in planes are named by their stable registry KEY — the same
+//!   `&'static str` every other plane surface is keyed by — so a match in core is no longer the
+//!   place the facts live.
 //!
 //! ## What this file does NOT yet carry, stated so its absence is not read as a claim
 //!
@@ -60,7 +62,7 @@
 // constructs its own `PlaneDecl` and names every seam type without a path back to core. Re-exported
 // HERE at their old paths so the population glue below, the built-in `PLANE_DECL`s and every in-core
 // caller (`busbar_core::plane::registry::{PlaneDecl, BuildCtx, RestoredSummary}`) resolve unchanged.
-// What did NOT move: the glue (it names `super::Plane`/`PlaneDispatch`/the built-in statics, all
+// What did NOT move: the glue (it names `PlaneDispatch`/the built-in statics, all
 // core-live) and `BootCtx` (its phase fields hold the core-live `App`/`AppHandle`) — `BootCtx` stays
 // here and IMPLEMENTS the neutral `PlaneBootCtx` so a plane hook reads it without naming `App`.
 pub use busbar_substrate::plane::registry::{

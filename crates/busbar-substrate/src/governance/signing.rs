@@ -18,6 +18,16 @@
 //!
 //! The token is NOT a JWT (no alg-confusion surface, no header): a single fixed algorithm
 //! (ed25519), two base64url segments, busbar on both ends. Small and unambiguous.
+//!
+//! ## Home: the NEUTRAL crypto primitive, GOVERNED by core
+//!
+//! [`TokenSigner`] lives HERE, in `busbar-substrate` — the neutral crate a plane may name — as a
+//! pure crypto primitive: it holds the ed25519 secret and turns a claims payload (`sub`/`exp`/`kid`
+//! + the optional generation/audience) into signed bytes, and verifies them. It decides NOTHING
+//! about WHO gets a token or WHAT they may do. The mint POLICY (which subject, which expiry, which
+//! audience, which grants) and the durable key/binding state are owned by core's `governance`, which
+//! drives this signer and re-exports the module at `busbar_core::governance::signing::…` so every
+//! in-core call site is unchanged. Substrate carries the primitive; core is the governor.
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
