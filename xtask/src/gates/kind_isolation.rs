@@ -378,7 +378,18 @@ const MAX_NAME_SEGMENTS: usize = 4;
 /// PLANE SPELLINGS HELD TOGETHER UNTIL THE RENAME LANDS. `voice` is the STREAMS plane (config
 /// section `streams:`); both spellings are one instance for every rule here, both are banned
 /// vocabulary in every other kind, and the entry is RED once the crate it translates is gone.
-const PLANE_ALIASES: &[(&str, &str, &str)] = &[("voice", "streams", "busbar-plane-voice")];
+///
+/// `streaming` is the SAME instance too (DECISIONS #18: the fourth plane is STREAMING; voice is one
+/// dialect inside it, and the codec rename is byte-identical). Until the #19 deletion wave renames
+/// `busbar-voice-codec` -> `busbar-streaming-codec` (and collapses `busbar-plane-voice` into
+/// `busbar-plane-streaming`), the new `busbar-plane-streaming` adapter path-deps the still-`voice`-
+/// spelled codec; canonicalising `streaming` onto `streams` is what lets that read as a plane naming
+/// ITS OWN codec rather than a cross-instance reach. The entry is RED once `busbar-voice-codec` (the
+/// crate whose name forces the alias) is gone — which is exactly when the rename has landed.
+const PLANE_ALIASES: &[(&str, &str, &str)] = &[
+    ("voice", "streams", "busbar-plane-voice"),
+    ("streaming", "streams", "busbar-voice-codec"),
+];
 
 /// Kinds the target scheme defines that the tree does not carry YET, each with its reason. The
 /// dead-kind rule skips these — and the ratchet runs the other way: the day a crate of one of them
@@ -516,6 +527,14 @@ const ARCHITECTURE_ALLOWED: &[(&str, &str)] = &[
     ("kernel", "contract"),
     ("kernel", "grammar"),
     ("legacy", "contract"),
+    // A PLANE ADAPTER PATH-DEPS ITS OWN CODEC (DECISIONS #6/#18/#21). The codec crate is stateful
+    // (entropy pools, streaming accumulators, feature `#[cfg]`) and so cannot live in the pure
+    // `busbar-plane-<x>` adapter's `src/`; #21 states in its own words that "the codec crate REMAINS
+    // a pure path-dep of its plane adapter". So `busbar-plane-<x> -> busbar-<x>-codec` is the
+    // architecture's intended PERMANENT shape, not grandfathered debt. This grants the CLASS; the
+    // instance seal below (the cross-instance witness) still refuses a plane naming a DIFFERENT
+    // plane's codec — a plane may path-dep ITS OWN codec and nothing else.
+    ("plane", "codec"),
     ("plane", "contract"),
     // The composition root is the one thing that names all three axes — that is what a root IS.
     ("root", "api"),
