@@ -32,6 +32,7 @@ pub mod feature_sets;
 pub mod field_inventory;
 pub mod hot_path_alloc;
 pub mod hot_path_perf;
+pub mod instance_noun_neutrality;
 pub mod inventory_coverage;
 pub mod inventory_ref;
 pub mod kernel_token_wire_purity;
@@ -117,6 +118,18 @@ pub const REPORT_ONLY: &[Posture] = &[
               on HEAD by design. It is a release-time gate, and full_gate's own excuse table is \
               where that claim is written down and checked.",
         excuse: Excused::ReleaseTime,
+    },
+    Posture {
+        name: "instance-noun-neutrality",
+        why: "THE WHOLE-APP KIND-NEUTRALITY WITNESS, and it is RED BY DESIGN on HEAD: real \
+              cross-family couplings exist today (the composition root names every plane, auth \
+              schemes are DECISION #3 internal-unit debt in core, sibling planes reference one \
+              another) and each is recorded in qa/instance-noun-neutrality.toml as a KNOWN-DEBT \
+              burndown row. It goes green only as those rows are drained. Every per-noun census \
+              row names the needle below; the `:undocumented` and `:stale-baseline` rows do NOT, \
+              so a NEW coupling or a stale ledger row is scored under `--all` exactly like any \
+              other regression.",
+        excuse: Excused::OnlyAbout("tracked known-debt"),
     },
     Posture {
         name: "ship-ready",
@@ -2045,6 +2058,14 @@ pub static REGISTRY: &[Registration] = &[
         build: || Box::new(plane_abi_neutrality::PlaneAbiNeutralityGate),
         summary:
             "the plane ABI's hot lane is derived from the taxonomy, not named after a protocol",
+    },
+    Registration {
+        name: "instance-noun-neutrality",
+        batch: 1,
+        tier: Tier::Fast,
+        build: || Box::new(instance_noun_neutrality::InstanceNounNeutralityGate),
+        summary:
+            "no crate names a concrete plugin instance outside that instance's own crate family",
     },
     Registration {
         name: "structure-lint",
