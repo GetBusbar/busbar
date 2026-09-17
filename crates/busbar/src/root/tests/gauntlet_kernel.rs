@@ -14,10 +14,10 @@ use axum::body::{to_bytes, Body};
 use axum::http::StatusCode;
 use axum::response::Response;
 use busbar_substrate::plane_host::{
-    run_gauntlet, GauntletPlane, GauntletRequest, VerifyOutcome,
+    run_gauntlet, run_gauntlet_session, GauntletPlane, GauntletRequest, VerifyOutcome,
 };
 
-use crate::root::gauntlet_kernel::run_gauntlet_via_kernel;
+use crate::root::gauntlet_kernel::{open_gauntlet_via_kernel, run_gauntlet_via_kernel};
 
 /// A deterministic plane: verify proceeds, drive returns a fixed status/headers/body. Two identical
 /// instances feed the two loops (each `drive` consumes its own box).
@@ -112,4 +112,39 @@ async fn kernel_rider_matches_substrate_gauntlet_on_refuse() {
     assert_eq!(gs, ks, "refusal status diverged rider-vs-gauntlet");
     assert_eq!(gh, kh, "refusal headers diverged rider-vs-gauntlet");
     assert_eq!(gb, kb, "refusal body diverged rider-vs-gauntlet");
+}
+
+// ── SESSION ADMIT GATE (Ruling 3): kernel open_unit vs substrate open_unit ──────────────────────
+
+#[tokio::test]
+async fn kernel_session_admit_matches_substrate_open_unit_on_proceed() {
+    let gov = busbar_api::PlaneRequestCtx::default();
+
+    let substrate = run_gauntlet_session(req(&gov), FixedPlane::boxed(200, b"ignored"))
+        .expect("substrate admits on proceed");
+    let kernel = open_gauntlet_via_kernel(req(&gov), FixedPlane::boxed(200, b"ignored"))
+        .expect("kernel admits on proceed");
+
+    // Same Admitted shape (correlation id) — and neither drove (a session opener never routes).
+    assert_eq!(
+        substrate, kernel,
+        "the admitted session shape diverged kernel-vs-substrate"
+    );
+}
+
+#[tokio::test]
+async fn kernel_session_admit_matches_substrate_open_unit_on_refuse() {
+    let gov = busbar_api::PlaneRequestCtx::default();
+
+    let substrate = run_gauntlet_session(req(&gov), Box::new(RefusePlane))
+        .expect_err("substrate refuses the session before any charge");
+    let kernel = open_gauntlet_via_kernel(req(&gov), Box::new(RefusePlane))
+        .expect_err("kernel refuses the session before any charge");
+
+    let (ss, sh, sb) = split(substrate).await;
+    let (ks, kh, kb) = split(kernel).await;
+    assert_eq!(ss, StatusCode::FORBIDDEN, "the plane's own refusal status");
+    assert_eq!(ss, ks, "session refusal status diverged kernel-vs-substrate");
+    assert_eq!(sh, kh, "session refusal headers diverged kernel-vs-substrate");
+    assert_eq!(sb, kb, "session refusal body diverged kernel-vs-substrate");
 }

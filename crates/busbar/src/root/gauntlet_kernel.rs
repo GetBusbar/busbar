@@ -33,7 +33,7 @@ use busbar_contract::{AuditFacts, FinishClass, RoutePlan, ScopeFacts, UnitKey};
 use busbar_kernel::slice::GroupLeaseSlip;
 use busbar_kernel::teller::{AccrualMeter, Evidence, RouteAwait, RouteLeg, UnitCtx, Units};
 use busbar_substrate::plane_host::{
-    GauntletPlane, GauntletRequest, PlaneAnswer, PlaneInFlight, VerifyOutcome,
+    Admitted, GauntletPlane, GauntletRequest, PlaneAnswer, PlaneInFlight, VerifyOutcome,
 };
 
 /// The transport stack every gauntlet request arrives over — one HTTP layer, named rather than
@@ -351,6 +351,104 @@ pub async fn run_gauntlet_via_kernel(
                 .take(raw_key)
                 .map(PlaneAnswer::into_response)
                 .unwrap_or_else(GauntletKernelUnit::plane_spent)
+        }
+    }
+}
+
+/// OPEN A SESSION through the UNIFIED kernel loop and return at the door — the kernel-loop twin of
+/// `busbar_substrate::plane_host::run_gauntlet_session` (its `admit_open` seat).
+///
+/// Runs the SAME plane's `verify_destination` in its verify-STRICTLY-before-charge position through
+/// `busbar_kernel::teller::open_unit` (governance-to-door, no Route, no settling exit), over an
+/// ephemeral per-request kernel harness. On a pass the door admitted at `Admission::ZeroHold` — an
+/// EMPTY hold, nothing settled — and the caller opens its own carrier next (its reserve-on-admit and
+/// per-turn settle stay plane-side, AFTER this gate, so there is no overlap and no double count). On
+/// a refusal the plane's OWN finished response comes back verbatim. Same shape and same admit
+/// decision as the substrate session opener; DORMANT — reachable, not the shipped path.
+///
+/// Synchronous: a session's steps up to and including the door are all sync (only Route awaits, and a
+/// session has none here), exactly like the substrate `run_gauntlet_session`.
+///
+/// (`result_large_err`: the `Err` is the plane's OWN finished refusal `Response`, carried BY VALUE so
+/// refusal shaping stays byte-identical — the same type and the same reason the substrate
+/// `run_gauntlet_session`/`admit_open` carry it un-boxed.)
+#[allow(clippy::result_large_err)]
+pub fn open_gauntlet_via_kernel(
+    req: GauntletRequest<'_>,
+    plane: Box<dyn GauntletPlane + '_>,
+) -> Result<Admitted, Response> {
+    let kernel = crate::root::kernel::new_kernel();
+    let gauge = busbar_kernel::slice::ConcurrencyGauge::new();
+    let canary = busbar_caps::Canary::new();
+    let inflight = busbar_kernel::inflight::InFlight::new(usize::MAX, 0);
+    let meter = AccrualMeter::new();
+    let table = PlaneInFlight::new();
+
+    let raw_key = NEXT_KEY.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let key = UnitKey::new(raw_key);
+    let principal = principal_of(req.gov);
+    let correlation_id = req.correlation_id;
+
+    let unit = GauntletKernelUnit {
+        plane: std::sync::Mutex::new(Some(plane)),
+        gov: req.gov,
+        destination: req.destination,
+        correlation_id,
+        charged_at: req.charged_at,
+        started: req.started,
+        principal: principal.clone(),
+        op_class: OpClassId::new("gauntlet"),
+        table: &table,
+        key: raw_key,
+    };
+    table.open(raw_key);
+
+    let arrival =
+        busbar_kernel::inflight::arrival_hold(&kernel, &crate::root::kernel::AdmissionDoor, principal);
+    let entered = inflight.insert(busbar_kernel::inflight::Enter {
+        key,
+        origin: OriginKind::Client,
+        session: None,
+        admin_listener: false,
+        provider_of_open_session: false,
+        zero_hold_tick: false,
+        arrival,
+        now: busbar_substrate_values::store::now_ms(),
+    });
+
+    match entered {
+        Err(_refused) => Err(GauntletKernelUnit::plane_spent()),
+        Ok(slot) => {
+            let opened = busbar_kernel::teller::open_unit(
+                &kernel,
+                &unit,
+                &UnitCtx {
+                    key,
+                    origin: OriginKind::Client,
+                    session: None,
+                    generation: busbar_kernel::registry::Generation::FIRST,
+                    admin_listener: false,
+                    kernel_verb_only: false,
+                },
+                busbar_kernel::teller::Run {
+                    cell: slot.cell(),
+                    parent: None,
+                    leases: slot.leases(),
+                    gauge: &gauge,
+                    canary: &canary,
+                    meter: &meter,
+                },
+            );
+            match opened {
+                // The door passed at ZeroHold — the caller opens its own carrier next. The
+                // correlation is the request's own, exactly as the substrate opener returns it.
+                busbar_kernel::teller::SessionOpen::Admitted => Ok(Admitted { correlation_id }),
+                // The plane refused at its verify step; its own finished response was stashed.
+                busbar_kernel::teller::SessionOpen::Refused => Err(table
+                    .take(raw_key)
+                    .map(PlaneAnswer::into_response)
+                    .unwrap_or_else(GauntletKernelUnit::plane_spent)),
+            }
         }
     }
 }

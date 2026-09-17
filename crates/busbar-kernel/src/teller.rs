@@ -708,78 +708,7 @@ pub async fn run_unit_async<U: Units, R: RouteAwait>(
     route: &R,
 ) -> Ended {
     let seal = &kernel.seal;
-    let opened = units
-        .arrival(&UnitToken::<Arrival>::mint(seal), ctx)
-        .into_result(seal)
-        .and_then(|_| {
-            units
-                .decode(&UnitToken::<Decode>::mint(seal), ctx)
-                .into_result(seal)
-        })
-        .and_then(|_| {
-            run.canary.draft_accepted();
-            units
-                .authenticate(&UnitToken::<Authenticate>::mint(seal), ctx)
-                .into_result(seal)
-        })
-        // A challenge is not a decision about this unit: it is a request for one more round before
-        // one can be made. The kernel delivers it and asks again, and the round itself is a
-        // handshake unit — it reaches no destination, is scoped against nothing and opens no
-        // reservation, which is exactly the zero-hold admission. Only an established identity walks
-        // on to verify.
-        .and_then(|authenticated| match authenticated {
-            Authenticated::Challenge(_) => Ok(Admission::ZeroHold),
-            Authenticated::Principal(principal) => units
-                .verify(
-                    &UnitToken::<Verify>::mint(seal),
-                    &TrustToken::mint(seal),
-                    ctx,
-                    &principal,
-                )
-                .into_result(seal)
-                .map(|destinations| (principal, destinations))
-                .and_then(
-                    |(principal, destinations): (PrincipalId, Vec<VerifiedDestination>)| {
-                        units
-                            .approve(
-                                &UnitToken::<Approve>::mint(seal),
-                                ctx,
-                                &principal,
-                                &destinations,
-                            )
-                            .into_result(seal)
-                            .map(|_| (principal, destinations))
-                    },
-                )
-                .and_then(
-                    |(principal, destinations): (PrincipalId, Vec<VerifiedDestination>)| {
-                        // The slip the door names its capped groups on, for the length of the one
-                        // call. It lives here rather than on the unit's context because it is not
-                        // something the unit IS: it is what the door said, read once, on the next
-                        // line, by the draw.
-                        let groups = GroupLeaseSlip::new();
-                        let admitted = units
-                            .admit(
-                                &UnitToken::<Admit>::mint(seal),
-                                &AdmitToken::<Admit>::mint(seal),
-                                ctx,
-                                &principal,
-                                &destinations,
-                                &groups,
-                            )
-                            .into_result(seal);
-                        // THE LEASE, drawn on the one answer that entitles a unit to it. The door
-                        // said yes, so from here until this unit's end the node is running it, and
-                        // the lease is what says so. A refusal draws nothing — there is no slot to
-                        // count — and a unit that never reached this step, a challenge round, is
-                        // never here to draw one.
-                        if admitted.is_ok() {
-                            draw_lease(ctx, &run, &groups);
-                        }
-                        admitted
-                    },
-                ),
-        });
+    let opened = open_to_door(seal, units, ctx, &run);
 
     match opened {
         // The refused door: nothing was charged beyond the arrival hold the table minted, and the
@@ -849,6 +778,151 @@ pub async fn run_unit_async<U: Units, R: RouteAwait>(
                     abandoned.reached(outcome)
                 }
             }
+        }
+    }
+}
+
+/// THE GOVERNANCE-TO-DOOR CHAIN, factored so both the one-shot loop and a session opener run the
+/// SAME arrival→decode→authenticate→verify→approve→admit, in the same order, minting the same tokens.
+///
+/// Returns the door's [`Admission`] on a pass, or the [`Refusal`] of the step that stopped the unit.
+/// No response is shaped here and nothing is settled — that is the caller's, whichever caller it is:
+/// [`run_unit_async`] continues under the hold, and [`open_unit`] stops at the door and hands it back.
+/// Written as the one chain it always was, moved verbatim out of [`run_unit_async`], so the order
+/// reads top to bottom and a refusal simply stops the chain.
+fn open_to_door<U: Units>(
+    seal: &KernelSeal,
+    units: &U,
+    ctx: &UnitCtx,
+    run: &Run<'_>,
+) -> Result<Admission, Refusal> {
+    units
+        .arrival(&UnitToken::<Arrival>::mint(seal), ctx)
+        .into_result(seal)
+        .and_then(|_| {
+            units
+                .decode(&UnitToken::<Decode>::mint(seal), ctx)
+                .into_result(seal)
+        })
+        .and_then(|_| {
+            run.canary.draft_accepted();
+            units
+                .authenticate(&UnitToken::<Authenticate>::mint(seal), ctx)
+                .into_result(seal)
+        })
+        // A challenge is not a decision about this unit: it is a request for one more round before
+        // one can be made. The kernel delivers it and asks again, and the round itself is a
+        // handshake unit — it reaches no destination, is scoped against nothing and opens no
+        // reservation, which is exactly the zero-hold admission. Only an established identity walks
+        // on to verify.
+        .and_then(|authenticated| match authenticated {
+            Authenticated::Challenge(_) => Ok(Admission::ZeroHold),
+            Authenticated::Principal(principal) => units
+                .verify(
+                    &UnitToken::<Verify>::mint(seal),
+                    &TrustToken::mint(seal),
+                    ctx,
+                    &principal,
+                )
+                .into_result(seal)
+                .map(|destinations| (principal, destinations))
+                .and_then(
+                    |(principal, destinations): (PrincipalId, Vec<VerifiedDestination>)| {
+                        units
+                            .approve(
+                                &UnitToken::<Approve>::mint(seal),
+                                ctx,
+                                &principal,
+                                &destinations,
+                            )
+                            .into_result(seal)
+                            .map(|_| (principal, destinations))
+                    },
+                )
+                .and_then(
+                    |(principal, destinations): (PrincipalId, Vec<VerifiedDestination>)| {
+                        // The slip the door names its capped groups on, for the length of the one
+                        // call. It lives here rather than on the unit's context because it is not
+                        // something the unit IS: it is what the door said, read once, on the next
+                        // line, by the draw.
+                        let groups = GroupLeaseSlip::new();
+                        let admitted = units
+                            .admit(
+                                &UnitToken::<Admit>::mint(seal),
+                                &AdmitToken::<Admit>::mint(seal),
+                                ctx,
+                                &principal,
+                                &destinations,
+                                &groups,
+                            )
+                            .into_result(seal);
+                        // THE LEASE, drawn on the one answer that entitles a unit to it. The door
+                        // said yes, so from here until this unit's end the node is running it, and
+                        // the lease is what says so. A refusal draws nothing — there is no slot to
+                        // count — and a unit that never reached this step, a challenge round, is
+                        // never here to draw one.
+                        if admitted.is_ok() {
+                            draw_lease(ctx, run, &groups);
+                        }
+                        admitted
+                    },
+                ),
+        })
+}
+
+/// How a session opener left the door.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionOpen {
+    /// The door passed. A session admits at [`Admission::ZeroHold`] — it opens its own reservation
+    /// AFTER, plane-side — so nothing was swapped into the cell and there is nothing to settle. The
+    /// caller opens its live carrier next.
+    Admitted,
+    /// The door refused before any charge. The plane's own refusal was audited and encoded; nothing
+    /// was charged and nothing settled.
+    Refused,
+}
+
+/// OPEN A SESSION — run the governance-to-door chain and STOP at the door, for a plane whose unit
+/// binds its live carrier AFTER admission and has no one-shot Route leg (voice, duplex).
+///
+/// The kernel twin of the substrate `open_unit`: it runs the SAME arrival→…→admit as
+/// [`run_unit_async`] (through [`open_to_door`]), then the success/refused audit — and RETURNS. It
+/// NEVER runs `under_hold` (there is no Route leg) and NEVER runs the settling [`exit`]. A session's
+/// door is [`Admission::ZeroHold`] — an empty hold — so there is nothing for the exit to settle, and
+/// the plane's own reserve-on-admit and per-turn settle stay entirely plane-side, AFTER this gate.
+/// The result says only whether the door passed; a refusing plane's own response is the plane's to
+/// carry (it shaped it at its refusing step), exactly as the substrate session opener carries it.
+///
+/// Sync: every step up to and including the door is synchronous (only Route awaits, and a session has
+/// no Route here), so a synchronous `begin_session` calls this directly.
+pub fn open_unit<U: Units>(kernel: &Kernel, units: &U, ctx: &UnitCtx, run: Run<'_>) -> SessionOpen {
+    let seal = &kernel.seal;
+    match open_to_door(seal, units, ctx, &run) {
+        // The door refused, at or before Admit: nothing was charged. Audit the refusal and encode
+        // its bytes — the same two doors a refused one-shot leaves through, minus the settling exit
+        // (a session that never opened has no reservation to settle).
+        Err(refusal) => {
+            let outcome =
+                Outcome::Refused(refusal.step().unwrap_or(StepName::Admit), refusal.reason());
+            let _sealed = units
+                .audit_refused(&UnitToken::<Audit>::mint(seal), ctx, &refusal)
+                .into_result(seal);
+            let _bytes = units
+                .encode(&UnitToken::<Encode>::mint(seal), ctx, &outcome)
+                .into_result(seal);
+            SessionOpen::Refused
+        }
+        // The door passed at ZeroHold. Record the admission (success-audit + encode) and hand the
+        // door back OPEN — no `under_hold`, no `exit`. The plane opens its own reservation next.
+        Ok(_admission) => {
+            let outcome = Outcome::Completed;
+            let _sealed = units
+                .audit(&UnitToken::<Audit>::mint(seal), ctx, &outcome)
+                .into_result(seal);
+            let _bytes = units
+                .encode(&UnitToken::<Encode>::mint(seal), ctx, &outcome)
+                .into_result(seal);
+            SessionOpen::Admitted
         }
     }
 }
