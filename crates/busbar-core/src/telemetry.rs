@@ -71,6 +71,13 @@ pub(crate) use busbar_substrate::telemetry::drain_serial;
 pub(crate) use busbar_substrate::telemetry::{
     counter_slot, histogram_slot, CounterSlot, HistogramSlot, DISPOSITIONS, OUTCOMES, REASONS,
 };
+// The five `&App`-shaped hot-path emit fns pushed their BULK DOWN to the neutral substrate behind the
+// `TelemetrySource` seam (the trait, plus the label building + bank fast path + macro/cached-handle
+// fallback). Core keeps the thin `impl TelemetrySource for App` below plus one-line `&App` call-site
+// wrappers (further down), so every `crate::telemetry::…` call site — `ingress::finish_inner`,
+// `plane::observe`, the plane host (which passes an `&Arc<App>` that deref-coerces to `&App`) —
+// resolves unchanged, and the emitted series are byte-identical over the `App` impl.
+use busbar_substrate::telemetry::TelemetrySource;
 // The capacity knobs and per-thread storage the retention batteries below read directly. Test-only
 // on both sides of the seam, so core's shipped surface gains nothing.
 #[cfg(test)]
@@ -262,22 +269,91 @@ impl AppSlots {
     }
 }
 
-// ── Hot-path emit helpers (bank fast path, macro fallback) ──────────────────────────────────────
+// ── Hot-path emit seam: the thin `App` projection ────────────────────────────────────────────────
 
-/// `busbar_requests_total` + `busbar_request_duration_seconds` for one finished request, on ANY
-/// plane. The single emission site for the request families: the model plane calls it from
-/// `ingress::finish_inner` and every mounted plane calls it from `plane::observe`.
-///
-/// TWO SERIES, split so the model plane stays v1.5.4-identical. The MODEL plane
-/// (`crate::plane::is_fallback(plane)`) emits `busbar_requests_total` / `busbar_request_duration_seconds`
-/// with exactly the v1.5.4 label set `{ingress_protocol, pool, outcome}` — NO `plane` label — so a
-/// pure-model-plane `/metrics` scrape is byte-identical to v1.5.4. Every OTHER mounted plane emits the
-/// parallel `busbar_plane_requests_total` / `busbar_plane_request_duration_seconds` families, which
-/// carry the extra `plane` label so `sum by (plane)` compares them — without ever altering the
-/// label identity of the two pre-existing model-plane families.
-///
-/// Bank fast path when `(plane, ingress_protocol, pool)` is in this generation's registered set (the
-/// bank holds only the model plane's label space); otherwise the cached-handle helpers in `metrics.rs`.
+// `upstream_attempt_on` / `upstream_failure_on` — THE EMIT for this family, on EVERY plane — live in
+// the neutral substrate (`busbar_substrate::telemetry`) so a plane's own synchronous client leg can
+// name them without reaching into core. They take NO `&App` and never did (both labels are
+// operator-configured and bounded, so the emit is a pure `metrics` write). Re-exported here so the
+// substrate emit wrappers' macro fallbacks and any core call site resolve unchanged.
+pub use busbar_substrate::telemetry::{outcome_of, upstream_attempt_on, upstream_failure_on};
+
+/// The thin `App` half of the [`TelemetrySource`] seam: bounded scalar/enum reads only. The emit
+/// BULK (metric names, label building, the bank fast path and the macro / cached-handle fallback)
+/// lives DOWN in `busbar_substrate::telemetry`; here we only project the `App`'s pre-registered bank
+/// slots (via [`AppSlots`]), the fallback-plane predicate, and a lane's model label. No `App`, plane,
+/// or money type crosses the boundary, so the substrate names none of them and the emitted series are
+/// byte-identical to the prior `&App`-shaped wrappers.
+impl TelemetrySource for App {
+    fn plane_is_fallback(&self, plane: &str) -> bool {
+        crate::plane::is_fallback(plane)
+    }
+
+    fn request_counter(
+        &self,
+        plane: &str,
+        ingress_protocol: &str,
+        pool: &str,
+        outcome_idx: usize,
+    ) -> Option<CounterSlot> {
+        self.tslots
+            .request_family(plane, ingress_protocol, pool)
+            .map(|fam| fam.requests[outcome_idx])
+    }
+
+    fn request_duration(
+        &self,
+        plane: &str,
+        ingress_protocol: &str,
+        pool: &str,
+    ) -> Option<HistogramSlot> {
+        self.tslots
+            .request_family(plane, ingress_protocol, pool)
+            .map(|fam| fam.duration)
+    }
+
+    fn lane_attempt(&self, pool_label: &str, lane_idx: usize) -> Option<CounterSlot> {
+        self.tslots
+            .lane_family(pool_label, lane_idx)
+            .map(|fam| fam.attempts)
+    }
+
+    fn lane_failure(
+        &self,
+        pool_label: &str,
+        lane_idx: usize,
+        disposition_idx: usize,
+    ) -> Option<CounterSlot> {
+        self.tslots
+            .lane_family(pool_label, lane_idx)
+            .map(|fam| fam.failures[disposition_idx])
+    }
+
+    fn lane_trip(&self, pool_label: &str, lane_idx: usize) -> Option<CounterSlot> {
+        self.tslots
+            .lane_family(pool_label, lane_idx)
+            .map(|fam| fam.trips)
+    }
+
+    fn failover_slot(&self, pool_label: &str, reason_idx: usize) -> Option<CounterSlot> {
+        self.tslots.failover.get(pool_label).map(|s| s[reason_idx])
+    }
+
+    fn lane_model(&self, lane_idx: usize) -> &str {
+        self.engine_tables_view()
+            .lane_view(lane_idx)
+            .map(|l| l.model)
+            .unwrap_or("")
+    }
+}
+
+// One-line `&App` call-site wrappers over the substrate emit BULK. They keep the exact historical
+// `crate::telemetry::…(&App, …)` signatures so every call site resolves unchanged (including the
+// plane host's `&Arc<App>`, which deref-coerces to `&App` at the wrapper boundary — a generic
+// `impl TelemetrySource` bound would not).
+
+/// `busbar_requests_total` + `busbar_request_duration_seconds` for one finished request, on ANY plane
+/// — see [`busbar_substrate::telemetry::request_finished`].
 pub(crate) fn request_finished(
     app: &App,
     plane: &str,
@@ -286,94 +362,34 @@ pub(crate) fn request_finished(
     outcome: &'static str,
     seconds: f64,
 ) {
-    // Mounted (non-model) planes emit on their OWN `busbar_plane_*` families, keeping the two
-    // model-plane families label-identical to v1.5.4. The bank holds only the model plane's label
-    // space, so a mounted-plane request would miss it anyway; routing here is explicit rather than
-    // relying on that miss, and it targets the correct (plane-labelled) family.
-    if !crate::plane::is_fallback(plane) {
-        crate::metrics::incr_plane_requests_total(plane, ingress_protocol, pool, outcome);
-        crate::metrics::record_plane_request_duration(plane, ingress_protocol, pool, seconds);
-        return;
-    }
-    // Model plane: bank fast path, else the cached-handle helpers — byte-identical series either way.
-    let fam = app.tslots.request_family(plane, ingress_protocol, pool);
-    let outcome_idx = OUTCOMES.iter().position(|o| *o == outcome);
-    match (fam, outcome_idx) {
-        (Some(fam), Some(oi)) if fam.requests[oi].is_valid() => fam.requests[oi].incr(),
-        _ => crate::metrics::incr_requests_total(ingress_protocol, pool, outcome),
-    }
-    match fam {
-        Some(fam) if fam.duration.is_valid() => fam.duration.record(seconds),
-        _ => crate::metrics::record_request_duration(ingress_protocol, pool, seconds),
-    }
+    busbar_substrate::telemetry::request_finished(
+        app,
+        plane,
+        ingress_protocol,
+        pool,
+        outcome,
+        seconds,
+    );
 }
-
-// `upstream_attempt_on` / `upstream_failure_on` — THE EMIT for this family, on EVERY plane — MOVED
-// DOWN to the neutral substrate (`busbar_substrate::telemetry`) so a plane's own synchronous client
-// leg can name them without reaching into core. They take NO `&App` and
-// never did (both labels are operator-configured and bounded, so the emit is a pure `metrics` write);
-// that is exactly what let them relocate. Re-exported here so core's own `App`-holding wrappers
-// ([`upstream_attempt`]/[`upstream_failure`], which resolve the lane label out of `app.lanes`) and
-// `crate::telemetry::*` call sites resolve unchanged.
-pub use busbar_substrate::telemetry::{outcome_of, upstream_attempt_on, upstream_failure_on};
 
 /// `busbar_upstream_attempts_total` for one dispatch attempt on `(pool label, lane)`.
 pub fn upstream_attempt(app: &App, pool_label: &str, lane_idx: usize) {
-    match app.tslots.lane_family(pool_label, lane_idx) {
-        Some(fam) if fam.attempts.is_valid() => fam.attempts.incr(),
-        _ => upstream_attempt_on(
-            pool_label,
-            app.engine_tables_view()
-                .lane_view(lane_idx)
-                .map(|l| l.model)
-                .unwrap_or(""),
-        ),
-    }
+    busbar_substrate::telemetry::upstream_attempt(app, pool_label, lane_idx);
 }
 
 /// `busbar_upstream_failures_total` for one classified failure on `(pool label, lane)`.
 pub fn upstream_failure(app: &App, pool_label: &str, lane_idx: usize, disposition: &'static str) {
-    let fam = app.tslots.lane_family(pool_label, lane_idx);
-    let di = DISPOSITIONS.iter().position(|d| *d == disposition);
-    match (fam, di) {
-        (Some(fam), Some(di)) if fam.failures[di].is_valid() => fam.failures[di].incr(),
-        _ => upstream_failure_on(
-            pool_label,
-            app.engine_tables_view()
-                .lane_view(lane_idx)
-                .map(|l| l.model)
-                .unwrap_or(""),
-            disposition,
-        ),
-    }
+    busbar_substrate::telemetry::upstream_failure(app, pool_label, lane_idx, disposition);
 }
 
 /// `busbar_breaker_trips_total` for one logical Closed→Open trip on `(pool label, lane)`.
 pub fn breaker_trip(app: &App, pool_label: &str, lane_idx: usize) {
-    match app.tslots.lane_family(pool_label, lane_idx) {
-        Some(fam) if fam.trips.is_valid() => fam.trips.incr(),
-        _ => metrics::counter!(
-            crate::metrics::BREAKER_TRIPS_TOTAL,
-            "pool" => pool_label.to_owned(),
-            "lane" => app.engine_tables_view().lane_view(lane_idx).map(|l| l.model.to_owned()).unwrap_or_default()
-        )
-        .increment(1),
-    }
+    busbar_substrate::telemetry::breaker_trip(app, pool_label, lane_idx);
 }
 
 /// `busbar_failovers_total` for one failover event on `pool label`, by reason.
 pub fn failover(app: &App, pool_label: &str, reason: &'static str) {
-    let slots = app.tslots.failover.get(pool_label);
-    let ri = REASONS.iter().position(|r| *r == reason);
-    match (slots, ri) {
-        (Some(slots), Some(ri)) if slots[ri].is_valid() => slots[ri].incr(),
-        _ => metrics::counter!(
-            crate::metrics::FAILOVERS_TOTAL,
-            "pool" => pool_label.to_owned(),
-            "reason" => reason
-        )
-        .increment(1),
-    }
+    busbar_substrate::telemetry::failover(app, pool_label, reason);
 }
 
 /// `busbar_translations_total` for one cross-protocol hop. Both names come from the fixed protocol

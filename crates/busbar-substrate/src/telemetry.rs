@@ -61,6 +61,168 @@ pub fn outcome_of(status: u16) -> &'static str {
     }
 }
 
+// ── THE APP-SHAPED EMIT WRAPPERS, PUSHED DOWN BEHIND A NEUTRAL TRAIT ──────────────────────────────
+//
+// The five hot-path emit fns that used to take `&busbar_core::state::App` moved DOWN here. The BULK
+// they carry — the metric NAME, the label building, the bank-slot fast path, and the macro /
+// cached-handle fallback — names only the neutral substrate surface: the bank slots below, the
+// metric-name consts + per-request cached-handle helpers in `crate::metrics`, and
+// [`upstream_attempt_on`] / [`upstream_failure_on`] above. The only things they need FROM the `App`
+// are bounded scalar/enum reads — a fallback-plane flag, the pre-resolved bank slot for a label set,
+// and a lane's model-string label — so those come through the neutral [`TelemetrySource`] seam that
+// `busbar-core` implements as a thin `impl TelemetrySource for App` (field reads only). No
+// `App`/plane/money TYPE crosses the boundary and the emitted series are byte-identical. Core
+// re-exports each fn at its historical `crate::telemetry::…` path, so every call site
+// (`ingress::finish_inner`, `plane::observe`, the plane host) resolves unchanged.
+
+/// The NEUTRAL scalar/enum seam the `&App`-shaped emit wrappers read. The substrate NAMES this trait
+/// and owns the emit BULK; `busbar-core` implements it as a thin set of `App` reads (`impl
+/// TelemetrySource for App`). Every method returns either a bounded scalar/enum or a pre-resolved
+/// bank slot (a neutral substrate handle) — never an `App`, plane, or money type — so the emit
+/// composition lives here without a substrate→core cycle and the rendered `/metrics` bytes stay
+/// byte-identical. A returned slot may be INVALID (registration hit the cap); the caller checks
+/// [`CounterSlot::is_valid`] / [`HistogramSlot::is_valid`] and falls back to the macro exactly as
+/// before, so a miss is never lost.
+pub trait TelemetrySource {
+    /// Is `plane` the MODEL (fallback) plane? The model plane emits the two v1.5.4-identical request
+    /// families (NO `plane` label); every other mounted plane emits the parallel `busbar_plane_*`
+    /// families instead.
+    fn plane_is_fallback(&self, plane: &str) -> bool;
+    /// The banked `busbar_requests_total` counter slot for `(plane, ingress_protocol, pool)` at
+    /// `outcome_idx` (a position in [`OUTCOMES`]), or `None` when the label set is outside this
+    /// generation's registered model-plane space.
+    fn request_counter(
+        &self,
+        plane: &str,
+        ingress_protocol: &str,
+        pool: &str,
+        outcome_idx: usize,
+    ) -> Option<CounterSlot>;
+    /// The banked `busbar_request_duration_seconds` histogram slot for `(plane, ingress_protocol,
+    /// pool)`, or `None` on a miss (same contract as [`Self::request_counter`]).
+    fn request_duration(
+        &self,
+        plane: &str,
+        ingress_protocol: &str,
+        pool: &str,
+    ) -> Option<HistogramSlot>;
+    /// The banked `busbar_upstream_attempts_total` counter slot for `(pool label, lane index)`.
+    fn lane_attempt(&self, pool_label: &str, lane_idx: usize) -> Option<CounterSlot>;
+    /// The banked `busbar_upstream_failures_total` counter slot for `(pool label, lane index)` at
+    /// `disposition_idx` (a position in [`DISPOSITIONS`]).
+    fn lane_failure(
+        &self,
+        pool_label: &str,
+        lane_idx: usize,
+        disposition_idx: usize,
+    ) -> Option<CounterSlot>;
+    /// The banked `busbar_breaker_trips_total` counter slot for `(pool label, lane index)`.
+    fn lane_trip(&self, pool_label: &str, lane_idx: usize) -> Option<CounterSlot>;
+    /// The banked `busbar_failovers_total` counter slot for `pool label` at `reason_idx` (a position
+    /// in [`REASONS`]).
+    fn failover_slot(&self, pool_label: &str, reason_idx: usize) -> Option<CounterSlot>;
+    /// The lane's configured MODEL string — the `lane` label value the macro-fallback emits carry, so
+    /// gauge and counters PromQL-join. `""` when the lane index is out of range (matching the prior
+    /// `unwrap_or("")`).
+    fn lane_model(&self, lane_idx: usize) -> &str;
+}
+
+/// `busbar_requests_total` + `busbar_request_duration_seconds` for one finished request, on ANY
+/// plane. The single emission site for the request families: the model plane calls it from
+/// `ingress::finish_inner` and every mounted plane calls it from `plane::observe`.
+///
+/// TWO SERIES, split so the model plane stays v1.5.4-identical. The MODEL plane
+/// ([`TelemetrySource::plane_is_fallback`]) emits `busbar_requests_total` /
+/// `busbar_request_duration_seconds` with exactly the v1.5.4 label set `{ingress_protocol, pool,
+/// outcome}` — NO `plane` label — so a pure-model-plane `/metrics` scrape is byte-identical to
+/// v1.5.4. Every OTHER mounted plane emits the parallel `busbar_plane_requests_total` /
+/// `busbar_plane_request_duration_seconds` families, which carry the extra `plane` label so `sum by
+/// (plane)` compares them — without ever altering the label identity of the two pre-existing
+/// model-plane families.
+///
+/// Bank fast path when `(plane, ingress_protocol, pool)` is in this generation's registered set (the
+/// bank holds only the model plane's label space); otherwise the cached-handle helpers in
+/// `crate::metrics`.
+pub fn request_finished<S: TelemetrySource + ?Sized>(
+    src: &S,
+    plane: &str,
+    ingress_protocol: &str,
+    pool: &str,
+    outcome: &'static str,
+    seconds: f64,
+) {
+    // Mounted (non-model) planes emit on their OWN `busbar_plane_*` families, keeping the two
+    // model-plane families label-identical to v1.5.4. The bank holds only the model plane's label
+    // space, so a mounted-plane request would miss it anyway; routing here is explicit rather than
+    // relying on that miss, and it targets the correct (plane-labelled) family.
+    if !src.plane_is_fallback(plane) {
+        crate::metrics::incr_plane_requests_total(plane, ingress_protocol, pool, outcome);
+        crate::metrics::record_plane_request_duration(plane, ingress_protocol, pool, seconds);
+        return;
+    }
+    // Model plane: bank fast path, else the cached-handle helpers — byte-identical series either way.
+    let outcome_idx = OUTCOMES.iter().position(|o| *o == outcome);
+    match outcome_idx.and_then(|oi| src.request_counter(plane, ingress_protocol, pool, oi)) {
+        Some(slot) if slot.is_valid() => slot.incr(),
+        _ => crate::metrics::incr_requests_total(ingress_protocol, pool, outcome),
+    }
+    match src.request_duration(plane, ingress_protocol, pool) {
+        Some(slot) if slot.is_valid() => slot.record(seconds),
+        _ => crate::metrics::record_request_duration(ingress_protocol, pool, seconds),
+    }
+}
+
+/// `busbar_upstream_attempts_total` for one dispatch attempt on `(pool label, lane)`. Bank fast path
+/// when the label set is registered, else the neutral [`upstream_attempt_on`] emit (which resolves
+/// the lane's model label through the source).
+pub fn upstream_attempt<S: TelemetrySource + ?Sized>(src: &S, pool_label: &str, lane_idx: usize) {
+    match src.lane_attempt(pool_label, lane_idx) {
+        Some(slot) if slot.is_valid() => slot.incr(),
+        _ => upstream_attempt_on(pool_label, src.lane_model(lane_idx)),
+    }
+}
+
+/// `busbar_upstream_failures_total` for one classified failure on `(pool label, lane)`.
+pub fn upstream_failure<S: TelemetrySource + ?Sized>(
+    src: &S,
+    pool_label: &str,
+    lane_idx: usize,
+    disposition: &'static str,
+) {
+    let di = DISPOSITIONS.iter().position(|d| *d == disposition);
+    match di.and_then(|di| src.lane_failure(pool_label, lane_idx, di)) {
+        Some(slot) if slot.is_valid() => slot.incr(),
+        _ => upstream_failure_on(pool_label, src.lane_model(lane_idx), disposition),
+    }
+}
+
+/// `busbar_breaker_trips_total` for one logical Closed→Open trip on `(pool label, lane)`.
+pub fn breaker_trip<S: TelemetrySource + ?Sized>(src: &S, pool_label: &str, lane_idx: usize) {
+    match src.lane_trip(pool_label, lane_idx) {
+        Some(slot) if slot.is_valid() => slot.incr(),
+        _ => metrics::counter!(
+            crate::metrics::BREAKER_TRIPS_TOTAL,
+            "pool" => pool_label.to_owned(),
+            "lane" => src.lane_model(lane_idx).to_owned()
+        )
+        .increment(1),
+    }
+}
+
+/// `busbar_failovers_total` for one failover event on `pool label`, by reason.
+pub fn failover<S: TelemetrySource + ?Sized>(src: &S, pool_label: &str, reason: &'static str) {
+    let ri = REASONS.iter().position(|r| *r == reason);
+    match ri.and_then(|ri| src.failover_slot(pool_label, ri)) {
+        Some(slot) if slot.is_valid() => slot.incr(),
+        _ => metrics::counter!(
+            crate::metrics::FAILOVERS_TOTAL,
+            "pool" => pool_label.to_owned(),
+            "reason" => reason
+        )
+        .increment(1),
+    }
+}
+
 // ── THE TELEMETRY BANK (relocated from busbar-core, verbatim) ────────────────────────────────────
 //
 // Per-thread metric cells for the request hot path plus the one scrape-time aggregator that folds

@@ -112,6 +112,13 @@ use busbar_substrate::metrics::{
     LANE_STATE, POOL_QUEUED,
 };
 
+// The per-request cached-handle emit helpers (`incr_requests_total` / `incr_plane_requests_total` /
+// `record_request_duration` / `record_plane_request_duration`) moved DOWN to the neutral substrate
+// alongside the recorder install they feed (they name only the substrate metric consts,
+// `recorder_installed`, and the `metrics` macros — no `App`). Their only callers — the `&App` request
+// emit wrappers — ALSO moved down behind the `TelemetrySource` seam and now name
+// `busbar_substrate::metrics::…` directly, so core no longer references them.
+
 /// Refresh all scrape-time gauges from in-process reads. Called on every `/metrics` scrape so values
 /// are current at observation time. A THIN call site over the neutral
 /// [`busbar_substrate::metrics::refresh_scrape_gauges`] composition — every `App` field read (and its
