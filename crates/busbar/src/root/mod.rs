@@ -55,6 +55,8 @@
 #![allow(dead_code)]
 
 pub mod adapters;
+#[cfg(any(test, feature = "test-harness"))]
+pub mod a2a_kernel_rider;
 pub mod auth_bindings;
 pub mod durability;
 pub mod gauntlet_install;
