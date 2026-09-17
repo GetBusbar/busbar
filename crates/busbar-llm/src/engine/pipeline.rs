@@ -608,7 +608,10 @@ mod future_size_probe;
 /// mutates `cands` (restrict-intersect), `request_ctx` (active restricts) and `v` (DOM
 /// materialization) exactly as the inline code did, returns `(policy_order, chosen_policy_name)`
 /// on success and `Err(Response)` at each gate/policy reject. ZERO COST default path unchanged.
-#[allow(clippy::too_many_arguments)]
+// `result_large_err`: `Err` is the plane's OWN finished ingress-native `Response`, handed straight
+// back to the client (see the rationale on `attempt/assemble.rs::build`). Boxing it would only add
+// an allocation on a gave-up path and ripple through every `?` site — behaviour-identical to leave.
+#[allow(clippy::too_many_arguments, clippy::result_large_err)]
 async fn decide_routing(
     host: &Arc<dyn EngineHost>,
     rt: &Arc<NativeRuntime>,
@@ -860,6 +863,8 @@ async fn run_failover_loop(
 /// The op-support candidate filter: every candidate lane's protocol must HOLD this operation's
 /// handler (a deleted handler is not a valid egress — a clean no-handler 404). Fast path keeps
 /// the caller's Vec as-is; `Err` is the ingress-native 404 when the filter empties a non-empty set.
+// `result_large_err`: `Err` is the plane's own finished `Response`, returned as-is (see `assemble.rs`).
+#[allow(clippy::result_large_err)]
 fn filter_candidates_for_op(
     rt: &Arc<NativeRuntime>,
     cands: Vec<WeightedLane>,
@@ -917,7 +922,8 @@ fn read_stream_intent(
 /// re-serialize the retained `body` bytes when a rewrite commits (so the pristine short-circuit and
 /// failover re-parse see the effective request), and reject fail-closed. Pure extraction; ZERO COST
 /// when no rewrite hook is configured. `Err` is the ingress-native gate rejection.
-#[allow(clippy::too_many_arguments)]
+// `result_large_err`: `Err` is the plane's own finished `Response`, returned as-is (see `assemble.rs`).
+#[allow(clippy::too_many_arguments, clippy::result_large_err)]
 async fn run_rewrite_pass(
     host: &Arc<dyn EngineHost>,
     v: &mut Option<LazyBody>,
@@ -1139,8 +1145,8 @@ fn prepare_failover_ctx(
 /// (see `apply_gate_restricts`), else the last ordering gate wins re-validated against the surviving
 /// set. Returns the winning gate order (`None` = abstain to the base policy). ZERO COST when no gate
 /// is configured. `Err` is the ingress-native gate rejection.
-
-#[allow(clippy::too_many_arguments)]
+// `result_large_err`: `Err` is the plane's own finished `Response`, returned as-is (see `assemble.rs`).
+#[allow(clippy::too_many_arguments, clippy::result_large_err)]
 async fn reconcile_phase2_gates(
     host: &Arc<dyn EngineHost>,
     rt: &Arc<NativeRuntime>,
@@ -1298,7 +1304,8 @@ async fn reconcile_phase2_gates(
 /// order only decides whose `on_empty` applies first when the set empties). Shrinks `cands` so the
 /// restriction persists across failover, records each restrict on `request_ctx`, and fails closed
 /// (`Err`) when a required restrict leaves no eligible lane.
-#[allow(clippy::too_many_arguments)]
+// `result_large_err`: `Err` is the plane's own finished `Response`, returned as-is (see `assemble.rs`).
+#[allow(clippy::too_many_arguments, clippy::result_large_err)]
 fn apply_gate_restricts(
     rt: &Arc<NativeRuntime>,
     cands: &mut Vec<WeightedLane>,
@@ -1386,8 +1393,8 @@ fn apply_gate_restricts(
 /// overrides directly, else the resolved `route:` policy (default `None` ⇒ SWRR) produces a ranked
 /// order / abstains / rejects / restricts. Returns `(policy_order, chosen_policy_name)`; `Err` is the
 /// ingress-native policy rejection. ZERO COST default path unchanged (single always-false branch).
-
-#[allow(clippy::too_many_arguments)]
+// `result_large_err`: `Err` is the plane's own finished `Response`, returned as-is (see `assemble.rs`).
+#[allow(clippy::too_many_arguments, clippy::result_large_err)]
 async fn resolve_base_policy(
     host: &Arc<dyn EngineHost>,
     rt: &Arc<NativeRuntime>,
@@ -1559,7 +1566,8 @@ async fn resolve_base_policy(
 /// `request_ctx` (so it survives a `fallback_pool` hop too). An EMPTY intersection is fail-closed
 /// (`on_empty` default reject) unless `Weighted` (the advisory full-pool SWRR escape). Returns the
 /// policy name to advertise on a commit, `None` on a weighted escape, and `Err` on a fail-closed 503.
-#[allow(clippy::too_many_arguments)]
+// `result_large_err`: `Err` is the plane's own finished `Response`, returned as-is (see `assemble.rs`).
+#[allow(clippy::too_many_arguments, clippy::result_large_err)]
 fn apply_base_policy_restrict(
     rt: &Arc<NativeRuntime>,
     cands: &mut Vec<WeightedLane>,

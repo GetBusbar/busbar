@@ -17,6 +17,13 @@ use std::sync::{Arc, OnceLock};
 use super::config::AsIdentity;
 use crate::core_routes::CoreRouter;
 
+/// The plane's runtime-build entry point (the type of [`AsPlaneSeam::build`]), named as an alias so
+/// the fn-pointer signature reads once here rather than inline in the struct field. Behaviour is
+/// identical to the inline type; the alias exists only to keep the field legible (and satisfy
+/// `clippy::type_complexity`).
+type AsPlaneBuildFn =
+    fn(&AsIdentity, Option<&str>, Vec<String>) -> Result<Arc<dyn Any + Send + Sync>, String>;
+
 /// The two functions core calls through this seam. Every field type here is either core-owned
 /// (`AsIdentity`, `CoreRouter`) or fully type-erased (`Arc<dyn Any + Send + Sync>`), so the seam
 /// itself names no `busbar_oauth2` item.
@@ -29,8 +36,7 @@ pub struct AsPlaneSeam {
     /// extraction — the seam owns the whole "how do I come alive" act, not just allocation.
     /// Returns the type-erased object `App::oauth_as` stores, or the plane's own build error
     /// rendered to a string (boot refuses with it exactly as it did when this call was inline).
-    pub build:
-        fn(&AsIdentity, Option<&str>, Vec<String>) -> Result<Arc<dyn Any + Send + Sync>, String>,
+    pub build: AsPlaneBuildFn,
 
     /// Mount the plane's routes onto the router, or return it untouched when `plane` is `None` —
     /// the zero-cost-when-off property at the routing layer, preserved unchanged by this move.

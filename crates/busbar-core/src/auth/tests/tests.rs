@@ -2691,8 +2691,6 @@ async fn test_1_5_2_keys_chain_disabled_vkey_rejected() {
     server.shutdown().await;
 }
 
-/// The ADMIN path still bypasses governance (empty GovCtx) and mint still works: the admin
-
 /// The `keys` ENGINE ARM is CACHE-EXEMPT: running a keys chain WITH a credential cache
 /// resolves the vkey (Identified{resolved:Some}) but writes NOTHING to the cache (revocation stays
 /// per-request). Before 1.5.2 no keys engine arm / no `resolved` field existed at all.

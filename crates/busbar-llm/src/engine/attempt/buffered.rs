@@ -298,7 +298,8 @@ fn failed_transfer(i: usize) -> TapReport {
 /// already reported the tap and recorded the compensating breaker/budget outcome). Pure extraction
 /// of the capped-read block of [`translate_response_cross_protocol`]; `permit` is consumed (dropped
 /// once the body is in hand) exactly where the inline code dropped it.
-#[allow(clippy::too_many_arguments)]
+// `result_large_err`: `Err` is the plane's own finished `Response`, returned as-is (see `assemble.rs`).
+#[allow(clippy::too_many_arguments, clippy::result_large_err)]
 async fn read_capped_body(
     host: &Arc<dyn EngineHost>,
     rt: &Arc<NativeRuntime>,
