@@ -304,6 +304,17 @@ pub trait GauntletPlane: Send + Sync {
     /// in-place dispatch. Takes `self: Box<Self>` so the plane moves its owned per-request payload
     /// (body/parsed form/grant) into the engine; object-safe, so `run_gauntlet` drives it as `dyn`.
     async fn drive(self: Box<Self>, req: GauntletRequest<'_>) -> axum::response::Response;
+
+    /// THIS PLANE'S CAPABILITY KEY, for the composition-tier host-selection seam
+    /// ([`register_gauntlet_runner`]). `None` (the DEFAULT) means "run me on the substrate loop,
+    /// exactly as today" — so with nothing overridden and nothing registered, every path is
+    /// byte-identical to the shipped release. A plane opts onto the unified kernel loop by returning
+    /// its key AND the composition root registering a runner under it (an oracle-gated flip, #29).
+    /// NEUTRAL: the trait names no plane; each plane spells its own key, and the seam only ever
+    /// compares strings.
+    fn capability_key(&self) -> Option<&str> {
+        None
+    }
 }
 
 /// The successful OPEN-PASS ADMISSION result of [`admit_open`] — the request cleared the verify-before-
@@ -502,17 +513,91 @@ fn admit_open(
     }
 }
 
-/// THE SHARED GAUNTLET SEQUENCE — the ONE request path every protocol plane rides, now the Teller
-/// loop ([`crate::teller::run_unit`]) over the [`GauntletAdapter`]. Stage 1 identity is already
-/// resolved (threaded via `req.gov`); the loop runs the plane's `verify_destination` at Verify, in
-/// the correct PRE-ADMISSION position, and only if it proceeds the plane's `drive` at Route (its own
-/// byte-identical engine + metering). Returns the plane's (possibly streaming) response verbatim.
-/// The plane owns admission/route/metering/finish; the loop owns solely the order (nothing may
-/// reject after a charge) — so all planes enforce that invariant in ONE place.
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// THE COMPOSITION-TIER HOST-SELECTION SEAM (loop unification, DECISIONS #28).
+//
+// A per-capability-keyed registry of KERNEL-LOOP runners the composition root installs at boot
+// (mirrors the admin-mount-seam, busbar-core/src/admin/seam.rs). The kernel loop lives in
+// `busbar-kernel`, which this tier does not depend on, so the runners are FN-POINTERS root injects.
+// The gauntlet free fns below consult the registry by the request's plane capability key: if a
+// runner is registered, route to it; UNSET (the default) runs today's substrate loop, byte-identical.
+// NEUTRAL: the seam names no plane — it is a `&str`-keyed table, exactly as `AdminUnitTable` is
+// `ctx.key`-keyed. Per-plane flip = registering that one plane's runner, oracle-gated (#29).
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+/// A kernel-loop one-shot runner, as the composition root injects it: the kernel-loop twin of
+/// [`run_gauntlet`], erased to a fn-pointer so this tier need not name `busbar-kernel`.
+pub type GauntletRunner = for<'a> fn(
+    GauntletRequest<'a>,
+    Box<dyn GauntletPlane + 'a>,
+) -> std::pin::Pin<
+    Box<dyn std::future::Future<Output = axum::response::Response> + Send + 'a>,
+>;
+
+/// A kernel-loop session runner, the kernel-loop twin of [`run_gauntlet_session`].
+pub type SessionRunner = for<'a> fn(
+    GauntletRequest<'a>,
+    Box<dyn GauntletPlane + 'a>,
+) -> Result<Admitted, axum::response::Response>;
+
+static ONE_SHOT_RUNNERS: std::sync::RwLock<
+    std::collections::BTreeMap<&'static str, GauntletRunner>,
+> = std::sync::RwLock::new(std::collections::BTreeMap::new());
+
+static SESSION_RUNNERS: std::sync::RwLock<
+    std::collections::BTreeMap<&'static str, SessionRunner>,
+> = std::sync::RwLock::new(std::collections::BTreeMap::new());
+
+/// Register a kernel-loop one-shot runner for a plane capability key. Composition root only, at boot.
+/// Last-write-wins and idempotent. Registering a key is the per-plane FLIP onto the unified loop.
+pub fn register_gauntlet_runner(key: &'static str, runner: GauntletRunner) {
+    ONE_SHOT_RUNNERS
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(key, runner);
+}
+
+/// Register a kernel-loop session runner for a plane capability key. Composition root only, at boot.
+pub fn register_session_runner(key: &'static str, runner: SessionRunner) {
+    SESSION_RUNNERS
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(key, runner);
+}
+
+fn one_shot_runner(key: &str) -> Option<GauntletRunner> {
+    ONE_SHOT_RUNNERS
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(key)
+        .copied()
+}
+
+fn session_runner(key: &str) -> Option<SessionRunner> {
+    SESSION_RUNNERS
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(key)
+        .copied()
+}
+
+/// THE SHARED GAUNTLET SEQUENCE — the ONE request path every protocol plane rides. It consults the
+/// host-selection seam first: a plane whose capability key has a kernel-loop runner registered rides
+/// the UNIFIED kernel loop; every other plane (the default) rides the substrate Teller loop
+/// ([`crate::teller::run_unit`]) over the [`GauntletAdapter`], byte-identical to the shipped release.
+/// Stage 1 identity is already resolved (threaded via `req.gov`); the loop runs the plane's
+/// `verify_destination` at Verify, in the correct PRE-ADMISSION position, and only if it proceeds the
+/// plane's `drive` at Route (its own byte-identical engine + metering). Returns the plane's (possibly
+/// streaming) response verbatim. The plane owns admission/route/metering/finish; the loop owns solely
+/// the order (nothing may reject after a charge) — so all planes enforce that invariant in ONE place.
 pub async fn run_gauntlet(
     req: GauntletRequest<'_>,
     plane: Box<dyn GauntletPlane + '_>,
 ) -> axum::response::Response {
+    let selected = plane.capability_key().and_then(one_shot_runner);
+    if let Some(runner) = selected {
+        return runner(req, plane).await;
+    }
     let unit = gauntlet_unit(&req);
     crate::teller::run_unit(GauntletAdapter { plane: Some(plane) }, unit).await
 }
@@ -536,6 +621,10 @@ pub fn run_gauntlet_session(
     req: GauntletRequest<'_>,
     plane: Box<dyn GauntletPlane + '_>,
 ) -> Result<Admitted, axum::response::Response> {
+    let selected = plane.capability_key().and_then(session_runner);
+    if let Some(runner) = selected {
+        return runner(req, plane);
+    }
     admit_open(&req, plane)
 }
 

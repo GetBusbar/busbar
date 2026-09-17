@@ -879,6 +879,12 @@ fn main() {
     // list through `plane::config::config_sections()`, so the plane axis must be installed before
     // any reader — including the CLI flags — can run.
     register_planes();
+    // HOST-SELECTION SEAM INSTALL (loop unification, DECISIONS #28), after the planes are registered
+    // and mirroring `busbar_admin::install()`: inject the kernel-loop runners into the neutral
+    // per-capability-keyed seam. DORMANT — it registers ZERO planes, so every gauntlet/session path
+    // stays on the substrate loop, byte-identical. Each per-plane flip onto the unified kernel loop is
+    // one line inside this install, landed only when that plane's money family is fleet-box oracle-green (#29).
+    root::gauntlet_install::install();
     // DIAGNOSTICS REGISTRATION, same slot and the same reason: a rendered catalog or a `by_code`
     // lookup must see every linked plane's owned codes, so the diagnostics axis is installed before
     // any reader. Each plane contributes its `DIAGNOSTICS` under its feature; a no-planes build

@@ -8,13 +8,16 @@
 //! loop unification adds nothing to the wire — the same faithfulness the fleet-box money oracle
 //! (DECISIONS #29) will later confirm on the MCP money family. Any difference here is a divergence.
 
+use std::future::Future;
+use std::pin::Pin;
 use std::time::Instant;
 
 use axum::body::{to_bytes, Body};
 use axum::http::StatusCode;
 use axum::response::Response;
 use busbar_substrate::plane_host::{
-    run_gauntlet, run_gauntlet_session, GauntletPlane, GauntletRequest, VerifyOutcome,
+    register_gauntlet_runner, register_session_runner, run_gauntlet, run_gauntlet_session, Admitted,
+    GauntletPlane, GauntletRequest, VerifyOutcome,
 };
 
 use crate::root::gauntlet_kernel::{open_gauntlet_via_kernel, run_gauntlet_via_kernel};
@@ -66,6 +69,52 @@ impl GauntletPlane for RefusePlane {
         // Unreachable: a refuse never drives. Kept so the trait is satisfied.
         Response::new(Body::empty())
     }
+}
+
+/// A plane that self-reports a capability key, so the host-selection seam can route it. Its `drive`
+/// returns a distinct sentinel so a test can tell "routed to substrate `drive`" from "routed to a
+/// registered runner".
+struct KeyedPlane {
+    key: &'static str,
+}
+
+#[async_trait::async_trait]
+impl GauntletPlane for KeyedPlane {
+    fn verify_destination(&self, _req: &GauntletRequest<'_>) -> VerifyOutcome {
+        VerifyOutcome::Proceed
+    }
+
+    async fn drive(self: Box<Self>, _req: GauntletRequest<'_>) -> Response {
+        // Reached only when the seam routes to the SUBSTRATE loop (which runs `drive`).
+        Response::new(Body::from("SUBSTRATE-DRIVE"))
+    }
+
+    fn capability_key(&self) -> Option<&str> {
+        Some(self.key)
+    }
+}
+
+/// A sentinel one-shot runner: proves the seam routed to a REGISTERED runner rather than substrate.
+fn sentinel_one_shot<'a>(
+    _req: GauntletRequest<'a>,
+    _plane: Box<dyn GauntletPlane + 'a>,
+) -> Pin<Box<dyn Future<Output = Response> + Send + 'a>> {
+    Box::pin(async {
+        let mut resp = Response::new(Body::from("ROUTED-TO-REGISTERED-RUNNER"));
+        *resp.status_mut() = StatusCode::from_u16(599).unwrap();
+        resp
+    })
+}
+
+/// A sentinel session runner with a distinctive correlation id.
+#[allow(clippy::result_large_err)]
+fn sentinel_session<'a>(
+    _req: GauntletRequest<'a>,
+    _plane: Box<dyn GauntletPlane + 'a>,
+) -> Result<Admitted, Response> {
+    Ok(Admitted {
+        correlation_id: 4242,
+    })
 }
 
 fn req(gov: &busbar_api::PlaneRequestCtx) -> GauntletRequest<'_> {
@@ -147,4 +196,81 @@ async fn kernel_session_admit_matches_substrate_open_unit_on_refuse() {
     assert_eq!(ss, ks, "session refusal status diverged kernel-vs-substrate");
     assert_eq!(sh, kh, "session refusal headers diverged kernel-vs-substrate");
     assert_eq!(sb, kb, "session refusal body diverged kernel-vs-substrate");
+}
+
+// ── HOST-SELECTION SEAM (Ruling: composition-tier runner registry) ──────────────────────────────
+// Unique test capability keys, so registration is isolated from every real plane (which returns
+// None) and from the other tests (which use their own planes) — no global-state cross-talk.
+
+#[tokio::test]
+async fn host_selection_seam_unset_key_routes_to_substrate() {
+    // A plane whose key has NO runner registered rides the substrate loop (its `drive` runs).
+    let gov = busbar_api::PlaneRequestCtx::default();
+    let resp = run_gauntlet(
+        req(&gov),
+        Box::new(KeyedPlane {
+            key: "kappa-unregistered-oneshot",
+        }),
+    )
+    .await;
+    let (status, _h, body) = split(resp).await;
+    assert_eq!(status, StatusCode::OK, "substrate drive's default status");
+    assert_eq!(
+        body,
+        axum::body::Bytes::from_static(b"SUBSTRATE-DRIVE"),
+        "an unregistered key must run the plane's substrate drive, byte-identical to today"
+    );
+}
+
+#[tokio::test]
+async fn host_selection_seam_routes_one_shot_to_registered_runner_when_set() {
+    register_gauntlet_runner("kappa-test-oneshot", sentinel_one_shot);
+    let gov = busbar_api::PlaneRequestCtx::default();
+    let resp = run_gauntlet(
+        req(&gov),
+        Box::new(KeyedPlane {
+            key: "kappa-test-oneshot",
+        }),
+    )
+    .await;
+    let (status, _h, body) = split(resp).await;
+    assert_eq!(status.as_u16(), 599, "the registered runner ran, not substrate drive");
+    assert_eq!(
+        body,
+        axum::body::Bytes::from_static(b"ROUTED-TO-REGISTERED-RUNNER")
+    );
+}
+
+#[test]
+fn host_selection_seam_unset_session_key_routes_to_substrate() {
+    // No session runner registered for this key → substrate admit_open admits (correlation from req).
+    let gov = busbar_api::PlaneRequestCtx::default();
+    let admitted = run_gauntlet_session(
+        req(&gov),
+        Box::new(KeyedPlane {
+            key: "kappa-unregistered-session",
+        }),
+    )
+    .expect("substrate admits on proceed");
+    assert_eq!(
+        admitted.correlation_id, 0,
+        "substrate admit_open carries the request's own correlation id (0 here)"
+    );
+}
+
+#[test]
+fn host_selection_seam_routes_session_to_registered_runner_when_set() {
+    register_session_runner("kappa-test-session", sentinel_session);
+    let gov = busbar_api::PlaneRequestCtx::default();
+    let admitted = run_gauntlet_session(
+        req(&gov),
+        Box::new(KeyedPlane {
+            key: "kappa-test-session",
+        }),
+    )
+    .expect("the registered session runner admits");
+    assert_eq!(
+        admitted.correlation_id, 4242,
+        "the registered session runner ran, not substrate admit_open"
+    );
 }
