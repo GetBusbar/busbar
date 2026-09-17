@@ -286,6 +286,20 @@ tikv-jemalloc-ctl = { workspace = true }
 name = "pool_upstream_creds"
 harness = false
 
+# ── THE HOT-PATH PERF INSTRUMENT ── the `<1µs` witness of the plane-extraction §8 perf gate:
+# plugin-host-vtable call vs direct call, delta < 1µs at p50 AND p99, plus a per-token host-call
+# counter asserted == 0 on the streaming path. `harness = false`: criterion supplies `main`, and the
+# file's own budget assertions take the process down non-zero when a claim is violated.
+[[bench]]
+name = "plane_host_vtable_perf"
+harness = false
+
+# ── THE HOT-PATH ALLOC INSTRUMENT ── the zero-allocation witness of the §8 alloc gate: a counting
+# `#[global_allocator]` asserted == 0 across the isolated POD host-call batch.
+[[bench]]
+name = "plane_host_vtable_alloc"
+harness = false
+
 # `txn_fence_red` is the rustc cfg `scripts/txn-fence.sh` sets to compile the NEGATIVE compile
 # fence (admin/v1/json/tests/txn_fence.rs). It is a cfg rather than a cargo feature because a
 # feature whose only effect is to break the build makes `--all-features` red for no defect.

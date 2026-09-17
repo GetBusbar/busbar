@@ -30,6 +30,8 @@ pub mod design_bindings;
 pub mod duplex_ws_default_edge;
 pub mod feature_sets;
 pub mod field_inventory;
+pub mod hot_path_alloc;
+pub mod hot_path_perf;
 pub mod inventory_coverage;
 pub mod inventory_ref;
 pub mod kernel_token_wire_purity;
@@ -2078,6 +2080,22 @@ pub static REGISTRY: &[Registration] = &[
         tier: Tier::Fast,
         build: || Box::new(duplex_ws_default_edge::DuplexWsDefaultEdgeGate),
         summary: "no WebSocket crate in the default money-path dependency closure",
+    },
+    Registration {
+        name: "hot-path-perf",
+        batch: 1,
+        tier: Tier::Fast,
+        build: || Box::new(hot_path_perf::HotPathPerfGate),
+        summary: "the §8 perf instrument measures the vtable crossing < 1µs (p50+p99) and 0 per-token \
+                  host calls",
+    },
+    Registration {
+        name: "hot-path-alloc",
+        batch: 1,
+        tier: Tier::Fast,
+        build: || Box::new(hot_path_alloc::HotPathAllocGate),
+        summary: "the §8 alloc instrument asserts 0 global allocations across the isolated POD \
+                  host-call batch",
     },
     Registration {
         name: "teller-steps",
