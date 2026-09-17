@@ -89,13 +89,9 @@ pub use busbar_substrate::metrics::{
 pub(crate) use busbar_substrate::metrics::{drain_pending, retaining, retaining_from};
 // The per-request cached-handle emit helpers moved DOWN to the neutral substrate alongside the
 // recorder install they feed (they name only the substrate metric consts, `recorder_installed`, and
-// the `metrics` macros — no `App`). Re-exported here so the `&App` telemetry wrappers in
-// `crate::telemetry` (their only callers) resolve `crate::metrics::…` unchanged and emit byte-identical
-// series.
-pub(crate) use busbar_substrate::metrics::{
-    incr_plane_requests_total, incr_requests_total, record_plane_request_duration,
-    record_request_duration,
-};
+// the `metrics` macros — no `App`). Their only callers — the `&App` telemetry wrappers — ALSO moved
+// down behind the `TelemetrySource` seam (`busbar_substrate::telemetry`) and now name
+// `busbar_substrate::metrics::…` directly, so core no longer re-exports them.
 // The scrape-time gauge NAMES + the gauge COMPOSITION/emit + `emit_lane_gauges` moved DOWN to the
 // substrate behind the neutral `ScrapeSource` seam (`busbar_substrate::metrics::refresh_scrape_gauges`);
 // core keeps only the thin `impl ScrapeSource for App` (App field reads) + the call-site wrapper below,
