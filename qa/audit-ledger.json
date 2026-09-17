@@ -1277,6 +1277,24 @@
    ]
   },
   {
+   "id": "crates/busbar-plane-a2a-host/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-plane-a2a-host/src"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-plane-a2a-host/src/tests"
+   ]
+  },
+  {
    "id": "crates/busbar-plane-admin/src",
    "kind": "production",
    "paths": [
@@ -4357,6 +4375,21 @@
    ]
   },
   {
+   "id": "crates/busbar-core-hooks/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-core-hooks/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
    "id": "crates/busbar-grammar/tests",
    "kind": "test",
    "paths": [
@@ -4585,6 +4618,21 @@
      "report": "the only allocation gate measures the request direction, so nothing holds the per-frame relay path the arena reset is pinned for; no test feeds an ordinary successful answer through the response decoder, which is what let the terminal test ship wrong in both directions"
     }
    ]
+  },
+  {
+   "id": "crates/busbar-plane-a2a-host/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-plane-a2a-host/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
   },
   {
    "id": "crates/busbar-plane-admin/src/tests",
