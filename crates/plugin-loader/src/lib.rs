@@ -39,6 +39,7 @@ pub mod highwater;
 pub mod hook;
 mod hostlog;
 mod legacy_usage;
+pub mod plane;
 pub mod registry;
 mod stage;
 pub mod store_adapter;
@@ -59,6 +60,7 @@ pub use busbar_plugin::cold::export::{ExportField, ExportStream};
 pub use fetch::{fetch_plugins, FetchOutcome, FetchSpec};
 pub use highwater::{HighWaterMarks, HIGH_WATER_FILE};
 pub use hook::DlopenPolicy;
+pub use plane::{load_plane, load_plane_from_bytes, DynPlane};
 pub use registry::{
     inventory as inventory_tarballs, scan_and_validate, supported_abi, InventoryEntry,
     LoadablePlugin, PluginRegistry, SkippedPlugin,

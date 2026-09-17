@@ -4091,6 +4091,36 @@ why     = "busbar-plugin names busbar-api: declared normal in the shipped graph,
 drain   = "unknown until the ruling. If the edge is granted, this row becomes `allowed` and its class joins ARCHITECTURE_ALLOWED in xtask/src/gates/kind_isolation.rs; if it is not, the drain is deleting the busbar-api dependency from busbar-plugin."
 
 [[dep]]
+from    = "busbar-plugin-example-plane"
+to      = "busbar-plugin"
+half    = "shipped"
+count   = "1"
+verdict = "tcb"
+cite    = "ARCHITECTURE.md 1.4 \"`loader` and `abi` are TCB crates, not kinds.\" The kind:plane drop-in FIXTURE is plugin-tooling (beside busbar-plugin-sdk/busbar-plugin-loader), so naming the plugin-abi crate is inside the trusted computing base."
+why     = "busbar-plugin-example-plane names busbar-plugin: the kind:plane drop-in fixture authors a real busbar_plugin::hot::PlaneDecl, so it names the plugin-abi crate, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none while the loader and the plugin tooling are outside the kind system (ARCHITECTURE.md 1.4: they are not kinds). The drain is the ruling that gives them one; until it lands this row holds the number."
+
+[[dep]]
+from    = "busbar-plugin-example-plane"
+to      = "busbar-plugin-sdk"
+half    = "shipped"
+count   = "1"
+verdict = "tcb"
+cite    = "ARCHITECTURE.md 1.4 \"`loader` and `abi` are TCB crates, not kinds.\" The fixture exports its PlaneDecl through busbar_plugin_sdk::export_plane!, a plugin-tooling-to-plugin-tooling edge inside the trusted computing base."
+why     = "busbar-plugin-example-plane names busbar-plugin-sdk: it emits its cdylib boundary symbols through busbar_plugin_sdk::export_plane!, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none while the loader and the plugin tooling are outside the kind system (ARCHITECTURE.md 1.4: they are not kinds). The drain is the ruling that gives them one; until it lands this row holds the number."
+
+[[dep]]
+from    = "busbar-plugin-loader"
+to      = "busbar-plugin-example-plane"
+half    = "test"
+count   = "1"
+verdict = "tcb"
+cite    = "ARCHITECTURE.md 1.4 \"`loader` and `abi` are TCB crates, not kinds.\" The loader's drop-in conformance test dev-depends on the fixture's rlib for the COMPILED-IN PLANE_DECL reference it compares the DROPPED-IN decl against; a plugin-tooling-to-plugin-tooling test edge inside the trusted computing base."
+why     = "busbar-plugin-loader names busbar-plugin-example-plane: declared dev in the test graph so plane_conformance_tests can link the compiled-in PLANE_DECL, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none while the loader and the plugin tooling are outside the kind system (ARCHITECTURE.md 1.4: they are not kinds). The drain is the ruling that gives them one; until it lands this row holds the number."
+
+[[dep]]
 from    = "busbar-plugin-loader"
 to      = "busbar-api"
 half    = "shipped"

@@ -1106,6 +1106,76 @@ macro_rules! export_store_plugin {
     };
 }
 
+// ── PLANE glue (`kind: plane`, 1.6.0 S4) ──────────────────────────────────────────────────────────
+// A plane is the SIXTH kind and the ONE kind that does NOT speak the six-symbol JSON `call` wire: it
+// is a HOT-tier protocol plane driven over the `#[repr(C)]` `busbar_plugin::hot::PlaneDecl` vtable.
+// `export_plane!` is therefore its OWN macro (not a thin wrapper over `export_plugin!`): it stamps the
+// SHARED transport handshake (`busbar_abi`) + `busbar_plugin_kind() == "plane"` so the plane rides the
+// same tarball/trust discovery pipeline, plus the ONE hot-lane entrypoint `busbar_plane_decl()`
+// returning the author's `'static PlaneDecl`. The plane author authors a real `PlaneDecl` (its
+// `#[repr(C)]` vtable, filling the `build`/`start`/`dispatch`/… slots against `busbar_plugin::hot`);
+// the SDK only emits the boundary symbols. This is the plane analogue of `export_store_plugin!`.
+
+/// The whole HOT-tier plane ABI surface, re-exported so a plane crate names
+/// `busbar_plugin_sdk::plane::PlaneDecl` (etc.) without a direct `busbar-plugin` dependency — the same
+/// convenience re-export path the cold kinds get for their wire types.
+pub mod plane {
+    pub use busbar_plugin::hot::{
+        decl, host, pod, workitem, BuildCtx, EmitHandle, EmitKind, InboundHandle, InboundKind,
+        IngressCarrier, OpaqueHandle, PlaneDecl, PlaneDeclFn, PlaneHostVtable, WorkItem,
+    };
+    pub use busbar_plugin::hot::pod::{OpaqueState, RawStatus, StatusClass, POD_VERSION};
+    pub use busbar_plugin::{
+        check_preamble, honoured_size, write_out, AbiPreamble, ABI_MAJOR, ABI_MINOR,
+    };
+}
+
+/// Re-export used ONLY by the `export_plane!` expansion, so a plane crate does not need its own
+/// direct `busbar-plugin` dependency just to name `PlaneDecl` in the generated `busbar_plane_decl`
+/// symbol.
+#[doc(hidden)]
+pub mod __plane_abi {
+    pub use busbar_plugin::hot::PlaneDecl;
+}
+
+/// Emit a `plane`-kind cdylib from `$decl` (a `'static busbar_plugin_sdk::plane::PlaneDecl`, e.g. a
+/// `pub static PLANE_DECL: PlaneDecl = …`). Stamps the SHARED transport handshake `busbar_abi()`,
+/// `busbar_plugin_kind() == "plane"`, and the ONE hot-lane entrypoint `busbar_plane_decl()` returning
+/// a pointer to `$decl`. The SAME `$decl` `static` is usable STATICALLY (compiled-in) — depend on the
+/// crate as a normal `lib` and hand `&PLANE_DECL` to the registry — so a plane is both-ways by
+/// construction, exactly like the cold kinds (`DECISIONS #2/#11/#26 S4`).
+///
+/// The plane author owns `$decl`: the `#[repr(C)]` `PlaneDecl` whose `config_validate`/`build`/
+/// `hydrate`/`start`/`admin_routes`/`openapi`/`dispatch` slots and `provided_carriers` they fill
+/// against `busbar_plugin::hot`. The macro adds NO seam on which a boundary symbol can be got wrong.
+#[macro_export]
+macro_rules! export_plane {
+    ($decl:path) => {
+        /// # Safety
+        /// Read only by the busbar loader as the frozen TRANSPORT handshake (shared with cold kinds).
+        #[no_mangle]
+        pub extern "C-unwind" fn busbar_abi() -> u32 {
+            $crate::transport_version()
+        }
+
+        /// # Safety
+        /// The returned pointer is to a `'static` NUL-terminated string owned by this library.
+        #[no_mangle]
+        pub extern "C-unwind" fn busbar_plugin_kind() -> *const u8 {
+            const KIND_NUL: &str = "plane\0";
+            KIND_NUL.as_ptr()
+        }
+
+        /// # Safety
+        /// The returned pointer is to a `'static` [`PlaneDecl`] owned by this library, whose bytes and
+        /// vocabulary ranges live for the whole life of the loaded image. The loader NEVER frees it.
+        #[no_mangle]
+        pub unsafe extern "C-unwind" fn busbar_plane_decl() -> *const $crate::__plane_abi::PlaneDecl {
+            ::core::ptr::addr_of!($decl)
+        }
+    };
+}
+
 #[cfg(test)]
 #[path = "tests/lib_tests.rs"]
 mod tests;

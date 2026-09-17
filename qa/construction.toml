@@ -744,6 +744,7 @@ known_sites = [
   "crates/busbar-transport-ws/src/transport.rs",
   "crates/plugin-loader/src/",
   "crates/plugin-sdk/src/boundary.rs",
+  "crates/plane-example/src/",
 ]
 
 # The escape list, mirroring crates/busbar-caps/fixtures/lint_rules.rs HOLD_ESCAPES. A test in that

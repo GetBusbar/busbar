@@ -80,6 +80,15 @@ pub fn supported_abi(kind: &str) -> &'static [u32] {
             busbar_plugin::cold::export::EXPORT_ABI_VERSION,
             busbar_plugin::cold::export::EXPORT_ABI_VERSION,
         ],
+        // A `kind: plane` plugin is a protocol plane delivered as a `cdylib` and driven over the
+        // HOT-tier `#[repr(C)]` `PlaneDecl` vtable (`busbar_plugin::hot`) — NOT the six-symbol JSON
+        // `call` wire the five cold kinds share. Its per-kind PAYLOAD axis is the AIRLOCK MINOR
+        // (`busbar_plugin::ABI_MINOR`): a plane cdylib stamps that minor into its `PlaneDecl`'s frozen
+        // `AbiPreamble`, and `open_plane` fail-closes on a MAJOR mismatch while accepting an older
+        // minor (append-only). The manifest `abi_version` a plane declares is that same minor, floored
+        // at 1 (the first minor a plane ABI could target) so an older-minor plane still validates and
+        // its real forward-compat gate is the airlock `check_preamble` at load. `[1, ABI_MINOR]`.
+        "plane" => &[1, busbar_plugin::ABI_MINOR],
         _ => &[],
     }
 }
@@ -422,6 +431,39 @@ impl PluginRegistry {
             &p.manifest.name,
             &p.manifest.kind,
         )
+    }
+
+    /// Open a PLANE resolved by name or alias: verifies the resolved plugin's `kind` is `plane`, then
+    /// loads the VERIFIED bytes over the HOT-tier ABI (`busbar_plugin::hot`) and reads its
+    /// [`PlaneDecl`](busbar_plugin::hot::PlaneDecl), returning a [`crate::DynPlane`] — the boundary-safe
+    /// handle the composition root drives exactly as it drives a compiled-in plane. Same trust and
+    /// load pipeline as store/secret/auth/hook/export; only the kind (and the driving seam) differs.
+    /// FAIL-CLOSED on any resolution/kind/load failure. The 1.6.0 S4 both-ways entrypoint for planes.
+    pub fn open_plane(&self, name_or_alias: &str) -> Result<crate::DynPlane, String> {
+        let Some(p) = self.resolve(name_or_alias) else {
+            return Err(match self.unresolved_reason(name_or_alias) {
+                Some(s) => format!(
+                    "plugin '{name_or_alias}' is present ({}) but was not loaded: {}",
+                    s.file, s.reason
+                ),
+                None => format!(
+                    "no plugin named or aliased '{name_or_alias}' is available (loadable plugins: \
+                     [{}])",
+                    self.loadable
+                        .iter()
+                        .map(|p| p.manifest.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            });
+        };
+        if p.manifest.kind != "plane" {
+            return Err(format!(
+                "plugin '{}' has kind '{}', not 'plane' - it cannot serve as a protocol plane",
+                p.manifest.name, p.manifest.kind
+            ));
+        }
+        crate::plane::load_plane_from_bytes(&p.lib_bytes, &p.manifest.name, &p.manifest.kind)
     }
 }
 
