@@ -238,8 +238,25 @@ pub trait Clock: Send + Sync {
 /// configuration when a store is unreachable would be worse than a gap in a log that is already
 /// being alarmed on.
 pub trait DurableSeam: Send + Sync {
-    /// Persist one recorded mutation. The same timestamp the ring sealed is passed in.
-    fn emit(&self, ts: u64, action: &str, resource: &str, outcome: &str, principal: &str);
+    /// Persist one recorded mutation — the LINKED, SEALED record verbatim.
+    ///
+    /// The durable copy is restored and re-verified at boot as a window, and that verification
+    /// checks the sequence, the link and the digest, not just the five facts. So those three are
+    /// passed in alongside the facts: `seq`, `prev_hash` and the sealed `hash`, straight off the
+    /// entry the ring just sealed. Persisting only the facts would leave the off-box copy unable to
+    /// reconstruct what restore verifies. The same timestamp the ring sealed is passed in with them.
+    #[allow(clippy::too_many_arguments)]
+    fn emit(
+        &self,
+        seq: u64,
+        ts: u64,
+        action: &str,
+        resource: &str,
+        outcome: &str,
+        principal: &str,
+        prev_hash: &str,
+        hash: &str,
+    );
 }
 
 /// A seam that does nothing, for a deployment that keeps only the ring.
@@ -247,7 +264,19 @@ pub trait DurableSeam: Send + Sync {
 pub struct NoSeam;
 
 impl DurableSeam for NoSeam {
-    fn emit(&self, _ts: u64, _action: &str, _resource: &str, _outcome: &str, _principal: &str) {}
+    #[allow(clippy::too_many_arguments)]
+    fn emit(
+        &self,
+        _seq: u64,
+        _ts: u64,
+        _action: &str,
+        _resource: &str,
+        _outcome: &str,
+        _principal: &str,
+        _prev_hash: &str,
+        _hash: &str,
+    ) {
+    }
 }
 
 /// The in-memory admin audit ring.
@@ -308,7 +337,9 @@ impl AuditLog {
         // ONE clock read for this mutation, shared by the sealed ring record below AND the durable
         // emit after it.
         let ts = self.clock.now();
-        {
+        // The LINKED, SEALED position and digest, lifted out of the lock so the durable emit below
+        // persists the SAME record the ring sealed — not just its facts.
+        let (seq, prev_hash, hash) = {
             let mut q = self.entries.lock().unwrap_or_else(|e| e.into_inner());
             let seq = self.seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             // Chain to the most recent entry, before any prune.
@@ -328,15 +359,19 @@ impl AuditLog {
                     principal: principal.to_string(),
                 },
             );
+            // Capture the sealed link and digest before the entry is moved into the ring.
+            let sealed = (entry.seq, entry.prev_hash.clone(), entry.hash.clone());
             while q.len() >= MAX_AUDIT_ENTRIES {
                 q.pop_front();
             }
             q.push_back(entry);
-        }
+            sealed
+        };
         // THE CHOKEPOINT FEED onto the durable seam. Recording a mutation is the ONE place a
-        // mutation is recorded, so this ONE call — with the SAME timestamp sealed above — is the
-        // durable write.
-        self.seam.emit(ts, action, resource, outcome, principal);
+        // mutation is recorded, so this ONE call — with the SAME timestamp sealed above AND the
+        // sealed sequence, link and digest — is the durable write, verbatim.
+        self.seam
+            .emit(seq, ts, action, resource, outcome, principal, &prev_hash, &hash);
     }
 
     /// Export the retained ring, oldest first.

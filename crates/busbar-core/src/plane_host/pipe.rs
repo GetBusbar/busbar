@@ -99,11 +99,17 @@ impl PipeBackend {
     fn close(&self) {
         // Drop stdin first so a child reading its input observes EOF and can exit cleanly.
         let _ = self.stdin.lock().unwrap_or_else(|e| e.into_inner()).take();
-        let _ = self.stdout.lock().unwrap_or_else(|e| e.into_inner()).take();
+        // Kill and reap the child BEFORE contending for the stdout lock. `read` holds that lock
+        // across a blocking `stdout.read`, so a child that ignores its stdin EOF and keeps stdout
+        // open would park the reader forever — and taking stdout first (its lock) would then wedge
+        // this teardown behind the parked read, leaking the process. Killing the child closes its
+        // stdout, so the parked read returns EOF and releases the lock; only then do we take the
+        // handle. This mirrors the egress path's stop-signal teardown.
         if let Some(mut child) = self.child.lock().unwrap_or_else(|e| e.into_inner()).take() {
             let _ = child.kill();
             let _ = child.wait();
         }
+        let _ = self.stdout.lock().unwrap_or_else(|e| e.into_inner()).take();
     }
 }
 

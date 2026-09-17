@@ -62,22 +62,40 @@ impl Grants {
     }
 }
 
+/// The open posture's non-principal, however the caller spells it.
+///
+/// `Auth::resolve` renders the unauthenticated open door as `Some(Principal::anonymous())`, while
+/// other call sites pass `None`; both mean "no authenticated caller". The two admin gates below must
+/// read them the SAME way, or the open-admin grant lands for one spelling and not the other — an
+/// absent principal getting full scope from `admin_grants` while the resolved `Some(anonymous)` the
+/// authenticate unit actually produces is turned away (or vice versa). Answering "is this the
+/// open-posture non-principal?" in one place makes the two gates agree by construction.
+fn is_open_posture_caller(principal: Option<&Principal>) -> bool {
+    match principal {
+        None => true,
+        Some(p) => p.is_anonymous(),
+    }
+}
+
 /// The grants for an administrative caller under the deployment's admin posture.
 ///
 /// `admin_chain_empty` is the operator's configuration: true when no admin module is named. On that
-/// posture an absent principal is granted full scope. With a chain configured, an absent principal
-/// holds nothing, and a resolved principal's grants come from the bindings rather than from here.
+/// posture the open-posture non-principal — an absent principal, or the anonymous principal the
+/// authenticate unit renders the open door as — is granted full scope. With a chain configured, that
+/// caller holds nothing, and a resolved principal's grants come from the bindings rather than here.
 pub fn admin_grants(admin_chain_empty: bool, principal: Option<&Principal>) -> Option<Grants> {
-    match (admin_chain_empty, principal) {
-        (true, None) => Some(Grants::of(Scope::Full)),
-        _ => None,
+    if admin_chain_empty && is_open_posture_caller(principal) {
+        Some(Grants::of(Scope::Full))
+    } else {
+        None
     }
 }
 
 /// Whether the kernel-verb scope check is satisfied for this caller.
 ///
 /// The check ALWAYS runs — it is never skipped for a posture. On the open posture it is satisfied
-/// for the anonymous principal, which is a different statement from not asking.
+/// for the open-posture non-principal, which is a different statement from not asking. It shares
+/// `is_open_posture_caller` with `admin_grants` so the two gates cannot drift apart.
 pub fn kernel_verb_scope_satisfied(admin_chain_empty: bool, principal: &Principal) -> bool {
-    admin_chain_empty && principal.is_anonymous()
+    admin_chain_empty && is_open_posture_caller(Some(principal))
 }

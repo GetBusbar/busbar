@@ -99,8 +99,17 @@ pub fn reconcile_order(
 /// keeps pinning to it and silently defeats the drain — and neither is one this request already
 /// tried. Both are selection-policy skips rather than unavailability, so neither is recorded as a
 /// reason.
+///
+/// A THIRD skip, matching the ranked and floor paths (see `survives_prewalk_filter`): a member the
+/// lane table reports NOT admissible — configured-out/Dead, or over its lifetime budget — is not
+/// pinned to either. Without it a session hashing onto a dead lane in the candidate set is offered
+/// it directly, and `breaker.try_admit` has no dead concept, so the hop would be dispatched to a
+/// dead upstream. This uses the SAME `LaneTable::lane_admissible` predicate the other paths use;
+/// it deliberately does NOT add the readiness/breaker peek, preserving the affinity half-open probe
+/// pass-through (a breaker-open sticky is still offered first, exactly as before).
 pub fn sticky_position(
     candidates: &[LaneCandidate],
+    lanes: &dyn LaneTable,
     affinity_key_hash: Option<u64>,
     excluded: &HashSet<usize>,
 ) -> Option<usize> {
@@ -109,7 +118,10 @@ pub fn sticky_position(
         return None;
     }
     let pos = (hash as usize) % candidates.len();
-    (candidates[pos].weight != 0 && !excluded.contains(&candidates[pos].idx)).then_some(pos)
+    (candidates[pos].weight != 0
+        && !excluded.contains(&candidates[pos].idx)
+        && lanes.lane_admissible(candidates[pos].idx))
+    .then_some(pos)
 }
 
 /// What the walk produced.
@@ -165,7 +177,7 @@ pub fn pick(
         return PickOutcome::NoneAdmissible;
     }
 
-    let sticky = sticky_position(candidates, affinity_key_hash, excluded);
+    let sticky = sticky_position(candidates, lanes, affinity_key_hash, excluded);
     let mut sticky_offered = false;
     let mut sticky_grace = false;
     let mut local_excluded: HashSet<usize> = HashSet::new();

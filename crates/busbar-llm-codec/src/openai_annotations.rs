@@ -128,7 +128,12 @@ fn citation_span(text: &str, base: usize, c: &crate::ir::IrCitation) -> Option<(
                 // a char boundary, so the byte slice below stays valid — only the emitted span
                 // needs converting.
                 let first = text.find(q)?;
-                if text[first + q.len()..].contains(q) {
+                // Scan for a second match starting one byte past `first` (NOT `first + q.len()`):
+                // an ambiguous quote can repeat OVERLAPPING itself (text="aaaa", q="aaa" matches at
+                // 0 and 1), and skipping a full `q.len()` would step over that second anchor and
+                // wrongly accept the quote as unique. Any further match at all makes the anchor
+                // ambiguous, so no span is recovered.
+                if text[first + 1..].contains(q) {
                     return None;
                 }
                 let start_ch = text[..first].chars().count();
@@ -198,4 +203,40 @@ pub fn read_url_annotations(annotations: &serde_json::Value) -> Vec<crate::ir::I
         });
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cite_from_quote(quote: &str) -> crate::ir::IrCitation {
+        crate::ir::IrCitation {
+            kind: Some("web_search_result_location".to_string()),
+            cited_text: Some(quote.to_string()),
+            title: None,
+            url: Some("https://example.test/".to_string()),
+            document_index: None,
+            // No offsets → force the quote-recovery arm of `citation_span`.
+            start_index: None,
+            end_index: None,
+            encrypted_index: None,
+            raw: None,
+        }
+    }
+
+    /// L6: an OVERLAPPING repeat (text="aaaa", quote="aaa" matches at offsets 0 and 1) is
+    /// ambiguous, so no span may be recovered. The pre-fix check skipped a full `q.len()` past the
+    /// first hit and stepped over the overlapping second match, wrongly emitting a span.
+    #[test]
+    fn overlapping_quote_repeat_is_ambiguous_no_span() {
+        let c = cite_from_quote("aaa");
+        assert_eq!(citation_span("aaaa", 0, &c), None);
+    }
+
+    /// Byte-neutral control: a genuinely unique quote still recovers its span unchanged.
+    #[test]
+    fn unique_quote_still_recovers_span() {
+        let c = cite_from_quote("brown");
+        assert_eq!(citation_span("the brown fox", 0, &c), Some((4, 9)));
+    }
 }

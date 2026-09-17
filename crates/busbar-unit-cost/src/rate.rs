@@ -39,7 +39,12 @@ use crate::currency::CurrencyCode;
 /// whether the float that produced it was infinite or merely a config typo with too many zeros.
 pub fn nano_rate(micro_per_unit: f64) -> u64 {
     let v = (micro_per_unit * 1000.0).round();
-    if v.is_finite() && v > 0.0 && v <= u64::MAX as f64 {
+    // Reject at the TRUE boundary. `u64::MAX as f64` rounds UP to 2^64, so a `v <= u64::MAX as f64`
+    // guard lets a finite `v == 2^64` through, and `v as u64` then SATURATES to `u64::MAX` — the
+    // astronomical overcharge this guard exists to prevent. Comparing against `2^64` itself makes an
+    // out-of-range value fall to `0` as the doc above promises. Byte-neutral for every in-range rate:
+    // the largest representable f64 strictly below 2^64 (`2^64 - 2048`) still passes and converts.
+    if v.is_finite() && v > 0.0 && v < 2.0_f64.powi(64) {
         v as u64
     } else {
         0
@@ -436,5 +441,37 @@ impl LaneRates<'_> {
                 .saturating_mul(u128::from(self.nanos_per_unit(l.class.as_str())));
             acc.saturating_add(amount)
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::nano_rate;
+
+    /// L14: a finite value that rounds to exactly 2^64 is OUT of range and must fall to `0` as the
+    /// guard's doc says, NOT saturate to `u64::MAX`. `u64::MAX as f64` rounds UP to 2^64, so a
+    /// `v <= u64::MAX as f64` guard would let `v == 2^64` through and then `v as u64` saturates to
+    /// `u64::MAX` — the astronomical overcharge the guard exists to prevent.
+    #[test]
+    fn out_of_range_astronomical_value_falls_to_zero_not_max() {
+        // A micro value whose (micro * 1000).round() is exactly 2^64.
+        let two_pow_64 = 2.0_f64.powi(64);
+        let micro = two_pow_64 / 1000.0;
+        // Precondition: this input really does round to the boundary the guard concerns.
+        assert_eq!((micro * 1000.0).round(), two_pow_64);
+        assert_eq!(
+            nano_rate(micro),
+            0,
+            "an out-of-range value must fall to 0, not saturate to u64::MAX"
+        );
+    }
+
+    /// Control: an ordinary in-range rate is unchanged — the fix is byte-neutral for real rates.
+    #[test]
+    fn normal_rate_is_unchanged() {
+        // 1.234 micro-units per unit -> multiply by 1000, round half away from zero.
+        assert_eq!(nano_rate(1.234), 1234);
+        assert_eq!(nano_rate(0.0), 0);
+        assert_eq!(nano_rate(1_000_000.0), 1_000_000_000);
     }
 }

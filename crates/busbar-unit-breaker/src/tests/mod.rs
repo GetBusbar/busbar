@@ -746,14 +746,14 @@ fn record_failure_says_which_arm_it_took() {
     );
     let past = now + 100_000;
     assert!(matches!(probing.acquire(past), ProbeAdmit::ProbeWon(_)));
-    assert_eq!(
+    assert!(matches!(
         probing.record_failure(past, &cfg, None, 86_400),
-        FailureEffect::Reopened
-    );
+        FailureEffect::Reopened(_)
+    ));
 
     // And the boolean the kernel counts trips with is unchanged.
     assert!(FailureEffect::Tripped.tripped());
-    assert!(!FailureEffect::Reopened.tripped());
+    assert!(!FailureEffect::Reopened(0).tripped());
     assert!(!FailureEffect::Benched.tripped());
     assert!(!FailureEffect::Nothing.tripped());
 }
@@ -899,6 +899,106 @@ fn a_probe_that_closed_the_cell_is_always_journaled_as_succeeded() {
     assert_eq!(
         orphans, 0,
         "a won probe whose cell then closed left no Succeeded record in the journal"
+    );
+}
+
+/// The `ProbeEvent::Failed` a reopen journals carries the SAME `cooldown_until` the reopen armed —
+/// sourced from `record_failure`'s own return, under the transition lock, not from a second,
+/// unlocked `cell.state()` read `observe` used to take.
+///
+/// Red before the fix: `observe` armed the reopen inside `record_failure` (holding the transition
+/// lock) but then dropped that lock and read `cell.state()` a SECOND time to fill the journal's
+/// `cooldown_until`, falling back to `now` when the cell was no longer `Open`. A concurrent recovery
+/// `close` landing between the two reads made the durable record carry `now` instead of the real
+/// deadline — a TOCTOU the second read cannot avoid. This test proves the returned deadline is used
+/// even when a state re-read WOULD differ.
+#[test]
+fn a_reopen_journals_the_deadline_it_armed_not_a_second_state_read() {
+    let cfg = consecutive_cfg(100, 10_000);
+    let token = route_token();
+    let destination = DestinationId::new(7);
+
+    // Green, common case: the whole `observe` path journals the armed deadline. Trip, win the
+    // probe, then fail it — the journal's `cooldown_until` is the cell's freshly-armed Open deadline.
+    let journal = std::sync::Arc::new(RecordingJournal::default());
+    let unit = BreakerUnit::<_, crate::classify::NoopDiagnostics>::with_journal(journal.clone());
+    unit.observe(
+        "pool",
+        destination,
+        Outcome::Transient { retry_after: None },
+        &cfg,
+        1_000,
+        &token,
+    );
+    let probe_now = 1_000_000;
+    assert!(
+        unit.try_admit("pool", destination, probe_now)
+            .expect("the cooldown is long past")
+            .probe_epoch
+            .is_some(),
+        "this call won the recovery probe"
+    );
+    let tripped = unit.observe(
+        "pool",
+        destination,
+        Outcome::Transient { retry_after: None },
+        &cfg,
+        probe_now,
+        &token,
+    );
+    assert!(!tripped, "a failed probe reopens, it is not a fresh trip");
+    let armed = match unit.cell("pool", destination).state() {
+        BreakerState::Open { until } => until,
+        other => panic!("expected Open after a failed probe, got {other:?}"),
+    };
+    let journaled = journal
+        .events()
+        .into_iter()
+        .find_map(|e| match e {
+            crate::journal::ProbeEvent::Failed { cooldown_until, .. } => Some(cooldown_until),
+            _ => None,
+        })
+        .expect("a failed probe must journal a Failed event");
+    assert_eq!(
+        journaled, armed,
+        "the journal must carry the deadline the reopen armed, not `now`"
+    );
+    assert!(
+        journaled > probe_now,
+        "the armed deadline is in the future, not `now`"
+    );
+
+    // The red-before proof, deterministic: `record_failure` RETURNS the deadline it set, so the
+    // value survives even after a concurrent recovery `close` — the exact interleaving that made the
+    // old second-read strategy fall back to `now`.
+    let cell = BreakerCell::new();
+    let now = 2_000;
+    assert!(matches!(
+        cell.record_failure(now, &cfg, None, MAX_RETRY_AFTER),
+        FailureEffect::Tripped
+    ));
+    let past = now + 1_000_000;
+    assert!(matches!(cell.acquire(past), ProbeAdmit::ProbeWon(_)));
+    let returned_until = match cell.record_failure(past, &cfg, None, MAX_RETRY_AFTER) {
+        FailureEffect::Reopened(until) => until,
+        other => panic!("a failed probe must reopen, got {other:?}"),
+    };
+    assert!(
+        returned_until > past,
+        "the reopen armed a real, future cooldown deadline"
+    );
+    // A peer recovers the cell before the journal line is written.
+    cell.close();
+    // What the OLD `observe` did — read the state a SECOND time, fall back to `now` — now yields
+    // `past`, NOT the armed deadline: the durable record would have been wrong.
+    let second_read_value = match cell.state() {
+        BreakerState::Open { until } => until,
+        _ => past,
+    };
+    assert_ne!(
+        second_read_value, returned_until,
+        "the second unlocked state read diverges from the armed deadline after a concurrent close — \
+         this is the TOCTOU the returned deadline removes"
     );
 }
 
@@ -1261,9 +1361,11 @@ fn a_long_failure_streak_saturates_the_cooldown_instead_of_wrapping_it_to_zero()
             matches!(cell.acquire(now), ProbeAdmit::ProbeWon(_)),
             "an expired cooldown must yield the probe at reopen {i}"
         );
-        assert_eq!(
-            cell.record_failure(now, &cfg, None, MAX_RETRY_AFTER),
-            FailureEffect::Reopened,
+        assert!(
+            matches!(
+                cell.record_failure(now, &cfg, None, MAX_RETRY_AFTER),
+                FailureEffect::Reopened(_)
+            ),
             "a failed probe reopens at reopen {i}"
         );
     }

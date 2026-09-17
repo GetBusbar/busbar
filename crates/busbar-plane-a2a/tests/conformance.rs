@@ -284,6 +284,71 @@ fn a_composed_answer_is_wrapped_with_the_callers_identifier() {
     );
 }
 
+/// A target-binding answer is a BARE resource; a document-binding answer keeps the JSON-RPC envelope.
+///
+/// This protocol is one agent reachable three ways, and the three disagree on the shape of an answer
+/// this node composes out of its own records: the HTTP+JSON target binding and the discovery
+/// documents return the resource itself, while the JSON-RPC document binding wraps it in an envelope
+/// keyed by the caller's identifier. The supplement's own bindings pin the two apart — its
+/// `RestBinding` reads the body AS the resource (`payload = doc`), its `JsonRpcBinding` reads
+/// `doc["result"]` — so the SAME composed record answer must go back bare on a target row and
+/// enveloped on the document mount. The facts the decode step read travel with the unit to the
+/// answer, which is the channel `encode_response` keys on: the same one the caller's identifier
+/// already rides.
+#[test]
+fn a_target_binding_answer_is_bare_and_a_document_answer_is_wrapped() {
+    let plane = A2aPlane::EMPTY;
+    let composed = br#"{"tasks":[]}"#;
+
+    // The target binding: GET /a2a/tasks, named by the target and answered from this node's records.
+    let scaffold = Scaffold::new("http")
+        .on_path("/a2a/tasks")
+        .with_method("GET");
+    let ctx = scaffold.ctx();
+    let frames = vec![frame(b"")];
+    let mut cursor = FrameCursor::new(&frames);
+    let Ok(Ingress::OneShot(draft)) = plane.decode_ingress(&mut cursor, None, &ctx) else {
+        panic!("a target GET decodes as one whole unit");
+    };
+    let r = Response {
+        ir: busbar_contract::bounded::Ir::new(composed, &[]),
+        finish: busbar_contract::unit::FinishClass::Complete,
+        facts: draft.facts,
+    };
+    let out = plane
+        .encode_response(&r, None, &ctx)
+        .expect("a target answer encodes");
+    assert_eq!(
+        out.as_slice(),
+        composed,
+        "the target binding returns the resource itself, with no JSON-RPC envelope"
+    );
+
+    // The document binding: the same operation reached by a posted envelope keeps its envelope, with
+    // the caller's own identifier — byte for byte what it was before this shape existed.
+    let scaffold = Scaffold::new("http").on_path("/a2a");
+    let ctx = scaffold.ctx();
+    let body = request("7", "tasks/list");
+    let frames = vec![frame(&body)];
+    let mut cursor = FrameCursor::new(&frames);
+    let Ok(Ingress::OneShot(draft)) = plane.decode_ingress(&mut cursor, None, &ctx) else {
+        panic!("a posted envelope decodes as one whole unit");
+    };
+    let r = Response {
+        ir: busbar_contract::bounded::Ir::new(composed, &[]),
+        finish: busbar_contract::unit::FinishClass::Complete,
+        facts: draft.facts,
+    };
+    let out = plane
+        .encode_response(&r, None, &ctx)
+        .expect("a document answer encodes");
+    assert_eq!(
+        core::str::from_utf8(out.as_slice()).unwrap(),
+        r#"{"id":7,"jsonrpc":"2.0","result":{"tasks":[]}}"#,
+        "the document binding keeps the JSON-RPC envelope with the caller's identifier"
+    );
+}
+
 /// A document arriving on an upstream with no identifier opens a unit of the agent's own.
 #[test]
 fn an_unsolicited_document_opens_a_provider_unit() {

@@ -162,6 +162,8 @@ fn a_realtime_voice_session_reserves_takes_turns_and_settles() {
         &destination("api.openai.com", LaneId::new("realtime")),
         &c,
     );
+    // The announcement accumulates the call name but mints nothing on its own; the call is
+    // dispatched on its close, carrying the arguments the model streamed.
     let tool_open = serde_json::to_vec(&json!({
         "type": "response.output_item.added",
         "item": { "type": "function_call", "call_id": "call_1", "name": "lookup" },
@@ -169,16 +171,37 @@ fn a_realtime_voice_session_reserves_takes_turns_and_settles() {
     .expect("tool-call fixture serializes");
     let tool_frames = [frame(&tool_open)];
     let mut tool_cursor = FrameCursor::new(&tool_frames);
-    let tool = plane
+    let announced = plane
         .decode_response(
             &mut tool_cursor,
             &destination("api.openai.com", LaneId::new("realtime")),
             Some(&mut upstream_state),
             &c,
         )
-        .expect("tool-call open decodes");
+        .expect("tool-call announcement decodes");
+    assert!(
+        matches!(announced, Progress::Discard { .. }),
+        "a tool-call announcement mints no unit on its own, got {announced:?}"
+    );
+    let tool_done = serde_json::to_vec(&json!({
+        "type": "response.function_call_arguments.done",
+        "call_id": "call_1",
+        "name": "lookup",
+        "arguments": "{\"city\":\"Paris\"}",
+    }))
+    .expect("tool-call close fixture serializes");
+    let tool_done_frames = [frame(&tool_done)];
+    let mut tool_done_cursor = FrameCursor::new(&tool_done_frames);
+    let tool = plane
+        .decode_response(
+            &mut tool_done_cursor,
+            &destination("api.openai.com", LaneId::new("realtime")),
+            Some(&mut upstream_state),
+            &c,
+        )
+        .expect("tool-call close decodes");
     let Progress::OneShot(tool_draft) = tool else {
-        panic!("expected Progress::OneShot (a tool call opens), got {tool:?}");
+        panic!("expected Progress::OneShot (a tool call dispatches on close), got {tool:?}");
     };
     assert_eq!(tool_draft.op.as_str(), "tool_call");
     assert_eq!(
@@ -186,6 +209,10 @@ fn a_realtime_voice_session_reserves_takes_turns_and_settles() {
         Some(FactValue::Str("lookup")),
         "the tool-call sub-unit names the tool the loop invokes"
     );
+    // The dispatched call carries the arguments the model streamed, not an empty body.
+    let tool_args: serde_json::Value = serde_json::from_slice(tool_draft.body_ir.body())
+        .expect("the tool-call sub-unit body carries the arguments");
+    assert_eq!(tool_args["city"], "Paris");
 
     // ── SETTLE (END-OF-TURN) ────────────────────────────────────────────────────────────────────
     // The turn's `response.done` carries usage; the plane decodes it as the terminal frame and the

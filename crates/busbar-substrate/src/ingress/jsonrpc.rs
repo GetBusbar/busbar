@@ -404,15 +404,25 @@ pub fn read_response(value: &Value, sent_id: &Value) -> Result<Reply, NotAnAnswe
 /// number case: JSON has a single number type, so `1` and `1.0` are the same value, and
 /// `serde_json`'s own `Number` equality — which compares the parsed REPRESENTATION — would refuse a
 /// peer that echoed `1` as `1.0`. Refusing a correct answer is as much a correlation failure as
-/// accepting a wrong one, so the comparison is on the numeric value. It is still exact: no
-/// cross-type coercion, and `"1"` never matches `1`.
+/// accepting a wrong one, so the comparison also accepts equal numeric VALUES. It is still exact:
+/// no cross-type coercion, and `"1"` never matches `1`.
+///
+/// The `f64` value comparison is bounded to the exact-integer window (`|v| < 2^53`). Beyond it two
+/// DISTINCT integers can round to the same `f64` (`2^53` and `2^53 + 1` both become `9007199254740992.0`),
+/// so an unbounded `f64` fallback would correlate a response whose `id` merely rounds to the sent
+/// one. Identical representations are already caught by `a == b` (which is exact for any integer
+/// width), so the bounded fallback only ever has to reconcile the `1` vs `1.0` spelling.
 fn same_id(got: &Value, sent: &Value) -> bool {
+    /// 2^53: the largest magnitude below which every integer is exactly representable as `f64`.
+    const EXACT_F64_INT: f64 = 9_007_199_254_740_992.0;
     match (got, sent) {
         (Value::String(a), Value::String(b)) => a == b,
         (Value::Number(a), Value::Number(b)) => {
             a == b
                 || match (a.as_f64(), b.as_f64()) {
-                    (Some(x), Some(y)) => x == y,
+                    (Some(x), Some(y)) => {
+                        x == y && x.abs() < EXACT_F64_INT && y.abs() < EXACT_F64_INT
+                    }
                     _ => false,
                 }
         }

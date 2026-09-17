@@ -216,8 +216,11 @@ pub enum FailureEffect {
     /// A Closed cell reached its trip threshold and opened. The logical trip a metric counts.
     Tripped,
     /// A HalfOpen cell's recovery probe failed, so the cell reopened with a fresh cooldown. Not a
-    /// fresh trip: the cell was already tripped.
-    Reopened,
+    /// fresh trip: the cell was already tripped. Carries the `cooldown_until` deadline (Unix
+    /// seconds) armed by the reopen, computed and stored under the transition lock — so the probe
+    /// journal can record the deadline that was actually set, without a second unlocked state read
+    /// a concurrent recovery `close` could invalidate.
+    Reopened(u64),
     /// A Closed cell stayed closed but was benched for a cooldown, below the trip threshold.
     Benched,
     /// Nothing changed: an already-Open cell, or a sub-threshold failure on a cell that does not
@@ -234,7 +237,7 @@ impl FailureEffect {
     /// Whether this reopened a cell whose recovery probe failed — the event the probe journal
     /// records.
     pub fn reopened(self) -> bool {
-        matches!(self, FailureEffect::Reopened)
+        matches!(self, FailureEffect::Reopened(_))
     }
 }
 
@@ -392,13 +395,18 @@ impl BreakerCell {
 
     /// `open` body, assuming the caller already holds `transition_lock` (used by the record paths
     /// that take the lock once and must not re-take a non-reentrant `std::sync::Mutex`).
+    ///
+    /// Returns the `cooldown_until` deadline it armed. The deadline is COMPUTED and STORED here,
+    /// under the transition lock the caller already holds, so returning it lets a caller journal the
+    /// exact value it set without a second, unlocked `state()`/`cooldown_until` read that a
+    /// concurrent recovery `close` could invalidate.
     fn open_locked(
         &self,
         now_time: u64,
         cfg: &BreakerCfg,
         retry_after: Option<u64>,
         max_honored_retry_after_secs: u64,
-    ) {
+    ) -> u64 {
         let duration = self.compute_cooldown_with_retry_after(
             now_time,
             cfg,
@@ -408,12 +416,13 @@ impl BreakerCell {
         // saturating_add: `duration` may carry a server-supplied Retry-After (already clamped
         // above, but defense in depth) — never wrap `now + duration`, which would land
         // `cooldown_until` in the past and instantly re-ready a tripped cell.
-        self.cooldown_until
-            .store(now_time.saturating_add(duration), Ordering::Release);
+        let cooldown_until = now_time.saturating_add(duration);
+        self.cooldown_until.store(cooldown_until, Ordering::Release);
         self.breaker_state.store(ST_OPEN, Ordering::Release);
         // Release any in-flight probe back to Open: a failed half-open probe routes here, and
         // without this the flag would stay true forever, permanently wedging the cell HalfOpen.
         self.probe_in_flight.store(false, Ordering::Release);
+        cooldown_until
     }
 
     /// Transition the cell to Open with an escalated cooldown. Acquires the transition lock.
@@ -425,7 +434,7 @@ impl BreakerCell {
         max_honored_retry_after_secs: u64,
     ) {
         let _tx = lock_recover(&self.transition_lock);
-        self.open_locked(now_time, cfg, retry_after, max_honored_retry_after_secs);
+        let _ = self.open_locked(now_time, cfg, retry_after, max_honored_retry_after_secs);
     }
 
     /// `close` body, assuming the caller already holds `transition_lock`.
@@ -584,8 +593,9 @@ impl BreakerCell {
             // probe; reopening re-arms the cooldown but is not a fresh Closed→Open trip.
             ST_HALF_OPEN => {
                 self.streak.fetch_add(1, Ordering::Relaxed);
-                self.open_locked(now_time, cfg, retry_after, max_honored_retry_after_secs);
-                FailureEffect::Reopened
+                let cooldown_until =
+                    self.open_locked(now_time, cfg, retry_after, max_honored_retry_after_secs);
+                FailureEffect::Reopened(cooldown_until)
             }
             // Already Open: an intentional no-op. The cooldown is already armed; a failure while
             // Open does not re-escalate on every request during the cooldown.

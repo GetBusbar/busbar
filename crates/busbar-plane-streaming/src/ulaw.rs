@@ -12,7 +12,7 @@
 //!
 //! µ-law encodes a 14-bit-magnitude linear sample into an 8-bit sign/exponent/mantissa byte: one
 //! sign bit, a 3-bit exponent selecting one of eight logarithmic segments, and a 4-bit mantissa
-//! giving the position within the segment. The constants below (`BIAS = 0x84`, `CLIP = 8159`) and
+//! giving the position within the segment. The constants below (`BIAS = 0x84`, `CLIP = 32635`) and
 //! the segment table are the values the ITU-T G.711 reference algorithm defines; a byte is always
 //! bitwise-inverted on the wire (`!ulawbyte`), which is why both directions below start by
 //! inverting.

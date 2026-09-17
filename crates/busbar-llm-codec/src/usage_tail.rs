@@ -29,14 +29,17 @@ fn find_last(hay: &[u8], needle: &[u8]) -> Option<usize> {
 /// bracket-match the following `{...}` object (string- and escape-aware, so a `}` inside a quoted
 /// string value does not close the object early). Returns the byte span INCLUDING both braces.
 fn balanced_object_after(buf: &[u8], mut i: usize) -> Option<&[u8]> {
-    while i < buf.len() && (buf[i] as char).is_whitespace() {
+    // `is_ascii_whitespace` (NOT `(buf[i] as char).is_whitespace()`): the `as char` cast reinterprets
+    // a raw byte as a Unicode scalar, so Latin-1/C1 bytes 0x85 (NEL) and 0xA0 (NBSP) would count as
+    // whitespace — but only ASCII whitespace is legal JSON inter-token whitespace.
+    while i < buf.len() && buf[i].is_ascii_whitespace() {
         i += 1;
     }
     if buf.get(i) != Some(&b':') {
         return None;
     }
     i += 1;
-    while i < buf.len() && (buf[i] as char).is_whitespace() {
+    while i < buf.len() && buf[i].is_ascii_whitespace() {
         i += 1;
     }
     if buf.get(i) != Some(&b'{') {
@@ -83,4 +86,30 @@ pub fn isolate_tail_usage_object(tail: &[u8], key: &[u8]) -> Option<serde_json::
     let key_pos = find_last(tail, key)?;
     let obj = balanced_object_after(tail, key_pos + key.len())?;
     busbar_substrate_values::json::parse(obj).ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// L7: the C1/Latin-1 bytes 0x85 (NEL) and 0xA0 (NBSP) are NOT JSON whitespace and must not be
+    /// skipped. The pre-fix `(buf[i] as char).is_whitespace()` cast treated them as whitespace, so
+    /// the scan stepped over them and matched the `:`/`{` beyond — wrongly recovering an object.
+    #[test]
+    fn c1_latin1_bytes_are_not_json_whitespace() {
+        // `[0x85, ':', '{', '}']` scanned from 0: only ASCII whitespace may precede the `:`, so a
+        // leading 0x85/0xA0 means the very first byte is not `:` and no object is recovered.
+        assert_eq!(balanced_object_after(&[0x85, b':', b'{', b'}'], 0), None);
+        assert_eq!(balanced_object_after(&[0xA0, b':', b'{', b'}'], 0), None);
+    }
+
+    /// Byte-neutral control: ASCII whitespace around the `:` is still skipped and the object is
+    /// recovered exactly as before.
+    #[test]
+    fn ascii_whitespace_still_skipped() {
+        assert_eq!(
+            balanced_object_after(b" : {\"a\":1}", 0),
+            Some(&b"{\"a\":1}"[..])
+        );
+    }
 }

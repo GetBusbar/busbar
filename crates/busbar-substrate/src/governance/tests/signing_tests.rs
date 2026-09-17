@@ -289,3 +289,52 @@ fn derived_subkey_seed_is_the_free_function_over_the_root_secret() {
         "the method must be exactly the free function over the root secret, with no second path"
     );
 }
+
+/// Ed25519 signature malleability: STRICT verification refuses a non-canonical `S`.
+///
+/// `S` and `S + L` (L = the group order) both satisfy the verification equation under the
+/// permissive cofactored `verify`, so a holder of one valid token could mint a DIFFERENT token
+/// string carrying the identical claims. `verify_strict` refuses `S >= L`, pinning one signature
+/// string per payload. Here we take a genuine mint, add L to its `S` scalar, and require the
+/// verifier to reject the malleated token while the genuine one still verifies.
+#[test]
+fn a_malleated_non_canonical_signature_is_refused() {
+    // The ed25519 group order L (ℓ), little-endian.
+    const L_LE: [u8; 32] = [
+        0xed, 0xd3, 0xf5, 0x5c, 0x1a, 0x63, 0x12, 0x58, 0xd6, 0x9c, 0xf7, 0xa2, 0xde, 0xf9, 0x4d,
+        0x01, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x10,
+    ];
+    let s = signer();
+    let v = verifier(&s);
+    let payload = serde_json::to_vec(
+        &serde_json::json!({ "sub": "vk_mall", "exp": 2000u64, "kid": DEFAULT_KID }),
+    )
+    .unwrap();
+    let sig: Signature = s.key.sign(&payload);
+    let mut sig_bytes = sig.to_bytes(); // [R || S], S little-endian
+    // S' = S + L (little-endian add with carry). S < L, so S' < 2^254 and still fits 32 bytes.
+    let mut carry = 0u16;
+    for i in 0..32 {
+        let sum = u16::from(sig_bytes[32 + i]) + u16::from(L_LE[i]) + carry;
+        sig_bytes[32 + i] = (sum & 0xff) as u8;
+        carry = sum >> 8;
+    }
+    let malleated = format!(
+        "{TOKEN_PREFIX}{}.{}",
+        URL_SAFE_NO_PAD.encode(&payload),
+        URL_SAFE_NO_PAD.encode(sig_bytes)
+    );
+    let genuine = format!(
+        "{TOKEN_PREFIX}{}.{}",
+        URL_SAFE_NO_PAD.encode(&payload),
+        URL_SAFE_NO_PAD.encode(sig.to_bytes())
+    );
+    assert!(
+        v.verify(&genuine, 1000, None).is_ok(),
+        "the genuine signature must still verify"
+    );
+    assert!(
+        v.verify(&malleated, 1000, None).is_err(),
+        "a non-canonical S = S + L must be refused by strict verification"
+    );
+}

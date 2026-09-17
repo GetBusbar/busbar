@@ -790,3 +790,38 @@ fn egress_refuses_a_credential_bound_to_a_different_destination() {
         );
     });
 }
+
+#[test]
+fn a_streaming_thread_death_is_a_fault_not_a_clean_eof() {
+    use std::collections::VecDeque;
+    use std::sync::mpsc::sync_channel;
+    use std::sync::{Arc, Mutex};
+    // A sender dropped WITHOUT a clean `End` models the streaming task ending abnormally (a panic in
+    // the spawned reader, which carries no `catch_unwind`). `recv` then returns `Err(Disconnected)`.
+    // Serving that as a clean EOF would hand a TRUNCATED body back as a complete success; poll must
+    // report a Fault so the plane sees the truncation.
+    let (tx, rx) = sync_channel::<ChunkMsg>(1);
+    drop(tx);
+    let egress = HttpEgress {
+        chunks: Mutex::new(Some(rx)),
+        pending: Mutex::new(VecDeque::new()),
+        ended: Mutex::new(false),
+        stop: Arc::new(tokio::sync::Notify::new()),
+        join: Mutex::new(None),
+        observed_spki: Vec::new(),
+        resp_headers: Vec::new(),
+    };
+    let mut buf = [0u8; 16];
+    // SAFETY: `buf` is a live writable range for the call.
+    let (class, n, cause) = unsafe { egress.poll(buf.as_mut_ptr(), buf.len()) };
+    assert_eq!(
+        class,
+        StatusClass::Fault,
+        "a truncated stream is a Fault, not a clean EOF"
+    );
+    assert_eq!(n, 0);
+    assert!(
+        cause.is_some(),
+        "the Fault carries a cause the plane can read back"
+    );
+}

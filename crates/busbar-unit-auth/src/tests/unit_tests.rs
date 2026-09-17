@@ -324,6 +324,28 @@ fn the_kernel_verb_scope_check_is_satisfied_for_anonymous_on_the_open_posture() 
     );
 }
 
+#[test]
+fn the_two_admin_gates_agree_on_the_resolved_open_door_principal() {
+    // `Auth::resolve` renders the open front door as `Some(Principal::anonymous())`, not `None`
+    // (see unit.rs `ChainVerdict::Open`). The two admin gates must read that exact spelling the
+    // same way, or the open-admin surface is granted by one gate and refused by the other. Before
+    // the shared `is_open_posture_caller` predicate, `admin_grants` keyed on `None` alone and
+    // returned nothing for the resolved `Some(anonymous)`, while `kernel_verb_scope_satisfied`
+    // keyed on `is_anonymous()` and returned true — a representation split.
+    let open_door = Principal::anonymous();
+    let grants = admin_grants(true, Some(&open_door))
+        .expect("the open posture grants full scope to the resolved anonymous door");
+    assert_eq!(grants.scope(), Scope::Full);
+    assert_eq!(
+        admin_grants(true, Some(&open_door)).is_some(),
+        kernel_verb_scope_satisfied(true, &open_door),
+        "the two admin gates must agree for the resolved open-door principal"
+    );
+    // A configured chain still holds the anonymous caller to nothing, both gates.
+    assert!(admin_grants(false, Some(&open_door)).is_none());
+    assert!(!kernel_verb_scope_satisfied(false, &open_door));
+}
+
 /// The satisfaction table, pinned pair by pair.
 ///
 /// Pinned rather than derived from an ordering: a comparison would answer for a rung nobody has

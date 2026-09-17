@@ -432,6 +432,13 @@ fn decode_open_surface<'u>(
         }
     };
     let _ = facts.set(f::FACT_STREAMING, FactValue::Bool(false));
+    // The discovery documents and the HTTP+JSON target rows answer with a BARE resource, not a
+    // JSON-RPC envelope, so the encode step is told which shape this caller's binding expects.
+    // The callback is not marked: it is provider-initiated and its answer is left exactly as it is
+    // today rather than changed on an unproven shape.
+    if !matches!(surface, OpenSurface::Push) {
+        let _ = facts.set(f::FACT_BINDING, FactValue::Str(f::BINDING_BARE));
+    }
     Ok(Ingress::OneShot(Box::new(UnitDraft {
         op,
         body_ir: view(body, &[PTR_TASK_ID, PTR_CONTEXT_ID], ctx)?,
@@ -697,6 +704,18 @@ impl Plane for A2aPlane {
         // path and it is byte-identical by construction: the agent answered the caller's own
         // identifier, because the caller's own envelope is what was relayed.
         if has(body, jsonrpc::PTR_VERSION) {
+            return ctx
+                .arena()
+                .alloc_bytes(body)
+                .map_err(|_| Encode::ArenaExhausted);
+        }
+        // A binding whose answer is a BARE resource — the HTTP+JSON target rows and the discovery
+        // documents — returns the resource itself, with no envelope. The REST binding reads the body
+        // AS the resource, where the document binding reads its `result` member, so wrapping a
+        // target answer would hand a REST caller an envelope it would read as the resource. The
+        // decode step recorded which binding this is; its ABSENCE is the document binding, which is
+        // wrapped below exactly as before.
+        if matches!(r.facts.get(f::FACT_BINDING), Some(FactValue::Str(f::BINDING_BARE))) {
             return ctx
                 .arena()
                 .alloc_bytes(body)

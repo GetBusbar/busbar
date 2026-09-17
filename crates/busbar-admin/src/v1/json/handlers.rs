@@ -2031,15 +2031,24 @@ pub(crate) async fn put_auth(
                 busbar_core::config::overlay::NO_WRITABLE_OVERLAY_MSG.to_string(),
             ));
         }
-        // Known-module validation (mirrors the boot rule): `admin-tokens` is the built-in; the
-        // test-only stand-in exists in test builds only. An unknown name can never silently drop
-        // auth.
+        // Known-module validation, against the running app's ACTUAL admin-capable set (the same set
+        // `run_admin_chain` dispatches on), NOT a hardcoded literal. That set is: the built-in
+        // `admin-tokens` engine arm, every EXTERNAL `kind: auth` admin plugin resolved at boot into
+        // `admin_modules` (keyed by config name — the same names GET /admin-auth echoes), and the
+        // compiled-out test-only stand-in. A PUT does not rebuild `admin_modules` (the candidate
+        // clones the current one), so a name absent from that map would dispatch to `Pass` and be
+        // silently dropped — hence it is genuinely unknown and refused here. This makes the PUT
+        // surface exactly as wide as the resource GET /admin-auth reads back (read-after-write): a
+        // configured external IdP chain like `[admin-tokens, corp-ad]` now round-trips.
         for name in &req.admin_auth {
-            let known = name == "admin-tokens" || (cfg!(test) && name == "test-scope-module");
+            let known = name == "admin-tokens"
+                || current.admin_modules.modules.contains_key(name)
+                || (cfg!(test) && name == "test-scope-module");
             if !known {
                 return Err(AdminError::Validation(format!(
-                    "admin_auth names unknown module '{name}'; the built-in admin module is \
-                     `admin-tokens` (external admin modules are registered at compile time)"
+                    "admin_auth names unknown module '{name}'; the admin-capable modules are the \
+                     built-in `admin-tokens` plus the external `kind: auth` admin providers \
+                     resolved at boot (configure new ones in config.yaml and restart)"
                 )));
             }
         }
@@ -2370,7 +2379,7 @@ pub(crate) async fn restart(
         audit::AUDIT.record_by("admin.restart", "process", audit::OUTCOME_REJECTED, &actor);
         return err_json_cond(
             &AdminError::Conflict(
-                "no process supervisor was detected, so exiting would leave busbar down; re-send                  with `confirm: true` if a supervisor will restart it"
+                "no process supervisor was detected, so exiting would leave busbar down; re-send with `confirm: true` if a supervisor will restart it"
                     .into(),
             ),
             Cond::NoSupervisor,
@@ -2712,17 +2721,18 @@ fn reload_to_apply_fields(req: &busbar_core::config::overlay::RootSettings) -> V
             pool_max_idle_per_host,
             pool_idle_timeout_secs,
             max_inbound_concurrent,
+            // BOOT-FROZEN (restart to apply) — the OPERATOR-FACING meaning of this field is the
+            // inbound `DefaultBodyLimit` 413 threshold, and that is captured ONCE at boot
+            // (`apply_common_layers`, reachable only from the boot/test-only router builders) and
+            // baked into the router layer stack the same way as `max_inbound_concurrent`; an
+            // `Arc<App>` swap never rebuilds it. (The egress translate cap IS live off the
+            // `INSTALLED` snapshot, but reporting the field "applied live" on the strength of the
+            // secondary consumer would mis-tell the operator the inbound cap took effect when it did
+            // not.) So flag it reload-to-apply — the honest answer for the dominant consumer.
+            request_body_max_bytes,
             // GENUINELY LIVE — read per-request/per-connection off the `INSTALLED` snapshot that
             // `InstallGuard::install` refreshes on every apply (see `limits.rs`), or off the swapped
             // `Arc<App>` directly. NOT boot-captured, so a live `PUT` takes effect without a restart.
-            request_body_max_bytes: _, // HALF-live: the egress translate cap is live via the
-            // `INSTALLED` snapshot, but the inbound `DefaultBodyLimit` 413 threshold is boot-frozen
-            // the same way as `max_inbound_concurrent` (`main.rs:3184`, in `apply_common_layers`,
-            // reachable only from the boot/test-only router builders). Tracked as a known post-1.5.0
-            // gap (documented, not flagged here — see docs/configuration.md) rather than fixed now:
-            // fixing the coupling touches the request path and router layer stack, and flagging it
-            // dotted would mis-state that the WHOLE field is stored-not-live when three of its four
-            // consumers are live.
             max_keys_per_principal: _,
             max_auto_provisioned_groups: _,
             // GENUINELY LIVE — the hook seam reads the installed ceiling with a single relaxed
@@ -2752,6 +2762,10 @@ fn reload_to_apply_fields(req: &busbar_core::config::overlay::RootSettings) -> V
         push(
             max_inbound_concurrent.is_some(),
             "limits.max_inbound_concurrent",
+        );
+        push(
+            request_body_max_bytes.is_some(),
+            "limits.request_body_max_bytes",
         );
     }
     // 1.5.3: the `observability:` block IS DELETED, so there is nothing to flag for it

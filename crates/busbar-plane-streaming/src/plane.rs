@@ -22,11 +22,14 @@
 //!   (`busbar_contract::transport::facts::PATH`), used to resolve which one-shot operation or which
 //!   duplex dialect a session's Unit 0 is. This used to be a guess, and both transports now declare
 //!   the key they publish it under.
-//! - **Only the first decoded IR event per wire frame is acted on.** Both `read_up`/`read_down`
-//!   return `Vec<..Event>` (one wire message can map to 0..n IR events); this plane surfaces the
-//!   first and drops the rest. A wire frame that genuinely carries more than one IR event (not
-//!   observed in the reference dialects' own reader, which emit at most one per frame today) would
-//!   lose the extras. Flagged rather than silently accepted.
+//! - **Every decoded IR event of a wire frame is folded, in order.** Both `read_up`/`read_down`
+//!   return `Vec<..Event>` (one wire message can map to 0..n IR events); `decode_response` walks all
+//!   of them, letting each update the session's accumulation state, and returns the one meaningful
+//!   outcome. A tool call is the frame that genuinely decodes to more than one event — Gemini's
+//!   `toolCall` is `CallOpen`→`CallArgs`→`CallClose` in one frame, and OpenAI's
+//!   `…arguments.done` frame carries the complete arguments and the close together — so acting on
+//!   only the first dropped the `CallClose` that dispatches the call. Every other reference-dialect
+//!   frame emits at most one non-state event, so the fold is identical to first-only for them.
 //! - **The uplink audio format is assumed PCM16 for the `audio_seconds_in` estimate on the two WS
 //!   dialects.** `DecodeState` only tracks the NEGOTIATED OUTPUT format (for the downlink barge-in
 //!   truncate math); there is no equivalent uplink format tracked anywhere in this plane's closure,
@@ -34,13 +37,15 @@
 //!   default. Twilio's own uplink is unambiguous (G.711 µ-law, priced from the raw payload before this
 //!   plane's `encode_ingress_frame` transforms it), so this assumption is scoped to the two WS
 //!   dialects only.
-//! - **A provider tool call's `CallArgs`/`CallClose` frames relay under the still-open duplex turn**,
-//!   not under the `tool_call` `OneShot` unit `CallOpen` mints. Modelling a tool call as its own
-//!   fully-correlated open unit across a streamed argument delta would need a second correlation
-//!   table this plane does not build in this pass; `CallOpen` mints the `OneShot` (so a tool call is
-//!   visible, priced and audited as its own unit at its `tool_call` operation class) and increments
-//!   [`crate::session::TurnCounters::tool_calls`], and the delta/close frames that follow are folded
-//!   into the turn's own frame stream. Stated as a finding, not hidden.
+//! - **A provider tool call is dispatched with its ACCUMULATED ARGUMENTS, on `CallClose`.**
+//!   `CallOpen` announces the call (and increments [`crate::session::TurnCounters::tool_calls`]) but
+//!   mints nothing on its own — a tool call dispatched with no arguments is a different call. The
+//!   streamed `CallArgs` fragments are accumulated on the session's own codec state
+//!   ([`busbar_voice_codec::ir::codec::DecodeState::push_call_args`], which appends a fragment and
+//!   replaces on a whole object, so the OpenAI done-repeat and the Gemini atomic call both land the
+//!   right bytes), and `CallClose` mints the `tool_call` `OneShot` carrying the tool name and those
+//!   arguments as its body, correlated by the wire call id. That is when the call becomes visible,
+//!   priced and audited as its own unit at its `tool_call` operation class.
 //! - **`encode_response` is a passthrough of bytes `decode_response` already rendered**, mirroring
 //!   `busbar-plane-admin`'s pattern. `decode_response` reads the open turn's own client dialect off
 //!   `Ctx::session()`'s declared `dialect` session fact (the one fact this plane's `SESSION_FACTS`
@@ -316,13 +321,25 @@ impl Plane for StreamingPlane {
         // second in each direction for the length of a call.
         let reader = reader_for(upstream_dialect);
         let events = reader.read_down_ref(WireRef(frame.bytes.as_slice()), &mut state.codec);
-        let Some(event) = events.into_iter().next() else {
-            return Ok(Progress::Discard {
-                reason: DiscardCode::Unsupported,
-            });
+        // ALL events of the frame are folded, not just the first. A tool call is the one wire frame
+        // that genuinely decodes to more than one IR event: Gemini delivers `CallOpen`→`CallArgs`→
+        // `CallClose` in a single `toolCall` frame, and OpenAI's `…arguments.done` frame carries the
+        // complete arguments AND the close together. Acting on only the first event dropped the
+        // `CallClose` that dispatches the call, so its executor never ran — the defect this fold
+        // fixes. Each event updates the session's accumulation state; the meaningful outcome (the
+        // `OneShot` a `CallClose` mints) is the one returned. Every reference dialect emits at most
+        // one non-state event per frame, so this is identical to acting on the first for every
+        // non-tool frame.
+        let mut outcome = Progress::Discard {
+            reason: DiscardCode::Unsupported,
         };
-
-        progress_from_server_event(event, state, client_dialect, ctx)
+        for event in events {
+            match progress_from_server_event(event, state, client_dialect, ctx)? {
+                Progress::Discard { .. } => {}
+                progress => outcome = progress,
+            }
+        }
+        Ok(outcome)
     }
 
     fn encode_response<'u>(
@@ -1022,26 +1039,72 @@ fn progress_from_server_event<'u>(
             reason: DiscardCode::Unsupported,
         }),
         IrServerEvent::Tool(IrDuplexTool::CallOpen { call_id, name, .. }) => {
+            // A tool call is ANNOUNCED here. Its arguments stream in as `CallArgs` and it is
+            // dispatched to its executor ONCE, on `CallClose`, with the name and the ACCUMULATED
+            // arguments — a call dispatched with no arguments is a different call, which is what the
+            // old open-mints-empty path did. Announcing opens nothing on its own; the name is
+            // remembered so `CallClose` (which carries none) can name the executor call.
             state.turn.tool_calls = state.turn.tool_calls.saturating_add(1);
+            state.codec.remember_call_name(&call_id, &name);
+            Ok(Progress::Discard {
+                reason: DiscardCode::Unsupported,
+            })
+        }
+        IrServerEvent::Tool(IrDuplexTool::CallArgs {
+            call_ref,
+            json_delta,
+            ..
+        }) => {
+            // Accumulate one streamed argument fragment. `push_call_args` appends a fragment and
+            // REPLACES on a whole JSON object (the complete arguments a streamed call states when it
+            // closes, or an atomic call's `args`), so the OpenAI done-repeat and the Gemini atomic
+            // call both land the right bytes rather than a fragment spliced onto its own prefix.
+            state.codec.push_call_args(call_ref, &json_delta);
+            Ok(Progress::Discard {
+                reason: DiscardCode::Unsupported,
+            })
+        }
+        IrServerEvent::Tool(IrDuplexTool::CallClose { call_ref, call_id }) => {
+            // The arguments are complete: dispatch the tool call as its own `OneShot` unit, carrying
+            // the tool name and the arguments the model asked for, correlated by the wire call id so
+            // its reply reaches it. This is where a tool call becomes visible, priced and audited as
+            // its own `tool_call` unit.
             let mut facts = Facts::new();
-            let name_arena = ctx.arena().alloc_str(&name).map_err(|_| Decode::Oversize)?;
+            let name = state.codec.call_name(&call_id).to_string();
+            if !name.is_empty() {
+                let name_arena = ctx.arena().alloc_str(&name).map_err(|_| Decode::Oversize)?;
+                facts
+                    .set(meta::FACT_TOOL_NAME, FactValue::Str(name_arena))
+                    .map_err(|_| Decode::Oversize)?;
+            }
+            // The call identifier travels as itself. It is a string on the wire and it is a string
+            // here, allocated in the unit's own arena — a fold into sixty four bits would be one
+            // collision away from answering a tool call with another's reply.
             let call_id_arena = ctx
                 .arena()
                 .alloc_str(&call_id)
                 .map_err(|_| Decode::Oversize)?;
             facts
-                .set(meta::FACT_TOOL_NAME, FactValue::Str(name_arena))
-                .map_err(|_| Decode::Oversize)?;
-            facts
                 .set(meta::FACT_CALL_ID, FactValue::Str(call_id_arena))
                 .map_err(|_| Decode::Oversize)?;
+            // The arguments the model asked for. An accumulation that never closed readable (past the
+            // byte ceiling, or a call joined mid-stream with nothing decodable) leaves an empty body
+            // rather than inventing a null argument list the model never sent.
+            let body_ir = match state.codec.take_call_args(call_ref) {
+                Some(args) => {
+                    let bytes = serde_json::to_vec(&args).map_err(|_| Decode::Malformed)?;
+                    let arena = ctx
+                        .arena()
+                        .alloc_bytes(&bytes)
+                        .map_err(|_| Decode::Oversize)?;
+                    view(arena.as_slice(), ctx)?
+                }
+                None => Ir::empty(),
+            };
             Ok(Progress::OneShot(Box::new(UnitDraft {
                 op: OpClassId::new("tool_call"),
-                body_ir: Ir::empty(),
+                body_ir,
                 correlates: None,
-                // The call identifier travels as itself. It is a string on the wire and it is a
-                // string here, allocated in the unit's own arena — a fold into sixty four bits
-                // would be one collision away from answering a tool call with another's reply.
                 correlation_out: Some(CorrelationRef {
                     fact_key: FACT_TOOL_CORRELATION,
                     value: CorrelationValue::Str(call_id_arena),

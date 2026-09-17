@@ -179,9 +179,24 @@ impl HttpEgress {
                 pending.extend(bytes);
                 (StatusClass::Ok, drain_into(&mut pending, buf, cap), None)
             }
-            Ok(ChunkMsg::End) | Err(_) => {
+            Ok(ChunkMsg::End) => {
                 *self.ended.lock().unwrap_or_else(|e| e.into_inner()) = true;
                 (StatusClass::Ok, 0, None)
+            }
+            Err(_) => {
+                // The sender was dropped WITHOUT a clean `End`: the streaming task ended abnormally
+                // (a panic in the spawned reader — which carries no `catch_unwind` — or an early
+                // return), so the body is TRUNCATED. A clean `End` sets `ended` and is never followed
+                // by another `recv`, so a disconnect here is only ever abnormal. Returning a clean
+                // EOF would serve a partial response as a complete success and silently violate
+                // output byte-identity; report a Fault so the plane sees the truncation. This mirrors
+                // the pre-head path, which maps a disconnected `head_rx` to `Fault`.
+                *self.ended.lock().unwrap_or_else(|e| e.into_inner()) = true;
+                (
+                    StatusClass::Fault,
+                    0,
+                    Some("egress stream ended before the body completed".to_string()),
+                )
             }
             Ok(ChunkMsg::Err(reason)) => {
                 tracing::debug!(target: "busbar::plane_host::egress", %reason, "egress stream failed mid-body");

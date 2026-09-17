@@ -56,9 +56,14 @@ impl fmt::Debug for CallerToken {
 /// Pull the token out of an authorization header value, when the scheme is bearer.
 ///
 /// Splits on the first space rather than slicing by byte offset, so a malformed header with a
-/// multi-byte character where the scheme belongs cannot land mid-character and panic.
+/// multi-byte character where the scheme belongs cannot land mid-character and panic. The token is
+/// trimmed of surrounding whitespace: a header written `Bearer   tok` (padded scheme separator) or
+/// with a trailing space would otherwise carry the padding into the credential, so it would never
+/// match the verified form and would occupy a distinct cache row — a whitespace-sensitive denial
+/// and cache fragmentation. An all-whitespace token trims to empty and is treated as absent.
 pub fn extract_bearer_token(auth_header: &str) -> Option<String> {
     let (scheme, token) = auth_header.split_once(' ')?;
+    let token = token.trim();
     if scheme.eq_ignore_ascii_case(AUTH_SCHEME_BEARER) && !token.is_empty() {
         Some(token.to_string())
     } else {

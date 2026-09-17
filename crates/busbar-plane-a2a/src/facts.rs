@@ -40,6 +40,22 @@ pub const FACT_TASK_STATE: &str = "task_state";
 /// The error code the answer carried, where it carried one.
 pub const FACT_ERROR_CODE: &str = "error_code";
 
+/// The SHAPE the caller's binding expects the answer in.
+///
+/// This protocol is one agent reachable three ways, and the three do not agree on the shape of an
+/// answer this node composes itself: the JSON-RPC document binding wraps a composed result in an
+/// envelope keyed by the caller's identifier, while the HTTP+JSON target binding and the discovery
+/// documents return the resource ITSELF, with no envelope at all (the conformance supplement's
+/// `RestBinding` reads the body AS the resource — `payload = doc` — where its `JsonRpcBinding` reads
+/// `doc["result"]`). The decode step is the only place that knows which binding a request arrived on,
+/// so it records that here for the encode step, which keys the wrapping on it. Absent means the
+/// document binding, whose answer is wrapped: the safe default, and byte-identical to before.
+pub const FACT_BINDING: &str = "binding";
+
+/// The value [`FACT_BINDING`] carries for a surface whose answer is a BARE resource — the HTTP+JSON
+/// target rows and the discovery documents — rather than a JSON-RPC envelope.
+pub const BINDING_BARE: &str = "bare";
+
 /// The session fact keys this plane writes.
 ///
 /// The protocol revision and the agent are session facts because a session that changed either

@@ -44,7 +44,7 @@ use std::sync::{Arc, RwLock};
 
 use budget::LifetimeBudget;
 use busbar_caps::{Route, UnitToken};
-use cell::{BreakerCell, BreakerState as CellState, BreakerVerdict, DeniedBy, ProbeAdmit};
+use cell::{BreakerCell, BreakerVerdict, DeniedBy, FailureEffect, ProbeAdmit};
 use cfg::BreakerCfg;
 use classify::Diagnostics;
 use journal::{JournalSink, NoopJournal, ProbeEvent};
@@ -562,11 +562,12 @@ impl<J: JournalSink, D: Diagnostics> Breaker for BreakerUnit<J, D> {
                 // name a probe failure for a fresh trip, or miss one for a reopen.
                 let effect =
                     cell.record_failure(now, cfg, retry_after, self.max_honored_retry_after_secs);
-                if effect.reopened() {
-                    let cooldown_until = match cell.state() {
-                        CellState::Open { until } => until,
-                        _ => now,
-                    };
+                // The reopen's own armed deadline, carried out of `record_failure` under the
+                // transition lock. Journaling from `FailureEffect::Reopened(until)` replaces a
+                // SECOND, unlocked `cell.state()` read that a concurrent recovery `close` between
+                // the two reads could turn into `now`, making the durable `ProbeEvent::Failed`
+                // carry `now` instead of the cooldown the reopen actually set.
+                if let FailureEffect::Reopened(cooldown_until) = effect {
                     self.journal.record(ProbeEvent::Failed {
                         pool: pool.to_string(),
                         destination,

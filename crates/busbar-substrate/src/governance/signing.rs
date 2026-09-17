@@ -31,7 +31,7 @@
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
-use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
+use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -345,7 +345,14 @@ impl TokenVerifier {
         let key = self.keys.get(&claims.kid).ok_or(VerifyError::UnknownKid)?;
 
         // Authenticate the payload bytes. Only AFTER this succeeds are the claims trusted.
-        key.verify(&payload, &signature)
+        //
+        // STRICT verification, not the permissive cofactored `Verifier::verify`: `verify_strict`
+        // refuses a non-canonical `S` (>= the group order) and small-order public keys, so exactly
+        // one 64-byte signature string authenticates one payload. The permissive path tolerates
+        // signature malleability — `S` and `S + L` both verify — which would let a holder of one
+        // valid `bbk_` token mint a DIFFERENT token string carrying the identical claims. This
+        // matches the deliberate strict choice on the plugin-signing path.
+        key.verify_strict(&payload, &signature)
             .map_err(|_| VerifyError::BadSignature)?;
 
         if claims.exp <= now {

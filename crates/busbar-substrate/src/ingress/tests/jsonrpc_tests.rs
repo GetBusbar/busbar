@@ -339,3 +339,23 @@ fn an_error_member_is_read_with_its_code_and_message() {
         }
     );
 }
+
+/// `same_id` correlates equal numeric VALUES (`1` vs `1.0`) but must not let two DISTINCT integers
+/// that round to one `f64` correlate. `2^53` and `2^53 + 1` both round to `9007199254740992.0`; an
+/// unbounded `f64` fallback would treat a response carrying one as the reply to the other. The
+/// fallback is bounded to the exact-integer window, and identical representations are already caught
+/// exactly by `Number` equality, so genuinely-equal large ids still correlate.
+#[test]
+fn same_id_does_not_correlate_distinct_large_integers_that_round_together() {
+    use serde_json::json;
+    // The intended looseness holds: `1` and `1.0` are the same value.
+    assert!(same_id(&json!(1.0), &json!(1)));
+    assert!(same_id(&json!(1), &json!(1)));
+    // 2^53 and 2^53 + 1 are distinct integers that share one f64 — they must NOT correlate.
+    let a = json!(9_007_199_254_740_993u64);
+    let b = json!(9_007_199_254_740_992u64);
+    assert_ne!(a, b);
+    assert!(!same_id(&a, &b), "2^53 and 2^53+1 must not correlate");
+    // A genuinely-equal large integer still correlates (exact representation match).
+    assert!(same_id(&a, &json!(9_007_199_254_740_993u64)));
+}

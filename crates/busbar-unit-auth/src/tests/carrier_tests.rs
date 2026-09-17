@@ -38,6 +38,26 @@ fn test_extract_bearer_token_malformed_no_panic() {
 }
 
 #[test]
+fn test_extract_bearer_token_trims_padding() {
+    // A padded scheme separator or trailing space must not ride into the credential: the padded
+    // token would never match the verified form and would occupy a distinct cache row.
+    assert_eq!(
+        extract_bearer_token("Bearer   tok"),
+        Some("tok".to_string())
+    );
+    assert_eq!(
+        extract_bearer_token("bearer tok "),
+        Some("tok".to_string())
+    );
+    assert_eq!(
+        extract_bearer_token("Bearer \ttok\t"),
+        Some("tok".to_string())
+    );
+    // An all-whitespace token trims to empty and is treated as absent.
+    assert_eq!(extract_bearer_token("Bearer    "), None);
+}
+
+#[test]
 fn test_extract_client_token_authorization_bearer() {
     let h = Headers(vec![("authorization", "Bearer tok-a")]);
     assert_eq!(extract_client_token(&h), Some("tok-a".to_string()));

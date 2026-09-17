@@ -225,3 +225,25 @@ fn a_non_object_schema_constrains_nothing() {
     assert!(check(&json!({ "anything": true }), &json!(true)).is_ok());
     assert!(check(&json!(1), &json!("not a schema")).is_ok());
 }
+
+/// THE EXACT-VALUE COMPARE OBEYS THE SAME DEPTH BOUND AS THE WALKER. A `const` value is compared
+/// against the result by recursing to the value's depth, with NO bound before this fix — so an
+/// adversarially deep `const` recursed frame-for-frame to the leaf and could exhaust the stack.
+/// Now the compare STOPS at `MAX_DEPTH` and calls the pair unequal: a value nested deeper than the
+/// walker will follow cannot satisfy an in-bound schema anyway, so an over-deep `const` yields a
+/// bounded violation instead. The tell is that an identical value and constant, nested far past the
+/// bound, are reported UNEQUAL — before the fix the unbounded recursion compared them equal (or, at
+/// pathological depths, overflowed the stack) and no violation was raised.
+#[test]
+fn an_over_deep_const_compare_is_bounded_not_a_stack_overflow() {
+    // Nested far past `MAX_DEPTH` (= 32), but shallow enough to build and drop without recursion
+    // trouble in the harness — the bound fires at 33 regardless of how much deeper the value goes.
+    let mut deep = json!("leaf");
+    for _ in 0..256 {
+        deep = json!([deep]);
+    }
+    let schema = json!({ "const": deep });
+    // Identical value and constant, yet the compare stops at the bound and reports them unequal.
+    let e = check(&deep, &schema).unwrap_err();
+    assert!(e.contains("expected the constant"), "{e}");
+}

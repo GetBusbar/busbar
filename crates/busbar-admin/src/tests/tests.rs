@@ -1704,6 +1704,78 @@ async fn test_admin_v1_put_auth_dry_run_guard() {
     handle.abort();
 }
 
+/// M7: `PUT /api/v1/admin/admin-auth` must validate module names against the running app's ACTUAL
+/// admin-capable set (built-in `admin-tokens` + every external `kind: auth` admin provider resolved
+/// at boot into `admin_modules`), not a hardcoded `"admin-tokens"` literal. Before the fix a config
+/// chain like `[admin-tokens, corp-ad]` — an external IdP `GET /admin-auth` reads back — was refused
+/// 400 "unknown module 'corp-ad'" on a read-after-write PUT, making the write surface strictly
+/// narrower than the resource it echoes. A genuinely-unknown name is still refused.
+#[tokio::test]
+async fn test_admin_v1_put_auth_accepts_configured_external_module() {
+    /// A resolved external `kind: auth` admin provider stand-in — it exists in `admin_modules` (so
+    /// it is admin-capable) but never claims this test's operator credential (all-`Pass`), which is
+    /// fine: the operator authenticates through `admin-tokens`, so the candidate chain survives.
+    struct ExternalAdminIdp;
+    impl busbar_core::auth::AuthModule for ExternalAdminIdp {
+        fn name(&self) -> &'static str {
+            "corp-ad"
+        }
+        fn authenticate(&self, _candidate: Option<&str>) -> busbar_core::auth::AuthOutcome {
+            busbar_core::auth::AuthOutcome::Pass
+        }
+    }
+
+    busbar_core::metrics::init();
+    let store = Arc::new(MemoryStore::new());
+    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    let app = crate::new_test_app()
+        .governance(gov)
+        .admin_chain(vec!["admin-tokens".to_string()])
+        .admin_module("corp-ad", Box::new(ExternalAdminIdp))
+        .build();
+    let router = crate::build_router(app);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let client = reqwest::Client::new();
+    let put = |chain: serde_json::Value| {
+        client
+            .put(format!("http://{addr}/api/v1/admin/admin-auth"))
+            .header("x-admin-token", "admintok")
+            .header("content-type", "application/json")
+            .body(serde_json::json!({ "admin_auth": chain }).to_string())
+            .send()
+    };
+
+    // RED BEFORE: a chain naming the configured external admin module is REFUSED 400 "unknown
+    // module" by the old hardcoded allowlist. GREEN AFTER: accepted (200), since `corp-ad` is a
+    // resolved admin-capable module and the operator survives via `admin-tokens`.
+    let r = put(serde_json::json!(["admin-tokens", "corp-ad"]))
+        .await
+        .unwrap();
+    assert_eq!(
+        r.status().as_u16(),
+        200,
+        "a configured external admin module must not be rejected as unknown: {:?}",
+        r.text().await
+    );
+
+    // A genuinely-unknown module is STILL refused 400 — the allowlist widened to the real set, it
+    // did not go permissive.
+    let r = put(serde_json::json!(["admin-tokens", "no-such-idp"]))
+        .await
+        .unwrap();
+    assert_eq!(
+        r.status().as_u16(),
+        400,
+        "a module that is neither built-in nor a resolved external provider is still unknown"
+    );
+    let body: serde_json::Value = r.json().await.unwrap();
+    assert_eq!(body["error"]["code"], "invalid_request");
+
+    handle.abort();
+}
+
 /// AF1 (security-visibility): `PUT /api/v1/admin/admin-auth` must REFUSE an EMPTY admin_auth chain.
 /// An empty chain is the anonymous, full-authority OPEN dev posture; letting the live admin API
 /// apply it would swing the door open to the whole network on one call. Before the fix the handler
@@ -10075,6 +10147,47 @@ async fn test_admin_v1_config_settings_max_inbound_concurrent_flagged_reload_to_
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// L10: `limits.request_body_max_bytes` is HALF-live — the egress translate cap hot-swaps, but the
+/// OPERATOR-FACING inbound `DefaultBodyLimit` 413 threshold is captured ONCE at boot
+/// (`apply_common_layers`) and never rebuilt on an `Arc<App>` swap. `reload_to_apply_fields` bound it
+/// `_` ("genuinely live"), so a `PUT {"limits":{"request_body_max_bytes":N}}` returned
+/// `reload_to_apply: []` and a note claiming "applied live" — misstating that the inbound cap took
+/// effect when it needs a restart. Assert the field IS flagged reload-to-apply.
+#[tokio::test]
+async fn test_admin_v1_config_settings_request_body_max_bytes_flagged_reload_to_apply() {
+    let (dir, _overlay, addr, handle) = settings_test_app("reqbodymaxbytes").await;
+    let client = reqwest::Client::new();
+    let admin = |r: reqwest::RequestBuilder| r.header("x-admin-token", "admintok");
+
+    let put = admin(client.put(format!("http://{addr}/api/v1/admin/config/settings")))
+        .header("content-type", "application/json")
+        .body(
+            serde_json::json!({
+                "limits": { "request_body_max_bytes": 1048576 }
+            })
+            .to_string(),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(put.status().as_u16(), 200, "{:?}", put.text().await);
+    let body: serde_json::Value = put.json().await.unwrap();
+    let flagged: Vec<&str> = body["reload_to_apply"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    assert!(
+        flagged.contains(&"limits.request_body_max_bytes"),
+        "the inbound DefaultBodyLimit 413 cap is boot-frozen and must be flagged reload-to-apply, \
+         not silently 'applied live': {flagged:?}"
+    );
+
+    handle.abort();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// The `observability` section is live EXCEPT two fields: the `advanced.response_headers` block
 /// (formerly `observability.emit_server_timing`) is boot-frozen the same way — baked into router
 /// middleware composition and a process-global `OnceLock`, neither rebuilt by a config apply — so it
@@ -12966,12 +13079,15 @@ async fn test_admin_v1_restart_refuses_when_it_cannot_restart() {
     );
     let body: serde_json::Value = resp.json().await.unwrap();
     assert_eq!(body["error"]["code"], "conflict");
+    let nosup_msg = body["error"]["message"].as_str().unwrap_or_default();
     assert!(
-        body["error"]["message"]
-            .as_str()
-            .unwrap_or_default()
-            .contains("confirm"),
+        nosup_msg.contains("confirm"),
         "the refusal must tell the operator how to proceed: {body}"
+    );
+    // L11: the literal must read normally — no stray run of spaces from a copy-paste artifact.
+    assert!(
+        !nosup_msg.contains("  "),
+        "the no-supervisor refusal must have no double-space run: {nosup_msg:?}"
     );
 
     // Confirmed, so the supervisor check passes — but a test binary published no shutdown channel,

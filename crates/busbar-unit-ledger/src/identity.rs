@@ -79,6 +79,19 @@ impl std::fmt::Display for Residual {
 /// `since` is the last sealed checkpoint's figures for this key; `now` is the figures as they
 /// stand. A key that was not in the last checkpoint is measured from zeros, which is right: it had
 /// nothing then.
+///
+/// ## `disputed` is informational-only and is DELIBERATELY not a term here
+///
+/// [`Totals::disputed`] is sealed and digested into every checkpoint (see `encode_body`), but it is
+/// NOT a term in this identity and must never become one without owner sign-off — adding it would
+/// change what "the books balance" means for every window ever sealed. The invariant that lets it
+/// stay out is a hard rule on the posting side, not an accident of this arithmetic: `disputed` is a
+/// COUNTER laid over money that is already sitting in an accounted column (settled, unreconciled,
+/// holds, …), and moving value INTO `disputed` must never move it OUT of one of those columns. As
+/// long as that holds, the identity is exactly invariant to `disputed`, which is what the disputed
+/// figure being informational-only means. `disputed_is_informational_only` in this module's tests
+/// pins that invariance so a future change that folds value through `disputed` alone trips a test
+/// rather than silently unbalancing sealed history.
 pub fn residual(since: &Totals, now: &Totals) -> Residual {
     let accounted = (now.settled - since.settled)
         + (now.open_holds - since.open_holds)
@@ -182,4 +195,51 @@ pub fn closed_window_is_settled(since: &Totals, now: &Totals) -> Result<(), i128
 /// was accrued is what was settled.
 pub fn attribution_holds(accrued: i128, settled: i128) -> bool {
     accrued == settled
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{holds, residual};
+    use crate::totals::Totals;
+
+    /// A `Totals` that balances: everything drawn is sitting in an accounted column.
+    fn balanced() -> Totals {
+        Totals {
+            drawn: 1_000,
+            settled: 600,
+            open_holds: 250,
+            unreconciled: 150,
+            ..Totals::default()
+        }
+    }
+
+    /// L15: the identity is INVARIANT to `disputed`. `disputed` is sealed and digested into every
+    /// checkpoint but is deliberately not a term in [`residual`]; it is an informational counter over
+    /// money that already lives in an accounted column. Mutating ONLY `disputed` on an otherwise
+    /// balanced ledger must not change the balanced verdict or the residual amount. If a future
+    /// change ever folds value through `disputed` alone, this test fails instead of sealed history
+    /// silently ceasing to balance.
+    #[test]
+    fn disputed_is_informational_only() {
+        let since = Totals::default();
+        let now = balanced();
+        assert!(holds(&since, &now));
+        assert_eq!(residual(&since, &now).amount(), 0);
+
+        // Move an arbitrary amount into `disputed` on the "now" side, touching nothing else.
+        let mut now_disputed = now;
+        now_disputed.disputed = 777;
+        now_disputed.open_dispute_count = 1;
+        assert!(
+            holds(&since, &now_disputed),
+            "the identity must be invariant to `disputed`"
+        );
+        assert_eq!(residual(&since, &now_disputed), residual(&since, &now));
+
+        // Also invariant when `disputed` moves on the `since` (checkpoint) side.
+        let mut since_disputed = since;
+        since_disputed.disputed = 500;
+        assert!(holds(&since_disputed, &now));
+        assert_eq!(residual(&since_disputed, &now).amount(), 0);
+    }
 }

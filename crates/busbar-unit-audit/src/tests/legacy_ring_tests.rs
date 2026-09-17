@@ -78,22 +78,48 @@ impl Clock for FixedClock {
     }
 }
 
-/// One emit, as the seam saw it.
-type Emitted = (u64, String, String, String, String);
+/// One emit, as the seam saw it — the full LINKED, SEALED record, so a test can observe both the
+/// "one clock read" rule AND that the durable copy carries the sequence, link and digest restore
+/// verifies against.
+#[derive(Clone)]
+struct Emitted {
+    seq: u64,
+    ts: u64,
+    action: String,
+    resource: String,
+    outcome: String,
+    principal: String,
+    prev_hash: String,
+    hash: String,
+}
 
 /// A seam that keeps what it was handed, so the "one clock read" rule is observable.
 #[derive(Default, Clone)]
 struct RecordingSeam(Arc<Mutex<Vec<Emitted>>>);
 
 impl DurableSeam for RecordingSeam {
-    fn emit(&self, ts: u64, action: &str, resource: &str, outcome: &str, principal: &str) {
-        self.0.lock().unwrap().push((
+    #[allow(clippy::too_many_arguments)]
+    fn emit(
+        &self,
+        seq: u64,
+        ts: u64,
+        action: &str,
+        resource: &str,
+        outcome: &str,
+        principal: &str,
+        prev_hash: &str,
+        hash: &str,
+    ) {
+        self.0.lock().unwrap().push(Emitted {
+            seq,
             ts,
-            action.to_string(),
-            resource.to_string(),
-            outcome.to_string(),
-            principal.to_string(),
-        ));
+            action: action.to_string(),
+            resource: resource.to_string(),
+            outcome: outcome.to_string(),
+            principal: principal.to_string(),
+            prev_hash: prev_hash.to_string(),
+            hash: hash.to_string(),
+        });
     }
 }
 
@@ -376,8 +402,8 @@ fn one_clock_read_per_mutation_reaches_both_the_ring_and_the_durable_seam() {
     let ring = log.export();
     let emitted = seam.0.lock().unwrap().clone();
     assert_eq!(emitted.len(), 2, "every mutation reaches the durable seam");
-    assert_eq!(ring[0].ts, emitted[0].0);
-    assert_eq!(ring[1].ts, emitted[1].0);
+    assert_eq!(ring[0].ts, emitted[0].ts);
+    assert_eq!(ring[1].ts, emitted[1].ts);
     assert_eq!(ring[0].ts, 1_700_000_000);
     assert_eq!(ring[1].ts, 1_700_000_099);
 }
@@ -390,10 +416,10 @@ fn the_seam_sees_the_same_action_resource_outcome_and_principal_the_ring_sealed(
     let emitted = seam.0.lock().unwrap().clone();
     assert_eq!(
         (
-            emitted[0].1.as_str(),
-            emitted[0].2.as_str(),
-            emitted[0].3.as_str(),
-            emitted[0].4.as_str()
+            emitted[0].action.as_str(),
+            emitted[0].resource.as_str(),
+            emitted[0].outcome.as_str(),
+            emitted[0].principal.as_str()
         ),
         (
             ring[0].action.as_str(),
@@ -402,6 +428,50 @@ fn the_seam_sees_the_same_action_resource_outcome_and_principal_the_ring_sealed(
             ring[0].principal.as_str()
         )
     );
+}
+
+#[test]
+fn the_durable_seam_persists_the_sealed_sequence_link_and_digest_and_restores_verifiably() {
+    // The off-box durable copy is restored and re-verified at boot, and that verification checks
+    // the sequence, the link and the digest — not just the five facts. So the seam must be handed
+    // those three straight off the sealed entry. Persisting only the facts (the old signature could
+    // carry nothing else) left the durable copy unable to reconstruct what restore verifies.
+    let (log, _clock, seam) = log_at(1_700_000_000);
+    log.record_by("hook.register", "hook:a", OUTCOME_APPLIED, "admin");
+    log.record_by("hook.delete", "hook:a", OUTCOME_REJECTED, "admin");
+
+    let sealed_ring = log.export();
+    let emitted = seam.0.lock().unwrap().clone();
+    assert_eq!(emitted.len(), sealed_ring.len());
+
+    // Every emitted record carries the SAME seq, prev_hash and hash the ring sealed.
+    for (persisted, sealed) in emitted.iter().zip(sealed_ring.iter()) {
+        assert_eq!(persisted.seq, sealed.seq, "the durable copy carries the sequence");
+        assert_eq!(persisted.prev_hash, sealed.prev_hash, "and the link");
+        assert_eq!(persisted.hash, sealed.hash, "and the digest");
+    }
+
+    // And a restore rebuilt from ONLY what the seam persisted verifies — the whole point of the
+    // durable copy is that it, alone, reconstructs a chain the boot path can trust.
+    let rebuilt: Vec<AuditEntry> = emitted
+        .iter()
+        .map(|e| AuditEntry {
+            seq: e.seq,
+            ts: e.ts,
+            action: e.action.clone(),
+            resource: e.resource.clone(),
+            outcome: e.outcome.clone(),
+            principal: e.principal.clone(),
+            prev_hash: e.prev_hash.clone(),
+            hash: e.hash.clone(),
+            recorded_here: false,
+        })
+        .collect();
+    let restored = ring();
+    restored
+        .restore_from_store(rebuilt)
+        .expect("the durable copy alone reconstructs a chain the boot path verifies");
+    assert!(restored.verify());
 }
 
 #[test]

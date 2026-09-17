@@ -5,6 +5,8 @@
 //! asks for. The interesting reading is in the codec crate; the interesting decisions are in the
 //! units. What is here is the wiring, and it is meant to stay boring enough to check by eye.
 
+use std::borrow::Cow;
+
 use busbar_contract::bounded::{
     ArenaBytes, BoundedVec, FactValue, Facts, Ir, Span, MAX_RESPONSE_PTRS,
 };
@@ -271,19 +273,31 @@ fn is_event_frame(bytes: &[u8]) -> bool {
 /// Split one streamed event into its name and its payload.
 ///
 /// The framing is the transport's, so this reads only what the transport left: the two named lines,
-/// in either order, with the payload taken verbatim.
-fn split_event(bytes: &[u8]) -> (&str, &[u8]) {
+/// in either order. Per the SSE grammar an event may carry SEVERAL `data:` lines, and their values
+/// are the payload joined with a newline between them — keeping only the last would hand a truncated,
+/// invalid document to the reader. The single-`data:` case (what every LLM dialect actually sends)
+/// stays a borrow with no allocation; only a genuinely multi-line event allocates to join.
+fn split_event(bytes: &[u8]) -> (&str, Cow<'_, [u8]>) {
     let text = core::str::from_utf8(bytes).unwrap_or_default();
     let mut name = "";
-    let mut data: &[u8] = b"";
+    let mut data: Option<Cow<'_, [u8]>> = None;
     for line in text.lines() {
         if let Some(rest) = line.strip_prefix("event:") {
             name = rest.trim();
         } else if let Some(rest) = line.strip_prefix("data:") {
-            data = rest.trim_start().as_bytes();
+            let piece = rest.trim_start().as_bytes();
+            data = Some(match data.take() {
+                None => Cow::Borrowed(piece),
+                Some(prev) => {
+                    let mut joined = prev.into_owned();
+                    joined.push(b'\n');
+                    joined.extend_from_slice(piece);
+                    Cow::Owned(joined)
+                }
+            });
         }
     }
-    (name, data)
+    (name, data.unwrap_or(Cow::Borrowed(b"")))
 }
 
 /// Whether the answer this response was read from arrived as a streamed event.
@@ -305,10 +319,10 @@ fn is_streamed(r: &Response<'_>) -> bool {
 /// always split the two before reading.
 fn event_payload(bytes: &[u8]) -> Option<(&str, serde_json::Value)> {
     let (name, data) = split_event(bytes);
-    if data == b"[DONE]" || data.is_empty() {
+    if data.as_ref() == b"[DONE]" || data.is_empty() {
         return None;
     }
-    let value: serde_json::Value = sonic_rs::from_slice(data).ok()?;
+    let value: serde_json::Value = sonic_rs::from_slice(data.as_ref()).ok()?;
     Some((name, value))
 }
 
@@ -630,7 +644,7 @@ impl Plane for LlmPlane {
         if is_event_frame(bytes) {
             let (name, data) = split_event(bytes);
             // The dialect's own end-of-stream marker is not a document; it ends the answer.
-            if data == b"[DONE]" {
+            if data.as_ref() == b"[DONE]" {
                 let _ = facts.set(meta::FACT_FRAME_KIND, FactValue::Str("event"));
                 return Ok(Progress::Terminal {
                     for_: None,
@@ -641,7 +655,7 @@ impl Plane for LlmPlane {
                     }),
                 });
             }
-            let value = parse(data)?;
+            let value = parse(data.as_ref())?;
             // The reader holds nothing across frames — the state it reads against is the kernel's,
             // borrowed for the length of the call — so this is a stateless question and the writer
             // a resolved `Protocol` would box alongside it is never touched.
@@ -653,16 +667,27 @@ impl Plane for LlmPlane {
             let terminal = events
                 .iter()
                 .any(|e| matches!(e, IrStreamEvent::MessageStop));
+            // A concrete stop reason (or an error) in this frame decides the finish class. Absent
+            // one, the class is decided by whether this frame ENDS the stream: a `message_delta`
+            // carrying the `stop_reason` and the terminal `message_stop` can arrive as SEPARATE
+            // transport frames, so the frame that ends the stream would otherwise settle a naturally
+            // completed answer as `Partial`. A terminal frame with no error is `Complete`; a
+            // non-terminal frame with nothing to say is still `Partial` (it is not a settlement).
             let finish = events
                 .iter()
                 .find_map(|e| match e {
-                    IrStreamEvent::MessageDelta { stop_reason, .. } => {
-                        Some(finish_of(*stop_reason))
-                    }
                     IrStreamEvent::Error(_) => Some(FinishClass::Error),
+                    IrStreamEvent::MessageDelta {
+                        stop_reason: Some(sr),
+                        ..
+                    } => Some(finish_of(Some(*sr))),
                     _ => None,
                 })
-                .unwrap_or(FinishClass::Partial);
+                .unwrap_or(if terminal {
+                    FinishClass::Complete
+                } else {
+                    FinishClass::Partial
+                });
             let r = Response {
                 ir: response_view(egress, body.as_slice(), ctx)?,
                 finish,
@@ -679,6 +704,16 @@ impl Plane for LlmPlane {
                     r: Box::new(r),
                 }
             });
+        }
+
+        // An SSE comment/keepalive (`: ping`) or a blank separator frame carries no document — it is
+        // the transport holding the stream open, not a malformed answer. A2A and MCP treat such a
+        // frame as `NeedMore`; reading it here as a whole body would fail `parse` and abort the
+        // stream as `Malformed`. A leading `:` is never a valid JSON start, so this cannot swallow a
+        // real body. (Genuinely malformed bytes still fall through to `parse` below.)
+        let head = bytes.trim_ascii_start();
+        if head.is_empty() || head[0] == b':' {
+            return Ok(Progress::NeedMore);
         }
 
         let value = parse(bytes)?;
@@ -716,7 +751,7 @@ impl Plane for LlmPlane {
         );
         if is_event {
             let (name, data) = split_event(bytes);
-            if data == b"[DONE]" {
+            if data.as_ref() == b"[DONE]" {
                 return put(ctx, bytes);
             }
             // The one resolution in this plane that is NOT a stateless question, so the one that
@@ -726,7 +761,7 @@ impl Plane for LlmPlane {
             let ingress_protocol = busbar_llm_codec::proto_codec::protocol_for(ingress.name)
                 .ok_or(Encode::Unrepresentable)?;
             let value: serde_json::Value =
-                sonic_rs::from_slice(data).map_err(|_| Encode::Unrepresentable)?;
+                sonic_rs::from_slice(data.as_ref()).map_err(|_| Encode::Unrepresentable)?;
             let events = with_decode_state(st, |state| {
                 with_reader(source, |r| r.read_response_events(name, &value, state))
             })

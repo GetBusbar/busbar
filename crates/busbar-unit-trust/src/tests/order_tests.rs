@@ -104,14 +104,15 @@ fn sticky_affinity_never_selects_zero_weight_drained_member() {
 
 #[test]
 fn the_affinity_position_is_the_hash_over_the_candidate_count() {
+    let lanes = Lanes::default();
     let c = cands(&[(10, 1), (11, 1), (12, 1)]);
-    assert_eq!(sticky_position(&c, Some(7), &no_exclusions()), Some(1));
-    assert_eq!(sticky_position(&c, Some(9), &no_exclusions()), Some(0));
-    assert_eq!(sticky_position(&c, None, &no_exclusions()), None);
+    assert_eq!(sticky_position(&c, &lanes, Some(7), &no_exclusions()), Some(1));
+    assert_eq!(sticky_position(&c, &lanes, Some(9), &no_exclusions()), Some(0));
+    assert_eq!(sticky_position(&c, &lanes, None, &no_exclusions()), None);
     // A lane this request already tried is not pinned to.
     let mut tried = HashSet::new();
     tried.insert(11usize);
-    assert_eq!(sticky_position(&c, Some(7), &tried), None);
+    assert_eq!(sticky_position(&c, &lanes, Some(7), &tried), None);
 }
 
 #[test]
@@ -530,5 +531,62 @@ fn every_ordering_native_declares_that_it_may_change_the_destination() {
     assert!(
         a.may_change_destination(),
         "an ordering hook changes which destination is selected, and says so"
+    );
+}
+
+#[test]
+fn sticky_affinity_never_pins_to_a_configured_out_dead_lane() {
+    // Two members, both weighted; the affinity hash lands on position 1 (idx 1). When idx 1 is
+    // configured-out/Dead, the lane table reports it inadmissible — the SAME predicate the ranked
+    // and floor paths gate on. `sticky_position` must not pin to it (it falls through to the floor),
+    // and the dead lane must never be offered to the admission, because `try_admit` has no dead
+    // concept and would dispatch the hop to a dead upstream.
+    let c = cands(&[(0, 1), (1, 1)]);
+    let hash = 3u64; // 3 % 2 == 1 -> position 1, idx 1
+
+    let dead = Lanes::with(|l| {
+        l.dead.insert(1);
+    });
+    // Red before the fix: `sticky_position` returned `Some(1)` because it gated only on weight and
+    // exclusion, never consulting `lane_admissible`. After the fix it abstains on the dead lane.
+    assert_eq!(
+        sticky_position(&c, &dead, Some(hash), &no_exclusions()),
+        None,
+        "a dead sticky candidate must not be pinned to"
+    );
+    let (outcome, _) = pick_with(&dead, &c, None, Some(hash), &no_exclusions());
+    assert_eq!(
+        outcome,
+        PickOutcome::Admitted(Pick {
+            lane: 0,
+            position: 0
+        }),
+        "the pick falls through to the floor and admits the admissible lane"
+    );
+    assert!(
+        !dead.admissions.borrow().contains(&1),
+        "the dead lane must NEVER be dispatched to the admission (try_admit has no dead concept)"
+    );
+
+    // Byte-neutral: an ADMISSIBLE sticky candidate is still offered first, exactly as before.
+    let healthy = Lanes::default();
+    assert_eq!(
+        sticky_position(&c, &healthy, Some(hash), &no_exclusions()),
+        Some(1),
+        "an admissible sticky candidate is still pinned to"
+    );
+    let (outcome, _) = pick_with(&healthy, &c, None, Some(hash), &no_exclusions());
+    assert_eq!(
+        outcome,
+        PickOutcome::Admitted(Pick {
+            lane: 1,
+            position: 1
+        }),
+        "the admissible sticky lane is offered and admitted first"
+    );
+    assert_eq!(
+        healthy.admissions.borrow()[0],
+        1,
+        "the admissible pinned lane is asked first, unchanged"
     );
 }

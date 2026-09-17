@@ -170,3 +170,99 @@ fn the_deltas_after_the_opening_frame_are_written_to_the_client() {
         "and it does not re-open a block the first delta already opened: {second_delta}"
     );
 }
+
+/// An SSE comment/keepalive frame keeps the stream open rather than aborting it.
+///
+/// A `: ping` line is neither `event:` nor `data:` and is not JSON. Read as a whole body it would
+/// fail to parse and abort the stream as `Malformed`; it is the transport holding the connection
+/// open, so the plane must report `NeedMore`, the way the A2A and MCP planes do.
+#[test]
+fn an_sse_comment_keepalive_is_needmore_not_malformed() {
+    let plane = LlmPlane::new(UPSTREAMS);
+    let arena = harness::LeakArena;
+    let config = harness::EmptyConfig;
+    let transport = harness::HttpStack::new(harness::path_for("bedrock"), &[]);
+    let labels = Labels::new();
+    let ctx = harness::ctx(&arena, &config, &transport, &labels);
+    let dest = harness::destination("bedrock.invalid", LANE);
+    let mut st = session();
+
+    let comment = b": ping\n\n".to_vec();
+    let frames = vec![harness::frame(&comment)];
+    let mut answers = FrameCursor::new(&frames);
+    let progress = plane
+        .decode_response(&mut answers, &dest, Some(&mut st), &ctx)
+        .expect("a keepalive comment must not error the stream");
+    assert!(
+        matches!(progress, Progress::NeedMore),
+        "an SSE comment is a keepalive, not a document: {progress:?}"
+    );
+}
+
+/// An SSE event whose JSON payload is split across MULTIPLE `data:` lines is joined per the SSE
+/// grammar before it is read. Keeping only the last line would hand a truncated, invalid document to
+/// the reader and abort the stream.
+#[test]
+fn a_payload_split_across_two_data_lines_is_joined() {
+    let plane = LlmPlane::new(UPSTREAMS);
+    let arena = harness::LeakArena;
+    let config = harness::EmptyConfig;
+    let transport = harness::HttpStack::new(harness::path_for("bedrock"), &[]);
+    let labels = Labels::new();
+    let ctx = harness::ctx(&arena, &config, &transport, &labels);
+    let dest = harness::destination("bedrock.invalid", LANE);
+    let mut st = session();
+
+    // One valid document, its bytes split across two `data:` lines. Joined with a newline (legal
+    // JSON whitespace between tokens) it parses; the last line alone does not.
+    let split =
+        b"event: contentBlockDelta\ndata: {\"type\":\"contentBlockDelta\",\ndata: \"contentBlockIndex\":0,\"delta\":{\"text\":\"Hi\"}}\n\n"
+            .to_vec();
+    let frames = vec![harness::frame(&split)];
+    let mut answers = FrameCursor::new(&frames);
+    let progress = plane
+        .decode_response(&mut answers, &dest, Some(&mut st), &ctx)
+        .expect("the joined payload is valid and must decode, not abort as Malformed");
+    assert!(
+        matches!(progress, Progress::Frame { .. } | Progress::Terminal { .. }),
+        "the two data lines join into one valid document: {progress:?}"
+    );
+}
+
+/// A terminal `message_stop` that carries no stop reason settles the answer as COMPLETE, not
+/// PARTIAL. The `message_delta` that states the reason and the `message_stop` that ends the stream
+/// can arrive as SEPARATE transport frames, so the frame that ends the stream may carry no reason of
+/// its own — a naturally completed answer must not be recorded as cut short.
+#[test]
+fn a_terminal_stop_without_a_reason_settles_complete() {
+    const ANTHROPIC: &[Upstream] = &[Upstream {
+        lane: LaneId::new("lane-anthropic"),
+        host: "anthropic.invalid",
+        dialect: "anthropic",
+        model: "claude",
+    }];
+    const A_LANE: LaneId = LaneId::new("lane-anthropic");
+    let plane = LlmPlane::new(ANTHROPIC);
+    let arena = harness::LeakArena;
+    let config = harness::EmptyConfig;
+    let transport = harness::HttpStack::new(harness::path_for("anthropic"), &[]);
+    let labels = Labels::new();
+    let ctx = harness::ctx(&arena, &config, &transport, &labels);
+    let dest = harness::destination("anthropic.invalid", A_LANE);
+    let mut st = session();
+
+    let stop = event("message_stop", r#"{"type":"message_stop"}"#);
+    let frames = vec![harness::frame(&stop)];
+    let mut answers = FrameCursor::new(&frames);
+    let progress = plane
+        .decode_response(&mut answers, &dest, Some(&mut st), &ctx)
+        .expect("the stop frame is read");
+    let Progress::Terminal { r, .. } = progress else {
+        panic!("message_stop ends the answer: {progress:?}");
+    };
+    assert_eq!(
+        r.finish,
+        FinishClass::Complete,
+        "a terminal stop with no reason is a completed answer, not a partial one"
+    );
+}

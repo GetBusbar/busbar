@@ -175,6 +175,18 @@ fn walk(v: &Value, s: &Value, path: &str, depth: usize, errors: &mut Vec<String>
 /// give. Numbers are therefore compared by value and everything else structurally — recursing so the
 /// rule reaches a number nested inside an array or object constant too.
 fn json_eq(a: &Value, b: &Value) -> bool {
+    json_eq_depth(a, b, 0)
+}
+
+/// The depth-bounded body of [`json_eq`]. A `const`/`enum` value is compared against a structured
+/// result by recursing to the structure's depth, so an adversarially nested value would recurse to
+/// that depth and exhaust the stack. This mirrors [`walk`]'s `MAX_DEPTH` discipline: past the bound
+/// the recursion stops and the values are reported unequal — a deeper structure cannot legitimately
+/// satisfy an in-bound schema anyway, and [`walk`] itself stops descending there too.
+fn json_eq_depth(a: &Value, b: &Value, depth: usize) -> bool {
+    if depth > MAX_DEPTH {
+        return false;
+    }
     match (a, b) {
         (Value::Number(x), Value::Number(y)) => match (x.as_f64(), y.as_f64()) {
             (Some(x), Some(y)) => x == y,
@@ -183,12 +195,15 @@ fn json_eq(a: &Value, b: &Value) -> bool {
             _ => x == y,
         },
         (Value::Array(x), Value::Array(y)) => {
-            x.len() == y.len() && x.iter().zip(y).all(|(x, y)| json_eq(x, y))
+            x.len() == y.len()
+                && x.iter()
+                    .zip(y)
+                    .all(|(x, y)| json_eq_depth(x, y, depth + 1))
         }
         (Value::Object(x), Value::Object(y)) => {
             x.len() == y.len()
                 && x.iter()
-                    .all(|(k, xv)| y.get(k).is_some_and(|yv| json_eq(xv, yv)))
+                    .all(|(k, xv)| y.get(k).is_some_and(|yv| json_eq_depth(xv, yv, depth + 1)))
         }
         _ => a == b,
     }

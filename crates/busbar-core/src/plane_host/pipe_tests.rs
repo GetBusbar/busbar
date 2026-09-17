@@ -341,3 +341,51 @@ fn arena_drop_reclaims_and_kills_an_unclosed_subprocess() {
         "arena drop reclaims (kills + reaps) a subprocess the plane never closed"
     );
 }
+
+#[test]
+fn close_does_not_wedge_when_a_read_is_parked_on_a_child_holding_stdout() {
+    // A child that never writes stdout and ignores its stdin EOF parks a reader on the blocking
+    // `stdout.read`, which holds the stdout lock. Teardown must still kill and reap it: `close` kills
+    // the child BEFORE contending for that lock, so the parked read returns EOF and the process is
+    // reaped rather than leaked. Before the fix `close` took the stdout lock first and wedged behind
+    // the parked read forever — this test would hang.
+    if !std::path::Path::new("/bin/sleep").exists() {
+        return;
+    }
+    use std::process::{Command, Stdio};
+    use std::sync::{Arc, Mutex};
+    let mut child = Command::new("/bin/sleep")
+        .arg("30")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn sleep");
+    let stdin = child.stdin.take();
+    let stdout = child.stdout.take();
+    let backend = Arc::new(PipeBackend {
+        child: Mutex::new(Some(child)),
+        stdin: Mutex::new(stdin),
+        stdout: Mutex::new(stdout),
+    });
+
+    let reader = Arc::clone(&backend);
+    let handle = std::thread::spawn(move || {
+        let mut buf = [0u8; 16];
+        // SAFETY: `buf` is a live writable range for the call.
+        unsafe { reader.read(buf.as_mut_ptr(), buf.len()) }
+    });
+    // Let the reader park on the blocking read.
+    std::thread::sleep(std::time::Duration::from_millis(200));
+
+    // Must return promptly (it kills the child first), not wedge behind the parked read.
+    backend.close();
+
+    let (_class, n) = handle
+        .join()
+        .expect("the parked reader returns after close kills the child");
+    assert_eq!(
+        n, 0,
+        "the read returns EOF once the child's stdout is closed by the kill"
+    );
+}
