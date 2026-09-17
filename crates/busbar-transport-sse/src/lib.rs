@@ -39,6 +39,7 @@ use busbar_transport_http::HttpTransport;
 use futures::{Stream, StreamExt};
 
 pub(crate) mod proto;
+pub mod reframe;
 
 /// Carve every complete SSE frame sitting at the front of `buf`, resuming the terminator scan at
 /// `scanned` (rewound by three, the most of a four-byte terminator a previous look can have left

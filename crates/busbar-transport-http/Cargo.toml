@@ -30,6 +30,7 @@ http-body-util = { workspace = true }
 http = { workspace = true }
 bytes = { workspace = true }
 webpki-roots = { workspace = true }
+sha2 = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["net", "rt-multi-thread", "sync", "io-util", "time", "macros"] }
