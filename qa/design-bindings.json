@@ -15,16 +15,16 @@
  },
  "counts": {
   "bindings": 103,
-  "mapped": 102,
-  "unproven": 1,
+  "mapped": 103,
+  "unproven": 0,
   "unmapped": 0,
   "gap": 0,
   "checks_by_kind": {
    "gate": 13,
    "lint": 5,
-   "oracle-cell": 57,
+   "oracle-cell": 58,
    "oracle-family": 5,
-   "test": 448
+   "test": 452
   }
  },
  "owner_decisions": {
@@ -958,7 +958,7 @@
    "surface": "admin audit chain",
    "binding": "1.6.0 keeps APPENDING the legacy `AuditEntry` chain: 8 WIRE fields (`recorded_here` is `#[serde(skip)]`), 33 action names, `hash` = SHA-256 hex over the canonical `prev",
    "inventory": "seq",
-   "status": "unproven",
+   "status": "mapped",
    "checks": [
     {
      "kind": "test",
@@ -969,14 +969,14 @@
     },
     {
      "kind": "test",
-     "ref": "crates/busbar-core/src/admin/tests/audit_tests.rs::hash_chain_links_and_verifies",
+     "ref": "crates/busbar-unit-audit/src/tests/legacy_ring_tests.rs::hash_chain_links_and_verifies",
      "proves": "genesis prev_hash is empty; tamper breaks verify",
      "source": "curated",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "crates/busbar-core/src/admin/tests/audit_tests.rs::export_load_roundtrip_resumes_chain",
+     "ref": "crates/busbar-unit-audit/src/tests/legacy_ring_tests.rs::export_load_roundtrip_resumes_chain",
      "proves": "restore resumes the sequence",
      "source": "curated",
      "status": "mapped"
@@ -996,8 +996,8 @@
      "status": "mapped"
     }
    ],
-   "verdict": "FAIL",
-   "verdict_detail": "partly proven; a referenced check settles nothing: test:crates/busbar-core/src/admin/tests/audit_tests.rs::hash_chain_links_and_verifies (no test fn by that name is declared in that file), test:crates/busbar-core/src/admin/tests/audit_tests.rs::export_load_roundtrip_resumes_chain (no test fn by that name is declared in that file)"
+   "verdict": "PASS",
+   "verdict_detail": "test:the_admin_audit_digest_is_unchanged_by_the_unification, test:crates/busbar-unit-audit/src/tests/legacy_ring_tests.rs::hash_chain_links_and_verifies, test:crates/busbar-unit-audit/src/tests/legacy_ring_tests.rs::export_load_roundtrip_resumes_chain, test:admin_audit_chain_boot_verifies_from_frozen_bytes, oracle-cell:admin.ops|GetAudit|ok"
   },
   {
    "id": "PB-21",
