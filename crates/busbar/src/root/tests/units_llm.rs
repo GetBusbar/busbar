@@ -550,19 +550,23 @@ fn two_units_of_one_second_are_ordered_by_the_monotonic_stamp() {
     // is the ordering the record is FOR, and which does not exist if the second field is the
     // first one copied.
     let seal = busbar_caps::KernelSeal::acquire_for_kernel();
-    let mut durability = crate::root::durability::build(
+    let durability = crate::root::durability::build(
         &crate::root::durability::DurabilityConfig { data_dir: None },
         Box::new(busbar_unit_wal::NullShipper::new()),
         Box::new(busbar_unit_ledger::legacy::RecordingRows::new()),
     )
     .expect("a memory-buffered journal cannot fail to open");
+    // Both settlements through the ONE money-book seam over the shared book — the pass-through the
+    // live exit arm now takes, and what a second exit arm settling behind the first takes too.
+    let book = std::sync::Arc::new(std::sync::Mutex::new(durability));
+    let seam = crate::root::durability::SharedBook::over(std::sync::Arc::clone(&book));
     let who = PrincipalId::new("acct:llm");
     for arrived in [Arrived::at(EPOCH * 1_000, 7), Arrived::at(EPOCH * 1_000, 8)] {
         let ledger_token = busbar_caps::LedgerToken::mint(&seal);
         let accrual = busbar_caps::HoldAccrual::after_terminal(who.clone(), 0, &ledger_token);
         let posted = busbar_caps::Posted::settle_late(accrual, &ledger_token);
         settle(
-            &mut durability,
+            &seam,
             &who,
             arrived,
             &busbar_caps::DurabilityToken::mint(&seal),
@@ -570,6 +574,7 @@ fn two_units_of_one_second_are_ordered_by_the_monotonic_stamp() {
         )
         .expect("the memory-buffered journal takes it");
     }
+    let durability = book.lock().unwrap_or_else(|p| p.into_inner());
     let replayed = durability
         .journal
         .replay()
@@ -932,15 +937,18 @@ async fn the_exit_arm_puts_the_loops_posting_on_the_journal() {
     );
 
     let seal = busbar_caps::KernelSeal::acquire_for_kernel();
-    let mut durability = crate::root::durability::build(
+    let durability = crate::root::durability::build(
         &crate::root::durability::DurabilityConfig { data_dir: None },
         Box::new(busbar_unit_wal::NullShipper::new()),
         Box::new(busbar_unit_ledger::legacy::RecordingRows::new()),
     )
     .expect("a memory-buffered journal cannot fail to open");
+    // Settle THROUGH the money-book seam, over the shared book — the pass-through the live exit arm
+    // now takes. The posting it lands and the record it replays are the exit arm's own bytes.
+    let book = std::sync::Arc::new(std::sync::Mutex::new(durability));
     let who = PrincipalId::new("acct:llm");
     let settled = settle(
-        &mut durability,
+        &crate::root::durability::SharedBook::over(std::sync::Arc::clone(&book)),
         &who,
         Arrived::at(EPOCH * 1_000, 0),
         &busbar_caps::DurabilityToken::mint(&seal),
@@ -949,6 +957,7 @@ async fn the_exit_arm_puts_the_loops_posting_on_the_journal() {
     .expect("the memory-buffered journal takes it");
     assert!(settled.overdraft.is_none(), "nothing to carry out");
 
+    let durability = book.lock().unwrap_or_else(|p| p.into_inner());
     let window =
         busbar_unit_admission::budget_window(busbar_unit_admission::window::WINDOW_DAY, EPOCH);
     let figures = durability.ledger.book().get(&balance(&who), window);

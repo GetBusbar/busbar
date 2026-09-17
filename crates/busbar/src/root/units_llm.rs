@@ -419,14 +419,12 @@ impl LlmNode {
         let Ok(posted) = end.into_posted() else {
             return;
         };
-        let mut durability = book.lock().unwrap_or_else(|p| p.into_inner());
-        let _settled = settle(
-            &mut durability,
-            principal,
-            arrived,
-            &self.durability_token,
-            posted,
-        );
+        // Settle THROUGH the money-book seam rather than a `&mut` on the book itself: the lock is
+        // taken and released inside the seam, so this arm settling does not hold the one book across
+        // its whole exit the way a `&mut Durability` did. The pass-through settles the identical
+        // posting onto the identical shared book — the bytes on the chain are unchanged.
+        let book = crate::root::durability::SharedBook::over(Arc::clone(book));
+        let _settled = settle(&book, principal, arrived, &self.durability_token, posted);
     }
 
     /// Walk one request through the loop and answer with what the terminal posted.
@@ -857,14 +855,10 @@ impl LateAccrual {
         let accrual =
             busbar_caps::HoldAccrual::after_terminal(principal.clone(), amount, &ledger_token);
         let posted = busbar_caps::Posted::settle_late(accrual, &ledger_token);
-        let mut durability = book.lock().unwrap_or_else(|p| p.into_inner());
-        let _settled = settle(
-            &mut durability,
-            &principal,
-            arrived,
-            &durability_token,
-            posted,
-        );
+        // Through the money-book seam, as the terminal exit arm does — the same shared book, the
+        // same posting, the lock taken and released behind the seam.
+        let book = crate::root::durability::SharedBook::over(book);
+        let _settled = settle(&book, &principal, arrived, &durability_token, posted);
     }
 }
 
@@ -1569,7 +1563,7 @@ fn balance(principal: &PrincipalId) -> busbar_unit_ledger::totals::TotalsKey {
 /// The journal could not make the record durable. The books have already moved: value was delivered,
 /// and a settlement is not rolled back because a write failed.
 pub fn settle(
-    durability: &mut crate::root::durability::Durability,
+    book: &dyn crate::root::durability::MoneyBook,
     principal: &PrincipalId,
     arrived: Arrived,
     token: &busbar_caps::DurabilityToken,
@@ -1596,7 +1590,7 @@ pub fn settle(
             mono: arrived.mono(),
         },
     };
-    durability.settle_posted(&at, posted)
+    book.settle_posted(&at, posted)
 }
 
 // ---------------------------------------------------------------------------------------------
