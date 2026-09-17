@@ -179,6 +179,12 @@ pub mod catalogue;
 pub mod egress_auth;
 pub mod failover;
 pub mod store;
+// THE NEUTRAL PER-SESSION SUBSTRATE: a `(session, owner) → opaque slot` store (bounded LRU + TTL,
+// pin-aware, clock injected as `now_ms`), std-only with zero busbar deps. Relocated DOWN from
+// `busbar_core::session` so the neutral gate and the planes name one substrate type; core re-exports
+// it at its historical `busbar_core::session::…` path (public API byte-identical). Distinct from the
+// plane-streaming/voice and kernel session tables, which are unrelated.
+pub mod session;
 pub mod telemetry;
 // The neutral METRIC-NAME facade: the `&'static str` Prometheus names a plane's engine emits. Pure
 // data, no registry/`App`; core re-exports each from `crate::metrics`. The recorder + `render()` +
