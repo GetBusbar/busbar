@@ -28,7 +28,7 @@ Owner rulings carried into this document (2026-09-08):
 
 1. **07:5x** — implement all seventeen to their ARCHITECTURE contract; **admin views that name money
    live in `busbar-unit-cost`'s view types** — the control surface never names a figure.
-2. **08:5x** — **admin is a CONTROL SURFACE**, a new plugin kind `control`. See §1.1.
+2. **admin is a CONTROL SURFACE served by a compiled-in cleanliness crate, not a plugin kind.** See §1.1.
 
 ---
 
@@ -36,10 +36,10 @@ Owner rulings carried into this document (2026-09-08):
 
 ### 1.1 Admin is a control surface, not a data plane
 
-The seventeen are contracted here as operations of a **`control` kind**, not of a plane. Five
-properties follow, and every row in §7 is written to them:
+The seventeen are contracted here as operations of the admin **cleanliness surface** (a compiled-in
+crate, not a plugin kind), not of a plane. Five properties follow, and every row in §7 is written to them:
 
-| property of a `control` surface | what it means for the seventeen | evidence it already holds |
+| property of a control surface | what it means for the seventeen | evidence it already holds |
 |---|---|---|
 | **unmetered** | no verb draws a meter class, a `requests` slot, a `concurrent` lease or a fee. Every one posts zero | §4.7:368 — "an admin unit's set is `KernelVerb` only … `KernelVerb` units draw no dimension unless the card's `KernelVerb` section prices them"; §8.1:1196's admin cell asserts "zero fee/requests postings" under a non-zero configured fee; the loop's `meter` already reports an empty usage report and says why (`crates/busbar/src/root/units_admin/mod.rs:1822–1839`) |
 | **routes are data** | the 88-row `(method, path) -> verb` table is a declared table, matched by a pure function, never a router the surface owns | `busbar-plane-admin::verbs::{all_verbs, find_verb, resolve, table}` are already exactly this — a linear scan over a closed slice with no behaviour |
@@ -51,16 +51,16 @@ Two consequences worth stating so no row is read the wrong way:
 
 - **"Executes in `busbar-unit-verbs`" in §7 and §8 means the control path**, not a plane's Route
   step: `verify → admit → (idempotency) → effect through the unit → audit → answer`. The kernel
-  `Route` step is where the composition root currently hangs it (`mod.rs:1500`) because there is no
-  `control` kind yet; that is a wiring detail, and the contract below does not depend on it.
+  `Route` step is where the composition root currently hangs it (`mod.rs:1500`); admin is a cleanliness
+  crate rather than a metered plane, so that is a wiring detail, and the contract below does not depend on it.
 - **`busbar-plane-admin` becomes `busbar-control-admin` in the R7 rename.** This document keeps the
   current crate name in every path citation because the rename has not happened; **do not rename
   now**. Every `crates/busbar-plane-admin/...` citation below is a `crates/busbar-control-admin/...`
   citation after R7.
 
-The `control` kind itself — its entry in §1.4's plugin-kind table, its ABI constant, its declared
-route-table shape and the AST scan that keeps it unmetered — is not this document's to invent; it is
-owner decision **D-15**.
+How the admin cleanliness crate reuses the plane's route-as-data claim shape, and the AST scan that
+keeps it unmetered — there is no separate `control` `Kind` variant, ABI constant or §1.4 plugin-kind
+table row to invent — is not this document's to settle; it is owner decision **D-15**.
 
 ### 1.2 The constraints
 
@@ -349,7 +349,7 @@ existing surface already owns the scale (`NANOS_PER_CENT` :54, `NANOS_PER_MICRO`
 projections (`project.rs:23,31`) and the only per-line money struct (`PricedLine`, `posting.rs:20`).
 The control surface passes through the bytes the unit produced and names no figure — no money type,
 no currency, no amount identifier appears in `busbar-plane-admin` — so `plane-no-money`
-(`qa/full-gate.toml:89`) stays green and the `control` kind's no-money-vocabulary rule holds by
+(`qa/full-gate.toml:89`) stays green and the cleanliness crate's no-money-vocabulary rule holds by
 construction.
 
 **ARCHITECTURE silent on the type names; proposed:** a new `busbar-unit-cost::view` module, five
@@ -980,5 +980,5 @@ are collected below.
 | **D-12** | **Does the `verify` verb write a `Reconciliation` entry**, or only the every-T timer run (§4.2:782)? Proposed: only the timer. | An operator polling `verify` would otherwise rewrite the recompute watermark |
 | **D-13** | **`plane_record_write` concurrency shape** — `if_match` + `revision`, or last-write-wins? ARCHITECTURE gives `record_put/get/scan` and no concurrency rule. | `409 version_conflict` exists or it does not |
 | **D-14** | **Rate class for the fifteen mutating new verbs.** They fall through to `Crud` (60/min) because they have no `ADMIN_PREFIX`-relative rule (`rate.rs:164–167`). Several are blast-radius operations that §4.7 treats like `/config/*`. Proposed: add `set-operator-key`, `set-escrow`, `set-dual-control`, `commit-upgrade`, `chain-break`, `store-restore`, `reseal-epoch-floor` to `CONFIG_CLASS_RULES` (10/min). | CG-38 already flags the config-class table as supplied-at-integration and "must not ship" wrong |
-| **D-15** | **The `control` kind's declaration** (owner ruling 08:5x). Needs: its row in §1.4's plugin-kind table; whether it takes `PLANE_ABI` or a `CONTROL_ABI` of its own (cf. CG-12); the declared shape of "routes as data" (the 88-row table is already that shape — is it the contract's type or the surface's?); and the AST/gate rule that keeps a control surface unmetered and money-free. Also: does `control` replace the admin plane's `Claim`/`CLAIMS` declaration, or reuse it? | It decides whether the seventeen are contracted against a plane trait or a new one, and R7's rename (`busbar-plane-admin` → `busbar-control-admin`) lands on it |
-| **D-16** | **Where the control path hangs in the kernel loop.** Today all seventeen run inside the `Route` step (`mod.rs:1500`) because there is no `control` kind. Proposed: keep it there until D-15 lands, since the contract in §7 does not depend on it. | A control surface with a Route step is the shape §1.1 says it does not have |
+| **D-15** | **The admin cleanliness crate's declaration.** admin is a compiled-in cleanliness crate, not a plugin kind, so there is no new `Kind` variant, no `CONTROL_ABI` and no §1.4 plugin-kind table row. Needs: the declared shape of "routes as data" (the 88-row table is already that shape — is it the contract's type or the surface's?); whether it reuses the admin plane's existing `Claim`/`CLAIMS` declaration; and the AST/gate rule that keeps the control surface unmetered and money-free. | It decides how the seventeen are contracted against the reused plane claim shape, and R7's rename (`busbar-plane-admin` → `busbar-control-admin`) lands on it |
+| **D-16** | **Where the control path hangs in the kernel loop.** Today all seventeen run inside the `Route` step (`mod.rs:1500`). Proposed: keep it there until D-15 lands, since the contract in §7 does not depend on it. | A control surface with a Route step is the shape §1.1 says it does not have |

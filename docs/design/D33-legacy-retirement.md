@@ -518,12 +518,13 @@ book, so deleting the legacy accrual without moving the views first turns thirte
 ### 7.13 Two homes that did not exist now have one
 
 - **The OAuth authorization server** (1,341 lines: the metadata document, the routes, the consent UI,
-  the signer, the policy) had no crate and no kind. Owner ruling, 2026-09-08: it is a **CONTROL**
-  surface — `busbar-control-oauth2` — not a plane, not an auth plugin and not a core module. A
-  verifier answers a question about a credential and stays the `auth` kind; an authorization server
-  serves routes, and the request ends there.
-- **Admin is the same kind.** `busbar-plane-admin` becomes `busbar-control-admin` at the rename. The
-  split is metering and nothing else: a plane is the metered path and follows the strict workflow
-  every plane follows; a control surface is not on it and follows the lesser one
-  (verify → admit → audit → answer). `PLUGIN-TREE.md` §1 carries the kind row, its CAN/CANNOT list
-  and the dependency row; `ARCHITECTURE.md` §1.4 carries the closed-shape/open-vocabulary row.
+  the signer, the policy) is a compiled-in **cleanliness crate** — `busbar-control-oauth2` — not a
+  plugin kind, not a plane, not an auth plugin and not a core module. A verifier answers a question
+  about a credential and stays the `auth` kind; an authorization server serves routes, and the request
+  ends there.
+- **Admin is the same.** `busbar-plane-admin` becomes `busbar-control-admin` at the rename, a
+  compiled-in cleanliness crate rather than a plugin kind. The split is metering and nothing else: a
+  plane is the metered path and follows the strict workflow every plane follows; a cleanliness surface
+  is not on it and follows the lesser one (verify → admit → audit → answer). `PLUGIN-TREE.md` carries
+  the cleanliness-crate CAN/CANNOT list; `ARCHITECTURE.md` §1.4 carries the closed-shape/open-vocabulary
+  rows for the seven kinds.

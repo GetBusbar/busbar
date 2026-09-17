@@ -403,8 +403,8 @@ $ git show b0c5b6f1:qa/kind-isolation.toml | grep -c 'kind = "dialect"'
 0
 ```
 
-**The `dialect` KIND COLUMN DOES NOT EXIST AT THE MERGE-BASE AT ALL** — not for `busbar`, not for
-anyone. The kind went live on this branch. So `cell.busbar.dialect.count` (today `651`) has no
+**The `dialect` MATRIX COLUMN DOES NOT EXIST AT THE MERGE-BASE AT ALL** — not for `busbar`, not for
+anyone. The column went live on this branch. So `cell.busbar.dialect.count` (today `651`) has no
 `before`, and `ceiling-rose`'s arithmetic — *"a key with no `before` has nothing to be higher than"*
 — means it reports **no finding** when the number moves. It is not that a rise is refused; it is
 that a rise is **invisible**. Confirmed on this tree: `ceiling-rose`'s 9 findings do not include

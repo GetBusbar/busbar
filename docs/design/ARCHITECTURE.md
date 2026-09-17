@@ -104,8 +104,8 @@ them). Each axis is blind to the other two; only the kernel composes them.
 |---|---|---|---|
 | `busbar-core-config` | core | the config document root, loader, env interpolation, migrator, overlay, named-map validator, the byte-identity prepass, the validator and the secret resolver — the product's config grammar, which had **no** replacement anywhere and could not be cut leaf-first (the layer reaches up into ten modules at 65 sites) | its own row, against a measured **20,050** surface lines |
 | `busbar-core-hooks` | core | the hook POLICY engine — resolution, gates, rewrites, singleflight, scrape — which the plain-data hook carriers in the substrate are not and never were. The kernel seats hook PLUGINS; this seats their policies | its own row (1,662 surface today) |
-| `busbar-control-admin` | control | the admin surface. `busbar-plane-admin` until **R7** renames it; registered as `control` by an explicit row until then | none (control carries no §1.1 union row) |
-| `busbar-control-oauth2` | control | the OAuth 2.1 authorization server — metadata document, `/authorize`, `/token`, login, consent, its own signer — which had no crate and no kind. Verification is a step and stays in `busbar-unit-auth`; an authorization SERVER is a served surface | none |
+| `busbar-control-admin` | cleanliness crate (not a plugin kind) | the admin surface. `busbar-plane-admin` until **R7** renames it; compiled in, one-way dep on core, off the hot path, unmetered | none (a cleanliness crate carries no §1.1 union row) |
+| `busbar-control-oauth2` | cleanliness crate (not a plugin kind) | the OAuth 2.1 authorization server — metadata document, `/authorize`, `/token`, login, consent, its own signer. Verification is a step and stays in `busbar-unit-auth`; an authorization SERVER is a served surface, compiled in and off the hot path | none |
 
 ### 1.2 Core → plugin. Never plugin → core.
 
@@ -117,7 +117,7 @@ Every plugin is passive: the kernel registers it, calls it, consumes what it ret
   DIALECT crate `busbar-plane-<p>-<d>` names its own plane `busbar-plane-<p>`, for the plane's IR
   type and nothing else; naming any other plane, any dialect, or a transport is a CI failure.
 - **Source denylist** (transitive via `cargo metadata`), scoped to the **pure kinds**: plane, hook,
-  static auth schemes that are pure, egress-auth-scheme, and the FFI transform crate: any path under
+  pure auth schemes (inbound verify and outbound decorate), and the FFI transform crate: any path under
   `std::{net, fs, process, os, env}`, `tokio::{net, fs, process}`, `async_std::*`, `libc`, `reqwest`,
   `hyper`; allow-list empty at hour 0. Meta-test: a socket-opening plane is red. **I/O kinds** — store,
   secret, export, and network-backed auth plugins (LDAP, OIDC/JWKS) — own their I/O by definition; they
@@ -126,7 +126,7 @@ Every plugin is passive: the kernel registers it, calls it, consumes what it ret
 - **Purity** (pure kinds): an AST scan rejects interior mutability in the plugin crate's own struct
   fields and statics; dependency purity is review-only (§3.7 says so); the determinism meta-test proves
   a stateful plane is red. Cross-frame codec state lives only in `PlaneSessionState` (§3.1).
-- Plane, hook, pure-auth, egress-auth-scheme and secret crates are `#![forbid(unsafe_code)]`;
+- Plane, hook, pure auth (inbound and outbound) and secret crates are `#![forbid(unsafe_code)]`;
   transport, ABI, loader, store and export crates are `deny` with a reviewed allow-list; the one FFI
   transform crate is a dependency of the plane that uses it and carries its own `deny` entry.
 - `Ctx` carries exactly one **resource** handle — the per-unit arena; `clock` and a per-unit **entropy**
@@ -203,27 +203,30 @@ scope. The plane key `streams` (formerly `voice`) is matched by the scan as the 
 **`docs/design/PLUGIN-TREE.md` is normative for this table.** It states, per kind, the ONE trait in
 `busbar-contract`, the compile boundary in both directions, the ceiling row, the testkit battery, the
 uniform crate skeleton, the single registration seam, the naming rule, and the procedure for adding a
-kind. There are **ten plugin kinds** — plane, dialect, transport, **control**, auth, egress-auth,
-store, secret, hook, export — and one core row, `unit`, which is never loadable. `loader` and `abi` are TCB crates,
+kind. There are **seven plugin kinds** — store, secret, auth, hook, export, plane, transport — and one
+core row, `unit`, which is never loadable. Direction (inbound/outbound) is a usage mode, never a kind
+boundary: **auth is one kind**, and inbound verification and outbound signing/decoration are two
+operations of it — there is no separate egress-auth kind. **transport is one kind, bidirectional.** A
+plane declares its needs as `(transport, auth)` per direction. `loader` and `abi` are TCB crates,
 not kinds. "Rate card" below is CONFIG, not a kind: it has no trait, no `Kind` variant and no crate,
 and is listed here only because the pricing surface is read alongside them.
 
-**`control` is the tenth, ruled 2026-09-08**, and the metering is the whole of the split. There are
-two families of served things: DATA PLANES (llm, mcp, a2a, streams), which are metered and follow the
-strict step list of §2.2 in full, never deviating; and CONTROL SURFACES (admin, the OAuth issuer),
-which are not on the metered path and run the lesser workflow `verify → admit → audit → answer`.
-Every kind uses transports, and no kind declares a wire of its own: `http` is declared and registered
-in ONE spot — `busbar-transport-http` — and both families reach it by declaring routes as data for it
-to mount generically. `PLUGIN-TREE.md` §1 is normative for what a control crate CAN and CANNOT do.
+**A dialect is a thing inside a plane, not a kind** — one plane owns one IR, and its dialects are the
+wire vocabularies that translate bytes ↔ that IR; there are no per-dialect crates and no dialect trait.
+**admin and oauth2 are compiled-in cleanliness crates, not a kind** — `busbar-control-admin` and
+`busbar-control-oauth2` depend one way on core, sit off the hot path, and are unmetered. The metering is
+the whole of the distinction: a DATA PLANE (llm, mcp, a2a, streams) is metered and follows the strict
+step list of §2.2 in full, never deviating; a cleanliness crate serves a system-level surface (admin,
+the OAuth issuer), is not on the metered path, and runs the lesser workflow `verify → admit → audit →
+answer`. Every plugin kind uses transports, and no kind declares a wire of its own: `http` is declared
+and registered in ONE spot — `busbar-transport-http` — and both reach it by declaring routes as data for
+it to mount generically. `PLUGIN-TREE.md` states what a cleanliness crate CAN and CANNOT do.
 
 | Kind | Closed shape (kernel calls) | Open vocabulary (plugin declares) |
 |---|---|---|
 | Plane | 7 codec, 7 fact, 2 introspection methods; `SessionPlane::open_session` / `open_upstream` — **18 call sites** | `KEY`, `CLAIMS`, `OP_CLASSES`, `METER_CLASSES` (each entry: key, `family`, `direction: Input | Response | CacheRead | CacheWrite | Kernel`, default divisor — the card may price but never re-family; "class family" everywhere means this field), `SESSION_FACTS`, `CONTENT_FACTS`, `RECORD_SCHEMAS`, `INTROSPECTION_VERBS`, `INTERRUPT_FACT`, `EGRESS_PACING_FACT`, `CONFIG_SCHEMA` |
-| Dialect | 4 codec methods over its plane's IR (decode-to-IR, encode-from-IR, decode-response-to-IR, encode-response); pure, no I/O, no clock | `KEY`, `PLANE`, `CLAIMS` (compile-time constants of this crate; the plane's `CLAIMS` is the union of its own and its registered dialects'), `LOCATIONS`, `SCHEME_ALT`, `EGRESS_SCHEME`, `STREAMING_CONTENT_TYPE`, `HEAD_KEYS`, `VERBS`, meter-locator pointers |
 | Transport (in-tree) | `arrival / listen / accept / dial / frames / write / upgrade / close / unit0_refusal` (async, boxed futures) | `KEY`, `SELECTOR_FORMS`, `EGRESS_SELECTOR_FORMS`, `COMPOSES_OVER`, `HANDOFF`, `SESSION`, `SESSION_BOUND`, `UNIT0_TRIGGER`, `UPGRADES_TO`, `HANDSHAKE_TRIGGER`, `TRANSPORT_FACTS`, `DECODES_PAYLOAD` |
-| Control | the lesser workflow and nothing else — `verify` (through the auth kind) · `admit` · `audit` · `answer`. No Route to an upstream, no egress, no encode-from-facts, no meter: every operation posts zero | `KEY`, its route table as data (the `(method, path) → verb` rows it claims), its own request and response body shapes, the refusal codes it renders, its UI data. It names no money, fee, rate or posting vocabulary; no upstream, pool, failover or breaker vocabulary; no transport, plane, dialect, unit or sibling-control crate; it owns no key material and no process-global state, and serves no route absent from its claim table |
-| Auth (ingress) | `verify(credential, arrival, clock, prior: Option<ChallengeState>) → CredentialFacts | Challenge { bytes, state, rounds_left } | Pass` (`Pass` = abstain, 1.5.5's chain continuation; the migrated `auth.chain` runs through `run_chain_cached` semantics, the credential cache applying to EXTERNAL modules only — the `keys` arm is cache-exempt — PB-35) (the proof of round n arrives with the state of round n−1); `refresh(clock) → KeyMaterial` (Tick-driven) | `KEY`, `LOCATIONS` (arrival forms), issuer config, `IO: bool` |
-| Egress-auth scheme | `decorate(cfg, &EgressBody, signer) → AuthDecoration`; `continue_handshake(state, &Frame, signer) → AuthDecoration` for multi-round schemes (the upstream challenge reaches round 2 here) | `KEY` |
+| Auth | **inbound operation** — `verify(credential, arrival, clock, prior: Option<ChallengeState>) → CredentialFacts | Challenge { bytes, state, rounds_left } | Pass` (`Pass` = abstain, 1.5.5's chain continuation; the migrated `auth.chain` runs through `run_chain_cached` semantics, the credential cache applying to EXTERNAL modules only — the `keys` arm is cache-exempt — PB-35) (the proof of round n arrives with the state of round n−1); `refresh(clock) → KeyMaterial` (Tick-driven). **outbound operation** — `decorate(cfg, &EgressBody, signer) → AuthDecoration`; `continue_handshake(state, &Frame, signer) → AuthDecoration` for multi-round schemes (the upstream challenge reaches round 2 here) | `KEY`, `LOCATIONS` (arrival forms), issuer config, `IO: bool` |
 | Store (kind `store`; native ABI **5**; every 1.5.5 dynamic plugin LOADS through an in-tree ADAPTER per kind at the exact 1.5.5 loader windows (store 2, auth 1–2, hook 1, export 2, secret 1), so a 1.5.5 plugins.yaml boots unchanged — parity clause, no `PluginAbiTooOld` for any 1.5.5 plugin) | `append_batch / replay_batch / reserve / release / heads / heartbeat / elect_checkpoint / claim_key / void_claims / replay_put / replay_get / session_put / session_remove / sessions_for / record_put / record_get / record_scan / legacy_cells_read / legacy_cells_write / legacy_audit_head / backup_watermark / purge_before` | `KEY`, `ABI_FLOOR`, `FLEET_SAFE`, schema versions, measured max sustained record rate |
 | Secret | `resolve`, `watch`, `sign`, `seal/unseal` (SIV-AEAD, deterministic); `watch` is inert for every migrated 1.5.5 ref (resolved once at 1.5.5's site, PB-34) | `KEY`, `REF_GRAMMAR` |
 | Hook | `observe(seat, &HookView) → HookFacts` at the four seats `Before(Approve)` (1.5.5 `Request`), `After(Admit)` (1.5.5 `Candidate` — AFTER the draw, so a restrict-to-empty veto consumes the `requests` slot exactly as 1.5.5's late reject did), `Before(Route)` (1.5.5 `Routing`, also after the draw), `After(Route)` (1.5.5 `Response`); `HookFacts { permutation: Option<Permutation> (None = abstain, 1.5.5's `Abstain`), restrict: Option<CandidateSet>, veto: Option<VetoCode>, rewrite: Option<IrPatch>, tap: Facts }`; COMPOSITION at a seat: hooks at a gate seat run CONCURRENTLY (`join_all`) against the same t0 candidate set, the reject winning by chain position — 1.5.5's order (proxy-hooks :126-130); sealed in `Policy`, `restrict` sets intersect, the first `veto` wins, the LAST non-`None` permutation wins, re-validated against the final restricted set (PB-5; a ranked order is walked as-is, as 1.5.5 does); the SWRR floor applies when every permutation above it is `None` OR when no ranked lane passes the pick-time gate (in this hop's set, non-zero weight, `ready_in` peek) — 1.5.5's fall-through, PB-5; `restrict` carries `on_empty ∈ { weighted | reject | first }` (the 1.5.5 key, default `reject` — PB-1; `weighted` = for a GATE, skip only that gate's restriction (candidate set unchanged), for the BASE POLICY, escape to the full pool under the SWRR floor (PB-28); `first` on the restrict-empty arm takes the SAME 503 as `reject` (1.5.5's `if matches!(on_empty, Weighted)` else-branch; `first` orders only as an `on_error`-chain terminal, PB-1)), sealed per migrated hook at `Migration`; a MIGRATED 1.5.5 `Request`-stage hook seats `After(Admit)` ahead of the `Candidate` hooks, in 1.5.5's order (PB-6, PB-46 — `Before(Approve)` is a 1.6.0-native seat); `After(Route)` is `Tap`-only (the response has relayed and the fee is decided) and fires once per request that reached the forward path with 1.5.5's `outcome`, OR once on a pre-forward auth refusal on a hooked pool with the synthetic `rejected_by_auth` (OWNER DECISION, PB-84 — every other pre-forward refusal still never taps), detached under `MAX_INFLIGHT_TAP_NOTIFICATIONS = 1024` (PB-84) — 1.5.5 `Gate` = veto/restrict/rewrite, 1.5.5 `Tap` = `tap` facts only; a `rewrite` is applied by the kernel to the `Ir` over the SPOOLED BODY (the head plus the spill, retained until the egress body is encoded at Route or the unit ends — the same bytes the pointers price; never to bytes on the wire; the patched body lives in the spill under `spill_budget`, so a 1.5.5 full-body rewrite gate works unchanged), price-neutral by default (`max_priced_delta = 0`), journaled `Access` with pre/post hash, bounded by `max_priced_delta`; the compiled-in 1.5.5 ranking strategies are in-tree hooks of this kind | `KEY`, kind (`Tap` | `Gate`), seats, `HOOK_FACTS`, `on_failure`, `max_priced_delta`, `may_change_destination`, `may_rewrite` |
@@ -518,10 +521,9 @@ busbar-caps          capability types + tokens                                  
                      trusted base: `std` and `busbar-contract` — a capability is keyed on the contract's own objects, so it names them rather than restating them
 busbar-kernel        registry + generations, Teller, pump, in-flight table, sessions, Ticks, recovery, slices/leases, drain, grammars
 busbar-unit-*        auth · trust · scope · admission · cost · egress (pool) · breaker · egress-auth · transport-key · usage · ledger · audit · wal · verbs
-busbar-plane-*       (one per plane; owns its semantic IR, dialect-neutral)
-busbar-plane-<p>-<d> (one per DIALECT; workspace deps are exactly busbar-contract + busbar-plane-<p>)
+busbar-plane-*       (one per plane; owns its semantic IR and holds its dialect logic — dialects are inside the plane, not crates of their own)
 busbar-transport-*   (one per WIRE, in-tree, incl. peer; never named for a plane)
-busbar-*-plugin      auth / egress-auth-scheme / store / secret / hook / export (static or dynamic); auth-lease and secret-local in-tree, mandatory
+busbar-*-plugin      auth / store / secret / hook / export (static or dynamic); auth-lease and secret-local in-tree, mandatory
 ```
 The `busbar-<kind>-<name>` naming rule, the full rename table and the compile boundary in both
 directions are normative in `docs/design/PLUGIN-TREE.md` §§4, 7.
@@ -1202,16 +1204,16 @@ message-level) · video · SSH/git · webhook fan-out · vector DB · VPN (Noise
 
 *(`docs/design/PLUGIN-TREE.md` is normative for every kind below: the ONE trait each implements, what
 it may depend on and what may depend on it, its ceiling row, its testkit battery, and the migration
-of the six kinds that today have gate rules but no implementor of their `busbar-contract` trait.)*
+of the kinds that today have gate rules but no implementor of their `busbar-contract` trait.)*
 
-- **Dialect**: one crate per wire vocabulary, `busbar-plane-<plane>-<dialect>`; pure; declares its
-  claims, locations, schemes, streaming content type, head keys, verbs and meter-locator pointers;
-  translates bytes ↔ its plane's IR; its only workspace dependencies are `busbar-contract` and its
-  own plane.
-- **Auth**: `LOCATIONS` (arrival forms) + `verify` (pure, or `IO: true` for LDAP/OIDC with a deadline and
-  `Access` entries) returning facts or a `Challenge` inside a Handshake unit; `refresh` on the node Tick
-  for key material; `auth-lease` mandatory.
-- **Egress-auth scheme**: `decorate` → `Decorate` or `Handshake`.
+- **Dialect (inside a plane, not a kind)**: a wire vocabulary that translates bytes ↔ its plane's IR;
+  pure. The plane owns its dialects and declares their claims, locations, schemes, streaming content
+  type, head keys, verbs and meter-locator pointers. There are no per-dialect crates and no dialect
+  trait; the dialect logic lives in the plane crate.
+- **Auth**: `LOCATIONS` (arrival forms) + the inbound `verify` operation (pure, or `IO: true` for
+  LDAP/OIDC with a deadline and `Access` entries) returning facts or a `Challenge` inside a Handshake
+  unit; `refresh` on the node Tick for key material; the outbound `decorate` operation → `Decorate` or
+  `Handshake`; `auth-lease` mandatory.
 - **Store**: native ABI 5; ABI 2 loads through the in-tree adapter (parity clause);
   required methods; blocking pool; `FLEET_SAFE` (native ABI only, never a `Load` precondition for a 1.5.5 store)
   proven; boot write-read-back ONLY when `data_dir` or `peers:` is written — a migrated config boots on 1.5.5's read-only hydrate (PB-42); gap detection; measured record rate published. memory and postgres
@@ -1652,9 +1654,10 @@ about a kind boundary, this register and that spec win.)*
 - **"busbar = core + plugins. ~10 plugin KINDS. Kinds never cross-contaminate: no plane-transport,
   no one-offs; build it into compilation and CI. Dialects can't call transport willy nilly. All
   dialects are siblings using traits; one dialect must not look different in shape from another;
-  same for planes and every kind. It's a TREE: they all integrate with core the same way."** Nine
-  plugin kinds — plane, dialect, transport, auth, egress-auth, store, secret, hook, export — plus
-  the core `unit` row, which is never loadable. `loader` and `abi` are TCB crates, not kinds; "rate
+  same for planes and every kind. It's a TREE: they all integrate with core the same way."** Seven
+  plugin kinds — store, secret, auth, hook, export, plane, transport — plus the core `unit` row,
+  which is never loadable (auth is one kind, inbound-verify and outbound-decorate being two operations
+  of it; a dialect is a thing inside a plane, not a kind). `loader` and `abi` are TCB crates, not kinds; "rate
   card" is config, not a kind. Enforced by `cargo xtask gate kind-isolation` (`PLUGIN-TREE.md`
   Appendix G) with ten rows: `:name :deps :vocab :registry :plane-steps
   :transport-registration :matrix` on every push, and `:shape :testkit :control-path` on the ship
@@ -1662,15 +1665,11 @@ about a kind boundary, this register and that spec win.)*
   how many times that crate names that kind's vocabulary — `crates/busbar/src/root/**` and `main.rs`
   included, comments and tests included — against per-cell ceilings in `qa/kind-isolation.toml` that
   ratchet down only.
-- **Naming is `busbar-<kind>-<name>`,** kind first, always. A dialect's kind segment is
-  `plane-<plane>` — `busbar-plane-<plane>-<dialect>` (`busbar-plane-llm-openai`,
-  `busbar-plane-mcp-mcpv2`, `busbar-plane-streams-voice`) — which is the "dialect → own plane only"
-  edge expressed in the name. The gate reads the kind from segment two, so directory name and
-  `package.name` must agree.
-- **DIALECT is its own kind.** One crate per wire vocabulary, under its plane. The plane owns the
-  IR and is dialect-neutral; a dialect's only workspace dependencies are `busbar-contract` and its
-  own plane. This SUPERSEDES the 2026-09-06 row "one crate per plane: the codec folds into its
-  plane" — **D36 becomes the SPLIT of each codec into dialect crates, not a fold.**
+- **Naming is `busbar-<kind>-<name>`,** kind first, always. The gate reads the kind from segment
+  two, so directory name and `package.name` must agree.
+- **A DIALECT is a thing inside a plane, not a kind.** A plane owns one IR; its dialects are the wire
+  vocabularies that translate bytes ↔ that IR. There are no per-dialect crates and no dialect trait;
+  the plane crate holds its dialect logic and remains the single crate per plane.
 - **The voice plane is renamed `streams`** (its config section is already `streams:`). The
   1.5.5-frozen `export.<n>.streams` field is a different key, coexists unchanged, and never moves.
 - **`busbar-caps` → `busbar-core-capabilities`**, with the rest of the core rename table in
@@ -1766,7 +1765,7 @@ published 1.5.5 binary.
 | PB-61 | chunked bodies | a request body is accepted up to `request_body_max_bytes` (default 32 MiB, ceiling 1 GiB) regardless of chunk count; `MAX_NEEDMORE_FRAMES` never applies to body spooling | config CONF-131 |
 | PB-62 | admin scope derivation | `required_scope(method, path)` verbatim: 34 `read-only` / 32 `full` per `x-busbar-required-scope`, incl. `POST /config/validate` and `POST /plugins/inspect` as read-only; a read-only credential succeeds on exactly the 1.5.5 set | routes-admin :266-284, :425-429 |
 | PB-63 | plugin reload / rollback mechanics | the governance/store instance is REUSED across `plugins/reload` (keys, budgets, ledger survive); in-flight requests finish on the old snapshot; fail-closed on any pipeline error; ephemeral-mode degrade to report-only reconcile; `kind_restart_default` and the first-party-only `x-busbar-restart-required: false` override; rollback = persist-pin-then-rebuild with `If-Match`, `NO_WRITABLE_OVERLAY_MSG`, the two-stage revert error strings | plugins-stores §2.16–2.17 (:476-478) |
-| PB-64 | token-minting egress auth | `jwt-bearer` and `oauth-client-credentials` mint through 1.5.5's background loop verbatim (a Tick-driven, I/O-permitted refresh against the configured `token_url`): `REFRESH_SKEW_SECS = 300`, `MIN_SLEEP_SECS = 30`, `expires_in` default 3600, header built once at mint; before the first mint the request path emits no header (`NoCredential`, the upstream 401 is classified `HardDown`/`Auth`, rendered INGRESS-NATIVE with the body never relayed, and the lane parked (PB-83)) and the active health prober SKIPS the lane (`is_ready()`'s only caller) so a pre-mint lane is never hard-down-parked; the egress-auth kind's purity rule carves out this loop | proxy-hooks :462-470, :509-514, §5.5 (:512; `health.rs:272`) |
+| PB-64 | token-minting egress auth | `jwt-bearer` and `oauth-client-credentials` mint through 1.5.5's background loop verbatim (a Tick-driven, I/O-permitted refresh against the configured `token_url`): `REFRESH_SKEW_SECS = 300`, `MIN_SLEEP_SECS = 30`, `expires_in` default 3600, header built once at mint; before the first mint the request path emits no header (`NoCredential`, the upstream 401 is classified `HardDown`/`Auth`, rendered INGRESS-NATIVE with the body never relayed, and the lane parked (PB-83)) and the active health prober SKIPS the lane (`is_ready()`'s only caller) so a pre-mint lane is never hard-down-parked; the auth kind's purity rule (the outbound decorate operation) carves out this loop | proxy-hooks :462-470, :509-514, §5.5 (:512; `health.rs:272`) |
 | PB-65 | egress auth wire behaviour | the 7 schemes as wire bytes: `api-key` / `x-goog-api-key` header names; the Anthropic five-way key-prefix disambiguation incl. the mode-blind arm emitting BOTH `x-api-key` and `Authorization`; `anthropic-version` always appended; SigV4's SignedHeaders set, double-encoded canonical URI, `us-east-1` fallback, `access:secret[:session]` split; `jwt-bearer` / `oauth-client-credentials` fail closed to `NoCredential`; the header is omitted on an unencodable credential | dialects §8.2; auth-secrets §7 |
 | PB-66 | request and response headers | OWNER DECISION: an ALLOW-LISTED client request header rides upstream verbatim, scoped per egress dialect so a beta header sent for one dialect never leaks to a different one on a cross-protocol route or failover — `anthropic-beta` and `anthropic-version` only to a matching `anthropic` upstream, `OpenAI-Beta` only to a matching `openai` or `responses` upstream; every OTHER client request header is dropped, never forwarded; egress headers are otherwise the four-group construction (credential, three-case `content-type`, pinned native-SDK `user-agent`, `accept` with the Bedrock eventstream override) plus the allow-listed set above; on the response `retry-after` is busbar-SET (no dialect parses an upstream `Retry-After`); `content-type` is the upstream's VERBATIM on a same-protocol relay (`engine/mod.rs:2300-2321`) and otherwise the three cases of dialects :1304 — `application/json` for buffered and error responses, `writer.streaming_content_type()` when reframed (SSE, the gemini JSON array, bedrock `application/vnd.amazon.eventstream`), upstream verbatim same-protocol, and the relayed set is PER INGRESS WRITER — `ingress_relayed_response_header_names()`: bedrock `["x-amzn-requestid", "x-amzn-errortype"]` (UUID v4 when absent), anthropic `["request-id"]` (synthesized `req_01<24 base62>` when absent), every other dialect `[]`; everything else stripped; `advanced.response_headers.*` injections per PB-73 are outside this list | dialects §8.1–8.4 (:1305-1316; `proto/mod.rs:695-697`), §6.5 (:997); `engine/egress.rs` `FORWARDED_CLIENT_HEADERS` |
 | PB-67 | per-dialect error mapping | the 27-row scenario matrix (:942-970), the per-dialect auth-failure statuses (gemini 400 `invalid_request_error`; bedrock 403 kind `"auth"` with an empty message), the six error-envelope shapes, the kind→native tables, `extract_error`, the in-stream `StatusClass` mapping and the 11 `KIND_*` literals — reproduced verbatim, one cell per row | dialects §6.2–6.6 (:965-975) |

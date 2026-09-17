@@ -47,8 +47,9 @@ and is reconstructable from the design doc's plane-session section.)
 ### `kinds.rs` — the other plugin kinds
 
 The plugin-kinds table of the design gives each kind a closed shape the kernel calls and an open
-vocabulary the plugin declares. Two kinds are pure — a hook and an egress-auth scheme perform no
-input or output and are held to the source denylist. Four own their input and output by
+vocabulary the plugin declares. The pure ones — a hook, and a pure auth scheme (its inbound verify
+and outbound decorate operations) — perform no input or output and are held to the source denylist.
+Four own their input and output by
 definition: a store, a secret plugin, an export sink and a network-backed auth scheme all reach
 outside the process. Those four are not trusted more for it; they are bounded instead by the
 signature, by a load entry, by a kernel-enforced per-call deadline, by an access entry per
