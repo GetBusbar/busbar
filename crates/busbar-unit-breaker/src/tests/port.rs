@@ -161,10 +161,13 @@ fn client_error_status_is_client_fault_with_no_penalty() {
 }
 
 #[test]
-fn no_code_at_all_classifies_as_client_error_via_status_zero() {
-    // A caller with no numeric status to report (`status.code: None`) — the same "unexpected
-    // non-error status reaching the error path" fallback 1.5.5 took for a 2xx/3xx: no penalty,
-    // relay as-is.
+fn no_code_at_all_classifies_as_network_failure_and_trips() {
+    // A caller with no numeric status to report (`status.code: None`) is a TRANSPORT failure: the
+    // upstream never answered (connection refused/reset, a transport error, a timeout with no HTTP
+    // response). 1.5.5's legacy breaker (`a2a::relay::classify_hop`) mapped exactly this — a
+    // `RelayRefusal::Transport` — to `StatusClass::Network`, a transient upstream failure that
+    // trips the destination's cell. Treating it as `ClientFault`/RecordNothing (the old behaviour
+    // here) was a regression that let a destination failing this way keep taking full traffic.
     let out = classify_upstream(
         &HashMap::new(),
         UpstreamStatus {
@@ -173,8 +176,8 @@ fn no_code_at_all_classifies_as_client_error_via_status_zero() {
         },
         &NoopDiagnostics,
     );
-    assert_eq!(out.disposition, Disposition::ClientFault);
-    assert_eq!(out.outcome, Outcome::RecordNothing);
+    assert_eq!(out.disposition, Disposition::TransientUpstream);
+    assert!(matches!(out.outcome, Outcome::Transient { .. }));
 }
 
 // ── BreakerUnit::classify: the stateful method, reading the declared per-destination error_map
