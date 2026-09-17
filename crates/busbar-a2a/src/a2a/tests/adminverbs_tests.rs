@@ -29,6 +29,27 @@ const TOKEN: &str = "admintok";
 const STD: base64::engine::general_purpose::GeneralPurpose =
     base64::engine::general_purpose::STANDARD;
 
+/// Mount the admin JSON-REST surface (`/api/v1/admin/*`) for THIS crate's OWN test binary.
+///
+/// The surface is served by busbar-admin, which busbar-core nests through the runtime fn-pointer seam
+/// `busbar_core::admin::seam` — a no-op until `busbar_admin::install()` registers it. Production does
+/// that once at the composition root; this plane crate's `test-support` engine path never does, so
+/// without this call the router carries no admin surface and every trust verb here is a router-level
+/// `404`.
+///
+/// GATED ON `cfg(test)`, NOT `feature = "test-support"`, ON PURPOSE. This whole module compiles INTO
+/// THE LIBRARY under `test-support` (busbar-admin's own test binary pulls this crate that way to reuse
+/// `drive_a2a_verb_errors`), and busbar-admin is a dev-dependency — unavailable to, and forbidden from,
+/// the library build (naming it there would be the reverse edge Cargo refuses: busbar-admin →
+/// busbar-a2a → busbar-admin). Under `cfg(test)` — this crate's own `cargo test` — the dev-dep is
+/// linked and the real mount is installed; in the `test-support` library build the call vanishes and
+/// busbar-admin (whose own test binary calls `install()`) supplies the mount instead. `install()` is
+/// idempotent (first-wins `OnceLock`), so every fixture may call this.
+fn install_admin_mount() {
+    #[cfg(test)]
+    busbar_admin::install();
+}
+
 fn key() -> SigningKey {
     SigningKey::from_bytes(&[7u8; 32])
 }
@@ -124,6 +145,7 @@ async fn serve(
     tokio::task::JoinHandle<()>,
     Arc<crate::a2a::plane::A2aPlane>,
 ) {
+    install_admin_mount();
     let gov = engine()
         .governance(
             Arc::new(busbar_store_memory::MemoryStore::new()),

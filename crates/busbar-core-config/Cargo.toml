@@ -1,0 +1,29 @@
+# busbar-core-config — the CONFIG home carved out of busbar-core (DECISIONS #19).
+#
+# 1.6.0 dissolves busbar-core into busbar-kernel + busbar-unit-* + the three `core`-kind sibling
+# homes named by #19: this crate (config + the secret-resolver seam), `busbar-core-hooks` (hook
+# dispatch) and `busbar-oauth2` (the oauth_as plane, already landed). This is the WAVE-0 SCAFFOLD:
+# an announced, dormant home (see `qa/kind-isolation.toml [[announced]]`). No engine source has
+# been reconciled in yet — the L0 secret-resolver move is STOP-and-reported this pass because it
+# cannot be made byte-safe against the shipped money path (see below and `busbar-core::config::secret`).
+#
+# KIND `core`, NEUTRAL SPINE ONLY. Like `busbar-kernel` and `busbar-caps`, a `core` crate reaches
+# only api/caps/grammar/kernel/substrate/timing and carries no plane, dialect, transport or unit in
+# its name or its edges. Crucially it must NEVER depend on `busbar-core`: this home exists precisely
+# so `busbar-core` can eventually depend on IT (re-export shim), and the reverse edge would be the
+# cycle Cargo refuses — which is exactly why the config/secret drain is a reimplementation-behind-a-
+# seam, not a `git mv`.
+[package]
+name = "busbar-core-config"
+version = "1.6.0"
+publish = false            # internal workspace crate; never goes to crates.io
+edition = "2021"
+rust-version = "1.97"
+description = "The busbar config + secret-resolver home carved out of busbar-core (DECISIONS #19). Wave-0 scaffold; neutral `core`-kind spine only, never depends on busbar-core."
+license = "Apache-2.0"
+
+[lib]
+name = "busbar_core_config"
+path = "src/lib.rs"
+
+[dependencies]

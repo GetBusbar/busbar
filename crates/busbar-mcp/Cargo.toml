@@ -163,3 +163,14 @@ rustls-pki-types = { workspace = true }
 busbar-store-memory = { path = "../store-memory" }
 busbar-secret-ref = { path = "../secret-ref" }
 busbar-plugin-sign = { path = "../plugin-sign" }
+# THE ADMIN JSON-REST SERVICE, dev-only — a dev-dep BACK-EDGE, not linked into any shipped target
+# (the same shape as the `busbar-llm` back-edge above). `/api/v1/admin/*` is served by busbar-admin,
+# which busbar-core nests through the runtime fn-pointer seam `busbar_core::admin::seam`; production
+# registers it via `busbar_admin::install()` at the composition root. This plane crate's `test-support`
+# engine path never calls it, so the admin surface is absent and every trust-verb test is a router-level
+# 404. The `adminverbs_tests` battery installs the seam for THIS crate's own test binary — see the
+# `#[cfg(test)]`-gated `busbar_admin::install()` there. A dev-dependency (not a normal/optional dep) is
+# what keeps the real build graph one-directional: dev-deps are compiled only when testing THIS crate,
+# never when busbar-admin (which itself dev-depends on this crate) links it as a library, so no reverse
+# edge exists in any non-test build.
+busbar-admin = { path = "../busbar-admin" }
