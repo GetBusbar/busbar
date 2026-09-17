@@ -34,3 +34,9 @@ path = "src/main.rs"
 # `cargo_metadata` crate — one more dependency for a tool whose entire point is auditing
 # dependencies is one worth not adding, and the format-version=1 shape this tool reads is small.
 serde_json = { workspace = true }
+
+# The plugin contract, so `kind-isolation:truths` can read the COMPILED `busbar_contract::Kind`
+# variant set (`Kind::ALL`) and assert it is exactly the seven locked kinds — the fourth vocabulary
+# that gate reconciles, and the one the enum itself defines (DECISIONS #3). A tooling-only edge;
+# xtask is not a plugin-kind crate under `crates/`, so no ledger edge tracks it.
+busbar-contract = { path = "../crates/busbar-contract" }

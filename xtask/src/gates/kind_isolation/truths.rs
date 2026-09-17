@@ -6,15 +6,19 @@
 //! (admin/oauth2 = cleanliness crates, #5) and `dialect` (a thing INSIDE a plane, #4) are NOT
 //! kinds; `unit`/`loader`/`abi` are core/TCB infra, not plugin kinds.
 //!
-//! Three statements of that taxonomy live in this repository and nothing else compares them:
+//! FOUR statements of that taxonomy live in this repository and nothing else compares them:
 //!
 //! * the gate's own KIND TABLE (`xtask/src/gates/kind_isolation.rs`), the MATCHER, which decides
 //!   what a crate name resolves to — handed in as `table_kinds`;
 //! * `qa/construction.toml [gate.plugin_kinds]`, the SCOPE, which decides which directories each
 //!   plugin kind's construction rules read;
-//! * `qa/kind-isolation.toml`, the LEDGER, whose `[[cell]]`/`[[edge]]` rows name a kind per row.
+//! * `qa/kind-isolation.toml`, the LEDGER, whose `[[cell]]`/`[[edge]]` rows name a kind per row;
+//! * `busbar_contract::Kind` itself, the ENUM — the code the decision is encoded IN, read as its
+//!   compiled `Kind::ALL` variant set. The three data files a decision can DRIFT from; the enum is
+//!   the decision, and an 8th variant (a resurrected `EgressAuth`) is a code change that would slip
+//!   every data-file check, so it is reconciled here too.
 //!
-//! They are not three copies of one list — each is for something different — and that is exactly why
+//! They are not four copies of one list — each is for something different — and that is exactly why
 //! they could drift. This row compares them, in both directions, against the CONCLUDED 7-kind model,
 //! and any disagreement is RED. `ARCHITECTURE.md` is owned elsewhere and is NOT a
 //! left-hand side here: the code and its two data files must agree among themselves, on the decision
@@ -61,6 +65,53 @@ const FORBIDDEN_KINDS: &[&str] = &[
     "egress_auth",
     "pure_auth",
 ];
+
+/// The seven locked kinds in the ENUM's own spelling — `busbar_contract::Kind`'s `Display`/`name`
+/// (the design writes `hook`; the gate's kind TABLE writes `hooks`, so this list is NOT
+/// [`PLUGIN_KINDS`]). This is the left-hand side the compiled variant set is reconciled against.
+const CONTRACT_KIND_NAMES: &[&str] = &[
+    "plane",
+    "transport",
+    "auth",
+    "store",
+    "secret",
+    "hook",
+    "export",
+];
+
+/// Reconcile the live `busbar_contract::Kind` variant set (its `Display` names, HANDED IN) against
+/// the seven locked kinds — the fourth vocabulary [`rule_truths`] compares, and the one the enum
+/// itself defines. Handed in rather than read here for the same reason `table_kinds` is: so the
+/// selftest can plant an 8th variant this module cannot otherwise inject, and so a resurrected
+/// `EgressAuth` variant (which Displays as `egress-auth`) is caught by name rather than by count.
+fn reconcile_enum_kinds(enum_names: &[&str]) -> Vec<String> {
+    let mut findings = Vec::new();
+    let live: BTreeSet<&str> = enum_names.iter().copied().collect();
+    let expected: BTreeSet<&str> = CONTRACT_KIND_NAMES.iter().copied().collect();
+    for name in enum_names {
+        if FORBIDDEN_KINDS.contains(name) {
+            findings.push(format!(
+                "forbidden-enum-kind\tbusbar_contract::Kind\tthe enum carries a variant that spells \
+                 `{name}`, which DECISIONS #3/#4/#5 struck as a kind — auth is ONE kind and there is \
+                 no separate `egress-auth`; delete the variant"
+            ));
+        } else if !expected.contains(name) {
+            findings.push(format!(
+                "unknown-enum-kind\tbusbar_contract::Kind\tthe enum carries a variant `{name}` that \
+                 is not one of the seven locked kinds (DECISIONS #3)"
+            ));
+        }
+    }
+    for want in CONTRACT_KIND_NAMES {
+        if !live.contains(want) {
+            findings.push(format!(
+                "missing-enum-kind\tbusbar_contract::Kind\t`{want}` is one of the seven locked kinds \
+                 (DECISIONS #3) and the enum has no variant that spells it"
+            ));
+        }
+    }
+    findings
+}
 
 /// THE ROW. `table_kinds` is the gate's own kind table, handed in rather than read here so this
 /// module cannot drift from the table it is reconciling.
@@ -167,21 +218,33 @@ pub fn rule_truths(cx: &Ctx, table_kinds: &[&str], crates: &[CrateInfo]) -> Row 
         )),
     }
 
+    // ── truth 4: the ENUM ITSELF — the compiled `busbar_contract::Kind` variant set is exactly the
+    // seven locked kinds ──────────────────────────────────────────────────────────────────────────
+    // The three vocabularies above are data files a decision can drift from; the enum is the code the
+    // decision is encoded IN, and until this row nothing compared the variant set to the seven. An
+    // 8th variant (a resurrected `EgressAuth`) would pass every check above — it is a code change, not
+    // a data one — so this reads `Kind::ALL` (kept complete by the enum's own exhaustive-match guard)
+    // and reconciles it, closing the gap that let the split return invisibly.
+    let enum_names: Vec<&str> = busbar_contract::Kind::ALL.iter().map(|k| k.name()).collect();
+    findings.extend(reconcile_enum_kinds(&enum_names));
+
     findings.sort();
     findings.dedup();
     if findings.is_empty() {
         let live: BTreeSet<&str> = crates.iter().filter_map(|c| c.kind).collect();
         return Row::pass(
             ROW_TRUTHS,
-            "the kind table, the construction ceilings and the kind-isolation ledger name the same \
-             seven plugin kinds and infra families",
+            "the kind table, the construction ceilings, the kind-isolation ledger and the compiled \
+             busbar_contract::Kind enum name the same seven plugin kinds and infra families",
             format!(
                 "{} plugin kind(s), {} table row(s), {} construction key(s), {} kind(s) live in the \
-                 census — reconciled on the DECISIONS #3 taxonomy in all three vocabularies",
+                 census, {} enum variant(s) — reconciled on the DECISIONS #3 taxonomy in all four \
+                 vocabularies",
                 PLUGIN_KINDS.len(),
                 table.len(),
                 CONSTRUCTION_KIND_KEYS.len(),
-                live.len()
+                live.len(),
+                busbar_contract::Kind::ALL.len(),
             ),
         );
     }
@@ -244,7 +307,7 @@ pub fn selftest<'a>(
     report: &mut crate::gates::Report<'a>,
 ) {
     use crate::ctx::Overlay;
-    use crate::gates::{prove_rows_green, prove_rows_red};
+    use crate::gates::{prove_rows_green, prove_rows_red, Case, CasePlan, Expect};
 
     report.push(prove_rows_green(
         cx,
@@ -253,6 +316,53 @@ pub fn selftest<'a>(
         &[ROW_TRUTHS],
         Overlay::new(),
     ));
+
+    // TRUTH 4'S RED-BEFORE-GREEN — the enum-variant assertion. The enum is COMPILED IN, not a data
+    // file, so it cannot be planted through an `Overlay`; the check is a pure function handed the
+    // variant names (exactly as `table_kinds` is handed to the row). These two cases feed it the REAL
+    // `Kind::ALL` set (must be clean) and a set with an 8th `egress-auth` variant planted back in
+    // (must go RED, naming it) — the same reconciliation the row runs against the compiled enum.
+    report.push(CasePlan::new(|| {
+        let live: Vec<&str> = busbar_contract::Kind::ALL.iter().map(|k| k.name()).collect();
+        let findings = reconcile_enum_kinds(&live);
+        Case {
+            name: "the live busbar_contract::Kind variant set is exactly the seven locked kinds"
+                .to_string(),
+            covers: vec![ROW_TRUTHS.to_string()],
+            expected: Expect::Green,
+            got: if findings.is_empty() {
+                Expect::Green
+            } else {
+                Expect::Red { naming: findings }
+            },
+        }
+    }));
+    report.push(CasePlan::new(|| {
+        // The 8th kind DECISIONS #3 struck, planted back into the variant-name list.
+        let planted = [
+            "plane",
+            "transport",
+            "auth",
+            "store",
+            "secret",
+            "hook",
+            "export",
+            "egress-auth",
+        ];
+        let findings = reconcile_enum_kinds(&planted);
+        Case {
+            name: "an 8th `egress-auth` variant planted into the Kind set is refused".to_string(),
+            covers: vec![ROW_TRUTHS.to_string()],
+            expected: Expect::Red {
+                naming: vec!["forbidden-enum-kind".to_string(), "egress-auth".to_string()],
+            },
+            got: if findings.is_empty() {
+                Expect::Green
+            } else {
+                Expect::Red { naming: findings }
+            },
+        }
+    }));
 
     // THE MEASURED HOLE. Deleting a plugin kind's key from `[gate.plugin_kinds]` left this gate
     // GREEN and left the construction gate's failing-row count unchanged: every rule scoped by that
@@ -463,6 +573,43 @@ mod tests {
                 "{pk} is both plugin and forbidden"
             );
         }
+    }
+
+    #[test]
+    fn the_compiled_enum_is_exactly_the_seven_locked_kinds() {
+        // The real variant set reconciles clean, in the enum's own Display spelling.
+        let live: Vec<&str> = busbar_contract::Kind::ALL.iter().map(|k| k.name()).collect();
+        assert!(
+            reconcile_enum_kinds(&live).is_empty(),
+            "the compiled Kind set is not the seven locked kinds: {:?}",
+            reconcile_enum_kinds(&live)
+        );
+        // And CONTRACT_KIND_NAMES is the enum's own truth, not a hand-kept second copy.
+        assert_eq!(live, CONTRACT_KIND_NAMES);
+    }
+
+    #[test]
+    fn a_resurrected_egress_auth_variant_is_named_red() {
+        let planted = [
+            "plane",
+            "transport",
+            "auth",
+            "store",
+            "secret",
+            "hook",
+            "export",
+            "egress-auth",
+        ];
+        let findings = reconcile_enum_kinds(&planted);
+        assert!(
+            findings.iter().any(|f| f.contains("egress-auth")),
+            "an 8th egress-auth variant must be named: {findings:?}"
+        );
+        // A dropped kind is caught the other way too.
+        let short = ["plane", "transport", "auth", "store", "secret", "hook"];
+        assert!(reconcile_enum_kinds(&short)
+            .iter()
+            .any(|f| f.contains("missing-enum-kind") && f.contains("export")));
     }
 
     #[test]

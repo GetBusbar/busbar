@@ -21,7 +21,7 @@ use busbar_contract::ids::{
 };
 use busbar_contract::kinds::{
     Ack, Anchor, AuthOutcome, AuthScheme, Challenge, ChallengeState, ContentFacts, Credential,
-    CredentialFacts, CredentialLocator, EgressAuthScheme, Export, ExportItem, Head, Hook,
+    CredentialFacts, CredentialLocator, Export, ExportItem, Head, Hook,
     HookFacts, HookKindDecl, HookView, KeyMaterial, OnFailure, PlaneFacts, Seat, Secret,
     SecretError, SecretRef, SecretValue, Signer, Store, StoreError,
 };
@@ -45,7 +45,6 @@ const _PLANE: Option<&dyn Plane> = None;
 const _SESSION_PLANE: Option<&dyn SessionPlane> = None;
 const _TRANSPORT: Option<&dyn Transport> = None;
 const _AUTH: Option<&dyn AuthScheme> = None;
-const _EGRESS_AUTH: Option<&dyn EgressAuthScheme> = None;
 const _STORE: Option<&dyn Store> = None;
 const _SECRET: Option<&dyn Secret> = None;
 const _HOOK: Option<&dyn Hook> = None;
@@ -510,6 +509,32 @@ impl AuthScheme for FixtureAuth {
             fetched_at: clock.unix_secs,
         }
     }
+    // The outbound (sign) operation of the one auth kind. This inbound-only fixture answers it
+    // trivially — the point here is that the merged trait is object-safe, which the outbound methods
+    // being present exercises.
+    fn decorate<'u>(
+        &self,
+        _cfg: &dyn ConfigView,
+        _body: &EgressBody<'u>,
+        _signer: &dyn Signer,
+    ) -> AuthDecoration<'u> {
+        AuthDecoration::Handshake {
+            max_frames: 0,
+            max_bytes: 0,
+        }
+    }
+    fn continue_handshake<'u>(
+        &self,
+        _state: &ChallengeState,
+        _frame: &Frame,
+        _ctx: &Ctx<'u>,
+        _signer: &dyn Signer,
+    ) -> AuthDecoration<'u> {
+        AuthDecoration::Handshake {
+            max_frames: 0,
+            max_bytes: 0,
+        }
+    }
 }
 
 // ── the tests ─────────────────────────────────────────────────────────────────────────────────
@@ -658,14 +683,37 @@ impl Plugin for FixtureEgressAuth {
         "fixture-egress-auth"
     }
     fn kind(&self) -> Kind {
-        Kind::EgressAuth
+        Kind::Auth
     }
     fn abi(&self) -> AbiVersion {
         AbiVersion(1)
     }
 }
 
-impl EgressAuthScheme for FixtureEgressAuth {
+// The outbound (sign) operation of the one auth kind. This outbound-focused fixture answers the
+// inbound methods trivially; direction is a usage mode, not a kind (DECISIONS #3).
+impl AuthScheme for FixtureEgressAuth {
+    fn locations(&self) -> &'static [ArrivalLocation] {
+        &[]
+    }
+    fn does_io(&self) -> bool {
+        false
+    }
+    fn verify(
+        &self,
+        _credential: &Credential,
+        _arrival: &ArrivalRecord,
+        _clock: Clock,
+        _prior: Option<&ChallengeState>,
+    ) -> AuthOutcome {
+        AuthOutcome::Pass
+    }
+    fn refresh(&self, clock: Clock) -> KeyMaterial {
+        KeyMaterial {
+            bytes: Vec::new(),
+            fetched_at: clock.unix_secs,
+        }
+    }
     fn decorate<'u>(
         &self,
         _cfg: &dyn ConfigView,
@@ -733,7 +781,7 @@ fn a_continued_handshake_can_decorate_with_arena_bytes() {
         },
     };
 
-    let scheme: &dyn EgressAuthScheme = &FixtureEgressAuth;
+    let scheme: &dyn AuthScheme = &FixtureEgressAuth;
     let out = scheme.continue_handshake(&ChallengeState(vec![1]), &frame, &ctx, &NoSigner);
 
     let AuthDecoration::Decorate { body_signature, .. } = out else {

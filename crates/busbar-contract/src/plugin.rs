@@ -22,10 +22,10 @@ pub enum Kind {
     Plane,
     /// Moves bytes. In-tree only, inside the trusted computing base.
     Transport,
-    /// Turns an arriving credential into facts about a principal.
+    /// Turns an arriving credential into facts about a principal, and decorates an outbound request
+    /// with an upstream's own scheme. ONE kind: inbound-verify and outbound-sign are two OPERATIONS
+    /// of it, not two kinds (DECISIONS #3). There is no separate `egress-auth` kind.
     Auth,
-    /// Decorates an outbound request with an upstream's own scheme.
-    EgressAuth,
     /// The durable store behind the journal.
     Store,
     /// Resolves, signs, seals and unseals key material.
@@ -43,6 +43,56 @@ impl Kind {
         K::KIND
     }
 
+    /// Every kind, exactly once, in discriminant order.
+    ///
+    /// This is the ground truth the `kind-isolation:truths` enum-variant assertion reads: DECISIONS
+    /// #3 locks the set at these seven, so a crate outside this one can compare the compiled variant
+    /// set against the seven and go RED if one is added (a resurrected `EgressAuth`) or removed. The
+    /// completeness guard below ties it to an exhaustive match, so `ALL` cannot silently omit a live
+    /// variant.
+    pub const ALL: &'static [Kind] = &[
+        Kind::Plane,
+        Kind::Transport,
+        Kind::Auth,
+        Kind::Store,
+        Kind::Secret,
+        Kind::Hook,
+        Kind::Export,
+    ];
+
+    /// This kind's vocabulary name — the ONE spelling `Display`, the journal and the gate read.
+    ///
+    /// The match is EXHAUSTIVE, so it is also a guard: adding a variant (a resurrected `EgressAuth`)
+    /// or removing one fails to compile here until the arm set is updated. A resurrected `EgressAuth`
+    /// would Display as `egress-auth`, which the enum-variant gate names as a struck kind.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Kind::Plane => "plane",
+            Kind::Transport => "transport",
+            Kind::Auth => "auth",
+            Kind::Store => "store",
+            Kind::Secret => "secret",
+            Kind::Hook => "hook",
+            Kind::Export => "export",
+        }
+    }
+
+    /// This kind's stable position in [`Kind::ALL`], via an EXHAUSTIVE match. Paired with the const
+    /// guard below, it holds `ALL` in variant order with no gaps.
+    #[must_use]
+    pub const fn ordinal(self) -> usize {
+        match self {
+            Kind::Plane => 0,
+            Kind::Transport => 1,
+            Kind::Auth => 2,
+            Kind::Store => 3,
+            Kind::Secret => 4,
+            Kind::Hook => 5,
+            Kind::Export => 6,
+        }
+    }
+
     // The PURE kinds — plane, hook, and the pure static and egress-auth schemes — are the ones the
     // core-to-plugin section scopes its source denylist to; the input/output kinds (store, secret,
     // export, and the network-backed auth plugins) own their input and output by definition and are
@@ -52,19 +102,24 @@ impl Kind {
     // this enum. One statement of it, in the place that acts on it.
 }
 
+/// COMPLETENESS + ORDER GUARD (compile-time). Every [`Kind::ALL`] entry sits at the ordinal its own
+/// exhaustive-match arm reports, and `ALL` is exactly seven long — so no entry is missing,
+/// duplicated or out of order, and the two exhaustive matches above (`name`, `ordinal`) refuse to
+/// compile if a variant is added or removed without the arm set being updated. A variant added to
+/// the enum forces new arms; keeping this block green then forces the matching `ALL` entry, so the
+/// gate that reads `ALL` always sees the true variant set.
+const _KIND_ALL_IS_COMPLETE: () = {
+    assert!(Kind::ALL.len() == 7);
+    let mut i = 0;
+    while i < Kind::ALL.len() {
+        assert!(Kind::ALL[i].ordinal() == i);
+        i += 1;
+    }
+};
+
 impl fmt::Display for Kind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let s = match self {
-            Self::Plane => "plane",
-            Self::Transport => "transport",
-            Self::Auth => "auth",
-            Self::EgressAuth => "egress-auth",
-            Self::Store => "store",
-            Self::Secret => "secret",
-            Self::Hook => "hook",
-            Self::Export => "export",
-        };
-        f.write_str(s)
+        f.write_str(self.name())
     }
 }
 
@@ -101,11 +156,9 @@ pub mod markers {
         /// Marker for the transport kind.
         TransportKind => Transport);
     marker!(
-        /// Marker for the ingress auth kind.
+        /// Marker for the auth kind. ONE kind: inbound-verify and outbound-sign are two OPERATIONS
+        /// of it (DECISIONS #3), so there is one marker, not a second `EgressAuthKind`.
         AuthKind => Auth);
-    marker!(
-        /// Marker for the egress auth-scheme kind.
-        EgressAuthKind => EgressAuth);
     marker!(
         /// Marker for the store kind.
         StoreKind => Store);

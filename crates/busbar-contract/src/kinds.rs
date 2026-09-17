@@ -1,7 +1,8 @@
-//! The other plugin kinds: auth, egress auth, store, secret, hook and export — one closed shape
-//! per trait, transcribed from the plugin-kinds table of the design. See
-//! `docs/design/contract-notes.md` for why four of the six reach outside the process on a bounded
-//! blocking pool while the other two (hook, egress-auth scheme) are pure.
+//! The other plugin kinds: auth, store, secret, hook and export — one closed shape per trait,
+//! transcribed from the plugin-kinds table of the design. Auth is ONE kind whose trait carries both
+//! operations — inbound verify and outbound sign (DECISIONS #3); there is no separate egress-auth
+//! kind. See `docs/design/contract-notes.md` for why store, secret and export reach outside the
+//! process on a bounded blocking pool while hook and auth's outbound sign operation are pure.
 //!
 //! Fallibility: every fallible method below returns its trait's own error enum; see the trait doc
 //! for what a failure means, rather than repeating it per method.
@@ -139,12 +140,22 @@ impl fmt::Debug for Credential {
     }
 }
 
-/// Turns an arriving credential into facts about a principal.
+/// The auth kind: turns an arriving credential into facts about a principal (INBOUND verify), and
+/// decorates an outbound request with an upstream's own scheme (OUTBOUND sign).
 ///
-/// A scheme sees the credential and nothing else — no plane, no unit, no destination. Its own
-/// secret, whether a stored verifier or a static key, reaches it through the secret plugin and
-/// never through a plane.
+/// ONE kind, two OPERATIONS — direction is a usage mode, not a kind boundary (DECISIONS #3). There
+/// is no separate `egress-auth` kind; the inbound/outbound split is an ABI detail INSIDE this one
+/// trait. The inbound methods (`locations`/`does_io`/`verify`/`refresh`) and the outbound methods
+/// (`decorate`/`continue_handshake`) keep the exact behaviour they had when the outbound half was a
+/// peer trait; only the taxonomy changed.
+///
+/// A scheme verifying inbound sees the credential and nothing else — no plane, no unit, no
+/// destination. Its own secret, whether a stored verifier or a static key, reaches it through the
+/// secret plugin and never through a plane. A scheme decorating outbound is pure: it computes a
+/// decoration and returns it, asking the [`Signer`] for any signature so it never holds the key.
 pub trait AuthScheme: Plugin + Send + Sync + 'static {
+    // ── inbound: verify an arriving credential ───────────────────────────────────────────────────
+
     /// The arrival forms this scheme's credential can be found in.
     fn locations(&self) -> &'static [ArrivalLocation];
 
@@ -166,14 +177,41 @@ pub trait AuthScheme: Plugin + Send + Sync + 'static {
 
     /// Refresh key material. Driven by the node's clock, never by a request.
     fn refresh(&self, clock: Clock) -> KeyMaterial;
+
+    // ── outbound: decorate an outgoing request (the sign operation) ───────────────────────────────
+
+    /// Decorate a request.
+    ///
+    /// Pure: it computes a decoration and returns it. The egress-auth unit is what applies it,
+    /// checks the envelope still equals the verified destination, and re-runs the lane cross-check
+    /// on the decorated bytes.
+    fn decorate<'u>(
+        &self,
+        cfg: &dyn ConfigView,
+        body: &EgressBody<'u>,
+        signer: &dyn Signer,
+    ) -> AuthDecoration<'u>;
+
+    /// Continue a multi-round exchange with the upstream's challenge.
+    ///
+    /// The context is what the unit's lifetime is bound to, and it is here for the same reason
+    /// `decorate` takes a body: without an argument carrying it, the only decoration a second round
+    /// could return was one that borrowed nothing, so a scheme that wanted to answer a challenge
+    /// with bytes it had built could not be written at all. The arena the context carries is where
+    /// those bytes come from.
+    fn continue_handshake<'u>(
+        &self,
+        state: &ChallengeState,
+        frame: &Frame,
+        ctx: &crate::unit::Ctx<'u>,
+        signer: &dyn Signer,
+    ) -> AuthDecoration<'u>;
 }
 
-// ── egress auth ──────────────────────────────────────────────────────────────────────────────
-
-/// What signs on an egress-auth scheme's behalf.
+/// What signs on the auth kind's OUTBOUND (sign) operation's behalf.
 ///
-/// The scheme asks for a signature; it never holds the key. Only the auth, egress-auth and
-/// transport-key units can expose a secret, and this handle is the egress-auth unit's own.
+/// The scheme asks for a signature; it never holds the key. Only the auth and transport-key units
+/// can expose a secret, and this handle is the auth kind's own.
 pub trait Signer: Send + Sync {
     /// Sign these bytes with the named key. Errors when the key cannot be resolved or the
     /// signature cannot be made.
@@ -196,36 +234,6 @@ impl fmt::Display for SignFailed {
 }
 
 impl std::error::Error for SignFailed {}
-
-/// Decorates an outbound request with an upstream's own scheme.
-///
-/// Pure: it computes a decoration and returns it. The egress-auth unit is what applies it, checks
-/// the envelope still equals the verified destination, and re-runs the lane cross-check on the
-/// decorated bytes.
-pub trait EgressAuthScheme: Plugin + Send + Sync + 'static {
-    /// Decorate a request.
-    fn decorate<'u>(
-        &self,
-        cfg: &dyn ConfigView,
-        body: &EgressBody<'u>,
-        signer: &dyn Signer,
-    ) -> AuthDecoration<'u>;
-
-    /// Continue a multi-round exchange with the upstream's challenge.
-    ///
-    /// The context is what the unit's lifetime is bound to, and it is here for the same reason
-    /// `decorate` takes a body: without an argument carrying it, the only decoration a second
-    /// round could return was one that borrowed nothing, so a scheme that wanted to answer a
-    /// challenge with bytes it had built could not be written at all. The arena the context
-    /// carries is where those bytes come from.
-    fn continue_handshake<'u>(
-        &self,
-        state: &ChallengeState,
-        frame: &Frame,
-        ctx: &crate::unit::Ctx<'u>,
-        signer: &dyn Signer,
-    ) -> AuthDecoration<'u>;
-}
 
 // ── store ────────────────────────────────────────────────────────────────────────────────────
 

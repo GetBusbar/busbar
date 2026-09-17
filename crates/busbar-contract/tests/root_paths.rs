@@ -7,19 +7,19 @@
 //! is reachable only through its module is a name the list does not claim, and a plugin author
 //! reading the list would conclude the type does not exist — so the seven names below were
 //! effectively invisible even though every one of them is required to implement a shipped kind:
-//! an egress-auth scheme cannot be written without `Signer`, `SignFailed` and `EnvelopeFields`, a
-//! gate hook cannot build a patch without `IrEdit`, and neither can handle a full bounded
+//! the auth kind's OUTBOUND sign operation cannot be written without `Signer`, `SignFailed` and
+//! `EnvelopeFields`, a gate hook cannot build a patch without `IrEdit`, and neither can handle a full bounded
 //! collection without `Overflow` or a full fact map without `FactsExhausted`.
 //!
 //! Nothing below names a module path. That is the whole assertion.
 
 use busbar_contract::{
-    AbiVersion, ArenaBytes, AuthDecoration, BoundedVec, ConfigView, EgressAuthScheme, EgressBody,
+    AbiVersion, ArenaBytes, AuthDecoration, AuthScheme, BoundedVec, ConfigView, EgressBody,
     EnvelopeFields, FactValue, Facts, FactsExhausted, FrameStream, IrEdit, IrPatch, Kind, Overflow,
     Plugin, SignFailed, Signer, MAX_KEYS,
 };
 
-/// An egress-auth scheme written entirely against the crate root.
+/// An auth scheme whose OUTBOUND sign operation is written entirely against the crate root.
 struct RootScheme;
 
 impl Plugin for RootScheme {
@@ -27,14 +27,37 @@ impl Plugin for RootScheme {
         "root-scheme"
     }
     fn kind(&self) -> Kind {
-        Kind::EgressAuth
+        Kind::Auth
     }
     fn abi(&self) -> AbiVersion {
         AbiVersion(1)
     }
 }
 
-impl EgressAuthScheme for RootScheme {
+impl AuthScheme for RootScheme {
+    // The inbound (verify) half of the one auth kind — trivial here; this fixture exercises the
+    // OUTBOUND (sign) half against the crate root.
+    fn locations(&self) -> &'static [busbar_contract::ArrivalLocation] {
+        &[]
+    }
+    fn does_io(&self) -> bool {
+        false
+    }
+    fn verify(
+        &self,
+        _credential: &busbar_contract::Credential,
+        _arrival: &busbar_contract::ArrivalRecord,
+        _clock: busbar_contract::Clock,
+        _prior: Option<&busbar_contract::ChallengeState>,
+    ) -> busbar_contract::AuthOutcome {
+        busbar_contract::AuthOutcome::Pass
+    }
+    fn refresh(&self, clock: busbar_contract::Clock) -> busbar_contract::KeyMaterial {
+        busbar_contract::KeyMaterial {
+            bytes: Vec::new(),
+            fetched_at: clock.unix_secs,
+        }
+    }
     fn decorate<'u>(
         &self,
         _cfg: &dyn ConfigView,
@@ -106,7 +129,7 @@ fn a_patch_and_both_full_answers_are_reachable_from_the_crate_root() {
 /// The scheme above exists, and so does the transport's frame stream, at root paths.
 #[test]
 fn the_scheme_and_the_frame_stream_are_root_names() {
-    let scheme: &dyn EgressAuthScheme = &RootScheme;
+    let scheme: &dyn AuthScheme = &RootScheme;
     assert_eq!(scheme.key(), "root-scheme");
     let _: Option<FrameStream> = None;
 }
