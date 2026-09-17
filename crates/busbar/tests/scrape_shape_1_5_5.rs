@@ -24,7 +24,7 @@
     feature = "proto-llm",
     feature = "plane-mcp",
     feature = "plane-a2a",
-    feature = "plane-voice"
+    feature = "plane-streaming"
 ))]
 
 use std::io::Read;

@@ -48,7 +48,7 @@
 //! belongs in the transport, and until it lands a deployment with two TLS listeners is exposed.
 
 use busbar_contract::{ConfigView, Listener, Transport, TransportConfigView, TransportError};
-#[cfg(feature = "plane-voice")]
+#[cfg(feature = "plane-streaming")]
 use busbar_transport_ws::MESSAGE_MAX_BYTES_KEY;
 
 use std::sync::Arc;
@@ -229,13 +229,13 @@ impl ConfigView for ListenerView {
         // The one key answered, and it is answered because a transport that assembles a message
         // before anything above it sees a byte has no other place to learn the ceiling. Every other
         // key is still `None`: this is a limit the node states, not an opening onto configuration.
-        #[cfg(feature = "plane-voice")]
+        #[cfg(feature = "plane-streaming")]
         {
             (key == MESSAGE_MAX_BYTES_KEY)
                 .then(|| i64::try_from(self.request_body_max_bytes).unwrap_or(i64::MAX))
         }
         // Without the voice plane there is no transport assembling messages, so no key is answered.
-        #[cfg(not(feature = "plane-voice"))]
+        #[cfg(not(feature = "plane-streaming"))]
         {
             let _ = key;
             None

@@ -1554,91 +1554,6 @@
    ]
   },
   {
-   "id": "crates/busbar-plane-voice/src",
-   "kind": "production",
-   "paths": [
-    "crates/busbar-plane-voice/src"
-   ],
-   "tree_hash": "950bba3ac899c7b4f18462087b271dfc69ceba094c42614eaef4cf223b4a82be",
-   "audited_at": "1b616b2580d09c96bab0b0dbdbb5cc1e8703deb0",
-   "round": 8,
-   "result": "findings",
-   "counts": {
-    "HIGH": 1,
-    "MEDIUM": 3,
-    "NIT": 1
-   },
-   "report": "every streamed tool-call argument is discarded (only the call-open event is read, so a tool call reaches its executor with a name and an identifier and no arguments); a banned owned byte carrier is constructed per uplink frame on the fifty-hertz path; the tool-executor port is referenced by nothing and is the only reason this pure crate names an async-trait dependency",
-   "auditor": "opus-plane-auditor-b",
-   "fixed_at": null,
-   "exclude": [
-    "crates/busbar-plane-voice/src/tests"
-   ],
-   "rounds": [
-    {
-     "round": 5,
-     "result": "findings",
-     "auditor": "opus",
-     "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
-     "tree_hash": "93b607552cefb66d2d4c2cf84bc416680235f0f9d251998cac13e7b7035c5ccd",
-     "counts": {
-      "HIGH": 1,
-      "MEDIUM": 4
-     },
-     "report": "findings against plane-voice; the reading's detail was not carried into the register"
-    },
-    {
-     "round": 5,
-     "result": "in_progress",
-     "auditor": "round-5 finder fleet",
-     "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
-     "tree_hash": "e770cb46b434dc34c1b196a0af0f9f62c89e196fe7258283fc333e4b5ebb2dbf",
-     "counts": {},
-     "report": "in flight; no reading recorded against this scope yet"
-    },
-    {
-     "round": 6,
-     "result": "findings",
-     "auditor": "opus-pass2",
-     "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
-     "tree_hash": "93b607552cefb66d2d4c2cf84bc416680235f0f9d251998cac13e7b7035c5ccd",
-     "counts": {
-      "HIGH": 1,
-      "MEDIUM": 2,
-      "LOW": 1,
-      "NIT": 4
-     },
-     "report": "second turn of a call never a unit (fixed), downlink frames named no turn (fixed), telephony frames carried an empty stream id (fixed), style check read half the source (fixed); every file read fully"
-    },
-    {
-     "round": 7,
-     "result": "findings",
-     "auditor": "opus-streams-auditor-a",
-     "audited_at": "e36685644ca9399d68d209c2b4244f2884a9dc15",
-     "tree_hash": "950bba3ac899c7b4f18462087b271dfc69ceba094c42614eaef4cf223b4a82be",
-     "counts": {
-      "HIGH": 2,
-      "MEDIUM": 8,
-      "LOW": 3
-     },
-     "report": "unit 0's egress body never dialect-framed (session.update reaches the upstream as empty bytes; encode_egress untested); a barge-in drops the interrupted turn's audio_ms_in/tool_calls and misattributes the next usage report; twilio stop drops the same counters; the Pending stash is written on the client half and taken on the destination half so it is always dead; encode_refusal is dialect-blind on a justification that is false (PlaneSessionState::get takes &self); refusal map has a catch-all and its battery samples 9 of ~77 variants; the crate-root dependency-seam doc is false in three respects; twilio mediaFormat parsed then discarded; empty streamSid defeats the forgery guard; ulaw tests are self-consistency (algorithm itself re-derived and cleared). 4 rejected of 21 distinct, 2 off-by-one quote mismatches; tests/clippy/plane-purity/voice-conformance all green against every finding"
-    },
-    {
-     "round": 8,
-     "result": "findings",
-     "auditor": "opus-plane-auditor-b",
-     "audited_at": "1b616b2580d09c96bab0b0dbdbb5cc1e8703deb0",
-     "tree_hash": "950bba3ac899c7b4f18462087b271dfc69ceba094c42614eaef4cf223b4a82be",
-     "counts": {
-      "HIGH": 1,
-      "MEDIUM": 3,
-      "NIT": 1
-     },
-     "report": "every streamed tool-call argument is discarded (only the call-open event is read, so a tool call reaches its executor with a name and an identifier and no arguments); a banned owned byte carrier is constructed per uplink frame on the fifty-hertz path; the tool-executor port is referenced by nothing and is the only reason this pure crate names an async-trait dependency"
-    }
-   ]
-  },
-  {
    "id": "crates/busbar-plugin/src",
    "kind": "production",
    "paths": [
@@ -1686,6 +1601,42 @@
      },
      "report": "11 Sonnet lens finders at e36685644; 6 raw -> 4 confirmed (0 HIGH, 1 MEDIUM, 3 LOW/NIT), 33% reject rate, 2 quote mismatches; NOT CONVERGED (no lens retired, hot/pod.rs second half unread)"
     }
+   ]
+  },
+  {
+   "id": "crates/busbar-streaming/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-streaming/src"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-streaming/src/tests"
+   ]
+  },
+  {
+   "id": "crates/busbar-streaming-codec/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-streaming-codec/src"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-streaming-codec/src/tests"
    ]
   },
   {
@@ -3283,112 +3234,6 @@
    ]
   },
   {
-   "id": "crates/busbar-voice/src",
-   "kind": "production",
-   "paths": [
-    "crates/busbar-voice/src"
-   ],
-   "tree_hash": "e1e2d22f99559ae6bd166c53c0d5598b2c9570a6c0321d54489465fdb390a69e",
-   "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
-   "round": 5,
-   "result": "findings",
-   "counts": {
-    "HIGH": 1,
-    "MEDIUM": 2
-   },
-   "report": "legacy runtime (busbar-voice, busbar-mcp stdio, busbar-core plane_host/governance/admin) -- HIGH=1 MEDIUM=2 fix queued, plus ~10 further MEDIUM/LOW reported in retiring core paths",
-   "auditor": "opus",
-   "fixed_at": null,
-   "exclude": [
-    "crates/busbar-voice/src/tests"
-   ],
-   "rounds": [
-    {
-     "round": 5,
-     "result": "findings",
-     "auditor": "opus",
-     "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
-     "tree_hash": "e1e2d22f99559ae6bd166c53c0d5598b2c9570a6c0321d54489465fdb390a69e",
-     "counts": {
-      "HIGH": 1,
-      "MEDIUM": 2
-     },
-     "report": "legacy runtime (busbar-voice, busbar-mcp stdio, busbar-core plane_host/governance/admin) -- HIGH=1 MEDIUM=2 fix queued, plus ~10 further MEDIUM/LOW reported in retiring core paths"
-    }
-   ]
-  },
-  {
-   "id": "crates/busbar-voice-codec/src",
-   "kind": "production",
-   "paths": [
-    "crates/busbar-voice-codec/src"
-   ],
-   "tree_hash": "45662ac5f3c7872c4dc6e80ad0ee4c094cfcb3bfafc784634491571cfa4b9804",
-   "audited_at": "e36685644ca9399d68d209c2b4244f2884a9dc15",
-   "round": 7,
-   "result": "findings",
-   "counts": {
-    "MEDIUM": 2,
-    "LOW": 2
-   },
-   "report": "a full owned serde_json::Value tree is built per wire frame on the 50 Hz duplex path and the alloc gate pins only the marginal owned-vs-borrowed delta, never an absolute per-frame budget; topology/twilio.rs duplicates the plane crate's own hand-rolled Twilio reader/writer and base64 with no shared golden test and already divergent shapes (Bytes vs Vec, flat vs nested Start, only one validates mediaFormat, differing member order); the crate declares no forbid(unsafe_code) though it is the pure half of a pure plane's scanned closure; no test sends media-before-start, stop-without-start or a zero-length payload. topology/* is runtime-gated and out of the shipping plane's build -- a perf HIGH against it was rejected on that ground. 4 rejected of 21 distinct across the unit",
-   "auditor": "opus-streams-auditor-a",
-   "fixed_at": null,
-   "exclude": [
-    "crates/busbar-voice-codec/src/tests"
-   ],
-   "rounds": [
-    {
-     "round": 5,
-     "result": "findings",
-     "auditor": "opus",
-     "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
-     "tree_hash": "a2fa8be7163c6ba98bdbb7fdfb99f15680d3977511267c856d222ea1a3fd761b",
-     "counts": {
-      "HIGH": 3,
-      "MEDIUM": 11,
-      "LOW": 8,
-      "NIT": 8
-     },
-     "report": "findings against transports+codecs+substrate-values; the reading's detail was not carried into the register"
-    },
-    {
-     "round": 5,
-     "result": "in_progress",
-     "auditor": "round-5 finder fleet",
-     "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
-     "tree_hash": "babcacc4cdc0324943ff8814da8b78e4e23f4e81d38f2e4348252ad83fc45c22",
-     "counts": {},
-     "report": "in flight; no reading recorded against this scope yet"
-    },
-    {
-     "round": 6,
-     "result": "findings",
-     "auditor": "opus-pass2",
-     "audited_at": "d6d871893dbd196e0d2b3a00d2e22ed2473d2adf",
-     "tree_hash": "a2fa8be7163c6ba98bdbb7fdfb99f15680d3977511267c856d222ea1a3fd761b",
-     "counts": {
-      "MEDIUM": 5,
-      "LOW": 4,
-      "NIT": 2
-     },
-     "report": "mulaw admitted as pcm (fixed), null tool result (fixed), totals without breakdown metered free (fixed), nested argument lost the call (fixed); gemini uplink labelled with the output format reported (DecodeState seam); every production file read fully"
-    },
-    {
-     "round": 7,
-     "result": "findings",
-     "auditor": "opus-streams-auditor-a",
-     "audited_at": "e36685644ca9399d68d209c2b4244f2884a9dc15",
-     "tree_hash": "45662ac5f3c7872c4dc6e80ad0ee4c094cfcb3bfafc784634491571cfa4b9804",
-     "counts": {
-      "MEDIUM": 2,
-      "LOW": 2
-     },
-     "report": "a full owned serde_json::Value tree is built per wire frame on the 50 Hz duplex path and the alloc gate pins only the marginal owned-vs-borrowed delta, never an absolute per-frame budget; topology/twilio.rs duplicates the plane crate's own hand-rolled Twilio reader/writer and base64 with no shared golden test and already divergent shapes (Bytes vs Vec, flat vs nested Start, only one validates mediaFormat, differing member order); the crate declares no forbid(unsafe_code) though it is the pure half of a pure plane's scanned closure; no test sends media-before-start, stop-without-start or a zero-length payload. topology/* is runtime-gated and out of the shipping plane's build -- a perf HIGH against it was rejected on that ground. 4 rejected of 21 distinct across the unit"
-    }
-   ]
-  },
-  {
    "id": "crates/export-example-plugin/src",
    "kind": "production",
    "paths": [
@@ -4809,58 +4654,6 @@
    "fixed_at": null
   },
   {
-   "id": "crates/busbar-plane-voice/src/tests",
-   "kind": "test",
-   "paths": [
-    "crates/busbar-plane-voice/src/tests"
-   ],
-   "tree_hash": "3409918ca80cf53dccde9639bc85f3c67b74f07ac86f18372892e0802ae18d1d",
-   "audited_at": "64b54387c4f177667ba688f7680877455579b293",
-   "round": 1,
-   "result": "findings",
-   "counts": {},
-   "report": "busbar-landq-state/gate/audits/tests-planes.md",
-   "auditor": "opus-test-auditor-planes",
-   "fixed_at": null,
-   "rounds": [
-    {
-     "round": 1,
-     "result": "findings",
-     "auditor": "opus-test-auditor-planes",
-     "audited_at": "64b54387c4f177667ba688f7680877455579b293",
-     "tree_hash": "3409918ca80cf53dccde9639bc85f3c67b74f07ac86f18372892e0802ae18d1d",
-     "counts": {},
-     "report": "busbar-landq-state/gate/audits/tests-planes.md"
-    }
-   ]
-  },
-  {
-   "id": "crates/busbar-plane-voice/tests",
-   "kind": "test",
-   "paths": [
-    "crates/busbar-plane-voice/tests"
-   ],
-   "tree_hash": "1288699d61795d4c4cce8c37ed6cc29bd2bd00ebc2573f60673105df178833a7",
-   "audited_at": "64b54387c4f177667ba688f7680877455579b293",
-   "round": 1,
-   "result": "findings",
-   "counts": {},
-   "report": "busbar-landq-state/gate/audits/tests-planes.md",
-   "auditor": "opus-test-auditor-planes",
-   "fixed_at": null,
-   "rounds": [
-    {
-     "round": 1,
-     "result": "findings",
-     "auditor": "opus-test-auditor-planes",
-     "audited_at": "64b54387c4f177667ba688f7680877455579b293",
-     "tree_hash": "1288699d61795d4c4cce8c37ed6cc29bd2bd00ebc2573f60673105df178833a7",
-     "counts": {},
-     "report": "busbar-landq-state/gate/audits/tests-planes.md"
-    }
-   ]
-  },
-  {
    "id": "crates/busbar-plugin/src/tests",
    "kind": "test",
    "paths": [
@@ -4928,6 +4721,36 @@
      "report": "busbar-landq-state/gate/audits/tests-planes.md"
     }
    ]
+  },
+  {
+   "id": "crates/busbar-streaming/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-streaming/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-streaming-codec/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-streaming-codec/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
   },
   {
    "id": "crates/busbar-substrate/src/tests",
@@ -5830,38 +5653,6 @@
      "report": "read for tautologies and shared-fixture races; none found in what was opened"
     }
    ]
-  },
-  {
-   "id": "crates/busbar-voice/src/tests",
-   "kind": "test",
-   "paths": [
-    "crates/busbar-voice/src/tests"
-   ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null,
-   "rounds": []
-  },
-  {
-   "id": "crates/busbar-voice-codec/tests",
-   "kind": "test",
-   "paths": [
-    "crates/busbar-voice-codec/tests"
-   ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null,
-   "rounds": []
   },
   {
    "id": "crates/hooks-ranking/src/tests",
@@ -6972,61 +6763,19 @@
    ]
   },
   {
-   "id": "testing/voice-conformance",
+   "id": "testing/streaming-conformance",
    "kind": "instrument",
    "paths": [
-    "testing/voice-conformance"
+    "testing/streaming-conformance"
    ],
-   "tree_hash": "d7226a3a3cdee211a4dc2780429348a4d155c8fb7e314e2e9ee6fee2d5b16ed3",
-   "audited_at": "7f4e716e500ce3a8de17524a820506c1208a3bb0",
-   "round": 3,
-   "result": "findings",
-   "counts": {
-    "HIGH": 2,
-    "NIT": 1
-   },
-   "report": "voice rig fresh eyes: 11 of 14 legs deleted still passed (floor 3), the spec leg had no required scenario set and judges busbar's own re-encode rather than the pinned spec (report)",
-   "auditor": "opus-instr-p3-voice",
-   "fixed_at": null,
-   "rounds": [
-    {
-     "round": 1,
-     "result": "findings",
-     "auditor": "opus-pass1",
-     "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
-     "tree_hash": "ba336f403a545c7ad4bcfcb9a428ae6f7025ba4797d65d504906e521b3f55c1e",
-     "counts": {
-      "HIGH": 2
-     },
-     "report": "cross oo/gg print PASS before opening fixtures; || true masks a panic after PASS lines; reported to the pass-2 auditor"
-    },
-    {
-     "round": 2,
-     "result": "findings",
-     "auditor": "opus-pass2",
-     "audited_at": "d6d871893dbd196e0d2b3a00d2e22ed2473d2adf",
-     "tree_hash": "ba336f403a545c7ad4bcfcb9a428ae6f7025ba4797d65d504906e521b3f55c1e",
-     "counts": {
-      "HIGH": 1,
-      "MEDIUM": 3,
-      "LOW": 2,
-      "NIT": 2
-     },
-     "report": "harness dying after PASS lines read green (fixed), asymmetry rows deferred by all pairs (fixed), literal-true rows (fixed), missing map fixtures silent (fixed); no sample-rate or timing assertion exists in the rig"
-    },
-    {
-     "round": 3,
-     "result": "findings",
-     "auditor": "opus-instr-p3-voice",
-     "audited_at": "7f4e716e500ce3a8de17524a820506c1208a3bb0",
-     "tree_hash": "d7226a3a3cdee211a4dc2780429348a4d155c8fb7e314e2e9ee6fee2d5b16ed3",
-     "counts": {
-      "HIGH": 2,
-      "NIT": 1
-     },
-     "report": "voice rig fresh eyes: 11 of 14 legs deleted still passed (floor 3), the spec leg had no required scenario set and judges busbar's own re-encode rather than the pinned spec (report)"
-    }
-   ]
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
   },
   {
    "id": "testing",
@@ -7051,7 +6800,7 @@
     "testing/llm-conformance",
     "testing/mcp-conformance",
     "testing/shadow-oracle",
-    "testing/voice-conformance"
+    "testing/streaming-conformance"
    ],
    "rounds": []
   }

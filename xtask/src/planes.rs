@@ -20,7 +20,7 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 
 /// The canonical order is the doctrine order: the three original protocols, then voice (Plane 4).
-pub const PLANE_KEYS: [&str; 4] = ["llm", "mcp", "a2a", "voice"];
+pub const PLANE_KEYS: [&str; 4] = ["llm", "mcp", "a2a", "streaming"];
 
 /// The default ownership grammar. Overridable for a fixture tree, the way
 /// `PLANE_ROOTS_GRAMMAR` is in the shell.
@@ -52,7 +52,7 @@ pub fn plane_src_roots() -> Vec<String> {
     out.push("crates/busbar-llm-codec/src".to_string());
     out.push("crates/busbar-mcp-codec/src".to_string());
     out.push("crates/busbar-a2a-codec/src".to_string());
-    out.push("crates/busbar-voice-codec/src".to_string());
+    out.push("crates/busbar-streaming-codec/src".to_string());
     out
 }
 

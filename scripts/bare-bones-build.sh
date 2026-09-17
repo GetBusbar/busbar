@@ -7,7 +7,7 @@
 # 1.6.0 ships TWO distributions of `busbar`, one plugin contract:
 #
 #   * DEFAULT      — everything compiled in (the `default` feature set: proto-llm, plane-mcp,
-#                    plane-a2a, plane-voice, root-*). `cargo build -p busbar`.
+#                    plane-a2a, plane-streaming, root-*). `cargo build -p busbar`.
 #   * BARE-BONES   — core + the DROP-IN plugin path, no compiled-in protocol planes. The composition
 #                    root's `register_planes()`/`register_protocols()` push nothing (every row is
 #                    feature-gated), so the substrate plane registry is EMPTY and the node serves

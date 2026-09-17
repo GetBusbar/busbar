@@ -12,7 +12,7 @@
 # [[transitional]] — THE LEGACY DRAIN, EDGE BY EDGE
 # ------------------------------------------------------------------------------------------------
 #
-# A legacy crate (`busbar-core`, `busbar-llm`, `busbar-mcp`, `busbar-a2a`, `busbar-voice`) is
+# A legacy crate (`busbar-core`, `busbar-llm`, `busbar-mcp`, `busbar-a2a`, `busbar-streaming`) is
 # draining INTO the new plugin kinds. That drain is what makes a `legacy -> unit` or
 # `legacy -> plane` edge appear, and for the duration of the drain those edges are expected rather
 # than catastrophic. They are NOT, however, unremarkable: an unlisted one is indistinguishable from
@@ -43,13 +43,13 @@ to = "busbar-plane-admin"
 reason = "legacy drain"
 
 # The same phenomenon one crate over, and it is in the tree TODAY rather than on a branch:
-# `busbar-voice` is the retiring 1.5.x streams crate and `busbar-plane-voice` is the plane it is
+# `busbar-streaming` is the retiring 1.5.x streams crate and `busbar-plane-streaming` is the plane it is
 # draining into. The rule is written about the drain, not about `busbar-core`, so this edge is named
 # on exactly the same terms — leaving it out would have meant a rule that only sees the drain the
 # ruling happened to mention.
 [[transitional]]
-from = "busbar-voice"
-to = "busbar-plane-voice"
+from = "busbar-streaming"
+to = "busbar-plane-streaming"
 reason = "legacy drain"
 
 # ------------------------------------------------------------------------------------------------
@@ -1841,27 +1841,27 @@ kind = "transport"
 count = "82"
 
 [[cell]]
-crate = "busbar-plane-voice"
+crate = "busbar-plane-streaming"
 kind = "api"
 count = "1"
 
 [[cell]]
-crate = "busbar-plane-voice"
+crate = "busbar-plane-streaming"
 kind = "codec"
 count = "24"
 
 [[cell]]
-crate = "busbar-plane-voice"
+crate = "busbar-plane-streaming"
 kind = "contract-transport"
 count = "2"
 
 [[cell]]
-crate = "busbar-plane-voice"
+crate = "busbar-plane-streaming"
 kind = "plane"
 count = "43"
 
 [[cell]]
-crate = "busbar-plane-voice"
+crate = "busbar-plane-streaming"
 kind = "transport"
 count = "102"
 
@@ -2551,62 +2551,62 @@ kind = "caps"
 count = "37"
 
 [[cell]]
-crate = "busbar-voice"
+crate = "busbar-streaming"
 kind = "api"
 count = "65"
 
 [[cell]]
-crate = "busbar-voice"
+crate = "busbar-streaming"
 kind = "codec"
 count = "10"
 
 [[cell]]
-crate = "busbar-voice"
+crate = "busbar-streaming"
 kind = "legacy"
 count = "11"
 
 [[cell]]
-crate = "busbar-voice"
+crate = "busbar-streaming"
 kind = "plane"
 count = "807"
 
 [[cell]]
-crate = "busbar-voice"
+crate = "busbar-streaming"
 kind = "secret"
 count = "13"
 
 [[cell]]
-crate = "busbar-voice"
+crate = "busbar-streaming"
 kind = "store"
 count = "1"
 
 [[cell]]
-crate = "busbar-voice"
+crate = "busbar-streaming"
 kind = "transport"
 count = "290"
 
 [[cell]]
-crate = "busbar-voice-codec"
+crate = "busbar-streaming-codec"
 kind = "api"
 count = "9"
 
 [[cell]]
-crate = "busbar-voice-codec"
+crate = "busbar-streaming-codec"
 kind = "legacy"
 count = "1"
 
 [[cell]]
-crate = "busbar-voice-codec"
+crate = "busbar-streaming-codec"
 kind = "plane"
 count = "117"
 
 [[cell]]
-crate = "busbar-voice-codec"
+crate = "busbar-streaming-codec"
 kind = "substrate"
 count = "15"
 
 [[cell]]
-crate = "busbar-voice-codec"
+crate = "busbar-streaming-codec"
 kind = "transport"
 count = "19"
 
@@ -2876,12 +2876,12 @@ drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an arch
 
 [[dep]]
 from    = "busbar"
-to      = "busbar-plane-voice"
+to      = "busbar-plane-streaming"
 half    = "shipped"
 count   = "1"
 verdict = "allowed"
 cite    = "ARCHITECTURE.md 1.1 / ARCHITECTURE.md 3.1 — the composition root is the one thing that names all three axes."
-why     = "busbar names busbar-plane-voice: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+why     = "busbar names busbar-plane-streaming: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
 drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
 
 [[dep]]
@@ -3126,12 +3126,12 @@ drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an arch
 
 [[dep]]
 from    = "busbar"
-to      = "busbar-voice"
+to      = "busbar-streaming"
 half    = "shipped"
 count   = "1"
 verdict = "allowed"
 cite    = "ARCHITECTURE.md 1.1 / ARCHITECTURE.md 3.1 — the composition root is the one thing that names all three axes."
-why     = "busbar names busbar-voice: declared normal, optional in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+why     = "busbar names busbar-streaming: declared normal, optional in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
 drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
 
 [[dep]]
@@ -3715,23 +3715,23 @@ why     = "busbar-plane-mcp names busbar-mcp-codec: declared normal in the shipp
 drain   = "none: DECISIONS #6/#21 grant this class — the codec crate is a permanent path-dep of its plane adapter. Draining it would be an architecture change and not a landing; what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
 
 [[dep]]
-from    = "busbar-plane-voice"
+from    = "busbar-plane-streaming"
 to      = "busbar-contract"
 half    = "shipped"
 count   = "1"
 verdict = "allowed"
 cite    = "ARCHITECTURE.md 1.2 manifest allow-list — busbar-contract is the face every kind is written against."
-why     = "busbar-plane-voice names busbar-contract: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+why     = "busbar-plane-streaming names busbar-contract: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
 drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
 
 [[dep]]
-from    = "busbar-plane-voice"
-to      = "busbar-voice-codec"
+from    = "busbar-plane-streaming"
+to      = "busbar-streaming-codec"
 half    = "shipped"
 count   = "1"
 verdict = "allowed"
-cite    = "DECISIONS #6/#21 — each plane is a pure adapter `busbar-plane-<x>` plus its OWN codec crate `busbar-<x>-codec` as a path dep; #21: \"the codec crate REMAINS a pure path-dep of its plane adapter\". ARCHITECTURE.md 6 — a plane and its codec are the two halves of one plane; the plane may name ITS OWN codec. busbar-plane-voice and busbar-voice-codec are one instance (`streams`) per DECISIONS #18, so this is a plane naming ITS OWN codec. The instance seal still refuses a plane naming a DIFFERENT plane's codec."
-why     = "busbar-plane-voice names busbar-voice-codec: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+cite    = "DECISIONS #6/#21 — each plane is a pure adapter `busbar-plane-<x>` plus its OWN codec crate `busbar-<x>-codec` as a path dep; #21: \"the codec crate REMAINS a pure path-dep of its plane adapter\". ARCHITECTURE.md 6 — a plane and its codec are the two halves of one plane; the plane may name ITS OWN codec. busbar-plane-streaming and busbar-streaming-codec are one instance (`streams`) per DECISIONS #18, so this is a plane naming ITS OWN codec. The instance seal still refuses a plane naming a DIFFERENT plane's codec."
+why     = "busbar-plane-streaming names busbar-streaming-codec: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
 drain   = "none: DECISIONS #6/#21 grant this class — the codec crate is a permanent path-dep of its plane adapter. Draining it would be an architecture change and not a landing; what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
 
 [[dep]]
@@ -3746,13 +3746,13 @@ drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an arch
 
 [[dep]]
 from    = "busbar-plane-streaming"
-to      = "busbar-voice-codec"
+to      = "busbar-streaming-codec"
 half    = "shipped"
 count   = "1"
 verdict = "allowed"
-cite    = "DECISIONS #6/#18/#21 — the streaming plane adapter `busbar-plane-streaming` path-deps its OWN codec. #18: `voice` is one dialect inside the STREAMING plane and the codec rename (busbar-voice-codec -> busbar-streaming-codec) is byte-identical, so busbar-plane-streaming and busbar-voice-codec are one instance (`streams`) until the #19 wave renames the codec. #21: \"the codec crate REMAINS a pure path-dep of its plane adapter\". The instance seal still refuses a plane naming a DIFFERENT plane's codec."
-why     = "busbar-plane-streaming names busbar-voice-codec: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
-drain   = "none: DECISIONS #6/#21 grant this class — the codec crate is a permanent path-dep of its plane adapter. The busbar-voice-codec -> busbar-streaming-codec rename is the #19 wave's byte-identical packaging move, not a drain of this edge. What this row holds is the NUMBER."
+cite    = "DECISIONS #6/#18/#21 — the streaming plane adapter `busbar-plane-streaming` path-deps its OWN codec. #18: `voice` is one dialect inside the STREAMING plane and the codec rename (busbar-streaming-codec -> busbar-streaming-codec) is byte-identical, so busbar-plane-streaming and busbar-streaming-codec are one instance (`streams`) until the #19 wave renames the codec. #21: \"the codec crate REMAINS a pure path-dep of its plane adapter\". The instance seal still refuses a plane naming a DIFFERENT plane's codec."
+why     = "busbar-plane-streaming names busbar-streaming-codec: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: DECISIONS #6/#21 grant this class — the codec crate is a permanent path-dep of its plane adapter. The busbar-streaming-codec -> busbar-streaming-codec rename is the #19 wave's byte-identical packaging move, not a drain of this edge. What this row holds is the NUMBER."
 
 [[dep]]
 from    = "busbar-plugin"
@@ -4585,74 +4585,74 @@ why     = "busbar-unit-wal names busbar-caps: declared normal in the shipped gra
 drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
 
 [[dep]]
-from    = "busbar-voice"
+from    = "busbar-streaming"
 to      = "busbar-api"
 half    = "shipped"
 count   = "1"
 verdict = "not-allowed"
 cite    = "ARCHITECTURE.md 1.2 \"Core -> plugin. Never plugin -> core.\" / ARCHITECTURE.md 1.1 the three axes are blind to each other. The retiring 1.5.x crates fuse plane+core+transport in one name."
-why     = "busbar-voice names busbar-api: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
-drain   = "delete the busbar-api dependency from busbar-voice's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
+why     = "busbar-streaming names busbar-api: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "delete the busbar-api dependency from busbar-streaming's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
 
 [[dep]]
-from    = "busbar-voice"
-to      = "busbar-plane-voice"
+from    = "busbar-streaming"
+to      = "busbar-plane-streaming"
 half    = "shipped"
 count   = "1"
 verdict = "not-allowed"
 cite    = "ARCHITECTURE.md 1.2 \"Core -> plugin. Never plugin -> core.\" / ARCHITECTURE.md 1.1 the three axes are blind to each other. The retiring 1.5.x crates fuse plane+core+transport in one name."
-why     = "busbar-voice names busbar-plane-voice: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
-drain   = "delete the busbar-plane-voice dependency from busbar-voice's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
+why     = "busbar-streaming names busbar-plane-streaming: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "delete the busbar-plane-streaming dependency from busbar-streaming's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
 
 [[dep]]
-from    = "busbar-voice"
+from    = "busbar-streaming"
 to      = "busbar-plugin"
 half    = "shipped"
 count   = "1"
 verdict = "not-allowed"
 cite    = "ARCHITECTURE.md 1.2 \"Core -> plugin. Never plugin -> core.\" / ARCHITECTURE.md 1.1 the three axes are blind to each other. The retiring 1.5.x crates fuse plane+core+transport in one name."
-why     = "busbar-voice names busbar-plugin: declared normal, optional in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
-drain   = "delete the busbar-plugin dependency from busbar-voice's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
+why     = "busbar-streaming names busbar-plugin: declared normal, optional in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "delete the busbar-plugin dependency from busbar-streaming's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
 
 [[dep]]
-from    = "busbar-voice"
+from    = "busbar-streaming"
 to      = "busbar-substrate"
 half    = "shipped"
 count   = "1"
 verdict = "not-allowed"
 cite    = "ARCHITECTURE.md 1.2 \"Core -> plugin. Never plugin -> core.\" / ARCHITECTURE.md 1.1 the three axes are blind to each other. The retiring 1.5.x crates fuse plane+core+transport in one name."
-why     = "busbar-voice names busbar-substrate: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
-drain   = "delete the busbar-substrate dependency from busbar-voice's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
+why     = "busbar-streaming names busbar-substrate: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "delete the busbar-substrate dependency from busbar-streaming's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
 
 [[dep]]
-from    = "busbar-voice"
-to      = "busbar-voice-codec"
+from    = "busbar-streaming"
+to      = "busbar-streaming-codec"
 half    = "shipped"
 count   = "1"
 verdict = "not-allowed"
 cite    = "ARCHITECTURE.md 1.2 \"Core -> plugin. Never plugin -> core.\" / ARCHITECTURE.md 1.1 the three axes are blind to each other. The retiring 1.5.x crates fuse plane+core+transport in one name."
-why     = "busbar-voice names busbar-voice-codec: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
-drain   = "delete the busbar-voice-codec dependency from busbar-voice's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
+why     = "busbar-streaming names busbar-streaming-codec: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "delete the busbar-streaming-codec dependency from busbar-streaming's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
 
 [[dep]]
-from    = "busbar-voice-codec"
+from    = "busbar-streaming-codec"
 to      = "busbar-api"
 half    = "shipped"
 count   = "1"
 verdict = "not-allowed"
 cite    = "ARCHITECTURE.md 1.2 manifest allow-list is busbar-contract + busbar-grammar + reviewed third-party only."
-why     = "busbar-voice-codec names busbar-api: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
-drain   = "delete the busbar-api dependency from busbar-voice-codec's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
+why     = "busbar-streaming-codec names busbar-api: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "delete the busbar-api dependency from busbar-streaming-codec's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
 
 [[dep]]
-from    = "busbar-voice-codec"
+from    = "busbar-streaming-codec"
 to      = "busbar-substrate-values"
 half    = "shipped"
 count   = "1"
 verdict = "not-allowed"
 cite    = "ARCHITECTURE.md 1.2 manifest allow-list is busbar-contract + busbar-grammar + reviewed third-party only."
-why     = "busbar-voice-codec names busbar-substrate-values: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
-drain   = "delete the busbar-substrate-values dependency from busbar-voice-codec's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
+why     = "busbar-streaming-codec names busbar-substrate-values: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "delete the busbar-substrate-values dependency from busbar-streaming-codec's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
 
 [[dep]]
 from    = "busbar"

@@ -254,7 +254,7 @@ jobs:
       - name: Release-order lint
         run: cargo xtask gate release-order
       # DUPLEX-WS DEFAULT-EDGE gate: `tokio-tungstenite` must not be in the DEFAULT money-path
-      # build's dependency closure — the WebSocket edge belongs to `plane-voice` and nowhere else.
+      # build's dependency closure — the WebSocket edge belongs to `plane-streaming` and nowhere else.
       # It was a fully-written, self-testing gate that NOTHING invoked: it lived in `scripts/`,
       # named itself a gate in its own header, passed on every commit, and no workflow, no script
       # and no gate runner ever executed it. A gate nothing runs is not a gate — it is a file that
@@ -561,7 +561,7 @@ jobs:
       - name: Plane-purity gate (BLOCKING — no side channel in the neutral crates)
         run: cargo xtask gate plane-purity
       # VOICE-TRANSPORT/MEDIA neutrality — the FORWARD-edge companion to plane-purity. plane-purity bans
-      # the plane KEYS + LLM dialects; this bans the Plane-4 (busbar-voice) TRANSPORT/MEDIA nouns
+      # the plane KEYS + LLM dialects; this bans the Plane-4 (busbar-streaming) TRANSPORT/MEDIA nouns
       # (rtc/sdp/webrtc/twilio/dtmf/rtp/sideband/realtime/audio/mulaw/g711/barge) that plane-purity does
       # NOT name, so core can never learn a protocol's transport words. Self-test first (it plants a
       # SdpOffer/webrtc hit and proves the scanner RED-flags it and passes a clean/comment/test tree),
@@ -850,15 +850,15 @@ jobs:
           fi
 
       # THE VOICE RUNTIME SUITE — the 4th plane's live duplex/session tests
-      # (crates/busbar-voice/src/runtime/tests.rs + crates/busbar-voice-codec/src/topology/tests/)
+      # (crates/busbar-streaming/src/runtime/tests.rs + crates/busbar-streaming-codec/src/topology/tests/)
       # live under `#[cfg(feature = "runtime")]`, which is OFF by default. The workspace `cargo test`
       # above runs with default features, so those tests NEVER execute there, and the
-      # voice-conformance workflow only `cargo build`s the conform bin — nothing ran the tests until
+      # streaming-conformance workflow only `cargo build`s the conform bin — nothing ran the tests until
       # this step. Voice is dev-only until DoD, so this is a plain `--features runtime` run: no
       # service containers, just the previously-dark plane suites made to actually run and go green.
-      # `busbar-voice-codec` is a SEPARATE crate from `busbar-voice` (the codec/topology split moved
-      # the Twilio Media Streams grammar and its tests out from under `busbar-voice`'s own tree), so
-      # it is named here too — a step that only ever named `busbar-voice` would go on passing green
+      # `busbar-streaming-codec` is a SEPARATE crate from `busbar-streaming` (the codec/topology split moved
+      # the Twilio Media Streams grammar and its tests out from under `busbar-streaming`'s own tree), so
+      # it is named here too — a step that only ever named `busbar-streaming` would go on passing green
       # while a whole suite sat uncollected behind a feature gate nothing runs. The floor below is
       # this step's own version of the workspace job's collected-test-count guard above: a suite that
       # stops being built/collected still prints `test result: ok` and exits 0, so the count is what
@@ -874,8 +874,8 @@ jobs:
         # laundered through a pipe.
         run: |
           set -uo pipefail
-          cargo test -p busbar-voice --features runtime,test-support \
-                     -p busbar-voice-codec --features runtime \
+          cargo test -p busbar-streaming --features runtime,test-support \
+                     -p busbar-streaming-codec --features runtime \
                      --locked --verbose 2>&1 | tee "$RUNNER_TEMP/voice-test.log"
           rc=${PIPESTATUS[0]}
           total=$(grep -oE 'test result: (ok|FAILED)\. [0-9]+ passed' "$RUNNER_TEMP/voice-test.log" \
@@ -891,7 +891,7 @@ jobs:
           fi
           if [ "$total" -lt "$VOICE_MIN_TESTS" ]; then
             echo "::error::the voice runtime suite ran ${total} tests, below its floor of ${VOICE_MIN_TESTS}."
-            echo "::error::A crate split (like codec/topology moving out of busbar-voice) can strand a"
+            echo "::error::A crate split (like codec/topology moving out of busbar-streaming) can strand a"
             echo "::error::suite behind a feature gate no workflow step names — this floor exists to catch that."
             exit 1
           fi
@@ -1675,7 +1675,7 @@ jobs:
           - name: mcp-codec test-support
             features: busbar-mcp-codec/test-support
             tests: -p busbar-mcp-codec
-          # duplex-ws is reachable from the root binary's default `plane-voice` TODAY. It is in this
+          # duplex-ws is reachable from the root binary's default `plane-streaming` TODAY. It is in this
           # matrix anyway, because reachability is a property of a DEFAULT and a default moving is
           # the exposure this whole job is about. A row that NAMES the feature survives the flip.
           - name: core duplex-ws
@@ -1820,20 +1820,20 @@ jobs:
   # feature-covered: busbar-mcp/openapi-schema -- openapi-schema -- pulled by the forward from busbar-core in that job's build
   # feature-covered: busbar-plane-mcp-host/openapi-schema -- openapi-schema -- reached through busbar-mcp's forward when the openapi-schema job builds it
   # feature-covered: busbar-substrate/openapi-schema -- openapi-schema -- pulled by the forward from every plane crate there
-  # feature-covered: busbar-voice/openapi-schema -- openapi-schema -- pulled by the forward from busbar with the feature on
+  # feature-covered: busbar-streaming/openapi-schema -- openapi-schema -- pulled by the forward from busbar with the feature on
   # feature-covered: busbar-timing/timing -- check -- the Timing implementation tests step names -p busbar-timing --features timing
   # feature-covered: busbar-llm/teller-waist -- check -- the LLM teller-step tests step names it, and the root default reaches it
-  # feature-covered: busbar-voice/test-support -- check -- the Voice runtime tests step names --features runtime,test-support
-  # feature-covered: busbar-voice/runtime -- check -- the Voice runtime tests step names it, and the root default reaches it
-  # feature-covered: busbar-voice-codec/runtime -- check -- the Voice runtime tests step names -p busbar-voice-codec --features runtime
-  # feature-covered: busbar-core/plane-voice -- check -- reached from the root binary's default plane-voice in the workspace build
-  # feature-covered: busbar-substrate/plane-voice -- check -- reached from busbar-core/plane-voice in the workspace default build
+  # feature-covered: busbar-streaming/test-support -- check -- the Voice runtime tests step names --features runtime,test-support
+  # feature-covered: busbar-streaming/runtime -- check -- the Voice runtime tests step names it, and the root default reaches it
+  # feature-covered: busbar-streaming-codec/runtime -- check -- the Voice runtime tests step names -p busbar-streaming-codec --features runtime
+  # feature-covered: busbar-core/plane-streaming -- check -- reached from the root binary's default plane-streaming in the workspace build
+  # feature-covered: busbar-substrate/plane-streaming -- check -- reached from busbar-core/plane-streaming in the workspace default build
   # feature-covered: busbar-substrate/plane-a2a -- check -- reached from busbar-core/plane-a2a in the workspace default build
   # feature-covered: busbar-substrate/plane-mcp -- check -- reached from busbar-core/plane-mcp in the workspace default build
   # feature-covered: busbar-substrate/plane-llm -- check -- reached from busbar-core/plane-llm in the workspace default build
   # feature-covered: busbar-substrate/dispatch -- check -- reached from the plane-mcp forward in the workspace default build
   # feature-covered: busbar-substrate/relay -- check -- reached from the plane-a2a forward in the workspace default build
-  # feature-covered: busbar-substrate/runtime -- check -- reached from the plane-voice forward in the workspace default build
+  # feature-covered: busbar-substrate/runtime -- check -- reached from the plane-streaming forward in the workspace default build
   # feature-covered: busbar-substrate-values/dispatch -- check -- reached from busbar-substrate/dispatch in the default build
   # feature-covered: busbar-substrate-values/relay -- check -- reached from busbar-substrate/relay in the default build
   # feature-covered: busbar-substrate-values/runtime -- check -- reached from busbar-substrate/runtime in the default build
@@ -2941,7 +2941,7 @@ jobs:
   #   2. --check     every GATING plane x step cell in qa/teller-steps.json names a real scenario and
   #      not "none". This reads the JSON.
   #   3. --root-legs the part that reads nothing and PROVES something: it builds the binary crate with
-  #      all five root legs on (root-admin,root-mcp,root-a2a,root-voice,root-llm) and EXECUTES every
+  #      all five root legs on (root-admin,root-mcp,root-a2a,root-streaming,root-llm) and EXECUTES every
   #      named root-leg cell. A matrix can only be verified against cells that run; verified against
   #      itself it is a spreadsheet.
   # All three were run by scripts/verify-1.6.0-done.sh alone — the release-time DONE claim — so a cell

@@ -28,7 +28,7 @@
 //! - [`adapters`] — the seams where two units name the same object at two widths, plus the boot
 //!   assertion that the two hand-kept metric label banks still agree.
 //! - [`policy`] — the values the units take from configuration rather than from a `Default`.
-//! - [`units_voice`] — one plane, switched over: a live voice session as a sequence of ordinary
+//! - [`units_streaming`] — one plane, switched over: a live voice session as a sequence of ordinary
 //!   units. The handshake that opens it, the per-frame turns the pump dispatches, the hold that is
 //!   the session's metering lease, and four seams to the half of the plane that owns sockets.
 //! - [`units_admin`] — the admin plane's twelve steps, and the one seam an admin operation's body
@@ -81,6 +81,6 @@ pub mod units_admin;
 pub mod units_llm;
 #[cfg(feature = "root-mcp")]
 pub mod units_mcp;
-#[cfg(feature = "root-voice")]
-pub mod units_voice;
+#[cfg(feature = "root-streaming")]
+pub mod units_streaming;
 pub mod vocabulary;

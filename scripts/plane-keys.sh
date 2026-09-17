@@ -4,11 +4,11 @@
 #
 # plane-keys.sh — THE ONE LIST OF PLANE KEYS.
 #
-# WHY THIS FILE EXISTS. The set of protocol PLANES the tree carries — {llm, mcp, a2a, voice} — was
+# WHY THIS FILE EXISTS. The set of protocol PLANES the tree carries — {llm, mcp, a2a, streaming} — was
 # spelled as a constant in a dozen gate scripts (plane-delete-test's `PLANES`, plane-grep-gate's
 # per-crate needle sets, plane-purity-lint's `PLANE_ROOTS`, plane-abi-neutrality's ban list). Each
 # copy is one more place that silently NO-OPs on the day a plane is added and someone forgets a row:
-# a gate that scans zero files of a plane it never heard of still prints `ok`. `voice` (Plane 4)
+# a gate that scans zero files of a plane it never heard of still prints `ok`. `streaming` (Plane 4)
 # arriving as a skeleton crate is exactly that day. There is one list of plane keys and it lives
 # here; every gate that enumerates the planes SOURCES this file instead of restating the set.
 #
@@ -24,8 +24,8 @@
 #   plane_keys_other <self>    → the PROTOCOL keys except <self>, in canonical order.
 # It NEVER exits and NEVER prints — the caller owns its own reporting.
 
-# The canonical order is the doctrine order: the three original protocols, then voice (Plane 4).
-PLANE_KEYS="llm mcp a2a voice"
+# The canonical order is the doctrine order: the three original protocols, then streaming (Plane 4).
+PLANE_KEYS="llm mcp a2a streaming"
 
 # The protocol subset: every plane key except `llm`. Derived from PLANE_KEYS so adding a plane in
 # one place flows here automatically.

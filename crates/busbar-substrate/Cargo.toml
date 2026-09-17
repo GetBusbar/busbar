@@ -241,9 +241,9 @@ plane-llm = []
 # `Transport::WebSocket` selection), so this forward ARMS that capability by plane name — the boundary
 # mapping voice→WS-transport lives here, not in the source, exactly as `plane-mcp`→`dispatch`. The
 # voice crate also forwards its own `runtime` feature to `busbar-substrate/runtime`; this composition-
-# root forward lets core/bin arm the same seam via `busbar-substrate/plane-voice` in lock-step. OFF by
+# root forward lets core/bin arm the same seam via `busbar-substrate/plane-streaming` in lock-step. OFF by
 # default: no default feature pulls it, so a shipped build carries no WS edge.
-plane-voice = ["runtime"]
+plane-streaming = ["runtime"]
 # The CI-only OpenAPI schema derive, mirroring core and the plane crates: `api::NamedDefView`'s
 # `schemars::JsonSchema` derive and `api::set_response_schema` are gated on it. Core's own
 # `openapi-schema` FORWARDS to this so the re-exported view carries its schema impl in lock-step.

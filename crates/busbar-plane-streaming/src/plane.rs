@@ -1,6 +1,6 @@
 //! The `Plane`/`SessionPlane` implementation.
 //!
-//! Every method here is a thin adapter over `busbar_voice_codec::ir`'s shared duplex codec
+//! Every method here is a thin adapter over `busbar_streaming_codec::ir`'s shared duplex codec
 //! ([`OpenAiRealtimeCodec`], [`GeminiLiveCodec`]), this crate's own Twilio reader/writer
 //! ([`crate::twilio`]) and its own µ-law transform ([`crate::ulaw`]). None of the three inputs the
 //! design brief names is skipped: a turn is the unit (opened on the first audio frame of a session,
@@ -41,7 +41,7 @@
 //!   `CallOpen` announces the call (and increments [`crate::session::TurnCounters::tool_calls`]) but
 //!   mints nothing on its own — a tool call dispatched with no arguments is a different call. The
 //!   streamed `CallArgs` fragments are accumulated on the session's own codec state
-//!   ([`busbar_voice_codec::ir::codec::DecodeState::push_call_args`], which appends a fragment and
+//!   ([`busbar_streaming_codec::ir::codec::DecodeState::push_call_args`], which appends a fragment and
 //!   replaces on a whole object, so the OpenAI done-repeat and the Gemini atomic call both land the
 //!   right bytes), and `CallClose` mints the `tool_call` `OneShot` carrying the tool name and those
 //!   arguments as its body, correlated by the wire call id. That is when the call becomes visible,
@@ -81,17 +81,17 @@ use busbar_contract::unit::{
 };
 use busbar_contract::wire::{Decode, DiscardCode, Encode, Frame, FrameCursor, TransportEnvelope};
 
-use busbar_voice_codec::ir::control::IrDuplexControl;
-use busbar_voice_codec::ir::event::{IrClientEvent, IrServerEvent};
-use busbar_voice_codec::ir::media::{AudioFormat, IrAudioFrame, IrAudioRef, UpDown};
-use busbar_voice_codec::ir::tool::IrDuplexTool;
-use busbar_voice_codec::ir::{
+use busbar_streaming_codec::ir::control::IrDuplexControl;
+use busbar_streaming_codec::ir::event::{IrClientEvent, IrServerEvent};
+use busbar_streaming_codec::ir::media::{AudioFormat, IrAudioFrame, IrAudioRef, UpDown};
+use busbar_streaming_codec::ir::tool::IrDuplexTool;
+use busbar_streaming_codec::ir::{
     DecodeState, DuplexReader, DuplexWriter, GeminiLiveCodec, OpenAiRealtimeCodec, WireRef,
 };
 
 use crate::claims::{self, Dialect};
 use crate::meta;
-use crate::session::{Pending, VoiceSessionState};
+use crate::session::{Pending, StreamingSessionState};
 use crate::{twilio, ulaw, StreamingPlane};
 
 /// The transport fact key the request path is published under.
@@ -159,7 +159,7 @@ impl Plane for StreamingPlane {
             None => decode_one_shot(frames, ctx),
             Some(halfbox) => {
                 let state = halfbox
-                    .get_mut::<VoiceSessionState>()
+                    .get_mut::<StreamingSessionState>()
                     .ok_or(Decode::MissingDeclaredFact)?;
                 let dialect = state.dialect.ok_or(Decode::MissingDeclaredFact)?;
                 match dialect {
@@ -209,7 +209,7 @@ impl Plane for StreamingPlane {
     ) -> Result<Option<ArenaBytes<'u>>, Encode> {
         let state = st
             .ok_or(Encode::Poisoned)?
-            .get_mut::<VoiceSessionState>()
+            .get_mut::<StreamingSessionState>()
             .ok_or(Encode::Poisoned)?;
         // The client's own dialect off the session fact first, exactly as `decode_response` asks
         // it: this seam is scoped to the DESTINATION, so the half it is handed is not guaranteed
@@ -310,7 +310,7 @@ impl Plane for StreamingPlane {
             return decode_one_shot_response(frames, ctx);
         };
         let state = halfbox
-            .get_mut::<VoiceSessionState>()
+            .get_mut::<StreamingSessionState>()
             .ok_or(Decode::MissingDeclaredFact)?;
         let upstream_dialect = upstream_dialect_for(self, dest);
         let client_dialect = client_dialect_from_session(ctx).unwrap_or(upstream_dialect);
@@ -373,7 +373,7 @@ impl Plane for StreamingPlane {
         // claimed. `error` is one of the few wire shapes both duplex dialects converge on closely
         // enough that a client library for either can surface it; a fully dialect-correct refusal
         // would need the immutable half of the state to still carry the negotiated dialect, which it
-        // does today (`VoiceSessionState::dialect`) but this method has no path to it before Unit 0
+        // does today (`StreamingSessionState::dialect`) but this method has no path to it before Unit 0
         // completes. Flagged rather than guessed past.
         // The write seam threads the session's decode state (it holds what framing cannot answer
         // per-event); a refusal reaches none of the session's state here, and needs none — it is one
@@ -591,12 +591,12 @@ impl SessionPlane for StreamingPlane {
             .fact(FACT_PATH)
             .and_then(claims::dialect_for)
             .unwrap_or(Dialect::OpenaiRealtime);
-        PlaneSessionState::new(VoiceSessionState::for_dialect(dialect))
+        PlaneSessionState::new(StreamingSessionState::for_dialect(dialect))
     }
 
     fn open_upstream<'u>(&self, dest: &VerifiedDestination, _ctx: &Ctx<'u>) -> PlaneSessionState {
         let dialect = upstream_dialect_for(self, dest);
-        PlaneSessionState::new(VoiceSessionState::for_dialect(dialect))
+        PlaneSessionState::new(StreamingSessionState::for_dialect(dialect))
     }
 }
 
@@ -803,7 +803,7 @@ fn transcript_text(body: &[u8]) -> Option<String> {
 /// Gemini Live).
 fn decode_ws_frame<'u>(
     frames: &mut FrameCursor<'u>,
-    state: &mut VoiceSessionState,
+    state: &mut StreamingSessionState,
     dialect: Dialect,
     ctx: &Ctx<'u>,
 ) -> Result<Ingress<'u>, Decode> {
@@ -836,7 +836,7 @@ fn decode_ws_frame<'u>(
 /// Decode one frame of a `twilio-media`-carried session.
 fn decode_twilio_frame<'u>(
     frames: &mut FrameCursor<'u>,
-    state: &mut VoiceSessionState,
+    state: &mut StreamingSessionState,
     ctx: &Ctx<'u>,
 ) -> Result<Ingress<'u>, Decode> {
     let frame = frames.next_frame().ok_or(Decode::Malformed)?;
@@ -921,7 +921,7 @@ fn decode_twilio_frame<'u>(
 /// facts and price its hold.
 fn ingress_from_client_event<'u>(
     event: IrClientEvent,
-    state: &mut VoiceSessionState,
+    state: &mut StreamingSessionState,
     dialect: Dialect,
     ctx: &Ctx<'u>,
 ) -> Result<Ingress<'u>, Decode> {
@@ -979,7 +979,7 @@ fn ingress_from_client_event<'u>(
 /// superseded unit to nobody: the interrupted turn kept the direction's slot and kept pricing while
 /// the caller was already talking over it, and the turn that took over could never open.
 fn open_or_relay<'u>(
-    state: &mut VoiceSessionState,
+    state: &mut StreamingSessionState,
     dialect: Dialect,
     relay: ArenaBytes<'u>,
     interrupt_ms: Option<u64>,
@@ -1029,7 +1029,7 @@ fn open_or_relay<'u>(
 /// bytes immediately (see the module doc comment's `encode_response` note).
 fn progress_from_server_event<'u>(
     event: IrServerEvent,
-    state: &mut VoiceSessionState,
+    state: &mut StreamingSessionState,
     client_dialect: Dialect,
     ctx: &Ctx<'u>,
 ) -> Result<Progress<'u>, Decode> {

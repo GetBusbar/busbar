@@ -300,7 +300,7 @@ pub fn resolve_cell(cx: &Ctx, cell_id: &str) -> Option<String> {
     }
 
     if namespace == "voice.rig" {
-        let path = format!("testing/voice-conformance/legs/{rest}.sh");
+        let path = format!("testing/streaming-conformance/legs/{rest}.sh");
         if cx.exists(&path) {
             return Some(path);
         }
@@ -807,7 +807,7 @@ pub fn root_line(m: &Matrix) -> String {
 // -------------------------------------------------------------------------------------------
 
 /// The five root legs the `--root-legs` arm compiles the binary crate with.
-const ROOT_FEATURES: &str = "root-admin,root-mcp,root-a2a,root-voice,root-llm";
+const ROOT_FEATURES: &str = "root-admin,root-mcp,root-a2a,root-streaming,root-llm";
 
 const ARM_USAGE: &str = "\
 usage:
@@ -1423,7 +1423,7 @@ impl Gate for TellerStepsGate {
                 "a plane no root leg answers to",
                 ROW_ROOT_LEGS,
                 "answered by NO root leg",
-                Box::new(|p: &mut Plant| p.drop_leg("root-voice")),
+                Box::new(|p: &mut Plant| p.drop_leg("root-streaming")),
             ),
             (
                 "a gating cell that is still a gap",

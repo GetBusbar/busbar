@@ -470,7 +470,7 @@ fn every_diagnostic_code_is_unique_across_the_neutral_and_plane_catalogues() {
 
 /// WHAT THE VOICE NODE COMPOSED AT THIS MOUNT IS ALLOWED TO BE READ FOR.
 ///
-/// The node built in `compose_voice_governed_calls` carries values that are not the deployment's:
+/// The node built in `compose_streaming_governed_calls` carries values that are not the deployment's:
 /// a flat rate card, a chain of nothing, a journal that ships nowhere, unbound key authorities. It
 /// is shipped anyway because the port installed over it asks the node exactly two questions, and
 /// both are answered out of the open-call table — nothing under that port reads a price, a chain, a
@@ -481,10 +481,10 @@ fn every_diagnostic_code_is_unique_across_the_neutral_and_plane_catalogues() {
 /// `GovernedCalls` impl — up to the divider that begins the node's long-lived half. A reach added
 /// anywhere in it to a second field of the node fails here, which is the moment the stand-ins stop
 /// being unreachable and this mount owes the deployment's real parts instead.
-#[cfg(all(feature = "root-voice", feature = "plane-voice"))]
+#[cfg(all(feature = "root-streaming", feature = "plane-streaming"))]
 #[test]
 fn the_governed_call_port_reads_only_the_nodes_open_call_table() {
-    const SOURCE: &str = include_str!("../root/units_voice.rs");
+    const SOURCE: &str = include_str!("../root/units_streaming.rs");
     const DIVIDER: &str = "// The node's long-lived half";
 
     let from = SOURCE

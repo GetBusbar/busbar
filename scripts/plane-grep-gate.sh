@@ -24,9 +24,9 @@
 #       `mcp` / `a2a` / `voice` (a neutral crate must name no plane by key).
 #     busbar-mcp   : may name `mcp`,   but NOT the six dialect names and NOT `a2a` / `voice`.
 #     busbar-a2a   : may name `a2a`,   but NOT the six dialect names and NOT `mcp` / `voice`.
-#     busbar-voice : may name `voice`, but NOT the six dialect names and NOT `mcp` / `a2a`.
+#     busbar-streaming : may name `voice`, but NOT the six dialect names and NOT `mcp` / `a2a`.
 #       (voice added at parity with mcp/a2a after the initial F4 pin, closing the same substring hole
-#       for the busbar-voice plane crate.)
+#       for the busbar-streaming plane crate.)
 #     busbar-llm : OWNS the dialect names — not scanned.
 #
 #   Substring match (index, not word-boundary) is the whole point: it is a SUPERSET of plane-purity's
@@ -118,8 +118,8 @@ MCP_ROOT="crates/busbar-mcp/src crates/busbar-mcp-codec/src crates/busbar-plane-
 MCP_NEEDLES="$DIALECTS $(plane_keys_other mcp)"
 A2A_ROOT="crates/busbar-a2a/src crates/busbar-a2a-codec/src"
 A2A_NEEDLES="$DIALECTS $(plane_keys_other a2a)"
-VOICE_ROOT="crates/busbar-voice/src crates/busbar-voice-codec/src"
-VOICE_NEEDLES="$DIALECTS $(plane_keys_other voice)"
+VOICE_ROOT="crates/busbar-streaming/src crates/busbar-streaming-codec/src"
+VOICE_NEEDLES="$DIALECTS $(plane_keys_other streaming)"
 
 # The neutral Operation enum — generic op vocabulary, explicitly in-scope-neutral. Excluded whole.
 OPERATION_EXCLUDE="crates/api/src/operation.rs"
@@ -368,19 +368,19 @@ run_selftest() {
   cat >"$tmp/neutral_red.rs" <<'RED'
 pub const GEMINI_KEY: &str = "gemini_api_version";
 use busbar_a2a::Foo;
-use busbar_voice::Bar;
+use busbar_streaming::Bar;
 fn probe() { let url = "https://api.openai.com/v1/models"; }
 RED
   out="$(scan "$NEUTRAL_NEEDLES" "" "$tmp/neutral_red.rs")"
-  local hit_gemini hit_a2a hit_openai hit_voice
+  local hit_gemini hit_a2a hit_openai hit_streaming
   hit_gemini="$(printf '%s\n' "$out" | awk -F'\t' '$1=="gemini"{n++} END{print n+0}')"
   hit_a2a="$(printf '%s\n' "$out"    | awk -F'\t' '$1=="a2a"{n++}    END{print n+0}')"
   hit_openai="$(printf '%s\n' "$out" | awk -F'\t' '$1=="openai"{n++} END{print n+0}')"
-  hit_voice="$(printf '%s\n' "$out"  | awk -F'\t' '$1=="voice"{n++}  END{print n+0}')"
+  hit_streaming="$(printf '%s\n' "$out"  | awk -F'\t' '$1=="streaming"{n++}  END{print n+0}')"
   if [ "$hit_gemini" -ge 1 ]; then note "RED neutral: caught gemini SUBSTRING in \`gemini_api_version\`"; else fail=1; note "RED neutral FAILED: gemini_api_version not flagged"; fi
   if [ "$hit_a2a"    -ge 1 ]; then note "RED neutral: caught the busbar_a2a:: plane-key reach"; else fail=1; note "RED neutral FAILED: busbar_a2a:: not flagged"; fi
   if [ "$hit_openai" -ge 1 ]; then note "RED neutral: caught openai SUBSTRING in the /v1/models url host"; else fail=1; note "RED neutral FAILED: api.openai.com not flagged"; fi
-  if [ "$hit_voice"  -ge 1 ]; then note "RED neutral: caught the busbar_voice:: plane-key reach"; else fail=1; note "RED neutral FAILED: busbar_voice:: not flagged"; fi
+  if [ "$hit_streaming"  -ge 1 ]; then note "RED neutral: caught the busbar_streaming:: plane-key reach"; else fail=1; note "RED neutral FAILED: busbar_streaming:: not flagged"; fi
   [ "$fail" -eq 0 ] || { note "  (scanner output was:)"; printf '%s\n' "$out" | sed 's/^/    /'; }
 
   # ── GREEN (neutral): the generic neutral vocabulary + a comment / cfg(test) block MENTIONING dialect
@@ -417,17 +417,17 @@ MCP
   if [ "$mcp_hit_a2a" -ge 1 ];      then note "SYMMETRIC mcp: flagged the foreign \`a2a\` plane key"; else fail=1; note "SYMMETRIC mcp FAILED: foreign a2a not flagged"; fi
   if [ "$mcp_hit_anthropic" -ge 1 ]; then note "SYMMETRIC mcp: flagged \`anthropic\` SUBSTRING in anthropic_v1"; else fail=1; note "SYMMETRIC mcp FAILED: anthropic_v1 not flagged"; fi
 
-  # ── SYMMETRIC (busbar-voice): may name `voice`, must NOT name `mcp` or `a2a`. ──
+  # ── SYMMETRIC (busbar-streaming): may name `voice`, must NOT name `mcp` or `a2a`. ──
   cat >"$tmp/voice_case.rs" <<'VOICE'
-use busbar_voice::runtime::Session;
+use busbar_streaming::runtime::Session;
 fn wire() { let _ = "mcp"; let _d = "a2a_bridge"; }
 VOICE
   out="$(scan "$VOICE_NEEDLES" "" "$tmp/voice_case.rs")"
-  local voice_hit_voice voice_hit_mcp voice_hit_a2a
-  voice_hit_voice="$(printf '%s\n' "$out" | awk -F'\t' '$1=="voice"{n++} END{print n+0}')"
+  local voice_hit_streaming voice_hit_mcp voice_hit_a2a
+  voice_hit_streaming="$(printf '%s\n' "$out" | awk -F'\t' '$1=="streaming"{n++} END{print n+0}')"
   voice_hit_mcp="$(printf '%s\n' "$out"   | awk -F'\t' '$1=="mcp"{n++}   END{print n+0}')"
   voice_hit_a2a="$(printf '%s\n' "$out"   | awk -F'\t' '$1=="a2a"{n++}   END{print n+0}')"
-  if [ "$voice_hit_voice" -eq 0 ]; then note "SYMMETRIC voice: did NOT flag its own \`voice\` name"; else fail=1; note "SYMMETRIC voice FAILED: flagged its own \`voice\`"; fi
+  if [ "$voice_hit_streaming" -eq 0 ]; then note "SYMMETRIC voice: did NOT flag its own \`voice\` name"; else fail=1; note "SYMMETRIC voice FAILED: flagged its own \`voice\`"; fi
   if [ "$voice_hit_mcp"   -ge 1 ]; then note "SYMMETRIC voice: flagged the foreign \`mcp\` plane key"; else fail=1; note "SYMMETRIC voice FAILED: foreign mcp not flagged"; fi
   if [ "$voice_hit_a2a"   -ge 1 ]; then note "SYMMETRIC voice: flagged the foreign \`a2a\` plane key SUBSTRING in a2a_bridge"; else fail=1; note "SYMMETRIC voice FAILED: foreign a2a not flagged"; fi
 

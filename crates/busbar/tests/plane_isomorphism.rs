@@ -80,7 +80,7 @@ const PLANE_LEDGER_COLUMNS: &[(&str, &[&str])] = &[
     ("llm", &["llm"]),
     ("mcp", &["mcp-client", "mcp-server"]),
     ("a2a", &["a2a-client", "a2a-server"]),
-    ("voice", &["voice-client", "voice-server"]),
+    ("streaming", &["streaming-client", "streaming-server"]),
 ];
 
 fn repo_root() -> PathBuf {
@@ -106,8 +106,8 @@ fn installed_decls() -> Vec<(&'static str, &'static PlaneDecl)> {
     v.push(("mcp", &busbar_mcp::PLANE_DECL));
     #[cfg(feature = "plane-a2a")]
     v.push(("a2a", &busbar_a2a::PLANE_DECL));
-    #[cfg(feature = "plane-voice")]
-    v.push(("voice", &busbar_voice::PLANE_DECL));
+    #[cfg(feature = "plane-streaming")]
+    v.push(("streaming", &busbar_streaming::PLANE_DECL));
     v
 }
 
@@ -364,8 +364,8 @@ fn compiled_legs() -> BTreeSet<&'static str> {
     legs.insert("root-llm");
     #[cfg(feature = "root-mcp")]
     legs.insert("root-mcp");
-    #[cfg(feature = "root-voice")]
-    legs.insert("root-voice");
+    #[cfg(feature = "root-streaming")]
+    legs.insert("root-streaming");
     legs
 }
 
@@ -378,7 +378,7 @@ fn compiled_legs() -> BTreeSet<&'static str> {
 ///
 /// This used to be cfg-gated on all five `root-*` features at once, which meant it ran in exactly one
 /// build configuration and in no other — not the default build, and not `--features
-/// root-a2a,root-voice,root-llm` either. The join it performs is over DATA (the installed decls and
+/// root-a2a,root-streaming,root-llm` either. The join it performs is over DATA (the installed decls and
 /// the ledger), so it is answerable on every build and is asked on every build. What the features
 /// decide is which legs are COMPILED, and that is asserted separately below: a plane installed into
 /// this build whose answering leg this build also carries must be driven through the loop by a leg
@@ -469,7 +469,7 @@ fn the_reflected_hook_set_and_constants_are_the_doctrine() {
     let keys: Vec<&str> = PLANE_LEDGER_COLUMNS.iter().map(|(k, _)| *k).collect();
     assert_eq!(
         keys,
-        vec!["llm", "mcp", "a2a", "voice"],
+        vec!["llm", "mcp", "a2a", "streaming"],
         "the installed-plane axis is the owner's ruling; changing it is a doctrine change"
     );
 }

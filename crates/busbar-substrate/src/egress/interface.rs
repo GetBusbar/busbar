@@ -16,15 +16,15 @@
 //! surface today's native consumers use, implemented by [`Engine`] as a thin pass-through over
 //! the unchanged `egress::engine` free functions. Nothing here changes engine behavior and no
 //! consumer is moved onto it yet (see the module-level doc on `egress` for the staging). This is
-//! purely additive scaffolding: a later stage can (a) route `busbar-mcp`/`busbar-voice`/
+//! purely additive scaffolding: a later stage can (a) route `busbar-mcp`/`busbar-streaming`/
 //! `busbar-llm` onto [`EgressEngine`] instead of `egress::engine::*`, and only once every native
 //! consumer names the trait can (b) relocate the engine behind it, with zero fidelity loss at
 //! either step — the trait already carries everything a full-fidelity caller needs:
 //!
 //! * [`EgressEngine::build_client`] + [`EgressEngine::Client`] — build the ONE pooled client
 //!   ([`engine::EngineClient`]) from an [`engine::EngineSpec`], covering BOTH postures a native
-//!   consumer builds today: [`engine::EngineSpec::pooled_webpki`] (busbar-voice's own outbound
-//!   client, `crates/busbar-voice/src/mount.rs::egress_client`) and
+//!   consumer builds today: [`engine::EngineSpec::pooled_webpki`] (busbar-streaming's own outbound
+//!   client, `crates/busbar-streaming/src/mount.rs::egress_client`) and
 //!   [`engine::EngineSpec::pinned`] (busbar-mcp's per-destination pinned pool,
 //!   `crates/busbar-mcp/src/mcp/client/pool.rs::client_for`). `EngineSpec` itself is already
 //!   neutral (lives in this crate) so its constructors need no trait indirection — only the BUILD
@@ -39,7 +39,7 @@
 //! * [`EgressEngine::send_bounded`] — the full `http::Response<hyper::body::Incoming>` (the raw
 //!   incoming, header map and all) under a deadline, classified into [`engine::HopError`] on
 //!   failure. This is the exact fidelity `egress::seam::Buffered` cannot carry: busbar-mcp reads
-//!   the upstream's real header map off this response (`mcp/upstream.rs`), and busbar-voice's
+//!   the upstream's real header map off this response (`mcp/upstream.rs`), and busbar-streaming's
 //!   minted-credential HTTPS fetch (`topology/minter_https.rs`) does the same.
 //! * [`EgressEngine::install_proxy_tunnel_if_configured`] — the boot-time CONNECT-tunnel env
 //!   read every consumer's composition root calls once (busbar-llm:

@@ -40,7 +40,7 @@ LEDGER = "qa/capability-equality.json"
 STATES = {"proven", "missing", "not-applicable"}
 ROOT_STATES = {"proven", "none", "not-applicable"}
 # The five legs the composition root carries, and the one cargo invocation that turns them all on.
-ROOT_FEATURES = "root-admin,root-mcp,root-a2a,root-voice,root-llm"
+ROOT_FEATURES = "root-admin,root-mcp,root-a2a,root-streaming,root-llm"
 
 
 def load(path):

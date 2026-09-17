@@ -1214,7 +1214,7 @@ wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
 [[leak]]
 noun = "bearer"
 kind = "auth"
-file = "crates/busbar-plane-voice/src/claims.rs"
+file = "crates/busbar-plane-streaming/src/claims.rs"
 count = 2
 category = "cross-plugin"
 wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
@@ -1382,7 +1382,7 @@ wave = "core neutralization — DECISION #1 (core names no instance); auth schem
 [[leak]]
 noun = "bearer"
 kind = "auth"
-file = "crates/busbar-voice/src/lib.rs"
+file = "crates/busbar-streaming/src/lib.rs"
 count = 4
 category = "cross-plugin"
 wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
@@ -1390,7 +1390,7 @@ wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
 [[leak]]
 noun = "bearer"
 kind = "auth"
-file = "crates/busbar-voice/src/mount.rs"
+file = "crates/busbar-streaming/src/mount.rs"
 count = 1
 category = "cross-plugin"
 wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
@@ -1398,7 +1398,7 @@ wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
 [[leak]]
 noun = "bearer"
 kind = "auth"
-file = "crates/busbar-voice/src/tests/egress_tests.rs"
+file = "crates/busbar-streaming/src/tests/egress_tests.rs"
 count = 3
 category = "cross-plugin"
 wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
@@ -1406,7 +1406,7 @@ wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
 [[leak]]
 noun = "bearer"
 kind = "auth"
-file = "crates/busbar-voice/src/tests/mint_tests.rs"
+file = "crates/busbar-streaming/src/tests/mint_tests.rs"
 count = 1
 category = "cross-plugin"
 wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
@@ -1414,7 +1414,7 @@ wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
 [[leak]]
 noun = "bearer"
 kind = "auth"
-file = "crates/busbar-voice/src/tests/sdp_tests.rs"
+file = "crates/busbar-streaming/src/tests/sdp_tests.rs"
 count = 5
 category = "cross-plugin"
 wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
@@ -1422,7 +1422,7 @@ wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
 [[leak]]
 noun = "bearer"
 kind = "auth"
-file = "crates/busbar-voice/src/topology/minter_https.rs"
+file = "crates/busbar-streaming/src/topology/minter_https.rs"
 count = 1
 category = "cross-plugin"
 wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
@@ -1462,7 +1462,7 @@ wave = "keystone / composition-root — register_planes both-ways self-registrat
 [[leak]]
 noun = "bearer"
 kind = "auth"
-file = "crates/busbar/src/root/tests/units_voice.rs"
+file = "crates/busbar/src/root/tests/units_streaming.rs"
 count = 1
 category = "composition-root"
 wave = "keystone / composition-root — register_planes both-ways self-registration"
@@ -1502,7 +1502,7 @@ wave = "keystone / composition-root — register_planes both-ways self-registrat
 [[leak]]
 noun = "bearer"
 kind = "auth"
-file = "crates/busbar/src/root/units_voice.rs"
+file = "crates/busbar/src/root/units_streaming.rs"
 count = 1
 category = "composition-root"
 wave = "keystone / composition-root — register_planes both-ways self-registration"
@@ -2822,7 +2822,7 @@ wave = "keystone / composition-root — register_planes both-ways self-registrat
 [[leak]]
 noun = "mcp"
 kind = "plane"
-file = "crates/busbar/src/root/tests/units_voice.rs"
+file = "crates/busbar/src/root/tests/units_streaming.rs"
 count = 2
 category = "composition-root"
 wave = "keystone / composition-root — register_planes both-ways self-registration"
@@ -5204,7 +5204,7 @@ category = "core"
 wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
 
 [[leak]]
-noun = "voice"
+noun = "streaming"
 kind = "plane"
 file = "crates/busbar-core/src/plane/tests/registry_tests.rs"
 count = 1
@@ -5212,7 +5212,7 @@ category = "core"
 wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
 
 [[leak]]
-noun = "voice"
+noun = "streaming"
 kind = "plane"
 file = "crates/busbar-llm-codec/src/gemini/handler.rs"
 count = 7
@@ -5220,7 +5220,7 @@ category = "cross-plugin"
 wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
 
 [[leak]]
-noun = "voice"
+noun = "streaming"
 kind = "plane"
 file = "crates/busbar-llm-codec/src/gemini/tests/handler_tests.rs"
 count = 2
@@ -5228,7 +5228,7 @@ category = "cross-plugin"
 wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
 
 [[leak]]
-noun = "voice"
+noun = "streaming"
 kind = "plane"
 file = "crates/busbar-llm-codec/src/gemini/tests/logprobs_carry_tests.rs"
 count = 1
@@ -5236,7 +5236,7 @@ category = "cross-plugin"
 wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
 
 [[leak]]
-noun = "voice"
+noun = "streaming"
 kind = "plane"
 file = "crates/busbar-llm-codec/src/ir/audio.rs"
 count = 2
@@ -5244,7 +5244,7 @@ category = "cross-plugin"
 wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
 
 [[leak]]
-noun = "voice"
+noun = "streaming"
 kind = "plane"
 file = "crates/busbar-llm-codec/src/ir/tests/audio_tests.rs"
 count = 2
@@ -5252,7 +5252,7 @@ category = "cross-plugin"
 wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
 
 [[leak]]
-noun = "voice"
+noun = "streaming"
 kind = "plane"
 file = "crates/busbar-llm-codec/src/openai_chat/handler.rs"
 count = 2
@@ -5260,7 +5260,7 @@ category = "cross-plugin"
 wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
 
 [[leak]]
-noun = "voice"
+noun = "streaming"
 kind = "plane"
 file = "crates/busbar-llm-codec/src/openai_chat/tests/field_carry_tests.rs"
 count = 2
@@ -5268,7 +5268,7 @@ category = "cross-plugin"
 wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
 
 [[leak]]
-noun = "voice"
+noun = "streaming"
 kind = "plane"
 file = "crates/busbar-llm-codec/src/openai_chat/tests/handler_tests.rs"
 count = 2
@@ -5276,7 +5276,7 @@ category = "cross-plugin"
 wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
 
 [[leak]]
-noun = "voice"
+noun = "streaming"
 kind = "plane"
 file = "crates/busbar-llm/src/engine/tests/hook_non_chat_projection_tests.rs"
 count = 1
@@ -5284,7 +5284,7 @@ category = "cross-plugin"
 wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
 
 [[leak]]
-noun = "voice"
+noun = "streaming"
 kind = "plane"
 file = "crates/busbar-transport-grpc/tests/no_plane_names.rs"
 count = 5
@@ -5292,7 +5292,7 @@ category = "cross-plugin"
 wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
 
 [[leak]]
-noun = "voice"
+noun = "streaming"
 kind = "plane"
 file = "crates/busbar-transport-http/tests/no_plane_names.rs"
 count = 5
@@ -5300,7 +5300,7 @@ category = "cross-plugin"
 wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
 
 [[leak]]
-noun = "voice"
+noun = "streaming"
 kind = "plane"
 file = "crates/busbar/src/main.rs"
 count = 30
@@ -5308,7 +5308,7 @@ category = "composition-root"
 wave = "keystone / composition-root — register_planes both-ways self-registration"
 
 [[leak]]
-noun = "voice"
+noun = "streaming"
 kind = "plane"
 file = "crates/busbar/src/root/mod.rs"
 count = 2
@@ -5316,7 +5316,7 @@ category = "composition-root"
 wave = "keystone / composition-root — register_planes both-ways self-registration"
 
 [[leak]]
-noun = "voice"
+noun = "streaming"
 kind = "plane"
 file = "crates/busbar/src/root/registry.rs"
 count = 20
@@ -5324,7 +5324,7 @@ category = "composition-root"
 wave = "keystone / composition-root — register_planes both-ways self-registration"
 
 [[leak]]
-noun = "voice"
+noun = "streaming"
 kind = "plane"
 file = "crates/busbar/src/root/tests/registry.rs"
 count = 24
@@ -5332,7 +5332,7 @@ category = "composition-root"
 wave = "keystone / composition-root — register_planes both-ways self-registration"
 
 [[leak]]
-noun = "voice"
+noun = "streaming"
 kind = "plane"
 file = "crates/busbar/src/root/tests/transports.rs"
 count = 1
@@ -5340,15 +5340,15 @@ category = "composition-root"
 wave = "keystone / composition-root — register_planes both-ways self-registration"
 
 [[leak]]
-noun = "voice"
+noun = "streaming"
 kind = "plane"
-file = "crates/busbar/src/root/tests/units_voice.rs"
+file = "crates/busbar/src/root/tests/units_streaming.rs"
 count = 136
 category = "composition-root"
 wave = "keystone / composition-root — register_planes both-ways self-registration"
 
 [[leak]]
-noun = "voice"
+noun = "streaming"
 kind = "plane"
 file = "crates/busbar/src/root/transports.rs"
 count = 3
@@ -5356,15 +5356,15 @@ category = "composition-root"
 wave = "keystone / composition-root — register_planes both-ways self-registration"
 
 [[leak]]
-noun = "voice"
+noun = "streaming"
 kind = "plane"
-file = "crates/busbar/src/root/units_voice.rs"
+file = "crates/busbar/src/root/units_streaming.rs"
 count = 48
 category = "composition-root"
 wave = "keystone / composition-root — register_planes both-ways self-registration"
 
 [[leak]]
-noun = "voice"
+noun = "streaming"
 kind = "plane"
 file = "crates/busbar/src/tests/tests.rs"
 count = 2
@@ -5372,7 +5372,7 @@ category = "composition-root"
 wave = "keystone / composition-root — register_planes both-ways self-registration"
 
 [[leak]]
-noun = "voice"
+noun = "streaming"
 kind = "plane"
 file = "crates/busbar/tests/capability_equality.rs"
 count = 11
@@ -5380,7 +5380,7 @@ category = "composition-root"
 wave = "keystone / composition-root — register_planes both-ways self-registration"
 
 [[leak]]
-noun = "voice"
+noun = "streaming"
 kind = "plane"
 file = "crates/busbar/tests/field_coverage.rs"
 count = 1
@@ -5388,7 +5388,7 @@ category = "composition-root"
 wave = "keystone / composition-root — register_planes both-ways self-registration"
 
 [[leak]]
-noun = "voice"
+noun = "streaming"
 kind = "plane"
 file = "crates/busbar/tests/plane_host_universal_purity.rs"
 count = 6
@@ -5396,7 +5396,7 @@ category = "composition-root"
 wave = "keystone / composition-root — register_planes both-ways self-registration"
 
 [[leak]]
-noun = "voice"
+noun = "streaming"
 kind = "plane"
 file = "crates/busbar/tests/plane_isomorphism.rs"
 count = 6
@@ -5404,7 +5404,7 @@ category = "composition-root"
 wave = "keystone / composition-root — register_planes both-ways self-registration"
 
 [[leak]]
-noun = "voice"
+noun = "streaming"
 kind = "plane"
 file = "crates/busbar/tests/plane_meter_seam_reachability.rs"
 count = 2
@@ -5412,7 +5412,7 @@ category = "composition-root"
 wave = "keystone / composition-root — register_planes both-ways self-registration"
 
 [[leak]]
-noun = "voice"
+noun = "streaming"
 kind = "plane"
 file = "crates/busbar/tests/plane_transport_neutrality.rs"
 count = 3
@@ -5420,7 +5420,7 @@ category = "composition-root"
 wave = "keystone / composition-root — register_planes both-ways self-registration"
 
 [[leak]]
-noun = "voice"
+noun = "streaming"
 kind = "plane"
 file = "crates/busbar/tests/scrape_shape_1_5_5.rs"
 count = 1
@@ -5428,7 +5428,7 @@ category = "composition-root"
 wave = "keystone / composition-root — register_planes both-ways self-registration"
 
 [[leak]]
-noun = "voice"
+noun = "streaming"
 kind = "plane"
 file = "crates/busbar/tests/transport_composed_over_consistency.rs"
 count = 4
@@ -5436,15 +5436,15 @@ category = "composition-root"
 wave = "keystone / composition-root — register_planes both-ways self-registration"
 
 [[leak]]
-noun = "voice"
+noun = "streaming"
 kind = "plane"
-file = "crates/busbar/tests/voice_boot.rs"
+file = "crates/busbar/tests/streaming_boot.rs"
 count = 14
 category = "composition-root"
 wave = "keystone / composition-root — register_planes both-ways self-registration"
 
 [[leak]]
-noun = "voice"
+noun = "streaming"
 kind = "plane"
 file = "crates/plugin-loader/src/tests/legacy_usage_tests.rs"
 count = 2

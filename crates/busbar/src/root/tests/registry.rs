@@ -10,7 +10,7 @@ use busbar_kernel::registry::{check_claims, claims_overlap, ConflictReason, Plug
 ///
 /// Pinned as text rather than as indices so that a diff of it reads as a routing change. See
 /// the test that reads it for what a change to this array means.
-#[cfg(feature = "plane-voice")]
+#[cfg(feature = "plane-streaming")]
 const SEALED_ORDER: &[&str] = &[
     "mcp ExactPath(\"/.well-known/oauth-protected-resource/mcp\")",
     "a2a ExactPath(\"/.well-known/oauth-protected-resource/a2a\")",
@@ -38,19 +38,19 @@ const SEALED_ORDER: &[&str] = &[
     "llm HeaderPresent(\"anthropic-beta\")",
     "llm HeaderPresent(\"x-goog-api-key\")",
     "llm HeaderPresent(\"x-api-key\")",
-    "voice PathSuffix(\"/v1/audio/transcriptions\")",
+    "streaming PathSuffix(\"/v1/audio/transcriptions\")",
     "llm PathSuffix(\"/v1/audio/translations\")",
     "llm PathContains(\":streamGenerateContent\")",
     "llm PathSuffix(\"/v1/chat/completions\")",
     "llm PathContains(\":batchEmbedContents\")",
-    "voice PathContains(\"BidiGenerateContent\")",
-    "voice PathSuffix(\"/v1/audio/speech\")",
+    "streaming PathContains(\"BidiGenerateContent\")",
+    "streaming PathSuffix(\"/v1/audio/speech\")",
     "llm PathContains(\":generateContent\")",
     "llm PathSuffix(\"/v1/moderations\")",
     "llm PathSuffix(\"/v1/embeddings\")",
     "llm PathSuffix(\"/v1/responses\")",
     "llm PathContains(\":embedContent\")",
-    "voice PathSuffix(\"/v1/realtime\")",
+    "streaming PathSuffix(\"/v1/realtime\")",
     "llm PathContains(\"/v1/messages\")",
     "llm PathContains(\"/v1/images/\")",
     "llm PathSuffix(\"/v2/rerank\")",
@@ -64,9 +64,9 @@ const SEALED_ORDER: &[&str] = &[
 
 /// Whether this build carries the voice plane — and therefore its WS transport, its registry row
 /// and its four claims. Every pinned number below is a statement about ONE composition, and the
-/// shipped one (voice on, since `plane-voice` is in `default`) is the one they are pinned
+/// shipped one (voice on, since `plane-streaming` is in `default`) is the one they are pinned
 /// against; a build that compiled voice out is a different composition, not a smaller one.
-const VOICE: bool = cfg!(feature = "plane-voice");
+const STREAMING: bool = cfg!(feature = "plane-streaming");
 
 /// Every transport and every plane goes into one registry, and both counts are what the design
 /// says they are. This is the half of the seal that does not depend on the claims.
@@ -76,9 +76,9 @@ fn seven_transports_and_five_planes_register() {
     let registry = register_all(&transports).expect("nothing collides on a key");
     assert_eq!(
         registry.count(PluginKind::Transport),
-        if VOICE { 7 } else { 6 }
+        if STREAMING { 7 } else { 6 }
     );
-    assert_eq!(registry.count(PluginKind::Plane), if VOICE { 5 } else { 4 });
+    assert_eq!(registry.count(PluginKind::Plane), if STREAMING { 5 } else { 4 });
     for key in ["tcp", "tls", "http", "sse", "grpc", "stdio"] {
         assert!(
             registry.resolve(PluginKind::Transport, key).is_some(),
@@ -95,11 +95,11 @@ fn seven_transports_and_five_planes_register() {
     // root registers without the other.
     assert_eq!(
         registry.resolve(PluginKind::Transport, "ws").is_some(),
-        VOICE
+        STREAMING
     );
     assert_eq!(
-        registry.resolve(PluginKind::Plane, "voice").is_some(),
-        VOICE
+        registry.resolve(PluginKind::Plane, "streaming").is_some(),
+        STREAMING
     );
 }
 
@@ -108,7 +108,7 @@ fn seven_transports_and_five_planes_register() {
 /// should have to say so here.
 // Pinned against the SHIPPED composition (voice on). Compiled out with the voice plane
 // because the numbers below are that composition's, not a subset of it.
-#[cfg(feature = "plane-voice")]
+#[cfg(feature = "plane-streaming")]
 #[test]
 fn the_planes_declare_forty_eight_claims() {
     let claims = plane_claims();
@@ -116,7 +116,7 @@ fn the_planes_declare_forty_eight_claims() {
     assert_eq!(count("llm"), 25);
     assert_eq!(count("mcp"), 4);
     assert_eq!(count("a2a"), 14);
-    assert_eq!(count("voice"), 4);
+    assert_eq!(count("streaming"), 4);
     assert_eq!(count("admin"), 1);
     assert_eq!(claims.len(), 48);
 }
@@ -133,7 +133,7 @@ fn the_planes_declare_forty_eight_claims() {
 /// surface one path at a time rather than as a prefix took it from 65 to 63.
 // Pinned against the SHIPPED composition (voice on). Compiled out with the voice plane
 // because the numbers below are that composition's, not a subset of it.
-#[cfg(feature = "plane-voice")]
+#[cfg(feature = "plane-streaming")]
 #[test]
 fn one_hundred_and_fifty_three_cross_plane_pairs_overlap() {
     use busbar_kernel::grammar::family;
@@ -174,7 +174,7 @@ fn one_hundred_and_fifty_three_cross_plane_pairs_overlap() {
 /// account of itself. There is none, and the assertion is that there is none.
 // Pinned against the SHIPPED composition (voice on). Compiled out with the voice plane
 // because the numbers below are that composition's, not a subset of it.
-#[cfg(feature = "plane-voice")]
+#[cfg(feature = "plane-streaming")]
 #[test]
 fn every_remaining_path_overlap_is_a_shape_and_not_a_gap() {
     use busbar_contract::grammar::PathSeg;
@@ -221,7 +221,7 @@ fn every_remaining_path_overlap_is_a_shape_and_not_a_gap() {
 /// which is the whole claim of this file — the declared set of five planes seals.
 // Pinned against the SHIPPED composition (voice on). Compiled out with the voice plane
 // because the numbers below are that composition's, not a subset of it.
-#[cfg(feature = "plane-voice")]
+#[cfg(feature = "plane-streaming")]
 #[test]
 fn every_cross_plane_overlap_is_resolved_by_precedence_and_none_refuses() {
     let claims = plane_claims();
@@ -262,7 +262,7 @@ fn every_cross_plane_overlap_is_resolved_by_precedence_and_none_refuses() {
 /// respelled has to update it, on purpose, with the new order visible in the same diff.
 // Pinned against the SHIPPED composition (voice on). Compiled out with the voice plane
 // because the numbers below are that composition's, not a subset of it.
-#[cfg(feature = "plane-voice")]
+#[cfg(feature = "plane-streaming")]
 #[test]
 fn the_sealed_order_of_the_forty_eight_claims_is_pinned() {
     let claims = plane_claims();
@@ -436,7 +436,7 @@ fn the_shipped_transport_stack_composes() {
     };
     // The two transports whose `new()` yields something that refuses every connection are the
     // two that must be built through `over`, and the rows say they were.
-    if VOICE {
+    if STREAMING {
         assert_eq!(composed_over("ws"), Some("http"));
     }
     assert_eq!(composed_over("grpc"), Some("http"));
@@ -513,11 +513,11 @@ fn every_claimed_plane_key_is_a_registered_plane() {
 #[test]
 fn a_claim_on_a_transport_with_no_crate_refuses_at_boot() {
     let telephony = vec![PlaneClaim {
-        plane: "voice",
+        plane: "streaming",
         claim: Claim {
             transport: "twilio-media",
             selector: Selector::PrefixOneLevel("/twilio"),
-            scheme: Some("voice-key"),
+            scheme: Some("streaming-key"),
             scheme_alternatives: &["twilio-signature"],
             idempotency: None,
         },
@@ -527,7 +527,7 @@ fn a_claim_on_a_transport_with_no_crate_refuses_at_boot() {
     assert!(matches!(
         refusal,
         BootRefusal::UnregisteredClaimTransport {
-            plane: "voice",
+            plane: "streaming",
             transport: "twilio-media",
         }
     ));
@@ -539,7 +539,7 @@ fn a_claim_on_a_transport_with_no_crate_refuses_at_boot() {
 /// composition and a node that boots.
 // Pinned against the SHIPPED composition (voice on). Compiled out with the voice plane
 // because the numbers below are that composition's, not a subset of it.
-#[cfg(feature = "plane-voice")]
+#[cfg(feature = "plane-streaming")]
 #[test]
 fn the_seal_answers_now_that_every_claim_names_a_registered_transport() {
     let sealed = seal(ClientSettings::default()).expect("every claim names a live transport");
@@ -615,7 +615,7 @@ fn the_operators_body_cap_reaches_every_mounted_planes_transport() {
 /// on, and a dial-side instance over `tls`, which is the only composition under which `wss` is
 /// honest. A `ws://` destination still resolves to the ingress instance, so nothing that worked
 /// over cleartext quietly moved onto a different stack.
-#[cfg(feature = "plane-voice")]
+#[cfg(feature = "plane-streaming")]
 #[test]
 fn a_secure_realtime_upstream_resolves_to_the_tls_composed_instance() {
     let sealed = seal(ClientSettings::default()).expect("every claim names a live transport");

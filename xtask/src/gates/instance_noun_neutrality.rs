@@ -82,12 +82,12 @@ const FAM_MCP: &[&str] = &["busbar-mcp", "busbar-plane-mcp", "busbar-mcp-codec"]
 const FAM_A2A: &[&str] = &["busbar-a2a", "busbar-plane-a2a", "busbar-a2a-codec"];
 const FAM_LLM: &[&str] = &["busbar-llm", "busbar-plane-llm", "busbar-llm-codec"];
 // streaming + voice share one family. `busbar-streaming-codec` is named by the owner's map but does
-// not exist in this tree; `busbar-plane-voice` does. The family is what EXISTS.
+// not exist in this tree; `busbar-plane-streaming` does. The family is what EXISTS.
 const FAM_STREAM: &[&str] = &[
     "busbar-plane-streaming",
-    "busbar-plane-voice",
-    "busbar-voice",
-    "busbar-voice-codec",
+    "busbar-plane-streaming",
+    "busbar-streaming",
+    "busbar-streaming-codec",
 ];
 
 // ── TRANSPORTS (each concrete transport is its own crate) ─────────────────────────────────────
@@ -116,7 +116,7 @@ const NOUNS: &[Noun] = &[
     Noun { key: "a2a", kind: "plane", family: FAM_A2A, tokens: &["a2a"] },
     Noun { key: "llm", kind: "plane", family: FAM_LLM, tokens: &["llm"] },
     Noun { key: "streaming", kind: "plane", family: FAM_STREAM, tokens: &["streaming"] },
-    Noun { key: "voice", kind: "plane", family: FAM_STREAM, tokens: &["voice"] },
+    Noun { key: "streaming", kind: "plane", family: FAM_STREAM, tokens: &["streaming"] },
     // Transports — KEYED ON THE PLUGIN-INSTANCE IDENTIFIER, NOT THE BARE PROTOCOL WORD. Bare
     // `http`/`tcp`/`tls`/… are the wire protocols and the `http` crate's own types, used as neutral
     // plumbing across nearly every crate (URL schemes, `http::HeaderMap`, OTLP endpoints); censusing

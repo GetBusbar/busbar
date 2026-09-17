@@ -43,7 +43,7 @@
 //! ## The ROOT LEG column — the same matrix, judged a second time over the loop
 //!
 //! Every plane now also runs through the composition root, behind `root-llm` / `root-mcp` /
-//! `root-a2a` / `root-voice` / `root-admin`. A capability proven where the plane crate serves it and
+//! `root-a2a` / `root-streaming` / `root-admin`. A capability proven where the plane crate serves it and
 //! unwitnessed where the root drives it is the same silent half-answer this file exists to refuse,
 //! so the ledger carries a SECOND verdict per cell (`root`) and this gate runs the matrix ONCE PER
 //! LEG: for each declared leg, every cell in that leg's ledger columns is checked against the leg's
@@ -93,8 +93,8 @@ const PLANES: [&str; 7] = [
     "mcp-server",
     "a2a-client",
     "a2a-server",
-    "voice-client",
-    "voice-server",
+    "streaming-client",
+    "streaming-server",
 ];
 
 /// M0 TOTALITY CROSS-CHECK — a SEPARATE axis from the pinned directional `PLANES` above.
@@ -107,15 +107,15 @@ const PLANES: [&str; 7] = [
 /// carries maps to ZERO columns — a plane that reaches the workspace and then answers to nothing is
 /// tracked by no cell, the silent hole the whole file exists to refuse.
 ///
-/// `voice` (busbar-voice, Plane 4) is armed: it answers to two REAL directional ledger columns —
-/// `voice-client` (the dialed provider WSS + telephony media egress) and `voice-server` (the inbound
+/// `voice` (busbar-streaming, Plane 4) is armed: it answers to two REAL directional ledger columns —
+/// `streaming-client` (the dialed provider WSS + telephony media egress) and `streaming-server` (the inbound
 /// session-open front door: browser sideband WS + telephony media webhook) — exactly as the two
 /// bidirectional protocols do. Every mapped column must be a real declared ledger plane.
 const PLANE_CRATE_LEDGER_COLUMNS: &[(&str, &[&str])] = &[
     ("llm", &["llm"]),
     ("mcp", &["mcp-client", "mcp-server"]),
     ("a2a", &["a2a-client", "a2a-server"]),
-    ("voice", &["voice-client", "voice-server"]),
+    ("streaming", &["streaming-client", "streaming-server"]),
 ];
 
 /// Floor on the capability axis. Set AT today's real number (13), not below it. A floor of 12 was
@@ -143,7 +143,7 @@ const ROOT_LEGS: [&str; 5] = [
     "root-admin",
     "root-llm",
     "root-mcp",
-    "root-voice",
+    "root-streaming",
 ];
 
 /// Every root leg's file lives here, and evidence for a leg that lived anywhere else would not be
@@ -806,7 +806,7 @@ fn every_cell_carries_a_root_leg_verdict_and_every_root_proof_exists() {
 /// The Teller-path half of this gate used to be cfg-gated on all five `root-*` features AT ONCE.
 /// That conjunction is the wrong shape for the switch-over it is supposed to judge: the planes are
 /// moved onto the composition root ONE AT A TIME, so the ordinary build has SOME legs on — and under
-/// any such build (including the default one, and including `--features root-a2a,root-voice,root-llm`)
+/// any such build (including the default one, and including `--features root-a2a,root-streaming,root-llm`)
 /// the whole Teller-path check simply did not exist. A gate that is absent reports a green that
 /// asked nothing, which is the exact failure mode the rest of this file is built to refuse.
 ///
@@ -824,8 +824,8 @@ fn compiled_legs() -> BTreeSet<&'static str> {
     legs.insert("root-llm");
     #[cfg(feature = "root-mcp")]
     legs.insert("root-mcp");
-    #[cfg(feature = "root-voice")]
-    legs.insert("root-voice");
+    #[cfg(feature = "root-streaming")]
+    legs.insert("root-streaming");
     legs
 }
 
@@ -917,8 +917,8 @@ fn the_gates_own_constants_are_the_doctrines() {
             "mcp-server",
             "a2a-client",
             "a2a-server",
-            "voice-client",
-            "voice-server"
+            "streaming-client",
+            "streaming-server"
         ],
         "the plane list is the owner's ruling (LLM == MCP == A2A == VOICE, both directions of the \
          bidirectional three); changing it is a doctrine change, not a refactor"
@@ -933,7 +933,7 @@ fn the_gates_own_constants_are_the_doctrines() {
             "root-admin",
             "root-llm",
             "root-mcp",
-            "root-voice"
+            "root-streaming"
         ],
         "the five root legs are the composition root's own; changing the list is a doctrine change"
     );
@@ -995,7 +995,7 @@ fn every_workspace_plane_crate_maps_to_at_least_one_ledger_column() {
         match map.get(key.as_str()) {
             Some(cols) if !cols.is_empty() => {
                 // Every mapped column must be a real declared ledger plane (voice is armed: its
-                // voice-client / voice-server columns are real ledger planes like the other two).
+                // streaming-client / streaming-server columns are real ledger planes like the other two).
                 for &col in *cols {
                     assert!(
                         ledger_columns.contains(col),

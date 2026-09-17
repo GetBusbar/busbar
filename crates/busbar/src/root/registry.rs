@@ -90,8 +90,8 @@ use busbar_plane_a2a::A2aPlane;
 use busbar_plane_admin::AdminPlane;
 use busbar_plane_llm::LlmPlane;
 use busbar_plane_mcp::McpPlane;
-#[cfg(feature = "plane-voice")]
-use busbar_plane_voice::VoicePlane;
+#[cfg(feature = "plane-streaming")]
+use busbar_plane_streaming::StreamingPlane;
 use busbar_transport_grpc::GrpcTransport;
 use busbar_transport_http::{ClientSettings, HttpTransport};
 use busbar_transport_sse::SseTransport;
@@ -100,7 +100,7 @@ use busbar_transport_tcp::TcpTransport;
 use busbar_transport_tls::TlsTransport;
 // The WS transport is the voice plane's edge and the one transport that leaves with its plane, so
 // its crate — and everything below it — is compiled only when voice is.
-#[cfg(feature = "plane-voice")]
+#[cfg(feature = "plane-streaming")]
 use busbar_transport_ws::WsTransport;
 
 /// Why a node will not boot.
@@ -162,7 +162,7 @@ pub struct ComposedTransports {
     pub sse: Arc<SseTransport>,
     /// WebSocket for ingress, built over HTTP — never over nothing. This is the instance an in-band
     /// upgrade arrives on, and the one registered under the `ws` key.
-    #[cfg(feature = "plane-voice")]
+    #[cfg(feature = "plane-streaming")]
     pub ws: Arc<WsTransport>,
     /// WebSocket for a secure dial, built over TLS — the same key, composed a second way.
     ///
@@ -170,7 +170,7 @@ pub struct ComposedTransports {
     /// root's own handle, reached through [`ComposedTransports::dialer`], because the composition a
     /// `wss://` destination needs is not the composition an upgrade arrives on and one instance
     /// cannot be both.
-    #[cfg(feature = "plane-voice")]
+    #[cfg(feature = "plane-streaming")]
     pub ws_tls: Arc<WsTransport>,
     /// gRPC, built over HTTP — never over nothing.
     pub grpc: Arc<GrpcTransport>,
@@ -189,9 +189,9 @@ impl ComposedTransports {
     /// which is a fact of the dial rather than of the registry.
     #[must_use]
     pub fn dialer(&self, key: &str, address: &UpstreamAddress) -> Option<Arc<dyn Transport>> {
-        #[cfg(not(feature = "plane-voice"))]
+        #[cfg(not(feature = "plane-streaming"))]
         let _ = address;
-        #[cfg(feature = "plane-voice")]
+        #[cfg(feature = "plane-streaming")]
         let secure = address
             .authority()
             .is_some_and(|authority| authority.starts_with("wss://"));
@@ -200,11 +200,11 @@ impl ComposedTransports {
             TlsTransport::KEY => Arc::clone(&self.tls) as Arc<dyn Transport>,
             HttpTransport::KEY => Arc::clone(&self.http) as Arc<dyn Transport>,
             SseTransport::KEY => Arc::clone(&self.sse) as Arc<dyn Transport>,
-            #[cfg(feature = "plane-voice")]
+            #[cfg(feature = "plane-streaming")]
             <WsTransport as TransportMeta>::KEY if secure => {
                 Arc::clone(&self.ws_tls) as Arc<dyn Transport>
             }
-            #[cfg(feature = "plane-voice")]
+            #[cfg(feature = "plane-streaming")]
             <WsTransport as TransportMeta>::KEY => Arc::clone(&self.ws) as Arc<dyn Transport>,
             GrpcTransport::KEY => Arc::clone(&self.grpc) as Arc<dyn Transport>,
             StdioTransport::KEY => Arc::clone(&self.stdio) as Arc<dyn Transport>,
@@ -254,8 +254,8 @@ pub fn plane_claims() -> Vec<PlaneClaim> {
         .chain(claims_of::<McpPlane>())
         .chain(claims_of::<A2aPlane>())
         .collect();
-    #[cfg(feature = "plane-voice")]
-    claims.extend(claims_of::<VoicePlane>());
+    #[cfg(feature = "plane-streaming")]
+    claims.extend(claims_of::<StreamingPlane>());
     claims.extend(claims_of::<AdminPlane>());
     claims
 }
@@ -269,13 +269,13 @@ fn compose_transports(client_settings: ClientSettings) -> ComposedTransports {
     // continuation frames before anything above the transport sees it, so the ceiling has to be
     // stated at the handshake or it is not stated at all — and a node that refuses a body of a
     // given size over HTTP has no basis for holding a larger one over a socket it upgraded.
-    #[cfg(feature = "plane-voice")]
+    #[cfg(feature = "plane-streaming")]
     let max_message_bytes = client_settings.request_body_max_bytes;
     let tcp = Arc::new(TcpTransport::new());
     let tls = Arc::new(TlsTransport::new());
     let http = Arc::new(HttpTransport::new(client_settings));
     let sse = Arc::new(SseTransport::new(Arc::clone(&http)));
-    #[cfg(feature = "plane-voice")]
+    #[cfg(feature = "plane-streaming")]
     let ws = Arc::new(WsTransport::over_with_max_message_bytes(
         Arc::clone(&http) as Arc<dyn Transport>,
         max_message_bytes,
@@ -285,7 +285,7 @@ fn compose_transports(client_settings: ClientSettings) -> ComposedTransports {
     // the dial otherwise rather than put a cleartext upgrade on a wire the caller was told was
     // secure. Every realtime upstream this deployment reaches is `wss`, so without this instance
     // the refusal is the whole voice plane's answer.
-    #[cfg(feature = "plane-voice")]
+    #[cfg(feature = "plane-streaming")]
     let ws_tls = Arc::new(WsTransport::over_with_max_message_bytes(
         Arc::clone(&tls) as Arc<dyn Transport>,
         max_message_bytes,
@@ -297,9 +297,9 @@ fn compose_transports(client_settings: ClientSettings) -> ComposedTransports {
         tls,
         http,
         sse,
-        #[cfg(feature = "plane-voice")]
+        #[cfg(feature = "plane-streaming")]
         ws,
-        #[cfg(feature = "plane-voice")]
+        #[cfg(feature = "plane-streaming")]
         ws_tls,
         grpc,
         stdio,
@@ -341,7 +341,7 @@ fn registered_rows() -> Vec<Registered> {
     ];
     // WS goes in beside the others when the voice plane is compiled, and leaves with it: a row for a
     // transport this build does not carry would be the root stating a composition it did not make.
-    #[cfg(feature = "plane-voice")]
+    #[cfg(feature = "plane-streaming")]
     rows.push(Registered {
         key: WsTransport::KEY,
         composes_over: WsTransport::COMPOSES_OVER,
@@ -441,7 +441,7 @@ fn register_all(transports: &ComposedTransports) -> Result<Registry, BootRefusal
         Arc::clone(&transports.http) as Arc<dyn Plugin>,
         Arc::clone(&transports.sse) as Arc<dyn Plugin>,
     ];
-    #[cfg(feature = "plane-voice")]
+    #[cfg(feature = "plane-streaming")]
     to_register.push(Arc::clone(&transports.ws) as Arc<dyn Plugin>);
     to_register.push(Arc::clone(&transports.grpc) as Arc<dyn Plugin>);
     to_register.push(Arc::clone(&transports.stdio) as Arc<dyn Plugin>);
@@ -459,8 +459,8 @@ fn register_all(transports: &ComposedTransports) -> Result<Registry, BootRefusal
     // The voice plane goes in with its own crate edge and leaves with it. It is the only plane that
     // claims bytes on `ws`, so registering it in a build with no WS transport would be the root
     // mounting a plane whose claims name a layer this binary does not carry.
-    #[cfg(feature = "plane-voice")]
-    planes.push(Arc::new(VoicePlane::EMPTY) as Arc<dyn Plugin>);
+    #[cfg(feature = "plane-streaming")]
+    planes.push(Arc::new(StreamingPlane::EMPTY) as Arc<dyn Plugin>);
     planes.push(Arc::new(AdminPlane::new()) as Arc<dyn Plugin>);
     for plane in planes {
         registry.register(plane).map_err(BootRefusal::Registry)?;
