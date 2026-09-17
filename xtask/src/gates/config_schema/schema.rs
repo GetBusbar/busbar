@@ -23,6 +23,15 @@ use crate::ctx::{Ctx, WalkSpec};
 /// [`core_roots`] can put it first. It is NOT the tracked root any more: see [`core_roots`].
 const CORE: &str = "crates/busbar-core";
 
+/// THE HOOK-DISPATCH CARVE-OUT. Core-kind BY NAME (the `busbar-core-` prefix `kind-isolation` uses),
+/// so [`core_roots`] censuses it — but it is the HOOK plugin ABI, not the config layer. Its `src/`
+/// root carries hook-wire `Deserialize` envelopes (`wire.rs`'s `DescribeReply`/`StatusReply`/… — the
+/// messages a hook plugin EMITS over the ABI, never a `config.yaml` surface), and it has no `config/`
+/// module, so the whole-`src/` fallback in [`grammar_dir`] would drag those wire types into the
+/// config fingerprint. Named here so that fallback is SUPPRESSED for it. Not silent: if this crate
+/// ever grows a `config/` module, that module IS tracked (see [`grammar_dir`]).
+const HOOK_CORE: &str = "crates/busbar-core-hooks";
+
 /// The committed fingerprint. DATA: it stays where the config module keeps it.
 pub const SNAPSHOT: &str = "crates/busbar-core/src/config/config-schema.snapshot.json";
 
@@ -174,7 +183,7 @@ fn package_name(text: &str) -> Option<String> {
 }
 
 /// THE GRAMMAR DIRECTORY OF ONE CORE ROOT — its `config/` module, or the crate's own `src/` when it
-/// has none.
+/// has none, or NOTHING for a core crate that is not a config layer at all.
 ///
 /// A core crate that keeps its grammar in a `config` module is tracked there, exactly as
 /// `busbar-core` always was. A core crate that IS the config layer has no `config/` module to point
@@ -183,15 +192,23 @@ fn package_name(text: &str) -> Option<String> {
 /// does not join the fingerprint.
 ///
 /// THE HAZARD, STATED. A core crate with no `config/` module whose `src/` root also carries
-/// NON-grammar `Deserialize` types would pull them into the fingerprint. That does not fail
-/// silently: `config-schema:snapshot-drift` goes red and NAMES the type it did not expect. The
-/// answer is the one the drain wants anyway — give that crate's grammar its own `config` module.
-fn grammar_dir(cx: &Ctx, root: &str) -> String {
+/// NON-grammar `Deserialize` types would pull them into the fingerprint. For the HOOK-dispatch
+/// carve-out [`HOOK_CORE`] that is not a hazard but its defining shape — its root is the hook plugin
+/// ABI (`wire.rs`), never a config surface — so its whole-`src/` fallback is suppressed and it
+/// contributes `None`. This is NOT a silent drop of config grammar: it has none at its root, and the
+/// day it grows a `config/` module that module is tracked like any other core crate's. Any OTHER
+/// core crate that trips this hazard still surfaces loudly — `config-schema:snapshot-drift` goes red
+/// and NAMES the unexpected type — and the answer the drain wants is to give that crate's grammar
+/// its own `config` module (or, for a genuinely non-config carve-out, a `HOOK_CORE`-style entry).
+fn grammar_dir(cx: &Ctx, root: &str) -> Option<String> {
     let sub = format!("{root}/config");
     if cx.exists(&sub) {
-        sub
+        Some(sub)
+    } else if root == format!("{HOOK_CORE}/src") {
+        // The hook-ABI carve-out's root is the plugin wire, not config grammar. See [`HOOK_CORE`].
+        None
     } else {
-        root.to_string()
+        Some(root.to_string())
     }
 }
 
@@ -234,7 +251,7 @@ pub fn sources(cx: &Ctx) -> Result<Vec<String>, String> {
     // THE CORE KIND, BY CENSUS. Each core-kind crate contributes its grammar directory; the three
     // leaf files below are resolved ACROSS the census rather than under one hardcoded crate.
     let core = core_roots(cx)?;
-    let mut out: Vec<String> = core.iter().map(|r| grammar_dir(cx, r)).collect();
+    let mut out: Vec<String> = core.iter().filter_map(|r| grammar_dir(cx, r)).collect();
     out.dedup();
     out.extend([
         // The bulk of the config GRAMMAR's PURE SHAPES moved DOWN to `busbar-substrate` in the
@@ -255,7 +272,10 @@ pub fn sources(cx: &Ctx) -> Result<Vec<String>, String> {
         format!("{mcp}/config.rs"),
         // `tool_pools:` / `agent_pools:` — one type, two sections, and `repeatable:` is the SAFETY
         // declaration that decides whether an operation with effects may be performed twice.
-        core_file(cx, &core, "failover/mod.rs")?,
+        // `CandidatePoolCfg` moved DOWN to `busbar-substrate` (byte-safe, behind core's re-export
+        // shim) in the failover-seam relocation; track its relocated home directly, as the sibling
+        // relocated shapes above do, since the core shim fingerprints nothing.
+        "crates/busbar-substrate/src/failover.rs".to_string(),
         // `streams:` — the voice plane's grammar, including the three plane-imposed session
         // CEILINGS that bound what a live-voice deployment may ever hold.
         "crates/busbar-voice/src/config.rs".to_string(),
