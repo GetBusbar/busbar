@@ -118,9 +118,7 @@ pub fn requested_signals(
 /// hooks that actually fire: a granted hook that no pool wires still reads `true`. The one-sided
 /// direction is deliberate — over-reporting costs an unused IR build, under-reporting would hand a
 /// content-granted hook a view the request was never parsed into.
-pub fn any_content_hook(
-    hooks: &std::collections::HashMap<String, crate::config::HookCfg>,
-) -> bool {
+pub fn any_content_hook(hooks: &std::collections::HashMap<String, crate::config::HookCfg>) -> bool {
     hooks.values().any(|h| h.prompt.sends_prompt())
 }
 

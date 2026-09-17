@@ -187,11 +187,7 @@ impl NamedMapSection {
     /// ([`crate::config::patch::merge_entry`]), so the thing being patched has to be a document. The
     /// projection round-trips into the same struct it came from, so a field that survives the merge
     /// untouched parses back to exactly the value it had.
-    pub fn entry_as_document(
-        self,
-        deploy: &DeployCfg,
-        name: &str,
-    ) -> Option<serde_json::Value> {
+    pub fn entry_as_document(self, deploy: &DeployCfg, name: &str) -> Option<serde_json::Value> {
         match self {
             NamedMapSection::IdentityProviders => deploy
                 .identity_providers

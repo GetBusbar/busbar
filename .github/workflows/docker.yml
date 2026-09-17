@@ -394,11 +394,19 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - name: Resolve cargo home (Latchkey image sets CARGO_HOME off $HOME)
+        uses: ./.github/actions/cargo-home
+      - name: Latchkey Fast Cache (cargo registry + target, restore)
+        # Keyed by ARCH, not target: the two arm64 legs share a triple but differ in RUSTFLAGS
+        # (+lse vs baseline), and a shared cache would hand one leg the other's build products.
+        uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
         with:
-          # Keyed by ARCH, not target: the two arm64 legs share a triple but differ in RUSTFLAGS
-          # (+lse vs baseline), and a shared cache would hand one leg the other's build products.
-          key: ${{ matrix.arch }}
+          action: restore
+          key: cargo-${{ runner.os }}-build-binaries-${{ matrix.arch }}-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
+          path: |
+            ${{ env.CARGO_HOME }}/registry
+            ${{ env.CARGO_HOME }}/git
+            target
 
       # PGO release build (scripts/pgo-build.sh): instrumented build -> on-host training (native-arch
       # runner, so the musl-static instrumented binary executes locally) -> optimized build.
@@ -441,6 +449,15 @@ jobs:
           if ldd "target/pgo/${{ matrix.target }}/release/busbar" 2>&1 | grep -qv 'not a dynamic\|statically linked'; then
             echo "binary is dynamically linked; refusing to ship in FROM scratch" && exit 1
           fi
+      - name: Latchkey Fast Cache (cargo registry + target, save)
+        uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
+        with:
+          action: save
+          key: cargo-${{ runner.os }}-build-binaries-${{ matrix.arch }}-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
+          path: |
+            ${{ env.CARGO_HOME }}/registry
+            ${{ env.CARGO_HOME }}/git
+            target
 
       # POSITIVE PGO GATE: pgo-build.sh writes this marker ONLY after a non-empty merged profile
       # was fed to a successful -Cprofile-use build. Asserting it here (not just the script's exit

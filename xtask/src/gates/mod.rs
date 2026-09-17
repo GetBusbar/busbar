@@ -28,6 +28,7 @@ pub mod construction;
 pub mod denylist_gate;
 pub mod design_bindings;
 pub mod duplex_ws_default_edge;
+pub mod feature_sets;
 pub mod field_inventory;
 pub mod inventory_coverage;
 pub mod inventory_ref;
@@ -35,6 +36,7 @@ pub mod kernel_token_wire_purity;
 pub mod kind_isolation;
 pub mod no_deferral;
 pub mod no_self_filed_issues;
+pub mod no_tracked_ignored;
 pub mod plane_abi_neutrality;
 pub mod plane_purity;
 pub mod plane_transport_neutrality;
@@ -1899,6 +1901,13 @@ pub static REGISTRY: &[Registration] = &[
         summary: "every job is in the umbrella's needs or excluded for a written reason",
     },
     Registration {
+        name: "feature-sets",
+        batch: 1,
+        tier: Tier::Fast,
+        build: || Box::new(feature_sets::FeatureSetsGate),
+        summary: "every non-default cargo feature is built by a CI job that names it",
+    },
+    Registration {
         name: "inventory-ref",
         batch: 1,
         tier: Tier::Fast,
@@ -2098,6 +2107,14 @@ pub static REGISTRY: &[Registration] = &[
         tier: Tier::Fast,
         build: || Box::new(audit_ledger::AuditLedgerGate),
         summary: "every tracked file is in a scope, and no audit result outlives the tree it read",
+    },
+    Registration {
+        name: "no-tracked-ignored",
+        batch: 1,
+        tier: Tier::Fast,
+        build: || Box::new(no_tracked_ignored::NoTrackedIgnoredGate),
+        summary: "no tracked path matches a .gitignore rule of this tree (git ls-files -ci \
+                  --exclude-standard)",
     },
 ];
 

@@ -56,11 +56,11 @@ pub mod testkit;
 // + callback flow, so they were never one file's own test), so they are wired here instead, at the
 // crate root — the direct analogue of the old `oauth_as/mod.rs` wiring.
 #[cfg(test)]
-#[path = "tests/mount_tests.rs"]
-mod mount_tests;
-#[cfg(test)]
 #[path = "tests/flow_tests.rs"]
 mod flow_tests;
+#[cfg(test)]
+#[path = "tests/mount_tests.rs"]
+mod mount_tests;
 
 /// Register this crate's implementation of the authorization-server plane seam
 /// (`busbar_core::oauth_as::seam::AsPlaneSeam`) into busbar-core's process-wide registration slot.

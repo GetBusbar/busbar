@@ -292,7 +292,10 @@ pub enum MethodTag {
 // feature — see its `mod tests;` gate). Plain `cfg(test)` alone is NOT a real caller: under
 // `--no-default-features` (auth-admin-tokens off) that left this compiled but unreachable,
 // tripping `-D dead-code` in CI.
-#[cfg(any(feature = "openapi-schema", all(any(test, feature = "test-support"), feature = "auth-admin-tokens")))]
+#[cfg(any(
+    feature = "openapi-schema",
+    all(any(test, feature = "test-support"), feature = "auth-admin-tokens")
+))]
 impl MethodTag {
     /// Parse an OpenAPI operation key (`"get"`, `"post"`, …) back into a tag. `None` for the `x-*`
     /// specification extensions that share the path-item object with real operations. Called from

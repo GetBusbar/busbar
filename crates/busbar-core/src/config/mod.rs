@@ -592,11 +592,7 @@ pub const CONFIG_TARGET_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// resolved chain, so a provider defined through the admin API and not yet referenced escaped it
 /// entirely — the API answered 200 and stored the misplaced credential, and the error surfaced only
 /// once something named the provider.
-pub fn validate_token_placement(
-    name: &str,
-    module: &str,
-    has_token: bool,
-) -> Result<(), String> {
+pub fn validate_token_placement(name: &str, module: &str, has_token: bool) -> Result<(), String> {
     if has_token && module != ADMIN_TOKENS_MODULE {
         return Err(format!(
             "identity-providers.{name}: `token:` is the built-in `admin-tokens` operator \
@@ -1325,10 +1321,7 @@ impl DeployCfg {
     /// `Some`; the section KEYS are read off the frozen static
     /// [`busbar_substrate::plane::config::NAMED_MAP_SECTIONS`] mirror so this accessor spells no
     /// plane noun.
-    pub fn plane_section(
-        &self,
-        section: &str,
-    ) -> Option<&dyn crate::plane::config::PlaneCfg> {
+    pub fn plane_section(&self, section: &str) -> Option<&dyn crate::plane::config::PlaneCfg> {
         let mirror = busbar_substrate::plane::config::NAMED_MAP_SECTIONS;
         if section == mirror[2] {
             Some(&*self.tools.0)
@@ -2142,8 +2135,9 @@ pub fn resolve(
     // so a build compiled without the LLM plane must keep merging providers exactly as every prior
     // release has — `merge_provider_fallback` is core's own byte-identical copy of the same merge,
     // kept for exactly that build.
-    let resolve_provider_hook = crate::plane::registry::plane_decl_for(crate::plane::fallback_key())
-        .and_then(|d| d.resolve_provider);
+    let resolve_provider_hook =
+        crate::plane::registry::plane_decl_for(crate::plane::fallback_key())
+            .and_then(|d| d.resolve_provider);
 
     for (deploy_name, deploy_cfg) in &deploy.providers {
         // Look up the provider definition by name

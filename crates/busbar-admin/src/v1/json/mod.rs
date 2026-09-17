@@ -19,17 +19,17 @@ use axum::{extract::Path, extract::Query, Router};
 use serde::Serialize;
 use serde_json::json;
 
+use super::service::{
+    build_with_group, build_with_hook, build_with_registry, build_without_group,
+    build_without_hook, AdminService,
+};
+use crate::transport::AdminTransport;
 use busbar_core::admin::v1::contract::taxonomy::Cond;
 use busbar_core::admin::v1::contract::{
     AdminError, PATH_ADMIN_AUTH, PATH_CONFIG_VALIDATE, PATH_GROUPS, PATH_HOOKS,
     PATH_PLUGINS_INSPECT,
 };
-use super::service::{
-    build_with_group, build_with_hook, build_with_registry, build_without_group,
-    build_without_hook, AdminService,
-};
 use busbar_core::audit_ring as audit;
-use crate::transport::AdminTransport;
 use busbar_core::state::AppHandle;
 
 /// The OpenAPI response-object key (`"responses"`). Named here ONCE and assembled from fragments so
@@ -157,10 +157,7 @@ impl AdminTransport for JsonV1 {
             // 1.5.0 signed-token keys: revoke a key (denylist, keep the binding) and rotate the
             // busbar key-signing key (revoke-all).
             .route("/keys/{id}/revoke", post(crate::keys::revoke_key))
-            .route(
-                "/signing-key/rotate",
-                post(crate::keys::rotate_signing_key),
-            )
+            .route("/signing-key/rotate", post(crate::keys::rotate_signing_key))
             // EVERY response on this surface speaks the frozen envelope — including an unmatched
             // path (404 `not_found`) and a matched path with the wrong method (405
             // `method_not_allowed`). Without these, axum's nest semantics leak an empty-body 405
@@ -368,9 +365,9 @@ fn finish_admin_reply(
     };
     match reply {
         AdminReply::Prebuilt(resp) => resp,
-        AdminReply::Refused(e) => {
-            err_json(&busbar_core::admin::planeverbs::to_admin_error(plane, name, e))
-        }
+        AdminReply::Refused(e) => err_json(&busbar_core::admin::planeverbs::to_admin_error(
+            plane, name, e,
+        )),
         AdminReply::Applied(body) => {
             record_audit(audit::OUTCOME_APPLIED);
             // Byte-identical to `ok_json(StatusCode::OK, &view)`: same status, same content type, and the
@@ -384,7 +381,9 @@ fn finish_admin_reply(
         }
         AdminReply::Rejected(e) => {
             record_audit(audit::OUTCOME_REJECTED);
-            err_json(&busbar_core::admin::planeverbs::to_admin_error(plane, name, e))
+            err_json(&busbar_core::admin::planeverbs::to_admin_error(
+                plane, name, e,
+            ))
         }
     }
 }

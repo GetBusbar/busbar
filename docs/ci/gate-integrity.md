@@ -46,6 +46,41 @@ be promoted.
 | `gate-mutants` | the gates themselves, under mutation | qa, main |
 | `ship-ready` | the ship criterion, as five rows | qa, main |
 
+### Which executable scenario runs on the integration/dev push
+
+Same question, one layer down. `qa/teller-steps.json` maps every Teller step of every gating plane to
+the scenario that proves it, and `cargo xtask gate teller-steps` asserts each cell NAMES A REAL
+SCRIPT. It does not run one. Measured on this line: the twelve `scripts/mcp-subject/h2-*.sh` and
+`scripts/a2a-subject/h2-*.sh` scenarios — the admission path end to end, authenticate through exit —
+were executed by no job of any workflow, while being cited by the matrix as proof.
+
+`ci.yml`'s `plane-rigs` job runs all twelve on every push to `integration/**`, `dev`, `qa` and
+`main`, one named step each, and it is in `ci-umbrella`'s `needs` and RESULTS. `feature-sets`'s
+eighth row holds the membership: a `h2-*.sh` in the tree that no step of `ci.yml` names is red.
+
+### Which registered gate runs on the integration/dev push
+
+Measured on this line, not assumed. Every gate in `xtask`'s registry is either invoked by
+`.github/workflows/ci.yml` or carries an entry in `full_gate::REGISTRY_NOT_IN_CI` with an `Excuse`
+that is *checked* — `XtaskTest` needs its needle under `xtask/tests/`, `ReleaseScript` needs it in
+the named script — so a gate that runs on no job cannot exist here quietly. `full-gate` reports the
+set difference in both directions.
+
+`design-bindings` is one of the invoked ones: `ci.yml` runs it in its own job
+(`cargo xtask gate design-bindings --selftest`, then the gate), with no `if:` guard, so it executes
+on every push to `integration/**`, `dev`, `qa` and `main`; it is in `ci-umbrella`'s `needs` and
+scored `fast` in its RESULTS ledger. It does **not** exist at all on `dev`, `qa`, `main` or
+`integration/plane-extraction` at the time of writing — the gate is newer than those lines, which is
+why a reading taken against them finds no job running it.
+
+It is also RED on this line, and it is red BLOCKING: the job invokes the bare scored form (no
+`--posture`), and `PB-0` fails because it cites `scripts/inventory-coverage.sh`, a file the shell
+retirement removed without converting the gate. `gates::REPORT_ONLY` names exactly that red
+(`Excused::OnlyAbout("scripts/inventory-coverage.sh")`), which excuses it from `gate --all` — but
+`--all` is not what `ci.yml` runs. Either PB-0 gets a check that exists, or that job needs the
+`--posture` treatment `construction-gate` already has. Softening it without fixing PB-0 would be a
+waiver; it is recorded here instead.
+
 The required-check list is not maintained by hand in a settings page. It is
 [`scripts/ci-branch-protection.sh`](../../scripts/ci-branch-protection.sh): idempotent, `gh api`,
 read-modify-write (it adds a floor to whatever a branch already requires, and never removes a

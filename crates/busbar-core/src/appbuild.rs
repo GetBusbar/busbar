@@ -1100,36 +1100,36 @@ pub fn build_app_from_config(
         // these read identically to the former per-feature branches without naming a plane feature.
         let tools_stateful = !cfg.tool_defs.def_names().is_empty() || !cfg.tool_pools.is_empty();
         let agents_stateful = !cfg.agent_defs.def_names().is_empty() || !cfg.agent_pools.is_empty();
-        let store: Arc<dyn governance::Store> = if g.module
-            == crate::config::GOVERNANCE_STORE_MEMORY
-        {
-            diag_warn!(
-                GOVERNANCE_STORE_EPHEMERAL,
-                "store: in-memory (ephemeral) - keys, groups' usage, and ledgers reset on \
+        let store: Arc<dyn governance::Store> =
+            if g.module == crate::config::GOVERNANCE_STORE_MEMORY {
+                diag_warn!(
+                    GOVERNANCE_STORE_EPHEMERAL,
+                    "store: in-memory (ephemeral) - keys, groups' usage, and ledgers reset on \
                      restart; configure a durable store plugin for persistence"
-            );
-            // SHARPER, CONDITIONAL warn: the generic notice above is about governance state; a
-            // container plane's task state also lives only in this RAM store. Fire the specific warn
-            // (naming the consequence) ONLY when a stateful plane is configured — a deploy with no
-            // container plane configured keeps just the generic notice. Additive to, not a
-            // replacement for, the notice above.
-            if let Some(msg) = stateful_plane_ephemeral_store_warn(true, tools_stateful, agents_stateful)
-            {
-                diag_warn!(STATEFUL_PLANE_EPHEMERAL_STORE, "{msg}");
-            }
-            Arc::new(governance::MemoryStore::new())
-        } else {
-            // Resolve any SecretRef-typed setting (e.g. a `licenseKey`) against the secret
-            // store BEFORE the settings cross the ABI (ADR-0010). FAIL-CLOSED: an unresolvable
-            // ref refuses the store load rather than handing the plugin a dangling reference.
-            let resolved = config::secret::resolve_settings(&g.settings, &secret_resolver)
-                .map_err(|e| format!("store '{}' settings: {e}", g.module))?;
-            let cfg_json = serde_json::Value::Object(resolved).to_string();
-            match plugin_registry.open_store(&g.module, &cfg_json) {
-                Ok(s) => Arc::from(s),
-                Err(e) => return Err(format!("store '{}' plugin load failed: {e}", g.module)),
-            }
-        };
+                );
+                // SHARPER, CONDITIONAL warn: the generic notice above is about governance state; a
+                // container plane's task state also lives only in this RAM store. Fire the specific warn
+                // (naming the consequence) ONLY when a stateful plane is configured — a deploy with no
+                // container plane configured keeps just the generic notice. Additive to, not a
+                // replacement for, the notice above.
+                if let Some(msg) =
+                    stateful_plane_ephemeral_store_warn(true, tools_stateful, agents_stateful)
+                {
+                    diag_warn!(STATEFUL_PLANE_EPHEMERAL_STORE, "{msg}");
+                }
+                Arc::new(governance::MemoryStore::new())
+            } else {
+                // Resolve any SecretRef-typed setting (e.g. a `licenseKey`) against the secret
+                // store BEFORE the settings cross the ABI (ADR-0010). FAIL-CLOSED: an unresolvable
+                // ref refuses the store load rather than handing the plugin a dangling reference.
+                let resolved = config::secret::resolve_settings(&g.settings, &secret_resolver)
+                    .map_err(|e| format!("store '{}' settings: {e}", g.module))?;
+                let cfg_json = serde_json::Value::Object(resolved).to_string();
+                match plugin_registry.open_store(&g.module, &cfg_json) {
+                    Ok(s) => Arc::from(s),
+                    Err(e) => return Err(format!("store '{}' plugin load failed: {e}", g.module)),
+                }
+            };
         // The operator ADMIN credential: the `admin-tokens` chain entry's `token:` secret ref.
         // FAIL-CLOSED: a configured-but-unresolvable admin token refuses boot (a silently-absent
         // token would lock the admin API while the operator believes it is guarded).
@@ -1522,7 +1522,7 @@ pub fn build_app_from_config(
         }),
     };
 
-    let llm_runtime_key = crate::state::runtime_slot_key(crate::plane::fallback_key());
+    let fallback_runtime_key = crate::state::runtime_slot_key(crate::plane::fallback_key());
     // Compose the fallback plane's runtime slot through that plane's OWN `build_runtime` fn-pointer,
     // exactly as a container plane's runtime is composed above — passing the neutral carrier erased to
     // `&dyn Any` and the prior generation's snapshot through the neutral `PlaneSlots` seam (for the
@@ -1541,7 +1541,7 @@ pub fn build_app_from_config(
                 &llm_build_input as &dyn std::any::Any,
                 prior.map(|p| p as &dyn busbar_substrate::plane_host::PlaneSlots),
             );
-            plane_slots.insert(llm_runtime_key, slot);
+            plane_slots.insert(fallback_runtime_key, slot);
         }
     }
 
@@ -1625,7 +1625,7 @@ pub fn build_app_from_config(
         // above into `plane_slots` under this interned key through that plane's `build_runtime`
         // seam; the snapshot names only the `&'static str` key, and `App::llm_runtime` downcasts the
         // slot on the money path. Absent slot (featureless build) reads the empty default.
-        llm_runtime_key,
+        fallback_runtime_key,
         store,
         // The container planes' breaker cells: PROCESS-LIFETIME, reused across an apply/reload the
         // way the HTTP client pool and governance state are — a config swap must not un-trip a

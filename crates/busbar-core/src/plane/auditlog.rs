@@ -36,9 +36,9 @@ use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use crate::audit_ring::{AuditEntry, MAX_AUDIT_ENTRIES};
 use crate::audit::journal::NeutralBody;
 use crate::audit::{verify_chain, ChainBreak, Framing};
+use crate::audit_ring::{AuditEntry, MAX_AUDIT_ENTRIES};
 use crate::plane::store::{decode, encode, PlaneStore, PlaneStoreView, KIND_AUDIT};
 use crate::plane_host::journal::PlaneJournalRecord;
 use busbar_api::{PlaneDisposition, PlaneRecord, PlaneSelector, StoreError, StoreResult};

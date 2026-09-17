@@ -7,9 +7,7 @@
 
 use super::*;
 use axum::Router;
-use busbar_plugin_loader::{
-    EndpointRequest, EndpointResponse, Route, RouteAuth, RouteMethod,
-};
+use busbar_plugin_loader::{EndpointRequest, EndpointResponse, Route, RouteAuth, RouteMethod};
 use std::sync::Arc;
 
 /// A fake plugin dispatcher that echoes its label + the request line, so a test can prove WHICH plugin

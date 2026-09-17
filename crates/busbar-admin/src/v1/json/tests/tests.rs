@@ -328,10 +328,8 @@ fn openapi_hook_escalation_endpoints_document_403() {
 /// The committed static OpenAPI document the LIVE handler serves (via `include_str!`). The release
 /// binary can't regenerate it (schemars is CI-only), so this path is what every build ships.
 #[cfg(feature = "openapi-schema")]
-const COMMITTED_OPENAPI_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/src/v1/json/openapi.json"
-);
+const COMMITTED_OPENAPI_PATH: &str =
+    concat!(env!("CARGO_MANIFEST_DIR"), "/src/v1/json/openapi.json");
 
 /// Serialize the doc the way it is committed: pretty-printed + a trailing newline (POSIX text file).
 #[cfg(feature = "openapi-schema")]
@@ -531,7 +529,9 @@ fn err_kind_bridges_every_admin_error_variant() {
 #[cfg(feature = "openapi-schema")]
 #[test]
 fn declared_errors_is_total_and_well_formed() {
-    use busbar_core::admin::v1::contract::taxonomy::{declared_errors, declared_responses, MethodTag};
+    use busbar_core::admin::v1::contract::taxonomy::{
+        declared_errors, declared_responses, MethodTag,
+    };
     let doc = openapi_doc();
     let prefix = busbar_core::admin::v1::contract::ADMIN_PREFIX;
     for (path, methods) in doc["paths"].as_object().expect("paths") {

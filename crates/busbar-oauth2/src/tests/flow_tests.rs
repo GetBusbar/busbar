@@ -250,7 +250,9 @@ async fn serve() -> (String, Arc<busbar_core::state::App>) {
 /// route only refuses when there is something to refuse, so a test of that refusal needs a chain
 /// that actually demands one. Every other test here passes an empty chain and gets the open posture
 /// described above.
-async fn serve_with_admin_chain(admin_chain: Vec<String>) -> (String, Arc<busbar_core::state::App>) {
+async fn serve_with_admin_chain(
+    admin_chain: Vec<String>,
+) -> (String, Arc<busbar_core::state::App>) {
     busbar_core::metrics::init();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -271,7 +273,8 @@ async fn serve_with_admin_chain(admin_chain: Vec<String>) -> (String, Arc<busbar
         .build();
 
     let scopes = ScopeSet::from_tokens([SCOPE]).expect("scope");
-    oauth_as_plane(&app).expect("configured")
+    oauth_as_plane(&app)
+        .expect("configured")
         .server()
         .register_client(Client {
             client_id: ClientId::new(CLIENT_ID),
@@ -355,8 +358,8 @@ fn the_jar_refuses_to_send_a_cookie_to_a_sibling_path() {
 /// "`/authorize` gets it" would pass just as happily against `Path=/`.
 #[test]
 fn the_session_cookie_carries_exactly_the_attributes_it_should() {
-    use busbar_core::oauth_as::config::AsIdentity;
     use crate::routes::session_cookies;
+    use busbar_core::oauth_as::config::AsIdentity;
 
     for (issuer, secure_expected) in [
         ("https://as.example.com", true),
@@ -560,7 +563,8 @@ async fn the_authorization_code_flow_mints_and_exchanges_a_code() {
 
     // 6. The token is USABLE: the server that minted it knows it, for the client and the subject
     //    and the scope the operator actually approved. A token the AS cannot introspect is a string.
-    let record = oauth_as_plane(&app).expect("configured")
+    let record = oauth_as_plane(&app)
+        .expect("configured")
         .server()
         .introspect(&access)
         .await
@@ -724,7 +728,8 @@ async fn dynamic_client_registration_admits_a_client_end_to_end() {
         .to_string();
 
     let access = mint_access_token(&origin, &client_id).await;
-    let record = oauth_as_plane(&app).expect("configured")
+    let record = oauth_as_plane(&app)
+        .expect("configured")
         .server()
         .introspect(&access)
         .await
@@ -764,7 +769,8 @@ impl crate::cimd::CimdFetch for StubDocumentHost {
 #[tokio::test]
 async fn a_client_id_metadata_document_admits_a_client_end_to_end() {
     let (origin, app) = serve().await;
-    oauth_as_plane(&app).expect("configured")
+    oauth_as_plane(&app)
+        .expect("configured")
         .server()
         .store()
         .set_fetcher(Arc::new(StubDocumentHost(serde_json::json!({
@@ -776,7 +782,8 @@ async fn a_client_id_metadata_document_admits_a_client_end_to_end() {
         }))));
 
     let access = mint_access_token(&origin, CIMD_CLIENT_ID).await;
-    let record = oauth_as_plane(&app).expect("configured")
+    let record = oauth_as_plane(&app)
+        .expect("configured")
         .server()
         .introspect(&access)
         .await
@@ -841,7 +848,8 @@ const OFFSITE_REDIRECT_URI: &str = "https://client.example/cb";
 async fn the_consent_screen_names_the_client_and_the_redirect_host() {
     let (origin, app) = serve().await;
     let scopes = ScopeSet::from_tokens([SCOPE]).expect("scope");
-    oauth_as_plane(&app).expect("configured")
+    oauth_as_plane(&app)
+        .expect("configured")
         .server()
         .register_client(Client {
             client_id: ClientId::new(OFFSITE_CLIENT_ID),

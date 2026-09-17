@@ -2621,9 +2621,10 @@ agent_pools:
         });
 
     // (b) It resolves and validates clean on 1.6.0.
-    let defs: std::collections::HashMap<String, crate::config::ProviderDef> =
-        serde_yaml::from_str("acme:\n  protocol: anthropic\n  base_url: https://api.acme.example\n")
-            .expect("provider defs parse");
+    let defs: std::collections::HashMap<String, crate::config::ProviderDef> = serde_yaml::from_str(
+        "acme:\n  protocol: anthropic\n  base_url: https://api.acme.example\n",
+    )
+    .expect("provider defs parse");
     let cfg = crate::config::resolve(&deploy, &defs)
         .unwrap_or_else(|e| panic!("migrated config must resolve on 1.6.0: {e:?}"));
     crate::config_validate::validate(&cfg)

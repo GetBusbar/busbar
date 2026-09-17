@@ -425,10 +425,7 @@ models:
     let deploy: DeployCfg = serde_yaml::from_str(yaml).expect("config without pools must parse");
     assert!(deploy.pools.pools.is_empty());
     assert!(deploy.models.contains_key("widget"));
-    assert_eq!(
-        deploy.providers["acme"].api_key.env_var(),
-        Some("ACME_KEY")
-    );
+    assert_eq!(deploy.providers["acme"].api_key.env_var(), Some("ACME_KEY"));
 }
 
 /// A provider's `path` override flows from the catalog (and a deployment override wins) into

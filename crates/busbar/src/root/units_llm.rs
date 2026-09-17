@@ -1801,8 +1801,7 @@ fn bedrock_path_arrival(
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Response> + Send>> {
     let started = Instant::now();
     let charged_at = busbar_substrate_values::store::now();
-    let parsed =
-        busbar_llm::arrival::bedrock_path_parse(&a.host, &a.ctx, &a.path, &a.uri, &a.body);
+    let parsed = busbar_llm::arrival::bedrock_path_parse(&a.host, &a.ctx, &a.path, &a.uri, &a.body);
     match parsed {
         // A NAMED pre-routing refusal: render it at the audit terminal and post it through the
         // rejected door on this dialect's own arrival host — byte- and accounting-identical to the

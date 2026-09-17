@@ -233,7 +233,8 @@ pub(crate) async fn operation_ingress_inner(
 
     let Some(rh) = busbar_substrate::handlers::request_handler(proto) else {
         return finish_rejected_via_audit(
-            host, gov,
+            host,
+            gov,
             proto,
             crate::engine::POOL_LABEL_UNRESOLVED,
             started,
@@ -247,7 +248,8 @@ pub(crate) async fn operation_ingress_inner(
         );
     };
     let Some(op_handler) = rh.operation_handler(operation) else {
-        return finish_rejected_via_audit(host,
+        return finish_rejected_via_audit(
+            host,
             gov,
             proto,
             crate::engine::POOL_LABEL_UNRESOLVED,
@@ -279,7 +281,8 @@ pub(crate) async fn operation_ingress_inner(
             Ok(v) => Some(v),
             Err(_) => {
                 tracing::debug!(detail = %busbar_substrate::json::parse_err_log(body.len()), "request body JSON parse failed");
-                return finish_rejected_via_audit(host,
+                return finish_rejected_via_audit(
+                    host,
                     gov,
                     proto,
                     crate::engine::POOL_LABEL_UNRESOLVED,
@@ -314,7 +317,8 @@ pub(crate) async fn operation_ingress_inner(
     let model = match model {
         Some(m) if !m.is_empty() => m,
         _ => {
-            return finish_rejected_via_audit(host,
+            return finish_rejected_via_audit(
+                host,
                 gov,
                 proto,
                 crate::engine::POOL_LABEL_UNRESOLVED,
@@ -455,7 +459,8 @@ impl busbar_substrate::plane_host::GauntletPlane for NativePlane<'_> {
                     crate::engine::KIND_NOT_FOUND,
                     &busbar_substrate::ingress::not_found_message(model, model_not_found_message),
                 );
-                return finish_admitted_via_audit(host,
+                return finish_admitted_via_audit(
+                    host,
                     req.gov,
                     proto,
                     host.pool_label(model),
@@ -533,7 +538,8 @@ impl busbar_substrate::plane_host::GauntletPlane for NativePlane<'_> {
         // cardinality; on this path it is the name itself, because a request that reached stage 6
         // resolved to a configured pool or by-model lane, and the `"unresolved"` sentinel belongs
         // to the not-found return above.
-        finish_admitted_via_audit(host,
+        finish_admitted_via_audit(
+            host,
             req.gov,
             proto,
             host.pool_label(model),
@@ -712,7 +718,8 @@ async fn ingress_path_model_inner(
             // bounded `"unresolved"` label so the malformed-body request is still counted in REQUESTS_TOTAL /
             // REQUEST_DURATION_SECONDS and fires the request-log webhook, mirroring the model-miss
             // path. A raw early-return made it invisible to Prometheus and the webhook.
-            return finish_rejected_via_audit(host,
+            return finish_rejected_via_audit(
+                host,
                 gov,
                 proto,
                 crate::engine::POOL_LABEL_UNRESOLVED,
@@ -751,7 +758,8 @@ async fn ingress_path_model_inner(
             // Pre-routing failure (body is not a JSON object → model never resolved): route through
             // `finish_rejected` with the bounded `"unresolved"` label so it is observable in metrics +
             // the webhook, not a silent early-return — and never charged, so nothing to refund.
-            return finish_rejected_via_audit(host,
+            return finish_rejected_via_audit(
+                host,
                 gov,
                 proto,
                 crate::engine::POOL_LABEL_UNRESOLVED,
@@ -785,7 +793,8 @@ async fn ingress_path_model_inner(
             // with the bounded `"unresolved"` label so it is observable in metrics + the webhook. This
             // arm is effectively unreachable today (see the comment above), but keeping it on
             // `finish_rejected` preserves the observability invariant for every pre-routing exit.
-            return finish_rejected_via_audit(host,
+            return finish_rejected_via_audit(
+                host,
                 gov,
                 proto,
                 crate::engine::POOL_LABEL_UNRESOLVED,
@@ -807,7 +816,8 @@ async fn ingress_path_model_inner(
     let Some(op_handler) = busbar_substrate::handlers::request_handler(proto)
         .and_then(|rh| rh.operation_handler(operation))
     else {
-        return finish_rejected_via_audit(host,
+        return finish_rejected_via_audit(
+            host,
             gov,
             proto,
             crate::engine::POOL_LABEL_UNRESOLVED,

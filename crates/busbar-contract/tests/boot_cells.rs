@@ -207,9 +207,7 @@ fn a_registration_interns_a_configured_key_exactly_once() {
     assert_eq!(reg.len(), 1);
 
     // A different key is a second entry, and the fixed term is readable from the count.
-    let other = reg
-        .key("gadget-frontier")
-        .expect("the vocabulary is open");
+    let other = reg.key("gadget-frontier").expect("the vocabulary is open");
     assert_ne!(first, other);
     assert_eq!(reg.len(), 2);
 }

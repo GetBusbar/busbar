@@ -1394,8 +1394,8 @@ pub(crate) fn openai_classify(status: StatusCode, body: &[u8]) -> CanonicalSigna
     // failover through this function was then proving behaviour production does not have, for three
     // of the four phrasings the providers actually send.
     let oversized = status == StatusCode::BAD_REQUEST || status == StatusCode::PAYLOAD_TOO_LARGE;
-    let prose_is_context = oversized
-        && context_length_prose_scan(&String::from_utf8_lossy(body).to_lowercase());
+    let prose_is_context =
+        oversized && context_length_prose_scan(&String::from_utf8_lossy(body).to_lowercase());
     if code_is_context || prose_is_context {
         return CanonicalSignal {
             class: StatusClass::ContextLength,

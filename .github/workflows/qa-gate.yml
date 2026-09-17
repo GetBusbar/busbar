@@ -42,7 +42,7 @@
 # with `lto = "fat"` + `codegen-units = 1`; ten legs each paying that link would make wall clock
 # WORSE than the old sequential gate while looking like progress. `build` pays it once and every leg
 # hydrates from the artifact. See qa-gate-run.sh's `hydrate` for the mtime trap that makes a naive
-# artifact restore a silent no-op, and for why Swatinem/rust-cache alone cannot do this job.
+# artifact restore a silent no-op, and for why the Latchkey Fast Cache alone cannot do this job.
 #
 # `fast` does NOT gate `build`; they are siblings. Serialising a cheap tier in FRONT of the long
 # pole would spend 100% of its duration on every green run and save nothing. But `slow` needs BOTH,
@@ -230,16 +230,33 @@ jobs:
       # already names this exact drift as the history it exists to prevent, and every job in ci.yml
       # follows it; this file was the one that did not.
       - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
-      # rust-cache still earns its place HERE: it makes this one build faster run-over-run by
-      # restoring the dependency graph. It cannot replace the artifact below, because it
-      # deliberately drops workspace-member artifacts, and `busbar` IS where fat LTO is paid.
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      # The Latchkey Fast Cache still earns its place HERE: it makes this one build faster
+      # run-over-run by restoring the dependency graph. It cannot replace the artifact below,
+      # because `busbar` IS where fat LTO is paid.
+      - name: Resolve cargo home (Latchkey image sets CARGO_HOME off $HOME)
+        uses: ./.github/actions/cargo-home
+      - name: Latchkey Fast Cache (cargo registry + target, restore)
+        uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
         with:
-          workspaces: busbarAI
+          action: restore
+          key: cargo-${{ runner.os }}-build-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
+          path: |
+            ${{ env.CARGO_HOME }}/registry
+            ${{ env.CARGO_HOME }}/git
+            busbarAI/target
 
       - name: Build once + prune + pack
         working-directory: busbarAI
         run: ./scripts/qa-gate-run.sh build "$TARBALL"
+      - name: Latchkey Fast Cache (cargo registry + target, save)
+        uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
+        with:
+          action: save
+          key: cargo-${{ runner.os }}-build-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
+          path: |
+            ${{ env.CARGO_HOME }}/registry
+            ${{ env.CARGO_HOME }}/git
+            busbarAI/target
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:

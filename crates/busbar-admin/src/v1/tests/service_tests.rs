@@ -31,7 +31,8 @@ fn hook(kind: HookKind, global: bool) -> HookCfg {
 /// Lanes/store are shared (unchanged), proving the store-constraint-free subset.
 #[test]
 fn build_with_hook_registers_and_wires_global_tap() {
-    let Some(env) = busbar_core::test_support::test_hook_env(&["test-hook"], Default::default()) else {
+    let Some(env) = busbar_core::test_support::test_hook_env(&["test-hook"], Default::default())
+    else {
         eprintln!("skip: hook cdylib not built (run under --workspace)");
         return;
     };
@@ -63,7 +64,8 @@ fn build_with_hook_registers_and_wires_global_tap() {
 /// reported `global: true`.
 #[test]
 fn build_with_hook_demotes_global_false_removes_wiring() {
-    let Some(env) = busbar_core::test_support::test_hook_env(&["test-hook"], Default::default()) else {
+    let Some(env) = busbar_core::test_support::test_hook_env(&["test-hook"], Default::default())
+    else {
         eprintln!("skip: hook cdylib not built (run under --workspace)");
         return;
     };
@@ -103,7 +105,8 @@ fn build_with_hook_demotes_global_false_removes_wiring() {
 /// fail-open for a plane-owned attach, using MCP as the concrete plane under test.
 #[test]
 fn build_with_hook_makes_an_mcp_attach_live() {
-    let Some(env) = busbar_core::test_support::test_hook_env(&["test-hook"], Default::default()) else {
+    let Some(env) = busbar_core::test_support::test_hook_env(&["test-hook"], Default::default())
+    else {
         eprintln!("skip: hook cdylib not built (run under --workspace)");
         return;
     };
@@ -331,7 +334,10 @@ fn signed_tarball(key: &SigningKey, m: Manifest, lib: &[u8]) -> Vec<u8> {
 
 /// Build a service over an App whose plugins dir + `plugins.*` posture are the given ones.
 fn svc_with(dir: std::path::PathBuf, cfg: busbar_core::config::PluginsCfg) -> AdminService {
-    let app = crate::new_test_app().plugins_dir(dir).plugins_cfg(cfg).build();
+    let app = crate::new_test_app()
+        .plugins_dir(dir)
+        .plugins_cfg(cfg)
+        .build();
     AdminService::new(app)
 }
 
@@ -1495,8 +1501,8 @@ fn build_without_group_not_found() {
 /// (re-bind or delete the keys first) rather than silently orphaning them.
 #[test]
 fn build_without_group_conflict_when_keys_still_bound() {
-    use busbar_core::governance::{GovState, MemoryStore};
     use busbar_api::Store as _;
+    use busbar_core::governance::{GovState, MemoryStore};
     let store = std::sync::Arc::new(MemoryStore::new());
     store
         .put_key(&busbar_core::governance::VirtualKey {
@@ -1572,7 +1578,9 @@ fn usage_group_cfg() -> GroupCfg {
 
 /// A cost model carrying `groups` and a rate card pricing model `m` at 10 micro-units per
 /// token (in and out) — 1 cent per 1_000 tokens, so the derived-spend assertions are round.
-fn usage_cost(groups: &std::collections::BTreeMap<String, GroupCfg>) -> busbar_core::cost::CostModel {
+fn usage_cost(
+    groups: &std::collections::BTreeMap<String, GroupCfg>,
+) -> busbar_core::cost::CostModel {
     let card = std::collections::BTreeMap::from([(
         "m".to_string(),
         busbar_core::config::RateEntryCfg {
@@ -1946,9 +1954,10 @@ fn max_inspect_schema_json_bytes_is_exactly_256_kibibytes() {
 /// return `Some(false)` and pass a loose "it's false" check, but the detail text would be wrong.
 #[tokio::test]
 async fn probe_transport_distinguishes_wrong_kind_from_unresolved() {
-    let Some(env) =
-        busbar_core::test_support::test_hook_env_with_wrong_kind_plugin("test-hook", "test-wrong-kind")
-    else {
+    let Some(env) = busbar_core::test_support::test_hook_env_with_wrong_kind_plugin(
+        "test-hook",
+        "test-wrong-kind",
+    ) else {
         eprintln!("skip: hook cdylib not built (run under --workspace)");
         return;
     };
@@ -1994,7 +2003,8 @@ async fn probe_transport_distinguishes_wrong_kind_from_unresolved() {
 /// would defeat the guard and double-push on every re-register.
 #[test]
 fn build_with_hook_reregistering_same_global_hook_does_not_duplicate() {
-    let Some(env) = busbar_core::test_support::test_hook_env(&["test-hook"], Default::default()) else {
+    let Some(env) = busbar_core::test_support::test_hook_env(&["test-hook"], Default::default())
+    else {
         eprintln!("skip: hook cdylib not built (run under --workspace)");
         return;
     };
@@ -2101,7 +2111,8 @@ fn build_with_group_name_length_boundary_is_exact() {
 /// one is fine — a mutated `> 1` boundary needs both sides tested to catch `==`/`>=` variants.
 #[test]
 fn build_with_registry_rejects_more_than_one_default_but_allows_exactly_one() {
-    let Some(env) = busbar_core::test_support::test_hook_env(&["test-hook"], Default::default()) else {
+    let Some(env) = busbar_core::test_support::test_hook_env(&["test-hook"], Default::default())
+    else {
         eprintln!("skip: hook cdylib not built (run under --workspace)");
         return;
     };
@@ -2129,7 +2140,8 @@ fn build_with_registry_rejects_more_than_one_default_but_allows_exactly_one() {
 /// every VALID global reference instead.
 #[test]
 fn build_with_registry_rejects_a_dangling_global_hook_reference() {
-    let Some(env) = busbar_core::test_support::test_hook_env(&["test-hook"], Default::default()) else {
+    let Some(env) = busbar_core::test_support::test_hook_env(&["test-hook"], Default::default())
+    else {
         eprintln!("skip: hook cdylib not built (run under --workspace)");
         return;
     };
@@ -2184,7 +2196,8 @@ async fn healthz_returns_a_real_response_not_the_default() {
 /// whose gate disagrees with its own hook registry.
 #[test]
 fn hook_snapshot_builders_recompute_the_content_gate() {
-    let Some(env) = busbar_core::test_support::test_hook_env(&["test-hook"], Default::default()) else {
+    let Some(env) = busbar_core::test_support::test_hook_env(&["test-hook"], Default::default())
+    else {
         eprintln!("skip: hook cdylib not built (run under --workspace)");
         return;
     };

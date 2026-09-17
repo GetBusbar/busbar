@@ -34,9 +34,7 @@ use axum::body::{Body, Bytes};
 use axum::http::{HeaderMap, Method, StatusCode, Uri};
 use axum::response::Response;
 use axum::routing::{on, MethodFilter, MethodRouter};
-use busbar_plugin_loader::{
-    EndpointRequest, EndpointResponse, Route, RouteAuth, RouteMethod,
-};
+use busbar_plugin_loader::{EndpointRequest, EndpointResponse, Route, RouteAuth, RouteMethod};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -291,9 +289,7 @@ fn confine(kind: RouteKind, owner: &str, path: &str) -> Result<(), String> {
 /// order, first-to-claim owns, and a second claim of the same `{path, method}` fails LOUD naming the
 /// owning plugin. The SAME logic backs [`build_route_table`] (which additionally carries the live
 /// dispatchers), so `--validate` and boot cannot diverge from what actually mounts.
-pub fn preflight_route_collisions(
-    decls: &[(String, RouteKind, Route)],
-) -> Result<(), String> {
+pub fn preflight_route_collisions(decls: &[(String, RouteKind, Route)]) -> Result<(), String> {
     let mut owned: HashMap<(String, RouteMethod), String> = HashMap::new();
     for (owner, kind, route) in decls {
         confine(*kind, owner, &route.path)?;

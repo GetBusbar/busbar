@@ -987,7 +987,9 @@ pub(crate) async fn delete_hook(
 // (and `admin/mod.rs`'s `POST /keys` handler) is unchanged; `plan_mint_group` now returns
 // `busbar_core::config::transaction::TxnError` (`AdminError: From<TxnError>` converts it 1:1 at every
 // `?`/`match` site — byte-identical wire error).
-pub(crate) use busbar_core::governance::group_provision::{plan_mint_group, persist_provisioned_group};
+pub(crate) use busbar_core::governance::group_provision::{
+    persist_provisioned_group, plan_mint_group,
+};
 
 /// `POST /api/v1/admin/groups` — create (or replace) a group at RUNTIME. Validate-at-the-door: the
 /// mutated tree is re-validated (parent exists, acyclic, depth) — an invalid tree is a `400` that
@@ -2197,7 +2199,13 @@ pub(crate) async fn flush_credential_cache(
 #[inline(never)]
 pub(crate) fn rebuild_app_from_disk(
     current: &Arc<busbar_core::state::App>,
-) -> Result<(busbar_core::state::App, Option<busbar_core::GovCredentialRotation>), String> {
+) -> Result<
+    (
+        busbar_core::state::App,
+        Option<busbar_core::GovCredentialRotation>,
+    ),
+    String,
+> {
     let (Some(config_path), Some(providers_path)) =
         (current.config_path.clone(), current.providers_path.clone())
     else {
@@ -3002,7 +3010,10 @@ pub(crate) async fn put_config_settings(
                 // the BASE floors and re-loads the newer artifact, silently reverting a live audited
                 // rollback until the next restart re-applies the persisted pin.
                 if let Some(doc) = loaded.overlay_doc.as_ref() {
-                    busbar_core::config::overlay::apply_pre_resolve_sections(&mut loaded.deploy, doc);
+                    busbar_core::config::overlay::apply_pre_resolve_sections(
+                        &mut loaded.deploy,
+                        doc,
+                    );
                 }
                 let mut cfg = busbar_core::config::resolve(&loaded.deploy, &loaded.defs)
                     .map_err(|errs| format!("config errors:\n  - {}", errs.join("\n  - ")))?;
@@ -3038,13 +3049,16 @@ pub(crate) async fn put_config_settings(
             Ok(Outcome::commit_then(
                 installed.clone(),
                 move || {
-                    busbar_core::config::overlay::persist_root(p.overlay_path.as_deref(), &to_persist)
-                        .map_err(|e| {
-                            format!(
-                                "config settings could not be persisted to the overlay: {e}; \
+                    busbar_core::config::overlay::persist_root(
+                        p.overlay_path.as_deref(),
+                        &to_persist,
+                    )
+                    .map_err(|e| {
+                        format!(
+                            "config settings could not be persisted to the overlay: {e}; \
                                  nothing was changed (the running engine is unaffected)"
-                            )
-                        })
+                        )
+                    })
                 },
                 move || {
                     if let Some(rotate) = gov_rotate {
@@ -3189,7 +3203,8 @@ pub(crate) async fn patch_hook_settings(
     // never leaves the running hook ahead of committed config. The hook plugin env is captured here;
     // the load() that feeds the actual swap is re-taken AFTER the await, under the mutation lock.
     let hook_env = current.hook_env.clone();
-    if let Err(e) = busbar_core::hooks::push_configure(&updated, &name, settings_version, &hook_env).await
+    if let Err(e) =
+        busbar_core::hooks::push_configure(&updated, &name, settings_version, &hook_env).await
     {
         // The hook NACKed / timed out: nothing was pushed-and-acked, so nothing is live and nothing
         // committed — the running hook keeps its old settings. Reject cleanly, no compensation needed.
@@ -3319,9 +3334,13 @@ pub(crate) async fn plugin_schema(
     // first — a `source: "describe"` with `schema: null` is only correct when describe was asked
     // and truly had nothing to fall back to (no resolvable manifest either).
     if let Some(hook) = current.hook_registry.get(&name) {
-        let described =
-            busbar_core::hooks::fetch_schema(&name, hook, current.config_version, &current.hook_env)
-                .await;
+        let described = busbar_core::hooks::fetch_schema(
+            &name,
+            hook,
+            current.config_version,
+            &current.hook_env,
+        )
+        .await;
         // The manifest baseline lives under the PLUGIN's name/alias (`hook.plugin`), not the
         // hook's own config-registry name — the two are commonly different strings (a hook is
         // registered as e.g. "fallback-hook" while backed by a plugin aliased "test-hook"), so
@@ -3421,7 +3440,8 @@ pub(crate) async fn hook_schema(
         return err_json(&AdminError::not_found(format!("hook `{name}`")));
     };
     let schema =
-        busbar_core::hooks::fetch_schema(&name, hook, current.config_version, &current.hook_env).await;
+        busbar_core::hooks::fetch_schema(&name, hook, current.config_version, &current.hook_env)
+            .await;
     ok_json(StatusCode::OK, &json!({ "name": name, "schema": schema }))
 }
 
@@ -4052,10 +4072,11 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
     // The section enum + the summary are DERIVED from `OverlaySection::all()`. Hand-written, they
     // stated a four-value set as COMPLETE for the whole life of the `named_maps` section, so the
     // reference documentation asserted a shipped functional gap was not one.
-    let overlay_section_names: Vec<&'static str> = busbar_core::config::overlay::OverlaySection::all()
-        .iter()
-        .map(|s| s.as_str())
-        .collect();
+    let overlay_section_names: Vec<&'static str> =
+        busbar_core::config::overlay::OverlaySection::all()
+            .iter()
+            .map(|s| s.as_str())
+            .collect();
     paths.insert(
         ap("/overlay/{section}"),
         json!({

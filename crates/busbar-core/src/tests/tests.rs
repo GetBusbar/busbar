@@ -524,7 +524,6 @@ async fn test_fallback_openai_404_is_json_no_amzn_headers() {
     );
 }
 
-
 /// `Server-Timing` reports Busbar's OWN processing time = total − upstream RTT, with the
 /// no-upstream sentinel reporting the full time and clock skew saturating to zero (never a
 /// huge underflowed value).

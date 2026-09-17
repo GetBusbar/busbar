@@ -13,9 +13,7 @@
 //! recorder registry.
 
 use crate::plugin_routes::{PluginHttpDispatch, RouteDecl, RouteKind};
-use busbar_plugin_loader::{
-    EndpointRequest, EndpointResponse, Route, RouteAuth, RouteMethod,
-};
+use busbar_plugin_loader::{EndpointRequest, EndpointResponse, Route, RouteAuth, RouteMethod};
 use std::sync::Arc;
 
 /// The well-known Prometheus/OpenMetrics scrape path — the one exception to "an export sink lives

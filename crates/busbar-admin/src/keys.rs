@@ -588,7 +588,9 @@ fn check_key_cap(
 
 /// POST /api/v1/admin/keys — mint a virtual key. Returns the plaintext secret ONCE.
 pub(crate) async fn create_key(
-    axum::extract::State(handle): axum::extract::State<std::sync::Arc<busbar_core::state::AppHandle>>,
+    axum::extract::State(handle): axum::extract::State<
+        std::sync::Arc<busbar_core::state::AppHandle>,
+    >,
     axum::Extension(principal): axum::Extension<busbar_core::auth::AuthPrincipal>,
     headers: axum::http::HeaderMap,
     body: Bytes,
@@ -1075,7 +1077,9 @@ pub(crate) struct UpdateKeyReq {
 /// target is validated to EXIST (mint parity): otherwise PATCH would be a back door minting a
 /// dangling binding that fails every request closed. 404 if the key is absent.
 pub(crate) async fn update_key(
-    axum::extract::State(handle): axum::extract::State<std::sync::Arc<busbar_core::state::AppHandle>>,
+    axum::extract::State(handle): axum::extract::State<
+        std::sync::Arc<busbar_core::state::AppHandle>,
+    >,
     axum::Extension(principal): axum::Extension<busbar_core::auth::AuthPrincipal>,
     Path(id): Path<String>,
     headers: axum::http::HeaderMap,

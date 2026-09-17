@@ -19,9 +19,9 @@ use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use serde_json::json;
 
-use busbar_core::config::transaction::{config_transaction, Outcome};
-use busbar_core::admin::v1::contract::AdminError;
 use crate::v1::json::{delete_group, install_plugin};
+use busbar_core::admin::v1::contract::AdminError;
+use busbar_core::config::transaction::{config_transaction, Outcome};
 use busbar_core::governance::{GovState, MemoryStore};
 use busbar_core::state::AppHandle;
 
@@ -107,10 +107,12 @@ fn gov(store: Arc<dyn busbar_core::governance::Store>) -> Arc<GovState> {
         GovState::new_with_signer(
             store,
             None,
-            Some(busbar_core::governance::signing::TokenSigner::from_secret_bytes(
-                &[7u8; 32],
-                busbar_core::governance::signing::DEFAULT_KID,
-            )),
+            Some(
+                busbar_core::governance::signing::TokenSigner::from_secret_bytes(
+                    &[7u8; 32],
+                    busbar_core::governance::signing::DEFAULT_KID,
+                ),
+            ),
         )
         .expect("gov"),
     )
@@ -504,10 +506,11 @@ async fn plugin_install_is_serialized_by_the_mutation_domain() {
 async fn a_txn_that_declares_no_plan_swaps_nothing() {
     let handle = handle_for(crate::new_test_app().build());
     let before = handle.load().config_version;
-    let seen: u64 =
-        config_transaction::<_, _, AdminError>(&handle, |txn| Ok(txn.done(txn.app().config_version)))
-            .await
-            .expect("read-only txn succeeds");
+    let seen: u64 = config_transaction::<_, _, AdminError>(&handle, |txn| {
+        Ok(txn.done(txn.app().config_version))
+    })
+    .await
+    .expect("read-only txn succeeds");
     assert_eq!(seen, before, "the body reads the post-lock snapshot");
     assert_eq!(handle.load().config_version, before, "no plan ⇒ no swap");
 }

@@ -40,12 +40,12 @@ use std::time::Duration;
 
 use axum::Router;
 
-use busbar_core::{config, config_validate, export, metrics, observability, tls};
 use busbar_core::{
     build_app_from_config, build_split_routers_with_limits, load_config_from_disk,
     preflight_plugins_and_secrets, validate_builtin_secrets_resolve, LoadedConfig,
     DEFAULT_CONFIG_PATH, ENV_CONFIG, ENV_PROVIDERS,
 };
+use busbar_core::{config, config_validate, export, metrics, observability, tls};
 // Read only by the jemalloc idle-purge fallback below, which is itself
 // `#[cfg(not(target_env = "msvc"))]` — windows-msvc has no jemalloc, so importing this
 // unconditionally is an unused-import error there under `-D warnings`.
