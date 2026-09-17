@@ -58,6 +58,8 @@ pub mod adapters;
 #[cfg(any(test, feature = "test-harness"))]
 pub mod a2a_kernel_rider;
 pub mod auth_bindings;
+#[cfg(any(test, feature = "test-harness"))]
+pub mod duplex_kernel_rider;
 pub mod durability;
 pub mod gauntlet_install;
 pub mod gauntlet_kernel;
@@ -80,3 +82,5 @@ pub mod units_mcp;
 #[cfg(feature = "root-voice")]
 pub mod units_voice;
 pub mod vocabulary;
+#[cfg(any(test, feature = "test-harness"))]
+pub mod voice_kernel_rider;
