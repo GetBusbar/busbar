@@ -407,6 +407,11 @@ identically, and every 1.5.5 key and minted secret carries over.
   after a rate-card change, they no longer do; use the new `amend-rate-history` verb to post an
   attributed correction instead. See [the 1.6.0 migration guide](docs/migration-1.6.md).
 
+- 1.6.0 Changed: the new `amend-rate-history` verb refuses an unsigned or unauthorized amend with
+  `403 forbidden` where 1.5.5's router answered `404 not found` because the route did not exist; the
+  refusal moves no money. The verb itself is additive; only the refusal status a caller sees on the
+  path differs from 1.5.5's generic router miss.
+
 - 1.6.0 Breaking: a provider whose `api_key` reference does not resolve now refuses boot; keyless
   local upstreams must declare `api_key: none`. 1.5.5 logged
   `[warn] provider <name> api_key (<reference>) empty` and started the lane with an empty
