@@ -186,6 +186,7 @@ impl Governance for FakeGovernance {
         verb: KernelVerb,
         _admin: &AdminToken,
         _request: &[u8],
+        _operator: OperatorState,
     ) -> Result<Vec<u8>, GovernanceError> {
         if let Some(e) = self.injected() {
             return Err(e);
@@ -710,7 +711,7 @@ fn a_new_verb_admitted_by_posture_reaches_governance() {
     let verbs = make_verbs(FakeGovernance::new());
     let admin = admin();
     let ctx = PostureCtx {
-        operator: OperatorState::Set,
+        operator: OperatorState::Set([0u8; 32]),
         dual_control: DualControl::Single,
     };
     let out = verbs
@@ -777,7 +778,7 @@ fn amend_rate_history_is_a_full_scope_irreducible_new_verb() {
     let verbs = make_verbs(FakeGovernance::new());
     let admin = admin();
     let ctx = PostureCtx {
-        operator: OperatorState::Set,
+        operator: OperatorState::Set([0u8; 32]),
         dual_control: DualControl::Single,
     };
 
@@ -884,8 +885,9 @@ impl Governance for GatedGovernance {
         verb: KernelVerb,
         admin: &AdminToken,
         request: &[u8],
+        operator: OperatorState,
     ) -> Result<Vec<u8>, GovernanceError> {
-        self.inner.execute_new_verb(verb, admin, request)
+        self.inner.execute_new_verb(verb, admin, request, operator)
     }
 }
 
@@ -1109,7 +1111,7 @@ fn a_governance_store_failure_refuses_with_store_error_on_every_call() {
             VerbScope::Full,
             0,
             Some(PostureCtx {
-                operator: OperatorState::Set,
+                operator: OperatorState::Set([0u8; 32]),
                 dual_control: DualControl::Single,
             }),
             ApprovalState::NotYetApproved,
@@ -1276,6 +1278,7 @@ impl Governance for RoutingGovernance {
         verb: KernelVerb,
         _admin: &AdminToken,
         _request: &[u8],
+        _operator: OperatorState,
     ) -> Result<Vec<u8>, GovernanceError> {
         self.0.lock().unwrap().push((verb, "new"));
         Ok(b"new".to_vec())
@@ -1435,6 +1438,7 @@ fn an_unbound_integrator_serves_no_view_rather_than_an_empty_one() {
             _verb: KernelVerb,
             _admin: &AdminToken,
             _request: &[u8],
+            _operator: OperatorState,
         ) -> Result<Vec<u8>, GovernanceError> {
             Ok(Vec::new())
         }
@@ -1537,7 +1541,7 @@ fn the_two_read_only_new_verbs_answer_a_read_only_credential_under_required_post
     let log: SeamLog = std::sync::Arc::new(Mutex::new(Vec::new()));
     let verbs = make_verbs(RoutingGovernance(std::sync::Arc::clone(&log)));
     let posture = Some(PostureCtx {
-        operator: OperatorState::Set,
+        operator: OperatorState::Set([0u8; 32]),
         dual_control: DualControl::Required,
     });
 
@@ -1665,7 +1669,7 @@ fn the_recovery_verbs_are_gated_before_anything_reaches_the_store() {
             "alice",
             VerbScope::ReadOnly,
             0,
-            single(OperatorState::Set),
+            single(OperatorState::Set([0u8; 32])),
             ApprovalState::NotYetApproved,
         )
         .unwrap_err(),
@@ -1674,7 +1678,7 @@ fn the_recovery_verbs_are_gated_before_anything_reaches_the_store() {
             "alice",
             VerbScope::ReadOnly,
             0,
-            single(OperatorState::Set),
+            single(OperatorState::Set([0u8; 32])),
             ApprovalState::NotYetApproved,
             "backup-1",
         )
@@ -1684,7 +1688,7 @@ fn the_recovery_verbs_are_gated_before_anything_reaches_the_store() {
             "alice",
             VerbScope::ReadOnly,
             0,
-            single(OperatorState::Set),
+            single(OperatorState::Set([0u8; 32])),
             ApprovalState::NotYetApproved,
         )
         .unwrap_err(),
@@ -1773,7 +1777,7 @@ fn the_recovery_verbs_are_gated_before_anything_reaches_the_store() {
         "alice",
         VerbScope::Full,
         0,
-        single(OperatorState::Set),
+        single(OperatorState::Set([0u8; 32])),
         ApprovalState::NotYetApproved,
     )
     .expect("admitted");
@@ -1782,7 +1786,7 @@ fn the_recovery_verbs_are_gated_before_anything_reaches_the_store() {
         "alice",
         VerbScope::Full,
         0,
-        single(OperatorState::Set),
+        single(OperatorState::Set([0u8; 32])),
         ApprovalState::NotYetApproved,
         "backup-1",
     )
@@ -1792,7 +1796,7 @@ fn the_recovery_verbs_are_gated_before_anything_reaches_the_store() {
         "alice",
         VerbScope::Full,
         0,
-        single(OperatorState::Set),
+        single(OperatorState::Set([0u8; 32])),
         ApprovalState::NotYetApproved,
     )
     .expect("admitted");
@@ -1808,7 +1812,7 @@ fn a_recovery_verb_waits_for_its_approval_under_required_dual_control() {
     let admin = admin();
     let v = recovery_verbs();
     let ctx = Some(PostureCtx {
-        operator: OperatorState::Set,
+        operator: OperatorState::Set([0u8; 32]),
         dual_control: DualControl::Required,
     });
     let err = v

@@ -22,13 +22,23 @@
 use crate::refusal::{ReasonCode, Refusal, RefusalStep};
 use crate::verb::{KernelVerb, ADMITTED_UNDER_UNSET, IRREDUCIBLE_VERBS, READ_ONLY_NEW_VERBS};
 
-/// Whether the operator-key ceremony (`busbar operator keygen` + `set_operator_key`) has run.
+/// Whether the operator-key ceremony (`busbar operator keygen` + `set_operator_key`) has run, and
+/// when it has, the raw 32-byte ed25519 public key it sealed.
+///
+/// The key travels ON the state on purpose: the gate below only needs to know a ceremony ran, but the
+/// verbs whose signatures are checked against the sealed key (D38 `amend_rate_history`) need the key
+/// itself, and the posture seam is the one channel a fleet's sealed `Policy` reaches a verb through.
+/// So `Set` carries the public key material — the raw 32 bytes, not a parsed key type, so this crate
+/// stays free of a crypto dependency and the verifying site (which already owns one) parses and
+/// verifies. There is exactly ONE operator key (a single key sealed at `Bootstrap`, not a registry);
+/// the `operator_fingerprint` a verb body carries is the digest of THIS key, a which-key
+/// confirmation the verifier checks against `sha256(key)`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OperatorState {
     /// No operator key configured yet — sealed at `Bootstrap` when `operator.pub` is absent.
     Unset,
-    /// An operator public key is sealed in `Policy`.
-    Set,
+    /// An operator public key is sealed in `Policy`: the raw 32-byte ed25519 verifying key.
+    Set([u8; 32]),
 }
 
 /// The dual-control posture, sealed at `Bootstrap`.
@@ -78,7 +88,7 @@ pub enum ApprovalState {
 /// here regardless of operator state — this gate is scoped to exactly the closed
 /// [`IRREDUCIBLE_VERBS`] list.
 pub fn check_operator_gate(verb: KernelVerb, operator: OperatorState) -> Result<(), Refusal> {
-    if operator == OperatorState::Set {
+    if matches!(operator, OperatorState::Set(_)) {
         return Ok(());
     }
     if !IRREDUCIBLE_VERBS.contains(&verb) {

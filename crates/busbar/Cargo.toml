@@ -50,6 +50,11 @@ busbar-admin = { path = "../busbar-admin", default-features = false }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
+# The operator-signature verifier for the D38 `amend_rate_history` effect: the sealed operator key
+# arrives (through the posture seam) as raw ed25519 bytes, and this parses them and checks the
+# detached signature with the inherent STRICT verify. Composition-root knowledge, used only by the
+# admin verb's effect half.
+ed25519-dalek = { workspace = true }
 # THE PROTOCOL CRATES — the composition root's knowledge, per the manifest header above. ONE CRATE
 # PER PROTOCOL: `busbar-llm` carries the LLM protocol's six dialects together (an operator picks LLM
 # coverage or none, never a subset), and `busbar-mcp` is a different protocol and therefore a

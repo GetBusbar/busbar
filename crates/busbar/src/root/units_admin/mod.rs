@@ -626,17 +626,20 @@ impl busbar_unit_verbs::Governance for CoreGovernance {
         verb: KernelVerb,
         _admin: &busbar_caps::AdminToken,
         request: &[u8],
+        operator: busbar_unit_verbs::OperatorState,
     ) -> Result<Vec<u8>, busbar_unit_verbs::GovernanceError> {
         // `amend_rate_history` (D38) is the one new verb whose effect is NOT the mounted router's:
         // its correction lands on this root's own dated rate-card history, which no 1.5.5 handler
         // knows about. The scope, rate class, operator ceremony and dual control were already run by
         // the verbs unit before this seam was reached — the verb is in the irreducible set — so this
-        // half speaks only to the correction's own shape and effect.
+        // half speaks only to the correction's own shape and to verifying it was signed by the
+        // operator key the fleet sealed, before it lands the effect.
         if verb == KernelVerb::AmendRateHistory {
             return amend_rate_history_effect(
                 &crate::root::kernel::ROOT_CARD,
                 request,
                 self.request.at,
+                operator,
             );
         }
         Ok(self.run())
@@ -682,7 +685,18 @@ fn ledger_answer(body: Vec<u8>) -> AdminAnswer {
 /// that corrects nothing, or a correction that moves no price is `Validation` (400); a history with
 /// no opening entry to correct is `NotFound` (404). The verb's scope (`full`), rate class, operator
 /// ceremony and dual control ran before this seam — the verb is irreducible — so this half assumes an
-/// admitted call and adjudicates only the correction itself.
+/// admitted call and adjudicates the correction itself: its shape, its cryptographic signature
+/// against the operator key the fleet sealed, and its effect.
+///
+/// The signature is the D38 hardening (`docs/design/rate-card-history.md:445-467`; the sealed-key
+/// posture is `busbar-unit-verbs/src/posture.rs:28-32`). `operator` carries the single sealed
+/// ed25519 verifying key; the body's `operator_fingerprint` must equal `sha256(key)` (a which-key
+/// confirmation, not a registry lookup — there is one operator key), and the detached `signature`
+/// must verify (STRICT) against that key over the canonical correction payload. An unknown
+/// fingerprint or a signature that does not verify is a client-safe `Validation` (400), the same
+/// refusal shape a missing signer already produces — the presence-only checks below still refuse the
+/// no-signer/window/price cases at the exact byte they did before, and the cryptographic check is
+/// reached only by a body that already carries a well-formed signer and signature.
 ///
 /// It names no figure on the wire. The corrected rates go into the card, never into the answer, so
 /// the control surface stays free of money vocabulary; the answer is the seq an invoice will cite,
@@ -691,6 +705,7 @@ fn amend_rate_history_effect(
     history: &crate::root::kernel::RootHistory,
     body: &[u8],
     arrival_secs: u64,
+    operator: busbar_unit_verbs::OperatorState,
 ) -> Result<Vec<u8>, busbar_unit_verbs::GovernanceError> {
     use busbar_unit_verbs::GovernanceError;
     use sha2::Digest as _;
@@ -721,13 +736,11 @@ fn amend_rate_history_effect(
         .filter(|s| !s.is_empty())
         .ok_or(GovernanceError::Validation)?
         .to_string();
-    let signature_present = obj
+    let signature = obj
         .get("signature")
         .and_then(serde_json::Value::as_str)
-        .is_some_and(|s| !s.is_empty());
-    if !signature_present {
-        return Err(GovernanceError::Validation);
-    }
+        .filter(|s| !s.is_empty())
+        .ok_or(GovernanceError::Validation)?;
 
     // The reason is free text and is not the record; its SHA-256 is, so the sealed entry is
     // fixed-width and the text cannot be edited under it.
@@ -784,6 +797,41 @@ fn amend_rate_history_effect(
         per_request_fee.unwrap_or(0),
     );
 
+    // The cryptographic seam (D38 hardening). A well-formed correction is now verified against the
+    // single operator key the fleet sealed — not merely checked for the presence of a signer. This
+    // is reached only after every shape refusal above, so the no-signer/window/price cases keep
+    // refusing at the exact byte they did before this seam existed.
+    //
+    // The `operator_fingerprint` is a WHICH-KEY confirmation: it must equal `sha256(sealed key)`.
+    // There is exactly one operator key (a single key sealed in `Policy`, not a registry), so a
+    // fingerprint that does not name it is a correction signed for a key this fleet does not hold —
+    // an unknown signer — and is refused. The detached signature then must verify (STRICT, refusing
+    // small-order keys and non-canonical signatures) against that key over the canonical payload the
+    // operator signed. Every failure here is the client-safe `Validation`, the same 400 a missing
+    // signer already produced.
+    let busbar_unit_verbs::OperatorState::Set(operator_key) = operator else {
+        // The operator gate admits `amend_rate_history` only under `Set`, so this is unreachable in
+        // an admitted call; refusing rather than trusting an unverified correction is the only safe
+        // reading if the seam is ever reached without a sealed key.
+        return Err(GovernanceError::Validation);
+    };
+    let verifying_key =
+        ed25519_dalek::VerifyingKey::from_bytes(&operator_key).map_err(|_| GovernanceError::Validation)?;
+    let expected_fingerprint = hex::encode(sha2::Sha256::digest(operator_key));
+    if operator_fingerprint != expected_fingerprint {
+        return Err(GovernanceError::Validation);
+    }
+    let signature_bytes: [u8; 64] = hex::decode(signature)
+        .ok()
+        .and_then(|raw| raw.try_into().ok())
+        .ok_or(GovernanceError::Validation)?;
+    verifying_key
+        .verify_strict(
+            &canonical_amend_payload(obj),
+            &ed25519_dalek::Signature::from_bytes(&signature_bytes),
+        )
+        .map_err(|_| GovernanceError::Validation)?;
+
     // The append. Milliseconds, because the history dates every instant in them; a correction written
     // "now" is written at the arrival it was admitted under, never a fresh clock read.
     let appended_at_ms = arrival_secs.saturating_mul(1000);
@@ -816,6 +864,39 @@ fn amend_rate_history_effect(
     json_string(&hex::encode(reason_hash), &mut out);
     out.push('}');
     Ok(ledger_answer(out.into_bytes()).pack())
+}
+
+/// The exact bytes the operator's detached signature is verified over.
+///
+/// A domain-separated, order-fixed serialization of the correction's SEMANTIC fields — everything the
+/// amendment means, and nothing about how it was transported or which key is confirming itself.
+/// `signature` is excluded (it is the thing being verified) and `operator_fingerprint` is excluded
+/// (it is the which-key confirmation, checked separately against `sha256(key)`); every other field is
+/// rendered from the parsed body, in a fixed order, each on its own line. Because it is a pure
+/// function of the parsed body's semantic fields, the operator who signs the correction and this seam
+/// which verifies it derive byte-identical inputs regardless of how the transport spelled the JSON —
+/// and a test reproduces the signing input by calling this same function over the same body.
+///
+/// The domain-separation prefix binds a signature to THIS operation: a signature captured over one
+/// operation's bytes cannot be replayed as another's, because no other operation signs a payload that
+/// begins with this line.
+fn canonical_amend_payload(obj: &serde_json::Map<String, serde_json::Value>) -> Vec<u8> {
+    let mut payload = String::from("busbar/amend-rate-history/v1\n");
+    for key in [
+        "effective_from",
+        "effective_until",
+        "currency",
+        "per_request_fee",
+        "reason",
+        "rates",
+    ] {
+        payload.push_str(key);
+        payload.push('=');
+        let value = obj.get(key).unwrap_or(&serde_json::Value::Null);
+        payload.push_str(&serde_json::to_string(value).unwrap_or_default());
+        payload.push('\n');
+    }
+    payload.into_bytes()
 }
 
 /// The bytes one ledger view answers with, or `None` for a verb that is not one.

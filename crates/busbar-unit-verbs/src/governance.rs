@@ -127,11 +127,18 @@ pub trait Governance {
     /// `// contract:` the actual effect of a new 1.6.0 verb, once
     /// [`crate::posture::check_new_verb_admission`] has already admitted it (operator gate, then
     /// dual control). `Verbs::execute` never calls this for a refused verb.
+    ///
+    /// `operator` is the resolved [`crate::posture::OperatorState`] the admission was checked
+    /// against, carried through so a verb whose effect is verified against the sealed operator key
+    /// (D38 `amend_rate_history`) can read the key material without a second policy read. A verb
+    /// whose effect needs no key ignores it; the gate above has already guaranteed it is
+    /// [`crate::posture::OperatorState::Set`] for every irreducible verb.
     fn execute_new_verb(
         &self,
         verb: KernelVerb,
         admin: &AdminToken,
         request: &[u8],
+        operator: crate::posture::OperatorState,
     ) -> Result<Vec<u8>, GovernanceError>;
 
     /// `// contract:` the answer to one of the five 1.6.0 ledger views

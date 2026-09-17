@@ -474,7 +474,7 @@ impl<G: Governance, S: Store, N: NonceSource, E: ReplayEncoder<MintedKeyOutcome>
             crate::posture::check_new_verb_admission(verb, ctx, approval)?;
             return self
                 .governance
-                .execute_new_verb(verb, admin, request)
+                .execute_new_verb(verb, admin, request, ctx.operator)
                 .map_err(GovernanceError::into_refusal);
         }
         self.governance

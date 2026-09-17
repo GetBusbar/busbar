@@ -379,6 +379,7 @@ dependencies = [
  "bytes",
  "core_affinity",
  "criterion",
+ "ed25519-dalek",
  "futures",
  "hex",
  "http-body",

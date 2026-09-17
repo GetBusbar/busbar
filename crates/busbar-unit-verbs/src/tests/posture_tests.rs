@@ -49,7 +49,7 @@ fn every_new_verb_except_set_operator_key_and_export_keyset_is_refused_under_uns
 #[test]
 fn every_new_verb_is_admitted_once_operator_is_set() {
     for verb in NEW_VERBS {
-        assert!(check_operator_gate(*verb, OperatorState::Set).is_ok());
+        assert!(check_operator_gate(*verb, OperatorState::Set([0u8; 32])).is_ok());
     }
 }
 
