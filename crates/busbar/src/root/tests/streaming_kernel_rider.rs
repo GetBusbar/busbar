@@ -1,17 +1,17 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! SHADOW-COMPARE: the dormant voice kernel-loop SESSION rider reproduces the substrate session admit
+//! SHADOW-COMPARE: the dormant streaming kernel-loop SESSION rider reproduces the substrate session admit
 //! BYTE-FOR-BYTE, and the admit gate stays MONEY-FREE (reserve/turn-settle are plane-side, after it).
 //!
-//! The voice analogue of `gauntlet_kernel`'s `kernel_session_admit_matches_substrate_open_unit` shadow,
-//! driving a FAITHFUL stand-in for the voice `SessionGauntlet` (topology/mod.rs) through BOTH admit
+//! The streaming analogue of `gauntlet_kernel`'s `kernel_session_admit_matches_substrate_open_unit` shadow,
+//! driving a FAITHFUL stand-in for the streaming `SessionGauntlet` (topology/mod.rs) through BOTH admit
 //! paths — `leg_legacy` = `busbar_substrate::plane_host::run_gauntlet_session` (the shipped `admit_open`
-//! authority), `leg_loop` = the dormant `admit_voice_session_via_kernel` (→ `open_gauntlet_via_kernel`)
+//! authority), `leg_loop` = the dormant `admit_streaming_session_via_kernel` (→ `open_gauntlet_via_kernel`)
 //! — on the same input, and asserting:
 //!   (1) PROCEED — identical `Admitted` (correlation), and neither drove (a session opener never routes);
 //!   (2) REFUSE — byte-identical status/headers/body (the plane's own 403);
-//!   (3) MONEY — the admit gate fires ZERO charges on BOTH legs. The voice reserve-on-admit
+//!   (3) MONEY — the admit gate fires ZERO charges on BOTH legs. The streaming reserve-on-admit
 //!       (`cost_reserve`) and per-turn settle (`TurnMeter`) live AFTER the gate inside the plane's
 //!       post-admit open, so a stand-in whose (unreachable) `drive` would record a charge records
 //!       NOTHING on either leg: the kernel admit (empty ZeroHold, Evidence::default, no book) adds
@@ -37,20 +37,20 @@ use busbar_substrate::plane_host::{
     run_gauntlet_session, GauntletPlane, GauntletRequest, VerifyOutcome,
 };
 
-use crate::root::voice_kernel_rider::admit_voice_session_via_kernel;
+use crate::root::streaming_kernel_rider::admit_streaming_session_via_kernel;
 
 /// A faithful stand-in for `busbar-voice`'s crate-private `SessionGauntlet` (topology/mod.rs:234):
 /// `verify_destination` refuses a denied destination with the plane's OWN `403` + body, else proceeds;
 /// `drive` is the session-path-unreachable neutral 500. The `charged` recorder would fire only if the
 /// admit gate ever drove (it never does on the session path) — the shadow asserts it stays empty, which
-/// is the money-free-gate proof: voice's real reserve/turn-settle live AFTER this gate, plane-side.
-struct VoiceSessionStandin {
+/// is the money-free-gate proof: streaming's real reserve/turn-settle live AFTER this gate, plane-side.
+struct StreamingSessionStandin {
     deny: bool,
     charged: Arc<Mutex<u32>>,
 }
 
 #[async_trait::async_trait]
-impl GauntletPlane for VoiceSessionStandin {
+impl GauntletPlane for StreamingSessionStandin {
     fn verify_destination(&self, _req: &GauntletRequest<'_>) -> VerifyOutcome {
         if self.deny {
             VerifyOutcome::Refuse(
@@ -76,7 +76,7 @@ impl GauntletPlane for VoiceSessionStandin {
 }
 
 fn standin(deny: bool, charged: &Arc<Mutex<u32>>) -> Box<dyn GauntletPlane> {
-    Box::new(VoiceSessionStandin {
+    Box::new(StreamingSessionStandin {
         deny,
         charged: Arc::clone(charged),
     })
@@ -102,27 +102,27 @@ async fn split(resp: Response) -> (StatusCode, axum::http::HeaderMap, axum::body
 }
 
 #[test]
-fn voice_kernel_admit_matches_substrate_open_unit_on_proceed() {
+fn streaming_kernel_admit_matches_substrate_open_unit_on_proceed() {
     let gov = busbar_api::PlaneRequestCtx::default();
     let legacy_charged = Arc::new(Mutex::new(0));
     let loop_charged = Arc::new(Mutex::new(0));
 
     let legacy = run_gauntlet_session(req(&gov), standin(false, &legacy_charged))
-        .expect("substrate admits the voice session on proceed");
-    let kernel = admit_voice_session_via_kernel(req(&gov), standin(false, &loop_charged))
-        .expect("kernel admits the voice session on proceed");
+        .expect("substrate admits the streaming session on proceed");
+    let kernel = admit_streaming_session_via_kernel(req(&gov), standin(false, &loop_charged))
+        .expect("kernel admits the streaming session on proceed");
 
     // (1) Same Admitted shape (correlation) — and neither drove (a session opener never routes).
     assert_eq!(
         legacy, kernel,
-        "the admitted voice session shape diverged kernel-vs-substrate"
+        "the admitted streaming session shape diverged kernel-vs-substrate"
     );
 
     // (3) MONEY: the admit gate never drove on either leg — reserve/turn-settle are plane-side, after it.
     assert_eq!(
         *legacy_charged.lock().unwrap(),
         0,
-        "the substrate admit gate must not drive (voice reserve/settle are post-admit, plane-side)"
+        "the substrate admit gate must not drive (streaming reserve/settle are post-admit, plane-side)"
     );
     assert_eq!(
         *loop_charged.lock().unwrap(),
@@ -133,23 +133,23 @@ fn voice_kernel_admit_matches_substrate_open_unit_on_proceed() {
 }
 
 #[tokio::test]
-async fn voice_kernel_admit_matches_substrate_open_unit_on_refuse() {
+async fn streaming_kernel_admit_matches_substrate_open_unit_on_refuse() {
     let gov = busbar_api::PlaneRequestCtx::default();
     let legacy_charged = Arc::new(Mutex::new(0));
     let loop_charged = Arc::new(Mutex::new(0));
 
     let legacy = run_gauntlet_session(req(&gov), standin(true, &legacy_charged))
-        .expect_err("substrate refuses the voice session before any charge");
-    let kernel = admit_voice_session_via_kernel(req(&gov), standin(true, &loop_charged))
-        .expect_err("kernel refuses the voice session before any charge");
+        .expect_err("substrate refuses the streaming session before any charge");
+    let kernel = admit_streaming_session_via_kernel(req(&gov), standin(true, &loop_charged))
+        .expect_err("kernel refuses the streaming session before any charge");
 
     // (2) BYTE-IDENTICAL REFUSAL — the plane's own 403, verbatim on both legs.
     let (ls, lh, lb) = split(legacy).await;
     let (ks, kh, kb) = split(kernel).await;
-    assert_eq!(ls, StatusCode::FORBIDDEN, "the voice plane's own refusal status");
-    assert_eq!(ls, ks, "voice session refusal status diverged kernel-vs-substrate");
-    assert_eq!(lh, kh, "voice session refusal headers diverged kernel-vs-substrate");
-    assert_eq!(lb, kb, "voice session refusal body diverged kernel-vs-substrate");
+    assert_eq!(ls, StatusCode::FORBIDDEN, "the streaming plane's own refusal status");
+    assert_eq!(ls, ks, "streaming session refusal status diverged kernel-vs-substrate");
+    assert_eq!(lh, kh, "streaming session refusal headers diverged kernel-vs-substrate");
+    assert_eq!(lb, kb, "streaming session refusal body diverged kernel-vs-substrate");
 
     // (3) MONEY: a refused open costs zero charge on both legs (verify strictly before any charge).
     assert_eq!(*legacy_charged.lock().unwrap(), 0, "substrate refuse charges nothing");

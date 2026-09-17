@@ -70,6 +70,8 @@ pub mod ledger_identity;
 pub mod migration;
 pub mod policy;
 pub mod registry;
+#[cfg(any(test, feature = "test-harness"))]
+pub mod streaming_kernel_rider;
 pub mod transports;
 #[cfg(feature = "root-a2a")]
 pub mod units_a2a;
@@ -82,5 +84,3 @@ pub mod units_mcp;
 #[cfg(feature = "root-voice")]
 pub mod units_voice;
 pub mod vocabulary;
-#[cfg(any(test, feature = "test-harness"))]
-pub mod voice_kernel_rider;
