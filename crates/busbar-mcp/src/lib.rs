@@ -36,7 +36,15 @@
 /// what it always did. The split is a MOVE: no item changed shape crossing it.
 pub use busbar_mcp_codec::{codec, outputschema, record, sanitize};
 
-pub mod diagnostics;
+/// THE MCP PLANE'S DIAGNOSTICS CATALOG, RE-EXPORTED FROM `busbar-plane-mcp-host`.
+///
+/// The `MCP_*` catalog entries and the `DIAGNOSTICS` slice moved into the plane's impure host crate
+/// (the first byte-safe step of the fat-crate collapse — DECISIONS #19/#20/#21). They are a
+/// self-contained leaf: they name nothing in this crate, so the move is a MOVE with no shape change,
+/// re-exported HERE under the old path so every `busbar_mcp::diagnostics::…` / `crate::diagnostics::…`
+/// caller resolves exactly what it always did.
+pub use busbar_plane_mcp_host::diagnostics;
+
 pub mod mcp;
 
 /// THE SDK-IDENTITY PIN FOR THE CODEC'S WIRE VOCABULARY. It lives here, not in the codec crate,

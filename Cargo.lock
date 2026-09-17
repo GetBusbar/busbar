@@ -748,6 +748,7 @@ dependencies = [
  "busbar-core",
  "busbar-llm",
  "busbar-mcp-codec",
+ "busbar-plane-mcp-host",
  "busbar-plugin",
  "busbar-plugin-loader",
  "busbar-plugin-sign",
@@ -845,6 +846,13 @@ dependencies = [
  "busbar-contract",
  "busbar-mcp-codec",
  "serde_json",
+]
+
+[[package]]
+name = "busbar-plane-mcp-host"
+version = "1.6.0"
+dependencies = [
+ "busbar-substrate",
 ]
 
 [[package]]
