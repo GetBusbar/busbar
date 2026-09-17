@@ -96,7 +96,7 @@ subject_free_ports() {
 # arm). The first honest connect therefore lands `approved`, while the security property this rig
 # actually exercises — the per-tool digest rug-pull on the CAPABILITY axis — still quarantines a
 # changed tool set exactly as before (see the `probe` registration's note). The `cert_spki`/`mtls`
-# enforcement itself is unchanged and stays under test in `crates/busbar-mcp` (`transport_pin_tests`,
+# enforcement itself is unchanged and stays under test in `crates/busbar-plane-mcp-host` (`transport_pin_tests`,
 # which drive a REAL TLS handshake against the throw-away `test_ca`).
 #
 # The server id is `test` and the tools are named without that prefix, because busbar's routing key

@@ -34,7 +34,7 @@
 # plane's own declaration. A candidate must CARRY the plane's grammar to count: the file that
 # declares `pub const PLANE_DECL: … PlaneDecl = …` directly inside it (`a2a/mod.rs`, `mcp/mod.rs` —
 # the composition root's one stable handle onto the plane, per `crates/busbar-a2a/src/lib.rs` and
-# `crates/busbar-mcp/src/mcp/mod.rs`). The codec crate only ever REFERENCES `PLANE_DECL.key`; it
+# `crates/busbar-plane-mcp-host/src/mcp/mod.rs`). The codec crate only ever REFERENCES `PLANE_DECL.key`; it
 # never declares one, so it is not a candidate. Three answers, one of which is a pass:
 #
 #   exactly one   — that is the home, wherever the tree put it. Moving the plane needs no edit here.

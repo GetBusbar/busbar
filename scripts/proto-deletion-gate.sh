@@ -34,7 +34,7 @@
 #                 droppable only as a set.
 #
 # WHAT THE MCP LEG NOW CLAIMS: dropping `plane-mcp` compiles out BOTH halves of MCP — the
-#   protocol codec crate (busbar-mcp) AND the MCP PLANE in `busbar-mcp/src/mcp` (gated by the
+#   protocol codec crate (busbar-mcp) AND the MCP PLANE in `busbar-plane-mcp-host/src/mcp` (gated by the
 #   `busbar-core/plane-mcp` feature the binary's `plane-mcp` forwards). Core names no `crate::mcp`
 #   type in that build, so:
 #     * mcp-b: the binary BUILDS, BOOTS and SERVES its operator surface (/healthz, /stats), and the
@@ -502,7 +502,7 @@ OUT=$(run_busbar "$MCP_DELETED_BIN" --validate 2>&1) \
 note "mcp-b kept dialect: anthropic config validates clean with plane-mcp off"
 
 # ── mcp-c: THE MCP PLANE'S CONFIG SURFACE LEFT WITH IT ──────────────────────────────────────────
-# `plane-mcp` off compiles `busbar-mcp/src/mcp` out, so a `tools:` section names a plane this
+# `plane-mcp` off compiles `busbar-plane-mcp-host/src/mcp` out, so a `tools:` section names a plane this
 # build does not carry. `resolve` REFUSES such a config, naming the SECTION and pointing at the
 # compiled-out plane's feature (rebuild with it, or remove the block) — the config analogue of the
 # protocol registry refusing a deleted dialect. The neutral core cannot name the plane itself: a

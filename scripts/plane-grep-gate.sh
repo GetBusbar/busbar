@@ -114,7 +114,7 @@ NEUTRAL_NEEDLES="$DIALECTS $PLANE_KEYS_PROTOCOL"
 # historical crate name and shed its pure half into a `-codec` crate a PURE kind may name. The gate
 # scans sources, not manifests, so both halves are named or the moved files stop being scanned —
 # which is the failure mode a split invites and the reason these are lists.
-MCP_ROOT="crates/busbar-mcp/src crates/busbar-mcp-codec/src"
+MCP_ROOT="crates/busbar-mcp/src crates/busbar-mcp-codec/src crates/busbar-plane-mcp-host/src"
 MCP_NEEDLES="$DIALECTS $(plane_keys_other mcp)"
 A2A_ROOT="crates/busbar-a2a/src crates/busbar-a2a-codec/src"
 A2A_NEEDLES="$DIALECTS $(plane_keys_other a2a)"
@@ -156,7 +156,7 @@ OPERATION_EXCLUDE="crates/api/src/operation.rs"
 #               `deploy.mcp.0` read). Pinned to the two declarations' own text — the unrelated `mcp`
 #               import at the top of that file matches neither and still trips.
 ALLOWLIST="responses|crates/busbar-core/src/admin/|
-responses|crates/busbar-mcp/src/|
+responses|crates/busbar-plane-mcp-host/src/|
 responses|crates/busbar-a2a/src/|
 anthropic|crates/busbar-substrate/src/config/providers.rs|DEFAULT_PROTOCOL
 mcp|crates/busbar-core/src/config/mod.rs|mcp: McpEndpointSection
