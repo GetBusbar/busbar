@@ -19,7 +19,12 @@ pub mod named_map;
 /// Neutral config-parsing helpers (`parse_duration_secs`, `parse_ceiling`), relocated out of
 /// `admin::`/`admin::v1::contract` (1.6.0 de-vocab): both are consumed by `config_validate` and
 /// `named_map`, not the admin HTTP API. See the module doc.
-pub mod parse;
+///
+/// LANDED in `busbar-core-config` (DECISIONS #5/#19 config neutral-half wave): the helpers name
+/// only the neutral spine, so they moved byte-identically to `busbar_core_config::parse` and are
+/// RE-EXPORTED here so every `crate::config::parse::…` / `busbar_core::config::parse::…` caller is
+/// unchanged.
+pub use busbar_core_config::parse;
 /// The secret-reference type: `{ module, settings }` + the `{env}`/`{file}` sugar.
 pub mod patch;
 /// The 1.6.0-only key PRE-PASS: lift the additive keys off a document before the frozen

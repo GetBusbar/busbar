@@ -38,7 +38,7 @@ pub fn parse_ceiling(subject: &str, token: &str) -> Result<Scope, String> {
              (`{}`), and to grant NO admin authority through this identity source grant no \
              `admin_scope` under its `role_bindings:` — the ceiling caps what a grant can \
              reach, it cannot express the absence of one.",
-            crate::config::DEFAULT_MAX_ADMIN_SCOPE
+            busbar_substrate::config::auth::DEFAULT_MAX_ADMIN_SCOPE
         )
     })
 }
