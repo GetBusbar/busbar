@@ -236,6 +236,55 @@ impl PlaneAnswer {
     }
 }
 
+/// THE PLANE-NEUTRAL IN-FLIGHT ANSWER TABLE (DECISIONS #28), keyed by the unit's `ctx.key`.
+///
+/// The kernel Teller loop (`busbar_kernel::teller::run_unit`) returns only the money/lifecycle
+/// `Ended`; a rider stashes its [`PlaneAnswer`] here at the step that produced it (Route, or a
+/// pre-charge refusal) and the outer async handler reads it back by key AFTER the loop returns —
+/// mirroring `AdminUnitTable` (the admin template, `admin_mount.rs`). NEUTRAL BY CONSTRUCTION: the
+/// key is a bare `u64` (the raw `ctx.key`), so this names no plane, no dialect and no verb, and it
+/// lives in the neutral substrate tier — every rider (mcp first, then a2a/voice/llm) reuses this ONE
+/// table with zero new seam code.
+#[derive(Default)]
+pub struct PlaneInFlight {
+    slots: std::sync::Mutex<std::collections::BTreeMap<u64, Option<PlaneAnswer>>>,
+}
+
+impl PlaneInFlight {
+    /// An empty table.
+    #[must_use]
+    pub fn new() -> Self {
+        PlaneInFlight::default()
+    }
+
+    /// Open a slot for a unit about to run. Idempotent; a re-open clears any prior answer.
+    pub fn open(&self, key: u64) {
+        self.slots
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(key, None);
+    }
+
+    /// Record the unit's answer, at the step that produced it.
+    pub fn store(&self, key: u64, answer: PlaneAnswer) {
+        self.slots
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(key, Some(answer));
+    }
+
+    /// Take the unit's answer out and forget the slot, after the loop returned. `None` if the unit
+    /// produced no answer (a path that never reached the step that stores one).
+    #[must_use]
+    pub fn take(&self, key: u64) -> Option<PlaneAnswer> {
+        self.slots
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&key)
+            .flatten()
+    }
+}
+
 /// A protocol plane's contribution to the shared gauntlet: the pre-admission destination check
 /// (stage 2, sync) and the byte-identical engine that admits, routes, meters and finishes the
 /// request (stages 4+5, async). The SHARED sequence ([`run_gauntlet`]) owns only stage 1 (identity,
@@ -1577,5 +1626,26 @@ mod plane_answer_tests {
         *live.status_mut() = axum::http::StatusCode::CREATED;
         let resp = PlaneAnswer::Live(live).into_response();
         assert_eq!(resp.status(), axum::http::StatusCode::CREATED);
+    }
+
+    #[test]
+    fn plane_in_flight_stores_and_takes_by_key() {
+        use super::PlaneInFlight;
+        let table = PlaneInFlight::new();
+        table.open(7);
+        // Before a store, the slot yields nothing.
+        assert!(table.take(9).is_none());
+        table.store(
+            7,
+            PlaneAnswer::Unary(
+                axum::http::StatusCode::OK,
+                axum::http::HeaderMap::new(),
+                axum::body::Bytes::from_static(b"x"),
+            ),
+        );
+        let taken = table.take(7);
+        assert!(matches!(taken, Some(PlaneAnswer::Unary(..))));
+        // Taken once, gone after.
+        assert!(table.take(7).is_none());
     }
 }

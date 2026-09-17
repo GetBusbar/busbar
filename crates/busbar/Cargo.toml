@@ -295,6 +295,10 @@ openapi-schema = ["busbar-core/openapi-schema", "busbar-admin/openapi-schema", "
 loom-model = ["busbar-core/loom-model"]
 
 [dev-dependencies]
+# The loop-unify shadow-compare test (`root::gauntlet_kernel`) implements a deterministic
+# `GauntletPlane` to drive both the substrate gauntlet and the kernel rider on one input; the trait
+# is `#[async_trait]`, so its test impl needs the macro.
+async-trait = { workspace = true }
 # The root's own llm tests install the plane's seams.
 busbar-llm = { path = "../busbar-llm", features = ["test-support"] }
 # The bin's own unit tests (src/tests/tests.rs, the ~14 boot/CLI helpers) build App fixtures

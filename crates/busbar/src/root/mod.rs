@@ -58,6 +58,7 @@ pub mod adapters;
 pub mod auth_bindings;
 pub mod durability;
 #[cfg(any(test, feature = "test-harness"))]
+pub mod gauntlet_kernel;
 pub mod harness;
 pub mod kernel;
 pub mod ledger_identity;
