@@ -103,7 +103,7 @@ use busbar_substrate::metrics::{KeyUsage, ScrapeGroupBucket, ScrapeKey, ScrapeSo
 // test build only, so the shipped surface gains nothing while the byte-shape batteries still resolve.
 #[cfg(test)]
 use busbar_substrate::metrics::{
-    BUCKET_BUDGET_REMAINING_CENTS, BUCKET_SPEND_CENTS, BUCKET_TOKENS, KEY_SPEND_CENTS,
+    BUCKET_BUDGET_REMAINING_CENTS, BUCKET_SPEND_CENTS, KEY_SPEND_CENTS,
     KEY_TOKENS_TOTAL, LANE_AVAILABLE, LANE_AVAILABLE_PERMITS, LANE_INFLIGHT, LANE_RECOVERY_HINT_MS,
     LANE_STATE, POOL_QUEUED,
 };

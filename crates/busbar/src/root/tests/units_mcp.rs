@@ -927,7 +927,7 @@ fn only_a_served_call_leaves_an_administrative_entry() {
 /// rather than an audit surface that answers under a name the rig does not look for.
 #[test]
 fn the_audit_strings_are_the_codecs_own() {
-    let codec = include_str!("../../../../busbar-mcp/src/mcp/method.rs");
+    let codec = include_str!("../../../../busbar-plane-mcp-host/src/mcp/method.rs");
     assert!(
         codec.contains(&format!("\"{AUDIT_ACTION_TOOL_CALL}\"")),
         "the codec no longer records under {AUDIT_ACTION_TOOL_CALL}"
@@ -941,7 +941,7 @@ fn the_audit_strings_are_the_codecs_own() {
 /// The two scope kinds are the ones the I/O half declares on its own plane row.
 #[test]
 fn the_scope_kinds_are_the_codecs_own() {
-    let codec = include_str!("../../../../busbar-mcp/src/mcp/mod.rs");
+    let codec = include_str!("../../../../busbar-plane-mcp-host/src/mcp/mod.rs");
     assert!(
         codec.contains(&format!(
             "scope_kinds: &[\"{SCOPE_KIND_SERVER}\", \"{SCOPE_KIND_TOOL}\"]"
