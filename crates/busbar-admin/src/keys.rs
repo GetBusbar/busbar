@@ -115,8 +115,8 @@ pub(crate) struct CreateKeyReq {
     /// Token expiry as an absolute Unix-seconds timestamp. Mutually exclusive with `expires_in`.
     #[serde(default)]
     expires_at: Option<u64>,
-    /// When true, ALSO issue an AWS-style access-key-id + secret access key so a client can
-    /// authenticate via inbound SigV4. Both are returned ONCE.
+    /// When true, ALSO issue an AWS-style access-key-id + secret access key (the MinIO/S3-compatible
+    /// model) so a Bedrock-SDK client can authenticate via inbound SigV4. Both are returned ONCE.
     #[serde(default)]
     issue_aws_credential: bool,
 }
