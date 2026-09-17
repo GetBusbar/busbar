@@ -558,6 +558,7 @@ dependencies = [
  "busbar-api",
  "busbar-auth-admin-tokens",
  "busbar-contract",
+ "busbar-core-config",
  "busbar-hooks-ranking",
  "busbar-llm",
  "busbar-mcp",
@@ -626,6 +627,10 @@ dependencies = [
 [[package]]
 name = "busbar-core-config"
 version = "1.6.0"
+dependencies = [
+ "busbar-contract",
+ "busbar-substrate",
+]
 
 [[package]]
 name = "busbar-core-hooks"

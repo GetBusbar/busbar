@@ -27,3 +27,8 @@ name = "busbar_core_config"
 path = "src/lib.rs"
 
 [dependencies]
+# NEUTRAL SPINE ONLY (never busbar-core). `parse` reaches the `<n><unit>` duration parser
+# (`busbar_substrate::duration`), the `DEFAULT_MAX_ADMIN_SCOPE` ceiling default
+# (`busbar_substrate::config::auth`), and the `Scope` authz lattice (`busbar_contract::authz`).
+busbar-substrate = { path = "../busbar-substrate" }
+busbar-contract = { path = "../busbar-contract" }
