@@ -39,7 +39,12 @@ use serde::de::{DeserializeSeed, Deserializer, Error as _, IntoDeserializer, Map
 use serde::Deserialize;
 
 use super::DeployCfg;
-use crate::plane::config::{AgentsSection, McpEndpointSection, StreamsSection, ToolsSection}; // plane-purity: frozen-wire the carrier TYPE names recorded verbatim in config-schema.snapshot.json
+// The `mcp:` endpoint carrier is lifted through the config seam's plane-NEUTRAL spellings
+// (`EndpointSection` / `ENDPOINT_SECTION_KEY`), so this generic lift machinery names no concrete
+// plane (DECISIONS #1). The other carriers are already neutrally named.
+use crate::plane::config::{
+    AgentsSection, EndpointSection, StreamsSection, ToolsSection, ENDPOINT_SECTION_KEY,
+};
 
 /// One lifted key's parse-and-bank step: deserialize the key's value straight into `Target` on the
 /// live (monomorphic) deserializer — never via a rebuilt `serde_yaml::Value` — then bank it into the
@@ -61,10 +66,10 @@ trait LiftableSection: for<'de> Deserialize<'de> {
     fn bank(self, into: &mut Lifted);
 }
 
-impl LiftableSection for McpEndpointSection {
-    const KEY: &'static str = "mcp";
+impl LiftableSection for EndpointSection {
+    const KEY: &'static str = ENDPOINT_SECTION_KEY;
     fn bank(self, into: &mut Lifted) {
-        into.mcp = Some(self); // plane-purity: frozen-wire banks the frozen carrier value
+        into.endpoint = Some(self);
     }
 }
 
@@ -130,7 +135,7 @@ const NESTED_WATCH: &[&str] = &[NESTED_TOP_LEVEL_KEY];
 /// Everything the pre-pass pulled out of one document.
 #[derive(Default)]
 pub(crate) struct Lifted {
-    mcp: Option<McpEndpointSection>, // plane-purity: frozen-wire the frozen carrier field + its snapshot TYPE
+    endpoint: Option<EndpointSection>,
     oauth_as: Option<Option<crate::oauth_as::config::OauthAsCfg>>,
     tools: Option<ToolsSection>,
     agents: Option<AgentsSection>,
@@ -142,9 +147,8 @@ impl Lifted {
     /// Install what was lifted onto the freshly parsed frozen struct. Absent keys leave the
     /// carrier at its `Default`, which is exactly what an omitted section means.
     fn install(self, deploy: &mut DeployCfg) {
-        // plane-purity: frozen-wire reads the frozen carrier slot
-        if let Some(v) = self.mcp {
-            // plane-purity: frozen-wire writes the frozen carrier field
+        if let Some(v) = self.endpoint {
+            // plane-purity: frozen-wire writes the frozen mcp: wire field on DeployCfg
             deploy.mcp = v;
         }
         if let Some(v) = self.oauth_as {
@@ -186,10 +190,7 @@ impl<'de> DeserializeSeed<'de> for LiftedSeed<'_> {
 
     fn deserialize<D: Deserializer<'de>>(self, de: D) -> Result<Self::Value, D::Error> {
         match self.key {
-            // plane-purity: frozen-wire routes the frozen wire KEY to its frozen carrier TYPE
-            k if k == McpEndpointSection::KEY => {
-                McpEndpointSection::deserialize(de)?.bank(self.lifted)
-            }
+            k if k == EndpointSection::KEY => EndpointSection::deserialize(de)?.bank(self.lifted),
             k if k == <Option<crate::oauth_as::config::OauthAsCfg> as LiftableSection>::KEY => {
                 Option::<crate::oauth_as::config::OauthAsCfg>::deserialize(de)?.bank(self.lifted)
             }
