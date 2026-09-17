@@ -680,7 +680,7 @@ begin_group "KERNEL — the Teller loop battery, the capability fixtures and att
 if [ -d crates/busbar-kernel ]; then
   step "busbar-kernel battery"           cargo test -p busbar-kernel --quiet
   step "busbar-caps fixtures"            cargo test -p busbar-caps --quiet
-  step "attempt identity (busbar-llm)"   filtered_cargo_test 1 cargo test -p busbar-llm --quiet attempt_identity
+  step "attempt identity (busbar-llm)"   filtered_cargo_test 2 cargo test -p busbar-llm --quiet attempt_identity
 else
   absent_step "kernel battery" "crates/busbar-kernel"
 fi
