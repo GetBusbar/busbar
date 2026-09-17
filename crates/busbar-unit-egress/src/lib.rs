@@ -57,6 +57,7 @@
 //! [`wire`] so they cannot drift. What goes on the wire is the plane's rendering of them; what is
 //! fixed here is the status, the kind, the words and the wait.
 
+pub mod arity;
 pub mod attempt;
 pub mod exhaustion;
 pub mod pool;
@@ -66,6 +67,7 @@ pub mod select;
 pub mod walk;
 pub mod wire;
 
+pub use arity::{on_primary_unavailable, Arity, PinnedRefusal, Reroute};
 pub use pool::{
     Failover, Member, OnExhausted, Pool, PoolTable, DEFAULT_FAILOVER_CAP,
     DEFAULT_FAILOVER_DEADLINE_SECS,
