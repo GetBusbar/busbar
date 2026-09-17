@@ -295,7 +295,13 @@ root-admin = ["dep:tower"]
 # release build, which is why the surface ceilings do not count it.
 test-harness = []
 auth-admin-tokens = ["busbar-core/auth-admin-tokens", "busbar-admin/auth-admin-tokens"]
-hooks-ranking = ["busbar-core/hooks-ranking"]
+# Forwards to BOTH busbar-core (the engine's ranking hooks) AND busbar-admin (whose relocated v1
+# service gates the `ranking` entry of `/info`.hook_plugins and the plugin-digests trap on its OWN
+# `hooks-ranking` feature). busbar pulls busbar-admin with default-features=false, so without the
+# busbar-admin edge a DEFAULT `cargo build -p busbar` compiles the admin lib with hooks-ranking OFF
+# and the binary drops `ranking` from those surfaces — a 1.5.5 parity divergence. Mirrors the
+# auth-admin-tokens / plane-mcp / plane-a2a forwards above, which already carry the busbar-admin edge.
+hooks-ranking = ["busbar-core/hooks-ranking", "busbar-admin/hooks-ranking"]
 openapi-schema = ["busbar-core/openapi-schema", "busbar-admin/openapi-schema", "busbar-llm?/openapi-schema", "busbar-mcp?/openapi-schema", "busbar-a2a?/openapi-schema", "busbar-streaming?/openapi-schema"]
 loom-model = ["busbar-core/loom-model"]
 
