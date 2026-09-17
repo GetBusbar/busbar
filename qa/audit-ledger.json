@@ -127,6 +127,10 @@
   {
    "glob": "providers.yaml",
    "reason": "the shipped sample provider table"
+  },
+  {
+   "glob": ".keep-proof.toml",
+   "reason": "keep-branch CI-scoping input read by .github/workflows/keep-proof.yml; a keep-branch artefact absent from the integration tree, not shipped code"
   }
  ],
  "scopes": [
@@ -347,6 +351,26 @@
      },
      "report": "shipped voice stub table refuses every client tool reply (critical, fix dispatched); mount_root_voice discards the seal; three load-bearing doc comments false; read fully"
     }
+   ]
+  },
+  {
+   "id": "crates/busbar/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar/src"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar/src/root",
+    "crates/busbar/src/main.rs",
+    "crates/busbar/src/tests"
    ]
   },
   {
@@ -5968,6 +5992,21 @@
    "rounds": []
   },
   {
+   "id": "xtask/tests",
+   "kind": "test",
+   "paths": [
+    "xtask/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
    "id": "scripts",
    "kind": "instrument",
    "paths": [
@@ -6252,6 +6291,21 @@
      "report": "a router example's copy-paste config names a module that does not exist for the in-process shape it claims, when the shipped binary is actually an out-of-process socket server needing different config; its two reference sidecars read peer input with no size cap; and a usage script neither enables strict shell error handling nor checks its cloud CLI's exit status, so a failing query silently reads as empty"
     }
    ]
+  },
+  {
+   "id": "bin",
+   "kind": "instrument",
+   "paths": [
+    "bin"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
   },
   {
    "id": ".github",

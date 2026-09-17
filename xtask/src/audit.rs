@@ -88,7 +88,7 @@ pub fn next_why(status: &str) -> &'static str {
 
 /// Instrument/QA paths that are code too, and are audited as their own scopes. A harness that
 /// decides whether the product is correct is exactly as worth auditing as the product.
-const INSTRUMENT_PATHS: [&str; 7] = [
+const INSTRUMENT_PATHS: [&str; 8] = [
     "scripts",
     "qa",
     ".github/workflows",
@@ -96,6 +96,9 @@ const INSTRUMENT_PATHS: [&str; 7] = [
     ".github/scripts",
     "assets/readme",
     "examples",
+    // `bin/oracle` — the pinned-shadow-oracle glue. An unpinned judge is not a judge, so the
+    // script that installs and pins it is an instrument the audit must cover, not a loose file.
+    "bin",
 ];
 
 /// The crate whose `src/` is split, because its production code is two very different things.
@@ -197,6 +200,11 @@ pub const UNCOVERED_BY_DESIGN: &[(&str, &str)] = &[
     ("config.yaml", "the shipped sample deployment config"),
     ("plugins.yaml", "the shipped sample plugin manifest"),
     ("providers.yaml", "the shipped sample provider table"),
+    (
+        ".keep-proof.toml",
+        "keep-branch CI-scoping input read by .github/workflows/keep-proof.yml; a keep-branch \
+         artefact absent from the integration tree, not shipped code",
+    ),
 ];
 
 // ---------------------------------------------------------------------------------------------
@@ -480,6 +488,20 @@ pub fn derive_scopes(root: &Path) -> Vec<Json> {
                     // clean read of one stand in for the other.
                     prod.push(scope(&format!("{base}/src/root"), "production", &[]));
                     prod.push(scope(&format!("{base}/src/main.rs"), "production", &[]));
+                    // The loose files DIRECTLY in the split crate's `src/` — today
+                    // `src/build_stamp.rs`, the build-provenance derivation `build.rs` `include!`s
+                    // and `main.rs` mounts under `#[cfg(test)]` — are neither the composition root
+                    // nor the entry point, so without a remainder scope a shipped source file sits
+                    // in no scope at all. Same hazard, same fix as the `.github` remainder below.
+                    prod.push(scope(
+                        &format!("{base}/src"),
+                        "production",
+                        &[
+                            format!("{base}/src/root"),
+                            format!("{base}/src/main.rs"),
+                            format!("{base}/src/tests"),
+                        ],
+                    ));
                 } else {
                     prod.push(scope(
                         &format!("{base}/src"),
@@ -511,6 +533,12 @@ pub fn derive_scopes(root: &Path) -> Vec<Json> {
     }
     if root.join("xtask/src/tests").is_dir() {
         tests.push(scope("xtask/src/tests", "test", &[]));
+    }
+    // xtask's INTEGRATION tests — the red-before-green proofs every gate's own selftest rests on.
+    // A crate gets a `tests` scope from the loop above; xtask is hand-rolled here and used to be
+    // missing one, so the eight files that prove the gates can go red sat in no scope at all.
+    if root.join("xtask/tests").is_dir() {
+        tests.push(scope("xtask/tests", "test", &[]));
     }
 
     for p in INSTRUMENT_PATHS {
