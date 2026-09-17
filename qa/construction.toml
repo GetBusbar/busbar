@@ -32,47 +32,37 @@ test_path_fragments = ["/tests/", "_tests.rs", "_test.rs", "/tests.rs"]
 # once. A glob matching no directory today is fine (the kind has no crate yet) — every rule below
 # treats an empty match list as nothing-to-check, not a failure.
 #
-# OWED, per docs/design/PLUGIN-TREE.md (normative for every kind boundary; owner rulings 2026-09-07,
-# ARCHITECTURE.md Appendix A). These are notes for the gate agent, not changes:
-#   * `dialect` is a KIND and has no row here. It lands as `crates/busbar-plane-*-*` once the codec
-#     crates split; its manifest rule is the tightest in the tree — a `busbar-plane-<p>-<d>` crate's
-#     only workspace dependencies are `busbar-contract` and `busbar-plane-<p>`.
-#   * `loader` and `abi` are NOT kinds. They are TCB crates and belong in a separate `tcb_crates`
-#     list; they are here only so they inherit the forbid-unsafe deny row, and counting them is how
-#     this table reaches "10" with a set that is not the owner's ten.
+# THE SEVEN PLUGIN KINDS (DECISIONS #3, locked): store, secret, auth, hook, export, plane,
+# transport. Each has a construction scope below. `unit` scopes core's governance steps; `loader`
+# and `abi` scope the TCB crates the design excuses by name (NOT plugin kinds). `control` and
+# `dialect` are gone (DECISIONS #4/#5): admin/oauth2 are compiled-in cleanliness crates, not a
+# `control` kind, and a dialect is a thing inside a plane with no crate of its own. The old
+# `pure_auth`/`egress_auth` split is collapsed into ONE `auth` key — outbound-sign is an OPERATION of
+# the auth kind (DECISIONS #3), and the outbound-scheme units are scoped by `unit`.
+#
 #   * Kind membership is decided here by DIRECTORY GLOB, and `Plugin::kind()` — the declaration that
 #     should be authoritative — is read by nothing. That is how `crates/secret-ref` (a SecretRef TYPE
 #     crate, no Secret impl) is classified `secret`, and how `crates/hooks-ranking` is classified
-#     `hook` by the directory name while implementing a busbar-api trait. Renaming the fifteen crate
+#     `hook` by the directory name while implementing a busbar-api trait. Renaming the crate
 #     directories to their existing `package.name` (PLUGIN-TREE.md section 7) makes these globs
 #     correct by construction and is the cheap first half of kind-by-declaration.
+#
+# `kind-isolation:truths` reconciles this file, the gate's kind table and qa/kind-isolation.toml, in
+# both directions, on the DECISIONS #3 taxonomy: a key naming a struck kind (control/dialect/
+# egress_auth/pure_auth), or a plugin kind with no key here, is RED.
 [gate.plugin_kinds]
 plane = ["crates/busbar-plane-*"]
-# THE THREE KINDS THIS TABLE DID NOT NAME, added 2026-09-09. ARCHITECTURE.md's kind list is
-# normative and names ten kinds plus the `unit` core row; this table named ten KEYS and three of the
-# eleven were missing from it -- `dialect`, `unit` and `control`. `cargo xtask gate kind-isolation`
-# cross-checked this table in ONE direction (a key here that maps onto no kind in its table was
-# refused), so a kind the design states and this file does not mention was invisible to both.
-# `kind-isolation:truths` compares the three vocabularies in both directions now.
-#
-# `dialect` has no crate yet: the pre-split dialects are the `*-codec` crates and the rename that
-# splits them into `busbar-plane-<plane>-<dialect>` is what creates the first one. The glob is
-# written for the shape it will have, and a kind whose glob matches nothing is a kind with no crate
-# rather than a rule switched off -- which is exactly the case `kind-isolation:truths` now watches.
-dialect = ["crates/busbar-plane-*-*"]
-# `control` is the tenth kind (owner ruling 2026-09-08). Its one member is `busbar-plane-admin`,
-# whose NAME says plane and which is not one; the R7 rename makes it `busbar-control-admin`. The
-# declaration lives in qa/kind-isolation.toml's [[registered]] row, which is where PLUGIN-TREE.md
-# has said it lives since it was written.
-control = ["crates/busbar-control-*"]
-unit = ["crates/busbar-unit-*"]
-hook = ["crates/hook*"]
-pure_auth = ["crates/auth-*"]
-egress_auth = ["crates/egress-auth-*"]
-secret = ["crates/secret-*"]
-store = ["crates/store-*"]
-export = ["crates/export-*"]
 transport = ["crates/busbar-transport-*"]
+store = ["crates/store-*"]
+secret = ["crates/secret-*"]
+hook = ["crates/hook*"]
+# ONE auth kind. Inbound-verify and outbound-sign are two OPERATIONS of it (DECISIONS #3), not two
+# kinds: the auth PLUGINS live at crates/auth-*; the outbound-scheme units (busbar-unit-egress-auth,
+# …) are `unit` kind, scoped by `unit` below.
+auth = ["crates/auth-*"]
+export = ["crates/export-*"]
+# NON-PLUGIN-KIND infra families: unit (core governance steps), loader and abi (TCB crates).
+unit = ["crates/busbar-unit-*"]
 loader = ["crates/plugin-loader"]
 abi = ["crates/busbar-contract"]
 

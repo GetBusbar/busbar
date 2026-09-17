@@ -107,10 +107,13 @@ pub const LEDGER: &str = "qa/kind-isolation.toml";
 /// whose extension is not on [`BINARY_EXTS`], which is 1 707 of them today.
 const MIN_SCANNED: usize = 600;
 
-/// LAW 0/1: the plugin-INSTANCE vocabularies a NEUTRAL crate may name ZERO times.
-/// `codec`/`legacy` are the pre-split dialect halves and retiring crates — they drain
-/// on the ordinary ratchet; when the rename lands `codec` folds into `dialect`.
-const INSTANCE_VOCAB_KINDS: &[&str] = &["plane", "control", "transport", "dialect"];
+/// LAW 0/1: the plugin-INSTANCE vocabularies a NEUTRAL crate may name ZERO times. These are the two
+/// families the kind table gives an instance vocabulary (`Family::Plane`, `Family::Transport`).
+/// `control` and `dialect` are gone (DECISIONS #4/#5): control is not a kind, and a dialect is a
+/// thing inside a plane whose vendor-name confinement lives in `plane-purity`, not a kind column
+/// here. `codec`/`legacy` are the pre-split plane halves and retiring crates — they drain on the
+/// ordinary ratchet.
+const INSTANCE_VOCAB_KINDS: &[&str] = &["plane", "transport"];
 
 /// LAW 0/1 readiness: the neutral crates ENFORCED at ceiling 0 in the EVERYDAY
 /// (`ship: false`) gate. Starts empty. A crate belongs here the moment its measured
@@ -225,32 +228,10 @@ fn vocabulary(crates: &[CrateInfo]) -> BTreeMap<&'static str, Vec<Needle>> {
             }
         }
     }
-    // THE `dialect` KIND'S VOCABULARY IS NOT ITS CRATES', BECAUSE IT HAS NONE YET.
-    //
-    // Every other kind above derives its needles from the census, which works because every other
-    // kind has members. `dialect` lands as `busbar-plane-<plane>-<dialect>` once the codec split
-    // finishes; until then the census contributes nothing and the matrix carried no `dialect`
-    // column at all. A red team walked through that gap with `const VD = "anthropic";` and
-    // `fn openai_shim()` in `busbar-store-memory` and got six green gates.
-    //
-    // A dialect's vocabulary is its VENDOR NAME — that is what the `<dialect>` segment of the name
-    // will be, and it is the word already in the tree today. So the needles are the DIALECT rule's
-    // own list, imported rather than copied: `plane-purity`'s scanner is the one place the vendor
-    // names are written down, and a hand list here would be a second place to keep in step. When a
-    // real `busbar-plane-llm-anthropic` lands, the loop above contributes its package name and its
-    // kind-qualified id on top of these, and the dedup below keeps one of each.
-    {
-        let entry = out.entry("dialect").or_default();
-        for d in crate::gates::plane_purity::scanner::DIALECTS {
-            entry.push(Needle {
-                word: d.to_lowercase(),
-                // No owner and no id: a vendor name is not a crate's own spelling of itself, so
-                // there is no crate for `needles_for` to strike it from.
-                owner: String::new(),
-                id: String::new(),
-            });
-        }
-    }
+    // DIALECT IS NOT A KIND (DECISIONS #4), so the matrix measures no `dialect` column. The
+    // vendor-name confinement — a plane may name its own dialects' vendor names, nothing else may —
+    // lives in `plane-purity`'s scanner (the one place the vendor names are written down), and is not
+    // duplicated here as a kind column.
 
     let names: Vec<Vec<String>> = crates
         .iter()
@@ -525,17 +506,8 @@ fn measure(cx: &Ctx, crates: &[CrateInfo]) -> Result<Measured, String> {
     for c in crates {
         let mut p = Plan::default();
         for (kind, words) in &vocab {
-            // A PLANE MAY SAY ITS OWN DIALECTS' NAMES, AND NOTHING ELSE MAY.
-            //
-            // The dialect vocabulary is the one column whose needles do not come from the census,
-            // so it is the one column with no owner to strike itself out. A plane crate IS where
-            // the vendor names live until the split lands, and a dialect crate is the vendor name;
-            // for those two kinds the column is not a coupling and is not measured. For every
-            // other kind — neutral, unit, store, transport, codec, control, root — a vendor name
-            // is another kind's vocabulary on exactly the terms every other cell is scored on.
-            if *kind == "dialect" && matches!(c.kind, Some("plane") | Some("dialect")) {
-                continue;
-            }
+            // `dialect` is not a kind (DECISIONS #4) and no longer a column; the vendor-name
+            // confinement is `plane-purity`'s. Every column here comes from the census.
             for n in needles_for(words, c) {
                 let parts = needle_segments(&n.word);
                 if parts.is_empty() {

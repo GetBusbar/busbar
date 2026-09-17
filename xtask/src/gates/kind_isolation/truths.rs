@@ -1,34 +1,30 @@
 //! `kind-isolation:truths` — THE THREE PLACES THAT NAME THE PLUGIN KINDS SAY THE SAME THING.
 //!
-//! There are three statements of the taxonomy in this repository and nothing compared them:
+//! DECISIONS #3 (locked) concluded the taxonomy: **seven plugin kinds** — store, secret, auth,
+//! hook, export, plane, transport. `auth` is ONE kind (inbound-verify and outbound-sign are
+//! OPERATIONS of it; there is no separate `egress-auth` kind). `transport` is ONE kind. `control`
+//! (admin/oauth2 = cleanliness crates, #5) and `dialect` (a thing INSIDE a plane, #4) are NOT
+//! kinds; `unit`/`loader`/`abi` are core/TCB infra, not plugin kinds.
 //!
-//! * `docs/design/ARCHITECTURE.md` is normative and states TEN kinds — plane, dialect, transport,
-//!   **control**, auth, egress-auth, store, secret, hook, export — plus one core row, `unit`;
-//! * the gate's own kind table is the MATCHER, which decides what a crate name resolves to;
-//! * `qa/construction.toml [gate.plugin_kinds]` is the SCOPE, which decides which directories each
-//!   kind's construction rules read.
+//! Three statements of that taxonomy live in this repository and nothing else compares them:
+//!
+//! * the gate's own KIND TABLE (`xtask/src/gates/kind_isolation.rs`), the MATCHER, which decides
+//!   what a crate name resolves to — handed in as `table_kinds`;
+//! * `qa/construction.toml [gate.plugin_kinds]`, the SCOPE, which decides which directories each
+//!   plugin kind's construction rules read;
+//! * `qa/kind-isolation.toml`, the LEDGER, whose `[[cell]]`/`[[edge]]` rows name a kind per row.
 //!
 //! They are not three copies of one list — each is for something different — and that is exactly why
-//! they could drift. On the base this row was written against, `[gate.plugin_kinds]` named ten keys
-//! and had no `dialect`, no `unit` and no `control`: three of the eleven kinds the design states had
-//! NO construction scope at all, and all three files reported green about a taxonomy none of them
-//! shared. This row compares them, in both directions, and any disagreement is RED.
+//! they could drift. This row compares them, in both directions, against the CONCLUDED 7-kind model,
+//! and any disagreement is RED. The design doc (`ARCHITECTURE.md`) is owned elsewhere and is NOT a
+//! left-hand side here: the code and its two data files must agree among themselves, on the decision
+//! DECISIONS #3 locked, without waiting on prose.
 //!
-//! The two translation tables ([`ARCH_KIND_KEYS`] here and the gate's `CONSTRUCTION_KIND_KEYS`) are
-//! the only place a difference of SPELLING is allowed to live, and every entry of each is
-//! stale-checked: a translation whose left side is no longer in the document, or whose right side is
-//! no longer in the table, is itself a finding — the rule every waiver in this tree is held to.
-//!
-//! ## THE DIRECTION THAT WAS MISSING
-//!
-//! The registry row already refused a `[gate.plugin_kinds]` key that maps onto no kind here. The
-//! REVERSE was unchecked, and the hole was measured: deleting `plane = [...]` from
-//! `[gate.plugin_kinds]` left this gate GREEN and left the construction gate's failing-row count
-//! unchanged, because a kind with no globs reads as "the kind simply has no crate yet" and every
-//! rule scoped by it then scans the empty set and reports clean. That is the passing answer to a
-//! rule that has been switched off, and it is what `missing-construction-kind` is for.
+//! The stale 10-kind model reached this row through `control`, `dialect` and the
+//! `egress-auth`/`pure_auth` split. Each is now a NAMED REFUSAL ([`FORBIDDEN_KINDS`]): a table row,
+//! a construction key or a ledger row that still names one is the drift, reported by name.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 use crate::ctx::Ctx;
 use crate::ledger::Row;
@@ -37,47 +33,28 @@ use super::{CrateInfo, CONSTRUCTION_KIND_KEYS};
 
 pub const ROW_TRUTHS: &str = "kind-isolation:truths";
 
-/// The normative kind list, and the file that carries it.
-pub const ARCH: &str = "docs/design/ARCHITECTURE.md";
+/// The two data files the code is reconciled against.
 pub const CONSTRUCTION: &str = "qa/construction.toml";
+pub const LEDGER: &str = "qa/kind-isolation.toml";
 
-/// The sentence the list is read out of. Anchored on its own words rather than on a section number,
-/// so renumbering the document does not silently turn this row into a reader of nothing.
-const KINDS_OPEN: &str = "plugin kinds** —";
-const KINDS_CLOSE: &str = "— and one core row,";
-
-/// The document's word for a kind, mapped onto the kind table's name for it.
-///
-/// Only two differ, and both differences are old: the document writes `hook` where the table writes
-/// `hooks`, and it splits `auth` from `egress-auth` where the table has one `auth` kind whose
-/// members are both. Every entry is stale-checked in both directions by [`rule_truths`].
-const ARCH_KIND_KEYS: &[(&str, &str)] = &[
-    ("plane", "plane"),
-    ("dialect", "dialect"),
-    ("transport", "transport"),
-    ("control", "control"),
-    ("auth", "auth"),
-    ("egress-auth", "auth"),
-    ("store", "store"),
-    ("secret", "secret"),
-    ("hook", "hooks"),
-    ("export", "export"),
-    ("unit", "unit"),
+/// DECISIONS #3 (locked): the SEVEN plugin kinds, in the gate's own spelling (the design writes
+/// `hook`; the table writes `hooks`). Every one must be a row of the kind table and must have a
+/// construction scope, or a plugin kind is a kind nothing measures.
+const PLUGIN_KINDS: &[&str] = &[
+    "store",
+    "secret",
+    "auth",
+    "hooks",
+    "export",
+    "plane",
+    "transport",
 ];
 
-/// The sentence that names the crates the design deliberately does NOT make kinds.
-const TCB_CLOSE: &str = "are TCB crates, not kinds";
-
-/// The number words the document is allowed to count in. A list whose length does not match the word
-/// in front of it is a list somebody added to without re-reading the sentence.
-const NUMBER_WORDS: &[(&str, usize)] = &[
-    ("eight", 8),
-    ("nine", 9),
-    ("ten", 10),
-    ("eleven", 11),
-    ("twelve", 12),
-    ("thirteen", 13),
-];
+/// The words the STALE 10-kind model named as kinds and DECISIONS #3/#4/#5 struck. None of the three
+/// vocabularies may name any of them: `control` and `dialect` are not kinds, and the auth kind has
+/// no separate `egress-auth` (the `pure_auth`/`egress_auth` construction split is collapsed into one
+/// `auth`). Each spelling the data files could carry is listed so the refusal names it.
+const FORBIDDEN_KINDS: &[&str] = &["control", "dialect", "egress-auth", "egress_auth", "pure_auth"];
 
 /// THE ROW. `table_kinds` is the gate's own kind table, handed in rather than read here so this
 /// module cannot drift from the table it is reconciling.
@@ -85,67 +62,30 @@ pub fn rule_truths(cx: &Ctx, table_kinds: &[&str], crates: &[CrateInfo]) -> Row 
     let mut findings: Vec<String> = Vec::new();
     let table: BTreeSet<&str> = table_kinds.iter().copied().collect();
 
-    // ── truth 1: the document ───────────────────────────────────────────────────────────────────
-    let arch_text = cx.read(ARCH).unwrap_or_default();
-    let doc_kinds = match cx
-        .read(ARCH)
-        .map_err(|e| e.to_string())
-        .and_then(|t| arch_kinds(&t))
-    {
-        Ok(k) => k,
-        Err(e) => {
-            return Row::fail(
-                ROW_TRUTHS,
-                "the normative kind list could not be read at all",
-                format!(
-                    "{ARCH}: {e} — the taxonomy's own statement of itself is the left-hand side of \
-                     every comparison below, and a comparison against nothing is not one that \
-                     passed"
-                ),
-            )
-        }
-    };
-    // THE TWO KEYS THE DESIGN EXCUSES BY NAME. `loader` and `abi` are `[gate.plugin_kinds]` keys
-    // and the document says in the same paragraph as the kind list that they are TCB crates and NOT
-    // kinds — so demanding they be in the list would be demanding the document contradict itself.
-    // The excuse is READ FROM THE DOCUMENT rather than written here, so a key that stops being
-    // excused there stops being excused here on the same commit.
-    let tcb = arch_tcb(&arch_text);
-    let arch_map: BTreeMap<&str, &str> = ARCH_KIND_KEYS.iter().copied().collect();
-    for word in &doc_kinds {
-        match arch_map.get(word.as_str()) {
-            Some(kind) if table.contains(kind) => {}
-            Some(kind) => findings.push(format!(
-                "no-table-row\t{ARCH}\t`{word}` is normative and maps onto `{kind}`, which is in no \
-                 row of the kind table — a kind the design states and the gate cannot recognise is \
-                 a kind nothing measures"
-            )),
-            None => findings.push(format!(
-                "untranslated-kind\t{ARCH}\t`{word}` is in the normative list and this gate has no \
-                 word for it; add it to the kind table and to ARCH_KIND_KEYS, or the design and the \
-                 instrument are two taxonomies"
-            )),
-        }
-    }
-    for (word, kind) in ARCH_KIND_KEYS {
-        if !doc_kinds.iter().any(|w| w == word) {
+    // ── truth 1: the KIND TABLE ─────────────────────────────────────────────────────────────────
+    for pk in PLUGIN_KINDS {
+        if !table.contains(pk) {
             findings.push(format!(
-                "stale-translation\tARCH_KIND_KEYS\t`{word}` -> `{kind}` translates a word the \
-                 normative list no longer uses; strike it"
+                "no-table-row\tKIND TABLE\t`{pk}` is one of the seven plugin kinds (DECISIONS #3) \
+                 and is in no row of the kind table — a kind the decision states and the gate \
+                 cannot recognise is a kind nothing measures"
             ));
         }
-        if !table.contains(kind) {
+    }
+    for bad in FORBIDDEN_KINDS {
+        if table.contains(bad) {
             findings.push(format!(
-                "stale-translation\tARCH_KIND_KEYS\t`{word}` -> `{kind}` names no row of the kind \
-                 table; strike it or restore the row"
+                "forbidden-kind\tKIND TABLE\t`{bad}` is not a kind (DECISIONS #3/#4/#5) and the \
+                 kind table still carries a row for it; strike the row"
             ));
         }
     }
 
-    // ── truth 3: the ceilings file, in BOTH directions ──────────────────────────────────────────
+    // ── truth 2: the CONSTRUCTION ceilings, in BOTH directions ───────────────────────────────────
     match cx.read(CONSTRUCTION) {
         Ok(text) => {
             let keys = super::plugin_kind_keys(&text);
+            // Every CONSTRUCTION_KIND_KEYS translation is stale-checked both ways.
             for (key, kind) in CONSTRUCTION_KIND_KEYS {
                 if !keys.iter().any(|k| k == key) {
                     findings.push(format!(
@@ -161,42 +101,64 @@ pub fn rule_truths(cx: &Ctx, table_kinds: &[&str], crates: &[CrateInfo]) -> Row 
                          row of the kind table; strike it or restore the row"
                     ));
                 }
-                if !tcb.iter().any(|t| t == key)
-                    && !doc_kinds
-                        .iter()
-                        .any(|w| arch_map.get(w.as_str()) == Some(kind))
-                {
+            }
+            // A construction key that maps onto no kind here is the second vocabulary drifting, and
+            // a key naming a FORBIDDEN kind is the stale taxonomy surviving in the ceilings file.
+            let mapped: BTreeSet<&str> = CONSTRUCTION_KIND_KEYS.iter().map(|(k, _)| *k).collect();
+            for key in &keys {
+                if FORBIDDEN_KINDS.contains(&key.as_str()) {
                     findings.push(format!(
-                        "unstated-construction-kind\t{ARCH}\t[gate.plugin_kinds] scopes `{key}` to \
-                         the `{kind}` kind, and the normative kind list neither names that kind nor \
-                         excuses `{key}` as a TCB crate"
+                        "forbidden-construction-kind\t{CONSTRUCTION}\t[gate.plugin_kinds] declares \
+                         `{key}`, which DECISIONS #3/#4/#5 struck as a kind; strike the key"
+                    ));
+                } else if !mapped.contains(key.as_str()) {
+                    findings.push(format!(
+                        "unmapped-construction-kind\t{CONSTRUCTION}\t[gate.plugin_kinds] declares \
+                         `{key}`, which maps onto no kind in CONSTRUCTION_KIND_KEYS; map it or \
+                         strike it"
+                    ));
+                }
+            }
+            // EVERY PLUGIN KIND HAS A CONSTRUCTION SCOPE. A plugin kind with no `[gate.plugin_kinds]`
+            // key is a kind no construction rule reads a single file of.
+            let scoped: BTreeSet<&str> = CONSTRUCTION_KIND_KEYS.iter().map(|(_, k)| *k).collect();
+            for pk in PLUGIN_KINDS {
+                if !scoped.contains(pk) {
+                    findings.push(format!(
+                        "unscoped-plugin-kind\t{CONSTRUCTION}\t`{pk}` is a plugin kind (DECISIONS \
+                         #3) and [gate.plugin_kinds] scopes no directory to it, so no construction \
+                         rule reads a single file of it"
                     ));
                 }
             }
         }
         Err(e) => findings.push(format!(
-            "unreadable\t{CONSTRUCTION}\t{e} — the third vocabulary cannot be compared"
+            "unreadable\t{CONSTRUCTION}\t{e} — the second vocabulary cannot be compared"
         )),
     }
 
-    // ── EVERY KIND THE DESIGN STATES HAS A CONSTRUCTION SCOPE ───────────────────────────────────
-    //
-    // The kind table carries rows the design does not state as plugin kinds — `kernel`, `caps`,
-    // `contract`, `root`, the retiring `legacy` spine — and that is correct: they are what the
-    // matcher needs in order to say what a crate is NOT. The claim that must hold in the other
-    // direction is narrower and is the one that was false: a kind the DESIGN states, with no
-    // `[gate.plugin_kinds]` key, is a kind no construction rule reads a single file of.
-    let construction: BTreeSet<&str> = CONSTRUCTION_KIND_KEYS.iter().map(|(_, k)| *k).collect();
-    let stated: BTreeSet<&str> = doc_kinds
-        .iter()
-        .filter_map(|w| arch_map.get(w.as_str()).copied())
-        .collect();
-    for kind in stated.iter().filter(|k| !construction.contains(*k)) {
-        findings.push(format!(
-            "unscoped-kind\t{CONSTRUCTION}\t`{kind}` is a kind the design states and \
-             [gate.plugin_kinds] scopes no directory to it, so no construction rule reads a single \
-             file of it"
-        ));
+    // ── truth 3: the LEDGER, which must not carry the stale taxonomy ──────────────────────────────
+    match cx.read(LEDGER) {
+        Ok(text) => {
+            for (kind, count) in ledger_kinds(&text) {
+                if FORBIDDEN_KINDS.contains(&kind.as_str()) {
+                    findings.push(format!(
+                        "forbidden-ledger-kind\t{LEDGER}\t{count} row(s) name the kind `{kind}`, \
+                         which DECISIONS #3/#4/#5 struck; strike the rows — the ledger is measuring \
+                         a kind the taxonomy no longer has"
+                    ));
+                } else if !table.contains(kind.as_str()) {
+                    findings.push(format!(
+                        "unknown-ledger-kind\t{LEDGER}\t{count} row(s) name the kind `{kind}`, \
+                         which is in no row of the kind table; the ledger and the matcher are two \
+                         taxonomies"
+                    ));
+                }
+            }
+        }
+        Err(e) => findings.push(format!(
+            "unreadable\t{LEDGER}\t{e} — the third vocabulary cannot be compared"
+        )),
     }
 
     findings.sort();
@@ -205,11 +167,12 @@ pub fn rule_truths(cx: &Ctx, table_kinds: &[&str], crates: &[CrateInfo]) -> Row 
         let live: BTreeSet<&str> = crates.iter().filter_map(|c| c.kind).collect();
         return Row::pass(
             ROW_TRUTHS,
-            "the design, the kind table and the ceilings file name the same kinds",
+            "the kind table, the construction ceilings and the kind-isolation ledger name the same \
+             seven plugin kinds and infra families",
             format!(
-                "{} normative kind(s), {} table row(s), {} construction key(s), {} kind(s) live in \
-                 the census — reconciled in both directions",
-                doc_kinds.len(),
+                "{} plugin kind(s), {} table row(s), {} construction key(s), {} kind(s) live in the \
+                 census — reconciled on the DECISIONS #3 taxonomy in all three vocabularies",
+                PLUGIN_KINDS.len(),
                 table.len(),
                 CONSTRUCTION_KIND_KEYS.len(),
                 live.len()
@@ -218,93 +181,57 @@ pub fn rule_truths(cx: &Ctx, table_kinds: &[&str], crates: &[CrateInfo]) -> Row 
     }
     Row::fail(
         ROW_TRUTHS,
-        "the three places that name the plugin kinds do not agree",
+        "the three places that name the plugin kinds do not agree on the DECISIONS #3 taxonomy",
         format!("{} finding(s): {}", findings.len(), findings.join(" | ")),
     )
 }
 
-/// The normative kind list, read out of the sentence that states it.
-///
-/// THE COUNT WORD IS READ TOO. "ten plugin kinds" in front of eleven names is the drift this is
-/// most likely to catch, because adding a kind to the list is a smaller edit than re-reading the
-/// sentence around it.
-pub fn arch_kinds(text: &str) -> Result<Vec<String>, String> {
-    let open = text.find(KINDS_OPEN).ok_or_else(|| {
-        format!(
-            "no sentence containing `{KINDS_OPEN}` — the normative list has been reworded, and this \
-             row is reading nothing"
-        )
-    })?;
-    let rest = &text[open + KINDS_OPEN.len()..];
-    let close = rest
-        .find(KINDS_CLOSE)
-        .ok_or_else(|| format!("the list opened and no `{KINDS_CLOSE}` closed it"))?;
-    let mut kinds: Vec<String> = rest[..close]
-        .split(',')
-        .map(|s| s.trim().trim_matches('*').trim().to_string())
-        .filter(|s| !s.is_empty())
-        .collect();
-    if kinds.is_empty() {
-        return Err("the normative list is empty".to_string());
-    }
-
-    // The count word sits immediately before `plugin kinds**`, inside the same emphasis.
-    let head = &text[..open];
-    let word = head
-        .rsplit(|c: char| !c.is_ascii_alphabetic())
-        .find(|w| !w.is_empty())
-        .unwrap_or("");
-    // A LIST WITH NO STATED SIZE HAS NOTHING TO CHECK AGAINST, so a sentence that does not count
-    // is refused before the list it introduces is read as agreement.
-    let Some((word_read, stated)) = NUMBER_WORDS.iter().find(|(w, _)| *w == word) else {
-        return Err(format!(
-            "`{word}` is not a number word this row can count in; the sentence must state how many \
-             kinds it is about, or the list has no stated size to check against"
-        ));
-    };
-    if *stated != kinds.len() {
-        return Err(format!(
-            "the sentence says `{word_read}` and lists {} — a list somebody added to without \
-             re-reading the sentence in front of it",
-            kinds.len()
-        ));
-    }
-
-    // The core row is named after the list and is a kind for every purpose this gate has.
-    let tail = &rest[close + KINDS_CLOSE.len()..];
-    if let Some(core) = tail.split('`').nth(1) {
-        if !core.trim().is_empty() {
-            kinds.push(core.trim().to_string());
+/// The kinds a ledger names, with how many rows name each. ONLY the tables whose fields are KINDS are
+/// read: a `[[cell]]`'s `kind`, an `[[edge]]`'s `from` and `to`, and a `[[registered]]`/`[[announced]]`
+/// row's `kind`. `[[dep]]` and `[[transitional]]` carry CRATE names in their `from`/`to`, not kinds,
+/// so they are skipped — reading them would report every crate as an unknown kind. Read as a bag so a
+/// stale-taxonomy word is reported with its weight rather than once.
+fn ledger_kinds(text: &str) -> Vec<(String, usize)> {
+    use std::collections::BTreeMap;
+    let mut counts: BTreeMap<String, usize> = BTreeMap::new();
+    let mut table = "";
+    for raw in text.lines() {
+        let t = raw.trim();
+        if t.starts_with("[[") {
+            table = t.trim_start_matches("[[").trim_end_matches("]]").trim();
+            continue;
         }
+        if t.starts_with('[') {
+            table = "";
+            continue;
+        }
+        if t.starts_with('#') {
+            continue;
+        }
+        let Some((k, v)) = t.split_once('=') else {
+            continue;
+        };
+        let key = k.trim();
+        let is_kind_field = match table {
+            "cell" | "registered" | "announced" => key == "kind",
+            "edge" => key == "from" || key == "to",
+            _ => false,
+        };
+        if !is_kind_field {
+            continue;
+        }
+        let word = v.trim().trim_matches('"').trim();
+        if word.is_empty() {
+            continue;
+        }
+        *counts.entry(word.to_string()).or_default() += 1;
     }
-    Ok(kinds)
+    counts.into_iter().collect()
 }
 
-/// The `[gate.plugin_kinds]` keys the document excuses from being kinds, read out of its own
-/// sentence: "`loader` and `abi` are TCB crates, not kinds".
-pub fn arch_tcb(text: &str) -> Vec<String> {
-    let Some(at) = text.find(TCB_CLOSE) else {
-        return Vec::new();
-    };
-    // The names are the backticked words immediately before the clause; take the last few ticks of
-    // the line rather than the whole document.
-    let head = &text[..at];
-    let line_start = head.rfind('\n').map(|i| i + 1).unwrap_or(0);
-    head[line_start..]
-        .split('`')
-        .skip(1)
-        .step_by(2)
-        .map(str::trim)
-        .filter(|w| !w.is_empty())
-        .map(str::to_string)
-        .collect()
-}
-
-/// THE RED PROOFS, one per disagreement the row is written to catch.
-///
-/// Each plants the DOCUMENT the truth lives in rather than the code that reads it, because the
-/// finding is always about a document having drifted from the other two — a plant in the reader
-/// would prove the reader can be broken, which is not the claim.
+/// THE RED PROOFS, one per disagreement the row is written to catch. Each plants the DATA FILE the
+/// drift would live in rather than the code that reads it, because the finding is always about a
+/// data file having drifted from the code the decision is encoded in.
 pub fn selftest<'a>(
     cx: &Ctx,
     gate: &'a dyn crate::gates::Gate,
@@ -316,18 +243,18 @@ pub fn selftest<'a>(
     report.push(prove_rows_green(
         cx,
         gate,
-        "on this tree the design, the kind table and the ceilings file name the same kinds",
+        "on this tree the table, the ceilings and the ledger name the same seven plugin kinds",
         &[ROW_TRUTHS],
         Overlay::new(),
     ));
 
-    // THE MEASURED HOLE. Deleting `plane = [...]` from `[gate.plugin_kinds]` left this gate GREEN
-    // and left the construction gate's failing-row count unchanged: every rule scoped by that key
-    // scanned the empty set and reported clean.
+    // THE MEASURED HOLE. Deleting a plugin kind's key from `[gate.plugin_kinds]` left this gate
+    // GREEN and left the construction gate's failing-row count unchanged: every rule scoped by that
+    // key scanned the empty set and reported clean.
     if let Ok(text) = cx.read(CONSTRUCTION) {
         let cut: String = text
             .lines()
-            .filter(|l| !l.starts_with("plane = ["))
+            .filter(|l| !l.trim_start().starts_with("plane = ["))
             .collect::<Vec<_>>()
             .join("\n");
         let mut ov = Overlay::new();
@@ -335,7 +262,7 @@ pub fn selftest<'a>(
         report.push(prove_rows_red(
             cx,
             gate,
-            "a kind vocabulary key that vanished from the ceilings file is refused",
+            "a plugin-kind key that vanished from the ceilings file is refused",
             &[ROW_TRUTHS],
             ov,
             &["missing-construction-kind", "`plane`"],
@@ -346,22 +273,47 @@ pub fn selftest<'a>(
         );
     }
 
-    // THE DOCUMENT'S OWN SENTENCE. Striking a kind from the normative list without re-reading the
-    // count word in front of it is the likelier drift, and it is the one this catches first.
-    if let Ok(text) = cx.read(ARCH) {
+    // THE STALE TAXONOMY SURVIVING IN THE CEILINGS FILE. A `control` or `dialect` key is the
+    // 10-kind model coming back, and DECISIONS #4/#5 struck both.
+    if let Ok(text) = cx.read(CONSTRUCTION) {
         let mut ov = Overlay::new();
-        ov.set(ARCH, text.replace(", **control**,", ","));
+        ov.set(
+            CONSTRUCTION,
+            text.replace(
+                "[gate.plugin_kinds]\n",
+                "[gate.plugin_kinds]\ndialect = [\"crates/busbar-plane-*-*\"]\n",
+            ),
+        );
         report.push(prove_rows_red(
             cx,
             gate,
-            "a normative kind list that no longer matches its own count is refused, never half-read",
+            "a struck kind re-declared as a construction scope is refused (dialect is not a kind)",
             &[ROW_TRUTHS],
             ov,
-            &["says `ten` and lists 9", "could not be read at all"],
+            &["forbidden-construction-kind", "dialect"],
         ));
     } else {
-        report
-            .note_infra_failure("ARCHITECTURE.md could not be read, so the list cannot be planted");
+        report.note_infra_failure("the ceilings file could not be read, so it cannot be planted");
+    }
+
+    // THE STALE TAXONOMY SURVIVING IN THE LEDGER. A `[[cell]]` naming the `control` kind is the
+    // matrix measuring a kind the taxonomy no longer has.
+    if let Ok(text) = cx.read(LEDGER) {
+        let mut ov = Overlay::new();
+        ov.set(
+            LEDGER,
+            format!("{text}\n[[cell]]\ncrate = \"busbar-admin\"\nkind = \"control\"\ncount = \"1\"\n"),
+        );
+        report.push(prove_rows_red(
+            cx,
+            gate,
+            "a ledger row naming a struck kind is refused (control is not a kind)",
+            &[ROW_TRUTHS],
+            ov,
+            &["forbidden-ledger-kind", "control"],
+        ));
+    } else {
+        report.note_infra_failure("the ledger could not be read, so it cannot be planted");
     }
 
     registry_selftest(cx, gate, report);
@@ -371,11 +323,7 @@ pub fn selftest<'a>(
 ///
 /// `kind-isolation:registry` is one row over many independent refusals, and only some of them had a
 /// plant. That is the shape of an honest-looking selftest that is not one: gutting a whole rule is
-/// caught, because the row stops going red under the case written for it, but gutting ONE ARM of a
-/// rule with several is not — the row still reds under the other arms' plants and the report still
-/// says "the gate is proven RED-able". The `unmapped-kind` arm was proven gut-able exactly that way:
-/// with its match arm emptied the gate ran GREEN over the tree and the self-test reported every case
-/// passing.
+/// caught, but gutting ONE ARM of a rule with several is not.
 fn registry_selftest<'a>(
     cx: &Ctx,
     gate: &'a dyn crate::gates::Gate,
@@ -385,7 +333,7 @@ fn registry_selftest<'a>(
     use crate::gates::prove_rows_red;
 
     if let Ok(text) = cx.read(CONSTRUCTION) {
-        // A key here that names no kind there is the second vocabulary starting to drift.
+        // A key here that names no kind in the table is the second vocabulary starting to drift.
         let mut ov = Overlay::new();
         ov.set(
             CONSTRUCTION,
@@ -470,84 +418,33 @@ fn registry_selftest<'a>(
 mod tests {
     use super::*;
 
-    const SENTENCE: &str = "There are **ten plugin kinds** — plane, dialect, transport, \
-                            **control**, auth, egress-auth, store, secret, hook, export — and one \
-                            core row, `unit`, which is never loadable.";
-
     #[test]
-    fn the_normative_list_is_read_with_its_core_row() {
-        let k = arch_kinds(SENTENCE).expect("the sentence parses");
-        assert_eq!(
-            k,
-            vec![
-                "plane",
-                "dialect",
-                "transport",
-                "control",
-                "auth",
-                "egress-auth",
-                "store",
-                "secret",
-                "hook",
-                "export",
-                "unit"
-            ]
-        );
-    }
-
-    /// The count word is the cheap half of the check and the likelier drift: a kind is appended to
-    /// the list and the word in front of it is not re-read.
-    #[test]
-    fn a_list_that_outgrew_its_own_count_word_is_refused() {
-        let grown = SENTENCE.replace("export —", "export, ledger —");
-        let e = arch_kinds(&grown).expect_err("eleven names under `ten` is a refusal");
-        assert!(e.contains("says `ten` and lists 11"), "{e}");
-    }
-
-    /// The TCB excuse is the document's, not this file's: it is read from the sentence, so a key
-    /// that stops being excused there stops being excused here on the same commit.
-    #[test]
-    fn the_tcb_excuse_is_read_from_the_document() {
-        let text = std::fs::read_to_string(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .parent()
-                .expect("the workspace root is the xtask crate's parent")
-                .join(ARCH),
-        )
-        .expect("ARCHITECTURE.md is readable");
-        let tcb = arch_tcb(&text);
-        assert!(tcb.iter().any(|t| t == "loader"), "{tcb:?}");
-        assert!(tcb.iter().any(|t| t == "abi"), "{tcb:?}");
-        assert!(
-            arch_tcb("nothing here says it").is_empty(),
-            "an excuse that is not written down excuses nothing"
-        );
-    }
-
-    #[test]
-    fn a_reworded_sentence_is_a_refusal_and_never_an_empty_list() {
-        assert!(arch_kinds("there are some kinds").is_err());
-        assert!(arch_kinds("**ten plugin kinds** — plane, store").is_err());
-    }
-
-    /// Every translation is stale-checked by the row; this asserts the table itself is consistent
-    /// with the committed sentence, so a typo here is a test failure rather than a gate finding
-    /// nobody expected.
-    #[test]
-    fn every_translation_names_a_word_the_committed_sentence_uses() {
-        let text = std::fs::read_to_string(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .parent()
-                .expect("the workspace root is the xtask crate's parent")
-                .join(ARCH),
-        )
-        .expect("ARCHITECTURE.md is readable");
-        let doc = arch_kinds(&text).expect("the committed sentence parses");
-        for (word, _) in ARCH_KIND_KEYS {
-            assert!(
-                doc.iter().any(|d| d == word),
-                "ARCH_KIND_KEYS translates `{word}`, which the committed sentence does not use"
-            );
+    fn the_seven_plugin_kinds_are_the_decisions_3_taxonomy() {
+        assert_eq!(PLUGIN_KINDS.len(), 7);
+        for k in ["store", "secret", "auth", "hooks", "export", "plane", "transport"] {
+            assert!(PLUGIN_KINDS.contains(&k), "{k} is a plugin kind");
         }
+    }
+
+    #[test]
+    fn the_struck_kinds_are_forbidden_in_every_vocabulary() {
+        for k in ["control", "dialect", "egress-auth", "egress_auth", "pure_auth"] {
+            assert!(FORBIDDEN_KINDS.contains(&k), "{k} is struck (DECISIONS #3/#4/#5)");
+        }
+        // A plugin kind can never also be forbidden.
+        for pk in PLUGIN_KINDS {
+            assert!(!FORBIDDEN_KINDS.contains(pk), "{pk} is both plugin and forbidden");
+        }
+    }
+
+    #[test]
+    fn the_ledger_kinds_reader_bags_cell_and_edge_words() {
+        let text = "[[cell]]\ncrate = \"c\"\nkind = \"plane\"\ncount = \"1\"\n\
+                    [[edge]]\nfrom = \"plane\"\nto = \"contract\"\n# kind = \"ignored comment\"\n";
+        let bag: std::collections::BTreeMap<String, usize> =
+            ledger_kinds(text).into_iter().collect();
+        assert_eq!(bag.get("plane"), Some(&2));
+        assert_eq!(bag.get("contract"), Some(&1));
+        assert!(!bag.contains_key("ignored comment"), "comments are skipped");
     }
 }

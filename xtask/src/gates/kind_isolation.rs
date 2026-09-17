@@ -74,15 +74,13 @@
 //! the owner's own words. Nothing is grandfathered by silence, and a FIVE-segment name is refused
 //! outright — the scheme has three segments, four only for a dialect.
 //!
-//! ## DIALECT IS A PLUGIN KIND
+//! ## DIALECT IS NOT A KIND
 //!
-//! A four-segment plane name — `busbar-plane-<plane>-<dialect>`, e.g. `busbar-plane-llm-openai`,
-//! `busbar-plane-mcp-mcpv2`, `busbar-plane-streams-voice` — is a DIALECT of that plane, and the
-//! direction is fixed: **the dialect names its plane; the plane never names a dialect.** A dialect
-//! reaching a SIBLING plane is the same fusion one level down and is refused too. Today's `*-codec`
-//! crates are the PRE-SPLIT dialects and are read as belonging to their plane (`busbar-llm-codec`
-//! is a dialect half of `llm`), which is why the plane-to-codec edge is in the measured graph and
-//! the plane-to-dialect edge never can be: the split is what the rename is FOR.
+//! A DIALECT is a thing INSIDE a plane (llm 6, mcp 1, a2a 1, streaming N) — DECISIONS #4. It is not
+//! a plugin and not a kind: there are no per-dialect crates, no Dialect trait, no `dialect` row in
+//! the table, and no four-segment `busbar-plane-<plane>-<dialect>` crate to resolve into one.
+//! Today's `*-codec` crates are the codec halves of their plane (`busbar-llm-codec` belongs to
+//! `llm`), which is why the plane-to-codec edge is in the measured graph.
 //!
 //! ## VOICE IS THE STREAMS PLANE
 //!
@@ -213,8 +211,15 @@ struct KindDef {
     matchers: &'static [&'static str],
 }
 
-/// THE KIND TABLE. Ten plugin kinds, the contract crates they are written against, the composition
-/// root, and the retiring legacy crates.
+/// THE KIND TABLE. The SEVEN plugin kinds (DECISIONS #3: store, secret, auth, hook, export, plane,
+/// transport), the infra crate families that are NOT plugin kinds (unit, kernel, caps, contract,
+/// grammar, substrate, api, timing, the plugin-abi/plugin-tooling TCB, the `core` neutral spine and
+/// the `cleanliness` compiled-in surfaces), the composition root, and the retiring legacy crates.
+///
+/// `control` and `dialect` are NOT kinds (DECISIONS #4/#5): a dialect is a thing INSIDE a plane
+/// (llm 6, mcp 1, a2a 1, streaming N) with no crate of its own, and admin/oauth2 are compiled-in
+/// CLEANLINESS crates, one-way dep on core, off the hot path — not a `control` plugin kind. They
+/// resolve here as the `cleanliness` infra family, never as one of the seven plugin kinds.
 static KINDS: &[KindDef] = &[
     KindDef {
         kind: "root",
@@ -226,13 +231,9 @@ static KINDS: &[KindDef] = &[
         family: Family::Plane,
         matchers: &["busbar-plane-"],
     },
-    // A DIALECT OF A PLANE — `busbar-plane-<plane>-<dialect>`. It has no matcher of its own: it IS
-    // the plane marker with a second remainder segment, and [`refine`] is what tells the two apart.
-    KindDef {
-        kind: "dialect",
-        family: Family::Plane,
-        matchers: &[],
-    },
+    // A DIALECT IS NOT A KIND (DECISIONS #4). It is a thing INSIDE a plane — no per-dialect crate,
+    // no Dialect trait/kind — so there is no `dialect` row here and no four-segment
+    // `busbar-plane-<plane>-<dialect>` crate to refine into one.
     // THE PRE-SPLIT DIALECTS. `busbar-llm-codec` is the `llm` plane's other half; the rename turns
     // it into a `busbar-plane-llm-<dialect>`. Until then it is its own kind, and the day the last
     // one goes the dead-kind rule below demands this row be struck.
@@ -241,25 +242,21 @@ static KINDS: &[KindDef] = &[
         family: Family::Plane,
         matchers: &["*-codec"],
     },
-    // A CONTROL SURFACE — a full plugin kind, and a new branch of the tree.
+    // CLEANLINESS SURFACES — admin & oauth2, and NOT a `control` plugin kind (DECISIONS #5).
     //
-    // > "CONTROL is a full plugin KIND … busbar-control-admin (today busbar-plane-admin) and
-    // > busbar-control-oauth2. The verifier plugins stay the AUTH kind." — owner, 2026-09-08
+    // > "admin & oauth2 are NOT plugins. They are compiled-in cleanliness crates, one-way dep on
+    // > core, off the hot path. There is no `control` plugin kind." — DECISIONS #5
     //
-    // A control crate is an UNMETERED served surface: it declares its routes as data the way a plane
-    // does, owns its own bodies, and runs the control path (verified by the auth kind, admitted,
-    // audited, answered). What makes it a separate kind rather than a quiet plane is everything it
-    // may NOT do — no money vocabulary, no upstream, no plane may call it and it may call no plane,
-    // and its only dependency is the contract. Those are the rows below, not a comment here.
-    //
-    // The FAMILY is `Plane` and that is deliberate: family in this gate is about the instance
-    // VOCABULARY and the served/neutral split `plane-purity` scans, not about metering. `admin` is
-    // a served-surface instance word no transport and no unit may carry, and a control crate's
-    // source is served source that the backwards-reach scan must read. The KIND is what differs.
+    // These are compiled-in served surfaces, never loaded over the ABI and never one of the seven
+    // plugin kinds. They resolve here so the registry recognises `busbar-admin` and `busbar-oauth2`
+    // without demanding a plugin kind; `busbar-plane-admin`, the retiring pre-rename spelling, is
+    // held to the same family by a `[[registered]]` row until it is deleted. The FAMILY is `Neutral`
+    // — a cleanliness crate carries no plane or transport INSTANCE in its NAME — while its source's
+    // naming of other kinds' vocabulary is measured by the matrix like every other crate's.
     KindDef {
-        kind: "control",
-        family: Family::Plane,
-        matchers: &["busbar-control-"],
+        kind: "cleanliness",
+        family: Family::Neutral,
+        matchers: &["=busbar-admin", "=busbar-oauth2"],
     },
     KindDef {
         kind: "transport",
@@ -386,20 +383,14 @@ const PLANE_ALIASES: &[(&str, &str, &str)] = &[("voice", "streams", "busbar-plan
 /// Kinds the target scheme defines that the tree does not carry YET, each with its reason. The
 /// dead-kind rule skips these — and the ratchet runs the other way: the day a crate of one of them
 /// exists, the entry must be struck, or a kind would be both pending and live.
-const PENDING_KINDS: &[(&str, &str)] = &[(
-    "dialect",
-    "the four-segment `busbar-plane-<plane>-<dialect>` form. The pre-split dialects are today's \
-     `*-codec` crates; the rename that splits them is what creates the first crate of this kind.",
-)];
+///
+/// Empty: `dialect` was the only pending kind and it is not a kind at all (DECISIONS #4). Every
+/// kind in the table now has, or is the neutral spine for, at least one crate in the tree.
+const PENDING_KINDS: &[(&str, &str)] = &[];
 
 /// Edge classes the TARGET scheme has and the tree does not yet. They are allowed without being
 /// scored as dead — a class that cannot exist until the rename lands cannot be a stale allowance.
 const PENDING_EDGES: &[(&str, &str)] = &[
-    ("dialect", "plane"),
-    ("dialect", "grammar"),
-    ("dialect", "substrate"),
-    ("dialect", "api"),
-    ("dialect", "timing"),
     // THE `core` KIND'S NEUTRAL SPINE, and deliberately nothing else. The crates being carved out
     // of `busbar-core` land branch by branch, so their edges cannot be measured yet; what CAN be
     // stated in advance is the same sink set `kernel` and `caps` have. A `core` crate that reaches
@@ -413,10 +404,6 @@ const PENDING_EDGES: &[(&str, &str)] = &[
     ("core", "kernel"),
     ("core", "substrate"),
     ("core", "timing"),
-    // The one sink `CONTROL_SINKS` grants beside the contract. No control crate has taken it yet —
-    // and a control crate that does must not read as a kind learning about another kind, because
-    // the design granted it before the tree grew it.
-    ("control", "caps"),
 ];
 
 /// The retiring 1.5.x crates, named so the ratchet can check they still exist.
@@ -461,16 +448,19 @@ const OFF_TREE_MANIFESTS: &[(&str, &str)] = &[
 
 /// `qa/construction.toml`'s `[gate.plugin_kinds]` keys, each mapped onto the kind it names here.
 /// A key that maps onto nothing in [`KINDS`] is a second kind vocabulary drifting beside this one.
+///
+/// The seven plugin kinds get a construction scope (`plane`, `transport`, `store`, `secret`,
+/// `hook`, `auth`, `export`); `unit` scopes the core governance steps; `loader`/`abi` scope the TCB
+/// crates the design excuses by name. `control` and `dialect` are gone (DECISIONS #4/#5), and the
+/// old `pure_auth`/`egress_auth` split is collapsed into one `auth` key: outbound-sign is an
+/// OPERATION of the auth kind, not a second kind (DECISIONS #3).
 const CONSTRUCTION_KIND_KEYS: &[(&str, &str)] = &[
     ("plane", "plane"),
-    ("dialect", "dialect"),
-    ("control", "control"),
     ("unit", "unit"),
     ("transport", "transport"),
     ("store", "store"),
     ("hook", "hooks"),
-    ("pure_auth", "auth"),
-    ("egress_auth", "auth"),
+    ("auth", "auth"),
     ("secret", "secret"),
     ("export", "export"),
     ("loader", "plugin-tooling"),
@@ -492,12 +482,6 @@ const ACCEPTED_NAMES: &[(&str, &str)] = &[
         "busbar-unit-auth",
         "the ingress AUTH unit. `auth` here is the step of the Teller loop this unit runs, not the \
          auth-plugin kind: the unit calls auth plugins, it is not one.",
-    ),
-    (
-        "busbar-auth-admin-tokens",
-        "the ADMIN API's token issuer, an auth plugin. `admin` here is the administrative surface \
-         whose tokens it mints, not the admin PLANE instance — it carries no plane edge and no \
-         plane vocabulary.",
     ),
     (
         "busbar-core-hooks",
@@ -536,8 +520,8 @@ const ARCHITECTURE_ALLOWED: &[(&str, &str)] = &[
     // The composition root is the one thing that names all three axes — that is what a root IS.
     ("root", "api"),
     ("root", "caps"),
+    ("root", "cleanliness"),
     ("root", "contract"),
-    ("root", "control"),
     ("root", "kernel"),
     ("root", "legacy"),
     ("root", "plane"),
@@ -554,10 +538,11 @@ const ARCHITECTURE_ALLOWED: &[(&str, &str)] = &[
     ("unit", "caps"),
     ("unit", "contract"),
     ("unit", "unit"),
-    // A CONTROL SURFACE NAMES THE CONTRACT AND NOTHING ELSE — the closed sink set the owner ruled,
-    // already stated in [`CONTROL_SINKS`] and repeated here because this table is what the ship
-    // twin reads.
-    ("control", "contract"),
+    // A CLEANLINESS SURFACE (admin/oauth2) is compiled-in with a one-way dep on core (DECISIONS #5).
+    // The ship twin permits its contract/caps edges here; its core/substrate/api/loader edges are
+    // measured in the `[[dep]]` ledger like every other Neutral kind's.
+    ("cleanliness", "contract"),
+    ("cleanliness", "caps"),
 ];
 
 /// THE TRUSTED COMPUTING BASE: the loader and the plugin tooling, which `ARCHITECTURE.md` 1.4 says
@@ -591,19 +576,12 @@ const DEP_HALVES: &[&str] = &["shipped", "test"];
 /// than gate it. These four are different: `busbar-core -> busbar-unit-audit` is the drain in
 /// flight and `busbar-core -> busbar-transport-ws` is the fusion, and nothing about "legacy is
 /// unscored" can tell them apart. A NAME can.
-const DRAIN_TARGET_KINDS: &[&str] = &["unit", "plane", "dialect", "transport", "control"];
+const DRAIN_TARGET_KINDS: &[&str] = &["unit", "plane", "transport", "cleanliness"];
 
-/// THE ONLY CRATES A CONTROL SURFACE MAY NAME.
-///
-/// > "depend on a transport, plane, dialect, unit or another control crate — CANNOT. Only
-/// > busbar-contract, +busbar-caps if the contract needs it." — owner, 2026-09-08
-///
-/// This is a CLOSED set rather than a line in the measured graph, and the difference matters: the
-/// measured graph ratchets on what the tree HAS, so a control crate that grew an edge on the same
-/// commit as its allowance would be green. A control crate's dependency list is a design decision
-/// that was made once, so it is written once, and anything else is refused whether or not the tree
-/// has grown it.
-const CONTROL_SINKS: &[&str] = &["contract", "caps"];
+// A CLEANLINESS SURFACE (admin/oauth2) is compiled-in with a one-way dep on core (DECISIONS #5).
+// Unlike the retired `control` kind, its edges are NOT a closed sink set: admin/oauth2 legitimately
+// name core, substrate, api and the plugin-loader TCB, so their dependency edges are recorded in
+// the measured graph (the `[[dep]]` rows and [`PENDING_EDGES`]) like every other Neutral kind's.
 
 // ------------------------------------------------------------------------------------------------
 // the shape and the battery
@@ -657,10 +635,8 @@ fn kind_skeleton(kind: &str) -> BTreeSet<String> {
 /// directions: the rule never asked whether a crate implements SOMEBODY ELSE'S face.
 const ENTRY_TRAIT_KINDS: &[&str] = &[
     "plane",
-    "dialect",
     "transport",
     "unit",
-    "control",
     "store",
     "auth",
     "secret",
@@ -669,16 +645,17 @@ const ENTRY_TRAIT_KINDS: &[&str] = &[
 ];
 
 /// The kinds that declare CLAIMS (`PLUGIN-TREE.md` §3): what the crate answers for.
-/// A CONTROL surface and an AUTH plugin are here for the reason the planes are: both declare what
-/// they answer for as DATA — the same claim-table shape — rather than deciding it inside a handler.
-const CLAIMING_KINDS: &[&str] = &["plane", "dialect", "transport", "control", "auth"];
+/// An AUTH plugin is here for the reason the planes are: it declares what it answers for as DATA —
+/// the same claim-table shape — rather than deciding it inside a handler. `control` and `dialect`
+/// are gone (DECISIONS #4/#5); a `cleanliness` crate is compiled-in and declares no plugin claims.
+const CLAIMING_KINDS: &[&str] = &["plane", "transport", "auth"];
 
 /// The kinds that owe a shared conformance battery. The plugin kinds are here because a plugin is
-/// exactly the thing whose contract is checked from outside; the three exemplar kinds are here
-/// because the ship criterion says every kind runs its kind's battery, with no exceptions.
+/// exactly the thing whose contract is checked from outside; the exemplar kinds are here because the
+/// ship criterion says every kind runs its kind's battery, with no exceptions. `cleanliness` owes
+/// none — it is compiled-in, not a plugin whose contract is checked from outside (DECISIONS #5).
 const BATTERY_KINDS: &[&str] = &[
     "plane",
-    "control",
     "transport",
     "unit",
     "store",
@@ -1474,14 +1451,11 @@ fn resolve_kind(name: &str) -> (Option<&'static str>, Vec<String>, Vec<&'static 
     }
 }
 
-/// THE PLANE/DIALECT SPLIT. `busbar-plane-llm` is a plane; `busbar-plane-llm-openai` is a DIALECT
-/// of it. One remainder segment or two is the whole of the difference, which is exactly why the
-/// scheme puts the dialect in segment four rather than inventing a second prefix.
-fn refine(kind: Option<&'static str>, remainder: &[String]) -> Option<&'static str> {
-    match kind {
-        Some("plane") if remainder.len() >= 2 => Some("dialect"),
-        other => other,
-    }
+/// A DIALECT IS NOT A KIND (DECISIONS #4): it is a thing INSIDE a plane, with no crate of its own,
+/// so a name resolves to exactly the kind its matcher gives it and nothing is refined into a
+/// separate `dialect` kind. Kept as a seam so callers need not change if a later refinement returns.
+fn refine(kind: Option<&'static str>, _remainder: &[String]) -> Option<&'static str> {
+    kind
 }
 
 /// The canonical spelling of a plane instance, through [`PLANE_ALIASES`].
@@ -1728,11 +1702,10 @@ fn vocabularies(crates: &[CrateInfo]) -> (BTreeSet<String>, BTreeSet<String>) {
     let mut transports = BTreeSet::new();
     for c in crates {
         match c.kind {
-            // A CONTROL SURFACE CARRIES A SERVED-SURFACE INSTANCE WORD, like a plane does: `admin`
-            // is claimed here, so no transport and no unit may be named after it. Dropping control
-            // out of this harvest would have quietly RETIRED `admin` from the vocabulary on the
-            // same commit that made admin a control crate.
-            Some("plane") | Some("dialect") | Some("control") => {
+            // The plane instance vocabulary is the plane crates' own remainder. `dialect` and
+            // `control` are not kinds (DECISIONS #4/#5); `cleanliness` (admin/oauth2) is a Neutral
+            // compiled-in family with no instance vocabulary of its own.
+            Some("plane") => {
                 if let Some(first) = c.remainder.first() {
                     planes.insert(first.clone());
                 }
@@ -1756,12 +1729,6 @@ fn vocabularies(crates: &[CrateInfo]) -> (BTreeSet<String>, BTreeSet<String>) {
 /// Fill in each crate's own instance, once the vocabularies are known.
 fn assign_instances(crates: &mut [CrateInfo], planes: &BTreeSet<String>, ports: &BTreeSet<String>) {
     for c in crates.iter_mut() {
-        // A DIALECT'S INSTANCE IS THE PLANE IT IS A DIALECT OF — segment three, never the dialect
-        // word in segment four. `busbar-plane-streams-voice` belongs to `streams`, not to `voice`.
-        if c.kind == Some("dialect") {
-            c.instance = c.remainder.first().map(|p| canon_plane(p));
-            continue;
-        }
         let vocab = match c.family {
             Family::Plane => planes,
             Family::Transport => ports,
@@ -2181,46 +2148,11 @@ fn rule_deps(cx: &Ctx, crates: &[CrateInfo], reg: &KindRegistry, half: Half, shi
                 }
             }
 
-            // THE DIALECT DIRECTION IS FIXED, and it is fixed the way the split needs: the dialect
-            // names its plane, the plane never names a dialect. A plane that reaches back into a
-            // dialect has re-fused the two halves the rename exists to separate.
-            if from == "plane" && to == "dialect" {
-                offenders.push(format!(
-                    "plane-names-dialect\t{}\t{} depends on {dep}. A DIALECT names its plane; a \
-                     plane never names a dialect — {MAKE_A_NEW_KIND}",
-                    c.dir, c.name
-                ));
-            }
-
-            // A CONTROL SURFACE NAMES THE CONTRACT AND NOTHING ELSE.
-            //
-            // The closed sink set, not a measured line: a control crate reaching a transport, a
-            // plane, a dialect, a unit or ANOTHER CONTROL crate is refused whether or not the tree
-            // has grown that edge yet. `control -> control` is in the refusal on purpose — two
-            // control surfaces that know about each other are one surface with a seam drawn
-            // through it, and the next thing they share is state.
-            if from == "control" && !CONTROL_SINKS.contains(&to) {
-                offenders.push(format!(
-                    "control-sink\t{}\t{} is a CONTROL surface and depends on {dep} (kind {to}). A \
-                     control crate names {} and nothing else: not a transport, not a plane, not a \
-                     dialect, not a unit, not another control crate",
-                    c.dir,
-                    c.name,
-                    CONTROL_SINKS.join(" and ")
-                ));
-            }
-
-            // NO PLANE CALLS A CONTROL SURFACE, AND NO CONTROL SURFACE CALLS A PLANE. A control
-            // surface does not appear in a plane's step list; the two paths meet at the kernel or
-            // they do not meet. Both directions, because either one alone is the fusion.
-            if (from == "plane" && to == "control") || (from == "control" && to == "plane") {
-                offenders.push(format!(
-                    "plane-control\t{}\t{} depends on {dep}: {from} -> {to}. A control surface \
-                     never appears in a plane's step list and never reaches into one — the metered \
-                     path and the control path are two kinds, {MAKE_A_NEW_KIND}",
-                    c.dir, c.name
-                ));
-            }
+            // DIALECT and CONTROL are not kinds (DECISIONS #4/#5), so the plane-names-dialect,
+            // control-sink and plane-control refusals are gone with them: admin/oauth2 are
+            // `cleanliness` crates whose one-way deps (core, substrate, api, the plugin-loader TCB)
+            // are recorded in the measured graph like every other Neutral kind's, not held to a
+            // closed sink set.
 
             // THE DRAIN, EDGE BY EDGE. A `legacy` source is no longer unscored — its edges are rows
             // like everything else — and this is the refusal that survives that: an edge into a
@@ -2664,12 +2596,11 @@ fn banned_for(kind: &str, planes: &BTreeSet<String>) -> Vec<(String, &'static st
                 out.push((p.clone(), "a PLANE instance named inside a transport"));
             }
         }
-        // A DIALECT IS A PLANE'S OTHER HALF AND IS BOUND BY THE PLANE'S OWN BAN. It had no arm at
-        // all, so on the day D36 lands and the first `busbar-plane-<p>-<d>` crate exists, that
-        // crate could `use axum` and name `busbar_transport_http` with this row silent — the ban is
-        // written against the kind word, and `dialect` was not one of the four spelled here. The
-        // hole opens on the rename rather than today, which is exactly when nobody is looking.
-        "plane" | "dialect" => {
+        // A PLANE SPEAKS THE PLANE ABI, NEVER THE WIRE. `dialect` is not a kind (DECISIONS #4); its
+        // pre-split codec halves carry the codec ban below. There is no `control` arm — admin/oauth2
+        // are `cleanliness` crates, served surfaces that legitimately reference transports over the
+        // kernel, so they carry no transport ban (DECISIONS #5).
+        "plane" => {
             for lib in TRANSPORT_LIBS {
                 out.push((
                     (*lib).to_string(),
@@ -2684,28 +2615,6 @@ fn banned_for(kind: &str, planes: &BTreeSet<String>) -> Vec<(String, &'static st
                 out.push(((*p).to_string(), "a TRANSPORT CRATE named inside a plane"));
             }
         }
-        // A CONTROL SURFACE IS SERVED SOURCE: it carries every ban a plane carries, for the same
-        // reason a plane does — it speaks its own ABI and never the wire. The money vocabulary it
-        // additionally may not name is read off `plane-no-money`'s own list rather than restated
-        // here; see [`money_vocabulary`].
-        "control" => {
-            for lib in TRANSPORT_LIBS {
-                out.push((
-                    (*lib).to_string(),
-                    "a transport LIBRARY named inside a control surface",
-                ));
-            }
-            out.push((
-                TOKIO_NET.to_string(),
-                "a socket module named inside a control surface",
-            ));
-            for p in TRANSPORT_CRATE_PATHS {
-                out.push((
-                    (*p).to_string(),
-                    "a TRANSPORT CRATE named inside a control surface",
-                ));
-            }
-        }
         "codec" => {
             for p in TRANSPORT_CRATE_PATHS {
                 out.push(((*p).to_string(), "a TRANSPORT CRATE named inside a codec"));
@@ -2714,101 +2623,6 @@ fn banned_for(kind: &str, planes: &BTreeSet<String>) -> Vec<(String, &'static st
         _ => {}
     }
     out
-}
-
-/// `qa/construction.toml`'s own file, so the two lists are ONE list.
-const MONEY_LIST_FILE: &str = "qa/construction.toml";
-/// …and the rule inside it whose vocabulary a control surface inherits VERBATIM.
-const MONEY_LIST_RULE: &str = "[rules.plane-no-money]";
-
-/// One `key = [ … ]` array of quoted strings inside `section`, however many lines it spans.
-fn toml_string_list(text: &str, section: &str, key: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut inside = false;
-    let mut collecting = false;
-    for raw in text.lines() {
-        let t = raw.trim();
-        if t.starts_with('[') && !collecting {
-            inside = t == section;
-            continue;
-        }
-        if !inside {
-            continue;
-        }
-        let body = if collecting {
-            t
-        } else if let Some((k, v)) = t.split_once('=') {
-            if k.trim() != key {
-                continue;
-            }
-            collecting = true;
-            v.trim()
-        } else {
-            continue;
-        };
-        let mut rest = body;
-        while let Some(open) = rest.find('"') {
-            let after = &rest[open + 1..];
-            let Some(close) = after.find('"') else { break };
-            out.push(after[..close].to_string());
-            rest = &after[close + 1..];
-        }
-        if body.contains(']') {
-            break;
-        }
-    }
-    out
-}
-
-/// THE MONEY VOCABULARY, TAKEN FROM `plane-no-money` RATHER THAN RESTATED.
-///
-/// > "name any money/fee/rate/posting vocabulary (plane-no-money list VERBATIM)" — owner
-///
-/// Two copies of a banned-word list are two lists, and the day somebody adds a word to one of them
-/// is the day they diverge without either gate noticing. So there is one list, it lives where the
-/// rule that argued for it lives, and this reads it. A list that does not read is FATAL rather than
-/// empty: a ban over no words bans nothing and reads exactly like a clean surface.
-fn money_vocabulary(cx: &Ctx) -> Result<(Vec<String>, BTreeSet<String>), String> {
-    let text = cx.read(MONEY_LIST_FILE).map_err(|e| e.to_string())?;
-    let symbols = toml_string_list(&text, MONEY_LIST_RULE, "symbols");
-    if symbols.is_empty() {
-        return Err(format!(
-            "{MONEY_LIST_FILE} {MONEY_LIST_RULE} declares no `symbols`"
-        ));
-    }
-    let allowed = toml_string_list(&text, MONEY_LIST_RULE, "allowed_vocabulary")
-        .into_iter()
-        .map(|s| s.to_lowercase())
-        .collect();
-    Ok((symbols, allowed))
-}
-
-/// The identifiers on one line, lowercased — the unit a money symbol is judged as, so a needle that
-/// lands inside a longer name is read as the name a reader sees (`as_nanos`, not `_nanos`).
-fn identifiers(code: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut cur = String::new();
-    for ch in code.chars() {
-        if ch.is_ascii_alphanumeric() || ch == '_' {
-            cur.push(ch.to_ascii_lowercase());
-        } else if !cur.is_empty() {
-            out.push(std::mem::take(&mut cur));
-        }
-    }
-    if !cur.is_empty() {
-        out.push(cur);
-    }
-    out
-}
-
-/// Does `ident` carry money symbol `needle`? A `_`-fixed entry is a fragment, everything else is the
-/// whole name — the same reading `plane-no-money` gives its own list.
-fn money_hit(ident: &str, needle: &str) -> bool {
-    if needle.starts_with('_') || needle.ends_with('_') {
-        ident.contains(needle)
-    } else {
-        ident == needle
-    }
 }
 
 fn rule_vocab(cx: &Ctx, crates: &[CrateInfo], planes: &BTreeSet<String>) -> Row {
@@ -2831,22 +2645,9 @@ fn rule_vocab(cx: &Ctx, crates: &[CrateInfo], planes: &BTreeSet<String>) -> Row 
         }
     };
 
-    // THE MONEY LIST IS AN INPUT, AND A MISSING ONE IS FATAL. A control surface's money ban is
-    // `plane-no-money`'s own vocabulary; if that list cannot be read there is no ban, and no ban
-    // over a privileged unmetered surface reads exactly like a surface that names no price.
-    let (money, money_allowed) = match money_vocabulary(cx) {
-        Ok(v) => v,
-        Err(e) => {
-            return Row::fail(
-                ROW_VOCAB,
-                "the control surface's money vocabulary could not be read",
-                format!(
-                    "{e} — a control crate may name no money vocabulary, and the list is \
-                     `plane-no-money`'s so the two are one list. A ban over no words bans nothing."
-                ),
-            )
-        }
-    };
+    // The money-vocabulary ban was a CONTROL-kind rule; `control` is not a kind (DECISIONS #5) and
+    // its `cleanliness` successor (admin/oauth2) is a served surface that legitimately reports on
+    // cost/usage, so no crate carries the money ban in this rule any more.
 
     // EVERY WORKSPACE CRATE'S PATH SPELLING, so a source line that names one can be asked whether
     // its own manifest declares the edge. Both spellings, because `busbar_plane_llm::` and
@@ -2881,24 +2682,6 @@ fn rule_vocab(cx: &Ctx, crates: &[CrateInfo], planes: &BTreeSet<String>) -> Row 
         };
         let banned = banned_for(kind, planes);
         scanned += 1;
-        if *kind == "control" {
-            for (lineno, code) in scan::production_lines(&f.text) {
-                let code = scan::blank_literals(&code);
-                for ident in identifiers(&code) {
-                    if money_allowed.contains(&ident) {
-                        continue;
-                    }
-                    if let Some(sym) = money.iter().find(|s| money_hit(&ident, &s.to_lowercase())) {
-                        offenders.push(format!(
-                            "{sym}\t{rel}:{lineno}\ta MONEY symbol named inside a control surface \
-                             (`{ident}`). A control surface is UNMETERED: it never names an \
-                             amount, a rate, a fee, a card or a posting — the vocabulary is \
-                             `plane-no-money`'s, verbatim"
-                        ));
-                    }
-                }
-            }
-        }
         for (lineno, code) in scan::production_lines(&f.text) {
             // BLANK THE LITERALS FIRST. A ban on an identifier that would equally match its own
             // prose in a `format!` is a ban that reds on documentation.
@@ -3829,10 +3612,6 @@ fn rule_faces(crates: &[CrateInfo], idx: &SourceIndex, reg: &KindRegistry, ship:
             if *owner == mine {
                 continue;
             }
-            // The dialect and its plane are one face by design.
-            if mine == "dialect" && *owner == "plane" {
-                continue;
-            }
             seen.insert((c.name.clone(), trait_name.clone()));
             // THE SHIP TWIN OWES ZERO. Per-push the four that exist are held at their exact count
             // by a `[[face]]` row; at the tag there is no such thing as a reviewed one.
@@ -4261,7 +4040,7 @@ fn rule_steps(cx: &Ctx, crates: &[CrateInfo]) -> Row {
 fn rule_control(cx: &Ctx, crates: &[CrateInfo]) -> Row {
     let controls: Vec<&CrateInfo> = crates
         .iter()
-        .filter(|c| c.kind == Some("control"))
+        .filter(|c| c.kind == Some("cleanliness"))
         .collect();
     if controls.is_empty() {
         return Row::fail(
@@ -5199,7 +4978,8 @@ impl Gate for KindIsolationGate {
         ));
 
         // THE SCHEME'S OWN WIDTH. Five segments is a name describing the crate instead of naming
-        // its kind, and a dialect is the ONLY four-segment form.
+        // its kind (four segments is the widest an accepted name reaches, e.g.
+        // `busbar-unit-transport-key`).
         report.push(prove_rows_red(
             cx,
             self,
@@ -5215,14 +4995,14 @@ impl Gate for KindIsolationGate {
 
         // A WAIVER THAT COVERS NOTHING IS RED.
         let mut ov = Overlay::new();
-        ov.remove("crates/auth-admin-tokens/Cargo.toml");
+        ov.remove("crates/busbar-unit-transport-key/Cargo.toml");
         report.push(prove_rows_red(
             cx,
             self,
             "an accepted-name waiver whose crate is gone is reported dead",
             &[ROW_NAME],
             ov,
-            &["dead-waiver", "busbar-auth-admin-tokens"],
+            &["dead-waiver", "busbar-unit-transport-key"],
         ));
 
         // AN EDGE NOBODY WROTE DOWN. A plane reaching a transport is the fusion done through
@@ -5461,33 +5241,9 @@ impl Gate for KindIsolationGate {
             &["cross-instance", "busbar-plane-llm"],
         ));
 
-        // …AND THE DIALECT DIRECTION, WHICH IS THE ONE THE SPLIT DEPENDS ON. `cross-instance` reads
-        // the two crates' INSTANCES and says nothing when they match, so a plane reaching back into
-        // its OWN dialect walked through it: same instance, same family, no finding. That edge is
-        // the re-fusion the `busbar-plane-<plane>-<dialect>` rename exists to undo — a dialect names
-        // its plane, a plane never names a dialect — and a mutation campaign found nothing proving
-        // it. The plant is the first crate of the pending `dialect` kind plus the edge back.
-        let mut ov = manifest_plant(
-            "crates/busbar-plane-llm-openai",
-            "busbar-plane-llm-openai",
-            &["busbar-plane-llm"],
-        );
-        ov.set(
-            "crates/busbar-plane-llm/Cargo.toml",
-            manifest_plus(
-                cx,
-                "crates/busbar-plane-llm/Cargo.toml",
-                "\n[dependencies]\nbusbar-plane-llm-openai = { workspace = true }\n",
-            ),
-        );
-        report.push(prove_rows_red(
-            cx,
-            self,
-            "a plane depending on its own dialect is the re-fusion the rename exists to undo",
-            &[ROW_DEPS],
-            ov,
-            &["plane-names-dialect", "busbar-plane-llm-openai"],
-        ));
+        // The dialect-direction case retired with the `dialect` kind (DECISIONS #4): a dialect is a
+        // thing inside a plane, not a crate, so there is no `busbar-plane-<plane>-<dialect>` edge for
+        // a plane to name back and no `plane-names-dialect` refusal to prove.
 
         // THE LEDGER CASES BELONG TO THE PER-PUSH GATE ALONE. Every one is about the `[[dep]]`
         // rows in the registry file, and the SHIP twin does not read them: it owes the
@@ -5944,20 +5700,8 @@ impl Gate for KindIsolationGate {
             &["dead-kind", "grammar"],
         ));
 
-        // …AND THE RATCHET RUNS THE OTHER WAY FOR A PENDING ONE: the first crate of a pending kind
-        // retires its entry, so a kind can never be both pending and live.
-        report.push(prove_rows_red(
-            cx,
-            self,
-            "a pending kind that now has crates must have its entry struck",
-            &[ROW_REGISTRY],
-            manifest_plant(
-                "crates/busbar-plane-llm-openai",
-                "busbar-plane-llm-openai",
-                &["busbar-contract"],
-            ),
-            &["kind-arrived", "dialect"],
-        ));
+        // The pending-kind ratchet had exactly one subject, `dialect`, and a dialect is not a kind
+        // (DECISIONS #4). PENDING_KINDS is empty now, so there is no pending kind to plant as arrived.
 
         // THE RENAME ALIAS EXPIRES WITH THE CRATE IT TRANSLATES.
         let mut ov = Overlay::new();
@@ -6058,17 +5802,9 @@ impl Gate for KindIsolationGate {
             &["0 file(s) reached the vocabulary rule"],
         ));
 
-        // THE MONEY LIST IS THE CONTROL SURFACE'S BAN, and a ban over no words bans nothing.
-        let mut ov = Overlay::new();
-        ov.remove(MONEY_LIST_FILE);
-        report.push(prove_rows_red(
-            cx,
-            self,
-            "the money vocabulary unreadable is a refusal, never a surface that names no price",
-            &[ROW_VOCAB],
-            ov,
-            &["A ban over no words bans nothing"],
-        ));
+        // The money-vocabulary case retired with the `control` kind (DECISIONS #5): a `cleanliness`
+        // surface is a served admin surface that legitimately reports on cost/usage, so this rule no
+        // longer carries a money ban to prove RED-able.
 
         // A STEP LIST THAT READ TWO STEPS IS NOT A PLANE THAT RUNS EVERY STEP.
         let mut ov = Overlay::new();

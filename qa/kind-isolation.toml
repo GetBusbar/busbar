@@ -93,13 +93,8 @@ reason = "legacy drain"
 
 [[registered]]
 crate = "busbar-plane-admin"
-kind = "control"
-reason = "the admin CONTROL surface — an unmetered served surface on the control path. R7 renames it to busbar-control-admin, at which point its name says `control` and this row must be struck"
-
-[[announced]]
-crate = "busbar-control-oauth2"
-kind = "control"
-reason = "the OAuth issuer being extracted from busbar-core/src/oauth_as; a control surface, not an auth VERIFIER (the verifier plugins stay the auth kind)"
+kind = "cleanliness"
+reason = "the admin surface — a compiled-in CLEANLINESS crate, not a plugin and not a `control` kind (DECISIONS #5). Its name still says `plane`; the rename to busbar-admin (which resolves to cleanliness by name) is what strikes this row. busbar-admin and busbar-oauth2 need no registered row — their names resolve to cleanliness directly."
 
 [[announced]]
 crate = "busbar-core-config"
@@ -160,13 +155,6 @@ drain = "delete the auth name from the api crate: a api reaches auth through the
 
 [[edge]]
 from = "api"
-to = "control"
-cite = "none. PLUGIN-TREE.md 1 admits control as its own kind (owner, 2026-09-08): a control surface is an UNMETERED served surface and a plane is the metered path, and neither may name the other. busbar-plane-admin is registered as control until R7 renames it, so this number is the rename measured rather than asserted."
-why = "crates of kind api naming control vocabulary: control package names in any spelling, the kind-qualified id (control-<id>), and — where control is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
-drain = "R7. The admin surface becomes busbar-control-admin with its route table declared as data; every hit here is one line of that rename, and the row falls when the surface stops being named from outside itself."
-
-[[edge]]
-from = "api"
 to = "legacy"
 cite = "none. The retiring 1.5.x crates predate the plane/transport split (ARCHITECTURE.md 9.2); the number is the SIZE OF THE RETIREMENT, not an allowance, and it goes to zero when the crate does."
 why = "crates of kind api naming legacy vocabulary: legacy package names in any spelling, the kind-qualified id (legacy-<id>), and — where legacy is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
@@ -223,13 +211,6 @@ drain = "delete the auth name from the auth crate: a auth reaches auth through t
 
 [[edge]]
 from = "auth"
-to = "control"
-cite = "none. PLUGIN-TREE.md 1 admits control as its own kind (owner, 2026-09-08): a control surface is an UNMETERED served surface and a plane is the metered path, and neither may name the other. busbar-plane-admin is registered as control until R7 renames it, so this number is the rename measured rather than asserted."
-why = "crates of kind auth naming control vocabulary: control package names in any spelling, the kind-qualified id (control-<id>), and — where control is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
-drain = "R7. The admin surface becomes busbar-control-admin with its route table declared as data; every hit here is one line of that rename, and the row falls when the surface stops being named from outside itself."
-
-[[edge]]
-from = "auth"
 to = "plugin-tooling"
 cite = "none. ARCHITECTURE.md 1.1 — three blind axes, one small kernel: a crate of kind auth has no clause that lets it name plugin-tooling vocabulary. Every hit is a coupling to delete."
 why = "crates of kind auth naming plugin-tooling vocabulary: plugin-tooling package names in any spelling, the kind-qualified id (plugin-tooling-<id>), and — where plugin-tooling is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
@@ -251,13 +232,6 @@ drain = "nothing to drain while the crate is a plugin of its kind; the row exist
 
 [[edge]]
 from = "caps"
-to = "control"
-cite = "none. PLUGIN-TREE.md 1 admits control as its own kind (owner, 2026-09-08): a control surface is an UNMETERED served surface and a plane is the metered path, and neither may name the other. busbar-plane-admin is registered as control until R7 renames it, so this number is the rename measured rather than asserted."
-why = "crates of kind caps naming control vocabulary: control package names in any spelling, the kind-qualified id (control-<id>), and — where control is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
-drain = "R7. The admin surface becomes busbar-control-admin with its route table declared as data; every hit here is one line of that rename, and the row falls when the surface stops being named from outside itself."
-
-[[edge]]
-from = "caps"
 to = "legacy"
 cite = "none. The retiring 1.5.x crates predate the plane/transport split (ARCHITECTURE.md 9.2); the number is the SIZE OF THE RETIREMENT, not an allowance, and it goes to zero when the crate does."
 why = "crates of kind caps naming legacy vocabulary: legacy package names in any spelling, the kind-qualified id (legacy-<id>), and — where legacy is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
@@ -276,13 +250,6 @@ to = "codec"
 cite = "none. ARCHITECTURE.md 1.1 — three blind axes, one small kernel: a crate of kind codec has no clause that lets it name codec vocabulary. Every hit is a coupling to delete."
 why = "crates of kind codec naming codec vocabulary: codec package names in any spelling, the kind-qualified id (codec-<id>), and — where codec is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
 drain = "delete the codec name from the codec crate: a codec reaches codec through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
-
-[[edge]]
-from = "codec"
-to = "control"
-cite = "none. PLUGIN-TREE.md 1 admits control as its own kind (owner, 2026-09-08): a control surface is an UNMETERED served surface and a plane is the metered path, and neither may name the other. busbar-plane-admin is registered as control until R7 renames it, so this number is the rename measured rather than asserted."
-why = "crates of kind codec naming control vocabulary: control package names in any spelling, the kind-qualified id (control-<id>), and — where control is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
-drain = "R7. The admin surface becomes busbar-control-admin with its route table declared as data; every hit here is one line of that rename, and the row falls when the surface stops being named from outside itself."
 
 [[edge]]
 from = "codec"
@@ -342,13 +309,6 @@ drain = "nothing to drain while the crate is a plugin of its kind; the row exist
 
 [[edge]]
 from = "contract"
-to = "control"
-cite = "none. PLUGIN-TREE.md 1 admits control as its own kind (owner, 2026-09-08): a control surface is an UNMETERED served surface and a plane is the metered path, and neither may name the other. busbar-plane-admin is registered as control until R7 renames it, so this number is the rename measured rather than asserted."
-why = "crates of kind contract naming control vocabulary: control package names in any spelling, the kind-qualified id (control-<id>), and — where control is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
-drain = "R7. The admin surface becomes busbar-control-admin with its route table declared as data; every hit here is one line of that rename, and the row falls when the surface stops being named from outside itself."
-
-[[edge]]
-from = "contract"
 to = "grammar"
 cite = "ARCHITECTURE.md 3.1 (crate graph, bounded types) — grammar is a CORE FACE a plugin kind is written against, and naming the face is what being a plugin of a kind means. What the clause does NOT grant is naming an INSTANCE of another plugin kind, which is why this class still carries a number."
 why = "crates of kind contract naming grammar vocabulary: grammar package names in any spelling, the kind-qualified id (grammar-<id>), and — where grammar is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
@@ -391,13 +351,6 @@ drain = "delete the transport name from the contract crate: a contract reaches t
 
 [[edge]]
 from = "contract-transport"
-to = "control"
-cite = "none. PLUGIN-TREE.md 1 admits control as its own kind (owner, 2026-09-08): a control surface is an UNMETERED served surface and a plane is the metered path, and neither may name the other. busbar-plane-admin is registered as control until R7 renames it, so this number is the rename measured rather than asserted."
-why = "crates of kind contract-transport naming control vocabulary: control package names in any spelling, the kind-qualified id (control-<id>), and — where control is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
-drain = "R7. The admin surface becomes busbar-control-admin with its route table declared as data; every hit here is one line of that rename, and the row falls when the surface stops being named from outside itself."
-
-[[edge]]
-from = "contract-transport"
 to = "plane"
 cite = "none. ARCHITECTURE.md 1.1 — three blind axes, one small kernel: a crate of kind contract-transport has no clause that lets it name plane vocabulary. Every hit is a coupling to delete."
 why = "crates of kind contract-transport naming plane vocabulary: plane package names in any spelling, the kind-qualified id (plane-<id>), and — where plane is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
@@ -409,48 +362,6 @@ to = "transport"
 cite = "none. ARCHITECTURE.md 1.1 — three blind axes, one small kernel: a crate of kind contract-transport has no clause that lets it name transport vocabulary. Every hit is a coupling to delete."
 why = "crates of kind contract-transport naming transport vocabulary: transport package names in any spelling, the kind-qualified id (transport-<id>), and — where transport is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
 drain = "delete the transport name from the contract-transport crate: a contract-transport reaches transport through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
-
-[[edge]]
-from = "control"
-to = "contract-transport"
-cite = "ARCHITECTURE.md 3.1 (crate graph, bounded types) — contract-transport is a CORE FACE a plugin kind is written against, and naming the face is what being a plugin of a kind means. What the clause does NOT grant is naming an INSTANCE of another plugin kind, which is why this class still carries a number."
-why = "crates of kind control naming contract-transport vocabulary: contract-transport package names in any spelling, the kind-qualified id (contract-transport-<id>), and — where contract-transport is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
-drain = "nothing to drain while the crate is a plugin of its kind; the row exists so that a NEW control -> contract-transport coupling is visible on the landing that adds it. It falls when the crate stops naming the face outside its ABI-facing modules."
-
-[[edge]]
-from = "control"
-to = "legacy"
-cite = "none. The retiring 1.5.x crates predate the plane/transport split (ARCHITECTURE.md 9.2); the number is the SIZE OF THE RETIREMENT, not an allowance, and it goes to zero when the crate does."
-why = "crates of kind control naming legacy vocabulary: legacy package names in any spelling, the kind-qualified id (legacy-<id>), and — where legacy is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
-drain = "git rm -r the retiring 1.5.x crate. The ratchet here IS the retirement; this row cannot be edited down any other way."
-
-[[edge]]
-from = "control"
-to = "plane"
-cite = "none. PLUGIN-TREE.md 1 admits control as its own kind (owner, 2026-09-08): a control surface is an UNMETERED served surface and a plane is the metered path, and neither may name the other. busbar-plane-admin is registered as control until R7 renames it, so this number is the rename measured rather than asserted."
-why = "crates of kind control naming plane vocabulary: plane package names in any spelling, the kind-qualified id (plane-<id>), and — where plane is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
-drain = "R7. The admin surface becomes busbar-control-admin with its route table declared as data; every hit here is one line of that rename, and the row falls when the surface stops being named from outside itself."
-
-[[edge]]
-from = "control"
-to = "secret"
-cite = "none. PLUGIN-TREE.md 1 admits control as its own kind (owner, 2026-09-08): a control surface is an UNMETERED served surface and a plane is the metered path, and neither may name the other. busbar-plane-admin is registered as control until R7 renames it, so this number is the rename measured rather than asserted."
-why = "crates of kind control naming secret vocabulary: secret package names in any spelling, the kind-qualified id (secret-<id>), and — where secret is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
-drain = "R7. The admin surface becomes busbar-control-admin with its route table declared as data; every hit here is one line of that rename, and the row falls when the surface stops being named from outside itself."
-
-[[edge]]
-from = "control"
-to = "transport"
-cite = "none. PLUGIN-TREE.md 1 admits control as its own kind (owner, 2026-09-08): a control surface is an UNMETERED served surface and a plane is the metered path, and neither may name the other. busbar-plane-admin is registered as control until R7 renames it, so this number is the rename measured rather than asserted."
-why = "crates of kind control naming transport vocabulary: transport package names in any spelling, the kind-qualified id (transport-<id>), and — where transport is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
-drain = "R7. The admin surface becomes busbar-control-admin with its route table declared as data; every hit here is one line of that rename, and the row falls when the surface stops being named from outside itself."
-
-[[edge]]
-from = "control"
-to = "unit"
-cite = "none. PLUGIN-TREE.md 1 admits control as its own kind (owner, 2026-09-08): a control surface is an UNMETERED served surface and a plane is the metered path, and neither may name the other. busbar-plane-admin is registered as control until R7 renames it, so this number is the rename measured rather than asserted."
-why = "crates of kind control naming unit vocabulary: unit package names in any spelling, the kind-qualified id (unit-<id>), and — where unit is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
-drain = "R7. The admin surface becomes busbar-control-admin with its route table declared as data; every hit here is one line of that rename, and the row falls when the surface stops being named from outside itself."
 
 [[edge]]
 from = "export"
@@ -517,13 +428,6 @@ drain = "nothing to drain while the crate is a plugin of its kind; the row exist
 
 [[edge]]
 from = "kernel"
-to = "control"
-cite = "none. PLUGIN-TREE.md 1 admits control as its own kind (owner, 2026-09-08): a control surface is an UNMETERED served surface and a plane is the metered path, and neither may name the other. busbar-plane-admin is registered as control until R7 renames it, so this number is the rename measured rather than asserted."
-why = "crates of kind kernel naming control vocabulary: control package names in any spelling, the kind-qualified id (control-<id>), and — where control is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
-drain = "R7. The admin surface becomes busbar-control-admin with its route table declared as data; every hit here is one line of that rename, and the row falls when the surface stops being named from outside itself."
-
-[[edge]]
-from = "kernel"
 to = "grammar"
 cite = "ARCHITECTURE.md 3.1 (crate graph, bounded types) — grammar is a CORE FACE a plugin kind is written against, and naming the face is what being a plugin of a kind means. What the clause does NOT grant is naming an INSTANCE of another plugin kind, which is why this class still carries a number."
 why = "crates of kind kernel naming grammar vocabulary: grammar package names in any spelling, the kind-qualified id (grammar-<id>), and — where grammar is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
@@ -569,13 +473,6 @@ from = "legacy"
 to = "codec"
 cite = "none. The retiring 1.5.x crates predate the plane/transport split (ARCHITECTURE.md 9.2); the number is the SIZE OF THE RETIREMENT, not an allowance, and it goes to zero when the crate does."
 why = "crates of kind legacy naming codec vocabulary: codec package names in any spelling, the kind-qualified id (codec-<id>), and — where codec is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
-drain = "git rm -r the retiring 1.5.x crate. The ratchet here IS the retirement; this row cannot be edited down any other way."
-
-[[edge]]
-from = "legacy"
-to = "control"
-cite = "none. The retiring 1.5.x crates predate the plane/transport split (ARCHITECTURE.md 9.2); the number is the SIZE OF THE RETIREMENT, not an allowance, and it goes to zero when the crate does."
-why = "crates of kind legacy naming control vocabulary: control package names in any spelling, the kind-qualified id (control-<id>), and — where control is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
 drain = "git rm -r the retiring 1.5.x crate. The ratchet here IS the retirement; this row cannot be edited down any other way."
 
 [[edge]]
@@ -685,13 +582,6 @@ drain = "nothing to drain while the crate is a plugin of its kind; the row exist
 
 [[edge]]
 from = "plane"
-to = "control"
-cite = "none. PLUGIN-TREE.md 1 admits control as its own kind (owner, 2026-09-08): a control surface is an UNMETERED served surface and a plane is the metered path, and neither may name the other. busbar-plane-admin is registered as control until R7 renames it, so this number is the rename measured rather than asserted."
-why = "crates of kind plane naming control vocabulary: control package names in any spelling, the kind-qualified id (control-<id>), and — where control is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
-drain = "R7. The admin surface becomes busbar-control-admin with its route table declared as data; every hit here is one line of that rename, and the row falls when the surface stops being named from outside itself."
-
-[[edge]]
-from = "plane"
 to = "kernel"
 cite = "ARCHITECTURE.md 3.1 (crate graph, bounded types) — kernel is a CORE FACE a plugin kind is written against, and naming the face is what being a plugin of a kind means. What the clause does NOT grant is naming an INSTANCE of another plugin kind, which is why this class still carries a number."
 why = "crates of kind plane naming kernel vocabulary: kernel package names in any spelling, the kind-qualified id (kernel-<id>), and — where kernel is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
@@ -724,13 +614,6 @@ to = "api"
 cite = "ARCHITECTURE.md 3.1 (crate graph, bounded types) — api is a CORE FACE a plugin kind is written against, and naming the face is what being a plugin of a kind means. What the clause does NOT grant is naming an INSTANCE of another plugin kind, which is why this class still carries a number."
 why = "crates of kind plugin-abi naming api vocabulary: api package names in any spelling, the kind-qualified id (api-<id>), and — where api is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
 drain = "nothing to drain while the crate is a plugin of its kind; the row exists so that a NEW plugin-abi -> api coupling is visible on the landing that adds it. It falls when the crate stops naming the face outside its ABI-facing modules."
-
-[[edge]]
-from = "plugin-abi"
-to = "control"
-cite = "none. PLUGIN-TREE.md 1 admits control as its own kind (owner, 2026-09-08): a control surface is an UNMETERED served surface and a plane is the metered path, and neither may name the other. busbar-plane-admin is registered as control until R7 renames it, so this number is the rename measured rather than asserted."
-why = "crates of kind plugin-abi naming control vocabulary: control package names in any spelling, the kind-qualified id (control-<id>), and — where control is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
-drain = "R7. The admin surface becomes busbar-control-admin with its route table declared as data; every hit here is one line of that rename, and the row falls when the surface stops being named from outside itself."
 
 [[edge]]
 from = "plugin-abi"
@@ -787,13 +670,6 @@ to = "caps"
 cite = "ARCHITECTURE.md 3.1 (crate graph, bounded types) — caps is a CORE FACE a plugin kind is written against, and naming the face is what being a plugin of a kind means. What the clause does NOT grant is naming an INSTANCE of another plugin kind, which is why this class still carries a number."
 why = "crates of kind plugin-tooling naming caps vocabulary: caps package names in any spelling, the kind-qualified id (caps-<id>), and — where caps is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
 drain = "nothing to drain while the crate is a plugin of its kind; the row exists so that a NEW plugin-tooling -> caps coupling is visible on the landing that adds it. It falls when the crate stops naming the face outside its ABI-facing modules."
-
-[[edge]]
-from = "plugin-tooling"
-to = "control"
-cite = "none. PLUGIN-TREE.md 1 admits control as its own kind (owner, 2026-09-08): a control surface is an UNMETERED served surface and a plane is the metered path, and neither may name the other. busbar-plane-admin is registered as control until R7 renames it, so this number is the rename measured rather than asserted."
-why = "crates of kind plugin-tooling naming control vocabulary: control package names in any spelling, the kind-qualified id (control-<id>), and — where control is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
-drain = "R7. The admin surface becomes busbar-control-admin with its route table declared as data; every hit here is one line of that rename, and the row falls when the surface stops being named from outside itself."
 
 [[edge]]
 from = "plugin-tooling"
@@ -895,13 +771,6 @@ drain = "delete the per-contract-transport wiring from crates/busbar/src/root/**
 
 [[edge]]
 from = "root"
-to = "control"
-cite = "none. ARCHITECTURE.md 1.1 gives the composition root a REGISTRY to assemble from — it mounts what a plugin DECLARES. A control name inside crates/busbar is the assembly hand-wired instead of read, and no clause grants it."
-why = "crates of kind root naming control vocabulary: control package names in any spelling, the kind-qualified id (control-<id>), and — where control is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
-drain = "delete the per-control wiring from crates/busbar/src/root/** and crates/busbar/src/main.rs: the root mounts a declared surface read off the registry, so each hit goes on the commit that moves the declaration into the control itself."
-
-[[edge]]
-from = "root"
 to = "hooks"
 cite = "none. ARCHITECTURE.md 1.1 gives the composition root a REGISTRY to assemble from — it mounts what a plugin DECLARES. A hooks name inside crates/busbar is the assembly hand-wired instead of read, and no clause grants it."
 why = "crates of kind root naming hooks vocabulary: hooks package names in any spelling, the kind-qualified id (hooks-<id>), and — where hooks is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
@@ -979,13 +848,6 @@ drain = "nothing to drain while the crate is a plugin of its kind; the row exist
 
 [[edge]]
 from = "secret"
-to = "control"
-cite = "none. PLUGIN-TREE.md 1 admits control as its own kind (owner, 2026-09-08): a control surface is an UNMETERED served surface and a plane is the metered path, and neither may name the other. busbar-plane-admin is registered as control until R7 renames it, so this number is the rename measured rather than asserted."
-why = "crates of kind secret naming control vocabulary: control package names in any spelling, the kind-qualified id (control-<id>), and — where control is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
-drain = "R7. The admin surface becomes busbar-control-admin with its route table declared as data; every hit here is one line of that rename, and the row falls when the surface stops being named from outside itself."
-
-[[edge]]
-from = "secret"
 to = "hooks"
 cite = "none. ARCHITECTURE.md 1.1 — three blind axes, one small kernel: a crate of kind secret has no clause that lets it name hooks vocabulary. Every hit is a coupling to delete."
 why = "crates of kind secret naming hooks vocabulary: hooks package names in any spelling, the kind-qualified id (hooks-<id>), and — where hooks is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
@@ -1025,13 +887,6 @@ to = "api"
 cite = "ARCHITECTURE.md 3.1 (crate graph, bounded types) — api is a CORE FACE a plugin kind is written against, and naming the face is what being a plugin of a kind means. What the clause does NOT grant is naming an INSTANCE of another plugin kind, which is why this class still carries a number."
 why = "crates of kind store naming api vocabulary: api package names in any spelling, the kind-qualified id (api-<id>), and — where api is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
 drain = "nothing to drain while the crate is a plugin of its kind; the row exists so that a NEW store -> api coupling is visible on the landing that adds it. It falls when the crate stops naming the face outside its ABI-facing modules."
-
-[[edge]]
-from = "store"
-to = "control"
-cite = "none. PLUGIN-TREE.md 1 admits control as its own kind (owner, 2026-09-08): a control surface is an UNMETERED served surface and a plane is the metered path, and neither may name the other. busbar-plane-admin is registered as control until R7 renames it, so this number is the rename measured rather than asserted."
-why = "crates of kind store naming control vocabulary: control package names in any spelling, the kind-qualified id (control-<id>), and — where control is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
-drain = "R7. The admin surface becomes busbar-control-admin with its route table declared as data; every hit here is one line of that rename, and the row falls when the surface stops being named from outside itself."
 
 [[edge]]
 from = "store"
@@ -1095,13 +950,6 @@ to = "codec"
 cite = "none. ARCHITECTURE.md 1.1 — three blind axes, one small kernel: a crate of kind substrate has no clause that lets it name codec vocabulary. Every hit is a coupling to delete."
 why = "crates of kind substrate naming codec vocabulary: codec package names in any spelling, the kind-qualified id (codec-<id>), and — where codec is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
 drain = "delete the codec name from the substrate crate: a substrate reaches codec through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
-
-[[edge]]
-from = "substrate"
-to = "control"
-cite = "none. PLUGIN-TREE.md 1 admits control as its own kind (owner, 2026-09-08): a control surface is an UNMETERED served surface and a plane is the metered path, and neither may name the other. busbar-plane-admin is registered as control until R7 renames it, so this number is the rename measured rather than asserted."
-why = "crates of kind substrate naming control vocabulary: control package names in any spelling, the kind-qualified id (control-<id>), and — where control is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
-drain = "R7. The admin surface becomes busbar-control-admin with its route table declared as data; every hit here is one line of that rename, and the row falls when the surface stops being named from outside itself."
 
 [[edge]]
 from = "substrate"
@@ -1203,13 +1051,6 @@ drain = "nothing to drain while the crate is a plugin of its kind; the row exist
 
 [[edge]]
 from = "transport"
-to = "control"
-cite = "none. PLUGIN-TREE.md 1 admits control as its own kind (owner, 2026-09-08): a control surface is an UNMETERED served surface and a plane is the metered path, and neither may name the other. busbar-plane-admin is registered as control until R7 renames it, so this number is the rename measured rather than asserted."
-why = "crates of kind transport naming control vocabulary: control package names in any spelling, the kind-qualified id (control-<id>), and — where control is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
-drain = "R7. The admin surface becomes busbar-control-admin with its route table declared as data; every hit here is one line of that rename, and the row falls when the surface stops being named from outside itself."
-
-[[edge]]
-from = "transport"
 to = "kernel"
 cite = "ARCHITECTURE.md 3.1 (crate graph, bounded types) — kernel is a CORE FACE a plugin kind is written against, and naming the face is what being a plugin of a kind means. What the clause does NOT grant is naming an INSTANCE of another plugin kind, which is why this class still carries a number."
 why = "crates of kind transport naming kernel vocabulary: kernel package names in any spelling, the kind-qualified id (kernel-<id>), and — where kernel is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
@@ -1273,13 +1114,6 @@ drain = "nothing to drain while the crate is a plugin of its kind; the row exist
 
 [[edge]]
 from = "unit"
-to = "control"
-cite = "none. PLUGIN-TREE.md 1 admits control as its own kind (owner, 2026-09-08): a control surface is an UNMETERED served surface and a plane is the metered path, and neither may name the other. busbar-plane-admin is registered as control until R7 renames it, so this number is the rename measured rather than asserted."
-why = "crates of kind unit naming control vocabulary: control package names in any spelling, the kind-qualified id (control-<id>), and — where control is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
-drain = "R7. The admin surface becomes busbar-control-admin with its route table declared as data; every hit here is one line of that rename, and the row falls when the surface stops being named from outside itself."
-
-[[edge]]
-from = "unit"
 to = "legacy"
 cite = "none. The retiring 1.5.x crates predate the plane/transport split (ARCHITECTURE.md 9.2); the number is the SIZE OF THE RETIREMENT, not an allowance, and it goes to zero when the crate does."
 why = "crates of kind unit naming legacy vocabulary: legacy package names in any spelling, the kind-qualified id (legacy-<id>), and — where legacy is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
@@ -1330,11 +1164,6 @@ count = "5"
 crate = "busbar"
 kind = "contract-transport"
 count = "18"
-
-[[cell]]
-crate = "busbar"
-kind = "control"
-count = "1063"
 
 [[cell]]
 crate = "busbar"
@@ -1403,11 +1232,6 @@ count = "40"
 
 [[cell]]
 crate = "busbar-a2a"
-kind = "control"
-count = "172"
-
-[[cell]]
-crate = "busbar-a2a"
 kind = "hooks"
 count = "4"
 
@@ -1473,11 +1297,6 @@ count = "2"
 
 [[cell]]
 crate = "busbar-api"
-kind = "control"
-count = "28"
-
-[[cell]]
-crate = "busbar-api"
 kind = "legacy"
 count = "2"
 
@@ -1512,11 +1331,6 @@ kind = "api"
 count = "3"
 
 [[cell]]
-crate = "busbar-auth-admin-tokens"
-kind = "control"
-count = "49"
-
-[[cell]]
 crate = "busbar-auth-static-plugin"
 kind = "api"
 count = "5"
@@ -1524,11 +1338,6 @@ count = "5"
 [[cell]]
 crate = "busbar-auth-static-plugin"
 kind = "auth"
-count = "2"
-
-[[cell]]
-crate = "busbar-auth-static-plugin"
-kind = "control"
 count = "2"
 
 [[cell]]
@@ -1548,11 +1357,6 @@ count = "1"
 
 [[cell]]
 crate = "busbar-caps"
-kind = "control"
-count = "11"
-
-[[cell]]
-crate = "busbar-caps"
 kind = "legacy"
 count = "1"
 
@@ -1565,11 +1369,6 @@ count = "2"
 crate = "busbar-contract"
 kind = "contract-transport"
 count = "16"
-
-[[cell]]
-crate = "busbar-contract"
-kind = "control"
-count = "20"
 
 [[cell]]
 crate = "busbar-contract"
@@ -1603,11 +1402,6 @@ count = "41"
 
 [[cell]]
 crate = "busbar-contract-transport"
-kind = "control"
-count = "5"
-
-[[cell]]
-crate = "busbar-contract-transport"
 kind = "plane"
 count = "8"
 
@@ -1630,11 +1424,6 @@ count = "94"
 crate = "busbar-core"
 kind = "codec"
 count = "4"
-
-[[cell]]
-crate = "busbar-core"
-kind = "control"
-count = "5520"
 
 [[cell]]
 crate = "busbar-core"
@@ -1728,11 +1517,6 @@ count = "68"
 
 [[cell]]
 crate = "busbar-kernel"
-kind = "control"
-count = "24"
-
-[[cell]]
-crate = "busbar-kernel"
 kind = "grammar"
 count = "5"
 
@@ -1765,11 +1549,6 @@ count = "43"
 crate = "busbar-llm"
 kind = "codec"
 count = "25"
-
-[[cell]]
-crate = "busbar-llm"
-kind = "control"
-count = "88"
 
 [[cell]]
 crate = "busbar-llm"
@@ -1863,11 +1642,6 @@ count = "42"
 
 [[cell]]
 crate = "busbar-mcp"
-kind = "control"
-count = "153"
-
-[[cell]]
-crate = "busbar-mcp"
 kind = "hooks"
 count = "7"
 
@@ -1913,11 +1687,6 @@ count = "1"
 
 [[cell]]
 crate = "busbar-mcp-codec"
-kind = "control"
-count = "3"
-
-[[cell]]
-crate = "busbar-mcp-codec"
 kind = "grammar"
 count = "4"
 
@@ -1955,11 +1724,6 @@ count = "45"
 crate = "busbar-plane-a2a"
 kind = "contract-transport"
 count = "7"
-
-[[cell]]
-crate = "busbar-plane-a2a"
-kind = "control"
-count = "13"
 
 [[cell]]
 crate = "busbar-plane-a2a"
@@ -2028,11 +1792,6 @@ count = "1"
 
 [[cell]]
 crate = "busbar-plane-llm"
-kind = "control"
-count = "12"
-
-[[cell]]
-crate = "busbar-plane-llm"
 kind = "kernel"
 count = "1"
 
@@ -2060,11 +1819,6 @@ count = "2"
 crate = "busbar-plane-mcp"
 kind = "codec"
 count = "33"
-
-[[cell]]
-crate = "busbar-plane-mcp"
-kind = "control"
-count = "10"
 
 [[cell]]
 crate = "busbar-plane-mcp"
@@ -2103,11 +1857,6 @@ count = "2"
 
 [[cell]]
 crate = "busbar-plane-voice"
-kind = "control"
-count = "13"
-
-[[cell]]
-crate = "busbar-plane-voice"
 kind = "plane"
 count = "43"
 
@@ -2120,11 +1869,6 @@ count = "102"
 crate = "busbar-plugin"
 kind = "api"
 count = "58"
-
-[[cell]]
-crate = "busbar-plugin"
-kind = "control"
-count = "35"
 
 [[cell]]
 crate = "busbar-plugin"
@@ -2165,11 +1909,6 @@ count = "1"
 crate = "busbar-plugin-loader"
 kind = "caps"
 count = "6"
-
-[[cell]]
-crate = "busbar-plugin-loader"
-kind = "control"
-count = "50"
 
 [[cell]]
 crate = "busbar-plugin-loader"
@@ -2218,11 +1957,6 @@ count = "42"
 
 [[cell]]
 crate = "busbar-plugin-pack"
-kind = "control"
-count = "2"
-
-[[cell]]
-crate = "busbar-plugin-pack"
 kind = "plugin-tooling"
 count = "31"
 
@@ -2243,11 +1977,6 @@ count = "61"
 
 [[cell]]
 crate = "busbar-plugin-sdk"
-kind = "control"
-count = "1"
-
-[[cell]]
-crate = "busbar-plugin-sdk"
 kind = "plane"
 count = "20"
 
@@ -2260,11 +1989,6 @@ count = "7"
 crate = "busbar-plugin-sdk"
 kind = "transport"
 count = "44"
-
-[[cell]]
-crate = "busbar-plugin-sign"
-kind = "control"
-count = "2"
 
 [[cell]]
 crate = "busbar-plugin-sign"
@@ -2298,11 +2022,6 @@ count = "3"
 
 [[cell]]
 crate = "busbar-secret-ref"
-kind = "control"
-count = "3"
-
-[[cell]]
-crate = "busbar-secret-ref"
 kind = "legacy"
 count = "1"
 
@@ -2325,11 +2044,6 @@ count = "2"
 crate = "busbar-store-example-plugin"
 kind = "api"
 count = "6"
-
-[[cell]]
-crate = "busbar-store-example-plugin"
-kind = "control"
-count = "1"
 
 [[cell]]
 crate = "busbar-store-example-plugin"
@@ -2358,11 +2072,6 @@ count = "15"
 
 [[cell]]
 crate = "busbar-store-memory"
-kind = "control"
-count = "5"
-
-[[cell]]
-crate = "busbar-store-memory"
 kind = "kernel"
 count = "2"
 
@@ -2385,11 +2094,6 @@ count = "134"
 crate = "busbar-substrate"
 kind = "auth"
 count = "3"
-
-[[cell]]
-crate = "busbar-substrate"
-kind = "control"
-count = "352"
 
 [[cell]]
 crate = "busbar-substrate"
@@ -2445,11 +2149,6 @@ count = "31"
 crate = "busbar-substrate-values"
 kind = "codec"
 count = "1"
-
-[[cell]]
-crate = "busbar-substrate-values"
-kind = "control"
-count = "121"
 
 [[cell]]
 crate = "busbar-substrate-values"
@@ -2578,11 +2277,6 @@ count = "46"
 
 [[cell]]
 crate = "busbar-transport-stdio"
-kind = "control"
-count = "3"
-
-[[cell]]
-crate = "busbar-transport-stdio"
 kind = "plane"
 count = "1"
 
@@ -2610,11 +2304,6 @@ count = "7"
 crate = "busbar-transport-tls"
 kind = "contract-transport"
 count = "33"
-
-[[cell]]
-crate = "busbar-transport-tls"
-kind = "control"
-count = "1"
 
 [[cell]]
 crate = "busbar-transport-tls"
@@ -2653,11 +2342,6 @@ count = "50"
 
 [[cell]]
 crate = "busbar-unit-admission"
-kind = "control"
-count = "3"
-
-[[cell]]
-crate = "busbar-unit-admission"
 kind = "transport"
 count = "2"
 
@@ -2673,11 +2357,6 @@ count = "23"
 
 [[cell]]
 crate = "busbar-unit-audit"
-kind = "control"
-count = "87"
-
-[[cell]]
-crate = "busbar-unit-audit"
 kind = "plane"
 count = "6"
 
@@ -2690,11 +2369,6 @@ count = "6"
 crate = "busbar-unit-auth"
 kind = "caps"
 count = "6"
-
-[[cell]]
-crate = "busbar-unit-auth"
-kind = "control"
-count = "24"
 
 [[cell]]
 crate = "busbar-unit-auth"
@@ -2758,11 +2432,6 @@ count = "55"
 
 [[cell]]
 crate = "busbar-unit-egress"
-kind = "control"
-count = "1"
-
-[[cell]]
-crate = "busbar-unit-egress"
 kind = "plane"
 count = "1"
 
@@ -2805,11 +2474,6 @@ count = "20"
 crate = "busbar-unit-scope"
 kind = "caps"
 count = "3"
-
-[[cell]]
-crate = "busbar-unit-scope"
-kind = "control"
-count = "139"
 
 [[cell]]
 crate = "busbar-unit-scope"
@@ -2873,11 +2537,6 @@ count = "16"
 
 [[cell]]
 crate = "busbar-unit-verbs"
-kind = "control"
-count = "486"
-
-[[cell]]
-crate = "busbar-unit-verbs"
 kind = "legacy"
 count = "25"
 
@@ -2900,11 +2559,6 @@ count = "65"
 crate = "busbar-voice"
 kind = "codec"
 count = "10"
-
-[[cell]]
-crate = "busbar-voice"
-kind = "control"
-count = "17"
 
 [[cell]]
 crate = "busbar-voice"
@@ -5486,285 +5140,218 @@ drain = "move both implementations into a store-kind crate and have the root REG
 # large is the point: the ratchet is exact in BOTH directions, so a vendor word ADDED to a crate is
 # red and a vendor word DELETED without re-pinning is red too. `cargo xtask gate kind-isolation
 # --write` re-pins downward and refuses every rise.
+# ------------------------------------------------------------------------------------------------
+# CLEANLINESS (admin/oauth2) EDGES — DECISIONS #5. Pre-existing at the merge-base; recorded, not
+# introduced. Struck when busbar-core is deleted.
+# ------------------------------------------------------------------------------------------------
 
-[[cell]]
-crate = "busbar"
-kind = "dialect"
-count = "175"
+[[dep]]
+from    = "busbar-admin"
+to      = "busbar-api"
+half    = "shipped"
+count   = "1"
+verdict = "not-allowed"
+cite    = "the byte-identical busbar-admin/oauth2 extraction out of busbar-core (a compiled-in cleanliness crate, DECISIONS #5); a one-way dep pre-existing at the merge-base."
+why     = "the admin API service names the api surface it serves."
+drain   = "folds away when busbar-core is deleted and the cleanliness crates reach the kernel/substrate/api spine by their final names."
 
-[[cell]]
-crate = "busbar-a2a"
-kind = "dialect"
-count = "8"
+[[dep]]
+from    = "busbar-admin"
+to      = "busbar-core"
+half    = "shipped"
+count   = "1"
+verdict = "not-allowed"
+cite    = "the byte-identical busbar-admin/oauth2 extraction out of busbar-core (a compiled-in cleanliness crate, DECISIONS #5); a one-way dep pre-existing at the merge-base."
+why     = "the admin service's one-way dep on core for App/AppHandle."
+drain   = "folds away when busbar-core is deleted and the cleanliness crates reach the kernel/substrate/api spine by their final names."
 
-[[cell]]
-crate = "busbar-api"
-kind = "dialect"
-count = "3"
+[[dep]]
+from    = "busbar-oauth2"
+to      = "busbar-core"
+half    = "shipped"
+count   = "1"
+verdict = "not-allowed"
+cite    = "the byte-identical busbar-admin/oauth2 extraction out of busbar-core (a compiled-in cleanliness crate, DECISIONS #5); a one-way dep pre-existing at the merge-base."
+why     = "the oauth2 authorization-server's one-way dep on core for CoreRouter."
+drain   = "folds away when busbar-core is deleted and the cleanliness crates reach the kernel/substrate/api spine by their final names."
 
-[[cell]]
-crate = "busbar-caps"
-kind = "dialect"
-count = "2"
+[[dep]]
+from    = "busbar-admin"
+to      = "busbar-plugin-loader"
+half    = "shipped"
+count   = "1"
+verdict = "not-allowed"
+cite    = "the byte-identical busbar-admin/oauth2 extraction out of busbar-core (a compiled-in cleanliness crate, DECISIONS #5); a one-way dep pre-existing at the merge-base."
+why     = "the admin service names the plugin loader TCB."
+drain   = "folds away when busbar-core is deleted and the cleanliness crates reach the kernel/substrate/api spine by their final names."
 
-[[cell]]
-crate = "busbar-contract"
-kind = "dialect"
-count = "4"
+[[dep]]
+from    = "busbar-admin"
+to      = "busbar-plugin-sign"
+half    = "shipped"
+count   = "1"
+verdict = "not-allowed"
+cite    = "the byte-identical busbar-admin/oauth2 extraction out of busbar-core (a compiled-in cleanliness crate, DECISIONS #5); a one-way dep pre-existing at the merge-base."
+why     = "the admin service names the plugin-sign TCB."
+drain   = "folds away when busbar-core is deleted and the cleanliness crates reach the kernel/substrate/api spine by their final names."
 
-[[cell]]
-crate = "busbar-core"
-kind = "dialect"
-count = "1033"
+[[dep]]
+from    = "busbar-oauth2"
+to      = "busbar-plugin-loader"
+half    = "shipped"
+count   = "1"
+verdict = "not-allowed"
+cite    = "the byte-identical busbar-admin/oauth2 extraction out of busbar-core (a compiled-in cleanliness crate, DECISIONS #5); a one-way dep pre-existing at the merge-base."
+why     = "the oauth2 crate names the plugin loader TCB."
+drain   = "folds away when busbar-core is deleted and the cleanliness crates reach the kernel/substrate/api spine by their final names."
 
-[[cell]]
-crate = "busbar-hooks-ranking"
-kind = "dialect"
-count = "2"
+[[dep]]
+from    = "busbar-admin"
+to      = "busbar-substrate"
+half    = "shipped"
+count   = "1"
+verdict = "not-allowed"
+cite    = "the byte-identical busbar-admin/oauth2 extraction out of busbar-core (a compiled-in cleanliness crate, DECISIONS #5); a one-way dep pre-existing at the merge-base."
+why     = "the admin service names the neutral substrate."
+drain   = "folds away when busbar-core is deleted and the cleanliness crates reach the kernel/substrate/api spine by their final names."
 
-[[cell]]
-crate = "busbar-llm"
-kind = "dialect"
-count = "3203"
+[[dep]]
+from    = "busbar-oauth2"
+to      = "busbar-substrate"
+half    = "shipped"
+count   = "1"
+verdict = "not-allowed"
+cite    = "the byte-identical busbar-admin/oauth2 extraction out of busbar-core (a compiled-in cleanliness crate, DECISIONS #5); a one-way dep pre-existing at the merge-base."
+why     = "the oauth2 crate's CIMD fetch goes through the neutral substrate egress engine."
+drain   = "folds away when busbar-core is deleted and the cleanliness crates reach the kernel/substrate/api spine by their final names."
 
-[[cell]]
-crate = "busbar-llm-codec"
-kind = "dialect"
-count = "11195"
+[[dep]]
+from    = "busbar"
+to      = "busbar-admin"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "the composition root wires every compiled-in surface (ARCHITECTURE_ALLOWED root -> cleanliness)."
+why     = "the root mounts the admin service."
+drain   = "n/a — the root names all axes by design."
 
-[[cell]]
-crate = "busbar-mcp"
-kind = "dialect"
-count = "119"
+[[dep]]
+from    = "busbar"
+to      = "busbar-oauth2"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "the composition root wires every compiled-in surface (ARCHITECTURE_ALLOWED root -> cleanliness)."
+why     = "the root mounts the oauth2 plane."
+drain   = "n/a — the root names all axes by design."
 
-[[cell]]
-crate = "busbar-mcp-codec"
-kind = "dialect"
-count = "7"
+[[dep]]
+from    = "busbar-core"
+to      = "busbar-contract"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.1 — every crate is written against the contract (legacy -> contract)."
+why     = "the retiring 1.5.x core names the contract."
+drain   = "git rm the retiring crate."
 
-[[cell]]
-crate = "busbar-plugin"
-kind = "dialect"
-count = "3"
+[[dep]]
+from    = "busbar-substrate-values"
+to      = "busbar-contract-transport"
+half    = "shipped"
+count   = "1"
+verdict = "not-allowed"
+cite    = "a pre-existing edge at the merge-base: the substrate values crate names the contract-transport surface."
+why     = "substrate values reach the transport contract."
+drain   = "route the reference through busbar-contract."
 
-[[cell]]
-crate = "busbar-plugin-loader"
-kind = "dialect"
-count = "9"
+[[dep]]
+from    = "busbar-admin"
+to      = "busbar-a2a"
+half    = "test"
+count   = "1"
+verdict = "not-allowed"
+cite    = "the byte-identical busbar-admin/oauth2 extraction out of busbar-core (a compiled-in cleanliness crate, DECISIONS #5); a one-way dep pre-existing at the merge-base."
+why     = "the admin e2e tests build against the a2a plane's test-support."
+drain   = "folds away when busbar-core is deleted and the cleanliness crates reach the kernel/substrate/api spine by their final names."
 
-[[cell]]
-crate = "busbar-secret-ref"
-kind = "dialect"
-count = "2"
+[[dep]]
+from    = "busbar-admin"
+to      = "busbar-core"
+half    = "test"
+count   = "1"
+verdict = "not-allowed"
+cite    = "the byte-identical busbar-admin/oauth2 extraction out of busbar-core (a compiled-in cleanliness crate, DECISIONS #5); a one-way dep pre-existing at the merge-base."
+why     = "the admin e2e tests build a core-configured TestApp."
+drain   = "folds away when busbar-core is deleted and the cleanliness crates reach the kernel/substrate/api spine by their final names."
 
-[[cell]]
-crate = "busbar-substrate"
-kind = "dialect"
-count = "87"
+[[dep]]
+from    = "busbar-admin"
+to      = "busbar-llm"
+half    = "test"
+count   = "1"
+verdict = "not-allowed"
+cite    = "the byte-identical busbar-admin/oauth2 extraction out of busbar-core (a compiled-in cleanliness crate, DECISIONS #5); a one-way dep pre-existing at the merge-base."
+why     = "the admin e2e tests build against the llm plane's test-support."
+drain   = "folds away when busbar-core is deleted and the cleanliness crates reach the kernel/substrate/api spine by their final names."
 
-[[cell]]
-crate = "busbar-substrate-values"
-kind = "dialect"
-count = "213"
+[[dep]]
+from    = "busbar-admin"
+to      = "busbar-mcp"
+half    = "test"
+count   = "1"
+verdict = "not-allowed"
+cite    = "the byte-identical busbar-admin/oauth2 extraction out of busbar-core (a compiled-in cleanliness crate, DECISIONS #5); a one-way dep pre-existing at the merge-base."
+why     = "the admin e2e tests build against the mcp plane's test-support."
+drain   = "folds away when busbar-core is deleted and the cleanliness crates reach the kernel/substrate/api spine by their final names."
 
-[[cell]]
-crate = "busbar-transport-sse"
-kind = "dialect"
-count = "3"
+[[dep]]
+from    = "busbar-oauth2"
+to      = "busbar-core"
+half    = "test"
+count   = "1"
+verdict = "not-allowed"
+cite    = "the byte-identical busbar-admin/oauth2 extraction out of busbar-core (a compiled-in cleanliness crate, DECISIONS #5); a one-way dep pre-existing at the merge-base."
+why     = "the oauth2 tests build a core-configured TestApp."
+drain   = "folds away when busbar-core is deleted and the cleanliness crates reach the kernel/substrate/api spine by their final names."
 
-[[cell]]
-crate = "busbar-unit-auth"
-kind = "dialect"
-count = "4"
+[[dep]]
+from    = "busbar-admin"
+to      = "busbar-store-memory"
+half    = "test"
+count   = "1"
+verdict = "not-allowed"
+cite    = "the byte-identical busbar-admin/oauth2 extraction out of busbar-core (a compiled-in cleanliness crate, DECISIONS #5); a one-way dep pre-existing at the merge-base."
+why     = "the admin e2e tests use the in-memory store."
+drain   = "folds away when busbar-core is deleted and the cleanliness crates reach the kernel/substrate/api spine by their final names."
 
-[[cell]]
-crate = "busbar-unit-breaker"
-kind = "dialect"
-count = "3"
+[[dep]]
+from    = "busbar-a2a"
+to      = "busbar-admin"
+half    = "test"
+count   = "1"
+verdict = "not-allowed"
+cite    = "legacy a2a's adminverbs tests build against the admin service (legacy -> cleanliness drain)."
+why     = "a2a adminverbs tests name the admin surface."
+drain   = "folds away when busbar-core is deleted and the cleanliness crates reach the kernel/substrate/api spine by their final names."
 
-[[cell]]
-crate = "busbar-unit-egress-auth"
-kind = "dialect"
-count = "34"
+[[dep]]
+from    = "busbar-mcp"
+to      = "busbar-admin"
+half    = "test"
+count   = "1"
+verdict = "not-allowed"
+cite    = "legacy mcp's adminverbs tests build against the admin service (legacy -> cleanliness drain)."
+why     = "mcp adminverbs tests name the admin surface."
+drain   = "folds away when busbar-core is deleted and the cleanliness crates reach the kernel/substrate/api spine by their final names."
 
-[[cell]]
-crate = "busbar-unit-ledger"
-kind = "dialect"
-count = "2"
+[[transitional]]
+from = "busbar-a2a"
+to = "busbar-admin"
+reason = "legacy drain: a2a adminverbs tests build against the extracted admin cleanliness crate"
 
-[[cell]]
-crate = "busbar-unit-trust"
-kind = "dialect"
-count = "5"
-
-[[cell]]
-crate = "busbar-unit-usage"
-kind = "dialect"
-count = "7"
-
-[[cell]]
-crate = "busbar-voice"
-kind = "dialect"
-count = "335"
-
-[[cell]]
-crate = "busbar-voice-codec"
-kind = "dialect"
-count = "257"
-
-[[edge]]
-from = "api"
-to = "dialect"
-cite = "none. ARCHITECTURE.md 1.1 -- three blind axes, one small kernel: a crate of kind api has no clause that lets it name a vendor. Every hit is a coupling to delete."
-why = "crates of kind api naming DIALECT vocabulary: the vendor names the `dialect` kind is named for -- the six words `plane-purity`'s DIALECT rule bans as whole words, read from that list and not from a second one here. The `dialect` kind has no crate yet (it lands as `busbar-plane-<plane>-<dialect>` when the codec split finishes), so the census derives no needles for it and this column would otherwise be the one column of the matrix that is unmeasured. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
-drain = "delete the vendor name from the api crate: a vendor is reached through the dialect crate that is named for it, never by spelling it. Until the codec split lands these are the pre-split dialects' own words sitting in crates that are not dialects; every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
-
-[[edge]]
-from = "caps"
-to = "dialect"
-cite = "none. ARCHITECTURE.md 1.1 -- three blind axes, one small kernel: a crate of kind caps has no clause that lets it name a vendor. Every hit is a coupling to delete."
-why = "crates of kind caps naming DIALECT vocabulary: the vendor names the `dialect` kind is named for -- the six words `plane-purity`'s DIALECT rule bans as whole words, read from that list and not from a second one here. The `dialect` kind has no crate yet (it lands as `busbar-plane-<plane>-<dialect>` when the codec split finishes), so the census derives no needles for it and this column would otherwise be the one column of the matrix that is unmeasured. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
-drain = "delete the vendor name from the caps crate: a vendor is reached through the dialect crate that is named for it, never by spelling it. Until the codec split lands these are the pre-split dialects' own words sitting in crates that are not dialects; every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
-
-[[edge]]
-from = "codec"
-to = "dialect"
-cite = "none. ARCHITECTURE.md 1.1 -- three blind axes, one small kernel: a crate of kind codec has no clause that lets it name a vendor. Every hit is a coupling to delete."
-why = "crates of kind codec naming DIALECT vocabulary: the vendor names the `dialect` kind is named for -- the six words `plane-purity`'s DIALECT rule bans as whole words, read from that list and not from a second one here. The `dialect` kind has no crate yet (it lands as `busbar-plane-<plane>-<dialect>` when the codec split finishes), so the census derives no needles for it and this column would otherwise be the one column of the matrix that is unmeasured. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
-drain = "delete the vendor name from the codec crate: a vendor is reached through the dialect crate that is named for it, never by spelling it. Until the codec split lands these are the pre-split dialects' own words sitting in crates that are not dialects; every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
-
-[[edge]]
-from = "contract"
-to = "dialect"
-cite = "none. ARCHITECTURE.md 1.1 -- three blind axes, one small kernel: a crate of kind contract has no clause that lets it name a vendor. Every hit is a coupling to delete."
-why = "crates of kind contract naming DIALECT vocabulary: the vendor names the `dialect` kind is named for -- the six words `plane-purity`'s DIALECT rule bans as whole words, read from that list and not from a second one here. The `dialect` kind has no crate yet (it lands as `busbar-plane-<plane>-<dialect>` when the codec split finishes), so the census derives no needles for it and this column would otherwise be the one column of the matrix that is unmeasured. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
-drain = "delete the vendor name from the contract crate: a vendor is reached through the dialect crate that is named for it, never by spelling it. Until the codec split lands these are the pre-split dialects' own words sitting in crates that are not dialects; every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
-
-[[edge]]
-from = "hooks"
-to = "dialect"
-cite = "none. ARCHITECTURE.md 1.1 -- three blind axes, one small kernel: a crate of kind hooks has no clause that lets it name a vendor. Every hit is a coupling to delete."
-why = "crates of kind hooks naming DIALECT vocabulary: the vendor names the `dialect` kind is named for -- the six words `plane-purity`'s DIALECT rule bans as whole words, read from that list and not from a second one here. The `dialect` kind has no crate yet (it lands as `busbar-plane-<plane>-<dialect>` when the codec split finishes), so the census derives no needles for it and this column would otherwise be the one column of the matrix that is unmeasured. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
-drain = "delete the vendor name from the hooks crate: a vendor is reached through the dialect crate that is named for it, never by spelling it. Until the codec split lands these are the pre-split dialects' own words sitting in crates that are not dialects; every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
-
-[[edge]]
-from = "legacy"
-to = "dialect"
-cite = "none. ARCHITECTURE.md 1.1 -- three blind axes, one small kernel: a crate of kind legacy has no clause that lets it name a vendor. Every hit is a coupling to delete."
-why = "crates of kind legacy naming DIALECT vocabulary: the vendor names the `dialect` kind is named for -- the six words `plane-purity`'s DIALECT rule bans as whole words, read from that list and not from a second one here. The `dialect` kind has no crate yet (it lands as `busbar-plane-<plane>-<dialect>` when the codec split finishes), so the census derives no needles for it and this column would otherwise be the one column of the matrix that is unmeasured. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
-drain = "delete the vendor name from the legacy crate: a vendor is reached through the dialect crate that is named for it, never by spelling it. Until the codec split lands these are the pre-split dialects' own words sitting in crates that are not dialects; every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
-
-[[edge]]
-from = "plugin-abi"
-to = "dialect"
-cite = "none. ARCHITECTURE.md 1.1 -- three blind axes, one small kernel: a crate of kind plugin-abi has no clause that lets it name a vendor. Every hit is a coupling to delete."
-why = "crates of kind plugin-abi naming DIALECT vocabulary: the vendor names the `dialect` kind is named for -- the six words `plane-purity`'s DIALECT rule bans as whole words, read from that list and not from a second one here. The `dialect` kind has no crate yet (it lands as `busbar-plane-<plane>-<dialect>` when the codec split finishes), so the census derives no needles for it and this column would otherwise be the one column of the matrix that is unmeasured. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
-drain = "delete the vendor name from the plugin-abi crate: a vendor is reached through the dialect crate that is named for it, never by spelling it. Until the codec split lands these are the pre-split dialects' own words sitting in crates that are not dialects; every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
-
-[[edge]]
-from = "plugin-tooling"
-to = "dialect"
-cite = "none. ARCHITECTURE.md 1.1 -- three blind axes, one small kernel: a crate of kind plugin-tooling has no clause that lets it name a vendor. Every hit is a coupling to delete."
-why = "crates of kind plugin-tooling naming DIALECT vocabulary: the vendor names the `dialect` kind is named for -- the six words `plane-purity`'s DIALECT rule bans as whole words, read from that list and not from a second one here. The `dialect` kind has no crate yet (it lands as `busbar-plane-<plane>-<dialect>` when the codec split finishes), so the census derives no needles for it and this column would otherwise be the one column of the matrix that is unmeasured. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
-drain = "delete the vendor name from the plugin-tooling crate: a vendor is reached through the dialect crate that is named for it, never by spelling it. Until the codec split lands these are the pre-split dialects' own words sitting in crates that are not dialects; every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
-
-[[edge]]
-from = "root"
-to = "dialect"
-cite = "none. ARCHITECTURE.md 1.1 -- three blind axes, one small kernel: a crate of kind root has no clause that lets it name a vendor. Every hit is a coupling to delete."
-why = "crates of kind root naming DIALECT vocabulary: the vendor names the `dialect` kind is named for -- the six words `plane-purity`'s DIALECT rule bans as whole words, read from that list and not from a second one here. The `dialect` kind has no crate yet (it lands as `busbar-plane-<plane>-<dialect>` when the codec split finishes), so the census derives no needles for it and this column would otherwise be the one column of the matrix that is unmeasured. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
-drain = "delete the vendor name from the root crate: a vendor is reached through the dialect crate that is named for it, never by spelling it. Until the codec split lands these are the pre-split dialects' own words sitting in crates that are not dialects; every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
-
-[[edge]]
-from = "secret"
-to = "dialect"
-cite = "none. ARCHITECTURE.md 1.1 -- three blind axes, one small kernel: a crate of kind secret has no clause that lets it name a vendor. Every hit is a coupling to delete."
-why = "crates of kind secret naming DIALECT vocabulary: the vendor names the `dialect` kind is named for -- the six words `plane-purity`'s DIALECT rule bans as whole words, read from that list and not from a second one here. The `dialect` kind has no crate yet (it lands as `busbar-plane-<plane>-<dialect>` when the codec split finishes), so the census derives no needles for it and this column would otherwise be the one column of the matrix that is unmeasured. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
-drain = "delete the vendor name from the secret crate: a vendor is reached through the dialect crate that is named for it, never by spelling it. Until the codec split lands these are the pre-split dialects' own words sitting in crates that are not dialects; every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
-
-[[edge]]
-from = "substrate"
-to = "dialect"
-cite = "none. ARCHITECTURE.md 1.1 -- three blind axes, one small kernel: a crate of kind substrate has no clause that lets it name a vendor. Every hit is a coupling to delete."
-why = "crates of kind substrate naming DIALECT vocabulary: the vendor names the `dialect` kind is named for -- the six words `plane-purity`'s DIALECT rule bans as whole words, read from that list and not from a second one here. The `dialect` kind has no crate yet (it lands as `busbar-plane-<plane>-<dialect>` when the codec split finishes), so the census derives no needles for it and this column would otherwise be the one column of the matrix that is unmeasured. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
-drain = "delete the vendor name from the substrate crate: a vendor is reached through the dialect crate that is named for it, never by spelling it. Until the codec split lands these are the pre-split dialects' own words sitting in crates that are not dialects; every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
-
-[[edge]]
-from = "transport"
-to = "dialect"
-cite = "none. ARCHITECTURE.md 1.1 -- three blind axes, one small kernel: a crate of kind transport has no clause that lets it name a vendor. Every hit is a coupling to delete."
-why = "crates of kind transport naming DIALECT vocabulary: the vendor names the `dialect` kind is named for -- the six words `plane-purity`'s DIALECT rule bans as whole words, read from that list and not from a second one here. The `dialect` kind has no crate yet (it lands as `busbar-plane-<plane>-<dialect>` when the codec split finishes), so the census derives no needles for it and this column would otherwise be the one column of the matrix that is unmeasured. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
-drain = "delete the vendor name from the transport crate: a vendor is reached through the dialect crate that is named for it, never by spelling it. Until the codec split lands these are the pre-split dialects' own words sitting in crates that are not dialects; every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
-
-[[edge]]
-from = "unit"
-to = "dialect"
-cite = "none. ARCHITECTURE.md 1.1 -- three blind axes, one small kernel: a crate of kind unit has no clause that lets it name a vendor. Every hit is a coupling to delete."
-why = "crates of kind unit naming DIALECT vocabulary: the vendor names the `dialect` kind is named for -- the six words `plane-purity`'s DIALECT rule bans as whole words, read from that list and not from a second one here. The `dialect` kind has no crate yet (it lands as `busbar-plane-<plane>-<dialect>` when the codec split finishes), so the census derives no needles for it and this column would otherwise be the one column of the matrix that is unmeasured. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
-drain = "delete the vendor name from the unit crate: a vendor is reached through the dialect crate that is named for it, never by spelling it. Until the codec split lands these are the pre-split dialects' own words sitting in crates that are not dialects; every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
-
-[[disagreement]]
-crate = "busbar"
-kind = "dialect"
-note = "segment scanner 166, window scanner 175. The two read the vendor spellings differently: a vendor name run together with the word beside it (`OpenaiResponses`, `anthropic_responses`) opens a segment for one scanner and reads as one window for the other. The scored count is the higher, never the lower, and it falls to zero with the hits."
-
-[[disagreement]]
-crate = "busbar-api"
-kind = "dialect"
-note = "segment scanner 2, window scanner 3. The two read the vendor spellings differently: a vendor name run together with the word beside it (`OpenaiResponses`, `anthropic_responses`) opens a segment for one scanner and reads as one window for the other. The scored count is the higher, never the lower, and it falls to zero with the hits."
-
-[[disagreement]]
-crate = "busbar-core"
-kind = "dialect"
-note = "segment scanner 1127, window scanner 1195. The two read the vendor spellings differently: a vendor name run together with the word beside it (`OpenaiResponses`, `anthropic_responses`) opens a segment for one scanner and reads as one window for the other. The scored count is the higher, never the lower, and it falls to zero with the hits."
-
-[[disagreement]]
-crate = "busbar-llm"
-kind = "dialect"
-note = "segment scanner 2901, window scanner 3208. The two read the vendor spellings differently: a vendor name run together with the word beside it (`OpenaiResponses`, `anthropic_responses`) opens a segment for one scanner and reads as one window for the other. The scored count is the higher, never the lower, and it falls to zero with the hits."
-
-[[disagreement]]
-crate = "busbar-llm-codec"
-kind = "dialect"
-note = "segment scanner 9963, window scanner 11200. The two read the vendor spellings differently: a vendor name run together with the word beside it (`OpenaiResponses`, `anthropic_responses`) opens a segment for one scanner and reads as one window for the other. The scored count is the higher, never the lower, and it falls to zero with the hits."
-
-[[disagreement]]
-crate = "busbar-mcp"
-kind = "dialect"
-note = "segment scanner 118, window scanner 119. The two read the vendor spellings differently: a vendor name run together with the word beside it (`OpenaiResponses`, `anthropic_responses`) opens a segment for one scanner and reads as one window for the other. The scored count is the higher, never the lower, and it falls to zero with the hits."
-
-[[disagreement]]
-crate = "busbar-mcp-codec"
-kind = "dialect"
-note = "segment scanner 4, window scanner 7. The two read the vendor spellings differently: a vendor name run together with the word beside it (`OpenaiResponses`, `anthropic_responses`) opens a segment for one scanner and reads as one window for the other. The scored count is the higher, never the lower, and it falls to zero with the hits."
-
-[[disagreement]]
-crate = "busbar-substrate"
-kind = "dialect"
-note = "segment scanner 75, window scanner 89. The two read the vendor spellings differently: a vendor name run together with the word beside it (`OpenaiResponses`, `anthropic_responses`) opens a segment for one scanner and reads as one window for the other. The scored count is the higher, never the lower, and it falls to zero with the hits."
-
-[[disagreement]]
-crate = "busbar-substrate-values"
-kind = "dialect"
-note = "segment scanner 192, window scanner 252. The two read the vendor spellings differently: a vendor name run together with the word beside it (`OpenaiResponses`, `anthropic_responses`) opens a segment for one scanner and reads as one window for the other. The scored count is the higher, never the lower, and it falls to zero with the hits."
-
-[[disagreement]]
-crate = "busbar-transport-sse"
-kind = "dialect"
-note = "segment scanner 2, window scanner 3. The two read the vendor spellings differently: a vendor name run together with the word beside it (`OpenaiResponses`, `anthropic_responses`) opens a segment for one scanner and reads as one window for the other. The scored count is the higher, never the lower, and it falls to zero with the hits."
-
-[[disagreement]]
-crate = "busbar-unit-egress-auth"
-kind = "dialect"
-note = "segment scanner 31, window scanner 34. The two read the vendor spellings differently: a vendor name run together with the word beside it (`OpenaiResponses`, `anthropic_responses`) opens a segment for one scanner and reads as one window for the other. The scored count is the higher, never the lower, and it falls to zero with the hits."
-
-[[disagreement]]
-crate = "busbar-voice"
-kind = "dialect"
-note = "segment scanner 251, window scanner 335. The two read the vendor spellings differently: a vendor name run together with the word beside it (`OpenaiResponses`, `anthropic_responses`) opens a segment for one scanner and reads as one window for the other. The scored count is the higher, never the lower, and it falls to zero with the hits."
-
-[[disagreement]]
-crate = "busbar-voice-codec"
-kind = "dialect"
-note = "segment scanner 175, window scanner 257. The two read the vendor spellings differently: a vendor name run together with the word beside it (`OpenaiResponses`, `anthropic_responses`) opens a segment for one scanner and reads as one window for the other. The scored count is the higher, never the lower, and it falls to zero with the hits."
+[[transitional]]
+from = "busbar-mcp"
+to = "busbar-admin"
+reason = "legacy drain: mcp adminverbs tests build against the extracted admin cleanliness crate"
 
