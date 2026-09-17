@@ -35,6 +35,7 @@
 pub mod decl;
 pub mod host;
 pub mod pod;
+pub mod transport;
 pub mod workitem;
 
 /// The cdylib ENTRYPOINT convention a dropped-in plane exports so the loader can recover its
@@ -51,6 +52,16 @@ pub mod symbol {
     /// `check_preamble`s before reading any slot). The loader NEVER frees it — it lives for the life
     /// of the mapped image, exactly like the vocabulary strings the decl points into.
     pub const PLANE_DECL: &[u8] = b"busbar_plane_decl\0";
+
+    /// `busbar_transport_decl() -> *const TransportDecl` — a `kind: transport` carrier's ONE hot-lane
+    /// entrypoint, the exact analogue of [`PLANE_DECL`]. Returns a pointer to a `'static`
+    /// [`TransportDecl`](super::TransportDecl) owned by the library (its `#[repr(C)]` vtable, leading
+    /// with the FROZEN [`AbiPreamble`](crate::AbiPreamble) the loader `check_preamble`s before reading
+    /// any slot). The loader NEVER frees it — it lives for the life of the mapped image. A carrier
+    /// rides the SAME `busbar_abi`/`busbar_plugin_kind` (== `"transport"`) handshake as every kind, so
+    /// it shares the tarball / signed-manifest / trust pipeline; this ONE extra symbol is how it hands
+    /// core the bidirectional-carrier vtable instead of the JSON `call` wire.
+    pub const TRANSPORT_DECL: &[u8] = b"busbar_transport_decl\0";
 }
 
 /// `busbar_plane_decl` — the plane cdylib entrypoint's fn-pointer type the loader resolves via
@@ -63,9 +74,20 @@ pub mod symbol {
 /// vocabulary ranges it points into) live for the whole life of the loaded library.
 pub type PlaneDeclFn = unsafe extern "C-unwind" fn() -> *const PlaneDecl;
 
+/// `busbar_transport_decl` — the transport-carrier cdylib entrypoint's fn-pointer type the loader
+/// resolves via `libloading`. The transport analogue of [`PlaneDeclFn`]; `unsafe extern "C-unwind"`
+/// for the same reason (a panic in the accessor unwinds as a DEFINED forced unwind the loader's guard
+/// catches, rather than aborting at the plugin frame).
+///
+/// # Safety
+/// The returned pointer, when non-null, must address a `'static` [`TransportDecl`] whose bytes (and
+/// the vocabulary ranges it points into) live for the whole life of the loaded library.
+pub type TransportDeclFn = unsafe extern "C-unwind" fn() -> *const TransportDecl;
+
 // Re-export the whole POD surface at the lane root so a plane author writes
 // `busbar_plugin::hot::Facts`, not `busbar_plugin::hot::pod::Facts`.
 pub use decl::{BuildCtx, IngressCarrier, OpaqueHandle, PlaneDecl};
+pub use transport::{TransportDecl, TransportFacet};
 pub use host::PlaneHostVtable;
 pub use pod::*;
 pub use workitem::{EmitHandle, EmitKind, InboundHandle, InboundKind, WorkItem};

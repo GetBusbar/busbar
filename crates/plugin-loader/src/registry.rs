@@ -89,6 +89,15 @@ pub fn supported_abi(kind: &str) -> &'static [u32] {
         // at 1 (the first minor a plane ABI could target) so an older-minor plane still validates and
         // its real forward-compat gate is the airlock `check_preamble` at load. `[1, ABI_MINOR]`.
         "plane" => &[1, busbar_plugin::ABI_MINOR],
+        // A `kind: transport` plugin is a bidirectional byte-stream carrier delivered as a `cdylib` and
+        // driven over the HOT-tier `#[repr(C)]` `TransportDecl` vtable (`busbar_plugin::hot::transport`)
+        // — the transport analogue of `plane`, NOT the six-symbol JSON `call` wire. It shares the plane's
+        // per-kind PAYLOAD axis: the AIRLOCK MINOR (`busbar_plugin::ABI_MINOR`), stamped into the decl's
+        // frozen `AbiPreamble`, with `open_transport` fail-closing on a MAJOR mismatch and accepting an
+        // older minor (append-only). Its manifest `abi_version` is that minor, floored at 1 so an
+        // older-minor carrier still validates and the real forward-compat gate is the airlock
+        // `check_preamble` at load. `[1, ABI_MINOR]`.
+        "transport" => &[1, busbar_plugin::ABI_MINOR],
         _ => &[],
     }
 }
@@ -464,6 +473,41 @@ impl PluginRegistry {
             ));
         }
         crate::plane::load_plane_from_bytes(&p.lib_bytes, &p.manifest.name, &p.manifest.kind)
+    }
+
+    /// Open a TRANSPORT carrier resolved by name or alias: verifies the resolved plugin's `kind` is
+    /// `transport`, then loads the VERIFIED bytes over the HOT-tier ABI
+    /// (`busbar_plugin::hot::transport`) and reads its
+    /// [`TransportDecl`](busbar_plugin::hot::TransportDecl), returning a [`crate::DynTransport`] — the
+    /// boundary-safe handle the composition root drives exactly as it drives a compiled-in carrier.
+    /// Same trust and load pipeline as every other kind; only the kind (and the driving seam) differs.
+    /// FAIL-CLOSED on any resolution/kind/load failure. The both-ways entrypoint for `kind: transport`
+    /// (`DECISIONS #3/#11`), the drop-in packaging the seven compiled-in carriers were owed.
+    pub fn open_transport(&self, name_or_alias: &str) -> Result<crate::DynTransport, String> {
+        let Some(p) = self.resolve(name_or_alias) else {
+            return Err(match self.unresolved_reason(name_or_alias) {
+                Some(s) => format!(
+                    "plugin '{name_or_alias}' is present ({}) but was not loaded: {}",
+                    s.file, s.reason
+                ),
+                None => format!(
+                    "no plugin named or aliased '{name_or_alias}' is available (loadable plugins: \
+                     [{}])",
+                    self.loadable
+                        .iter()
+                        .map(|p| p.manifest.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            });
+        };
+        if p.manifest.kind != "transport" {
+            return Err(format!(
+                "plugin '{}' has kind '{}', not 'transport' - it cannot serve as a transport carrier",
+                p.manifest.name, p.manifest.kind
+            ));
+        }
+        crate::transport::load_transport_from_bytes(&p.lib_bytes, &p.manifest.name, &p.manifest.kind)
     }
 }
 

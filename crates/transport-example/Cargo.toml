@@ -1,0 +1,27 @@
+# SPDX-License-Identifier: Apache-2.0
+# NAMED `busbar-plugin-example-*` (the plugin-tooling / TCB family), NOT `busbar-transport-*`: this is a
+# TEST FIXTURE that exercises the plugin ABI + SDK + loader for `kind: transport`, so it belongs beside
+# `busbar-plugin-sdk` and `busbar-plugin-loader` in the trusted-computing-base kind, exactly as
+# `busbar-plugin-example-plane` does. A `busbar-transport-*` name would classify it as a first-class
+# compiled-in carrier instance (the seven shipped carriers), which is the wrong kind for an ABI fixture.
+[package]
+name = "busbar-plugin-example-transport"
+version = "1.6.0"
+publish = false            # internal TEST-support cdylib; never goes to crates.io
+edition = "2021"
+rust-version = "1.97"
+description = "A hermetic trivial kind:transport plugin cdylib exporting a real busbar_plugin::hot::TransportDecl over the HOT-tier ABI. The in-tree both-ways (compiled-in vs dropped-in) coverage for kind:transport, and the copy-me template a carrier author exports through busbar_plugin_sdk::export_transport_plugin!."
+license = "Apache-2.0"
+
+[lib]
+# cdylib for the HOT-ABI drop-in delivery; rlib is REQUIRED both so `cargo test` emits the cdylib
+# artifact at all AND so the drop-in conformance test can link this crate's `TRANSPORT_DECL` const as
+# the COMPILED-IN reference to compare the dropped-in decl against — the carrier's both-ways proof.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# The HOT-tier transport ABI types (TransportDecl, BuildCtx, OpaqueState, RawStatus, …). A carrier
+# author authors a real TransportDecl against this crate; the SDK below only emits the boundary symbols.
+busbar-plugin = { path = "../busbar-plugin" }
+# The transport export macro (`export_transport_plugin!`) + the `transport` re-export module.
+busbar-plugin-sdk = { path = "../plugin-sdk" }

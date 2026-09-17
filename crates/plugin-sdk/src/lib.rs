@@ -1138,6 +1138,30 @@ pub mod __plane_abi {
     pub use busbar_plugin::hot::PlaneDecl;
 }
 
+/// The whole HOT-tier TRANSPORT carrier ABI surface, re-exported so a carrier crate names
+/// `busbar_plugin_sdk::transport::TransportDecl` (etc.) without a direct `busbar-plugin` dependency —
+/// the same convenience re-export path `plane` gets. A carrier author authors a real `TransportDecl`
+/// (its `#[repr(C)]` vtable, filling the `config_validate`/`build`/`accept`/`connect`/`write`/`read`
+/// slots against `busbar_plugin::hot::transport`) and exports it through [`export_transport_plugin!`].
+pub mod transport {
+    pub use busbar_plugin::hot::transport::{
+        AcceptFn, ConnectFn, ReadFn, TransportDecl, TransportFacet, WriteFn,
+    };
+    pub use busbar_plugin::hot::{BuildCtx, OpaqueHandle, PlaneHostVtable, TransportDeclFn};
+    pub use busbar_plugin::hot::pod::{OpaqueState, RawStatus, StatusClass, POD_VERSION};
+    pub use busbar_plugin::{
+        check_preamble, honoured_size, write_out, AbiPreamble, ABI_MAJOR, ABI_MINOR,
+    };
+}
+
+/// Re-export used ONLY by the `export_transport_plugin!` expansion, so a carrier crate does not need
+/// its own direct `busbar-plugin` dependency just to name `TransportDecl` in the generated
+/// `busbar_transport_decl` symbol. The transport analogue of [`__plane_abi`].
+#[doc(hidden)]
+pub mod __transport_abi {
+    pub use busbar_plugin::hot::TransportDecl;
+}
+
 /// Emit a `plane`-kind cdylib from `$decl` (a `'static busbar_plugin_sdk::plane::PlaneDecl`, e.g. a
 /// `pub static PLANE_DECL: PlaneDecl = …`). Stamps the SHARED transport handshake `busbar_abi()`,
 /// `busbar_plugin_kind() == "plane"`, and the ONE hot-lane entrypoint `busbar_plane_decl()` returning
@@ -1171,6 +1195,45 @@ macro_rules! export_plane {
         /// vocabulary ranges live for the whole life of the loaded image. The loader NEVER frees it.
         #[no_mangle]
         pub unsafe extern "C-unwind" fn busbar_plane_decl() -> *const $crate::__plane_abi::PlaneDecl {
+            ::core::ptr::addr_of!($decl)
+        }
+    };
+}
+
+/// Emit a `transport`-kind cdylib from `$decl` (a `'static busbar_plugin_sdk::transport::TransportDecl`,
+/// e.g. a `pub static TRANSPORT_DECL: TransportDecl = …`). Stamps the SHARED transport handshake
+/// `busbar_abi()`, `busbar_plugin_kind() == "transport"`, and the ONE hot-lane entrypoint
+/// `busbar_transport_decl()` returning a pointer to `$decl`. The SAME `$decl` `static` is usable
+/// STATICALLY (compiled-in) — depend on the crate as a normal `lib` and hand `&TRANSPORT_DECL` to the
+/// registry — so a carrier is both-ways by construction, exactly like a plane (`DECISIONS #2/#3/#11`).
+///
+/// The carrier author owns `$decl`: the `#[repr(C)]` `TransportDecl` whose `config_validate`/`build`/
+/// `accept`/`connect`/`write`/`read` slots and `provided_facets` they fill against
+/// `busbar_plugin::hot::transport`. The macro adds NO seam on which a boundary symbol can be got wrong.
+#[macro_export]
+macro_rules! export_transport_plugin {
+    ($decl:path) => {
+        /// # Safety
+        /// Read only by the busbar loader as the frozen TRANSPORT handshake (shared with every kind).
+        #[no_mangle]
+        pub extern "C-unwind" fn busbar_abi() -> u32 {
+            $crate::transport_version()
+        }
+
+        /// # Safety
+        /// The returned pointer is to a `'static` NUL-terminated string owned by this library.
+        #[no_mangle]
+        pub extern "C-unwind" fn busbar_plugin_kind() -> *const u8 {
+            const KIND_NUL: &str = "transport\0";
+            KIND_NUL.as_ptr()
+        }
+
+        /// # Safety
+        /// The returned pointer is to a `'static` [`TransportDecl`] owned by this library, whose bytes
+        /// and vocabulary ranges live for the whole life of the loaded image. The loader NEVER frees it.
+        #[no_mangle]
+        pub unsafe extern "C-unwind" fn busbar_transport_decl(
+        ) -> *const $crate::__transport_abi::TransportDecl {
             ::core::ptr::addr_of!($decl)
         }
     };

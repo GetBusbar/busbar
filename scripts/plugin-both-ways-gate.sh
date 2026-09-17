@@ -25,16 +25,18 @@
 # with no rig cannot hide in an aggregate green.
 #
 # THE 7 KINDS (DECISION #3): store, secret, auth, hook, export, plane, transport.
-#   * SIX are fully both-ways today — SDK `export_<kind>_plugin!` macro + `plugin-loader` open path +
-#     `supported_abi(<kind>)` range + a passing drop-in rig. This gate proves all six.
-#   * TRANSPORT is the one OWED kind. The ABI (`crates/busbar-plugin/src/cold/mod.rs`, `mod kind`)
-#     defines exactly the six kind constants above and NO `transport`; there is no
-#     `export_transport_plugin!`, no `open_transport`/`supported_abi("transport")`, and no transport
-#     cdylib. DECISION #3 lists transport's impls as the compiled-in `busbar-transport-{http,ws,
-#     stdio,tcp,tls,sse,grpc}` crates and says its "drop-in packaging [is] owed". Closing it needs a
-#     NEW shipped `#[repr(C)]`/JSON ABI for a bidirectional byte-stream carrier — an architect seam,
-#     not additive test wiring — so this gate NAMES it as owed rather than papering it green. It is a
-#     loud warning by default; set PLUGIN_BOTH_WAYS_STRICT=1 to make the owed kind fatal.
+#   * ALL SEVEN are now fully both-ways — SDK `export_<kind>_plugin!` (or `export_plane!`) macro +
+#     `plugin-loader` open path + `supported_abi(<kind>)` range + a passing drop-in rig. This gate
+#     proves all seven.
+#   * TRANSPORT was the one OWED kind; 1.6.0 closed it. It is ONE bidirectional kind (DECISION #3:
+#     server-accept + client-connect are two DIRECTIONS, not two kinds). Its drop-in ABI mirrors the
+#     plane HOT lane: a `transport` kind constant (`crates/busbar-plugin/src/cold/mod.rs`, `mod kind`),
+#     an `export_transport_plugin!` macro, a `#[repr(C)]` `TransportDecl` vtable
+#     (`crates/busbar-plugin/src/hot/transport.rs`), `open_transport` /
+#     `supported_abi("transport")`, and the `busbar-plugin-example-transport` cdylib the rig loads and
+#     drives BOTH ways (byte round-trip over accept + connect). The seven compiled-in carriers
+#     (`busbar-transport-{http,ws,stdio,tcp,tls,sse,grpc}`) are UNCHANGED — this is purely additive
+#     drop-in PACKAGING, exactly the "drop-in packaging owed" DECISION #3 named.
 #
 # USAGE
 #   plugin-both-ways-gate.sh              build cdylibs, run both distributions + every kind's rig
@@ -44,7 +46,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-# The six kinds the ABI implements, each paired with the cargo package + `--exact` test that loads a
+# The seven kinds the ABI implements, each paired with the cargo package + `--exact` test that loads a
 # real cdylib of that kind over the drop-in ABI and drives it. These test names are asserted to exist
 # by `--selftest`, so a rename that silently drops a kind's coverage is caught here, not in the field.
 KIND_STORE_PKG="busbar-plugin-loader"
@@ -60,6 +62,8 @@ KIND_EXPORT_PKG="busbar-plugin-loader"
 KIND_EXPORT_TEST="tests::load_and_exercise_export_example_plugin"
 KIND_PLANE_PKG="busbar-plugin-loader"
 KIND_PLANE_TEST="plane::tests::example_plane_loads_identically_compiled_in_and_dropped_in"
+KIND_TRANSPORT_PKG="busbar-plugin-loader"
+KIND_TRANSPORT_TEST="transport::tests::example_transport_loads_identically_compiled_in_and_dropped_in"
 
 # Every example plugin cdylib the rigs load. Built FIRST so `CI=1` turns a missing artifact into a
 # hard failure inside the rig instead of a silent skip.
@@ -70,6 +74,7 @@ CDYLIB_PKGS=(
   busbar-hook-test-plugin
   busbar-export-example-plugin
   busbar-plugin-example-plane
+  busbar-plugin-example-transport
 )
 
 run_rig() {
@@ -111,40 +116,26 @@ gate() {
   run_rig auth   "$KIND_AUTH_PKG"   "$KIND_AUTH_TEST" "$KIND_AUTH_FEATURES" || fails=$((fails+1))
   run_rig hook   "$KIND_HOOK_PKG"   "$KIND_HOOK_TEST"   || fails=$((fails+1))
   run_rig export "$KIND_EXPORT_PKG" "$KIND_EXPORT_TEST" || fails=$((fails+1))
-  run_rig plane  "$KIND_PLANE_PKG"  "$KIND_PLANE_TEST"  || fails=$((fails+1))
-  echo
-
-  # TRANSPORT — the one OWED kind. Named, never silent. See the header for why it is architect-owed.
-  echo "== kind:transport — OWED (DECISION #3: 'drop-in packaging owed') =="
-  echo "::warning::kind:transport has NO drop-in ABI (no \`transport\` kind constant in \
-crates/busbar-plugin/src/cold/mod.rs, no export_transport_plugin! macro, no open_transport / \
-supported_abi(\"transport\"), no transport cdylib). Its carriers ship compiled-in as \
-busbar-transport-{http,ws,stdio,tcp,tls,sse,grpc}. A drop-in transport ABI (bidirectional \
-byte-stream carrier) is a NEW shipped repr(C)/JSON seam — architect design, not additive wiring."
-  echo "  [OWED] kind:transport — 0/1 both-ways; needs the transport ABI seam."
+  run_rig plane     "$KIND_PLANE_PKG"     "$KIND_PLANE_TEST"     || fails=$((fails+1))
+  run_rig transport "$KIND_TRANSPORT_PKG" "$KIND_TRANSPORT_TEST" || fails=$((fails+1))
   echo
 
   echo "### SUMMARY"
   echo "  both distributions: DEFAULT + BARE-BONES compiled from one tree"
-  echo "  drop-in rigs proved: store, secret, auth, hook, export, plane (6/7 kinds)"
-  echo "  owed: transport (needs a new bidirectional-carrier drop-in ABI seam)"
+  echo "  drop-in rigs proved: store, secret, auth, hook, export, plane, transport (7/7 kinds)"
 
   if [ "$fails" -ne 0 ]; then
-    echo "plugin-both-ways-gate: FAILED — ${fails} implemented kind(s) lost their both-ways rig"
+    echo "plugin-both-ways-gate: FAILED — ${fails} kind(s) lost their both-ways rig"
     return 1
   fi
-  if [ "${PLUGIN_BOTH_WAYS_STRICT:-0}" = "1" ]; then
-    echo "plugin-both-ways-gate: STRICT — transport is owed and PLUGIN_BOTH_WAYS_STRICT=1"
-    return 1
-  fi
-  echo "plugin-both-ways-gate: 6/7 kinds proved both-ways; transport OWED (architect seam) — green"
+  echo "plugin-both-ways-gate: 7/7 kinds proved both-ways — green"
 }
 
 # == SELFTEST ===
 # The honesty ratchet: the set of kinds this gate runs a rig for MUST equal the set of kind constants
-# the ABI actually defines, and transport MUST still be absent from that set (i.e. still owed). If
-# someone adds a `transport` kind constant, this fails until the gate grows a real transport rig
-# instead of the owed banner — the banner cannot outlive the gap it describes.
+# the ABI actually defines — now SEVEN, transport included. 7 rigs == 7 kind constants. If a kind
+# constant is added or removed without matching the rig set, this fails; if transport ever loses its
+# constant (regressing the both-ways close), this fails too — the "7/7" claim cannot outlive its proof.
 selftest() {
   local fails=0 kinds_file="$ROOT/crates/busbar-plugin/src/cold/mod.rs"
   echo "plugin-both-ways-gate.sh selftest"
@@ -154,22 +145,31 @@ selftest() {
   local abi_kinds
   abi_kinds="$(grep -oE 'pub const [A-Z]+: &str = "[a-z]+"' "$kinds_file" \
     | sed -E 's/.*= "([a-z]+)"/\1/' | sort -u | tr '\n' ' ')"
-  local want="auth export hook plane secret store "
+  local want="auth export hook plane secret store transport "
   if [ "$abi_kinds" = "$want" ]; then
-    echo "  [ok] ABI defines exactly the six implemented kinds: ${abi_kinds}"
+    echo "  [ok] ABI defines exactly the seven implemented kinds: ${abi_kinds}"
   else
     echo "  [FAIL] ABI kind constants changed: got '${abi_kinds}' want '${want}'"
-    echo "         If a 'transport' constant was added, replace the OWED banner with a real"
-    echo "         transport drop-in rig and add it to gate()."
+    echo "         Every kind constant needs a matching drop-in rig named in gate() and below."
     fails=$((fails+1))
   fi
 
-  # transport must NOT be an ABI kind constant yet (it is owed, not implemented).
+  # transport MUST now be an ABI kind constant (the both-ways gap is closed, not owed).
   if printf '%s' "$abi_kinds" | grep -qw transport; then
-    echo "  [FAIL] 'transport' is now an ABI kind constant but the gate still only warns about it"
-    fails=$((fails+1))
+    echo "  [ok] transport is an ABI kind constant — both-ways, no longer owed"
   else
-    echo "  [ok] transport is still owed (no ABI kind constant) — banner is honest"
+    echo "  [FAIL] 'transport' is missing from the ABI kind constants — the both-ways close regressed"
+    fails=$((fails+1))
+  fi
+
+  # 7 rigs == 7 kind constants: the gate names exactly one rig per kind (rig_count asserted below).
+  local kind_count rig_count=7
+  kind_count="$(printf '%s' "$abi_kinds" | wc -w | tr -d ' ')"
+  if [ "$kind_count" = "$rig_count" ]; then
+    echo "  [ok] ${rig_count} drop-in rigs == ${kind_count} ABI kind constants"
+  else
+    echo "  [FAIL] ${rig_count} rigs != ${kind_count} ABI kind constants — a kind lost or gained a rig"
+    fails=$((fails+1))
   fi
 
   # Each rig test the gate names must exist in the source, so a rename cannot silently drop coverage.
@@ -180,7 +180,8 @@ selftest() {
     "auth_plugin_loads_and_identifies_through_middleware" \
     "dlopen_policy_drives_every_op" \
     "load_and_exercise_export_example_plugin" \
-    "example_plane_loads_identically_compiled_in_and_dropped_in"; do
+    "example_plane_loads_identically_compiled_in_and_dropped_in" \
+    "example_transport_loads_identically_compiled_in_and_dropped_in"; do
     if grep -rqE "fn ${t}\b" "$ROOT/crates"; then
       echo "  [ok] rig present: ${t}"
     else

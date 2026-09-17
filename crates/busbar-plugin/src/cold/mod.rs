@@ -106,6 +106,15 @@ pub mod kind {
     /// plane is the airlock minor ([`crate::ABI_MINOR`]); its transport-version handshake is the
     /// SHARED [`TRANSPORT_VERSION`], so the discovery/trust half is reused byte-for-byte.
     pub const PLANE: &str = "plane";
+    /// A bidirectional byte-stream carrier (`busbar_contract::transport::Transport`) delivered as a
+    /// `cdylib` and driven over the HOT-tier `#[repr(C)]` [`crate::hot::TransportDecl`] vtable. Like
+    /// [`PLANE`] it does NOT speak the six-symbol JSON `call` wire: it shares the SAME tarball /
+    /// signed-manifest / trust pipeline (`busbar_abi` transport handshake + `busbar_plugin_kind`) but
+    /// hands core its `TransportDecl` through the dedicated [`crate::hot::symbol::TRANSPORT_DECL`]
+    /// entrypoint. TRANSPORT is ONE bidirectional kind (`DECISIONS #3`): server-accept + client-connect
+    /// are two DIRECTIONS of it, not two kinds. The compiled-in carriers ship as
+    /// `busbar-transport-{http,ws,stdio,tcp,tls,sse,grpc}`; this kind is their drop-in packaging.
+    pub const TRANSPORT: &str = "transport";
 
     /// [`STORE`], NUL-terminated — return `STORE_NUL.as_ptr()` from `busbar_plugin_kind()`.
     pub const STORE_NUL: &[u8] = b"store\0";
@@ -119,6 +128,8 @@ pub mod kind {
     pub const EXPORT_NUL: &[u8] = b"export\0";
     /// [`PLANE`], NUL-terminated — return `PLANE_NUL.as_ptr()` from `busbar_plugin_kind()`.
     pub const PLANE_NUL: &[u8] = b"plane\0";
+    /// [`TRANSPORT`], NUL-terminated — return `TRANSPORT_NUL.as_ptr()` from `busbar_plugin_kind()`.
+    pub const TRANSPORT_NUL: &[u8] = b"transport\0";
 }
 
 /// The store-plugin PAYLOAD schema version (the signed manifest's `abi_version` for `kind: store`).

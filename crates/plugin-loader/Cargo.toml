@@ -52,6 +52,10 @@ tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
 # `PLANE_DECL` reference and separately `dlopen`s its `cdylib` (located on disk) — the two decls the
 # both-ways test compares. `cargo test -p busbar-plugin-loader` builds the member cdylib.
 busbar-plugin-example-plane = { path = "../plane-example" }
+# The `kind: transport` drop-in conformance fixture — same `["cdylib", "rlib"]` shape as the plane
+# fixture: the conformance test LINKS its `rlib` for the COMPILED-IN `TRANSPORT_DECL` reference and
+# separately `dlopen`s its `cdylib` on disk. `cargo test -p busbar-plugin-loader` builds the member.
+busbar-plugin-example-transport = { path = "../transport-example" }
 
 [target.'cfg(unix)'.dependencies]
 # memfd_create (Linux zero-disk loads) + kill(pid, 0) liveness for the dead-pid staging sweep.

@@ -63,6 +63,7 @@ members = [
     "crates/store-example-plugin",
     "crates/export-example-plugin",
     "crates/plane-example",
+    "crates/transport-example",
     "crates/hooks-ranking",
     "crates/store-memory",
     "crates/busbar-transport-ws",
