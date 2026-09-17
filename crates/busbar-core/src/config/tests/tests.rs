@@ -1759,6 +1759,7 @@ fn test_debug_of_full_config_never_shows_resolved_secrets() {
     std::env::set_var("BUSBAR_T_DEBUG_SECRET", "SECRET-resolved-value-zzz");
     let auth = crate::config::AuthDeployCfg {
         signing_key: Some(SecretRef::env("BUSBAR_T_DEBUG_SECRET")),
+        operator_pub: None,
         chain: vec![KEYS_MODULE.to_string()],
         admin_auth: vec![ADMIN_TOKENS_MODULE.to_string()],
         role_bindings: RoleBindings::new(),

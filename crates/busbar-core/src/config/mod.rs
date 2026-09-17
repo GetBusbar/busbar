@@ -678,6 +678,7 @@ pub fn resolve_auth(
 
     AuthCfg {
         signing_key: auth.signing_key.clone(),
+        operator_pub: auth.operator_pub.clone(),
         chain,
         admin_auth,
         role_bindings: auth.role_bindings.clone(),

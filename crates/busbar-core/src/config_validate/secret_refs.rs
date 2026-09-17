@@ -264,6 +264,7 @@ fn walk_secret_refs(cfg: &RootCfg, tokens: TokenRefs) -> Vec<(String, &crate::co
     if let Some(auth) = auth {
         let crate::config::AuthCfg {
             signing_key,
+            operator_pub,
             chain,
             admin_auth,
             methods,
@@ -277,6 +278,9 @@ fn walk_secret_refs(cfg: &RootCfg, tokens: TokenRefs) -> Vec<(String, &crate::co
         } = auth;
         if let Some(sk) = signing_key {
             refs.push(("auth.signing_key".to_string(), sk));
+        }
+        if let Some(op) = operator_pub {
+            refs.push(("auth.operator_pub".to_string(), op));
         }
         // The RESOLVED chains and methods are projections of the definitions walked above, so in a
         // config built by `resolve` these add nothing new. They are walked anyway because they are

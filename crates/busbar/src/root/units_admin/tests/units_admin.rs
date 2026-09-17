@@ -3149,3 +3149,69 @@ fn amend_rate_history_refuses_a_correction_whose_signature_does_not_verify() {
     );
     assert_eq!(history.len(), 1, "a refused correction appends nothing");
 }
+
+// ── D38 PRODUCTION SEALING — the composition-root posture view that activates the verify path ──────
+
+/// THE PRODUCTION POSTURE VIEW SEALS THE OPERATOR KEY THE VERIFY PATH VERIFIES AGAINST — and an unset
+/// key is byte-identical to the `UnsealedPosture` default it replaces.
+///
+/// This is the whole of D38 production sealing: [`SealedPosture`] is what the composition root binds
+/// over [`AdminBinding::with_posture_view`] in place of [`UnsealedPosture`], and it carries the
+/// boot-resolved operator public key. The route step reads its `resolve()` and threads the operator it
+/// returns into `amend_rate_history_effect` — so proving the key the view seals is the key the effect
+/// admits against is proving the two halves are one path.
+///
+/// - SEALED: `resolve()` returns `OperatorState::Set(key)` (with `Single`/`NotYetApproved` beside it,
+///   the fresh-install truth this release seals nothing else over), and that operator ADMITS a
+///   valid-signed, back-dated correction.
+/// - UNSET (the default): `resolve()` is byte-for-byte `UnsealedPosture`'s, `OperatorState::Unset`, and
+///   the SAME valid-signed correction is REFUSED at the verify seam — amend refused exactly as the
+///   release without an operator key.
+#[test]
+fn the_production_posture_view_seals_the_operator_key_the_verify_path_admits_against() {
+    use busbar_unit_verbs::{DualControl, OperatorState};
+
+    // The fleet's sealed operator PUBLIC key — the 32 raw ed25519 bytes `set_operator_key` seals.
+    let sealed_pub = a_test_operator_signing_key().verifying_key().to_bytes();
+
+    // SEALED. The production view resolves the ceremony-run posture for the amend verb.
+    let sealed = SealedPosture::new(Some(sealed_pub));
+    let (ctx, approval) = sealed
+        .resolve(KernelVerb::AmendRateHistory, "operator")
+        .expect("a node that sealed an operator key knows its posture");
+    assert_eq!(ctx.operator, OperatorState::Set(sealed_pub));
+    assert_eq!(ctx.dual_control, DualControl::Single);
+    assert_eq!(approval, ApprovalState::NotYetApproved);
+
+    // END TO END: the operator the production view resolved is exactly what the D38 verify path
+    // needs — a valid-signed, back-dated correction is ADMITTED and applied against it.
+    let history = a_seeded_history();
+    let packed = amend_rate_history_effect(&history, &a_correction_body(), 6, ctx.operator)
+        .expect("a correction signed by the sealed key is admitted via the production posture view");
+    let answer = AdminAnswer::unpack(&packed).expect("the answer packs");
+    assert_eq!(answer.status, 200);
+    assert_eq!(history.len(), 2, "the verified correction appended exactly one entry");
+
+    // UNSET — the default, and byte-identical to the `UnsealedPosture` it replaces.
+    let unsealed = SealedPosture::new(None);
+    assert_eq!(
+        unsealed.resolve(KernelVerb::AmendRateHistory, "operator"),
+        UnsealedPosture.resolve(KernelVerb::AmendRateHistory, "operator"),
+        "an unset operator key resolves byte-identically to the UnsealedPosture default"
+    );
+    let (unset_ctx, _) = unsealed
+        .resolve(KernelVerb::AmendRateHistory, "operator")
+        .expect("an unsealed node knows its fresh-install posture");
+    assert_eq!(unset_ctx.operator, OperatorState::Unset);
+
+    // The SAME valid-signed correction is refused with no sealed key — amend refused exactly as today.
+    let fresh = a_seeded_history();
+    assert!(
+        matches!(
+            amend_rate_history_effect(&fresh, &a_correction_body(), 6, unset_ctx.operator),
+            Err(busbar_unit_verbs::GovernanceError::Validation)
+        ),
+        "with no sealed operator key the amend is refused, byte-for-byte as the release without it"
+    );
+    assert_eq!(fresh.len(), 1, "a refused correction appends nothing");
+}

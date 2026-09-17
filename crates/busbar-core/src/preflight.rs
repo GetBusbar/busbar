@@ -575,6 +575,61 @@ pub(crate) fn resolve_signing_key(
     Ok(Some(TokenSigner::from_secret_bytes(&secret, DEFAULT_KID)))
 }
 
+/// Parse resolved bytes into a 32-byte ed25519 PUBLIC key: accept RAW 32 bytes or 64 hex chars. The
+/// verifying-key twin of [`parse_signing_secret`] — same wire shapes (a fleet's `operator.pub` is
+/// distributed either as raw bytes in a file or as 64 hex chars), a distinct error string so a
+/// malformed operator key never reads as a malformed signing key.
+pub(crate) fn parse_operator_public_key(bytes: &[u8]) -> Result<[u8; 32], String> {
+    if bytes.len() == 32 {
+        let mut out = [0u8; 32];
+        out.copy_from_slice(bytes);
+        return Ok(out);
+    }
+    if let Ok(s) = std::str::from_utf8(bytes) {
+        let s = s.trim();
+        if s.len() == 64 {
+            if let Ok(v) = hex::decode(s) {
+                let mut out = [0u8; 32];
+                out.copy_from_slice(&v);
+                return Ok(out);
+            }
+        }
+    }
+    Err(
+        "auth.operator_pub must resolve to a 32-byte ed25519 PUBLIC key (raw 32 bytes or 64 hex \
+         characters)"
+            .to_string(),
+    )
+}
+
+/// Resolve the POLICY-SEALED operator public key. `auth.operator_pub` is a reference to an EXISTING
+/// secret (env/file/plugin) resolving to the raw 32-byte ed25519 VERIFYING key the fleet's operator
+/// ceremony sealed (`operator.pub`). D38's `amend_rate_history` verifies a back-dated correction's
+/// detached signature against it. Fleet-shared: every node resolves the SAME key.
+///
+/// When `auth.operator_pub` is ABSENT this returns `None` — the operator ceremony has not run, which
+/// the composition root seals as [`crate::posture`]'s `OperatorState::Unset`, refusing every
+/// irreducible money-governance verb at the ceremony gate exactly as the release without this key
+/// does. FAIL-CLOSED: a configured-but-unresolvable / malformed operator key refuses boot, so a
+/// fleet that MEANT to seal a key never comes up silently ungated.
+pub fn resolve_operator_public_key(
+    auth: Option<&config::AuthCfg>,
+    resolver: &config::secret::SecretResolver,
+) -> Result<Option<[u8; 32]>, String> {
+    let Some(op) = auth.and_then(|a| a.operator_pub.as_ref()) else {
+        return Ok(None);
+    };
+    let bytes = resolver.resolve(op).map_err(|e| {
+        format!(
+            "auth.operator_pub did not resolve: {e}. auth.operator_pub is a reference to an EXISTING \
+             secret (env/file/plugin) holding the fleet's sealed operator public key (32 raw bytes \
+             or 64 hex chars — the `operator.pub` your operator ceremony produced), or OMIT \
+             auth.operator_pub entirely if this fleet has not run the operator ceremony."
+        )
+    })?;
+    Ok(Some(parse_operator_public_key(&bytes)?))
+}
+
 /// Validate ONE `secrets:` block key against the plugin registry and return the plugin's CANONICAL
 /// name. Fail-closed (an `Err`) when the key names a reserved built-in resolver (`env`/`file`, which
 /// take no module-level config), when no loadable plugin is named or aliased by it, or when the

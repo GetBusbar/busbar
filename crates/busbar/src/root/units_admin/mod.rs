@@ -1416,6 +1416,56 @@ impl PostureView for UnsealedPosture {
     }
 }
 
+/// The posture a running node reports from what its fleet actually sealed — the composition root's
+/// production [`PostureView`], bound over [`AdminBinding::with_posture_view`] in place of
+/// [`UnsealedPosture`].
+///
+/// It carries ONE piece of sealed state: the operator-ceremony key, resolved once at boot from
+/// `auth.operator_pub` (a fleet-shared `operator.pub`, [`busbar_core::preflight::resolve_operator_public_key`]).
+/// Present ⇒ [`OperatorState::Set`] with the raw 32-byte verifying key, which lifts the ceremony gate
+/// for the sealed key and hands D38's `amend_rate_history` the key it verifies a correction's
+/// signature against; ABSENT ⇒ [`OperatorState::Unset`], and this view then reports the EXACT posture
+/// [`UnsealedPosture`] does — a fresh install that has not run the ceremony — so binding it over an
+/// unset key is byte-for-byte identical to the default it replaces.
+///
+/// The other two halves are the fresh-install truth rather than a guess: `dual_control` is
+/// [`DualControl::Single`] and the approval standing is [`ApprovalState::NotYetApproved`], because
+/// this release seals NO dual-control posture and keeps NO pending-approval journal for a node to read
+/// a maker-checker state out of. Stating the true values rather than inventing a `Required`/`Approved`
+/// pair is what keeps this view from becoming a gate that reports whatever it wishes; when a later
+/// increment seals those, they resolve here beside the operator key, through this same seam.
+#[derive(Debug, Clone, Copy)]
+pub struct SealedPosture {
+    operator: busbar_unit_verbs::OperatorState,
+}
+
+impl SealedPosture {
+    /// Build the production posture from the boot-resolved operator public key. `Some(key)` ⇒ the
+    /// ceremony ran and sealed `key`; `None` ⇒ it has not, which is [`OperatorState::Unset`] and is
+    /// byte-identical to [`UnsealedPosture`].
+    #[must_use]
+    pub fn new(operator_key: Option<[u8; 32]>) -> Self {
+        SealedPosture {
+            operator: match operator_key {
+                Some(key) => busbar_unit_verbs::OperatorState::Set(key),
+                None => busbar_unit_verbs::OperatorState::Unset,
+            },
+        }
+    }
+}
+
+impl PostureView for SealedPosture {
+    fn resolve(&self, _verb: KernelVerb, _actor: &str) -> Option<(PostureCtx, ApprovalState)> {
+        Some((
+            PostureCtx {
+                operator: self.operator,
+                dual_control: busbar_unit_verbs::DualControl::Single,
+            },
+            ApprovalState::NotYetApproved,
+        ))
+    }
+}
+
 impl std::fmt::Debug for AdminBinding {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AdminBinding")

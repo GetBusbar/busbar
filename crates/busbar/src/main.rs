@@ -1330,6 +1330,15 @@ async fn run(data_workers: usize) {
     #[cfg(feature = "root-llm")]
     root::kernel::install_card_repricer();
 
+    // D38: the fleet's SEALED OPERATOR KEY reference (`auth.operator_pub`), captured from the
+    // resolved `auth:` block BEFORE `cfg` is consumed by `build_app_from_config`. It is resolved to
+    // its raw 32 ed25519 bytes below — once the secret resolver the build produces exists — and
+    // sealed into the admin plane's production posture view. Absent (the default) it stays `None`,
+    // which the posture view reads as `OperatorState::Unset`: the amend ceremony gate refuses exactly
+    // as the release without this field, byte for byte.
+    #[cfg(feature = "root-admin")]
+    let boot_operator_auth = cfg.auth.clone();
+
     // The secret resolver the listeners resolve TLS cert/key/CA references through - the SAME seam
     // (built-in env/file + kind:secret plugins) that resolved provider keys at build time.
     // Boot has no `prior` App, so `build_app_from_config` never resolves a credential rotation here
@@ -1440,6 +1449,16 @@ async fn run(data_workers: usize) {
     // Grab the secret resolver before `app` is moved into the router builder - the TLS listeners
     // resolve cert/key/CA references through it below.
     let tls_secret_resolver = app.secret_resolver.clone();
+    // D38: resolve the sealed operator public key to its raw 32 ed25519 bytes through the SAME secret
+    // seam every key is resolved through (built-in env/file + kind:secret plugins). FAIL-CLOSED on a
+    // configured-but-unresolvable / malformed key — a fleet that MEANT to seal one must not come up
+    // silently ungated. `None` (absent) ⇒ `OperatorState::Unset` in the posture view below.
+    #[cfg(feature = "root-admin")]
+    let operator_key = busbar_core::preflight::resolve_operator_public_key(
+        boot_operator_auth.as_ref(),
+        &tls_secret_resolver,
+    )
+    .unwrap_or_else(|e| die(e));
     let (data_router, admin_router, app_handle) = build_split_routers_with_limits(
         app,
         req_body_max,
@@ -1479,12 +1498,22 @@ async fn run(data_workers: usize) {
         // body before that router's own limit can.
         req_body_max,
         |dispatch| {
-            let units = root::kernel::ProductionUnits::admin_only_sharing(
+            let mut units = root::kernel::ProductionUnits::admin_only_sharing(
                 dispatch,
                 std::sync::Arc::clone(&book.durability),
                 std::sync::Arc::clone(&book.rows)
                     as std::sync::Arc<dyn root::units_admin::LegacyRowsRead>,
             );
+            // D38 PRODUCTION SEALING (composition-root, binding-only). Replace the assembly's
+            // `UnsealedPosture` default with the posture THIS fleet sealed: `SealedPosture` carries
+            // the boot-resolved operator key, so `operator.pub` present ⇒ `OperatorState::Set` (a
+            // valid-signed `amend_rate_history` is now performable + ed25519-verified) and absent ⇒
+            // `OperatorState::Unset` (amend refused at the ceremony gate, byte-identical to before).
+            // Bound over the SAME public `posture` seam `AdminBinding::with_posture_view` sets — and
+            // the same one the ledger view beside it is bound through — so this is a binding, not a
+            // structural change to the units.
+            units.admin.posture =
+                std::sync::Arc::new(root::units_admin::SealedPosture::new(operator_key));
             // THE DEPLOYMENT'S OWN DOOR, in front of the authenticate step. Without these two lines
             // the assembly's open posture shipped: the step admitted every caller anonymously and
             // the only thing deciding was the surface mounted underneath — so a credential this node
