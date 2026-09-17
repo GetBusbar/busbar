@@ -578,6 +578,16 @@ pub struct ProductionUnits {
     /// outside the loop, for the same reason as the first: a kernel verb is a Route destination
     /// rather than a step, so no step's token stands in for it.
     pub admin_token: busbar_caps::AdminToken,
+    /// The planes registered onto this loop, in registration order.
+    ///
+    /// Every step consults this table before it does anything: the FIRST plane whose `claims`
+    /// answers for the unit `ctx` names is the one that runs, and a unit no plane claims falls
+    /// through to the step's own default. The loop body therefore names no concrete plane — a plane
+    /// is a value registered here at composition, not a branch soldered into the dispatch — which is
+    /// what lets a plane be added or deleted without touching a single one of the twelve methods
+    /// below. With no plane registered the table is empty, `resolve` always answers `None`, and
+    /// every step is its own default: byte-identical to a node that drives no plane at all.
+    registry: UnitsRegistry,
 }
 
 impl ProductionUnits {
@@ -635,7 +645,8 @@ impl ProductionUnits {
         #[cfg(feature = "root-admin")] admin: crate::root::units_admin::AdminBinding,
         store: Arc<dyn busbar_unit_verbs::store::Store + Send + Sync>,
     ) -> Self {
-        ProductionUnits {
+        #[cfg_attr(not(feature = "root-admin"), allow(unused_mut))]
+        let mut units = ProductionUnits {
             door: Door::new(InMemoryCells::new()),
             // The breaker unit's one diagnostic reaches the node's own logging rather than the
             // noop the crate defaults to. What an operator gets out of the binding is the line
@@ -664,7 +675,19 @@ impl ProductionUnits {
             // Minted once, at boot, from the node's one authority. The verbs unit is lent it for the
             // length of an execution and holds nothing after; there is no second way to obtain one.
             admin_token: kernel.admin_token(),
-        }
+            // Empty at birth. A plane is registered onto the loop below, through the one public
+            // additive seam — never soldered into the dispatch — so that a build with no plane
+            // feature holds an empty table and every step is its own default.
+            registry: UnitsRegistry::default(),
+        };
+        // The admin plane registers through the SAME seam every plane uses. Its key is the plane's
+        // own, so the registry names planes by exactly the words the plane names itself with.
+        #[cfg(feature = "root-admin")]
+        units.register_units(
+            crate::root::units_admin::UNITS_KEY,
+            Box::new(crate::root::units_admin::AdminPlane),
+        );
+        units
     }
 
     /// The units an administrative listener needs, and only those.
@@ -802,7 +825,7 @@ impl ProductionUnits {
     /// `ReadOnly` would hand an unbound principal every read the surface has. The scope unit's matrix
     /// still decides what a grant reaches — the grant is the ceiling, the matrix is the door — and a
     /// caller holding no ceiling never reaches the door at all.
-    fn admin_grant(&self, principal: &PrincipalId) -> Option<busbar_unit_verbs::VerbScope> {
+    pub(crate) fn admin_grant(&self, principal: &PrincipalId) -> Option<busbar_unit_verbs::VerbScope> {
         if self.front_door_is_open() {
             return Some(busbar_unit_verbs::VerbScope::Full);
         }
@@ -811,43 +834,212 @@ impl ProductionUnits {
         }
         None
     }
+
+    /// Register a plane onto this loop, keyed by its own name, and return `self` to chain.
+    ///
+    /// ADDITIVE and public: a plane is a value handed to the root here, never a branch edited into
+    /// the dispatch. Registration order is claim precedence — the first plane whose `claims` answers
+    /// for a unit is the one that runs it — so a caller registers the most specific plane first. A
+    /// plane composes over the root's state by reference and owns none of it, which is what keeps the
+    /// money book, the auth chain and the durability the root's however many planes register.
+    pub fn register_units(
+        &mut self,
+        key: &'static str,
+        plane: Box<dyn RegisteredUnits>,
+    ) -> &mut Self {
+        self.registry.planes.push((key, plane));
+        self
+    }
 }
 
-/// Every step below asks the same question first: which plane is this unit's? One plane has been
-/// switched onto this loop, so the answer is either the admin plane or a plane whose own steps have
-/// not landed yet. The unswitched answer is a refusal naming the step, never a panic and never a
-/// silent pass: a unit that reached here on a plane this root does not yet drive was routed wrongly,
-/// and the honest answer is to say so and end it rather than to serve it half-composed.
+/// A plane, driven through the kernel's teller loop over the root's state.
+///
+/// It mirrors [`Units`] method-for-method, each with a leading `root: &ProductionUnits` — a plane
+/// COMPOSES over the root by reference and owns none of it. That is the whole discipline: a plane
+/// reaches the auth chain, the store, the durability and the admin bindings through the `root` it is
+/// handed for the length of one call, and holds nothing across requests that the root does not. A
+/// plane that owned auth or the book would be a second answer to what this node's money and identity
+/// are, and there is exactly one of each.
+pub trait RegisteredUnits: Send + Sync {
+    /// Whether this plane claims the unit `ctx` names. The registry runs the first plane that does.
+    fn claims(&self, root: &ProductionUnits, ctx: &UnitCtx) -> bool;
+
+    /// The plane's Arrival step. See [`Units::arrival`].
+    fn arrival(
+        &self,
+        root: &ProductionUnits,
+        token: &UnitToken<Arrival>,
+        ctx: &UnitCtx,
+    ) -> Decision<Arrival>;
+
+    /// The plane's Decode step. See [`Units::decode`].
+    fn decode(
+        &self,
+        root: &ProductionUnits,
+        token: &UnitToken<Decode>,
+        ctx: &UnitCtx,
+    ) -> Decision<Decode>;
+
+    /// The plane's Authenticate step. See [`Units::authenticate`].
+    fn authenticate(
+        &self,
+        root: &ProductionUnits,
+        token: &UnitToken<Authenticate>,
+        ctx: &UnitCtx,
+    ) -> Decision<Authenticate>;
+
+    /// The plane's Verify step. See [`Units::verify`].
+    fn verify(
+        &self,
+        root: &ProductionUnits,
+        token: &UnitToken<Verify>,
+        trust: &busbar_caps::TrustToken,
+        ctx: &UnitCtx,
+        principal: &PrincipalId,
+    ) -> Decision<Verify>;
+
+    /// The plane's Approve step. See [`Units::approve`].
+    fn approve(
+        &self,
+        root: &ProductionUnits,
+        token: &UnitToken<Approve>,
+        ctx: &UnitCtx,
+        principal: &PrincipalId,
+        destinations: &[VerifiedDestination],
+    ) -> Decision<Approve>;
+
+    /// The plane's Admit step. See [`Units::admit`].
+    // One argument over the lint's ceiling, and it is the `root` every method on this trait leads
+    // with — a plane composes over the root by reference rather than owning it, which is the whole
+    // design. Mirroring [`Units::admit`] arg-for-arg is the property this trait exists to hold.
+    #[allow(clippy::too_many_arguments)]
+    fn admit(
+        &self,
+        root: &ProductionUnits,
+        token: &UnitToken<Admit>,
+        admit: &AdmitToken<Admit>,
+        ctx: &UnitCtx,
+        principal: &PrincipalId,
+        destinations: &[VerifiedDestination],
+        leases: &GroupLeaseSlip,
+    ) -> Decision<Admit>;
+
+    /// The plane's Route step. See [`Units::route`].
+    fn route(
+        &self,
+        root: &ProductionUnits,
+        token: &UnitToken<Route>,
+        ctx: &UnitCtx,
+        meter: &AccrualMeter,
+    ) -> Decision<Route>;
+
+    /// The plane's Meter step. See [`Units::meter`].
+    fn meter(
+        &self,
+        root: &ProductionUnits,
+        token: &UnitToken<Meter>,
+        usage: &UsageToken,
+        ctx: &UnitCtx,
+        provisional: &Outcome,
+    ) -> Decision<Meter>;
+
+    /// The plane's Audit step. See [`Units::audit`].
+    fn audit(
+        &self,
+        root: &ProductionUnits,
+        token: &UnitToken<Audit>,
+        ctx: &UnitCtx,
+        outcome: &Outcome,
+    ) -> Decision<Audit>;
+
+    /// The plane's refused-Audit step. See [`Units::audit_refused`].
+    fn audit_refused(
+        &self,
+        root: &ProductionUnits,
+        token: &UnitToken<Audit>,
+        ctx: &UnitCtx,
+        refusal: &Refusal,
+    ) -> Decision<Audit>;
+
+    /// The plane's Encode step. See [`Units::encode`].
+    fn encode(
+        &self,
+        root: &ProductionUnits,
+        token: &UnitToken<Encode>,
+        ctx: &UnitCtx,
+        outcome: &Outcome,
+    ) -> Decision<Encode>;
+
+    /// The plane's Evidence read. See [`Units::evidence`].
+    fn evidence(&self, root: &ProductionUnits, ctx: &UnitCtx) -> Evidence;
+}
+
+/// The planes registered onto one loop, in registration order.
+///
+/// A plain ordered list, because claim precedence IS registration order: [`resolve`] answers the
+/// first plane whose `claims` is true, so a caller puts the most specific plane first. Empty by
+/// default, which is the state a node has before any plane is registered and the state a build with
+/// no plane feature keeps for its whole life — and an empty table resolves to nothing, so every step
+/// is its own default.
+///
+/// [`resolve`]: UnitsRegistry::resolve
+#[derive(Default)]
+pub struct UnitsRegistry {
+    planes: Vec<(&'static str, Box<dyn RegisteredUnits>)>,
+}
+
+impl UnitsRegistry {
+    /// The first plane that claims this unit, or nothing.
+    ///
+    /// First-wins over the registration order, so the caller's ordering is the precedence. A unit no
+    /// registered plane claims answers `None`, and the step that asked falls through to its own
+    /// default — which is the byte-identity property the whole seam turns on.
+    fn resolve(&self, root: &ProductionUnits, ctx: &UnitCtx) -> Option<&dyn RegisteredUnits> {
+        self.planes
+            .iter()
+            .find(|(_key, plane)| plane.claims(root, ctx))
+            .map(|(_key, plane)| plane.as_ref())
+    }
+}
+
+/// Every step below asks the registry the same question first — is there a plane that claims this
+/// unit? — and names no plane in doing so. The FIRST plane whose `claims` answers runs the step; a
+/// unit no registered plane claims falls through to the step's own default, which is a refusal naming
+/// the step (never a panic and never a silent pass: a unit that reached here claimed by nothing was
+/// routed wrongly, and the honest answer is to say so and end it rather than serve it half-composed).
+/// Which planes exist is a composition decision made at [`ProductionUnits::register_units`], not a
+/// branch in this loop.
 impl ProductionUnits {
     /// Whether this unit is one the admin bindings are walking.
     ///
     /// Membership of the table, not a guess from the context: the surface that opened the unit is
     /// what put it there, so a unit that is in the table is one this root composed and a unit that
     /// is not is one it did not.
-    #[cfg(feature = "root-admin")]
+    ///
+    /// It is now the admin plane's `claims` that the dispatch consults, and this method is kept only
+    /// for the test that asserts a fixture is a unit the admin plane never claimed — the same
+    /// question, asked directly.
+    #[cfg(all(test, feature = "root-admin"))]
     fn is_admin(&self, ctx: &UnitCtx) -> bool {
         self.admin.units.holds(ctx.key)
     }
 }
 
-// With no leg compiled, this root drives no plane at all: every step below refuses without reading
-// the facts it was handed, so every step's arguments go unused. That is exactly the composition the
-// ordering intends — the root is BUILT before any plane is SWITCHED onto it — and the allow says so
-// for that one build rather than silencing an unread argument in a build that does drive a plane.
-#[cfg_attr(not(feature = "root-admin"), allow(unused_variables))]
+// Every step hands its facts to the registry's resolve branch before it defaults, so no argument
+// goes unused in any build — a node with an empty registry still names every fact in the branch it
+// never takes at runtime. The old `allow(unused_variables)` the no-plane build once needed is gone
+// with the per-method refusals that made the arguments dead.
 impl Units for ProductionUnits {
     fn arrival(&self, token: &UnitToken<Arrival>, ctx: &UnitCtx) -> Decision<Arrival> {
-        #[cfg(feature = "root-admin")]
-        if self.is_admin(ctx) {
-            return crate::root::units_admin::arrival(&self.admin, token, ctx);
+        if let Some(plane) = self.registry.resolve(self, ctx) {
+            return plane.arrival(self, token, ctx);
         }
         Decision::refuse(token, Refusal::new(busbar_caps::ReasonCode::NoDestination))
     }
 
     fn decode(&self, token: &UnitToken<Decode>, ctx: &UnitCtx) -> Decision<Decode> {
-        #[cfg(feature = "root-admin")]
-        if self.is_admin(ctx) {
-            return crate::root::units_admin::decode(&self.admin, token, ctx);
+        if let Some(plane) = self.registry.resolve(self, ctx) {
+            return plane.decode(self, token, ctx);
         }
         Decision::refuse(token, Refusal::new(busbar_caps::ReasonCode::DecodeFailed))
     }
@@ -857,15 +1049,8 @@ impl Units for ProductionUnits {
         token: &UnitToken<Authenticate>,
         ctx: &UnitCtx,
     ) -> Decision<Authenticate> {
-        #[cfg(feature = "root-admin")]
-        if self.is_admin(ctx) {
-            return crate::root::units_admin::authenticate(
-                &self.auth,
-                &self.admin,
-                &self.auth_bindings,
-                token,
-                ctx,
-            );
+        if let Some(plane) = self.registry.resolve(self, ctx) {
+            return plane.authenticate(self, token, ctx);
         }
         Decision::refuse(
             token,
@@ -876,13 +1061,12 @@ impl Units for ProductionUnits {
     fn verify(
         &self,
         token: &UnitToken<Verify>,
-        _trust: &busbar_caps::TrustToken,
+        trust: &busbar_caps::TrustToken,
         ctx: &UnitCtx,
         principal: &PrincipalId,
     ) -> Decision<Verify> {
-        #[cfg(feature = "root-admin")]
-        if self.is_admin(ctx) {
-            return crate::root::units_admin::verify(&self.admin, token, ctx, principal);
+        if let Some(plane) = self.registry.resolve(self, ctx) {
+            return plane.verify(self, token, trust, ctx, principal);
         }
         Decision::refuse(token, Refusal::new(busbar_caps::ReasonCode::NoDestination))
     }
@@ -894,16 +1078,8 @@ impl Units for ProductionUnits {
         principal: &PrincipalId,
         destinations: &[VerifiedDestination],
     ) -> Decision<Approve> {
-        #[cfg(feature = "root-admin")]
-        if self.is_admin(ctx) {
-            return crate::root::units_admin::approve(
-                &self.admin,
-                self.admin_grant(principal),
-                token,
-                ctx,
-                principal,
-                destinations,
-            );
+        if let Some(plane) = self.registry.resolve(self, ctx) {
+            return plane.approve(self, token, ctx, principal, destinations);
         }
         Decision::refuse(token, Refusal::new(busbar_caps::ReasonCode::ScopeDenied))
     }
@@ -915,20 +1091,10 @@ impl Units for ProductionUnits {
         ctx: &UnitCtx,
         principal: &PrincipalId,
         destinations: &[VerifiedDestination],
-        // The administrative surface charges through no configured group — a kernel verb is exempt
-        // from the gauge entirely — so this door names none.
-        _leases: &GroupLeaseSlip,
+        leases: &GroupLeaseSlip,
     ) -> Decision<Admit> {
-        #[cfg(feature = "root-admin")]
-        if self.is_admin(ctx) {
-            return crate::root::units_admin::admit(
-                &self.admin,
-                token,
-                admit,
-                ctx,
-                principal,
-                destinations,
-            );
+        if let Some(plane) = self.registry.resolve(self, ctx) {
+            return plane.admit(self, token, admit, ctx, principal, destinations, leases);
         }
         Decision::refuse(token, Refusal::new(busbar_caps::ReasonCode::NoDestination))
     }
@@ -939,16 +1105,8 @@ impl Units for ProductionUnits {
         ctx: &UnitCtx,
         meter: &AccrualMeter,
     ) -> Decision<Route> {
-        #[cfg(feature = "root-admin")]
-        if self.is_admin(ctx) {
-            return crate::root::units_admin::route(
-                &self.admin,
-                Arc::clone(&self.store),
-                &self.admin_token,
-                token,
-                ctx,
-                meter,
-            );
+        if let Some(plane) = self.registry.resolve(self, ctx) {
+            return plane.route(self, token, ctx, meter);
         }
         Decision::refuse(token, Refusal::new(busbar_caps::ReasonCode::NoDestination))
     }
@@ -960,24 +1118,15 @@ impl Units for ProductionUnits {
         ctx: &UnitCtx,
         provisional: &Outcome,
     ) -> Decision<Meter> {
-        #[cfg(feature = "root-admin")]
-        if self.is_admin(ctx) {
-            return crate::root::units_admin::meter(token, usage, ctx, provisional);
+        if let Some(plane) = self.registry.resolve(self, ctx) {
+            return plane.meter(self, token, usage, ctx, provisional);
         }
         Decision::refuse(token, Refusal::new(busbar_caps::ReasonCode::Unpriced))
     }
 
     fn audit(&self, token: &UnitToken<Audit>, ctx: &UnitCtx, outcome: &Outcome) -> Decision<Audit> {
-        #[cfg(feature = "root-admin")]
-        if self.is_admin(ctx) {
-            let durability = self.durability.lock().unwrap_or_else(|p| p.into_inner());
-            return crate::root::units_admin::audit(
-                &self.admin,
-                &durability.legacy,
-                token,
-                ctx,
-                outcome,
-            );
+        if let Some(plane) = self.registry.resolve(self, ctx) {
+            return plane.audit(self, token, ctx, outcome);
         }
         Decision::proceed(token, unclaimed_facts(outcome))
     }
@@ -988,16 +1137,8 @@ impl Units for ProductionUnits {
         ctx: &UnitCtx,
         refusal: &Refusal,
     ) -> Decision<Audit> {
-        #[cfg(feature = "root-admin")]
-        if self.is_admin(ctx) {
-            let durability = self.durability.lock().unwrap_or_else(|p| p.into_inner());
-            return crate::root::units_admin::audit_refused(
-                &self.admin,
-                &durability.legacy,
-                token,
-                ctx,
-                refusal,
-            );
+        if let Some(plane) = self.registry.resolve(self, ctx) {
+            return plane.audit_refused(self, token, ctx, refusal);
         }
         Decision::proceed(
             token,
@@ -1017,20 +1158,18 @@ impl Units for ProductionUnits {
         ctx: &UnitCtx,
         outcome: &Outcome,
     ) -> Decision<Encode> {
-        #[cfg(feature = "root-admin")]
-        if self.is_admin(ctx) {
-            return crate::root::units_admin::encode(&self.admin, token, ctx, outcome);
+        if let Some(plane) = self.registry.resolve(self, ctx) {
+            return plane.encode(self, token, ctx, outcome);
         }
         Decision::refuse(token, Refusal::new(busbar_caps::ReasonCode::DecodeFailed))
     }
 
     fn evidence(&self, ctx: &UnitCtx) -> Evidence {
-        #[cfg(feature = "root-admin")]
-        if self.is_admin(ctx) {
-            return crate::root::units_admin::evidence(ctx);
+        if let Some(plane) = self.registry.resolve(self, ctx) {
+            return plane.evidence(self, ctx);
         }
-        // Nothing located, nothing accrued, no upstream candidate: a unit this root did not compose
-        // reached no destination, and the settlement table's answer for that is zero on every row.
+        // Nothing located, nothing accrued, no upstream candidate: a unit no plane claimed reached
+        // no destination, and the settlement table's answer for that is zero on every row.
         Evidence::default()
     }
 }

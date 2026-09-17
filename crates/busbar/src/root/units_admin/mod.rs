@@ -51,6 +51,7 @@ use busbar_plane_admin::verbs::ResolvedVerb;
 use busbar_unit_auth::unit::AuthRequest;
 use busbar_unit_scope::Scope;
 
+use crate::root::kernel::{ProductionUnits, RegisteredUnits};
 use crate::root::ledger_identity::{LedgerSnapshot, LegacySnapshot};
 use busbar_unit_verbs::rate::{MutationClass, CONFIG_CLASS_RULES};
 use busbar_unit_verbs::{
@@ -2154,6 +2155,172 @@ pub(crate) fn evidence(_ctx: &UnitCtx) -> busbar_kernel::teller::Evidence {
     busbar_kernel::teller::Evidence {
         upstream_candidate: false,
         ..Default::default()
+    }
+}
+
+/// The key the admin plane registers under.
+///
+/// Its OWN key, taken from the plane's `PlaneMeta` rather than spelt a second time here, so the
+/// loop's registry names this plane with exactly the word the plane names itself with and the two
+/// can never drift. There is one string that says "admin" and it lives on the plane.
+pub const UNITS_KEY: &str = <busbar_plane_admin::AdminPlane as busbar_contract::plane::PlaneMeta>::KEY;
+
+/// The admin plane, registered onto the kernel's teller loop through the one seam every plane uses.
+///
+/// A zero-sized value: it owns nothing and composes entirely over the `root` it is handed each call,
+/// reaching the admin bindings, the auth chain, the store and the durability by reference — never a
+/// copy, so the money book, the identity and the revocation set stay the root's however many planes
+/// register. `claims` is membership of the admin units table: the same question the dispatch once
+/// asked as `is_admin`, now answered here, and each step delegates to the free function above it
+/// arg-for-arg, unchanged.
+pub struct AdminPlane;
+
+impl RegisteredUnits for AdminPlane {
+    fn claims(&self, root: &ProductionUnits, ctx: &UnitCtx) -> bool {
+        root.admin.units.holds(ctx.key)
+    }
+
+    fn arrival(
+        &self,
+        root: &ProductionUnits,
+        token: &UnitToken<busbar_caps::Arrival>,
+        ctx: &UnitCtx,
+    ) -> Decision<busbar_caps::Arrival> {
+        arrival(&root.admin, token, ctx)
+    }
+
+    fn decode(
+        &self,
+        root: &ProductionUnits,
+        token: &UnitToken<Decode>,
+        ctx: &UnitCtx,
+    ) -> Decision<Decode> {
+        decode(&root.admin, token, ctx)
+    }
+
+    fn authenticate(
+        &self,
+        root: &ProductionUnits,
+        token: &UnitToken<Authenticate>,
+        ctx: &UnitCtx,
+    ) -> Decision<Authenticate> {
+        authenticate(&root.auth, &root.admin, &root.auth_bindings, token, ctx)
+    }
+
+    fn verify(
+        &self,
+        root: &ProductionUnits,
+        token: &UnitToken<Verify>,
+        _trust: &busbar_caps::TrustToken,
+        ctx: &UnitCtx,
+        principal: &PrincipalId,
+    ) -> Decision<Verify> {
+        verify(&root.admin, token, ctx, principal)
+    }
+
+    fn approve(
+        &self,
+        root: &ProductionUnits,
+        token: &UnitToken<Approve>,
+        ctx: &UnitCtx,
+        principal: &PrincipalId,
+        destinations: &[VerifiedDestination],
+    ) -> Decision<Approve> {
+        approve(
+            &root.admin,
+            root.admin_grant(principal),
+            token,
+            ctx,
+            principal,
+            destinations,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn admit(
+        &self,
+        root: &ProductionUnits,
+        token: &UnitToken<Admit>,
+        admit_token: &AdmitToken<Admit>,
+        ctx: &UnitCtx,
+        principal: &PrincipalId,
+        destinations: &[VerifiedDestination],
+        // The administrative surface charges through no configured group — a kernel verb is exempt
+        // from the gauge entirely — so this door names none.
+        _leases: &busbar_kernel::slice::GroupLeaseSlip,
+    ) -> Decision<Admit> {
+        admit(
+            &root.admin,
+            token,
+            admit_token,
+            ctx,
+            principal,
+            destinations,
+        )
+    }
+
+    fn route(
+        &self,
+        root: &ProductionUnits,
+        token: &UnitToken<Route>,
+        ctx: &UnitCtx,
+        meter: &busbar_kernel::teller::AccrualMeter,
+    ) -> Decision<Route> {
+        route(
+            &root.admin,
+            Arc::clone(&root.store),
+            &root.admin_token,
+            token,
+            ctx,
+            meter,
+        )
+    }
+
+    fn meter(
+        &self,
+        _root: &ProductionUnits,
+        token: &UnitToken<Meter>,
+        usage: &UsageToken,
+        ctx: &UnitCtx,
+        provisional: &Outcome,
+    ) -> Decision<Meter> {
+        meter(token, usage, ctx, provisional)
+    }
+
+    fn audit(
+        &self,
+        root: &ProductionUnits,
+        token: &UnitToken<Audit>,
+        ctx: &UnitCtx,
+        outcome: &Outcome,
+    ) -> Decision<Audit> {
+        let durability = root.durability.lock().unwrap_or_else(|p| p.into_inner());
+        audit(&root.admin, &durability.legacy, token, ctx, outcome)
+    }
+
+    fn audit_refused(
+        &self,
+        root: &ProductionUnits,
+        token: &UnitToken<Audit>,
+        ctx: &UnitCtx,
+        refusal: &Refusal,
+    ) -> Decision<Audit> {
+        let durability = root.durability.lock().unwrap_or_else(|p| p.into_inner());
+        audit_refused(&root.admin, &durability.legacy, token, ctx, refusal)
+    }
+
+    fn encode(
+        &self,
+        root: &ProductionUnits,
+        token: &UnitToken<Encode>,
+        ctx: &UnitCtx,
+        outcome: &Outcome,
+    ) -> Decision<Encode> {
+        encode(&root.admin, token, ctx, outcome)
+    }
+
+    fn evidence(&self, _root: &ProductionUnits, ctx: &UnitCtx) -> busbar_kernel::teller::Evidence {
+        evidence(ctx)
     }
 }
 
