@@ -11,7 +11,7 @@ PRESENT (none stale/already-fixed).
 
 ## FIXED
 
-### busbar-unit-breaker — no-response upstream failure never trips the breaker  (SHA 3cbf9b1e4)
+### busbar-unit-breaker — no-response upstream failure never trips the breaker  (SHA 0c7bf720b)
 
 - **Cell:** `crates/busbar-unit-breaker/src/classify.rs` `normalize_raw_error`, Step-2 status ladder.
 - **Root cause:** a transport failure with no HTTP/gRPC response (`port.rs` builds
