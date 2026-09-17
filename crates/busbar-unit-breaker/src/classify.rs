@@ -387,12 +387,11 @@ pub fn normalize_raw_error(
         // True 4xx (other than 401/403/408/429 above) — the caller's fault.
         StatusClass::ClientError
     } else if http_status == 0 {
-        // No status at all: the upstream never answered (connection refused/reset, a transport
-        // error, a timeout with no HTTP response). That is a failure OF the destination, not of
-        // the caller — it is exactly what `StatusClass::Network` (a transient upstream failure)
-        // exists for. Without this arm a no-response failure fell through to the 2xx/3xx arm below
-        // and was recorded as `ClientFault`/RecordNothing, so a destination failing this way never
-        // tripped its breaker cell and kept taking full traffic.
+        // No status at all: the upstream never answered (connection refused/reset, transport
+        // error, timeout with no response) — a failure OF the destination, which is what
+        // `StatusClass::Network` (a transient upstream failure that trips the cell) exists for.
+        // 1.5.5 mapped this (`a2a::relay::classify_hop`'s Transport arm) to Network; before this
+        // arm it fell to the 2xx/3xx arm below as `ClientFault`/RecordNothing and never tripped.
         StatusClass::Network
     } else {
         // An unexpected non-error status (2xx/3xx) reaching the error path — the destination is not
