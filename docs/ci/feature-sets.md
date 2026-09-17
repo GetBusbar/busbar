@@ -25,6 +25,9 @@ measurement from going stale.
 | non-default, built by NO CI leg before this change | **7** |
 | non-default, built after this change | **46** |
 | dead / never referenced, therefore deleted | **0** — see "Nothing was dead", below |
+| H2 rig scenarios in the tree | 12 |
+| H2 rig scenarios run by any job BEFORE this change | **0** |
+| H2 rig scenarios run after this change | **12** |
 
 "Built by some CI leg" is measured, not assumed: for each cargo invocation any workflow on the
 integration line (`ci.yml`, `a2a-conformance.yml`, `mcp-conformance.yml`, `voice-conformance.yml`
@@ -132,6 +135,21 @@ in a written declaration:
 so that a feature added to any crate is RED until somebody says, in the workflow file, which job
 builds it. A declaration that names a feature which no longer exists is red too: a stale exemption
 outlives the feature it excused and then silently excuses the next one to take the name.
+
+### The second axis the same gate holds: rig scenarios
+
+A feature nothing builds and an executable scenario nothing runs are the same defect. The eighth row
+of the gate walks `scripts/mcp-subject/` and `scripts/a2a-subject/` for `h2-*.sh` — the twelve H2
+gating scenarios `qa/teller-steps.json` cites as the proof of a Teller step — and requires each one
+to be NAMED by a step of `ci.yml`. `cargo xtask gate teller-steps` already asserts that a cell names
+a real script; naming a file is not running it, and no job in any workflow ran one.
+
+`ci.yml`'s new `plane-rigs` job runs all twelve, one named step each, fast tier, after the matrix
+self-test and the release build the rigs boot. It is one step per scenario rather than a
+`for f in scripts/*-subject/h2-*.sh` loop on purpose: a loop names none of them, and a glob expands
+on the runner where nobody reads the expansion, so a rig added tomorrow would be covered by a loop
+that never listed it with no diff to show the difference. The rig row counts steps against the
+directory listing, which only works if the steps are lines.
 
 ## What this does NOT hold
 
