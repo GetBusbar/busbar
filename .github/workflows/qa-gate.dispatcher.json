@@ -25,15 +25,31 @@
           "uses": "dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1"
         },
         {
-          "uses": "Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6",
+          "name": "Resolve cargo home (Latchkey image sets CARGO_HOME off $HOME)",
+          "uses": "./.github/actions/cargo-home"
+        },
+        {
+          "name": "Latchkey Fast Cache (cargo registry + target, restore)",
+          "uses": "latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662",
           "with": {
-            "workspaces": "busbarAI"
+            "action": "restore",
+            "key": "cargo-${{ runner.os }}-build-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}",
+            "path": "${{ env.CARGO_HOME }}/registry\n${{ env.CARGO_HOME }}/git\nbusbarAI/target\n"
           }
         },
         {
           "name": "Build once + prune + pack",
           "run": "./scripts/qa-gate-run.sh build \"$TARBALL\"",
           "working-directory": "busbarAI"
+        },
+        {
+          "name": "Latchkey Fast Cache (cargo registry + target, save)",
+          "uses": "latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662",
+          "with": {
+            "action": "save",
+            "key": "cargo-${{ runner.os }}-build-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}",
+            "path": "${{ env.CARGO_HOME }}/registry\n${{ env.CARGO_HOME }}/git\nbusbarAI/target\n"
+          }
         },
         {
           "uses": "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",

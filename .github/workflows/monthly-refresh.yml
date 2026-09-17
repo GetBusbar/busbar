@@ -26,7 +26,17 @@ jobs:
       - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
         with:
           components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - name: Resolve cargo home (Latchkey image sets CARGO_HOME off $HOME)
+        uses: ./.github/actions/cargo-home
+      - name: Latchkey Fast Cache (cargo registry + target, restore)
+        uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
+        with:
+          action: restore
+          key: cargo-${{ runner.os }}-refresh-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
+          path: |
+            ${{ env.CARGO_HOME }}/registry
+            ${{ env.CARGO_HOME }}/git
+            target
 
       - name: cargo update (semver-compatible sweep)
         run: cargo update
@@ -60,6 +70,15 @@ jobs:
           cargo build --quiet
           echo "version=$new" >> "$GITHUB_OUTPUT"
           echo "Bumped $cur -> $new"
+      - name: Latchkey Fast Cache (cargo registry + target, save)
+        uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
+        with:
+          action: save
+          key: cargo-${{ runner.os }}-refresh-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
+          path: |
+            ${{ env.CARGO_HOME }}/registry
+            ${{ env.CARGO_HOME }}/git
+            target
 
       - name: Open refresh PR
         if: steps.diff.outputs.changed == 'true'

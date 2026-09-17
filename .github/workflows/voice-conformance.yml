@@ -74,12 +74,31 @@ jobs:
         with:
           python-version: '3.12'
       - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - name: Resolve cargo home (Latchkey image sets CARGO_HOME off $HOME)
+        uses: ./.github/actions/cargo-home
+      - name: Latchkey Fast Cache (cargo registry + target, restore)
+        uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
+        with:
+          action: restore
+          key: cargo-${{ runner.os }}-gate-selftest-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
+          path: |
+            ${{ env.CARGO_HOME }}/registry
+            ${{ env.CARGO_HOME }}/git
+            target
       # THE ONE BUILD. Every downstream leg consumes this exact binary as an artifact (uploaded at
       # the end of this job), so the harness every verdict is drawn from is the harness the
       # self-test below proved.
       - name: Build the voice conformance harness
         run: cargo build -p busbar-voice --features runtime,test-support --bin voice-conform
+      - name: Latchkey Fast Cache (cargo registry + target, save)
+        uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
+        with:
+          action: save
+          key: cargo-${{ runner.os }}-gate-selftest-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
+          path: |
+            ${{ env.CARGO_HOME }}/registry
+            ${{ env.CARGO_HOME }}/git
+            target
       # FIRST, and separately from any verdict: never trust a gate's verdict before proving the gate
       # still works. The self-test plants runs that MUST be refused (a ready leg that executed
       # nothing; a dropped leg; a gutted tree) and runs that must be accepted (the all-pending
@@ -321,7 +340,17 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - name: Resolve cargo home (Latchkey image sets CARGO_HOME off $HOME)
+        uses: ./.github/actions/cargo-home
+      - name: Latchkey Fast Cache (cargo registry + target, restore)
+        uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
+        with:
+          action: restore
+          key: cargo-${{ runner.os }}-boot-validate-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
+          path: |
+            ${{ env.CARGO_HOME }}/registry
+            ${{ env.CARGO_HOME }}/git
+            target
       # M5: the composition root LINKS busbar-voice under `plane-voice`, the plane OWNS the `streams:`
       # section, and its grammar is reached at config validation. This leg proves that end to end, so a
       # regression that unwires `parse_section`/`owned_config_sections` — or one that lets a second
@@ -338,6 +367,15 @@ jobs:
           #     registered, and (c) the dup-claim guard admits the real voice decl and REFUSES a
           #     planted second claimant of `streams`.
           cargo test -p busbar --features plane-voice --test voice_boot -- --nocapture | tee -a voice-boot-validate.log
+      - name: Latchkey Fast Cache (cargo registry + target, save)
+        uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
+        with:
+          action: save
+          key: cargo-${{ runner.os }}-boot-validate-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
+          path: |
+            ${{ env.CARGO_HOME }}/registry
+            ${{ env.CARGO_HOME }}/git
+            target
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         if: always()
         with:
