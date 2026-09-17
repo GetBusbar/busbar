@@ -39,7 +39,7 @@ reason = "legacy drain"
 
 [[transitional]]
 from = "busbar-core"
-to = "busbar-plane-admin"
+to = "busbar-control-admin"
 reason = "legacy drain"
 
 # The same phenomenon one crate over, and it is in the tree TODAY rather than on a branch:
@@ -92,9 +92,9 @@ reason = "legacy drain"
 # commit; there is no window in which the tree carries both.
 
 [[registered]]
-crate = "busbar-plane-admin"
+crate = "busbar-control-admin"
 kind = "cleanliness"
-reason = "the admin surface — a compiled-in CLEANLINESS crate, not a plugin and not a `control` kind (DECISIONS #5). Its name still says `plane`; the rename to busbar-admin (which resolves to cleanliness by name) is what strikes this row. busbar-admin and busbar-oauth2 need no registered row — their names resolve to cleanliness directly."
+reason = "the admin surface — a compiled-in CLEANLINESS crate, not a plugin and not a `control` plugin kind (DECISIONS #5). Its name says `control`, which is not one of the seven plugin kinds and resolves to no kind matcher, so this row is what gives it the cleanliness family; the day `cleanliness` grows a `busbar-control-` matcher (or the crate is folded into busbar-admin) is what strikes this row. busbar-admin and busbar-oauth2 need no registered row — their names resolve to cleanliness directly."
 
 [[announced]]
 crate = "busbar-core-config"
@@ -1746,32 +1746,32 @@ kind = "transport"
 count = "103"
 
 [[cell]]
-crate = "busbar-plane-admin"
+crate = "busbar-control-admin"
 kind = "contract-transport"
 count = "1"
 
 [[cell]]
-crate = "busbar-plane-admin"
+crate = "busbar-control-admin"
 kind = "legacy"
 count = "8"
 
 [[cell]]
-crate = "busbar-plane-admin"
+crate = "busbar-control-admin"
 kind = "plane"
 count = "3"
 
 [[cell]]
-crate = "busbar-plane-admin"
+crate = "busbar-control-admin"
 kind = "secret"
 count = "1"
 
 [[cell]]
-crate = "busbar-plane-admin"
+crate = "busbar-control-admin"
 kind = "transport"
 count = "24"
 
 [[cell]]
-crate = "busbar-plane-admin"
+crate = "busbar-control-admin"
 kind = "unit"
 count = "16"
 
@@ -2846,12 +2846,12 @@ drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an arch
 
 [[dep]]
 from    = "busbar"
-to      = "busbar-plane-admin"
+to      = "busbar-control-admin"
 half    = "shipped"
 count   = "1"
 verdict = "allowed"
 cite    = "ARCHITECTURE.md 1.1 / ARCHITECTURE.md 3.1 — the composition root is the one thing that names all three axes."
-why     = "busbar names busbar-plane-admin: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+why     = "busbar names busbar-control-admin: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
 drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
 
 [[dep]]
@@ -3665,13 +3665,13 @@ why     = "busbar-plane-a2a names busbar-contract: declared normal in the shippe
 drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
 
 [[dep]]
-from    = "busbar-plane-admin"
+from    = "busbar-control-admin"
 to      = "busbar-contract"
 half    = "shipped"
 count   = "1"
 verdict = "allowed"
 cite    = "ARCHITECTURE.md 1.2 manifest allow-list — busbar-contract is the face every kind is written against."
-why     = "busbar-plane-admin names busbar-contract: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+why     = "busbar-control-admin names busbar-contract: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
 drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
 
 [[dep]]
@@ -5114,12 +5114,12 @@ question = "OWNER RULING WANTED. busbar-transport-tls -> busbar-caps matches no 
 #   drain — the line that deletes it.
 
 [[face]]
-crate = "busbar-plane-admin"
+crate = "busbar-control-admin"
 face = "Plane"
 count = "1"
 cite = "none. ARCHITECTURE.md 1.4 makes `control` a kind of its own, and a control surface is not a metered plane; this crate is registered `control` by the [[registered]] row above and still carries the plane face."
 why = "the admin surface predates the control kind: it was written as a plane, it is registered as control, and the trait it implements has not moved yet. One implementation, in shipped source."
-drain = "R7: rename busbar-plane-admin to busbar-control-admin and move it off the Plane face onto the control face. kind-isolation:control-path is the ship criterion that refuses the tag until it lands."
+drain = "R7: move busbar-control-admin off the Plane face onto the control face. kind-isolation:control-path is the ship criterion that refuses the tag until it lands."
 
 [[face]]
 crate = "busbar-a2a"

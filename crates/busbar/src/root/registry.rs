@@ -87,7 +87,7 @@ use busbar_contract::{
 };
 use busbar_kernel::registry::{seal_claims, ClaimConflict, PlaneClaim, Registry, ResolvedOverlap};
 use busbar_plane_a2a::A2aPlane;
-use busbar_plane_admin::AdminPlane;
+use busbar_control_admin::AdminPlane;
 use busbar_plane_llm::LlmPlane;
 use busbar_plane_mcp::McpPlane;
 #[cfg(feature = "plane-streaming")]

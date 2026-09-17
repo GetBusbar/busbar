@@ -1,4 +1,4 @@
-# busbar-plane-admin — THE HTTP CODEC for the admin surface, and nothing else.
+# busbar-control-admin — THE HTTP CODEC for the admin surface, and nothing else.
 #
 # WHAT THIS CRATE IS. One implementation of the plugin contract's plane kind for busbar's own admin
 # API: it translates the 1.5.5-shaped HTTP request/response shapes (66 operations over 49 paths,
@@ -21,7 +21,7 @@
 # transcribed by hand into `refusal.rs`, with a doc-comment table recording the mapping, precisely so
 # this crate never needs to pull in the whole admin JSON-REST stack to render four closed strings.
 [package]
-name = "busbar-plane-admin"
+name = "busbar-control-admin"
 version = "1.6.0"
 publish = false            # internal workspace crate; never goes to crates.io
 edition = "2021"
@@ -31,7 +31,7 @@ description = "The admin plane for busbar: the plugin contract's plane kind impl
 license = "Apache-2.0"
 
 [lib]
-name = "busbar_plane_admin"
+name = "busbar_control_admin"
 path = "src/lib.rs"
 
 # NO FEATURES, ON PURPOSE. A plane compiled two ways is two planes, and the kernel would have no way

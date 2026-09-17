@@ -356,7 +356,7 @@ pub(crate) fn error_answer_with_message(status: u16, code: &str, message: &str) 
     AdminAnswer {
         status,
         headers: vec![("content-type".to_string(), "application/json".to_string())],
-        body: busbar_plane_admin::refusal::envelope_of(code, message).into_bytes(),
+        body: busbar_control_admin::refusal::envelope_of(code, message).into_bytes(),
     }
 }
 
@@ -614,7 +614,7 @@ pub fn mount(
                 // this plane never claimed would be the root inventing an answer it has no basis
                 // for, and the whole point of the seam is that it never does that.
                 let declared =
-                    busbar_plane_admin::verbs::resolve(req.method().as_str(), &path).is_some();
+                    busbar_control_admin::verbs::resolve(req.method().as_str(), &path).is_some();
                 if !claimed || !declared {
                     return inner.oneshot(req).await.unwrap_or_else(|e| match e {});
                 }

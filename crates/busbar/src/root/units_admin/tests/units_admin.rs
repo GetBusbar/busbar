@@ -455,7 +455,7 @@ fn an_unsealed_node_reports_the_posture_a_fresh_install_is_actually_in() {
 #[test]
 fn every_row_the_plane_decodes_names_a_verb_the_unit_knows() {
     let mut unmatched = Vec::new();
-    for row in busbar_plane_admin::verbs::table() {
+    for row in busbar_control_admin::verbs::table() {
         if kernel_verb(&row).is_none() {
             unmatched.push(row.verb);
         }
@@ -471,7 +471,7 @@ fn every_row_the_plane_decodes_names_a_verb_the_unit_knows() {
 /// convention rather than on what the tag actually pinned.
 #[test]
 fn all_sixty_six_legacy_rows_join_on_the_pinned_method_and_path() {
-    let joined = busbar_plane_admin::verbs::table()
+    let joined = busbar_control_admin::verbs::table()
         .iter()
         .filter(|row| {
             LEGACY_VERBS
@@ -487,7 +487,7 @@ fn all_sixty_six_legacy_rows_join_on_the_pinned_method_and_path() {
 /// so that a future crate quietly agreeing on one casing does not look like a fix.
 #[test]
 fn the_two_tables_spell_one_operations_name_two_ways() {
-    let audit = busbar_plane_admin::verbs::resolve("GET", "/api/v1/admin/audit")
+    let audit = busbar_control_admin::verbs::resolve("GET", "/api/v1/admin/audit")
         .expect("audit is in the plane's table");
     let row = LEGACY_VERBS
         .iter()
@@ -2631,7 +2631,7 @@ fn a_read_only_credential_reaches_every_view_and_still_no_mutation() {
 #[test]
 fn a_ledger_view_is_read_only_in_every_table_that_has_an_opinion() {
     for path in LEDGER_PATHS {
-        let row = busbar_plane_admin::verbs::resolve("GET", path)
+        let row = busbar_control_admin::verbs::resolve("GET", path)
             .unwrap_or_else(|| panic!("{path} is not in the plane's table"));
         assert!(
             row.read_only,
@@ -2792,7 +2792,7 @@ fn the_additive_document_describes_the_ledger_views_and_nothing_the_pinned_one_h
             "{path} is documented at a scope it is not served at"
         );
         let operation_id = op["operationId"].as_str().expect("an operationId");
-        let verb = busbar_plane_admin::verbs::resolve("GET", path)
+        let verb = busbar_control_admin::verbs::resolve("GET", path)
             .expect("the table declares it")
             .verb;
         assert_eq!(

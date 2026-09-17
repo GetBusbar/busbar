@@ -34,7 +34,7 @@ members = [
     "crates/busbar-plane-llm",
     "crates/busbar-plane-mcp",
     "crates/busbar-plane-a2a",
-    "crates/busbar-plane-admin",
+    "crates/busbar-control-admin",
     "crates/busbar-plane-streaming",
     "crates/busbar-unit-admission",
     "crates/busbar-unit-cost",

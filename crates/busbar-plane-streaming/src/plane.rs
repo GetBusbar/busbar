@@ -47,7 +47,7 @@
 //!   arguments as its body, correlated by the wire call id. That is when the call becomes visible,
 //!   priced and audited as its own unit at its `tool_call` operation class.
 //! - **`encode_response` is a passthrough of bytes `decode_response` already rendered**, mirroring
-//!   `busbar-plane-admin`'s pattern. `decode_response` reads the open turn's own client dialect off
+//!   `busbar-control-admin`'s pattern. `decode_response` reads the open turn's own client dialect off
 //!   `Ctx::session()`'s declared `dialect` session fact (the one fact this plane's `SESSION_FACTS`
 //!   declares) and renders the client-shaped bytes immediately. The downlink half of
 //!   [`crate::session::Pending`] is gone with the reason it existed: a step after decode can now
@@ -607,7 +607,7 @@ impl SessionPlane for StreamingPlane {
 /// every caller which internal ceiling it met and pinned this node's private vocabulary as the
 /// dialect's `error.code` — a name no client library has a case for and no dialect documents. What
 /// goes out instead is the same small opaque set every other plane in this workspace renders (see
-/// `busbar-plane-admin`'s own table): the caller learns the CLASS of refusal and nothing about why
+/// `busbar-control-admin`'s own table): the caller learns the CLASS of refusal and nothing about why
 /// this node reached it.
 fn refusal_render(reason: busbar_contract::unit::RefusalReason) -> (&'static str, &'static str) {
     use busbar_contract::unit::RefusalReason as R;

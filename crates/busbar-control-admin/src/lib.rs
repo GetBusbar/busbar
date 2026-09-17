@@ -1,4 +1,4 @@
-//! busbar-plane-admin — the HTTP codec for busbar's own admin surface.
+//! busbar-control-admin — the HTTP codec for busbar's own admin surface.
 //!
 //! ## What this crate is
 //!

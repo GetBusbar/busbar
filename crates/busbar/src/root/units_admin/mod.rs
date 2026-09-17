@@ -47,7 +47,7 @@ use busbar_caps::{
 };
 use busbar_contract::UnitKey;
 use busbar_kernel::teller::UnitCtx;
-use busbar_plane_admin::verbs::ResolvedVerb;
+use busbar_control_admin::verbs::ResolvedVerb;
 use busbar_unit_auth::unit::AuthRequest;
 use busbar_unit_scope::Scope;
 
@@ -1628,7 +1628,7 @@ pub(crate) fn decode(
     let Some(request) = binding.units.request(ctx.key) else {
         return Decision::refuse(token, Refusal::new(ReasonCode::DecodeFailed));
     };
-    match busbar_plane_admin::verbs::resolve(&request.method, &request.path) {
+    match busbar_control_admin::verbs::resolve(&request.method, &request.path) {
         None => Decision::refuse(token, Refusal::new(ReasonCode::DecodeFailed)),
         Some(resolved) => {
             binding.units.set_verb(ctx.key, resolved);
@@ -2294,7 +2294,7 @@ pub(crate) fn evidence(_ctx: &UnitCtx) -> busbar_kernel::teller::Evidence {
 /// Its OWN key, taken from the plane's `PlaneMeta` rather than spelt a second time here, so the
 /// loop's registry names this plane with exactly the word the plane names itself with and the two
 /// can never drift. There is one string that says "admin" and it lives on the plane.
-pub const UNITS_KEY: &str = <busbar_plane_admin::AdminPlane as busbar_contract::plane::PlaneMeta>::KEY;
+pub const UNITS_KEY: &str = <busbar_control_admin::AdminPlane as busbar_contract::plane::PlaneMeta>::KEY;
 
 /// The admin plane, registered onto the kernel's teller loop through the one seam every plane uses.
 ///

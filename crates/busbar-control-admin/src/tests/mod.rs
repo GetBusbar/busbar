@@ -283,7 +283,7 @@ fn build_unit<'u>(
     struct TestSeal;
     impl busbar_contract::plugin::KernelSeal for TestSeal {
         fn seal_origin(&self) -> &'static str {
-            "busbar-plane-admin::tests"
+            "busbar-control-admin::tests"
         }
     }
     // Through the one scanner, exactly as the codec builds it, so a unit a test hands the plane
