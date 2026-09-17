@@ -9,14 +9,14 @@
 //! The REQUEST-side projection (`HookRequest`/`build`/the op constants/the reject clamp+sanitize) lives
 //! in the NEUTRAL substrate at [`busbar_substrate::hooks::wire`] so the LLM model plane names it
 //! without reaching back into core; it is RE-EXPORTED below so every core-internal
-//! `crate::hooks::wire::…` path (proxy_vocab, plugin, auth, admin, the tests) is unchanged. The
+//! `crate::wire::…` path (proxy_vocab, plugin, auth, admin, the tests) is unchanged. The
 //! reply-side normalizers + the settings-bag-carrying [`StatusReply`] stay HERE — inside the
 //! settings-leak-lint scan root that must keep watching any raw operator-settings bag.
 
 use super::{Candidate, RoutingDecision};
 use serde::Deserialize;
 
-// RE-EXPORT the substrate request-side contract so `crate::hooks::wire::{…}` resolves by-identity for
+// RE-EXPORT the substrate request-side contract so `crate::wire::{…}` resolves by-identity for
 // every historical core caller (proxy_vocab builds `HookRequest`; plugin.rs calls `build`; auth/admin
 // name `HookStageProjection`; the tests exercise `build`) and for the reject clamp/sanitize the
 // reply-side normalizers below share with the forward seam.

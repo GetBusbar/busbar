@@ -19,9 +19,8 @@
 pub(crate) mod admission;
 
 use crate::config::{
-    LimitsResolved, DEFAULT_KEY_GAUGE_LIMIT, DEFAULT_POLICY_TIMEOUT_MS,
-    DEFAULT_PROBE_INTERVAL_SECS, DEFAULT_PROBE_TIMEOUT_SECS, DEFAULT_RATE_SWEEP_INTERVAL,
-    DEFAULT_USAGE_FLUSH_INTERVAL_MS,
+    LimitsResolved, DEFAULT_KEY_GAUGE_LIMIT, DEFAULT_PROBE_INTERVAL_SECS,
+    DEFAULT_PROBE_TIMEOUT_SECS, DEFAULT_RATE_SWEEP_INTERVAL, DEFAULT_USAGE_FLUSH_INTERVAL_MS,
 };
 // The body-cap default is no longer read by any accessor on this page (the translate cap moved to
 // its own home); the tests below still assert the uninstalled fallback against it.
@@ -145,12 +144,9 @@ pub(crate) fn default_probe_timeout_secs() -> u64 {
         .unwrap_or(DEFAULT_PROBE_TIMEOUT_SECS)
 }
 
-/// Global default routing-policy timeout (ms). Per-policy `policy.timeout_ms` overrides.
-pub(crate) fn default_policy_timeout_ms() -> u64 {
-    get()
-        .map(|l| l.default_policy_timeout_ms)
-        .unwrap_or(DEFAULT_POLICY_TIMEOUT_MS)
-}
+// The routing-policy-timeout accessor moved WITH the hook-dispatch code into `busbar-core-hooks`
+// (`busbar_core_hooks::limits::default_policy_timeout_ms`, reading this same installed-limits slot via
+// `busbar_substrate::config::limits::installed()`). It had no remaining caller in this crate.
 
 #[cfg(test)]
 #[path = "tests/limits_tests.rs"]

@@ -30,6 +30,11 @@ busbar-api = { path = "../api" }
 # — that edge is the cycle Cargo refuses) and re-exports its neutral config helpers at their
 # historical `crate::config::…` paths. First reconciled-in helper: `config::parse`.
 busbar-core-config = { path = "../busbar-core-config" }
+# The carved-out HOOK-DISPATCH home (DECISIONS #19). The hook engine (`HookEnv`, the `resolve_*`
+# lowering, the gate/wire/plugin submodules) lives here now; `crate::hooks` is a re-export shim over
+# `busbar_core_hooks::*`. One-way edge: core -> core-hooks; core-hooks reaches only the neutral spine
+# and never names busbar-core (the reverse edge is the cycle Cargo refuses).
+busbar-core-hooks = { path = "../busbar-core-hooks", default-features = false }
 # The NEUTRAL SUBSTRATE. Phase-B B0-b relocated the Tier-0 leaves (net-guard primitives, the
 # diagnostics catalog, the audit vocabulary, the JSON-RPC envelope reader, the wire-format names,
 # and the capped upstream-body read) DOWN into this crate; core re-exports each unchanged so the
@@ -58,7 +63,9 @@ busbar-plugin-loader = { path = "../plugin-loader" }
 busbar-plugin-sign = { path = "../plugin-sign" }
 busbar-secret-ref = { path = "../secret-ref" }
 busbar-auth-admin-tokens = { path = "../auth-admin-tokens", optional = true }
-busbar-hooks-ranking = { path = "../hooks-ranking", optional = true }
+# `busbar-hooks-ranking` moved WITH the hook-dispatch code into `busbar-core-hooks`; core no longer
+# names the crate. The `hooks-ranking` feature (still consulted by `config_validate`'s cfg checks)
+# now forwards to `busbar-core-hooks/hooks-ranking` so both compile in lock-step.
 axum = { workspace = true }
 tower = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal", "io-util", "io-std", "process"] }
@@ -139,7 +146,7 @@ rustls-pki-types = { workspace = true }
 # protocol-extraction step's job; this split is what makes it possible. Do not "fix" it here.
 default = ["auth-admin-tokens", "hooks-ranking", "plane-llm", "plane-mcp", "plane-a2a"]
 auth-admin-tokens = ["dep:busbar-auth-admin-tokens"]
-hooks-ranking = ["dep:busbar-hooks-ranking"]
+hooks-ranking = ["busbar-core-hooks/hooks-ranking"]
 # THE MCP PLANE, in-core today (`src/mcp`), behind the SAME switch the binary already uses for MCP
 # the protocol codec (`busbar-mcp`): one plane-kind name for MCP-the-protocol and MCP-the-plane,
 # never two. Default-on — the shipped engine speaks MCP. With it OFF, `src/mcp` is compiled out and
@@ -228,7 +235,7 @@ loom-model = ["dep:loom"]
 # the bin enables it from its [dev-dependencies] edge only. Forwards to substrate's matching feature
 # so the relocated test-only `governance::signing::TokenSigner::mint_for_audience` is likewise
 # revealed to a dependent test binary.
-test-support = ["busbar-substrate/test-support", "dep:rmcp", "dep:reqwest"]
+test-support = ["busbar-substrate/test-support", "busbar-core-hooks/test-support", "dep:rmcp", "dep:reqwest"]
 # Passthrough to `busbar-timing`'s debug-only per-method micro-timing. DEFAULT OFF: with this off,
 # `busbar_timing::timeit!` expands to `()` and the RAII guards it produces are zero-sized no-ops, so
 # the `drop(_guard)` calls that end a timed span are compiled in ONLY under this feature (dropping a

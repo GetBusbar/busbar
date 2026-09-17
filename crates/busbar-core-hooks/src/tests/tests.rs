@@ -1,6 +1,164 @@
 use super::*;
 use std::collections::HashSet;
 
+// ── PORTED TEST FIXTURES ──────────────────────────────────────────────────────────────────────────
+// These moved with the hook-dispatch tests out of `busbar-core`. They are neutral plugin-fixture
+// builders (`busbar_plugin_sign` / `busbar_plugin_loader`) and a byte-faithful secret resolver, kept
+// here so `busbar-core-hooks` tests never name `busbar-core` (the reverse dependency Cargo refuses).
+
+/// A byte-faithful copy of the engine's `config::secret::SecretResolver` (built-ins `env`/`file`
+/// resolve inline; any other module delegates to the boxed plugin closure, fail-closed on error /
+/// empty / non-UTF-8). Aliased as `crate::config::secret::SecretResolver` for the dispatch tests, so
+/// they build a `HookEnv` exactly as before without this crate depending on `busbar-core`.
+/// The boxed plugin-resolution closure `(module, settings JSON) -> secret bytes` a
+/// [`TestSecretResolver`] delegates non-built-in modules to (mirrors the engine's `PluginResolveFn`).
+pub(crate) type TestPluginResolveFn =
+    Box<dyn Fn(&str, &str) -> Result<Vec<u8>, String> + Send + Sync>;
+
+pub(crate) struct TestSecretResolver {
+    plugin: Option<TestPluginResolveFn>,
+}
+
+impl TestSecretResolver {
+    pub(crate) fn builtins_only() -> Self {
+        Self { plugin: None }
+    }
+
+    pub(crate) fn with_plugin(plugin: TestPluginResolveFn) -> Self {
+        Self {
+            plugin: Some(plugin),
+        }
+    }
+
+    fn resolve(&self, secret: &busbar_api::SecretRef) -> Result<Vec<u8>, String> {
+        use busbar_secret_ref::{SECRET_MODULE_ENV, SECRET_MODULE_FILE, SECRET_MODULE_NONE};
+        match secret.module.as_str() {
+            SECRET_MODULE_ENV | SECRET_MODULE_FILE | SECRET_MODULE_NONE => {
+                busbar_api::resolve_builtin(secret)
+            }
+            module => match &self.plugin {
+                Some(f) => {
+                    let settings =
+                        serde_json::Value::Object(secret.settings.clone()).to_string();
+                    let bytes = f(module, &settings).map_err(|e| {
+                        format!(
+                            "secret module '{module}' (a kind: secret plugin) failed to resolve \
+                             {}: {e}",
+                            secret.describe()
+                        )
+                    })?;
+                    if bytes.is_empty() {
+                        return Err(format!(
+                            "secret module '{module}' resolved {} to an EMPTY value; a secret must \
+                             be non-empty (fail-closed)",
+                            secret.describe()
+                        ));
+                    }
+                    Ok(bytes)
+                }
+                None => Err(format!(
+                    "secret module '{module}' is not a built-in (`env` / `file`) and the plugin \
+                     subsystem is not enabled, so no secret plugin can resolve {}; a secret that \
+                     cannot resolve is a hard error (fail-closed)",
+                    secret.describe()
+                )),
+            },
+        }
+    }
+
+    fn resolve_string(&self, secret: &busbar_api::SecretRef) -> Result<String, String> {
+        let bytes = self.resolve(secret)?;
+        let s = String::from_utf8(bytes).map_err(|_| {
+            format!(
+                "secret {} resolved to non-UTF-8 bytes where a text secret is required",
+                secret.describe()
+            )
+        })?;
+        let trimmed = s.trim_end_matches(['\r', '\n']);
+        if trimmed.is_empty() {
+            return Err(format!(
+                "secret {} resolved to an empty value after trimming trailing newlines \
+                 (fail-closed)",
+                secret.describe()
+            ));
+        }
+        Ok(trimmed.to_string())
+    }
+}
+
+impl busbar_api::SecretResolve for TestSecretResolver {
+    fn resolve(&self, secret: &busbar_api::SecretRef) -> Result<Vec<u8>, String> {
+        TestSecretResolver::resolve(self, secret)
+    }
+    fn resolve_string(&self, secret: &busbar_api::SecretRef) -> Result<String, String> {
+        TestSecretResolver::resolve_string(self, secret)
+    }
+}
+
+/// A fresh, uniquely-named temp plugins dir (never cleaned up; collision-proof across concurrent
+/// tests and pid reuse). Ported from `busbar-core`'s test helpers.
+pub(crate) fn tmp_plugin_dir(tag: &str) -> std::path::PathBuf {
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    static PROC_TOKEN: std::sync::OnceLock<u128> = std::sync::OnceLock::new();
+    let token = PROC_TOKEN.get_or_init(|| {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    });
+    let dir = std::env::temp_dir().join(format!(
+        "busbar-hooks-plugins-{}-{token:x}-{tag}-{}",
+        std::process::id(),
+        SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+pub(crate) fn plugin_manifest(
+    name: &str,
+    alias: &str,
+    publisher: &str,
+) -> busbar_plugin_sign::Manifest {
+    busbar_plugin_sign::Manifest {
+        name: name.into(),
+        alias: alias.into(),
+        kind: "store".into(),
+        version: "1.5.0".into(),
+        publisher: publisher.into(),
+        abi_version: *busbar_plugin_loader::supported_abi("store")
+            .iter()
+            .max()
+            .expect("store abi"),
+        sha256: String::new(),
+        signature: String::new(),
+        description: String::new(),
+        homepage: String::new(),
+        license: String::new(),
+        needs: Default::default(),
+        settings_schema: None,
+        schema_derived: false,
+        host: None,
+    }
+}
+
+/// An UNSIGNED (but structurally valid) tarball: sha256 set, signature empty.
+pub(crate) fn unsigned_tarball(mut m: busbar_plugin_sign::Manifest, lib: &[u8]) -> Vec<u8> {
+    m.sha256 = busbar_plugin_sign::sha256_hex(lib);
+    busbar_plugin_loader::tarball::package(&m, "lib.so", lib).unwrap()
+}
+
+/// The uninstalled-fallback assertion for the routing-policy-timeout accessor, relocated here with the
+/// dispatch code from `busbar-core`'s limits tests. No test in this crate installs limits, so the
+/// process-global slot is empty and the accessor returns the frozen default.
+#[test]
+fn default_policy_timeout_ms_uninstalled_fallback() {
+    assert_eq!(
+        crate::limits::default_policy_timeout_ms(),
+        busbar_substrate::config::hooks::DEFAULT_POLICY_TIMEOUT_MS
+    );
+}
+
 #[test]
 fn from_ranked_drops_unknown_and_dedups() {
     let valid: HashSet<usize> = [0usize, 1, 2].into_iter().collect();
@@ -2326,7 +2484,7 @@ fn settings_drift_reports_only_key_names_and_never_resolves_a_secret() {
     .unwrap()
     .clone();
     assert!(
-        crate::hooks::settings_drift_keys(&hook, Some(&in_sync)).is_empty(),
+        crate::settings_drift_keys(&hook, Some(&in_sync)).is_empty(),
         "a hook running EXACTLY the pushed settings is not drifting — comparing the resolved echo \
          against the unresolved `SecretRef` made every secret-bearing hook report drift forever"
     );
@@ -2341,7 +2499,7 @@ fn settings_drift_reports_only_key_names_and_never_resolves_a_secret() {
     .as_object()
     .unwrap()
     .clone();
-    let keys = crate::hooks::settings_drift_keys(&hook, Some(&drifted));
+    let keys = crate::settings_drift_keys(&hook, Some(&drifted));
     assert_eq!(
         keys,
         vec!["ratio".to_string()],
@@ -2362,13 +2520,13 @@ fn settings_drift_reports_only_key_names_and_never_resolves_a_secret() {
     .unwrap()
     .clone();
     assert_eq!(
-        crate::hooks::settings_drift_keys(&hook, Some(&literal_drift)),
+        crate::settings_drift_keys(&hook, Some(&literal_drift)),
         vec!["db".to_string()],
         "`{{ literal: … }}` is ordinary data, compared against its INNER value"
     );
 
     // A hook that reports no settings at all is fail-open, not drift.
-    assert!(crate::hooks::settings_drift_keys(&hook, None).is_empty());
+    assert!(crate::settings_drift_keys(&hook, None).is_empty());
 }
 
 /// `hook_status` is a POLLED async GET, so nothing it calls may resolve a secret.
@@ -2413,7 +2571,7 @@ fn settings_drift_never_compares_a_secret_ref_field() {
     ] {
         let observed = echoed.as_object().unwrap().clone();
         assert!(
-            crate::hooks::settings_drift_keys(&hook, Some(&observed)).is_empty(),
+            crate::settings_drift_keys(&hook, Some(&observed)).is_empty(),
             "a SecretRef-valued field is never compared on the read path (and resolving it to \
              compare would be blocking FFI on a polled async GET): {observed:?}"
         );
@@ -2429,7 +2587,7 @@ fn settings_drift_never_compares_a_secret_ref_field() {
     .unwrap()
     .clone();
     assert_eq!(
-        crate::hooks::settings_drift_keys(&hook, Some(&observed)),
+        crate::settings_drift_keys(&hook, Some(&observed)),
         vec!["ratio".to_string()],
         "an ordinary field still drifts — the fix must not blind the endpoint"
     );
@@ -2502,7 +2660,7 @@ fn concurrent_push_configure_does_not_starve_the_runtime() {
         .map(|_| {
             let (h, e) = (hook.clone(), env.clone());
             rt.spawn(
-                async move { crate::hooks::push_configure(&h, "compliance-gate", 1, &e).await },
+                async move { crate::push_configure(&h, "compliance-gate", 1, &e).await },
             )
         })
         .collect();

@@ -49,7 +49,9 @@ fn uninstalled_accessors_return_historical_defaults() {
     assert_eq!(rate_sweep_interval(), DEFAULT_RATE_SWEEP_INTERVAL);
     assert_eq!(default_probe_interval_secs(), DEFAULT_PROBE_INTERVAL_SECS);
     assert_eq!(default_probe_timeout_secs(), DEFAULT_PROBE_TIMEOUT_SECS);
-    assert_eq!(default_policy_timeout_ms(), DEFAULT_POLICY_TIMEOUT_MS);
+    // The `default_policy_timeout_ms()` fallback moved WITH the hook-dispatch code to
+    // `busbar-core-hooks` (its accessor reads this same installed-limits slot); its uninstalled-
+    // fallback assertion lives in that crate's tests now.
     // 1.5.3: no `webhook_delivery_timeout_secs()` accessor exists any more — the deadline is PER
     // named `request-log-webhook` export instance (`export::webhook::Target::timeout`), so there is
     // no single process-global value an accessor could honestly return.

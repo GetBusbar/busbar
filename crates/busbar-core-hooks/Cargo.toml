@@ -26,3 +26,41 @@ name = "busbar_core_hooks"
 path = "src/lib.rs"
 
 [dependencies]
+# THE NEUTRAL SPINE — the ONLY crates this home names. `busbar-api` is the plugin/contract crate
+# (the `RoutingPolicy`/`Signal` hook contract, `SecretResolve`); `busbar-substrate` carries the
+# relocated config/session/ir/limits/secret value families the dispatch code reaches for. NEITHER is
+# `busbar-core`: the reverse edge is the cycle Cargo refuses (see the crate/header docs).
+busbar-api = { path = "../api" }
+busbar-substrate = { path = "../busbar-substrate" }
+# The dispatch core holds a validated plugin registry (`PluginRegistry`, `DlopenPolicy`,
+# `hook::HookProjectors`) and reads a manifest's declared `NeedLevel` — both neutral plugin crates.
+busbar-plugin-loader = { path = "../plugin-loader" }
+busbar-plugin-sign = { path = "../plugin-sign" }
+# The compiled-in NATIVE ranking policies (`native_policy`), behind the `hooks-ranking` feature
+# exactly as they were in busbar-core. Optional; default-on (shipped engine ranks natively).
+busbar-hooks-ranking = { path = "../hooks-ranking", optional = true }
+
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+bytes = { workspace = true }
+async-trait = { workspace = true }
+tokio = { workspace = true, features = ["rt", "time"] }
+
+[dev-dependencies]
+# The dispatch tests build a real plugin registry from hermetic fixtures and drive the neutral
+# warn-capture layer — all reachable WITHOUT naming `busbar-core`.
+busbar-substrate = { path = "../busbar-substrate", features = ["test-support"] }
+# The test secret-resolver double names the built-in module constants (env/file/none).
+busbar-secret-ref = { path = "../secret-ref" }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time", "test-util"] }
+# The warn-capture assertions install a `tracing_subscriber::registry()` layer.
+tracing-subscriber = { workspace = true }
+
+[features]
+# Mirrors the busbar-core feature grammar for the `#[cfg(...)]` sites that moved in with the dispatch
+# code. `hooks-ranking` (default-on, shipped) compiles in the native ranking policies; `test-support`
+# reveals the readiness-poll helpers the dispatch tests + busbar-core's cross-plane tests drive.
+default = ["hooks-ranking"]
+hooks-ranking = ["dep:busbar-hooks-ranking"]
+test-support = []

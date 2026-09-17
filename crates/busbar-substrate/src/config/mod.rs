@@ -21,6 +21,11 @@ pub mod limits;
 pub mod pools;
 pub mod providers;
 pub mod sections;
+// The NEUTRAL plugin-settings secret classify/resolve helpers (1.6.0 hooks seam): pure
+// `serde_json` + `busbar_api::{SecretRef, SecretResolve}` shape logic with no engine coupling,
+// relocated off `busbar_core::config::secret` so the hook-dispatch home names them via the ABI.
+// `busbar-core` re-exports them at their historical `config::secret::` path.
+pub mod secret;
 
 /// A resolved on_error/on_empty TERMINAL. `Weighted` (default) is the non-negotiable safety
 /// stance: a broken/slow policy is indistinguishable from no policy and NEVER blocks or fails a
