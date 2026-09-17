@@ -339,13 +339,13 @@ dependencies = [
  "busbar-api",
  "busbar-caps",
  "busbar-contract",
+ "busbar-control-admin",
  "busbar-core",
  "busbar-kernel",
  "busbar-llm",
  "busbar-mcp",
  "busbar-oauth2",
  "busbar-plane-a2a",
- "busbar-plane-admin",
  "busbar-plane-llm",
  "busbar-plane-mcp",
  "busbar-plane-streaming",
@@ -544,6 +544,14 @@ version = "1.6.0"
 dependencies = [
  "futures",
  "serde",
+]
+
+[[package]]
+name = "busbar-control-admin"
+version = "1.6.0"
+dependencies = [
+ "busbar-contract",
+ "serde_json",
 ]
 
 [[package]]
@@ -812,14 +820,6 @@ name = "busbar-plane-a2a-host"
 version = "1.6.0"
 dependencies = [
  "busbar-substrate",
-]
-
-[[package]]
-name = "busbar-plane-admin"
-version = "1.6.0"
-dependencies = [
- "busbar-contract",
- "serde_json",
 ]
 
 [[package]]
