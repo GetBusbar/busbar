@@ -190,6 +190,52 @@ pub enum VerifyOutcome {
     Refuse(axum::response::Response),
 }
 
+/// THE LOOP'S ANSWER SHAPE at the unified boundary (DECISIONS #28), plane-neutral.
+///
+/// When a rider runs on the kernel Teller loop (`busbar_kernel::teller::run_unit`), the loop returns
+/// only the money/lifecycle `Ended`; the request's ANSWER bytes are read back out of the plane's own
+/// `ctx.key`-keyed binding table (the admin template — `AdminUnitTable`). `PlaneAnswer` is what a
+/// rider stashes into that table and the outer async handler serves. Two shapes, per #28:
+///
+/// - [`PlaneAnswer::Unary`] — buffered status + headers + body, crosses the sync channel and settles
+///   at Encode on the final byte count (the admin cleanliness caller and every unary verb, including
+///   an SSE body materialised after dispatch).
+/// - [`PlaneAnswer::Live`] — a live body the outer handler serves directly, governed at admit
+///   (auth/verify/approve/admit/audit ran unary), bypassing the Encode-emits-bytes path (the llm
+///   RouteLeg emits this).
+///
+/// NEUTRAL BY CONSTRUCTION: nothing here names a plane, a dialect or a verb, and it lives in the
+/// neutral substrate tier — NOT in `busbar-kernel`, which keeps naming zero planes and zero answer
+/// shapes. It coexists with the shipped [`crate::plane_host`] `PlaneDispatch`-role carriers (#28): a
+/// plane's arena (`DispatchScope`) rides its own loop value, so nothing in this shape carries it.
+pub enum PlaneAnswer {
+    /// Buffered: status, headers, body bytes. Settles at Encode on the final byte count.
+    Unary(
+        axum::http::StatusCode,
+        axum::http::HeaderMap,
+        axum::body::Bytes,
+    ),
+    /// A live body the outer async handler serves directly, governed at admit.
+    Live(axum::response::Response),
+}
+
+impl PlaneAnswer {
+    /// Materialise either shape into the one response the outer handler serves. `Unary` is rebuilt
+    /// status-for-header-for-byte so a buffered answer serves byte-identically to the response the
+    /// plane shaped; `Live` is handed through untouched.
+    pub fn into_response(self) -> axum::response::Response {
+        match self {
+            PlaneAnswer::Unary(status, headers, body) => {
+                let mut resp = axum::response::Response::new(axum::body::Body::from(body));
+                *resp.status_mut() = status;
+                *resp.headers_mut() = headers;
+                resp
+            }
+            PlaneAnswer::Live(resp) => resp,
+        }
+    }
+}
+
 /// A protocol plane's contribution to the shared gauntlet: the pre-admission destination check
 /// (stage 2, sync) and the byte-identical engine that admits, routes, meters and finishes the
 /// request (stages 4+5, async). The SHARED sequence ([`run_gauntlet`]) owns only stage 1 (identity,
@@ -1499,3 +1545,37 @@ pub trait ContainerGateSink: PlaneSlots {
 #[cfg(test)]
 #[path = "tests/gauntlet_session_tests.rs"]
 mod gauntlet_session_tests;
+
+#[cfg(test)]
+mod plane_answer_tests {
+    use super::PlaneAnswer;
+
+    #[tokio::test]
+    async fn unary_materialises_status_headers_and_body_byte_for_byte() {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert("content-type", "application/json".parse().unwrap());
+        headers.insert("x-busbar-plane", "neutral".parse().unwrap());
+        let body = axum::body::Bytes::from_static(b"{\"ok\":true}");
+        let answer = PlaneAnswer::Unary(
+            axum::http::StatusCode::ACCEPTED,
+            headers.clone(),
+            body.clone(),
+        );
+
+        let resp = answer.into_response();
+        assert_eq!(resp.status(), axum::http::StatusCode::ACCEPTED);
+        assert_eq!(resp.headers(), &headers);
+        let got = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .expect("body drains");
+        assert_eq!(got, body);
+    }
+
+    #[tokio::test]
+    async fn live_is_handed_through_untouched() {
+        let mut live = axum::response::Response::new(axum::body::Body::from("stream"));
+        *live.status_mut() = axum::http::StatusCode::CREATED;
+        let resp = PlaneAnswer::Live(live).into_response();
+        assert_eq!(resp.status(), axum::http::StatusCode::CREATED);
+    }
+}
