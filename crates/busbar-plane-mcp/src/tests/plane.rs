@@ -29,31 +29,57 @@ fn verify_and_route_reach_one_declared_sampling_destination() {
 ///
 /// Totality is the point: a reason with no row would be a caller who is told nothing, and the
 /// contract's reason list is closed precisely so this can be checked rather than hoped for.
+/// EVERY reason the kernel closes a unit for, so a new variant cannot be added without deciding what
+/// this dialect answers it with. Exhaustive against `busbar_contract::unit::RefusalReason` (42
+/// variants); `refusal_render`'s own match is `_`-free, so the two lists are kept in step on purpose.
+const ALL_REFUSAL_REASONS: [RefusalReason; 42] = [
+    RefusalReason::InFlightCap,
+    RefusalReason::CursorBudget,
+    RefusalReason::CredentialBudget,
+    RefusalReason::SessionBudget,
+    RefusalReason::BodyTooLarge,
+    RefusalReason::OpenSlotBusy,
+    RefusalReason::SchemeNotDeclared,
+    RefusalReason::CredentialRejected,
+    RefusalReason::SessionUnbound,
+    RefusalReason::Revoked,
+    RefusalReason::ScopeMissing,
+    RefusalReason::Vetoed,
+    RefusalReason::NoDestination,
+    RefusalReason::OverBudget,
+    RefusalReason::GroupFrozen,
+    RefusalReason::Unpriced,
+    RefusalReason::OverdraftCeiling,
+    RefusalReason::StaleSlice,
+    RefusalReason::DurabilityUnavailable,
+    RefusalReason::TierMismatch,
+    RefusalReason::SpillBudget,
+    RefusalReason::ArenaBudget,
+    RefusalReason::RateLimited,
+    RefusalReason::DecodeFailed,
+    RefusalReason::ChallengeExhausted,
+    RefusalReason::PoolNotPermitted,
+    RefusalReason::NoRate,
+    RefusalReason::Replayed,
+    RefusalReason::InFlight,
+    RefusalReason::DestinationBudgetExhausted,
+    RefusalReason::BreakerOpen,
+    RefusalReason::DestinationUnreachable,
+    RefusalReason::MeterDisputed,
+    RefusalReason::HandoffMismatch,
+    RefusalReason::PlanePanic,
+    RefusalReason::TaskLost,
+    RefusalReason::Stalled,
+    RefusalReason::SecretPlaceholder,
+    RefusalReason::Drain,
+    RefusalReason::Superseded,
+    RefusalReason::ClientGone,
+    RefusalReason::DeadlineExceeded,
+];
+
 #[test]
 fn every_refusal_reason_has_an_answer() {
-    let reasons = [
-        RefusalReason::InFlightCap,
-        RefusalReason::CursorBudget,
-        RefusalReason::CredentialBudget,
-        RefusalReason::SessionBudget,
-        RefusalReason::BodyTooLarge,
-        RefusalReason::OpenSlotBusy,
-        RefusalReason::SchemeNotDeclared,
-        RefusalReason::CredentialRejected,
-        RefusalReason::SessionUnbound,
-        RefusalReason::Revoked,
-        RefusalReason::ScopeMissing,
-        RefusalReason::Vetoed,
-        RefusalReason::NoDestination,
-        RefusalReason::OverBudget,
-        RefusalReason::GroupFrozen,
-        RefusalReason::Unpriced,
-        RefusalReason::OverdraftCeiling,
-        RefusalReason::StaleSlice,
-        RefusalReason::DurabilityUnavailable,
-        RefusalReason::TierMismatch,
-    ];
-    for reason in reasons {
+    for reason in ALL_REFUSAL_REASONS {
         let (code, message) = refusal_render(reason);
         assert!(
             crate::jsonrpc::CODES.contains(&code),
@@ -64,6 +90,36 @@ fn every_refusal_reason_has_an_answer() {
             "{reason:?} renders the retired code {code}"
         );
         assert!(!message.is_empty(), "{reason:?} renders no words");
+    }
+}
+
+/// An operational refusal — a rate limit, an open breaker, a drain, a spent budget — is NOT a node
+/// fault. Before the exhaustive mapping every reason but a hand-picked nine fell through a `_` arm to
+/// `CODE_INTERNAL`, so a throttled client was told this node had broken. These must reach the caller
+/// as a real refusal (a policy `CODE_REFUSED`, or `CODE_UPSTREAM_UNAVAILABLE` for a shut route),
+/// never as internal.
+#[test]
+fn no_operational_refusal_is_answered_as_an_internal_fault() {
+    for reason in [
+        RefusalReason::RateLimited,
+        RefusalReason::BreakerOpen,
+        RefusalReason::Drain,
+        RefusalReason::OverBudget,
+        RefusalReason::GroupFrozen,
+        RefusalReason::PoolNotPermitted,
+        RefusalReason::Replayed,
+        RefusalReason::DestinationBudgetExhausted,
+        RefusalReason::DestinationUnreachable,
+        RefusalReason::OverdraftCeiling,
+        RefusalReason::Superseded,
+        RefusalReason::DeadlineExceeded,
+    ] {
+        let (code, _) = refusal_render(reason);
+        assert_ne!(
+            code,
+            crate::jsonrpc::CODE_INTERNAL,
+            "{reason:?} reaches the caller as an internal fault"
+        );
     }
 }
 
