@@ -657,5 +657,5 @@ pub static DIAGNOSTICS: &[&Diagnostic] = &[
 ];
 
 #[cfg(test)]
-#[path = "a2a/tests/diagnostics_tests.rs"]
+#[path = "tests/diagnostics_tests.rs"]
 mod diagnostics_tests;

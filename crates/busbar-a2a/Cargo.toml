@@ -49,6 +49,11 @@ busbar-api = { path = "../api" }
 # leg and socket-capable tokio into a pure kind's closure. Every module that moved is re-exported
 # from this crate under its old name.
 busbar-a2a-codec = { path = "../busbar-a2a-codec" }
+# THE PLANE'S IMPURE HOST CRATE. The first byte-safe step of the fat-crate collapse moved the A2A
+# plane's DIAGNOSTICS catalog here (a self-contained leaf that names nothing in this crate); this
+# crate re-exports it under the old `busbar_a2a::diagnostics` path. The rest of the host surface
+# drains into here in the oracle-gated money cell, after which this crate's name is deleted.
+busbar-plane-a2a-host = { path = "../busbar-plane-a2a-host" }
 # The plane's own runtime surface — the same workspace pins core takes, for the plane code that moved
 # here whole: the transports (tokio, reqwest, futures, tonic/tonic-types/prost + a2a-pb for the gRPC
 # binding, tower), the config codecs (serde, serde_yaml, indexmap), the trust crypto (sha2, hex,

@@ -1,0 +1,34 @@
+# busbar-plane-a2a-host — THE A2A PLANE'S IMPURE HOST CRATE.
+#
+# The fat `busbar-a2a` splits (mirroring busbar-mcp's four-way collapse, DECISIONS #19/#20/#21/#1):
+# the pure codec (`busbar-a2a-codec`), the shared transport crates, the purity-scanned contract
+# adapter (`busbar-plane-a2a`), and THIS crate — the impure, bridged-ABI host: the substrate
+# `PlaneDecl` (`PLANE_DECL`), the runtime slot (the `A2aPlane` runtime), `serve`, the plane test-kit,
+# the plane-contributed DIAGNOSTICS and the engine glue (the inbound `receive`/`inbound` admission
+# path). `busbar-a2a` the NAME ultimately drains into here and is deleted.
+#
+# THIS CELL SEEDS THE CRATE with the one byte-safe, non-money, cycle-free leaf: the A2A plane's own
+# DIAGNOSTICS catalog. The remainder of the host surface (`PLANE_DECL`, the `A2aPlane` runtime slot,
+# `serve`, the test-kit, the `receive`/`inbound` admission dispatch and the `config`/`admin_view`
+# modules) is a single strongly-connected component welded to the money/receive files
+# (`receive.rs`'s `meter_charge`/`run_gauntlet`/`GauntletPlane`/`A2aInvokePlane`, the `inbound::Dispatch`
+# admission path) and moves as one unit in the oracle-gated money cell — it cannot leave `busbar-a2a`
+# byte-safely while those files stay. See that cell's report.
+[package]
+name = "busbar-plane-a2a-host"
+version = "1.6.0"
+publish = false            # internal workspace crate; never goes to crates.io
+edition = "2021"
+# One pinned number, set to what CI verifies — the same rationale every other member states.
+rust-version = "1.97"
+description = "The A2A plane's impure host crate: the substrate PlaneDecl, the runtime slot, serve, the plane test-kit, the plane-contributed diagnostics and the engine glue. busbar-a2a drains into here."
+license = "Apache-2.0"
+
+[lib]
+name = "busbar_plane_a2a_host"
+path = "src/lib.rs"
+
+[dependencies]
+# The neutral shared surface — the diagnostics catalog types (`Class`/`Diagnostic`/`Severity`) and
+# the catalog install/render seams the plane-contributed `DIAGNOSTICS` slice is handed to at boot.
+busbar-substrate = { path = "../busbar-substrate" }
