@@ -564,7 +564,7 @@ impl Gate for FeatureSetsGate {
         Verdict::of(rows)
     }
 
-    fn selftest(&self, cx: &Ctx) -> Report {
+    fn selftest<'a>(&'a self, cx: &'a Ctx) -> Report<'a> {
         let mut report = Report::new();
         report.push(prove_green(
             cx,
@@ -591,7 +591,7 @@ struct Plant {
 }
 
 impl Plant {
-    fn case(self, cx: &Ctx, gate: &dyn Gate) -> Case {
+    fn case<'a>(self, cx: &'a Ctx, gate: &'a dyn Gate) -> crate::gates::CasePlan<'a> {
         let Some(overlay) = self.overlay else {
             // NOTHING TO PLANT is a visible, counted case — never a silent green.
             return Case {
@@ -601,7 +601,8 @@ impl Plant {
                     naming: self.naming.clone(),
                 },
                 got: Expect::Skipped,
-            };
+            }
+            .into();
         };
         let naming: Vec<&str> = self.naming.iter().map(String::as_str).collect();
         prove_red(cx, gate, self.label, &[self.rule], overlay, &naming)
