@@ -25,7 +25,7 @@
 //! and the `receive`/`inbound` admission path with its `config`/`admin_view` modules — is a single
 //! strongly-connected component welded to the money/receive files: `receive.rs` reaches
 //! `meter_charge`, `run_gauntlet`, `GauntletPlane`/`A2aInvokePlane`, and the private
-//! `inbound::Dispatch` admission struct that the §11a audit flags for the shared `PlaneDecl::dispatch`
+//! `inbound::Dispatch` admission struct behind the shared `PlaneDecl::dispatch`
 //! seam. It cannot leave `busbar-a2a` byte-safely while the money files stay — so it moves as one unit
 //! in the oracle-gated money cell, not this byte-safe one.
 
