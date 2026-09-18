@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use futures::StreamExt;
 
-use busbar_contract::{ArenaBytes, StreamId, Transport};
+use busbar_contract::{ArenaBytes, Frame, FrameMeta, StreamId, Transport};
 use busbar_contract_transport::wire::CloseReason;
 use busbar_contract_transport::wire::Direction;
 use busbar_contract_transport::wire::TransportError;
@@ -61,6 +61,76 @@ async fn upgrade_then_round_trip_byte_exact() {
     assert_eq!(frame.meta.bytes, payload.len() as u64, "honest frame meta");
     assert_eq!(frame.meta.transport_units, None);
     assert_eq!(frame.meta.status, None, "no status leg after the upgrade");
+}
+
+/// Frame meta is honest on frames a REAL `WsTransport` emitted, and the check that says so is one
+/// an inflating or a deflating fixture turns red.
+///
+/// [`upgrade_then_round_trip_byte_exact`] asserts `frame.meta.bytes == payload.len()` against the
+/// single correct value the transport produced — green over exactly one number, and a test that can
+/// never go red proves nothing about a figure that MOVED. The metering path reads `FrameMeta.bytes`
+/// as the bytes meter class, so a dishonest count is a billing figure, not a cosmetic slip. Its
+/// three siblings — tcp, sse, stdio — each carry a "must turn red" cell that perturbs a real frame
+/// one byte each way; this is the ws one. It asserts against frames off the wire and proves the
+/// predicate discriminates by inflating and deflating them.
+#[tokio::test]
+async fn frame_meta_honesty_catches_inflating_and_deflating_fixtures() {
+    fn honest(frame: &Frame) -> bool {
+        frame.meta.bytes == frame.bytes.len() as u64
+    }
+    fn perturbed(frame: &Frame, by: i64) -> Frame {
+        Frame {
+            meta: FrameMeta {
+                bytes: (frame.meta.bytes as i64 + by) as u64,
+                ..frame.meta
+            },
+            ..frame.clone()
+        }
+    }
+
+    let t = WsTransport::new();
+    let (a, b) = pair(&t, 256 * 1024).await;
+
+    // A WebSocket carries one message per frame, so each write is exactly one frame under test. Two
+    // of them, one far larger than any single read chunk, so a transport that miscounted a large
+    // message's reassembly would be caught, not only a one-frame happy path.
+    let payloads: [Vec<u8>; 2] = [vec![b'L'; 128 * 1024], b"and a short one".to_vec()];
+    let on_the_wire: u64 = payloads.iter().map(|p| p.len() as u64).sum();
+    for payload in &payloads {
+        t.write(&a, StreamId(0), ArenaBytes::new(payload))
+            .await
+            .unwrap();
+    }
+
+    let mut frames = t.frames(b);
+    let mut metered = 0_u64;
+    let mut carried = 0_u64;
+    while metered < on_the_wire {
+        let (_s, frame) = frames.next().await.unwrap().unwrap();
+        metered += frame.meta.bytes;
+        carried += frame.bytes.len() as u64;
+        assert!(
+            honest(&frame),
+            "the transport's own frame reports the bytes it actually carries"
+        );
+        assert!(
+            !honest(&perturbed(&frame, 1)),
+            "an inflating fixture is red"
+        );
+        assert!(
+            !honest(&perturbed(&frame, -1)),
+            "a deflating fixture is red"
+        );
+    }
+
+    // Counted from the fixture, not read back off the frames under test: every byte the peer wrote
+    // is metered exactly once, so a transport that over- or under-counted across the two messages is
+    // caught even when each frame on its own stayed internally consistent.
+    assert_eq!(
+        metered, on_the_wire,
+        "the meter totals the bytes the peer actually wrote"
+    );
+    assert_eq!(carried, on_the_wire, "and carries exactly those bytes");
 }
 
 /// The in-band `http` → `ws` upgrade, driven through the seam the design names: `http` accepts the
@@ -423,17 +493,39 @@ async fn a_second_concurrent_frames_consumer_is_a_loud_panic_not_a_silent_close(
     let t = Arc::new(WsTransport::new());
     let (a, b) = pair(&t, 64 * 1024).await;
 
-    // The first consumer, parked IN the socket read: polled once and kept alive, so it holds the
-    // one reader. Kept pinned rather than let a timeout drop it — dropping the read future would
-    // hand the reader back and there would be nothing for the second consumer to collide with.
+    // The connection's ONE reader lives in this slot. The first consumer taking it is the exact
+    // fact the second must collide with, so the interleaving is established by observing the slot
+    // empty — not by sleeping and hoping the read got there inside the window.
+    let state = t.state_of(b.id()).expect("the connection is live");
+
+    // The first consumer, parked IN the socket read: kept pinned rather than let a timeout drop it —
+    // dropping the read future would hand the reader back and there would be nothing for the second
+    // consumer to collide with.
     let mut first = t.frames(b.clone());
     let first_next = first.next();
     tokio::pin!(first_next);
-    let parked = tokio::time::timeout(Duration::from_millis(50), first_next.as_mut()).await;
-    assert!(
-        parked.is_err(),
-        "the first consumer must be parked in the read, holding the reader"
-    );
+
+    // Drive it by hand until it has TAKEN the reader — the slot going empty is the "parked in the
+    // read, holding the one reader" fact, established by real progress rather than a wall-clock
+    // guess. A single poll already acquires the uncontended reader lock, takes the reader and parks
+    // (no frame is coming, so the read stays `Pending` by design); the loop is only so any extra
+    // internal await still resolves deterministically instead of on a timer. A never-polled or
+    // starved consumer would leave the slot full and this loop would spin on progress rather than
+    // fall through on a clock — the flaw a fixed sleep has, where an unpolled task reads as "parked".
+    loop {
+        match futures::poll!(first_next.as_mut()) {
+            std::task::Poll::Pending => {}
+            std::task::Poll::Ready(_) => {
+                panic!(
+                    "the first consumer must park in the read, not complete: nothing sends a frame"
+                )
+            }
+        }
+        if state.reader.lock().await.is_none() {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
 
     // The second consumer, on a clone, concurrently. It must not fall silent.
     let second = {
