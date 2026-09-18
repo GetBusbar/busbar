@@ -1386,9 +1386,11 @@ async fn run(data_workers: usize) {
     // resolve, which is worth saying rather than leaving the routes mysteriously uncomposed.
     #[cfg(feature = "plane-streaming")]
     if let Some((base_url, api_key)) = streaming_provider {
-        if let Err(e) =
-            busbar_streaming::mount::compose_provider(base_url.clone(), &api_key, &*app.secret_resolver)
-        {
+        if let Err(e) = busbar_streaming::mount::compose_provider(
+            base_url.clone(),
+            &api_key,
+            &*app.secret_resolver,
+        ) {
             tracing::warn!(
                 "streaming: the realtime provider credential did not resolve, so the streaming mint and SDP \
                  routes stay uncomposed: {e}"
@@ -1400,9 +1402,11 @@ async fn run(data_workers: usize) {
         // model, so today both endpoints are composed from the SAME resolved (origin, reference) pair;
         // a deployment that fronts Gemini Live through a distinct provider entry needs a second
         // `streams:` knob to name it, which is not this cycle's grammar change (see docs/voice.md).
-        if let Err(e) =
-            busbar_streaming::mount::compose_gemini_provider(base_url, &api_key, &*app.secret_resolver)
-        {
+        if let Err(e) = busbar_streaming::mount::compose_gemini_provider(
+            base_url,
+            &api_key,
+            &*app.secret_resolver,
+        ) {
             tracing::warn!(
                 "streaming: the Gemini Live provider credential did not resolve, so the Gemini route \
                  stays uncomposed: {e}"

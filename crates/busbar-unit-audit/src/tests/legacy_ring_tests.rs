@@ -446,7 +446,10 @@ fn the_durable_seam_persists_the_sealed_sequence_link_and_digest_and_restores_ve
 
     // Every emitted record carries the SAME seq, prev_hash and hash the ring sealed.
     for (persisted, sealed) in emitted.iter().zip(sealed_ring.iter()) {
-        assert_eq!(persisted.seq, sealed.seq, "the durable copy carries the sequence");
+        assert_eq!(
+            persisted.seq, sealed.seq,
+            "the durable copy carries the sequence"
+        );
         assert_eq!(persisted.prev_hash, sealed.prev_hash, "and the link");
         assert_eq!(persisted.hash, sealed.hash, "and the digest");
     }

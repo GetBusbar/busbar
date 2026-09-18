@@ -147,12 +147,33 @@ async fn duplex_kernel_admit_matches_substrate_open_unit_on_refuse() {
     // (2) BYTE-IDENTICAL REFUSAL — the gate's own 403, verbatim on both legs.
     let (ls, lh, lb) = split(legacy).await;
     let (ks, kh, kb) = split(kernel).await;
-    assert_eq!(ls, StatusCode::FORBIDDEN, "the duplex gate's own refusal status");
-    assert_eq!(ls, ks, "duplex session refusal status diverged kernel-vs-substrate");
-    assert_eq!(lh, kh, "duplex session refusal headers diverged kernel-vs-substrate");
-    assert_eq!(lb, kb, "duplex session refusal body diverged kernel-vs-substrate");
+    assert_eq!(
+        ls,
+        StatusCode::FORBIDDEN,
+        "the duplex gate's own refusal status"
+    );
+    assert_eq!(
+        ls, ks,
+        "duplex session refusal status diverged kernel-vs-substrate"
+    );
+    assert_eq!(
+        lh, kh,
+        "duplex session refusal headers diverged kernel-vs-substrate"
+    );
+    assert_eq!(
+        lb, kb,
+        "duplex session refusal body diverged kernel-vs-substrate"
+    );
 
     // (3) MONEY: a refused accept costs zero charge on both legs (verify strictly before any charge).
-    assert_eq!(*legacy_charged.lock().unwrap(), 0, "substrate refuse charges nothing");
-    assert_eq!(*loop_charged.lock().unwrap(), 0, "kernel refuse charges nothing");
+    assert_eq!(
+        *legacy_charged.lock().unwrap(),
+        0,
+        "substrate refuse charges nothing"
+    );
+    assert_eq!(
+        *loop_charged.lock().unwrap(),
+        0,
+        "kernel refuse charges nothing"
+    );
 }

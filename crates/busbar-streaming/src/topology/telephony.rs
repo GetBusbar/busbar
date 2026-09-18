@@ -20,7 +20,7 @@ use crate::ir::config::SessionConfig;
 use crate::ir::media::AudioFormat;
 use crate::runtime::carrier::Carrier;
 use crate::runtime::scope::SessionHandle;
-use crate::runtime::session::{SessionCore, UplinkForwarder, StreamingSession};
+use crate::runtime::session::{SessionCore, StreamingSession, UplinkForwarder};
 use crate::runtime::{LeaseCloseGuard, StreamingRuntime};
 use crate::topology::{begin_session, SessionBudget, StartError};
 use busbar_substrate::ingress::byte_duplex::serve_messages;

@@ -507,7 +507,11 @@ impl PluginRegistry {
                 p.manifest.name, p.manifest.kind
             ));
         }
-        crate::transport::load_transport_from_bytes(&p.lib_bytes, &p.manifest.name, &p.manifest.kind)
+        crate::transport::load_transport_from_bytes(
+            &p.lib_bytes,
+            &p.manifest.name,
+            &p.manifest.kind,
+        )
     }
 }
 

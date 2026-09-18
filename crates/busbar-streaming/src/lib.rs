@@ -114,17 +114,20 @@ const STREAMING_BUILD: fn(
 
 /// `PLANE_DECL.claims` — the one audience-checked base the plane answers on, or nothing off-feature.
 #[cfg(feature = "runtime")]
-const STREAMING_CLAIMS: fn(&dyn std::any::Any) -> Vec<(String, &'static str)> = mount::streaming_claims;
+const STREAMING_CLAIMS: fn(&dyn std::any::Any) -> Vec<(String, &'static str)> =
+    mount::streaming_claims;
 #[cfg(not(feature = "runtime"))]
 const STREAMING_CLAIMS: fn(&dyn std::any::Any) -> Vec<(String, &'static str)> = |_slot| Vec::new();
 
 /// `PLANE_DECL.admission` — the RFC 8707 audience bound from `public_url`, or `None` off-feature.
 #[cfg(feature = "runtime")]
-const STREAMING_ADMISSION: fn(&dyn std::any::Any) -> Option<busbar_substrate::plane::PlaneAdmission> =
-    mount::streaming_admission;
+const STREAMING_ADMISSION: fn(
+    &dyn std::any::Any,
+) -> Option<busbar_substrate::plane::PlaneAdmission> = mount::streaming_admission;
 #[cfg(not(feature = "runtime"))]
-const STREAMING_ADMISSION: fn(&dyn std::any::Any) -> Option<busbar_substrate::plane::PlaneAdmission> =
-    |_slot| None;
+const STREAMING_ADMISSION: fn(
+    &dyn std::any::Any,
+) -> Option<busbar_substrate::plane::PlaneAdmission> = |_slot| None;
 
 /// `PLANE_DECL.routes` — the four neutral ingress routes, or `None` (no data path) off-feature.
 #[cfg(feature = "runtime")]
@@ -149,7 +152,8 @@ const STREAMING_HYDRATE: Option<busbar_substrate::plane::registry::BootHook> = N
 /// `PLANE_DECL.start` — the post-listener boot step ([`mount::streaming_start`]); `None` off-feature so the
 /// default decl is byte-unchanged.
 #[cfg(feature = "runtime")]
-const STREAMING_START: Option<busbar_substrate::plane::registry::BootHook> = Some(mount::streaming_start);
+const STREAMING_START: Option<busbar_substrate::plane::registry::BootHook> =
+    Some(mount::streaming_start);
 #[cfg(not(feature = "runtime"))]
 const STREAMING_START: Option<busbar_substrate::plane::registry::BootHook> = None;
 

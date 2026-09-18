@@ -70,7 +70,9 @@ impl GauntletPlane for StreamingSessionStandin {
         *self.charged.lock().expect("charge recorder lock") += 1;
         Response::builder()
             .status(StatusCode::INTERNAL_SERVER_ERROR)
-            .body(Body::from("session gauntlet never drives a one-shot response"))
+            .body(Body::from(
+                "session gauntlet never drives a one-shot response",
+            ))
             .expect("static fault response builds")
     }
 }
@@ -146,12 +148,33 @@ async fn streaming_kernel_admit_matches_substrate_open_unit_on_refuse() {
     // (2) BYTE-IDENTICAL REFUSAL — the plane's own 403, verbatim on both legs.
     let (ls, lh, lb) = split(legacy).await;
     let (ks, kh, kb) = split(kernel).await;
-    assert_eq!(ls, StatusCode::FORBIDDEN, "the streaming plane's own refusal status");
-    assert_eq!(ls, ks, "streaming session refusal status diverged kernel-vs-substrate");
-    assert_eq!(lh, kh, "streaming session refusal headers diverged kernel-vs-substrate");
-    assert_eq!(lb, kb, "streaming session refusal body diverged kernel-vs-substrate");
+    assert_eq!(
+        ls,
+        StatusCode::FORBIDDEN,
+        "the streaming plane's own refusal status"
+    );
+    assert_eq!(
+        ls, ks,
+        "streaming session refusal status diverged kernel-vs-substrate"
+    );
+    assert_eq!(
+        lh, kh,
+        "streaming session refusal headers diverged kernel-vs-substrate"
+    );
+    assert_eq!(
+        lb, kb,
+        "streaming session refusal body diverged kernel-vs-substrate"
+    );
 
     // (3) MONEY: a refused open costs zero charge on both legs (verify strictly before any charge).
-    assert_eq!(*legacy_charged.lock().unwrap(), 0, "substrate refuse charges nothing");
-    assert_eq!(*loop_charged.lock().unwrap(), 0, "kernel refuse charges nothing");
+    assert_eq!(
+        *legacy_charged.lock().unwrap(),
+        0,
+        "substrate refuse charges nothing"
+    );
+    assert_eq!(
+        *loop_charged.lock().unwrap(),
+        0,
+        "kernel refuse charges nothing"
+    );
 }

@@ -923,9 +923,9 @@ pub fn run(cx: &Ctx) -> Report {
                 hits: Vec::new(),
                 crates_scanned: 0,
                 defects: vec![format!(
-                    "{e} — the dependency closure could not be resolved, so no crate's banned-crate \
+                "{e} — the dependency closure could not be resolved, so no crate's banned-crate \
                      ban was proven; a scan that could not run is not a clean bill of health"
-                )],
+            )],
                 stale_waivers: Vec::new(),
             }
         }

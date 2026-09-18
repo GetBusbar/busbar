@@ -16,7 +16,7 @@ use serde_json::json;
 
 use crate::claims::Dialect;
 use crate::tests::harness::{ctx, destination, frame, EmptyConfig, LeakArena, WsStack};
-use crate::{Upstream, StreamingPlane};
+use crate::{StreamingPlane, Upstream};
 
 fn openai_plane() -> StreamingPlane {
     static UPSTREAMS: &[Upstream] = &[Upstream {
@@ -255,8 +255,9 @@ fn downlink_audio_frames_carry_the_declared_pacing_fact() {
         panic!("expected Progress::Frame, got {progress:?}");
     };
     assert_eq!(
-        r.facts
-            .get(<StreamingPlane as busbar_contract::plane::PlaneMeta>::EGRESS_PACING_FACT.unwrap()),
+        r.facts.get(
+            <StreamingPlane as busbar_contract::plane::PlaneMeta>::EGRESS_PACING_FACT.unwrap()
+        ),
         Some(busbar_contract::bounded::FactValue::Int(1))
     );
 }

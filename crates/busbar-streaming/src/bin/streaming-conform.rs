@@ -15,8 +15,6 @@
 //! Non-`RESULT` lines (`NOTE:` / `SUBITEM`) are ignored by the runner and used to record documented
 //! sub-item gaps that must stay HONESTLY PENDING rather than be dressed as a green.
 
-use busbar_substrate::plane_host::{CostLeaseId, EngineHost, MeteringHost, SettleOutcome};
-use busbar_substrate::testkit::fixture_host::FixtureHost;
 use busbar_streaming::ir::{
     DecodeState, DuplexReader, DuplexWriter, GeminiLiveCodec, IrClientEvent, IrDuplexControl,
     IrDuplexTool, IrServerEvent, OpenAiRealtimeCodec, WireEvent,
@@ -28,6 +26,8 @@ use busbar_streaming::runtime::{
 use busbar_streaming::topology::{
     begin_session, dial_provider, DialProviderError, SessionBudget, StartError,
 };
+use busbar_substrate::plane_host::{CostLeaseId, EngineHost, MeteringHost, SettleOutcome};
+use busbar_substrate::testkit::fixture_host::FixtureHost;
 use bytes::Bytes;
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -1303,7 +1303,11 @@ fn probe_provider_credential() -> (&'static str, String) {
         );
     }
     // The declared reference resolves and composes the endpoint the mint / SDP passes read.
-    match busbar_streaming::mount::compose_provider("https://api.example.com", &reference, &resolver) {
+    match busbar_streaming::mount::compose_provider(
+        "https://api.example.com",
+        &reference,
+        &resolver,
+    ) {
         Ok(true) => {}
         Ok(false) => {
             return (
@@ -1652,7 +1656,8 @@ fn probe_metering_lease() -> (&'static str, String) {
     if busbar_streaming::runtime::cap_nanos_from_buckets(&[budget_bucket("vk", None)]).is_some() {
         return ("FAIL", "an unbudgeted caller was given a ceiling".into());
     }
-    if busbar_streaming::runtime::cap_nanos_from_buckets(&[budget_bucket("vk", Some(0))]) != Some(0) {
+    if busbar_streaming::runtime::cap_nanos_from_buckets(&[budget_bucket("vk", Some(0))]) != Some(0)
+    {
         return ("FAIL", "a spent budget did not refuse all".into());
     }
 
@@ -1728,7 +1733,8 @@ fn probe_session_scope() -> (&'static str, String) {
         ("a session grant for another pool", vec![session_elsewhere]),
         ("an empty grant list", Vec::new()),
     ] {
-        if busbar_streaming::mount::session_scope_allowed(&key_with_scopes("vk-ungranted", scopes)) {
+        if busbar_streaming::mount::session_scope_allowed(&key_with_scopes("vk-ungranted", scopes))
+        {
             return ("FAIL", format!("{name} was admitted a streaming session"));
         }
     }
@@ -1770,13 +1776,19 @@ fn probe_gemini_live_route() -> (&'static str, String) {
     };
 
     let claims = busbar_streaming::mount::streaming_claims(slot.as_ref());
-    if !claims.contains(&("/v1/realtime/gemini".to_string(), busbar_streaming::GEMINI_LIVE)) {
+    if !claims.contains(&(
+        "/v1/realtime/gemini".to_string(),
+        busbar_streaming::GEMINI_LIVE,
+    )) {
         return (
             "FAIL",
             format!("the Gemini base is not claimed under its own dialect: {claims:?}"),
         );
     }
-    if !claims.contains(&("/v1/realtime".to_string(), busbar_streaming::OPENAI_REALTIME)) {
+    if !claims.contains(&(
+        "/v1/realtime".to_string(),
+        busbar_streaming::OPENAI_REALTIME,
+    )) {
         return (
             "FAIL",
             format!("the OpenAI base is no longer claimed alongside Gemini: {claims:?}"),
@@ -2226,7 +2238,10 @@ fn probe_audit_record() -> (&'static str, String) {
         );
     }
     let row = &log[0];
-    if row.action != "streaming.session.open" || row.outcome != "applied" || row.principal != "alice" {
+    if row.action != "streaming.session.open"
+        || row.outcome != "applied"
+        || row.principal != "alice"
+    {
         return ("FAIL", format!("wrong audit row shape: {row:?}"));
     }
     if row.resource != "streaming:call-audit-1" {

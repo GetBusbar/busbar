@@ -52,7 +52,14 @@ fn a_mistyped_flag_is_an_argument_error_not_a_quietly_weaker_run() {
     // (No probes-less gate + a no-row legacy command is exit 3, proven elsewhere; here the point is
     // only that the `--bogus` past `--` did not turn into a 2.)
     assert_ne!(
-        run(&["gate", "segregation", "--parity", "--", "/usr/bin/true", "--bogus"]),
+        run(&[
+            "gate",
+            "segregation",
+            "--parity",
+            "--",
+            "/usr/bin/true",
+            "--bogus"
+        ]),
         2,
         "a flag after `--` belongs to the legacy command and must not trip the unknown-flag guard"
     );
@@ -146,7 +153,13 @@ fn ledger_sync_refuses_to_overwrite_a_corrupt_register_and_never_exits_zero() {
     let corrupt: &[u8] = b"{ \"scopes\": [ this is not valid json";
     std::fs::write(&reg, corrupt).unwrap();
 
-    let code = run(&["ledger", "sync", "--write", "--ledger", reg.to_str().unwrap()]);
+    let code = run(&[
+        "ledger",
+        "sync",
+        "--write",
+        "--ledger",
+        reg.to_str().unwrap(),
+    ]);
     assert_eq!(
         code, 2,
         "a corrupt register must be a hard error, never a silent overwrite at exit 0"

@@ -57,8 +57,8 @@
 // installed); the allow is unconditional so the neutral seam names no plane feature.
 #![allow(dead_code)]
 
-use crate::{Candidate, ResolvedPolicy, RoutingContext, RoutingDecision, RoutingRequest};
 use crate::ir::facts::{ContentItem, IrFacts, ScreenedContent, Slot};
+use crate::{Candidate, ResolvedPolicy, RoutingContext, RoutingDecision, RoutingRequest};
 use std::borrow::Cow;
 
 /// The answer a firing site acts on. Deliberately NOT the model plane's `PolicyOutcome`: that type
@@ -210,10 +210,7 @@ impl IncrementalScan<'_> {
 /// ZERO COST when nothing is attached: an empty slice returns before any projection is built, which
 /// is the same shape (and the same guarantee) as the model plane's `global_gates.is_empty()`
 /// early-out.
-pub async fn decide(
-    gates: &[(u16, ResolvedPolicy)],
-    subject: &GateSubject<'_>,
-) -> GateVerdict {
+pub async fn decide(gates: &[(u16, ResolvedPolicy)], subject: &GateSubject<'_>) -> GateVerdict {
     if gates.is_empty() {
         return GateVerdict::Proceed;
     }

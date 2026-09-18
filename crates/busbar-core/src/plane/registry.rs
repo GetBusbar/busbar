@@ -279,13 +279,13 @@ impl BootCtx {
 // (install is a write; the fold takes explicit args; the const is data), so they are DIRECT re-exports
 // in every build. The READ accessors get a `cfg(test)` seeding VENEER (below), which is why they are
 // re-exported only under `cfg(not(test))`.
-pub use busbar_substrate::plane::registry::{
-    install_planes, merged_boot_plane_decls, CORE_OWNED_CONCRETE_SECTIONS,
-};
 #[cfg(not(test))]
 pub use busbar_substrate::plane::registry::{
     builtin_plane_decls, plane_decl_for, plane_decl_for_config_section, plane_decls, plane_key_at,
     plane_key_index, scope_kind_at, scope_kind_index,
+};
+pub use busbar_substrate::plane::registry::{
+    install_planes, merged_boot_plane_decls, CORE_OWNED_CONCRETE_SECTIONS,
 };
 
 // ── CORE'S OWN-TEST-BINARY BUILT-IN SEEDING (cfg(test) veneers) ─────────────────────────────────────
@@ -362,7 +362,6 @@ pub fn scope_kind_index(kind: &str) -> Option<u32> {
 pub fn default_mcp_test_runtime() -> std::sync::Arc<dyn std::any::Any + Send + Sync> {
     registry_tests::default_mcp_test_runtime()
 }
-
 
 /// TEST-SUPPORT SEAM — register an extracted plane's declaration into the process registry. Re-exported
 /// from the neutral substrate ([`busbar_substrate::plane::registry::register_test_plane`], which owns

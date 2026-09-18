@@ -106,8 +106,14 @@ fn sticky_affinity_never_selects_zero_weight_drained_member() {
 fn the_affinity_position_is_the_hash_over_the_candidate_count() {
     let lanes = Lanes::default();
     let c = cands(&[(10, 1), (11, 1), (12, 1)]);
-    assert_eq!(sticky_position(&c, &lanes, Some(7), &no_exclusions()), Some(1));
-    assert_eq!(sticky_position(&c, &lanes, Some(9), &no_exclusions()), Some(0));
+    assert_eq!(
+        sticky_position(&c, &lanes, Some(7), &no_exclusions()),
+        Some(1)
+    );
+    assert_eq!(
+        sticky_position(&c, &lanes, Some(9), &no_exclusions()),
+        Some(0)
+    );
     assert_eq!(sticky_position(&c, &lanes, None, &no_exclusions()), None);
     // A lane this request already tried is not pinned to.
     let mut tried = HashSet::new();

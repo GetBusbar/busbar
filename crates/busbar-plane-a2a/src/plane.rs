@@ -715,7 +715,10 @@ impl Plane for A2aPlane {
         // target answer would hand a REST caller an envelope it would read as the resource. The
         // decode step recorded which binding this is; its ABSENCE is the document binding, which is
         // wrapped below exactly as before.
-        if matches!(r.facts.get(f::FACT_BINDING), Some(FactValue::Str(f::BINDING_BARE))) {
+        if matches!(
+            r.facts.get(f::FACT_BINDING),
+            Some(FactValue::Str(f::BINDING_BARE))
+        ) {
             return ctx
                 .arena()
                 .alloc_bytes(body)

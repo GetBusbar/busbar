@@ -21,9 +21,9 @@ use busbar_contract::ids::{
 };
 use busbar_contract::kinds::{
     Ack, Anchor, AuthOutcome, AuthScheme, Challenge, ChallengeState, ContentFacts, Credential,
-    CredentialFacts, CredentialLocator, Export, ExportItem, Head, Hook,
-    HookFacts, HookKindDecl, HookView, KeyMaterial, OnFailure, PlaneFacts, Seat, Secret,
-    SecretError, SecretRef, SecretValue, Signer, Store, StoreError,
+    CredentialFacts, CredentialLocator, Export, ExportItem, Head, Hook, HookFacts, HookKindDecl,
+    HookView, KeyMaterial, OnFailure, PlaneFacts, Seat, Secret, SecretError, SecretRef,
+    SecretValue, Signer, Store, StoreError,
 };
 use busbar_contract::plane::{
     Ingress, Plane, PlaneMeta, PlaneSessionState, Progress, Response, SessionPlane, UnitDraft,

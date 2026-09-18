@@ -544,9 +544,8 @@ static ONE_SHOT_RUNNERS: std::sync::RwLock<
     std::collections::BTreeMap<&'static str, GauntletRunner>,
 > = std::sync::RwLock::new(std::collections::BTreeMap::new());
 
-static SESSION_RUNNERS: std::sync::RwLock<
-    std::collections::BTreeMap<&'static str, SessionRunner>,
-> = std::sync::RwLock::new(std::collections::BTreeMap::new());
+static SESSION_RUNNERS: std::sync::RwLock<std::collections::BTreeMap<&'static str, SessionRunner>> =
+    std::sync::RwLock::new(std::collections::BTreeMap::new());
 
 /// Register a kernel-loop one-shot runner for a plane capability key. Composition root only, at boot.
 /// Last-write-wins and idempotent. Registering a key is the per-plane FLIP onto the unified loop.

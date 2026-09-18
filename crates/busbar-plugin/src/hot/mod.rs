@@ -87,7 +87,7 @@ pub type TransportDeclFn = unsafe extern "C-unwind" fn() -> *const TransportDecl
 // Re-export the whole POD surface at the lane root so a plane author writes
 // `busbar_plugin::hot::Facts`, not `busbar_plugin::hot::pod::Facts`.
 pub use decl::{BuildCtx, IngressCarrier, OpaqueHandle, PlaneDecl};
-pub use transport::{TransportDecl, TransportFacet};
 pub use host::PlaneHostVtable;
 pub use pod::*;
+pub use transport::{TransportDecl, TransportFacet};
 pub use workitem::{EmitHandle, EmitKind, InboundHandle, InboundKind, WorkItem};

@@ -41,10 +41,10 @@ mod hostlog;
 mod legacy_usage;
 pub mod plane;
 pub mod registry;
-pub mod transport;
 mod stage;
 pub mod store_adapter;
 pub mod tarball;
+pub mod transport;
 
 pub use auth::DynAuth;
 /// Re-export the HTTP-endpoint wire types (plugin route registration + dispatch) so the engine
@@ -62,12 +62,12 @@ pub use fetch::{fetch_plugins, FetchOutcome, FetchSpec};
 pub use highwater::{HighWaterMarks, HIGH_WATER_FILE};
 pub use hook::DlopenPolicy;
 pub use plane::{load_plane, load_plane_from_bytes, DynPlane};
-pub use transport::{load_transport, load_transport_from_bytes, DynTransport};
 pub use registry::{
     inventory as inventory_tarballs, scan_and_validate, supported_abi, InventoryEntry,
     LoadablePlugin, PluginRegistry, SkippedPlugin,
 };
 pub use stage::sweep_dead_staging;
+pub use transport::{load_transport, load_transport_from_bytes, DynTransport};
 
 /// INTERN a plugin name into a stable `&'static str`, reusing one allocation per unique name.
 ///

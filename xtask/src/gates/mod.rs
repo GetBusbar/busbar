@@ -2107,7 +2107,8 @@ pub static REGISTRY: &[Registration] = &[
         batch: 1,
         tier: Tier::Fast,
         build: || Box::new(hot_path_perf::HotPathPerfGate),
-        summary: "the perf instrument measures the vtable crossing < 1µs (p50+p99) and 0 per-token \
+        summary:
+            "the perf instrument measures the vtable crossing < 1µs (p50+p99) and 0 per-token \
                   host calls",
     },
     Registration {

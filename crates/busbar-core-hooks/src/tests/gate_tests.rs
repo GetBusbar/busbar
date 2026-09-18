@@ -10,11 +10,11 @@
 //! reach a hook without this file being edited, which is where the decision belongs.
 
 use crate::gate::{decide, GateSubject, GateVerdict};
+use crate::ir::invoke::InvokeReq;
 use crate::{
     Candidate, PolicyResult, ResolvedPolicy, RoutingContext, RoutingDecision, RoutingPolicy,
     RoutingRequest,
 };
-use crate::ir::invoke::InvokeReq;
 use std::sync::{Arc, Mutex};
 
 /// A gate that ANSWERS a fixed decision and RECORDS the exact wire document it was handed — built

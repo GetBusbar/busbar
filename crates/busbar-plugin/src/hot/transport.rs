@@ -68,10 +68,8 @@ impl TransportFacet {
 
 /// ACCEPT one inbound connection (the passive/server-accept side), producing the plane-owned opaque
 /// [`OpaqueHandle`] for the accepted bounded byte stream on `Ok`. `state` is the built carrier handle.
-pub type AcceptFn = extern "C-unwind" fn(
-    state: *mut c_void,
-    out_conn: *mut MaybeUninit<OpaqueHandle>,
-) -> RawStatus;
+pub type AcceptFn =
+    extern "C-unwind" fn(state: *mut c_void, out_conn: *mut MaybeUninit<OpaqueHandle>) -> RawStatus;
 
 /// CONNECT to a destination (the active/client-connect side), producing the opaque connection handle
 /// on `Ok`. `dest` is the borrowed destination descriptor bytes (opaque to core), live for the call.
@@ -203,8 +201,8 @@ impl TransportDecl {
 /// fn-pointer signature of its slot — the type-level proof the export surface compiles. A real carrier
 /// replaces each with an impl that runs INSIDE a `catch_unwind` and writes out-params only on Ok.
 pub mod stub {
-    use super::*;
     use super::super::decl::BuildCtx;
+    use super::*;
 
     /// Stub: see module docs.
     pub extern "C-unwind" fn config_validate(

@@ -84,7 +84,10 @@ fn the_grant_is_read_off_the_keys_own_scope_list() {
 
     // An explicit list that names the session scope on the voice pool grants it.
     assert!(
-        session_scope_allowed(&key_scoped("vk-granted", vec![session_scope(STREAMING_POOL)])),
+        session_scope_allowed(&key_scoped(
+            "vk-granted",
+            vec![session_scope(STREAMING_POOL)]
+        )),
         "an explicit session grant on the voice pool admits"
     );
 

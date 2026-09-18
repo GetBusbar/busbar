@@ -1120,11 +1120,11 @@ macro_rules! export_store_plugin {
 /// `busbar_plugin_sdk::plane::PlaneDecl` (etc.) without a direct `busbar-plugin` dependency — the same
 /// convenience re-export path the cold kinds get for their wire types.
 pub mod plane {
+    pub use busbar_plugin::hot::pod::{OpaqueState, RawStatus, StatusClass, POD_VERSION};
     pub use busbar_plugin::hot::{
         decl, host, pod, workitem, BuildCtx, EmitHandle, EmitKind, InboundHandle, InboundKind,
         IngressCarrier, OpaqueHandle, PlaneDecl, PlaneDeclFn, PlaneHostVtable, WorkItem,
     };
-    pub use busbar_plugin::hot::pod::{OpaqueState, RawStatus, StatusClass, POD_VERSION};
     pub use busbar_plugin::{
         check_preamble, honoured_size, write_out, AbiPreamble, ABI_MAJOR, ABI_MINOR,
     };
@@ -1144,11 +1144,11 @@ pub mod __plane_abi {
 /// (its `#[repr(C)]` vtable, filling the `config_validate`/`build`/`accept`/`connect`/`write`/`read`
 /// slots against `busbar_plugin::hot::transport`) and exports it through [`export_transport_plugin!`].
 pub mod transport {
+    pub use busbar_plugin::hot::pod::{OpaqueState, RawStatus, StatusClass, POD_VERSION};
     pub use busbar_plugin::hot::transport::{
         AcceptFn, ConnectFn, ReadFn, TransportDecl, TransportFacet, WriteFn,
     };
     pub use busbar_plugin::hot::{BuildCtx, OpaqueHandle, PlaneHostVtable, TransportDeclFn};
-    pub use busbar_plugin::hot::pod::{OpaqueState, RawStatus, StatusClass, POD_VERSION};
     pub use busbar_plugin::{
         check_preamble, honoured_size, write_out, AbiPreamble, ABI_MAJOR, ABI_MINOR,
     };
@@ -1194,7 +1194,8 @@ macro_rules! export_plane {
         /// The returned pointer is to a `'static` [`PlaneDecl`] owned by this library, whose bytes and
         /// vocabulary ranges live for the whole life of the loaded image. The loader NEVER frees it.
         #[no_mangle]
-        pub unsafe extern "C-unwind" fn busbar_plane_decl() -> *const $crate::__plane_abi::PlaneDecl {
+        pub unsafe extern "C-unwind" fn busbar_plane_decl() -> *const $crate::__plane_abi::PlaneDecl
+        {
             ::core::ptr::addr_of!($decl)
         }
     };

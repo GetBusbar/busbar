@@ -34,7 +34,7 @@ pub use metering::{
     LeaseState, LocalLease, LocalMeteringPort, MeteringLease, MeteringPort,
 };
 pub use scope::{SessionHandle, StreamingSessionRow};
-pub use session::{serve_with_sweep, Outbound, SessionCore, UplinkForwarder, StreamingSession};
+pub use session::{serve_with_sweep, Outbound, SessionCore, StreamingSession, UplinkForwarder};
 pub use tools::{EchoToolExecutor, ToolExecutor};
 
 use busbar_substrate::plane::handle_engine::DurableHandleEngine;

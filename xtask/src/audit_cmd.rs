@@ -170,7 +170,11 @@ fn cmd_sync(git: &Git, register: &std::path::Path, write: bool) -> i32 {
         Ok(scopes) => scopes,
         // A register that exists and will not parse must STOP the sync, never let it overwrite the
         // audit history with a fresh, record-less document at exit 0.
-        Err(e) => return die(format!("{e} -- refusing to sync over an unreadable register")),
+        Err(e) => {
+            return die(format!(
+                "{e} -- refusing to sync over an unreadable register"
+            ))
+        }
     };
     let derived_ids = ids(&derived);
     let existing_ids = ids(&existing);

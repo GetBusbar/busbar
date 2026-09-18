@@ -10,8 +10,16 @@ fn facets_are_the_two_bidirectional_directions() {
     // Direction is a binary usage-mode axis (DECISIONS #3), so exactly two facets, distinct bits.
     assert_ne!(TransportFacet::Accept.bit(), 0);
     assert_ne!(TransportFacet::Connect.bit(), 0);
-    assert_eq!(TransportFacet::Accept.bit(), 1 << 0, "facet bit layout is part of the ABI");
-    assert_eq!(TransportFacet::Connect.bit(), 1 << 1, "facet bit layout is part of the ABI");
+    assert_eq!(
+        TransportFacet::Accept.bit(),
+        1 << 0,
+        "facet bit layout is part of the ABI"
+    );
+    assert_eq!(
+        TransportFacet::Connect.bit(),
+        1 << 1,
+        "facet bit layout is part of the ABI"
+    );
     assert_eq!(
         TransportFacet::bidirectional(),
         TransportFacet::Accept.bit() | TransportFacet::Connect.bit()

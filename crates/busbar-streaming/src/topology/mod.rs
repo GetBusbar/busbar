@@ -217,7 +217,9 @@ impl std::fmt::Display for StartError {
                     "streaming session destination refused at the open-pass gate (fail closed)"
                 )
             }
-            StartError::BudgetRefused => write!(f, "streaming session budget refused (fail closed)"),
+            StartError::BudgetRefused => {
+                write!(f, "streaming session budget refused (fail closed)")
+            }
             StartError::Durable(e) => write!(f, "streaming session durable open failed: {e:?}"),
         }
     }
@@ -242,7 +244,9 @@ impl GauntletPlane for SessionGauntlet {
             VerifyOutcome::Refuse(
                 axum::response::Response::builder()
                     .status(axum::http::StatusCode::FORBIDDEN)
-                    .body(axum::body::Body::from("streaming session destination denied"))
+                    .body(axum::body::Body::from(
+                        "streaming session destination denied",
+                    ))
                     .expect("static refusal response builds"),
             )
         } else {

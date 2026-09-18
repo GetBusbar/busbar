@@ -3990,7 +3990,9 @@ fn calls_dial_fn(lower: &str, name: &str) -> bool {
             }
         }
         let before = lower[..at].trim_end();
-        if before.ends_with("fn") && (before.len() == 2 || !is_word_byte(before.as_bytes()[before.len() - 3])) {
+        if before.ends_with("fn")
+            && (before.len() == 2 || !is_word_byte(before.as_bytes()[before.len() - 3]))
+        {
             continue;
         }
         // RIGHT: the call paren, past any spaces.
@@ -7197,7 +7199,11 @@ impl Gate for KindIsolationGate {
             "a control surface calling the egress provider-dial machinery",
             &[ROW_CONTROL],
             ov,
-            &["upstream-dial", "busbar-control-planted", "send_pinned_buffered"],
+            &[
+                "upstream-dial",
+                "busbar-control-planted",
+                "send_pinned_buffered",
+            ],
         ));
 
         // …AND GREEN WHEN NOTHING DIALS. Strike busbar-plane-admin — the R7 `Plane` debt that keeps

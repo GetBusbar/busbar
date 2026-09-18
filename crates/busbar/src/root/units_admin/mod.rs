@@ -46,8 +46,8 @@ use busbar_caps::{
     VerifiedDestination, Verify,
 };
 use busbar_contract::UnitKey;
-use busbar_kernel::teller::UnitCtx;
 use busbar_control_admin::verbs::ResolvedVerb;
+use busbar_kernel::teller::UnitCtx;
 use busbar_unit_auth::unit::AuthRequest;
 use busbar_unit_scope::Scope;
 
@@ -815,8 +815,8 @@ fn amend_rate_history_effect(
         // reading if the seam is ever reached without a sealed key.
         return Err(GovernanceError::Validation);
     };
-    let verifying_key =
-        ed25519_dalek::VerifyingKey::from_bytes(&operator_key).map_err(|_| GovernanceError::Validation)?;
+    let verifying_key = ed25519_dalek::VerifyingKey::from_bytes(&operator_key)
+        .map_err(|_| GovernanceError::Validation)?;
     let expected_fingerprint = hex::encode(sha2::Sha256::digest(operator_key));
     if operator_fingerprint != expected_fingerprint {
         return Err(GovernanceError::Validation);

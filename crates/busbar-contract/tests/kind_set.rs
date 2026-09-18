@@ -11,11 +11,23 @@ use busbar_contract::Kind;
 
 #[test]
 fn the_kind_set_is_exactly_the_seven_locked_kinds() {
-    assert_eq!(Kind::ALL.len(), 7, "DECISIONS #3 locks the kind set at seven");
+    assert_eq!(
+        Kind::ALL.len(),
+        7,
+        "DECISIONS #3 locks the kind set at seven"
+    );
     let names: Vec<&str> = Kind::ALL.iter().map(|k| k.name()).collect();
     assert_eq!(
         names,
-        ["plane", "transport", "auth", "store", "secret", "hook", "export"],
+        [
+            "plane",
+            "transport",
+            "auth",
+            "store",
+            "secret",
+            "hook",
+            "export"
+        ],
     );
 }
 

@@ -30,10 +30,7 @@ fn a_pinned_primary_refuses_carrying_the_member() {
     let cause = Unavailable::BreakerOpen { until: 1_000 };
     assert_eq!(
         on_primary_unavailable(Arity::ExactlyOne, 7_usize, cause),
-        Reroute::Refuse(PinnedRefusal {
-            pinned: 7,
-            cause
-        })
+        Reroute::Refuse(PinnedRefusal { pinned: 7, cause })
     );
 }
 

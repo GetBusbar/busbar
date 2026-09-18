@@ -312,7 +312,7 @@ fn a_malleated_non_canonical_signature_is_refused() {
     .unwrap();
     let sig: Signature = s.key.sign(&payload);
     let mut sig_bytes = sig.to_bytes(); // [R || S], S little-endian
-    // S' = S + L (little-endian add with carry). S < L, so S' < 2^254 and still fits 32 bytes.
+                                        // S' = S + L (little-endian add with carry). S < L, so S' < 2^254 and still fits 32 bytes.
     let mut carry = 0u16;
     for i in 0..32 {
         let sum = u16::from(sig_bytes[32 + i]) + u16::from(L_LE[i]) + carry;

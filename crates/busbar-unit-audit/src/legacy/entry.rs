@@ -370,8 +370,9 @@ impl AuditLog {
         // THE CHOKEPOINT FEED onto the durable seam. Recording a mutation is the ONE place a
         // mutation is recorded, so this ONE call — with the SAME timestamp sealed above AND the
         // sealed sequence, link and digest — is the durable write, verbatim.
-        self.seam
-            .emit(seq, ts, action, resource, outcome, principal, &prev_hash, &hash);
+        self.seam.emit(
+            seq, ts, action, resource, outcome, principal, &prev_hash, &hash,
+        );
     }
 
     /// Export the retained ring, oldest first.

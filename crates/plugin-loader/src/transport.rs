@@ -20,11 +20,13 @@
 
 use crate::stage;
 use busbar_plugin::hot::decl::BuildFn;
+use busbar_plugin::hot::decl::ConfigValidateFn;
 use busbar_plugin::hot::host::HostCtx;
 use busbar_plugin::hot::pod::{OpaqueState, StatusClass, POD_VERSION};
 use busbar_plugin::hot::transport::{AcceptFn, ConnectFn, ReadFn, WriteFn};
-use busbar_plugin::hot::{BuildCtx, PlaneHostVtable, TransportDecl, TransportDeclFn, TransportFacet};
-use busbar_plugin::hot::decl::ConfigValidateFn;
+use busbar_plugin::hot::{
+    BuildCtx, PlaneHostVtable, TransportDecl, TransportDeclFn, TransportFacet,
+};
 use busbar_plugin::{check_preamble, AbiPreamble};
 use core::mem::MaybeUninit;
 use libloading::Library;
@@ -122,23 +124,33 @@ impl DynTransport {
 
     // ── Slot readers — pull one `Option<fn>` slot out of the decl through the sized-struct guard. ──
     fn slot_config_validate(&self) -> Option<ConfigValidateFn> {
-        busbar_plugin::read_sized_field!(self.decl, self.honoured_size, TransportDecl, config_validate)
-            .flatten()
+        busbar_plugin::read_sized_field!(
+            self.decl,
+            self.honoured_size,
+            TransportDecl,
+            config_validate
+        )
+        .flatten()
     }
     fn slot_build(&self) -> Option<BuildFn> {
-        busbar_plugin::read_sized_field!(self.decl, self.honoured_size, TransportDecl, build).flatten()
+        busbar_plugin::read_sized_field!(self.decl, self.honoured_size, TransportDecl, build)
+            .flatten()
     }
     fn slot_accept(&self) -> Option<AcceptFn> {
-        busbar_plugin::read_sized_field!(self.decl, self.honoured_size, TransportDecl, accept).flatten()
+        busbar_plugin::read_sized_field!(self.decl, self.honoured_size, TransportDecl, accept)
+            .flatten()
     }
     fn slot_connect(&self) -> Option<ConnectFn> {
-        busbar_plugin::read_sized_field!(self.decl, self.honoured_size, TransportDecl, connect).flatten()
+        busbar_plugin::read_sized_field!(self.decl, self.honoured_size, TransportDecl, connect)
+            .flatten()
     }
     fn slot_write(&self) -> Option<WriteFn> {
-        busbar_plugin::read_sized_field!(self.decl, self.honoured_size, TransportDecl, write).flatten()
+        busbar_plugin::read_sized_field!(self.decl, self.honoured_size, TransportDecl, write)
+            .flatten()
     }
     fn slot_read(&self) -> Option<ReadFn> {
-        busbar_plugin::read_sized_field!(self.decl, self.honoured_size, TransportDecl, read).flatten()
+        busbar_plugin::read_sized_field!(self.decl, self.honoured_size, TransportDecl, read)
+            .flatten()
     }
 
     /// Drive the carrier's `config_validate` over raw config bytes, catching any panic across the seam.
@@ -149,7 +161,9 @@ impl DynTransport {
         let mut out = MaybeUninit::<OpaqueState>::uninit();
         let (raw_ptr, raw_len) = (raw.as_ptr(), raw.len());
         let out_ptr: *mut MaybeUninit<OpaqueState> = &mut out;
-        match crate::ffi_guard(&self.path, "transport_config_validate", || f(raw_ptr, raw_len, out_ptr)) {
+        match crate::ffi_guard(&self.path, "transport_config_validate", || {
+            f(raw_ptr, raw_len, out_ptr)
+        }) {
             Ok(status) if status.class() == StatusClass::Ok => {
                 // SAFETY: init-only-on-Ok — the carrier wrote `out` before returning `Ok`.
                 (StatusClass::Ok, Some(unsafe { out.assume_init() }))
@@ -227,7 +241,11 @@ impl DynTransport {
     ///
     /// # Safety
     /// `state` must be a live carrier state pointer; `dest`'s borrowed range outlives the call.
-    pub unsafe fn connect(&self, state: *mut c_void, dest: &[u8]) -> (StatusClass, Option<OpaqueState>) {
+    pub unsafe fn connect(
+        &self,
+        state: *mut c_void,
+        dest: &[u8],
+    ) -> (StatusClass, Option<OpaqueState>) {
         let Some(f) = self.slot_connect() else {
             return (StatusClass::Unsupported, None);
         };
@@ -281,7 +299,9 @@ impl DynTransport {
         let cap = buf.len();
         let buf_ptr = buf.as_mut_ptr();
         let got_ptr: *mut usize = &mut got;
-        match crate::ffi_guard(&self.path, "transport_read", || f(conn, buf_ptr, cap, got_ptr)) {
+        match crate::ffi_guard(&self.path, "transport_read", || {
+            f(conn, buf_ptr, cap, got_ptr)
+        }) {
             Ok(status) if status.class() == StatusClass::Ok => {
                 // Clamp a hostile/buggy over-report to the caller buffer capacity before it is trusted.
                 (StatusClass::Ok, got.min(cap))
@@ -357,11 +377,15 @@ fn wire_up_transport(
     // ── 3. Resolve the ONE hot-lane entrypoint and read the decl pointer (guarded). ──
     let decl_ptr = {
         let f = unsafe { lib.get::<TransportDeclFn>(busbar_plugin::hot::symbol::TRANSPORT_DECL) }
-            .map_err(|_| format!("transport '{display}' missing busbar_transport_decl symbol"))?;
+            .map_err(|_| {
+            format!("transport '{display}' missing busbar_transport_decl symbol")
+        })?;
         crate::ffi_guard_confined(&display, "transport_decl", || unsafe { (*f)() })?
     };
     if decl_ptr.is_null() {
-        return Err(format!("transport '{display}' returned a null TransportDecl"));
+        return Err(format!(
+            "transport '{display}' returned a null TransportDecl"
+        ));
     }
 
     // ── 4. AIRLOCK: check the FROZEN preamble WITHOUT forming a `&TransportDecl` over a possibly-shorter
@@ -381,8 +405,8 @@ fn wire_up_transport(
     let ours = core::mem::size_of::<TransportDecl>() as u32;
     // Minimum size that can carry the frozen header + vocabulary + facets (offset THROUGH
     // `provided_facets`). A decl that does not even reach the facets cannot describe a carrier.
-    let min = (core::mem::offset_of!(TransportDecl, provided_facets)
-        + core::mem::size_of::<u32>()) as u32;
+    let min = (core::mem::offset_of!(TransportDecl, provided_facets) + core::mem::size_of::<u32>())
+        as u32;
     if advertised < min {
         return Err(format!(
             "transport '{display}' decl attests size {advertised}, below the {min}-byte vocabulary \
@@ -437,8 +461,10 @@ fn read_vocab(
             busbar_plugin::read_sized_field!(decl, size, TransportDecl, name_len).unwrap_or(0),
         ),
         Vocab::SectionKey => (
-            busbar_plugin::read_sized_field!(decl, size, TransportDecl, section_key_ptr).flatten_ptr(),
-            busbar_plugin::read_sized_field!(decl, size, TransportDecl, section_key_len).unwrap_or(0),
+            busbar_plugin::read_sized_field!(decl, size, TransportDecl, section_key_ptr)
+                .flatten_ptr(),
+            busbar_plugin::read_sized_field!(decl, size, TransportDecl, section_key_len)
+                .unwrap_or(0),
         ),
         Vocab::Scope => (
             busbar_plugin::read_sized_field!(decl, size, TransportDecl, scope_ptr).flatten_ptr(),

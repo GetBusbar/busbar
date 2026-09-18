@@ -70,13 +70,22 @@ fn example_transport_loads_identically_compiled_in_and_dropped_in() {
     let dropped =
         crate::load_transport(&lib).expect("load the example transport over the HOT-tier ABI");
 
-    assert_eq!(dropped.name(), vocab(COMPILED_IN.name_ptr, COMPILED_IN.name_len));
+    assert_eq!(
+        dropped.name(),
+        vocab(COMPILED_IN.name_ptr, COMPILED_IN.name_len)
+    );
     assert_eq!(
         dropped.section_key(),
         vocab(COMPILED_IN.section_key_ptr, COMPILED_IN.section_key_len)
     );
-    assert_eq!(dropped.scope(), vocab(COMPILED_IN.scope_ptr, COMPILED_IN.scope_len));
-    assert_eq!(dropped.label(), vocab(COMPILED_IN.label_ptr, COMPILED_IN.label_len));
+    assert_eq!(
+        dropped.scope(),
+        vocab(COMPILED_IN.scope_ptr, COMPILED_IN.scope_len)
+    );
+    assert_eq!(
+        dropped.label(),
+        vocab(COMPILED_IN.label_ptr, COMPILED_IN.label_len)
+    );
     assert_eq!(dropped.provided_facets(), COMPILED_IN.provided_facets);
     // A fully bidirectional carrier — BOTH directions of the one transport kind (DECISIONS #3).
     assert!(dropped.provides(TransportFacet::Accept));
@@ -111,7 +120,8 @@ fn dropped_in_example_transport_round_trips_bytes_both_directions() {
     let host_ptr: *const PlaneHostVtable = &host;
     // SAFETY: `host_ptr` is a live EMPTY vtable that outlives these calls; the example does not
     // dereference `host_ctx`.
-    let (build_status, state) = unsafe { carrier.build(host_ptr, core::ptr::null_mut(), b"{}", &[]) };
+    let (build_status, state) =
+        unsafe { carrier.build(host_ptr, core::ptr::null_mut(), b"{}", &[]) };
     assert_eq!(build_status, StatusClass::Ok);
     let state = state.expect("build yields an opaque carrier handle on Ok");
     assert!(!state.ptr.is_null());
@@ -126,7 +136,11 @@ fn dropped_in_example_transport_round_trips_bytes_both_directions() {
     // SAFETY: `conn.ptr` is the live connection handle `connect` just produced.
     let (w_status, wrote) = unsafe { carrier.write(conn.ptr, payload) };
     assert_eq!(w_status, StatusClass::Ok);
-    assert_eq!(wrote, payload.len(), "the carrier accepted every byte written over the ABI");
+    assert_eq!(
+        wrote,
+        payload.len(),
+        "the carrier accepted every byte written over the ABI"
+    );
 
     let mut buf = [0u8; 32];
     // SAFETY: as above.

@@ -45,10 +45,7 @@ fn test_extract_bearer_token_trims_padding() {
         extract_bearer_token("Bearer   tok"),
         Some("tok".to_string())
     );
-    assert_eq!(
-        extract_bearer_token("bearer tok "),
-        Some("tok".to_string())
-    );
+    assert_eq!(extract_bearer_token("bearer tok "), Some("tok".to_string()));
     assert_eq!(
         extract_bearer_token("Bearer \ttok\t"),
         Some("tok".to_string())

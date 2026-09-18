@@ -38,8 +38,7 @@ impl TestSecretResolver {
             }
             module => match &self.plugin {
                 Some(f) => {
-                    let settings =
-                        serde_json::Value::Object(secret.settings.clone()).to_string();
+                    let settings = serde_json::Value::Object(secret.settings.clone()).to_string();
                     let bytes = f(module, &settings).map_err(|e| {
                         format!(
                             "secret module '{module}' (a kind: secret plugin) failed to resolve \
@@ -2659,9 +2658,7 @@ fn concurrent_push_configure_does_not_starve_the_runtime() {
     let tasks: Vec<_> = (0..4)
         .map(|_| {
             let (h, e) = (hook.clone(), env.clone());
-            rt.spawn(
-                async move { crate::push_configure(&h, "compliance-gate", 1, &e).await },
-            )
+            rt.spawn(async move { crate::push_configure(&h, "compliance-gate", 1, &e).await })
         })
         .collect();
     std::thread::sleep(std::time::Duration::from_millis(200));

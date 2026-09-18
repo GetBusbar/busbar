@@ -225,7 +225,10 @@ pub fn rule_truths(cx: &Ctx, table_kinds: &[&str], crates: &[CrateInfo]) -> Row 
     // 8th variant (a resurrected `EgressAuth`) would pass every check above — it is a code change, not
     // a data one — so this reads `Kind::ALL` (kept complete by the enum's own exhaustive-match guard)
     // and reconciles it, closing the gap that let the split return invisibly.
-    let enum_names: Vec<&str> = busbar_contract::Kind::ALL.iter().map(|k| k.name()).collect();
+    let enum_names: Vec<&str> = busbar_contract::Kind::ALL
+        .iter()
+        .map(|k| k.name())
+        .collect();
     findings.extend(reconcile_enum_kinds(&enum_names));
 
     findings.sort();
@@ -323,7 +326,10 @@ pub fn selftest<'a>(
     // `Kind::ALL` set (must be clean) and a set with an 8th `egress-auth` variant planted back in
     // (must go RED, naming it) — the same reconciliation the row runs against the compiled enum.
     report.push(CasePlan::new(|| {
-        let live: Vec<&str> = busbar_contract::Kind::ALL.iter().map(|k| k.name()).collect();
+        let live: Vec<&str> = busbar_contract::Kind::ALL
+            .iter()
+            .map(|k| k.name())
+            .collect();
         let findings = reconcile_enum_kinds(&live);
         Case {
             name: "the live busbar_contract::Kind variant set is exactly the seven locked kinds"
@@ -578,7 +584,10 @@ mod tests {
     #[test]
     fn the_compiled_enum_is_exactly_the_seven_locked_kinds() {
         // The real variant set reconciles clean, in the enum's own Display spelling.
-        let live: Vec<&str> = busbar_contract::Kind::ALL.iter().map(|k| k.name()).collect();
+        let live: Vec<&str> = busbar_contract::Kind::ALL
+            .iter()
+            .map(|k| k.name())
+            .collect();
         assert!(
             reconcile_enum_kinds(&live).is_empty(),
             "the compiled Kind set is not the seven locked kinds: {:?}",

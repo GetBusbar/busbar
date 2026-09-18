@@ -448,7 +448,10 @@ fn strip_comment_line_keeps_string_literals_intact() {
 #[test]
 fn the_plane_key_contract_matches_plane_keys_sh() {
     assert_eq!(planes::PLANE_KEYS, ["llm", "mcp", "a2a", "streaming"]);
-    assert_eq!(planes::plane_keys_protocol(), vec!["mcp", "a2a", "streaming"]);
+    assert_eq!(
+        planes::plane_keys_protocol(),
+        vec!["mcp", "a2a", "streaming"]
+    );
     assert_eq!(planes::plane_keys_other("a2a"), vec!["mcp", "streaming"]);
     let src = planes::plane_src_roots();
     assert_eq!(src[0], "crates/busbar-llm/src");

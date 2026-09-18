@@ -271,7 +271,10 @@ pub fn plane_claims() -> Vec<PlaneClaim> {
 /// part in the plane claim seal above; this is the one place the composition root names it, paired
 /// with the key it is known by, exactly as `plane_claims` names the planes.
 #[must_use]
-pub fn control_surfaces() -> Vec<(&'static str, Box<dyn busbar_contract::control::ControlSurface>)> {
+pub fn control_surfaces() -> Vec<(
+    &'static str,
+    Box<dyn busbar_contract::control::ControlSurface>,
+)> {
     vec![(
         busbar_control_admin::meta::KEY,
         Box::new(busbar_control_admin::AdminPlane::new()),

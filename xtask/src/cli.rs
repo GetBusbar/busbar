@@ -107,12 +107,7 @@ fn known_gate_flag(a: &str) -> bool {
         "--posture",
         "--jobs",
     ];
-    const PREFIX: [&str; 4] = [
-        "--format=",
-        "--require-version=",
-        "--root-flag=",
-        "--jobs=",
-    ];
+    const PREFIX: [&str; 4] = ["--format=", "--require-version=", "--root-flag=", "--jobs="];
     EXACT.contains(&a) || PREFIX.iter().any(|p| a.starts_with(p))
 }
 

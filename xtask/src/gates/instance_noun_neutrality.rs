@@ -112,49 +112,166 @@ const FAM_EXPORT: &[&str] = &["export-example-plugin"];
 
 const NOUNS: &[Noun] = &[
     // Planes.
-    Noun { key: "mcp", kind: "plane", family: FAM_MCP, tokens: &["mcp"] },
-    Noun { key: "a2a", kind: "plane", family: FAM_A2A, tokens: &["a2a"] },
-    Noun { key: "llm", kind: "plane", family: FAM_LLM, tokens: &["llm"] },
-    Noun { key: "streaming", kind: "plane", family: FAM_STREAM, tokens: &["streaming"] },
-    Noun { key: "streaming", kind: "plane", family: FAM_STREAM, tokens: &["streaming"] },
+    Noun {
+        key: "mcp",
+        kind: "plane",
+        family: FAM_MCP,
+        tokens: &["mcp"],
+    },
+    Noun {
+        key: "a2a",
+        kind: "plane",
+        family: FAM_A2A,
+        tokens: &["a2a"],
+    },
+    Noun {
+        key: "llm",
+        kind: "plane",
+        family: FAM_LLM,
+        tokens: &["llm"],
+    },
+    Noun {
+        key: "streaming",
+        kind: "plane",
+        family: FAM_STREAM,
+        tokens: &["streaming"],
+    },
+    Noun {
+        key: "streaming",
+        kind: "plane",
+        family: FAM_STREAM,
+        tokens: &["streaming"],
+    },
     // Transports — KEYED ON THE PLUGIN-INSTANCE IDENTIFIER, NOT THE BARE PROTOCOL WORD. Bare
     // `http`/`tcp`/`tls`/… are the wire protocols and the `http` crate's own types, used as neutral
     // plumbing across nearly every crate (URL schemes, `http::HeaderMap`, OTLP endpoints); censusing
     // those is noise, not plugin-instance coupling. What #1/#8 forbid is a crate reaching for the
     // concrete transport PLUGIN, which reads `busbar_transport_http` / `transport_http` /
     // `transport-http` (the crate, module and feature spellings). Those are what the census tracks.
-    Noun { key: "http", kind: "transport", family: FAM_HTTP,
-           tokens: &["busbar_transport_http", "transport_http", "transport-http"] },
-    Noun { key: "ws", kind: "transport", family: FAM_WS,
-           tokens: &["busbar_transport_ws", "transport_ws", "transport-ws"] },
-    Noun { key: "stdio", kind: "transport", family: FAM_STDIO,
-           tokens: &["busbar_transport_stdio", "transport_stdio", "transport-stdio"] },
-    Noun { key: "tcp", kind: "transport", family: FAM_TCP,
-           tokens: &["busbar_transport_tcp", "transport_tcp", "transport-tcp"] },
-    Noun { key: "tls", kind: "transport", family: FAM_TLS,
-           tokens: &["busbar_transport_tls", "transport_tls", "transport-tls"] },
-    Noun { key: "sse", kind: "transport", family: FAM_SSE,
-           tokens: &["busbar_transport_sse", "transport_sse", "transport-sse"] },
-    Noun { key: "grpc", kind: "transport", family: FAM_GRPC,
-           tokens: &["busbar_transport_grpc", "transport_grpc", "transport-grpc"] },
+    Noun {
+        key: "http",
+        kind: "transport",
+        family: FAM_HTTP,
+        tokens: &["busbar_transport_http", "transport_http", "transport-http"],
+    },
+    Noun {
+        key: "ws",
+        kind: "transport",
+        family: FAM_WS,
+        tokens: &["busbar_transport_ws", "transport_ws", "transport-ws"],
+    },
+    Noun {
+        key: "stdio",
+        kind: "transport",
+        family: FAM_STDIO,
+        tokens: &[
+            "busbar_transport_stdio",
+            "transport_stdio",
+            "transport-stdio",
+        ],
+    },
+    Noun {
+        key: "tcp",
+        kind: "transport",
+        family: FAM_TCP,
+        tokens: &["busbar_transport_tcp", "transport_tcp", "transport-tcp"],
+    },
+    Noun {
+        key: "tls",
+        kind: "transport",
+        family: FAM_TLS,
+        tokens: &["busbar_transport_tls", "transport_tls", "transport-tls"],
+    },
+    Noun {
+        key: "sse",
+        kind: "transport",
+        family: FAM_SSE,
+        tokens: &["busbar_transport_sse", "transport_sse", "transport-sse"],
+    },
+    Noun {
+        key: "grpc",
+        kind: "transport",
+        family: FAM_GRPC,
+        tokens: &["busbar_transport_grpc", "transport_grpc", "transport-grpc"],
+    },
     // Stores — no backend crate in this tree, so the family is empty and every hit is a leak.
-    Noun { key: "postgres", kind: "store", family: FAM_NONE, tokens: &["postgres"] },
-    Noun { key: "mysql", kind: "store", family: FAM_NONE, tokens: &["mysql"] },
-    Noun { key: "valkey", kind: "store", family: FAM_NONE, tokens: &["valkey", "redis"] },
-    Noun { key: "sqlite", kind: "store", family: FAM_NONE, tokens: &["sqlite"] },
+    Noun {
+        key: "postgres",
+        kind: "store",
+        family: FAM_NONE,
+        tokens: &["postgres"],
+    },
+    Noun {
+        key: "mysql",
+        kind: "store",
+        family: FAM_NONE,
+        tokens: &["mysql"],
+    },
+    Noun {
+        key: "valkey",
+        kind: "store",
+        family: FAM_NONE,
+        tokens: &["valkey", "redis"],
+    },
+    Noun {
+        key: "sqlite",
+        kind: "store",
+        family: FAM_NONE,
+        tokens: &["sqlite"],
+    },
     // Auth schemes — matched on the unambiguous scheme name only. `aws` (broad infra) is left to
     // its precise scheme spelling `sigv4`.
-    Noun { key: "bearer", kind: "auth", family: FAM_AUTH, tokens: &["bearer"] },
-    Noun { key: "mtls", kind: "auth", family: FAM_AUTH, tokens: &["mtls"] },
-    Noun { key: "sigv4", kind: "auth", family: FAM_AUTH, tokens: &["sigv4"] },
-    Noun { key: "gcp", kind: "auth", family: FAM_AUTH, tokens: &["gcp"] },
-    Noun { key: "spki", kind: "auth", family: FAM_AUTH, tokens: &["spki"] },
+    Noun {
+        key: "bearer",
+        kind: "auth",
+        family: FAM_AUTH,
+        tokens: &["bearer"],
+    },
+    Noun {
+        key: "mtls",
+        kind: "auth",
+        family: FAM_AUTH,
+        tokens: &["mtls"],
+    },
+    Noun {
+        key: "sigv4",
+        kind: "auth",
+        family: FAM_AUTH,
+        tokens: &["sigv4"],
+    },
+    Noun {
+        key: "gcp",
+        kind: "auth",
+        family: FAM_AUTH,
+        tokens: &["gcp"],
+    },
+    Noun {
+        key: "spki",
+        kind: "auth",
+        family: FAM_AUTH,
+        tokens: &["spki"],
+    },
     // Secret / hook / export — bare `secret`/`hook`/`export` are core subsystems (secret-ref,
     // busbar-core-hooks, export verbs), so the ENFORCEABLE instance token is the example/test
     // plugin's own crate identifier. Zero false positives; reds only if core names the plugin.
-    Noun { key: "secret", kind: "secret", family: FAM_SECRET, tokens: &["secret_example_plugin"] },
-    Noun { key: "hook", kind: "hook", family: FAM_HOOK, tokens: &["hook_test_plugin"] },
-    Noun { key: "export", kind: "export", family: FAM_EXPORT, tokens: &["export_example_plugin"] },
+    Noun {
+        key: "secret",
+        kind: "secret",
+        family: FAM_SECRET,
+        tokens: &["secret_example_plugin"],
+    },
+    Noun {
+        key: "hook",
+        kind: "hook",
+        family: FAM_HOOK,
+        tokens: &["hook_test_plugin"],
+    },
+    Noun {
+        key: "export",
+        kind: "export",
+        family: FAM_EXPORT,
+        tokens: &["export_example_plugin"],
+    },
 ];
 
 const CLEAN: &str = "the scan cleared its floors and named nothing";
@@ -232,15 +349,15 @@ fn camel_hit(code: &str, needle: &str) -> bool {
 }
 
 fn line_hits(orig: &str, lower: &str, noun: &Noun) -> bool {
-    noun
-        .tokens
+    noun.tokens
         .iter()
         .any(|t| word_ci(lower, t) || camel_hit(orig, t))
 }
 
 /// The crate directory name for a `crates/<name>/...` path, or `None` for anything else.
 fn crate_of(rel: &str) -> Option<&str> {
-    rel.strip_prefix("crates/").and_then(|r| r.split('/').next())
+    rel.strip_prefix("crates/")
+        .and_then(|r| r.split('/').next())
 }
 
 /// Every crate that is SOME noun's family — used to tell a cross-plugin leak from a core one.
@@ -398,9 +515,17 @@ impl Gate for InstanceNounNeutralityGate {
                     format!("{e} — {DID_NOT_RUN}"),
                 )];
                 for n in NOUNS {
-                    rows.push(Row::fail(row_id(n.key), "the scan did not run", DID_NOT_RUN));
+                    rows.push(Row::fail(
+                        row_id(n.key),
+                        "the scan did not run",
+                        DID_NOT_RUN,
+                    ));
                 }
-                rows.push(Row::fail(ROW_UNDOCUMENTED, "the scan did not run", DID_NOT_RUN));
+                rows.push(Row::fail(
+                    ROW_UNDOCUMENTED,
+                    "the scan did not run",
+                    DID_NOT_RUN,
+                ));
                 rows.push(Row::fail(ROW_STALE, "the scan did not run", DID_NOT_RUN));
                 return Verdict::of(rows);
             }
@@ -542,7 +667,10 @@ impl Gate for InstanceNounNeutralityGate {
             report.push(prove_rows_red_at(
                 cx,
                 self,
-                format!("`{}` named by a non-family crate reds its census row", n.key),
+                format!(
+                    "`{}` named by a non-family crate reds its census row",
+                    n.key
+                ),
                 &[&row_id(n.key)],
                 FIX,
                 &["crates/busbar-core/src/lib.rs"],

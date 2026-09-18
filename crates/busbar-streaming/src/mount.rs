@@ -34,7 +34,7 @@ use crate::ir::codec::{DuplexReader, DuplexWriter, OpenAiRealtimeCodec};
 use crate::ir::config::SessionConfig;
 use crate::runtime::carrier::Carrier;
 use crate::runtime::scope::SessionHandle;
-use crate::runtime::session::{serve_with_sweep, UplinkForwarder, StreamingSession};
+use crate::runtime::session::{serve_with_sweep, StreamingSession, UplinkForwarder};
 use crate::runtime::{EchoToolExecutor, LocalMeteringPort, StreamingRuntime};
 use crate::topology::minter_https::HttpsTokenMinter;
 use crate::topology::telephony::{begin_telephony, g711_config, open_admitted_telephony};
@@ -533,7 +533,8 @@ pub fn streaming_claims(slot: &dyn Any) -> Vec<(String, &'static str)> {
 /// by construction here: a slot ⇒ a claim AND an admission, never one without the other.
 #[must_use]
 pub fn streaming_admission(slot: &dyn Any) -> Option<PlaneAdmission> {
-    slot.downcast_ref::<StreamingMount>().map(StreamingMount::admission)
+    slot.downcast_ref::<StreamingMount>()
+        .map(StreamingMount::admission)
 }
 
 /// [`PlaneDecl::routes`] — the streaming plane's TWO one-shot HTTP ingress routes, described NEUTRALLY

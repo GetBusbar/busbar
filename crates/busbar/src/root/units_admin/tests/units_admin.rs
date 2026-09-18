@@ -3186,11 +3186,16 @@ fn the_production_posture_view_seals_the_operator_key_the_verify_path_admits_aga
     // END TO END: the operator the production view resolved is exactly what the D38 verify path
     // needs — a valid-signed, back-dated correction is ADMITTED and applied against it.
     let history = a_seeded_history();
-    let packed = amend_rate_history_effect(&history, &a_correction_body(), 6, ctx.operator)
-        .expect("a correction signed by the sealed key is admitted via the production posture view");
+    let packed = amend_rate_history_effect(&history, &a_correction_body(), 6, ctx.operator).expect(
+        "a correction signed by the sealed key is admitted via the production posture view",
+    );
     let answer = AdminAnswer::unpack(&packed).expect("the answer packs");
     assert_eq!(answer.status, 200);
-    assert_eq!(history.len(), 2, "the verified correction appended exactly one entry");
+    assert_eq!(
+        history.len(),
+        2,
+        "the verified correction appended exactly one entry"
+    );
 
     // UNSET — the default, and byte-identical to the `UnsealedPosture` it replaces.
     let unsealed = SealedPosture::new(None);

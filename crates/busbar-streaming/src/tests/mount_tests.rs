@@ -8,8 +8,8 @@
 //! (governed, but the live serving leg is the deployment's to compose).
 
 use super::{
-    streaming_admission, streaming_build, streaming_claims, streaming_hydrate, streaming_routes, streaming_start,
-    MOUNT_PATH,
+    streaming_admission, streaming_build, streaming_claims, streaming_hydrate, streaming_routes,
+    streaming_start, MOUNT_PATH,
 };
 use crate::ir::codec::OpenAiRealtimeCodec;
 // Test-support-only: the governed-open battery (`governed_open` + its denied-destination test) drives
@@ -196,8 +196,8 @@ fn build_binds_the_audience_from_public_url_and_none_without() {
 
     // The admission BINDS the audience derived from `public_url` — the confused-deputy defence: a token
     // minted for another resource is refused here (R2: a claim without an admission refuses boot).
-    let admission =
-        streaming_admission(slot.as_ref()).expect("a claimed plane must admit (mounted ⇒ admitted)");
+    let admission = streaming_admission(slot.as_ref())
+        .expect("a claimed plane must admit (mounted ⇒ admitted)");
     assert_eq!(
         admission.audience,
         format!("{PUBLIC_URL}/v1/realtime"),

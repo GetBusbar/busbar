@@ -195,10 +195,7 @@ fn json_eq_depth(a: &Value, b: &Value, depth: usize) -> bool {
             _ => x == y,
         },
         (Value::Array(x), Value::Array(y)) => {
-            x.len() == y.len()
-                && x.iter()
-                    .zip(y)
-                    .all(|(x, y)| json_eq_depth(x, y, depth + 1))
+            x.len() == y.len() && x.iter().zip(y).all(|(x, y)| json_eq_depth(x, y, depth + 1))
         }
         (Value::Object(x), Value::Object(y)) => {
             x.len() == y.len()

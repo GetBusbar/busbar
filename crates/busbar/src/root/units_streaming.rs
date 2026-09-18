@@ -135,7 +135,7 @@ use busbar_kernel::slice::{DoorGrant, GroupLeaseSlip};
 use busbar_kernel::teller::{AccrualMeter, Evidence, FeeEvidence, UnitCtx, Units};
 use busbar_kernel::Millis;
 use busbar_plane_streaming::claims::Dialect;
-use busbar_plane_streaming::{meta, Upstream, StreamingPlane};
+use busbar_plane_streaming::{meta, StreamingPlane, Upstream};
 use busbar_unit_admission::{Admission as _, Door, Estimate, InMemoryCells, Pricer};
 use busbar_unit_auth::{Auth, AuthRequest};
 use busbar_unit_scope::{Grants, Scope, TRANSPORT_HANDSHAKE};
@@ -671,7 +671,9 @@ impl busbar_streaming::runtime::GovernedCalls for NodeCalls {
             Err(ReplyRefused::NoSuchSession) => {
                 Err(busbar_streaming::runtime::ReplyRefusal::NoSuchSession)
             }
-            Err(ReplyRefused::UnknownCall) => Err(busbar_streaming::runtime::ReplyRefusal::UnknownCall),
+            Err(ReplyRefused::UnknownCall) => {
+                Err(busbar_streaming::runtime::ReplyRefusal::UnknownCall)
+            }
         }
     }
 
