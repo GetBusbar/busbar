@@ -1699,6 +1699,15 @@ jobs:
           - name: core-hooks test-support
             features: busbar-core-hooks/test-support
             tests: -p busbar-core-hooks
+          # busbar-unit-audit's test-support reveals `Journal::clear_sink_for_test` to a dependent
+          # crate's tests (busbar-core's plane-host wiring drives it through `set_stream_sink_for_test`).
+          # It is a non-default forward no sibling edge enables (busbar-unit-audit's own dev-deps do NOT
+          # turn on its test-support), so nothing builds the `cfg(feature = "test-support")` surface
+          # behind it. This row builds and tests the owning crate with the feature on, exactly like the
+          # rows above.
+          - name: unit-audit test-support
+            features: busbar-unit-audit/test-support
+            tests: -p busbar-unit-audit
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       # THE COMPILER CACHE — see "COMPILER CACHE (sccache)" at the top of this file. Installed in
