@@ -3,6 +3,10 @@
 //! parser tests ported alongside `proto` itself.
 
 use super::*;
+use busbar_contract::{
+    ArenaBytes, Frame, StreamId, Transport, TransportConfigView, TransportKeyHandle,
+};
+use busbar_contract_transport::wire::{FrameMeta, TransportError};
 use busbar_transport_http::ClientSettings;
 use futures::StreamExt;
 

@@ -4,12 +4,17 @@
 //! opaque key handle's slot).
 
 use super::*;
+use crate::transport::deliver_refusal;
 use busbar_contract::plugin::KernelSeal;
-use busbar_contract::ConfigView;
+use busbar_contract::{
+    ArenaBytes, ConfigView, Frame, StreamId, Transport, TransportConfigView, TransportKeyHandle,
+};
+use busbar_contract_transport::wire::{CloseReason, FrameMeta, Listener};
 use futures::StreamExt;
 use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use std::sync::Arc as StdArc;
+use tokio_rustls::TlsConnector;
 
 /// New file per the mutation-hardening pass on this crate: `src/tests/mutation_hardening.rs`.
 mod mutation_hardening;
@@ -245,6 +250,65 @@ async fn byte_exact_round_trip_over_a_real_handshake() {
     let mut frames = server.frames(server_conn);
     let (_s, frame) = frames.next().await.unwrap().unwrap();
     assert_eq!(frame.bytes.as_slice(), payload);
+    assert_eq!(frame.meta.bytes, payload.len() as u64);
+}
+
+/// Frame meta is honest on frames a REAL `TlsTransport` emitted, and the check that says so is one
+/// an inflating or a deflating fixture turns red.
+///
+/// The single-value assertions elsewhere in this file pin what one honest frame reported; they say
+/// nothing about a frame whose `meta.bytes` drifted from the plaintext it carried. `FrameMeta.bytes`
+/// is what the metering path reads as the bytes meter class, so a dishonest one is a billing figure
+/// rather than a cosmetic slip. This drives a real handshake, reads a real frame off it, and proves
+/// the honesty predicate discriminates by perturbing that frame one byte each way — the "must turn
+/// red" cell the `tcp` and `sse` siblings already carry.
+#[tokio::test]
+async fn frame_meta_honesty_catches_inflating_and_deflating_fixtures() {
+    fn honest(frame: &Frame) -> bool {
+        frame.meta.bytes == frame.bytes.len() as u64
+    }
+    fn perturbed(frame: &Frame, by: i64) -> Frame {
+        Frame {
+            meta: FrameMeta {
+                bytes: (frame.meta.bytes as i64 + by) as u64,
+                ..frame.meta
+            },
+            ..frame.clone()
+        }
+    }
+
+    let (server, listener, client) = bound_pair().await;
+    let addr = listener.local_addr();
+    let accept_fut = tokio::spawn({
+        let server = server.clone();
+        async move { server.accept(&listener).await.unwrap() }
+    });
+    let client_conn = client
+        .dial(&upstream_dest(&addr), &fixture_key(0))
+        .await
+        .unwrap();
+    let server_conn = accept_fut.await.unwrap();
+
+    let payload = b"tls frame meta must equal the plaintext it carried";
+    client
+        .write(&client_conn, StreamId(0), ArenaBytes::new(payload))
+        .await
+        .unwrap();
+
+    let mut frames = server.frames(server_conn);
+    let (_s, frame) = frames.next().await.unwrap().unwrap();
+    assert!(
+        honest(&frame),
+        "the transport's own frame reports the bytes it actually carries"
+    );
+    assert!(
+        !honest(&perturbed(&frame, 1)),
+        "an inflating fixture is red"
+    );
+    assert!(
+        !honest(&perturbed(&frame, -1)),
+        "a deflating fixture is red"
+    );
     assert_eq!(frame.meta.bytes, payload.len() as u64);
 }
 

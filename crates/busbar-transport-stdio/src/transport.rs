@@ -15,8 +15,8 @@ use busbar_contract::dest::{DestinationFacts, VerifiedDestination};
 use busbar_contract::unit::Refusal;
 use busbar_contract::wire::Frame;
 use busbar_contract::{
-    grammar::SelectorForm, ArenaBytes, Fut, Kind, Plugin, SlabBytes, StreamId, Transport,
-    TransportConfigView, TransportKeyHandle, TransportMeta,
+    ArenaBytes, Fut, Kind, Plugin, SlabBytes, StreamId, Transport, TransportConfigView,
+    TransportKeyHandle, TransportMeta,
 };
 use busbar_contract_transport::wire::ArrivalRecord;
 use busbar_contract_transport::wire::CloseReason;
@@ -26,7 +26,6 @@ use busbar_contract_transport::wire::FrameMeta;
 use busbar_contract_transport::wire::Listener;
 use busbar_contract_transport::wire::ListenerHandle;
 use busbar_contract_transport::wire::TransportError;
-use busbar_contract_transport::wire::Unit0Trigger;
 use busbar_contract_transport::AbiVersion;
 
 use crate::conn::{ConnState, ReaderSlot, StdioConnHandle};
@@ -220,30 +219,6 @@ impl Plugin for StdioTransport {
     fn abi(&self) -> AbiVersion {
         busbar_contract_transport::registry::TRANSPORT_ABI
     }
-}
-
-impl TransportMeta for StdioTransport {
-    const KEY: &'static str = "stdio";
-    // stdio carries no header, path or handshake surface to select on: a claim on this transport
-    // can only ever be the whole channel. Empty rather than guessed — see the crate report.
-    const SELECTOR_FORMS: &'static [SelectorForm] = &[];
-    const EGRESS_SELECTOR_FORMS: &'static [SelectorForm] = &[];
-    const COMPOSES_OVER: &'static [&'static str] = &[];
-    const HANDOFF: Option<busbar_contract_transport::wire::Handoff> = None;
-    const FRAMING: busbar_contract_transport::wire::Framing =
-        busbar_contract_transport::wire::Framing::Stream;
-    const SESSION: bool = true;
-    const SESSION_BOUND: bool = true;
-    const UNIT0_TRIGGER: Option<Unit0Trigger> = Some(Unit0Trigger::FirstMessage);
-    const UPGRADES_TO: &'static [&'static str] = &[];
-    const HANDSHAKE_TRIGGER: Option<busbar_contract_transport::wire::HandshakeTrigger> = None;
-    // No transport-level fact this carrier writes beyond the arrival record itself.
-    const TRANSPORT_FACTS: &'static [&'static str] = &[];
-    const DECODES_PAYLOAD: bool = false;
-    // The transports table names no status leg for stdio; the plane's own `finish` class is the fee's sole
-    // source here.
-    const STATUS_CLASS: Option<busbar_contract_transport::wire::StatusAt> = None;
-    const STATUS_NAMESPACE: Option<&'static str> = None;
 }
 
 impl Transport for StdioTransport {

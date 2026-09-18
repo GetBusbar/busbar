@@ -12,8 +12,9 @@ use std::time::Duration;
 use futures::StreamExt;
 use tokio::io::{split, AsyncWriteExt};
 
-use busbar_contract::{ArenaBytes, Transport};
+use busbar_contract::{ArenaBytes, Frame, Transport};
 use busbar_contract_transport::wire::Direction;
+use busbar_contract_transport::wire::FrameMeta;
 use busbar_contract_transport::wire::TransportError;
 
 use crate::StdioTransport;
@@ -68,6 +69,70 @@ async fn round_trip_byte_exact() {
     assert_eq!(frame.meta.bytes, payload.len() as u64, "honest frame meta");
     assert_eq!(frame.meta.transport_units, None, "DECODES_PAYLOAD is false");
     assert_eq!(frame.meta.status, None, "STATUS_CLASS is None for stdio");
+}
+
+/// Frame meta is honest on frames a REAL `StdioTransport` emitted, and the check that says so is
+/// one an inflating or a deflating fixture turns red.
+///
+/// The round-trip cell above asserts `meta.bytes` against a single correct value, which stays green
+/// no matter which way a mutated meter drifts. `FrameMeta.bytes` is the bytes meter class, so a
+/// dishonest one is a billing figure rather than a cosmetic slip; this drives frames off the wire
+/// and proves the predicate discriminates by perturbing each one byte both ways. The total is
+/// checked against what the fixture wrote, counted here rather than read back off the frames.
+#[tokio::test]
+async fn frame_meta_honesty_catches_inflating_and_deflating_fixtures() {
+    fn honest(frame: &Frame) -> bool {
+        frame.meta.bytes == frame.bytes.len() as u64
+    }
+    fn perturbed(frame: &Frame, by: i64) -> Frame {
+        Frame {
+            meta: FrameMeta {
+                bytes: (frame.meta.bytes as i64 + by) as u64,
+                ..frame.meta
+            },
+            ..frame.clone()
+        }
+    }
+
+    let t = StdioTransport::new();
+    let (a, b) = pair(&t, 64 * 1024);
+
+    // Two line-framed payloads, neither carrying the newline delimiter this wire frames on.
+    let payloads: [Vec<u8>; 2] = [
+        b"the quick brown fox jumps over the lazy dog".to_vec(),
+        b"and a short one".to_vec(),
+    ];
+    let on_the_wire: u64 = payloads.iter().map(|p| p.len() as u64).sum();
+    for payload in &payloads {
+        t.write(&a, busbar_contract::StreamId(0), ArenaBytes::new(payload))
+            .await
+            .expect("write succeeds");
+    }
+
+    let mut frames = t.frames(b);
+    let mut metered = 0_u64;
+    while metered < on_the_wire {
+        let (_s, frame) = frames
+            .next()
+            .await
+            .expect("a frame arrives")
+            .expect("the frame is not an error");
+        metered += frame.meta.bytes;
+        assert!(
+            honest(&frame),
+            "the transport's own frame reports the bytes it actually carries"
+        );
+        assert!(
+            !honest(&perturbed(&frame, 1)),
+            "an inflating fixture is red"
+        );
+        assert!(
+            !honest(&perturbed(&frame, -1)),
+            "a deflating fixture is red"
+        );
+    }
+    // Counted from the fixture, not the frames: every byte the peer wrote is metered exactly once.
+    assert_eq!(metered, on_the_wire);
 }
 
 /// A payload carrying the delimiter is refused, not written through and split at the peer.

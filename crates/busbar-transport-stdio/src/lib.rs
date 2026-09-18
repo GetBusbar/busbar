@@ -37,6 +37,9 @@
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
+pub mod claims;
+pub mod meta;
+
 mod conn;
 mod transport;
 

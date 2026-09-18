@@ -30,9 +30,11 @@
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
+pub mod claims;
 mod client;
 mod codec;
 mod conn;
+pub mod meta;
 pub mod mount;
 mod server;
 mod transport;

@@ -61,6 +61,28 @@ async fn upgrade_then_round_trip_byte_exact() {
     assert_eq!(frame.meta.bytes, payload.len() as u64, "honest frame meta");
     assert_eq!(frame.meta.transport_units, None);
     assert_eq!(frame.meta.status, None, "no status leg after the upgrade");
+
+    // The honesty check is one an inflating or a deflating fixture turns red. Asserting a single
+    // correct value proves the transport reported THAT number, not that the check discriminates: a
+    // meter that padded every count would pass the equality above. `meta.bytes` is the bytes meter
+    // class, so a dishonest one is a billing figure. Perturbing the real frame one byte each way
+    // proves the predicate is red-capable rather than a tautology.
+    fn honest(frame: &busbar_contract::wire::Frame) -> bool {
+        frame.meta.bytes == frame.bytes.len() as u64
+    }
+    let perturbed = |by: i64| busbar_contract::wire::Frame {
+        meta: busbar_contract_transport::wire::FrameMeta {
+            bytes: (frame.meta.bytes as i64 + by) as u64,
+            ..frame.meta
+        },
+        ..frame.clone()
+    };
+    assert!(
+        honest(&frame),
+        "the frame reports the bytes it actually carries"
+    );
+    assert!(!honest(&perturbed(1)), "an inflating fixture is red");
+    assert!(!honest(&perturbed(-1)), "a deflating fixture is red");
 }
 
 /// The in-band `http` → `ws` upgrade, driven through the seam the design names: `http` accepts the

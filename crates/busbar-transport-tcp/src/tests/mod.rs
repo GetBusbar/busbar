@@ -3,8 +3,9 @@
 //! deflating fixture must fail it — the "must turn red" cell from the design's transport battery).
 
 use super::*;
-use busbar_contract::{ConfigView, Frame};
-use busbar_contract_transport::wire::FrameMeta;
+use crate::transport::deliver_refusal;
+use busbar_contract::{ArenaBytes, ConfigView, Frame, StreamId, Transport, TransportConfigView};
+use busbar_contract_transport::wire::{CloseReason, FrameMeta, Listener};
 use futures::StreamExt;
 use std::sync::Arc as StdArc;
 

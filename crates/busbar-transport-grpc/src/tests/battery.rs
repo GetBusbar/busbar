@@ -1365,6 +1365,26 @@ async fn an_empty_message_is_delivered_and_does_not_wedge_the_ones_behind_it() {
             .expect("an empty message must not park the call that carries it");
         let (_s, frame) = next.unwrap().unwrap();
         assert_eq!(frame.meta.bytes, frame.bytes.as_slice().len() as u64);
+        // The check that says the meter is honest is one an inflating or a deflating fixture turns
+        // red. `meta.bytes == bytes.len()` is the metering path's own reading of what this frame
+        // carried, so a transport that reported a byte count one too many or one too few is a
+        // billing figure rather than a cosmetic slip. Perturb this REAL frame's count one each way
+        // and the predicate must reject both, so a dishonest count cannot ship green past it.
+        let honest =
+            |f: &busbar_contract::wire::Frame| f.meta.bytes == f.bytes.as_slice().len() as u64;
+        let perturbed = |by: i64| busbar_contract::wire::Frame {
+            meta: busbar_contract_transport::wire::FrameMeta {
+                bytes: (frame.meta.bytes as i64 + by) as u64,
+                ..frame.meta
+            },
+            ..frame.clone()
+        };
+        assert!(
+            honest(&frame),
+            "the transport's own frame reports the bytes it actually carries"
+        );
+        assert!(!honest(&perturbed(1)), "an inflating fixture is red");
+        assert!(!honest(&perturbed(-1)), "a deflating fixture is red");
         got.push(frame.bytes.as_slice().to_vec());
     }
     assert_eq!(
