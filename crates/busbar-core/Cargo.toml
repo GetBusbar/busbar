@@ -246,8 +246,13 @@ loom-model = ["dep:loom"]
 # Exposes `test_support` to a DEPENDENT crate's tests (the bin's). Never on in a normal build;
 # the bin enables it from its [dev-dependencies] edge only. Forwards to substrate's matching feature
 # so the relocated test-only `governance::signing::TokenSigner::mint_for_audience` is likewise
-# revealed to a dependent test binary.
-test-support = ["busbar-substrate/test-support", "busbar-core-hooks/test-support", "dep:rmcp", "dep:reqwest"]
+# revealed to a dependent test binary. Also forwards to busbar-unit-audit's matching feature: the
+# journal relocation (owner ruling 2026-09-08) moved `Journal::clear_sink_for_test` — named by core's
+# own plane-host `set_stream_sink_for_test` — behind that crate's `test-support`, so when a DEPENDENT
+# (the bin, or the admin service's tests) enables `busbar-core/test-support`, core's lib is built with
+# this feature ON as a normal dep (its own dev-deps inactive) and the forward is what keeps the moved
+# method resolvable, exactly as for `busbar-substrate`/`busbar-core-hooks`.
+test-support = ["busbar-substrate/test-support", "busbar-core-hooks/test-support", "busbar-unit-audit/test-support", "dep:rmcp", "dep:reqwest"]
 # Passthrough to `busbar-timing`'s debug-only per-method micro-timing. DEFAULT OFF: with this off,
 # `busbar_timing::timeit!` expands to `()` and the RAII guards it produces are zero-sized no-ops, so
 # the `drop(_guard)` calls that end a timed span are compiled in ONLY under this feature (dropping a
