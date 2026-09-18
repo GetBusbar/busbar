@@ -105,9 +105,11 @@ fn split_frame_lines(buf: &[u8]) -> impl Iterator<Item = &[u8]> {
     })
 }
 
-/// The four field names the SSE grammar defines. Anything else on a line — a leading `:`, which is
-/// a comment, or a name this list does not hold — is not a field.
-const SSE_FIELDS: [&[u8]; 4] = [b"data:", b"event:", b"id:", b"retry:"];
+/// The four field names the SSE grammar defines, WITHOUT their colons: the grammar reads a line's
+/// field name as the bytes up to its first colon, or the WHOLE line when it holds no colon at all
+/// (the value is then empty). A leading `:` is a comment (an empty field name), and a name this list
+/// does not hold is not a field.
+const SSE_FIELDS: [&[u8]; 4] = [b"data", b"event", b"id", b"retry"];
 
 /// Whether this frame carries an SSE FIELD at all.
 ///
@@ -123,9 +125,21 @@ const SSE_FIELDS: [&[u8]; 4] = [b"data:", b"event:", b"id:", b"retry:"];
 /// valid UTF-8 is still the frame the upstream sent, and dropping it silently loses an event
 /// nothing else will report. What stays out is what carries no field at all: a comment (`: ping`,
 /// the ordinary keepalive) says nothing, and there is nothing to hand up for it.
+///
+/// A line's field name is the bytes up to its first colon, or the whole line when it has none — the
+/// grammar reads a bare `data` with no colon as the field `data` carrying an empty value, so a legal
+/// frame whose only line is a bare field name is an event, not a comment. Matching a `data:` PREFIX
+/// instead — which the earlier reading did — dropped that frame on the floor and would have admitted
+/// a `datastream:` line that is not a field at all.
 #[must_use]
 pub fn frame_carries_a_field(frame: &[u8]) -> bool {
-    split_frame_lines(frame).any(|line| SSE_FIELDS.iter().any(|field| line.starts_with(field)))
+    split_frame_lines(frame).any(|line| {
+        let name = match memchr::memchr(b':', line) {
+            Some(colon) => &line[..colon],
+            None => line,
+        };
+        SSE_FIELDS.contains(&name)
+    })
 }
 
 /// Parse one SSE frame into `(event_type, data_payload)`. `event_type` is "" when the frame has
@@ -150,7 +164,10 @@ pub fn parse_sse_frame(frame: &[u8]) -> Option<(String, String)> {
     for line in split_frame_lines(frame) {
         let line = std::str::from_utf8(line).expect("ascii-boundary split of valid utf-8");
         if let Some(rest) = line.strip_prefix("event:") {
-            event_type = rest.trim().to_string();
+            // The grammar strips ONE leading U+0020 SPACE from a field value, nothing more — not a
+            // `trim`, which would also eat a second leading space and any trailing whitespace the
+            // upstream meant to keep. Same rule the `data:` arm below already follows.
+            event_type = rest.strip_prefix(' ').unwrap_or(rest).to_string();
         } else if let Some(rest) = line.strip_prefix("data:") {
             data_lines.push(rest.strip_prefix(' ').unwrap_or(rest));
         }

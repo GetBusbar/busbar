@@ -69,6 +69,24 @@ fn parses_a_cr_only_frame() {
     );
 }
 
+/// The grammar strips exactly ONE leading U+0020 SPACE from a field value and leaves everything
+/// else — a second leading space, any trailing whitespace — as the upstream wrote it. A `trim`
+/// instead ate all of it: an `event:` value's own significant whitespace vanished, and the `data:`
+/// arm next to it (which strips a single space) and this one disagreed on the same grammar rule.
+#[test]
+fn an_event_value_strips_one_leading_space_not_all_whitespace() {
+    // Two leading spaces and a trailing one: one leading space comes off, the rest stays.
+    assert_eq!(
+        parse_sse_frame(b"event:  msg \ndata: y"),
+        Some((" msg ".to_string(), "y".to_string()))
+    );
+    // A value with no leading space keeps every byte.
+    assert_eq!(
+        parse_sse_frame(b"event:msg\ndata: y"),
+        Some(("msg".to_string(), "y".to_string()))
+    );
+}
+
 /// A frame whose lines end on different terminators must not have them fused into one
 /// corrupted payload: each `data:` line is its own line, joined afterwards with `\n`, exactly
 /// as the all-LF and all-CRLF cells above are.
