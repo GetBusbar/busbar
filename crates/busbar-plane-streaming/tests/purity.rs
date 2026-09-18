@@ -4,8 +4,8 @@
 //! purity too: a wrapper that added a cell, a lock or an atomic would be a plane that kept state of its
 //! own across calls, and the whole point of the reframe is that it does not.
 
-use busbar_plane_streaming::{Dialect, StreamingPlane, Upstream};
 use busbar_contract::ids::LaneId;
+use busbar_plane_streaming::{Dialect, StreamingPlane, Upstream};
 
 /// `StreamingPlane` derives `Copy`. Every interior-mutable cell (`Cell`, `RefCell`, `Mutex`,
 /// `OnceLock`, ...) is `!Copy`, so a type that IS `Copy` structurally cannot hold one: a compile-time
