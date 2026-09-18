@@ -266,3 +266,134 @@ fn an_unquoted_inline_secret_is_refused_without_echoing_it() {
         );
     }
 }
+
+/// A pasted credential dropped into the WRONG SLOT — `settings:` given as a scalar rather than the
+/// map it must be — is the same leak in a different disguise: `{ module: vault, settings:
+/// "sk-live-abc123" }`. A typed `next_value::<Map>()` would make serde echo the scalar verbatim into
+/// the boot log. The visitor reads the slot untyped, sees it is not an object, and refuses with the
+/// shared non-echoing message — never printing the value it was handed.
+#[test]
+fn a_scalar_in_the_settings_slot_is_refused_without_echoing_it() {
+    let err = serde_yaml::from_str::<SecretRef>("{ module: vault, settings: \"sk-live-abc123\" }")
+        .expect_err("settings must be a map, never a pasted scalar credential")
+        .to_string();
+    assert!(
+        !err.contains("sk-live-abc123"),
+        "the refusal echoed the mis-slotted credential into the error text: {err}"
+    );
+    assert!(
+        err.contains("never an inline literal"),
+        "a scalar in the settings slot takes the same non-echoing refusal: {err}"
+    );
+}
+
+/// The sugar keys carry secrets too, and an unquoted YAML number/bool in an `{ env: … }` /
+/// `{ file: … }` slot is exactly the spelling nobody quotes. A typed `next_value::<String>()` on the
+/// mismatch would echo it; the untyped-then-shape-check refuses without printing it.
+#[test]
+fn a_non_string_sugar_value_is_refused_without_echoing_it() {
+    for (yaml, value) in [("{ env: 12345 }", "12345"), ("{ file: true }", "true")] {
+        let err = serde_yaml::from_str::<SecretRef>(yaml)
+            .expect_err("the sugar value must be a string")
+            .to_string();
+        assert!(
+            !err.contains(value),
+            "the refusal echoed the sugar value into the error text: {err}"
+        );
+        assert!(
+            err.contains("never an inline literal"),
+            "a non-string sugar value takes the same non-echoing refusal: {err}"
+        );
+    }
+}
+
+/// A non-string `module:` names no module — and a typed `next_value::<String>()` would echo whatever
+/// it was handed. The visitor reads it untyped, refuses the shape, and never prints the value.
+#[test]
+fn a_non_string_module_is_refused_without_echoing_it() {
+    let err = serde_yaml::from_str::<SecretRef>("{ module: 12345 }")
+        .expect_err("module must be a string naming a secret module")
+        .to_string();
+    assert!(
+        !err.contains("12345"),
+        "the refusal echoed the module value into the error text: {err}"
+    );
+    assert!(
+        err.contains("must be a string"),
+        "a non-string module names no module: {err}"
+    );
+}
+
+/// Duplicate `module:` / `settings:` keys are a malformed reference, and the visitor catches each
+/// with serde's `duplicate_field` rather than silently taking the last one. serde_yaml rejects
+/// duplicate mapping keys at parse time, so the visitor's own guard is exercised through
+/// serde_json, whose `MapAccess` hands both entries to the visitor.
+#[test]
+fn duplicate_keys_are_refused() {
+    let err = serde_json::from_str::<SecretRef>(r#"{"module":"vault","module":"env"}"#)
+        .expect_err("a duplicate module: is malformed")
+        .to_string();
+    assert!(
+        err.contains("duplicate field") && err.contains("module"),
+        "duplicate module: must be a duplicate_field error: {err}"
+    );
+
+    let err = serde_json::from_str::<SecretRef>(
+        r#"{"module":"vault","settings":{"key":"x"},"settings":{"key":"y"}}"#,
+    )
+    .expect_err("a duplicate settings: is malformed")
+    .to_string();
+    assert!(
+        err.contains("duplicate field") && err.contains("settings"),
+        "duplicate settings: must be a duplicate_field error: {err}"
+    );
+}
+
+/// Serialize round-trip: every one of the four accepted input spellings lands on the SAME canonical
+/// `{ module, settings }` wire shape, and the `settings` key is structurally present by name on each.
+/// That key name is not cosmetic: the one admin read that serializes a config tree containing a
+/// `SecretRef` (`GET /config/settings`) redacts by rewriting every `settings` member — so if this
+/// type ever serialized its settings under a different name, the redaction would silently miss it.
+#[test]
+fn serialize_yields_the_canonical_module_settings_wire_shape() {
+    let env: SecretRef = serde_yaml::from_str("{ env: MY_VAR }").unwrap();
+    let file: SecretRef = serde_yaml::from_str("{ file: /run/secrets/x }").unwrap();
+    let canonical: SecretRef =
+        serde_yaml::from_str("{ module: vault, settings: { key: kv/data/x } }").unwrap();
+    let none: SecretRef = serde_yaml::from_str("none").unwrap();
+
+    for r in [&env, &file, &canonical, &none] {
+        let wire = serde_json::to_value(r).expect("SecretRef serializes");
+        let obj = wire.as_object().expect("the wire shape is a map");
+        assert!(
+            obj.contains_key("module"),
+            "the canonical wire shape names `module`: {wire}"
+        );
+        assert!(
+            obj.contains_key("settings"),
+            "the canonical wire shape names `settings` (admin redaction keys off it): {wire}"
+        );
+        assert_eq!(
+            obj.len(),
+            2,
+            "the wire shape is EXACTLY {{ module, settings }}, nothing else: {wire}"
+        );
+    }
+
+    assert_eq!(
+        serde_json::to_value(&env).unwrap(),
+        serde_json::json!({"module": "env", "settings": {"key": "MY_VAR"}})
+    );
+    assert_eq!(
+        serde_json::to_value(&file).unwrap(),
+        serde_json::json!({"module": "file", "settings": {"path": "/run/secrets/x"}})
+    );
+    assert_eq!(
+        serde_json::to_value(&canonical).unwrap(),
+        serde_json::json!({"module": "vault", "settings": {"key": "kv/data/x"}})
+    );
+    assert_eq!(
+        serde_json::to_value(&none).unwrap(),
+        serde_json::json!({"module": "none", "settings": {}})
+    );
+}
