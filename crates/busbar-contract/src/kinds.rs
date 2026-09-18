@@ -118,6 +118,19 @@ impl KeyMaterial {
     /// Read the material. **Sealed** (DECISIONS #40): the `seal` is what says the caller is the
     /// kernel or one of the units the design permits to read key material on the hot path. Every
     /// other call site is a finding.
+    ///
+    /// The raw symbols a plugin used to reach for are gone. Neither the private field nor a
+    /// seal-less read resolves — a plugin has NO name for the bytes without a [`KernelSeal`]:
+    ///
+    /// ```compile_fail,E0616
+    /// let k = busbar_contract::KeyMaterial::new(b"signing".to_vec(), 0);
+    /// let _raw: &[u8] = &k.bytes; // field is private since #40
+    /// ```
+    ///
+    /// ```compile_fail,E0451
+    /// // Building by struct literal is also gone — the field is private; use `KeyMaterial::new`.
+    /// let _k = busbar_contract::KeyMaterial { bytes: Vec::new(), fetched_at: 0 };
+    /// ```
     #[must_use]
     pub fn bytes(&self, _seal: &dyn KernelSeal) -> &[u8] {
         &self.bytes
@@ -447,6 +460,14 @@ impl SecretValue {
     /// Named for what it is, and **sealed** (DECISIONS #40): the `seal` is what says the caller is
     /// the kernel or one of the three units the design permits to expose a resolved secret. Every
     /// other call site is a finding.
+    ///
+    /// A plugin has NO seal-less symbol for the resolved bytes — the pre-#40 no-argument call no
+    /// longer resolves:
+    ///
+    /// ```compile_fail,E0061
+    /// let s = busbar_contract::SecretValue::new(b"pw".to_vec());
+    /// let _raw: &[u8] = s.expose(); // pre-#40 symbol: no `KernelSeal`, no longer resolves
+    /// ```
     #[must_use]
     pub fn expose(&self, _seal: &dyn KernelSeal) -> &[u8] {
         &self.0

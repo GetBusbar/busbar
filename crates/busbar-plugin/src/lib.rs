@@ -72,7 +72,12 @@ pub const ABI_MAJOR: u32 = 1;
 ///
 /// 19→20 (1.6.0 M1): the append-only `hot::Usage` keyed-unit tail (`units_ptr`/`units_len`), paired
 /// with `POD_VERSION` 2→3. `check_preamble` still accepts an older minor (append-only compatibility).
-pub const ABI_MINOR: u32 = 20;
+///
+/// 20→21 (1.6.0, DECISIONS #40): the plugin-facing secret surface changed — `SecretValue::expose`
+/// and `KeyMaterial::bytes` are sealed behind `busbar_contract::plugin::KernelSeal`, so the raw
+/// secret-byte symbols a plugin could name are gone. No frozen struct moved (a COLD-surface access
+/// change, not a wire/layout change); the minor bumps because the plugin ABI surface changed.
+pub const ABI_MINOR: u32 = 21;
 
 /// The FROZEN-FOR-ALL-TIME ABI header. This exact layout — `magic` at offset 0, `abi_major` at 8,
 /// `abi_minor` at 12 — is a permanent contract: it may NEVER be reordered, resized, extended, or
