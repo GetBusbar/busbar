@@ -340,6 +340,124 @@ async fn split_admin_listener_no_double_exposure() {
     assert_eq!(get(data_router, "/healthz", None).await, 200);
 }
 
+/// The /admin management API — create→list→usage→delete, admin-token gating, and a minted
+/// secret then authenticating as a working virtual key. RELOCATED here from busbar-llm's
+/// `engine::forward_pool_integration_tests` (1.6.0): the admin `/api/v1/admin/keys*` routes mount
+/// only through the admin seam (`crate::build_router`), which the busbar-llm plane test binary never
+/// installs (busbar-admin is NOT a dep of the LLM plane, per DECISIONS.md #37 — a PLANE crate must
+/// not depend on busbar-admin nor mount the admin surface). The duplicate there was deterministically
+/// RED (valid-token POST → 404); this is its correct home, where the seam is mounted.
+// Admin-token behavior — requires the compile-removable `admin-tokens` module.
+#[cfg(feature = "auth-admin-tokens")]
+#[tokio::test]
+async fn test_governance_admin_api() {
+    use busbar_core::governance::{GovState, MemoryStore};
+    use std::sync::Arc;
+
+    busbar_core::metrics::init();
+    let store = Arc::new(MemoryStore::new());
+    // A signing key is required to MINT signed-token keys (1.5.0).
+    let signer = busbar_core::governance::signing::TokenSigner::from_secret_bytes(
+        &[9u8; 32],
+        busbar_core::governance::signing::DEFAULT_KID,
+    );
+    let gov = Arc::new(
+        GovState::new_with_signer(store, Some("admintok".to_string()), Some(signer)).unwrap(),
+    );
+
+    let app = crate::new_test_app().keys_chain().governance(gov).build();
+
+    let router = crate::build_router(app);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    // Missing admin token → 401.
+    let r = client
+        .post(format!("{base}/api/v1/admin/keys"))
+        .json(&serde_json::json!({"name": "x"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status().as_u16(), 401, "no admin token → unauthorized");
+
+    // Create a key with the admin token.
+    let r = client
+        .post(format!("{base}/api/v1/admin/keys"))
+        .bearer_auth("admintok")
+        .json(&serde_json::json!({"name": "team-a", "allowed_pools": ["allowedpool"]}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status().as_u16(), 201, "admin create → 201");
+    let created: serde_json::Value = r.json().await.unwrap();
+    let id = created["id"].as_str().unwrap().to_string();
+    // The key credential is a busbar-SIGNED token (1.5.0), returned once - never a stored secret.
+    let secret = created["token"].as_str().unwrap().to_string();
+    assert!(secret.starts_with("bbk_"), "signed token returned once");
+    assert!(
+        created.get("generation_hash").is_none(),
+        "hash never returned"
+    );
+    assert!(created.get("secret").is_none(), "no legacy secret in 1.5.0");
+
+    // List shows it (no hash).
+    let r = client
+        .get(format!("{base}/api/v1/admin/keys"))
+        .bearer_auth("admintok")
+        .send()
+        .await
+        .unwrap();
+    let listed: serde_json::Value = r.json().await.unwrap();
+    assert_eq!(listed["items"].as_array().unwrap().len(), 1);
+    assert!(listed["items"][0].get("generation_hash").is_none());
+
+    // Usage endpoint works.
+    let r = client
+        .get(format!("{base}/api/v1/admin/keys/{id}/usage"))
+        .bearer_auth("admintok")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status().as_u16(), 200);
+
+    // The minted secret authenticates as a virtual key: its allowed pool passes the ACL →
+    // routing 404 (no such pool wired), proving the key is live + ACL applied.
+    let r = client
+        .post(format!("{base}/allowedpool/v1/messages"))
+        .bearer_auth(&secret)
+        .body("{}")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        r.status().as_u16(),
+        404,
+        "minted key authenticates + ACL passes"
+    );
+
+    // Delete, then it's gone from the list.
+    let r = client
+        .delete(format!("{base}/api/v1/admin/keys/{id}"))
+        .bearer_auth("admintok")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status().as_u16(), 204);
+    let r = client
+        .get(format!("{base}/api/v1/admin/keys"))
+        .bearer_auth("admintok")
+        .send()
+        .await
+        .unwrap();
+    let listed: serde_json::Value = r.json().await.unwrap();
+    assert_eq!(listed["items"].as_array().unwrap().len(), 0, "deleted");
+
+    handle.abort();
+}
+
 // Local helpers copied from busbar-core's auth tests (shared there; a private copy here).
 /// Local helper: serve a router on an ephemeral port, returning (addr, join handle).
 async fn dp_serve(
