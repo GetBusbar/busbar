@@ -855,3 +855,75 @@ fn record_put_sweep_boundary_is_exact_and_a_rewrite_refreshes_the_row() {
         "a rewrite refreshes the row: freshness rides the write, not the key"
     );
 }
+
+/// An upsert-kind plane record (`task`): `parent` is `None` and `seq` is `0`, so `plane_key`
+/// resolves its identity to its own `id` and it lands where `get_plane_record`/`plane_token_live`
+/// point-read.
+fn plane_task(id: &str, disposition: PlaneDisposition) -> PlaneRecord {
+    PlaneRecord {
+        kind: "task".to_string(),
+        id: id.to_string(),
+        parent: None,
+        seq: 0,
+        ts: 0,
+        disposition,
+        body: b"opaque".to_vec(),
+    }
+}
+
+/// `plane_token_live` is the MULTI-use, time-and-disposition-bounded capability check, NOT the
+/// single-use `redeem_plane_token` test-and-set. On the default in-memory backend it answers `true`
+/// while a matching `(kind, token)` record is present, still `Active`, and unexpired — and it must be
+/// REPEATABLE, spending nothing, because the A2A push-callback verify-live leg calls back several
+/// times against one long-running task. The trait default returns `Ok(false)`, which would refuse
+/// every legitimate callback out of the box; this proves the override answers `true` for the live
+/// case and stays fail-closed for every other.
+#[test]
+fn plane_token_live_is_true_while_active_and_unexpired_and_is_repeatable() {
+    let s = MemoryStore::new();
+    s.upsert_plane_record(&plane_task("t1", PlaneDisposition::Active))
+        .unwrap();
+
+    // Present, Active, and now (100) is before expires_at (1000): live.
+    assert!(s.plane_token_live("task", "t1", 1000, 100).unwrap());
+    // MULTI-use: asking again answers the same, and spends nothing — the record is untouched.
+    assert!(s.plane_token_live("task", "t1", 1000, 100).unwrap());
+    assert!(
+        s.get_plane_record("task", "t1").unwrap().is_some(),
+        "a live-check must not consume or remove the record (unlike a redeem)"
+    );
+    assert!(
+        s.plane_token_live("task", "t1", 1000, 100).unwrap(),
+        "still live after repeated checks — the capability is 'work still in flight', not 'unused'"
+    );
+}
+
+/// Fail-closed on every non-live case: unknown `(kind, token)`, a terminal disposition, and a lapsed
+/// deadline (`now >= expires_at`) each yield `Ok(false)`.
+#[test]
+fn plane_token_live_is_false_for_unknown_terminal_and_expired() {
+    let s = MemoryStore::new();
+
+    // Unknown (kind, token): fail-closed.
+    assert!(!s.plane_token_live("task", "missing", 1000, 100).unwrap());
+    // Wrong kind for an existing token is also unknown.
+    s.upsert_plane_record(&plane_task("t1", PlaneDisposition::Active))
+        .unwrap();
+    assert!(!s.plane_token_live("other", "t1", 1000, 100).unwrap());
+
+    // Expired: now == expires_at is already past (`now < expires_at` is the live predicate), and
+    // now > expires_at likewise.
+    assert!(
+        !s.plane_token_live("task", "t1", 1000, 1000).unwrap(),
+        "now == expires_at is not before the deadline"
+    );
+    assert!(!s.plane_token_live("task", "t1", 1000, 1001).unwrap());
+
+    // Terminal disposition: the task has finished, so the token is dead even before its deadline.
+    s.upsert_plane_record(&plane_task("t1", PlaneDisposition::Terminal))
+        .unwrap();
+    assert!(
+        !s.plane_token_live("task", "t1", 1000, 100).unwrap(),
+        "a terminal record refuses further callbacks even while unexpired"
+    );
+}
