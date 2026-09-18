@@ -719,19 +719,56 @@ pub fn confirming_auditors(sc: &Json, current_hash: Option<&str>) -> BTreeSet<St
         .collect()
 }
 
-/// TWO ZERO ROUNDS FROM TWO PEOPLE — the bar `clean` is held to.
+/// TWO CONSECUTIVE ZEROS FROM TWO PEOPLE, WITH NO FINDING BETWEEN THEM — the bar `clean` is held to.
 ///
-/// Both halves are required and neither implies the other. Two identities on one round is one
-/// reading credited to two names; two rounds under one identity is one person reading twice. Only a
-/// pair that differs in BOTH is a second, independent reading, and a round whose number cannot be
-/// read cannot be shown to be a different round, so it does not count as one.
+/// A scope is clean iff the TRAILING RUN of consecutive `zero` verdicts at the current tree has
+/// length ≥ 2. A `findings` verdict at the current tree RESETS the run: `zero -> findings -> zero`
+/// stands one zero, not two, because the finding between them is a fresh verdict the earlier zero no
+/// longer answers. Only `zero`/`findings` are verdicts; `in_progress`/`unaudited`/notes are skipped
+/// and do not break the run. Counting every same-hash zero regardless of order — the pre-#41 rule —
+/// read `zero -> findings -> zero` as clean, which is the hole this closes.
+///
+/// The anti-forgery bar rides on top: the LAST TWO zeros of the trailing run must be a second,
+/// independent reading — distinct auditor identities AND distinct round numbers. Both halves are
+/// required and neither implies the other. Two identities on one round is one reading credited to two
+/// names; two rounds under one identity is one person reading twice; a round whose number cannot be
+/// read cannot be shown to be a different round. An earlier distinct zero cannot lend its
+/// independence to a trailing run that ends in one person reading twice.
 pub fn confirmed(sc: &Json, current_hash: Option<&str>) -> bool {
-    let seen = confirmations(sc, current_hash);
-    seen.iter().enumerate().any(|(i, a)| {
-        seen[i + 1..].iter().any(|b| {
-            a.auditor != b.auditor && matches!((a.round, b.round), (Some(x), Some(y)) if x != y)
+    // The verdict rounds at the current tree, in order. `in_progress`/`unaudited`/notes are not
+    // verdicts and are skipped, so they neither reset nor extend the run.
+    let verdicts: Vec<&Json> = sc
+        .get("rounds")
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|r| {
+            r.get("tree_hash").as_str() == current_hash
+                && matches!(r.get("result").as_str(), Some("zero" | "findings"))
         })
-    })
+        .collect();
+    // The trailing maximal run of consecutive `zero`s, most recent first. A `findings` verdict ends
+    // the run.
+    let run: Vec<&Json> = verdicts
+        .iter()
+        .rev()
+        .take_while(|r| r.get("result").as_str() == Some("zero"))
+        .copied()
+        .collect();
+    let [last, prev, ..] = run.as_slice() else {
+        return false;
+    };
+    let (Some(la), Some(pa)) = (
+        auditor_identity(last.get("auditor")),
+        auditor_identity(prev.get("auditor")),
+    ) else {
+        return false;
+    };
+    la != pa
+        && matches!(
+            (last.get("round").as_i64(), prev.get("round").as_i64()),
+            (Some(x), Some(y)) if x != y
+        )
 }
 
 /// The latest round that REACHED A VERDICT about the current tree — `zero` or `findings`.
@@ -1356,6 +1393,88 @@ mod tests {
                ]}}"#
         ));
         assert!(!confirmed(&sc, Some(HASH)));
+    }
+
+    /// A FINDING RESETS THE RUN, EVEN AT AN UNCHANGED HASH. `zero -> findings -> zero` is one
+    /// standing zero, not two: the finding between them is a fresh verdict that the earlier zero no
+    /// longer answers, so the trailing run of consecutive zeros is length one and the scope is NOT
+    /// clean. Counting both zeros regardless of the finding between them is the exact hole #41 closes.
+    #[test]
+    fn zero_findings_zero_same_hash_is_not_clean() {
+        let sc = scope(&format!(
+            r#"{{"result": "zero", "audited_at": "c0", "tree_hash": "{HASH}", "rounds": [
+                 {{"round": 1, "result": "zero", "auditor": "alice", "tree_hash": "{HASH}"}},
+                 {{"round": 2, "result": "findings", "tree_hash": "{HASH}", "counts": {{"HIGH": 1}}}},
+                 {{"round": 3, "result": "zero", "auditor": "bob", "tree_hash": "{HASH}"}}
+               ]}}"#
+        ));
+        assert!(
+            !confirmed(&sc, Some(HASH)),
+            "the finding between the two zeros resets the run to one standing zero"
+        );
+        assert_eq!(status_of(&sc, Some(HASH)), "unconfirmed");
+    }
+
+    /// EVERY FINDING RESETS THE RUN, HOWEVER MANY ZEROS CAME BEFORE IT. `zero -> findings -> zero ->
+    /// findings -> zero` at one unchanged hash still ends in a run of exactly one zero, because the
+    /// last finding wiped whatever ran before it. Three same-hash zeros do not add up to clean when a
+    /// finding stands between each pair.
+    #[test]
+    fn zero_findings_zero_findings_zero_is_not_clean() {
+        let sc = scope(&format!(
+            r#"{{"result": "zero", "audited_at": "c0", "tree_hash": "{HASH}", "rounds": [
+                 {{"round": 1, "result": "zero", "auditor": "alice", "tree_hash": "{HASH}"}},
+                 {{"round": 2, "result": "findings", "tree_hash": "{HASH}", "counts": {{"HIGH": 1}}}},
+                 {{"round": 3, "result": "zero", "auditor": "bob", "tree_hash": "{HASH}"}},
+                 {{"round": 4, "result": "findings", "tree_hash": "{HASH}", "counts": {{"MEDIUM": 2}}}},
+                 {{"round": 5, "result": "zero", "auditor": "carol", "tree_hash": "{HASH}"}}
+               ]}}"#
+        ));
+        assert!(
+            !confirmed(&sc, Some(HASH)),
+            "the last finding leaves a trailing run of one zero, so three zeros are not clean"
+        );
+        assert_eq!(status_of(&sc, Some(HASH)), "unconfirmed");
+    }
+
+    /// A CLOSED FINDING FOLLOWED BY TWO INDEPENDENT ZEROS IS CLEAN. `zero -> findings -> zero -> zero`
+    /// ends in a trailing run of two zeros from two people, which is the whole of the bar. The finding
+    /// earlier in the history does not disqualify a genuine two-zero run that lands after it.
+    #[test]
+    fn zero_findings_zero_zero_is_clean() {
+        let sc = scope(&format!(
+            r#"{{"result": "zero", "audited_at": "c0", "tree_hash": "{HASH}", "rounds": [
+                 {{"round": 1, "result": "zero", "auditor": "alice", "tree_hash": "{HASH}"}},
+                 {{"round": 2, "result": "findings", "tree_hash": "{HASH}", "counts": {{"HIGH": 1}}}},
+                 {{"round": 3, "result": "zero", "auditor": "bob", "tree_hash": "{HASH}"}},
+                 {{"round": 4, "result": "zero", "auditor": "carol", "tree_hash": "{HASH}"}}
+               ]}}"#
+        ));
+        assert!(
+            confirmed(&sc, Some(HASH)),
+            "the trailing run of two zeros from two people is clean despite the earlier finding"
+        );
+        assert_eq!(status_of(&sc, Some(HASH)), "clean");
+    }
+
+    /// THE TWO TRAILING ZEROS THEMSELVES MUST BE TWO PEOPLE. An earlier distinct zero cannot lend its
+    /// independence to a trailing run that ends in one person reading twice: `zero(bob) -> zero(alice)
+    /// -> zero(alice)` ends in two readings by ALICE, so the anti-forgery bar is not met even though a
+    /// distinct pair exists earlier in the history.
+    #[test]
+    fn trailing_two_zeros_same_auditor_is_not_clean() {
+        let sc = scope(&format!(
+            r#"{{"result": "zero", "audited_at": "c0", "tree_hash": "{HASH}", "rounds": [
+                 {{"round": 1, "result": "zero", "auditor": "bob", "tree_hash": "{HASH}"}},
+                 {{"round": 2, "result": "zero", "auditor": "alice", "tree_hash": "{HASH}"}},
+                 {{"round": 3, "result": "zero", "auditor": "alice", "tree_hash": "{HASH}"}}
+               ]}}"#
+        ));
+        assert!(
+            !confirmed(&sc, Some(HASH)),
+            "the trailing two zeros are one person, and an earlier distinct zero cannot stand in"
+        );
+        assert_eq!(status_of(&sc, Some(HASH)), "unconfirmed");
     }
 
     /// H1, THE HOLE ITSELF. `record --result in_progress` overwrites the top-level record and wipes
