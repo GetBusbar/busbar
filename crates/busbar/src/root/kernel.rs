@@ -825,7 +825,10 @@ impl ProductionUnits {
     /// `ReadOnly` would hand an unbound principal every read the surface has. The scope unit's matrix
     /// still decides what a grant reaches — the grant is the ceiling, the matrix is the door — and a
     /// caller holding no ceiling never reaches the door at all.
-    pub(crate) fn admin_grant(&self, principal: &PrincipalId) -> Option<busbar_unit_verbs::VerbScope> {
+    pub(crate) fn admin_grant(
+        &self,
+        principal: &PrincipalId,
+    ) -> Option<busbar_unit_verbs::VerbScope> {
         if self.front_door_is_open() {
             return Some(busbar_unit_verbs::VerbScope::Full);
         }

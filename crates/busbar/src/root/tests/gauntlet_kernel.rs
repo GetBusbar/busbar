@@ -16,8 +16,8 @@ use axum::body::{to_bytes, Body};
 use axum::http::StatusCode;
 use axum::response::Response;
 use busbar_substrate::plane_host::{
-    register_gauntlet_runner, register_session_runner, run_gauntlet, run_gauntlet_session, Admitted,
-    GauntletPlane, GauntletRequest, VerifyOutcome,
+    register_gauntlet_runner, register_session_runner, run_gauntlet, run_gauntlet_session,
+    Admitted, GauntletPlane, GauntletRequest, VerifyOutcome,
 };
 
 use crate::root::gauntlet_kernel::{open_gauntlet_via_kernel, run_gauntlet_via_kernel};
@@ -60,8 +60,7 @@ impl GauntletPlane for RefusePlane {
     fn verify_destination(&self, _req: &GauntletRequest<'_>) -> VerifyOutcome {
         let mut resp = Response::new(Body::from("denied"));
         *resp.status_mut() = StatusCode::FORBIDDEN;
-        resp.headers_mut()
-            .insert("x-refused", "1".parse().unwrap());
+        resp.headers_mut().insert("x-refused", "1".parse().unwrap());
         VerifyOutcome::Refuse(resp)
     }
 
@@ -130,7 +129,9 @@ fn req(gov: &busbar_api::PlaneRequestCtx) -> GauntletRequest<'_> {
 async fn split(resp: Response) -> (StatusCode, axum::http::HeaderMap, axum::body::Bytes) {
     let status = resp.status();
     let headers = resp.headers().clone();
-    let body = to_bytes(resp.into_body(), usize::MAX).await.expect("body drains");
+    let body = to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .expect("body drains");
     (status, headers, body)
 }
 
@@ -139,7 +140,8 @@ async fn kernel_rider_matches_substrate_gauntlet_on_proceed() {
     let gov = busbar_api::PlaneRequestCtx::default();
 
     let substrate = run_gauntlet(req(&gov), FixedPlane::boxed(200, br#"{"ok":true}"#)).await;
-    let kernel = run_gauntlet_via_kernel(req(&gov), FixedPlane::boxed(200, br#"{"ok":true}"#)).await;
+    let kernel =
+        run_gauntlet_via_kernel(req(&gov), FixedPlane::boxed(200, br#"{"ok":true}"#)).await;
 
     let (gs, gh, gb) = split(substrate).await;
     let (ks, kh, kb) = split(kernel).await;
@@ -193,8 +195,14 @@ async fn kernel_session_admit_matches_substrate_open_unit_on_refuse() {
     let (ss, sh, sb) = split(substrate).await;
     let (ks, kh, kb) = split(kernel).await;
     assert_eq!(ss, StatusCode::FORBIDDEN, "the plane's own refusal status");
-    assert_eq!(ss, ks, "session refusal status diverged kernel-vs-substrate");
-    assert_eq!(sh, kh, "session refusal headers diverged kernel-vs-substrate");
+    assert_eq!(
+        ss, ks,
+        "session refusal status diverged kernel-vs-substrate"
+    );
+    assert_eq!(
+        sh, kh,
+        "session refusal headers diverged kernel-vs-substrate"
+    );
     assert_eq!(sb, kb, "session refusal body diverged kernel-vs-substrate");
 }
 
@@ -234,7 +242,11 @@ async fn host_selection_seam_routes_one_shot_to_registered_runner_when_set() {
     )
     .await;
     let (status, _h, body) = split(resp).await;
-    assert_eq!(status.as_u16(), 599, "the registered runner ran, not substrate drive");
+    assert_eq!(
+        status.as_u16(),
+        599,
+        "the registered runner ran, not substrate drive"
+    );
     assert_eq!(
         body,
         axum::body::Bytes::from_static(b"ROUTED-TO-REGISTERED-RUNNER")

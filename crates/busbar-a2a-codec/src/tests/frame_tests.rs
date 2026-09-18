@@ -66,7 +66,11 @@ fn transforms_compose_in_order() {
     );
 
     assert_eq!(out.get("x-corr"), Some("c-42"));
-    assert_eq!(out.get("authorization"), None, "the redaction ran after the stamp");
+    assert_eq!(
+        out.get("authorization"),
+        None,
+        "the redaction ran after the stamp"
+    );
     assert_eq!(out.body, serde_json::json!({"body": "kept"}));
 }
 

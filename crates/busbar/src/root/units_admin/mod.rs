@@ -815,8 +815,8 @@ fn amend_rate_history_effect(
         // reading if the seam is ever reached without a sealed key.
         return Err(GovernanceError::Validation);
     };
-    let verifying_key =
-        ed25519_dalek::VerifyingKey::from_bytes(&operator_key).map_err(|_| GovernanceError::Validation)?;
+    let verifying_key = ed25519_dalek::VerifyingKey::from_bytes(&operator_key)
+        .map_err(|_| GovernanceError::Validation)?;
     let expected_fingerprint = hex::encode(sha2::Sha256::digest(operator_key));
     if operator_fingerprint != expected_fingerprint {
         return Err(GovernanceError::Validation);
@@ -2294,7 +2294,8 @@ pub(crate) fn evidence(_ctx: &UnitCtx) -> busbar_kernel::teller::Evidence {
 /// Its OWN key, taken from the plane's `PlaneMeta` rather than spelt a second time here, so the
 /// loop's registry names this plane with exactly the word the plane names itself with and the two
 /// can never drift. There is one string that says "admin" and it lives on the plane.
-pub const UNITS_KEY: &str = <busbar_plane_admin::AdminPlane as busbar_contract::plane::PlaneMeta>::KEY;
+pub const UNITS_KEY: &str =
+    <busbar_plane_admin::AdminPlane as busbar_contract::plane::PlaneMeta>::KEY;
 
 /// The admin plane, registered onto the kernel's teller loop through the one seam every plane uses.
 ///

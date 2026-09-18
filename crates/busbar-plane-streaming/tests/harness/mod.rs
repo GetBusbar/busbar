@@ -5,7 +5,9 @@
 //! values (a unit, a verified destination) handed through a seal. Nothing here is shipped — it is the
 //! test binary's own scaffolding, the same way every plane crate carries one.
 
-use busbar_contract::bounded::{Arena, ArenaBudget, ArenaBytes, Facts, Ir, Labels, SlabBytes, Span};
+use busbar_contract::bounded::{
+    Arena, ArenaBudget, ArenaBytes, Facts, Ir, Labels, SlabBytes, Span,
+};
 use busbar_contract::dest::{DestinationFacts, VerifiedDestination};
 use busbar_contract::ids::{LaneId, OpClassId, StreamId};
 use busbar_contract::plugin::KernelSeal;

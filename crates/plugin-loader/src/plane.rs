@@ -26,8 +26,8 @@
 
 use crate::stage;
 use busbar_plugin::hot::decl::{BuildFn, ConfigValidateFn, DispatchFn, HydrateFn, StartFn};
-use busbar_plugin::hot::pod::{OpaqueState, RawStatus, StatusClass, POD_VERSION};
 use busbar_plugin::hot::host::HostCtx;
+use busbar_plugin::hot::pod::{OpaqueState, RawStatus, StatusClass, POD_VERSION};
 use busbar_plugin::hot::{
     BuildCtx, IngressCarrier, PlaneDecl, PlaneDeclFn, PlaneHostVtable, WorkItem,
 };
@@ -142,13 +142,15 @@ impl DynPlane {
         busbar_plugin::read_sized_field!(self.decl, self.honoured_size, PlaneDecl, build).flatten()
     }
     fn slot_hydrate(&self) -> Option<HydrateFn> {
-        busbar_plugin::read_sized_field!(self.decl, self.honoured_size, PlaneDecl, hydrate).flatten()
+        busbar_plugin::read_sized_field!(self.decl, self.honoured_size, PlaneDecl, hydrate)
+            .flatten()
     }
     fn slot_start(&self) -> Option<StartFn> {
         busbar_plugin::read_sized_field!(self.decl, self.honoured_size, PlaneDecl, start).flatten()
     }
     fn slot_dispatch(&self) -> Option<DispatchFn> {
-        busbar_plugin::read_sized_field!(self.decl, self.honoured_size, PlaneDecl, dispatch).flatten()
+        busbar_plugin::read_sized_field!(self.decl, self.honoured_size, PlaneDecl, dispatch)
+            .flatten()
     }
 
     /// Drive the plane's `config_validate` over raw config bytes, catching any panic across the seam.
@@ -161,7 +163,9 @@ impl DynPlane {
         let raw_ptr = raw.as_ptr();
         let raw_len = raw.len();
         let out_ptr: *mut MaybeUninit<OpaqueState> = &mut out;
-        match crate::ffi_guard(&self.path, "plane_config_validate", || f(raw_ptr, raw_len, out_ptr)) {
+        match crate::ffi_guard(&self.path, "plane_config_validate", || {
+            f(raw_ptr, raw_len, out_ptr)
+        }) {
             Ok(status) => {
                 let class = status.class();
                 if class == StatusClass::Ok {
@@ -280,7 +284,11 @@ impl DynPlane {
 /// Load a plane from EXACTLY the verified library `bytes` (the TOCTOU-safe entrypoint; see
 /// [`load_store_from_bytes`](crate::load_store_from_bytes) for the staging contract). `manifest_kind`
 /// is the trust-verified signed-manifest `kind`, cross-checked against `busbar_plugin_kind()`.
-pub fn load_plane_from_bytes(bytes: &[u8], display: &str, manifest_kind: &str) -> Result<DynPlane, String> {
+pub fn load_plane_from_bytes(
+    bytes: &[u8],
+    display: &str,
+    manifest_kind: &str,
+) -> Result<DynPlane, String> {
     let (lib, staged) = stage::load_library_from_bytes(bytes, display)?;
     wire_up_plane(lib, display.to_string(), manifest_kind, Some(staged))
 }
@@ -337,9 +345,8 @@ fn wire_up_plane(
 
     // ── 3. Resolve the ONE hot-lane entrypoint and read the decl pointer (guarded). ──
     let decl_ptr = {
-        let f = unsafe { lib.get::<PlaneDeclFn>(busbar_plugin::hot::symbol::PLANE_DECL) }.map_err(
-            |_| format!("plane '{display}' missing busbar_plane_decl symbol"),
-        )?;
+        let f = unsafe { lib.get::<PlaneDeclFn>(busbar_plugin::hot::symbol::PLANE_DECL) }
+            .map_err(|_| format!("plane '{display}' missing busbar_plane_decl symbol"))?;
         crate::ffi_guard_confined(&display, "plane_decl", || unsafe { (*f)() })?
     };
     if decl_ptr.is_null() {
@@ -359,13 +366,15 @@ fn wire_up_plane(
         )
     };
     check_preamble(&abi).map_err(|e| {
-        format!("plane '{display}' decl preamble refused: {e:?} (rebuild it against this busbar ABI)")
+        format!(
+            "plane '{display}' decl preamble refused: {e:?} (rebuild it against this busbar ABI)"
+        )
     })?;
     let ours = core::mem::size_of::<PlaneDecl>() as u32;
     // Minimum size that can carry the frozen header + vocabulary + carriers (offset THROUGH
     // `provided_carriers`). A decl that does not even reach the carriers cannot describe a plane.
-    let min = (core::mem::offset_of!(PlaneDecl, provided_carriers)
-        + core::mem::size_of::<u32>()) as u32;
+    let min =
+        (core::mem::offset_of!(PlaneDecl, provided_carriers) + core::mem::size_of::<u32>()) as u32;
     if advertised < min {
         return Err(format!(
             "plane '{display}' decl attests size {advertised}, below the {min}-byte vocabulary \

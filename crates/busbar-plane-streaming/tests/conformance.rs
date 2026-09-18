@@ -128,7 +128,10 @@ fn a_realtime_voice_session_reserves_takes_turns_and_settles() {
     let Ingress::Frame { for_, .. } = relayed else {
         panic!("expected Ingress::Frame (audio relays under the turn), got {relayed:?}");
     };
-    assert!(for_.is_some(), "the relay frame carries the turn's correlation");
+    assert!(
+        for_.is_some(),
+        "the relay frame carries the turn's correlation"
+    );
 
     // (2) BARGE-IN: a client truncation supersedes the open turn, and the plane writes the declared
     // interrupt fact carrying the playback position — the kernel's teller loop reads this to truncate.
@@ -182,7 +185,9 @@ fn a_realtime_voice_session_reserves_takes_turns_and_settles() {
     };
     assert_eq!(tool_draft.op.as_str(), "tool_call");
     assert_eq!(
-        tool_draft.facts.get(busbar_plane_streaming::meta::FACT_TOOL_NAME),
+        tool_draft
+            .facts
+            .get(busbar_plane_streaming::meta::FACT_TOOL_NAME),
         Some(FactValue::Str("lookup")),
         "the tool-call sub-unit names the tool the loop invokes"
     );
@@ -205,7 +210,12 @@ fn a_realtime_voice_session_reserves_takes_turns_and_settles() {
     let mut done_cursor = FrameCursor::new(&done_frames);
     let settle_dest = destination("api.openai.com", LaneId::new("realtime"));
     let progress = plane
-        .decode_response(&mut done_cursor, &settle_dest, Some(&mut upstream_state), &c)
+        .decode_response(
+            &mut done_cursor,
+            &settle_dest,
+            Some(&mut upstream_state),
+            &c,
+        )
         .expect("response.done decodes");
     let Progress::Terminal { r, .. } = progress else {
         panic!("expected Progress::Terminal (the turn completes), got {progress:?}");
@@ -259,6 +269,8 @@ fn the_streaming_plane_declares_its_full_dialect_and_meter_roster() {
     );
     // The two duplex dialects a streaming session may DIAL, with voice among them.
     let plane = streaming_plane();
-    assert!(plane.upstream_for_dialect(Dialect::OpenaiRealtime).is_some());
+    assert!(plane
+        .upstream_for_dialect(Dialect::OpenaiRealtime)
+        .is_some());
     assert!(plane.upstream_for_dialect(Dialect::GeminiLive).is_none());
 }
