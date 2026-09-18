@@ -839,6 +839,31 @@ impl Store for MemoryStore {
             .is_none();
         Ok(first)
     }
+
+    fn plane_token_live(
+        &self,
+        kind: &str,
+        token: &str,
+        expires_at: u64,
+        now: u64,
+    ) -> StoreResult<bool> {
+        // MULTI-use and SPENDS NOTHING — the opposite of `redeem_plane_token`'s single-use
+        // test-and-set. This is a plain READ of the `(kind, token)` upsert record (an upsert kind
+        // lives at `seq` 0, exactly where `get_plane_record` point-reads it), live only while that
+        // record is present, its disposition is still `Active` (non-terminal), and `now` has not
+        // reached `expires_at`. Nothing is inserted, removed or mutated, so asking twice answers the
+        // same twice — the whole point of the verb.
+        //
+        // The trait default is `Ok(false)` precisely so a backend that keeps no records refuses these
+        // callbacks fail-closed. This backend DOES keep them, in the same `plane_records` map the
+        // upsert leg wrote to, so it answers from there — and it stays fail-closed for the same three
+        // reasons: an unknown `(kind, token)`, a terminal disposition, and a lapsed deadline each
+        // yield `Ok(false)`.
+        Ok(self
+            .plane_records_read()
+            .get(&(kind.to_string(), token.to_string(), 0))
+            .is_some_and(|r| r.disposition == PlaneDisposition::Active && now < expires_at))
+    }
 }
 
 #[cfg(test)]
