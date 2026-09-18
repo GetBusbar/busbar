@@ -330,6 +330,33 @@ OFFLINE
   return 0
 }
 
+# ── Drain-safe downscale selection ───────────────────────────────────────────────────────────────
+# Print the instance ids of SPOT boxes that are SAFE TO TERMINATE right now: registered (at least
+# one online agent) AND fully idle (NO agent currently executing a job). This is the selection the
+# utilization-aware controller uses when it sheds over-provisioned capacity — the owner rule is
+# "never pay for a box at 10%", but the harder rule is "never kill a box mid-job", so a box with any
+# busy agent is never returned, and a box still bootstrapping (no online agent yet) is left alone so
+# we do not throw away capacity that is seconds from taking work.
+#
+# Keyed on the instance-id embedded in the runner name (`ec2-<id-minus-i->-<agent>`), NOT on labels.
+# Needs org-runner read (admin:org). With no such token it returns nothing, so a downscale that
+# cannot prove a box is idle simply does not happen — the conservative direction.
+idle_spot_boxes() {
+  local spot runners online_iids busy_iids iid
+  spot="$(fleet_spot_ids | tr '\n' ' ')"
+  [ -n "${spot// /}" ] || return 0
+  runners="$(gh api --paginate "/orgs/${ORG}/actions/runners?per_page=100" \
+     --jq '.runners[] | select(.status=="online") | [.name, .busy] | @tsv' 2>/dev/null)"
+  online_iids="$(printf '%s\n' "$runners" | sed -nE 's/^ec2-(.+)-[0-9]+\t.*/i-\1/p' | sort -u)"
+  busy_iids="$(printf '%s\n' "$runners" | awk -F'\t' '$2=="true"{print $1}' \
+     | sed -nE 's/^ec2-(.+)-[0-9]+$/i-\1/p' | sort -u)"
+  for iid in $spot; do
+    printf '%s\n' "$online_iids" | grep -qx "$iid" || continue   # not online yet: keep (may be booting)
+    printf '%s\n' "$busy_iids"   | grep -qx "$iid" && continue    # has a busy agent: NEVER terminate
+    printf '%s\n' "$iid"
+  done
+}
+
 # ── SSM plumbing shared by register / reconcile / ssh ───────────────────────────────────────────
 ssm_online() { # $1 = whitespace-separated instance ids
   [ -n "${1:-}" ] || return 0
