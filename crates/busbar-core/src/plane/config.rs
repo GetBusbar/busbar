@@ -211,7 +211,7 @@ impl RawPlaneSection {
 /// hook and falls back to an empty raw capture (never present, never refused). Byte-identical to the
 /// pre-seam typed field's `Default`.
 fn default_plane_section(config_section: &str) -> Box<dyn PlaneCfg> {
-    match crate::plane::registry::plane_decl_for_config_section(config_section)
+    match busbar_substrate::plane::registry::plane_decl_for_config_section(config_section)
         .and_then(|d| d.default_section)
     {
         Some(f) => f(),
@@ -232,7 +232,7 @@ where
     D: serde::Deserializer<'de>,
 {
     let value = serde_yaml::Value::deserialize(deserializer)?;
-    match crate::plane::registry::plane_decl_for_config_section(config_section)
+    match busbar_substrate::plane::registry::plane_decl_for_config_section(config_section)
         .and_then(|d| d.parse_section)
     {
         Some(parse) => parse(&value).map_err(serde::de::Error::custom),
@@ -257,7 +257,7 @@ where
     if value.is_null() {
         return Ok(None);
     }
-    match crate::plane::registry::plane_decl_for_config_section(config_section)
+    match busbar_substrate::plane::registry::plane_decl_for_config_section(config_section)
         .and_then(|d| d.parse_endpoint)
     {
         Some(parse) => parse(&value).map(Some).map_err(serde::de::Error::custom),
@@ -390,7 +390,7 @@ pub(crate) type EndpointSection = McpEndpointSection; // plane-purity: frozen-wi
 /// names the same one on every run. A nondeterministic diagnostic makes a boot failure
 /// unreproducible.
 pub fn config_sections() -> Vec<&'static str> {
-    config_sections_from(super::registry::plane_decls())
+    config_sections_from(busbar_substrate::plane::registry::plane_decls())
 }
 
 /// THE SECTION FOLD, over a GIVEN plane declaration list rather than the process one — so a test can
@@ -400,7 +400,7 @@ pub fn config_sections() -> Vec<&'static str> {
 /// [`super::registry::PlaneDecl::config_section`] rather than an enum `match`, which is what lets a
 /// registered plane's section into the hook-reference grammar.
 pub(crate) fn config_sections_from(
-    decls: &[&'static super::registry::PlaneDecl],
+    decls: &[&'static busbar_substrate::plane::registry::PlaneDecl],
 ) -> Vec<&'static str> {
     let mut out: Vec<&'static str> = Vec::new();
     for section in decls
