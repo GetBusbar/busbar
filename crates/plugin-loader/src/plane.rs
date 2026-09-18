@@ -26,8 +26,8 @@
 
 use crate::stage;
 use busbar_plugin::hot::decl::{BuildFn, ConfigValidateFn, DispatchFn, HydrateFn, StartFn};
-use busbar_plugin::hot::pod::{OpaqueState, RawStatus, StatusClass, POD_VERSION};
 use busbar_plugin::hot::host::HostCtx;
+use busbar_plugin::hot::pod::{OpaqueState, RawStatus, StatusClass, POD_VERSION};
 use busbar_plugin::hot::{
     BuildCtx, IngressCarrier, PlaneDecl, PlaneDeclFn, PlaneHostVtable, WorkItem,
 };
@@ -142,13 +142,15 @@ impl DynPlane {
         busbar_plugin::read_sized_field!(self.decl, self.honoured_size, PlaneDecl, build).flatten()
     }
     fn slot_hydrate(&self) -> Option<HydrateFn> {
-        busbar_plugin::read_sized_field!(self.decl, self.honoured_size, PlaneDecl, hydrate).flatten()
+        busbar_plugin::read_sized_field!(self.decl, self.honoured_size, PlaneDecl, hydrate)
+            .flatten()
     }
     fn slot_start(&self) -> Option<StartFn> {
         busbar_plugin::read_sized_field!(self.decl, self.honoured_size, PlaneDecl, start).flatten()
     }
     fn slot_dispatch(&self) -> Option<DispatchFn> {
-        busbar_plugin::read_sized_field!(self.decl, self.honoured_size, PlaneDecl, dispatch).flatten()
+        busbar_plugin::read_sized_field!(self.decl, self.honoured_size, PlaneDecl, dispatch)
+            .flatten()
     }
 
     /// Drive the plane's `config_validate` over raw config bytes, catching any panic across the seam.
@@ -161,7 +163,9 @@ impl DynPlane {
         let raw_ptr = raw.as_ptr();
         let raw_len = raw.len();
         let out_ptr: *mut MaybeUninit<OpaqueState> = &mut out;
-        match crate::ffi_guard(&self.path, "plane_config_validate", || f(raw_ptr, raw_len, out_ptr)) {
+        match crate::ffi_guard(&self.path, "plane_config_validate", || {
+            f(raw_ptr, raw_len, out_ptr)
+        }) {
             Ok(status) => {
                 let class = status.class();
                 if class == StatusClass::Ok {
@@ -280,7 +284,11 @@ impl DynPlane {
 /// Load a plane from EXACTLY the verified library `bytes` (the TOCTOU-safe entrypoint; see
 /// [`load_store_from_bytes`](crate::load_store_from_bytes) for the staging contract). `manifest_kind`
 /// is the trust-verified signed-manifest `kind`, cross-checked against `busbar_plugin_kind()`.
-pub fn load_plane_from_bytes(bytes: &[u8], display: &str, manifest_kind: &str) -> Result<DynPlane, String> {
+pub fn load_plane_from_bytes(
+    bytes: &[u8],
+    display: &str,
+    manifest_kind: &str,
+) -> Result<DynPlane, String> {
     let (lib, staged) = stage::load_library_from_bytes(bytes, display)?;
     wire_up_plane(lib, display.to_string(), manifest_kind, Some(staged))
 }
@@ -337,9 +345,8 @@ fn wire_up_plane(
 
     // ── 3. Resolve the ONE hot-lane entrypoint and read the decl pointer (guarded). ──
     let decl_ptr = {
-        let f = unsafe { lib.get::<PlaneDeclFn>(busbar_plugin::hot::symbol::PLANE_DECL) }.map_err(
-            |_| format!("plane '{display}' missing busbar_plane_decl symbol"),
-        )?;
+        let f = unsafe { lib.get::<PlaneDeclFn>(busbar_plugin::hot::symbol::PLANE_DECL) }
+            .map_err(|_| format!("plane '{display}' missing busbar_plane_decl symbol"))?;
         crate::ffi_guard_confined(&display, "plane_decl", || unsafe { (*f)() })?
     };
     if decl_ptr.is_null() {
@@ -359,13 +366,15 @@ fn wire_up_plane(
         )
     };
     check_preamble(&abi).map_err(|e| {
-        format!("plane '{display}' decl preamble refused: {e:?} (rebuild it against this busbar ABI)")
+        format!(
+            "plane '{display}' decl preamble refused: {e:?} (rebuild it against this busbar ABI)"
+        )
     })?;
     let ours = core::mem::size_of::<PlaneDecl>() as u32;
     // Minimum size that can carry the frozen header + vocabulary + carriers (offset THROUGH
     // `provided_carriers`). A decl that does not even reach the carriers cannot describe a plane.
-    let min = (core::mem::offset_of!(PlaneDecl, provided_carriers)
-        + core::mem::size_of::<u32>()) as u32;
+    let min =
+        (core::mem::offset_of!(PlaneDecl, provided_carriers) + core::mem::size_of::<u32>()) as u32;
     if advertised < min {
         return Err(format!(
             "plane '{display}' decl attests size {advertised}, below the {min}-byte vocabulary \
@@ -396,6 +405,21 @@ fn wire_up_plane(
         _backing: backing,
     })
 }
+
+/// Hard cap on a single plane vocabulary string (`name`/`section_key`/`scope`/`label`), enforced
+/// BEFORE the `from_raw_parts` slice in [`read_vocab`]. The `*_len` fields of a [`PlaneDecl`] are
+/// plugin-attested `usize`s read straight out of the (third-party, possibly-hostile) decl: without a
+/// bound, a plane that pairs a short `name_ptr` buffer with a huge `name_len` forces the host to form
+/// a slice — and then walk it in `str::from_utf8` — far past the real allocation, an unbounded
+/// out-of-bounds read in the ENGINE's address space. This mirrors the discipline the COLD load path
+/// already enforces on every plugin-supplied length before its own `from_raw_parts`
+/// (`response_len_ok`/`open_err_is_readable` against `MAX_PLUGIN_RESPONSE_LEN`, and `host_log_sink`'s
+/// `MAX_LOG_LEN`): the hot-tier vocabulary read must not be the one plugin-length path that skips it.
+/// A vocabulary string is an identifier/label; 64 KiB is orders of magnitude past any real one, so a
+/// legitimate plane never trips it — an oversize declaration is refused as a hard load error
+/// (fail-closed) rather than silently truncated, since a truncated `name`/`section_key` would corrupt
+/// the plane's routing identity.
+const MAX_PLANE_VOCAB_LEN: usize = 64 * 1024;
 
 /// Which vocabulary `(ptr,len)` pair to read.
 #[derive(Clone, Copy)]
@@ -435,8 +459,18 @@ fn read_vocab(
     if ptr.is_null() || len == 0 {
         return Ok(String::new());
     }
+    // Cap the plugin-attested length BEFORE slicing: `len` is read verbatim from the (third-party)
+    // decl, so an unbounded `from_raw_parts` here is an OOB read past the real vocabulary buffer.
+    // Refuse the load fail-closed rather than form the slice. See [`MAX_PLANE_VOCAB_LEN`].
+    if len > MAX_PLANE_VOCAB_LEN {
+        return Err(format!(
+            "plane '{display}' declares a {len}-byte vocabulary string, exceeding the \
+             {MAX_PLANE_VOCAB_LEN}-byte cap — refusing to load"
+        ));
+    }
     // SAFETY: the plane's decl guarantees each non-null `(ptr,len)` addresses a live, immutable
-    // vocabulary range for the life of the mapped image (the decl's own Send/Sync soundness note).
+    // vocabulary range for the life of the mapped image (the decl's own Send/Sync soundness note),
+    // and `len` is now bounded by `MAX_PLANE_VOCAB_LEN`.
     let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
     std::str::from_utf8(bytes)
         .map(str::to_string)

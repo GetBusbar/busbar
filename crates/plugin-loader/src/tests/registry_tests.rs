@@ -939,3 +939,31 @@ fn a_first_party_replay_is_refused_after_the_mark_records_the_newer_load() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// TOCTOU-close: `read_file_capped` bounds the STREAM at `cap`, not `metadata().len()`. `examine`
+/// used to size-check via `fs::metadata` then `fs::read` the file unbounded, so a file swapped for a
+/// larger one AFTER the stat was read in full — the cap was bypassable. This proves the read itself is
+/// bounded: a file one byte over the cap is a hard reject, `cap` bytes exactly reads, and a small file
+/// reads back byte-for-byte. Exercised with a tiny cap so the test never allocates the real ceiling.
+#[test]
+fn read_file_capped_bounds_the_stream_not_the_stale_metadata() {
+    let dir = tmpdir("capread");
+
+    // Over the cap: 20 bytes against an 8-byte cap → refused (never a silent unbounded read).
+    let big = dir.join("big.bin");
+    std::fs::write(&big, vec![0u8; 20]).unwrap();
+    let err = read_file_capped(&big, 8).expect_err("a file over the cap must be refused");
+    assert!(err.contains("cap"), "the refusal names the cap: {err}");
+
+    // Exactly at the cap boundary is allowed (cap bytes read; cap + 1 is the reject threshold).
+    let exact = dir.join("exact.bin");
+    std::fs::write(&exact, vec![7u8; 8]).unwrap();
+    assert_eq!(read_file_capped(&exact, 8).unwrap(), vec![7u8; 8]);
+
+    // A within-cap file reads back byte-for-byte.
+    let small = dir.join("small.bin");
+    std::fs::write(&small, b"hello").unwrap();
+    assert_eq!(read_file_capped(&small, 8).unwrap(), b"hello");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
