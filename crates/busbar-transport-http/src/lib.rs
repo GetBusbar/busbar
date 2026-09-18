@@ -1467,10 +1467,21 @@ fn complete_message(
         };
         let message = raw::parse_message(&buffered[..header_end]).ok_or(TransportError::Framing)?;
         cache.parses += 1;
-        if raw::has_transfer_encoding(&message.headers) && !raw::is_chunked(&message.headers) {
-            // A declared coding this transport cannot frame. Falling through to `Content-Length`
-            // would be answering a question the sender did not ask.
-            return Err(TransportError::Framing);
+        if raw::has_transfer_encoding(&message.headers) {
+            if !raw::is_chunked(&message.headers) {
+                // A declared coding this transport cannot frame. Falling through to `Content-Length`
+                // would be answering a question the sender did not ask.
+                return Err(TransportError::Framing);
+            }
+            if raw::header(&message.headers, "content-length").is_some() {
+                // Two headers describing two framings of the same bytes — the request-smuggling
+                // shape the ingress reader refuses. This side de-chunks the body and rebuilds the
+                // request with both framing headers stripped, so it could quietly resolve the
+                // ambiguity to `chunked` and forward a clean re-framing; but that is still accepting
+                // and acting on a message no honest peer sent. The two directions agree: refused
+                // rather than forwarded.
+                return Err(TransportError::Framing);
+            }
         }
         cache.head = Some(CachedHead {
             end: header_end,

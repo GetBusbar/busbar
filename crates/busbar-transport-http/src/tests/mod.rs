@@ -715,8 +715,8 @@ async fn a_transfer_encoding_that_is_not_chunked_last_is_refused() {
 /// the other arm and refuses, because the HEAD frame it would otherwise hand up is the verbatim
 /// header prefix and any reader re-parsing it would see the length that was never true.
 ///
-/// The egress direction already gets this right by stripping both headers when it rebuilds the
-/// request, and the round-trip cell above pins that. The two directions now agree.
+/// The egress direction refuses the same shape before it dials — see the egress cell below. The two
+/// directions agree: neither accepts a message that describes two framings of one body.
 #[tokio::test]
 async fn a_message_with_both_a_transfer_encoding_and_a_content_length_is_refused() {
     let transport = StdArc::new(HttpTransport::new(ClientSettings::default()));
@@ -752,6 +752,38 @@ async fn a_message_with_both_a_transfer_encoding_and_a_content_length_is_refused
         "two disagreeing framings of one body is a message to refuse, not one to forward"
     );
     writer.abort();
+}
+
+/// The egress re-segmenter refuses BOTH a `Transfer-Encoding` and a `Content-Length` too — the same
+/// request-smuggling shape its ingress twin refuses, and for the same reason.
+///
+/// `complete_message` decodes the chunked body and rebuilds the request with both framing headers
+/// stripped, so nothing forces it to notice that the message it accepted was ambiguous. But a
+/// message describing two framings of one body is one to refuse in either direction: an intermediary
+/// that quietly resolves it to `chunked` and forwards a clean re-framing has still accepted, and
+/// acted on, a request no honest peer sent. The two directions must agree, so egress refuses it
+/// before the message ever reaches the wire — no dial happens, which is why an unreachable upstream
+/// still yields the framing error rather than a connection error.
+#[tokio::test]
+async fn an_egress_message_with_both_a_transfer_encoding_and_a_content_length_is_refused() {
+    let transport = HttpTransport::new(ClientSettings::default());
+    let conn = transport
+        .dial(&upstream_dest("http://127.0.0.1:1/"), &fixture_key())
+        .await
+        .unwrap();
+    // A whole chunked message that ALSO declares a Content-Length: complete_message would otherwise
+    // decode the chunked body and rebuild the request, never having refused the ambiguity.
+    let req =
+        b"POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 6\r\nTransfer-Encoding: chunked\r\n\r\n3\r\nabc\r\n0\r\n\r\n";
+    let err = transport
+        .write(&conn, StreamId(0), ArenaBytes::new(req))
+        .await
+        .unwrap_err();
+    assert_eq!(
+        err,
+        TransportError::Framing,
+        "egress refuses the both-headers smuggling shape before dialing, matching ingress"
+    );
 }
 
 /// RFC 9112 6.3: an unparsable `Content-Length` with no `Transfer-Encoding` is unrecoverable
