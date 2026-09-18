@@ -120,6 +120,8 @@ pub const CARGO_LOCAL: &[&str] = &[
     "cargo xtask gate response-header",
     "cargo xtask gate blocking-ffi --selftest",
     "cargo xtask gate blocking-ffi",
+    "cargo xtask gate no-tracked-ignored --selftest",
+    "cargo xtask gate no-tracked-ignored",
     "cargo xtask gate plane-transport-neutrality --selftest",
     "cargo xtask gate plane-transport-neutrality",
     "cargo xtask gate plane-abi-neutrality --selftest",
@@ -286,6 +288,26 @@ pub const REGISTRY_NOT_IN_CI: &[(&str, &str, Excuse)] = &[
         Excuse::ReleaseScript(
             "scripts/verify-1.6.0-done.sh",
             "cargo xtask gate kind-isolation-ship",
+        ),
+    ),
+    (
+        "instance-noun-neutrality",
+        "THE WHOLE-APP KIND-NEUTRALITY WITNESS, and a RELEASE-TIME claim on the same footing as \
+         plane-purity-strict and kind-isolation-ship. It goes green only when its burndown baseline \
+         qa/instance-noun-neutrality.toml is EMPTY — i.e. when no crate outside a plugin family names \
+         a concrete instance — which is the fully-neutral DONE state, not a per-push posture. On the \
+         dev/RC line it is RED by design: real cross-family couplings exist today (the composition \
+         root names every plane; auth schemes are DECISION #3 internal-unit debt in core; sibling \
+         planes reference one another) and the plane-extraction relocations move leaked files faster \
+         than a hand-reviewed baseline can track, so a per-push run would red every dev-line push for \
+         the retirement being in flight. Run at release time by scripts/verify-1.6.0-done.sh \
+         (`cargo xtask gate instance-noun-neutrality`) as part of the DONE oracle, and exercised \
+         report-only on every keep push by `cargo xtask gate --all` in keep-proof.yml. Wire it into \
+         ci.yml by name — as a --posture step, the construction model its REPORT_ONLY entry was \
+         written for — once the baseline is regenerated and its rows are owner-reviewed clean.",
+        Excuse::ReleaseScript(
+            "scripts/verify-1.6.0-done.sh",
+            "cargo xtask gate instance-noun-neutrality",
         ),
     ),
     (

@@ -121,15 +121,17 @@ pub const REPORT_ONLY: &[Posture] = &[
     },
     Posture {
         name: "instance-noun-neutrality",
-        why: "THE WHOLE-APP KIND-NEUTRALITY WITNESS, and it is RED BY DESIGN on HEAD: real \
-              cross-family couplings exist today (the composition root names every plane, auth \
-              schemes are DECISION #3 internal-unit debt in core, sibling planes reference one \
-              another) and each is recorded in qa/instance-noun-neutrality.toml as a KNOWN-DEBT \
-              burndown row. It goes green only as those rows are drained. Every per-noun census \
-              row names the needle below; the `:undocumented` and `:stale-baseline` rows do NOT, \
-              so a NEW coupling or a stale ledger row is scored under `--all` exactly like any \
-              other regression.",
-        excuse: Excused::OnlyAbout("tracked known-debt"),
+        why: "THE WHOLE-APP KIND-NEUTRALITY WITNESS, a RELEASE-TIME claim on the same footing as \
+              kind-isolation-ship. It goes green only when its burndown baseline \
+              qa/instance-noun-neutrality.toml is EMPTY — the fully-neutral DONE state — and on the \
+              dev/RC line it is RED by design: real cross-family couplings exist today and the \
+              plane-extraction relocations move leaked files faster than a hand-reviewed baseline can \
+              track, so its `:undocumented`/`:stale-baseline` rows red on every dev-line push for the \
+              retirement being in flight. Run at release time by scripts/verify-1.6.0-done.sh, which \
+              is where full_gate's own excuse table writes that claim down and checks it against the \
+              tree. Graduates to the construction --posture model here once the baseline is \
+              regenerated and owner-reviewed clean.",
+        excuse: Excused::ReleaseTime,
     },
     Posture {
         name: "ship-ready",

@@ -208,6 +208,9 @@ pub struct Git {
     repo: std::path::PathBuf,
     /// See [`Git::reachable`]. Resolved at most once, and never from anything an overlay can move.
     reachable: std::sync::OnceLock<BTreeSet<String>>,
+    /// See [`Git::commits_between`]. `(old, new) -> count`, memoised for the SAME reason
+    /// [`Git::reachable`] is: both inputs are commit ids, which a register overlay cannot move.
+    commits_between: std::sync::Mutex<BTreeMap<(String, String), Option<u64>>>,
 }
 
 impl Git {
@@ -215,6 +218,7 @@ impl Git {
         Git {
             repo: repo.into(),
             reachable: std::sync::OnceLock::new(),
+            commits_between: std::sync::Mutex::new(BTreeMap::new()),
         }
     }
 
@@ -341,10 +345,29 @@ impl Git {
         .is_ok()
     }
 
+    /// COMMITS in `old..new`, one `rev-list --count` per DISTINCT PAIR and no more.
+    ///
+    /// `audit::rows` asks this once per scope — 171 scopes today — to date each row against HEAD,
+    /// but the register names only a couple of dozen distinct `audited_at` commits and `new` is a
+    /// single fixed HEAD, so 171 questions have ~23 answers. Left uncached it was 171 `rev-list`
+    /// PROCESSES per scan, and the audit-ledger self-test drives a fresh scan per planted case: on
+    /// the 1.6.0 register that churn (measured at ~4.5 s of forking per case, ~0.7 s once memoised)
+    /// is what pushed the self-test's work-unit budget over its cap under `cargo test` contention,
+    /// where process spawns balloon far past the CPU ruler the budget is denominated in. The memo is
+    /// keyed on `(old, new)` and safe for exactly the reason [`Git::reachable`]'s is: both are commit
+    /// ids, which a register overlay may NAME differently but cannot make the repository RESOLVE
+    /// differently.
     pub fn commits_between(&self, old: &str, new: &str) -> Option<u64> {
-        self.run(&["rev-list", "--count", &format!("{old}..{new}")])
+        let key = (old.to_string(), new.to_string());
+        if let Some(hit) = self.commits_between.lock().unwrap().get(&key) {
+            return *hit;
+        }
+        let ans = self
+            .run(&["rev-list", "--count", &format!("{old}..{new}")])
             .ok()
-            .and_then(|s| s.trim().parse().ok())
+            .and_then(|s| s.trim().parse().ok());
+        self.commits_between.lock().unwrap().insert(key, ans);
+        ans
     }
 
     /// LOC per blob, through ONE `git cat-file --batch` process rather than one per file.
