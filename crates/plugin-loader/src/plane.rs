@@ -406,6 +406,21 @@ fn wire_up_plane(
     })
 }
 
+/// Hard cap on a single plane vocabulary string (`name`/`section_key`/`scope`/`label`), enforced
+/// BEFORE the `from_raw_parts` slice in [`read_vocab`]. The `*_len` fields of a [`PlaneDecl`] are
+/// plugin-attested `usize`s read straight out of the (third-party, possibly-hostile) decl: without a
+/// bound, a plane that pairs a short `name_ptr` buffer with a huge `name_len` forces the host to form
+/// a slice — and then walk it in `str::from_utf8` — far past the real allocation, an unbounded
+/// out-of-bounds read in the ENGINE's address space. This mirrors the discipline the COLD load path
+/// already enforces on every plugin-supplied length before its own `from_raw_parts`
+/// (`response_len_ok`/`open_err_is_readable` against `MAX_PLUGIN_RESPONSE_LEN`, and `host_log_sink`'s
+/// `MAX_LOG_LEN`): the hot-tier vocabulary read must not be the one plugin-length path that skips it.
+/// A vocabulary string is an identifier/label; 64 KiB is orders of magnitude past any real one, so a
+/// legitimate plane never trips it — an oversize declaration is refused as a hard load error
+/// (fail-closed) rather than silently truncated, since a truncated `name`/`section_key` would corrupt
+/// the plane's routing identity.
+const MAX_PLANE_VOCAB_LEN: usize = 64 * 1024;
+
 /// Which vocabulary `(ptr,len)` pair to read.
 #[derive(Clone, Copy)]
 enum Vocab {
@@ -444,8 +459,18 @@ fn read_vocab(
     if ptr.is_null() || len == 0 {
         return Ok(String::new());
     }
+    // Cap the plugin-attested length BEFORE slicing: `len` is read verbatim from the (third-party)
+    // decl, so an unbounded `from_raw_parts` here is an OOB read past the real vocabulary buffer.
+    // Refuse the load fail-closed rather than form the slice. See [`MAX_PLANE_VOCAB_LEN`].
+    if len > MAX_PLANE_VOCAB_LEN {
+        return Err(format!(
+            "plane '{display}' declares a {len}-byte vocabulary string, exceeding the \
+             {MAX_PLANE_VOCAB_LEN}-byte cap — refusing to load"
+        ));
+    }
     // SAFETY: the plane's decl guarantees each non-null `(ptr,len)` addresses a live, immutable
-    // vocabulary range for the life of the mapped image (the decl's own Send/Sync soundness note).
+    // vocabulary range for the life of the mapped image (the decl's own Send/Sync soundness note),
+    // and `len` is now bounded by `MAX_PLANE_VOCAB_LEN`.
     let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
     std::str::from_utf8(bytes)
         .map(str::to_string)

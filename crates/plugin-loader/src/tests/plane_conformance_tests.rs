@@ -144,6 +144,59 @@ fn dropped_in_example_plane_builds_hydrates_starts_and_dispatches() {
     }
 }
 
+/// A plane that declares a vocabulary length far larger than its real buffer must be REFUSED at load,
+/// never sliced: `read_vocab` reads each `*_len` verbatim from the (third-party) decl, so an
+/// unbounded `from_raw_parts` would over-read past the real allocation — an OOB read in the HOST's
+/// address space. Exercises `read_vocab` directly with the hostile short-buffer/huge-length shape.
+#[test]
+fn oversize_plane_vocab_length_is_refused_not_over_read() {
+    use busbar_plugin::hot::PlaneDecl;
+    use busbar_plugin::AbiPreamble;
+
+    // A one-byte real buffer paired with a length past the cap — the hostile shape a lying decl uses.
+    let small = b"x";
+    let decl = PlaneDecl {
+        abi: AbiPreamble::CURRENT,
+        size: core::mem::size_of::<PlaneDecl>() as u32,
+        version: busbar_plugin::ABI_MINOR,
+        name_ptr: small.as_ptr(),
+        name_len: super::MAX_PLANE_VOCAB_LEN + 1,
+        section_key_ptr: core::ptr::null(),
+        section_key_len: 0,
+        scope_ptr: core::ptr::null(),
+        scope_len: 0,
+        label_ptr: core::ptr::null(),
+        label_len: 0,
+        provided_carriers: 0,
+        _reserved: 0,
+        config_validate: None,
+        build: None,
+        hydrate: None,
+        start: None,
+        admin_routes: None,
+        openapi: None,
+        dispatch: None,
+    };
+    let honoured = busbar_plugin::honoured_size(decl.size, core::mem::size_of::<PlaneDecl>());
+    let decl_ptr: *const PlaneDecl = &decl;
+    let err = super::read_vocab(decl_ptr, honoured, super::Vocab::Name, "hostile")
+        .expect_err("an oversize vocabulary length must be refused, never sliced");
+    assert!(
+        err.contains("exceeding") && err.contains(&super::MAX_PLANE_VOCAB_LEN.to_string()),
+        "expected a cap-refusal naming the limit, got: {err}"
+    );
+
+    // A within-cap vocabulary still reads back correctly — the fix is a cap, not a blanket refusal.
+    let ok = PlaneDecl {
+        name_len: small.len(),
+        ..decl
+    };
+    let ok_ptr: *const PlaneDecl = &ok;
+    let name = super::read_vocab(ok_ptr, honoured, super::Vocab::Name, "ok")
+        .expect("a within-cap vocabulary reads back");
+    assert_eq!(name, "x");
+}
+
 /// `supported_abi("plane")` gates a plane's manifest `abi_version` against the airlock-minor axis.
 #[test]
 fn plane_supported_abi_covers_the_airlock_minor() {
