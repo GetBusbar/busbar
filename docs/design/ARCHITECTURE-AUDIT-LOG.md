@@ -791,7 +791,7 @@ derived from journal replay (a hold with no settlement) and asserted after every
 crash re-derives open holds from the journal and settles them per C3. (The existing
 `settle_admission` code is the furnishing; the two-phase rule is the contract.)
 
-**D3 — Admin is a plane.** `AdminPlane` claims `Http`; its credential facts are admin tokens (an auth
+**D3 — Admin is a plane.** [SUPERSEDED: admin is a cleanliness crate, not a plane — DECISIONS #3/#5/#19] `AdminPlane` claims `Http`; its credential facts are admin tokens (an auth
 plugin kind); its Route step's destination is a **unit method** (mint key, set group, revoke, read
 usage, read audit) rather than an upstream. Same 7 steps: minting a key is Admitted (rate/count),
 Metered (count), Audited (who/what/when) like any transaction — "opening an account is a
@@ -2197,7 +2197,7 @@ are data-plane routes outside the 66 admin operations; `reserved_admin_name` is 
 |---|---|---|
 | F-B1 / O-B4 | three sections disagree on hard-close for a refused provider unit | one source: cap or Admit-for-money → floor line + hard-close; Verify/Approve → floor line, session continues; §8.3 cell reworded (§2.2 step 0, §2.3, §8.3) |
 | O-B1 | no listener axis; admin claims reachable on the public bind | listeners are a config axis with admissible claim sets sealed in `Policy`; 1.5.5's two listeners map with admin claims on the admin listener only; `admin_require_mtls` → `AdminListenerExposed` boot refusal; two cells (§10, §4.8) |
-| O-B2 | `in_flight_cap` sheds the admin plane | `KernelVerb`-only units never take a table slot; cell (§2.2 step 0) |
+| O-B2 | `in_flight_cap` sheds the admin plane [SUPERSEDED: admin is a cleanliness crate, not a plane — DECISIONS #3/#5/#19] | `KernelVerb`-only units never take a table slot; cell (§2.2 step 0) |
 | O-B3 | `/auth/token` and five data-plane routes outside the verb table | named non-admin surfaces added to the table, pinned by handler, with effects rows; `/auth/token` posture stated (§4.7) |
 | O-G1 | spill retention window | retained until the egress body is encoded; hold-time term in the spill RSS row (§1.4, §10) |
 | O-N1, O-N2 | kernel-declared reserved classes; boot assertion operand | applied (§6, §4.7) |

@@ -44,7 +44,7 @@ crate, not a plugin kind), not of a plane. Five properties follow, and every row
 | **unmetered** | no verb draws a meter class, a `requests` slot, a `concurrent` lease or a fee. Every one posts zero | §4.7:368 — "an admin unit's set is `KernelVerb` only … `KernelVerb` units draw no dimension unless the card's `KernelVerb` section prices them"; §8.1:1196's admin cell asserts "zero fee/requests postings" under a non-zero configured fee; the loop's `meter` already reports an empty usage report and says why (`crates/busbar/src/root/units_admin/mod.rs:1822–1839`) |
 | **routes are data** | the 88-row `(method, path) -> verb` table is a declared table, matched by a pure function, never a router the surface owns | `busbar-plane-admin::verbs::{all_verbs, find_verb, resolve, table}` are already exactly this — a linear scan over a closed slice with no behaviour |
 | **verify · admit · audit · answer** — and nothing else | a control surface has no Route-to-upstream, no egress, no encode-from-facts. It checks the call, admits it, records it, and hands back bytes the unit produced | the loop's `encode` already "hands back an empty frame … which is the shape that makes it impossible for a byte to be re-derived here" (`mod.rs:1998–2002`) |
-| **node state only through the verbs unit** | no verb reaches governance, the store, `Policy` or the journal except through `busbar-unit-verbs`, which holds `AdminToken`. The surface holds no store handle | §4.7:949 — "executed by `busbar-unit-verbs`, which holds `AdminToken` … the admin plane is the codec only"; `Verbs` does not hand out its bound store (`verbs.rs:463–468`) |
+| **node state only through the verbs unit** | no verb reaches governance, the store, `Policy` or the journal except through `busbar-unit-verbs`, which holds `AdminToken`. The surface holds no store handle | §4.7:949 — "executed by `busbar-unit-verbs`, which holds `AdminToken` … the admin cleanliness crate is the codec only"; `Verbs` does not hand out its bound store (`verbs.rs:463–468`) |
 | **no money vocabulary** | the surface names no figure, no currency, no bucket amount. Where an answer carries a figure it is a `busbar-unit-cost` view type, serialized by the unit, passed through as bytes | §5; the `plane-no-money` gate rule (`qa/full-gate.toml:89`) |
 
 Two consequences worth stating so no row is read the wrong way:
@@ -53,9 +53,9 @@ Two consequences worth stating so no row is read the wrong way:
   step: `verify → admit → (idempotency) → effect through the unit → audit → answer`. The kernel
   `Route` step is where the composition root currently hangs it (`mod.rs:1500`); admin is a cleanliness
   crate rather than a metered plane, so that is a wiring detail, and the contract below does not depend on it.
-- **`busbar-plane-admin` becomes `busbar-control-admin` in the R7 rename.** This document keeps the
+- **`busbar-plane-admin` becomes `busbar-core-admin` in the R7 rename.** This document keeps the
   current crate name in every path citation because the rename has not happened; **do not rename
-  now**. Every `crates/busbar-plane-admin/...` citation below is a `crates/busbar-control-admin/...`
+  now**. Every `crates/busbar-plane-admin/...` citation below is a `crates/busbar-core-admin/...`
   citation after R7.
 
 How the admin cleanliness crate reuses the plane's route-as-data claim shape, and the AST scan that
@@ -67,10 +67,10 @@ table row to invent — is not this document's to settle; it is owner decision *
 | constraint | consequence for every row below |
 |---|---|
 | the 66 legacy verbs' bytes are untouched | no row here edits `generated::verb_table_1_5_5`, and the 240 existing `admin.ops` cells stay green unchanged. Every cell this document asks for is additive |
-| kind isolation | the control surface is a codec and a declared route table (`busbar-plane-admin`, `busbar-control-admin` after R7); the unit executes (`busbar-unit-verbs`); every figure is a `busbar-unit-cost` view type. `plane-no-money` stays green |
+| kind isolation | the control surface is a codec and a declared route table (`busbar-plane-admin`, `busbar-core-admin` after R7); the unit executes (`busbar-unit-verbs`); every figure is a `busbar-unit-cost` view type. `plane-no-money` stays green |
 | every verb is unmetered | no row below declares a meter class, a `requests` draw, a `concurrent` lease or a fee. The mutation **rate limiter** (§3, step 3) is not metering — it is admission bookkeeping and posts nothing |
 | the sealed idempotency cache exists and is never consulted | `Store::replay_new_verb` / `Store::commit_new_verb_replay` (`crates/busbar-unit-verbs/src/store.rs:60,63`) have **no non-test caller**. Every mutating row below states where the probe goes |
-| the plane's table literals are stale | §4.7's binding list disagrees with `crates/busbar-plane-admin/src/verbs.rs:33–136` in nine places. §3 lists them |
+| the admin cleanliness crate's table literals are stale | §4.7's binding list disagrees with `crates/busbar-plane-admin/src/verbs.rs:33–136` in nine places. §3 lists them |
 
 Sources every row cites:
 
@@ -120,7 +120,7 @@ not two against one: `crates/busbar-unit-verbs/src/verb.rs:692–693`,
 `crates/busbar-unit-verbs/src/tests/verbs_tests.rs:1464,1467`.
 
 One consequence worth naming: `crates/busbar/tests/new_verbs_legacy_leg.rs` drives each row with the
-method the plane's table declares (its `ask()` helper panics on anything but GET/POST). Flipping the
+method the admin surface's table declares (its `ask()` helper panics on anything but GET/POST). Flipping the
 table row flips what that test asks, which is the intended coupling.
 
 ### 2.1 The other eight rows that drift from §4.7
@@ -980,5 +980,5 @@ are collected below.
 | **D-12** | **Does the `verify` verb write a `Reconciliation` entry**, or only the every-T timer run (§4.2:782)? Proposed: only the timer. | An operator polling `verify` would otherwise rewrite the recompute watermark |
 | **D-13** | **`plane_record_write` concurrency shape** — `if_match` + `revision`, or last-write-wins? ARCHITECTURE gives `record_put/get/scan` and no concurrency rule. | `409 version_conflict` exists or it does not |
 | **D-14** | **Rate class for the fifteen mutating new verbs.** They fall through to `Crud` (60/min) because they have no `ADMIN_PREFIX`-relative rule (`rate.rs:164–167`). Several are blast-radius operations that §4.7 treats like `/config/*`. Proposed: add `set-operator-key`, `set-escrow`, `set-dual-control`, `commit-upgrade`, `chain-break`, `store-restore`, `reseal-epoch-floor` to `CONFIG_CLASS_RULES` (10/min). | CG-38 already flags the config-class table as supplied-at-integration and "must not ship" wrong |
-| **D-15** | **The admin cleanliness crate's declaration.** admin is a compiled-in cleanliness crate, not a plugin kind, so there is no new `Kind` variant, no `CONTROL_ABI` and no §1.4 plugin-kind table row. Needs: the declared shape of "routes as data" (the 88-row table is already that shape — is it the contract's type or the surface's?); whether it reuses the admin plane's existing `Claim`/`CLAIMS` declaration; and the AST/gate rule that keeps the control surface unmetered and money-free. | It decides how the seventeen are contracted against the reused plane claim shape, and R7's rename (`busbar-plane-admin` → `busbar-control-admin`) lands on it |
+| **D-15** | **The admin cleanliness crate's declaration.** admin is a compiled-in cleanliness crate, not a plugin kind, so there is no new `Kind` variant, no `CONTROL_ABI` and no §1.4 plugin-kind table row. Needs: the declared shape of "routes as data" (the 88-row table is already that shape — is it the contract's type or the surface's?); whether it reuses the admin cleanliness crate's existing `Claim`/`CLAIMS` declaration; and the AST/gate rule that keeps the control surface unmetered and money-free. | It decides how the seventeen are contracted against the reused plane claim shape, and R7's rename (`busbar-plane-admin` → `busbar-core-admin`) lands on it |
 | **D-16** | **Where the control path hangs in the kernel loop.** Today all seventeen run inside the `Route` step (`mod.rs:1500`). Proposed: keep it there until D-15 lands, since the contract in §7 does not depend on it. | A control surface with a Route step is the shape §1.1 says it does not have |

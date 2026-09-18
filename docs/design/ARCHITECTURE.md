@@ -104,8 +104,8 @@ them). Each axis is blind to the other two; only the kernel composes them.
 |---|---|---|---|
 | `busbar-core-config` | core | the config document root, loader, env interpolation, migrator, overlay, named-map validator, the byte-identity prepass, the validator and the secret resolver — the product's config grammar, which had **no** replacement anywhere and could not be cut leaf-first (the layer reaches up into ten modules at 65 sites) | its own row, against a measured **20,050** surface lines |
 | `busbar-core-hooks` | core | the hook POLICY engine — resolution, gates, rewrites, singleflight, scrape — which the plain-data hook carriers in the substrate are not and never were. The kernel seats hook PLUGINS; this seats their policies | its own row (1,662 surface today) |
-| `busbar-control-admin` | cleanliness crate (not a plugin kind) | the admin surface. `busbar-plane-admin` until **R7** renames it; compiled in, one-way dep on core, off the hot path, unmetered | none (a cleanliness crate carries no §1.1 union row) |
-| `busbar-control-oauth2` | cleanliness crate (not a plugin kind) | the OAuth 2.1 authorization server — metadata document, `/authorize`, `/token`, login, consent, its own signer. Verification is a step and stays in `busbar-unit-auth`; an authorization SERVER is a served surface, compiled in and off the hot path | none |
+| `busbar-core-admin` | cleanliness crate (not a plugin kind) | the admin surface. `busbar-plane-admin` until **R7** renames it; compiled in, one-way dep on core, off the hot path, unmetered | none (a cleanliness crate carries no §1.1 union row) |
+| `busbar-core-oauth2` | cleanliness crate (not a plugin kind) | the OAuth 2.1 authorization server — metadata document, `/authorize`, `/token`, login, consent, its own signer. Verification is a step and stays in `busbar-unit-auth`; an authorization SERVER is a served surface, compiled in and off the hot path | none |
 
 ### 1.2 Core → plugin. Never plugin → core.
 
@@ -213,8 +213,8 @@ and is listed here only because the pricing surface is read alongside them.
 
 **A dialect is a thing inside a plane, not a kind** — one plane owns one IR, and its dialects are the
 wire vocabularies that translate bytes ↔ that IR; there are no per-dialect crates and no dialect trait.
-**admin and oauth2 are compiled-in cleanliness crates, not a kind** — `busbar-control-admin` and
-`busbar-control-oauth2` depend one way on core, sit off the hot path, and are unmetered. The metering is
+**admin and oauth2 are compiled-in cleanliness crates, not a kind** — `busbar-core-admin` and
+`busbar-core-oauth2` depend one way on core, sit off the hot path, and are unmetered. The metering is
 the whole of the distinction: a DATA PLANE (llm, mcp, a2a, streams) is metered and follows the strict
 step list of §2.2 in full, never deviating; a cleanliness crate serves a system-level surface (admin,
 the OAuth issuer), is not on the metered path, and runs the lesser workflow `verify → admit → audit →
@@ -243,10 +243,10 @@ oracle already proves against the released stores; `append_batch`, `reserve`, `r
 
 **`INTROSPECTION_VERBS` names one thing.** A plane's per-plane, read-only introspection list is
 `INTROSPECTION_VERBS`; it never shares a name with the kernel's own closed `KernelVerb` table (§4.7),
-which is the admin plane's surface, not a plane-declared one. The contract's closed `Refusal` reason
-code maps onto the admin plane's rendered error codes through one ratified table, owned by the admin
-plane: several reasons share one code (reasons are opaque to a client, §3.1), and that table — not a
-per-implementer reading — is the admin plane's mapping of record.
+which is the admin cleanliness crate's surface, not a plane-declared one. The contract's closed `Refusal` reason
+code maps onto the admin cleanliness crate's rendered error codes through one ratified table, owned by the admin
+cleanliness crate: several reasons share one code (reasons are opaque to a client, §3.1), and that table — not a
+per-implementer reading — is the admin cleanliness crate's mapping of record.
 
 Registration is the only way in. Zero of any kind is valid, except the mandatory in-tree `auth-lease`, the in-tree `memory` store (the default when a config names none — 1.5.5's default)
 and `secret-local`.
@@ -979,7 +979,7 @@ secret plugin; rotation and escrow follow §4.7; key loss is treated as erasure 
 ### 4.7 Corrections, disputes, admin authorization, config, defaults
 
 **Kernel verbs** (executed by `busbar-unit-verbs`, which holds `AdminToken` and builds `SecretOnce`; the
-admin plane is the codec only) are a closed table **derived mechanically from 1.5.5's `openapi.json`
+admin cleanliness crate is the codec only) are a closed table **derived mechanically from 1.5.5's `openapi.json`
 at the tag — 66 operations over 49 paths (34 `read-only`, 32 `full` — `POST /config/validate` and `POST /plugins/inspect` are read-only; `required_scope(method, path)` pinned, PB-62) — pinned by git object hash — PLUS the named non-admin 1.5.5 surfaces, each pinned by its handler: `POST /auth/token` (the self-serve exchange) and `GET /auth/token` (the browser exchange: unauthenticated exact-path bypass, `200 text/html` or `302` to the IdP, `?logout` / `?code` / `?method` / `?refresh` dispatch — PB-33), `GET /v1/models` and `/v1beta/models` (governance-scoped listings), `/stats`, `/healthz` (unconditional auth bypass on BOTH listeners), `/metrics` (present only when `export.prometheus` is configured; data-plane key auth) and `/metrics/hooks` (present only when `metrics::enabled()`) — PB-43 — with their own §8.1 effects rows; admin mutations are rate-limited exactly as `admin/rate.rs` (PB-32)**, plus
 the 1.6.0 additions: `verify`, `plane_facts`, `plane_record_write`, `chain_break`, `store_restore`,
 `reseal_epoch_floor`, `set_overdraft_ceiling`, `set_dispute_max_age`, `commit_upgrade`,
@@ -1245,7 +1245,7 @@ of the kinds that today have gate rules but no implementor of their `busbar-cont
   sharing one idempotency header; **every cap kind (`budget`, `requests`, `tokens`, `concurrent`) ×
   every window kind incl. `total` × scoped/unscoped at every chain depth in the migration corpus;
   frozen group; `on_exhaust: downgrade` (served through `downgrade_to`, posting `downgraded`); a
-  ranking policy (pick order byte-identical) and a config naming NO policy (the SWRR floor, pick order byte-identical); an admin key mint under any existing parent (byte-identical; existence-only check, as 1.5.5); the admin plane under a non-zero fee (zero fee/requests postings); a chunked ≥ 1 MiB body at a budget boundary; a same-node cross-bucket fan-out recipient (priced once); keyed × no card × unknown lane (served at 0); a `tier_bp` ≠ 10,000 bucket at a budget boundary; a `concurrent` cap on a plane whose units never route upstream; a 64-byte-plus idempotency key (never truncated); one boot cell per 1.5.5 route through `PathPattern`; a declared-length body with a body-reading gate (whole body seen); a session-budget refusal at Unit 0; a chain with mixed `tier_bp` (boot refused); a per-lane `max_requests` budget (exhaustion, failover on exhaustion, refund on body failure, pick order with `budget_remaining`); every lane hard-down (one `requests` slot consumed, `fee_count = 0`); a restrict-to-empty under each `on_empty` terminal — `weighted` per PB-28, `first` takes the gate 503 exactly as `reject` (PB-1), `reject` at `After(Admit)` (slot consumed) and at `Before(Route)` (`Failed(Route, RestrictedEmpty)`, slot consumed); keyset lost with the journal present (off-node import); a scoped `requests` cap on a non-selected pool (unchanged, byte-identical); a provider push through `SessionUpstream` (`fee_count = 0`); AUTH then N messages on one unbound-transport connection; a memory-store node on a disk smaller than `wal_capacity` through two fills (continuous admission); every migration-corpus config carrying a secret ref (boots); self-approval refused under `required`; a `Completed` unit with no usage locator (priced 0 on every 1.5.5 surface; the floor internal only); token-verb
+  ranking policy (pick order byte-identical) and a config naming NO policy (the SWRR floor, pick order byte-identical); an admin key mint under any existing parent (byte-identical; existence-only check, as 1.5.5); the admin cleanliness crate under a non-zero fee (zero fee/requests postings); a chunked ≥ 1 MiB body at a budget boundary; a same-node cross-bucket fan-out recipient (priced once); keyed × no card × unknown lane (served at 0); a `tier_bp` ≠ 10,000 bucket at a budget boundary; a `concurrent` cap on a plane whose units never route upstream; a 64-byte-plus idempotency key (never truncated); one boot cell per 1.5.5 route through `PathPattern`; a declared-length body with a body-reading gate (whole body seen); a session-budget refusal at Unit 0; a chain with mixed `tier_bp` (boot refused); a per-lane `max_requests` budget (exhaustion, failover on exhaustion, refund on body failure, pick order with `budget_remaining`); every lane hard-down (one `requests` slot consumed, `fee_count = 0`); a restrict-to-empty under each `on_empty` terminal — `weighted` per PB-28, `first` takes the gate 503 exactly as `reject` (PB-1), `reject` at `After(Admit)` (slot consumed) and at `Before(Route)` (`Failed(Route, RestrictedEmpty)`, slot consumed); keyset lost with the journal present (off-node import); a scoped `requests` cap on a non-selected pool (unchanged, byte-identical); a provider push through `SessionUpstream` (`fee_count = 0`); AUTH then N messages on one unbound-transport connection; a memory-store node on a disk smaller than `wal_capacity` through two fills (continuous admission); every migration-corpus config carrying a secret ref (boots); self-approval refused under `required`; a `Completed` unit with no usage locator (priced 0 on every 1.5.5 surface; the floor internal only); token-verb
   auto-provisioned leaf bucket**; admission at a budget boundary under concurrency (byte-identical
   cardinality — the hold is accounting, the decision is 1.5.5's); a mid-window rate edit (`/usage`
   reprices at read time exactly as 1.5.5; the immutable posting is on the 1.6.0 endpoints).

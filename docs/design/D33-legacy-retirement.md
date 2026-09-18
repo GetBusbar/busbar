@@ -102,7 +102,7 @@ spelling change with no behavioural surface at all.
 | 1 | `metrics::init` | RE-EX (`busbar_substrate::metrics`) → REPLACE | `ops\|` | cut 2 |
 | 1 | `ingress::PathIngress` | RE-EX (`busbar_substrate::ingress::arrival::PathIngress`) → REPLACE — the root *already* names the substrate spelling one line away | `llm\|`, `route\|` | cut 2 |
 | 1 | `proxy::configure_route_policy_headers` | RE-EX (`busbar_substrate::proxy`) → REPLACE | `http\|`, `route\|` | cut 2 |
-| 1 | `admin::restart::{publish_shutdown, release_asked_drain, drain_released_at_exit}` | **MOVE, but blocked.** `busbar-core/src/admin/restart.rs` is 152 lines of process-lifecycle broadcast with no `App` in its signature, and its one true owner is the composition root (it *is* the process). But the module is a set of process **globals** that core's own legacy admin handler still writes — `crate::admin::restart::{supervisor_detected, can_restart, begin_drain}` at `busbar-core/src/admin/v1/json/handlers.rs:2494,2506,2517`. Moving the module to the root would split one static across two crates and silently break `POST /admin/restart` → drain-release. The move lands **with the admin plane**, when `busbar-plane-admin` owns the restart verb and core's handler is deleted. | `documented-admin-restart\|`, `admin.ops\|` | blocked on the admin plane owning the restart verb |
+| 1 | `admin::restart::{publish_shutdown, release_asked_drain, drain_released_at_exit}` | **MOVE, but blocked.** `busbar-core/src/admin/restart.rs` is 152 lines of process-lifecycle broadcast with no `App` in its signature, and its one true owner is the composition root (it *is* the process). But the module is a set of process **globals** that core's own legacy admin handler still writes — `crate::admin::restart::{supervisor_detected, can_restart, begin_drain}` at `busbar-core/src/admin/v1/json/handlers.rs:2494,2506,2517`. Moving the module to the root would split one static across two crates and silently break `POST /admin/restart` → drain-release. The move lands **with the admin cleanliness crate**, when `busbar-plane-admin` owns the restart verb and core's handler is deleted. | `documented-admin-restart\|`, `admin.ops\|` | blocked on the admin cleanliness crate owning the restart verb |
 | 1 | `admin::planeverbs::CorePlaneAdminEnvelope` | REPLACE by `busbar_substrate::admin_verbs::install_plane_admin_envelope` (root names both today) | `admin.ops\|` | cut 3 |
 | 1 | `egress::seam::CoreHostlessEgress` | REPLACE by `busbar_substrate::egress::seam::HostlessEgress` (root names both today) | `llm\|`, `mcp\|` | cut 3 |
 | 1 | `cost::CostModel::resolve_parts` | **REPLACE** by `busbar-unit-cost`. Money path — byte-identity required, so this rides the late-accrual landing, never ahead of it. **Deletion-wave blocker, measured 2026-09-09 (slot R5-3): the replacement does not exist yet.** `busbar-core/src/cost.rs` is 848 lines and `CostModel` is declared nowhere else in the workspace — a symbol-by-symbol sweep of `busbar-unit-cost`, `busbar-caps` and `busbar-kernel` returns ZERO declarations of `CostModel`, `resolve_parts`, `ChainBucket`, `GroupBucket`, `GroupRuntime`, `RateNanos`, `is_bucket_of_group`, `GROUP_BUCKET_PREFIX`, `ExtraRates` or `model_unpriced`. `busbar-unit-cost` exports a rate-card/posting face (`RateCard`, `LaneRates`, `price`, `price_at_card`, `Posting`, `derive_spend_micros`) and `busbar-caps::hold` a hold/accrual state machine (`Hold`, `Accrual`, `Spend`, `HoldCell`) — neither carries the group-chain budget resolver the type IS. `busbar_unit_admission::RateNanos` is a same-named DIFFERENT type (`from_micros_per_token`, not `from_cfg(&RateEntryCfg)`), so it is not a re-point either. 19 non-test in-core sites name `crate::cost::CostModel` **as a type in a signature** — `governance/state.rs` 12, `plane_host/mod.rs` 6, plus `state.rs:490`, `appbuild.rs:589`, `governance/mod.rs:727`, `admin/v1/service.rs:101` — so there is no one-line re-point; deleting the module means WRITING the resolver into a unit crate, which the deletion wave forbids. No dead sub-item to cut either: every `fn` in `cost.rs` has an in-module caller. **Skipped, net-zero.** | `billing\|`, `teller-meter-row\|` | blocked — unblocks only when `busbar-unit-cost` actually declares the group-chain resolver, i.e. with the late-accrual landing |
@@ -226,7 +226,7 @@ all required before a fold cut lands:
 
 Planes carry no §1.1 line ceiling (§1's first escape hatch), so the gate allows the fold outright;
 nothing in this wave asks for a ceiling exception. This is the explicit last wave of D33: the plan
-is not "done" until the fold has landed on all four non-admin planes and the tracker's D34 row (see
+is not "done" until the fold has landed on all four planes (admin is a compiled-in cleanliness crate, NOT a plane) and the tracker's D34 row (see
 `docs/design/1.6.0-TRACKER.md`) is checked.
 
 Two standing carve-outs, in every wave: the 1.5.5 config structs
@@ -518,11 +518,11 @@ book, so deleting the legacy accrual without moving the views first turns thirte
 ### 7.13 Two homes that did not exist now have one
 
 - **The OAuth authorization server** (1,341 lines: the metadata document, the routes, the consent UI,
-  the signer, the policy) is a compiled-in **cleanliness crate** — `busbar-control-oauth2` — not a
+  the signer, the policy) is a compiled-in **cleanliness crate** — `busbar-core-oauth2` — not a
   plugin kind, not a plane, not an auth plugin and not a core module. A verifier answers a question
   about a credential and stays the `auth` kind; an authorization server serves routes, and the request
   ends there.
-- **Admin is the same.** `busbar-plane-admin` becomes `busbar-control-admin` at the rename, a
+- **Admin is the same.** `busbar-plane-admin` becomes `busbar-core-admin` at the rename, a
   compiled-in cleanliness crate rather than a plugin kind. The split is metering and nothing else: a
   plane is the metered path and follows the strict workflow every plane follows; a cleanliness surface
   is not on it and follows the lesser one (verify → admit → audit → answer). `PLUGIN-TREE.md` carries
