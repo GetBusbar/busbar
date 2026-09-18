@@ -1676,9 +1676,16 @@ async fn read_ingress_message(
         // actually arrived rather than against a number the peer supplied.
         let mut read_so_far = rest.len();
         decoder.feed(&rest).map_err(|_| TransportError::Framing)?;
-        while !decoder.is_done() {
+        loop {
+            // The cap is checked before the done test, not only around the next read, so a whole
+            // chunked message that already sits in the buffer is held to it the same as one that
+            // arrives across reads — the mirror of the `Content-Length` branch, which caps every
+            // body whether or not it had to read past the head.
             if read_so_far > max_body_bytes {
                 return Err(TransportError::Framing);
+            }
+            if decoder.is_done() {
+                break;
             }
             let Some(read) = read_or_closed(r, closed, closing).await else {
                 return Ok(None);

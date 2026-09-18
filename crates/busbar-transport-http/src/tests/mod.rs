@@ -513,6 +513,55 @@ async fn a_body_past_the_configured_maximum_is_refused_on_both_sides() {
     );
 }
 
+/// Ingress refuses a CHUNKED body past the cap even when the whole message already sits in the read
+/// buffer — the decode loop never has to iterate, so a cap check that lived only inside it would let
+/// an oversized single-buffer body through. A chunked sender declares no total, so the refusal is on
+/// the bytes that actually arrived, and it must fire whether they arrive in one read or many.
+#[tokio::test]
+async fn an_ingress_chunked_body_past_the_configured_maximum_is_refused() {
+    let settings = ClientSettings {
+        request_body_max_bytes: 64,
+        ..ClientSettings::default()
+    };
+    let transport = StdArc::new(HttpTransport::new(settings));
+    let cfg = TestCfg {
+        bind: "127.0.0.1:0".to_string(),
+    };
+    let listener = transport.listen(&cfg, &fixture_key()).await.unwrap();
+    let addr = listener.local_addr();
+    let accept_fut = tokio::spawn({
+        let transport = transport.clone();
+        async move { transport.accept(&listener).await.unwrap() }
+    });
+    let writer = tokio::spawn(async move {
+        let mut client = tokio::net::TcpStream::connect(&addr).await.unwrap();
+        // A single 0x50 (80-byte) chunk plus its terminal chunk, written in ONE go so the whole
+        // chunked message lands in the read buffer at once: the decoder is done on the first feed
+        // and the loop body never runs. 80 decoded bytes (and ~91 wire bytes) are both past the
+        // 64-byte cap.
+        let mut msg =
+            b"POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n50\r\n".to_vec();
+        msg.extend_from_slice(&[b'a'; 80]);
+        msg.extend_from_slice(b"\r\n0\r\n\r\n");
+        tokio::io::AsyncWriteExt::write_all(&mut client, &msg)
+            .await
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+    });
+    let conn = accept_fut.await.unwrap();
+    let mut frames = transport.frames(conn);
+    let first = tokio::time::timeout(std::time::Duration::from_secs(5), frames.next())
+        .await
+        .expect("the reader refuses rather than hanging")
+        .expect("the stream yields the framing error");
+    assert_eq!(
+        first.unwrap_err(),
+        TransportError::Framing,
+        "a chunked body past the configured maximum is refused even when it arrives in one read"
+    );
+    writer.abort();
+}
+
 /// A header block this transport cannot parse fails closed, rather than decoding as no headers.
 ///
 /// The old reading took an unparsable block to mean an empty header list — declared length zero,
