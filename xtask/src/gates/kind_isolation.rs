@@ -1780,6 +1780,21 @@ fn rule_name(
     let mut fired: BTreeSet<&str> = BTreeSet::new();
     let accepted: BTreeMap<&str, &str> = ACCEPTED_NAMES.iter().copied().collect();
 
+    // THE SERVED-SURFACE INSTANCES. admin & oauth2 are compiled-in cleanliness/control surfaces
+    // (DECISIONS #5): each names ONE served surface, and a crate of another kind whose WHOLE
+    // remainder is that surface's instance is the same fusion `fused-instance-name` refuses for a
+    // plane or transport instance — an auth plugin named `busbar-auth-admin` is the admin surface
+    // wearing an `auth` marker, not a thing that does auth. The instance is the surface crate's
+    // last name segment (`busbar-admin` -> `admin`, `busbar-oauth2` -> `oauth2`, and the registered
+    // `busbar-plane-admin` -> `admin`), read off the census so the vocabulary cannot rot behind a
+    // hand-kept list. The surface crate itself carries an EMPTY remainder (exact match) or is the
+    // surface's own kind, so it never trips on its own name.
+    let surfaces: BTreeSet<String> = crates
+        .iter()
+        .filter(|c| matches!(c.kind, Some("cleanliness") | Some("control")))
+        .filter_map(|c| segments(&c.name).pop())
+        .collect();
+
     // A WORD THAT IS BOTH A PLANE INSTANCE AND A TRANSPORT INSTANCE is the fusion itself, one level
     // above any single crate: `busbar-plane-http` beside `busbar-transport-http` means the tree can
     // no longer say what `http` names. Reported once, naming every claimant.
@@ -1840,6 +1855,24 @@ fn rule_name(
                     c.kind.unwrap_or("?")
                 ));
             }
+        }
+        // THE SAME REFUSAL FOR A SERVED SURFACE. A cleanliness/control surface has no `Family` of
+        // its own, so the plane/transport arm above cannot reach it — but a crate of some OTHER
+        // kind whose whole remainder is a surface's instance (`busbar-auth-admin`) is the identical
+        // fusion, and it is refused on the identical terms: structurally, outside the waiver map.
+        // The surface's own crate is excluded — it IS the surface, it does not wear its marker.
+        if surfaces.contains(only.as_str())
+            && !matches!(c.kind, Some("cleanliness") | Some("control"))
+        {
+            offenders.push(format!(
+                "fused-instance-name\t{}\t`{}` IS a SERVED SURFACE instance wearing a `{}` marker: \
+                 its whole remainder is `{only}`, so the crate is named for a control/cleanliness \
+                 surface rather than for what it does. No reviewed sentence reaches this — a waiver \
+                 excuses a QUALIFIER, never a fusion; {MAKE_A_NEW_KIND}",
+                c.dir,
+                c.name,
+                c.kind.unwrap_or("?")
+            ));
         }
     }
 
@@ -6876,12 +6909,23 @@ impl Gate for KindIsolationGate {
         // crates are still absent and the `core` kind is a dead row in the table — which is what
         // the dead-kind rule is for, and what it would have said the day the kind was added if the
         // announcement had not been made with it.
+        //
+        // The `core` crates have since LANDED (`busbar-core-config`, `busbar-core-hooks`), so
+        // emptying the registry alone no longer isolates the dead-kind condition — the kind stays
+        // live off the tree and the rule is right to keep quiet. The honest fixture is the one the
+        // case's own words describe: NEITHER a crate NOR an announcement. So the plant removes every
+        // `core` crate from the census (`kinds_gone`) AND empties the announcement table, and only
+        // then is the kind row genuinely dead.
         report.push(prove_rows_red(
             cx,
             self,
             "the `core` kind row with neither a crate nor an announcement is a dead kind",
             &[ROW_REGISTRY],
-            registry_plant(""),
+            move || {
+                let mut ov = kinds_gone(cx, &["core"]);
+                ov.set(REGISTRY_FILE, String::new());
+                ov
+            },
             &["dead-kind", "core"],
         ));
 
