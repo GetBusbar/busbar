@@ -635,11 +635,21 @@ async fn read_line<R: tokio::io::AsyncBufRead + Unpin>(
     buf: &mut Vec<u8>,
 ) -> std::io::Result<(usize, LineEnd)> {
     use tokio::io::{AsyncBufReadExt, AsyncReadExt};
+    // A carried-over buffer already at the ceiling is the tail of a line an earlier poll reported
+    // as too long: its bytes are still on the connection because dropping them there would have
+    // split the rejected line into a spurious frame the next read delivered. Recover here — discard
+    // the rest of that line, up to and INCLUDING the newline that ends it, and start fresh — so the
+    // connection reads the NEXT line rather than answering `TooLong` forever without ever touching
+    // the pipe again. That wedged-forever state contradicts this crate's contract that a framing
+    // error leaves the connection neither poisoned nor closed, i.e. usable (see
+    // `tests/mutation_hardening.rs`). Discarding actually READS the pipe, so a peer still withholding
+    // the newline keeps this parked on a real read — the honest answer — not a synthetic refusal.
+    if (MAX_LINE_BYTES + 1).saturating_sub(buf.len()) == 0 {
+        discard_through_newline(reader).await?;
+        buf.clear();
+    }
     // One byte past the maximum is enough to tell "a line that fits" from "a line that does not".
     let budget = (MAX_LINE_BYTES + 1).saturating_sub(buf.len());
-    if budget == 0 {
-        return Ok((0, LineEnd::TooLong));
-    }
     let n = reader.take(budget as u64).read_until(b'\n', buf).await?;
     if buf.last() == Some(&b'\n') {
         buf.pop();
@@ -652,4 +662,32 @@ async fn read_line<R: tokio::io::AsyncBufRead + Unpin>(
         return Ok((n, LineEnd::TooLong));
     }
     Ok((n, LineEnd::Eof))
+}
+
+/// Discard bytes up to and INCLUDING the next newline, leaving `reader` positioned at the start of
+/// the following line. This is how [`read_line`] recovers from an over-long line: the tail past the
+/// ceiling is dropped straight out of the `BufReader`'s own buffer — no allocation, and bounded
+/// memory regardless of how far past the ceiling the peer ran — so the connection can read the next
+/// line instead of re-reporting the rejected one. EOF before any newline ends the discard: there is
+/// no next line to align to.
+async fn discard_through_newline<R: tokio::io::AsyncBufRead + Unpin>(
+    reader: &mut R,
+) -> std::io::Result<()> {
+    use tokio::io::AsyncBufReadExt;
+    loop {
+        let chunk = reader.fill_buf().await?;
+        if chunk.is_empty() {
+            return Ok(());
+        }
+        match chunk.iter().position(|&b| b == b'\n') {
+            Some(idx) => {
+                reader.consume(idx + 1);
+                return Ok(());
+            }
+            None => {
+                let consumed = chunk.len();
+                reader.consume(consumed);
+            }
+        }
+    }
 }
