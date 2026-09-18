@@ -1823,3 +1823,358 @@ async fn closing_a_dialled_connection_releases_its_socket() {
         "a closed dialled connection kept its socket open: the peer never saw end-of-stream"
     );
 }
+
+// ---------------------------------------------------------------------------
+// codeaudit(transport-grpc): the configured message cap, and a served request
+// body's per-stream failure surfacing as this call's own status — never the
+// connection's.
+// ---------------------------------------------------------------------------
+
+/// A bind address that ALSO answers the deployment's message-size cap key, so a listener built from
+/// it reads a real operator ceiling — the seam the number actually arrives through — instead of the
+/// `None` [`BindTo`] returns. The value is returned only for [`crate::codec::MESSAGE_MAX_BYTES_KEY`];
+/// every other key is unset, exactly as an operator setting one limit and nothing else would look.
+struct BindWithCap {
+    addr: String,
+    cap: i64,
+}
+impl busbar_contract::ConfigView for BindWithCap {
+    fn get_str(&self, _k: &str) -> Option<&str> {
+        None
+    }
+    fn get_int(&self, k: &str) -> Option<i64> {
+        (k == crate::codec::MESSAGE_MAX_BYTES_KEY).then_some(self.cap)
+    }
+    fn get_bool(&self, _k: &str) -> Option<bool> {
+        None
+    }
+}
+impl busbar_contract::TransportConfigView for BindWithCap {
+    fn bind(&self) -> Option<&str> {
+        Some(&self.addr)
+    }
+}
+
+/// A raw HTTP/2 client over a fresh TCP connection to `addr`, its driver spawned. The request bodies
+/// this battery sends are hand-built gRPC message streams, so the client is `hyper`'s own rather than
+/// `tonic`'s — nothing here needs a codec.
+async fn h2_client(
+    addr: &std::net::SocketAddr,
+) -> hyper::client::conn::http2::SendRequest<http_body_util::Full<bytes::Bytes>> {
+    let sock = tokio::net::TcpStream::connect(addr).await.unwrap();
+    let (send, driver) =
+        hyper::client::conn::http2::handshake::<_, _, http_body_util::Full<bytes::Bytes>>(
+            hyper_util::rt::TokioExecutor::new(),
+            hyper_util::rt::TokioIo::new(sock),
+        )
+        .await
+        .unwrap();
+    tokio::spawn(async move {
+        let _ = driver.await;
+    });
+    send
+}
+
+/// One gRPC POST on the server's fallback path, carrying `body` as its whole length-prefixed message
+/// stream (END_STREAM follows the body).
+fn grpc_request(
+    addr: &std::net::SocketAddr,
+    body: bytes::Bytes,
+) -> http::Request<http_body_util::Full<bytes::Bytes>> {
+    http::Request::builder()
+        .method(http::Method::POST)
+        .uri(format!("http://{addr}{}", crate::server::RPC_PATH))
+        .header(http::header::CONTENT_TYPE, "application/grpc")
+        .header("te", "trailers")
+        .body(http_body_util::Full::new(body))
+        .unwrap()
+}
+
+/// One well-formed gRPC message: the 5-byte prefix (`compression=0`, big-endian length) then `body`.
+fn grpc_message(body: &[u8]) -> bytes::Bytes {
+    let len = (body.len() as u32).to_be_bytes();
+    let mut v = vec![0, len[0], len[1], len[2], len[3]];
+    v.extend_from_slice(body);
+    bytes::Bytes::from(v)
+}
+
+/// A gRPC message PREFIX alone, declaring a body of `declared_len` bytes with none following — all
+/// the decoder needs to compare the prefix against its ceiling and refuse an over-limit one before
+/// buffering a byte.
+fn grpc_prefix_only(declared_len: u32) -> bytes::Bytes {
+    let len = declared_len.to_be_bytes();
+    bytes::Bytes::from(vec![0, len[0], len[1], len[2], len[3]])
+}
+
+/// It is the OPERATOR'S configured cap that bounds a message, not `tonic`'s private library default.
+///
+/// A `grpc` listener handed `limits.request_body_max_bytes = 64` must refuse a 128-byte message —
+/// well under `tonic`'s own 4 MiB default, so a transport that had never read the configured number
+/// would have buffered and DELIVERED it. The oversized body never becomes a frame; a well-formed
+/// sibling message on another call arrives as always. Red before the cap is read: the 128-byte body
+/// is delivered.
+#[tokio::test]
+async fn the_configured_message_cap_is_enforced_not_the_library_default() {
+    const CAP: usize = 64;
+    let server_t = std::sync::Arc::new(server_transport());
+    let cfg = BindWithCap {
+        addr: "127.0.0.1:0".to_string(),
+        cap: CAP as i64,
+    };
+    let keys = test_key_handle();
+    let listener = server_t.listen(&cfg, &keys).await.unwrap();
+    let addr: std::net::SocketAddr = listener.local_addr().parse().unwrap();
+    let accept_task = {
+        let server_t = server_t.clone();
+        tokio::spawn(async move { server_t.accept(&listener).await })
+    };
+    let mut send = h2_client(&addr).await;
+    let server_conn = accept_task.await.unwrap().unwrap();
+
+    // A 128-byte message: over the operator's 64-byte cap, but far under `tonic`'s 4 MiB default.
+    let oversized = grpc_message(&[b'x'; 128]);
+    let _over = send
+        .send_request(grpc_request(&addr, oversized))
+        .await
+        .unwrap();
+    // A well-formed sibling on its own call.
+    let _ok = send
+        .send_request(grpc_request(&addr, grpc_message(b"hello")))
+        .await
+        .unwrap();
+
+    let mut frames = server_t.frames(server_conn.clone());
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    server_t.close(
+        server_conn,
+        busbar_contract_transport::wire::CloseReason::Normal,
+    );
+
+    let mut bodies: Vec<Vec<u8>> = Vec::new();
+    let drained = tokio::time::timeout(Duration::from_secs(10), async {
+        while let Some(item) = frames.next().await {
+            if let Ok((_s, frame)) = item {
+                bodies.push(frame.bytes.as_slice().to_vec());
+            }
+        }
+    })
+    .await;
+    assert!(
+        drained.is_ok(),
+        "the closed connection's frames() never ended"
+    );
+    assert!(
+        bodies.iter().any(|b| b == b"hello"),
+        "the well-formed message must still arrive: got {bodies:?}"
+    );
+    assert!(
+        bodies.iter().all(|b| b.len() != 128),
+        "the 128-byte message exceeded the operator's 64-byte cap and must be refused, not \
+         delivered as a frame: got lengths {:?}",
+        bodies.iter().map(Vec::len).collect::<Vec<_>>()
+    );
+}
+
+/// One served call's inbound READ FAILURE must not tear down its healthy neighbours.
+///
+/// A single stream's request body failing — a peer that reset its own RPC, or a message the framing
+/// refused — used to be pushed onto the connection-wide inbound channel as the SAME untagged `Err`
+/// a whole-connection failure uses, so a `frames()` consumer that reads `Err` as "the connection is
+/// over" tore down every other multiplexed call on it. The failing call ends only itself; the
+/// neighbour's message still arrives, and no `Err` crosses the shared channel.
+#[tokio::test]
+async fn one_calls_inbound_failure_does_not_tear_down_its_neighbour() {
+    const CAP: usize = 64;
+    let server_t = std::sync::Arc::new(server_transport());
+    let cfg = BindWithCap {
+        addr: "127.0.0.1:0".to_string(),
+        cap: CAP as i64,
+    };
+    let keys = test_key_handle();
+    let listener = server_t.listen(&cfg, &keys).await.unwrap();
+    let addr: std::net::SocketAddr = listener.local_addr().parse().unwrap();
+    let accept_task = {
+        let server_t = server_t.clone();
+        tokio::spawn(async move { server_t.accept(&listener).await })
+    };
+    let mut send = h2_client(&addr).await;
+    let server_conn = accept_task.await.unwrap().unwrap();
+
+    // A HEALTHY call, held so its stream is not reset before the server has read the message.
+    let _good = send
+        .send_request(grpc_request(&addr, grpc_message(b"good")))
+        .await
+        .unwrap();
+    // A FAILING call on the SAME connection: a length prefix declaring a body far past the cap, so
+    // the server's decoder refuses THAT stream's request body — the per-stream failure whose old
+    // handling took the whole connection down.
+    let _bad = send
+        .send_request(grpc_request(&addr, grpc_prefix_only((CAP + 64) as u32)))
+        .await
+        .unwrap();
+
+    let mut frames = server_t.frames(server_conn.clone());
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    server_t.close(
+        server_conn,
+        busbar_contract_transport::wire::CloseReason::Normal,
+    );
+
+    let mut bodies: Vec<Vec<u8>> = Vec::new();
+    let drained = tokio::time::timeout(Duration::from_secs(10), async {
+        while let Some(item) = frames.next().await {
+            let (_s, frame) = item.expect(
+                "a single call's inbound failure must not surface as a connection-wide Err",
+            );
+            bodies.push(frame.bytes.as_slice().to_vec());
+        }
+    })
+    .await;
+    assert!(
+        drained.is_ok(),
+        "the closed connection's frames() never ended"
+    );
+    assert!(
+        bodies.iter().any(|b| b == b"good"),
+        "the healthy neighbour's message must survive one call's failure: got {bodies:?}"
+    );
+}
+
+/// A served request body's decode failure surfaces as THIS call's own status frame — a caller fault
+/// named as such — not the connection's broken-pipe reset.
+///
+/// The failing stream's terminal frame is tagged with its own `StreamId`, carries a status class
+/// (a caller/framing fault, `ClientError`, for an over-limit message), and is an `Ok` item, not the
+/// `Err(TransportError::Reset)` a network break uses. Red before the fix: the item is that `Reset`.
+#[tokio::test]
+async fn a_request_body_decode_failure_surfaces_as_a_stream_status_frame_not_a_reset() {
+    const CAP: usize = 64;
+    let server_t = std::sync::Arc::new(server_transport());
+    let cfg = BindWithCap {
+        addr: "127.0.0.1:0".to_string(),
+        cap: CAP as i64,
+    };
+    let keys = test_key_handle();
+    let listener = server_t.listen(&cfg, &keys).await.unwrap();
+    let addr: std::net::SocketAddr = listener.local_addr().parse().unwrap();
+    let accept_task = {
+        let server_t = server_t.clone();
+        tokio::spawn(async move { server_t.accept(&listener).await })
+    };
+    let mut send = h2_client(&addr).await;
+    let server_conn = accept_task.await.unwrap().unwrap();
+
+    // One call whose request body the decoder refuses: a prefix declaring a body past the cap.
+    let _bad = send
+        .send_request(grpc_request(&addr, grpc_prefix_only((CAP + 64) as u32)))
+        .await
+        .unwrap();
+
+    let mut frames = server_t.frames(server_conn.clone());
+    let item = tokio::time::timeout(Duration::from_secs(5), frames.next())
+        .await
+        .expect("the refused request must surface an item, not park")
+        .expect("frames() ended before the failing call's status frame");
+    server_t.close(
+        server_conn,
+        busbar_contract_transport::wire::CloseReason::Normal,
+    );
+
+    let (_stream, frame) = item.expect(
+        "a request-body decode failure is a caller fault on ONE stream, not the connection's \
+         Err(TransportError::Reset)",
+    );
+    assert_eq!(
+        frame.meta.status,
+        Some(WireStatusClass::ClientError),
+        "the over-limit message is the caller's fault, named as such — not a broken-pipe reset"
+    );
+    assert!(
+        frame.meta.status_code.is_some(),
+        "the caller-fault frame carries the transport's declared status number, not a bare class"
+    );
+}
+
+/// The server ADVERTISES a per-connection `max_concurrent_streams` cap in its opening SETTINGS.
+///
+/// Without it hyper takes its default, so a peer could open calls on one connection unboundedly (a
+/// stream flood). A cap set on the builder is advertised in the connection's opening SETTINGS frame,
+/// which is where this test reads it back. Red before the cap is set: hyper advertises its default.
+#[tokio::test]
+async fn the_server_advertises_a_max_concurrent_streams_cap() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let server_t = std::sync::Arc::new(server_transport());
+    let cfg = BindTo("127.0.0.1:0".to_string());
+    let keys = test_key_handle();
+    let listener = server_t.listen(&cfg, &keys).await.unwrap();
+    let addr = listener.local_addr();
+    let accept_task = {
+        let server_t = server_t.clone();
+        tokio::spawn(async move { server_t.accept(&listener).await })
+    };
+
+    let mut sock = tokio::net::TcpStream::connect(&addr).await.unwrap();
+    // The client connection preface, then an empty SETTINGS frame, so the server proceeds and sends
+    // its own SETTINGS — where a `max_concurrent_streams` cap, if set, is advertised.
+    sock.write_all(b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n")
+        .await
+        .unwrap();
+    sock.write_all(&[0, 0, 0, 4, 0, 0, 0, 0, 0]).await.unwrap();
+    let _server_conn = accept_task.await.unwrap().unwrap();
+
+    // Scan an HTTP/2 byte stream for SETTINGS_MAX_CONCURRENT_STREAMS (id `0x0003`) in a server
+    // SETTINGS frame (type `0x4`, non-ACK), or `None` if it is never advertised.
+    fn max_concurrent_streams(bytes: &[u8]) -> Option<u32> {
+        let mut off = 0usize;
+        while off + 9 <= bytes.len() {
+            let len = ((bytes[off] as usize) << 16)
+                | ((bytes[off + 1] as usize) << 8)
+                | bytes[off + 2] as usize;
+            let frame_type = bytes[off + 3];
+            let flags = bytes[off + 4];
+            let body = off + 9;
+            if body + len > bytes.len() {
+                break;
+            }
+            if frame_type == 0x4 && flags & 0x1 == 0 {
+                let mut p = body;
+                while p + 6 <= body + len {
+                    let id = ((bytes[p] as u16) << 8) | bytes[p + 1] as u16;
+                    let value = ((bytes[p + 2] as u32) << 24)
+                        | ((bytes[p + 3] as u32) << 16)
+                        | ((bytes[p + 4] as u32) << 8)
+                        | bytes[p + 5] as u32;
+                    if id == 0x0003 {
+                        return Some(value);
+                    }
+                    p += 6;
+                }
+            }
+            off = body + len;
+        }
+        None
+    }
+
+    let mut buf = vec![0u8; 4096];
+    let advertised = tokio::time::timeout(Duration::from_secs(5), async {
+        let mut acc: Vec<u8> = Vec::new();
+        loop {
+            let n = sock.read(&mut buf).await.unwrap();
+            if n == 0 {
+                return None;
+            }
+            acc.extend_from_slice(&buf[..n]);
+            if let Some(v) = max_concurrent_streams(&acc) {
+                return Some(v);
+            }
+        }
+    })
+    .await
+    .expect("the server sends its opening SETTINGS");
+    assert_eq!(
+        advertised,
+        Some(crate::server::MAX_CONCURRENT_STREAMS),
+        "the server must advertise its per-connection stream cap, not hyper's default"
+    );
+}
