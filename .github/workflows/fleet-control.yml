@@ -1,0 +1,130 @@
+# fleet-control — keep the self-hosted EC2 runner floor "running or DOWN, never idle".
+#
+# WHAT THIS DOES. On every push/PR (pre-warm), whenever CI / gate-mutants / keep-proof finish
+# (re-evaluate), every ~15 min (safety reaper), and on demand, this workflow asks one question:
+# "is there, right now, any self-hosted CI work queued or running?" (scripts/ci-fleet-decision.sh).
+#   - If YES  -> ensure the floor is UP   (scripts/ci-runners-up.sh, idempotent).
+#   - If NO   -> tear the floor fully DOWN (scripts/ci-runners-down.sh --all).
+#
+# WHY IT RUNS ON GITHUB-HOSTED ubuntu-latest. The whole point is to bring the self-hosted floor back
+# from ZERO, so the controller must not itself depend on that floor being up.
+#
+# CRITICAL SAFETY — NEVER TEAR DOWN LIVE WORK. A teardown fires only after TWO consecutive
+# "empty queue" reads FLEET_DEBOUNCE_SECONDS apart (default 3 min), so a gap between two jobs in a
+# run can never be mistaken for an empty queue. The decision itself is conservative: any self-hosted
+# runner busy OR any self-hosted job queued/in_progress => UP.
+#
+# SHIPS INERT. FLEET_CONTROL_ENFORCE defaults to "report-only": the workflow logs the decision and
+# what it WOULD do and makes ZERO AWS mutations (it does not even assume the AWS role). Merging this
+# changes nothing about the fleet. Flip it to "enforce" (repo variable FLEET_CONTROL_ENFORCE, or the
+# workflow_dispatch input) to let it actually scale the fleet. See docs/ci/fleet-auto-scale.md.
+name: fleet-control
+
+on:
+  pull_request:
+  push:
+  workflow_run:
+    workflows: ["CI", "gate-mutants", "keep-proof"]
+    types: [completed]
+  schedule:
+    - cron: "*/15 * * * *"   # safety reaper: catch anything the event-driven passes missed
+  workflow_dispatch:
+    inputs:
+      enforce:
+        description: "Override enforcement for this run: report-only (default) or enforce"
+        type: choice
+        default: report-only
+        options: [report-only, enforce]
+
+# Serialize: never let two controllers bring the fleet up and down at the same time. Do NOT cancel
+# an in-flight run — a half-finished teardown/bring-up is worse than waiting for it to complete.
+concurrency:
+  group: fleet-control
+  cancel-in-progress: false
+
+permissions:
+  id-token: write     # assume the OIDC role (only used when enforcing)
+  contents: read      # checkout
+  actions: read       # read this repo's workflow runs / jobs for the queue check
+
+env:
+  AWS_REGION: us-east-1
+  FLEET_ROLE_ARN: arn:aws:iam::457667483187:role/busbar-ci-fleet-controller
+  # Default posture. A repo variable of the same name (vars.FLEET_CONTROL_ENFORCE) overrides it, and
+  # a manual dispatch input overrides that. Anything other than exactly "enforce" is report-only.
+  FLEET_CONTROL_ENFORCE: ${{ github.event.inputs.enforce || vars.FLEET_CONTROL_ENFORCE || 'report-only' }}
+  FLEET_DEBOUNCE_SECONDS: "180"
+  CI_RUNNER_COUNT: "8"          # spot boxes to bring up (on top of the on-demand floor)
+
+jobs:
+  control:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      # ── Decide: UP or DOWN, with the two-read debounce that guards a teardown ────────────────────
+      - name: Evaluate the self-hosted CI queue
+        id: decide
+        env:
+          # Repo-scoped github.token can read this repo's runs/jobs (enough for correctness). Supply
+          # secrets.FLEET_CONTROL_GH_TOKEN (a PAT with admin:org read) to ALSO see org-wide busy
+          # runners; the script degrades gracefully to the repo view when it is absent.
+          GH_TOKEN: ${{ secrets.FLEET_CONTROL_GH_TOKEN || github.token }}
+          ORG: GetBusbar
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          read1="$(bash scripts/ci-fleet-decision.sh)"
+          echo "first read: $read1"
+          if [ "$read1" = "up" ]; then
+            target=up
+          else
+            echo "queue looks empty; debouncing ${FLEET_DEBOUNCE_SECONDS}s before confirming a teardown..."
+            sleep "${FLEET_DEBOUNCE_SECONDS}"
+            read2="$(bash scripts/ci-fleet-decision.sh)"
+            echo "second read: $read2"
+            if [ "$read2" = "down" ]; then target=down; else target=up; fi
+          fi
+          echo "target=$target" >> "$GITHUB_OUTPUT"
+          {
+            echo "## fleet-control decision"
+            echo ""
+            echo "- enforcement: \`${FLEET_CONTROL_ENFORCE}\`"
+            echo "- target: **${target}**"
+            echo "- trigger: \`${{ github.event_name }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # ── Assume the OIDC role — ONLY when enforcing (report-only makes no AWS calls at all) ───────
+      - name: Configure AWS credentials
+        if: env.FLEET_CONTROL_ENFORCE == 'enforce'
+        uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502 # v4.0.2
+        with:
+          role-to-assume: ${{ env.FLEET_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: fleet-control-${{ github.run_id }}
+
+      # ── Act ─────────────────────────────────────────────────────────────────────────────────────
+      - name: Apply (or, in report-only, describe) the decision
+        env:
+          TARGET: ${{ steps.decide.outputs.target }}
+          GH_TOKEN: ${{ secrets.FLEET_CONTROL_GH_TOKEN || github.token }}
+        run: |
+          set -euo pipefail
+          if [ "${FLEET_CONTROL_ENFORCE}" != "enforce" ]; then
+            echo "REPORT-ONLY: enforcement is '${FLEET_CONTROL_ENFORCE}', making NO AWS changes."
+            if [ "${TARGET}" = "up" ]; then
+              echo "WOULD RUN: CI_RUNNER_COUNT=${CI_RUNNER_COUNT} scripts/ci-runners-up.sh   (ensure floor UP)"
+            else
+              echo "WOULD RUN: scripts/ci-runners-down.sh --all   (tear the floor fully DOWN)"
+            fi
+            echo "Set repo variable FLEET_CONTROL_ENFORCE=enforce (or dispatch with enforce) to act."
+            exit 0
+          fi
+
+          echo "ENFORCE: applying target '${TARGET}'."
+          if [ "${TARGET}" = "up" ]; then
+            CI_RUNNER_COUNT="${CI_RUNNER_COUNT}" bash scripts/ci-runners-up.sh
+          else
+            bash scripts/ci-runners-down.sh --all
+          fi
