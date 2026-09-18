@@ -56,15 +56,22 @@
 //! transfers to the plane axis — the vocabulary half, joined by the slot half, the surface half and
 //! the boot half — and the honest measure of how much of the plane problem is covered.
 
-// S4b: the NEUTRAL PLANE-REGISTRY SURFACE — `PlaneDecl` (the plane vocabulary/seam declaration), the
-// `BuildCtx` its `build` reads, the neutral `PlaneBootCtx` boot-context trait + its `RestoredSummary`
-// return, and the `BootHook` alias — relocated into `busbar-substrate` so an extracted plane crate
-// constructs its own `PlaneDecl` and names every seam type without a path back to core. Re-exported
-// HERE at their old paths so the population glue below, the built-in `PLANE_DECL`s and every in-core
-// caller (`busbar_core::plane::registry::{PlaneDecl, BuildCtx, RestoredSummary}`) resolve unchanged.
-// What did NOT move: the glue (it names `PlaneDispatch`/the built-in statics, all
-// core-live) and `BootCtx` (its phase fields hold the core-live `App`/`AppHandle`) — `BootCtx` stays
-// here and IMPLEMENTS the neutral `PlaneBootCtx` so a plane hook reads it without naming `App`.
+// S4b: the NEUTRAL PLANE-REGISTRY VOCABULARY/SEAM — `PlaneDecl`, the `BuildCtx` its `build` reads, the
+// neutral `PlaneBootCtx` boot-context trait + its `RestoredSummary` return, and the `BootHook` alias —
+// relocated into `busbar-substrate` so an extracted plane crate constructs its own `PlaneDecl` and names
+// every seam type without a path back to core. `check_owned_config_claims` (the neutral dup-claim guard)
+// rode down with them.
+//
+// S1 (1.6.0 deletion-wave keystone): the plane-registry RESOLUTION surface joined them — see the block
+// further down. `install_planes`, the boot fold, the process list (`plane_decls`), the built-in
+// accessor, the by-key/by-section resolvers and the ABI index codecs all name only `PlaneDecl` +
+// `busbar_api`, so they live on the substrate now and are re-exported HERE (or, under `cfg(test)`, wear
+// a thin seeding veneer) at their old paths so every in-core caller resolves unchanged.
+//
+// What STAYS in this file is the population glue that DOES name core-live types: `BootCtx` (its phase
+// fields hold the core-live `App`/`AppHandle`) — which IMPLEMENTS the neutral `PlaneBootCtx` so a plane
+// hook reads it without naming `App` — and `build_dispatch` (it names `PlaneDispatch`). Both now name the
+// moved resolution symbols through the shims below.
 pub use busbar_substrate::plane::registry::{
     check_owned_config_claims, BootHook, BuildCtx, CardIssuer, PlaneBootCtx, PlaneDecl,
     RestoredSummary,
@@ -257,38 +264,93 @@ impl BootCtx {
     }
 }
 
-/// THE BUILT-INS — one line per plane, and every line is DATA.
-///
-/// This is the whole of core's knowledge of which planes exist. Each row is a reference to a
-/// declaration that lives in the plane's OWN module beside the code it describes, which is what
-/// makes the row — rather than a table of strings — the thing that leaves with the plane.
-///
-/// Order is the operator-visible LAYERING order, unchanged from `Plane::ALL`.
-/// Production carries NO built-in plane rows: every plane is a plugin the composition root installs
-/// through [`install_planes`]. Naming a plane crate's `PLANE_DECL` here would be a plane-crate symbol
-/// reference in neutral source — a side channel around the ABI — so this stays empty.
-///
-/// Core's OWN test binary still needs the shipped process list of the plane crates it ships against
-/// (dev-dependencies there), but that list names each plane crate's `PLANE_DECL`, which belongs OFF
-/// the neutral source. It is therefore defined in the test module (`registry_tests`, a `tests/` file
-/// the neutral-purity lint excludes) and reached ONLY through [`builtin_plane_decls`]. An EXTERNAL
-/// `test-support` consumer (the plane suites, core's integration target) has `cfg(test)` false and
-/// registers through [`register_test_plane`] from each plane's `testkit`.
+// ── THE PLANE-REGISTRY RESOLUTION SURFACE — RELOCATED to `busbar_substrate::plane::registry` (S1) ────
+// The Class-A RESOLUTION surface — `install_planes`, the boot fold
+// (`merged_boot_plane_decls`/`canonical_key_order`), the process list (`plane_decls`), the built-in
+// accessor (`builtin_plane_decls`), the by-key/by-section resolvers and the ABI index codecs — names
+// only `PlaneDecl`, `busbar_api` and `busbar-contract`, never a core-live type, so it moved DOWN to the
+// neutral substrate beside `PlaneDecl`. Re-exported HERE at the historical
+// `busbar_core::plane::registry::…` paths so all ~50 in-core / composition-root / plugin callers compile
+// unchanged. The population glue that DOES name core-live types — `BootCtx` (its phase fields borrow
+// `App`/`AppHandle`) and `build_dispatch` (names `PlaneDispatch`) — stays in this file, and now names
+// the moved symbols through these same shims.
+//
+// `install_planes`, `merged_boot_plane_decls` and `CORE_OWNED_CONCRETE_SECTIONS` read no process list
+// (install is a write; the fold takes explicit args; the const is data), so they are DIRECT re-exports
+// in every build. The READ accessors get a `cfg(test)` seeding VENEER (below), which is why they are
+// re-exported only under `cfg(not(test))`.
+pub use busbar_substrate::plane::registry::{
+    install_planes, merged_boot_plane_decls, CORE_OWNED_CONCRETE_SECTIONS,
+};
 #[cfg(not(test))]
-static BUILTIN_PLANE_DECLS: &[&PlaneDecl] = &[];
+pub use busbar_substrate::plane::registry::{
+    builtin_plane_decls, plane_decl_for, plane_decl_for_config_section, plane_decls, plane_key_at,
+    plane_key_index, scope_kind_at, scope_kind_index,
+};
 
-/// The built-in declarations. Read by [`plane_decls`] to build the process list, and by the
-/// registry's own tests to build a list with ONE MORE declaration in it — which is the whole of what
-/// a loader will do differently. Empty in production and under `test-support`; under core's own
-/// `#[cfg(test)]` binary it is the test-module list, so no plane crate is named in neutral source.
-#[cfg(not(test))]
+// ── CORE'S OWN-TEST-BINARY BUILT-IN SEEDING (cfg(test) veneers) ─────────────────────────────────────
+// Under core's OWN `#[cfg(test)]` binary the shipped `[llm, mcp, a2a]` plane set is named in the
+// `registry_tests` module (a `tests/` file the neutral-purity lint excludes) and handed to the neutral
+// substrate registry through its `set_test_builtins` hook as the stable TAIL of the boot fold — exactly
+// as the pre-relocation core registry folded `builtin_plane_decls()` under `#[cfg(test)]`. The neutral
+// substrate spells no plane crate; it only holds the fn pointer core hands it. Every READ accessor
+// SEEDS the hook before it reads, idempotently — self-healing regardless of call order because the
+// substrate memoises on a key that includes the built-in tail's length. Under `test-support` WITHOUT
+// `cfg(test)` (a plane suite / core's integration target) the veneers are inactive and the hook stays
+// unset — those consumers register their planes through `register_test_plane`, needing no core tail.
+#[cfg(test)]
+fn core_test_builtin_plane_decls() -> &'static [&'static PlaneDecl] {
+    registry_tests::TEST_BUILTIN_PLANE_DECLS
+}
+
+/// The built-in declarations for core's OWN test binary — the shipped plane set, seeded into the
+/// neutral substrate's core-test hook then read back through it, so this file names no plane crate.
+#[cfg(test)]
 pub fn builtin_plane_decls() -> &'static [&'static PlaneDecl] {
-    BUILTIN_PLANE_DECLS
+    busbar_substrate::plane::registry::set_test_builtins(core_test_builtin_plane_decls);
+    busbar_substrate::plane::registry::builtin_plane_decls()
 }
 
 #[cfg(test)]
-pub fn builtin_plane_decls() -> &'static [&'static PlaneDecl] {
-    registry_tests::TEST_BUILTIN_PLANE_DECLS
+pub fn plane_decls() -> &'static [&'static PlaneDecl] {
+    busbar_substrate::plane::registry::set_test_builtins(core_test_builtin_plane_decls);
+    busbar_substrate::plane::registry::plane_decls()
+}
+
+#[cfg(test)]
+pub fn plane_decl_for(key: &str) -> Option<&'static PlaneDecl> {
+    busbar_substrate::plane::registry::set_test_builtins(core_test_builtin_plane_decls);
+    busbar_substrate::plane::registry::plane_decl_for(key)
+}
+
+#[cfg(test)]
+pub fn plane_decl_for_config_section(section: &str) -> Option<&'static PlaneDecl> {
+    busbar_substrate::plane::registry::set_test_builtins(core_test_builtin_plane_decls);
+    busbar_substrate::plane::registry::plane_decl_for_config_section(section)
+}
+
+#[cfg(test)]
+pub fn plane_key_index(key: &str) -> u8 {
+    busbar_substrate::plane::registry::set_test_builtins(core_test_builtin_plane_decls);
+    busbar_substrate::plane::registry::plane_key_index(key)
+}
+
+#[cfg(test)]
+pub fn plane_key_at(idx: u8) -> Option<&'static str> {
+    busbar_substrate::plane::registry::set_test_builtins(core_test_builtin_plane_decls);
+    busbar_substrate::plane::registry::plane_key_at(idx)
+}
+
+#[cfg(test)]
+pub fn scope_kind_at(idx: u32) -> Option<&'static str> {
+    busbar_substrate::plane::registry::set_test_builtins(core_test_builtin_plane_decls);
+    busbar_substrate::plane::registry::scope_kind_at(idx)
+}
+
+#[cfg(test)]
+pub fn scope_kind_index(kind: &str) -> Option<u32> {
+    busbar_substrate::plane::registry::set_test_builtins(core_test_builtin_plane_decls);
+    busbar_substrate::plane::registry::scope_kind_index(kind)
 }
 
 /// ONE PLANE'S DEFAULT per-generation runtime, type-erased — the object core's `cfg(test)` fixture
@@ -301,312 +363,13 @@ pub fn default_mcp_test_runtime() -> std::sync::Arc<dyn std::any::Any + Send + S
     registry_tests::default_mcp_test_runtime()
 }
 
-/// The process plane list, folded on first read from the built-ins plus anything installed. Under the
-/// test-support surface `plane_decls` folds a growable test registration set instead (see below), so
-/// this memo is the production path only.
-#[cfg(not(any(test, feature = "test-support")))]
-static PLANES: std::sync::OnceLock<Vec<&'static PlaneDecl>> = std::sync::OnceLock::new();
-
-/// Declarations the COMPOSITION ROOT installed before the plane list was first read.
-static INSTALLED: std::sync::OnceLock<&'static [&'static PlaneDecl]> = std::sync::OnceLock::new();
-
-/// INSTALL PLANE DECLARATIONS — the composition root's one write into the plane axis, and the seam
-/// an extracted plane crate registers through. Exactly `crate::proto::registry::install_protocols`'
-/// shape and contract, on the plane axis. `pub`, not `pub`: the `busbar` binary crate is the
-/// composition root and calls this from `main` (`register_planes`), before any config load or
-/// validation touches a plane.
-///
-/// # Panics
-/// - if called twice: two composition roots is a wiring bug, not a merge to attempt.
-/// - if called after the plane list was first read: see the module header's INSTALL BEFORE FIRST
-///   READ invariant.
-pub fn install_planes(decls: &'static [&'static PlaneDecl]) {
-    assert!(
-        INSTALLED.set(decls).is_ok(),
-        "install_planes called twice: there is one composition root, and it registers once"
-    );
-    // The "install before first read" invariant is enforced by the production memo.
-    #[cfg(not(any(test, feature = "test-support")))]
-    assert!(
-        PLANES.get().is_none(),
-        "install_planes called after the plane list was first read; register in main before any \
-         config load or validation touches a plane"
-    );
-    // Under the test-support surface `plane_decls` re-folds on every read (no frozen `PLANES` memo),
-    // so the FIRST-READ witness is `TEST_MEMO` being populated instead: it is set the first time the
-    // process plane list is folded, so a non-empty memo means a layer has already resolved against the
-    // built-ins-only set — the same invariant the production `PLANES` memo enforces, spelled on the
-    // structure that stands in for it here.
-    #[cfg(any(test, feature = "test-support"))]
-    assert!(
-        TEST_MEMO.lock().unwrap().is_none(),
-        "install_planes called after the plane list was first read; register in main before any \
-         config load or validation touches a plane"
-    );
-}
-
-/// THE BOOT FOLD: installed declarations ahead of built-ins, one entry per KEY, later same-key
-/// registrations skipped audibly. Split from [`plane_decls`]' `OnceLock` so its order and skip
-/// semantics are a function a test can drive — the process singleton can only ever be initialised
-/// once per test binary, which would leave these rules provable only by booting binaries.
-pub fn merged_boot_plane_decls(
-    installed: &[&'static PlaneDecl],
-    builtins: &[&'static PlaneDecl],
-) -> Vec<&'static PlaneDecl> {
-    let mut decls: Vec<&'static PlaneDecl> = Vec::new();
-    for d in installed.iter().chain(builtins) {
-        if decls.iter().any(|p| p.key == d.key) {
-            tracing::info!(
-                plane = d.key,
-                "skipping a later registration of an already-declared plane (composition-root copy \
-                 and built-in copy of one plane)"
-            );
-            continue;
-        }
-        decls.push(d);
-    }
-    // NORMALISE TO CANONICAL LAYERING ORDER. The dedup above still runs installed-first, so the
-    // composition-root copy still wins a same-key collision; this only reorders the SURVIVORS so an
-    // extracted plane (installed) lands in the same slot its built-in copy held — a stable sort, so
-    // any plane outside the canonical list keeps its relative fold position at the tail.
-    //
-    // The canonical order is DATA, not a hard-coded token list: it is the order each plane KEY first
-    // appears across the built-in rows then the installed ones. In production the built-in rows
-    // compile out and the composition root installs the planes in layering order, so that install
-    // order IS the canonical order; under the test / test-support surface the built-in rows supply
-    // it. Either way core names no plane token here — the order leaves with the decls.
-    let canonical = canonical_key_order(installed, builtins);
-    let rank = |key: &str| {
-        canonical
-            .iter()
-            .position(|k| *k == key)
-            .unwrap_or(canonical.len())
-    };
-    decls.sort_by_key(|d| rank(d.key));
-    // REGISTER EACH PLANE'S SCOPE KINDS with the neutral `busbar_api` scope-kind wire registry, so a
-    // `VirtualKey` grant of a plane's kind (`mcp_server`, …) serializes to its `allowed_{kind}s` wire
-    // field instead of failing the write. The kind strings are DATA off each `PlaneDecl.scope_kinds`
-    // — core names no plane vocabulary here. Idempotent, so re-folding under the test surface is safe.
-    for d in &decls {
-        for kind in d.scope_kinds {
-            busbar_api::register_scope_kind(kind);
-        }
-    }
-    // PLANE-OWNED-CONFIG DUP-CLAIM GUARD (1.6.0 config-seam, stage 1). Refuse the boot if two planes
-    // claim the same top-level config section, or if a plane claims a section core STILL owns
-    // concretely (`CORE_OWNED_CONCRETE_SECTIONS`) — the invariant that makes the later section moves
-    // safe. In stage 1 every `owned_config_sections` is empty, so this is unconditionally `Ok(())` and
-    // adds no behaviour; it exists so the FIRST move that mis-claims a section fails at boot, loudly,
-    // rather than silently double-declaring the grammar. A panic (not a `Result`) because a mis-wired
-    // composition root is a build bug, not an operator error to recover from — same disposition as the
-    // `install_planes`-twice / read-before-install asserts above.
-    if let Err(refusal) =
-        crate::plane::registry::check_owned_config_claims(&decls, CORE_OWNED_CONCRETE_SECTIONS)
-    {
-        panic!("plane-owned-config dup-claim guard: {refusal}");
-    }
-    decls
-}
-
-/// THE TOP-LEVEL CONFIG SECTIONS CORE STILL OWNS CONCRETELY as fields of
-/// [`crate::config::DeployCfg`] — the reserved set the plane-owned-config dup-claim guard
-/// ([`crate::plane::registry::check_owned_config_claims`]) refuses a plane from claiming until the
-/// section is actually evicted from core in the SAME change.
-///
-/// STAGE 1 lists all five: `providers`/`models`/`pools`/`rate_card`/`limits` are all concrete today.
-/// As the LATER stages move a section into its owning plane crate, that stage DELETES the section's
-/// key from this list in lockstep with adding it to the plane's `owned_config_sections` — the two
-/// edits are one change, so at no instant is a section either owned by nobody or claimed by two. Per
-/// the reconciled-audit scope, `pools` and `providers` stay neutral in core and are NEVER removed
-/// here; only `rate_card`, `limits` and `models`-capabilities are evictable in later stages.
-pub const CORE_OWNED_CONCRETE_SECTIONS: &[&str] =
-    &["providers", "models", "pools", "rate_card", "limits"];
-
-/// THE OPERATOR-VISIBLE LAYERING ORDER of the planes, by key — the order `config_sections` reports
-/// and a cross-plane refusal names sections in — DERIVED FROM REGISTRATION DATA rather than a
-/// hard-coded token list. It is the order each plane key FIRST APPEARS across the built-in rows then
-/// the installed ones, deduped. The built-in rows (a plane's own `&PLANE_DECL`, `#[cfg(test)]`) fix
-/// the canonical positions under the test/test-support surface; in production the built-ins compile
-/// out and the composition root installs the planes in layering order, so the install order IS the
-/// canonical order. Core spells no specific plane's key here — the order leaves with the decls.
-///
-/// `merged_boot_plane_decls` sorts its survivors by each key's index in this list (tail for a key not
-/// present — an unknown/registered-later plane sorts stably after the canonical set rather than
-/// jumping the queue), so the position is a property of the plane, not of whether it shipped as a
-/// built-in or an installed crate.
-fn canonical_key_order(
-    installed: &[&'static PlaneDecl],
-    builtins: &[&'static PlaneDecl],
-) -> Vec<&'static str> {
-    let mut order: Vec<&'static str> = Vec::new();
-    for d in builtins.iter().chain(installed) {
-        if !order.contains(&d.key) {
-            order.push(d.key);
-        }
-    }
-    order
-}
-
-/// The process plane list, in fold order. One acquire-load once initialised.
-#[cfg(not(any(test, feature = "test-support")))]
-pub fn plane_decls() -> &'static [&'static PlaneDecl] {
-    PLANES.get_or_init(|| {
-        let installed = INSTALLED.get().copied().unwrap_or(&[]);
-        merged_boot_plane_decls(installed, builtin_plane_decls())
-    })
-}
-
-// ── TEST-SUPPORT PLANE REGISTRATION ──────────────────────────────────────────────────────────────
-// The extracted plane crates can't be hard-coded into `BUILTIN_PLANE_DECLS` (core cannot name them),
-// so under the test-support surface each plane's `testkit` REGISTERS its `&'static PlaneDecl` through
-// the NEUTRAL seam [`busbar_substrate::plane::registry::register_test_plane`] — the storage lives on
-// the substrate so a plane crate names no `busbar_core::` implementation to register itself, exactly
-// as production's composition root `install_planes`. `plane_decls()` folds the registered set ahead of
-// the built-ins on every read, recomputing (and leaking once) only when the set GROWS — so a plane
-// registered by any test before it reads the list is visible regardless of test order, and the
-// `&'static` contract holds. Bounded: at most one leak per distinct plane (≤ the plane count).
-// Keyed on the PAIR `(installed_len, registered_len)`, not their sum: a set that GREW `installed` by
-// one while `register_test_plane`'s set SHRANK by one (the isolation guard's snapshot/restore) sums to
-// the same total but folds to a different list, and a lone sum would alias the two and hand back a
-// stale leak. The pair distinguishes them for the price of one extra `usize`.
-/// The memo entry: the `(installed_len, registered_len)` key the fold was last computed for, and the
-/// leaked slice it produced.
-#[cfg(any(test, feature = "test-support"))]
-type TestMemoEntry = ((usize, usize), &'static [&'static PlaneDecl]);
-#[cfg(any(test, feature = "test-support"))]
-static TEST_MEMO: std::sync::Mutex<Option<TestMemoEntry>> = std::sync::Mutex::new(None);
 
 /// TEST-SUPPORT SEAM — register an extracted plane's declaration into the process registry. Re-exported
 /// from the neutral substrate ([`busbar_substrate::plane::registry::register_test_plane`], which owns
-/// the storage) so core's own test-support callers keep one stable path; the plane crates call the
-/// substrate function directly.
+/// the storage AND the whole resolution surface now) so core's own test-support callers keep one stable
+/// path; the plane crates call the substrate function directly.
 #[cfg(any(test, feature = "test-support"))]
 pub use busbar_substrate::plane::registry::register_test_plane;
-
-#[cfg(any(test, feature = "test-support"))]
-pub fn plane_decls() -> &'static [&'static PlaneDecl] {
-    let reg = busbar_substrate::plane::registry::test_registered_planes();
-    let installed = INSTALLED.get().copied().unwrap_or(&[]);
-    let want = (installed.len(), reg.len());
-    let mut memo = TEST_MEMO.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some((n, slice)) = *memo {
-        if n == want {
-            return slice;
-        }
-    }
-    // Fold explicit `install_planes` registrations (registry's own tests) AND `register_test_plane`
-    // registrations ahead of the built-ins, then leak ONCE for this (grown) set.
-    let mut all: Vec<&'static PlaneDecl> = installed.to_vec();
-    all.extend(reg.iter().copied());
-    let merged = merged_boot_plane_decls(&all, builtin_plane_decls());
-    let leaked: &'static [&'static PlaneDecl] = Box::leak(merged.into_boxed_slice());
-    *memo = Some((want, leaked));
-    leaked
-}
-
-/// THE ABI PLANE-KEY (the registration INDEX) for a plane's stable decl `key`, or `u8::MAX` when no
-/// registered plane owns it — the opaque numeric handle the FFI PODs carry across the C-ABI seam,
-/// resolved back to the key string via [`plane_key_at`]. This is the "registration index → key"
-/// assignment the plane ABI keys on, in place of a hard-coded `0`/`1` numbering: core spells no plane
-/// token; the number is only a position in the process registry.
-pub fn plane_key_index(key: &str) -> u8 {
-    plane_decls()
-        .iter()
-        .position(|d| d.key == key)
-        .map_or(u8::MAX, |i| i as u8)
-}
-
-/// THE SCOPE-KIND at ABI scope-kind index `idx`, DERIVED FROM REGISTRY DATA rather than a hard-coded
-/// table. Index `0` is core's neutral admission-pool topology (`"pool"`, the kind every deployment
-/// always has); indices `1..` are each installed plane's declared `PlaneDecl.scope_kinds` in
-/// registration order — the same order a plane encodes when it stamps a `TargetRef.scope_kind`. So a
-/// host entitlement slot resolves the opaque numeric kind to its string without core spelling any
-/// plane's kind token. `None` (fail-closed) for an index past the registered kinds.
-///
-/// The index is a bijection over the DISTINCT kinds, base first: a plane that also declares the
-/// neutral base kind (one plane grants over `"pool"`, which `busbar_api` already treats as the
-/// unconditional `BUILTIN_POOL_KIND`) must NOT re-count it. Without this dedup the base `"pool"` and
-/// that plane's own `"pool"` declaration would occupy indices 0 AND 1, shifting every later plane's
-/// kind up by one so a `pool` grant would wrongly resolve a different plane's scope kind (entitlement
-/// escalation). Folding a re-declared base onto its existing index 0 keeps each grant target mapped to
-/// the RIGHT plane's kind.
-pub fn scope_kind_at(idx: u32) -> Option<&'static str> {
-    // `"pool"` is the neutral base kind (not a plane token); the plane kinds follow it as data,
-    // de-duplicated in first-seen order so a re-declared base does not create a phantom index.
-    let mut seen: Vec<&'static str> = Vec::new();
-    std::iter::once("pool")
-        .chain(
-            plane_decls()
-                .iter()
-                .flat_map(|d| d.scope_kinds.iter().copied()),
-        )
-        .filter(|k| {
-            let fresh = !seen.contains(k);
-            if fresh {
-                seen.push(k);
-            }
-            fresh
-        })
-        .nth(idx as usize)
-}
-
-/// THE ABI SCOPE-KIND INDEX for a kind string — the exact INVERSE of [`scope_kind_at`], sharing its
-/// first-seen dedup so the two can never skew. Any encoder that must stamp a `TargetRef.scope_kind`
-/// routes through here rather than re-deriving the numbering, which is what keeps the base-kind
-/// entitlement escalation closed: if the encode side and the [`scope_kind_at`] decode side computed
-/// the base-first dedup independently they could drift, and a `pool` grant could resolve a
-/// different plane's scope-kind target. Fail-closed (`None`) for a kind no registered plane declares.
-pub fn scope_kind_index(kind: &str) -> Option<u32> {
-    // The identical sequence `scope_kind_at` indexes: the neutral base kind first, then each plane's
-    // declared kinds, de-duplicated in first-seen order. `position` over it is the inverse of `nth`.
-    let mut seen: Vec<&'static str> = Vec::new();
-    std::iter::once("pool")
-        .chain(
-            plane_decls()
-                .iter()
-                .flat_map(|d| d.scope_kinds.iter().copied()),
-        )
-        .filter(|k| {
-            let fresh = !seen.contains(k);
-            if fresh {
-                seen.push(k);
-            }
-            fresh
-        })
-        .position(|k| k == kind)
-        .map(|i| i as u32)
-}
-
-/// The stable decl `key` of the plane at ABI registration index `idx`, or `None` when out of range —
-/// the inverse of [`plane_key_index`], so a host vtable slot that received the opaque numeric handle
-/// resolves it back to the key string it looks its gate set / `ingress_protocol` label up by, naming
-/// no plane token.
-pub fn plane_key_at(idx: u8) -> Option<&'static str> {
-    plane_decls().get(idx as usize).map(|d| d.key)
-}
-
-/// RESOLVE A PLANE DECLARATION BY KEY. Allocates nothing.
-///
-/// NAMED FOR ITS AXIS, not `decl_for`. the `structure-lint` gate's declaration census holds
-/// `fn decl_for(` to EXACTLY ONE production occurrence — "there is exactly ONE by-name protocol
-/// resolution in busbar, and a second one is a second answer to which protocols exist". That rule
-/// is right and is not weakened to make room for this: plane resolution is a different axis and
-/// says so in its name, so the census keeps meaning what it means.
-pub fn plane_decl_for(key: &str) -> Option<&'static PlaneDecl> {
-    plane_decls().iter().copied().find(|d| d.key == key)
-}
-
-/// RESOLVE A PLANE DECLARATION BY ITS CONFIG SECTION, against the PROCESS list — the neutral bridge
-/// the named-definition write path and the config parse/lower path cross to reach a plane's hooks
-/// without naming the plane. Resolves through [`plane_decls`] (installed + built-ins, canonically
-/// ordered) rather than the built-ins alone, so an EXTRACTED plane the composition root installed
-/// is found on the same footing as a still-built-in one.
-pub fn plane_decl_for_config_section(section: &str) -> Option<&'static PlaneDecl> {
-    plane_decls()
-        .iter()
-        .copied()
-        .find(|d| d.config_section == section)
-}
 
 /// FOLD THE DISPATCH TABLE from the registered plane declarations and the per-plane runtime objects
 /// (`slots`, each type-erased as `&dyn Any` and keyed by plane key). For every decl with a slot this
