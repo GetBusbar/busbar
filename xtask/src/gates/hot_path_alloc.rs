@@ -1,4 +1,4 @@
-//! `cargo xtask gate hot-path-alloc` — THE §8 HOT-PATH ALLOC WITNESS, ENFORCED.
+//! `cargo xtask gate hot-path-alloc` — THE §8 HOT-PATH ALLOC INSTRUMENT'S SOURCE CONTRACT.
 //!
 //! `docs/design/1.6.0-plane-extraction-LOCKED.md` §8 owes an alloc gate: "`#[global_allocator]`
 //! counter = 0 across the ISOLATED POD host-call batch", the second of the two criterion benches
@@ -6,35 +6,45 @@
 //! `crates/busbar-core/benches/plane_host_vtable_alloc.rs`; this gate keeps that instrument making
 //! §8's claim, so it cannot be dropped from the bench without an owed row going missing.
 //!
-//! Three claims, three rows:
+//! # WHAT GREEN MEANS HERE — READ THIS BEFORE TRUSTING THE COLOR
 //!
-//! | row | the claim it holds |
+//! This gate is a SOURCE gate: it proves the alloc instrument's SOURCE still MAKES §8's claim (the
+//! load-bearing markers are present), NOT that zero allocations were MEASURED. A green row here says
+//! "the assertion is still written into the bench," never "the allocator counted zero." The rows are
+//! named `…-markers-present` / `…-assertion-present` for exactly that reason — an earlier draft named
+//! one `pod-batch-zero`, which read as a MEASURED result and was theatre.
+//!
+//! The measurement is produced by RUNNING the bench (`cargo bench -p busbar-core --bench
+//! plane_host_vtable_alloc`), whose counting `#[global_allocator]` asserts `== 0` and EXITS NON-ZERO
+//! otherwise (its `BUSBAR_ALLOC_INJECT` knob proves that assertion can still fire). That run is the
+//! bench's job in the perf lane; this gate is deliberately not it, because `xtask` depends on no
+//! product crate (`segregation:xtask-src-imports` — xtask reads sources as TEXT) and a Tier::Fast
+//! gate builds nothing, so a text gate cannot honestly report a measured allocation count.
+//!
+//! Three rows:
+//!
+//! | row | what a GREEN proves (source only) |
 //! | --- | --- |
 //! | `:instrument-present` | the criterion bench exists AND is registered `harness = false` |
-//! | `:global-allocator` | it installs a counting `#[global_allocator]` |
-//! | `:pod-batch-zero` | it asserts that counter is `== 0` across the isolated `PlaneHostVtable` POD batch |
+//! | `:global-allocator-markers-present` | the source still installs a counting `#[global_allocator]` (markers present) |
+//! | `:pod-batch-assertion-present` | the source still asserts the counter is `== 0` across the isolated `PlaneHostVtable` POD batch (marker present) |
 //!
-//! WHY A SOURCE GATE. Same reason as `hot-path-perf`: `xtask` depends on no product crate
-//! (`segregation`) and a Tier::Fast gate builds nothing, so the allocation count is the bench's
-//! measurement, run in the perf lane, and its `BUSBAR_ALLOC_INJECT` knob is what proves the `== 0`
-//! assertion can still fire. This gate owns the CONTRACT that the instrument keeps arming the counter
-//! around the isolated POD batch and asserting zero.
-//!
-//! THE PENDING-RIDER DEPENDENCY. As with the perf instrument, `PlaneHostVtable`
-//! (`crates/busbar-plugin/src/hot/host.rs`) has no production caller yet — the keystone
-//! loop-unification (`crates/busbar/src/root/kernel.rs` + `main.rs`, reserved for the keystone wave)
-//! has not landed — so the instrument is ARMED against the vtable's own construction (the subject
-//! `crates/busbar-plugin/tests/layout_golden.rs` pins) and binds to the production crossing
-//! unchanged when the rider lands: an allocation-free POD call is allocation-free wherever it is
-//! made. This gate is GREEN now and stays green across that transition.
+//! THE PENDING-RIDER DEPENDENCY — WHY THE MEASURED GATE IS NOT WIRED YET. As with the perf
+//! instrument, `PlaneHostVtable` (`crates/busbar-plugin/src/hot/host.rs`) has no production caller
+//! yet — the keystone loop-unification (`crates/busbar/src/root/kernel.rs` + `main.rs`, reserved for
+//! the keystone wave) has not landed — so the instrument is ARMED against the vtable's own
+//! construction (the subject `crates/busbar-plugin/tests/layout_golden.rs` pins) and binds to the
+//! production crossing unchanged when the rider lands: an allocation-free POD call is allocation-free
+//! wherever it is made. That is when the measured `cargo bench` step earns a place in `ci.yml`; until
+//! then this source contract is the honest witness.
 
 use crate::ctx::{Ctx, Overlay};
 use crate::gates::{prove_green, prove_red, Gate, Report};
 use crate::ledger::{Row, Verdict};
 
 pub const ROW_INSTRUMENT: &str = "hot-path-alloc:instrument-present";
-pub const ROW_GLOBAL_ALLOCATOR: &str = "hot-path-alloc:global-allocator";
-pub const ROW_POD_BATCH: &str = "hot-path-alloc:pod-batch-zero";
+pub const ROW_GLOBAL_ALLOCATOR: &str = "hot-path-alloc:global-allocator-markers-present";
+pub const ROW_POD_BATCH: &str = "hot-path-alloc:pod-batch-assertion-present";
 
 const BENCH_REL: &str = "crates/busbar-core/benches/plane_host_vtable_alloc.rs";
 const MANIFEST_REL: &str = "crates/busbar-core/Cargo.toml";
@@ -51,7 +61,7 @@ const CLAIMS: &[Claim] = &[
     Claim {
         row: ROW_GLOBAL_ALLOCATOR,
         markers: &["#[global_allocator]", "GlobalAlloc", "ALLOC_COUNT"],
-        ok: "the instrument installs a counting #[global_allocator]",
+        ok: "the instrument source still installs a counting #[global_allocator] (markers present)",
         bad: "the instrument no longer installs a counting global allocator",
     },
     Claim {
@@ -63,7 +73,8 @@ const CLAIMS: &[Claim] = &[
             "ALLOC_COUNT",
             "assert_eq!",
         ],
-        ok: "the instrument asserts zero allocations across the isolated PlaneHostVtable POD batch",
+        ok: "the instrument source still asserts zero allocations across the isolated PlaneHostVtable \
+             POD batch (marker present)",
         bad: "the instrument no longer asserts zero allocations across the isolated POD batch",
     },
 ];

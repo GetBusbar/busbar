@@ -124,6 +124,8 @@ pub const CARGO_LOCAL: &[&str] = &[
     "cargo xtask gate plane-transport-neutrality",
     "cargo xtask gate plane-abi-neutrality --selftest",
     "cargo xtask gate plane-abi-neutrality",
+    "cargo xtask gate kind-abi-lane --selftest",
+    "cargo xtask gate kind-abi-lane",
     "cargo xtask gate duplex-ws-default-edge --selftest",
     "cargo xtask gate duplex-ws-default-edge",
     "cargo xtask gate teller-steps --selftest",

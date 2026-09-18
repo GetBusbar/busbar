@@ -1,4 +1,4 @@
-//! `cargo xtask gate hot-path-perf` — THE §8 HOT-PATH PERF WITNESS, ENFORCED.
+//! `cargo xtask gate hot-path-perf` — THE §8 HOT-PATH PERF INSTRUMENT'S SOURCE CONTRACT.
 //!
 //! `docs/design/1.6.0-plane-extraction-LOCKED.md` §8 owes a perf gate: "criterion,
 //! plugin-host-vtable vs direct-call baseline, delta<1µs p50 AND p99; a per-token host-call counter
@@ -8,41 +8,53 @@
 //! instrument making every one of §8's claims, so a claim cannot be quietly dropped from the bench
 //! without an owed row going missing.
 //!
-//! Five claims, five rows — the same shape as `duplex-ws-default-edge`:
+//! # WHAT GREEN MEANS HERE — READ THIS BEFORE TRUSTING THE COLOR
 //!
-//! | row | the claim it holds |
+//! This gate is a SOURCE gate: it proves that the perf instrument's SOURCE still MAKES each §8 claim
+//! (the load-bearing markers are present), NOT that the number was MEASURED. A green row here says
+//! "the assertion is still written into the bench," never "the p50 delta was measured under 1µs."
+//! The rows are named `…-markers-present` / `…-assertion-present` for exactly this reason: an earlier
+//! draft named them `delta-p50-under-1us` / `per-token-host-calls-zero`, which read as a MEASURED
+//! result and was theatre — green there meant a grep matched, not that a microsecond was clocked.
+//!
+//! The measurement is produced by RUNNING the bench (`cargo bench -p busbar-core --bench
+//! plane_host_vtable_perf`), which computes the percentiles itself and EXITS NON-ZERO on a blown
+//! budget or a per-token crossing (its `BUSBAR_PERF_STREAM_CROSS` knob proves those assertions can
+//! still fire). That run is the bench's job in the perf lane — it is NOT wired into `ci.yml` yet (see
+//! the pending-rider note below) — and this gate is deliberately not it: `xtask` depends on no
+//! product crate (`segregation:xtask-src-imports` — xtask reads sources as TEXT) and a Tier::Fast
+//! gate builds nothing, so a text gate cannot honestly report a measured microsecond.
+//!
+//! Five rows — the same shape as `duplex-ws-default-edge`:
+//!
+//! | row | what a GREEN proves (source only) |
 //! | --- | --- |
 //! | `:instrument-present` | the criterion bench exists AND is registered `harness = false` |
-//! | `:vtable-vs-direct` | it measures the REAL `PlaneHostVtable` slot against a direct-call baseline |
-//! | `:delta-p50-under-1us` | it asserts the crossing delta `< HOT_PATH_BUDGET_NANOS` at p50 |
-//! | `:delta-p99-under-1us` | …and at p99 |
-//! | `:per-token-host-calls-zero` | it asserts the per-token host-call counter `== 0` on the stream |
+//! | `:vtable-vs-direct-markers-present` | the source still names the REAL `PlaneHostVtable` slot and the direct-call baseline it compares (markers present — NOT a measured delta) |
+//! | `:delta-p50-assertion-present` | the source still carries the p50 `< HOT_PATH_BUDGET_NANOS` assertion (marker present) |
+//! | `:delta-p99-assertion-present` | …and the p99 assertion |
+//! | `:per-token-assertion-present` | the source still carries the per-token host-call counter `== 0` assertion (marker present) |
 //!
-//! WHY A SOURCE GATE AND NOT A `cargo bench` RUNNER. `xtask` depends on no product crate (the
-//! `segregation` gate), and a Tier::Fast gate builds nothing; the microsecond measurement is the
-//! bench's job and runs in the perf lane. What this gate owns is the CONTRACT — that the instrument
-//! still constructs the vtable, still compares it to a direct call, and still asserts §8's exact
-//! budget at both percentiles and a zero per-token crossing. Deleting an assertion from the bench is
-//! the drift this catches, and the bench's own `BUSBAR_PERF_STREAM_CROSS` knob is what proves those
-//! assertions can still fire.
-//!
-//! THE PENDING-RIDER DEPENDENCY. `PlaneHostVtable`
+//! THE PENDING-RIDER DEPENDENCY — WHY THE MEASURED GATE IS NOT WIRED YET. `PlaneHostVtable`
 //! (`crates/busbar-plugin/src/hot/host.rs`) has NO production caller yet — the keystone
 //! loop-unification (`crates/busbar/src/root/kernel.rs` + `main.rs`, reserved for the keystone wave)
-//! has not landed. So the instrument this gate guards is ARMED against the vtable's own construction
-//! (the `#[repr(C)]` subject `crates/busbar-plugin/tests/layout_golden.rs` pins), and binds to the
-//! production crossing unchanged when the rider lands: the measured slot is the same fn pointer
-//! either way. This gate is GREEN now and stays green across that transition.
+//! has not landed. So the instrument is ARMED against the vtable's own construction (the `#[repr(C)]`
+//! subject `crates/busbar-plugin/tests/layout_golden.rs` pins) rather than the production streaming
+//! path: what it clocks today is an ISOLATED vtable-vs-direct crossing, not a real rider streaming N
+//! tokens. That isolated bench binds to the production crossing unchanged when the rider lands (the
+//! slot is the same fn pointer either way), and THAT is when the measured `cargo bench` step earns a
+//! place in `ci.yml`. Until then this source contract is the honest witness: it holds the shape of
+//! the claim, and says plainly that it does not hold the number.
 
 use crate::ctx::{Ctx, Overlay};
 use crate::gates::{prove_green, prove_red, Gate, Report};
 use crate::ledger::{Row, Verdict};
 
 pub const ROW_INSTRUMENT: &str = "hot-path-perf:instrument-present";
-pub const ROW_SUBJECT: &str = "hot-path-perf:vtable-vs-direct";
-pub const ROW_P50: &str = "hot-path-perf:delta-p50-under-1us";
-pub const ROW_P99: &str = "hot-path-perf:delta-p99-under-1us";
-pub const ROW_PER_TOKEN: &str = "hot-path-perf:per-token-host-calls-zero";
+pub const ROW_SUBJECT: &str = "hot-path-perf:vtable-vs-direct-markers-present";
+pub const ROW_P50: &str = "hot-path-perf:delta-p50-assertion-present";
+pub const ROW_P99: &str = "hot-path-perf:delta-p99-assertion-present";
+pub const ROW_PER_TOKEN: &str = "hot-path-perf:per-token-assertion-present";
 
 const BENCH_REL: &str = "crates/busbar-core/benches/plane_host_vtable_perf.rs";
 const MANIFEST_REL: &str = "crates/busbar-core/Cargo.toml";
@@ -67,25 +79,27 @@ const CLAIMS: &[Claim] = &[
             "HOT_PATH_DIRECT_CALL",
             "HOT_PATH_VTABLE_CALL",
         ],
-        ok: "the instrument measures the real PlaneHostVtable slot against a direct-call baseline",
+        ok: "the instrument source still names the real PlaneHostVtable slot and its direct-call \
+             baseline (markers present — not a measured delta)",
         bad: "the instrument no longer compares the vtable crossing to a direct call",
     },
     Claim {
         row: ROW_P50,
         markers: &["p50_delta_nanos", "HOT_PATH_BUDGET_NANOS", "assert!"],
-        ok: "the instrument asserts the crossing delta is under 1µs at p50",
+        ok: "the instrument source still carries the p50-under-budget assertion (marker present)",
         bad: "the instrument no longer asserts the p50 delta under budget",
     },
     Claim {
         row: ROW_P99,
         markers: &["p99_delta_nanos", "HOT_PATH_BUDGET_NANOS", "assert!"],
-        ok: "the instrument asserts the crossing delta is under 1µs at p99",
+        ok: "the instrument source still carries the p99-under-budget assertion (marker present)",
         bad: "the instrument no longer asserts the p99 delta under budget",
     },
     Claim {
         row: ROW_PER_TOKEN,
         markers: &["PER_TOKEN_HOST_CALLS", "per_token_crossings", "assert_eq!"],
-        ok: "the instrument asserts zero per-token host-vtable crossings on the streaming path",
+        ok: "the instrument source still carries the zero-per-token-crossing assertion (marker \
+             present)",
         bad: "the instrument no longer asserts the per-token host-call counter is zero",
     },
 ];
