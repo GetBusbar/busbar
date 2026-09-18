@@ -127,10 +127,7 @@ fn a_one_time_placeholder_does_not_print_its_nonce() {
 
 #[test]
 fn key_material_prints_how_much_and_how_old_but_not_what() {
-    let k = KeyMaterial {
-        bytes: b"signing-SECRET".to_vec(),
-        fetched_at: 1_700_000_000,
-    };
+    let k = KeyMaterial::new(b"signing-SECRET".to_vec(), 1_700_000_000);
     let printed = format!("{k:?}");
     assert!(!printed.contains("SECRET"), "{printed}");
     assert!(
