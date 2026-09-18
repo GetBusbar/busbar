@@ -1823,3 +1823,248 @@ async fn closing_a_dialled_connection_releases_its_socket() {
         "a closed dialled connection kept its socket open: the peer never saw end-of-stream"
     );
 }
+
+/// One served call's inbound READ FAILURE must not be reported as a connection-wide error that
+/// tears down its healthy neighbours.
+///
+/// A single stream's request body failing — a peer that reset its own RPC, or sent this one stream a
+/// message the framing could not read — used to be pushed onto the connection-wide inbound channel
+/// as the SAME untagged `Err(TransportError::Reset)` a whole-connection failure uses. A `frames()`
+/// consumer that reads `Err` as "the connection is over" then tore down every other multiplexed call
+/// on it. The failing call ends only itself; the neighbour's message still arrives, and no `Err`
+/// crosses the shared channel for it.
+#[tokio::test]
+async fn one_calls_inbound_failure_is_not_a_connection_wide_error() {
+    let server_t = std::sync::Arc::new(server_transport());
+    let cfg = BindTo("127.0.0.1:0".to_string());
+    let keys = test_key_handle();
+    let listener = server_t.listen(&cfg, &keys).await.unwrap();
+    let addr = listener.local_addr();
+    let accept_task = {
+        let server_t = server_t.clone();
+        tokio::spawn(async move { server_t.accept(&listener).await })
+    };
+
+    let sock = tokio::net::TcpStream::connect(&addr).await.unwrap();
+    let (mut send, driver) =
+        hyper::client::conn::http2::handshake::<_, _, http_body_util::Full<bytes::Bytes>>(
+            hyper_util::rt::TokioExecutor::new(),
+            hyper_util::rt::TokioIo::new(sock),
+        )
+        .await
+        .unwrap();
+    tokio::spawn(async move {
+        let _ = driver.await;
+    });
+    let server_conn = accept_task.await.unwrap().unwrap();
+
+    // One gRPC request on this connection carrying `body` as its whole length-prefixed message
+    // stream (END_STREAM follows the body).
+    let request = |body: bytes::Bytes| {
+        http::Request::builder()
+            .method(http::Method::POST)
+            .uri(format!("http://{addr}{}", crate::server::RPC_PATH))
+            .header(http::header::CONTENT_TYPE, "application/grpc")
+            .header("te", "trailers")
+            .body(http_body_util::Full::new(body))
+            .unwrap()
+    };
+
+    // A HEALTHY call: one well-formed message `[compression=0, len=4, "good"]`.
+    let good = bytes::Bytes::from_static(&[0, 0, 0, 0, 4, b'g', b'o', b'o', b'd']);
+    // Held so its stream is not reset before the server has read the message.
+    let _good_resp = send.send_request(request(good)).await.unwrap();
+
+    // A FAILING call on the SAME connection: a length prefix declaring a body far past the max, so
+    // the server's decoder refuses THAT stream's request body (`OUT_OF_RANGE`) — the per-stream
+    // read failure whose old handling took the whole connection down.
+    let huge = ((crate::codec::MAX_MESSAGE_BYTES + 1) as u32).to_be_bytes();
+    let bad = bytes::Bytes::from(vec![0, huge[0], huge[1], huge[2], huge[3]]);
+    let _bad_resp = send.send_request(request(bad)).await.unwrap();
+
+    // The frames stream is taken BEFORE the close: it captures the connection state, so the close
+    // (which unlists the connection) still leaves this reader draining the frames already queued.
+    let mut server_frames = server_t.frames(server_conn.clone());
+
+    // Let the server's per-RPC inbound tasks run: the healthy one forwards its frame, the failing
+    // one detects its decode error (and, before the fix, emitted the connection-wide `Err`).
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    // Close so the inbound side ends and `frames()` reaches end-of-stream, then drain EVERY item:
+    // the healthy call's "good" must be there, and no item may be an `Err`.
+    server_t.close(
+        server_conn,
+        busbar_contract_transport::wire::CloseReason::Normal,
+    );
+    let mut goods: Vec<Vec<u8>> = Vec::new();
+    let drained = tokio::time::timeout(Duration::from_secs(10), async {
+        while let Some(item) = server_frames.next().await {
+            let (_s, frame) = item.expect(
+                "a single call's inbound failure must not surface as a connection-wide Err",
+            );
+            goods.push(frame.bytes.as_slice().to_vec());
+        }
+    })
+    .await;
+    assert!(
+        drained.is_ok(),
+        "the closed connection's frames() never ended"
+    );
+    assert!(
+        goods.iter().any(|b| b == b"good"),
+        "the healthy neighbour's message must survive one call's failure: got {goods:?}"
+    );
+}
+
+/// An oversized message is refused, not buffered.
+///
+/// The decoder checks a message's length PREFIX against [`crate::codec::MAX_MESSAGE_BYTES`] before it
+/// reserves the memory that prefix claims, so one over-limit length-prefixed message never becomes a
+/// frame and never commits the transport to a buffer of the size it declares. A normal message on a
+/// sibling call is delivered as always — the ceiling refuses only what is over it.
+#[tokio::test]
+async fn an_oversized_message_is_refused_not_delivered() {
+    let server_t = std::sync::Arc::new(server_transport());
+    let cfg = BindTo("127.0.0.1:0".to_string());
+    let keys = test_key_handle();
+    let listener = server_t.listen(&cfg, &keys).await.unwrap();
+    let addr = listener.local_addr();
+    let accept_task = {
+        let server_t = server_t.clone();
+        tokio::spawn(async move { server_t.accept(&listener).await })
+    };
+
+    let sock = tokio::net::TcpStream::connect(&addr).await.unwrap();
+    let (mut send, driver) =
+        hyper::client::conn::http2::handshake::<_, _, http_body_util::Full<bytes::Bytes>>(
+            hyper_util::rt::TokioExecutor::new(),
+            hyper_util::rt::TokioIo::new(sock),
+        )
+        .await
+        .unwrap();
+    tokio::spawn(async move {
+        let _ = driver.await;
+    });
+    let server_conn = accept_task.await.unwrap().unwrap();
+
+    let request = |body: bytes::Bytes| {
+        http::Request::builder()
+            .method(http::Method::POST)
+            .uri(format!("http://{addr}{}", crate::server::RPC_PATH))
+            .header(http::header::CONTENT_TYPE, "application/grpc")
+            .header("te", "trailers")
+            .body(http_body_util::Full::new(body))
+            .unwrap()
+    };
+
+    // An OVER-limit message: a length prefix one byte past the ceiling. It must never be delivered.
+    let over = ((crate::codec::MAX_MESSAGE_BYTES + 1) as u32).to_be_bytes();
+    let oversized = bytes::Bytes::from(vec![0, over[0], over[1], over[2], over[3]]);
+    let _over_resp = send.send_request(request(oversized)).await.unwrap();
+
+    // A normal-sized message on a SEPARATE call, sent second: whichever frame reaches the server
+    // FIRST must be this one, never the oversized body — the oversized one is refused outright.
+    let ok = bytes::Bytes::from_static(&[0, 0, 0, 0, 5, b'h', b'e', b'l', b'l', b'o']);
+    let _ok_resp = send.send_request(request(ok)).await.unwrap();
+
+    let mut server_frames = server_t.frames(server_conn);
+    let (_s, frame) = tokio::time::timeout(Duration::from_secs(5), server_frames.next())
+        .await
+        .expect("the well-formed call still arrives")
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        frame.bytes.as_slice(),
+        b"hello",
+        "the oversized message was refused before it could be buffered or delivered as a frame"
+    );
+    assert!(
+        frame.meta.bytes <= crate::codec::MAX_MESSAGE_BYTES as u64,
+        "no delivered frame exceeds the message ceiling"
+    );
+}
+
+/// The server ADVERTISES a per-connection `max_concurrent_streams` cap in its SETTINGS.
+///
+/// Without it hyper takes its default — an unbounded concurrent-stream count — so a peer could open
+/// calls on one connection without limit (a stream flood). A cap set on the builder is advertised to
+/// the peer in the connection's opening SETTINGS frame, which is where this test reads it back.
+#[tokio::test]
+async fn the_server_advertises_a_max_concurrent_streams_cap() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let server_t = std::sync::Arc::new(server_transport());
+    let cfg = BindTo("127.0.0.1:0".to_string());
+    let keys = test_key_handle();
+    let listener = server_t.listen(&cfg, &keys).await.unwrap();
+    let addr = listener.local_addr();
+    let accept_task = {
+        let server_t = server_t.clone();
+        tokio::spawn(async move { server_t.accept(&listener).await })
+    };
+
+    let mut sock = tokio::net::TcpStream::connect(&addr).await.unwrap();
+    // The client connection preface, then an empty SETTINGS frame, so the server proceeds and sends
+    // its own SETTINGS — where a `max_concurrent_streams` cap, if set, is advertised.
+    sock.write_all(b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n")
+        .await
+        .unwrap();
+    sock.write_all(&[0, 0, 0, 4, 0, 0, 0, 0, 0]).await.unwrap();
+    let _server_conn = accept_task.await.unwrap().unwrap();
+
+    // Scan an HTTP/2 byte stream for the value of SETTINGS_MAX_CONCURRENT_STREAMS (id `0x0003`) in a
+    // server SETTINGS frame (type `0x4`, non-ACK, stream 0), or `None` if it is never advertised.
+    fn max_concurrent_streams(bytes: &[u8]) -> Option<u32> {
+        let mut off = 0usize;
+        while off + 9 <= bytes.len() {
+            let len = ((bytes[off] as usize) << 16)
+                | ((bytes[off + 1] as usize) << 8)
+                | bytes[off + 2] as usize;
+            let frame_type = bytes[off + 3];
+            let flags = bytes[off + 4];
+            let body = off + 9;
+            if body + len > bytes.len() {
+                break;
+            }
+            // A SETTINGS frame that is not an ACK; ACK carries no payload.
+            if frame_type == 0x4 && flags & 0x1 == 0 {
+                let mut p = body;
+                while p + 6 <= body + len {
+                    let id = ((bytes[p] as u16) << 8) | bytes[p + 1] as u16;
+                    let value = ((bytes[p + 2] as u32) << 24)
+                        | ((bytes[p + 3] as u32) << 16)
+                        | ((bytes[p + 4] as u32) << 8)
+                        | bytes[p + 5] as u32;
+                    if id == 0x0003 {
+                        return Some(value);
+                    }
+                    p += 6;
+                }
+            }
+            off = body + len;
+        }
+        None
+    }
+
+    let mut buf = vec![0u8; 4096];
+    let advertised = tokio::time::timeout(Duration::from_secs(5), async {
+        let mut acc: Vec<u8> = Vec::new();
+        loop {
+            let n = sock.read(&mut buf).await.unwrap();
+            if n == 0 {
+                return None;
+            }
+            acc.extend_from_slice(&buf[..n]);
+            if let Some(v) = max_concurrent_streams(&acc) {
+                return Some(v);
+            }
+        }
+    })
+    .await
+    .expect("the server sends its opening SETTINGS");
+    assert_eq!(
+        advertised,
+        Some(crate::server::MAX_CONCURRENT_STREAMS),
+        "the server must advertise its per-connection stream cap, not hyper's unbounded default"
+    );
+}
