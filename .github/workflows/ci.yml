@@ -1691,6 +1691,14 @@ jobs:
           - name: oauth2 test-support
             features: busbar-oauth2/test-support
             tests: -p busbar-oauth2
+          # busbar-core-hooks's test-support reveals the readiness-poll helpers the dispatch tests
+          # and busbar-core's cross-plane tests drive. It is a non-default forward no sibling edge
+          # enables (busbar-core-hooks's dev-deps do NOT turn on its own test-support), so nothing
+          # builds the `cfg(all(not(test), feature = "test-support"))` surface behind it. This row
+          # builds and tests the owning crate with the feature on, exactly like the rows above.
+          - name: core-hooks test-support
+            features: busbar-core-hooks/test-support
+            tests: -p busbar-core-hooks
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       # THE COMPILER CACHE — see "COMPILER CACHE (sccache)" at the top of this file. Installed in
