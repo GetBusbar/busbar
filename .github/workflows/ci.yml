@@ -1638,9 +1638,6 @@ jobs:
           - name: timing
             features: busbar-core/timing,busbar-llm/timing,busbar-llm-codec/timing
             tests: -p busbar-core -p busbar-llm -p busbar-llm-codec -p busbar-timing
-          - name: llm auth-admin-tokens
-            features: busbar-llm/auth-admin-tokens
-            tests: -p busbar-llm
           - name: llm webhook-receiver
             features: busbar-llm/webhook-receiver
             tests: -p busbar-llm
