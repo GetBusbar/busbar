@@ -132,7 +132,11 @@ impl ListenerHandle for TcpListenerHandle {
 /// The `tcp` transport.
 pub struct TcpTransport {
     next_id: AtomicU64,
-    conns: Mutex<HashMap<u64, Arc<Inner>>>,
+    /// Behind an `Arc` because the frame pump `frames` returns is `'static` — it cannot borrow the
+    /// transport — yet it must be able to deregister its own connection when a read ends in an
+    /// error (the same cleanup `close` does), so it holds its own clone of this map rather than a
+    /// reference to `self`.
+    conns: Arc<Mutex<HashMap<u64, Arc<Inner>>>>,
     listeners: Mutex<HashMap<String, Arc<TcpListener>>>,
 }
 
@@ -154,7 +158,7 @@ impl TcpTransport {
     pub fn new() -> Self {
         Self {
             next_id: AtomicU64::new(1),
-            conns: Mutex::new(HashMap::new()),
+            conns: Arc::new(Mutex::new(HashMap::new())),
             listeners: Mutex::new(HashMap::new()),
         }
     }
@@ -249,6 +253,40 @@ impl TcpTransport {
             _ => TransportError::Closed,
         }
     }
+
+    /// Run an in-flight write raced against this connection's close, so a peer that has stopped
+    /// reading cannot pin the write — and the fd, scratch, registry entry and both halves behind
+    /// it — for the life of the process.
+    ///
+    /// The write path is the mirror of the read path in [`TcpTransport::frames`]: a `write_all`
+    /// into a full send buffer blocks until the peer drains it, and a peer that never reads never
+    /// does. Without this, [`TcpTransport::close`] could not interrupt such a write: it drops the
+    /// registry's clone and sets the flag, but the write task holds its own clone and stays parked
+    /// on the socket forever. Here the write is armed against `closing` exactly as the read is, so
+    /// `close`/`finalise` wakes it, it reports [`TransportError::Closed`], and the connection is
+    /// actually released.
+    ///
+    /// The happy path is byte-for-byte the caller's own write future: when it completes first, its
+    /// result is returned untouched.
+    async fn raced_write<F>(inner: &Inner, write: F) -> Result<(), TransportError>
+    where
+        F: std::future::Future<Output = Result<(), TransportError>>,
+    {
+        // Arm the wait BEFORE re-reading the flag, the same ordering the read path relies on: a
+        // close that lands between the two is seen as the flag, one that lands after as the
+        // notification, and neither leaves this write parked.
+        let mut closing = std::pin::pin!(inner.closing.notified());
+        closing.as_mut().enable();
+        if inner.closed.load(Ordering::Acquire) {
+            return Err(TransportError::Closed);
+        }
+        let write = std::pin::pin!(write);
+        match futures::future::select(write, closing).await {
+            futures::future::Either::Left((r, _)) => r,
+            // The close won: the write is dropped where it stood and the connection is released.
+            futures::future::Either::Right(((), _)) => Err(TransportError::Closed),
+        }
+    }
 }
 
 impl Plugin for TcpTransport {
@@ -329,10 +367,7 @@ impl Transport for TcpTransport {
                 .get(&addr)
                 .cloned()
                 .ok_or(TransportError::Closed)?;
-            let (stream, peer) = listener
-                .accept()
-                .await
-                .map_err(|_| TransportError::Closed)?;
+            let (stream, peer) = listener.accept().await.map_err(|e| Self::map_io_err(&e))?;
             self.register(stream, peer)
                 .map_err(|e| Self::map_io_err(&e))
         })
@@ -366,51 +401,74 @@ impl Transport for TcpTransport {
         conn: Conn,
     ) -> Pin<Box<dyn Stream<Item = Result<(StreamId, Frame), TransportError>> + Send>> {
         let inner = self.inner(conn.id());
-        Box::pin(futures::stream::unfold(inner, move |inner| async move {
-            let inner = inner?;
-            if inner.closed.load(Ordering::Acquire) {
-                return None;
-            }
-            let mut guard = inner.read.lock().await;
-            let side = &mut *guard;
-            // Arm the wait BEFORE re-reading the flag: a close that lands between the two is seen
-            // as the flag, and one that lands after it is seen as the notification. Neither order
-            // leaves this parked.
-            let mut closing = Box::pin(inner.closing.notified());
-            closing.as_mut().enable();
-            if inner.closed.load(Ordering::Acquire) {
-                return None;
-            }
-            let reading = std::pin::pin!(side.half.read(&mut side.scratch));
-            let result = match futures::future::select(reading, closing).await {
-                futures::future::Either::Left((r, _)) => r,
-                // The close won: the read is dropped where it stood and the stream ends.
-                futures::future::Either::Right(((), _)) => return None,
-            };
-            match result {
-                Ok(0) => None,
-                Ok(n) => {
-                    // Copied out to exactly this frame's length; the scratch keeps whatever the
-                    // read left in it, which nothing else ever looks at.
-                    let bytes: Arc<[u8]> = Arc::from(&side.scratch[..n]);
-                    drop(guard);
-                    let frame = Frame {
-                        direction: Direction::Inbound,
-                        stream: StreamId(0),
-                        bytes: SlabBytes::new(bytes),
-                        meta: FrameMeta {
-                            bytes: n as u64,
-                            transport_units: None,
-                            status: None,
-                            status_code: None,
-                            retry_after_secs: None,
-                        },
-                    };
-                    Some((Ok((StreamId(0), frame)), Some(inner)))
+        // The pump is `'static`: it cannot borrow `self`, so it holds its own clone of the registry
+        // and the connection id, which is all it needs to deregister itself on a read error the way
+        // `close` deregisters on a finalise.
+        let conns = Arc::clone(&self.conns);
+        let id = conn.id();
+        Box::pin(futures::stream::unfold(inner, move |inner| {
+            let conns = Arc::clone(&conns);
+            async move {
+                let inner = inner?;
+                if inner.closed.load(Ordering::Acquire) {
+                    return None;
                 }
-                Err(e) => {
-                    drop(guard);
-                    Some((Err(TcpTransport::map_io_err(&e)), None))
+                let mut guard = inner.read.lock().await;
+                let side = &mut *guard;
+                // Arm the wait BEFORE re-reading the flag: a close that lands between the two is
+                // seen as the flag, and one that lands after it is seen as the notification. Neither
+                // order leaves this parked.
+                let mut closing = std::pin::pin!(inner.closing.notified());
+                closing.as_mut().enable();
+                if inner.closed.load(Ordering::Acquire) {
+                    return None;
+                }
+                let reading = std::pin::pin!(side.half.read(&mut side.scratch));
+                let result = match futures::future::select(reading, closing).await {
+                    futures::future::Either::Left((r, _)) => r,
+                    // The close won: the read is dropped where it stood and the stream ends.
+                    futures::future::Either::Right(((), _)) => return None,
+                };
+                match result {
+                    Ok(0) => None,
+                    Ok(n) => {
+                        // Copied out to exactly this frame's length; the scratch keeps whatever the
+                        // read left in it, which nothing else ever looks at.
+                        let bytes: Arc<[u8]> = Arc::from(&side.scratch[..n]);
+                        drop(guard);
+                        let frame = Frame {
+                            direction: Direction::Inbound,
+                            stream: StreamId(0),
+                            bytes: SlabBytes::new(bytes),
+                            meta: FrameMeta {
+                                bytes: n as u64,
+                                transport_units: None,
+                                status: None,
+                                status_code: None,
+                                retry_after_secs: None,
+                            },
+                        };
+                        // The next state is a fresh clone of the handle rather than a move of
+                        // `inner`: the `closing` future above borrows `inner` and, because
+                        // `Notified` has a real `Drop`, that borrow lives to the end of this block —
+                        // moving `inner` out here would collide with it. An `Arc` bump is cheaper
+                        // than the per-frame `Box::pin` this arm's wait no longer needs.
+                        Some((Ok((StreamId(0), frame)), Some(Arc::clone(&inner))))
+                    }
+                    Err(e) => {
+                        drop(guard);
+                        // A read error is the connection's end, not just this frame's. Deregister
+                        // and finalise it the way `close` does — otherwise the registry entry (and
+                        // the fd, the scratch and both halves it pins) leaks for the life of the
+                        // process, which under an RST flood that never reaches the clean-EOF path is
+                        // one leaked connection per reset.
+                        if let Some(removed) =
+                            conns.lock().expect("conn registry poisoned").remove(&id)
+                        {
+                            removed.finalise();
+                        }
+                        Some((Err(TcpTransport::map_io_err(&e)), None))
+                    }
                 }
             }
         }))
@@ -425,11 +483,19 @@ impl Transport for TcpTransport {
         Box::pin(async move {
             let inner = self.inner(conn.id()).ok_or(TransportError::Closed)?;
             let mut guard = inner.write.lock().await;
-            guard
-                .write_all(bytes.as_slice())
-                .await
-                .map_err(|e| Self::map_io_err(&e))?;
-            guard.flush().await.map_err(|e| Self::map_io_err(&e))?;
+            // Raced against the connection's close: a peer that stops reading fills the send buffer
+            // and would block `write_all` until it drains — which, for a peer that never reads, is
+            // never. `close` must be able to interrupt that, or the connection it means to shed
+            // leaks instead. The happy-path bytes are unchanged: this is the caller's own write when
+            // it wins the race.
+            let write = async {
+                guard
+                    .write_all(bytes.as_slice())
+                    .await
+                    .map_err(|e| Self::map_io_err(&e))?;
+                guard.flush().await.map_err(|e| Self::map_io_err(&e))
+            };
+            Self::raced_write(&inner, write).await?;
             Ok(bytes.len())
         })
     }
@@ -502,7 +568,11 @@ impl Transport for TcpTransport {
             let inner = self.inner(conn.id()).ok_or(TransportError::Closed)?;
             let delivered = {
                 let mut guard = inner.write.lock().await;
-                deliver_refusal(&mut *guard, bytes.as_slice()).await
+                // Raced against the close, the same as the ordinary write path: the refusal is meant
+                // to SHED a bad connection, so a peer that has stopped reading must not be able to
+                // block its delivery forever and pin the very connection the refusal is ending. When
+                // the close wins, the bytes are gone and the connection is finalised below anyway.
+                Self::raced_write(&inner, deliver_refusal(&mut *guard, bytes.as_slice())).await
             };
             // A refusal finalises the connection, so it ends it the way `close` does: dropping the
             // registry's clone is not enough, because a frame stream that started before the

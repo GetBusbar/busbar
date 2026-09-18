@@ -735,3 +735,115 @@ async fn a_unit0_refusal_ends_a_live_frame_stream_and_drops_the_socket() {
         "the refused connection's socket must close"
     );
 }
+
+/// A write to a peer that has stopped reading must not pin the connection for the life of the
+/// process: `close` interrupts it.
+///
+/// A peer that opens a connection and never reads a byte fills its own receive window and then this
+/// side's send buffer; `write_all` blocks until the peer drains them, and a peer that never reads
+/// never does. The write path used not to be raced against the close — unlike the read path — so
+/// `close` could set the flag and drop the registry's clone while the write task stayed parked on
+/// the socket forever, holding the last clone of the state, the fd and the scratch. That is the
+/// exact opposite of what `close` (and the refusal that shares this path) is for: shedding a bad
+/// connection. This proves the write answers the close instead.
+#[tokio::test]
+async fn a_write_blocked_on_a_nonreading_peer_is_interrupted_by_close() {
+    let (server, listener, client) = bound_pair().await;
+    let addr = listener.local_addr();
+    let accept_fut = tokio::spawn({
+        let server = server.clone();
+        async move { server.accept(&listener).await.unwrap() }
+    });
+    // A peer that connects and then never reads a single byte.
+    let _peer = tokio::net::TcpStream::connect(&addr).await.unwrap();
+    let server_conn = accept_fut.await.unwrap();
+    let id = server_conn.id();
+    let _ = client;
+
+    // Far more than any socket buffer can hold: `write_all` fills the send buffer and blocks.
+    let big = vec![0_u8; 64 * 1024 * 1024];
+    let writer = {
+        let server = server.clone();
+        let conn = server_conn.clone();
+        tokio::spawn(async move {
+            server
+                .write(&conn, StreamId(0), ArenaBytes::new(&big))
+                .await
+        })
+    };
+    // Let the write fill the buffer and park on the non-reading peer.
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    assert!(
+        !writer.is_finished(),
+        "the write is parked on the full send buffer"
+    );
+
+    // The close must reach into that parked write and end it.
+    server.close(server_conn, CloseReason::Normal);
+    let result = tokio::time::timeout(std::time::Duration::from_secs(5), writer)
+        .await
+        .expect("close must interrupt a write blocked on a non-reading peer")
+        .unwrap();
+    assert_eq!(
+        result,
+        Err(TransportError::Closed),
+        "an interrupted write reports Closed rather than a queued byte count"
+    );
+    assert!(
+        server.inner(id).is_none(),
+        "the interrupted write's connection is deregistered, not leaked"
+    );
+}
+
+/// A read that ends in an error — not a clean end-of-stream — deregisters the connection.
+///
+/// The frame pump used to end the stream on a read error but leave the registry entry behind: under
+/// a flood of resets that is one leaked entry (and the fd, scratch and both halves it pins) per
+/// reset, none of which ever reaches the clean-EOF path that would have dropped them. The pump now
+/// does the same cleanup `close` does — deregister and finalise — on a read error too.
+#[tokio::test]
+async fn a_read_error_deregisters_the_connection() {
+    let (server, listener, client) = bound_pair().await;
+    let addr = listener.local_addr();
+    let accept_fut = tokio::spawn({
+        let server = server.clone();
+        async move { server.accept(&listener).await.unwrap() }
+    });
+    let peer = tokio::net::TcpStream::connect(&addr).await.unwrap();
+    let server_conn = accept_fut.await.unwrap();
+    let id = server_conn.id();
+    let _ = client;
+
+    assert!(
+        server.inner(id).is_some(),
+        "the connection starts registered"
+    );
+
+    // Send bytes toward the peer that it will never read, then have the peer close: closing a
+    // socket with unread received data makes the stack answer with an RST rather than a clean FIN,
+    // so the server's read ends in an error (ConnectionReset) rather than a clean end-of-stream —
+    // the path that must still clean up. This is deterministic and needs no deprecated `SO_LINGER`.
+    server
+        .write(
+            &server_conn,
+            StreamId(0),
+            ArenaBytes::new(&vec![0_u8; 4096]),
+        )
+        .await
+        .unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    drop(peer);
+
+    let mut frames = server.frames(server_conn);
+    let item = tokio::time::timeout(std::time::Duration::from_secs(5), frames.next())
+        .await
+        .expect("a reset read ends the pump");
+    assert!(
+        matches!(item, Some(Err(_))),
+        "an aborted connection yields a read error, not a clean end: {item:?}"
+    );
+    assert!(
+        server.inner(id).is_none(),
+        "a read error deregisters the connection instead of leaking the registry entry"
+    );
+}
