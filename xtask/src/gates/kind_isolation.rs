@@ -705,6 +705,17 @@ const TRANSPORT_CRATE_PATHS: &[&str] = &["busbar_transport_", "busbar-transport-
 /// The one `tokio` submodule a plane may not reach: sockets are the transport's, not the plane's.
 const TOKIO_NET: &str = "tokio::net";
 
+/// Plane instance words that are ALSO the wire's own vocabulary. `streaming`/`streams` is the fourth
+/// plane's instance (DECISIONS #18) AND the universal word for an HTTP/2 stream and a gRPC streaming
+/// call: `tonic::Streaming`, `Grpc::streaming` and hyper's `max_concurrent_streams` are
+/// transport-LIBRARY API — exactly the types the LOCKED rule keeps inside transport/plane crates —
+/// and a transport crate cannot spell them any other way. So the transport arm of [`banned_for`]
+/// does NOT ban these as bare words: banning them reds a transport for naming the WIRE, not the
+/// plane. A real reach INTO the streaming plane is still refused as a CRATE PATH
+/// (`undeclared-crate-path`) and counted by `:matrix`; the other plane instances
+/// (`llm`/`mcp`/`a2a`/`voice`) collide with no wire vocabulary and stay banned.
+const WIRE_PROTOCOL_WORDS: &[&str] = &["streaming", "streams"];
+
 // ------------------------------------------------------------------------------------------------
 // the registry file — the two tables that are true of this week and false of the ship sha
 // ------------------------------------------------------------------------------------------------
@@ -2612,6 +2623,13 @@ fn banned_for(kind: &str, planes: &BTreeSet<String>) -> Vec<(String, &'static st
     match kind {
         "transport" => {
             for p in planes {
+                // THE WIRE'S OWN WORD IS NOT THE PLANE'S. `streaming`/`streams` is a transport
+                // crate's transport-LIBRARY vocabulary (`tonic::Streaming`, `Grpc::streaming`,
+                // hyper's `max_concurrent_streams`), not a reach into the streaming plane — see
+                // [`WIRE_PROTOCOL_WORDS`]. The crate-path and matrix rules still catch a real reach.
+                if WIRE_PROTOCOL_WORDS.contains(&p.as_str()) {
+                    continue;
+                }
                 out.push((p.clone(), "a PLANE instance named inside a transport"));
             }
         }
@@ -6407,6 +6425,49 @@ impl Gate for KindIsolationGate {
             &[ROW_VOCAB],
             ov,
             &["a2a", "mcp", "planted_leak.rs"],
+        ));
+
+        // THE WIRE'S OWN WORD IS NOT THE PLANE'S. A transport crate names `tonic::Streaming`,
+        // `Grpc::streaming` and hyper's `max_concurrent_streams` because they ARE its
+        // transport-library API — the LOCKED rule keeps those libraries in transport crates, and no
+        // transport can spell them any other way. `streaming`/`streams` is also the fourth plane's
+        // instance (DECISIONS #18), so the bare-word ban used to red a transport for naming the
+        // wire; [`WIRE_PROTOCOL_WORDS`] carves exactly those two words out of the transport ban. The
+        // companion red directly above proves the carve-out is not blanket — `a2a`/`mcp` still red a
+        // transport — and a real reach into the plane is a CRATE PATH the next case still refuses.
+        let mut ov = Overlay::new();
+        ov.set(
+            "crates/busbar-transport-tcp/src/planted_wire.rs",
+            "pub const MAX_CONCURRENT_STREAMS: u32 = 128;\n\
+             pub fn recv(mut inbound: tonic::Streaming<bytes::Bytes>) { let _ = &mut inbound; }\n\
+             pub fn caps(b: &mut hyper::server::conn::http2::Builder<TokioExecutor>) {\n\
+                 b.max_concurrent_streams(MAX_CONCURRENT_STREAMS);\n\
+             }\n",
+        );
+        report.push(prove_rows_green(
+            cx,
+            self,
+            "a transport naming the wire's own `streaming`/`streams` (tonic/hyper API) is not a plane reach",
+            &[ROW_VOCAB],
+            ov,
+        ));
+
+        // …AND THE CARVE-OUT DOES NOT OPEN THE FUSION. A transport that reaches the streaming plane
+        // by its CRATE PATH is still refused — as `undeclared-crate-path`, the edge nobody declared —
+        // so exempting the bare word narrowed a false positive without letting a transport name the
+        // plane crate.
+        let mut ov = Overlay::new();
+        ov.set(
+            "crates/busbar-transport-tcp/src/planted_plane_reach.rs",
+            "pub fn go() { let _ = busbar_plane_streaming::VERSION; }\n",
+        );
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "a transport reaching the streaming plane by crate path is still refused",
+            &[ROW_VOCAB],
+            ov,
+            &["undeclared-crate-path", "busbar_plane_streaming", "planted_plane_reach.rs"],
         ));
 
         let mut ov = Overlay::new();
