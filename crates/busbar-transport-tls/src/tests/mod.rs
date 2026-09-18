@@ -1640,3 +1640,98 @@ async fn a_unit0_refusal_ends_a_live_frame_stream_and_drops_the_session() {
         "the refused connection's session must close"
     );
 }
+
+/// One upstream that answers the SYN and then never sends a ServerHello must not be able to hold a
+/// dial task — and the socket it stands on — forever.
+///
+/// `dial` runs the TLS handshake inline over the TCP stream it just connected. The connect proves
+/// the far side answered a SYN, not that it will ever talk TLS. Before the budget, `connect`'s await
+/// was unbounded: a stalled or hostile upstream parked the dialling task and leaked the fd for the
+/// life of the process. The handshake budget — the same one `accept`/`adopt` use inbound — ends
+/// that: the dial answers with `Timeout`, the IO drops, and nothing is left registered.
+#[tokio::test]
+async fn a_stalled_dial_handshake_times_out_without_leaking() {
+    let (_server_cfg, client_cfg) = self_signed();
+
+    // A raw TCP listener that accepts the connection and then goes silent. The accepted sockets are
+    // held, not dropped, so the peer stays open-and-quiet (a stall) rather than closing (a reset).
+    let stall_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = stall_listener.local_addr().unwrap().to_string();
+    let held = tokio::spawn(async move {
+        let mut kept = Vec::new();
+        while let Ok((s, _)) = stall_listener.accept().await {
+            kept.push(s);
+        }
+    });
+
+    let client =
+        StdArc::new(TlsTransport::new().with_handshake_timeout(Duration::from_millis(300)));
+    client.register_client_config(0, client_cfg);
+
+    let err = tokio::time::timeout(
+        Duration::from_secs(5),
+        client.dial(&upstream_dest(&addr), &fixture_key(0)),
+    )
+    .await
+    .expect("the dial answers on the handshake budget rather than parking on a silent upstream")
+    .expect_err("a handshake that never progressed is a failure, not a connection");
+    assert_eq!(
+        err,
+        TransportError::Timeout,
+        "a stalled dial handshake maps to the same Timeout the inbound side reports"
+    );
+    assert!(
+        client.conns.lock().expect("poisoned").is_empty(),
+        "a dial that timed out on the handshake must leave no connection in the registry"
+    );
+
+    held.abort();
+}
+
+/// A corrupted or tampered TLS record arriving mid-session is not a handshake failure.
+///
+/// The handshake already completed — the peer WAS authenticated — so `io::ErrorKind::InvalidData` on
+/// a live read or write is a bad record, and reporting it as `HandshakeFailed` would tell an operator
+/// the identity check failed when it did not. The post-handshake path maps it to `Framing`; the
+/// handshake-phase mapping is unchanged. The two are asserted side by side so a regression that
+/// collapses one into the other, or routes the live path back through the handshake table, is caught
+/// here rather than only in whichever live cell happens to provoke a bad record.
+#[test]
+fn a_mid_session_bad_record_is_not_reported_as_a_handshake_failure() {
+    let invalid = || io::Error::new(io::ErrorKind::InvalidData, "tampered record");
+    assert_eq!(
+        TlsTransport::map_io_err(&invalid()),
+        TransportError::HandshakeFailed,
+        "during the handshake, InvalidData is the peer failing authentication"
+    );
+    assert_eq!(
+        TlsTransport::map_session_err(&invalid()),
+        TransportError::Framing,
+        "on a live session, InvalidData is a bad record, not a handshake that never completed"
+    );
+    assert_ne!(
+        TlsTransport::map_session_err(&invalid()),
+        TransportError::HandshakeFailed,
+        "a mid-session record error must never surface as a handshake failure"
+    );
+
+    // Every other kind means the same thing in both phases: the session mapper defers to the
+    // handshake table for all of them, so the two agree everywhere except InvalidData.
+    for kind in [
+        io::ErrorKind::ConnectionRefused,
+        io::ErrorKind::TimedOut,
+        io::ErrorKind::ConnectionReset,
+        io::ErrorKind::ConnectionAborted,
+        io::ErrorKind::AddrNotAvailable,
+        io::ErrorKind::InvalidInput,
+        io::ErrorKind::BrokenPipe,
+        io::ErrorKind::NotFound,
+    ] {
+        let e = io::Error::new(kind, "fixture");
+        assert_eq!(
+            TlsTransport::map_session_err(&e),
+            TlsTransport::map_io_err(&e),
+            "the session and handshake mappings agree on {kind:?}"
+        );
+    }
+}

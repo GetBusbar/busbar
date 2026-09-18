@@ -65,13 +65,16 @@ pub use rustls;
 /// How many bytes one read syscall may fill a frame with.
 pub const READ_CHUNK_BYTES: usize = 16 * 1024;
 
-/// How long an inbound TLS handshake has to complete before the connection is dropped.
+/// How long a TLS handshake has to complete before the connection is dropped — the same budget on
+/// both directions.
 ///
-/// `accept` runs the handshake inline, so without a budget one peer that opens a TCP connection and
-/// then sends nothing holds the accept loop for as long as it likes — a listener taken out of
-/// service by a client that never spent a byte. Ten seconds is the same budget the egress
-/// connector's own connect timeout is set to, so the two ends of this crate's tolerance for a peer
-/// that will not talk are one number rather than two.
+/// `accept`/`adopt` run the handshake inline, so without a budget one peer that opens a TCP
+/// connection and then sends nothing holds the accept loop for as long as it likes — a listener
+/// taken out of service by a client that never spent a byte. `dial` runs its handshake inline too,
+/// with the mirror-image exposure: a completed TCP connect proves nothing about whether the upstream
+/// will ever send a ServerHello, and an unbounded handshake there parks the dial task and its
+/// socket. Ten seconds is one number for both ends of this crate's tolerance for a peer that will
+/// not talk, rather than two.
 pub const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Any duplex byte stream this transport can run a handshake over: the socket it opened itself, or
@@ -178,8 +181,8 @@ pub struct TlsTransport {
     listeners: Mutex<HashMap<String, (Arc<TcpListener>, u64)>>,
     server_configs: Mutex<HashMap<u64, Arc<rustls::ServerConfig>>>,
     client_configs: Mutex<HashMap<u64, Arc<rustls::ClientConfig>>>,
-    /// How long an inbound handshake has to complete; [`HANDSHAKE_TIMEOUT`] unless a caller said
-    /// otherwise.
+    /// How long a handshake — inbound (`accept`/`adopt`) or outbound (`dial`) — has to complete;
+    /// [`HANDSHAKE_TIMEOUT`] unless a caller said otherwise.
     handshake_timeout: Duration,
 }
 
@@ -209,8 +212,8 @@ impl TlsTransport {
         }
     }
 
-    /// Set the budget an inbound handshake has to complete in, for a deployment — or a battery cell
-    /// — whose tolerance is not the default ten seconds.
+    /// Set the budget a handshake — inbound or outbound — has to complete in, for a deployment — or
+    /// a battery cell — whose tolerance is not the default ten seconds.
     #[must_use]
     pub fn with_handshake_timeout(mut self, budget: Duration) -> Self {
         self.handshake_timeout = budget;
@@ -352,6 +355,25 @@ impl TlsTransport {
                 TransportError::AddressRefused
             }
             _ => TransportError::Closed,
+        }
+    }
+
+    /// Map an IO error that arose on an ALREADY-ESTABLISHED session — a read or write after the
+    /// handshake has completed — rather than during the handshake itself.
+    ///
+    /// It differs from [`map_io_err`](Self::map_io_err) on exactly one kind. During the handshake,
+    /// `io::ErrorKind::InvalidData` is rustls saying the peer could not be authenticated, which is a
+    /// `HandshakeFailed`. On a live session the handshake already succeeded — the peer WAS
+    /// authenticated — and an `InvalidData` is instead a corrupted or tampered TLS record arriving
+    /// mid-stream: the record's authentication tag did not verify, or its length framing was wrong.
+    /// Reporting that as `HandshakeFailed` would tell an operator the identity check failed when it
+    /// did not; it is the transport's own framing that a record violated, so it maps to
+    /// [`TransportError::Framing`]. Every other kind carries the same meaning in both phases and is
+    /// deferred to [`map_io_err`](Self::map_io_err).
+    fn map_session_err(e: &io::Error) -> TransportError {
+        match e.kind() {
+            io::ErrorKind::InvalidData => TransportError::Framing,
+            _ => Self::map_io_err(e),
         }
     }
 }
@@ -546,10 +568,19 @@ impl Transport for TlsTransport {
             let server_name = ServerName::try_from(name)
                 .map_err(|_| TransportError::AddressRefused)?
                 .to_owned();
-            let tls_stream = connector
-                .connect(server_name, Box::new(stream) as BoxedIo)
-                .await
-                .map_err(|_| TransportError::HandshakeFailed)?;
+            // Bounded for the same reason `accept`/`adopt` are: the TCP connect above proves the
+            // far side answered a SYN, not that it will ever send a ServerHello. A stalled or
+            // hostile upstream that completes the handshake's transport leg and then goes silent
+            // would otherwise park this dial task — and the socket it holds — for the life of the
+            // process. On expiry the future is dropped, the IO drops with it, and the caller sees
+            // the same `Timeout` the inbound side reports for a handshake that never progressed.
+            let tls_stream = tokio::time::timeout(
+                self.handshake_timeout,
+                connector.connect(server_name, Box::new(stream) as BoxedIo),
+            )
+            .await
+            .map_err(|_| TransportError::Timeout)?
+            .map_err(|_| TransportError::HandshakeFailed)?;
             Ok(self.insert_client(tls_stream, addr, vec!["tcp", "tls"], local_port))
         })
     }
@@ -608,7 +639,9 @@ impl Transport for TlsTransport {
                 }
                 Err(e) => {
                     drop(guard);
-                    Some((Err(TlsTransport::map_io_err(&e)), None))
+                    // Post-handshake read: an `InvalidData` here is a bad record on a live session,
+                    // not a handshake that never completed.
+                    Some((Err(TlsTransport::map_session_err(&e)), None))
                 }
             }
         }))
@@ -627,14 +660,14 @@ impl Transport for TlsTransport {
                 InnerWrite::Server(w) => {
                     w.write_all(bytes.as_slice())
                         .await
-                        .map_err(|e| Self::map_io_err(&e))?;
-                    w.flush().await.map_err(|e| Self::map_io_err(&e))?;
+                        .map_err(|e| Self::map_session_err(&e))?;
+                    w.flush().await.map_err(|e| Self::map_session_err(&e))?;
                 }
                 InnerWrite::Client(w) => {
                     w.write_all(bytes.as_slice())
                         .await
-                        .map_err(|e| Self::map_io_err(&e))?;
-                    w.flush().await.map_err(|e| Self::map_io_err(&e))?;
+                        .map_err(|e| Self::map_session_err(&e))?;
+                    w.flush().await.map_err(|e| Self::map_session_err(&e))?;
                 }
             }
             Ok(bytes.len())
@@ -863,8 +896,10 @@ where
 {
     w.write_all(bytes)
         .await
-        .map_err(|e| TlsTransport::map_io_err(&e))?;
-    w.flush().await.map_err(|e| TlsTransport::map_io_err(&e))
+        .map_err(|e| TlsTransport::map_session_err(&e))?;
+    w.flush()
+        .await
+        .map_err(|e| TlsTransport::map_session_err(&e))
 }
 
 #[cfg(test)]
