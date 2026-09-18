@@ -1524,7 +1524,7 @@ async fn no_selector_form_is_advertised_that_the_certificate_facts_cannot_serve(
 /// The read buffer is per-connection and reused across polls, so the byte-exactness cell has a new
 /// way to fail: a short frame following a long one must not carry the tail of its predecessor, and
 /// the buffer a connection reads through must be the same allocation each time rather than a fresh
-/// `READ_CHUNK_BYTES` one per read.
+/// `TLS_READ_CHUNK_BYTES` one per read.
 #[tokio::test]
 async fn one_read_buffer_per_connection_reused_without_leaking_bytes_between_frames() {
     let (server, listener, client) = bound_pair().await;
@@ -1638,5 +1638,138 @@ async fn a_unit0_refusal_ends_a_live_frame_stream_and_drops_the_session() {
     assert!(
         eof.is_none() || eof.is_some_and(|r| r.is_err()),
         "the refused connection's session must close"
+    );
+}
+
+/// One upstream that answers the SYN and then never sends a ServerHello must not be able to hold a
+/// dial task — and the socket it stands on — forever.
+///
+/// `dial` runs the TLS handshake inline over the TCP stream it just connected. The connect proves
+/// the far side answered a SYN, not that it will ever talk TLS. Before the budget, `connect`'s await
+/// was unbounded: a stalled or hostile upstream parked the dialling task and leaked the fd for the
+/// life of the process. The handshake budget — the same one `accept`/`adopt` use inbound — ends
+/// that: the dial answers with `Timeout`, the IO drops, and nothing is left registered.
+#[tokio::test]
+async fn a_stalled_dial_handshake_times_out_without_leaking() {
+    let (_server_cfg, client_cfg) = self_signed();
+
+    // A raw TCP listener that accepts the connection and then goes silent. The accepted sockets are
+    // held, not dropped, so the peer stays open-and-quiet (a stall) rather than closing (a reset).
+    let stall_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = stall_listener.local_addr().unwrap().to_string();
+    let held = tokio::spawn(async move {
+        let mut kept = Vec::new();
+        while let Ok((s, _)) = stall_listener.accept().await {
+            kept.push(s);
+        }
+    });
+
+    let client =
+        StdArc::new(TlsTransport::new().with_handshake_timeout(Duration::from_millis(300)));
+    client.register_client_config(0, client_cfg);
+
+    let err = tokio::time::timeout(
+        Duration::from_secs(5),
+        client.dial(&upstream_dest(&addr), &fixture_key(0)),
+    )
+    .await
+    .expect("the dial answers on the handshake budget rather than parking on a silent upstream")
+    .expect_err("a handshake that never progressed is a failure, not a connection");
+    assert_eq!(
+        err,
+        TransportError::Timeout,
+        "a stalled dial handshake maps to the same Timeout the inbound side reports"
+    );
+    assert!(
+        client.conns.lock().expect("poisoned").is_empty(),
+        "a dial that timed out on the handshake must leave no connection in the registry"
+    );
+
+    held.abort();
+}
+
+/// A corrupted or tampered TLS record arriving mid-session is not a handshake failure.
+///
+/// The handshake already completed — the peer WAS authenticated — so `io::ErrorKind::InvalidData` on
+/// a live read or write is a bad record, and reporting it as `HandshakeFailed` would tell an operator
+/// the identity check failed when it did not. The post-handshake path maps it to `Framing`; the
+/// handshake-phase mapping is unchanged. The two are asserted side by side so a regression that
+/// collapses one into the other, or routes the live path back through the handshake table, is caught
+/// here rather than only in whichever live cell happens to provoke a bad record.
+#[test]
+fn a_mid_session_bad_record_is_not_reported_as_a_handshake_failure() {
+    let invalid = || io::Error::new(io::ErrorKind::InvalidData, "tampered record");
+    assert_eq!(
+        TlsTransport::map_io_err(&invalid()),
+        TransportError::HandshakeFailed,
+        "during the handshake, InvalidData is the peer failing authentication"
+    );
+    assert_eq!(
+        TlsTransport::map_session_err(&invalid()),
+        TransportError::Framing,
+        "on a live session, InvalidData is a bad record, not a handshake that never completed"
+    );
+    assert_ne!(
+        TlsTransport::map_session_err(&invalid()),
+        TransportError::HandshakeFailed,
+        "a mid-session record error must never surface as a handshake failure"
+    );
+
+    // Every other kind means the same thing in both phases: the session mapper defers to the
+    // handshake table for all of them, so the two agree everywhere except InvalidData and
+    // UnexpectedEof (each has its own cell).
+    for kind in [
+        io::ErrorKind::ConnectionRefused,
+        io::ErrorKind::TimedOut,
+        io::ErrorKind::ConnectionReset,
+        io::ErrorKind::ConnectionAborted,
+        io::ErrorKind::AddrNotAvailable,
+        io::ErrorKind::InvalidInput,
+        io::ErrorKind::BrokenPipe,
+        io::ErrorKind::NotFound,
+    ] {
+        let e = io::Error::new(kind, "fixture");
+        assert_eq!(
+            TlsTransport::map_session_err(&e),
+            TlsTransport::map_io_err(&e),
+            "the session and handshake mappings agree on {kind:?}"
+        );
+    }
+}
+
+/// A peer that vanishes mid-session WITHOUT its `close_notify` alert is a truncation, not a tidy
+/// close — and this transport must not report the two the same way.
+///
+/// rustls surfaces the missing alert as `io::ErrorKind::UnexpectedEof` (the very signature
+/// [`send_close_notify`]'s own doc names as a truncation). Without a dedicated arm the session
+/// mapper defers it to the catch-all, which yields [`TransportError::Closed`] — indistinguishable
+/// from the clean shutdown a `close_notify`-terminated session produces. The truncation arm maps it
+/// to [`TransportError::Reset`] instead: a stream cut mid-flight, not a graceful end. This asserts
+/// both halves — the truncation is `Reset`, and it is NOT the generic `Closed` a tidy shutdown
+/// yields — so a regression that drops the arm and lets it fall back to `Closed` is caught here.
+#[test]
+fn a_truncated_session_is_a_reset_not_the_generic_close() {
+    let truncated = || {
+        io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            "peer vanished, no close_notify",
+        )
+    };
+    assert_eq!(
+        TlsTransport::map_session_err(&truncated()),
+        TransportError::Reset,
+        "a mid-session UnexpectedEof is a truncated stream, reported as Reset"
+    );
+    assert_ne!(
+        TlsTransport::map_session_err(&truncated()),
+        TransportError::Closed,
+        "a truncation must not surface as the same Closed a tidy close_notify shutdown yields"
+    );
+    // The handshake-phase mapper is unchanged: an UnexpectedEof there is still the generic Closed,
+    // so the divergence is the live session's alone.
+    assert_eq!(
+        TlsTransport::map_io_err(&truncated()),
+        TransportError::Closed,
+        "the handshake-phase mapping is untouched by the session-only truncation arm"
     );
 }
