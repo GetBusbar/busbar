@@ -2300,6 +2300,8 @@ fn a_panicking_close_during_reclaim_does_not_take_the_engine_down() {
 mod abi2_store_ops_tests;
 #[path = "ffi_guard_tests.rs"]
 mod ffi_guard_tests;
+#[path = "kernelseal_trust_tests.rs"]
+mod kernelseal_trust_tests;
 #[path = "legacy_default_tests.rs"]
 mod legacy_default_tests;
 #[path = "legacy_usage_tests.rs"]
