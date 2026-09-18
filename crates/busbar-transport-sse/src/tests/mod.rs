@@ -588,7 +588,7 @@ async fn a_success_body_that_is_not_an_event_stream_reaches_the_plane() {
         .expect("the body is carried as a frame, not thrown away");
     assert_eq!(
         only.meta.status,
-        Some(busbar_contract_transport::wire::WireStatusClass::Success),
+        Some(busbar_contract::transport::wire::WireStatusClass::Success),
         "the status leg http read off the 200 rides the frame that carries the leftover body"
     );
     assert_eq!(

@@ -1894,7 +1894,7 @@ async fn one_calls_inbound_failure_is_not_a_connection_wide_error() {
     // the healthy call's "good" must be there, and no item may be an `Err`.
     server_t.close(
         server_conn,
-        busbar_contract_transport::wire::CloseReason::Normal,
+        busbar_contract::transport::wire::CloseReason::Normal,
     );
     let mut goods: Vec<Vec<u8>> = Vec::new();
     let drained = tokio::time::timeout(Duration::from_secs(10), async {
