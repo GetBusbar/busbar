@@ -67,7 +67,7 @@
 //!
 //! The owner's scheme (2026-09-07) is `busbar-<kind>-<name>`: SEGMENT TWO IS THE KIND. The tree is
 //! not renamed yet, so the kinds whose crates predate it — `busbar-caps`, `busbar-kernel`,
-//! `busbar-contract`, `busbar-contract-transport`, `busbar-grammar`, `busbar-timing`,
+//! `busbar-contract`, `busbar-grammar`, `busbar-timing`,
 //! `busbar-api`, the `*-codec` halves and the `busbar-plugin-*` tooling — reach their kind through
 //! the EXPLICIT TABLE below rather than through segment two. That table is the whole of the
 //! exception: a name that is neither in it nor `busbar-<kind>-…` for a kind IN it is refused, in
@@ -299,11 +299,6 @@ static KINDS: &[KindDef] = &[
         matchers: &["=busbar-contract"],
     },
     KindDef {
-        kind: "contract-transport",
-        family: Family::Neutral,
-        matchers: &["=busbar-contract-transport"],
-    },
-    KindDef {
         kind: "grammar",
         family: Family::Neutral,
         matchers: &["=busbar-grammar"],
@@ -487,7 +482,8 @@ const ACCEPTED_NAMES: &[(&str, &str)] = &[
         "busbar-unit-transport-key",
         "the unit that holds TRANSPORT KEYS. `transport` here is the kind word describing what the \
          unit's keys are for, never a transport instance — no transport is named, and the crate \
-         depends on busbar-contract-transport as every unit on that path does.",
+         depends on busbar-contract as every unit on that path does (the transport ABI face folded \
+         into busbar-contract per DECISIONS #38).",
     ),
     (
         "busbar-unit-auth",
@@ -521,8 +517,12 @@ const ARCHITECTURE_ALLOWED: &[(&str, &str)] = &[
     ("caps", "contract"),
     // The pre-split dialects: a codec is written on the closed span grammar the contract re-exports.
     ("codec", "grammar"),
-    ("contract", "contract-transport"),
     ("contract", "grammar"),
+    // busbar-core-config -> busbar-contract: a compiled-in core-* scaffolding crate names the neutral
+    // ABI face every kind is written against. DECISIONS #37 tier meaning: `busbar-core-*` = compiled-in
+    // scaffolding around the kernel; the contract is the ABI below everyone. core reaching contract is
+    // legal downward coupling, not a fused kind. // #37
+    ("core", "contract"),
     ("kernel", "caps"),
     ("kernel", "contract"),
     ("kernel", "grammar"),
@@ -552,7 +552,6 @@ const ARCHITECTURE_ALLOWED: &[(&str, &str)] = &[
     ("store", "contract"),
     ("substrate", "contract"),
     ("transport", "contract"),
-    ("transport", "contract-transport"),
     ("transport", "transport"),
     ("unit", "caps"),
     ("unit", "contract"),
@@ -7059,7 +7058,7 @@ impl Gate for KindIsolationGate {
             manifest_plant(
                 "crates/busbar-transport-stdio",
                 "busbar-transport-stdio",
-                &["busbar-contract-transport", "busbar-plane-llm"],
+                &["busbar-contract", "busbar-plane-llm"],
             ),
             &[
                 "ship-edge",
