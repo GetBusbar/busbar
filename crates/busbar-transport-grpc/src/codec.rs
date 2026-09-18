@@ -9,6 +9,20 @@
 use tonic::codec::{Codec, DecodeBuf, Decoder, EncodeBuf, Encoder};
 use tonic::Status;
 
+/// The largest single gRPC message this transport will decode, in bytes — applied on both the
+/// serving and the dialling side's `Grpc` builder.
+///
+/// `tonic` checks this ceiling against a message's length PREFIX before it reserves or buffers the
+/// body (see `Grpc::max_decoding_message_size` and its decoder), refusing an oversized prefix with
+/// `OUT_OF_RANGE` rather than allocating the memory that prefix claims. Left unset, the ceiling was
+/// `tonic`'s own private 4 MiB default — a memory bound this crate leaned on without ever stating,
+/// and one a `tonic` upgrade could move without this crate noticing. Named here and set explicitly,
+/// it is this crate's OWN bound: one oversized length-prefixed message cannot make the transport
+/// reserve unbounded memory, whichever direction it arrives from. The number must stay at or above
+/// the largest single message the relay path can emit, which for this byte-blind transport is one
+/// plane-supplied body per `write()`.
+pub(crate) const MAX_MESSAGE_BYTES: usize = 4 * 1024 * 1024;
+
 /// The codec: `Vec<u8>` messages, no message meaning.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct RawCodec;
