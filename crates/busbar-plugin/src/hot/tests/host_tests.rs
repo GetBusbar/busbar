@@ -136,14 +136,7 @@ fn stub_vtable_populates_every_slot() {
 #[should_panic(expected = "cost_reserve")]
 fn stub_cost_reserve_is_unimplemented() {
     let vt = &PlaneHostVtable::STUB;
-    (vt.cost_reserve.unwrap())(
-        core::ptr::null_mut(),
-        1_000,
-        0,
-        10_000,
-        true,
-        core::ptr::null_mut(),
-    );
+    (vt.cost_reserve.unwrap())(HostCtx::NULL, 1_000, 0, 10_000, true, core::ptr::null_mut());
 }
 
 #[test]
@@ -151,7 +144,7 @@ fn stub_cost_reserve_is_unimplemented() {
 fn stub_slot_is_unimplemented() {
     let vt = &PlaneHostVtable::STUB;
     let g = Facts::new(1, 10, 0, 0, 0, b"p");
-    (vt.govern_admit.unwrap())(core::ptr::null_mut(), &*g as *const Facts);
+    (vt.govern_admit.unwrap())(HostCtx::NULL, &*g as *const Facts);
 }
 
 // ── The table's own sized-struct guard: `size` is now READ, and clamped in both directions ──────
@@ -384,7 +377,7 @@ fn the_vtable_hop_stays_under_the_budget_and_the_pod_paths_still_do_not_allocate
     });
     let vtable_ns = per_call(&|| {
         black_box((vt.govern_admit.unwrap())(
-            core::ptr::null_mut(),
+            HostCtx::NULL,
             black_box(facts_ptr),
         ));
     });
@@ -420,7 +413,7 @@ fn the_vtable_hop_stays_under_the_budget_and_the_pod_paths_still_do_not_allocate
     crate::CountingAlloc::reset();
     for _ in 0..M {
         black_box((vt.govern_admit.unwrap())(
-            core::ptr::null_mut(),
+            HostCtx::NULL,
             black_box(facts_ptr),
         ));
     }
@@ -458,4 +451,84 @@ fn an_over_large_attested_size_is_clamped_to_this_builds_struct() {
     // A shorter claim is honoured verbatim — that is the append-only rule, untouched.
     assert_eq!(crate::honoured_size(16, ours), 16);
     assert_eq!(crate::honoured_size(ours as u32, ours), ours as u32);
+}
+
+// ── ABI review A6: the `HostCtx` generation guard (use-after-free hardening) ─────────────────────
+// `HostCtx` is now a `#[repr(C)]` opaque handle carrying a `generation` stamp + `kind` tag. The host
+// (busbar-core's `recover`/`try_recover`) checks the generation is live at slot entry BEFORE
+// dereferencing the pointer, so a stale handle from an ended dispatch is refused. These prove the ABI
+// mechanism the host builds that check on.
+
+/// A handle minted for a live dispatch is honoured only while that dispatch's `HostGeneration` token is
+/// held; once the token drops (the dispatch ended), the SAME handle carries a stale generation the host
+/// rejects — the use-after-free guard, proven at the ABI level.
+#[test]
+fn stale_generation_is_rejected() {
+    let mut backing = 0u8;
+    let ptr = std::ptr::from_mut(&mut backing).cast::<std::os::raw::c_void>();
+
+    // Inside its live dispatch, the handle's generation is live, so the host would honour it.
+    let handle = {
+        let generation = HostGeneration::open();
+        let handle = HostCtx::new(ptr, generation.value(), HostCtx::KIND_PLANE_HOST);
+        assert!(
+            HostGeneration::is_live(handle.generation()),
+            "the handle is live inside its own dispatch"
+        );
+        handle
+        // `generation` drops here — the dispatch has ended.
+    };
+
+    // The SAME handle now carries a stale generation: the host's slot-entry check refuses it, so the
+    // stale pointer is never dereferenced.
+    assert!(
+        !HostGeneration::is_live(handle.generation()),
+        "the handle is stale once its dispatch ended — a slot must refuse it"
+    );
+    assert_eq!(handle.kind(), HostCtx::KIND_PLANE_HOST);
+    assert!(!handle.is_null());
+}
+
+/// Each dispatch mints a DISTINCT generation, so a stale handle can never alias a later live one.
+#[test]
+fn generations_are_distinct_across_dispatches() {
+    let g1 = HostGeneration::open().value();
+    let g2 = HostGeneration::open().value();
+    assert_ne!(g1, g2, "each dispatch gets its own generation stamp");
+    // Both tokens already dropped, so neither is live.
+    assert!(!HostGeneration::is_live(g1));
+    assert!(!HostGeneration::is_live(g2));
+}
+
+/// A nested dispatch keeps the OUTER generation live: both are honoured while nested, and dropping the
+/// inner one does not invalidate the outer (the nested-dispatch host seam relies on this).
+#[test]
+fn nested_generation_keeps_the_outer_live() {
+    let outer = HostGeneration::open();
+    {
+        let inner = HostGeneration::open();
+        assert!(
+            HostGeneration::is_live(outer.value()),
+            "outer stays live under nesting"
+        );
+        assert!(
+            HostGeneration::is_live(inner.value()),
+            "inner is live while held"
+        );
+    }
+    assert!(
+        HostGeneration::is_live(outer.value()),
+        "the outer generation survives the inner dispatch ending"
+    );
+    let outer_gen = outer.value();
+    drop(outer);
+    assert!(!HostGeneration::is_live(outer_gen));
+}
+
+/// The NULL handle is never live and carries the reserved kind `0`.
+#[test]
+fn null_handle_is_never_live() {
+    assert!(HostCtx::NULL.is_null());
+    assert_eq!(HostCtx::NULL.kind(), 0);
+    assert!(!HostGeneration::is_live(HostCtx::NULL.generation()));
 }

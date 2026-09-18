@@ -305,7 +305,7 @@ async fn host_dispatch_guard_reclaims_across_an_await() {
         }));
         // Materialize the HostCtx synchronously and recover a live HostState through it.
         host.with_host(|ctx, vt| {
-            assert!(ctx as usize != 0, "a live HostCtx is minted");
+            assert!(!ctx.is_null(), "a live HostCtx is minted");
             assert!(vt.clock_now.is_some());
         });
         // The guard is held ACROSS this await — the scope must not reclaim yet.
@@ -365,4 +365,49 @@ fn dispatch_scope_reclaims_a_registered_handle_on_scope_end() {
     });
     // The dispatch scope ended → the registered handle was reclaimed exactly once.
     assert_eq!(reclaimed.load(Ordering::SeqCst), 1);
+}
+
+// ── ABI review A6: the `HostCtx` generation guard, over the REAL recovery path ────────────────────
+
+/// A handle recovers while its dispatch is live, but once the dispatch ends its generation is no longer
+/// live, so [`try_recover`] refuses the SAME handle WITHOUT dereferencing its now-dangling pointer — the
+/// use-after-free guard A6 asked for.
+#[test]
+fn a_stale_hostctx_is_refused_by_try_recover() {
+    let app = crate::test_support::TestApp::new().build();
+    let scope = DispatchScope::new();
+    // Copy the handle OUT of the dispatch — a plane stashing the host pointer for later replay.
+    let stashed: HostCtx = with_borrowed_host(&app, &scope, |host, _vt| {
+        // SAFETY: inside the live dispatch the handle recovers a live `HostState`.
+        assert!(
+            unsafe { try_recover(host) }.is_some(),
+            "a live handle recovers inside its own dispatch"
+        );
+        host
+    });
+    // The dispatch has ended: the generation is no longer live.
+    // SAFETY: `try_recover` checks the generation BEFORE any dereference; on the stale handle it returns
+    // `None` without ever touching the (now-dangling) pointer.
+    assert!(
+        unsafe { try_recover(stashed) }.is_none(),
+        "the stashed handle is refused after its dispatch ended (stale generation)"
+    );
+}
+
+/// A REAL wired slot invoked with a stale handle fails closed rather than dereferencing it: `clock_now`
+/// recovers, so the stale generation makes `recover` reject (panic) inside the slot's own
+/// `catch_unwind`, which maps it to the fail-closed `0` — never a use-after-free.
+#[test]
+fn a_real_slot_fails_closed_on_a_stale_hostctx() {
+    let app = crate::test_support::TestApp::new().build();
+    let scope = DispatchScope::new();
+    let stashed: HostCtx = with_borrowed_host(&app, &scope, |host, _vt| host);
+
+    let vt = build_plane_host_vtable();
+    let clock = vt.clock_now.expect("clock_now is a wired slot");
+    assert_eq!(
+        clock(stashed),
+        0,
+        "a stale-generation slot call is rejected and returns the fail-closed value, not a UAF read"
+    );
 }

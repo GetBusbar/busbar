@@ -597,7 +597,7 @@ pub(crate) fn journal_append_scoped_full_hostless(
         };
         // The reframe is reached ONLY on an LRU-evicted-scope resume; the shipped in-core reframes
         // ignore the `host` argument (see `reframe_bridge`), so a null host here is never dereferenced.
-        let null_host: HostCtx = core::ptr::null_mut();
+        let null_host: HostCtx = HostCtx::NULL;
         let reframe = |sc: &str, body: &[u8]| {
             call_reframe(null_host, kind_id, h.reframe, h.framing, sc, body)
         };

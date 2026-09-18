@@ -262,19 +262,12 @@ fn neutral_and_ffi_seams_share_one_lease_registry() {
 
 #[test]
 fn a_caught_panic_maps_to_fault_and_leaves_out_untouched() {
-    // A null `HostCtx` trips `recover`'s debug-assert (tests build with `debug_assertions`), so the
-    // shim body panics; the mandatory `catch_unwind` catches it and maps to the fail-closed `Fault`,
-    // never `Ok`, with the out-param left untouched.
+    // A null/invalid `HostCtx` is refused by `recover`'s generation/kind guard, so the shim body
+    // panics; the mandatory `catch_unwind` catches it and maps to the fail-closed `Fault`, never `Ok`,
+    // with the out-param left untouched.
     let mut out = MaybeUninit::<CostLeaseId>::uninit();
     out.write(CostLeaseId(0x1234));
-    let status = cost_reserve(
-        std::ptr::null_mut(),
-        1,
-        0,
-        0,
-        false,
-        std::ptr::from_mut(&mut out),
-    );
+    let status = cost_reserve(HostCtx::NULL, 1, 0, 0, false, std::ptr::from_mut(&mut out));
     assert_eq!(
         status,
         StatusClass::Fault,

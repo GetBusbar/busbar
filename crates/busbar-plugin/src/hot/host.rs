@@ -37,9 +37,151 @@ use crate::AbiPreamble;
 use core::mem::MaybeUninit;
 use std::os::raw::c_void;
 
-/// The opaque host-context pointer threaded as the first arg of every host call. The plane never
-/// dereferences it; it passes it back so the host recovers its own state. Never null in a live call.
-pub type HostCtx = *mut c_void;
+/// The host-context HANDLE threaded as the first arg of every host call. The plane never dereferences
+/// it; it passes it back so the host recovers its own state.
+///
+/// ## Generation guard — ABI review A6 use-after-free hardening (DECISIONS #30 hot `repr(C)`, #40 opaque handles)
+///
+/// A6 found the previous `HostCtx = *mut c_void` carried NO generation: a plane that stashed the raw
+/// pointer and called back AFTER the host slot the pointer addressed was reclaimed/reused would hand the
+/// host a STALE pointer it then dereferenced — a use-after-free. `HostCtx` is now a `#[repr(C)]` opaque
+/// HANDLE (#40) that carries, beside the pointer, a `generation` stamp the host mints per live dispatch
+/// (see [`HostGeneration`]) and a `kind` tag. The host checks the generation (and kind) at slot entry
+/// BEFORE dereferencing `ptr` (core's `recover`/`try_recover`), so a call carrying a stale generation is
+/// REJECTED, never dereferenced.
+///
+/// This is an APPEND-ONLY hot-lane change: the HOT plane/transport ABI is NEW in 1.6.0 (no 1.5.5
+/// byte-identity constraint, nothing on the money JSON path) and its planes are version-locked to this
+/// crate, so it bumps [`ABI_MINOR`](crate::ABI_MINOR) rather than the frozen major. The struct stays a
+/// small `#[repr(C)]` `Copy` value passed by register/stack across the `extern "C-unwind"` boundary,
+/// exactly as the bare pointer was.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct HostCtx {
+    /// The host's own state pointer — opaque to the plane. The host recovers its state from it, but
+    /// ONLY after the generation/kind check passes.
+    ptr: *mut c_void,
+    /// The generation stamp of the live dispatch that minted this handle. A host slot rejects the call
+    /// when this generation is not currently live (a stale handle outliving its dispatch).
+    generation: u32,
+    /// A discriminant of what `ptr` addresses, so a handle minted for one host role cannot be replayed
+    /// as another (a type-confusion guard). `0` is the reserved null/invalid tag.
+    kind: u8,
+}
+
+impl HostCtx {
+    /// The `kind` tag for a plane-host state handle (core's `HostState`). Non-zero, so the null handle
+    /// (`kind == 0`) can never be mistaken for a live one.
+    pub const KIND_PLANE_HOST: u8 = 1;
+
+    /// The null/invalid handle: a null pointer, generation `0`, kind `0`. Never live — a host rejects
+    /// it. Used only where a slot is known to ignore its host argument (bench fixtures, host-free
+    /// reframes), never in a live plane call.
+    pub const NULL: HostCtx = HostCtx {
+        ptr: core::ptr::null_mut(),
+        generation: 0,
+        kind: 0,
+    };
+
+    /// Mint a handle over a host state `ptr`, its live-dispatch `generation` stamp, and a `kind` tag.
+    #[must_use]
+    pub const fn new(ptr: *mut c_void, generation: u32, kind: u8) -> Self {
+        HostCtx {
+            ptr,
+            generation,
+            kind,
+        }
+    }
+
+    /// The opaque host state pointer. A host dereferences this ONLY after the generation/kind check.
+    #[must_use]
+    pub const fn ptr(self) -> *mut c_void {
+        self.ptr
+    }
+
+    /// The live-dispatch generation stamp a host checks before dereferencing [`ptr`](Self::ptr).
+    #[must_use]
+    pub const fn generation(self) -> u32 {
+        self.generation
+    }
+
+    /// The `kind` discriminant of what [`ptr`](Self::ptr) addresses.
+    #[must_use]
+    pub const fn kind(self) -> u8 {
+        self.kind
+    }
+
+    /// Whether the underlying pointer is null (a [`NULL`](Self::NULL) or unset handle).
+    #[must_use]
+    pub fn is_null(self) -> bool {
+        self.ptr.is_null()
+    }
+}
+
+thread_local! {
+    /// The generations of the dispatches currently LIVE on this thread (a small nesting stack). A
+    /// [`HostCtx`] is honoured only while its generation is in this set; when a dispatch ends, its
+    /// [`HostGeneration`] token drops and removes it — so a handle outliving its dispatch (the A6
+    /// use-after-free) is no longer live and the host rejects it before any dereference.
+    ///
+    /// Thread-local by the SAME invariant core's `recover` already documents: a `HostCtx` is valid only
+    /// on the dispatch frame that minted it and must not escape it (the sync dogfood AND the
+    /// `spawn_blocking` legs each mint and call on one thread). A handle replayed on another thread is
+    /// already a contract violation and is now additionally rejected there (its generation is not live).
+    static LIVE_GENERATIONS: core::cell::RefCell<Vec<u32>> = const { core::cell::RefCell::new(Vec::new()) };
+}
+
+/// Process-monotonic source of dispatch generation stamps. A wrapping `u32` gives ~4.29e9 distinct
+/// stamps before reuse; because a generation is removed the moment its token drops, a wrap can only ever
+/// re-mint one that is no longer live — at worst aliasing a CONCURRENTLY-live dispatch, never
+/// resurrecting an ended one.
+static NEXT_GENERATION: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(1);
+
+/// A RAII token that marks one dispatch's generation LIVE on the current thread while it is held and
+/// removes it on drop — the host side of the [`HostCtx`] use-after-free guard (ABI review A6).
+///
+/// The host opens one per dispatch (beside the stack `HostState` whose address becomes the [`HostCtx`]
+/// pointer), stamps its [`value`](Self::value) into every `HostCtx` it mints for that dispatch, and
+/// holds it across every host call the plane makes. When it drops (the dispatch ends — normally or by
+/// unwind), the generation stops being live, so the same handle used afterwards is refused.
+#[derive(Debug)]
+pub struct HostGeneration {
+    generation: u32,
+}
+
+impl HostGeneration {
+    /// Open a fresh generation and mark it live on the current thread.
+    #[must_use]
+    pub fn open() -> Self {
+        let generation = NEXT_GENERATION.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        LIVE_GENERATIONS.with(|live| live.borrow_mut().push(generation));
+        HostGeneration { generation }
+    }
+
+    /// The generation stamp to write into a [`HostCtx::new`] for this dispatch.
+    #[must_use]
+    pub fn value(&self) -> u32 {
+        self.generation
+    }
+
+    /// Whether `generation` is currently live on THIS thread — the host's use-after-free check at slot
+    /// entry. A stale handle (its dispatch ended, its token dropped) is not live and is rejected.
+    #[must_use]
+    pub fn is_live(generation: u32) -> bool {
+        LIVE_GENERATIONS.with(|live| live.borrow().contains(&generation))
+    }
+}
+
+impl Drop for HostGeneration {
+    fn drop(&mut self) {
+        LIVE_GENERATIONS.with(|live| {
+            let mut live = live.borrow_mut();
+            if let Some(pos) = live.iter().rposition(|&g| g == self.generation) {
+                live.remove(pos);
+            }
+        });
+    }
+}
 
 // ── hot fn-pointer signatures (small results BY VALUE) ──────────────────────────────────────────
 

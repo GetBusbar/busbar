@@ -55,7 +55,7 @@ pub use scope::{DispatchScope, DurableScope, SessionScope};
 pub use vtable::build_plane_host_vtable;
 
 use crate::state::App;
-use busbar_plugin::hot::host::{HostCtx, PlaneHostVtable};
+use busbar_plugin::hot::host::{HostCtx, HostGeneration, PlaneHostVtable};
 use std::sync::Arc;
 
 /// Core's own state behind the opaque [`HostCtx`] the plane ABI threads through every host call. A
@@ -83,15 +83,69 @@ pub struct HostState<'a> {
 /// invariant this is sound: the pointer is non-null, aligned, and points at a live `HostState` for a
 /// lifetime the caller's frame bounds.
 ///
+/// # Generation guard (ABI review A6 — use-after-free)
+///
+/// Before dereferencing the pointer, this checks the handle's `kind` tag and that its `generation` is
+/// still LIVE (its [`HostGeneration`] token still held — see [`mint_host_ctx`]). A stale handle from a
+/// dispatch that already ended carries a generation no longer live, so it is REJECTED rather than
+/// dereferenced: [`recover`] panics (each slot invokes it inside a `catch_unwind` that maps the panic to
+/// its fail-closed outcome), and [`try_recover`] returns `None`. This is what makes a plane that stashes
+/// and replays a host handle safe against the use-after-free A6 found.
+///
 /// # Safety
 ///
-/// `host` MUST be a `HostCtx` produced by [`with_dispatch_scope`] for a dispatch that is still on the
-/// stack, per the invariant above. Calling with any other pointer is undefined behavior.
+/// A handle that PASSES the guard MUST be a `HostCtx` produced by [`mint_host_ctx`] for a dispatch that
+/// is still on the stack, per the invariant above. The guard rejects stale/foreign generations without
+/// dereferencing, so the remaining obligation is only that a live-generation handle is genuinely one this
+/// process minted for the still-open dispatch (upheld by the mint sites).
 #[must_use]
 pub unsafe fn recover<'a>(host: HostCtx) -> &'a HostState<'a> {
-    debug_assert!(!host.is_null(), "HostCtx must never be null in a live call");
-    // SAFETY: by the documented invariant `host` is a live `*const HostState` for the call's duration.
-    unsafe { &*(host as *const HostState<'a>) }
+    // SAFETY: `try_recover` performs the null/kind/generation checks and forms the reference only on
+    // success, under the same invariant documented here.
+    match unsafe { try_recover(host) } {
+        Some(state) => state,
+        None => panic!(
+            "stale or invalid HostCtx (generation {} not live for this dispatch) — rejected before \
+             dereference (ABI review A6 use-after-free guard)",
+            host.generation()
+        ),
+    }
+}
+
+/// The fallible core of [`recover`]: the host's use-after-free check at slot entry. Returns `None`
+/// WITHOUT dereferencing `host.ptr()` when the handle is null, carries the wrong `kind`, or carries a
+/// generation that is not currently live on this thread (a stale handle outliving its dispatch — the A6
+/// use-after-free). Only when all three checks pass is the reference formed.
+///
+/// # Safety
+///
+/// Same invariant as [`recover`]: a handle that passes the guard must have been minted by
+/// [`mint_host_ctx`] for a dispatch whose [`HostGeneration`] token is still held.
+#[must_use]
+pub unsafe fn try_recover<'a>(host: HostCtx) -> Option<&'a HostState<'a>> {
+    if host.is_null() || host.kind() != HostCtx::KIND_PLANE_HOST {
+        return None;
+    }
+    if !HostGeneration::is_live(host.generation()) {
+        return None;
+    }
+    // SAFETY: the generation is live and the kind matches, so by the recovery invariant `host.ptr()`
+    // addresses the live `HostState` of a dispatch still on the stack.
+    Some(unsafe { &*(host.ptr() as *const HostState<'a>) })
+}
+
+/// Mint a [`HostCtx`] handle over a stack-pinned [`HostState`] and the live dispatch `generation`. The
+/// state's address IS the handle's opaque pointer; the `generation` stamp is what [`recover`] checks
+/// (against the still-held [`HostGeneration`] token) before dereferencing it — the A6 use-after-free
+/// guard. Tagged [`HostCtx::KIND_PLANE_HOST`].
+pub(crate) fn mint_host_ctx(state: &HostState, generation: u32) -> HostCtx {
+    HostCtx::new(
+        (state as *const HostState)
+            .cast_mut()
+            .cast::<std::os::raw::c_void>(),
+        generation,
+        HostCtx::KIND_PLANE_HOST,
+    )
 }
 
 /// Open a [`DispatchScope`], build the host vtable, and hand a plane a [`HostCtx`] + `&PlaneHostVtable`
@@ -123,12 +177,13 @@ pub fn with_borrowed_host<R>(
 ) -> R {
     let state = HostState { app, scope };
     let vtable = build_plane_host_vtable();
+    // Mark a fresh generation live for this dispatch; the token is held across every call `f` makes and
+    // drops (invalidating the generation) when this fn returns — the A6 use-after-free guard.
+    let generation = HostGeneration::open();
     // The stack `HostState`'s address IS the opaque HostCtx; it outlives every call `f` makes.
-    let host: HostCtx = (&state as *const HostState)
-        .cast_mut()
-        .cast::<std::os::raw::c_void>();
+    let host = mint_host_ctx(&state, generation.value());
     let out = f(host, &vtable);
-    let _keep_alive = &state;
+    let _keep_alive = (&state, &generation);
     out
 }
 
@@ -1689,12 +1744,13 @@ impl<'a> HostDispatch<'a> {
     pub fn with_host<R>(&self, f: impl FnOnce(HostCtx, &PlaneHostVtable) -> R) -> R {
         let state = self.host_state();
         let vtable = build_plane_host_vtable();
+        // Mark a fresh generation live for this dispatch; the token drops (invalidating it) when this
+        // fn returns — the A6 use-after-free guard.
+        let generation = HostGeneration::open();
         // The stack `HostState`'s address IS the opaque HostCtx; it outlives every call `f` makes.
-        let host: HostCtx = (&state as *const HostState)
-            .cast_mut()
-            .cast::<std::os::raw::c_void>();
+        let host = mint_host_ctx(&state, generation.value());
         let out = f(host, &vtable);
-        let _keep_alive = &state;
+        let _keep_alive = (&state, &generation);
         out
     }
 }
@@ -1750,11 +1806,12 @@ impl SendHostDispatch {
     pub fn with_host<R>(&self, f: impl FnOnce(HostCtx, &PlaneHostVtable) -> R) -> R {
         let state = self.host_state();
         let vtable = build_plane_host_vtable();
-        let host: HostCtx = (&state as *const HostState)
-            .cast_mut()
-            .cast::<std::os::raw::c_void>();
+        // Mark a fresh generation live for this dispatch; the token drops (invalidating it) when this
+        // fn returns — the A6 use-after-free guard.
+        let generation = HostGeneration::open();
+        let host = mint_host_ctx(&state, generation.value());
         let out = f(host, &vtable);
-        let _keep_alive = &state;
+        let _keep_alive = (&state, &generation);
         out
     }
 }
@@ -1827,11 +1884,12 @@ impl DurableHostDispatch {
     pub fn with_host<R>(&self, f: impl FnOnce(HostCtx, &PlaneHostVtable) -> R) -> R {
         let state = self.host_state();
         let vtable = build_plane_host_vtable();
-        let host: HostCtx = (&state as *const HostState)
-            .cast_mut()
-            .cast::<std::os::raw::c_void>();
+        // Mark a fresh generation live for this dispatch; the token drops (invalidating it) when this
+        // fn returns — the A6 use-after-free guard.
+        let generation = HostGeneration::open();
+        let host = mint_host_ctx(&state, generation.value());
         let out = f(host, &vtable);
-        let _keep_alive = &state;
+        let _keep_alive = (&state, &generation);
         out
     }
 }

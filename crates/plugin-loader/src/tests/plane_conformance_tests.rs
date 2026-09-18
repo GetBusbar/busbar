@@ -116,8 +116,14 @@ fn dropped_in_example_plane_builds_hydrates_starts_and_dispatches() {
     let host_ptr: *const PlaneHostVtable = &host;
     // SAFETY: `host_ptr` is a live EMPTY vtable that outlives this call; the example plane does not
     // dereference `host_ctx`.
-    let (build_status, handle) =
-        unsafe { plane.build(host_ptr, core::ptr::null_mut(), b"{}", &[]) };
+    let (build_status, handle) = unsafe {
+        plane.build(
+            host_ptr,
+            busbar_plugin::hot::host::HostCtx::NULL,
+            b"{}",
+            &[],
+        )
+    };
     assert_eq!(build_status, StatusClass::Ok);
     let handle = handle.expect("build yields an opaque plane handle on Ok");
     assert!(!handle.ptr.is_null());
