@@ -505,10 +505,7 @@ impl AuthScheme for FixtureAuth {
         AuthOutcome::Pass
     }
     fn refresh(&self, clock: Clock) -> KeyMaterial {
-        KeyMaterial {
-            bytes: Vec::new(),
-            fetched_at: clock.unix_secs,
-        }
+        KeyMaterial::new(Vec::new(), clock.unix_secs)
     }
 }
 
