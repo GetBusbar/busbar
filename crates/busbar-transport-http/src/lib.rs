@@ -69,23 +69,23 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use busbar_contract::transport::registry::facts as tfacts;
+use busbar_contract::transport::trust::EgressTrust;
+use busbar_contract::transport::wire::ArrivalRecord;
+use busbar_contract::transport::wire::CloseReason;
+use busbar_contract::transport::wire::Conn;
+use busbar_contract::transport::wire::ConnHandle;
+use busbar_contract::transport::wire::Direction;
+use busbar_contract::transport::wire::FrameMeta;
+use busbar_contract::transport::wire::Listener;
+use busbar_contract::transport::wire::ListenerHandle;
+use busbar_contract::transport::wire::TransportError;
+use busbar_contract::transport::wire::WireStatus;
+use busbar_contract::transport::wire::WireStatusClass;
 use busbar_contract::{
     ArenaBytes, Frame, Fut, Kind, Plugin, Refusal, SlabBytes, StreamId, Transport,
     TransportConfigView, TransportKeyHandle, TransportMeta,
 };
-use busbar_contract_transport::registry::facts as tfacts;
-use busbar_contract_transport::trust::EgressTrust;
-use busbar_contract_transport::wire::ArrivalRecord;
-use busbar_contract_transport::wire::CloseReason;
-use busbar_contract_transport::wire::Conn;
-use busbar_contract_transport::wire::ConnHandle;
-use busbar_contract_transport::wire::Direction;
-use busbar_contract_transport::wire::FrameMeta;
-use busbar_contract_transport::wire::Listener;
-use busbar_contract_transport::wire::ListenerHandle;
-use busbar_contract_transport::wire::TransportError;
-use busbar_contract_transport::wire::WireStatus;
-use busbar_contract_transport::wire::WireStatusClass;
 use bytes::Bytes;
 use futures::Stream;
 use http_body_util::{BodyExt, Full};
@@ -721,8 +721,8 @@ impl Plugin for HttpTransport {
     fn kind(&self) -> Kind {
         Kind::Transport
     }
-    fn abi(&self) -> busbar_contract_transport::AbiVersion {
-        busbar_contract_transport::registry::TRANSPORT_ABI
+    fn abi(&self) -> busbar_contract::transport::AbiVersion {
+        busbar_contract::transport::registry::TRANSPORT_ABI
     }
 }
 
@@ -740,14 +740,14 @@ impl TransportMeta for HttpTransport {
     ];
     const EGRESS_SELECTOR_FORMS: &'static [busbar_contract::SelectorForm] = &[];
     const COMPOSES_OVER: &'static [&'static str] = &["tcp", "tls"];
-    const HANDOFF: Option<busbar_contract_transport::wire::Handoff> = None;
-    const FRAMING: busbar_contract_transport::wire::Framing =
-        busbar_contract_transport::wire::Framing::Stream;
+    const HANDOFF: Option<busbar_contract::transport::wire::Handoff> = None;
+    const FRAMING: busbar_contract::transport::wire::Framing =
+        busbar_contract::transport::wire::Framing::Stream;
     const SESSION: bool = false;
     const SESSION_BOUND: bool = false;
-    const UNIT0_TRIGGER: Option<busbar_contract_transport::wire::Unit0Trigger> = None;
+    const UNIT0_TRIGGER: Option<busbar_contract::transport::wire::Unit0Trigger> = None;
     const UPGRADES_TO: &'static [&'static str] = &[];
-    const HANDSHAKE_TRIGGER: Option<busbar_contract_transport::wire::HandshakeTrigger> = None;
+    const HANDSHAKE_TRIGGER: Option<busbar_contract::transport::wire::HandshakeTrigger> = None;
     const TRANSPORT_FACTS: &'static [&'static str] = &[
         tfacts::PATH,
         tfacts::METHOD,
@@ -755,10 +755,10 @@ impl TransportMeta for HttpTransport {
         tfacts::PEER,
     ];
     const DECODES_PAYLOAD: bool = false;
-    const STATUS_CLASS: Option<busbar_contract_transport::wire::StatusAt> =
-        Some(busbar_contract_transport::wire::StatusAt::FirstFrame);
+    const STATUS_CLASS: Option<busbar_contract::transport::wire::StatusAt> =
+        Some(busbar_contract::transport::wire::StatusAt::FirstFrame);
     const STATUS_NAMESPACE: Option<&'static str> =
-        Some(busbar_contract_transport::registry::status_ns::HTTP);
+        Some(busbar_contract::transport::registry::status_ns::HTTP);
 }
 
 impl Transport for HttpTransport {
@@ -1100,7 +1100,7 @@ impl Transport for HttpTransport {
         fields: &[(&str, &[u8])],
         body: &[u8],
         arena: &'a dyn busbar_contract::Arena,
-    ) -> Result<ArenaBytes<'a>, busbar_contract_transport::wire::Encode> {
+    ) -> Result<ArenaBytes<'a>, busbar_contract::transport::wire::Encode> {
         let field = |name: &str| {
             fields
                 .iter()
@@ -1118,11 +1118,11 @@ impl Transport for HttpTransport {
         // arena.
         let clean = |v: &[u8]| !v.iter().any(|b| matches!(b, b'\r' | b'\n' | 0));
         if !clean(method) || !clean(path) {
-            return Err(busbar_contract_transport::wire::Encode::Unrepresentable);
+            return Err(busbar_contract::transport::wire::Encode::Unrepresentable);
         }
         for (name, value) in fields {
             if !clean(name.as_bytes()) || !clean(value) {
-                return Err(busbar_contract_transport::wire::Encode::Unrepresentable);
+                return Err(busbar_contract::transport::wire::Encode::Unrepresentable);
             }
         }
 
@@ -1147,7 +1147,7 @@ impl Transport for HttpTransport {
         out.extend_from_slice(body);
         arena
             .alloc_bytes(&out)
-            .map_err(|_| busbar_contract_transport::wire::Encode::ArenaExhausted)
+            .map_err(|_| busbar_contract::transport::wire::Encode::ArenaExhausted)
     }
 
     fn adopt<'a>(
@@ -1168,7 +1168,7 @@ impl Transport for HttpTransport {
     /// layer adopting the stream is the one that speaks the upgrade and answers it. An egress
     /// connection has no socket to give — it dials through a pooled client, and a pooled connection
     /// is not one caller's to take.
-    fn detach(&self, conn: &Conn) -> Option<busbar_contract_transport::wire::RawStream> {
+    fn detach(&self, conn: &Conn) -> Option<busbar_contract::transport::wire::RawStream> {
         // Checked BEFORE the removal, under the same lock: see the sibling `tcp` note. Removing
         // first and then failing to unwrap loses the connection — no stream up, no entry left.
         let mut registry = self.conns.lock().expect("poisoned");
@@ -1183,7 +1183,7 @@ impl Transport for HttpTransport {
             return None;
         };
         let stream = read.into_inner().half.reunite(write.into_inner()).ok()?;
-        Some(busbar_contract_transport::wire::RawStream::new(
+        Some(busbar_contract::transport::wire::RawStream::new(
             Self::KEY,
             peer,
             Box::new(TokioAsyncReadCompatExt::compat(stream)),

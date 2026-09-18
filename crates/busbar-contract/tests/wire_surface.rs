@@ -8,7 +8,7 @@
 //! real protocol's surface would be unable to tell "this vocabulary is general" from "this
 //! vocabulary happens to fit the one protocol it was written beside".
 
-use busbar_contract_transport::surface::{
+use busbar_contract::transport::surface::{
     binding_at, check_surface, match_target, resolve_document, resolve_service, resolve_target,
     Answering, Bar, BindingDecl, Dispatch, Operation, SurfaceError, WireSurface, MAX_CAPTURES,
 };
@@ -141,28 +141,18 @@ fn depth_is_part_of_the_match() {
 /// The grammar is checked, and each way of breaking it is refused.
 #[test]
 fn the_template_grammar_is_closed() {
-    assert!(busbar_contract_transport::surface::template_is_wellformed(
+    assert!(busbar_contract::transport::surface::template_is_wellformed(
         "/a/{b}/c"
     ));
     // No leading separator.
-    assert!(!busbar_contract_transport::surface::template_is_wellformed(
-        "a/b"
-    ));
+    assert!(!busbar_contract::transport::surface::template_is_wellformed("a/b"));
     // An empty segment.
-    assert!(!busbar_contract_transport::surface::template_is_wellformed(
-        "/a//b"
-    ));
+    assert!(!busbar_contract::transport::surface::template_is_wellformed("/a//b"));
     // A capture that is not a whole segment.
-    assert!(!busbar_contract_transport::surface::template_is_wellformed(
-        "/a/x{b}"
-    ));
-    assert!(!busbar_contract_transport::surface::template_is_wellformed(
-        "/a/{b"
-    ));
+    assert!(!busbar_contract::transport::surface::template_is_wellformed("/a/x{b}"));
+    assert!(!busbar_contract::transport::surface::template_is_wellformed("/a/{b"));
     // An unnamed capture.
-    assert!(!busbar_contract_transport::surface::template_is_wellformed(
-        "/a/{}"
-    ));
+    assert!(!busbar_contract::transport::surface::template_is_wellformed("/a/{}"));
 }
 
 /// A template past the capture ceiling is refused at boot rather than truncated at serve time.
@@ -172,9 +162,7 @@ fn a_template_past_the_capture_ceiling_is_refused() {
     for _ in 0..=MAX_CAPTURES {
         deep.push_str("/{x}");
     }
-    assert!(!busbar_contract_transport::surface::template_is_wellformed(
-        &deep
-    ));
+    assert!(!busbar_contract::transport::surface::template_is_wellformed(&deep));
 }
 
 /// The first row that matches is the answer, in the surface's own order.

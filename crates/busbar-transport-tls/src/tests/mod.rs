@@ -152,7 +152,7 @@ fn upstream_dest(addr: &str) -> busbar_contract::VerifiedDestination {
         &FixtureSeal,
         busbar_contract::DestinationFacts::Upstream {
             transport: "tls",
-            address: busbar_contract_transport::dest::UpstreamAddress::socket(host),
+            address: busbar_contract::transport::dest::UpstreamAddress::socket(host),
             lane: busbar_contract::LaneId::new("test"),
         },
         "tls",
@@ -732,7 +732,7 @@ async fn a_declared_certificate_name_is_what_the_handshake_offers() {
         &FixtureSeal,
         busbar_contract::DestinationFacts::Upstream {
             transport: "tls",
-            address: busbar_contract_transport::dest::UpstreamAddress::Socket {
+            address: busbar_contract::transport::dest::UpstreamAddress::Socket {
                 authority: leaked,
                 sni: Some("localhost"),
                 extras: &[],
@@ -821,7 +821,7 @@ async fn the_arrival_record_names_the_port_the_connection_arrived_on() {
 /// fails here instead of in a deployment.
 #[tokio::test]
 async fn every_reserved_key_this_transport_publishes_is_declared() {
-    use busbar_contract_transport::registry::facts;
+    use busbar_contract::transport::registry::facts;
 
     // The connection is built so all three keys are actually FILLED. A default pair offers no ALPN
     // and declares no name, so both come back None and the check below covers only the peer key —
@@ -853,7 +853,7 @@ async fn every_reserved_key_this_transport_publishes_is_declared() {
         &FixtureSeal,
         busbar_contract::DestinationFacts::Upstream {
             transport: "tls",
-            address: busbar_contract_transport::dest::UpstreamAddress::Socket {
+            address: busbar_contract::transport::dest::UpstreamAddress::Socket {
                 authority: leaked,
                 sni: Some("localhost"),
                 extras: &[],
@@ -1120,7 +1120,7 @@ mod cg_49_sni {
             &FixtureSeal,
             busbar_contract::DestinationFacts::Upstream {
                 transport: "tls",
-                address: busbar_contract_transport::dest::UpstreamAddress::Socket {
+                address: busbar_contract::transport::dest::UpstreamAddress::Socket {
                     authority: leaked_addr,
                     sni: Some(leaked_sni),
                     extras: &[],

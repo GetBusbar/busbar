@@ -28,13 +28,13 @@ use hyper::body::Incoming;
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use tonic::{Request, Response, Status};
 
+use busbar_contract::transport::wire::Direction;
+use busbar_contract::transport::wire::FrameMeta;
+use busbar_contract::transport::wire::TransportError;
+use busbar_contract::transport::wire::WireStatus;
 use busbar_contract::wire::Frame;
 use busbar_contract::TransportMeta;
 use busbar_contract::{SlabBytes, StreamId};
-use busbar_contract_transport::wire::Direction;
-use busbar_contract_transport::wire::FrameMeta;
-use busbar_contract_transport::wire::TransportError;
-use busbar_contract_transport::wire::WireStatus;
 
 use crate::codec::RawCodec;
 use crate::conn::ConnState;
@@ -256,7 +256,7 @@ pub(crate) fn terminal_frame(stream_id: StreamId, status: Option<&Status>) -> Fr
         bytes: 0,
         transport_units: None,
         status: Some(status.map_or(
-            busbar_contract_transport::wire::WireStatusClass::Success,
+            busbar_contract::transport::wire::WireStatusClass::Success,
             map_status,
         )),
         // `as i32` is `grpc-status`'s own wire spelling, and every code it names is small and
@@ -288,9 +288,9 @@ pub(crate) fn terminal_frame(stream_id: StreamId, status: Option<&Status>) -> Fr
 }
 
 /// The transport's own honest reading of the `grpc-status` trailer, into the closed
-/// [`busbar_contract_transport::wire::WireStatusClass`] — never a judgement about what the RPC's bytes meant.
-pub(crate) fn map_status(status: &Status) -> busbar_contract_transport::wire::WireStatusClass {
-    use busbar_contract_transport::wire::WireStatusClass;
+/// [`busbar_contract::transport::wire::WireStatusClass`] — never a judgement about what the RPC's bytes meant.
+pub(crate) fn map_status(status: &Status) -> busbar_contract::transport::wire::WireStatusClass {
+    use busbar_contract::transport::wire::WireStatusClass;
     use tonic::Code;
     match status.code() {
         Code::Ok => WireStatusClass::Success,

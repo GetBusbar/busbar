@@ -4,9 +4,9 @@
 
 use super::*;
 use busbar_contract::plugin::KernelSeal;
+use busbar_contract::transport::registry::status_ns;
+use busbar_contract::transport::wire::WireStatus;
 use busbar_contract::ConfigView;
-use busbar_contract_transport::registry::status_ns;
-use busbar_contract_transport::wire::WireStatus;
 use futures::StreamExt;
 use std::sync::Arc as StdArc;
 
@@ -46,7 +46,7 @@ fn upstream_dest(uri: &str) -> busbar_contract::VerifiedDestination {
         &FixtureSeal,
         busbar_contract::DestinationFacts::Upstream {
             transport: "http",
-            address: busbar_contract_transport::dest::UpstreamAddress::socket(host),
+            address: busbar_contract::transport::dest::UpstreamAddress::socket(host),
             lane: busbar_contract::LaneId::new("test"),
         },
         "http",
@@ -1101,7 +1101,7 @@ fn a_field_cannot_smuggle_a_line_ending_into_the_header_block() {
             .expect_err("a field carrying a line ending is not encodable");
         assert_eq!(
             err,
-            busbar_contract_transport::wire::Encode::Unrepresentable,
+            busbar_contract::transport::wire::Encode::Unrepresentable,
             "field {:?} was written through",
             field.0
         );

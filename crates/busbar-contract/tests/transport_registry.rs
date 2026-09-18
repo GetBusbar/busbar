@@ -9,7 +9,7 @@
 //! booted. A declaration nothing checks is the frame-honesty problem one layer up — the stack a
 //! node reports is the stack its declarations describe, so the description has to be true.
 
-use busbar_contract_transport::{
+use busbar_contract::transport::{
     check_composition, CompositionError, Listener, ListenerHandle, Registered,
 };
 use std::sync::Arc;
@@ -100,8 +100,8 @@ fn the_transport_kind_has_one_abi_generation() {
     // needs something to compare against, and every transport naming the same constant is what
     // makes "one generation" a fact rather than a coincidence between six crates.
     assert_eq!(
-        busbar_contract_transport::TRANSPORT_ABI,
-        busbar_contract_transport::AbiVersion(1)
+        busbar_contract::transport::TRANSPORT_ABI,
+        busbar_contract::transport::AbiVersion(1)
     );
 }
 

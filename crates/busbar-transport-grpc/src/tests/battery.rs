@@ -9,9 +9,9 @@ use std::time::Duration;
 
 use futures::StreamExt;
 
+use busbar_contract::transport::registry::status_ns;
+use busbar_contract::transport::wire::{TransportError, WireStatus, WireStatusClass};
 use busbar_contract::{ArenaBytes, StreamId, Transport};
-use busbar_contract_transport::registry::status_ns;
-use busbar_contract_transport::wire::{TransportError, WireStatus, WireStatusClass};
 
 use crate::GrpcTransport;
 
@@ -69,7 +69,7 @@ fn verified_upstream(host: &'static str) -> busbar_contract::VerifiedDestination
         &Seal,
         busbar_contract::DestinationFacts::Upstream {
             transport: "grpc",
-            address: busbar_contract_transport::dest::UpstreamAddress::socket(host),
+            address: busbar_contract::transport::dest::UpstreamAddress::socket(host),
             lane: busbar_contract::LaneId::new("test-lane"),
         },
         "grpc",
@@ -236,7 +236,7 @@ async fn an_ok_grpc_status_trailer_terminates_the_call_as_success() {
         .unwrap();
     server_t.close(
         server_conn,
-        busbar_contract_transport::wire::CloseReason::Normal,
+        busbar_contract::transport::wire::CloseReason::Normal,
     );
 
     let mut client_frames = client_t.frames(client_conn);
@@ -693,11 +693,11 @@ async fn the_destinations_method_is_the_path_the_call_opens_against() {
         &Seal,
         busbar_contract::DestinationFacts::Upstream {
             transport: "grpc",
-            address: busbar_contract_transport::dest::UpstreamAddress::Socket {
+            address: busbar_contract::transport::dest::UpstreamAddress::Socket {
                 authority: host,
                 sni: None,
                 extras: &[(
-                    busbar_contract_transport::registry::facts::METHOD,
+                    busbar_contract::transport::registry::facts::METHOD,
                     "/vendor.Inference/Chat",
                 )],
             },
@@ -766,9 +766,9 @@ async fn a_transport_with_no_lower_layer_cannot_listen_or_dial() {
 #[allow(clippy::assertions_on_constants)]
 #[tokio::test]
 async fn transport_meta_matches_the_architecture_row() {
+    use busbar_contract::transport::wire::StatusAt;
+    use busbar_contract::transport::wire::Unit0Trigger;
     use busbar_contract::TransportMeta;
-    use busbar_contract_transport::wire::StatusAt;
-    use busbar_contract_transport::wire::Unit0Trigger;
     assert_eq!(<GrpcTransport as TransportMeta>::KEY, "grpc");
     assert!(<GrpcTransport as TransportMeta>::SESSION);
     assert!(<GrpcTransport as TransportMeta>::SESSION_BOUND);
@@ -1125,10 +1125,10 @@ async fn the_inbound_channel_backpressures_a_peer_that_outruns_frames() {
         Ok((
             StreamId(1),
             busbar_contract::wire::Frame {
-                direction: busbar_contract_transport::wire::Direction::Inbound,
+                direction: busbar_contract::transport::wire::Direction::Inbound,
                 stream: StreamId(1),
                 bytes: busbar_contract::SlabBytes::new(std::sync::Arc::from(&b"x"[..])),
-                meta: busbar_contract_transport::wire::FrameMeta {
+                meta: busbar_contract::transport::wire::FrameMeta {
                     bytes: 1,
                     transport_units: None,
                     status: None,
@@ -1203,10 +1203,10 @@ async fn a_forwarder_parked_on_a_full_inbound_buffer_ends_when_the_connection_do
         Ok((
             StreamId(1),
             busbar_contract::wire::Frame {
-                direction: busbar_contract_transport::wire::Direction::Inbound,
+                direction: busbar_contract::transport::wire::Direction::Inbound,
                 stream: StreamId(1),
                 bytes: busbar_contract::SlabBytes::new(std::sync::Arc::from(&b"x"[..])),
-                meta: busbar_contract_transport::wire::FrameMeta {
+                meta: busbar_contract::transport::wire::FrameMeta {
                     bytes: 1,
                     transport_units: None,
                     status: None,
@@ -1287,11 +1287,11 @@ async fn a_malformed_sealed_method_refuses_instead_of_panicking() {
         &Seal,
         busbar_contract::DestinationFacts::Upstream {
             transport: "grpc",
-            address: busbar_contract_transport::dest::UpstreamAddress::Socket {
+            address: busbar_contract::transport::dest::UpstreamAddress::Socket {
                 authority: host,
                 sni: None,
                 extras: &[(
-                    busbar_contract_transport::registry::facts::METHOD,
+                    busbar_contract::transport::registry::facts::METHOD,
                     "/pkg.Svc/My Method",
                 )],
             },
@@ -1417,7 +1417,7 @@ async fn closing_a_connection_stops_serving_new_calls_on_it() {
 
     server_t.close(
         server_conn,
-        busbar_contract_transport::wire::CloseReason::Normal,
+        busbar_contract::transport::wire::CloseReason::Normal,
     );
 
     // A closed connection serves nothing further: the peer's next RPC on it must fail rather than
@@ -1483,7 +1483,7 @@ async fn frames_end_when_the_connection_does() {
     // The peer is finished with this connection and gone.
     server_t.close(
         server_conn,
-        busbar_contract_transport::wire::CloseReason::Normal,
+        busbar_contract::transport::wire::CloseReason::Normal,
     );
 
     // The closing side's own reader ends: nothing more will ever arrive on a connection this
@@ -1810,7 +1810,7 @@ async fn closing_a_dialled_connection_releases_its_socket() {
     // The dialling side is done with it.
     client_t.close(
         client_conn,
-        busbar_contract_transport::wire::CloseReason::Normal,
+        busbar_contract::transport::wire::CloseReason::Normal,
     );
 
     // The socket goes with it, which is what the accepting side sees: its own reader ends.

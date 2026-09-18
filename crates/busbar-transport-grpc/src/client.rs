@@ -13,8 +13,8 @@ use futures::Stream;
 use http::uri::PathAndQuery;
 use hyper_util::rt::{TokioExecutor, TokioIo};
 
+use busbar_contract::transport::wire::TransportError;
 use busbar_contract::StreamId;
-use busbar_contract_transport::wire::TransportError;
 
 use crate::codec::RawCodec;
 use crate::conn::ConnState;

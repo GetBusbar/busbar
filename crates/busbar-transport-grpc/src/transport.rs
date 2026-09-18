@@ -10,20 +10,20 @@ use std::sync::{Arc, Mutex as SyncMutex};
 use futures::Stream;
 
 use busbar_contract::dest::{DestinationFacts, VerifiedDestination};
+use busbar_contract::transport::registry::facts as tfacts;
+use busbar_contract::transport::wire::ArrivalRecord;
+use busbar_contract::transport::wire::CloseReason;
+use busbar_contract::transport::wire::Conn;
+use busbar_contract::transport::wire::Listener;
+use busbar_contract::transport::wire::TransportError;
+use busbar_contract::transport::wire::Unit0Trigger;
+use busbar_contract::transport::AbiVersion;
 use busbar_contract::unit::Refusal;
 use busbar_contract::wire::Frame;
 use busbar_contract::{
     grammar::SelectorForm, ArenaBytes, Fut, Kind, Plugin, StreamId, Transport, TransportConfigView,
     TransportKeyHandle, TransportMeta,
 };
-use busbar_contract_transport::registry::facts as tfacts;
-use busbar_contract_transport::wire::ArrivalRecord;
-use busbar_contract_transport::wire::CloseReason;
-use busbar_contract_transport::wire::Conn;
-use busbar_contract_transport::wire::Listener;
-use busbar_contract_transport::wire::TransportError;
-use busbar_contract_transport::wire::Unit0Trigger;
-use busbar_contract_transport::AbiVersion;
 
 use crate::client;
 use crate::conn::{ConnState, GrpcConnHandle};
@@ -116,7 +116,7 @@ impl Plugin for GrpcTransport {
         Kind::Transport
     }
     fn abi(&self) -> AbiVersion {
-        busbar_contract_transport::registry::TRANSPORT_ABI
+        busbar_contract::transport::registry::TRANSPORT_ABI
     }
 }
 
@@ -140,22 +140,22 @@ impl TransportMeta for GrpcTransport {
     // The layers this one is actually built over, and the Cargo edges say the same: `http`
     // carries an inbound connection, `tcp` carries a dialled one.
     const COMPOSES_OVER: &'static [&'static str] = &["http", "tcp"];
-    const HANDOFF: Option<busbar_contract_transport::wire::Handoff> = None;
-    const FRAMING: busbar_contract_transport::wire::Framing =
-        busbar_contract_transport::wire::Framing::Stream;
+    const HANDOFF: Option<busbar_contract::transport::wire::Handoff> = None;
+    const FRAMING: busbar_contract::transport::wire::Framing =
+        busbar_contract::transport::wire::Framing::Stream;
     const SESSION: bool = true;
     const SESSION_BOUND: bool = true;
     const UNIT0_TRIGGER: Option<Unit0Trigger> = Some(Unit0Trigger::FirstMessage);
     const UPGRADES_TO: &'static [&'static str] = &[];
-    const HANDSHAKE_TRIGGER: Option<busbar_contract_transport::wire::HandshakeTrigger> = None;
+    const HANDSHAKE_TRIGGER: Option<busbar_contract::transport::wire::HandshakeTrigger> = None;
     const TRANSPORT_FACTS: &'static [&'static str] = &[tfacts::PATH, tfacts::PEER];
     const DECODES_PAYLOAD: bool = false;
     // "carries the per-frame StatusClass at Terminal (the grpc-status trailer)" — the transports
     // table's own words for this row.
-    const STATUS_CLASS: Option<busbar_contract_transport::wire::StatusAt> =
-        Some(busbar_contract_transport::wire::StatusAt::Terminal);
+    const STATUS_CLASS: Option<busbar_contract::transport::wire::StatusAt> =
+        Some(busbar_contract::transport::wire::StatusAt::Terminal);
     const STATUS_NAMESPACE: Option<&'static str> =
-        Some(busbar_contract_transport::registry::status_ns::GRPC);
+        Some(busbar_contract::transport::registry::status_ns::GRPC);
 }
 
 impl Transport for GrpcTransport {
@@ -227,7 +227,7 @@ impl Transport for GrpcTransport {
             // that declares keys for some other family is not this transport's business and it
             // does not see them.
             let method = address
-                .extra(busbar_contract_transport::registry::facts::METHOD)
+                .extra(busbar_contract::transport::registry::facts::METHOD)
                 .unwrap_or(crate::server::RPC_PATH);
             // The socket is the layer below's, dialled against the address this destination
             // already carries. Re-addressing narrows the sealed destination to what that layer
@@ -236,7 +236,7 @@ impl Transport for GrpcTransport {
             let beneath = dest
                 .beneath(
                     lower.key(),
-                    busbar_contract_transport::dest::UpstreamAddress::Socket {
+                    busbar_contract::transport::dest::UpstreamAddress::Socket {
                         authority,
                         sni: address.sni(),
                         extras: &[],
@@ -373,10 +373,10 @@ impl Transport for GrpcTransport {
         _fields: &[(&str, &[u8])],
         body: &[u8],
         arena: &'a dyn busbar_contract::Arena,
-    ) -> Result<ArenaBytes<'a>, busbar_contract_transport::wire::Encode> {
+    ) -> Result<ArenaBytes<'a>, busbar_contract::transport::wire::Encode> {
         arena
             .alloc_bytes(body)
-            .map_err(|_| busbar_contract_transport::wire::Encode::ArenaExhausted)
+            .map_err(|_| busbar_contract::transport::wire::Encode::ArenaExhausted)
     }
 
     fn adopt<'a>(
@@ -388,7 +388,7 @@ impl Transport for GrpcTransport {
         Box::pin(async move { Err(TransportError::HandoffMismatch) })
     }
 
-    fn detach(&self, conn: &Conn) -> Option<busbar_contract_transport::wire::RawStream> {
+    fn detach(&self, conn: &Conn) -> Option<busbar_contract::transport::wire::RawStream> {
         // Nothing upgrades in-band over `grpc` (`UPGRADES_TO` is empty), so there is no raw stream
         // this layer ever hands up.
         let _ = conn;

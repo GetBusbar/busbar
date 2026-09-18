@@ -34,21 +34,21 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use busbar_contract::transport::registry::facts as tfacts;
+use busbar_contract::transport::wire::ArrivalRecord;
+use busbar_contract::transport::wire::CertFacts;
+use busbar_contract::transport::wire::CloseReason;
+use busbar_contract::transport::wire::Conn;
+use busbar_contract::transport::wire::ConnHandle;
+use busbar_contract::transport::wire::Direction;
+use busbar_contract::transport::wire::FrameMeta;
+use busbar_contract::transport::wire::Listener;
+use busbar_contract::transport::wire::ListenerHandle;
+use busbar_contract::transport::wire::TransportError;
 use busbar_contract::{
     ArenaBytes, Frame, Fut, Kind, Plugin, Refusal, SlabBytes, StreamId, Transport,
     TransportConfigView, TransportKeyHandle, TransportMeta,
 };
-use busbar_contract_transport::registry::facts as tfacts;
-use busbar_contract_transport::wire::ArrivalRecord;
-use busbar_contract_transport::wire::CertFacts;
-use busbar_contract_transport::wire::CloseReason;
-use busbar_contract_transport::wire::Conn;
-use busbar_contract_transport::wire::ConnHandle;
-use busbar_contract_transport::wire::Direction;
-use busbar_contract_transport::wire::FrameMeta;
-use busbar_contract_transport::wire::Listener;
-use busbar_contract_transport::wire::ListenerHandle;
-use busbar_contract_transport::wire::TransportError;
 use futures::Stream;
 use rustls_pki_types::ServerName;
 use tokio::io::{AsyncReadExt, AsyncWriteExt, ReadHalf, WriteHalf};
@@ -418,8 +418,8 @@ impl Plugin for TlsTransport {
     fn kind(&self) -> Kind {
         Kind::Transport
     }
-    fn abi(&self) -> busbar_contract_transport::AbiVersion {
-        busbar_contract_transport::registry::TRANSPORT_ABI
+    fn abi(&self) -> busbar_contract::transport::AbiVersion {
+        busbar_contract::transport::registry::TRANSPORT_ABI
     }
 }
 
@@ -437,18 +437,18 @@ impl TransportMeta for TlsTransport {
     ];
     const EGRESS_SELECTOR_FORMS: &'static [busbar_contract::SelectorForm] = &[];
     const COMPOSES_OVER: &'static [&'static str] = &["tcp"];
-    const HANDOFF: Option<busbar_contract_transport::wire::Handoff> = None;
-    const FRAMING: busbar_contract_transport::wire::Framing =
-        busbar_contract_transport::wire::Framing::Stream;
+    const HANDOFF: Option<busbar_contract::transport::wire::Handoff> = None;
+    const FRAMING: busbar_contract::transport::wire::Framing =
+        busbar_contract::transport::wire::Framing::Stream;
     const SESSION: bool = true;
     const SESSION_BOUND: bool = true;
-    const UNIT0_TRIGGER: Option<busbar_contract_transport::wire::Unit0Trigger> =
-        Some(busbar_contract_transport::wire::Unit0Trigger::FirstBytes);
+    const UNIT0_TRIGGER: Option<busbar_contract::transport::wire::Unit0Trigger> =
+        Some(busbar_contract::transport::wire::Unit0Trigger::FirstBytes);
     const UPGRADES_TO: &'static [&'static str] = &[];
-    const HANDSHAKE_TRIGGER: Option<busbar_contract_transport::wire::HandshakeTrigger> = None;
+    const HANDSHAKE_TRIGGER: Option<busbar_contract::transport::wire::HandshakeTrigger> = None;
     const TRANSPORT_FACTS: &'static [&'static str] = &[tfacts::SNI, tfacts::ALPN, tfacts::PEER];
     const DECODES_PAYLOAD: bool = false;
-    const STATUS_CLASS: Option<busbar_contract_transport::wire::StatusAt> = None;
+    const STATUS_CLASS: Option<busbar_contract::transport::wire::StatusAt> = None;
     const STATUS_NAMESPACE: Option<&'static str> = None;
 }
 
@@ -682,10 +682,10 @@ impl Transport for TlsTransport {
         _fields: &[(&str, &[u8])],
         body: &[u8],
         arena: &'a dyn busbar_contract::Arena,
-    ) -> Result<ArenaBytes<'a>, busbar_contract_transport::wire::Encode> {
+    ) -> Result<ArenaBytes<'a>, busbar_contract::transport::wire::Encode> {
         arena
             .alloc_bytes(body)
-            .map_err(|_| busbar_contract_transport::wire::Encode::ArenaExhausted)
+            .map_err(|_| busbar_contract::transport::wire::Encode::ArenaExhausted)
     }
 
     /// The in-band upgrade, from this side: the STARTTLS-shaped handoff the transports table names.
@@ -738,7 +738,7 @@ impl Transport for TlsTransport {
         })
     }
 
-    fn detach(&self, conn: &Conn) -> Option<busbar_contract_transport::wire::RawStream> {
+    fn detach(&self, conn: &Conn) -> Option<busbar_contract::transport::wire::RawStream> {
         // Checked BEFORE the removal, under the same lock: see the sibling `tcp` note. Removing
         // first and then failing to unwrap loses the connection — no stream up, no entry left.
         let mut registry = self.conns.lock().expect("poisoned");
@@ -756,7 +756,7 @@ impl Transport for TlsTransport {
             // registry had been torn, and there is no stream to hand up in that case.
             _ => return None,
         };
-        Some(busbar_contract_transport::wire::RawStream::new(
+        Some(busbar_contract::transport::wire::RawStream::new(
             Self::KEY,
             peer,
             Box::new(TokioAsyncReadCompatExt::compat(stream)),
@@ -829,7 +829,7 @@ impl Transport for TlsTransport {
 /// offer. Nothing is leaked per dial: both halves are already `'static`, which is what the closed
 /// address shape bought.
 fn split_address(
-    address: &busbar_contract_transport::dest::UpstreamAddress,
+    address: &busbar_contract::transport::dest::UpstreamAddress,
 ) -> Result<(&'static str, SocketAddr), TransportError> {
     let authority = address.authority().ok_or(TransportError::AddressRefused)?;
     let addr: SocketAddr = authority

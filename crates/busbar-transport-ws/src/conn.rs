@@ -1,15 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The per-connection side table. [`busbar_contract_transport::wire::Conn`] is a sealed, opaque handle (only
+//! The per-connection side table. [`busbar_contract::transport::wire::Conn`] is a sealed, opaque handle (only
 //! `id()`/`peer()` are readable from outside), so the live split socket halves live here, keyed by
 //! `Conn::id()`.
 
 use std::sync::atomic::AtomicBool;
 
+use busbar_contract::transport::wire::ConnHandle;
 use busbar_contract::unit::ConfigView;
 use busbar_contract::TransportConfigView;
-use busbar_contract_transport::wire::ConnHandle;
 use futures::stream::{SplitSink, SplitStream};
 use tokio::sync::Mutex as AsyncMutex;
 use tokio_tungstenite::tungstenite::Message;
@@ -55,12 +55,12 @@ pub(crate) struct LowerFacts {
     pub(crate) port: u16,
     pub(crate) alpn: Option<String>,
     pub(crate) sni: Option<String>,
-    pub(crate) peer_cert: Option<busbar_contract_transport::wire::CertFacts>,
+    pub(crate) peer_cert: Option<busbar_contract::transport::wire::CertFacts>,
 }
 
 impl LowerFacts {
     /// The facts worth keeping out of the record the layer below reported.
-    pub(crate) fn of(record: &busbar_contract_transport::wire::ArrivalRecord) -> Self {
+    pub(crate) fn of(record: &busbar_contract::transport::wire::ArrivalRecord) -> Self {
         Self {
             port: record.port,
             alpn: record.alpn.clone(),

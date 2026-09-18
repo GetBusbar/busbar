@@ -12,22 +12,22 @@ use futures::Stream;
 use tokio::io::AsyncWriteExt;
 
 use busbar_contract::dest::{DestinationFacts, VerifiedDestination};
+use busbar_contract::transport::wire::ArrivalRecord;
+use busbar_contract::transport::wire::CloseReason;
+use busbar_contract::transport::wire::Conn;
+use busbar_contract::transport::wire::Direction;
+use busbar_contract::transport::wire::FrameMeta;
+use busbar_contract::transport::wire::Listener;
+use busbar_contract::transport::wire::ListenerHandle;
+use busbar_contract::transport::wire::TransportError;
+use busbar_contract::transport::wire::Unit0Trigger;
+use busbar_contract::transport::AbiVersion;
 use busbar_contract::unit::Refusal;
 use busbar_contract::wire::Frame;
 use busbar_contract::{
     grammar::SelectorForm, ArenaBytes, Fut, Kind, Plugin, SlabBytes, StreamId, Transport,
     TransportConfigView, TransportKeyHandle, TransportMeta,
 };
-use busbar_contract_transport::wire::ArrivalRecord;
-use busbar_contract_transport::wire::CloseReason;
-use busbar_contract_transport::wire::Conn;
-use busbar_contract_transport::wire::Direction;
-use busbar_contract_transport::wire::FrameMeta;
-use busbar_contract_transport::wire::Listener;
-use busbar_contract_transport::wire::ListenerHandle;
-use busbar_contract_transport::wire::TransportError;
-use busbar_contract_transport::wire::Unit0Trigger;
-use busbar_contract_transport::AbiVersion;
 
 use crate::conn::{ConnState, ReaderSlot, StdioConnHandle};
 
@@ -218,7 +218,7 @@ impl Plugin for StdioTransport {
         Kind::Transport
     }
     fn abi(&self) -> AbiVersion {
-        busbar_contract_transport::registry::TRANSPORT_ABI
+        busbar_contract::transport::registry::TRANSPORT_ABI
     }
 }
 
@@ -229,20 +229,20 @@ impl TransportMeta for StdioTransport {
     const SELECTOR_FORMS: &'static [SelectorForm] = &[];
     const EGRESS_SELECTOR_FORMS: &'static [SelectorForm] = &[];
     const COMPOSES_OVER: &'static [&'static str] = &[];
-    const HANDOFF: Option<busbar_contract_transport::wire::Handoff> = None;
-    const FRAMING: busbar_contract_transport::wire::Framing =
-        busbar_contract_transport::wire::Framing::Stream;
+    const HANDOFF: Option<busbar_contract::transport::wire::Handoff> = None;
+    const FRAMING: busbar_contract::transport::wire::Framing =
+        busbar_contract::transport::wire::Framing::Stream;
     const SESSION: bool = true;
     const SESSION_BOUND: bool = true;
     const UNIT0_TRIGGER: Option<Unit0Trigger> = Some(Unit0Trigger::FirstMessage);
     const UPGRADES_TO: &'static [&'static str] = &[];
-    const HANDSHAKE_TRIGGER: Option<busbar_contract_transport::wire::HandshakeTrigger> = None;
+    const HANDSHAKE_TRIGGER: Option<busbar_contract::transport::wire::HandshakeTrigger> = None;
     // No transport-level fact this carrier writes beyond the arrival record itself.
     const TRANSPORT_FACTS: &'static [&'static str] = &[];
     const DECODES_PAYLOAD: bool = false;
     // The transports table names no status leg for stdio; the plane's own `finish` class is the fee's sole
     // source here.
-    const STATUS_CLASS: Option<busbar_contract_transport::wire::StatusAt> = None;
+    const STATUS_CLASS: Option<busbar_contract::transport::wire::StatusAt> = None;
     const STATUS_NAMESPACE: Option<&'static str> = None;
 }
 
@@ -478,16 +478,16 @@ impl Transport for StdioTransport {
         _fields: &[(&str, &[u8])],
         body: &[u8],
         arena: &'a dyn busbar_contract::Arena,
-    ) -> Result<ArenaBytes<'a>, busbar_contract_transport::wire::Encode> {
+    ) -> Result<ArenaBytes<'a>, busbar_contract::transport::wire::Encode> {
         // The same two bytes `write` refuses, refused here too: a body spelling this wire's own
         // delimiter cannot be expressed as ONE frame, and answering the plane at the point it
         // builds the frame says so where the plane can still do something about it.
         if body.contains(&b'\n') || body.last() == Some(&b'\r') {
-            return Err(busbar_contract_transport::wire::Encode::Unrepresentable);
+            return Err(busbar_contract::transport::wire::Encode::Unrepresentable);
         }
         arena
             .alloc_bytes(body)
-            .map_err(|_| busbar_contract_transport::wire::Encode::ArenaExhausted)
+            .map_err(|_| busbar_contract::transport::wire::Encode::ArenaExhausted)
     }
 
     fn adopt<'a>(
@@ -501,7 +501,7 @@ impl Transport for StdioTransport {
         Box::pin(async move { Err(TransportError::HandoffMismatch) })
     }
 
-    fn detach(&self, conn: &Conn) -> Option<busbar_contract_transport::wire::RawStream> {
+    fn detach(&self, conn: &Conn) -> Option<busbar_contract::transport::wire::RawStream> {
         // stdio hands nothing up: the process's own stdin/stdout is never adopted by another
         // transport, so there is no raw stream to give.
         let _ = conn;

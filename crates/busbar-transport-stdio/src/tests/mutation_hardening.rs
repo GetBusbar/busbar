@@ -57,7 +57,7 @@ async fn is_closed_reports_the_real_flag() {
     let (a, _b) = pair(&t, 64);
     let state = t.state_of(a.id()).unwrap();
     assert!(!state.is_closed());
-    t.close(a, busbar_contract_transport::wire::CloseReason::Normal);
+    t.close(a, busbar_contract::transport::wire::CloseReason::Normal);
     assert!(state.is_closed());
 }
 

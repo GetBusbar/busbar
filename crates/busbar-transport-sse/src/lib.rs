@@ -24,17 +24,17 @@ use std::collections::VecDeque;
 use std::pin::Pin;
 use std::sync::Arc;
 
+use busbar_contract::transport::wire::ArrivalRecord;
+use busbar_contract::transport::wire::CloseReason;
+use busbar_contract::transport::wire::Conn;
+use busbar_contract::transport::wire::Direction;
+use busbar_contract::transport::wire::FrameMeta;
+use busbar_contract::transport::wire::Listener;
+use busbar_contract::transport::wire::TransportError;
 use busbar_contract::{
     ArenaBytes, Frame, Fut, Kind, Plugin, Refusal, SlabBytes, StreamId, Transport,
     TransportConfigView, TransportKeyHandle, TransportMeta,
 };
-use busbar_contract_transport::wire::ArrivalRecord;
-use busbar_contract_transport::wire::CloseReason;
-use busbar_contract_transport::wire::Conn;
-use busbar_contract_transport::wire::Direction;
-use busbar_contract_transport::wire::FrameMeta;
-use busbar_contract_transport::wire::Listener;
-use busbar_contract_transport::wire::TransportError;
 use busbar_transport_http::HttpTransport;
 use futures::{Stream, StreamExt};
 
@@ -107,8 +107,8 @@ impl Plugin for SseTransport {
     fn kind(&self) -> Kind {
         Kind::Transport
     }
-    fn abi(&self) -> busbar_contract_transport::AbiVersion {
-        busbar_contract_transport::registry::TRANSPORT_ABI
+    fn abi(&self) -> busbar_contract::transport::AbiVersion {
+        busbar_contract::transport::registry::TRANSPORT_ABI
     }
 }
 
@@ -117,20 +117,20 @@ impl TransportMeta for SseTransport {
     const SELECTOR_FORMS: &'static [busbar_contract::SelectorForm] = &[];
     const EGRESS_SELECTOR_FORMS: &'static [busbar_contract::SelectorForm] = &[];
     const COMPOSES_OVER: &'static [&'static str] = &["http"];
-    const HANDOFF: Option<busbar_contract_transport::wire::Handoff> = None;
-    const FRAMING: busbar_contract_transport::wire::Framing =
-        busbar_contract_transport::wire::Framing::Stream;
+    const HANDOFF: Option<busbar_contract::transport::wire::Handoff> = None;
+    const FRAMING: busbar_contract::transport::wire::Framing =
+        busbar_contract::transport::wire::Framing::Stream;
     const SESSION: bool = false;
     const SESSION_BOUND: bool = false;
-    const UNIT0_TRIGGER: Option<busbar_contract_transport::wire::Unit0Trigger> = None;
+    const UNIT0_TRIGGER: Option<busbar_contract::transport::wire::Unit0Trigger> = None;
     const UPGRADES_TO: &'static [&'static str] = &[];
-    const HANDSHAKE_TRIGGER: Option<busbar_contract_transport::wire::HandshakeTrigger> = None;
+    const HANDSHAKE_TRIGGER: Option<busbar_contract::transport::wire::HandshakeTrigger> = None;
     const TRANSPORT_FACTS: &'static [&'static str] = &[];
     const DECODES_PAYLOAD: bool = false;
-    const STATUS_CLASS: Option<busbar_contract_transport::wire::StatusAt> =
-        Some(busbar_contract_transport::wire::StatusAt::FirstFrame);
+    const STATUS_CLASS: Option<busbar_contract::transport::wire::StatusAt> =
+        Some(busbar_contract::transport::wire::StatusAt::FirstFrame);
     const STATUS_NAMESPACE: Option<&'static str> =
-        Some(busbar_contract_transport::registry::status_ns::HTTP);
+        Some(busbar_contract::transport::registry::status_ns::HTTP);
 }
 
 impl Transport for SseTransport {
@@ -176,8 +176,8 @@ impl Transport for SseTransport {
         /// without the others — they describe one answer, so they move as one.
         #[derive(Clone, Copy, Default)]
         struct StatusLeg {
-            class: Option<busbar_contract_transport::wire::WireStatusClass>,
-            code: Option<busbar_contract_transport::wire::WireStatus>,
+            class: Option<busbar_contract::transport::wire::WireStatusClass>,
+            code: Option<busbar_contract::transport::wire::WireStatus>,
             retry_after_secs: Option<u64>,
         }
         struct State {
@@ -309,11 +309,11 @@ impl Transport for SseTransport {
                         // frame is defensible and the framing error is what is left.
                         let failing = matches!(
                             st.status.class,
-                            Some(busbar_contract_transport::wire::WireStatusClass::ClientError)
+                            Some(busbar_contract::transport::wire::WireStatusClass::ClientError)
                                 | Some(
-                                    busbar_contract_transport::wire::WireStatusClass::ServerError
+                                    busbar_contract::transport::wire::WireStatusClass::ServerError
                                 )
-                                | Some(busbar_contract_transport::wire::WireStatusClass::Other)
+                                | Some(busbar_contract::transport::wire::WireStatusClass::Other)
                         );
                         if failing && !st.status_attached {
                             if st.buf.is_empty() {
@@ -385,7 +385,7 @@ impl Transport for SseTransport {
         fields: &[(&str, &[u8])],
         body: &[u8],
         arena: &'a dyn busbar_contract::Arena,
-    ) -> Result<busbar_contract::ArenaBytes<'a>, busbar_contract_transport::wire::Encode> {
+    ) -> Result<busbar_contract::ArenaBytes<'a>, busbar_contract::transport::wire::Encode> {
         // `sse` is a reading of an `http` response, and an outbound request on it is an HTTP one.
         self.http.encode_envelope(fields, body, arena)
     }
@@ -399,7 +399,7 @@ impl Transport for SseTransport {
         self.http.adopt(from, conn, keys)
     }
 
-    fn detach(&self, conn: &Conn) -> Option<busbar_contract_transport::wire::RawStream> {
+    fn detach(&self, conn: &Conn) -> Option<busbar_contract::transport::wire::RawStream> {
         self.http.detach(conn)
     }
 

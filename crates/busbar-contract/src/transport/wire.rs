@@ -130,13 +130,13 @@ impl WireStatus {
     /// The HTTP status, when this IS one.
     #[must_use]
     pub fn http(self) -> Option<u32> {
-        self.in_namespace(crate::registry::status_ns::HTTP)
+        self.in_namespace(super::registry::status_ns::HTTP)
     }
 
     /// The `grpc-status` code, when this IS one.
     #[must_use]
     pub fn grpc(self) -> Option<u32> {
-        self.in_namespace(crate::registry::status_ns::GRPC)
+        self.in_namespace(super::registry::status_ns::GRPC)
     }
 }
 

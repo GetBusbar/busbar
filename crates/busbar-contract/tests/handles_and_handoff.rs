@@ -13,7 +13,7 @@
 //! The `Debug` renderings are proofs too, not decoration: they are what a transport author reads off
 //! a log line while an upgrade is failing, and each of these types hand-rolls one.
 
-use busbar_contract_transport::{Conn, ConnHandle, Listener, ListenerHandle, RawStream};
+use busbar_contract::transport::{Conn, ConnHandle, Listener, ListenerHandle, RawStream};
 use std::sync::Arc;
 
 struct Bound(&'static str);

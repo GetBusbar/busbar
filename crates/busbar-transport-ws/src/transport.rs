@@ -10,22 +10,22 @@ use std::sync::{Arc, Mutex as SyncMutex};
 use futures::{Stream, StreamExt};
 
 use busbar_contract::dest::{DestinationFacts, VerifiedDestination};
+use busbar_contract::transport::registry::facts as tfacts;
+use busbar_contract::transport::wire::ArrivalRecord;
+use busbar_contract::transport::wire::CloseReason;
+use busbar_contract::transport::wire::Conn;
+use busbar_contract::transport::wire::Direction;
+use busbar_contract::transport::wire::FrameMeta;
+use busbar_contract::transport::wire::Listener;
+use busbar_contract::transport::wire::TransportError;
+use busbar_contract::transport::wire::Unit0Trigger;
+use busbar_contract::transport::AbiVersion;
 use busbar_contract::unit::Refusal;
 use busbar_contract::wire::Frame;
 use busbar_contract::{
     grammar::SelectorForm, ArenaBytes, Fut, Kind, Plugin, SlabBytes, StreamId, Transport,
     TransportConfigView, TransportKeyHandle, TransportMeta,
 };
-use busbar_contract_transport::registry::facts as tfacts;
-use busbar_contract_transport::wire::ArrivalRecord;
-use busbar_contract_transport::wire::CloseReason;
-use busbar_contract_transport::wire::Conn;
-use busbar_contract_transport::wire::Direction;
-use busbar_contract_transport::wire::FrameMeta;
-use busbar_contract_transport::wire::Listener;
-use busbar_contract_transport::wire::TransportError;
-use busbar_contract_transport::wire::Unit0Trigger;
-use busbar_contract_transport::AbiVersion;
 use tokio_tungstenite::tungstenite::Message;
 
 use crate::conn::{ConnState, LowerFacts, LowerIo, Sock, WsConnHandle};
@@ -347,7 +347,7 @@ impl Plugin for WsTransport {
         Kind::Transport
     }
     fn abi(&self) -> AbiVersion {
-        busbar_contract_transport::registry::TRANSPORT_ABI
+        busbar_contract::transport::registry::TRANSPORT_ABI
     }
 }
 
@@ -378,19 +378,19 @@ impl TransportMeta for WsTransport {
     // no encryption of its own, so that is the only composition under which `wss` is honest, and
     // `dial` refuses a secure target over any other lower layer.
     const COMPOSES_OVER: &'static [&'static str] = &["http", "tcp", "tls"];
-    const HANDOFF: Option<busbar_contract_transport::wire::Handoff> = None;
-    const FRAMING: busbar_contract_transport::wire::Framing =
-        busbar_contract_transport::wire::Framing::Stream;
+    const HANDOFF: Option<busbar_contract::transport::wire::Handoff> = None;
+    const FRAMING: busbar_contract::transport::wire::Framing =
+        busbar_contract::transport::wire::Framing::Stream;
     const SESSION: bool = true;
     const SESSION_BOUND: bool = true;
     const UNIT0_TRIGGER: Option<Unit0Trigger> = Some(Unit0Trigger::Upgrade);
     const UPGRADES_TO: &'static [&'static str] = &[];
-    const HANDSHAKE_TRIGGER: Option<busbar_contract_transport::wire::HandshakeTrigger> = None;
+    const HANDSHAKE_TRIGGER: Option<busbar_contract::transport::wire::HandshakeTrigger> = None;
     const TRANSPORT_FACTS: &'static [&'static str] = &[tfacts::PATH, tfacts::PEER];
     const DECODES_PAYLOAD: bool = false;
     // "frames after the upgrade carry no status leg" — the transports table's own words for this
     // row.
-    const STATUS_CLASS: Option<busbar_contract_transport::wire::StatusAt> = None;
+    const STATUS_CLASS: Option<busbar_contract::transport::wire::StatusAt> = None;
     const STATUS_NAMESPACE: Option<&'static str> = None;
 }
 
@@ -482,7 +482,7 @@ impl Transport for WsTransport {
             let beneath = dest
                 .beneath(
                     lower.key(),
-                    busbar_contract_transport::dest::UpstreamAddress::Socket {
+                    busbar_contract::transport::dest::UpstreamAddress::Socket {
                         authority,
                         sni: address.sni().or(if secure {
                             Some(intern(&host_name))
@@ -710,10 +710,10 @@ impl Transport for WsTransport {
         _fields: &[(&str, &[u8])],
         body: &[u8],
         arena: &'a dyn busbar_contract::Arena,
-    ) -> Result<ArenaBytes<'a>, busbar_contract_transport::wire::Encode> {
+    ) -> Result<ArenaBytes<'a>, busbar_contract::transport::wire::Encode> {
         arena
             .alloc_bytes(body)
-            .map_err(|_| busbar_contract_transport::wire::Encode::ArenaExhausted)
+            .map_err(|_| busbar_contract::transport::wire::Encode::ArenaExhausted)
     }
 
     /// The `http` → `ws` upgrade, from the side that owns what comes out.
@@ -747,7 +747,7 @@ impl Transport for WsTransport {
         })
     }
 
-    fn detach(&self, conn: &Conn) -> Option<busbar_contract_transport::wire::RawStream> {
+    fn detach(&self, conn: &Conn) -> Option<busbar_contract::transport::wire::RawStream> {
         // Nothing upgrades in-band over `ws` (`UPGRADES_TO` is empty), so there is no raw stream
         // this layer ever hands up.
         let _ = conn;

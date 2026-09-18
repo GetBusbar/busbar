@@ -9,7 +9,7 @@
 //! verb-to-operation map, the media types, the streaming decision and the loop drive all lived
 //! beside the codec that knew what the bytes meant, and every new protocol brought another copy of
 //! all five. None of those five is about a protocol. They are about how bytes are ADDRESSED, and a
-//! plane can declare that — `busbar_contract_transport::surface` is the vocabulary and this module
+//! plane can declare that — `busbar_contract::transport::surface` is the vocabulary and this module
 //! is the reader.
 //!
 //! So: hand this a [`WireSurface`] and a driver, and it mounts the surface. Which surface it is, it
@@ -34,7 +34,7 @@
 //!
 //! And the one it does not: **running the unit.** That is [`UnitDriver::drive`], and everything it
 //! takes — the arena, the context, the plane call, the loop, the ending, the ledger — is on the far
-//! side of that seam. See `busbar_contract_transport::driver` for why the tree draws it there and
+//! side of that seam. See `busbar_contract::transport::driver` for why the tree draws it there and
 //! not here: core drives plugins, and a transport that called the loop would be a plugin naming
 //! core.
 //!
@@ -46,9 +46,9 @@
 
 use std::collections::HashMap;
 
-use busbar_contract_transport::driver::{Answer, Arrival, Outcome, UnitDriver};
-use busbar_contract_transport::registry::facts as tfacts;
-use busbar_contract_transport::surface::{
+use busbar_contract::transport::driver::{Answer, Arrival, Outcome, UnitDriver};
+use busbar_contract::transport::registry::facts as tfacts;
+use busbar_contract::transport::surface::{
     resolve_target, Bar, Capture, Dispatch, Operation, WireSurface,
 };
 
@@ -127,7 +127,7 @@ pub fn resolve<'s>(
             captures,
         });
     }
-    let binding = busbar_contract_transport::surface::binding_at(surface, request.target)
+    let binding = busbar_contract::transport::surface::binding_at(surface, request.target)
         .ok_or(Unaddressed)?;
     Ok(Addressed {
         operation: None,

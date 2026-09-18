@@ -6,18 +6,41 @@
 //! review, the source denylist, and the frame-honesty tests that turn red for a transport whose
 //! reported byte counts inflate or deflate against what actually moved.
 
+// The transport-facing vocabulary, folded in from the former `busbar-contract-transport` crate
+// (DECISIONS #38): a KIND is a match-arm, not a crate, so the transport half lives here as one
+// module tree rather than a sibling crate the contract depended on.
+pub mod dest;
+pub mod driver;
+pub mod registry;
+pub mod surface;
+// The transport-axis enum (`Transport`, `UpstreamWireKind`) keeps its own file name from the folded
+// crate; nested under the `transport` kind module this reads as inception, but renaming the axis
+// module would change the public path dependents reach the enum through.
+#[allow(clippy::module_inception)]
+pub mod transport;
+pub mod trust;
+pub mod wire;
+
 use crate::bounded::ArenaBytes;
 use crate::dest::{TransportKeyHandle, VerifiedDestination};
 use crate::ids::StreamId;
 use crate::plugin::Plugin;
 use crate::unit::{ConfigView, Refusal};
-use crate::wire::{
-    ArrivalRecord, CloseReason, Conn, Frame, Handoff, HandshakeTrigger, Listener, StatusAt,
-    TransportError,
-};
+// `Frame` is the plane-facing frame, which lives one level up in the contract's own `wire` module
+// (it borrows the arena the contract owns). Every other wire name below arrives via the
+// `pub use wire::{…}` re-export of this module's own transport `wire` submodule.
+use crate::wire::Frame;
 use futures::Stream;
 use std::future::Future;
 use std::pin::Pin;
+
+/// A plugin kind's native interface generation.
+///
+/// Spelled here because the transport kind's own generation is spelled here, and a generation that
+/// two crates each declared their own newtype for would compare equal to nothing. It carries no
+/// meaning of its own: a kind pins a number, and the loader or the surface scan compares against it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
+pub struct AbiVersion(pub u16);
 
 /// The one boxed future per call.
 ///
@@ -32,10 +55,10 @@ pub type FrameStream =
 /// The transport kind's ABI generation, the fact keys the kernel reserves, and the boot check over
 /// a composed stack.
 ///
-/// All three moved into the transport contract, where a transport author reads them and a plane
+/// All three live in the `registry` submodule, where a transport author reads them and a plane
 /// author does not; they are named here so that `busbar_contract::transport` still means what it
 /// meant to the composition root that wires the registry.
-pub use busbar_contract_transport::registry::{
+pub use registry::{
     check_composition, facts, status_ns, CompositionError, Registered, TRANSPORT_ABI,
 };
 
@@ -46,18 +69,33 @@ pub use busbar_contract_transport::registry::{
 /// plane's manifest may name `busbar-contract` and nothing else in the workspace. The declaration
 /// itself is plane-agnostic and lives with the rest of the transport-facing vocabulary, because it
 /// is read by every mount and by no plugin author who is not writing one.
-pub use busbar_contract_transport::surface;
-pub use busbar_contract_transport::surface::{
+pub use surface::{
     binding_at, check_surface, match_target, resolve_document, resolve_service, resolve_target,
     Answering, Bar, BindingDecl, Capture, Dispatch, Operation, SurfaceError, WireSurface,
+    MAX_CAPTURES,
 };
 
 /// The seam a transport hands an arrival across, and the closed vocabulary it gets back.
 ///
 /// Re-exported for the one reader who is neither a transport author nor a plugin author: the
-/// composition root IMPLEMENTS this, and it reaches the transport contract through this crate.
-pub use busbar_contract_transport::driver;
-pub use busbar_contract_transport::driver::{Answer, Arrival, Detached, Outcome, UnitDriver};
+/// composition root IMPLEMENTS this, and it reaches the transport contract through this module.
+pub use driver::{Answer, Arrival, Detached, Outcome, UnitDriver};
+
+/// Where a dial lands, as the transport family that dials it spells it — named at the transport
+/// module root because a plane builds one when it says where a unit wants to go.
+pub use dest::UpstreamAddress;
+
+/// The host-owned trust seam currency: the client identity and the egress/inbound trust a
+/// composition root fills in and hands across to the transport that applies it.
+pub use trust::{ClientIdentity, EgressTrust, InboundTrust};
+
+/// The transport wire vocabulary a plane still touches, re-exported at the transport module root so
+/// `busbar_contract::transport::<name>` resolves exactly as `busbar_contract::transport::<name>` did.
+pub use wire::{
+    ArrivalRecord, CertFacts, CloseReason, Conn, ConnHandle, Decode, Direction, DiscardCode,
+    Encode, FrameMeta, Framing, Handoff, HandshakeTrigger, Listener, ListenerHandle, RawIo,
+    RawStream, StatusAt, TransportError, Unit0Trigger, WireStatus, WireStatusClass,
+};
 
 /// Everything a transport declares about itself.
 pub trait TransportMeta {

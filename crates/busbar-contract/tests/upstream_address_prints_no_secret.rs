@@ -14,8 +14,8 @@
 //! is what a reader needs to see that the child was spawned with the variables it was configured
 //! with, and it is all they get.
 
-use busbar_contract_transport::registry::facts;
-use busbar_contract_transport::UpstreamAddress;
+use busbar_contract::transport::registry::facts;
+use busbar_contract::transport::UpstreamAddress;
 
 const TOKEN: &str = "sk-live-8f2b1c";
 

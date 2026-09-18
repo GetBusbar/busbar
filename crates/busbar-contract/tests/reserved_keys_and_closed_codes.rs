@@ -16,8 +16,8 @@
 //! are the totality half — a code added to any of these enums stops this file compiling until
 //! somebody says what it renders as — and the rendering assertions are the other half.
 
-use busbar_contract_transport::registry::{facts, status_ns};
-use busbar_contract_transport::{
+use busbar_contract::transport::registry::{facts, status_ns};
+use busbar_contract::transport::{
     CloseReason, CompositionError, Decode, Direction, DiscardCode, Encode, Framing, StatusAt,
     TransportError, Unit0Trigger, WireStatus, WireStatusClass,
 };

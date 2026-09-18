@@ -16,7 +16,7 @@ use core::fmt;
 /// but the ABI-surface scan needs something to compare against, and a constant every transport
 /// names is the difference between one generation and each crate having invented its own. It sits
 /// beside the store's for the same reason: a kind's ABI is the kind's, not a plugin's.
-pub const TRANSPORT_ABI: crate::AbiVersion = crate::AbiVersion(1);
+pub const TRANSPORT_ABI: super::AbiVersion = super::AbiVersion(1);
 
 /// The transport fact keys the kernel reserves, spelled once.
 ///

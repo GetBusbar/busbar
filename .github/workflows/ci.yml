@@ -1821,8 +1821,8 @@ jobs:
   # feature-covered: busbar-llm-codec/test-support -- check -- unified in by a dev-dependency under --all-targets in that job
   # feature-covered: busbar-plugin-testkit/store -- check -- unified in by a dev-dependency under --all-targets in that job
   # feature-covered: busbar-admin/openapi-schema -- openapi-schema -- the job clippies and tests -p busbar-admin with the feature named
-  # feature-covered: busbar-contract-transport/dispatch -- check -- reached from busbar-substrate-values/dispatch in the workspace default build
-  # feature-covered: busbar-contract-transport/runtime -- check -- reached from busbar-substrate-values/runtime in the workspace default build
+  # feature-covered: busbar-contract/dispatch -- check -- reached from busbar-substrate-values/dispatch in the workspace default build (transport axis folded into busbar-contract, DECISIONS #38)
+  # feature-covered: busbar-contract/runtime -- check -- reached from busbar-substrate-values/runtime in the workspace default build (transport axis folded into busbar-contract, DECISIONS #38)
 
   # THE MECHANICAL DEFINITION OF "PLUGIN". Anything busbar calls a plugin must be 100% a plugin: make
   # it downloadable-only tomorrow, ship it uninstalled, and CORE MUST STILL WORK. If core stops

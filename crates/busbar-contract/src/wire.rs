@@ -9,7 +9,7 @@
 //! envelope it hands back — because each of those borrows the arena and the bounded collections the
 //! contract owns. The rest is named, so `busbar_contract::wire` still means what it meant.
 
-pub use busbar_contract_transport::wire::{
+pub use crate::transport::wire::{
     ArrivalRecord, CertFacts, CloseReason, Conn, ConnHandle, Decode, Direction, DiscardCode,
     Encode, FrameMeta, Framing, Handoff, HandshakeTrigger, Listener, ListenerHandle, RawIo,
     RawStream, StatusAt, TransportError, Unit0Trigger, WireStatus, WireStatusClass,

@@ -3,8 +3,8 @@
 
 //! The driver seam: the shape a transport hands an arrival across, and the closed set it gets back.
 
-use busbar_contract_transport::driver::{Answer, Arrival, Detached, Outcome, UnitDriver};
-use busbar_contract_transport::surface::{
+use busbar_contract::transport::driver::{Answer, Arrival, Detached, Outcome, UnitDriver};
+use busbar_contract::transport::surface::{
     Answering, Bar, BindingDecl, Dispatch, Operation, WireSurface,
 };
 
