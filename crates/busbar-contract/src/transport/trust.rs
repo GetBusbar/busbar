@@ -25,12 +25,24 @@
 /// parses; the host owns the parse and never lets the plane hold it, so what crosses this seam is the
 /// material a composition root already resolved, not a handle into a registry the transport cannot
 /// reach.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Default, PartialEq, Eq)]
 pub struct ClientIdentity {
     /// The certificate chain to present, leaf first, each entry one DER certificate.
     pub cert_chain: Vec<Vec<u8>>,
     /// The private key, in DER, that proves the leaf.
     pub private_key: Vec<u8>,
+}
+
+impl core::fmt::Debug for ClientIdentity {
+    /// Hand-rolled to REDACT the private key. The DER private key is secret material a derived
+    /// `Debug` would spill byte-for-byte into any log line or panic that formats this type; the
+    /// certificate chain is public and prints as itself, and the key prints as `<redacted>`.
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("ClientIdentity")
+            .field("cert_chain", &self.cert_chain)
+            .field("private_key", &"<redacted>")
+            .finish()
+    }
 }
 
 /// The trust a composition root decided for one OUTBOUND connection, as the seam carries it.
@@ -44,7 +56,7 @@ pub struct ClientIdentity {
 ///   these. Empty means no pinning, which is today's posture.
 /// * `client_identity` — the certificate the connection should present for a mutual handshake. `None`
 ///   means present none, which is today's posture.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Default, PartialEq, Eq)]
 pub struct EgressTrust {
     /// Extra trust anchors (DER certificates) trusted alongside the platform roots. Empty = none.
     pub extra_anchors: Vec<Vec<u8>>,
@@ -53,6 +65,19 @@ pub struct EgressTrust {
     pub pinned_spki: Vec<[u8; 32]>,
     /// The client identity to present for a mutual handshake. `None` = present none.
     pub client_identity: Option<ClientIdentity>,
+}
+
+impl core::fmt::Debug for EgressTrust {
+    /// Hand-rolled so the `client_identity`'s private key is redacted through [`ClientIdentity`]'s
+    /// own `Debug`. The anchors and pins are public bytes and print as themselves; the shape is
+    /// exactly what the derive produced, minus the key material.
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("EgressTrust")
+            .field("extra_anchors", &self.extra_anchors)
+            .field("pinned_spki", &self.pinned_spki)
+            .field("client_identity", &self.client_identity)
+            .finish()
+    }
 }
 
 impl EgressTrust {
@@ -95,4 +120,52 @@ pub trait InboundTrust: Send + Sync {
     /// # Errors
     /// Returns the reason when the document cannot be canonicalised.
     fn fingerprint(&self, document: &[u8]) -> Result<String, String>;
+}
+
+#[cfg(test)]
+mod redaction_tests {
+    use super::{ClientIdentity, EgressTrust};
+
+    /// A byte value that appears NOWHERE in the redacted `Debug` shells (`ClientIdentity { … }`,
+    /// `EgressTrust { … }`, `[]`, `<redacted>`), so its decimal spelling in the output can only mean
+    /// the key material leaked. `0xEF` = 239.
+    const KEY_BYTE: u8 = 0xEF;
+
+    #[test]
+    fn client_identity_debug_redacts_private_key() {
+        let id = ClientIdentity {
+            cert_chain: Vec::new(),
+            private_key: vec![KEY_BYTE; 8],
+        };
+        let shown = format!("{id:?}");
+        assert!(
+            shown.contains("<redacted>"),
+            "private key must be redacted, got: {shown}"
+        );
+        assert!(
+            !shown.contains(&KEY_BYTE.to_string()),
+            "Debug output leaked private key bytes: {shown}"
+        );
+    }
+
+    #[test]
+    fn egress_trust_debug_redacts_client_private_key() {
+        let trust = EgressTrust {
+            extra_anchors: Vec::new(),
+            pinned_spki: Vec::new(),
+            client_identity: Some(ClientIdentity {
+                cert_chain: Vec::new(),
+                private_key: vec![KEY_BYTE; 8],
+            }),
+        };
+        let shown = format!("{trust:?}");
+        assert!(
+            shown.contains("<redacted>"),
+            "nested client identity's private key must be redacted, got: {shown}"
+        );
+        assert!(
+            !shown.contains(&KEY_BYTE.to_string()),
+            "Debug output leaked nested private key bytes: {shown}"
+        );
+    }
 }

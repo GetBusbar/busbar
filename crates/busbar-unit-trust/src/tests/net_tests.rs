@@ -769,7 +769,7 @@ fn dest(authority: &'static str) -> busbar_contract::VerifiedDestination {
         &trust_token(),
         busbar_contract::DestinationFacts::Upstream {
             transport: "https",
-            address: busbar_contract_transport::dest::UpstreamAddress::socket(authority),
+            address: busbar_contract::transport::dest::UpstreamAddress::socket(authority),
             lane: busbar_contract::LaneId::new("test"),
         },
         "https",
@@ -1094,7 +1094,7 @@ fn a_program_destination_has_no_address_to_judge() {
         &trust_token(),
         busbar_contract::DestinationFacts::Upstream {
             transport: "stdio",
-            address: busbar_contract_transport::dest::UpstreamAddress::Program {
+            address: busbar_contract::transport::dest::UpstreamAddress::Program {
                 path: "/usr/local/bin/server",
                 args: &[],
                 env: &[],
@@ -1160,21 +1160,21 @@ fn the_sealed_door_and_the_facts_door_are_one_implementation() {
     let cases: [busbar_contract::DestinationFacts; 4] = [
         busbar_contract::DestinationFacts::Upstream {
             transport: "https",
-            address: busbar_contract_transport::dest::UpstreamAddress::socket(
+            address: busbar_contract::transport::dest::UpstreamAddress::socket(
                 "https://169.254.169.254/latest/meta-data",
             ),
             lane: busbar_contract::LaneId::new("test"),
         },
         busbar_contract::DestinationFacts::Upstream {
             transport: "https",
-            address: busbar_contract_transport::dest::UpstreamAddress::socket(
+            address: busbar_contract::transport::dest::UpstreamAddress::socket(
                 "https://private.example/",
             ),
             lane: busbar_contract::LaneId::new("test"),
         },
         busbar_contract::DestinationFacts::Upstream {
             transport: "stdio",
-            address: busbar_contract_transport::dest::UpstreamAddress::Program {
+            address: busbar_contract::transport::dest::UpstreamAddress::Program {
                 path: "/usr/local/bin/server",
                 args: &[],
                 env: &[],

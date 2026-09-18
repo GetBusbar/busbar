@@ -10,8 +10,8 @@
 //! family needs beside its shape is a declared key, not a shape of its own, and `open_shapes.rs`
 //! next door is where that is proven.
 
-use busbar_contract_transport::registry::facts;
-use busbar_contract_transport::UpstreamAddress;
+use busbar_contract::transport::registry::facts;
+use busbar_contract::transport::UpstreamAddress;
 
 #[test]
 fn a_socket_target_carries_an_authority_and_an_optional_certificate_name() {

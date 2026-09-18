@@ -9,10 +9,10 @@ use std::time::Duration;
 
 use futures::StreamExt;
 
+use busbar_contract::transport::wire::CloseReason;
+use busbar_contract::transport::wire::Direction;
+use busbar_contract::transport::wire::TransportError;
 use busbar_contract::{ArenaBytes, StreamId, Transport};
-use busbar_contract_transport::wire::CloseReason;
-use busbar_contract_transport::wire::Direction;
-use busbar_contract_transport::wire::TransportError;
 
 use crate::WsTransport;
 
@@ -29,8 +29,8 @@ async fn pair(
     t: &WsTransport,
     cap: usize,
 ) -> (
-    busbar_contract_transport::wire::Conn,
-    busbar_contract_transport::wire::Conn,
+    busbar_contract::transport::wire::Conn,
+    busbar_contract::transport::wire::Conn,
 ) {
     let (end_a, end_b) = tokio::io::duplex(cap);
     let server = t.handshake_over(end_a, true, WS_TARGET, "peer-a");
@@ -389,9 +389,9 @@ impl StubLower {
         }
     }
 
-    fn conn(&self) -> busbar_contract_transport::wire::Conn {
+    fn conn(&self) -> busbar_contract::transport::wire::Conn {
         struct Handle;
-        impl busbar_contract_transport::wire::ConnHandle for Handle {
+        impl busbar_contract::transport::wire::ConnHandle for Handle {
             fn id(&self) -> u64 {
                 1
             }
@@ -399,7 +399,7 @@ impl StubLower {
                 "203.0.113.7:54321".to_string()
             }
         }
-        busbar_contract_transport::wire::Conn::new(Arc::new(Handle))
+        busbar_contract::transport::wire::Conn::new(Arc::new(Handle))
     }
 }
 
@@ -410,22 +410,22 @@ impl busbar_contract::Plugin for StubLower {
     fn kind(&self) -> busbar_contract::Kind {
         busbar_contract::Kind::Transport
     }
-    fn abi(&self) -> busbar_contract_transport::AbiVersion {
-        busbar_contract_transport::registry::TRANSPORT_ABI
+    fn abi(&self) -> busbar_contract::transport::AbiVersion {
+        busbar_contract::transport::registry::TRANSPORT_ABI
     }
 }
 
 impl Transport for StubLower {
     fn arrival(
         &self,
-        conn: &busbar_contract_transport::wire::Conn,
-    ) -> busbar_contract_transport::wire::ArrivalRecord {
-        busbar_contract_transport::wire::ArrivalRecord {
+        conn: &busbar_contract::transport::wire::Conn,
+    ) -> busbar_contract::transport::wire::ArrivalRecord {
+        busbar_contract::transport::wire::ArrivalRecord {
             source: conn.peer(),
             port: 8443,
             alpn: Some("http/1.1".to_string()),
             sni: Some("edge.invalid".to_string()),
-            peer_cert: Some(busbar_contract_transport::wire::CertFacts {
+            peer_cert: Some(busbar_contract::transport::wire::CertFacts {
                 subject: "CN=peer".to_string(),
                 issuer: "CN=issuer".to_string(),
                 fingerprint: "sha256:stub".to_string(),
@@ -438,14 +438,14 @@ impl Transport for StubLower {
         &'a self,
         _cfg: &'a dyn busbar_contract::TransportConfigView,
         _keys: &'a busbar_contract::TransportKeyHandle,
-    ) -> busbar_contract::Fut<'a, busbar_contract_transport::wire::Listener> {
+    ) -> busbar_contract::Fut<'a, busbar_contract::transport::wire::Listener> {
         Box::pin(async { Err(TransportError::HandoffMismatch) })
     }
 
     fn accept<'a>(
         &'a self,
-        _l: &'a busbar_contract_transport::wire::Listener,
-    ) -> busbar_contract::Fut<'a, busbar_contract_transport::wire::Conn> {
+        _l: &'a busbar_contract::transport::wire::Listener,
+    ) -> busbar_contract::Fut<'a, busbar_contract::transport::wire::Conn> {
         Box::pin(async { Err(TransportError::HandoffMismatch) })
     }
 
@@ -453,19 +453,19 @@ impl Transport for StubLower {
         &'a self,
         _dest: &'a busbar_contract::VerifiedDestination,
         _keys: &'a busbar_contract::TransportKeyHandle,
-    ) -> busbar_contract::Fut<'a, busbar_contract_transport::wire::Conn> {
+    ) -> busbar_contract::Fut<'a, busbar_contract::transport::wire::Conn> {
         Box::pin(async { Err(TransportError::HandoffMismatch) })
     }
 
     fn frames(
         &self,
-        _conn: busbar_contract_transport::wire::Conn,
+        _conn: busbar_contract::transport::wire::Conn,
     ) -> std::pin::Pin<
         Box<
             dyn futures::Stream<
                     Item = Result<
                         (StreamId, busbar_contract::wire::Frame),
-                        busbar_contract_transport::wire::TransportError,
+                        busbar_contract::transport::wire::TransportError,
                     >,
                 > + Send,
         >,
@@ -475,7 +475,7 @@ impl Transport for StubLower {
 
     fn write<'a>(
         &'a self,
-        _conn: &'a busbar_contract_transport::wire::Conn,
+        _conn: &'a busbar_contract::transport::wire::Conn,
         _stream: StreamId,
         _bytes: ArenaBytes<'a>,
     ) -> busbar_contract::Fut<'a, usize> {
@@ -487,27 +487,27 @@ impl Transport for StubLower {
         _fields: &[(&str, &[u8])],
         body: &[u8],
         arena: &'a dyn busbar_contract::Arena,
-    ) -> Result<ArenaBytes<'a>, busbar_contract_transport::wire::Encode> {
+    ) -> Result<ArenaBytes<'a>, busbar_contract::transport::wire::Encode> {
         arena
             .alloc_bytes(body)
-            .map_err(|_| busbar_contract_transport::wire::Encode::ArenaExhausted)
+            .map_err(|_| busbar_contract::transport::wire::Encode::ArenaExhausted)
     }
 
     fn adopt<'a>(
         &'a self,
         _from: &'a dyn Transport,
-        _conn: busbar_contract_transport::wire::Conn,
+        _conn: busbar_contract::transport::wire::Conn,
         _keys: &'a busbar_contract::TransportKeyHandle,
-    ) -> busbar_contract::Fut<'a, busbar_contract_transport::wire::Conn> {
+    ) -> busbar_contract::Fut<'a, busbar_contract::transport::wire::Conn> {
         Box::pin(async { Err(TransportError::HandoffMismatch) })
     }
 
     fn detach(
         &self,
-        conn: &busbar_contract_transport::wire::Conn,
-    ) -> Option<busbar_contract_transport::wire::RawStream> {
+        conn: &busbar_contract::transport::wire::Conn,
+    ) -> Option<busbar_contract::transport::wire::RawStream> {
         let io = self.io.lock().unwrap().take()?;
-        Some(busbar_contract_transport::wire::RawStream::new(
+        Some(busbar_contract::transport::wire::RawStream::new(
             "tls",
             conn.peer(),
             Box::new(tokio_util::compat::TokioAsyncReadCompatExt::compat(io)),
@@ -520,14 +520,14 @@ impl Transport for StubLower {
 
     fn close(
         &self,
-        _conn: busbar_contract_transport::wire::Conn,
-        _reason: busbar_contract_transport::wire::CloseReason,
+        _conn: busbar_contract::transport::wire::Conn,
+        _reason: busbar_contract::transport::wire::CloseReason,
     ) {
     }
 
     fn unit0_refusal<'a>(
         &'a self,
-        _conn: busbar_contract_transport::wire::Conn,
+        _conn: busbar_contract::transport::wire::Conn,
         _stream: Option<StreamId>,
         _refusal: &'a busbar_contract::unit::Refusal,
         _bytes: ArenaBytes<'a>,
@@ -859,8 +859,8 @@ async fn a_refusal_that_could_not_be_written_is_reported_rather_than_claimed() {
 #[allow(clippy::assertions_on_constants)]
 #[tokio::test]
 async fn transport_meta_matches_the_architecture_row() {
+    use busbar_contract::transport::wire::Unit0Trigger;
     use busbar_contract::TransportMeta;
-    use busbar_contract_transport::wire::Unit0Trigger;
     assert_eq!(<WsTransport as TransportMeta>::KEY, "ws");
     assert!(<WsTransport as TransportMeta>::SESSION);
     assert!(<WsTransport as TransportMeta>::SESSION_BOUND);
@@ -900,7 +900,7 @@ fn verified_upstream(host: &'static str) -> busbar_contract::VerifiedDestination
         &Seal,
         busbar_contract::DestinationFacts::Upstream {
             transport: "ws",
-            address: busbar_contract_transport::dest::UpstreamAddress::socket(host),
+            address: busbar_contract::transport::dest::UpstreamAddress::socket(host),
             lane: busbar_contract::LaneId::new("test-lane"),
         },
         "ws",

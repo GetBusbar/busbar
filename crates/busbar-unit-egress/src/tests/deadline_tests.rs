@@ -13,8 +13,8 @@
 use super::harness::{frame, Script};
 use super::{member, Node};
 use crate::ports::{disposition, Clock};
+use busbar_contract::transport::wire::WireStatusClass;
 use busbar_contract::DestinationId;
-use busbar_contract_transport::wire::WireStatusClass;
 
 /// The client-level ceiling every walk in this module runs under, in milliseconds. The harness
 /// hands the unit `stream_ceiling_secs: 300`.
@@ -74,7 +74,7 @@ fn a_deadline_that_expires_between_hops_stops_the_walk() {
     node.timeout_secs = 1;
     node.transport.script(
         "a",
-        Script::DialError(busbar_contract_transport::wire::TransportError::Refused),
+        Script::DialError(busbar_contract::transport::wire::TransportError::Refused),
     );
     node.transport
         .script("b", Script::Frames(super::harness::ok_frames()));

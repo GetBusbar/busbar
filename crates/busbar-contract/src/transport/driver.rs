@@ -61,9 +61,9 @@ pub struct Arrival<'a> {
     /// `None` where the operation is named inside the document instead. That is not missing
     /// information: it is the transport saying it addressed a mount rather than a route, and that
     /// naming the operation is the plane's job, off bytes the transport does not read.
-    pub operation: Option<&'a crate::surface::Operation>,
+    pub operation: Option<&'a super::surface::Operation>,
     /// The credential bar the declaration puts on this address.
-    pub bar: crate::surface::Bar,
+    pub bar: super::surface::Bar,
 }
 
 impl Arrival<'_> {
@@ -124,7 +124,7 @@ pub struct Answer {
     /// no declaration named a media type, so the transport puts none on rather than guessing one.
     pub media: String,
     /// Whether the declaration says the answer is a run of documents rather than one.
-    pub answering: crate::surface::Answering,
+    pub answering: super::surface::Answering,
     /// What happened, in the closed vocabulary above.
     pub outcome: Outcome,
 }
@@ -140,7 +140,7 @@ impl Answer {
         Self {
             body: Vec::new(),
             media: String::new(),
-            answering: crate::surface::Answering::Unary,
+            answering: super::surface::Answering::Unary,
             outcome,
         }
     }
@@ -168,7 +168,7 @@ pub trait UnitDriver: Send + Sync {
     /// [`Outcome`] words, and a `Result` here would give a transport a second failure channel with
     /// no wire behind it — it would have to invent a status for "the driver itself errored", which
     /// is a thing no protocol defines.
-    fn drive(&self, arrival: Arrival<'_>, surface: &crate::surface::WireSurface) -> Answer;
+    fn drive(&self, arrival: Arrival<'_>, surface: &super::surface::WireSurface) -> Answer;
 }
 
 /// A driver that refuses everything, for a listener composed before its driver exists.
@@ -182,7 +182,7 @@ pub trait UnitDriver: Send + Sync {
 pub struct Detached;
 
 impl UnitDriver for Detached {
-    fn drive(&self, _arrival: Arrival<'_>, _surface: &crate::surface::WireSurface) -> Answer {
+    fn drive(&self, _arrival: Arrival<'_>, _surface: &super::surface::WireSurface) -> Answer {
         Answer::empty(Outcome::Unavailable)
     }
 }

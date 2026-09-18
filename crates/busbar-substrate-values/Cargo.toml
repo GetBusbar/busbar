@@ -32,7 +32,6 @@ busbar-contract = { path = "../busbar-contract" }
 # THE `Transport`/`UpstreamWireKind` wire-selection axis, relocated here in 1.6.0 (the non-core
 # transport hand-over). A leaf crate — serde + futures only, opens nothing — so this edge adds no
 # new closure. `transport.rs` re-exports the axis at its historical path.
-busbar-contract-transport = { path = "../busbar-contract-transport" }
 # The bare HTTP vocabulary (`HeaderMap`/`HeaderName`/`HeaderValue`/`StatusCode`) the protocol
 # declarations, the breaker's `Retry-After` parse and the wire types name. These are the SAME types
 # `axum::http::…` resolves to — axum re-exports this crate — so the move off the `axum::` spelling
@@ -82,9 +81,9 @@ tracing-subscriber = { workspace = true }
 # `#[cfg]` sites in `transport` — RELOCATED to `busbar-contract-transport` in 1.6.0, so `dispatch` and
 # `runtime` forward to that crate's same-named features to keep the gated surface arming in
 # lock-step. `busbar-substrate` forwards its own same-named features to these in turn.
-dispatch = ["busbar-contract-transport/dispatch"]
+dispatch = ["busbar-contract/dispatch"]
 relay = []
-runtime = ["busbar-contract-transport/runtime"]
+runtime = ["busbar-contract/runtime"]
 # Reveals the test-only protocol-registry seeding (`proto::register_test_protocol`) and the
 # `testkit::warn_capture` layer to a DEPENDENT crate's test binary, mirroring the parent crate's own
 # `test-support`, which forwards to this one.

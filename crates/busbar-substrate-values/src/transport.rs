@@ -8,6 +8,6 @@
 //! [`super::plane`]), so re-exporting the type at this historical path changes no byte a caller
 //! reads. Every existing `busbar_substrate_values::transport::…` / `busbar_substrate::transport::…`
 //! call site resolves unchanged through this re-export.
-pub use busbar_contract_transport::transport::Transport;
+pub use busbar_contract::transport::transport::Transport;
 #[cfg(any(feature = "dispatch", feature = "runtime"))]
-pub use busbar_contract_transport::transport::UpstreamWireKind;
+pub use busbar_contract::transport::transport::UpstreamWireKind;

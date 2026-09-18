@@ -32,7 +32,7 @@
 //! entry point would be the axis that knows only bytes holding the machinery that knows what a unit
 //! costs — and it is an easy thing to do by accident, because running the unit yourself is one
 //! function call shorter than handing it across a seam. What a transport gets instead is a
-//! `busbar_contract_transport::driver::UnitDriver`, handed to it at listen by the root that
+//! `busbar_contract::transport::driver::UnitDriver`, handed to it at listen by the root that
 //! implements it.
 //!
 //! So `busbar_kernel`, `busbar_caps` and `run_unit` are refused here beside the plane names, in the

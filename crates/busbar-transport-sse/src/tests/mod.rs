@@ -26,7 +26,7 @@ fn upstream_dest(uri: &str) -> busbar_contract::VerifiedDestination {
         &fixture_seal(),
         busbar_contract::DestinationFacts::Upstream {
             transport: "sse",
-            address: busbar_contract_transport::dest::UpstreamAddress::socket(host),
+            address: busbar_contract::transport::dest::UpstreamAddress::socket(host),
             lane: busbar_contract::LaneId::new("test"),
         },
         "sse",
@@ -86,7 +86,7 @@ async fn request_plus_n_response_frames_over_a_real_stream() {
     let (_s, first) = frames.next().await.unwrap().unwrap();
     assert_eq!(
         first.meta.status,
-        Some(busbar_contract_transport::wire::WireStatusClass::Success)
+        Some(busbar_contract::transport::wire::WireStatusClass::Success)
     );
     let (event, data) = proto::parse_sse_frame(first.bytes.as_slice()).unwrap();
     assert_eq!(event, "message");
@@ -442,7 +442,7 @@ async fn an_upstream_error_body_reaches_the_plane_with_its_status_leg() {
         .expect("the error body is carried as a frame, not thrown away");
     assert_eq!(
         only.meta.status,
-        Some(busbar_contract_transport::wire::WireStatusClass::ClientError),
+        Some(busbar_contract::transport::wire::WireStatusClass::ClientError),
         "the status leg http read off the 429 is attached to the frame that carries the body"
     );
     assert_eq!(
@@ -546,7 +546,7 @@ fn the_declared_abi_is_the_registrys_own_constant() {
     let http = std::sync::Arc::new(HttpTransport::new(ClientSettings::default()));
     assert_eq!(
         SseTransport::new(http).abi(),
-        busbar_contract_transport::registry::TRANSPORT_ABI
+        busbar_contract::transport::registry::TRANSPORT_ABI
     );
 }
 
@@ -731,7 +731,7 @@ async fn an_event_stream_that_ends_mid_event_is_a_framing_error() {
         .expect_err("it is a framing failure");
     assert_eq!(
         err,
-        busbar_contract_transport::wire::TransportError::Framing
+        busbar_contract::transport::wire::TransportError::Framing
     );
 }
 

@@ -3,8 +3,8 @@
 //! deflating fixture must fail it — the "must turn red" cell from the design's transport battery).
 
 use super::*;
+use busbar_contract::transport::wire::FrameMeta;
 use busbar_contract::{ConfigView, Frame};
-use busbar_contract_transport::wire::FrameMeta;
 use futures::StreamExt;
 use std::sync::Arc as StdArc;
 
@@ -62,7 +62,7 @@ fn upstream_dest(addr: &str) -> busbar_contract::VerifiedDestination {
         &FixtureSeal,
         busbar_contract::DestinationFacts::Upstream {
             transport: "tcp",
-            address: busbar_contract_transport::dest::UpstreamAddress::socket(host),
+            address: busbar_contract::transport::dest::UpstreamAddress::socket(host),
             lane: busbar_contract::LaneId::new("test"),
         },
         "tcp",

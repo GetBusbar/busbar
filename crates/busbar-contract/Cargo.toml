@@ -26,12 +26,12 @@ license = "Apache-2.0"
 # that a plane resolving a declared pointer and the kernel resolving the same pointer are one
 # reading of one grammar rather than two.
 #
-# `busbar-contract-transport` is the transport-facing half of this contract, split out so that the
-# vocabulary only a transport author reads is not counted against a plugin author's budget. The
-# handful of names a plane still touches are re-exported here, so `busbar_contract::wire` means
-# what it always meant.
+# The transport-facing half of this contract lives in the `transport` module (folded in from the
+# former `busbar-contract-transport` crate, DECISIONS #38): a KIND is a match-arm, not a crate, so
+# the vocabulary only a transport author reads is one module tree here rather than a sibling crate.
+# The handful of names a plane still touches are re-exported at the crate root, so
+# `busbar_contract::wire` means what it always meant.
 [dependencies]
-busbar-contract-transport = { path = "../busbar-contract-transport" }
 busbar-grammar = { path = "../busbar-grammar" }
 serde = { workspace = true }
 futures = { workspace = true }
@@ -40,3 +40,12 @@ futures = { workspace = true }
 # test that asserts what a serialisation does NOT contain has to run a real serializer over it.
 [dev-dependencies]
 serde_json = { workspace = true }
+
+# The two NEUTRAL capability features that gate the `transport::transport` module's
+# `Transport`/`UpstreamWireKind` wire-selection axis (folded in from `busbar-contract-transport`,
+# DECISIONS #38). Both empty here — they gate `#[cfg]` sites only — and must stay DECLARED or
+# `unexpected_cfgs` fires under `-D warnings`. `busbar-substrate-values` forwards its own same-named
+# features to these so the gated surface arms in lock-step, exactly as before the fold.
+[features]
+dispatch = []
+runtime = []

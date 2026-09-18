@@ -12,7 +12,7 @@
 //! ## Composition seam
 //!
 //! A connection this transport accepted or dialled is tracked in an internal registry keyed by
-//! the connection's opaque id, because [`busbar_contract_transport::wire::ConnHandle`] only exposes `id()` and
+//! the connection's opaque id, because [`busbar_contract::transport::wire::ConnHandle`] only exposes `id()` and
 //! `peer()` to the kernel — the concrete socket lives here, never behind the trait object. This is
 //! also what makes an in-band upgrade possible: [`TcpTransport::take_stream`] hands the raw
 //! `TcpStream` to whichever upper layer is upgrading the connection (the `tls` transport calls it
@@ -29,20 +29,20 @@ use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
+use busbar_contract::transport::registry::facts as tfacts;
+use busbar_contract::transport::wire::ArrivalRecord;
+use busbar_contract::transport::wire::CloseReason;
+use busbar_contract::transport::wire::Conn;
+use busbar_contract::transport::wire::ConnHandle;
+use busbar_contract::transport::wire::Direction;
+use busbar_contract::transport::wire::FrameMeta;
+use busbar_contract::transport::wire::Listener;
+use busbar_contract::transport::wire::ListenerHandle;
+use busbar_contract::transport::wire::TransportError;
 use busbar_contract::{
     ArenaBytes, Frame, Fut, Kind, Plugin, Refusal, SlabBytes, StreamId, Transport,
     TransportConfigView, TransportMeta,
 };
-use busbar_contract_transport::registry::facts as tfacts;
-use busbar_contract_transport::wire::ArrivalRecord;
-use busbar_contract_transport::wire::CloseReason;
-use busbar_contract_transport::wire::Conn;
-use busbar_contract_transport::wire::ConnHandle;
-use busbar_contract_transport::wire::Direction;
-use busbar_contract_transport::wire::FrameMeta;
-use busbar_contract_transport::wire::Listener;
-use busbar_contract_transport::wire::ListenerHandle;
-use busbar_contract_transport::wire::TransportError;
 use futures::Stream;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
@@ -102,7 +102,7 @@ impl Inner {
 }
 
 /// The opaque handle the kernel is actually given. Carries nothing but what
-/// [`busbar_contract_transport::wire::ConnHandle`] requires; the real state lives in the transport's registry.
+/// [`busbar_contract::transport::wire::ConnHandle`] requires; the real state lives in the transport's registry.
 struct TcpConnHandle {
     id: u64,
     peer: String,
@@ -258,8 +258,8 @@ impl Plugin for TcpTransport {
     fn kind(&self) -> Kind {
         Kind::Transport
     }
-    fn abi(&self) -> busbar_contract_transport::AbiVersion {
-        busbar_contract_transport::registry::TRANSPORT_ABI
+    fn abi(&self) -> busbar_contract::transport::AbiVersion {
+        busbar_contract::transport::registry::TRANSPORT_ABI
     }
 }
 
@@ -269,18 +269,18 @@ impl TransportMeta for TcpTransport {
         &[busbar_contract::SelectorForm::Port];
     const EGRESS_SELECTOR_FORMS: &'static [busbar_contract::SelectorForm] = &[];
     const COMPOSES_OVER: &'static [&'static str] = &[];
-    const HANDOFF: Option<busbar_contract_transport::wire::Handoff> = None;
-    const FRAMING: busbar_contract_transport::wire::Framing =
-        busbar_contract_transport::wire::Framing::Stream;
+    const HANDOFF: Option<busbar_contract::transport::wire::Handoff> = None;
+    const FRAMING: busbar_contract::transport::wire::Framing =
+        busbar_contract::transport::wire::Framing::Stream;
     const SESSION: bool = true;
     const SESSION_BOUND: bool = false;
-    const UNIT0_TRIGGER: Option<busbar_contract_transport::wire::Unit0Trigger> =
-        Some(busbar_contract_transport::wire::Unit0Trigger::FirstBytes);
+    const UNIT0_TRIGGER: Option<busbar_contract::transport::wire::Unit0Trigger> =
+        Some(busbar_contract::transport::wire::Unit0Trigger::FirstBytes);
     const UPGRADES_TO: &'static [&'static str] = &["tls"];
-    const HANDSHAKE_TRIGGER: Option<busbar_contract_transport::wire::HandshakeTrigger> = None;
+    const HANDSHAKE_TRIGGER: Option<busbar_contract::transport::wire::HandshakeTrigger> = None;
     const TRANSPORT_FACTS: &'static [&'static str] = &[tfacts::PEER];
     const DECODES_PAYLOAD: bool = false;
-    const STATUS_CLASS: Option<busbar_contract_transport::wire::StatusAt> = None;
+    const STATUS_CLASS: Option<busbar_contract::transport::wire::StatusAt> = None;
     const STATUS_NAMESPACE: Option<&'static str> = None;
 }
 
@@ -442,10 +442,10 @@ impl Transport for TcpTransport {
         _fields: &[(&str, &[u8])],
         body: &[u8],
         arena: &'a dyn busbar_contract::Arena,
-    ) -> Result<ArenaBytes<'a>, busbar_contract_transport::wire::Encode> {
+    ) -> Result<ArenaBytes<'a>, busbar_contract::transport::wire::Encode> {
         arena
             .alloc_bytes(body)
-            .map_err(|_| busbar_contract_transport::wire::Encode::ArenaExhausted)
+            .map_err(|_| busbar_contract::transport::wire::Encode::ArenaExhausted)
     }
 
     fn adopt<'a>(
@@ -460,9 +460,9 @@ impl Transport for TcpTransport {
         Box::pin(async move { Err(TransportError::HandoffMismatch) })
     }
 
-    fn detach(&self, conn: &Conn) -> Option<busbar_contract_transport::wire::RawStream> {
+    fn detach(&self, conn: &Conn) -> Option<busbar_contract::transport::wire::RawStream> {
         let (stream, peer) = self.take_stream(conn)?;
-        Some(busbar_contract_transport::wire::RawStream::new(
+        Some(busbar_contract::transport::wire::RawStream::new(
             Self::KEY,
             peer.to_string(),
             Box::new(TokioAsyncReadCompatExt::compat(stream)),

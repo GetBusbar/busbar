@@ -13,9 +13,9 @@
 //! question the two shipped families answer, through the same keyed accessors, without a line
 //! changing anywhere. A closed vocabulary cannot pass them; a keyed one passes them for free.
 
-use busbar_contract_transport::registry::{facts, status_ns};
-use busbar_contract_transport::wire::WireStatus;
-use busbar_contract_transport::UpstreamAddress;
+use busbar_contract::transport::registry::{facts, status_ns};
+use busbar_contract::transport::wire::WireStatus;
+use busbar_contract::transport::UpstreamAddress;
 
 /// A status namespace nothing in this tree registers, spelled here and nowhere else.
 const QUIC: &str = "quic";
