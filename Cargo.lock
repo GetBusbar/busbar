@@ -578,6 +578,7 @@ dependencies = [
  "busbar-store-example-plugin",
  "busbar-store-memory",
  "busbar-substrate",
+ "busbar-substrate-values",
  "busbar-timing",
  "busbar-unit-audit",
  "bytes",

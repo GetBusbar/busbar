@@ -6,11 +6,11 @@
 //! it means, whether it needs action, and what to do.
 //!
 //! The catalog itself — [`Class`], [`Severity`], [`Diagnostic`], [`Banner`], [`REGISTRY`],
-//! [`by_code`], and the `docs/diagnostics.{md,json}` renderers — now lives in the neutral
-//! `busbar-substrate` crate and is re-exported here unchanged, so every in-core call site keeps
-//! using `crate::diagnostics::…`. What stays local to core are the emit macros, because a
-//! `macro_rules!` macro cannot be re-exported across a crate boundary without `#[macro_export]`
-//! polluting the crate root, and the coverage lint that scans core's own tree.
+//! [`by_code`], and the `docs/diagnostics.{md,json}` renderers — AND the `diag_warn!`/`diag_error!`/
+//! `diag_debug!` emit macros now live in the neutral pure-half `busbar-substrate-values` crate
+//! (§11a #19 deletion-wave; they had been duplicated here as crate-local twins). This module is a
+//! byte-safe re-export shim so every in-core call site keeps using `crate::diagnostics::…`. What
+//! stays local to core is only the coverage lint that scans core's own tree (see [`tests`]).
 //!
 //! ## Emitting
 //!
@@ -22,39 +22,18 @@
 //! diag_warn!(DURABLE_WRITETHROUGH_BELOW_FLOOR, seq, durable_floor, "seq predates the durable floor");
 //! ```
 
-pub use busbar_substrate::diagnostics::*;
+// The catalog (consts, `Class`/`Severity`/`Diagnostic`/`Banner`, `REGISTRY`, `by_code`, the doc
+// renderers). Glob of the DIAGNOSTICS MODULE only — the `#[macro_export]` emit macros are hoisted to
+// the substrate-values crate ROOT, not this module, so this glob never carries them (nothing to
+// shadow / no crate-root pollution).
+pub use busbar_substrate_values::diagnostics::*;
+
+// The three emit macros, re-exported at their historical `crate::diagnostics::…` path so every
+// in-crate `use crate::diagnostics::diag_warn;` caller is unchanged. `#[macro_export]` in
+// substrate-values put them at THAT crate's root, so they are named there (not under `diagnostics`).
+// The expansion is byte-identical to core's retired copies (`::tracing::warn!(diag = %DIAG.banner(),
+// …)`); core supplies `tracing` at the call site exactly as before.
+pub use busbar_substrate_values::{diag_debug, diag_error, diag_warn};
 
 #[cfg(test)]
 mod tests;
-
-// ─────────────────────────────────────────────────────────────────────────────────────────────
-// Emit macros. `#[macro_export]` (was crate-internal): an out-of-tree plugin crate relocated off
-// core names these at `busbar_core::diagnostics::{diag_warn, diag_debug, diag_error}` on its own hot
-// path, so they must cross the crate boundary — the one mechanism a `macro_rules!` has for that is `#[macro_export]`
-// (which also surfaces them at the crate root). The `pub use` below re-exports them at their
-// historical `crate::diagnostics::…` path so every in-crate `use crate::diagnostics::diag_warn;`
-// caller is unchanged. Sites in this crate use `use crate::diagnostics::diag_warn;`.
-// ─────────────────────────────────────────────────────────────────────────────────────────────
-
-/// `warn!` carrying the `diag = "BUSBAR-NNNN"` field. First arg is the [`Diagnostic`] const.
-#[macro_export]
-macro_rules! diag_warn {
-    ($diag:expr, $($rest:tt)*) => {
-        ::tracing::warn!(diag = %$diag.banner(), $($rest)*)
-    };
-}
-/// `error!` carrying the `diag = "BUSBAR-NNNN"` field.
-#[macro_export]
-macro_rules! diag_error {
-    ($diag:expr, $($rest:tt)*) => {
-        ::tracing::error!(diag = %$diag.banner(), $($rest)*)
-    };
-}
-/// `debug!` carrying the `diag = "BUSBAR-NNNN"` field (the benign-recurring / latched-quiet arm).
-#[macro_export]
-macro_rules! diag_debug {
-    ($diag:expr, $($rest:tt)*) => {
-        ::tracing::debug!(diag = %$diag.banner(), $($rest)*)
-    };
-}
-pub use crate::{diag_debug, diag_error, diag_warn};

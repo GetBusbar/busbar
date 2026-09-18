@@ -46,6 +46,12 @@ busbar-substrate = { path = "../busbar-substrate" }
 # `crate::audit::…` / `crate::audit::journal::…` paths. The mechanism is the unit's own types, so a
 # plane's `ChainedRecord` impl and the relocated `Journal` agree by identity.
 busbar-unit-audit = { path = "../busbar-unit-audit" }
+# The PURE half of the substrate. Core names it directly for the diagnostics catalog + emit macros
+# (§11a #19 deletion-wave): `crate::diagnostics` is now a `pub use busbar_substrate_values::
+# diagnostics::*` shim onto the single source of truth, so core no longer carries a duplicate copy of
+# the `diag_warn!`/`diag_error!`/`diag_debug!` macros. Already in the closure via `busbar-substrate`
+# (which re-exports it); naming it here just lets the shim reach the leaf without the parent hop.
+busbar-substrate-values = { path = "../busbar-substrate-values" }
 # The plugin-visible contract. Core names it directly for the GENERIC authorization lattice
 # (`busbar_contract::authz::{Scope, Grants}`) — the admin-worded ceiling/error/path vocabulary
 # stays on the admin surface; only the neutral scope model lives here, so a non-admin core
