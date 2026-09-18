@@ -513,6 +513,55 @@ async fn a_body_past_the_configured_maximum_is_refused_on_both_sides() {
     );
 }
 
+/// Ingress refuses a CHUNKED body past the cap even when the whole message already sits in the read
+/// buffer — the decode loop never has to iterate, so a cap check that lived only inside it would let
+/// an oversized single-buffer body through. A chunked sender declares no total, so the refusal is on
+/// the bytes that actually arrived, and it must fire whether they arrive in one read or many.
+#[tokio::test]
+async fn an_ingress_chunked_body_past_the_configured_maximum_is_refused() {
+    let settings = ClientSettings {
+        request_body_max_bytes: 64,
+        ..ClientSettings::default()
+    };
+    let transport = StdArc::new(HttpTransport::new(settings));
+    let cfg = TestCfg {
+        bind: "127.0.0.1:0".to_string(),
+    };
+    let listener = transport.listen(&cfg, &fixture_key()).await.unwrap();
+    let addr = listener.local_addr();
+    let accept_fut = tokio::spawn({
+        let transport = transport.clone();
+        async move { transport.accept(&listener).await.unwrap() }
+    });
+    let writer = tokio::spawn(async move {
+        let mut client = tokio::net::TcpStream::connect(&addr).await.unwrap();
+        // A single 0x50 (80-byte) chunk plus its terminal chunk, written in ONE go so the whole
+        // chunked message lands in the read buffer at once: the decoder is done on the first feed
+        // and the loop body never runs. 80 decoded bytes (and ~91 wire bytes) are both past the
+        // 64-byte cap.
+        let mut msg =
+            b"POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n50\r\n".to_vec();
+        msg.extend_from_slice(&[b'a'; 80]);
+        msg.extend_from_slice(b"\r\n0\r\n\r\n");
+        tokio::io::AsyncWriteExt::write_all(&mut client, &msg)
+            .await
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+    });
+    let conn = accept_fut.await.unwrap();
+    let mut frames = transport.frames(conn);
+    let first = tokio::time::timeout(std::time::Duration::from_secs(5), frames.next())
+        .await
+        .expect("the reader refuses rather than hanging")
+        .expect("the stream yields the framing error");
+    assert_eq!(
+        first.unwrap_err(),
+        TransportError::Framing,
+        "a chunked body past the configured maximum is refused even when it arrives in one read"
+    );
+    writer.abort();
+}
+
 /// A header block this transport cannot parse fails closed, rather than decoding as no headers.
 ///
 /// The old reading took an unparsable block to mean an empty header list — declared length zero,
@@ -666,8 +715,8 @@ async fn a_transfer_encoding_that_is_not_chunked_last_is_refused() {
 /// the other arm and refuses, because the HEAD frame it would otherwise hand up is the verbatim
 /// header prefix and any reader re-parsing it would see the length that was never true.
 ///
-/// The egress direction already gets this right by stripping both headers when it rebuilds the
-/// request, and the round-trip cell above pins that. The two directions now agree.
+/// The egress direction refuses the same shape before it dials — see the egress cell below. The two
+/// directions agree: neither accepts a message that describes two framings of one body.
 #[tokio::test]
 async fn a_message_with_both_a_transfer_encoding_and_a_content_length_is_refused() {
     let transport = StdArc::new(HttpTransport::new(ClientSettings::default()));
@@ -703,6 +752,38 @@ async fn a_message_with_both_a_transfer_encoding_and_a_content_length_is_refused
         "two disagreeing framings of one body is a message to refuse, not one to forward"
     );
     writer.abort();
+}
+
+/// The egress re-segmenter refuses BOTH a `Transfer-Encoding` and a `Content-Length` too — the same
+/// request-smuggling shape its ingress twin refuses, and for the same reason.
+///
+/// `complete_message` decodes the chunked body and rebuilds the request with both framing headers
+/// stripped, so nothing forces it to notice that the message it accepted was ambiguous. But a
+/// message describing two framings of one body is one to refuse in either direction: an intermediary
+/// that quietly resolves it to `chunked` and forwards a clean re-framing has still accepted, and
+/// acted on, a request no honest peer sent. The two directions must agree, so egress refuses it
+/// before the message ever reaches the wire — no dial happens, which is why an unreachable upstream
+/// still yields the framing error rather than a connection error.
+#[tokio::test]
+async fn an_egress_message_with_both_a_transfer_encoding_and_a_content_length_is_refused() {
+    let transport = HttpTransport::new(ClientSettings::default());
+    let conn = transport
+        .dial(&upstream_dest("http://127.0.0.1:1/"), &fixture_key())
+        .await
+        .unwrap();
+    // A whole chunked message that ALSO declares a Content-Length: complete_message would otherwise
+    // decode the chunked body and rebuild the request, never having refused the ambiguity.
+    let req =
+        b"POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 6\r\nTransfer-Encoding: chunked\r\n\r\n3\r\nabc\r\n0\r\n\r\n";
+    let err = transport
+        .write(&conn, StreamId(0), ArenaBytes::new(req))
+        .await
+        .unwrap_err();
+    assert_eq!(
+        err,
+        TransportError::Framing,
+        "egress refuses the both-headers smuggling shape before dialing, matching ingress"
+    );
 }
 
 /// RFC 9112 6.3: an unparsable `Content-Length` with no `Transfer-Encoding` is unrecoverable

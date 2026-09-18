@@ -1467,10 +1467,21 @@ fn complete_message(
         };
         let message = raw::parse_message(&buffered[..header_end]).ok_or(TransportError::Framing)?;
         cache.parses += 1;
-        if raw::has_transfer_encoding(&message.headers) && !raw::is_chunked(&message.headers) {
-            // A declared coding this transport cannot frame. Falling through to `Content-Length`
-            // would be answering a question the sender did not ask.
-            return Err(TransportError::Framing);
+        if raw::has_transfer_encoding(&message.headers) {
+            if !raw::is_chunked(&message.headers) {
+                // A declared coding this transport cannot frame. Falling through to `Content-Length`
+                // would be answering a question the sender did not ask.
+                return Err(TransportError::Framing);
+            }
+            if raw::header(&message.headers, "content-length").is_some() {
+                // Two headers describing two framings of the same bytes — the request-smuggling
+                // shape the ingress reader refuses. This side de-chunks the body and rebuilds the
+                // request with both framing headers stripped, so it could quietly resolve the
+                // ambiguity to `chunked` and forward a clean re-framing; but that is still accepting
+                // and acting on a message no honest peer sent. The two directions agree: refused
+                // rather than forwarded.
+                return Err(TransportError::Framing);
+            }
         }
         cache.head = Some(CachedHead {
             end: header_end,
@@ -1676,9 +1687,16 @@ async fn read_ingress_message(
         // actually arrived rather than against a number the peer supplied.
         let mut read_so_far = rest.len();
         decoder.feed(&rest).map_err(|_| TransportError::Framing)?;
-        while !decoder.is_done() {
+        loop {
+            // The cap is checked before the done test, not only around the next read, so a whole
+            // chunked message that already sits in the buffer is held to it the same as one that
+            // arrives across reads — the mirror of the `Content-Length` branch, which caps every
+            // body whether or not it had to read past the head.
             if read_so_far > max_body_bytes {
                 return Err(TransportError::Framing);
+            }
+            if decoder.is_done() {
+                break;
             }
             let Some(read) = read_or_closed(r, closed, closing).await else {
                 return Ok(None);

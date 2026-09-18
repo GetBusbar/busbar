@@ -56,8 +56,8 @@ money, fee, rate or posting vocabulary (the `plane-no-money` list, verbatim); re
 egress, pool, routing, failover, breaker or provider vocabulary); appear in a plane's step list or be
 called by one (no plane→cleanliness edge and no cleanliness→plane edge); depend on a transport, plane,
 unit or another cleanliness crate; own key material or process-global state; or serve a route
-absent from its claim table. `busbar-control-admin` is the first — `busbar-plane-admin` until
-R7 renames it — and `busbar-control-oauth2` is the second. The AUTH kind is unchanged: the verifier
+absent from its claim table. `busbar-core-admin` is the first — `busbar-plane-admin` until
+R7 renames it — and `busbar-core-oauth2` is the second. The AUTH kind is unchanged: the verifier
 plugins (`busbar-auth-static`, `busbar-auth-admin-tokens`) stay auth, because a verifier answers a
 question about a credential and a cleanliness surface serves a route.
 
@@ -262,7 +262,7 @@ ceiling 0.** The kind-isolation gate reads the kind from segment two, so directo
 | `busbar-grammar` | `busbar-core-grammar` | |
 | `busbar-timing` | `busbar-core-timing` | |
 | `busbar-plane-voice` | `busbar-plane-streams` | §9 row 10 |
-| `busbar-plane-admin` | `busbar-control-admin` | a compiled-in cleanliness crate, not a plugin kind; R7 renames it |
+| `busbar-plane-admin` | `busbar-core-admin` | a compiled-in cleanliness crate, not a plugin kind; R7 renames it |
 | `busbar-llm-codec` | `busbar-llm-codec` (unchanged) | codec logic stays a per-plane path-dep; the dialect logic (anthropic, openai, gemini, bedrock, responses, cohere) is modules inside `busbar-plane-llm`, not per-dialect crates (DECISIONS #4/#6) |
 | `busbar-mcp-codec` | `busbar-mcp-codec` (unchanged) | dialect logic is modules inside `busbar-plane-mcp` |
 | `busbar-a2a-codec` | `busbar-a2a-codec` (unchanged) | dialect logic is modules inside `busbar-plane-a2a` |

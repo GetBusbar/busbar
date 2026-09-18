@@ -189,7 +189,11 @@ fn the_manifest_names_neither_a_plane_nor_core() {
 /// for and requires the matcher to fire on it.
 #[test]
 fn the_scan_would_catch_a_planted_name() {
-    assert!(contains_word("let x = A2A_MOUNT;", "a2a") || "A2A_MOUNT".contains("A2A"));
+    // `A2A_MOUNT` names the dialect with an underscore on the right, the word boundary a manifest
+    // and a `use` line write it against. The match must come from the matcher under test, so there
+    // is no `|| "A2A_MOUNT".contains("A2A")` fallback: that literal-on-literal is always true and
+    // would pass this line even if `contains_word` stopped firing on the boundary entirely.
+    assert!(contains_word("let x = A2A_MOUNT;", "a2a"));
     assert!(contains_word("this is the a2a binding", "a2a"));
     assert!(contains_word("the MCP door", "mcp"));
     assert!(contains_word("dialect: voice", "voice"));
