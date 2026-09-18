@@ -541,6 +541,28 @@ pub fn discover(dir: &Path) -> Result<Vec<PathBuf>, String> {
     Ok(out)
 }
 
+/// Read a file fully, but bounded at `cap` bytes STREAMED — never trusting `metadata().len()` for the
+/// bound. The size pre-check in [`examine`] rejects a declared-oversize file cheaply, but `fs::read`
+/// afterwards reads the file as it is at read time; a file swapped larger between the stat and the
+/// read would slip past that pre-check unbounded (a boot-time TOCTOU). Bounding the STREAM with
+/// `take(cap + 1)` makes the cap real: at most `cap + 1` bytes ever enter memory, and one byte over is
+/// a hard reject. Pure enough to unit-test without touching the rest of the scan pipeline.
+fn read_file_capped(path: &Path, cap: u64) -> Result<Vec<u8>, String> {
+    use std::io::Read as _;
+    let f = std::fs::File::open(path).map_err(|e| format!("cannot read: {e}"))?;
+    let mut buf = Vec::new();
+    f.take(cap + 1)
+        .read_to_end(&mut buf)
+        .map_err(|e| format!("cannot read: {e}"))?;
+    if buf.len() as u64 > cap {
+        return Err(format!(
+            "tarball exceeds the {cap}-byte cap (a file swapped in after the size check cannot \
+             bypass the bound)"
+        ));
+    }
+    Ok(buf)
+}
+
 /// One file's outcome through phases 1 + 2 (phase 3 needs the whole set).
 enum FileOutcome {
     Loadable(LoadablePlugin),
@@ -579,14 +601,14 @@ fn examine(path: &Path, policy: &TrustPolicy) -> FileOutcome {
             };
         }
     }
-    let bytes = match std::fs::read(path) {
+    // Read with the cap enforced on the STREAM, not on `metadata().len()`. The size check above is a
+    // cheap early reject, but on its own it is a TOCTOU: `fs::read` sizes and then reads the file as it
+    // is NOW, so a file swapped for a larger one AFTER the stat is read in full — the cap the stat
+    // enforced is bypassable, an unbounded read on every boot-time scan. `read_file_capped` bounds the
+    // read with `take(cap + 1)`, so the cap holds regardless of any swap between check and use.
+    let bytes = match read_file_capped(path, tarball::MAX_TARBALL_FILE_BYTES) {
         Ok(b) => b,
-        Err(e) => {
-            return FileOutcome::Invalid {
-                file,
-                reason: format!("cannot read: {e}"),
-            }
-        }
+        Err(reason) => return FileOutcome::Invalid { file, reason },
     };
     // Phase 1a: unpack in memory (bounded).
     let unpacked = match tarball::unpack(&bytes) {

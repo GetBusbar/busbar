@@ -11,9 +11,9 @@
 //! preamble surface — "loads identically compiled-in vs dropped-in". The second drives the dropped-in
 //! plane end to end (build → hydrate → start → dispatch) to prove it is a LIVE plane, not just a decl.
 
-use busbar_plugin_example_plane::PLANE_DECL as COMPILED_IN;
 use busbar_plugin::hot::pod::StatusClass;
 use busbar_plugin::hot::{EmitHandle, InboundHandle, IngressCarrier, PlaneHostVtable, WorkItem};
+use busbar_plugin_example_plane::PLANE_DECL as COMPILED_IN;
 
 /// Locate the REAL `busbar-plane-example` cdylib built into this workspace's target dir (uplifted or
 /// under `deps`, newest wins). Mirrors `store_example_plugin_path()` in `lib_tests.rs`.
@@ -66,13 +66,22 @@ fn example_plane_loads_identically_compiled_in_and_dropped_in() {
     };
     let dropped = crate::load_plane(&lib).expect("load the example plane over the HOT-tier ABI");
 
-    assert_eq!(dropped.name(), vocab(COMPILED_IN.name_ptr, COMPILED_IN.name_len));
+    assert_eq!(
+        dropped.name(),
+        vocab(COMPILED_IN.name_ptr, COMPILED_IN.name_len)
+    );
     assert_eq!(
         dropped.section_key(),
         vocab(COMPILED_IN.section_key_ptr, COMPILED_IN.section_key_len)
     );
-    assert_eq!(dropped.scope(), vocab(COMPILED_IN.scope_ptr, COMPILED_IN.scope_len));
-    assert_eq!(dropped.label(), vocab(COMPILED_IN.label_ptr, COMPILED_IN.label_len));
+    assert_eq!(
+        dropped.scope(),
+        vocab(COMPILED_IN.scope_ptr, COMPILED_IN.scope_len)
+    );
+    assert_eq!(
+        dropped.label(),
+        vocab(COMPILED_IN.label_ptr, COMPILED_IN.label_len)
+    );
     assert_eq!(dropped.provided_carriers(), COMPILED_IN.provided_carriers);
     // The wired carrier the example declares.
     assert!(dropped.provides(IngressCarrier::RequestResponse));
@@ -124,12 +133,68 @@ fn dropped_in_example_plane_builds_hydrates_starts_and_dispatches() {
         EmitHandle::absent(),
     );
     // SAFETY: as above; `inbound_bytes` outlives the dispatch call.
-    assert_eq!(unsafe { plane.dispatch(handle.ptr, &work) }, StatusClass::Ok);
+    assert_eq!(
+        unsafe { plane.dispatch(handle.ptr, &work) },
+        StatusClass::Ok
+    );
 
     // Free the plane's state through its own `free` fn (the config-swap path core would take).
     if let Some(free) = handle.free {
         free(handle.ptr);
     }
+}
+
+/// A plane that declares a vocabulary length far larger than its real buffer must be REFUSED at load,
+/// never sliced: `read_vocab` reads each `*_len` verbatim from the (third-party) decl, so an
+/// unbounded `from_raw_parts` would over-read past the real allocation — an OOB read in the HOST's
+/// address space. Exercises `read_vocab` directly with the hostile short-buffer/huge-length shape.
+#[test]
+fn oversize_plane_vocab_length_is_refused_not_over_read() {
+    use busbar_plugin::hot::PlaneDecl;
+    use busbar_plugin::AbiPreamble;
+
+    // A one-byte real buffer paired with a length past the cap — the hostile shape a lying decl uses.
+    let small = b"x";
+    let decl = PlaneDecl {
+        abi: AbiPreamble::CURRENT,
+        size: core::mem::size_of::<PlaneDecl>() as u32,
+        version: busbar_plugin::ABI_MINOR,
+        name_ptr: small.as_ptr(),
+        name_len: super::MAX_PLANE_VOCAB_LEN + 1,
+        section_key_ptr: core::ptr::null(),
+        section_key_len: 0,
+        scope_ptr: core::ptr::null(),
+        scope_len: 0,
+        label_ptr: core::ptr::null(),
+        label_len: 0,
+        provided_carriers: 0,
+        _reserved: 0,
+        config_validate: None,
+        build: None,
+        hydrate: None,
+        start: None,
+        admin_routes: None,
+        openapi: None,
+        dispatch: None,
+    };
+    let honoured = busbar_plugin::honoured_size(decl.size, core::mem::size_of::<PlaneDecl>());
+    let decl_ptr: *const PlaneDecl = &decl;
+    let err = super::read_vocab(decl_ptr, honoured, super::Vocab::Name, "hostile")
+        .expect_err("an oversize vocabulary length must be refused, never sliced");
+    assert!(
+        err.contains("exceeding") && err.contains(&super::MAX_PLANE_VOCAB_LEN.to_string()),
+        "expected a cap-refusal naming the limit, got: {err}"
+    );
+
+    // A within-cap vocabulary still reads back correctly — the fix is a cap, not a blanket refusal.
+    let ok = PlaneDecl {
+        name_len: small.len(),
+        ..decl
+    };
+    let ok_ptr: *const PlaneDecl = &ok;
+    let name = super::read_vocab(ok_ptr, honoured, super::Vocab::Name, "ok")
+        .expect("a within-cap vocabulary reads back");
+    assert_eq!(name, "x");
 }
 
 /// `supported_abi("plane")` gates a plane's manifest `abi_version` against the airlock-minor axis.
