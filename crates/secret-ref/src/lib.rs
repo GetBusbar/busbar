@@ -268,13 +268,32 @@ impl<'de> Deserialize<'de> for SecretRef {
                             if module.is_some() {
                                 return Err(de::Error::duplicate_field("module"));
                             }
-                            module = Some(map.next_value()?);
+                            // Read as an untyped value and check the shape ourselves: a typed
+                            // `next_value::<String>()` on a mismatched scalar makes serde echo the
+                            // scalar verbatim into the boot log, and this deserializer NEVER echoes
+                            // what it was handed. A non-string `module:` names no module — refuse
+                            // without printing the value.
+                            match map.next_value::<serde_json::Value>()? {
+                                serde_json::Value::String(s) => module = Some(s),
+                                _ => {
+                                    return Err(de::Error::custom(
+                                        "a secret reference `module:` must be a string naming a \
+                                         secret module (the value is not echoed)",
+                                    ))
+                                }
+                            }
                         }
                         "settings" => {
                             if settings.is_some() {
                                 return Err(de::Error::duplicate_field("settings"));
                             }
-                            settings = Some(map.next_value()?);
+                            // Untyped-then-shape-check: `settings:` given as a scalar is a pasted
+                            // credential in the wrong slot; a typed `next_value::<Map>()` would echo
+                            // it. Refuse with the shared non-echoing message.
+                            match map.next_value::<serde_json::Value>()? {
+                                serde_json::Value::Object(m) => settings = Some(m),
+                                _ => return Err(RefVisitor::inline_literal()),
+                            }
                         }
                         "env" => {
                             if sugar.is_some() {
@@ -282,7 +301,12 @@ impl<'de> Deserialize<'de> for SecretRef {
                                     "a secret reference takes exactly one of `env:` / `file:`",
                                 ));
                             }
-                            sugar = Some((SECRET_MODULE_ENV, map.next_value()?));
+                            // Untyped-then-shape-check: a non-string `env:` (e.g. an unquoted YAML
+                            // number/bool, or a nested map holding a literal) must not be echoed.
+                            match map.next_value::<serde_json::Value>()? {
+                                serde_json::Value::String(s) => sugar = Some((SECRET_MODULE_ENV, s)),
+                                _ => return Err(RefVisitor::inline_literal()),
+                            }
                         }
                         "file" => {
                             if sugar.is_some() {
@@ -290,7 +314,12 @@ impl<'de> Deserialize<'de> for SecretRef {
                                     "a secret reference takes exactly one of `env:` / `file:`",
                                 ));
                             }
-                            sugar = Some((SECRET_MODULE_FILE, map.next_value()?));
+                            match map.next_value::<serde_json::Value>()? {
+                                serde_json::Value::String(s) => {
+                                    sugar = Some((SECRET_MODULE_FILE, s))
+                                }
+                                _ => return Err(RefVisitor::inline_literal()),
+                            }
                         }
                         other => {
                             return Err(de::Error::unknown_field(
