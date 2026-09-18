@@ -12,7 +12,6 @@ members = [
     "crates/busbar-llm-codec",
     "crates/busbar-mcp",
     "crates/busbar-mcp-codec",
-    "crates/busbar-plane-mcp-host",
     "crates/busbar-a2a",
     "crates/busbar-a2a-codec",
     "crates/busbar-plane-a2a-host",

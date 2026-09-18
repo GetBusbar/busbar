@@ -36,14 +36,15 @@
 /// what it always did. The split is a MOVE: no item changed shape crossing it.
 pub use busbar_mcp_codec::{codec, outputschema, record, sanitize};
 
-/// THE MCP PLANE'S DIAGNOSTICS CATALOG, RE-EXPORTED FROM `busbar-plane-mcp-host`.
+/// THE MCP PLANE'S DIAGNOSTICS CATALOG.
 ///
-/// The `MCP_*` catalog entries and the `DIAGNOSTICS` slice moved into the plane's impure host crate
-/// (the first byte-safe step of the fat-crate collapse — DECISIONS #19/#20/#21). They are a
-/// self-contained leaf: they name nothing in this crate, so the move is a MOVE with no shape change,
-/// re-exported HERE under the old path so every `busbar_mcp::diagnostics::…` / `crate::diagnostics::…`
-/// caller resolves exactly what it always did.
-pub use busbar_plane_mcp_host::diagnostics;
+/// The `MCP_*` catalog entries and the `DIAGNOSTICS` slice. `busbar-plane-mcp-host` was collapsed
+/// (DECISIONS #39: the MCP plane is exactly one PURE adapter crate, no `busbar-plane-mcp-host`); its
+/// one self-contained leaf — this impure diagnostics catalog, which names `busbar_substrate` types
+/// the pure adapter may not — re-homes HERE, the crate that already carries `busbar-substrate` and
+/// already re-exported it. The path `busbar_mcp::diagnostics::…` / `busbar_mcp::DIAGNOSTICS` is
+/// byte-identical to what every caller resolved before.
+pub mod diagnostics;
 
 pub mod mcp;
 
