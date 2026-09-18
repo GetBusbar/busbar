@@ -1,6 +1,6 @@
 //! Mutation-hardening battery for `tls`: closes gaps a mutation run found where the existing
 //! battery happened to pass regardless of what a mutated body returned. Every cell here pins one
-//! fact the parent battery left unpinned: `READ_CHUNK_BYTES`'s actual value, that a connection
+//! fact the parent battery left unpinned: `TLS_READ_CHUNK_BYTES`'s actual value, that a connection
 //! handle's `id()`/`peer()` report the real registered values rather than a placeholder, that
 //! `Debug` on the transport actually names it, that `key()` and `composed_over()` report the
 //! transport's real identity, and that `detach` on an idle connection — server side and client
@@ -8,11 +8,11 @@
 
 use super::*;
 
-/// `READ_CHUNK_BYTES` is `16 * 1024`. A mutant that turns the `*` into a `+` changes this to
+/// `TLS_READ_CHUNK_BYTES` is `16 * 1024`. A mutant that turns the `*` into a `+` changes this to
 /// `1040`, and nothing else in this crate's battery reads the constant itself.
 #[test]
 fn read_chunk_bytes_is_16_kib() {
-    assert_eq!(READ_CHUNK_BYTES, 16 * 1024);
+    assert_eq!(TLS_READ_CHUNK_BYTES, 16 * 1024);
 }
 
 /// Two connections registered on the same transport must carry their own, distinct ids. A mutant

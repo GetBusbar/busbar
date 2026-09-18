@@ -1524,7 +1524,7 @@ async fn no_selector_form_is_advertised_that_the_certificate_facts_cannot_serve(
 /// The read buffer is per-connection and reused across polls, so the byte-exactness cell has a new
 /// way to fail: a short frame following a long one must not carry the tail of its predecessor, and
 /// the buffer a connection reads through must be the same allocation each time rather than a fresh
-/// `READ_CHUNK_BYTES` one per read.
+/// `TLS_READ_CHUNK_BYTES` one per read.
 #[tokio::test]
 async fn one_read_buffer_per_connection_reused_without_leaking_bytes_between_frames() {
     let (server, listener, client) = bound_pair().await;
@@ -1716,7 +1716,8 @@ fn a_mid_session_bad_record_is_not_reported_as_a_handshake_failure() {
     );
 
     // Every other kind means the same thing in both phases: the session mapper defers to the
-    // handshake table for all of them, so the two agree everywhere except InvalidData.
+    // handshake table for all of them, so the two agree everywhere except InvalidData and
+    // UnexpectedEof (each has its own cell).
     for kind in [
         io::ErrorKind::ConnectionRefused,
         io::ErrorKind::TimedOut,
@@ -1734,4 +1735,41 @@ fn a_mid_session_bad_record_is_not_reported_as_a_handshake_failure() {
             "the session and handshake mappings agree on {kind:?}"
         );
     }
+}
+
+/// A peer that vanishes mid-session WITHOUT its `close_notify` alert is a truncation, not a tidy
+/// close — and this transport must not report the two the same way.
+///
+/// rustls surfaces the missing alert as `io::ErrorKind::UnexpectedEof` (the very signature
+/// [`send_close_notify`]'s own doc names as a truncation). Without a dedicated arm the session
+/// mapper defers it to the catch-all, which yields [`TransportError::Closed`] — indistinguishable
+/// from the clean shutdown a `close_notify`-terminated session produces. The truncation arm maps it
+/// to [`TransportError::Reset`] instead: a stream cut mid-flight, not a graceful end. This asserts
+/// both halves — the truncation is `Reset`, and it is NOT the generic `Closed` a tidy shutdown
+/// yields — so a regression that drops the arm and lets it fall back to `Closed` is caught here.
+#[test]
+fn a_truncated_session_is_a_reset_not_the_generic_close() {
+    let truncated = || {
+        io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            "peer vanished, no close_notify",
+        )
+    };
+    assert_eq!(
+        TlsTransport::map_session_err(&truncated()),
+        TransportError::Reset,
+        "a mid-session UnexpectedEof is a truncated stream, reported as Reset"
+    );
+    assert_ne!(
+        TlsTransport::map_session_err(&truncated()),
+        TransportError::Closed,
+        "a truncation must not surface as the same Closed a tidy close_notify shutdown yields"
+    );
+    // The handshake-phase mapper is unchanged: an UnexpectedEof there is still the generic Closed,
+    // so the divergence is the live session's alone.
+    assert_eq!(
+        TlsTransport::map_io_err(&truncated()),
+        TransportError::Closed,
+        "the handshake-phase mapping is untouched by the session-only truncation arm"
+    );
 }
