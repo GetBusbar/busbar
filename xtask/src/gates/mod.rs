@@ -36,6 +36,7 @@ pub mod instance_noun_neutrality;
 pub mod inventory_coverage;
 pub mod inventory_ref;
 pub mod kernel_token_wire_purity;
+pub mod kind_abi_lane;
 pub mod kind_isolation;
 pub mod no_deferral;
 pub mod no_self_filed_issues;
@@ -1988,6 +1989,14 @@ pub static REGISTRY: &[Registration] = &[
         summary: "the kernel never re-derives a usage token class from a raw provider wire pointer",
     },
     Registration {
+        name: "kind-abi-lane",
+        batch: 1,
+        tier: Tier::Fast,
+        build: || Box::new(kind_abi_lane::KindAbiLaneGate),
+        summary: "each kind declares the ONE ABI lane #30 binds it to by heat (plane/transport=hot, \
+                  store/secret/auth/hook/export=cold); the per-token loop is {plane,transport} only",
+    },
+    Registration {
         name: "kind-isolation",
         batch: 1,
         tier: Tier::Fast,
@@ -2108,16 +2117,16 @@ pub static REGISTRY: &[Registration] = &[
         tier: Tier::Fast,
         build: || Box::new(hot_path_perf::HotPathPerfGate),
         summary:
-            "the §8 perf instrument measures the vtable crossing < 1µs (p50+p99) and 0 per-token \
-                  host calls",
+            "the §8 perf instrument's SOURCE still makes each claim (vtable-vs-direct, p50/p99 \
+                  under-budget, 0 per-token) — markers present, not a measured number",
     },
     Registration {
         name: "hot-path-alloc",
         batch: 1,
         tier: Tier::Fast,
         build: || Box::new(hot_path_alloc::HotPathAllocGate),
-        summary: "the §8 alloc instrument asserts 0 global allocations across the isolated POD \
-                  host-call batch",
+        summary: "the §8 alloc instrument's SOURCE still asserts 0 global allocations across the \
+                  isolated POD host-call batch — markers present, not a measured number",
     },
     Registration {
         name: "teller-steps",

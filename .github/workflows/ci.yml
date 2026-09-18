@@ -555,6 +555,22 @@ jobs:
         run: cargo xtask gate plane-abi-neutrality --selftest
       - name: Plane-ABI neutrality witness (BLOCKING — no protocol/role noun in the plane ABI hot lane)
         run: cargo xtask gate plane-abi-neutrality
+      # KIND-ABI-LANE gate: DECISIONS #30 binds each plugin kind to exactly ONE ABI lane by HEAT — a
+      # plugin uses the tier matched to its heat, NOT both. HOT/POD lane = plane, transport (the only
+      # kinds in the per-token streaming inner loop, driven over the `#[repr(C)]` `PlaneDecl` vtable);
+      # COLD/JSON lane = store, secret, auth, hook, export (each fires per-request-once or at
+      # boot/write-behind, NEVER per-token, and stays on the six-symbol JSON wire — required for 1.5.5
+      # byte-identity). #30 NAMES this gate as its enforcement, and it did not exist: before it,
+      # nothing stopped a hot kind being wired onto the cold JSON `call`, or a cold kind sprouting a
+      # POD surface on the per-token hot lane. The lane assignment is READ from #30 itself (not copied
+      # beside it), the per-kind declaration is read off `supported_abi(kind)` in the loader registry,
+      # and the per-token-loop grep asserts the hot lane names only {plane, transport}. Self-test runs
+      # FIRST — the wrong-lane declaration and the cold-kind-on-the-hot-lane are planted and proven RED
+      # before the verdict is trusted.
+      - name: Kind-ABI-lane self-test (a wrong-lane declaration, planted and proven RED)
+        run: cargo xtask gate kind-abi-lane --selftest
+      - name: Kind-ABI-lane gate (BLOCKING — each kind on the ONE lane #30 assigns it by heat)
+        run: cargo xtask gate kind-abi-lane
       # KIND-ISOLATION gate: busbar is core + plugins, and the ~10 plugin kinds can never
       # cross-contaminate (owner ruling, 2026-09-07). A proposal to create `busbar-transport-a2a`
       # was ruled catastrophic — it fuses a KIND with another kind's INSTANCE and merges back what
