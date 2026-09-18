@@ -1277,6 +1277,24 @@
    ]
   },
   {
+   "id": "crates/busbar-plane-a2a-host/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-plane-a2a-host/src"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-plane-a2a-host/src/tests"
+   ]
+  },
+  {
    "id": "crates/busbar-plane-admin/src",
    "kind": "production",
    "paths": [
@@ -1497,6 +1515,24 @@
      },
      "report": "refusals outside the first twenty reasons all render as internal error, so a rate limit, an open breaker and a drain reach the caller as a node fault; an answer carrying neither result nor error is reported and billed as complete; the markup-normalisation floor the retiring engine applies has no call site here; the plane names another plane as a string literal; the round cap the session counter exists for has no reader"
     }
+   ]
+  },
+  {
+   "id": "crates/busbar-plane-mcp-host/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-plane-mcp-host/src"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-plane-mcp-host/src/tests"
    ]
   },
   {
@@ -4603,6 +4639,21 @@
    ]
   },
   {
+   "id": "crates/busbar-plane-a2a-host/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-plane-a2a-host/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
    "id": "crates/busbar-plane-admin/src/tests",
    "kind": "test",
    "paths": [
@@ -4730,6 +4781,21 @@
      "report": "the only allocation gate calls no plane method at all, so nothing holds the per-frame relay path the arena reset is pinned for"
     }
    ]
+  },
+  {
+   "id": "crates/busbar-plane-mcp-host/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-plane-mcp-host/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
   },
   {
    "id": "crates/busbar-plane-streaming/src/tests",
