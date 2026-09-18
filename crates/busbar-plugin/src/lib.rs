@@ -72,7 +72,14 @@ pub const ABI_MAJOR: u32 = 1;
 ///
 /// 19→20 (1.6.0 M1): the append-only `hot::Usage` keyed-unit tail (`units_ptr`/`units_len`), paired
 /// with `POD_VERSION` 2→3. `check_preamble` still accepts an older minor (append-only compatibility).
-pub const ABI_MINOR: u32 = 20;
+///
+/// 20→21 (1.6.0, ABI review A6): the HOT-lane `hot::host::HostCtx` gains a `generation` stamp + `kind`
+/// tag (it becomes a `#[repr(C)]` opaque handle instead of a bare `*mut c_void`), so the host rejects a
+/// stale host handle at slot entry instead of dereferencing it (a use-after-free guard). Append-only on
+/// the NEW-in-1.6.0 hot plane/transport ABI (no 1.5.5 byte-identity constraint, nothing on the money
+/// JSON path); the version-locked planes rebuild in lockstep. `check_preamble` still accepts an older
+/// minor (append-only compatibility).
+pub const ABI_MINOR: u32 = 21;
 
 /// The FROZEN-FOR-ALL-TIME ABI header. This exact layout — `magic` at offset 0, `abi_major` at 8,
 /// `abi_minor` at 12 — is a permanent contract: it may NEVER be reordered, resized, extended, or

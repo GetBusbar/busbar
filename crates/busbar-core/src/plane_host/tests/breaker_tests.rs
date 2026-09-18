@@ -173,9 +173,10 @@ fn durable_host_route_settles_through_breaker_settle() {
             app: &app,
             scope: &disp,
         };
-        let host: HostCtx = (&state as *const HostState)
-            .cast_mut()
-            .cast::<std::os::raw::c_void>();
+        // Mark a generation live for this manual dispatch so the host's slot-entry guard honours the
+        // handle (the A6 use-after-free check); the token is held to the end of this block.
+        let generation = busbar_plugin::hot::host::HostGeneration::open();
+        let host = crate::plane_host::mint_host_ctx(&state, generation.value());
         let k = key(0);
         let id = breaker_admit(host, &k as *const Key);
         assert!(!id.is_none(), "admit wins the half-open probe");
@@ -228,9 +229,10 @@ fn task_admit_bears_the_probe_in_the_durable_scope_and_settles() {
             app: &app,
             scope: durable.arena(),
         };
-        let host: HostCtx = (&state as *const HostState)
-            .cast_mut()
-            .cast::<std::os::raw::c_void>();
+        // Mark a generation live for this manual dispatch so the host's slot-entry guard honours the
+        // handle (the A6 use-after-free check); the token is held to the end of this block.
+        let generation = busbar_plugin::hot::host::HostGeneration::open();
+        let host = crate::plane_host::mint_host_ctx(&state, generation.value());
         let k = key(0);
         let id = breaker_admit(host, &k as *const Key);
         assert!(!id.is_none(), "the task admit wins the half-open probe");
@@ -281,9 +283,10 @@ fn task_admit_releases_the_probe_when_the_durable_scope_drops_unsettled() {
             app: &app,
             scope: durable.arena(),
         };
-        let host: HostCtx = (&state as *const HostState)
-            .cast_mut()
-            .cast::<std::os::raw::c_void>();
+        // Mark a generation live for this manual dispatch so the host's slot-entry guard honours the
+        // handle (the A6 use-after-free check); the token is held to the end of this block.
+        let generation = busbar_plugin::hot::host::HostGeneration::open();
+        let host = crate::plane_host::mint_host_ctx(&state, generation.value());
         let k = key(0);
         let id = breaker_admit(host, &k as *const Key);
         assert!(

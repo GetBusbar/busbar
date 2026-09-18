@@ -117,7 +117,7 @@ fn pod_facts() -> Facts {
 
 /// THE §8 ASSERTION — zero allocations across the isolated POD host-call batch.
 fn assert_zero_alloc_pod_batch() {
-    let null: HostCtx = std::ptr::null_mut();
+    let null: HostCtx = HostCtx::NULL;
     let vt = armed_vtable();
     let facts = pod_facts();
     let facts_ptr: *const Facts = &facts;
@@ -151,7 +151,7 @@ fn assert_zero_alloc_pod_batch() {
 }
 
 fn hot_path_alloc(c: &mut Criterion) {
-    let null: HostCtx = std::ptr::null_mut();
+    let null: HostCtx = HostCtx::NULL;
     let vt = armed_vtable();
     let facts = pod_facts();
     let facts_ptr: *const Facts = &facts;
