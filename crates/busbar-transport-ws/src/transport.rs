@@ -174,6 +174,21 @@ impl WsTransport {
         }
     }
 
+    /// A transport with no layer under it, carrying the message ceiling its embedder named.
+    ///
+    /// The no-lower twin of [`WsTransport::over_with_max_message_bytes`]. An instance driven only
+    /// through [`WsTransport::handshake_over`] or [`WsTransport::adopt`] never reaches
+    /// [`Transport::listen`] — nothing binds it, so nothing hands it a configuration view — so the
+    /// one place its message ceiling can arrive is the embedder that constructs it. The plain
+    /// [`WsTransport::new`] leaves the number zero and tungstenite's own default stands, which is the
+    /// behaviour that constructor keeps.
+    #[must_use]
+    pub fn with_max_message_bytes(max: usize) -> Self {
+        let t = Self::new();
+        t.max_message_bytes.store(max, Ordering::Relaxed);
+        t
+    }
+
     /// A transport composed over `lower` — the layer that binds, accepts and dials on its behalf.
     ///
     /// The design's own stack is `tcp → tls → http → ws`: `http` is what an inbound upgrade arrives
@@ -518,7 +533,28 @@ impl Transport for WsTransport {
                     return None;
                 }
                 let mut slot = state.reader.lock().await;
-                let taken = slot.take()?;
+                let Some(taken) = slot.take() else {
+                    drop(slot);
+                    // The reader is gone. A connection that was closed or fenced put it back before
+                    // this poll and is a clean end — the checks above already caught those, but the
+                    // window between them and this lock is a real one, so re-read the fences here and
+                    // end quietly if either fired. What is left is the reader being HELD by another
+                    // live `frames()` stream on a clone of this `Conn`: a WebSocket carries one
+                    // message stream and it has exactly one reader, so a second consumer cannot get
+                    // frames. Returning `None` here would report it as a peer that cleanly closed —
+                    // indistinguishable from a real close, and a silent lie about a session that is
+                    // still running for the first consumer. It is a caller-side contract violation,
+                    // and the honest answer is to say so loudly rather than fake an end of stream.
+                    if state.is_poisoned() || state.is_closed() {
+                        return None;
+                    }
+                    panic!(
+                        "busbar-transport-ws: frames() called concurrently on the same connection; \
+                         a WebSocket carries one message stream with one reader and admits exactly \
+                         one consumer — the second silently terminating as a clean close would be a \
+                         session cut nothing could see"
+                    );
+                };
                 drop(slot);
                 // The reader belongs to the connection, not to this future. Holding it in a guard
                 // is what makes a cancelled read the same non-event a cancelled poll of any other
@@ -638,6 +674,14 @@ impl Transport for WsTransport {
             if state.is_poisoned() {
                 return Err(TransportError::Framing);
             }
+            // ONE copy, and it is the floor. `bytes` is an `ArenaBytes<'a>` — a borrow into the
+            // caller's arena, which owns the storage and outlives nothing here — and tungstenite's
+            // `Message::Binary` takes owned `Bytes` it holds until the frame is flushed. `Vec ->
+            // Bytes` is itself zero-copy (the allocation is reused), so this `to_vec` is the single
+            // unavoidable copy. Removing it would mean handing the sink an `Arc`-backed `Bytes` that
+            // shares the payload's storage, which the borrowed `ArenaBytes` cannot supply without
+            // widening `Transport::write`'s ABI to pass owned/shared bytes — a change to the one
+            // contract every transport implements, out of proportion to one memcpy. Left as is.
             let payload = bytes.as_slice().to_vec();
             let n = payload.len();
             // The lock first, the fence second. A write dropped while still QUEUED on the writer
@@ -756,12 +800,30 @@ impl Transport for WsTransport {
                 Some(state) if state.is_poisoned() => Err(TransportError::Closed),
                 Some(state) => {
                     let payload = bytes.as_slice().to_vec();
+                    // The lock first, the fence second — the identical discipline `write` and the
+                    // Ping-answer path hold, and for the identical reason: a send interrupted
+                    // mid-frame (this future dropped, or the send erroring) has put a partial WS
+                    // frame on the wire, and a later write that resumed on that socket would splice
+                    // its bytes onto the tail of a torn one. Arming only after the lock is held keeps
+                    // a send still QUEUED on the writer — which put no bytes out — from condemning a
+                    // healthy connection. The refusal finalises the connection right below, but the
+                    // fence is what makes the send honest in the window a cancellation opens before
+                    // that.
                     let mut w = state.writer.lock().await;
-                    let sent = futures::SinkExt::send(&mut *w, Message::Binary(payload.into()))
-                        .await
-                        .map_err(|_| TransportError::Reset);
+                    let mut guard = PoisonGuard {
+                        state: &state,
+                        armed: true,
+                    };
+                    let sent =
+                        futures::SinkExt::send(&mut *w, Message::Binary(payload.into())).await;
+                    // Disarm only on a clean completion: a send that erred left the same
+                    // possibly-torn frame a dropped one does, so both fence — exactly as `write`
+                    // returns through its own `?` with the guard still armed.
+                    if sent.is_ok() {
+                        guard.armed = false;
+                    }
                     drop(w);
-                    sent
+                    sent.map_err(|_| TransportError::Reset)
                 }
             };
             // Finalised on every path, including the failures: a refusal ends the connection, and
