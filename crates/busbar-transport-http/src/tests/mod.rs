@@ -4,9 +4,9 @@
 
 use super::*;
 use busbar_contract::plugin::KernelSeal;
+use busbar_contract::transport::registry::status_ns;
+use busbar_contract::transport::wire::WireStatus;
 use busbar_contract::ConfigView;
-use busbar_contract_transport::registry::status_ns;
-use busbar_contract_transport::wire::WireStatus;
 use futures::StreamExt;
 use std::sync::Arc as StdArc;
 
@@ -46,7 +46,7 @@ fn upstream_dest(uri: &str) -> busbar_contract::VerifiedDestination {
         &FixtureSeal,
         busbar_contract::DestinationFacts::Upstream {
             transport: "http",
-            address: busbar_contract_transport::dest::UpstreamAddress::socket(host),
+            address: busbar_contract::transport::dest::UpstreamAddress::socket(host),
             lane: busbar_contract::LaneId::new("test"),
         },
         "http",
@@ -511,6 +511,55 @@ async fn a_body_past_the_configured_maximum_is_refused_on_both_sides() {
         Some(TransportError::Framing),
         "the egress accumulator refuses past the configured maximum instead of growing unbounded"
     );
+}
+
+/// Ingress refuses a CHUNKED body past the cap even when the whole message already sits in the read
+/// buffer — the decode loop never has to iterate, so a cap check that lived only inside it would let
+/// an oversized single-buffer body through. A chunked sender declares no total, so the refusal is on
+/// the bytes that actually arrived, and it must fire whether they arrive in one read or many.
+#[tokio::test]
+async fn an_ingress_chunked_body_past_the_configured_maximum_is_refused() {
+    let settings = ClientSettings {
+        request_body_max_bytes: 64,
+        ..ClientSettings::default()
+    };
+    let transport = StdArc::new(HttpTransport::new(settings));
+    let cfg = TestCfg {
+        bind: "127.0.0.1:0".to_string(),
+    };
+    let listener = transport.listen(&cfg, &fixture_key()).await.unwrap();
+    let addr = listener.local_addr();
+    let accept_fut = tokio::spawn({
+        let transport = transport.clone();
+        async move { transport.accept(&listener).await.unwrap() }
+    });
+    let writer = tokio::spawn(async move {
+        let mut client = tokio::net::TcpStream::connect(&addr).await.unwrap();
+        // A single 0x50 (80-byte) chunk plus its terminal chunk, written in ONE go so the whole
+        // chunked message lands in the read buffer at once: the decoder is done on the first feed
+        // and the loop body never runs. 80 decoded bytes (and ~91 wire bytes) are both past the
+        // 64-byte cap.
+        let mut msg =
+            b"POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n50\r\n".to_vec();
+        msg.extend_from_slice(&[b'a'; 80]);
+        msg.extend_from_slice(b"\r\n0\r\n\r\n");
+        tokio::io::AsyncWriteExt::write_all(&mut client, &msg)
+            .await
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+    });
+    let conn = accept_fut.await.unwrap();
+    let mut frames = transport.frames(conn);
+    let first = tokio::time::timeout(std::time::Duration::from_secs(5), frames.next())
+        .await
+        .expect("the reader refuses rather than hanging")
+        .expect("the stream yields the framing error");
+    assert_eq!(
+        first.unwrap_err(),
+        TransportError::Framing,
+        "a chunked body past the configured maximum is refused even when it arrives in one read"
+    );
+    writer.abort();
 }
 
 /// A header block this transport cannot parse fails closed, rather than decoding as no headers.
@@ -1052,7 +1101,7 @@ fn a_field_cannot_smuggle_a_line_ending_into_the_header_block() {
             .expect_err("a field carrying a line ending is not encodable");
         assert_eq!(
             err,
-            busbar_contract_transport::wire::Encode::Unrepresentable,
+            busbar_contract::transport::wire::Encode::Unrepresentable,
             "field {:?} was written through",
             field.0
         );
@@ -2146,4 +2195,75 @@ async fn upstream_response_trailers_reach_the_caller_as_a_final_frame() {
         "only the HEAD frame carries the status leg, which is how a composed layer tells the two apart"
     );
     assert_eq!(trailer.meta.bytes, trailer.bytes.len() as u64);
+}
+
+// ── the outbound-egress trust seam (byte-inert until a field is filled) ────────────────────────────
+
+/// The default trust is genuinely nothing decided — the whole basis for the byte-identity claim.
+#[test]
+fn a_default_egress_trust_is_unset() {
+    assert!(EgressTrust::default().is_unset());
+    assert!(build_egress_trust_all_none().is_unset());
+}
+
+/// Building with a default trust takes the unset branch and produces a client, the same as the bare
+/// entry point does — neither panics and both stand up the platform-roots posture.
+#[test]
+fn the_unset_seam_builds_the_same_posture_as_the_bare_entry_point() {
+    let settings = ClientSettings::default();
+    let _bare = build_egress_client(&settings);
+    let _seam = build_egress_client_with_trust(&settings, &EgressTrust::default());
+}
+
+fn build_egress_trust_all_none() -> EgressTrust {
+    EgressTrust {
+        extra_anchors: Vec::new(),
+        pinned_spki: Vec::new(),
+        client_identity: None,
+    }
+}
+
+/// A hand-built DER certificate whose SubjectPublicKeyInfo is the seventh TBS member: the walk lands
+/// on exactly it, header and all, so a pin taken over the returned bytes is a pin over the SPKI.
+#[test]
+fn the_spki_walk_lands_on_the_key() {
+    fn tlv(tag: u8, content: &[u8]) -> Vec<u8> {
+        assert!(content.len() < 0x80, "short-form only in this fixture");
+        let mut v = vec![tag, content.len() as u8];
+        v.extend_from_slice(content);
+        v
+    }
+    let serial = tlv(0x02, &[1]);
+    let sig = tlv(0x30, &[]);
+    let issuer = tlv(0x30, &[]);
+    let validity = tlv(0x30, &[]);
+    let subject = tlv(0x30, &[]);
+    let spki = tlv(0x30, &[0xAA, 0xBB, 0xCC]);
+    let mut tbs_contents = Vec::new();
+    for part in [&serial, &sig, &issuer, &validity, &subject, &spki] {
+        tbs_contents.extend_from_slice(part);
+    }
+    let tbs = tlv(0x30, &tbs_contents);
+    let sig_alg = tlv(0x30, &[]);
+    let sig_val = tlv(0x03, &[0]);
+    let mut cert_contents = Vec::new();
+    for part in [&tbs, &sig_alg, &sig_val] {
+        cert_contents.extend_from_slice(part);
+    }
+    let cert = tlv(0x30, &cert_contents);
+
+    let found = subject_public_key_info(&cert).expect("the walk reaches the key");
+    assert_eq!(
+        found,
+        spki.as_slice(),
+        "the whole SPKI element, header included"
+    );
+}
+
+/// Non-DER and truncated inputs produce no pin rather than a wrong one.
+#[test]
+fn the_spki_walk_refuses_what_is_not_a_certificate() {
+    assert!(subject_public_key_info(&[]).is_none());
+    assert!(subject_public_key_info(&[0x30, 0x80]).is_none()); // indefinite length is BER, not DER
+    assert!(subject_public_key_info(&[0x02, 0x01, 0x01]).is_none()); // an INTEGER, not a certificate
 }

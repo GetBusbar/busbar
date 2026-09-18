@@ -29,7 +29,9 @@ pub(crate) struct VerbEntry {
     pub(crate) read_only: bool,
 }
 
-/// The 17 1.6.0-additive verbs, with their synthetic HTTP binding (see the module doc comment).
+/// The 18 1.6.0-additive money-governance verbs. The first seventeen carry the synthetic HTTP
+/// binding flagged in the module doc; the eighteenth, `amend_rate_history` (D38), carries the
+/// design's own binding under `/ledger/`.
 const NEW_VERBS_1_6_0: &[VerbEntry] = &[
     VerbEntry {
         method: "POST",
@@ -133,6 +135,16 @@ const NEW_VERBS_1_6_0: &[VerbEntry] = &[
         verb: "approve",
         read_only: false,
     },
+    // `amend_rate_history` (D38): unlike the seventeen above, its path is NOT a judgment call. The
+    // dated rate-card-history design binds it at `POST /api/v1/admin/ledger/amend-rate-history` —
+    // under the `/ledger/` prefix the five views share, because it is the one write among them — and
+    // `full` + irreducible, because it corrects what the past cost.
+    VerbEntry {
+        method: "POST",
+        path: "/api/v1/admin/ledger/amend-rate-history",
+        verb: "amend_rate_history",
+        read_only: false,
+    },
 ];
 
 /// The five 1.6.0 ledger views, mounted under one sub-prefix of the admin surface.
@@ -178,9 +190,10 @@ const LEDGER_VERBS_1_6_0: &[VerbEntry] = &[
     },
 ];
 
-/// How many rows the closed table declares: 66 from the pinned 1.5.5 tag, the 17 1.6.0
-/// money-governance verbs, and the 5 1.6.0 ledger views.
-pub(crate) const VERB_COUNT: usize = 66 + 17 + 5;
+/// How many rows the closed table declares: 66 from the pinned 1.5.5 tag, the 18 1.6.0
+/// money-governance verbs (the seventeen plus `amend_rate_history`, D38), and the 5 1.6.0 ledger
+/// views.
+pub(crate) const VERB_COUNT: usize = 66 + 18 + 5;
 
 /// The verb the `openapi.json` blob is served under, where `encode_response` applies the one
 /// documented exception (an `info.version` substitution over an otherwise verbatim body).

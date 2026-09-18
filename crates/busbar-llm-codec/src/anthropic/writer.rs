@@ -130,13 +130,12 @@ impl ProtocolWriter for AnthropicWriter {
     }
 
     fn dropped_egress_controls(&self, req: &crate::ir::IrRequest) -> Vec<&'static str> {
-        // Mirrors the `write_request` warns: Anthropic's Messages API has no native `response_format`
-        // field, nor the OpenAI-family sampling controls `frequency_penalty`/`presence_penalty`/`seed`/
-        // `n`, so a cross-protocol request carrying any of them has that control dropped on egress.
+        // Mirrors the `write_request` warns: Anthropic's Messages API has no native OpenAI-family
+        // sampling controls `frequency_penalty`/`presence_penalty`/`seed`/`n`, so a cross-protocol
+        // request carrying any of them has that control dropped on egress. `response_format` is NOT
+        // listed: it is no longer dropped — `write_request` TRANSLATES it to Anthropic tool-forcing
+        // (see the RESPONSE_FORMAT_TOOL_NAME injection), so the structured-output directive is honored.
         let mut dropped = Vec::new();
-        if req.response_format.is_some() {
-            dropped.push("response_format");
-        }
         if req.frequency_penalty.is_some() {
             dropped.push("frequency_penalty");
         }
@@ -239,6 +238,60 @@ impl ProtocolWriter for AnthropicWriter {
                 out.insert(
                     "tool_choice".to_string(),
                     serde_json::json!({"type": "auto", "disable_parallel_tool_use": !parallel}),
+                );
+            }
+        }
+        // response_format → Anthropic TOOL-FORCING. Anthropic's Messages API has NO native
+        // `response_format` field, so a structured-output / JSON-schema directive that crossed a
+        // protocol boundary (e.g. an OpenAI/Responses caller routed to a Claude backend) is
+        // translated to the idiomatic Anthropic mechanism: synthesize ONE tool whose `input_schema`
+        // IS the requested JSON schema and pin `tool_choice` to it, so the model MUST answer as that
+        // tool's input. The response reader recognizes `RESPONSE_FORMAT_TOOL_NAME` and maps the
+        // forced `tool_use` back to a plain assistant text block, so the caller sees structured
+        // content and never the synthetic tool. Placed BEFORE the thinking decision below so the
+        // forced `tool_choice` is subject to the same thinking-incompatibility downgrade as any other
+        // forced choice (Anthropic 400s on a forced/targeted tool_choice alongside extended thinking).
+        //
+        // DELIBERATE DIVERGENCE from the 1.5.5 golden: 1.5.5 DROPPED `response_format` here (the model
+        // got no schema and returned free-form prose — the owner-reported bug). Emitting the tool +
+        // tool_choice changes the upstream request bytes ON PURPOSE. Only reachable cross-protocol:
+        // same-protocol Anthropic relays the raw upstream body and never enters this writer.
+        if let Some(rf) = &req.response_format {
+            if rf.json {
+                let mut tool = serde_json::Map::new();
+                tool.insert(
+                    "name".to_string(),
+                    serde_json::json!(RESPONSE_FORMAT_TOOL_NAME),
+                );
+                tool.insert(
+                    "description".to_string(),
+                    serde_json::json!(rf.description.clone().unwrap_or_else(|| {
+                        "Respond by calling this tool with a JSON object that conforms to the \
+                         required schema."
+                            .to_string()
+                    })),
+                );
+                // Anthropic requires `input_schema` to be a JSON-Schema OBJECT. Use the caller's
+                // schema when present; a schema-less `json_object` request (free-form JSON) falls
+                // back to a permissive object schema so the tool definition stays valid.
+                let schema = rf
+                    .schema
+                    .clone()
+                    .unwrap_or_else(|| serde_json::json!({"type": "object"}));
+                tool.insert("input_schema".to_string(), schema);
+                // Append to any tools the request already carried (create the array otherwise).
+                match out.get_mut("tools").and_then(|v| v.as_array_mut()) {
+                    Some(arr) => arr.push(serde_json::Value::Object(tool)),
+                    None => {
+                        out.insert(
+                            "tools".to_string(),
+                            serde_json::Value::Array(vec![serde_json::Value::Object(tool)]),
+                        );
+                    }
+                }
+                out.insert(
+                    "tool_choice".to_string(),
+                    serde_json::json!({"type": "tool", "name": RESPONSE_FORMAT_TOOL_NAME}),
                 );
             }
         }
@@ -369,23 +422,8 @@ impl ProtocolWriter for AnthropicWriter {
             out.insert("stop_sequences".to_string(), serde_json::json!(req.stop));
         }
         out.insert("stream".to_string(), serde_json::json!(req.stream));
-        // response_format: Anthropic's Messages API has NO native `response_format` field. The
-        // idiomatic Anthropic mapping is tool-forcing (a synthetic tool + `tool_choice:{type:"tool"}`),
-        // which is non-trivial and deliberately NOT implemented in this pass. The reader never sets
-        // `response_format` on the same-protocol (Anthropic→Anthropic) path — same-protocol relays the
-        // raw upstream body and never reaches this writer — so this only fires for a CROSS-PROTOCOL IR
-        // (e.g. an OpenAI/Responses request carrying `response_format`) reaching the Anthropic egress.
-        // Dropping it silently would be exactly the lossy mutation busbar exists to avoid; emit a
-        // `warn!` so the divergence is observable in logs rather than invisible. (The block is dropped,
-        // not forwarded: emitting an unknown `response_format` key would 400 the upstream.)
-        if req.response_format.is_some() {
-            tracing::warn!(
-                parameter = "response_format",
-                "dropping response_format on Anthropic egress: the Messages API has no native \
-                 response_format field and tool-forcing is not implemented in this pass; the \
-                 structured-output directive from a cross-protocol request is NOT forwarded"
-            );
-        }
+        // (response_format is handled ABOVE via tool-forcing — see the RESPONSE_FORMAT_TOOL_NAME
+        // injection near the tool_choice handling — not dropped here.)
         // SAMPLING CONTROLS with no Anthropic Messages analog: `frequency_penalty`,
         // `presence_penalty`, `seed`, `n`. Anthropic models none of them, so a cross-protocol request
         // (e.g. an OpenAI/Responses caller) carrying any is dropped here. The drop is intentional (the

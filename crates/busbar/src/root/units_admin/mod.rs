@@ -51,6 +51,7 @@ use busbar_plane_admin::verbs::ResolvedVerb;
 use busbar_unit_auth::unit::AuthRequest;
 use busbar_unit_scope::Scope;
 
+use crate::root::kernel::{ProductionUnits, RegisteredUnits};
 use crate::root::ledger_identity::{LedgerSnapshot, LegacySnapshot};
 use busbar_unit_verbs::rate::{MutationClass, CONFIG_CLASS_RULES};
 use busbar_unit_verbs::{
@@ -622,10 +623,25 @@ impl busbar_unit_verbs::Governance for CoreGovernance {
 
     fn execute_new_verb(
         &self,
-        _verb: KernelVerb,
+        verb: KernelVerb,
         _admin: &busbar_caps::AdminToken,
-        _request: &[u8],
+        request: &[u8],
+        operator: busbar_unit_verbs::OperatorState,
     ) -> Result<Vec<u8>, busbar_unit_verbs::GovernanceError> {
+        // `amend_rate_history` (D38) is the one new verb whose effect is NOT the mounted router's:
+        // its correction lands on this root's own dated rate-card history, which no 1.5.5 handler
+        // knows about. The scope, rate class, operator ceremony and dual control were already run by
+        // the verbs unit before this seam was reached — the verb is in the irreducible set — so this
+        // half speaks only to the correction's own shape and to verifying it was signed by the
+        // operator key the fleet sealed, before it lands the effect.
+        if verb == KernelVerb::AmendRateHistory {
+            return amend_rate_history_effect(
+                &crate::root::kernel::ROOT_CARD,
+                request,
+                self.request.at,
+                operator,
+            );
+        }
         Ok(self.run())
     }
 
@@ -657,6 +673,230 @@ fn ledger_answer(body: Vec<u8>) -> AdminAnswer {
         headers: vec![("content-type".to_string(), "application/json".to_string())],
         body,
     }
+}
+
+/// The effect half of `amend_rate_history` (D38): decode the correction, validate its shape, append
+/// the signed back-dated entry to this root's dated rate-card history, and answer with the entry it
+/// sealed.
+///
+/// The append is [`crate::root::kernel::RootHistory::amend`], which rewrites nothing: the entry the
+/// correction out-ranks stays exactly as booked, and recompute reprices the corrected window against
+/// the new entry. Every refusal here is a client-safe `GovernanceError`: a malformed body, a window
+/// that corrects nothing, or a correction that moves no price is `Validation` (400); a history with
+/// no opening entry to correct is `NotFound` (404). The verb's scope (`full`), rate class, operator
+/// ceremony and dual control ran before this seam — the verb is irreducible — so this half assumes an
+/// admitted call and adjudicates the correction itself: its shape, its cryptographic signature
+/// against the operator key the fleet sealed, and its effect.
+///
+/// The signature is the D38 hardening (`docs/design/rate-card-history.md:445-467`; the sealed-key
+/// posture is `busbar-unit-verbs/src/posture.rs:28-32`). `operator` carries the single sealed
+/// ed25519 verifying key; the body's `operator_fingerprint` must equal `sha256(key)` (a which-key
+/// confirmation, not a registry lookup — there is one operator key), and the detached `signature`
+/// must verify (STRICT) against that key over the canonical correction payload. An unknown
+/// fingerprint or a signature that does not verify is a client-safe `Validation` (400), the same
+/// refusal shape a missing signer already produces — the presence-only checks below still refuse the
+/// no-signer/window/price cases at the exact byte they did before, and the cryptographic check is
+/// reached only by a body that already carries a well-formed signer and signature.
+///
+/// It names no figure on the wire. The corrected rates go into the card, never into the answer, so
+/// the control surface stays free of money vocabulary; the answer is the seq an invoice will cite,
+/// the window it corrected, who signed it and the digest of why.
+fn amend_rate_history_effect(
+    history: &crate::root::kernel::RootHistory,
+    body: &[u8],
+    arrival_secs: u64,
+    operator: busbar_unit_verbs::OperatorState,
+) -> Result<Vec<u8>, busbar_unit_verbs::GovernanceError> {
+    use busbar_unit_verbs::GovernanceError;
+    use sha2::Digest as _;
+
+    let doc: serde_json::Value =
+        serde_json::from_slice(body).map_err(|_| GovernanceError::Validation)?;
+    let obj = doc.as_object().ok_or(GovernanceError::Validation)?;
+
+    // The window the correction prices. `effective_from` is required; `effective_until` is optional
+    // and, where present, must lie strictly after it — an empty or inverted window corrects nothing.
+    let effective_from = obj
+        .get("effective_from")
+        .and_then(serde_json::Value::as_u64)
+        .ok_or(GovernanceError::Validation)?;
+    let effective_until = match obj.get("effective_until") {
+        None | Some(serde_json::Value::Null) => None,
+        Some(v) => Some(v.as_u64().ok_or(GovernanceError::Validation)?),
+    };
+    if effective_until.is_some_and(|until| until <= effective_from) {
+        return Err(GovernanceError::Validation);
+    }
+
+    // The signer and the signature. `amend_rate_history` is `full` + operator signature, so a
+    // correction that names neither is refused at the shape, before it can touch the history.
+    let operator_fingerprint = obj
+        .get("operator_fingerprint")
+        .and_then(serde_json::Value::as_str)
+        .filter(|s| !s.is_empty())
+        .ok_or(GovernanceError::Validation)?
+        .to_string();
+    let signature = obj
+        .get("signature")
+        .and_then(serde_json::Value::as_str)
+        .filter(|s| !s.is_empty())
+        .ok_or(GovernanceError::Validation)?;
+
+    // The reason is free text and is not the record; its SHA-256 is, so the sealed entry is
+    // fixed-width and the text cannot be edited under it.
+    let reason = obj
+        .get("reason")
+        .and_then(serde_json::Value::as_str)
+        .filter(|s| !s.is_empty())
+        .ok_or(GovernanceError::Validation)?;
+    let reason_hash: [u8; 32] = sha2::Sha256::digest(reason.as_bytes()).into();
+
+    // The corrected card. The currency defaults to the one a 1.5.5 deployment's figures are read as;
+    // the fee defaults to zero. A correction must move at least one figure — a rate or the fee —
+    // because an amendment that changes no price is a history append and nothing else.
+    let currency = match obj.get("currency").and_then(serde_json::Value::as_str) {
+        Some(code) => {
+            busbar_unit_cost::CurrencyCode::new(code).ok_or(GovernanceError::Validation)?
+        }
+        None => busbar_unit_cost::CurrencyCode::USD,
+    };
+    let per_request_fee = match obj.get("per_request_fee") {
+        None | Some(serde_json::Value::Null) => None,
+        Some(v) => Some(v.as_i64().ok_or(GovernanceError::Validation)?),
+    };
+    let mut entries: Vec<(busbar_unit_cost::LaneClass, f64)> = Vec::new();
+    if let Some(rates) = obj.get("rates") {
+        for row in rates.as_array().ok_or(GovernanceError::Validation)? {
+            let r = row.as_object().ok_or(GovernanceError::Validation)?;
+            let lane = r
+                .get("lane")
+                .and_then(serde_json::Value::as_str)
+                .filter(|s| !s.is_empty())
+                .ok_or(GovernanceError::Validation)?;
+            let class = r
+                .get("class")
+                .and_then(serde_json::Value::as_str)
+                .filter(|s| !s.is_empty())
+                .ok_or(GovernanceError::Validation)?;
+            let micro = r
+                .get("micro_per_unit")
+                .and_then(serde_json::Value::as_f64)
+                .ok_or(GovernanceError::Validation)?;
+            if !micro.is_finite() || micro < 0.0 {
+                return Err(GovernanceError::Validation);
+            }
+            entries.push((busbar_unit_cost::LaneClass::new(lane, class), micro));
+        }
+    }
+    if entries.is_empty() && per_request_fee.is_none() {
+        return Err(GovernanceError::Validation);
+    }
+    let card = busbar_unit_cost::RateCard::from_micro_rates_in(
+        currency,
+        entries,
+        per_request_fee.unwrap_or(0),
+    );
+
+    // The cryptographic seam (D38 hardening). A well-formed correction is now verified against the
+    // single operator key the fleet sealed — not merely checked for the presence of a signer. This
+    // is reached only after every shape refusal above, so the no-signer/window/price cases keep
+    // refusing at the exact byte they did before this seam existed.
+    //
+    // The `operator_fingerprint` is a WHICH-KEY confirmation: it must equal `sha256(sealed key)`.
+    // There is exactly one operator key (a single key sealed in `Policy`, not a registry), so a
+    // fingerprint that does not name it is a correction signed for a key this fleet does not hold —
+    // an unknown signer — and is refused. The detached signature then must verify (STRICT, refusing
+    // small-order keys and non-canonical signatures) against that key over the canonical payload the
+    // operator signed. Every failure here is the client-safe `Validation`, the same 400 a missing
+    // signer already produced.
+    let busbar_unit_verbs::OperatorState::Set(operator_key) = operator else {
+        // The operator gate admits `amend_rate_history` only under `Set`, so this is unreachable in
+        // an admitted call; refusing rather than trusting an unverified correction is the only safe
+        // reading if the seam is ever reached without a sealed key.
+        return Err(GovernanceError::Validation);
+    };
+    let verifying_key = ed25519_dalek::VerifyingKey::from_bytes(&operator_key)
+        .map_err(|_| GovernanceError::Validation)?;
+    let expected_fingerprint = hex::encode(sha2::Sha256::digest(operator_key));
+    if operator_fingerprint != expected_fingerprint {
+        return Err(GovernanceError::Validation);
+    }
+    let signature_bytes: [u8; 64] = hex::decode(signature)
+        .ok()
+        .and_then(|raw| raw.try_into().ok())
+        .ok_or(GovernanceError::Validation)?;
+    verifying_key
+        .verify_strict(
+            &canonical_amend_payload(obj),
+            &ed25519_dalek::Signature::from_bytes(&signature_bytes),
+        )
+        .map_err(|_| GovernanceError::Validation)?;
+
+    // The append. Milliseconds, because the history dates every instant in them; a correction written
+    // "now" is written at the arrival it was admitted under, never a fresh clock read.
+    let appended_at_ms = arrival_secs.saturating_mul(1000);
+    let seq = history
+        .amend(
+            card,
+            effective_from,
+            effective_until,
+            appended_at_ms,
+            operator_fingerprint.clone(),
+            reason_hash,
+        )
+        .ok_or(GovernanceError::NotFound)?;
+
+    let mut out = String::new();
+    out.push_str("{\"history_seq\":");
+    out.push_str(&seq.get().to_string());
+    out.push_str(",\"effective_from\":");
+    out.push_str(&effective_from.to_string());
+    out.push_str(",\"effective_until\":");
+    match effective_until {
+        Some(until) => out.push_str(&until.to_string()),
+        None => out.push_str("null"),
+    }
+    out.push_str(",\"amended_at\":");
+    out.push_str(&appended_at_ms.to_string());
+    out.push_str(",\"operator_fingerprint\":");
+    json_string(&operator_fingerprint, &mut out);
+    out.push_str(",\"reason_sha256\":");
+    json_string(&hex::encode(reason_hash), &mut out);
+    out.push('}');
+    Ok(ledger_answer(out.into_bytes()).pack())
+}
+
+/// The exact bytes the operator's detached signature is verified over.
+///
+/// A domain-separated, order-fixed serialization of the correction's SEMANTIC fields — everything the
+/// amendment means, and nothing about how it was transported or which key is confirming itself.
+/// `signature` is excluded (it is the thing being verified) and `operator_fingerprint` is excluded
+/// (it is the which-key confirmation, checked separately against `sha256(key)`); every other field is
+/// rendered from the parsed body, in a fixed order, each on its own line. Because it is a pure
+/// function of the parsed body's semantic fields, the operator who signs the correction and this seam
+/// which verifies it derive byte-identical inputs regardless of how the transport spelled the JSON —
+/// and a test reproduces the signing input by calling this same function over the same body.
+///
+/// The domain-separation prefix binds a signature to THIS operation: a signature captured over one
+/// operation's bytes cannot be replayed as another's, because no other operation signs a payload that
+/// begins with this line.
+fn canonical_amend_payload(obj: &serde_json::Map<String, serde_json::Value>) -> Vec<u8> {
+    let mut payload = String::from("busbar/amend-rate-history/v1\n");
+    for key in [
+        "effective_from",
+        "effective_until",
+        "currency",
+        "per_request_fee",
+        "reason",
+        "rates",
+    ] {
+        payload.push_str(key);
+        payload.push('=');
+        let value = obj.get(key).unwrap_or(&serde_json::Value::Null);
+        payload.push_str(&serde_json::to_string(value).unwrap_or_default());
+        payload.push('\n');
+    }
+    payload.into_bytes()
 }
 
 /// The bytes one ledger view answers with, or `None` for a verb that is not one.
@@ -1176,6 +1416,56 @@ impl PostureView for UnsealedPosture {
     }
 }
 
+/// The posture a running node reports from what its fleet actually sealed — the composition root's
+/// production [`PostureView`], bound over [`AdminBinding::with_posture_view`] in place of
+/// [`UnsealedPosture`].
+///
+/// It carries ONE piece of sealed state: the operator-ceremony key, resolved once at boot from
+/// `auth.operator_pub` (a fleet-shared `operator.pub`, [`busbar_core::preflight::resolve_operator_public_key`]).
+/// Present ⇒ [`OperatorState::Set`] with the raw 32-byte verifying key, which lifts the ceremony gate
+/// for the sealed key and hands D38's `amend_rate_history` the key it verifies a correction's
+/// signature against; ABSENT ⇒ [`OperatorState::Unset`], and this view then reports the EXACT posture
+/// [`UnsealedPosture`] does — a fresh install that has not run the ceremony — so binding it over an
+/// unset key is byte-for-byte identical to the default it replaces.
+///
+/// The other two halves are the fresh-install truth rather than a guess: `dual_control` is
+/// [`DualControl::Single`] and the approval standing is [`ApprovalState::NotYetApproved`], because
+/// this release seals NO dual-control posture and keeps NO pending-approval journal for a node to read
+/// a maker-checker state out of. Stating the true values rather than inventing a `Required`/`Approved`
+/// pair is what keeps this view from becoming a gate that reports whatever it wishes; when a later
+/// increment seals those, they resolve here beside the operator key, through this same seam.
+#[derive(Debug, Clone, Copy)]
+pub struct SealedPosture {
+    operator: busbar_unit_verbs::OperatorState,
+}
+
+impl SealedPosture {
+    /// Build the production posture from the boot-resolved operator public key. `Some(key)` ⇒ the
+    /// ceremony ran and sealed `key`; `None` ⇒ it has not, which is [`OperatorState::Unset`] and is
+    /// byte-identical to [`UnsealedPosture`].
+    #[must_use]
+    pub fn new(operator_key: Option<[u8; 32]>) -> Self {
+        SealedPosture {
+            operator: match operator_key {
+                Some(key) => busbar_unit_verbs::OperatorState::Set(key),
+                None => busbar_unit_verbs::OperatorState::Unset,
+            },
+        }
+    }
+}
+
+impl PostureView for SealedPosture {
+    fn resolve(&self, _verb: KernelVerb, _actor: &str) -> Option<(PostureCtx, ApprovalState)> {
+        Some((
+            PostureCtx {
+                operator: self.operator,
+                dual_control: busbar_unit_verbs::DualControl::Single,
+            },
+            ApprovalState::NotYetApproved,
+        ))
+    }
+}
+
 impl std::fmt::Debug for AdminBinding {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AdminBinding")
@@ -1276,6 +1566,7 @@ fn verb_name(verb: KernelVerb) -> &'static str {
         KernelVerb::Adjust => "adjust",
         KernelVerb::ExportKeyset => "export_keyset",
         KernelVerb::Approve => "approve",
+        KernelVerb::AmendRateHistory => "amend_rate_history",
         KernelVerb::GetLedgerTotals => "get_ledger_totals",
         KernelVerb::GetLedgerCheckpoints => "get_ledger_checkpoints",
         KernelVerb::GetLedgerReconciliation => "get_ledger_reconciliation",
@@ -1995,6 +2286,173 @@ pub(crate) fn evidence(_ctx: &UnitCtx) -> busbar_kernel::teller::Evidence {
     busbar_kernel::teller::Evidence {
         upstream_candidate: false,
         ..Default::default()
+    }
+}
+
+/// The key the admin plane registers under.
+///
+/// Its OWN key, taken from the plane's `PlaneMeta` rather than spelt a second time here, so the
+/// loop's registry names this plane with exactly the word the plane names itself with and the two
+/// can never drift. There is one string that says "admin" and it lives on the plane.
+pub const UNITS_KEY: &str =
+    <busbar_plane_admin::AdminPlane as busbar_contract::plane::PlaneMeta>::KEY;
+
+/// The admin plane, registered onto the kernel's teller loop through the one seam every plane uses.
+///
+/// A zero-sized value: it owns nothing and composes entirely over the `root` it is handed each call,
+/// reaching the admin bindings, the auth chain, the store and the durability by reference — never a
+/// copy, so the money book, the identity and the revocation set stay the root's however many planes
+/// register. `claims` is membership of the admin units table: the same question the dispatch once
+/// asked as `is_admin`, now answered here, and each step delegates to the free function above it
+/// arg-for-arg, unchanged.
+pub struct AdminPlane;
+
+impl RegisteredUnits for AdminPlane {
+    fn claims(&self, root: &ProductionUnits, ctx: &UnitCtx) -> bool {
+        root.admin.units.holds(ctx.key)
+    }
+
+    fn arrival(
+        &self,
+        root: &ProductionUnits,
+        token: &UnitToken<busbar_caps::Arrival>,
+        ctx: &UnitCtx,
+    ) -> Decision<busbar_caps::Arrival> {
+        arrival(&root.admin, token, ctx)
+    }
+
+    fn decode(
+        &self,
+        root: &ProductionUnits,
+        token: &UnitToken<Decode>,
+        ctx: &UnitCtx,
+    ) -> Decision<Decode> {
+        decode(&root.admin, token, ctx)
+    }
+
+    fn authenticate(
+        &self,
+        root: &ProductionUnits,
+        token: &UnitToken<Authenticate>,
+        ctx: &UnitCtx,
+    ) -> Decision<Authenticate> {
+        authenticate(&root.auth, &root.admin, &root.auth_bindings, token, ctx)
+    }
+
+    fn verify(
+        &self,
+        root: &ProductionUnits,
+        token: &UnitToken<Verify>,
+        _trust: &busbar_caps::TrustToken,
+        ctx: &UnitCtx,
+        principal: &PrincipalId,
+    ) -> Decision<Verify> {
+        verify(&root.admin, token, ctx, principal)
+    }
+
+    fn approve(
+        &self,
+        root: &ProductionUnits,
+        token: &UnitToken<Approve>,
+        ctx: &UnitCtx,
+        principal: &PrincipalId,
+        destinations: &[VerifiedDestination],
+    ) -> Decision<Approve> {
+        approve(
+            &root.admin,
+            root.admin_grant(principal),
+            token,
+            ctx,
+            principal,
+            destinations,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn admit(
+        &self,
+        root: &ProductionUnits,
+        token: &UnitToken<Admit>,
+        admit_token: &AdmitToken<Admit>,
+        ctx: &UnitCtx,
+        principal: &PrincipalId,
+        destinations: &[VerifiedDestination],
+        // The administrative surface charges through no configured group — a kernel verb is exempt
+        // from the gauge entirely — so this door names none.
+        _leases: &busbar_kernel::slice::GroupLeaseSlip,
+    ) -> Decision<Admit> {
+        admit(
+            &root.admin,
+            token,
+            admit_token,
+            ctx,
+            principal,
+            destinations,
+        )
+    }
+
+    fn route(
+        &self,
+        root: &ProductionUnits,
+        token: &UnitToken<Route>,
+        ctx: &UnitCtx,
+        meter: &busbar_kernel::teller::AccrualMeter,
+    ) -> Decision<Route> {
+        route(
+            &root.admin,
+            Arc::clone(&root.store),
+            &root.admin_token,
+            token,
+            ctx,
+            meter,
+        )
+    }
+
+    fn meter(
+        &self,
+        _root: &ProductionUnits,
+        token: &UnitToken<Meter>,
+        usage: &UsageToken,
+        ctx: &UnitCtx,
+        provisional: &Outcome,
+    ) -> Decision<Meter> {
+        meter(token, usage, ctx, provisional)
+    }
+
+    fn audit(
+        &self,
+        root: &ProductionUnits,
+        token: &UnitToken<Audit>,
+        ctx: &UnitCtx,
+        outcome: &Outcome,
+    ) -> Decision<Audit> {
+        let durability = root.durability.lock().unwrap_or_else(|p| p.into_inner());
+        audit(&root.admin, &durability.legacy, token, ctx, outcome)
+    }
+
+    fn audit_refused(
+        &self,
+        root: &ProductionUnits,
+        token: &UnitToken<Audit>,
+        ctx: &UnitCtx,
+        refusal: &Refusal,
+    ) -> Decision<Audit> {
+        let durability = root.durability.lock().unwrap_or_else(|p| p.into_inner());
+        audit_refused(&root.admin, &durability.legacy, token, ctx, refusal)
+    }
+
+    fn encode(
+        &self,
+        root: &ProductionUnits,
+        token: &UnitToken<Encode>,
+        ctx: &UnitCtx,
+        outcome: &Outcome,
+    ) -> Decision<Encode> {
+        encode(&root.admin, token, ctx, outcome)
+    }
+
+    fn evidence(&self, _root: &ProductionUnits, ctx: &UnitCtx) -> busbar_kernel::teller::Evidence {
+        evidence(ctx)
     }
 }
 

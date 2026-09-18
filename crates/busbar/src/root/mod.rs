@@ -54,9 +54,13 @@
 // It comes off with the last plane switch, when `main()` calls into this module.
 #![allow(dead_code)]
 
+#[cfg(any(test, feature = "test-harness"))]
+pub mod a2a_kernel_rider;
 pub mod adapters;
 pub mod auth_bindings;
 pub mod durability;
+pub mod gauntlet_install;
+pub mod gauntlet_kernel;
 #[cfg(any(test, feature = "test-harness"))]
 pub mod harness;
 pub mod kernel;

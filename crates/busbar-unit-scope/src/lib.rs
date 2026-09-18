@@ -42,12 +42,17 @@
 //!   the design makes the lookup key can finally be spelled; without the claim half, a native plane
 //!   had no way to be scoped at all.
 //!
-//! The hook-veto seat is still absent: it reaches into the hook seat machinery, which this crate
-//! does not depend on. A veto composes with the check here the way the design says — this runs
-//! first, and a veto after it wins regardless of what it returned.
+//! The hook-veto seat is [`hook_veto`]: it reaches into no hook seat machinery — that stays in the
+//! plane host, and only the VERDICT reaches this crate — so a veto composes with the scope check the
+//! way the design says. The scope check runs first, and a veto after it wins regardless of what it
+//! returned; the first veto at any seat wins.
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
+
+pub mod hook_veto;
+
+pub use hook_veto::{gate, Approval, HookGate, Veto};
 
 use busbar_contract::{ClaimKey, OpClassId};
 

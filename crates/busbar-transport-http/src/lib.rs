@@ -69,28 +69,30 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use busbar_contract::transport::registry::facts as tfacts;
+use busbar_contract::transport::trust::EgressTrust;
+use busbar_contract::transport::wire::ArrivalRecord;
+use busbar_contract::transport::wire::CloseReason;
+use busbar_contract::transport::wire::Conn;
+use busbar_contract::transport::wire::ConnHandle;
+use busbar_contract::transport::wire::Direction;
+use busbar_contract::transport::wire::FrameMeta;
+use busbar_contract::transport::wire::Listener;
+use busbar_contract::transport::wire::ListenerHandle;
+use busbar_contract::transport::wire::TransportError;
+use busbar_contract::transport::wire::WireStatus;
+use busbar_contract::transport::wire::WireStatusClass;
 use busbar_contract::{
     ArenaBytes, Frame, Fut, Kind, Plugin, Refusal, SlabBytes, StreamId, Transport,
     TransportConfigView, TransportKeyHandle, TransportMeta,
 };
-use busbar_contract_transport::registry::facts as tfacts;
-use busbar_contract_transport::wire::ArrivalRecord;
-use busbar_contract_transport::wire::CloseReason;
-use busbar_contract_transport::wire::Conn;
-use busbar_contract_transport::wire::ConnHandle;
-use busbar_contract_transport::wire::Direction;
-use busbar_contract_transport::wire::FrameMeta;
-use busbar_contract_transport::wire::Listener;
-use busbar_contract_transport::wire::ListenerHandle;
-use busbar_contract_transport::wire::TransportError;
-use busbar_contract_transport::wire::WireStatus;
-use busbar_contract_transport::wire::WireStatusClass;
 use bytes::Bytes;
 use futures::Stream;
 use http_body_util::{BodyExt, Full};
 use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::client::legacy::Client;
 use hyper_util::rt::TokioExecutor;
+use sha2::Digest as _;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::TcpListener;
@@ -330,8 +332,27 @@ impl HttpTransport {
 
 /// Build the pinned egress client. Free function (not a method) so a battery test can build one
 /// without a whole transport, to assert the posture directly.
+///
+/// The platform-roots, no-client-auth posture. Identical to
+/// [`build_egress_client_with_trust`] handed a default [`EgressTrust`]; kept as the bare name every
+/// existing caller already spells, so none of them changes.
 #[must_use]
 pub fn build_egress_client(settings: &ClientSettings) -> EgressClient {
+    build_egress_client_with_trust(settings, &EgressTrust::default())
+}
+
+/// Build the egress client with the host's OUTBOUND trust decisions applied — extra trust anchors, a
+/// per-destination SPKI pin check, and/or a client identity for a mutual handshake.
+///
+/// The seam is additive and byte-inert when unset: a default [`EgressTrust`]
+/// ([`EgressTrust::is_unset`]) takes the exact platform-roots / no-client-auth branch this transport
+/// has always taken, so nothing about an existing caller moves until a caller fills a field in. The
+/// client-identity path is the real consumer a mutual-TLS destination opts into.
+#[must_use]
+pub fn build_egress_client_with_trust(
+    settings: &ClientSettings,
+    trust: &EgressTrust,
+) -> EgressClient {
     let _ = rustls::crypto::ring::default_provider().install_default();
     let mut http = HttpConnector::new();
     http.enforce_http(false);
@@ -339,9 +360,7 @@ pub fn build_egress_client(settings: &ClientSettings) -> EgressClient {
     http.set_keepalive(Some(Duration::from_secs(60)));
     http.set_nodelay(true);
 
-    let tls = rustls::ClientConfig::builder()
-        .with_root_certificates(webpki_roots_store())
-        .with_no_client_auth();
+    let tls = client_tls_config(trust);
     let builder = hyper_rustls::HttpsConnectorBuilder::new().with_tls_config(tls);
     let https = if settings.upstream_http1_only {
         builder.https_or_http().enable_http1().wrap_connector(http)
@@ -369,6 +388,218 @@ fn webpki_roots_store() -> rustls::RootCertStore {
     let mut roots = rustls::RootCertStore::empty();
     roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
     roots
+}
+
+/// The client TLS config the egress client is built over, given the host's outbound trust.
+///
+/// The unset case is spelled FIRST and returns early down the exact branch this crate has always
+/// taken — platform roots, no client auth — so a caller that decided nothing is provably unchanged
+/// rather than merely equal to what it was.
+fn client_tls_config(trust: &EgressTrust) -> rustls::ClientConfig {
+    if trust.is_unset() {
+        return rustls::ClientConfig::builder()
+            .with_root_certificates(webpki_roots_store())
+            .with_no_client_auth();
+    }
+    match &trust.client_identity {
+        None => wants_client_cert(trust).with_no_client_auth(),
+        Some(identity) => {
+            // A private key the stack cannot parse, or a chain it will not accept, is the honest
+            // "present no identity" outcome — the mutual peer closes its own handshake rather than
+            // this side forging one — so a bad identity falls back to no client auth instead of
+            // panicking a boot path.
+            let Ok(key) = rustls_pki_types::PrivateKeyDer::try_from(identity.private_key.clone())
+            else {
+                return wants_client_cert(trust).with_no_client_auth();
+            };
+            let chain: Vec<rustls_pki_types::CertificateDer<'static>> = identity
+                .cert_chain
+                .iter()
+                .cloned()
+                .map(rustls_pki_types::CertificateDer::from)
+                .collect();
+            wants_client_cert(trust)
+                .with_client_auth_cert(chain, key)
+                .unwrap_or_else(|_| wants_client_cert(trust).with_no_client_auth())
+        }
+    }
+}
+
+/// The verifier half of the client config, before the client-auth decision: platform roots plus any
+/// extra anchors, and — when the host pinned any keys — an SPKI-pin check layered over the ordinary
+/// chain verification.
+fn wants_client_cert(
+    trust: &EgressTrust,
+) -> rustls::ConfigBuilder<rustls::ClientConfig, rustls::client::WantsClientCert> {
+    let mut roots = webpki_roots_store();
+    for der in &trust.extra_anchors {
+        let _ = roots.add(rustls_pki_types::CertificateDer::from(der.clone()));
+    }
+    let builder = rustls::ClientConfig::builder();
+    if trust.pinned_spki.is_empty() {
+        builder.with_root_certificates(roots)
+    } else {
+        let verifier = SpkiPinVerifier::new(roots, &trust.pinned_spki);
+        builder
+            .dangerous()
+            .with_custom_certificate_verifier(Arc::new(verifier))
+    }
+}
+
+/// A server-certificate verifier that runs the ordinary chain-and-name check AND then requires the
+/// peer's SubjectPublicKeyInfo to hash (SHA-256) to one of the pinned values. The pin is layered
+/// OVER the standard verification, never in place of it: a pinned key on an otherwise-invalid chain
+/// is still a refusal.
+#[derive(Debug)]
+struct SpkiPinVerifier {
+    inner: Arc<rustls::client::WebPkiServerVerifier>,
+    pins: Vec<[u8; 32]>,
+}
+
+impl SpkiPinVerifier {
+    fn new(roots: rustls::RootCertStore, pins: &[[u8; 32]]) -> Self {
+        let inner = rustls::client::WebPkiServerVerifier::builder(Arc::new(roots))
+            .build()
+            .expect("a root store with at least the platform anchors builds a verifier");
+        Self {
+            inner,
+            pins: pins.to_vec(),
+        }
+    }
+}
+
+impl rustls::client::danger::ServerCertVerifier for SpkiPinVerifier {
+    fn verify_server_cert(
+        &self,
+        end_entity: &rustls_pki_types::CertificateDer<'_>,
+        intermediates: &[rustls_pki_types::CertificateDer<'_>],
+        server_name: &rustls_pki_types::ServerName<'_>,
+        ocsp_response: &[u8],
+        now: rustls_pki_types::UnixTime,
+    ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+        let verified = self.inner.verify_server_cert(
+            end_entity,
+            intermediates,
+            server_name,
+            ocsp_response,
+            now,
+        )?;
+        let spki = subject_public_key_info(end_entity.as_ref()).ok_or_else(|| {
+            rustls::Error::General("peer certificate carries no readable key".into())
+        })?;
+        let digest = sha2::Sha256::digest(spki);
+        if self
+            .pins
+            .iter()
+            .any(|pin| pin.as_slice() == digest.as_slice())
+        {
+            Ok(verified)
+        } else {
+            Err(rustls::Error::General(
+                "the peer's key is not one this destination is pinned to".into(),
+            ))
+        }
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &rustls_pki_types::CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        self.inner.verify_tls12_signature(message, cert, dss)
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &rustls_pki_types::CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        self.inner.verify_tls13_signature(message, cert, dss)
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        self.inner.supported_verify_schemes()
+    }
+}
+
+/// THE SubjectPublicKeyInfo of a DER certificate, whole (tag and length included), or `None` when the
+/// bytes are not the DER this pin walk expects.
+///
+/// RFC 5280 section 4.1 read literally: `Certificate` is a `SEQUENCE` whose first member is
+/// `TBSCertificate`, itself a `SEQUENCE` whose members up to the key are `[0] version DEFAULT v1`,
+/// `serialNumber`, `signature`, `issuer`, `validity`, `subject`, then the SPKI. Nothing here
+/// interprets a field it walks past; the TLS stack has already validated the certificate this reads a
+/// key off. The pin is taken over the SPKI's whole encoding, so a pinning caller and any other tool
+/// compute the same digest for one key.
+fn subject_public_key_info(cert_der: &[u8]) -> Option<&[u8]> {
+    /// ASN.1 SEQUENCE, constructed — the only tag this walk expects at a structural position.
+    const TAG_SEQUENCE: u8 = 0x30;
+    /// `[0] EXPLICIT`, the optional context tag carrying `TBSCertificate.version`.
+    const TAG_VERSION: u8 = 0xA0;
+    /// `serialNumber`, `signature`, `issuer`, `validity`, `subject` — the members before the SPKI.
+    const MEMBERS_BEFORE_SPKI: usize = 5;
+
+    // (tag, contents, whole) of one DER element off the front of `buf`, DER-strict on length.
+    fn element(buf: &[u8]) -> Option<(u8, &[u8])> {
+        let (&tag, rest) = buf.split_first()?;
+        let (&first_len, rest) = rest.split_first()?;
+        let (len, header) = if first_len < 0x80 {
+            (usize::from(first_len), 2usize)
+        } else if first_len == 0x80 {
+            return None; // an indefinite length is BER, not DER
+        } else {
+            let count = usize::from(first_len & 0x7f);
+            if count > 4 {
+                return None; // a length wider than any certificate needs
+            }
+            let bytes = rest.get(..count)?;
+            if bytes.first() == Some(&0) {
+                return None; // a non-minimal length
+            }
+            let mut len = 0usize;
+            for b in bytes {
+                len = (len << 8) | usize::from(*b);
+            }
+            if len < 0x80 {
+                return None; // long form where the short form would have fit
+            }
+            (len, 2 + count)
+        };
+        let end = header.checked_add(len)?;
+        let whole = buf.get(..end)?;
+        Some((tag, whole))
+    }
+
+    fn expect_sequence(buf: &[u8]) -> Option<&[u8]> {
+        let (tag, whole) = element(buf)?;
+        (tag == TAG_SEQUENCE).then_some(whole)
+    }
+
+    fn contents(whole: &[u8]) -> Option<&[u8]> {
+        // Re-read the header length off the whole element to hand back its contents.
+        let first_len = *whole.get(1)?;
+        let header = if first_len < 0x80 {
+            2
+        } else {
+            2 + usize::from(first_len & 0x7f)
+        };
+        whole.get(header..)
+    }
+
+    let certificate = expect_sequence(cert_der)?;
+    let tbs = expect_sequence(contents(certificate)?)?;
+    let mut rest = contents(tbs)?;
+    if rest.first() == Some(&TAG_VERSION) {
+        let (_, version) = element(rest)?;
+        rest = &rest[version.len()..];
+    }
+    for _ in 0..MEMBERS_BEFORE_SPKI {
+        let (_, member) = element(rest)?;
+        rest = &rest[member.len()..];
+    }
+    expect_sequence(rest)
 }
 
 fn status_class(status: u16) -> WireStatusClass {
@@ -490,8 +721,8 @@ impl Plugin for HttpTransport {
     fn kind(&self) -> Kind {
         Kind::Transport
     }
-    fn abi(&self) -> busbar_contract_transport::AbiVersion {
-        busbar_contract_transport::registry::TRANSPORT_ABI
+    fn abi(&self) -> busbar_contract::transport::AbiVersion {
+        busbar_contract::transport::registry::TRANSPORT_ABI
     }
 }
 
@@ -509,14 +740,14 @@ impl TransportMeta for HttpTransport {
     ];
     const EGRESS_SELECTOR_FORMS: &'static [busbar_contract::SelectorForm] = &[];
     const COMPOSES_OVER: &'static [&'static str] = &["tcp", "tls"];
-    const HANDOFF: Option<busbar_contract_transport::wire::Handoff> = None;
-    const FRAMING: busbar_contract_transport::wire::Framing =
-        busbar_contract_transport::wire::Framing::Stream;
+    const HANDOFF: Option<busbar_contract::transport::wire::Handoff> = None;
+    const FRAMING: busbar_contract::transport::wire::Framing =
+        busbar_contract::transport::wire::Framing::Stream;
     const SESSION: bool = false;
     const SESSION_BOUND: bool = false;
-    const UNIT0_TRIGGER: Option<busbar_contract_transport::wire::Unit0Trigger> = None;
+    const UNIT0_TRIGGER: Option<busbar_contract::transport::wire::Unit0Trigger> = None;
     const UPGRADES_TO: &'static [&'static str] = &[];
-    const HANDSHAKE_TRIGGER: Option<busbar_contract_transport::wire::HandshakeTrigger> = None;
+    const HANDSHAKE_TRIGGER: Option<busbar_contract::transport::wire::HandshakeTrigger> = None;
     const TRANSPORT_FACTS: &'static [&'static str] = &[
         tfacts::PATH,
         tfacts::METHOD,
@@ -524,10 +755,10 @@ impl TransportMeta for HttpTransport {
         tfacts::PEER,
     ];
     const DECODES_PAYLOAD: bool = false;
-    const STATUS_CLASS: Option<busbar_contract_transport::wire::StatusAt> =
-        Some(busbar_contract_transport::wire::StatusAt::FirstFrame);
+    const STATUS_CLASS: Option<busbar_contract::transport::wire::StatusAt> =
+        Some(busbar_contract::transport::wire::StatusAt::FirstFrame);
     const STATUS_NAMESPACE: Option<&'static str> =
-        Some(busbar_contract_transport::registry::status_ns::HTTP);
+        Some(busbar_contract::transport::registry::status_ns::HTTP);
 }
 
 impl Transport for HttpTransport {
@@ -869,7 +1100,7 @@ impl Transport for HttpTransport {
         fields: &[(&str, &[u8])],
         body: &[u8],
         arena: &'a dyn busbar_contract::Arena,
-    ) -> Result<ArenaBytes<'a>, busbar_contract_transport::wire::Encode> {
+    ) -> Result<ArenaBytes<'a>, busbar_contract::transport::wire::Encode> {
         let field = |name: &str| {
             fields
                 .iter()
@@ -887,11 +1118,11 @@ impl Transport for HttpTransport {
         // arena.
         let clean = |v: &[u8]| !v.iter().any(|b| matches!(b, b'\r' | b'\n' | 0));
         if !clean(method) || !clean(path) {
-            return Err(busbar_contract_transport::wire::Encode::Unrepresentable);
+            return Err(busbar_contract::transport::wire::Encode::Unrepresentable);
         }
         for (name, value) in fields {
             if !clean(name.as_bytes()) || !clean(value) {
-                return Err(busbar_contract_transport::wire::Encode::Unrepresentable);
+                return Err(busbar_contract::transport::wire::Encode::Unrepresentable);
             }
         }
 
@@ -916,7 +1147,7 @@ impl Transport for HttpTransport {
         out.extend_from_slice(body);
         arena
             .alloc_bytes(&out)
-            .map_err(|_| busbar_contract_transport::wire::Encode::ArenaExhausted)
+            .map_err(|_| busbar_contract::transport::wire::Encode::ArenaExhausted)
     }
 
     fn adopt<'a>(
@@ -937,7 +1168,7 @@ impl Transport for HttpTransport {
     /// layer adopting the stream is the one that speaks the upgrade and answers it. An egress
     /// connection has no socket to give — it dials through a pooled client, and a pooled connection
     /// is not one caller's to take.
-    fn detach(&self, conn: &Conn) -> Option<busbar_contract_transport::wire::RawStream> {
+    fn detach(&self, conn: &Conn) -> Option<busbar_contract::transport::wire::RawStream> {
         // Checked BEFORE the removal, under the same lock: see the sibling `tcp` note. Removing
         // first and then failing to unwrap loses the connection — no stream up, no entry left.
         let mut registry = self.conns.lock().expect("poisoned");
@@ -952,7 +1183,7 @@ impl Transport for HttpTransport {
             return None;
         };
         let stream = read.into_inner().half.reunite(write.into_inner()).ok()?;
-        Some(busbar_contract_transport::wire::RawStream::new(
+        Some(busbar_contract::transport::wire::RawStream::new(
             Self::KEY,
             peer,
             Box::new(TokioAsyncReadCompatExt::compat(stream)),
@@ -1445,9 +1676,16 @@ async fn read_ingress_message(
         // actually arrived rather than against a number the peer supplied.
         let mut read_so_far = rest.len();
         decoder.feed(&rest).map_err(|_| TransportError::Framing)?;
-        while !decoder.is_done() {
+        loop {
+            // The cap is checked before the done test, not only around the next read, so a whole
+            // chunked message that already sits in the buffer is held to it the same as one that
+            // arrives across reads — the mirror of the `Content-Length` branch, which caps every
+            // body whether or not it had to read past the head.
             if read_so_far > max_body_bytes {
                 return Err(TransportError::Framing);
+            }
+            if decoder.is_done() {
+                break;
             }
             let Some(read) = read_or_closed(r, closed, closing).await else {
                 return Ok(None);

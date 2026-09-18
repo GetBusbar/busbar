@@ -14,7 +14,7 @@
 //! is gone: both units now name `busbar_contract::DestinationId`, so there is nothing to narrow and
 //! no width at which a locator could be truncated on the way between them.
 //! - The upstream status: this crate's `UpstreamStatus` carries the transport's own COARSE
-//!   `busbar_contract_transport::wire::WireStatusClass` (`Success` / `ClientError` / `ServerError` / `Other`) as a
+//!   `busbar_contract::transport::wire::WireStatusClass` (`Success` / `ClientError` / `ServerError` / `Other`) as a
 //!   fallback leg for when no numeric `code` is known; the breaker unit takes no dependency on
 //!   `busbar-contract` at all (its `Cargo.toml` allows only `busbar-caps`), so its own
 //!   `port::UpstreamStatus` carries its own `port::UpstreamCode`. Both sides carry the NUMBERING
@@ -22,9 +22,9 @@
 //!   class down to a representative HTTP-shaped code only when no number was reported at all.
 
 use busbar_caps::{KernelSeal, Route, UnitToken};
-use busbar_contract_transport::registry::status_ns;
-use busbar_contract_transport::wire::WireStatus;
-use busbar_contract_transport::wire::WireStatusClass;
+use busbar_contract::transport::registry::status_ns;
+use busbar_contract::transport::wire::WireStatus;
+use busbar_contract::transport::wire::WireStatusClass;
 use busbar_unit_breaker::cfg::BreakerCfg;
 use busbar_unit_breaker::{Breaker as BreakerUnitTrait, BreakerUnit};
 use busbar_unit_egress::ports::{

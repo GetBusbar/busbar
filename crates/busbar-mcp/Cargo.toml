@@ -49,6 +49,11 @@ busbar-substrate = { path = "../busbar-substrate", features = ["plane-mcp"] }
 # pulling this crate's axum routes, stdio serve loop and tokio transports into a pure kind's
 # closure. Every module that moved is re-exported from this crate's `lib.rs` under its old name.
 busbar-mcp-codec = { path = "../busbar-mcp-codec" }
+# THE PLANE'S IMPURE HOST CRATE. The first byte-safe step of the fat-crate collapse moved the MCP
+# plane's DIAGNOSTICS catalog here (a self-contained leaf that names nothing in this crate); this
+# crate re-exports it under the old `busbar_mcp::diagnostics` path. The rest of the host surface
+# drains into here in the oracle-gated money cell, after which this crate's name is deleted.
+busbar-plane-mcp-host = { path = "../busbar-plane-mcp-host" }
 # The plugin contracts crate, named ahead of use per owner ruling R-E (see header).
 busbar-api = { path = "../api" }
 # The specification authors' own crate, pinned narrow (see busbar-core/Cargo.toml's rationale): the
@@ -163,3 +168,14 @@ rustls-pki-types = { workspace = true }
 busbar-store-memory = { path = "../store-memory" }
 busbar-secret-ref = { path = "../secret-ref" }
 busbar-plugin-sign = { path = "../plugin-sign" }
+# THE ADMIN JSON-REST SERVICE, dev-only — a dev-dep BACK-EDGE, not linked into any shipped target
+# (the same shape as the `busbar-llm` back-edge above). `/api/v1/admin/*` is served by busbar-admin,
+# which busbar-core nests through the runtime fn-pointer seam `busbar_core::admin::seam`; production
+# registers it via `busbar_admin::install()` at the composition root. This plane crate's `test-support`
+# engine path never calls it, so the admin surface is absent and every trust-verb test is a router-level
+# 404. The `adminverbs_tests` battery installs the seam for THIS crate's own test binary — see the
+# `#[cfg(test)]`-gated `busbar_admin::install()` there. A dev-dependency (not a normal/optional dep) is
+# what keeps the real build graph one-directional: dev-deps are compiled only when testing THIS crate,
+# never when busbar-admin (which itself dev-depends on this crate) links it as a library, so no reverse
+# edge exists in any non-test build.
+busbar-admin = { path = "../busbar-admin" }

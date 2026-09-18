@@ -414,7 +414,7 @@ fn a_money_governance_verb_is_checked_against_the_posture_the_fleet_sealed() {
 
     let ceremony_run = Sealed(Some((
         PostureCtx {
-            operator: busbar_unit_verbs::OperatorState::Set,
+            operator: busbar_unit_verbs::OperatorState::Set([0u8; 32]),
             dual_control: busbar_unit_verbs::DualControl::Single,
         },
         ApprovalState::NotYetApproved,
@@ -1449,7 +1449,7 @@ fn each_recovery_verb_reaches_the_store_and_a_refusing_store_is_the_answer() {
             ) -> Option<(PostureCtx, ApprovalState)> {
                 Some((
                     PostureCtx {
-                        operator: busbar_unit_verbs::OperatorState::Set,
+                        operator: busbar_unit_verbs::OperatorState::Set([0u8; 32]),
                         dual_control: busbar_unit_verbs::DualControl::Single,
                     },
                     ApprovalState::NotYetApproved,
@@ -2861,4 +2861,362 @@ fn a_configured_name_cannot_break_out_of_the_document() {
     assert_eq!(parsed["rows"][0]["bucket"], hostile);
     assert_eq!(parsed["rows"][0]["lane"], hostile);
     assert_eq!(parsed["rows"][0]["provider"], hostile);
+}
+
+// ── D38 `amend_rate_history` — the money-path verb's effect half ──────────────────────────────────
+
+/// A history seeded with one opening card, effective from instant zero, priced in USD.
+#[cfg(test)]
+fn a_seeded_history() -> crate::root::kernel::RootHistory {
+    let history = crate::root::kernel::RootHistory::default();
+    let opening = busbar_unit_cost::RateCard::from_micro_rates_in(
+        busbar_unit_cost::CurrencyCode::USD,
+        [(
+            busbar_unit_cost::LaneClass::new("gpt", busbar_unit_cost::CLASS_INPUT),
+            2.0,
+        )],
+        0,
+    );
+    history.apply(opening, 1_000);
+    history
+}
+
+/// The fixed operator signing key the D38 amend tests seal and sign with. Deterministic (minted from
+/// a constant secret) so every run derives the same key, fingerprint and signature — the sealed key a
+/// fleet's `set_operator_key` ceremony would have produced.
+#[cfg(test)]
+fn a_test_operator_signing_key() -> ed25519_dalek::SigningKey {
+    ed25519_dalek::SigningKey::from_bytes(&[7u8; 32])
+}
+
+/// The sealed-posture operator state the effect verifies against: the single operator PUBLIC key, as
+/// the fleet would seal it in `Policy` and the posture seam would carry it to the verb.
+#[cfg(test)]
+fn a_sealed_operator() -> busbar_unit_verbs::OperatorState {
+    busbar_unit_verbs::OperatorState::Set(a_test_operator_signing_key().verifying_key().to_bytes())
+}
+
+/// The `operator_fingerprint` a correction names to confirm WHICH key signed it: the SHA-256 of the
+/// sealed public key, hex-encoded — exactly what the effect recomputes and checks against.
+#[cfg(test)]
+fn a_test_operator_fingerprint() -> String {
+    use sha2::Digest as _;
+    hex::encode(sha2::Sha256::digest(
+        a_test_operator_signing_key().verifying_key().to_bytes(),
+    ))
+}
+
+/// Detach-sign a correction with the test operator key. The canonical payload the signature covers is
+/// computed by the SAME function the effect verifies with, so signer and verifier agree byte for
+/// byte; the hex signature is added to the body, which is what a real caller sends.
+#[cfg(test)]
+fn signed_correction(mut body: serde_json::Value) -> Vec<u8> {
+    use ed25519_dalek::Signer as _;
+    let payload = canonical_amend_payload(body.as_object().expect("a correction is a JSON object"));
+    let signature = a_test_operator_signing_key().sign(&payload);
+    body.as_object_mut().unwrap().insert(
+        "signature".to_string(),
+        serde_json::json!(hex::encode(signature.to_bytes())),
+    );
+    serde_json::to_vec(&body).expect("the signed correction serialises")
+}
+
+/// A well-formed correction body: a signed, back-dated amendment of the `gpt`/`input` rate over a
+/// bounded window, its fingerprint naming — and its signature made by — the sealed test operator key.
+#[cfg(test)]
+fn a_correction_body() -> Vec<u8> {
+    signed_correction(serde_json::json!({
+        "effective_from": 4_000,
+        "effective_until": 9_000,
+        "currency": "USD",
+        "rates": [ { "lane": "gpt", "class": "input", "micro_per_unit": 1.0 } ],
+        "reason": "vendor corrected the March price sheet",
+        "operator_fingerprint": a_test_operator_fingerprint(),
+    }))
+}
+
+/// THE HAPPY PATH, AND THE PROOF IT REWRITES NOTHING. An amendment appends a signed, back-dated
+/// entry that out-ranks the one it corrects for the window it names — and the corrected entry, and
+/// every snapshot taken before the amendment, is byte-for-byte what it was. A bill already sent
+/// re-derives unchanged; only a recompute against the new head moves.
+#[test]
+fn amend_rate_history_appends_a_signed_back_dated_correction_and_rewrites_nothing() {
+    let history = a_seeded_history();
+    let instant = 5_000u64;
+
+    // Before: the opening entry (seq 0) prices the instant.
+    let before = history.pin().expect("the opening pinned");
+    let (before_seq, _) = before
+        .view()
+        .card_at(instant)
+        .expect("the opening prices the instant");
+    assert_eq!(before_seq, busbar_unit_cost::HistorySeq(0));
+
+    // The correction applies, arriving at second 6 (→ 6000 ms).
+    let packed = amend_rate_history_effect(&history, &a_correction_body(), 6, a_sealed_operator())
+        .expect("the correction applies");
+    let answer = AdminAnswer::unpack(&packed).expect("the answer packs");
+    assert_eq!(answer.status, 200);
+    let doc: serde_json::Value = serde_json::from_slice(&answer.body).expect("the answer is JSON");
+    assert_eq!(doc["history_seq"], 1);
+    assert_eq!(doc["effective_from"], 4_000);
+    assert_eq!(doc["effective_until"], 9_000);
+    assert_eq!(doc["amended_at"], 6_000);
+    assert_eq!(doc["operator_fingerprint"], a_test_operator_fingerprint());
+    assert!(
+        doc["reason_sha256"].as_str().is_some_and(|s| s.len() == 64),
+        "the reason is sealed as its 32-byte SHA-256, hex-encoded"
+    );
+
+    // After: exactly one entry was appended, and the opening entry is untouched.
+    assert_eq!(history.len(), 2);
+    let after = history.pin().expect("pinned after");
+    let view = after.view();
+    let entries = view.entries();
+    assert_eq!(entries[0].seq(), busbar_unit_cost::HistorySeq(0));
+    assert_eq!(entries[0].effective_from(), 0);
+    assert!(matches!(
+        entries[0].author(),
+        busbar_unit_cost::Author::Config { .. }
+    ));
+    // The correction out-ranks the opening for the window it covers.
+    let (now_seq, _) = view
+        .card_at(instant)
+        .expect("the correction prices the instant");
+    assert_eq!(now_seq, busbar_unit_cost::HistorySeq(1));
+    match entries[1].author() {
+        busbar_unit_cost::Author::Amend {
+            operator_fingerprint,
+            ..
+        } => assert_eq!(operator_fingerprint, &a_test_operator_fingerprint()),
+        other => panic!("the appended entry must be an amendment, got {other:?}"),
+    }
+
+    // AN INVOICE CUT BEFORE THE AMENDMENT RE-DERIVES UNCHANGED: an older snapshot never sees the
+    // correction, so money already booked stays booked.
+    let old =
+        crate::root::kernel::PinnedHistory::for_test_at(&after, busbar_unit_cost::HistorySeq(0));
+    let (old_seq, _) = old
+        .view()
+        .card_at(instant)
+        .expect("the old snapshot still prices the instant");
+    assert_eq!(old_seq, busbar_unit_cost::HistorySeq(0));
+}
+
+/// VALIDATION REFUSALS. Every malformed or empty correction is refused at its shape, before it can
+/// touch the history — and each leaves the history exactly as it was.
+#[test]
+fn amend_rate_history_refuses_a_correction_that_names_no_signer_window_or_price() {
+    let cases: &[serde_json::Value] = &[
+        // No signature.
+        serde_json::json!({ "effective_from": 1, "rates": [{"lane":"gpt","class":"input","micro_per_unit":1.0}], "reason": "r", "operator_fingerprint": "op" }),
+        // No operator fingerprint.
+        serde_json::json!({ "effective_from": 1, "rates": [{"lane":"gpt","class":"input","micro_per_unit":1.0}], "reason": "r", "signature": "s" }),
+        // No reason.
+        serde_json::json!({ "effective_from": 1, "rates": [{"lane":"gpt","class":"input","micro_per_unit":1.0}], "operator_fingerprint": "op", "signature": "s" }),
+        // Inverted window.
+        serde_json::json!({ "effective_from": 9, "effective_until": 1, "rates": [{"lane":"gpt","class":"input","micro_per_unit":1.0}], "reason": "r", "operator_fingerprint": "op", "signature": "s" }),
+        // Corrects no price: no rates and no fee.
+        serde_json::json!({ "effective_from": 1, "reason": "r", "operator_fingerprint": "op", "signature": "s" }),
+        // Missing effective_from.
+        serde_json::json!({ "rates": [{"lane":"gpt","class":"input","micro_per_unit":1.0}], "reason": "r", "operator_fingerprint": "op", "signature": "s" }),
+    ];
+    for case in cases {
+        let history = a_seeded_history();
+        let body = serde_json::to_vec(case).expect("serialises");
+        let err = amend_rate_history_effect(&history, &body, 6, a_sealed_operator())
+            .expect_err("a malformed correction must be refused");
+        assert!(
+            matches!(err, busbar_unit_verbs::GovernanceError::Validation),
+            "{case} must refuse Validation, got {err:?}"
+        );
+        assert_eq!(
+            history.len(),
+            1,
+            "a refused correction appends nothing: {case}"
+        );
+    }
+    // A body that is not JSON at all is also a validation refusal.
+    let history = a_seeded_history();
+    assert!(matches!(
+        amend_rate_history_effect(&history, b"not json", 6, a_sealed_operator()),
+        Err(busbar_unit_verbs::GovernanceError::Validation)
+    ));
+    assert_eq!(history.len(), 1);
+}
+
+/// A history with no opening entry has nothing to correct: the correction is refused `NotFound`
+/// rather than sealing a card no configuration ever wrote.
+#[test]
+fn amend_rate_history_refuses_when_there_is_no_history_to_amend() {
+    let empty = crate::root::kernel::RootHistory::default();
+    let err = amend_rate_history_effect(&empty, &a_correction_body(), 6, a_sealed_operator())
+        .expect_err("an empty history cannot be amended");
+    assert!(matches!(err, busbar_unit_verbs::GovernanceError::NotFound));
+    assert_eq!(empty.len(), 0);
+}
+
+/// EXISTING MONEY/LEDGER READS ARE UNTOUCHED WHEN THE VERB IS NOT CALLED — and the amendment lands
+/// only on the rate-card history, never on the ledger book. A ledger view rendered before an
+/// amendment is byte-for-byte the view rendered after it: the verb moves no ledger cell.
+#[test]
+fn amend_rate_history_leaves_the_ledger_views_byte_identical() {
+    use crate::root::ledger_identity::{LedgerRow, LedgerSnapshot, RowKey};
+
+    let mut rows = LedgerSnapshot::new();
+    rows.insert(
+        RowKey::new("team-a", A_DAY, "gpt", "openai"),
+        LedgerRow {
+            priced_nanos: 42,
+            fee_count: 1,
+        },
+    );
+    let totals_before = render_totals(&rows);
+
+    // Amend the rate-card history — an operation that never touches the ledger book.
+    let history = a_seeded_history();
+    amend_rate_history_effect(&history, &a_correction_body(), 6, a_sealed_operator())
+        .expect("the correction applies");
+
+    // The ledger view is byte-for-byte what it was.
+    let totals_after = render_totals(&rows);
+    assert_eq!(
+        totals_before, totals_after,
+        "amending the rate-card history moves no ledger cell"
+    );
+}
+
+// ── D38 operator-signature verification (the additive REFUSAL-path hardening) ──────────────────────
+
+/// THE SIGNATURE SEAM, HAPPY PATH. A correction whose `operator_fingerprint` names the single sealed
+/// operator key AND whose detached signature verifies (STRICT) over the canonical payload is admitted
+/// and applied — the presence-only check has become a cryptographic one, and a genuine signature
+/// still passes it.
+#[test]
+fn amend_rate_history_admits_a_correction_signed_by_the_sealed_operator_key() {
+    let history = a_seeded_history();
+    let packed = amend_rate_history_effect(&history, &a_correction_body(), 6, a_sealed_operator())
+        .expect("a correction signed by the sealed key applies");
+    let answer = AdminAnswer::unpack(&packed).expect("the answer packs");
+    assert_eq!(answer.status, 200);
+    let doc: serde_json::Value = serde_json::from_slice(&answer.body).expect("the answer is JSON");
+    assert_eq!(doc["history_seq"], 1);
+    assert_eq!(doc["operator_fingerprint"], a_test_operator_fingerprint());
+    assert_eq!(history.len(), 2, "the signed correction appended one entry");
+}
+
+/// AN UNKNOWN SIGNER IS REFUSED. The body is well-formed and carries a genuine signature, but its
+/// `operator_fingerprint` names a key that is not the one the fleet sealed — a correction signed for a
+/// key this fleet does not hold. Refused `Validation` (400), the same shape a missing signer produces,
+/// and it appends nothing.
+#[test]
+fn amend_rate_history_refuses_a_correction_from_an_unknown_operator_fingerprint() {
+    let history = a_seeded_history();
+    let body = signed_correction(serde_json::json!({
+        "effective_from": 4_000,
+        "effective_until": 9_000,
+        "currency": "USD",
+        "rates": [ { "lane": "gpt", "class": "input", "micro_per_unit": 1.0 } ],
+        "reason": "vendor corrected the March price sheet",
+        "operator_fingerprint": "a-fingerprint-that-names-no-sealed-key",
+    }));
+    let err = amend_rate_history_effect(&history, &body, 6, a_sealed_operator())
+        .expect_err("an unknown signer must be refused");
+    assert!(
+        matches!(err, busbar_unit_verbs::GovernanceError::Validation),
+        "an unknown fingerprint refuses Validation, got {err:?}"
+    );
+    assert_eq!(history.len(), 1, "a refused correction appends nothing");
+}
+
+/// A SIGNATURE THAT DOES NOT COVER THE BODY IS REFUSED. The fingerprint names the sealed key, but the
+/// correction was signed and THEN a priced figure was changed, so the detached signature no longer
+/// covers the bytes on the wire — exactly the tamper a presence-only check would have waved through.
+/// Refused `Validation` (400), appending nothing.
+#[test]
+fn amend_rate_history_refuses_a_correction_whose_signature_does_not_verify() {
+    let history = a_seeded_history();
+    let mut signed: serde_json::Value =
+        serde_json::from_slice(&a_correction_body()).expect("the signed body is JSON");
+    // Move a price AFTER signing: the signature is now over different bytes than the body carries.
+    signed["rates"][0]["micro_per_unit"] = serde_json::json!(999.0);
+    let body = serde_json::to_vec(&signed).expect("the tampered body serialises");
+    let err = amend_rate_history_effect(&history, &body, 6, a_sealed_operator())
+        .expect_err("a signature that does not cover the body must be refused");
+    assert!(
+        matches!(err, busbar_unit_verbs::GovernanceError::Validation),
+        "a bad signature refuses Validation, got {err:?}"
+    );
+    assert_eq!(history.len(), 1, "a refused correction appends nothing");
+}
+
+// ── D38 PRODUCTION SEALING — the composition-root posture view that activates the verify path ──────
+
+/// THE PRODUCTION POSTURE VIEW SEALS THE OPERATOR KEY THE VERIFY PATH VERIFIES AGAINST — and an unset
+/// key is byte-identical to the `UnsealedPosture` default it replaces.
+///
+/// This is the whole of D38 production sealing: [`SealedPosture`] is what the composition root binds
+/// over [`AdminBinding::with_posture_view`] in place of [`UnsealedPosture`], and it carries the
+/// boot-resolved operator public key. The route step reads its `resolve()` and threads the operator it
+/// returns into `amend_rate_history_effect` — so proving the key the view seals is the key the effect
+/// admits against is proving the two halves are one path.
+///
+/// - SEALED: `resolve()` returns `OperatorState::Set(key)` (with `Single`/`NotYetApproved` beside it,
+///   the fresh-install truth this release seals nothing else over), and that operator ADMITS a
+///   valid-signed, back-dated correction.
+/// - UNSET (the default): `resolve()` is byte-for-byte `UnsealedPosture`'s, `OperatorState::Unset`, and
+///   the SAME valid-signed correction is REFUSED at the verify seam — amend refused exactly as the
+///   release without an operator key.
+#[test]
+fn the_production_posture_view_seals_the_operator_key_the_verify_path_admits_against() {
+    use busbar_unit_verbs::{DualControl, OperatorState};
+
+    // The fleet's sealed operator PUBLIC key — the 32 raw ed25519 bytes `set_operator_key` seals.
+    let sealed_pub = a_test_operator_signing_key().verifying_key().to_bytes();
+
+    // SEALED. The production view resolves the ceremony-run posture for the amend verb.
+    let sealed = SealedPosture::new(Some(sealed_pub));
+    let (ctx, approval) = sealed
+        .resolve(KernelVerb::AmendRateHistory, "operator")
+        .expect("a node that sealed an operator key knows its posture");
+    assert_eq!(ctx.operator, OperatorState::Set(sealed_pub));
+    assert_eq!(ctx.dual_control, DualControl::Single);
+    assert_eq!(approval, ApprovalState::NotYetApproved);
+
+    // END TO END: the operator the production view resolved is exactly what the D38 verify path
+    // needs — a valid-signed, back-dated correction is ADMITTED and applied against it.
+    let history = a_seeded_history();
+    let packed = amend_rate_history_effect(&history, &a_correction_body(), 6, ctx.operator).expect(
+        "a correction signed by the sealed key is admitted via the production posture view",
+    );
+    let answer = AdminAnswer::unpack(&packed).expect("the answer packs");
+    assert_eq!(answer.status, 200);
+    assert_eq!(
+        history.len(),
+        2,
+        "the verified correction appended exactly one entry"
+    );
+
+    // UNSET — the default, and byte-identical to the `UnsealedPosture` it replaces.
+    let unsealed = SealedPosture::new(None);
+    assert_eq!(
+        unsealed.resolve(KernelVerb::AmendRateHistory, "operator"),
+        UnsealedPosture.resolve(KernelVerb::AmendRateHistory, "operator"),
+        "an unset operator key resolves byte-identically to the UnsealedPosture default"
+    );
+    let (unset_ctx, _) = unsealed
+        .resolve(KernelVerb::AmendRateHistory, "operator")
+        .expect("an unsealed node knows its fresh-install posture");
+    assert_eq!(unset_ctx.operator, OperatorState::Unset);
+
+    // The SAME valid-signed correction is refused with no sealed key — amend refused exactly as today.
+    let fresh = a_seeded_history();
+    assert!(
+        matches!(
+            amend_rate_history_effect(&fresh, &a_correction_body(), 6, unset_ctx.operator),
+            Err(busbar_unit_verbs::GovernanceError::Validation)
+        ),
+        "with no sealed operator key the amend is refused, byte-for-byte as the release without it"
+    );
+    assert_eq!(fresh.len(), 1, "a refused correction appends nothing");
 }

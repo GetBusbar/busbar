@@ -12,7 +12,7 @@ use crate::dest::{
 };
 use crate::grammar::ArrivalLocation;
 use crate::ids::{LaneId, PrincipalId, RecordSchemaId, SchemeAlt, SessionId};
-use crate::plugin::Plugin;
+use crate::plugin::{KernelSeal, Plugin};
 use crate::unit::{Clock, ConfigView, Step, Unit};
 use crate::wire::{ArrivalRecord, Frame};
 use core::fmt;
@@ -99,10 +99,29 @@ pub enum AuthOutcome {
 /// refresh is diagnosed from — and never the material.
 #[derive(Clone, Default, PartialEq, Eq)]
 pub struct KeyMaterial {
-    /// The material, in whatever encoding the scheme uses.
-    pub bytes: Vec<u8>,
+    /// The material, in whatever encoding the scheme uses. PRIVATE: reading it is a raw
+    /// secret-byte access, sealed behind [`KeyMaterial::bytes`]; a scheme BUILDS one with
+    /// [`KeyMaterial::new`].
+    bytes: Vec<u8>,
     /// When it was fetched, in seconds since the epoch.
     pub fetched_at: u64,
+}
+
+impl KeyMaterial {
+    /// Build key material an auth scheme just refreshed. Building is not reading: any scheme may
+    /// construct one, but only a kernel-side unit holding the seal can read the bytes back.
+    #[must_use]
+    pub fn new(bytes: Vec<u8>, fetched_at: u64) -> Self {
+        Self { bytes, fetched_at }
+    }
+
+    /// Read the material. **Sealed** (DECISIONS #40): the `seal` is what says the caller is the
+    /// kernel or one of the units the design permits to read key material on the hot path. Every
+    /// other call site is a finding.
+    #[must_use]
+    pub fn bytes(&self, _seal: &dyn KernelSeal) -> &[u8] {
+        &self.bytes
+    }
 }
 
 impl fmt::Debug for KeyMaterial {
@@ -425,10 +444,11 @@ impl SecretValue {
 
     /// Read the bytes.
     ///
-    /// Named for what it is. The three units that may call it are named in the design; every other
-    /// call site is a finding.
+    /// Named for what it is, and **sealed** (DECISIONS #40): the `seal` is what says the caller is
+    /// the kernel or one of the three units the design permits to expose a resolved secret. Every
+    /// other call site is a finding.
     #[must_use]
-    pub fn expose(&self) -> &[u8] {
+    pub fn expose(&self, _seal: &dyn KernelSeal) -> &[u8] {
         &self.0
     }
 }

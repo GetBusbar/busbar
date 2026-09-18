@@ -44,7 +44,7 @@ pub mod sigv4;
 /// surface, which names the host seams and the route mount) stays in `busbar-substrate`.
 /// `busbar-substrate`'s own `plane` re-exports all three, so `busbar_substrate::plane::WIRE_JSONRPC`
 /// and its siblings resolve unchanged.
-pub use busbar_contract_transport::transport::plane;
+pub use busbar_contract::transport::transport::plane;
 
 // The value families the money path is written in.
 pub mod billing;

@@ -16,7 +16,7 @@ use core::fmt;
 /// The transport contract's, named here: a plane builds one when it says where a unit wants to go,
 /// so it must be reachable from the contract, but what the arms MEAN is a transport author's
 /// reading and lives with the rest of what only a transport reads.
-pub use busbar_contract_transport::dest::UpstreamAddress;
+pub use crate::transport::dest::UpstreamAddress;
 
 /// How a client leg delivers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize)]

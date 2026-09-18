@@ -21,6 +21,5 @@ path = "src/lib.rs"
 [dependencies]
 busbar-caps = { path = "../busbar-caps" }
 busbar-contract = { path = "../busbar-contract" }
-busbar-contract-transport = { path = "../busbar-contract-transport" }
 
 # Temporary standalone root while the workspace members land in parallel.

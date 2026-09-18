@@ -224,7 +224,14 @@ pub mod proxy;
 /// de-vocab): it is core's own auth-middleware infrastructure — gating every request in
 /// `auth_middleware` before any handler runs — not part of the admin HTTP API service.
 pub mod ratelimit;
-pub mod session;
+// THE NEUTRAL PER-SESSION SUBSTRATE relocated DOWN to busbar-substrate (std-only, money-safe, zero
+// busbar deps). Core re-exports it so `crate::session::{SessionStore, SessionKey, OwnerKey}` — the
+// gate's screen-cache tenant, the appbuild session_store construction and the App field — are
+// unchanged. The former hooks::gate ↔ core::session co-location edge is dissolved: the gate now
+// reaches `SessionStore` via the substrate type.
+pub mod session {
+    pub use busbar_substrate::session::*;
+}
 /// The wire error-type taxonomy (`ERR_TYPE_*`), relocated out of `admin::` (1.6.0 de-vocab): the
 /// constant string VALUES (the wire error-type tokens) are byte-identical; only their Rust binding
 /// path moved, since `ingress::dispatch`/`ingress::arrival_host`/`router` consume them, not the

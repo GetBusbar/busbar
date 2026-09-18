@@ -125,7 +125,7 @@ pub mod markers {
 /// Declared one crate down, beside the transport kind's own generation, so that the two constants
 /// a registry compares are the same type rather than two newtypes that happen to wrap the same
 /// number and compare equal to nothing.
-pub use busbar_contract_transport::AbiVersion;
+pub use crate::transport::AbiVersion;
 
 /// The store kind's native interface generation.
 ///

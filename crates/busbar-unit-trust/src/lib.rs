@@ -62,6 +62,8 @@
 #![deny(missing_docs)]
 #![deny(rustdoc::broken_intra_doc_links)]
 
+pub mod arity;
+pub mod counterparty;
 pub mod destination;
 pub mod guard;
 pub mod lane;
@@ -70,6 +72,8 @@ pub mod order;
 pub mod swrr;
 pub mod unit;
 
+pub use arity::{select, Arity, ArityRefusal, Selection};
+pub use counterparty::{admit as counterparty_admit, CounterpartyFacts, CounterpartyRefusal};
 pub use destination::{
     kind_permitted, kind_rule_passes, Candidate, DestinationFacts, KindFacts, OriginKind,
 };

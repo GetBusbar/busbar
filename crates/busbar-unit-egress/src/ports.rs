@@ -121,11 +121,11 @@ pub enum Outcome {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct UpstreamStatus {
     /// The transport's own reading of the frame, where it carries one.
-    pub class: Option<busbar_contract_transport::wire::WireStatusClass>,
+    pub class: Option<busbar_contract::transport::wire::WireStatusClass>,
     /// The upstream's numeric status AND the numbering that spelled it, where the transport
     /// reports one — carried across from the frame exactly as the transport named it, never
     /// flattened to a bare number on the way.
-    pub code: Option<busbar_contract_transport::wire::WireStatus>,
+    pub code: Option<busbar_contract::transport::wire::WireStatus>,
     /// The wait the upstream asked for, in seconds.
     pub retry_after: Option<u64>,
 }

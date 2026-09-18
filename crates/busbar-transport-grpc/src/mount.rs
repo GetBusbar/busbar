@@ -32,8 +32,8 @@
 //!
 //! Asserted, not asked for: `tests/no_plane_names.rs` scans this crate's source and its manifest.
 
-use busbar_contract_transport::driver::Outcome;
-use busbar_contract_transport::surface::{resolve_service, Bar, Dispatch, Operation, WireSurface};
+use busbar_contract::transport::driver::Outcome;
+use busbar_contract::transport::surface::{resolve_service, Bar, Dispatch, Operation, WireSurface};
 
 /// A framed call's two names, split out of the target it arrived on.
 ///
@@ -132,7 +132,7 @@ pub fn declared_calls(surface: &WireSurface) -> Vec<String> {
 /// This wire's own status for one outcome, in its numbering.
 ///
 /// Eight words in, one code out. The input is the CLOSED vocabulary the driver answers with and not
-/// the loop's own ending, for the reason `busbar_contract_transport::driver` gives: an ending
+/// the loop's own ending, for the reason `busbar_contract::transport::driver` gives: an ending
 /// carries the step, the reason code and the posting, and this wire has a field for none of the
 /// three. A protocol that wants a finer word than these writes it in its answer body, which the
 /// plane wrote and this module does not read.

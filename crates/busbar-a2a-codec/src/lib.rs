@@ -33,6 +33,10 @@ pub mod a2a {
     pub mod meter;
 }
 
+pub mod frame;
+
+pub use frame::{rewrite, Direction, Frame, Tap, Transform};
+
 pub mod record;
 
 /// THE A2A PLANE'S DURABLE RECORD TYPES, re-exported at the crate root exactly as `busbar-a2a`

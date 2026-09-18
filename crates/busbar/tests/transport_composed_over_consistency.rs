@@ -11,7 +11,7 @@
 //! all seven the way the composition root does and checks both halves: the answer is the one the
 //! design's table expects, AND — for the composed three — it is one of the layers the transport
 //! actually declares in `COMPOSES_OVER`, which is exactly what the registry's boot check
-//! (`busbar_contract_transport::registry::check_composition`) relies on being true.
+//! (`busbar_contract::transport::registry::check_composition`) relies on being true.
 
 use std::sync::Arc;
 

@@ -63,7 +63,11 @@ pub const FIRST_PARTY_PUBLISHER: &str = "busbar";
 
 /// The plugin kinds this binary understands. ONE plugin subsystem: `kind` only selects which C ABI
 /// the cdylib exports and which engine subsystem consumes it; discovery/trust/validation are shared.
-pub const KNOWN_KINDS: &[&str] = &["store", "auth", "hook", "secret", "export"];
+/// `plane` is the SIXTH kind (1.6.0 S4): a protocol plane delivered as a `cdylib`, sharing this exact
+/// discovery/trust/validation pipeline but driven over the HOT-tier `#[repr(C)]` `PlaneDecl` vtable
+/// (`busbar_plugin::hot`) rather than the five cold kinds' six-symbol JSON `call` wire. Its
+/// `abi_version` axis is the airlock minor; `busbar-plugin-loader`'s `supported_abi("plane")` gates it.
+pub const KNOWN_KINDS: &[&str] = &["store", "auth", "hook", "secret", "export", "plane"];
 
 /// This binary's own host identity — the value [`Manifest::host`] must match (or omit) to load.
 /// `busbar` names the OSS engine. A sibling product (e.g. `busbar-ui`) that reuses this exact

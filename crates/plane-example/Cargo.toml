@@ -1,0 +1,30 @@
+# SPDX-License-Identifier: Apache-2.0
+# NAMED `busbar-plugin-example-*` (the plugin-tooling / TCB family), NOT `busbar-plane-*`: this is a
+# TEST FIXTURE that exercises the plugin ABI + SDK + loader, so it belongs beside `busbar-plugin-sdk`
+# and `busbar-plugin-loader` in the trusted-computing-base kind, whose edges to the plugin-abi
+# (`busbar-plugin`) and plugin-tooling (`busbar-plugin-sdk`) crates are architecture-allowed
+# (`xtask kind-isolation`'s `ARCHITECTURE_TCB`). A `busbar-plane-*` name would classify it as a
+# first-class PROTOCOL PLANE instance, which may name only the contract and whose instance word would
+# be forbidden vocabulary everywhere else — the wrong kind for an ABI fixture.
+[package]
+name = "busbar-plugin-example-plane"
+version = "1.6.0"
+publish = false            # internal TEST-support cdylib; never goes to crates.io
+edition = "2021"
+rust-version = "1.97"
+description = "A hermetic trivial kind:plane plugin cdylib exporting a real busbar_plugin::hot::PlaneDecl over the HOT-tier ABI. The in-tree both-ways (compiled-in vs dropped-in) coverage for kind:plane, and the copy-me template a plane author exports through busbar_plugin_sdk::export_plane!."
+license = "Apache-2.0"
+
+[lib]
+# cdylib for the HOT-ABI drop-in delivery; rlib is REQUIRED both so `cargo test` emits the cdylib
+# artifact at all (the same rlib-alongside-cdylib reason the other example fixtures carry) AND so the drop-in conformance test can
+# link this crate's `PLANE_DECL` const as the COMPILED-IN reference to compare the dropped-in decl
+# against — the plane's both-ways proof.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# The HOT-tier plane ABI types (PlaneDecl, BuildCtx, WorkItem, RawStatus, …). A plane author authors a
+# real PlaneDecl against this crate; the SDK below only emits the boundary symbols.
+busbar-plugin = { path = "../busbar-plugin" }
+# The plane export macro (`export_plane!`) + the `plane` re-export module — the copy-me surface.
+busbar-plugin-sdk = { path = "../plugin-sdk" }

@@ -133,8 +133,12 @@ pub struct HookEnv {
     pub projectors: std::sync::Arc<busbar_plugin_loader::hook::HookProjectors>,
     /// The secret resolver used to turn any SecretRef-typed hook setting (e.g. a `licenseKey`) into
     /// its raw value BEFORE the settings cross the ABI at open/configure (ADR-0010). Shared with the
-    /// store/auth open paths; the same fail-closed resolver.
-    pub secret_resolver: std::sync::Arc<crate::config::secret::SecretResolver>,
+    /// store/auth open paths; the same fail-closed resolver. Held behind the NEUTRAL
+    /// [`busbar_api::SecretResolve`] trait — not the engine's concrete `config::secret::SecretResolver`
+    /// — so `hooks` no longer names a `busbar-core::config` type (DECISION #19: busbar-core dissolves).
+    /// The concrete resolver impls the trait (same crate), so the wiring hands the identical instance;
+    /// only the static type at this boundary is narrowed (DECISION #9: byte-identity, behavior identical).
+    pub secret_resolver: std::sync::Arc<dyn busbar_api::SecretResolve>,
     /// Names of hooks that have already emitted the loud [`hook_inert_gate_banner`] THIS build. A
     /// gate named in several pools' `hooks:` lists (and/or `global_hooks`) resolves once per
     /// reference — `resolve_pool_rewrites` runs once per pool, `resolve_rewrite_hooks` once for
@@ -152,7 +156,7 @@ impl HookEnv {
     /// environment.
     pub fn new(
         registry: std::sync::Arc<busbar_plugin_loader::PluginRegistry>,
-        secret_resolver: std::sync::Arc<crate::config::secret::SecretResolver>,
+        secret_resolver: std::sync::Arc<dyn busbar_api::SecretResolve>,
     ) -> Self {
         HookEnv {
             registry,
@@ -171,7 +175,7 @@ impl HookEnv {
         &self,
         settings: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<serde_json::Map<String, serde_json::Value>, String> {
-        crate::config::secret::resolve_settings(settings, &self.secret_resolver)
+        crate::config::secret::resolve_settings(settings, self.secret_resolver.as_ref())
     }
 
     /// PRE-BUILD FAIL-CLOSED PASS: resolve every configured hook's SecretRef settings ONCE, up

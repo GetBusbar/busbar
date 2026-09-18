@@ -49,6 +49,11 @@ busbar-api = { path = "../api" }
 # leg and socket-capable tokio into a pure kind's closure. Every module that moved is re-exported
 # from this crate under its old name.
 busbar-a2a-codec = { path = "../busbar-a2a-codec" }
+# THE PLANE'S IMPURE HOST CRATE. The first byte-safe step of the fat-crate collapse moved the A2A
+# plane's DIAGNOSTICS catalog here (a self-contained leaf that names nothing in this crate); this
+# crate re-exports it under the old `busbar_a2a::diagnostics` path. The rest of the host surface
+# drains into here in the oracle-gated money cell, after which this crate's name is deleted.
+busbar-plane-a2a-host = { path = "../busbar-plane-a2a-host" }
 # The plane's own runtime surface — the same workspace pins core takes, for the plane code that moved
 # here whole: the transports (tokio, reqwest, futures, tonic/tonic-types/prost + a2a-pb for the gRPC
 # binding, tower), the config codecs (serde, serde_yaml, indexmap), the trust crypto (sha2, hex,
@@ -154,3 +159,14 @@ rustls-pki-types = { workspace = true }
 busbar-store-memory = { path = "../store-memory" }
 busbar-secret-ref = { path = "../secret-ref" }
 busbar-plugin-sign = { path = "../plugin-sign" }
+# THE ADMIN JSON-REST SERVICE, dev-only — a dev-dep BACK-EDGE, not linked into any shipped target
+# (the same shape as busbar-mcp's `busbar-llm` back-edge). `/api/v1/admin/*` is served by
+# busbar-admin, which busbar-core nests through the runtime fn-pointer seam `busbar_core::admin::seam`;
+# production registers it via `busbar_admin::install()` at the composition root. This plane crate's
+# `test-support` engine path never calls it, so the admin surface is absent and every trust-verb test
+# is a router-level 404. The `adminverbs_tests` battery installs the seam for THIS crate's own test
+# binary — see the `#[cfg(test)]`-gated `busbar_admin::install()` there. A dev-dependency (not a
+# normal/optional dep) is what keeps the real build graph one-directional: dev-deps are compiled only
+# when testing THIS crate, never when busbar-admin (which itself dev-depends on this crate) links it
+# as a library, so no reverse edge exists in any non-test build.
+busbar-admin = { path = "../busbar-admin" }

@@ -486,6 +486,24 @@
    ]
   },
   {
+   "id": "crates/busbar-admin/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-admin/src"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-admin/src/tests"
+   ]
+  },
+  {
    "id": "crates/busbar-caps/src",
    "kind": "production",
    "paths": [
@@ -743,6 +761,42 @@
      },
      "report": "rotate_key unbounded id (fixed), auth.mode replaced the chain (fixed), malformed pools/export replaced with empty (fixed), consent decoder panic (fixed); validate cannot see boot-only checks, inferred pool knobs discarded, oauth_as task leak per apply, overlay no interpolation reported"
     }
+   ]
+  },
+  {
+   "id": "crates/busbar-core-config/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-core-config/src"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-core-config/src/tests"
+   ]
+  },
+  {
+   "id": "crates/busbar-core-hooks/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-core-hooks/src"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-core-hooks/src/tests"
    ]
   },
   {
@@ -1121,6 +1175,24 @@
    ]
   },
   {
+   "id": "crates/busbar-oauth2/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-oauth2/src"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-oauth2/src/tests"
+   ]
+  },
+  {
    "id": "crates/busbar-plane-a2a/src",
    "kind": "production",
    "paths": [
@@ -1202,6 +1274,24 @@
      },
      "report": "an ordinary non-streaming answer never ends its unit (the terminal test asks only whether the result carries a kind discriminator, so every Task and Message answer reads as a mid-stream frame and an envelope with neither result nor error reads as complete); refusals outside the first twenty reasons all render as internal error; a message with no identifier is answered; approve names the first configured agent whatever the unit asked for and never the task"
     }
+   ]
+  },
+  {
+   "id": "crates/busbar-plane-a2a-host/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-plane-a2a-host/src"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-plane-a2a-host/src/tests"
    ]
   },
   {
@@ -1425,6 +1515,42 @@
      },
      "report": "refusals outside the first twenty reasons all render as internal error, so a rate limit, an open breaker and a drain reach the caller as a node fault; an answer carrying neither result nor error is reported and billed as complete; the markup-normalisation floor the retiring engine applies has no call site here; the plane names another plane as a string literal; the round cap the session counter exists for has no reader"
     }
+   ]
+  },
+  {
+   "id": "crates/busbar-plane-mcp-host/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-plane-mcp-host/src"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-plane-mcp-host/src/tests"
+   ]
+  },
+  {
+   "id": "crates/busbar-plane-streaming/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-plane-streaming/src"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-plane-streaming/src/tests"
    ]
   },
   {
@@ -3354,6 +3480,24 @@
    ]
   },
   {
+   "id": "crates/plane-example/src",
+   "kind": "production",
+   "paths": [
+    "crates/plane-example/src"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null,
+   "exclude": [
+    "crates/plane-example/src/tests"
+   ]
+  },
+  {
    "id": "crates/plugin-loader/src",
    "kind": "production",
    "paths": [
@@ -4048,6 +4192,21 @@
    ]
   },
   {
+   "id": "crates/busbar-admin/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-admin/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
    "id": "crates/busbar-caps/src/tests",
    "kind": "test",
    "paths": [
@@ -4087,6 +4246,21 @@
      "report": "busbar-landq-state/gate/audits/tests-kernel.md"
     }
    ]
+  },
+  {
+   "id": "crates/busbar-contract-transport/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-contract-transport/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
   },
   {
    "id": "crates/busbar-contract-transport/tests",
@@ -4381,6 +4555,21 @@
    ]
   },
   {
+   "id": "crates/busbar-oauth2/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-oauth2/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
    "id": "crates/busbar-plane-a2a/src/tests",
    "kind": "test",
    "paths": [
@@ -4448,6 +4637,21 @@
      "report": "the only allocation gate measures the request direction, so nothing holds the per-frame relay path the arena reset is pinned for; no test feeds an ordinary successful answer through the response decoder, which is what let the terminal test ship wrong in both directions"
     }
    ]
+  },
+  {
+   "id": "crates/busbar-plane-a2a-host/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-plane-a2a-host/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
   },
   {
    "id": "crates/busbar-plane-admin/src/tests",
@@ -4577,6 +4781,51 @@
      "report": "the only allocation gate calls no plane method at all, so nothing holds the per-frame relay path the arena reset is pinned for"
     }
    ]
+  },
+  {
+   "id": "crates/busbar-plane-mcp-host/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-plane-mcp-host/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-plane-streaming/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-plane-streaming/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-plane-streaming/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-plane-streaming/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
   },
   {
    "id": "crates/busbar-plane-voice/src/tests",

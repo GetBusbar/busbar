@@ -13,7 +13,6 @@ license = "Apache-2.0"
 [dependencies]
 memchr = { workspace = true }
 busbar-contract = { path = "../busbar-contract" }
-busbar-contract-transport = { path = "../busbar-contract-transport" }
 busbar-transport-http = { path = "../busbar-transport-http" }
 futures = { workspace = true }
 tokio = { workspace = true, features = ["sync"] }

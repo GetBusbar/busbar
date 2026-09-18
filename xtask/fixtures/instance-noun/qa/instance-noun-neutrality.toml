@@ -1,0 +1,4 @@
+# fixture baseline: one GHOST row (stale) that names no live leak.
+[[leak]]
+noun = "mcp"
+file = "crates/ghost-nonexistent.rs"

@@ -19,7 +19,12 @@ pub mod named_map;
 /// Neutral config-parsing helpers (`parse_duration_secs`, `parse_ceiling`), relocated out of
 /// `admin::`/`admin::v1::contract` (1.6.0 de-vocab): both are consumed by `config_validate` and
 /// `named_map`, not the admin HTTP API. See the module doc.
-pub mod parse;
+///
+/// LANDED in `busbar-core-config` (DECISIONS #5/#19 config neutral-half wave): the helpers name
+/// only the neutral spine, so they moved byte-identically to `busbar_core_config::parse` and are
+/// RE-EXPORTED here so every `crate::config::parse::…` / `busbar_core::config::parse::…` caller is
+/// unchanged.
+pub use busbar_core_config::parse;
 /// The secret-reference type: `{ module, settings }` + the `{env}`/`{file}` sugar.
 pub mod patch;
 /// The 1.6.0-only key PRE-PASS: lift the additive keys off a document before the frozen
@@ -427,7 +432,7 @@ pub struct RootCfg {
     /// generation. Lowering it here would give the registry two representations that could disagree
     /// about what the operator approved — precisely the disagreement the trust lifecycle removes by
     /// DERIVING state from intent-versus-observation instead of storing it.
-    pub tool_defs: Box<dyn crate::plane::config::PlaneCfg>,
+    pub tool_defs: Box<dyn busbar_substrate::plane::config::PlaneCfg>,
     /// Optional native inbound TLS. `None` ⇒ plain HTTP (today's path, byte-for-byte).
     pub tls: Option<TlsCfg>,
     /// Separate admin listen address — the admin API is served ONLY here, never on the data
@@ -510,7 +515,7 @@ pub struct RootCfg {
     // Neutral capture when this section's owning plane is compiled out: the resolved registry type
     // does not exist then, and a non-empty `agents:` section is refused at `resolve` (the raw capture
     // is carried through unchanged, as `RootCfg` is for any plane section whose plane is off).
-    pub agent_defs: Box<dyn crate::plane::config::PlaneCfg>,
+    pub agent_defs: Box<dyn busbar_substrate::plane::config::PlaneCfg>,
     /// The `tool_pools:` failover pools for this section's owning plane, carried through `resolve`
     /// VERBATIM — operator intent, like `tool_defs` beside it, projected onto
     /// `state::App::tool_pools` at build. Empty ⇒ no failover on that plane.
@@ -678,6 +683,7 @@ pub fn resolve_auth(
 
     AuthCfg {
         signing_key: auth.signing_key.clone(),
+        operator_pub: auth.operator_pub.clone(),
         chain,
         admin_auth,
         role_bindings: auth.role_bindings.clone(),
@@ -1321,7 +1327,10 @@ impl DeployCfg {
     /// `Some`; the section KEYS are read off the frozen static
     /// [`busbar_substrate::plane::config::NAMED_MAP_SECTIONS`] mirror so this accessor spells no
     /// plane noun.
-    pub fn plane_section(&self, section: &str) -> Option<&dyn crate::plane::config::PlaneCfg> {
+    pub fn plane_section(
+        &self,
+        section: &str,
+    ) -> Option<&dyn busbar_substrate::plane::config::PlaneCfg> {
         let mirror = busbar_substrate::plane::config::NAMED_MAP_SECTIONS;
         if section == mirror[2] {
             Some(&*self.tools.0)
@@ -1338,7 +1347,7 @@ impl DeployCfg {
     pub fn plane_section_mut(
         &mut self,
         section: &str,
-    ) -> Option<&mut dyn crate::plane::config::PlaneCfg> {
+    ) -> Option<&mut dyn busbar_substrate::plane::config::PlaneCfg> {
         let mirror = busbar_substrate::plane::config::NAMED_MAP_SECTIONS;
         if section == mirror[2] {
             Some(&mut *self.tools.0)

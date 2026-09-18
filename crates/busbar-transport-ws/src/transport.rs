@@ -10,22 +10,22 @@ use std::sync::{Arc, Mutex as SyncMutex};
 use futures::{Stream, StreamExt};
 
 use busbar_contract::dest::{DestinationFacts, VerifiedDestination};
+use busbar_contract::transport::registry::facts as tfacts;
+use busbar_contract::transport::wire::ArrivalRecord;
+use busbar_contract::transport::wire::CloseReason;
+use busbar_contract::transport::wire::Conn;
+use busbar_contract::transport::wire::Direction;
+use busbar_contract::transport::wire::FrameMeta;
+use busbar_contract::transport::wire::Listener;
+use busbar_contract::transport::wire::TransportError;
+use busbar_contract::transport::wire::Unit0Trigger;
+use busbar_contract::transport::AbiVersion;
 use busbar_contract::unit::Refusal;
 use busbar_contract::wire::Frame;
 use busbar_contract::{
     grammar::SelectorForm, ArenaBytes, Fut, Kind, Plugin, SlabBytes, StreamId, Transport,
     TransportConfigView, TransportKeyHandle, TransportMeta,
 };
-use busbar_contract_transport::registry::facts as tfacts;
-use busbar_contract_transport::wire::ArrivalRecord;
-use busbar_contract_transport::wire::CloseReason;
-use busbar_contract_transport::wire::Conn;
-use busbar_contract_transport::wire::Direction;
-use busbar_contract_transport::wire::FrameMeta;
-use busbar_contract_transport::wire::Listener;
-use busbar_contract_transport::wire::TransportError;
-use busbar_contract_transport::wire::Unit0Trigger;
-use busbar_contract_transport::AbiVersion;
 use tokio_tungstenite::tungstenite::Message;
 
 use crate::conn::{ConnState, LowerFacts, LowerIo, Sock, WsConnHandle};
@@ -172,6 +172,21 @@ impl WsTransport {
             max_message_bytes: std::sync::atomic::AtomicUsize::new(0),
             lower: None,
         }
+    }
+
+    /// A transport with no layer under it, carrying the message ceiling its embedder named.
+    ///
+    /// The no-lower twin of [`WsTransport::over_with_max_message_bytes`]. An instance driven only
+    /// through [`WsTransport::handshake_over`] or [`WsTransport::adopt`] never reaches
+    /// [`Transport::listen`] — nothing binds it, so nothing hands it a configuration view — so the
+    /// one place its message ceiling can arrive is the embedder that constructs it. The plain
+    /// [`WsTransport::new`] leaves the number zero and tungstenite's own default stands, which is the
+    /// behaviour that constructor keeps.
+    #[must_use]
+    pub fn with_max_message_bytes(max: usize) -> Self {
+        let t = Self::new();
+        t.max_message_bytes.store(max, Ordering::Relaxed);
+        t
     }
 
     /// A transport composed over `lower` — the layer that binds, accepts and dials on its behalf.
@@ -332,7 +347,7 @@ impl Plugin for WsTransport {
         Kind::Transport
     }
     fn abi(&self) -> AbiVersion {
-        busbar_contract_transport::registry::TRANSPORT_ABI
+        busbar_contract::transport::registry::TRANSPORT_ABI
     }
 }
 
@@ -363,19 +378,19 @@ impl TransportMeta for WsTransport {
     // no encryption of its own, so that is the only composition under which `wss` is honest, and
     // `dial` refuses a secure target over any other lower layer.
     const COMPOSES_OVER: &'static [&'static str] = &["http", "tcp", "tls"];
-    const HANDOFF: Option<busbar_contract_transport::wire::Handoff> = None;
-    const FRAMING: busbar_contract_transport::wire::Framing =
-        busbar_contract_transport::wire::Framing::Stream;
+    const HANDOFF: Option<busbar_contract::transport::wire::Handoff> = None;
+    const FRAMING: busbar_contract::transport::wire::Framing =
+        busbar_contract::transport::wire::Framing::Stream;
     const SESSION: bool = true;
     const SESSION_BOUND: bool = true;
     const UNIT0_TRIGGER: Option<Unit0Trigger> = Some(Unit0Trigger::Upgrade);
     const UPGRADES_TO: &'static [&'static str] = &[];
-    const HANDSHAKE_TRIGGER: Option<busbar_contract_transport::wire::HandshakeTrigger> = None;
+    const HANDSHAKE_TRIGGER: Option<busbar_contract::transport::wire::HandshakeTrigger> = None;
     const TRANSPORT_FACTS: &'static [&'static str] = &[tfacts::PATH, tfacts::PEER];
     const DECODES_PAYLOAD: bool = false;
     // "frames after the upgrade carry no status leg" — the transports table's own words for this
     // row.
-    const STATUS_CLASS: Option<busbar_contract_transport::wire::StatusAt> = None;
+    const STATUS_CLASS: Option<busbar_contract::transport::wire::StatusAt> = None;
     const STATUS_NAMESPACE: Option<&'static str> = None;
 }
 
@@ -467,7 +482,7 @@ impl Transport for WsTransport {
             let beneath = dest
                 .beneath(
                     lower.key(),
-                    busbar_contract_transport::dest::UpstreamAddress::Socket {
+                    busbar_contract::transport::dest::UpstreamAddress::Socket {
                         authority,
                         sni: address.sni().or(if secure {
                             Some(intern(&host_name))
@@ -518,7 +533,28 @@ impl Transport for WsTransport {
                     return None;
                 }
                 let mut slot = state.reader.lock().await;
-                let taken = slot.take()?;
+                let Some(taken) = slot.take() else {
+                    drop(slot);
+                    // The reader is gone. A connection that was closed or fenced put it back before
+                    // this poll and is a clean end — the checks above already caught those, but the
+                    // window between them and this lock is a real one, so re-read the fences here and
+                    // end quietly if either fired. What is left is the reader being HELD by another
+                    // live `frames()` stream on a clone of this `Conn`: a WebSocket carries one
+                    // message stream and it has exactly one reader, so a second consumer cannot get
+                    // frames. Returning `None` here would report it as a peer that cleanly closed —
+                    // indistinguishable from a real close, and a silent lie about a session that is
+                    // still running for the first consumer. It is a caller-side contract violation,
+                    // and the honest answer is to say so loudly rather than fake an end of stream.
+                    if state.is_poisoned() || state.is_closed() {
+                        return None;
+                    }
+                    panic!(
+                        "busbar-transport-ws: frames() called concurrently on the same connection; \
+                         a WebSocket carries one message stream with one reader and admits exactly \
+                         one consumer — the second silently terminating as a clean close would be a \
+                         session cut nothing could see"
+                    );
+                };
                 drop(slot);
                 // The reader belongs to the connection, not to this future. Holding it in a guard
                 // is what makes a cancelled read the same non-event a cancelled poll of any other
@@ -638,6 +674,14 @@ impl Transport for WsTransport {
             if state.is_poisoned() {
                 return Err(TransportError::Framing);
             }
+            // ONE copy, and it is the floor. `bytes` is an `ArenaBytes<'a>` — a borrow into the
+            // caller's arena, which owns the storage and outlives nothing here — and tungstenite's
+            // `Message::Binary` takes owned `Bytes` it holds until the frame is flushed. `Vec ->
+            // Bytes` is itself zero-copy (the allocation is reused), so this `to_vec` is the single
+            // unavoidable copy. Removing it would mean handing the sink an `Arc`-backed `Bytes` that
+            // shares the payload's storage, which the borrowed `ArenaBytes` cannot supply without
+            // widening `Transport::write`'s ABI to pass owned/shared bytes — a change to the one
+            // contract every transport implements, out of proportion to one memcpy. Left as is.
             let payload = bytes.as_slice().to_vec();
             let n = payload.len();
             // The lock first, the fence second. A write dropped while still QUEUED on the writer
@@ -666,10 +710,10 @@ impl Transport for WsTransport {
         _fields: &[(&str, &[u8])],
         body: &[u8],
         arena: &'a dyn busbar_contract::Arena,
-    ) -> Result<ArenaBytes<'a>, busbar_contract_transport::wire::Encode> {
+    ) -> Result<ArenaBytes<'a>, busbar_contract::transport::wire::Encode> {
         arena
             .alloc_bytes(body)
-            .map_err(|_| busbar_contract_transport::wire::Encode::ArenaExhausted)
+            .map_err(|_| busbar_contract::transport::wire::Encode::ArenaExhausted)
     }
 
     /// The `http` → `ws` upgrade, from the side that owns what comes out.
@@ -703,7 +747,7 @@ impl Transport for WsTransport {
         })
     }
 
-    fn detach(&self, conn: &Conn) -> Option<busbar_contract_transport::wire::RawStream> {
+    fn detach(&self, conn: &Conn) -> Option<busbar_contract::transport::wire::RawStream> {
         // Nothing upgrades in-band over `ws` (`UPGRADES_TO` is empty), so there is no raw stream
         // this layer ever hands up.
         let _ = conn;
@@ -756,12 +800,30 @@ impl Transport for WsTransport {
                 Some(state) if state.is_poisoned() => Err(TransportError::Closed),
                 Some(state) => {
                     let payload = bytes.as_slice().to_vec();
+                    // The lock first, the fence second — the identical discipline `write` and the
+                    // Ping-answer path hold, and for the identical reason: a send interrupted
+                    // mid-frame (this future dropped, or the send erroring) has put a partial WS
+                    // frame on the wire, and a later write that resumed on that socket would splice
+                    // its bytes onto the tail of a torn one. Arming only after the lock is held keeps
+                    // a send still QUEUED on the writer — which put no bytes out — from condemning a
+                    // healthy connection. The refusal finalises the connection right below, but the
+                    // fence is what makes the send honest in the window a cancellation opens before
+                    // that.
                     let mut w = state.writer.lock().await;
-                    let sent = futures::SinkExt::send(&mut *w, Message::Binary(payload.into()))
-                        .await
-                        .map_err(|_| TransportError::Reset);
+                    let mut guard = PoisonGuard {
+                        state: &state,
+                        armed: true,
+                    };
+                    let sent =
+                        futures::SinkExt::send(&mut *w, Message::Binary(payload.into())).await;
+                    // Disarm only on a clean completion: a send that erred left the same
+                    // possibly-torn frame a dropped one does, so both fence — exactly as `write`
+                    // returns through its own `?` with the guard still armed.
+                    if sent.is_ok() {
+                        guard.armed = false;
+                    }
                     drop(w);
-                    sent
+                    sent.map_err(|_| TransportError::Reset)
                 }
             };
             // Finalised on every path, including the failures: a refusal ends the connection, and

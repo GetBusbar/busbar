@@ -98,6 +98,14 @@ pub mod kind {
     /// (metrics/logs/audit/traces) OUT to an external backend. Its payload schema lives in
     /// [`crate::cold::export`].
     pub const EXPORT: &str = "export";
+    /// A protocol PLANE (`busbar_api`-neutral HOT-tier ABI) delivered as a `cdylib` and driven over
+    /// the `#[repr(C)]` [`crate::hot::PlaneDecl`] vtable. UNLIKE the five cold kinds it does NOT speak
+    /// the six-symbol JSON `call` wire: it shares the SAME tarball / signed-manifest / trust pipeline
+    /// (`busbar_abi` transport handshake + `busbar_plugin_kind`) but hands core its `PlaneDecl` through
+    /// the dedicated [`crate::hot::symbol::PLANE_DECL`] entrypoint. The per-kind "payload" axis for a
+    /// plane is the airlock minor ([`crate::ABI_MINOR`]); its transport-version handshake is the
+    /// SHARED [`TRANSPORT_VERSION`], so the discovery/trust half is reused byte-for-byte.
+    pub const PLANE: &str = "plane";
 
     /// [`STORE`], NUL-terminated — return `STORE_NUL.as_ptr()` from `busbar_plugin_kind()`.
     pub const STORE_NUL: &[u8] = b"store\0";
@@ -109,6 +117,8 @@ pub mod kind {
     pub const HOOK_NUL: &[u8] = b"hook\0";
     /// [`EXPORT`], NUL-terminated — return `EXPORT_NUL.as_ptr()` from `busbar_plugin_kind()`.
     pub const EXPORT_NUL: &[u8] = b"export\0";
+    /// [`PLANE`], NUL-terminated — return `PLANE_NUL.as_ptr()` from `busbar_plugin_kind()`.
+    pub const PLANE_NUL: &[u8] = b"plane\0";
 }
 
 /// The store-plugin PAYLOAD schema version (the signed manifest's `abi_version` for `kind: store`).

@@ -349,8 +349,18 @@ fn skip_value(bytes: &[u8], mut i: usize) -> Option<usize> {
 /// TEXT, which the composition root must compare against the battery's recorded answers on the day
 /// it switches this plane on. That is stated here rather than left for someone to discover.
 fn refusal_render(reason: RefusalReason) -> (i64, &'static str) {
+    // THE MATCH IS TOTAL — there is no `_` arm. Before this, only nine of the 42 reasons were mapped
+    // and the rest collapsed to `CODE_INTERNAL`, so a rate limit, an open breaker, a drain or a spent
+    // budget reached the caller as "this node broke" — a node fault a client retries the wrong way.
+    // This protocol has its own code for a policy refusal (`CODE_REFUSED`), so a busbar admission /
+    // rate / budget refusal is a policy refusal and says so; only a genuine node fault is internal,
+    // and each is listed explicitly so a new reason is a compile error, never a silent collapse.
     match reason {
         RefusalReason::BodyTooLarge => (jsonrpc::CODE_INVALID_REQUEST, "the request is too large"),
+        RefusalReason::DecodeFailed => (
+            jsonrpc::CODE_INVALID_REQUEST,
+            "the request could not be read",
+        ),
         RefusalReason::SchemeNotDeclared
         | RefusalReason::CredentialRejected
         | RefusalReason::SessionUnbound
@@ -360,18 +370,57 @@ fn refusal_render(reason: RefusalReason) -> (i64, &'static str) {
         ),
         // The caller is known and may not do this. This protocol has its own code for a policy
         // refusal, and it is outside the range the specification reserves for itself.
-        RefusalReason::ScopeMissing | RefusalReason::Vetoed | RefusalReason::Revoked => (
+        RefusalReason::ScopeMissing
+        | RefusalReason::Vetoed
+        | RefusalReason::Revoked
+        | RefusalReason::PoolNotPermitted => (
             jsonrpc::CODE_REFUSED,
             "the caller may not perform this operation",
         ),
-        // There is nowhere for it to go, which this protocol names specifically.
-        RefusalReason::NoDestination => (
+        // There is nowhere for it to go, or the way there is shut, which this protocol names
+        // specifically.
+        RefusalReason::NoDestination
+        | RefusalReason::DestinationUnreachable
+        | RefusalReason::BreakerOpen
+        | RefusalReason::DestinationBudgetExhausted => (
             jsonrpc::CODE_UPSTREAM_UNAVAILABLE,
             "no server is reachable for this request",
         ),
-        // Everything else is this node saying no for a reason that is this node's own. A caller is
-        // told that it failed here, and is told nothing about the money, the buckets or the store.
-        _ => (
+        // Every busbar-specific admission / capacity / rate / budget / drain refusal. A policy said
+        // no; the caller is told that and nothing about the money, the buckets or the store.
+        RefusalReason::InFlightCap
+        | RefusalReason::CursorBudget
+        | RefusalReason::SessionBudget
+        | RefusalReason::OpenSlotBusy
+        | RefusalReason::OverBudget
+        | RefusalReason::GroupFrozen
+        | RefusalReason::Unpriced
+        | RefusalReason::OverdraftCeiling
+        | RefusalReason::StaleSlice
+        | RefusalReason::TierMismatch
+        | RefusalReason::SpillBudget
+        | RefusalReason::ArenaBudget
+        | RefusalReason::RateLimited
+        | RefusalReason::ChallengeExhausted
+        | RefusalReason::NoRate
+        | RefusalReason::Replayed
+        | RefusalReason::InFlight
+        | RefusalReason::Drain
+        | RefusalReason::Superseded
+        | RefusalReason::ClientGone
+        | RefusalReason::DeadlineExceeded
+        | RefusalReason::Stalled => (
+            jsonrpc::CODE_REFUSED,
+            "the request could not be served at this time",
+        ),
+        // A genuine node-internal fault — this node did break, and the caller is owed that fact and
+        // not a false policy refusal.
+        RefusalReason::DurabilityUnavailable
+        | RefusalReason::MeterDisputed
+        | RefusalReason::HandoffMismatch
+        | RefusalReason::PlanePanic
+        | RefusalReason::TaskLost
+        | RefusalReason::SecretPlaceholder => (
             jsonrpc::CODE_INTERNAL,
             "the request could not be served at this time",
         ),
@@ -613,9 +662,19 @@ impl Plane for McpPlane {
         }
         // A result whose discriminator says it is finished IS finished. One that asks the caller for
         // something, or hands back a task, is a turn rather than an ending: the exchange continues.
+        //
+        // COMPLETE IS EARNED, NOT ASSUMED. A JSON-RPC answer carries exactly one of `result` or
+        // `error`; a document with NEITHER is not a terminal answer at all. It used to fall through to
+        // the `else` and bill `Complete` — charging the caller for a full answer that never came, a
+        // money boundary crossed on an empty envelope. Complete now requires the `result` member to
+        // be present; an envelope with no result and no error is `Partial` (what arrived, arrived)
+        // and is billed as such, never as a completed turn.
+        let has_result = has(body, jsonrpc::PTR_RESULT);
         let kind = read_str(body, jsonrpc::PTR_RESULT_TYPE);
         let finish = if is_error {
             FinishClass::Error
+        } else if !has_result {
+            FinishClass::Partial
         } else if matches!(
             kind,
             Some(jsonrpc::RESULT_TYPE_INPUT_REQUIRED | jsonrpc::RESULT_TYPE_TASK)

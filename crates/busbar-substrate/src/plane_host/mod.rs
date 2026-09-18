@@ -190,6 +190,101 @@ pub enum VerifyOutcome {
     Refuse(axum::response::Response),
 }
 
+/// THE LOOP'S ANSWER SHAPE at the unified boundary (DECISIONS #28), plane-neutral.
+///
+/// When a rider runs on the kernel Teller loop (`busbar_kernel::teller::run_unit`), the loop returns
+/// only the money/lifecycle `Ended`; the request's ANSWER bytes are read back out of the plane's own
+/// `ctx.key`-keyed binding table (the admin template — `AdminUnitTable`). `PlaneAnswer` is what a
+/// rider stashes into that table and the outer async handler serves. Two shapes, per #28:
+///
+/// - [`PlaneAnswer::Unary`] — buffered status + headers + body, crosses the sync channel and settles
+///   at Encode on the final byte count (the admin cleanliness caller and every unary verb, including
+///   an SSE body materialised after dispatch).
+/// - [`PlaneAnswer::Live`] — a live body the outer handler serves directly, governed at admit
+///   (auth/verify/approve/admit/audit ran unary), bypassing the Encode-emits-bytes path (the llm
+///   RouteLeg emits this).
+///
+/// NEUTRAL BY CONSTRUCTION: nothing here names a plane, a dialect or a verb, and it lives in the
+/// neutral substrate tier — NOT in `busbar-kernel`, which keeps naming zero planes and zero answer
+/// shapes. It coexists with the shipped [`crate::plane_host`] `PlaneDispatch`-role carriers (#28): a
+/// plane's arena (`DispatchScope`) rides its own loop value, so nothing in this shape carries it.
+pub enum PlaneAnswer {
+    /// Buffered: status, headers, body bytes. Settles at Encode on the final byte count.
+    Unary(
+        axum::http::StatusCode,
+        axum::http::HeaderMap,
+        axum::body::Bytes,
+    ),
+    /// A live body the outer async handler serves directly, governed at admit.
+    Live(axum::response::Response),
+}
+
+impl PlaneAnswer {
+    /// Materialise either shape into the one response the outer handler serves. `Unary` is rebuilt
+    /// status-for-header-for-byte so a buffered answer serves byte-identically to the response the
+    /// plane shaped; `Live` is handed through untouched.
+    pub fn into_response(self) -> axum::response::Response {
+        match self {
+            PlaneAnswer::Unary(status, headers, body) => {
+                let mut resp = axum::response::Response::new(axum::body::Body::from(body));
+                *resp.status_mut() = status;
+                *resp.headers_mut() = headers;
+                resp
+            }
+            PlaneAnswer::Live(resp) => resp,
+        }
+    }
+}
+
+/// THE PLANE-NEUTRAL IN-FLIGHT ANSWER TABLE (DECISIONS #28), keyed by the unit's `ctx.key`.
+///
+/// The kernel Teller loop (`busbar_kernel::teller::run_unit`) returns only the money/lifecycle
+/// `Ended`; a rider stashes its [`PlaneAnswer`] here at the step that produced it (Route, or a
+/// pre-charge refusal) and the outer async handler reads it back by key AFTER the loop returns —
+/// mirroring `AdminUnitTable` (the admin template, `admin_mount.rs`). NEUTRAL BY CONSTRUCTION: the
+/// key is a bare `u64` (the raw `ctx.key`), so this names no plane, no dialect and no verb, and it
+/// lives in the neutral substrate tier — every rider (mcp first, then a2a/voice/llm) reuses this ONE
+/// table with zero new seam code.
+#[derive(Default)]
+pub struct PlaneInFlight {
+    slots: std::sync::Mutex<std::collections::BTreeMap<u64, Option<PlaneAnswer>>>,
+}
+
+impl PlaneInFlight {
+    /// An empty table.
+    #[must_use]
+    pub fn new() -> Self {
+        PlaneInFlight::default()
+    }
+
+    /// Open a slot for a unit about to run. Idempotent; a re-open clears any prior answer.
+    pub fn open(&self, key: u64) {
+        self.slots
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(key, None);
+    }
+
+    /// Record the unit's answer, at the step that produced it.
+    pub fn store(&self, key: u64, answer: PlaneAnswer) {
+        self.slots
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(key, Some(answer));
+    }
+
+    /// Take the unit's answer out and forget the slot, after the loop returned. `None` if the unit
+    /// produced no answer (a path that never reached the step that stores one).
+    #[must_use]
+    pub fn take(&self, key: u64) -> Option<PlaneAnswer> {
+        self.slots
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&key)
+            .flatten()
+    }
+}
+
 /// A protocol plane's contribution to the shared gauntlet: the pre-admission destination check
 /// (stage 2, sync) and the byte-identical engine that admits, routes, meters and finishes the
 /// request (stages 4+5, async). The SHARED sequence ([`run_gauntlet`]) owns only stage 1 (identity,
@@ -209,6 +304,17 @@ pub trait GauntletPlane: Send + Sync {
     /// in-place dispatch. Takes `self: Box<Self>` so the plane moves its owned per-request payload
     /// (body/parsed form/grant) into the engine; object-safe, so `run_gauntlet` drives it as `dyn`.
     async fn drive(self: Box<Self>, req: GauntletRequest<'_>) -> axum::response::Response;
+
+    /// THIS PLANE'S CAPABILITY KEY, for the composition-tier host-selection seam
+    /// ([`register_gauntlet_runner`]). `None` (the DEFAULT) means "run me on the substrate loop,
+    /// exactly as today" — so with nothing overridden and nothing registered, every path is
+    /// byte-identical to the shipped release. A plane opts onto the unified kernel loop by returning
+    /// its key AND the composition root registering a runner under it (an oracle-gated flip, #29).
+    /// NEUTRAL: the trait names no plane; each plane spells its own key, and the seam only ever
+    /// compares strings.
+    fn capability_key(&self) -> Option<&str> {
+        None
+    }
 }
 
 /// The successful OPEN-PASS ADMISSION result of [`admit_open`] — the request cleared the verify-before-
@@ -407,17 +513,90 @@ fn admit_open(
     }
 }
 
-/// THE SHARED GAUNTLET SEQUENCE — the ONE request path every protocol plane rides, now the Teller
-/// loop ([`crate::teller::run_unit`]) over the [`GauntletAdapter`]. Stage 1 identity is already
-/// resolved (threaded via `req.gov`); the loop runs the plane's `verify_destination` at Verify, in
-/// the correct PRE-ADMISSION position, and only if it proceeds the plane's `drive` at Route (its own
-/// byte-identical engine + metering). Returns the plane's (possibly streaming) response verbatim.
-/// The plane owns admission/route/metering/finish; the loop owns solely the order (nothing may
-/// reject after a charge) — so all planes enforce that invariant in ONE place.
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// THE COMPOSITION-TIER HOST-SELECTION SEAM (loop unification, DECISIONS #28).
+//
+// A per-capability-keyed registry of KERNEL-LOOP runners the composition root installs at boot
+// (mirrors the admin-mount-seam, busbar-core/src/admin/seam.rs). The kernel loop lives in
+// `busbar-kernel`, which this tier does not depend on, so the runners are FN-POINTERS root injects.
+// The gauntlet free fns below consult the registry by the request's plane capability key: if a
+// runner is registered, route to it; UNSET (the default) runs today's substrate loop, byte-identical.
+// NEUTRAL: the seam names no plane — it is a `&str`-keyed table, exactly as `AdminUnitTable` is
+// `ctx.key`-keyed. Per-plane flip = registering that one plane's runner, oracle-gated (#29).
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+/// A kernel-loop one-shot runner, as the composition root injects it: the kernel-loop twin of
+/// [`run_gauntlet`], erased to a fn-pointer so this tier need not name `busbar-kernel`.
+pub type GauntletRunner = for<'a> fn(
+    GauntletRequest<'a>,
+    Box<dyn GauntletPlane + 'a>,
+) -> std::pin::Pin<
+    Box<dyn std::future::Future<Output = axum::response::Response> + Send + 'a>,
+>;
+
+/// A kernel-loop session runner, the kernel-loop twin of [`run_gauntlet_session`].
+pub type SessionRunner = for<'a> fn(
+    GauntletRequest<'a>,
+    Box<dyn GauntletPlane + 'a>,
+) -> Result<Admitted, axum::response::Response>;
+
+static ONE_SHOT_RUNNERS: std::sync::RwLock<
+    std::collections::BTreeMap<&'static str, GauntletRunner>,
+> = std::sync::RwLock::new(std::collections::BTreeMap::new());
+
+static SESSION_RUNNERS: std::sync::RwLock<std::collections::BTreeMap<&'static str, SessionRunner>> =
+    std::sync::RwLock::new(std::collections::BTreeMap::new());
+
+/// Register a kernel-loop one-shot runner for a plane capability key. Composition root only, at boot.
+/// Last-write-wins and idempotent. Registering a key is the per-plane FLIP onto the unified loop.
+pub fn register_gauntlet_runner(key: &'static str, runner: GauntletRunner) {
+    ONE_SHOT_RUNNERS
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(key, runner);
+}
+
+/// Register a kernel-loop session runner for a plane capability key. Composition root only, at boot.
+pub fn register_session_runner(key: &'static str, runner: SessionRunner) {
+    SESSION_RUNNERS
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(key, runner);
+}
+
+fn one_shot_runner(key: &str) -> Option<GauntletRunner> {
+    ONE_SHOT_RUNNERS
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(key)
+        .copied()
+}
+
+fn session_runner(key: &str) -> Option<SessionRunner> {
+    SESSION_RUNNERS
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(key)
+        .copied()
+}
+
+/// THE SHARED GAUNTLET SEQUENCE — the ONE request path every protocol plane rides. It consults the
+/// host-selection seam first: a plane whose capability key has a kernel-loop runner registered rides
+/// the UNIFIED kernel loop; every other plane (the default) rides the substrate Teller loop
+/// ([`crate::teller::run_unit`]) over the [`GauntletAdapter`], byte-identical to the shipped release.
+/// Stage 1 identity is already resolved (threaded via `req.gov`); the loop runs the plane's
+/// `verify_destination` at Verify, in the correct PRE-ADMISSION position, and only if it proceeds the
+/// plane's `drive` at Route (its own byte-identical engine + metering). Returns the plane's (possibly
+/// streaming) response verbatim. The plane owns admission/route/metering/finish; the loop owns solely
+/// the order (nothing may reject after a charge) — so all planes enforce that invariant in ONE place.
 pub async fn run_gauntlet(
     req: GauntletRequest<'_>,
     plane: Box<dyn GauntletPlane + '_>,
 ) -> axum::response::Response {
+    let selected = plane.capability_key().and_then(one_shot_runner);
+    if let Some(runner) = selected {
+        return runner(req, plane).await;
+    }
     let unit = gauntlet_unit(&req);
     crate::teller::run_unit(GauntletAdapter { plane: Some(plane) }, unit).await
 }
@@ -441,6 +620,10 @@ pub fn run_gauntlet_session(
     req: GauntletRequest<'_>,
     plane: Box<dyn GauntletPlane + '_>,
 ) -> Result<Admitted, axum::response::Response> {
+    let selected = plane.capability_key().and_then(session_runner);
+    if let Some(runner) = selected {
+        return runner(req, plane);
+    }
     admit_open(&req, plane)
 }
 
@@ -1499,3 +1682,58 @@ pub trait ContainerGateSink: PlaneSlots {
 #[cfg(test)]
 #[path = "tests/gauntlet_session_tests.rs"]
 mod gauntlet_session_tests;
+
+#[cfg(test)]
+mod plane_answer_tests {
+    use super::PlaneAnswer;
+
+    #[tokio::test]
+    async fn unary_materialises_status_headers_and_body_byte_for_byte() {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert("content-type", "application/json".parse().unwrap());
+        headers.insert("x-busbar-plane", "neutral".parse().unwrap());
+        let body = axum::body::Bytes::from_static(b"{\"ok\":true}");
+        let answer = PlaneAnswer::Unary(
+            axum::http::StatusCode::ACCEPTED,
+            headers.clone(),
+            body.clone(),
+        );
+
+        let resp = answer.into_response();
+        assert_eq!(resp.status(), axum::http::StatusCode::ACCEPTED);
+        assert_eq!(resp.headers(), &headers);
+        let got = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .expect("body drains");
+        assert_eq!(got, body);
+    }
+
+    #[tokio::test]
+    async fn live_is_handed_through_untouched() {
+        let mut live = axum::response::Response::new(axum::body::Body::from("stream"));
+        *live.status_mut() = axum::http::StatusCode::CREATED;
+        let resp = PlaneAnswer::Live(live).into_response();
+        assert_eq!(resp.status(), axum::http::StatusCode::CREATED);
+    }
+
+    #[test]
+    fn plane_in_flight_stores_and_takes_by_key() {
+        use super::PlaneInFlight;
+        let table = PlaneInFlight::new();
+        table.open(7);
+        // Before a store, the slot yields nothing.
+        assert!(table.take(9).is_none());
+        table.store(
+            7,
+            PlaneAnswer::Unary(
+                axum::http::StatusCode::OK,
+                axum::http::HeaderMap::new(),
+                axum::body::Bytes::from_static(b"x"),
+            ),
+        );
+        let taken = table.take(7);
+        assert!(matches!(taken, Some(PlaneAnswer::Unary(..))));
+        // Taken once, gone after.
+        assert!(table.take(7).is_none());
+    }
+}

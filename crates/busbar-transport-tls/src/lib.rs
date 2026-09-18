@@ -34,21 +34,21 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use busbar_contract::transport::registry::facts as tfacts;
+use busbar_contract::transport::wire::ArrivalRecord;
+use busbar_contract::transport::wire::CertFacts;
+use busbar_contract::transport::wire::CloseReason;
+use busbar_contract::transport::wire::Conn;
+use busbar_contract::transport::wire::ConnHandle;
+use busbar_contract::transport::wire::Direction;
+use busbar_contract::transport::wire::FrameMeta;
+use busbar_contract::transport::wire::Listener;
+use busbar_contract::transport::wire::ListenerHandle;
+use busbar_contract::transport::wire::TransportError;
 use busbar_contract::{
     ArenaBytes, Frame, Fut, Kind, Plugin, Refusal, SlabBytes, StreamId, Transport,
     TransportConfigView, TransportKeyHandle, TransportMeta,
 };
-use busbar_contract_transport::registry::facts as tfacts;
-use busbar_contract_transport::wire::ArrivalRecord;
-use busbar_contract_transport::wire::CertFacts;
-use busbar_contract_transport::wire::CloseReason;
-use busbar_contract_transport::wire::Conn;
-use busbar_contract_transport::wire::ConnHandle;
-use busbar_contract_transport::wire::Direction;
-use busbar_contract_transport::wire::FrameMeta;
-use busbar_contract_transport::wire::Listener;
-use busbar_contract_transport::wire::ListenerHandle;
-use busbar_contract_transport::wire::TransportError;
 use futures::Stream;
 use rustls_pki_types::ServerName;
 use tokio::io::{AsyncReadExt, AsyncWriteExt, ReadHalf, WriteHalf};
@@ -65,13 +65,16 @@ pub use rustls;
 /// How many bytes one read syscall may fill a frame with.
 pub const READ_CHUNK_BYTES: usize = 16 * 1024;
 
-/// How long an inbound TLS handshake has to complete before the connection is dropped.
+/// How long a TLS handshake has to complete before the connection is dropped — the same budget on
+/// both directions.
 ///
-/// `accept` runs the handshake inline, so without a budget one peer that opens a TCP connection and
-/// then sends nothing holds the accept loop for as long as it likes — a listener taken out of
-/// service by a client that never spent a byte. Ten seconds is the same budget the egress
-/// connector's own connect timeout is set to, so the two ends of this crate's tolerance for a peer
-/// that will not talk are one number rather than two.
+/// `accept`/`adopt` run the handshake inline, so without a budget one peer that opens a TCP
+/// connection and then sends nothing holds the accept loop for as long as it likes — a listener
+/// taken out of service by a client that never spent a byte. `dial` runs its handshake inline too,
+/// with the mirror-image exposure: a completed TCP connect proves nothing about whether the upstream
+/// will ever send a ServerHello, and an unbounded handshake there parks the dial task and its
+/// socket. Ten seconds is one number for both ends of this crate's tolerance for a peer that will
+/// not talk, rather than two.
 pub const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Any duplex byte stream this transport can run a handshake over: the socket it opened itself, or
@@ -178,8 +181,8 @@ pub struct TlsTransport {
     listeners: Mutex<HashMap<String, (Arc<TcpListener>, u64)>>,
     server_configs: Mutex<HashMap<u64, Arc<rustls::ServerConfig>>>,
     client_configs: Mutex<HashMap<u64, Arc<rustls::ClientConfig>>>,
-    /// How long an inbound handshake has to complete; [`HANDSHAKE_TIMEOUT`] unless a caller said
-    /// otherwise.
+    /// How long a handshake — inbound (`accept`/`adopt`) or outbound (`dial`) — has to complete;
+    /// [`HANDSHAKE_TIMEOUT`] unless a caller said otherwise.
     handshake_timeout: Duration,
 }
 
@@ -209,8 +212,8 @@ impl TlsTransport {
         }
     }
 
-    /// Set the budget an inbound handshake has to complete in, for a deployment — or a battery cell
-    /// — whose tolerance is not the default ten seconds.
+    /// Set the budget a handshake — inbound or outbound — has to complete in, for a deployment — or
+    /// a battery cell — whose tolerance is not the default ten seconds.
     #[must_use]
     pub fn with_handshake_timeout(mut self, budget: Duration) -> Self {
         self.handshake_timeout = budget;
@@ -354,6 +357,25 @@ impl TlsTransport {
             _ => TransportError::Closed,
         }
     }
+
+    /// Map an IO error that arose on an ALREADY-ESTABLISHED session — a read or write after the
+    /// handshake has completed — rather than during the handshake itself.
+    ///
+    /// It differs from [`map_io_err`](Self::map_io_err) on exactly one kind. During the handshake,
+    /// `io::ErrorKind::InvalidData` is rustls saying the peer could not be authenticated, which is a
+    /// `HandshakeFailed`. On a live session the handshake already succeeded — the peer WAS
+    /// authenticated — and an `InvalidData` is instead a corrupted or tampered TLS record arriving
+    /// mid-stream: the record's authentication tag did not verify, or its length framing was wrong.
+    /// Reporting that as `HandshakeFailed` would tell an operator the identity check failed when it
+    /// did not; it is the transport's own framing that a record violated, so it maps to
+    /// [`TransportError::Framing`]. Every other kind carries the same meaning in both phases and is
+    /// deferred to [`map_io_err`](Self::map_io_err).
+    fn map_session_err(e: &io::Error) -> TransportError {
+        match e.kind() {
+            io::ErrorKind::InvalidData => TransportError::Framing,
+            _ => Self::map_io_err(e),
+        }
+    }
 }
 
 impl busbar_unit_transport_key::TlsConfigSink for TlsTransport {
@@ -396,8 +418,8 @@ impl Plugin for TlsTransport {
     fn kind(&self) -> Kind {
         Kind::Transport
     }
-    fn abi(&self) -> busbar_contract_transport::AbiVersion {
-        busbar_contract_transport::registry::TRANSPORT_ABI
+    fn abi(&self) -> busbar_contract::transport::AbiVersion {
+        busbar_contract::transport::registry::TRANSPORT_ABI
     }
 }
 
@@ -415,18 +437,18 @@ impl TransportMeta for TlsTransport {
     ];
     const EGRESS_SELECTOR_FORMS: &'static [busbar_contract::SelectorForm] = &[];
     const COMPOSES_OVER: &'static [&'static str] = &["tcp"];
-    const HANDOFF: Option<busbar_contract_transport::wire::Handoff> = None;
-    const FRAMING: busbar_contract_transport::wire::Framing =
-        busbar_contract_transport::wire::Framing::Stream;
+    const HANDOFF: Option<busbar_contract::transport::wire::Handoff> = None;
+    const FRAMING: busbar_contract::transport::wire::Framing =
+        busbar_contract::transport::wire::Framing::Stream;
     const SESSION: bool = true;
     const SESSION_BOUND: bool = true;
-    const UNIT0_TRIGGER: Option<busbar_contract_transport::wire::Unit0Trigger> =
-        Some(busbar_contract_transport::wire::Unit0Trigger::FirstBytes);
+    const UNIT0_TRIGGER: Option<busbar_contract::transport::wire::Unit0Trigger> =
+        Some(busbar_contract::transport::wire::Unit0Trigger::FirstBytes);
     const UPGRADES_TO: &'static [&'static str] = &[];
-    const HANDSHAKE_TRIGGER: Option<busbar_contract_transport::wire::HandshakeTrigger> = None;
+    const HANDSHAKE_TRIGGER: Option<busbar_contract::transport::wire::HandshakeTrigger> = None;
     const TRANSPORT_FACTS: &'static [&'static str] = &[tfacts::SNI, tfacts::ALPN, tfacts::PEER];
     const DECODES_PAYLOAD: bool = false;
-    const STATUS_CLASS: Option<busbar_contract_transport::wire::StatusAt> = None;
+    const STATUS_CLASS: Option<busbar_contract::transport::wire::StatusAt> = None;
     const STATUS_NAMESPACE: Option<&'static str> = None;
 }
 
@@ -546,10 +568,19 @@ impl Transport for TlsTransport {
             let server_name = ServerName::try_from(name)
                 .map_err(|_| TransportError::AddressRefused)?
                 .to_owned();
-            let tls_stream = connector
-                .connect(server_name, Box::new(stream) as BoxedIo)
-                .await
-                .map_err(|_| TransportError::HandshakeFailed)?;
+            // Bounded for the same reason `accept`/`adopt` are: the TCP connect above proves the
+            // far side answered a SYN, not that it will ever send a ServerHello. A stalled or
+            // hostile upstream that completes the handshake's transport leg and then goes silent
+            // would otherwise park this dial task — and the socket it holds — for the life of the
+            // process. On expiry the future is dropped, the IO drops with it, and the caller sees
+            // the same `Timeout` the inbound side reports for a handshake that never progressed.
+            let tls_stream = tokio::time::timeout(
+                self.handshake_timeout,
+                connector.connect(server_name, Box::new(stream) as BoxedIo),
+            )
+            .await
+            .map_err(|_| TransportError::Timeout)?
+            .map_err(|_| TransportError::HandshakeFailed)?;
             Ok(self.insert_client(tls_stream, addr, vec!["tcp", "tls"], local_port))
         })
     }
@@ -608,7 +639,9 @@ impl Transport for TlsTransport {
                 }
                 Err(e) => {
                     drop(guard);
-                    Some((Err(TlsTransport::map_io_err(&e)), None))
+                    // Post-handshake read: an `InvalidData` here is a bad record on a live session,
+                    // not a handshake that never completed.
+                    Some((Err(TlsTransport::map_session_err(&e)), None))
                 }
             }
         }))
@@ -627,14 +660,14 @@ impl Transport for TlsTransport {
                 InnerWrite::Server(w) => {
                     w.write_all(bytes.as_slice())
                         .await
-                        .map_err(|e| Self::map_io_err(&e))?;
-                    w.flush().await.map_err(|e| Self::map_io_err(&e))?;
+                        .map_err(|e| Self::map_session_err(&e))?;
+                    w.flush().await.map_err(|e| Self::map_session_err(&e))?;
                 }
                 InnerWrite::Client(w) => {
                     w.write_all(bytes.as_slice())
                         .await
-                        .map_err(|e| Self::map_io_err(&e))?;
-                    w.flush().await.map_err(|e| Self::map_io_err(&e))?;
+                        .map_err(|e| Self::map_session_err(&e))?;
+                    w.flush().await.map_err(|e| Self::map_session_err(&e))?;
                 }
             }
             Ok(bytes.len())
@@ -649,10 +682,10 @@ impl Transport for TlsTransport {
         _fields: &[(&str, &[u8])],
         body: &[u8],
         arena: &'a dyn busbar_contract::Arena,
-    ) -> Result<ArenaBytes<'a>, busbar_contract_transport::wire::Encode> {
+    ) -> Result<ArenaBytes<'a>, busbar_contract::transport::wire::Encode> {
         arena
             .alloc_bytes(body)
-            .map_err(|_| busbar_contract_transport::wire::Encode::ArenaExhausted)
+            .map_err(|_| busbar_contract::transport::wire::Encode::ArenaExhausted)
     }
 
     /// The in-band upgrade, from this side: the STARTTLS-shaped handoff the transports table names.
@@ -705,7 +738,7 @@ impl Transport for TlsTransport {
         })
     }
 
-    fn detach(&self, conn: &Conn) -> Option<busbar_contract_transport::wire::RawStream> {
+    fn detach(&self, conn: &Conn) -> Option<busbar_contract::transport::wire::RawStream> {
         // Checked BEFORE the removal, under the same lock: see the sibling `tcp` note. Removing
         // first and then failing to unwrap loses the connection — no stream up, no entry left.
         let mut registry = self.conns.lock().expect("poisoned");
@@ -723,7 +756,7 @@ impl Transport for TlsTransport {
             // registry had been torn, and there is no stream to hand up in that case.
             _ => return None,
         };
-        Some(busbar_contract_transport::wire::RawStream::new(
+        Some(busbar_contract::transport::wire::RawStream::new(
             Self::KEY,
             peer,
             Box::new(TokioAsyncReadCompatExt::compat(stream)),
@@ -796,7 +829,7 @@ impl Transport for TlsTransport {
 /// offer. Nothing is leaked per dial: both halves are already `'static`, which is what the closed
 /// address shape bought.
 fn split_address(
-    address: &busbar_contract_transport::dest::UpstreamAddress,
+    address: &busbar_contract::transport::dest::UpstreamAddress,
 ) -> Result<(&'static str, SocketAddr), TransportError> {
     let authority = address.authority().ok_or(TransportError::AddressRefused)?;
     let addr: SocketAddr = authority
@@ -863,8 +896,10 @@ where
 {
     w.write_all(bytes)
         .await
-        .map_err(|e| TlsTransport::map_io_err(&e))?;
-    w.flush().await.map_err(|e| TlsTransport::map_io_err(&e))
+        .map_err(|e| TlsTransport::map_session_err(&e))?;
+    w.flush()
+        .await
+        .map_err(|e| TlsTransport::map_session_err(&e))
 }
 
 #[cfg(test)]

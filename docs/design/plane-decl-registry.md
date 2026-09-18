@@ -208,7 +208,7 @@ below.
 message formats `crate::config::DEFAULT_MAX_ADMIN_SCOPE` — so config names `Scope` and `Scope` names
 config. The reference cannot be inverted by moving one end; the type and its message move together,
 and the message's constant has to move with them. `Scope` also carries `Grants`/`dominates`/`meet`
-used across the whole admin surface, so this is the admin plane's move, not the config layer's.
+used across the whole admin surface, so this is the admin cleanliness crate's move, not the config layer's.
 
 **`proto::registry::registry()` (1 site)** is core-live (`busbar-core/src/proto/registry.rs`), not a
 substrate shim. It retires on the protocol-registry axis.

@@ -420,11 +420,18 @@ end_group
 begin_group "BYTE-IDENTITY — the money path is byte-stable"
 if assert_bless_env_empty >/tmp/done-oracle-step.$$ 2>&1; then
   printf '  \033[32m[ok]\033[0m   bless/regen env (UPDATE_OPENAPI/BLESS_*/BUSBAR_BLESS_GOLDEN) is empty\n'
-  # MUST carry --features openapi-schema AND -p busbar (unifies the feature graph-wide) — the golden
-  # tests are cfg-gated on it, so without both the filter selects ZERO tests: a vacuous green. The broad
-  # `openapi` filter runs all three goldens (json-matches-committed, served-equals-committed,
-  # error-enum-matches), so the oracle's byte-identity check is real, matching cargo xtask full-gate.
-  step "openapi.json goldens match committed file"  filtered_cargo_test 15 cargo test -p busbar -p busbar-core --features openapi-schema --quiet openapi
+  # MUST carry --features openapi-schema AND -p busbar (unifies the feature graph-wide, so the plane
+  # crates' `openapi-schema` reaches busbar-admin's dev-dep edges) — the golden tests are cfg-gated on
+  # it, so without both the filter selects ZERO of them. The three byte-identity goldens (json-matches-
+  # committed, served-equals-committed, error-enum-matches) MOVED to busbar-admin with the admin service
+  # (1.6.0), so `-p busbar-admin` is REQUIRED: `-p busbar -p busbar-core` alone selects just 1 test
+  # (busbar-core's `a_plane_with_admin_verbs_documents_at_least_one_openapi_path`) against the expected
+  # 15 — a vacuity the count check catches. With busbar-admin added the `openapi` filter runs the real
+  # set (14 in busbar-admin + 1 in busbar-core = 15), so the oracle's byte-identity check is real,
+  # matching cargo xtask full-gate. Thread-count-independent: every busbar-admin openapi test installs
+  # the plane seam before reading `openapi_doc()` (see `openapi_doc_seamed` in that crate's json tests),
+  # so no `--test-threads=1` pin is needed for determinism.
+  step "openapi.json goldens match committed file"  filtered_cargo_test 15 cargo test -p busbar -p busbar-core -p busbar-admin --features openapi-schema --quiet openapi
   step "resolved billing+limits config byte-stable" filtered_cargo_test 1  cargo test -p busbar-core --quiet resolved_billing_and_limits_config_is_byte_stable
   # The six `*_round_trip_byte_exact` oracles live in busbar-llm-codec
   # (crates/busbar-llm-codec/src/tests/proto/same_proto_fidelity_tests.rs), not in busbar-llm.

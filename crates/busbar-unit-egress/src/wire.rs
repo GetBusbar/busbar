@@ -182,7 +182,7 @@ pub struct Delivered {
     /// Which pool cell the attempt was recorded against.
     pub pool: String,
     /// The transport's own reading of the first relayed frame, where it carries one.
-    pub status: Option<busbar_contract_transport::wire::WireStatusClass>,
+    pub status: Option<busbar_contract::transport::wire::WireStatusClass>,
     /// How many response frames were relayed to the client.
     pub frames: usize,
     /// The plane's reading of how the answer ended.
@@ -193,5 +193,5 @@ pub struct Delivered {
     /// The upstream's own refusal, relayed as-is — the number AND the numbering that spelled it,
     /// because a relayed `14` that does not say it is gRPC's is a number a reader can only guess
     /// at. Only a degraded caller asks for this; the walk fails over instead.
-    pub relayed_error: Option<busbar_contract_transport::wire::WireStatus>,
+    pub relayed_error: Option<busbar_contract::transport::wire::WireStatus>,
 }

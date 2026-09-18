@@ -8,7 +8,7 @@
 //! mount happens to fit the one protocol it was written beside".
 
 use super::*;
-use busbar_contract_transport::surface::{Answering, BindingDecl};
+use busbar_contract::transport::surface::{Answering, BindingDecl};
 
 const SVC: &str = "svc";
 

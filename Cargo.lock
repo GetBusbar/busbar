@@ -331,6 +331,7 @@ name = "busbar"
 version = "1.6.0"
 dependencies = [
  "arc-swap",
+ "async-trait",
  "axum",
  "base64 0.23.1",
  "busbar-a2a",
@@ -378,6 +379,7 @@ dependencies = [
  "bytes",
  "core_affinity",
  "criterion",
+ "ed25519-dalek",
  "futures",
  "hex",
  "http-body",
@@ -388,6 +390,7 @@ dependencies = [
  "rustls",
  "serde_json",
  "serde_yaml_ng",
+ "sha2 0.11.0",
  "socket2",
  "tikv-jemalloc-ctl",
  "tikv-jemallocator",
@@ -406,8 +409,10 @@ dependencies = [
  "axum",
  "base64 0.23.1",
  "busbar-a2a-codec",
+ "busbar-admin",
  "busbar-api",
  "busbar-core",
+ "busbar-plane-a2a-host",
  "busbar-plugin",
  "busbar-plugin-loader",
  "busbar-plugin-sign",
@@ -526,19 +531,10 @@ dependencies = [
 name = "busbar-contract"
 version = "1.6.0"
 dependencies = [
- "busbar-contract-transport",
  "busbar-grammar",
  "futures",
  "serde",
  "serde_json",
-]
-
-[[package]]
-name = "busbar-contract-transport"
-version = "1.6.0"
-dependencies = [
- "futures",
- "serde",
 ]
 
 [[package]]
@@ -554,6 +550,7 @@ dependencies = [
  "busbar-api",
  "busbar-auth-admin-tokens",
  "busbar-contract",
+ "busbar-core-config",
  "busbar-hooks-ranking",
  "busbar-llm",
  "busbar-mcp",
@@ -618,6 +615,18 @@ dependencies = [
  "webpki-roots",
  "zeroize",
 ]
+
+[[package]]
+name = "busbar-core-config"
+version = "1.6.0"
+dependencies = [
+ "busbar-contract",
+ "busbar-substrate",
+]
+
+[[package]]
+name = "busbar-core-hooks"
+version = "1.6.0"
 
 [[package]]
 name = "busbar-export-example-plugin"
@@ -731,10 +740,12 @@ dependencies = [
  "async-trait",
  "axum",
  "base64 0.23.1",
+ "busbar-admin",
  "busbar-api",
  "busbar-core",
  "busbar-llm",
  "busbar-mcp-codec",
+ "busbar-plane-mcp-host",
  "busbar-plugin",
  "busbar-plugin-loader",
  "busbar-plugin-sign",
@@ -808,6 +819,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "busbar-plane-a2a-host"
+version = "1.6.0"
+dependencies = [
+ "busbar-substrate",
+]
+
+[[package]]
 name = "busbar-plane-admin"
 version = "1.6.0"
 dependencies = [
@@ -835,6 +853,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "busbar-plane-mcp-host"
+version = "1.6.0"
+dependencies = [
+ "busbar-substrate",
+]
+
+[[package]]
+name = "busbar-plane-streaming"
+version = "1.6.0"
+dependencies = [
+ "async-trait",
+ "busbar-contract",
+ "busbar-voice-codec",
+ "bytes",
+ "serde_json",
+]
+
+[[package]]
 name = "busbar-plane-voice"
 version = "1.6.0"
 dependencies = [
@@ -855,6 +891,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "busbar-plugin-example-plane"
+version = "1.6.0"
+dependencies = [
+ "busbar-plugin",
+ "busbar-plugin-sdk",
+]
+
+[[package]]
 name = "busbar-plugin-loader"
 version = "1.5.0"
 dependencies = [
@@ -863,6 +907,7 @@ dependencies = [
  "busbar-caps",
  "busbar-kernel",
  "busbar-plugin",
+ "busbar-plugin-example-plane",
  "busbar-plugin-sign",
  "busbar-unit-ledger",
  "busbar-unit-verbs",
@@ -1021,7 +1066,6 @@ version = "1.6.0"
 dependencies = [
  "busbar-api",
  "busbar-contract",
- "busbar-contract-transport",
  "busbar-plugin",
  "busbar-timing",
  "bytes",
@@ -1053,7 +1097,6 @@ name = "busbar-transport-grpc"
 version = "1.6.0"
 dependencies = [
  "busbar-contract",
- "busbar-contract-transport",
  "busbar-transport-http",
  "busbar-transport-tcp",
  "bytes",
@@ -1073,7 +1116,6 @@ name = "busbar-transport-http"
 version = "1.6.0"
 dependencies = [
  "busbar-contract",
- "busbar-contract-transport",
  "busbar-transport-tcp",
  "busbar-transport-tls",
  "bytes",
@@ -1086,6 +1128,7 @@ dependencies = [
  "memchr",
  "rustls",
  "rustls-pki-types",
+ "sha2 0.11.0",
  "tokio",
  "tokio-rustls",
  "tokio-util",
@@ -1098,7 +1141,6 @@ version = "1.6.0"
 dependencies = [
  "busbar-caps",
  "busbar-contract",
- "busbar-contract-transport",
  "busbar-transport-http",
  "futures",
  "memchr",
@@ -1110,7 +1152,6 @@ name = "busbar-transport-stdio"
 version = "1.6.0"
 dependencies = [
  "busbar-contract",
- "busbar-contract-transport",
  "futures",
  "tokio",
 ]
@@ -1120,7 +1161,6 @@ name = "busbar-transport-tcp"
 version = "1.6.0"
 dependencies = [
  "busbar-contract",
- "busbar-contract-transport",
  "futures",
  "tokio",
  "tokio-util",
@@ -1132,7 +1172,6 @@ version = "1.6.0"
 dependencies = [
  "busbar-caps",
  "busbar-contract",
- "busbar-contract-transport",
  "busbar-transport-tcp",
  "busbar-unit-transport-key",
  "futures",
@@ -1150,7 +1189,6 @@ name = "busbar-transport-ws"
 version = "1.6.0"
 dependencies = [
  "busbar-contract",
- "busbar-contract-transport",
  "busbar-transport-http",
  "busbar-transport-tcp",
  "futures",
@@ -1215,7 +1253,6 @@ version = "1.6.0"
 dependencies = [
  "busbar-caps",
  "busbar-contract",
- "busbar-contract-transport",
  "busbar-unit-breaker",
  "futures",
 ]
@@ -1253,7 +1290,6 @@ version = "1.6.0"
 dependencies = [
  "busbar-caps",
  "busbar-contract",
- "busbar-contract-transport",
  "rcgen",
  "rustls",
 ]
@@ -1264,7 +1300,6 @@ version = "1.6.0"
 dependencies = [
  "busbar-caps",
  "busbar-contract",
- "busbar-contract-transport",
 ]
 
 [[package]]

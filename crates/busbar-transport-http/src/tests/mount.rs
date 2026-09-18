@@ -13,7 +13,7 @@
 //! answer, and a test that ran a real loop would be testing the loop.
 
 use super::*;
-use busbar_contract_transport::surface::{Answering, BindingDecl};
+use busbar_contract::transport::surface::{Answering, BindingDecl};
 
 const ENVELOPE: &str = "envelope";
 const ROUTED: &str = "routed";
@@ -306,11 +306,11 @@ fn every_published_reserved_key_is_declared() {
     let published: Vec<&str> = facts
         .iter()
         .map(|(k, _)| *k)
-        .filter(|k| busbar_contract_transport::registry::facts::is_reserved(k))
+        .filter(|k| busbar_contract::transport::registry::facts::is_reserved(k))
         .collect();
     assert!(!published.is_empty(), "the mount publishes reserved keys");
     assert!(
-        busbar_contract_transport::registry::facts::undeclared(MOUNT_FACTS, &published).is_none()
+        busbar_contract::transport::registry::facts::undeclared(MOUNT_FACTS, &published).is_none()
     );
 }
 
@@ -400,7 +400,7 @@ fn the_detached_driver_refuses_without_blaming_the_caller() {
     let r = request("/things/summary", "GET");
     let addressed = resolve(&SURFACE, &r).expect("a declared target");
     let answer = serve(
-        &busbar_contract_transport::driver::Detached,
+        &busbar_contract::transport::driver::Detached,
         &SURFACE,
         &r,
         &addressed,

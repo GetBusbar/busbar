@@ -13,8 +13,8 @@ use futures::Stream;
 use http::uri::PathAndQuery;
 use hyper_util::rt::{TokioExecutor, TokioIo};
 
+use busbar_contract::transport::wire::TransportError;
 use busbar_contract::StreamId;
-use busbar_contract_transport::wire::TransportError;
 
 use crate::codec::RawCodec;
 use crate::conn::ConnState;
@@ -116,7 +116,11 @@ pub(crate) async fn open_stream(
     // pseudo-header) — `Grpc::new` alone leaves both empty, which `hyper`'s h2 client rejects
     // (`MissingUriSchemeAndAuthority`), a real error this crate's own battery caught red before
     // this fix.
-    let mut grpc = tonic::client::Grpc::with_origin(dialer, origin);
+    // A bounded max decoding message size on the reading (upstream-answer) side too: an upstream's
+    // response is as untrusted as a peer's request, and one oversized length-prefixed message must
+    // not make the framing layer reserve unbounded memory. See [`crate::codec::MAX_MESSAGE_BYTES`].
+    let mut grpc = tonic::client::Grpc::with_origin(dialer, origin)
+        .max_decoding_message_size(crate::codec::MAX_MESSAGE_BYTES);
     grpc.ready().await.map_err(|_| TransportError::Refused)?;
     let path = PathAndQuery::try_from(method).map_err(|_| TransportError::AddressRefused)?;
     let response = match grpc

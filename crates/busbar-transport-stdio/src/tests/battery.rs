@@ -12,9 +12,9 @@ use std::time::Duration;
 use futures::StreamExt;
 use tokio::io::{split, AsyncWriteExt};
 
+use busbar_contract::transport::wire::Direction;
+use busbar_contract::transport::wire::TransportError;
 use busbar_contract::{ArenaBytes, Transport};
-use busbar_contract_transport::wire::Direction;
-use busbar_contract_transport::wire::TransportError;
 
 use crate::StdioTransport;
 
@@ -29,8 +29,8 @@ fn pair(
     t: &StdioTransport,
     cap: usize,
 ) -> (
-    busbar_contract_transport::wire::Conn,
-    busbar_contract_transport::wire::Conn,
+    busbar_contract::transport::wire::Conn,
+    busbar_contract::transport::wire::Conn,
 ) {
     let (end_a, end_b) = tokio::io::duplex(cap);
     // `tokio::io::duplex` already returns a connected PAIR: writes on `end_a` are what `end_b`
@@ -468,8 +468,8 @@ async fn a_refusal_on_a_fenced_connection_is_reported_closed() {
 #[allow(clippy::assertions_on_constants)]
 #[tokio::test]
 async fn transport_meta_matches_the_architecture_row() {
+    use busbar_contract::transport::wire::Unit0Trigger;
     use busbar_contract::TransportMeta;
-    use busbar_contract_transport::wire::Unit0Trigger;
     assert_eq!(<StdioTransport as TransportMeta>::KEY, "stdio");
     assert!(<StdioTransport as TransportMeta>::SESSION);
     assert!(<StdioTransport as TransportMeta>::SESSION_BOUND);
@@ -493,13 +493,13 @@ fn test_key_handle() -> busbar_contract::TransportKeyHandle {
     busbar_contract::TransportKeyHandle::issue(&Seal, 0, "test")
 }
 
-/// Test-only: [`busbar_contract_transport::wire::Conn`] is `Clone` (a cheap `Arc` handle), which is exactly
+/// Test-only: [`busbar_contract::transport::wire::Conn`] is `Clone` (a cheap `Arc` handle), which is exactly
 /// what lets several tasks hold "the same connection" the way a real caller's writer/closer/frame
 /// pump each hold their own clone. Named to make every call site read as what it is.
 trait CloneForTest {
     fn clone_for_test(&self) -> Self;
 }
-impl CloneForTest for busbar_contract_transport::wire::Conn {
+impl CloneForTest for busbar_contract::transport::wire::Conn {
     fn clone_for_test(&self) -> Self {
         self.clone()
     }
@@ -526,7 +526,7 @@ async fn argv_and_env_reach_the_spawned_child() {
     let mut frames = t.frames(conn.clone_for_test());
     let (_, frame) = frames.next().await.unwrap().unwrap();
     assert_eq!(frame.bytes.as_slice(), b"declared argzero");
-    t.close(conn, busbar_contract_transport::wire::CloseReason::Normal);
+    t.close(conn, busbar_contract::transport::wire::CloseReason::Normal);
 }
 
 /// The environment is cleared before anything the destination declared is set, so a child never
@@ -549,7 +549,7 @@ async fn the_child_inherits_no_environment_it_was_not_given() {
     let mut frames = t.frames(conn.clone_for_test());
     let (_, frame) = frames.next().await.unwrap().unwrap();
     assert_eq!(frame.bytes.as_slice(), b"home=[]");
-    t.close(conn, busbar_contract_transport::wire::CloseReason::Normal);
+    t.close(conn, busbar_contract::transport::wire::CloseReason::Normal);
 }
 
 /// A sealed destination naming `/bin/sh`, the given argument vector (with `argzero` appended to
@@ -575,7 +575,7 @@ fn program_dest(
         &Seal,
         busbar_contract::DestinationFacts::Upstream {
             transport: "stdio",
-            address: busbar_contract_transport::dest::UpstreamAddress::Program {
+            address: busbar_contract::transport::dest::UpstreamAddress::Program {
                 path: "/bin/sh",
                 args: argv,
                 env,
@@ -769,7 +769,7 @@ async fn a_closed_connection_delivers_no_further_frames() {
         "the fixture is only honest if the pump is parked on the silent peer"
     );
 
-    t.close(b, busbar_contract_transport::wire::CloseReason::Normal);
+    t.close(b, busbar_contract::transport::wire::CloseReason::Normal);
 
     let ended = tokio::time::timeout(Duration::from_secs(5), pump)
         .await

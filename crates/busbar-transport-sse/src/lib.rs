@@ -24,21 +24,22 @@ use std::collections::VecDeque;
 use std::pin::Pin;
 use std::sync::Arc;
 
+use busbar_contract::transport::wire::ArrivalRecord;
+use busbar_contract::transport::wire::CloseReason;
+use busbar_contract::transport::wire::Conn;
+use busbar_contract::transport::wire::Direction;
+use busbar_contract::transport::wire::FrameMeta;
+use busbar_contract::transport::wire::Listener;
+use busbar_contract::transport::wire::TransportError;
 use busbar_contract::{
     ArenaBytes, Frame, Fut, Kind, Plugin, Refusal, SlabBytes, StreamId, Transport,
     TransportConfigView, TransportKeyHandle, TransportMeta,
 };
-use busbar_contract_transport::wire::ArrivalRecord;
-use busbar_contract_transport::wire::CloseReason;
-use busbar_contract_transport::wire::Conn;
-use busbar_contract_transport::wire::Direction;
-use busbar_contract_transport::wire::FrameMeta;
-use busbar_contract_transport::wire::Listener;
-use busbar_contract_transport::wire::TransportError;
 use busbar_transport_http::HttpTransport;
 use futures::{Stream, StreamExt};
 
 pub(crate) mod proto;
+pub mod reframe;
 
 /// Carve every complete SSE frame sitting at the front of `buf`, resuming the terminator scan at
 /// `scanned` (rewound by three, the most of a four-byte terminator a previous look can have left
@@ -51,8 +52,12 @@ pub(crate) mod proto;
 /// frames the buffer holds; removing each frame as it is found instead moves the whole remaining
 /// tail once per frame, which is quadratic in the number of frames one buffer arrives holding — the
 /// ordinary shape when an upstream flushes a batch of events in a single body.
-fn carve_complete_frames(buf: &mut Vec<u8>, scanned: usize) -> (Vec<Vec<u8>>, usize) {
-    let mut carved: Vec<Vec<u8>> = Vec::new();
+///
+/// Each frame is carved straight into the `Arc<[u8]>` the emitted `Frame` carries, so a frame is
+/// copied out of the buffer exactly once rather than to an owned `Vec` and again on the conversion
+/// to the shared representation on the way out.
+fn carve_complete_frames(buf: &mut Vec<u8>, scanned: usize) -> (Vec<Arc<[u8]>>, usize) {
+    let mut carved: Vec<Arc<[u8]>> = Vec::new();
     let mut moved = 0_usize;
     let mut resume = scanned;
     // How much of `buf` has been carved into a frame already. Nothing is removed inside the loop:
@@ -62,7 +67,7 @@ fn carve_complete_frames(buf: &mut Vec<u8>, scanned: usize) -> (Vec<Vec<u8>>, us
         proto::find_frame_terminator_from(&buf[consumed..], resume.saturating_sub(3))
     {
         let end = consumed + offset + term_len;
-        carved.push(buf[consumed..end].to_vec());
+        carved.push(Arc::from(&buf[consumed..end]));
         consumed = end;
         // What follows a carved frame is a fresh frame's worth of bytes, none of it yet proven.
         resume = 0;
@@ -102,8 +107,8 @@ impl Plugin for SseTransport {
     fn kind(&self) -> Kind {
         Kind::Transport
     }
-    fn abi(&self) -> busbar_contract_transport::AbiVersion {
-        busbar_contract_transport::registry::TRANSPORT_ABI
+    fn abi(&self) -> busbar_contract::transport::AbiVersion {
+        busbar_contract::transport::registry::TRANSPORT_ABI
     }
 }
 
@@ -112,20 +117,20 @@ impl TransportMeta for SseTransport {
     const SELECTOR_FORMS: &'static [busbar_contract::SelectorForm] = &[];
     const EGRESS_SELECTOR_FORMS: &'static [busbar_contract::SelectorForm] = &[];
     const COMPOSES_OVER: &'static [&'static str] = &["http"];
-    const HANDOFF: Option<busbar_contract_transport::wire::Handoff> = None;
-    const FRAMING: busbar_contract_transport::wire::Framing =
-        busbar_contract_transport::wire::Framing::Stream;
+    const HANDOFF: Option<busbar_contract::transport::wire::Handoff> = None;
+    const FRAMING: busbar_contract::transport::wire::Framing =
+        busbar_contract::transport::wire::Framing::Stream;
     const SESSION: bool = false;
     const SESSION_BOUND: bool = false;
-    const UNIT0_TRIGGER: Option<busbar_contract_transport::wire::Unit0Trigger> = None;
+    const UNIT0_TRIGGER: Option<busbar_contract::transport::wire::Unit0Trigger> = None;
     const UPGRADES_TO: &'static [&'static str] = &[];
-    const HANDSHAKE_TRIGGER: Option<busbar_contract_transport::wire::HandshakeTrigger> = None;
+    const HANDSHAKE_TRIGGER: Option<busbar_contract::transport::wire::HandshakeTrigger> = None;
     const TRANSPORT_FACTS: &'static [&'static str] = &[];
     const DECODES_PAYLOAD: bool = false;
-    const STATUS_CLASS: Option<busbar_contract_transport::wire::StatusAt> =
-        Some(busbar_contract_transport::wire::StatusAt::FirstFrame);
+    const STATUS_CLASS: Option<busbar_contract::transport::wire::StatusAt> =
+        Some(busbar_contract::transport::wire::StatusAt::FirstFrame);
     const STATUS_NAMESPACE: Option<&'static str> =
-        Some(busbar_contract_transport::registry::status_ns::HTTP);
+        Some(busbar_contract::transport::registry::status_ns::HTTP);
 }
 
 impl Transport for SseTransport {
@@ -171,8 +176,8 @@ impl Transport for SseTransport {
         /// without the others — they describe one answer, so they move as one.
         #[derive(Clone, Copy, Default)]
         struct StatusLeg {
-            class: Option<busbar_contract_transport::wire::WireStatusClass>,
-            code: Option<busbar_contract_transport::wire::WireStatus>,
+            class: Option<busbar_contract::transport::wire::WireStatusClass>,
+            code: Option<busbar_contract::transport::wire::WireStatus>,
             retry_after_secs: Option<u64>,
         }
         struct State {
@@ -184,7 +189,12 @@ impl Transport for SseTransport {
             /// arriving chunk, which for one large trickled frame is the difference between a pass
             /// over the frame and a pass per chunk.
             scanned: usize,
-            pending: VecDeque<(Vec<u8>, StatusLeg)>,
+            pending: VecDeque<(Arc<[u8]>, StatusLeg)>,
+            /// The live byte count of `pending`, kept as frames are queued and dequeued so the
+            /// per-connection reading budget can be applied to the TOTAL buffered volume — the
+            /// carved-and-queued frames as well as the trailing incomplete one in `buf` — in O(1)
+            /// rather than by summing the queue on every arriving chunk.
+            pending_bytes: usize,
             status: StatusLeg,
             status_attached: bool,
             done: bool,
@@ -194,15 +204,16 @@ impl Transport for SseTransport {
             buf: Vec::new(),
             scanned: 0,
             pending: VecDeque::new(),
+            pending_bytes: 0,
             status: StatusLeg::default(),
             status_attached: false,
             done: false,
         };
         Box::pin(futures::stream::unfold(state, move |mut st| async move {
             loop {
-                if let Some((raw, status)) = st.pending.pop_front() {
-                    let len = raw.len() as u64;
-                    let bytes: Arc<[u8]> = raw.into();
+                if let Some((bytes, status)) = st.pending.pop_front() {
+                    let len = bytes.len() as u64;
+                    st.pending_bytes -= bytes.len();
                     let frame = Frame {
                         direction: Direction::Inbound,
                         stream: StreamId(0),
@@ -249,18 +260,22 @@ impl Transport for SseTransport {
                                     st.status_attached = true;
                                     st.status
                                 };
+                                st.pending_bytes += raw.len();
                                 st.pending.push_back((raw, status));
                             }
                         }
                         st.scanned = st.buf.len();
-                        if st.buf.len() > busbar_contract::MAX_CURSOR_BYTES {
-                            // What is left after every complete frame has been drained is ONE
-                            // frame's prefix, and the design's per-connection reading budget is
-                            // what one frame is allowed to be. Upstream bytes are untrusted and
-                            // this buffer has no cap a layer up — a streamed response body is
-                            // exactly what the served door's body limit does not reach — so an
-                            // upstream that never ends a frame would grow it for the life of the
-                            // connection. Ended here instead.
+                        if st.buf.len() + st.pending_bytes > busbar_contract::MAX_CURSOR_BYTES {
+                            // The design's per-connection reading budget is applied to the TOTAL
+                            // volume this connection is holding, not to the trailing incomplete
+                            // frame alone: the complete frames just carved off the front are queued
+                            // in `pending` awaiting emission, and one flush of many complete events
+                            // in a single body would otherwise carry unbounded bytes past a check
+                            // that only ever weighed the leftover prefix. Upstream bytes are
+                            // untrusted and this buffer has no cap a layer up — a streamed response
+                            // body is exactly what the served door's body limit does not reach — so
+                            // an upstream that never ends a frame, OR one that floods complete ones,
+                            // would grow this connection's held bytes without bound. Ended here.
                             //
                             // Frames carved off the front of this same buffer are dropped with it.
                             // The error is the stream's last word, and a consumer that kept polling
@@ -268,6 +283,7 @@ impl Transport for SseTransport {
                             // this transport has just refused to go on reading.
                             st.done = true;
                             st.pending.clear();
+                            st.pending_bytes = 0;
                             return Some((Err(TransportError::Framing), st));
                         }
                         if !st.pending.is_empty() {
@@ -279,6 +295,7 @@ impl Transport for SseTransport {
                         // terminal, so nothing queued behind it goes out after it.
                         st.done = true;
                         st.pending.clear();
+                        st.pending_bytes = 0;
                         return Some((Err(e), st));
                     }
                     None => {
@@ -292,18 +309,19 @@ impl Transport for SseTransport {
                         // frame is defensible and the framing error is what is left.
                         let failing = matches!(
                             st.status.class,
-                            Some(busbar_contract_transport::wire::WireStatusClass::ClientError)
+                            Some(busbar_contract::transport::wire::WireStatusClass::ClientError)
                                 | Some(
-                                    busbar_contract_transport::wire::WireStatusClass::ServerError
+                                    busbar_contract::transport::wire::WireStatusClass::ServerError
                                 )
-                                | Some(busbar_contract_transport::wire::WireStatusClass::Other)
+                                | Some(busbar_contract::transport::wire::WireStatusClass::Other)
                         );
                         if failing && !st.status_attached {
                             if st.buf.is_empty() {
                                 return Some((Err(TransportError::Framing), st));
                             }
                             st.status_attached = true;
-                            let raw = std::mem::take(&mut st.buf);
+                            let raw: Arc<[u8]> = std::mem::take(&mut st.buf).into();
+                            st.pending_bytes += raw.len();
                             st.pending.push_back((raw, st.status));
                             continue;
                         }
@@ -326,6 +344,26 @@ impl Transport for SseTransport {
                         if proto::frame_carries_a_field(&st.buf) {
                             return Some((Err(TransportError::Framing), st));
                         }
+                        // A body that ended without ever yielding an event, on a status that was
+                        // NOT a failure and so did not take the special-case above, yet left bytes
+                        // behind that are not an SSE field. A 2xx answered a `text/event-stream`
+                        // request with something that is not an event stream at all — a proxy's
+                        // HTML, a JSON blob — and dropping it silently hands the consumer a clean
+                        // empty success indistinguishable from a real empty event stream, losing the
+                        // upstream's whole answer. It is surfaced as one final frame wearing the
+                        // status leg `http` read off the head, the same way the failing-status body
+                        // above is, so the lost content is visible rather than vanishing.
+                        //
+                        // Gated on `!status_attached`: once an event HAS gone out, a non-field
+                        // leftover is the trailer/header section the layer below hands up as its own
+                        // frame — not a lost body — and it ends the stream cleanly, as before.
+                        if !st.status_attached && !st.buf.is_empty() {
+                            st.status_attached = true;
+                            let raw: Arc<[u8]> = std::mem::take(&mut st.buf).into();
+                            st.pending_bytes += raw.len();
+                            st.pending.push_back((raw, st.status));
+                            continue;
+                        }
                         return None;
                     }
                 }
@@ -347,7 +385,7 @@ impl Transport for SseTransport {
         fields: &[(&str, &[u8])],
         body: &[u8],
         arena: &'a dyn busbar_contract::Arena,
-    ) -> Result<busbar_contract::ArenaBytes<'a>, busbar_contract_transport::wire::Encode> {
+    ) -> Result<busbar_contract::ArenaBytes<'a>, busbar_contract::transport::wire::Encode> {
         // `sse` is a reading of an `http` response, and an outbound request on it is an HTTP one.
         self.http.encode_envelope(fields, body, arena)
     }
@@ -361,7 +399,7 @@ impl Transport for SseTransport {
         self.http.adopt(from, conn, keys)
     }
 
-    fn detach(&self, conn: &Conn) -> Option<busbar_contract_transport::wire::RawStream> {
+    fn detach(&self, conn: &Conn) -> Option<busbar_contract::transport::wire::RawStream> {
         self.http.detach(conn)
     }
 

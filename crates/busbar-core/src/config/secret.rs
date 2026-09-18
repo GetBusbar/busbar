@@ -197,7 +197,7 @@ pub(crate) fn classify_setting(value: &serde_json::Value) -> SettingShape<'_> {
 /// or a silently-empty value. `field` names the settings key in the error (never the secret value).
 pub(crate) fn resolve_settings(
     settings: &serde_json::Map<String, serde_json::Value>,
-    resolver: &SecretResolver,
+    resolver: &dyn busbar_api::SecretResolve,
 ) -> Result<serde_json::Map<String, serde_json::Value>, String> {
     let mut out = serde_json::Map::with_capacity(settings.len());
     for (field, value) in settings {

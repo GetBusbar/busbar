@@ -34,13 +34,20 @@ use crate::A2aPlane;
 
 /// The per-connection codec state this plane keeps.
 ///
-/// It holds a COUNT and nothing else. This protocol's framing is one document per frame, so there
-/// is no partial document to carry across a call; what a connection does need to remember is how far
-/// into a streamed answer it is, because a stream's last event is the one that ends the unit.
+/// This protocol's framing is one document per frame, so there is no partial document to carry
+/// across a call; what a connection does need to remember is how far into a streamed answer it is
+/// (a stream's last event is the one that ends the unit), and WHETHER the answer streams at all —
+/// a unary answer ends on its one result, a streamed one on the frame that says it is the last.
+/// The upstream half learns which it is at `encode_egress`, from the operation the request was, and
+/// `decode_response` reads it back to decide terminality.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Codec {
     /// How many event frames of a streamed answer this half has read.
     pub events_read: u32,
+    /// Whether the request this half carries expects a STREAMED answer. Set at `encode_egress` on
+    /// the upstream half from the request's operation; read at `decode_response`. A unary answer
+    /// ends on its result; a streamed one ends only on `final:true` (or an error).
+    pub streaming: bool,
 }
 
 /// The fact key the per-name projection reports the agent's own name under.
@@ -177,9 +184,21 @@ fn has(body: &[u8], pointer: &str) -> bool {
 /// must compare against the rig's recorded answers on the day it switches this plane on. That is
 /// stated here rather than left for someone to discover.
 fn refusal_render(reason: RefusalReason) -> (i64, &'static str) {
+    // THE MATCH IS TOTAL — there is no `_` arm. A2A's JSON-RPC binding names a small set of codes,
+    // so a busbar-specific condition rides the NEAREST defined binding with the real reason kept out
+    // of the words rather than a code the specification does not define (the rule the legacy plane's
+    // `rpcerror.rs` states: "a busbar-specific condition is mapped to the NEAREST binding ... rather
+    // than to a code the specification does not define"). The whole point of removing the catch-all
+    // is that a reason with no home is a COMPILE error here, never a silent collapse to an internal
+    // fault — the defect this exhaustive form exists to make impossible: a rate-limit, a breaker or a
+    // drain answered as "this node broke" tells the caller to retry the wrong thing.
     match reason {
-        // The caller's request was not one this node will take.
+        // The caller's request was not one this node could read or take.
         RefusalReason::BodyTooLarge => (jsonrpc::CODE_INVALID_REQUEST, "the request is too large"),
+        RefusalReason::DecodeFailed => (
+            jsonrpc::CODE_INVALID_REQUEST,
+            "the request could not be read",
+        ),
         RefusalReason::SchemeNotDeclared
         | RefusalReason::CredentialRejected
         | RefusalReason::SessionUnbound
@@ -188,7 +207,10 @@ fn refusal_render(reason: RefusalReason) -> (i64, &'static str) {
             "the request did not carry usable authority",
         ),
         // The caller is known and may not do this.
-        RefusalReason::ScopeMissing | RefusalReason::Vetoed | RefusalReason::Revoked => (
+        RefusalReason::ScopeMissing
+        | RefusalReason::Vetoed
+        | RefusalReason::Revoked
+        | RefusalReason::PoolNotPermitted => (
             jsonrpc::CODE_UNSUPPORTED_OPERATION,
             "the caller may not perform this operation",
         ),
@@ -197,12 +219,72 @@ fn refusal_render(reason: RefusalReason) -> (i64, &'static str) {
             jsonrpc::CODE_INVALID_PARAMS,
             "no agent is reachable for this request",
         ),
-        // Everything else is this node saying no for a reason that is this node's own. A caller is
-        // told that it failed here, and is told nothing about the money, the buckets or the store.
-        _ => (
+        // Every busbar-specific admission / capacity / rate / budget / breaker / drain refusal. The
+        // A2A JSON-RPC binding defines no code of its own for any of these, so each rides the nearest
+        // one — `UnsupportedOperation`, which is how the legacy plane answers its own admission
+        // refusals too — with a neutral message that leaks nothing about the money, the buckets or
+        // the store. A caller learns it was refused here and nothing more.
+        RefusalReason::InFlightCap
+        | RefusalReason::CursorBudget
+        | RefusalReason::SessionBudget
+        | RefusalReason::OpenSlotBusy
+        | RefusalReason::OverBudget
+        | RefusalReason::GroupFrozen
+        | RefusalReason::Unpriced
+        | RefusalReason::OverdraftCeiling
+        | RefusalReason::StaleSlice
+        | RefusalReason::TierMismatch
+        | RefusalReason::SpillBudget
+        | RefusalReason::ArenaBudget
+        | RefusalReason::RateLimited
+        | RefusalReason::ChallengeExhausted
+        | RefusalReason::NoRate
+        | RefusalReason::Replayed
+        | RefusalReason::InFlight
+        | RefusalReason::DestinationBudgetExhausted
+        | RefusalReason::BreakerOpen
+        | RefusalReason::DestinationUnreachable
+        | RefusalReason::Drain
+        | RefusalReason::Superseded
+        | RefusalReason::ClientGone
+        | RefusalReason::DeadlineExceeded
+        | RefusalReason::Stalled => (
+            jsonrpc::CODE_UNSUPPORTED_OPERATION,
+            "the request could not be served at this time",
+        ),
+        // A genuine node-internal fault — this node did break, and the caller is owed that fact and
+        // not a false policy refusal. Listed explicitly (never a catch-all) so a new reason cannot
+        // join this arm by accident.
+        RefusalReason::DurabilityUnavailable
+        | RefusalReason::MeterDisputed
+        | RefusalReason::HandoffMismatch
+        | RefusalReason::PlanePanic
+        | RefusalReason::TaskLost
+        | RefusalReason::SecretPlaceholder => (
             jsonrpc::CODE_INTERNAL,
             "the request could not be served at this time",
         ),
+    }
+}
+
+/// Whether one response frame ENDS its metering unit.
+///
+/// This is a money boundary: the frame this answers `true` for is the one that closes and bills the
+/// unit. It used to key on the ABSENCE of `/result/kind`, which was backwards — a real unary answer
+/// (a Task or Message) CARRIES a `kind`, so it read as non-terminal and its unit never closed, while
+/// an empty envelope carries none and read as terminal, billing `Complete` for nothing.
+///
+/// The honest predicate depends on the SHAPE of the exchange, which the wire alone cannot always
+/// tell (a streamed answer's first event can itself be a whole Task): a UNARY answer ends on its one
+/// answer — a `result` or an `error` — and an envelope carrying neither ends nothing; a STREAMED
+/// answer ends only when a frame says it is the last (`final:true`) or reports an error, so its
+/// intermediate events, `result` and all, are frames rather than endings.
+fn response_terminal(body: &[u8], streaming: bool) -> bool {
+    let is_error = has(body, jsonrpc::PTR_ERROR);
+    if streaming {
+        is_error || read_raw(body, jsonrpc::PTR_RESULT_FINAL) == Some(b"true".as_slice())
+    } else {
+        is_error || has(body, jsonrpc::PTR_RESULT)
     }
 }
 
@@ -432,10 +514,19 @@ impl Plane for A2aPlane {
         &self,
         u: &Unit<'u>,
         dest: &VerifiedDestination,
-        _st: Option<&mut PlaneSessionState>,
+        st: Option<&mut PlaneSessionState>,
         ctx: &Ctx<'u>,
     ) -> Result<EgressBody<'u>, Encode> {
         let body = u.body().body();
+        // Record on this upstream half whether the answer will STREAM, from the operation the request
+        // is. `decode_response` reads it back to end a unary answer on its result and a streamed one
+        // only on its last frame — the wire alone cannot always tell the two apart (a streamed
+        // answer's first event can itself be a whole Task).
+        if let Some(state) = st {
+            if let Some(codec) = state.get_mut::<Codec>() {
+                codec.streaming = Self::row_for_op(u.op()).is_some_and(|row| row.streaming);
+            }
+        }
         // The caller's envelope goes on unchanged unless a record leg came back saying the agent
         // knows this task by a different name. That is the ONE rewrite this protocol performs, and
         // it performs it for one reason: the identifier this node minted is not the identifier the
@@ -558,11 +649,14 @@ impl Plane for A2aPlane {
             }
         }
         let for_ = id.and_then(|raw| f::correlation_for(raw, ctx.arena()));
-        // An answer that says it is the last one is the last one. An answer carrying an error is
-        // also the last one, whatever it says about itself: an agent does not keep streaming after
-        // it has reported that it failed.
-        let final_event = read_raw(body, "/result/final") == Some(b"true".as_slice());
-        let terminal = is_error || final_event || !has(body, "/result/kind");
+        // Whether this exchange streams was decided when the request went out (`encode_egress` set
+        // it on this upstream half from the request's own operation). A unary answer ends on its one
+        // result; a streamed one ends on the frame that says it is the last. See `response_terminal`.
+        let streaming = st
+            .as_deref()
+            .and_then(PlaneSessionState::get::<Codec>)
+            .is_some_and(|codec| codec.streaming);
+        let terminal = response_terminal(body, streaming);
         if let Some(state) = st {
             if let Some(codec) = state.get_mut::<Codec>() {
                 codec.events_read = codec.events_read.saturating_add(1);

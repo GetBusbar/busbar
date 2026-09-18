@@ -1,0 +1,63 @@
+# busbar-plane-streaming — THE STREAMING PLANE, as an identity over the duplex/session dialects.
+#
+# WHAT THIS CRATE IS. One implementation of the plugin contract's plane kind for busbar's STREAMING
+# surface: long-lived, bidirectional, per-turn-governed sessions. Its dialects are the duplex/live
+# ones — `openai-realtime` and `gemini-live` (the live realtime VOICE dialect is one of them, not the
+# plane's name), the `twilio-media-streams` telephony grammar, and the one-shot transcribe/tts
+# operations. Voice is ONE dialect inside this plane; the plane is streaming.
+#
+# WHY IT DELEGATES. Every byte of every dialect this plane speaks is already read and written by the
+# duplex codecs in `busbar-voice-codec`, adapted onto the contract plane trait in `busbar-plane-voice`.
+# No wire format is written twice: this crate is the STREAMING identity (its own registry key, its own
+# capability key) over that proven adapter, so the reframe (the plane is streaming; voice is a dialect)
+# costs one crate and zero re-implemented codecs. If a byte differs between what this plane produces and
+# what the underlying adapter produces, the adapter is the answer and this crate has the bug.
+#
+# WHAT THIS CRATE IS NOT. There is no governance here, no breaker, no hook seat and no metering
+# arithmetic — those are units, on the far side of the kernel from a plane. The metering method returns
+# LOCATORS (where the per-turn quantities are), never a price. The routing method returns a plan, never
+# a connection. Nothing here opens a socket, reads a file or reads a clock other than the one the
+# context hands it: the plane's entire transitive closure is `busbar-contract` + `busbar-plane-voice` +
+# `busbar-voice-codec` (default features only — no runtime, no async, no `hyper`/`tokio`/`net`), the
+# same pure closure the voice plane keeps.
+[package]
+name = "busbar-plane-streaming"
+version = "1.6.0"
+publish = false            # internal workspace crate; never goes to crates.io
+edition = "2021"
+# One pinned number, set to what CI verifies — the same rationale every other member states.
+rust-version = "1.97"
+description = "The streaming plane for busbar: the plugin contract's plane and session-plane kinds for duplex/live sessions (openai-realtime, gemini-live, twilio, one-shot), with the live realtime voice dialect as one dialect among them — implemented as a thin identity over the busbar-plane-voice duplex adapter."
+license = "Apache-2.0"
+
+[lib]
+name = "busbar_plane_streaming"
+path = "src/lib.rs"
+
+# NO FEATURES, ON PURPOSE. A plane compiled two ways is two planes, and the kernel would have no way to
+# tell which one it registered. The contract crate holds itself to the same rule and asserts it.
+
+[dependencies]
+# THE CONTRACT. The one busbar crate a plugin manifest may name without argument.
+busbar-contract = { path = "../busbar-contract" }
+# THE CODECS. Read-only from here: this crate calls the plane-4 duplex/session IR and both dialect
+# readers/writers and edits none of them. `busbar-voice-codec`, NOT any plane crate: a plane naming
+# another plane is the `kind-isolation` gate's forbidden plane→plane edge, so the streaming plane adapts
+# the shared, pure, sync codec directly. The codec's default features carry no async surface, no `hyper`,
+# no `tokio`, no `net` — the closure a pure kind may hold.
+busbar-voice-codec = { path = "../busbar-voice-codec" }
+# The object notation the dialect wire (OpenAI Realtime, Gemini Live, Twilio) is written in. The adapter
+# hands values across the seam and never invents a second parser.
+serde_json = { workspace = true }
+# THE MEDIA-FRAME CARRIER. `IrAudioFrame::media` and the tool IR's opaque payloads are `bytes::Bytes`;
+# this crate reads and builds them at the same seam rather than converting through an owned `Vec<u8>`.
+bytes = { workspace = true }
+# THE SERVER-SIDE TOOL EXECUTOR PORT's async signature — an `async fn` in a trait object, written on the
+# `#[async_trait]` desugaring it always was. A proc-macro that expands to `Box`ed futures and pulls no
+# I/O into this crate's closure.
+async-trait = { workspace = true }
+
+[dev-dependencies]
+# The conformance rig drives the plane end-to-end over real openai-realtime (the voice dialect) wire
+# bytes, so it builds the same JSON fixtures the underlying codec tests use.
+serde_json = { workspace = true }

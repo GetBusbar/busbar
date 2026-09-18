@@ -386,6 +386,13 @@ pub fn normalize_raw_error(
     } else if (400..500).contains(&http_status) {
         // True 4xx (other than 401/403/408/429 above) — the caller's fault.
         StatusClass::ClientError
+    } else if http_status == 0 {
+        // No status at all: the upstream never answered (connection refused/reset, transport
+        // error, timeout with no response) — a failure OF the destination, which is what
+        // `StatusClass::Network` (a transient upstream failure that trips the cell) exists for.
+        // 1.5.5 mapped this (`a2a::relay::classify_hop`'s Transport arm) to Network; before this
+        // arm it fell to the 2xx/3xx arm below as `ClientFault`/RecordNothing and never tripped.
+        StatusClass::Network
     } else {
         // An unexpected non-error status (2xx/3xx) reaching the error path — the destination is not
         // at fault, so record nothing and relay as-is (the closest available disposition).

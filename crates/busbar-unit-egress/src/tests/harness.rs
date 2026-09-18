@@ -18,23 +18,23 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
+use busbar_contract::transport::registry::status_ns;
+use busbar_contract::transport::wire::ArrivalRecord;
+use busbar_contract::transport::wire::Conn;
+use busbar_contract::transport::wire::ConnHandle;
+use busbar_contract::transport::wire::Decode;
+use busbar_contract::transport::wire::Direction;
+use busbar_contract::transport::wire::Encode;
+use busbar_contract::transport::wire::FrameMeta;
+use busbar_contract::transport::wire::TransportError;
+use busbar_contract::transport::wire::WireStatus;
+use busbar_contract::transport::wire::WireStatusClass;
 use busbar_contract::{
     AdmitFacts, ArenaBytes, AuditFacts, ContentFacts, CredentialLocator, Ctx, DestinationFacts,
     EgressBody, Frame, Ingress, Ir, Kind, Labels, LaneId, PlaneFacts, Plugin, Progress, Refusal,
     RoutePlan, ScopeFacts, SlabBytes, StreamId, TransportEnvelope, TransportKeyHandle, Unit,
     UnitEnd, UsageLocators, VerifiedDestination,
 };
-use busbar_contract_transport::registry::status_ns;
-use busbar_contract_transport::wire::ArrivalRecord;
-use busbar_contract_transport::wire::Conn;
-use busbar_contract_transport::wire::ConnHandle;
-use busbar_contract_transport::wire::Decode;
-use busbar_contract_transport::wire::Direction;
-use busbar_contract_transport::wire::Encode;
-use busbar_contract_transport::wire::FrameMeta;
-use busbar_contract_transport::wire::TransportError;
-use busbar_contract_transport::wire::WireStatus;
-use busbar_contract_transport::wire::WireStatusClass;
 use busbar_unit_breaker::classify::{
     GRPC_ABORTED, GRPC_DATA_LOSS, GRPC_DEADLINE_EXCEEDED, GRPC_INTERNAL, GRPC_PERMISSION_DENIED,
     GRPC_RESOURCE_EXHAUSTED, GRPC_UNAUTHENTICATED, GRPC_UNAVAILABLE, GRPC_UNKNOWN,
@@ -829,8 +829,8 @@ impl Plugin for TestTransport {
         Kind::Transport
     }
 
-    fn abi(&self) -> busbar_contract_transport::AbiVersion {
-        busbar_contract_transport::AbiVersion(1)
+    fn abi(&self) -> busbar_contract::transport::AbiVersion {
+        busbar_contract::transport::AbiVersion(1)
     }
 }
 
@@ -850,13 +850,13 @@ impl busbar_contract::Transport for TestTransport {
         &'a self,
         _cfg: &'a dyn busbar_contract::TransportConfigView,
         _keys: &'a TransportKeyHandle,
-    ) -> busbar_contract::Fut<'a, busbar_contract_transport::wire::Listener> {
+    ) -> busbar_contract::Fut<'a, busbar_contract::transport::wire::Listener> {
         Box::pin(async { Err(TransportError::Refused) })
     }
 
     fn accept<'a>(
         &'a self,
-        _l: &'a busbar_contract_transport::wire::Listener,
+        _l: &'a busbar_contract::transport::wire::Listener,
     ) -> busbar_contract::Fut<'a, Conn> {
         Box::pin(async { Err(TransportError::Refused) })
     }
@@ -939,7 +939,7 @@ impl busbar_contract::Transport for TestTransport {
         fields: &[(&str, &[u8])],
         body: &[u8],
         arena: &'a dyn busbar_contract::Arena,
-    ) -> Result<busbar_contract::ArenaBytes<'a>, busbar_contract_transport::wire::Encode> {
+    ) -> Result<busbar_contract::ArenaBytes<'a>, busbar_contract::transport::wire::Encode> {
         // The fixture's own wire shape, standing in for a real transport's: every field, then the
         // body. What the tests assert is that the cross-check and the write see the SAME bytes,
         // and one buffer is what makes that true whatever the layout is.
@@ -954,7 +954,7 @@ impl busbar_contract::Transport for TestTransport {
         out.extend_from_slice(body);
         let encoded = arena
             .alloc_bytes(&out)
-            .map_err(|_| busbar_contract_transport::wire::Encode::ArenaExhausted)?;
+            .map_err(|_| busbar_contract::transport::wire::Encode::ArenaExhausted)?;
         self.encoded_at
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -971,7 +971,7 @@ impl busbar_contract::Transport for TestTransport {
         Box::pin(async { Err(TransportError::HandoffMismatch) })
     }
 
-    fn detach(&self, _conn: &Conn) -> Option<busbar_contract_transport::wire::RawStream> {
+    fn detach(&self, _conn: &Conn) -> Option<busbar_contract::transport::wire::RawStream> {
         None
     }
 
@@ -979,7 +979,7 @@ impl busbar_contract::Transport for TestTransport {
         None
     }
 
-    fn close(&self, _conn: Conn, _reason: busbar_contract_transport::wire::CloseReason) {
+    fn close(&self, _conn: Conn, _reason: busbar_contract::transport::wire::CloseReason) {
         *self.closed.lock().unwrap_or_else(|e| e.into_inner()) += 1;
     }
 
@@ -1025,8 +1025,8 @@ impl Plugin for TestPlane {
         Kind::Plane
     }
 
-    fn abi(&self) -> busbar_contract_transport::AbiVersion {
-        busbar_contract_transport::AbiVersion(1)
+    fn abi(&self) -> busbar_contract::transport::AbiVersion {
+        busbar_contract::transport::AbiVersion(1)
     }
 }
 
@@ -1162,7 +1162,7 @@ impl busbar_contract::Plane for TestPlane {
     fn verify<'u>(&self, _u: &Unit<'u>, _ctx: &Ctx<'u>) -> DestinationFacts {
         DestinationFacts::Upstream {
             transport: "test-transport",
-            address: busbar_contract_transport::dest::UpstreamAddress::socket("test-host"),
+            address: busbar_contract::transport::dest::UpstreamAddress::socket("test-host"),
             lane: LaneId::new("test-lane"),
         }
     }
@@ -1344,7 +1344,7 @@ pub fn sealed(lane: &'static str) -> VerifiedDestination {
         &TestSeal,
         DestinationFacts::Upstream {
             transport: "test-transport",
-            address: busbar_contract_transport::dest::UpstreamAddress::socket("test-host"),
+            address: busbar_contract::transport::dest::UpstreamAddress::socket("test-host"),
             lane: LaneId::new(lane),
         },
         "test-transport",

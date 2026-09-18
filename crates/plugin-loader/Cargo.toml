@@ -47,6 +47,11 @@ getrandom = { workspace = true }
 # The end-to-end DlopenPolicy test drives the async RoutingPolicy methods, so the test needs a
 # runtime + the `#[tokio::test]` macro (the crate's own dep is `rt`/`time` only — no macros).
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
+# The `kind: plane` drop-in conformance fixture. UNLIKE the cdylib-only cold fixtures, this one is a
+# `["cdylib", "rlib"]` crate, so the conformance test LINKS its `rlib` to get the COMPILED-IN
+# `PLANE_DECL` reference and separately `dlopen`s its `cdylib` (located on disk) — the two decls the
+# both-ways test compares. `cargo test -p busbar-plugin-loader` builds the member cdylib.
+busbar-plugin-example-plane = { path = "../plane-example" }
 
 [target.'cfg(unix)'.dependencies]
 # memfd_create (Linux zero-disk loads) + kill(pid, 0) liveness for the dead-pid staging sweep.

@@ -1358,6 +1358,7 @@ fn cfg_with_credentials(
         signing_key: Some(crate::config::SecretRef::file(
             key_path.to_string_lossy().to_string(),
         )),
+        operator_pub: None,
         chain: vec![],
         admin_auth: vec![admin_entry],
         role_bindings: crate::config::RoleBindings::new(),

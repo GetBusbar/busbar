@@ -9,10 +9,10 @@ use std::time::Duration;
 
 use futures::StreamExt;
 
+use busbar_contract::transport::wire::CloseReason;
+use busbar_contract::transport::wire::Direction;
+use busbar_contract::transport::wire::TransportError;
 use busbar_contract::{ArenaBytes, StreamId, Transport};
-use busbar_contract_transport::wire::CloseReason;
-use busbar_contract_transport::wire::Direction;
-use busbar_contract_transport::wire::TransportError;
 
 use crate::WsTransport;
 
@@ -29,8 +29,8 @@ async fn pair(
     t: &WsTransport,
     cap: usize,
 ) -> (
-    busbar_contract_transport::wire::Conn,
-    busbar_contract_transport::wire::Conn,
+    busbar_contract::transport::wire::Conn,
+    busbar_contract::transport::wire::Conn,
 ) {
     let (end_a, end_b) = tokio::io::duplex(cap);
     let server = t.handshake_over(end_a, true, WS_TARGET, "peer-a");
@@ -345,6 +345,119 @@ async fn a_dial_only_instance_holds_the_ceiling_its_root_named() {
     );
 }
 
+/// The third lifecycle for the ceiling: an instance with NO layer under it — the `handshake_over`
+/// seam an embedder drives directly — must be able to carry the operator's cap too. Before
+/// [`WsTransport::with_max_message_bytes`] a `new()` instance had no route to set it, so it was
+/// capped only by tungstenite's 64 MiB default: four orders of magnitude above a typical body cap,
+/// a number this project never chose, silently in force on every embedder-driven connection.
+#[tokio::test]
+async fn a_no_lower_instance_holds_the_ceiling_its_constructor_named() {
+    const CAP: usize = 1024;
+    // No `over`, no `listen`: the only route to the cap is the constructor.
+    let capped = WsTransport::with_max_message_bytes(CAP);
+
+    // The far side is uncapped, because the cap under test is the RECEIVER's.
+    let peer = WsTransport::new();
+    let (end_a, end_b) = tokio::io::duplex(64 * 1024);
+    let (accepted, dialled) = tokio::join!(
+        capped.handshake_over(end_a, true, WS_TARGET, "capped-embedder"),
+        peer.handshake_over(end_b, false, WS_TARGET, "uncapped-peer")
+    );
+    let (mine, theirs) = (accepted.unwrap(), dialled.unwrap());
+
+    // At the ceiling a message is a message — this is a ceiling, not a smaller default.
+    let at_cap = vec![b'k'; CAP];
+    peer.write(&theirs, StreamId(0), ArenaBytes::new(&at_cap))
+        .await
+        .unwrap();
+    let mut frames = capped.frames(mine);
+    let (_s, frame) = frames.next().await.unwrap().unwrap();
+    assert_eq!(frame.bytes.len(), CAP);
+
+    let oversized = vec![b'w'; 2 * CAP];
+    peer.write(&theirs, StreamId(0), ArenaBytes::new(&oversized))
+        .await
+        .expect("the uncapped peer puts the oversized message on the wire");
+    let outcome = tokio::time::timeout(Duration::from_secs(5), frames.next())
+        .await
+        .expect("the cap must be enforced rather than waited on")
+        .expect("an over-cap message is an error, not a clean end of session");
+    assert_eq!(
+        outcome.unwrap_err(),
+        TransportError::Framing,
+        "a no-lower instance is bounded by the number its constructor named, not the library's",
+    );
+
+    // And the plain constructor keeps the current behaviour: no cap named, so a message far past
+    // any sane body cap still reads. `with_max_message_bytes` is additive, not a new default.
+    let uncapped = WsTransport::new();
+    let peer2 = WsTransport::new();
+    let (end_c, end_d) = tokio::io::duplex(4 * 1024 * 1024);
+    let (accepted2, dialled2) = tokio::join!(
+        uncapped.handshake_over(end_c, true, WS_TARGET, "default-embedder"),
+        peer2.handshake_over(end_d, false, WS_TARGET, "peer")
+    );
+    let (mine2, theirs2) = (accepted2.unwrap(), dialled2.unwrap());
+    let large = vec![b'z'; 2 * CAP];
+    peer2
+        .write(&theirs2, StreamId(0), ArenaBytes::new(&large))
+        .await
+        .unwrap();
+    let mut frames2 = uncapped.frames(mine2);
+    let (_s, frame) = frames2.next().await.unwrap().unwrap();
+    assert_eq!(
+        frame.bytes.len(),
+        2 * CAP,
+        "the plain constructor names no cap and keeps the library default"
+    );
+}
+
+/// A WebSocket carries ONE message stream, with one reader, and admits exactly one consumer. A
+/// second `frames()` on a clone of the same `Conn`, while the first is live, cannot get frames —
+/// the first holds the one reader. Before this was caught, the second stream found the reader
+/// absent and terminated as `None`: a clean end of session, indistinguishable from the peer
+/// closing, for a session that was in fact still running. It must be a loud contract violation
+/// rather than a silent fake-close.
+#[tokio::test]
+async fn a_second_concurrent_frames_consumer_is_a_loud_panic_not_a_silent_close() {
+    let t = Arc::new(WsTransport::new());
+    let (a, b) = pair(&t, 64 * 1024).await;
+
+    // The first consumer, parked IN the socket read: polled once and kept alive, so it holds the
+    // one reader. Kept pinned rather than let a timeout drop it — dropping the read future would
+    // hand the reader back and there would be nothing for the second consumer to collide with.
+    let mut first = t.frames(b.clone());
+    let first_next = first.next();
+    tokio::pin!(first_next);
+    let parked = tokio::time::timeout(Duration::from_millis(50), first_next.as_mut()).await;
+    assert!(
+        parked.is_err(),
+        "the first consumer must be parked in the read, holding the reader"
+    );
+
+    // The second consumer, on a clone, concurrently. It must not fall silent.
+    let second = {
+        let (t, b) = (t.clone(), b.clone());
+        tokio::spawn(async move {
+            let mut s = t.frames(b);
+            s.next().await
+        })
+    };
+    let joined = tokio::time::timeout(Duration::from_secs(5), second)
+        .await
+        .expect("the second consumer must resolve rather than hang");
+    let panicked = joined.expect_err("a second concurrent consumer must not be a clean close");
+    assert!(
+        panicked.is_panic(),
+        "the collision must be a loud panic, not a silent fake end-of-stream: {panicked:?}"
+    );
+
+    // The first consumer is still holding the reader through all of the above; touch its parts here
+    // so the borrow checker keeps them — and the parked read, and both ends — alive until now, which
+    // is what made the collision genuinely concurrent rather than sequential.
+    let _ = (&first_next, &a, &b);
+}
+
 /// A secure handshake happened underneath this connection, and the upgrade does not unhappen it.
 /// The port the bytes arrived on, the name offered, the protocol negotiated and the certificate
 /// presented exist in exactly one place — the record the lower layer reported before it gave the
@@ -389,9 +502,9 @@ impl StubLower {
         }
     }
 
-    fn conn(&self) -> busbar_contract_transport::wire::Conn {
+    fn conn(&self) -> busbar_contract::transport::wire::Conn {
         struct Handle;
-        impl busbar_contract_transport::wire::ConnHandle for Handle {
+        impl busbar_contract::transport::wire::ConnHandle for Handle {
             fn id(&self) -> u64 {
                 1
             }
@@ -399,7 +512,7 @@ impl StubLower {
                 "203.0.113.7:54321".to_string()
             }
         }
-        busbar_contract_transport::wire::Conn::new(Arc::new(Handle))
+        busbar_contract::transport::wire::Conn::new(Arc::new(Handle))
     }
 }
 
@@ -410,22 +523,22 @@ impl busbar_contract::Plugin for StubLower {
     fn kind(&self) -> busbar_contract::Kind {
         busbar_contract::Kind::Transport
     }
-    fn abi(&self) -> busbar_contract_transport::AbiVersion {
-        busbar_contract_transport::registry::TRANSPORT_ABI
+    fn abi(&self) -> busbar_contract::transport::AbiVersion {
+        busbar_contract::transport::registry::TRANSPORT_ABI
     }
 }
 
 impl Transport for StubLower {
     fn arrival(
         &self,
-        conn: &busbar_contract_transport::wire::Conn,
-    ) -> busbar_contract_transport::wire::ArrivalRecord {
-        busbar_contract_transport::wire::ArrivalRecord {
+        conn: &busbar_contract::transport::wire::Conn,
+    ) -> busbar_contract::transport::wire::ArrivalRecord {
+        busbar_contract::transport::wire::ArrivalRecord {
             source: conn.peer(),
             port: 8443,
             alpn: Some("http/1.1".to_string()),
             sni: Some("edge.invalid".to_string()),
-            peer_cert: Some(busbar_contract_transport::wire::CertFacts {
+            peer_cert: Some(busbar_contract::transport::wire::CertFacts {
                 subject: "CN=peer".to_string(),
                 issuer: "CN=issuer".to_string(),
                 fingerprint: "sha256:stub".to_string(),
@@ -438,14 +551,14 @@ impl Transport for StubLower {
         &'a self,
         _cfg: &'a dyn busbar_contract::TransportConfigView,
         _keys: &'a busbar_contract::TransportKeyHandle,
-    ) -> busbar_contract::Fut<'a, busbar_contract_transport::wire::Listener> {
+    ) -> busbar_contract::Fut<'a, busbar_contract::transport::wire::Listener> {
         Box::pin(async { Err(TransportError::HandoffMismatch) })
     }
 
     fn accept<'a>(
         &'a self,
-        _l: &'a busbar_contract_transport::wire::Listener,
-    ) -> busbar_contract::Fut<'a, busbar_contract_transport::wire::Conn> {
+        _l: &'a busbar_contract::transport::wire::Listener,
+    ) -> busbar_contract::Fut<'a, busbar_contract::transport::wire::Conn> {
         Box::pin(async { Err(TransportError::HandoffMismatch) })
     }
 
@@ -453,19 +566,19 @@ impl Transport for StubLower {
         &'a self,
         _dest: &'a busbar_contract::VerifiedDestination,
         _keys: &'a busbar_contract::TransportKeyHandle,
-    ) -> busbar_contract::Fut<'a, busbar_contract_transport::wire::Conn> {
+    ) -> busbar_contract::Fut<'a, busbar_contract::transport::wire::Conn> {
         Box::pin(async { Err(TransportError::HandoffMismatch) })
     }
 
     fn frames(
         &self,
-        _conn: busbar_contract_transport::wire::Conn,
+        _conn: busbar_contract::transport::wire::Conn,
     ) -> std::pin::Pin<
         Box<
             dyn futures::Stream<
                     Item = Result<
                         (StreamId, busbar_contract::wire::Frame),
-                        busbar_contract_transport::wire::TransportError,
+                        busbar_contract::transport::wire::TransportError,
                     >,
                 > + Send,
         >,
@@ -475,7 +588,7 @@ impl Transport for StubLower {
 
     fn write<'a>(
         &'a self,
-        _conn: &'a busbar_contract_transport::wire::Conn,
+        _conn: &'a busbar_contract::transport::wire::Conn,
         _stream: StreamId,
         _bytes: ArenaBytes<'a>,
     ) -> busbar_contract::Fut<'a, usize> {
@@ -487,27 +600,27 @@ impl Transport for StubLower {
         _fields: &[(&str, &[u8])],
         body: &[u8],
         arena: &'a dyn busbar_contract::Arena,
-    ) -> Result<ArenaBytes<'a>, busbar_contract_transport::wire::Encode> {
+    ) -> Result<ArenaBytes<'a>, busbar_contract::transport::wire::Encode> {
         arena
             .alloc_bytes(body)
-            .map_err(|_| busbar_contract_transport::wire::Encode::ArenaExhausted)
+            .map_err(|_| busbar_contract::transport::wire::Encode::ArenaExhausted)
     }
 
     fn adopt<'a>(
         &'a self,
         _from: &'a dyn Transport,
-        _conn: busbar_contract_transport::wire::Conn,
+        _conn: busbar_contract::transport::wire::Conn,
         _keys: &'a busbar_contract::TransportKeyHandle,
-    ) -> busbar_contract::Fut<'a, busbar_contract_transport::wire::Conn> {
+    ) -> busbar_contract::Fut<'a, busbar_contract::transport::wire::Conn> {
         Box::pin(async { Err(TransportError::HandoffMismatch) })
     }
 
     fn detach(
         &self,
-        conn: &busbar_contract_transport::wire::Conn,
-    ) -> Option<busbar_contract_transport::wire::RawStream> {
+        conn: &busbar_contract::transport::wire::Conn,
+    ) -> Option<busbar_contract::transport::wire::RawStream> {
         let io = self.io.lock().unwrap().take()?;
-        Some(busbar_contract_transport::wire::RawStream::new(
+        Some(busbar_contract::transport::wire::RawStream::new(
             "tls",
             conn.peer(),
             Box::new(tokio_util::compat::TokioAsyncReadCompatExt::compat(io)),
@@ -520,14 +633,14 @@ impl Transport for StubLower {
 
     fn close(
         &self,
-        _conn: busbar_contract_transport::wire::Conn,
-        _reason: busbar_contract_transport::wire::CloseReason,
+        _conn: busbar_contract::transport::wire::Conn,
+        _reason: busbar_contract::transport::wire::CloseReason,
     ) {
     }
 
     fn unit0_refusal<'a>(
         &'a self,
-        _conn: busbar_contract_transport::wire::Conn,
+        _conn: busbar_contract::transport::wire::Conn,
         _stream: Option<StreamId>,
         _refusal: &'a busbar_contract::unit::Refusal,
         _bytes: ArenaBytes<'a>,
@@ -856,11 +969,54 @@ async fn a_refusal_that_could_not_be_written_is_reported_rather_than_claimed() {
     assert_eq!(err, TransportError::Closed);
 }
 
+/// The refusal's own answer is a write, and a write interrupted mid-frame tears a WebSocket frame
+/// the same way [`crate::WsTransport::write`]'s does. Before this path carried a `PoisonGuard`, a
+/// refusal whose send was cancelled mid-frame left the torn frame on the wire and the connection
+/// UNfenced — so a later write on the same socket would splice its bytes onto the tail of a
+/// half-written one. The fence is what makes a cancelled refusal end the connection instead of
+/// leaving it looking healthy.
+#[tokio::test]
+async fn a_refusal_cancelled_mid_send_fences_the_connection() {
+    let t = WsTransport::new();
+    // A duplex too small to swallow the payload, so the send parks mid-frame rather than completing.
+    let (a, _b) = pair(&t, 8).await;
+    // The one handle on the state besides the registry's, so the fence is readable after the drop.
+    let state = t.state_of(a.id()).expect("the connection is live");
+    let refusal = test_refusal();
+    let big = vec![b'x'; 1_000_000];
+    {
+        let refuse = t.unit0_refusal(a.clone(), None, &refusal, ArenaBytes::new(&big));
+        tokio::pin!(refuse);
+        let raced = tokio::time::timeout(Duration::from_millis(20), refuse.as_mut()).await;
+        assert!(
+            raced.is_err(),
+            "the refusal's send must still be parked mid-frame when it is dropped"
+        );
+    }
+    // The future was dropped mid-send, before its own `close` could run, so the state is still in
+    // the registry — and it is fenced, which is the whole point: a torn refusal poisons the
+    // connection rather than leaving it apparently live.
+    assert!(
+        state.is_poisoned(),
+        "a refusal cancelled mid-send must fence the connection, not leave a torn frame unfenced"
+    );
+    // And the fence is observable through the public write path, the way every other torn write is.
+    let err = t
+        .write(&a, StreamId(0), ArenaBytes::new(b"after the torn refusal"))
+        .await
+        .unwrap_err();
+    assert_eq!(
+        err,
+        TransportError::Framing,
+        "a write onto a fenced connection is refused rather than spliced onto a torn frame"
+    );
+}
+
 #[allow(clippy::assertions_on_constants)]
 #[tokio::test]
 async fn transport_meta_matches_the_architecture_row() {
+    use busbar_contract::transport::wire::Unit0Trigger;
     use busbar_contract::TransportMeta;
-    use busbar_contract_transport::wire::Unit0Trigger;
     assert_eq!(<WsTransport as TransportMeta>::KEY, "ws");
     assert!(<WsTransport as TransportMeta>::SESSION);
     assert!(<WsTransport as TransportMeta>::SESSION_BOUND);
@@ -900,7 +1056,7 @@ fn verified_upstream(host: &'static str) -> busbar_contract::VerifiedDestination
         &Seal,
         busbar_contract::DestinationFacts::Upstream {
             transport: "ws",
-            address: busbar_contract_transport::dest::UpstreamAddress::socket(host),
+            address: busbar_contract::transport::dest::UpstreamAddress::socket(host),
             lane: busbar_contract::LaneId::new("test-lane"),
         },
         "ws",
