@@ -443,6 +443,19 @@ jobs:
         run: cargo xtask gate blocking-ffi --selftest
       - name: Blocking-FFI lint
         run: cargo xtask gate blocking-ffi
+      # NO-TRACKED-IGNORED: no path git already TRACKS may match one of this tree's own .gitignore
+      # rules. Once a path is tracked, git exempts it from every ignore rule from that commit on, so a
+      # `.fix/*.orig` scratch snapshot can be `git add`ed into a real commit and stay live, reviewed
+      # and shipped while five other gates (loc-surface, census, structure-lint, legacy-reach,
+      # forbid-unsafe) walk straight past it — every one of them skips ignored paths on the working
+      # assumption that "ignored" and "not source" are the same fact, which they are not once a path is
+      # tracked. `git ls-files -ci --exclude-standard` is the exact test. GREEN on this tree today,
+      # which is why it is wired now rather than after the next scratch file slips through. Self-test
+      # runs FIRST, the discipline every lint above uses.
+      - name: No-tracked-ignored self-test (the scanner cannot be lied to)
+        run: cargo xtask gate no-tracked-ignored --selftest
+      - name: No-tracked-ignored gate (BLOCKING — no tracked path matches a .gitignore rule)
+        run: cargo xtask gate no-tracked-ignored
       # THE FOUR GATES BELOW EACH SHIPPED WITH A --selftest AND A --check AND WERE INVOKED BY
       # NOTHING: no workflow step, no qa/segments.toml row, and so nothing cargo xtask full-gate could
       # discover. A gate nobody runs measures nothing — it is a script with the SHAPE of a gate, which

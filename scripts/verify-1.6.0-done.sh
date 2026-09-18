@@ -400,6 +400,18 @@ step "plane-purity --strict"   cargo xtask gate plane-purity-strict
 end_group
 
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
+# THE WHOLE-APP KIND-NEUTRALITY WITNESS. plane-purity above holds the NEUTRAL crates and the hot lane;
+# this generalises it to EVERY crate and all seven plugin kinds — no crate outside a plugin family may
+# name a concrete instance. It is a release-time claim like plane-purity-strict and kind-isolation-ship
+# above: green only when qa/instance-noun-neutrality.toml is EMPTY (the fully-neutral DONE state), and
+# RED here by design while the plane-extraction burndown is in flight. full_gate's REGISTRY_NOT_IN_CI
+# excuse for the per-push path points at THIS line.
+begin_group "INSTANCE-NOUN-NEUTRALITY — no crate outside a plugin family names a concrete instance (0)"
+step "instance-noun-neutrality --selftest" cargo xtask gate instance-noun-neutrality --selftest
+step "instance-noun-neutrality gate"       cargo xtask gate instance-noun-neutrality
+end_group
+
+# ─────────────────────────────────────────────────────────────────────────────────────────────────
 # THE SHIP CRITERION (owner, 2026-09-07): the ~10 plugin kinds never cross-contaminate, and on the
 # ship SHA that is ZERO — zero fused names, zero cross-kind edges, zero cross-kind vocabulary, one
 # entry surface per kind and one shared conformance battery per kind, with no permanent exemptions.
