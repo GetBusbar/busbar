@@ -457,6 +457,152 @@ async fn an_upstream_error_body_reaches_the_plane_with_its_status_leg() {
     );
 }
 
+/// A single body flushing MANY complete events whose total runs past the cursor budget is refused,
+/// not carried. The per-connection reading budget bounds the whole volume this connection holds, not
+/// only the trailing incomplete frame: a run of complete frames carves clean off the front and
+/// queues in `pending`, leaving the leftover buffer near-empty, so a budget weighed against that
+/// leftover alone would wave through an unbounded flush of complete events. This drives the served
+/// side, where a declared-length body arrives as ONE frame the re-segmenter carves in a single step.
+#[tokio::test]
+async fn a_single_body_of_many_complete_frames_past_the_budget_is_refused() {
+    /// The bind the served side is given; `sse` delegates `listen`/`accept` straight to `http`.
+    struct BindCfg(String);
+    impl busbar_contract::unit::ConfigView for BindCfg {
+        fn get_str(&self, _k: &str) -> Option<&str> {
+            None
+        }
+        fn get_int(&self, _k: &str) -> Option<i64> {
+            None
+        }
+        fn get_bool(&self, _k: &str) -> Option<bool> {
+            None
+        }
+    }
+    impl TransportConfigView for BindCfg {
+        fn bind(&self) -> Option<&str> {
+            Some(&self.0)
+        }
+    }
+
+    let http = std::sync::Arc::new(HttpTransport::new(ClientSettings::default()));
+    let sse = std::sync::Arc::new(SseTransport::new(http));
+    let listener = sse
+        .listen(&BindCfg("127.0.0.1:0".to_string()), &fixture_key())
+        .await
+        .unwrap();
+    let addr = listener.local_addr();
+    let accept = tokio::spawn({
+        let sse = sse.clone();
+        async move { sse.accept(&listener).await.unwrap() }
+    });
+
+    // Nothing but complete, terminated events — each far below the budget on its own — whose sum
+    // runs well past it. Every one of them carves clean, leaving no incomplete tail at all.
+    let mut body: Vec<u8> = Vec::new();
+    let mut total = 0_usize;
+    let mut count = 0_usize;
+    while total <= busbar_contract::MAX_CURSOR_BYTES * 2 {
+        let frame = format!("data: event number {count}\n\n");
+        body.extend_from_slice(frame.as_bytes());
+        total += frame.len();
+        count += 1;
+    }
+
+    let mut client = tokio::net::TcpStream::connect(&addr).await.unwrap();
+    let head = format!(
+        "POST / HTTP/1.1\r\nHost: x\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\n\r\n",
+        body.len()
+    );
+    tokio::io::AsyncWriteExt::write_all(&mut client, head.as_bytes())
+        .await
+        .unwrap();
+    tokio::io::AsyncWriteExt::write_all(&mut client, &body)
+        .await
+        .unwrap();
+
+    let conn = accept.await.unwrap();
+    let mut frames = sse.frames(conn);
+    // The FIRST poll answers with the framing error rather than the first of an unbounded run of
+    // events: the budget is weighed the moment the oversized batch is carved, before any of it is
+    // handed out.
+    let first = tokio::time::timeout(std::time::Duration::from_secs(5), frames.next())
+        .await
+        .expect("the stream answers rather than carrying the whole flush")
+        .expect("the stream yields an item");
+    assert_eq!(
+        first.unwrap_err(),
+        TransportError::Framing,
+        "a single body of complete frames past the cursor budget is refused, not queued whole"
+    );
+}
+
+/// A 2xx response whose body is NOT an event stream at all reaches the plane as a frame carrying its
+/// status leg, not as a clean empty success that has silently swallowed the body.
+///
+/// The mirror of the failing-status case next door: there a 4xx JSON body is surfaced; here a 200
+/// answered a `text/event-stream` request with a body that carves into no event and parses as none —
+/// a proxy's HTML error page, say. Dropping it leaves the consumer a `None` on the first poll,
+/// indistinguishable from a provider that answered 200 with a genuinely empty event stream, and the
+/// upstream's whole answer is lost. It has to survive the composition as a visible frame.
+#[tokio::test]
+async fn a_success_body_that_is_not_an_event_stream_reaches_the_plane() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let body = b"<html><body>gateway says hello, not an event</body></html>";
+    tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut buf = [0_u8; 4096];
+        let _ = tokio::io::AsyncReadExt::read(&mut stream, &mut buf).await;
+        let resp = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\n\r\n",
+            body.len()
+        );
+        tokio::io::AsyncWriteExt::write_all(&mut stream, resp.as_bytes())
+            .await
+            .unwrap();
+        tokio::io::AsyncWriteExt::write_all(&mut stream, body)
+            .await
+            .unwrap();
+    });
+
+    let uri = format!("http://{addr}/");
+    let http = std::sync::Arc::new(HttpTransport::new(ClientSettings::default()));
+    let sse = SseTransport::new(http);
+    let conn = sse
+        .dial(&upstream_dest(&uri), &fixture_key())
+        .await
+        .unwrap();
+    sse.write(
+        &conn,
+        StreamId(0),
+        ArenaBytes::new(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n"),
+    )
+    .await
+    .unwrap();
+
+    let mut frames = sse.frames(conn);
+    let (_s, only) = frames
+        .next()
+        .await
+        .expect("a non-event 2xx body is an item, not a silently empty stream")
+        .expect("the body is carried as a frame, not thrown away");
+    assert_eq!(
+        only.meta.status,
+        Some(busbar_contract_transport::wire::WireStatusClass::Success),
+        "the status leg http read off the 200 rides the frame that carries the leftover body"
+    );
+    assert_eq!(
+        only.bytes.as_slice(),
+        body.as_slice(),
+        "the upstream's own body is what the frame carries, verbatim"
+    );
+    assert_eq!(only.meta.bytes, body.len() as u64);
+    assert!(
+        frames.next().await.is_none(),
+        "exactly one item: the leftover is surfaced once and the stream ends"
+    );
+}
+
 /// Frame meta is honest on frames a REAL `SseTransport` emitted, and the check that says so is one
 /// an inflating or a deflating fixture turns red.
 ///
