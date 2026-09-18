@@ -1,0 +1,186 @@
+# fleet-control — size the self-hosted EC2 runner fleet TO ITS LOAD, and never pay for an idle box.
+#
+# WHAT THIS DOES. On every push/PR (pre-warm), whenever CI / gate-mutants / keep-proof finish
+# (re-evaluate), every ~15 min (safety reaper), and on demand, this workflow runs
+# scripts/ci-fleet-decision.sh, which sizes capacity to the backlog:
+#
+#     desired_boxes = ceil(pending_self_hosted_jobs / agents_per_box)   clamped to [0, MAX_BOXES]
+#
+# and compares it to what is online:
+#   - pending == 0                -> DOWN-ALL : tear the fleet fully to ZERO (NO idle floor).
+#   - desired_boxes  > current    -> UP        : top up toward desired_boxes (ci-runners-up.sh).
+#   - desired_boxes  < current    -> DOWN-TO   : drain the over-provisioned excess (idle spot only).
+#   - desired_boxes == current    -> HOLD      : steady state (online_slots ~= pending, util ~90%+).
+#
+# THE OWNER RULE. "Increase EC2 to whatever number, but it MUST be ~90%+ utilized — never pay for a
+# box sitting at 10%." So there is no standing floor on a timer: 1 runner slot is provisioned per
+# pending job, capacity tracks the queue, and an empty queue means ZERO boxes.
+#
+# WHY IT RUNS ON GITHUB-HOSTED ubuntu-latest. The whole point is to bring the fleet back from ZERO,
+# so the controller must not itself depend on the self-hosted fleet being up.
+#
+# CRITICAL SAFETY — NEVER TEAR DOWN LIVE WORK.
+#   * A full teardown (DOWN-ALL) fires only after TWO consecutive "queue empty" reads
+#     FLEET_DEBOUNCE_SECONDS apart, so a gap between two jobs in a run can never look like an empty
+#     queue.
+#   * A drain (DOWN-TO) likewise requires two consecutive reads agreeing that we are over-provisioned
+#     (so a transient dip in the queue does not shed capacity), and ci-runners-down.sh --to-boxes
+#     terminates only boxes whose agents are ALL idle — it never kills a box mid-job.
+#   * A bring-up (UP) is idempotent and fires on the first read with no debounce.
+#
+# ENFORCES BY DEFAULT. FLEET_CONTROL_ENFORCE defaults to "enforce": with the repo variable unset the
+# workflow still enforces (it cannot silently no-op). Set the repo variable FLEET_CONTROL_ENFORCE to
+# anything other than "enforce" (e.g. "report-only"), or dispatch with the report-only input, to make
+# it log the decision and the AWS calls it WOULD make without mutating the fleet. See
+# docs/ci/fleet-auto-scale.md.
+name: fleet-control
+
+on:
+  pull_request:
+  push:
+  workflow_run:
+    workflows: ["CI", "gate-mutants", "keep-proof"]
+    types: [completed]
+  schedule:
+    - cron: "*/15 * * * *"   # safety reaper: catch anything the event-driven passes missed
+  workflow_dispatch:
+    inputs:
+      enforce:
+        description: "Override enforcement for this run"
+        type: choice
+        default: enforce
+        options: [enforce, report-only]
+
+# Serialize: never let two controllers bring the fleet up and down at the same time. Do NOT cancel
+# an in-flight run — a half-finished teardown/bring-up is worse than waiting for it to complete.
+concurrency:
+  group: fleet-control
+  cancel-in-progress: false
+
+permissions:
+  id-token: write     # assume the OIDC role (only used when enforcing)
+  contents: read      # checkout
+  actions: read       # read this repo's workflow runs / jobs for the queue check
+
+env:
+  AWS_REGION: us-east-1
+  FLEET_ROLE_ARN: arn:aws:iam::457667483187:role/busbar-ci-fleet-controller
+  # Default posture is ENFORCE. A repo variable of the same name (vars.FLEET_CONTROL_ENFORCE)
+  # overrides it, and a manual dispatch input overrides that. Anything other than exactly "enforce"
+  # is report-only. Unset var => enforce (it cannot silently no-op).
+  FLEET_CONTROL_ENFORCE: ${{ github.event.inputs.enforce || vars.FLEET_CONTROL_ENFORCE || 'enforce' }}
+  FLEET_DEBOUNCE_SECONDS: "180"
+  # Utilization-aware sizing knobs. The cap is a repo variable so the owner can raise/lower the
+  # ceiling without a code change; the geometry mirrors ci-runners-lib.sh (4 agents/box, floor 2).
+  FLEET_MAX_BOXES: ${{ vars.FLEET_MAX_BOXES || '16' }}
+  CI_RUNNER_AGENTS: "4"
+  CI_RUNNER_ONDEMAND_FLOOR: "2"
+
+jobs:
+  control:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      # ── Decide: size to load, with the two-read debounce that guards any downscale ───────────────
+      - name: Evaluate the self-hosted CI queue and size the fleet
+        id: decide
+        env:
+          # Repo-scoped github.token can read this repo's runs/jobs (enough to size UP from the
+          # backlog). Supply secrets.FLEET_CONTROL_GH_TOKEN (a PAT with admin:org read) to ALSO see
+          # online runners — required to compute current utilization and to DRAIN over-provisioned
+          # boxes. Without it the controller degrades safely to UP / DOWN-ALL only.
+          GH_TOKEN: ${{ secrets.FLEET_CONTROL_GH_TOKEN || github.token }}
+          ORG: GetBusbar
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          read1="$(bash scripts/ci-fleet-decision.sh)"
+          echo "read 1: $read1"
+          # shellcheck disable=SC2086  # KEY=VALUE tokens are meant to word-split into the environment
+          eval "$read1"
+
+          # A downscale (full teardown OR drain of excess) must be confirmed by a second read taken
+          # FLEET_DEBOUNCE_SECONDS later: a lull between two jobs, or a transient queue dip, must not
+          # shed capacity. A bring-up acts on the first read.
+          case "$action" in
+            down-all|down-to)
+              echo "downscale proposed ($action); debouncing ${FLEET_DEBOUNCE_SECONDS}s before confirming..."
+              sleep "${FLEET_DEBOUNCE_SECONDS}"
+              read2="$(bash scripts/ci-fleet-decision.sh)"
+              echo "read 2: $read2"
+              a1="$action"; t1="$target_boxes"
+              # shellcheck disable=SC2086
+              eval "$read2"
+              if [ "$action" != "$a1" ]; then
+                echo "second read disagrees (was $a1, now $action) — holding, taking NO action this run."
+                action=hold
+              elif [ "$action" = "down-to" ] && [ "$target_boxes" != "$t1" ]; then
+                echo "drain target moved ($t1 -> $target_boxes); using the larger to stay conservative."
+                [ "$t1" -gt "$target_boxes" ] && target_boxes="$t1"
+              fi
+              ;;
+          esac
+
+          {
+            echo "action=$action"
+            echo "target_boxes=$target_boxes"
+            echo "up_spot_count=$up_spot_count"
+          } >> "$GITHUB_OUTPUT"
+
+          {
+            echo "## fleet-control decision"
+            echo ""
+            echo "- enforcement: \`${FLEET_CONTROL_ENFORCE}\`"
+            echo "- action: **${action}** (target boxes: \`${target_boxes}\`)"
+            echo "- pending self-hosted jobs: \`${pending}\`"
+            echo "- online slots / busy: \`${slots}\` / \`${busy}\`  (current util \`${util_pct}%\`)"
+            echo "- current boxes: \`${cur_boxes}\`  ->  desired boxes: \`${desired_boxes}\` (cap ${FLEET_MAX_BOXES})"
+            echo "- projected utilization at desired sizing: \`${proj_util}%\`"
+            echo "- runners API visible (admin:org token present): \`${runners_visible}\`"
+            echo "- trigger: \`${{ github.event_name }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # ── Assume the OIDC role — ONLY when enforcing (report-only makes no AWS calls at all) ───────
+      - name: Configure AWS credentials
+        if: env.FLEET_CONTROL_ENFORCE == 'enforce' && steps.decide.outputs.action != 'hold'
+        uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502 # v4.0.2
+        with:
+          role-to-assume: ${{ env.FLEET_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: fleet-control-${{ github.run_id }}
+
+      # ── Act ─────────────────────────────────────────────────────────────────────────────────────
+      - name: Apply (or, in report-only, describe) the decision
+        env:
+          ACTION: ${{ steps.decide.outputs.action }}
+          TARGET_BOXES: ${{ steps.decide.outputs.target_boxes }}
+          UP_SPOT_COUNT: ${{ steps.decide.outputs.up_spot_count }}
+          GH_TOKEN: ${{ secrets.FLEET_CONTROL_GH_TOKEN || github.token }}
+        run: |
+          set -euo pipefail
+          describe() {
+            case "$ACTION" in
+              up)       echo "CI_RUNNER_COUNT=${UP_SPOT_COUNT} scripts/ci-runners-up.sh   (top up to ${TARGET_BOXES} boxes)" ;;
+              down-all) echo "scripts/ci-runners-down.sh --all   (tear the fleet fully to ZERO)" ;;
+              down-to)  echo "scripts/ci-runners-down.sh --to-boxes ${TARGET_BOXES}   (drain over-provisioned idle spot)" ;;
+              hold)     echo "(nothing — online capacity already matches the backlog)" ;;
+            esac
+          }
+
+          if [ "${FLEET_CONTROL_ENFORCE}" != "enforce" ]; then
+            echo "REPORT-ONLY: enforcement is '${FLEET_CONTROL_ENFORCE}', making NO AWS changes."
+            echo "WOULD RUN: $(describe)"
+            echo "Set repo variable FLEET_CONTROL_ENFORCE=enforce (or dispatch with enforce) to act."
+            exit 0
+          fi
+
+          echo "ENFORCE: applying action '${ACTION}'."
+          case "$ACTION" in
+            up)       CI_RUNNER_COUNT="${UP_SPOT_COUNT}" bash scripts/ci-runners-up.sh ;;
+            down-all) bash scripts/ci-runners-down.sh --all ;;
+            down-to)  bash scripts/ci-runners-down.sh --to-boxes "${TARGET_BOXES}" ;;
+            hold)     echo "hold: nothing to do." ;;
+            *)        echo "unknown action '${ACTION}'; doing nothing."; exit 1 ;;
+          esac

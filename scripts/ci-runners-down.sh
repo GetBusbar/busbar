@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Take the busbar self-hosted runner fleet DOWN and leave no ghosts behind.
 #
-#   ./scripts/ci-runners-down.sh          # the SPOT boxes; the on-demand floor SURVIVES
-#   ./scripts/ci-runners-down.sh --all    # everything, floor included
+#   ./scripts/ci-runners-down.sh             # the SPOT boxes; the on-demand floor SURVIVES
+#   ./scripts/ci-runners-down.sh --all       # everything, floor included
+#   ./scripts/ci-runners-down.sh --to-boxes N  # DRAIN down to N total boxes, idle spot boxes only
 #   CI_RUNNER_DRY_RUN=1 ./scripts/ci-runners-down.sh
 #
 # THE FLOOR SURVIVES A PLAIN `down`, AND THAT IS THE POINT OF IT. `down` is what an operator runs
@@ -10,6 +11,14 @@
 # session — and every one of those is a moment when the next agent's push must still land. So the
 # default takes the SPOT capacity down and leaves CI_RUNNER_ONDEMAND_FLOOR boxes standing. Only
 # `--all` is a fleet-to-zero command, and it says so in its name.
+#
+# `--to-boxes N` is the UTILIZATION-AWARE DOWNSCALE the fleet-control workflow uses when the backlog
+# shrinks below the capacity online: it sheds the excess SPOT boxes so online_slots tracks the queue
+# (~90%+ utilization) instead of leaving 32-vCPU boxes idling. It NEVER kills a box mid-job — it
+# terminates only boxes whose agents are ALL idle (see idle_spot_boxes) — and it never drops below
+# the on-demand floor, because a downscale only happens while work still exists and the floor is the
+# guaranteed capacity underneath it. If there is no fully-idle spot box to shed, it does nothing and
+# says so: waiting one cycle beats interrupting a running job.
 #
 # Two halves, and the ORDER MATTERS. Terminating the boxes first would leave the org's runner list
 # full of entries GitHub still believes are available: a job routed to a dead runner sits in
@@ -22,16 +31,43 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$HERE/ci-runners-lib.sh"
 
 ALL=0
+MODE=spot          # spot | all | to
+TO_BOXES=""
 case "${1:-}" in
-  --all) ALL=1 ;;
-  "")    ;;
-  *)     die "unknown argument '$1' (expected --all)" ;;
+  --all)      ALL=1; MODE=all ;;
+  --to-boxes) MODE=to; TO_BOXES="${2:-}"
+              [ -n "$TO_BOXES" ] || die "--to-boxes needs a target box count (e.g. --to-boxes 6)"
+              case "$TO_BOXES" in *[!0-9]*) die "--to-boxes wants a non-negative integer, got '$TO_BOXES'" ;; esac ;;
+  "")         ;;
+  *)          die "unknown argument '$1' (expected --all or --to-boxes N)" ;;
 esac
 
 require_aws
-if [ "$ALL" = 1 ]; then
+if [ "$MODE" = all ]; then
   IDS="$(fleet_instance_ids)"
   log "--all: taking the WHOLE fleet down, on-demand floor included"
+elif [ "$MODE" = to ]; then
+  # DRAIN to N boxes: shed the over-provisioned SPOT excess, and ONLY boxes that are fully idle.
+  cur_total="$(n_of "$(fleet_instance_ids)")"
+  excess=$(( cur_total - TO_BOXES ))
+  log "drain to $TO_BOXES box(es): $cur_total up now, excess $excess (never below the floor, idle spot only)"
+  if [ "$excess" -le 0 ]; then
+    log "already at or below target ($cur_total <= $TO_BOXES); nothing to drain"
+    write_fleet_file
+    exit 0
+  fi
+  _idle=()
+  while IFS= read -r _b; do [ -n "$_b" ] && _idle+=("$_b"); done < <(idle_spot_boxes)
+  if [ "${#_idle[@]}" -eq 0 ]; then
+    log "over-provisioned by $excess, but NO fully-idle spot box to drain — every spot box is busy"
+    log "or still bootstrapping. Leaving the fleet as-is: never terminate a box mid-job."
+    write_fleet_file
+    exit 0
+  fi
+  # Take at most `excess` of the idle spot boxes.
+  take=$excess; [ "$take" -gt "${#_idle[@]}" ] && take="${#_idle[@]}"
+  IDS="$(printf '%s\n' "${_idle[@]:0:take}" | tr '\n' ' ' | sed 's/ $//')"
+  log "draining $take idle spot box(es) (of ${#_idle[@]} idle, excess $excess): $IDS"
 else
   IDS="$(fleet_spot_ids | tr '\n' ' ' | sed 's/ $//')"
   KEEP="$(fleet_ondemand_ids | tr '\n' ' ' | sed 's/ $//')"
