@@ -126,6 +126,77 @@ fn writer_for(dialect: Dialect) -> Box<dyn DuplexWriter> {
     }
 }
 
+/// The client→server IR event ONE client wire frame carries, read in the client's own dialect.
+///
+/// Twilio's carrier `media` payload is widened from µ-law to PCM16 HERE, the documented transform
+/// seam (see [`encode_ingress_frame`]'s own note). `None` when the frame carries no event to relay
+/// (a lifecycle frame, or one this reader does not model).
+///
+/// Metering is DELIBERATELY not done here: the frame that OPENS a turn is metered on its draft at
+/// decode (`open_or_relay`'s `FACT_AUDIO_MS_IN`), and every later frame at the relay seam in
+/// [`encode_ingress_frame`]; this seam only shapes bytes, so neither path's count leaks into it.
+///
+/// [`encode_ingress_frame`]: StreamingPlane::encode_ingress_frame
+fn client_event_from_wire(
+    client_dialect: Dialect,
+    wire: &[u8],
+    state: &mut VoiceSessionState,
+) -> Result<Option<IrClientEvent>, Encode> {
+    match client_dialect {
+        Dialect::TwilioMediaStreams => {
+            let event = match twilio::decode(wire) {
+                Ok(event) => event,
+                Err(twilio::TwilioError::UnknownEvent(_)) => return Ok(None),
+                Err(_) => return Err(Encode::Unrepresentable),
+            };
+            match event {
+                twilio::TwilioEvent::Media { payload, .. } => {
+                    let pcm = ulaw::decode_frame(&payload);
+                    Ok(Some(IrClientEvent::AudioFrame(IrAudioFrame {
+                        dir: UpDown::Up,
+                        seq: state.codec.next_up_seq(),
+                        media: bytes::Bytes::from(pcm),
+                        origin: IrAudioRef::default(),
+                    })))
+                }
+                _ => Ok(None),
+            }
+        }
+        _ => {
+            let reader = reader_for(client_dialect);
+            Ok(reader
+                .read_up_ref(WireRef(wire), &mut state.codec)
+                .into_iter()
+                .next())
+        }
+    }
+}
+
+/// Re-frame ONE client→server event onto the upstream dialect's wire and park the result in the
+/// arena — the single dialect-writer path every relayed client frame travels, whether it OPENS the
+/// turn (Unit 0's egress body, via [`encode_egress`]) or is a LATER frame of it (via
+/// [`encode_ingress_frame`]). `None` when the upstream dialect has no verb for the concept (the
+/// cross-dialect drop rows): nothing is relayed, the same answer a fully-handled lifecycle frame
+/// gives.
+///
+/// [`encode_egress`]: StreamingPlane::encode_egress
+/// [`encode_ingress_frame`]: StreamingPlane::encode_ingress_frame
+fn write_up_to_arena<'u>(
+    upstream_dialect: Dialect,
+    event: IrClientEvent,
+    state: &mut VoiceSessionState,
+    ctx: &Ctx<'u>,
+) -> Result<Option<ArenaBytes<'u>>, Encode> {
+    let writer = writer_for(upstream_dialect);
+    let Some(out) = writer.write_up(event, &mut state.codec) else {
+        return Ok(None);
+    };
+    ctx.arena()
+        .alloc_bytes(&out.0)
+        .map(Some)
+        .map_err(|_| Encode::ArenaExhausted)
+}
+
 impl StreamingPlane {
     /// The upstream a fresh session's Unit 0 dials, given the dialect it arrived on. See the module
     /// doc comment's "verify's upstream pick" note.
@@ -174,19 +245,44 @@ impl Plane for StreamingPlane {
         &self,
         u: &Unit<'u>,
         dest: &VerifiedDestination,
-        _st: Option<&mut PlaneSessionState>,
+        st: Option<&mut PlaneSessionState>,
         ctx: &Ctx<'u>,
     ) -> Result<EgressBody<'u>, Encode> {
-        // Unit 0 of a session: the first frame IS the egress body (the session-shapes section of
-        // the architecture doc — "Unit 0's EgressBody is the first upstream frame"). Every later frame of the same turn travels through
-        // `encode_ingress_frame` instead. `u.body()` already carries this plane's own rendering of
-        // the client's first event (built in `decode_ingress`/`decode_one_shot`), so egress here is
-        // the pass-through of those bytes into the arena the destination's own encoder expects.
-        let _ = dest;
-        let body = ctx
-            .arena()
-            .alloc_bytes(u.body().body())
-            .map_err(|_| Encode::ArenaExhausted)?;
+        // Unit 0 of a DUPLEX session: the first frame IS the egress body (the session-shapes section
+        // of the architecture doc — "Unit 0's EgressBody is the first upstream frame"). Its body
+        // carries the client's opening wire frame verbatim (stored by `open_or_relay`), and it must
+        // reach the provider in the UPSTREAM's own dialect — the SAME shaping `encode_ingress_frame`
+        // gives every LATER frame of the turn. Rendering it through the upstream writer HERE is what
+        // makes a session-opening `session.update` (voice/instructions/tools/turn_detection) actually
+        // apply, and a first audio frame arrive as a dialect-shaped `input_audio_buffer.append`
+        // rather than raw PCM; a byte pass-through of the raw opening frame silently applied none of
+        // it. A one-shot transcribe/tts unit has no session state: its body was already decoded in
+        // the upstream's HTTP request shape, so it passes straight through unchanged.
+        let session = st.and_then(|halfbox| halfbox.get_mut::<VoiceSessionState>());
+        let body = match session {
+            Some(state) => {
+                let client_dialect = client_dialect_from_session(ctx)
+                    .or(state.dialect)
+                    .ok_or(Encode::Poisoned)?;
+                let upstream_dialect = upstream_dialect_for(self, dest);
+                // The opening frame is re-read off the unit's OWN body rather than the session stash:
+                // the body is this unit's authoritative frame, whereas `state.pending` is a per-half
+                // scratch slot the next decoded frame overwrites — reading it here would risk shaping
+                // a later frame's event into Unit 0. Metering is not repeated: the opening frame's
+                // audio was counted on its draft at decode.
+                match client_event_from_wire(client_dialect, u.body().body(), state)? {
+                    Some(event) => write_up_to_arena(upstream_dialect, event, state, ctx)?
+                        // The upstream dialect has no verb for this opening concept: nothing is
+                        // relayed, the same answer `encode_ingress_frame` gives a dropped later frame.
+                        .unwrap_or_else(|| ArenaBytes::new(&[])),
+                    None => ArenaBytes::new(&[]),
+                }
+            }
+            None => ctx
+                .arena()
+                .alloc_bytes(u.body().body())
+                .map_err(|_| Encode::ArenaExhausted)?,
+        };
         Ok(EgressBody {
             envelope: TransportEnvelope::default(),
             body,
@@ -278,16 +374,10 @@ impl Plane for StreamingPlane {
             }
         }
 
-        let writer = writer_for(upstream_dialect);
         // The upstream dialect may have NO verb for this concept (the cross-dialect drop rows): then
-        // nothing is relayed — the same answer a lifecycle frame handled fully at decode gives.
-        let Some(out) = writer.write_up(client_event, &mut state.codec) else {
-            return Ok(None);
-        };
-        ctx.arena()
-            .alloc_bytes(&out.0)
-            .map(Some)
-            .map_err(|_| Encode::ArenaExhausted)
+        // nothing is relayed — the same answer a lifecycle frame handled fully at decode gives. This
+        // is the SAME dialect-writer path Unit 0's opening frame takes in `encode_egress`.
+        write_up_to_arena(upstream_dialect, client_event, state, ctx)
     }
 
     fn decode_response<'u>(
@@ -813,7 +903,10 @@ fn decode_ws_frame<'u>(
     // Stashed so `encode_ingress_frame` never calls the stateful reader a second time for the same
     // wire frame (see `crate::session::Pending`'s doc comment).
     state.pending = Some(Pending::Ingress(event.clone()));
-    ingress_from_client_event(event, state, dialect, ctx)
+    // The original wire frame, handed on so an OPENING frame's Unit-0 body is the client's own
+    // message (`encode_egress` re-frames it onto the upstream), not the extracted relay.
+    let wire = frame.bytes.as_slice();
+    ingress_from_client_event(event, state, dialect, wire, ctx)
 }
 
 /// Decode one frame of a `twilio-media`-carried session.
@@ -870,9 +963,14 @@ fn decode_twilio_frame<'u>(
                 .arena()
                 .alloc_bytes(&payload)
                 .map_err(|_| Decode::Oversize)?;
+            // The OPENING frame's body is the carrier's ORIGINAL `media` envelope, so `encode_egress`
+            // can re-run the same µ-law -> PCM -> `input_audio_buffer.append` shaping the relay seam
+            // does; a byte pass-through would have shipped raw µ-law upstream. The extracted relay is
+            // still handed on for the already-open case.
             open_or_relay(
                 state,
                 Dialect::TwilioMediaStreams,
+                frame.bytes.as_slice(),
                 arena_bytes,
                 None,
                 Some(ms),
@@ -906,6 +1004,7 @@ fn ingress_from_client_event<'u>(
     event: IrClientEvent,
     state: &mut VoiceSessionState,
     dialect: Dialect,
+    wire: &'u [u8],
     ctx: &Ctx<'u>,
 ) -> Result<Ingress<'u>, Decode> {
     // A tool RESULT is not a frame of the conversation; it is the answer to a call the upstream
@@ -950,7 +1049,7 @@ fn ingress_from_client_event<'u>(
         }) => (ArenaBytes::new(&[]), Some(*audio_played_ms), None),
         IrClientEvent::Control(_) | IrClientEvent::Tool(_) => (ArenaBytes::new(&[]), None, None),
     };
-    open_or_relay(state, dialect, relay, interrupt_ms, audio_ms, ctx)
+    open_or_relay(state, dialect, wire, relay, interrupt_ms, audio_ms, ctx)
 }
 
 /// Open a fresh turn (this is its first frame) or relay onto the one already open, attaching the
@@ -964,6 +1063,7 @@ fn ingress_from_client_event<'u>(
 fn open_or_relay<'u>(
     state: &mut VoiceSessionState,
     dialect: Dialect,
+    open_wire: &'u [u8],
     relay: ArenaBytes<'u>,
     interrupt_ms: Option<u64>,
     audio_ms: Option<u64>,
@@ -991,7 +1091,11 @@ fn open_or_relay<'u>(
         }
         let correlation = state.open_turn();
         let _ = facts.set(meta::FACT_DIALECT, FactValue::Str(dialect.name()));
-        let ir = view(relay.as_slice(), ctx)?;
+        // The opening frame's body is the client's ORIGINAL wire frame, not the extracted relay:
+        // `encode_egress` re-frames it onto the upstream dialect (see its note), so what it carries
+        // must be the full client message (a `session.update` config, a carrier `media` envelope),
+        // never the empty/raw relay a byte pass-through would have shipped upstream unshaped.
+        let ir = view(open_wire, ctx)?;
         Ok(Ingress::Open(Box::new(UnitDraft {
             op: OpClassId::new("duplex_turn"),
             body_ir: ir,

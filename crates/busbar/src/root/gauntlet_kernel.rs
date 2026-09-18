@@ -24,9 +24,9 @@
 use axum::response::Response;
 
 use busbar_caps::{
-    Admit, AdmitToken, Admission, Approve, Arrival, ArrivalRecord, Audit, Authenticate,
+    Admission, Admit, AdmitToken, Approve, Arrival, ArrivalRecord, Audit, Authenticate,
     Authenticated, Decision, Decode, Encode, Frame, Meter, OpClassId, OriginKind, Outcome,
-    PrincipalId, ReasonCode, Refusal, Route, TrustToken, Usage, UnitToken, UsageToken,
+    PrincipalId, ReasonCode, Refusal, Route, TrustToken, UnitToken, Usage, UsageToken,
     VerifiedDestination, Verify,
 };
 use busbar_contract::{AuditFacts, FinishClass, RoutePlan, ScopeFacts, UnitKey};
@@ -107,7 +107,11 @@ impl Units for GauntletKernelUnit<'_> {
         Decision::proceed(token, self.op_class)
     }
 
-    fn authenticate(&self, token: &UnitToken<Authenticate>, _ctx: &UnitCtx) -> Decision<Authenticate> {
+    fn authenticate(
+        &self,
+        token: &UnitToken<Authenticate>,
+        _ctx: &UnitCtx,
+    ) -> Decision<Authenticate> {
         // Identity is already resolved upstream and threaded via `gov`; this step states it.
         Decision::proceed(token, Authenticated::Principal(self.principal.clone()))
     }
@@ -124,7 +128,10 @@ impl Units for GauntletKernelUnit<'_> {
         // response, stashed for the outer handler; the sealed set is empty (the plane's engine owns
         // routing inside `drive`), so no upstream candidate and no flat fee.
         let outcome = {
-            let guard = self.plane.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let guard = self
+                .plane
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             match guard.as_deref() {
                 Some(plane) => plane.verify_destination(&self.request()),
                 None => VerifyOutcome::Refuse(Self::plane_spent()),
@@ -163,7 +170,12 @@ impl Units for GauntletKernelUnit<'_> {
         Decision::proceed(token, Admission::ZeroHold)
     }
 
-    fn route(&self, token: &UnitToken<Route>, _ctx: &UnitCtx, _meter: &AccrualMeter) -> Decision<Route> {
+    fn route(
+        &self,
+        token: &UnitToken<Route>,
+        _ctx: &UnitCtx,
+        _meter: &AccrualMeter,
+    ) -> Decision<Route> {
         // This rider's Route AWAITS (the plane's `drive`), so the loop reaches it through the
         // `RouteAwait` arm below and this synchronous one is never taken. Answered rather than
         // unwrapped: there is no task here to run the leg on.
@@ -185,7 +197,12 @@ impl Units for GauntletKernelUnit<'_> {
         )
     }
 
-    fn audit(&self, token: &UnitToken<Audit>, _ctx: &UnitCtx, _outcome: &Outcome) -> Decision<Audit> {
+    fn audit(
+        &self,
+        token: &UnitToken<Audit>,
+        _ctx: &UnitCtx,
+        _outcome: &Outcome,
+    ) -> Decision<Audit> {
         Decision::proceed(
             token,
             AuditFacts {
@@ -211,7 +228,12 @@ impl Units for GauntletKernelUnit<'_> {
         )
     }
 
-    fn encode(&self, token: &UnitToken<Encode>, _ctx: &UnitCtx, _outcome: &Outcome) -> Decision<Encode> {
+    fn encode(
+        &self,
+        token: &UnitToken<Encode>,
+        _ctx: &UnitCtx,
+        _outcome: &Outcome,
+    ) -> Decision<Encode> {
         // The plane's `drive` already produced the bytes and the transport owns the envelope; there
         // is no frame this rider writes around one.
         Decision::proceed(
@@ -307,8 +329,11 @@ pub async fn run_gauntlet_via_kernel(
     };
     table.open(raw_key);
 
-    let arrival =
-        busbar_kernel::inflight::arrival_hold(&kernel, &crate::root::kernel::AdmissionDoor, principal);
+    let arrival = busbar_kernel::inflight::arrival_hold(
+        &kernel,
+        &crate::root::kernel::AdmissionDoor,
+        principal,
+    );
     let entered = inflight.insert(busbar_kernel::inflight::Enter {
         key,
         origin: OriginKind::Client,
@@ -403,8 +428,11 @@ pub fn open_gauntlet_via_kernel(
     };
     table.open(raw_key);
 
-    let arrival =
-        busbar_kernel::inflight::arrival_hold(&kernel, &crate::root::kernel::AdmissionDoor, principal);
+    let arrival = busbar_kernel::inflight::arrival_hold(
+        &kernel,
+        &crate::root::kernel::AdmissionDoor,
+        principal,
+    );
     let entered = inflight.insert(busbar_kernel::inflight::Enter {
         key,
         origin: OriginKind::Client,

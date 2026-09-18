@@ -304,7 +304,9 @@ impl<'de> Deserialize<'de> for SecretRef {
                             // Untyped-then-shape-check: a non-string `env:` (e.g. an unquoted YAML
                             // number/bool, or a nested map holding a literal) must not be echoed.
                             match map.next_value::<serde_json::Value>()? {
-                                serde_json::Value::String(s) => sugar = Some((SECRET_MODULE_ENV, s)),
+                                serde_json::Value::String(s) => {
+                                    sugar = Some((SECRET_MODULE_ENV, s))
+                                }
                                 _ => return Err(RefVisitor::inline_literal()),
                             }
                         }

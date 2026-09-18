@@ -143,6 +143,67 @@ async fn a_stream_that_ended_on_an_error_stays_ended() {
     flood.abort();
 }
 
+/// A too-long line is a NON-FATAL framing error: this crate's contract (see
+/// `a_stream_that_ended_on_an_error_stays_ended` above) is that it leaves the connection neither
+/// poisoned nor closed, i.e. re-usable. But the rejected line's bytes stay in the connection's
+/// carried-over buffer, and a `read_line` that answered `TooLong` from a full buffer WITHOUT ever
+/// reading again wedged the connection forever: every later `frames()` on it returned a synthetic
+/// framing error with no read, so the fd/child leaked while the contract claimed the connection was
+/// still usable. This pins the recovery — after a too-long line, a fresh `frames()` on the SAME
+/// connection discards the rejected line and delivers the NEXT well-formed one. A mutant that drops
+/// the recovery drain (leaving the wedge) hangs this cell at the second pump; one that discards the
+/// wrong amount delivers a spurious frame instead of `after`.
+#[tokio::test]
+async fn a_too_long_line_is_recovered_and_the_next_line_delivered() {
+    let t = StdioTransport::new();
+    let (end_a, end_b) = tokio::io::duplex(64 * 1024);
+    let (br, bw) = split(end_b);
+    let b = t.wrap_pair(br, bw, "a");
+    let (_ar, mut aw) = split(end_a);
+
+    // An over-long TERMINATED line, then a well-formed line behind it. The writer is spawned: the
+    // payload is larger than the duplex buffer, so it drains only as the reader consumes it.
+    let feeder = tokio::spawn(async move {
+        let mut over = vec![b'x'; crate::transport::MAX_LINE_BYTES + 1];
+        over.push(b'\n');
+        aw.write_all(&over).await.unwrap();
+        aw.write_all(b"after\n").await.unwrap();
+        aw.flush().await.unwrap();
+        aw
+    });
+
+    // First pump: the over-long line is a framing error and ends this stream.
+    let mut frames = t.frames(b.clone_for_test());
+    let err = tokio::time::timeout(Duration::from_secs(5), frames.next())
+        .await
+        .expect("the over-long line must be answered, not read forever")
+        .expect("the stream must report it")
+        .expect_err("a line past the maximum is not a frame");
+    assert_eq!(err, TransportError::Framing);
+    drop(frames);
+
+    // The connection is left usable: not poisoned, not closed.
+    let state = t.state_of(b.id()).unwrap();
+    assert!(!state.is_poisoned());
+    assert!(!state.is_closed());
+
+    // A fresh pump on the SAME connection must discard the rejected line and deliver the next one,
+    // reading the pipe rather than answering a synthetic `TooLong` forever.
+    let mut frames = t.frames(b.clone_for_test());
+    let (_stream, frame) = tokio::time::timeout(Duration::from_secs(5), frames.next())
+        .await
+        .expect("the connection must recover and read the pipe, not stay wedged")
+        .expect("the next line must arrive")
+        .expect("the next line is a well-formed frame, not a framing error");
+    assert_eq!(
+        frame.bytes.as_slice(),
+        b"after",
+        "recovery must consume the whole rejected line, then deliver the NEXT line intact"
+    );
+
+    feeder.await.unwrap();
+}
+
 /// The other end of `encode_envelope`'s check: the same delimiter and trailing-`\r` refusal
 /// `write` enforces at the byte level, enforced again where a plane builds the frame. A mutant
 /// that turns the `||` into `&&`, or the trailing-`\r` `==` into `!=`, survives unless each half is

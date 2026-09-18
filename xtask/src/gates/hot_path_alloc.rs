@@ -106,7 +106,11 @@ fn claim_row(claim: &Claim, bench: &str) -> Row {
         .filter(|m| !bench.contains(m))
         .collect();
     if missing.is_empty() {
-        Row::pass(claim.row, claim.ok, format!("{BENCH_REL}: all markers present"))
+        Row::pass(
+            claim.row,
+            claim.ok,
+            format!("{BENCH_REL}: all markers present"),
+        )
     } else {
         Row::fail(
             claim.row,

@@ -2533,14 +2533,23 @@ async fn the_resolved_op_loop_leaves_the_money_where_run_gauntlet_leaves_it() {
     // A DELIVERED unit: one request, one metering row, the tap's reported token split — once.
     let shipped = leg_native_run(Fixture::BufferedOk).await;
     let looped = leg_native_run_via_loop(Fixture::BufferedOk).await;
-    for f in ["ledger_requests", "ledger_tokens", "ledger_spend_cents", "metering_rows"] {
+    for f in [
+        "ledger_requests",
+        "ledger_tokens",
+        "ledger_spend_cents",
+        "metering_rows",
+    ] {
         assert_eq!(
             field(&shipped, f),
             field(&looped, f),
             "delivered: `{f}` differs between run_gauntlet and the loop"
         );
     }
-    assert_eq!(field(&looped, "ledger_requests"), "1", "one request, counted once");
+    assert_eq!(
+        field(&looped, "ledger_requests"),
+        "1",
+        "one request, counted once"
+    );
     assert_eq!(
         field(&looped, "ledger_tokens"),
         (INPUT + OUTPUT).to_string(),
@@ -2558,7 +2567,10 @@ async fn the_resolved_op_loop_leaves_the_money_where_run_gauntlet_leaves_it() {
             "streamed: `{f}` differs between run_gauntlet and the loop"
         );
     }
-    assert_eq!(field(&s_looped, "ledger_tokens"), (INPUT + OUTPUT).to_string());
+    assert_eq!(
+        field(&s_looped, "ledger_tokens"),
+        (INPUT + OUTPUT).to_string()
+    );
 
     // The door refused (over budget): nothing charged on either leg — no phantom request the loop
     // invented by entering the funnel.
