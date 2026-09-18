@@ -39,6 +39,13 @@
 //! to go and look at), so the generic core stays free of any plane's vocabulary. A broken chain is
 //! REPORTED and still resumed from its tail (via [`Chain::from_persisted_unverified`]): refusing to
 //! restore a tamper-detected chain would convert a detection control into a deletion primitive.
+//!
+//! The RUNTIME resume path holds to the same rule. A scope evicted from the LRU and then written to
+//! again reads its persisted tail back to resume ([`Journal::resume_missing`] /
+//! [`Journal::resume_scoped`]); if that tail no longer verifies it is the same tamper evidence, found
+//! after boot rather than at it. There is no [`Restored`] to return it on, so the break is RECORDED on
+//! the journal ([`Journal::take_resume_breaks`] drains it) instead of discarded — the resume still
+//! proceeds from the tail, but the evidence is never silently dropped.
 
 // Two downstream plugins each wire this in production for their own evidence stream. But with both
 // of those plugins compiled out (`--no-default-features`) nothing instantiates a `Journal`, so every
@@ -142,6 +149,15 @@ pub(crate) struct Journal<R> {
     /// an evicted scope is resumed from the store on its next write. `usize::MAX` opts a stream out of
     /// eviction (an unbounded working set that is bounded elsewhere, e.g. a task table).
     cap: usize,
+    /// Chain breaks the RUNTIME resume path detected and RECORDED rather than discarded. A scope
+    /// evicted from the LRU then written to again reads its persisted tail back; if that tail fails to
+    /// verify it is TAMPER EVIDENCE, exactly the kind [`Restored::chain_breaks`] carries for the boot
+    /// rehydrate. The runtime path has no [`Restored`] to return the break on, so it is accumulated
+    /// here instead of dropped — the resume STILL proceeds from the tail (refusing would convert a
+    /// detection control into a deletion primitive), but the break is never silently lost. A wrapper
+    /// drains it via [`Journal::take_resume_breaks`] and reports it in its own vocabulary, the same way
+    /// it drains `Restored::chain_breaks` from a boot rehydrate; the journal itself does not judge.
+    resume_breaks: Mutex<Vec<ChainBreak>>,
 }
 
 impl<R: ChainedRecord> Journal<R> {
@@ -152,7 +168,16 @@ impl<R: ChainedRecord> Journal<R> {
             overflowed: AtomicBool::new(false),
             sink: Mutex::new(None),
             cap,
+            resume_breaks: Mutex::new(Vec::new()),
         }
+    }
+
+    /// Drain the chain breaks the RUNTIME resume path recorded since the last drain — the runtime
+    /// analogue of reading [`Restored::chain_breaks`] off a boot rehydrate. A wrapper calls this to
+    /// report resume-time tamper evidence in its own vocabulary; the breaks are TAKEN, so each is
+    /// reported once. Empty when no evicted scope's persisted tail failed to verify on resume.
+    pub(crate) fn take_resume_breaks(&self) -> Vec<ChainBreak> {
+        std::mem::take(&mut *self.resume_breaks.lock().unwrap_or_else(|e| e.into_inner()))
     }
 
     /// Poison-recovering lock. The data behind it stays consistent after a panic (the critical
@@ -252,10 +277,21 @@ impl<R: ChainedRecord> Journal<R> {
             .map(|body| decode(body))
             .collect::<StoreResult<_>>()
             .map_err(JournalError::Store)?;
-        // A break here was already reported at boot; resume from the tail regardless, never re-based
-        // onto a fresh chain — the same judgement `restore_from_store` makes.
-        Ok(Chain::from_persisted(&records)
-            .unwrap_or_else(|_brk| Chain::from_persisted_unverified(&records)))
+        // A break here is TAMPER EVIDENCE surfaced at RUNTIME: this scope was evicted from the LRU and
+        // its persisted tail, read back to resume, no longer verifies. Resume from the tail regardless,
+        // never re-based onto a fresh chain — the same judgement `restore_from_store` makes — but RECORD
+        // the break rather than discard it, so it is never silently dropped. (The old comment's premise,
+        // "already reported at boot", is false for an evict-then-resume that happens after boot.)
+        Ok(match Chain::from_persisted(&records) {
+            Ok(chain) => chain,
+            Err(brk) => {
+                self.resume_breaks
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .push(brk);
+                Chain::from_persisted_unverified(&records)
+            }
+        })
     }
 
     /// BOOT REHYDRATE. Enumerate the scopes the store holds records for, resume each chain from its
@@ -459,8 +495,21 @@ impl<R: NeutralRecord> Journal<R> {
             .map(|body| reframe(scope, body))
             .collect::<StoreResult<_>>()
             .map_err(JournalError::Store)?;
-        Ok(Chain::from_persisted(&records)
-            .unwrap_or_else(|_brk| Chain::from_persisted_unverified(&records)))
+        // A break here is TAMPER EVIDENCE surfaced at RUNTIME (the neutral-path twin of
+        // `resume_missing`): the evicted scope's persisted tail no longer verifies when read back.
+        // Resume from the tail regardless — never re-based onto a fresh chain, the same judgement
+        // `restore_scoped` makes — but RECORD the break rather than discard it, so it is never silently
+        // dropped.
+        Ok(match Chain::from_persisted(&records) {
+            Ok(chain) => chain,
+            Err(brk) => {
+                self.resume_breaks
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .push(brk);
+                Chain::from_persisted_unverified(&records)
+            }
+        })
     }
 
     /// APPEND one neutral record: chain it to MINT the sequence and link (the SOLE chain authority),

@@ -122,6 +122,18 @@ impl MockStore {
             r.body = serde_json::to_vec(&w).unwrap();
         }
     }
+    /// Corrupt the first stored NEUTRAL row's body so its chain no longer verifies, while leaving the
+    /// body a perfectly DECODABLE [`super::NeutralBody`] — so the resume reads it back as a real record
+    /// and the failure is a chain BREAK, not an unreadable row. Changes a digest-covered field
+    /// (`content`) and leaves the stored `hash` stale.
+    fn tamper_first_neutral(&self) {
+        let mut rows = self.rows.lock().unwrap();
+        if let Some(r) = rows.first_mut() {
+            let mut nb: super::NeutralBody = decode(&r.body).unwrap();
+            nb.content = b"|TAMPERED".to_vec();
+            r.body = encode(&nb).unwrap();
+        }
+    }
 }
 
 impl PlaneStore for MockStore {
@@ -653,4 +665,78 @@ fn a_tampered_row_is_reported_and_still_restored() {
     assert_eq!(restored.chain_breaks.len(), 1, "the tamper is reported");
     assert_eq!(restored.scopes, 1, "and the scope is still restored");
     assert_eq!(j2.next_seq("acme"), 3, "resumed from the tail, not refused");
+}
+
+/// RUNTIME resume-path tamper is SURFACED, not swallowed (typed path). A scope is evicted from the
+/// LRU, its persisted rows are tampered while it is cold, and it is then written to again — which
+/// resumes it from the (now broken) store tail via `resume_missing`. The resume must STILL proceed
+/// (refusing would let anyone who can write the store delete a scope's history), but the break must be
+/// RECORDED, not discarded: `take_resume_breaks` returns it. The regression this pins is the old
+/// `from_persisted(..).unwrap_or_else(|_brk| ..)` that bound the break to `_brk` and dropped it — with
+/// that swallow restored, `take_resume_breaks` stays empty and this test fails.
+#[test]
+fn an_evicted_scopes_tampered_tail_surfaces_a_break_on_resume() {
+    let store = Arc::new(MockStore::new());
+    let j: Journal<Widget> = Journal::new(1); // cap 1 → the next scope evicts this one
+    j.set_sink(store.clone());
+
+    write(&j, "acme", 10); // acme seq 1, durable and cached
+    write(&j, "other", 1); // inserting `other` evicts `acme`, latching overflow
+    assert_eq!(j.len(), 1, "cap 1: only the most-recent scope is cached");
+    assert!(
+        j.take_resume_breaks().is_empty(),
+        "no break yet — nothing has been resumed"
+    );
+
+    // Tamper acme's cold persisted row (its is the first stored row).
+    store.tamper_first();
+
+    // Write acme again: it is evicted, so this resumes it from the tampered store tail.
+    let resumed = write(&j, "acme", 20);
+    assert_eq!(
+        resumed.seq, 2,
+        "the resume STILL proceeds from the tail — service is not refused"
+    );
+
+    let breaks = j.take_resume_breaks();
+    assert_eq!(
+        breaks.len(),
+        1,
+        "the runtime resume-path tamper must be RECORDED, not swallowed (this is the fix): {breaks:?}"
+    );
+    assert!(
+        j.take_resume_breaks().is_empty(),
+        "the breaks were TAKEN — a second drain is empty, so each is reported once"
+    );
+}
+
+/// RUNTIME resume-path tamper is SURFACED on the NEUTRAL path too (`append_scoped` → `resume_scoped`).
+/// Same shape as the typed test: evict a scope, tamper its cold rows (kept DECODABLE so the failure is
+/// a chain break rather than an unreadable row), append to it again, and assert the break is recorded
+/// via `take_resume_breaks` while the append still lands.
+#[test]
+fn an_evicted_neutral_scopes_tampered_tail_surfaces_a_break_on_resume() {
+    let store = Arc::new(MockStore::new());
+    let j: Journal<NeutralRec> = Journal::new(1);
+    j.set_sink(store.clone());
+
+    write_neutral(&j, "acme", b"|first"); // acme seq 1
+    write_neutral(&j, "other", b"|x"); // evicts acme, latches overflow
+    assert_eq!(j.len(), 1);
+    assert!(j.take_resume_breaks().is_empty());
+
+    store.tamper_first_neutral(); // acme's cold row, still a valid NeutralBody
+
+    let resumed = write_neutral(&j, "acme", b"|second");
+    assert_eq!(
+        resumed.seq, 2,
+        "the neutral resume STILL proceeds from the tail"
+    );
+
+    let breaks = j.take_resume_breaks();
+    assert_eq!(
+        breaks.len(),
+        1,
+        "the neutral runtime resume-path tamper must be RECORDED, not swallowed: {breaks:?}"
+    );
 }
