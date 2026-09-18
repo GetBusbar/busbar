@@ -297,7 +297,8 @@ fn hot_row(cx: &Ctx, hot: &[String]) -> Row {
         }
     }
     if offenders.is_empty() {
-        let mut detail = format!("{REGISTRY_REL}: the hot kinds present declare the #[repr(C)] POD lane");
+        let mut detail =
+            format!("{REGISTRY_REL}: the hot kinds present declare the #[repr(C)] POD lane");
         if !deferred.is_empty() {
             detail.push_str(&format!(
                 "; declared HOT by #30 but not yet wired into the tree: {}",
@@ -422,7 +423,11 @@ impl Gate for KindAbiLaneGate {
                 rows.push(Row::pass(
                     ROW_MAPPING,
                     "DECISIONS #30 partitions the seven kinds into the two lanes",
-                    format!("HOT/POD = {}; COLD/JSON = {}", hot.join(", "), cold.join(", ")),
+                    format!(
+                        "HOT/POD = {}; COLD/JSON = {}",
+                        hot.join(", "),
+                        cold.join(", ")
+                    ),
                 ));
                 rows.push(cold_row(cx, &cold));
                 rows.push(hot_row(cx, &hot));
@@ -478,7 +483,10 @@ impl Gate for KindAbiLaneGate {
         let mut ov = Overlay::new();
         ov.set(
             REGISTRY_REL,
-            registry.replace("busbar_plugin::cold::AUTH_ABI_VERSION", "busbar_plugin::ABI_MINOR"),
+            registry.replace(
+                "busbar_plugin::cold::AUTH_ABI_VERSION",
+                "busbar_plugin::ABI_MINOR",
+            ),
         );
         report.push(prove_rows_red(
             cx,

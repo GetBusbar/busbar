@@ -6467,7 +6467,11 @@ impl Gate for KindIsolationGate {
             "a transport reaching the streaming plane by crate path is still refused",
             &[ROW_VOCAB],
             ov,
-            &["undeclared-crate-path", "busbar_plane_streaming", "planted_plane_reach.rs"],
+            &[
+                "undeclared-crate-path",
+                "busbar_plane_streaming",
+                "planted_plane_reach.rs",
+            ],
         ));
 
         let mut ov = Overlay::new();

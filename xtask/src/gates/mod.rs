@@ -1993,7 +1993,8 @@ pub static REGISTRY: &[Registration] = &[
         batch: 1,
         tier: Tier::Fast,
         build: || Box::new(kind_abi_lane::KindAbiLaneGate),
-        summary: "each kind declares the ONE ABI lane #30 binds it to by heat (plane/transport=hot, \
+        summary:
+            "each kind declares the ONE ABI lane #30 binds it to by heat (plane/transport=hot, \
                   store/secret/auth/hook/export=cold); the per-token loop is {plane,transport} only",
     },
     Registration {
