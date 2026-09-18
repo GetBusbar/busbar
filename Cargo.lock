@@ -412,7 +412,6 @@ dependencies = [
  "busbar-admin",
  "busbar-api",
  "busbar-core",
- "busbar-plane-a2a-host",
  "busbar-plugin",
  "busbar-plugin-loader",
  "busbar-plugin-sign",
@@ -816,13 +815,6 @@ dependencies = [
  "busbar-a2a-codec",
  "busbar-contract",
  "serde_json",
-]
-
-[[package]]
-name = "busbar-plane-a2a-host"
-version = "1.6.0"
-dependencies = [
- "busbar-substrate",
 ]
 
 [[package]]
