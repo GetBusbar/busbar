@@ -726,8 +726,16 @@ fn the_field_predicate_admits_every_event_and_only_events() {
         (b"retry: 3000", true),
         // Bytes that do not decode are still bytes the upstream sent.
         (invalid_utf8, true),
-        // A field name is a name up to its colon; without one there is no field.
-        (b"data", false),
+        // A bare field name with no colon is a field whose value is empty, per the grammar — an
+        // event, not a comment. Each of the four in turn.
+        (b"data", true),
+        (b"event", true),
+        (b"id", true),
+        (b"retry", true),
+        (b"data\r\n", true),
+        // The field name is the bytes up to the first colon: a longer name that merely STARTS with
+        // `data` is not the `data` field. The old prefix match would have admitted it.
+        (b"datastream: x", false),
         // A comment, which is what a keepalive is.
         (b": ping", false),
         (b"\n\n", false),
