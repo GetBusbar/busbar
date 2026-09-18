@@ -15,8 +15,8 @@ use busbar_contract::wire::FrameCursor;
 use serde_json::json;
 
 use crate::claims::Dialect;
-use crate::tests::harness::{ctx, destination, frame, EmptyConfig, LeakArena, WsStack};
-use crate::{Upstream, StreamingPlane};
+use crate::tests::harness::{ctx, destination, frame, unit, EmptyConfig, LeakArena, WsStack};
+use crate::{StreamingPlane, Upstream};
 
 fn openai_plane() -> StreamingPlane {
     static UPSTREAMS: &[Upstream] = &[Upstream {
@@ -255,8 +255,9 @@ fn downlink_audio_frames_carry_the_declared_pacing_fact() {
         panic!("expected Progress::Frame, got {progress:?}");
     };
     assert_eq!(
-        r.facts
-            .get(<StreamingPlane as busbar_contract::plane::PlaneMeta>::EGRESS_PACING_FACT.unwrap()),
+        r.facts.get(
+            <StreamingPlane as busbar_contract::plane::PlaneMeta>::EGRESS_PACING_FACT.unwrap()
+        ),
         Some(busbar_contract::bounded::FactValue::Int(1))
     );
 }
@@ -1272,5 +1273,127 @@ fn a_barge_in_on_an_open_turn_opens_the_turn_that_supersedes_it() {
             .expect("the first turn correlates")
             .value,
         "a late frame of the superseded turn must not relay onto the one that replaced it"
+    );
+}
+
+/// Unit 0's egress body — the FIRST upstream message a fresh duplex session sends — must be the
+/// opening client frame re-framed onto the upstream dialect, not an empty byte pass-through. A
+/// session that opens with `session.update` used to relay an EMPTY body, so the provider was handed
+/// nothing and voice/instructions/tools/turn_detection silently never applied.
+#[test]
+fn unit_zero_egress_reframes_the_opening_session_update() {
+    let plane = openai_plane();
+    let arena = LeakArena;
+    let config = EmptyConfig;
+    let transport = WsStack::new("/v1/realtime");
+    let labels = Labels::new();
+    let c = ctx(&arena, &config, &transport, &labels);
+    let mut state = open_client_session(&plane, &c);
+
+    let bytes = client_wire(&session_update_fixture());
+    let frames = [frame(&bytes)];
+    let mut cursor = FrameCursor::new(&frames);
+    let ingress = plane
+        .decode_ingress(&mut cursor, Some(&mut state), &c)
+        .expect("session.update decodes");
+    let Ingress::Open(draft) = ingress else {
+        panic!("expected Ingress::Open, got {ingress:?}");
+    };
+    let draft = *draft;
+    let u = unit(draft.op, draft.body_ir, draft.facts);
+
+    let dest = destination("api.openai.com", LaneId::new("realtime"));
+    let egress = plane
+        .encode_egress(&u, &dest, Some(&mut state), &c)
+        .expect("Unit 0 encodes an egress body");
+
+    let sent = egress.body.as_slice();
+    assert!(
+        !sent.is_empty(),
+        "Unit 0's egress body must carry the opening frame, not an empty relay"
+    );
+    let value: serde_json::Value =
+        serde_json::from_slice(sent).expect("the egress body is a shaped upstream JSON message");
+    assert_eq!(
+        value.get("type").and_then(serde_json::Value::as_str),
+        Some("session.update"),
+        "the opening frame reaches the provider as a session.update"
+    );
+    let session = value
+        .get("session")
+        .expect("the session config the client asked to apply travels upstream");
+    assert_eq!(
+        session.get("voice").and_then(serde_json::Value::as_str),
+        Some("marin"),
+        "the negotiated voice must reach the provider"
+    );
+    assert_eq!(
+        session
+            .get("instructions")
+            .and_then(serde_json::Value::as_str),
+        Some("You are a helpful voice agent."),
+        "the instructions must reach the provider"
+    );
+    assert!(
+        session.get("turn_detection").is_some(),
+        "turn_detection must reach the provider"
+    );
+    assert!(
+        session.get("tools").is_some(),
+        "the tool set must reach the provider"
+    );
+}
+
+/// A session whose FIRST frame is audio must have Unit 0 reach the provider as a dialect-shaped
+/// `input_audio_buffer.append`, never as the raw PCM the byte pass-through shipped. The session's
+/// stash is cleared first so the seam re-reads the opening frame off Unit 0's own body — proving the
+/// body carries the client's wire frame (the fix), not the extracted relay.
+#[test]
+fn unit_zero_egress_reframes_an_opening_audio_frame() {
+    let plane = openai_plane();
+    let arena = LeakArena;
+    let config = EmptyConfig;
+    let transport = WsStack::new("/v1/realtime");
+    let labels = Labels::new();
+    let c = ctx(&arena, &config, &transport, &labels);
+    let mut state = open_client_session(&plane, &c);
+
+    let audio = serde_json::to_vec(&json!({
+        "type": "input_audio_buffer.append",
+        "audio": "AAAA",
+    }))
+    .expect("audio fixture serializes");
+    let frames = [frame(&audio)];
+    let mut cursor = FrameCursor::new(&frames);
+    let ingress = plane
+        .decode_ingress(&mut cursor, Some(&mut state), &c)
+        .expect("the opening audio frame decodes");
+    let Ingress::Open(draft) = ingress else {
+        panic!("an audio frame opens the turn too, got {ingress:?}");
+    };
+    let draft = *draft;
+    // The Unit-0 body must carry the client's own wire frame (not the extracted raw PCM relay): the
+    // egress seam re-reads it off the body to re-frame it onto the upstream dialect.
+    let u = unit(draft.op, draft.body_ir, draft.facts);
+
+    let dest = destination("api.openai.com", LaneId::new("realtime"));
+    let egress = plane
+        .encode_egress(&u, &dest, Some(&mut state), &c)
+        .expect("Unit 0 encodes an egress body");
+
+    let sent = egress.body.as_slice();
+    let value: serde_json::Value = serde_json::from_slice(sent)
+        .expect("the egress body is a shaped upstream JSON message, not raw PCM");
+    assert_eq!(
+        value.get("type").and_then(serde_json::Value::as_str),
+        Some("input_audio_buffer.append"),
+        "an opening audio frame reaches the provider enveloped, not as raw PCM"
+    );
+    assert!(
+        value
+            .get("audio")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|a| !a.is_empty()),
+        "the enveloped append must carry the base64 audio"
     );
 }
