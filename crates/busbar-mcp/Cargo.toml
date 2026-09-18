@@ -49,11 +49,6 @@ busbar-substrate = { path = "../busbar-substrate", features = ["plane-mcp"] }
 # pulling this crate's axum routes, stdio serve loop and tokio transports into a pure kind's
 # closure. Every module that moved is re-exported from this crate's `lib.rs` under its old name.
 busbar-mcp-codec = { path = "../busbar-mcp-codec" }
-# THE PLANE'S IMPURE HOST CRATE. The first byte-safe step of the fat-crate collapse moved the MCP
-# plane's DIAGNOSTICS catalog here (a self-contained leaf that names nothing in this crate); this
-# crate re-exports it under the old `busbar_mcp::diagnostics` path. The rest of the host surface
-# drains into here in the oracle-gated money cell, after which this crate's name is deleted.
-busbar-plane-mcp-host = { path = "../busbar-plane-mcp-host" }
 # The plugin contracts crate, named ahead of use per owner ruling R-E (see header).
 busbar-api = { path = "../api" }
 # The specification authors' own crate, pinned narrow (see busbar-core/Cargo.toml's rationale): the

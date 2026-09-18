@@ -123,7 +123,7 @@ fn every_live_entry_documents_meaning_and_action() {
 
 /// The committed per-plane docs equal a fresh render of this plane's `DIAGNOSTICS`. Regenerate
 /// after any catalog change with:
-///   `UPDATE_DIAGNOSTICS=1 cargo test -p busbar-plane-mcp-host diagnostics`
+///   `UPDATE_DIAGNOSTICS=1 cargo test -p busbar-mcp diagnostics`
 #[test]
 fn committed_markdown_matches_diagnostics() {
     let fresh = render_markdown_for(DIAGNOSTICS);
@@ -138,7 +138,7 @@ fn committed_markdown_matches_diagnostics() {
     assert_eq!(
         committed, fresh,
         "per-plane diagnostics markdown is stale — regenerate with \
-             `UPDATE_DIAGNOSTICS=1 cargo test -p busbar-plane-mcp-host diagnostics`"
+             `UPDATE_DIAGNOSTICS=1 cargo test -p busbar-mcp diagnostics`"
     );
 }
 
