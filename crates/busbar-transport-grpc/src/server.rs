@@ -43,6 +43,26 @@ use crate::conn::ConnState;
 /// method, the only one a byte-blind transport can name for itself. See the module header.
 pub(crate) const RPC_PATH: &str = "/busbar.raw/Frames";
 
+/// Conservative per-connection HTTP/2 caps for a listener answering untrusted peers, set explicitly
+/// on the hyper server builder in [`serve_connection`] rather than left to hyper's defaults.
+///
+/// Hyper already defaults these to sane values (200 concurrent streams, a 16 KiB max frame, a 16 KiB
+/// max header list), so a stream flood or an HPACK bomb was already bounded — but a default is a
+/// bound this crate leans on without stating and a hyper upgrade could move. Pinned here, the ceiling
+/// on how many calls one connection multiplexes at once, and how much of a peer's framing this
+/// listener will read, is this crate's own deliberate choice. Each is a ceiling, not a target: a
+/// well-behaved peer never reaches any of them.
+///
+/// The stream cap is set tighter than hyper's default on purpose: past it the peer's next `HEADERS`
+/// waits rather than opening yet another concurrent call on this one connection.
+pub(crate) const MAX_CONCURRENT_STREAMS: u32 = 128;
+/// The largest HTTP/2 frame a peer may send — the protocol minimum (16 KiB, also hyper's default),
+/// the smallest a peer can be held to, so no single frame commits the connection to a larger read.
+const MAX_FRAME_BYTES: u32 = 16 * 1024;
+/// The largest decoded header list a peer may send (16 KiB, also hyper's default) — the ceiling on
+/// where an HPACK bomb would spend its budget, pinned so it stays bounded whatever the default does.
+const MAX_HEADER_LIST_BYTES: u32 = 16 * 1024;
+
 /// Serve one stream the layer below handed up as an HTTP/2 gRPC connection until it closes — or
 /// until the connection is closed from this side.
 ///
@@ -60,8 +80,15 @@ pub(crate) fn serve_connection(stream: crate::conn::LowerIo, state: Arc<ConnStat
             let state = state.clone();
             async move { Ok::<_, std::convert::Infallible>(handle_one_rpc(state, req).await) }
         });
-        let conn = hyper::server::conn::http2::Builder::new(TokioExecutor::new())
-            .serve_connection(io, svc);
+        let mut builder = hyper::server::conn::http2::Builder::new(TokioExecutor::new());
+        // Explicit, crate-owned per-connection caps against a stream flood and HPACK exhaustion from
+        // an untrusted peer — see the constants' own note on why they are pinned rather than left to
+        // hyper's (already sane) defaults.
+        builder
+            .max_concurrent_streams(MAX_CONCURRENT_STREAMS)
+            .max_frame_size(MAX_FRAME_BYTES)
+            .max_header_list_size(MAX_HEADER_LIST_BYTES);
+        let conn = builder.serve_connection(io, svc);
         tokio::pin!(conn);
         let served = tokio::select! {
             served = conn.as_mut() => served,
@@ -96,7 +123,16 @@ async fn handle_one_rpc(
     state.record_served_path(req.uri().path().to_string());
     let local = state.next_local_stream.fetch_add(1, Ordering::Relaxed);
     let stream_id = StreamId(local);
+    // The operator's configured max decoding message size, read at `listen` and stamped on this
+    // connection: `tonic` refuses an over-limit length prefix with `OUT_OF_RANGE` before it buffers
+    // the body the prefix claims. Left at zero (no cap configured, e.g. a bare `dial`-only instance)
+    // the builder keeps `tonic`'s own default rather than being pinned to a number no operator
+    // chose. See [`crate::codec::MESSAGE_MAX_BYTES_KEY`].
     let mut grpc = tonic::server::Grpc::new(RawCodec);
+    let cap = state.max_message_bytes();
+    if cap > 0 {
+        grpc = grpc.max_decoding_message_size(cap);
+    }
     // The call is registered by the handler, not here. `Grpc::streaming` can answer entirely on
     // its own — a request naming a `grpc-encoding` this server has not enabled is refused while
     // its headers are still being read — and then the handler below, whose response stream being
@@ -198,8 +234,21 @@ pub(crate) async fn forward_inbound(
     if is_response {
         let frame = terminal_frame(stream_id, final_status.as_ref());
         let _ = state.send_inbound(Ok((stream_id, frame))).await;
-    } else if final_status.is_some() {
-        let _ = state.send_inbound(Err(TransportError::Reset)).await;
+    } else if let Some(status) = final_status {
+        // A served REQUEST body that ends in FAILURE — an over-limit message the decoder refused
+        // (`OUT_OF_RANGE`), a peer that reset its own stream, bytes the framing could not read — is
+        // ONE call's fault, never the connection's. It used to be pushed onto the connection-wide
+        // inbound channel as the SAME untagged `Err(TransportError::Reset)` a whole-connection break
+        // uses, which did two wrong things at once: a `frames()` consumer that reads `Err` as "the
+        // connection is over" tore down every healthy multiplexed neighbour on it (HIGH), and a
+        // caller's framing fault was dressed up as a broken-pipe network reset (MED). It goes up
+        // instead as THIS stream's own terminal frame, carrying the failure's status class — tagged
+        // with the `StreamId`, so it is scoped to the one call and reads as the framing/status fault
+        // it is rather than the connection being gone. The genuine whole-connection break is still
+        // reported once, from `serve_connection` (and, on a dial, from the connection-over task),
+        // where the HTTP/2 driver itself ends — never from one call's inbound read.
+        let frame = terminal_frame(stream_id, Some(&status));
+        let _ = state.send_inbound(Ok((stream_id, frame))).await;
     }
 }
 

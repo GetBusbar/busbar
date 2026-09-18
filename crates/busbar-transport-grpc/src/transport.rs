@@ -53,6 +53,13 @@ pub struct GrpcTransport {
     /// The layer this one composes over. `None` for an instance that will only ever be handed a
     /// stream directly, which is all a transport owning no socket can otherwise do.
     lower: Option<Arc<dyn Transport>>,
+    /// The deployment's configured max decoding message size, read once at `listen` from the
+    /// configuration view handed there — the seam a deployment's limits actually arrive through. It
+    /// is stamped on every connection this instance opens, served or dialled, so both directions
+    /// enforce the SAME operator cap. Zero until `listen` reads one: a dial-only instance never
+    /// handed a configuration leaves each connection at `tonic`'s own default, a bound no operator
+    /// chose but still finite. See [`crate::codec::MESSAGE_MAX_BYTES_KEY`].
+    max_message_bytes: std::sync::atomic::AtomicUsize,
 }
 
 impl Default for GrpcTransport {
@@ -69,6 +76,7 @@ impl GrpcTransport {
             next_id: AtomicU64::new(1),
             conns: SyncMutex::new(HashMap::new()),
             lower: None,
+            max_message_bytes: std::sync::atomic::AtomicUsize::new(0),
         }
     }
 
@@ -79,6 +87,7 @@ impl GrpcTransport {
             next_id: AtomicU64::new(1),
             conns: SyncMutex::new(HashMap::new()),
             lower: Some(lower),
+            max_message_bytes: std::sync::atomic::AtomicUsize::new(0),
         }
     }
 
@@ -181,7 +190,18 @@ impl Transport for GrpcTransport {
         cfg: &'a dyn TransportConfigView,
         keys: &'a TransportKeyHandle,
     ) -> Fut<'a, Listener> {
-        Box::pin(async move { self.lower()?.listen(cfg, keys).await })
+        Box::pin(async move {
+            // `listen` is the one call that carries the deployment's configuration into this
+            // transport, so it is where the message cap is read — the same seam, and the same key,
+            // `busbar-transport-ws` reads it through. A dial made from the same instance reads the
+            // same number back (see `dial`): the cap is the node's, not the listener's.
+            if let Some(cap) = cfg.get_int(crate::codec::MESSAGE_MAX_BYTES_KEY) {
+                if let Ok(cap) = usize::try_from(cap) {
+                    self.max_message_bytes.store(cap, Ordering::Relaxed);
+                }
+            }
+            self.lower()?.listen(cfg, keys).await
+        })
     }
 
     /// Take the next connection off the layer below and serve HTTP/2 over the stream it gives up.
@@ -202,6 +222,9 @@ impl Transport for GrpcTransport {
             let id = self.mint_id();
             let state = ConnState::new(None, chain);
             state.set_local_port(port);
+            // The operator's configured message cap this instance read at `listen`, stamped on the
+            // connection so the served `Grpc` builder enforces it — see the field's own note.
+            state.set_max_message_bytes(self.max_message_bytes.load(Ordering::Relaxed));
             self.conns.lock().unwrap().insert(id, state.clone());
             crate::server::serve_connection(stream, state);
             Ok(Conn::new(Arc::new(GrpcConnHandle { id, peer })))
@@ -253,6 +276,11 @@ impl Transport for GrpcTransport {
             let id = self.mint_id();
             let state = ConnState::new(Some((Arc::new(dialer), origin, method)), chain);
             state.arm_cut(cut);
+            // The same operator cap the served side enforces, stamped on the dialled connection so
+            // an upstream's answer is decoded under the node's own ceiling — a response is as
+            // untrusted as a request, and one oversized length-prefixed answer must not make the
+            // framing layer reserve the memory that prefix claims either.
+            state.set_max_message_bytes(self.max_message_bytes.load(Ordering::Relaxed));
             self.conns.lock().unwrap().insert(id, state.clone());
             // When the HTTP/2 connection under this dial is over, so is anything that could arrive
             // on it: end the inbound side so a reader sees end-of-stream instead of waiting out its

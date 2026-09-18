@@ -9,6 +9,23 @@
 use tonic::codec::{Codec, DecodeBuf, Decoder, EncodeBuf, Encoder};
 use tonic::Status;
 
+/// The configuration key naming the largest single message this transport will decode.
+///
+/// It is the deployment's request-body cap, read through the SAME name the rest of the stack knows
+/// it by (`busbar-transport-ws` reads the identical key for the identical reason): a gRPC message
+/// and an HTTP body are the same thing to an operator sizing a limit, so a `grpc` listener that
+/// buffered more than the operator asked for would be a hole nobody declared. Read once at `listen`
+/// and applied — symmetric, this node's own number — to both the served and the dialled `Grpc`
+/// builder's `max_decoding_message_size`, so one oversized length-prefixed message cannot make the
+/// framing layer reserve the memory that prefix claims, in either direction.
+///
+/// `tonic` checks the ceiling against a message's length PREFIX before it reserves or buffers the
+/// body, refusing an oversized prefix with `OUT_OF_RANGE` rather than allocating for it. Left unread,
+/// every message was pinned to `tonic`'s own private 4 MiB default — a memory bound this crate
+/// leaned on without ever stating, unrelated to the operator's configured cap, and one a `tonic`
+/// upgrade could move without this crate noticing.
+pub(crate) const MESSAGE_MAX_BYTES_KEY: &str = "limits.request_body_max_bytes";
+
 /// The codec: `Vec<u8>` messages, no message meaning.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct RawCodec;

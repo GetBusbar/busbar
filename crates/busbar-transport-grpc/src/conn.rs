@@ -290,6 +290,11 @@ pub(crate) struct ConnState {
     /// the layer below's chain plus this one, carried across the handoff — a connection that named
     /// only itself was one a location could not resolve against.
     pub(crate) chain: Vec<&'static str>,
+    /// The largest single gRPC message this connection will decode, in bytes — the deployment's
+    /// configured [`crate::codec::MESSAGE_MAX_BYTES_KEY`] cap, read once at `listen` and stamped on
+    /// each connection this transport opens. Zero means "unconfigured": the builder is left at
+    /// `tonic`'s own default rather than pinned to a number no operator chose.
+    max_message_bytes: std::sync::atomic::AtomicUsize,
 }
 
 impl ConnState {
@@ -311,6 +316,7 @@ impl ConnState {
             cut: SyncMutex::new(None),
             local_port: std::sync::atomic::AtomicU16::new(0),
             chain,
+            max_message_bytes: std::sync::atomic::AtomicUsize::new(0),
         })
     }
 }
@@ -431,6 +437,21 @@ impl ConnState {
     /// The local port this connection arrived on, zero where it arrived on none.
     pub(crate) fn local_port(&self) -> u16 {
         self.local_port.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Stamp this connection with the deployment's configured max decoding message size — the number
+    /// the transport read once at `listen`. Zero leaves it unconfigured.
+    pub(crate) fn set_max_message_bytes(&self, max: usize) {
+        self.max_message_bytes
+            .store(max, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// The configured max decoding message size for this connection, zero where none was configured
+    /// — in which case the caller leaves the `Grpc` builder at its own default rather than pinning
+    /// a number no operator chose.
+    pub(crate) fn max_message_bytes(&self) -> usize {
+        self.max_message_bytes
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Remember how to cut the stream this connection runs on.

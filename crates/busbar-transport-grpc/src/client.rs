@@ -116,7 +116,16 @@ pub(crate) async fn open_stream(
     // pseudo-header) — `Grpc::new` alone leaves both empty, which `hyper`'s h2 client rejects
     // (`MissingUriSchemeAndAuthority`), a real error this crate's own battery caught red before
     // this fix.
+    // The operator's configured max decoding message size on the reading (upstream-answer) side too:
+    // a response is as untrusted as a request, so one oversized length-prefixed answer must not make
+    // the framing layer reserve the memory that prefix claims. The number is the one this instance
+    // read at `listen` and stamped on the connection; zero (no cap configured) leaves the builder at
+    // `tonic`'s own default. See [`crate::codec::MESSAGE_MAX_BYTES_KEY`].
     let mut grpc = tonic::client::Grpc::with_origin(dialer, origin);
+    let cap = state.max_message_bytes();
+    if cap > 0 {
+        grpc = grpc.max_decoding_message_size(cap);
+    }
     grpc.ready().await.map_err(|_| TransportError::Refused)?;
     let path = PathAndQuery::try_from(method).map_err(|_| TransportError::AddressRefused)?;
     let response = match grpc
