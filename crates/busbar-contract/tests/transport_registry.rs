@@ -100,7 +100,7 @@ fn the_transport_kind_has_one_abi_generation() {
     // needs something to compare against, and every transport naming the same constant is what
     // makes "one generation" a fact rather than a coincidence between six crates.
     assert_eq!(
-        busbar_contract::transport::TRANSPORT_ABI,
+        busbar_contract::transport::TRANSPORT_KIND_ABI,
         busbar_contract::transport::AbiVersion(1)
     );
 }

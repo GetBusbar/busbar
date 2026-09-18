@@ -692,7 +692,7 @@ fn the_declared_abi_is_the_registrys_own_constant() {
     let http = std::sync::Arc::new(HttpTransport::new(ClientSettings::default()));
     assert_eq!(
         SseTransport::new(http).abi(),
-        busbar_contract::transport::registry::TRANSPORT_ABI
+        busbar_contract::transport::registry::TRANSPORT_KIND_ABI
     );
 }
 

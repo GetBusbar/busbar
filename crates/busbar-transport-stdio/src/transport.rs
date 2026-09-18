@@ -218,7 +218,7 @@ impl Plugin for StdioTransport {
         Kind::Transport
     }
     fn abi(&self) -> AbiVersion {
-        busbar_contract::transport::registry::TRANSPORT_ABI
+        busbar_contract::transport::registry::TRANSPORT_KIND_ABI
     }
 }
 

@@ -127,13 +127,6 @@ pub mod markers {
 /// number and compare equal to nothing.
 pub use crate::transport::AbiVersion;
 
-/// The store kind's native interface generation.
-///
-/// The other-kinds section pins it, and it also fixes the compatibility rule: an older store loads
-/// through an in-tree adapter rather than being refused, so a configuration written for the
-/// previous release boots unchanged.
-pub const STORE_ABI: AbiVersion = AbiVersion(5);
-
 /// The base trait every plugin implements.
 ///
 /// It is deliberately tiny. Everything a plugin *does* is on its kind trait; everything a plugin

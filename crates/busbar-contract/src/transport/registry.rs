@@ -14,9 +14,14 @@ use core::fmt;
 ///
 /// Transports are in-tree and never dynamically loaded, so there is no loader window to police —
 /// but the ABI-surface scan needs something to compare against, and a constant every transport
-/// names is the difference between one generation and each crate having invented its own. It sits
-/// beside the store's for the same reason: a kind's ABI is the kind's, not a plugin's.
-pub const TRANSPORT_ABI: super::AbiVersion = super::AbiVersion(1);
+/// names is the difference between one generation and each crate having invented its own. A kind's
+/// ABI is the kind's, not a plugin's.
+///
+/// The `_KIND_` in the name is load-bearing: this versions the transport *kind*'s native in-tree
+/// interface. It is a different lane from `busbar_plugin::cold::TRANSPORT_VERSION`, the cold-JSON
+/// `busbar_abi()` handshake shared by every dynamically loaded kind — the two happen to both read 1
+/// today, but they version unrelated wires and must never be conflated.
+pub const TRANSPORT_KIND_ABI: super::AbiVersion = super::AbiVersion(1);
 
 /// The transport fact keys the kernel reserves, spelled once.
 ///

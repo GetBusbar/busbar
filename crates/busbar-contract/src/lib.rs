@@ -60,10 +60,10 @@ pub use plane::{
 // it is not among the names this crate offers as the plugin-visible ABI. It cannot be made private
 // — the capability crate implements it on every token and sits above this one — so the scan named
 // in its own documentation is what holds the in-tree side.
-pub use plugin::{AbiVersion, Kind, KindMarker, Plugin, STORE_ABI};
+pub use plugin::{AbiVersion, Kind, KindMarker, Plugin};
 pub use transport::{
     check_composition, CompositionError, FrameStream, Fut, Registered, Transport,
-    TransportConfigView, TransportMeta, TRANSPORT_ABI,
+    TransportConfigView, TransportMeta, TRANSPORT_KIND_ABI,
 };
 pub use unit::{
     AbortBy, AdmitFacts, AuditFacts, Clock, ConfigView, Ctx, FailureReason, FinishClass, LegResult,
