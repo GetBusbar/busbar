@@ -994,6 +994,13 @@ fn run_root_legs(cx: &Ctx) -> i32 {
     // `crates/busbar/src/root/units_llm.rs::the_fn` is the ledger's spelling; libtest's is
     // `root::units_llm::tests::the_fn`. Deriving one from the other rather than storing both is
     // what keeps the two from drifting apart.
+    //
+    // The structure lint moved each inline `#[cfg(test)] mod tests` body out to its own file, wired
+    // back with `#[path = "tests/<stem>.rs"] mod tests;`, and pointed every ledger entry at that
+    // physical file so the `fn` floor reads it where the body now lives. But `#[path]` does NOT move
+    // the module: the body is still child `tests` of its impl module, so libtest still spells it
+    // `<impl>::tests::<fn>`. The stem is decorative -- named after the impl module by convention --
+    // so a `.../tests/<stem>.rs` tail resolves to `<impl>::tests`, never `...::tests::<stem>::tests`.
     let mut wanted: Vec<String> = Vec::new();
     let mut unknown: Vec<String> = Vec::new();
     let mut per_leg: BTreeMap<String, usize> = BTreeMap::new();
@@ -1002,7 +1009,27 @@ fn run_root_legs(cx: &Ctx) -> i32 {
             .split("src/")
             .nth(1)
             .and_then(|s| s.strip_suffix(".rs"))
-            .map(|s| format!("{}::tests::{func}", s.replace('/', "::")))
+            .map(|s| {
+                let segs: Vec<&str> = s.split('/').collect();
+                // A `.../tests/<stem>` tail is a lifted-out test body reached through `#[path]`.
+                let module = if segs.len() >= 2 && segs[segs.len() - 2] == "tests" {
+                    let stem = segs[segs.len() - 1];
+                    let parent = &segs[..segs.len() - 2];
+                    if parent.last() == Some(&stem) {
+                        // Dir-module impl (`<impl>/mod.rs` beside `<impl>/tests/<stem>.rs`, where
+                        // the dir already IS `<impl>` == stem): the module is `<impl>::tests`.
+                        parent.join("::")
+                    } else {
+                        // File-module impl (`<impl>.rs` beside a sibling `tests/<stem>.rs`, stem ==
+                        // impl name): the module is `<impl>::tests`, restoring the impl segment.
+                        format!("{}::{stem}", parent.join("::"))
+                    }
+                } else {
+                    // Inline / old-style: the file itself is the impl module.
+                    segs.join("::")
+                };
+                format!("{module}::tests::{func}")
+            })
             .unwrap_or_default();
         if path.is_empty() || !known.contains(path.as_str()) {
             unknown.push(format!("  {leg}: {file}::{func} (looked for {path})"));
