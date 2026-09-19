@@ -366,6 +366,75 @@ fn a_capture_cannot_shadow_the_presented_credential() {
     );
 }
 
+/// A capture named `accepts` or `media` cannot shadow what the caller actually presented, either —
+/// the same property as the credential test above, checked for the other two presented facts so the
+/// coverage matches the mechanism (one ordering rule, three reserved keys) rather than just the one
+/// key an attacker would most obviously target.
+#[test]
+fn a_capture_cannot_shadow_the_presented_accepts_or_media() {
+    let r = Request {
+        accepts: Some("application/json"),
+        media: Some("application/json"),
+        ..request("/things/t-7", "GET")
+    };
+    let facts = published_facts(
+        &r,
+        &[
+            Capture {
+                name: presented::ACCEPTS,
+                value: "text/html",
+            },
+            Capture {
+                name: presented::MEDIA,
+                value: "text/html",
+            },
+        ],
+    );
+    let arrival = Arrival {
+        facts: &facts,
+        body: r.body,
+        transport: "http",
+        chain: &["http"],
+        operation: None,
+        bar: Bar::Open,
+    };
+    assert_eq!(arrival.fact(presented::ACCEPTS), Some("application/json"));
+    assert_eq!(arrival.fact(presented::MEDIA), Some("application/json"));
+}
+
+/// A presented credential never appears verbatim in `Request`'s `Debug` output.
+///
+/// `Request` is plain data a caller could reasonably hand to a log line or a panic message without
+/// thinking twice — it is not itself a secret-shaped type. A derived `Debug` would spill the token
+/// byte-for-byte the first time someone did; this asserts the hand-rolled impl actually redacts it,
+/// the same property [`busbar_contract::transport::trust::ClientIdentity`] asserts for its own
+/// secret field.
+#[test]
+fn the_presented_credential_is_redacted_from_debug() {
+    let r = Request {
+        credential: Some("Bearer super-secret-token-9f8e7d"),
+        ..request("/things/summary", "GET")
+    };
+    let shown = format!("{r:?}");
+    assert!(
+        !shown.contains("super-secret-token-9f8e7d"),
+        "credential must be redacted, got: {shown}"
+    );
+    assert!(
+        shown.contains("<redacted>"),
+        "expected a redaction marker, got: {shown}"
+    );
+}
+
+/// An absent credential stays absent in `Debug` rather than printing a spurious redaction marker.
+#[test]
+fn an_absent_credential_shows_as_none_in_debug_not_redacted() {
+    let r = request("/things/summary", "GET");
+    let shown = format!("{r:?}");
+    assert!(!shown.contains("<redacted>"), "got: {shown}");
+    assert!(shown.contains("credential: None"), "got: {shown}");
+}
+
 /// Every reserved key this mount publishes is one it declares.
 ///
 /// The registration check that catches a transport publishing a reserved key it never declared has
