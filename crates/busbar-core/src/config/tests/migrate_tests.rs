@@ -743,6 +743,62 @@ fn migrate_auth_mode_arms() {
     );
 }
 
+/// `auth.mode:` and `auth.chain:` TOGETHER — both are shapes `detect_legacy_markers` names as 1.x,
+/// so a config carrying both is squarely inside this migrator's declared input domain. The `mode:`
+/// arm must NOT overwrite the chain the operator wrote: an identity provider listed there is a whole
+/// auth module, and dropping it with no `todos`/`changes` entry is exactly the silent-loss class the
+/// `Taken` doctrine exists to forbid. `keys` still has to end up in the chain (that is what
+/// `mode: token` meant), but ALONGSIDE what was already there, not instead of it.
+#[test]
+fn migrate_auth_mode_does_not_clobber_an_existing_chain() {
+    let out = migrate_config(
+        "auth:\n  mode: token\n  chain: [ad, tokens]\nproviders: {}\nmodels: {}\npools: {}\n",
+    )
+    .unwrap();
+    let doc: serde_yaml::Value = serde_yaml::from_str(&out.yaml).unwrap();
+    let chain = doc["auth"]["chain"]
+        .as_sequence()
+        .expect("auth.chain must survive the mode: arm");
+    let names: Vec<&str> = chain.iter().filter_map(|e| e.as_str()).collect();
+    assert!(
+        names.contains(&"ad"),
+        "the `ad` module the operator wrote was DROPPED by the auth.mode arm; chain is {names:?} \
+         and the ledgers never mention it (changes={:?} todos={:?})",
+        out.changes,
+        out.todos
+    );
+    assert!(
+        names.contains(&"keys"),
+        "mode: token must still land the signed-key verifier in the chain; chain is {names:?}"
+    );
+}
+
+/// A `chain:` written in a shape the auth.mode merge cannot read (a bare scalar, not a list) is
+/// MALFORMED, not absent. `.as_sequence()` returns `None` for both cases, and folding a malformed
+/// chain into the `existing.is_empty()` path would unconditionally overwrite it with `[keys]` —
+/// destroying the operator's chain exactly the way the unconditional-overwrite bug this arm was
+/// rewritten to fix did, just reached through a malformed shape instead of an absent one. The
+/// malformed chain must survive as-written, with a todo naming it, and `keys` must NOT be silently
+/// substituted in its place.
+#[test]
+fn migrate_auth_mode_never_replaces_a_malformed_chain() {
+    let out =
+        migrate_config("auth:\n  mode: token\n  chain: ad\nproviders: {}\nmodels: {}\npools: {}\n")
+            .unwrap();
+    let doc: serde_yaml::Value = serde_yaml::from_str(&out.yaml).unwrap();
+    assert_eq!(
+        doc["auth"]["chain"].as_str(),
+        Some("ad"),
+        "a malformed auth.chain was destroyed and replaced with a synthesized [keys]: {}",
+        out.yaml
+    );
+    assert!(
+        out.todos.iter().any(|t| t.contains("auth.chain")),
+        "a chain this migrator refuses to touch must say so: {:?}",
+        out.todos
+    );
+}
+
 /// A group_map with an AMBIGUOUS module home (no external chain module) gets the placeholder +
 /// TODO, never a silent guess.
 #[test]
@@ -2835,5 +2891,142 @@ fn migrate_never_invents_a_keyless_api_key() {
     assert!(
         dig(&doc, &["providers", "local", "api_key"]).is_none(),
         "a provider with no credential to convert gets NO api_key — never a fabricated `none`"
+    );
+}
+
+/// A `pools:` written in a shape this migrator cannot merge into must be LEFT EXACTLY AS WRITTEN —
+/// the same take-on-match contract `Taken` states for every other section. Replacing it with a
+/// freshly-built mapping deletes the operator's whole pools section (the money path) and announces
+/// nothing; and because the `auth.upstream_credentials:` it was moving had already been taken off
+/// `auth:`, that key vanished with it. Both must survive, with a todo naming the block.
+#[test]
+fn malformed_pools_is_never_replaced_by_a_synthesized_one() {
+    let out = migrate_config(
+        "auth:\n  upstream_credentials: passthrough\npools: not-a-mapping\nproviders: {}\nmodels: {}\n",
+    )
+    .unwrap();
+    let doc: serde_yaml::Value = serde_yaml::from_str(&out.yaml).unwrap();
+    assert_eq!(
+        doc["pools"].as_str(),
+        Some("not-a-mapping"),
+        "the operator's `pools:` was destroyed and replaced with a synthesized mapping: {}",
+        out.yaml
+    );
+    assert_eq!(
+        doc["auth"]["upstream_credentials"].as_str(),
+        Some("passthrough"),
+        "auth.upstream_credentials was taken off `auth:` and never put anywhere: {}",
+        out.yaml
+    );
+    assert!(
+        out.todos.iter().any(|t| t.contains("pools")),
+        "a section this migrator refuses to touch must say so: {:?}",
+        out.todos
+    );
+}
+
+/// The IDENTICAL take-on-match guard exists a second time in `migrate_unified_pools`, on the
+/// `tool_pools:`/`agent_pools:` fold — a malformed `pools:` there must not be silently replaced by a
+/// freshly-synthesized mapping either, and the section that could not be folded must survive
+/// verbatim rather than being consumed and lost. `malformed_pools_is_never_replaced_by_a_synthesized_one`
+/// above only exercises the sibling guard in `migrate_pools_upstream_credentials`; this proves the
+/// second call site independently, since neither guard's test data combines with the other's input.
+#[test]
+fn malformed_pools_is_never_replaced_when_folding_tool_pools() {
+    let out = migrate_config(
+        "pools: not-a-mapping\ntool_pools:\n  search:\n    members: [search-eu]\n\
+         providers: {}\nmodels: {}\n",
+    )
+    .unwrap();
+    let doc: serde_yaml::Value = serde_yaml::from_str(&out.yaml).unwrap();
+    assert_eq!(
+        doc["pools"].as_str(),
+        Some("not-a-mapping"),
+        "the operator's `pools:` was destroyed and replaced with a synthesized mapping: {}",
+        out.yaml
+    );
+    assert_eq!(
+        dig(&doc, &["tool_pools", "search", "members"]),
+        Some(&serde_yaml::from_str::<serde_yaml::Value>("[search-eu]").unwrap()),
+        "`tool_pools:` could not be folded (pools: is malformed) and must survive verbatim rather \
+         than being dropped: {}",
+        out.yaml
+    );
+    assert!(
+        out.todos
+            .iter()
+            .any(|t| t.contains("tool_pools") && t.contains("pools")),
+        "a fold this migrator refuses to perform must say so: {:?}",
+        out.todos
+    );
+}
+
+/// Same take-on-match rule on the `export:` DESTINATION: `export_mut` normalized a non-mapping
+/// `export:` by overwriting it, so an operator's malformed export block was deleted and the
+/// observability keys being lifted into it were taken off `observability:` first — losing both. The
+/// migrator must touch neither and say why.
+#[test]
+fn malformed_export_is_never_replaced_by_a_synthesized_one() {
+    // `request_log_webhook_url` is DELIBERATELY named in the export take-on-match guard's own
+    // hard-coded bail-out sentence (see the assertion on `t.contains("export")` below), so an
+    // assertion that only checks for THAT key would pass even if the observability-residue naming
+    // in `migrate_observability_block` were deleted entirely — the static bail-out text alone
+    // would satisfy it. `some_forward_compat_key` is not mentioned anywhere in that static text, so
+    // finding it in the ledger proves the residue naming is genuinely DYNAMIC (built from what was
+    // actually in the input), not an artifact of the unrelated guard's fixed wording.
+    let out = migrate_config(
+        "observability:\n  request_log_webhook_url: https://x.example/log\n  some_forward_compat_key: s3cr3t-do-not-leak-me\nexport: not-a-mapping\nproviders: {}\nmodels: {}\n",
+    )
+    .unwrap();
+    let doc: serde_yaml::Value = serde_yaml::from_str(&out.yaml).unwrap();
+    assert_eq!(
+        doc["export"].as_str(),
+        Some("not-a-mapping"),
+        "the operator's `export:` was destroyed and replaced with a synthesized mapping: {}",
+        out.yaml
+    );
+    // The export guard names the block it refused to touch, and (because the guard bailed BEFORE
+    // lifting) it also reports that the retired observability sink was left where it was written —
+    // so the operator is told both halves and nothing was half-migrated.
+    assert!(
+        out.todos.iter().any(|t| t.contains("export")),
+        "a section this migrator refuses to touch must say so: {:?}",
+        out.todos
+    );
+    // `observability:` is a RETIRED section, so the block itself still has to go — but the sink it
+    // carried may not disappear WITHOUT A WORD. The residue todo names the KEY (never the VALUE — a
+    // value can be a secret), so the operator knows what to re-express by hand.
+    assert!(
+        out.todos
+            .iter()
+            .any(|t| t.contains("request_log_webhook_url")),
+        "the deleted observability sink must be named (by key) in the ledger: {:?}",
+        out.todos
+    );
+    // The SECOND retired key is named nowhere in this migrator's static text — only the dynamic
+    // residue-naming pass can produce it, so finding it proves that pass actually ran over this
+    // input rather than the assertion above being satisfied by unrelated fixed wording.
+    assert!(
+        out.todos
+            .iter()
+            .any(|t| t.contains("some_forward_compat_key")),
+        "a SECOND retired key, named nowhere in this migrator's fixed strings, must still be \
+         named by the dynamic residue ledger: {:?}",
+        out.todos
+    );
+    // A residue todo must NEVER echo the value, which could be a credential.
+    assert!(
+        !out.todos
+            .iter()
+            .any(|t| t.contains("https://x.example/log")),
+        "a residue todo must name the KEY, never the VALUE (secret-leak guard): {:?}",
+        out.todos
+    );
+    assert!(
+        !out.todos
+            .iter()
+            .any(|t| t.contains("s3cr3t-do-not-leak-me")),
+        "a residue todo must name the KEY, never the VALUE (secret-leak guard): {:?}",
+        out.todos
     );
 }

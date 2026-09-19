@@ -376,7 +376,7 @@ pub fn migrate_config(raw: &str) -> Result<MigrateOutput, String> {
     // 1.5.3 observability→export lift-out. Runs AFTER migrate_observability (otlp rename) and
     // migrate_response_headers (emit_server_timing move) so this only sees the retired webhook +
     // metrics keys, and rewrites them into the new `export:` surface in place.
-    migrate_observability_export(&mut root, &mut changes);
+    migrate_observability_export(&mut root, &mut changes, &mut todos);
     // ── the 1.5.3 GRAMMAR-LOCK migrations ────────────────────────────────────────────────────────
     // Order matters: `migrate_export_named_map` runs AFTER `migrate_observability_export` (which
     // writes the TYPE-KEYED `export.request-log-webhook` / `export.prometheus` this then renames into
@@ -388,7 +388,7 @@ pub fn migrate_config(raw: &str) -> Result<MigrateOutput, String> {
     // pass sees the final `module:` of each one.
     super::migrate_export::migrate_export_projection(&mut root, &mut changes, &mut todos);
     migrate_admin_require_mtls(&mut root, &mut changes);
-    migrate_pools_upstream_credentials(&mut root, &mut changes);
+    migrate_pools_upstream_credentials(&mut root, &mut changes, &mut todos);
     migrate_identity_providers(&mut root, &mut changes, &mut todos);
     // 1.5.3: the first-party Valkey store plugin's rename to Valkey. Independent of every
     // migration above (it touches only `store.module`), so its position in this list is free; it runs
@@ -1270,17 +1270,72 @@ fn migrate_auth(
                 );
             }
             other => {
-                auth.insert("chain".into(), Value::Sequence(vec!["keys".into()]));
-                changes.push(format!(
-                    "auth.mode: {other} -> auth.chain: [keys] (static tokens are removed; mint \
-                     signed keys)"
-                ));
-                todos.push(
-                    "auth.chain: the static-token allowlist is GONE in 1.5.0; every caller needs \
-                     a minted signed key (POST /api/v1/admin/keys) - 1.x bearer tokens stop \
-                     working"
-                        .into(),
-                );
+                // MERGE, never REPLACE. `auth.mode:` and `auth.chain:` are BOTH shapes
+                // `detect_legacy_markers` names as 1.x, so a config carrying both is inside this
+                // migrator's declared input domain — and an unconditional
+                // `insert("chain", ["keys"])` DELETED every module the operator had listed there
+                // (`chain: [ad, tokens]` came out as `[keys]`, the `ad` identity provider gone with
+                // no `changes` and no `todos` entry). That is the silent-loss class `Taken`
+                // documents: an absent chain module is a legal shape, so `--validate` passed too,
+                // and the migrated deployment simply stopped authenticating against that IdP.
+                //
+                // `mode:` only ever asserted "this deployment authenticates callers", whose 1.5.0
+                // spelling is the `keys` verifier — so APPEND `keys` when the chain does not
+                // already name it and leave every other entry exactly where it was. An
+                // absent/empty chain still lands `[keys]`, which is the whole 1.4.x-only case.
+                //
+                // TAKE-ON-MATCH: a `chain:` present in the WRONG shape (a bare scalar or mapping,
+                // not a sequence) is MALFORMED, not absent — `.as_sequence()` returning `None` for
+                // either case is exactly the confusion this guard exists to split apart. Treating a
+                // malformed chain as "nothing here yet" would fall into the `is_empty()` branch
+                // below and unconditionally overwrite it with `[keys]`, silently destroying
+                // whatever the operator wrote — the identical silent-loss class this arm exists to
+                // close, just reachable via a malformed rather than an absent chain. So a malformed
+                // chain is left EXACTLY as written and named in a todo instead of merged into.
+                let malformed_chain =
+                    matches!(auth.get(Value::from("chain")), Some(v) if !v.is_sequence());
+                if malformed_chain {
+                    todos.push(format!(
+                        "auth.chain: is not a list — it was left EXACTLY as written, so the \
+                         `keys` verifier `auth.mode: {other}` needs was NOT added to it (nothing \
+                         was half-migrated). 1.5.0 expects `auth.chain: [ <module>, ... ]`; fix \
+                         the list by hand, add `keys` yourself, and re-run `--migrate-config`."
+                    ));
+                } else {
+                    let existing: Vec<Value> = auth
+                        .get(Value::from("chain"))
+                        .and_then(|v| v.as_sequence())
+                        .cloned()
+                        .unwrap_or_default();
+                    let has_keys = existing
+                        .iter()
+                        .any(|e| entry_module_name(e).as_deref() == Some("keys"));
+                    if existing.is_empty() {
+                        auth.insert("chain".into(), Value::Sequence(vec!["keys".into()]));
+                        changes.push(format!(
+                            "auth.mode: {other} -> auth.chain: [keys] (static tokens are removed; \
+                             mint signed keys)"
+                        ));
+                    } else {
+                        let mut merged = existing;
+                        if !has_keys {
+                            merged.push("keys".into());
+                        }
+                        auth.insert("chain".into(), Value::Sequence(merged));
+                        changes.push(format!(
+                            "auth.mode: {other} -> the `keys` verifier ADDED to the existing \
+                             auth.chain (static tokens are removed; mint signed keys). The modules \
+                             you already listed on the chain were KEPT — `mode:` never named them, \
+                             so replacing the chain with [keys] would have dropped them"
+                        ));
+                    }
+                    todos.push(
+                        "auth.chain: the static-token allowlist is GONE in 1.5.0; every caller \
+                         needs a minted signed key (POST /api/v1/admin/keys) - 1.x bearer tokens \
+                         stop working"
+                            .into(),
+                    );
+                }
             }
         }
     }
@@ -1783,7 +1838,20 @@ fn migrate_unified_pools(root: &mut Mapping, changes: &mut Vec<String>, todos: &
         let Some(Value::Mapping(folded)) = take(root, section) else {
             continue;
         };
-        // Ensure a `pools:` mapping exists to merge into.
+        // Ensure a `pools:` mapping exists to merge into — but NEVER by overwriting one the
+        // operator wrote in a shape this migrator cannot merge into (same take-on-match rule as
+        // `migrate_pools_upstream_credentials`). A malformed `pools:` stays as written and the
+        // section being folded is put back verbatim, so neither is lost.
+        if matches!(root.get(Value::from("pools")), Some(v) if !v.is_mapping()) {
+            let shape = one_line(root.get(Value::from("pools")).expect("just matched"));
+            todos.push(format!(
+                "`{section}:` could NOT be folded into `pools:` because `pools:` is not a mapping \
+                 (`{shape}`) — BOTH were left EXACTLY as written. 1.6.0 has ONE neutral `pools:` \
+                 map; fix `pools:` by hand and re-run `--migrate-config`."
+            ));
+            root.insert(section.into(), Value::Mapping(folded));
+            continue;
+        }
         if !matches!(root.get(Value::from("pools")), Some(Value::Mapping(_))) {
             root.insert("pools".into(), Value::Mapping(Mapping::new()));
         }
@@ -1994,18 +2062,38 @@ fn migrate_observability(root: &mut Mapping, changes: &mut Vec<String>) {
 /// tarball plugins), this is a full mechanical rewrite (not just a printed TODO) — the config breaks
 /// ONCE and the sink is preserved, not lost. Idempotent: a config already in the new shape has no
 /// retired keys to move, so a second run is a no-op.
-fn migrate_observability_export(root: &mut Mapping, changes: &mut Vec<String>) {
+fn migrate_observability_export(
+    root: &mut Mapping,
+    changes: &mut Vec<String>,
+    todos: &mut Vec<String>,
+) {
+    // TAKE-ON-MATCH, on the DESTINATION (see `Taken`), and checked BEFORE anything is lifted. The
+    // old `export_mut` "normalized" a non-mapping `export:` by OVERWRITING it — deleting whatever
+    // the operator wrote there — and by the time it ran, the webhook/metrics keys had already been
+    // taken off `observability:`/`metrics:`, so the migrated document had neither the operator's
+    // export block nor the sinks that were supposed to land in it. Bail out first instead: nothing
+    // is taken, nothing is overwritten, and the todo names the block.
+    if matches!(root.get(Value::from("export")), Some(v) if !v.is_mapping()) {
+        let shape = one_line(root.get(Value::from("export")).expect("just matched"));
+        todos.push(format!(
+            "export: is not a mapping (`{shape}`) — it was left EXACTLY as written, so the retired \
+             `observability.request_log_webhook_url` / `metrics:` sinks were NOT lifted into it and \
+             were left exactly where you wrote them too (nothing was half-migrated). 1.5.3 expects \
+             `export: {{ <name>: {{ module, settings }} }}`; fix the block by hand and re-run \
+             `--migrate-config`."
+        ));
+        return;
+    }
     // Ensure `export` exists as a mapping, returning a handle to splice a sub-exporter into.
     fn export_mut(root: &mut Mapping) -> &mut Mapping {
         let entry = root
             .entry("export".into())
             .or_insert_with(|| Value::Mapping(Mapping::new()));
-        if !matches!(entry, Value::Mapping(_)) {
-            *entry = Value::Mapping(Mapping::new());
-        }
         match entry {
             Value::Mapping(m) => m,
-            _ => unreachable!("just normalized to a mapping"),
+            // Unreachable: the caller returns early on a non-mapping `export:`, and `or_insert_with`
+            // only ever inserts a mapping.
+            _ => unreachable!("a non-mapping export: returns early above"),
         }
     }
 
@@ -2231,19 +2319,39 @@ fn migrate_admin_require_mtls(root: &mut Mapping, changes: &mut Vec<String>) {
 /// default. IDEMPOTENT: no `auth.upstream_credentials` ⇒ nothing to move. An existing
 /// `pools.upstream_credentials` WINS (it is already the new grammar, so it is the operator's most
 /// recent statement of intent) and the retired key is dropped with a named change entry.
-fn migrate_pools_upstream_credentials(root: &mut Mapping, changes: &mut Vec<String>) {
+fn migrate_pools_upstream_credentials(
+    root: &mut Mapping,
+    changes: &mut Vec<String>,
+    todos: &mut Vec<String>,
+) {
     let Some(Value::Mapping(auth)) = root.get_mut(Value::from("auth")) else {
         return;
     };
     let Some(mode) = take(auth, "upstream_credentials") else {
         return;
     };
+    // TAKE-ON-MATCH, on the DESTINATION (see `Taken`). `*pools = Mapping::new()` overwrote a
+    // `pools:` the operator had written in a shape this migrator cannot merge into — deleting the
+    // ENTIRE pools section, the money path, and announcing nothing. Worse, `mode` had already been
+    // taken off `auth:` by then, so the retired key it was moving vanished too and the migrated
+    // document had neither. Leave a malformed `pools:` exactly as written, put `mode` back where it
+    // came from so nothing is half-migrated, and say so.
+    if matches!(root.get(Value::from("pools")), Some(v) if !v.is_mapping()) {
+        let shape = one_line(root.get(Value::from("pools")).expect("just matched"));
+        if let Some(Value::Mapping(auth)) = root.get_mut(Value::from("auth")) {
+            auth.insert("upstream_credentials".into(), mode);
+        }
+        todos.push(format!(
+            "pools: is not a mapping (`{shape}`) — it was left EXACTLY as written, so \
+             `auth.upstream_credentials` could NOT be moved to its 1.5.3 home and was left on \
+             `auth:` too (nothing was half-migrated). Fix `pools:` by hand and re-run \
+             `--migrate-config`."
+        ));
+        return;
+    }
     let pools = root
         .entry("pools".into())
         .or_insert_with(|| Value::Mapping(Mapping::new()));
-    if !matches!(pools, Value::Mapping(_)) {
-        *pools = Value::Mapping(Mapping::new());
-    }
     if let Value::Mapping(pm) = pools {
         if pm.contains_key(Value::from("upstream_credentials")) {
             changes.push(

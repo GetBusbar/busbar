@@ -516,10 +516,32 @@ impl<R: NeutralRecord> Journal<R> {
     /// persist the neutral `{seq, prev_hash, hash, content}` envelope under `kind`/`scope`, and advance
     /// the position only once the durable write succeeded — the SAME write-ordering the typed
     /// [`Journal::record`] holds, so a failed write does not burn a sequence.
+    ///
+    /// `ts` is THE RETENTION AXIS, and it is a parameter for the reason every other reading on this
+    /// path is: reading a clock is the composition root's job, so the seam that opens the append
+    /// reads the node's wall clock and hands the reading down. The typed twin [`Journal::record`]
+    /// gets the same value out of the record's own `to_plane_record`, which is where a typed row
+    /// already carries its stamp. The neutral body cannot: its `content` is opaque to core, so a
+    /// timestamp inside it is a timestamp the store cannot sweep on, and an envelope stamped with
+    /// anything other than a real reading is a row that reads as infinitely old — which
+    /// `purge_plane_records_before` drops on the first sweep at ANY cutoff for every kind but `task`.
+    /// The stamp has to be the clock or the evidence does not survive retention.
+    ///
+    /// `ts` is taken as a THUNK, not an already-read value: the caller's clock read must happen
+    /// AFTER `positions` is locked (below), not before this call. Reading it as an argument
+    /// expression — `append_scoped(scope, stamp_now(), ..)` — evaluates `stamp_now()` before the
+    /// call even starts, i.e. before the lock is taken; two concurrent callers can then read the
+    /// clock in the OPPOSITE order to the one they acquire the lock and mint `seq` in, so a
+    /// later-`seq` row can end up stamped with an earlier `ts` than the row before it. Calling the
+    /// thunk here, inside the same critical section that mints `seq`, keeps `seq` and `ts` ordered
+    /// the same way for every writer — the property [`Journal::record`]'s clock read (inside
+    /// `to_plane_record`, itself only reached after `positions` is locked) already has by
+    /// construction.
     pub(crate) fn append_scoped(
         &self,
         kind: &str,
         scope: &str,
+        ts: impl FnOnce() -> u64,
         input: R::Input,
         reframe: &Reframe<'_, R>,
     ) -> Result<R, JournalError> {
@@ -530,6 +552,7 @@ impl<R: NeutralRecord> Journal<R> {
         };
         let record = candidate.append(scope, input);
         if let Some(store) = self.sink() {
+            let ts = ts();
             let body = NeutralBody {
                 seq: record.seq(),
                 prev_hash: record.prev_hash().to_string(),
@@ -541,7 +564,7 @@ impl<R: NeutralRecord> Journal<R> {
                 id: scope.to_string(),
                 parent: Some(scope.to_string()),
                 seq: record.seq(),
-                ts: 0,
+                ts,
                 disposition: PlaneDisposition::Active,
                 body: encode(&body).map_err(JournalError::Store)?,
             };

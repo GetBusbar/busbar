@@ -401,6 +401,67 @@ fn test_validate_rejects_unknown_member_ref() {
     assert!(errs[0].contains("references unknown model"));
 }
 
+/// Validation reads a `file:` credential reference so it can dry-run the credential FORMAT check.
+/// The read is BOUNDED: `POST /api/v1/admin/config/validate` runs this same `validate` over a
+/// CALLER-SUPPLIED config, so an unbounded `fs::read` let a read-scope admin aim it at an endless
+/// or enormous path and make the gateway allocate until it died. A file over the cap resolves to
+/// nothing — exactly as an unset env var already does — so the dry-run check is skipped rather than
+/// the process being spent reading. A credential-sized file is unaffected: the same content under
+/// the cap still produces the format error.
+#[test]
+fn test_validate_bounds_the_credential_file_it_reads() {
+    let dir = std::env::temp_dir().join(format!(
+        "busbar-validate-credfile-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+
+    // No colon ⇒ `validate_credential` rejects it, so a RESOLVED read is observable as an error
+    // naming this provider's credential.
+    let small = dir.join("small.cred");
+    std::fs::write(&small, b"no-colon-in-here").unwrap();
+    let huge = dir.join("huge.cred");
+    std::fs::write(
+        &huge,
+        vec![b'x'; super::VALIDATE_SECRET_MAX_BYTES as usize + 1],
+    )
+    .unwrap();
+
+    let build = |path: &std::path::Path| -> Vec<String> {
+        let mut providers = HashMap::new();
+        let mut entra = make_provider("openai", "https://myres.openai.azure.com", "API_KEY");
+        entra.api_key = config::SecretRef::file(path.to_string_lossy().into_owned());
+        entra.token_url = Some("https://login.microsoftonline.com/t/token".into());
+        entra.scope = Some("api://x/.default".into());
+        entra.auth = Some(config::ProviderAuth::OAuthClientCredentials);
+        providers.insert("entra".to_string(), entra);
+        let mut models = HashMap::new();
+        models.insert("m".to_string(), make_model("entra", 10));
+        let mut pools = HashMap::new();
+        pools.insert("p".to_string(), make_pool(vec![make_member("m")]));
+        let cfg = make_root_cfg(providers, models, pools);
+        validate(&cfg).err().unwrap_or_default()
+    };
+    let names_the_credential =
+        |errs: &[String]| errs.iter().any(|e| e.contains("credential (from file:"));
+
+    assert!(
+        names_the_credential(&build(&small)),
+        "a credential-sized file is still read and still format-checked"
+    );
+    let over = build(&huge);
+    assert!(
+        !names_the_credential(&over),
+        "a file over the read cap must not be read into memory at all; got: {over:?}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn test_validate_token_url_ssrf_and_scheme() {
     // token_url carries the client secret in the POST body, so it must clear BOTH the https
@@ -5583,5 +5644,66 @@ fn test_validate_rejects_empty_canonical_builtin_secret_ref() {
             .iter()
             .any(|e| e.contains("providers.acme.api_key") && e.to_lowercase().contains("non-empty")),
         "a non-empty canonical key must not raise the empty-secret error; got: {errs:?}"
+    );
+}
+
+/// D58: `validate_builtin_secrets_resolve` must run boot's VALUE checks, not merely prove a
+/// reference RESOLVES. `auth.signing_key` pointing at an env var that IS set but holds a
+/// wrong-length value satisfies the resolvability loop, so `--validate` used to green-light a config
+/// that boot then refuses in `parse_signing_secret`. The same guard now runs at validate time and
+/// reports boot's own sentence.
+#[test]
+fn validate_runs_the_signing_key_format_guard_like_boot() {
+    // Unique env-var name so parallel tests cannot clobber the value we set/read here.
+    let sig_env = "BUSBAR_T_D58_SIGNING_KEY";
+    std::env::set_var(sig_env, "too-short-not-32-bytes");
+
+    let mut cfg = make_root_cfg(HashMap::new(), HashMap::new(), HashMap::new());
+    let mut auth = config::AuthCfg::default_none();
+    auth.signing_key = Some(config::SecretRef::env(sig_env));
+    cfg.auth = Some(auth);
+
+    let result = crate::preflight::validate_builtin_secrets_resolve(&cfg);
+
+    std::env::remove_var(sig_env);
+
+    let err =
+        result.expect_err("a malformed signing key must fail validate exactly as it fails boot");
+    assert!(
+        err.contains("32-byte ed25519"),
+        "the refusal must be boot's own format sentence, verbatim: {err}"
+    );
+}
+
+/// D58's OTHER half: the blank-admin-token guard, exercised the same way as its signing-key sibling
+/// above. `BUSBAR_ADMIN_TOKEN=""` (or all-whitespace) satisfies the plain resolvability loop
+/// `validate_builtin_secrets_resolve` used to stop at, so `--validate` green-lit a config boot then
+/// refuses in `resolve_admin_token`'s own trim guard (the digest would be taken over the blank
+/// string, authenticating an empty presented token). Only the signing-key half of D58 had a
+/// regression test; this proves the admin-token half runs too.
+#[cfg(feature = "auth-admin-tokens")]
+#[test]
+fn validate_runs_the_blank_admin_token_guard_like_boot() {
+    // Unique env-var name so parallel tests cannot clobber the value we set/read here.
+    let tok_env = "BUSBAR_T_D58_ADMIN_TOKEN";
+    std::env::set_var(tok_env, "   ");
+
+    let mut cfg = make_root_cfg(HashMap::new(), HashMap::new(), HashMap::new());
+    let mut auth = config::AuthCfg::default_none();
+    let mut entry = config::AuthChainEntry::bare(config::ADMIN_TOKENS_MODULE);
+    entry.token = Some(config::SecretRef::env(tok_env));
+    auth.admin_auth = vec![entry];
+    cfg.auth = Some(auth);
+
+    let result = crate::preflight::validate_builtin_secrets_resolve(&cfg);
+
+    std::env::remove_var(tok_env);
+
+    let err = result.expect_err(
+        "a blank/whitespace-only admin token must fail validate exactly as it fails boot",
+    );
+    assert!(
+        err.contains("EMPTY/whitespace-only"),
+        "the refusal must be boot's own blank-token sentence, verbatim: {err}"
     );
 }

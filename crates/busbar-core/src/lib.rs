@@ -271,12 +271,13 @@ pub mod router;
 mod tests;
 
 pub use appbuild::{
-    build_app_from_config, inert_durable_keys_banner, load_config_from_disk, open_relay_banner,
-    resolve_model_context_max, GovCredentialRotation, LoadedConfig, DEFAULT_CONFIG_PATH,
-    ENV_CONFIG, ENV_PROVIDERS,
+    build_app_from_config, emit_posture_banner, ephemeral_store_banner, inert_durable_keys_banner,
+    load_config_from_disk, open_relay_banner, posture_banner_line, resolve_model_context_max,
+    GovCredentialRotation, LoadedConfig, DEFAULT_CONFIG_PATH, ENV_CONFIG, ENV_PROVIDERS,
 };
 pub use preflight::{
     plugins_preflight, preflight_plugins_and_secrets, validate_builtin_secrets_resolve,
+    validate_plugins_dir_exists,
 };
 pub use router::{
     build_router, build_split_routers_with_limits, fallback_error_response, REQUEST_ACTIVITY_TICKS,
