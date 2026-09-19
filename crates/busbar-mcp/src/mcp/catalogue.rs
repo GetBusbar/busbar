@@ -476,7 +476,10 @@ impl Catalogue {
         let mut resources = BTreeMap::new();
         let mut resource_templates = BTreeMap::new();
         for (id, def) in &cfg.servers {
-            servers.insert(id.clone(), server_entry(id, def, cfg.effective_upstream_credentials(id)));
+            servers.insert(
+                id.clone(),
+                server_entry(id, def, cfg.effective_upstream_credentials(id)),
+            );
             for (tool, allow) in &def.tools_allow {
                 // THE PUBLISHED NAME: the operator's `publish_as:` where they wrote one, the
                 // `{server}_{tool}` default where they did not — which is every config that
