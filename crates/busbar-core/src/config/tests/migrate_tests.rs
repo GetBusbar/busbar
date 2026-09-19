@@ -3003,9 +3003,29 @@ fn malformed_export_is_never_replaced_by_a_synthesized_one() {
         "the deleted observability sink must be named (by key) in the ledger: {:?}",
         out.todos
     );
+    // The SECOND retired key is named nowhere in this migrator's static text — only the dynamic
+    // residue-naming pass can produce it, so finding it proves that pass actually ran over this
+    // input rather than the assertion above being satisfied by unrelated fixed wording.
+    assert!(
+        out.todos
+            .iter()
+            .any(|t| t.contains("some_forward_compat_key")),
+        "a SECOND retired key, named nowhere in this migrator's fixed strings, must still be \
+         named by the dynamic residue ledger: {:?}",
+        out.todos
+    );
     // A residue todo must NEVER echo the value, which could be a credential.
     assert!(
-        !out.todos.iter().any(|t| t.contains("https://x.example/log")),
+        !out.todos
+            .iter()
+            .any(|t| t.contains("https://x.example/log")),
+        "a residue todo must name the KEY, never the VALUE (secret-leak guard): {:?}",
+        out.todos
+    );
+    assert!(
+        !out.todos
+            .iter()
+            .any(|t| t.contains("s3cr3t-do-not-leak-me")),
         "a residue todo must name the KEY, never the VALUE (secret-leak guard): {:?}",
         out.todos
     );
