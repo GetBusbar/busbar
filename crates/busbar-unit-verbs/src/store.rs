@@ -22,6 +22,13 @@ pub enum StoreError {
     NotFound,
     /// The underlying store failed; details are for the integrator's own logs only.
     Failed,
+    /// THIS COMPOSITION HAS NO STORE WIRED. A distinct variant from [`StoreError::Failed`] so an
+    /// integrator that never wired a store for this seam can say so precisely instead of a caller
+    /// only ever seeing a generic, undifferentiated failure. Refused the SAME fail-closed way a
+    /// store failure is (`ReasonCode::StoreError`, 503) — a caller must not treat "no store
+    /// configured" as a softer case than "the store errored"; both mean this operation cannot be
+    /// completed here right now.
+    Unconfigured,
 }
 
 impl StoreError {
@@ -30,7 +37,7 @@ impl StoreError {
     pub fn into_refusal(self) -> Refusal {
         let reason = match self {
             StoreError::NotFound => ReasonCode::NotFound,
-            StoreError::Failed => ReasonCode::StoreError,
+            StoreError::Failed | StoreError::Unconfigured => ReasonCode::StoreError,
         };
         Refusal::new(RefusalStep::Verify, reason)
     }
