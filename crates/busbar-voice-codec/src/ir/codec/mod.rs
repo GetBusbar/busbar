@@ -799,11 +799,35 @@ fn extract_usage(u: &Value) -> IrDuplexUsage {
             .and_then(Value::as_u64)
             .unwrap_or_default()
     };
+    let stated = |k: &str| u.get(k).and_then(Value::as_u64).unwrap_or_default();
+    // The per-modality breakdown (`*_token_details`) is a REFINEMENT of the stated
+    // `input_tokens`/`output_tokens` totals, not their sole source: OpenAI Realtime can state the
+    // totals while omitting the breakdown. Reading a missing breakdown as zero metered a real turn at
+    // zero (silent under-billing); when the breakdown yields nothing, the stated total is billed
+    // instead — attributed to `text`, the conservative default when the split is unknown (this only
+    // changes the audio/text LABEL, never the input/output lane the billing fold sums onto). Mirrors
+    // gemini's `usage_from_metadata` (D26).
+    let (audio_in, text_in) = {
+        let (a, t) = (field(ind, "audio_tokens"), field(ind, "text_tokens"));
+        if a.saturating_add(t) == 0 {
+            (0, stated("input_tokens"))
+        } else {
+            (a, t)
+        }
+    };
+    let (audio_out, text_out) = {
+        let (a, t) = (field(outd, "audio_tokens"), field(outd, "text_tokens"));
+        if a.saturating_add(t) == 0 {
+            (0, stated("output_tokens"))
+        } else {
+            (a, t)
+        }
+    };
     IrDuplexUsage {
-        audio_in: field(ind, "audio_tokens"),
-        audio_out: field(outd, "audio_tokens"),
-        text_in: field(ind, "text_tokens"),
-        text_out: field(outd, "text_tokens"),
+        audio_in,
+        audio_out,
+        text_in,
+        text_out,
         cached: field(ind, "cached_tokens"),
     }
 }
