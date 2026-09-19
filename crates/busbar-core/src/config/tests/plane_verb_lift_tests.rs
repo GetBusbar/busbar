@@ -70,10 +70,22 @@ static GIZMO_PLANE: PlaneDecl = PlaneDecl {
     resolve_provider: None,
 };
 
-/// Register [`GIZMO_PLANE`] into the process test registry, idempotently (by key) — a no-op past
-/// the first call, exactly as every other `testkit`'s registration is documented to be.
-fn register_gizmo_plane() {
+/// Register [`GIZMO_PLANE`] into the process test registry, CONFINED to the returned guard's
+/// lifetime. Unlike a bare `register_test_plane` call (which — with no unregister — would leak
+/// `GIZMO_PLANE` into every sibling test sharing this `#[lib] test` binary, including the two
+/// enumeration tests over `crate::plane::plane_keys()` in `plane/tests/{plane_tests,sections_tests}.rs`
+/// that assert the exact built-in plane set), this takes
+/// [`busbar_substrate::plane::registry::TestRegistryIsolation::snapshot`] FIRST — which holds the
+/// process test-registry serial lock for the guard's lifetime (so no sibling's read or registration
+/// races or interleaves) — and registers afterwards, so `Drop` rolls the registration back to the
+/// pre-call snapshot the instant the caller's `#[test]` returns. The caller MUST hold the returned
+/// guard for its whole test body (`let _iso = register_gizmo_plane();`): dropping it early re-opens
+/// the same leak this exists to close.
+#[must_use = "GIZMO_PLANE stays registered — and the shared registry stays confined — only while this guard is alive"]
+fn register_gizmo_plane() -> busbar_substrate::plane::registry::TestRegistryIsolation {
+    let iso = busbar_substrate::plane::registry::TestRegistryIsolation::snapshot();
     busbar_substrate::plane::registry::register_test_plane(&GIZMO_PLANE);
+    iso
 }
 
 /// A minimal YAML document valid without any plane-verb section, so each test below can add
@@ -144,7 +156,7 @@ fn plane_verb_lift_set_is_derived_from_the_registry_and_excludes_core_owned_sect
 /// naming `gizmos` — the exact failure this stage exists to remove.
 #[test]
 fn a_dropped_in_plane_section_parses_into_the_overflow_carrier() {
-    register_gizmo_plane();
+    let _iso = register_gizmo_plane();
 
     let yaml = format!("{}gizmos:\n  widget: yes\n", base_yaml());
     let deploy = deploy_from_yaml_str(&yaml).expect(
@@ -181,7 +193,7 @@ fn a_dropped_in_plane_section_parses_into_the_overflow_carrier() {
 /// name.
 #[test]
 fn an_unknown_top_level_key_refusal_names_no_lifted_or_carrier_key() {
-    register_gizmo_plane();
+    let _iso = register_gizmo_plane();
 
     let yaml = format!("{}sprockets: {{}}\n", base_yaml());
     let err = deploy_from_yaml_str(&yaml)
@@ -193,7 +205,11 @@ fn an_unknown_top_level_key_refusal_names_no_lifted_or_carrier_key() {
         "must be the deny_unknown_fields refusal naming the actual unknown key: {msg}"
     );
     for must_not_appear in [
-        "tools", "agents", "streams", "gizmos", "extra_plane_sections",
+        "tools",
+        "agents",
+        "streams",
+        "gizmos",
+        "extra_plane_sections",
     ] {
         assert!(
             !msg.contains(must_not_appear),
