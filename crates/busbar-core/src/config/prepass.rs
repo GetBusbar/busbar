@@ -41,22 +41,27 @@ use serde::Deserialize;
 use super::DeployCfg;
 // The `mcp:` endpoint carrier is lifted through the config seam's plane-NEUTRAL spellings
 // (`EndpointSection` / `ENDPOINT_SECTION_KEY`), so this generic lift machinery names no concrete
-// plane (DECISIONS #1). The other carriers are already neutrally named.
-use crate::plane::config::{
-    AgentsSection, EndpointSection, StreamsSection, ToolsSection, ENDPOINT_SECTION_KEY,
-};
+// plane (DECISIONS #1). `ToolsSection`/`AgentsSection`/`StreamsSection` route the GENERIC plane-verb
+// lift (below) back onto their concrete carrier fields in [`Lifted::install`]; this module's parse
+// path never names a plane type to select which lift function to call.
+use crate::plane::config::{EndpointSection, ENDPOINT_SECTION_KEY};
 
-/// One lifted key's parse-and-bank step: deserialize the key's value straight into `Target` on the
-/// live (monomorphic) deserializer — never via a rebuilt `serde_yaml::Value` — then bank it into the
-/// [`Lifted`] buffer.
+/// One CORE-ADDITIVE lifted key's parse-and-bank step: deserialize the key's value straight into
+/// `Target` on the live (monomorphic) deserializer — never via a rebuilt `serde_yaml::Value` — then
+/// bank it into the [`Lifted`] buffer.
 ///
-/// This is the extension seam: adding a lifted key later is implementing this trait for the new
-/// carrier type and adding one arm to [`LiftedSeed::deserialize`] (and one field to [`Lifted`]) —
-/// never widening a fixed value enum. `KEY` must read as the SAME literal that names the key in
-/// [`LIFTED_TOP_LEVEL_KEYS`] / [`LIFTED_AUTH_KEYS`] — those stay literal string arrays (rather than
-/// being assembled from `KEY`) because `cargo xtask gate config-schema` recovers the lifted-key set
-/// by scanning this file's source text for `const LIFTED_*KEYS` string literals, not by evaluating
-/// Rust; a non-literal array would read to that scanner as an empty lift list.
+/// This is the extension seam for a key core itself adds (`mcp:`, `oauth_as:`, `auth.policy:`):
+/// implementing this trait for the new carrier type and adding one arm to
+/// [`LiftedSeed::deserialize`] (and one field to [`Lifted`]). It is NOT how a PLANE-VERB top-level
+/// section (`tools:`/`agents:`/`streams:` today) is lifted — those are computed at parse entry from
+/// the plane registry and routed through [`crate::plane::config::deserialize_plane_section`]
+/// generically, in [`plane_verb_lift_keys`] and [`LiftedSeed::deserialize`]'s fallback arm, so
+/// adding or dropping a registered plane's section needs no new impl here. `KEY` must read as the
+/// SAME literal that names the key in [`LIFTED_TOP_LEVEL_KEYS`] / [`LIFTED_AUTH_KEYS`] — those stay
+/// literal string arrays (rather than being assembled from `KEY`) because `cargo xtask gate
+/// config-schema` recovers the CORE-ADDITIVE half of the lifted-key set by scanning this file's
+/// source text for `const LIFTED_*KEYS` string literals (the plane-verb half it recovers separately,
+/// from each plane's own `config_section` declaration — see that gate's `config_schema/schema.rs`).
 trait LiftableSection: for<'de> Deserialize<'de> {
     /// The wire key this section is lifted from.
     const KEY: &'static str;
@@ -80,27 +85,6 @@ impl LiftableSection for Option<crate::oauth_as::config::OauthAsCfg> {
     }
 }
 
-impl LiftableSection for ToolsSection {
-    const KEY: &'static str = "tools";
-    fn bank(self, into: &mut Lifted) {
-        into.tools = Some(self);
-    }
-}
-
-impl LiftableSection for AgentsSection {
-    const KEY: &'static str = "agents";
-    fn bank(self, into: &mut Lifted) {
-        into.agents = Some(self);
-    }
-}
-
-impl LiftableSection for StreamsSection {
-    const KEY: &'static str = "streams";
-    fn bank(self, into: &mut Lifted) {
-        into.streams = Some(self);
-    }
-}
-
 impl LiftableSection for crate::config::AuthPolicyCfg {
     const KEY: &'static str = "policy";
     fn bank(self, into: &mut Lifted) {
@@ -108,23 +92,50 @@ impl LiftableSection for crate::config::AuthPolicyCfg {
     }
 }
 
-/// The TOP-LEVEL keys that exist only in 1.6.0 and must never reach the frozen top-level struct.
+/// The CORE-ADDITIVE TOP-LEVEL keys — 1.6.0 keys core itself adds, as opposed to a registered
+/// plane's own section (see [`plane_verb_lift_keys`]) — that must never reach the frozen top-level
+/// struct.
 ///
-/// This list is the authoritative enumeration of the 1.6.0-additive top-level grammar: every entry
-/// is a key the published 1.5.5 binary refuses as unknown, and none of them may appear in the
-/// frozen struct's field set. Adding a 1.6.0 top-level key means adding it HERE and giving the
-/// carrier field a serde-skipped declaration — never a plain field.
+/// Every entry is a key the published 1.5.5 binary refuses as unknown, and none of them may appear
+/// in the frozen struct's field set. Adding a core-additive 1.6.0 top-level key means adding it HERE
+/// and giving the carrier field a serde-skipped declaration — never a plain field. A registered
+/// plane's own top-level section (`tools:`/`agents:`/`streams:` today) is NOT added here: it joins
+/// the lift set automatically the moment the plane registers, via [`plane_verb_lift_keys`].
 ///
-/// In order: busbar's OWN endpoint as an OAuth 2.1 resource server; busbar AS an OAuth 2.1
-/// authorization server; then, one per registered plane that declares a top-level config section
-/// of its own — a remote-endpoint registry, a named-definition registry, and a session-policy
-/// section.
-pub(crate) const LIFTED_TOP_LEVEL_KEYS: &[&str] =
-    &["mcp", "oauth_as", "tools", "agents", "streams"]; // plane-purity: frozen-wire the frozen top-level wire KEYS this pass lifts
+/// busbar's OWN endpoint as an OAuth 2.1 resource server; busbar AS an OAuth 2.1 authorization
+/// server.
+pub(crate) const LIFTED_TOP_LEVEL_KEYS: &[&str] = &["mcp", "oauth_as"]; // plane-purity: frozen-wire the frozen core-additive top-level wire KEYS this pass lifts
 
 /// The keys lifted out of the `auth:` block. `policy:` is a 1.6.0 addition (token-mint caps); the
 /// five keys around it are 1.5.5's and stay in the frozen struct.
 pub(crate) const LIFTED_AUTH_KEYS: &[&str] = &["policy"];
+
+/// THE PLANE-VERB LIFT SET, DERIVED FROM THE PLANE REGISTRY rather than written as a literal here.
+///
+/// Every REGISTERED plane declares exactly one top-level config section of its own
+/// ([`busbar_substrate::plane::registry::PlaneDecl::config_section`]); a section core still owns
+/// CONCRETELY as a plain field of [`DeployCfg`]
+/// ([`crate::plane::registry::CORE_OWNED_CONCRETE_SECTIONS`] — `providers`/`models`/`pools`/
+/// `rate_card`/`limits` today) is excluded, because that section is not lifted at all: the frozen
+/// struct parses it directly. What is left — `tools`/`agents`/`streams` today — is exactly the set
+/// of top-level sections a registered plane owns that core does NOT also own concretely, which is
+/// what makes adding or dropping a plane verb a ZERO-EDIT change here: the set is read off the
+/// registry at every parse, not maintained by hand.
+///
+/// Order is deterministic ([`crate::plane::registry::plane_decls`] is itself ordered), so a parse
+/// error naming a lifted section names the same one on every run.
+pub(crate) fn plane_verb_lift_keys() -> Vec<&'static str> {
+    let mut out: Vec<&'static str> = Vec::new();
+    for decl in crate::plane::registry::plane_decls() {
+        let section = decl.config_section;
+        if !crate::plane::registry::CORE_OWNED_CONCRETE_SECTIONS.contains(&section)
+            && !out.contains(&section)
+        {
+            out.push(section);
+        }
+    }
+    out
+}
 
 /// The top-level key whose VALUE carries a nested lift of its own.
 const NESTED_TOP_LEVEL_KEY: &str = "auth";
@@ -137,10 +148,13 @@ const NESTED_WATCH: &[&str] = &[NESTED_TOP_LEVEL_KEY];
 pub(crate) struct Lifted {
     endpoint: Option<EndpointSection>,
     oauth_as: Option<Option<crate::oauth_as::config::OauthAsCfg>>,
-    tools: Option<ToolsSection>,
-    agents: Option<AgentsSection>,
-    streams: Option<StreamsSection>,
     auth_policy: Option<crate::config::AuthPolicyCfg>,
+    /// Every PLANE-VERB section lifted off this document, keyed by its wire key (`tools`, `agents`,
+    /// `streams`, or a dropped-in plane's own section) — banked generically through
+    /// [`crate::plane::config::deserialize_plane_section`] rather than one field per plane, so a
+    /// registered plane needs no new field here. [`Lifted::install`] routes each entry to its
+    /// concrete carrier field when one exists, and to [`DeployCfg::extra_plane_sections`] otherwise.
+    plane_sections: indexmap::IndexMap<String, Box<dyn crate::plane::config::PlaneCfg>>,
 }
 
 impl Lifted {
@@ -154,20 +168,26 @@ impl Lifted {
         if let Some(v) = self.oauth_as {
             deploy.oauth_as = v;
         }
-        if let Some(v) = self.tools {
-            deploy.tools = v;
-        }
-        if let Some(v) = self.agents {
-            deploy.agents = v;
-        }
-        if let Some(v) = self.streams {
-            deploy.streams = v;
-        }
         if let Some(v) = self.auth_policy {
             // A policy block without an `auth:` block cannot happen: `policy:` is lifted from
             // INSIDE `auth:`, so reaching here means `auth:` parsed.
             if let Some(auth) = deploy.auth.as_mut() {
                 auth.policy = v;
+            }
+        }
+        for (key, section) in self.plane_sections {
+            // The THREE sections core still declares concretely on `DeployCfg` route to their own
+            // typed carrier (byte-identical to the pre-registry-lift wiring, which is what keeps
+            // `config-schema.snapshot.json` unchanged); any OTHER registered plane's section — one
+            // with no concrete field on this frozen struct — lands in the generic overflow carrier
+            // instead of being refused by `deny_unknown_fields`.
+            match key.as_str() {
+                "tools" => deploy.tools = crate::plane::config::ToolsSection(section),
+                "agents" => deploy.agents = crate::plane::config::AgentsSection(section),
+                "streams" => deploy.streams = crate::plane::config::StreamsSection(section),
+                _ => {
+                    deploy.extra_plane_sections.insert(key, section);
+                }
             }
         }
     }
@@ -177,9 +197,11 @@ impl Lifted {
 /// generic value that is re-parsed afterwards) — this is what keeps a malformed 1.6.0 section's
 /// error message positioned and path-prefixed exactly like every other section's — then bank it.
 ///
-/// The key-to-type routing is the one place this module still matches on the key string; every arm
-/// is otherwise identical (`Type::deserialize(de)?.bank(self.lifted)`), so a new [`LiftableSection`]
-/// impl is registered by adding one such arm, never by widening a value enum.
+/// Two routes: a CORE-ADDITIVE key (`mcp`/`oauth_as`/`policy`) matches one of the named arms below,
+/// each registered by adding a [`LiftableSection`] impl and an arm; any OTHER key reaching here is,
+/// by construction, a PLANE-VERB key from [`plane_verb_lift_keys`] (the only other source
+/// [`DocumentVisitor::visit_map`] builds the lift set from) and is deserialized generically through
+/// [`crate::plane::config::deserialize_plane_section`] — no per-plane arm to add.
 struct LiftedSeed<'a> {
     key: &'static str,
     lifted: &'a mut Lifted,
@@ -190,22 +212,18 @@ impl<'de> DeserializeSeed<'de> for LiftedSeed<'_> {
 
     fn deserialize<D: Deserializer<'de>>(self, de: D) -> Result<Self::Value, D::Error> {
         match self.key {
-            k if k == EndpointSection::KEY => EndpointSection::deserialize(de)?.bank(self.lifted),
+            k if k == EndpointSection::KEY => {
+                EndpointSection::deserialize(de)?.bank(self.lifted);
+            }
             k if k == <Option<crate::oauth_as::config::OauthAsCfg> as LiftableSection>::KEY => {
-                Option::<crate::oauth_as::config::OauthAsCfg>::deserialize(de)?.bank(self.lifted)
+                Option::<crate::oauth_as::config::OauthAsCfg>::deserialize(de)?.bank(self.lifted);
             }
-            k if k == ToolsSection::KEY => ToolsSection::deserialize(de)?.bank(self.lifted),
-            k if k == AgentsSection::KEY => AgentsSection::deserialize(de)?.bank(self.lifted),
-            k if k == StreamsSection::KEY => StreamsSection::deserialize(de)?.bank(self.lifted),
             k if k == crate::config::AuthPolicyCfg::KEY => {
-                crate::config::AuthPolicyCfg::deserialize(de)?.bank(self.lifted)
+                crate::config::AuthPolicyCfg::deserialize(de)?.bank(self.lifted);
             }
-            other => {
-                // Unreachable while the two key lists and this match agree; a hard error rather
-                // than a silent drop so they cannot drift apart unnoticed.
-                return Err(D::Error::custom(format!(
-                    "internal: no lift destination for the key `{other}`"
-                )));
+            key => {
+                let section = crate::plane::config::deserialize_plane_section(key, de)?;
+                self.lifted.plane_sections.insert(key.to_string(), section);
             }
         }
         Ok(())
@@ -221,9 +239,9 @@ enum KeyOutcome<V, S> {
 
 /// Reads one map key: lifted keys are reported without ever reaching `inner`, so the frozen
 /// struct's field matcher — and therefore its `expected one of` list — never sees them.
-struct KeySeed<'a, S> {
+struct KeySeed<'a, 'l, S> {
     inner: S,
-    lift: &'static [&'static str],
+    lift: &'l [&'static str],
     watch: &'static [&'static str],
     /// Set to the matched entry of `lift` when the key is lifted.
     lifted: &'a mut Option<&'static str>,
@@ -232,7 +250,7 @@ struct KeySeed<'a, S> {
     watched: &'a mut Option<&'static str>,
 }
 
-impl<'de, S: DeserializeSeed<'de>> DeserializeSeed<'de> for KeySeed<'_, S> {
+impl<'de, S: DeserializeSeed<'de>> DeserializeSeed<'de> for KeySeed<'_, '_, S> {
     type Value = KeyOutcome<S::Value, S>;
 
     fn deserialize<D: Deserializer<'de>>(self, de: D) -> Result<Self::Value, D::Error> {
@@ -240,7 +258,7 @@ impl<'de, S: DeserializeSeed<'de>> DeserializeSeed<'de> for KeySeed<'_, S> {
     }
 }
 
-impl<'de, S: DeserializeSeed<'de>> Visitor<'de> for KeySeed<'_, S> {
+impl<'de, S: DeserializeSeed<'de>> Visitor<'de> for KeySeed<'_, '_, S> {
     type Value = KeyOutcome<S::Value, S>;
 
     fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
@@ -272,7 +290,12 @@ impl<'de, S: DeserializeSeed<'de>> Visitor<'de> for KeySeed<'_, S> {
 /// [`Lifted`] on the way past.
 struct LiftingMap<'a, M> {
     inner: M,
-    lift: &'static [&'static str],
+    /// OWNED rather than `&'static`: the TOP-LEVEL lift set is CORE-ADDITIVE keys ∪
+    /// [`plane_verb_lift_keys`], computed once at parse entry — the plane-verb half is read off the
+    /// process plane registry, not a compile-time literal, so it cannot be `'static`. The NESTED
+    /// (`auth:`) lift stays the `'static` [`LIFTED_AUTH_KEYS`] literal and is copied in here too
+    /// ([`NestedSeed::visit_map`]) for a uniform field type.
+    lift: Vec<&'static str>,
     /// A forwarded key whose VALUE gets its own nested lift (`auth:`), and the keys to lift there.
     nested: Option<(&'static str, &'static [&'static str])>,
     /// Set when the key just forwarded is the `nested` one, so the value read can be wrapped.
@@ -297,7 +320,7 @@ impl<'de, M: MapAccess<'de>> MapAccess<'de> for LiftingMap<'_, M> {
             let mut watched = None;
             let outcome = self.inner.next_key_seed(KeySeed {
                 inner: seed,
-                lift: self.lift,
+                lift: &self.lift,
                 watch,
                 lifted: &mut lifted,
                 watched: &mut watched,
@@ -365,7 +388,7 @@ impl<'de, S: DeserializeSeed<'de>> Visitor<'de> for NestedSeed<'_, S> {
     fn visit_map<M: MapAccess<'de>>(self, map: M) -> Result<Self::Value, M::Error> {
         self.inner.deserialize(OptionalMap(LiftingMap {
             inner: map,
-            lift: self.lift,
+            lift: self.lift.to_vec(),
             nested: None,
             pending_nested: false,
             lifted: self.lifted,
@@ -438,9 +461,14 @@ impl<'de> Visitor<'de> for DocumentVisitor {
 
     fn visit_map<M: MapAccess<'de>>(self, map: M) -> Result<Self::Value, M::Error> {
         let mut lifted = Lifted::default();
+        // The TOP-LEVEL lift set: the core-additive literal ∪ the plane-verb keys read off the
+        // registry at this parse (empty in a build/test with no plane registered — the lift then
+        // degrades to exactly the core-additive set, unchanged from before this pass existed).
+        let mut lift: Vec<&'static str> = LIFTED_TOP_LEVEL_KEYS.to_vec();
+        lift.extend(plane_verb_lift_keys());
         let mut deploy = DeployCfg::deserialize(MapAccessDeserializer::new(LiftingMap {
             inner: map,
-            lift: LIFTED_TOP_LEVEL_KEYS,
+            lift,
             nested: Some((NESTED_TOP_LEVEL_KEY, LIFTED_AUTH_KEYS)),
             pending_nested: false,
             lifted: &mut lifted,
