@@ -31,6 +31,9 @@ path = "src/lib.rs"
 busbar-caps = { path = "../busbar-caps" }
 busbar-contract = { path = "../busbar-contract" }
 busbar-grammar = { path = "../busbar-grammar" }
+# The per-connection credential slab holds raw credential bytes. `zeroize` scrubs them on `clear`
+# and on drop, and its use here is what keeps a credential out of a `{:?}`, a leaked page or a core.
+zeroize = { workspace = true }
 
 # TEMPORARY (delete before hand-off, together with this comment): stand this crate up as its own
 # workspace root while sibling members are mid-landing. Several in-flight crates currently carry the

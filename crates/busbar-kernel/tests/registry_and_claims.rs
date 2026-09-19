@@ -246,6 +246,34 @@ fn a_pattern_of_nothing_but_open_segments_still_ranks_below_a_literal_path() {
     );
 }
 
+/// Two server names that differ only in case are one server name, so their claims overlap.
+///
+/// A server name is case-insensitive, and the kernel lower-cases the SNI it reads off a handshake,
+/// so `Sni("Example.com")` and `Sni("example.com")` are matched by one and the same connection. The
+/// transport overlap rule used to be transcribed with a case-sensitive `==`, which proved the two
+/// disjoint at boot while a request satisfied both — the exact class of routing defect the overlap
+/// check exists to refuse. The rule is now read from the contract, which compares SNI case-blind.
+#[test]
+fn server_names_that_differ_only_in_case_overlap() {
+    assert!(
+        overlaps(&Selector::Sni("Example.COM"), &Selector::Sni("example.com")),
+        "one handshake matches both, so a boot that proved them disjoint was wrong"
+    );
+    // The other transport forms are still compared exactly, and reflexivity still holds.
+    assert!(overlaps(
+        &Selector::Sni("a.example"),
+        &Selector::Sni("a.example")
+    ));
+    assert!(!overlaps(
+        &Selector::Sni("a.example"),
+        &Selector::Sni("b.example")
+    ));
+    assert!(!overlaps(
+        &Selector::Alpn("h2"),
+        &Selector::Alpn("http/1.1")
+    ));
+}
+
 #[test]
 fn distinct_exact_paths_and_distinct_headers_do_not_overlap() {
     assert!(!overlaps(

@@ -206,6 +206,46 @@ fn the_table_empties_as_units_leave() {
     assert!(table.insert(enter(&kernel, 9, OriginKind::Client)).is_ok());
 }
 
+/// A key already in the table is a collision, refused — never overwritten.
+///
+/// A blind `insert` would replace the live slot and drop the one it displaced on the floor: that
+/// slot's hold becomes unreachable and is never settled, and the in-flight count it took is never
+/// given back, so the table ratchets toward its cap one leaked hold at a time. The unit already in
+/// flight stays exactly where it was, and the colliding arrival is refused with its own hold handed
+/// back.
+#[test]
+fn a_key_collision_is_refused_and_leaks_no_hold() {
+    let kernel = Kernel::new();
+    let table = InFlight::new(4, 0);
+    let first = table
+        .insert(enter(&kernel, 7, OriginKind::Client))
+        .map_err(|_| ())
+        .expect("under the cap");
+    assert_eq!(table.len(), 1);
+
+    let refused = table
+        .insert(enter(&kernel, 7, OriginKind::Client))
+        .expect_err("a key already in the table is refused, not overwritten");
+    assert_eq!(
+        refused.reason,
+        ReasonCode::InFlight,
+        "a collision is the idempotency-in-flight refusal"
+    );
+    // The count did not ratchet: the refused arrival gave its claimed slot back.
+    assert_eq!(table.len(), 1, "the refused arrival left no slot behind");
+    // The unit already in flight is untouched — the very slot we first inserted.
+    let live = table
+        .get(busbar_caps::UnitKey::new(7))
+        .expect("the original unit is still in flight");
+    assert!(
+        std::sync::Arc::ptr_eq(&first, &live),
+        "the collision replaced the live slot instead of refusing"
+    );
+    // And the refusal handed the arrival hold back rather than stranding it: it is the colliding
+    // arrival's own hold, reachable and attributable, not one lost inside the table.
+    assert_eq!(refused.hold.principal(), &principal());
+}
+
 #[test]
 fn an_interrupt_is_one_compare_and_set_and_only_before_the_meter() {
     let kernel = Kernel::new();
@@ -576,13 +616,17 @@ fn one_shots_run_under_a_small_fixed_concurrency() {
             Direction::Inbound,
             Shape::OneShot
         ),
-        Dispatch::Wait,
-        "the third waits rather than crowding out the open conversation"
+        Dispatch::Refuse {
+            step: StepName::Decode,
+            reason: ReasonCode::InFlightCap,
+        },
+        "the third is a whole unit awaiting an answer; at a spent permit it is refused, not \
+         silently parked and lost"
     );
     assert_eq!(
         scheduler.one_shots(),
         2,
-        "a wait takes no permit, so the count does not move past the ceiling"
+        "a refusal takes no permit, so the count does not move past the ceiling"
     );
     scheduler.finish_one_shot();
     assert_eq!(

@@ -492,16 +492,16 @@ fn path_overlaps(left: &Selector, right: &Selector) -> bool {
     left.overlaps(right)
 }
 
-/// Transport forms: same form compares its value, different forms coincide.
+/// Transport forms, as the contract decides them.
+///
+/// READ from the contract, not transcribed. The transcription got the server-name rule wrong: it
+/// compared two `Sni` values with `==`, but a server name is case-insensitive, so `Sni("Example.com")`
+/// and `Sni("example.com")` were proved disjoint at boot while one handshake — whose SNI the kernel
+/// lower-cases — matches both. The contract's `Selector::overlaps` is the one reading a plane writes
+/// its claims against (`eq_ignore_ascii_case` for SNI, exact for the rest), so reading it here is
+/// what makes a boot that proves two claims disjoint and a request that matches both answer the same.
 fn transport_overlaps(left: &Selector, right: &Selector) -> bool {
-    match (left, right) {
-        (Selector::Sni(a), Selector::Sni(b))
-        | (Selector::ClientCertSubject(a), Selector::ClientCertSubject(b))
-        | (Selector::StreamName(a), Selector::StreamName(b))
-        | (Selector::Alpn(a), Selector::Alpn(b)) => a == b,
-        (Selector::Port(a), Selector::Port(b)) => a == b,
-        _ => true,
-    }
+    left.overlaps(right)
 }
 
 /// Whether this deployment has already been bootstrapped.
