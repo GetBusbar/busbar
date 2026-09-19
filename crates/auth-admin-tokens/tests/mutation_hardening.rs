@@ -12,12 +12,20 @@
 //! ## Non-JWT-shaped-credential invariant
 //!
 //! This module does not parse JWTs at all (it hashes an opaque bearer/header string and
-//! constant-time-compares the digest against the configured admin-token hash), so there is no
-//! "JWT-shaped" structural check to bypass. The analogous, and stronger, invariant that DOES apply
-//! here: no malformed/adversarial candidate string — regardless of shape — may ever be `Identify`d
-//! (accepted) without its SHA-256 digest exactly matching the configured hash. The tests below drive
-//! that with empty strings, random-looking bytes-as-string, JWT-shaped-but-wrong strings, and other
-//! garbage, all of which must fall through to `Pass`/`Reject`, never `Identify`.
+//! constant-time-compares the digest against the configured admin-token hash). The invariant that
+//! applies: no malformed/adversarial candidate string — regardless of shape — may ever be
+//! `Identify`d (accepted) without its SHA-256 digest exactly matching the configured hash. The
+//! tests below drive that with empty strings, random-looking bytes-as-string, JWT-shaped-but-wrong
+//! strings, and other garbage, all of which must fall through to `Pass`/`Reject`, never `Identify`.
+//!
+//! ## S12: JWS-shaped mismatch defers (`Pass`), it does not terminally `Reject`
+//!
+//! A candidate shaped like a JWS/JWT compact serialization (three non-empty dot-separated
+//! segments) is never admin-tokens' own credential grammar — it belongs to a different scheme
+//! (e.g. an OIDC/AD admin module later in the same `admin_auth:` chain, sharing the
+//! `Authorization: Bearer` carrier). Such a candidate must `Pass` (defer) so that later chain arm
+//! stays reachable, not `Reject` and short-circuit the whole chain. A non-JWS-shaped wrong
+//! candidate is still a genuine "addressed to this module and wrong" attempt and must `Reject`.
 
 use busbar_api::{sha256_hex, AuthOutcome};
 use busbar_auth_admin_tokens::{authenticate_admin_tokens, ADMIN_TOKENS_PRINCIPAL_ID};
@@ -83,13 +91,14 @@ fn non_matching_credentials_of_any_shape_never_identify() {
     }
 }
 
-/// A mismatched credential presented against a configured token must specifically `Reject`
-/// (a credential WAS presented, it's just wrong) — never silently `Pass`, which would make a wrong
-/// credential indistinguishable from "no credential", and never `Identify`.
+/// A mismatched, NON-JWS-shaped credential presented against a configured token must specifically
+/// `Reject` (a credential WAS presented, addressed to THIS module's grammar, and it's just wrong)
+/// — never silently `Pass`, which would make a wrong credential indistinguishable from "no
+/// credential", and never `Identify`.
 #[test]
 fn wrong_credential_of_any_shape_rejects_not_passes() {
     let h = hash("secret");
-    for cred in ["", "wrong", "a.b.c", "\0\x01garbage"] {
+    for cred in ["", "wrong", "\0\x01garbage"] {
         assert_eq!(
             authenticate_admin_tokens(Some(&h), Some(cred), None),
             AuthOutcome::Reject,
@@ -101,4 +110,68 @@ fn wrong_credential_of_any_shape_rejects_not_passes() {
             "candidate {cred:?} on header carrier must Reject"
         );
     }
+}
+
+/// S12 boundary: candidates that are ONE segment-count away from JWS-shaped (2 segments, 4
+/// segments) or that have an empty segment inside a 3-dot-count split must still `Reject`, not
+/// defer. `non_matching_credentials_of_any_shape_never_identify` already drives these shapes but
+/// only asserts non-`Identify` (`Pass` or `Reject` both pass); that leaves the segment-count and
+/// empty-segment boundaries in `is_jws_shaped` unlocked — a mutant that widens the 3-segment check
+/// to accept 2, 4, or an empty segment would defer these instead of rejecting and nothing here
+/// would catch it. Pin `Reject` explicitly for every boundary shape.
+#[test]
+fn near_jws_shaped_boundary_still_rejects() {
+    let h = hash("secret");
+    for cred in ["a.b", "a.b.c.d", "a..c", ".b.c", "a.b."] {
+        assert_eq!(
+            authenticate_admin_tokens(Some(&h), Some(cred), None),
+            AuthOutcome::Reject,
+            "near-JWS-boundary candidate {cred:?} on bearer carrier must Reject, not defer"
+        );
+        assert_eq!(
+            authenticate_admin_tokens(Some(&h), None, Some(cred)),
+            AuthOutcome::Reject,
+            "near-JWS-boundary candidate {cred:?} on header carrier must Reject, not defer"
+        );
+    }
+}
+
+/// S12: a mismatched but JWS-SHAPED credential (three non-empty dot-separated segments — the
+/// compact-serialization shape a real JWT/JWS uses) must `Pass` (defer), never `Reject`. It is
+/// not admin-tokens' credential grammar, so a terminal `Reject` here would short-circuit the
+/// `admin_auth:` chain before a later, JWT-consuming module (e.g. OIDC/AD) ever sees it.
+#[test]
+fn jws_shaped_mismatch_defers_not_rejects() {
+    let h = hash("secret");
+    for cred in ["a.b.c", "eyJhbGciOiJub25lIn0.eyJzdWIiOiJ4In0.sig", "x.y.z"] {
+        assert_eq!(
+            authenticate_admin_tokens(Some(&h), Some(cred), None),
+            AuthOutcome::Pass,
+            "JWS-shaped candidate {cred:?} on bearer carrier must Pass (defer), not Reject"
+        );
+        assert_eq!(
+            authenticate_admin_tokens(Some(&h), None, Some(cred)),
+            AuthOutcome::Pass,
+            "JWS-shaped candidate {cred:?} on header carrier must Pass (defer), not Reject"
+        );
+    }
+}
+
+/// A non-JWS-shaped wrong credential on one carrier must still `Reject` the whole verdict even
+/// when the OTHER carrier independently carries a JWS-shaped (deferring) candidate — the
+/// non-JWS-shaped carrier genuinely addressed this module and was wrong; that must not be masked
+/// by the other carrier's defer.
+#[test]
+fn mixed_carriers_non_jws_wrong_still_rejects() {
+    let h = hash("secret");
+    assert_eq!(
+        authenticate_admin_tokens(Some(&h), Some("wrong"), Some("a.b.c")),
+        AuthOutcome::Reject,
+        "non-JWS-shaped wrong bearer must still Reject even with a JWS-shaped header"
+    );
+    assert_eq!(
+        authenticate_admin_tokens(Some(&h), Some("a.b.c"), Some("wrong")),
+        AuthOutcome::Reject,
+        "non-JWS-shaped wrong header must still Reject even with a JWS-shaped bearer"
+    );
 }
