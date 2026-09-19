@@ -986,6 +986,79 @@ fn cached_input_tokens_are_not_billed_twice() {
     );
 }
 
+/// A turn stating only its totals (no per-modality breakdown) is billed those totals, not zero.
+///
+/// The `input_token_details`/`output_token_details` breakdown is a REFINEMENT of the stated
+/// `input_tokens`/`output_tokens` totals, not their sole source — OpenAI Realtime can state the
+/// totals while omitting the details. Reading a missing breakdown as zero metered a real turn at
+/// zero (silent under-billing). When the breakdown yields nothing, the stated total is billed,
+/// attributed to `text` (the conservative default when the split is unknown — it changes only the
+/// audio/text LABEL, never the input/output lane the billing fold sums onto), mirroring gemini.
+#[test]
+fn usage_falls_back_to_stated_totals_when_the_modality_breakdown_is_absent() {
+    let codec = OpenAiRealtimeCodec;
+    let mut st = DecodeState::default();
+    let src = json!({
+        "type": "response.done",
+        "response": {
+            "usage": {
+                "total_tokens": 150,
+                "input_tokens": 100,
+                "output_tokens": 50
+            }
+        }
+    });
+    let ir = codec.read_down(wire(&src.to_string()), &mut st);
+    let IrServerEvent::Usage(u) = &ir[0] else {
+        panic!("expected Usage")
+    };
+    assert_eq!(u.text_in, 100, "the stated input total is billed, not zero");
+    assert_eq!(
+        u.text_out, 50,
+        "the stated output total is billed, not zero"
+    );
+    assert_eq!(u.audio_in, 0);
+    assert_eq!(u.audio_out, 0);
+    let billed = u.to_billing_usage();
+    assert_eq!(
+        billed.usage_units.get(busbar_api::UNIT_INPUT).copied(),
+        Some(100),
+        "the input lane bills the stated total, never zero"
+    );
+    assert_eq!(
+        billed.usage_units.get(busbar_api::UNIT_OUTPUT).copied(),
+        Some(50),
+        "the output lane bills the stated total, never zero"
+    );
+}
+
+/// When the breakdown IS present it wins — the stated totals are the fallback, never override it.
+#[test]
+fn a_present_breakdown_is_not_overridden_by_the_stated_totals() {
+    let codec = OpenAiRealtimeCodec;
+    let mut st = DecodeState::default();
+    let src = json!({
+        "type": "response.done",
+        "response": {
+            "usage": {
+                "total_tokens": 150,
+                "input_tokens": 100,
+                "output_tokens": 50,
+                "input_token_details": { "audio_tokens": 80, "text_tokens": 15, "cached_tokens": 5 },
+                "output_token_details": { "audio_tokens": 40, "text_tokens": 10 }
+            }
+        }
+    });
+    let ir = codec.read_down(wire(&src.to_string()), &mut st);
+    let IrServerEvent::Usage(u) = &ir[0] else {
+        panic!("expected Usage")
+    };
+    assert_eq!(u.audio_in, 80);
+    assert_eq!(u.text_in, 15);
+    assert_eq!(u.audio_out, 40);
+    assert_eq!(u.text_out, 10);
+}
+
 // ── barge-in signals & session lifecycle ─────────────────────────────────────────────────────────
 
 #[test]
