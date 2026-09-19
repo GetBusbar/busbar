@@ -295,6 +295,40 @@ pub struct Estimate {
     pub per_class: crate::bounded::BoundedVec<ClassEstimate, { crate::bounded::MAX_USAGE_LINES }>,
 }
 
+/// One uniform meter event a plugin emits over the ABI.
+///
+/// The single money-adjacent shape every plugin — llm, mcp, a2a, streaming (voice is a dialect
+/// inside it) and any non-plane kind that bills — hands core about money:
+/// `(billable-units, meter-class, timestamp)` and nothing else. A plugin computes no money and
+/// holds no price; core records the event and derives money as the one dated VIEW
+/// (`Σ price(card_at(event.timestamp), event)`), so the event carries no price, no currency and no
+/// rate-card version — those live in `busbar-kernel-ledger`, never here.
+///
+/// It carries NO plugin identity and NO lane. Uniform metering is keyed on the meter class an
+/// operator prices, never on which plugin emitted it: per-plugin pricing is unrepresentable, not
+/// merely banned. The pricing destination (`lane`/`dest`) is core's own routing decision, joined
+/// to the event at pricing time — it is never a value the plugin supplies.
+///
+/// The timestamp is part of the immutable event and is never a placeholder: an event with no
+/// timestamp falls in a rate-card-history hole and cannot be priced at all (a visible refusal,
+/// never a silent free line).
+///
+/// The money model's uniform-metering ruling defines this event: every plugin emits the triple of
+/// billable units, meter class and timestamp and nothing else about money, and the money model's
+/// dated-view section keeps the price a recomputed view over the event rather than a value stored
+/// on it. The same ruling keeps plugin identity and the plugin-supplied lane off the event, and the
+/// dated-timestamp rule forbids a placeholder timestamp.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+pub struct MeterEvent {
+    /// How many billable units this event measured, in the class's own quantity.
+    pub units: u64,
+    /// Which meter class the units are for.
+    pub class: MeterClassId,
+    /// When the event happened: wall-clock milliseconds since the epoch. Never zero as a
+    /// placeholder — the dated pricing view resolves the rate card in force at this instant.
+    pub wall_millis: u64,
+}
+
 /// How many distinct keys one image may ever intern.
 ///
 /// The freeze below is what a composition root does. This is what holds where there is no
