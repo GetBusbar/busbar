@@ -23,7 +23,7 @@ use busbar_contract::unit::{
     AdmitFacts, AuditFacts, Ctx, FinishClass, Refusal, RefusalReason, ResourceLocator, ScopeFacts,
     Unit, UnitEnd, UsageLocator, UsageLocators,
 };
-use busbar_contract::wire::{Decode, Encode, Frame, FrameCursor, TransportEnvelope};
+use busbar_contract::wire::{Decode, DiscardCode, Encode, Frame, FrameCursor, TransportEnvelope};
 
 use crate::facts as f;
 use crate::jsonrpc;
@@ -410,8 +410,21 @@ fn decode_open_surface<'u>(
         // itself. They price as the card read the vocabulary already names, because that is the
         // work — a static document handed back — and a second class for the same work would be a
         // second price for it.
-        OpenSurface::Discovery => ops::OP_AGENT_CARD,
+        OpenSurface::Discovery => {
+            // A discovery document's claim declares no scheme: mark the unit open so the
+            // authenticate step narrows it to nothing rather than demanding the bearer the
+            // authenticated card — which shares this operation class — presents.
+            let _ = facts.set(f::FACT_OPEN_SURFACE, FactValue::Bool(true));
+            ops::OP_AGENT_CARD
+        }
         OpenSurface::Targeted(op) => {
+            // A create names its configuration in the POST body; an empty body is a create of
+            // nothing and the document has not arrived on this frame. Defer rather than open a unit
+            // from a document that never came. Every other targeted surface names its subject in the
+            // target and needs no body, so only the create defers.
+            if op == ops::OP_PUSH_CONFIG_CREATE && body.is_empty() {
+                return Ok(Ingress::NeedMore);
+            }
             if let Some(id) = task_id_of(target) {
                 let id = ctx.arena().alloc_str(id).map_err(|_| Decode::Oversize)?;
                 let _ = facts.set(f::FACT_TASK_ID, FactValue::Str(id));
@@ -422,6 +435,9 @@ fn decode_open_surface<'u>(
             if body.is_empty() {
                 return Ok(Ingress::NeedMore);
             }
+            // The callback's claim declares no scheme either: the kernel's own pairing of the
+            // connection is its authority, not a credential on these bytes.
+            let _ = facts.set(f::FACT_OPEN_SURFACE, FactValue::Bool(true));
             if let Some(id) = read_str(body, PTR_TASK_ID) {
                 let _ = facts.set(f::FACT_TASK_ID, FactValue::Str(id));
             }
@@ -487,6 +503,15 @@ impl Plane for A2aPlane {
             return Ok(Ingress::NeedMore);
         }
         let envelope = jsonrpc::read(body)?;
+        // A request that carries no identifier is a JSON-RPC notification: it expects no answer, so
+        // it opens no unit, routes nowhere and bills nothing. Opening it as a OneShot would meter a
+        // caller for work no one is waiting on, and there is no identifier to answer on even if one
+        // wanted to. It is discarded — no state changes, and the loop is handed nothing.
+        if envelope.id.is_none() {
+            return Ok(Ingress::Discard {
+                reason: DiscardCode::Unsupported,
+            });
+        }
         let method = envelope.method_str(body).ok_or(Decode::Malformed)?;
         let row = ops::row_for(method).ok_or(Decode::UnsupportedOperation)?;
         let facts = request_facts(body, &envelope);
@@ -752,7 +777,17 @@ impl Plane for A2aPlane {
         // nothing — which is a stronger statement than the invented "anonymous" alternative it
         // replaces, because that one was a value a plane could narrow an authenticated claim down
         // to. The rest present a bearer credential.
-        let open_surface = matches!(u.op(), ops::OP_PUSH_EVENT);
+        //
+        // Which surface a unit arrived on is NOT its operation class alone: the open discovery card
+        // and the authenticated extended card are the same class, so keying on the class refused the
+        // open card the very authority its claim declares no scheme for. The open surfaces are named
+        // by decode — as the sealed `FACT_OPEN_SURFACE` — and a provider-pushed unit, which never
+        // travels through decode's open path, is open by its class the way it always was.
+        let open_surface = matches!(u.op(), ops::OP_PUSH_EVENT)
+            || matches!(
+                u.draft_facts().get(f::FACT_OPEN_SURFACE),
+                Some(FactValue::Bool(true))
+            );
         CredentialLocator {
             narrowing: if open_surface {
                 None
