@@ -466,6 +466,20 @@ impl Gate for PlanePurityGate {
             &[ROW_KEY, "planted_plane_purity.rs:1"],
         ));
 
+        // `_` IS NOT A WORD BOUNDARY for the KEY rule's own alternation, same as it is not one for
+        // SYMBOL: `word_ci` treats `_` as an identifier character, so a plane key spelled inside a
+        // larger snake_case identifier — `busbar_mcp_config`, not the bare token `mcp` — must stay
+        // GREEN. The RED control right above proves the rule fires; this proves it does not fire on
+        // every substring that merely contains the key.
+        report.push(green_with(
+            cx,
+            self,
+            "a plane key spelled inside a snake_case identifier is not a bare token",
+            &[ROW_KEY],
+            &plant_at,
+            "fn route() { let busbar_mcp_config = 1; }\n",
+        ));
+
         report.push(create(
             cx,
             self,
