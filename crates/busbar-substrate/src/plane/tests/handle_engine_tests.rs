@@ -1208,3 +1208,89 @@ fn a_submit_whose_genesis_append_fails_leaves_no_durable_row() {
         .expect("rehydrate");
     assert_eq!(counts.active, 0, "a boot resumes no orphan");
 }
+
+/// D10: the mutate-path counterpart of the submit rollback. A live handle's row upsert and its event
+/// append are two writes, not one transaction. When the append fails AFTER the row upserts, the
+/// durable row is left one write ahead of a chain that never recorded the move — a divergence the next
+/// boot resolves the wrong way. The row must be taken back to what the live handle still holds.
+#[test]
+fn a_mutate_whose_event_append_fails_rolls_the_row_write_back() {
+    let store = Arc::new(MemStore::default());
+    let engine = DurableHandleEngine::new();
+    engine.set_sink(store.clone() as Arc<dyn PlaneStore>);
+
+    // A live handle whose genesis lands cleanly: durable row at cursor 0.
+    submit_demo(
+        &engine,
+        DemoRow {
+            id: "h".into(),
+            owner: "alice".into(),
+            updated_at: 1,
+            terminal: false,
+            cursor: 0,
+        },
+        1,
+    );
+
+    // From here every append fails. A mutation that upserts the row (cursor 9) and then tries to append
+    // its event fails at the append.
+    store
+        .append_fails
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let outcome = engine.mutate("h", |row, _pos| {
+        let row = row.downcast_ref::<DemoRow>().unwrap();
+        let mut next = row.clone();
+        next.cursor = 9;
+        next.updated_at = 2;
+        let record = next.record();
+        let meta = next.meta();
+        Ok(Some(Mutation {
+            row: Some(next.arc()),
+            meta: Some(meta),
+            row_record: Some(record.clone()),
+            event: Some(SealedEvent {
+                record,
+                tail_hash: "h-h-2".into(),
+            }),
+        }))
+    });
+    assert!(
+        matches!(outcome, Err(HandleEngineError::Store(_))),
+        "the caller is told the mutation did not land"
+    );
+
+    // The durable row is back at cursor 0 — the row write was taken back with the append failure.
+    let rows = store.rows.lock().unwrap();
+    assert_eq!(
+        rows.len(),
+        1,
+        "still exactly one durable row for the handle"
+    );
+    let persisted = DemoRow::from_body(&rows[0].body).expect("row decodes");
+    assert_eq!(
+        persisted.cursor, 0,
+        "the row write was rolled back to what the live handle still holds"
+    );
+    drop(rows);
+
+    // The in-memory handle was never advanced either (a durable failure returns before memory moves).
+    assert_eq!(engine.meta("h").unwrap().cursor, 0);
+
+    // And a boot rehydrate resumes the handle at the un-diverged row.
+    let counts = engine
+        .rehydrate(store.as_ref(), "demo", |_store, body| {
+            let Some(row) = DemoRow::from_body(body) else {
+                return Ok(RehydrateOutcome::Unreadable);
+            };
+            let meta = row.meta();
+            Ok(RehydrateOutcome::Active {
+                id: row.id.clone(),
+                pos: ChainPosition::genesis(),
+                row: row.arc(),
+                meta,
+                event_unreadable: 0,
+            })
+        })
+        .expect("rehydrate");
+    assert_eq!(counts.active, 1, "the live handle resumes");
+}
