@@ -29,6 +29,16 @@ pub const ADMIN_TOKENS_PRINCIPAL_ID: &str = "admin";
 ///
 /// `None` hash (no admin token configured) ⇒ `Pass` — this module has nothing to judge; a chain
 /// that ends all-`Pass` is denied (fail-closed), preserving "admin API disabled without a token".
+///
+/// Shape pre-check (S12): a candidate shaped like a JWS/JWT (three non-empty, dot-separated
+/// segments) is never this module's credential grammar — admin-tokens compares an opaque token
+/// hash, it does not parse structured tokens. Such a candidate belongs to a different scheme (e.g.
+/// an OIDC/AD admin module configured later in the same `admin_auth:` chain, which legitimately
+/// shares the `Authorization: Bearer` carrier). Fail-closed but NON-TERMINAL: this module still
+/// never `Identify`s it, but a carrier that is either absent or JWS-shaped does not count as "this
+/// module was addressed" — so a JWS-shaped mismatch alone yields `Pass` (defer), not `Reject`,
+/// keeping the next chain arm reachable. A carrier that is present and NOT JWS-shaped is a genuine
+/// wrong-credential attempt against this module and still `Reject`s.
 pub fn authenticate_admin_tokens(
     configured_hash: Option<&str>,
     bearer: Option<&str>,
@@ -41,6 +51,12 @@ pub fn authenticate_admin_tokens(
         // No credential presented for this module — defer (the chain's all-Pass denies).
         return AuthOutcome::Pass;
     }
+    // Shape check runs on the PUBLIC candidate string only (no secret-dependent branching — the
+    // hash compare below still runs unconditionally on every presented carrier regardless of
+    // shape, preserving the constant-time fold).
+    let bearer_is_jws = bearer.is_some_and(is_jws_shaped);
+    let header_is_jws = header.is_some_and(is_jws_shaped);
+
     let bearer_match = u8::from(
         bearer
             .map(|b| constant_time_eq(&sha256_hex(b.as_bytes()), configured_hash))
@@ -52,10 +68,29 @@ pub fn authenticate_admin_tokens(
             .unwrap_or(false),
     );
     if std::hint::black_box(bearer_match | header_match) != 0 {
-        AuthOutcome::Identify(Principal::from_id(ADMIN_TOKENS_PRINCIPAL_ID))
-    } else {
-        AuthOutcome::Reject
+        return AuthOutcome::Identify(Principal::from_id(ADMIN_TOKENS_PRINCIPAL_ID));
     }
+    // Only a carrier that was actually presented AND not JWS-shaped counts as "addressed to this
+    // module and wrong" — that still terminally denies. A carrier that's absent, or present but
+    // JWS-shaped (some other module's grammar), defers instead of short-circuiting the chain.
+    let bearer_addressed_me = bearer.is_some() && !bearer_is_jws;
+    let header_addressed_me = header.is_some() && !header_is_jws;
+    if bearer_addressed_me || header_addressed_me {
+        AuthOutcome::Reject
+    } else {
+        AuthOutcome::Pass
+    }
+}
+
+/// True if `candidate` is shaped like a JWS/JWT compact serialization: exactly three
+/// dot-separated segments, none empty (`header.payload.signature`). This is a pure shape check —
+/// it says nothing about validity — used only to recognise "not admin-tokens' grammar".
+fn is_jws_shaped(candidate: &str) -> bool {
+    let mut parts = candidate.split('.');
+    matches!(
+        (parts.next(), parts.next(), parts.next(), parts.next()),
+        (Some(a), Some(b), Some(c), None) if !a.is_empty() && !b.is_empty() && !c.is_empty()
+    )
 }
 
 #[cfg(test)]
