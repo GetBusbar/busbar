@@ -638,3 +638,157 @@ fn the_admin_write_path_refuses_a_malformed_publish_as_exactly_as_the_file_does(
         .expect_err("the API must reject exactly what the file rejects");
     assert!(err.contains("publish_as"), "{err}");
 }
+
+/// A MISSPELLED ASK METHOD REFUSES BOOT RATHER THAN REMOVING THE GATE. `elicitation/created` names
+/// no capability a caller can declare, so at dispatch the round is filtered away and the destructive
+/// tool runs with no confirmation at all — the failure mode of a typo must not be "the safety check
+/// is gone". The diagnostic names the path, the bad value and the three legal ones.
+#[test]
+fn an_ask_naming_a_method_outside_the_closed_set_refuses_boot_with_a_diagnostic() {
+    let err = parse(
+        r#"
+filesystem:
+  url: "https://mcp.internal/fs"
+  pin: { mechanism: cert_spki, key: "sha256/PIN==" }
+  tools_allow:
+    delete_everything:
+      ask_caller:
+        - confirm: { method: "elicitation/created" }
+"#,
+    )
+    .expect_err(
+        "a method outside the closed set is dropped at dispatch, so accepting it at boot means a \
+         one-character typo silently deletes an operator's confirmation gate",
+    );
+    assert!(
+        err.contains("elicitation/created"),
+        "the diagnostic must quote what the operator wrote: {err}"
+    );
+    assert!(
+        err.contains("ask_caller[0].confirm.method"),
+        "and locate it precisely enough to fix without searching: {err}"
+    );
+    assert!(
+        err.contains("elicitation/create")
+            && err.contains("sampling/createMessage")
+            && err.contains("roots/list"),
+        "and name the legal set, read from `callerask::ASK_METHODS` rather than re-spelled: {err}"
+    );
+}
+
+/// The same rule on the task-scoped list and on prompts, because an ask is an ask: three lists that
+/// reach the same dispatch filter cannot have two of them unvalidated.
+#[test]
+fn every_ask_list_is_validated_and_the_three_legal_methods_still_parse() {
+    for field in ["ask_caller", "task_ask_caller"] {
+        let err = parse(&format!(
+            r#"
+filesystem:
+  url: "https://mcp.internal/fs"
+  pin: {{ mechanism: cert_spki, key: "sha256/PIN==" }}
+  tools_allow:
+    wipe:
+      task_support: optional
+      {field}:
+        - confirm: {{ method: "roots/lists" }}
+"#
+        ));
+        let err = err.expect_err(&format!(
+            "`{field}` reaches the same dispatch filter as `ask_caller`, so leaving it unvalidated \
+             leaves the same hole"
+        ));
+        assert!(err.contains("roots/lists"), "{field}: {err}");
+    }
+    let cfg = parse(
+        r#"
+filesystem:
+  url: "https://mcp.internal/fs"
+  pin: { mechanism: cert_spki, key: "sha256/PIN==" }
+  prompts_allow:
+    summarise:
+      template: "hi"
+      ask_caller:
+        - a: { method: "elicitation/create" }
+        - b: { method: "sampling/createMessage" }
+        - c: { method: "roots/list" }
+"#,
+    )
+    .expect("all three legal methods must still parse — the rule refuses typos, not asks");
+    assert_eq!(
+        cfg.servers["filesystem"].prompts_allow["summarise"]
+            .ask_caller
+            .len(),
+        3
+    );
+}
+
+/// THE SECTION VALUE IS THE DEFAULT THE ENTRY OVERRIDES — asserted through the SNAPSHOT dispatch
+/// actually holds, not only through the combine accessor. `filesystem` says nothing, so it inherits
+/// `passthrough`; `archive` says `own`, so it keeps it. Before the combine reached
+/// `Catalogue::build`, both came back `Own` and the section line governed nothing.
+#[test]
+fn the_section_credential_mode_governs_a_server_that_declares_none_and_never_one_that_does() {
+    let cfg = parse(
+        r#"
+upstream_credentials: passthrough
+filesystem:
+  url: "https://mcp.internal/fs"
+  pin: { mechanism: cert_spki, key: "sha256/PIN==" }
+  tools_allow: { read_file: {} }
+archive:
+  url: "https://mcp.internal/ar"
+  pin: { mechanism: cert_spki, key: "sha256/PIN==" }
+  tools_allow: { read_file: {} }
+  upstream_credentials: own
+"#,
+    )
+    .expect("a section-level credential mode is legal on its own");
+    let cat = super::super::catalogue::Catalogue::build(&cfg);
+    assert_eq!(
+        cat.server("filesystem")
+            .expect("filesystem is registered")
+            .upstream
+            .credentials,
+        Some(busbar_api::UpstreamCreds::Passthrough),
+        "a server that wrote no `upstream_credentials:` must inherit the section's; a parsed value \
+         that reaches no dispatch is an operator instruction busbar silently declined to follow"
+    );
+    assert_eq!(
+        cat.server("archive")
+            .expect("archive is registered")
+            .upstream
+            .credentials,
+        Some(busbar_api::UpstreamCreds::Own),
+        "SCALAR ⇒ OVERRIDE: the entry's own line wins over the section default"
+    );
+}
+
+/// AND THE CONFLICT REFUSAL FOLLOWS THE VALUE UP A LEVEL. `token_exchange:` mints busbar's own
+/// credential; a section-level `passthrough` says the caller supplies one. The per-entry rule the
+/// section split calls cannot see the section, so this refusal has to run after the split — and it
+/// has to run, or the combine above would hand dispatch two contradictory answers.
+#[test]
+fn a_section_level_passthrough_conflicts_with_an_entry_level_token_exchange_and_refuses_boot() {
+    let err = parse(
+        r#"
+upstream_credentials: passthrough
+filesystem:
+  url: "https://mcp.internal/fs"
+  pin: { mechanism: cert_spki, key: "sha256/PIN==" }
+  tools_allow: { read_file: {} }
+  aud: "https://mcp.internal/fs"
+  token_exchange:
+    token_url: "https://idp.internal/token"
+    subject_token: { env: BUSBAR_SUBJECT_TOKEN }
+"#,
+    )
+    .expect_err(
+        "a `token_exchange:` under a section that says the CALLER supplies the credential is the \
+         same conflict as one written on the entry, and refusing only the entry spelling means the \
+         section spelling is the way past the check",
+    );
+    assert!(
+        err.contains("token_exchange") && err.contains("passthrough"),
+        "the diagnostic has to name both halves so the operator knows which line to delete: {err}"
+    );
+}
