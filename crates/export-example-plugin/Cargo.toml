@@ -17,6 +17,6 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 busbar-plugin-sdk = { path = "../plugin-sdk" }
-
-[dev-dependencies]
+# The `deliver` override names `serde_json::Value` in the ABI v3 signature, so serde_json is a
+# regular (not dev-only) dependency, mirroring `busbar-store-example-plugin`.
 serde_json = { workspace = true }

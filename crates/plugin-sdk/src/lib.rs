@@ -845,7 +845,9 @@ pub unsafe fn hook_dispatch(handle: *mut c_void, bytes: &[u8]) -> BoundaryOutcom
 
 /// Re-export the export wire types so a plugin author names `busbar_plugin_sdk::ExportStream` (etc.)
 /// without a direct `busbar-plugin` dependency, mirroring the hook/auth re-export path.
-pub use busbar_plugin::cold::export::{ExportField, ExportRequest, ExportResponse, ExportStream};
+pub use busbar_plugin::cold::export::{
+    ExportAck, ExportField, ExportRequest, ExportResponse, ExportStream,
+};
 
 /// Re-export the endpoint wire types (plugin route registration + dispatch) so an export/hook
 /// author names `busbar_plugin_sdk::Route` / `EndpointRequest` (etc.) without a direct
@@ -856,15 +858,22 @@ pub use busbar_plugin::cold::endpoint::{
 
 /// The sync contract a `kind: export` plugin author implements. [`streams`](ExportHandler::streams)
 /// declares which observability streams THIS instance carries (asked once at load); `deliver` hands
-/// one already-serialized batch for a declared stream to the sink and has a DEFAULT no-op, so a trivial
-/// sink implements only `streams`.
+/// one already-serialized batch for a declared stream to the sink and ANSWERS WHAT HAPPENED TO IT
+/// with an [`ExportAck`]. Its DEFAULT drops the batch and answers [`ExportAck::Retry`] — the honest
+/// word for a sink that took the record nowhere — so a trivial sink can implement only `streams`
+/// without ever claiming a delivery it did not make.
 pub trait ExportHandler: Send + Sync {
     /// The [`ExportStream`]s this instance carries. Asked once at load; the engine only routes
     /// deliveries for streams named here.
     fn streams(&self) -> Vec<ExportStream>;
-    /// Accept one batch for `stream`. `payload` is the engine-built batch as an opaque JSON value.
-    /// Default: no-op (a sink that reports streams but drops batches).
-    fn deliver(&self, _stream: ExportStream, _payload: &serde_json::Value) {}
+    /// Accept one batch for `stream` and SAY WHAT HAPPENED TO IT. `payload` is the engine-built batch
+    /// as an opaque JSON value. Return [`ExportAck::Durable`]/[`ExportAck::Received`] only if the sink
+    /// truly took the record; [`ExportAck::Retry`] if it did not. Default: drop the batch and answer
+    /// `Retry`, since a sink that has not implemented `deliver` has taken the record nowhere — the ack
+    /// is relayed to the host and must never overstate what the sink did.
+    fn deliver(&self, _stream: ExportStream, _payload: &serde_json::Value) -> ExportAck {
+        ExportAck::Retry
+    }
     /// The HTTP [`Route`]s this instance serves — its OWN compiled-in declarations, collected once at
     /// load (a metrics sink declares `GET /metrics`). Default: none (a push-only sink has no HTTP
     /// surface). The engine collision-checks + namespace-confines these before mounting.
@@ -900,13 +909,14 @@ pub fn export_abi_version() -> u32 {
 
 /// Run one [`ExportRequest`] against an [`ExportHandler`] — the single op-dispatch match that maps the
 /// wire envelope to the trait, unit-testable without FFI. `Streams` returns the handler's declared
-/// streams; `Deliver` runs the handler's sink and acks with [`ExportResponse::Delivered`].
+/// streams; `Deliver` runs the handler's sink and RELAYS the acknowledgement it answered with in
+/// [`ExportResponse::Delivered`] — the sink's own word, never a constant, so a sink that says `Retry`
+/// says `Retry` on the wire and nothing upward is invented.
 pub fn dispatch_export(handler: &dyn ExportHandler, req: ExportRequest) -> ExportResponse {
     match req {
         ExportRequest::Streams => ExportResponse::Streams(handler.streams()),
         ExportRequest::Deliver { stream, payload } => {
-            handler.deliver(stream, &payload);
-            ExportResponse::Delivered
+            ExportResponse::Delivered(handler.deliver(stream, &payload))
         }
         ExportRequest::Routes => ExportResponse::Routes(handler.routes()),
         ExportRequest::Endpoint { request } => {

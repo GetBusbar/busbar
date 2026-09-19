@@ -2,8 +2,8 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! Coverage for the trivial `kind: export` reference plugin: it declares exactly the `Metrics`
-//! stream, takes the trait's default no-op `deliver`, and `open` accepts any config (including
-//! malformed JSON) since this sink has no configurable shape.
+//! stream, DROPS every batch AND SAYS SO (answering `Retry`), and `open` accepts any config
+//! (including malformed JSON) since this sink has no configurable shape.
 
 use super::*;
 
@@ -27,10 +27,17 @@ fn the_sink_declares_exactly_the_metrics_stream() {
 }
 
 #[test]
-fn deliver_is_the_trait_default_no_op_and_does_not_panic() {
+fn deliver_drops_the_batch_and_honestly_says_retry() {
     let sink = open("").unwrap();
-    // The default `deliver` is a no-op: calling it for the declared stream (and for one it did NOT
-    // declare) must not panic and produces no observable state to assert on beyond "it returned".
-    sink.deliver(ExportStream::Metrics, &serde_json::json!({"n": 1}));
-    sink.deliver(ExportStream::Logs, &serde_json::json!({}));
+    // It is handed a record for the stream it declared and one for a stream it did not, drops BOTH,
+    // and answers `Retry` to each — the only true word for a sink that took the record nowhere.
+    // `Received` would claim the sink HAS it.
+    assert_eq!(
+        sink.deliver(ExportStream::Metrics, &serde_json::json!({"n": 1})),
+        ExportAck::Retry
+    );
+    assert_eq!(
+        sink.deliver(ExportStream::Logs, &serde_json::json!({})),
+        ExportAck::Retry
+    );
 }

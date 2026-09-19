@@ -4,12 +4,21 @@
 //! Tests for `crates/plugin-loader/src/export.rs`.
 
 use super::*;
-use busbar_plugin::cold::{STATUS_OK, STATUS_PANIC, STATUS_UNSUPPORTED};
+use busbar_plugin::cold::{export::ExportAck, STATUS_OK, STATUS_PANIC, STATUS_UNSUPPORTED};
 use std::ffi::c_void;
 
 /// The status the fake `busbar_call` answers the `Routes` op with. `Streams` is always answered
 /// well, so a load that fails can only have failed on the routes query.
 static ROUTES_STATUS: std::sync::Mutex<i32> = std::sync::Mutex::new(STATUS_OK);
+
+/// The acknowledgement the fake `busbar_call` answers `Deliver` with — the test's to choose, so a
+/// cell can drive a sink that REFUSES and watch what the loader makes of it.
+static DELIVER_ACK: std::sync::Mutex<ExportAck> = std::sync::Mutex::new(ExportAck::Received);
+
+/// Every cell in this file drives the ONE fake `busbar_call` through process-global answer knobs,
+/// so they take turns. Held for the whole of each cell, not just the mutation: a cell that set its
+/// answer and then loaded while a sibling was mid-load would read the sibling's.
+static ONE_AT_A_TIME: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// A fake `busbar_call` that answers `Streams` with the empty stream list and `Routes` with
 /// whatever status the test chose. Mimics the plugin side of the allocation contract: the plugin
@@ -41,7 +50,10 @@ unsafe extern "C-unwind" fn fake_call(
         }
         _ => (
             STATUS_OK,
-            serde_json::to_vec(&ExportResponse::Delivered).expect("encode ack"),
+            serde_json::to_vec(&ExportResponse::Delivered(
+                *DELIVER_ACK.lock().unwrap_or_else(|p| p.into_inner()),
+            ))
+            .expect("encode ack"),
         ),
     };
     let boxed: Box<[u8]> = body.into_boxed_slice();
@@ -116,6 +128,7 @@ fn raw_with_fake_call() -> Option<RawPlugin> {
 /// whose gates nobody has heard from. The load fails and names the plugin.
 #[test]
 fn a_panic_on_the_routes_query_fails_the_load() {
+    let _turn = ONE_AT_A_TIME.lock().unwrap_or_else(|p| p.into_inner());
     let Some(raw) = raw_with_fake_call() else {
         eprintln!("skip: export example plugin cdylib not built (run under --workspace)");
         return;
@@ -137,6 +150,7 @@ fn a_panic_on_the_routes_query_fails_the_load() {
 /// existed.
 #[test]
 fn an_unsupported_routes_query_loads_with_no_routes() {
+    let _turn = ONE_AT_A_TIME.lock().unwrap_or_else(|p| p.into_inner());
     let Some(raw) = raw_with_fake_call() else {
         eprintln!("skip: export example plugin cdylib not built (run under --workspace)");
         return;
@@ -148,5 +162,38 @@ fn an_unsupported_routes_query_loads_with_no_routes() {
     assert!(
         sink.routes().is_empty(),
         "a sink that cannot answer the routes op carries no HTTP surface"
+    );
+}
+
+/// A DLOPEN'd SINK THAT REFUSES IS `Retry` THROUGH THE LOADER, and never `Received`.
+///
+/// Red before ABI v3: `deliver` returned `Result<(), String>` and answered `Ok(())` to any
+/// `Delivered` reply, so a sink that took a record and put it nowhere was indistinguishable HERE
+/// from one that took it — the caller was told a delivery happened and had no way to learn
+/// otherwise. The word is now the SINK'S, relayed, and this cell drives both answers through the
+/// same seam so the relay cannot be a constant.
+#[test]
+fn a_dlopend_sink_that_refuses_is_retry_through_the_loader() {
+    let _turn = ONE_AT_A_TIME.lock().unwrap_or_else(|p| p.into_inner());
+    let Some(raw) = raw_with_fake_call() else {
+        eprintln!("skip: the reference sink cdylib is not built (run under --workspace)");
+        return;
+    };
+    let sink = export_from_raw(raw, "fake-call-export").expect("the sink loads");
+
+    *DELIVER_ACK.lock().unwrap_or_else(|p| p.into_inner()) = ExportAck::Retry;
+    let refused = sink.deliver(ExportStream::Metrics, &serde_json::json!({"reqs": 1}));
+    *DELIVER_ACK.lock().unwrap_or_else(|p| p.into_inner()) = ExportAck::Received;
+    let took = sink.deliver(ExportStream::Metrics, &serde_json::json!({"reqs": 1}));
+
+    assert_eq!(
+        refused,
+        Ok(ExportAck::Retry),
+        "a sink that took the record nowhere is Retry all the way up"
+    );
+    assert_eq!(
+        took,
+        Ok(ExportAck::Received),
+        "and a sink that took it is Received, so the relay is not a constant"
     );
 }
