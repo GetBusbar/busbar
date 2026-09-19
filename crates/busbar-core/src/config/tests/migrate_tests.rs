@@ -2925,14 +2925,57 @@ fn malformed_pools_is_never_replaced_by_a_synthesized_one() {
     );
 }
 
+/// The IDENTICAL take-on-match guard exists a second time in `migrate_unified_pools`, on the
+/// `tool_pools:`/`agent_pools:` fold — a malformed `pools:` there must not be silently replaced by a
+/// freshly-synthesized mapping either, and the section that could not be folded must survive
+/// verbatim rather than being consumed and lost. `malformed_pools_is_never_replaced_by_a_synthesized_one`
+/// above only exercises the sibling guard in `migrate_pools_upstream_credentials`; this proves the
+/// second call site independently, since neither guard's test data combines with the other's input.
+#[test]
+fn malformed_pools_is_never_replaced_when_folding_tool_pools() {
+    let out = migrate_config(
+        "pools: not-a-mapping\ntool_pools:\n  search:\n    members: [search-eu]\n\
+         providers: {}\nmodels: {}\n",
+    )
+    .unwrap();
+    let doc: serde_yaml::Value = serde_yaml::from_str(&out.yaml).unwrap();
+    assert_eq!(
+        doc["pools"].as_str(),
+        Some("not-a-mapping"),
+        "the operator's `pools:` was destroyed and replaced with a synthesized mapping: {}",
+        out.yaml
+    );
+    assert_eq!(
+        dig(&doc, &["tool_pools", "search", "members"]),
+        Some(&serde_yaml::from_str::<serde_yaml::Value>("[search-eu]").unwrap()),
+        "`tool_pools:` could not be folded (pools: is malformed) and must survive verbatim rather \
+         than being dropped: {}",
+        out.yaml
+    );
+    assert!(
+        out.todos
+            .iter()
+            .any(|t| t.contains("tool_pools") && t.contains("pools")),
+        "a fold this migrator refuses to perform must say so: {:?}",
+        out.todos
+    );
+}
+
 /// Same take-on-match rule on the `export:` DESTINATION: `export_mut` normalized a non-mapping
 /// `export:` by overwriting it, so an operator's malformed export block was deleted and the
 /// observability keys being lifted into it were taken off `observability:` first — losing both. The
 /// migrator must touch neither and say why.
 #[test]
 fn malformed_export_is_never_replaced_by_a_synthesized_one() {
+    // `request_log_webhook_url` is DELIBERATELY named in the export take-on-match guard's own
+    // hard-coded bail-out sentence (see the assertion on `t.contains("export")` below), so an
+    // assertion that only checks for THAT key would pass even if the observability-residue naming
+    // in `migrate_observability_block` were deleted entirely — the static bail-out text alone
+    // would satisfy it. `some_forward_compat_key` is not mentioned anywhere in that static text, so
+    // finding it in the ledger proves the residue naming is genuinely DYNAMIC (built from what was
+    // actually in the input), not an artifact of the unrelated guard's fixed wording.
     let out = migrate_config(
-        "observability:\n  request_log_webhook_url: https://x.example/log\nexport: not-a-mapping\nproviders: {}\nmodels: {}\n",
+        "observability:\n  request_log_webhook_url: https://x.example/log\n  some_forward_compat_key: s3cr3t-do-not-leak-me\nexport: not-a-mapping\nproviders: {}\nmodels: {}\n",
     )
     .unwrap();
     let doc: serde_yaml::Value = serde_yaml::from_str(&out.yaml).unwrap();
