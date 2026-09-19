@@ -822,12 +822,12 @@ max_hits = 0
 [rules.seal-sites]
 why = """busbar-caps writes down two lists of rules the compiler cannot carry: the hold escapes, \
 scanned above, and the seal sites -- the symbols that decide who may build a capability at all. \
-Its honesty table said CI scanned for both. It scanned for one. The three seal-site symbols are \
+Its honesty table said CI scanned for both. It scanned for one. The four seal-site symbols are \
 the seal every token constructor needs, the recovery token that materialises a hold from a journal \
-record with no admission behind it, and the take that empties a hold cell; each is a crate boundary \
-Rust cannot police, so each is one audited name and this is the scan that audits it. Same shape as \
-hold-escapes and the same code path: literal substrings, `confined_to` scoping, one reviewed \
-known_sites ratchet, over production sources only."""
+record with no admission behind it, the take that empties a hold cell, and the exit-token mint that \
+take call demands; each is a crate boundary Rust cannot police, so each is one audited name and \
+this is the scan that audits it. Same shape as hold-escapes and the same code path: literal \
+substrings, `confined_to` scoping, one reviewed known_sites ratchet, over production sources only."""
 scan_globs = ["crates/*/src"]
 max_sites = 0
 # The reviewed sites, each read before it was written down.
@@ -873,6 +873,16 @@ confined_to = "kernel/src"
 # The scope resolved against this tree, matched as path prefixes.
 confined_to_paths = ["crates/busbar-kernel/src/teller.rs", "crates/busbar-kernel/src/tick.rs"]
 because = "there are three take sites -- the exit path, the sweep and the tick -- and no fourth"
+
+[rules.seal-sites.symbols.exit-token-mint]
+symbol = "ExitToken::mint("
+confined_to = "kernel/src"
+# The scope resolved against this tree, matched as path prefixes.
+confined_to_paths = ["crates/busbar-kernel/src/"]
+because = "the call-site literal above only catches an inline mint; a take whose token was minted \
+           a line earlier -- exactly how the tick's own take site is written -- has no `take(&\
+           ExitToken::mint(` substring at all, so auditing the mint itself is what still catches a \
+           fourth take site anywhere outside the kernel"
 
 # ── 28. plane-no-money ───────────────────────────────────────────────────────────────────────────
 [rules.plane-no-money]
