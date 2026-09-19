@@ -37,7 +37,10 @@ use busbar_api::{
 use super::self_keys::{issue_key, resolve_exchange, DeterministicEd25519Keys, HandleProvisioner};
 use super::ChainVerdict;
 use crate::config::AuthCfg;
-use crate::diagnostics::{diag_debug, diag_warn, LOGIN_OFFLOAD_SATURATED, LOGIN_PLUGIN_PANICKED};
+use crate::diagnostics::{
+    diag_debug, diag_warn, LOGIN_OFFLOAD_SATURATED, LOGIN_PLUGIN_PANICKED,
+    LOGIN_REDIRECT_UNENCODABLE,
+};
 use crate::state::{App, AppHandle};
 
 /// The login-state cookie name. Scoped to `/auth/token` (Path), HttpOnly + Secure + SameSite=Lax.
@@ -428,7 +431,13 @@ async fn begin(app: &App, method: &str, refresh: bool) -> Response {
                 .body(Body::empty())
             {
                 Ok(resp) => resp,
-                Err(_) => {
+                Err(e) => {
+                    diag_warn!(
+                        LOGIN_REDIRECT_UNENCODABLE,
+                        method = %method,
+                        error = %e,
+                        "login redirect URL could not be encoded into a Location header; failing closed"
+                    );
                     return error_page(
                         StatusCode::BAD_GATEWAY,
                         "Sign-in redirect failed",

@@ -760,6 +760,17 @@ An update_key request body did not parse as valid JSON, so busbar returns a gene
 
 **What to do:** None — self-heals; the client must send well-formed JSON. Persistent volume from one caller indicates a broken client worth fixing.
 
+<a id="login-redirect-unencodable"></a>
+### BUSBAR-4030 — Login redirect URL could not be encoded into a Location header (502)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `login-redirect-unencodable`
+
+A login module's begin_login returned an authorize URL containing a byte an HTTP header value cannot carry, so the 302 redirect could not be built. busbar fails closed with a 502 error page rather than panic. This is anonymously reachable (any caller can hit `begin` for any configured method), so a panic here would have been a caller-triggerable crash.
+
+**What to do:** Check the named method's issuer configuration and, if it is a plugin, its begin_login implementation — either is returning a malformed authorize URL.
+
 ## 5xxx — Proxy & routing
 
 <a id="usage-tap-reassembly-cap-exceeded"></a>

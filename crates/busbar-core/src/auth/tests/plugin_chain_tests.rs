@@ -1068,3 +1068,98 @@ fn an_identified_chain_still_caches_the_leading_pass() {
         "an identified chain must still cache both the leading Pass and the Identify"
     );
 }
+
+/// A cacheable module that always `Identify`s, counting how many times it was actually consulted —
+/// the only way to tell a cache HIT (module never called) from a re-verification (module called
+/// again). Mirrors `busbar-unit-auth`'s `Canned` test double for the same regression.
+struct CountingIdentify {
+    calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    ttl_secs: u64,
+}
+impl busbar_api::AuthModule for CountingIdentify {
+    fn name(&self) -> &'static str {
+        "counting-identify-module"
+    }
+    fn authenticate(&self, _candidate: Option<&str>) -> busbar_api::AuthOutcome {
+        self.calls
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        busbar_api::AuthOutcome::Identify(crate::auth::Principal {
+            id: "test:counted".to_string(),
+            name: None,
+            roles: vec![],
+            ttl_secs: Some(self.ttl_secs),
+        })
+    }
+    fn cacheable(&self) -> bool {
+        true
+    }
+}
+
+/// REGRESSION PROOF for `AuthMiddleware::run_chain_cached`'s `was_hit` guard: a cache HIT must NOT
+/// re-`put` the row (which would reset its expiry and let a credential used more often than its own
+/// TTL dodge re-verification forever), while a MISS must still commit so the row is usable at all.
+/// This is `busbar-core`'s own copy of the same `run_chain_cached` logic
+/// `busbar-unit-auth::AuthChain` has (see `cache_tests.rs`'s
+/// `a_hit_does_not_extend_the_row_and_the_module_is_consulted_again_after_the_ttl`) — the two are
+/// hand-duplicated, not shared, so this proves the `busbar-core` copy independently.
+#[test]
+fn a_cache_hit_does_not_extend_the_row_busbar_core() {
+    let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    // TTL and sleep margins are deliberately WIDE. `store::now()` is whole-SECOND granularity (it
+    // truncates), so a tight margin is a flaky test waiting to happen: an insert a hair before a
+    // second boundary can lose up to ~1s of "real" TTL to truncation alone, before any scheduler
+    // jitter from a loaded, parallel `cargo test` run is even in the picture. The margins below
+    // (measured in whole seconds, each several seconds wide) are sized to survive both.
+    const TTL_SECS: u64 = 10;
+    let auth = AuthMiddleware::from_chain_for_test(
+        vec![(
+            "counting-idp".to_string(),
+            Box::new(CountingIdentify {
+                calls: calls.clone(),
+                ttl_secs: TTL_SECS,
+            }) as Box<dyn crate::auth::AuthModule>,
+        )],
+        false,
+    );
+    let cache = crate::auth_cache::CredentialCache::new();
+    let consulted = || calls.load(std::sync::atomic::Ordering::Relaxed);
+
+    // The MISS that admits the row, at real time T0.
+    assert!(matches!(
+        auth.run_chain_cached(Some("cred"), Some(&cache), None, None),
+        ChainVerdict::Identified { .. }
+    ));
+    assert_eq!(consulted(), 1, "a miss must consult the module");
+
+    // A HIT at ~T0+3s — comfortably inside the 10s TTL either way it could be measured, so this
+    // cannot itself be mistaken for an expiry: the module must NOT be consulted.
+    std::thread::sleep(std::time::Duration::from_secs(3));
+    assert!(matches!(
+        auth.run_chain_cached(Some("cred"), Some(&cache), None, None),
+        ChainVerdict::Identified { .. }
+    ));
+    assert_eq!(consulted(), 1, "a hit does not consult the module");
+
+    // Check at ~T0+11.5s: past the ORIGINAL row's expiry (T0+10) by 1.5s, but a full 1.5s short of
+    // what a buggy re-`put` on the hit would have produced (~T0+3+10 = T0+13). Either margin
+    // comfortably absorbs a second's worth of truncation/scheduling slop, so this discriminates the
+    // two behaviors without being a coin flip under load.
+    std::thread::sleep(std::time::Duration::from_millis(8500));
+    let now = busbar_substrate::store::now();
+    assert!(
+        cache.get("counting-idp", "cred", now).is_none(),
+        "a hit must not have extended the row's TTL"
+    );
+
+    // So the credential is sent back to the module, proving the cache is not stuck serving a
+    // verdict past its original TTL.
+    assert!(matches!(
+        auth.run_chain_cached(Some("cred"), Some(&cache), None, None),
+        ChainVerdict::Identified { .. }
+    ));
+    assert_eq!(
+        consulted(),
+        2,
+        "the expired row sent the credential back to the module"
+    );
+}

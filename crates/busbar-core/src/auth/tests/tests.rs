@@ -293,6 +293,13 @@ fn test_keys_in_chain_sets_flag_not_module() {
         mw.chain_names().is_empty(),
         "keys is engine-handled, never a boxed module"
     );
+    // `chain: [keys]` leaves the boxed `chain` empty, but the front door must still read CLOSED:
+    // `is_open()` must not treat "no boxed modules" as "no auth at all" when the keys engine arm is
+    // the thing actually gating admission.
+    assert!(
+        !mw.is_open(),
+        "a keys-only chain has an empty boxed chain but must not report itself open"
+    );
 
     let mw = AuthMiddleware::new_builtin(&crate::config::AuthCfg::default_none());
     assert!(!mw.keys_in_chain, "an empty chain must not claim keys");

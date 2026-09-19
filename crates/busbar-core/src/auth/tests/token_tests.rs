@@ -164,6 +164,44 @@ async fn begin_sets_httponly_secure_cookie_and_redirects() {
     );
 }
 
+/// REGRESSION PROOF: `begin()` must fail CLOSED with a 502 error page, never panic, when the login
+/// module's `begin_login` hands back an authorize URL that cannot be carried in a `Location`
+/// header (here, a raw CR/LF — the exact class of value a misconfigured issuer or a buggy plugin
+/// can return; `begin` is anonymously reachable, so this used to be a caller-triggerable panic via
+/// `.expect("static 302")`).
+#[tokio::test]
+async fn begin_fails_closed_with_502_on_an_unencodable_redirect_url() {
+    let app = crate::test_support::TestApp::new()
+        .public_url("https://busbar.example.com")
+        .login_method(
+            "microsoft",
+            Box::new(TestLogin {
+                authorize_url: "https://idp.example.com/authorize?x=1\r\nSet-Cookie: evil=1".into(),
+                token_url: String::new(),
+            }),
+            Some("REAL-CLIENT-SECRET".into()),
+            None,
+            true,
+        )
+        .build();
+
+    let resp = begin(&app, "microsoft", false).await;
+
+    assert_eq!(
+        resp.status().as_u16(),
+        502,
+        "an unencodable IdP redirect must fail closed with 502, not panic"
+    );
+    assert!(
+        resp.headers().get("location").is_none(),
+        "the error page must not carry the bad Location"
+    );
+    assert!(
+        resp.headers().get("set-cookie").is_none(),
+        "no login cookie is set on the error path"
+    );
+}
+
 // ── callback: state + nonce guards ───────────────────────────────────────────────────────────────
 
 #[tokio::test]
