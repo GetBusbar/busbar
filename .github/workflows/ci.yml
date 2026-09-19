@@ -264,6 +264,17 @@ jobs:
         run: cargo xtask gate duplex-ws-default-edge --selftest
       - name: duplex-ws default-edge gate (no WS in the default money-path closure)
         run: cargo xtask gate duplex-ws-default-edge
+      # NO-TRACKED-IGNORED gate: no path this tree TRACKS may also match one of its own
+      # `.gitignore` rules. A tracked-and-ignored path is a file `git status` will never show as
+      # dirty no matter how it drifts from what is committed, which is the same blind spot every
+      # other gate here assumes does not exist. It was a registered gate NOTHING invoked: present
+      # in the registry, self-testing, and named by no workflow — a gate nothing runs is not a
+      # gate. Wired here (a `git ls-files` read, seconds, no build), self-test first as everywhere
+      # else.
+      - name: no-tracked-ignored self-test
+        run: cargo xtask gate no-tracked-ignored --selftest
+      - name: no-tracked-ignored gate (no tracked path matches this tree's own ignore rules)
+        run: cargo xtask gate no-tracked-ignored
       # CI-UMBRELLA MEMBERSHIP lint: `ci-umbrella` is the ONE required check, and its `needs:` list
       # is the whole of what "CI is green" means. That list is hand-maintained, and a job added
       # without its `needs:` line is invisible to it: the job goes red and the required check reports
