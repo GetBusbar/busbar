@@ -607,7 +607,10 @@ fn legacy_pipe_suffix_lets_an_embedded_pipe_forge_the_readback() {
     // The real outcome/principal ("rejected"/"attacker") were swallowed into `resource` and the
     // forged tail split out as if they were the real outcome/principal.
     assert_eq!(resource, "innocuous");
-    assert_eq!(outcome, "applied", "the forged outcome was read back, not the real one");
+    assert_eq!(
+        outcome, "applied",
+        "the forged outcome was read back, not the real one"
+    );
     // `splitn(5, '|')` stops splitting after the 5th field, so the REAL outcome/principal
     // ("rejected"/"attacker") end up tacked onto the end of the forged principal rather than
     // vanishing — either way, what comes back as `outcome`/`principal` is not what was recorded.
@@ -629,7 +632,10 @@ fn safe_suffix_round_trips_a_pipe_carrying_payload_without_forgery() {
     let (got_ts, action, resource, outcome, principal) = parse_audit_suffix(&suffix);
     assert_eq!(got_ts, ts);
     assert_eq!(action, "hook.register");
-    assert_eq!(resource, forged_resource, "the embedded `|` must not move a boundary");
+    assert_eq!(
+        resource, forged_resource,
+        "the embedded `|` must not move a boundary"
+    );
     assert_eq!(outcome, "rejected");
     assert_eq!(principal, "attacker");
 }

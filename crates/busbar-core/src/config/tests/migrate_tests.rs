@@ -531,7 +531,12 @@ pools: {}
         .todos
         .iter()
         .find(|t| t.contains("totally_unknown_cap"))
-        .unwrap_or_else(|| panic!("unrecognized auth.modules cap must get a todo: {:?}", out.todos));
+        .unwrap_or_else(|| {
+            panic!(
+                "unrecognized auth.modules cap must get a todo: {:?}",
+                out.todos
+            )
+        });
     assert!(
         !todo.contains("s3cr3t-do-not-leak-me"),
         "the todo must name the KEY, never the VALUE (secret leak): {todo:?}"
@@ -559,7 +564,13 @@ pools: {}
     assert_eq!(
         dig(
             &doc,
-            &["auth", "role_bindings", "oidc", "growth-eng", "allowed_pools"]
+            &[
+                "auth",
+                "role_bindings",
+                "oidc",
+                "growth-eng",
+                "allowed_pools"
+            ]
         )
         .and_then(|v| v.as_sequence())
         .map(|s| s.len()),
@@ -571,7 +582,12 @@ pools: {}
         .todos
         .iter()
         .find(|t| t.contains("some_future_cap"))
-        .unwrap_or_else(|| panic!("unrecognized group_map role key must get a todo: {:?}", out.todos));
+        .unwrap_or_else(|| {
+            panic!(
+                "unrecognized group_map role key must get a todo: {:?}",
+                out.todos
+            )
+        });
     assert!(
         !todo.contains("topsecret-value"),
         "the todo must name the KEY, never the VALUE (secret leak): {todo:?}"
@@ -1612,7 +1628,12 @@ fn migrate_observability_unrecognized_key_gets_a_loud_todo_naming_only_the_key()
         .todos
         .iter()
         .find(|t| t.contains("totally_unknown_field"))
-        .unwrap_or_else(|| panic!("unrecognized observability key must get a todo: {:?}", out.todos));
+        .unwrap_or_else(|| {
+            panic!(
+                "unrecognized observability key must get a todo: {:?}",
+                out.todos
+            )
+        });
     assert!(
         !todo.contains("s3cr3t-do-not-leak-me"),
         "the todo must name the KEY, never the VALUE (secret leak): {todo:?}"

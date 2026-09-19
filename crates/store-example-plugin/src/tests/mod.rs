@@ -778,7 +778,8 @@ fn keys_usage_and_metering_written_by_one_handle_are_read_by_a_reopened_handle()
     {
         let h1 = FileStore::open(path.clone()).expect("open handle 1");
         h1.put_key(&key).expect("write the key");
-        h1.put_usage("kum_key", 0, &ledger).expect("write the ledger");
+        h1.put_usage("kum_key", 0, &ledger)
+            .expect("write the ledger");
         h1.add_metering(&metering_delta).expect("write metering");
     } // handle dropped — simulate a restart
 
@@ -789,7 +790,10 @@ fn keys_usage_and_metering_written_by_one_handle_are_read_by_a_reopened_handle()
         .expect("the key SURVIVES the restart");
     assert_eq!(row.name, key.name);
     assert!(
-        h2.list_keys().expect("list").iter().any(|k| k.id == "kum_key"),
+        h2.list_keys()
+            .expect("list")
+            .iter()
+            .any(|k| k.id == "kum_key"),
         "list_keys sees the key too"
     );
     assert_eq!(
