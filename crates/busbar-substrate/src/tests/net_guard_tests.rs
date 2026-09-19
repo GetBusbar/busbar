@@ -118,6 +118,14 @@ fn the_shared_internal_predicate_covers_every_range_any_plane_ever_checked() {
         ("IPv4-MAPPED metadata", "::ffff:169.254.169.254"),
         ("IPv4-COMPATIBLE metadata", "::169.254.169.254"),
         ("IPv4-COMPATIBLE loopback", "::127.0.0.1"),
+        // NAT64 / RFC 6052 `64:ff9b::/96`: the synthesis a DNS64 resolver hands back for an
+        // AAAA-only lookup of an IPv4-only name. Matches neither `to_ipv4()` (mapped/compatible
+        // only) nor any v6 range mask, so a guard that unwraps only `to_ipv4()` judges this an
+        // ordinary public v6 address and connects straight through to IMDS / loopback / a private
+        // target.
+        ("NAT64 metadata (169.254.169.254)", "64:ff9b::a9fe:a9fe"),
+        ("NAT64 loopback (127.0.0.1)", "64:ff9b::7f00:1"),
+        ("NAT64 private 10/8", "64:ff9b::a01:203"),
     ];
     let mut checked = 0usize;
     for (what, spelling) in cases {
@@ -133,7 +141,7 @@ fn the_shared_internal_predicate_covers_every_range_any_plane_ever_checked() {
     // `checked` equals `cases.len()` by construction (one increment per row, no early `continue`),
     // so the anti-shrink guard is a FLOOR on that count, not an equality that could only restate it.
     assert!(
-        checked >= 30,
+        checked >= 33,
         "the shared hostile table shrank; a deleted row is a range every plane silently stopped \
          guarding"
     );
@@ -164,6 +172,37 @@ fn whitespace_padded_metadata_urls_are_still_refused() {
              whitespace the guard must trim and delete the same way"
         );
     }
+}
+
+/// A DNS64-FRONTED RESOLVER MUST NOT BUY AN IMDS HOP. `64:ff9b::/96` (RFC 6052) is the well-known
+/// NAT64 prefix a DNS64 resolver uses to synthesize an AAAA answer for an IPv4-only name on an
+/// IPv6-only network — `64:ff9b::a9fe:a9fe` reaches `169.254.169.254` exactly as surely as the
+/// IPv4-mapped/compatible spellings do. Before the fix this matched neither `to_ipv4()` (mapped and
+/// compatible only) nor any `Ipv6Addr` range predicate, so it fell all the way through
+/// `ssrf_blocked_host`'s IP-literal match arm unrecognized and was ALLOWED.
+#[test]
+fn nat64_synthesized_metadata_and_private_literals_are_recognized() {
+    // Direct IP-literal URL, the same path an operator-supplied `base_url` or a DNS64-answered
+    // upstream host takes once normalized to a literal.
+    assert_eq!(
+        ssrf_blocked_host("https://[64:ff9b::a9fe:a9fe]/", &[], false, &[]).as_deref(),
+        Some("64:ff9b::a9fe:a9fe"),
+        "64:ff9b::a9fe:a9fe is the NAT64 synthesis of the AWS/Azure/GCP IMDS target and must be \
+         refused exactly like ::ffff:169.254.169.254 and ::169.254.169.254 already are"
+    );
+    // An operator's `blocked_metadata_hosts` entry for a private literal must also catch the NAT64
+    // spelling of that same address, the way it already catches the mapped/compatible spellings.
+    assert_eq!(
+        ssrf_blocked_host(
+            "https://[64:ff9b::a01:203]/",
+            &[],
+            false,
+            &["10.1.2.3".to_string()],
+        )
+        .as_deref(),
+        Some("64:ff9b::a01:203"),
+        "64:ff9b::a01:203 is the NAT64 synthesis of the operator-blocked 10.1.2.3 literal"
+    );
 }
 
 /// The CONTROL for the trim: whitespace INSIDE a host (not at either end of the input, and not one
@@ -225,6 +264,7 @@ fn cloud_metadata_is_judged_separately_and_covers_every_vendor() {
         "fd00:ec2::254",   // EC2 IMDSv6
         "::ffff:169.254.169.254",
         "::169.254.169.254",
+        "64:ff9b::a9fe:a9fe", // NAT64/RFC 6052 synthesis of 169.254.169.254
     ] {
         let ip: IpAddr = meta.parse().expect(meta);
         assert!(

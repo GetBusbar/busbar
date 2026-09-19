@@ -149,7 +149,10 @@ pub fn ipv6_is_internal(v6: &Ipv6Addr) -> bool {
     if v6.is_loopback() {
         return true;
     }
-    if let Some(v4) = v6.to_ipv4() {
+    // `embedded_ipv4` (not the narrower `to_ipv4()`) so a NAT64/RFC 6052 `64:ff9b::/96` synthesized
+    // address is judged by the IPv4 target it actually reaches, not left to fall through to the
+    // v6 range checks below, none of which cover that prefix.
+    if let Some(v4) = embedded_ipv4(v6) {
         return ipv4_is_internal(&v4);
     }
     v6.is_unspecified() || v6.is_multicast() || is_unique_local_v6(v6) || is_link_local_v6(v6)
@@ -189,7 +192,11 @@ pub fn ip_is_cloud_metadata(addr: &IpAddr) -> bool {
     match addr {
         IpAddr::V4(v4) => is_metadata_v4(v4),
         IpAddr::V6(v6) => {
-            if let Some(v4) = v6.to_ipv4() {
+            // `embedded_ipv4`, not `to_ipv4()`: a DNS64 resolver answering with the NAT64/RFC 6052
+            // `64:ff9b::/96` synthesis of an IMDS literal (e.g. `64:ff9b::a9fe:a9fe` for
+            // `169.254.169.254`) reaches the metadata endpoint exactly as surely as the mapped or
+            // compatible forms do, and matches neither.
+            if let Some(v4) = embedded_ipv4(v6) {
                 return is_metadata_v4(&v4);
             }
             // IMDSv6.
@@ -246,6 +253,43 @@ pub fn is_link_local_v6(addr: &Ipv6Addr) -> bool {
 pub fn is_cgnat_shared_v4(v4: &Ipv4Addr) -> bool {
     let o = v4.octets();
     o[0] == 100 && (o[1] & 0xC0) == 64
+}
+
+/// Unwrap an embedded IPv4 target from an IPv6 literal or resolved answer, covering EVERY form a
+/// connecting stack still routes to an IPv4 destination.
+///
+/// `Ipv6Addr::to_ipv4()` only recognises the IPv4-MAPPED (`::ffff:a.b.c.d`) and IPv4-COMPATIBLE
+/// (`::a.b.c.d`) forms. It does NOT recognise NAT64 / RFC 6052 `64:ff9b::/96` — the well-known
+/// prefix a DNS64 resolver uses to synthesize an AAAA answer for an IPv4-only name on a
+/// NAT64/DNS64 network (common on IPv6-only cellular and enterprise egress). A hostile or
+/// rebinding resolver behind DNS64 answers a AAAA query for its name with `64:ff9b::a9fe:a9fe` —
+/// the IMDS target `169.254.169.254` re-encoded — and that address matches NONE of `to_ipv4()`,
+/// NONE of the unique-local/link-local/multicast v6 range checks, and so a guard that unwraps only
+/// `to_ipv4()` judges it as an ordinary public v6 address and connects. This is the SAME class of
+/// bug the mapped-vs-compatible unwrap already guards against in [`ipv6_is_internal`] and
+/// [`ip_is_cloud_metadata`]; NAT64 is a third embedding, not a different problem.
+///
+/// Called BEFORE any IMDS / link-local / private judgement is made, exactly like `to_ipv4()` is,
+/// so the embedded address is what gets judged rather than the (harmless-looking) v6 wrapper.
+pub fn embedded_ipv4(v6: &Ipv6Addr) -> Option<Ipv4Addr> {
+    if let Some(v4) = v6.to_ipv4() {
+        return Some(v4);
+    }
+    // `64:ff9b::/96`: the fixed top 96 bits are the segments below; the low 32 bits (the last two
+    // u16 segments) are the embedded IPv4 address, byte for byte.
+    let seg = v6.segments();
+    if seg[0] == 0x0064
+        && seg[1] == 0xff9b
+        && seg[2] == 0
+        && seg[3] == 0
+        && seg[4] == 0
+        && seg[5] == 0
+    {
+        let [a, b] = seg[6].to_be_bytes();
+        let [c, d] = seg[7].to_be_bytes();
+        return Some(Ipv4Addr::new(a, b, c, d));
+    }
+    None
 }
 
 /// True when `host` is an alternate (non-dotted-quad) IPv4 encoding that `IpAddr::from_str` rejects
@@ -1032,7 +1076,9 @@ pub fn host_is_private_or_loopback(host: &str) -> bool {
                 || is_cgnat_shared_v4(&v4) // 100.64.0.0/10 (RFC 6598 CGNAT, Tailscale)
         }
         Ok(IpAddr::V6(v6)) => {
-            let embedded = v6.to_ipv4();
+            // `embedded_ipv4` covers NAT64/RFC 6052 `64:ff9b::/96` in addition to the mapped and
+            // compatible forms `to_ipv4()` alone recognises.
+            let embedded = embedded_ipv4(&v6);
             v6.is_loopback()        // ::1
                 || v6.is_unspecified() // ::
                 || is_unique_local_v6(&v6) // fc00::/7
@@ -1097,7 +1143,9 @@ fn host_matches_any(host: &str, entries: &[String]) -> bool {
     match host.parse::<IpAddr>() {
         Ok(IpAddr::V4(v4)) => entry_v4.contains(&v4),
         Ok(IpAddr::V6(v6)) => {
-            let embedded = v6.to_ipv4();
+            // `embedded_ipv4` also matches a NAT64/RFC 6052 `64:ff9b::/96` spelling of an entry's
+            // IPv4 literal, so an allow/block entry unblocks or blocks that spelling too.
+            let embedded = embedded_ipv4(&v6);
             entry_v6.contains(&v6) || embedded.is_some_and(|m| entry_v4.contains(&m))
         }
         Err(_) => false,
@@ -1317,8 +1365,10 @@ pub fn ssrf_blocked_host(
         Ok(IpAddr::V6(v6)) => {
             // An IPv6 literal embedding an IPv4 address reaches the same v4 target as the bare form,
             // so apply the IDENTICAL metadata predicate to the embedded v4 (covers `[::ffff:a.b.c.d]`
-            // mapped AND `[::a.b.c.d]` compatible via `to_ipv4()`).
-            let embedded = v6.to_ipv4();
+            // mapped, `[::a.b.c.d]` compatible, AND `64:ff9b::a.b.c.d` NAT64/RFC 6052 — the DNS64
+            // synthesis of an IMDS literal a DNS64-fronted resolver hands back — via
+            // [`embedded_ipv4`], not the narrower `to_ipv4()`).
+            let embedded = embedded_ipv4(&v6);
             v6 == imds_v6 || embedded.is_some_and(|m| is_metadata_v4(&m))
         }
         Err(_) => false,
