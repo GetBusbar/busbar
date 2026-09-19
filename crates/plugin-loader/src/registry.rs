@@ -53,11 +53,11 @@ pub fn supported_abi(kind: &str) -> &'static [u32] {
         // plugin is COMPILED against, not a byte on the wire, so a v2 artifact keeps behaving exactly
         // as it did under 1.5.5. Raising this floor refuses every published store plugin at load.
         "store" => &[STORE_ABI_FLOOR, busbar_plugin::cold::ABI_VERSION],
-        // A `kind: secret` plugin resolves a secret reference's settings to bytes.
-        "secret" => &[
-            busbar_plugin::cold::SECRET_ABI_VERSION,
-            busbar_plugin::cold::SECRET_ABI_VERSION,
-        ],
+        // A `kind: secret` plugin resolves a secret reference's settings to bytes. Payload schema v1
+        // (1.5.5) OR v2 (the 1.6.0 additive bump). The FLOOR MUST STAY 1: the v2 additions are
+        // externally-tagged with no `deny_unknown_fields`, so a published v1 secret plugin still
+        // loads and answers. `[1, SECRET_ABI_VERSION]` = `[1, 2]`.
+        "secret" => &[1, busbar_plugin::cold::SECRET_ABI_VERSION],
         // A `kind: auth` plugin is a first-class identity provider (the engine's auth chain consumes
         // `Box<dyn AuthModule>` via `open_auth`). Payload schema v1 (verify-only) OR v2 (adds the
         // browser-login primitives). The FLOOR MUST STAY 1: the v2 wire additions are
@@ -66,20 +66,18 @@ pub fn supported_abi(kind: &str) -> &'static [u32] {
         "auth" => &[1, busbar_plugin::cold::AUTH_ABI_VERSION],
         // A `kind: hook` plugin is an in-process routing policy (the engine's routing/hook chains
         // consume `Arc<dyn RoutingPolicy>` via `open_hook`). The 1.5.0 replacement for the retired
-        // out-of-process socket/webhook hook transport. Payload schema v1.
-        "hook" => &[
-            busbar_plugin::cold::hook::HOOK_ABI_VERSION,
-            busbar_plugin::cold::hook::HOOK_ABI_VERSION,
-        ],
+        // out-of-process socket/webhook hook transport. Payload schema v1 (1.5.5) OR v2 (the 1.6.0
+        // additive bump). The FLOOR MUST STAY 1: the v2 additions are externally-tagged with no
+        // `deny_unknown_fields`, so a published v1 hook still loads. `[1, HOOK_ABI_VERSION]` = `[1, 2]`.
+        "hook" => &[1, busbar_plugin::cold::hook::HOOK_ABI_VERSION],
         // A `kind: export` plugin is a telemetry sink the engine's observability seam feeds
         // (`open_export`). Payload schema v2 (`streams`/`deliver`): 1.5.3 expanded the stream
         // vocabulary and REMOVED `audit` — an auditor is a projection made of other streams, not a
         // data type of its own — so a v1 sink that declared `audit` no longer has a stream to
-        // declare, and v1 is not accepted here.
-        "export" => &[
-            busbar_plugin::cold::export::EXPORT_ABI_VERSION,
-            busbar_plugin::cold::export::EXPORT_ABI_VERSION,
-        ],
+        // declare, and v1 is not accepted here. v3 is the 1.6.0 additive bump. THE FLOOR STAYS 2: a
+        // published v2 sink still loads and delivers (the v3 additions are additive, no token
+        // removed), while v1 remains refused. `[2, EXPORT_ABI_VERSION]` = `[2, 3]`.
+        "export" => &[2, busbar_plugin::cold::export::EXPORT_ABI_VERSION],
         // A `kind: plane` plugin is a protocol plane delivered as a `cdylib` and driven over the
         // HOT-tier `#[repr(C)]` `PlaneDecl` vtable (`busbar_plugin::hot`) — NOT the six-symbol JSON
         // `call` wire the five cold kinds share. Its per-kind PAYLOAD axis is the AIRLOCK MINOR

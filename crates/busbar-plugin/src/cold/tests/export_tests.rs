@@ -162,11 +162,12 @@ fn response_json_roundtrip() {
     }
 }
 
-/// The export payload schema is at v2 (1.5.3, the projection grammar: expanded vocabulary,
-/// `audit` removed) — pinned so the SDK/loader floor and the wire cannot drift.
+/// The export payload schema is at v3 (the 1.6.0 additive bump atop 1.5.3's projection grammar,
+/// which expanded the vocabulary and removed `audit`) — pinned so the SDK/loader floor and the wire
+/// cannot drift.
 #[test]
-fn export_abi_version_is_two() {
-    assert_eq!(EXPORT_ABI_VERSION, 2);
+fn export_abi_version_is_three() {
+    assert_eq!(EXPORT_ABI_VERSION, 3);
 }
 
 /// The HTTP-endpoint ops (`routes`/`http_endpoint`) round-trip and carry the stable op tags — the

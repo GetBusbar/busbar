@@ -492,12 +492,12 @@ fn export_default_handle_http_is_404() {
 /// coincidental literal) and is pinned at v2 (1.5.3 — the projection grammar: expanded stream
 /// vocabulary, `audit` removed).
 #[test]
-fn export_abi_version_reads_the_shared_const_and_is_two() {
+fn export_abi_version_reads_the_shared_const_and_is_three() {
     assert_eq!(
         export_abi_version(),
         busbar_plugin::cold::export::EXPORT_ABI_VERSION
     );
-    assert_eq!(export_abi_version(), 2);
+    assert_eq!(export_abi_version(), 3);
 }
 
 fn mem_ctor(_cfg: &str) -> Result<BoxedStore, String> {
@@ -856,10 +856,10 @@ fn auth_abi_version_reads_the_shared_const() {
     assert_eq!(auth_abi_version(), busbar_plugin::cold::AUTH_ABI_VERSION);
 }
 
-/// Pin the auth payload schema at v2 (1.5.2 login primitives) — the SDK builds v2.
+/// Pin the auth payload schema at v3 (the 1.6.0 additive bump) — the SDK builds v3.
 #[test]
-fn auth_abi_version_is_two() {
-    assert_eq!(auth_abi_version(), 2);
+fn auth_abi_version_is_three() {
+    assert_eq!(auth_abi_version(), 3);
 }
 
 // ── ABI v2 login dispatch (SDK server side) ────────────────────────────────────────────────

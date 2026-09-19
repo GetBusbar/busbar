@@ -69,15 +69,16 @@ fn panicking_plugin_returns_status_panic_with_a_body() {
 /// The compile-time half: the version the window is BUILT from. `supported_abi` itself matches on a
 /// `&str` kind and so cannot be a `const fn`, but the constant it reads can be pinned here, and a
 /// change to it fails the build rather than a test.
-const _: () = assert!(busbar_plugin::cold::export::EXPORT_ABI_VERSION == 2);
+const _: () = assert!(busbar_plugin::cold::export::EXPORT_ABI_VERSION == 3);
 
-/// The runtime half: the window `export` actually resolves to is exactly `[2, 2]` — no v1 sink is
-/// accepted, and the floor and ceiling are the same single version.
+/// The runtime half: the window `export` actually resolves to is exactly `[2, 3]` — the 1.6.0
+/// additive bump keeps the floor at 2 (a published v2 sink still loads) while admitting v3; v1, which
+/// declared the removed `audit` stream, is still refused.
 #[test]
-fn export_abi_window_is_v2_only() {
+fn export_abi_window_is_v2_to_v3() {
     assert_eq!(
         crate::registry::supported_abi("export"),
-        &[2, 2],
-        "the export payload schema is v2 (1.5.3 removed the `audit` stream); a v1 sink must not load"
+        &[2, 3],
+        "export window is [2, 3]: v2 (1.5.3, `audit` removed) and v3 (1.6.0 additive) load; v1 must not"
     );
 }

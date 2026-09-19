@@ -32,10 +32,13 @@ use serde::{Deserialize, Serialize};
 
 /// The hook-plugin PAYLOAD schema version (the signed manifest's `abi_version` for `kind: hook`).
 /// v1 (1.5.0): the op-discriminated `decide`/`transform`/`notify`/`configure`/`describe`/`status`
-/// envelope lifted verbatim from the retired socket/webhook wire. This is the per-kind PAYLOAD axis,
-/// NOT the transport axis — a hook plugin exports the SAME six neutral symbols ([`crate::cold::symbol`]) as
-/// every other kind, at `busbar_abi() == TRANSPORT_VERSION`.
-pub const HOOK_ABI_VERSION: u32 = 1;
+/// envelope lifted verbatim from the retired socket/webhook wire. v2 (1.6.0): an ADDITIVE bump —
+/// the op-discriminated envelope grows new optional fields/ops on the same externally-tagged wire, so
+/// a published v1 hook still loads and answers and the loader floor stays `[1, HOOK_ABI_VERSION]` =
+/// `[1, 2]`. This is the per-kind PAYLOAD axis, NOT the transport axis — a hook plugin exports the
+/// SAME six neutral symbols ([`crate::cold::symbol`]) as every other kind, at
+/// `busbar_abi() == TRANSPORT_VERSION`.
+pub const HOOK_ABI_VERSION: u32 = 2;
 
 /// A hook operation, serialized as the `call` request payload. One self-describing enum keeps the C
 /// ABI to a single `call` symbol; the variant is the op-code. Mirrors the retired socket/webhook wire

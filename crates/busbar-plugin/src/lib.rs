@@ -70,16 +70,13 @@ pub const ABI_MAJOR: u32 = 1;
 /// new reserved `#[repr(u8)]` variant, a new trailing vtable slot). A newer minor is compatible with
 /// an older one BY the sized-struct discipline: the older peer never reads the newer trailing bytes.
 ///
-/// 19→20 (1.6.0 M1): the append-only `hot::Usage` keyed-unit tail (`units_ptr`/`units_len`), paired
-/// with `POD_VERSION` 2→3. `check_preamble` still accepts an older minor (append-only compatibility).
-///
-/// 20→21 (1.6.0, ABI review A6): the HOT-lane `hot::host::HostCtx` gains a `generation` stamp + `kind`
-/// tag (it becomes a `#[repr(C)]` opaque handle instead of a bare `*mut c_void`), so the host rejects a
-/// stale host handle at slot entry instead of dereferencing it (a use-after-free guard). Append-only on
-/// the NEW-in-1.6.0 hot plane/transport ABI (no 1.5.5 byte-identity constraint, nothing on the money
-/// JSON path); the version-locked planes rebuild in lockstep. `check_preamble` still accepts an older
-/// minor (append-only compatibility).
-pub const ABI_MINOR: u32 = 21;
+/// New in 1.6.0: the hot plane/transport airlock is a 1.6.0-only surface (no 1.5.5 byte-identity
+/// constraint, nothing on the money JSON path), so its in-development minor churn is reset to the
+/// 1.6.0 baseline of 1. The append-only additions this cycle — the `hot::Usage` keyed-unit tail
+/// (`units_ptr`/`units_len`, paired with `POD_VERSION`) and the `hot::host::HostCtx`
+/// `generation`+`kind` opaque-handle guard — ship AT this baseline; the version-locked planes rebuild
+/// in lockstep. `check_preamble` still accepts an older minor (append-only compatibility).
+pub const ABI_MINOR: u32 = 1;
 
 /// The FROZEN-FOR-ALL-TIME ABI header. This exact layout — `magic` at offset 0, `abi_major` at 8,
 /// `abi_minor` at 12 — is a permanent contract: it may NEVER be reordered, resized, extended, or

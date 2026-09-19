@@ -199,10 +199,12 @@ fn get_usage_from_an_abi_2_store_reads_the_1_5_5_tier_row() {
 /// unit-map schema and above take the current one.
 #[test]
 fn the_legacy_wire_covers_exactly_the_schemas_below_the_unit_map() {
-    assert_eq!(UNIT_MAP_ABI, 4, "the unit map landed at payload schema 4");
+    assert_eq!(UNIT_MAP_ABI, 3, "the unit map landed at payload schema 3");
     assert!(needs_legacy_usage_wire(2), "every published 1.5.x store");
-    assert!(needs_legacy_usage_wire(3));
-    assert!(!needs_legacy_usage_wire(4));
+    assert!(
+        !needs_legacy_usage_wire(3),
+        "the 1.6.0 store schema speaks the unit map"
+    );
     assert!(!needs_legacy_usage_wire(busbar_plugin::cold::ABI_VERSION));
 }
 

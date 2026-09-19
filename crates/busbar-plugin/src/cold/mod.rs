@@ -147,29 +147,28 @@ pub mod kind {
 /// eight new verbs are ones a v2 plugin answers with `STATUS_UNSUPPORTED`, which `DynStore` treats
 /// as "this plugin has no durable plane" (inert), the same way 1.5.5 treated a missing denylist.
 ///
-/// v3 -> v4 (1.7.0, plane record-type relocation): the four protocol-named durable record structs
-/// (`McpCallRecord`/`McpDemotionRow`/`TaskRow`/`TaskEventRow`) are REMOVED from `busbar-api` and
-/// relocated into their owning plane crates (busbar-mcp / busbar-a2a). The WIRE is unchanged — still
-/// the eight kind-tagged neutral `PlaneRecord` variants carrying opaque bodies — but a plugin built
-/// against the 1.6 typed `busbar-api` contract can no longer be built against 1.7, since the record
-/// types it linked against no longer live in `busbar-api`. That is a break on the SOURCE contract a
-/// plugin author compiles against, not on the bytes the engine exchanges with an already-built
-/// artifact.
+/// v3 -> v4 (1.7.0, plane record-type relocation): DEFERRED to 1.7.0 — the four protocol-named
+/// durable record structs (`McpCallRecord`/`McpDemotionRow`/`TaskRow`/`TaskEventRow`) move out of
+/// `busbar-api` into their owning plane crates (busbar-mcp / busbar-a2a). The WIRE is unchanged
+/// (still the eight kind-tagged neutral `PlaneRecord` variants carrying opaque bodies), but a plugin
+/// built against the 1.6 typed `busbar-api` contract can no longer be built against 1.7, since the
+/// record types it linked against no longer live in `busbar-api`. That is a break on the SOURCE
+/// contract a plugin author compiles against, not on the bytes the engine exchanges with an
+/// already-built artifact — a MAJOR-version boundary, which is why it does NOT land in 1.6.0 and this
+/// binary's `ABI_VERSION` is 3, not 4. The abi-4 forward-load returns in 1.7.0.
 ///
-/// v4 (no bump, plane-record sidecar on the wire): `UpsertPlaneRecord`/`AppendPlaneRecord` gained the
-/// `ts` and `disposition` sidecar columns (and append its child `id`), so a store behind this ABI can
-/// run the retention sweep the trait's contract promises instead of reconstituting every record at
-/// ts 0 / `Active`. This is the ADDITIVE case this constant's rule names, so the version does NOT
-/// move: the new fields are `#[serde(default)]`, so an older engine's request that omits them still
-/// decodes (at the same neutral values the receiver used to hard-code), and serde ignores unknown
-/// fields, so the enriched request still decodes in a plugin built before they existed. Nothing is
-/// refused in either direction, and the `supported_abi` range is unchanged.
+/// The plane-record sidecar columns (`ts`/`disposition` on `UpsertPlaneRecord`/`AppendPlaneRecord`,
+/// plus append's child `id`) are ADDITIVE and DO NOT move the version: the new fields are
+/// `#[serde(default)]`, so an older engine's request that omits them still decodes (at the same
+/// neutral values the receiver used to hard-code), and serde ignores unknown fields, so the enriched
+/// request still decodes in a plugin built before they existed. Nothing is refused in either
+/// direction, and the `supported_abi` range is unchanged.
 ///
-/// Because v3 and v4 never changed what a v2 artifact is asked or how it answers, the engine's
-/// `supported_abi` range for `store` is `[2, ABI_VERSION]` (see `plugin-loader`'s
+/// Because v3 never changed what a v2 artifact is asked or how it answers, the engine's
+/// `supported_abi` range for `store` is `[2, ABI_VERSION]` = `[2, 3]` (see `plugin-loader`'s
 /// `STORE_ABI_FLOOR`): every published first-party store plugin (sqlite/postgres/mysql/valkey,
 /// all `abi_version: 2`) keeps loading and behaves exactly as it did under 1.5.5. Only v1 is refused.
-pub const ABI_VERSION: u32 = 4;
+pub const ABI_VERSION: u32 = 3;
 
 /// The exported-symbol names the engine resolves after `dlopen`/`LoadLibrary`. A plugin of ANY kind
 /// MUST export all SIX with these exact (kind-NEUTRAL) names and the signatures in the `*Fn` type
@@ -575,9 +574,12 @@ pub enum StoreResponse {
 // which engine seam consumes it) differs.
 
 /// The secret-plugin PAYLOAD schema version (the signed manifest's `abi_version` for `kind: secret`).
-/// v1 (1.5.0): the initial `Resolve` wire. This is the per-kind payload axis, NOT the transport axis
-/// — a secret plugin exports the SAME six neutral symbols ([`symbol`]) as every other kind.
-pub const SECRET_ABI_VERSION: u32 = 1;
+/// v1 (1.5.0): the initial `Resolve` wire. v2 (1.6.0): an ADDITIVE bump — the request/response enums
+/// are externally tagged with no `deny_unknown_fields`, so a published v1 secret plugin still loads
+/// and answers, and the loader floor stays `[1, SECRET_ABI_VERSION]` = `[1, 2]`. This is the per-kind
+/// payload axis, NOT the transport axis — a secret plugin exports the SAME six neutral symbols
+/// ([`symbol`]) as every other kind.
+pub const SECRET_ABI_VERSION: u32 = 2;
 
 /// The auth-plugin PAYLOAD schema version (the signed manifest's `abi_version` for `kind: auth`).
 /// v1 (1.5.0): the initial wire. Named the same way `SECRET_ABI_VERSION` and `hook::HOOK_ABI_VERSION`
@@ -591,9 +593,13 @@ pub const SECRET_ABI_VERSION: u32 = 1;
 /// [`auth::AuthResponse::AuthorizeUrl`]/[`auth::AuthResponse::TokenExchange`]. `AuthRequest`/
 /// `AuthResponse` are externally-tagged with NO `deny_unknown_fields`, so the new variants are
 /// wire-additive: a v1 plugin that only ever emits `Authenticate`/`Identity` is unaffected, and the
-/// loader floor stays `[1, 2]` (v1 plugins still load). Bumping the const value is the v2
-/// declaration; the identity-only `Identity` invariant (its own `deny_unknown_fields`) is untouched.
-pub const AUTH_ABI_VERSION: u32 = 2;
+/// loader floor stays `[1, AUTH_ABI_VERSION]` (v1 plugins still load). Bumping the const value is the
+/// v2 declaration; the identity-only `Identity` invariant (its own `deny_unknown_fields`) is untouched.
+///
+/// v3 (1.6.0): an ADDITIVE bump on the same externally-tagged, no-`deny_unknown_fields` wire, so a
+/// published v1 (verify-only) OR v2 (login-capable) auth plugin still loads and works; the loader
+/// window is `[1, AUTH_ABI_VERSION]` = `[1, 3]`.
+pub const AUTH_ABI_VERSION: u32 = 3;
 
 /// A [`busbar_api::SecretModule`] operation, serialized as the secret `call` request payload.
 #[derive(Debug, Serialize, Deserialize)]
