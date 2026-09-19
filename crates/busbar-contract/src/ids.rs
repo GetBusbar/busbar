@@ -143,6 +143,18 @@ impl PrincipalId {
         Self(id.into())
     }
 
+    /// The anonymous principal: the kernel's own, carried by an unauthenticated handshake round.
+    ///
+    /// A challenge round has no established identity, yet it must still face the `approve`
+    /// hook-veto seat and the `admit` frozen-group check — a handshake that walked past both would
+    /// be an unauthenticated path around the node's policy. Those seats decide about a principal, so
+    /// the round needs one to present, and this is it. It has no bucket, so it draws against no
+    /// budget; it exists only to give the policy seats a subject to answer about.
+    #[must_use]
+    pub fn anonymous() -> Self {
+        Self(String::from("anonymous"))
+    }
+
     /// The identity as the audit row prints it.
     #[must_use]
     pub fn as_str(&self) -> &str {
@@ -442,5 +454,21 @@ impl Registration {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.interned.is_empty()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PrincipalId;
+
+    /// The anonymous principal is a stable, nameable identity the handshake seats can present.
+    ///
+    /// A challenge round has to hand the approve and admit seats a principal even though no
+    /// identity has been established; this is the one it hands them, and it prints the same way
+    /// every time so an audit row of a refused handshake reads consistently.
+    #[test]
+    fn the_anonymous_principal_is_stable_and_named() {
+        assert_eq!(PrincipalId::anonymous().as_str(), "anonymous");
+        assert_eq!(PrincipalId::anonymous(), PrincipalId::anonymous());
     }
 }

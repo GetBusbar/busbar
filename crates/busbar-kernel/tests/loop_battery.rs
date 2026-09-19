@@ -92,8 +92,10 @@ fn the_verify_step_seals_the_destinations_the_later_steps_read() {
 }
 
 /// A challenge round is a handshake unit: the authenticate step answers "one more round" rather
-/// than an identity, so verify, approve and admit are never asked and no reservation is opened.
-/// The design says the step's decision may yield a challenge; this is what the loop does with one.
+/// than an identity, so it reaches no destination and opens no reservation. `verify` is skipped —
+/// there is no principal whose destinations could be sealed — but `approve` and `admit` are still
+/// asked, against the anonymous principal, because a hook-veto or a frozen group must be able to
+/// refuse the exchange itself. What a challenge does NOT do is verify, hold or draw a lease.
 #[test]
 fn a_challenge_round_reaches_no_destination_and_opens_no_reservation() {
     let kernel = Kernel::new();
@@ -111,17 +113,57 @@ fn a_challenge_round_reaches_no_destination_and_opens_no_reservation() {
             StepName::Arrival,
             StepName::Decode,
             StepName::Authenticate,
+            StepName::Approve,
+            StepName::Admit,
             StepName::Route,
             StepName::Meter,
             StepName::Audit,
             StepName::Encode,
         ],
-        "a challenge settles nothing about where the unit may go or whether it may be admitted"
+        "a challenge skips verify but still faces the approve and admit policy seats"
     );
     assert!(
         matches!(ended, Ended::Settled { .. }),
         "the round still ends once, through the one exit"
     );
+}
+
+/// A challenge round still faces the two policy seats that decide whether the node will engage.
+///
+/// `approve` is the hook-veto seat and `admit` is the frozen-group check. A challenge is
+/// unauthenticated and reaches no destination, but skipping these two was an unauth path straight
+/// around the node's own policy: a hook that would veto the exchange, or a frozen group that would
+/// refuse it, never got asked. Now the round presents the anonymous principal at both, so a refusal
+/// at either stops the handshake exactly as it would stop an authenticated unit.
+#[test]
+fn a_challenge_round_still_faces_the_hook_veto_and_the_frozen_group() {
+    for (step, reason) in [
+        (StepName::Approve, ReasonCode::HookVeto),
+        (StepName::Admit, ReasonCode::GroupFrozen),
+    ] {
+        let kernel = Kernel::new();
+        let units = TestUnits {
+            challenge: true,
+            refuse_at: Some((step, reason)),
+            ..TestUnits::passing()
+        };
+        let cell = cell(&kernel);
+        let canary = Canary::new();
+        let ended = run(&units, &kernel, &cell, &canary);
+
+        assert!(
+            units.called().contains(&step),
+            "the challenge round never reached {step}"
+        );
+        match ended {
+            Ended::Settled { end, .. } => assert_eq!(
+                end.outcome(),
+                Outcome::Refused(step, reason),
+                "a challenge refused at {step} must not settle as anything else"
+            ),
+            other => panic!("expected a settled refusal at {step}, got {other:?}"),
+        }
+    }
 }
 
 #[test]
@@ -759,15 +801,15 @@ fn two_capped_groups_are_two_leases_while_the_unit_flies_and_none_after() {
 /// A unit that never reaches the door draws nothing, and neither does an exempt one.
 ///
 /// Three units that must not raise the gauge, for three different reasons: a challenge round, which
-/// is a handshake and never reaches the door at all; a tick, which moves no money; and a unit whose
-/// every destination is a kernel verb, which is what makes the administrative surface answer while
-/// the rest of the node is capped out. A gauge these three raised would be a node that stopped
-/// admitting because of the very units that are meant to keep it reachable.
+/// faces the door's policy seats but opens no reservation, so it holds nothing to count; a tick,
+/// which moves no money; and a unit whose every destination is a kernel verb, which is what makes
+/// the administrative surface answer while the rest of the node is capped out. A gauge these three
+/// raised would be a node that stopped admitting because of the very units that keep it reachable.
 #[test]
 fn a_challenge_a_tick_and_a_kernel_verb_unit_draw_no_lease() {
     for (name, units, unit_ctx) in [
         (
-            "a challenge round never reaches the door",
+            "a challenge round opens no reservation and draws no lease",
             TestUnits {
                 challenge: true,
                 ..TestUnits::passing()

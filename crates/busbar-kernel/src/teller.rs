@@ -815,8 +815,42 @@ fn open_to_door<U: Units>(
         // handshake unit — it reaches no destination, is scoped against nothing and opens no
         // reservation, which is exactly the zero-hold admission. Only an established identity walks
         // on to verify.
+        //
+        // But "reaches no destination" is not "faces no policy". A challenge round is still a unit
+        // the node is about to run one more round of, so it still passes the approve hook-veto seat
+        // and the admit frozen-group check — the two seats that decide whether the node will engage
+        // at all, as opposed to where. Skipping them was an unauthenticated path straight around the
+        // node's own policy: a hook that would veto the exchange, or a frozen group that would refuse
+        // it, never got asked. The round has no principal to present, so it presents the anonymous
+        // one over no destination; it admits at zero hold whatever the door sized, because a
+        // challenge opens no reservation, and it draws no lease for the same reason.
         .and_then(|authenticated| match authenticated {
-            Authenticated::Challenge(_) => Ok(Admission::ZeroHold),
+            Authenticated::Challenge(_) => {
+                let anonymous = PrincipalId::anonymous();
+                let destinations: Vec<VerifiedDestination> = Vec::new();
+                units
+                    .approve(
+                        &UnitToken::<Approve>::mint(seal),
+                        ctx,
+                        &anonymous,
+                        &destinations,
+                    )
+                    .into_result(seal)
+                    .and_then(|_| {
+                        let groups = GroupLeaseSlip::new();
+                        units
+                            .admit(
+                                &UnitToken::<Admit>::mint(seal),
+                                &AdmitToken::<Admit>::mint(seal),
+                                ctx,
+                                &anonymous,
+                                &destinations,
+                                &groups,
+                            )
+                            .into_result(seal)
+                    })
+                    .map(|_admitted| Admission::ZeroHold)
+            }
             Authenticated::Principal(principal) => units
                 .verify(
                     &UnitToken::<Verify>::mint(seal),
