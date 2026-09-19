@@ -96,6 +96,9 @@ fn request<'r>(target: &'r str, method: &'r str) -> Request<'r> {
         method,
         authority: Some("node.example"),
         peer: "203.0.113.7:51234",
+        credential: None,
+        accepts: None,
+        media: None,
         body: b"{}",
     }
 }
@@ -293,6 +296,74 @@ fn a_capture_cannot_shadow_a_reserved_key() {
         bar: Bar::Open,
     };
     assert_eq!(arrival.fact(tfacts::PATH), Some("/things/t-7"));
+}
+
+/// A presented credential, accept header and content type are published as facts — the whole point
+/// this mount exists to fix: a plane driven over the generic mount previously saw no credential
+/// whatever the caller sent, and the only posture available to it was the anonymous one.
+#[test]
+fn a_presented_credential_and_accept_and_media_are_published() {
+    let r = Request {
+        credential: Some("Bearer abc.def.ghi"),
+        accepts: Some("application/json"),
+        media: Some("application/json"),
+        ..request("/things/summary", "GET")
+    };
+    let facts = published_facts(&r, &[]);
+    assert_eq!(
+        facts,
+        vec![
+            (tfacts::PATH, "/things/summary"),
+            (tfacts::METHOD, "GET"),
+            (tfacts::AUTHORITY, "node.example"),
+            (tfacts::PEER, "203.0.113.7:51234"),
+            (presented::CREDENTIAL, "Bearer abc.def.ghi"),
+            (presented::ACCEPTS, "application/json"),
+            (presented::MEDIA, "application/json"),
+        ]
+    );
+}
+
+/// A request presenting none of the three publishes none of the three — absent, not empty, same as
+/// the authority already distinguishes.
+#[test]
+fn an_absent_credential_is_absent_rather_than_empty() {
+    let r = request("/things/summary", "GET");
+    let facts = published_facts(&r, &[]);
+    assert!(!facts.iter().any(|(k, _)| *k == presented::CREDENTIAL));
+    assert!(!facts.iter().any(|(k, _)| *k == presented::ACCEPTS));
+    assert!(!facts.iter().any(|(k, _)| *k == presented::MEDIA));
+}
+
+/// A capture named `credential` cannot shadow what the caller actually presented.
+///
+/// A unit authenticated against a template capture instead of against what the caller sent would be
+/// a door opened by whoever wrote the route.
+#[test]
+fn a_capture_cannot_shadow_the_presented_credential() {
+    let r = Request {
+        credential: Some("Bearer real-caller-token"),
+        ..request("/things/t-7", "GET")
+    };
+    let facts = published_facts(
+        &r,
+        &[Capture {
+            name: presented::CREDENTIAL,
+            value: "Bearer spoofed-by-route",
+        }],
+    );
+    let arrival = Arrival {
+        facts: &facts,
+        body: r.body,
+        transport: "http",
+        chain: &["http"],
+        operation: None,
+        bar: Bar::Open,
+    };
+    assert_eq!(
+        arrival.fact(presented::CREDENTIAL),
+        Some("Bearer real-caller-token")
+    );
 }
 
 /// Every reserved key this mount publishes is one it declares.
