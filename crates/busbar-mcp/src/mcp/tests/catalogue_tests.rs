@@ -249,6 +249,35 @@ fn a_tool_with_no_approved_hash_is_listed_and_refuses_to_dispatch() {
     );
 }
 
+/// A BLANK `schema_hash` IS NO HASH, and it must not self-match.
+///
+/// `ToolEntry::dispatch_digest` stands the EMPTY STRING in for "the operator approved no hash" and
+/// says it cannot admit anything, because a tool with no hash is absent from the approval map. An
+/// operator who wrote `schema_hash: ""` put `Some("")` into that map, so the approval held an empty
+/// digest, the digest offered was empty, and the two MATCHED — the tool dispatched against an
+/// approval of nothing, on the one comparison that exists to catch a rug-pull. Whitespace counts
+/// as blank for the same reason `key: "  "` is refused on the pin.
+#[test]
+fn a_blank_approved_hash_is_no_approval_and_does_not_match_itself() {
+    for blank in ["", "   ", "\t"] {
+        let (name, mut def) = server("fs", &[], &[]);
+        def.tools_allow.insert(
+            "read".to_string(),
+            ToolAllowCfg {
+                schema_hash: Some(blank.to_string()),
+                ..ToolAllowCfg::default()
+            },
+        );
+        let cat = Catalogue::build(&cfg(vec![(name, def)]));
+        let g = grant_of(&[("mcp_server", "fs"), ("mcp_tool", "fs_read")]);
+        assert_eq!(
+            cat.resolve_now(Some(&g), LiveSightings::unsighted(), "fs_read"),
+            Err(DispatchRefusal::NotApproved("fs_read".to_string())),
+            "a blank `schema_hash` ({blank:?}) approved nothing and must not dispatch"
+        );
+    }
+}
+
 /// An `unpinned` registration has no authenticity root — nothing the operator pinned out of band for
 /// the endpoint to be checked against — so it CANNOT SERVE TRAFFIC, whatever its tools claim and
 /// whatever the caller's grant says.
