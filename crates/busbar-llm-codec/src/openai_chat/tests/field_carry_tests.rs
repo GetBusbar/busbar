@@ -440,6 +440,40 @@ fn openai_carry_response_usage_sub_buckets() {
     );
 }
 
+/// Backs: `usage.prompt_tokens_details.cache_write_tokens`. The cache-WRITE slice of `prompt_tokens`
+/// prices at its own tier, distinct from both plain input and cache-read. Hardcoded `None`, a
+/// cache-writing turn billed the whole write at the plain input rate. The reader must map it into the
+/// IR's ADDITIVE `cache_creation_input_tokens` and normalize `input_tokens` to the UNCACHED remainder
+/// (prompt_tokens = uncached + cached + cache_write).
+#[test]
+fn openai_carry_response_cache_write_tokens_priced_at_cache_write_tier() {
+    let body = json!({
+        "id": "chatcmpl-w", "object": "chat.completion", "created": 1, "model": "gpt-4o",
+        "choices": [{"index": 0, "finish_reason": "stop",
+            "message": {"role": "assistant", "content": "hi"}}],
+        "usage": {
+            "prompt_tokens": 100, "completion_tokens": 50, "total_tokens": 150,
+            "prompt_tokens_details": {"cached_tokens": 20, "cache_write_tokens": 15}
+        }
+    });
+    let ir = OpenAiReader.read_response(&body).expect("read");
+    assert_eq!(
+        ir.usage.cache_creation_input_tokens,
+        Some(15),
+        "cache_write_tokens must read into cache_creation_input_tokens: {ir:?}"
+    );
+    assert_eq!(
+        ir.usage.cache_read_input_tokens,
+        Some(20),
+        "cached_tokens must still read into cache_read_input_tokens: {ir:?}"
+    );
+    // Uncached remainder = 100 - 20 cached - 15 cache-write = 65.
+    assert_eq!(
+        ir.usage.input_tokens, 65,
+        "input_tokens must be normalized to the UNCACHED remainder: {ir:?}"
+    );
+}
+
 // ── streaming delta fields ───────────────────────────────────────────────────────────────────────
 
 /// Backs: `stream:choices[].delta.role`, `stream:choices[].delta.content`,
@@ -580,6 +614,63 @@ fn openai_carry_stream_delta_fields() {
         tc_chunk["choices"][0]["delta"]["tool_calls"][0]["id"],
         json!("call_9"),
         "stream:choices[].delta.tool_calls id"
+    );
+}
+
+/// Regression (B40): text emitted AFTER a `tool_calls` chunk must not be dropped. A `tool_calls`
+/// chunk closes the open text block, but OpenAI models narrate around their tool calls — text after
+/// the call is ordinary output. The reader used to filter it out (gated on `!text_block_closed`), so
+/// the client lost every word the model said after the tool call. It must resume on a NEW text block
+/// at a fresh index (never reopening the already-stopped one).
+#[test]
+fn openai_stream_text_after_tool_calls_is_not_dropped() {
+    let mut state = crate::ir::StreamDecodeState::default();
+    let _ = OpenAiReader.read_response_events(
+        "",
+        &json!({"id": "chatcmpl-b", "object": "chat.completion.chunk", "created": 1, "model": "gpt-4o",
+                "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": null}]}),
+        &mut state,
+    );
+    // Preamble text — opens the first text block.
+    let _ = OpenAiReader.read_response_events(
+        "",
+        &json!({"choices": [{"index": 0, "delta": {"content": "before"}, "finish_reason": null}]}),
+        &mut state,
+    );
+    // A tool call — closes the open text block.
+    let _ = OpenAiReader.read_response_events(
+        "",
+        &json!({"choices": [{"index": 0, "delta": {"tool_calls": [
+            {"index": 0, "id": "call_1", "type": "function", "function": {"name": "f", "arguments": "{}"}}
+        ]}, "finish_reason": null}]}),
+        &mut state,
+    );
+    // Narration AFTER the tool call — previously DROPPED.
+    let ev = OpenAiReader.read_response_events(
+        "",
+        &json!({"choices": [{"index": 0, "delta": {"content": "after"}, "finish_reason": null}]}),
+        &mut state,
+    );
+    let after_idx = ev.iter().find_map(|e| match e {
+        IrStreamEvent::BlockDelta {
+            index,
+            delta: crate::ir::IrDelta::TextDelta(t),
+        } if t == "after" => Some(*index),
+        _ => None,
+    });
+    assert!(
+        after_idx.is_some(),
+        "text after a tool_calls chunk must be carried, not dropped: {ev:?}"
+    );
+    // It resumes on a FRESH text block (a new BlockStart at that index), never reopening the
+    // already-stopped preamble block.
+    let idx = after_idx.unwrap();
+    assert!(
+        ev.iter().any(|e| matches!(
+            e,
+            IrStreamEvent::BlockStart { index, block: crate::ir::IrBlockMeta::Text } if *index == idx
+        )),
+        "the resumed text must open a fresh Text block: {ev:?}"
     );
 }
 
