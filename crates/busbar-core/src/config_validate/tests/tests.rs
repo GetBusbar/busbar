@@ -5642,3 +5642,30 @@ fn test_validate_rejects_empty_canonical_builtin_secret_ref() {
         "a non-empty canonical key must not raise the empty-secret error; got: {errs:?}"
     );
 }
+
+/// D58: `validate_builtin_secrets_resolve` must run boot's VALUE checks, not merely prove a
+/// reference RESOLVES. `auth.signing_key` pointing at an env var that IS set but holds a
+/// wrong-length value satisfies the resolvability loop, so `--validate` used to green-light a config
+/// that boot then refuses in `parse_signing_secret`. The same guard now runs at validate time and
+/// reports boot's own sentence.
+#[test]
+fn validate_runs_the_signing_key_format_guard_like_boot() {
+    // Unique env-var name so parallel tests cannot clobber the value we set/read here.
+    let sig_env = "BUSBAR_T_D58_SIGNING_KEY";
+    std::env::set_var(sig_env, "too-short-not-32-bytes");
+
+    let mut cfg = make_root_cfg(HashMap::new(), HashMap::new(), HashMap::new());
+    let mut auth = config::AuthCfg::default_none();
+    auth.signing_key = Some(config::SecretRef::env(sig_env));
+    cfg.auth = Some(auth);
+
+    let result = crate::preflight::validate_builtin_secrets_resolve(&cfg);
+
+    std::env::remove_var(sig_env);
+
+    let err = result.expect_err("a malformed signing key must fail validate exactly as it fails boot");
+    assert!(
+        err.contains("32-byte ed25519"),
+        "the refusal must be boot's own format sentence, verbatim: {err}"
+    );
+}
