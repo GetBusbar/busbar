@@ -12,12 +12,15 @@ on:
       - "Cargo.lock"
       - "deny.toml"
       - ".github/workflows/security.yml"
-  pull_request:
-    paths:
-      - "Cargo.toml"
-      - "Cargo.lock"
-      - "deny.toml"
-      - ".github/workflows/security.yml"
+  # NO `paths:` filter here. cargo-deny is a REQUIRED status check (branch protection): a
+  # paths filter on pull_request means GitHub never creates the check run at all for a PR that
+  # doesn't touch the listed files, and a required check that never runs is a required check a
+  # PR can merge past unimpeded (or leaves it permanently pending under strict required-checks
+  # settings) -- either way, a gate a PR can route around by construction. The push trigger below
+  # keeps its paths filter (it's a post-merge advisory re-scan on main, not a merge gate), and the
+  # weekly schedule already covers newly-disclosed advisories against unchanged deps; running on
+  # every PR regardless of files touched is what keeps this one a real gate.
+  pull_request: {}
   schedule:
     # Mondays 07:00 UTC — catch newly-disclosed advisories against pinned deps.
     - cron: "0 7 * * 1"
