@@ -14,10 +14,15 @@ pub mod authz;
 pub mod bounded;
 pub mod dest;
 pub mod grammar;
+// The NEW 1.6.0 hook/routing contract surface (DECISIONS #38; `1.6.0-hook-plugin.md` Appendix A):
+// the `RoutingPolicy` trait, its projections/verbs, the plane-neutral grant axes, the cold envelope,
+// and the signal catalog. Replaces the retiring `busbar-api` hook types.
+pub mod hook;
 pub mod ids;
 pub mod kinds;
 pub mod plane;
 pub mod plugin;
+pub mod signal;
 pub mod spans;
 pub mod surface;
 pub mod transport;
@@ -27,8 +32,8 @@ pub mod wire;
 
 pub use bounded::{
     Arena, ArenaBudget, ArenaBytes, BoundedVec, FactValue, Facts, FactsExhausted, Ir, IrEdit,
-    IrPatch, Labels, Overflow, SlabBytes, Span, ARENA_BYTES, MAX_CURSOR_BYTES, MAX_KEYS, MAX_LEGS,
-    MAX_LEG_REPLIES, MAX_NEEDMORE_FRAMES, MAX_RECORD_BYTES, MAX_RESPONSE_PTRS,
+    IrPatch, Labels, Overflow, Scratch, SlabBytes, Span, ARENA_BYTES, MAX_CURSOR_BYTES, MAX_KEYS,
+    MAX_LEGS, MAX_LEG_REPLIES, MAX_NEEDMORE_FRAMES, MAX_RECORD_BYTES, MAX_RESPONSE_PTRS,
     MAX_SESSION_UPSTREAMS, MAX_USAGE_LINES,
 };
 pub use dest::{

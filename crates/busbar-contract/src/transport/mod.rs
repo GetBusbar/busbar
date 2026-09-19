@@ -12,6 +12,10 @@
 pub mod dest;
 pub mod driver;
 pub mod registry;
+// The NEW 1.6.0 duplex/session seam (DECISIONS #38; `1.6.0-streaming-model.md` section 9.1). The generic
+// transport/driver faces both sides of the fourth (streaming) plane name — bytes-only, no plane type,
+// no plugin identity.
+pub mod session;
 pub mod surface;
 // The transport-axis enum (`Transport`, `UpstreamWireKind`) keeps its own file name from the folded
 // crate; nested under the `transport` kind module this reads as inception, but renaming the axis

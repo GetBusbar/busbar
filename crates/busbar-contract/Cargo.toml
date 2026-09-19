@@ -36,6 +36,14 @@ busbar-grammar = { path = "../busbar-grammar" }
 serde = { workspace = true }
 futures = { workspace = true }
 
+# The hook/routing contract surface (DECISIONS #38; `1.6.0-hook-plugin.md` Appendix A). The cold
+# `HookRequest`/`HookReply` envelope and the routing projections carry opaque `serde_json` values (the
+# host's pre-serialized projection), so `serde_json` is a NORMAL dep here, not test-only. `smallvec`
+# backs the bounded, zero-alloc-by-default `SignalBag`. Both are reviewed third-party crates, and
+# neither names anything of busbar's — the stand-alone rule holds.
+serde_json = { workspace = true }
+smallvec = { workspace = true }
+
 # Tests only. The ABI types that seal into the policy journal are serialised by something, and a
 # test that asserts what a serialisation does NOT contain has to run a real serializer over it.
 [dev-dependencies]

@@ -62,16 +62,19 @@ const SURFACE: WireSurface = WireSurface {
             name: DOC,
             transport: "http",
             mounts: &["/mount", "/mount/"],
+            session: None,
         },
         BindingDecl {
             name: TGT,
             transport: "http",
             mounts: &[],
+            session: None,
         },
         BindingDecl {
             name: SVC,
             transport: "grpc",
             mounts: &[],
+            session: None,
         },
     ],
     operations: &[
@@ -244,6 +247,7 @@ const UNADDRESSABLE: WireSurface = WireSurface {
         name: TGT,
         transport: "http",
         mounts: &[],
+        session: None,
     }],
     operations: &[Operation {
         op: "ghost",
@@ -267,6 +271,7 @@ const DUPLICATE: WireSurface = WireSurface {
         name: TGT,
         transport: "http",
         mounts: &[],
+        session: None,
     }],
     operations: &[
         Operation {
@@ -300,6 +305,7 @@ const BAD_TEMPLATE: WireSurface = WireSurface {
         name: TGT,
         transport: "http",
         mounts: &[],
+        session: None,
     }],
     operations: &[Operation {
         op: "bent",
@@ -327,6 +333,7 @@ const UNKNOWN_BINDING: WireSurface = WireSurface {
         name: TGT,
         transport: "http",
         mounts: &[],
+        session: None,
     }],
     operations: &[Operation {
         op: "lost",

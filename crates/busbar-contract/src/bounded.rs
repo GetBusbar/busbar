@@ -319,6 +319,39 @@ pub trait Arena: Send + Sync {
     fn remaining(&self) -> usize;
 }
 
+/// The per-unit reclaiming scratch arena, reached as `&dyn Scratch`.
+///
+/// NEW 1.6.0 trait (`1.6.0-arena-model.md` section 1.3, ruling r-arena-D1). Added ALONGSIDE the existing
+/// [`Arena`]`: Send + Sync` above, which is NOT reused and NOT modified. `Scratch` carries NO
+/// `Send`/`Sync` bounds ON PURPOSE: the session-driving future holds `&dyn Scratch` across the
+/// upstream await, so it is `!Send` (#42), and `dyn Scratch` being `!Sync` is the compile-time guard
+/// that forces the thread-per-core `LocalSet` topology rather than trusting a convention. The kernel
+/// side is `busbar-kernel::arena::ScratchArena` (`bumpalo::Bump`, `forbid(unsafe_code)`), held in a
+/// fixed pre-allocated per-core pool of N (bound `N × ARENA_BYTES`).
+///
+/// The receivers, [`ArenaBudget`], [`ArenaBytes`], the fallible returns, and [`remaining`](Scratch::remaining)
+/// carry over from [`Arena`] verbatim; only the auto-trait bounds are dropped, so session seams move
+/// from `&dyn Arena` to `&dyn Scratch` as a mechanical type-name swap.
+///
+/// # Errors
+/// Every allocation method returns [`ArenaBudget`] when the request does not fit what is left.
+pub trait Scratch {
+    /// Copy bytes into the arena.
+    fn alloc_bytes<'a>(&'a self, src: &[u8]) -> Result<ArenaBytes<'a>, ArenaBudget>;
+
+    /// Copy a string into the arena.
+    fn alloc_str<'a>(&'a self, src: &str) -> Result<&'a str, ArenaBudget>;
+
+    /// Copy a resolved span table into the arena.
+    fn alloc_spans<'a>(
+        &'a self,
+        src: &[(&'a str, Span)],
+    ) -> Result<&'a [(&'a str, Span)], ArenaBudget>;
+
+    /// How many bytes remain before the next allocation fails.
+    fn remaining(&self) -> usize;
+}
+
 /// The arena said no.
 ///
 /// The loop turns this into a failure at the step that asked for the bytes.

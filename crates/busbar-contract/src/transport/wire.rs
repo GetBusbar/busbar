@@ -222,6 +222,16 @@ pub enum CloseReason {
     TransportFailed,
     /// A money reason closed the session.
     CapacityExhausted,
+    // --- NEW 1.6.0 additive variants (`1.6.0-streaming-model.md` section 9.3, RULING-3; oracle-safe: new
+    // surface, no 1.5.5 golden constrains them). ---
+    /// The session's `idle_deadline` expired (the slow-trickle kill, streaming section 3).
+    IdleTimeout,
+    /// The session's `total_deadline` expired (the renewal-proof outer ceiling, streaming section 3).
+    SessionTimeout,
+    /// The afford-gate was exhausted mid-session, forcing a hard close (streaming section 5, money-model section 4b).
+    BudgetCut,
+    /// The `OpenGuard` fired: an `OpenSession` was dropped without `pump_session` (streaming section 1).
+    Aborted,
 }
 
 /// The closed set of transport failures.

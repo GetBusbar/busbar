@@ -186,6 +186,36 @@ pub struct BindingDecl {
     ///
     /// Empty for a binding whose operations are named by their target or by a service descriptor.
     pub mounts: &'static [&'static str],
+    /// The additive 1.6.0 session declaration (`1.6.0-streaming-model.md` section 9.2, RULING-3).
+    ///
+    /// `None` = a non-session binding = today's behaviour verbatim (oracle-safe, the default a
+    /// pre-1.6.0 declarer wrote). `Some(_)` marks a duplex/session binding and carries its posture +
+    /// budgets. A wholly additive new field on new surface, never read by the 1.5.5 path.
+    pub session: Option<SessionDecl>,
+}
+
+/// Whether a session holds its metered slot across per-leg exits (`1.6.0-streaming-model.md` section 3/section 9.2).
+///
+/// Read by the kernel at the door and nowhere else. Carries no plugin name.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, serde::Serialize)]
+pub enum SessionPosture {
+    /// Settle at this unit's own exit — what declaring nothing means (a plain request).
+    #[default]
+    Release,
+    /// Keep the slot + in-flight lease for the session's whole life; settle ONCE at session end.
+    Hold,
+}
+
+/// The additive session declaration a duplex [`BindingDecl`] carries (`1.6.0-streaming-model.md` section 9.2).
+///
+/// Bundles the posture with the budgets the composition enforces, so a binding declares its whole
+/// session shape once.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize)]
+pub struct SessionDecl {
+    /// Whether the session holds its metered slot across per-leg exits.
+    pub posture: SessionPosture,
+    /// The whole-session budgets `pump_session` enforces (two deadlines + bounded renewal).
+    pub budgets: crate::transport::session::SessionBudgets,
 }
 
 /// Everything a transport needs to serve a plane, and nothing that says which plane it is.

@@ -343,16 +343,19 @@ pub const SURFACE: WireSurface = WireSurface {
             name: BINDING_DOCUMENT,
             transport: crate::claims::TRANSPORT_HTTP,
             mounts: &[MOUNT, MOUNT_SLASH],
+            session: None,
         },
         BindingDecl {
             name: BINDING_TARGET,
             transport: crate::claims::TRANSPORT_HTTP,
             mounts: &[],
+            session: None,
         },
         BindingDecl {
             name: BINDING_FRAMED,
             transport: crate::claims::TRANSPORT_GRPC,
             mounts: &[],
+            session: None,
         },
     ],
     operations: &[

@@ -257,8 +257,12 @@ fn the_close_and_discard_vocabularies_are_complete_and_have_no_duplicates() {
         CloseReason::Timeout,
         CloseReason::TransportFailed,
         CloseReason::CapacityExhausted,
+        CloseReason::IdleTimeout,
+        CloseReason::SessionTimeout,
+        CloseReason::BudgetCut,
+        CloseReason::Aborted,
     ];
-    assert_eq!(closes.len(), 8);
+    assert_eq!(closes.len(), 12);
     for (i, a) in closes.iter().enumerate() {
         for b in &closes[..i] {
             assert_ne!(a, b, "a close reason is listed twice");
@@ -272,7 +276,11 @@ fn the_close_and_discard_vocabularies_are_complete_and_have_no_duplicates() {
             | CloseReason::Revoked
             | CloseReason::Timeout
             | CloseReason::TransportFailed
-            | CloseReason::CapacityExhausted => true,
+            | CloseReason::CapacityExhausted
+            | CloseReason::IdleTimeout
+            | CloseReason::SessionTimeout
+            | CloseReason::BudgetCut
+            | CloseReason::Aborted => true,
         };
     }
 
