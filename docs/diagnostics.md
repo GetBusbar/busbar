@@ -292,7 +292,7 @@ A `plugins.min_versions` anti-downgrade floor is not a valid MAJOR.MINOR.PATCH v
 - **Since:** 1.6.0
 - **Slug:** `config-firstparty-floor-invalid`
 
-A `plugins.first_party_floors` floor is not a valid MAJOR.MINOR.PATCH version. It cannot be satisfied, and because a first-party floor REPLACES the binary-version floor, the named plugin is refused UNCONDITIONALLY until this is fixed — a stricter failure than an invalid `min_versions` floor.
+A `plugins.first_party_floors` floor is not a valid MAJOR.MINOR.PATCH version. It cannot be satisfied, and because a rollback pin REPLACES the automatic first-party floor (the highest version of that plugin this deployment has already loaded), the named plugin is refused UNCONDITIONALLY until this is fixed — a stricter failure than an invalid `min_versions` floor.
 
 **What to do:** Fix or remove the named `plugins.first_party_floors` entry so the floor is a bare MAJOR.MINOR.PATCH version. Until then that first-party plugin is refused on every boot.
 
@@ -438,6 +438,17 @@ One of the 1.5.x environment overrides (BUSBAR_PROVIDERS, BUSBAR_CONFIG_OVERLAY,
 A provider's `error_map` maps an upstream error code or structured type to a string that is not one of busbar's status classes (rate_limit, overloaded, server_error, timeout, network, auth, billing, client_error, context_length). The mapping is IGNORED and the error is classified from its HTTP status instead, so a typo'd entry (`rate_limt`) silently never takes effect. Reported once per distinct unrecognized value for the life of the process, on the first error that reaches it — never at boot, so a deployment whose providers never fail never sees this line.
 
 **What to do:** Correct the named `error_map` value to one of the nine status classes, or remove the entry if the built-in HTTP-status classification is what you want.
+
+<a id="config-overlay-rejected"></a>
+### BUSBAR-3023 — Config overlay rejected at read (the reason, naming the key and the file)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `config-overlay-rejected`
+
+The persisted config overlay was present but could not be read into a document, so every caller of the overlay classifies it unreadable (BUSBAR-3005 at boot, BUSBAR-3017 on the settings read) and proceeds without it. Those report the CONSEQUENCE; this line reports the CAUSE, because the parser's message — the offending key and the sections that are accepted — exists nowhere else. The common causes are a hand-edit that mis-spelled a section name and a truncated write.
+
+**What to do:** Read this line's message for the exact key and path, then fix or remove the overlay file and restart so the API-applied hooks, gates and groups are restored.
 
 ## 4xxx — Auth & identity
 
@@ -1827,13 +1838,13 @@ During a self-serve key refresh, the store tombstone of the prior binding commit
 <a id="accrual-group-missing"></a>
 ### BUSBAR-8007 — Group missing at accrual (tokens ledgered to the key bucket only)
 
-- **Severity:** benign_recurring
+- **Severity:** actionable
 - **Since:** 1.6.0
 - **Slug:** `accrual-group-missing`
 
-A group referenced by a key was gone by the time usage was accrued (the group was deleted between admission and accrual), so busbar degrades to ledgering the tokens on the key's own bucket only rather than lose them. The request was already admitted and served; nothing is lost. This is a per-request, self-degrading path, so it is emitted at debug.
+A group referenced by a key was gone by the time usage was accrued (the group was deleted between admission and accrual), so busbar degrades to ledgering the tokens on the key's own bucket only rather than lose them. The KEY's bucket keeps every token, but the GROUP's does not: that group's ledger under-counts by this request, and the budget cap derived from it reads low for the rest of the window, so a caller already over its group budget can be admitted. That is a money signal, not a footnote, which is why this is a warning and not a debug line. Admission and accrual read ONE pinned cost-model snapshot per request, so this cannot fire for a config apply that merely rebuilt the model — it means the group is genuinely gone.
 
-**What to do:** None — self-heals; tokens are preserved on the key bucket. Frequent occurrence for one key means a group is being deleted out from under active keys; reconcile the key's group assignment.
+**What to do:** Reconcile the key's group assignment: a group is being deleted out from under active keys. The tokens themselves are preserved on the key bucket, but the named group's derived spend is low by this request until its window rolls.
 
 <a id="metering-flush-partial-failure"></a>
 ### BUSBAR-8008 — Metering flush: some keys failed to persist this tick (retained for retry)

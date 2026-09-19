@@ -482,6 +482,25 @@ pub const CONFIG_OVERLAY_CORRUPT_BASE_ONLY: Diagnostic = Diagnostic {
     retired: false,
 };
 
+/// The overlay document was rejected at READ; this is the only place the reason exists.
+pub const CONFIG_OVERLAY_REJECTED: Diagnostic = Diagnostic {
+    code: 3023,
+    class: Class::Config,
+    slug: "config-overlay-rejected",
+    title: "Config overlay rejected at read (the reason, naming the key and the file)",
+    severity: Severity::Actionable,
+    summary: "The persisted config overlay was present but could not be read into a document, so \
+              every caller of the overlay classifies it unreadable (BUSBAR-3005 at boot, \
+              BUSBAR-3017 on the settings read) and proceeds without it. Those report the \
+              CONSEQUENCE; this line reports the CAUSE, because the parser's message — the \
+              offending key and the sections that are accepted — exists nowhere else. The common \
+              causes are a hand-edit that mis-spelled a section name and a truncated write.",
+    action: "Read this line's message for the exact key and path, then fix or remove the overlay \
+             file and restart so the API-applied hooks, gates and groups are restored.",
+    since: "1.6.0",
+    retired: false,
+};
+
 /// At boot the overlay was written by a NEWER busbar; the boot caller refuses to start (fatal).
 pub const CONFIG_OVERLAY_VERSION_TOO_NEW: Diagnostic = Diagnostic {
     code: 3006,
@@ -546,8 +565,9 @@ pub const CONFIG_FIRSTPARTY_FLOOR_INVALID: Diagnostic = Diagnostic {
     title: "plugins.first_party_floors floor is not valid semver (plugin refused unconditionally)",
     severity: Severity::Actionable,
     summary: "A `plugins.first_party_floors` floor is not a valid MAJOR.MINOR.PATCH version. It \
-              cannot be satisfied, and because a first-party floor REPLACES the binary-version floor, \
-              the named plugin is refused UNCONDITIONALLY until this is fixed — a stricter failure \
+              cannot be satisfied, and because a rollback pin REPLACES the automatic first-party \
+              floor (the highest version of that plugin this deployment has already loaded), the \
+              named plugin is refused UNCONDITIONALLY until this is fixed — a stricter failure \
               than an invalid `min_versions` floor.",
     action: "Fix or remove the named `plugins.first_party_floors` entry so the floor is a bare \
              MAJOR.MINOR.PATCH version. Until then that first-party plugin is refused on every boot.",
@@ -1894,15 +1914,19 @@ pub const ACCRUAL_GROUP_MISSING: Diagnostic = Diagnostic {
     class: Class::Governance,
     slug: "accrual-group-missing",
     title: "Group missing at accrual (tokens ledgered to the key bucket only)",
-    severity: Severity::BenignRecurring,
+    severity: Severity::Actionable,
     summary: "A group referenced by a key was gone by the time usage was accrued (the group was \
               deleted between admission and accrual), so busbar degrades to ledgering the tokens on \
-              the key's own bucket only rather than lose them. The request was already admitted and \
-              served; nothing is lost. This is a per-request, self-degrading path, so it is emitted \
-              at debug.",
-    action: "None — self-heals; tokens are preserved on the key bucket. Frequent occurrence for one \
-             key means a group is being deleted out from under active keys; reconcile the key's group \
-             assignment.",
+              the key's own bucket only rather than lose them. The KEY's bucket keeps every token, \
+              but the GROUP's does not: that group's ledger under-counts by this request, and the \
+              budget cap derived from it reads low for the rest of the window, so a caller already \
+              over its group budget can be admitted. That is a money signal, not a footnote, which \
+              is why this is a warning and not a debug line. Admission and accrual read ONE pinned \
+              cost-model snapshot per request, so this cannot fire for a config apply that merely \
+              rebuilt the model — it means the group is genuinely gone.",
+    action: "Reconcile the key's group assignment: a group is being deleted out from under active \
+             keys. The tokens themselves are preserved on the key bucket, but the named group's \
+             derived spend is low by this request until its window rolls.",
     since: "1.6.0",
     retired: false,
 };
@@ -3670,6 +3694,7 @@ pub static REGISTRY: &[&Diagnostic] = &[
     &CONFIG_OVERLAY_CORRUPT_REFUSE_WRITE,
     &CONFIG_OVERLAY_VERSION_TOO_NEW_RMW,
     &CONFIG_OVERLAY_CORRUPT_BASE_ONLY,
+    &CONFIG_OVERLAY_REJECTED,
     &CONFIG_OVERLAY_VERSION_TOO_NEW,
     &CONFIG_OVERLAY_PATCH_UNPARSABLE,
     &CONFIG_ANTIDOWNGRADE_FLOOR_INVALID,

@@ -114,6 +114,56 @@ fn lookup_by_code_works() {
     assert!(by_code(9999).is_none());
 }
 
+// ── SEVERITY / WORDING METADATA (the registry half of core-emit fixes) ───────────────────────
+//
+// These entries are the shared source of truth for the log LEVEL and the operator-facing PROSE
+// that busbar-core's emit sites use. When the emit half is landed separately, the registry must
+// already carry the corrected metadata so emit and catalog cannot drift.
+
+/// D56: a group missing at accrual under-counts the GROUP's ledger and lets a caller already over
+/// its group budget be admitted — a money-integrity signal, so the diagnostic is `Actionable`
+/// (warn), matching its siblings `METERING_FLUSH_PARTIAL_FAILURE` / `BUDGET_FLUSH_PARTIAL_FAILURE`,
+/// not `BenignRecurring` (debug).
+#[test]
+fn accrual_group_missing_is_actionable_not_benign() {
+    assert_eq!(
+        ACCRUAL_GROUP_MISSING.severity,
+        Severity::Actionable,
+        "ACCRUAL_GROUP_MISSING is a money-integrity signal and must be warn-level"
+    );
+}
+
+/// D64: the WARN a malformed `plugins.first_party_floors` entry raises must name the floor a
+/// rollback pin actually displaces — the automatic per-name first-party high-water mark — not a
+/// non-existent "binary-version floor" (`plugin-sign` applies no binary-version floor to a
+/// first-party plugin).
+#[test]
+fn firstparty_floor_invalid_names_the_real_floor() {
+    let summary = CONFIG_FIRSTPARTY_FLOOR_INVALID.summary;
+    assert!(
+        !summary.contains("binary-version floor"),
+        "BUSBAR-3009 must not claim a first-party floor replaces the binary-version floor"
+    );
+    assert!(
+        summary.contains("automatic first-party floor"),
+        "BUSBAR-3009 must name the automatic first-party (high-water) floor the pin replaces"
+    );
+}
+
+/// D54: the overlay-rejected-at-read diagnostic exists so the one place the parser's message (the
+/// offending key + accepted sections) is logged has a stable code. Inert until busbar-core's
+/// overlay read path emits it, but it must be registered and resolvable by code.
+#[test]
+fn config_overlay_rejected_is_registered() {
+    assert_eq!(CONFIG_OVERLAY_REJECTED.code, 3023);
+    assert_eq!(CONFIG_OVERLAY_REJECTED.severity, Severity::Actionable);
+    assert_eq!(
+        by_code(3023).map(|d| d.slug),
+        Some("config-overlay-rejected"),
+        "CONFIG_OVERLAY_REJECTED must be in REGISTRY and resolvable by code"
+    );
+}
+
 // ── DOCS-IN-SYNC ────────────────────────────────────────────────────────────────────────────
 //
 // The committed docs/diagnostics.{md,json} MUST equal a fresh render of REGISTRY. Regenerate
