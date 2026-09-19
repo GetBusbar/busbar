@@ -363,10 +363,7 @@ fn the_reserved_id_rule_binds_modules_and_not_the_engines_own_key_arm() {
             _now: u64,
             _expected_aud: Option<&str>,
         ) -> Option<crate::chain::ResolvedKey> {
-            Some(crate::chain::ResolvedKey {
-                id: "vk_live".to_string(),
-                name: "live".to_string(),
-            })
+            Some(crate::chain::ResolvedKey::unrestricted("vk_live", "live"))
         }
     }
 

@@ -34,16 +34,105 @@ pub struct ChainEntry {
     pub module: Box<dyn AuthModule>,
 }
 
-/// The enforced key the built-in signed-key arm resolves.
+/// One kind-tagged scope grant on a resolved key.
 ///
-/// Opaque here on purpose: this unit needs to carry it, never to read it.
-// contract: the governance crate's `VirtualKey`.
+/// The kind is an OPEN string, not an enum: the kinds a deployment grants over (`pool`,
+/// `mcp_server`, `mcp_tool`, `agent`, a session kind) are added by releases and by planes, and an
+/// enum here would make the auth unit the place a new plane's vocabulary has to be registered. A
+/// membership test over two strings needs to know neither.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeyScope {
+    /// What kind of thing is being granted — `pool`, `agent`, `mcp_server`, and so on.
+    pub kind: String,
+    /// Which one of that kind.
+    pub value: String,
+}
+
+/// The enforced key the built-in signed-key arm resolves — the ONE shape, for every reader.
+///
+/// It carries identity, scope, expiry and revocation, and it carries them because a production
+/// reader was found for each. What it deliberately does NOT carry is as load-bearing as what it
+/// does:
+///
+/// - **No money.** No budget, no cap, no rate, no card, and not the charging-pot NAME either. The
+///   legacy key's one money-adjacent field was its `group`, and that belongs to the cost and ledger
+///   views. An auth unit that knew which pot a caller draws from would be an auth unit with an
+///   opinion about spending, and this one decides who is calling and nothing else.
+/// - **No secret.** The legacy key carried a rotation fingerprint that was secret-equivalent and
+///   had to be redacted by a hand-rolled `Debug`. Nothing here needs redacting, which is why the
+///   `Debug` below is derived: the shape is safe to print by construction rather than by care.
+/// - **No admin-only identity.** The mint-time provenance a legacy row carries — labels, the IdP
+///   subject, the binding mode, the minter, the creation time, the store revision — is read off the
+///   STORED row by the administrative surface and by no holder of a resolved key.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedKey {
-    /// The key's stable id — the principal's id.
+    /// The key's stable id — the principal's id, the attribution bucket, the audit actor.
     pub id: String,
     /// The key's operator-facing label.
     pub name: String,
+    /// The scopes this key may target, kind-tagged.
+    ///
+    /// `None` = ALL scopes of EVERY kind (the grant was omitted at mint). `Some(list)` = exactly
+    /// those, EXHAUSTIVELY ACROSS ALL KINDS. `Some([])` = no scopes at all — an empty list is the
+    /// empty set and is never "all". These are the 1.5.3-frozen semantics; see
+    /// [`ResolvedKey::scope_allowed`] for why the cross-kind reading is the fail-closed one.
+    pub scopes: Option<Vec<KeyScope>>,
+    /// The PRINCIPAL's own hard expiry — a different clock from any token's `exp` claim. `None` =
+    /// never expires. Read ONLY through [`ResolvedKey::is_live`].
+    pub expires_at: Option<u64>,
+    /// Whether the key is switched on. An operator disables a key without destroying it.
+    pub enabled: bool,
+    /// TOMBSTONE marker. `None` = live; `Some(ts)` = hard-deleted at `ts`.
+    ///
+    /// A tombstoned key's row survives forever, because anything that attributes by key id —
+    /// billing, audit — must keep resolving it. So LIVENESS is the check and the row's existence
+    /// is not.
+    pub deleted_at: Option<u64>,
+}
+
+impl ResolvedKey {
+    /// A live, never-expiring key with no scope restriction at all.
+    ///
+    /// Named `unrestricted` rather than offered as a `Default`, because what it builds is a
+    /// WILDCARD: `scopes: None` grants every scope of every kind. That is the honest shape for a
+    /// key minted without a grant, and it is exactly the wrong thing to reach for absent-mindedly
+    /// while filling in a struct literal.
+    #[must_use]
+    pub fn unrestricted(id: impl Into<String>, name: impl Into<String>) -> Self {
+        ResolvedKey {
+            id: id.into(),
+            name: name.into(),
+            scopes: None,
+            expires_at: None,
+            enabled: true,
+            deleted_at: None,
+        }
+    }
+
+    /// Whether this key may target the scope `(kind, value)`.
+    ///
+    /// An OMITTED list is the only wildcard. An explicit list is exhaustive across ALL kinds, not
+    /// per kind: a key whose grants name only pools grants NOTHING for any other kind. The
+    /// alternative reading — an unlisted kind is unconstrained, therefore allowed — is fail-OPEN,
+    /// and it would turn every existing pool-scoped key into a wildcard over a brand-new kind,
+    /// silently, on upgrade. These semantics shipped in 1.5.3 and are frozen with it.
+    #[must_use]
+    pub fn scope_allowed(&self, kind: &str, value: &str) -> bool {
+        match &self.scopes {
+            None => true,
+            Some(list) => list.iter().any(|s| s.kind == kind && s.value == value),
+        }
+    }
+
+    /// Whether this key still stands as of `now`: not tombstoned, not disabled, not expired.
+    ///
+    /// ONE predicate for three questions that are always asked together. The expiry comparison is
+    /// `now >= exp`, not `>`: a key is dead AT its expiry instant, and the strict form would leave
+    /// it live for the whole second it expires in.
+    #[must_use]
+    pub fn is_live(&self, now: u64) -> bool {
+        self.deleted_at.is_none() && self.enabled && !self.expires_at.is_some_and(|exp| now >= exp)
+    }
 }
 
 /// The built-in signed-key verifier, as the chain reaches it.
@@ -81,6 +170,11 @@ pub trait RevocationView: Send + Sync {
 }
 
 /// The whole chain's verdict for one unit.
+///
+/// The resolved key is BOXED, and the reason is the shape of the traffic rather than tidiness: a
+/// verdict is returned by value on every request, and the two arms that carry nothing — the open
+/// door and the refusal — are the ones an unauthenticated flood produces. An unboxed key would make
+/// every one of those returns move the whole key's width for a value it does not have.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ChainVerdict {
     /// Admitted with an identity: the provider that identified, the principal, and — only on an
@@ -92,7 +186,7 @@ pub enum ChainVerdict {
         /// Who is calling.
         principal: Principal,
         /// The enforced key, when an engine arm resolved one.
-        resolved: Option<ResolvedKey>,
+        resolved: Option<Box<ResolvedKey>>,
     },
     /// Admitted anonymously — the open front door.
     Open,
@@ -322,7 +416,7 @@ fn keys_arm_verdict(
         Some(key) => ChainVerdict::Identified {
             module: KEYS_MODULE.to_string(),
             principal: principal_from_key(&key),
-            resolved: Some(key),
+            resolved: Some(Box::new(key)),
         },
         None => ChainVerdict::Denied,
     }
