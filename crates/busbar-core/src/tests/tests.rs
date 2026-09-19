@@ -2241,7 +2241,7 @@ fn plugins_boot_logging_wording_present() {
 
 /// A minimal but structurally VALID 1.5.x config (parses into `DeployCfg`; `load_config_from_disk`
 /// does not resolve, so empty maps are fine).
-const BOOT_MINIMAL_CONFIG: &str = "providers: {}\nmodels: {}\n";
+const BOOT_MINIMAL_CONFIG: &str = "providers: {}\npools: {models: {}}\n";
 
 /// 1.5.3 durable-by-default at the BOOT path: with NO `config:` section the default overlay lands next
 /// to config.yaml and the config is reported mutable. The deprecated `BUSBAR_CONFIG_OVERLAY` env var
@@ -2269,7 +2269,7 @@ fn boot_default_config_resolves_a_durable_overlay_next_to_config() {
 /// enforced "mutable XOR writable overlay".
 #[test]
 fn boot_mutable_with_overlay_disabled_refuses_to_boot() {
-    let cfg = "providers: {}\nmodels: {}\nconfig:\n  locked: false\n  overlay: false\n";
+    let cfg = "providers: {}\npools: {models: {}}\nconfig:\n  locked: false\n  overlay: false\n";
     let (dir, config_path, _p) = boot_config_dir("no-backend", cfg);
     let Err(err) =
         load_config_from_disk(&config_path, None, false, crate::config::EnvSubst::Strict)
@@ -2291,7 +2291,7 @@ fn boot_mutable_with_overlay_disabled_refuses_to_boot() {
 /// 1.5.3: a LOCKED config boots with NO overlay backend (mutations are refused at runtime).
 #[test]
 fn boot_locked_config_has_no_overlay() {
-    let cfg = "providers: {}\nmodels: {}\nconfig:\n  locked: true\n";
+    let cfg = "providers: {}\npools: {models: {}}\nconfig:\n  locked: true\n";
     let (dir, config_path, _p) = boot_config_dir("locked", cfg);
     let loaded = load_config_from_disk(&config_path, None, false, crate::config::EnvSubst::Strict)
         .expect("a locked config boots");
@@ -2319,7 +2319,7 @@ fn boot_providers_file_pointer_is_honored_and_override_wins() {
     std::fs::write(&catalog, "{}\n").unwrap();
     std::fs::write(
         &config_path,
-        "providers: {}\nmodels: {}\nproviders_file: catalog.yaml\n",
+        "providers: {}\npools: {models: {}}\nproviders_file: catalog.yaml\n",
     )
     .unwrap();
 

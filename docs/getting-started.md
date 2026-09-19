@@ -157,9 +157,10 @@ providers:
   anthropic:
     api_key: { env: ANTHROPIC_KEY }   # the NAME of the env var to read the key from, NOT the key itself
 
-models:
-  claude-sonnet-4-5:
-    provider: anthropic
+pools:
+  models:
+    claude-sonnet-4-5:
+      provider: anthropic
 ```
 
 `provider` is the only required field on a model. `max_concurrent` (a per-lane concurrency limiter) is optional and defaults to unbounded; add it only when you want to cap in-flight requests to a model.
@@ -299,15 +300,15 @@ providers:
   openai:
     api_key: { env: OPENAI_KEY }
 
-models:
-  claude-sonnet-4-5:
-    provider: anthropic
-    max_concurrent: 20
-  gpt-4o:
-    provider: openai
-    max_concurrent: 20
-
 pools:
+  models:
+    claude-sonnet-4-5:
+      provider: anthropic
+      max_concurrent: 20
+    gpt-4o:
+      provider: openai
+      max_concurrent: 20
+
   smart:
     members:
       - model: claude-sonnet-4-5
@@ -492,10 +493,11 @@ providers:
   bedrock:
     api_key: { env: AWS_BEDROCK_CREDS }
 
-models:
-  claude-bedrock:
-    provider: bedrock
-    max_concurrent: 10
+pools:
+  models:
+    claude-bedrock:
+      provider: bedrock
+      max_concurrent: 10
 ```
 
 ```bash
@@ -514,11 +516,12 @@ Busbar signs each outbound request with SigV4 (region parsed from the host); you
 If you route OpenAI-format requests to an Anthropic backend, Anthropic's API requires a `max_tokens` field that OpenAI clients often omit. Busbar injects a default only on cross-protocol translation to a backend that requires `max_tokens` (Anthropic Messages) when the source omitted it. The default is 4096 unless you override it per model:
 
 ```yaml
-models:
-  claude-sonnet-4-5:
-    provider: anthropic
-    max_concurrent: 20
-    default_max_tokens: 8192
+pools:
+  models:
+    claude-sonnet-4-5:
+      provider: anthropic
+      max_concurrent: 20
+      default_max_tokens: 8192
 ```
 
 A caller-supplied `max_tokens` is always preserved; this only applies when the field is absent and the egress requires it. It has no effect on same-protocol passthrough.

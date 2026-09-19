@@ -940,12 +940,12 @@ groups:
 providers:
   {PROVIDER}:
     api_key: {{ env: ORACLE_UPSTREAM_KEY }}
-models:
-  {LANE}:
-    provider: {PROVIDER}
 rate_card:
   {LANE}: {{ input_utok: {INPUT_UTOK}, output_utok: {OUTPUT_UTOK} }}
 pools:
+  models:
+    {LANE}:
+      provider: {PROVIDER}
   oracle-unused:
     members:
       - model: {LANE}

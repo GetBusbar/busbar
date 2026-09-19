@@ -139,9 +139,10 @@ listen: "127.0.0.1:0"
 providers:
   mock:
     api_key: { env: MOCK_KEY }
-models:
-  test-model:
-    provider: mock
+pools:
+  models:
+    test-model:
+      provider: mock
 plugins:
   enabled: true
   dir: '$WORK/plugins'

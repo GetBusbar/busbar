@@ -88,7 +88,7 @@ fn worker_threads_from_config_reads_a_real_file() {
 
     std::fs::write(
         &config_path,
-        "providers: {}\nmodels: {}\nadvanced:\n  worker_threads: 5\n",
+        "providers: {}\npools: {models: {}}\nadvanced:\n  worker_threads: 5\n",
     )
     .unwrap();
     std::env::set_var(ENV_CONFIG, &config_path);
@@ -100,7 +100,7 @@ fn worker_threads_from_config_reads_a_real_file() {
 
     std::fs::write(
         &config_path,
-        "providers: {}\nmodels: {}\nadvanced:\n  worker_threads: 0\n",
+        "providers: {}\npools: {models: {}}\nadvanced:\n  worker_threads: 0\n",
     )
     .unwrap();
     assert_eq!(

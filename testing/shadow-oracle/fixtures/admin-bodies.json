@@ -1241,27 +1241,27 @@
        "request_body_max_bytes": 33554432
       },
       "listen": "{LISTEN_ADDR}",
-      "models": {
-       "m-anthropic": {
-        "provider": "anthropic"
-       },
-       "m-bedrock": {
-        "provider": "bedrock"
-       },
-       "m-cohere": {
-        "provider": "cohere"
-       },
-       "m-gemini": {
-        "provider": "gemini"
-       },
-       "m-openai-chat": {
-        "provider": "openai-chat"
-       },
-       "m-openai-responses": {
-        "provider": "openai-responses"
-       }
-      },
       "pools": {
+       "models": {
+        "m-anthropic": {
+         "provider": "anthropic"
+        },
+        "m-bedrock": {
+         "provider": "bedrock"
+        },
+        "m-cohere": {
+         "provider": "cohere"
+        },
+        "m-gemini": {
+         "provider": "gemini"
+        },
+        "m-openai-chat": {
+         "provider": "openai-chat"
+        },
+        "m-openai-responses": {
+         "provider": "openai-responses"
+        }
+       },
        "oracle-unused": {
         "members": [
          {
@@ -1493,27 +1493,27 @@
        "request_body_max_bytes": 33554432
       },
       "listen": "{LISTEN_ADDR}",
-      "models": {
-       "m-anthropic": {
-        "provider": "anthropic"
-       },
-       "m-bedrock": {
-        "provider": "bedrock"
-       },
-       "m-cohere": {
-        "provider": "cohere"
-       },
-       "m-gemini": {
-        "provider": "gemini"
-       },
-       "m-openai-chat": {
-        "provider": "openai-chat"
-       },
-       "m-openai-responses": {
-        "provider": "openai-responses"
-       }
-      },
       "pools": {
+       "models": {
+        "m-anthropic": {
+         "provider": "anthropic"
+        },
+        "m-bedrock": {
+         "provider": "bedrock"
+        },
+        "m-cohere": {
+         "provider": "cohere"
+        },
+        "m-gemini": {
+         "provider": "gemini"
+        },
+        "m-openai-chat": {
+         "provider": "openai-chat"
+        },
+        "m-openai-responses": {
+         "provider": "openai-responses"
+        }
+       },
        "oracle-unused": {
         "members": [
          {

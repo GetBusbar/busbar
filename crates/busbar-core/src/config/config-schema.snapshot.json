@@ -429,10 +429,6 @@
           "optional": true,
           "type": "McpEndpointSection"
         },
-        "models": {
-          "optional": false,
-          "type": "HashMap<String, ModelCfg>"
-        },
         "oauth_as": {
           "optional": true,
           "type": "crate::oauth_as::config::OauthAsCfg"

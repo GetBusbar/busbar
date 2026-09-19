@@ -94,7 +94,8 @@ fn read_absent_or_corrupt_is_none() {
 /// A minimal RESOLVED config to merge overlays into (providers/models empty; registry empty).
 fn minimal_cfg() -> RootCfg {
     let deploy: super::super::DeployCfg =
-        serde_json::from_value(serde_json::json!({"providers": {}, "models": {}})).unwrap();
+        serde_json::from_value(serde_json::json!({"providers": {}, "pools": {"models": {}}}))
+            .unwrap();
     super::super::resolve(&deploy, &HashMap::new()).expect("minimal config resolves")
 }
 
@@ -555,7 +556,7 @@ fn clear_section_refuses_to_overwrite_corrupt_overlay() {
 /// A minimal base `DeployCfg` (all uncovered sections at their defaults) to apply root overrides
 /// onto. Uses the real YAML parse path so the defaults match production exactly.
 fn minimal_deploy() -> DeployCfg {
-    serde_yaml::from_str("providers: {}\nmodels: {}\n").expect("minimal deploy parses")
+    serde_yaml::from_str("providers: {}\npools: {models: {}}\n").expect("minimal deploy parses")
 }
 
 /// A `RootSettings` naming a couple of overrides, parsed from JSON exactly as the API body would.

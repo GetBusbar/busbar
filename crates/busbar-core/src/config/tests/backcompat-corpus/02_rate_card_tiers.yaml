@@ -10,13 +10,14 @@ providers:
     api_key: { env: ANTHROPIC_API_KEY }
   openai:
     api_key: { env: OPENAI_API_KEY }
-models:
-  claude-sonnet:
-    provider: anthropic
-    default_max_tokens: 8192
-  gpt-4o:
-    provider: openai
-    default_max_tokens: 4096
+pools:
+  models:
+    claude-sonnet:
+      provider: anthropic
+      default_max_tokens: 8192
+    gpt-4o:
+      provider: openai
+      default_max_tokens: 4096
 rate_card:
   claude-sonnet:
     input_utok: 3.0

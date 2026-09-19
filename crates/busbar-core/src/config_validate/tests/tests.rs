@@ -1959,10 +1959,11 @@ auth:
 providers:
   acme:
     api_key: { env: ACME_KEY }
-models:
-  model-1:
-    provider: acme
-    max_concurrent: 10
+pools:
+  models:
+    model-1:
+      provider: acme
+      max_concurrent: 10
 "#;
     let err = serde_yaml::from_str::<crate::config::DeployCfg>(yaml)
         .expect_err("a config setting the removed auth keys must fail to parse");
@@ -1984,9 +1985,10 @@ listen: "0.0.0.0:8080"
 providers:
   acme:
     api_key_env: ACME_KEY
-models:
-  model-1:
-    provider: acme
+pools:
+  models:
+    model-1:
+      provider: acme
 "#;
     let err2 = serde_yaml::from_str::<crate::config::DeployCfg>(yaml2)
         .expect_err("the removed api_key_env key must fail to parse");
@@ -4570,10 +4572,10 @@ auth:
 providers:
   acme:
     api_key: { env: ACME_API_KEY }
-models:
-  claude:
-    provider: acme
 pools:
+  models:
+    claude:
+      provider: acme
   main:
     members:
       - model: claude
@@ -4624,8 +4626,8 @@ fn test_undefined_pool_member_is_refused_by_validate_in_1_5_5_words() {
     let yaml = r#"
 listen: "0.0.0.0:8080"
 providers: {}
-models: {}
 pools:
+  models: {}
   oracle-unused:
     members:
       - model: nope
@@ -4656,10 +4658,10 @@ listen: "0.0.0.0:8080"
 providers:
   acme:
     api_key: { module: acme-vault, settings: { path: "secret/data/acme#key" } }
-models:
-  claude:
-    provider: acme
 pools:
+  models:
+    claude:
+      provider: acme
   main:
     members:
       - model: claude
@@ -4695,12 +4697,12 @@ auth:
 providers:
   acme:
     api_key: { env: ACME_API_KEY }
-models:
-  claude:
-    provider: acme
-  haiku:
-    provider: acme
 pools:
+  models:
+    claude:
+      provider: acme
+    haiku:
+      provider: acme
   main:
     members:
       - model: claude

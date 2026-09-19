@@ -185,12 +185,12 @@ providers:
   openai:          { api_key: { env: OPENAI_KEY } }
   bedrock:         { api_key: { env: AWS_KEYPAIR } }   # ACCESS_KEY_ID:SECRET_ACCESS_KEY
 
-models:
-  claude:      { provider: anthropic, upstream_model: claude-sonnet-4-5, max_concurrent: 40 }
-  gpt:         { provider: openai,    upstream_model: gpt-4o,            max_concurrent: 40 }
-  claude-aws:  { provider: bedrock,   upstream_model: "anthropic.claude-3-5-sonnet-20241022-v2:0" }
-
 pools:
+  models:
+    claude:      { provider: anthropic, upstream_model: claude-sonnet-4-5, max_concurrent: 40 }
+    gpt:         { provider: openai,    upstream_model: gpt-4o,            max_concurrent: 40 }
+    claude-aws:  { provider: bedrock,   upstream_model: "anthropic.claude-3-5-sonnet-20241022-v2:0" }
+
   fast:
     members:
       - { model: claude,     weight: 8 }   # 80 percent of traffic
@@ -218,9 +218,9 @@ curl -fsSL https://getbusbar.com/install.sh | sh      # busbar + providers.yaml 
 cat > config.yaml <<'EOF'
 providers:
   anthropic: { api_key: { env: ANTHROPIC_KEY } }   # the NAME of the env var, never the key
-models:
-  claude: { provider: anthropic, upstream_model: claude-sonnet-4-5 }
 pools:
+  models:
+    claude: { provider: anthropic, upstream_model: claude-sonnet-4-5 }
   fast:
     members:
       - { model: claude, weight: 1 }

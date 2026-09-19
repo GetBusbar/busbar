@@ -91,7 +91,7 @@ fn register_gizmo_plane() -> busbar_substrate::plane::registry::TestRegistryIsol
 /// A minimal YAML document valid without any plane-verb section, so each test below can add
 /// exactly the top-level key it is proving something about.
 fn base_yaml() -> String {
-    "providers: {}\nmodels: {}\n".to_string()
+    "providers: {}\npools:\n  models: {}\n".to_string()
 }
 
 // ══ 1. THE LIFT SET IS REGISTRY-DERIVED, NOT HARDCODED ═══════════════════════════════════════════

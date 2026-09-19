@@ -22,3 +22,11 @@
 # line here, the change needs a human decision, not a config edit.
 #
 # EMPTY BY DEFAULT. It should stay that way.
+
+# config-model STAGE 3 (busbar 1.6.0, §16 R-C): the top-level `models:` map moved to the reserved
+# `pools.models:` sibling under `pools:`. The concrete top-level `DeployCfg.models` field is removed;
+# `RootCfg.models` (the resolved, runtime-read map) is UNCHANGED. This is a BREAKING grammar change,
+# and it is migrate-backed: `migrate_pools_models` moves a top-level `models:` to `pools.models:`
+# (fail-closed on an ambiguous both-present document), so `--migrate-config` carries every existing
+# config across. Reviewed and intended.
+DeployCfg.models = models moved to pools.models (config-model STAGE 3, 1.6.0); BREAKING, migrate-backed via migrate_pools_models

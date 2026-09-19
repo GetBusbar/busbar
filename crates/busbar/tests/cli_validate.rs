@@ -52,9 +52,10 @@ fn write_configs(dir: &Path, extra: &str) {
 providers:
   mock:
     api_key: {{ env: MOCK_KEY }}
-models:
-  test-model:
-    provider: mock
+pools:
+  models:
+    test-model:
+      provider: mock
 {extra}"#
         ),
     )
@@ -1122,9 +1123,10 @@ fn providers_flag_overrides_providers_file_and_default() {
          providers:\n\
          \x20 mock:\n\
          \x20   api_key: { env: MOCK_KEY }\n\
-         models:\n\
-         \x20 test-model:\n\
-         \x20   provider: mock\n\
+         pools:\n\
+         \x20 models:\n\
+         \x20   test-model:\n\
+         \x20     provider: mock\n\
          providers_file: does-not-exist.yaml\n",
     )
     .unwrap();
@@ -1239,9 +1241,10 @@ fn write_configs_with_api_key(dir: &Path, api_key_yaml: &str, extra: &str) {
 providers:
   mock:
     api_key: {api_key_yaml}
-models:
-  test-model:
-    provider: mock
+pools:
+  models:
+    test-model:
+      provider: mock
 {extra}"#
         ),
     )

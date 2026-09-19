@@ -59,7 +59,6 @@ pub(crate) fn base_deploy() -> DeployCfg {
         auth: None,
         identity_providers: Default::default(),
         providers: HashMap::new(),
-        models: HashMap::new(),
         pools: Default::default(),
         hooks: Default::default(),
         groups: Default::default(),
@@ -352,7 +351,7 @@ fn test_otlp_folds_into_an_export_instance() {
 #[test]
 fn test_retired_observability_export_keys_loud_fail_with_hint() {
     let err = serde_yaml::from_str::<DeployCfg>(
-        "observability:\n  request_log_webhook_url: \"https://x.example.com/l\"\nproviders: {}\nmodels: {}\npools: {}\n",
+        "observability:\n  request_log_webhook_url: \"https://x.example.com/l\"\nproviders: {}\npools: {models: {}}\n",
     )
     .expect_err("the retired observability block must be rejected");
     let hint = crate::config::augment_config_error(err);
@@ -364,7 +363,7 @@ fn test_retired_observability_export_keys_loud_fail_with_hint() {
     );
 
     let err = serde_yaml::from_str::<DeployCfg>(
-        "metrics:\n  buffer_seconds: 60\nproviders: {}\nmodels: {}\npools: {}\n",
+        "metrics:\n  buffer_seconds: 60\nproviders: {}\npools: {models: {}}\n",
     )
     .expect_err("the retired metrics block must be rejected");
     let hint = crate::config::augment_config_error(err);
@@ -381,7 +380,7 @@ fn test_retired_observability_export_keys_loud_fail_with_hint() {
 #[test]
 fn test_emit_server_timing_moved_to_advanced_response_headers() {
     let err = serde_yaml::from_str::<DeployCfg>(
-        "observability:\n  emit_server_timing: true\nproviders: {}\nmodels: {}\npools: {}\n",
+        "observability:\n  emit_server_timing: true\nproviders: {}\npools: {models: {}}\n",
     )
     .expect_err("the removed observability block must be rejected");
     let msg = err.to_string();
@@ -418,15 +417,71 @@ listen: "0.0.0.0:8080"
 providers:
   acme:
     api_key: { env: ACME_KEY }
-models:
-  widget:
-    provider: acme
-    max_concurrent: 10
+pools:
+  models:
+    widget:
+      provider: acme
+      max_concurrent: 10
 "#;
     let deploy: DeployCfg = serde_yaml::from_str(yaml).expect("config without pools must parse");
     assert!(deploy.pools.pools.is_empty());
-    assert!(deploy.models.contains_key("widget"));
+    assert!(deploy.pools.models.contains_key("widget"));
     assert_eq!(deploy.providers["acme"].api_key.env_var(), Some("ACME_KEY"));
+}
+
+/// config-model STAGE 3 (1.6.0): the reserved `pools.models:` submap parses into `PoolsCfg.models`,
+/// and a real pool sitting beside it is still a pool (models is a RESERVED sibling, not a pool).
+#[test]
+fn pools_models_submap_parses_beside_a_real_pool() {
+    let yaml = r#"
+providers: {}
+pools:
+  models:
+    widget:
+      provider: acme
+  fast:
+    members:
+      - model: widget
+"#;
+    let deploy: DeployCfg = serde_yaml::from_str(yaml).expect("pools.models parses");
+    assert!(deploy.pools.models.contains_key("widget"));
+    assert!(deploy.pools.pools.contains_key("fast"));
+    assert!(
+        !deploy.pools.pools.contains_key("models"),
+        "`models` under pools is the reserved submap, never a pool"
+    );
+}
+
+/// config-model STAGE 3: the top-level `models:` field is GONE. A document that still spells it is
+/// refused by `deny_unknown_fields` (the migrate-backed break) — `--migrate-config` moves it.
+#[test]
+fn top_level_models_is_now_an_unknown_field() {
+    let yaml = "providers: {}\nmodels:\n  widget:\n    provider: acme\n";
+    let err = serde_yaml::from_str::<DeployCfg>(yaml)
+        .expect_err("a top-level `models:` must now be rejected");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("unknown field") && msg.contains("models"),
+        "the refusal names the retired top-level key: {msg}"
+    );
+}
+
+/// config-model STAGE 3: on the pool plane `models` is the RESERVED submap, so a top-level pools key
+/// named `models` is consumed as the model map (never a pool). A pool-shaped value there is a hard
+/// parse error rather than a silently-accepted pool, so the name cannot be smuggled in as a pool.
+#[test]
+fn models_under_pools_is_the_reserved_submap_not_a_pool() {
+    // A pool-shaped value under the reserved `models:` key is refused (it must be a model map).
+    assert!(
+        serde_yaml::from_str::<crate::config::PoolsCfg>("models:\n  members: [ { model: a } ]\n")
+            .is_err(),
+        "a pool-shaped `models:` value is refused — `models` is the reserved model submap"
+    );
+    // The well-typed model map is accepted as the submap and produces zero pools.
+    let pools: crate::config::PoolsCfg =
+        serde_yaml::from_str("models:\n  widget:\n    provider: acme\n").expect("model map parses");
+    assert!(pools.models.contains_key("widget"));
+    assert!(pools.pools.is_empty(), "the reserved submap is not a pool");
 }
 
 /// A provider's `path` override flows from the catalog (and a deployment override wins) into
@@ -546,14 +601,14 @@ fn admin_plane_boot_guard() {
 #[test]
 fn admin_require_mtls_defaults_on_and_the_retired_key_loud_fails() {
     let deploy: DeployCfg =
-        serde_yaml::from_str("providers: {}\nmodels: {}\npools: {}\n").expect("parses");
+        serde_yaml::from_str("providers: {}\npools: {models: {}}\n").expect("parses");
     assert!(
         deploy.admin_require_mtls,
         "an OMITTED admin_require_mtls must default to the SAFE posture (guard ON)"
     );
 
     let err = serde_yaml::from_str::<DeployCfg>(
-        "admin_insecure: true\nproviders: {}\nmodels: {}\npools: {}\n",
+        "admin_insecure: true\nproviders: {}\npools: {models: {}}\n",
     )
     .expect_err("the retired admin_insecure key must be rejected at parse");
     let hint = crate::config::augment_config_error(err);
@@ -1194,7 +1249,7 @@ fn test_structural_injection_widens_client_tokens_array_end_to_end() {
     std::env::set_var(var, payload);
 
     let template = format!(
-        "providers: {{}}\nmodels: {{}}\nidentity-providers: {{ tokens: {{ module: tokens, settings: {{ client_tokens: [\"${{{var}}}\"] }} }} }}\n"
+        "providers: {{}}\npools: {{models: {{}}}}\nidentity-providers: {{ tokens: {{ module: tokens, settings: {{ client_tokens: [\"${{{var}}}\"] }} }} }}\n"
     );
 
     // Sanity check FIRST: prove the underlying vulnerability is real by splicing the payload
@@ -1249,7 +1304,7 @@ fn test_structural_injection_adds_sibling_settings_key_end_to_end() {
     std::env::set_var(var, payload);
 
     let template = format!(
-        "providers: {{}}\nmodels: {{}}\nidentity-providers: {{ ad: {{ module: ad, settings: {{ server: \"${{{var}}}\" }} }} }}\n"
+        "providers: {{}}\npools: {{models: {{}}}}\nidentity-providers: {{ ad: {{ module: ad, settings: {{ server: \"${{{var}}}\" }} }} }}\n"
     );
 
     // Sanity: the unguarded splice really does add the sibling key through real deserialization.
@@ -1295,7 +1350,7 @@ fn test_plugins_trust_allow_unsigned_injection_already_fails_via_deny_unknown_fi
         "real-dir\", \"trust\": {\"allow_unsigned\": true}, \"ignore\": \"";
     std::env::set_var(var, redirect_via_unknown_field);
     let template = format!(
-        "providers: {{}}\nmodels: {{}}\nplugins: {{ enabled: true, dir: \"${{{var}}}\" }}\n"
+        "providers: {{}}\npools: {{models: {{}}}}\nplugins: {{ enabled: true, dir: \"${{{var}}}\" }}\n"
     );
     let spliced = template.replace(&format!("${{{var}}}"), redirect_via_unknown_field);
     let result: Result<DeployCfg, _> = serde_yaml::from_str(&spliced);
@@ -1312,7 +1367,7 @@ fn test_plugins_trust_allow_unsigned_injection_already_fails_via_deny_unknown_fi
         "real-dir\", \"trust\": {\"allow_unsigned\": true}, \"dir\": \"";
     std::env::set_var(var2, redirect_via_duplicate_key);
     let template2 = format!(
-        "providers: {{}}\nmodels: {{}}\nplugins: {{ enabled: true, dir: \"${{{var2}}}\" }}\n"
+        "providers: {{}}\npools: {{models: {{}}}}\nplugins: {{ enabled: true, dir: \"${{{var2}}}\" }}\n"
     );
     let spliced2 = template2.replace(&format!("${{{var2}}}"), redirect_via_duplicate_key);
     let result2: Result<serde_yaml::Value, _> = serde_yaml::from_str(&spliced2);
@@ -1371,7 +1426,7 @@ fn test_structural_check_allows_numeric_scalar_type_inference_change() {
     let var = "BUSBAR_T_FENCE_PORT";
     std::env::set_var(var, "8080");
     let input =
-        format!("providers: {{}}\nmodels: {{}}\nlisten: \"x\"\nadvanced: {{}}\nport: ${{{var}}}\n");
+        format!("providers: {{}}\npools: {{models: {{}}}}\nlisten: \"x\"\nadvanced: {{}}\nport: ${{{var}}}\n");
     let result = interpolate_env(&input);
     std::env::remove_var(var);
     let expanded =
@@ -1564,7 +1619,8 @@ fn test_provider_inline_key_and_removed_env_key_rejected() {
 providers:
   myprov:
     api_key: "sk-inline-not-a-ref"
-models: {}
+pools:
+  models: {}
 "#;
     assert!(
         serde_yaml::from_str::<DeployCfg>(yaml).is_err(),
@@ -1576,7 +1632,8 @@ models: {}
 providers:
   myprov:
     api_key_env: MYPROV_KEY
-models: {}
+pools:
+  models: {}
 "#;
     let err = serde_yaml::from_str::<DeployCfg>(yaml)
         .expect_err("the removed api_key_env key must be rejected");
@@ -1839,10 +1896,11 @@ listen: "0.0.0.0:8080"
 providers:
   acme:
     api_key: { env: ACME_KEY }
-models:
-  widget:
-    provider: acme
-    max_concurrent: 10
+pools:
+  models:
+    widget:
+      provider: acme
+      max_concurrent: 10
 "#;
     let deploy: DeployCfg =
         serde_yaml::from_str(yaml).expect("config without a limits block must parse");
@@ -1938,10 +1996,11 @@ listen: "0.0.0.0:8080"
 providers:
   acme:
     api_key: { env: ACME_KEY }
-models:
-  widget:
-    provider: acme
-    max_concurrent: 10
+pools:
+  models:
+    widget:
+      provider: acme
+      max_concurrent: 10
 limits:
   upstream_request_timeout_secs: 42
   max_inbound_concurrent: 256
@@ -1999,10 +2058,11 @@ listen: "0.0.0.0:8080"
 providers:
   acme:
     api_key: { env: ACME_KEY }
-models:
-  widget:
-    provider: acme
-    max_concurrent: 10
+pools:
+  models:
+    widget:
+      provider: acme
+      max_concurrent: 10
 limits:
   request_body_max_bytes: 5242880
 "#;
@@ -2167,7 +2227,7 @@ fn test_identity_provider_definition_is_referenced_by_name_from_both_planes() {
            corp-ad: { module: ad, max_admin_scope: full, settings: { server: \"ldaps://corp\" } }\n  \
            admin-tokens: { module: admin-tokens, token: { env: BUSBAR_T_AD_TOKEN } }\n\
          auth:\n  chain: [keys, corp-ad]\n  admin_auth: [admin-tokens, corp-ad]\n\
-         providers: {}\nmodels: {}\npools: {}\n",
+         providers: {}\npools: {models: {}}\n",
     )
     .expect("the 1.5.3 identity-providers grammar parses");
 
@@ -2216,7 +2276,7 @@ fn test_max_admin_scope_default_is_most_restrictive_except_admin_tokens() {
     let deploy: DeployCfg = serde_yaml::from_str(
         "identity-providers:\n  corp-ad: { module: ad }\n  admin-tokens: { module: admin-tokens }\n\
          auth:\n  chain: [corp-ad]\n  admin_auth: [admin-tokens, corp-ad]\n\
-         providers: {}\nmodels: {}\npools: {}\n",
+         providers: {}\npools: {models: {}}\n",
     )
     .expect("parses");
     let mut errors = Vec::new();
@@ -2242,7 +2302,7 @@ fn test_max_admin_scope_default_is_most_restrictive_except_admin_tokens() {
 #[test]
 fn test_dangling_identity_provider_reference_is_an_error() {
     let deploy: DeployCfg = serde_yaml::from_str(
-        "auth: { chain: [keys, ghost] }\nproviders: {}\nmodels: {}\npools: {}\n",
+        "auth: { chain: [keys, ghost] }\nproviders: {}\npools: {models: {}}\n",
     )
     .expect("parses");
     let mut errors = Vec::new();
@@ -2291,7 +2351,7 @@ fn test_identity_provider_typo_rejected_at_parse() {
 fn test_token_on_a_non_admin_tokens_provider_is_an_error() {
     let deploy: DeployCfg = serde_yaml::from_str(
         "identity-providers:\n  corp-ad: { module: ad, token: { env: X } }\n\
-         auth: { chain: [corp-ad] }\nproviders: {}\nmodels: {}\npools: {}\n",
+         auth: { chain: [corp-ad] }\nproviders: {}\npools: {models: {}}\n",
     )
     .expect("parses");
     let mut errors = Vec::new();
@@ -2608,7 +2668,7 @@ fn test_removed_top_level_blocks_rejected() {
         ("group_map:\n  eng:\n    group: eng\n", "group_map"),
         ("admin_auth: [admin-tokens]\n", "admin_auth"),
     ] {
-        let yaml = format!("providers: {{}}\nmodels: {{}}\n{block}");
+        let yaml = format!("providers: {{}}\npools: {{models: {{}}}}\n{block}");
         let err = serde_yaml::from_str::<DeployCfg>(&yaml)
             .expect_err("a removed top-level block must be rejected");
         let msg = err.to_string();
@@ -2626,7 +2686,8 @@ fn test_removed_top_level_blocks_rejected() {
 fn test_new_top_level_blocks_parse() {
     let yaml = r#"
 providers: {}
-models: {}
+pools:
+  models: {}
 store:
   module: sqlite
   settings:
@@ -2680,7 +2741,7 @@ advanced:
 
     // Defaults when everything is absent: no store, no rate_card, fee 0, defaults for advanced.
     let bare: DeployCfg =
-        serde_yaml::from_str("providers: {}\nmodels: {}\n").expect("bare deploy parses");
+        serde_yaml::from_str("providers: {}\npools: {models: {}}\n").expect("bare deploy parses");
     assert!(bare.store.is_none());
     assert!(bare.rate_card.is_none());
     assert_eq!(bare.per_request_fee, 0, "per_request_fee defaults to 0");
@@ -3065,7 +3126,8 @@ fn test_public_url_parses_top_level() {
 listen: 0.0.0.0:8080
 public_url: https://api.busbar.example
 providers: {}
-models: {}
+pools:
+  models: {}
 ";
     let deploy: DeployCfg = serde_yaml::from_str(yaml).expect("public_url must parse");
     assert_eq!(
@@ -3074,7 +3136,7 @@ models: {}
     );
     // Absent ⇒ None (default).
     let deploy2: DeployCfg =
-        serde_yaml::from_str("listen: 0.0.0.0:8080\nproviders: {}\nmodels: {}\n")
+        serde_yaml::from_str("listen: 0.0.0.0:8080\nproviders: {}\npools: {models: {}}\n")
             .expect("absent public_url ⇒ default None");
     assert_eq!(deploy2.public_url, None);
 }
@@ -3250,7 +3312,8 @@ fn test_fetch_env_spec_unset_is_error() {
 fn config_consolidation_keys_parse_into_deploy_cfg() {
     let yaml = "\
 providers: {}
-models: {}
+pools:
+  models: {}
 providers_file: catalog.yaml
 config:
   locked: true
@@ -3292,7 +3355,7 @@ advanced:
     );
 
     // `overlay: false` parses as the explicit-disable form.
-    let yaml2 = "providers: {}\nmodels: {}\nconfig:\n  locked: true\n  overlay: false\n";
+    let yaml2 = "providers: {}\npools: {models: {}}\nconfig:\n  locked: true\n  overlay: false\n";
     let d2: crate::config::DeployCfg = serde_yaml::from_str(yaml2).expect("overlay:false parses");
     assert!(matches!(
         d2.config.overlay,
@@ -3300,7 +3363,7 @@ advanced:
     ));
 
     // Absent `config:` ⇒ durable-by-default posture (mutable, no explicit overlay).
-    let yaml3 = "providers: {}\nmodels: {}\n";
+    let yaml3 = "providers: {}\npools: {models: {}}\n";
     let d3: crate::config::DeployCfg = serde_yaml::from_str(yaml3).expect("absent config parses");
     assert!(!d3.config.locked);
     assert!(d3.config.overlay.is_none());
@@ -3509,8 +3572,8 @@ fn additive_hook_lists_dedupe_at_first_position() {
     // already carries, so the hook is fired by exactly one of the two resolved chains.
     let deploy: DeployCfg = serde_yaml::from_str(
         "hooks:\n  audit: { module: h, kind: gate }\n\
-         pools:\n  hooks: [audit]\n  fast:\n    members: []\n    hooks: [cheapest, audit]\n\
-         providers: {}\nmodels: {}\n",
+         pools:\n  models: {}\n  hooks: [audit]\n  fast:\n    members: []\n    hooks: [cheapest, audit]\n\
+         providers: {}\n",
     )
     .expect("parses");
     let cfg = resolve(&deploy, &HashMap::new()).expect("resolves");
@@ -3524,8 +3587,8 @@ fn additive_hook_lists_dedupe_at_first_position() {
     // A pool hook the section list does NOT name is untouched.
     let deploy: DeployCfg = serde_yaml::from_str(
         "hooks:\n  audit: { module: h, kind: gate }\n  pii: { module: h, kind: gate }\n\
-         pools:\n  hooks: [audit]\n  fast:\n    members: []\n    hooks: [pii]\n\
-         providers: {}\nmodels: {}\n",
+         pools:\n  models: {}\n  hooks: [audit]\n  fast:\n    members: []\n    hooks: [pii]\n\
+         providers: {}\n",
     )
     .expect("parses");
     let cfg = resolve(&deploy, &HashMap::new()).expect("resolves");
@@ -3572,10 +3635,10 @@ fn pools_reserved_section_keys_are_frozen() {
 #[test]
 fn pools_upstream_credentials_is_a_scalar_override() {
     let deploy: DeployCfg = serde_yaml::from_str(
-        "pools:\n  upstream_credentials: own\n\
+        "pools:\n  upstream_credentials: own\n  models: {}\n\
          \x20 fast:\n    members: []\n    upstream_credentials: passthrough\n\
          \x20 cold:\n    members: []\n\
-         providers: {}\nmodels: {}\n",
+         providers: {}\n",
     )
     .expect("parses");
     let cfg = resolve(&deploy, &HashMap::new()).expect("resolves");
@@ -3607,7 +3670,7 @@ fn pools_upstream_credentials_is_a_scalar_override() {
 fn secrets_block_stays_module_keyed_by_design() {
     let deploy: DeployCfg = serde_yaml::from_str(
         "secrets:\n  vault:\n    settings: { address: \"https://vault.internal\" }\n\
-         providers: {}\nmodels: {}\npools: {}\n",
+         providers: {}\npools: {models: {}}\n",
     )
     .expect("the module-keyed `secrets:` block parses");
     let vault = deploy
@@ -3623,7 +3686,7 @@ fn secrets_block_stays_module_keyed_by_design() {
     // struct doc explaining the exemption.
     let err = serde_yaml::from_str::<DeployCfg>(
         "secrets:\n  my-vault:\n    module: vault\n    settings: {}\n\
-         providers: {}\nmodels: {}\npools: {}\n",
+         providers: {}\npools: {models: {}}\n",
     )
     .expect_err("`secrets:` entries take no `module:` — the key IS the module");
     assert!(err.to_string().contains("unknown field"), "{err}");
@@ -3957,7 +4020,7 @@ fn test_auth_policy_block_parses_and_resolves() {
                  max_ttl: \"7d\"\n        \
                  allowed_pools: [growth, ops]\n        \
                  binding_modes: [time-bound]\n\
-         providers: {}\nmodels: {}\npools: {}\n",
+         providers: {}\npools: {models: {}}\n",
     )
     .expect("the 1.6.0 auth.policy grammar parses");
 
@@ -4005,7 +4068,7 @@ fn test_auth_policy_block_parses_and_resolves() {
 #[test]
 fn test_auth_policy_absent_is_default() {
     let deploy: DeployCfg =
-        serde_yaml::from_str("auth:\n  chain: [keys]\nproviders: {}\nmodels: {}\npools: {}\n")
+        serde_yaml::from_str("auth:\n  chain: [keys]\nproviders: {}\npools: {models: {}}\n")
             .expect("an auth block with no policy parses");
     let mut errors = Vec::new();
     let auth = crate::config::resolve_auth(
@@ -4034,7 +4097,7 @@ fn test_auth_policy_ceiling_allowed_pools_three_state() {
                all-pools: { max_ttl: \"1h\" }\n      \
                no-pools: { allowed_pools: [] }\n      \
                some-pools: { allowed_pools: [a, b] }\n\
-         providers: {}\nmodels: {}\npools: {}\n",
+         providers: {}\npools: {models: {}}\n",
     )
     .expect("three-state allowed_pools parses");
     let policy = &deploy.auth.expect("auth").policy;
@@ -4064,7 +4127,7 @@ fn test_auth_policy_rejects_bad_input_at_parse() {
     // Whole DOCUMENTS, because `auth.policy:` is lifted off the document by the pre-pass: parsing
     // the `auth:` block on its own would never reach the block at all.
     let doc = |policy_body: &str| {
-        format!("auth:\n  policy:\n{policy_body}providers: {{}}\nmodels: {{}}\n")
+        format!("auth:\n  policy:\n{policy_body}providers: {{}}\npools: {{models: {{}}}}\n")
     };
 
     let bad_mode = doc("    binding_modes: [forever]\n");

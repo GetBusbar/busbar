@@ -451,6 +451,7 @@ pub use busbar_substrate::plane::config::Section;
 pub fn split_section<'de, D, T>(
     deserializer: D,
     plane_key: &'static str,
+    reserved: &[&str],
     validate: impl Fn(&str, &T) -> Result<(), String>,
 ) -> Result<Section<T>, D::Error>
 where
@@ -462,6 +463,7 @@ where
         deserializer,
         d.config_section,
         d.subject_noun,
+        reserved,
         validate,
     )
 }

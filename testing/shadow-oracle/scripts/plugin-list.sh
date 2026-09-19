@@ -23,8 +23,9 @@ plugins:
   dir: "${W}/plugins"
 providers:
   p: { api_key: { env: ORACLE_UPSTREAM_KEY } }
-models:
-  m: { provider: p }
+pools:
+  models:
+    m: { provider: p }
 YAML
 printf 'p:\n  protocol: openai\n  base_url: "http://127.0.0.1:1"\n' >"$W/providers.yaml"
 BUSBAR_CONFIG="$W/config.yaml" BUSBAR_PROVIDERS="$W/providers.yaml" ORACLE_UPSTREAM_KEY=x "$BIN" --list-plugins >"$W/stdout" 2>"$W/stderr"; rc=$?

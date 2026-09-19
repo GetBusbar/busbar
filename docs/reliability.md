@@ -56,25 +56,25 @@ providers:
   gemini:
     api_key: { env: GEMINI_KEY }
 
-models:
-  claude-sonnet:
-    provider: anthropic
-    max_concurrent: 20
-    default_max_tokens: 4096
-
-  gpt-4o:
-    provider: openai
-    max_concurrent: 20
-
-  gemini-flash:
-    provider: gemini
-    max_concurrent: 30
-
-  claude-haiku:
-    provider: anthropic
-    max_concurrent: 40
-
 pools:
+  models:
+    claude-sonnet:
+      provider: anthropic
+      max_concurrent: 20
+      default_max_tokens: 4096
+
+    gpt-4o:
+      provider: openai
+      max_concurrent: 20
+
+    gemini-flash:
+      provider: gemini
+      max_concurrent: 30
+
+    claude-haiku:
+      provider: anthropic
+      max_concurrent: 40
+
   primary:
     members:
       - model: claude-sonnet

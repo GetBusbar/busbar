@@ -42,8 +42,9 @@ my-provider:
 providers:
   my-provider: { api_key: { env: MY_PROVIDER_KEY } }
 
-models:
-  my-model: { provider: my-provider, max_concurrent: 20 }
+pools:
+  models:
+    my-model: { provider: my-provider, max_concurrent: 20 }
 ```
 
 **3. Run it:**
@@ -107,12 +108,12 @@ providers:
   ollama:
     api_key: none                  # this upstream takes NO credential — declare it
 
-models:
-  llama-local:
-    provider: ollama
-    upstream_model: "llama3.1:8b"
-
 pools:
+  models:
+    llama-local:
+      provider: ollama
+      upstream_model: "llama3.1:8b"
+
   default:
     members:
       - model: llama-local

@@ -75,10 +75,10 @@ secrets:
 providers:
   mock:
     api_key: { module: ${SECRET_MODULE}, settings: { path: "secret/data/busbar", field: "api_key" } }
-models:
-  test-model:
-    provider: mock
 pools:
+  models:
+    test-model:
+      provider: mock
   default:
     members:
       - model: test-model

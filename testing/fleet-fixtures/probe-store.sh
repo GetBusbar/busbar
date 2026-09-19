@@ -102,9 +102,10 @@ store:
 providers:
   mock:
     api_key: { env: MOCK_KEY }
-models:
-  test-model:
-    provider: mock
+pools:
+  models:
+    test-model:
+      provider: mock
 EOF
 
 # One list, used by both the foreground calls and the background spawn, so the process the probe

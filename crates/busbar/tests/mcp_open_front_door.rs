@@ -71,8 +71,8 @@ fn write_config(dir: &Path, data_port: u16, admin_port: u16, auth_block: &str) -
             r#"listen: "127.0.0.1:{data_port}"
 admin_listen: "127.0.0.1:{admin_port}"
 providers: {{}}
-models: {{}}
-pools: {{}}
+pools:
+  models: {{}}
 {auth_block}
 mcp:
   canonical_uri: "http://127.0.0.1:{data_port}/mcp"

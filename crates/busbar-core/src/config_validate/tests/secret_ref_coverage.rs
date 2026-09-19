@@ -432,7 +432,8 @@ fn unreferenced_identity_provider_token_is_enumerated_but_not_resolved_by_valida
     let yaml = r#"
 listen: "127.0.0.1:8080"
 providers: {}
-models: {}
+pools:
+  models: {}
 identity-providers:
   oracle-keys:
     module: keys
@@ -472,7 +473,8 @@ auth:
     let yaml = r#"
 listen: "127.0.0.1:8080"
 providers: {}
-models: {}
+pools:
+  models: {}
 identity-providers:
   admin-tokens:
     module: admin-tokens
@@ -516,7 +518,8 @@ fn browser_login_client_secret_is_enumerated() {
 listen: "127.0.0.1:8080"
 public_url: "https://busbar.example.com"
 providers: {}
-models: {}
+pools:
+  models: {}
 identity-providers:
   corp-oidc:
     module: oidc
@@ -564,7 +567,8 @@ providers:
     api_key: { env: BUSBAR_TEST_HOSTED_KEY }
   local:
     api_key: none
-models: {}
+pools:
+  models: {}
 tls:
   cert: { file: /run/secrets/cert.pem }
   key: { file: /run/secrets/key.pem }

@@ -380,12 +380,12 @@ groups:
 providers:
   mock:
     api_key: { env: PGO_MOCK_KEY }
-models:
-  gpt-4o-mini:
-    provider: mock
-    max_concurrent: 512
-    max_requests: -1
 pools:
+  models:
+    gpt-4o-mini:
+      provider: mock
+      max_concurrent: 512
+      max_requests: -1
   upstream_credentials: own
   bench-pool:
     members:

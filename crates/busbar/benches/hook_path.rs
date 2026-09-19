@@ -327,9 +327,10 @@ auth:
 {plugins_block}providers:
   stub:
     api_key: {{ env: STUB_KEY }}
-models:
-  bench-model:
-    provider: stub
+pools:
+  models:
+    bench-model:
+      provider: stub
 {hooks_block}pools:
 {pool_hooks}  bench:
     members:

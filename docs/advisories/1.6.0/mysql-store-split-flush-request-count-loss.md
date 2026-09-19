@@ -31,7 +31,8 @@ Not a hydration race — a **split flush**. The engine charges a request at ADMI
 known) and accrues its tokens at COMPLETION, while the write-behind flusher ticks on its own
 interval (100 ms by default). A request slower than one flush tick is therefore written to the
 store as **two separate deltas**: `{requests: +1, models: []}`, then later `{requests: 0,
-models: [<tokens>]}`. A backend that keys its request counters off its per-`(bucket, window,
+pools:
+  models: [<tokens>]}`. A backend that keys its request counters off its per-`(bucket, window,
 MODEL)` rows has nowhere to place a delta whose `models` list is empty — the
 published MySQL store returns `Ok(())` for that delta and silently drops it. After a restart the
 key's spend is intact but its `requests` counter is back at zero, so a restarted node hands a

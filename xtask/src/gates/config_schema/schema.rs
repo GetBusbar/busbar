@@ -929,7 +929,12 @@ pub fn extract(
 
     let pv_sources: Vec<(String, Vec<char>)> = plane_verb_files
         .iter()
-        .map(|(p, t)| (p.clone(), scan::strip_comments(&t.chars().collect::<Vec<char>>())))
+        .map(|(p, t)| {
+            (
+                p.clone(),
+                scan::strip_comments(&t.chars().collect::<Vec<char>>()),
+            )
+        })
         .collect();
     lifted.extend(plane_verb_keys(&pv_sources)?);
 
