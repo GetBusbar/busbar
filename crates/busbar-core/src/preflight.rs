@@ -29,7 +29,13 @@ use crate::{
 /// for on disk. `BUSBAR_DATA_DIR` is PB-13's own first probe name; there is no `data_dir` config key
 /// yet, so it is the only source, and reading an absent environment variable touches no filesystem.
 /// When the `data_dir` config key lands this is the one place that has to learn about it.
-fn fleet_data_dir() -> Option<std::path::PathBuf> {
+///
+/// `pub`: the composition root's durability branch reads the SAME resolved directory this
+/// preflight persists the anti-downgrade floor under, so the boot ledger's on-disk journal and the
+/// floor never disagree about where a node keeps its own files. One accessor, no second probe — a
+/// caller that resolved the directory a different way is a caller that could open a journal beside a
+/// floor that lives somewhere else.
+pub fn fleet_data_dir() -> Option<std::path::PathBuf> {
     let raw = std::env::var_os("BUSBAR_DATA_DIR")?;
     let path = std::path::PathBuf::from(raw);
     (!path.as_os_str().is_empty()).then_some(path)

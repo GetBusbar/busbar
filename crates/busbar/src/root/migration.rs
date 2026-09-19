@@ -74,6 +74,52 @@ pub struct MigrationConfig {
     pub rate_card_version: u64,
 }
 
+/// Derive the migration's read plan from the deployment's RESOLVED configuration.
+///
+/// The root is the only thing that has both the resolved cost model and the process's rate-card
+/// history, which is why the derivation lives here rather than in the ledger unit: the key buckets
+/// name their own windows (the store lists them), but the GROUP buckets are a configuration fact and
+/// the metering days are a time base, and neither is discoverable from a store row.
+///
+/// - `node` is zero, the boot node's identity — the same number [`crate::root::durability::build`]
+///   opens the journal under, so the marker the seal writes carries the writer's own name.
+/// - `window` is the all-time enforcement window the per-key token ledgers accrue into
+///   ([`WINDOW_TOTAL`], which resolves to zero), the window the store's key rows are addressed by.
+/// - `group_buckets` is every configured group bucket paired with the window it is on, resolved to
+///   its opening instant against `now` exactly as budget hydration resolves the same buckets.
+/// - `metering_days` is the current UTC-day metering bucket — the time base the previous release's
+///   per-model rows are aggregated under.
+/// - `rate_card_version` is the head of the process's dated rate-card history, NOT a literal zero:
+///   the opening entries are sealed under the card in force at boot, and a single-entry history's
+///   head is [`busbar_unit_cost::HistorySeq::OPENING`] — a real resolution of the real history, so
+///   the day an operator's card edit lands before the seal the marker records the entry it was
+///   actually opened under rather than a hardcoded sentinel.
+#[must_use]
+pub fn config_from(cost: &busbar_core::cost::CostModel, now: u64) -> MigrationConfig {
+    let group_buckets = cost
+        .groups()
+        .iter()
+        .flat_map(|g| g.buckets.iter())
+        .map(|b| {
+            (
+                b.bucket_id.clone(),
+                busbar_core::governance::budget_window(b.window, now),
+            )
+        })
+        .collect();
+    MigrationConfig {
+        node: 0,
+        window: busbar_core::governance::budget_window(busbar_core::governance::WINDOW_TOTAL, now),
+        group_buckets,
+        metering_days: vec![busbar_core::governance::metering_bucket(now)],
+        rate_card_version: crate::root::kernel::ROOT_CARD
+            .pin()
+            .map_or(busbar_unit_cost::HistorySeq::OPENING.0, |pinned| {
+                pinned.seq().0
+            }),
+    }
+}
+
 /// What the migration step did.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Migration {
