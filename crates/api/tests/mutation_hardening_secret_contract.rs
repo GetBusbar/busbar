@@ -194,6 +194,18 @@ fn resolve_builtin_file_empty_file_is_fail_closed() {
 }
 
 #[test]
+fn resolve_builtin_file_over_the_size_cap_is_a_bounded_error_not_an_oom() {
+    let path = temp_path("FILE_OVERSIZE");
+    // One byte past the 1 MiB secret-file cap: must be rejected without ever materializing the
+    // whole file, and definitely without silently truncating it to something that "resolves".
+    let oversize = vec![b'a'; 1024 * 1024 + 1];
+    std::fs::write(&path, &oversize).unwrap();
+    let err = busbar_api::resolve_builtin(&SecretRef::file(path.to_str().unwrap())).unwrap_err();
+    assert!(err.contains("cannot resolve"), "{err}");
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
 fn resolve_builtin_file_missing_file_is_an_error() {
     let path = temp_path("FILE_MISSING"); // never created
     let err = busbar_api::resolve_builtin(&SecretRef::file(path.to_str().unwrap())).unwrap_err();

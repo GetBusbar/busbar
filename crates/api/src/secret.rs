@@ -155,7 +155,7 @@ pub fn resolve_builtin(secret: &SecretRef) -> Result<Vec<u8>, String> {
         };
     }
     if let Some(path) = self_file_path_checked(secret)? {
-        return match std::fs::read(&path) {
+        return match read_secret_file_bounded(&path) {
             Ok(bytes) if !bytes.is_empty() => Ok(bytes),
             Ok(_) => Err(format!(
                 "secret file:{path} resolved to an EMPTY file; a secret must be non-empty \
@@ -169,6 +169,33 @@ pub fn resolve_builtin(secret: &SecretRef) -> Result<Vec<u8>, String> {
          a secret that cannot resolve is a hard error (fail-closed)",
         secret.module
     ))
+}
+
+/// The largest a `file:`-sourced secret is allowed to be. A secret is a credential (a key, a
+/// token, a short PEM blob) — never a multi-megabyte payload — so this is generous for any
+/// legitimate secret while still bounding memory: `settings.path` can name any path the process
+/// can read (a device node, a named pipe, an operator-controlled mount), and an unbounded
+/// `std::fs::read` would buffer the whole thing before the emptiness/UTF-8 checks ever run,
+/// turning a misconfigured or hostile path into an OOM.
+const MAX_SECRET_FILE_BYTES: u64 = 1024 * 1024;
+
+/// Read a `file:`-sourced secret with `MAX_SECRET_FILE_BYTES` enforced BEFORE the read buffers the
+/// content, not after: `Read::take` caps the reader itself, so a file larger than the limit never
+/// gets fully materialized in memory. A file over the cap is a hard error (fail-closed), not a
+/// silent truncation — a truncated credential is worse than a rejected one.
+fn read_secret_file_bounded(path: &str) -> std::io::Result<Vec<u8>> {
+    use std::io::Read;
+
+    let mut file = std::fs::File::open(path)?;
+    let mut buf = Vec::new();
+    let mut limited = (&mut file).take(MAX_SECRET_FILE_BYTES + 1);
+    limited.read_to_end(&mut buf)?;
+    if buf.len() as u64 > MAX_SECRET_FILE_BYTES {
+        return Err(std::io::Error::other(format!(
+            "file exceeds the {MAX_SECRET_FILE_BYTES}-byte secret size limit"
+        )));
+    }
+    Ok(buf)
 }
 
 /// The `env` module's variable name, validating the settings shape (a malformed built-in ref must
