@@ -2264,6 +2264,53 @@ fn boot_default_config_resolves_a_durable_overlay_next_to_config() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// D65: a RELATIVE `plugins.dir` resolves against the CONFIG FILE'S directory, not the process
+/// working directory — the same rule `providers_file`/`overlay.file` already follow. Joining the
+/// default bare `plugins` to the CWD made "which tarballs does this deployment trust?" depend on how
+/// busbar was started; a missing dir reads as zero plugins, so the drift is silent.
+#[test]
+fn boot_resolves_a_relative_plugins_dir_against_the_config_dir() {
+    let cfg = "providers: {}\nmodels: {}\nplugins:\n  enabled: true\n  dir: myplugins\n";
+    let (dir, config_path, _p) = boot_config_dir("plugins-dir", cfg);
+    let _guard = EnvVarGuard::capture("BUSBAR_CONFIG_OVERLAY");
+    std::env::remove_var("BUSBAR_CONFIG_OVERLAY");
+    let loaded = load_config_from_disk(&config_path, None, false, crate::config::EnvSubst::Strict)
+        .expect("a minimal config with a relative plugins.dir must boot");
+    assert_eq!(
+        loaded.deploy.plugins.dir,
+        dir.join("myplugins").to_string_lossy().into_owned(),
+        "a relative plugins.dir must resolve against the config file's directory, not the CWD"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// D65 (second half): `--validate` REFUSES a `plugins.dir` that does not exist while
+/// `plugins.enabled` is true — a missing directory scans clean as zero tarballs, so without this
+/// guard validate green-lights a deployment that will load none of its plugins. Boot keeps
+/// tolerating it (a volume that mounts a moment late is legitimate), so this lives only on the
+/// validate path.
+#[test]
+fn validate_plugins_dir_exists_refuses_a_missing_enabled_dir() {
+    let mut plugins = crate::config::PluginsCfg::default();
+
+    // Disabled: never refused, whatever the dir.
+    plugins.enabled = false;
+    plugins.dir = "/no/such/plugins/dir".to_string();
+    assert!(crate::validate_plugins_dir_exists(&plugins).is_ok());
+
+    // Enabled + missing: refused, naming the path and the setting.
+    plugins.enabled = true;
+    let err = crate::validate_plugins_dir_exists(&plugins)
+        .expect_err("an enabled but missing plugins.dir must be refused at --validate");
+    assert!(err.contains("/no/such/plugins/dir"), "names the path: {err}");
+    assert!(err.contains("plugins.enabled"), "names the setting: {err}");
+
+    // Enabled + present: accepted.
+    let present = std::env::temp_dir();
+    plugins.dir = present.to_string_lossy().into_owned();
+    assert!(crate::validate_plugins_dir_exists(&plugins).is_ok());
+}
+
 /// 1.5.3 BOOT INVARIANT: a mutable config that explicitly disables the overlay REFUSES TO BOOT, with an
 /// actionable message (writable overlay OR `config.locked: true`). Pre-1.5.3 nothing
 /// enforced "mutable XOR writable overlay".
