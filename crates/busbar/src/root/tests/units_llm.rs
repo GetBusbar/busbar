@@ -1009,6 +1009,163 @@ async fn a_provider_origin_unit_posts_no_flat_fee() {
     );
 }
 
+/// The DERIVED spend on the key's all-time bucket, in whole cents. At `FEE_CENTS = 1` a single
+/// charged-and-kept flat fee reads as `1` and a refunded one reads as `0`, so this is the money the
+/// keep-vs-refund decision moves. Read at the same all-time window every charge and refund lands in.
+fn derived(rig: &Rig) -> busbar_core::governance::DerivedUsage {
+    rig.app
+        .governance
+        .clone()
+        .expect("the rig configures governance")
+        .derived_bucket_usage(&rig.app.cost, &rig.key.id, "total", true, rig.charged_at)
+        .expect("the usage read succeeds")
+}
+
+/// The same drive as [`drive_keeping_the_unit`], with the caller's SLOT CANCELLED before the loop
+/// reaches its one await — the stop-before-dial client disconnect the node's sweep trips when a
+/// caller walks away. The unit is admitted and CHARGED like any other, and then the Route step reads
+/// the tripped token and refuses in place with `ClientGone`, so the end reaches the CHARGED terminal
+/// as the client-disconnect end rather than as a node-side failure.
+async fn drive_client_gone_to_end(
+    rig: &Rig,
+    node: &LlmNode,
+    gov: busbar_api::PlaneRequestCtx,
+) -> Ended {
+    let arrival = WalkArrival {
+        host: rig.host(),
+        gov,
+        proto: PROTO,
+        operation: busbar_api::operation::Operation::CHAT,
+        caller_token: None,
+        headers: json_headers(),
+        body: Fixture::BufferedOk.body(),
+        path: None,
+    };
+    let key = UnitKey::new(node.next_key.fetch_add(1, Ordering::Relaxed));
+    let principal = authenticate::principal_id(&arrival.gov);
+    let meter = Arc::new(AccrualMeter::new());
+    let unit = LlmUnit {
+        node,
+        seats: NATIVE_SEATS,
+        meter: Arc::clone(&meter),
+        op_class: OpClassId::new(arrival.operation.name()),
+        model_hint: None,
+        started: Instant::now(),
+        charged_at: rig.charged_at,
+        history: crate::root::kernel::ROOT_CARD.pin(),
+        arrived: Arrived::at(rig.charged_at * 1_000, 0),
+        deferred: Mutex::new(None),
+        model: Mutex::new(String::new()),
+        walk: Walk::open(arrival),
+    };
+    let hold = busbar_kernel::inflight::arrival_hold(&node.kernel, &node.door, principal);
+    let slot = node
+        .inflight
+        .insert(busbar_kernel::inflight::Enter {
+            key,
+            origin: OriginKind::Client,
+            session: None,
+            admin_listener: false,
+            provider_of_open_session: false,
+            zero_hold_tick: false,
+            arrival: hold,
+            now: busbar_substrate::store::now_ms(),
+        })
+        .expect("the uncapped table takes the unit");
+    // THE CALLER WALKS AWAY. Trip the slot's cancellation before `run_unit_async` reaches Route, so
+    // the step reads a tripped token on the calling thread and refuses before dialing an upstream —
+    // the cooperative half of the client-gone pair, and the one that ends deterministically at the
+    // charged terminal rather than through a dropped future.
+    assert!(
+        slot.cancel().trip(ReasonCode::ClientGone),
+        "this call is the one that trips the cancellation"
+    );
+    let ctx = UnitCtx {
+        key,
+        origin: OriginKind::Client,
+        session: None,
+        generation: busbar_kernel::registry::Generation::FIRST,
+        admin_listener: false,
+        kernel_verb_only: false,
+    };
+    let ended = busbar_kernel::teller::run_unit_async(
+        &node.kernel,
+        &unit,
+        &ctx,
+        busbar_kernel::teller::Run {
+            cell: slot.cell(),
+            parent: None,
+            leases: slot.leases(),
+            gauge: &node.gauge,
+            canary: &node.canary,
+            meter: &meter,
+        },
+        &unit,
+    )
+    .await;
+    node.inflight.remove(key);
+    ended
+}
+
+/// PB-27 — THE FLAT FEE IS KEPT ON A CLIENT DISCONNECT.
+///
+/// A unit that passed the door is charged the flat per-request fee. When the caller then walks away,
+/// the Route step refuses it in place with `ClientGone` and the unit ends at the CHARGED terminal on
+/// a non-2xx. The fee STANDS: the caller — not the node — ended the unit, exactly as the fee stands
+/// on every exit after a 2xx was relayed. The admission `requests` slot the door drew is kept either
+/// way (a cap cannot be escaped by disconnecting), so the discriminator is the derived SPEND: the
+/// flat fee, un-refunded.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_flat_fee_is_kept_when_the_client_disconnects() {
+    let rig = rig(Fixture::BufferedOk).await;
+    let node = LlmNode::new();
+    let ended = drive_client_gone_to_end(&rig, &node, rig.gov()).await;
+    let derived = derived(&rig);
+    rig.server.shutdown().await;
+
+    assert!(
+        matches!(ended, Ended::Settled { .. }),
+        "the charged terminal settles the client-gone unit"
+    );
+    assert_eq!(
+        derived.requests, 1,
+        "the admission slot is drawn and NEVER released: a disconnect cannot escape the requests cap"
+    );
+    assert_eq!(
+        derived.spend_cents, FEE_CENTS,
+        "the flat fee is KEPT on a client disconnect (PB-27), not refunded"
+    );
+}
+
+/// PB-27 — THE FLAT FEE IS REFUNDED ON A GENUINELY-REVERSIBLE FAILURE.
+///
+/// The guard beside the case above: a failure the NODE owns still refunds. A model that resolves to
+/// no pool after the caller was charged is a post-admission 404 — charged, non-2xx, and not the
+/// caller's doing — so the flat fee is reversed while the admission slot is kept. Without this a fix
+/// that simply stopped refunding every non-2xx would pass the keep case and silently over-bill every
+/// real failure.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_flat_fee_is_refunded_on_a_reversible_failure() {
+    let rig = rig(Fixture::UnknownModel).await;
+    let node = LlmNode::new();
+    let ended = drive_to_end(&rig, &node, Fixture::UnknownModel, rig.gov(), NATIVE_SEATS).await;
+    let derived = derived(&rig);
+    rig.server.shutdown().await;
+
+    assert!(
+        matches!(ended, Ended::Settled { .. }),
+        "the charged terminal settles the post-admission 404"
+    );
+    assert_eq!(
+        derived.requests, 1,
+        "the admission slot is kept on a failure just as on a disconnect"
+    );
+    assert_eq!(
+        derived.spend_cents, 0,
+        "a node-owned failure REFUNDS the flat fee: the caller is not billed for it"
+    );
+}
+
 /// One request, driven through the real loop, answering with the END rather than the bytes.
 ///
 /// The same drive [`LlmNode::answer`] performs — the same table, the same slot, the same

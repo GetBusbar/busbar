@@ -1521,6 +1521,112 @@ async fn the_live_carry_hands_the_meter_step_the_meter_half_the_walk_took() {
     rig.server.shutdown().await;
 }
 
+/// PB-27 AT THE WALK'S OWN TERMINAL — `Walk::audit` reverses the charged flat fee on a non-2xx end
+/// only when the end is REVERSIBLE.
+///
+/// The kernel decides reversibility from the outcome it sealed and hands the walk a bool; this pins
+/// the walk's half of that contract, over the real governed door that actually charged the fee. A
+/// NON-reversible end — the client disconnect, whose fee is KEPT because the caller ended the unit —
+/// leaves the derived spend standing at the one-cent fee; a reversible node-side failure refunds it
+/// to zero. The admission `requests` slot is drawn and kept on BOTH, because only the fee base is
+/// ever reversed — a cap that a failure or a disconnect could refund would be a cap nothing enforced.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_walk_terminal_keeps_the_fee_on_a_non_reversible_end_and_refunds_it_otherwise() {
+    use axum::response::IntoResponse as _;
+
+    for (reversible, want_spend) in [(false, FEE_CENTS), (true, 0_i64)] {
+        let rig = rig(Fixture::BufferedOk).await;
+        let (host, rt) = crate::engine::test_host_rt(&rig.app);
+        let gov = rig.gov();
+        let seal = kernel_seal();
+        let model = Fixture::BufferedOk.model().to_string();
+
+        let walk = crate::unit::walk::Walk::open(crate::unit::walk::WalkArrival {
+            host: Arc::clone(&host),
+            gov: gov.clone(),
+            proto: PROTO,
+            operation: busbar_api::operation::Operation::CHAT,
+            caller_token: None,
+            headers: json_headers(),
+            body: request_body(Fixture::BufferedOk),
+            path: None,
+        });
+
+        let principal: PrincipalId = {
+            let token: UnitToken<Authenticate> = UnitToken::mint(&seal);
+            authenticate::authenticate(&token, &gov)
+                .into_result(&seal)
+                .ok()
+                .and_then(|facts| facts.principal().cloned())
+                .expect("the governed fixture authenticates")
+        };
+        let configured_lane = rt
+            .lane_view(0)
+            .expect("the fixture configures one lane")
+            .model
+            .to_string();
+        let destinations = sealed_destinations(&seal, &configured_lane);
+
+        // THE DOOR charges the flat fee, exactly as it does for every admitted unit.
+        let admitted = admit::admit(
+            &UnitToken::mint(&seal),
+            &AdmitToken::mint(&seal),
+            &admit::AdmitCtx {
+                host: &host,
+                gov: &gov,
+                proto: PROTO,
+                destination: &model,
+                charged_at: rig.charged_at,
+            },
+            &principal,
+            &destinations,
+        );
+        assert!(
+            admitted.charged,
+            "the governed fixture is admitted with the charge landed, or this pins nothing"
+        );
+        let effective = admitted
+            .effective_pool
+            .clone()
+            .unwrap_or_else(|| model.clone());
+        let _admission = walk.take_admission(admitted);
+
+        let derived = |rig: &Rig| {
+            rig.app
+                .governance
+                .clone()
+                .expect("governance is configured")
+                .derived_bucket_usage(&rig.app.cost, &rig.key.id, "total", true, rig.charged_at)
+                .expect("usage read")
+        };
+        assert_eq!(
+            derived(&rig).spend_cents,
+            FEE_CENTS,
+            "the door charged the flat fee before the terminal ran"
+        );
+
+        // THE CHARGED TERMINAL, on a non-2xx end. `reversible` is the only thing that varies.
+        let _ = walk.audit(
+            &UnitToken::mint(&seal),
+            &audit_ctx(&host, &gov, &effective, Instant::now(), rig.charged_at),
+            reversible,
+            || audit::Served::of((StatusCode::BAD_GATEWAY, "no").into_response()),
+        );
+
+        let after = derived(&rig);
+        assert_eq!(
+            after.requests, 1,
+            "reversible={reversible}: the admission slot is kept whichever way the fee went"
+        );
+        assert_eq!(
+            after.spend_cents, want_spend,
+            "reversible={reversible}: a non-reversible end keeps the fee, a reversible one refunds it"
+        );
+
+        rig.server.shutdown().await;
+    }
+}
+
 /// GAP 3, CLOSED — the VERIFY step hands its named refusal back with the decision.
 ///
 /// `verify::verify` answers a [`verify::Verified`]: the `Decision<Verify>` the loop reads, whose

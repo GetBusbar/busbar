@@ -534,14 +534,25 @@ impl Walk {
     /// fallback is unreachable from the loop's order — every path to a terminal has already rendered
     /// something — and it is an answer rather than an unwrap, because a path that cannot be taken
     /// still has to say something if it is.
+    ///
+    /// `reversible` is PB-27's keep-vs-refund line: the flat per-request fee is REFUNDED on a
+    /// non-2xx end only when the failure is one the node owns — an upstream 4xx/5xx, a router 503, a
+    /// post-admission 404 — and KEPT when the caller went away after the node had committed to
+    /// serving it (a client disconnect). The refund the terminal issues is a decrement of a shared
+    /// window counter, so it is gated on BOTH the charge having landed (`charged`) and the end being
+    /// reversible; a non-reversible end passes `charged = false` to the door, which suppresses the
+    /// refund WITHOUT rewriting anything the record already posted — the terminal's own request-log
+    /// link is the auditable statement of how the unit ended, and keeping the fee is simply not
+    /// posting the adjusting refund against it.
     pub fn audit(
         &self,
         token: &UnitToken<busbar_caps::step::Audit>,
         ctx: &crate::unit::audit::AuditCtx<'_>,
+        reversible: bool,
         fallback: impl FnOnce() -> Served,
     ) -> Decision<busbar_caps::step::Audit> {
         let bytes = self.take_bytes().unwrap_or_else(fallback);
-        let audited = crate::unit::audit::audit(token, ctx, bytes, self.charged());
+        let audited = crate::unit::audit::audit(token, ctx, bytes, self.charged() && reversible);
         self.seal_terminal(audited.response);
         audited.decision
     }
