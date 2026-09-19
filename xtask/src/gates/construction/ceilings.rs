@@ -706,4 +706,3 @@ mod tests {
         assert!(set_int(DOC, "rules.x", "missing", 9).is_none());
     }
 }
-

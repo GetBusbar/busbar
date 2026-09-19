@@ -826,15 +826,19 @@ impl FileStore {
                 Some(e) => {
                     e.row.tokens_input = e.row.tokens_input.saturating_add(delta.tokens_input);
                     e.row.tokens_output = e.row.tokens_output.saturating_add(delta.tokens_output);
-                    e.row.tokens_cache_read =
-                        e.row.tokens_cache_read.saturating_add(delta.tokens_cache_read);
+                    e.row.tokens_cache_read = e
+                        .row
+                        .tokens_cache_read
+                        .saturating_add(delta.tokens_cache_read);
                     e.row.tokens_cache_write = e
                         .row
                         .tokens_cache_write
                         .saturating_add(delta.tokens_cache_write);
                     e.row.requests = e.row.requests.saturating_add(delta.requests);
-                    e.row.billable_requests =
-                        e.row.billable_requests.saturating_add(delta.billable_requests);
+                    e.row.billable_requests = e
+                        .row
+                        .billable_requests
+                        .saturating_add(delta.billable_requests);
                 }
                 None => d.metering.push(MeteringEntry {
                     bucket: delta.bucket,

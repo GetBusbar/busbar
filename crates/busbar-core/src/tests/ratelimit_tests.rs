@@ -131,7 +131,9 @@ fn backward_clock_does_not_wipe_other_principals_budgets() {
     // The clock now regresses by several windows (e.g. an NTP step). A third principal's
     // request lands with a `now` that computes an OLDER window than "a" and "b" already hold.
     let regressed_now = real_now - 5 * MUTATION_RATE_WINDOW_SECS;
-    assert!(l.check("c", MutationClass::Config, regressed_now).admitted());
+    assert!(l
+        .check("c", MutationClass::Config, regressed_now)
+        .admitted());
 
     // Back at the real (later) time, "a" must still be denied (budget not refilled) and "b"
     // must still show exactly 5 spent, not a fresh 0 — the regressed-clock sweep must not have
