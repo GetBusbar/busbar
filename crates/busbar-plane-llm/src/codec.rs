@@ -461,14 +461,19 @@ impl Plane for LlmPlane {
                 let _ = facts.set(meta::FACT_MODEL, FactValue::Str(model));
             }
         }
+        // Whether the client asked for a stream is read from wherever this dialect carries the
+        // intent: the `stream` body member for the dialects that spell it there, OR the request
+        // target for the one dialect whose streaming action is a distinct target rather than a body
+        // flag. A body-only read answered that dialect's stream-action clients "not a stream" and
+        // served whole the stream they explicitly asked for.
+        let body_stream = value
+            .get("stream")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        let target_stream = d.stream_marker.is_some_and(|marker| path.contains(marker));
         let _ = facts.set(
             meta::FACT_STREAM,
-            FactValue::Bool(
-                value
-                    .get("stream")
-                    .and_then(serde_json::Value::as_bool)
-                    .unwrap_or(false),
-            ),
+            FactValue::Bool(body_stream || target_stream),
         );
         // The response ceiling the client asked for, as evidence. It is a fact, never a decision:
         // what it is clamped to is the admission step's business.

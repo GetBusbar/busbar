@@ -78,12 +78,27 @@ const fn claim(selector: Selector) -> Claim {
 const MODEL_INVOKE: &[PathSeg] = &[PathSeg::Lit("model"), PathSeg::Var, PathSeg::Lit("invoke")];
 
 /// A path pattern that matches the whole model-scoped surface of one API version.
-const V1_MODELS: &[PathSeg] = &[PathSeg::Lit("v1"), PathSeg::Lit("models"), PathSeg::Tail];
+///
+/// The `Var` is the model segment, and it is required: it is what makes this the per-MODEL surface
+/// rather than the bare `/v1/models` list surface. A `Tail` alone swallows nothing as readily as it
+/// swallows a model, so `/v1/models` matched this claim and was read as an invoke of a model that
+/// was never named — a `Var` demands the segment the invoke is scoped to before the `Tail` takes
+/// whatever action suffix or sub-path follows it.
+const V1_MODELS: &[PathSeg] = &[
+    PathSeg::Lit("v1"),
+    PathSeg::Lit("models"),
+    PathSeg::Var,
+    PathSeg::Tail,
+];
 
 /// A path pattern that matches the whole model-scoped surface of the preview API version.
+///
+/// Same shape as [`V1_MODELS`]: the `Var` is the required model segment, so the preview list
+/// surface `/v1beta/models` is not swallowed by this per-model claim.
 const V1BETA_MODELS: &[PathSeg] = &[
     PathSeg::Lit("v1beta"),
     PathSeg::Lit("models"),
+    PathSeg::Var,
     PathSeg::Tail,
 ];
 
