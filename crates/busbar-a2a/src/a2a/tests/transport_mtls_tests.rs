@@ -233,7 +233,7 @@ fn an_mtls_peer_accepts_the_card_fetch_when_the_registration_names_a_client_iden
     let policy = FetchPolicy::default();
     let resp = ReqwestTransport::new(&policy)
         .trusting_root(server_ca.as_bytes())
-        .presenting(identity)
+        .presenting(1, identity)
         .get(
             &url("https", addr.port(), "/.well-known/agent-card.json"),
             LOOPBACK,
@@ -284,6 +284,7 @@ fn the_verb_layers_probe_fetches_an_mtls_vendors_card_with_that_registrations_ce
             allow_private: true,
             ..FetchPolicy::default()
         },
+        1,
         &identities,
     )
     .trusting_root(server_ca.as_bytes());
@@ -359,7 +360,7 @@ fn each_registration_presents_its_own_certificate_and_not_another_registrations(
     );
     // THE PRODUCTION BUNDLE, built exactly as the re-verification job builds it, plus the one test
     // root that makes the peers' server certificates acceptable.
-    let live = LiveCardFetch::presenting(FetchPolicy::default(), &identities)
+    let live = LiveCardFetch::presenting(FetchPolicy::default(), 1, &identities)
         .trusting_root(server_ca.as_bytes());
 
     // EACH AGENT AT ITS OWN PEER: accepted.

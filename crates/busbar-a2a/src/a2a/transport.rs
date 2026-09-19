@@ -271,11 +271,18 @@ impl ReqwestTransport {
     /// that could be attached after the fact is an identity that could be attached to the transport
     /// a different agent is being fetched with. The parsed key is handed to the host registry ONCE
     /// here (at boot), not per hop — this transport keeps only the opaque ref.
+    ///
+    /// `generation` is the config generation this transport (and the plane that owns it) was built
+    /// under (S28: [`busbar_substrate::plane_host::identity::register`] tags every entry with it, so
+    /// the identity a stale plane instance's transport presents is evicted, and best-effort
+    /// zeroized, once two NEWER generations have registered their own).
     pub(crate) fn presenting(
         mut self,
+        generation: u64,
         identity: busbar_substrate::egress::engine::ClientIdentity,
     ) -> Self {
-        self.client_identity_ref = busbar_substrate::plane_host::identity::register(identity);
+        self.client_identity_ref =
+            busbar_substrate::plane_host::identity::register(generation, identity);
         self
     }
 
@@ -528,7 +535,8 @@ pub(crate) struct LiveCardFetch {
 
 impl LiveCardFetch {
     pub(crate) fn new(policy: FetchPolicy) -> Self {
-        Self::presenting(policy, &ClientIdentities::new())
+        // No identities to register, so the generation tag is moot — `0` names nothing live.
+        Self::presenting(policy, 0, &ClientIdentities::new())
     }
 
     /// The production bundle for a plane whose registrations name client certificates.
@@ -536,13 +544,25 @@ impl LiveCardFetch {
     /// Takes the identities by reference and clones per agent, because a `ClientIdentity` is a
     /// parsed key that several transports may need over a process lifetime and the caller resolved
     /// them once.
-    pub(crate) fn presenting(policy: FetchPolicy, identities: &ClientIdentities) -> Self {
+    ///
+    /// `generation` is the config generation the caller built this bundle under — threaded to every
+    /// [`ReqwestTransport::presenting`] call below, which threads it to
+    /// [`busbar_substrate::plane_host::identity::register`] (S28's bounded, generation-scoped
+    /// retention). `a2a_start` passes the owning plane's own `generation()`, so a stale plane's
+    /// identities fall out of the registry (and are best-effort zeroized) once two newer
+    /// generations have registered their own — the same "replaced, not merely superseded" posture
+    /// the rest of that plane's boot-resolved state already gets.
+    pub(crate) fn presenting(
+        policy: FetchPolicy,
+        generation: u64,
+        identities: &ClientIdentities,
+    ) -> Self {
         let per_agent = identities
             .iter()
             .map(|(agent_id, identity)| {
                 (
                     agent_id.clone(),
-                    ReqwestTransport::new(&policy).presenting(identity.clone()),
+                    ReqwestTransport::new(&policy).presenting(generation, identity.clone()),
                 )
             })
             .collect();
