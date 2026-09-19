@@ -2916,19 +2916,28 @@ fn malformed_export_is_never_replaced_by_a_synthesized_one() {
         "the operator's `export:` was destroyed and replaced with a synthesized mapping: {}",
         out.yaml
     );
-    // `observability:` is a RETIRED section, so the block itself still has to go — but the sink it
-    // carried may not disappear WITHOUT A WORD. The ledger has to print the key and its value so the
-    // operator can put it back by hand.
-    assert!(
-        out.todos
-            .iter()
-            .any(|t| t.contains("https://x.example/log")),
-        "the webhook sink was deleted with the retired block and never named in the ledger: {:?}",
-        out.todos
-    );
+    // The export guard names the block it refused to touch, and (because the guard bailed BEFORE
+    // lifting) it also reports that the retired observability sink was left where it was written —
+    // so the operator is told both halves and nothing was half-migrated.
     assert!(
         out.todos.iter().any(|t| t.contains("export")),
         "a section this migrator refuses to touch must say so: {:?}",
+        out.todos
+    );
+    // `observability:` is a RETIRED section, so the block itself still has to go — but the sink it
+    // carried may not disappear WITHOUT A WORD. The residue todo names the KEY (never the VALUE — a
+    // value can be a secret), so the operator knows what to re-express by hand.
+    assert!(
+        out.todos
+            .iter()
+            .any(|t| t.contains("request_log_webhook_url")),
+        "the deleted observability sink must be named (by key) in the ledger: {:?}",
+        out.todos
+    );
+    // A residue todo must NEVER echo the value, which could be a credential.
+    assert!(
+        !out.todos.iter().any(|t| t.contains("https://x.example/log")),
+        "a residue todo must name the KEY, never the VALUE (secret-leak guard): {:?}",
         out.todos
     );
 }
