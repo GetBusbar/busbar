@@ -2192,7 +2192,7 @@ async fn test_write_behind_flush_serializes_and_counts_exactly_once() {
         assert!(gov.try_admit(&cost, &key, "", at).is_ok());
     }
     let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel::<()>(1);
-    let flusher = crate::governance::spawn_budget_flusher(gov.clone(), shutdown_rx);
+    let (flusher, _gate) = crate::governance::spawn_budget_flusher(gov.clone(), shutdown_rx);
 
     // Wait until the first flush is paused inside add_usage.
     tokio::task::spawn_blocking(move || entered_rx.recv().unwrap())
@@ -5290,5 +5290,64 @@ fn proof_minted_admission_is_store_state_config_signing_is_not() {
     assert!(
         gov_fresh.verify_token(&token, now, None).is_none(),
         "admission is store state: a genuinely-signed token is refused when the store has no binding"
+    );
+}
+
+/// DEFECT B13 (durable double-count): the process's inline shutdown flush and the periodic flusher
+/// must share ONE [`FlushGate`] so a graceful stop counts the last window's spend EXACTLY ONCE.
+///
+/// The two contenders (the "shutdown" inline flush and a "periodic" flush) each run through
+/// `FlushGate::flush_final`, whose body models `flush_budgets`' vulnerable window: CHECK the acked
+/// baseline, then OFF the lock write the delta to the durable store, then ADVANCE the baseline. Two
+/// of these OVERLAPPING would both observe an un-advanced baseline and add the delta twice — the
+/// double-count. Because the shared gate serializes them, the first advances the baseline before the
+/// second checks it, so the second is a no-op and durable spend lands ONCE. Without the gate
+/// (overlap allowed) the durable total would be `2 * DELTA`; this asserts it is exactly `DELTA`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn b13_shutdown_and_periodic_flush_count_durable_spend_once() {
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    use std::sync::Arc;
+
+    let gate = FlushGate::new();
+    let durable = Arc::new(AtomicU64::new(0));
+    let baseline_advanced = Arc::new(AtomicBool::new(false));
+    const DELTA: u64 = 100;
+
+    // Build one flush body capturing fresh handle clones. Each body reproduces the flush_budgets
+    // snapshot/write/advance window: CHECK the acked baseline, then (off the lock) SLEEP to model
+    // the store write, ADD the delta, and only THEN ADVANCE the baseline. If the two bodies OVERLAP
+    // (a non-serializing gate), both observe the un-advanced baseline inside the sleep window and add
+    // DELTA twice -> durable == 2*DELTA. The shared gate serializes them, so the first advances the
+    // baseline before the second checks it and the second adds nothing -> durable == DELTA.
+    let make_body = || {
+        let durable = durable.clone();
+        let baseline_advanced = baseline_advanced.clone();
+        move || {
+            if !baseline_advanced.load(Ordering::SeqCst) {
+                std::thread::sleep(std::time::Duration::from_millis(50)); // off-lock store write
+                durable.fetch_add(DELTA, Ordering::SeqCst);
+                baseline_advanced.store(true, Ordering::SeqCst);
+            }
+        }
+    };
+
+    // The periodic flush and the process's inline shutdown flush, launched concurrently.
+    let periodic = {
+        let gate = gate.clone();
+        let body = make_body();
+        tokio::spawn(async move { gate.flush_final(body).await })
+    };
+    let shutdown = {
+        let gate = gate.clone();
+        let body = make_body();
+        tokio::spawn(async move { gate.flush_final(body).await })
+    };
+    periodic.await.unwrap();
+    shutdown.await.unwrap();
+
+    assert_eq!(
+        durable.load(Ordering::SeqCst),
+        DELTA,
+        "durable spend must be counted ONCE (not doubled) when shutdown-flush races the periodic flush"
     );
 }

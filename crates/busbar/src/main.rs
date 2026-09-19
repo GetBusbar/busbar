@@ -1597,14 +1597,19 @@ async fn run(data_workers: usize) {
     // a graceful stop loses nothing (an ungraceful crash can lose at most one flush interval). Spawned
     // once here (not on config apply/reload — the reused `Arc<GovState>` keeps its live cells and its
     // already-running flusher). No-op when governance is disabled.
-    if let Some(gov) = app_handle.load().governance.clone() {
-        // Handle intentionally dropped (not awaited): the flusher runs for the process lifetime and
-        // exits its own loop on the shutdown broadcast; nothing here needs to join it.
-        std::mem::drop(busbar_core::governance::spawn_budget_flusher(
-            gov,
-            shutdown_tx.subscribe(),
-        ));
-    }
+    // KEEP the returned `FlushGate` so the inline final flush below (the durability-guaranteeing
+    // shutdown flush) runs through the SAME gate the periodic flusher serializes on — otherwise the
+    // two race the same un-advanced baseline and double-count the last window's durable spend (B13).
+    // The spawned task's own handle is detached inside `spawn_budget_flusher` (it runs for the
+    // process lifetime and exits its loop on the shutdown broadcast). `None` when governance is off.
+    let flush_gate = app_handle.load().governance.clone().map(|gov| {
+        let (handle, gate) =
+            busbar_core::governance::spawn_budget_flusher(gov, shutdown_tx.subscribe());
+        // Detach the task (runs for the process lifetime, exits its loop on the shutdown broadcast);
+        // keep only the gate so the inline final flush below shares it.
+        std::mem::drop(handle);
+        gate
+    });
 
     // START EVERY PLANE'S BACKGROUND WORK — the MCP tool-list refresh sweep and the A2A
     // re-verification job — through ONE boot entry point that folds over the plane registry and calls
@@ -1633,11 +1638,19 @@ async fn run(data_workers: usize) {
         // re-mints the host over each frame's live snapshot without naming the core factory itself.
         let factory = busbar_core::plane_host::live_host_factory(app_handle.clone());
         let code = busbar_mcp::mcp::stdio_serve::serve_stdio(factory).await;
-        if let Some(gov) = app_handle.load().governance.clone() {
-            let n = gov.flush_budgets();
-            tracing::info!(flushed = n, "budget counters flushed on shutdown");
-            let m = gov.flush_metering();
-            tracing::info!(flushed = m, "metering rows flushed on shutdown");
+        // FINAL flush THROUGH THE SHARED GATE: `flush_final` waits for any in-flight periodic flush
+        // to drain before flushing, so this shutdown flush never overlaps the flusher and the last
+        // window's spend is counted exactly ONCE, not double-counted (B13). `gov` present iff a gate
+        // was spawned above.
+        if let (Some(gov), Some(gate)) = (app_handle.load().governance.clone(), flush_gate.clone())
+        {
+            gate.flush_final(move || {
+                let n = gov.flush_budgets();
+                tracing::info!(flushed = n, "budget counters flushed on shutdown");
+                let m = gov.flush_metering();
+                tracing::info!(flushed = m, "metering rows flushed on shutdown");
+            })
+            .await;
         }
         observability::shutdown_tracing();
         std::process::exit(code);
@@ -1729,15 +1742,21 @@ async fn run(data_workers: usize) {
     // BUDGET WRITE-BEHIND: one FINAL, SYNCHRONOUS flush after the graceful drain, so a graceful stop
     // persists the freshest accrued spend/requests before the process exits. The background flusher's
     // shutdown arm also flushes, but it is a fire-and-forget task that could lose the race with process
-    // exit; flushing inline here on the run task guarantees durability (this call blocks briefly under
-    // the budget lock, off any request path — the listeners have already drained).
-    if let Some(gov) = app_handle.load().governance.clone() {
-        let n = gov.flush_budgets();
-        tracing::info!(flushed = n, "budget counters flushed on shutdown");
-        // The flusher task's own shutdown arm also flushes metering, but it is fire-and-forget and
-        // can lose the race with process exit (same reason the budget flush above is inline here).
-        let m = gov.flush_metering();
-        tracing::info!(flushed = m, "metering rows flushed on shutdown");
+    // exit; flushing here on the run task guarantees durability. It runs THROUGH THE SHARED
+    // `FlushGate` (`flush_final`): it waits for any in-flight periodic flush to drain first, so this
+    // final flush never overlaps the flusher and never double-counts the last window's spend against
+    // a still-in-flight periodic flush that snapshotted the same un-advanced baseline (defect B13).
+    // `gov` is present iff a gate was spawned above.
+    if let (Some(gov), Some(gate)) = (app_handle.load().governance.clone(), flush_gate) {
+        gate.flush_final(move || {
+            let n = gov.flush_budgets();
+            tracing::info!(flushed = n, "budget counters flushed on shutdown");
+            // The flusher task's own shutdown arm also flushes metering, but it is fire-and-forget and
+            // can lose the race with process exit (same reason the budget flush above is inline here).
+            let m = gov.flush_metering();
+            tracing::info!(flushed = m, "metering rows flushed on shutdown");
+        })
+        .await;
     }
     // No state snapshot on shutdown: reliability state is RAM-only (re-learned on boot) and the
     // audit log is written through to the durable store as it happens (store-or-RAM rule — there is
