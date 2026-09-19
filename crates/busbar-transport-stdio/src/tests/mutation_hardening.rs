@@ -9,7 +9,7 @@
 use super::*;
 use busbar_contract::unit::ConfigView;
 use busbar_contract::{
-    Scratch, ArenaBudget, ArenaBytes as ContractArenaBytes, Plugin, Transport, TransportConfigView,
+    ArenaBudget, ArenaBytes as ContractArenaBytes, Plugin, Scratch, Transport, TransportConfigView,
     TransportMeta,
 };
 

@@ -6,7 +6,7 @@
 
 use std::sync::Arc;
 
-use busbar_contract::bounded::{Scratch, ArenaBudget, ArenaBytes, Labels};
+use busbar_contract::bounded::{ArenaBudget, ArenaBytes, Labels, Scratch};
 use busbar_contract::bounded::{SlabBytes, Span};
 use busbar_contract::plane::{Ingress, Plane, PlaneMeta};
 use busbar_contract::unit::{Clock, ConfigView, Ctx, SessionView, TransportView};

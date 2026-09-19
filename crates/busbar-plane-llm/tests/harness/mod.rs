@@ -13,7 +13,7 @@
 #![allow(dead_code)]
 
 use busbar_contract::bounded::SlabBytes;
-use busbar_contract::bounded::{Scratch, ArenaBudget, ArenaBytes, Facts, Ir, Labels, Span};
+use busbar_contract::bounded::{ArenaBudget, ArenaBytes, Facts, Ir, Labels, Scratch, Span};
 use busbar_contract::dest::{DestinationFacts, VerifiedDestination};
 use busbar_contract::ids::{LaneId, OpClassId, StreamId};
 use busbar_contract::plugin::KernelSeal;

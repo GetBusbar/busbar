@@ -5,7 +5,7 @@
 //! values (a unit, a verified destination) handed through a seal. Nothing here is shipped.
 
 use busbar_contract::bounded::{
-    Scratch, ArenaBudget, ArenaBytes, Facts, Ir, Labels, SlabBytes, Span,
+    ArenaBudget, ArenaBytes, Facts, Ir, Labels, Scratch, SlabBytes, Span,
 };
 use busbar_contract::dest::{DestinationFacts, VerifiedDestination};
 use busbar_contract::ids::{LaneId, OpClassId, SessionId, StreamId};

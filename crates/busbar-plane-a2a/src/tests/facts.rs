@@ -3,7 +3,7 @@
 //! super::*` reaches the private items it always did.
 
 use super::{correlation_for, correlation_value, FACT_RPC_ID};
-use busbar_contract::bounded::{Scratch, ArenaBudget, ArenaBytes, Span};
+use busbar_contract::bounded::{ArenaBudget, ArenaBytes, Scratch, Span};
 use busbar_contract::ids::CorrelationValue;
 
 /// An arena that hands out leaked bytes, which is what a test arena is.

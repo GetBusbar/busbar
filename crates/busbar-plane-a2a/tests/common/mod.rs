@@ -13,7 +13,7 @@
 
 #![allow(dead_code)]
 
-use busbar_contract::bounded::{Scratch, ArenaBudget, ArenaBytes, Labels, SlabBytes, Span};
+use busbar_contract::bounded::{ArenaBudget, ArenaBytes, Labels, Scratch, SlabBytes, Span};
 use busbar_contract::ids::{PrincipalId, SessionId};
 use busbar_contract::plugin::KernelSeal;
 use busbar_contract::unit::{Clock, ConfigView, Ctx, SessionView, TransportView};
