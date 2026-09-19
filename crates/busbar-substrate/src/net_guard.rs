@@ -275,27 +275,42 @@ pub fn embedded_ipv4(v6: &Ipv6Addr) -> Option<Ipv4Addr> {
     if let Some(v4) = v6.to_ipv4() {
         return Some(v4);
     }
-    // `64:ff9b::/96` (well-known, RFC 6052) AND `64:ff9b:1::/96` (local-use, RFC 8215) — the same
-    // NAT64 translation, one behind the well-known prefix and one behind an operator's own gateway.
-    // Both pin the leading six groups and carry the embedded IPv4 in the low 32 bits (the last two
-    // u16 segments), byte for byte; the only difference is `seg[2]` (`0` well-known, `1` local-use).
-    // A hostile/rebinding DNS64 resolver on a local-use NAT64 network answers with the local-use
-    // spelling, so unwrapping only the well-known prefix left `64:ff9b:1::a9fe:a9fe` (IMDS) as an
-    // apparently-public v6 address that the connecting stack still routes to `169.254.169.254`. A
-    // longer local-use embedding (/48, /56, /64) scatters the octets around the `u` byte and is
-    // deliberately NOT unwrapped: it is site-specific, and a wrong unwrap would refuse legitimate
-    // public v6 space.
+    // `64:ff9b::/96` (well-known, RFC 6052 Section 2.1) AND any `/96`-length instantiation of
+    // `64:ff9b:1::/48` (local-use, RFC 8215 Section 2) embed IPv4 identically: PL=96 has no
+    // reserved `u` byte (RFC 6052 Section 2.2), so the low 32 bits (the last two u16 segments) are
+    // the embedded IPv4 address, byte for byte, in both forms.
+    //
+    // The two forms differ in how much of the leading 96 bits is FIXED, not just in `seg[2]`:
+    //   - well-known (`seg[2] == NAT64_WELL_KNOWN`): RFC 6052 pins the ENTIRE 96-bit prefix to
+    //     `64:ff9b::`, so `seg[3]`/`seg[4]`/`seg[5]` must also be zero.
+    //   - local-use (`seg[2] == NAT64_LOCAL_USE`): RFC 8215 pins only the top 48 bits
+    //     (`64:ff9b:1::/48`) and leaves an operator free to choose ANY value for the rest of a
+    //     /96-length Network-Specific Prefix under it — RFC 8215 Section 6's own checksum-neutral
+    //     worked example, `64:ff9b:1:fffe::/96`, has a non-zero `seg[3]`. Requiring
+    //     `seg[3..6] == 0` here too would recognise only the single degenerate all-zero /96 and
+    //     miss every other /96 an operator (including the RFC's own example) might actually run —
+    //     the same hostile-DNS64-on-a-local-use-network bypass this prefix was added to guard
+    //     against, reopened for any non-zero-padded instantiation. `64:ff9b:1::/48` is reserved
+    //     entirely for this translation and is never legitimately globally routable (RFC 8215
+    //     Section 3), so accepting the whole block here cannot mis-flag real public v6 traffic.
+    //
+    // A local-use prefix of another length (/32, /40, /48, /56, /64) scatters the octets around a
+    // `u` byte at a different bit position and is deliberately NOT unwrapped here: this function
+    // only recognises /96-length translation, well-known or local-use.
+    const NAT64_WELL_KNOWN: u16 = 0; // RFC 6052 `64:ff9b::/96`
+    const NAT64_LOCAL_USE: u16 = 1; // RFC 8215 `64:ff9b:1::/48`, /96 instantiation
     let seg = v6.segments();
-    if seg[0] == 0x0064
-        && seg[1] == 0xff9b
-        && (seg[2] == 0 || seg[2] == 1)
-        && seg[3] == 0
-        && seg[4] == 0
-        && seg[5] == 0
-    {
-        let [a, b] = seg[6].to_be_bytes();
-        let [c, d] = seg[7].to_be_bytes();
-        return Some(Ipv4Addr::new(a, b, c, d));
+    if seg[0] == 0x0064 && seg[1] == 0xff9b {
+        let embeds_v4 = match seg[2] {
+            NAT64_WELL_KNOWN => seg[3] == 0 && seg[4] == 0 && seg[5] == 0,
+            NAT64_LOCAL_USE => true,
+            _ => false,
+        };
+        if embeds_v4 {
+            let [a, b] = seg[6].to_be_bytes();
+            let [c, d] = seg[7].to_be_bytes();
+            return Some(Ipv4Addr::new(a, b, c, d));
+        }
     }
     None
 }
