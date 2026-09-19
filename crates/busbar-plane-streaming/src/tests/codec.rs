@@ -1166,13 +1166,17 @@ fn a_refusal_renders_an_opaque_code_not_the_internal_reason() {
     let labels = Labels::new();
     let c = ctx(&arena, &config, &transport, &labels);
 
+    // The neutral `KIND_*` vocabulary a `busbar-plane-llm` client already sees — the shared taxonomy
+    // this plane now renders through, in place of its old hand-rolled code set. `internal` is gone:
+    // no refusal collapses into a generic swallow.
     const OPAQUE: &[&str] = &[
-        "invalid_request",
-        "unauthorized",
-        "forbidden",
-        "rate_limited",
-        "unavailable",
-        "internal",
+        "authentication_error",
+        "permission_error",
+        "rate_limit_error",
+        "invalid_request_error",
+        "overloaded_error",
+        "request_too_large",
+        "api_error",
     ];
     let reasons = [
         RefusalReason::OverdraftCeiling,
@@ -1396,4 +1400,134 @@ fn unit_zero_egress_reframes_an_opening_audio_frame() {
             .is_some_and(|a| !a.is_empty()),
         "the enveloped append must carry the base64 audio"
     );
+}
+
+/// A refusal is rendered in the dialect the session negotiated, not one fixed shape.
+///
+/// `encode_refusal` framed every refusal as an OpenAI-Realtime `{"type":"error"}` frame regardless of
+/// the bound dialect (it wrote through `OpenAiRealtimeCodec` unconditionally). A Gemini Live client
+/// cannot parse that shape — its errors arrive inside `serverContent`. The immutable session half
+/// carries the negotiated dialect (`VoiceSessionState::dialect`), so the refusal is now framed by
+/// that dialect's own writer; a one-shot refusal with no session state still defaults to OpenAI.
+#[test]
+fn a_refusal_is_rendered_in_the_negotiated_dialect() {
+    use busbar_contract::unit::{Refusal, RefusalReason, Step};
+
+    let plane = openai_plane();
+    let arena = LeakArena;
+    let config = EmptyConfig;
+    let transport = WsStack::new("/v1/realtime");
+    let labels = Labels::new();
+    let c = ctx(&arena, &config, &transport, &labels);
+
+    let refusal = Refusal {
+        step: Step::Decode,
+        reason: RefusalReason::RateLimited,
+        retry_after_secs: None,
+        stream: None,
+        correlates: None,
+    };
+
+    // A Gemini Live session gets a Gemini-shaped error (inside `serverContent`), not `{"type":"error"}`.
+    let gemini_state = PlaneSessionState::new(crate::session::VoiceSessionState::for_dialect(
+        Dialect::GeminiLive,
+    ));
+    let bytes = plane
+        .encode_refusal(&refusal, None, Some(&gemini_state), &c)
+        .expect("a refusal renders");
+    let parsed: serde_json::Value =
+        serde_json::from_slice(bytes.as_slice()).expect("the refusal is JSON");
+    assert!(
+        parsed.get("type").is_none(),
+        "a Gemini refusal is not the OpenAI `type:error` shape, got {parsed}"
+    );
+    assert!(
+        parsed["serverContent"]["error"]["code"].is_string(),
+        "a Gemini refusal carries its error inside serverContent, got {parsed}"
+    );
+
+    // An OpenAI Realtime session still gets the OpenAI shape.
+    let openai_state = PlaneSessionState::new(crate::session::VoiceSessionState::for_dialect(
+        Dialect::OpenaiRealtime,
+    ));
+    let bytes = plane
+        .encode_refusal(&refusal, None, Some(&openai_state), &c)
+        .expect("a refusal renders");
+    let parsed: serde_json::Value =
+        serde_json::from_slice(bytes.as_slice()).expect("the refusal is JSON");
+    assert_eq!(
+        parsed["type"], "error",
+        "the OpenAI dialect's own error event"
+    );
+
+    // No session state (a unit-0 refusal before any dialect binds) defaults to the OpenAI shape.
+    let bytes = plane
+        .encode_refusal(&refusal, None, None, &c)
+        .expect("a refusal renders");
+    let parsed: serde_json::Value =
+        serde_json::from_slice(bytes.as_slice()).expect("the refusal is JSON");
+    assert_eq!(
+        parsed["type"], "error",
+        "an unbound refusal defaults to OpenAI"
+    );
+}
+
+/// An operational refusal keeps its class; it never collapses into a generic node fault.
+///
+/// The old renderer had a `_ => ("internal", …)` catch-all that swallowed every rate limit, open
+/// breaker, spend cap, drain and deadline into one code a client could not act on. Routed through
+/// the neutral `refusal_shape` seam, a rate-family refusal reads `rate_limit_error` and a
+/// node-capacity refusal (breaker / budget / drain / deadline) reads `overloaded_error` — never the
+/// `api_error` reserved for a genuine node fault.
+#[test]
+fn an_operational_refusal_keeps_its_class_and_never_collapses() {
+    use busbar_contract::unit::{Refusal, RefusalReason, Step};
+
+    let plane = openai_plane();
+    let arena = LeakArena;
+    let config = EmptyConfig;
+    let transport = WsStack::new("/v1/realtime");
+    let labels = Labels::new();
+    let c = ctx(&arena, &config, &transport, &labels);
+
+    // (reason, the class a client must be able to act on) — none may read `api_error`.
+    let cases = [
+        (RefusalReason::RateLimited, "rate_limit_error"),
+        (RefusalReason::OverBudget, "rate_limit_error"),
+        (RefusalReason::OverdraftCeiling, "rate_limit_error"),
+        (RefusalReason::GroupFrozen, "rate_limit_error"),
+        (RefusalReason::BreakerOpen, "overloaded_error"),
+        (RefusalReason::SpillBudget, "overloaded_error"),
+        (RefusalReason::ArenaBudget, "overloaded_error"),
+        (
+            RefusalReason::DestinationBudgetExhausted,
+            "overloaded_error",
+        ),
+        (RefusalReason::Drain, "overloaded_error"),
+        (RefusalReason::DeadlineExceeded, "overloaded_error"),
+    ];
+    for (reason, expected) in cases {
+        let refusal = Refusal {
+            step: Step::Decode,
+            reason,
+            retry_after_secs: None,
+            stream: None,
+            correlates: None,
+        };
+        let bytes = plane
+            .encode_refusal(&refusal, None, None, &c)
+            .expect("a refusal renders");
+        let parsed: serde_json::Value =
+            serde_json::from_slice(bytes.as_slice()).expect("the refusal is JSON");
+        let code = parsed["error"]["code"].as_str().expect("names a code");
+        assert_eq!(
+            code, expected,
+            "{reason:?} must read {expected:?}, not collapse to a generic code"
+        );
+        assert_ne!(
+            code, "api_error",
+            "{reason:?} is operational, not a node fault"
+        );
+        assert_ne!(code, "internal", "the generic `internal` swallow is gone");
+    }
 }
