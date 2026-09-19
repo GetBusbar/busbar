@@ -320,14 +320,16 @@ impl BreakerCell {
     ///
     /// ±10% jitter is then applied on EVERY trip, including the `streak == 0` base — a fleet of
     /// lanes tripping on the same base would otherwise get an identical cooldown and a synchronized
-    /// thundering herd of half-open probes. The jitter seed mixes the caller's `now`, this cell's
-    /// address, and the streak (FNV-1a) so lanes failing within nanoseconds of each other still
-    /// decorrelate — it is the CELL ADDRESS that does the decorrelating, since sibling lanes tripping
-    /// together share the `now`. `now` is the value the caller already holds, not a clock this crate
-    /// reads: a decision replayed from the same inputs must arm the same cooldown, and a unit crate
-    /// does not own a clock. The result is clamped to `[(duration/2).max(1), max_cooldown_secs]` — the
-    /// `.max(1)` floor exists so `base_cooldown_secs == 1` can never jitter down to a zero cooldown
-    /// (an instantly-re-admitting "tripped" cell).
+    /// thundering herd of half-open probes. The jitter seed mixes `now_nanos`, this cell's address,
+    /// and the streak (FNV-1a) so lanes failing within the SAME SECOND still decorrelate on the time
+    /// component too, not on the cell address alone. `now_nanos` is the same instant as the caller's
+    /// `now`, read at nanosecond resolution: seeding from whole seconds leaves every cell that trips
+    /// inside one second with an identical time-seed contribution, which is exactly the
+    /// thundering-herd desync this jitter exists to prevent. `now_nanos` is a PARAMETER for the same
+    /// reason `now` is — a unit crate does not own a clock, so a decision replayed from the same
+    /// inputs must arm the same cooldown. The result is clamped to `[(duration/2).max(1),
+    /// max_cooldown_secs]` — the `.max(1)` floor exists so `base_cooldown_secs == 1` can never
+    /// jitter down to a zero cooldown (an instantly-re-admitting "tripped" cell).
     ///
     /// Finally, when `honor_retry_after` is set and the upstream sent a Retry-After, that value is a
     /// FLOOR under the computed cooldown (`duration.max(retry_after)`) — honored even past
@@ -336,7 +338,7 @@ impl BreakerCell {
     /// overflow `now + duration`.
     pub fn compute_cooldown_with_retry_after(
         &self,
-        now_time: u64,
+        now_nanos: u128,
         cfg: &BreakerCfg,
         retry_after: Option<u64>,
         max_honored_retry_after_secs: u64,
@@ -355,7 +357,7 @@ impl BreakerCell {
 
         {
             let jitter_range = (duration / 10).max(1);
-            let time_seed = now_time as u128;
+            let time_seed = now_nanos;
             let cell_id = self as *const _ as *const () as usize as u128;
             let mut seed = FNV1A_OFFSET_BASIS as u128;
             for part in [time_seed, cell_id, streak as u128] {
@@ -395,12 +397,13 @@ impl BreakerCell {
     fn open_locked(
         &self,
         now_time: u64,
+        now_nanos: u128,
         cfg: &BreakerCfg,
         retry_after: Option<u64>,
         max_honored_retry_after_secs: u64,
     ) {
         let duration = self.compute_cooldown_with_retry_after(
-            now_time,
+            now_nanos,
             cfg,
             retry_after,
             max_honored_retry_after_secs,
@@ -420,12 +423,19 @@ impl BreakerCell {
     pub fn open(
         &self,
         now_time: u64,
+        now_nanos: u128,
         cfg: &BreakerCfg,
         retry_after: Option<u64>,
         max_honored_retry_after_secs: u64,
     ) {
         let _tx = lock_recover(&self.transition_lock);
-        self.open_locked(now_time, cfg, retry_after, max_honored_retry_after_secs);
+        self.open_locked(
+            now_time,
+            now_nanos,
+            cfg,
+            retry_after,
+            max_honored_retry_after_secs,
+        );
     }
 
     /// `close` body, assuming the caller already holds `transition_lock`.
@@ -540,6 +550,7 @@ impl BreakerCell {
     pub fn record_failure(
         &self,
         now_time: u64,
+        now_nanos: u128,
         cfg: &BreakerCfg,
         retry_after: Option<u64>,
         max_honored_retry_after_secs: u64,
@@ -552,7 +563,13 @@ impl BreakerCell {
             ST_CLOSED => {
                 self.streak.fetch_add(1, Ordering::Relaxed);
                 if self.should_trip(now_time, cfg) {
-                    self.open_locked(now_time, cfg, retry_after, max_honored_retry_after_secs);
+                    self.open_locked(
+                        now_time,
+                        now_nanos,
+                        cfg,
+                        retry_after,
+                        max_honored_retry_after_secs,
+                    );
                     FailureEffect::Tripped
                 } else if !cfg.bench_below_trip_threshold {
                     // A degenerate single-member cell: there is no sibling to fail over to, so a
@@ -570,7 +587,7 @@ impl BreakerCell {
                     FailureEffect::Nothing
                 } else {
                     let duration = self.compute_cooldown_with_retry_after(
-                        now_time,
+                        now_nanos,
                         cfg,
                         retry_after,
                         max_honored_retry_after_secs,
@@ -584,7 +601,13 @@ impl BreakerCell {
             // probe; reopening re-arms the cooldown but is not a fresh Closed→Open trip.
             ST_HALF_OPEN => {
                 self.streak.fetch_add(1, Ordering::Relaxed);
-                self.open_locked(now_time, cfg, retry_after, max_honored_retry_after_secs);
+                self.open_locked(
+                    now_time,
+                    now_nanos,
+                    cfg,
+                    retry_after,
+                    max_honored_retry_after_secs,
+                );
                 FailureEffect::Reopened
             }
             // Already Open: an intentional no-op. The cooldown is already armed; a failure while

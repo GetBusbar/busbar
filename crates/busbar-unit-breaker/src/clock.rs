@@ -17,3 +17,16 @@ pub fn unix_time_secs() -> u64 {
         .unwrap_or_default()
         .as_secs()
 }
+
+/// The same instant, in whole NANOSECONDS since the Unix epoch — the resolution
+/// [`crate::cell::BreakerCell::compute_cooldown_with_retry_after`] seeds its ±10% cooldown jitter
+/// from. Seconds cannot stand in for it: two cells tripping within the same second must not draw
+/// the same jitter, which is the whole reason the jitter band exists (a thundering herd of
+/// half-open probes re-synchronizing on the second boundary).
+pub fn unix_time_nanos() -> u128 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos()
+}
