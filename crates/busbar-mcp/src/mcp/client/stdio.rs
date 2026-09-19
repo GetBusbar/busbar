@@ -748,10 +748,19 @@ async fn read_capped_line(
 pub(crate) struct ChildSlot {
     supervisor: Supervisor,
     child: Option<StdioChild>,
-    /// The recipe the live child was ACTUALLY spawned with, so an operator's edit to `command:` is
-    /// noticed. Without it a config apply would leave the old binary serving under the new
-    /// registration — the change would appear to have been made and would not have been.
-    spawned_with: Option<StdioCommand>,
+    /// The recipe this slot last ATTEMPTED, so an operator's edit to `command:` is noticed. Without
+    /// it a config apply would leave the old binary serving under the new registration — the change
+    /// would appear to have been made and would not have been.
+    ///
+    /// ATTEMPTED, NOT SPAWNED, and the distinction is the whole re-approval story. This held the
+    /// recipe a child was successfully spawned with, which is written only on a spawn that WORKED —
+    /// so the one failure mode guaranteed to quarantine a slot without ever producing a process (a
+    /// typo'd program, a missing interpreter, a permission error) left it unset, the "has the
+    /// operator changed the recipe?" comparison could never fire, and the breaker's documented
+    /// remedy could not be performed on the slot that needs it most. Recording the ATTEMPT makes the
+    /// comparison answer the question it is actually asking: is the operator's recipe still the one
+    /// that produced this slot's state?
+    attempted_with: Option<StdioCommand>,
 }
 
 impl ChildSlot {
@@ -759,7 +768,7 @@ impl ChildSlot {
         Self {
             supervisor: Supervisor::spawning(RestartPolicy::default()),
             child: None,
-            spawned_with: None,
+            attempted_with: None,
         }
     }
 
@@ -803,6 +812,38 @@ impl ChildSlot {
         let out = child.call(body, timeout, policy).await;
         if out.is_ok() {
             // The exchange finished cleanly and the child is at a message boundary: keep it.
+            guard.committed = true;
+        }
+        out
+    }
+
+    /// ONE cancel-safe NOTIFICATION write against the live child.
+    ///
+    /// The same guard [`ChildSlot::guarded_call`] uses, for the same reason, on the half of the
+    /// exchange a notification has. A notification is a WRITE with no read, and the write is not one
+    /// step: [`StdioChild::write_line`] awaits a body, a newline and a flush, and a future dropped at
+    /// any of those await points has already put SOME of the line into the child's stdin. The child
+    /// is left mid-frame. The next dispatch on that slot writes its own request onto the tail of the
+    /// truncated one, and the child parses the concatenation as a single malformed message — so the
+    /// call that inherits the mess is refused (or worse, mis-parsed) for a fault that belongs to a
+    /// notification nobody is waiting on.
+    ///
+    /// A partial write is exactly as unrecoverable as a partial exchange: the stream is the
+    /// connection and there is no resync point on it. So it retires the child on any end other than a
+    /// clean return, which is what makes the next dispatch spawn a fresh child at a frame boundary.
+    async fn guarded_notify(&mut self, body: &[u8], timeout: Duration) -> Result<(), String> {
+        let mut guard = CallGuard {
+            slot: self,
+            committed: false,
+        };
+        let child = guard
+            .slot
+            .child
+            .as_mut()
+            .expect("a child was spawned or found live above");
+        let out = child.notify(body, timeout).await;
+        if out.is_ok() {
+            // The whole line and its terminator reached the child: it is at a frame boundary.
             guard.committed = true;
         }
         out
@@ -941,20 +982,19 @@ impl McpWire for StdioWire {
     /// Goes through the SAME supervision gate as a request — a notification to a quarantined child
     /// is still a write to a process busbar has decided not to talk to, and a path that skipped the
     /// breaker would be a way to keep a crash-looping child alive by never asking it anything.
+    ///
+    /// And through the SAME cancel-safety guard ([`ChildSlot::guarded_notify`]). A hand-rolled
+    /// `match` on the result retired the child on an `Err` and on nothing else, so a notification
+    /// whose future was DROPPED mid-write — the write is a body, a newline and a flush, each its own
+    /// await — left part of a line in the child's stdin and kept the child. The next dispatch then
+    /// wrote its request onto that tail and the child parsed the two as one malformed frame. The
+    /// guard makes a cancellation and a failure the same answer here that they already are on the
+    /// request arm.
     async fn notify(&self, leg: &WireLeg<'_>, req: &OutboundRequest) -> Result<(), TransportError> {
         let mut slot = self.ready_child(leg).await?;
-        let child = slot
-            .child
-            .as_mut()
-            .expect("a child was spawned or found live above");
-        match child.notify(&req.body, leg.timeout).await {
-            Ok(()) => Ok(()),
-            Err(e) => {
-                slot.supervisor.crashed(now_ms());
-                slot.child = None;
-                Err(TransportError::Io(e))
-            }
-        }
+        slot.guarded_notify(&req.body, leg.timeout)
+            .await
+            .map_err(TransportError::Io)
     }
 }
 
@@ -1016,14 +1056,20 @@ impl StdioWire {
         // operator naming THIS child and saying they have fixed it. It fires only when the recipe
         // itself differs, so touching an unrelated key does not re-arm a fork bomb — which is the
         // property that would be lost by resetting on every apply.
+        //
+        // The comparison is against the last ATTEMPT, not the last successful spawn. A recipe that
+        // never produced a process — a typo'd program, a missing interpreter, a permission error —
+        // is precisely the one that quarantines a slot, and recording it only on success meant the
+        // slot in quarantine had nothing to compare against and the edit could not be seen. The
+        // refusal names re-approval as the way out, so this is what makes that sentence true.
         if slot
-            .spawned_with
+            .attempted_with
             .as_ref()
             .is_some_and(|previous| previous != cmd)
         {
             slot.supervisor.drain();
             slot.child = None;
-            slot.spawned_with = None;
+            slot.attempted_with = None;
             slot.supervisor.reset();
         }
 
@@ -1033,10 +1079,13 @@ impl StdioWire {
             slot.supervisor
                 .may_restart(now_ms())
                 .map_err(|r| TransportError::Supervision(r.to_string()))?;
+            // RECORDED BEFORE THE SPAWN, so a recipe that fails to start is still the recipe this
+            // slot's state was produced by — see the field's own note for why recording it after a
+            // successful spawn made a quarantine unreopenable.
+            slot.attempted_with = Some(cmd.clone());
             match StdioChild::spawn(cmd).await {
                 Ok(child) => {
                     slot.child = Some(child);
-                    slot.spawned_with = Some(cmd.clone());
                     // The pipes are open and the reader is this task, so the child is dispatchable.
                     // The FIRST call is the readiness probe: a program that exits immediately fails
                     // that call and lands on the crash arm below, which is where a child that
