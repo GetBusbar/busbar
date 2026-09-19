@@ -47,6 +47,41 @@ fn required_scope_matrix() {
     );
 }
 
+/// S11: the method match is EXACT, never case-folded. `axum::http::Method`'s own equality (what
+/// the enforced admin contract in busbar-core checks against) is case-sensitive per RFC 9110, so a
+/// non-canonical-case verb must fail closed to `full` — the same way an unrecognized method does —
+/// rather than be silently treated as `GET`/`HEAD` and downgraded to `read-only`.
+#[test]
+fn method_match_is_case_sensitive() {
+    for method in ["get", "Get", "gET", "head", "Head"] {
+        assert_eq!(
+            admin_required_scope(method, "/api/v1/admin/hooks"),
+            Scope::Full,
+            "{method} must fail closed, not be folded to GET/HEAD"
+        );
+    }
+}
+
+/// S11: the two dry-run paths are read-only on PATH ALONE, with no method gate — matching the
+/// enforced admin contract's `required_scope`, which never checks the verb for these two paths
+/// either (any non-`GET`/`HEAD` method landing on one of these two exact paths is `read-only`,
+/// same as core).
+#[test]
+fn dry_run_paths_are_not_post_gated() {
+    for method in ["POST", "post", "PUT", "DELETE"] {
+        for path in [
+            "/api/v1/admin/config/validate",
+            "/api/v1/admin/plugins/inspect",
+        ] {
+            assert_eq!(
+                admin_required_scope(method, path),
+                Scope::ReadOnly,
+                "{method} {path}"
+            );
+        }
+    }
+}
+
 /// `parse` drops the retired delegated tokens; `read-only`/`full` round-trip.
 #[test]
 fn scope_parse_drops_retired_tokens() {
