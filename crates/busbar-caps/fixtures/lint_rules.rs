@@ -89,11 +89,27 @@ pub const SEAL_SITES: &[LintRule] = &[
     },
     LintRule {
         // The take is spelled on a `HoldCell` value rather than through the type, so the literal
-        // that finds every take site is the exit token the take demands.
+        // that finds every take site is the exit token the take demands. This only catches the
+        // INLINE spelling -- a take whose token was minted on an earlier line and named by a
+        // variable (exactly how the tick's own take site is written) does not contain this
+        // substring at all, so it is invisible to this rule regardless of scope. The next rule
+        // closes that gap by auditing the mint instead of the call that consumes it.
         symbol: "take(&ExitToken::mint(",
         scope: LintScope::ConfinedTo("kernel/src"),
         because: "there are three take sites -- the exit path, the sweep and the tick -- all in \
                   the kernel, and no fourth anywhere",
+    },
+    LintRule {
+        // However the take call is spelled -- inline or against a variable minted lines earlier --
+        // an `ExitToken` cannot reach a `take()` call at all without first being minted. Auditing
+        // the mint itself, rather than trying to enumerate every way a take call can quote it,
+        // closes the blind spot the rule above has for a token minted one line above its use: a
+        // fourth take site anywhere outside the kernel would first have to mint its own token here,
+        // in the open, where this rule sees it.
+        symbol: "ExitToken::mint(",
+        scope: LintScope::ConfinedTo("kernel/src"),
+        because: "an exit token minted outside the kernel is a take site the call-site literal \
+                  above cannot see once its mint is on a line of its own",
     },
 ];
 

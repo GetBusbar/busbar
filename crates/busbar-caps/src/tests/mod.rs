@@ -783,6 +783,7 @@ fn the_lint_hooks_name_every_escape_the_compiler_cannot_close() {
         "KernelSeal::acquire_for_kernel",
         "RecoveryToken",
         "take(&ExitToken::mint(",
+        "ExitToken::mint(",
     ] {
         assert!(
             symbols.contains(&expected),
@@ -797,6 +798,46 @@ fn the_lint_hooks_name_every_escape_the_compiler_cannot_close() {
             assert!(!path.is_empty(), "{} confines to nowhere", rule.symbol);
         }
     }
+}
+
+/// D68: the call-site literal alone is blind to a take whose token was minted a line earlier.
+///
+/// The gate's `hold-cell-take` symbol is the literal substring `take(&ExitToken::mint(`, found by
+/// a plain `str::contains` (the scan is a literal substring search, not a parser). The kernel's own
+/// tick already writes the take this way -- mint on one line, `take(&exit)` on the next -- and that
+/// spelling does not contain the literal at all. So a fourth take site anywhere outside the kernel,
+/// written in exactly this style, would pass a scan that believes it enforces "no fourth" on take
+/// sites. The `exit-token-mint` rule closes it by auditing the mint instead: a token cannot reach
+/// any take call, inline or not, without first being minted, and that mint is never split across
+/// two lines.
+#[test]
+fn a_split_mint_and_take_is_invisible_to_the_call_site_literal_but_not_to_the_mint_rule() {
+    let split_mint_and_take =
+        "let exit = ExitToken::mint(kernel.seal());\nslot.cell().take(&exit);";
+
+    let call_site_literal = lint::SEAL_SITES
+        .iter()
+        .find(|r| r.symbol == "take(&ExitToken::mint(")
+        .expect("the call-site rule is still named");
+    assert!(
+        !split_mint_and_take.contains(call_site_literal.symbol),
+        "a split mint-then-take must not contain the inline call-site literal, or this test is \
+         not exercising the blind spot it claims to"
+    );
+
+    let mint_rule = lint::SEAL_SITES
+        .iter()
+        .find(|r| r.symbol == "ExitToken::mint(")
+        .expect("the mint rule exists and closes the gap the call-site literal leaves");
+    assert!(
+        split_mint_and_take.contains(mint_rule.symbol),
+        "the mint rule must see the split spelling even though the call-site literal cannot"
+    );
+    assert_eq!(
+        mint_rule.scope,
+        lint::LintScope::ConfinedTo("kernel/src"),
+        "the mint is confined to the kernel exactly like the call-site rule is"
+    );
 }
 
 /// The rule list is a specification; the gate is the enforcement. This is the join between them.
