@@ -21,6 +21,7 @@
 use std::sync::Arc;
 
 use rustls_pki_types::{CertificateDer, PrivateKeyDer};
+use zeroize::Zeroize;
 
 /// What the engine trusts on a posture.
 pub enum Trust {
@@ -96,5 +97,19 @@ impl ClientIdentity {
     /// The leaf certificate, DER — what an mTLS peer records busbar as.
     pub fn leaf_der(&self) -> &[u8] {
         self.chain[0].as_ref()
+    }
+}
+
+// S28: an identity superseded by rotation (the host's generation-scoped identity/trust
+// registries drop the old entry once a fresher one lands) must not leave its private key sitting
+// unzeroed in freed heap. `Arc::get_mut` only succeeds when THIS is the last live reference — a
+// clone still in flight through `resolve()` (an in-progress handshake) is left untouched, and only
+// the truly-last owner wipes. Best-effort by construction: `PrivateKeyDer` implements `Zeroize`
+// but not `ZeroizeOnDrop`, so this impl is what actually invokes it.
+impl Drop for ClientIdentity {
+    fn drop(&mut self) {
+        if let Some(key) = Arc::get_mut(&mut self.key) {
+            key.zeroize();
+        }
     }
 }
