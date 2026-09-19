@@ -1334,3 +1334,34 @@ fn validate_refuses_none_on_a_secret_that_requires_a_credential() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// D65: `--validate` must REFUSE a config whose resolved `plugins.dir` does not exist while
+/// `plugins.enabled` is true — the same posture boot's operator-facing check wants, via
+/// `busbar_core::config::validate_plugins_dir_exists`. A missing directory reads as zero tarballs
+/// (`discover` maps NotFound to an empty list), so before this wiring `--validate` printed a clean
+/// `ok: config valid` over a deployment that would boot carrying NONE of the plugins the config
+/// installs — no store, no auth module, no hook. The refusal names the path and `plugins.enabled`.
+#[test]
+fn validate_fails_when_plugins_dir_is_missing() {
+    let dir = fixture_dir("missing-plugins-dir");
+    let missing = dir.join("does-not-exist");
+    let block = format!(
+        "plugins:\n  enabled: true\n  dir: '{}'\n  trust:\n    allow_unsigned: true\n",
+        missing.display()
+    );
+    write_configs(&dir, &block);
+    let (code, stdout, stderr) = run_busbar(&dir, &["--validate"]);
+    assert_eq!(
+        code, 1,
+        "an enabled plugins.dir that does not exist must fail --validate: stdout={stdout} stderr={stderr}"
+    );
+    assert!(
+        stderr.contains("plugins.dir") && stderr.contains("does not exist"),
+        "the refusal names plugins.dir and that it is missing: {stderr}"
+    );
+    assert!(
+        stderr.contains("plugins.enabled"),
+        "the refusal names plugins.enabled as the alternative: {stderr}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

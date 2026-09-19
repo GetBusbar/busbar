@@ -42,8 +42,8 @@ use axum::Router;
 
 use busbar_core::{
     build_app_from_config, build_split_routers_with_limits, load_config_from_disk,
-    preflight_plugins_and_secrets, validate_builtin_secrets_resolve, LoadedConfig,
-    DEFAULT_CONFIG_PATH, ENV_CONFIG, ENV_PROVIDERS,
+    preflight_plugins_and_secrets, validate_builtin_secrets_resolve, validate_plugins_dir_exists,
+    LoadedConfig, DEFAULT_CONFIG_PATH, ENV_CONFIG, ENV_PROVIDERS,
 };
 use busbar_core::{config, config_validate, export, metrics, observability, tls};
 // Read only by the jemalloc idle-purge fallback below, which is itself
@@ -318,6 +318,18 @@ fn validate_config_command() -> i32 {
             "[error] {}: config validation failed:\n  - {}",
             busbar_substrate::diagnostics::CLI_VALIDATE_CONFIG_INVALID.banner(),
             errs.join("\n  - ")
+        );
+        return 1;
+    }
+    // PLUGINS.DIR EXISTENCE, `--validate` only. `plugins_preflight` (shared with boot/apply) maps an
+    // absent directory to zero tarballs on purpose — drop-is-inert at boot — so it cannot catch a
+    // typo'd or mis-mounted `dir:`. The operator asking `--validate` wants the strict answer: with
+    // plugins enabled, a directory that is not there means busbar would boot with NONE of the plugins
+    // this config installs. `deploy.plugins.dir` is already resolved by `load_config_from_disk`.
+    if let Err(e) = validate_plugins_dir_exists(&loaded.deploy.plugins) {
+        eprintln!(
+            "[error] {}: {e}",
+            busbar_substrate::diagnostics::CLI_VALIDATE_CONFIG_INVALID.banner()
         );
         return 1;
     }

@@ -2403,10 +2403,18 @@ pub(crate) async fn restart(
 
 /// The `POST /api/v1/admin/config/apply` body: a full proposed config (validate's exact shape).
 /// Optimistic concurrency rides `If-Match`.
+///
+/// `config` is carried as a raw [`serde_json::Value`], NOT a plain-derived `DeployCfg` — the SAME
+/// shape as [`ValidateConfigReq`] and for the same reason: the 1.6.0 pre-pass
+/// (`busbar_core::config::deploy_from_deserializer`) must run on it first to lift the 1.6.0-additive
+/// top-level keys (`mcp`/`oauth_as`/`tools`/`agents`/`streams`, plus `auth.policy`) out BEFORE the
+/// frozen `deny_unknown_fields` `DeployCfg` parses the remainder. Deriving `Deserialize` straight
+/// onto `DeployCfg` here refused any of those keys as `unknown field`, even though the same document
+/// boots clean from disk AND validates clean via `config/validate`.
 #[derive(serde::Deserialize)]
 pub(crate) struct ApplyConfigReq {
-    /// The deploy config (operator-owned `config.yaml` shape).
-    config: busbar_core::config::DeployCfg,
+    /// The deploy config (operator-owned `config.yaml` shape), pre-lift.
+    config: serde_json::Value,
     /// The provider definitions (`providers.yaml` shape). Optional — empty validates/fails loudly
     /// on dangling references.
     #[serde(default)]
@@ -2466,10 +2474,14 @@ pub(crate) async fn apply_config(
                 .overlay_path
                 .as_deref()
                 .and_then(busbar_core::config::overlay::read);
-            let ApplyConfigReq {
-                config: mut deploy,
-                providers,
-            } = req;
+            let ApplyConfigReq { config, providers } = req;
+            // Same lift the disk loader (boot/reload) and `config/validate` run before parsing
+            // `DeployCfg` — see the struct doc above. `deploy_from_deserializer` is format-agnostic,
+            // so feeding it the already-parsed JSON `Value` reproduces the disk-load parse behavior
+            // for this JSON-bodied endpoint. A malformed body is a `400 Validation`, matching the
+            // `serde_json::from_slice` refusal `config/validate` returns for the same shape.
+            let mut deploy = busbar_core::config::deploy_from_deserializer(config)
+                .map_err(|e| AdminError::Validation(format!("malformed config body: {e}")))?;
             if let Some(doc) = overlay_doc.as_ref() {
                 busbar_core::config::overlay::apply_root_to_deploy(&mut deploy, doc);
                 // Without this an apply re-validates against the BASE floors and silently reverts a
@@ -5132,10 +5144,9 @@ pub(crate) async fn validate_config(
         }
     };
     // Same lift the disk loader (boot/reload) runs before parsing `DeployCfg` — see the struct
-    // doc above. NOTE: `config/apply`'s `ApplyConfigReq` derives `DeployCfg` directly and does
-    // NOT run this lift (verified: an `oauth_as` key there is refused with `400 unknown field`
-    // exactly like this endpoint was before this change) — that gap is real but out of scope
-    // here; do not extend this comment to imply it is already handled. `deploy_from_deserializer`
+    // doc above. `config/apply`'s `ApplyConfigReq` now carries `config` as a `serde_json::Value`
+    // and runs this SAME lift before building its deploy, so a 1.6.0-additive key
+    // (`mcp`/`oauth_as`/…) applies clean instead of a `400 unknown field`. `deploy_from_deserializer`
     // is format-agnostic by design (its own doc: "the JSON-shaped paths ... get it too"), so
     // feeding it the already-parsed JSON `Value` reproduces the exact disk-load parse behavior
     // for this JSON-bodied endpoint.
