@@ -384,10 +384,7 @@ mod tests {
 
     #[test]
     fn an_explicit_deployment_override_is_never_implicit() {
-        assert!(!protocol_is_implicit_default(
-            &deploy(Some("openai")),
-            None
-        ));
+        assert!(!protocol_is_implicit_default(&deploy(Some("openai")), None));
         assert!(!protocol_is_implicit_default(
             &deploy(Some("openai")),
             Some(&def("anthropic"))

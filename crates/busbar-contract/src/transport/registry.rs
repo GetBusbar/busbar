@@ -139,8 +139,9 @@ pub enum CompositionError {
     /// Two transports both declare the same URL scheme.
     ///
     /// The scheme half of frame-honesty: a scheme with two claimants is a dial whose transport
-    /// depends on which one happened to register first, and CONFIG-MODEL-RULING §15 asks for it to
-    /// be a boot refusal naming both rather than a silent pick.
+    /// depends on which one happened to register first, and the config-model design's
+    /// transport-by-scheme section asks for it to be a boot refusal naming both rather than a
+    /// silent pick.
     DuplicateScheme {
         /// The contested scheme.
         scheme: &'static str,
@@ -222,7 +223,7 @@ pub fn check_composition(registered: &[Registered]) -> Result<(), CompositionErr
 /// carries a given URL scheme.
 ///
 /// The scheme twin of [`check_composition`]'s duplicate-key half, over the same [`Registered`] rows
-/// rather than a fresh input — CONFIG-MODEL-RULING §15's boot-time index, built once by the
+/// rather than a fresh input — the config-model design's transport-by-scheme boot-time index, built once by the
 /// composition root before a provider's `base_url` scheme is checked against it (a provider whose
 /// scheme names no registered transport is refused fail-closed, at the config layer that reads this
 /// index — see `busbar-core`'s `config_validate::config_validate_providers`).
