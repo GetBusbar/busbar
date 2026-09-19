@@ -1028,11 +1028,16 @@ pub trait Store: Send + Sync + 'static {
     /// `VirtualKey::revision`'s doc, and `list_keys` is unfiltered so tombstones are always visible
     /// here) but not incremental; a backend that wants real delta-fetch efficiency overrides this
     /// with an indexed `WHERE revision > ?`-shaped query.
+    ///
+    /// `revision == 0` is its own arm, not folded into `revision > since`: a row the backend never
+    /// stamped with a real revision (including a tombstoned/revoked key written by a backend that
+    /// doesn't track revisions) must always read as "changed", or an incremental hydrator running
+    /// with `since > 0` would never observe it and would never evict that key's cached credentials.
     fn list_keys_since(&self, since: u64) -> StoreResult<Vec<VirtualKey>> {
         Ok(self
             .list_keys()?
             .into_iter()
-            .filter(|k| k.revision > since)
+            .filter(|k| k.revision == 0 || k.revision > since)
             .collect())
     }
     /// The TOKEN LEDGER for one (bucket, window). `bucket_id` is a key's own budget bucket (its
