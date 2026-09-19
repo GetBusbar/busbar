@@ -1280,11 +1280,14 @@ fn text_then_tool_closes_text_block_before_opening_tool() {
 
 // Chat#1 regression: preamble-text → tool_calls → MORE text. The `tool_calls` chunk closes the text
 // block (BlockStart+BlockStop at its index); a LATER `delta.content` chunk must NOT reopen a text
-// block at that already-closed index (a second `content_block_start` at one index = an unbalanced IR
+// block at that ALREADY-CLOSED index (a second `content_block_start` at one index = an unbalanced IR
 // stream on an Anthropic egress). Reachable with OpenAI-compatible backends (vLLM/Azure/OpenRouter).
 // Pre-fix: `text_index` stays `Some` and the reopen fires on `!text_block_open`, emitting TWO
-// BlockStart at the same index. Post-fix: `text_block_closed` latches on the close and the resumed
-// text is dropped, leaving exactly one balanced text block.
+// BlockStart at the SAME index.
+//
+// The resumed text is NOT dropped (B40) — OpenAI models narrate around their tool calls, and dropping
+// it lost everything the model said after the call. It opens a SECOND text block at a FRESH index, so
+// every block is opened once and closed once and no index is ever reopened.
 #[test]
 fn preamble_text_then_tool_then_text_keeps_one_balanced_text_block() {
     let reader = OpenAiReader;
@@ -1328,7 +1331,8 @@ fn preamble_text_then_tool_then_text_keeps_one_balanced_text_block() {
         &mut st,
     ));
 
-    // Exactly ONE text BlockStart across the whole stream — the resumed text never reopens.
+    // TWO text blocks — the preamble and the resumed narration — at DISTINCT indices. The
+    // already-closed index is never reopened.
     let text_starts: Vec<usize> = events
         .iter()
         .filter_map(|e| match e {
@@ -1341,19 +1345,36 @@ fn preamble_text_then_tool_then_text_keeps_one_balanced_text_block() {
         .collect();
     assert_eq!(
         text_starts.len(),
-        1,
-        "the text block must be opened exactly once, never reopened at a closed index: {events:?}"
+        2,
+        "the resumed text must reach the client as its own block: {events:?}"
     );
-    let text_idx = text_starts[0];
-    // …and exactly one BlockStop at that text index, so the block is balanced.
-    let text_stops = events
+    assert_ne!(
+        text_starts[0], text_starts[1],
+        "a closed index must never be reopened: {events:?}"
+    );
+    // …and each text index is closed exactly once, so both blocks are balanced.
+    for text_idx in &text_starts {
+        let text_stops = events
+            .iter()
+            .filter(|e| matches!(e, IrStreamEvent::BlockStop { index } if index == text_idx))
+            .count();
+        assert_eq!(
+            text_stops, 1,
+            "text index {text_idx} must be closed exactly once (balanced): {events:?}"
+        );
+    }
+    // The resumed narration is carried, not dropped.
+    let text: String = events
         .iter()
-        .filter(|e| matches!(e, IrStreamEvent::BlockStop { index } if *index == text_idx))
-        .count();
-    assert_eq!(
-        text_stops, 1,
-        "the text block index must be closed exactly once (balanced): {events:?}"
-    );
+        .filter_map(|e| match e {
+            IrStreamEvent::BlockDelta {
+                delta: IrDelta::TextDelta(t),
+                ..
+            } => Some(t.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(text, "Thinking… …done.", "{events:?}");
 }
 
 // --- total_tokens must saturate, never overflow-panic/wrap ---

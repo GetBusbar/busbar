@@ -11,13 +11,18 @@ impl ProtocolReader for ResponsesReader {
             .get("input_tokens_details")
             .and_then(|d| d.get("cached_tokens"))
             .and_then(|x| x.as_u64());
+        // A truncated body bills the same cache tiers an untruncated one does: `cache_write_tokens`
+        // is the OTHER slice of `input_tokens`, priced at the cache-WRITE tier. See
+        // `read_cache_write_tokens`.
+        let cache_write = super::read_cache_write_tokens(&v);
         Some(
             crate::ir::IrUsage {
                 input_tokens: u64_field("input_tokens")
                     .unwrap_or(0)
-                    .saturating_sub(cached.unwrap_or(0)),
+                    .saturating_sub(cached.unwrap_or(0))
+                    .saturating_sub(cache_write.unwrap_or(0)),
                 output_tokens: u64_field("output_tokens").unwrap_or(0),
-                cache_creation_input_tokens: None,
+                cache_creation_input_tokens: cache_write,
                 cache_read_input_tokens: cached,
                 detail: crate::ir::IrUsageDetail::default(),
             }
@@ -1197,21 +1202,27 @@ impl ProtocolReader for ResponsesReader {
                         .get("usage")
                         .map(|u| {
                             let cached = read_cached_tokens(u);
+                            // `cache_write_tokens` rides the STREAM's terminal usage object exactly
+                            // as `cached_tokens` does — the OTHER slice of `input_tokens`, priced at
+                            // the cache-WRITE tier. See `read_cache_write_tokens`.
+                            let cache_write = read_cache_write_tokens(u);
                             crate::ir::IrUsage {
                                 // NORMALIZE to the additive-cache convention: the Responses API's
-                                // `input_tokens` is a TOTAL that already INCLUDES the cached prefix,
-                                // so subtract the cached tokens to leave only the uncached input.
-                                // `saturating_sub` guards an odd upstream where cached > input.
+                                // `input_tokens` is a TOTAL that already INCLUDES the cached prefix
+                                // and the cache-write slice, so subtract both to leave only the
+                                // uncached input. `saturating_sub` guards an odd upstream where the
+                                // slices exceed the total.
                                 input_tokens: u
                                     .get("input_tokens")
                                     .and_then(|v| v.as_u64())
                                     .unwrap_or(0)
-                                    .saturating_sub(cached.unwrap_or(0)),
+                                    .saturating_sub(cached.unwrap_or(0))
+                                    .saturating_sub(cache_write.unwrap_or(0)),
                                 output_tokens: u
                                     .get("output_tokens")
                                     .and_then(|v| v.as_u64())
                                     .unwrap_or(0),
-                                cache_creation_input_tokens: None,
+                                cache_creation_input_tokens: cache_write,
                                 // Carry the streamed prompt-cache hit count
                                 // (`usage.input_tokens_details.cached_tokens`) into the IR's
                                 // read-side cache field so a streaming Responses terminal preserves
@@ -1554,20 +1565,28 @@ impl ProtocolReader for ResponsesReader {
         let usage_val = obj.get("usage");
 
         let cached = usage_val.and_then(read_cached_tokens);
+        // `input_tokens_details.cache_write_tokens` — the OTHER slice of `input_tokens`, priced at
+        // the cache-WRITE tier. See `read_cache_write_tokens`.
+        let cache_write = usage_val.and_then(read_cache_write_tokens);
         let usage = crate::ir::IrUsage {
             // NORMALIZE to the additive-cache convention: the Responses API's `input_tokens` is a
-            // TOTAL that already INCLUDES the cached prefix, so subtract the cached tokens to leave
-            // only the uncached input. `saturating_sub` guards an odd upstream where cached > input.
+            // TOTAL that already INCLUDES the cached prefix and the cache-write slice, so subtract
+            // both to leave only the uncached input. `saturating_sub` guards an odd upstream where
+            // the slices exceed the total.
             input_tokens: usage_val
                 .and_then(|u| u.get("input_tokens"))
                 .and_then(|v| v.as_u64())
                 .unwrap_or(0)
-                .saturating_sub(cached.unwrap_or(0)),
+                .saturating_sub(cached.unwrap_or(0))
+                .saturating_sub(cache_write.unwrap_or(0)),
             output_tokens: usage_val
                 .and_then(|u| u.get("output_tokens"))
                 .and_then(|v| v.as_u64())
                 .unwrap_or(0),
-            cache_creation_input_tokens: None,
+            // `input_tokens_details.cache_write_tokens` is the CACHE-WRITE tier's count; leaving it
+            // inside the plain input total (hardcoded `None`) charged a cache-writing turn at the
+            // wrong rate. Map it to the IR's ADDITIVE `cache_creation_input_tokens`.
+            cache_creation_input_tokens: cache_write,
             // The Responses API reports prompt-cache hits under
             // `usage.input_tokens_details.cached_tokens`. Map it into the IR's
             // `cache_read_input_tokens` (the read-side cache field Bedrock already uses) so the cache
