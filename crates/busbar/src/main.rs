@@ -183,7 +183,8 @@ USAGE:
                         safe in CI and before a reload; a clean --validate means boot succeeds
     busbar --list-plugins
                         manifest-only inventory of the plugins dir (name/alias/kind/version,
-                        signature verdict, load status + exact reason); never loads plugin code
+                        signature verdict, verification status + exact reason); a verified row
+                        reads VERIFIED (not loaded) — never loads plugin code, never dlopens
     busbar --migrate-config <old-config.yaml>
                         mechanically convert a 1.4.x config to the 1.5.0 shape: prints the new
                         YAML to stdout (with TODO/WARNING comments where a human must decide)
@@ -381,9 +382,15 @@ fn validate_config_command() -> i32 {
 }
 
 /// `--list-plugins`: MANIFEST-ONLY inventory of every plugin tarball in `plugins.dir` — name,
-/// alias, kind, version, signature verdict, and load status (including the exact skip/invalid
-/// reason and which one `store.module` selects). NEVER `dlopen`s anything, so an untrusted
-/// plugin's code cannot run from listing it. Exit 0 (informational; `--validate` is the gate).
+/// alias, kind, version, signature verdict, and verification status (including the exact
+/// skip/invalid reason and which one `store.module` selects). NEVER `dlopen`s anything, so an
+/// untrusted plugin's code cannot run from listing it. Exit 0 (informational; `--validate` is the
+/// gate).
+///
+/// A verified, selected row reads `VERIFIED (not loaded; store.module: <ref>)`, NOT `LOADS`: this
+/// surface checks the signature/ABI window and stops there. Only a real `dlopen` — which this
+/// command never performs — can honestly answer "will this plugin load HERE". The 1.5.5 image
+/// printed `LOADS` for a tarball it then could not load; the status now names what was checked.
 fn list_plugins_command() -> i32 {
     let providers_override = providers_override();
     let config_path = std::path::PathBuf::from(resolve_config_path(config_path_flag().as_deref()));
@@ -458,7 +465,15 @@ fn list_plugins_command() -> i32 {
             && row.status == "ready"
             && (name == store_ref || alias == store_ref);
         let status = if selected {
-            format!("LOADS (store.module: {store_ref})")
+            // MANIFEST-ONLY, so this never says `LOADS`: `ready` is the end of the
+            // manifest/signature/ABI window (the tarball decoded, the signature verified, the
+            // declared abi_version is one this binary speaks) and that is NOT a load. Loading a
+            // plugin is a `dlopen`, which this surface deliberately never performs (see the
+            // function contract above), so it can only truthfully report what it checked. The 1.5.5
+            // image printed `LOADS (store.module: sqlite)` and then refused to boot on
+            // `dlopen failed`; an operator surface that answers a question it never asked is a
+            // defect whichever way it guesses.
+            format!("VERIFIED (not loaded; store.module: {store_ref})")
         } else if !plugins_cfg.enabled && row.status == "ready" {
             "ready (inert: plugins.enabled is false)".to_string()
         } else {

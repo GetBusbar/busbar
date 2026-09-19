@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (C) 2026 Busbar Inc and contributors
-"""PROVE EVERY CHECK BITES, by making it fail on purpose.
+"""PROVE EVERY CHECK BITES, by making it fail on purpose -- AND prove the runner's own exit-code
+floors bite too.
 
 WHY THIS FILE IS NOT OPTIONAL, and it is the honest answer to a gap rather than a decoration.
 
@@ -27,6 +28,14 @@ forbids, runs the real check against it, and FAILS THE SELFTEST IF THE CHECK PAS
 A green here means every mutation was caught. A red here means a check is asleep, and no verdict
 from the suite should be believed until it is fixed.
 
+SECOND PURPOSE, ADDED ALONGSIDE THE FIRST RATHER THAN REPLACING IT: `report()` in `a2asup/runner.py`
+used to end `return 1 if bad else 0`, where `bad` is FAIL|ERROR only. Two runs that established
+NOTHING were therefore green -- a requirement silently dropped from `run()`'s plan left the
+denominator instead of failing ("21 of 21" quietly becoming "20 of 20"), and a subject that
+answered every probe with UNTESTABLE/PARTIAL/NOT_APPLICABLE demonstrated ZERO MUST requirements and
+still exited 0. `runner_floor_mutations` drives the real `report()` against results shaped exactly
+like each of those two runs and fails if the exit code is 0.
+
     python3 selftest.py          (needs the pinned TCK's interpreter only for `cryptography`;
                                   run it the way run-supplement.sh runs the suite)
 """
@@ -34,16 +43,24 @@ from the suite should be believed until it is fixed.
 from __future__ import annotations
 
 import base64
+import contextlib
 import copy
+import io
 import json
 import sys
 
 from a2asup import checks_auth, checks_bind, checks_card, checks_ver
-from a2asup.model import Verdict
+from a2asup.model import Result, Verdict
+from a2asup.runner import report
+from a2asup.spec import REQUIREMENTS
 from a2asup.target import Interface, Target
 from a2asup.transport import Reply
 
 FAILURES: list[str] = []
+# How many expectations HELD, across both the check mutations and the runner floor mutations.
+# Counted rather than inferred, so `main`'s floor can tell a green run from a run in which the
+# cases were deleted -- a selftest that discovered nothing is not a pass.
+PASSES_SEEN = [0]
 
 
 def expect(label: str, result, allowed: set[Verdict]) -> None:
@@ -51,12 +68,24 @@ def expect(label: str, result, allowed: set[Verdict]) -> None:
     mark = "ok " if ok else "MISS"
     print(f"  {mark}  {label}")
     print(f"        -> {result.verdict.value}: {result.summary[:150]}")
-    if not ok:
+    if ok:
+        PASSES_SEEN[0] += 1
+    else:
         FAILURES.append(
             f"{label}: the check answered {result.verdict.value}, but this subject is "
             f"deliberately wrong and one of {sorted(v.value for v in allowed)} was required. "
             f"The check did not bite."
         )
+
+
+def expect_code(label: str, got: int, want: int, why: str) -> None:
+    ok = got == want
+    print(f"  {'ok ' if ok else 'MISS'}  {label}")
+    print(f"        -> exit {got} (wanted {want})")
+    if ok:
+        PASSES_SEEN[0] += 1
+    else:
+        FAILURES.append(f"{label}: report() exited {got}, wanted {want}. {why}")
 
 
 # ── card signing ────────────────────────────────────────────────────────────────────────────────
@@ -485,6 +514,61 @@ def in_task_authorization_mutations() -> None:
     )
 
 
+# ── runner exit-code floors ────────────────────────────────────────────────────────────────────
+
+
+def runner_floor_mutations() -> None:
+    """The two ways a `report()` run can establish NOTHING and still exit 0, made to fail."""
+    target = Target(label="selftest", card_url="http://selftest.invalid/card")
+    target.card = {}
+    target.interfaces = [Interface("http://a/", "jsonrpc", "1.0")]
+
+    def run_report(results) -> int:
+        with contextlib.redirect_stdout(io.StringIO()):
+            return report(target, results, None)
+
+    all_ids = sorted(REQUIREMENTS)
+
+    print("\nRUNNER -- every declared requirement decided, at least one DEMONSTRATED")
+    full_pass = [Result(i, Verdict.PASS, "selftest") for i in all_ids]
+    expect_code(
+        "POSITIVE CONTROL: a complete run with passes must exit 0",
+        run_report(full_pass),
+        0,
+        "None of the floors may refuse a run that actually decided everything.",
+    )
+
+    print("\nRUNNER -- a requirement silently dropped from the plan")
+    short = [Result(i, Verdict.PASS, "selftest") for i in all_ids[1:]]
+    expect_code(
+        f"a run that never ran {all_ids[0]} must NOT exit 0",
+        run_report(short),
+        1,
+        "A requirement that leaves the denominator instead of failing turns '21 of 21' into "
+        "'20 of 20' with nothing anywhere going red.",
+    )
+
+    print("\nRUNNER -- nothing demonstrated, and nothing failed either")
+    nothing = [Result(i, Verdict.UNTESTABLE, "selftest") for i in all_ids]
+    expect_code(
+        "a run demonstrating ZERO MUSTs must NOT exit 0",
+        run_report(nothing),
+        1,
+        "UNTESTABLE, PARTIAL and NOT_APPLICABLE are not passes and are not `bad`, so '0 of 21 "
+        "DEMONSTRATED' exited 0 and read as a clean run.",
+    )
+
+    print("\nRUNNER -- a real failure is still a failure (the floors did not replace it)")
+    one_bad = [Result(i, Verdict.PASS, "selftest") for i in all_ids[1:]]
+    one_bad.append(Result(all_ids[0], Verdict.FAIL, "selftest"))
+    expect_code(
+        "a FAIL must still exit 1",
+        run_report(one_bad),
+        1,
+        "The floors are added to the FAIL/ERROR rule, never in place of it.",
+    )
+
+
 def main() -> int:
     print("a2a-supplement SELFTEST -- every check is made to fail on purpose")
     print("A check that does not bite here is a check that reports green over nothing.")
@@ -492,13 +576,22 @@ def main() -> int:
     card_signing_mutations()
     binding_equivalence_mutations()
     versioning_mutations()
+    runner_floor_mutations()
     print()
+    # A SELFTEST THAT DISCOVERED NO CASES IS NOT A PASS. Without a floor, deleting a mutation
+    # leaves this file printing SELFTEST PASSED over the checks (or the runner floors) it stopped
+    # exercising.
+    total = len(FAILURES) + PASSES_SEEN[0]
+    if total < 20:
+        print(f"SELFTEST DISCOVERED ONLY {total} CASES. Mutations were deleted or never ran.")
+        return 2
     if FAILURES:
-        print(f"SELFTEST FAILED: {len(FAILURES)} check(s) did not bite")
+        print(f"SELFTEST FAILED: {len(FAILURES)} check(s)/floor(s) did not bite")
         for line in FAILURES:
             print(f"  - {line}")
         return 1
-    print("SELFTEST PASSED: every mutation was caught and every positive control still passed.")
+    print("SELFTEST PASSED: every mutation was caught, both runner floors bit, and every "
+          "positive control still passed.")
     return 0
 
 

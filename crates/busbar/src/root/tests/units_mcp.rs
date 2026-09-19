@@ -585,9 +585,15 @@ fn a_registered_hop_answering_with_the_metadata_address_does_not_pass_the_guard(
     assert!(Catalogue::upstream_only(plane, seam()).net_guard_passes(&hop));
 }
 
-/// The breaker's answer at the seal is the breaker's answer about that lane's position.
+/// The breaker's answer at the seal is its answer about that lane's position IN THE POOL THE
+/// QUERY NAMES — because that is the only position the cell has.
+///
+/// The cell is `(pool, lane-within-pool)`. This plane declares one registration per pool, so the
+/// member a pool key names is that pool's lane zero and the answer is read there. The position
+/// in the whole registered-server table is a different number about a different pool's cell, and
+/// reading it here asks the breaker about somebody else's member.
 #[test]
-fn the_catalogue_asks_the_breaker_about_the_registered_lanes_position() {
+fn the_catalogue_asks_the_breaker_about_the_lanes_position_in_the_named_pool() {
     struct Open(usize);
     impl BreakerView for Open {
         fn ready(&self, _pool: &str, lane: usize, _now: u64) -> bool {
@@ -623,21 +629,34 @@ fn the_catalogue_asks_the_breaker_about_the_registered_lanes_position() {
         lane: LaneId::new("second-lane"),
     };
 
-    let open = Open(1);
+    // Its own pool's zeroth member is what the second registration is, and a breaker holding
+    // that cell open refuses it. (Keying by the whole table would look at position ONE — the bug.)
+    let open = Open(0);
     let at = BreakerQuery {
         breaker: &open,
-        pool: "second",
+        pool: &pool_key("second"),
         now: 7,
     };
     assert!(
         !facts.breaker_admits(&second, &at),
-        "the second registration is at position one, and that is the open cell"
+        "the second registration is its own pool's lane zero, and that is the open cell"
     );
 
-    let elsewhere = Open(0);
+    // A breaker holding some OTHER member of that pool open says nothing about this one.
+    let elsewhere = Open(1);
     let at = BreakerQuery {
         breaker: &elsewhere,
-        pool: "second",
+        pool: &pool_key("second"),
+        now: 7,
+    };
+    assert!(facts.breaker_admits(&second, &at));
+
+    // And a query naming a pool this destination is not a member of has no position to read.
+    // The allow-list conjunct beside this one is what refuses that, not a borrowed index.
+    let open = Open(0);
+    let at = BreakerQuery {
+        breaker: &open,
+        pool: &pool_key("first"),
         now: 7,
     };
     assert!(facts.breaker_admits(&second, &at));
@@ -704,7 +723,9 @@ fn a_configured_pool_is_priced_even_though_it_is_no_registration() {
 
 /// A call names both resource kinds; everything else names only the server.
 ///
-/// The coarse grant never stands in for the fine one, which is the whole reason there are two.
+/// The coarse grant never stands in for the fine one, which is the whole reason there are two —
+/// and the fine one is only fine if it carries the TOOL's name. Two tools on one registration
+/// have to reach two different scopes, or a grant for the reader is a grant for the deleter.
 #[test]
 fn a_call_names_the_tool_as_well_as_the_server() {
     static SERVERS: &[Server] = &[Server {
@@ -715,12 +736,25 @@ fn a_call_names_the_tool_as_well_as_the_server() {
     }];
     let plane = McpPlane::new(SERVERS);
 
-    let call = resources(&plane, ops::OP_TOOL_CALL);
+    let call = resources(&plane, ops::OP_TOOL_CALL, Some("read_file"));
     assert_eq!(call.len(), 2);
     assert_eq!(call[0].kind, SCOPE_KIND_SERVER);
+    assert_eq!(call[0].name, "fs");
     assert_eq!(call[1].kind, SCOPE_KIND_TOOL);
+    assert_eq!(call[1].name, "read_file");
 
-    let listing = resources(&plane, ops::OP_TOOLS_LIST);
+    // The two tools of one registration do not collapse onto one scope: the tool scope must carry
+    // the tool's own name, never the server's a second time. Otherwise a grant for the harmless
+    // tool would carry the destructive one.
+    let destructive = resources(&plane, ops::OP_TOOL_CALL, Some("delete_file"));
+    assert_eq!(destructive[1].name, "delete_file");
+    assert_ne!(call[1], destructive[1]);
+
+    // A call that named no tool names no resource at all, which is a refusal rather than a pass.
+    assert!(resources(&plane, ops::OP_TOOL_CALL, None).is_empty());
+    assert!(resources(&plane, ops::OP_TOOL_CALL, Some("")).is_empty());
+
+    let listing = resources(&plane, ops::OP_TOOLS_LIST, None);
     assert_eq!(listing.len(), 1);
     assert_eq!(listing[0].kind, SCOPE_KIND_SERVER);
 }
@@ -736,6 +770,7 @@ fn nothing_registered_is_a_refusal_and_not_a_pass() {
     let refusal = approve(
         &McpPlane::EMPTY,
         ops::OP_TOOL_CALL,
+        Some("read_file"),
         Grants::of(Scope::Full),
         &policy,
     )
@@ -757,8 +792,14 @@ fn silence_is_a_refusal() {
     }];
     let plane = McpPlane::new(SERVERS);
     let silent = crate::root::policy::ScopePolicy::new();
-    let refusal = approve(&plane, ops::OP_TOOL_CALL, Grants::of(Scope::Full), &silent)
-        .expect_err("an unwritten policy entry authorizes nothing");
+    let refusal = approve(
+        &plane,
+        ops::OP_TOOL_CALL,
+        Some("read_file"),
+        Grants::of(Scope::Full),
+        &silent,
+    )
+    .expect_err("an unwritten policy entry authorizes nothing");
     assert_eq!(refusal, ApproveRefusal::NoPolicyEntry);
 }
 
@@ -780,6 +821,7 @@ fn a_read_only_grant_lists_and_does_not_call() {
     assert!(approve(
         &plane,
         ops::OP_TOOLS_LIST,
+        None,
         Grants::of(Scope::ReadOnly),
         &policy
     )
@@ -788,6 +830,7 @@ fn a_read_only_grant_lists_and_does_not_call() {
     let refusal = approve(
         &plane,
         ops::OP_TOOL_CALL,
+        Some("read_file"),
         Grants::of(Scope::ReadOnly),
         &policy,
     )

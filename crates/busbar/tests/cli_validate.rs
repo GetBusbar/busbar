@@ -388,9 +388,17 @@ fn list_plugins_reports_statuses_without_loading() {
     );
     let (code, stdout, _stderr) = run_busbar(&dir, &["--list-plugins"]);
     assert_eq!(code, 0, "list-plugins is informational: {stdout}");
+    // A bare `--list-plugins` NEVER dlopens (its doc-comment contract), so it must not claim the
+    // selected row LOADS — it only VERIFIED the signature/ABI window. Saying LOADS here is the
+    // 1.5.5 lie: the published image printed it for a tarball that then refused to boot on
+    // `dlopen failed`. The honest verdict names what was actually checked.
     assert!(
-        stdout.contains("LOADS (store.module: sqlite)"),
-        "the selected store row: {stdout}"
+        stdout.contains("VERIFIED (not loaded; store.module: sqlite)"),
+        "the selected store row must say VERIFIED (not loaded), never LOADS: {stdout}"
+    );
+    assert!(
+        !stdout.contains("LOADS"),
+        "a manifest-only listing must never print LOADS: {stdout}"
     );
     assert!(stdout.contains("busbar-store-sqlite"), "{stdout}");
     assert!(stdout.contains("acme-store-dynamo"), "{stdout}");
@@ -429,8 +437,8 @@ fn list_plugins_selected_row_requires_every_conjunct() {
     let (code, stdout, _stderr) = run_busbar(&dir, &["--list-plugins"]);
     assert_eq!(code, 0, "{stdout}");
     assert!(
-        stdout.contains("LOADS (store.module: sqlite)"),
-        "a NAME match alone (alias differs) must still select: {stdout}"
+        stdout.contains("VERIFIED (not loaded; store.module: sqlite)"),
+        "a NAME match alone (alias differs) must still select (and say VERIFIED, not LOADS): {stdout}"
     );
     let _ = std::fs::remove_dir_all(&dir);
 

@@ -2419,6 +2419,102 @@ async fn the_route_seam_is_driven_once_by_a_served_unit_and_never_by_a_refused_o
     );
 }
 
+/// D41 — a unit whose cancellation token is already tripped is refused AT `route_leg`, before an
+/// upstream connection is opened, rather than dialed for a client nobody is left to read.
+///
+/// RED FIRST: with `route_leg` ignoring the slot's cancellation token, a served fixture reaches the
+/// route step and dials the scripted upstream even though the unit was told to stop — the upstream
+/// records a request path. The cooperative check reads the token on the calling thread before the
+/// leg is built, so the served fixture never touches the socket. (The drop of the leg's future is
+/// the other half, for cancellation that lands mid-await; this half is the one before the wait.)
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn route_leg_refuses_a_cancelled_unit_before_dialing_the_upstream() {
+    // A SERVED fixture, so the only reason it would not dial is the cancellation check itself.
+    let fixture = Fixture::BufferedOk;
+    let rig = rig(fixture).await;
+    let node = LlmNode::new();
+    let arrival = WalkArrival {
+        host: rig.host(),
+        gov: rig.gov(),
+        proto: PROTO,
+        operation: busbar_api::operation::Operation::CHAT,
+        caller_token: None,
+        headers: json_headers(),
+        body: fixture.body(),
+        path: None,
+    };
+    let key = UnitKey::new(node.next_key.fetch_add(1, Ordering::Relaxed));
+    let principal = authenticate::principal_id(&arrival.gov);
+    let meter = Arc::new(AccrualMeter::new());
+    let seats: &[&(dyn approve::VetoSeat + Sync)] = &[];
+    let unit = LlmUnit {
+        node: &node,
+        seats,
+        meter: Arc::clone(&meter),
+        op_class: OpClassId::new(arrival.operation.name()),
+        model_hint: None,
+        started: Instant::now(),
+        charged_at: EPOCH,
+        history: crate::root::kernel::ROOT_CARD.pin(),
+        arrived: Arrived::at(EPOCH * 1_000, 0),
+        deferred: Mutex::new(None),
+        model: Mutex::new(String::new()),
+        walk: Walk::open(arrival),
+    };
+    let hold = busbar_kernel::inflight::arrival_hold(&node.kernel, &node.door, principal);
+    let slot = node
+        .inflight
+        .insert(busbar_kernel::inflight::Enter {
+            key,
+            origin: OriginKind::Client,
+            session: None,
+            admin_listener: false,
+            provider_of_open_session: false,
+            zero_hold_tick: false,
+            arrival: hold,
+            now: busbar_substrate::store::now_ms(),
+        })
+        .expect("the uncapped table takes the unit");
+
+    // TELL IT TO STOP before the loop runs. `route_leg` reads this on the calling thread and must
+    // refuse in place rather than open the leg.
+    assert!(
+        slot.cancel().trip(ReasonCode::ClientGone),
+        "this is the call that trips it"
+    );
+
+    let ctx = UnitCtx {
+        key,
+        origin: OriginKind::Client,
+        session: None,
+        generation: busbar_kernel::registry::Generation::FIRST,
+        admin_listener: false,
+        kernel_verb_only: false,
+    };
+    let _ended = busbar_kernel::teller::run_unit_async(
+        &node.kernel,
+        &unit,
+        &ctx,
+        busbar_kernel::teller::Run {
+            cell: slot.cell(),
+            parent: None,
+            leases: slot.leases(),
+            gauge: &node.gauge,
+            canary: &node.canary,
+            meter: &meter,
+        },
+        &unit,
+    )
+    .await;
+    node.inflight.remove(key);
+
+    assert!(
+        rig.upstream.get_last_request_path().is_none(),
+        "a cancelled unit must refuse at route_leg before dialing — the upstream was dialled"
+    );
+    rig.server.shutdown().await;
+}
+
 // ── THE ENTRY-LEVEL SHADOW: run_gauntlet vs the kernel loop, AT THE RESOLVED-OP FUNNEL ────────
 //
 // `native_ingress::run` (native_ingress.rs:554) is the resolved-op funnel every native arrival
