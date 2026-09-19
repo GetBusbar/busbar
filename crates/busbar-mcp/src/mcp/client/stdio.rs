@@ -317,7 +317,16 @@ const MAX_INTERLEAVED_MESSAGES: u32 = 256;
 /// to a caller's call. It does not need to be unique across children: correlation is per exchange
 /// (see `super::jsonrpc::parse_response`), and there is no table of pending ids for two children to
 /// collide in.
-const HANDSHAKE_REQUEST_ID: u64 = 0;
+///
+/// `u64::MAX`, not `0`: dispatch ids come from `App::next_request_id`
+/// (`crates/busbar-core/src/state.rs`), a per-process counter that starts at `0` and counts up — so
+/// `0` is not a spare value, it is the id the FIRST inbound request of the process's whole lifetime
+/// carries. A handshake constant of `0` collided with exactly that request: if it routed to a
+/// server whose stdio connection was mid-handshake, the handshake's own id-`0` reply and the
+/// caller's id-`0` `tools/call` reply became indistinguishable to `parse_response`, so either could
+/// be delivered as the other. `u64::MAX` is not reachable by a counter that starts at `0` and only
+/// increments, so no dispatch id can ever land here.
+const HANDSHAKE_REQUEST_ID: u64 = u64::MAX;
 
 /// EVERYTHING THE INBOUND HALF NEEDS about one leg: whose child this is, what authority the operator
 /// granted it, and where an accepted refresh trigger goes.
