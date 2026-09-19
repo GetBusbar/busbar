@@ -541,6 +541,9 @@ const ARCHITECTURE_ALLOWED: &[(&str, &str)] = &[
     ("root", "caps"),
     ("root", "cleanliness"),
     ("root", "contract"),
+    // The composition root mounts every plugin kind it ships, export included; the edge runs
+    // root -> export and never the reverse.
+    ("root", "export"),
     ("root", "kernel"),
     ("root", "legacy"),
     ("root", "plane"),

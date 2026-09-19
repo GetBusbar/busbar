@@ -563,21 +563,66 @@ fn ints_of(text: &str) -> Result<BTreeMap<String, i64>, String> {
     let doc = crate::toml_doc::parse_str(text)?;
     let mut out = BTreeMap::new();
     for (path, table) in doc.tables() {
+        let prefix = row_key(&doc, path, table);
         for key in table.keys() {
             if let Some(v) = table
                 .int_of(key)
                 .or_else(|| table.str_of(key).and_then(|s| s.trim().parse::<i64>().ok()))
             {
-                let dotted = if path.is_empty() {
+                let dotted = if prefix.is_empty() {
                     key.clone()
                 } else {
-                    format!("{path}.{key}")
+                    format!("{prefix}.{key}")
                 };
                 out.insert(dotted, v);
             }
         }
     }
     Ok(out)
+}
+
+/// The key-prefix one table contributes to [`ints_of`]'s dotted paths.
+///
+/// AN ARRAY-OF-TABLES ROW IS KEYED BY WHAT IT IS, NOT WHERE IT SITS. [`crate::toml_doc::Document::
+/// tables`] names an `[[cell]]` entry `cell.<ordinal>` — the position it happened to be written
+/// at — and comparing `cell.0.count` across two commits compares "whichever row the file happens
+/// to list first" rather than "the `busbar` × `api` row". A commit that only REORDERS
+/// `qa/kind-isolation.toml` (a resort, a rebase that reflows the array) then silently swaps which
+/// base count every ceiling is checked against, and [`ceiling_rose`] would compare two unrelated
+/// crates' counts and call it the same ceiling. A row's own string-valued fields (`crate = "…"`,
+/// `kind = "…"`) name it independent of its position, so when a row carries at least one, that
+/// identity is the key component instead of the ordinal — a reorder changes nothing the ratchet
+/// reads. A row with no string field to be identified by falls back to its ordinal, the
+/// pre-existing behaviour, rather than refusing to be scored at all.
+fn row_key(doc: &crate::toml_doc::Document, path: &str, table: &crate::toml_doc::Table) -> String {
+    let Some((prefix, idx)) = path
+        .rsplit_once('.')
+        .and_then(|(p, i)| i.parse::<usize>().ok().map(|i| (p, i)))
+    else {
+        return path.to_string();
+    };
+    if doc.array_len(prefix) <= idx {
+        return path.to_string();
+    }
+    let identity: Vec<String> = table
+        .keys()
+        .iter()
+        .filter_map(|k| {
+            let v = table.str_of(k)?;
+            // A value that parses as a number is a MEASUREMENT (`count = "122"` reads exactly like
+            // `count = 122`, see `ints_of`'s string fallback), not part of the row's identity —
+            // otherwise a row's own ceiling would be folded into the key it is filed under and a
+            // re-pin of the number would silently rename the row.
+            if v.trim().parse::<i64>().is_ok() {
+                return None;
+            }
+            Some(format!("{k}={v}"))
+        })
+        .collect();
+    if identity.is_empty() {
+        return path.to_string();
+    }
+    format!("{prefix}[{}]", identity.join(","))
 }
 
 #[cfg(test)]
@@ -601,10 +646,36 @@ mod tests {
     fn a_count_written_as_a_quoted_string_is_still_a_ceiling() {
         let doc = "[[cell]]\ncrate = \"busbar\"\nkind = \"api\"\ncount = \"122\"\n";
         let ints = ints_of(doc).expect("the fixture parses");
-        assert_eq!(ints.get("cell.0.count"), Some(&122));
+        assert_eq!(ints.get("cell[crate=busbar,kind=api].count"), Some(&122));
         // The neighbouring strings are words, not numbers, and must not become ceilings.
-        assert_eq!(ints.get("cell.0.crate"), None);
-        assert_eq!(ints.get("cell.0.kind"), None);
+        assert_eq!(ints.get("cell[crate=busbar,kind=api].crate"), None);
+        assert_eq!(ints.get("cell[crate=busbar,kind=api].kind"), None);
+    }
+
+    /// T1: A `[[cell]]` ROW IS KEYED BY ITS OWN `crate`/`kind`, NOT ITS ORDINAL POSITION. Reordering
+    /// the two rows below must not change which key each `count` is filed under — a ratchet keyed
+    /// by ordinal would compare `busbar`'s count at one commit against `substrate`'s at the next
+    /// merely because a resort put them in different array slots.
+    #[test]
+    fn a_reordered_cell_row_keeps_the_same_key() {
+        let forward =
+            "[[cell]]\ncrate = \"busbar\"\nkind = \"api\"\ncount = \"1\"\n\n[[cell]]\ncrate = \"substrate\"\nkind = \"api\"\ncount = \"2\"\n";
+        let reversed =
+            "[[cell]]\ncrate = \"substrate\"\nkind = \"api\"\ncount = \"2\"\n\n[[cell]]\ncrate = \"busbar\"\nkind = \"api\"\ncount = \"1\"\n";
+        let a = ints_of(forward).expect("the fixture parses");
+        let b = ints_of(reversed).expect("the fixture parses");
+        assert_eq!(a, b);
+        assert_eq!(a.get("cell[crate=busbar,kind=api].count"), Some(&1));
+        assert_eq!(a.get("cell[crate=substrate,kind=api].count"), Some(&2));
+    }
+
+    /// A row with no string field to be identified by keeps the pre-existing ordinal behaviour
+    /// rather than being dropped.
+    #[test]
+    fn an_unidentifiable_array_row_falls_back_to_its_ordinal() {
+        let doc = "[[n]]\ncount = 5\n";
+        let ints = ints_of(doc).expect("the fixture parses");
+        assert_eq!(ints.get("n.0.count"), Some(&5));
     }
 
     /// A string that is not a number is not a ceiling, and must not make the file unreadable
@@ -635,3 +706,4 @@ mod tests {
         assert!(set_int(DOC, "rules.x", "missing", 9).is_none());
     }
 }
+
