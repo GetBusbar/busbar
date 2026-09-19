@@ -112,6 +112,30 @@ fn wrong_credential_of_any_shape_rejects_not_passes() {
     }
 }
 
+/// S12 boundary: candidates that are ONE segment-count away from JWS-shaped (2 segments, 4
+/// segments) or that have an empty segment inside a 3-dot-count split must still `Reject`, not
+/// defer. `non_matching_credentials_of_any_shape_never_identify` already drives these shapes but
+/// only asserts non-`Identify` (`Pass` or `Reject` both pass); that leaves the segment-count and
+/// empty-segment boundaries in `is_jws_shaped` unlocked — a mutant that widens the 3-segment check
+/// to accept 2, 4, or an empty segment would defer these instead of rejecting and nothing here
+/// would catch it. Pin `Reject` explicitly for every boundary shape.
+#[test]
+fn near_jws_shaped_boundary_still_rejects() {
+    let h = hash("secret");
+    for cred in ["a.b", "a.b.c.d", "a..c", ".b.c", "a.b."] {
+        assert_eq!(
+            authenticate_admin_tokens(Some(&h), Some(cred), None),
+            AuthOutcome::Reject,
+            "near-JWS-boundary candidate {cred:?} on bearer carrier must Reject, not defer"
+        );
+        assert_eq!(
+            authenticate_admin_tokens(Some(&h), None, Some(cred)),
+            AuthOutcome::Reject,
+            "near-JWS-boundary candidate {cred:?} on header carrier must Reject, not defer"
+        );
+    }
+}
+
 /// S12: a mismatched but JWS-SHAPED credential (three non-empty dot-separated segments — the
 /// compact-serialization shape a real JWT/JWS uses) must `Pass` (defer), never `Reject`. It is
 /// not admin-tokens' credential grammar, so a terminal `Reject` here would short-circuit the
