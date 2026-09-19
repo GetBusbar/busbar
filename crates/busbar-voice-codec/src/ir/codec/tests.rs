@@ -762,6 +762,30 @@ fn the_held_tool_argument_table_is_capped_and_evicts_the_oldest() {
     );
 }
 
+/// D23: A MID-STREAM FRAGMENT THAT HAPPENS TO BE A COMPLETE NESTED OBJECT IS NOT A RESTATEMENT.
+///
+/// The model can emit a nested sub-object as one delta chunk on its own token boundary — e.g.
+/// `{"outer": ` then `{"inner": 1}` then `, "other": 2}` for the whole arguments
+/// `{"outer": {"inner": 1}, "other": 2}`. The middle fragment parses as a complete JSON object all by
+/// itself, but it is NOT the dialect restating the call's arguments — a genuine restatement (Gemini's
+/// atomic call, or OpenAI's `function_call_arguments.done`) always carries everything already held as
+/// a literal prefix of its own text. Treating any complete-object fragment as a restatement replaced
+/// the held `{"outer": ` with just `{"inner":1}`, then appended the tail onto that, leaving
+/// `{"inner":1}, "other": 2}` — invalid JSON that dropped the whole call.
+#[test]
+fn a_nested_object_fragment_mid_call_is_appended_not_mistaken_for_a_restatement() {
+    let mut st = DecodeState::default();
+    let call = st.ref_for_call_id("fc_nested");
+    st.push_call_args(call, br#"{"outer": "#);
+    st.push_call_args(call, br#"{"inner": 1}"#);
+    st.push_call_args(call, br#", "other": 2}"#);
+    assert_eq!(
+        st.take_call_args(call),
+        Some(serde_json::json!({"outer": {"inner": 1}, "other": 2})),
+        "a nested-object delta must extend the held prefix, never replace it"
+    );
+}
+
 // ── tools: correlation across the call loop ──────────────────────────────────────────────────────
 
 #[test]
