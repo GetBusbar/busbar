@@ -335,6 +335,11 @@ pub struct Rehydrated {
 pub enum TaskStoreError {
     /// The task id is not in the working set.
     NoSuchTask(String),
+    /// A submit named an id the working set ALREADY holds. Refused rather than applied: the neutral
+    /// engine's install overwrites on a key collision, which would reset the displaced task to a
+    /// fresh genesis chain — a live task quietly ceasing to exist, and on a shared `contextId` one
+    /// principal handed another's task handle. A submit never clobbers an existing task's chain.
+    DuplicateTask(String),
     /// The A2A codec refused the row or the move — carried as its already-rendered message.
     Domain(String),
     /// The durable write failed.
@@ -345,6 +350,7 @@ impl std::fmt::Display for TaskStoreError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             TaskStoreError::NoSuchTask(id) => write!(f, "no such task `{id}`"),
+            TaskStoreError::DuplicateTask(id) => write!(f, "a task `{id}` already exists"),
             TaskStoreError::Domain(e) => write!(f, "{e}"),
             TaskStoreError::Store(e) => write!(f, "{e}"),
         }
@@ -635,6 +641,16 @@ impl TaskRegistry {
     pub fn submit(&self, row: &TaskRow, request_id: &str) -> Result<TaskRow, TaskStoreError> {
         let row = row.clone();
         let request_id = request_id.to_string();
+        // DUPLICATE GUARD. A submit for an id already live is REFUSED, never applied: the neutral
+        // engine installs by overwriting, so a colliding id (a `uuid_like` clash, or a caller
+        // naming an id it already holds) would otherwise reset the existing task to a fresh genesis
+        // chain — its history erased and, on a shared `contextId`, one principal handed another's
+        // task. The engine's per-handle serialization means an id that reads absent here cannot be
+        // installed by another writer between this check and our own install below (a submit is the
+        // only path that installs a fresh id, and the front door drives inbound submits in order).
+        if self.engine.get_unscoped(&row.task_id).is_some() {
+            return Err(TaskStoreError::DuplicateTask(row.task_id.clone()));
+        }
         self.engine
             .submit(
                 row.created_at,
@@ -834,7 +850,15 @@ impl TaskRegistry {
             .mutate(task_id, |row, _pos| {
                 let mut candidate = as_task_ref(row).clone();
                 candidate.push_callback = callback.clone().unwrap_or_default();
-                candidate.updated_at = now;
+                // RETENTION-CLOCK FREEZE. `updated_at` is the terminal TTL's age key, and this write
+                // is NOT a transition — it re-targets delivery and changes no task state. On an
+                // already-SETTLED task, moving the clock forward would push the eviction deadline out
+                // with it, so a caller repeatedly touching a finished task could pin it in the working
+                // set forever. A settled task ages out from its terminal transition; a non-transition
+                // write leaves that clock where it is.
+                if !is_terminal_state(&candidate.state) {
+                    candidate.updated_at = now;
+                }
                 let row_record = candidate.to_plane_record().map_err(MutateError::Store)?;
                 let meta = meta_of(&candidate);
                 Ok(Some(Mutation {
