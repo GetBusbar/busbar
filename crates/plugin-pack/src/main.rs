@@ -29,6 +29,18 @@ use std::process::ExitCode;
 
 const SIGN_KEY_ENV: &str = "BUSBAR_SIGN_KEY";
 
+/// The refusal for a `$BUSBAR_SIGN_KEY` that is not hex, built here so the message has exactly one
+/// definition and carries NONE of the value. The hex decoder's own error names the offending
+/// character and its index, and that character is a nibble of the ed25519 signing seed — a
+/// packaging run is exactly where such a line goes to live, in a CI log or a pasted bug report.
+/// Which variable is malformed and what shape it must have is the whole of what the operator needs.
+fn sign_key_hex_error() -> String {
+    format!(
+        "{SIGN_KEY_ENV} is not valid hex; it must be exactly 64 hex characters (a 32-byte ed25519 \
+         seed)"
+    )
+}
+
 /// The ONLY `$schema` value `--settings-schema-file` accepts.
 /// `jsonschema::validator_for` auto-detects draft from `$schema` and silently falls back to
 /// whatever draft it currently defaults to when the field is absent — it does not itself refuse
@@ -534,8 +546,7 @@ fn pack(args: &[String]) -> ExitCode {
         // Sign with $BUSBAR_SIGN_KEY, or package unsigned only under the explicit dev flag.
         let manifest = match std::env::var(SIGN_KEY_ENV) {
             Ok(hex_seed) => {
-                let seed = hex::decode(hex_seed.trim())
-                    .map_err(|e| format!("{SIGN_KEY_ENV} is not valid hex: {e}"))?;
+                let seed = hex::decode(hex_seed.trim()).map_err(|_| sign_key_hex_error())?;
                 let seed: [u8; 32] = seed
                     .as_slice()
                     .try_into()
