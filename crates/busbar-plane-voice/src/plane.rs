@@ -76,8 +76,8 @@ use busbar_contract::plane::{
     Ingress, Plane, PlaneSessionState, Progress, Response, SessionPlane, UnitDraft,
 };
 use busbar_contract::unit::{
-    AdmitFacts, AuditFacts, Ctx, FinishClass, Refusal, ResourceLocator, ScopeFacts, Unit, UnitEnd,
-    UsageLocator, UsageLocators,
+    AdmitFacts, AuditFacts, Ctx, FinishClass, Refusal, RefusalReason, ResourceLocator, ScopeFacts,
+    Unit, UnitEnd, UsageLocator, UsageLocators,
 };
 use busbar_contract::wire::{Decode, DiscardCode, Encode, Frame, FrameCursor, TransportEnvelope};
 
@@ -362,10 +362,10 @@ impl Plane for VoicePlane {
         st: Option<&PlaneSessionState>,
         ctx: &Ctx<'u>,
     ) -> Result<ArenaBytes<'u>, Encode> {
-        let (code, message) = refusal_render(refusal.reason);
+        let (_status, kind) = refusal_shape(refusal.reason);
         let event = IrServerEvent::Error {
-            code: code.to_string(),
-            message: message.to_string(),
+            code: kind.to_string(),
+            message: refusal_message(refusal.reason).to_string(),
         };
         // A refusal is rendered in the dialect this session NEGOTIATED, not one fixed shape. The
         // immutable session half carries the bound dialect (`VoiceSessionState::dialect`), and a
@@ -603,38 +603,101 @@ impl SessionPlane for VoicePlane {
     }
 }
 
-/// What a refused session is told, in the closed vocabulary a client is allowed to see.
+// ── The neutral refusal taxonomy this plane's dialect writers render.
+//
+// A refusal reaches a client the same way `busbar-plane-llm` sends one (the reference the invariant
+// is measured against): the kernel's private reason is mapped to a `(status, KIND_*)` pair here, and
+// the negotiated dialect's own writer — never this function — frames that pair into the shape the
+// client library surfaces. So the reason code never reaches a client, and neither does a generic
+// `internal` swallow: every operational refusal wears the CLASS it belongs to (a rate refusal reads
+// `rate_limit_error`, a node-capacity refusal `overloaded_error`), which is the same neutral
+// vocabulary a `busbar-plane-llm` client already sees. The tokens are restated rather than reached
+// for through the crate that holds them, exactly as `busbar-plane-llm` restates them, so no HTTP
+// stack is pulled into a duplex plane.
+//
+/// The token an authentication refusal wears.
+const KIND_AUTHENTICATION: &str = "authentication_error";
+/// The token a permission refusal wears.
+const KIND_PERMISSION: &str = "permission_error";
+/// The token a rate refusal wears.
+const KIND_RATE_LIMIT: &str = "rate_limit_error";
+/// The token a malformed-or-unacceptable request wears.
+const KIND_INVALID_REQUEST: &str = "invalid_request_error";
+/// The token a node-side capacity refusal wears.
+const KIND_OVERLOADED: &str = "overloaded_error";
+/// The token an oversized request wears.
+const KIND_REQUEST_TOO_LARGE: &str = "request_too_large";
+/// The token a node-side fault wears.
+const KIND_API_ERROR: &str = "api_error";
+
+/// The status and kind token one refusal reason wears on the wire.
 ///
-/// The internal reason is a kernel enum with names for the money, the buckets and the store
-/// (`OverdraftCeiling`, `StaleSlice`, `DurabilityUnavailable`). Formatting it onto the wire told
-/// every caller which internal ceiling it met and pinned this node's private vocabulary as the
-/// dialect's `error.code` — a name no client library has a case for and no dialect documents. What
-/// goes out instead is the same small opaque set every other plane in this workspace renders (see
-/// `busbar-plane-admin`'s own table): the caller learns the CLASS of refusal and nothing about why
-/// this node reached it.
-fn refusal_render(reason: busbar_contract::unit::RefusalReason) -> (&'static str, &'static str) {
-    use busbar_contract::unit::RefusalReason as R;
+/// The reason code itself never reaches a client: what reaches a client is the negotiated dialect's
+/// own rendering of the pair below, written by that dialect's own error writer. This is the total
+/// mapping `busbar-plane-llm::refusal_shape` is — no catch-all, so no operational class collapses
+/// into a generic `internal` or `api_error`.
+fn refusal_shape(reason: RefusalReason) -> (u16, &'static str) {
     match reason {
-        R::BodyTooLarge | R::DecodeFailed | R::SchemeNotDeclared | R::SecretPlaceholder => {
-            ("invalid_request", "the request could not be read")
+        RefusalReason::CredentialRejected
+        | RefusalReason::SessionUnbound
+        | RefusalReason::SchemeNotDeclared => (401, KIND_AUTHENTICATION),
+        RefusalReason::Revoked | RefusalReason::ScopeMissing | RefusalReason::Vetoed => {
+            (403, KIND_PERMISSION)
         }
-        R::CredentialRejected | R::SessionUnbound | R::CredentialBudget => {
-            ("unauthorized", "the session did not carry usable authority")
-        }
-        R::ScopeMissing | R::Vetoed | R::Revoked | R::PoolNotPermitted => (
-            "forbidden",
-            "the caller may not open a session for this operation",
-        ),
-        R::RateLimited | R::InFlightCap | R::OpenSlotBusy | R::SessionBudget => {
-            ("rate_limited", "too many sessions at once")
-        }
-        R::NoDestination | R::DestinationUnreachable | R::BreakerOpen | R::Drain => (
-            "unavailable",
-            "no provider is reachable for this session right now",
-        ),
-        // Everything else is this node saying no for a reason that is this node's own — the money,
-        // the buckets, the journal. A caller is told it failed here and nothing more.
-        _ => ("internal", "the session could not be opened at this time"),
+        RefusalReason::BodyTooLarge
+        | RefusalReason::CursorBudget
+        | RefusalReason::CredentialBudget => (413, KIND_REQUEST_TOO_LARGE),
+        RefusalReason::InFlightCap
+        | RefusalReason::SessionBudget
+        | RefusalReason::OpenSlotBusy
+        | RefusalReason::OverBudget
+        | RefusalReason::GroupFrozen
+        | RefusalReason::OverdraftCeiling => (429, KIND_RATE_LIMIT),
+        RefusalReason::NoDestination | RefusalReason::Unpriced => (400, KIND_INVALID_REQUEST),
+        RefusalReason::DurabilityUnavailable
+        | RefusalReason::StaleSlice
+        | RefusalReason::TierMismatch => (503, KIND_OVERLOADED),
+        // The reasons the kernel could always raise and this dialect had no rendering for. Each
+        // joins the family it belongs to rather than acquiring a status of its own: a client learns
+        // the shape of the refusal, never which of the node's ceilings it met.
+        RefusalReason::ChallengeExhausted => (401, KIND_AUTHENTICATION),
+        RefusalReason::PoolNotPermitted => (403, KIND_PERMISSION),
+        RefusalReason::RateLimited | RefusalReason::InFlight => (429, KIND_RATE_LIMIT),
+        RefusalReason::DecodeFailed
+        | RefusalReason::NoRate
+        | RefusalReason::Replayed
+        | RefusalReason::Superseded => (400, KIND_INVALID_REQUEST),
+        RefusalReason::SpillBudget
+        | RefusalReason::ArenaBudget
+        | RefusalReason::DestinationBudgetExhausted
+        | RefusalReason::BreakerOpen
+        | RefusalReason::DestinationUnreachable
+        | RefusalReason::Stalled
+        | RefusalReason::Drain
+        | RefusalReason::ClientGone
+        | RefusalReason::DeadlineExceeded => (503, KIND_OVERLOADED),
+        // Node-side faults: the node got something wrong, and says so without saying what.
+        RefusalReason::MeterDisputed
+        | RefusalReason::HandoffMismatch
+        | RefusalReason::PlanePanic
+        | RefusalReason::TaskLost
+        | RefusalReason::SecretPlaceholder => (500, KIND_API_ERROR),
+    }
+}
+
+/// The message a refusal carries.
+///
+/// Deliberately a small closed set of neutral sentences: a refusal message is read by a client, and
+/// a client must not learn from it which internal ceiling it hit.
+fn refusal_message(reason: RefusalReason) -> &'static str {
+    match refusal_shape(reason).0 {
+        401 => "Authentication failed.",
+        403 => "Not permitted.",
+        413 => "Request too large.",
+        429 => "Rate limited.",
+        500 => "The request could not be completed.",
+        503 => "Temporarily unavailable.",
+        _ => "Request rejected.",
     }
 }
 
