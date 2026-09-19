@@ -1466,6 +1466,9 @@ pub(crate) async fn rotate_key(
         resource: &resource,
         actor: &actor,
     };
+    if let Some(resp) = reject_overlong_id(who, &id) {
+        return resp;
+    }
     // IDEMPOTENT ROTATE (optional `Idempotency-Key`): rotate is the one other
     // destructive, secret-bearing POST — a network-level retry without this mints TWICE and the
     // first (lost) response's secret is silently dead. Same mechanics as create's idempotent mint
