@@ -187,8 +187,9 @@ pub enum Progress<'u> {
 
 /// What bytes mean.
 ///
-/// Seven codec methods, seven fact methods and two introspection methods. Every one of them is
-/// pure over its inputs, and none of them may perform input or output.
+/// Seven codec methods, seven fact methods, two introspection methods, and one state opener the
+/// codec methods read through. Every one of them is pure over its inputs, and none of them may
+/// perform input or output.
 ///
 /// # Errors
 /// Every codec method returns [`Decode`] or [`Encode`] when the bytes, or the unit, cannot be
@@ -222,6 +223,24 @@ pub trait Plane: Plugin + Send + Sync + 'static {
         st: Option<&mut PlaneSessionState>,
         ctx: &Ctx<'u>,
     ) -> Result<Option<ArenaBytes<'u>>, Encode>;
+
+    /// Open the codec state one outbound hop of this unit reads and writes, where the dialect
+    /// needs one.
+    ///
+    /// [`Plane::decode_response`] is handed frames, a destination and a context — never the unit
+    /// whose request those frames answer. So a dialect whose complete answer and whose first
+    /// streamed event are the same bytes has nowhere to read the one fact that separates them,
+    /// which is what the unit was OPENED as. This is where that fact is put: the egress attempt
+    /// opens one state per hop from the unit it is about to send, and lends it to
+    /// [`Plane::encode_egress`] and to every [`Plane::decode_response`] of that hop.
+    ///
+    /// A plane with nothing to carry across a hop answers `None` and is handed `None`, which is
+    /// what every plane did before this existed. The state is the hop's, not the session's: a
+    /// session transport's per-connection halves come from [`SessionPlane`] and outlive any one
+    /// unit.
+    fn open_unit_state<'u>(&self, _u: &Unit<'u>, _ctx: &Ctx<'u>) -> Option<PlaneSessionState> {
+        None
+    }
 
     /// Read bytes coming back from an upstream.
     fn decode_response<'u>(
