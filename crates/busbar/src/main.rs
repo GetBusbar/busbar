@@ -1206,7 +1206,9 @@ fn open_boot_book(app: &busbar_core::state::App) -> root::durability::NodeBook {
     match compose_boot_book(&adapter, data_dir, &mig, now, &token) {
         Ok((durability, rows, migration)) => {
             if migration.sealed_now() {
-                tracing::info!(
+                // Internal durability step; must not add a new INFO+ boot line vs the 1.5.5
+                // boot shape (boot_lines_match_1_5_5_shape). Sealing happens silently at debug.
+                tracing::debug!(
                     node = mig.node,
                     rate_card_version = mig.rate_card_version,
                     "the boot ledger sealed its opening balances from the configured store"
