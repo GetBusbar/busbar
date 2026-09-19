@@ -5131,10 +5131,14 @@ pub(crate) async fn validate_config(
             )))
         }
     };
-    // Same lift the disk loader (boot/reload) and `config/apply`'s builder run — see the struct
-    // doc above. `deploy_from_deserializer` is format-agnostic by design (its own doc: "the
-    // JSON-shaped paths ... get it too"), so feeding it the already-parsed JSON `Value` reproduces
-    // the exact disk-load parse behavior for this JSON-bodied endpoint.
+    // Same lift the disk loader (boot/reload) runs before parsing `DeployCfg` — see the struct
+    // doc above. NOTE: `config/apply`'s `ApplyConfigReq` derives `DeployCfg` directly and does
+    // NOT run this lift (verified: an `oauth_as` key there is refused with `400 unknown field`
+    // exactly like this endpoint was before this change) — that gap is real but out of scope
+    // here; do not extend this comment to imply it is already handled. `deploy_from_deserializer`
+    // is format-agnostic by design (its own doc: "the JSON-shaped paths ... get it too"), so
+    // feeding it the already-parsed JSON `Value` reproduces the exact disk-load parse behavior
+    // for this JSON-bodied endpoint.
     let deploy: busbar_core::config::DeployCfg =
         match busbar_core::config::deploy_from_deserializer(req.config) {
             Ok(d) => d,
