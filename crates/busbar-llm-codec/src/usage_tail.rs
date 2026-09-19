@@ -115,3 +115,71 @@ pub fn token_count(v: &serde_json::Value) -> Option<u64> {
     }
     Some(ceil as u64)
 }
+
+#[cfg(test)]
+mod token_count_tests {
+    use super::token_count;
+    use serde_json::json;
+
+    /// A whole-valued double must stay EXACT — `11.0` is eleven tokens, never twelve. `f.ceil()` on
+    /// an already-integral float is a no-op, but this pins that byte-for-byte rather than trusting
+    /// the implementation.
+    #[test]
+    fn integral_double_is_exact_not_rounded_up() {
+        assert_eq!(token_count(&json!(11.0)), Some(11));
+        assert_eq!(token_count(&json!(0.0)), Some(0));
+        assert_eq!(token_count(&json!(1_000_000.0)), Some(1_000_000));
+    }
+
+    /// A genuine `u64` (no decimal point in the wire bytes) parses exactly as it always did, via
+    /// the `as_u64` fast path — this function must not regress the integer case while adding double
+    /// tolerance.
+    #[test]
+    fn plain_integer_is_unaffected() {
+        assert_eq!(token_count(&json!(11)), Some(11));
+        assert_eq!(token_count(&json!(0)), Some(0));
+    }
+
+    /// A fractional value rounds UP: a partially-consumed billing unit is still a whole unit
+    /// charged, and this must never bill LESS than the provider reported.
+    #[test]
+    fn fractional_double_rounds_up() {
+        assert_eq!(token_count(&json!(11.1)), Some(12));
+        assert_eq!(token_count(&json!(11.9)), Some(12));
+        assert_eq!(token_count(&json!(0.001)), Some(1));
+    }
+
+    /// A negative count is not a real token count under any provider's billing model — reject
+    /// rather than clamp to 0, so a caller's `unwrap_or(0)` and this function's `None` are
+    /// distinguishable in principle even though both currently ledger nothing.
+    #[test]
+    fn negative_is_rejected() {
+        assert_eq!(token_count(&json!(-1.0)), None);
+        assert_eq!(token_count(&json!(-0.5)), None);
+    }
+
+    /// NaN and +/-infinity are not finite counts; must never silently bill as 0 or saturate to a
+    /// fabricated maximum.
+    #[test]
+    fn non_finite_is_rejected() {
+        assert_eq!(token_count(&json!(f64::NAN)), None);
+        assert_eq!(token_count(&json!(f64::INFINITY)), None);
+        assert_eq!(token_count(&json!(f64::NEG_INFINITY)), None);
+    }
+
+    /// A value at or beyond `u64::MAX`'s representable range must not silently saturate to
+    /// `u64::MAX` (the `as` cast's default behavior) and pose as a real, enormous token count.
+    #[test]
+    fn overflow_is_rejected_not_saturated() {
+        assert_eq!(token_count(&json!(1.0e30)), None);
+        assert_eq!(token_count(&json!(18_446_744_073_709_551_616.0_f64)), None);
+    }
+
+    /// A non-numeric value (string, bool, null, object) is not a token count at all.
+    #[test]
+    fn non_numeric_is_rejected() {
+        assert_eq!(token_count(&json!("11")), None);
+        assert_eq!(token_count(&json!(null)), None);
+        assert_eq!(token_count(&json!(true)), None);
+    }
+}
