@@ -53,9 +53,49 @@ pub(crate) fn hydrate(
     let rt = super::runtime_of(host);
     let mut replayed = 0usize;
     for body in bodies {
+        // AN UNDECODABLE ROW FAILS CLOSED, and it is the one row on this path that must.
+        //
+        // This was `Err(_) => continue`: a row that would not decode was dropped on the floor with
+        // no log line and no count. A demotion row exists BECAUSE an upstream was quarantined — a
+        // live observation disagreed with the operator's approval — and the replay is here to keep
+        // the property that a quarantine survives a restart and a restart does not silently re-open
+        // it. Skipping the row re-opened it exactly that way. Worse, the record is a security
+        // control and the store is the thing an attacker with write access reaches first: corrupting
+        // ONE byte of one row was a supported, untraceable way to un-quarantine a drifted upstream
+        // across the next restart.
+        //
+        // So the row is not skipped. The `server` field is SALVAGED from the raw body — a row that
+        // fails to decode as a whole very often still carries a legible name, because the failure is
+        // a missing or changed field elsewhere — and the demotion is replayed on that name with a
+        // reason saying why. Only a body with no salvageable name has nothing to act on. The row is
+        // never deleted here either way: destroying the evidence is the one thing the restart that
+        // found it must not do.
         let row = match crate::record::McpDemotionRow::from_body(&body) {
             Ok(row) => row,
-            Err(_) => continue,
+            Err(e) => {
+                let salvaged = salvage_server(&body);
+                tracing::warn!(
+                    error = %e,
+                    server = salvaged.as_deref().unwrap_or("<unreadable>"),
+                    "a durable MCP demotion record could not be decoded at boot; the quarantine it \
+                     records is HELD rather than dropped. Investigate the durable governance store \
+                     for corruption or tampering, then clear the named server's demotion \
+                     deliberately once the upstream is known good — busbar will not clear it for you"
+                );
+                let Some(server) = salvaged else {
+                    // Nothing to hold the quarantine ON. The warning above is the whole answer:
+                    // busbar will not invent a server name, and it will not pretend the row was
+                    // absent either.
+                    continue;
+                };
+                crate::record::McpDemotionRow {
+                    server,
+                    reason: "a durable demotion record for this server could not be decoded at \
+                             boot; the quarantine is held until an operator clears it deliberately"
+                        .to_string(),
+                    recorded_at: 0,
+                }
+            }
         };
         let Some(entry) = rt.catalogue.server(&row.server) else {
             tracing::info!(
@@ -79,4 +119,22 @@ pub(crate) fn hydrate(
         replayed += 1;
     }
     replayed
+}
+
+/// The `server` field of a demotion body that did NOT decode as a whole row.
+///
+/// A last resort and deliberately a narrow one: the body is parsed as generic JSON and exactly one
+/// string member is read. It recovers the ordinary corruption — a field added, removed or retyped
+/// somewhere else in the row — without ever inventing a name, which is what lets the replay hold a
+/// quarantine whose full terms it can no longer read.
+///
+/// An empty name is treated as no name. A demotion keyed by the empty string would seed a cache
+/// entry nothing routes to, which is a quarantine that looks enforced and is not.
+fn salvage_server(body: &[u8]) -> Option<String> {
+    serde_json::from_slice::<serde_json::Value>(body)
+        .ok()?
+        .get("server")?
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
 }
