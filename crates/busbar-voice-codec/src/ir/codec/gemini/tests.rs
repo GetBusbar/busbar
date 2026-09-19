@@ -1042,6 +1042,50 @@ fn usage_metadata_extracts_split_token_classes() {
     assert_eq!(back, src);
 }
 
+/// D26: A MISSING MODALITY BREAKDOWN MUST NOT METER THE TURN AT ZERO.
+///
+/// Gemini can omit `promptTokensDetails`/`responseTokensDetails` while still stating the turn's
+/// TOTAL token counts. The breakdown is a REFINEMENT of the stated total, never its sole source, so
+/// billing must fall back to the stated `promptTokenCount`/`responseTokenCount` rather than meter a
+/// real turn as zero tokens (silent under-billing).
+#[test]
+fn usage_falls_back_to_stated_totals_when_the_modality_breakdown_is_absent() {
+    let codec = GeminiLiveCodec;
+    let mut st = DecodeState::default();
+    let src = json!({
+        "usageMetadata": {
+            "promptTokenCount": 95,
+            "responseTokenCount": 50,
+            "totalTokenCount": 145
+        }
+    });
+    let ir = codec.read_down(wire(&src.to_string()), &mut st);
+    let IrServerEvent::Usage(u) = &ir[0] else {
+        panic!("expected Usage");
+    };
+    assert_eq!(
+        u.audio_in + u.text_in,
+        95,
+        "the turn's stated prompt total must not be dropped to zero"
+    );
+    assert_eq!(
+        u.audio_out + u.text_out,
+        50,
+        "the turn's stated response total must not be dropped to zero"
+    );
+    let billed = u.to_billing_usage();
+    assert_eq!(
+        billed.usage_units.get(busbar_api::UNIT_INPUT).copied(),
+        Some(95),
+        "a turn with no modality breakdown still bills its stated input tokens"
+    );
+    assert_eq!(
+        billed.usage_units.get(busbar_api::UNIT_OUTPUT).copied(),
+        Some(50),
+        "a turn with no modality breakdown still bills its stated output tokens"
+    );
+}
+
 #[test]
 fn cached_content_tokens_are_not_billed_twice() {
     // Gemini reports `cachedContentTokenCount` as a SUBSET of `promptTokenCount` (cached content IS

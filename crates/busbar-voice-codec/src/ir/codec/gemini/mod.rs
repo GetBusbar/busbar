@@ -368,14 +368,39 @@ fn modality_tokens(details: Option<&Value>, modality: &str) -> u64 {
 
 /// Extract the split token classes from a Gemini `usageMetadata` object (`plane4-duplex-session.md` — audio vs text are
 /// SEPARATE classes; extraction-only, never client-translated).
+///
+/// D26: the per-modality breakdown (`promptTokensDetails`/`responseTokensDetails`) is a REFINEMENT of
+/// the stated `promptTokenCount`/`responseTokenCount` totals, never their sole source — Gemini can
+/// omit the breakdown while still stating the totals. Reading a missing breakdown as zero tokens
+/// metered a real turn at zero (silent under-billing); when the breakdown yields nothing, the stated
+/// total is billed instead (attributed to `text`, the conservative default when the split is
+/// unknown — this only changes the audio/text LABEL, never the input/output lane the billing fold
+/// sums onto).
 fn usage_from_metadata(u: &Value) -> IrDuplexUsage {
     let pd = u.get("promptTokensDetails");
     let rd = u.get("responseTokensDetails");
+    let stated_total = |key: &str| u.get(key).and_then(Value::as_u64).unwrap_or_default();
+    let (audio_in, text_in) = {
+        let (a, t) = (modality_tokens(pd, "AUDIO"), modality_tokens(pd, "TEXT"));
+        if a.saturating_add(t) == 0 {
+            (0, stated_total("promptTokenCount"))
+        } else {
+            (a, t)
+        }
+    };
+    let (audio_out, text_out) = {
+        let (a, t) = (modality_tokens(rd, "AUDIO"), modality_tokens(rd, "TEXT"));
+        if a.saturating_add(t) == 0 {
+            (0, stated_total("responseTokenCount"))
+        } else {
+            (a, t)
+        }
+    };
     IrDuplexUsage {
-        audio_in: modality_tokens(pd, "AUDIO"),
-        text_in: modality_tokens(pd, "TEXT"),
-        audio_out: modality_tokens(rd, "AUDIO"),
-        text_out: modality_tokens(rd, "TEXT"),
+        audio_in,
+        text_in,
+        audio_out,
+        text_out,
         cached: u
             .get("cachedContentTokenCount")
             .and_then(Value::as_u64)
