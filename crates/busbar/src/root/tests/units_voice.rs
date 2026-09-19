@@ -2198,7 +2198,8 @@ fn a_credential_is_resolved_against_this_planes_own_audience() {
                 "mcp-tok" => "mcp",
                 _ => return None,
             };
-            (expected_aud == Some(minted_for)).then(|| KeyFacts::unrestricted("key-voice-1", "an approved key"))
+            (expected_aud == Some(minted_for))
+                .then(|| KeyFacts::unrestricted("key-voice-1", "an approved key"))
         }
 
         fn revoked(&self, _credential: &str) -> bool {
