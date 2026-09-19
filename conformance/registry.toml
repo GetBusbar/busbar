@@ -1,0 +1,118 @@
+# Conformance suite registry — the ONE hand-authored input to the conformance
+# manifest generator (`cargo xtask conformance-manifest --write`, not yet
+# built — see `conformance/README.md`). Holds no status; status comes only
+# from real verdict artifacts at manifest-generation time.
+#
+# Design: CONFORMANCE-SYNC-DESIGN.md §3.3 (schema), §4 (honesty tiering — the
+# `tier` here is a CEILING the rendered claim can never exceed).
+# Ruling:  CONFORMANCE-MATRIX-RULING.md (owner-agreed 2026-09-19) — the MUST
+#          set and the free-vs-paid classification of each suite.
+# Turnstile-side consumer: `busbar-release` `crates/busbar-release-turnstile/
+#          src/conformance.rs` (DEFAULT_MUST_SUITES) and `auto_apply.rs`
+#          (FREE_SUITES / PAID_SUITES) — the `cost` field below is this
+#          registry's copy of that same classification, kept in the repo whose
+#          workflows actually produce the verdicts.
+#
+# Adding a suite: add one [suite.<id>] block here (CONFORMANCE-SYNC-DESIGN.md
+# §7 "onboarding a brand-new suite") — nothing else changes on either
+# human-visible surface. Do NOT set tier="certified" without a real, issued
+# cert_id/issuer/expires in the suite's verdict; the generator refuses it.
+
+[suite.mcp]
+standard = "Model Context Protocol"
+plan     = "official modelcontextprotocol/typescript-sdk TCK + in-house battery"
+tier     = "conformant"
+cost     = "free"
+verdict  = "conformance-verdict-mcp"
+public   = true
+# Already wired: mcp-conformance.yml -> "MCP conformance verdict" (required
+# GitHub check today). Turnstile CommandCheck id: conformance:mcp.
+
+[suite.a2a]
+standard = "Agent2Agent (A2A) protocol"
+plan     = "official a2aproject/a2a-tck + in-house battery + a2a-go reference peer"
+tier     = "conformant"
+cost     = "free"
+verdict  = "conformance-verdict-a2a"
+public   = true
+# Already wired: a2a-conformance.yml -> "A2A conformance verdict" (required
+# GitHub check today). Turnstile CommandCheck id: conformance:a2a.
+
+[suite.ws-autobahn]
+standard = "RFC 6455 WebSocket (Autobahn|Testsuite)"
+plan     = "Docker crossbario/autobahn-testsuite fuzzingclient vs a booted busbar-transport-ws subject"
+tier     = "conformant"
+cost     = "free"
+verdict  = "conformance-verdict-ws-autobahn"
+public   = true
+# NOT built yet (CONFORMANCE-GATES-PLAN.md §5.1). Turnstile CommandCheck id:
+# conformance:ws-autobahn.
+
+[suite.http2-h2spec]
+standard = "HTTP/2 (h2spec)"
+plan     = "summerwind/h2spec -k (h2c prior-knowledge) vs the served a2a-gRPC h2c listener"
+tier     = "conformant"
+cost     = "free"
+verdict  = "conformance-verdict-http2-h2spec"
+public   = true
+# NOT built yet; scope pending DICTATOR-D2 (CONFORMANCE-GATES-PLAN.md §5.2,
+# §7 D2). Turnstile CommandCheck id: conformance:http2-h2spec.
+
+[suite.tls-testssl]
+standard = "TLS configuration grade (testssl.sh)"
+plan     = "Docker drwetter/testssl.sh vs a booted busbar-transport-tls (rustls) subject, grade >= A"
+tier     = "conformant"
+cost     = "free"
+verdict  = "conformance-verdict-tls-testssl"
+public   = true
+# NOT built yet (CONFORMANCE-GATES-PLAN.md §5.3). Turnstile CommandCheck id:
+# conformance:tls-testssl.
+
+[suite.slsa-verifier]
+standard = "SLSA Build provenance (L2 today, L3 aspirational)"
+plan     = "slsa-verifier verify-artifact/verify-image beside gh attestation verify, + self-assessment doc"
+tier     = "capable"
+cost     = "free"
+verdict  = "conformance-verdict-slsa-verifier"
+public   = true
+# NOT built yet (CONFORMANCE-GATES-PLAN.md §5.4). Release-time, not a PR
+# check. Turnstile CommandCheck id: conformance:slsa-verifier.
+
+[suite.oidf-oauth2]
+standard = "OpenID Foundation OAuth 2.0 conformance suite (self-hosted, no logo)"
+plan     = "gitlab.com/openid/conformance-suite self-hosted run vs busbar-oauth2 (oauth-as 0.10.0 FAPI2 harness)"
+tier     = "conformant"
+cost     = "free"
+verdict  = "conformance-verdict-oidf-oauth2"
+public   = true
+# $0, self-hosted, no logo (owner ruling 2026-09-19). Turnstile CommandCheck
+# id: conformance:oidf-oauth2.
+
+[suite.fapi2]
+standard = "FAPI 2.0 Security Profile (OpenID Foundation OP certification)"
+plan     = "OIDF FAPI2 conformance suite self-hosted to green (PAR + DPoP + client-assertion wired)"
+tier     = "conformant"
+cost     = "paid"
+verdict  = "conformance-verdict-fapi2"
+public   = true
+# Suite-green is buildable now and is self-hosted/free; the PUBLIC OIDF
+# listing + logo is a paid, owner-owned step ($5k non-member / ~$2k as new
+# member — CONFORMANCE-MATRIX-RULING.md "OWNER (2026-09-19): FAPI2 paid
+# listing is owner-owned"). tier stays "conformant" ("passes the FAPI2
+# suite") until the owner completes the paid listing; bumping to
+# tier="certified" requires the issued cert_id/issuer/expires in the verdict
+# (CONFORMANCE-SYNC-DESIGN.md §4) — the generator refuses otherwise. This is
+# the manifest-side half of the never-overclaim guard; the turnstile-side
+# half is `busbar-release` `auto_apply::PAID_SUITES`.
+
+[suite.jev]
+standard = "jev decision plane (client.models.list() dialect probes)"
+plan     = "2 typesafe SDKs exercising /v1/systemone + /v1/models"
+tier     = "conformant"
+cost     = "free"
+verdict  = "conformance-verdict-jev"
+public   = true
+# Build item in the jev wiring stage (CONFORMANCE-MATRIX-RULING.md line
+# 10-11); registers here ahead of the wiring landing so `conformance:coverage`
+# (CONFORMANCE-SYNC-DESIGN.md §5) starts owing it now rather than being
+# retrofitted later.
