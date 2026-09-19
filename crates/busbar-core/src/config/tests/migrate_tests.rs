@@ -2846,3 +2846,44 @@ fn malformed_pools_is_never_replaced_by_a_synthesized_one() {
         out.todos
     );
 }
+
+/// The IDENTICAL take-on-match guard exists a second time in `migrate_unified_pools`, on the
+/// `tool_pools:`/`agent_pools:` fold — a malformed `pools:` there must not be silently replaced by a
+/// freshly-synthesized mapping either, and the section that could not be folded must survive
+/// verbatim rather than being consumed and lost. `malformed_pools_is_never_replaced_by_a_synthesized_one`
+/// above only exercises the sibling guard in `migrate_pools_upstream_credentials`; this proves the
+/// second call site independently, since neither guard's test data combines with the other's input.
+#[test]
+fn malformed_pools_is_never_replaced_when_folding_tool_pools() {
+    // No top-level `models:` here: this test exercises the `migrate_unified_pools` take-on-match
+    // guard on a malformed `pools:`. Under 1.6.0 config-model STAGE 3 a top-level `models:` is moved
+    // to `pools.models:` (the decided contract) by a separate pass, and a document already in
+    // STAGE-3 shape carries no top-level `models:`, so leaving it out keeps this fixture focused on
+    // the `tool_pools:` fold it means to guard.
+    let out = migrate_config(
+        "pools: not-a-mapping\ntool_pools:\n  search:\n    members: [search-eu]\n\
+         providers: {}\n",
+    )
+    .unwrap();
+    let doc: serde_yaml::Value = serde_yaml::from_str(&out.yaml).unwrap();
+    assert_eq!(
+        doc["pools"].as_str(),
+        Some("not-a-mapping"),
+        "the operator's `pools:` was destroyed and replaced with a synthesized mapping: {}",
+        out.yaml
+    );
+    assert_eq!(
+        dig(&doc, &["tool_pools", "search", "members"]),
+        Some(&serde_yaml::from_str::<serde_yaml::Value>("[search-eu]").unwrap()),
+        "`tool_pools:` could not be folded (pools: is malformed) and must survive verbatim rather \
+         than being dropped: {}",
+        out.yaml
+    );
+    assert!(
+        out.todos
+            .iter()
+            .any(|t| t.contains("tool_pools") && t.contains("pools")),
+        "a fold this migrator refuses to perform must say so: {:?}",
+        out.todos
+    );
+}
