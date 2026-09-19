@@ -1411,6 +1411,25 @@ fn migrate_auth(
                     "auth.group_map.{role_name} caps -> generated groups.{gname}"
                 ));
             }
+            // Anything besides the known per-role keys handled above (allowed_pools,
+            // budget_group/group, admin_scope, rpm_limit/tpm_limit/max_budget_cents/budget_period)
+            // is UNRECOGNIZED here — the same "no 1.5.0 home this migrator knows of" shape as the
+            // sibling auth.modules.<mod> caps loop above. Letting `b` simply go out of scope would
+            // drop it from the migrated document with no trace at all. Name every such key loudly
+            // instead.
+            if !b.is_empty() {
+                let unrecognized: Vec<String> = b
+                    .keys()
+                    .filter_map(|k| k.as_str().map(str::to_string))
+                    .collect();
+                todos.push(format!(
+                    "auth.group_map.{role_name}: unrecognized key(s) [{}] have NO 1.5.0 \
+                     equivalent this migrator knows how to relocate; they were DROPPED from the \
+                     old group_map role rather than migrated. Re-express this by hand in \
+                     auth.role_bindings.{module}.{role_name} before deploying.",
+                    unrecognized.join(", ")
+                ));
+            }
             bindings.insert(role, Value::Mapping(binding));
         }
     }

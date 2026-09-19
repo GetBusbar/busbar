@@ -495,6 +495,89 @@ pools: {}
     );
 }
 
+/// S29: an `auth.modules.<mod>` cap this migrator does not recognize (neither `max_admin_scope`
+/// nor `allowed_groups`) must be named LOUDLY in a `todos` entry — the exact same "never silently
+/// drop a trust-boundary key" contract as `allowed_groups` already gets — rather than vanishing
+/// with the rest of the removed `auth.modules` block. The todo must name the KEY, never the
+/// VALUE (an IdP module cap can carry a secret).
+#[test]
+fn migrate_auth_modules_unrecognized_cap_gets_a_loud_todo_naming_only_the_key() {
+    let raw = r#"
+auth:
+  chain: [oidc]
+  modules:
+    oidc:
+      max_admin_scope: full
+      totally_unknown_cap: "s3cr3t-do-not-leak-me"
+providers: {}
+models: {}
+pools: {}
+"#;
+    let (out, doc) = migrate_to_value(raw);
+
+    // the known cap still folds exactly as before.
+    assert_eq!(
+        dig(&doc, &["identity-providers", "oidc", "max_admin_scope"]).and_then(|v| v.as_str()),
+        Some("full"),
+        "the fix must not change which keys survive migration"
+    );
+    // `auth.modules` itself is still fully removed (1.5.0 shape).
+    assert!(
+        dig(&doc, &["auth", "modules"]).is_none(),
+        "auth.modules must still be gone after migration"
+    );
+
+    let todo = out
+        .todos
+        .iter()
+        .find(|t| t.contains("totally_unknown_cap"))
+        .unwrap_or_else(|| panic!("unrecognized auth.modules cap must get a todo: {:?}", out.todos));
+    assert!(
+        !todo.contains("s3cr3t-do-not-leak-me"),
+        "the todo must name the KEY, never the VALUE (secret leak): {todo:?}"
+    );
+}
+
+/// S29 sibling: the same "unrecognized key -> loud todo, not a silent drop" contract must also
+/// apply to a per-role `auth.group_map.<role>` cap this migrator does not know (mirrors the
+/// auth.modules.<mod> caps loop it was modeled on).
+#[test]
+fn migrate_group_map_unrecognized_role_key_gets_a_loud_todo_naming_only_the_key() {
+    let raw = r#"
+auth:
+  chain: [oidc]
+  group_map:
+    growth-eng:
+      allowed_pools: [fast]
+      some_future_cap: "topsecret-value"
+providers: {}
+models: {}
+pools: {}
+"#;
+    let (out, doc) = migrate_to_value(raw);
+
+    assert_eq!(
+        dig(
+            &doc,
+            &["auth", "role_bindings", "oidc", "growth-eng", "allowed_pools"]
+        )
+        .and_then(|v| v.as_sequence())
+        .map(|s| s.len()),
+        Some(1),
+        "the fix must not change which keys survive migration"
+    );
+
+    let todo = out
+        .todos
+        .iter()
+        .find(|t| t.contains("some_future_cap"))
+        .unwrap_or_else(|| panic!("unrecognized group_map role key must get a todo: {:?}", out.todos));
+    assert!(
+        !todo.contains("topsecret-value"),
+        "the todo must name the KEY, never the VALUE (secret leak): {todo:?}"
+    );
+}
+
 /// The 1.4.x TOP-LEVEL `global_hooks: [<name>]` (a list of REGISTRY names) → the reserved
 /// `pools.hooks:` all-pools attach (1.5.3). A registry name becomes a NAMED DEFINITION under
 /// `hooks:` and a BARE reference in `pools.hooks:`; a hook that is BOTH named in global_hooks AND
@@ -1445,6 +1528,38 @@ fn golden_migrate_observability_block_folds_into_an_otlp_export_instance() {
     assert_eq!(
         dig(&doc, &["export", "traces", "settings", "url"]).and_then(|v| v.as_str()),
         Some("http://otel:4318/v1/traces")
+    );
+}
+
+/// S29: an `observability:` field left over after the `otlp_url` fold (and every other known
+/// sub-migration) has run must be named LOUDLY in a `todos` entry, not dropped silently along
+/// with the rest of the (deleted) block. The todo must name the KEY, never the VALUE.
+#[test]
+fn migrate_observability_unrecognized_key_gets_a_loud_todo_naming_only_the_key() {
+    let raw = "observability:\n  otlp_url: \"http://otel:4318/v1/traces\"\n  \
+               totally_unknown_field: \"s3cr3t-do-not-leak-me\"\n\
+               providers: {}\nmodels: {}\npools: {}\n";
+    let (out, doc) = migrate_golden(raw);
+
+    // the known field still folds exactly as before.
+    assert_eq!(
+        dig(&doc, &["export", "traces", "settings", "url"]).and_then(|v| v.as_str()),
+        Some("http://otel:4318/v1/traces"),
+        "the fix must not change which fields survive migration"
+    );
+    assert!(
+        dig(&doc, &["observability"]).is_none(),
+        "the whole block is still DELETED in 1.5.3"
+    );
+
+    let todo = out
+        .todos
+        .iter()
+        .find(|t| t.contains("totally_unknown_field"))
+        .unwrap_or_else(|| panic!("unrecognized observability key must get a todo: {:?}", out.todos));
+    assert!(
+        !todo.contains("s3cr3t-do-not-leak-me"),
+        "the todo must name the KEY, never the VALUE (secret leak): {todo:?}"
     );
 }
 
