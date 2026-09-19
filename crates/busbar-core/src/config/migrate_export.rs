@@ -263,24 +263,24 @@ pub(super) fn migrate_observability_block(
                 .into(),
         );
     }
-    // Every OTHER field the block still carries at this point (this pass runs after
-    // `migrate_observability`'s rename, `migrate_response_headers`'s `emit_server_timing` lift, and
-    // `migrate_observability_export`'s webhook/metrics lift, so only an UNRECOGNIZED key can remain)
-    // has no 1.5.3 home this migrator knows of. Leaving `obs` to simply go out of scope here would
-    // drop it from the migrated document with no trace — exactly the "silently downgraded security/
-    // observability config" shape this migrator exists to prevent. Name every such key loudly
-    // instead of discarding it in silence.
+    // NAME WHAT IS BEING DELETED. `observability:` is a RETIRED section, so the block genuinely has
+    // to go — but everything still standing in it after `otlp_url` was folded out is operator
+    // configuration this function was about to drop on the floor under a ledger line that says only
+    // "it carried no otlp_url to fold". That reads as "there was nothing else", which is the silent
+    // loss the whole module refuses. In the normal path there is nothing left (the lift-out pass
+    // already moved the webhook + metrics keys); when there IS something — a forward-compat key, or
+    // a sink the lift-out pass declined to move because `export:` was malformed — the todo prints
+    // the key AND its value, so the operator can put it back by hand.
     if !obs.is_empty() {
-        let unrecognized: Vec<String> = obs
-            .keys()
-            .filter_map(|k| k.as_str().map(str::to_string))
+        let residue: Vec<String> = obs
+            .iter()
+            .map(|(k, v)| format!("{}: {}", k.as_str().unwrap_or("?"), one_line(v)))
             .collect();
         todos.push(format!(
-            "observability: unrecognized key(s) [{}] have NO 1.5.3 equivalent this migrator knows \
-             how to relocate; they were DROPPED along with the rest of the (DELETED) \
-             `observability:` block rather than migrated. Re-express them by hand under `export:` \
-             (or elsewhere, if they belong to a different 1.5.3 surface) before deploying.",
-            unrecognized.join(", ")
+            "observability: the block is DELETED in 1.5.3 and these keys had no mechanical home, so \
+             they are GONE from the migrated document — re-express them by hand if you still need \
+             them: {}",
+            residue.join(", ")
         ));
     }
 }
