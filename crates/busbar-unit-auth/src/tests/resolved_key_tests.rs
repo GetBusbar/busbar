@@ -56,6 +56,22 @@ fn an_explicit_list_is_exhaustive_across_all_kinds_not_per_kind() {
     assert!(!k.scope_allowed("mcp_server", "blue"));
 }
 
+#[test]
+fn a_multi_kind_list_matches_only_the_named_kind_and_value_pair() {
+    // Two grants of DIFFERENT kinds on the same key. `.any()` over the list must match kind AND
+    // value on the SAME entry — a bug that matched kind and value independently (any entry's kind
+    // equals `kind`, any entry's value equals `value`) would pass every single-entry test above
+    // and still pass here only if it never cross-wires an entry's value onto another entry's kind.
+    let k = scoped(&[("pool", "blue"), ("agent", "sales")]);
+    assert!(k.scope_allowed("pool", "blue"));
+    assert!(k.scope_allowed("agent", "sales"));
+    // The value from one entry must not leak onto another entry's kind.
+    assert!(!k.scope_allowed("pool", "sales"));
+    assert!(!k.scope_allowed("agent", "blue"));
+    // A kind+value pair named nowhere in the list.
+    assert!(!k.scope_allowed("mcp_server", "blue"));
+}
+
 // ── EXPIRY + REVOCATION, AS ONE PREDICATE ────────────────────────────────────────────────────────
 
 #[test]

@@ -189,3 +189,31 @@ fn a_refusal_leaves_the_sink_alone() {
     );
     assert!(key.is_none(), "and no key was handed back");
 }
+
+/// A REFUSAL LEAVES A PRE-POPULATED SINK ALONE, NOT JUST AN EMPTY ONE.
+///
+/// The empty case above proves a refusal does not FABRICATE a key. It does not prove a refusal
+/// does not CLEAR one a caller already held — an `Open` arm does exactly that on purpose (see
+/// `an_open_door_and_a_boxed_module_both_resolve_no_key`), so a refusal that copied the same
+/// `*key = None;` habit would look identical to this suite unless the sink starts non-empty.
+#[test]
+fn a_refusal_leaves_a_pre_populated_sink_untouched() {
+    let (seal, token) = seal_and_token();
+    let auth = Auth::new(AuthChain::new(Vec::new(), true));
+    let carried = granting("vk_carried", "agent", "sales");
+    let mut key = Some(carried.clone());
+    // The keys arm with no verifier behind it denies.
+    let decision = auth.resolve_recording_key(&request(), None, None, None, None, &token, &mut key);
+    assert_eq!(
+        decision
+            .into_result(&seal)
+            .expect_err("nothing verified the candidate")
+            .reason(),
+        ReasonCode::Unauthenticated
+    );
+    assert_eq!(
+        key,
+        Some(carried),
+        "a refusal leaves whatever was already in the sink exactly as it found it"
+    );
+}

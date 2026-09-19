@@ -1860,6 +1860,32 @@ fn an_unkeyed_caller_is_refused_on_a_credentialed_address_and_admitted_on_an_ope
     );
 }
 
+/// **A DECLARED-OPEN ADDRESS BYPASSES THE GRANT EVEN WHEN A KEY DID RESOLVE, AND THAT KEY DOES NOT
+/// HOLD IT.**
+///
+/// The case above proves the bypass for the no-key walk. It does not prove `grant_held` checks
+/// `open_address` BEFORE it ever reads the key — a caller who presents a credential the directory
+/// still resolves, on an address the plane declared open, must not be refused on the strength of
+/// that key's own grant list, because the operation's authority there is the surface's, never the
+/// key's.
+#[test]
+fn a_declared_open_address_holds_even_when_the_resolved_key_grants_nothing_here() {
+    let wrong_grant = deployment_keyed(
+        busbar_unit_admission::GroupTable::default(),
+        Some(vec![agent_grant("someone-elses-agent")]),
+    );
+    let unit = wrong_grant.calling_at_on(
+        None,
+        1_700_000_000,
+        true,
+        credentialed(ops::OP_MESSAGE_SEND),
+    );
+    assert!(
+        authenticate_then_approve(&unit).is_ok(),
+        "the open address holds regardless of what the resolved key grants"
+    );
+}
+
 fn deployment_priced(groups: busbar_unit_admission::GroupTable, pricer: Pricer) -> Deployment {
     let durability = crate::root::durability::build(
         &crate::root::durability::DurabilityConfig { data_dir: None },
