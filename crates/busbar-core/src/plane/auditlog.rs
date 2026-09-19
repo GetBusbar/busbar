@@ -20,11 +20,22 @@
 //! never distinguished a scope and its persisted records were sealed WITHOUT one in the digest input.
 //! A plane's own stream typically digests a per-scope key (a principal, a task id, …); this stream
 //! registers with `digests_scope = FALSE`. The prelude the host frames is then exactly
-//! `frame_prelude(PipeSeparated, prev_hash, None, seq)` = `prev_hash|seq`, and the plane's suffix
-//! `|ts|action|resource|outcome|principal` byte-concatenates onto it to reproduce the legacy
-//! [`crate::audit_ring::AuditEntry`] digest input byte-for-byte. Registering with `digests_scope = 1`
-//! would fold the scope into the prelude and make EVERY already-persisted admin record report
-//! `DigestMismatch` at the next boot.
+//! `frame_prelude(PipeSeparated, prev_hash, None, seq)` = `prev_hash|seq`, and — for a body already on
+//! disk — the plane's legacy suffix `|ts|action|resource|outcome|principal` byte-concatenates onto it
+//! to reproduce the legacy [`crate::audit_ring::AuditEntry`] digest input byte-for-byte. Registering
+//! with `digests_scope = 1` would fold the scope into the prelude and make EVERY already-persisted
+//! admin record report `DigestMismatch` at the next boot.
+//!
+//! ## THE SUFFIX ITSELF: legacy pipe-joined bytes are read, never written
+//!
+//! The legacy suffix is `|`-joined free text, and `|`-joined free text is FORGEABLE: a `|` inside a
+//! caller- or user-influenced `action`/`resource`/`outcome`/`principal` shifts every field after it
+//! once [`parse_audit_suffix`] splits the suffix back apart, while the stored `hash` still matches (it
+//! seals the exact bytes either way) — so [`crate::audit::verify_chain`] reports the chain intact
+//! while the fields it reports back are wrong. NEW writes ([`emit_admin_hostless`], [`mirror`]) use
+//! [`audit_suffix_safe`] instead: every field is length-prefixed, so no field's bytes can move a
+//! boundary. Reads stay back-compatible — [`parse_audit_suffix`] tries the safe shape first and falls
+//! back to the legacy pipe split for a body a store already holds from before this change.
 //!
 //! ## The claim, and the RAM default
 //!
@@ -140,11 +151,22 @@ fn pack_bodies(bodies: &[Vec<u8>]) -> Vec<u8> {
     out
 }
 
-/// The admin audit's pre-framed content SUFFIX (Option A leading `|`): `|ts|action|resource|outcome|
-/// principal`. With `digests_scope = false` the host frames the prelude `prev_hash|seq`, and
+/// The admin audit's LEGACY pre-framed content SUFFIX (Option A leading `|`): `|ts|action|resource|
+/// outcome|principal`. With `digests_scope = false` the host frames the prelude `prev_hash|seq`, and
 /// `prelude ⧺ suffix` reproduces the legacy [`AuditEntry`] digest input `prev_hash | seq | ts | action
 /// | resource | outcome | principal` byte-for-byte, so a chain appended through the seam verifies
 /// byte-identically against records written before the seam existed.
+///
+/// FORGEABLE BY CONSTRUCTION and kept ONLY for reproducing bytes that are already sealed: a `|`
+/// inside a free-text `action`/`resource`/`outcome`/`principal` (any of these can carry caller- or
+/// user-influenced text, e.g. a resource name) shifts every field after it when the suffix is later
+/// split back apart in [`parse_audit_suffix`] — the stored `hash` still matches (it is sealed over
+/// the exact same bytes either way), so [`crate::audit::verify_chain`] reports the chain intact while
+/// the READ-BACK fields (action/resource/outcome/principal) are wrong. That is a forgery of what the
+/// audit trail is reported to say, not of its tamper-evidence hash, and it is why this format is not
+/// used for anything new — see [`audit_suffix_safe`]. Call sites: ONLY
+/// [`migrate_legacy_table_to_plane_records`], which must reproduce bytes an already-sealed `hash` was
+/// computed over verbatim, and the golden/round-trip tests pinning the legacy on-disk shape.
 pub(crate) fn audit_suffix(
     ts: u64,
     action: &str,
@@ -155,10 +177,82 @@ pub(crate) fn audit_suffix(
     format!("|{ts}|{action}|{resource}|{outcome}|{principal}").into_bytes()
 }
 
-/// Parse a `PipeSeparated` admin audit SUFFIX back into its typed fields — the inverse of
-/// [`audit_suffix`], for reconstructing an [`AuditEntry`] from a stored neutral body. The leading `|`
-/// is stripped and the five fields are split; the framing contract guarantees no field carries a `|`.
+/// Sentinel first byte of a [`audit_suffix_safe`] suffix. A LEGACY [`audit_suffix`] body always
+/// starts with the literal `|` (`0x7C`, Option A) even when every field is empty, so this byte can
+/// never collide with a legacy suffix and the two formats are unambiguous to tell apart on read.
+const SAFE_SUFFIX_MARKER: u8 = 0x00;
+
+/// THE SAFE admin audit content SUFFIX for NEW writes: `SAFE_SUFFIX_MARKER` then `ts`/`action`/
+/// `resource`/`outcome`/`principal` each LENGTH-PREFIXED (`u64` big-endian byte length, then the raw
+/// bytes — the same convention [`crate::audit::Framing::LengthPrefixed`] uses). Field boundaries are
+/// determined ENTIRELY by the length prefixes, so no byte any field contains — including `|` — can
+/// move a boundary; a caller who controls one field's bytes cannot make [`parse_audit_suffix`]
+/// recover a different action/resource/outcome/principal than what was actually sealed. This is the
+/// suffix [`emit_admin_hostless`] and [`mirror`] append with today; [`audit_suffix`] (the old
+/// pipe-joined shape) is kept only to reproduce bytes already on disk.
+pub(crate) fn audit_suffix_safe(
+    ts: u64,
+    action: &str,
+    resource: &str,
+    outcome: &str,
+    principal: &str,
+) -> Vec<u8> {
+    let mut out = Vec::new();
+    out.push(SAFE_SUFFIX_MARKER);
+    push_lp(&mut out, &ts.to_be_bytes());
+    push_lp(&mut out, action.as_bytes());
+    push_lp(&mut out, resource.as_bytes());
+    push_lp(&mut out, outcome.as_bytes());
+    push_lp(&mut out, principal.as_bytes());
+    out
+}
+
+/// Append one length-prefixed field (`u64` big-endian byte length, then the bytes) — the write-side
+/// half of [`audit_suffix_safe`]'s framing.
+fn push_lp(out: &mut Vec<u8>, bytes: &[u8]) {
+    out.extend_from_slice(&(bytes.len() as u64).to_be_bytes());
+    out.extend_from_slice(bytes);
+}
+
+/// Take one length-prefixed field off the front of `rest` (`u64` big-endian byte length, then the
+/// bytes), advancing `rest` past it. A truncated/malformed tail (short on the length prefix, or the
+/// declared length runs past what remains) yields an empty field and consumes nothing further — the
+/// same "decode what you can, never panic" discipline [`parse_audit_suffix`]'s legacy path already
+/// uses on missing fields.
+fn take_lp(rest: &mut &[u8]) -> Vec<u8> {
+    let Some((len_bytes, after_len)) = rest.split_first_chunk::<8>() else {
+        *rest = &[];
+        return Vec::new();
+    };
+    let len = u64::from_be_bytes(*len_bytes) as usize;
+    let Some(field) = after_len.get(..len) else {
+        *rest = &[];
+        return Vec::new();
+    };
+    *rest = &after_len[len..];
+    field.to_vec()
+}
+
+/// Parse an admin audit SUFFIX back into its typed fields — the inverse of BOTH [`audit_suffix_safe`]
+/// (tried first, keyed off [`SAFE_SUFFIX_MARKER`]) and the legacy [`audit_suffix`] (the fallback, for
+/// suffixes a store already holds from before this stream wrote the safe framing), for reconstructing
+/// an [`AuditEntry`] from a stored neutral body.
 fn parse_audit_suffix(content: &[u8]) -> (u64, String, String, String, String) {
+    if let Some(rest) = content.strip_prefix(&[SAFE_SUFFIX_MARKER]) {
+        let mut rest = rest;
+        let ts_bytes = take_lp(&mut rest);
+        let mut ts_buf = [0u8; 8];
+        let n = ts_bytes.len().min(8);
+        ts_buf[..n].copy_from_slice(&ts_bytes[..n]);
+        let ts = u64::from_be_bytes(ts_buf);
+        let action = String::from_utf8_lossy(&take_lp(&mut rest)).into_owned();
+        let resource = String::from_utf8_lossy(&take_lp(&mut rest)).into_owned();
+        let outcome = String::from_utf8_lossy(&take_lp(&mut rest)).into_owned();
+        let principal = String::from_utf8_lossy(&take_lp(&mut rest)).into_owned();
+        return (ts, action, resource, outcome, principal);
+    }
+    // LEGACY fallback: the `|`-joined shape (see [`audit_suffix`]'s doc for why this split is only
+    // trusted for old, already-sealed bodies and never chosen for a new write).
     let s = String::from_utf8_lossy(content);
     let f: Vec<&str> = s.trim_start_matches('|').splitn(5, '|').collect();
     (
@@ -610,7 +704,7 @@ pub(crate) fn emit_admin_hostless(
     principal: &str,
 ) {
     static WRITE_FAILED_LATCHED: AtomicBool = AtomicBool::new(false);
-    let suffix = audit_suffix(ts, action, resource, outcome, principal);
+    let suffix = audit_suffix_safe(ts, action, resource, outcome, principal);
     match crate::plane_host::journal::journal_append_scoped_full_hostless(
         KIND_ID_AUDIT,
         ADMIN_LOG,
@@ -678,7 +772,7 @@ pub(crate) fn mirror(
     principal: &str,
 ) {
     let ts = crate::plane_host::clock_now_secs_over(app);
-    let suffix = audit_suffix(ts, action, resource, outcome, principal);
+    let suffix = audit_suffix_safe(ts, action, resource, outcome, principal);
     crate::plane_host::with_dispatch_scope(app, |host, _| emit(host, ADMIN_LOG, suffix));
 }
 

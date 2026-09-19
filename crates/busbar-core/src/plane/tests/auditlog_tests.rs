@@ -586,3 +586,109 @@ fn restore_does_not_fork_the_chain_when_one_row_is_undecodable() {
         "the chain resumes after the good genesis; an undecodable sibling must not fork it to seq 1"
     );
 }
+
+// ── S20: the legacy pipe-joined suffix is forgeable; `audit_suffix_safe` is not ────────────────────
+
+/// THE FORGERY [`audit_suffix`] (legacy) IS VULNERABLE TO: a `|` inside a free-text field shifts
+/// every field after it once split back apart, so a caller who controls `resource` can make a
+/// restored record report a DIFFERENT outcome/principal than what actually happened — while the
+/// digest still matches (same bytes either way), so `verify_chain` sees nothing wrong. This pins the
+/// defect on the LEGACY path so nobody mistakes it for fixed, since fixing it there would change bytes
+/// already sealed on disk.
+#[test]
+fn legacy_pipe_suffix_lets_an_embedded_pipe_forge_the_readback() {
+    let ts = 1_700_000_000u64;
+    // The attacker controls `resource` (e.g. a hook/task name echoed into the audit trail) and packs
+    // it with the rest of the record it wants read back instead.
+    let forged_resource = "innocuous|applied|root";
+    let suffix = audit_suffix(ts, "hook.register", forged_resource, "rejected", "attacker");
+    let (_, action, resource, outcome, principal) = parse_audit_suffix(&suffix);
+    assert_eq!(action, "hook.register");
+    // The real outcome/principal ("rejected"/"attacker") were swallowed into `resource` and the
+    // forged tail split out as if they were the real outcome/principal.
+    assert_eq!(resource, "innocuous");
+    assert_eq!(outcome, "applied", "the forged outcome was read back, not the real one");
+    // `splitn(5, '|')` stops splitting after the 5th field, so the REAL outcome/principal
+    // ("rejected"/"attacker") end up tacked onto the end of the forged principal rather than
+    // vanishing — either way, what comes back as `outcome`/`principal` is not what was recorded.
+    assert_eq!(
+        principal, "root|rejected|attacker",
+        "the forged principal was read back, not the real one, and the real outcome/principal are \
+         buried inside it instead of being their own fields"
+    );
+}
+
+/// THE FIX: the SAME embedded-`|` payload through [`audit_suffix_safe`] round-trips EXACTLY — no
+/// byte any field carries can move a boundary, because boundaries come from the length prefixes, not
+/// from scanning the content.
+#[test]
+fn safe_suffix_round_trips_a_pipe_carrying_payload_without_forgery() {
+    let ts = 1_700_000_000u64;
+    let forged_resource = "innocuous|applied|root";
+    let suffix = audit_suffix_safe(ts, "hook.register", forged_resource, "rejected", "attacker");
+    let (got_ts, action, resource, outcome, principal) = parse_audit_suffix(&suffix);
+    assert_eq!(got_ts, ts);
+    assert_eq!(action, "hook.register");
+    assert_eq!(resource, forged_resource, "the embedded `|` must not move a boundary");
+    assert_eq!(outcome, "rejected");
+    assert_eq!(principal, "attacker");
+}
+
+/// Every field carrying `|` at once, plus empty fields — the safe suffix must not confuse any of it.
+#[test]
+fn safe_suffix_round_trips_pipes_in_every_field_and_empty_fields() {
+    let suffix = audit_suffix_safe(42, "a|b", "", "o|u|t", "p|r");
+    let (ts, action, resource, outcome, principal) = parse_audit_suffix(&suffix);
+    assert_eq!(ts, 42);
+    assert_eq!(action, "a|b");
+    assert_eq!(resource, "");
+    assert_eq!(outcome, "o|u|t");
+    assert_eq!(principal, "p|r");
+}
+
+/// BACK-COMPAT: a body a store already holds from before this change (the legacy pipe-joined suffix,
+/// no [`SAFE_SUFFIX_MARKER`] byte) still parses as it always did — reading old records is unaffected.
+#[test]
+fn parse_audit_suffix_still_reads_legacy_bodies() {
+    let suffix = audit_suffix(7, "hook.delete", "hook:compress", "applied", "admin");
+    let (ts, action, resource, outcome, principal) = parse_audit_suffix(&suffix);
+    assert_eq!(ts, 7);
+    assert_eq!(action, "hook.delete");
+    assert_eq!(resource, "hook:compress");
+    assert_eq!(outcome, "applied");
+    assert_eq!(principal, "admin");
+}
+
+/// A record appended through the SEAM with the SAFE suffix (what [`emit_admin_hostless`]/[`mirror`]
+/// write) restores and reconstructs its EXACT typed fields — including a `|`-carrying value that
+/// would have forged a different record under the legacy suffix — via the same
+/// [`audit_entry_from_body`] bridge a boot restore uses.
+#[test]
+fn a_safe_suffix_record_restores_with_exact_fields_despite_embedded_pipes() {
+    let store: std::sync::Arc<dyn busbar_api::Store> =
+        std::sync::Arc::new(busbar_store_memory::MemoryStore::new());
+    let h = AuditTestHarness::over(store.clone());
+    let ts = 1_700_000_555u64;
+    let forged_resource = "x|applied|nobody";
+    let (seq, _prev, hash) = h.emit_full(
+        ADMIN_LOG,
+        audit_suffix_safe(ts, "hook.register", forged_resource, "rejected", "attacker"),
+    );
+    assert_eq!(seq, 1);
+
+    let rows = store
+        .list_plane_records(KIND_AUDIT, &PlaneSelector::Parent(ADMIN_LOG.to_string()))
+        .expect("list the just-appended plane record");
+    assert_eq!(rows.len(), 1);
+    let entry = audit_entry_from_body(ADMIN_LOG, &rows[0]).expect("decode the safe-suffix body");
+    assert_eq!(entry.seq, seq);
+    assert_eq!(entry.hash, hash);
+    assert_eq!(entry.ts, ts);
+    assert_eq!(entry.action, "hook.register");
+    assert_eq!(
+        entry.resource, forged_resource,
+        "the embedded `|` must not have been split as a field boundary"
+    );
+    assert_eq!(entry.outcome, "rejected");
+    assert_eq!(entry.principal, "attacker");
+}
