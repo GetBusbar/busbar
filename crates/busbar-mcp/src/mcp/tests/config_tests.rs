@@ -99,6 +99,23 @@ fn every_malformed_canonical_uri_is_refused_with_its_own_diagnosis() {
                 "https://gateway.example.com/mcp#frag".into(),
             ),
         ),
+        // A `?` INSIDE THE AUTHORITY. The authority is cut at the FIRST `/`, so this splits into the
+        // origin `https://gateway.example.com?tenant=a` and the path `/mcp`: the path is clean and
+        // the origin carries no `#`, which is how it used to be accepted — leaving a query string
+        // embedded in the canonical resource identifier this deployment publishes and binds tokens
+        // to. A `?` in an authority is a malformed authority, not a query.
+        (
+            "https://gateway.example.com?tenant=a/mcp",
+            McpCfgError::CanonicalUriHasQueryOrFragment(
+                "https://gateway.example.com?tenant=a/mcp".into(),
+            ),
+        ),
+        (
+            "https://gateway.example.com#frag/mcp",
+            McpCfgError::CanonicalUriHasQueryOrFragment(
+                "https://gateway.example.com#frag/mcp".into(),
+            ),
+        ),
         (
             "https://gateway.example.com",
             McpCfgError::CanonicalUriHasNoPath("https://gateway.example.com".into()),
