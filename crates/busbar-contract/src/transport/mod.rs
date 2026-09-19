@@ -213,7 +213,7 @@ pub trait Transport: Plugin + Send + Sync + 'static {
         &self,
         fields: &[(&str, &[u8])],
         body: &[u8],
-        arena: &'a dyn crate::bounded::Arena,
+        arena: &'a dyn crate::bounded::Scratch,
     ) -> Result<crate::bounded::ArenaBytes<'a>, crate::wire::Encode>;
 
     /// Adopt a connection a lower layer is handing up, becoming the new top of the stack.

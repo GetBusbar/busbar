@@ -9,7 +9,7 @@
 //! no-default-bodies rule the same way a reviewer would: the fixture below names every method,
 //! because leaving one out does not compile.
 
-use busbar_contract::bounded::{Arena, ArenaBudget, ArenaBytes, Facts, Ir, Labels, Span};
+use busbar_contract::bounded::{ArenaBudget, ArenaBytes, Facts, Ir, Labels, Scratch, Span};
 use busbar_contract::dest::{
     AuthDecoration, DestinationFacts, EgressBody, RoutePlan, TransportKeyHandle,
     VerifiedDestination,
@@ -53,7 +53,7 @@ const _EXPORT: Option<&dyn Export> = None;
 const _ANCHOR: Option<&dyn Anchor> = None;
 const _PLUGIN: Option<&dyn Plugin> = None;
 const _SIGNER: Option<&dyn Signer> = None;
-const _ARENA: Option<&dyn Arena> = None;
+const _ARENA: Option<&dyn Scratch> = None;
 const _CONFIG: Option<&dyn ConfigView> = None;
 const _SESSION_VIEW: Option<&dyn SessionView> = None;
 const _TRANSPORT_VIEW: Option<&dyn TransportView> = None;
@@ -63,7 +63,7 @@ const _TRANSPORT_VIEW: Option<&dyn TransportView> = None;
 /// An arena that never has room. Enough to build a context; nothing here allocates.
 struct NoArena;
 
-impl Arena for NoArena {
+impl Scratch for NoArena {
     fn alloc_bytes<'a>(&'a self, src: &[u8]) -> Result<ArenaBytes<'a>, ArenaBudget> {
         Err(ArenaBudget {
             wanted: src.len(),
@@ -394,7 +394,7 @@ impl Transport for FixtureTransport {
         &self,
         _fields: &[(&str, &[u8])],
         body: &[u8],
-        arena: &'a dyn Arena,
+        arena: &'a dyn Scratch,
     ) -> Result<ArenaBytes<'a>, Encode> {
         arena.alloc_bytes(body).map_err(|_| Encode::ArenaExhausted)
     }
@@ -613,7 +613,7 @@ fn the_remaining_kinds_shapes_are_constructible() {
 /// is the thing an unbound lifetime made impossible to express at all.
 struct LeakArena;
 
-impl Arena for LeakArena {
+impl Scratch for LeakArena {
     fn alloc_bytes<'a>(&'a self, src: &[u8]) -> Result<ArenaBytes<'a>, ArenaBudget> {
         Ok(ArenaBytes::new(Box::leak(src.to_vec().into_boxed_slice())))
     }

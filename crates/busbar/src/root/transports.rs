@@ -313,9 +313,10 @@ pub fn provision_dial(
 /// It runs the loop and maps the ending. It does NOT yet call the plane, so the answers it returns
 /// carry no body. Two things upstream of it are missing, and neither is this file's to fix:
 ///
-/// 1. **There is no per-unit arena that ships.** `busbar_contract::Arena` is `Send + Sync` and its
-///    allocators take `&self` and hand back a slice borrowed from it; those two together have no
-///    safe implementation, and every implementor in this tree is a test double that leaks. A plane
+/// 1. **There is no per-unit arena that ships.** `busbar_contract::Scratch` is `!Send`/`!Sync` (#42)
+///    and its allocators take `&self` and hand back a slice borrowed from it; those two together have
+///    no safe pure-`std` implementation, and every implementor in this tree is a test double that
+///    leaks (the shipping bumpalo-backed `ScratchArena` + per-core pool is a sequenced follow-up). A plane
 ///    call needs one, so there is nothing to build a `Ctx` around.
 /// 2. **`ProductionUnits` answers every non-admin step with a refusal.** That is deliberate — the
 ///    bodies arrive one plane at a time and admin is the one that has landed — so a unit driven

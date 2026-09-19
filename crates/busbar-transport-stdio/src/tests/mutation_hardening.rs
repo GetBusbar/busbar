@@ -9,14 +9,14 @@
 use super::*;
 use busbar_contract::unit::ConfigView;
 use busbar_contract::{
-    Arena, ArenaBudget, ArenaBytes as ContractArenaBytes, Plugin, Transport, TransportConfigView,
+    Scratch, ArenaBudget, ArenaBytes as ContractArenaBytes, Plugin, Transport, TransportConfigView,
     TransportMeta,
 };
 
 /// A trivial arena, leaking rather than tracking a budget: this crate's `encode_envelope` battery
 /// only needs somewhere to copy bytes into, never a budget to exhaust.
 struct TestArena;
-impl Arena for TestArena {
+impl Scratch for TestArena {
     fn alloc_bytes<'a>(&'a self, src: &[u8]) -> Result<ContractArenaBytes<'a>, ArenaBudget> {
         let leaked: &'static [u8] = Box::leak(src.to_vec().into_boxed_slice());
         Ok(ContractArenaBytes::new(leaked))

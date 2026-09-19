@@ -13,7 +13,7 @@
 
 #![allow(dead_code)]
 
-use busbar_contract::bounded::{Arena, ArenaBudget, ArenaBytes, Labels, SlabBytes, Span};
+use busbar_contract::bounded::{Scratch, ArenaBudget, ArenaBytes, Labels, SlabBytes, Span};
 use busbar_contract::ids::{PrincipalId, SessionId};
 use busbar_contract::plugin::KernelSeal;
 use busbar_contract::unit::{Clock, ConfigView, Ctx, SessionView, TransportView};
@@ -54,7 +54,7 @@ impl Default for TestArena {
     }
 }
 
-impl Arena for TestArena {
+impl Scratch for TestArena {
     fn alloc_bytes<'a>(&'a self, src: &[u8]) -> Result<ArenaBytes<'a>, ArenaBudget> {
         let remaining = self
             .ceiling

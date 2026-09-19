@@ -26,8 +26,8 @@ pub mod upstream;
 pub mod wire;
 
 pub use bounded::{
-    Arena, ArenaBudget, ArenaBytes, BoundedVec, FactValue, Facts, FactsExhausted, Ir, IrEdit,
-    IrPatch, Labels, Overflow, SlabBytes, Span, ARENA_BYTES, MAX_CURSOR_BYTES, MAX_KEYS, MAX_LEGS,
+    ArenaBudget, ArenaBytes, BoundedVec, FactValue, Facts, FactsExhausted, Ir, IrEdit, IrPatch,
+    Labels, Overflow, Scratch, SlabBytes, Span, ARENA_BYTES, MAX_CURSOR_BYTES, MAX_KEYS, MAX_LEGS,
     MAX_LEG_REPLIES, MAX_NEEDMORE_FRAMES, MAX_RECORD_BYTES, MAX_RESPONSE_PTRS,
     MAX_SESSION_UPSTREAMS, MAX_USAGE_LINES,
 };

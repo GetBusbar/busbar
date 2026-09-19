@@ -5,7 +5,7 @@
 //! values (a unit, a verified destination) handed through a seal. Nothing here is shipped.
 
 use busbar_contract::bounded::{
-    Arena, ArenaBudget, ArenaBytes, Facts, Ir, Labels, SlabBytes, Span,
+    Scratch, ArenaBudget, ArenaBytes, Facts, Ir, Labels, SlabBytes, Span,
 };
 use busbar_contract::dest::{DestinationFacts, VerifiedDestination};
 use busbar_contract::ids::{LaneId, OpClassId, SessionId, StreamId};
@@ -18,7 +18,7 @@ use std::sync::Arc;
 #[derive(Debug, Default)]
 pub struct LeakArena;
 
-impl Arena for LeakArena {
+impl Scratch for LeakArena {
     fn alloc_bytes<'a>(&'a self, src: &[u8]) -> Result<ArenaBytes<'a>, ArenaBudget> {
         Ok(ArenaBytes::new(Box::leak(src.to_vec().into_boxed_slice())))
     }

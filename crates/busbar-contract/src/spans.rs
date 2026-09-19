@@ -11,7 +11,7 @@
 
 pub use busbar_grammar::{resolve_pointer, scan_frontier, Resolved, Span, MAX_JSON_DEPTH};
 
-use crate::bounded::{Arena, ArenaBudget, MAX_KEYS};
+use crate::bounded::{ArenaBudget, Scratch, MAX_KEYS};
 
 /// Resolve a plane's declared pointers over a body, into a table the unit can hold.
 ///
@@ -30,7 +30,7 @@ use crate::bounded::{Arena, ArenaBudget, MAX_KEYS};
 pub fn resolve<'a>(
     body: &[u8],
     pointers: &[&'a str],
-    arena: &'a dyn Arena,
+    arena: &'a dyn Scratch,
 ) -> Result<&'a [(&'a str, Span)], ArenaBudget> {
     let mut found: [(&'a str, Span); MAX_KEYS] = [("", Span::new(0, 0)); MAX_KEYS];
     let mut len = 0usize;

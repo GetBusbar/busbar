@@ -189,7 +189,7 @@ fn the_arrival_facts_are_the_stack_the_claim_was_matched_on() {
 /// this crate's tests do not reach for unsafe.
 struct CellArena;
 
-impl busbar_contract::bounded::Arena for CellArena {
+impl busbar_contract::bounded::Scratch for CellArena {
     fn alloc_bytes<'a>(
         &'a self,
         src: &[u8],

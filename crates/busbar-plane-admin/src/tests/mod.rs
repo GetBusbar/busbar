@@ -6,7 +6,7 @@
 
 use std::sync::Arc;
 
-use busbar_contract::bounded::{Arena, ArenaBudget, ArenaBytes, Labels};
+use busbar_contract::bounded::{Scratch, ArenaBudget, ArenaBytes, Labels};
 use busbar_contract::bounded::{SlabBytes, Span};
 use busbar_contract::plane::{Ingress, Plane, PlaneMeta};
 use busbar_contract::unit::{Clock, ConfigView, Ctx, SessionView, TransportView};
@@ -17,9 +17,9 @@ use crate::AdminPlane;
 
 // ── a minimal, leak-based test arena ─────────────────────────────────────────────────────────────
 //
-// The `Arena` trait's only two allocators hand back byte/str slices, never a typed slice — see
+// The `Scratch` trait's only two allocators hand back byte/str slices, never a typed slice — see
 // `verbs.rs`'s and the crate report's note on why `Ir.spans` stays empty in this plane. A test
-// double for `Arena` has the same shape problem the plane itself does, minus the "never leak"
+// double for `Scratch` has the same shape problem the plane itself does, minus the "never leak"
 // requirement production code is held to: this is TEST-ONLY code, run a bounded number of times
 // per process, and a short-lived leak here trades a small amount of test-process memory for a
 // simple, honest double instead of unsafe code (which this crate forbids even in its own tests).
@@ -29,7 +29,7 @@ struct TestArena;
 /// has to live at least as long as the unit does and a test's own local arena does not.
 static LEAK_ARENA: TestArena = TestArena;
 
-impl Arena for TestArena {
+impl Scratch for TestArena {
     fn alloc_bytes<'a>(&'a self, src: &[u8]) -> Result<ArenaBytes<'a>, ArenaBudget> {
         let leaked: &'static [u8] = Box::leak(src.to_vec().into_boxed_slice());
         Ok(ArenaBytes::new(leaked))
@@ -550,7 +550,7 @@ impl TinyArena {
     }
 }
 
-impl Arena for TinyArena {
+impl Scratch for TinyArena {
     fn alloc_bytes<'a>(&'a self, src: &[u8]) -> Result<ArenaBytes<'a>, ArenaBudget> {
         let used = self.used() + src.len();
         if used > busbar_contract::ARENA_BYTES {
