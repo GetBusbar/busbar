@@ -353,6 +353,10 @@ impl Plugin for WsTransport {
 
 impl TransportMeta for WsTransport {
     const KEY: &'static str = "ws";
+    // The cleartext and TLS-secured dial forms alike — which of `tcp`/`tls` a `wss://` target
+    // actually stands on is `dial`'s own refusal to run a secure target over a cleartext lower
+    // layer (see `COMPOSES_OVER`'s doc below), not a distinction this constant draws.
+    const SCHEMES: &'static [&'static str] = &["ws", "wss"];
     // ws IS the top transport of its stack (composed over `http`), and the architecture states the
     // TOP transport owns claims — including the ones that, before the upgrade, are read off the
     // HTTP request carrying it. So this declares the request-shaped forms rather than none; a

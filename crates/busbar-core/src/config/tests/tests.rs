@@ -1601,6 +1601,31 @@ fn test_resolve_unknown_provider_error() {
     assert_eq!(errs.len(), 1);
     assert!(errs[0].contains("nope"));
     assert!(errs[0].contains("not found in providers.yaml"));
+    // DEFAULT_PROTOCOL non-llm fix (CONFIG-MODEL-RULING §16): `provider_deploy` sets no explicit
+    // `protocol:`, so — with no catalog entry either — this is exactly the shape that would have
+    // silently ridden the implicit anthropic dialect default had it been allowed to resolve. Still
+    // ONE error (the enrichment is appended to the same refusal, not a second one).
+    assert!(
+        errs[0].contains("implicit anthropic dialect default"),
+        "expected the DEFAULT_PROTOCOL enrichment on the same refusal; got: {errs:?}"
+    );
+}
+
+/// The enrichment is silent when the deployment DID name an explicit `protocol:` — the provider is
+/// still refused for having no catalog entry, but not on the implicit-default grounds, since there
+/// was nothing implicit about it.
+#[test]
+fn test_resolve_unknown_provider_with_explicit_protocol_omits_the_default_enrichment() {
+    let defs = HashMap::new();
+    let mut deploy = base_deploy();
+    let mut dep = provider_deploy("NOPE_KEY");
+    dep.protocol = Some("openai".to_string());
+    deploy.providers.insert("nope".to_string(), dep);
+
+    let errs = resolve(&deploy, &defs).unwrap_err();
+    assert_eq!(errs.len(), 1);
+    assert!(errs[0].contains("not found in providers.yaml"));
+    assert!(!errs[0].contains("implicit anthropic dialect default"));
 }
 
 #[test]

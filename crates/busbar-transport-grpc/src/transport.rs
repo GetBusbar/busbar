@@ -122,6 +122,9 @@ impl Plugin for GrpcTransport {
 
 impl TransportMeta for GrpcTransport {
     const KEY: &'static str = "grpc";
+    // This transport's `COMPOSES_OVER` names `http`/`tcp` only — no `tls` leg is declared, so there
+    // is no honest `grpcs` this instance dials over; `grpc` is the one scheme it carries.
+    const SCHEMES: &'static [&'static str] = &["grpc"];
     // See `busbar-transport-ws`'s identical note: grpc is the top transport of its stack and
     // therefore the one that owns claim selection over the request that opens each call, including
     // its `:path`.

@@ -10,7 +10,7 @@
 //! node reports is the stack its declarations describe, so the description has to be true.
 
 use busbar_contract::transport::{
-    check_composition, CompositionError, Listener, ListenerHandle, Registered,
+    check_composition, scheme_index, CompositionError, Listener, ListenerHandle, Registered,
 };
 use std::sync::Arc;
 
@@ -21,9 +21,70 @@ fn declared(
 ) -> Registered {
     Registered {
         key,
+        // This file's own subject is the composition check, not the scheme index — every fixture
+        // row claims no scheme, which is fine: `scheme_index` is exercised by its own tests below.
+        schemes: &[],
         composes_over,
         composed_over,
     }
+}
+
+fn with_schemes(key: &'static str, schemes: &'static [&'static str]) -> Registered {
+    Registered {
+        key,
+        schemes,
+        composes_over: &[],
+        composed_over: None,
+    }
+}
+
+#[test]
+fn the_real_schemes_index_without_conflict() {
+    // The seven transports' actual `TransportMeta::SCHEMES` (CONFIG-MODEL-RULING §15): `http`
+    // carries `http`/`https`, `ws` carries `ws`/`wss`, `grpc` carries its own name, `stdio` carries
+    // its own name, and `tcp`/`tls`/`sse` carry none — each is either a composed-under layer or
+    // (for `sse`) dials straight through `http`'s own scheme rather than owning one.
+    let registry = [
+        with_schemes("tcp", &[]),
+        with_schemes("tls", &[]),
+        with_schemes("http", &["http", "https"]),
+        with_schemes("sse", &[]),
+        with_schemes("ws", &["ws", "wss"]),
+        with_schemes("grpc", &["grpc"]),
+        with_schemes("stdio", &["stdio"]),
+    ];
+    let index = scheme_index(&registry).expect("no two transports claim the same scheme");
+    for (scheme, transport) in [
+        ("http", "http"),
+        ("https", "http"),
+        ("ws", "ws"),
+        ("wss", "ws"),
+        ("grpc", "grpc"),
+        ("stdio", "stdio"),
+    ] {
+        assert_eq!(
+            index.iter().find(|(s, _)| *s == scheme).map(|(_, t)| *t),
+            Some(transport),
+            "scheme `{scheme}` should resolve to `{transport}`"
+        );
+    }
+    assert_eq!(index.len(), 6, "one entry per claimed scheme, no more");
+}
+
+#[test]
+fn two_transports_cannot_claim_one_scheme() {
+    let registry = [
+        with_schemes("http", &["https"]),
+        with_schemes("evil-http", &["https"]),
+    ];
+    assert_eq!(
+        scheme_index(&registry),
+        Err(CompositionError::DuplicateScheme {
+            scheme: "https",
+            first: "http",
+            second: "evil-http",
+        })
+    );
 }
 
 #[test]

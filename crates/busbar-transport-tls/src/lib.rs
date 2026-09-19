@@ -425,6 +425,10 @@ impl Plugin for TlsTransport {
 
 impl TransportMeta for TlsTransport {
     const KEY: &'static str = "tls";
+    // Same reasoning as `tcp`'s row: nothing ever addresses a destination as `tls://host:port`.
+    // TLS is reached only as a layer `http`/`ws` compose over for their own `https`/`wss` schemes,
+    // never named directly by a `base_url`.
+    const SCHEMES: &'static [&'static str] = &[];
     // `ClientCertSubject` is deliberately absent. The form reads a distinguished name off the
     // presented certificate, and this transport does not parse one: what it records is the
     // certificate's fingerprint, a real fact the handshake already established. Advertising the

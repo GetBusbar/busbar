@@ -728,6 +728,10 @@ impl Plugin for HttpTransport {
 
 impl TransportMeta for HttpTransport {
     const KEY: &'static str = "http";
+    // The plain and TLS-terminated carriers alike: which of `tcp`/`tls` this instance was actually
+    // built over is a listener's (or a dial's) own configuration, not a property this constant
+    // narrows — see `COMPOSES_OVER` two lines down, which names both.
+    const SCHEMES: &'static [&'static str] = &["http", "https"];
     const SELECTOR_FORMS: &'static [busbar_contract::SelectorForm] = &[
         busbar_contract::SelectorForm::ExactPath,
         busbar_contract::SelectorForm::PrefixOneLevel,

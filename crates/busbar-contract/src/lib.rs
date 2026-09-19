@@ -62,7 +62,7 @@ pub use plane::{
 // in its own documentation is what holds the in-tree side.
 pub use plugin::{AbiVersion, Kind, KindMarker, Plugin, STORE_ABI};
 pub use transport::{
-    check_composition, CompositionError, FrameStream, Fut, Registered, Transport,
+    check_composition, scheme_index, CompositionError, FrameStream, Fut, Registered, Transport,
     TransportConfigView, TransportMeta, TRANSPORT_ABI,
 };
 pub use unit::{

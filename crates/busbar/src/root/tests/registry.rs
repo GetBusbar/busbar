@@ -443,6 +443,29 @@ fn the_shipped_transport_stack_composes() {
     assert_eq!(composed_over("sse"), Some("http"));
 }
 
+/// The scheme half of the same rows: no two of the seven transports claim one URL scheme, and
+/// `https` — the scheme every shipped `1.5.5` provider's `base_url` uses — resolves to `http`.
+#[test]
+fn the_shipped_transport_stack_has_no_scheme_conflict() {
+    let rows = registered_rows();
+    let index = scheme_index(&rows).expect("no two transports claim the same scheme");
+    assert_eq!(
+        index.iter().find(|(s, _)| *s == "https").map(|(_, t)| *t),
+        Some("http"),
+        "a provider's `https://` base_url must resolve to the `http` transport plugin"
+    );
+    assert_eq!(
+        index.iter().find(|(s, _)| *s == "http").map(|(_, t)| *t),
+        Some("http")
+    );
+    if VOICE {
+        assert_eq!(
+            index.iter().find(|(s, _)| *s == "wss").map(|(_, t)| *t),
+            Some("ws")
+        );
+    }
+}
+
 /// The other direction of the composition rule: a transport built over a layer it does not
 /// declare describes a node nobody is running, and the check says so.
 #[test]
@@ -469,6 +492,7 @@ fn an_undeclared_composition_refuses_at_boot() {
 fn an_unregistered_layer_refuses_at_boot() {
     let rows = vec![Registered {
         key: "sse",
+        schemes: &[],
         composes_over: &["http"],
         composed_over: None,
     }];

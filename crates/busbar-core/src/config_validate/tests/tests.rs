@@ -5191,6 +5191,64 @@ fn an_empty_protocol_set_refuses_every_provider_naming_the_build() {
     );
 }
 
+/// CONFIG-MODEL-RULING §15 — the transport-by-scheme sweep, driven directly against an injected
+/// scheme set exactly like `an_empty_protocol_set_refuses_every_provider_naming_the_build` does for
+/// the protocol arm: the earlier `scheme_ok` gate already restricts every `base_url` this sweep
+/// ever sees (through `validate`) to `http`/`https`, both always in the production
+/// `KNOWN_TRANSPORT_SCHEMES` — so the "no registered transport carries this scheme" arm can only be
+/// watched red by calling the helper directly, against a set that does not contain `https`.
+#[test]
+fn a_scheme_no_transport_advertises_refuses_the_provider() {
+    let mut errors = Vec::new();
+    super::validate_provider_transport_scheme_with(
+        &["grpc", "stdio"],
+        "prov-a",
+        "https://api.example.com",
+        &mut errors,
+    );
+    assert_eq!(errors.len(), 1, "got: {errors:?}");
+    assert!(errors[0].contains("prov-a"), "{}", errors[0]);
+    assert!(errors[0].contains("https"), "{}", errors[0]);
+    assert!(
+        errors[0].contains("no registered transport plugin carries"),
+        "{}",
+        errors[0]
+    );
+}
+
+/// The positive twin: a scheme the injected set DOES advertise produces no error, and an
+/// unparseable base_url (defensive arm — unreachable through `validate`, which only calls this
+/// after `scheme_ok`) is named rather than silently accepted.
+#[test]
+fn a_known_scheme_passes_and_an_unparseable_one_is_named() {
+    let mut errors = Vec::new();
+    super::validate_provider_transport_scheme_with(
+        &["http", "https"],
+        "prov-a",
+        "https://api.example.com",
+        &mut errors,
+    );
+    assert!(errors.is_empty(), "got: {errors:?}");
+
+    super::validate_provider_transport_scheme_with(
+        &["http", "https"],
+        "prov-b",
+        "not-a-url",
+        &mut errors,
+    );
+    assert_eq!(errors.len(), 1, "got: {errors:?}");
+    assert!(errors[0].contains("prov-b") && errors[0].contains("no parseable scheme"));
+}
+
+/// The real, unmodified `KNOWN_TRANSPORT_SCHEMES` production list — pinned so a future edit that
+/// drops `http`/`https` (the only schemes a provider `base_url` can ever reach this sweep with) is
+/// a loud, named test failure rather than a silent regression on every provider in the fleet.
+#[test]
+fn known_transport_schemes_carries_http_and_https() {
+    assert!(super::KNOWN_TRANSPORT_SCHEMES.contains(&"http"));
+    assert!(super::KNOWN_TRANSPORT_SCHEMES.contains(&"https"));
+}
+
 /// **D5 — THE FAIL-OPEN, DRIVEN THROUGH THE PRODUCTION SWEEP.**
 ///
 /// [`an_empty_protocol_set_refuses_every_provider_naming_the_build`] above pins the protocol ARM.

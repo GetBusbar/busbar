@@ -83,7 +83,8 @@ use std::sync::Arc;
 use busbar_contract::plane::PlaneMeta;
 use busbar_contract::transport::TransportMeta;
 use busbar_contract::{
-    check_composition, CompositionError, Plugin, Registered, Transport, UpstreamAddress,
+    check_composition, scheme_index, CompositionError, Plugin, Registered, Transport,
+    UpstreamAddress,
 };
 use busbar_kernel::registry::{seal_claims, ClaimConflict, PlaneClaim, Registry, ResolvedOverlap};
 use busbar_plane_a2a::A2aPlane;
@@ -229,6 +230,11 @@ pub struct BootRegistry {
     pub resolved: Vec<ResolvedOverlap>,
     /// Every transport as the composition check read it.
     pub registered: Vec<Registered>,
+    /// The boot-time scheme→transport-plugin index (CONFIG-MODEL-RULING §15): which registered
+    /// transport's `SCHEMES` carries each URL scheme this build can dial. Built alongside the
+    /// composition check, from the same `registered` rows, and refused at boot (below, before this
+    /// struct exists) if two transports claim one scheme.
+    pub scheme_index: Vec<(&'static str, &'static str)>,
     /// The concrete handles the root keeps.
     pub transports: ComposedTransports,
 }
@@ -316,11 +322,13 @@ fn registered_rows() -> Vec<Registered> {
     let mut rows = vec![
         Registered {
             key: TcpTransport::KEY,
+            schemes: TcpTransport::SCHEMES,
             composes_over: TcpTransport::COMPOSES_OVER,
             composed_over: None,
         },
         Registered {
             key: TlsTransport::KEY,
+            schemes: TlsTransport::SCHEMES,
             composes_over: TlsTransport::COMPOSES_OVER,
             // TLS takes its lower layer's connection at `adopt`, per connection, rather than at
             // construction: there is no lower layer to record here.
@@ -328,6 +336,7 @@ fn registered_rows() -> Vec<Registered> {
         },
         Registered {
             key: HttpTransport::KEY,
+            schemes: HttpTransport::SCHEMES,
             composes_over: HttpTransport::COMPOSES_OVER,
             // Which of TCP or TLS carries a given HTTP listener is the listener's configuration,
             // not a property of the transport object.
@@ -335,6 +344,7 @@ fn registered_rows() -> Vec<Registered> {
         },
         Registered {
             key: SseTransport::KEY,
+            schemes: SseTransport::SCHEMES,
             composes_over: SseTransport::COMPOSES_OVER,
             composed_over: Some(HttpTransport::KEY),
         },
@@ -344,16 +354,19 @@ fn registered_rows() -> Vec<Registered> {
     #[cfg(feature = "plane-voice")]
     rows.push(Registered {
         key: WsTransport::KEY,
+        schemes: WsTransport::SCHEMES,
         composes_over: WsTransport::COMPOSES_OVER,
         composed_over: Some(HttpTransport::KEY),
     });
     rows.push(Registered {
         key: GrpcTransport::KEY,
+        schemes: GrpcTransport::SCHEMES,
         composes_over: GrpcTransport::COMPOSES_OVER,
         composed_over: Some(HttpTransport::KEY),
     });
     rows.push(Registered {
         key: StdioTransport::KEY,
+        schemes: StdioTransport::SCHEMES,
         composes_over: StdioTransport::COMPOSES_OVER,
         composed_over: None,
     });
@@ -387,6 +400,7 @@ pub fn seal(client_settings: ClientSettings) -> Result<BootRegistry, BootRefusal
     let registered = registered_rows();
     check_composition(&registered).map_err(BootRefusal::Composition)?;
     check_claim_transports(&claims, &registered)?;
+    let scheme_index = scheme_index(&registered).map_err(BootRefusal::Composition)?;
 
     Ok(BootRegistry {
         registry,
@@ -394,6 +408,7 @@ pub fn seal(client_settings: ClientSettings) -> Result<BootRegistry, BootRefusal
         precedence: sealed.order,
         resolved: sealed.resolved,
         registered,
+        scheme_index,
         transports,
     })
 }
