@@ -5674,3 +5674,36 @@ fn validate_runs_the_signing_key_format_guard_like_boot() {
         "the refusal must be boot's own format sentence, verbatim: {err}"
     );
 }
+
+/// D58's OTHER half: the blank-admin-token guard, exercised the same way as its signing-key sibling
+/// above. `BUSBAR_ADMIN_TOKEN=""` (or all-whitespace) satisfies the plain resolvability loop
+/// `validate_builtin_secrets_resolve` used to stop at, so `--validate` green-lit a config boot then
+/// refuses in `resolve_admin_token`'s own trim guard (the digest would be taken over the blank
+/// string, authenticating an empty presented token). Only the signing-key half of D58 had a
+/// regression test; this proves the admin-token half runs too.
+#[cfg(feature = "auth-admin-tokens")]
+#[test]
+fn validate_runs_the_blank_admin_token_guard_like_boot() {
+    // Unique env-var name so parallel tests cannot clobber the value we set/read here.
+    let tok_env = "BUSBAR_T_D58_ADMIN_TOKEN";
+    std::env::set_var(tok_env, "   ");
+
+    let mut cfg = make_root_cfg(HashMap::new(), HashMap::new(), HashMap::new());
+    let mut auth = config::AuthCfg::default_none();
+    let mut entry = config::AuthChainEntry::bare(config::ADMIN_TOKENS_MODULE);
+    entry.token = Some(config::SecretRef::env(tok_env));
+    auth.admin_auth = vec![entry];
+    cfg.auth = Some(auth);
+
+    let result = crate::preflight::validate_builtin_secrets_resolve(&cfg);
+
+    std::env::remove_var(tok_env);
+
+    let err = result.expect_err(
+        "a blank/whitespace-only admin token must fail validate exactly as it fails boot",
+    );
+    assert!(
+        err.contains("EMPTY/whitespace-only"),
+        "the refusal must be boot's own blank-token sentence, verbatim: {err}"
+    );
+}
