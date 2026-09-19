@@ -1621,6 +1621,12 @@ struct Deployment {
     door: Door<busbar_unit_admission::InMemoryCells>,
     groups: busbar_unit_admission::GroupTable,
     pricer: Pricer,
+    /// What a byte of the priced document costs, in nano-units — the same figure the root reads off
+    /// the card once and hands the bindings. Zero on the fixtures that only exercise the door.
+    bytes_nanos: u64,
+    /// The resolved rate-card history seq the root would stamp a posting with. Nonzero on every
+    /// fixture, because a real deployment resolves a real entry and `0` is the bug this proves gone.
+    rate_card_version: u64,
     records: RecordLegs,
     meter_policy: crate::root::policy::MeterPolicyHandle,
     scope: crate::root::policy::ScopePolicy,
@@ -1906,6 +1912,10 @@ fn deployment_priced(groups: busbar_unit_admission::GroupTable, pricer: Pricer) 
         door: Door::new(busbar_unit_admission::InMemoryCells::new()),
         groups,
         pricer,
+        bytes_nanos: 0,
+        // A real, resolved history entry — the number the root would carry off the pin it read
+        // `bytes_nanos` out of. Nonzero so a stamp that still reads `0` is a red assertion.
+        rate_card_version: 3,
         records: RecordLegs::new(Arc::new(RecordingStore::default())),
         meter_policy: crate::root::policy::build(&crate::root::policy::MeterPolicyConfig::default()),
         scope: scope_policy(crate::root::policy::ScopePolicy::new()),
@@ -1968,7 +1978,8 @@ impl Deployment {
                 door: &self.door,
                 chain,
                 pricer: &self.pricer,
-                bytes_nanos: 0,
+                bytes_nanos: self.bytes_nanos,
+                rate_card_version: self.rate_card_version,
                 records: &self.records,
                 meter_policy: &self.meter_policy,
                 scope_policy: &self.scope,
@@ -2201,4 +2212,126 @@ fn two_units_of_one_caller_are_handed_the_same_chain() {
         "one resolved chain, lent twice — not two copies of one answer"
     );
     assert!(std::ptr::eq(one, &chain), "and it is the root's own value");
+}
+
+/// **The meter accrues PRICED NANOS, not raw bytes.**
+///
+/// The kernel's meter is the unit's hold drawdown, denominated in nano-units, and the hold the
+/// door opened was sized in nano-units — `request_bytes * bytes_nanos` plus the fee. So the route
+/// step must accrue the PRICED figure: a meter fed raw byte counts drains a nano-sized reservation
+/// a thousand-fold too slowly and the exit settles a fraction of what the traffic was worth. The
+/// fixture prices a byte at more than one nano, so a meter still reading the raw count shows up
+/// here as a figure short by exactly that multiple.
+#[test]
+fn the_route_step_accrues_priced_nanos_not_raw_bytes() {
+    const BYTES_NANOS: u64 = 7;
+    let mut deployment = deployment(one_call_at_a_time("a2a-team"));
+    deployment.bytes_nanos = BYTES_NANOS;
+    let who = PrincipalId::new("vk_agent");
+    let chain = deployment.resolve(&who, Some("a2a-team"));
+    let unit = deployment.calling(chain.as_ref());
+    let seal = busbar_caps::KernelSeal::acquire_for_kernel();
+    let meter = AccrualMeter::new();
+    let _ = Units::route(
+        &unit,
+        &busbar_caps::UnitToken::mint(&seal),
+        &a2a_ctx(),
+        &meter,
+    );
+    let request_bytes = unit.draft().request_bytes;
+    assert_eq!(
+        meter.total(),
+        request_bytes * BYTES_NANOS,
+        "a byte accrues at its price, so the meter drains the nano-sized hold at the nano rate"
+    );
+    assert_ne!(
+        meter.total(),
+        request_bytes,
+        "the raw byte count is not a nano figure and posting it is the revenue leak"
+    );
+}
+
+/// **The settlement evidence is PRICED NANOS, not raw bytes.**
+///
+/// The settlement table posts `located` for a completed unit and the kernel's floor for one that
+/// did not locate — both against a balance keyed in nano-units. So both figures the evidence hands
+/// it have to be priced: a located raw-byte count is a completed unit billed a thousandth of its
+/// worth, and a raw-byte floor is the same leak on the estimated row. The fixture prices a byte
+/// above one nano and its two sides differ, so a figure taken from the wrong side or left unpriced
+/// is a red assertion here rather than a coincidence.
+#[test]
+fn the_settlement_evidence_is_priced_nanos_not_raw_bytes() {
+    const BYTES_NANOS: u64 = 7;
+    let mut deployment = deployment(one_call_at_a_time("a2a-team"));
+    deployment.bytes_nanos = BYTES_NANOS;
+    let who = PrincipalId::new("vk_agent");
+    let chain = deployment.resolve(&who, Some("a2a-team"));
+    let unit = deployment.calling(chain.as_ref());
+    let seal = busbar_caps::KernelSeal::acquire_for_kernel();
+    // The metering step is what records the located figure the exit reads.
+    let _ = Units::meter(
+        &unit,
+        &busbar_caps::UnitToken::mint(&seal),
+        &busbar_caps::UsageToken::mint(&seal),
+        &a2a_ctx(),
+        &Outcome::Completed,
+    );
+    let evidence = unit.evidence(&a2a_ctx());
+    let draft = unit.draft();
+    assert_eq!(
+        evidence.located,
+        Some(draft.response_bytes * BYTES_NANOS),
+        "what settles is the answer document's bytes at their price, not the raw count"
+    );
+    assert_eq!(
+        evidence.accrued_floor,
+        draft.request_bytes * BYTES_NANOS,
+        "and the kernel's floor is priced too, so the estimated row posts nanos not bytes"
+    );
+}
+
+/// **The audit record stamps the RESOLVED rate-card version, never a hardcoded zero.**
+///
+/// A posting records which card entry priced it so a later reader can reproduce the figure against
+/// the card in force when the unit was earned. Stamped `0`, every posting claims the opening entry
+/// whatever card actually priced it, and an amendment that reprices one window silently reprices
+/// them all. The fixture resolves a real, nonzero entry, and a stamp still reading `0` is the bug.
+#[test]
+fn the_audit_record_stamps_the_resolved_rate_card_version() {
+    let deployment = deployment(one_call_at_a_time("a2a-team"));
+    let who = PrincipalId::new("vk_agent");
+    let chain = deployment.resolve(&who, Some("a2a-team"));
+    let inputs =
+        deployment
+            .calling(chain.as_ref())
+            .audit_inputs(&a2a_ctx(), Outcome::Completed, Some(&who));
+    assert_ne!(
+        inputs.amount.rate_card_version, 0,
+        "a posting priced against a real history entry never stamps the opening-entry lie"
+    );
+    assert_eq!(
+        inputs.amount.rate_card_version, 3,
+        "the resolved seq the root carried off the pin it read the byte price out of"
+    );
+}
+
+/// **The audit record names the unit's OWN key, not a zero.**
+///
+/// The record is keyed by the unit it is about, and the loop hands each step that unit's key on the
+/// context. Hardcoded `0`, every unit's record collides on one key and the chain that orders a
+/// caller's events cannot tell one apart from the next.
+#[test]
+fn the_audit_record_names_the_units_own_key() {
+    let deployment = deployment(one_call_at_a_time("a2a-team"));
+    let who = PrincipalId::new("vk_agent");
+    let chain = deployment.resolve(&who, Some("a2a-team"));
+    let inputs =
+        deployment
+            .calling(chain.as_ref())
+            .audit_inputs(&a2a_ctx(), Outcome::Completed, Some(&who));
+    assert_eq!(
+        inputs.what.unit_key,
+        busbar_caps::UnitKey::new(1),
+        "the context's own key — a2a_ctx names unit 1 — not a hardcoded zero"
+    );
 }

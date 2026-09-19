@@ -654,6 +654,17 @@ pub struct A2aBindings<'r, S: CellStore> {
     /// reaches a rate table. Zero on a deployment whose card prices this plane's byte class at
     /// nothing, which is a reservation carrying the flat fee alone and not a missing one.
     pub bytes_nanos: u64,
+    /// **WHICH RATE-CARD HISTORY ENTRY PRICED THIS UNIT** — the resolved
+    /// [`busbar_unit_cost::HistorySeq`] of the pin `bytes_nanos` was read out of, carried as its
+    /// `u64` so the settlement and the audit record can stamp it.
+    ///
+    /// Read once by the root off the SAME pin that produced `bytes_nanos`, never invented here and
+    /// never hardcoded: a posting stamped `0` claims to have been priced against the opening entry
+    /// whatever card actually priced it, so a later reader that reproduces the figure reproduces it
+    /// against the wrong card. The number is the history's own — the entry a posting resolves back
+    /// to — and it is the one figure that makes a booked line auditable against the card in force
+    /// when it was earned.
+    pub rate_card_version: u64,
     /// The plane's durable records.
     pub records: &'r RecordLegs,
     /// What the usage unit folds against.
@@ -842,7 +853,10 @@ impl<'r, S: CellStore> A2aUnits<'r, S> {
             // way: the wall epoch dates it, the monotonic reading orders it. A posting stamped twice
             // off the wall clock is a posting a stepped clock can reorder against its own record.
             stamp: crate::root::durability::PostingStamp {
-                rate_card_version: 0,
+                // The resolved history seq, the same the audit record stamps and off the same pin
+                // the byte price came from, so a posting and its record name one card entry rather
+                // than a posting priced against a real card and a stamp claiming the opening one.
+                rate_card_version: self.bindings.rate_card_version,
                 wall: self.bindings.now,
                 mono: self.bindings.mono,
             },
@@ -1044,7 +1058,10 @@ impl<'r, S: CellStore> A2aUnits<'r, S> {
                 None => busbar_unit_audit::Subject::Arrival,
             },
             what: busbar_unit_audit::What {
-                unit_key: busbar_contract::ids::UnitKey::new(0),
+                // THE UNIT'S OWN KEY, off the context the loop hands every step. Hardcoded `0`,
+                // every unit's record collided on one key and the chain that orders a caller's
+                // events could not tell one from the next.
+                unit_key: ctx.key,
                 // The action, not the operation class. The rig reads this word, and the plane's own
                 // class is carried beside it on the facts the step returns.
                 op_class: busbar_unit_audit::OpClassId::new(AUDIT_ACTION),
@@ -1076,7 +1093,10 @@ impl<'r, S: CellStore> A2aUnits<'r, S> {
                 tier_bp: 0,
                 fee_count,
                 currency: String::new(),
-                rate_card_version: 0,
+                // THE RESOLVED HISTORY SEQ, off the same pin the byte price was read from — never a
+                // hardcoded `0`, which claims the opening entry priced a unit whatever card did and
+                // makes an amendment reprice every past posting on the next read.
+                rate_card_version: self.bindings.rate_card_version,
                 bucket_chain_ref: String::new(),
             },
             controls: busbar_unit_audit::Controls::default(),
@@ -1386,9 +1406,17 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
         }
 
         // The bytes the request carried accrue as the unit runs; the answer's bytes settle at the
-        // metering step. The meter is the kernel's running total and the hold is applied to it at
-        // the exit, which is why this is an accrual and not a posting.
-        meter.accrue(self.draft.request_bytes);
+        // metering step. The meter is the kernel's running total IN NANO-UNITS and the hold — sized
+        // in nano-units at the door — is applied to it at the exit, which is why this accrues the
+        // PRICED figure and not the raw byte count: a byte accrues at `bytes_nanos`, the same price
+        // the estimate sized the reservation with, so the meter drains the hold at the rate the hold
+        // was opened at. Fed the raw count, the meter drains a nano-sized hold a `bytes_nanos`-fold
+        // too slowly and the exit settles a fraction of what the traffic was worth.
+        meter.accrue(
+            self.draft
+                .request_bytes
+                .saturating_mul(self.bindings.bytes_nanos),
+        );
         // How far this unit's reservation may still grow, read off the same chain the door was
         // judged against. Offered here rather than at the door because it is a reading of the window
         // as it is NOW, and the exit is where it is spent. Zero is a top-up that does not happen,
@@ -1552,8 +1580,19 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
     fn evidence(&self, ctx: &UnitCtx) -> Evidence {
         let progress = read_through_poison(&self.progress);
         Evidence {
-            located: progress.metered,
-            accrued_floor: self.draft.request_bytes,
+            // PRICED NANOS, not the raw byte count. The settlement table posts `located` for a
+            // completed unit against a balance keyed in nano-units, so the metered response bytes
+            // are priced at `bytes_nanos` here — the same price the accrual and the estimate use.
+            // Posted raw, a completed unit bills a `bytes_nanos`-fold fraction of its worth.
+            located: progress
+                .metered
+                .map(|bytes| bytes.saturating_mul(self.bindings.bytes_nanos)),
+            // The kernel's floor is priced too: it is the estimated row's posting and the tripwire
+            // beside the located figure, and both live in the same nano unit or the two disagree.
+            accrued_floor: self
+                .draft
+                .request_bytes
+                .saturating_mul(self.bindings.bytes_nanos),
             // Nothing is required of a card that does not price this class. With a card that does,
             // the located figure is what settles and the floor is the tripwire beside it.
             locator_required: false,
