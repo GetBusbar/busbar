@@ -510,7 +510,11 @@ pub enum ExportRequest {
 /// rides the wire at all.
 ///
 /// Serialized with serde's default externally-tagged representation, as every type on this wire is.
+/// `#[serde(rename_all = "snake_case")]` pins the wire spelling to `durable` / `received` / `retry`
+/// — the SAME discipline [`ExportStream`] and [`ExportField`] carry, so a plugin author in any
+/// language matches a stable token, never the Rust variant name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ExportAck {
     /// The record is where a crash on the sink's node cannot lose it.
     Durable,
