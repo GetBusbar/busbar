@@ -474,6 +474,24 @@ impl InFlight {
                 hold: request.arrival,
             });
         }
+        let mut shard = self
+            .shard(request.key)
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        // A key already in the table is a collision, not a slot to overwrite. A blind `insert` would
+        // drop the displaced slot's `HoldCell` on the floor: its hold becomes unreachable, is never
+        // settled, and the in-flight count it took is never given back — the table ratchets toward
+        // its cap one leaked hold at a time. Refuse instead, hand this unit's arrival hold back, and
+        // release the slot we just claimed for it, leaving the unit already in flight untouched.
+        if shard.contains_key(&request.key) {
+            drop(shard);
+            self.count.fetch_sub(1, Ordering::AcqRel);
+            return Err(CapRefused {
+                step: cap_refusal_step(request.origin),
+                reason: ReasonCode::InFlight,
+                hold: request.arrival,
+            });
+        }
         let slot = Arc::new(UnitSlot {
             key: request.key,
             origin: request.origin,
@@ -485,10 +503,7 @@ impl InFlight {
             marked: AtomicBool::new(false),
             last_progress: AtomicU64::new(request.now),
         });
-        self.shard(request.key)
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(request.key, Arc::clone(&slot));
+        shard.insert(request.key, Arc::clone(&slot));
         Ok(slot)
     }
 

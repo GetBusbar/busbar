@@ -198,7 +198,15 @@ impl Scheduler {
                 if self.start_one_shot() {
                     Dispatch::OpenOneShot
                 } else {
-                    Dispatch::Wait
+                    // The one-shot concurrency is spent. `Wait` here is a silent loss: the frame is
+                    // a whole unit the caller is waiting on an answer to, and parking it means the
+                    // unit is never opened, rendered, counted or ended — it just disappears. Refuse
+                    // it instead, so the caller is told the node is at capacity and the session
+                    // stays open for the next frame.
+                    Dispatch::Refuse {
+                        step: StepName::Decode,
+                        reason: ReasonCode::InFlightCap,
+                    }
                 }
             }
             Shape::Open { interrupt } => {
