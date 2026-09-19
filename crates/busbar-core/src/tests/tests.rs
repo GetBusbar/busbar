@@ -6,8 +6,8 @@ use crate::test_support::{build_once, cfg_with_provider_api_key, oversized_413_b
 // scope. Allowed-unused as one block: which of these a given test build exercises varies by cfg.
 #[allow(unused_imports)]
 use crate::appbuild::{
-    inert_durable_keys_banner, open_relay_banner, resolve_model_context_max,
-    stateful_plane_ephemeral_store_warn,
+    ephemeral_store_banner, inert_durable_keys_banner, open_relay_banner, posture_banner_line,
+    resolve_model_context_max, stateful_plane_ephemeral_store_warn,
 };
 #[allow(unused_imports)]
 use crate::preflight::{
@@ -356,6 +356,53 @@ fn test_stateful_plane_ephemeral_store_warn_fires_only_for_ram_plus_stateful() {
     assert!(
         stateful_plane_ephemeral_store_warn(false, true, true).is_none(),
         "a durable store persists MCP/A2A task state across restarts — no sharper warn"
+    );
+}
+
+/// THE ONE BANNER SHAPE. Three conditions are "this deployment is not what you think it is": the
+/// OPEN RELAY (nobody is authenticated), INERT DURABLE KEYS (the keys you minted govern nothing),
+/// and the EPHEMERAL STORE DEFAULT (nothing you mint survives a restart). All three are postures an
+/// operator can hold a false belief about, so all three are announced the SAME way and through the
+/// SAME function — unconditionally on stderr, where no `RUST_LOG` setting can delete them. This pins
+/// the shape (one function, one prefix) rather than three hand-copied `eprintln!`s that can drift.
+#[test]
+fn test_one_posture_banner_shape_for_all_three_deployment_postures() {
+    let relay = open_relay_banner(true, false).expect("empty chain banners");
+    let inert = inert_durable_keys_banner(true, 3, false).expect("durable+keys+no-chain banners");
+    let ephemeral = ephemeral_store_banner(true).expect("the memory store default banners");
+    for b in [relay, &inert, ephemeral] {
+        assert_eq!(
+            posture_banner_line(b),
+            format!("[error] {b}"),
+            "every posture banner must take the ONE shape; drift here is how a fourth condition \
+             gets announced in a fourth way"
+        );
+    }
+}
+
+/// THE EPHEMERAL-STORE DEFAULT IS A POSTURE, NOT A FOOTNOTE. `store.module` defaults to `memory`,
+/// so a deployment that never wrote a `store:` block persists NOTHING — and until now that fact was
+/// carried only by a `tracing::warn!` that `RUST_LOG=error` deletes, while the other two postures got
+/// an unmaskable stderr banner. The banner must NAME THE FIX: the setting (`store.module`) and the
+/// recipe that shows what to set it to. A durable store gets no banner.
+#[test]
+fn test_ephemeral_store_banner_names_the_setting_and_the_recipe() {
+    let b = ephemeral_store_banner(true).expect("the memory store default must banner");
+    assert!(
+        b.contains("store.module"),
+        "the banner must name the SETTING an operator changes; got: {b}"
+    );
+    assert!(
+        b.contains("docs/storage-model.md#deployment-guidance"),
+        "the banner must name the RECIPE that says what to set it to; got: {b}"
+    );
+    assert!(
+        b.contains("restart"),
+        "the banner must name the CONSEQUENCE (state does not survive a restart); got: {b}"
+    );
+    assert!(
+        ephemeral_store_banner(false).is_none(),
+        "a durable store is the posture the operator asked for — no banner"
     );
 }
 
