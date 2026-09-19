@@ -1243,6 +1243,14 @@ async fn tools_call_via_gauntlet(
         .await
 }
 
+/// THE LONGEST `params.name` this server will record.
+///
+/// A published name is `<server>_<tool>` and both halves are operator-written config, so 256 bytes
+/// is far beyond any registration an operator can deploy and far below anything that matters as a
+/// durable-store cost. It bounds the CALLER'S string on its way into the per-call hash chain — see
+/// the call site for why that string reaching a durable row uncapped is the defect.
+const MAX_TOOL_NAME_BYTES: usize = 256;
+
 /// `tools/call` — DISPATCH. See the module header for the ordering and why it is that ordering.
 async fn tools_call(
     ctx: &Ctx<'_>,
@@ -1260,6 +1268,31 @@ async fn tools_call(
             invalid_params(id, "`params.name` is required and must be a string."),
         );
     };
+    // THE NAME IS BOUNDED BEFORE IT IS RECORDED. `params.name` is the CALLER'S string, and
+    // `CallLog::open` writes it verbatim into `McpCallRecord::tool` — a DURABLE row in the
+    // principal's hash chain. Nothing capped it, so a caller could append a megabyte to the store
+    // per refused call, without ever holding a grant for anything: the name is read before the
+    // catalogue lookup that would refuse it, and the refusal is itself a recorded row. A bound on
+    // the chain's inputs is the only thing that makes "one row per call" a bound on anything.
+    //
+    // REFUSED, NOT TRUNCATED. A name this long matches no registration, so refusing costs a legal
+    // caller nothing — and a truncated name in the chain would be a record of a call nobody made,
+    // which is worse than no record on a structure whose whole value is that it is evidence. The
+    // refusal rides the malformed arm above and records an EMPTY tool, exactly as an absent name
+    // does, so the bounded row is the one written.
+    if name.len() > MAX_TOOL_NAME_BYTES {
+        let log = CallLog::open(ctx, "", selected_gen);
+        return log.refused(
+            busbar_substrate::audit::vocab::REASON_MALFORMED,
+            invalid_params(
+                id,
+                &format!(
+                    "`params.name` is longer than {MAX_TOOL_NAME_BYTES} bytes and names no tool \
+                     this server publishes."
+                ),
+            ),
+        );
+    }
     let mut log = CallLog::open(ctx, name, selected_gen);
     let mut arguments = params
         .and_then(|p| p.get("arguments"))
