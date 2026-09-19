@@ -216,6 +216,9 @@ pub enum WalkError {
         path: PathBuf,
         message: String,
     },
+    TooDeep {
+        path: PathBuf,
+    },
 }
 
 impl fmt::Display for WalkError {
@@ -238,6 +241,13 @@ impl fmt::Display for WalkError {
                 roots.join(", ")
             ),
             WalkError::Io { path, message } => write!(f, "walk {}: {message}", path.display()),
+            WalkError::TooDeep { path } => write!(
+                f,
+                "walk {} exceeded the recursion cap. A symlink cycle (a directory that reaches \
+                 back into itself through a link) makes an ordinary recursive walk loop forever; \
+                 the cap turns that hang into a reported error instead.",
+                path.display()
+            ),
         }
     }
 }
@@ -460,7 +470,7 @@ impl Ctx {
             if !abs.exists() && !overlay_adds_it {
                 return Err(WalkError::MissingRoot { root: root.clone() });
             }
-            collect(&abs, &self.root, &mut rels)?;
+            collect(&abs, &self.root, &mut rels, 0)?;
         }
 
         if let Some(ov) = self.overlay() {
@@ -768,12 +778,36 @@ impl Ctx {
     }
 }
 
-fn collect(dir: &Path, root: &Path, out: &mut Vec<PathBuf>) -> Result<(), WalkError> {
-    if dir.is_file() {
+/// A DIRECTORY SYMLINK IS NEVER FOLLOWED, and depth is CAPPED — both guard the same hazard.
+/// `Path::is_dir` (and a bare `read_dir`) resolves through symlinks, so a directory that links
+/// back into one of its own ancestors turns an ordinary recursive walk into an infinite loop: no
+/// ban, no floor, nothing — the process just hangs. `symlink_metadata` answers about the link
+/// itself rather than its target, which is what lets a cycle be recognized as "a link, not a
+/// directory to descend into" instead of being followed one hop closer to the loop. The depth cap
+/// is the second, independent backstop: even a chain of non-cyclic real directories nested deeper
+/// than any repository plausibly goes is refused rather than walked, so a pathological tree fails
+/// closed instead of exhausting the stack.
+const WALK_DEPTH_CAP: usize = 128;
+
+fn collect(dir: &Path, root: &Path, out: &mut Vec<PathBuf>, depth: usize) -> Result<(), WalkError> {
+    let Ok(meta) = std::fs::symlink_metadata(dir) else {
+        return Ok(());
+    };
+    if meta.file_type().is_symlink() {
+        // A symlink is never traversed as a directory and never recorded as a file here — the
+        // walk only names paths that are themselves real entries, not the links pointing at them.
+        return Ok(());
+    }
+    if meta.is_file() {
         if let Ok(rel) = dir.strip_prefix(root) {
             out.push(rel.to_path_buf());
         }
         return Ok(());
+    }
+    if depth > WALK_DEPTH_CAP {
+        return Err(WalkError::TooDeep {
+            path: dir.to_path_buf(),
+        });
     }
     let Ok(rd) = std::fs::read_dir(dir) else {
         return Ok(());
@@ -785,8 +819,14 @@ fn collect(dir: &Path, root: &Path, out: &mut Vec<PathBuf>) -> Result<(), WalkEr
         if name == "target" || name == ".git" {
             continue;
         }
-        if path.is_dir() {
-            collect(&path, root, out)?;
+        let Ok(entry_meta) = std::fs::symlink_metadata(&path) else {
+            continue;
+        };
+        if entry_meta.file_type().is_symlink() {
+            continue;
+        }
+        if entry_meta.is_dir() {
+            collect(&path, root, out, depth + 1)?;
         } else if let Ok(rel) = path.strip_prefix(root) {
             out.push(rel.to_path_buf());
         }
