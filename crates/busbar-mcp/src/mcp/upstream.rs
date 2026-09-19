@@ -379,8 +379,23 @@ pub(super) fn credential_mode(server: &ServerEntry) -> Result<UpstreamCredential
          issued token is spendable at any backend the authorization server serves"
             .to_string()
     })?;
-    let subject_token = busbar_api::resolve_builtin_string(&tx.subject_token)
-        .map_err(|e| format!("busbar's own subject token for this upstream cannot resolve: {e}"))?;
+    let subject_token = busbar_api::resolve_builtin_string(&tx.subject_token).map_err(|e| {
+        // `e` is NOT put in the caller-facing message: `resolve_builtin_string`'s error names the
+        // secret's SOURCE (e.g. `secret env:OPENAI_KEY cannot resolve: environment variable
+        // 'OPENAI_KEY' is unset`), and this refusal is rendered straight into the JSON-RPC error a
+        // caller who is not the operator receives (`refuse_setup` in `mcp::method`). Handing that
+        // caller the exact env var / file path busbar reads the upstream's credential from is a
+        // configuration-disclosure leak that costs the operator nothing to avoid: the detail goes
+        // to the log, where the operator who can actually fix it can see it.
+        tracing::warn!(
+            server = %server.id,
+            error = %e,
+            "busbar's own subject token for this upstream cannot resolve"
+        );
+        "busbar's own subject token for this upstream cannot resolve; see the server log for which \
+         secret and why"
+            .to_string()
+    })?;
     Ok(UpstreamCredential::Exchange(ExchangeCfg {
         token_url: tx.token_url.clone(),
         subject_token: Redacted::new(subject_token),
@@ -707,20 +722,40 @@ pub(super) async fn exchange(
         .await
         .map_err(|e| format!("the RFC 8693 exchange failed: {}", e.into_cause()))?;
     let status = response.status().as_u16();
-    let body = {
-        use http_body_util::BodyExt;
-        let collected = tokio::time::timeout_at(deadline, response.into_body().collect())
-            .await
-            .map_err(|_| {
+    let body =
+        {
+            // Capped, not `.collect()`: an unbounded read buffers whatever the authorization server
+            // sends entirely into memory before the size is even looked at, and this endpoint is
+            // OPERATOR-CONFIGURED, not busbar's own — a compromised or misbehaving token endpoint
+            // returning a multi-GB body would otherwise be read to completion first. Same cap and the
+            // same capped-read primitive the transport leg's own response read uses
+            // (`max_upstream_buffered_bytes`); a real token response is well under 1 KiB, so this has
+            // no effect on legitimate traffic.
+            use http_body_util::BodyExt;
+            let cap = busbar_substrate::proxy::max_upstream_buffered_bytes();
+            let read =
+                busbar_substrate::proxy::read_capped(response.into_body().into_data_stream(), cap);
+            let (raw, read_end) = tokio::time::timeout_at(deadline, read).await.map_err(|_| {
                 format!(
                     "the RFC 8693 exchange body could not be read: {}",
                     busbar_substrate::egress::engine::HOP_DEADLINE_CAUSE
                 )
             })?;
-        collected
-            .map_err(|e| format!("the RFC 8693 exchange body could not be read: {e}"))?
-            .to_bytes()
-    };
+            match read_end {
+                busbar_substrate::proxy::ReadEnd::Complete => raw,
+                busbar_substrate::proxy::ReadEnd::Truncated => {
+                    return Err(format!(
+                    "the RFC 8693 exchange response exceeded the {cap}-byte cap; refusing to parse \
+                     a truncated token response"
+                ))
+                }
+                busbar_substrate::proxy::ReadEnd::TransportError => return Err(
+                    "the RFC 8693 exchange connection failed mid-response; refusing to parse a \
+                     partial token response"
+                        .to_string(),
+                ),
+            }
+        };
     if !(200..300).contains(&status) {
         // The BODY is deliberately not echoed: an authorization server's error body can carry the
         // subject token back in a diagnostic, and this string reaches busbar's own caller.
@@ -817,6 +852,13 @@ mod reroute_pool_tests;
 #[cfg(all(test, feature = "test-support"))]
 #[path = "tests/calllog_dispatch_tests.rs"]
 mod calllog_dispatch_tests;
+
+// S6: THE SUBJECT-TOKEN SOURCE MUST NOT REACH THE CALLER when it cannot resolve. Beside its
+// neighbours for the same reason: the claim is about what `refuse_setup` renders onto the wire for a
+// REAL caller, not about the string `credential_mode` builds in isolation.
+#[cfg(all(test, feature = "test-support"))]
+#[path = "tests/credential_secret_leak_tests.rs"]
+mod credential_secret_leak_tests;
 
 // THE HOOK GATE ON THIS PLANE, proven the only way the claim can be made honestly: against the same
 // real fake peer. "The call was rejected" is evidence only next to a control that REACHES the peer

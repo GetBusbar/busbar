@@ -184,6 +184,53 @@ async fn a_passthrough_server_refuses_an_operator_driven_refresh() {
     );
 }
 
+/// THE SAME REFUSAL, but reached through the ALL-MCP `tools.upstream_credentials:` default rather
+/// than a per-server override. `server_entry` (S32) reads `ToolsCfg::effective_upstream_credentials`
+/// — the per-server value OR ELSE the section-level default — into `UpstreamPosture.credentials`, so
+/// a server that names no `upstream_credentials:` of its own must still come out `passthrough` (and
+/// therefore still fail closed with no caller credential) when the operator set the default and
+/// nothing else. Without this test, a regression that read `def.upstream_credentials` straight off
+/// the per-server config again — silently dropping the section default for every server that does
+/// not repeat it — would pass every other test in this file, because they all set the per-server
+/// field directly.
+#[tokio::test]
+async fn a_passthrough_all_mcp_default_refuses_an_operator_driven_refresh() {
+    metrics_init();
+    let peer = Peer::start(vec![wire_tool("read", DESCRIPTION, schema())]).await;
+    let cache = Arc::new(CatalogueCache::new());
+    let cfg = server_cfg(
+        &peer,
+        &[("read", Some(approved_hash("read", DESCRIPTION, schema())))],
+    );
+    // NOT set here: `cfg.upstream_credentials` stays `None`, so the only source of `passthrough` is
+    // the section-level default below.
+    assert_eq!(cfg.upstream_credentials, None);
+    let app = test_app()
+        .mcp(&mcp_cfg())
+        .tools_upstream_credentials(busbar_api::UpstreamCreds::Passthrough)
+        .mcp_server("fs", cfg)
+        .with_mcp_sightings(cache.clone())
+        .build();
+    let entry = crate::mcp::runtime(&app)
+        .catalogue
+        .server("fs")
+        .unwrap()
+        .clone();
+
+    let refusal = refresh(&crate::mcp::runtime(&app).pool, &cache, &entry)
+        .await
+        .expect_err("the ALL-MCP passthrough default has no caller credential to send either");
+
+    assert!(
+        refusal.to_string().contains("passthrough"),
+        "the refusal names the posture that caused it: {refusal}"
+    );
+    assert!(
+        peer.methods().is_empty(),
+        "and it refuses BEFORE any network I/O, so a misconfiguration cannot generate traffic"
+    );
+}
+
 /// THE ROUND TRIP. An approval projects onto exactly the two config fields the build reads back —
 /// `pin.key` and `tools_allow[].schema_hash` — so an approval worked through the changes queue
 /// survives the next config apply instead of evaporating.

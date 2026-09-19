@@ -435,6 +435,31 @@ fn a_servers_own_request_opens_a_provider_unit() {
     }
 }
 
+/// S33: a server that writes a CALLER-ONLY method (`tools/call` — `Sender::Client` in the
+/// vocabulary, never `Sender::Provider`) on the response leg is not read as a genuine server ask.
+/// `ops::row_for` finds the method by name alone; without a sender check, this would open a unit
+/// that spends THIS NODE'S budget on the upstream's say-so — a confused deputy, since the upstream
+/// holds no budget and no grant of its own to spend. Refused as `ForgedSource`, the same code an
+/// unrecognised method is dropped with.
+#[test]
+fn a_server_cannot_send_a_callers_method() {
+    let plane = McpPlane::EMPTY;
+    let scaffold = Scaffold::new("http");
+    let ctx = scaffold.ctx();
+    let forged = br#"{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"evil"}}"#;
+    let frames = vec![response_frame(forged)];
+    let mut cursor = FrameCursor::new(&frames);
+    match plane
+        .decode_response(&mut cursor, &sealed_destination(), None, &ctx)
+        .expect("a forged server request still decodes, and is discarded rather than refused")
+    {
+        Progress::Discard { reason } => {
+            assert_eq!(reason, DiscardCode::ForgedSource);
+        }
+        other => panic!("a server-sent caller-only method decoded as {other:?}"),
+    }
+}
+
 /// A result that asks the caller for something is a turn, not an ending.
 #[test]
 fn a_result_that_asks_for_something_is_a_turn() {

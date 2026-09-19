@@ -476,7 +476,10 @@ impl Catalogue {
         let mut resources = BTreeMap::new();
         let mut resource_templates = BTreeMap::new();
         for (id, def) in &cfg.servers {
-            servers.insert(id.clone(), server_entry(id, def));
+            servers.insert(
+                id.clone(),
+                server_entry(id, def, cfg.effective_upstream_credentials(id)),
+            );
             for (tool, allow) in &def.tools_allow {
                 // THE PUBLISHED NAME: the operator's `publish_as:` where they wrote one, the
                 // `{server}_{tool}` default where they did not — which is every config that
@@ -1069,7 +1072,11 @@ fn as_dispatch_refusal(
     }
 }
 
-fn server_entry(id: &str, def: &McpServerDefCfg) -> ServerEntry {
+fn server_entry(
+    id: &str,
+    def: &McpServerDefCfg,
+    effective_credentials: Option<busbar_api::UpstreamCreds>,
+) -> ServerEntry {
     // The registration read as the operator's standing INTENT: the identity they pinned out of
     // band, and the digest they approved for each capability. A capability they allowed without
     // approving a digest is absent from the map, which is `pending` — allowed is not approved.
@@ -1136,7 +1143,15 @@ fn server_entry(id: &str, def: &McpServerDefCfg) -> ServerEntry {
         ),
         upstream: UpstreamPosture {
             allow_private: def.allow_private,
-            credentials: def.upstream_credentials,
+            // S32: `def.upstream_credentials` ALONE (the per-server override) silently dropped the
+            // operator's `tools.upstream_credentials:` ALL-MCP default for every server that did not
+            // repeat it — a server left unspecified was read as `None` here and `credential_mode`
+            // (`mcp::upstream`) then treats an absent value as though `passthrough` was never
+            // configured at all, sending NO caller credential where the operator's global directive
+            // said to. `effective_upstream_credentials` is the SCALAR ⇒ OVERRIDE combine
+            // (`ToolsCfg::effective_upstream_credentials`) already written for exactly this — it was
+            // computed and never wired into the snapshot this dispatch actually reads.
+            credentials: effective_credentials,
             token_exchange: def.token_exchange.clone(),
             aud: def.aud.clone(),
             // `validate_server` already refused a malformed or zero value at BOOT, so a parse

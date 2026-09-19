@@ -963,12 +963,14 @@ impl ToolsCfg {
     // not routing). The rule below is still stated here, and still delegates to the one grammar
     // rule in `hooks::attach_list`, because the combine belongs to the section it describes.
     //
-    // The UPSTREAM-CREDENTIAL combine below still has none: the effective mode is read off the
-    // catalogue snapshot's `UpstreamPosture` rather than through `effective_upstream_credentials`,
-    // because the snapshot is what dispatch holds and reaching back into `ToolsCfg` from a request
-    // path would be a second reader of the operator's intent. It is written and pinned here because
-    // the OVERRIDE-scalar combine is a rule of the config grammar itself, and a grammar rule
-    // discovered at the moment its first caller lands is a grammar rule decided by that caller.
+    // The UPSTREAM-CREDENTIAL combine NOW HAS A PRODUCTION CALLER TOO (S32): `server_entry` calls
+    // `effective_upstream_credentials` ONCE, at catalogue-snapshot build time, and the result is what
+    // lands in `UpstreamPosture.credentials`. Dispatch itself still never calls this method — it
+    // reads the already-combined value off the snapshot's `UpstreamPosture`, because the snapshot is
+    // what dispatch holds and reaching back into `ToolsCfg` from a request path would be a second
+    // reader of the operator's intent. It is written and pinned here because the OVERRIDE-scalar
+    // combine is a rule of the config grammar itself, and a grammar rule discovered at the moment its
+    // first caller lands is a grammar rule decided by that caller.
     #![cfg_attr(any(not(test), not(feature = "test-support")), allow(dead_code))]
 
     /// The effective hook set for one server: `tools.hooks ∪ tools.<server>.hooks`, deduped, in

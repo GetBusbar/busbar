@@ -617,6 +617,22 @@ impl Plane for McpPlane {
                     reason: DiscardCode::Unsupported,
                 });
             };
+            // S33: THE SENDER CHECK. `ops::row_for` looks a method up by NAME alone; the vocabulary
+            // also records WHO may send it (`Sender::Client` for the ten methods only busbar's own
+            // caller may issue, `Sender::Provider` for the three an upstream may ask BACK mid-call).
+            // Without this check, a server that writes `{"method":"tools/call",...}` on this SAME
+            // decode path a legitimate `sampling/createMessage` ask arrives on is read as a genuine
+            // server ask and opens a `UnitDraft` that spends on THIS NODE'S budget — a confused
+            // deputy: the upstream (which holds no budget and no grant of its own) spending an
+            // authority that was never its to spend, under a method name that exists in the table
+            // but was never one a server may originate. Refused the same way an unrecognised method
+            // is — `ForgedSource`, because that is exactly what this is: a party claiming to send
+            // something it is not entitled to send.
+            if row.sender != ops::Sender::Provider {
+                return Ok(Progress::Discard {
+                    reason: DiscardCode::ForgedSource,
+                });
+            }
             // The subject is read HERE, at the one step entitled to read the bytes, so the steps
             // after this one read it off the draft rather than scanning the request a second time.
             if let Some(pointer) = row.name_pointer {
