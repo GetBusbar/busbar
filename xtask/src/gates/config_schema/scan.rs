@@ -641,6 +641,41 @@ pub fn lift_lists(src: &[char]) -> Vec<String> {
     out
 }
 
+// ── PLANE-VERB LIFT RECOVERY ─────────────────────────────────────────────────────────────────────
+// The 1.6.0 config-stage1 registry lift: a plane's own top-level section is no longer named in
+// `prepass.rs`'s `LIFTED_*KEYS` literals, so those two functions recover it from the SAME place the
+// runtime lift does — a plane's own `PlaneDecl` literal (`config_section: "…"` or, for one
+// indirection, a same-crate `const` it points at) and core's `CORE_OWNED_CONCRETE_SECTIONS` array —
+// without evaluating Rust.
+
+/// The trimmed RHS text of the FIRST top-level `const NAME: TYPE = <rhs>;` declaration matching
+/// `name`, whatever shape the RHS is (a scalar string literal or a `&[&str]` array) — the caller
+/// decides which it expected. Used to recover `CORE_OWNED_CONCRETE_SECTIONS` (an array) and a
+/// same-crate `CONFIG_SECTION` indirection (a scalar) with one scanner.
+pub fn const_rhs(src: &[char], name: &str) -> Option<String> {
+    let s: String = src.iter().collect();
+    let needle = format!("const {name}");
+    let idx = s.find(&needle)?;
+    let after = &s[idx + needle.len()..];
+    let eq = after.find('=')?;
+    let rest = &after[eq + 1..];
+    let end = rest.find(';')?;
+    Some(rest[..end].trim().to_string())
+}
+
+/// The trimmed RHS text of the FIRST top-level `field: <rhs>,` struct-literal assignment matching
+/// `field` — either a quoted string literal or a path expression (a same-crate constant reference),
+/// verbatim. Used to read a `PlaneDecl` literal's own `config_section: …` field without parsing the
+/// whole struct literal.
+pub fn field_rhs(src: &[char], field: &str) -> Option<String> {
+    let s: String = src.iter().collect();
+    let needle = format!("{field}:");
+    let idx = s.find(&needle)?;
+    let rest = &s[idx + needle.len()..];
+    let end = rest.find(',')?;
+    Some(rest[..end].trim().to_string())
+}
+
 // ── STR_LIT_RE ───────────────────────────────────────────────────────────────────────────────────
 
 /// `re.findall(r'"([^"\n]*)"', s)` — non-overlapping, left to right.

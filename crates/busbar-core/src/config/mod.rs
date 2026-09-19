@@ -48,7 +48,9 @@ pub use crate::breaker::status_class_from_str;
 use crate::diagnostics::{
     diag_warn, CONFIG_ANTIDOWNGRADE_FLOOR_INVALID, CONFIG_FIRSTPARTY_FLOOR_INVALID,
 };
-use crate::plane::config::{AgentsSection, McpEndpointSection, StreamsSection, ToolsSection}; // plane-purity: frozen-wire McpEndpointSection is the snapshot-recorded type of the mcp: field
+use crate::plane::config::{
+    AgentsSection, McpEndpointSection, PlaneCfg, StreamsSection, ToolsSection,
+}; // plane-purity: frozen-wire McpEndpointSection is the snapshot-recorded type of the mcp: field
 
 /// Reject an env-var value that could break out of the surrounding YAML scalar when substituted
 /// into the raw config text BEFORE parsing. `interpolate_env` splices each value in verbatim, so a
@@ -1284,6 +1286,16 @@ pub struct DeployCfg {
     /// A lifted CARRIER, exactly as `mcp:` above is.
     #[serde(skip)]
     pub streams: StreamsSection,
+    /// THE OVERFLOW CARRIER for a REGISTERED plane's top-level section that has no concrete field of
+    /// its own here — a plane dropped in after `tools`/`agents`/`streams` were given their typed
+    /// carriers above. The registry-derived plane-verb lift ([`crate::config::prepass`]) still lifts
+    /// such a plane's section off the document (so `deny_unknown_fields` never refuses it), and
+    /// banks it here by its wire key instead of a named field, so a new plane's config section
+    /// parses with ZERO edits to this struct. Not part of the frozen 1.5.5 grammar — absent for
+    /// every deployment today, since `tools`/`agents`/`streams` above already cover every plane this
+    /// build registers.
+    #[serde(skip)]
+    pub(crate) extra_plane_sections: indexmap::IndexMap<String, Box<dyn PlaneCfg>>,
     // 1.6.0 UNIFIED POOLS: the separate `tool_pools:` and `agent_pools:` sections are GONE. There is
     // ONE neutral top-level `pools:` (above); a pool's kind is INFERRED from its members and each
     // plane's pools are projected to their own carriers in `resolve`. A 1.5.4/1.6.0-dev config still
@@ -2739,6 +2751,13 @@ mod tests;
 #[cfg(test)]
 #[path = "tests/named_map_merge_tests.rs"]
 mod named_map_merge_tests;
+
+// The config-model STAGE 1 registry-driven lift: the plane-verb lift set is DERIVED from the plane
+// registry rather than hardcoded, and a dropped-in plane's top-level section is lifted through the
+// generic overflow carrier rather than refused by `deny_unknown_fields`.
+#[cfg(test)]
+#[path = "tests/plane_verb_lift_tests.rs"]
+mod plane_verb_lift_tests;
 
 // The CONFIG BACK-COMPAT CORPUS GATE: the resolved billing/limits surface is byte-stable across
 // 1.6.0 changes (the baseline M3's config-noun eviction must preserve). Lives here because it reads

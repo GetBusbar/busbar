@@ -44,6 +44,7 @@ pub(crate) fn base_deploy() -> DeployCfg {
         tools: Default::default(),
         agents: Default::default(),
         streams: Default::default(),
+        extra_plane_sections: Default::default(),
         listen: DEFAULT_LISTEN_ADDR.into(),
         // Left at its type default (unset).
         mcp: Default::default(),
