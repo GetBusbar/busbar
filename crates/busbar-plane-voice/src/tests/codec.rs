@@ -639,6 +639,93 @@ fn twilio_media_after_start_admits_a_ulaw_audio_frame() {
 }
 
 #[test]
+fn twilio_start_refuses_a_non_mulaw_8khz_mono_carrier() {
+    // Every millisecond this dialect derives runs through `AudioFormat::G711Ulaw::bytes_to_ms`, which
+    // is baked to G.711 µ-law/8 kHz/mono. A `start` that negotiates a different rate/channels/encoding
+    // would have every duration measured against the wrong constant — a 16 kHz caller billed at half
+    // duration, a-law bytes transcoded as µ-law — so a carrier that is not the assumed one is refused
+    // at decode, never silently mismetered.
+    static UPSTREAMS: &[Upstream] = &[Upstream {
+        lane: LaneId::new("realtime"),
+        host: "api.openai.com",
+        dialect: Dialect::OpenaiRealtime,
+    }];
+    let plane = VoicePlane::new(UPSTREAMS);
+    let arena = LeakArena;
+    let config = EmptyConfig;
+    let transport = WsStack::new("/twilio/call-123");
+    let labels = Labels::new();
+    let c = ctx(&arena, &config, &transport, &labels);
+
+    // A 16 kHz start is refused, not admitted.
+    let mut state = PlaneSessionState::new(crate::session::VoiceSessionState::for_dialect(
+        Dialect::TwilioMediaStreams,
+    ));
+    let start_16k = serde_json::to_vec(&json!({
+        "event": "start",
+        "start": {
+            "streamSid": "MZ123",
+            "callSid": "CA123",
+            "mediaFormat": { "encoding": "audio/x-mulaw", "sampleRate": 16000, "channels": 1 },
+        },
+    }))
+    .unwrap();
+    let frames = [frame(&start_16k)];
+    let mut cursor = FrameCursor::new(&frames);
+    assert!(
+        matches!(
+            plane.decode_ingress(&mut cursor, Some(&mut state), &c),
+            Err(busbar_contract::wire::Decode::UnsupportedOperation)
+        ),
+        "a 16 kHz carrier is refused, not billed at half duration"
+    );
+
+    // An a-law (`audio/x-pcma`) carrier at the right rate/channels is still refused: its bytes are not
+    // what the µ-law millisecond math measures.
+    let mut state = PlaneSessionState::new(crate::session::VoiceSessionState::for_dialect(
+        Dialect::TwilioMediaStreams,
+    ));
+    let start_alaw = serde_json::to_vec(&json!({
+        "event": "start",
+        "start": {
+            "streamSid": "MZ123",
+            "callSid": "CA123",
+            "mediaFormat": { "encoding": "audio/x-pcma", "sampleRate": 8000, "channels": 1 },
+        },
+    }))
+    .unwrap();
+    let frames = [frame(&start_alaw)];
+    let mut cursor = FrameCursor::new(&frames);
+    assert!(
+        matches!(
+            plane.decode_ingress(&mut cursor, Some(&mut state), &c),
+            Err(busbar_contract::wire::Decode::UnsupportedOperation)
+        ),
+        "an a-law carrier is refused, not transcoded as µ-law"
+    );
+
+    // The assumed carrier (µ-law/8 kHz/mono) still binds the session and discards the lifecycle frame.
+    let mut state = PlaneSessionState::new(crate::session::VoiceSessionState::for_dialect(
+        Dialect::TwilioMediaStreams,
+    ));
+    let start_ok = serde_json::to_vec(&json!({
+        "event": "start",
+        "start": {
+            "streamSid": "MZ123",
+            "callSid": "CA123",
+            "mediaFormat": { "encoding": "audio/x-mulaw", "sampleRate": 8000, "channels": 1 },
+        },
+    }))
+    .unwrap();
+    let frames = [frame(&start_ok)];
+    let mut cursor = FrameCursor::new(&frames);
+    let ingress = plane
+        .decode_ingress(&mut cursor, Some(&mut state), &c)
+        .expect("the assumed carrier is admitted");
+    assert!(matches!(ingress, Ingress::Discard { .. }));
+}
+
+#[test]
 fn twilio_media_with_a_forged_stream_sid_is_discarded() {
     static UPSTREAMS: &[Upstream] = &[Upstream {
         lane: LaneId::new("realtime"),
@@ -1266,6 +1353,76 @@ fn a_refusal_renders_an_opaque_code_not_the_internal_reason() {
             "the error carries a message"
         );
     }
+}
+
+/// A refusal is rendered in the dialect the session negotiated, not one fixed shape.
+///
+/// `encode_refusal` framed every refusal as an OpenAI-Realtime `{"type":"error"}` frame regardless of
+/// the bound dialect. A Gemini Live client cannot parse that shape — its errors arrive inside
+/// `serverContent`. The immutable session half carries the negotiated dialect
+/// (`VoiceSessionState::dialect`), so the refusal is framed by that dialect's own writer; a one-shot
+/// refusal with no session state still defaults to the OpenAI shape.
+#[test]
+fn a_refusal_is_rendered_in_the_negotiated_dialect() {
+    use busbar_contract::unit::{Refusal, RefusalReason, Step};
+
+    let plane = openai_plane();
+    let arena = LeakArena;
+    let config = EmptyConfig;
+    let transport = WsStack::new("/v1/realtime");
+    let labels = Labels::new();
+    let c = ctx(&arena, &config, &transport, &labels);
+
+    let refusal = Refusal {
+        step: Step::Decode,
+        reason: RefusalReason::RateLimited,
+        retry_after_secs: None,
+        stream: None,
+        correlates: None,
+    };
+
+    // A Gemini Live session gets a Gemini-shaped error (inside `serverContent`), not `{"type":"error"}`.
+    let gemini_state = PlaneSessionState::new(crate::session::VoiceSessionState::for_dialect(
+        Dialect::GeminiLive,
+    ));
+    let bytes = plane
+        .encode_refusal(&refusal, None, Some(&gemini_state), &c)
+        .expect("a refusal renders");
+    let parsed: serde_json::Value =
+        serde_json::from_slice(bytes.as_slice()).expect("the refusal is JSON");
+    assert!(
+        parsed.get("type").is_none(),
+        "a Gemini refusal is not the OpenAI `type:error` shape, got {parsed}"
+    );
+    assert!(
+        parsed["serverContent"]["error"]["code"].is_string(),
+        "a Gemini refusal carries its error inside serverContent, got {parsed}"
+    );
+
+    // An OpenAI Realtime session still gets the OpenAI shape.
+    let openai_state = PlaneSessionState::new(crate::session::VoiceSessionState::for_dialect(
+        Dialect::OpenaiRealtime,
+    ));
+    let bytes = plane
+        .encode_refusal(&refusal, None, Some(&openai_state), &c)
+        .expect("a refusal renders");
+    let parsed: serde_json::Value =
+        serde_json::from_slice(bytes.as_slice()).expect("the refusal is JSON");
+    assert_eq!(
+        parsed["type"], "error",
+        "the OpenAI dialect's own error event"
+    );
+
+    // No session state (a unit-0 refusal before any dialect binds) defaults to the OpenAI shape.
+    let bytes = plane
+        .encode_refusal(&refusal, None, None, &c)
+        .expect("a refusal renders");
+    let parsed: serde_json::Value =
+        serde_json::from_slice(bytes.as_slice()).expect("the refusal is JSON");
+    assert_eq!(
+        parsed["type"], "error",
+        "an unbound refusal defaults to OpenAI"
+    );
 }
 
 /// A barge-in on an OPEN turn opens the turn that takes over.
