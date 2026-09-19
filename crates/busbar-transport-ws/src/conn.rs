@@ -81,6 +81,13 @@ pub(crate) struct ConnState {
     /// in a read: this is the fence that does, and it is what makes a close the end of the session
     /// for the read side too rather than only for the registry.
     pub(crate) closed: AtomicBool,
+    /// What WAKES that pump. The flag above is only ever read once a read has RETURNED, and the read
+    /// a pump parks on returns when the peer sends a message — which is precisely what a peer that
+    /// upgraded and then went silent never does. Against that peer the flag alone leaves the pump
+    /// parked for the life of the process, holding the last clone of the split socket. The close
+    /// notifies this, every read is raced against it, and the pump ends where it was parked. The
+    /// sibling `stdio`, `tcp` and `tls` crates close the same way.
+    pub(crate) closing: tokio::sync::Notify,
     /// The composed stack this connection stands on, bottom layer first, ending in `ws`. It is what
     /// the layer below reported plus this one, carried across the handoff — a connection that named
     /// only itself was one a location could not resolve against.
@@ -102,6 +109,7 @@ impl ConnState {
             writer: AsyncMutex::new(writer),
             poisoned: AtomicBool::new(false),
             closed: AtomicBool::new(false),
+            closing: tokio::sync::Notify::new(),
             chain,
             lower,
         })
@@ -113,6 +121,15 @@ impl ConnState {
 
     pub(crate) fn is_closed(&self) -> bool {
         self.closed.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// Close the connection: the flag FIRST, then the wake. A pump that arms its wait and then
+    /// re-reads the flag can never miss both, whichever order the two tasks interleave in. Reversed,
+    /// a pump between the two would see neither and stay parked.
+    pub(crate) fn begin_close(&self) {
+        self.closed
+            .store(true, std::sync::atomic::Ordering::Release);
+        self.closing.notify_waiters();
     }
 }
 

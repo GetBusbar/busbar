@@ -567,7 +567,23 @@ impl Transport for WsTransport {
                 };
                 let reader = held.reader.as_mut().expect("held for the guard's lifetime");
                 let item = loop {
-                    match reader.next().await {
+                    // Arm the close wait BEFORE re-reading the flag, the same ordering the sibling
+                    // `stdio`/`tcp`/`tls` pumps rely on: a close that lands between the two is seen
+                    // as the flag, one that lands after it as the notification, and neither leaves a
+                    // pump parked on a peer that upgraded and then went silent. Re-armed each turn so
+                    // a `continue` (a Ping answered, a Pong or raw frame skipped) is raced too.
+                    let mut closing = std::pin::pin!(state.closing.notified());
+                    closing.as_mut().enable();
+                    if state.is_closed() {
+                        break None;
+                    }
+                    let next = std::pin::pin!(reader.next());
+                    let read = match futures::future::select(next, closing).await {
+                        futures::future::Either::Left((read, _)) => read,
+                        // The close won: the read is dropped where it stood and the pump ends.
+                        futures::future::Either::Right(((), _)) => break None,
+                    };
+                    match read {
                         None => break None, // the peer closed the socket
                         Some(Ok(Message::Binary(b))) => {
                             // One copy, straight into the slab: `to_vec` then `Arc::from` copied the payload
@@ -763,8 +779,10 @@ impl Transport for WsTransport {
         if let Some(state) = self.conns.lock().unwrap().remove(&id) {
             // The fence goes up before anything is spawned, and before the courtesy frame goes
             // out: leaving the registry is invisible to a pump that already holds this state, and
-            // a frame delivered after the close is one nothing upstream still owns.
-            state.closed.store(true, Ordering::Release);
+            // a frame delivered after the close is one nothing upstream still owns. Flag AND wake
+            // together — a pump parked reading a peer that upgraded then went silent never reaches
+            // a flag on its own, so the notify is what actually ends it.
+            state.begin_close();
             // The Close frame is a courtesy, and the connection is already finalised: the state has
             // left the registry, so nothing can cancel the task that sends it. It therefore cancels
             // itself. A peer whose receive window is full never accepts the frame, and without this
