@@ -32,7 +32,7 @@
 //! # Why the shim answers on every store this binary can load
 //!
 //! The ten additions have no request variant on any payload schema in this binary's store window
-//! ([`crate::registry::supported_abi`] pins `[2, ABI_VERSION]`, and `ABI_VERSION` is 4). They gain
+//! ([`crate::registry::supported_abi`] pins `[2, ABI_VERSION]`, and `ABI_VERSION` is 3). They gain
 //! one at [`STORE_ABI_WITH_NEW_OPS`], which is above that window's top. So for every store this
 //! binary can actually load — the ABI-2 published ones included — the shim IS the answer, and
 //! [`StoreAdapter::speaks_new_ops`] says so out loud rather than leaving it implied. When the wire
