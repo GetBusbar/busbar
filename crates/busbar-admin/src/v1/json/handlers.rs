@@ -1358,6 +1358,27 @@ pub(crate) async fn delete_group(
     }
 }
 
+/// The valid overlay section names as the PUBLISHED 1.5.5 prose list — backticked,
+/// comma-separated, with an `or` before the last one — for `reset_overlay_section`'s own 400
+/// message, which spelled its list that way (not `busbar_core`'s `OverlaySection::valid_names`,
+/// which pipe-joins with `expected one of` for the request-taxonomy's own sentence). Derived from
+/// `OverlaySection::all` so a new section can't be live in the parser and missing from what this
+/// tells an operator, but kept local to `busbar-admin` (not added to `busbar_core`) so the two
+/// surfaces keep spelling their lists the way each shipped with in 1.5.5.
+fn valid_overlay_section_names_or() -> String {
+    use busbar_core::config::overlay::OverlaySection;
+    let names: Vec<String> = OverlaySection::all()
+        .iter()
+        .map(|s| format!("`{}`", s.as_str()))
+        .collect();
+    match names.split_last() {
+        None => String::new(),
+        Some((last, [])) => last.clone(),
+        Some((last, [only])) => format!("{only} or {last}"),
+        Some((last, rest)) => format!("{}, or {last}", rest.join(", ")),
+    }
+}
+
 /// `DELETE /api/v1/admin/overlay/{section}` — DISCARD every overlay mutation for one section and revert
 /// it to what base `config.yaml` declares. `section` ∈ {`groups`, `hooks`, `root`}; an unknown name is
 /// a `400` `invalid_request`. This is the audited revert-to-config front door (per-section, NOT
@@ -1386,9 +1407,15 @@ pub(crate) async fn reset_overlay_section(
         // The valid set is DERIVED from `OverlaySection::all`, never restated here. The
         // hand-written version of this sentence outlived the addition of the `named_maps` section
         // and told operators `export` was not a section for a whole release.
+        //
+        // Oracle-parity (M22): 1.5.5 published this refusal as `expected `a`, `b`, ... or `d``
+        // (backticked, comma-separated, `or` before the last name) — NOT the `expected one of
+        // ...` phrasing. The section SET is allowed to grow (that's the announced 1.6.0 change),
+        // but the sentence around it must keep its 1.5.5 wording so a diff against the oracle
+        // shows only the added names, never a re-worded refusal.
         return err_json(&AdminError::Validation(format!(
-            "unknown overlay section `{section}`: expected one of {}",
-            OverlaySection::valid_names()
+            "unknown overlay section `{section}`: expected {}",
+            valid_overlay_section_names_or()
         )));
     };
     let resource = format!("overlay:{}", section.as_str());
