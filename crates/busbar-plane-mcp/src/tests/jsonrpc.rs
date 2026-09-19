@@ -5,7 +5,7 @@
 use super::{
     error, id_shape, id_value, read, success, IdShape, CODES, RESULT_TYPE_COMPLETE, RETIRED_CODES,
 };
-use busbar_contract::wire::Decode;
+use busbar_contract::wire::{Decode, Encode};
 
 /// The serializer writes members in sorted order, and every byte-identity claim rests on it.
 #[test]
@@ -170,6 +170,33 @@ fn a_servers_own_discriminator_is_replaced() {
     .expect("the result writes");
     let value: serde_json::Value = serde_json::from_slice(&bytes).expect("it is a document");
     assert_eq!(value["result"]["resultType"], "complete");
+}
+
+/// A result that is not an object cannot carry the discriminator, so it is REFUSED rather than
+/// shipped without one.
+///
+/// The discriminator is a member, and only an object holds members. `success` used to stamp it only
+/// when the result was an object and hand a non-object result back UNSTAMPED — an array, a string, a
+/// number. A result with no discriminator reads to a peer as finished, because the absence of the
+/// `input_required`/`task` discriminator is exactly how a completed answer is spelled. So a
+/// non-object result would launder a server's own non-answer into this node's "complete", which is
+/// the one thing the stamp exists to prevent. It cannot be stamped, so it is not written at all.
+#[test]
+fn a_non_object_result_is_refused_rather_than_shipped_undiscriminated() {
+    let id = id_value(b"1").expect("a number is a value");
+    for raw in [
+        &b"[1,2,3]"[..],
+        &br#""a bare string""#[..],
+        &b"42"[..],
+        &b"true"[..],
+        &b"null"[..],
+    ] {
+        assert_eq!(
+            success(Some(&id), raw, RESULT_TYPE_COMPLETE),
+            Err(Encode::Unrepresentable),
+            "{raw:?} was shipped without a discriminator"
+        );
+    }
 }
 
 /// On a successful answer with no identifier, the member is omitted.
