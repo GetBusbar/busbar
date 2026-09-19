@@ -1008,6 +1008,36 @@ pub struct TestPlane {
     /// The envelope field the lane name goes in, where the test wants one written.
     pub lane_field: Mutex<Option<String>>,
     pub decoded: Mutex<usize>,
+    /// What the attempt handed this plane as its codec state, one entry per `decode_response`
+    /// call: the count the state carried in, or `None` where the call was handed no state at all.
+    ///
+    /// A plane whose answers stream reads the unit's own facts out of this state, and a plane
+    /// handed `None` on every frame has no way to tell an answer that is complete from the first
+    /// event of a run that is not — which is a money question, not a cosmetic one.
+    pub state_seen: Mutex<Vec<Option<u32>>>,
+    /// Whether the unit this plane is about to read an answer for is answered by ONE document —
+    /// the a2a plane's `row.streaming`, inverted, in miniature.
+    ///
+    /// It is here because the shape it creates is this unit's problem rather than that plane's: a
+    /// unit whose answer is one document is finished on that document, and a plane with no way to
+    /// tell which kind of unit it is reading for answers `Frame` to both, which this unit reads as
+    /// a body that never arrived. Every cell written before the state seam existed was written
+    /// against the streamed shape — a run of frames ending in `end` — so that stays the default
+    /// and the unary cells say otherwise.
+    pub unary: Mutex<bool>,
+}
+
+/// The codec state this plane carries across one hop.
+///
+/// It holds a count, which is what makes the state observable: a state opened once per hop and
+/// lent to every call reaches the last frame carrying every earlier frame's mark, and a state
+/// re-opened per call does not.
+#[derive(Debug, Default)]
+pub struct TestCodec {
+    /// How many response frames of this hop the plane has read.
+    pub events_read: u32,
+    /// Whether this hop's unit is answered by one document.
+    pub unary: bool,
 }
 
 impl TestPlane {
@@ -1038,6 +1068,17 @@ impl busbar_contract::Plane for TestPlane {
         _ctx: &Ctx<'u>,
     ) -> Result<Ingress<'u>, Decode> {
         Ok(Ingress::NeedMore)
+    }
+
+    fn open_unit_state<'u>(
+        &self,
+        _u: &Unit<'u>,
+        _ctx: &Ctx<'u>,
+    ) -> Option<busbar_contract::PlaneSessionState> {
+        Some(busbar_contract::PlaneSessionState::new(TestCodec {
+            events_read: 0,
+            unary: *self.unary.lock().unwrap_or_else(|e| e.into_inner()),
+        }))
     }
 
     fn encode_egress<'u>(
@@ -1097,23 +1138,39 @@ impl busbar_contract::Plane for TestPlane {
         &self,
         frames: &mut busbar_contract::FrameCursor<'u>,
         _dest: &VerifiedDestination,
-        _st: Option<&mut busbar_contract::PlaneSessionState>,
+        st: Option<&mut busbar_contract::PlaneSessionState>,
         _ctx: &Ctx<'u>,
     ) -> Result<Progress<'u>, Decode> {
         *self.decoded.lock().unwrap_or_else(|e| e.into_inner()) += 1;
+        let mut unary = false;
+        let carried = st.and_then(|state| {
+            let codec = state.get_mut::<TestCodec>()?;
+            codec.events_read = codec.events_read.saturating_add(1);
+            unary = codec.unary;
+            Some(codec.events_read)
+        });
+        self.state_seen
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(carried);
         let Some(frame) = frames.next_frame() else {
             return Ok(Progress::NeedMore);
         };
+        // A unit whose answer is ONE document is finished on that document, whatever the document
+        // says about itself — which is the whole of the a2a shape, because that dialect's complete
+        // answer and its first streamed event are the same bytes. A unit whose answer is a run
+        // ends on the frame that says so.
+        let terminal = unary || frame.bytes.as_slice() == b"end";
         let response = busbar_contract::Response {
             ir: Ir::new(&[], &[]),
-            finish: if frame.bytes.as_slice() == b"end" {
+            finish: if terminal {
                 busbar_contract::FinishClass::Complete
             } else {
                 busbar_contract::FinishClass::Partial
             },
             facts: busbar_contract::Facts::new(),
         };
-        if frame.bytes.as_slice() == b"end" {
+        if terminal {
             Ok(Progress::Terminal {
                 for_: None,
                 r: Box::new(response),
