@@ -218,6 +218,60 @@ fn a_missing_retry_after_is_none() {
     assert_eq!(parse_retry_after("", NOW), None);
 }
 
+/// RFC 9110 §5.6.7 still requires a recipient to parse the two obsolete HTTP-date forms, not just
+/// the preferred IMF-fixdate — a provider is free to emit either, and rejecting them silently drops
+/// a real backoff hint. All three forms below name the SAME instant (2050-11-06 08:49:37 UTC, picked
+/// inside the RFC 850 two-digit-year pivot so the obsolete form is not itself ambiguous) and must
+/// parse to the same answer.
+#[test]
+fn retry_after_accepts_rfc_850_and_asctime_date_forms() {
+    const IMF_FIXDATE: &str = "Sun, 06 Nov 2050 08:49:37 GMT";
+    const RFC_850: &str = "Sunday, 06-Nov-50 08:49:37 GMT";
+    const ASCTIME: &str = "Sun Nov  6 08:49:37 2050";
+
+    let imf = parse_retry_after(IMF_FIXDATE, NOW).expect("IMF-fixdate must parse");
+    let rfc850 = parse_retry_after(RFC_850, NOW).expect("RFC 850 date must parse");
+    let asctime = parse_retry_after(ASCTIME, NOW).expect("asctime date must parse");
+    assert_eq!(
+        rfc850, imf,
+        "RFC 850 must name the same instant as IMF-fixdate"
+    );
+    assert_eq!(
+        asctime, imf,
+        "asctime must name the same instant as IMF-fixdate"
+    );
+}
+
+#[test]
+fn a_past_rfc_850_or_asctime_retry_after_floors_at_zero() {
+    assert_eq!(
+        parse_retry_after("Monday, 01-Jan-90 00:00:00 GMT", NOW),
+        Some(0)
+    );
+    assert_eq!(parse_retry_after("Mon Jan  1 00:00:00 1990", NOW), Some(0));
+}
+
+#[test]
+fn asctime_accepts_a_two_digit_day_of_month_with_no_padding_ambiguity() {
+    // asctime's day field is space-padded, not zero-padded (`"Nov 16"`, never `"Nov 016"`).
+    let secs = parse_retry_after("Sun Nov 16 08:49:37 2050", NOW);
+    assert!(secs.is_some(), "a two-digit day-of-month must still parse");
+}
+
+#[test]
+fn malformed_rfc_850_and_asctime_dates_are_rejected() {
+    // Wrong fixed-width field count / missing comma / truncated forms are all a firm None, the
+    // same posture as the existing IMF-fixdate rejection — a caller degrades to no Retry-After
+    // rather than misreading garbage as a delay.
+    assert_eq!(
+        parse_retry_after("Sunday 06-Nov-50 08:49:37 GMT", NOW),
+        None
+    ); // missing comma
+    assert_eq!(parse_retry_after("Sunday, 06-Nov-50 08:49:37", NOW), None); // missing " GMT"
+    assert_eq!(parse_retry_after("Sun Nov  6 08:49:37", NOW), None); // asctime missing year
+    assert_eq!(parse_retry_after("not a date at all", NOW), None);
+}
+
 /// An HTTP-date `Retry-After` is "how long until that instant", which needs a NOW — and the now is
 /// the kernel's, handed in, not one this crate reads for itself. Stated as the arithmetic it is: the
 /// answer is exactly the remaining seconds against the supplied `now`, and moving `now` moves the
@@ -322,6 +376,7 @@ fn trip_then_cooldown_then_half_open_then_success_closes() {
         Outcome::Transient { retry_after: None },
         &cfg,
         now,
+        u128::from(now),
         &route_token(),
     );
     assert!(tripped, "a single failure must trip a consecutive_n=1 cell");
@@ -361,6 +416,7 @@ fn trip_then_cooldown_then_half_open_then_success_closes() {
         Outcome::Success,
         &cfg,
         past,
+        u128::from(past),
         &route_token(),
     );
     assert!(!re_tripped, "a success is never reported as a trip");
@@ -382,6 +438,7 @@ fn a_failed_probe_re_trips_with_the_shifted_cooldown() {
         Outcome::Transient { retry_after: None },
         &cfg,
         now,
+        u128::from(now),
         &route_token(),
     );
     let LaneState::Suppressed { until: first_until } =
@@ -410,6 +467,7 @@ fn a_failed_probe_re_trips_with_the_shifted_cooldown() {
         Outcome::Transient { retry_after: None },
         &cfg,
         first_until,
+        u128::from(first_until),
         &route_token(),
     );
     let LaneState::Suppressed {
@@ -448,7 +506,8 @@ fn the_oracle_cooldown_pool_draws_a_whole_second_in_one_to_three() {
         // arithmetic helper.
         let now = 1_000;
         assert!(
-            cell.record_failure(now, &cfg, None, 86_400).tripped(),
+            cell.record_failure(now, u128::from(now), &cfg, None, 86_400)
+                .tripped(),
             "consecutive_n=1 must trip"
         );
         let BreakerState::Open { until } = cell.state() else {
@@ -502,7 +561,7 @@ fn a_cooldown_ceiling_below_the_floor_is_answered_rather_than_panicked_on() {
         ),
     ] {
         let cell = BreakerCell::new();
-        let duration = cell.compute_cooldown_with_retry_after(NOW, &cfg, None, 86_400);
+        let duration = cell.compute_cooldown_with_retry_after(u128::from(NOW), &cfg, None, 86_400);
         assert_eq!(
             duration, cfg.max_cooldown_secs,
             "{label}: the ceiling is what a ceiling means"
@@ -522,7 +581,7 @@ fn retry_after_is_honored_as_a_floor_under_the_computed_cooldown() {
     };
     // A 500s Retry-After floors a would-be-15s cooldown up to (at least) 500s, well past
     // max_cooldown_secs — the server's explicit hint is honored past the configured cap.
-    let duration = cell.compute_cooldown_with_retry_after(NOW, &cfg, Some(500), 86_400);
+    let duration = cell.compute_cooldown_with_retry_after(u128::from(NOW), &cfg, Some(500), 86_400);
     assert!(
         duration >= 500,
         "Retry-After floor was not applied: {duration}"
@@ -530,7 +589,8 @@ fn retry_after_is_honored_as_a_floor_under_the_computed_cooldown() {
 
     // The ceiling still applies: a hostile 10_000_000s Retry-After is clamped to
     // max_honored_retry_after_secs, never honored past it.
-    let duration = cell.compute_cooldown_with_retry_after(NOW, &cfg, Some(10_000_000), 86_400);
+    let duration =
+        cell.compute_cooldown_with_retry_after(u128::from(NOW), &cfg, Some(10_000_000), 86_400);
     assert_eq!(duration, 86_400);
 }
 
@@ -558,7 +618,7 @@ fn the_armed_cooldown_is_a_function_of_the_now_the_caller_supplied() {
     let now = 1_700_000_000_u64;
 
     let arm = || {
-        cell.open(now, &cfg, Some(7), 86_400);
+        cell.open(now, u128::from(now), &cfg, Some(7), 86_400);
         let BreakerState::Open { until } = cell.state() else {
             panic!("expected Open immediately after the trip");
         };
@@ -612,6 +672,7 @@ fn an_exhausted_destination_budget_is_excluded_not_ordered_last() {
         Outcome::Success,
         &cfg,
         now,
+        u128::from(now),
         &route_token(),
     );
     assert_eq!(
@@ -655,6 +716,7 @@ fn hard_down_trips_every_pool_cell_for_the_destination() {
         Outcome::HardDown,
         &cfg,
         now,
+        u128::from(now),
         &route_token(),
     );
     assert!(fresh, "the first hard-down trip must be reported fresh");
@@ -675,6 +737,7 @@ fn hard_down_trips_every_pool_cell_for_the_destination() {
         Outcome::HardDown,
         &cfg,
         now,
+        u128::from(now),
         &route_token(),
     );
     assert!(!fresh_again);
@@ -719,13 +782,13 @@ fn record_failure_says_which_arm_it_took() {
     // Closed and at the threshold: a genuine fresh trip.
     let fresh = BreakerCell::new();
     assert_eq!(
-        fresh.record_failure(now, &cfg, None, 86_400),
+        fresh.record_failure(now, u128::from(now), &cfg, None, 86_400),
         FailureEffect::Tripped
     );
 
     // The same cell, now Open: nothing to do, and certainly not a reopen.
     assert_eq!(
-        fresh.record_failure(now, &cfg, None, 86_400),
+        fresh.record_failure(now, u128::from(now), &cfg, None, 86_400),
         FailureEffect::Nothing
     );
 
@@ -734,20 +797,20 @@ fn record_failure_says_which_arm_it_took() {
     lenient.trip.consecutive_n = 5;
     let benched = BreakerCell::new();
     assert_eq!(
-        benched.record_failure(now, &lenient, None, 86_400),
+        benched.record_failure(now, u128::from(now), &lenient, None, 86_400),
         FailureEffect::Benched
     );
 
     // HalfOpen: the probe failed, so the cell reopens — and that is NOT a fresh trip.
     let probing = BreakerCell::new();
     assert_eq!(
-        probing.record_failure(now, &cfg, None, 86_400),
+        probing.record_failure(now, u128::from(now), &cfg, None, 86_400),
         FailureEffect::Tripped
     );
     let past = now + 100_000;
     assert!(matches!(probing.acquire(past), ProbeAdmit::ProbeWon(_)));
     assert_eq!(
-        probing.record_failure(past, &cfg, None, 86_400),
+        probing.record_failure(past, u128::from(past), &cfg, None, 86_400),
         FailureEffect::Reopened
     );
 
@@ -784,6 +847,7 @@ fn a_fresh_trip_is_never_journaled_as_a_failed_probe() {
             Outcome::Transient { retry_after: None },
             &cfg,
             1_000,
+            1_000u128,
             &token,
         );
         let admit = unit
@@ -801,6 +865,7 @@ fn a_fresh_trip_is_never_journaled_as_a_failed_probe() {
                     Outcome::Transient { retry_after: None },
                     &cfg,
                     1_000_000,
+                    1_000_000u128,
                     &token,
                 )
             });
@@ -811,6 +876,7 @@ fn a_fresh_trip_is_never_journaled_as_a_failed_probe() {
                     Outcome::Success,
                     &cfg,
                     1_000_000,
+                    1_000_000u128,
                     &token,
                 )
             });
@@ -858,6 +924,7 @@ fn a_probe_that_closed_the_cell_is_always_journaled_as_succeeded() {
             Outcome::Transient { retry_after: None },
             &cfg,
             1_000,
+            1_000u128,
             &token,
         );
 
@@ -872,7 +939,15 @@ fn a_probe_that_closed_the_cell_is_always_journaled_as_succeeded() {
         std::thread::scope(|scope| {
             scope.spawn(move || {
                 barrier.wait();
-                unit.observe("pool", destination, Outcome::Success, cfg, 1_000_000, token);
+                unit.observe(
+                    "pool",
+                    destination,
+                    Outcome::Success,
+                    cfg,
+                    1_000_000,
+                    1_000_000u128,
+                    token,
+                );
             });
             scope.spawn(move || {
                 barrier.wait();
@@ -1046,6 +1121,7 @@ fn a_refusal_never_reports_a_state_that_would_have_admitted() {
                     Outcome::Transient { retry_after: None },
                     &cfg,
                     1_000,
+                    1_000u128,
                     &token,
                 );
                 unit.observe(
@@ -1054,6 +1130,7 @@ fn a_refusal_never_reports_a_state_that_would_have_admitted() {
                     Outcome::Success,
                     &cfg,
                     2_000_000,
+                    2_000_000u128,
                     &token,
                 );
             }
@@ -1123,7 +1200,7 @@ fn the_default_mode_will_not_trip_below_its_minimum_request_count() {
     // between this cell and a trip is the minimum-request floor.
     for i in 1..cfg.trip.min_requests {
         assert_eq!(
-            cell.record_failure(NOW, &cfg, None, MAX_RETRY_AFTER),
+            cell.record_failure(NOW, u128::from(NOW), &cfg, None, MAX_RETRY_AFTER),
             FailureEffect::Benched,
             "failure {i} of {} must not trip: the window holds fewer outcomes than the floor",
             cfg.trip.min_requests
@@ -1137,7 +1214,7 @@ fn the_default_mode_will_not_trip_below_its_minimum_request_count() {
     // The one that reaches the floor trips, so the loop above is measuring the floor and not some
     // other refusal.
     assert_eq!(
-        cell.record_failure(NOW, &cfg, None, MAX_RETRY_AFTER),
+        cell.record_failure(NOW, u128::from(NOW), &cfg, None, MAX_RETRY_AFTER),
         FailureEffect::Tripped,
         "the outcome that reaches min_requests must trip at a 1.0 error rate"
     );
@@ -1160,13 +1237,13 @@ fn the_default_mode_trips_at_the_threshold_and_not_below_it() {
     }
     for i in 1..5 {
         assert_eq!(
-            at.record_failure(NOW, &cfg, None, MAX_RETRY_AFTER),
+            at.record_failure(NOW, u128::from(NOW), &cfg, None, MAX_RETRY_AFTER),
             FailureEffect::Benched,
             "failure {i} sits strictly below the threshold and must not trip"
         );
     }
     assert_eq!(
-        at.record_failure(NOW, &cfg, None, MAX_RETRY_AFTER),
+        at.record_failure(NOW, u128::from(NOW), &cfg, None, MAX_RETRY_AFTER),
         FailureEffect::Tripped,
         "an error rate exactly AT the threshold must trip: the comparison is >=, not >"
     );
@@ -1181,7 +1258,7 @@ fn the_default_mode_trips_at_the_threshold_and_not_below_it() {
     }
     for i in 1..=3 {
         assert_eq!(
-            below.record_failure(NOW, &cfg, None, MAX_RETRY_AFTER),
+            below.record_failure(NOW, u128::from(NOW), &cfg, None, MAX_RETRY_AFTER),
             FailureEffect::Benched,
             "failure {i} of 3 against 7 successes is a 0.3 error rate and must not trip"
         );
@@ -1201,11 +1278,11 @@ fn outcomes_that_have_aged_out_of_the_window_do_not_count_toward_a_trip() {
     // `ts >= now - window_s`, so at `NOW + window_s + 1` the four old outcomes are outside it and
     // the count is 1 — under the floor.
     for _ in 1..cfg.trip.min_requests {
-        cell.record_failure(NOW, &cfg, None, MAX_RETRY_AFTER);
+        cell.record_failure(NOW, u128::from(NOW), &cfg, None, MAX_RETRY_AFTER);
     }
     let later = NOW + cfg.trip.window_s + 1;
     assert_eq!(
-        cell.record_failure(later, &cfg, None, MAX_RETRY_AFTER),
+        cell.record_failure(later, u128::from(later), &cfg, None, MAX_RETRY_AFTER),
         FailureEffect::Benched,
         "aged-out failures must not be counted toward the trip of a much later one"
     );
@@ -1214,10 +1291,16 @@ fn outcomes_that_have_aged_out_of_the_window_do_not_count_toward_a_trip() {
     // cut and not some unrelated refusal.
     let inside = BreakerCell::new();
     for _ in 1..cfg.trip.min_requests {
-        inside.record_failure(NOW, &cfg, None, MAX_RETRY_AFTER);
+        inside.record_failure(NOW, u128::from(NOW), &cfg, None, MAX_RETRY_AFTER);
     }
     assert_eq!(
-        inside.record_failure(NOW + cfg.trip.window_s, &cfg, None, MAX_RETRY_AFTER),
+        inside.record_failure(
+            NOW + cfg.trip.window_s,
+            u128::from(NOW + cfg.trip.window_s),
+            &cfg,
+            None,
+            MAX_RETRY_AFTER
+        ),
         FailureEffect::Tripped,
         "an outcome at exactly the window's edge is still inside it"
     );
@@ -1235,7 +1318,7 @@ fn a_long_failure_streak_saturates_the_cooldown_instead_of_wrapping_it_to_zero()
     let mut now = NOW;
 
     assert_eq!(
-        cell.record_failure(now, &cfg, None, MAX_RETRY_AFTER),
+        cell.record_failure(now, u128::from(now), &cfg, None, MAX_RETRY_AFTER),
         FailureEffect::Tripped
     );
     let BreakerState::Open { until } = cell.state() else {
@@ -1262,7 +1345,7 @@ fn a_long_failure_streak_saturates_the_cooldown_instead_of_wrapping_it_to_zero()
             "an expired cooldown must yield the probe at reopen {i}"
         );
         assert_eq!(
-            cell.record_failure(now, &cfg, None, MAX_RETRY_AFTER),
+            cell.record_failure(now, u128::from(now), &cfg, None, MAX_RETRY_AFTER),
             FailureEffect::Reopened,
             "a failed probe reopens at reopen {i}"
         );
@@ -1284,7 +1367,8 @@ fn a_long_failure_streak_saturates_the_cooldown_instead_of_wrapping_it_to_zero()
 
     // Asked directly, the arithmetic gives the same answer — the armed value above is not an
     // artifact of the transition path.
-    let computed = cell.compute_cooldown_with_retry_after(now, &cfg, None, MAX_RETRY_AFTER);
+    let computed =
+        cell.compute_cooldown_with_retry_after(u128::from(now), &cfg, None, MAX_RETRY_AFTER);
     assert!(
         (90..=100).contains(&computed),
         "the computed cooldown at a saturating streak must be at the ceiling; got {computed}"
