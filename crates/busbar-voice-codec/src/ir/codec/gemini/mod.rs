@@ -127,9 +127,25 @@ pub fn audio_format_from_mime(mime: &str, dir: UpDown) -> Option<AudioFormat> {
     if !m.starts_with("audio/pcm") {
         return None;
     }
-    let rate_16k = m.contains("rate=16000");
-    let rate_24k = m.contains("rate=24000");
-    let untagged = !m.contains("rate=");
+    // The `rate=` parameter is matched EXACTLY against each `;`-delimited part, never by substring:
+    // `"rate=160000"` (10x the real 16 kHz rate) CONTAINS `"rate=16000"` as a literal substring, and a
+    // `.contains` probe mismeasured it as the 16 kHz rate it is not — on the downlink that mismeasures
+    // the truncate math's bytes-per-ms by 10x (premature barge-in truncation) and mismeters billed
+    // audio duration by the same factor. A rate parameter that IS stated but matches neither known
+    // value is a rate this dialect does not recognize, not an untagged blob.
+    let mut rate_16k = false;
+    let mut rate_24k = false;
+    let mut untagged = true;
+    for part in m.split(';').map(str::trim) {
+        if let Some(rate) = part.strip_prefix("rate=") {
+            untagged = false;
+            match rate {
+                "16000" => rate_16k = true,
+                "24000" => rate_24k = true,
+                _ => {}
+            }
+        }
+    }
     match dir {
         // No millisecond count is taken from the uplink, so either PCM rate is the shared token.
         UpDown::Up if rate_16k || rate_24k || untagged => Some(AudioFormat::Pcm16),
@@ -352,14 +368,39 @@ fn modality_tokens(details: Option<&Value>, modality: &str) -> u64 {
 
 /// Extract the split token classes from a Gemini `usageMetadata` object (`plane4-duplex-session.md` — audio vs text are
 /// SEPARATE classes; extraction-only, never client-translated).
+///
+/// D26: the per-modality breakdown (`promptTokensDetails`/`responseTokensDetails`) is a REFINEMENT of
+/// the stated `promptTokenCount`/`responseTokenCount` totals, never their sole source — Gemini can
+/// omit the breakdown while still stating the totals. Reading a missing breakdown as zero tokens
+/// metered a real turn at zero (silent under-billing); when the breakdown yields nothing, the stated
+/// total is billed instead (attributed to `text`, the conservative default when the split is
+/// unknown — this only changes the audio/text LABEL, never the input/output lane the billing fold
+/// sums onto).
 fn usage_from_metadata(u: &Value) -> IrDuplexUsage {
     let pd = u.get("promptTokensDetails");
     let rd = u.get("responseTokensDetails");
+    let stated_total = |key: &str| u.get(key).and_then(Value::as_u64).unwrap_or_default();
+    let (audio_in, text_in) = {
+        let (a, t) = (modality_tokens(pd, "AUDIO"), modality_tokens(pd, "TEXT"));
+        if a.saturating_add(t) == 0 {
+            (0, stated_total("promptTokenCount"))
+        } else {
+            (a, t)
+        }
+    };
+    let (audio_out, text_out) = {
+        let (a, t) = (modality_tokens(rd, "AUDIO"), modality_tokens(rd, "TEXT"));
+        if a.saturating_add(t) == 0 {
+            (0, stated_total("responseTokenCount"))
+        } else {
+            (a, t)
+        }
+    };
     IrDuplexUsage {
-        audio_in: modality_tokens(pd, "AUDIO"),
-        text_in: modality_tokens(pd, "TEXT"),
-        audio_out: modality_tokens(rd, "AUDIO"),
-        text_out: modality_tokens(rd, "TEXT"),
+        audio_in,
+        text_in,
+        audio_out,
+        text_out,
         cached: u
             .get("cachedContentTokenCount")
             .and_then(Value::as_u64)
@@ -633,16 +674,24 @@ fn atomic_tool_call(call_ref: CallRef, call_id: &str, st: &mut DecodeState) -> O
     Some(tool_call_frame(Value::Object(fc)))
 }
 
-/// A TOOL PAYLOAD, AS THIS DIALECT MUST STATE IT. Gemini's `functionResponse.response` is a JSON
-/// OBJECT; the shared IR carries the tool's output as OPAQUE BYTES, because the dialect it was named
-/// from (`function_call_output.output`) is a FREE-FORM STRING — a tool that answers `OK` is answering.
+/// A TOOL PAYLOAD, AS THIS DIALECT MUST STATE IT. Gemini's `functionResponse.response` REQUIRES a
+/// JSON OBJECT (a `Struct`); the shared IR carries the tool's output as OPAQUE BYTES, because the
+/// dialect it was named from (`function_call_output.output`) is a FREE-FORM STRING — a tool that
+/// answers `OK` is answering, and a tool that answers `42`, `["a","b"]`, or literal `null` is
+/// answering too.
 ///
-/// So: JSON rides as the value it is, and anything else is WRAPPED (`{"result": "<the text>"}`) rather
-/// than flattened to `null`. `null` told the model the tool returned nothing, which is a different
-/// answer from the one the tool gave — the same confusion the argument seam above refuses.
+/// So: a JSON OBJECT rides as the value it is; anything else — non-JSON text, or JSON that parses but
+/// is not an object (a bare number, array, string, bool, or `null`) — is WRAPPED (`{"result": <the
+/// value>}`) rather than sent bare or flattened to `null`. Sending a bare `null`/array/scalar is a
+/// malformed frame this dialect rejects, and flattening to `null` told the model the tool returned
+/// nothing, which is a different answer from the one the tool gave — the same confusion the argument
+/// seam above refuses.
 fn tool_payload(output: &Bytes) -> Value {
-    serde_json::from_slice::<Value>(output)
-        .unwrap_or_else(|_| json!({ "result": String::from_utf8_lossy(output).into_owned() }))
+    match serde_json::from_slice::<Value>(output) {
+        Ok(v @ Value::Object(_)) => v,
+        Ok(v) => json!({ "result": v }),
+        Err(_) => json!({ "result": String::from_utf8_lossy(output).into_owned() }),
+    }
 }
 
 /// Frame one Gemini `toolResponse` around a single tool result. Gemini REQUIRES `name` on a
