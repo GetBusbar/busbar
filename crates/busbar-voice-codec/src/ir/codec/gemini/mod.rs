@@ -127,9 +127,25 @@ pub fn audio_format_from_mime(mime: &str, dir: UpDown) -> Option<AudioFormat> {
     if !m.starts_with("audio/pcm") {
         return None;
     }
-    let rate_16k = m.contains("rate=16000");
-    let rate_24k = m.contains("rate=24000");
-    let untagged = !m.contains("rate=");
+    // The `rate=` parameter is matched EXACTLY against each `;`-delimited part, never by substring:
+    // `"rate=160000"` (10x the real 16 kHz rate) CONTAINS `"rate=16000"` as a literal substring, and a
+    // `.contains` probe mismeasured it as the 16 kHz rate it is not — on the downlink that mismeasures
+    // the truncate math's bytes-per-ms by 10x (premature barge-in truncation) and mismeters billed
+    // audio duration by the same factor. A rate parameter that IS stated but matches neither known
+    // value is a rate this dialect does not recognize, not an untagged blob.
+    let mut rate_16k = false;
+    let mut rate_24k = false;
+    let mut untagged = true;
+    for part in m.split(';').map(str::trim) {
+        if let Some(rate) = part.strip_prefix("rate=") {
+            untagged = false;
+            match rate {
+                "16000" => rate_16k = true,
+                "24000" => rate_24k = true,
+                _ => {}
+            }
+        }
+    }
     match dir {
         // No millisecond count is taken from the uplink, so either PCM rate is the shared token.
         UpDown::Up if rate_16k || rate_24k || untagged => Some(AudioFormat::Pcm16),

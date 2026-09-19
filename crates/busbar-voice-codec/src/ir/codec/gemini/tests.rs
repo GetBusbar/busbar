@@ -1122,6 +1122,35 @@ fn audio_format_from_mime_probe() {
     }
 }
 
+/// D25: THE RATE PARAMETER IS MATCHED EXACTLY, NOT BY SUBSTRING.
+///
+/// `"rate=160000"` (10x the real 16 kHz rate) CONTAINS `"rate=16000"` as a literal substring, so a
+/// `.contains("rate=16000")` probe mismeasures it as the 16 kHz rate it is not — on the downlink that
+/// mismeasures the truncate math's bytes-per-ms by 10x (premature barge-in truncation) and mismeters
+/// billed audio duration by the same factor. A malformed/off-rate mime must be refused, not
+/// misread as a rate nobody sent.
+#[test]
+fn a_malformed_rate_parameter_is_not_matched_by_substring() {
+    // "rate=160000" is NOT 16 kHz — it must not probe as Pcm16 via a substring match on "rate=16000".
+    assert_eq!(
+        audio_format_from_mime("audio/pcm;rate=160000", UpDown::Down),
+        None,
+        "160000 is not the 24 kHz rate the downlink truncate math measures in"
+    );
+    // "rate=240000" is NOT 24 kHz either, and is not the 16 kHz rate — a stated-but-unrecognized rate
+    // is refused on BOTH directions, not accepted as if it were an untagged mime.
+    assert_eq!(
+        audio_format_from_mime("audio/pcm;rate=240000", UpDown::Up),
+        None,
+        "240000 is a stated rate this dialect does not recognize, not an untagged blob"
+    );
+    assert_eq!(
+        audio_format_from_mime("audio/pcm;rate=240000", UpDown::Down),
+        None,
+        "240000 is not the 24 kHz rate — a substring match wrongly measured it as one"
+    );
+}
+
 // ── degrade, don't error (drop+warn asymmetries) ─────────────────────────────────────────────────
 
 #[test]
