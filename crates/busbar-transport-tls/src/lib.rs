@@ -77,6 +77,20 @@ pub const READ_CHUNK_BYTES: usize = 16 * 1024;
 /// not talk, rather than two.
 pub const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// How long the courtesy `close_notify` alert may take to reach the peer — including the wait for
+/// the connection's writer lock — before this transport gives up on it.
+///
+/// The alert is a write, and every write on a connection passes through one lock: a `close` that
+/// races an in-flight write, or a peer whose receive window is full, can leave `close_notify`
+/// waiting on that lock or on the socket for as long as either lasts. On the `close` path the alert
+/// goes out on a detached task, so an unbounded wait there is a task, a rustls session and a socket
+/// pinned for the life of the process; on the `unit0_refusal` path the alert is awaited inline, so
+/// the same unbounded wait means the caller is NEVER answered. The alert is a courtesy the peer is
+/// owed, not a delivery this connection blocks on — a quarter second is long enough for a peer that
+/// is still reading and short enough that one that has stopped cannot hold anything. `ws` bounds its
+/// own courtesy Close frame the same way.
+pub const CLOSE_NOTIFY_BUDGET: Duration = Duration::from_millis(250);
+
 /// Any duplex byte stream this transport can run a handshake over: the socket it opened itself, or
 /// the one a lower layer handed up. Boxing it is what lets one connection type cover both, so an
 /// adopted connection is not a second shape with a second set of methods.
@@ -861,15 +875,25 @@ fn split_address(
 /// truncated one has to treat every close as suspect. This transport knows which one this is, so
 /// it says so.
 async fn send_close_notify(inner: &Inner) {
-    let mut guard = inner.write.lock().await;
-    match &mut *guard {
-        InnerWrite::Server(w) => {
-            let _ = w.shutdown().await;
+    // Bounded, and the budget covers the writer lock as well as the shutdown itself: the alert is a
+    // courtesy owed to a peer that is still there, never a delivery this connection parks on. A
+    // `close` racing an in-flight write, or a peer that has stopped reading, would otherwise pin the
+    // lock — and the task, rustls session and socket behind it — with no one left to cancel it, and
+    // on the `unit0_refusal` path would leave the caller awaiting an answer that never comes. When
+    // the budget elapses the halves drop unshut, which is the same abrupt close a caller off a
+    // runtime already gets.
+    let _ = tokio::time::timeout(CLOSE_NOTIFY_BUDGET, async {
+        let mut guard = inner.write.lock().await;
+        match &mut *guard {
+            InnerWrite::Server(w) => {
+                let _ = w.shutdown().await;
+            }
+            InnerWrite::Client(w) => {
+                let _ = w.shutdown().await;
+            }
         }
-        InnerWrite::Client(w) => {
-            let _ = w.shutdown().await;
-        }
-    }
+    })
+    .await;
 }
 
 /// [`send_close_notify`] from `close`, which the trait makes synchronous.
