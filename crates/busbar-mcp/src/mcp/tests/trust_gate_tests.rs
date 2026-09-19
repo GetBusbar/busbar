@@ -157,7 +157,10 @@ fn deleted_inline_decision(
     if matches!(mechanism, McpPinMechanism::Unpinned) {
         return Err(DispatchRefusal::NotPinned("fs".to_string()));
     }
-    if schema_hash.is_none() {
+    // A BLANK HASH IS NO HASH (see `catalogue::server_entry`): a `schema_hash` that is absent, empty
+    // or whitespace approved nothing, so the tool is `pending` and refuses to dispatch. The oracle
+    // reads the field exactly as the routed gate now does.
+    if schema_hash.map(str::trim).unwrap_or("").is_empty() {
         return Err(DispatchRefusal::NotApproved("fs_read".to_string()));
     }
     Ok(())
