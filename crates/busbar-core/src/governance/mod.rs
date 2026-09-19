@@ -1213,21 +1213,34 @@ pub use busbar_store_memory::MemoryStore;
 /// transient write failure is retried on the next tick rather than lost. The admin audit log needs no
 /// flush here: its ONE durable path is the neutral journal seam, which persists each record inline as
 /// it is recorded.
+///
+/// Returns `(JoinHandle, FlushGate)`. The [`FlushGate`] is the load-bearing half: the spawned loop
+/// serializes on it, so the CALLER runs its own inline shutdown flush (the process's final,
+/// durability-guaranteeing flush in `main`) through the SAME gate. Without a shared gate that inline
+/// flush would race a still-in-flight periodic flush and both would snapshot the same un-advanced
+/// baseline — a durable DOUBLE-COUNT of the last window's spend (defect B13). `main` detaches the
+/// JoinHandle (the loop runs for the process lifetime and exits on the shutdown broadcast); it is
+/// returned only so a test can JOIN the task to await the internal shutdown arm's final flush
+/// deterministically rather than by wall-clock guess.
 pub fn spawn_budget_flusher(
     gov: std::sync::Arc<GovState>,
     mut shutdown: tokio::sync::broadcast::Receiver<()>,
-) -> tokio::task::JoinHandle<()> {
+) -> (tokio::task::JoinHandle<()>, FlushGate) {
     let interval = std::time::Duration::from_millis(crate::limits::usage_flush_interval_ms());
     // SERIALIZE flushes: `flush_budgets` snapshots each dirty cell's DELTA against its acked
     // baseline and `add_usage`-accumulates it, advancing the baseline only on success. If a slow
     // flush outlasts a tick, a second concurrent flush would snapshot against the SAME un-advanced
     // baseline and re-send the first flush's still-in-flight delta - a durable DOUBLE-COUNT. A
     // single-permit async gate makes at most one flush in flight at a time: the periodic tick SKIPS
-    // if a flush is still running (`try_lock`), and the shutdown arm WAITS for the in-flight flush to
-    // drain (`lock().await`) before its final flush, so shutdown never overlaps and never loses the
-    // last window's spend.
-    let flush_gate = std::sync::Arc::new(tokio::sync::Mutex::new(()));
-    tokio::spawn(async move {
+    // if a flush is still running (`try_lock`), the shutdown arm WAITS for the in-flight flush to
+    // drain (`lock().await`) before its final flush, AND the caller's inline shutdown flush shares
+    // this SAME gate (see the returned `FlushGate`), so no two flushes ever overlap and none loses
+    // the last window's spend.
+    let gate = FlushGate::new();
+    // The loop shares the SAME inner permit as the `FlushGate` returned to the caller, so the
+    // caller's inline shutdown flush serializes against this periodic flusher.
+    let flush_gate = gate.0.clone();
+    let handle = tokio::spawn(async move {
         loop {
             tokio::select! {
                 _ = tokio::time::sleep(interval) => {
@@ -1274,7 +1287,44 @@ pub fn spawn_budget_flusher(
                 }
             }
         }
-    })
+    });
+    (handle, gate)
+}
+
+/// The single-permit gate that serializes EVERY write-behind budget/metering flush: the periodic
+/// flusher's tick, its own shutdown arm, AND the process's inline final flush at shutdown all
+/// acquire this ONE gate, so at most one flush is ever in flight and each advances the acked
+/// baseline exactly once. Two overlapping flushes would snapshot the same un-advanced baseline and
+/// re-send the in-flight delta — a durable double-count of real spend (defect B13). Cheap to clone
+/// (an `Arc` around the inner permit); every clone shares the same permit.
+#[derive(Clone)]
+pub struct FlushGate(std::sync::Arc<tokio::sync::Mutex<()>>);
+
+impl FlushGate {
+    /// Mint a fresh gate. Private to the crate: the ONLY supported gate is the one
+    /// [`spawn_budget_flusher`] returns, so the periodic flusher and the caller's inline shutdown
+    /// flush provably share it rather than each minting their own (which would serialize nothing).
+    fn new() -> Self {
+        Self(std::sync::Arc::new(tokio::sync::Mutex::new(())))
+    }
+
+    /// Run ONE final, blocking flush under the gate. WAIT for any in-flight periodic/shutdown flush
+    /// to drain first (`lock_owned().await`) so this inline flush never overlaps the periodic
+    /// flusher, then run `flush` on the blocking pool (its body issues SYNCHRONOUS store writes) with
+    /// the gate held for its whole duration. This is what the process's final shutdown flush calls
+    /// so it counts the last window's spend exactly ONCE instead of double-counting it against a
+    /// still-in-flight periodic flush.
+    pub async fn flush_final<F>(&self, flush: F)
+    where
+        F: FnOnce() + Send + 'static,
+    {
+        let guard = self.0.clone().lock_owned().await;
+        let _ = tokio::task::spawn_blocking(move || {
+            flush();
+            drop(guard);
+        })
+        .await;
+    }
 }
 
 #[cfg(test)]
