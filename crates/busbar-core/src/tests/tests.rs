@@ -2338,16 +2338,17 @@ fn boot_resolves_a_relative_plugins_dir_against_the_config_dir() {
 /// validate path.
 #[test]
 fn validate_plugins_dir_exists_refuses_a_missing_enabled_dir() {
-    let mut plugins = crate::config::PluginsCfg::default();
+    let with = |enabled: bool, dir: &str| crate::config::PluginsCfg {
+        enabled,
+        dir: dir.to_string(),
+        ..Default::default()
+    };
 
     // Disabled: never refused, whatever the dir.
-    plugins.enabled = false;
-    plugins.dir = "/no/such/plugins/dir".to_string();
-    assert!(crate::validate_plugins_dir_exists(&plugins).is_ok());
+    assert!(crate::validate_plugins_dir_exists(&with(false, "/no/such/plugins/dir")).is_ok());
 
     // Enabled + missing: refused, naming the path and the setting.
-    plugins.enabled = true;
-    let err = crate::validate_plugins_dir_exists(&plugins)
+    let err = crate::validate_plugins_dir_exists(&with(true, "/no/such/plugins/dir"))
         .expect_err("an enabled but missing plugins.dir must be refused at --validate");
     assert!(
         err.contains("/no/such/plugins/dir"),
@@ -2357,8 +2358,7 @@ fn validate_plugins_dir_exists_refuses_a_missing_enabled_dir() {
 
     // Enabled + present: accepted.
     let present = std::env::temp_dir();
-    plugins.dir = present.to_string_lossy().into_owned();
-    assert!(crate::validate_plugins_dir_exists(&plugins).is_ok());
+    assert!(crate::validate_plugins_dir_exists(&with(true, &present.to_string_lossy())).is_ok());
 }
 
 /// 1.5.3 BOOT INVARIANT: a mutable config that explicitly disables the overlay REFUSES TO BOOT, with an
