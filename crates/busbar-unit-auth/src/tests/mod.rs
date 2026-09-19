@@ -7,6 +7,7 @@ mod cache_tests;
 mod carrier_tests;
 mod chain_tests;
 mod exchange_tests;
+mod key_sink_tests;
 mod resolved_key_tests;
 mod unit_tests;
 
