@@ -63,6 +63,40 @@ async fn upgrade_then_round_trip_byte_exact() {
     assert_eq!(frame.meta.status, None, "no status leg after the upgrade");
 }
 
+/// A `close` ends a pump parked reading a peer that upgraded and then went silent, rather than
+/// leaving it — and the split socket it holds the last clone of — alive for the life of the process.
+///
+/// The frame pump parks in `reader.next()`, which returns when the peer sends a message; a peer that
+/// completed the handshake and then said nothing never makes it return. The close is what ends it:
+/// it sets the fence AND wakes the pump, and the read is raced against that wake. The outer timeout
+/// is the red-before-green witness — without the paired `Notify` the pump parks forever, the close
+/// reaches only the registry, and this wait fires; with it the pump ends where it was parked.
+#[tokio::test]
+async fn a_close_ends_a_pump_parked_on_a_silent_peer() {
+    let t = Arc::new(WsTransport::new());
+    // `b` completes the upgrade and then never writes; `a`'s pump parks reading it. The handle is
+    // held so the duplex half behind `b` stays open — this is a silent peer, not a closed one.
+    let (a, _b) = pair(&t, 64 * 1024).await;
+
+    let mut frames = t.frames(a.clone());
+    let closer = {
+        let t = t.clone();
+        tokio::spawn(async move {
+            // Let the pump reach its parked read before the close arrives.
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            t.close(a, CloseReason::Normal);
+        })
+    };
+    let ended = tokio::time::timeout(Duration::from_secs(3), frames.next())
+        .await
+        .expect("a closed connection's parked pump answers the close, it does not wait for a byte");
+    assert!(
+        ended.is_none(),
+        "the pump ends at the close rather than yielding a frame"
+    );
+    closer.await.unwrap();
+}
+
 /// The in-band `http` → `ws` upgrade, driven through the seam the design names: `http` accepts the
 /// connection, `ws` adopts the stream it gives up, and the handshake runs on the layer that speaks
 /// it. The facts of the pre-upgrade layer do not survive it — `http` no longer knows the connection
