@@ -211,6 +211,56 @@ fn a_client_certificate_masks_nothing_because_it_was_never_in_the_bytes() {
     assert_eq!(cursor, b"hello");
 }
 
+/// The slab never prints the credential it hides.
+///
+/// A derived `Debug` renders the byte buffer, so a slab holding a token would spell it straight
+/// into any `{:?}`, tracing span or panic message — the credential leaking through the diagnostics
+/// rather than the wire. The manual `Debug` names only the shape, so the one property the whole type
+/// exists for holds for its own formatting too.
+#[test]
+fn the_credential_slab_debug_prints_no_credential_bytes() {
+    let mut cursor = b"authorization: Bearer swordfish-4d5e6f".to_vec();
+    let start = "authorization: Bearer ".len();
+    let span = Span::new(start, cursor.len());
+    let mut slab = CredentialSlab::with_capacity(1024);
+    let masked = slab.mask(&mut cursor, span).expect("room in the slab");
+    assert_eq!(slab.read(masked), b"swordfish-4d5e6f");
+
+    let printed = format!("{slab:?}");
+    assert!(
+        !printed.contains("swordfish"),
+        "the slab printed its credential as text in Debug: {printed}"
+    );
+    // Not even the raw bytes of it: a derived Debug renders the buffer as a decimal byte array
+    // (`[115, 119, ...]`), so a check for the ASCII text alone would pass that shape. Assert the
+    // credential's own decimal byte sequence is absent.
+    let as_decimals = b"swordfish-4d5e6f"
+        .iter()
+        .map(u8::to_string)
+        .collect::<Vec<_>>()
+        .join(", ");
+    assert!(
+        !printed.contains(&as_decimals),
+        "the slab printed its credential as a byte array in Debug: {printed}"
+    );
+    // The shape is still legible — the lengths are what a diagnostic actually needs.
+    assert!(printed.contains("used"));
+    assert!(printed.contains("cap"));
+}
+
+/// Clearing the slab forgets the credential rather than leaving it in the allocation.
+#[test]
+fn clearing_the_slab_empties_it() {
+    let mut cursor = b"secret-token".to_vec();
+    let whole = Span::new(0, cursor.len());
+    let mut slab = CredentialSlab::with_capacity(64);
+    slab.mask(&mut cursor, whole).expect("room in the slab");
+    assert_ne!(slab.used(), 0);
+    slab.clear();
+    assert_eq!(slab.used(), 0, "the slab still held bytes after clear");
+    assert_eq!(slab.remaining(), 64);
+}
+
 #[test]
 fn the_arena_is_four_kibibytes_and_is_reset_per_frame() {
     let mut arena = Arena::new();

@@ -17,6 +17,7 @@
 //! sees a credential" is a property of the bytes rather than a rule planes are asked to follow.
 
 use busbar_caps::ReasonCode;
+use zeroize::Zeroize;
 
 use crate::grammar::{ArrivalLocation, MaskKind, Span};
 
@@ -193,10 +194,36 @@ impl MaskedSpan {
 /// One allocation, made when the connection is accepted, sized by the cursor cap. Nothing on the
 /// frame path grows it: an oversize credential is refused with `CredentialBudget`, which is a
 /// different answer from `CursorBudget` on purpose — the slab is full, not the cursor.
-#[derive(Debug)]
+///
+/// It holds raw credential bytes, so it does NOT derive `Debug`: a derived one would print the
+/// bytes into any `{:?}`, a tracing span or a panic message, which is a credential leaking through
+/// the diagnostics rather than the wire. The manual [`std::fmt::Debug`] below names the shape and
+/// nothing of the contents. For the same reason the bytes are scrubbed — not merely dropped — on
+/// [`clear`](Self::clear) and again when the slab itself is dropped, so a credential never outlives
+/// the connection in a freed page.
 pub struct CredentialSlab {
     buf: Vec<u8>,
     cap: usize,
+}
+
+impl std::fmt::Debug for CredentialSlab {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // The lengths, never the bytes: a credential slab that printed its contents would be the
+        // one line of diagnostics that leaks what the whole type exists to hide.
+        f.debug_struct("CredentialSlab")
+            .field("used", &self.buf.len())
+            .field("cap", &self.cap)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Drop for CredentialSlab {
+    fn drop(&mut self) {
+        // The connection is gone; the credential must not survive it in a freed page. The slab is
+        // sized once and never reallocated on the frame path, so scrubbing the live length reaches
+        // every credential byte that was ever copied in.
+        self.buf.zeroize();
+    }
 }
 
 impl CredentialSlab {
@@ -292,8 +319,12 @@ impl CredentialSlab {
 
     /// Forget everything. Called when a connection upgrades in band, because the facts and the
     /// principal are cleared there too, and a credential that survived would outlive its context.
+    ///
+    /// Scrubbed, not merely truncated: `Vec::clear` leaves the credential bytes sitting in the
+    /// allocation for the next credential to be copied over — or read out of — so the bytes are
+    /// zeroized first, which also sets the length back to zero.
     pub fn clear(&mut self) {
-        self.buf.clear();
+        self.buf.zeroize();
     }
 }
 
