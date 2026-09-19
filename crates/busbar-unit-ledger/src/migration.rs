@@ -114,6 +114,21 @@ fn length_framed(component: &str) -> String {
     format!("{:016x}{component}", component.len() as u64)
 }
 
+/// The pool scope a metering row lands on, given its lane and provider.
+///
+/// The single source of truth for the metering pool key: `LegacyFigure::key` builds its metering
+/// scope through this, and any consumer that needs to look a migrated metering balance back up
+/// must build the same scope here rather than re-spelling the framed key by hand. The two
+/// caller-controlled components are length-framed (see [`length_framed`]) so no arrangement of
+/// delimiters inside a lane or a provider can move the boundary and merge two balances into one.
+pub fn meter_pool_scope(lane: &str, provider: &str) -> BucketScope {
+    BucketScope::Pool(format!(
+        "meter:{}{}",
+        length_framed(lane),
+        length_framed(provider)
+    ))
+}
+
 impl LegacyFigure {
     /// The balance this figure opens.
     ///
@@ -132,11 +147,7 @@ impl LegacyFigure {
         let scope = match (self.family, self.lane.as_str()) {
             (LegacyFamily::Window, "") => BucketScope::All,
             (LegacyFamily::Window, lane) => BucketScope::Pool(format!("lane:{lane}")),
-            (LegacyFamily::Meter, lane) => BucketScope::Pool(format!(
-                "meter:{}{}",
-                length_framed(lane),
-                length_framed(&self.provider)
-            )),
+            (LegacyFamily::Meter, lane) => meter_pool_scope(lane, &self.provider),
         };
         TotalsKey::new(
             BucketId::new(self.bucket.clone()),
