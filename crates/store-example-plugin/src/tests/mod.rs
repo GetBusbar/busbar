@@ -807,6 +807,184 @@ fn keys_usage_and_metering_written_by_one_handle_are_read_by_a_reopened_handle()
     let _ = std::fs::remove_file(super::lock_path_for(&path));
 }
 
+// ── M4 AUDIT FIXES: the durable FileStore must pass the SAME shared conformance suite RamStore does
+// ── ────────────────────────────────────────────────────────────────────────────────────────────────
+//
+// `put_key_impl`/`delete_key_impl`/`add_metering_impl` above are a hand-written, field-for-field copy
+// of `ram::RamStore`'s own logic rather than a delegation to it — which means nothing before this
+// point actually RAN the shared `store_conformance` battery (the tombstone precondition, the
+// unknown-id error, the delete cascade) against `FileStore` itself. Every `conformance_ram_*` /
+// `ram_*` test above proves those rulings hold for `RamStore`; it proves NOTHING about whether the
+// hand-copy in this file's own `_impl` methods actually matches. A backend can pass every ROUND-TRIP
+// test in this file (write a key, read it back) and still get the tombstone precondition or the
+// delete cascade wrong — exactly the class of defect `store_conformance`'s module doc says it exists
+// to catch (`revoke_credential`/`delete_key`/`append_audit` each disagreeing across real backends).
+
+/// `put_key` on `FileStore` must not clear a tombstone — same shared ruling as
+/// `conformance_ram_put_key_does_not_resurrect_a_tombstone`, run against the file-backed copy of the
+/// same precondition in `put_key_impl`.
+#[test]
+fn conformance_file_put_key_does_not_resurrect_a_tombstone() {
+    busbar_plugin_testkit::store_conformance::assert_put_key_does_not_resurrect_a_tombstone(
+        &store(),
+        "file",
+    );
+}
+
+/// `delete_key` on `FileStore` with an id that names no row is an ERROR, not a silent success — same
+/// shared ruling as `conformance_ram_delete_key_unknown_id_is_an_error`.
+#[test]
+fn conformance_file_delete_key_unknown_id_is_an_error() {
+    busbar_plugin_testkit::store_conformance::assert_delete_key_unknown_id_is_an_error(
+        &store(),
+        "file",
+    );
+}
+
+/// The tombstone cascade on `FileStore`: the key ROW survives (attribution by id keeps resolving) while
+/// its usage LEDGER is dropped — the file-backed analogue of
+/// `ram_delete_key_tombstones_the_row_and_drops_its_usage_ledger`, proving `delete_key_impl`'s
+/// `d.usage.retain(...)` line actually does what the RAM cascade does.
+#[test]
+fn file_delete_key_tombstones_the_row_and_drops_its_usage_ledger() {
+    let s = store();
+    let key = busbar_plugin_testkit::store_conformance::live_key("file_cascade");
+    s.put_key(&key).expect("put a live key");
+    s.put_usage(
+        "file_cascade",
+        0,
+        &UsageLedger {
+            requests: 3,
+            billable_requests: 3,
+            models: Vec::new(),
+        },
+    )
+    .expect("write the ledger");
+
+    s.delete_key("file_cascade").expect("tombstone the key");
+
+    let row = s.get_key("file_cascade").expect("read back").expect(
+        "the key ROW survives its own deletion — anything that attributes by key id still resolves",
+    );
+    assert!(row.deleted_at.is_some(), "the row carries a tombstone");
+    assert!(!row.enabled, "a tombstoned key is not enabled");
+    assert_eq!(
+        s.get_usage("file_cascade", 0).expect("read the ledger"),
+        UsageLedger::default(),
+        "the usage ledger must be DROPPED by the delete cascade, not left behind"
+    );
+    assert!(
+        s.list_keys().expect("list").iter().any(|k| k.id == row.id),
+        "list_keys is UNFILTERED, so the hydrator can observe the new tombstone and evict"
+    );
+    s.delete_key("file_cascade")
+        .expect("deleting an already-tombstoned key is idempotent");
+}
+
+/// `add_metering` on `FileStore` ACCUMULATES into one row per `(key_id, bucket, model, provider)`
+/// rather than replacing it — the file-backed analogue of
+/// `ram_add_metering_accumulates_into_one_row_per_bucket`, proving `add_metering_impl`'s hand-copy of
+/// the accumulate logic actually sums instead of overwriting.
+#[test]
+fn file_add_metering_accumulates_into_one_row_per_bucket() {
+    let s = store();
+    let delta = |requests: u64, tokens_input: u64| MeteringDelta {
+        key_id: "file_meter".into(),
+        bucket: 7,
+        model: "m".into(),
+        provider: "p".into(),
+        tokens_input,
+        tokens_output: 0,
+        tokens_cache_read: 0,
+        tokens_cache_write: 0,
+        requests,
+        billable_requests: requests,
+        key_group_at_use: String::new(),
+        pricing_version: String::new(),
+    };
+    s.add_metering(&delta(1, 10)).expect("first charge");
+    s.add_metering(&delta(2, 5)).expect("second charge");
+
+    let rows = s.list_metering(7).expect("read the bucket");
+    assert_eq!(
+        rows.len(),
+        1,
+        "one row per (key_id, bucket, model, provider)"
+    );
+    assert_eq!(rows[0].requests, 3, "requests accumulate");
+    assert_eq!(rows[0].tokens_input, 15, "tokens accumulate");
+    assert!(
+        s.list_metering(8).expect("read another bucket").is_empty(),
+        "list_metering answers only the bucket it was asked for"
+    );
+}
+
+/// M4 AUDIT FIX: `add_usage` on `FileStore` must not LOSE AN UPDATE across two concurrent handles.
+///
+/// `Store::add_usage`'s trait default is `get_usage` then `put_usage` — TWO separate calls. Before
+/// this fix `FileStore` did not override `add_usage`, so it ran that default over `self.path`, and
+/// `get_usage`/`put_usage` each take the cross-handle `flock` for their OWN call only: the read and
+/// the write are not one critical section. Two handles racing `add_usage` on the same
+/// `(bucket_id, window_start)` could both `get_usage` the same base, both compute base+delta, and the
+/// second `put_usage` clobbers the first — the exact lost-update class `FileStore::mutate`'s own doc
+/// says a caller-side read-then-write cannot close, reached here through the one verb that was still
+/// doing a caller-side read-then-write. This test proves the dedicated `add_usage_impl` (one `mutate`
+/// call, one flock, read-apply-write as a single critical section) closes it: every one of
+/// `2 * PER_THREAD` concurrent adds must be reflected in the final ledger, with none silently dropped.
+#[test]
+fn two_handles_do_not_lose_updates_on_add_usage_under_contention() {
+    use busbar_api::UsageDelta;
+    use std::sync::Arc;
+
+    let mut path = std::env::temp_dir();
+    path.push(format!(
+        "busbar-store-example-plugin-add-usage-contention-{}-{}.json",
+        std::process::id(),
+        std::sync::atomic::AtomicU64::new(0).fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    let _ = std::fs::remove_file(&path);
+
+    let h1 = Arc::new(FileStore::open(path.clone()).expect("open handle 1"));
+    let h2 = Arc::new(FileStore::open(path.clone()).expect("open handle 2"));
+
+    const PER_THREAD: u64 = 40;
+    let mut threads = Vec::new();
+    for handle in [h1.clone(), h2.clone()] {
+        threads.push(std::thread::spawn(move || {
+            for _ in 0..PER_THREAD {
+                handle
+                    .add_usage(
+                        "bucket-x",
+                        0,
+                        &UsageDelta {
+                            requests: 1,
+                            billable_requests: 1,
+                            ..Default::default()
+                        },
+                    )
+                    .unwrap();
+            }
+        }));
+    }
+    for t in threads {
+        t.join().unwrap();
+    }
+
+    let ledger = h1.get_usage("bucket-x", 0).expect("read back the ledger");
+    assert_eq!(
+        ledger.requests,
+        2 * PER_THREAD,
+        "cross-handle add_usage lost an update: expected {} total requests, found {}",
+        2 * PER_THREAD,
+        ledger.requests
+    );
+    assert_eq!(ledger.billable_requests, 2 * PER_THREAD);
+
+    let _ = std::fs::remove_file(&path);
+    #[cfg(unix)]
+    let _ = std::fs::remove_file(super::lock_path_for(&path));
+}
+
 /// THE STANDALONE RULING ITSELF, read off the manifest rather than trusted to review. This crate is
 /// the copy-me template for `kind: store`; PLUGIN-TREE.md §4 says no crate may name another instance
 /// of any kind, "not in a dependency". The `manifest-allowlist` gate is report-only in CI today

@@ -2,12 +2,11 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! A **hermetic trivial `kind: store` plugin** — a `cdylib` exporting the store C ABI over this
-//! crate's OWN in-process backend, `RamStore` (see `src/ram.rs`). It is the in-tree ABI-crossing
-//! coverage for the `kind: store` seam (the store-seam analogue of `busbar-secret-example-plugin`).
-//! It does no real persistence beyond `RamStore`'s own in-process maps; its job is to be a real,
-//! loadable, signable store plugin for the ABI to round-trip through, both in this crate's own
-//! boundary tests and as the fixture `plugin-ci.yml`'s install-and-serve CI step packs and installs
-//! against a real running busbar.
+//! crate's OWN in-process backend, `RamStore` (see `src/ram.rs`), used when no config is given. It is
+//! the in-tree ABI-crossing coverage for the `kind: store` seam (the store-seam analogue of
+//! `busbar-secret-example-plugin`); its job is to be a real, loadable, signable store plugin for the
+//! ABI to round-trip through, both in this crate's own boundary tests and as the fixture
+//! `plugin-ci.yml`'s install-and-serve CI step packs and installs against a real running busbar.
 //!
 //! ## STANDALONE ON PURPOSE
 //!
@@ -20,12 +19,12 @@
 //! ## The one exception: `{"durable_path": "…"}`
 //!
 //! Given that config key the plugin opens a [`FileStore`] instead — a tiny JSON-file-backed store
-//! that keeps A2A task rows, task provenance events and MCP call records on DISK. It exists for one
-//! reason: DURABILITY ACROSS A RESTART cannot be proven against a store whose state dies with the
-//! process, and the durability of the A2A task table is a product claim that had never been
-//! exercised over the path a deployment actually takes (the plugin ABI). `RamStore` survives one
-//! plugin handle and no more, so a "write, restart, read it back" test needs a backend that puts
-//! bytes somewhere a second `busbar_open` can find them.
+//! that keeps A2A task rows, task provenance events, MCP call records, virtual keys, the usage ledger
+//! and metering on DISK (M4). It exists for one reason: DURABILITY ACROSS A RESTART cannot be proven
+//! against a store whose state dies with the process, and the durability of these tables is a product
+//! claim that had never been exercised over the path a deployment actually takes (the plugin ABI).
+//! `RamStore` survives one plugin handle and no more, so a "write, restart, read it back" test needs a
+//! backend that puts bytes somewhere a second `busbar_open` can find them.
 //!
 //! NO config still means `RamStore`, so the CI install-and-serve fixture and every existing
 //! over-the-ABI test are untouched. A config that is PRESENT but unreadable is a load error: the
@@ -34,11 +33,12 @@
 
 use busbar_api::{
     MeteringDelta, MeteringRow, PlaneDisposition, PlaneRecord, PlaneSelector, Store, StoreError,
-    StoreResult, UsageLedger, VirtualKey,
+    StoreResult, UsageDelta, UsageLedger, VirtualKey,
 };
 mod ram;
 use ram::RamStore;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
 fn now() -> u64 {
@@ -46,6 +46,29 @@ fn now() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
+}
+
+/// Retention ceiling for tombstoned `keys` rows and old `usage`/`metering` rows, keyed by the row's
+/// own epoch-second field (`deleted_at` / `window_start` / `bucket`) — the SAME bound and the SAME
+/// reasoning as `ram::RamStore`'s own `MAX_RETENTION_SECS` (see that module's doc): a store that never
+/// sweeps grows without bound for the life of the store, and for `FileStore` "the life of the store"
+/// now spans restarts instead of dying with the process, which makes an unbounded table here WORSE
+/// than the in-process one, not equivalent to it.
+const MAX_RETENTION_SECS: u64 = 31 * 86_400;
+
+/// Amortized sweep cadence, mirroring `ram::RamStore`'s: one `retain()` pass per this many writes to
+/// the table being swept, so a durability fixture with a handful of rows does not pay a sweep on every
+/// single call.
+const SWEEP_INTERVAL: u64 = 256;
+
+/// One tick of an amortized sweep counter; `true` on every `SWEEP_INTERVAL`-th call. A per-handle,
+/// in-memory counter — like `ram::RamStore`'s, it does not itself need to survive a restart, since
+/// missing one sweep window merely defers the next `retain()` pass rather than losing data.
+fn tick(counter: &AtomicU64) -> bool {
+    counter
+        .fetch_add(1, Ordering::Relaxed)
+        .wrapping_add(1)
+        .is_multiple_of(SWEEP_INTERVAL)
 }
 
 /// The plugin's optional config. Every field optional; an ABSENT body means "`RamStore`, no
@@ -208,6 +231,12 @@ struct FileStore {
     /// Serialises this handle's own read-modify-write cycles. It holds no DATA, deliberately — see
     /// [`FileStore::load`].
     gate: Mutex<()>,
+    /// Amortized sweep counters for the retention bound on `keys`/`usage`/`metering` — see
+    /// `MAX_RETENTION_SECS`. Per-handle and in-memory, like `ram::RamStore`'s own tickers: losing
+    /// them on restart only defers the next sweep, never data.
+    keys_sweep_ticker: AtomicU64,
+    usage_sweep_ticker: AtomicU64,
+    metering_sweep_ticker: AtomicU64,
 }
 
 impl FileStore {
@@ -221,6 +250,9 @@ impl FileStore {
         Ok(Self {
             path,
             gate: Mutex::new(()),
+            keys_sweep_ticker: AtomicU64::new(0),
+            usage_sweep_ticker: AtomicU64::new(0),
+            metering_sweep_ticker: AtomicU64::new(0),
         })
     }
 
@@ -652,6 +684,16 @@ impl FileStore {
                 Some(existing) => *existing = key,
                 None => d.keys.push(key),
             }
+            if tick(&self.keys_sweep_ticker) {
+                let n = now();
+                // NEVER prunes a live row: only `deleted_at.is_some()` rows are candidates, and only
+                // past the same ceiling attribution already stops caring past — mirrors
+                // `ram::RamStore::put_key`'s own sweep exactly.
+                d.keys.retain(|k| match k.deleted_at {
+                    None => true,
+                    Some(deleted_at) => deleted_at.saturating_add(MAX_RETENTION_SECS) > n,
+                });
+            }
             Ok(())
         })?
     }
@@ -728,6 +770,48 @@ impl FileStore {
         })
     }
 
+    /// Write-behind ADDITIVE accumulate of a bucket's window ledger, mirroring `RamStore::add_usage`
+    /// field-for-field: adds the signed delta to whatever is on disk NOW, inside the ONE `mutate`
+    /// critical section, so two handles racing on the same `(bucket_id, window_start)` each read the
+    /// other's committed write rather than clobbering it. Overriding the trait's own default here is
+    /// the whole point — that default is `get_usage` then `put_usage`, which on this backend is TWO
+    /// separate flock acquisitions with no atomicity between them: a second handle's `add_usage` could
+    /// commit in the gap and have its delta silently discarded by the first handle's stale-based
+    /// `put_usage`, the exact lost-update class `mutate`'s own doc warns a caller-side read-then-write
+    /// cannot close.
+    fn add_usage_impl(
+        &self,
+        bucket_id: &str,
+        window_start: u64,
+        delta: &UsageDelta,
+    ) -> StoreResult<()> {
+        let bucket_id = bucket_id.to_string();
+        let delta = delta.clone();
+        self.mutate(move |d| {
+            match d
+                .usage
+                .iter_mut()
+                .find(|u| u.bucket_id == bucket_id && u.window_start == window_start)
+            {
+                Some(existing) => existing.ledger.apply_delta(&delta),
+                None => {
+                    let mut ledger = UsageLedger::default();
+                    ledger.apply_delta(&delta);
+                    d.usage.push(UsageRow {
+                        bucket_id,
+                        window_start,
+                        ledger,
+                    });
+                }
+            }
+            if tick(&self.usage_sweep_ticker) {
+                let n = now();
+                d.usage
+                    .retain(|u| u.window_start.saturating_add(MAX_RETENTION_SECS) > n);
+            }
+        })
+    }
+
     /// ACCUMULATE (UPSERT/add) one row per `(key_id, bucket, model, provider)`, mirroring
     /// `RamStore::add_metering` field-for-field.
     fn add_metering_impl(&self, delta: &MeteringDelta) -> StoreResult<()> {
@@ -769,6 +853,11 @@ impl FileStore {
                     },
                 }),
             }
+            if tick(&self.metering_sweep_ticker) {
+                let n = now();
+                d.metering
+                    .retain(|e| e.bucket.saturating_add(MAX_RETENTION_SECS) > n);
+            }
         })
     }
 
@@ -809,6 +898,9 @@ impl Store for FileStore {
         ledger: &UsageLedger,
     ) -> StoreResult<()> {
         self.put_usage_impl(bucket_id, window_start, ledger)
+    }
+    fn add_usage(&self, bucket_id: &str, window_start: u64, delta: &UsageDelta) -> StoreResult<()> {
+        self.add_usage_impl(bucket_id, window_start, delta)
     }
     fn add_metering(&self, delta: &MeteringDelta) -> StoreResult<()> {
         self.add_metering_impl(delta)
