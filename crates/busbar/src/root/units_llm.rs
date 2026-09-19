@@ -81,8 +81,8 @@ use axum::http::StatusCode;
 use axum::response::Response;
 
 use busbar_caps::{
-    Admit, AdmitToken, Approve, Arrival, ArrivalRecord, Audit, Authenticate, Decision, Decode,
-    Encode, Meter, OpClassId, OriginKind, Outcome, PrincipalId, ReasonCode, Refusal, Route,
+    Abort, Admit, AdmitToken, Approve, Arrival, ArrivalRecord, Audit, Authenticate, Decision,
+    Decode, Encode, Meter, OpClassId, OriginKind, Outcome, PrincipalId, ReasonCode, Refusal, Route,
     TrustToken, UnitToken, UsageToken, VerifiedDestination, Verify,
 };
 use busbar_contract::{LaneId, Registration, UnitKey};
@@ -991,6 +991,27 @@ fn unavailable(proto: &str) -> Response {
     )
 }
 
+/// Whether a non-2xx end is one the flat per-request fee is REFUNDED for (PB-27).
+///
+/// The fee is charged at admission and reversed only for a failure the node owns — an upstream
+/// 4xx/5xx, a router 503, a post-admission 404 — so a key is never billed for a failure outside its
+/// control. A CLIENT DISCONNECT is the one non-2xx end that is NOT the node's: the caller went away
+/// after the node had committed to serving it, and the fee stands exactly as it does on every exit
+/// after a 2xx was relayed. A client-gone end reaches this terminal two ways — the loop aborted the
+/// unit mid-await (`Aborted(Kernel { ClientGone })`) or the Route step refused it before dialing
+/// because the caller's slot was already cancelled (`Failed(_, ClientGone)`) — and both keep the fee.
+/// Every other outcome, including a node-side abort (`Drain`, `Superseded`), is the node's own and
+/// stays reversible; a 2xx `Completed` end refunds nothing regardless, so the door's own non-2xx gate
+/// makes this a no-op there.
+fn reversible(outcome: &Outcome) -> bool {
+    !matches!(
+        outcome,
+        Outcome::Aborted(Abort::Kernel {
+            reason: ReasonCode::ClientGone
+        }) | Outcome::Failed(_, ReasonCode::ClientGone)
+    )
+}
+
 // ---------------------------------------------------------------------------------------------
 // The unit
 // ---------------------------------------------------------------------------------------------
@@ -1384,15 +1405,24 @@ impl Units for LlmUnit<'_> {
         &self,
         token: &UnitToken<Audit>,
         _ctx: &UnitCtx,
-        _outcome: &Outcome,
+        outcome: &Outcome,
     ) -> Decision<Audit> {
         // THE CHARGED TERMINAL. A unit that passed the door leaves here, whatever it ended on: a
         // delivered answer, a relayed upstream failure, or a destination that resolved to nothing
         // after the caller was already charged. All three are the same door.
+        //
+        // The end says whether the flat per-request fee is REVERSIBLE. A non-2xx end refunds the fee
+        // only when the failure is the node's own; a client that went away after the node committed
+        // to serving it (PB-27) keeps the fee, because the caller — not the node — ended the unit.
+        // The terminal reads the reversibility off the end the kernel sealed, never off the status
+        // the fallback bytes happen to wear.
         let destination = self.destination();
-        self.walk.audit(token, &self.audit_ctx(&destination), || {
-            self.nothing_rendered()
-        })
+        self.walk.audit(
+            token,
+            &self.audit_ctx(&destination),
+            reversible(outcome),
+            || self.nothing_rendered(),
+        )
     }
 
     fn audit_refused(
