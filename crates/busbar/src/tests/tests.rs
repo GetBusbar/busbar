@@ -758,3 +758,88 @@ fn a_plane_gated_module_is_named_only_from_code_under_the_same_feature() {
         escapes.join("\n  ")
     );
 }
+
+/// THE BOOT BOOK IS COMMITTED-BEFORE-ACK AND SEALED — the one proof over the extracted composition
+/// seam (`compose_boot_book`), the seam `run()` calls to open the process's one book.
+///
+/// It proves the two facts B11a is about, both of which the previous shape (`node_book`'s hardcoded
+/// `NullShipper` + a boot that never called the migration) failed:
+///
+/// (a) THE JOURNAL WRITES LAND IN THE CONFIGURED STORE, not in the null shipper. The seam is handed
+///     a `StoreAdapter` over a real store and the marker the seal writes is OFFERED to that adapter's
+///     shipper — so the adapter's own shim records a shipped batch under this node's identity. Under
+///     the old `NullShipper` the adapter saw nothing at all, so a shipped count above zero and a head
+///     carrying node zero is exactly the difference between the two shapes.
+///
+/// (b) THE OPENING WAS SEALED at start-of-book. The migration reports it sealed, and the marker is a
+///     record of the migration class ON THIS JOURNAL — the ledger's own durable record that says
+///     "this deployment has opened its balances", which the old boot never wrote because it never
+///     called the migration at all.
+#[cfg(any(feature = "root-admin", feature = "root-llm"))]
+#[test]
+fn the_boot_book_ships_to_the_store_and_seals_its_opening() {
+    use busbar_plugin_loader::store_adapter::StoreAdapter;
+    use busbar_unit_wal::RecordClass;
+
+    // A store adapter over a real (in-tree memory) store — the shape `open_boot_book` builds from the
+    // deployment's governance store, minus the app around it.
+    let store: std::sync::Arc<dyn busbar_api::Store> =
+        std::sync::Arc::new(busbar_core::governance::MemoryStore::new());
+    let adapter = StoreAdapter::native(store);
+
+    // A read plan naming nothing: an empty deployment seals a zero opening rather than refusing, so
+    // the seam's two facts are proved without seeding rows the seal would then have to read back.
+    let mig = crate::root::migration::MigrationConfig {
+        node: 0,
+        window: 0,
+        group_buckets: Vec::new(),
+        metering_days: Vec::new(),
+        rate_card_version: 7,
+    };
+
+    // The token the marker append is made under. `acquire_for_kernel` is kernel-only outside tests;
+    // this is a test, and it stands in for the `new_kernel().durability_token()` the seam is handed
+    // at boot.
+    let token = busbar_caps::DurabilityToken::mint(&busbar_caps::KernelSeal::acquire_for_kernel());
+
+    let (durability, _rows, migration) =
+        compose_boot_book(&adapter, None, &mig, 1_700_000_000, &token)
+            .expect("the boot book composes over a memory-buffered journal and an empty store");
+
+    // (b) The opening was sealed.
+    assert!(
+        migration.sealed_now(),
+        "the composition must SEAL the opening at start-of-book, not leave the book unopened"
+    );
+
+    // (b) …and the marker is a record of the migration class on THIS journal.
+    let replayed = durability
+        .journal
+        .replay()
+        .expect("the journal reads back")
+        .expect("and verifies");
+    assert_eq!(
+        replayed.len(),
+        1,
+        "exactly the one migration marker is on the chain"
+    );
+    assert_eq!(
+        replayed[0].class,
+        RecordClass::Migration,
+        "the sealed opening's marker is a Migration record"
+    );
+
+    // (a) The journal's write shipped to the CONFIGURED STORE's shipper, not to a null one.
+    let shim = adapter.shim_state();
+    assert!(
+        shim.records_shipped >= 1,
+        "the journal must ship the marker batch to the store adapter (was {}), which a NullShipper \
+         would never receive",
+        shim.records_shipped
+    );
+    assert_eq!(
+        adapter.head(),
+        Some((0, replayed[0].node_seq)),
+        "the store adapter's shipped head carries this node's identity and the marker's sequence"
+    );
+}

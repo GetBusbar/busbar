@@ -1135,6 +1135,99 @@ fn main() {
     }
 }
 
+/// THE BOOT LEDGER, COMPOSED — the extracted seam `run()` calls, wired against a store adapter so
+/// its behaviour can be proved without a bound listener or a loaded plugin.
+///
+/// Three decisions, and this function is where all three are made together because they are one
+/// value: the journal ships to the CONFIGURED STORE'S shipper (a batch is offered to the store and
+/// its answer is part of the commit — committed-before-ack, and on this node's own disk too when a
+/// data directory was resolved), the ledger dual-writes onto the in-memory reconciliation rows (the
+/// cross-check half, not the ack path), and the OPENING is SEALED at start-of-book: the previous
+/// release's rows are read through the adapter and sealed as opening figures, with the marker written
+/// onto THIS journal rather than the adapter's node-local shim, which could only hold it for the life
+/// of a process.
+///
+/// It returns the wired stack, the rows a view reads them back from, and what the migration did.
+/// `secret: None` seals an unsigned opening, which the ledger unit accepts.
+///
+/// # Errors
+///
+/// The journal could not be opened (a configured data directory that could not be read), or the
+/// opening could not be sealed — the two boot conditions [`root::migration::run`] returns where
+/// continuing would be worse than refusing.
+#[cfg(any(feature = "root-admin", feature = "root-llm"))]
+fn compose_boot_book(
+    adapter: &busbar_plugin_loader::store_adapter::StoreAdapter,
+    data_dir: Option<std::path::PathBuf>,
+    mig: &root::migration::MigrationConfig,
+    now: u64,
+    token: &busbar_caps::DurabilityToken,
+) -> Result<
+    (
+        root::durability::Durability,
+        Arc<busbar_unit_ledger::legacy::RecordingRows>,
+        root::migration::Migration,
+    ),
+    String,
+> {
+    let rows = Arc::new(busbar_unit_ledger::legacy::RecordingRows::new());
+    let mut durability = root::durability::build_for_node(
+        &root::durability::DurabilityConfig { data_dir },
+        mig.node,
+        adapter.shipper(),
+        Box::new(busbar_unit_ledger::legacy::RecordingRows::clone(&rows)),
+    )
+    .map_err(|e| format!("the boot ledger's journal could not be opened: {e}"))?;
+    let migration = {
+        let mut records = durability.migration_records(token, busbar_caps::StepName::Meter);
+        root::migration::run(adapter, &mut records, mig, now, None)
+            .map_err(|e| format!("the boot ledger could not seal its opening balances: {e}"))?
+    };
+    Ok((durability, rows, migration))
+}
+
+/// THE PROCESS'S ONE BOOK, opened over the deployment's configured store with its balances sealed.
+///
+/// A node with a governance store ships its journal to that store and opens its book from the rows
+/// the previous release left there; a node with no store keeps the previous release's memory-only
+/// book, because a store the batches were never going to reach cannot be the one they are shipped to.
+#[cfg(any(feature = "root-admin", feature = "root-llm"))]
+fn open_boot_book(app: &busbar_core::state::App) -> root::durability::NodeBook {
+    let Some(gov) = app.governance.as_ref() else {
+        return root::durability::node_book();
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    let adapter = busbar_plugin_loader::store_adapter::StoreAdapter::native(gov.store());
+    let mig = root::migration::config_from(&app.cost, now);
+    let token = root::kernel::new_kernel().durability_token();
+    let data_dir = busbar_core::preflight::fleet_data_dir();
+    match compose_boot_book(&adapter, data_dir, &mig, now, &token) {
+        Ok((durability, rows, migration)) => {
+            if migration.sealed_now() {
+                tracing::info!(
+                    node = mig.node,
+                    rate_card_version = mig.rate_card_version,
+                    "the boot ledger sealed its opening balances from the configured store"
+                );
+            }
+            if let Some(reason) = &migration.key_rows_unreadable {
+                tracing::warn!(
+                    reason = %reason,
+                    "the boot ledger could not list the store's key rows, so the opening was sealed \
+                     over the buckets the configuration named"
+                );
+            }
+            root::durability::NodeBook {
+                durability: Arc::new(std::sync::Mutex::new(durability)),
+                rows,
+            }
+        }
+        Err(e) => die(e),
+    }
+}
+
 async fn run(data_workers: usize) {
     // Metrics are configured AFTER the config loads (below, via `metrics::configure`) because they
     // are 100% OPT-IN: `observability.metrics` absent ⇒ no recorder, no `/metrics`, nothing recorded
@@ -1499,11 +1592,13 @@ async fn run(data_workers: usize) {
     // THE PROCESS'S ONE BOOK. Every plane's exit arm settles onto it and the administrative ledger
     // views read it, which is a property of there being ONE: a mount that opened its own would post
     // onto books nothing serves and serve books nothing posts to, and both halves of that would look
-    // healthy, because an empty ledger reconciles. It is memory-buffered and reads no data
-    // directory, so nothing appears beside a configuration that asked for none, and it is built
-    // before either listener binds because the first accepted connection can settle.
+    // healthy, because an empty ledger reconciles. Its journal ships to the deployment's CONFIGURED
+    // STORE (committed-before-ack, and on this node's own disk when a data directory was resolved)
+    // and its OPENING BALANCES are SEALED at start-of-book from the rows the previous release left in
+    // that store — see `open_boot_book`. It is built before either listener binds because the first
+    // accepted connection can settle against a book whose opening must already be sealed.
     #[cfg(any(feature = "root-admin", feature = "root-llm"))]
-    let book = root::durability::node_book();
+    let book = open_boot_book(&app_handle.load());
 
     // THE ROOT-DRIVEN LLM PLANE'S EXIT ARM, bound to that book. The loop already ended every unit
     // and handed back a posting; what this line adds is somewhere for the posting to go. Off, the
