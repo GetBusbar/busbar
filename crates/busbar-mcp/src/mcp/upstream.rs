@@ -379,8 +379,23 @@ pub(super) fn credential_mode(server: &ServerEntry) -> Result<UpstreamCredential
          issued token is spendable at any backend the authorization server serves"
             .to_string()
     })?;
-    let subject_token = busbar_api::resolve_builtin_string(&tx.subject_token)
-        .map_err(|e| format!("busbar's own subject token for this upstream cannot resolve: {e}"))?;
+    let subject_token = busbar_api::resolve_builtin_string(&tx.subject_token).map_err(|e| {
+        // `e` is NOT put in the caller-facing message: `resolve_builtin_string`'s error names the
+        // secret's SOURCE (e.g. `secret env:OPENAI_KEY cannot resolve: environment variable
+        // 'OPENAI_KEY' is unset`), and this refusal is rendered straight into the JSON-RPC error a
+        // caller who is not the operator receives (`refuse_setup` in `mcp::method`). Handing that
+        // caller the exact env var / file path busbar reads the upstream's credential from is a
+        // configuration-disclosure leak that costs the operator nothing to avoid: the detail goes
+        // to the log, where the operator who can actually fix it can see it.
+        tracing::warn!(
+            server = %server.id,
+            error = %e,
+            "busbar's own subject token for this upstream cannot resolve"
+        );
+        "busbar's own subject token for this upstream cannot resolve; see the server log for which \
+         secret and why"
+            .to_string()
+    })?;
     Ok(UpstreamCredential::Exchange(ExchangeCfg {
         token_url: tx.token_url.clone(),
         subject_token: Redacted::new(subject_token),
