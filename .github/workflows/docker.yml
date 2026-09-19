@@ -351,6 +351,13 @@ jobs:
   build-binaries:
     name: musl ${{ matrix.arch }}
     if: ${{ inputs.promote_to == '' }}
+    # Least-privilege override of the workflow-level grant above: this job only checks out the
+    # repo, builds a static binary, and uploads workflow artifacts — it never pushes an image,
+    # signs anything keylessly, or writes an attestation (that's all `publish`, below). The
+    # workflow-level `packages: write` / `id-token: write` / `attestations: write` were leaking
+    # into this job for no reason this job needs.
+    permissions:
+      contents: read
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: true
