@@ -598,6 +598,12 @@ pub(crate) struct Runner {
     /// decision about THIS field as much as about retention.
     pub(crate) authorised: super::upstream::Authorised,
     pub(crate) arguments: serde_json::Value,
+    /// The SAME pinned schema `upstream::authorise` walked the ORIGINAL arguments against at task
+    /// creation. Kept so the runner can re-walk it after [`merge_answers`] folds in a caller's
+    /// `tasks/update` responses — those never passed through `authorise`'s guard (they did not
+    /// exist yet when it ran), so without a second walk here an SSRF-shaped value handed in AFTER
+    /// creation would reach the upstream unscreened.
+    pub(crate) input_schema: serde_json::Value,
     pub(crate) server_id: String,
     pub(crate) max_rounds: u32,
     /// The rounds of input busbar asks its caller for from inside the task, already filtered to
@@ -760,6 +766,20 @@ async fn dispatch(task: Arc<McpTask>, runner: Runner) {
     // gate means by it, and what makes the gathered answer observable in the task's own result
     // rather than discarded at busbar.
     let arguments = merge_answers(&runner.arguments, &task.answers());
+
+    // (2b) RE-SCREEN THE MERGED ARGUMENTS. `upstream::authorise` walked `runner.arguments` against
+    // `runner.input_schema` at task creation — but that was BEFORE any `tasks/update` response
+    // existed. An answer rides in over a SEPARATE request, under a caller-authored value and an
+    // operator-declared key (`merge_answers`, above), and nothing has judged it for SSRF yet. Without
+    // this walk a metadata/private-address value handed in as a task answer reaches the upstream
+    // leg below completely unscreened, even though the identical value in the ORIGINAL `tools/call`
+    // arguments would have been refused before the task was ever created.
+    if let Err(refusal) =
+        super::client::argguard::guard(&runner.input_schema, &arguments, runner.authorised.policy)
+    {
+        task.fail(TASK_PROTOCOL_ERROR_CODE, refusal.to_string(), host.clock_now_ms());
+        return;
+    }
 
     // (3) THE UPSTREAM LEG, through the SAME bounded, per-round-gated loop the synchronous path
     // uses. Not a second dispatcher: an upstream's own `input_required` must terminate at busbar on
