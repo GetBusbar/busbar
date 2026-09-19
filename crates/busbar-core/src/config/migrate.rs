@@ -1283,39 +1283,59 @@ fn migrate_auth(
                 // spelling is the `keys` verifier — so APPEND `keys` when the chain does not
                 // already name it and leave every other entry exactly where it was. An
                 // absent/empty chain still lands `[keys]`, which is the whole 1.4.x-only case.
-                let existing: Vec<Value> = auth
-                    .get(Value::from("chain"))
-                    .and_then(|v| v.as_sequence())
-                    .cloned()
-                    .unwrap_or_default();
-                let has_keys = existing
-                    .iter()
-                    .any(|e| entry_module_name(e).as_deref() == Some("keys"));
-                if existing.is_empty() {
-                    auth.insert("chain".into(), Value::Sequence(vec!["keys".into()]));
-                    changes.push(format!(
-                        "auth.mode: {other} -> auth.chain: [keys] (static tokens are removed; mint \
-                         signed keys)"
+                //
+                // TAKE-ON-MATCH: a `chain:` present in the WRONG shape (a bare scalar or mapping,
+                // not a sequence) is MALFORMED, not absent — `.as_sequence()` returning `None` for
+                // either case is exactly the confusion this guard exists to split apart. Treating a
+                // malformed chain as "nothing here yet" would fall into the `is_empty()` branch
+                // below and unconditionally overwrite it with `[keys]`, silently destroying
+                // whatever the operator wrote — the identical silent-loss class this arm exists to
+                // close, just reachable via a malformed rather than an absent chain. So a malformed
+                // chain is left EXACTLY as written and named in a todo instead of merged into.
+                let malformed_chain =
+                    matches!(auth.get(Value::from("chain")), Some(v) if !v.is_sequence());
+                if malformed_chain {
+                    todos.push(format!(
+                        "auth.chain: is not a list — it was left EXACTLY as written, so the \
+                         `keys` verifier `auth.mode: {other}` needs was NOT added to it (nothing \
+                         was half-migrated). 1.5.0 expects `auth.chain: [ <module>, ... ]`; fix \
+                         the list by hand, add `keys` yourself, and re-run `--migrate-config`."
                     ));
                 } else {
-                    let mut merged = existing;
-                    if !has_keys {
-                        merged.push("keys".into());
+                    let existing: Vec<Value> = auth
+                        .get(Value::from("chain"))
+                        .and_then(|v| v.as_sequence())
+                        .cloned()
+                        .unwrap_or_default();
+                    let has_keys = existing
+                        .iter()
+                        .any(|e| entry_module_name(e).as_deref() == Some("keys"));
+                    if existing.is_empty() {
+                        auth.insert("chain".into(), Value::Sequence(vec!["keys".into()]));
+                        changes.push(format!(
+                            "auth.mode: {other} -> auth.chain: [keys] (static tokens are removed; \
+                             mint signed keys)"
+                        ));
+                    } else {
+                        let mut merged = existing;
+                        if !has_keys {
+                            merged.push("keys".into());
+                        }
+                        auth.insert("chain".into(), Value::Sequence(merged));
+                        changes.push(format!(
+                            "auth.mode: {other} -> the `keys` verifier ADDED to the existing \
+                             auth.chain (static tokens are removed; mint signed keys). The modules \
+                             you already listed on the chain were KEPT — `mode:` never named them, \
+                             so replacing the chain with [keys] would have dropped them"
+                        ));
                     }
-                    auth.insert("chain".into(), Value::Sequence(merged));
-                    changes.push(format!(
-                        "auth.mode: {other} -> the `keys` verifier ADDED to the existing \
-                         auth.chain (static tokens are removed; mint signed keys). The modules you \
-                         already listed on the chain were KEPT — `mode:` never named them, so \
-                         replacing the chain with [keys] would have dropped them"
-                    ));
+                    todos.push(
+                        "auth.chain: the static-token allowlist is GONE in 1.5.0; every caller \
+                         needs a minted signed key (POST /api/v1/admin/keys) - 1.x bearer tokens \
+                         stop working"
+                            .into(),
+                    );
                 }
-                todos.push(
-                    "auth.chain: the static-token allowlist is GONE in 1.5.0; every caller needs \
-                     a minted signed key (POST /api/v1/admin/keys) - 1.x bearer tokens stop \
-                     working"
-                        .into(),
-                );
             }
         }
     }

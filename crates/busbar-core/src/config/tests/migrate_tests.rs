@@ -773,6 +773,32 @@ fn migrate_auth_mode_does_not_clobber_an_existing_chain() {
     );
 }
 
+/// A `chain:` written in a shape the auth.mode merge cannot read (a bare scalar, not a list) is
+/// MALFORMED, not absent. `.as_sequence()` returns `None` for both cases, and folding a malformed
+/// chain into the `existing.is_empty()` path would unconditionally overwrite it with `[keys]` —
+/// destroying the operator's chain exactly the way the unconditional-overwrite bug this arm was
+/// rewritten to fix did, just reached through a malformed shape instead of an absent one. The
+/// malformed chain must survive as-written, with a todo naming it, and `keys` must NOT be silently
+/// substituted in its place.
+#[test]
+fn migrate_auth_mode_never_replaces_a_malformed_chain() {
+    let out =
+        migrate_config("auth:\n  mode: token\n  chain: ad\nproviders: {}\nmodels: {}\npools: {}\n")
+            .unwrap();
+    let doc: serde_yaml::Value = serde_yaml::from_str(&out.yaml).unwrap();
+    assert_eq!(
+        doc["auth"]["chain"].as_str(),
+        Some("ad"),
+        "a malformed auth.chain was destroyed and replaced with a synthesized [keys]: {}",
+        out.yaml
+    );
+    assert!(
+        out.todos.iter().any(|t| t.contains("auth.chain")),
+        "a chain this migrator refuses to touch must say so: {:?}",
+        out.todos
+    );
+}
+
 /// A group_map with an AMBIGUOUS module home (no external chain module) gets the placeholder +
 /// TODO, never a silent guess.
 #[test]
