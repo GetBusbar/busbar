@@ -45,6 +45,16 @@ pub struct Dialect {
     pub cache_read_pointer: Option<&'static str>,
     /// Where the response reports the input quantity that was written to a cache.
     pub cache_write_pointer: Option<&'static str>,
+    /// The request-target marker that names a streamed answer, for a dialect that carries the
+    /// stream intent in the target rather than in the body.
+    ///
+    /// Most dialects spell "stream this answer" as a `stream` member of the request body, and for
+    /// them this is `None`: the intent is a body fact and is read there. One dialect spells it in
+    /// the target instead — the same model-scoped surface has a whole-answer action and a streaming
+    /// action, and a client that wants a stream names the streaming action and sends no `stream`
+    /// member. This is the substring of the target that names that action, so the decode step can
+    /// see the intent a body-only read would miss.
+    pub stream_marker: Option<&'static str>,
     /// The credential alternative this dialect's clients present.
     pub scheme_alt: &'static str,
     /// The egress-auth scheme that decorates a request to an upstream of this dialect.
@@ -67,6 +77,7 @@ const MODEL_IN_PATH: Location = Location::Arrival(ArrivalLocation::PathSegment(0
 pub const DIALECTS: &[Dialect] = &[
     Dialect {
         name: "anthropic",
+        stream_marker: None,
         model_location: MODEL,
         max_response_pointers: &["/max_tokens"],
         input_pointer: "/messages",
@@ -79,6 +90,7 @@ pub const DIALECTS: &[Dialect] = &[
     },
     Dialect {
         name: "openai",
+        stream_marker: None,
         model_location: MODEL,
         // This dialect accepts a newer spelling as well, and both are declared. The reasoning
         // models of this vendor refuse the older key outright, so a client of one of them sends
@@ -95,6 +107,9 @@ pub const DIALECTS: &[Dialect] = &[
     },
     Dialect {
         name: "gemini",
+        // The stream intent is in the request target, not the body: the streaming action is a
+        // distinct target from the whole-answer action, and a client names it there.
+        stream_marker: Some(":streamGenerateContent"),
         // The model is in the request target, not the body.
         model_location: MODEL_IN_PATH,
         max_response_pointers: &["/generationConfig/maxOutputTokens"],
@@ -108,6 +123,7 @@ pub const DIALECTS: &[Dialect] = &[
     },
     Dialect {
         name: "bedrock",
+        stream_marker: None,
         // The model is in the request target, not the body.
         model_location: MODEL_IN_PATH,
         max_response_pointers: &["/inferenceConfig/maxTokens"],
@@ -121,6 +137,7 @@ pub const DIALECTS: &[Dialect] = &[
     },
     Dialect {
         name: "responses",
+        stream_marker: None,
         model_location: MODEL,
         max_response_pointers: &["/max_output_tokens"],
         input_pointer: "/input",
@@ -133,6 +150,7 @@ pub const DIALECTS: &[Dialect] = &[
     },
     Dialect {
         name: "cohere",
+        stream_marker: None,
         model_location: MODEL,
         max_response_pointers: &["/max_tokens"],
         input_pointer: "/messages",
