@@ -41,6 +41,13 @@ use ram::RamStore;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
+fn now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
 /// The plugin's optional config. Every field optional; an ABSENT body means "`RamStore`, no
 /// config", which is this fixture's original and default posture. A present body must parse.
 #[derive(serde::Deserialize)]
@@ -107,6 +114,43 @@ struct Durable {
     /// a typed column this fixture reads without ever decoding the body.
     #[serde(default)]
     push_configs: Vec<TaskRecord>,
+    /// The virtual-key table, keyed by `VirtualKey::id`. `#[serde(default)]` so a file written
+    /// before this table existed (when keys lived only in the in-process `RamStore` and were lost on
+    /// every restart) still opens.
+    #[serde(default)]
+    keys: Vec<VirtualKey>,
+    /// The per-(bucket, window) token ledger. `#[serde(default)]` for the same pre-durability-fix
+    /// reason as `keys` above.
+    #[serde(default)]
+    usage: Vec<UsageRow>,
+    /// The per-(key_id, bucket, model, provider) metering accumulation. `#[serde(default)]` for the
+    /// same pre-durability-fix reason as `keys` above.
+    #[serde(default)]
+    metering: Vec<MeteringEntry>,
+    /// Monotonic revision counter for `VirtualKey::revision`, persisted so it keeps counting up
+    /// across a restart rather than resetting to 0 and making every reopened key look "unchanged"
+    /// to `Store::list_keys_since`'s revision-delta default.
+    #[serde(default)]
+    next_revision: u64,
+}
+
+/// One persisted token ledger row: the `(bucket_id, window_start)` primary key plus the ledger
+/// itself. A `Vec` (not a `HashMap`) because `serde_json` map keys must be strings and this key is a
+/// tuple — mirrors every other table in this file.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+struct UsageRow {
+    bucket_id: String,
+    window_start: u64,
+    ledger: UsageLedger,
+}
+
+/// One persisted metering accumulation row: the `bucket` primary-key component that
+/// [`MeteringRow`] itself does not carry (it rides alongside the row here instead), plus the row.
+/// Primary key is `(row.key_id, bucket, row.model, row.provider)`.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+struct MeteringEntry {
+    bucket: u64,
+    row: MeteringRow,
 }
 
 /// One persisted A2A task: the `PlaneRecord`'s `id` primary key plus the OPAQUE body the seam wrote,
@@ -153,14 +197,14 @@ struct TaskEventBody {
     body: Vec<u8>,
 }
 
-/// A JSON-file-backed store. The A2A task and MCP call-log methods are REAL — they read and write
-/// `path`, so a row written by one plugin handle is found by the next one. Every other `Store`
-/// method delegates to an inner `RamStore` (the required ones) or keeps the trait default: this
-/// fixture exists to prove task durability over the ABI, and pretending to durably store keys and
-/// credentials it never reads back would be exactly the kind of claim this crate is here to catch.
+/// A JSON-file-backed store. The A2A task/MCP-call-log methods, the virtual-key table, the usage
+/// ledger and metering are ALL REAL — every one reads and writes `path`, so a row written by one
+/// plugin handle is found by the next one. Only the credential methods (`put_key_with_credential`,
+/// `list_credentials`, …) keep the trait default: this fixture exists to prove durability across a
+/// restart, and pretending to durably store a credential it never reads back would be exactly the
+/// kind of claim this crate is here to catch.
 struct FileStore {
     path: PathBuf,
-    inner: RamStore,
     /// Serialises this handle's own read-modify-write cycles. It holds no DATA, deliberately — see
     /// [`FileStore::load`].
     gate: Mutex<()>,
@@ -176,7 +220,6 @@ impl FileStore {
         Self::load_from(&path).map_err(|e| e.0)?;
         Ok(Self {
             path,
-            inner: RamStore::new(),
             gate: Mutex::new(()),
         })
     }
@@ -575,24 +618,189 @@ impl FileStore {
             })
         })
     }
+
+    // ── the durable ones (M4): virtual keys, the usage ledger, and metering ─────────────────────
+    //
+    // These used to delegate to the in-process `inner: RamStore`, which meant every key, every
+    // rate-limit ledger and every metering row was lost the instant the plugin handle was dropped —
+    // exactly the restart-durability claim this crate exists to prove, broken for the one config
+    // (`durable_path`) whose entire point is proving it. They now read and write `self.path` like
+    // every other table in this file, under the same cross-handle `flock` critical section.
+
+    /// UPSERT by `id`, with the SAME tombstone precondition [`RamStore::put_key`] enforces: a write
+    /// that does not itself carry a tombstone must never clear an existing one, tested and applied
+    /// inside the ONE critical section `mutate` already holds — a caller-side read-then-write check
+    /// cannot close the gap a concurrent `delete_key` opens between the read and the write.
+    fn put_key_impl(&self, key: &VirtualKey) -> StoreResult<()> {
+        let key = key.clone();
+        self.mutate(move |d| {
+            if key.deleted_at.is_none() {
+                if let Some(existing) = d.keys.iter().find(|k| k.id == key.id) {
+                    if existing.deleted_at.is_some() {
+                        return Err(StoreError(format!(
+                            "put_key: '{}' is tombstoned and its id is never reissued; refusing to \
+                             clear the tombstone",
+                            key.id
+                        )));
+                    }
+                }
+            }
+            d.next_revision += 1;
+            let mut key = key;
+            key.revision = d.next_revision;
+            match d.keys.iter_mut().find(|k| k.id == key.id) {
+                Some(existing) => *existing = key,
+                None => d.keys.push(key),
+            }
+            Ok(())
+        })?
+    }
+
+    fn get_key_impl(&self, id: &str) -> StoreResult<Option<VirtualKey>> {
+        self.read(|d| d.keys.iter().find(|k| k.id == id).cloned())
+    }
+
+    fn list_keys_impl(&self) -> StoreResult<Vec<VirtualKey>> {
+        // Deliberately UNFILTERED (tombstones included) — see `Store::list_keys`'s doc.
+        self.read(|d| {
+            let mut v = d.keys.clone();
+            v.sort_by_key(|k| k.created_at);
+            v
+        })
+    }
+
+    /// TOMBSTONE `id`: the row SURVIVES (so attribution by key id — metering rows, audit records —
+    /// keeps resolving forever) but its usage ledger is dropped, mirroring `RamStore::delete_key`'s
+    /// cascade exactly. An unknown id is an ERROR, not a silent success; an already-tombstoned id is
+    /// idempotent `Ok(())`.
+    fn delete_key_impl(&self, id: &str) -> StoreResult<()> {
+        let id = id.to_string();
+        self.mutate(move |d| {
+            let ts = now();
+            let Some(key) = d.keys.iter_mut().find(|k| k.id == id) else {
+                return Err(StoreError(format!("delete_key: unknown id '{id}'")));
+            };
+            if key.deleted_at.is_some() {
+                return Ok(()); // idempotent: already tombstoned
+            }
+            key.enabled = false;
+            key.deleted_at = Some(ts);
+            d.next_revision += 1;
+            let rev = d.next_revision;
+            d.keys.iter_mut().find(|k| k.id == id).unwrap().revision = rev;
+            d.usage.retain(|u| u.bucket_id != id);
+            Ok(())
+        })?
+    }
+
+    fn get_usage_impl(&self, bucket_id: &str, window_start: u64) -> StoreResult<UsageLedger> {
+        self.read(|d| {
+            d.usage
+                .iter()
+                .find(|u| u.bucket_id == bucket_id && u.window_start == window_start)
+                .map(|u| u.ledger.clone())
+                .unwrap_or_default()
+        })
+    }
+
+    /// Write-behind ABSOLUTE set: replaces the whole (bucket, window) ledger row.
+    fn put_usage_impl(
+        &self,
+        bucket_id: &str,
+        window_start: u64,
+        ledger: &UsageLedger,
+    ) -> StoreResult<()> {
+        let bucket_id = bucket_id.to_string();
+        let ledger = ledger.clone();
+        self.mutate(move |d| {
+            match d
+                .usage
+                .iter_mut()
+                .find(|u| u.bucket_id == bucket_id && u.window_start == window_start)
+            {
+                Some(existing) => existing.ledger = ledger,
+                None => d.usage.push(UsageRow {
+                    bucket_id,
+                    window_start,
+                    ledger,
+                }),
+            }
+        })
+    }
+
+    /// ACCUMULATE (UPSERT/add) one row per `(key_id, bucket, model, provider)`, mirroring
+    /// `RamStore::add_metering` field-for-field.
+    fn add_metering_impl(&self, delta: &MeteringDelta) -> StoreResult<()> {
+        let delta = delta.clone();
+        self.mutate(move |d| {
+            match d.metering.iter_mut().find(|e| {
+                e.bucket == delta.bucket
+                    && e.row.key_id == delta.key_id
+                    && e.row.model == delta.model
+                    && e.row.provider == delta.provider
+            }) {
+                Some(e) => {
+                    e.row.tokens_input = e.row.tokens_input.saturating_add(delta.tokens_input);
+                    e.row.tokens_output = e.row.tokens_output.saturating_add(delta.tokens_output);
+                    e.row.tokens_cache_read =
+                        e.row.tokens_cache_read.saturating_add(delta.tokens_cache_read);
+                    e.row.tokens_cache_write = e
+                        .row
+                        .tokens_cache_write
+                        .saturating_add(delta.tokens_cache_write);
+                    e.row.requests = e.row.requests.saturating_add(delta.requests);
+                    e.row.billable_requests =
+                        e.row.billable_requests.saturating_add(delta.billable_requests);
+                }
+                None => d.metering.push(MeteringEntry {
+                    bucket: delta.bucket,
+                    row: MeteringRow {
+                        key_id: delta.key_id,
+                        model: delta.model,
+                        provider: delta.provider,
+                        tokens_input: delta.tokens_input,
+                        tokens_output: delta.tokens_output,
+                        tokens_cache_read: delta.tokens_cache_read,
+                        tokens_cache_write: delta.tokens_cache_write,
+                        requests: delta.requests,
+                        billable_requests: delta.billable_requests,
+                        key_group_at_use: delta.key_group_at_use,
+                        pricing_version: delta.pricing_version,
+                    },
+                }),
+            }
+        })
+    }
+
+    fn list_metering_impl(&self, bucket: u64) -> StoreResult<Vec<MeteringRow>> {
+        self.read(|d| {
+            d.metering
+                .iter()
+                .filter(|e| e.bucket == bucket)
+                .map(|e| e.row.clone())
+                .collect()
+        })
+    }
 }
 
 impl Store for FileStore {
-    // ── delegated to the inner RamStore (the methods the trait requires) ─────────────────────
+    // ── keys / usage / metering: REAL persistence to `self.path` (M4) ────────────────────────
+    //
+    // No longer delegated to an in-process `RamStore` — see the `_impl` helpers above for why.
     fn put_key(&self, key: &VirtualKey) -> StoreResult<()> {
-        self.inner.put_key(key)
+        self.put_key_impl(key)
     }
     fn get_key(&self, id: &str) -> StoreResult<Option<VirtualKey>> {
-        self.inner.get_key(id)
+        self.get_key_impl(id)
     }
     fn list_keys(&self) -> StoreResult<Vec<VirtualKey>> {
-        self.inner.list_keys()
+        self.list_keys_impl()
     }
     fn delete_key(&self, id: &str) -> StoreResult<()> {
-        self.inner.delete_key(id)
+        self.delete_key_impl(id)
     }
     fn get_usage(&self, bucket_id: &str, window_start: u64) -> StoreResult<UsageLedger> {
-        self.inner.get_usage(bucket_id, window_start)
+        self.get_usage_impl(bucket_id, window_start)
     }
     fn put_usage(
         &self,
@@ -600,13 +808,13 @@ impl Store for FileStore {
         window_start: u64,
         ledger: &UsageLedger,
     ) -> StoreResult<()> {
-        self.inner.put_usage(bucket_id, window_start, ledger)
+        self.put_usage_impl(bucket_id, window_start, ledger)
     }
     fn add_metering(&self, delta: &MeteringDelta) -> StoreResult<()> {
-        self.inner.add_metering(delta)
+        self.add_metering_impl(delta)
     }
     fn list_metering(&self, bucket: u64) -> StoreResult<Vec<MeteringRow>> {
-        self.inner.list_metering(bucket)
+        self.list_metering_impl(bucket)
     }
 
     // ── THE NEUTRAL KIND-TAGGED PLANE-RECORD VERBS (1.6.0, Commit 2) ──────────────────────────

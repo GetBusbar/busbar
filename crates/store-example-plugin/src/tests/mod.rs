@@ -739,6 +739,74 @@ fn ram_add_metering_accumulates_into_one_row_per_bucket() {
     );
 }
 
+/// M4: DURABILITY ACROSS A RESTART for keys, the usage ledger, and metering — the same claim
+/// `a_task_written_by_one_handle_is_read_by_a_reopened_handle` proves for the A2A task table, proved
+/// here for the three tables that used to delegate to an in-process `RamStore` and therefore lost
+/// every key, every rate-limit ledger and every metering row the instant the plugin handle was
+/// dropped. A regression back to that delegation would pass every OTHER test in this file (they all
+/// drive a single still-open handle) and fail only this one.
+#[test]
+fn keys_usage_and_metering_written_by_one_handle_are_read_by_a_reopened_handle() {
+    let mut path = std::env::temp_dir();
+    path.push(format!(
+        "busbar-store-example-plugin-restart-kum-{}-{}.json",
+        std::process::id(),
+        std::sync::atomic::AtomicU64::new(0).fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    let _ = std::fs::remove_file(&path);
+
+    let key = busbar_plugin_testkit::store_conformance::live_key("kum_key");
+    let ledger = UsageLedger {
+        requests: 3,
+        billable_requests: 2,
+        models: Vec::new(),
+    };
+    let metering_delta = MeteringDelta {
+        key_id: "kum_key".into(),
+        bucket: 9,
+        model: "m".into(),
+        provider: "p".into(),
+        tokens_input: 11,
+        tokens_output: 22,
+        tokens_cache_read: 0,
+        tokens_cache_write: 0,
+        requests: 1,
+        billable_requests: 1,
+        key_group_at_use: String::new(),
+        pricing_version: String::new(),
+    };
+    {
+        let h1 = FileStore::open(path.clone()).expect("open handle 1");
+        h1.put_key(&key).expect("write the key");
+        h1.put_usage("kum_key", 0, &ledger).expect("write the ledger");
+        h1.add_metering(&metering_delta).expect("write metering");
+    } // handle dropped — simulate a restart
+
+    let h2 = FileStore::open(path.clone()).expect("reopen handle 2");
+    let row = h2
+        .get_key("kum_key")
+        .expect("read back")
+        .expect("the key SURVIVES the restart");
+    assert_eq!(row.name, key.name);
+    assert!(
+        h2.list_keys().expect("list").iter().any(|k| k.id == "kum_key"),
+        "list_keys sees the key too"
+    );
+    assert_eq!(
+        h2.get_usage("kum_key", 0).expect("read back the ledger"),
+        ledger,
+        "the usage ledger SURVIVES the restart"
+    );
+    let rows = h2.list_metering(9).expect("read back metering");
+    assert_eq!(rows.len(), 1, "the metering row SURVIVES the restart");
+    assert_eq!(rows[0].tokens_input, 11);
+    assert_eq!(rows[0].requests, 1);
+
+    let _ = std::fs::remove_file(&path);
+    #[cfg(unix)]
+    let _ = std::fs::remove_file(super::lock_path_for(&path));
+}
+
 /// THE STANDALONE RULING ITSELF, read off the manifest rather than trusted to review. This crate is
 /// the copy-me template for `kind: store`; PLUGIN-TREE.md §4 says no crate may name another instance
 /// of any kind, "not in a dependency". The `manifest-allowlist` gate is report-only in CI today
