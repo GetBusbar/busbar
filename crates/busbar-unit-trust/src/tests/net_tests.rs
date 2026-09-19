@@ -206,6 +206,68 @@ fn cloud_metadata_is_judged_separately_and_covers_every_vendor() {
     ));
 }
 
+/// D27 PARITY: THE NAT64 / RFC 6052 EMBEDDING MUST BE JUDGED HERE TOO.
+///
+/// The live sibling (`busbar-substrate::net_guard`) unwraps a NAT64-synthesized address through
+/// `embedded_ipv4` before the IMDS/private judgement, so a DNS64 resolver answering `64:ff9b::a9fe:a9fe`
+/// (= `169.254.169.254`) cannot buy an IMDS hop. This copy unwrapped only `to_ipv4()`, which does NOT
+/// recognise `64:ff9b::/96` — so the SAME synthesized IMDS literal read as an ordinary public v6
+/// address here and was connected to. Whichever copy a call site routes through decided whether the
+/// hop was guarded, which is exactly the drift the two copies must never carry. This asserts the
+/// embedding is judged in BOTH the well-known and the RFC 8215 local-use forms, including the D27
+/// follow-up: a `/96` local-use instantiation with a NON-ZERO middle (RFC 8215 Section 6's own
+/// `64:ff9b:1:fffe::/96` worked example).
+#[test]
+fn nat64_embedded_ipv4_is_judged_at_parity_with_the_substrate() {
+    use std::net::{IpAddr, Ipv6Addr};
+
+    // Well-known `64:ff9b::/96` (RFC 6052): metadata and internal targets, unwrapped and refused.
+    for meta in [
+        "64:ff9b::a9fe:a9fe",
+        "64:ff9b:1::a9fe:a9fe",
+        "64:ff9b:1:fffe::a9fe:a9fe",
+    ] {
+        let ip: IpAddr = meta.parse().expect(meta);
+        assert!(
+            ip_is_cloud_metadata(&ip),
+            "{meta} is the NAT64 synthesis of the IMDS target 169.254.169.254 and must be judged \
+             metadata exactly as the substrate copy judges it"
+        );
+    }
+    for internal in [
+        "64:ff9b::7f00:1",         // 127.0.0.1 loopback
+        "64:ff9b::a01:203",        // 10.1.2.3 private
+        "64:ff9b:1::7f00:1",       // local-use loopback
+        "64:ff9b:1:fffe::a01:203", // non-zero-padded local-use private (RFC 8215 §6 prefix)
+    ] {
+        let ip: IpAddr = internal.parse().expect(internal);
+        assert!(
+            ip_is_internal(&ip),
+            "{internal} is a NAT64 embedding of an internal IPv4 target and must be internal here \
+             just as it is to the substrate copy"
+        );
+    }
+
+    // `embedded_ipv4` decodes the low 32 bits regardless of the operator-chosen local-use middle.
+    assert_eq!(
+        embedded_ipv4(&"64:ff9b:1:fffe::a9fe:a9fe".parse::<Ipv6Addr>().unwrap()),
+        Some(Ipv4Addr::new(169, 254, 169, 254)),
+    );
+    // RFC 6052 fixes the ENTIRE well-known /96 to zero: a non-zero middle there is an ordinary
+    // address, not an embedding, and must NOT be unwrapped.
+    assert_eq!(
+        embedded_ipv4(&"64:ff9b::1:0:a9fe:a9fe".parse::<Ipv6Addr>().unwrap()),
+        None,
+    );
+
+    // End-to-end through the denylist judgement, the way an operator's guard actually runs.
+    assert_eq!(
+        ssrf_blocked_host("https://[64:ff9b:1:fffe::a9fe:a9fe]/", &[], false, &[]).as_deref(),
+        Some("64:ff9b:1:fffe::a9fe:a9fe"),
+        "the RFC 8215 local-use NAT64 synthesis of the IMDS target must be refused end to end"
+    );
+}
+
 const PUBLIC: &str = "93.184.216.34";
 const PUBLIC_2: &str = "93.184.216.35";
 
