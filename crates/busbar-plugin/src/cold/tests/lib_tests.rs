@@ -216,19 +216,18 @@ fn request_response_json_roundtrip() {
 }
 
 #[test]
-fn abi_version_is_four() {
-    // Bumped 1 -> 2 for the credentials generalization, 2 -> 3 for the Store genericization (the 14
-    // protocol-named Store verbs collapsed to 8 neutral kind-tagged verbs), then 3 -> 4 for the
-    // plane record-type relocation (the four durable record structs moved out of `busbar-api` into
-    // the plane crates, so a 1.6-built plugin can no longer link against 1.7 — see ABI_VERSION's
-    // doc). A mismatched plugin is refused at the handshake, and the loader's supported-ABI floor is
-    // [4,4], so a stale 1.6 store artifact is refused at load.
-    assert_eq!(ABI_VERSION, 4);
+fn abi_version_is_three() {
+    // Bumped 1 -> 2 for the credentials generalization, then 2 -> 3 for the Store genericization (the
+    // 14 protocol-named Store verbs collapsed to 8 neutral kind-tagged verbs). v3 is the 1.6.0 max;
+    // the 3 -> 4 plane record-type relocation is a SOURCE-contract break DEFERRED to 1.7.0 (see
+    // ABI_VERSION's doc). A mismatched plugin is refused at the handshake, and the loader's
+    // supported-ABI window is [2, 3], so every published 1.5.x store (abi_version 2) still loads.
+    assert_eq!(ABI_VERSION, 3);
 }
 
-/// The auth payload schema is at v2 (1.5.2 login primitives). Pinned so the SDK/loader floor and
+/// The auth payload schema is at v3 (the 1.6.0 additive bump). Pinned so the SDK/loader floor and
 /// the wire additions can't silently drift apart.
 #[test]
-fn auth_abi_version_is_two() {
-    assert_eq!(AUTH_ABI_VERSION, 2);
+fn auth_abi_version_is_three() {
+    assert_eq!(AUTH_ABI_VERSION, 3);
 }

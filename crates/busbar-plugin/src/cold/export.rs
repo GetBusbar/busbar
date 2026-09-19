@@ -28,12 +28,15 @@ use serde::{Deserialize, Serialize};
 /// vocabulary was expanded and the `audit` stream REMOVED (an auditor is a projection made of other
 /// streams, not a data type), so a v1 sink that declared `audit` no longer has a stream to declare.
 /// A REMOVED wire token is a breaking payload change, so the floor moves rather than accepting a
-/// token the engine can no longer route. This is the per-kind PAYLOAD axis, NOT the transport axis
+/// token the engine can no longer route. v3 (1.6.0): an ADDITIVE bump — the projection grammar grows
+/// new stream tokens/envelope fields without removing any, so a published v2 sink still loads and
+/// delivers and the loader window stays `[2, EXPORT_ABI_VERSION]` = `[2, 3]` (v1, which declared the
+/// removed `audit` stream, remains refused). This is the per-kind PAYLOAD axis, NOT the transport axis
 /// — an export plugin exports the SAME six neutral symbols ([`crate::cold::symbol`]) as every other kind, at
 /// `busbar_abi() == TRANSPORT_VERSION`. Named the same way [`crate::cold::SECRET_ABI_VERSION`] and
 /// [`crate::cold::hook::HOOK_ABI_VERSION`] are, so the loader floor and the SDK's declared version share one
 /// const and cannot silently drift apart.
-pub const EXPORT_ABI_VERSION: u32 = 2;
+pub const EXPORT_ABI_VERSION: u32 = 3;
 
 /// One observability stream an export sink can carry OUT of the engine — the FROZEN word-space of
 /// the export projection grammar, the same discipline as the hook phase names.

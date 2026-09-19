@@ -1111,7 +1111,7 @@ impl Store for DynStore {
     // ── THE NEUTRAL KIND-TAGGED PLANE-RECORD SURFACE (1.6.0) ─────────────────────────────────
     //
     // THE EIGHT DURABLE-PLANE OVERRIDES, and now the ONLY ones — the fourteen protocol-named
-    // overrides they replaced are deleted and `ABI_VERSION` is 4.
+    // overrides they replaced are deleted and `ABI_VERSION` is 3.
     // Without these overrides `DynStore` would answer the neutral verbs from `Store`'s defaults, so a
     // store plugin that implements them would have its every write DISCARDED here while the call
     // reported success. Each routes through `call_with_legacy_default`, the one choke point, so a

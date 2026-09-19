@@ -15,10 +15,13 @@ use std::os::raw::c_void;
 /// The POD schema version stamped into each struct's `version` field at construction. Distinct from
 /// the airlock [`ABI_MAJOR`](crate::ABI_MAJOR): this bumps additively as fields are appended.
 ///
-/// 1.6.0 M1: 2→3 for the append-only `Usage` keyed-unit tail (`units_ptr`/`units_len`), paired with
-/// `ABI_MINOR` 19→20. A pre-minor-20 sender advertises the shorter `size`; the sized-struct guard
-/// reads the tail only when `size` proves it was written, so back-compat holds.
-pub const POD_VERSION: u16 = 3;
+/// New in 1.6.0: the hot plane/transport POD ABI is a 1.6.0-only surface (no 1.5.5 byte-identity
+/// constraint), so its in-development churn is reset to the 1.6.0 baseline of 1. It bumps additively
+/// as fields are appended thereafter; a pre-append sender advertises the shorter `size`, and the
+/// sized-struct guard reads a trailing field only when `size` proves it was written, so back-compat
+/// holds (e.g. the append-only `Usage` keyed-unit tail `units_ptr`/`units_len`, paired with
+/// `ABI_MINOR`).
+pub const POD_VERSION: u16 = 1;
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 // Handle-id newtypes — opaque host-side references a plane holds. `#[repr(transparent)]` over u64

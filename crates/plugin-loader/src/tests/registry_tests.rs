@@ -10,35 +10,37 @@ fn key(seed: u8) -> SigningKey {
     SigningKey::from_bytes(&[seed; 32])
 }
 
-/// After the auth ABI v1→2 bump the loader floor MUST still admit v1 — a pre-built v1
-/// auth plugin (verify-only, e.g. `auth-static-plugin`) keeps loading. The supported range is the
-/// inclusive `[1, 2]`.
+/// After the auth ABI bumps (v1→2→3) the loader floor MUST still admit v1 — a pre-built v1
+/// auth plugin (verify-only, e.g. `auth-static-plugin`) keeps loading, as does a published v2
+/// (login-capable) one. The supported range is the inclusive `[1, 3]`.
 #[test]
 fn supported_abi_auth_floor_admits_v1() {
     let range = supported_abi("auth");
     assert_eq!(range, &[1, busbar_plugin::cold::AUTH_ABI_VERSION]);
     let (floor, max) = (range[0], range[1]);
     assert_eq!(floor, 1, "v1 auth plugins must still load");
-    assert_eq!(max, 2, "v2 is the current auth payload schema");
+    assert_eq!(max, 3, "v3 is the current auth payload schema");
     assert!(floor <= 1 && 1 <= max, "abi_version 1 is in range");
     assert!(floor <= 2 && 2 <= max, "abi_version 2 is in range");
+    assert!(floor <= 3 && 3 <= max, "abi_version 3 is in range");
 }
 
 /// THE STORE FLOOR IS 2 AND MUST STAY THERE. Every published first-party store plugin
-/// (sqlite/postgres/mysql/valkey) carries `abi_version: 2`, the 1.5.x wire. The 2→3 and 3→4 bumps
+/// (sqlite/postgres/mysql/valkey) carries `abi_version: 2`, the 1.5.x wire. The 2→3 bump
 /// changed what a plugin is COMPILED against, not a byte the engine exchanges with a built artifact:
 /// every variant the 1.5.x engine sent still exists unchanged, and the eight neutral plane-record
 /// verbs added since are ones a v2 plugin answers with `STATUS_UNSUPPORTED`, which `DynStore`
-/// already treats as inert. So the range is `[2, ABI_VERSION]` = `[2, 4]`; v1 (whose AWS-only
-/// credential variants no longer exist) is the only store schema this binary cannot speak.
+/// already treats as inert. So the range is `[2, ABI_VERSION]` = `[2, 3]`; v1 (whose AWS-only
+/// credential variants no longer exist) is the only store schema this binary cannot speak. (v4, the
+/// plane record-type relocation, is a SOURCE-contract break DEFERRED to 1.7.0.)
 #[test]
 fn supported_abi_store_floor_admits_v2() {
     let range = supported_abi("store");
     assert_eq!(range, &[STORE_ABI_FLOOR, busbar_plugin::cold::ABI_VERSION]);
     assert_eq!(
         busbar_plugin::cold::ABI_VERSION,
-        4,
-        "store payload schema is v4"
+        3,
+        "store payload schema is v3"
     );
     let (floor, max) = (range[0], range[1]);
     assert_eq!(
@@ -48,7 +50,10 @@ fn supported_abi_store_floor_admits_v2() {
     assert!(!(floor <= 1 && 1 <= max), "abi_version 1 is NOT in range");
     assert!(floor <= 2 && 2 <= max, "abi_version 2 is in range");
     assert!(floor <= 3 && 3 <= max, "abi_version 3 is in range");
-    assert!(floor <= 4 && 4 <= max, "abi_version 4 is in range");
+    assert!(
+        !(floor <= 4 && 4 <= max),
+        "abi_version 4 is NOT in range (deferred to 1.7.0)"
+    );
 }
 
 /// PARITY WITH 1.5.5: a signed, otherwise-valid store artifact whose manifest declares
@@ -80,15 +85,15 @@ fn a_v2_store_artifact_is_accepted_at_load() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// THE RANGE EDGES, both ways. The store range is `v2..=v4`: a v2 manifest is accepted (above),
-/// while v1 (below the floor) and v5 (above what this binary speaks) are each a HARD structural
-/// INVALID that names the file, the kind, the offending version AND the range — so an operator
-/// reading the line knows exactly what this binary will take. The signatures are valid on purpose:
-/// both rejections are the ABI range, not trust.
+/// THE RANGE EDGES, both ways. The store range is `v2..=v3`: a v2 manifest is accepted (above),
+/// while v1 (below the floor) and v4 (above what this binary speaks — the abi-4 forward-load is
+/// deferred to 1.7.0) are each a HARD structural INVALID that names the file, the kind, the offending
+/// version AND the range — so an operator reading the line knows exactly what this binary will take.
+/// The signatures are valid on purpose: both rejections are the ABI range, not trust.
 #[test]
-fn store_abi_below_or_above_the_range_is_refused_naming_v2_to_v4() {
+fn store_abi_below_or_above_the_range_is_refused_naming_v2_to_v3() {
     let release = key(1);
-    for (tag, version) in [("v1", 1u32), ("v5", 5u32)] {
+    for (tag, version) in [("v1", 1u32), ("v4", 4u32)] {
         let dir = tmpdir(&format!("range-{tag}"));
         let mut m = manifest("busbar-store-edge", "edge", "busbar");
         m.abi_version = version;
@@ -117,7 +122,7 @@ fn store_abi_below_or_above_the_range_is_refused_naming_v2_to_v4() {
             errs[0]
         );
         assert!(
-            errs[0].contains("supported range v2..=v4"),
+            errs[0].contains("supported range v2..=v3"),
             "{tag}: names the range this binary speaks: {}",
             errs[0]
         );
@@ -848,19 +853,46 @@ fn auth_supported_abi_reads_the_shared_const() {
     );
 }
 
-/// The export range reads the shared `EXPORT_ABI_VERSION` const on both endpoints, so a bump
-/// propagates automatically instead of drifting from the SDK's declared version. `kind: export`
-/// is a recognized kind with a non-empty supported range.
+/// The export range's MAX reads the shared `EXPORT_ABI_VERSION` const, so a bump propagates
+/// automatically instead of drifting from the SDK's declared version. The FLOOR is pinned at 2 (a
+/// published v2 sink still loads — the 1.6.0 v3 bump is additive), so the range is
+/// `[2, EXPORT_ABI_VERSION]`, not `[EXPORT_ABI_VERSION, EXPORT_ABI_VERSION]`. `kind: export` is a
+/// recognized kind with a non-empty supported range.
 #[test]
 fn export_supported_abi_reads_the_shared_const() {
     assert_eq!(
         supported_abi("export"),
-        &[
-            busbar_plugin::cold::export::EXPORT_ABI_VERSION,
-            busbar_plugin::cold::export::EXPORT_ABI_VERSION,
-        ]
+        &[2, busbar_plugin::cold::export::EXPORT_ABI_VERSION]
     );
     assert!(!supported_abi("export").is_empty());
+}
+
+/// LOAD-FLOOR WIDENING (1.6.0, owner ruling 2026-09-19): every cold-kind ABI const bumped to its
+/// 1.5.5 baseline + 1, and each loader window was widened so BOTH the number a published 1.5.5 plugin
+/// carries AND the new 1.6.0 number are inside the accept-window. This is the anti-regression guard:
+/// a widened ceiling must never lift the floor and strand an already-published plugin at load.
+#[test]
+fn every_cold_kind_window_admits_both_the_published_1_5_5_and_the_1_6_0_abi() {
+    // (kind, the abi a published 1.5.5 plugin carries, the 1.6.0 abi)
+    for (kind, published_1_5_5, current_1_6_0) in [
+        ("store", 2u32, 3u32),
+        ("secret", 1, 2),
+        ("auth", 2, 3), // 1.5.5 shipped auth v2; a v1 verify-only plugin also still loads (floor 1)
+        ("hook", 1, 2),
+        ("export", 2, 3),
+    ] {
+        let range = supported_abi(kind);
+        let (floor, max) = (range[0], range[1]);
+        assert!(
+            floor <= published_1_5_5 && published_1_5_5 <= max,
+            "{kind}: a published 1.5.5 plugin (abi {published_1_5_5}) must still load, window \
+             [{floor},{max}]"
+        );
+        assert!(
+            floor <= current_1_6_0 && current_1_6_0 <= max,
+            "{kind}: a new 1.6.0 plugin (abi {current_1_6_0}) must load, window [{floor},{max}]"
+        );
+    }
 }
 
 // ── The FIRST-PARTY replay, end to end over the real scan ──────────────────────────────────────

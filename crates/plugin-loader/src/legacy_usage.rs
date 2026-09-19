@@ -31,8 +31,10 @@ use busbar_api::{
 use serde::{Deserialize, Serialize};
 
 /// The FIRST payload schema that speaks the name-keyed unit map. A store plugin below this version
-/// was built against the four-tier struct and must be spoken to in that shape.
-pub(crate) const UNIT_MAP_ABI: u32 = 4;
+/// was built against the four-tier struct and must be spoken to in that shape. The unit map is a
+/// 1.6.0 feature that lands at the current store schema (`cold::ABI_VERSION` = 3), so a 1.5.5
+/// published store (schema 2) still takes the legacy four-tier wire while a 1.6.0 store gets the map.
+pub(crate) const UNIT_MAP_ABI: u32 = 3;
 
 /// Does a store at this payload schema need the 1.5.5 four-tier usage shape?
 pub(crate) fn needs_legacy_usage_wire(abi_version: u32) -> bool {
