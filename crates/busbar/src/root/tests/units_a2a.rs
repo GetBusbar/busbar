@@ -360,14 +360,11 @@ fn a_bad_credential_is_refused_before_verify_through_the_nodes_own_seams() {
                 return None;
             }
             match credential {
-                "tok" => Some(KeyFacts {
-                    id: "key-a2a-1".to_string(),
-                    name: "an approved key".to_string(),
-                }),
-                "burned" => Some(KeyFacts {
-                    id: "key-a2a-burned".to_string(),
-                    name: "a key that was minted and then burned".to_string(),
-                }),
+                "tok" => Some(KeyFacts::unrestricted("key-a2a-1", "an approved key")),
+                "burned" => Some(KeyFacts::unrestricted(
+                    "key-a2a-burned",
+                    "a key that was minted and then burned",
+                )),
                 _ => None,
             }
         }

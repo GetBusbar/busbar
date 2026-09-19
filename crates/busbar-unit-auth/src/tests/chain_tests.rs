@@ -360,10 +360,7 @@ impl crate::chain::KeyVerifier for OrderRecordingVerifier {
         if !self.record_and_check("by_id") {
             return None;
         }
-        Some(ResolvedKey {
-            id: "vk_order".to_string(),
-            name: "order-pin".to_string(),
-        })
+        Some(ResolvedKey::unrestricted("vk_order", "order-pin"))
     }
 }
 

@@ -814,9 +814,11 @@ impl crate::root::auth_bindings::VirtualKeyDirectory for Denylist {
         // before its denylist can take it away, or the refusal would be a probe answered for
         // a string nothing verified. So the one credential these cells present is one this
         // directory minted.
-        (credential == "admin-token").then(|| crate::root::auth_bindings::KeyFacts {
-            id: "key-admin-1".to_string(),
-            name: "the operator credential these cells present".to_string(),
+        (credential == "admin-token").then(|| {
+            crate::root::auth_bindings::KeyFacts::unrestricted(
+                "key-admin-1",
+                "the operator credential these cells present",
+            )
         })
     }
 
