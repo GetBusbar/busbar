@@ -692,3 +692,47 @@ fn a_safe_suffix_record_restores_with_exact_fields_despite_embedded_pipes() {
     assert_eq!(entry.outcome, "rejected");
     assert_eq!(entry.principal, "attacker");
 }
+
+/// LENGTH-FIELD BOUNDS: a SAFE-marked suffix that is truncated — cut short inside a length prefix, or
+/// declaring a length that runs past what remains — must decode to empty trailing fields rather than
+/// panicking. `take_lp`'s "decode what you can, never panic" discipline is exercised here directly
+/// rather than only reasoned about, since this is the one path a corrupt/tampered on-disk row (caught
+/// by `verify_chain` separately) or a truncated write can actually reach at restore time.
+#[test]
+fn parse_audit_suffix_does_not_panic_on_a_truncated_safe_body() {
+    // Marker only, nothing after it.
+    let (ts, action, resource, outcome, principal) = parse_audit_suffix(&[SAFE_SUFFIX_MARKER]);
+    assert_eq!(
+        (
+            ts,
+            action.as_str(),
+            resource.as_str(),
+            outcome.as_str(),
+            principal.as_str()
+        ),
+        (0, "", "", "", "")
+    );
+
+    // Marker plus a length prefix cut short of its full 8 bytes.
+    let mut short_len = vec![SAFE_SUFFIX_MARKER];
+    short_len.extend_from_slice(&[0, 0, 0]);
+    let (ts, action, ..) = parse_audit_suffix(&short_len);
+    assert_eq!(ts, 0);
+    assert_eq!(action, "");
+
+    // Marker plus a complete length prefix that declares more bytes than actually follow.
+    let mut over_declared = vec![SAFE_SUFFIX_MARKER];
+    over_declared.extend_from_slice(&8u64.to_be_bytes()); // ts field claims 8 bytes...
+    over_declared.extend_from_slice(&1_700_000_000u64.to_be_bytes()); // ...and gets them.
+    over_declared.extend_from_slice(&1_000u64.to_be_bytes()); // action field claims 1000 bytes...
+    over_declared.extend_from_slice(b"short"); // ...but only 5 follow.
+    let (ts, action, resource, outcome, principal) = parse_audit_suffix(&over_declared);
+    assert_eq!(ts, 1_700_000_000);
+    assert_eq!(
+        action, "",
+        "an over-declared length must yield an empty field, not a panic"
+    );
+    assert_eq!(resource, "");
+    assert_eq!(outcome, "");
+    assert_eq!(principal, "");
+}
