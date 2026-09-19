@@ -765,3 +765,28 @@ fn price_discount_is_single_divide_not_sum_of_per_component_floors() {
         "top-level lines must sum to the single-divide total"
     );
 }
+
+/// `RateNanos::reserved_nanos` must SATURATE, never wrap, when the four reserved terms overshoot
+/// `u128::MAX`. Each term here is `2^63 × 2^63 = 2^126`; the four together are exactly `2^128`,
+/// which a non-saturating u128 sum wraps straight back to `0` in a release build — an
+/// astronomically expensive usage that would then price at nothing and slip under every budget
+/// cap. Saturating math floors the total at `u128::MAX` so the cap still trips.
+#[test]
+fn reserved_nanos_saturates_rather_than_wrapping_a_budget_bypass() {
+    let big: u64 = 1 << 63;
+    let rate = RateNanos {
+        input: big,
+        output: big,
+        cache_read: big,
+        cache_write: big,
+    };
+    let mut units: BTreeMap<String, u64> = BTreeMap::new();
+    for u in busbar_api::RESERVED_UNITS {
+        units.insert(u.to_string(), big);
+    }
+    assert_eq!(
+        rate.reserved_nanos(&units),
+        u128::MAX,
+        "reserved_nanos must saturate on overflow; a wrapped (~0) total bypasses every budget cap"
+    );
+}

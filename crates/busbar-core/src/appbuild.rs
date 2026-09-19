@@ -507,6 +507,40 @@ pub fn load_config_from_disk(
 /// `spawn_blocking` boundary the admin transaction (`txn.rs`) applies it on.
 pub type GovCredentialRotation = Box<dyn FnOnce() + Send>;
 
+/// The process-wide operational limits a build installed, still PROVISIONAL.
+///
+/// [`build_app_from_config_provisional`] has to install the candidate limits before it starts (the
+/// build reads them through deep-call-stack accessors), and every step of the build itself is
+/// fallible — the inner `InstallGuard` covers that, rolling them back on any `return Err`/`?`. What
+/// it does NOT cover is everything the CALLER still has to do: an admin apply persists the desired
+/// state to the overlay AFTER the build returns, and a persist failure aborts the transaction with
+/// "nothing was changed (the running engine is unaffected)". Committing the guard at the end of the
+/// build made that message false for exactly the values a rejected config should never get to set —
+/// the old `App` keeps serving, but under the rejected config's body caps.
+///
+/// So the commit is the CALLER's, shaped like the governance-credential rotation beside it: the
+/// build hands back an uncommitted handle, and the one place that knows the transaction actually
+/// landed (persist AND swap both `Ok`) calls [`InstalledLimits::keep`]. Dropped unkept — a persist
+/// failure, an early return, a caller that simply lets it fall out of scope — the previous limits
+/// are restored. The boot/reload-only [`build_app_from_config`] wrapper keeps them immediately,
+/// because boot has no separate persist step (the config file IS the durable state).
+#[must_use = "an unkept InstalledLimits rolls the process-wide limits back when dropped"]
+pub struct InstalledLimits(limits::InstallGuard);
+
+impl InstalledLimits {
+    /// The new generation is live (and durable, where the caller persists): KEEP these limits.
+    pub fn keep(self) {
+        self.0.commit();
+    }
+}
+
+/// Build one config generation's `App`, committing the process-wide limits IMMEDIATELY.
+///
+/// The entry point for callers with NO separate persist-and-swap step after the build — boot
+/// (`crates/busbar`'s `main`), a `--validate` preflight, and the in-crate test builders — for whom
+/// this build simply IS the live generation, so its limits stay installed the moment it succeeds.
+/// The admin mutation paths instead call [`build_app_from_config_provisional`] and defer
+/// [`InstalledLimits::keep`] to after their own persist-and-swap lands (see that type's doc).
 #[cold] // boot/admin-only — keeps hot text dense (never inlined into a warm path)
 #[inline(never)]
 pub fn build_app_from_config(
@@ -518,6 +552,36 @@ pub fn build_app_from_config(
     config_paths: (Option<std::path::PathBuf>, Option<std::path::PathBuf>),
     prior: Option<&state::App>,
 ) -> Result<(state::App, Option<GovCredentialRotation>), String> {
+    let (app, rotate, limits) = build_app_from_config_provisional(
+        cfg,
+        plugins_cfg,
+        overlay_path,
+        base_hook_names,
+        base_group_names,
+        config_paths,
+        prior,
+    )?;
+    // No caller-side persist step follows: this build is the live generation, so keep its limits now.
+    limits.keep();
+    Ok((app, rotate))
+}
+
+/// Build one config generation's `App`, handing the process-wide limits back UNCOMMITTED.
+///
+/// The entry point for the admin mutation paths, which must persist-and-swap before the limits this
+/// build installed become live: they thread the returned [`InstalledLimits`] to the commit site and
+/// [`keep`](InstalledLimits::keep) it only once that lands. See [`InstalledLimits`] for why.
+#[cold] // boot/admin-only — keeps hot text dense (never inlined into a warm path)
+#[inline(never)]
+pub fn build_app_from_config_provisional(
+    cfg: config::RootCfg,
+    plugins_cfg: config::PluginsCfg,
+    overlay_path: Option<std::path::PathBuf>,
+    base_hook_names: std::collections::HashSet<String>,
+    base_group_names: std::collections::HashSet<String>,
+    config_paths: (Option<std::path::PathBuf>, Option<std::path::PathBuf>),
+    prior: Option<&state::App>,
+) -> Result<(state::App, Option<GovCredentialRotation>, InstalledLimits), String> {
     // Install the resolved operational limits process-wide BEFORE any subsystem reads them —
     // running here (not in main) so a config APPLY/RELOAD refreshes them too. The values threaded
     // explicitly (client/store/router/TLS) read `cfg.limits` directly; the deep call-stack sites
@@ -1621,30 +1685,26 @@ pub fn build_app_from_config(
     // its `aud`, which any resource server verifying against our JWKS would then honour — so the
     // list is derived here, from the planes this deployment actually serves, rather than configured
     // separately where it could disagree with them.
-    let oauth_as_plane = match cfg.oauth_as.as_ref() {
-        None => None,
+    //
+    // AND CARRIED ACROSS AN APPLY THAT DOES NOT CHANGE IT. Rebuilding this plane is not a cheap no-op
+    // with a fresh object at the end of it: the store is `MemoryStorage`, so a rebuild INVALIDATES
+    // every outstanding token and every dynamically registered client, and with no `signing_key:`
+    // configured it also mints a brand-new ephemeral key, so even a client holding a token cannot
+    // have it verified. The documented contract is that those things are lost "on restart" — an
+    // operator editing an unrelated pool must not be silently logging every agent out. So the running
+    // plane is CARRIED whenever the generation would build the same one (same validated identity AND
+    // same protected-resource ceiling), and rebuilt only when an oauth input actually moved. The
+    // build inputs are remembered on `App` (`oauth_as_inputs`) precisely so this carry decision can
+    // compare them — the plane object itself is type-erased and cannot be interrogated from core.
+    let (oauth_as_plane, oauth_as_inputs) = match cfg.oauth_as.as_ref() {
+        None => (None, None),
         Some(identity) => {
-            let key_material = match identity.signing_key() {
-                None => {
-                    diag_warn!(
-                        OAUTH_AS_EPHEMERAL_SIGNING_KEY,
-                        "oauth_as: no signing_key configured, so an EPHEMERAL ES256 key was \
-                         generated. Every token this deployment issues stops verifying when the \
-                         process restarts. Set `oauth_as.signing_key` for anything but a trial."
-                    );
-                    None
-                }
-                Some(reference) => Some(
-                    secret_resolver
-                        .resolve_string(reference)
-                        .map_err(|e| format!("oauth_as.signing_key: {e}"))?,
-                ),
-            };
             // busbar's OWN protected resource is a container plane's ingress canonical URI, read back
             // through that plane's `admission` seam — a `PlaneAdmission::audience` IS that canonical
             // URI — so appbuild names no plane-owned resource type. Empty when the `tools:` section is
             // absent or its owning plane is compiled out (no built-in decl, hence no admission, so the
-            // deployment protects no such audience).
+            // deployment protects no such audience). Computed FIRST because it is a carry-compare
+            // input exactly as `identity` is.
             let protected_resources: Vec<String> = cfg
                 .endpoint_resources
                 .get(busbar_substrate::plane::config::NAMED_MAP_SECTIONS[2])
@@ -1657,23 +1717,58 @@ pub fn build_app_from_config(
                 .map(|adm| adm.audience)
                 .into_iter()
                 .collect();
-            // Built through the seam (`crate::oauth_as::seam`), not `crate::oauth_as::plane::AsPlane`
-            // directly: the concrete plane type lives in the sibling `busbar-oauth2` crate, which
-            // core cannot name (the one-way dependency runs the other direction). The seam's `build`
-            // also spawns the plane's own expired-record sweeper — the same "how do I come alive"
-            // act this call site used to perform inline (`Storage::sweep_expired` is the only thing
-            // that reclaims anything in `oauth-as`, and it runs when it is called and never
-            // otherwise; spawned once per generation).
-            let seam = crate::oauth_as::seam::seam().ok_or_else(|| {
-                "oauth_as: configured, but the authorization-server plane (busbar-oauth2) is not \
-                 linked into this binary"
-                    .to_string()
-            })?;
-            Some((seam.build)(
-                identity,
-                key_material.as_deref(),
-                protected_resources,
-            )?)
+            // THE CARRY: a prior generation whose oauth inputs equal this one's is reused as-is —
+            // tokens, registered clients, ephemeral key and its already-running sweeper all intact.
+            let carried = prior.and_then(|p| {
+                let plane = p.oauth_as.as_ref()?;
+                let (prev_identity, prev_resources) = p.oauth_as_inputs.as_ref()?;
+                (prev_identity == identity && *prev_resources == protected_resources)
+                    .then(|| Arc::clone(plane))
+            });
+            match carried {
+                // Carried: NO key resolution, NO ephemeral-key re-warn (a carried generation must
+                // not re-warn about a key it did not generate nor re-read the operator's secret), and
+                // NO second sweeper (the carried plane's own is still running over its own store).
+                Some(plane) => (Some(plane), Some((identity.clone(), protected_resources))),
+                None => {
+                    // A REBUILD: resolve the key (or warn about an ephemeral one) HERE.
+                    let key_material = match identity.signing_key() {
+                        None => {
+                            diag_warn!(
+                                OAUTH_AS_EPHEMERAL_SIGNING_KEY,
+                                "oauth_as: no signing_key configured, so an EPHEMERAL ES256 key was \
+                                 generated. Every token this deployment issues stops verifying when \
+                                 the process restarts. Set `oauth_as.signing_key` for anything but a \
+                                 trial."
+                            );
+                            None
+                        }
+                        Some(reference) => Some(
+                            secret_resolver
+                                .resolve_string(reference)
+                                .map_err(|e| format!("oauth_as.signing_key: {e}"))?,
+                        ),
+                    };
+                    // Built through the seam (`crate::oauth_as::seam`), not
+                    // `crate::oauth_as::plane::AsPlane` directly: the concrete plane type lives in the
+                    // sibling `busbar-oauth2` crate, which core cannot name (the one-way dependency
+                    // runs the other direction). The seam's `build` also spawns the plane's own
+                    // expired-record sweeper — the same "how do I come alive" act this call site used
+                    // to perform inline (spawned once per BUILT generation; a carried generation
+                    // spawns none).
+                    let seam = crate::oauth_as::seam::seam().ok_or_else(|| {
+                        "oauth_as: configured, but the authorization-server plane (busbar-oauth2) is \
+                         not linked into this binary"
+                            .to_string()
+                    })?;
+                    let plane = (seam.build)(
+                        identity,
+                        key_material.as_deref(),
+                        protected_resources.clone(),
+                    )?;
+                    (Some(plane), Some((identity.clone(), protected_resources)))
+                }
+            }
         }
     };
 
@@ -1897,6 +1992,9 @@ pub fn build_app_from_config(
         // runtime accessor, which downcasts that slot inside the plane.
         plane_slots,
         oauth_as: oauth_as_plane.clone(),
+        // The build inputs behind `oauth_as`, so the NEXT apply can carry the running plane when it
+        // would build the same one (see `oauth_as` above and `state::App::oauth_as_inputs`).
+        oauth_as_inputs,
         // CARRIED ACROSS THE APPLY for the same reason, and it is the same class of mistake: an
         // approval already spent is evidence, not intent, and a config apply that forgot it would
         // hand every outstanding confirmation back to whoever still holds it.
@@ -1982,8 +2080,10 @@ pub fn build_app_from_config(
             retain(&app);
         }
     }
-    // The build reached its end without a single fallible step refusing: KEEP the limits installed
-    // at the top. Every earlier `return Err` / `?` drops the guard instead and rolls them back.
-    limits_guard.commit();
-    Ok((app, rotate_gov_credentials))
+    // The build reached its end without a single fallible step refusing — but the build is not the
+    // whole apply. The guard travels OUT, uncommitted, so the limits survive only if the caller's own
+    // persist-and-swap lands (see `InstalledLimits`). Every earlier `return Err` / `?` drops it here
+    // instead and rolls them back, exactly as before. The `build_app_from_config` wrapper keeps it
+    // immediately for boot/reload callers that have no separate persist step.
+    Ok((app, rotate_gov_credentials, InstalledLimits(limits_guard)))
 }

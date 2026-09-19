@@ -172,16 +172,21 @@ impl RateNanos {
         }
     }
 
-    /// The nano-unit cost of a unit map's RESERVED FOUR at this rate: the four multiply-adds in u128
-    /// (a u64 count times a u64 nano rate cannot overflow u128). Byte-identical to the pre-M1b
-    /// `cost_nanos(&TierTokens)` — the map values ARE the old struct fields. Opens are NOT priced
-    /// here (they need the per-model `ExtraRates`); the enforcement/derive summation prices only the
+    /// The nano-unit cost of a unit map's RESERVED FOUR at this rate: four multiply-adds in u128.
+    /// A single `u64 count × u64 nano rate` cannot overflow a u128, but the SUM of the four CAN
+    /// (four products near `u64::MAX²` overshoot `u128::MAX`), and a non-saturating sum WRAPS in a
+    /// release build — a wrapped total can land near zero and price an astronomically expensive
+    /// usage at ~nothing, slipping under every budget cap. So the arithmetic SATURATES, exactly as
+    /// [`price`]'s own reserved-tier summation does: an overflowing usage floors at `u128::MAX` and
+    /// the cap still trips. Byte-identical to the pre-M1b `cost_nanos(&TierTokens)` for every
+    /// non-overflowing input — the map values ARE the old struct fields. Opens are NOT priced here
+    /// (they need the per-model `ExtraRates`); the enforcement/derive summation prices only the
     /// reserved four, exactly as before M1b.
     #[inline]
     pub fn reserved_nanos(&self, units: &BTreeMap<String, u64>) -> u128 {
         RESERVED_UNITS.iter().fold(0u128, |acc, u| {
             let n = units.get(*u).copied().unwrap_or(0);
-            acc + (n as u128) * (self.reserved_rate(u) as u128)
+            acc.saturating_add(u128::from(n).saturating_mul(u128::from(self.reserved_rate(u))))
         })
     }
 }

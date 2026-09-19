@@ -504,7 +504,7 @@ async fn apply(
                 let base_group_names: std::collections::HashSet<String> =
                     cfg.groups.keys().cloned().collect();
                 busbar_core::config::overlay::merge_into(&mut cfg, doc);
-                busbar_core::build_app_from_config(
+                busbar_core::build_app_from_config_provisional(
                     cfg,
                     loaded.deploy.plugins.clone(),
                     // Preserve the LIVE overlay path (not the env-derived one the disk load
@@ -516,7 +516,7 @@ async fn apply(
                     Some(&snapshot),
                 )
             })();
-            let (built, gov_rotate) = match built {
+            let (built, gov_rotate, limits) = match built {
                 Ok(v) => v,
                 // The rebuild rejected the mutated config — NOTHING was persisted or swapped.
                 Err(e) => {
@@ -560,6 +560,8 @@ async fn apply(
                     })
                 },
                 move || {
+                    // Past persist AND swap: keep the limits this build installed.
+                    limits.keep();
                     if let Some(rotate) = gov_rotate {
                         rotate();
                     }

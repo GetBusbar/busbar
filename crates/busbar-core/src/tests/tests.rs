@@ -2587,3 +2587,109 @@ fn planeless_config_gets_inert_plane_breakers_and_apply_upgrades() {
         "a provisioned prior must survive an apply that removes the plane content"
     );
 }
+
+/// B20: an apply whose oauth inputs are UNCHANGED must CARRY the running authorization server, not
+/// rebuild it over a fresh `MemoryStorage`. A rebuild invalidates every outstanding token and every
+/// dynamically-registered client and, with no `signing_key:`, mints a new ephemeral key — so an
+/// operator editing an unrelated section would silently log every agent out. Only a genuine change
+/// to an oauth input rebuilds. busbar-core cannot link busbar-oauth2, so this drives the carry
+/// decision over a DUMMY seam whose `build` counts its runs and hands back a fresh handle each time.
+#[test]
+fn oauth_as_is_carried_across_an_apply_that_does_not_change_it() {
+    crate::metrics::init();
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    static BUILDS: AtomicUsize = AtomicUsize::new(0);
+    fn dummy_build(
+        _id: &crate::oauth_as::config::AsIdentity,
+        _key: Option<&str>,
+        _res: Vec<String>,
+    ) -> Result<Arc<dyn std::any::Any + Send + Sync>, String> {
+        BUILDS.fetch_add(1, Ordering::SeqCst);
+        Ok(Arc::new(()) as Arc<dyn std::any::Any + Send + Sync>)
+    }
+    fn dummy_mount(
+        r: crate::core_routes::CoreRouter,
+        _p: Option<&Arc<dyn std::any::Any + Send + Sync>>,
+    ) -> crate::core_routes::CoreRouter {
+        r
+    }
+    // Register the dummy seam once for this test binary (busbar-oauth2 is never linked here, so the
+    // production seam is absent and this test is the only registrar).
+    if crate::oauth_as::seam::seam().is_none() {
+        crate::oauth_as::seam::install_as_plane_seam(crate::oauth_as::seam::AsPlaneSeam {
+            build: dummy_build,
+            mount: dummy_mount,
+        });
+    }
+
+    let id_of = |issuer: &str| {
+        crate::oauth_as::config::AsIdentity::from_cfg(&crate::oauth_as::config::OauthAsCfg {
+            issuer: issuer.to_string(),
+            signing_key: None,
+            key_id: None,
+            default_grant: Vec::new(),
+            access_token_ttl_secs: None,
+        })
+        .expect("valid identity")
+    };
+
+    let build = |ident: Option<crate::oauth_as::config::AsIdentity>,
+                 prior: Option<&crate::state::App>| {
+        let mut cfg =
+            cfg_with_provider_api_key(crate::config::SecretRef::env("BUSBAR_TEST_OAUTH_CARRY_KEY"));
+        cfg.oauth_as = ident;
+        crate::build_app_from_config(
+            cfg,
+            crate::config::PluginsCfg::default(),
+            None,
+            std::collections::HashSet::new(),
+            std::collections::HashSet::new(),
+            (None, None),
+            prior,
+        )
+        .expect("build must succeed")
+        .0
+    };
+
+    // Boot: one build.
+    let app1 = Arc::new(build(Some(id_of("https://gw.example.com")), None));
+    assert_eq!(
+        BUILDS.load(Ordering::SeqCst),
+        1,
+        "boot builds the plane once"
+    );
+
+    // Apply with the SAME oauth inputs → CARRY: no rebuild, and the SAME handle.
+    let app2 = Arc::new(build(Some(id_of("https://gw.example.com")), Some(&app1)));
+    assert_eq!(
+        BUILDS.load(Ordering::SeqCst),
+        1,
+        "an apply that does not change oauth_as must NOT rebuild the authorization server"
+    );
+    assert!(
+        Arc::ptr_eq(
+            app1.oauth_as.as_ref().expect("app1 has a plane"),
+            app2.oauth_as.as_ref().expect("app2 carries the plane"),
+        ),
+        "the carried apply must reuse the RUNNING plane object, not a fresh one"
+    );
+
+    // Apply with a CHANGED issuer → rebuild: a new build, a different handle.
+    let app3 = Arc::new(build(
+        Some(id_of("https://gw.example.com/tenant2")),
+        Some(&app2),
+    ));
+    assert_eq!(
+        BUILDS.load(Ordering::SeqCst),
+        2,
+        "a genuine oauth change must rebuild"
+    );
+    assert!(
+        !Arc::ptr_eq(
+            app2.oauth_as.as_ref().unwrap(),
+            app3.oauth_as.as_ref().unwrap(),
+        ),
+        "a rebuild must install a fresh plane object"
+    );
+}

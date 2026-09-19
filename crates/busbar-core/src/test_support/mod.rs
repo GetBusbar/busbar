@@ -1848,6 +1848,9 @@ impl TestApp {
             // the production default and is what keeps every existing test's route table unchanged
             // by this plane's arrival.
             oauth_as: self.oauth_as.clone(),
+            // No remembered build inputs: this builder installs a plane object directly and never
+            // reloads through the carry path, so it always rebuilds (the safe, pre-carry behaviour).
+            oauth_as_inputs: None,
             // The type-erased `agents:` handle: the A2A test-kit erases its own `AgentsCfg` and hands
             // it via `set_plane_defs_any` KEYED by its plane; `build()` reads it under the decl key of
             // the plane that owns the `agents:` section (resolved from the registry, never a literal),
