@@ -395,6 +395,35 @@ fn cohere_response_logprobs_drop_is_warned() {
     );
 }
 
+/// Watches: `usage.cached_tokens` → `cache_read_input_tokens`. A Cohere prompt-cache hit is a slice
+/// of `tokens.input_tokens` the model did not have to process; leaving it inside plain input prices
+/// it at the full input rate instead of the cache-READ tier. The reader must move it into
+/// `cache_read_input_tokens` and normalize `input_tokens` to the UNCACHED remainder (the additive
+/// convention: uncached + cache_read reconstructs the reported total).
+#[test]
+fn cohere_response_cached_tokens_priced_at_cache_read_tier() {
+    let ir = CohereReader
+        .read_response(&json!({
+            "id": "c1",
+            "message": {"role": "assistant", "content": [{"type": "text", "text": "hi"}]},
+            "finish_reason": "COMPLETE",
+            "usage": {
+                "tokens": {"input_tokens": 100, "output_tokens": 20},
+                "cached_tokens": 40
+            }
+        }))
+        .expect("cohere response parses");
+    assert_eq!(
+        ir.usage.cache_read_input_tokens,
+        Some(40),
+        "cached_tokens must read into cache_read_input_tokens: {ir:?}"
+    );
+    assert_eq!(
+        ir.usage.input_tokens, 60,
+        "input_tokens must be normalized to the UNCACHED remainder (100 - 40): {ir:?}"
+    );
+}
+
 // ─────────────────────────────────── RESPONSE: stream frames ───────────────────────────────────
 
 /// Build the IR usage a stream terminal carries.
