@@ -401,6 +401,63 @@ fn test_validate_rejects_unknown_member_ref() {
     assert!(errs[0].contains("references unknown model"));
 }
 
+/// Validation reads a `file:` credential reference so it can dry-run the credential FORMAT check.
+/// The read is BOUNDED: `POST /api/v1/admin/config/validate` runs this same `validate` over a
+/// CALLER-SUPPLIED config, so an unbounded `fs::read` let a read-scope admin aim it at an endless
+/// or enormous path and make the gateway allocate until it died. A file over the cap resolves to
+/// nothing — exactly as an unset env var already does — so the dry-run check is skipped rather than
+/// the process being spent reading. A credential-sized file is unaffected: the same content under
+/// the cap still produces the format error.
+#[test]
+fn test_validate_bounds_the_credential_file_it_reads() {
+    let dir = std::env::temp_dir().join(format!(
+        "busbar-validate-credfile-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+
+    // No colon ⇒ `validate_credential` rejects it, so a RESOLVED read is observable as an error
+    // naming this provider's credential.
+    let small = dir.join("small.cred");
+    std::fs::write(&small, b"no-colon-in-here").unwrap();
+    let huge = dir.join("huge.cred");
+    std::fs::write(&huge, vec![b'x'; super::VALIDATE_SECRET_MAX_BYTES as usize + 1]).unwrap();
+
+    let build = |path: &std::path::Path| -> Vec<String> {
+        let mut providers = HashMap::new();
+        let mut entra = make_provider("openai", "https://myres.openai.azure.com", "API_KEY");
+        entra.api_key = config::SecretRef::file(path.to_string_lossy().into_owned());
+        entra.token_url = Some("https://login.microsoftonline.com/t/token".into());
+        entra.scope = Some("api://x/.default".into());
+        entra.auth = Some(config::ProviderAuth::OAuthClientCredentials);
+        providers.insert("entra".to_string(), entra);
+        let mut models = HashMap::new();
+        models.insert("m".to_string(), make_model("entra", 10));
+        let mut pools = HashMap::new();
+        pools.insert("p".to_string(), make_pool(vec![make_member("m")]));
+        let cfg = make_root_cfg(providers, models, pools);
+        validate(&cfg).err().unwrap_or_default()
+    };
+    let names_the_credential =
+        |errs: &[String]| errs.iter().any(|e| e.contains("credential (from file:"));
+
+    assert!(
+        names_the_credential(&build(&small)),
+        "a credential-sized file is still read and still format-checked"
+    );
+    let over = build(&huge);
+    assert!(
+        !names_the_credential(&over),
+        "a file over the read cap must not be read into memory at all; got: {over:?}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn test_validate_token_url_ssrf_and_scheme() {
     // token_url carries the client secret in the POST body, so it must clear BOTH the https
