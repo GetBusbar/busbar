@@ -1055,6 +1055,135 @@ async fn a_token_is_not_spent_by_being_used_while_the_task_is_live() {
     }
 }
 
+// ══ S17: THE PER-TASK RATE LIMIT ═════════════════════════════════════════════════════════════════
+
+/// **A LIVE TOKEN PRESENTED PAST THE WINDOW'S BUDGET IS `429`, NOT `202`.**
+///
+/// The MAC and `token_live` together prove the token still authorises this task; neither says
+/// anything about how OFTEN it may be spent. A backend (or anyone holding the token — it rides the
+/// wire in the clear, per the module header) driving this endpoint as fast as it can open sockets
+/// must be refused before `taskstore::transition` and the delivery spawn run again for it, or an
+/// unbounded rate here is an unbounded rate against the caller's own webhook.
+///
+/// Every report here is `working` re-reported as `working` — a retry, per `push_notification`'s own
+/// rule, so this drives the rate budget without ever moving the task and without the ambiguity a
+/// terminal state would add (which would itself start evicting the entry, and the test is about the
+/// limit, not the eviction).
+#[tokio::test]
+async fn a_task_pushed_past_the_window_is_refused_with_429() {
+    let h = harness_on(
+        in_turn(200, vec![jsonrpc_working(), jsonrpc_config()]),
+        BINDING_JSONRPC,
+    )
+    .await;
+    let task = open_a_task(&h, &submission()).await;
+    let before = h.sent().len();
+    let registration = issued_last(&h, before, &create_call(&task)).await;
+    let token = token_on_the_wire(&registration);
+
+    let mut saw_429 = false;
+    let mut saw_202_at_budget = false;
+    for i in 0..130u32 {
+        let status = push_to_busbar(&h, &token, &pushed("working")).await;
+        if i < 120 {
+            assert_eq!(
+                status, 202,
+                "presentation {i} is within the documented per-window budget and must be taken"
+            );
+            saw_202_at_budget = true;
+        } else if status == 429 {
+            saw_429 = true;
+        } else {
+            assert_eq!(
+                status, 202,
+                "presentation {i} is past the budget and was neither 202 nor 429"
+            );
+        }
+    }
+    assert!(saw_202_at_budget, "the budget itself must admit requests");
+    assert!(
+        saw_429,
+        "a task pushed well past RATE_MAX_PER_WINDOW in one window was never refused with 429"
+    );
+}
+
+/// **THE LIMIT IS KEYED PER TASK, NOT GLOBALLY AND NOT PER TOKEN-HOLDER.** Exhausting one task's
+/// budget must not touch a second task's — each token names exactly one task, so a backend spamming
+/// task A cannot use that to deny service against task B's own, independent budget.
+#[tokio::test]
+async fn exhausting_one_tasks_budget_does_not_touch_another_tasks() {
+    let h = harness_on(
+        in_turn(
+            200,
+            vec![
+                jsonrpc_working(),
+                jsonrpc_config(),
+                jsonrpc_working(),
+                jsonrpc_config(),
+            ],
+        ),
+        BINDING_JSONRPC,
+    )
+    .await;
+    let task_a = open_a_task(&h, &submission()).await;
+    let before_a = h.sent().len();
+    let reg_a = issued_last(&h, before_a, &create_call(&task_a)).await;
+    let token_a = token_on_the_wire(&reg_a);
+
+    let task_b = open_a_task(&h, &submission()).await;
+    let before_b = h.sent().len();
+    let reg_b = issued_last(&h, before_b, &create_call(&task_b)).await;
+    let token_b = token_on_the_wire(&reg_b);
+
+    for _ in 0..125 {
+        push_to_busbar(&h, &token_a, &pushed("working")).await;
+    }
+    assert_eq!(
+        push_to_busbar(&h, &token_b, &pushed("working")).await,
+        202,
+        "task B's own budget must be untouched by task A's having been exhausted"
+    );
+}
+
+/// **THE MAINLINE EVICTION.** When a push's OWN transition is what lands the task in a terminal
+/// state, that same call forgets the task's rate entry — it does not wait on a later presentation of
+/// the now-dead token, which ordinarily never comes.
+#[tokio::test]
+async fn the_rate_entry_is_forgotten_when_a_push_ends_its_own_task() {
+    let h = harness_on(
+        in_turn(200, vec![jsonrpc_working(), jsonrpc_config()]),
+        BINDING_JSONRPC,
+    )
+    .await;
+    let task = open_a_task(&h, &submission()).await;
+    let before = h.sent().len();
+    let registration = issued_last(&h, before, &create_call(&task)).await;
+    let token = token_on_the_wire(&registration);
+
+    // A non-terminal push first, so the map is known to hold an entry for this task before the
+    // assertion that it no longer does.
+    assert_eq!(
+        push_to_busbar(&h, &token, &pushed("working")).await,
+        202,
+        "a non-terminal report on a live task must be taken"
+    );
+    assert!(
+        pushback::rate_map_contains(&task),
+        "a taken push must have entered a rate entry for its task"
+    );
+
+    assert_eq!(
+        push_to_busbar(&h, &token, &pushed("completed")).await,
+        202,
+        "the ending report on a live task must be taken"
+    );
+    assert!(
+        !pushback::rate_map_contains(&task),
+        "a push that ends its own task must forget that task's rate entry in the SAME call, not \
+         wait on a later presentation of the now-dead token"
+    );
+}
+
 // ══ THE TOKEN AND THE ADDRESS, AS VALUES ═════════════════════════════════════════════════════════
 
 /// A MINTED TOKEN VERIFIES FOR ITS OWN TASK AND FOR NO OTHER.
