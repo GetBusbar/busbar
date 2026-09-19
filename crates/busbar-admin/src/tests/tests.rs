@@ -9925,6 +9925,83 @@ async fn settings_test_app(
     (dir, overlay, addr, handle)
 }
 
+/// B59: an admin apply whose PERSIST step fails must NOT leave the rejected config's process-wide
+/// LIMITS installed. `build_app_from_config_provisional` installs the candidate limits at the top
+/// (the build reads them) behind a guard, but hands them back UNCOMMITTED — the caller `.keep()`s
+/// them only once its persist-and-swap lands. Committing the guard inside the build left a REJECTED
+/// config's limits installed process-wide while the handler told the operator "nothing was changed"
+/// and the old `App` kept serving under the rejected caps. Force the persist failure deterministically
+/// (a corrupt overlay `load_for_rmw` refuses) and assert the live cap afterwards. `PUT
+/// /config/settings` is the sharpest site — its root section CARRIES `limits:`.
+#[tokio::test]
+async fn test_admin_v1_config_settings_persist_failure_does_not_install_limits() {
+    busbar_core::metrics::init();
+    // The installed limits are a PROCESS-GLOBAL slot; hold the lock the limit-installing tests hold
+    // so a sibling's install cannot land mid-assertion here.
+    let _limits_lock = busbar_substrate::config::limits::LIMITS_TEST_LOCK
+        .lock()
+        .await;
+    let (dir, config_path, providers_path) = write_reset_fixture("settings-limits-persist-fail");
+    let overlay = dir.join("overlay.json");
+    // Corrupt from the start, so the apply's persist step (a read-modify-write) fails
+    // deterministically every time — while the BUILD still succeeds (and thus installs the
+    // candidate limits), which is the only state in which the pre-fix bug manifests.
+    std::fs::write(&overlay, b"{ not json").unwrap();
+    let store = Arc::new(MemoryStore::new());
+    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    let mut app = crate::new_test_app()
+        .governance(gov)
+        .overlay_path(overlay.clone())
+        .build();
+    {
+        let inner = Arc::get_mut(&mut app).expect("sole owner");
+        inner.config_path = Some(config_path.clone());
+        inner.providers_path = Some(providers_path.clone());
+    }
+    let router = crate::build_router(app);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+
+    let before = busbar_substrate::config::limits::installed();
+    // A cap nothing else in this binary uses (and comfortably inside the floor/ceiling so the build
+    // accepts it), so its presence afterwards could only come from THIS rejected apply.
+    let rejected_cap: usize = 7_654_321;
+    let put = reqwest::Client::new()
+        .put(format!("http://{addr}/api/v1/admin/config/settings"))
+        .header("x-admin-token", "admintok")
+        .header("content-type", "application/json")
+        .body(
+            serde_json::json!({ "limits": { "request_body_max_bytes": rejected_cap } }).to_string(),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        put.status().as_u16(),
+        400,
+        "the corrupt overlay must fail the persist step: {:?}",
+        put.text().await
+    );
+
+    let after = busbar_substrate::config::limits::installed();
+    assert_ne!(
+        after.as_ref().map(|l| l.request_body_max_bytes),
+        Some(rejected_cap),
+        "a persist failure must leave the REJECTED config's limits uninstalled — the response just \
+         claimed nothing was changed, and these are process-wide values the old (still-serving) App \
+         reads through"
+    );
+    assert_eq!(
+        after.map(|l| l.request_body_max_bytes),
+        before.map(|l| l.request_body_max_bytes),
+        "the limits installed before the rejected apply are the ones still installed after it"
+    );
+
+    handle.abort();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// ROUND-TRIP + RESTART SURVIVAL: a `PUT /config/settings` with LIVE-swappable sections (rate_card +
 /// per_request_fee + a limits field) applies live (200, version bumps), is written to the overlay
 /// `root` section, is reflected by `GET /config/settings`, and — crucially — survives a
