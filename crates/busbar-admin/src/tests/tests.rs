@@ -4207,6 +4207,52 @@ async fn test_admin_v1_config_validate_accepts_1_6_0_additive_top_level_keys() {
     handle.abort();
 }
 
+/// config/apply HIGH: `POST /api/v1/admin/config/apply` must run the SAME 1.6.0 pre-pass
+/// (`busbar_core::config::deploy_from_deserializer`) that the disk loader and `config/validate` (D49)
+/// run, so a 1.6.0-additive top-level key (`oauth_as`/`mcp`/…) applies clean rather than being
+/// refused `400 unknown field`. The same document boots clean from disk and now validates clean via
+/// `config/validate`; applying it must not diverge. Before the fix (`ApplyConfigReq` derived
+/// `DeployCfg` directly) this body returned `400`.
+#[tokio::test]
+async fn test_admin_v1_config_apply_accepts_1_6_0_additive_top_level_keys() {
+    busbar_core::metrics::init();
+    let store = Arc::new(MemoryStore::new());
+    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    let app = crate::new_test_app().governance(gov).build();
+    let router = crate::build_router(app);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let client = reqwest::Client::new();
+
+    let body = serde_json::json!({
+        "config": {
+            "oauth_as": null,
+            "listen": "127.0.0.1:0",
+            "providers": {},
+            "models": {},
+            "pools": {}
+        },
+        "providers": {}
+    });
+    let resp = client
+        .post(format!("http://{addr}/api/v1/admin/config/apply"))
+        .header("x-admin-token", "admintok")
+        .header("content-type", "application/json")
+        .body(body.to_string())
+        .send()
+        .await
+        .unwrap();
+    let status = resp.status().as_u16();
+    let text = resp.text().await.unwrap();
+    assert_eq!(
+        status, 200,
+        "a 1.6.0-additive top-level key must apply clean, not 400 unknown field: {text}"
+    );
+
+    handle.abort();
+}
+
 /// `GET /api/v1/admin/config` composes the effective-config snapshot (auth + pools/models/providers +
 /// hooks + global_hooks) from the redacted reads. Asserts the shape and that no secret-bearing
 /// field (client tokens, provider keys) appears anywhere in the serialized body.
