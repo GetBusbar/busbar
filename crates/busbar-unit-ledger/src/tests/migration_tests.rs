@@ -203,13 +203,16 @@ fn the_opening_figures_are_the_legacy_figures_exactly() {
         .settled,
         2_500
     );
-    // And the metering rows keep their provider, one balance each.
+    // And the metering rows keep their provider, one balance each. The metering scope is
+    // length-framed, so it is derived through the figure's own key rather than spelled by hand.
     assert_eq!(
         figures_for(
             totals,
             "team-a",
             CapDimension::Class("input".into()),
-            BucketScope::Pool("meter:gpt-4/openai".into()),
+            meter_figure("team-a", 86_400, "gpt-4", "openai", "input", 0)
+                .key()
+                .scope,
             86_400,
         )
         .settled,
@@ -220,7 +223,9 @@ fn the_opening_figures_are_the_legacy_figures_exactly() {
             totals,
             "team-a",
             CapDimension::Class("input".into()),
-            BucketScope::Pool("meter:gpt-4/azure".into()),
+            meter_figure("team-a", 86_400, "gpt-4", "azure", "input", 0)
+                .key()
+                .scope,
             86_400,
         )
         .settled,
@@ -235,6 +240,73 @@ fn the_opening_figures_are_the_legacy_figures_exactly() {
     assert!(opening.checkpoint.body_hash_verifies());
     assert_eq!(opening.checkpoint.checkpoint_seq, OPENING_CHECKPOINT_SEQ);
     assert!(opening.unreadable.is_empty());
+}
+
+/// Two distinct `(lane, provider)` pairs whose text collides across a bare delimiter must not merge
+/// onto one balance. `("gpt/4", "openai")` and `("gpt", "4/openai")` both spell `gpt/4/openai` once
+/// a `/` joins them; length-framing each component is what keeps them two providers' money and not
+/// one. The money golden is the full migrate: the two amounts land on two balances, at the amounts
+/// that were read, rather than one balance holding their sum.
+#[test]
+fn a_delimiter_collision_between_lane_and_provider_does_not_merge_two_balances() {
+    // The keys are distinct before a single figure is folded.
+    let left = meter_figure("team-a", 86_400, "gpt/4", "openai", "input", 4_000);
+    let right = meter_figure("team-a", 86_400, "gpt", "4/openai", "input", 2_000);
+    assert_ne!(
+        left.key(),
+        right.key(),
+        "two providers collapsed onto one length-unframed meter key"
+    );
+
+    let source = SeededRows {
+        head: LegacyHead {
+            seq: Some(1),
+            hash: Some("h".to_string()),
+            balances: Vec::new(),
+            cells_read: 0,
+        },
+        figures: vec![left, right],
+        unreadable: Vec::new(),
+        reads: std::cell::Cell::new(0),
+    };
+    let mut records = NodeLocalRecords::new();
+    let Outcome::Sealed(opening) = sealed(&source, &mut records).expect("migrates") else {
+        panic!("the first boot seals");
+    };
+    let totals = &opening.checkpoint.totals;
+
+    assert_eq!(
+        totals.len(),
+        2,
+        "two distinct providers must open two balances, not silently merge into one"
+    );
+    assert_eq!(
+        figures_for(
+            totals,
+            "team-a",
+            CapDimension::Class("input".into()),
+            meter_figure("team-a", 86_400, "gpt/4", "openai", "input", 0)
+                .key()
+                .scope,
+            86_400,
+        )
+        .settled,
+        4_000
+    );
+    assert_eq!(
+        figures_for(
+            totals,
+            "team-a",
+            CapDimension::Class("input".into()),
+            meter_figure("team-a", 86_400, "gpt", "4/openai", "input", 0)
+                .key()
+                .scope,
+            86_400,
+        )
+        .settled,
+        2_000,
+        "the second provider's money must not have been folded into the first"
+    );
 }
 
 /// Nothing is invented and nothing is lost: the sum of the sealed figures equals the sum of what was
