@@ -9780,6 +9780,47 @@ async fn test_admin_v1_overlay_reset_named_map_section_reverts_to_base() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// B58 wire-fidelity: `DELETE /overlay/{unknown}` 400 body must spell its valid-section list the
+/// way the PUBLISHED 1.5.5 route did — `expected \`a\`, \`b\`, ..., or \`z\`` — not the drifted
+/// `expected one of \`a\`, \`b\`, ...`. Two things had moved vs 1.5.5: the section set legitimately
+/// GREW (announced), but the sentence around it was silently RE-WORDED (`expected one of`, and the
+/// `or` before the last name dropped). This pins the wording back so a reader diffing against 1.5.5
+/// sees only the added names. Asserts the structural properties that regressed rather than the full
+/// (growing) list, so a future section addition does not re-break this test.
+#[tokio::test]
+async fn test_admin_v1_overlay_reset_unknown_section_uses_published_1_5_5_wording() {
+    let (dir, _overlay, addr, handle) = named_map_app("resetunknownwire", false).await;
+    let client = reqwest::Client::new();
+    let resp = client
+        .delete(format!("http://{addr}/api/v1/admin/overlay/nope"))
+        .header("x-admin-token", "admintok")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status().as_u16(),
+        400,
+        "unknown section is a plain 400"
+    );
+    let body: serde_json::Value = resp.json().await.unwrap();
+    let msg = body["error"]["message"].as_str().unwrap_or_default();
+    assert!(
+        msg.starts_with("unknown overlay section `nope`: expected `"),
+        "1.5.5 says `expected <backticked list>`, never `expected one of ...`: {msg}"
+    );
+    assert!(
+        !msg.contains("expected one of"),
+        "the drifted `expected one of` re-wording must not come back: {msg}"
+    );
+    assert!(
+        msg.contains(", or `"),
+        "1.5.5 puts an `or` before the last section name: {msg}"
+    );
+
+    handle.abort();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// REFERENTIAL INTEGRITY on a BULK reset: a section reset that would leave another config site
 /// naming a definition that no longer exists is refused as a terminal `conflict` NAMING both the
 /// entry and its referent, and nothing changes.
