@@ -222,6 +222,24 @@ pub struct MeterClassDecl {
     pub default_divisor: u32,
 }
 
+/// One uniform meter EVENT — the single thing every plugin emits per completed turn.
+///
+/// The money model's uniform triple `(billable-units, meter-class, timestamp)`: a plugin hands core
+/// this and nothing more — it holds no money, prices nothing, and this carries no plugin-identity
+/// field. Core records the event and derives money as the one dated view over the rate-card history
+/// in the ledger. Distinct from [`MeterClassDecl`], which is the class DECLARATION (the vocabulary);
+/// this is one recorded observation against a declared class.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize)]
+pub struct MeterEvent {
+    /// The billable quantity, in the class's own unit.
+    pub units: u64,
+    /// The declared meter class this observation is counted against.
+    pub class: MeterClassId,
+    /// The wall-clock timestamp of the event, in milliseconds since the epoch. Core matches it to
+    /// the effective-dated rate card in force at that instant when it derives the money view.
+    pub wall_millis: u64,
+}
+
 /// The closed shape of a cappable dimension over an open key.
 ///
 /// The open-vocabulary section is explicit that this is a closed *shape*, not a closed list of

@@ -48,8 +48,8 @@ pub use grammar::{
 pub use ids::{
     AdminVerbId, BucketChain, BucketRef, BucketScope, CapDimension, ClaimKey, ClassDirection,
     ClassEstimate, CorrelationRef, CorrelationValue, Estimate, LaneId, MeterClassDecl,
-    MeterClassId, OpClassId, PrincipalId, RecordSchemaId, Registration, SchemeAlt, SchemeKey,
-    SessionId, StreamId, TransportId, UnitKey, UpstreamIdx, MAX_VOCABULARY,
+    MeterClassId, MeterEvent, OpClassId, PrincipalId, RecordSchemaId, Registration, SchemeAlt,
+    SchemeKey, SessionId, StreamId, TransportId, UnitKey, UpstreamIdx, MAX_VOCABULARY,
 };
 pub use kinds::{
     Ack, Anchor, AuthOutcome, AuthScheme, Challenge, ChallengeState, ContentFacts, Credential,
