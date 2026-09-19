@@ -425,7 +425,11 @@ fn test_validate_bounds_the_credential_file_it_reads() {
     let small = dir.join("small.cred");
     std::fs::write(&small, b"no-colon-in-here").unwrap();
     let huge = dir.join("huge.cred");
-    std::fs::write(&huge, vec![b'x'; super::VALIDATE_SECRET_MAX_BYTES as usize + 1]).unwrap();
+    std::fs::write(
+        &huge,
+        vec![b'x'; super::VALIDATE_SECRET_MAX_BYTES as usize + 1],
+    )
+    .unwrap();
 
     let build = |path: &std::path::Path| -> Vec<String> {
         let mut providers = HashMap::new();
@@ -5663,7 +5667,8 @@ fn validate_runs_the_signing_key_format_guard_like_boot() {
 
     std::env::remove_var(sig_env);
 
-    let err = result.expect_err("a malformed signing key must fail validate exactly as it fails boot");
+    let err =
+        result.expect_err("a malformed signing key must fail validate exactly as it fails boot");
     assert!(
         err.contains("32-byte ed25519"),
         "the refusal must be boot's own format sentence, verbatim: {err}"

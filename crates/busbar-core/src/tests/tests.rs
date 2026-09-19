@@ -2349,7 +2349,10 @@ fn validate_plugins_dir_exists_refuses_a_missing_enabled_dir() {
     plugins.enabled = true;
     let err = crate::validate_plugins_dir_exists(&plugins)
         .expect_err("an enabled but missing plugins.dir must be refused at --validate");
-    assert!(err.contains("/no/such/plugins/dir"), "names the path: {err}");
+    assert!(
+        err.contains("/no/such/plugins/dir"),
+        "names the path: {err}"
+    );
     assert!(err.contains("plugins.enabled"), "names the setting: {err}");
 
     // Enabled + present: accepted.
