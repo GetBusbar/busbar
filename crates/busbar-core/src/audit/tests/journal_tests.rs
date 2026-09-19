@@ -427,7 +427,7 @@ fn write_neutral(j: &Journal<NeutralRec>, tenant: &str, content: &[u8]) -> Neutr
     j.append_scoped(
         KIND_NEUTRAL,
         tenant,
-        RIG_TS,
+        || RIG_TS,
         NeutralInput {
             content: content.to_vec(),
         },
@@ -631,7 +631,7 @@ fn neutral_failed_write_does_not_burn_a_sequence() {
     let err = j.append_scoped(
         KIND_NEUTRAL,
         "acme",
-        RIG_TS,
+        || RIG_TS,
         NeutralInput {
             content: b"|two".to_vec(),
         },

@@ -570,7 +570,7 @@ pub(crate) fn journal_append_scoped_full(
             |sc: &str, body: &[u8]| call_reframe(host, kind_id, h.reframe, h.framing, sc, body);
         match h
             .journal
-            .append_scoped(&h.kind, scope, stamp_now(), input, &reframe)
+            .append_scoped(&h.kind, scope, stamp_now, input, &reframe)
         {
             Ok(record) => Ok((
                 record.seq(),
@@ -625,7 +625,7 @@ pub(crate) fn journal_append_scoped_full_hostless(
         };
         match h
             .journal
-            .append_scoped(&h.kind, scope, stamp_now(), input, &reframe)
+            .append_scoped(&h.kind, scope, stamp_now, input, &reframe)
         {
             Ok(record) => Ok((
                 record.seq(),
@@ -686,7 +686,7 @@ pub(crate) extern "C-unwind" fn journal_append_scoped(
             |sc: &str, body: &[u8]| call_reframe(host, kind_id, h.reframe, h.framing, sc, body);
         match h
             .journal
-            .append_scoped(&h.kind, &scope, stamp_now(), input, &reframe)
+            .append_scoped(&h.kind, &scope, stamp_now, input, &reframe)
         {
             Ok(record) => Seq(record.seq()),
             Err(_) => Seq::NONE,
