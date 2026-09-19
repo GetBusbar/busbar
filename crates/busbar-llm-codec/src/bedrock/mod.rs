@@ -1165,6 +1165,70 @@ fn read_cache_usage(
     (cache_creation_input_tokens, cache_read_input_tokens)
 }
 
+/// The `CacheTTL` enum's two values, as the Bedrock service model spells them.
+const CACHE_TTL_5M: &str = "5m";
+const CACHE_TTL_1H: &str = "1h";
+
+/// Read Bedrock's per-TTL cache-WRITE breakdown off a Converse `usage` object into the neutral
+/// [`crate::ir::IrUsageDetail`] 5m/1h pair.
+///
+/// The service model gives `TokenUsage` a `cacheDetails` member — "Detailed breakdown of cache
+/// writes by TTL. Empty if no cache creation occurred. Sorted by TTL duration (1h before 5m)" — a
+/// list of `CacheDetail { ttl: CacheTTL ("5m" | "1h"), inputTokens }`. That is the SAME split
+/// Anthropic reports as `cache_creation.ephemeral_5m_input_tokens` / `ephemeral_1h_input_tokens`,
+/// and the IR carries it in exactly those two fields, for exactly the reason stated there: the two
+/// TTLs are PRICED DIFFERENTLY, so collapsing them into the one `cacheWriteInputTokens` total leaves
+/// a bill that reconciles in aggregate and cannot be reconciled per line. Reading only the total
+/// dropped the split on every Bedrock response.
+///
+/// A TTL the upstream did not report stays `None` (never `Some(0)`), matching the sibling buckets;
+/// an unrecognized `ttl` string is ignored rather than folded into one of the two known tiers (the
+/// total in `cacheWriteInputTokens` still carries it, so nothing is unbilled).
+fn read_cache_details(usage_obj: Option<&serde_json::Value>) -> (Option<u64>, Option<u64>) {
+    let Some(list) = usage_obj
+        .and_then(|u| u.get("cacheDetails"))
+        .and_then(|d| d.as_array())
+    else {
+        return (None, None);
+    };
+    let mut five_m: Option<u64> = None;
+    let mut one_h: Option<u64> = None;
+    for entry in list {
+        let Some(tokens) = entry.get("inputTokens").and_then(|v| v.as_u64()) else {
+            continue;
+        };
+        match entry.get("ttl").and_then(|t| t.as_str()) {
+            Some(CACHE_TTL_5M) => five_m = Some(five_m.unwrap_or(0).saturating_add(tokens)),
+            Some(CACHE_TTL_1H) => one_h = Some(one_h.unwrap_or(0).saturating_add(tokens)),
+            _ => {}
+        }
+    }
+    (five_m, one_h)
+}
+
+/// Write the IR's per-TTL cache-write split back onto a Bedrock Converse `usage` object, the inverse
+/// of [`read_cache_details`]. Emits the entries in the order the service model documents (1h before
+/// 5m) and ONLY for the tiers the IR actually carries — the spec says `cacheDetails` is "Empty if no
+/// cache creation occurred", so a response with no per-TTL split gains no member at all.
+fn write_cache_details(
+    usage_obj: &mut serde_json::Map<String, serde_json::Value>,
+    usage: &crate::ir::IrUsage,
+) {
+    let mut details = Vec::new();
+    if let Some(v) = usage.detail.cache_creation_1h_input_tokens {
+        details.push(serde_json::json!({ "ttl": CACHE_TTL_1H, "inputTokens": v }));
+    }
+    if let Some(v) = usage.detail.cache_creation_5m_input_tokens {
+        details.push(serde_json::json!({ "ttl": CACHE_TTL_5M, "inputTokens": v }));
+    }
+    if !details.is_empty() {
+        usage_obj.insert(
+            "cacheDetails".to_string(),
+            serde_json::Value::Array(details),
+        );
+    }
+}
+
 /// Write the IR's prompt-cache token fields back onto a Bedrock Converse `usage` object, the
 /// inverse of `read_cache_usage`. Emits `cacheWriteInputTokens` from `cache_creation_input_tokens`
 /// and `cacheReadInputTokens` from `cache_read_input_tokens`, and ONLY when the IR carries a value
@@ -1182,6 +1246,8 @@ fn write_cache_usage(
     if let Some(crit) = usage.cache_read_input_tokens {
         usage_obj.insert("cacheReadInputTokens".to_string(), crit.into());
     }
+    // The per-TTL breakdown of the write total above: priced separately, so carried separately.
+    write_cache_details(usage_obj, usage);
 }
 
 /// Upper bound applied to the upstream-controlled Bedrock ConverseStream `contentBlockIndex` at

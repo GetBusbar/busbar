@@ -706,6 +706,50 @@ fn bedrock_carry_response_usage() {
     );
 }
 
+/// `bedrock/response/usage.cacheDetails[]` — the per-TTL breakdown of `cacheWriteInputTokens`. The
+/// two TTLs (`5m`/`1h`) are PRICED DIFFERENTLY, so collapsing them into the one write total leaves a
+/// bill that reconciles in aggregate but not per line. The split must reach the IR's 5m/1h
+/// attribution fields and re-emit natively (1h before 5m, as the service model documents).
+#[test]
+fn bedrock_carry_response_cache_details_ttl_split() {
+    let reader = BedrockReader;
+    let writer = BedrockWriter;
+    let body = serde_json::json!({
+        "output": {"message": {"role": "assistant", "content": [{"text": "hi"}]}},
+        "stopReason": "end_turn",
+        "usage": {
+            "inputTokens": 100,
+            "outputTokens": 25,
+            "cacheWriteInputTokens": 30,
+            "cacheDetails": [
+                {"ttl": "1h", "inputTokens": 20},
+                {"ttl": "5m", "inputTokens": 10}
+            ]
+        }
+    });
+    let resp = reader.read_response(&body).expect("read");
+    assert_eq!(
+        resp.usage.detail.cache_creation_1h_input_tokens,
+        Some(20),
+        "cacheDetails 1h slice must reach IrUsageDetail.cache_creation_1h_input_tokens: {resp:?}"
+    );
+    assert_eq!(
+        resp.usage.detail.cache_creation_5m_input_tokens,
+        Some(10),
+        "cacheDetails 5m slice must reach IrUsageDetail.cache_creation_5m_input_tokens: {resp:?}"
+    );
+
+    let out = writer.write_response(&resp);
+    assert_eq!(
+        out.pointer("/usage/cacheDetails"),
+        Some(&serde_json::json!([
+            {"ttl": "1h", "inputTokens": 20},
+            {"ttl": "5m", "inputTokens": 10}
+        ])),
+        "cacheDetails must re-emit (1h before 5m); got {out}"
+    );
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // RESPONSE — provider-specific fields
 // ─────────────────────────────────────────────────────────────────────────────
