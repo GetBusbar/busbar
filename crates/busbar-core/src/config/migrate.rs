@@ -383,7 +383,7 @@ pub fn migrate_config(raw: &str) -> Result<MigrateOutput, String> {
     // the NAMED map) and BEFORE `migrate_observability_block` folds `otlp_url` in as a named
     // instance, so a single run of the migrator lands a 1.4.x config directly in the 1.5.3 shape.
     super::migrate_export::migrate_export_named_map(&mut root, &mut changes);
-    super::migrate_export::migrate_observability_block(&mut root, &mut changes);
+    super::migrate_export::migrate_observability_block(&mut root, &mut changes, &mut todos);
     // AFTER both of the above: every export instance is in its named form by now, so the projection
     // pass sees the final `module:` of each one.
     super::migrate_export::migrate_export_projection(&mut root, &mut changes, &mut todos);
@@ -1227,10 +1227,31 @@ fn migrate_auth(
                      the module's own plugin config"
                 ));
             }
+            // Anything besides the two known caps (`max_admin_scope` handled above,
+            // `allowed_groups` TODO'd above) is UNRECOGNIZED here — a key this migrator does not
+            // know how to relocate. Silently finishing the loop would drop it from the migrated
+            // document with no trace at all (the exact "quietly downgraded security config" shape
+            // this migrator exists to prevent). Name every such key loudly instead: the operator
+            // must decide by hand where it belongs (or that it truly has no 1.5.0 equivalent).
+            let unrecognized: Vec<String> = caps
+                .keys()
+                .filter_map(|k| k.as_str().map(str::to_string))
+                .filter(|k| k != "max_admin_scope" && k != "allowed_groups")
+                .collect();
+            if !unrecognized.is_empty() {
+                todos.push(format!(
+                    "auth.modules.{mod_name}: unrecognized key(s) [{}] have NO 1.5.0 equivalent \
+                     this migrator knows how to relocate; they were DROPPED from auth.modules \
+                     (which is itself removed in 1.5.0) rather than migrated. Re-express this \
+                     trust boundary by hand (role_bindings.{mod_name}, the chain/admin_auth entry \
+                     for '{mod_name}', or the module's own plugin config) before deploying.",
+                    unrecognized.join(", ")
+                ));
+            }
         }
         changes.push(
             "auth.modules removed (max_admin_scope folded into the chain entry; allowed_groups \
-             dropped with a TODO)"
+             and any other per-module key dropped with a TODO)"
                 .into(),
         );
     }
@@ -1388,6 +1409,25 @@ fn migrate_auth(
                 ));
                 changes.push(format!(
                     "auth.group_map.{role_name} caps -> generated groups.{gname}"
+                ));
+            }
+            // Anything besides the known per-role keys handled above (allowed_pools,
+            // budget_group/group, admin_scope, rpm_limit/tpm_limit/max_budget_cents/budget_period)
+            // is UNRECOGNIZED here — the same "no 1.5.0 home this migrator knows of" shape as the
+            // sibling auth.modules.<mod> caps loop above. Letting `b` simply go out of scope would
+            // drop it from the migrated document with no trace at all. Name every such key loudly
+            // instead.
+            if !b.is_empty() {
+                let unrecognized: Vec<String> = b
+                    .keys()
+                    .filter_map(|k| k.as_str().map(str::to_string))
+                    .collect();
+                todos.push(format!(
+                    "auth.group_map.{role_name}: unrecognized key(s) [{}] have NO 1.5.0 \
+                     equivalent this migrator knows how to relocate; they were DROPPED from the \
+                     old group_map role rather than migrated. Re-express this by hand in \
+                     auth.role_bindings.{module}.{role_name} before deploying.",
+                    unrecognized.join(", ")
                 ));
             }
             bindings.insert(role, Value::Mapping(binding));
