@@ -1004,3 +1004,51 @@ fn an_overlay_value_holding_an_interpolation_marker_is_refused_at_the_write() {
 
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// The interpolation-marker guard's ONLY prior test fixture has the `${...}` marker embedded inside
+/// a larger string (`"postgres://u:${DB_PASSWORD}@db:5432/busbar"`). A value that IS the marker in
+/// full, with nothing before it, is a DIFFERENT byte-offset case (`s.find("${")` returning `Some(0)`
+/// rather than a later offset) that the nested fixture can never exercise — a regression specific to
+/// the marker-at-offset-zero case would pass every test in the suite otherwise. Proves the guard
+/// refuses that shape too.
+#[test]
+fn an_overlay_value_that_is_entirely_an_interpolation_marker_is_refused_at_the_write() {
+    let dir = std::env::temp_dir().join(format!(
+        "busbar-overlay-interp-bare-{}-{}",
+        std::process::id(),
+        busbar_substrate::store::now()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("overlay.json");
+
+    let mut doc = crate::config::overlay::OverlayDoc::default();
+    let mut settings = serde_json::Map::new();
+    settings.insert(
+        "url".to_string(),
+        serde_json::Value::String("${MY_TOKEN}".to_string()),
+    );
+    let store: crate::config::StoreCfg = serde_json::from_value(serde_json::json!({
+        "module": "postgres",
+        "settings": settings,
+    }))
+    .expect("the store block builds");
+    doc.root = Some(crate::config::overlay::RootSettings {
+        store: Some(store),
+        ..Default::default()
+    });
+
+    let err = crate::config::overlay::write(&path, &doc).expect_err(
+        "a value that IS entirely an interpolation marker must refuse the write, the same as one \
+         with a marker embedded inside a larger string",
+    );
+    assert!(
+        err.to_string().contains("root.store.settings.url"),
+        "the refusal must name the exact value's path: {err}"
+    );
+    assert!(
+        !path.exists(),
+        "a refused write must publish nothing at all"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
