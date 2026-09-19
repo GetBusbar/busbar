@@ -5099,10 +5099,17 @@ pub(crate) async fn openapi(headers: axum::http::HeaderMap) -> Response {
 
 /// The `POST /api/v1/admin/config/validate` request body: a full proposed config — the `config.yaml`
 /// deploy block + the `providers.yaml` definitions — mirroring the two files busbar loads at boot.
+///
+/// `config` is carried as a raw [`serde_json::Value`], NOT a plain-derived `DeployCfg`: the 1.6.0
+/// pre-pass (`busbar_core::config::deploy_from_deserializer`) has to run on it first (see
+/// `validate_config` below) to lift the 1.6.0-additive top-level keys (`mcp`/`oauth_as`/`tools`/
+/// `agents`/`streams`, plus `auth.policy`) out BEFORE the frozen `deny_unknown_fields` `DeployCfg`
+/// parses the remainder — deriving `Deserialize` straight onto `DeployCfg` here would refuse any
+/// of those keys as unknown, even though the exact same document loads clean from disk at boot.
 #[derive(serde::Deserialize)]
 pub(crate) struct ValidateConfigReq {
-    /// The deploy config (operator-owned `config.yaml` shape).
-    config: busbar_core::config::DeployCfg,
+    /// The deploy config (operator-owned `config.yaml` shape), pre-lift.
+    config: serde_json::Value,
     /// The provider definitions (`providers.yaml` shape), keyed by provider name. Optional: a config
     /// that references no providers.yaml entries validates against an empty def set (and reports the
     /// dangling references as errors).
@@ -5124,10 +5131,27 @@ pub(crate) async fn validate_config(
             )))
         }
     };
+    // Same lift the disk loader (boot/reload) runs before parsing `DeployCfg` — see the struct
+    // doc above. NOTE: `config/apply`'s `ApplyConfigReq` derives `DeployCfg` directly and does
+    // NOT run this lift (verified: an `oauth_as` key there is refused with `400 unknown field`
+    // exactly like this endpoint was before this change) — that gap is real but out of scope
+    // here; do not extend this comment to imply it is already handled. `deploy_from_deserializer`
+    // is format-agnostic by design (its own doc: "the JSON-shaped paths ... get it too"), so
+    // feeding it the already-parsed JSON `Value` reproduces the exact disk-load parse behavior
+    // for this JSON-bodied endpoint.
+    let deploy: busbar_core::config::DeployCfg =
+        match busbar_core::config::deploy_from_deserializer(req.config) {
+            Ok(d) => d,
+            Err(e) => {
+                return err_json(&AdminError::Validation(format!(
+                    "malformed config body: {e}"
+                )))
+            }
+        };
     respond(
         StatusCode::OK,
         service(&handle)
-            .validate_config(req.config, req.providers)
+            .validate_config(deploy, req.providers)
             .await,
     )
 }
