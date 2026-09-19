@@ -104,6 +104,57 @@ fn plugin_inspect_is_classified_into_its_own_dedicated_bucket() {
     );
 }
 
+/// A regressed/backward clock (NTP step, VM live-migration, container clock skew) must not wipe
+/// every principal's budget. The window-sweep in `check` used to drop any entry whose window
+/// wasn't an exact match (`==`) for the freshly computed window; if the clock stepped backward,
+/// the newly computed window would be smaller than the real, already-recorded window, so an
+/// `==` sweep would treat every principal's live entry as "past" and evict it — refilling
+/// everyone's budget for free. The fix (`>=`) must keep any entry whose window is still current
+/// or ahead of the (bogus, regressed) computed window, sweeping only strictly-older entries.
+#[test]
+fn backward_clock_does_not_wipe_other_principals_budgets() {
+    let l = MutationLimiter::new();
+    let real_now = 1_000_000; // aligned to a window boundary (1_000_000 % 60 == 0)
+
+    // "a" and "b" each spend their whole CONFIG budget in the real, current window.
+    for _ in 0..10 {
+        assert!(l.check("a", MutationClass::Config, real_now).admitted());
+    }
+    assert!(matches!(
+        l.check("a", MutationClass::Config, real_now),
+        RateCheck::Denied { .. }
+    ));
+    for _ in 0..5 {
+        assert!(l.check("b", MutationClass::Config, real_now).admitted());
+    }
+
+    // The clock now regresses by several windows (e.g. an NTP step). A third principal's
+    // request lands with a `now` that computes an OLDER window than "a" and "b" already hold.
+    let regressed_now = real_now - 5 * MUTATION_RATE_WINDOW_SECS;
+    assert!(l.check("c", MutationClass::Config, regressed_now).admitted());
+
+    // Back at the real (later) time, "a" must still be denied (budget not refilled) and "b"
+    // must still show exactly 5 spent, not a fresh 0 — the regressed-clock sweep must not have
+    // evicted either entry.
+    assert!(
+        matches!(
+            l.check("a", MutationClass::Config, real_now),
+            RateCheck::Denied { .. }
+        ),
+        "a backward-clock request from another principal must not refill 'a' budget"
+    );
+    for _ in 0..5 {
+        assert!(
+            l.check("b", MutationClass::Config, real_now).admitted(),
+            "'b' should have exactly 5 remaining of its original 10, not a wiped/refilled budget"
+        );
+    }
+    assert!(matches!(
+        l.check("b", MutationClass::Config, real_now),
+        RateCheck::Denied { .. }
+    ));
+}
+
 /// `/config/validate` and `/plugins/inspect` are BOTH `read-only`-scoped, stateless dry-run/
 /// preview POSTs, but they must NOT share a rate bucket with each other or with CRUD — each has
 /// its own dedicated class.
