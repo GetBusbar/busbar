@@ -1335,8 +1335,15 @@ pub trait Store: Send + Sync + 'static {
     }
 
     /// TEST-AND-SET one single-use token of `kind`, valid until `expires_at`; `true` means THIS call
-    /// was the first redemption. `now` lets a backend drop lapsed rows in the same call. DEFAULTED
-    /// to `Ok(true)` ("this store keeps no ledger").
+    /// was the first redemption. `now` lets a backend drop lapsed rows in the same call.
+    ///
+    /// # The default is FAIL-CLOSED
+    ///
+    /// DEFAULTED to `Ok(false)`, NOT `Ok(true)`. A store that keeps no ledger cannot attest that
+    /// THIS call was the first redemption of the token — answering `true` unconditionally would let
+    /// a captured single-use token be replayed without limit against any backend that hasn't
+    /// implemented this verb. A store that means to grant these single-use capabilities implements
+    /// it; until then, every redemption attempt is refused.
     fn redeem_plane_token(
         &self,
         _kind: &str,
@@ -1344,7 +1351,7 @@ pub trait Store: Send + Sync + 'static {
         _expires_at: u64,
         _now: u64,
     ) -> StoreResult<bool> {
-        Ok(true)
+        Ok(false)
     }
 
     /// IS THIS TOKEN STILL LIVE? A MULTI-USE, TIME-AND-STATE-BOUNDED CAPABILITY, and deliberately
