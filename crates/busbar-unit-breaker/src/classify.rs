@@ -228,9 +228,12 @@ impl RawUpstreamError {
 /// hand-copying the literal, is how the spelling stays single-sourced.
 pub const PROVIDER_CODE_CONTEXT_LENGTH: &str = "context_length_exceeded";
 
-/// Parse an RFC 9110 `Retry-After` header VALUE against the caller's `now`. Both normative forms
-/// are accepted: `delay-seconds` (an integer, which ignores `now`) and an HTTP-date, converted to
-/// the seconds remaining until that instant and floored at 0 when it is already in the past.
+/// Parse an RFC 9110 `Retry-After` header VALUE against the caller's `now`. `delay-seconds` (an
+/// integer, which ignores `now`) and all three HTTP-date forms are accepted: the RFC 9110-preferred
+/// IMF-fixdate, and the two obsolete forms RFC 9110 §5.6.7 still requires a recipient to parse
+/// (RFC 850 and ANSI C's `asctime`) — a provider is free to emit either, so rejecting them would
+/// silently drop a real backoff hint. Any date form is converted to the seconds remaining until
+/// that instant and floored at 0 when it is already in the past.
 ///
 /// `now` is a PARAMETER because "how long until that instant" is a question about a clock, and a
 /// unit crate does not own one: the kernel that read the response also read the time, and handing
@@ -241,12 +244,13 @@ pub fn parse_retry_after(value: &str, now: u64) -> Option<u64> {
         return Some(n);
     }
     parse_imf_fixdate_retry_after(s, now)
+        .or_else(|| parse_rfc850_retry_after(s, now))
+        .or_else(|| parse_asctime_retry_after(s, now))
 }
 
-/// Parse the value as an IMF-fixdate (`Sun, 06 Nov 1994 08:49:37 GMT`, the sole HTTP-date form RFC
-/// 9110 recommends generating, though obsolete forms are permitted for parsing — this parser
-/// accepts only the recommended form, matching every provider observed in practice) and return the
-/// whole seconds remaining until it, floored at 0 for a date already in the past.
+/// Parse the value as an IMF-fixdate (`Sun, 06 Nov 1994 08:49:37 GMT`, the HTTP-date form RFC
+/// 9110 recommends generating) and return the whole seconds remaining until it, floored at 0 for a
+/// date already in the past.
 fn parse_imf_fixdate_retry_after(s: &str, now: u64) -> Option<u64> {
     // "Www, dd Mon yyyy HH:MM:SS GMT" — fixed-width, so a byte-length check plus field slicing is
     // enough; no general calendar library is warranted for one wire format.
@@ -263,6 +267,62 @@ fn parse_imf_fixdate_retry_after(s: &str, now: u64) -> Option<u64> {
     if s.as_bytes().get(3) != Some(&b',') || s.as_bytes().get(4) != Some(&b' ') {
         return None;
     }
+    let epoch_secs = civil_to_epoch_secs(year, month, day, hour, minute, second)?;
+    Some(epoch_secs.saturating_sub(now))
+}
+
+/// Parse the value as an obsolete RFC 850 date (`Sunday, 06-Nov-94 08:49:37 GMT`). The weekday
+/// name is variable-length (`Sunday` vs. `Mon`), so it is split off on the comma rather than
+/// fixed-offset sliced like the rest of the fixed-width fields; the two-digit year is expanded per
+/// the common `strptime`/POSIX pivot (00-69 -> 2000-2069, 70-99 -> 1900-1999).
+fn parse_rfc850_retry_after(s: &str, now: u64) -> Option<u64> {
+    let (_weekday, rest) = s.split_once(", ")?;
+    let bytes = rest.as_bytes();
+    if bytes.len() != 22 || !rest.ends_with(" GMT") {
+        return None;
+    }
+    if bytes.get(2) != Some(&b'-')
+        || bytes.get(6) != Some(&b'-')
+        || bytes.get(9) != Some(&b' ')
+        || bytes.get(12) != Some(&b':')
+        || bytes.get(15) != Some(&b':')
+        || bytes.get(18) != Some(&b' ')
+    {
+        return None;
+    }
+    let day: u64 = rest.get(0..2)?.parse().ok()?;
+    let month = month_from_abbrev(rest.get(3..6)?)?;
+    let yy: u64 = rest.get(7..9)?.parse().ok()?;
+    let year = if yy < 70 { 2000 + yy } else { 1900 + yy };
+    let hour: u64 = rest.get(10..12)?.parse().ok()?;
+    let minute: u64 = rest.get(13..15)?.parse().ok()?;
+    let second: u64 = rest.get(16..18)?.parse().ok()?;
+    let epoch_secs = civil_to_epoch_secs(year, month, day, hour, minute, second)?;
+    Some(epoch_secs.saturating_sub(now))
+}
+
+/// Parse the value as an ANSI C `asctime()` date (`Sun Nov  6 08:49:37 1994`) — fixed-width, but
+/// with a space-padded (not zero-padded) day-of-month for single-digit days.
+fn parse_asctime_retry_after(s: &str, now: u64) -> Option<u64> {
+    let bytes = s.as_bytes();
+    if bytes.len() != 24 {
+        return None;
+    }
+    if bytes.get(3) != Some(&b' ')
+        || bytes.get(7) != Some(&b' ')
+        || bytes.get(10) != Some(&b' ')
+        || bytes.get(13) != Some(&b':')
+        || bytes.get(16) != Some(&b':')
+        || bytes.get(19) != Some(&b' ')
+    {
+        return None;
+    }
+    let month = month_from_abbrev(s.get(4..7)?)?;
+    let day: u64 = s.get(8..10)?.trim_start().parse().ok()?;
+    let hour: u64 = s.get(11..13)?.parse().ok()?;
+    let minute: u64 = s.get(14..16)?.parse().ok()?;
+    let second: u64 = s.get(17..19)?.parse().ok()?;
+    let year: u64 = s.get(20..24)?.parse().ok()?;
     let epoch_secs = civil_to_epoch_secs(year, month, day, hour, minute, second)?;
     Some(epoch_secs.saturating_sub(now))
 }

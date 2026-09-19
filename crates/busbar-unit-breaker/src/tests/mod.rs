@@ -218,6 +218,60 @@ fn a_missing_retry_after_is_none() {
     assert_eq!(parse_retry_after("", NOW), None);
 }
 
+/// RFC 9110 §5.6.7 still requires a recipient to parse the two obsolete HTTP-date forms, not just
+/// the preferred IMF-fixdate — a provider is free to emit either, and rejecting them silently drops
+/// a real backoff hint. All three forms below name the SAME instant (2050-11-06 08:49:37 UTC, picked
+/// inside the RFC 850 two-digit-year pivot so the obsolete form is not itself ambiguous) and must
+/// parse to the same answer.
+#[test]
+fn retry_after_accepts_rfc_850_and_asctime_date_forms() {
+    const IMF_FIXDATE: &str = "Sun, 06 Nov 2050 08:49:37 GMT";
+    const RFC_850: &str = "Sunday, 06-Nov-50 08:49:37 GMT";
+    const ASCTIME: &str = "Sun Nov  6 08:49:37 2050";
+
+    let imf = parse_retry_after(IMF_FIXDATE, NOW).expect("IMF-fixdate must parse");
+    let rfc850 = parse_retry_after(RFC_850, NOW).expect("RFC 850 date must parse");
+    let asctime = parse_retry_after(ASCTIME, NOW).expect("asctime date must parse");
+    assert_eq!(
+        rfc850, imf,
+        "RFC 850 must name the same instant as IMF-fixdate"
+    );
+    assert_eq!(
+        asctime, imf,
+        "asctime must name the same instant as IMF-fixdate"
+    );
+}
+
+#[test]
+fn a_past_rfc_850_or_asctime_retry_after_floors_at_zero() {
+    assert_eq!(
+        parse_retry_after("Monday, 01-Jan-90 00:00:00 GMT", NOW),
+        Some(0)
+    );
+    assert_eq!(parse_retry_after("Mon Jan  1 00:00:00 1990", NOW), Some(0));
+}
+
+#[test]
+fn asctime_accepts_a_two_digit_day_of_month_with_no_padding_ambiguity() {
+    // asctime's day field is space-padded, not zero-padded (`"Nov 16"`, never `"Nov 016"`).
+    let secs = parse_retry_after("Sun Nov 16 08:49:37 2050", NOW);
+    assert!(secs.is_some(), "a two-digit day-of-month must still parse");
+}
+
+#[test]
+fn malformed_rfc_850_and_asctime_dates_are_rejected() {
+    // Wrong fixed-width field count / missing comma / truncated forms are all a firm None, the
+    // same posture as the existing IMF-fixdate rejection — a caller degrades to no Retry-After
+    // rather than misreading garbage as a delay.
+    assert_eq!(
+        parse_retry_after("Sunday 06-Nov-50 08:49:37 GMT", NOW),
+        None
+    ); // missing comma
+    assert_eq!(parse_retry_after("Sunday, 06-Nov-50 08:49:37", NOW), None); // missing " GMT"
+    assert_eq!(parse_retry_after("Sun Nov  6 08:49:37", NOW), None); // asctime missing year
+    assert_eq!(parse_retry_after("not a date at all", NOW), None);
+}
+
 /// An HTTP-date `Retry-After` is "how long until that instant", which needs a NOW — and the now is
 /// the kernel's, handed in, not one this crate reads for itself. Stated as the arithmetic it is: the
 /// answer is exactly the remaining seconds against the supplied `now`, and moving `now` moves the
