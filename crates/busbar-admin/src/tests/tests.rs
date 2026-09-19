@@ -4244,11 +4244,60 @@ async fn test_admin_v1_config_apply_accepts_1_6_0_additive_top_level_keys() {
         .await
         .unwrap();
     let status = resp.status().as_u16();
-    let text = resp.text().await.unwrap();
+    let body: serde_json::Value = resp.json().await.unwrap();
     assert_eq!(
         status, 200,
-        "a 1.6.0-additive top-level key must apply clean, not 400 unknown field: {text}"
+        "a 1.6.0-additive top-level key must apply clean, not 400 unknown field: {body}"
     );
+    // Not just a 200 — confirm the SUCCESS response shape actually came back (`applied: true` +
+    // a bumped `config_version`), so this proves the additive key rode all the way through the
+    // pre-pass to a real config swap, not a differently-shaped 200 from some other branch.
+    assert_eq!(
+        body["applied"], true,
+        "expected the applied-config response shape: {body}"
+    );
+    assert!(
+        body["config_version"].as_u64().is_some(),
+        "expected a config_version in the response: {body}"
+    );
+
+    handle.abort();
+}
+
+/// config/apply HIGH: a `config` value that is well-formed JSON but the WRONG SHAPE (not an object)
+/// must fail the `deploy_from_deserializer` pre-pass cleanly as a `400 invalid_request` — never a
+/// panic or a 500 — exactly like `config/validate` already proves for the identical pre-pass
+/// (`test_admin_v1_config_validate_dry_run`'s `"config": "not-an-object"` case). The pre-existing
+/// `config_apply_bad_body` table case only covers syntactically-broken JSON (`"{"`), which fails the
+/// OUTER `serde_json::from_slice::<ApplyConfigReq>` before `config` is ever handed to
+/// `deploy_from_deserializer` — it does not exercise this pre-pass at all.
+#[tokio::test]
+async fn test_admin_v1_config_apply_rejects_malformed_config_value() {
+    busbar_core::metrics::init();
+    let store = Arc::new(MemoryStore::new());
+    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    let app = crate::new_test_app().governance(gov).build();
+    let router = crate::build_router(app);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let client = reqwest::Client::new();
+
+    let resp = client
+        .post(format!("http://{addr}/api/v1/admin/config/apply"))
+        .header("x-admin-token", "admintok")
+        .header("content-type", "application/json")
+        .body("{\"config\": \"not-an-object\"}")
+        .send()
+        .await
+        .unwrap();
+    let status = resp.status().as_u16();
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(
+        status, 400,
+        "a wrong-shaped `config` value must fail the pre-pass as 400, not panic/500: {body}"
+    );
+    assert_eq!(body["error"]["code"], "invalid_request");
 
     handle.abort();
 }
