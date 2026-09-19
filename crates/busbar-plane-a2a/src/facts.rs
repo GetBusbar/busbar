@@ -40,6 +40,16 @@ pub const FACT_TASK_STATE: &str = "task_state";
 /// The error code the answer carried, where it carried one.
 pub const FACT_ERROR_CODE: &str = "error_code";
 
+/// Whether the unit arrived on a deliberately open surface — one whose claim declares no scheme, so
+/// its units carry no credential by design.
+///
+/// Set at decode for the two discovery documents and the provider callback, and read back at
+/// `authenticate`. It exists because the open discovery card and the AUTHENTICATED extended card are
+/// the same operation class, so op-class alone cannot tell the open surface from the closed one that
+/// shares its class: narrowing an open-surface unit to `bearer` would refuse it authority its claim
+/// declares no scheme for, and this fact is the decode-sealed evidence that tells the two apart.
+pub const FACT_OPEN_SURFACE: &str = "open_surface";
+
 /// The session fact keys this plane writes.
 ///
 /// The protocol revision and the agent are session facts because a session that changed either
