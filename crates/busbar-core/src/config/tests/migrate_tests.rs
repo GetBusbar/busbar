@@ -2810,3 +2810,39 @@ fn migrate_refuses_a_pool_named_models() {
         "the refusal explains the reserved-name conflict: {err}"
     );
 }
+
+/// A `pools:` written in a shape this migrator cannot merge into must be LEFT EXACTLY AS WRITTEN —
+/// the same take-on-match contract `Taken` states for every other section. Replacing it with a
+/// freshly-built mapping deletes the operator's whole pools section (the money path) and announces
+/// nothing; and because the `auth.upstream_credentials:` it was moving had already been taken off
+/// `auth:`, that key vanished with it. Both must survive, with a todo naming the block.
+#[test]
+fn malformed_pools_is_never_replaced_by_a_synthesized_one() {
+    // No top-level `models:` here: this test exercises the `migrate_pools_upstream_credentials`
+    // take-on-match guard on a malformed `pools:`. Under 1.6.0 config-model STAGE 3 a top-level
+    // `models:` is moved to `pools.models:` (the decided contract), and that separate move runs
+    // first — a document already in STAGE-3 shape carries no top-level `models:`, so leaving it out
+    // keeps this fixture focused on the upstream_credentials path it means to guard.
+    let out = migrate_config(
+        "auth:\n  upstream_credentials: passthrough\npools: not-a-mapping\nproviders: {}\n",
+    )
+    .unwrap();
+    let doc: serde_yaml::Value = serde_yaml::from_str(&out.yaml).unwrap();
+    assert_eq!(
+        doc["pools"].as_str(),
+        Some("not-a-mapping"),
+        "the operator's `pools:` was destroyed and replaced with a synthesized mapping: {}",
+        out.yaml
+    );
+    assert_eq!(
+        doc["auth"]["upstream_credentials"].as_str(),
+        Some("passthrough"),
+        "auth.upstream_credentials was taken off `auth:` and never put anywhere: {}",
+        out.yaml
+    );
+    assert!(
+        out.todos.iter().any(|t| t.contains("pools")),
+        "a section this migrator refuses to touch must say so: {:?}",
+        out.todos
+    );
+}
