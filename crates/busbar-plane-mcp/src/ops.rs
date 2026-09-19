@@ -25,6 +25,16 @@ use busbar_contract::ids::OpClassId;
 /// Ask the server what it is and what it supports.
 pub const OP_DISCOVER: OpClassId = OpClassId::new("discover");
 
+/// Read the discovery document a caller fetches to learn how to authenticate.
+///
+/// This is the well-known metadata GET, and it is unlike every other operation here: it carries no
+/// request envelope at all — no version member, no method, no identifier — so it is recognised by
+/// the PATH it arrived on rather than by a method in a body. It has its own claim (the one open
+/// surface), and without an operation class for it the arriving bytes reach `jsonrpc::read`, which
+/// finds no version member and fails the decode — leaving the caller waiting for an answer this
+/// plane could never produce.
+pub const OP_METADATA: OpClassId = OpClassId::new("metadata");
+
 /// List the tools this caller may use.
 pub const OP_TOOLS_LIST: OpClassId = OpClassId::new("tools_list");
 
@@ -79,6 +89,7 @@ pub const OP_NOTIFICATION: OpClassId = OpClassId::new("notification");
 /// Every operation class this plane's units can be, in declaration order.
 pub const OP_CLASSES: &[OpClassId] = &[
     OP_DISCOVER,
+    OP_METADATA,
     OP_TOOLS_LIST,
     OP_TOOL_CALL,
     OP_PROMPTS_LIST,

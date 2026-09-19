@@ -121,18 +121,20 @@ impl ConfigView for EmptyConfig {
     }
 }
 
-/// A transport that answers with the key it was given.
+/// A transport that answers with the key it was given, and with any facts a test set on it.
 pub struct TestTransport {
     pub key: &'static str,
     pub chain: Vec<&'static str>,
+    pub facts: Vec<(&'static str, String)>,
 }
 
 impl TestTransport {
-    /// A transport stack of one named layer.
+    /// A transport stack of one named layer, publishing no facts.
     pub fn new(key: &'static str) -> Self {
         Self {
             key,
             chain: vec![key],
+            facts: Vec::new(),
         }
     }
 }
@@ -144,8 +146,11 @@ impl TransportView for TestTransport {
     fn chain(&self) -> &[&'static str] {
         &self.chain
     }
-    fn fact(&self, _key: &str) -> Option<&str> {
-        None
+    fn fact(&self, key: &str) -> Option<&str> {
+        self.facts
+            .iter()
+            .find(|(k, _)| *k == key)
+            .map(|(_, v)| v.as_str())
     }
 }
 
@@ -260,6 +265,16 @@ impl Scaffold {
             session: TestSession::new(),
             labels: Labels::new(),
         }
+    }
+
+    /// A scaffold whose transport publishes a request path, as a real one does at accept.
+    pub fn on_path(transport: &'static str, path: &str) -> Self {
+        let mut scaffold = Self::new(transport);
+        scaffold
+            .transport
+            .facts
+            .push((busbar_contract::transport::facts::PATH, path.to_string()));
+        scaffold
     }
 
     /// The context itself.

@@ -274,7 +274,10 @@ fn a_recognised_notice_opens_a_unit_that_answers_nothing() {
         assert!(draft.correlation_out.is_none());
         assert!(draft.correlates.is_none());
     }
-    assert!(client_notices > 0, "no caller-originated notice was exercised");
+    assert!(
+        client_notices > 0,
+        "no caller-originated notice was exercised"
+    );
 }
 
 /// A caller cannot spoof a SERVER-originated notice.
@@ -320,6 +323,34 @@ fn an_unrecognised_notice_is_dropped() {
             reason: DiscardCode::Unsupported
         })
     );
+}
+
+/// The discovery document is a GET on a well-known path, and this plane answers it.
+///
+/// It carries no request envelope: no version member, no method, no identifier. Before it had an
+/// operation class the arriving bytes reached the envelope reader, which found no version member and
+/// failed the decode — so the surface this plane CLAIMS could never be answered, and a caller
+/// fetching it waited forever. It is recognised by the path it arrived on and opens a metadata unit.
+#[test]
+fn the_discovery_document_is_answered_by_path() {
+    let plane = McpPlane::EMPTY;
+    let scaffold = Box::leak(Box::new(Scaffold::on_path(
+        "http",
+        busbar_plane_mcp::claims::DEFAULT_METADATA,
+    )));
+    let ctx = scaffold.ctx();
+    // A discovery GET carries no body at all — the emptiest thing a frame can hold.
+    let frames: &'static [busbar_contract::wire::Frame] = Box::leak(vec![frame(b"")].into());
+    let mut cursor = FrameCursor::new(frames);
+    let draft = draft_of(
+        plane
+            .decode_ingress(&mut cursor, None, &ctx)
+            .expect("a discovery GET decodes rather than failing the envelope reader"),
+    );
+    assert_eq!(draft.op, ops::OP_METADATA);
+    // Nothing correlates: it answers nothing of this node's own and is answered in one document.
+    assert!(draft.correlation_out.is_none());
+    assert!(draft.correlates.is_none());
 }
 
 /// The metadata block the battery sends is read, keys and all.
@@ -635,6 +666,7 @@ fn a_refusal_that_implies_a_wait_says_so() {
 /// written down here rather than left to a bound that can never fail.
 const EXPECTED_LEGS: &[(&str, usize)] = &[
     ("discover", 2),
+    ("metadata", 1),
     ("tools_list", 2),
     ("tool_call", 5),
     ("prompts_list", 2),
