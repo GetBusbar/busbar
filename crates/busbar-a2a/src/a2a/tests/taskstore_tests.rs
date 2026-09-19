@@ -16,7 +16,9 @@
 //! the negative one goes red.
 
 use crate::a2a::task::{Direction, Task, TaskState};
-use crate::taskstore::{Denied, Rehydrated, TaskRegistry, TaskStoreTestExt, TaskTestHarness};
+use crate::taskstore::{
+    Denied, Rehydrated, TaskRegistry, TaskStoreError, TaskStoreTestExt, TaskTestHarness,
+};
 use crate::{TaskEventRow, TaskRow};
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -1211,4 +1213,120 @@ fn the_abandonment_ceiling_is_enforced_without_any_new_submission() {
         "a second sweep within the same second must decline the claim rather than rescan"
     );
     assert!(reg.sweep_now(at1 + 1), "a later second is a new claim");
+}
+
+/// **A SUBMIT MUST NOT CLOBBER A LIVE TASK'S CHAIN.** `uuid_like` derives a new id from the request
+/// body, the clock and a process-wide counter, and an ADDRESSED submission names an id outright — so
+/// a colliding id is reachable (a hash clash, or a caller re-submitting an id it already holds). The
+/// neutral engine's `install` overwrites on a key collision, which resets the displaced task to a
+/// FRESH genesis chain: a task quietly ceasing to exist and, on a shared `contextId`, one principal
+/// being handed another's task handle. The store must REFUSE a submit for an id it already holds
+/// live, not silently reset its chain.
+#[test]
+fn a_submit_for_a_live_task_id_is_refused_and_leaves_the_existing_chain_intact() {
+    let store = durable();
+    let handle: Arc<dyn busbar_api::Store> = store.clone();
+    let view = busbar_substrate::plane::store::PlaneStoreView::narrow(handle.clone());
+    let h = TaskTestHarness::over(handle.clone());
+    let reg = &h.reg;
+
+    reg.submit(
+        &Task::submitted("t-dup", "ctx-a", "key-1", Direction::Inbound, NOW)
+            .unwrap()
+            .to_row(),
+        "req-1",
+    )
+    .expect("first submit opens the task");
+    reg.transition(
+        "t-dup",
+        "req-1",
+        crate::a2a::task::plan_transition(TaskState::Working, NOW + 1),
+    )
+    .expect("t-dup -> working");
+
+    // A second submit for the SAME id — from a colliding uuid or a caller re-submitting an id it
+    // already holds — must be REFUSED, not silently reset the chain to a fresh genesis.
+    let clash = reg.submit(
+        &Task::submitted("t-dup", "ctx-OTHER", "key-2", Direction::Inbound, NOW + 50)
+            .unwrap()
+            .to_row(),
+        "req-2",
+    );
+    assert!(
+        matches!(&clash, Err(TaskStoreError::DuplicateTask(id)) if id == "t-dup"),
+        "a submit for a live task id is refused as a duplicate, got {clash:?}"
+    );
+
+    // The original task is untouched: still `working`, still owned by key-1 on ctx-a, and its chain
+    // is the two events it earned (submitted + working) — a clobbering submit would have reset it to
+    // a single genesis event.
+    let row = reg.get_unscoped("t-dup").expect("original task still live");
+    assert_eq!(row.state, "working");
+    assert_eq!(row.principal, "key-1");
+    assert_eq!(row.context_id, "ctx-a");
+    assert_eq!(
+        reg.verify_task_chain(view.as_ref(), "t-dup")
+            .expect("store read")
+            .expect("chain intact"),
+        2,
+        "the refused submit appended nothing; the original chain is untouched"
+    );
+}
+
+/// **A SETTLED TASK'S RETENTION CLOCK DOES NOT RESTART ON A NON-TRANSITION WRITE.** The terminal TTL
+/// is measured from a task's `updated_at`, and `set_push_callback` changes no task state — it only
+/// re-targets delivery. On an ALREADY-TERMINAL task, moving `updated_at` forward on such a write
+/// pushes the eviction deadline out with it, so a caller that keeps touching a settled task pins it
+/// in the working set indefinitely. The clock must be FROZEN once the task is terminal.
+#[test]
+fn a_non_transition_write_does_not_reset_a_settled_task_s_retention_clock() {
+    let (ttl_secs, _cap) = TaskRegistry::retention_bounds();
+    let store = durable();
+    let handle: Arc<dyn busbar_api::Store> = store.clone();
+    let h = TaskTestHarness::over(handle.clone());
+    let reg = &h.reg;
+
+    reg.submit(
+        &Task::submitted("t-done", "ctx-a", "key-1", Direction::Inbound, NOW)
+            .unwrap()
+            .to_row(),
+        "req-1",
+    )
+    .expect("submit t-done");
+    let settled = reg
+        .transition(
+            "t-done",
+            "req-1",
+            crate::a2a::task::plan_transition(TaskState::Completed, NOW + 1),
+        )
+        .expect("t-done -> completed");
+    assert_eq!(
+        settled.updated_at,
+        NOW + 1,
+        "the terminal transition stamps the retention clock"
+    );
+
+    // A push-config write (no provenance event, no state change) arrives much later. It must NOT
+    // move the retention clock forward on a settled task.
+    let touched = reg
+        .set_push_callback(
+            "t-done",
+            Some("https://caller.example/cb".to_string()),
+            NOW + 1 + ttl_secs * 10,
+        )
+        .expect("set callback on a settled task");
+    assert_eq!(
+        touched.updated_at,
+        NOW + 1,
+        "a non-transition write on a settled task leaves its retention clock frozen at the terminal \
+         transition"
+    );
+
+    // And the freeze is real, not cosmetic: one second past the terminal TTL measured from the
+    // TERMINAL TRANSITION (not from the later touch), the next sweep evicts it.
+    assert!(reg.sweep_now(NOW + 1 + ttl_secs + 1));
+    assert!(
+        reg.get_unscoped("t-done").is_none(),
+        "the settled task ages out on the terminal TTL despite the later non-transition write"
+    );
 }
