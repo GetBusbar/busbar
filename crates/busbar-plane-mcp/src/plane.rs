@@ -476,10 +476,26 @@ impl Plane for McpPlane {
         // notice this plane recognises opens a unit that ends without writing anything, and one it
         // does not recognise is DROPPED — never refused, because a refusal is an answer.
         if !envelope.is_request() {
-            if !ops::is_known_notification(method) {
-                return Ok(Ingress::Discard {
-                    reason: DiscardCode::Unsupported,
-                });
+            match ops::notice_row(method) {
+                // One this plane does not recognise is DROPPED — never refused, because a refusal is
+                // an answer and the specification forbids answering a notice.
+                None => {
+                    return Ok(Ingress::Discard {
+                        reason: DiscardCode::Unsupported,
+                    })
+                }
+                // A notice arriving on the INGRESS side is one the CALLER sent. A notice whose sender
+                // is the server (a tool-list change, a resource update) is not the caller's to send:
+                // honouring one here would let the caller force a catalogue re-scan from the wrong
+                // side — the party being catalogued deciding when its own catalogue is re-read.
+                // Discarded as a forged source, the same way a server-sent caller-only method is
+                // (S33), because that is exactly what this is.
+                Some(row) if row.sender != ops::Sender::Client => {
+                    return Ok(Ingress::Discard {
+                        reason: DiscardCode::ForgedSource,
+                    })
+                }
+                Some(_) => {}
             }
             return Ok(Ingress::OneShot(Box::new(UnitDraft {
                 op: ops::OP_NOTIFICATION,

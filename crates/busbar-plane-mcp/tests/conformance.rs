@@ -254,18 +254,58 @@ fn only_the_held_stream_opens_a_unit() {
     }
 }
 
-/// A notice this plane recognises opens a unit that answers nothing.
+/// A notice the CALLER is entitled to send opens a unit that answers nothing.
 #[test]
 fn a_recognised_notice_opens_a_unit_that_answers_nothing() {
     let plane = McpPlane::EMPTY;
     assert_eq!(ops::NOTIFICATIONS.len(), NOTICE_ROWS);
-    for name in ops::NOTIFICATIONS {
-        let draft = draft_of(decode(&plane, &notification(name)).expect("a notice decodes"));
+    let mut client_notices = 0usize;
+    for notice in ops::NOTIFICATIONS {
+        // A server-originated notice is not the caller's to send on the ingress side; that case is
+        // covered by `a_caller_cannot_spoof_a_server_notice`.
+        if notice.sender != ops::Sender::Client {
+            continue;
+        }
+        client_notices += 1;
+        let draft =
+            draft_of(decode(&plane, &notification(notice.method)).expect("a notice decodes"));
         assert_eq!(draft.op, ops::OP_NOTIFICATION);
         // Nothing correlates: a notice obliges no answer, so there is nothing to answer it with.
         assert!(draft.correlation_out.is_none());
         assert!(draft.correlates.is_none());
     }
+    assert!(client_notices > 0, "no caller-originated notice was exercised");
+}
+
+/// A caller cannot spoof a SERVER-originated notice.
+///
+/// `notifications/tools/list_changed` and `notifications/resources/updated` are the codec's own
+/// server-emitted half. A caller sending one on the ingress side would force a catalogue re-scan
+/// from the wrong side — the party being catalogued deciding when its own catalogue is believed. It
+/// is discarded as a forged source, the same code a server-sent caller-only method is (S33).
+#[test]
+fn a_caller_cannot_spoof_a_server_notice() {
+    let plane = McpPlane::EMPTY;
+    let mut server_notices = 0usize;
+    for notice in ops::NOTIFICATIONS {
+        if notice.sender == ops::Sender::Client {
+            continue;
+        }
+        server_notices += 1;
+        assert_eq!(
+            decode(&plane, &notification(notice.method)),
+            Ok(Ingress::Discard {
+                reason: DiscardCode::ForgedSource
+            }),
+            "the caller was allowed to spoof {}",
+            notice.method
+        );
+    }
+    assert_eq!(
+        server_notices,
+        NOTICE_ROWS - 1,
+        "the server-originated notice set changed"
+    );
 }
 
 /// A notice this plane does not recognise is dropped, never refused.
