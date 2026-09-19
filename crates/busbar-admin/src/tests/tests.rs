@@ -4158,6 +4158,55 @@ async fn test_admin_v1_config_validate_dry_run() {
     handle.abort();
 }
 
+/// D49: `POST /api/v1/admin/config/validate` must run the same 1.6.0 pre-pass the disk loader and
+/// `config/apply` use (`busbar_core::config::deploy_from_deserializer`) before the frozen
+/// `deny_unknown_fields` `DeployCfg` parses the remainder. `oauth_as:` is one of the 1.6.0-additive
+/// top-level keys the pre-pass lifts out (`config/prepass.rs::LIFTED_TOP_LEVEL_KEYS`) — a document
+/// naming it boots clean from disk, so submitting the identical document here must not come back a
+/// `400 invalid_request` for naming a key 1.5.5 never had.
+#[tokio::test]
+async fn test_admin_v1_config_validate_accepts_1_6_0_additive_top_level_keys() {
+    busbar_core::metrics::init();
+    let store = Arc::new(MemoryStore::new());
+    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    let app = crate::new_test_app().governance(gov).build();
+    let router = crate::build_router(app);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let client = reqwest::Client::new();
+    let url = format!("http://{addr}/api/v1/admin/config/validate");
+
+    let proposed = serde_json::json!({
+        "config": {
+            "oauth_as": null,
+            "providers": {},
+            "models": {}
+        },
+        "providers": {}
+    });
+    let resp = client
+        .post(&url)
+        .header("x-admin-token", "admintok")
+        .header("content-type", "application/json")
+        .body(proposed.to_string())
+        .send()
+        .await
+        .unwrap();
+    let status = resp.status().as_u16();
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(
+        status, 200,
+        "a 1.6.0-additive top-level key must not be refused as a malformed request: {body}"
+    );
+    assert_eq!(
+        body["ok"], true,
+        "an otherwise-empty config with a null oauth_as: should validate clean: {body}"
+    );
+
+    handle.abort();
+}
+
 /// `GET /api/v1/admin/config` composes the effective-config snapshot (auth + pools/models/providers +
 /// hooks + global_hooks) from the redacted reads. Asserts the shape and that no secret-bearing
 /// field (client tokens, provider keys) appears anywhere in the serialized body.
