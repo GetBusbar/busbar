@@ -633,16 +633,24 @@ fn atomic_tool_call(call_ref: CallRef, call_id: &str, st: &mut DecodeState) -> O
     Some(tool_call_frame(Value::Object(fc)))
 }
 
-/// A TOOL PAYLOAD, AS THIS DIALECT MUST STATE IT. Gemini's `functionResponse.response` is a JSON
-/// OBJECT; the shared IR carries the tool's output as OPAQUE BYTES, because the dialect it was named
-/// from (`function_call_output.output`) is a FREE-FORM STRING — a tool that answers `OK` is answering.
+/// A TOOL PAYLOAD, AS THIS DIALECT MUST STATE IT. Gemini's `functionResponse.response` REQUIRES a
+/// JSON OBJECT (a `Struct`); the shared IR carries the tool's output as OPAQUE BYTES, because the
+/// dialect it was named from (`function_call_output.output`) is a FREE-FORM STRING — a tool that
+/// answers `OK` is answering, and a tool that answers `42`, `["a","b"]`, or literal `null` is
+/// answering too.
 ///
-/// So: JSON rides as the value it is, and anything else is WRAPPED (`{"result": "<the text>"}`) rather
-/// than flattened to `null`. `null` told the model the tool returned nothing, which is a different
-/// answer from the one the tool gave — the same confusion the argument seam above refuses.
+/// So: a JSON OBJECT rides as the value it is; anything else — non-JSON text, or JSON that parses but
+/// is not an object (a bare number, array, string, bool, or `null`) — is WRAPPED (`{"result": <the
+/// value>}`) rather than sent bare or flattened to `null`. Sending a bare `null`/array/scalar is a
+/// malformed frame this dialect rejects, and flattening to `null` told the model the tool returned
+/// nothing, which is a different answer from the one the tool gave — the same confusion the argument
+/// seam above refuses.
 fn tool_payload(output: &Bytes) -> Value {
-    serde_json::from_slice::<Value>(output)
-        .unwrap_or_else(|_| json!({ "result": String::from_utf8_lossy(output).into_owned() }))
+    match serde_json::from_slice::<Value>(output) {
+        Ok(v @ Value::Object(_)) => v,
+        Ok(v) => json!({ "result": v }),
+        Err(_) => json!({ "result": String::from_utf8_lossy(output).into_owned() }),
+    }
 }
 
 /// Frame one Gemini `toolResponse` around a single tool result. Gemini REQUIRES `name` on a

@@ -1236,6 +1236,35 @@ fn a_json_tool_output_still_rides_as_the_object_it_is() {
     assert_eq!(fr["response"], json!({ "temp": 72 }));
 }
 
+/// D24: Gemini's `functionResponse.response` MUST be a JSON object (a `Struct`); a bare scalar,
+/// array, or `null` tool result sent verbatim is a malformed frame the API rejects. Each non-object
+/// JSON result is wrapped the same way a non-JSON (free-form string) result already is.
+#[test]
+fn a_bare_null_scalar_or_array_tool_result_is_object_wrapped() {
+    let codec = GeminiLiveCodec;
+    let case = |output: &'static [u8]| {
+        let w = up(
+            &codec,
+            IrClientEvent::Tool(IrDuplexTool::CallResult {
+                call_ref: CallRef(0),
+                call_id: "fc_bare".into(),
+                name: "lookup".into(),
+                output: Bytes::from_static(output),
+            }),
+        );
+        as_value(&w)["toolResponse"]["functionResponses"][0]["response"].clone()
+    };
+    let null_resp = case(b"null");
+    assert!(
+        null_resp.is_object(),
+        "null result must be object-wrapped, got {null_resp}"
+    );
+    let scalar_resp = case(b"42");
+    assert_eq!(scalar_resp, json!({ "result": 42 }));
+    let array_resp = case(br#"["a","b"]"#);
+    assert_eq!(array_resp, json!({ "result": ["a", "b"] }));
+}
+
 #[test]
 fn a_tool_call_whose_arguments_never_parse_frames_nothing() {
     // The other half of the same rule: when the accumulated whole is still not readable JSON, the
