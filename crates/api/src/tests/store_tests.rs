@@ -713,6 +713,30 @@ fn default_list_keys_since_excludes_the_watermark_itself() {
     assert_eq!(s.list_keys_since(6).unwrap().len(), 0);
 }
 
+/// `revision == 0` (a row the backend never stamped with a real revision — e.g. a
+/// tombstoned/revoked key on a backend that doesn't track revisions) must ALWAYS read as
+/// "changed", even against a nonzero watermark, or an incremental hydrator polling with
+/// `since > 0` would never observe it and would never evict that key's cached credentials.
+#[test]
+fn default_list_keys_since_always_includes_unstamped_revision_zero_rows() {
+    let mut tombstoned = sample_key();
+    tombstoned.id = "vk_tombstoned".to_string();
+    tombstoned.revision = 0;
+    tombstoned.deleted_at = Some(999);
+    let mut current = sample_key();
+    current.id = "vk_current".to_string();
+    current.revision = 10;
+    let s = AuditDouble(Vec::new(), vec![tombstoned, current]);
+
+    let since5 = s.list_keys_since(5).unwrap();
+    assert_eq!(
+        since5.len(),
+        2,
+        "the revision==0 row must still appear despite since=5 > 0"
+    );
+    assert!(since5.iter().any(|k| k.id == "vk_tombstoned"));
+}
+
 /// The DEFAULTED `list_audit_tail` fallback: keep only the last `limit` records (drain the
 /// HEAD, `all.len() - limit` of them), never off-by-one on the boundary.
 #[test]

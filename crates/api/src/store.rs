@@ -1028,11 +1028,16 @@ pub trait Store: Send + Sync + 'static {
     /// `VirtualKey::revision`'s doc, and `list_keys` is unfiltered so tombstones are always visible
     /// here) but not incremental; a backend that wants real delta-fetch efficiency overrides this
     /// with an indexed `WHERE revision > ?`-shaped query.
+    ///
+    /// `revision == 0` is its own arm, not folded into `revision > since`: a row the backend never
+    /// stamped with a real revision (including a tombstoned/revoked key written by a backend that
+    /// doesn't track revisions) must always read as "changed", or an incremental hydrator running
+    /// with `since > 0` would never observe it and would never evict that key's cached credentials.
     fn list_keys_since(&self, since: u64) -> StoreResult<Vec<VirtualKey>> {
         Ok(self
             .list_keys()?
             .into_iter()
-            .filter(|k| k.revision > since)
+            .filter(|k| k.revision == 0 || k.revision > since)
             .collect())
     }
     /// The TOKEN LEDGER for one (bucket, window). `bucket_id` is a key's own budget bucket (its
@@ -1330,8 +1335,15 @@ pub trait Store: Send + Sync + 'static {
     }
 
     /// TEST-AND-SET one single-use token of `kind`, valid until `expires_at`; `true` means THIS call
-    /// was the first redemption. `now` lets a backend drop lapsed rows in the same call. DEFAULTED
-    /// to `Ok(true)` ("this store keeps no ledger").
+    /// was the first redemption. `now` lets a backend drop lapsed rows in the same call.
+    ///
+    /// # The default is FAIL-CLOSED
+    ///
+    /// DEFAULTED to `Ok(false)`, NOT `Ok(true)`. A store that keeps no ledger cannot attest that
+    /// THIS call was the first redemption of the token — answering `true` unconditionally would let
+    /// a captured single-use token be replayed without limit against any backend that hasn't
+    /// implemented this verb. A store that means to grant these single-use capabilities implements
+    /// it; until then, every redemption attempt is refused.
     fn redeem_plane_token(
         &self,
         _kind: &str,
@@ -1339,7 +1351,7 @@ pub trait Store: Send + Sync + 'static {
         _expires_at: u64,
         _now: u64,
     ) -> StoreResult<bool> {
-        Ok(true)
+        Ok(false)
     }
 
     /// IS THIS TOKEN STILL LIVE? A MULTI-USE, TIME-AND-STATE-BOUNDED CAPABILITY, and deliberately
