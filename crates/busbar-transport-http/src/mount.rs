@@ -59,7 +59,7 @@ use busbar_contract::transport::surface::{
 /// Every field is something the bottom layer saw. Nothing here is derived and nothing is a protocol
 /// fact: a target, a request method, the authority the caller named, the peer the connection came
 /// from, what the caller presented, and the body.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy)]
 pub struct Request<'r> {
     /// The request target, query and fragment included, exactly as it arrived.
     pub target: &'r str,
@@ -84,6 +84,27 @@ pub struct Request<'r> {
     pub media: Option<&'r str>,
     /// The request body.
     pub body: &'r [u8],
+}
+
+impl core::fmt::Debug for Request<'_> {
+    /// Hand-rolled to REDACT the presented credential. A derived `Debug` would spill the caller's
+    /// bearer token or basic-auth pair byte-for-byte into any log line or panic that formats an
+    /// arrival — the same reason `ClientIdentity` and `EgressTrust` hand-roll theirs. Every other
+    /// field is public-ish wire shape and prints as itself; `credential` prints as `<redacted>` when
+    /// presented and stays `None` when it was not, so the redaction never manufactures a presented
+    /// credential out of an absent one.
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Request")
+            .field("target", &self.target)
+            .field("method", &self.method)
+            .field("authority", &self.authority)
+            .field("peer", &self.peer)
+            .field("credential", &self.credential.map(|_| "<redacted>"))
+            .field("accepts", &self.accepts)
+            .field("media", &self.media)
+            .field("body", &self.body)
+            .finish()
+    }
 }
 
 /// Which of the declaration's addresses an arrival matched.
