@@ -1450,9 +1450,11 @@ fn a_callback_token_past_its_deadline_is_refused() {
 /// default — which is the posture every deployment whose store predates this verb runs on. For a
 /// read, "this store remembers nothing" and "there is nothing to remember" are the same answer;
 /// for a capability check they are opposites, and this asserts which one the default takes. The
-/// sibling `redeem_plane_token` default is deliberately `Ok(true)` and stays that way — a store
-/// that keeps no ledger genuinely has spent nothing — so the two are asserted apart here rather
-/// than assumed to agree.
+/// sibling `redeem_plane_token` default is fail-closed for the SAME reason (locked decision S9,
+/// `af61c0228`): a store that keeps no ledger cannot attest that a call is the first redemption of
+/// a single-use token, so answering `Ok(true)` would let a captured token be replayed without
+/// limit. Both capability verbs default to `Ok(false)`, and the two are asserted together here so
+/// a future divergence in either default is caught.
 #[test]
 fn the_default_liveness_answer_is_a_refusal() {
     use busbar_api::Store as _;
@@ -1466,11 +1468,11 @@ fn the_default_liveness_answer_is_a_refusal() {
          deployment on an older store would accept a replayed callback"
     );
     assert!(
-        store
+        !store
             .redeem_plane_token("ask", "n-1", u64::MAX, 0)
             .expect("the default answers"),
-        "the single-use redeem's default is the opposite one on purpose, and moving it would \
-         break approvals rather than fix a replay"
+        "the single-use redeem's default answered LIVE for a store that keeps no ledger; a \
+         captured single-use token would replay without limit (locked decision S9: fail-closed)"
     );
 }
 
