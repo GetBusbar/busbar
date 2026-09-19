@@ -1122,6 +1122,59 @@ fn audio_format_from_mime_probe() {
     }
 }
 
+/// D25: THE RATE PARAMETER IS MATCHED EXACTLY, NOT BY SUBSTRING.
+///
+/// `"rate=160000"` (10x the real 16 kHz rate) CONTAINS `"rate=16000"` as a literal substring, so a
+/// `.contains("rate=16000")` probe mismeasures it as the 16 kHz rate it is not — on the downlink that
+/// mismeasures the truncate math's bytes-per-ms by 10x (premature barge-in truncation) and mismeters
+/// billed audio duration by the same factor. A malformed/off-rate mime must be refused, not
+/// misread as a rate nobody sent.
+#[test]
+fn a_malformed_rate_parameter_is_not_matched_by_substring() {
+    // "rate=160000" is NOT 16 kHz — it must not probe as Pcm16 via a substring match on "rate=16000".
+    assert_eq!(
+        audio_format_from_mime("audio/pcm;rate=160000", UpDown::Down),
+        None,
+        "160000 is not the 24 kHz rate the downlink truncate math measures in"
+    );
+    // "rate=240000" is NOT 24 kHz either, and is not the 16 kHz rate — a stated-but-unrecognized rate
+    // is refused on BOTH directions, not accepted as if it were an untagged mime.
+    assert_eq!(
+        audio_format_from_mime("audio/pcm;rate=240000", UpDown::Up),
+        None,
+        "240000 is a stated rate this dialect does not recognize, not an untagged blob"
+    );
+    assert_eq!(
+        audio_format_from_mime("audio/pcm;rate=240000", UpDown::Down),
+        None,
+        "240000 is not the 24 kHz rate — a substring match wrongly measured it as one"
+    );
+}
+
+/// `audio/pcmu` (G.711 µ-law) and `audio/pcma` (G.711 a-law) are NOT `audio/pcm`.
+///
+/// A `starts_with("audio/pcm")` probe reads both telephony mimes as the bare `audio/pcm` family and
+/// hands back `Pcm16` — a 6× measurement error (8 kHz 8-bit companded audio metered/truncated as
+/// 24 kHz signed-16 PCM). This dialect has no g711 mode at all, so a telephony mime has no honest
+/// format here and must probe as `None`, whichever direction it arrives on.
+#[test]
+fn companded_telephony_mimes_are_not_pcm() {
+    for dir in [UpDown::Up, UpDown::Down] {
+        assert_eq!(
+            audio_format_from_mime("audio/pcmu", dir),
+            None,
+            "audio/pcmu is G.711 µ-law, not the audio/pcm family"
+        );
+        assert_eq!(
+            audio_format_from_mime("audio/pcma", dir),
+            None,
+            "audio/pcma is G.711 a-law, not the audio/pcm family"
+        );
+        // A stated rate on a telephony mime does not rescue it: the type itself is not audio/pcm.
+        assert_eq!(audio_format_from_mime("audio/pcmu;rate=8000", dir), None);
+    }
+}
+
 // ── degrade, don't error (drop+warn asymmetries) ─────────────────────────────────────────────────
 
 #[test]
