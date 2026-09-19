@@ -477,7 +477,7 @@ impl Transport for StdioTransport {
         &self,
         _fields: &[(&str, &[u8])],
         body: &[u8],
-        arena: &'a dyn busbar_contract::Arena,
+        arena: &'a dyn busbar_contract::Scratch,
     ) -> Result<ArenaBytes<'a>, busbar_contract::transport::wire::Encode> {
         // The same two bytes `write` refuses, refused here too: a body spelling this wire's own
         // delimiter cannot be expressed as ONE frame, and answering the plane at the point it

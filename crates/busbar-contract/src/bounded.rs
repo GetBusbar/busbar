@@ -201,7 +201,7 @@ impl<T> fmt::Display for Overflow<T> {
 ///
 /// The crate-graph section of the design bans the `bytes` crate's reference-counted buffer from
 /// the plugin surface: a plugin that could clone a buffer handle could hold bytes past the unit
-/// that paid for them. Arena bytes borrow, so they cannot outlive the unit.
+/// that paid for them. Scratch bytes borrow, so they cannot outlive the unit.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ArenaBytes<'u> {
     bytes: &'u [u8],
@@ -292,7 +292,30 @@ impl SlabBytes {
 /// # Errors
 /// Both allocation methods return [`ArenaBudget`] when the request does not fit in what is left
 /// of the arena.
-pub trait Arena: Send + Sync {
+///
+/// # Auto-traits (#42)
+/// `Scratch` carries **no** `Send`/`Sync` bound. The arena is created, used and dropped on ONE
+/// worker thread (thread-per-core `LocalSet`, DECISIONS #42). Asserting `Send`/`Sync` would be a
+/// false promise AND would let a unit future holding `&dyn Scratch` be spawned across cores
+/// (`tokio::spawn`), defeating the topology guard — so the bounds are deliberately absent. Because
+/// `dyn Scratch` is `!Sync`, `&dyn Scratch` is `!Send`, and the type system enforces the pinned
+/// topology rather than convention. (`Send`/`Sync` are zero-representation auto-traits, so dropping
+/// them changes no emitted byte — oracle byte-identity #9/#10 cannot depend on them.)
+///
+/// The `!Send` guard is type-enforced (red-before-green: this compiled while the trait was
+/// `Arena: Send + Sync`; it must NOT compile now). A unit future that captures `&dyn Scratch`
+/// across an await cannot be sent to another core, so `tokio::spawn(unit_future)` is rejected and
+/// the thread-per-core `LocalSet` topology is enforced by the compiler:
+///
+/// ```compile_fail
+/// use busbar_contract::bounded::Scratch;
+/// fn assert_send<T: Send>() {}
+/// fn main() {
+///     // `&dyn Scratch` is `!Send` (Scratch is `!Sync`), so this fails to compile.
+///     assert_send::<&dyn Scratch>();
+/// }
+/// ```
+pub trait Scratch {
     /// Copy bytes into the arena.
     fn alloc_bytes<'a>(&'a self, src: &[u8]) -> Result<ArenaBytes<'a>, ArenaBudget>;
 

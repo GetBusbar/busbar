@@ -648,7 +648,14 @@ pub enum ExportItem<'u> {
 /// A sink written against this contract acknowledges at-least-once. The previous release's own
 /// sink subsystem stays fire-and-forget with its admission gate, and it refuses a configuration
 /// that asks it for durability rather than pretending to provide it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+///
+/// Both faces (kind + cold export wire) name this ONE type (fresh-eyes RULING #4, USE-FRESH): it
+/// derives `Deserialize` as well as `Serialize`, and pins `snake_case` wire tokens (`durable` /
+/// `received` / `retry`) so the response envelope `Delivered(Ack)` round-trips byte-identically to
+/// what the export docs and the #2 self-test expect. (There is no separate `ExportAck` — a duplicate
+/// would only ever be an identity translation over a byte-identical vocabulary.)
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Ack {
     /// Received and durable at the sink.
     Durable,

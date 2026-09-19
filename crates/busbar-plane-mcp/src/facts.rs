@@ -4,7 +4,7 @@
 //! here is something the plane READ off the bytes, reported under a key it declared up front so the
 //! kernel's fact maps can be sized before the first frame arrives.
 
-use busbar_contract::bounded::Arena;
+use busbar_contract::bounded::Scratch;
 use busbar_contract::ids::{CorrelationRef, CorrelationValue};
 
 /// The method name the request carried, exactly as it was spelled.
@@ -101,7 +101,7 @@ pub const META_PROGRESS_TOKEN_QUOTED: &[u8] = b"\"progressToken\"";
 /// Answers nothing when the arena is full or the identifier is not text: a correlation that cannot
 /// be carried honestly is better absent than approximated.
 #[must_use]
-pub fn correlation_for<'u>(raw_id: &[u8], arena: &'u dyn Arena) -> Option<CorrelationRef<'u>> {
+pub fn correlation_for<'u>(raw_id: &[u8], arena: &'u dyn Scratch) -> Option<CorrelationRef<'u>> {
     Some(CorrelationRef {
         fact_key: FACT_RPC_ID,
         value: correlation_value(raw_id, arena)?,
@@ -125,7 +125,7 @@ fn is_canonical_number(raw: &[u8]) -> bool {
 }
 
 /// The value one raw request identifier stands for.
-fn correlation_value<'u>(raw_id: &[u8], arena: &'u dyn Arena) -> Option<CorrelationValue<'u>> {
+fn correlation_value<'u>(raw_id: &[u8], arena: &'u dyn Scratch) -> Option<CorrelationValue<'u>> {
     if is_canonical_number(raw_id) {
         let mut n: u64 = 0;
         for byte in raw_id {

@@ -13,7 +13,7 @@
 #![allow(dead_code)]
 
 use busbar_contract::bounded::SlabBytes;
-use busbar_contract::bounded::{Arena, ArenaBudget, ArenaBytes, Facts, Ir, Labels, Span};
+use busbar_contract::bounded::{ArenaBudget, ArenaBytes, Facts, Ir, Labels, Scratch, Span};
 use busbar_contract::dest::{DestinationFacts, VerifiedDestination};
 use busbar_contract::ids::{LaneId, OpClassId, StreamId};
 use busbar_contract::plugin::KernelSeal;
@@ -29,7 +29,7 @@ use std::sync::Arc;
 #[derive(Debug, Default)]
 pub struct LeakArena;
 
-impl Arena for LeakArena {
+impl Scratch for LeakArena {
     fn alloc_bytes<'a>(&'a self, src: &[u8]) -> Result<ArenaBytes<'a>, ArenaBudget> {
         Ok(ArenaBytes::new(Box::leak(src.to_vec().into_boxed_slice())))
     }

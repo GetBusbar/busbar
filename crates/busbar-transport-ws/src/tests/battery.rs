@@ -599,7 +599,7 @@ impl Transport for StubLower {
         &self,
         _fields: &[(&str, &[u8])],
         body: &[u8],
-        arena: &'a dyn busbar_contract::Arena,
+        arena: &'a dyn busbar_contract::Scratch,
     ) -> Result<ArenaBytes<'a>, busbar_contract::transport::wire::Encode> {
         arena
             .alloc_bytes(body)

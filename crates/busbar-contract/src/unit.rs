@@ -479,7 +479,7 @@ pub struct Ctx<'u> {
     session: Option<&'u dyn SessionView>,
     transport: &'u dyn TransportView,
     labels: &'u Labels<'u>,
-    arena: &'u dyn crate::bounded::Arena,
+    arena: &'u dyn crate::bounded::Scratch,
 }
 
 impl<'u> Ctx<'u> {
@@ -491,7 +491,7 @@ impl<'u> Ctx<'u> {
         session: Option<&'u dyn SessionView>,
         transport: &'u dyn TransportView,
         labels: &'u Labels<'u>,
-        arena: &'u dyn crate::bounded::Arena,
+        arena: &'u dyn crate::bounded::Scratch,
     ) -> Self {
         Self {
             clock,
@@ -535,7 +535,7 @@ impl<'u> Ctx<'u> {
 
     /// The per-unit arena — the one resource handle.
     #[must_use]
-    pub fn arena(&self) -> &'u dyn crate::bounded::Arena {
+    pub fn arena(&self) -> &'u dyn crate::bounded::Scratch {
         self.arena
     }
 }

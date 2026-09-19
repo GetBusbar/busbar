@@ -938,7 +938,7 @@ impl busbar_contract::Transport for TestTransport {
         &self,
         fields: &[(&str, &[u8])],
         body: &[u8],
-        arena: &'a dyn busbar_contract::Arena,
+        arena: &'a dyn busbar_contract::Scratch,
     ) -> Result<busbar_contract::ArenaBytes<'a>, busbar_contract::transport::wire::Encode> {
         // The fixture's own wire shape, standing in for a real transport's: every field, then the
         // body. What the tests assert is that the cross-check and the write see the SAME bytes,
@@ -1221,7 +1221,7 @@ impl busbar_contract::Plane for TestPlane {
 #[derive(Debug, Default)]
 pub struct LeakArena;
 
-impl busbar_contract::Arena for LeakArena {
+impl busbar_contract::Scratch for LeakArena {
     fn alloc_bytes<'a>(
         &'a self,
         src: &[u8],

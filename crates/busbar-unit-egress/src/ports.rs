@@ -33,7 +33,12 @@ pub use busbar_contract::DestinationId;
 ///
 /// Same reasoning as the transport axis in the contract crate: an asynchronous trait method has to
 /// box its future, and one box per port call is the price of the seam being a trait at all.
-pub type BoxFut<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+///
+/// This future is `!Send`: a `RouteRequest` borrows the per-unit `&dyn Scratch` (which is `!Sync`,
+/// #42) across the upstream await, so the whole unit path is pinned to one `LocalSet` core and the
+/// box is deliberately NOT `+ Send`. A `+ Send` bound here would be a false promise and would let
+/// the unit future be spawned across cores.
+pub type BoxFut<'a, T> = Pin<Box<dyn Future<Output = T> + 'a>>;
 
 // ── the breaker seam ────────────────────────────────────────────────────────────────────────────
 

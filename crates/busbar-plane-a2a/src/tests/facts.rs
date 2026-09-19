@@ -3,13 +3,13 @@
 //! super::*` reaches the private items it always did.
 
 use super::{correlation_for, correlation_value, FACT_RPC_ID};
-use busbar_contract::bounded::{Arena, ArenaBudget, ArenaBytes, Span};
+use busbar_contract::bounded::{ArenaBudget, ArenaBytes, Scratch, Span};
 use busbar_contract::ids::CorrelationValue;
 
 /// An arena that hands out leaked bytes, which is what a test arena is.
 struct TestArena;
 
-impl Arena for TestArena {
+impl Scratch for TestArena {
     fn alloc_bytes<'a>(&'a self, src: &[u8]) -> Result<ArenaBytes<'a>, ArenaBudget> {
         Ok(ArenaBytes::new(Box::leak(src.to_vec().into_boxed_slice())))
     }

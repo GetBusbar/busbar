@@ -6,7 +6,7 @@
 //! ceiling the first busy afternoon removes.
 
 use busbar_contract::bounded::{
-    Arena, ArenaBudget, ArenaBytes, BoundedVec, FactValue, Facts, Labels, SlabBytes, Span,
+    ArenaBudget, ArenaBytes, BoundedVec, FactValue, Facts, Labels, Scratch, SlabBytes, Span,
     ARENA_BYTES, MAX_CURSOR_BYTES, MAX_KEYS, MAX_LEGS, MAX_LEG_REPLIES, MAX_NEEDMORE_FRAMES,
     MAX_RECORD_BYTES, MAX_SESSION_UPSTREAMS, MAX_USAGE_LINES,
 };
@@ -244,7 +244,7 @@ fn a_journal_record_refuses_past_the_record_ceiling() {
     assert_eq!(too_big.unwrap_err(), MAX_RECORD_BYTES + 1);
 }
 
-/// Arena bytes borrow and slab bytes own, and neither is the banned reference-counted buffer.
+/// Scratch bytes borrow and slab bytes own, and neither is the banned reference-counted buffer.
 #[test]
 fn the_two_byte_handles_do_what_they_say() {
     let owned = [1u8, 2, 3, 4];
@@ -371,7 +371,7 @@ struct LeakArena;
 
 static ARENA: LeakArena = LeakArena;
 
-impl Arena for LeakArena {
+impl Scratch for LeakArena {
     fn alloc_bytes<'a>(&'a self, src: &[u8]) -> Result<ArenaBytes<'a>, ArenaBudget> {
         Ok(ArenaBytes::new(Box::leak(src.to_vec().into_boxed_slice())))
     }

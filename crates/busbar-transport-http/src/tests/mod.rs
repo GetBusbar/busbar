@@ -1117,7 +1117,7 @@ fn a_field_cannot_smuggle_a_line_ending_into_the_header_block() {
 /// what this stands in for is only "the bytes come back with the arena's lifetime".
 struct TestArena;
 
-impl busbar_contract::Arena for TestArena {
+impl busbar_contract::Scratch for TestArena {
     fn alloc_bytes<'a>(
         &'a self,
         src: &[u8],

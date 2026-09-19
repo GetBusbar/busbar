@@ -1987,7 +1987,7 @@ fn a_turn_that_outruns_its_reservation_posts_in_full_and_carries_the_rest() {
 /// allocators hand back borrowed slices, so an honest double either leaks or is unsafe.
 struct CellArena;
 
-impl busbar_contract::bounded::Arena for CellArena {
+impl busbar_contract::bounded::Scratch for CellArena {
     fn alloc_bytes<'a>(
         &'a self,
         src: &[u8],
