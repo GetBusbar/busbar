@@ -1497,9 +1497,27 @@ impl busbar_kernel::teller::RouteAwait for LlmUnit<'_> {
     fn route_leg<'a>(
         &'a self,
         token: &'a UnitToken<Route>,
-        _ctx: &'a UnitCtx,
+        ctx: &'a UnitCtx,
         _meter: &'a AccrualMeter,
     ) -> busbar_kernel::teller::RouteLeg<'a> {
+        // STOP BEFORE DIALING. This is the one step of the ten that awaits an upstream, so it is the
+        // one place a hold that has been told to stop must be checked BEFORE the wait rather than
+        // only unwound by the drop that follows one. The unit's slot carries the cancellation token
+        // the node's sweep trips when the caller goes away or the node drains; reading it here — on
+        // the calling thread, before the leg is even built — is the cooperative half of the pair.
+        // The drop of this leg's future is the other half and covers cancellation that lands mid-await
+        // (see `Walk::route`). A tripped token refuses in place with the token's own reason, so no
+        // upstream connection is opened for a unit nobody is left to read.
+        if let Some(slot) = self.node.inflight.get(ctx.key) {
+            let cancellation = slot.cancel();
+            if cancellation.is_tripped() {
+                let reason = cancellation.reason().unwrap_or(ReasonCode::ClientGone);
+                return Box::pin(std::future::ready(Decision::refuse(
+                    token,
+                    Refusal::new(reason),
+                )));
+            }
+        }
         // The destination the charge actually LANDED on — post-downgrade, never the requested one.
         // Dispatching through the pool the client asked for after charging a different one is the
         // bug this ordering makes impossible.
