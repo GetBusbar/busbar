@@ -205,6 +205,78 @@ fn nat64_synthesized_metadata_and_private_literals_are_recognized() {
     );
 }
 
+/// D27: THE RFC 8215 LOCAL-USE NAT64 PREFIX MUST BE GUARDED TOO. `64:ff9b:1::/96` is the local-use
+/// counterpart of the well-known `64:ff9b::/96` — the same RFC 6052 translation behind an operator's
+/// own NAT64 gateway, common on enterprise/cellular IPv6-only egress. A DNS64 resolver on such a
+/// network synthesizes `64:ff9b:1::a9fe:a9fe` for an IMDS-only name, and the connecting stack routes
+/// it to `169.254.169.254` exactly as the well-known spelling does. The guard unwrapped only the
+/// well-known prefix (`seg[2] == 0`), so the local-use spelling (`seg[2] == 1`) fell through
+/// `ssrf_blocked_host` unrecognized and was ALLOWED.
+#[test]
+fn nat64_local_use_prefix_metadata_and_private_literals_are_recognized() {
+    assert_eq!(
+        ssrf_blocked_host("https://[64:ff9b:1::a9fe:a9fe]/", &[], false, &[]).as_deref(),
+        Some("64:ff9b:1::a9fe:a9fe"),
+        "the RFC 8215 local-use NAT64 synthesis of the IMDS target must be refused like the \
+         well-known 64:ff9b::a9fe:a9fe already is"
+    );
+    assert_eq!(
+        ssrf_blocked_host(
+            "https://[64:ff9b:1::a01:203]/",
+            &[],
+            false,
+            &["10.1.2.3".to_string()],
+        )
+        .as_deref(),
+        Some("64:ff9b:1::a01:203"),
+        "the operator-blocked 10.1.2.3 literal is caught in its local-use NAT64 spelling too"
+    );
+    // The shared internal predicate agrees, so every plane that routes through it inherits the row.
+    assert!(ip_is_internal(
+        &"64:ff9b:1::7f00:1"
+            .parse()
+            .expect("local-use NAT64 loopback")
+    ));
+}
+
+/// D27 FOLLOW-UP: RFC 8215 fixes only the top 48 bits of the local-use reservation
+/// (`64:ff9b:1::/48`), not the whole 96-bit prefix the way RFC 6052 fixes the well-known one — an
+/// operator's own `/96`-length instantiation under it may have ANY value in the next 48 bits. RFC
+/// 8215 Section 6's own checksum-neutral worked example, `64:ff9b:1:fffe::/96`, is exactly such a
+/// case: `seg[3] == 0xfffe`, not zero. A guard that additionally required `seg[3..6] == 0` for the
+/// local-use prefix (as it does for the well-known one) would recognise only the single degenerate
+/// all-zero `/96` and miss the RFC's own example — the same hostile-DNS64-on-a-local-use-network
+/// bypass D27 exists to close, reopened for any non-zero-padded instantiation.
+#[test]
+fn nat64_local_use_prefix_with_a_non_zero_padded_96_is_still_recognized() {
+    // The RFC 8215 Section 6 worked example prefix, carrying the IMDS target.
+    assert_eq!(
+        ssrf_blocked_host("https://[64:ff9b:1:fffe::a9fe:a9fe]/", &[], false, &[]).as_deref(),
+        Some("64:ff9b:1:fffe::a9fe:a9fe"),
+        "a non-zero-padded /96 local-use instantiation (RFC 8215 Section 6's own checksum-neutral \
+         example prefix) must be unwrapped exactly like the degenerate all-zero one already is"
+    );
+    assert_eq!(
+        embedded_ipv4(&"64:ff9b:1:fffe::a9fe:a9fe".parse().unwrap()),
+        Some(Ipv4Addr::new(169, 254, 169, 254)),
+        "the embedded IPv4 must decode correctly regardless of the operator-chosen middle bits"
+    );
+    // A well-known-prefix address with non-zero middle bits is a DIFFERENT (non-NAT64) address and
+    // must NOT be treated as an embedding — only the local-use prefix tolerates a non-zero middle.
+    assert_eq!(
+        embedded_ipv4(&"64:ff9b::1:0:a9fe:a9fe".parse().unwrap()),
+        None,
+        "RFC 6052 fixes the ENTIRE well-known /96 prefix to zero; a non-zero middle segment there \
+         is an ordinary address, not a NAT64 embedding, and must not be unwrapped"
+    );
+    // `seg[2]` outside `{0, 1}` is neither the well-known nor the local-use prefix.
+    assert_eq!(
+        embedded_ipv4(&"64:ff9b:2::a9fe:a9fe".parse().unwrap()),
+        None,
+        "seg[2] == 2 is neither RFC 6052's well-known prefix nor RFC 8215's local-use reservation"
+    );
+}
+
 /// The CONTROL for the trim: whitespace INSIDE a host (not at either end of the input, and not one
 /// of the three deleted bytes) is left alone, so a malformed host stays malformed rather than being
 /// silently repaired into something that matches.

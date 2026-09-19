@@ -6,7 +6,7 @@
 //! monotonic-cursor no-op-vs-advance, the retention cap sweep, and the boot rehydrate's counts.
 
 use super::*;
-use busbar_api::{PlaneDisposition, PlaneRecord, PlaneSelector, StoreResult};
+use busbar_api::{PlaneDisposition, PlaneRecord, PlaneSelector, StoreError, StoreResult};
 use std::sync::{Arc, Mutex};
 
 /// A stand-in plane row: the engine holds it opaquely and never names it.
@@ -67,17 +67,46 @@ impl DemoRow {
 }
 
 /// A minimal in-memory `PlaneStore` — the durable sink stand-in.
-#[derive(Default)]
 struct MemStore {
     rows: Mutex<Vec<PlaneRecord>>,
     events: Mutex<Vec<PlaneRecord>>,
     /// When set, every append fails -- the durable half of a submit that lands its row and then
     /// cannot open its chain.
     append_fails: std::sync::atomic::AtomicBool,
+    /// 0-indexed call count of `upsert_plane_record` across this store's whole life. Paired with
+    /// `upsert_fails_from_call` so a test can let an early upsert (a mutation's own row write) land
+    /// while a LATER one (a same-call rollback) fails — the only way to reach the double-failure
+    /// branch of `apply_mutation_to_slot`, which needs the first upsert to have already succeeded.
+    upsert_calls: std::sync::atomic::AtomicUsize,
+    /// `usize::MAX` (the default) means "never fails". Any other value is the 0-indexed call number
+    /// at which, and after which, every upsert fails.
+    upsert_fails_from_call: std::sync::atomic::AtomicUsize,
+}
+
+impl Default for MemStore {
+    fn default() -> Self {
+        MemStore {
+            rows: Mutex::new(Vec::new()),
+            events: Mutex::new(Vec::new()),
+            append_fails: std::sync::atomic::AtomicBool::new(false),
+            upsert_calls: std::sync::atomic::AtomicUsize::new(0),
+            upsert_fails_from_call: std::sync::atomic::AtomicUsize::new(usize::MAX),
+        }
+    }
 }
 
 impl PlaneStore for MemStore {
     fn upsert_plane_record(&self, record: &PlaneRecord) -> StoreResult<()> {
+        let call = self
+            .upsert_calls
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if call
+            >= self
+                .upsert_fails_from_call
+                .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            return Err(busbar_api::StoreError("the upsert did not land".into()));
+        }
         let mut rows = self.rows.lock().unwrap();
         if let Some(existing) = rows.iter_mut().find(|r| r.id == record.id) {
             *existing = record.clone();
@@ -361,6 +390,8 @@ fn what_a_submit_costs_on_a_ten_thousand_handle_working_set() {
         append_fails: std::sync::atomic::AtomicBool::new(false),
         rows: Mutex::new(rows),
         events: Mutex::new(Vec::new()),
+        upsert_calls: std::sync::atomic::AtomicUsize::new(0),
+        upsert_fails_from_call: std::sync::atomic::AtomicUsize::new(usize::MAX),
     };
     let engine = DurableHandleEngine::new();
     let counts = engine
@@ -1207,4 +1238,347 @@ fn a_submit_whose_genesis_append_fails_leaves_no_durable_row() {
         })
         .expect("rehydrate");
     assert_eq!(counts.active, 0, "a boot resumes no orphan");
+}
+
+/// D10: the mutate-path counterpart of the submit rollback. A live handle's row upsert and its event
+/// append are two writes, not one transaction. When the append fails AFTER the row upserts, the
+/// durable row is left one write ahead of a chain that never recorded the move — a divergence the next
+/// boot resolves the wrong way. The row must be taken back to what the live handle still holds.
+#[test]
+fn a_mutate_whose_event_append_fails_rolls_the_row_write_back() {
+    let store = Arc::new(MemStore::default());
+    let engine = DurableHandleEngine::new();
+    engine.set_sink(store.clone() as Arc<dyn PlaneStore>);
+
+    // A live handle whose genesis lands cleanly: durable row at cursor 0.
+    submit_demo(
+        &engine,
+        DemoRow {
+            id: "h".into(),
+            owner: "alice".into(),
+            updated_at: 1,
+            terminal: false,
+            cursor: 0,
+        },
+        1,
+    );
+
+    // From here every append fails. A mutation that upserts the row (cursor 9) and then tries to append
+    // its event fails at the append.
+    store
+        .append_fails
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let outcome = engine.mutate("h", |row, _pos| {
+        let row = row.downcast_ref::<DemoRow>().unwrap();
+        let mut next = row.clone();
+        next.cursor = 9;
+        next.updated_at = 2;
+        let record = next.record();
+        let meta = next.meta();
+        Ok(Some(Mutation {
+            row: Some(next.arc()),
+            meta: Some(meta),
+            row_record: Some(record.clone()),
+            event: Some(SealedEvent {
+                record,
+                tail_hash: "h-h-2".into(),
+            }),
+        }))
+    });
+    assert!(
+        matches!(outcome, Err(HandleEngineError::Store(_))),
+        "the caller is told the mutation did not land"
+    );
+
+    // The durable row is back at cursor 0 — the row write was taken back with the append failure.
+    let rows = store.rows.lock().unwrap();
+    assert_eq!(
+        rows.len(),
+        1,
+        "still exactly one durable row for the handle"
+    );
+    let persisted = DemoRow::from_body(&rows[0].body).expect("row decodes");
+    assert_eq!(
+        persisted.cursor, 0,
+        "the row write was rolled back to what the live handle still holds"
+    );
+    drop(rows);
+
+    // The in-memory handle was never advanced either (a durable failure returns before memory moves).
+    assert_eq!(engine.meta("h").unwrap().cursor, 0);
+
+    // And a boot rehydrate resumes the handle at the un-diverged row.
+    let counts = engine
+        .rehydrate(store.as_ref(), "demo", |_store, body| {
+            let Some(row) = DemoRow::from_body(body) else {
+                return Ok(RehydrateOutcome::Unreadable);
+            };
+            let meta = row.meta();
+            Ok(RehydrateOutcome::Active {
+                id: row.id.clone(),
+                pos: ChainPosition::genesis(),
+                row: row.arc(),
+                meta,
+                event_unreadable: 0,
+            })
+        })
+        .expect("rehydrate");
+    assert_eq!(counts.active, 1, "the live handle resumes");
+}
+
+/// D10's documented residual: a handle brought back by `rehydrate` carries no in-memory rollback
+/// target (`HandleSlot::row_record` is `None`), because the plane-encoded record is not carried
+/// across the boot seam. If THAT handle's post-boot mutation upserts a new row and then fails its
+/// event append, there is nothing to roll the row back to — the durable row is left one write ahead
+/// of the chain, exactly the divergence D10 exists to prevent everywhere else. `row_record` is set
+/// ONLY once a mutation's row AND event both land, so this proves the residual is real AND that its
+/// true boundary is "until the first FULLY SUCCESSFUL post-boot mutation", not merely "the first
+/// mutation attempted": it persists across a SECOND consecutive failure too, and only closes once a
+/// mutation actually succeeds — after which a later failure rolls back exactly as
+/// `a_mutate_whose_event_append_fails_rolls_the_row_write_back` proves.
+#[test]
+fn a_rehydrated_handles_failures_leave_the_documented_residual_until_the_first_success() {
+    let store = Arc::new(MemStore::default());
+    let boot_engine = DurableHandleEngine::new();
+    boot_engine.set_sink(store.clone() as Arc<dyn PlaneStore>);
+    submit_demo(
+        &boot_engine,
+        DemoRow {
+            id: "h".into(),
+            owner: "alice".into(),
+            updated_at: 1,
+            terminal: false,
+            cursor: 0,
+        },
+        1,
+    );
+
+    // A FRESH engine, brought back only through rehydrate: its slot's `row_record` starts `None`.
+    let engine = DurableHandleEngine::new();
+    engine.set_sink(store.clone() as Arc<dyn PlaneStore>);
+    let counts = engine
+        .rehydrate(store.as_ref(), "demo", |_store, body| {
+            let Some(row) = DemoRow::from_body(body) else {
+                return Ok(RehydrateOutcome::Unreadable);
+            };
+            let meta = row.meta();
+            Ok(RehydrateOutcome::Active {
+                id: row.id.clone(),
+                pos: ChainPosition::genesis(),
+                row: row.arc(),
+                meta,
+                event_unreadable: 0,
+            })
+        })
+        .expect("rehydrate");
+    assert_eq!(
+        counts.active, 1,
+        "the handle resumes from the durable row alone"
+    );
+
+    // Its first post-boot mutation upserts a new row (cursor 9) and then fails its event append.
+    store
+        .append_fails
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let outcome = engine.mutate("h", |row, _pos| {
+        let row = row.downcast_ref::<DemoRow>().unwrap();
+        let mut next = row.clone();
+        next.cursor = 9;
+        next.updated_at = 2;
+        let record = next.record();
+        let meta = next.meta();
+        Ok(Some(Mutation {
+            row: Some(next.arc()),
+            meta: Some(meta),
+            row_record: Some(record.clone()),
+            event: Some(SealedEvent {
+                record,
+                tail_hash: "h-h-2".into(),
+            }),
+        }))
+    });
+    assert!(
+        matches!(outcome, Err(HandleEngineError::Store(_))),
+        "the caller is still told the mutation did not land"
+    );
+
+    // The documented residual: with no in-memory pre-image, nothing rolled the row back — it is
+    // left at cursor 9, one write ahead of a chain that never recorded the move.
+    {
+        let rows = store.rows.lock().unwrap();
+        assert_eq!(
+            rows.len(),
+            1,
+            "still exactly one durable row for the handle"
+        );
+        let persisted = DemoRow::from_body(&rows[0].body).expect("row decodes");
+        assert_eq!(
+            persisted.cursor, 9,
+            "no in-memory pre-image existed to roll the row back to — the durable row is left \
+             ahead of the live handle, exactly as documented on HandleSlot::row_record"
+        );
+    }
+    // The live handle itself was never advanced (a durable failure returns before memory moves).
+    assert_eq!(engine.meta("h").unwrap().cursor, 0);
+
+    // BROADER than "the first mutation" alone would suggest: `row_record` is STILL `None` (the
+    // first mutation failed, so it was never set), so a SECOND consecutive failure leaves the SAME
+    // residual — the row moves again (to cursor 17) with nothing to roll back to.
+    let outcome2 = engine.mutate("h", |row, _pos| {
+        let row = row.downcast_ref::<DemoRow>().unwrap();
+        let mut next = row.clone();
+        next.cursor = 17;
+        next.updated_at = 3;
+        let record = next.record();
+        let meta = next.meta();
+        Ok(Some(Mutation {
+            row: Some(next.arc()),
+            meta: Some(meta),
+            row_record: Some(record.clone()),
+            event: Some(SealedEvent {
+                record,
+                tail_hash: "h-h-3".into(),
+            }),
+        }))
+    });
+    assert!(matches!(outcome2, Err(HandleEngineError::Store(_))));
+    {
+        let rows = store.rows.lock().unwrap();
+        let persisted = DemoRow::from_body(&rows[0].body).expect("row decodes");
+        assert_eq!(
+            persisted.cursor, 17,
+            "row_record is still None after one failed mutation, so a SECOND consecutive \
+             failure ALSO leaves the row diverged with nothing rolled back — the residual is \
+             bounded by the first SUCCESS, not by the first ATTEMPT"
+        );
+    }
+
+    // NOW let a mutation fully succeed: both the row upsert and the event append land.
+    store
+        .append_fails
+        .store(false, std::sync::atomic::Ordering::Relaxed);
+    let outcome3 = engine.mutate("h", |row, _pos| {
+        let row = row.downcast_ref::<DemoRow>().unwrap();
+        let mut next = row.clone();
+        next.cursor = 25;
+        next.updated_at = 4;
+        let record = next.record();
+        let meta = next.meta();
+        Ok(Some(Mutation {
+            row: Some(next.arc()),
+            meta: Some(meta),
+            row_record: Some(record.clone()),
+            event: Some(SealedEvent {
+                record,
+                tail_hash: "h-h-4".into(),
+            }),
+        }))
+    });
+    assert!(outcome3.is_ok(), "this mutation fully lands");
+    assert_eq!(engine.meta("h").unwrap().cursor, 25);
+
+    // The residual is now closed: `row_record` is `Some`, so a LATER failure rolls back exactly
+    // like the ordinary (non-rehydrated) case.
+    store
+        .append_fails
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let outcome4 = engine.mutate("h", |row, _pos| {
+        let row = row.downcast_ref::<DemoRow>().unwrap();
+        let mut next = row.clone();
+        next.cursor = 99;
+        next.updated_at = 5;
+        let record = next.record();
+        let meta = next.meta();
+        Ok(Some(Mutation {
+            row: Some(next.arc()),
+            meta: Some(meta),
+            row_record: Some(record.clone()),
+            event: Some(SealedEvent {
+                record,
+                tail_hash: "h-h-5".into(),
+            }),
+        }))
+    });
+    assert!(matches!(outcome4, Err(HandleEngineError::Store(_))));
+    let rows = store.rows.lock().unwrap();
+    let persisted = DemoRow::from_body(&rows[0].body).expect("row decodes");
+    assert_eq!(
+        persisted.cursor, 25,
+        "row_record was set by the mutation that fully succeeded, so this later failure DID \
+         roll back — the residual is closed for good once one mutation lands"
+    );
+}
+
+/// D10's double-failure branch: the event append fails, and the compensating rollback upsert ALSO
+/// fails. Neither cause may be swallowed — the returned error must name both, so an operator reading
+/// it learns the durable row is genuinely ahead of the live handle rather than reading an ordinary,
+/// successfully-rolled-back failure.
+#[test]
+fn a_mutate_whose_rollback_upsert_also_fails_names_both_causes() {
+    let store = Arc::new(MemStore::default());
+    let engine = DurableHandleEngine::new();
+    engine.set_sink(store.clone() as Arc<dyn PlaneStore>);
+
+    // Genesis upsert (call 0) lands.
+    submit_demo(
+        &engine,
+        DemoRow {
+            id: "h".into(),
+            owner: "alice".into(),
+            updated_at: 1,
+            terminal: false,
+            cursor: 0,
+        },
+        1,
+    );
+
+    // From here every append fails, and every upsert FROM call 2 onward fails too — call 1, the
+    // mutation's own row write, is left to succeed so the function reaches the rollback attempt.
+    store
+        .append_fails
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    store
+        .upsert_fails_from_call
+        .store(2, std::sync::atomic::Ordering::Relaxed);
+
+    let outcome = engine.mutate("h", |row, _pos| {
+        let row = row.downcast_ref::<DemoRow>().unwrap();
+        let mut next = row.clone();
+        next.cursor = 9;
+        next.updated_at = 2;
+        let record = next.record();
+        let meta = next.meta();
+        Ok(Some(Mutation {
+            row: Some(next.arc()),
+            meta: Some(meta),
+            row_record: Some(record.clone()),
+            event: Some(SealedEvent {
+                record,
+                tail_hash: "h-h-2".into(),
+            }),
+        }))
+    });
+
+    let Err(HandleEngineError::Store(StoreError(msg))) = outcome else {
+        panic!("expected a double-failure Store error, got {outcome:?}");
+    };
+    assert!(
+        msg.contains("the append did not land"),
+        "the original append failure must reach the caller: {msg}"
+    );
+    assert!(
+        msg.contains("the upsert did not land"),
+        "the rollback's own failure must reach the caller too, not be swallowed: {msg}"
+    );
+    assert!(
+        msg.contains("could NOT be rolled back"),
+        "the caller must be told the row was NOT restored: {msg}"
+    );
+    assert!(
+        msg.contains("ahead of the live handle"),
+        "the caller must be told the durable row now diverges from the live handle: {msg}"
+    );
+
+    // The live handle itself was never advanced.
+    assert_eq!(engine.meta("h").unwrap().cursor, 0);
 }

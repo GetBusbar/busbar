@@ -1332,10 +1332,16 @@ impl Registry {
         // Interned-name fast path: hot callers hold the registry's own `&'static` name, so pointer
         // identity settles the row without a byte compare; a foreign string falls through to the
         // equality arm of the same pass. Same result either way.
-        self.decls
-            .iter()
-            .copied()
-            .find(|d| d.name.as_ptr() == name.as_ptr() || d.name == name)
+        //
+        // The pointer test MUST also compare `len()`: `as_ptr()` names only the start of the slice,
+        // so a prefix subslice of an interned name (`"root"` carved from `"rooted"`) shares the start
+        // pointer while denoting a shorter, different string. Comparing the pointer alone would settle
+        // such an input onto the WRONG (longer) decl; the length guard forces the mismatch through to
+        // the byte-equality arm, which rejects it. Both slices are the same allocation, so the length
+        // compare stays O(1) — no byte walk on the fast path.
+        self.decls.iter().copied().find(|d| {
+            (d.name.as_ptr() == name.as_ptr() && d.name.len() == name.len()) || d.name == name
+        })
     }
 
     /// Every declaration, in declaration order.
