@@ -844,11 +844,13 @@ fn write_response_event_error_null_type_when_signal_absent() {
 /// THE 1.5.5 WIRE CONTRACT for the in-stream `error` event's `type` slot: whatever the transport
 /// handed over as the provider signal goes there VERBATIM, prose included. The mid-stream abort
 /// path hands over a human sentence, and the published 1.5.5 binary put that sentence in BOTH
-/// `error.type` and `error.message` -- the bytes the mid-stream golden pins for an
-/// Anthropic-ingress reset. Deriving a discriminator token from the class instead is a
-/// caller-visible change to a money-path stream terminal, and there is no CHANGELOG line
-/// registering one, so the recorded bytes stand. Spelled out here rather than read from a shared
-/// constant, so an edit to the constant cannot agree with this assertion.
+/// `error.type` and `error.message` -- confirmed against `v1.5.5:crates/busbar/src/proto/anthropic/writer.rs`
+/// directly, NOT against a recorded oracle golden: `llm|anthropic|anthropic|request|stream_upstream_error`
+/// is `needs_fixture: true` in testing/shadow-oracle/cells.json, so no golden byte-pins this cell
+/// today. Deriving a discriminator token from the class instead is a caller-visible change to a
+/// money-path stream terminal, and there is no CHANGELOG line registering one, so the 1.5.5 source
+/// stands as the evidence. Spelled out here rather than read from a shared constant, so an edit to
+/// the constant cannot agree with this assertion.
 #[test]
 fn write_response_event_error_type_carries_the_signal_verbatim() {
     let sentence = "The response stream was interrupted.";
