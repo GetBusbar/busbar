@@ -85,6 +85,19 @@ const TASK_POLL_INTERVAL_MS: u64 = 250;
 /// eventual answer unreachable, which is worse than refusing to remember an old completed one.
 const MAX_RETAINED_TASKS: usize = 4096;
 
+/// The hard ceiling on DISTINCT answer keys a single task retains at once.
+///
+/// `tasks/update` folds every key of its `inputResponses` into the task's `answers` map, and those
+/// keys are CALLER-CONTROLLED strings — an operator's asks name the keys a task WAITS on, but a
+/// caller may send any key it likes, and an early answer to a key not yet asked is deliberately kept
+/// (see [`McpTask::park`], which filters already-answered asks). Without a ceiling a caller parked in
+/// `input_required` can send `tasks/update` after `tasks/update` under freshly-invented keys and grow
+/// that map without bound — memory keyed on attacker text against a single in-flight id. The cap is
+/// generous next to any real ask fan-out (an operator declares asks in the low tens across all
+/// rounds), so a legitimate task never reaches it; a caller that does is dropping its own invented
+/// keys, and a key the task is actually WAITING on is admitted regardless (see [`McpTask::deliver`]).
+const MAX_TASK_ANSWERS: usize = 256;
+
 /// The ABANDONMENT ceiling on an ACTIVE task: one whose last update is older than this is treated
 /// as abandoned by its caller and cancelled through the normal [`McpTask::cancel`] path (the
 /// runner aborted, `updated_ms` stamped), after which the ordinary [`TASK_TTL_MS`] retention
@@ -307,6 +320,16 @@ impl McpTask {
     fn deliver(&self, responses: &serde_json::Map<String, serde_json::Value>, now_ms: u64) {
         let mut state = self.lock();
         for (key, value) in responses {
+            // BOUND the distinct answer keys this task retains (see [`MAX_TASK_ANSWERS`]). A key
+            // already held is updated in place — idempotent, no growth. A key the task is WAITING on
+            // is an operator-declared ask and always admitted. Only a NEW, un-asked key arriving
+            // once the cap is reached is dropped, which matches this method's stated policy that a
+            // key the task is not waiting on is ignored rather than refused: the ack is unchanged.
+            let already_held = state.answers.contains_key(key);
+            let awaited = state.input_requests.iter().any(|(k, _)| k == key);
+            if !already_held && !awaited && state.answers.len() >= MAX_TASK_ANSWERS {
+                continue;
+            }
             state.answers.insert(key.clone(), value.clone());
         }
         state
