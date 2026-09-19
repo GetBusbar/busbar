@@ -802,15 +802,31 @@ impl ProtocolWriter for AnthropicWriter {
                 // `message` leaves the SDK's `APIError` with an undefined description and is a
                 // distinguishability tell vs a native event.
                 let mut error_obj = serde_json::Map::new();
-                // `error.type` is a DISCRIMINATOR over nine tokens, not a free-text slot: the
-                // signal often carries an upstream sentence (or a foreign dialect's code), and
-                // writing that here produces an error object no SDK can dispatch on. Derive the
-                // token from the class, keeping a signal that is already a spec token so a native
-                // one round-trips. The free text is not lost — it is the `message` below.
-                error_obj.insert(
-                    "type".to_string(),
-                    serde_json::json!(stream_error_type(err)),
-                );
+                // `error.type` CARRIES THE SIGNAL VERBATIM, prose included — that is the published
+                // 1.5.5 wire contract, confirmed by reading `v1.5.5:crates/busbar/src/proto/anthropic/writer.rs`
+                // directly (this exact `match err.provider_signal { Some(ref ps) => ..., None =>
+                // Value::Null }` shape). NOTE: the oracle has no recorded golden for this cell —
+                // `llm|anthropic|anthropic|request|stream_upstream_error` is `needs_fixture: true`
+                // in testing/shadow-oracle/cells.json (mid-stream error injection is unfixtured), so
+                // this is NOT byte-pinned by a golden; the 1.5.5 tag's source is the evidence. A
+                // mid-stream reset on an Anthropic-ingress stream hands this writer a human sentence
+                // as the provider signal, and the shipped 1.5.5 binary put that sentence in the
+                // `type` slot. Deriving a spec token from `err.class` here instead reads better
+                // against the published discriminator, but it is a caller-visible change to a
+                // terminal frame on the money path with no CHANGELOG line registering it — the
+                // release notes assert the opposite for a DIFFERENT (buffered, non-stream) error
+                // path ("every other error type unchanged", CHANGELOG.md "An Anthropic-dialect error
+                // names an Anthropic error type"). So the 1.5.5 behavior stands: the signal goes
+                // through untouched, and an absent signal is an explicit `null` rather than an
+                // invented token.
+                match err.provider_signal {
+                    Some(ref ps) => {
+                        error_obj.insert("type".to_string(), serde_json::json!(ps));
+                    }
+                    None => {
+                        error_obj.insert("type".to_string(), serde_json::Value::Null);
+                    }
+                }
                 // The IR carries no separate message string (IrError == CanonicalSignal, which has
                 // no `message` field), so derive a human-readable one from the signal: prefer the
                 // provider type when present, otherwise a generic fallback. Always non-empty so the
