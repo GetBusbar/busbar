@@ -358,6 +358,73 @@ fn mcp_scope_wire_fields_are_additive() {
     assert!(!rt.scope_allowed("pool", "anything"));
 }
 
+/// B54: a scope kind read from a peer's persisted key must be REGISTERED on read, so THIS node can
+/// re-serialize the key to disable/rotate/tombstone it locally. Before the fix `assemble_scopes`
+/// registered nothing on read (only the boot-time `PlaneDecl` iteration did), so a key minted by a
+/// peer whose plane this node never installed read back fine but could never be WRITTEN back: the
+/// `put_key` behind every disable/rotate/tombstone serializes the key, and `partition_scopes`
+/// rejects an unregistered kind as a hard error — so a live credential row was bricked for local
+/// revocation forever. Reading a grant of a kind now registers that kind, closing the round-trip.
+#[test]
+fn peer_scope_kind_is_registered_on_read_so_key_can_be_rewritten() {
+    // A kind this node never installed a plane for, so it is NOT registered at boot. (Unique name so
+    // no other test in this binary has already registered it via the shared registry.)
+    let wire = r#"{"id":"vk_peer","generation_hash":"h","name":"n","allowed_pools":[],"allowed_b54_delegates":["planner"],"enabled":true,"created_at":1}"#;
+    let k: VirtualKey = serde_json::from_str(wire).expect("a peer's key must read back");
+    assert!(k.scope_allowed("b54_delegate", "planner"));
+    // The bricking bug: re-serializing (the disable/rotate/tombstone path) must now SUCCEED, because
+    // reading the grant registered its kind. Before the fix this was a hard serialize error and the
+    // key could never be disabled/rotated/tombstoned on this node.
+    let json = serde_json::to_string(&k).expect(
+        "a peer-minted key must be re-serializable locally to be disabled/rotated/tombstoned",
+    );
+    let rt: VirtualKey = serde_json::from_str(&json).unwrap();
+    assert_eq!(rt.allowed_scopes, k.allowed_scopes);
+}
+
+/// B55: a foreign or malformed FLATTENED field must not brick the WHOLE `VirtualKey` deserialize.
+/// The wire mirror once typed the flattened scope partition as `BTreeMap<String, Vec<String>>`, so
+/// ANY unrelated top-level field a future schema (or a peer on a newer version) added — a number, an
+/// object, a non-string array — failed to deserialize as `Vec<String>` and took the ENTIRE key row
+/// down with it, bricking a live credential on unrelated schema evolution. Foreign non-scope fields
+/// must now be ignored; only a genuinely malformed scope grant is refused.
+#[test]
+fn foreign_flattened_field_does_not_brick_deserialize() {
+    crate::register_scope_kind("mcp_tool");
+    // A wire row carrying unrelated future fields of assorted non-`Vec<String>` shapes beside a real
+    // grant. Every foreign field must be ignored; the real scopes must survive.
+    let wire = r#"{
+        "id":"vk_1","generation_hash":"h","name":"n",
+        "allowed_pools":["fast"],
+        "allowed_mcp_tools":["read_file"],
+        "telemetry_sample_rate":0.25,
+        "future_flags":{"beta":true},
+        "labels_v2":["a","b"],
+        "enabled":true,"created_at":1
+    }"#;
+    let k: VirtualKey =
+        serde_json::from_str(wire).expect("foreign fields must not brick a live key row");
+    assert!(k.scope_allowed("pool", "fast"));
+    assert!(k.scope_allowed("mcp_tool", "read_file"));
+    // A foreign field must NEVER become a phantom scope kind.
+    assert!(!k.scope_allowed("future_flag", "beta"));
+    assert!(!k.scope_allowed("labels_v", "a"));
+}
+
+/// B55 (companion guard): robustness to foreign fields must NOT become "swallow a corrupt grant". A
+/// genuinely malformed scope grant — an `allowed_{kind}s` field whose value is not an array of
+/// strings — must still be REFUSED, not silently dropped (dropping it would WIDEN an explicit
+/// grant toward the omitted-grant wildcard).
+#[test]
+fn malformed_scope_grant_is_refused() {
+    let wire = r#"{"id":"vk_1","generation_hash":"h","name":"n","allowed_pools":[],"allowed_mcp_tools":[1,2,3],"enabled":true,"created_at":1}"#;
+    let err = serde_json::from_str::<VirtualKey>(wire);
+    assert!(
+        err.is_err(),
+        "a malformed scope grant must be refused, got: {err:?}"
+    );
+}
+
 /// The redacting `Debug` - the guard for the structured-logging surface, since
 /// `tracing` records fields via `Debug`/`Display`, never serde - must NEVER emit the secret-
 /// equivalent `generation_hash` / `secret_access_key`. Any place a record reaches a log must
