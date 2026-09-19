@@ -2189,6 +2189,13 @@ async fn create_task(
             cell,
             authorised,
             arguments,
+            // The SAME schema `upstream::authorise` just walked `arguments` against, above (via
+            // `route`/`authorise`) — carried so the runner can re-walk it once `tasks/update`
+            // answers are merged in (S32: `authorise`'s guard ran before those answers existed).
+            input_schema: selected
+                .input_schema
+                .clone()
+                .unwrap_or_else(|| serde_json::json!({ "type": "object" })),
             // The ADMITTED member's id, not the caller-named one: the runner's per-round grant and
             // roots lookups must read the deployment the task actually runs against.
             server_id: member_id,
