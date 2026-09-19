@@ -23,6 +23,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
+mod common;
+
 /// A fresh, isolated fixture directory (pid + nanos, like the sibling harnesses). Deliberately does
 /// NOT spell "data-dir"/"data_dir" (or any other `LEDGER_BOOT_WORDS` entry): the boot log prints this
 /// path (e.g. the overlay file location), and a fixture name containing the tripwire vocabulary would
@@ -38,16 +40,6 @@ fn fixture_dir() -> PathBuf {
     ));
     std::fs::create_dir_all(&d).unwrap();
     d
-}
-
-/// A port the OS just handed out and released: the listener must be a fixed address so the test
-/// can scrape it (the boot line prints the CONFIGURED address, not the bound one).
-fn free_port() -> u16 {
-    std::net::TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port()
 }
 
 /// The 1.5.5 shape (the shadow oracle's own config, cut down): one provider, one model, keys on
@@ -123,8 +115,12 @@ const LEDGER_BOOT_WORDS: &[&str] = &[
 #[test]
 fn no_ledger_series_and_no_keyset_lines_without_data_dir() {
     let dir = fixture_dir();
-    let data_port = free_port();
-    let admin_port = free_port();
+    // Hold both ports across fixture setup (which shells out to `--generate-signing-key` and writes
+    // YAML) and release them only immediately before the spawn below — see `common::ReservedPort`.
+    let data = common::ReservedPort::reserve();
+    let admin = common::ReservedPort::reserve();
+    let data_port = data.port();
+    let admin_port = admin.port();
     write_configs(&dir, data_port, admin_port);
 
     let log_path = dir.join("out.log");
@@ -141,6 +137,10 @@ fn no_ledger_series_and_no_keyset_lines_without_data_dir() {
          nothing, and this assertion would then pass on a node that wrote a whole ledger tree.",
         before.len()
     );
+    // The window the reservation exists to shrink: drop both listeners, then spawn the child that
+    // binds their numbers, with nothing between the drop and the syscall.
+    data.release();
+    admin.release();
     let mut child = Command::new(env!("CARGO_BIN_EXE_busbar"))
         // The directory the assertion below reads is only the directory a stray file lands in if
         // it is also the directory the node was started in: a journal opened at a RELATIVE path
