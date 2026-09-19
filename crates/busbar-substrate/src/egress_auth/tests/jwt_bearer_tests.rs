@@ -22,6 +22,35 @@ fn pem_to_pkcs8_der_rejects_empty_and_garbage() {
     .is_err());
 }
 
+/// Regression: a `base64::DecodeError`'s `Display` names the offending byte VALUE and offset —
+/// a fragment of the private key's base64 body. The error must be a fixed, contentless message,
+/// not an interpolation of that `Display`.
+#[test]
+fn pem_to_pkcs8_der_garbage_error_does_not_echo_the_offending_byte() {
+    // A base64 body containing an invalid byte at a known position — if the error interpolated
+    // the underlying `base64::DecodeError`, it would name this byte and its offset.
+    let pem = "-----BEGIN PRIVATE KEY-----\nSGVsbG8s!IFBLQ1M4\n-----END PRIVATE KEY-----\n";
+    let err = pem_to_pkcs8_der(pem).unwrap_err();
+    assert!(
+        !err.contains("byte") && !err.contains("offset"),
+        "error must not describe the offending byte/offset of the key material: {err}"
+    );
+    assert_eq!(err, "service-account private_key base64 is invalid");
+}
+
+/// Regression: `read_credential`'s missing-file error must never interpolate `credential` — an
+/// operator who pastes the raw key body (or a secret ref that resolved to key material instead
+/// of a path) must not have that value echoed back in the error.
+#[test]
+fn read_credential_missing_file_error_does_not_leak_the_pasted_value() {
+    let pasted_key = "-----BEGIN PRIVATE KEY-----MARKER-DO-NOT-LEAK-MIIEvQIBADANBgkq-----END-----";
+    let err = read_credential(pasted_key).unwrap_err();
+    assert!(
+        !err.contains("MARKER-DO-NOT-LEAK") && !err.contains(pasted_key),
+        "error must not contain the pasted credential value: {err}"
+    );
+}
+
 #[test]
 fn b64url_is_url_safe_and_unpadded() {
     // 0xFB 0xFF encodes to "+/8=" in standard base64; url-safe-no-pad must yield "-_8".

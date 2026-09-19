@@ -286,6 +286,12 @@ fn read_credential(credential: &str) -> Result<String, String> {
 }
 
 /// Strip the PEM armor from a PKCS#8 private key and base64-decode the body to DER.
+///
+/// The failure message deliberately does NOT render the decode error's `Display`: a
+/// `base64::DecodeError` names the offending byte VALUE and its offset (e.g. `Invalid byte 37,
+/// offset 4.`), and that byte is a fragment of the private key's base64 body — the same category
+/// of leak `read_credential` below was fixed to avoid, and for the same reason (this can reach a
+/// terminal, CI log, or crash report). A fixed, contentless message is all this layer owes.
 fn pem_to_pkcs8_der(pem: &str) -> Result<Vec<u8>, String> {
     let body: String = pem
         .lines()
@@ -298,7 +304,7 @@ fn pem_to_pkcs8_der(pem: &str) -> Result<Vec<u8>, String> {
     }
     base64::engine::general_purpose::STANDARD
         .decode(body.as_bytes())
-        .map_err(|e| format!("service-account private_key base64 is invalid: {e}"))
+        .map_err(|_| "service-account private_key base64 is invalid".to_string())
 }
 
 fn b64url(bytes: &[u8]) -> String {
