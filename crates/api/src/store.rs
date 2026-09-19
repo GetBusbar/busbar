@@ -133,8 +133,17 @@ mod virtual_key_wire {
         /// so a registered kind's field sits inline exactly where its named field used to
         /// (`allowed_mcp_servers`/`allowed_mcp_tools`/…), and an empty map emits nothing — so a
         /// pool-only key's wire shape is byte-identical to the pre-generalization one.
+        ///
+        /// Typed `serde_json::Value`, NOT `Vec<String>` (B55): `#[serde(flatten)]` collects EVERY
+        /// unmatched top-level field into this map, not only the `allowed_*` scope grants. If the
+        /// value type were `Vec<String>`, ANY foreign field an unrelated schema evolution (or a peer
+        /// on a newer version) added — a number, an object, a non-string array — would fail to
+        /// deserialize as `Vec<String>` and take the WHOLE `VirtualKey` down with it, bricking a live
+        /// credential row. Holding the raw `Value` lets a foreign field ride through untouched;
+        /// [`assemble_scopes`] then IGNORES every non-`allowed_*` field and refuses only a genuinely
+        /// malformed scope grant.
         #[serde(flatten)]
-        pub allowed_by_kind: BTreeMap<String, Vec<String>>,
+        pub allowed_by_kind: BTreeMap<String, serde_json::Value>,
         pub enabled: bool,
         pub created_at: u64,
         #[serde(default)]
@@ -156,8 +165,9 @@ mod virtual_key_wire {
     }
 
     /// The per-kind wire partition: `(allowed_pools, {allowed_{kind}s → values})`. The map carries
-    /// every non-`pool` kind's grant under its frozen wire-field name.
-    pub(super) type ScopePartition = (Option<Vec<String>>, BTreeMap<String, Vec<String>>);
+    /// every non-`pool` kind's grant under its frozen wire-field name, as a `Value` array of strings
+    /// (the mirror struct's flattened field type — see [`VirtualKeyWire::allowed_by_kind`]).
+    pub(super) type ScopePartition = (Option<Vec<String>>, BTreeMap<String, serde_json::Value>);
 
     /// Partition `allowed_scopes` into the per-kind wire fields. `Err` names the offending kind:
     /// an unregistered kind must fail the WRITE, loudly, at the boundary - see the module doc.
@@ -186,40 +196,67 @@ mod virtual_key_wire {
                 ));
             }
         }
+        // Each kind's string list rides as a JSON array `Value` (the flattened field's type). Byte
+        // shape is unchanged from the former `Vec<String>` field — an array of strings.
+        let by_kind = by_kind
+            .into_iter()
+            .map(|(field, values)| (field, serde_json::Value::from(values)))
+            .collect();
         // `allowed_pools` is ALWAYS present for an explicit grant (even empty) so `Some([])` =
         // no-scopes survives the trip; the per-kind fields are additive and omitted when empty
         // (a kind with no values never gets a map entry above).
         Ok((Some(pools), by_kind))
     }
 
-    /// Reassemble the per-kind wire fields into kind-tagged scopes. All three absent = the
+    /// Reassemble the per-kind wire fields into kind-tagged scopes. All fields absent = the
     /// omitted-grant wildcard (`None`); any present field makes the grant an explicit
     /// (fail-closed, exhaustive-across-kinds) list.
+    ///
+    /// `by_kind` carries EVERY flattened top-level field (see [`VirtualKeyWire::allowed_by_kind`]),
+    /// so this is where foreign fields are separated from scope grants:
+    /// - a field that is not an `allowed_*` scope field is IGNORED — a foreign top-level field never
+    ///   becomes a phantom scope kind, and (B55) never bricks the read;
+    /// - a genuine `allowed_{kind}s` field whose value is not an array of strings is a malformed
+    ///   GRANT and is REFUSED (`Err`) — never silently dropped, which would WIDEN an explicit grant
+    ///   toward the omitted-grant wildcard;
+    /// - reading a well-formed grant REGISTERS its kind (B54), so a key minted by a peer whose plane
+    ///   this node never installed can still be re-serialized here (the disable/rotate/tombstone
+    ///   path) instead of being bricked by `partition_scopes`'s unregistered-kind refusal.
     pub(super) fn assemble_scopes(
         pools: Option<Vec<String>>,
-        by_kind: BTreeMap<String, Vec<String>>,
-    ) -> Option<Vec<ScopeRef>> {
+        by_kind: BTreeMap<String, serde_json::Value>,
+    ) -> Result<Option<Vec<ScopeRef>>, String> {
         // Only `allowed_*` wire fields carry scopes; any other flattened key is ignored so a
-        // foreign top-level field never becomes a phantom scope kind.
-        let scope_fields: Vec<(String, Vec<String>)> = by_kind
-            .into_iter()
-            .filter_map(|(field, values)| {
-                scope_kinds::kind_for_wire_field(&field).map(|kind| (kind, values))
-            })
-            .collect();
+        // foreign top-level field never becomes a phantom scope kind (and never fails the read).
+        let mut scope_fields: Vec<(String, Vec<String>)> = Vec::new();
+        for (field, value) in by_kind {
+            let Some(kind) = scope_kinds::kind_for_wire_field(&field) else {
+                continue;
+            };
+            let values: Vec<String> = serde_json::from_value(value).map_err(|e| {
+                format!(
+                    "malformed scope grant for wire field '{field}': expected an array of strings \
+                     ({e}) - a scope grant is never silently dropped"
+                )
+            })?;
+            scope_fields.push((kind, values));
+        }
         if pools.is_none() && scope_fields.is_empty() {
-            return None;
+            return Ok(None);
         }
         let mut list = Vec::new();
         list.extend(pools.into_iter().flatten().map(ScopeRef::pool));
         // `by_kind` is a `BTreeMap`, so kinds arrive in wire-field order (canonical, deterministic).
         for (kind, values) in scope_fields {
+            // Register the kind read off the wire so this node can round-trip (re-serialize) the key
+            // even if it never installed the plane that declared the kind (B54).
+            scope_kinds::register(&kind);
             list.extend(values.into_iter().map(|value| ScopeRef {
                 kind: kind.clone(),
                 value,
             }));
         }
-        Some(list)
+        Ok(Some(list))
     }
 
     impl serde::Serialize for VirtualKey {
@@ -260,7 +297,8 @@ mod virtual_key_wire {
                 id: w.id,
                 generation_hash: w.generation_hash,
                 name: w.name,
-                allowed_scopes: assemble_scopes(w.allowed_pools, w.allowed_by_kind),
+                allowed_scopes: assemble_scopes(w.allowed_pools, w.allowed_by_kind)
+                    .map_err(serde::de::Error::custom)?,
                 enabled: w.enabled,
                 created_at: w.created_at,
                 group: w.group,
