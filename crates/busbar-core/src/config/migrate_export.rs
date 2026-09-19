@@ -224,7 +224,11 @@ fn migrate_one_export_projection(
 /// `root.remove` always removes the key, so without this arm a malformed block vanished from
 /// the migrated document with no `changes` entry at all, which is exactly the "silently lost operator
 /// config" shape `migrate_auth` refuses.
-pub(super) fn migrate_observability_block(root: &mut Mapping, changes: &mut Vec<String>) {
+pub(super) fn migrate_observability_block(
+    root: &mut Mapping,
+    changes: &mut Vec<String>,
+    todos: &mut Vec<String>,
+) {
     let removed = root.remove(Value::from("observability"));
     let Some(Value::Mapping(mut obs)) = removed else {
         if let Some(other) = removed {
@@ -258,5 +262,25 @@ pub(super) fn migrate_observability_block(root: &mut Mapping, changes: &mut Vec<
             "observability: block removed (DELETED in 1.5.3; it carried no otlp_url to fold)"
                 .into(),
         );
+    }
+    // Every OTHER field the block still carries at this point (this pass runs after
+    // `migrate_observability`'s rename, `migrate_response_headers`'s `emit_server_timing` lift, and
+    // `migrate_observability_export`'s webhook/metrics lift, so only an UNRECOGNIZED key can remain)
+    // has no 1.5.3 home this migrator knows of. Leaving `obs` to simply go out of scope here would
+    // drop it from the migrated document with no trace — exactly the "silently downgraded security/
+    // observability config" shape this migrator exists to prevent. Name every such key loudly
+    // instead of discarding it in silence.
+    if !obs.is_empty() {
+        let unrecognized: Vec<String> = obs
+            .keys()
+            .filter_map(|k| k.as_str().map(str::to_string))
+            .collect();
+        todos.push(format!(
+            "observability: unrecognized key(s) [{}] have NO 1.5.3 equivalent this migrator knows \
+             how to relocate; they were DROPPED along with the rest of the (DELETED) \
+             `observability:` block rather than migrated. Re-express them by hand under `export:` \
+             (or elsewhere, if they belong to a different 1.5.3 surface) before deploying.",
+            unrecognized.join(", ")
+        ));
     }
 }
