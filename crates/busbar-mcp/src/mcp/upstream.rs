@@ -723,18 +723,41 @@ pub(super) async fn exchange(
         .map_err(|e| format!("the RFC 8693 exchange failed: {}", e.into_cause()))?;
     let status = response.status().as_u16();
     let body = {
+        // Capped, not `.collect()`: an unbounded read buffers whatever the authorization server
+        // sends entirely into memory before the size is even looked at, and this endpoint is
+        // OPERATOR-CONFIGURED, not busbar's own — a compromised or misbehaving token endpoint
+        // returning a multi-GB body would otherwise be read to completion first. Same cap and the
+        // same capped-read primitive the transport leg's own response read uses
+        // (`max_upstream_buffered_bytes`); a real token response is well under 1 KiB, so this has
+        // no effect on legitimate traffic.
         use http_body_util::BodyExt;
-        let collected = tokio::time::timeout_at(deadline, response.into_body().collect())
-            .await
-            .map_err(|_| {
-                format!(
-                    "the RFC 8693 exchange body could not be read: {}",
-                    busbar_substrate::egress::engine::HOP_DEADLINE_CAUSE
+        let cap = busbar_substrate::proxy::max_upstream_buffered_bytes();
+        let read = busbar_substrate::proxy::read_capped(
+            response.into_body().into_data_stream(),
+            cap,
+        );
+        let (raw, read_end) = tokio::time::timeout_at(deadline, read).await.map_err(|_| {
+            format!(
+                "the RFC 8693 exchange body could not be read: {}",
+                busbar_substrate::egress::engine::HOP_DEADLINE_CAUSE
+            )
+        })?;
+        match read_end {
+            busbar_substrate::proxy::ReadEnd::Complete => raw,
+            busbar_substrate::proxy::ReadEnd::Truncated => {
+                return Err(format!(
+                    "the RFC 8693 exchange response exceeded the {cap}-byte cap; refusing to parse \
+                     a truncated token response"
+                ))
+            }
+            busbar_substrate::proxy::ReadEnd::TransportError => {
+                return Err(
+                    "the RFC 8693 exchange connection failed mid-response; refusing to parse a \
+                     partial token response"
+                        .to_string(),
                 )
-            })?;
-        collected
-            .map_err(|e| format!("the RFC 8693 exchange body could not be read: {e}"))?
-            .to_bytes()
+            }
+        }
     };
     if !(200..300).contains(&status) {
         // The BODY is deliberately not echoed: an authorization server's error body can carry the
