@@ -585,9 +585,15 @@ fn a_registered_hop_answering_with_the_metadata_address_does_not_pass_the_guard(
     assert!(Catalogue::upstream_only(plane, seam()).net_guard_passes(&hop));
 }
 
-/// The breaker's answer at the seal is the breaker's answer about that lane's position.
+/// The breaker's answer at the seal is its answer about that lane's position IN THE POOL THE
+/// QUERY NAMES — because that is the only position the cell has.
+///
+/// The cell is `(pool, lane-within-pool)`. This plane declares one registration per pool, so the
+/// member a pool key names is that pool's lane zero and the answer is read there. The position
+/// in the whole registered-server table is a different number about a different pool's cell, and
+/// reading it here asks the breaker about somebody else's member.
 #[test]
-fn the_catalogue_asks_the_breaker_about_the_registered_lanes_position() {
+fn the_catalogue_asks_the_breaker_about_the_lanes_position_in_the_named_pool() {
     struct Open(usize);
     impl BreakerView for Open {
         fn ready(&self, _pool: &str, lane: usize, _now: u64) -> bool {
@@ -623,21 +629,34 @@ fn the_catalogue_asks_the_breaker_about_the_registered_lanes_position() {
         lane: LaneId::new("second-lane"),
     };
 
-    let open = Open(1);
+    // Its own pool's zeroth member is what the second registration is, and a breaker holding
+    // that cell open refuses it. (Keying by the whole table would look at position ONE — the bug.)
+    let open = Open(0);
     let at = BreakerQuery {
         breaker: &open,
-        pool: "second",
+        pool: &pool_key("second"),
         now: 7,
     };
     assert!(
         !facts.breaker_admits(&second, &at),
-        "the second registration is at position one, and that is the open cell"
+        "the second registration is its own pool's lane zero, and that is the open cell"
     );
 
-    let elsewhere = Open(0);
+    // A breaker holding some OTHER member of that pool open says nothing about this one.
+    let elsewhere = Open(1);
     let at = BreakerQuery {
         breaker: &elsewhere,
-        pool: "second",
+        pool: &pool_key("second"),
+        now: 7,
+    };
+    assert!(facts.breaker_admits(&second, &at));
+
+    // And a query naming a pool this destination is not a member of has no position to read.
+    // The allow-list conjunct beside this one is what refuses that, not a borrowed index.
+    let open = Open(0);
+    let at = BreakerQuery {
+        breaker: &open,
+        pool: &pool_key("first"),
         now: 7,
     };
     assert!(facts.breaker_admits(&second, &at));
