@@ -396,6 +396,15 @@ pub struct App {
     /// side of the seam (`crate::oauth_as::seam`); core only carries the opaque handle and knows
     /// `Some`/`None`.
     pub oauth_as: Option<Arc<dyn std::any::Any + Send + Sync>>,
+    /// THE INPUTS the [`oauth_as`](Self::oauth_as) plane above was BUILT from — the validated
+    /// identity and the derived RFC 8707 protected-resource list — kept so the NEXT apply can decide
+    /// whether it would build the same authorization server and, if so, CARRY the running one rather
+    /// than rebuild it over a fresh `MemoryStorage` (which would invalidate every outstanding token /
+    /// dynamically-registered client and, with no `signing_key:`, mint a new ephemeral key). The
+    /// plane object is type-erased (`Arc<dyn Any>`) and cannot be interrogated from core, so its
+    /// build inputs are remembered HERE instead. `None` whenever `oauth_as` is (and on the test
+    /// builder, which installs a plane object directly and so never carries).
+    pub(crate) oauth_as_inputs: Option<(crate::oauth_as::config::AsIdentity, Vec<String>)>,
     // ONE CONTAINER PLANE'S PER-GENERATION CLIENT-DIRECTION RUNTIME (which also carries its own
     // verify-on-call coalescer, formerly a dedicated flat field) is no longer a flat `App` field: it
     // lives in `plane_slots` under `runtime_slot_key(<that plane's decl key>)`, reached by the plane

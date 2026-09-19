@@ -1685,30 +1685,26 @@ pub fn build_app_from_config_provisional(
     // its `aud`, which any resource server verifying against our JWKS would then honour — so the
     // list is derived here, from the planes this deployment actually serves, rather than configured
     // separately where it could disagree with them.
-    let oauth_as_plane = match cfg.oauth_as.as_ref() {
-        None => None,
+    //
+    // AND CARRIED ACROSS AN APPLY THAT DOES NOT CHANGE IT. Rebuilding this plane is not a cheap no-op
+    // with a fresh object at the end of it: the store is `MemoryStorage`, so a rebuild INVALIDATES
+    // every outstanding token and every dynamically registered client, and with no `signing_key:`
+    // configured it also mints a brand-new ephemeral key, so even a client holding a token cannot
+    // have it verified. The documented contract is that those things are lost "on restart" — an
+    // operator editing an unrelated pool must not be silently logging every agent out. So the running
+    // plane is CARRIED whenever the generation would build the same one (same validated identity AND
+    // same protected-resource ceiling), and rebuilt only when an oauth input actually moved. The
+    // build inputs are remembered on `App` (`oauth_as_inputs`) precisely so this carry decision can
+    // compare them — the plane object itself is type-erased and cannot be interrogated from core.
+    let (oauth_as_plane, oauth_as_inputs) = match cfg.oauth_as.as_ref() {
+        None => (None, None),
         Some(identity) => {
-            let key_material = match identity.signing_key() {
-                None => {
-                    diag_warn!(
-                        OAUTH_AS_EPHEMERAL_SIGNING_KEY,
-                        "oauth_as: no signing_key configured, so an EPHEMERAL ES256 key was \
-                         generated. Every token this deployment issues stops verifying when the \
-                         process restarts. Set `oauth_as.signing_key` for anything but a trial."
-                    );
-                    None
-                }
-                Some(reference) => Some(
-                    secret_resolver
-                        .resolve_string(reference)
-                        .map_err(|e| format!("oauth_as.signing_key: {e}"))?,
-                ),
-            };
             // busbar's OWN protected resource is a container plane's ingress canonical URI, read back
             // through that plane's `admission` seam — a `PlaneAdmission::audience` IS that canonical
             // URI — so appbuild names no plane-owned resource type. Empty when the `tools:` section is
             // absent or its owning plane is compiled out (no built-in decl, hence no admission, so the
-            // deployment protects no such audience).
+            // deployment protects no such audience). Computed FIRST because it is a carry-compare
+            // input exactly as `identity` is.
             let protected_resources: Vec<String> = cfg
                 .endpoint_resources
                 .get(busbar_substrate::plane::config::NAMED_MAP_SECTIONS[2])
@@ -1721,23 +1717,58 @@ pub fn build_app_from_config_provisional(
                 .map(|adm| adm.audience)
                 .into_iter()
                 .collect();
-            // Built through the seam (`crate::oauth_as::seam`), not `crate::oauth_as::plane::AsPlane`
-            // directly: the concrete plane type lives in the sibling `busbar-oauth2` crate, which
-            // core cannot name (the one-way dependency runs the other direction). The seam's `build`
-            // also spawns the plane's own expired-record sweeper — the same "how do I come alive"
-            // act this call site used to perform inline (`Storage::sweep_expired` is the only thing
-            // that reclaims anything in `oauth-as`, and it runs when it is called and never
-            // otherwise; spawned once per generation).
-            let seam = crate::oauth_as::seam::seam().ok_or_else(|| {
-                "oauth_as: configured, but the authorization-server plane (busbar-oauth2) is not \
-                 linked into this binary"
-                    .to_string()
-            })?;
-            Some((seam.build)(
-                identity,
-                key_material.as_deref(),
-                protected_resources,
-            )?)
+            // THE CARRY: a prior generation whose oauth inputs equal this one's is reused as-is —
+            // tokens, registered clients, ephemeral key and its already-running sweeper all intact.
+            let carried = prior.and_then(|p| {
+                let plane = p.oauth_as.as_ref()?;
+                let (prev_identity, prev_resources) = p.oauth_as_inputs.as_ref()?;
+                (prev_identity == identity && *prev_resources == protected_resources)
+                    .then(|| Arc::clone(plane))
+            });
+            match carried {
+                // Carried: NO key resolution, NO ephemeral-key re-warn (a carried generation must
+                // not re-warn about a key it did not generate nor re-read the operator's secret), and
+                // NO second sweeper (the carried plane's own is still running over its own store).
+                Some(plane) => (Some(plane), Some((identity.clone(), protected_resources))),
+                None => {
+                    // A REBUILD: resolve the key (or warn about an ephemeral one) HERE.
+                    let key_material = match identity.signing_key() {
+                        None => {
+                            diag_warn!(
+                                OAUTH_AS_EPHEMERAL_SIGNING_KEY,
+                                "oauth_as: no signing_key configured, so an EPHEMERAL ES256 key was \
+                                 generated. Every token this deployment issues stops verifying when \
+                                 the process restarts. Set `oauth_as.signing_key` for anything but a \
+                                 trial."
+                            );
+                            None
+                        }
+                        Some(reference) => Some(
+                            secret_resolver
+                                .resolve_string(reference)
+                                .map_err(|e| format!("oauth_as.signing_key: {e}"))?,
+                        ),
+                    };
+                    // Built through the seam (`crate::oauth_as::seam`), not
+                    // `crate::oauth_as::plane::AsPlane` directly: the concrete plane type lives in the
+                    // sibling `busbar-oauth2` crate, which core cannot name (the one-way dependency
+                    // runs the other direction). The seam's `build` also spawns the plane's own
+                    // expired-record sweeper — the same "how do I come alive" act this call site used
+                    // to perform inline (spawned once per BUILT generation; a carried generation
+                    // spawns none).
+                    let seam = crate::oauth_as::seam::seam().ok_or_else(|| {
+                        "oauth_as: configured, but the authorization-server plane (busbar-oauth2) is \
+                         not linked into this binary"
+                            .to_string()
+                    })?;
+                    let plane = (seam.build)(
+                        identity,
+                        key_material.as_deref(),
+                        protected_resources.clone(),
+                    )?;
+                    (Some(plane), Some((identity.clone(), protected_resources)))
+                }
+            }
         }
     };
 
@@ -1961,6 +1992,9 @@ pub fn build_app_from_config_provisional(
         // runtime accessor, which downcasts that slot inside the plane.
         plane_slots,
         oauth_as: oauth_as_plane.clone(),
+        // The build inputs behind `oauth_as`, so the NEXT apply can carry the running plane when it
+        // would build the same one (see `oauth_as` above and `state::App::oauth_as_inputs`).
+        oauth_as_inputs,
         // CARRIED ACROSS THE APPLY for the same reason, and it is the same class of mistake: an
         // approval already spent is evidence, not intent, and a config apply that forgot it would
         // hand every outstanding confirmation back to whoever still holds it.
