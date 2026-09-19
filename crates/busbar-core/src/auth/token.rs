@@ -415,12 +415,27 @@ async fn begin(app: &App, method: &str, refresh: bool) -> Response {
                 refresh,
             }
             .encode();
-            let mut resp = Response::builder()
+            // `url` is the IdP AUTHORIZE URL as returned by the login module's `begin_login` — not a
+            // compile-time constant, and this path is ANONYMOUSLY reachable (any caller can hit
+            // `begin` for any configured method). A misconfigured issuer or a plugin returning a
+            // value with a byte the `LOCATION` header can't carry (e.g. a raw newline) fails the
+            // builder at `.body()`; an `.expect()` there turned that into a caller-triggerable panic.
+            // Fail closed with an error page instead.
+            let mut resp = match Response::builder()
                 .status(StatusCode::FOUND)
                 .header(header::LOCATION, url)
                 .header(header::CACHE_CONTROL, "no-store")
                 .body(Body::empty())
-                .expect("static 302");
+            {
+                Ok(resp) => resp,
+                Err(_) => {
+                    return error_page(
+                        StatusCode::BAD_GATEWAY,
+                        "Sign-in redirect failed",
+                        "The identity provider returned an invalid redirect. Try again or contact your administrator.",
+                    );
+                }
+            };
             resp.headers_mut().append(
                 header::SET_COOKIE,
                 set_cookie(&cookie).parse().expect("cookie"),
