@@ -275,12 +275,20 @@ pub fn embedded_ipv4(v6: &Ipv6Addr) -> Option<Ipv4Addr> {
     if let Some(v4) = v6.to_ipv4() {
         return Some(v4);
     }
-    // `64:ff9b::/96`: the fixed top 96 bits are the segments below; the low 32 bits (the last two
-    // u16 segments) are the embedded IPv4 address, byte for byte.
+    // `64:ff9b::/96` (well-known, RFC 6052) AND `64:ff9b:1::/96` (local-use, RFC 8215) — the same
+    // NAT64 translation, one behind the well-known prefix and one behind an operator's own gateway.
+    // Both pin the leading six groups and carry the embedded IPv4 in the low 32 bits (the last two
+    // u16 segments), byte for byte; the only difference is `seg[2]` (`0` well-known, `1` local-use).
+    // A hostile/rebinding DNS64 resolver on a local-use NAT64 network answers with the local-use
+    // spelling, so unwrapping only the well-known prefix left `64:ff9b:1::a9fe:a9fe` (IMDS) as an
+    // apparently-public v6 address that the connecting stack still routes to `169.254.169.254`. A
+    // longer local-use embedding (/48, /56, /64) scatters the octets around the `u` byte and is
+    // deliberately NOT unwrapped: it is site-specific, and a wrong unwrap would refuse legitimate
+    // public v6 space.
     let seg = v6.segments();
     if seg[0] == 0x0064
         && seg[1] == 0xff9b
-        && seg[2] == 0
+        && (seg[2] == 0 || seg[2] == 1)
         && seg[3] == 0
         && seg[4] == 0
         && seg[5] == 0

@@ -205,6 +205,40 @@ fn nat64_synthesized_metadata_and_private_literals_are_recognized() {
     );
 }
 
+/// D27: THE RFC 8215 LOCAL-USE NAT64 PREFIX MUST BE GUARDED TOO. `64:ff9b:1::/96` is the local-use
+/// counterpart of the well-known `64:ff9b::/96` — the same RFC 6052 translation behind an operator's
+/// own NAT64 gateway, common on enterprise/cellular IPv6-only egress. A DNS64 resolver on such a
+/// network synthesizes `64:ff9b:1::a9fe:a9fe` for an IMDS-only name, and the connecting stack routes
+/// it to `169.254.169.254` exactly as the well-known spelling does. The guard unwrapped only the
+/// well-known prefix (`seg[2] == 0`), so the local-use spelling (`seg[2] == 1`) fell through
+/// `ssrf_blocked_host` unrecognized and was ALLOWED.
+#[test]
+fn nat64_local_use_prefix_metadata_and_private_literals_are_recognized() {
+    assert_eq!(
+        ssrf_blocked_host("https://[64:ff9b:1::a9fe:a9fe]/", &[], false, &[]).as_deref(),
+        Some("64:ff9b:1::a9fe:a9fe"),
+        "the RFC 8215 local-use NAT64 synthesis of the IMDS target must be refused like the \
+         well-known 64:ff9b::a9fe:a9fe already is"
+    );
+    assert_eq!(
+        ssrf_blocked_host(
+            "https://[64:ff9b:1::a01:203]/",
+            &[],
+            false,
+            &["10.1.2.3".to_string()],
+        )
+        .as_deref(),
+        Some("64:ff9b:1::a01:203"),
+        "the operator-blocked 10.1.2.3 literal is caught in its local-use NAT64 spelling too"
+    );
+    // The shared internal predicate agrees, so every plane that routes through it inherits the row.
+    assert!(ip_is_internal(
+        &"64:ff9b:1::7f00:1"
+            .parse()
+            .expect("local-use NAT64 loopback")
+    ));
+}
+
 /// The CONTROL for the trim: whitespace INSIDE a host (not at either end of the input, and not one
 /// of the three deleted bytes) is left alone, so a malformed host stays malformed rather than being
 /// silently repaired into something that matches.
