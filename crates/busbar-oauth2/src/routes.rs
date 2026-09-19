@@ -388,6 +388,16 @@ fn form_urlencoded_pairs(query: &str) -> Vec<(String, String)> {
         .collect()
 }
 
+/// ASCII hex digit (`0-9`, `a-f`, `A-F`) to its nibble value.
+fn hex_digit(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    }
+}
+
 fn percent_decode(s: &str) -> String {
     let bytes = s.as_bytes();
     let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
@@ -398,15 +408,19 @@ fn percent_decode(s: &str) -> String {
                 out.push(b' ');
                 i += 1;
             }
+            // Decode the two hex digits from the raw bytes, not `&s[i+1..i+3]`: `s` is a `&str`,
+            // and slicing it by byte index panics if that index falls inside a multibyte UTF-8
+            // character (e.g. a query value containing a raw non-ASCII byte next to a stray `%`).
+            // Byte-indexing `bytes` has no such requirement, so this can't panic.
             b'%' if i + 2 < bytes.len() => {
-                match u8::from_str_radix(&s[i + 1..i + 3], 16) {
-                    Ok(b) => {
-                        out.push(b);
+                match (hex_digit(bytes[i + 1]), hex_digit(bytes[i + 2])) {
+                    (Some(hi), Some(lo)) => {
+                        out.push((hi << 4) | lo);
                         i += 3;
                     }
                     // A stray `%` is kept verbatim rather than dropped: dropping it would let two
                     // different query strings decode to one value.
-                    Err(_) => {
+                    _ => {
                         out.push(b'%');
                         i += 1;
                     }
@@ -526,3 +540,39 @@ fn escape(s: &str) -> String {
 /// Handlers take `Arc<AppHandle>` state through the `CurrentApp` extractor; naming the type here
 /// keeps the mount signature honest about what it is building against.
 type _State = Arc<AppHandle>;
+
+#[cfg(test)]
+mod percent_decode_tests {
+    use super::percent_decode;
+
+    // A trailing `%` (or a `%` too close to the end to carry two more bytes) used to be sliced as
+    // `&s[i+1..i+3]` on the `&str`, which panics when the missing bytes would have landed inside a
+    // multibyte UTF-8 character rather than simply running past the end of an all-ASCII string.
+    // Anyone who could get a query string in front of this decoder could crash the process.
+    #[test]
+    fn a_percent_sign_that_cannot_carry_two_more_bytes_does_not_panic() {
+        assert_eq!(percent_decode("%"), "%");
+        assert_eq!(percent_decode("a%"), "a%");
+        assert_eq!(percent_decode("a%2"), "a%2");
+    }
+
+    // The historical panic path: a `%` sitting immediately before a multibyte UTF-8 character. The
+    // old code computed byte indices `i+1..i+3` from ASCII-counting logic and handed them straight
+    // to `&str` slicing, which panics unless both endpoints fall on a char boundary. `é` is a
+    // 2-byte character, so `i+3` from a preceding `%` lands inside it.
+    #[test]
+    fn a_percent_sign_immediately_before_a_multibyte_character_does_not_panic() {
+        // `€` is 3 UTF-8 bytes, so the old `i+1..i+3` slice split its 2nd and 3rd bytes.
+        assert_eq!(percent_decode("%€"), "%€");
+        // A hex-looking ASCII byte followed by a 2-byte character shifts the split into the
+        // character's interior instead.
+        assert_eq!(percent_decode("%aé"), "%aé");
+    }
+
+    #[test]
+    fn a_well_formed_percent_escape_still_decodes() {
+        assert_eq!(percent_decode("%2B"), "+");
+        assert_eq!(percent_decode("a%20b"), "a b");
+        assert_eq!(percent_decode("%e2%82%ac"), "€");
+    }
+}
