@@ -3034,6 +3034,27 @@ pub const CREATEKEY_UNKNOWN_POOL: Diagnostic = Diagnostic {
     retired: false,
 };
 
+/// A login module's `begin_login` returned an authorize URL that could not be carried in a
+/// `Location` header (e.g. a raw CR/LF or another byte an HTTP header value cannot hold). The
+/// sign-in redirect fails closed with a 502 rather than panic.
+pub const LOGIN_REDIRECT_UNENCODABLE: Diagnostic = Diagnostic {
+    code: 4030,
+    class: Class::Auth,
+    slug: "login-redirect-unencodable",
+    title: "Login redirect URL could not be encoded into a Location header (502)",
+    severity: Severity::Actionable,
+    summary: "A login module's begin_login returned an authorize URL containing a byte an HTTP \
+              header value cannot carry, so the 302 redirect could not be built. busbar fails \
+              closed with a 502 error page rather than panic. This is anonymously reachable (any \
+              caller can hit `begin` for any configured method), so a panic here would have been a \
+              caller-triggerable crash.",
+    action:
+        "Check the named method's issuer configuration and, if it is a plugin, its begin_login \
+             implementation — either is returning a malformed authorize URL.",
+    since: "1.6.0",
+    retired: false,
+};
+
 pub const ADMIN_UPDATEKEY_MALFORMED_BODY: Diagnostic = Diagnostic {
     code: 4029,
     class: Class::Auth,
@@ -3796,6 +3817,7 @@ pub static REGISTRY: &[&Diagnostic] = &[
     &ADMIN_CREATEKEY_MALFORMED_BODY,
     &CREATEKEY_UNKNOWN_POOL,
     &ADMIN_UPDATEKEY_MALFORMED_BODY,
+    &LOGIN_REDIRECT_UNENCODABLE,
     &PLANE_BREAKER_TRIPPED,
     &PLANE_BREAKER_HARD_DOWN,
     &LANE_HARD_DOWN_ALL_CELLS,

@@ -367,9 +367,12 @@ impl AuthMiddleware {
     }
 
     /// Whether the front door is OPEN — an empty auth chain admits every request unconditionally
-    /// (the old `none`/`passthrough`). Governance, when enabled, supersedes this.
+    /// (the old `none`/`passthrough`). Governance, when enabled, supersedes this. `keys_in_chain`
+    /// keeps the door CLOSED even when `self.chain` (the boxed modules) is empty, matching
+    /// [`Self::run_chain_cached`]'s own open-door check — a config naming only `chain: [keys]` must
+    /// report itself closed, not open.
     pub fn is_open(&self) -> bool {
-        self.chain.is_empty()
+        self.chain.is_empty() && !self.keys_in_chain
     }
 
     /// Run the auth chain over the presented candidate credential. Empty chain -> admit with NO
@@ -429,7 +432,9 @@ impl AuthMiddleware {
             // providers backed by the same module are DIFFERENT verifiers with different settings, so
             // sharing a cache row between them would let one provider's verdict admit the other's
             // credential. The name is the instance, so the cache key must be the name.
-            let outcome = match cache_here.and_then(|(c, cred)| c.get(provider, cred, now)) {
+            let hit = cache_here.and_then(|(c, cred)| c.get(provider, cred, now));
+            let was_hit = hit.is_some();
+            let outcome = match hit {
                 Some(hit) => hit,
                 None => {
                     let o = module.authenticate(candidate);
@@ -445,7 +450,11 @@ impl AuthMiddleware {
                         for name in &pending_pass {
                             c.put(name, cred, &AuthOutcome::Pass, now, g);
                         }
-                        if cache_here.is_some() {
+                        // Only a MISS commits here. A HIT re-inserted on every request would reset
+                        // the row's expiry, so a credential used more often than its own TTL would
+                        // never be re-verified against its module and an upstream revocation would
+                        // never land — the revocation-window bug this guards against.
+                        if cache_here.is_some() && !was_hit {
                             c.put(
                                 provider,
                                 cred,
@@ -473,11 +482,24 @@ impl AuthMiddleware {
         // them (a plugin that positively identified already returned). It is NOT a `Box<dyn
         // AuthModule>` on purpose: the module ABI ([`AuthOutcome`]) can only `Identify(Principal)`,
         // never hand back a resolved `VirtualKey`, so vkey resolution lives here where it can.
-        // CACHE-EXEMPT: the arm never consults or writes the `CredentialCache` (revocation today is
-        // per-request `verify_token` + a short denylist sync; caching a vkey verdict would widen the
-        // revocation window to the cache TTL).
+        // CACHE-EXEMPT for its OWN verdict: the arm never consults or writes the `CredentialCache`
+        // for a vkey (revocation today is per-request `verify_token` + a short denylist sync;
+        // caching a vkey verdict would widen the revocation window to the cache TTL). But the
+        // buffered-Pass rule above is keyed on the CHAIN's `Identified` return, not on which member
+        // produced it — an earlier boxed module's buffered Pass is real work already done, and the
+        // keys arm identifying is as much an `Identified` return as a boxed module's. Not flushing
+        // it here would mean a chain ending in the keys arm re-runs every passing module on every
+        // request, cache or not.
         if self.keys_in_chain {
-            return keys_arm_verdict(gov, candidate, now, expected_aud);
+            let verdict = keys_arm_verdict(gov, candidate, now, expected_aud);
+            if matches!(verdict, ChainVerdict::Identified { .. }) {
+                if let (Some(c), Some(cred), Some(g)) = (cache, candidate, cache_gen) {
+                    for name in &pending_pass {
+                        c.put(name, cred, &AuthOutcome::Pass, now, g);
+                    }
+                }
+            }
+            return verdict;
         }
         ChainVerdict::Denied
     }

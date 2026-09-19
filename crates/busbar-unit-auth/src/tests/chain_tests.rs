@@ -434,3 +434,40 @@ fn revocation_gates_new_units_only() {
         ChainVerdict::Identified { .. }
     ));
 }
+
+/// REGRESSION PROOF: `run_chain_for_new_unit`'s revocation check must be gated on
+/// `ChainVerdict::Identified` — an `Open` (empty chain, anonymous front door) or `Denied`
+/// (all-`Pass`) verdict never authenticated `candidate`, so an `AllRevoked` view (or any revocation
+/// view that happens to match the raw candidate bytes) must NOT turn either into `Denied`. Companion
+/// to `revocation_gates_new_units_only`, which proves the positive case (`Identified` + revoked ⇒
+/// `Denied`); this proves the gate does not fire when there is nothing real to revoke.
+#[test]
+fn revocation_does_not_gate_open_or_denied_verdicts() {
+    struct AllRevoked;
+    impl crate::chain::RevocationView for AllRevoked {
+        fn is_revoked(&self, _credential: &str) -> bool {
+            true
+        }
+    }
+
+    // Open: an empty, keyless chain admits anonymously regardless of `candidate`.
+    let open = chain(vec![], false);
+    assert_eq!(
+        open.run_chain_for_new_unit(Some("cred"), None, None, 1000, None, Some(&AllRevoked)),
+        ChainVerdict::Open,
+        "an AllRevoked view must not turn an anonymous open-door admit into a denial"
+    );
+
+    // Denied: a non-empty chain where every module Passes fails closed on its own, independent of
+    // revocation — and the revocation check must not be what causes it (nor mask a bug that would
+    // otherwise let it through).
+    let denied = chain(
+        vec![entry("a", Box::new(Canned::new("a", AuthOutcome::Pass)))],
+        false,
+    );
+    assert_eq!(
+        denied.run_chain_for_new_unit(Some("cred"), None, None, 1000, None, Some(&AllRevoked)),
+        ChainVerdict::Denied,
+        "an all-Pass chain is denied on its own terms, not via the revocation view"
+    );
+}
