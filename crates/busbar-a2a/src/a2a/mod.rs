@@ -454,6 +454,7 @@ pub(crate) fn a2a_start(
         // bundle once and holding it is what keeps that key material out of a per-request rebuild.
         let live = std::sync::Arc::new(crate::a2a::transport::LiveCardFetch::presenting(
             plane.fetch_policy().clone(),
+            plane.generation(),
             &a2a_identities,
         ));
         // PUBLISHED FOR VERIFY-ON-CALL to re-fetch a stale card with. It carries the per-agent CLIENT

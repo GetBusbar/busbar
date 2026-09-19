@@ -382,7 +382,7 @@ fn an_mtls_registration_that_presents_its_client_certificate_verifies() {
     let policy = loopback_policy();
     let transport = ReqwestTransport::new(&policy)
         .trusting_root(endpoint.ca_pem.as_bytes())
-        .presenting(identity);
+        .presenting(1, identity);
 
     let mut registration = an_mtls_registration(addr.port());
     let pass = crate::a2a::verify::reverify_once(
