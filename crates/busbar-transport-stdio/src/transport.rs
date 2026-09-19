@@ -224,6 +224,10 @@ impl Plugin for StdioTransport {
 
 impl TransportMeta for StdioTransport {
     const KEY: &'static str = "stdio";
+    // Standalone — never composed over, and nothing else composes over it either — so `stdio` is
+    // the one scheme it carries, matching the `"stdio:own-process"` self-identifying peer address
+    // this transport already writes elsewhere in this file.
+    const SCHEMES: &'static [&'static str] = &["stdio"];
     // stdio carries no header, path or handshake surface to select on: a claim on this transport
     // can only ever be the whole channel. Empty rather than guessed — see the crate report.
     const SELECTOR_FORMS: &'static [SelectorForm] = &[];

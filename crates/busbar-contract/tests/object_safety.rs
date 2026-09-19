@@ -328,6 +328,7 @@ impl Plugin for FixtureTransport {
 
 impl TransportMeta for FixtureTransport {
     const KEY: &'static str = "fixture";
+    const SCHEMES: &'static [&'static str] = &[];
     const SELECTOR_FORMS: &'static [busbar_contract::grammar::SelectorForm] = &[];
     const EGRESS_SELECTOR_FORMS: &'static [busbar_contract::grammar::SelectorForm] = &[];
     const COMPOSES_OVER: &'static [&'static str] = &[];

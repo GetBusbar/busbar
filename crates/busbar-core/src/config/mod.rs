@@ -837,8 +837,8 @@ pub const STORE_MODULE_VALKEY_ASSET_STEM: &str = "busbar-store-valkey";
 // serde data; the catalog/deployment MERGE that produces a `ProviderCfg` stays here (`resolve`).
 // Moved to `busbar_substrate::config::providers`; re-exported at their historical `config::` path.
 pub use busbar_substrate::config::providers::{
-    default_protocol, neg1, HealthCfg, HealthMode, ModelCfg, ProviderCfg, ProviderDef,
-    ProviderDeploy, DEFAULT_PROTOCOL,
+    default_protocol, neg1, protocol_is_implicit_default, scheme_of, HealthCfg, HealthMode,
+    ModelCfg, ProviderCfg, ProviderDef, ProviderDeploy, DEFAULT_PROTOCOL,
 };
 
 // ABI-purity CONFIG-ENUMS: the per-provider auth-style selector is a plane-owned runtime config
@@ -2153,10 +2153,25 @@ pub fn resolve(
         let def = match defs.get(deploy_name) {
             Some(d) => d,
             None => {
-                errors.push(format!(
+                let mut msg = format!(
                     "provider '{}' referenced in config.yaml not found in providers.yaml",
                     deploy_name
-                ));
+                );
+                // DEFAULT_PROTOCOL non-llm fix (CONFIG-MODEL-RULING §16): with no catalog entry
+                // AND no explicit `protocol:` override, this provider — had it been allowed to
+                // resolve — would have silently ridden the implicit anthropic dialect default
+                // (`providers::protocol_is_implicit_default`). It cannot resolve today (the line
+                // above already refuses it), so this only enriches the SAME refusal with why a
+                // `protocol:` matters here specifically, rather than leaving an operator to guess.
+                if protocol_is_implicit_default(deploy_cfg, None) {
+                    msg.push_str(
+                        "; with no catalog entry and no explicit `protocol:` override, this \
+                         provider would also have silently ridden the implicit anthropic dialect \
+                         default — name a `protocol:` explicitly, or add a providers.yaml catalog \
+                         entry, rather than relying on it",
+                    );
+                }
+                errors.push(msg);
                 continue;
             }
         };

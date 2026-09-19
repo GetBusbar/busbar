@@ -102,6 +102,8 @@ pub mod status_ns {
 pub struct Registered {
     /// The transport's registry key.
     pub key: &'static str,
+    /// The URL schemes it declares it carries (`TransportMeta::SCHEMES`).
+    pub schemes: &'static [&'static str],
     /// The layers it declares it can be built over.
     pub composes_over: &'static [&'static str],
     /// The layer it was ACTUALLY built over, where the root composed it over one.
@@ -134,6 +136,20 @@ pub enum CompositionError {
     },
     /// Two transports registered under one key.
     DuplicateKey(&'static str),
+    /// Two transports both declare the same URL scheme.
+    ///
+    /// The scheme half of frame-honesty: a scheme with two claimants is a dial whose transport
+    /// depends on which one happened to register first, and the config-model design's
+    /// transport-by-scheme section asks for it to be a boot refusal naming both rather than a
+    /// silent pick.
+    DuplicateScheme {
+        /// The contested scheme.
+        scheme: &'static str,
+        /// The first transport (by registration order) that claims it.
+        first: &'static str,
+        /// The second.
+        second: &'static str,
+    },
 }
 
 impl fmt::Display for CompositionError {
@@ -151,6 +167,14 @@ impl fmt::Display for CompositionError {
             Self::DuplicateKey(key) => {
                 write!(f, "two transports registered under the key `{key}`")
             }
+            Self::DuplicateScheme {
+                scheme,
+                first,
+                second,
+            } => write!(
+                f,
+                "scheme `{scheme}` is claimed by two transports: `{first}` and `{second}`"
+            ),
         }
     }
 }
@@ -193,4 +217,37 @@ pub fn check_composition(registered: &[Registered]) -> Result<(), CompositionErr
         }
     }
     Ok(())
+}
+
+/// The boot-time scheme→transport-plugin index: which registered transport's declared `SCHEMES`
+/// carries a given URL scheme.
+///
+/// The scheme twin of [`check_composition`]'s duplicate-key half, over the same [`Registered`] rows
+/// rather than a fresh input — the config-model design's transport-by-scheme boot-time index, built once by the
+/// composition root before a provider's `base_url` scheme is checked against it (a provider whose
+/// scheme names no registered transport is refused fail-closed, at the config layer that reads this
+/// index — see `busbar-core`'s `config_validate::config_validate_providers`).
+///
+/// # Errors
+///
+/// Two transports declare the same scheme — the pair nothing downstream can arbitrate, named with
+/// both claimants so an operator sees the conflicting registration rather than a dial silently
+/// picking whichever transport happened to register first.
+pub fn scheme_index(
+    registered: &[Registered],
+) -> Result<Vec<(&'static str, &'static str)>, CompositionError> {
+    let mut index: Vec<(&'static str, &'static str)> = Vec::new();
+    for r in registered {
+        for scheme in r.schemes {
+            if let Some((_, first)) = index.iter().find(|(s, _)| s == scheme) {
+                return Err(CompositionError::DuplicateScheme {
+                    scheme,
+                    first,
+                    second: r.key,
+                });
+            }
+            index.push((scheme, r.key));
+        }
+    }
+    Ok(index)
 }

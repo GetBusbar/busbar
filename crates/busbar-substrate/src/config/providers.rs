@@ -79,6 +79,51 @@ pub fn default_protocol() -> String {
     DEFAULT_PROTOCOL.to_string()
 }
 
+/// The scheme prefix of a `base_url` — `Some("https")` for `"https://api.example.com"` — as the raw
+/// slice, lowercase or not as the config wrote it. `None` when there is no `scheme://` prefix to
+/// parse at all (a bare host, or an empty string): an unparseable value, which cannot occur for a
+/// `base_url` that already passed the http/https scheme gate in `config_validate`.
+///
+/// CONFIG-MODEL-RULING §15's boot-time scheme→transport-plugin index is keyed by lowercase scheme
+/// (every `TransportMeta::SCHEMES` entry is a lowercase literal), so a caller comparing this
+/// function's result against that index does so case-insensitively
+/// (`str::eq_ignore_ascii_case`) — mirroring `scheme_is`, the existing case-insensitive scheme
+/// check this same validation pass already runs (RFC 3986 §3.1: the scheme is case-insensitive).
+#[must_use]
+pub fn scheme_of(base_url: &str) -> Option<&str> {
+    let (scheme, rest) = base_url.split_once("://")?;
+    if scheme.is_empty() || rest.is_empty() {
+        return None;
+    }
+    Some(scheme)
+}
+
+/// Whether a resolved provider's `protocol` would have come from the implicit [`DEFAULT_PROTOCOL`]
+/// default rather than an explicit choice made somewhere in config (CONFIG-MODEL-RULING §16, the
+/// "DEFAULT_PROTOCOL non-llm fix").
+///
+/// The default exists so an omitted `protocol:` still parses — [`ProviderCfg`]'s own
+/// `#[serde(default = "default_protocol")]` — but NEITHER production merge
+/// (`busbar_llm::engine::build_runtime::resolve_provider`, or busbar-core's `merge_provider_fallback`
+/// for an llm-plane-absent build) ever actually reaches that default: [`ProviderDef::protocol`] is a
+/// REQUIRED catalog field, and a `config.yaml` provider naming no catalog entry at all is refused
+/// before either merge runs (`"… not found in providers.yaml"`). So a provider that resolves at all
+/// always carries an explicit protocol, from the deployment override, the catalog, or both — this
+/// predicate is `false` on every provider reachable through the catalog merge today.
+///
+/// It exists anyway, wired at the one seam ambiguous enough to need it: a caller resolving a
+/// provider from a deployment with NO catalog entry (`def: None`) — a shape the catalog merge
+/// refuses outright today, and the shape a future no-catalog provider path (a non-llm plane's own
+/// provider-like section, referencing nothing in providers.yaml) would need to ask this exact
+/// question about before silently riding the anthropic dialect default. An llm provider that omits
+/// `protocol:` in both `config.yaml` and providers.yaml (impossible today, since the catalog entry
+/// is required) would still be allowed to default — the refusal this predicate feeds is scoped to a
+/// NON-llm reference, never to the llm plane's own byte-identical 1.5.5 behavior.
+#[must_use]
+pub fn protocol_is_implicit_default(deploy: &ProviderDeploy, def: Option<&ProviderDef>) -> bool {
+    def.is_none() && deploy.protocol.is_none()
+}
+
 /// Active health-probe mode for a provider's lanes.
 #[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
@@ -266,4 +311,83 @@ pub struct ProviderDeploy {
     /// `health` when set; this is the block the shipped `config.yaml` documents under a provider.
     #[serde(default)]
     pub health: Option<HealthCfg>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn deploy(protocol: Option<&str>) -> ProviderDeploy {
+        ProviderDeploy {
+            api_key: busbar_api::SecretRef::env("KEY"),
+            protocol: protocol.map(str::to_string),
+            base_url: None,
+            error_map: None,
+            path: None,
+            path_base: None,
+            token_url: None,
+            scope: None,
+            subject: None,
+            auth: None,
+            allow_metadata_hosts: None,
+            health: None,
+        }
+    }
+
+    fn def(protocol: &str) -> ProviderDef {
+        ProviderDef {
+            protocol: protocol.to_string(),
+            base_url: "https://api.example.com".to_string(),
+            error_map: HashMap::new(),
+            health: None,
+            path: None,
+            path_base: None,
+            token_url: None,
+            scope: None,
+            subject: None,
+            auth: None,
+            allow_metadata_hosts: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn scheme_of_parses_the_prefix() {
+        assert_eq!(scheme_of("https://api.example.com"), Some("https"));
+        assert_eq!(scheme_of("http://localhost:11434"), Some("http"));
+        assert_eq!(scheme_of("HTTPS://api.example.com"), Some("HTTPS"));
+    }
+
+    #[test]
+    fn scheme_of_is_none_for_unparseable_values() {
+        assert_eq!(scheme_of("api.example.com"), None);
+        assert_eq!(scheme_of(""), None);
+        assert_eq!(scheme_of("://api.example.com"), None);
+        assert_eq!(scheme_of("https://"), None);
+    }
+
+    #[test]
+    fn implicit_default_only_when_neither_catalog_nor_deployment_names_a_protocol() {
+        // The shape the catalog merge refuses outright today (no def at all) and the deployment
+        // is also silent — the only shape that would ever ride `DEFAULT_PROTOCOL`.
+        assert!(protocol_is_implicit_default(&deploy(None), None));
+    }
+
+    #[test]
+    fn a_catalog_entry_is_never_implicit_even_when_silent_on_protocol() {
+        // Every real merge always has `Some(def)` by the time it builds a `ProviderCfg` — the
+        // catalog's own `protocol` (required, never defaulted) is the explicit answer.
+        assert!(!protocol_is_implicit_default(
+            &deploy(None),
+            Some(&def("anthropic"))
+        ));
+    }
+
+    #[test]
+    fn an_explicit_deployment_override_is_never_implicit() {
+        assert!(!protocol_is_implicit_default(&deploy(Some("openai")), None));
+        assert!(!protocol_is_implicit_default(
+            &deploy(Some("openai")),
+            Some(&def("anthropic"))
+        ));
+    }
 }
