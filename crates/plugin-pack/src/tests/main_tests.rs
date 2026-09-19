@@ -116,6 +116,26 @@ fn pack_cli_respects_allow_unsigned_and_returns_the_right_exit_code() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// Regression: a `hex::FromHexError`'s `Display` names the offending nibble and its index — a
+/// fragment of the ed25519 signing seed. `sign_key_hex_error()` must produce a fixed, contentless
+/// message regardless of what invalid value was decoded, never the decoder's own `Display`.
+#[test]
+fn sign_key_hex_error_never_echoes_the_offending_value() {
+    let leaky_value = "not-hex-MARKER-DO-NOT-LEAK-zzzz";
+    let err = hex::decode(leaky_value)
+        .map_err(|_| sign_key_hex_error())
+        .unwrap_err();
+    assert!(
+        !err.contains("MARKER-DO-NOT-LEAK") && !err.contains(leaky_value),
+        "error must not contain the invalid $BUSBAR_SIGN_KEY value: {err}"
+    );
+    assert_eq!(
+        err,
+        sign_key_hex_error(),
+        "message must be fixed, not value-dependent"
+    );
+}
+
 /// The `--needs-*` level parser accepts the ladder tokens (case/alias-insensitively) and hard-errors
 /// on anything else (a fat-fingered intent must not silently default to a weaker/stronger level).
 #[test]

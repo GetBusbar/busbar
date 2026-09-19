@@ -267,16 +267,31 @@ fn jwt_claims_json(
 }
 
 /// SA-JSON credential material: inline JSON (`{...}`) or a filesystem path to a key file.
+///
+/// The failure message deliberately does NOT render `credential`. On this branch the argument is a
+/// PATH only by assumption — the sole thing that distinguishes the two forms is a leading `{`, so an
+/// operator who pasted the key body, or a secret ref that resolved to key material rather than to a
+/// filename, lands here holding the SIGNING KEY. This error is not a swallowed one: it can reach a
+/// terminal, a CI log or a crash report, so interpolating the argument would publish the key in one
+/// step. Callers already name the lane and the secret's configured source, so what this layer owes
+/// is the io failure and nothing else.
 fn read_credential(credential: &str) -> Result<String, String> {
     let trimmed = credential.trim_start();
     if trimmed.starts_with('{') {
         return Ok(credential.to_string());
     }
-    std::fs::read_to_string(credential)
-        .map_err(|e| format!("could not read service-account key file '{credential}': {e}"))
+    std::fs::read_to_string(credential).map_err(|e| {
+        format!("could not read service-account key file named by this lane's credential: {e}")
+    })
 }
 
 /// Strip the PEM armor from a PKCS#8 private key and base64-decode the body to DER.
+///
+/// The failure message deliberately does NOT render the decode error's `Display`: a
+/// `base64::DecodeError` names the offending byte VALUE and its offset (e.g. `Invalid byte 37,
+/// offset 4.`), and that byte is a fragment of the private key's base64 body — the same category
+/// of leak `read_credential` below was fixed to avoid, and for the same reason (this can reach a
+/// terminal, CI log, or crash report). A fixed, contentless message is all this layer owes.
 fn pem_to_pkcs8_der(pem: &str) -> Result<Vec<u8>, String> {
     let body: String = pem
         .lines()
@@ -289,7 +304,7 @@ fn pem_to_pkcs8_der(pem: &str) -> Result<Vec<u8>, String> {
     }
     base64::engine::general_purpose::STANDARD
         .decode(body.as_bytes())
-        .map_err(|e| format!("service-account private_key base64 is invalid: {e}"))
+        .map_err(|_| "service-account private_key base64 is invalid".to_string())
 }
 
 fn b64url(bytes: &[u8]) -> String {
