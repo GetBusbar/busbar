@@ -124,7 +124,13 @@ pub struct GeminiLiveCodec;
 #[must_use]
 pub fn audio_format_from_mime(mime: &str, dir: UpDown) -> Option<AudioFormat> {
     let m = mime.to_ascii_lowercase();
-    if !m.starts_with("audio/pcm") {
+    // The MEDIA TYPE is the part before the first `;`, matched EXACTLY — `audio/pcmu` (G.711 µ-law)
+    // and `audio/pcma` (G.711 a-law) both `starts_with("audio/pcm")` yet are companded telephony
+    // codecs, not the signed-16 LE PCM this dialect speaks. A `starts_with` probe read them as the
+    // bare `audio/pcm` family and handed back `Pcm16`, a 6× measurement error (8 kHz 8-bit companded
+    // audio metered/truncated as 24 kHz PCM16). This dialect has no g711 mode, so a telephony mime
+    // has no honest format here.
+    if m.split(';').next().map(str::trim) != Some("audio/pcm") {
         return None;
     }
     // The `rate=` parameter is matched EXACTLY against each `;`-delimited part, never by substring:

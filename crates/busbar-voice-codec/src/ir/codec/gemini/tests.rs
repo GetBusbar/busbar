@@ -1195,6 +1195,30 @@ fn a_malformed_rate_parameter_is_not_matched_by_substring() {
     );
 }
 
+/// `audio/pcmu` (G.711 µ-law) and `audio/pcma` (G.711 a-law) are NOT `audio/pcm`.
+///
+/// A `starts_with("audio/pcm")` probe reads both telephony mimes as the bare `audio/pcm` family and
+/// hands back `Pcm16` — a 6× measurement error (8 kHz 8-bit companded audio metered/truncated as
+/// 24 kHz signed-16 PCM). This dialect has no g711 mode at all, so a telephony mime has no honest
+/// format here and must probe as `None`, whichever direction it arrives on.
+#[test]
+fn companded_telephony_mimes_are_not_pcm() {
+    for dir in [UpDown::Up, UpDown::Down] {
+        assert_eq!(
+            audio_format_from_mime("audio/pcmu", dir),
+            None,
+            "audio/pcmu is G.711 µ-law, not the audio/pcm family"
+        );
+        assert_eq!(
+            audio_format_from_mime("audio/pcma", dir),
+            None,
+            "audio/pcma is G.711 a-law, not the audio/pcm family"
+        );
+        // A stated rate on a telephony mime does not rescue it: the type itself is not audio/pcm.
+        assert_eq!(audio_format_from_mime("audio/pcmu;rate=8000", dir), None);
+    }
+}
+
 // ── degrade, don't error (drop+warn asymmetries) ─────────────────────────────────────────────────
 
 #[test]
