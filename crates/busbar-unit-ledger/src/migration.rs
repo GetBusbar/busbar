@@ -104,6 +104,16 @@ pub struct LegacyFigure {
     pub amount: i128,
 }
 
+/// One component of a composite pool key, framed so its boundary cannot be forged.
+///
+/// The component's byte length goes down first, as an 8-byte big-endian integer rendered as its
+/// fixed 16-hex-digit spelling, then the component's own text. A reader that knows the length knows
+/// exactly where the component ends whatever it contains, so no `/` (or any other byte) inside a
+/// lane or a provider can move the boundary onto a neighbour and merge two balances into one.
+fn length_framed(component: &str) -> String {
+    format!("{:016x}{component}", component.len() as u64)
+}
+
 impl LegacyFigure {
     /// The balance this figure opens.
     ///
@@ -111,13 +121,22 @@ impl LegacyFigure {
     /// happens to be empty would otherwise land on the same key as a window row for the same lane,
     /// and the two would silently add — which is the one arithmetic error a migration cannot be
     /// allowed to make, because there is nothing left to compare the result against.
+    ///
+    /// The metering pool joins two caller-controlled components — the lane and the provider — and a
+    /// bare delimiter between them is not enough: `("gpt/4", "openai")` and `("gpt", "4/openai")`
+    /// both spell `meter:gpt/4/openai` and land on ONE balance, silently merging two providers'
+    /// money. So each component is length-framed — its byte length as an 8-byte big-endian prefix,
+    /// rendered as fixed-width hex so the key stays a value string — which no arrangement of
+    /// delimiters in a component's own text can imitate.
     pub fn key(&self) -> TotalsKey {
         let scope = match (self.family, self.lane.as_str()) {
             (LegacyFamily::Window, "") => BucketScope::All,
             (LegacyFamily::Window, lane) => BucketScope::Pool(format!("lane:{lane}")),
-            (LegacyFamily::Meter, lane) => {
-                BucketScope::Pool(format!("meter:{lane}/{}", self.provider))
-            }
+            (LegacyFamily::Meter, lane) => BucketScope::Pool(format!(
+                "meter:{}{}",
+                length_framed(lane),
+                length_framed(&self.provider)
+            )),
         };
         TotalsKey::new(
             BucketId::new(self.bucket.clone()),

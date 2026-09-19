@@ -150,14 +150,20 @@ pub struct Usage {
 
 impl Usage {
     /// Report what the unit used.
+    ///
+    /// The report is estimated when ANY line is — a line the node floored (`estimated`) or a source
+    /// that floors by construction (`is_floor`). Hardcoding `estimated: false` here would let a
+    /// floored or derived quantity settle as a confirmed figure and never reach the disputes report,
+    /// because the estimate mark travels from this flag onto the posting. A report is only confirmed
+    /// when every line in it is.
     pub fn report(_token: &UsageToken, lines: Vec<UsageLine>) -> Result<Self, UsageError> {
         if lines.len() > MAX_USAGE_LINES {
             return Err(UsageError::TooManyLines);
         }
-        Ok(Usage {
-            lines,
-            estimated: false,
-        })
+        let estimated = lines
+            .iter()
+            .any(|line| line.estimated || line.source.is_floor());
+        Ok(Usage { lines, estimated })
     }
 
     /// Report the kernel's own floor, because the destination reported nothing.

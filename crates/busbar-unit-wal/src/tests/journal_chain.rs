@@ -474,6 +474,57 @@ fn a_full_buffer_seals_a_chain_break_rather_than_dropping_silently() {
     assert_eq!(breaks[0].node_seq, overflows[0].chain_break_seq);
 }
 
+/// The ChainBreak an overflow seals carries the appending batch's own clock, not epoch 0.
+///
+/// A break sealed with a bare `Entry` stamps wall = 0 (1970), so the first retention sweep at any
+/// cutoff deletes the one durable record that says records were dropped — the audit evidence an
+/// outage most needs to keep. So the break is dated to the moment it marks: this batch's own clock.
+#[test]
+fn the_chain_break_is_dated_to_the_batch_not_to_epoch_zero() {
+    let mut journal = Journal::memory_buffered_to(4, Box::new(RefusingShipper)).with_capacity(4);
+    let token = durability_token();
+
+    journal
+        .append(
+            &token,
+            StepName::Meter,
+            &entries(RecordClass::Transaction, 3, 1),
+        )
+        .expect_err("a store that refuses is a durability loss on a node with no data directory");
+
+    // This batch reaches the bound. Its clocks are the append moment, and the break must take them.
+    let batch = entries(RecordClass::Transaction, 3, 2);
+    let batch_wall = batch
+        .iter()
+        .map(|e| e.wall)
+        .max()
+        .expect("a non-empty batch");
+    let batch_mono = batch
+        .iter()
+        .map(|e| e.mono)
+        .max()
+        .expect("a non-empty batch");
+    journal
+        .append(&token, StepName::Meter, &batch)
+        .expect_err("the store is still refusing");
+
+    let on_the_medium =
+        decode_run(&journal.log().read_back().expect("readable").records).expect("journal records");
+    let brk = on_the_medium
+        .iter()
+        .find(|r| r.class == RecordClass::ChainBreak)
+        .expect("an overflow sealed a break");
+    assert_ne!(
+        brk.wall, 0,
+        "a ChainBreak dated to epoch 0 is swept out on the first retention pass, losing the drop"
+    );
+    assert_eq!(
+        brk.wall, batch_wall,
+        "the break takes the appending batch's own clock"
+    );
+    assert_eq!(brk.mono, batch_mono, "and its monotonic clock too");
+}
+
 /// A single batch bigger than the whole capacity has nothing already buffered to evict, but the
 /// bound was still reached and still has to seal a break — not silently accept a buffer left over
 /// the bound for as long as the outage lasts.

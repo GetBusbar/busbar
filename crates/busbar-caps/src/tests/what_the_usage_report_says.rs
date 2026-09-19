@@ -189,6 +189,60 @@ fn the_largest_report_the_record_can_hold_is_accepted() {
     );
 }
 
+/// A report carrying a node-floored line is an estimate, and the mark travels onto the posting.
+///
+/// `report` is the "somebody else confirmed it" constructor, but a single line the node floored is
+/// still the node's own figure. Hardcoding the report unestimated let a floored quantity settle as a
+/// confirmed one and never reach the disputes report — because the estimate flag on the settled
+/// posting is exactly what that report reads. The money golden is the flag on the posting, not just
+/// the report's own answer.
+#[test]
+fn a_report_with_a_floored_line_settles_estimated() {
+    let k = seal();
+
+    // One confirmed locator figure and one the node floored by dividing bytes: the byte division
+    // floors by construction, so the report it sits in is not a confirmed figure.
+    let lines = vec![
+        UsageLine {
+            class: MeterClassId::new("tokens"),
+            quantity: 900,
+            source: QuantitySource::Locator {
+                direction: busbar_contract::ClassDirection::Response,
+                ptr: LocatorPtr::new("/usage/total_tokens"),
+            },
+            estimated: false,
+        },
+        UsageLine {
+            class: MeterClassId::new("bytes"),
+            quantity: 42,
+            source: QuantitySource::KernelBytes { divisor: 1_024 },
+            estimated: true,
+        },
+    ];
+    let usage = Usage::report(&UsageToken::mint(&k), lines).expect("two lines fit");
+    assert!(
+        usage.is_estimated(),
+        "a report carrying a node-floored line is not a confirmed figure"
+    );
+
+    // And the mark lands on the money: settle the report against a hold and read the posting's flag,
+    // which is the one the disputes report keys on.
+    let admit: AdmitToken<Admit> = AdmitToken::mint(&k);
+    let cell = HoldCell::new(Hold::open(&admit, PrincipalId::new("acct-1"), 0));
+    let arrival = cell
+        .admit(
+            Hold::open(&admit, PrincipalId::new("acct-1"), 1_000),
+            &admit,
+        )
+        .expect("admitted");
+    let ledger = LedgerToken::mint(&k);
+    let posted = Posted::settle(arrival, 900, &usage, &ledger);
+    assert!(
+        posted.flags().contains(PostingFlags::ESTIMATED),
+        "a floored quantity settled as a confirmed figure: it will never reach the disputes report"
+    );
+}
+
 #[test]
 fn an_authenticate_step_that_asked_for_another_round_names_no_principal() {
     // Two arms, because a challenge is not a decision about the unit — it is a request for one more

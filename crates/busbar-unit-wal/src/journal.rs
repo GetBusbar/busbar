@@ -917,7 +917,16 @@ impl Journal {
 
         let mut sealed = Vec::with_capacity(entries.len() + usize::from(overflow.is_some()));
         if let Some(overflow) = &overflow {
-            sealed.push(self.seal(&Entry::new(RecordClass::ChainBreak, overflow.body())));
+            // The break is dated to this batch's own clock, not left at epoch 0. A ChainBreak
+            // sealed with a bare `Entry` carries wall = 0 (1970) and is swept out on the first
+            // retention pass at any cutoff — losing the durable evidence that records were dropped,
+            // which is the one record an outage most needs to keep. It marks the moment this batch
+            // displaced the older records, so it takes the latest clock the batch carries.
+            let wall = entries.iter().map(|e| e.wall).max().unwrap_or(0);
+            let mono = entries.iter().map(|e| e.mono).max().unwrap_or(0);
+            sealed.push(
+                self.seal(&Entry::new(RecordClass::ChainBreak, overflow.body()).at(wall, mono)),
+            );
         }
         for entry in entries {
             sealed.push(self.seal(entry));
