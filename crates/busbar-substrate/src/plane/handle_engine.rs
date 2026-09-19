@@ -490,13 +490,20 @@ impl DurableHandleEngine {
     /// restoring the row memory still agrees with. Where `submit` DELETES (its row named a handle
     /// nobody had been told about), this RESTORES: the row belongs to a live handle that keeps
     /// answering. If the restore fails too the divergence is real, and the returned error names BOTH
-    /// causes so the append's (the first failure) reaches the caller with the rollback's beside it.
+    /// causes so the append's (the first failure) reaches the caller with the rollback's beside it —
+    /// unlike `submit`'s compensation, which only reaches its side-channel `report_fail`, this
+    /// double failure is folded into the `Err` every caller of `mutate`/`scoped_mutate` already sees.
     ///
     /// The one case with nothing to restore is a handle brought back by [`rehydrate`](Self::rehydrate)
-    /// whose FIRST post-boot mutation is the one that fails: it has no in-memory pre-image
-    /// ([`HandleSlot::row_record`] is `None`) because the plane-encoded record is not carried across
-    /// the boot seam. That residual divergence is documented on [`HandleSlot::row_record`]; the append
-    /// error is still returned so the caller is never told the mutation succeeded.
+    /// whose event append keeps failing BEFORE any post-boot mutation has fully succeeded: it has no
+    /// in-memory pre-image ([`HandleSlot::row_record`] is `None`) because the plane-encoded record is
+    /// not carried across the boot seam, and `row_record` is only ever set once a mutation's row AND
+    /// event both land — so the gap does not close after one failed attempt, it closes on the first
+    /// FULLY SUCCESSFUL one. That residual divergence is documented on [`HandleSlot::row_record`]; the
+    /// append error is still returned so the caller is never told the mutation succeeded — but the
+    /// returned `StoreError` reads identically to an ordinary append failure that WAS rolled back, so
+    /// this one case is also logged via `tracing::warn!`: without it, the only way the divergence is
+    /// ever discovered is the next boot's `rehydrate` resuming the handle at a state no event justifies.
     ///
     /// This is the ONE place a live handle's `updated_at` and `terminal` move, so it is where the
     /// expiry index is re-keyed: a handle left under a stale key is a handle the sweep would judge at
@@ -513,16 +520,32 @@ impl DurableHandleEngine {
         }
         if let Some(ev) = &m.event {
             if let Err(e) = self.append_record(&ev.record) {
-                // Only a row write needs taking back; an event-only mutation left the row alone. A
-                // rehydrated handle's first mutation has no in-memory pre-image to restore (see the
-                // doc comment) — the append error is returned either way.
+                // Only a row write needs taking back; an event-only mutation left the row alone.
                 if m.row_record.is_some() {
-                    if let Some(prev) = &slot.row_record {
-                        if let Err(undo) = self.upsert_record(prev) {
-                            return Err(StoreError(format!(
-                                "{e}; the row write that preceded it could NOT be rolled back \
-                                 ({undo}), so the durable row for `{id}` is ahead of the live handle"
-                            )));
+                    match &slot.row_record {
+                        Some(prev) => {
+                            if let Err(undo) = self.upsert_record(prev) {
+                                return Err(StoreError(format!(
+                                    "{e}; the row write that preceded it could NOT be rolled back \
+                                     ({undo}), so the durable row for `{id}` is ahead of the live handle"
+                                )));
+                            }
+                        }
+                        // A rehydrated handle has no in-memory pre-image to restore until a
+                        // mutation of it FULLY succeeds (see the doc comment) — this branch can
+                        // run more than once in a row. The append error below reads identically
+                        // to the rolled-back case, so this residual divergence is logged here —
+                        // it is otherwise invisible until the next boot's rehydrate resumes the
+                        // handle at a state no event justifies.
+                        None => {
+                            tracing::warn!(
+                                handle = %id,
+                                error = %e,
+                                "a rehydrated handle with no in-memory pre-image yet upserted a \
+                                 new durable row and then failed to append its event; there is \
+                                 nothing to roll it back to, so the durable row for this handle \
+                                 is now ahead of the live handle until the next rehydrate"
+                            );
                         }
                     }
                 }
