@@ -853,6 +853,41 @@ fn responses_response_cached_tokens_survive_roundtrip() {
     );
 }
 
+/// responses/response/usage.input_tokens_details.cache_write_tokens — the CACHE-WRITE slice of
+/// `input_tokens`, priced at its own tier (distinct from both plain input and cache-read). Hardcoded
+/// `None`, a cache-writing turn was billed the whole write at the plain input rate. The reader must
+/// map it into `cache_creation_input_tokens` and normalize `input_tokens` to the UNCACHED remainder
+/// (input_tokens = uncached + cached + cache_write).
+#[test]
+fn responses_response_cache_write_tokens_priced_at_cache_write_tier() {
+    let body = serde_json::json!({
+        "status": "completed",
+        "output": [],
+        "usage": {
+            "input_tokens": 100,
+            "output_tokens": 20,
+            "input_tokens_details": { "cached_tokens": 30, "cache_write_tokens": 15 },
+            "output_tokens_details": { "reasoning_tokens": 0 }
+        }
+    });
+    let ir = ResponsesReader.read_response(&body).expect("read_response");
+    assert_eq!(
+        ir.usage.cache_creation_input_tokens,
+        Some(15),
+        "cache_write_tokens must read into cache_creation_input_tokens: {ir:?}"
+    );
+    assert_eq!(
+        ir.usage.cache_read_input_tokens,
+        Some(30),
+        "cached_tokens must still read into cache_read_input_tokens: {ir:?}"
+    );
+    // Uncached remainder = 100 - 30 cached - 15 cache-write = 55.
+    assert_eq!(
+        ir.usage.input_tokens, 55,
+        "input_tokens must be normalized to the UNCACHED remainder: {ir:?}"
+    );
+}
+
 /// responses/response/output[].type={message.id,message.status,message.content,reasoning.summary,
 /// reasoning.encrypted_content,function_call.call_id,function_call.name,function_call.arguments}
 #[test]
