@@ -465,6 +465,29 @@ impl Plane for McpPlane {
             return Ok(Ingress::NeedMore);
         };
         let body = frame.bytes.as_slice();
+
+        // The discovery document is a plain GET on a well-known path. It carries no request envelope
+        // at all, so it is recognised by the PATH it arrived on rather than by a method in a body,
+        // and it is recognised HERE — before the envelope reader, which would otherwise find no
+        // version member and fail the decode, leaving the caller waiting for an answer this plane
+        // could never produce. It has its own open claim; a request whose target is that claim's
+        // path opens a metadata unit answered from what this node publishes about itself.
+        if ctx
+            .transport()
+            .fact(busbar_contract::transport::facts::PATH)
+            == Some(crate::claims::DEFAULT_METADATA)
+        {
+            return Ok(Ingress::OneShot(Box::new(UnitDraft {
+                op: ops::OP_METADATA,
+                body_ir: view(body, jsonrpc::REQUEST_PTRS, ctx)?,
+                // A discovery GET answers nothing of this node's own, and it is answered in one
+                // document: nothing correlates on either side.
+                correlates: None,
+                correlation_out: None,
+                facts: Facts::new(),
+            })));
+        }
+
         if body.is_empty() {
             return Ok(Ingress::NeedMore);
         }
@@ -476,10 +499,26 @@ impl Plane for McpPlane {
         // notice this plane recognises opens a unit that ends without writing anything, and one it
         // does not recognise is DROPPED — never refused, because a refusal is an answer.
         if !envelope.is_request() {
-            if !ops::is_known_notification(method) {
-                return Ok(Ingress::Discard {
-                    reason: DiscardCode::Unsupported,
-                });
+            match ops::notice_row(method) {
+                // One this plane does not recognise is DROPPED — never refused, because a refusal is
+                // an answer and the specification forbids answering a notice.
+                None => {
+                    return Ok(Ingress::Discard {
+                        reason: DiscardCode::Unsupported,
+                    })
+                }
+                // A notice arriving on the INGRESS side is one the CALLER sent. A notice whose sender
+                // is the server (a tool-list change, a resource update) is not the caller's to send:
+                // honouring one here would let the caller force a catalogue re-scan from the wrong
+                // side — the party being catalogued deciding when its own catalogue is re-read.
+                // Discarded as a forged source, the same way a server-sent caller-only method is
+                // (S33), because that is exactly what this is.
+                Some(row) if row.sender != ops::Sender::Client => {
+                    return Ok(Ingress::Discard {
+                        reason: DiscardCode::ForgedSource,
+                    })
+                }
+                Some(_) => {}
             }
             return Ok(Ingress::OneShot(Box::new(UnitDraft {
                 op: ops::OP_NOTIFICATION,
@@ -809,6 +848,13 @@ impl Plane for McpPlane {
                 schema: rec::SCHEMA_CATALOGUE,
                 op: rec::OP_SCAN,
             },
+            // The discovery document is published from this node's own configuration, which this
+            // plane reads through its settings records. It reaches no server: what it answers is
+            // what this node says about itself, not anything a server holds.
+            ops::OP_METADATA => DestinationFacts::PlaneRecord {
+                schema: rec::SCHEMA_SETTINGS,
+                op: rec::OP_GET,
+            },
             // A held stream delivers back to the caller that opened it.
             ops::OP_SUBSCRIPTIONS_LISTEN => DestinationFacts::Client {
                 selector: "opener",
@@ -927,6 +973,8 @@ impl Plane for McpPlane {
                 leg(self.upstream_leg());
                 leg(Self::record_leg(rec::SCHEMA_CALL, rec::OP_APPEND));
             }
+            // The discovery document is answered from this node's own configuration, in one reach.
+            ops::OP_METADATA => leg(Self::record_leg(rec::SCHEMA_SETTINGS, rec::OP_GET)),
             ops::OP_COMPLETION => leg(Self::record_leg(rec::SCHEMA_CATALOGUE, rec::OP_GET)),
             ops::OP_TASK_GET => leg(Self::record_leg(rec::SCHEMA_TASK, rec::OP_GET)),
             ops::OP_TASK_UPDATE | ops::OP_TASK_CANCEL => {

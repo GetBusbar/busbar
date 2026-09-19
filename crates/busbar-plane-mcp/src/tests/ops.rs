@@ -2,7 +2,9 @@
 //! measures implementation and nothing else; still a direct child module, so `use
 //! super::*` reaches the private items it always did.
 
-use super::{is_known_notification, row_for, Sender, METHODS, NOTIFICATIONS, OP_CLASSES};
+use super::{
+    is_known_notification, notice_row, row_for, Sender, METHODS, NOTIFICATIONS, OP_CLASSES,
+};
 
 /// Every method maps to a class the plane declares.
 #[test]
@@ -59,8 +61,12 @@ fn the_lookup_answers_the_table_and_nothing_else() {
 /// The two lists must not overlap: a name in both would be answered and not answered at once.
 #[test]
 fn the_two_lists_do_not_overlap() {
-    for name in NOTIFICATIONS {
-        assert!(row_for(name).is_none(), "{name} is in both lists");
+    for notice in NOTIFICATIONS {
+        assert!(
+            row_for(notice.method).is_none(),
+            "{} is in both lists",
+            notice.method
+        );
     }
     for row in METHODS {
         assert!(
@@ -120,6 +126,34 @@ fn the_name_pointers_are_the_codecs_own() {
             "the codec and this plane disagree about where {}'s subject is",
             row.method
         );
+    }
+}
+
+/// A notice is one side's to send, and the vocabulary records which side.
+///
+/// The tool-list and resource-update notices come FROM the server (the codec's own
+/// `McpNotification` half); only the roots-changed notice comes from the caller. Without this
+/// attribution a caller could send a server-originated notice and drive an effect that was never
+/// theirs to trigger.
+#[test]
+fn each_notice_names_who_may_send_it() {
+    assert_eq!(
+        notice_row("notifications/roots/list_changed").map(|r| r.sender),
+        Some(Sender::Client)
+    );
+    assert_eq!(
+        notice_row("notifications/tools/list_changed").map(|r| r.sender),
+        Some(Sender::Provider)
+    );
+    assert_eq!(
+        notice_row("notifications/resources/updated").map(|r| r.sender),
+        Some(Sender::Provider)
+    );
+    assert_eq!(notice_row("notifications/not/a/real/one"), None);
+    // No notice is a provider-only method's name and vice versa: the two tables answer different
+    // questions and a name in both would be answered two ways.
+    for notice in NOTIFICATIONS {
+        assert!(is_known_notification(notice.method));
     }
 }
 
