@@ -141,6 +141,11 @@ pub trait TestAppMcpExt {
     fn mcp_server(self, name: &str, def: McpServerDefCfg) -> Self;
     /// The reserved section-level `tools.hooks:` attach — the all-MCP hook list.
     fn tools_hooks(self, names: &[&str]) -> Self;
+    /// The reserved section-level `tools.upstream_credentials:` default — the ALL-MCP fallback
+    /// `ToolsCfg::effective_upstream_credentials` applies to every server that carries no per-server
+    /// override. Exists so a test can prove that default reaches dispatch (via `server_entry`)
+    /// without threading a per-server `upstream_credentials:` through every fixture.
+    fn tools_upstream_credentials(self, mode: busbar_api::UpstreamCreds) -> Self;
     /// Dispatch against these LIVE sightings — the cache a `connect`/refresh has published into.
     fn with_mcp_sightings(self, cache: Arc<CatalogueCache>) -> Self;
 }
@@ -165,6 +170,11 @@ impl<A: TestAppSeam> TestAppMcpExt for A {
     fn tools_hooks(mut self, names: &[&str]) -> Self {
         scratch(&mut self).tool_defs.all_server_hooks =
             names.iter().map(|n| (*n).to_string()).collect();
+        self
+    }
+
+    fn tools_upstream_credentials(mut self, mode: busbar_api::UpstreamCreds) -> Self {
+        scratch(&mut self).tool_defs.all_server_upstream_credentials = Some(mode);
         self
     }
 

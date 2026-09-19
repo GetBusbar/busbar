@@ -777,7 +777,11 @@ async fn dispatch(task: Arc<McpTask>, runner: Runner) {
     if let Err(refusal) =
         super::client::argguard::guard(&runner.input_schema, &arguments, runner.authorised.policy)
     {
-        task.fail(TASK_PROTOCOL_ERROR_CODE, refusal.to_string(), host.clock_now_ms());
+        task.fail(
+            TASK_PROTOCOL_ERROR_CODE,
+            refusal.to_string(),
+            host.clock_now_ms(),
+        );
         return;
     }
 

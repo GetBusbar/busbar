@@ -380,6 +380,58 @@ fn bare_host_formats_are_judged_as_hosts() {
     assert_eq!(scan.declared_judged, 4);
 }
 
+/// S4: a `hostname`/`ipv4`/`ipv6`-declared field that actually carries a FULL URL — a caller smuggling
+/// a scheme and path past a check that (before S4) read the whole string as an opaque host and never
+/// stripped either. `judge_host` alone reads `https://169.254.169.254/x` as one weird hostname string
+/// that matches none of the metadata/private/obfuscated literal comparisons, so the address sails
+/// through untouched. The embedded `://` must route the value through the same absolute-URL judgement
+/// (scheme allowlist + host judgement on the REAL host) the `Reference` arm already gives a
+/// scheme-relative value.
+#[test]
+fn a_url_smuggled_into_a_bare_host_field_is_judged_on_its_real_host() {
+    let schema = json!({
+        "type": "object",
+        "properties": {
+            "host": {"type": "string", "format": "hostname"},
+            "v4": {"type": "string", "format": "ipv4"}
+        }
+    });
+    for (field, value) in [
+        ("host", "https://169.254.169.254/latest/meta-data/"),
+        ("host", "http://localhost:8080/admin"),
+        ("v4", "https://127.0.0.1/x"),
+    ] {
+        let args = json!({ field: value });
+        let err = guard(&schema, &args, public()).expect_err(&format!(
+            "`{value}` in `{field}` must be refused, not read as an opaque host"
+        ));
+        assert!(
+            matches!(err.why, ArgWhy::CloudMetadata(_) | ArgWhy::InternalHost(_)),
+            "the refusal must be about the REAL host inside the URL, not a scheme/parse failure: {:?}",
+            err.why
+        );
+    }
+    // A non-`http(s)` scheme smuggled the same way is refused too, but for the SCHEME, not the host —
+    // the allowlist in `judge_absolute` runs before the host is even extracted.
+    let scheme_err = guard(
+        &schema,
+        &json!({"host": "ftp://169.254.169.254/x"}),
+        public(),
+    )
+    .expect_err("a non-http(s) scheme in a bare-host field is still refused");
+    assert!(matches!(scheme_err.why, ArgWhy::Scheme(_)));
+
+    // THE CONTROL: a public host wearing a URL wrapper still passes, so this arm does not over-block
+    // a legitimate value merely for carrying a scheme.
+    let ok = guard(
+        &schema,
+        &json!({"host": "https://api.example.com/v1", "v4": "93.184.216.34"}),
+        public(),
+    )
+    .expect("a public host, wrapped in a URL or bare, still passes");
+    assert_eq!(ok.declared_judged, 2);
+}
+
 /// THE UNDECLARED CASE, and the decision it encodes. Most real MCP tools take a URL in a plain
 /// `{"type": "string"}`, so a walk that judged only declared fields would refuse almost nothing.
 /// A string whose WHOLE value is an `http(s)` URL is therefore judged wherever it appears — and

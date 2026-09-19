@@ -446,8 +446,7 @@ fn a_server_cannot_send_a_callers_method() {
     let plane = McpPlane::EMPTY;
     let scaffold = Scaffold::new("http");
     let ctx = scaffold.ctx();
-    let forged =
-        br#"{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"evil"}}"#;
+    let forged = br#"{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"evil"}}"#;
     let frames = vec![response_frame(forged)];
     let mut cursor = FrameCursor::new(&frames);
     match plane
