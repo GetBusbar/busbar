@@ -201,25 +201,33 @@ pub fn is_kernel_granted(path: &str) -> bool {
 /// crate that has to name it names one literal.
 pub use busbar_contract::surface::ADMIN_PREFIX;
 
-/// `POST /config/validate` and `POST /plugins/inspect` — stateless dry-runs (reads in POST
-/// clothing: the body is the config to lint / tarball to preview) that stay `read-only` although
-/// every other mutation-shaped method needs `full`.
+/// `/config/validate` and `/plugins/inspect` — stateless dry-runs (reads in POST clothing: the body
+/// is the config to lint / tarball to preview) that stay `read-only`. Matched on PATH ALONE (no
+/// method gate — these are the only two paths mounted on both crates, and gating on `POST` here
+/// would diverge from the enforced admin contract's `required_scope`, which checks the same two
+/// paths without checking the verb).
 const READ_ONLY_POST_PATHS: &[&str] = &["/config/validate", "/plugins/inspect"];
 
 /// The authorization matrix: the scope an admin endpoint requires, derived from METHOD + PATH —
 /// never from the body. A strict two-rung split: every read (`GET`/`HEAD`) plus the two stateless
-/// dry-run `POST`s is `read-only`; every mutation needs `full`. Unknown methods fail closed to
+/// dry-run paths is `read-only`; every mutation needs `full`. Unknown methods fail closed to
 /// `full`.
 ///
 /// Ported verbatim from 1.5.5's `busbar_core::admin::v1::contract::required_scope` (behaviourally
 /// identical; the only change is that `method` is a plain string here instead of `axum::http::Method`,
-/// so this crate carries no HTTP-framework dependency at all).
+/// so this crate carries no HTTP-framework dependency at all). The method match is therefore EXACT
+/// (never case-folded), matching `axum::http::Method`'s own case-sensitive `PartialEq` — an HTTP
+/// method token is case-sensitive per RFC 7230/9110, so a non-canonical-case verb (`"get"`, `"Get"`)
+/// is not `GET`/`HEAD` and must fail closed to `full` exactly as the enforced admin contract does,
+/// not be silently accepted as a read. Likewise the two dry-run paths are matched on PATH ALONE, with
+/// no method gate at all, so this function never diverges from the enforced matrix over which verb
+/// happened to reach it.
 pub fn admin_required_scope(method: &str, path: &str) -> Scope {
-    if method.eq_ignore_ascii_case("GET") || method.eq_ignore_ascii_case("HEAD") {
+    if method == "GET" || method == "HEAD" {
         return Scope::ReadOnly;
     }
     let rel = path.strip_prefix(ADMIN_PREFIX).unwrap_or(path);
-    if method.eq_ignore_ascii_case("POST") && READ_ONLY_POST_PATHS.contains(&rel) {
+    if READ_ONLY_POST_PATHS.contains(&rel) {
         return Scope::ReadOnly;
     }
     Scope::Full
