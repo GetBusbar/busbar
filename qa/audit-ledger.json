@@ -644,62 +644,6 @@
    ]
   },
   {
-   "id": "crates/busbar-contract-transport/src",
-   "kind": "production",
-   "paths": [
-    "crates/busbar-contract-transport/src"
-   ],
-   "tree_hash": "97b62ddfb154ce554e9956bd11c186ff347497e271b487b5b58a5d542e7ce4ed",
-   "audited_at": "d6d871893dbd196e0d2b3a00d2e22ed2473d2adf",
-   "round": 6,
-   "result": "findings",
-   "counts": {
-    "HIGH": 1
-   },
-   "report": "transport_registry.rs real-stack copy drifted from production (ws over http,tcp,tls; grpc over http); read fully",
-   "auditor": "opus-pass3",
-   "fixed_at": null,
-   "exclude": [
-    "crates/busbar-contract-transport/src/tests"
-   ],
-   "rounds": [
-    {
-     "round": 5,
-     "result": "findings",
-     "auditor": "opus",
-     "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
-     "tree_hash": "cb61b9c060ad4ad9906a2191be7207c65716cd7f61ea4da139a636fa4b8a06ec",
-     "counts": {
-      "HIGH": 3,
-      "MEDIUM": 11,
-      "LOW": 8,
-      "NIT": 8
-     },
-     "report": "findings against transports+codecs+substrate-values; the reading's detail was not carried into the register"
-    },
-    {
-     "round": 5,
-     "result": "in_progress",
-     "auditor": "round-5 finder fleet",
-     "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
-     "tree_hash": "cb61b9c060ad4ad9906a2191be7207c65716cd7f61ea4da139a636fa4b8a06ec",
-     "counts": {},
-     "report": "in flight; no reading recorded against this scope yet"
-    },
-    {
-     "round": 6,
-     "result": "findings",
-     "auditor": "opus-pass3",
-     "audited_at": "d6d871893dbd196e0d2b3a00d2e22ed2473d2adf",
-     "tree_hash": "97b62ddfb154ce554e9956bd11c186ff347497e271b487b5b58a5d542e7ce4ed",
-     "counts": {
-      "HIGH": 1
-     },
-     "report": "transport_registry.rs real-stack copy drifted from production (ws over http,tcp,tls; grpc over http); read fully"
-    }
-   ]
-  },
-  {
    "id": "crates/busbar-core/src",
    "kind": "production",
    "paths": [
@@ -1277,24 +1221,6 @@
    ]
   },
   {
-   "id": "crates/busbar-plane-a2a-host/src",
-   "kind": "production",
-   "paths": [
-    "crates/busbar-plane-a2a-host/src"
-   ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null,
-   "exclude": [
-    "crates/busbar-plane-a2a-host/src/tests"
-   ]
-  },
-  {
    "id": "crates/busbar-plane-admin/src",
    "kind": "production",
    "paths": [
@@ -1515,24 +1441,6 @@
      },
      "report": "refusals outside the first twenty reasons all render as internal error, so a rate limit, an open breaker and a drain reach the caller as a node fault; an answer carrying neither result nor error is reported and billed as complete; the markup-normalisation floor the retiring engine applies has no call site here; the plane names another plane as a string literal; the round cap the session counter exists for has no reader"
     }
-   ]
-  },
-  {
-   "id": "crates/busbar-plane-mcp-host/src",
-   "kind": "production",
-   "paths": [
-    "crates/busbar-plane-mcp-host/src"
-   ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null,
-   "exclude": [
-    "crates/busbar-plane-mcp-host/src/tests"
    ]
   },
   {
@@ -4011,6 +3919,21 @@
    "rounds": []
   },
   {
+   "id": "crates/busbar-a2a/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-a2a/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
    "id": "crates/busbar-a2a-codec/src/tests",
    "kind": "test",
    "paths": [
@@ -4087,47 +4010,6 @@
      "auditor": "opus-test-auditor-kernel",
      "audited_at": "64b54387c4f177667ba688f7680877455579b293",
      "tree_hash": "23ce9e4d68053fc3f7cb30591dc94ab5ada43903b7191d1706622b67d059b506",
-     "counts": {},
-     "report": "busbar-landq-state/gate/audits/tests-kernel.md"
-    }
-   ]
-  },
-  {
-   "id": "crates/busbar-contract-transport/src/tests",
-   "kind": "test",
-   "paths": [
-    "crates/busbar-contract-transport/src/tests"
-   ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
-  },
-  {
-   "id": "crates/busbar-contract-transport/tests",
-   "kind": "test",
-   "paths": [
-    "crates/busbar-contract-transport/tests"
-   ],
-   "tree_hash": "e8145960243ab7a5428878e0c03b2d853477894cd90b7ee124c978774221e852",
-   "audited_at": "64b54387c4f177667ba688f7680877455579b293",
-   "round": 1,
-   "result": "findings",
-   "counts": {},
-   "report": "busbar-landq-state/gate/audits/tests-kernel.md",
-   "auditor": "opus-test-auditor-kernel",
-   "fixed_at": null,
-   "rounds": [
-    {
-     "round": 1,
-     "result": "findings",
-     "auditor": "opus-test-auditor-kernel",
-     "audited_at": "64b54387c4f177667ba688f7680877455579b293",
-     "tree_hash": "e8145960243ab7a5428878e0c03b2d853477894cd90b7ee124c978774221e852",
      "counts": {},
      "report": "busbar-landq-state/gate/audits/tests-kernel.md"
     }
@@ -4484,21 +4366,6 @@
    ]
   },
   {
-   "id": "crates/busbar-plane-a2a-host/src/tests",
-   "kind": "test",
-   "paths": [
-    "crates/busbar-plane-a2a-host/src/tests"
-   ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
-  },
-  {
    "id": "crates/busbar-plane-admin/src/tests",
    "kind": "test",
    "paths": [
@@ -4626,21 +4493,6 @@
      "report": "the only allocation gate calls no plane method at all, so nothing holds the per-frame relay path the arena reset is pinned for"
     }
    ]
-  },
-  {
-   "id": "crates/busbar-plane-mcp-host/src/tests",
-   "kind": "test",
-   "paths": [
-    "crates/busbar-plane-mcp-host/src/tests"
-   ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
   },
   {
    "id": "crates/busbar-plane-streaming/src/tests",

@@ -8,12 +8,16 @@
 //! crate names no `A2A_*` diagnostic. Each keeps its stable `BUSBAR-NNNN` number and slug — the
 //! move preserves identity, it does not renumber: codes are REGISTERED, never collapsed.
 //!
-//! [`DIAGNOSTICS`] is the slice the composition root hands to
-//! [`install_diagnostics`](busbar_substrate::diagnostics::install_diagnostics) so these codes join
-//! the runtime catalog (`REGISTRY ∪ installed`) and resolve through `by_code`. The `busbar` binary
-//! names one stable path: `busbar-a2a::DIAGNOSTICS`.
+//! The catalog is built from the NEUTRAL diagnostics VOCABULARY — [`Class`], [`Diagnostic`] and
+//! [`Severity`] — which lives in `busbar-contract`, the leaf this pure plane already names. A plane
+//! adapter names those types WITHOUT reaching into the substrate; the substrate keeps only the
+//! install seam, the runtime union and the render helpers.
+//!
+//! [`DIAGNOSTICS`] is the slice the composition root hands to `install_diagnostics`
+//! (`busbar-substrate-values`) so these codes join the runtime catalog (`REGISTRY ∪ installed`) and
+//! resolve through `by_code`. The `busbar` binary names one stable path: `busbar-a2a::DIAGNOSTICS`.
 
-use busbar_substrate::diagnostics::{Class, Diagnostic, Severity};
+use busbar_contract::diagnostics::{Class, Diagnostic, Severity};
 
 /// A restored A2A task's per-task provenance chain failed verification at boot — tamper evidence.
 /// Lives in `a2a/mod.rs`, but the subject is the provenance chain's integrity, so it is a 2000 code.
@@ -655,7 +659,3 @@ pub static DIAGNOSTICS: &[&Diagnostic] = &[
     &A2A_PUSH_CONFIG_UNDELETED,
     &A2A_PUSH_REARM_FAILED,
 ];
-
-#[cfg(test)]
-#[path = "tests/diagnostics_tests.rs"]
-mod diagnostics_tests;

@@ -8,13 +8,18 @@
 //! crate names no `MCP_*` diagnostic. Each keeps its stable `BUSBAR-NNNN` number and slug — the
 //! move preserves identity, it does not renumber: codes are REGISTERED, never collapsed.
 //!
-//! [`DIAGNOSTICS`] is the slice the composition root hands to
-//! [`install_diagnostics`](busbar_substrate::diagnostics::install_diagnostics) so these codes join
-//! the runtime catalog (`REGISTRY ∪ installed`) and resolve through `by_code`. The `busbar` binary
-//! names one stable path: `busbar-mcp::DIAGNOSTICS`.
+//! The catalog is built from the NEUTRAL diagnostics VOCABULARY — [`Class`], [`Diagnostic`] and
+//! [`Severity`] — which lives in `busbar-contract`, the leaf this pure plane already names. A plane
+//! adapter names those types WITHOUT reaching into the substrate; the substrate keeps only the
+//! install seam, the runtime union and the render helpers.
+//!
+//! [`DIAGNOSTICS`] is the slice the composition root hands to `install_diagnostics`
+//! (`busbar-substrate-values`) so these codes join the runtime catalog (`REGISTRY ∪ installed`) and
+//! resolve through `by_code`. The `busbar` binary names one stable path: `busbar-mcp::DIAGNOSTICS`.
 
-use busbar_substrate::diagnostics::{Class, Diagnostic, Severity};
+use busbar_contract::diagnostics::{Class, Diagnostic, Severity};
 
+/// MCP per-call log failed hash-chain verification on restore — tamper evidence.
 pub const MCP_CALLLOG_CHAIN_VERIFY_FAILED: Diagnostic = Diagnostic {
     code: 2040,
     class: Class::Audit,
@@ -33,6 +38,7 @@ pub const MCP_CALLLOG_CHAIN_VERIFY_FAILED: Diagnostic = Diagnostic {
     retired: false,
 };
 
+/// Durable MCP call log enumerates principals with NO records.
 pub const MCP_CALLLOG_EMPTY_CHAINS: Diagnostic = Diagnostic {
     code: 7060,
     class: Class::Plane,
@@ -50,6 +56,7 @@ pub const MCP_CALLLOG_EMPTY_CHAINS: Diagnostic = Diagnostic {
     retired: false,
 };
 
+/// Durable MCP per-call log could not be read at boot.
 pub const MCP_CALLLOG_UNREAD: Diagnostic = Diagnostic {
     code: 7061,
     class: Class::Plane,
@@ -67,6 +74,7 @@ pub const MCP_CALLLOG_UNREAD: Diagnostic = Diagnostic {
     retired: false,
 };
 
+/// MCP upstream demotions restored from the durable store.
 pub const MCP_DEMOTIONS_RESTORED: Diagnostic = Diagnostic {
     code: 7062,
     class: Class::Plane,
@@ -82,6 +90,7 @@ pub const MCP_DEMOTIONS_RESTORED: Diagnostic = Diagnostic {
     retired: false,
 };
 
+/// MCP stdio serve read error on stdin — the session is ending.
 pub const MCP_STDIO_READ_ERROR: Diagnostic = Diagnostic {
     code: 7063,
     class: Class::Plane,
@@ -96,6 +105,7 @@ pub const MCP_STDIO_READ_ERROR: Diagnostic = Diagnostic {
     retired: false,
 };
 
+/// MCP input-required result reached the terminal check — the ask recogniser missed.
 pub const MCP_ASK_RECOGNISER_MISSED: Diagnostic = Diagnostic {
     code: 7064,
     class: Class::Plane,
@@ -113,6 +123,7 @@ pub const MCP_ASK_RECOGNISER_MISSED: Diagnostic = Diagnostic {
     retired: false,
 };
 
+/// MCP upstream `structuredContent` violates the published `outputSchema`.
 pub const MCP_OUTPUT_SCHEMA_VIOLATION: Diagnostic = Diagnostic {
     code: 7065,
     class: Class::Plane,
@@ -128,6 +139,7 @@ pub const MCP_OUTPUT_SCHEMA_VIOLATION: Diagnostic = Diagnostic {
     retired: false,
 };
 
+/// MCP `tools/call` refused by policy.
 pub const MCP_TOOLCALL_REFUSED: Diagnostic = Diagnostic {
     code: 7066,
     class: Class::Plane,
@@ -144,6 +156,7 @@ pub const MCP_TOOLCALL_REFUSED: Diagnostic = Diagnostic {
     retired: false,
 };
 
+/// MCP `tools/call` upstream failed to execute.
 pub const MCP_TOOLCALL_UPSTREAM_FAILED: Diagnostic = Diagnostic {
     code: 7067,
     class: Class::Plane,
@@ -160,6 +173,7 @@ pub const MCP_TOOLCALL_UPSTREAM_FAILED: Diagnostic = Diagnostic {
     retired: false,
 };
 
+/// MCP `tools/call` refused before it reached the upstream.
 pub const MCP_TOOLCALL_REFUSED_PRE_UPSTREAM: Diagnostic = Diagnostic {
     code: 7068,
     class: Class::Plane,
@@ -175,6 +189,7 @@ pub const MCP_TOOLCALL_REFUSED_PRE_UPSTREAM: Diagnostic = Diagnostic {
     retired: false,
 };
 
+/// MCP caller-ask for a capability refused by policy.
 pub const MCP_CALLER_ASK_REFUSED: Diagnostic = Diagnostic {
     code: 7069,
     class: Class::Plane,
@@ -203,7 +218,3 @@ pub static DIAGNOSTICS: &[&Diagnostic] = &[
     &MCP_TOOLCALL_REFUSED_PRE_UPSTREAM,
     &MCP_CALLER_ASK_REFUSED,
 ];
-
-#[cfg(test)]
-#[path = "tests/diagnostics_tests.rs"]
-mod diagnostics_tests;

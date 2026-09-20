@@ -40,6 +40,10 @@
 #![deny(missing_docs)]
 
 pub mod claims;
+/// THE A2A PLANE'S DIAGNOSTICS CATALOG — the `A2A_*` entries this plane OWNS, built on the neutral
+/// diagnostics vocabulary in `busbar-contract`. Folded in from the retired `busbar-plane-a2a-host`
+/// (DECISIONS #39); `busbar-a2a` re-exports the module under its historical path.
+pub mod diagnostics;
 pub mod facts;
 pub mod jsonrpc;
 pub mod meta;
@@ -47,6 +51,10 @@ pub mod ops;
 pub mod plane;
 pub mod records;
 pub mod surface;
+
+/// The plane-contributed diagnostics slice, re-exported at the crate root so the `busbar` binary —
+/// and `busbar-a2a`, which re-exports it onward — names one stable path (`busbar_a2a::DIAGNOSTICS`).
+pub use diagnostics::DIAGNOSTICS;
 
 use busbar_contract::ids::LaneId;
 use busbar_contract::plugin::{AbiVersion, Kind, Plugin};

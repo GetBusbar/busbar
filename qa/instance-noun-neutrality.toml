@@ -5483,7 +5483,7 @@ wave = "accepted pre-existing — pinned_spki naming point in the shared transpo
 [[leak]]
 noun = "spki"
 kind = "auth"
-file = "crates/busbar-plane-a2a-host/src/diagnostics.rs"
+file = "crates/busbar-plane-a2a/src/diagnostics.rs"
 count = 7
 category = "accepted"
 wave = "accepted pre-existing — \"SPKI pin\" is the standard X.509 term in a TLS diagnostic string, the same rationale as the pinned_spki acceptance above; not an auth-scheme instance coupling"
@@ -5491,7 +5491,7 @@ wave = "accepted pre-existing — \"SPKI pin\" is the standard X.509 term in a T
 [[leak]]
 noun = "streaming"
 kind = "plane"
-file = "crates/busbar-plane-a2a-host/src/diagnostics.rs"
+file = "crates/busbar-plane-a2a/src/diagnostics.rs"
 count = 5
 category = "accepted"
 wave = "accepted pre-existing — \"streaming\" is a generic English adjective in diagnostic prose (\"a backend's streaming response\"), not a reference to the streaming plane"
