@@ -1008,10 +1008,13 @@ impl<'de> Deserialize<'de> for ToolsCfg {
         // the file rejects.
         // The neutral substrate split, called with THIS plane's own section/noun consts (a standalone
         // plane holds no plane registry to look up); byte-identical to the core wrapper's forward.
+        // The MCP plane does not serve models, so it reserves only the universal pair — a `models:`
+        // key here is an ordinary server registration, not a reserved submap (config-model STAGE 3).
         let section = busbar_substrate::plane::config::split_section::<D, McpServerDefCfg>(
             deserializer,
             super::PLANE_DECL.config_section,
             super::PLANE_DECL.subject_noun,
+            busbar_substrate::plane::config::RESERVED_SECTION_KEYS,
             validate_server,
         )?;
 

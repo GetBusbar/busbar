@@ -1959,10 +1959,11 @@ auth:
 providers:
   acme:
     api_key: { env: ACME_KEY }
-models:
-  model-1:
-    provider: acme
-    max_concurrent: 10
+pools:
+  models:
+    model-1:
+      provider: acme
+      max_concurrent: 10
 "#;
     let err = serde_yaml::from_str::<crate::config::DeployCfg>(yaml)
         .expect_err("a config setting the removed auth keys must fail to parse");
@@ -1984,9 +1985,10 @@ listen: "0.0.0.0:8080"
 providers:
   acme:
     api_key_env: ACME_KEY
-models:
-  model-1:
-    provider: acme
+pools:
+  models:
+    model-1:
+      provider: acme
 "#;
     let err2 = serde_yaml::from_str::<crate::config::DeployCfg>(yaml2)
         .expect_err("the removed api_key_env key must fail to parse");
@@ -4570,10 +4572,10 @@ auth:
 providers:
   acme:
     api_key: { env: ACME_API_KEY }
-models:
-  claude:
-    provider: acme
 pools:
+  models:
+    claude:
+      provider: acme
   main:
     members:
       - model: claude
@@ -4624,8 +4626,8 @@ fn test_undefined_pool_member_is_refused_by_validate_in_1_5_5_words() {
     let yaml = r#"
 listen: "0.0.0.0:8080"
 providers: {}
-models: {}
 pools:
+  models: {}
   oracle-unused:
     members:
       - model: nope
@@ -4656,10 +4658,10 @@ listen: "0.0.0.0:8080"
 providers:
   acme:
     api_key: { module: acme-vault, settings: { path: "secret/data/acme#key" } }
-models:
-  claude:
-    provider: acme
 pools:
+  models:
+    claude:
+      provider: acme
   main:
     members:
       - model: claude
@@ -4695,12 +4697,12 @@ auth:
 providers:
   acme:
     api_key: { env: ACME_API_KEY }
-models:
-  claude:
-    provider: acme
-  haiku:
-    provider: acme
 pools:
+  models:
+    claude:
+      provider: acme
+    haiku:
+      provider: acme
   main:
     members:
       - model: claude
@@ -5189,6 +5191,64 @@ fn an_empty_protocol_set_refuses_every_provider_naming_the_build() {
         "the populated set names the choices: {}",
         errors[0]
     );
+}
+
+/// CONFIG-MODEL-RULING §15 — the transport-by-scheme sweep, driven directly against an injected
+/// scheme set exactly like `an_empty_protocol_set_refuses_every_provider_naming_the_build` does for
+/// the protocol arm: the earlier `scheme_ok` gate already restricts every `base_url` this sweep
+/// ever sees (through `validate`) to `http`/`https`, both always in the production
+/// `KNOWN_TRANSPORT_SCHEMES` — so the "no registered transport carries this scheme" arm can only be
+/// watched red by calling the helper directly, against a set that does not contain `https`.
+#[test]
+fn a_scheme_no_transport_advertises_refuses_the_provider() {
+    let mut errors = Vec::new();
+    super::validate_provider_transport_scheme_with(
+        &["grpc", "stdio"],
+        "prov-a",
+        "https://api.example.com",
+        &mut errors,
+    );
+    assert_eq!(errors.len(), 1, "got: {errors:?}");
+    assert!(errors[0].contains("prov-a"), "{}", errors[0]);
+    assert!(errors[0].contains("https"), "{}", errors[0]);
+    assert!(
+        errors[0].contains("no registered transport plugin carries"),
+        "{}",
+        errors[0]
+    );
+}
+
+/// The positive twin: a scheme the injected set DOES advertise produces no error, and an
+/// unparseable base_url (defensive arm — unreachable through `validate`, which only calls this
+/// after `scheme_ok`) is named rather than silently accepted.
+#[test]
+fn a_known_scheme_passes_and_an_unparseable_one_is_named() {
+    let mut errors = Vec::new();
+    super::validate_provider_transport_scheme_with(
+        &["http", "https"],
+        "prov-a",
+        "https://api.example.com",
+        &mut errors,
+    );
+    assert!(errors.is_empty(), "got: {errors:?}");
+
+    super::validate_provider_transport_scheme_with(
+        &["http", "https"],
+        "prov-b",
+        "not-a-url",
+        &mut errors,
+    );
+    assert_eq!(errors.len(), 1, "got: {errors:?}");
+    assert!(errors[0].contains("prov-b") && errors[0].contains("no parseable scheme"));
+}
+
+/// The real, unmodified `KNOWN_TRANSPORT_SCHEMES` production list — pinned so a future edit that
+/// drops `http`/`https` (the only schemes a provider `base_url` can ever reach this sweep with) is
+/// a loud, named test failure rather than a silent regression on every provider in the fleet.
+#[test]
+fn known_transport_schemes_carries_http_and_https() {
+    assert!(super::KNOWN_TRANSPORT_SCHEMES.contains(&"http"));
+    assert!(super::KNOWN_TRANSPORT_SCHEMES.contains(&"https"));
 }
 
 /// **D5 — THE FAIL-OPEN, DRIVEN THROUGH THE PRODUCTION SWEEP.**

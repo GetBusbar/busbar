@@ -90,15 +90,19 @@ store:
 providers:
   anthropic: { api_key: { env: ANTHROPIC_API_KEY } }
   bedrock:   { api_key: { env: AWS_BEDROCK_CREDS } }
-models:
-  sonnet-anthropic: { provider: anthropic, upstream_model: claude-3-5-sonnet }
-  sonnet-bedrock:   { provider: bedrock,   upstream_model: anthropic.claude-3-5-sonnet-v1 }
 
 # ── POOLS: pure routing/topology ──
 # The `pools:` section carries exactly TWO reserved keys, and that set is CLOSED (1.5.3): `hooks:`
 # (a LIST ⇒ ADDITIVE with a pool's own, deduped by name) and `upstream_credentials:` (a SCALAR ⇒ a
 # pool's own value REPLACES it). A pool may not be named either of them.
 pools:
+
+  # RESERVED (1.6.0 config-model): the `models:` map lives here, a reserved sibling of
+  # the pools (a pool may not be named `models`). It moved off the top level in 1.6.0.
+  models:
+    sonnet-anthropic: { provider: anthropic, upstream_model: claude-3-5-sonnet }
+    sonnet-bedrock:   { provider: bedrock,   upstream_model: anthropic.claude-3-5-sonnet-v1 }
+
   upstream_credentials: own                                  # all-pools default
   # hooks: [audit]                                           # all-pools attach (requires a hooks: def)
   fast:

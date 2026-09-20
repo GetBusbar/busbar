@@ -65,7 +65,7 @@ fn with_read_only_dir<T>(dir: &std::path::Path, f: impl FnOnce() -> T) -> T {
 fn a_read_only_config_dir_boots_without_an_overlay_instead_of_refusing() {
     let dir = scratch("quickstart");
     let config_path = dir.join("config.yaml");
-    std::fs::write(&config_path, "models: {}\n").unwrap();
+    std::fs::write(&config_path, "pools: {models: {}}\n").unwrap();
 
     let res = with_read_only_dir(&dir, || {
         resolve_backend(&ConfigMgmtCfg::default(), &config_path, true)
@@ -97,7 +97,7 @@ fn a_read_only_config_dir_boots_without_an_overlay_instead_of_refusing() {
 fn b_a_degraded_backend_refuses_a_persist_rather_than_silently_dropping_it() {
     let dir = scratch("failclosed");
     let config_path = dir.join("config.yaml");
-    std::fs::write(&config_path, "models: {}\n").unwrap();
+    std::fs::write(&config_path, "pools: {models: {}}\n").unwrap();
 
     let res = with_read_only_dir(&dir, || {
         resolve_backend(&ConfigMgmtCfg::default(), &config_path, true)
@@ -121,7 +121,7 @@ fn b_a_degraded_backend_refuses_a_persist_rather_than_silently_dropping_it() {
 fn c_a_writable_config_dir_still_resolves_a_durable_backend() {
     let dir = scratch("writable");
     let config_path = dir.join("config.yaml");
-    std::fs::write(&config_path, "models: {}\n").unwrap();
+    std::fs::write(&config_path, "pools: {models: {}}\n").unwrap();
 
     let res = resolve_backend(&ConfigMgmtCfg::default(), &config_path, true)
         .expect("a writable config dir resolves");
@@ -145,7 +145,7 @@ fn d_an_explicit_overlay_path_in_an_unwritable_dir_degrades_too() {
     let ro = dir.join("locked-down");
     std::fs::create_dir_all(&ro).unwrap();
     let config_path = dir.join("config.yaml");
-    std::fs::write(&config_path, "models: {}\n").unwrap();
+    std::fs::write(&config_path, "pools: {models: {}}\n").unwrap();
 
     let cfg = ConfigMgmtCfg {
         locked: false,
@@ -168,7 +168,7 @@ fn d_an_explicit_overlay_path_in_an_unwritable_dir_degrades_too() {
 fn e_mutable_with_the_overlay_explicitly_disabled_is_still_a_boot_refusal() {
     let dir = scratch("disabled");
     let config_path = dir.join("config.yaml");
-    std::fs::write(&config_path, "models: {}\n").unwrap();
+    std::fs::write(&config_path, "pools: {models: {}}\n").unwrap();
 
     let err = resolve_backend(
         &ConfigMgmtCfg {

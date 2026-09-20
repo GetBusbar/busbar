@@ -303,6 +303,10 @@ impl Plugin for TcpTransport {
 
 impl TransportMeta for TcpTransport {
     const KEY: &'static str = "tcp";
+    // Nothing in the tree ever addresses a destination as `tcp://host:port` — a plane names `tcp`
+    // as a bottom layer another transport composes over (see `http`'s and `ws`'s `COMPOSES_OVER`),
+    // never as a scheme a `base_url` picks a top transport by. Empty rather than a guessed literal.
+    const SCHEMES: &'static [&'static str] = &[];
     const SELECTOR_FORMS: &'static [busbar_contract::SelectorForm] =
         &[busbar_contract::SelectorForm::Port];
     const EGRESS_SELECTOR_FORMS: &'static [busbar_contract::SelectorForm] = &[];

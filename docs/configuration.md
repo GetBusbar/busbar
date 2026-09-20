@@ -750,24 +750,25 @@ A model is a **lane**: one model at one provider, with its own concurrency semap
 | `prompt_caching` | bool | no | `false` | Operator declaration that this model accepts prompt-cache markers on dialects where the marker is **model-gated**: Bedrock Converse's `cachePoint`, which Claude accepts but Amazon Nova hard-rejects with a 400 ("extraneous key"). The cache twin of `reasoning`: without the flag, cross-protocol `cache_control` breakpoints headed to such a dialect are dropped at the seam (warned) and the request proceeds uncached, fail-safe, never a translation-induced 400. Set it on Claude-on-Bedrock models to keep their prompt caching across the Anthropic→Bedrock translation. Dialects whose cache form is universally accepted (the Anthropic API's `cache_control`) ignore the flag, as does same-protocol passthrough (byte-exact). |
 
 ```yaml
-models:
-  claude-sonnet-4-5:
-    provider: anthropic
-    max_concurrent: 20
-    max_requests: -1
-    default_max_tokens: 8192
+pools:
+  models:
+    claude-sonnet-4-5:
+      provider: anthropic
+      max_concurrent: 20
+      max_requests: -1
+      default_max_tokens: 8192
 
-  gpt-4o:
-    provider: openai
-    max_concurrent: 20
+    gpt-4o:
+      provider: openai
+      max_concurrent: 20
 
-  gemini-1.5-pro:
-    provider: gemini
-    max_concurrent: 15
+    gemini-1.5-pro:
+      provider: gemini
+      max_concurrent: 15
 
-  nova-pro:
-    provider: bedrock-us-east-1
-    max_concurrent: 10
+    nova-pro:
+      provider: bedrock-us-east-1
+      max_concurrent: 10
 ```
 
 **Direct routing:** a model named `my-model` is reachable at `POST /my-model/v1/messages` (Anthropic ingress). The ad-hoc route `POST /{provider}/{model}/v1/messages` bypasses the model map entirely: it routes to the named provider with the named model string, using no pool.
@@ -779,17 +780,17 @@ models:
 To run one real model: say Claude 3.5 Sonnet, behind **both** Anthropic and Bedrock in a single failover pool, the two model keys must differ (keys are unique), but each provider expects its own model string. `upstream_model` carries the provider-specific wire id while the key stays a stable operator alias:
 
 ```yaml
-models:
-  sonnet-anthropic:
-    provider: anthropic
-    max_concurrent: 20
-    upstream_model: claude-3-5-sonnet-20241022             # what Anthropic expects on the wire
-  sonnet-bedrock:
-    provider: bedrock-us-east-1
-    max_concurrent: 10
-    upstream_model: anthropic.claude-3-5-sonnet-20241022-v2:0   # Bedrock's modelId
-
 pools:
+  models:
+    sonnet-anthropic:
+      provider: anthropic
+      max_concurrent: 20
+      upstream_model: claude-3-5-sonnet-20241022             # what Anthropic expects on the wire
+    sonnet-bedrock:
+      provider: bedrock-us-east-1
+      max_concurrent: 10
+      upstream_model: anthropic.claude-3-5-sonnet-20241022-v2:0   # Bedrock's modelId
+
   sonnet:                                  # clients call ONE name: POST /sonnet/v1/messages
     members:
       - model: sonnet-anthropic
@@ -851,13 +852,13 @@ Some providers fail by **hanging**: the connection opens, then nothing comes bac
 Two layers, member wins over model:
 
 ```yaml
-models:
-  gemini-pro:
-    provider: gemini
-    max_concurrent: 20
-    attempt_timeout_ms: 10000     # model-level default: give it 10s anywhere
-
 pools:
+  models:
+    gemini-pro:
+      provider: gemini
+      max_concurrent: 20
+      attempt_timeout_ms: 10000     # model-level default: give it 10s anywhere
+
   batch:
     members:
       - model: gemini-pro         # inherits the model's 10000ms
@@ -885,14 +886,15 @@ The reasoning/thinking ask translates between the three protocols that model it:
 The ask is **gated per lane** because thinking support is per-model, not per-protocol, and Busbar keeps no model database. `reasoning: true` on a model (or a pool member, which wins) declares "this backend accepts thinking params":
 
 ```yaml
-models:
-  claude-sonnet:
-    provider: anthropic
-    max_concurrent: 20
-    reasoning: true       # this model accepts thinking params
-  claude-haiku:
-    provider: anthropic
-    max_concurrent: 40    # no flag: a translated reasoning ask is dropped (warned), never sent
+pools:
+  models:
+    claude-sonnet:
+      provider: anthropic
+      max_concurrent: 20
+      reasoning: true       # this model accepts thinking params
+    claude-haiku:
+      provider: anthropic
+      max_concurrent: 40    # no flag: a translated reasoning ask is dropped (warned), never sent
 ```
 
 With the flag set, an OpenAI client's `reasoning_effort: "high"` reaches this Claude lane as `thinking: {type: enabled, budget_tokens: 16384}`; a Gemini client's `thinkingBudget: 6000` reaches it as `budget_tokens: 6000`. Without the flag the request still succeeds, thinking at the backend's default level.
@@ -1383,10 +1385,11 @@ providers:
   anthropic:
     api_key: { env: ANTHROPIC_KEY }
 
-models:
-  claude:
-    provider: anthropic
-    max_concurrent: 10
+pools:
+  models:
+    claude:
+      provider: anthropic
+      max_concurrent: 10
 ```
 
 **Required environment variable:** `ANTHROPIC_KEY` must be set.
@@ -1471,24 +1474,25 @@ providers:
 # ---------------------------------------------------------------------------
 # Models: one lane per model. Each lane has its own semaphore and breaker.
 # ---------------------------------------------------------------------------
-models:
-  claude-sonnet:
-    provider: anthropic
-    max_concurrent: 20
-    max_requests: -1          # unlimited lifetime budget
-    default_max_tokens: 4096  # injected on cross-protocol hops to Anthropic only
+pools:
+  models:
+    claude-sonnet:
+      provider: anthropic
+      max_concurrent: 20
+      max_requests: -1          # unlimited lifetime budget
+      default_max_tokens: 4096  # injected on cross-protocol hops to Anthropic only
 
-  gpt-4o:
-    provider: openai
-    max_concurrent: 20
+    gpt-4o:
+      provider: openai
+      max_concurrent: 20
 
-  gemini-1.5-pro:
-    provider: gemini
-    max_concurrent: 15
+    gemini-1.5-pro:
+      provider: gemini
+      max_concurrent: 15
 
-  gpt-4o-mini:
-    provider: openai
-    max_concurrent: 30        # high capacity overflow lane
+    gpt-4o-mini:
+      provider: openai
+      max_concurrent: 30        # high capacity overflow lane
 
 # ---------------------------------------------------------------------------
 # Pools: named groups of weighted lanes with failover and breaker config.

@@ -2328,10 +2328,10 @@ listen: "0.0.0.0:8080"
 providers:
   anthropic:
     api_key: {{ env: ANTHROPIC_API_KEY }}
-models:
-  claude:
-    provider: anthropic
 pools:
+  models:
+    claude:
+      provider: anthropic
   main:
     members:
       - model: claude

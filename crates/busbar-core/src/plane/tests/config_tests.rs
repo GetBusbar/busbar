@@ -275,3 +275,44 @@ fn server_with_hook(hook: &str) -> busbar_mcp::mcp::config::McpServerDefCfg {
     })
     .expect("the fixture entry must be present")
 }
+
+/// config-model STAGE 3 (1.6.0): `models` is reserved PER-PLANE. The pool plane reserves it (the
+/// `pools.models:` submap), so under `pools:` a `models:` map is the model registry, never a pool.
+/// The model-serving reservation is NOT universal: on the A2A (`agents:`) and MCP (`tools:`) planes
+/// `models` is an ORDINARY registration name — those planes do not serve models, so they pass only
+/// the base reserved pair to the shared split and `models:` there is just an agent/server named
+/// `models`. This is the one-grammar/per-plane-vocabulary property the reserved-set parameter buys.
+#[test]
+fn models_is_reserved_on_the_pool_plane_and_a_normal_entry_on_a2a_and_mcp() {
+    // Pool plane: `models:` is the reserved submap (a real pool sits beside it, unaffected).
+    let pools: crate::config::PoolsCfg = serde_yaml::from_str(
+        "models:\n  m:\n    provider: acme\nfast:\n  members: [ { model: m } ]\n",
+    )
+    .expect("pools parse");
+    assert!(
+        pools.models.contains_key("m"),
+        "pools reserves `models:` as the submap"
+    );
+    assert!(pools.pools.contains_key("fast"));
+    assert!(!pools.pools.contains_key("models"));
+
+    // A2A plane: `models:` is an ordinary agent registration.
+    let agents = serde_yaml::from_str::<busbar_a2a::a2a::config::AgentsCfg>(
+        "models:\n  url: \"https://a2a.vendor/x\"\n  pin: { mechanism: unpinned }\n",
+    )
+    .expect("an agent named `models` parses");
+    assert!(
+        agents.agents.contains_key("models"),
+        "on the A2A plane `models` is a normal agent, not a reserved key"
+    );
+
+    // MCP plane: `models:` is an ordinary server registration.
+    let tools = serde_yaml::from_str::<busbar_mcp::mcp::config::ToolsCfg>(
+        "models:\n  url: \"https://mcp.internal/x\"\n  pin: { mechanism: unpinned }\n",
+    )
+    .expect("a server named `models` parses");
+    assert!(
+        tools.servers.contains_key("models"),
+        "on the MCP plane `models` is a normal server, not a reserved key"
+    );
+}

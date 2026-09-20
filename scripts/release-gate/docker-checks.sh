@@ -329,10 +329,10 @@ auth:
 providers:
   anthropic:
     api_key: { env: ANTHROPIC_KEY }
-models:
-  claude-sonnet:
-    provider: anthropic
 pools:
+  models:
+    claude-sonnet:
+      provider: anthropic
   default:
     members:
       - model: claude-sonnet

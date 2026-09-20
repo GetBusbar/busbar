@@ -73,15 +73,15 @@ providers:
     api_key: { env: ORACLE_UPSTREAM_KEY }
   lane-live:
     api_key: { env: ORACLE_UPSTREAM_KEY }
-models:
-  m-lane-dead:
-    provider: lane-dead
-  m-lane-live:
-    provider: lane-live
 rate_card:
   m-lane-dead: { input_utok: 100000, output_utok: 200000 }
   m-lane-live: { input_utok: 100000, output_utok: 200000 }
 pools:
+  models:
+    m-lane-dead:
+      provider: lane-dead
+    m-lane-live:
+      provider: lane-live
   oracle:
     members:
       - { model: m-lane-dead, weight: 1 }

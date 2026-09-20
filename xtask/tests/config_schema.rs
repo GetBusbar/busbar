@@ -37,7 +37,10 @@ fn fp(files: &[(&str, &str)]) -> Value {
         .iter()
         .map(|(p, t)| ((*p).to_string(), (*t).to_string()))
         .collect();
-    schema::extract(&owned).unwrap_or_else(|e| panic!("extract refused: {e}"))
+    // No plane-verb lift sources: these fixtures exercise the CORE-ADDITIVE `LIFTED_*KEYS` path
+    // only, so the registry-derived plane-verb half stays empty here (see `schema::extract`'s
+    // second argument).
+    schema::extract(&owned, &[]).unwrap_or_else(|e| panic!("extract refused: {e}"))
 }
 
 /// The refusal a source tree produces, or a panic naming the fingerprint it produced instead.
@@ -46,7 +49,7 @@ fn refusal(files: &[(&str, &str)]) -> String {
         .iter()
         .map(|(p, t)| ((*p).to_string(), (*t).to_string()))
         .collect();
-    match schema::extract(&owned) {
+    match schema::extract(&owned, &[]) {
         Err(e) => e,
         Ok(v) => panic!("expected a refusal; got a fingerprint with {} type(s)", {
             v["types"].as_object().map(|o| o.len()).unwrap_or(0)

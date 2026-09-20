@@ -220,10 +220,10 @@ store:
 providers:
   mock:
     api_key: { env: MOCK_KEY }
-models:
-  test-model:
-    provider: mock
 pools:
+  models:
+    test-model:
+      provider: mock
   main:
     members:
       - model: test-model

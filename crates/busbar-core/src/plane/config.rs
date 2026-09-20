@@ -210,7 +210,7 @@ impl RawPlaneSection {
 /// `*Section` newtype takes when its `#[serde(default)]` field is ABSENT. A plane compiled out has no
 /// hook and falls back to an empty raw capture (never present, never refused). Byte-identical to the
 /// pre-seam typed field's `Default`.
-fn default_plane_section(config_section: &str) -> Box<dyn PlaneCfg> {
+pub(crate) fn default_plane_section(config_section: &str) -> Box<dyn PlaneCfg> {
     match crate::plane::registry::plane_decl_for_config_section(config_section)
         .and_then(|d| d.default_section)
     {
@@ -224,7 +224,7 @@ fn default_plane_section(config_section: &str) -> Box<dyn PlaneCfg> {
 /// section RAW (refused at `resolve` if present). The hook's `Err(String)` is surfaced through
 /// `de::Error::custom`, so it rides the SAME `from_str::<DeployCfg>` channel a typed field's parse
 /// error rode — the operator sees the plane's own sentence, byte-identical bar any `at line` suffix.
-fn deserialize_plane_section<'de, D>(
+pub(crate) fn deserialize_plane_section<'de, D>(
     config_section: &str,
     deserializer: D,
 ) -> Result<Box<dyn PlaneCfg>, D::Error>
@@ -451,6 +451,7 @@ pub use busbar_substrate::plane::config::Section;
 pub fn split_section<'de, D, T>(
     deserializer: D,
     plane_key: &'static str,
+    reserved: &[&str],
     validate: impl Fn(&str, &T) -> Result<(), String>,
 ) -> Result<Section<T>, D::Error>
 where
@@ -462,6 +463,7 @@ where
         deserializer,
         d.config_section,
         d.subject_noun,
+        reserved,
         validate,
     )
 }

@@ -246,9 +246,10 @@ plugins:
 providers:
   mock:
     api_key: { env: MOCK_KEY }
-models:
-  test-model:
-    provider: mock
+pools:
+  models:
+    test-model:
+      provider: mock
 YAML
     printf 'mock:\n  protocol: anthropic\n  base_url: "https://example.invalid"\n' > "${WORK}/providers.yaml"
     # macOS quarantines anything curl downloaded; without this the runner refuses to exec it and

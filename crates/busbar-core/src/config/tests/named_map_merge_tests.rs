@@ -17,8 +17,8 @@ fn deploy_with_a_base_provider() -> DeployCfg {
     serde_yaml::from_str(
         r#"
 providers: {}
-models: {}
-pools: {}
+pools:
+  models: {}
 identity-providers:
   corp:
     module: oidc

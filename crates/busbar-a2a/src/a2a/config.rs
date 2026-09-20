@@ -295,10 +295,13 @@ impl<'de> Deserialize<'de> for AgentsCfg {
         // stays here is what is genuinely this plane's: `validate_agent`, run through the same
         // function the admin write path calls so the API rejects exactly what the file rejects, and
         // the passthrough refusal below.
+        // The A2A plane does not serve models, so it reserves only the universal pair — a `models:`
+        // key here is an ordinary agent registration, not a reserved submap (config-model STAGE 3).
         let section = busbar_substrate::plane::config::split_section::<D, AgentDefCfg>(
             deserializer,
             super::PLANE_DECL.config_section,
             super::PLANE_DECL.subject_noun,
+            busbar_substrate::plane::config::RESERVED_SECTION_KEYS,
             validate_agent,
         )?;
 

@@ -653,13 +653,13 @@ providers:
   anthropic:
     api_key: { env: ANTHROPIC_KEY }
 
-models:
-  claude-sonnet:
-    provider: anthropic
-    max_concurrent: 20
-    default_max_tokens: 4096
-
 pools:
+  models:
+    claude-sonnet:
+      provider: anthropic
+      max_concurrent: 20
+      default_max_tokens: 4096
+
   fast:
     members:
       - model: claude-sonnet
@@ -781,17 +781,17 @@ providers:
   gemini:
     api_key: { env: GEMINI_KEY }
 
-models:
-  claude-sonnet:
-    provider: anthropic
-    max_concurrent: 20
-    default_max_tokens: 4096
-  gemini-flash:
-    provider: gemini
-    max_concurrent: 30
-    default_max_tokens: 4096
-
 pools:
+  models:
+    claude-sonnet:
+      provider: anthropic
+      max_concurrent: 20
+      default_max_tokens: 4096
+    gemini-flash:
+      provider: gemini
+      max_concurrent: 30
+      default_max_tokens: 4096
+
   smart:
     members:
       - model: claude-sonnet

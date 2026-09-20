@@ -964,11 +964,13 @@ async fn test_admin_v1_config_apply_body_swaps_and_carries_health() {
         "config": {
             "listen": "127.0.0.1:0",
             "providers": {"test-provider": {"api_key": "none"}},
-            "models": {
-                "m0": {"provider": "test-provider", "max_concurrent": 4},
-                "m-applied": {"provider": "test-provider", "max_concurrent": 4}
-            },
-            "pools": {"apply-pool": {"members": [{"model": "m0"}, {"model": "m-applied"}]}}
+            "pools": {
+                "models": {
+                    "m0": {"provider": "test-provider", "max_concurrent": 4},
+                    "m-applied": {"provider": "test-provider", "max_concurrent": 4}
+                },
+                "apply-pool": {"members": [{"model": "m0"}, {"model": "m-applied"}]}
+            }
         }
     });
     let resp = admin(client.post(format!("http://{addr}/api/v1/admin/config/apply")))
@@ -997,7 +999,7 @@ async fn test_admin_v1_config_apply_body_swaps_and_carries_health() {
         .header("if-match", "\"0\"")
         .body(
             serde_json::json!({
-                "config": {"listen": "127.0.0.1:0", "providers": {}, "models": {}, "pools": {}},
+                "config": {"listen": "127.0.0.1:0", "providers": {}, "pools": {"models": {}}},
             })
             .to_string(),
         )
@@ -1010,7 +1012,7 @@ async fn test_admin_v1_config_apply_body_swaps_and_carries_health() {
         .header("if-match", "\"not-a-version\"")
         .body(
             serde_json::json!({
-                "config": {"listen": "127.0.0.1:0", "providers": {}, "models": {}, "pools": {}},
+                "config": {"listen": "127.0.0.1:0", "providers": {}, "pools": {"models": {}}},
             })
             .to_string(),
         )
@@ -1049,14 +1051,14 @@ async fn test_admin_v1_config_reload_swaps_disk_truth_and_carries_health() {
 providers:
   test-provider:
     api_key: none
-models:
-  m0:
-    provider: test-provider
-    max_concurrent: 4
-  m-new:
-    provider: test-provider
-    max_concurrent: 4
 pools:
+  models:
+    m0:
+      provider: test-provider
+      max_concurrent: 4
+    m-new:
+      provider: test-provider
+      max_concurrent: 4
   reload-pool:
     members:
       - model: m0
@@ -1145,10 +1147,11 @@ pools:
     std::fs::write(
         &config_path,
         "listen: 127.0.0.1:0
-models:
-  broken:
-    provider: nope
-    max_concurrent: 1
+pools:
+  models:
+    broken:
+      provider: nope
+      max_concurrent: 1
 providers: {}
 ",
     )
@@ -1828,8 +1831,7 @@ async fn test_admin_v1_config_apply_refused_on_locked_config() {
         "config": {
             "listen": "127.0.0.1:0",
             "providers": {"test-provider": {"api_key": "none"}},
-            "models": {"m0": {"provider": "test-provider", "max_concurrent": 4}},
-            "pools": {"p": {"members": [{"model": "m0"}]}}
+            "pools": {"models": {"m0": {"provider": "test-provider", "max_concurrent": 4}}, "p": {"members": [{"model": "m0"}]}}
         }
     });
     let resp = client
@@ -3435,7 +3437,8 @@ async fn test_admin_v1_hook_register_persists_to_overlay() {
 
     // "Restart": merge the overlay onto a fresh RESOLVED base config → the hook is restored.
     let fresh_deploy: busbar_core::config::DeployCfg =
-        serde_json::from_value(serde_json::json!({"providers": {}, "models": {}})).unwrap();
+        serde_json::from_value(serde_json::json!({"providers": {}, "pools": {"models": {}}}))
+            .unwrap();
     let mut fresh = busbar_core::config::resolve(&fresh_deploy, &std::collections::HashMap::new())
         .expect("minimal config resolves");
     busbar_core::config::overlay::merge_into(&mut fresh, doc);
@@ -3502,7 +3505,7 @@ async fn test_admin_v1_config_apply_preserves_the_persisted_overlay() {
         .post(format!("http://{addr}/api/v1/admin/config/apply"))
         .header("x-admin-token", "admintok")
         .header("content-type", "application/json")
-        .body(serde_json::json!({"config": {"providers": {}, "models": {}}}).to_string())
+        .body(serde_json::json!({"config": {"providers": {}, "pools": {"models": {}}}}).to_string())
         .send()
         .await
         .unwrap();
@@ -4093,7 +4096,7 @@ async fn test_admin_v1_config_validate_dry_run() {
     let proposed = serde_json::json!({
         "config": {
             "providers": { "acme": { "api_key": { "env": "ACME_KEY" } } },
-            "models": {}
+            "pools": {"models": {}}
         },
         "providers": {}
     });
@@ -4127,7 +4130,7 @@ async fn test_admin_v1_config_validate_dry_run() {
         "config": {
             "secrets": { "acme-vault": { "settings": {} } },
             "providers": {},
-            "models": {}
+            "pools": {"models": {}}
         },
         "providers": {}
     });
@@ -9080,11 +9083,11 @@ fn write_reset_fixture(tag: &str) -> (std::path::PathBuf, std::path::PathBuf, st
 providers:
   test-provider:
     api_key: none
-models:
-  m0:
-    provider: test-provider
-    max_concurrent: 4
 pools:
+  models:
+    m0:
+      provider: test-provider
+      max_concurrent: 4
   p:
     members:
       - model: m0
@@ -10469,11 +10472,11 @@ async fn test_admin_v1_config_settings_persist_failure_does_not_rotate_gov_crede
 providers:
   test-provider:
     api_key: none
-models:
-  m0:
-    provider: test-provider
-    max_concurrent: 4
 pools:
+  models:
+    m0:
+      provider: test-provider
+      max_concurrent: 4
   p:
     members:
       - model: m0
@@ -12158,7 +12161,7 @@ async fn drive_admin_error_surface() {
             "POST",
             "/config/apply",
             Some(STALE),
-            Some(r#"{"config":{"listen":"127.0.0.1:0","providers":{},"models":{},"pools":{}}}"#),
+            Some(r#"{"config":{"listen":"127.0.0.1:0","providers":{},"pools":{"models":{}}}}"#),
             409,
             "version_conflict",
         ),
@@ -13167,11 +13170,11 @@ fn write_named_map_fixture(
 providers:
   test-provider:
     api_key: none
-models:
-  m0:
-    provider: test-provider
-    max_concurrent: 4
 pools:
+  models:
+    m0:
+      provider: test-provider
+      max_concurrent: 4
   p:
     members:
       - model: m0

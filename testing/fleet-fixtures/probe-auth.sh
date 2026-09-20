@@ -91,10 +91,10 @@ auth:
 providers:
   mock:
     api_key: { env: MOCK_KEY }
-models:
-  test-model:
-    provider: mock
 pools:
+  models:
+    test-model:
+      provider: mock
   default:
     members:
       - model: test-model

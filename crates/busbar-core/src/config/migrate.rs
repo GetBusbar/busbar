@@ -363,6 +363,12 @@ pub fn migrate_config(raw: &str) -> Result<MigrateOutput, String> {
     // is against the settled pool names already in the unified map. Members of those existing pools
     // are left exactly as written — the 1.5.5 member grammar is the 1.6.0 grammar.
     migrate_unified_pools(&mut root, &mut changes, &mut todos);
+    // 1.6.0 config-model STAGE 3: move a top-level `models:` under the reserved `pools.models:`
+    // sibling. Runs AFTER migrate_unified_pools so the `pools:` map it merges into already holds every
+    // folded pool and the reserved-name collision (a pool named `models`) is checked against the
+    // settled map. FAILS CLOSED (hard `Err`) on an ambiguous both-present document rather than dropping
+    // a model definition.
+    migrate_pools_models(&mut root, &mut changes)?;
     // 1.5.3 HARD rename of the tap `at:` vocabulary. Runs AFTER migrate_hooks_block (which builds
     // the inline-ref lists carrying the `at:` field) so every hook ref exists to rewrite.
     migrate_hook_stages(&mut root, &mut changes);
@@ -2220,6 +2226,60 @@ fn migrate_pools_upstream_credentials(root: &mut Mapping, changes: &mut Vec<Stri
             );
         }
     }
+}
+
+/// config-model STAGE 3 (1.6.0): move a top-level `models:` map to the reserved `pools.models:`
+/// sibling. STRUCTURED on [`migrate_pools_upstream_credentials`] (find-or-create the `pools:`
+/// mapping, move the value in) but explicitly NOT its silent-drop posture: a lost model definition
+/// turns a routable deployment into a 404 that still passes `busbar --validate`, so this migration
+/// FAILS CLOSED.
+///
+/// IDEMPOTENT: a config already in the new shape (no top-level `models:`; models under `pools:`) has
+/// nothing to move and is a no-op — running the migrator twice lands the same document.
+///
+/// FAIL-CLOSED HARD `Err`, naming the conflict, when a top-level `models:` AND a `pools.models:` are
+/// BOTH present. `models` is a RESERVED key under `pools:` in 1.6.0 (a pool may not be named
+/// `models`), so a `pools.models:` sitting next to a top-level `models:` is unresolvable two ways at
+/// once — either two model maps whose merge order the operator never stated, or a pool literally named
+/// `models` that must be renamed. Rather than pick one and drop the other, the migrator refuses and
+/// tells the operator to remove or rename one and re-run.
+fn migrate_pools_models(root: &mut Mapping, changes: &mut Vec<String>) -> Result<(), String> {
+    // A `pools:` present-but-not-a-mapping is left for `--validate` to reject; only a mapping `pools:`
+    // can already carry a `models` key.
+    let pools_has_models = matches!(
+        root.get(Value::from("pools")),
+        Some(Value::Mapping(pm)) if pm.contains_key(Value::from("models"))
+    );
+    let Some(top_models) = take(root, "models") else {
+        // No top-level `models:` — already migrated, or never had one. No-op (idempotent).
+        return Ok(());
+    };
+    if pools_has_models {
+        return Err(
+            "config-migrate: cannot move the top-level `models:` under `pools:` — a `pools.models:` \
+             is ALREADY present. In 1.6.0 `models` is a RESERVED key under `pools:` (a pool may not \
+             be named `models`), so this document either carries the moved `pools.models:` alongside \
+             a stale top-level `models:`, or defines a pool literally named `models`. Remove or \
+             rename one of the two and re-run `--migrate-config`."
+                .to_string(),
+        );
+    }
+    // Find-or-create the `pools:` mapping and move `models:` in VERBATIM.
+    let pools = root
+        .entry("pools".into())
+        .or_insert_with(|| Value::Mapping(Mapping::new()));
+    if !matches!(pools, Value::Mapping(_)) {
+        *pools = Value::Mapping(Mapping::new());
+    }
+    if let Value::Mapping(pm) = pools {
+        pm.insert("models".into(), top_models);
+        changes.push(
+            "models -> pools.models (1.6.0 config-model STAGE 3: the `models:` map moved off the top \
+             level to the reserved `pools.models:` sibling)"
+                .into(),
+        );
+    }
+    Ok(())
 }
 
 /// 1.5.3: rewrite a retired `store.module:` spelling of the first-party Valkey store plugin to

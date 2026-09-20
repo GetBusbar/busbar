@@ -114,6 +114,11 @@ impl Plugin for SseTransport {
 
 impl TransportMeta for SseTransport {
     const KEY: &'static str = "sse";
+    // `dial` delegates straight to the composed-over `http` instance (`self.http.dial`, unchanged)
+    // — an SSE upstream is reached at an `http`/`https` `base_url` exactly like a plain HTTP one,
+    // and it is `http`'s own `SCHEMES` that claims those, not this transport's. This one is never
+    // itself the top of a dial's stack, so it claims none.
+    const SCHEMES: &'static [&'static str] = &[];
     const SELECTOR_FORMS: &'static [busbar_contract::SelectorForm] = &[];
     const EGRESS_SELECTOR_FORMS: &'static [busbar_contract::SelectorForm] = &[];
     const COMPOSES_OVER: &'static [&'static str] = &["http"];

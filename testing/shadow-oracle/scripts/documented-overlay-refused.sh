@@ -74,9 +74,10 @@ groups:
 providers:
   openai-chat:
     api_key: { env: ORACLE_UPSTREAM_KEY }
-models:
-  m-openai-chat:
-    provider: openai-chat
+pools:
+  models:
+    m-openai-chat:
+      provider: openai-chat
 rate_card:
   m-openai-chat: { input_utok: 100000, output_utok: 200000 }
 YAML

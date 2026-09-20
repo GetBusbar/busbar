@@ -953,9 +953,10 @@ auth:
 providers:
   mock:
     api_key: { env: MOCK_KEY }
-models:
-  test-model:
-    provider: mock
+pools:
+  models:
+    test-model:
+      provider: mock
 EOF
 if BUSBAR_CONFIG="${sk_work}/config-nokey.yaml" BUSBAR_PROVIDERS="${sk_work}/providers.yaml" \
      MOCK_KEY=unused BUSBAR_ADMIN_TOKEN=release-check-admin \
@@ -987,9 +988,10 @@ auth:
 providers:
   mock:
     api_key: { env: MOCK_KEY }
-models:
-  test-model:
-    provider: mock
+pools:
+  models:
+    test-model:
+      provider: mock
 EOF
 BUSBAR_CONFIG="${sk_work}/config-key.yaml" BUSBAR_PROVIDERS="${sk_work}/providers.yaml" \
   MOCK_KEY=unused BUSBAR_ADMIN_TOKEN=release-check-admin \
@@ -1062,11 +1064,11 @@ export:
 providers:
   slow:
     api_key: { env: MOCK_KEY }
-models:
-  slow-model:
-    provider: slow
-    max_concurrent: 1
 pools:
+  models:
+    slow-model:
+      provider: slow
+      max_concurrent: 1
   satpool:
     members:
       - model: slow-model
@@ -1270,9 +1272,10 @@ store:
 providers:
   mock:
     api_key: { env: MOCK_KEY }
-models:
-  test-model:
-    provider: mock
+pools:
+  models:
+    test-model:
+      provider: mock
 EOF
 
   # --validate first: the same fail-closed preflight boot performs, with zero side effects.
@@ -1654,9 +1657,10 @@ plugins:
 providers:
   mock:
     api_key: { env: MOCK_KEY }
-models:
-  test-model:
-    provider: mock
+pools:
+  models:
+    test-model:
+      provider: mock
 EOF
   cat >"${work}/providers.yaml" <<EOF
 mock:

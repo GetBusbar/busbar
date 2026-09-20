@@ -263,6 +263,23 @@ pub fn sources(cx: &Ctx) -> Result<Vec<String>, String> {
     Ok(out)
 }
 
+/// THE PLANE-VERB LIFT SOURCES — the fixed, small set of files the registry-derived plane-verb lift
+/// set (config-stage1) is recovered from: each plane's own `PlaneDecl` literal (for its
+/// `config_section:` field) plus the ONE indirection the A2A plane's field carries (its codec
+/// crate's `CONFIG_SECTION` const), and core's own `CORE_OWNED_CONCRETE_SECTIONS` array.
+///
+/// Deliberately SEPARATE from [`sources`]: these files are read only to recover the plane-verb KEY
+/// STRINGS, never walked for `Deserialize` types, so adding them here cannot drift
+/// `config-schema.snapshot.json` — a file that belongs in the type fingerprint too still has to be
+/// added to [`sources`] in its own right.
+pub const PLANE_VERB_SOURCES: &[&str] = &[
+    "crates/busbar-mcp/src/mcp/mod.rs",
+    "crates/busbar-a2a/src/a2a/mod.rs",
+    "crates/busbar-a2a-codec/src/lib.rs",
+    "crates/busbar-voice/src/lib.rs",
+    "crates/busbar-core/src/plane/registry.rs",
+];
+
 /// Expand the tracked source set to a deduplicated, sorted list of `.rs` files.
 pub fn resolve_sources(cx: &Ctx, paths: &[String]) -> Result<Vec<String>, String> {
     let mut files: BTreeSet<String> = BTreeSet::new();
@@ -813,8 +830,80 @@ fn collide(
     Ok(())
 }
 
-/// The full fingerprint over an explicit `(path, text)` list.
-pub fn extract(files: &[(String, String)]) -> Result<Value, String> {
+/// THE PLANE-VERB LIFT KEYS, recovered from the plane registry rather than the pre-pass's own
+/// `LIFTED_*KEYS` literal — the config-stage1 registry lift. `files` is exactly
+/// [`PLANE_VERB_SOURCES`]'s content, read once and independently of the type-fingerprint walk (see
+/// that const's doc). A plane's `config_section:` field is either a string literal or, for the A2A
+/// plane, a same-crate `CONFIG_SECTION` const indirection — [`resolve_config_section`] follows the
+/// one hop. The result excludes every section core still owns concretely
+/// (`CORE_OWNED_CONCRETE_SECTIONS`), exactly as `crate::plane::config::config_sections()` minus that
+/// array does at runtime.
+fn plane_verb_keys(files: &[(String, Vec<char>)]) -> Result<BTreeSet<String>, String> {
+    let get = |suffix: &str| -> Result<&Vec<char>, String> {
+        files
+            .iter()
+            .find(|(p, _)| p.ends_with(suffix))
+            .map(|(_, s)| s)
+            .ok_or_else(|| {
+                format!("config-schema: plane-verb lift source ending in '{suffix}' was not read")
+            })
+    };
+    let mcp_src = get("busbar-mcp/src/mcp/mod.rs")?;
+    let a2a_src = get("busbar-a2a/src/a2a/mod.rs")?;
+    let codec_src = get("busbar-a2a-codec/src/lib.rs")?;
+    let voice_src = get("busbar-voice/src/lib.rs")?;
+    let registry_src = get("busbar-core/src/plane/registry.rs")?;
+
+    let mut sections: BTreeSet<String> = BTreeSet::new();
+    for (label, src) in [("MCP", mcp_src), ("A2A", a2a_src), ("voice", voice_src)] {
+        let raw = scan::field_rhs(src, "config_section").ok_or_else(|| {
+            format!(
+                "config-schema: no `config_section:` field found in the {label} plane's PLANE_DECL"
+            )
+        })?;
+        sections.insert(resolve_config_section(&raw, codec_src)?);
+    }
+
+    let core_owned_rhs =
+        scan::const_rhs(registry_src, "CORE_OWNED_CONCRETE_SECTIONS").ok_or_else(|| {
+            "config-schema: CORE_OWNED_CONCRETE_SECTIONS const not found in busbar-core's plane \
+             registry"
+                .to_string()
+        })?;
+    let core_owned: BTreeSet<String> = scan::string_literals(&core_owned_rhs).into_iter().collect();
+
+    Ok(sections.difference(&core_owned).cloned().collect())
+}
+
+/// Resolve one `config_section: <raw>` field's RHS to its wire-key string: either the literal
+/// itself, or — for the A2A plane's `busbar_a2a_codec::CONFIG_SECTION` indirection — the codec
+/// crate's own `const CONFIG_SECTION` literal.
+fn resolve_config_section(raw: &str, codec_src: &[char]) -> Result<String, String> {
+    if let Some(lit) = raw.strip_prefix('"').and_then(|r| r.strip_suffix('"')) {
+        return Ok(lit.to_string());
+    }
+    if raw.ends_with("CONFIG_SECTION") {
+        let rhs = scan::const_rhs(codec_src, "CONFIG_SECTION").ok_or_else(|| {
+            format!(
+                "config-schema: `config_section: {raw}` did not resolve — no `const CONFIG_SECTION` \
+                 found in the codec crate"
+            )
+        })?;
+        if let Some(lit) = rhs.strip_prefix('"').and_then(|r| r.strip_suffix('"')) {
+            return Ok(lit.to_string());
+        }
+    }
+    Err(format!(
+        "config-schema: could not resolve plane `config_section` value `{raw}` to a string literal"
+    ))
+}
+
+/// The full fingerprint over an explicit `(path, text)` list, plus the SEPARATE plane-verb lift
+/// sources (see [`PLANE_VERB_SOURCES`]) that widen the registry-derived half of the lift set.
+pub fn extract(
+    files: &[(String, String)],
+    plane_verb_files: &[(String, String)],
+) -> Result<Value, String> {
     let sources: Vec<(String, Vec<char>)> = files
         .iter()
         .map(|(p, t)| {
@@ -828,13 +917,27 @@ pub fn extract(files: &[(String, String)]) -> Result<Value, String> {
 
     // The pre-pass's lift list, read from its own declarations and BEFORE any declaration is
     // parsed: it decides which skipped fields are still grammar, and a list declared in one file
-    // governs a carrier declared in another.
+    // governs a carrier declared in another. This is now only the CORE-ADDITIVE half
+    // (`mcp`/`oauth_as`/`policy`) — the plane-verb half (`tools`/`agents`/`streams` today) is folded
+    // in separately, below, from the plane registry rather than a `prepass.rs` literal.
     let mut lifted: BTreeSet<String> = BTreeSet::new();
     for (_, src) in &sources {
         for body in scan::lift_lists(src) {
             lifted.extend(scan::string_literals(&body));
         }
     }
+
+    let pv_sources: Vec<(String, Vec<char>)> = plane_verb_files
+        .iter()
+        .map(|(p, t)| {
+            (
+                p.clone(),
+                scan::strip_comments(&t.chars().collect::<Vec<char>>()),
+            )
+        })
+        .collect();
+    lifted.extend(plane_verb_keys(&pv_sources)?);
+
     let mut carried: BTreeSet<String> = BTreeSet::new();
 
     let mut decls: BTreeMap<String, Map<String, Value>> = BTreeMap::new();
@@ -940,7 +1043,16 @@ pub fn extract(files: &[(String, String)]) -> Result<Value, String> {
 
     // EVERY LIFTED KEY MUST HAVE A CARRIER FIELD THAT WAS KEPT BECAUSE OF IT. Without this the
     // lift list would be a way to keep a field in the fingerprint after deleting it.
-    let orphans: Vec<&String> = lifted.difference(&carried).collect();
+    //
+    // `extra_plane_sections` is EXEMPT: it is the documented overflow carrier for a registered
+    // plane's section with no field of its own on `DeployCfg` (see that field's doc in
+    // `config/mod.rs`), not a wire key — no `lifted` entry is ever literally `extra_plane_sections`,
+    // so this never actually fires today, but the exemption is spelled out so a future rename of
+    // that carrier cannot be mistaken for an orphaned lift.
+    let orphans: Vec<&String> = lifted
+        .difference(&carried)
+        .filter(|k| k.as_str() != "extra_plane_sections")
+        .collect();
     if !orphans.is_empty() {
         return Err(format!(
             "config-schema: the config pre-pass lifts {orphans:?} but no struct in the tracked \
@@ -980,6 +1092,17 @@ pub fn canonical(doc: &Value) -> String {
     serde_json::to_string_pretty(doc).unwrap_or_default() + "\n"
 }
 
+/// The plane-verb lift sources ([`PLANE_VERB_SOURCES`]), read into the same `(path, text)` shape
+/// [`extract`] wants for its `plane_verb_files` argument.
+pub fn read_plane_verb_sources(cx: &Ctx) -> Result<Vec<(String, String)>, String> {
+    let mut read = Vec::with_capacity(PLANE_VERB_SOURCES.len());
+    for path in PLANE_VERB_SOURCES {
+        let text = cx.read(path)?;
+        read.push((path.to_string(), text));
+    }
+    Ok(read)
+}
+
 /// The fingerprint over the TRACKED SOURCE SET, as the committed snapshot's bytes.
 pub fn render(cx: &Ctx) -> Result<String, String> {
     let files = resolve_sources(cx, &sources(cx)?)?;
@@ -988,5 +1111,6 @@ pub fn render(cx: &Ctx) -> Result<String, String> {
         let text = cx.read(&path)?;
         read.push((path, text));
     }
-    Ok(canonical(&extract(&read)?))
+    let plane_verb = read_plane_verb_sources(cx)?;
+    Ok(canonical(&extract(&read, &plane_verb)?))
 }

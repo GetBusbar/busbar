@@ -204,7 +204,7 @@ fn the_inventory_is_exactly_what_the_mount_registers() {
 #[test]
 fn an_absent_block_resolves_to_no_authorization_server() {
     let deploy: busbar_core::config::DeployCfg =
-        serde_json::from_value(serde_json::json!({"providers": {}, "models": {}}))
+        serde_json::from_value(serde_json::json!({"providers": {}, "pools": {"models": {}}}))
             .expect("a minimal deploy config parses");
     let resolved = busbar_core::config::resolve(&deploy, &std::collections::HashMap::new())
         .expect("a minimal config resolves");
@@ -222,7 +222,7 @@ fn an_absent_block_resolves_to_no_authorization_server() {
     let deploy: busbar_core::config::DeployCfg =
         busbar_core::config::deploy_from_deserializer(serde_json::json!({
             "providers": {},
-            "models": {},
+            "pools": {"models": {}},
             "oauth_as": { "issuer": ISSUER },
         }))
         .expect("a deploy config carrying `oauth_as:` parses");

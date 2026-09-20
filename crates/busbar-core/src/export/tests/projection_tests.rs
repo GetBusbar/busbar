@@ -448,10 +448,10 @@ auth:
 providers:
   anthropic:
     api_key: { env: ANTHROPIC_API_KEY }
-models:
-  claude:
-    provider: anthropic
 pools:
+  models:
+    claude:
+      provider: anthropic
   main:
     members:
       - model: claude

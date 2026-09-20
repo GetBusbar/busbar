@@ -2722,3 +2722,91 @@ fn migrate_never_invents_a_keyless_api_key() {
         "a provider with no credential to convert gets NO api_key — never a fabricated `none`"
     );
 }
+
+// ── config-model STAGE 3 (1.6.0): top-level `models:` -> reserved `pools.models:` ────────────────
+
+/// HAPPY PATH: a top-level `models:` map moves VERBATIM under `pools.models:`, a reserved sibling of
+/// the pools. The model definitions are unchanged and the migrated document boot-parses.
+#[test]
+fn migrate_pools_models_moves_top_level_models_under_pools() {
+    let raw = "providers:\n  acme:\n    api_key: { env: ACME_KEY }\nmodels:\n  widget:\n    provider: acme\n    max_concurrent: 7\n";
+    let (out, doc) = migrate_to_value(raw);
+    assert!(
+        dig(&doc, &["models"]).is_none(),
+        "the top-level `models:` key is gone after migration"
+    );
+    assert_eq!(
+        dig(&doc, &["pools", "models", "widget", "provider"]).and_then(|v| v.as_str()),
+        Some("acme"),
+        "the model moved VERBATIM under `pools.models:`"
+    );
+    assert_eq!(
+        dig(&doc, &["pools", "models", "widget", "max_concurrent"]).and_then(|v| v.as_i64()),
+        Some(7),
+        "the model's fields ride through unchanged"
+    );
+    assert!(
+        out.changes
+            .iter()
+            .any(|c| c.contains("models -> pools.models")),
+        "the move is recorded in the change ledger: {:?}",
+        out.changes
+    );
+    let deploy: crate::config::DeployCfg =
+        serde_yaml::from_str(&out.yaml).expect("the migrated document boot-parses");
+    assert!(deploy.pools.models.contains_key("widget"));
+}
+
+/// IDEMPOTENT: re-running the migrator on its own output is a no-op for this move — the second run
+/// finds no top-level `models:` and leaves `pools.models:` exactly where the first run put it.
+#[test]
+fn migrate_pools_models_is_idempotent() {
+    let raw = "providers: {}\nmodels:\n  widget:\n    provider: acme\n";
+    let first = migrate_config(raw).expect("first migrate");
+    let second = migrate_config(&first.yaml).expect("second migrate is a no-op, not a refusal");
+    let doc: serde_yaml::Value = serde_yaml::from_str(&second.yaml).expect("valid YAML");
+    assert_eq!(
+        dig(&doc, &["pools", "models", "widget", "provider"]).and_then(|v| v.as_str()),
+        Some("acme"),
+        "models stays nested under pools across a second run"
+    );
+    assert!(
+        !second
+            .changes
+            .iter()
+            .any(|c| c.contains("models -> pools.models")),
+        "the already-nested config records no models move on the second run: {:?}",
+        second.changes
+    );
+}
+
+/// FAIL-CLOSED: a document carrying BOTH a top-level `models:` and a `pools.models:` is ambiguous —
+/// the migrator refuses with a hard `Err` naming the conflict rather than dropping or clobbering
+/// either.
+#[test]
+fn migrate_refuses_both_top_level_and_nested_models() {
+    let raw = "providers: {}\nmodels:\n  widget:\n    provider: acme\npools:\n  models:\n    other:\n      provider: acme\n";
+    let err = match migrate_config(raw) {
+        Err(e) => e,
+        Ok(_) => panic!("both-present must be a hard refusal, not a successful migrate"),
+    };
+    assert!(
+        err.contains("pools.models") && err.contains("models"),
+        "the refusal names the conflict: {err}"
+    );
+}
+
+/// FAIL-CLOSED: a pool literally named `models` (a `pools.models:` sitting alongside a top-level
+/// `models:`) is refused — `models` is reserved under `pools:` in 1.6.0, so the pool must be renamed.
+#[test]
+fn migrate_refuses_a_pool_named_models() {
+    let raw = "providers: {}\nmodels:\n  widget:\n    provider: acme\npools:\n  models:\n    members:\n      - model: widget\n";
+    let err = match migrate_config(raw) {
+        Err(e) => e,
+        Ok(_) => panic!("a pool named `models` must be a hard refusal, not a successful migrate"),
+    };
+    assert!(
+        err.contains("RESERVED") || err.contains("reserved") || err.contains("pools.models"),
+        "the refusal explains the reserved-name conflict: {err}"
+    );
+}

@@ -338,7 +338,14 @@ pub struct Section<T> {
     pub hooks: Vec<String>,
     /// The reserved `<section>.upstream_credentials:` all-plane default. SCALAR ⇒ OVERRIDE.
     pub upstream_credentials: Option<busbar_api::UpstreamCreds>,
-    /// The registrations — every key that is not one of [`RESERVED_SECTION_KEYS`].
+    /// The reserved `<section>.models:` submap (config-model STAGE 3): model NAME → [`ModelCfg`].
+    /// `Some` only when the caller listed `"models"` in the reserved set it passed to
+    /// [`split_section`] — i.e. the pool plane, which serves models. A plane that does not serve
+    /// models (a2a/mcp) does not reserve the word, so `models:` there is an ordinary registration and
+    /// this is `None`. `Some(empty)` vs `None` distinguishes "reserved but absent" from "not reserved".
+    pub models: Option<indexmap::IndexMap<String, crate::config::providers::ModelCfg>>,
+    /// The registrations — every key that is neither one of [`RESERVED_SECTION_KEYS`] nor (for a plane
+    /// that reserves it) `models`.
     pub entries: indexmap::IndexMap<String, T>,
 }
 
@@ -359,6 +366,7 @@ pub fn split_section<'de, D, T>(
     deserializer: D,
     section: &'static str,
     noun: &'static str,
+    reserved: &[&str],
     validate: impl Fn(&str, &T) -> Result<(), String>,
 ) -> Result<Section<T>, D::Error>
 where
@@ -371,15 +379,20 @@ where
     let mut raw: indexmap::IndexMap<String, serde_yaml::Value> =
         indexmap::IndexMap::deserialize(deserializer)?;
 
-    // BEFORE the typed lifts, for the reason in the doc above.
-    for reserved in RESERVED_SECTION_KEYS {
+    // BEFORE the typed lifts, for the reason in the doc above. The reserved set is PER-PLANE: the
+    // universal `hooks:`/`upstream_credentials:` pair always, plus `models:` on the pool plane
+    // (config-model STAGE 3). `models:` is EXEMPT from this map-valued refusal: unlike the LIST/SCALAR
+    // pair, a reserved `models:` value IS a mapping (the model submap, lifted below), so a mapping
+    // there is the correct grammar, not a registration collided with a reserved word.
+    for r in reserved {
+        if *r == "models" {
+            continue;
+        }
         if raw
-            .get(*reserved)
+            .get(*r)
             .is_some_and(|v| matches!(v, serde_yaml::Value::Mapping(_)))
         {
-            return Err(D::Error::custom(reserved_name_refusal(
-                section, noun, reserved,
-            )));
+            return Err(D::Error::custom(reserved_name_refusal(section, noun, r)));
         }
     }
 
@@ -406,11 +419,34 @@ where
         })?),
     };
 
+    // The reserved `<section>.models:` submap (config-model STAGE 3), lifted ONLY when the caller
+    // reserved the word — the pool plane, which serves models. Its value is a mapping model NAME →
+    // `ModelCfg`, typed here so the file and the admin write path refuse the same model definitions.
+    // A plane that does not reserve `models` leaves this `None` and its `models:` key (if any) falls
+    // through to `entries` as an ordinary registration.
+    let models = if reserved.contains(&"models") {
+        match raw.shift_remove("models") {
+            None => None,
+            Some(v) => Some(
+                indexmap::IndexMap::<String, crate::config::providers::ModelCfg>::deserialize(v)
+                    .map_err(|e| {
+                        D::Error::custom(format!(
+                            "the reserved `{section}.models:` submap must be a map of model name to \
+                             model definition: {e}"
+                        ))
+                    })?,
+            ),
+        }
+    } else {
+        None
+    };
+
     let mut entries = indexmap::IndexMap::new();
     for (name, value) in raw {
         // The well-typed spellings are gone; this catches the map-valued "I meant a registration"
-        // one with a precise message instead of a type error.
-        if RESERVED_SECTION_KEYS.contains(&name.as_str()) {
+        // one with a precise message instead of a type error. Iterates the PER-PLANE reserved set so
+        // a plane that reserves `models` refuses a registration by that name here too.
+        if reserved.contains(&name.as_str()) {
             return Err(D::Error::custom(reserved_name_refusal(
                 section, noun, &name,
             )));
@@ -423,6 +459,7 @@ where
     Ok(Section {
         hooks,
         upstream_credentials,
+        models,
         entries,
     })
 }

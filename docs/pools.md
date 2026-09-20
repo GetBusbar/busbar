@@ -134,10 +134,10 @@ pools:
 Run one real model behind two providers. The keys differ; `upstream_model` carries each provider's own model string. See [Configuration](/docs/configuration/#models).
 
 ```yaml
-models:
-  sonnet-anthropic: { provider: anthropic,         max_concurrent: 20, upstream_model: claude-3-5-sonnet-20241022 }
-  sonnet-bedrock:   { provider: bedrock-us-east-1, max_concurrent: 10, upstream_model: "anthropic.claude-3-5-sonnet-20241022-v2:0" }
 pools:
+  models:
+    sonnet-anthropic: { provider: anthropic,         max_concurrent: 20, upstream_model: claude-3-5-sonnet-20241022 }
+    sonnet-bedrock:   { provider: bedrock-us-east-1, max_concurrent: 10, upstream_model: "anthropic.claude-3-5-sonnet-20241022-v2:0" }
   sonnet:
     members:
       - { model: sonnet-anthropic, weight: 3 }   # primary

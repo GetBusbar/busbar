@@ -59,7 +59,7 @@ pub type FrameStream =
 /// author does not; they are named here so that `busbar_contract::transport` still means what it
 /// meant to the composition root that wires the registry.
 pub use registry::{
-    check_composition, facts, status_ns, CompositionError, Registered, TRANSPORT_ABI,
+    check_composition, facts, scheme_index, status_ns, CompositionError, Registered, TRANSPORT_ABI,
 };
 
 /// A plane's SERVED SURFACE as data — the operations, how each is addressed on each binding, how it
@@ -101,6 +101,15 @@ pub use wire::{
 pub trait TransportMeta {
     /// The transport's registry key.
     const KEY: &'static str;
+    /// The URL schemes this transport is the carrier for, lowercase — the vocabulary a provider's
+    /// (or any other egress) `base_url` names to pick a transport by. Empty for a transport that is
+    /// never itself the top of a dial's stack: a purely composed-under layer (`tcp`, `tls`) or a
+    /// framing riding wholly inside another transport's own scheme (`sse`, which dials through
+    /// `http`'s `dial` and so claims none of `http`'s). The composition root builds the boot-time
+    /// scheme→transport index from this field across every registered transport
+    /// (`crates/busbar/src/root/registry.rs`), and refuses to boot if two transports claim the same
+    /// scheme — see `busbar_contract::transport::registry::check_composition`'s sibling check.
+    const SCHEMES: &'static [&'static str];
     /// The selector forms this transport can evaluate on arriving bytes.
     const SELECTOR_FORMS: &'static [crate::grammar::SelectorForm];
     /// The selector forms this transport can evaluate when dialling out.

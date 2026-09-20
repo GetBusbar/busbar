@@ -30,6 +30,19 @@ const MAX_AFFINITY_HEADER_NAME_LEN: usize = 64;
 /// guaranteed to panic (on this target width) are newly rejected as a clean `400`/boot `die()`
 /// instead.
 const MAX_SEMAPHORE_PERMITS: usize = tokio::sync::Semaphore::MAX_PERMITS;
+
+/// The URL schemes at least one of this build's registered transport plugins carries, mirroring the
+/// boot-time scheme→transport-plugin index `crates/busbar/src/root/registry.rs` builds from the
+/// seven transport crates' `TransportMeta::SCHEMES` (CONFIG-MODEL-RULING §15). This crate cannot
+/// depend on the transport crates directly — they are wired together only at the composition root,
+/// one layer above `busbar-core` — so this list is the hand-kept mirror of the schemes every
+/// UNCONDITIONALLY in-tree transport advertises: `http`/`https` (`busbar-transport-http`), `grpc`
+/// (`busbar-transport-grpc`), `stdio` (`busbar-transport-stdio`). `ws`/`wss`
+/// (`busbar-transport-ws`) are deliberately OMITTED: that transport is compiled only under the
+/// `plane-voice` feature, and a provider `base_url` can never resolve to it anyway — the scheme
+/// gate just above this sweep already restricts every provider `base_url` to `http`/`https`.
+const KNOWN_TRANSPORT_SCHEMES: &[&str] = &["http", "https", "grpc", "stdio"];
+
 // SSRF host guards relocated DOWN into the neutral `busbar-substrate` net_guard leaf (Batch A),
 // re-exported here so every in-core caller keeps naming `config_validate::{…}` unchanged and the
 // two SSRF guards still single-source their byte-identical atoms.
@@ -2010,6 +2023,27 @@ fn validate_providers_with(
             ));
         }
 
+        // TRANSPORT-BY-SCHEME validation (CONFIG-MODEL-RULING §15): the scheme half above answers
+        // "is this scheme SAFE" (https for a public host); this answers "is this scheme CARRIED at
+        // all" — every provider's `base_url` scheme must resolve to a transport plugin this build
+        // actually registers, checked against the same boot-time scheme→transport index the
+        // composition root builds from the seven transports' `TransportMeta::SCHEMES`
+        // (`crates/busbar/src/root/registry.rs`, `busbar_contract::transport::scheme_index`).
+        // `config_validate` cannot depend on the transport crates directly — they compose only at
+        // the root, one layer above this crate — so `KNOWN_TRANSPORT_SCHEMES` mirrors the schemes
+        // every unconditionally-in-tree transport advertises. This is 0 oracle cells: only run when
+        // the scheme already passed the http/https gate above, so it can never move a 1.5.5
+        // provider's golden — `https`/`http` are always in the list, always resolving to the `http`
+        // transport plugin.
+        if scheme_ok {
+            validate_provider_transport_scheme_with(
+                KNOWN_TRANSPORT_SCHEMES,
+                provider_name,
+                base_url,
+                errors,
+            );
+        }
+
         // The `path` override is appended to `base_url` VERBATIM at request time
         // (`format!("{base}{wire_path}")` in proxy engine), and the composed string is then parsed by
         // reqwest's `url` crate to choose the connect host. base_url validation alone is therefore
@@ -2233,6 +2267,40 @@ fn validate_provider_protocol_with(
             protocol,
             known.join(", ")
         ));
+    }
+}
+
+/// The transport-by-scheme half of the provider sweep (CONFIG-MODEL-RULING §15), factored out so a
+/// test can drive it against an injected scheme set — mirroring
+/// `validate_provider_protocol_with`'s own `known` parameter one function up, and for the same
+/// reason: the single production caller always passes `KNOWN_TRANSPORT_SCHEMES`, but a test that
+/// wants to watch a genuinely unrecognised scheme refuse cannot do that through the public
+/// `validate` surface (the earlier `scheme_ok` gate already restricts every reachable `base_url` to
+/// `http`/`https`, both always in the production list).
+///
+/// Only called once `scheme_ok` has passed, so `scheme_of` returning `None` here is a defensive
+/// arm rather than a reachable one.
+fn validate_provider_transport_scheme_with(
+    known_schemes: &'static [&'static str],
+    provider_name: &str,
+    base_url: &str,
+    errors: &mut Vec<String>,
+) {
+    match crate::config::scheme_of(base_url) {
+        None => {
+            errors.push(format!(
+                "provider '{}' base_url '{}' has no parseable scheme",
+                provider_name, base_url
+            ));
+        }
+        Some(scheme) => {
+            if !known_schemes.iter().any(|s| s.eq_ignore_ascii_case(scheme)) {
+                errors.push(format!(
+                    "provider '{}' base_url '{}' uses scheme '{}', which no registered transport plugin carries",
+                    provider_name, base_url, scheme
+                ));
+            }
+        }
     }
 }
 

@@ -7,8 +7,9 @@ listen: "0.0.0.0:8080"
 providers:
   openai:
     api_key: { env: OPENAI_API_KEY }
-models:
-  gpt-4o:
-    provider: openai
-  gpt-4o-mini:
-    provider: openai
+pools:
+  models:
+    gpt-4o:
+      provider: openai
+    gpt-4o-mini:
+      provider: openai

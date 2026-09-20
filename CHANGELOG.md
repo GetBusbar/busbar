@@ -343,19 +343,21 @@ Each of these is an owner-accepted difference from 1.5.5: additive, or strictly 
 
 ### Breaking
 
-The accepted-differences register for this release has exactly eight entries of kind `breaking`:
+The accepted-differences register for this release has exactly nine entries of kind `breaking`:
 two confined to the fallback/least-bad/queue hop (the primary hop's behaviour is unchanged in
 both), one confined to Cohere backends that report `usage.billed_units`, one field removed
 from the hook view, one refusal that now comes out of the resolver rather than the validator, one
 key-rotate endpoint that now refuses an overlong id like its siblings, one where a rate-card
-edit stops repricing history it should not touch, and one provider credential that no longer
-degrades to an empty key.
-(A ninth register entry, F-003, is also of kind `breaking` — the CLI `--help`/`--version` text is a
+edit stops repricing history it should not touch, one provider credential that no longer
+degrades to an empty key, and one where the top-level `models:` map moved to the reserved
+`pools.models:` sibling under `pools:`.
+(A tenth register entry, F-003, is also of kind `breaking` — the CLI `--help`/`--version` text is a
 parseable contract surface — but it is caller-additive and so is presented above under Improvements
-rather than here; a reader counting `kind: breaking` rows in the register will find nine, not eight.)
+rather than here; a reader counting `kind: breaking` rows in the register will find ten, not nine.)
 Everything else that touches a 1.5.5 config, request or plugin is named above
-as an improvement or does not exist: a config written for 1.5.5 boots, validates and migrates
-identically, and every 1.5.5 key and minted secret carries over.
+as an improvement or does not exist: a config written for 1.5.5 migrates cleanly to 1.6.0
+(`--migrate-config` moves a top-level `models:` under `pools:` verbatim), and every 1.5.5 key and
+minted secret carries over.
 
 - 1.6.0 Improvements: a fallback hop refused upstream is answered in the ingress-native
   auth-failure envelope and recorded on the breaker. Previously, an auth or billing hard-down on a
@@ -425,6 +427,14 @@ identically, and every 1.5.5 key and minted secret carries over.
   empty-credential lane was. Omitting `api_key` remains an error, and `--migrate-config` does not
   insert `none` for you: whether an upstream needs a credential is a fact about your deployment,
   not something a migration can read off the config file.
+- 1.6.0 config-model STAGE 3: the top-level `models:` map moved to the reserved `pools.models:` sibling (migrate-backed).
+  `models` is now a reserved key at the `pools:` section level (alongside `hooks:` and
+  `upstream_credentials:`), so a pool may not be named `models`, and a top-level `models:` key is
+  refused by `deny_unknown_fields`. The resolved runtime model map and the
+  `GET /api/v1/admin/config` model view are unchanged — this is a grammar move at the input surface
+  only. **Migration:** `busbar --migrate-config` moves a top-level `models:` under `pools:`
+  verbatim, fail-closed if a config carries both a top-level `models:` and a `pools.models:` (rename
+  or remove one and re-run); no model definition changes.
 
 Four retired 1.5.x spellings that were never the documented form are rewritten for you rather
 than accepted: the hook `plugin:` key (the read-only alias of `module:`) and the single-stage tap

@@ -217,10 +217,11 @@ key) and point a model at it:
 providers:
   my-provider:
     api_key: { env: MY_PROVIDER_KEY }
-models:
-  my-model:
-    provider: my-provider
-    max_concurrent: 20
+pools:
+  models:
+    my-model:
+      provider: my-provider
+      max_concurrent: 20
 ```
 
 Notes on the seams:

@@ -48,7 +48,9 @@ pub use crate::breaker::status_class_from_str;
 use crate::diagnostics::{
     diag_warn, CONFIG_ANTIDOWNGRADE_FLOOR_INVALID, CONFIG_FIRSTPARTY_FLOOR_INVALID,
 };
-use crate::plane::config::{AgentsSection, McpEndpointSection, StreamsSection, ToolsSection}; // plane-purity: frozen-wire McpEndpointSection is the snapshot-recorded type of the mcp: field
+use crate::plane::config::{
+    AgentsSection, McpEndpointSection, PlaneCfg, StreamsSection, ToolsSection,
+}; // plane-purity: frozen-wire McpEndpointSection is the snapshot-recorded type of the mcp: field
 
 /// Reject an env-var value that could break out of the surrounding YAML scalar when substituted
 /// into the raw config text BEFORE parsing. `interpolate_env` splices each value in verbatim, so a
@@ -837,8 +839,8 @@ pub const STORE_MODULE_VALKEY_ASSET_STEM: &str = "busbar-store-valkey";
 // serde data; the catalog/deployment MERGE that produces a `ProviderCfg` stays here (`resolve`).
 // Moved to `busbar_substrate::config::providers`; re-exported at their historical `config::` path.
 pub use busbar_substrate::config::providers::{
-    default_protocol, neg1, HealthCfg, HealthMode, ModelCfg, ProviderCfg, ProviderDef,
-    ProviderDeploy, DEFAULT_PROTOCOL,
+    default_protocol, neg1, protocol_is_implicit_default, scheme_of, HealthCfg, HealthMode,
+    ModelCfg, ProviderCfg, ProviderDef, ProviderDeploy, DEFAULT_PROTOCOL,
 };
 
 // ABI-purity CONFIG-ENUMS: the per-provider auth-style selector is a plane-owned runtime config
@@ -1009,8 +1011,15 @@ pub struct PoolsCfg {
     /// key). SCALAR ⇒ OVERRIDE: a pool's own value REPLACES this. `None` = absent ⇒ the
     /// built-in default (`own`).
     pub all_pool_upstream_credentials: Option<crate::auth::UpstreamCreds>,
-    /// The real pools, keyed by name (every top-level key except the two reserved section keys).
+    /// The real pools, keyed by name (every top-level key except the reserved section keys).
     pub pools: HashMap<String, PoolCfg>,
+    /// The reserved `pools.models:` submap (config-model STAGE 3): model NAME → [`ModelCfg`]. This is
+    /// where `models:` lives as of 1.6.0 — it moved off the top level to a sibling of the pools under
+    /// `pools:`, with the `pools.hooks:`/`pools.upstream_credentials:` reserved knobs. A pool may NOT
+    /// be named `models` (it is reserved, refused at parse). `resolve` lowers this onto
+    /// [`RootCfg::models`], whose shape is unchanged. Empty when absent. The `--migrate-config` path
+    /// moves a top-level `models:` here verbatim.
+    pub models: HashMap<String, ModelCfg>,
 }
 
 impl<'de> Deserialize<'de> for PoolsCfg {
@@ -1025,9 +1034,28 @@ impl<'de> Deserialize<'de> for PoolsCfg {
         //
         // The pool plane declares NO value rules here: `PoolCfg`'s are run later, over the whole
         // config, where they can see the cross-section references a single entry cannot.
+        // The pool plane reserves `models:` alongside the universal pair (config-model STAGE 3): the
+        // `models:` map moved under `pools:` in 1.6.0, so it is a reserved sibling of the pools, not a
+        // pool. The split lifts it into `section.models`; a pool named `models` is refused there.
+        //
+        // The pools section is OWNED by the fallback plane's decl (`split_section` looks its
+        // config_section/subject_noun words up by `fallback_key()`). In a production or core-`cfg(test)`
+        // build the fallback plane is always registered, so that decl is always present and the split
+        // below runs unchanged. In the one degenerate composition where NO plane is registered — the
+        // `test-support`-only dependency-copy of core a plane crate links, whose built-in plane rows
+        // are empty and which registers only the plane under test — `fallback_key()` degrades to `""`
+        // and there is no plane to route pools to. Rather than fault (`plane_decl("")`), degrade
+        // gracefully to an EMPTY, no-op `PoolsCfg`: consume and ignore the section so a valid config
+        // still parses. This mirrors the non-panicking fallback GUARDS (`is_fallback`) and touches
+        // only this empty-plane-decls path — the shipped binary never reaches it.
+        if crate::plane::fallback_plane_decl().is_none() {
+            serde::de::IgnoredAny::deserialize(deserializer)?;
+            return Ok(PoolsCfg::default());
+        }
         let section = crate::plane::config::split_section::<D, PoolCfg>(
             deserializer,
             crate::plane::fallback_key(),
+            &["hooks", "upstream_credentials", "models"],
             |_, _| Ok(()),
         )?;
         Ok(PoolsCfg {
@@ -1036,6 +1064,13 @@ impl<'de> Deserialize<'de> for PoolsCfg {
             // The pool map is a `HashMap` and its order is never read back; converted here, once,
             // where the loss of order is visible rather than assumed.
             pools: section.entries.into_iter().collect::<HashMap<_, _>>(),
+            // `section.models` is `Some` because this plane reserved the word; an absent `pools.models:`
+            // is `Some(empty)`, so the flatten yields the empty map either way.
+            models: section
+                .models
+                .into_iter()
+                .flatten()
+                .collect::<HashMap<_, _>>(),
         })
     }
 }
@@ -1215,10 +1250,11 @@ pub struct DeployCfg {
     #[serde(default, rename = "identity-providers")]
     pub identity_providers: IdentityProviders,
     pub providers: HashMap<String, ProviderDeploy>,
-    pub models: HashMap<String, ModelCfg>,
     /// Pools are optional: a deployment can route to models directly (`/<model>/v1/messages`)
-    /// without defining any pool. Carries the reserved `pools.hooks:` all-pools attach key (1.5.3);
-    /// see [`PoolsCfg`].
+    /// without defining any pool. Carries the reserved `pools.hooks:` all-pools attach key (1.5.3)
+    /// and, as of 1.6.0 (config-model STAGE 3), the reserved `pools.models:` submap that REPLACES the
+    /// retired top-level `models:` field — see [`PoolsCfg`]. A top-level `models:` is now an unknown
+    /// key (`deny_unknown_fields`) and is moved under `pools:` by `--migrate-config`.
     #[serde(default)]
     pub pools: PoolsCfg,
     /// The top-level `hooks:` NAMED-DEFINITION map (1.5.3): instance name → [`HookDefCfg`]. This
@@ -1284,6 +1320,16 @@ pub struct DeployCfg {
     /// A lifted CARRIER, exactly as `mcp:` above is.
     #[serde(skip)]
     pub streams: StreamsSection,
+    /// THE OVERFLOW CARRIER for a REGISTERED plane's top-level section that has no concrete field of
+    /// its own here — a plane dropped in after `tools`/`agents`/`streams` were given their typed
+    /// carriers above. The registry-derived plane-verb lift ([`crate::config::prepass`]) still lifts
+    /// such a plane's section off the document (so `deny_unknown_fields` never refuses it), and
+    /// banks it here by its wire key instead of a named field, so a new plane's config section
+    /// parses with ZERO edits to this struct. Not part of the frozen 1.5.5 grammar — absent for
+    /// every deployment today, since `tools`/`agents`/`streams` above already cover every plane this
+    /// build registers.
+    #[serde(skip)]
+    pub(crate) extra_plane_sections: indexmap::IndexMap<String, Box<dyn PlaneCfg>>,
     // 1.6.0 UNIFIED POOLS: the separate `tool_pools:` and `agent_pools:` sections are GONE. There is
     // ONE neutral top-level `pools:` (above); a pool's kind is INFERRED from its members and each
     // plane's pools are projected to their own carriers in `resolve`. A 1.5.4/1.6.0-dev config still
@@ -2153,10 +2199,25 @@ pub fn resolve(
         let def = match defs.get(deploy_name) {
             Some(d) => d,
             None => {
-                errors.push(format!(
+                let mut msg = format!(
                     "provider '{}' referenced in config.yaml not found in providers.yaml",
                     deploy_name
-                ));
+                );
+                // DEFAULT_PROTOCOL non-llm fix (CONFIG-MODEL-RULING §16): with no catalog entry
+                // AND no explicit `protocol:` override, this provider — had it been allowed to
+                // resolve — would have silently ridden the implicit anthropic dialect default
+                // (`providers::protocol_is_implicit_default`). It cannot resolve today (the line
+                // above already refuses it), so this only enriches the SAME refusal with why a
+                // `protocol:` matters here specifically, rather than leaving an operator to guess.
+                if protocol_is_implicit_default(deploy_cfg, None) {
+                    msg.push_str(
+                        "; with no catalog entry and no explicit `protocol:` override, this \
+                         provider would also have silently ridden the implicit anthropic dialect \
+                         default — name a `protocol:` explicitly, or add a providers.yaml catalog \
+                         entry, rather than relying on it",
+                    );
+                }
+                errors.push(msg);
                 continue;
             }
         };
@@ -2216,7 +2277,7 @@ pub fn resolve(
         let member_kind = |name: &str| -> Option<&'static str> {
             // Global-unique noun names make this a name-only lookup — the router never asks "which
             // kind of `x`?". A name defined in two nouns is a collision the validator rejects.
-            if deploy.models.contains_key(name) {
+            if deploy.pools.models.contains_key(name) {
                 return Some(crate::plane::fallback_key());
             }
             // The plane registry sections read through the always-present type-erased seam, resolved
@@ -2680,7 +2741,7 @@ pub fn resolve(
             admin_tls: deploy.admin_tls.clone(),
             auth: resolved_auth,
             providers: resolved_providers,
-            models: deploy.models.clone(),
+            models: deploy.pools.models.clone(),
             pools,
             upstream_credentials: deploy
                 .pools
@@ -2739,6 +2800,13 @@ mod tests;
 #[cfg(test)]
 #[path = "tests/named_map_merge_tests.rs"]
 mod named_map_merge_tests;
+
+// The config-model STAGE 1 registry-driven lift: the plane-verb lift set is DERIVED from the plane
+// registry rather than hardcoded, and a dropped-in plane's top-level section is lifted through the
+// generic overflow carrier rather than refused by `deny_unknown_fields`.
+#[cfg(test)]
+#[path = "tests/plane_verb_lift_tests.rs"]
+mod plane_verb_lift_tests;
 
 // The CONFIG BACK-COMPAT CORPUS GATE: the resolved billing/limits surface is byte-stable across
 // 1.6.0 changes (the baseline M3's config-noun eviction must preserve). Lives here because it reads

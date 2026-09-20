@@ -650,11 +650,28 @@ static TEST_ISOLATION_OWNER: std::sync::Mutex<Option<std::thread::ThreadId>> =
 ///
 /// Takes the [`TEST_REGISTRY_SERIAL`] lock around the mutation so a concurrent [`TestRegistryIsolation`]
 /// either observes this registration in full or excludes it for its whole lifetime — never a torn view.
+///
+/// REENTRANT for the thread that currently holds a [`TestRegistryIsolation`] guard (mirrors
+/// [`test_registered_planes`]'s own reentrant fast path): that thread already holds
+/// [`TEST_REGISTRY_SERIAL`] exclusively, and `std::sync::Mutex` is not reentrant, so re-locking it here
+/// would self-deadlock. This is what lets a test confine its OWN registration to
+/// [`TestRegistryIsolation::snapshot`]'s guarded scope — register while holding the guard, and have the
+/// guard's `Drop` roll the registration back — without the two seams deadlocking each other.
 #[cfg(any(test, feature = "test-support"))]
 pub fn register_test_plane(decl: &'static PlaneDecl) {
-    let _serial = TEST_REGISTRY_SERIAL
+    let owned_by_us = *TEST_ISOLATION_OWNER
         .lock()
-        .unwrap_or_else(|e| e.into_inner());
+        .unwrap_or_else(|e| e.into_inner())
+        == Some(std::thread::current().id());
+    let _serial = if owned_by_us {
+        None
+    } else {
+        Some(
+            TEST_REGISTRY_SERIAL
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()),
+        )
+    };
     let mut reg = TEST_REGISTERED.lock().unwrap_or_else(|e| e.into_inner());
     if !reg.iter().any(|d| d.key == decl.key) {
         reg.push(decl);
@@ -694,6 +711,38 @@ impl TestRegistryIsolation {
             let mut reg = TEST_REGISTERED.lock().unwrap_or_else(|e| e.into_inner());
             std::mem::take(&mut *reg)
         };
+        Self {
+            _serial: serial,
+            saved,
+        }
+    }
+
+    /// Take the serial lock and snapshot the registered planes WITHOUT clearing them — unlike
+    /// [`Self::empty`], sibling registrations already in place (e.g. an extracted plane's `testkit`
+    /// eagerly registering its own `&PLANE_DECL`) stay visible for the guard's whole lifetime. What
+    /// this confines is whatever THIS THREAD registers (via [`register_test_plane`]) while holding the
+    /// guard: `Drop` restores the pre-guard snapshot verbatim, so a test-only plane registered inside
+    /// the guard's scope is rolled back the moment the guard drops and never reaches a sibling test that
+    /// shares the same `#[test]` binary.
+    ///
+    /// This is the confinement mechanism for a test that needs its plane to be visible through the
+    /// REAL process registry read (`test_registered_planes` / `busbar-core`'s `plane_decls()`) — not
+    /// just an explicitly-constructed decl list — while still leaving the shared enumeration surface
+    /// (every OTHER test in the binary) exactly as it found it.
+    pub fn snapshot() -> Self {
+        let serial = TEST_REGISTRY_SERIAL
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        // Record ownership BEFORE any registration happens inside the guard, so `register_test_plane`
+        // (called while this guard is held, on this thread) takes its reentrant fast path instead of
+        // re-locking `TEST_REGISTRY_SERIAL` and self-deadlocking.
+        *TEST_ISOLATION_OWNER
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(std::thread::current().id());
+        let saved = TEST_REGISTERED
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
         Self {
             _serial: serial,
             saved,

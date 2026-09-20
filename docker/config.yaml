@@ -29,11 +29,15 @@ providers:
   anthropic:
     api_key: { env: ANTHROPIC_KEY }
 
-models:
-  claude:
-    provider: anthropic
 
 pools:
+
+  # RESERVED (1.6.0 config-model): `models:` lives under `pools:` (a reserved sibling of
+  # the pools; a pool may not be named `models`). It moved off the top level in 1.6.0.
+  models:
+    claude:
+      provider: anthropic
+
   default:
     members:
       - model: claude

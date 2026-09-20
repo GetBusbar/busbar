@@ -157,9 +157,10 @@ providers:
     # A reference that does not resolve REFUSES BOOT — it never degrades to an empty credential.
     # protocol / base_url / error_map / auth / health … override the shipped catalog
 
-models:                                    # a model is one LANE (a model at a provider)  → #models
-  gpt-4o:        { provider: openai, max_concurrent: 20 }
-  gpt-4o-mini:   { provider: openai }
+pools:
+  models:                                    # a model is one LANE (a model at a provider)  → #models
+    gpt-4o:        { provider: openai, max_concurrent: 20 }
+    gpt-4o-mini:   { provider: openai }
 
 pools:                                      # a pool is weighted lanes with shared reliability  → #pools
   hooks: [audit]                            # RESERVED all-pools attach (LIST → ADDITIVE, deduped)

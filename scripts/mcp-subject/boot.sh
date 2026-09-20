@@ -161,7 +161,8 @@ YAML
 listen: "127.0.0.1:$data_port"
 admin_listen: "127.0.0.1:$admin_port"
 providers: {}
-models: {}
+pools:
+  models: {}
 pools: {}
 identity-providers:
   admin-tokens: { module: admin-tokens, token: { env: BUSBAR_ADMIN_TOKEN } }

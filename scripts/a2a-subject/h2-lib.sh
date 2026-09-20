@@ -83,7 +83,8 @@ listen: "127.0.0.1:${H2_DATA_PORT}"
 admin_listen: "127.0.0.1:${H2_ADMIN_PORT}"
 public_url: "http://127.0.0.1:${H2_DATA_PORT}"
 providers: {}
-models: {}
+pools:
+  models: {}
 pools: {}
 identity-providers:
   admin-tokens: { module: admin-tokens, token: { env: BUSBAR_ADMIN_TOKEN } }

@@ -376,7 +376,11 @@ impl Gate for ConfigSchemaGate {
                 Err(why) => return refuse(ROW_TRACKED_SOURCES, why),
             }
         }
-        let fresh = match schema::extract(&read) {
+        let plane_verb = match schema::read_plane_verb_sources(cx) {
+            Ok(f) => f,
+            Err(why) => return refuse(ROW_TRACKED_SOURCES, why),
+        };
+        let fresh = match schema::extract(&read, &plane_verb) {
             Ok(v) => v,
             Err(why) => return refuse(ROW_TRACKED_SOURCES, why),
         };
