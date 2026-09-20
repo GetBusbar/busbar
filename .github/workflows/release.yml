@@ -133,6 +133,7 @@ jobs:
   plan:
     name: plan (version, staging name, is this name still free)
     runs-on: latchkey-small
+    timeout-minutes: 20
     outputs:
       version: ${{ steps.p.outputs.version }}
       tag: ${{ steps.p.outputs.tag }}
@@ -495,6 +496,7 @@ jobs:
     name: resolve the staged record (refuse if absent, stale or contradicted)
     needs: [plan, branch-green]
     runs-on: latchkey-small
+    timeout-minutes: 20
     outputs:
       staging_tag: ${{ steps.r.outputs.staging_tag }}
       digest: ${{ steps.r.outputs.digest }}
@@ -817,6 +819,7 @@ jobs:
     name: promote ${{ needs['resolve-staged'].outputs.promote_tag }} (tag + publish + prove it landed)
     needs: [plan, resolve-staged, promote-image]
     runs-on: latchkey-small
+    timeout-minutes: 20
     outputs:
       version: ${{ needs.plan.outputs.version }}
       # Re-exported so the three public-facing jobs below can branch on it WITHOUT taking a
@@ -1015,6 +1018,7 @@ jobs:
     # fan a soak out to nineteen repos as though it had shipped.
     if: ${{ needs['promote-release'].outputs.is_rc != '1' }}
     runs-on: latchkey-small
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Dispatch upstream-release to every listed downstream repo
@@ -1083,6 +1087,7 @@ jobs:
     # of noise that teaches a community to mute the channel.
     if: ${{ needs['promote-release'].result == 'success' && needs.plan.outputs.release == '1' && needs['promote-release'].outputs.is_rc != '1' }}
     runs-on: latchkey-small
+    timeout-minutes: 15
     permissions:
       contents: read
     steps:

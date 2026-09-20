@@ -62,8 +62,9 @@ name: A2A conformance
 
 on:
   push:
-    branches: ['integration/**', 'dev', 'qa', 'main']
-  pull_request:
+    # QA-gate only (owner ruling, DECISIONS #78): conformance is an exhaustive promotion gate, not
+    # per-commit dev feedback — run it once at the qa boundary, not on every dev/integration push.
+    branches: ['qa']
   workflow_dispatch:
 
 concurrency:
@@ -85,7 +86,7 @@ jobs:
   # ---------------------------------------------------------------- the battery's own machinery
   harness-selftest:
     name: harness selftest (before believing any verdict)
-    runs-on: latchkey-xlarge
+    runs-on: latchkey-small
     # BOUNDED. Measured p95 0.3 min over the last 9 runs of this job; the
     # ceiling is the 10-minute floor of the `p95 x 1.5` rule ci.yml documents.
     # Unbounded, this job inherits the runner's six-hour default.
@@ -128,7 +129,7 @@ jobs:
   # -------------------------------------------------------- instrument 1: the independent battery
   control-a2a-go:
     name: control a2a-go (${{ matrix.binding }})
-    runs-on: latchkey-xlarge
+    runs-on: latchkey-small
     # BOUNDED. Measured p95 1.7 min over the last 9 runs of this job; the
     # ceiling is the 10-minute floor of the `p95 x 1.5` rule ci.yml documents.
     # Unbounded, this job inherits the runner's six-hour default.
@@ -188,7 +189,7 @@ jobs:
 
   control-a2a-python:
     name: control a2a-python (the second, independent oracle)
-    runs-on: latchkey-xlarge
+    runs-on: latchkey-small
     # A HANG IS A FAILURE, AND IT MUST LOOK LIKE ONE WITHIN MINUTES. The battery has no overall
     # deadline of its own: if a launched control never becomes ready, `--launch` waits, and the job
     # sits amber for hours. Amber is not a verdict, and a leg nobody can read the result of is the
@@ -261,7 +262,7 @@ jobs:
 
   negative-control:
     name: negative control (a broken peer MUST be red)
-    runs-on: latchkey-xlarge
+    runs-on: latchkey-small
     # BOUNDED. Measured p95 0.6 min over the last 9 runs of this job; the
     # ceiling is the 10-minute floor of the `p95 x 1.5` rule ci.yml documents.
     # Unbounded, this job inherits the runner's six-hour default.
@@ -411,7 +412,7 @@ jobs:
 
   swap-proof:
     name: swap proof (six states the gate must tell apart)
-    runs-on: latchkey-xlarge
+    runs-on: latchkey-small
     # BOUNDED. Measured p95 2.3 min over the last 9 runs of this job; the
     # ceiling is the 10-minute floor of the `p95 x 1.5` rule ci.yml documents.
     # Unbounded, this job inherits the runner's six-hour default.
@@ -434,7 +435,7 @@ jobs:
 
   tz-is-load-bearing:
     name: the timezone pin still changes the answer
-    runs-on: latchkey-xlarge
+    runs-on: latchkey-small
     # BOUNDED. Measured p95 1.7 min over the last 9 runs of this job; the
     # ceiling is the 10-minute floor of the `p95 x 1.5` rule ci.yml documents.
     # Unbounded, this job inherits the runner's six-hour default.
@@ -454,7 +455,7 @@ jobs:
   # ------------------------------------------------------------------- instrument 2: official TCK
   tck-control:
     name: official TCK vs control (${{ matrix.leg }})
-    runs-on: latchkey-xlarge
+    runs-on: latchkey-small
     # BOUNDED. Measured p95 0.9 min over the last 9 runs of this job; the
     # ceiling is the 10-minute floor of the `p95 x 1.5` rule ci.yml documents.
     # Unbounded, this job inherits the runner's six-hour default.
@@ -482,7 +483,7 @@ jobs:
   # --------------------------------------------------------------- the governance tier, separate
   governance-probe:
     name: governance probe (NOT a conformance result)
-    runs-on: latchkey-xlarge
+    runs-on: latchkey-small
     # BOUNDED. Measured p95 0.7 min over the last 9 runs of this job; the
     # ceiling is the 10-minute floor of the `p95 x 1.5` rule ci.yml documents.
     # Unbounded, this job inherits the runner's six-hour default.

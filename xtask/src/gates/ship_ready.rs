@@ -1,12 +1,12 @@
 //! `cargo xtask gate ship-ready` — THE SHIP CRITERION, AS A ROW THAT CAN GO RED.
 //!
 //! The ship criterion used to be a checklist that nothing enforced: the ship twin is zero
-//! everywhere, no ceiling carries slack, no ceiling rose, the standing-red list is empty, the
-//! mutation job caught everything. A checklist is a promise that someone will read it. Nothing in
-//! the tree could tell whether any line of it was true, and nothing went red when a line stopped
-//! being true — which is the same as not having the criterion at all.
+//! everywhere, no ceiling carries slack, no ceiling rose, the standing-red list is empty. A
+//! checklist is a promise that someone will read it. Nothing in the tree could tell whether any
+//! line of it was true, and nothing went red when a line stopped being true — which is the same as
+//! not having the criterion at all.
 //!
-//! So it is a gate. Five rows, each of which is one line of the old checklist, each of which can be
+//! So it is a gate. Four rows, each of which is one line of the old checklist, each of which can be
 //! red on its own:
 //!
 //! | row | the claim |
@@ -15,11 +15,15 @@
 //! | [`ROW_SLACK`] | `ceiling-slack` is green: every ceiling equals the thing it measures |
 //! | [`ROW_ROSE`] | `ceiling-rose` is green: no number in a qa ceilings file went up on this branch |
 //! | [`ROW_STANDING`] | the standing-red list is EMPTY, for a `qa`/`main` posture |
-//! | [`ROW_MUTANTS`] | the `gate-mutants` check for this commit is green |
+//!
+//! The `gate-mutants` (mutation testing) job used to be a fifth row here, read from the GitHub
+//! checks API. Per owner ruling it is now MANUAL-ONLY and entirely OPTIONAL — it tests the tests,
+//! it does not gate a release — so ship-ready no longer owes or reads a mutation verdict, and
+//! branch protection no longer requires the `gate-mutants` check.
 //!
 //! ## THE POSTURE
 //!
-//! Four of the five rows are claims about the tree and hold everywhere. [`ROW_STANDING`] is not:
+//! Three of the four rows are claims about the tree and hold everywhere. [`ROW_STANDING`] is not:
 //! the standing-red list is a DEV-LINE CONVENIENCE, a set of construction rows that are known-red,
 //! written down, and deliberately not blocking the integration line while they are drained. That is
 //! a reasonable thing to have on a working branch and an unreasonable thing to promote. So this row
@@ -27,29 +31,6 @@
 //! target while the list is non-empty, and green-with-the-list-printed otherwise. The row is never
 //! silent about what is on the list, because a convenience nobody re-reads is how a temporary
 //! exemption becomes the architecture.
-//!
-//! ## WHY THE MUTATION VERDICT IS READ FROM GITHUB AND NOT FROM A FILE IN THE TREE
-//!
-//! The obvious design is for the mutation job to commit `qa/gate-mutants.json` — `{tree, surviving,
-//! run_url}` — and for this row to read it. That design cannot work, and the reason is worth
-//! stating plainly because it is the same reason for every "proof carried in the tree":
-//!
-//! A COMMITTED FILE IS A CLAIM THE CLAIMANT WROTE. Anyone who can push to the branch can write
-//! `"surviving": 0` next to their own tree hash, and nothing in the repository can tell that file
-//! apart from the one the job wrote — same branch, same author permissions, no signature to check.
-//! The gate would then be asking the person being gated whether they passed. Worse, it fails in the
-//! quiet direction: the forgery is a one-line edit and the gate goes green.
-//!
-//! The GitHub check for a commit is a record only GitHub can write. It is keyed to the commit SHA,
-//! it cannot be produced by editing the tree, and re-running it requires actually re-running it. So
-//! [`ROW_MUTANTS`] asks the checks API, over `gh`, for the conclusion of the `gate-mutants` check on
-//! this commit — and an answer it cannot get is RED, never green. A gate that cannot reach its
-//! evidence has not been satisfied; it has been prevented from asking.
-//!
-//! `mutants.out/` is still uploaded by the job as a run artefact, and the run URL is still printed
-//! here — as a POINTER for a human, never as the verdict.
-
-use std::process::Command;
 
 use crate::ctx::Ctx;
 use crate::gates::construction::ceilings;
@@ -60,19 +41,8 @@ pub const ROW_SHIP_TWIN: &str = "ship-ready:ship-twin";
 pub const ROW_SLACK: &str = "ship-ready:ceiling-slack";
 pub const ROW_ROSE: &str = "ship-ready:ceiling-rose";
 pub const ROW_STANDING: &str = "ship-ready:standing-reds";
-pub const ROW_MUTANTS: &str = "ship-ready:gate-mutants";
 
-const OWED: &[&str] = &[
-    ROW_SHIP_TWIN,
-    ROW_SLACK,
-    ROW_ROSE,
-    ROW_STANDING,
-    ROW_MUTANTS,
-];
-
-/// The check GitHub reports for `.github/workflows/gate-mutants.yml`'s required summary job. It is
-/// the job's `name:`, which is what both the checks API and branch protection match on.
-pub const MUTANTS_CHECK: &str = "gate-mutants";
+const OWED: &[&str] = &[ROW_SHIP_TWIN, ROW_SLACK, ROW_ROSE, ROW_STANDING];
 
 /// The postures under which the standing-red list is refused. A promotion carries none of the
 /// dev line's written-down conveniences.
@@ -92,15 +62,6 @@ pub fn posture(cx: &Ctx) -> String {
     cx.git(&["rev-parse", "--abbrev-ref", "HEAD"])
         .map(|s| s.trim().to_string())
         .unwrap_or_default()
-}
-
-/// Which repository the checks API is asked about. Overridable only so the self-test can point the
-/// real reader at a repository that does not exist and prove the unreachable branch is RED.
-fn repo_of(_cx: &Ctx) -> String {
-    std::env::var("XTASK_SHIP_REPO")
-        .ok()
-        .filter(|s| !s.trim().is_empty())
-        .unwrap_or_else(|| "GetBusbar/busbar".to_string())
 }
 
 fn is_shipping(target: &str) -> bool {
@@ -220,143 +181,6 @@ fn ship_twin_row(ship: &Verdict) -> Row {
     )
 }
 
-/// One answer from the checks API, reduced to what this row needs. `None` for `conclusion` is a
-/// check that exists and has not finished — which is not a green one.
-struct CheckAnswer {
-    conclusion: Option<String>,
-    url: String,
-    sha: String,
-}
-
-/// ASK GITHUB. See the module comment for why this is a network read and not a file read.
-///
-/// It asks about HEAD first and falls back to the merge-base with the line the branch is measured
-/// against, because the mutation job's own claim is scoped to `merge-base..HEAD`: a commit that
-/// only moved documentation carries no `gate-mutants` run of its own and the standing verdict for
-/// the branch point is the honest answer for it.
-fn ask_github(cx: &Ctx, repo: &str, sha: &str) -> Result<Option<CheckAnswer>, String> {
-    let out = Command::new("gh")
-        .current_dir(cx.root())
-        .args([
-            "api",
-            &format!("repos/{repo}/commits/{sha}/check-runs"),
-            "--jq",
-            &format!(
-                r#".check_runs[] | select(.name == "{MUTANTS_CHECK}") | "\(.conclusion // "pending")\t\(.html_url)""#
-            ),
-        ])
-        .output()
-        .map_err(|e| format!("could not run `gh`: {e}"))?;
-    if !out.status.success() {
-        return Err(format!(
-            "`gh api repos/{repo}/commits/{sha}/check-runs` failed: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        ));
-    }
-    // The newest check-run for the name is the last line GitHub returns for it.
-    let Some(line) = String::from_utf8_lossy(&out.stdout)
-        .lines()
-        .map(str::to_string)
-        .next_back()
-    else {
-        return Ok(None);
-    };
-    let (concl, url) = line.split_once('\t').unwrap_or((line.as_str(), ""));
-    Ok(Some(CheckAnswer {
-        conclusion: match concl {
-            "pending" | "" => None,
-            other => Some(other.to_string()),
-        },
-        url: url.to_string(),
-        sha: sha.to_string(),
-    }))
-}
-
-fn mutants_row(cx: &Ctx, repo: &str) -> Row {
-    let head = cx
-        .git(&["rev-parse", "HEAD"])
-        .map(|s| s.trim().to_string())
-        .unwrap_or_default();
-    if head.is_empty() {
-        return Row::fail(
-            ROW_MUTANTS,
-            "this tree has no HEAD to ask about",
-            "`git rev-parse HEAD` said nothing, so there is no commit to look the mutation \
-             verdict up against."
-                .to_string(),
-        );
-    }
-    let base = cx
-        .git(&["merge-base", "HEAD", ceilings::INTEGRATION_REF])
-        .map(|s| s.trim().to_string())
-        .unwrap_or_default();
-
-    let mut tried: Vec<String> = Vec::new();
-    for sha in [head.clone(), base].into_iter().filter(|s| !s.is_empty()) {
-        match ask_github(cx, repo, &sha) {
-            Err(why) => {
-                // A GATE THAT CANNOT REACH ITS EVIDENCE HAS NOT BEEN SATISFIED. This is the one
-                // branch where the temptation to be lenient is strongest and where leniency is
-                // exactly the hole: "no token here" would make the row green on every laptop.
-                return Row::fail(
-                    ROW_MUTANTS,
-                    "the mutation verdict could not be read",
-                    format!(
-                        "{why}. The `{MUTANTS_CHECK}` verdict is read from the GitHub checks API \
-                         because that is the one record of it a push cannot forge; a run that \
-                         cannot ask has not been told yes. Authenticate `gh`, or run this gate \
-                         where CI runs it."
-                    ),
-                );
-            }
-            Ok(None) => tried.push(sha),
-            Ok(Some(a)) => {
-                return match a.conclusion.as_deref() {
-                    Some("success") => Row::pass(
-                        ROW_MUTANTS,
-                        "every mutant in the changed gate code was caught",
-                        format!(
-                            "`{MUTANTS_CHECK}` success on {} -- {}",
-                            &a.sha[..12.min(a.sha.len())],
-                            a.url
-                        ),
-                    ),
-                    Some(other) => Row::fail(
-                        ROW_MUTANTS,
-                        "the mutation job is not green",
-                        format!(
-                            "`{MUTANTS_CHECK}` is `{other}` on {} -- {}. Gate code this branch \
-                             changed is not fully held down by a self-test case.",
-                            &a.sha[..12.min(a.sha.len())],
-                            a.url
-                        ),
-                    ),
-                    None => Row::fail(
-                        ROW_MUTANTS,
-                        "the mutation job has not finished",
-                        format!(
-                            "`{MUTANTS_CHECK}` is still running on {} -- {}. Not finished is not \
-                             green.",
-                            &a.sha[..12.min(a.sha.len())],
-                            a.url
-                        ),
-                    ),
-                };
-            }
-        }
-    }
-    Row::fail(
-        ROW_MUTANTS,
-        "no mutation verdict exists for this commit",
-        format!(
-            "no `{MUTANTS_CHECK}` check on {}. The job reports on every push, so no check means \
-             the commit was never pushed, or the workflow is not on this branch. Either way \
-             nothing has measured whether this tree's gates still bite.",
-            tried.join(" or ")
-        ),
-    )
-}
-
 impl Gate for ShipReadyGate {
     fn name(&self) -> &'static str {
         "ship-ready"
@@ -383,7 +207,6 @@ impl Gate for ShipReadyGate {
         let ship = crate::gates::execute(&ship_gate as &dyn Gate, cx);
         rows.push(ship_twin_row(&ship));
 
-        rows.push(mutants_row(cx, &repo_of(cx)));
         Verdict::of(rows)
     }
 
@@ -492,19 +315,6 @@ impl Gate for ShipReadyGate {
                 "t",
                 "d",
             )])),
-        ));
-
-        // -- THE MUTATION VERDICT. Driven against the REAL reader, with `gh` pointed at a repo
-        //    that does not exist: an unreachable evidence source must be RED. This is the branch a
-        //    lenient implementation would have made green on every laptop, and it covers no row it
-        //    has not earned.
-        report.push(unit_case(
-            "a mutation verdict this run cannot READ is red, never green",
-            &[ROW_MUTANTS],
-            Expect::Red {
-                naming: vec!["could not be read".to_string()],
-            },
-            mutants_row(cx, "GetBusbar/no-such-repository-ever-0000"),
         ));
 
         // -- THE GATE RUNS END TO END AND OWES WHAT IT SAYS IT OWES.

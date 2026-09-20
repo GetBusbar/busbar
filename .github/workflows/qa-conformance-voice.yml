@@ -48,8 +48,9 @@ name: Voice conformance
 
 on:
   push:
-    branches: ['integration/**', 'dev', 'qa', 'main']
-  pull_request:
+    # QA-gate only (owner ruling, DECISIONS #78): conformance is an exhaustive promotion gate, not
+    # per-commit dev feedback — run it once at the qa boundary, not on every dev/integration push.
+    branches: ['qa']
   workflow_dispatch:
 
 concurrency:
@@ -147,7 +148,7 @@ jobs:
   spec-per-dialect:
     name: spec battery · ${{ matrix.dialect }}
     needs: gate-selftest
-    runs-on: latchkey-xlarge
+    runs-on: latchkey-small
     # BOUNDED. Measured p95 0.2 min over the last 9 runs of this job; the
     # ceiling is the 10-minute floor of the `p95 x 1.5` rule ci.yml documents.
     # Unbounded, this job inherits the runner's six-hour default.
@@ -189,7 +190,7 @@ jobs:
   replay:
     name: captured-transcript replay
     needs: gate-selftest
-    runs-on: latchkey-xlarge
+    runs-on: latchkey-small
     # BOUNDED. Measured p95 0.2 min over the last 9 runs of this job; the
     # ceiling is the 10-minute floor of the `p95 x 1.5` rule ci.yml documents.
     # Unbounded, this job inherits the runner's six-hour default.
@@ -221,7 +222,7 @@ jobs:
   cross-parity:
     name: cross-parity · 4 ordered OpenAI<->Gemini pairs
     needs: gate-selftest
-    runs-on: latchkey-xlarge
+    runs-on: latchkey-small
     # BOUNDED. Measured p95 0.2 min over the last 9 runs of this job; the
     # ceiling is the 10-minute floor of the `p95 x 1.5` rule ci.yml documents.
     # Unbounded, this job inherits the runner's six-hour default.
@@ -253,7 +254,7 @@ jobs:
   provider-dial:
     name: "provider-dial · a session dials the composed provider (the provider-dial leg)"
     needs: gate-selftest
-    runs-on: latchkey-xlarge
+    runs-on: latchkey-small
     # BOUNDED. Measured p95 0.2 min over the last 9 runs of this job; the
     # ceiling is the 10-minute floor of the `p95 x 1.5` rule ci.yml documents.
     # Unbounded, this job inherits the runner's six-hour default.
@@ -288,7 +289,7 @@ jobs:
   composition:
     name: "composition · provider credential, per-key lease, session scope, gemini route, admit/route/audit/exit"
     needs: gate-selftest
-    runs-on: latchkey-xlarge
+    runs-on: latchkey-small
     # BOUNDED. Measured p95 0.3 min over the last 9 runs of this job; the
     # ceiling is the 10-minute floor of the `p95 x 1.5` rule ci.yml documents.
     # Unbounded, this job inherits the runner's six-hour default.
@@ -386,7 +387,7 @@ jobs:
   governance-probe:
     name: governance probe · 5 vision checkpoints (NOT a conformance result)
     needs: gate-selftest
-    runs-on: latchkey-xlarge
+    runs-on: latchkey-small
     # BOUNDED. Measured p95 0.2 min over the last 9 runs of this job; the
     # ceiling is the 10-minute floor of the `p95 x 1.5` rule ci.yml documents.
     # Unbounded, this job inherits the runner's six-hour default.

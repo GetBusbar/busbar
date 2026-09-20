@@ -1,0 +1,43 @@
+name: Security
+
+# Supply-chain checks: scan the dependency graph for known advisories and enforce
+# the license/source/duplicate policy in deny.toml. Runs on dependency changes AND
+# on a weekly schedule — a crate already in Cargo.lock can have an advisory filed
+# AFTER it was merged, so PR-time scanning alone is not enough.
+on:
+  push:
+    # QA-gate + weekly (owner ruling, DECISIONS #78): runs at the qa promotion boundary, plus the
+    # weekly schedule below to catch advisories filed against already-pinned deps after merge.
+    branches: [qa]
+  schedule:
+    # Mondays 07:00 UTC — catch newly-disclosed advisories against pinned deps.
+    - cron: "0 7 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  cargo-deny:
+    name: cargo-deny (advisories · licenses · sources · bans) + cargo-audit
+    runs-on: latchkey-large
+    permissions:
+      # Read the code under scan.
+      contents: read
+      # rustsec/audit-check annotates the run with a check; on the weekly schedule it also
+      # files an advisory issue. Grant exactly those two writes and nothing more.
+      checks: write
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: cargo-deny
+        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2
+        with:
+          command: check advisories licenses sources bans
+      # cargo-audit alongside cargo-deny: both read RustSec, but audit is the RustSec
+      # project's own scanner and cross-checks deny's advisories view against the source of
+      # truth (and surfaces yanked crates). Same job, same qa+weekly cadence — a crate
+      # already pinned in Cargo.lock can have an advisory filed after it was merged.
+      - name: cargo-audit (RustSec advisories)
+        uses: rustsec/audit-check@69366f33c96575abad1ee0dba8212993eecbe998 # v2.0.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}

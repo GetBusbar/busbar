@@ -198,8 +198,8 @@ spot slots at once: the integration tip's proof queued behind slot work it had n
 So for a slot branch the 24-shard proof runs in two places instead: **locally**, as
 `scripts/gate-mutants.sh --shard 1/1` (one shard, every mutant, same script and same test command),
 by any slot whose diff enters the mutation scope, stated in the hand-back; and **at landing**, on
-the integration branch, where the required check is actually read from. `ship-ready:gate-mutants`
-already falls back to the merge-base's verdict when a commit carries no run of its own.
+the integration branch. The job is manual-only and optional per owner ruling — it tests the tests,
+it does not gate a release — so nothing owes or reads its verdict as a required check.
 
 **Two things the job refuses to treat as green.**
 
@@ -250,22 +250,27 @@ thing that can observe the environment a mutant is actually tested in, and a cam
 is assumed rather than measured scores every mutant CAUGHT the moment the assumption breaks. That is
 exactly what happened, and the cost of finding out was two full runs.
 
-**Why the required check is not path-filtered.** A required status that a `paths:` filter can decline
-to report is a required status that blocks every unrelated pull request forever, which is how
-required checks come to be removed. So the workflow always runs and `gate-mutants` always reports;
-the *work* is what the scope decides. A push with no gate Rust in it goes green in about a minute,
-honestly, having measured that there was nothing to measure.
+**Why the check is not path-filtered.** A status that a `paths:` filter can decline to report is one
+that, were it ever made required, would block every unrelated pull request forever — which is how
+required checks come to be removed. `gate-mutants` is manual-only and optional per owner ruling (it
+tests the tests, it does not gate a release), so it is not a required check; but when it does run,
+the workflow always runs and `gate-mutants` always reports, and the *work* is what the scope decides.
+A push with no gate Rust in it goes green in about a minute, honestly, having measured that there was
+nothing to measure.
 
 ## The ship-ready row
 
-`cargo xtask gate ship-ready` is the old ship checklist, as five rows that can each go red on their
+`cargo xtask gate ship-ready` is the old ship checklist, as four rows that can each go red on their
 own:
 
 - `ship-ready:ship-twin` — `kind-isolation-ship` is green: the twin measures zero everywhere.
 - `ship-ready:ceiling-slack` — every ceiling equals the thing it measures.
 - `ship-ready:ceiling-rose` — no number in a `qa` ceilings file went up on this branch.
 - `ship-ready:standing-reds` — the standing-red list is EMPTY, for a `qa`/`main` posture.
-- `ship-ready:gate-mutants` — the mutation verdict for this commit is green.
+
+(The `gate-mutants` mutation verdict was a fifth row here. Per owner ruling it is now manual-only
+and optional — it tests the tests, it does not gate a release — so ship-ready no longer owes or
+reads it, and branch protection no longer requires the `gate-mutants` check.)
 
 The first three are read from the gates that own those rules rather than re-implemented here; a rule
 implemented in two places is a rule two gates can disagree about while both stay green. If the
@@ -276,24 +281,6 @@ convenience*: construction rows that are known red, written down, and deliberate
 integration line while they are drained. That is reasonable to have and unreasonable to promote —
 promoting it does not drain it, it promotes the breakage and retires the record of it. So the row is
 green-with-the-list-printed on the dev line and red for `qa`/`main` while anything is on it.
-
-### Why the mutation verdict is read from GitHub and not from a file in the tree
-
-The obvious design is for the mutation job to commit `qa/gate-mutants.json` — `{tree, surviving,
-run_url}` — and for the row to read it. That design cannot work.
-
-**A committed file is a claim the claimant wrote.** Anyone who can push to the branch can write
-`"surviving": 0` next to their own tree hash, and nothing in the repository can tell that file apart
-from the one the job wrote: same branch, same permissions, no signature to check. The gate would be
-asking the person being gated whether they passed. And it fails in the quiet direction — the forgery
-is a one-line edit and the gate goes green.
-
-The GitHub check for a commit is a record only GitHub can write. It is keyed to the commit SHA, it
-cannot be produced by editing the tree, and re-running it requires actually re-running it. So the row
-asks the checks API over `gh`, and **an answer it cannot get is red, never green**: a gate that
-cannot reach its evidence has not been satisfied, it has been prevented from asking. `mutants.out/`
-is still uploaded as a run artefact and the run URL is still printed — as a pointer for a human,
-never as the verdict.
 
 ## The landing runner
 

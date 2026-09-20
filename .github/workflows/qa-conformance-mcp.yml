@@ -55,8 +55,9 @@ name: MCP conformance
 # 53-package third-party TypeScript workspace, which has no business on the per-commit fast tier.
 on:
   push:
-    branches: ['integration/**', 'dev', 'qa', 'main']
-  pull_request:
+    # QA-gate only (owner ruling, DECISIONS #78): conformance is an exhaustive promotion gate, not
+    # per-commit dev feedback — run it once at the qa boundary, not on every dev/integration push.
+    branches: ['qa']
   workflow_dispatch:
 
 concurrency:
@@ -66,7 +67,7 @@ concurrency:
 jobs:
   gate-selftest:
     name: gate self-test (the coverage assertion cannot be lied to)
-    runs-on: latchkey-xlarge
+    runs-on: latchkey-small
     # BOUNDED. Measured p95 0.2 min over the last 9 runs of this job; the
     # ceiling is the 10-minute floor of the `p95 x 1.5` rule ci.yml documents.
     # Unbounded, this job inherits the runner's six-hour default.
@@ -112,7 +113,7 @@ jobs:
   official-control:
     name: official suite · CONTROL (pinned reference SDK)
     needs: gate-selftest
-    runs-on: latchkey-xlarge
+    runs-on: latchkey-large
     # The control peer is a full third-party workspace build. Generous, because a timeout here would
     # be a red that is not a defect — the exact thing this workflow is arranged to avoid.
     timeout-minutes: 45
@@ -286,7 +287,7 @@ jobs:
   battery-control:
     name: in-house battery · CONTROL (pinned python reference peer)
     needs: gate-selftest
-    runs-on: latchkey-xlarge
+    runs-on: latchkey-small
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -313,7 +314,7 @@ jobs:
   battery-negative-control:
     name: in-house battery · NEGATIVE control (a broken peer MUST be red)
     needs: gate-selftest
-    runs-on: latchkey-xlarge
+    runs-on: latchkey-small
     # Raised with the row count: the negative control now drives all 24 of the peer's modes rather
     # than 7, and four of them (`stall`, `truncate`, `half-answer`, `giant`) answer nothing or
     # nearly nothing by design, so each spends its per-mode ceiling before being reported.

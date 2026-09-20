@@ -30,18 +30,24 @@
 # from whatever they currently are, so running this script can never regress
 # a protection setting that was configured through some other means.
 #
-# THE FIVE REQUIRED STATUS CHECKS
+# THE FOUR REQUIRED STATUS CHECKS
 # --------------------------------
 # The contexts below are matched by GitHub against the `name:` of the GitHub
 # Actions job that reports the check, not the workflow file name and not the
-# step name. Three of the five ("ci umbrella", "structure lint",
+# step name. Three of the four ("ci umbrella", "structure lint",
 # "construction gate (how the tree is built vs ARCHITECTURE.md — BLOCKING, on
 # its posture)") were verified against .github/workflows/ci.yml at the time
 # this script was written — they are the literal `name:` fields of jobs in
-# that file. "gate-mutants" was verified against
-# .github/workflows/gate-mutants.yml (the final aggregator job in that
-# workflow is literally named `gate-mutants`). "ship-ready" was NOT found
-# anywhere in .github/workflows/*.yml at the time this script was written —
+# that file.
+#
+# "gate-mutants" (mutation testing, from .github/workflows/gate-mutants.yml)
+# was a fifth required check. Per owner ruling it is now MANUAL-ONLY and
+# OPTIONAL — it tests the tests, it does not gate a release — so it is NO
+# LONGER a required status check and has been removed from the list below.
+# The workflow may still be run manually, but qa/main no longer require it.
+#
+# "ship-ready" was NOT found anywhere in .github/workflows/*.yml at the time
+# this script was written —
 # it does not exist yet as a job name in this repo. It is included here
 # because it was specified as a requirement, but until a job named exactly
 # "ship-ready" exists and reports a check with that name, GitHub will never
@@ -86,14 +92,13 @@ set -euo pipefail
 REPO="${CI_PROTECTION_REPO:-GetBusbar/busbar}"
 BRANCHES="${CI_PROTECTION_BRANCHES:-qa main}"
 
-# These five strings are GitHub Actions job `name:` values, matched verbatim
+# These four strings are GitHub Actions job `name:` values, matched verbatim
 # by the status-checks API. See the block comment above for provenance /
 # verification notes on each one.
 REQUIRED_CONTEXTS_JSON='[
   "ci umbrella",
   "structure lint",
   "construction gate (how the tree is built vs ARCHITECTURE.md — BLOCKING, on its posture)",
-  "gate-mutants",
   "ship-ready"
 ]'
 
@@ -119,18 +124,18 @@ fetch_current_protection() {
 # carried through from `current` untouched.
 #
 # CONTEXTS ARE A UNION, NEVER A REPLACEMENT: this script's job is to
-# guarantee a FLOOR of five required checks on qa/main, not to be the sole
+# guarantee a FLOOR of four required checks on qa/main, not to be the sole
 # authority over the complete list of required contexts. main, for example,
 # already requires "qa-gate umbrella" and "record the staged digest (the
 # promote's only input)" in addition to the shared ones — those were added
 # by hand for reasons specific to how release promotion works, and this
 # script has no opinion about them and no business deleting them. If this
-# script set `contexts` to exactly its five required strings, every
+# script set `contexts` to exactly its four required strings, every
 # hand-added context on every branch would become a casualty of the next
 # run — the exact silent-loss-of-protection hazard the rest of this script
 # is built around avoiding for every other field. So the contexts we send
 # are (current contexts) UNION (required contexts): anything already
-# required keeps being required, and the five required contexts are added
+# required keeps being required, and the four required contexts are added
 # if they're missing. Removing a context from protection, if that's ever
 # genuinely wanted, is a deliberate action for a human via `gh api` or the
 # UI — not something this script will ever do on its own.
@@ -265,14 +270,15 @@ cmd_selftest() {
   local failures=0
 
   # Fixture: a realistic "current protection" object for an already-protected
-  # branch. It deliberately: (1) is missing "gate-mutants" from its contexts,
-  # so the compliance check must catch that; (2) has strict=true, which this
+  # branch. It deliberately: (1) is missing required contexts (e.g. the
+  # "construction gate ..." check and "ship-ready") from its contexts, so the
+  # compliance check must catch that; (2) has strict=true, which this
   # script must flip to false; (3) carries an unrelated, unrequested setting
   # (required_conversation_resolution.enabled = true) that must survive the
   # merge untouched, proving read-modify-write actually preserves state
   # instead of dropping it; (4) carries a pre-existing, hand-added context
   # ("qa-gate umbrella", modelled on main's real protection) that is not one
-  # of the five required contexts and must survive the merge too, proving
+  # of the four required contexts and must survive the merge too, proving
   # contexts are unioned rather than replaced.
   local fixture_current='{
     "required_status_checks": {
@@ -289,7 +295,7 @@ cmd_selftest() {
   local body
   body=$(printf '%s' "$fixture_current" | build_body)
 
-  # (a) all five desired contexts present in the built body.
+  # (a) all four desired contexts present in the built body.
   local a_result
   a_result=$(python3 -c "
 import json, sys
@@ -298,7 +304,7 @@ required = json.loads(sys.argv[2])
 contexts = body['required_status_checks']['contexts']
 print('ok' if all(c in contexts for c in required) else 'FAIL')
 " "$body" "$REQUIRED_CONTEXTS_JSON")
-  echo "selftest (a) five contexts present after build: ${a_result}"
+  echo "selftest (a) four contexts present after build: ${a_result}"
   [ "$a_result" = "ok" ] || failures=$((failures + 1))
 
   # (b) the unrelated fixture setting (required_conversation_resolution) is
@@ -346,9 +352,9 @@ print('ok' if required_keys.issubset(body.keys()) else 'FAIL')
   [ "$d_result" = "ok" ] || failures=$((failures + 1))
 
   # (e) removing a context from the desired list is detected: a branch whose
-  # current contexts are missing one of the five must be reported as NOT
+  # current contexts are missing one of the four must be reported as NOT
   # COMPLIANT by the summariser (using the original fixture, which is
-  # missing "construction gate ..." and "gate-mutants" and "ship-ready").
+  # missing "construction gate ..." and "ship-ready").
   local e_summary e_result
   e_summary=$(printf '%s' "$fixture_current" | summarize_protection "fixture-branch")
   if echo "$e_summary" | grep -q "NOT COMPLIANT"; then
@@ -360,7 +366,7 @@ print('ok' if required_keys.issubset(body.keys()) else 'FAIL')
   [ "$e_result" = "ok" ] || failures=$((failures + 1))
 
   # (f) contexts are a UNION, never a replacement: the fixture's pre-existing,
-  # unrelated context ("qa-gate umbrella", not one of the five required
+  # unrelated context ("qa-gate umbrella", not one of the four required
   # strings) must still be present in the built body. This case must fail
   # if someone reverts build_body to set contexts = required verbatim
   # instead of required UNION existing.

@@ -27,19 +27,11 @@
 name: gate-mutants
 
 on:
-  push:
-    # Same branch set as ci.yml. `keep-*` WAS here and is not any more, and it is not an ungating:
-    # with ~15 live hand-back branches each fanning 24 shards onto the Latchkey minute pool, the
-    # per-branch `concurrency:` below cannot help (it cancels a branch's OWN superseded run, not its
-    # neighbours'), and the integration tip's proof sat starved behind slot work — exactly the
-    # arithmetic docs/ci/self-hosted-runners.md §1-2 predicts (folded here from CI2's
-    # 363ac81b8, which is not an ancestor of this branch). A slot that touches the mutation
-    # scope (`xtask/src/gates/**` et al., scripts/gate-mutants.sh) runs the same proof by hand —
-    # `scripts/gate-mutants.sh --shard 1/1` — and says so in its hand-back; the 24-shard run then
-    # happens at landing, on the integration branch, where the required check is read from.
-    # `!wip/**` for the same reason ci.yml carries it — checkpoint pushes arrive by the dozen.
-    branches: ['integration/**', 'dev', 'qa', 'main', '!wip/**']
-  pull_request:
+  # MANUAL ONLY (owner ruling + cost-watch, DECISIONS #78). Mutation testing is TEST-ENHANCING,
+  # not release-breaking: it surfaces gaps in the test suite, it does not gate a release. Running
+  # it on every push (24 shards) was ~69% of all CI runner-minutes. Run it on demand when hardening
+  # tests, act on its findings by writing tests, then re-push. It is NOT a required branch-protection
+  # check (removed from qa+main) and `ship-ready` treats an absent mutation verdict as neutral.
   workflow_dispatch:
     inputs:
       shards:

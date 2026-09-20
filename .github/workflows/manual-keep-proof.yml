@@ -50,12 +50,11 @@ name: keep-proof
 # file can make a promotion decision.
 
 on:
-  push:
-    # Same branch set as ci.yml/gate-mutants.yml. `keep-*` (and `wip/*`, `slot-*`) WAS here and is
-    # not any more (LK-ALL-2) -- see the header comment above and §8 of
-    # docs/ci/latchkey-migration.md. This workflow now only auto-fires on the branches CI itself
-    # gates; a slot's own hand-back proof runs on the engine via `scripts/prove-remote.sh`, not here.
-    branches: ['integration/**', 'dev', 'qa', 'main']
+  # DISPATCH ONLY (owner ruling: nothing does the same job twice, DECISIONS #78). On
+  # integration/dev/qa this re-ran fmt/clippy/build/tests/gates/construction-gate/design-bindings
+  # that ci.yml already runs on the SAME commit — pure duplicate spend. The one thing it does that
+  # CI does not — a shadow-oracle SCOPED to the families a hand-back names — stays available here on
+  # demand; slots prove their hand-backs via `scripts/prove-remote.sh` before handing back.
   workflow_dispatch:
     inputs:
       ref:
@@ -545,7 +544,7 @@ jobs:
             target
   design-bindings:
     name: design bindings (existence · regen-clean)
-    runs-on: latchkey-large
+    runs-on: latchkey-small
 
     timeout-minutes: 10
     steps:
