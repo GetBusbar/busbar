@@ -35,7 +35,7 @@
 use std::fmt;
 
 use serde::de::value::MapAccessDeserializer;
-use serde::de::{DeserializeSeed, Deserializer, Error as _, IntoDeserializer, MapAccess, Visitor};
+use serde::de::{DeserializeSeed, Deserializer, IntoDeserializer, MapAccess, Visitor};
 use serde::Deserialize;
 
 use super::DeployCfg;

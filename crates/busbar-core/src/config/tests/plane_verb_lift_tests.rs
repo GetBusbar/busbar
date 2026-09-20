@@ -19,7 +19,6 @@
 //!      byte-identical, and does it name neither a real plane-verb section nor the dropped-in one?
 
 use crate::config::deploy_from_yaml_str;
-use crate::plane::config::PlaneCfg;
 use crate::plane::registry::PlaneDecl;
 
 /// A PLANE BUSBAR DOES NOT HAVE — the same shape `plane/tests/registry_tests.rs`'s `WIDGET_PLANE`

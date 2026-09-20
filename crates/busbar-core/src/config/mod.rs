@@ -1037,6 +1037,21 @@ impl<'de> Deserialize<'de> for PoolsCfg {
         // The pool plane reserves `models:` alongside the universal pair (config-model STAGE 3): the
         // `models:` map moved under `pools:` in 1.6.0, so it is a reserved sibling of the pools, not a
         // pool. The split lifts it into `section.models`; a pool named `models` is refused there.
+        //
+        // The pools section is OWNED by the fallback plane's decl (`split_section` looks its
+        // config_section/subject_noun words up by `fallback_key()`). In a production or core-`cfg(test)`
+        // build the fallback plane is always registered, so that decl is always present and the split
+        // below runs unchanged. In the one degenerate composition where NO plane is registered — the
+        // `test-support`-only dependency-copy of core a plane crate links, whose built-in plane rows
+        // are empty and which registers only the plane under test — `fallback_key()` degrades to `""`
+        // and there is no plane to route pools to. Rather than fault (`plane_decl("")`), degrade
+        // gracefully to an EMPTY, no-op `PoolsCfg`: consume and ignore the section so a valid config
+        // still parses. This mirrors the non-panicking fallback GUARDS (`is_fallback`) and touches
+        // only this empty-plane-decls path — the shipped binary never reaches it.
+        if crate::plane::fallback_plane_decl().is_none() {
+            serde::de::IgnoredAny::deserialize(deserializer)?;
+            return Ok(PoolsCfg::default());
+        }
         let section = crate::plane::config::split_section::<D, PoolCfg>(
             deserializer,
             crate::plane::fallback_key(),

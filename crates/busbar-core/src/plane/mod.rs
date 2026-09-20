@@ -161,6 +161,20 @@ pub(crate) fn fallback_key() -> &'static str {
         .unwrap_or("")
 }
 
+/// The DECL of the plane [`fallback_key`] names, or `None` when NO plane is registered to receive
+/// the fallback (pools) routing. The non-panicking companion to `fallback_key` + [`plane_decl`],
+/// for the one degenerate build where `fallback_key` degrades to `""`: the `test-support`-only
+/// dependency-copy of core a plane crate links, whose built-in plane rows are empty and which
+/// registers only the plane under test (or none) — so `plane_decls()` can be empty, `fallback_key`
+/// returns `""`, and `plane_decl("")` would fault. Config-surface readers that must degrade
+/// gracefully when there is no plane to route to (`PoolsCfg::deserialize`) ask THIS instead of
+/// `plane_decl(fallback_key())`, exactly as the fallback GUARDS ask [`is_fallback`] rather than
+/// forcing a fallback to exist. In a production or core-`cfg(test)` build the fallback plane is
+/// always present, so this is always `Some` and the reader's normal path runs unchanged.
+pub(crate) fn fallback_plane_decl() -> Option<&'static registry::PlaneDecl> {
+    registry::plane_decl_for(fallback_key())
+}
+
 /// Whether `key` names THE FALLBACK plane — the non-panicking predicate the fallback GUARDS read
 /// (`PlaneDispatch::mount`/`admit` no-op; the fallback-plane telemetry branch). Distinct from
 /// [`fallback_key`]: it answers "is THIS key the fallback" WITHOUT requiring a fallback to be
