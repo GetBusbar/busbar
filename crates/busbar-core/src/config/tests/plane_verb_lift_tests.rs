@@ -131,16 +131,17 @@ fn plane_verb_lift_set_is_derived_from_the_registry_and_excludes_core_owned_sect
         );
     }
 
-    // Non-vacuous: `busbar-mcp`/`busbar-a2a` are this crate's own built-in test planes, so `tools`
-    // and `agents` are always present regardless of which OTHER planes a sibling test registered.
-    assert!(
-        derived.contains(&"tools"),
-        "the MCP plane's own section must be in the derived lift: {derived:?}"
-    );
-    assert!(
-        derived.contains(&"agents"),
-        "the A2A plane's own section must be in the derived lift: {derived:?}"
-    );
+    // Non-vacuous: this crate's own built-in test planes each carry a `config_section` that must
+    // always be present in the derived lift, regardless of which OTHER planes a sibling test
+    // registered. Read the expected sections back off the registry itself (as `expected` above
+    // already did) rather than naming the owning plane types — core must name zero plane types,
+    // even in a test's own panic message.
+    for section in ["tools", "agents"] {
+        assert!(
+            derived.contains(&section),
+            "a built-in test plane's own `{section}` section must be in the derived lift: {derived:?}"
+        );
+    }
 }
 
 // ══ 2. A DROPPED-IN PLANE'S SECTION PARSES INTO THE OVERFLOW CARRIER ═════════════════════════════

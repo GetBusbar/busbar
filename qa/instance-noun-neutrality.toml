@@ -126,14 +126,6 @@ wave = "core neutralization — DECISION #1 (core names no instance); auth schem
 [[leak]]
 noun = "a2a"
 kind = "plane"
-file = "crates/busbar-core/src/session/tests/session_tests.rs"
-count = 5
-category = "core"
-wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
-
-[[leak]]
-noun = "a2a"
-kind = "plane"
 file = "crates/busbar-core/src/tests/operation_tests.rs"
 count = 1
 category = "core"
@@ -1926,14 +1918,6 @@ wave = "core neutralization — DECISION #1 (core names no instance); auth schem
 [[leak]]
 noun = "llm"
 kind = "plane"
-file = "crates/busbar-core/src/session/tests/session_tests.rs"
-count = 1
-category = "core"
-wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
-
-[[leak]]
-noun = "llm"
-kind = "plane"
 file = "crates/busbar-core/src/test_support/mod.rs"
 count = 1
 category = "core"
@@ -2330,14 +2314,6 @@ file = "crates/busbar-admin/src/v1/tests/service_tests.rs"
 count = 8
 category = "core"
 wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
-
-[[leak]]
-noun = "mcp"
-kind = "plane"
-file = "crates/busbar-contract-transport/tests/upstream_address_prints_no_secret.rs"
-count = 4
-category = "shared-crate"
-wave = "shared-crate neutralization — the ABI-side crates must compile with every plugin removed"
 
 [[leak]]
 noun = "mcp"
@@ -3782,14 +3758,6 @@ wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
 [[leak]]
 noun = "spki"
 kind = "auth"
-file = "crates/busbar-a2a/src/diagnostics.rs"
-count = 7
-category = "cross-plugin"
-wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
-
-[[leak]]
-noun = "spki"
-kind = "auth"
 file = "crates/busbar-admin/src/tests/tests.rs"
 count = 2
 category = "core"
@@ -3802,14 +3770,6 @@ file = "crates/busbar-admin/src/v1/tests/service_tests.rs"
 count = 1
 category = "core"
 wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
-
-[[leak]]
-noun = "spki"
-kind = "auth"
-file = "crates/busbar-contract-transport/src/trust.rs"
-count = 2
-category = "shared-crate"
-wave = "shared-crate neutralization — the ABI-side crates must compile with every plugin removed"
 
 [[leak]]
 noun = "spki"
@@ -4536,14 +4496,6 @@ noun = "streaming"
 kind = "plane"
 file = "crates/busbar-a2a/src/a2a/tests/served_methods_tests.rs"
 count = 11
-category = "cross-plugin"
-wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
-
-[[leak]]
-noun = "streaming"
-kind = "plane"
-file = "crates/busbar-a2a/src/diagnostics.rs"
-count = 5
 category = "cross-plugin"
 wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
 
@@ -5474,4 +5426,73 @@ file = "crates/busbar/tests/transport_composed_over_consistency.rs"
 count = 1
 category = "composition-root"
 wave = "keystone / composition-root — register_planes both-ways self-registration"
+
+# ── ACCEPTED PRE-EXISTING (not burndown debt) ──────────────────────────────────────────────────
+# These rows are not scheduled to drain in a future wave: each names a leak the architect has
+# reviewed and ruled legitimate on its own terms, so the row records an accepted exception rather
+# than a burndown commitment.
+
+[[leak]]
+noun = "a2a"
+kind = "plane"
+file = "crates/busbar/src/root/a2a_kernel_rider.rs"
+count = 2
+category = "accepted"
+wave = "accepted pre-existing — the module's own doc declares it the ONE sanctioned place the A2A rider names A2A, to point the plane-neutral kernel bridge at the A2A plane"
+
+[[leak]]
+noun = "a2a"
+kind = "plane"
+file = "crates/busbar/src/root/tests/a2a_kernel_rider.rs"
+count = 14
+category = "accepted"
+wave = "accepted pre-existing — test module for the sanctioned a2a_kernel_rider.rs naming point"
+
+[[leak]]
+noun = "a2a"
+kind = "plane"
+file = "crates/busbar-substrate/src/session/tests/session_tests.rs"
+count = 5
+category = "accepted"
+wave = "accepted pre-existing — session-key STRING test data, not an instance-noun coupling"
+
+[[leak]]
+noun = "llm"
+kind = "plane"
+file = "crates/busbar-substrate/src/session/tests/session_tests.rs"
+count = 1
+category = "accepted"
+wave = "accepted pre-existing — session-key STRING test data, not an instance-noun coupling"
+
+[[leak]]
+noun = "mcp"
+kind = "plane"
+file = "crates/busbar-contract/tests/upstream_address_prints_no_secret.rs"
+count = 4
+category = "accepted"
+wave = "accepted pre-existing — secret-leak test fixture proving the upstream address never prints a secret"
+
+[[leak]]
+noun = "spki"
+kind = "auth"
+file = "crates/busbar-contract/src/transport/trust.rs"
+count = 4
+category = "accepted"
+wave = "accepted pre-existing — pinned_spki naming point in the shared transport-trust carrier"
+
+[[leak]]
+noun = "spki"
+kind = "auth"
+file = "crates/busbar-plane-a2a-host/src/diagnostics.rs"
+count = 7
+category = "accepted"
+wave = "accepted pre-existing — \"SPKI pin\" is the standard X.509 term in a TLS diagnostic string, the same rationale as the pinned_spki acceptance above; not an auth-scheme instance coupling"
+
+[[leak]]
+noun = "streaming"
+kind = "plane"
+file = "crates/busbar-plane-a2a-host/src/diagnostics.rs"
+count = 5
+category = "accepted"
+wave = "accepted pre-existing — \"streaming\" is a generic English adjective in diagnostic prose (\"a backend's streaming response\"), not a reference to the streaming plane"
 
