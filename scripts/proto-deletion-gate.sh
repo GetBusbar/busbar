@@ -90,7 +90,7 @@ CORE_SRC="crates/busbar-core/src"
 
 proto_crate_names() { # underscore crate names of every protocol / plane crate on disk
   local d b
-  for d in crates/busbar-llm crates/busbar-mcp crates/busbar-a2a crates/busbar-voice \
+  for d in crates/busbar-llm crates/busbar-mcp crates/busbar-a2a crates/busbar-streaming \
            crates/busbar-*-codec crates/busbar-plane-*; do
     [ -d "$d" ] || continue
     b="$(basename "$d")"

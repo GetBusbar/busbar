@@ -298,7 +298,7 @@ fn the_listener_view_offers_the_address_and_nothing_else() {
 /// chose — while the operator's configuration said something four orders of magnitude smaller,
 /// and every other listener on the node honoured it. That is not a refusal to disclose: it is a
 /// limit the node states everywhere else silently not applying here.
-#[cfg(feature = "plane-voice")]
+#[cfg(feature = "plane-streaming")]
 #[test]
 fn the_listener_view_answers_the_operators_message_ceiling() {
     const CAP: usize = 1024;

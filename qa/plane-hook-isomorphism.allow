@@ -157,7 +157,7 @@
     {
       "field": "admin_routes",
       "planes_none": [
-        "voice"
+        "streaming"
       ],
       "capability": "catalogue",
       "reason": "the voice plane's streams: is a singular section, not a named-definition map, so it has no per-registration admin surface to mount"
@@ -165,7 +165,7 @@
     {
       "field": "openapi",
       "planes_none": [
-        "voice"
+        "streaming"
       ],
       "capability": "catalogue",
       "reason": "the voice plane contributes no plane-owned OpenAPI path document; its duplex session ingress is not described as an OpenAPI fragment"
@@ -173,7 +173,7 @@
     {
       "field": "config_validate",
       "planes_none": [
-        "voice"
+        "streaming"
       ],
       "capability": "catalogue",
       "reason": "the voice streams: grammar is validated through parse_section/default_section, not a separate plane-owned config_validate hook"
@@ -181,7 +181,7 @@
     {
       "field": "registry_contains",
       "planes_none": [
-        "voice"
+        "streaming"
       ],
       "capability": "catalogue",
       "reason": "the voice plane keeps no named-registration registry to answer containment on; streams: is a singular section with no named stream defs"
@@ -189,7 +189,7 @@
     {
       "field": "reresolve_gates",
       "planes_none": [
-        "voice"
+        "streaming"
       ],
       "capability": "trust-pinning",
       "reason": "the voice plane pins no per-peer artifact (providers are operator-declared endpoints), so there are no container gates to re-resolve on a swap"
@@ -197,7 +197,7 @@
     {
       "field": "retain_verify_gates",
       "planes_none": [
-        "voice"
+        "streaming"
       ],
       "capability": "trust-pinning",
       "reason": "the voice plane retains no verify gates because it holds no pinned peer artifacts across generations"
@@ -205,7 +205,7 @@
     {
       "field": "on_swap",
       "planes_none": [
-        "voice"
+        "streaming"
       ],
       "capability": "trust-pinning",
       "reason": "endpoint hot-swap on generation change is an MCP-endpoint concern; the voice plane swaps no per-endpoint object, dialing an operator-configured provider socket"
@@ -213,7 +213,7 @@
     {
       "field": "parse_endpoint",
       "planes_none": [
-        "voice"
+        "streaming"
       ],
       "capability": "egress-auth",
       "reason": "the parse-endpoint hook lowers the MCP client-endpoint config grammar; the voice plane has no such per-endpoint config section"
@@ -221,7 +221,7 @@
     {
       "field": "lower_endpoint",
       "planes_none": [
-        "voice"
+        "streaming"
       ],
       "capability": "egress-auth",
       "reason": "the lower-endpoint hook is the MCP client-endpoint lowering; the voice plane lowers no endpoint config, dialing an operator-configured provider"
@@ -229,7 +229,7 @@
     {
       "field": "card_signing_domain",
       "planes_none": [
-        "voice"
+        "streaming"
       ],
       "capability": "trust-pinning",
       "reason": "agent-card signing identity is an A2A-only capability; the voice plane issues no signed card for a peer to verify"
@@ -237,7 +237,7 @@
     {
       "field": "card_kid_prefix",
       "planes_none": [
-        "voice"
+        "streaming"
       ],
       "capability": "trust-pinning",
       "reason": "the card key-id prefix is part of A2A-only agent-card signing; the voice plane mints no card key"

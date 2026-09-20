@@ -679,13 +679,13 @@ fn register_planes() {
     // reader. Present only under `plane-a2a`; a build with A2A compiled out pushes nothing.
     #[cfg(feature = "plane-a2a")]
     installed.push(&busbar_a2a::PLANE_DECL);
-    // The VOICE plane (Plane 4), now its own crate (`busbar-voice`). Same slot and reason as the A2A
+    // The VOICE plane (Plane 4), now its own crate (`busbar-streaming`). Same slot and reason as the A2A
     // row: `--validate` reads the plane list, so the axis is installed before any reader. Present
-    // under `plane-voice`, which is IN `default` — voice ships armed (default-on + deletable, exactly
+    // under `plane-streaming`, which is IN `default` — voice ships armed (default-on + deletable, exactly
     // like plane-mcp/plane-a2a), so the shipped build installs it and claims its `streams:` section; a
     // build with voice compiled out (`--no-default-features`) pushes nothing.
-    #[cfg(feature = "plane-voice")]
-    installed.push(&busbar_voice::PLANE_DECL);
+    #[cfg(feature = "plane-streaming")]
+    installed.push(&busbar_streaming::PLANE_DECL);
     busbar_core::plane::registry::install_planes(installed.leak());
 
     // THE AUTHORIZATION-SERVER PLANE'S SEAM, registered UNCONDITIONALLY (no feature flag — see the
@@ -732,8 +732,8 @@ fn register_diagnostics() {
     installed.extend_from_slice(busbar_mcp::DIAGNOSTICS);
     #[cfg(feature = "plane-a2a")]
     installed.extend_from_slice(busbar_a2a::DIAGNOSTICS);
-    #[cfg(feature = "plane-voice")]
-    installed.extend_from_slice(busbar_voice::DIAGNOSTICS);
+    #[cfg(feature = "plane-streaming")]
+    installed.extend_from_slice(busbar_streaming::DIAGNOSTICS);
     busbar_substrate::diagnostics::install_diagnostics(installed.leak());
 }
 
@@ -741,20 +741,20 @@ fn register_diagnostics() {
 /// into the neutral WS-accept registry (`busbar_substrate::ingress::duplex_ws::install_ws_arrivals`),
 /// exactly `register_planes`' shape on the WS-accept axis. Each duplex plane crate OWNS its
 /// `WsArrivalSpec`s (path + audience + a neutral gauntlet-gated accept fn) and exposes them as
-/// `voice_ws_arrivals()`; core carries none. Installed BEFORE the router is built (in `run()`), so
+/// `streaming_ws_arrivals()`; core carries none. Installed BEFORE the router is built (in `run()`), so
 /// `take_ws_arrivals` drains a populated set; a build with no duplex plane installs nothing and the
 /// router mounts no WS-accept route. Voice is the only duplex plane today, so this is a single
-/// feature-gated push — with `plane-voice` off, nothing installs, exactly as the plane row is absent.
+/// feature-gated push — with `plane-streaming` off, nothing installs, exactly as the plane row is absent.
 fn register_ws_arrivals() {
-    #[cfg(feature = "plane-voice")]
+    #[cfg(feature = "plane-streaming")]
     {
-        let installed = busbar_voice::mount::voice_ws_arrivals();
+        let installed = busbar_streaming::mount::streaming_ws_arrivals();
         busbar_substrate::ingress::duplex_ws::install_ws_arrivals(installed);
     }
 }
 
 /// SEAL THE COMPOSITION ROOT AND MOUNT THE VOICE PLANE ONTO IT — the switch-over, behind
-/// `root-voice`, which the shipped binary carries.
+/// `root-streaming`, which the shipped binary carries.
 ///
 /// The root is built before any plane is switched onto it, and this is where one is. Sealing is the
 /// whole mount: seven transports composed bottom-up, five planes registered over them, every claim
@@ -778,8 +778,8 @@ fn register_ws_arrivals() {
 /// the config loads) rather than beside the axis registrations in `main()`: the axes are installed
 /// before any reader because `--validate` reads them, and this reads configuration instead. It
 /// still answers before any listener is bound, which is the property the refusal is for.
-#[cfg(feature = "root-voice")]
-fn mount_root_voice(limits: &busbar_substrate::config::limits::LimitsResolved) {
+#[cfg(feature = "root-streaming")]
+fn mount_root_streaming(limits: &busbar_substrate::config::limits::LimitsResolved) {
     match root::registry::seal(root::policy::client_settings(limits)) {
         Ok(sealed) => {
             // A BOOT REFUSAL for the same reason the seal's own `Err` arm is one, and it was a
@@ -790,12 +790,12 @@ fn mount_root_voice(limits: &busbar_substrate::config::limits::LimitsResolved) {
             // clean.
             if sealed
                 .registry
-                .resolve(busbar_kernel::registry::PluginKind::Plane, "voice")
+                .resolve(busbar_kernel::registry::PluginKind::Plane, "streaming")
                 .is_none()
             {
                 eprintln!(
                     "busbar: the composition root did not seal: it reported success without the \
-                     voice plane, so the seal is not the composition it claims to be"
+                     streaming plane, so the seal is not the composition it claims to be"
                 );
                 std::process::exit(2);
             }
@@ -809,14 +809,14 @@ fn mount_root_voice(limits: &busbar_substrate::config::limits::LimitsResolved) {
     // the half of the plane that owns sockets reaches it through. Without this the seal composed a
     // node nothing on a socket could name — a client-served tool call's wait was entered where the
     // leg was planned, and no frame arriving on any session could wake it and no tick could sweep it.
-    compose_voice_governed_calls();
+    compose_streaming_governed_calls();
 }
 
 /// COMPOSE THE VOICE NODE'S OPEN-CALL TABLE onto the served door — the composition root's one write
 /// of the governed-call port, and the moment a served voice session becomes a governed one.
 ///
 /// The node is built here rather than passed in because nothing about the table configuration
-/// decides: [`root::units_voice::OpenToolCalls`] is empty at boot and its whole contents are what the
+/// decides: [`root::units_streaming::OpenToolCalls`] is empty at boot and its whole contents are what the
 /// sessions running on this node have opened since. What the served path reaches through the port is
 /// that table and nothing else — two questions, `replied` and `expired`, neither of which reads the
 /// node's door, its pricer, its auth chain or its journal.
@@ -825,15 +825,15 @@ fn mount_root_voice(limits: &busbar_substrate::config::limits::LimitsResolved) {
 /// unbound posture: the plane with the upstream list configuration composed (none today — the
 /// `streams:` reader that fills it is the same work that switches the serving path onto these units),
 /// a flat pricer, an unbound auth chain, and a memory-buffered journal. That posture is honest for
-/// exactly as long as this node serves no unit, which is the window `root-voice` exists to hold open;
+/// exactly as long as this node serves no unit, which is the window `root-streaming` exists to hold open;
 /// the switch that routes a frame through it is the one that has to thread the deployment's real
 /// auth, rate cards and data directory in, and it fails to compile until it does.
 ///
 /// Set-once on the plane's side: a second call is a no-op rather than a silent swap of the table
 /// this node's live sessions are already keyed into.
-#[cfg(feature = "root-voice")]
-fn compose_voice_governed_calls() {
-    use root::units_voice::{NodeCalls, VoiceNode, VoiceNodeParts};
+#[cfg(feature = "root-streaming")]
+fn compose_streaming_governed_calls() {
+    use root::units_streaming::{NodeCalls, StreamingNode, StreamingNodeParts};
 
     let durability = match root::durability::build(
         &root::durability::DurabilityConfig { data_dir: None },
@@ -842,12 +842,12 @@ fn compose_voice_governed_calls() {
     ) {
         Ok(d) => d,
         Err(e) => {
-            eprintln!("busbar: the voice node's journal did not open: {e}");
+            eprintln!("busbar: the streaming node's journal did not open: {e}");
             std::process::exit(2);
         }
     };
-    let node = std::sync::Arc::new(VoiceNode::new(VoiceNodeParts {
-        plane: busbar_plane_voice::VoicePlane::new(&[]),
+    let node = std::sync::Arc::new(StreamingNode::new(StreamingNodeParts {
+        plane: busbar_plane_streaming::StreamingPlane::new(&[]),
         // No group reaches this node's door: the table's two answers read no cap, and the served
         // sessions' admissions are the sealed root's, not this stub's.
         groups: root::policy::group_table(
@@ -857,15 +857,15 @@ fn compose_voice_governed_calls() {
         pricer: busbar_unit_admission::Pricer::flat(0),
         auth: busbar_unit_auth::Auth::new(busbar_unit_auth::AuthChain::new(Vec::new(), false)),
         auth_bindings: root::kernel::auth_bindings::AuthBindings::without_directory(),
-        scope: root::units_voice::scope_policy(),
+        scope: root::units_streaming::scope_policy(),
         meter_policy: root::policy::build(&root::policy::MeterPolicyConfig::default()),
         durability,
-        io: root::units_voice::VoiceIo::default(),
+        io: root::units_streaming::StreamingIo::default(),
         // Minted from the root's own kernel, which is the only place a sealed origin can come from:
         // a unit is lent its audit token and nothing else, so it cannot mint one where it is used.
         origin: root::kernel::new_kernel().origin(busbar_caps::OriginKind::Client),
     }));
-    busbar_voice::mount::install_governed_calls(std::sync::Arc::new(NodeCalls::new(node)));
+    busbar_streaming::mount::install_governed_calls(std::sync::Arc::new(NodeCalls::new(node)));
 }
 
 fn main() {
@@ -894,14 +894,14 @@ fn main() {
     // core router drains the installed arrivals at build (`take_ws_arrivals`), which happens later in
     // `run()` — so the duplex planes' arrivals must be installed here, before the router is built. Each
     // duplex plane contributes its `WsArrivalSpec`s under its feature; a build with no duplex plane
-    // installs nothing and the router mounts no WS-accept route. Gated to `plane-voice` (voice is the
+    // installs nothing and the router mounts no WS-accept route. Gated to `plane-streaming` (voice is the
     // only duplex plane today), so a shipped build drops it entirely — strong-form deletable.
     register_ws_arrivals();
     // THE COMPOSITION ROOT'S OWN SEAL is NOT here, and it is the one boot step that is not: it
     // composes the transports a switched-over plane would serve through, and the http one carries
     // the operator's `limits.request_body_max_bytes`, so it cannot run before the configuration it
     // is built from has been read. It runs in `run()`, off the resolved limits, still before any
-    // listener is bound — see `mount_root_voice`. Every axis above is installed by then, which is
+    // listener is bound — see `mount_root_streaming`. Every axis above is installed by then, which is
     // the ordering the seal needed from this slot in the first place.
     // THE HOSTLESS-EGRESS DRIVER, installed once here beside the plane axis: the neutral
     // `busbar_substrate::egress::seam::HostlessEgress` a plane drives its governed outbound hop
@@ -1298,10 +1298,10 @@ async fn run(data_workers: usize) {
     // for another few hundred lines. The transports it composes are built from THESE limits — the
     // same `request_body_max_bytes` the line above hands the served door — so a switched-over plane's
     // transport and the door in front of it cannot disagree about which bodies exist. Behind
-    // `root-voice`, which the shipped binary carries; the leg stays switchable, and with it off the
+    // `root-streaming`, which the shipped binary carries; the leg stays switchable, and with it off the
     // line is not compiled and the binary is what it was, which is what the neutrality cells read.
-    #[cfg(feature = "root-voice")]
-    mount_root_voice(&cfg.limits);
+    #[cfg(feature = "root-streaming")]
+    mount_root_streaming(&cfg.limits);
     // THE VOICE PLANE'S EGRESS CREDENTIAL, read off the deployment's ORDINARY provider catalog.
     // The voice plane's `streams:` grammar carries no credential field, so its realtime provider is
     // the one already serving the model that section targets: `streams.session.model` names a model,
@@ -1310,8 +1310,8 @@ async fn run(data_workers: usize) {
     // build — and handed to the plane below, once the resolver that turns a reference into a
     // credential exists. A deployment with no `streams:` block pins no model and captures nothing, so
     // nothing about it changes.
-    #[cfg(feature = "plane-voice")]
-    let voice_provider = busbar_voice::config::configured_session_model()
+    #[cfg(feature = "plane-streaming")]
+    let streaming_provider = busbar_streaming::config::configured_session_model()
         .and_then(|model| cfg.models.get(&model).map(|m| m.provider.clone()))
         .and_then(|provider| cfg.providers.get(&provider))
         .map(|p| (p.base_url.clone(), p.api_key.clone()));
@@ -1371,13 +1371,13 @@ async fn run(data_workers: usize) {
     // `streams:` block, no model pinned, or no such model/provider in the catalog) — the only line
     // this can emit is a fail-closed warning when a reference the operator DID declare will not
     // resolve, which is worth saying rather than leaving the routes mysteriously uncomposed.
-    #[cfg(feature = "plane-voice")]
-    if let Some((base_url, api_key)) = voice_provider {
+    #[cfg(feature = "plane-streaming")]
+    if let Some((base_url, api_key)) = streaming_provider {
         if let Err(e) =
-            busbar_voice::mount::compose_provider(base_url.clone(), &api_key, &*app.secret_resolver)
+            busbar_streaming::mount::compose_provider(base_url.clone(), &api_key, &*app.secret_resolver)
         {
             tracing::warn!(
-                "voice: the realtime provider credential did not resolve, so the voice mint and SDP \
+                "streaming: the realtime provider credential did not resolve, so the streaming mint and SDP \
                  routes stay uncomposed: {e}"
             );
         }
@@ -1388,10 +1388,10 @@ async fn run(data_workers: usize) {
         // a deployment that fronts Gemini Live through a distinct provider entry needs a second
         // `streams:` knob to name it, which is not this cycle's grammar change (see docs/voice.md).
         if let Err(e) =
-            busbar_voice::mount::compose_gemini_provider(base_url, &api_key, &*app.secret_resolver)
+            busbar_streaming::mount::compose_gemini_provider(base_url, &api_key, &*app.secret_resolver)
         {
             tracing::warn!(
-                "voice: the Gemini Live provider credential did not resolve, so the Gemini route \
+                "streaming: the Gemini Live provider credential did not resolve, so the Gemini route \
                  stays uncomposed: {e}"
             );
         }

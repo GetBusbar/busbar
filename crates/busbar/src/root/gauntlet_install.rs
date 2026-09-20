@@ -50,7 +50,7 @@ pub fn flip_session_to_kernel(capability_key: &'static str) {
 ///
 /// DORMANT by design: it registers NOTHING, so the seam stays UNSET and every plane rides the
 /// substrate loop exactly as today. Each per-plane flip is one line added here — e.g.
-/// `flip_one_shot_to_kernel("mcp");` or `flip_session_to_kernel("voice");` — landed only once that
+/// `flip_one_shot_to_kernel("mcp");` or `flip_session_to_kernel("streaming");` — landed only once that
 /// plane's money family is proven byte-green on the fleet-box oracle (#29).
 pub fn install() {
     // Intentionally empty: zero planes flipped. The five onboards become oracle-gated one-liners here.

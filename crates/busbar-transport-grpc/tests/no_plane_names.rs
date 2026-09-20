@@ -56,8 +56,8 @@ const PLANE_CRATES: &[&str] = &[
     "busbar_mcp",
     "busbar-a2a",
     "busbar_a2a",
-    "busbar-voice",
-    "busbar_voice",
+    "busbar-streaming",
+    "busbar_streaming",
 ];
 
 /// The dialect words, matched on word boundaries.

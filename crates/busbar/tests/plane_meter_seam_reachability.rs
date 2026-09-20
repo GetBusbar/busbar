@@ -54,7 +54,7 @@ use std::path::{Path, PathBuf};
 
 /// Every plane that performs billable work and therefore MUST reach the core Meter seam. Keyed by
 /// the plane's crate directory name under `crates/`.
-const BILLING_PLANE_CRATES: &[&str] = &["busbar-llm", "busbar-mcp", "busbar-a2a", "busbar-voice"];
+const BILLING_PLANE_CRATES: &[&str] = &["busbar-llm", "busbar-mcp", "busbar-a2a", "busbar-streaming"];
 
 /// The core Meter-seam call tokens. A production line containing any of these (outside a comment)
 /// counts as reaching the one billing path.
@@ -141,7 +141,7 @@ const BILLING_PLANE_ROOT_LEGS: &[(&str, &str)] = &[
     ("busbar-llm", "units_llm.rs"),
     ("busbar-mcp", "units_mcp.rs"),
     ("busbar-a2a", "units_a2a.rs"),
-    ("busbar-voice", "units_voice.rs"),
+    ("busbar-streaming", "units_streaming.rs"),
 ];
 
 /// The ONE usage seam every Teller Meter step folds through, in the three spellings the tree

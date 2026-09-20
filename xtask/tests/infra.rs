@@ -447,13 +447,13 @@ fn strip_comment_line_keeps_string_literals_intact() {
 
 #[test]
 fn the_plane_key_contract_matches_plane_keys_sh() {
-    assert_eq!(planes::PLANE_KEYS, ["llm", "mcp", "a2a", "voice"]);
-    assert_eq!(planes::plane_keys_protocol(), vec!["mcp", "a2a", "voice"]);
-    assert_eq!(planes::plane_keys_other("a2a"), vec!["mcp", "voice"]);
+    assert_eq!(planes::PLANE_KEYS, ["llm", "mcp", "a2a", "streaming"]);
+    assert_eq!(planes::plane_keys_protocol(), vec!["mcp", "a2a", "streaming"]);
+    assert_eq!(planes::plane_keys_other("a2a"), vec!["mcp", "streaming"]);
     let src = planes::plane_src_roots();
     assert_eq!(src[0], "crates/busbar-llm/src");
     assert!(src.contains(&"crates/busbar-llm-codec/src".to_string()));
-    assert!(src.contains(&"crates/busbar-voice-codec/src".to_string()));
+    assert!(src.contains(&"crates/busbar-streaming-codec/src".to_string()));
     assert_eq!(
         planes::neutral_src_roots(),
         vec![

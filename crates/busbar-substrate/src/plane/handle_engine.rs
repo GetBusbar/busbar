@@ -46,7 +46,7 @@
 //! the inner lock across the plan + persist. This preserves same-handle chain serialization (the naive
 //! "drop the lock during seal/append" minimization would reopen exactly the concurrent-same-handle fork
 //! the inner lock prevents) while lifting the per-ENGINE bottleneck the earlier single-global-lock shape
-//! imposed on a high-concurrency SECOND consumer (voice-session frames, Responses-stateful streaming).
+//! imposed on a high-concurrency SECOND consumer (streaming-session frames, Responses-stateful streaming).
 //!
 //! - [`submit`](DurableHandleEngine::submit) still does its durable writes (`upsert_record` +
 //!   `append_record`) BEFORE it takes the outer lock — a submit is a FRESH id at the genesis chain

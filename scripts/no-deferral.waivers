@@ -31,11 +31,11 @@
 # "C-unwind" ABI fn-pointer slot has a real, well-typed signature. Their real hosts are the
 # protocols-as-plugins effort (docs/design/1.6.0-protocols-as-plugins.md), tracked as H5.
 #
-# ── busbar-voice: the SKELETON / "dev-only until DoD" markers are CLEARED ───────────────────────────
+# ── busbar-streaming: the SKELETON / "dev-only until DoD" markers are CLEARED ───────────────────────────
 # The voice plane's IR + both dialect codecs + T2 runtime + both topologies are implemented (behind the
-# "runtime" feature) and the plane is installed at boot behind `plane-voice`; the stale SKELETON /
-# "dev-only until DoD" marker prose in busbar-voice src has been reworded to truthful current-state, so
-# no waiver rows remain for it. (Any residual "dev-only until DoD" prose outside busbar-voice src — e.g.
+# "runtime" feature) and the plane is installed at boot behind `plane-streaming`; the stale SKELETON /
+# "dev-only until DoD" marker prose in busbar-streaming src has been reworded to truthful current-state, so
+# no waiver rows remain for it. (Any residual "dev-only until DoD" prose outside busbar-streaming src — e.g.
 # the config-schema tracking note or the composition-root feature comment — is separate work.)
 
 crates/busbar-plugin/src/hot/decl.rs:227	class-B label on the STUB doc comment that names the slots above; it documents the fixture, it is not a deferred capability [retires: H5]

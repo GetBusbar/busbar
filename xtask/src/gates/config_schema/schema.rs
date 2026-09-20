@@ -258,7 +258,7 @@ pub fn sources(cx: &Ctx) -> Result<Vec<String>, String> {
         core_file(cx, &core, "failover/mod.rs")?,
         // `streams:` — the voice plane's grammar, including the three plane-imposed session
         // CEILINGS that bound what a live-voice deployment may ever hold.
-        "crates/busbar-voice/src/config.rs".to_string(),
+        "crates/busbar-streaming/src/config.rs".to_string(),
     ]);
     Ok(out)
 }

@@ -611,7 +611,7 @@ forbidden = [
             doc.table("gate")
                 .expect("gate table")
                 .list_of("plane_crates"),
-            vec!["busbar-llm", "busbar-mcp", "busbar-a2a", "busbar-voice"]
+            vec!["busbar-llm", "busbar-mcp", "busbar-a2a", "busbar-streaming"]
         );
         assert_eq!(
             doc.children("rules.loc-ceilings.kernel_files")

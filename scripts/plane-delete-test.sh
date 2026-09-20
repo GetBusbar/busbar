@@ -97,20 +97,20 @@ command -v cargo >/dev/null 2>&1 || { echo "plane-delete-test: cargo not found" 
 # plane-kind name). The NEUTRAL feature set to keep ON for the neutral-crate check (every default plane
 # EXCEPT the one being removed) — llm has no neutral-side feature of its own, so removing it keeps both
 # plane-mcp and plane-a2a. A crate/feature that appears or moves is a one-line edit here.
-# `voice` (busbar-voice, Plane 4) is WIRED into the bin and DEFAULT-ON, on both of its features: it has
-# a `dep:busbar-voice` optional dependency and the `plane-voice` bin feature, whose forwards to the
-# plane crate are `dep:busbar-voice`, `busbar-voice?/runtime` and `busbar-voice?/openapi-schema` — all
-# three stripped by neutralise_bin. Its bin_feature is `plane-voice`; its neutral_keep is the full
-# default plane set (removing voice touches neither mcp nor a2a). Because `root-voice` also ships in
-# `default` and FORWARDS to `plane-voice`, the bin's default build is coherent without the crate only
+# `voice` (busbar-streaming, Plane 4) is WIRED into the bin and DEFAULT-ON, on both of its features: it has
+# a `dep:busbar-streaming` optional dependency and the `plane-streaming` bin feature, whose forwards to the
+# plane crate are `dep:busbar-streaming`, `busbar-streaming?/runtime` and `busbar-streaming?/openapi-schema` — all
+# three stripped by neutralise_bin. Its bin_feature is `plane-streaming`; its neutral_keep is the full
+# default plane set (removing voice touches neither mcp nor a2a). Because `root-streaming` also ships in
+# `default` and FORWARDS to `plane-streaming`, the bin's default build is coherent without the crate only
 # once both come out — which is what neutralise_bin's forwarding closure is for.
-bin_feature() { case "$1" in llm) echo proto-llm ;; mcp) echo plane-mcp ;; a2a) echo plane-a2a ;; voice) echo plane-voice ;; esac; }
+bin_feature() { case "$1" in llm) echo proto-llm ;; mcp) echo plane-mcp ;; a2a) echo plane-a2a ;; streaming) echo plane-streaming ;; esac; }
 neutral_keep() {
   case "$1" in
     llm) echo "plane-mcp,plane-a2a" ;;
     mcp) echo "plane-a2a" ;;
     a2a) echo "plane-mcp" ;;
-    voice) echo "plane-mcp,plane-a2a" ;;
+    streaming) echo "plane-mcp,plane-a2a" ;;
   esac
 }
 valid_plane() { case " $PLANES " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
@@ -432,7 +432,7 @@ PYEOF
 #   Because P's routes MOUNT FROM P's config section (a2a's routes exist only with `agents:` +
 #   `public_url`; mcp's are derived from the `mcp:` endpoint), P's 404 on the STRIPPED subject boot
 #   is a NECESSARY condition and not, on its own, a sufficient one — the refusal witness is what
-#   makes it sufficient. For a plane that owns no section in the fixture (llm, voice) the subject
+#   makes it sufficient. For a plane that owns no section in the fixture (llm, streaming) the subject
 #   config is byte-identical to the control's and the 404 carries the whole verdict by itself, which
 #   is why `refusal_witness` reports "not applicable" rather than inventing a section to strip.
 
@@ -450,13 +450,13 @@ plane_probe_path() {
     llm)   echo "/v1/chat/completions" ;;
     mcp)   echo "/.well-known/oauth-protected-resource/mcp" ;;
     a2a)   echo "/a2a" ;;
-    voice) echo "/v1/realtime/client_secrets" ;;
+    streaming) echo "/v1/realtime/client_secrets" ;;
   esac
 }
 plane_probe_body() {
   case "$1" in
     a2a)   printf '{"jsonrpc":"2.0","method":"message/send","id":1}' ;;
-    voice) printf '{"model":"gpt-realtime"}' ;;
+    streaming) printf '{"model":"gpt-realtime"}' ;;
     llm | mcp) printf '' ;;
   esac
 }
@@ -494,7 +494,7 @@ section_omitted() { case " ${2:-} " in *" $1 "*) return 0 ;; *) return 1 ;; esac
 
 # write_boot_config <mode> <dir> <port> <admin_port> [omit-sections] — the two configs, into <dir>.
 #   mcp   closed chain (`auth.chain: [keys]`), `mcp:` mounted. Only the metadata route is open.
-#   open  no chain at all; `agents:`/`public_url` (A2A) and the realtime block (voice) mounted, so
+#   open  no chain at all; `agents:`/`public_url` (A2A) and the realtime block (streaming) mounted, so
 #         a 404 on this boot can never be an auth refusal in disguise.
 # Both name ZERO providers and ZERO models: a plane's ROUTE must mount from its crate being
 # compiled in, never from a pool happening to be configured.
@@ -1164,8 +1164,8 @@ run_selftest() {
   local CAL='__absent-open=404\n__absent-mcp=401\n'
 
   # (5a) GREEN: the plane was mounted (200), is now gone (404 = absent here), neighbours untouched.
-  printf "${CAL}llm=200\nmcp=200\na2a=200\nvoice=200\n" >"$ctl"
-  printf "${CAL}llm=404\nmcp=200\na2a=200\nvoice=200\n" >"$sub"
+  printf "${CAL}llm=200\nmcp=200\na2a=200\nstreaming=200\n" >"$ctl"
+  printf "${CAL}llm=404\nmcp=200\na2a=200\nstreaming=200\n" >"$sub"
   if judge_codes "$ctl" "$sub" llm >/dev/null 2>&1; then
     note "PASS  boot-judge GREEN: mounted-then-absent with neighbours serving is a clean deletion"
   else
@@ -1174,8 +1174,8 @@ run_selftest() {
 
   # (5b) RED — THE VACUOUS PROBE. The control itself 404s, i.e. the request never reached a route
   #      even with the plane compiled in. The old leg had no such check, so this state read as PASS.
-  printf "${CAL}llm=404\nmcp=200\na2a=200\nvoice=200\n" >"$ctl"
-  printf "${CAL}llm=404\nmcp=200\na2a=200\nvoice=200\n" >"$sub"
+  printf "${CAL}llm=404\nmcp=200\na2a=200\nstreaming=200\n" >"$ctl"
+  printf "${CAL}llm=404\nmcp=200\na2a=200\nstreaming=200\n" >"$sub"
   if judge_codes "$ctl" "$sub" llm >/dev/null 2>&1; then
     fail=1
     note "FAIL  boot-judge POSITIVE CONTROL: a probe that 404s on the UNMUTATED tree was accepted."
@@ -1186,8 +1186,8 @@ run_selftest() {
   fi
 
   # (5c) RED — the control never ran for this plane at all (no line recorded).
-  printf "${CAL}mcp=200\na2a=200\nvoice=200\n" >"$ctl"
-  printf "${CAL}llm=404\nmcp=200\na2a=200\nvoice=200\n" >"$sub"
+  printf "${CAL}mcp=200\na2a=200\nstreaming=200\n" >"$ctl"
+  printf "${CAL}llm=404\nmcp=200\na2a=200\nstreaming=200\n" >"$sub"
   if judge_codes "$ctl" "$sub" llm >/dev/null 2>&1; then
     fail=1; note "FAIL  boot-judge: accepted a verdict with no control measurement for the plane"
   else
@@ -1195,8 +1195,8 @@ run_selftest() {
   fi
 
   # (5d) RED — THE ROUTE SURVIVED: the deleted plane still answers, i.e. not the absence code.
-  printf "${CAL}llm=200\nmcp=200\na2a=200\nvoice=200\n" >"$ctl"
-  printf "${CAL}llm=200\nmcp=200\na2a=200\nvoice=200\n" >"$sub"
+  printf "${CAL}llm=200\nmcp=200\na2a=200\nstreaming=200\n" >"$ctl"
+  printf "${CAL}llm=200\nmcp=200\na2a=200\nstreaming=200\n" >"$sub"
   if judge_codes "$ctl" "$sub" llm >/dev/null 2>&1; then
     fail=1; note "FAIL  boot-judge: a route that still serves after its crate was deleted was accepted"
   else
@@ -1205,8 +1205,8 @@ run_selftest() {
 
   # (5e) RED — THE NEIGHBOUR CONTROL: a boot that mounted NOTHING 404s every plane at once, which
   #      under the old single-assertion shape is indistinguishable from a clean deletion.
-  printf "${CAL}llm=200\nmcp=200\na2a=200\nvoice=200\n" >"$ctl"
-  printf "${CAL}llm=404\nmcp=401\na2a=404\nvoice=404\n" >"$sub"
+  printf "${CAL}llm=200\nmcp=200\na2a=200\nstreaming=200\n" >"$ctl"
+  printf "${CAL}llm=404\nmcp=401\na2a=404\nstreaming=404\n" >"$sub"
   if judge_codes "$ctl" "$sub" llm >/dev/null 2>&1; then
     fail=1
     note "FAIL  boot-judge NEIGHBOUR CONTROL: a boot where EVERY plane read absent was a clean deletion."
@@ -1216,8 +1216,8 @@ run_selftest() {
   fi
 
   # (5f) a neighbour the CONTROL never mounted controls nothing, and must not manufacture a failure.
-  printf "${CAL}llm=200\nmcp=200\na2a=200\nvoice=404\n" >"$ctl"
-  printf "${CAL}llm=404\nmcp=200\na2a=200\nvoice=404\n" >"$sub"
+  printf "${CAL}llm=200\nmcp=200\na2a=200\nstreaming=404\n" >"$ctl"
+  printf "${CAL}llm=404\nmcp=200\na2a=200\nstreaming=404\n" >"$sub"
   if judge_codes "$ctl" "$sub" llm >/dev/null 2>&1; then
     note "PASS  boot-judge: a neighbour the control never mounted is excluded from the neighbour control"
   else
@@ -1230,8 +1230,8 @@ run_selftest() {
   #      Judged against a hard-coded 404 that read as "the route survived deletion" — a gate red on
   #      the deletion having WORKED. Both directions are proven: 401 is the deletion on that boot,
   #      and a route still answering 200 there is still not.
-  printf "${CAL}llm=200\nmcp=200\na2a=200\nvoice=200\n" >"$ctl"
-  printf "${CAL}llm=200\nmcp=401\na2a=200\nvoice=200\n" >"$sub"
+  printf "${CAL}llm=200\nmcp=200\na2a=200\nstreaming=200\n" >"$ctl"
+  printf "${CAL}llm=200\nmcp=401\na2a=200\nstreaming=200\n" >"$sub"
   if judge_codes "$ctl" "$sub" mcp >/dev/null 2>&1; then
     note "PASS  boot-judge ABSENCE CALIBRATION: 401 on the CLOSED boot is the deletion, not a survival"
   else
@@ -1239,7 +1239,7 @@ run_selftest() {
     note "FAIL  boot-judge ABSENCE CALIBRATION: a deleted route answering the closed boot's own"
     note "      absence code (401) was read as a route that survived — the gate reds on a clean deletion."
   fi
-  printf "${CAL}llm=200\nmcp=200\na2a=200\nvoice=200\n" >"$sub"
+  printf "${CAL}llm=200\nmcp=200\na2a=200\nstreaming=200\n" >"$sub"
   if judge_codes "$ctl" "$sub" mcp >/dev/null 2>&1; then
     fail=1; note "FAIL  boot-judge ABSENCE CALIBRATION: an mcp route still answering 200 was accepted as deleted"
   else
@@ -1249,8 +1249,8 @@ run_selftest() {
   # (5h) RED — NO CALIBRATION AT ALL. Without the measured absence code there is no answer to "what
   #      does a route that does not exist say here?", and every verdict would be taken against a
   #      guess. Refused, not defaulted to 404.
-  printf 'llm=200\nmcp=200\na2a=200\nvoice=200\n' >"$ctl"
-  printf 'llm=404\nmcp=200\na2a=200\nvoice=200\n' >"$sub"
+  printf 'llm=200\nmcp=200\na2a=200\nstreaming=200\n' >"$ctl"
+  printf 'llm=404\nmcp=200\na2a=200\nstreaming=200\n' >"$sub"
   if judge_codes "$ctl" "$sub" llm >/dev/null 2>&1; then
     fail=1; note "FAIL  boot-judge: a verdict was taken with no absence calibration for the boot"
   else

@@ -21,7 +21,7 @@ scan_roots = ["crates/*/src"]
 # two lists share zero members. manifest-allowlist reads THIS one to decide what "a plane names
 # another plane" means. The two collapse into one definition when the legacy engines are deleted;
 # until then a reader must not take either as "the plane kind".
-plane_crates = ["busbar-llm", "busbar-mcp", "busbar-a2a", "busbar-voice"]
+plane_crates = ["busbar-llm", "busbar-mcp", "busbar-a2a", "busbar-streaming"]
 # A file at one of these path fragments is TEST code (same rule the purity lint applies), in
 # addition to any `#[cfg(test)] mod … { … }` block inside a production file.
 # A bare `tests.rs` (Rust's `#[cfg(test)] mod tests;` file convention) is test code too.
@@ -88,7 +88,7 @@ abi = ["crates/busbar-contract"]
 busbar-llm = ["busbar-llm-codec"]
 busbar-mcp = ["busbar-mcp-codec"]
 busbar-a2a = ["busbar-a2a-codec"]
-busbar-voice = ["busbar-voice-codec"]
+busbar-streaming = ["busbar-streaming-codec"]
 
 # ── DECLARED CEILING RAISES ──────────────────────────────────────────────────────────────────────
 #
@@ -174,7 +174,7 @@ needle = "busbar_core::"
 busbar-llm = 0
 busbar-mcp = 0
 busbar-a2a = 0
-busbar-voice = 0
+busbar-streaming = 0
 
 [rules.ports-only-tests]
 why = """The same reach from test code. Tests that name core internals pin the plane to core's \
@@ -184,7 +184,7 @@ counts can trend to zero at their own pace."""
 busbar-llm = 14
 busbar-mcp = 1
 busbar-a2a = 3
-busbar-voice = 0
+busbar-streaming = 0
 
 # ── 4. no-uninstalled-seam ───────────────────────────────────────────────────────────────────────
 [rules.no-uninstalled-seam]
@@ -449,7 +449,7 @@ consulted when present to widen the same check to transitive path/workspace deps
 # closed JSON span grammar the contract itself is written on and re-exports as `spans`, so naming it
 # directly is naming a piece of the contract rather than reaching past it; the rest are ordinary
 # third-party crates.
-reviewed_allowlist = ["busbar-api", "busbar-plugin-sdk", "serde", "serde_json", "tracing", "async-trait", "bytes", "sonic-rs", "busbar-llm-codec", "busbar-mcp-codec", "busbar-a2a-codec", "busbar-voice-codec", "busbar-grammar"]
+reviewed_allowlist = ["busbar-api", "busbar-plugin-sdk", "serde", "serde_json", "tracing", "async-trait", "bytes", "sonic-rs", "busbar-llm-codec", "busbar-mcp-codec", "busbar-a2a-codec", "busbar-streaming-codec", "busbar-grammar"]
 # busbar-llm-codec: the pure codec half of the split llm crate (no I/O in its closure); the plane adapts it.
 # Per-crate additions beyond the global list above, each a one-line review.
 [rules.manifest-allowlist.reviewed_extra]
@@ -478,7 +478,7 @@ store-example-plugin = ["libc"]
 busbar-plane-llm = ["busbar-llm"]
 busbar-plane-a2a = ["busbar-a2a"]
 busbar-plane-mcp = ["busbar-mcp"]
-busbar-plane-voice = ["busbar-voice"]
+busbar-plane-streaming = ["busbar-streaming"]
 
 # ── 16. source-denylist (ARCHITECTURE.md section 1.2) ───────────────────────────────────────────────────────
 [rules.source-denylist]
@@ -616,13 +616,13 @@ allowed_root = "crates/busbar-caps/src"
 max_sites = 0
 # Ratchet, NOT a review: each file below forges a seal today with a private type, and each is owned
 # by a change that is not this one. A new site anywhere else is held to the rule immediately.
-# busbar-plane-admin and busbar-plane-voice are the awkward two: a PLANE crate may not name
+# busbar-plane-admin and busbar-plane-streaming are the awkward two: a PLANE crate may not name
 # busbar-caps at all (section 1.2, and manifest-allowlist makes it an automatic RED), so their test
 # seals cannot move onto a token until the contract offers a seal a plane is allowed to name. That is
 # debt this rule now PINS rather than debt it hides.
 known_sites = [
   "crates/busbar-plane-admin/src/tests/mod.rs",
-  "crates/busbar-plane-voice/src/tests/harness.rs",
+  "crates/busbar-plane-streaming/src/tests/harness.rs",
   "crates/busbar-transport-grpc/src/tests/battery.rs",
   "crates/busbar-transport-http/src/tests/mod.rs",
   "crates/busbar-transport-stdio/src/tests/battery.rs",
@@ -904,7 +904,7 @@ scope_globs = [
   "crates/busbar-llm/src/unit/*",
   "crates/busbar-mcp/src/unit/*",
   "crates/busbar-a2a/src/unit/*",
-  "crates/busbar-voice/src/unit/*",
+  "crates/busbar-streaming/src/unit/*",
 ]
 # Each is matched as a whole word (an entry starting with `_` as a suffix), and judged against the
 # WHOLE identifier it lands in, so the vocabulary below can excuse a word rather than a substring.

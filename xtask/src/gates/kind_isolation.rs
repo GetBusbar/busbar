@@ -85,13 +85,13 @@
 //! ## VOICE IS THE STREAMS PLANE
 //!
 //! The plane the tree spells `voice` is the STREAMS plane (config section `streams:`). Until
-//! `busbar-plane-voice` and `busbar-voice-codec` are renamed, [`PLANE_ALIASES`] holds the two
+//! `busbar-plane-streaming` and `busbar-streaming-codec` are renamed, [`PLANE_ALIASES`] holds the two
 //! spellings together so both are one instance for every rule here — and holds them on a ratchet:
 //! the alias is RED once the crate it translates is gone.
 //!
 //! ## THE LEGACY CRATES ARE EXEMPT UNTIL THEY ARE DELETED, AND THE EXEMPTION RATCHETS
 //!
-//! `busbar-core`, `busbar-llm`, `busbar-mcp`, `busbar-a2a` and `busbar-voice` are the retiring
+//! `busbar-core`, `busbar-llm`, `busbar-mcp`, `busbar-a2a` and `busbar-streaming` are the retiring
 //! 1.5.x crates. They are their own kind (`legacy`), exempt as a dependency SOURCE and from the
 //! vocabulary rule, because they predate the split and reporting them would only restate that the
 //! retirement is in flight. The exemption cannot outlive them: a name on [`LEGACY_CRATES`] that is
@@ -366,7 +366,7 @@ static KINDS: &[KindDef] = &[
             "=busbar-llm",
             "=busbar-mcp",
             "=busbar-a2a",
-            "=busbar-voice",
+            "=busbar-streaming",
         ],
     },
 ];
@@ -381,14 +381,14 @@ const MAX_NAME_SEGMENTS: usize = 4;
 ///
 /// `streaming` is the SAME instance too (DECISIONS #18: the fourth plane is STREAMING; voice is one
 /// dialect inside it, and the codec rename is byte-identical). Until the #19 deletion wave renames
-/// `busbar-voice-codec` -> `busbar-streaming-codec` (and collapses `busbar-plane-voice` into
+/// `busbar-streaming-codec` -> `busbar-streaming-codec` (and collapses `busbar-plane-streaming` into
 /// `busbar-plane-streaming`), the new `busbar-plane-streaming` adapter path-deps the still-`voice`-
 /// spelled codec; canonicalising `streaming` onto `streams` is what lets that read as a plane naming
-/// ITS OWN codec rather than a cross-instance reach. The entry is RED once `busbar-voice-codec` (the
+/// ITS OWN codec rather than a cross-instance reach. The entry is RED once `busbar-streaming-codec` (the
 /// crate whose name forces the alias) is gone — which is exactly when the rename has landed.
 const PLANE_ALIASES: &[(&str, &str, &str)] = &[
-    ("voice", "streams", "busbar-plane-voice"),
-    ("streaming", "streams", "busbar-voice-codec"),
+    ("streaming", "streams", "busbar-plane-streaming"),
+    ("streaming", "streams", "busbar-streaming-codec"),
 ];
 
 /// Kinds the target scheme defines that the tree does not carry YET, each with its reason. The
@@ -423,7 +423,7 @@ const LEGACY_CRATES: &[&str] = &[
     "busbar-llm",
     "busbar-mcp",
     "busbar-a2a",
-    "busbar-voice",
+    "busbar-streaming",
 ];
 
 /// THE MANIFESTS IN THIS REPOSITORY THAT ARE NOT CRATES OF THE TREE, each with the sentence that
@@ -5724,14 +5724,14 @@ impl Gate for KindIsolationGate {
 
         // THE RENAME ALIAS EXPIRES WITH THE CRATE IT TRANSLATES.
         let mut ov = Overlay::new();
-        ov.remove("crates/busbar-plane-voice/Cargo.toml");
+        ov.remove("crates/busbar-plane-streaming/Cargo.toml");
         report.push(prove_rows_red(
             cx,
             self,
             "a plane alias that outlived the crate it translates",
             &[ROW_REGISTRY],
             ov,
-            &["alias-retired", "busbar-plane-voice"],
+            &["alias-retired", "busbar-plane-streaming"],
         ));
 
         // THE SECOND KIND VOCABULARY, GONE. `qa/construction.toml`'s `[gate.plugin_kinds]` renamed
@@ -6818,13 +6818,13 @@ impl Gate for KindIsolationGate {
             "a plane crate depending on a wire crate",
             &[ROW_WIRES],
             manifest_plant(
-                "crates/busbar-plane-voice",
-                "busbar-plane-voice",
+                "crates/busbar-plane-streaming",
+                "busbar-plane-streaming",
                 &["busbar-contract", "busbar-transport-ws"],
             ),
             &[
                 "wire-dependency",
-                "busbar-plane-voice",
+                "busbar-plane-streaming",
                 "busbar-transport-ws",
             ],
         ));
@@ -7014,7 +7014,7 @@ impl Gate for KindIsolationGate {
         // equally be produced by a ratchet that is simply red for ever.
         let mut ov = registry_plant("");
         ov.remove("crates/busbar-core/Cargo.toml");
-        ov.remove("crates/busbar-voice/Cargo.toml");
+        ov.remove("crates/busbar-streaming/Cargo.toml");
         report.push(prove_rows_green(
             cx,
             self,

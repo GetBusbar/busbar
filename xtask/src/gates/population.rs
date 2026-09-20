@@ -3,7 +3,7 @@
 //! Three gates (`settings-leak`, `response-header`, `blocking-ffi`) named their scan roots as
 //! constants: a core root, a bin root, an LLM root, and two plane homes found by the resolver. That
 //! list opened 280 of the tree's 725 non-test `.rs` files (audit D-4). Everything in
-//! `busbar-substrate`, `busbar-substrate-values`, `api`, `busbar-voice`, every `*-codec` crate and
+//! `busbar-substrate`, `busbar-substrate-values`, `api`, `busbar-streaming`, every `*-codec` crate and
 //! every `busbar-plane-*` crate was never read at all, and no row compared the root set with the
 //! tree. A gate that says "no admin projection carries a raw settings bag" while never opening
 //! three fifths of the crates is not making that claim about this repository; it is making it about

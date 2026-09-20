@@ -91,13 +91,13 @@ const FAM_A2A: &[&str] = &[
     "busbar-a2a-codec",
 ];
 const FAM_LLM: &[&str] = &["busbar-llm", "busbar-plane-llm", "busbar-llm-codec"];
-// streaming + voice share one family. `busbar-streaming-codec` is named by the owner's map but does
-// not exist in this tree; `busbar-plane-voice` does. The family is what EXISTS.
+// The streaming plane family (voice is a dialect inside it, #18). The pure adapter
+// `busbar-plane-streaming`, the live runtime crate `busbar-streaming`, and its dialect codecs
+// `busbar-streaming-codec` — no `voice`-named crate survives the #18 rename.
 const FAM_STREAM: &[&str] = &[
     "busbar-plane-streaming",
-    "busbar-plane-voice",
-    "busbar-voice",
-    "busbar-voice-codec",
+    "busbar-streaming",
+    "busbar-streaming-codec",
 ];
 
 // ── TRANSPORTS (each concrete transport is its own crate) ─────────────────────────────────────
@@ -145,12 +145,6 @@ const NOUNS: &[Noun] = &[
         kind: "plane",
         family: FAM_STREAM,
         tokens: &["streaming"],
-    },
-    Noun {
-        key: "voice",
-        kind: "plane",
-        family: FAM_STREAM,
-        tokens: &["voice"],
     },
     // Transports — KEYED ON THE PLUGIN-INSTANCE IDENTIFIER, NOT THE BARE PROTOCOL WORD. Bare
     // `http`/`tcp`/`tls`/… are the wire protocols and the `http` crate's own types, used as neutral
