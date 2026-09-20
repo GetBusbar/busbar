@@ -350,6 +350,7 @@ impl Breaker for BreakerAdapter {
             to_breaker_outcome(outcome),
             cfg,
             now,
+            busbar_unit_breaker::clock::unix_time_nanos(),
             token,
         )
     }

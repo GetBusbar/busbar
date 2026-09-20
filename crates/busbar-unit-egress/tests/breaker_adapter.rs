@@ -192,13 +192,17 @@ impl Breaker for BreakerAdapter {
         token: &UnitToken<Route>,
     ) -> bool {
         // Both crates name the same `busbar-caps` `UnitToken<Route>`, so the token this call was
-        // actually lent is what crosses the seam — no adapter-minted stand-in.
+        // actually lent is what crosses the seam — no adapter-minted stand-in. The breaker port
+        // wants `now` at two resolutions (the pair is one reading); the egress port carries only
+        // the coarse `now`, so — exactly as the production adapter does
+        // (`busbar/src/root/adapters.rs`) — the fine reading comes from the unit crate's own clock.
         self.0.observe(
             pool,
             destination,
             map_outcome_to_breaker(outcome),
             &self.1,
             now,
+            busbar_unit_breaker::clock::unix_time_nanos(),
             token,
         )
     }

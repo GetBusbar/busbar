@@ -277,9 +277,16 @@ impl AuthChain {
         revocations: Option<&dyn RevocationView>,
     ) -> ChainVerdict {
         let verdict = self.run_chain_cached(candidate, cache, keys, now, expected_aud);
-        if let (Some(r), Some(cred)) = (revocations, candidate) {
-            if r.is_revoked(cred) {
-                return ChainVerdict::Denied;
+        // Only an `Identified` verdict asks the revocation question. An `Open` (anonymous front
+        // door) or `Denied` verdict never authenticated `candidate` in the first place, so treating
+        // its bytes as a credential to look up in the revocation list is meaningless at best — and
+        // on an open-door deployment, an unrelated header value that happens to collide with an
+        // unrelated revoked credential would wrongly turn an anonymous admit into a denial.
+        if matches!(verdict, ChainVerdict::Identified { .. }) {
+            if let (Some(r), Some(cred)) = (revocations, candidate) {
+                if r.is_revoked(cred) {
+                    return ChainVerdict::Denied;
+                }
             }
         }
         verdict
