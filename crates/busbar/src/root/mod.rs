@@ -66,6 +66,7 @@ pub mod harness;
 pub mod kernel;
 pub mod ledger_identity;
 pub mod migration;
+pub mod money_book;
 pub mod policy;
 pub mod registry;
 pub mod transports;

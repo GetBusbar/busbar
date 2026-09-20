@@ -35,6 +35,11 @@ pub mod engine_view;
 // one neutral home; core re-exports them under their historical `crate::plane_host::{identity,
 // trust_anchor,spki}` paths.
 pub mod identity;
+// THE COMPOSITION-ROOT-OWNED EGRESS-TRUST SEAM (HOST-CAPS S3, DECISIONS #26): the `EgressTrustHost`
+// trait naming client-identity / trust-anchor / peer-SPKI as ONE host capability, with a byte-for-byte
+// pass-through impl and a composition-root install/get. Additive and DORMANT — no shipped call site
+// consults it yet (W2 flips the egress chokepoint onto it).
+pub mod egress_trust;
 pub mod scope;
 // `PlaneSlots` through any pointer to a slot holder (`Arc`, load guard, borrow), so a plane's slot
 // readers can take `&impl PlaneSlots` instead of a concrete snapshot type without touching callers.

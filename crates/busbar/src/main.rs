@@ -914,6 +914,19 @@ fn main() {
     busbar_substrate::egress::seam::install_hostless_egress(
         &busbar_core::egress::seam::CoreHostlessEgress,
     );
+    // THE EGRESS-TRUST HOST CAPABILITY (HOST-CAPS S3, DECISIONS #26), installed once here beside the
+    // hostless-egress driver — the "both ends" binding of the outbound trust seam: the composition
+    // root installs the process capability so a call site can later reach client-identity /
+    // trust-anchor / peer-SPKI through `busbar_substrate::plane_host::egress_trust::egress_trust_host()`
+    // instead of the free primitives. ADDITIVE AND DORMANT: `PassThroughEgressTrust` is a byte-for-byte
+    // pass-through to the same `identity`/`trust_anchor`/`spki` primitives the egress chokepoint calls
+    // directly today, and NOTHING consults the seam on the shipped path yet (W2 flips the call site),
+    // so the outbound path is unchanged. `PassThroughEgressTrust` is a ZST unit struct, so it promotes
+    // to `'static`. Gated exactly as the hostless-egress driver above.
+    #[cfg(any(feature = "plane-mcp", feature = "plane-a2a"))]
+    busbar_substrate::plane_host::egress_trust::install_egress_trust_host(
+        &busbar_substrate::plane_host::egress_trust::PassThroughEgressTrust,
+    );
     // The A2A durable task set (`busbar_a2a::taskstore::TASKS`) now OWNS its whole write/restore path
     // and drives the generic `PlaneRecord` store directly at its own boot hook, so the composition root
     // binds no task codec or reader seam here — both were deleted with the relocation.

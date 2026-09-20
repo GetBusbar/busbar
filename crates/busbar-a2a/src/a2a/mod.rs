@@ -560,6 +560,11 @@ pub(crate) mod grpc;
 pub(crate) mod idmap;
 pub mod inbound;
 pub(crate) mod jws;
+// THE COMPOSITION-ROOT-OWNED INBOUND AGENT-CARD JWS SEAM (HOST-CAPS S3, DECISIONS #26): the
+// `InboundCardJws` trait naming verify-then-pin as ONE host capability, with a byte-for-byte
+// pass-through impl and a plane-composition install/get. Additive and DORMANT — `verify_document`
+// still calls `pin_a_signed_card` directly (W2 flips it onto the seam).
+pub(crate) mod inbound_jws;
 pub(crate) mod local;
 /// MOVED to `busbar-a2a-codec` (pure wire vocabulary), re-exported here under its old in-crate path
 /// so `super::meter::…` and `crate::a2a::meter::…` resolve unchanged.

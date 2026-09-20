@@ -154,6 +154,11 @@ pub mod config_validate;
 pub mod core_routes;
 pub mod cost;
 pub mod diagnostics;
+// THE DRAIN FACADE (1.6.0 wave W1.e, DECISIONS #27b): the one stable per-step re-export surface for
+// busbar-core's own Teller workflow steps (arrival…exit), so each step relocates to its
+// `busbar-unit-<step>` crate in ANY order by editing one line here. Pure additive/dormant re-export
+// of already-`pub` modules — no code moves, the shipped path is byte-untouched. See the module.
+pub mod drain;
 // The durable-write choke point moved to the shared `busbar-api` crate so the plugin-loader
 // (plugins.fetch cache write) can route through the SAME primitive. Re-exported here so every
 // existing `crate::durable::*` call site in this binary resolves unchanged.
@@ -269,6 +274,9 @@ pub mod router;
 #[cfg(test)]
 #[path = "tests/tests.rs"]
 mod tests;
+#[cfg(test)]
+#[path = "tests/drain_facade_tests.rs"]
+mod drain_facade_tests;
 
 pub use appbuild::{
     build_app_from_config, inert_durable_keys_banner, load_config_from_disk, open_relay_banner,

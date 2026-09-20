@@ -98,6 +98,62 @@ fn push_event(out: &mut Vec<u8>, event: &str, payload: &[u8]) {
     out.push(b'\n');
 }
 
+// ── THE COMPOSITION-ROOT-OWNED SSE-REFRAME SEAM (HOST-CAPS S3, DECISIONS #26) ─────────────────────
+//
+// The server-side reframe above is TWO neutral free functions. This seam names that pair as ONE host
+// capability a mount reaches through a trait object rather than by calling the free functions
+// directly, so the composition root can install the reframer once at boot and a later pass swap the
+// implementation WITHOUT the mount changing. ADDITIVE AND DORMANT: the production impl
+// [`PassThroughReframe`] delegates to the exact free functions above, and NOTHING on the shipped path
+// consults the seam yet — the transport is byte-for-byte unchanged until a mount opts in (W2). The
+// composition-root install ([`install_sse_reframe`]) mirrors the egress seam's `install_hostless_egress`.
+
+/// THE SERVER-SIDE SSE-REFRAME HOST CAPABILITY, as a neutral trait a mount reaches through instead of
+/// calling [`prefers_event_stream`] / [`reframe`] directly. `Send + Sync` so the installed capability
+/// is a process-wide `&'static dyn`.
+pub trait SseReframe: Send + Sync {
+    /// Does the caller PREFER an event stream over a single body? The q-value negotiation of
+    /// [`prefers_event_stream`].
+    fn prefers_event_stream(&self, accept: &str) -> bool;
+
+    /// Reframe one complete success message into event-stream bytes, records first. The framing of
+    /// [`reframe`].
+    fn reframe(&self, records: &[&[u8]], result: &[u8]) -> Vec<u8>;
+}
+
+/// The production SSE-reframe capability: a BYTE-FOR-BYTE pass-through to the free functions
+/// [`prefers_event_stream`] and [`reframe`]. The composition root installs this today, so a mount
+/// that opts onto the seam (W2) gets exactly the bytes the free functions produce now.
+pub struct PassThroughReframe;
+
+impl SseReframe for PassThroughReframe {
+    fn prefers_event_stream(&self, accept: &str) -> bool {
+        prefers_event_stream(accept)
+    }
+
+    fn reframe(&self, records: &[&[u8]], result: &[u8]) -> Vec<u8> {
+        reframe(records, result)
+    }
+}
+
+/// THE PROCESS-WIDE SSE-reframe capability, installed once by the composition root
+/// ([`install_sse_reframe`]). A mount reads it back through [`sse_reframe`] and gets `None` in a build
+/// that installed none — the dormant default, under which every served door calls the free functions
+/// directly and the wire is unchanged.
+static REFRAMER: std::sync::OnceLock<&'static dyn SseReframe> = std::sync::OnceLock::new();
+
+/// Install the process SSE-reframe capability — the composition root's one write, at boot, before any
+/// mount reframes. Idempotent by `OnceLock`: a second install is a no-op (the first wins).
+pub fn install_sse_reframe(reframer: &'static dyn SseReframe) {
+    let _ = REFRAMER.set(reframer);
+}
+
+/// The installed SSE-reframe capability, or `None` when none was installed (the dormant default).
+#[must_use]
+pub fn sse_reframe() -> Option<&'static dyn SseReframe> {
+    REFRAMER.get().copied()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -147,6 +203,54 @@ mod tests {
         assert_eq!(
             String::from_utf8(bytes).unwrap(),
             "event: result\ndata: a\ndata: b\n\n"
+        );
+    }
+
+    #[test]
+    fn the_seam_is_a_byte_for_byte_pass_through_to_the_free_functions() {
+        // The HOST-CAPS S3 seam must be a FAITHFUL pass-through: a mount that opts onto it (W2) must
+        // get exactly the bytes the free functions produce today, or the reframe is not byte-safe.
+        let reframer = PassThroughReframe;
+        for accept in [
+            "application/json",
+            "*/*",
+            "",
+            "text/event-stream",
+            "application/json;q=0.5, text/event-stream",
+            "text/event-stream;q=0.1, application/json",
+            "text/event-stream;q=0",
+        ] {
+            assert_eq!(
+                reframer.prefers_event_stream(accept),
+                prefers_event_stream(accept),
+                "seam prefers_event_stream diverged from the free fn for {accept:?}"
+            );
+        }
+        for (records, result) in [
+            (vec![&b"one"[..], &b"two"[..]], &b"answer"[..]),
+            (vec![], &b"a\nb"[..]),
+            (vec![&b"log-line"[..]], &b"answer"[..]),
+        ] {
+            assert_eq!(
+                reframer.reframe(&records, result),
+                reframe(&records, result),
+                "seam reframe diverged from the free fn"
+            );
+        }
+    }
+
+    #[test]
+    fn the_composition_root_install_hands_the_installed_capability_back() {
+        // Dormant by default: nothing installs the seam on the shipped path, so a fresh process reads
+        // `None`. This test installs its own and reads it back, exercising the OnceLock accessor the
+        // composition root uses — mirroring the egress seam's `install_hostless_egress`/`hostless`.
+        static REFRAMER: PassThroughReframe = PassThroughReframe;
+        install_sse_reframe(&REFRAMER);
+        let installed = sse_reframe().expect("the just-installed reframer reads back");
+        assert_eq!(
+            installed.reframe(&[b"x"], b"y"),
+            reframe(&[b"x"], b"y"),
+            "the installed capability reframes byte-identically to the free fn"
         );
     }
 
