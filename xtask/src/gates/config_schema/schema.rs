@@ -276,7 +276,7 @@ pub const PLANE_VERB_SOURCES: &[&str] = &[
     "crates/busbar-mcp/src/mcp/mod.rs",
     "crates/busbar-a2a/src/a2a/mod.rs",
     "crates/busbar-a2a-codec/src/lib.rs",
-    "crates/busbar-voice/src/lib.rs",
+    "crates/busbar-streaming/src/lib.rs",
     "crates/busbar-core/src/plane/registry.rs",
 ];
 
@@ -862,7 +862,7 @@ fn plane_verb_keys(files: &[(String, Vec<char>)]) -> Result<BTreeSet<String>, St
     let mcp_src = get("busbar-mcp/src/mcp/mod.rs")?;
     let a2a_src = get("busbar-a2a/src/a2a/mod.rs")?;
     let codec_src = get("busbar-a2a-codec/src/lib.rs")?;
-    let voice_src = get("busbar-voice/src/lib.rs")?;
+    let voice_src = get("busbar-streaming/src/lib.rs")?;
     let registry_src = get("busbar-core/src/plane/registry.rs")?;
 
     let mut sections: BTreeSet<String> = BTreeSet::new();
