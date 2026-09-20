@@ -78,7 +78,10 @@ fn seven_transports_and_five_planes_register() {
         registry.count(PluginKind::Transport),
         if STREAMING { 7 } else { 6 }
     );
-    assert_eq!(registry.count(PluginKind::Plane), if STREAMING { 5 } else { 4 });
+    assert_eq!(
+        registry.count(PluginKind::Plane),
+        if STREAMING { 5 } else { 4 }
+    );
     for key in ["tcp", "tls", "http", "sse", "grpc", "stdio"] {
         assert!(
             registry.resolve(PluginKind::Transport, key).is_some(),

@@ -634,7 +634,8 @@ fn each_dialect_dials_its_own_composed_endpoint() {
         realtime.target().map(|t| t.url),
         Some("wss://api.openai.com".to_string())
     );
-    let live = StreamingUnit::new(&node, UnitShape::SessionOpen, 8, 0).on_dialect(Dialect::GeminiLive);
+    let live =
+        StreamingUnit::new(&node, UnitShape::SessionOpen, 8, 0).on_dialect(Dialect::GeminiLive);
     assert_eq!(
         live.target().map(|t| t.url),
         Some("wss://generativelanguage.googleapis.com".to_string())
@@ -1034,8 +1035,8 @@ fn an_unanswered_tool_call_ends_at_the_deadline_its_leg_declared() {
 fn a_tool_call_that_minted_no_identifier_is_refused_rather_than_entered() {
     let kernel = Kernel::new();
     let node = node(serviceable());
-    let unit =
-        StreamingUnit::new(&node, UnitShape::ToolCall, 7, 1_700_000_000).charging_through(ungoverned());
+    let unit = StreamingUnit::new(&node, UnitShape::ToolCall, 7, 1_700_000_000)
+        .charging_through(ungoverned());
     let Ended::Settled { end, .. } = run(&kernel, &unit) else {
         panic!("the exit settles it");
     };
@@ -2097,7 +2098,8 @@ fn a_client_event_opens_a_turn_and_a_later_one_relays_onto_it() {
         monotonic_nanos: 0,
     };
     let plane = StreamingPlane::new(UPSTREAMS);
-    let mut state = PlaneSessionState::new(StreamingSessionState::for_dialect(Dialect::OpenaiRealtime));
+    let mut state =
+        PlaneSessionState::new(StreamingSessionState::for_dialect(Dialect::OpenaiRealtime));
 
     // The first client event of the session. `session.update` is what a real client sends
     // first, and it opens the turn.
@@ -2163,8 +2165,9 @@ fn a_client_event_opens_a_turn_and_a_later_one_relays_onto_it() {
     // A session bound to the telephony carrier, handed bytes that are not that carrier's shape.
     // The refusal is raised at the step that read them, and no unit exists to have been given a
     // class.
-    let mut telephony =
-        PlaneSessionState::new(StreamingSessionState::for_dialect(Dialect::TwilioMediaStreams));
+    let mut telephony = PlaneSessionState::new(StreamingSessionState::for_dialect(
+        Dialect::TwilioMediaStreams,
+    ));
     let frames = one_frame("not a carrier frame at all");
     let mut cursor = FrameCursor::new(&frames);
     let pctx = Ctx::new(clock, &config, None, &transport, &labels, &arena);
@@ -2343,7 +2346,8 @@ fn a_streaming_group_capped_at_one_turn_refuses_the_second_and_admits_it_after_t
     let who = PrincipalId::new("acct:voice");
     // Resolved once, at the open. Every turn below is lent this one value.
     let chain = node.chain_for(&who, Some(GROUP)).expect("configured");
-    let turn = || StreamingUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000).charging_through(&chain);
+    let turn =
+        || StreamingUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000).charging_through(&chain);
 
     let first = turn();
     let (admitted, held) = ask_the_door(&kernel, &first, &who);
@@ -2411,12 +2415,13 @@ fn a_capped_group_still_opens_a_session() {
     let kernel = Kernel::new();
     let who = PrincipalId::new("acct:voice");
     let chain = node.chain_for(&who, Some(GROUP)).expect("configured");
-    let turn = StreamingUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000).charging_through(&chain);
+    let turn =
+        StreamingUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000).charging_through(&chain);
     let (_, held) = ask_the_door(&kernel, &turn, &who);
     let _running = held.grant_taken().expect("the turn is counted");
 
-    let open =
-        StreamingUnit::new(&node, UnitShape::SessionOpen, 8, 1_700_000_000).charging_through(&chain);
+    let open = StreamingUnit::new(&node, UnitShape::SessionOpen, 8, 1_700_000_000)
+        .charging_through(&chain);
     let (decision, _) = ask_the_door(&kernel, &open, &who);
     assert!(
         decision.is_ok(),
@@ -2440,8 +2445,10 @@ fn two_turns_of_one_session_are_handed_the_same_chain() {
     let who = PrincipalId::new("acct:voice");
     let chain = node.chain_for(&who, Some(GROUP)).expect("configured");
 
-    let first = StreamingUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000).charging_through(&chain);
-    let second = StreamingUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000).charging_through(&chain);
+    let first =
+        StreamingUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000).charging_through(&chain);
+    let second =
+        StreamingUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000).charging_through(&chain);
     let (Some(one), Some(two)) = (first.chain, second.chain) else {
         panic!("both turns were lent the session's chain");
     };

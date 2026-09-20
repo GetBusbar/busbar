@@ -54,7 +54,8 @@ use std::path::{Path, PathBuf};
 
 /// Every plane that performs billable work and therefore MUST reach the core Meter seam. Keyed by
 /// the plane's crate directory name under `crates/`.
-const BILLING_PLANE_CRATES: &[&str] = &["busbar-llm", "busbar-mcp", "busbar-a2a", "busbar-streaming"];
+const BILLING_PLANE_CRATES: &[&str] =
+    &["busbar-llm", "busbar-mcp", "busbar-a2a", "busbar-streaming"];
 
 /// The core Meter-seam call tokens. A production line containing any of these (outside a comment)
 /// counts as reaching the one billing path.
