@@ -137,6 +137,31 @@ fn an_unclaimed_request_names_no_dialect() {
     assert_eq!(dialect_for("/api/status", &none), None);
 }
 
+/// The model-scoped surface claim names a model; the bare list surface is not a model.
+///
+/// `/v1/models` and `/v1beta/models` are the "list the models" surface, not a request against one
+/// model. The per-model claim's pattern must require the model segment, or the bare list is
+/// swallowed by it and read as an invoke of a model that was never named — the wrong operation and
+/// the wrong error envelope. A model-scoped path (`/v1/models/{id}`) still routes to the dialect;
+/// only the segment-short list surface is left unclaimed.
+#[test]
+fn the_bare_model_list_surface_is_not_a_per_model_claim() {
+    let none = |_: &str| None;
+    assert_eq!(
+        dialect_for("/v1/models", &none),
+        None,
+        "the bare model-list surface must not be swallowed by the per-model claim"
+    );
+    assert_eq!(
+        dialect_for("/v1beta/models", &none),
+        None,
+        "the preview bare model-list surface must not be swallowed either"
+    );
+    // The model-scoped surface itself still routes to its dialect.
+    assert_eq!(dialect_for("/v1/models/gpt-4o", &none), Some("gemini"));
+    assert_eq!(dialect_for("/v1beta/models/gemini", &none), Some("gemini"));
+}
+
 /// A header rung beats a path rung, whichever way the request is built.
 ///
 /// This is the whole point of the ordering: a request whose target says one dialect and whose
