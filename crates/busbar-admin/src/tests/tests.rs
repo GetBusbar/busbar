@@ -4183,8 +4183,7 @@ async fn test_admin_v1_config_validate_accepts_1_6_0_additive_top_level_keys() {
     let proposed = serde_json::json!({
         "config": {
             "oauth_as": null,
-            "providers": {},
-            "models": {}
+            "providers": {}
         },
         "providers": {}
     });
@@ -4233,7 +4232,6 @@ async fn test_admin_v1_config_apply_accepts_1_6_0_additive_top_level_keys() {
             "oauth_as": null,
             "listen": "127.0.0.1:0",
             "providers": {},
-            "models": {},
             "pools": {}
         },
         "providers": {}
