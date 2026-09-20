@@ -352,6 +352,43 @@ async fn a_close_sends_the_alert_the_peer_is_owed() {
     );
 }
 
+/// The `close_notify` alert self-bounds on its budget rather than parking forever on the writer
+/// lock a peer that stopped reading — or a `close` racing an in-flight write — leaves held.
+///
+/// `send_close_notify` is what `close` spawns and what `unit0_refusal` awaits inline, and both take
+/// the connection's one writer lock. Holding that lock here is the same standstill a full receive
+/// window or a still-running write produces; without a budget the alert waits on it for the life of
+/// the process, and on the `unit0_refusal` path the caller waits with it. The outer timeout is the
+/// red-before-green witness: without the budget this never returns and the outer wait fires; with it
+/// the alert gives up inside [`CLOSE_NOTIFY_BUDGET`] and the outer wait never does.
+#[tokio::test]
+async fn a_close_notify_self_bounds_on_a_held_writer_lock() {
+    let (server, listener, client) = bound_pair().await;
+    let addr = listener.local_addr();
+    let accept_fut = tokio::spawn({
+        let server = server.clone();
+        async move { server.accept(&listener).await.unwrap() }
+    });
+    let _client_conn = client
+        .dial(&upstream_dest(&addr), &fixture_key(0))
+        .await
+        .unwrap();
+    let server_conn = accept_fut.await.unwrap();
+
+    let inner = server
+        .inner(server_conn.id())
+        .expect("the accepted connection is registered");
+    // Hold the writer lock the alert must take — the standstill a peer that stopped reading, or a
+    // close racing an in-flight write, produces on the real socket.
+    let held = inner.write.lock().await;
+    let bounded = tokio::time::timeout(Duration::from_secs(3), send_close_notify(&inner)).await;
+    assert!(
+        bounded.is_ok(),
+        "send_close_notify must self-bound on CLOSE_NOTIFY_BUDGET, not park on the writer lock"
+    );
+    drop(held);
+}
+
 #[tokio::test]
 async fn close_ends_a_live_frame_stream() {
     let (server, listener, client) = bound_pair().await;

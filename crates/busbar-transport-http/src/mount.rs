@@ -58,8 +58,8 @@ use busbar_contract::transport::surface::{
 ///
 /// Every field is something the bottom layer saw. Nothing here is derived and nothing is a protocol
 /// fact: a target, a request method, the authority the caller named, the peer the connection came
-/// from, and the body.
-#[derive(Clone, Copy, Debug)]
+/// from, what the caller presented, and the body.
+#[derive(Clone, Copy)]
 pub struct Request<'r> {
     /// The request target, query and fragment included, exactly as it arrived.
     pub target: &'r str,
@@ -69,8 +69,42 @@ pub struct Request<'r> {
     pub authority: Option<&'r str>,
     /// The peer's source address as the bottom layer saw it.
     pub peer: &'r str,
+    /// The credential the caller presented, exactly as it arrived and whole — scheme word included.
+    ///
+    /// Deciding what a scheme means is the authentication chain's, not this transport's: stripping a
+    /// prefix here would be interpreting a credential this layer may not read, and stripping the
+    /// wrong one would turn a caller's secret into a different string. `None` is a request that
+    /// presented no credential at all, which is a posture a declaration can legitimately admit — see
+    /// [`Bar::Open`]. It is never reported as an empty string: an empty credential is a credential
+    /// that WAS presented and is blank, a different fact from none having arrived.
+    pub credential: Option<&'r str>,
+    /// What the caller said it will accept back, where it said anything.
+    pub accepts: Option<&'r str>,
+    /// The media type the caller said its body is, where it said anything.
+    pub media: Option<&'r str>,
     /// The request body.
     pub body: &'r [u8],
+}
+
+impl core::fmt::Debug for Request<'_> {
+    /// Hand-rolled to REDACT the presented credential. A derived `Debug` would spill the caller's
+    /// bearer token or basic-auth pair byte-for-byte into any log line or panic that formats an
+    /// arrival — the same reason `ClientIdentity` and `EgressTrust` hand-roll theirs. Every other
+    /// field is public-ish wire shape and prints as itself; `credential` prints as `<redacted>` when
+    /// presented and stays `None` when it was not, so the redaction never manufactures a presented
+    /// credential out of an absent one.
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Request")
+            .field("target", &self.target)
+            .field("method", &self.method)
+            .field("authority", &self.authority)
+            .field("peer", &self.peer)
+            .field("credential", &self.credential.map(|_| "<redacted>"))
+            .field("accepts", &self.accepts)
+            .field("media", &self.media)
+            .field("body", &self.body)
+            .finish()
+    }
 }
 
 /// Which of the declaration's addresses an arrival matched.
@@ -181,6 +215,27 @@ pub fn operation_of<'s>(surface: &'s WireSurface, op: &str) -> Option<&'s Operat
 
 // ── what this transport publishes about an arrival ──────────────────────────────────────────────
 
+/// What the caller presented, published beside where it was sent.
+///
+/// Named for what they ARE rather than for the header that happened to carry them: a header here, a
+/// field of the same name on a framed binding, an opening frame on a session transport. A plane
+/// authenticating a caller reads the fact and never the header, so a caller's credential, accept and
+/// content-type reach it under one name regardless of which of this crate's protocols carried them.
+///
+/// Kept local to this crate rather than folded into the kernel's own reserved-key list: that list is
+/// shared infrastructure this crate does not own, and publishing them under this mount's own
+/// vocabulary (declared in [`MOUNT_FACTS`], first in the fact list, ahead of every capture) already
+/// gets the property that matters here — a declaration cannot shadow what the caller presented with a
+/// same-named capture.
+pub mod presented {
+    /// The credential the caller presented, exactly as it arrived.
+    pub const CREDENTIAL: &str = "credential";
+    /// What the caller said it will accept back.
+    pub const ACCEPTS: &str = "accepts";
+    /// The media type the caller said its body is.
+    pub const MEDIA: &str = "media";
+}
+
 /// The reserved fact keys a mounted request publishes.
 ///
 /// Declared, so the registration check that catches a transport publishing a reserved key it never
@@ -190,6 +245,9 @@ pub const MOUNT_FACTS: &[&str] = &[
     tfacts::METHOD,
     tfacts::AUTHORITY,
     tfacts::PEER,
+    presented::CREDENTIAL,
+    presented::ACCEPTS,
+    presented::MEDIA,
 ];
 
 /// Build the fact list one arrival carries, reserved keys first.
@@ -214,6 +272,22 @@ pub fn published_facts<'a>(
         facts.push((tfacts::AUTHORITY, authority));
     }
     facts.push((tfacts::PEER, request.peer));
+    // What the caller PRESENTED, rather than where it was sent — pushed only where the request
+    // actually carried them, because an absent fact and an empty one are different statements. A
+    // plane reading an empty credential would be reading a credential that was presented and is
+    // blank; a caller that presented none did not present a blank one. Reserved to this mount and
+    // therefore still ordered before the captures, for the same reason the four above are: a
+    // declaration free to name a capture `credential` must never let that capture answer for what
+    // the caller actually sent.
+    if let Some(credential) = request.credential {
+        facts.push((presented::CREDENTIAL, credential));
+    }
+    if let Some(accepts) = request.accepts {
+        facts.push((presented::ACCEPTS, accepts));
+    }
+    if let Some(media) = request.media {
+        facts.push((presented::MEDIA, media));
+    }
     for c in captures {
         facts.push((c.name, c.value));
     }
