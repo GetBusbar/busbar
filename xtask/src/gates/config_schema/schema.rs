@@ -839,6 +839,17 @@ fn collide(
 /// (`CORE_OWNED_CONCRETE_SECTIONS`), exactly as `crate::plane::config::config_sections()` minus that
 /// array does at runtime.
 fn plane_verb_keys(files: &[(String, Vec<char>)]) -> Result<BTreeSet<String>, String> {
+    // ABSENT plane-verb sources ⇒ NO plane-verb lift keys. The production path
+    // ([`read_plane_verb_sources`]) always hands over the full [`PLANE_VERB_SOURCES`] set, so this
+    // only fires for a caller that deliberately drives the CORE-ADDITIVE `LIFTED_*KEYS` half alone
+    // and passes an empty plane-verb slice (the generator unit tests do exactly this). An empty set
+    // of sources genuinely contributes no registry-derived sections; erroring here would demand five
+    // files a caller never claimed to supply. A caller that supplies SOME but not all five still
+    // falls through to the per-suffix `get` below and is refused for the missing one — the
+    // real-input behavior is untouched, so the production fingerprint is byte-identical.
+    if files.is_empty() {
+        return Ok(BTreeSet::new());
+    }
     let get = |suffix: &str| -> Result<&Vec<char>, String> {
         files
             .iter()
