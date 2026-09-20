@@ -1,19 +1,19 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Per-plane diagnostics-catalog invariants for the MCP plane: code/slug uniqueness, the
+//! Per-plane diagnostics-catalog invariants for the A2A plane: code/slug uniqueness, the
 //! class↔code thousands-digit contract, and equality of the committed markdown/JSON snapshots with a
 //! fresh render. Relocated out of `diagnostics.rs` per the tests-in-their-own-file convention.
 
-use super::*;
+use crate::DIAGNOSTICS;
 use busbar_substrate::diagnostics::{render_json_for, render_markdown_for};
 
 /// Committed per-plane markdown snapshot (relative to this crate's manifest dir).
-const COMMITTED_MD: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/diagnostics-mcp.md");
+const COMMITTED_MD: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/diagnostics-a2a.md");
 /// Committed per-plane machine-readable snapshot.
 const COMMITTED_JSON: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../docs/diagnostics-mcp.json"
+    "/../../docs/diagnostics-a2a.json"
 );
 
 /// THE CATALOG IS NOT EMPTY, AND NOT ENTIRELY RETIRED.
@@ -123,7 +123,7 @@ fn every_live_entry_documents_meaning_and_action() {
 
 /// The committed per-plane docs equal a fresh render of this plane's `DIAGNOSTICS`. Regenerate
 /// after any catalog change with:
-///   `UPDATE_DIAGNOSTICS=1 cargo test -p busbar-plane-mcp-host diagnostics`
+///   `UPDATE_DIAGNOSTICS=1 cargo test -p busbar-a2a diagnostics`
 #[test]
 fn committed_markdown_matches_diagnostics() {
     let fresh = render_markdown_for(DIAGNOSTICS);
@@ -138,7 +138,7 @@ fn committed_markdown_matches_diagnostics() {
     assert_eq!(
         committed, fresh,
         "per-plane diagnostics markdown is stale — regenerate with \
-             `UPDATE_DIAGNOSTICS=1 cargo test -p busbar-plane-mcp-host diagnostics`"
+             `UPDATE_DIAGNOSTICS=1 cargo test -p busbar-a2a diagnostics`"
     );
 }
 

@@ -36,14 +36,15 @@
 /// what it always did. The split is a MOVE: no item changed shape crossing it.
 pub use busbar_mcp_codec::{codec, outputschema, record, sanitize};
 
-/// THE MCP PLANE'S DIAGNOSTICS CATALOG, RE-EXPORTED FROM `busbar-plane-mcp-host`.
+/// THE MCP PLANE'S DIAGNOSTICS CATALOG, RE-EXPORTED FROM `busbar-plane-mcp`.
 ///
-/// The `MCP_*` catalog entries and the `DIAGNOSTICS` slice moved into the plane's impure host crate
-/// (the first byte-safe step of the fat-crate collapse — DECISIONS #19/#20/#21). They are a
-/// self-contained leaf: they name nothing in this crate, so the move is a MOVE with no shape change,
+/// The `MCP_*` catalog entries and the `DIAGNOSTICS` slice folded INTO the pure plane adapter
+/// (DECISIONS #39 -host fold): the catalog names only the neutral diagnostics vocabulary in
+/// `busbar-contract`, so it belongs in the pure plane crate rather than an impure host. They are a
+/// self-contained leaf that names nothing in this crate, so the move is a MOVE with no shape change,
 /// re-exported HERE under the old path so every `busbar_mcp::diagnostics::…` / `crate::diagnostics::…`
 /// caller resolves exactly what it always did.
-pub use busbar_plane_mcp_host::diagnostics;
+pub use busbar_plane_mcp::diagnostics;
 
 pub mod mcp;
 
@@ -74,6 +75,15 @@ pub use mcp::PLANE_DECL;
 /// hands to `busbar_substrate::diagnostics::install_diagnostics` at boot, re-exported at the crate
 /// root so the `busbar` binary names one stable path (`busbar_mcp::DIAGNOSTICS`). See [`diagnostics`].
 pub use diagnostics::DIAGNOSTICS;
+
+// PER-PLANE DIAGNOSTICS-CATALOG INVARIANTS + the committed-docs-in-sync snapshots for the MCP
+// catalog. The catalog itself folded into the pure `busbar-plane-mcp` adapter (DECISIONS #39), but
+// its docs-in-sync test renders through `busbar_substrate::diagnostics::render_*`, which a pure plane
+// may not name — so the test rides on this crate, which re-exports `DIAGNOSTICS` and already names
+// the substrate. Run under `cargo test -p busbar-mcp diagnostics`.
+#[cfg(test)]
+#[path = "tests/diagnostics_tests.rs"]
+mod diagnostics_tests;
 
 /// MCP'S PROTOCOL DECLARATION — the `&'static ProtocolDecl` the composition root installs. Re-exported
 /// at the crate root so the `busbar` binary names one stable path (`busbar_mcp::PROTO_DECL`) and does

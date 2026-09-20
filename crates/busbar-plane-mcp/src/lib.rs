@@ -42,12 +42,20 @@
 #![deny(missing_docs)]
 
 pub mod claims;
+/// THE MCP PLANE'S DIAGNOSTICS CATALOG — the `MCP_*` entries this plane OWNS, built on the neutral
+/// diagnostics vocabulary in `busbar-contract`. Folded in from the retired `busbar-plane-mcp-host`
+/// (DECISIONS #39); `busbar-mcp` re-exports the module under its historical path.
+pub mod diagnostics;
 pub mod facts;
 pub mod jsonrpc;
 pub mod meta;
 pub mod ops;
 pub mod plane;
 pub mod records;
+
+/// The plane-contributed diagnostics slice, re-exported at the crate root so the `busbar` binary —
+/// and `busbar-mcp`, which re-exports it onward — names one stable path (`busbar_mcp::DIAGNOSTICS`).
+pub use diagnostics::DIAGNOSTICS;
 
 use busbar_contract::ids::LaneId;
 use busbar_contract::plugin::{AbiVersion, Kind, Plugin};

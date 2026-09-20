@@ -78,18 +78,8 @@ struct Noun {
 }
 
 // ── PLANES (DECISION #1 / #18) ────────────────────────────────────────────────────────────────
-const FAM_MCP: &[&str] = &[
-    "busbar-mcp",
-    "busbar-plane-mcp",
-    "busbar-plane-mcp-host",
-    "busbar-mcp-codec",
-];
-const FAM_A2A: &[&str] = &[
-    "busbar-a2a",
-    "busbar-plane-a2a",
-    "busbar-plane-a2a-host",
-    "busbar-a2a-codec",
-];
+const FAM_MCP: &[&str] = &["busbar-mcp", "busbar-plane-mcp", "busbar-mcp-codec"];
+const FAM_A2A: &[&str] = &["busbar-a2a", "busbar-plane-a2a", "busbar-a2a-codec"];
 const FAM_LLM: &[&str] = &["busbar-llm", "busbar-plane-llm", "busbar-llm-codec"];
 // The streaming plane family (voice is a dialect inside it, #18). The pure adapter
 // `busbar-plane-streaming`, the live runtime crate `busbar-streaming`, and its dialect codecs
