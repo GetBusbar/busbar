@@ -143,6 +143,66 @@ fn answering_one_of_two_asks_leaves_the_task_parked_on_the_other() {
     );
 }
 
+/// B52: the distinct answer keys a task retains are BOUNDED. A caller parked in `input_required`
+/// that keeps sending `tasks/update` under freshly-invented keys must not grow `answers` without
+/// limit — that map is keyed on caller-controlled strings against a single in-flight id, so an
+/// unbounded one is a memory-exhaustion DoS. Watched to fail before the cap existed: without
+/// [`MAX_TASK_ANSWERS`] the map grew to every key delivered.
+#[test]
+fn invented_answer_keys_are_bounded_per_task() {
+    let task = TASKS.create("key-answer-cap", busbar_substrate::store::now_ms());
+    // Deliver far more distinct, never-asked keys than the cap admits.
+    for i in 0..(MAX_TASK_ANSWERS + 500) {
+        let mut one = serde_json::Map::new();
+        one.insert(
+            format!("invented-{i}"),
+            serde_json::json!({ "action": "accept" }),
+        );
+        task.deliver(&one, busbar_substrate::store::now_ms());
+    }
+    assert!(
+        task.answers().len() <= MAX_TASK_ANSWERS,
+        "a task's retained answer keys must be capped at {MAX_TASK_ANSWERS}, not grow with every \
+         invented key a caller sends; observed {}",
+        task.answers().len()
+    );
+}
+
+/// B52: the cap never blocks the LEGITIMATE flow. A key the task is actually WAITING on is an
+/// operator-declared ask, and it must be admitted (and un-park the task) even after a flood of
+/// invented keys has filled the answer map to its ceiling — otherwise the DoS bound would itself
+/// wedge a real caller's resume.
+#[test]
+fn an_awaited_answer_is_admitted_even_past_the_cap() {
+    let task = TASKS.create("key-awaited-past-cap", busbar_substrate::store::now_ms());
+    task.park(vec![elicitation("real")], busbar_substrate::store::now_ms());
+    for i in 0..(MAX_TASK_ANSWERS + 50) {
+        let mut one = serde_json::Map::new();
+        one.insert(
+            format!("junk-{i}"),
+            serde_json::json!({ "action": "accept" }),
+        );
+        task.deliver(&one, busbar_substrate::store::now_ms());
+    }
+    assert_eq!(
+        task.detailed()["status"],
+        "input_required",
+        "the invented keys must not have satisfied the real ask"
+    );
+    let mut real = serde_json::Map::new();
+    real.insert("real".into(), serde_json::json!({ "action": "accept" }));
+    task.deliver(&real, busbar_substrate::store::now_ms());
+    assert_eq!(
+        task.detailed()["status"],
+        "working",
+        "the awaited ask must be admitted and resume the task even with the answer map at its cap"
+    );
+    assert!(
+        task.answers().contains_key("real"),
+        "the awaited answer must be stored so `merge_answers` folds it into the tool arguments"
+    );
+}
+
 /// The CreateTaskResult is FLAT and carries none of the DetailedTask-only members.
 #[test]
 fn the_creation_result_is_flat_and_carries_no_detailed_task_members() {

@@ -431,6 +431,21 @@ async fn a_caller_whose_key_does_not_reach_the_pool_cannot_be_spent_through() {
         1,
         "and the refused ask produces no retry to the upstream"
     );
+
+    // AND THE REFUSAL DOES NOT DESCRIBE THE DEPLOYMENT. busbar's own pipeline error was relayed
+    // verbatim and unbounded onto the caller's answer, so every refused completion was a probe an
+    // upstream could drive on demand — it chooses when to ask, and it reads the caller's answer —
+    // for the operator's pool and provider topology. The reason belongs in the operator's log; the
+    // caller is told the fact.
+    let rendered = body.to_string();
+    assert!(
+        rendered.contains("is not relayed"),
+        "the caller must be told the FACT of the refusal and not busbar's own reason for it: {body}"
+    );
+    assert!(
+        !rendered.contains(MODEL),
+        "the caller's answer names the operator's declared pool: {body}"
+    );
 }
 
 /// THE POLICY IS VETTED AT BOOT. A policy behind a closed grant, an empty model, and a zero on

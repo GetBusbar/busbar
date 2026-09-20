@@ -197,3 +197,42 @@ async fn a_rewrite_gate_can_reject_on_the_arguments_it_screens() {
          went out stopped nothing",
     );
 }
+
+/// A COMMITTED REWRITE BUSBAR CANNOT READ BACK REFUSES THE CALL — it does not fall back to the
+/// arguments the hook said it had replaced.
+///
+/// The apply site read the verdict's bytes with `if let Ok(v) = …`, so a hook that reported
+/// `applied` and produced bytes busbar could not read left `arguments` holding the ORIGINAL values
+/// and the call went on to dispatch them. For the hook class this seam exists for that is fail-OPEN
+/// in the precise sense: a redaction hook says "I have removed the secret from these arguments",
+/// its output is unreadable, and busbar sends the arguments WITH the secret still in them.
+///
+/// Driven at the decision rather than through a hook chain, because the plane cannot make the host
+/// seam emit unreadable bytes and the rule under test is what the PLANE does when it does. The
+/// dispatch-side consequence — a refusal, never a dispatch — is the `Err` arm's only caller.
+#[test]
+fn a_committed_rewrite_busbar_cannot_read_back_is_refused_rather_than_silently_undone() {
+    use crate::mcp::method::committed_arguments;
+
+    let ok = committed_arguments(br#"{"path":"/srv/rewritten-by-hook"}"#)
+        .expect("an ordinary rewrite is read back and used");
+    assert_eq!(ok["path"], "/srv/rewritten-by-hook");
+
+    for unusable in [
+        &b"not json at all"[..],
+        &b""[..],
+        // Well-formed JSON that is not an arguments object. Admitting it would only move the
+        // failure to the upstream, having already told the hook its rewrite landed.
+        &b"7"[..],
+        &b"[1,2,3]"[..],
+        &b"null"[..],
+    ] {
+        assert!(
+            committed_arguments(unusable).is_err(),
+            "a committed rewrite busbar cannot use must REFUSE the call; falling back to the \
+             caller's original arguments silently undoes a redaction the hook reported as applied: \
+             {:?}",
+            String::from_utf8_lossy(unusable)
+        );
+    }
+}

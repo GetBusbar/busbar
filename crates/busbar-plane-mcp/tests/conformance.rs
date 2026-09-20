@@ -254,18 +254,61 @@ fn only_the_held_stream_opens_a_unit() {
     }
 }
 
-/// A notice this plane recognises opens a unit that answers nothing.
+/// A notice the CALLER is entitled to send opens a unit that answers nothing.
 #[test]
 fn a_recognised_notice_opens_a_unit_that_answers_nothing() {
     let plane = McpPlane::EMPTY;
     assert_eq!(ops::NOTIFICATIONS.len(), NOTICE_ROWS);
-    for name in ops::NOTIFICATIONS {
-        let draft = draft_of(decode(&plane, &notification(name)).expect("a notice decodes"));
+    let mut client_notices = 0usize;
+    for notice in ops::NOTIFICATIONS {
+        // A server-originated notice is not the caller's to send on the ingress side; that case is
+        // covered by `a_caller_cannot_spoof_a_server_notice`.
+        if notice.sender != ops::Sender::Client {
+            continue;
+        }
+        client_notices += 1;
+        let draft =
+            draft_of(decode(&plane, &notification(notice.method)).expect("a notice decodes"));
         assert_eq!(draft.op, ops::OP_NOTIFICATION);
         // Nothing correlates: a notice obliges no answer, so there is nothing to answer it with.
         assert!(draft.correlation_out.is_none());
         assert!(draft.correlates.is_none());
     }
+    assert!(
+        client_notices > 0,
+        "no caller-originated notice was exercised"
+    );
+}
+
+/// A caller cannot spoof a SERVER-originated notice.
+///
+/// `notifications/tools/list_changed` and `notifications/resources/updated` are the codec's own
+/// server-emitted half. A caller sending one on the ingress side would force a catalogue re-scan
+/// from the wrong side — the party being catalogued deciding when its own catalogue is believed. It
+/// is discarded as a forged source, the same code a server-sent caller-only method is (S33).
+#[test]
+fn a_caller_cannot_spoof_a_server_notice() {
+    let plane = McpPlane::EMPTY;
+    let mut server_notices = 0usize;
+    for notice in ops::NOTIFICATIONS {
+        if notice.sender == ops::Sender::Client {
+            continue;
+        }
+        server_notices += 1;
+        assert_eq!(
+            decode(&plane, &notification(notice.method)),
+            Ok(Ingress::Discard {
+                reason: DiscardCode::ForgedSource
+            }),
+            "the caller was allowed to spoof {}",
+            notice.method
+        );
+    }
+    assert_eq!(
+        server_notices,
+        NOTICE_ROWS - 1,
+        "the server-originated notice set changed"
+    );
 }
 
 /// A notice this plane does not recognise is dropped, never refused.
@@ -280,6 +323,34 @@ fn an_unrecognised_notice_is_dropped() {
             reason: DiscardCode::Unsupported
         })
     );
+}
+
+/// The discovery document is a GET on a well-known path, and this plane answers it.
+///
+/// It carries no request envelope: no version member, no method, no identifier. Before it had an
+/// operation class the arriving bytes reached the envelope reader, which found no version member and
+/// failed the decode — so the surface this plane CLAIMS could never be answered, and a caller
+/// fetching it waited forever. It is recognised by the path it arrived on and opens a metadata unit.
+#[test]
+fn the_discovery_document_is_answered_by_path() {
+    let plane = McpPlane::EMPTY;
+    let scaffold = Box::leak(Box::new(Scaffold::on_path(
+        "http",
+        busbar_plane_mcp::claims::DEFAULT_METADATA,
+    )));
+    let ctx = scaffold.ctx();
+    // A discovery GET carries no body at all — the emptiest thing a frame can hold.
+    let frames: &'static [busbar_contract::wire::Frame] = Box::leak(vec![frame(b"")].into());
+    let mut cursor = FrameCursor::new(frames);
+    let draft = draft_of(
+        plane
+            .decode_ingress(&mut cursor, None, &ctx)
+            .expect("a discovery GET decodes rather than failing the envelope reader"),
+    );
+    assert_eq!(draft.op, ops::OP_METADATA);
+    // Nothing correlates: it answers nothing of this node's own and is answered in one document.
+    assert!(draft.correlation_out.is_none());
+    assert!(draft.correlates.is_none());
 }
 
 /// The metadata block the battery sends is read, keys and all.
@@ -435,6 +506,31 @@ fn a_servers_own_request_opens_a_provider_unit() {
     }
 }
 
+/// S33: a server that writes a CALLER-ONLY method (`tools/call` — `Sender::Client` in the
+/// vocabulary, never `Sender::Provider`) on the response leg is not read as a genuine server ask.
+/// `ops::row_for` finds the method by name alone; without a sender check, this would open a unit
+/// that spends THIS NODE'S budget on the upstream's say-so — a confused deputy, since the upstream
+/// holds no budget and no grant of its own to spend. Refused as `ForgedSource`, the same code an
+/// unrecognised method is dropped with.
+#[test]
+fn a_server_cannot_send_a_callers_method() {
+    let plane = McpPlane::EMPTY;
+    let scaffold = Scaffold::new("http");
+    let ctx = scaffold.ctx();
+    let forged = br#"{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"evil"}}"#;
+    let frames = vec![response_frame(forged)];
+    let mut cursor = FrameCursor::new(&frames);
+    match plane
+        .decode_response(&mut cursor, &sealed_destination(), None, &ctx)
+        .expect("a forged server request still decodes, and is discarded rather than refused")
+    {
+        Progress::Discard { reason } => {
+            assert_eq!(reason, DiscardCode::ForgedSource);
+        }
+        other => panic!("a server-sent caller-only method decoded as {other:?}"),
+    }
+}
+
 /// A result that asks the caller for something is a turn, not an ending.
 #[test]
 fn a_result_that_asks_for_something_is_a_turn() {
@@ -570,6 +666,7 @@ fn a_refusal_that_implies_a_wait_says_so() {
 /// written down here rather than left to a bound that can never fail.
 const EXPECTED_LEGS: &[(&str, usize)] = &[
     ("discover", 2),
+    ("metadata", 1),
     ("tools_list", 2),
     ("tool_call", 5),
     ("prompts_list", 2),

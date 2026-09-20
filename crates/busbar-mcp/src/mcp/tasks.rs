@@ -85,6 +85,19 @@ const TASK_POLL_INTERVAL_MS: u64 = 250;
 /// eventual answer unreachable, which is worse than refusing to remember an old completed one.
 const MAX_RETAINED_TASKS: usize = 4096;
 
+/// The hard ceiling on DISTINCT answer keys a single task retains at once.
+///
+/// `tasks/update` folds every key of its `inputResponses` into the task's `answers` map, and those
+/// keys are CALLER-CONTROLLED strings — an operator's asks name the keys a task WAITS on, but a
+/// caller may send any key it likes, and an early answer to a key not yet asked is deliberately kept
+/// (see [`McpTask::park`], which filters already-answered asks). Without a ceiling a caller parked in
+/// `input_required` can send `tasks/update` after `tasks/update` under freshly-invented keys and grow
+/// that map without bound — memory keyed on attacker text against a single in-flight id. The cap is
+/// generous next to any real ask fan-out (an operator declares asks in the low tens across all
+/// rounds), so a legitimate task never reaches it; a caller that does is dropping its own invented
+/// keys, and a key the task is actually WAITING on is admitted regardless (see [`McpTask::deliver`]).
+const MAX_TASK_ANSWERS: usize = 256;
+
 /// The ABANDONMENT ceiling on an ACTIVE task: one whose last update is older than this is treated
 /// as abandoned by its caller and cancelled through the normal [`McpTask::cancel`] path (the
 /// runner aborted, `updated_ms` stamped), after which the ordinary [`TASK_TTL_MS`] retention
@@ -307,6 +320,16 @@ impl McpTask {
     fn deliver(&self, responses: &serde_json::Map<String, serde_json::Value>, now_ms: u64) {
         let mut state = self.lock();
         for (key, value) in responses {
+            // BOUND the distinct answer keys this task retains (see [`MAX_TASK_ANSWERS`]). A key
+            // already held is updated in place — idempotent, no growth. A key the task is WAITING on
+            // is an operator-declared ask and always admitted. Only a NEW, un-asked key arriving
+            // once the cap is reached is dropped, which matches this method's stated policy that a
+            // key the task is not waiting on is ignored rather than refused: the ack is unchanged.
+            let already_held = state.answers.contains_key(key);
+            let awaited = state.input_requests.iter().any(|(k, _)| k == key);
+            if !already_held && !awaited && state.answers.len() >= MAX_TASK_ANSWERS {
+                continue;
+            }
             state.answers.insert(key.clone(), value.clone());
         }
         state
@@ -598,6 +621,12 @@ pub(crate) struct Runner {
     /// decision about THIS field as much as about retention.
     pub(crate) authorised: super::upstream::Authorised,
     pub(crate) arguments: serde_json::Value,
+    /// The SAME pinned schema `upstream::authorise` walked the ORIGINAL arguments against at task
+    /// creation. Kept so the runner can re-walk it after [`merge_answers`] folds in a caller's
+    /// `tasks/update` responses — those never passed through `authorise`'s guard (they did not
+    /// exist yet when it ran), so without a second walk here an SSRF-shaped value handed in AFTER
+    /// creation would reach the upstream unscreened.
+    pub(crate) input_schema: serde_json::Value,
     pub(crate) server_id: String,
     pub(crate) max_rounds: u32,
     /// The rounds of input busbar asks its caller for from inside the task, already filtered to
@@ -760,6 +789,24 @@ async fn dispatch(task: Arc<McpTask>, runner: Runner) {
     // gate means by it, and what makes the gathered answer observable in the task's own result
     // rather than discarded at busbar.
     let arguments = merge_answers(&runner.arguments, &task.answers());
+
+    // (2b) RE-SCREEN THE MERGED ARGUMENTS. `upstream::authorise` walked `runner.arguments` against
+    // `runner.input_schema` at task creation — but that was BEFORE any `tasks/update` response
+    // existed. An answer rides in over a SEPARATE request, under a caller-authored value and an
+    // operator-declared key (`merge_answers`, above), and nothing has judged it for SSRF yet. Without
+    // this walk a metadata/private-address value handed in as a task answer reaches the upstream
+    // leg below completely unscreened, even though the identical value in the ORIGINAL `tools/call`
+    // arguments would have been refused before the task was ever created.
+    if let Err(refusal) =
+        super::client::argguard::guard(&runner.input_schema, &arguments, runner.authorised.policy)
+    {
+        task.fail(
+            TASK_PROTOCOL_ERROR_CODE,
+            refusal.to_string(),
+            host.clock_now_ms(),
+        );
+        return;
+    }
 
     // (3) THE UPSTREAM LEG, through the SAME bounded, per-round-gated loop the synchronous path
     // uses. Not a second dispatcher: an upstream's own `input_required` must terminate at busbar on

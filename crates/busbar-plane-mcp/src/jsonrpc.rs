@@ -349,9 +349,13 @@ pub fn success(
 ) -> Result<Vec<u8>, Encode> {
     let mut result: serde_json::Value =
         serde_json::from_slice(result_bytes).map_err(|_| Encode::Unrepresentable)?;
-    if let Some(object) = result.as_object_mut() {
-        object.insert("resultType".into(), result_type.into());
-    }
+    // The discriminator is a MEMBER, and only an object holds members. A non-object result cannot
+    // carry it, and a result handed over without it reads as finished — the absence of the
+    // `input_required`/`task` discriminator is exactly how a completed answer is spelled. Stamping it
+    // "only if the result was an object" left the other results shipping unstamped, which is the very
+    // laundering the stamp exists to prevent. It cannot be stamped, so it is not written at all.
+    let object = result.as_object_mut().ok_or(Encode::Unrepresentable)?;
+    object.insert("resultType".into(), result_type.into());
     let mut envelope = serde_json::Map::new();
     envelope.insert("jsonrpc".into(), VERSION.into());
     // OMITTED when there is none: on the success path the member is written only if there is one.

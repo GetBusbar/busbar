@@ -35,6 +35,15 @@ const CANONICAL: &str = "https://gateway.example.com/mcp";
 /// passing through a rename that broke every client.
 const META_SUBSCRIPTION_ID: &str = "io.modelcontextprotocol/subscriptionId";
 
+/// NO CUSTOM `Mcp-Param-*` HEADERS and every declared capability, for the one case here that drives
+/// `dispatch` directly rather than over a socket. Same stand-ins, same reasons, as `method_tests`.
+static NO_HEADERS: std::sync::LazyLock<axum::http::HeaderMap> =
+    std::sync::LazyLock::new(axum::http::HeaderMap::new);
+
+static ALL_CAPABILITIES: std::sync::LazyLock<serde_json::Value> = std::sync::LazyLock::new(
+    || serde_json::json!({ "sampling": {}, "elicitation": {}, "roots": { "listChanged": true } }),
+);
+
 /// One registered MCP server, in the operator's own YAML — through the grammar and `validate_server`
 /// exactly as `config.yaml` is, so a fixture cannot register something an operator could not write.
 const ONE_TOOL: &str = r#"
@@ -554,7 +563,8 @@ fn a_recorded_update_is_not_delivered_to_a_caller_whose_grant_does_not_reach_it(
                 )
                 .expect("the SDK filter type accepts the wire shape"),
                 |_| true,
-            ),
+            )
+            .expect("the fixture names one uri, well inside the cap"),
             meta: crate::mcp::subscribe::subscription_meta(&id),
             id,
             phase: crate::mcp::subscribe::Phase::Acknowledge,
@@ -752,7 +762,8 @@ fn a_revoked_key_stops_being_served_on_the_next_poll() {
             &serde_json::from_value(serde_json::json!({ "toolsListChanged": true }))
                 .expect("the SDK filter type accepts the wire shape"),
             |_| false,
-        ),
+        )
+        .expect("the fixture names no uri at all, well inside the cap"),
         meta: crate::mcp::subscribe::subscription_meta(&id),
         id,
         phase: crate::mcp::subscribe::Phase::Acknowledge,
@@ -912,4 +923,172 @@ fn the_long_lived_response_holds_no_principal_it_resolved_at_open() {
         "the stream opens a standing permission and never asks it anything (re-asked through the \
          `EngineHost::principal_standing` host seam, which drives `Standing::still_permitted` core-side)"
     );
+}
+
+// ── THE COST OF ASKING, which nothing bounded ──────────────────────────────────────────────────
+
+/// A LISTEN NAMING MORE URIS THAN THE CAP IS REFUSED, and duplicates are not what breaks it.
+///
+/// Each requested uri drives a grant-scoped catalogue walk at open, and the surviving list is
+/// walked again on every poll for the stream's whole life — so an unbounded `resourceSubscriptions`
+/// is a request whose cost the CALLER chooses. The two halves are one requirement: the cap has to
+/// bite on distinct uris, and it must NOT bite on a client that repeated one uri, because that
+/// client asked for one subscription and repeating it costs nothing once the list is collapsed.
+#[tokio::test]
+async fn a_subscription_naming_more_uris_than_the_cap_is_refused_and_duplicates_are_collapsed() {
+    let (url, _h) = serve(ONE_TOOL_ONE_RESOURCE).await;
+
+    let over: Vec<String> = (0..crate::mcp::subscribe::MAX_SUBSCRIBED_URIS + 1)
+        .map(|n| format!("docs://bulk/{n}"))
+        .collect();
+    // `toolsListChanged` rides along DELIBERATELY: without it a list whose every uri is unreachable
+    // narrows to nothing and the "this stream could deliver nothing" refusal answers with the same
+    // status and the same code, so the case would pass on a tree carrying no cap at all.
+    let response = listen(
+        &url,
+        serde_json::json!({ "toolsListChanged": true, "resourceSubscriptions": over }),
+    )
+    .await;
+    assert_eq!(
+        response.status().as_u16(),
+        400,
+        "an unbounded uri list must be refused before it is walked"
+    );
+    let body: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(
+        body.pointer("/error/code"),
+        Some(&serde_json::json!(-32602)),
+        "the defect is in the caller's own params: {body}"
+    );
+    assert!(
+        body.pointer("/error/message")
+            .and_then(|m| m.as_str())
+            .unwrap_or_default()
+            .contains("at most"),
+        "the refusal must be the CAP's, not the empty-filter refusal that answers alike: {body}"
+    );
+
+    // The SAME count, all one uri. Collapsed to one subscription, so the cap never sees it and the
+    // stream opens — a client that repeated itself is not an attacker.
+    let repeated: Vec<String> = (0..crate::mcp::subscribe::MAX_SUBSCRIBED_URIS + 1)
+        .map(|_| "docs://guide".to_string())
+        .collect();
+    let response = listen(
+        &url,
+        serde_json::json!({ "toolsListChanged": true, "resourceSubscriptions": repeated }),
+    )
+    .await;
+    assert_eq!(
+        response.status().as_u16(),
+        200,
+        "one uri repeated is one subscription, and the cap must not read it as many"
+    );
+    let got = frames(response, 1, std::time::Duration::from_secs(3)).await;
+    let ack = got.first().expect("an acknowledgement");
+    assert_eq!(
+        ack.pointer("/params/notifications/resourceSubscriptions"),
+        Some(&serde_json::json!(["docs://guide"])),
+        "the acknowledged list must be the DEDUPLICATED one, not the caller's repetition: {ack}"
+    );
+}
+
+/// OPENING A SUBSCRIPTION IS CHARGED ON THE CALLER'S OWN BUDGET PLANE — the same per-key gate a
+/// `tools/call` runs, reached the same way.
+///
+/// This method reached no per-key admission at all, and it is the most expensive thing in the
+/// method table to ask for: an accepted stream is a 300-second task that wakes every 250ms,
+/// re-derives this caller's whole visible catalogue on each wake, and can be re-opened as fast as a
+/// client can POST. A caller's budget bounded every `tools/call` it made and bounded nothing about
+/// the streams it held open beside them.
+///
+/// The proof is the METERED ROW, read back out of a real store after a real flush, exactly as
+/// `method_tests`' tool-call case reads its own: the row exists only if the charge ran, and the
+/// charge and the admission are the two halves of one function.
+#[tokio::test]
+async fn opening_a_subscription_is_charged_on_the_callers_budget_plane() {
+    use busbar_store_memory::MemoryStore;
+    metrics_init();
+
+    let store = std::sync::Arc::new(MemoryStore::new());
+    let signer = busbar_substrate::governance::signing::TokenSigner::from_secret_bytes(
+        &[9u8; 32],
+        busbar_substrate::governance::signing::DEFAULT_KID,
+    );
+    let gov_state = engine()
+        .governance(store, Some("admintok".to_string()), Some(signer))
+        .unwrap();
+    let (key, _secret) = gov_state
+        .mint_signed(
+            busbar_substrate::governance::NewKeySpec {
+                name: "subscriber".to_string(),
+                allowed_pools: None,
+                group: None,
+                labels: Default::default(),
+                ..Default::default()
+            },
+            2_000_000_000,
+            1_000_000_000,
+        )
+        .unwrap();
+
+    let def: crate::mcp::config::McpServerDefCfg = serde_yaml::from_str(ONE_TOOL)
+        .expect("the `tools:` registration was refused by the grammar");
+    let app = test_app()
+        .mcp(&McpCfg {
+            canonical_uri: CANONICAL.to_string(),
+            authorization_servers: vec!["https://login.example.com".to_string()],
+            scopes_supported: Vec::new(),
+            allowed_origins: Vec::new(),
+        })
+        .mcp_server("tools", def)
+        .governance(gov_state.clone())
+        .build();
+    let gov = busbar_api::PlaneRequestCtx {
+        key: Some(std::sync::Arc::new(key.clone())),
+    };
+
+    // Dispatched directly rather than through the shared `call` helper: that helper drains the body
+    // to completion, and the body here is a stream that stays open for five minutes by design. The
+    // subject is what happened BEFORE the first byte, so the stream is dropped unread.
+    let handle = app_handle(app);
+    let ctx = crate::mcp::method::Ctx {
+        host: engine_host_from_handle(&handle),
+        gov: &gov,
+        actor: "test-principal",
+        capabilities: &ALL_CAPABILITIES,
+        headers: &NO_HEADERS,
+        scope: None,
+    };
+    let response = crate::mcp::method::dispatch(
+        &ctx,
+        "subscriptions/listen",
+        Some(&serde_json::json!({ "notifications": { "toolsListChanged": true } })),
+        Some(1.into()),
+    )
+    .await
+    .expect("`subscriptions/listen` must be in the method table");
+    assert_eq!(
+        response.status().as_u16(),
+        200,
+        "an ordinary subscription must still open"
+    );
+    drop(response);
+
+    assert!(
+        gov_state.flush_metering() > 0,
+        "opening a subscription must have metered"
+    );
+    let bucket = busbar_substrate::governance::metering_bucket(busbar_substrate::store::now());
+    let rows = gov_state.metering_for(bucket).expect("metering rows");
+    let ours: Vec<_> = rows.iter().filter(|r| r.key_id == key.id).collect();
+    assert_eq!(
+        ours.len(),
+        1,
+        "ONE metered event per OPEN — not zero, and not one per poll: {rows:?}"
+    );
+    assert_eq!(
+        ours[0].model, "subscriptions/listen",
+        "the metered series names the method that was opened"
+    );
+    assert_eq!(ours[0].provider, "mcp", "and the plane it was opened on");
 }

@@ -68,14 +68,20 @@ fn the_configuration_schema_is_a_document() {
     assert_eq!(parsed["required"], serde_json::json!(["canonical_uri"]));
 }
 
-/// Every declared operation class is named by at least one method of the vocabulary.
+/// Every declared operation class is produced by something the plane decodes.
+///
+/// Most classes are named by a method of the vocabulary. Two are not, and each is produced a
+/// different way that the decode step still reaches: the notice class is produced by a recognised
+/// notification, and the metadata class is produced by a GET on the discovery-document path, which
+/// carries no method at all and is recognised by its path.
 #[test]
 fn every_class_is_reachable_from_the_vocabulary() {
     for op in McpPlane::OP_CLASSES {
         let from_a_method = crate::ops::METHODS.iter().any(|m| m.op == *op);
         let from_a_notice = *op == crate::ops::OP_NOTIFICATION;
+        let from_the_discovery_surface = *op == crate::ops::OP_METADATA;
         assert!(
-            from_a_method || from_a_notice,
+            from_a_method || from_a_notice || from_the_discovery_surface,
             "{op} is declared but nothing produces it"
         );
     }

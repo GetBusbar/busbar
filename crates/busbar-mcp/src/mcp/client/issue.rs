@@ -49,7 +49,7 @@ use super::egress::{plan_verb_credential, CredentialPlan};
 use super::identity::ServerId;
 use super::jsonrpc::{parse_response, RpcOutcome};
 use super::verb::UpstreamVerb;
-use super::wire::WireLeg;
+use super::wire::{TransportError, WireLeg};
 use crate::mcp::upstream::Authorised;
 use busbar_substrate::audit::vocab::{OUTCOME_DISPATCHED, OUTCOME_REFUSED, REASON_UPSTREAM_FAILED};
 
@@ -211,7 +211,21 @@ pub(crate) async fn issue(
         Ok(r) => r,
         Err(e) => {
             let reason = e.to_string();
-            record(OUTCOME_DISPATCHED, REASON_UPSTREAM_FAILED.to_string());
+            // R9: `DISPATCHED` unconditionally here claimed the upstream saw every send failure,
+            // including the ones where NOTHING LEFT BUSBAR (`Unreachable`/`Refused`/`Supervision` —
+            // see `TransportError`'s own doc). That is a false fact in the call-log chain: an
+            // operator reading `dispatched` believes the upstream received this call, and a
+            // connect-class failure means it never did. Mirrors
+            // `crate::mcp::upstream::classify_wire_failure`'s BeforeFirstByte rule — only `Io`
+            // (failed/timed out AFTER the destination was reached, so the request may have landed)
+            // is ambiguous enough to still call `DISPATCHED`.
+            let outcome = match &e {
+                TransportError::Unreachable(_)
+                | TransportError::Refused(_)
+                | TransportError::Supervision(_) => OUTCOME_REFUSED,
+                TransportError::Io(_) => OUTCOME_DISPATCHED,
+            };
+            record(outcome, REASON_UPSTREAM_FAILED.to_string());
             return Err(reason);
         }
     };
