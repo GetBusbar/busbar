@@ -66,7 +66,8 @@
 //! token, an unparseable token, a token whose MAC does not verify, or a token naming a task busbar
 //! does not hold is a `401` that says nothing about which of those it was.
 
-use std::sync::OnceLock;
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
 
 use axum::response::{IntoResponse as _, Response};
 
@@ -161,6 +162,118 @@ fn task_of(presented: &str) -> Option<String> {
         return None;
     }
     Some(task_id.to_string())
+}
+
+/// S17: THE PER-TASK RATE MAP. The MAC proves a presented token was minted by this process for one
+/// task, and [`token_live`] proves that task has not ended — neither says anything about how OFTEN
+/// the token may be presented. A backend holding a live token (its own, or one lifted from an
+/// outbound hop's logs — see the module header on why the token rides in the clear on the wire it
+/// travels) could otherwise drive this endpoint as fast as it can open sockets: every call reaches
+/// `taskstore::transition` and, on a state change, spawns a delivery to the caller's own webhook, so
+/// an unbounded rate here is an unbounded rate against a customer's receiver too.
+///
+/// Keyed by the task id the token already named — never by the token itself, which would let a
+/// backend evade the count by presenting the one valid token it holds under a churn of nothing, and
+/// never by the caller's IP, which a fronted backend does not have one honest value of. The map can
+/// only ever hold entries for task ids a valid MAC has resolved, so its size tracks the number of
+/// tasks that have PUSHED at least once — bounded in the ordinary case by eviction-on-terminal
+/// ([`rate_forget`], called both here in [`push_notification`] once a push's own transition ends the
+/// task and from the dead-token branch above), and bounded in the worst case by the
+/// [`RATE_MAP_MAX_ENTRIES`] backstop for a task that reaches terminal some OTHER way and never
+/// pushes again to trigger either of those.
+struct RateWindow {
+    window_start: u64,
+    count: u32,
+}
+
+/// The window a task's push rate is measured over, and the count admitted within it. Generous
+/// enough for the legitimate pattern this endpoint serves — a handful of transitions per task,
+/// `working` → `input-required` → a terminal state — while still bounding a runaway or malicious
+/// backend to a rate that cannot turn this endpoint into an amplifier against a caller's webhook.
+const RATE_WINDOW_SECS: u64 = 60;
+const RATE_MAX_PER_WINDOW: u32 = 120;
+
+/// The backstop cap on the rate map's total size. Eviction-on-terminal is the primary cleanup — it
+/// fires on the mainline path (a push's own transition lands the task in a terminal state) and on
+/// the belt-and-braces path (a dead token presented again) — but neither fires for a task that
+/// reaches terminal by some path other than a push landing here and is never presented again. Once
+/// the map has grown past this many entries, [`rate_limited`] claims a sweep (at most once per
+/// [`RATE_STALE_SECS`], the same "claim the work once" shape `taskstore::sweep_now` uses) that drops
+/// every entry whose window has not been touched in that long. A live task's window keeps refreshing
+/// itself on every push, so the sweep can never take an entry out from under a task that is still
+/// being pushed to.
+const RATE_MAP_MAX_ENTRIES: usize = 50_000;
+
+/// How stale a window must be before the backstop sweep will drop it: ten full rate windows with no
+/// push at all. Long enough that nothing still in legitimate use looks like this.
+const RATE_STALE_SECS: u64 = RATE_WINDOW_SECS * 10;
+
+fn rate_map() -> &'static Mutex<HashMap<String, RateWindow>> {
+    static MAP: OnceLock<Mutex<HashMap<String, RateWindow>>> = OnceLock::new();
+    MAP.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// `true` once per [`RATE_STALE_SECS`], so the backstop sweep in [`rate_limited`] costs an O(n) walk
+/// of the map only occasionally rather than on every call once the map is over the cap.
+fn rate_purge_due(now: u64) -> bool {
+    static LAST_PURGE: OnceLock<std::sync::atomic::AtomicU64> = OnceLock::new();
+    let last = LAST_PURGE.get_or_init(|| std::sync::atomic::AtomicU64::new(0));
+    let prev = last.load(std::sync::atomic::Ordering::Relaxed);
+    now.saturating_sub(prev) >= RATE_STALE_SECS
+        && last
+            .compare_exchange(
+                prev,
+                now,
+                std::sync::atomic::Ordering::Relaxed,
+                std::sync::atomic::Ordering::Relaxed,
+            )
+            .is_ok()
+}
+
+/// `true` when `task_id` has exceeded [`RATE_MAX_PER_WINDOW`] presentations within the current
+/// [`RATE_WINDOW_SECS`]-second window and this call must be refused before it does any further work.
+fn rate_limited(task_id: &str, now: u64) -> bool {
+    let mut map = rate_map().lock().unwrap_or_else(|e| e.into_inner());
+    let limited = {
+        let entry = map.entry(task_id.to_string()).or_insert(RateWindow {
+            window_start: now,
+            count: 0,
+        });
+        if now.saturating_sub(entry.window_start) >= RATE_WINDOW_SECS {
+            entry.window_start = now;
+            entry.count = 0;
+        }
+        entry.count += 1;
+        entry.count > RATE_MAX_PER_WINDOW
+    };
+    // ── THE BACKSTOP. Only ever looks at the map when it is both over the cap AND a sweep has not
+    // run recently, so this is not a cost the mainline path pays.
+    if map.len() > RATE_MAP_MAX_ENTRIES && rate_purge_due(now) {
+        map.retain(|_, w| now.saturating_sub(w.window_start) < RATE_STALE_SECS);
+    }
+    limited
+}
+
+/// Drop `task_id`'s rate entry. Called once its token has stopped authorising anything
+/// ([`token_live`] false), so the map does not hold an entry forever for a task that will never be
+/// pushed to again.
+fn rate_forget(task_id: &str) {
+    rate_map()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(task_id);
+}
+
+/// TEST-ONLY: whether the rate map currently holds an entry for `task_id`. Reads the ONE
+/// process-global map every push-callback test in the binary shares, so a test built on this checks
+/// only its OWN task's presence/absence — never the map's total size, which a concurrently running
+/// test could change between two reads.
+#[cfg(all(test, feature = "test-support"))]
+pub(crate) fn rate_map_contains(task_id: &str) -> bool {
+    rate_map()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .contains_key(task_id)
 }
 
 /// BUSBAR'S OWN CALLBACK ADDRESS for this deployment, or `None` when busbar must not offer one.
@@ -355,9 +468,24 @@ pub(crate) async fn push_notification(
     // `task_of` gives one answer for four different failures: whether a task exists, and whether it
     // has ended, are not facts this endpoint tells an unauthenticated caller.
     if !token_live(task.state) {
+        // The task has ended, so its token authorises nothing further: it will never be presented
+        // validly again, and its rate entry would otherwise linger in the map for as long as this
+        // process runs.
+        rate_forget(&task_id);
         return refused(
             axum::http::StatusCode::UNAUTHORIZED,
             "this endpoint is addressed by the push token busbar registered with the agent",
+        );
+    }
+
+    // ── S17: THE RATE MAP. Asked once the token is proven live, so a dead or forged presentation is
+    // never what drives an entry into the map — only a token that genuinely still authorises this
+    // task can spend its budget. See `rate_limited`'s doc for what this bounds and why it is keyed
+    // by task id.
+    if rate_limited(&task_id, ctx.host.clock_now_secs()) {
+        return refused(
+            axum::http::StatusCode::TOO_MANY_REQUESTS,
+            "this task's push callback is being presented too often",
         );
     }
 
@@ -397,6 +525,16 @@ pub(crate) async fn push_notification(
             }
         }
     };
+
+    // ── THE MAINLINE EXIT OUT OF THE RATE MAP. If THIS push is what just ended the task, its rate
+    // entry is forgotten right here rather than waiting on a later presentation of a now-dead token
+    // that, ordinarily, never comes — a backend has no reason to push again once it has reported an
+    // ending. This is the common case `RATE_MAP_MAX_ENTRIES`'s backstop exists beside, not a
+    // replacement for it: a task that reaches terminal by some path OTHER than a push landing here
+    // still relies on the backstop.
+    if moved.state.is_terminal() {
+        rate_forget(&task_id);
+    }
 
     // AND THE CALLER'S OWN DELIVERY, through the one delivery path. Detached from this response for
     // the reason `receive::notify_push` detaches its own: the party waiting on this response is the

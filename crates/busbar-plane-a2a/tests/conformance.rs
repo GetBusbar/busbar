@@ -775,11 +775,9 @@ fn every_bodyless_route_the_codec_mounts_decodes() {
             "/a2a/tasks/t-1/pushNotificationConfigs",
             ops::OP_PUSH_CONFIG_LIST,
         ),
-        (
-            "POST",
-            "/a2a/tasks/t-1/pushNotificationConfigs",
-            ops::OP_PUSH_CONFIG_CREATE,
-        ),
+        // The POST create is NOT bodyless: it names its configuration in the request document, so an
+        // empty body is a document that has not arrived rather than a complete request. Its
+        // deferral and its open path are pinned in `a_push_config_create_with_no_body_is_deferred`.
         (
             "GET",
             "/a2a/tasks/t-1/pushNotificationConfigs/c-9",
@@ -936,4 +934,142 @@ fn the_document_mount_is_unchanged_by_the_open_surfaces() {
         draft.facts.get(facts::FACT_METHOD),
         Some(busbar_contract::bounded::FactValue::Str("tasks/get"))
     );
+}
+
+/// A JSON-RPC notification — a well-formed request that carries no `id` — opens no unit.
+///
+/// A notification expects no answer, so opening one as a OneShot routes it and bills a unit for work
+/// no caller is waiting on. The honest answer is to discard it: change no state, hand nothing to the
+/// loop.
+#[test]
+fn a_notification_opens_no_unit() {
+    let plane = A2aPlane::EMPTY;
+    let scaffold = Scaffold::new("http").on_path("/a2a");
+    let ctx = scaffold.ctx();
+    // Well formed in every way except that it names no identifier.
+    let body = br#"{"jsonrpc":"2.0","method":"tasks/get","params":{"id":"t1"}}"#;
+    let frames = vec![frame(body)];
+    let mut cursor = FrameCursor::new(&frames);
+    let ingress = plane
+        .decode_ingress(&mut cursor, None, &ctx)
+        .expect("a notification decodes");
+    assert!(
+        matches!(ingress, Ingress::Discard { .. }),
+        "a notification must open no billable unit, got {ingress:?}"
+    );
+}
+
+/// The open discovery card is refused no auth; the authenticated extended card still demands a
+/// bearer. Both are `OP_AGENT_CARD`, so op-class alone cannot tell the open surface from the closed
+/// one — the plane must carry the distinction as decode-sealed evidence.
+#[test]
+fn the_open_discovery_card_needs_no_credential() {
+    let plane = A2aPlane::EMPTY;
+    let seal = common::TestSeal;
+
+    // The open discovery card, decoded off its well-known path so the unit carries exactly the
+    // facts the decode step sealed onto it.
+    let card = Scaffold::new("http").on_path("/.well-known/agent-card.json");
+    let card_ctx = card.ctx();
+    let card_frames = vec![frame(b"")];
+    let mut card_cursor = FrameCursor::new(&card_frames);
+    let Ingress::OneShot(card_draft) = plane
+        .decode_ingress(&mut card_cursor, None, &card_ctx)
+        .expect("the discovery card decodes")
+    else {
+        panic!("the discovery card is one whole unit");
+    };
+    assert_eq!(card_draft.op, ops::OP_AGENT_CARD);
+    let card_unit = busbar_contract::unit::Unit::new(
+        &seal,
+        busbar_contract::UnitKey::new(1),
+        busbar_contract::unit::Origin::Client,
+        None,
+        None,
+        busbar_contract::wire::Direction::Inbound,
+        Some(common::principal()),
+        card_draft.op,
+        card_draft.body_ir,
+        card_draft.facts,
+        None,
+    );
+    assert_eq!(
+        plane.authenticate(&card_unit, &card_ctx).narrowing,
+        None,
+        "the open discovery card is refused auth it should not need"
+    );
+
+    // The authenticated extended card is the same op arriving on its own path: it still presents a
+    // bearer, which is what keeps the fix from opening the authenticated surface as well.
+    let ext = Scaffold::new("http")
+        .on_path("/a2a/extendedAgentCard")
+        .with_method("GET");
+    let ext_ctx = ext.ctx();
+    let ext_frames = vec![frame(b"")];
+    let mut ext_cursor = FrameCursor::new(&ext_frames);
+    let Ingress::OneShot(ext_draft) = plane
+        .decode_ingress(&mut ext_cursor, None, &ext_ctx)
+        .expect("the extended card decodes")
+    else {
+        panic!("the extended card is one whole unit");
+    };
+    assert_eq!(ext_draft.op, ops::OP_AGENT_CARD);
+    let ext_unit = busbar_contract::unit::Unit::new(
+        &seal,
+        busbar_contract::UnitKey::new(2),
+        busbar_contract::unit::Origin::Client,
+        None,
+        None,
+        busbar_contract::wire::Direction::Inbound,
+        Some(common::principal()),
+        ext_draft.op,
+        ext_draft.body_ir,
+        ext_draft.facts,
+        None,
+    );
+    assert_eq!(
+        plane.authenticate(&ext_unit, &ext_ctx).narrowing,
+        Some(busbar_contract::ids::SchemeAlt::new("bearer")),
+        "the authenticated extended card still presents a bearer"
+    );
+}
+
+/// A push-config create with no body yet is deferred, not opened from a document that never arrived.
+///
+/// The create names its configuration in the POST body; an empty body is a create of nothing, and
+/// the document has not arrived on this frame. Opening a unit from it bills for a document that never
+/// came. Every other targeted surface names its subject in the target and needs no body, so only the
+/// create defers.
+#[test]
+fn a_push_config_create_with_no_body_is_deferred() {
+    let plane = A2aPlane::EMPTY;
+    let empty = Scaffold::new("http")
+        .on_path("/a2a/tasks/t-1/pushNotificationConfigs")
+        .with_method("POST");
+    let empty_ctx = empty.ctx();
+    let empty_frames = vec![frame(b"")];
+    let mut empty_cursor = FrameCursor::new(&empty_frames);
+    let ingress = plane
+        .decode_ingress(&mut empty_cursor, None, &empty_ctx)
+        .expect("an empty create defers");
+    assert!(
+        matches!(ingress, Ingress::NeedMore),
+        "a create with no body must defer, got {ingress:?}"
+    );
+
+    // A create that DID carry its document opens a unit as before.
+    let full = Scaffold::new("http")
+        .on_path("/a2a/tasks/t-1/pushNotificationConfigs")
+        .with_method("POST");
+    let full_ctx = full.ctx();
+    let body = br#"{"pushNotificationConfig":{"url":"https://example.test/cb"}}"#;
+    let full_frames = vec![frame(body)];
+    let mut full_cursor = FrameCursor::new(&full_frames);
+    let Ingress::OneShot(draft) = plane
+        .decode_ingress(&mut full_cursor, None, &full_ctx)
+        .expect("a create with a body opens")
+    else {
+        panic!("a create with a body is one whole unit");
+    };
+    assert_eq!(draft.op, ops::OP_PUSH_CONFIG_CREATE);
 }
