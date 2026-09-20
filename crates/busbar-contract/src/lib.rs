@@ -13,6 +13,7 @@
 pub mod authz;
 pub mod bounded;
 pub mod dest;
+pub mod diagnostics;
 pub mod grammar;
 pub mod ids;
 pub mod kinds;
