@@ -569,6 +569,15 @@ pub fn register_session_runner(key: &'static str, runner: SessionRunner) {
         .insert(key, runner);
 }
 
+/// Whether a one-shot kernel-loop runner is registered for this capability key — i.e. whether that
+/// plane has been FLIPPED onto the unified kernel loop. The read-side twin of
+/// [`register_gauntlet_runner`], for a composition-root boot assertion or a per-plane cutover
+/// regression test. NEUTRAL: a bare `&str` lookup that names no plane.
+#[must_use]
+pub fn gauntlet_runner_registered(key: &str) -> bool {
+    one_shot_runner(key).is_some()
+}
+
 fn one_shot_runner(key: &str) -> Option<GauntletRunner> {
     ONE_SHOT_RUNNERS
         .read()

@@ -1219,6 +1219,16 @@ impl busbar_substrate::plane_host::GauntletPlane for ToolCallPlane<'_> {
         // this path (the engine reads `ctx`, not `req`).
         tools_call(self.ctx, self.params, self.id).await
     }
+
+    /// MCP'S CAPABILITY KEY on the composition-tier host-selection seam (loop unification, #28). The
+    /// plane DECLARES its identity here; the LOOP CHOICE is the composition root's — it registers a
+    /// kernel-loop runner under this same key ([`crate::PLANE_KEY`]) or leaves it UNSET. With W2.a the
+    /// root flips `mcp` on, so this reported key routes `tools/call` through the unified kernel loop;
+    /// the `drive` above is byte-identical either way, so declaring the key is safe with or without
+    /// the flip.
+    fn capability_key(&self) -> Option<&str> {
+        Some(crate::PLANE_KEY)
+    }
 }
 
 /// Route one `tools/call` through the shared gauntlet sequence — the seam entry the dispatch arm

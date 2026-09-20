@@ -79,3 +79,10 @@ pub use diagnostics::DIAGNOSTICS;
 /// at the crate root so the `busbar` binary names one stable path (`busbar_mcp::PROTO_DECL`) and does
 /// not reach into the `codec` module for it. See [`codec::DECL`] for the declaration itself.
 pub use busbar_mcp_codec::PROTO_DECL;
+
+/// MCP'S PLANE CAPABILITY KEY (`"mcp"`) — the string the composition root flips onto the unified
+/// kernel loop ([`busbar_substrate::plane_host::register_gauntlet_runner`]) and the same string the
+/// `tools/call` plane reports from its `GauntletPlane::capability_key`. Re-exported at the crate root
+/// so the `busbar` binary names ONE stable path (`busbar_mcp::PLANE_KEY`) and the plane and the flip
+/// cannot drift onto two different literals.
+pub use busbar_mcp_codec::PLANE_KEY;

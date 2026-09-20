@@ -48,10 +48,13 @@ pub fn flip_session_to_kernel(capability_key: &'static str) {
 /// Install the kernel-backed runners into the host-selection seam. Called once by `main.rs` at boot,
 /// AFTER the planes are registered (mirror of `busbar_admin::install()`).
 ///
-/// DORMANT by design: it registers NOTHING, so the seam stays UNSET and every plane rides the
-/// substrate loop exactly as today. Each per-plane flip is one line added here — e.g.
-/// `flip_one_shot_to_kernel("mcp");` or `flip_session_to_kernel("voice");` — landed only once that
-/// plane's money family is proven byte-green on the fleet-box oracle (#29).
+/// W2.a — MCP is FLIPPED onto the unified kernel loop (the first path-swap, DECISIONS #28/#29). The
+/// MCP `tools/call` plane reports its capability key (`busbar_mcp::PLANE_KEY`) and this registers the
+/// kernel-loop runner under it, so the SHIPPED MCP serving path now flows through
+/// `busbar_kernel::teller::run_unit` — proven byte-identical (oracle, #29). Every OTHER plane still
+/// rides the substrate loop until its own oracle-gated one-liner lands here (W2.b: a2a/streaming/llm;
+/// sessions via `flip_session_to_kernel`).
 pub fn install() {
-    // Intentionally empty: zero planes flipped. The five onboards become oracle-gated one-liners here.
+    #[cfg(feature = "plane-mcp")]
+    flip_one_shot_to_kernel(busbar_mcp::PLANE_KEY);
 }

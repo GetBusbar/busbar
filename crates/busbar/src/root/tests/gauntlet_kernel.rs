@@ -270,6 +270,24 @@ fn host_selection_seam_unset_session_key_routes_to_substrate() {
     );
 }
 
+// ── W2.a: THE MCP PRODUCTION FLIP ───────────────────────────────────────────────────────────────
+// The shipped serving path for MCP `tools/call` now rides the unified kernel loop: the plane declares
+// its capability key and the composition root registers the kernel-loop runner under it at boot.
+
+#[cfg(feature = "plane-mcp")]
+#[test]
+fn install_flips_mcp_onto_the_unified_kernel_loop() {
+    // The composition-root install (main.rs calls this at boot) must register a kernel-loop runner
+    // under MCP's capability key — the per-plane FLIP. Before W2.a this was empty (dormant), so this
+    // asserts the shipped MCP path is genuinely swapped onto the unified loop, not the substrate loop.
+    crate::root::gauntlet_install::install();
+    assert!(
+        busbar_substrate::plane_host::gauntlet_runner_registered(busbar_mcp::PLANE_KEY),
+        "install() must register MCP ({}) onto the unified kernel loop — the W2.a flip",
+        busbar_mcp::PLANE_KEY,
+    );
+}
+
 #[test]
 fn host_selection_seam_routes_session_to_registered_runner_when_set() {
     register_session_runner("kappa-test-session", sentinel_session);
