@@ -461,7 +461,7 @@ fn the_shipped_transport_stack_has_no_scheme_conflict() {
         index.iter().find(|(s, _)| *s == "http").map(|(_, t)| *t),
         Some("http")
     );
-    if VOICE {
+    if STREAMING {
         assert_eq!(
             index.iter().find(|(s, _)| *s == "wss").map(|(_, t)| *t),
             Some("ws")
