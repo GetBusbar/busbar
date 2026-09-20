@@ -145,7 +145,7 @@ fn writer_for(dialect: Dialect) -> Box<dyn DuplexWriter> {
 fn client_event_from_wire(
     client_dialect: Dialect,
     wire: &[u8],
-    state: &mut VoiceSessionState,
+    state: &mut StreamingSessionState,
 ) -> Result<Option<IrClientEvent>, Encode> {
     match client_dialect {
         Dialect::TwilioMediaStreams => {
@@ -189,7 +189,7 @@ fn client_event_from_wire(
 fn write_up_to_arena<'u>(
     upstream_dialect: Dialect,
     event: IrClientEvent,
-    state: &mut VoiceSessionState,
+    state: &mut StreamingSessionState,
     ctx: &Ctx<'u>,
 ) -> Result<Option<ArenaBytes<'u>>, Encode> {
     let writer = writer_for(upstream_dialect);
@@ -263,7 +263,7 @@ impl Plane for StreamingPlane {
         // rather than raw PCM; a byte pass-through of the raw opening frame silently applied none of
         // it. A one-shot transcribe/tts unit has no session state: its body was already decoded in
         // the upstream's HTTP request shape, so it passes straight through unchanged.
-        let session = st.and_then(|halfbox| halfbox.get_mut::<VoiceSessionState>());
+        let session = st.and_then(|halfbox| halfbox.get_mut::<StreamingSessionState>());
         let body = match session {
             Some(state) => {
                 let client_dialect = client_dialect_from_session(ctx)
@@ -449,7 +449,7 @@ impl Plane for StreamingPlane {
         &self,
         refusal: &Refusal,
         _draft: Option<&UnitDraft<'u>>,
-        _st: Option<&PlaneSessionState>,
+        st: Option<&PlaneSessionState>,
         ctx: &Ctx<'u>,
     ) -> Result<ArenaBytes<'u>, Encode> {
         let (code, message) = refusal_render(refusal.reason);
@@ -457,18 +457,21 @@ impl Plane for StreamingPlane {
             code: code.to_string(),
             message: message.to_string(),
         };
-        // A refusal is rendered in the OpenAI Realtime shape unconditionally: `st` is deliberately
-        // `&PlaneSessionState` (immutable — a refusal never advances codec state, per the trait's own
-        // doc comment), so this plane cannot read back which dialect a not-yet-open session even
-        // claimed. `error` is one of the few wire shapes both duplex dialects converge on closely
-        // enough that a client library for either can surface it; a fully dialect-correct refusal
-        // would need the immutable half of the state to still carry the negotiated dialect, which it
-        // does today (`StreamingSessionState::dialect`) but this method has no path to it before Unit 0
-        // completes. Flagged rather than guessed past.
-        // The write seam threads the session's decode state (it holds what framing cannot answer
-        // per-event); a refusal reaches none of the session's state here, and needs none — it is one
-        // self-contained frame with nothing accumulated behind it, so it is framed against a fresh one.
-        let bytes = OpenAiRealtimeCodec
+        // A refusal is rendered in the dialect this session NEGOTIATED, not one fixed shape. The
+        // immutable session half carries the bound dialect (`StreamingSessionState::dialect`), and a
+        // Gemini Live client handed an OpenAI-Realtime `{"type":"error"}` frame cannot parse it — its
+        // errors arrive inside `serverContent`. `error` is a wire shape both duplex dialects carry, so
+        // each dialect's own writer frames it into the form its client library surfaces. When no
+        // session state is threaded (a unit-0 refusal, before any dialect binds) the OpenAI shape is
+        // the default — the dialect every shared-IR concept was named from.
+        // The write seam threads a fresh decode state: a refusal reaches none of the session's
+        // accumulated codec state and needs none — it is one self-contained frame with nothing behind
+        // it (a refusal never advances codec state, per the trait's own doc comment).
+        let dialect = st
+            .and_then(PlaneSessionState::get::<StreamingSessionState>)
+            .and_then(|s| s.dialect)
+            .unwrap_or(Dialect::OpenaiRealtime);
+        let bytes = writer_for(dialect)
             .write_down(event, &mut DecodeState::default())
             .ok_or(Encode::Unrepresentable)?
             .0;
@@ -953,7 +956,27 @@ fn decode_twilio_frame<'u>(
         twilio::TwilioEvent::Connected => Ok(Ingress::Discard {
             reason: DiscardCode::Unsupported,
         }),
-        twilio::TwilioEvent::Start { stream_sid, .. } => {
+        twilio::TwilioEvent::Start {
+            stream_sid,
+            encoding,
+            sample_rate,
+            channels,
+            ..
+        } => {
+            // Every millisecond this dialect derives runs through `AudioFormat::G711Ulaw::bytes_to_ms`
+            // (the `media` arm below, and the turn-opening frame that becomes the unit's egress body),
+            // which is baked to the ONE carrier this plane transcodes: G.711 µ-law, 8 kHz, mono. A
+            // `start` that negotiates a different rate/channel-count/encoding would have every duration
+            // measured against the wrong constant — a 16 kHz caller billed at half duration, a-law
+            // bytes transcoded as µ-law — so a carrier that is not the assumed one is refused here
+            // rather than silently mismetered downstream. An ABSENT field is the passthrough default
+            // Twilio omits, so only a STATED disagreement refuses.
+            if (sample_rate != 0 && sample_rate != 8000)
+                || (channels != 0 && channels != 1)
+                || !twilio_carrier_is_mulaw(&encoding)
+            {
+                return Err(Decode::UnsupportedOperation);
+            }
             state.twilio_stream_sid = Some(stream_sid);
             state.dialect = Some(Dialect::TwilioMediaStreams);
             Ok(Ingress::Discard {
@@ -1009,6 +1032,21 @@ fn decode_twilio_frame<'u>(
             })
         }
     }
+}
+
+/// Whether a Twilio `start.mediaFormat.encoding` names the G.711 µ-law carrier this dialect's
+/// millisecond math assumes.
+///
+/// An ABSENT (empty) encoding is the passthrough default Twilio omits, and is accepted. A STATED
+/// encoding must be one of µ-law's spellings (`audio/x-mulaw`, `mulaw`, `pcmu`, ...); a-law
+/// (`audio/x-pcma`/`alaw`/`pcma`) or any other stated codec is refused, because its bytes are not
+/// what `AudioFormat::G711Ulaw::bytes_to_ms` measures.
+fn twilio_carrier_is_mulaw(encoding: &str) -> bool {
+    if encoding.is_empty() {
+        return true;
+    }
+    let e = encoding.to_ascii_lowercase();
+    e.contains("mulaw") || e.contains("ulaw") || e.contains("pcmu")
 }
 
 /// Turn one decoded client→server IR event into an `Ingress` answer, for the two WS dialects.
