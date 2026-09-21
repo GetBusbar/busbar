@@ -99,7 +99,7 @@ impl Future for ResolveFuture {
                 .map(|r| r.map(ResolvedAddrs::Gai).map_err(Into::into)),
             ResolveFuture::Ready(slot) => Poll::Ready(
                 slot.take()
-                    .expect("a resolve future is polled to completion once"),
+                    .expect("a resolve future is polled to its end once"),
             ),
             ResolveFuture::Custom(f) => f
                 .as_mut()

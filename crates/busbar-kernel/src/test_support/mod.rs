@@ -225,6 +225,7 @@ impl MockServerState {
 pub struct MockServer {
     addr: SocketAddr,
     handle: Option<JoinHandle<()>>,
+    stop: Option<tokio::sync::oneshot::Sender<()>>,
 }
 
 impl MockServer {
@@ -241,12 +242,21 @@ impl MockServer {
             .with_state(state);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
+        // Cooperative shutdown rather than `JoinHandle::abort`: `with_graceful_shutdown` is a signal
+        // `axum::serve` races inside its own accept loop, never a forced mid-flight interruption.
+        let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
         let handle = tokio::spawn(async move {
-            axum::serve(listener, app).await.unwrap();
+            axum::serve(listener, app)
+                .with_graceful_shutdown(async move {
+                    let _ = stop_rx.await;
+                })
+                .await
+                .unwrap();
         });
         Self {
             addr,
             handle: Some(handle),
+            stop: Some(stop_tx),
         }
     }
 
@@ -256,9 +266,12 @@ impl MockServer {
     pub fn base_url(&self) -> String {
         format!("http://{}", self.addr)
     }
-    pub async fn shutdown(self) {
-        if let Some(handle) = self.handle {
-            handle.abort();
+    pub async fn shutdown(mut self) {
+        if let Some(stop) = self.stop.take() {
+            let _ = stop.send(());
+        }
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.await;
         }
     }
 }

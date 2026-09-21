@@ -189,56 +189,23 @@ pub(crate) async fn translate_response_cross_protocol(
     // parses but whose shape is unmodeled falls through to the ingress-native 500 and bills nothing).
     let body_json = busbar_substrate_values::json::parse::<Value>(&bytes);
     if body_json.is_err() {
-        if let Some(eh) = egress_op {
-            match eh.translate_response(
-                busbar_substrate_values::handlers::TranslateRespInput::Opaque(&bytes),
-                ingress_op.is_some(),
-                ingress_protocol,
-                &EngineTables::new(rt).lanes()[i].model,
-                now(),
-                false,
-                None,
-                ingress_request_body.as_ref(),
-            ) {
-                Err(ref e) => {
-                    diag_debug!(
-                        CROSSPROTO_BINARY_CODEC_FAILED,
-                        ingress = %ingress_protocol,
-                        egress = %egress_name,
-                        error = ?e,
-                        degraded,
-                        "cross-protocol binary response failed the egress codec (read_response); returning ingress-native 500",
-                    );
-                }
-                Ok((usage, delivered)) => {
-                    if let busbar_substrate_values::wire::TranslatedResponse::Typed(wire) =
-                        delivered
-                    {
-                        // Delivered: bill and keep the lane unit (never refund out from under an
-                        // already-billed request).
-                        // THE REPORT-BACK, on the opaque delivery: the whole answer is in hand and
-                        // is about to be relayed, so the tap knows all four figures before the
-                        // client has any of them. Read from the SAME `usage` the accrual is made
-                        // from, before it moves.
-                        tap.report(TapReport {
-                            lane: i,
-                            usage: token_usage_of(&usage),
-                            billing_failed: false,
-                            finish: TapFinish::Complete,
-                        });
-                        record_resp_usage(
-                            host,
-                            usage,
-                            &usage_sink,
-                            EngineTables::new(rt).lanes().get(i),
-                        );
-                        budget_guard.disarm();
-                        return delivery.respond(wire.content_type, wire.bytes);
-                    }
-                    // `Untranslatable`: no client body could be written — fall through to the 500,
-                    // unbilled, guard left armed so the budget unit is refunded.
-                }
-            }
+        if let Some(resp) = try_deliver_opaque(
+            host,
+            rt,
+            i,
+            ingress_protocol,
+            egress_name,
+            egress_op,
+            ingress_op.is_some(),
+            &bytes,
+            ingress_request_body.as_ref(),
+            degraded,
+            &usage_sink,
+            budget_guard,
+            &delivery,
+            tap,
+        ) {
+            return resp;
         }
     }
     if let (Ok(rv), Some(eh)) = (&body_json, egress_op) {
@@ -279,6 +246,81 @@ pub(crate) async fn translate_response_cross_protocol(
         degraded,
         tap,
     )
+}
+
+/// The OPAQUE (non-JSON) delivery attempt, extracted straight out of
+/// [`translate_response_cross_protocol`] (pure extraction — no behavior change; see its call site):
+/// binary egress bodies — e.g. speech audio — bridge at the byte level through the operation codecs
+/// rather than through the JSON `Value` path below. `Some(resp)` is a terminal response the caller
+/// must return as-is (a delivered body, billed, OR the read-side plumbing already reported); `None`
+/// means nothing here delivered and the caller should fall through to the JSON path.
+#[allow(clippy::too_many_arguments)]
+fn try_deliver_opaque(
+    host: &Arc<dyn EngineHost>,
+    rt: &Arc<NativeRuntime>,
+    i: usize,
+    ingress_protocol: &str,
+    egress_name: &str,
+    egress_op: Option<&dyn busbar_substrate_values::handlers::OperationHandler>,
+    ingress_op_present: bool,
+    bytes: &[u8],
+    ingress_request_body: Option<&Value>,
+    degraded: bool,
+    usage_sink: &Option<UsageSink>,
+    budget_guard: &mut BudgetSpendGuard<'_>,
+    delivery: &Delivery<'_>,
+    tap: &TapCell,
+) -> Option<Response> {
+    let eh = egress_op?;
+    match eh.translate_response(
+        busbar_substrate_values::handlers::TranslateRespInput::Opaque(bytes),
+        ingress_op_present,
+        ingress_protocol,
+        &EngineTables::new(rt).lanes()[i].model,
+        now(),
+        false,
+        None,
+        ingress_request_body,
+    ) {
+        Err(ref e) => {
+            diag_debug!(
+                CROSSPROTO_BINARY_CODEC_FAILED,
+                ingress = %ingress_protocol,
+                egress = %egress_name,
+                error = ?e,
+                degraded,
+                "cross-protocol binary response failed the egress codec (read_response); returning ingress-native 500",
+            );
+            None
+        }
+        Ok((usage, delivered)) => {
+            let busbar_substrate_values::wire::TranslatedResponse::Typed(wire) = delivered else {
+                // `Untranslatable`: no client body could be written — fall through to the 500,
+                // unbilled, guard left armed so the budget unit is refunded.
+                return None;
+            };
+            // Delivered: bill and keep the lane unit (never refund out from under an
+            // already-billed request).
+            // THE REPORT-BACK, on the opaque delivery: the whole answer is in hand and
+            // is about to be relayed, so the tap knows all four figures before the
+            // client has any of them. Read from the SAME `usage` the accrual is made
+            // from, before it moves.
+            tap.report(TapReport {
+                lane: i,
+                usage: token_usage_of(&usage),
+                billing_failed: false,
+                finish: TapFinish::Complete,
+            });
+            record_resp_usage(
+                host,
+                usage,
+                usage_sink,
+                EngineTables::new(rt).lanes().get(i),
+            );
+            budget_guard.disarm();
+            Some(delivery.respond(wire.content_type, wire.bytes))
+        }
+    }
 }
 
 /// Every exit that is NOT a delivery is a transfer that FAILED after the upstream's 2xx headers,

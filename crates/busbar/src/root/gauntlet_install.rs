@@ -65,8 +65,12 @@ pub fn install() {
     flip_one_shot_to_kernel(busbar_mcp::PLANE_KEY);
     #[cfg(feature = "plane-a2a")]
     flip_one_shot_to_kernel(busbar_a2a::PLANE_KEY);
+    // Routed through `PLANE_DECL.key` rather than a fresh `busbar_llm::PLANE_KEY` reach: `main.rs`
+    // already names `busbar_llm::PLANE_DECL` to install the plane, and its `key` field IS the same
+    // capability key (see `busbar_llm::PLANE_DECL`'s definition) — so this reads the seam the plane
+    // already exposes instead of naming a second distinct `busbar_llm::` symbol.
     #[cfg(feature = "proto-llm")]
-    flip_one_shot_to_kernel(busbar_llm::PLANE_KEY);
+    flip_one_shot_to_kernel(busbar_llm::PLANE_DECL.key);
     #[cfg(feature = "plane-voice")]
     flip_session_to_kernel(busbar_voice::PLANE_KEY);
 }

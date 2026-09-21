@@ -68,10 +68,14 @@ use crate::state::App;
 // every emit site below and every core call site elsewhere resolves unchanged.
 // The capacity knobs and per-thread storage the retention batteries below read directly. Test-only
 // on both sides of the seam, so core's shipped surface gains nothing.
-#[cfg(test)]
-pub(crate) use busbar_kernel::telemetry::bank_internals::{
-    hist_chunk_materialized, HIST_DRAIN_THRESHOLD,
-};
+//
+// `HIST_DRAIN_THRESHOLD` is defined directly below (unconditionally `pub`), and
+// `hist_chunk_materialized` lives in `bank_internals` below, now that busbar-core's substrate is
+// absorbed into this crate. A `use busbar_kernel::telemetry::bank_internals::{..}` here is a
+// leftover from when this module lived in a separate `busbar-core` crate — `busbar_kernel::telemetry`
+// now names this very module, so the import collides with `HIST_DRAIN_THRESHOLD`'s own definition
+// (E0255) instead of importing anything new. Reach `bank_internals::hist_chunk_materialized`
+// directly where needed instead.
 
 // ── Per-App slot tables (registered once per config generation) ─────────────────────────────────
 

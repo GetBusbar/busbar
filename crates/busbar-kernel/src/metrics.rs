@@ -63,8 +63,12 @@ use crate::state::App;
 // retention window.
 // The builder seam and the shipped gauge idle window the reaping battery below drives. Test-only on
 // both sides of the seam, so core's shipped surface gains nothing.
-#[cfg(test)]
-pub(crate) use self::recorder_internals::{recorder_builder, GAUGE_IDLE_TIMEOUT};
+//
+// `recorder_builder`/`GAUGE_IDLE_TIMEOUT` are defined directly below (unconditionally `pub`) now
+// that busbar-core's substrate is absorbed into this crate; `recorder_internals` re-exports them
+// for the test/`test-support` axis. A `use` here of the same two names, into the very module that
+// defines them, is a leftover from when they lived in a separate `busbar-core` crate — it now
+// collides with their own definitions (E0255) rather than importing anything new.
 // The maintenance drain and the retention decision are driven from PRODUCTION down in the substrate
 // (the maintenance thread and `HistogramSlot::record`); core names them only from the batteries that
 // pin the drain-on-a-timer and the three-state retention truth table, so the re-export is test-only.
@@ -573,7 +577,7 @@ pub fn refresh_scrape_gauges(app: &App) {
         };
         let lane_model = view
             .lane_view(lane_idx)
-            .expect("model-routed lane index is in range")
+            .expect("the routed lane index is in range")
             .model
             .to_string();
         metrics::gauge!(

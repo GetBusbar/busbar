@@ -10,8 +10,33 @@
 use super::super::{Observation, TrustState};
 use super::*;
 use crate::trust::{Approval, Sighting};
-use busbar_a2a::a2a::pin::{approve_registration, CardPin};
 use std::collections::BTreeMap;
+
+/// A LOCAL, TEST-ONLY STAND-IN for `busbar_a2a::a2a::pin::CardPin`.
+///
+/// This mirrors the precedent set by `genericity_tests.rs`'s `CardPin`/`SpkiPin` fixtures rather
+/// than importing the real `busbar-a2a` type: `busbar-kernel` depends on `busbar-a2a`, and
+/// `busbar-a2a`'s dev-dependency on `busbar-kernel` (for its own tests) means a `busbar-kernel`
+/// unit test that imports `busbar_a2a::a2a::pin::CardPin` pulls in a SECOND, non-unified instance
+/// of the `busbar_kernel` crate graph. `CardPin`'s `PinnedArtifact` impl is then compiled against
+/// that other instance's `PinnedArtifact` trait, which is not the same trait item as the one
+/// `Approval<A>` here is generic over, so every call through it fails to typecheck. A local fixture
+/// sidesteps the cycle entirely, the same way `genericity_tests.rs` already does.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct CardPin {
+    issuer_key: &'static str,
+    card_fingerprint: String,
+}
+
+impl crate::trust::PinnedArtifact for CardPin {
+    fn mechanism(&self) -> &'static str {
+        "jws_issuer_key"
+    }
+
+    fn digest(&self) -> String {
+        format!("{}+{}", self.issuer_key, self.card_fingerprint)
+    }
+}
 
 fn policy() -> Policy {
     Policy {
@@ -21,8 +46,8 @@ fn policy() -> Policy {
 }
 
 fn pin(fingerprint: &str) -> CardPin {
-    CardPin::JwsIssuerKey {
-        issuer_key: "OPERATOR-KEY".to_string(),
+    CardPin {
+        issuer_key: "OPERATOR-KEY",
         card_fingerprint: fingerprint.to_string(),
     }
 }
@@ -38,7 +63,7 @@ fn seen(fingerprint: &str, plan_digest: &str) -> Sighting<CardPin> {
 fn approved() -> (Approval<CardPin>, Sighting<CardPin>) {
     let sighting = seen("sha256/FP-1", "sha256/PLAN-1");
     let mut approval = Approval::registered();
-    approve_registration(&mut approval, &sighting, None).expect("approve");
+    approval.approve(&sighting, None).expect("approve");
     (approval, sighting)
 }
 

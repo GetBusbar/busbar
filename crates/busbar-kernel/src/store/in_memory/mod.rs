@@ -558,7 +558,7 @@ impl LaneData {
 #[allow(dead_code)]
 pub(crate) fn make_lane_data_with_weight(id: usize, max_permits: usize) -> (LaneData, u32) {
     let lane = LaneData {
-        model: format!("model-{}", id),
+        model: format!("lane-{}", id),
         provider: format!("provider-{}", id),
         max: max_permits,
         sem: Arc::new(Semaphore::new(max_permits)),

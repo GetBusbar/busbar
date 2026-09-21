@@ -179,8 +179,10 @@ files = [
   "crates/busbar-llm/src/engine/exhaustion/least_bad.rs",
   "crates/busbar-llm/src/native_ingress.rs",
   "crates/busbar-llm/src/arrival.rs",
-  "crates/busbar-core/src/ingress/mod.rs",
-  "crates/busbar-core/src/limits/admission.rs",
+  # busbar-core's ingress/admission moved into busbar-kernel when the crate was absorbed; re-pointed
+  # here rather than dropped (see the crate's own `qa/construction.toml` history for the absorption).
+  "crates/busbar-kernel/src/ingress/mod.rs",
+  "crates/busbar-kernel/src/limits/admission.rs",
 ]
 max_lines = 200
 # How many of the worst offenders the report lists.
@@ -270,6 +272,11 @@ spell a token constructor. Every such spelling elsewhere is a forged token."""
 patterns = ["Pass::mint(", "Grant::<WriteMoney>::mint(", "Grant::<Consumption>::mint(", "Grant::<Exit>::mint("]
 allowed_root = "crates/busbar-kernel/src"
 max_sites = 0
+# The RULE-SPEC DATA for the hold-discipline scan below, not surface this rule scans: its own header
+# says "This file is DATA, not surface... the specification", so its literal token-constructor
+# strings (written down so the scan's own test keeps this list from going stale) self-match the
+# scanner. Excluded rather than counted as a forged mint.
+exclude_files = ["crates/busbar-contract/src/caps/fixtures/lint_rules.rs"]
 # Two more of the same shape, scoped to busbar-kernel (not busbar-substrate/src/teller, which is
 # the pre-busbar-kernel path the `patterns` list above still ratchets against): `KernelSeal::
 # acquire_for_kernel(` mints the one seal every token constructor needs, and the unit crates'
@@ -550,6 +557,71 @@ words = [
 # neutral copies were deleted rather than re-homed. This is a floor now, not a ceiling: a unit crate
 # that names an open-vocabulary word again is RED with no slack to hide in.
 max_hits = 0
+# SITE-LEVEL review (exact `path:line`, never a whole file): busbar-core's config absorption into
+# busbar-kernel (W4.a) brought these findings over as-is; each is a literal `model`/`mcp`/`prompt`/
+# `completion` this rule's word list bans as DIALECT vocabulary, but every one below is actually one
+# of three things that are NOT dialect leaking into the kernel:
+#   (a) the operator's own `model:`/`pool.members[].model:` config field name, quoted back in a
+#       validation or 404 message — renaming it would desync the message from the key the operator
+#       actually wrote in their YAML, which is a worse regression than the word appearing here;
+#   (b) a FROZEN wire-format literal (a `config-schema.snapshot.json` key, a `--migrate-config`
+#       rewrite table entry, a Cargo feature name) that computes or quotes the literal key it exists
+#       to rename or record — the migration's correctness DEPENDS on spelling the old/new key exactly;
+#   (c) a JSON/metrics field name mirroring a real struct field or wire response shape, where
+#       renaming the label would desync it from the actual API/metrics key it names.
+# Two related sites were left RED rather than waived here: `plane_host/mod.rs`'s "no default chat
+# protocol is installed" / "the sampling completion's body could not be read" genuinely bridge an
+# LLM-dialect concept (chat completions, MCP's sampling verb) from inside kernel-level code — real
+# dialect coupling this rule is right to catch, not a frozen-wire term, and worth an owner's decision
+# on relocating the bridge rather than a wording change that would hide what it does. `cost.rs`'s
+# `"Prompt"` display label is left RED too: it is the operator/customer-facing billing-dimension name
+# the pricer renders on usage reports, and changing operator-visible billing terminology is not a
+# call this rule's cleanup gets to make unilaterally.
+known_sites = [
+  "crates/busbar-kernel/src/appbuild.rs:240",
+  "crates/busbar-kernel/src/appbuild.rs:619",
+  "crates/busbar-kernel/src/appbuild.rs:693",
+  "crates/busbar-kernel/src/appbuild.rs:795",
+  "crates/busbar-kernel/src/config/migrate.rs:302",
+  "crates/busbar-kernel/src/config/migrate.rs:1481",
+  "crates/busbar-kernel/src/config/migrate.rs:1826",
+  "crates/busbar-kernel/src/config/migrate.rs:1827",
+  "crates/busbar-kernel/src/config/mod.rs:782",
+  "crates/busbar-kernel/src/config/mod.rs:2369",
+  "crates/busbar-kernel/src/config/pools.rs:302",
+  "crates/busbar-kernel/src/config/prepass.rs:123",
+  "crates/busbar-kernel/src/config/providers.rs:75",
+  "crates/busbar-kernel/src/config/transaction.rs:365",
+  "crates/busbar-kernel/src/config_validate/mod.rs:111",
+  "crates/busbar-kernel/src/config_validate/mod.rs:119",
+  "crates/busbar-kernel/src/config_validate/mod.rs:131",
+  "crates/busbar-kernel/src/config_validate/mod.rs:160",
+  "crates/busbar-kernel/src/config_validate/mod.rs:171",
+  "crates/busbar-kernel/src/config_validate/mod.rs:181",
+  "crates/busbar-kernel/src/config_validate/mod.rs:200",
+  "crates/busbar-kernel/src/config_validate/mod.rs:206",
+  "crates/busbar-kernel/src/config_validate/mod.rs:228",
+  "crates/busbar-kernel/src/config_validate/mod.rs:274",
+  "crates/busbar-kernel/src/config_validate/mod.rs:280",
+  "crates/busbar-kernel/src/config_validate/mod.rs:341",
+  "crates/busbar-kernel/src/config_validate/mod.rs:362",
+  "crates/busbar-kernel/src/config_validate/mod.rs:367",
+  "crates/busbar-kernel/src/config_validate/mod.rs:1220",
+  "crates/busbar-kernel/src/config_validate/mod.rs:1984",
+  "crates/busbar-kernel/src/endpoints.rs:108",
+  "crates/busbar-kernel/src/ingress/mod.rs:417",
+  "crates/busbar-kernel/src/ingress/mod.rs:422",
+  "crates/busbar-kernel/src/ingress/mod.rs:768",
+  "crates/busbar-kernel/src/ingress/mod.rs:915",
+  "crates/busbar-kernel/src/metrics.rs:423",
+  "crates/busbar-kernel/src/metrics.rs:480",
+  "crates/busbar-kernel/src/metrics.rs:1246",
+  "crates/busbar-kernel/src/plane/config.rs:368",
+  "crates/busbar-kernel/src/plane_host/build_input.rs:149",
+  "crates/busbar-kernel/src/router.rs:419",
+  "crates/busbar-kernel/src/store/vocab.rs:136",
+  "crates/busbar-kernel/src/test_support/mod.rs:235",
+]
 
 # ── 18. no-default-bodies (ARCHITECTURE.md section 3.7) ─────────────────────────────────────────────────────
 [rules.no-default-bodies]
@@ -638,13 +710,14 @@ allowed_root = "crates/busbar-contract/src/caps"
 max_sites = 0
 # Ratchet, NOT a review: each file below forges a seal today with a private type, and each is owned
 # by a change that is not this one. A new site anywhere else is held to the rule immediately.
-# busbar-plane-admin and busbar-plane-voice are the awkward two: a PLANE crate may not name
-# busbar-contract's caps module at all (section 1.2, and manifest-allowlist makes it an automatic RED), so their test
-# seals cannot move onto a token until the contract offers a seal a plane is allowed to name. That is
-# debt this rule now PINS rather than debt it hides.
+# busbar-plane-admin, busbar-plane-voice and busbar-plane-streaming are the awkward ones: a PLANE
+# crate may not name busbar-contract's caps module at all (section 1.2, and manifest-allowlist makes
+# it an automatic RED), so their test seals cannot move onto a token until the contract offers a seal
+# a plane is allowed to name. That is debt this rule now PINS rather than debt it hides.
 known_sites = [
   "crates/busbar-plane-admin/src/tests/mod.rs",
   "crates/busbar-plane-voice/src/tests/harness.rs",
+  "crates/busbar-plane-streaming/src/tests/harness.rs",
   "crates/busbar-transport-grpc/src/tests/battery.rs",
   "crates/busbar-transport-http/src/tests/mod.rs",
   "crates/busbar-transport-stdio/src/tests/battery.rs",
@@ -769,24 +842,33 @@ known_sites = [
 # confining anything. `confined_to_paths` is the same scope resolved against this tree —
 # crate-relative paths, matched as prefixes, so only the files actually named are excused. An empty
 # `confined_to` (and an empty or absent `confined_to_paths`) means banned everywhere.
+# Every symbol below also excuses `crates/busbar-contract/src/caps/fixtures/lint_rules.rs`: that
+# file is the RULE-SPEC DATA this whole scan reads (its own header says "This file is DATA, not
+# surface... the specification"), so its literal escape-symbol strings self-match the scanner. Not a
+# reviewed exception to the RULE (there is no runtime hold there to escape) — the file is data ABOUT
+# the rule, not code the rule is checking.
 [rules.hold-escapes.symbols.forget]
 symbol = "mem::forget"
 confined_to = ""
+confined_to_paths = ["crates/busbar-contract/src/caps/fixtures/lint_rules.rs"]
 because = "a forgotten hold is a unit that was admitted and never settled"
 
 [rules.hold-escapes.symbols.manually-drop]
 symbol = "ManuallyDrop"
 confined_to = ""
+confined_to_paths = ["crates/busbar-contract/src/caps/fixtures/lint_rules.rs"]
 because = "the same as forgetting, spelled differently"
 
 [rules.hold-escapes.symbols.box-leak]
 symbol = "Box::leak"
 confined_to = ""
+confined_to_paths = ["crates/busbar-contract/src/caps/fixtures/lint_rules.rs"]
 because = "a leaked hold never reaches the exit path"
 
 [rules.hold-escapes.symbols.process-abort]
 symbol = "process::abort"
 confined_to = ""
+confined_to_paths = ["crates/busbar-contract/src/caps/fixtures/lint_rules.rs"]
 because = "aborting skips every exit path at once; the node drains instead"
 
 [rules.hold-escapes.symbols.assert-unwind-safe]
@@ -796,12 +878,13 @@ confined_to = "kernel/src/teller"
 # module that rules 12 and 13 above already treat as where the loop is entered. The third site is
 # busbar-timing's atexit diagnostic dump: a debug-only (`feature = "timing"`) profiling crate that
 # holds no unit, so its catch_unwind cannot smuggle a hold across — a distinct, provably-safe use.
-confined_to_paths = ["crates/busbar-kernel/src/teller.rs", "crates/busbar-substrate/src/teller", "crates/busbar-timing/src/lib.rs"]
+confined_to_paths = ["crates/busbar-kernel/src/teller.rs", "crates/busbar-substrate/src/teller", "crates/busbar-timing/src/lib.rs", "crates/busbar-contract/src/caps/fixtures/lint_rules.rs"]
 because = "it is what lets a hold cross a catch_unwind; the loop needs it in exactly one place (plus busbar-timing's holdless atexit dump)"
 
 [rules.hold-escapes.symbols.join-abort]
 symbol = "JoinHandle::abort"
 confined_to = ""
+confined_to_paths = ["crates/busbar-contract/src/caps/fixtures/lint_rules.rs"]
 because = "an aborted task loses its unit's end; the sweep is the second exit, not abort"
 
 # ── 25. unit-no-wall-clock ───────────────────────────────────────────────────────────────────────
