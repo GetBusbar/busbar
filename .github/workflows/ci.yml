@@ -1885,7 +1885,7 @@ jobs:
   # feature-covered: busbar-substrate-values/dispatch -- check -- reached from busbar-substrate/dispatch in the default build
   # feature-covered: busbar-substrate-values/relay -- check -- reached from busbar-substrate/relay in the default build
   # feature-covered: busbar-substrate-values/runtime -- check -- reached from busbar-substrate/runtime in the default build
-  # feature-covered: busbar-unit-auth/sha256 -- check -- reached from the default auth-admin-tokens closure in the workspace build
+  # feature-covered: busbar-kernel-identity/sha256 -- check -- reached from the default auth-admin-tokens closure in the workspace build
   # feature-covered: busbar-core/test-support -- check -- unified in by a dev-dependency under cargo clippy --workspace --all-targets
   # feature-covered: busbar-substrate/test-support -- check -- unified in by a dev-dependency under --all-targets in that job
   # feature-covered: busbar-substrate-values/test-support -- check -- unified in by a dev-dependency under --all-targets in that job

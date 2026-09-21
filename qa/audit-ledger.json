@@ -509,8 +509,8 @@
    "paths": [
     "crates/busbar-contract/src/caps"
    ],
-   "tree_hash": "23e131ce5510c6d853bfbb964a039a2d4e02778db4bdb9bfa28992fb0b6df159",
-   "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
+   "tree_hash": "1f799f5492f4eeb0f1c7c5a36f4387f47fff4ce8d77fc9e01ed881e84795bc4b",
+   "audited_at": "0fe2cef653de2f97d74437f1f1be407e223037f8",
    "round": 8,
    "result": "findings",
    "counts": {
@@ -529,8 +529,8 @@
      "round": 5,
      "result": "findings",
      "auditor": "opus",
-     "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
-     "tree_hash": "23e131ce5510c6d853bfbb964a039a2d4e02778db4bdb9bfa28992fb0b6df159",
+     "audited_at": "0fe2cef653de2f97d74437f1f1be407e223037f8",
+     "tree_hash": "1f799f5492f4eeb0f1c7c5a36f4387f47fff4ce8d77fc9e01ed881e84795bc4b",
      "counts": {
       "HIGH": 1,
       "MEDIUM": 6,
@@ -543,8 +543,8 @@
      "round": 5,
      "result": "in_progress",
      "auditor": "round-5 finder fleet",
-     "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
-     "tree_hash": "efbe4b1d4dbcf788dbb04282c1028a34e37c7c7903a15d0ac48c99547a33b928",
+     "audited_at": "0fe2cef653de2f97d74437f1f1be407e223037f8",
+     "tree_hash": "1f799f5492f4eeb0f1c7c5a36f4387f47fff4ce8d77fc9e01ed881e84795bc4b",
      "counts": {},
      "report": "in flight; no reading recorded against this scope yet"
     },
@@ -552,8 +552,8 @@
      "round": 6,
      "result": "findings",
      "auditor": "opus-pass2",
-     "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
-     "tree_hash": "23e131ce5510c6d853bfbb964a039a2d4e02778db4bdb9bfa28992fb0b6df159",
+     "audited_at": "0fe2cef653de2f97d74437f1f1be407e223037f8",
+     "tree_hash": "1f799f5492f4eeb0f1c7c5a36f4387f47fff4ce8d77fc9e01ed881e84795bc4b",
      "counts": {
       "MEDIUM": 2
      },
@@ -563,8 +563,8 @@
      "round": 8,
      "result": "findings",
      "auditor": "opus-p3-caps-contract-kernel",
-     "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
-     "tree_hash": "23e131ce5510c6d853bfbb964a039a2d4e02778db4bdb9bfa28992fb0b6df159",
+     "audited_at": "0fe2cef653de2f97d74437f1f1be407e223037f8",
+     "tree_hash": "1f799f5492f4eeb0f1c7c5a36f4387f47fff4ce8d77fc9e01ed881e84795bc4b",
      "counts": {
       "MEDIUM": 1,
       "LOW": 4,
@@ -2402,8 +2402,8 @@
    "paths": [
     "crates/busbar-kernel-budget/src"
    ],
-   "tree_hash": "fb870bf44ea33c2b91e54ed5e09d9f4e2a770305b27cf8548d141444d25072a9",
-   "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+   "tree_hash": "0ebb8cefdae80bfef687914737cfa290421927a1a3c595454d3737cc783e67e0",
+   "audited_at": "0fe2cef653de2f97d74437f1f1be407e223037f8",
    "round": 6,
    "result": "findings",
    "counts": {
@@ -2421,8 +2421,8 @@
      "round": 5,
      "result": "findings",
      "auditor": "opus",
-     "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
-     "tree_hash": "25b62d6ce1971c5bdb35f18ba713cd991905faedcc19954b98df2f8b47644c74",
+     "audited_at": "0fe2cef653de2f97d74437f1f1be407e223037f8",
+     "tree_hash": "0ebb8cefdae80bfef687914737cfa290421927a1a3c595454d3737cc783e67e0",
      "counts": {
       "HIGH": 1,
       "MEDIUM": 6,
@@ -2435,8 +2435,8 @@
      "round": 5,
      "result": "in_progress",
      "auditor": "round-5 finder fleet",
-     "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
-     "tree_hash": "25b62d6ce1971c5bdb35f18ba713cd991905faedcc19954b98df2f8b47644c74",
+     "audited_at": "0fe2cef653de2f97d74437f1f1be407e223037f8",
+     "tree_hash": "0ebb8cefdae80bfef687914737cfa290421927a1a3c595454d3737cc783e67e0",
      "counts": {},
      "report": "in flight; no reading recorded against this scope yet"
     },
@@ -2444,8 +2444,8 @@
      "round": 6,
      "result": "findings",
      "auditor": "opus-units-auditor-b",
-     "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
-     "tree_hash": "fb870bf44ea33c2b91e54ed5e09d9f4e2a770305b27cf8548d141444d25072a9",
+     "audited_at": "0fe2cef653de2f97d74437f1f1be407e223037f8",
+     "tree_hash": "0ebb8cefdae80bfef687914737cfa290421927a1a3c595454d3737cc783e67e0",
      "counts": {
       "MEDIUM": 2,
       "LOW": 2
@@ -2460,8 +2460,8 @@
    "paths": [
     "crates/busbar-kernel-audit/src"
    ],
-   "tree_hash": "26343255f8865554112494380c77058905872e5c89c8a5fc882d5675ed2d6031",
-   "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+   "tree_hash": "977a9c4ebf1e32b39aa82ba896810a10d13bd328fc558bfcfe765a374c119348",
+   "audited_at": "0fe2cef653de2f97d74437f1f1be407e223037f8",
    "round": 8,
    "result": "in_progress",
    "counts": {},
@@ -2476,8 +2476,8 @@
      "round": 5,
      "result": "findings",
      "auditor": "opus",
-     "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
-     "tree_hash": "26343255f8865554112494380c77058905872e5c89c8a5fc882d5675ed2d6031",
+     "audited_at": "0fe2cef653de2f97d74437f1f1be407e223037f8",
+     "tree_hash": "977a9c4ebf1e32b39aa82ba896810a10d13bd328fc558bfcfe765a374c119348",
      "counts": {
       "HIGH": 1,
       "MEDIUM": 6,
@@ -2490,8 +2490,8 @@
      "round": 5,
      "result": "in_progress",
      "auditor": "round-5 finder fleet",
-     "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
-     "tree_hash": "56898114b3898bdd4a617f6c0fe4c6a97dbf7fdf52d9ac21cdb5d3c78d424daa",
+     "audited_at": "0fe2cef653de2f97d74437f1f1be407e223037f8",
+     "tree_hash": "977a9c4ebf1e32b39aa82ba896810a10d13bd328fc558bfcfe765a374c119348",
      "counts": {},
      "report": "in flight; no reading recorded against this scope yet"
     },
@@ -2499,8 +2499,8 @@
      "round": 6,
      "result": "zero",
      "auditor": "opus-pass2",
-     "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
-     "tree_hash": "26343255f8865554112494380c77058905872e5c89c8a5fc882d5675ed2d6031",
+     "audited_at": "0fe2cef653de2f97d74437f1f1be407e223037f8",
+     "tree_hash": "977a9c4ebf1e32b39aa82ba896810a10d13bd328fc558bfcfe765a374c119348",
      "counts": {},
      "report": "no defect; frozen digests intact; legacy_chain/legacy_ring tests unread"
     },
@@ -2508,8 +2508,8 @@
      "round": 7,
      "result": "findings",
      "auditor": "opus-pass3",
-     "audited_at": "d6d871893dbd196e0d2b3a00d2e22ed2473d2adf",
-     "tree_hash": "26343255f8865554112494380c77058905872e5c89c8a5fc882d5675ed2d6031",
+     "audited_at": "0fe2cef653de2f97d74437f1f1be407e223037f8",
+     "tree_hash": "977a9c4ebf1e32b39aa82ba896810a10d13bd328fc558bfcfe765a374c119348",
      "counts": {
       "MEDIUM": 1,
       "NIT": 1
@@ -2520,8 +2520,8 @@
      "round": 8,
      "result": "in_progress",
      "auditor": "opus-units-auditor-b",
-     "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
-     "tree_hash": "26343255f8865554112494380c77058905872e5c89c8a5fc882d5675ed2d6031",
+     "audited_at": "0fe2cef653de2f97d74437f1f1be407e223037f8",
+     "tree_hash": "977a9c4ebf1e32b39aa82ba896810a10d13bd328fc558bfcfe765a374c119348",
      "counts": {},
      "report": "chain digesting, amendment and the legacy ring were read and nothing survived triage; three lenses left scope unread, so this is a sample"
     }
@@ -2533,8 +2533,8 @@
    "paths": [
     "crates/busbar-kernel-identity/src"
    ],
-   "tree_hash": "484bf94021ea6a4ad7aed4d8d72c3f9d36a2788f31e5a2222a0b8247e738d57e",
-   "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+   "tree_hash": "d3b7b6073761190b7106bc78096412956a0d1f1819a6b57162c5b86d17e78542",
+   "audited_at": "0fe2cef653de2f97d74437f1f1be407e223037f8",
    "round": 6,
    "result": "findings",
    "counts": {
@@ -2552,8 +2552,8 @@
      "round": 5,
      "result": "findings",
      "auditor": "opus",
-     "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
-     "tree_hash": "d5246052c644844fcff51d38033fd0f02a856e4fa8cf8ba9b7bc9b39e6901abf",
+     "audited_at": "0fe2cef653de2f97d74437f1f1be407e223037f8",
+     "tree_hash": "d3b7b6073761190b7106bc78096412956a0d1f1819a6b57162c5b86d17e78542",
      "counts": {
       "HIGH": 1,
       "MEDIUM": 6,
@@ -2566,8 +2566,8 @@
      "round": 5,
      "result": "in_progress",
      "auditor": "round-5 finder fleet",
-     "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
-     "tree_hash": "d5246052c644844fcff51d38033fd0f02a856e4fa8cf8ba9b7bc9b39e6901abf",
+     "audited_at": "0fe2cef653de2f97d74437f1f1be407e223037f8",
+     "tree_hash": "d3b7b6073761190b7106bc78096412956a0d1f1819a6b57162c5b86d17e78542",
      "counts": {},
      "report": "in flight; no reading recorded against this scope yet"
     },
@@ -2575,8 +2575,8 @@
      "round": 6,
      "result": "findings",
      "auditor": "opus-units-auditor-b",
-     "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
-     "tree_hash": "484bf94021ea6a4ad7aed4d8d72c3f9d36a2788f31e5a2222a0b8247e738d57e",
+     "audited_at": "0fe2cef653de2f97d74437f1f1be407e223037f8",
+     "tree_hash": "d3b7b6073761190b7106bc78096412956a0d1f1819a6b57162c5b86d17e78542",
      "counts": {
       "MEDIUM": 2,
       "LOW": 1
@@ -2591,8 +2591,8 @@
    "paths": [
     "crates/busbar-kernel-breaker/src"
    ],
-   "tree_hash": "052a2b88e04b7516be9a6a641a4e60ac41be8a77144bc6c08a85f506ffe7421d",
-   "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+   "tree_hash": "88b5bd6b99dcc9e09370201c283053e973e5515862b38ec9c37ee0ae7b13c31b",
+   "audited_at": "0fe2cef653de2f97d74437f1f1be407e223037f8",
    "round": 6,
    "result": "findings",
    "counts": {
@@ -2611,8 +2611,8 @@
      "round": 5,
      "result": "findings",
      "auditor": "opus",
-     "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
-     "tree_hash": "20943150acee37b8c425838159dfd0aa6555d1225c29a4c5e0f2538bb8422f64",
+     "audited_at": "0fe2cef653de2f97d74437f1f1be407e223037f8",
+     "tree_hash": "88b5bd6b99dcc9e09370201c283053e973e5515862b38ec9c37ee0ae7b13c31b",
      "counts": {
       "HIGH": 1,
       "MEDIUM": 6,
@@ -2625,8 +2625,8 @@
      "round": 5,
      "result": "in_progress",
      "auditor": "round-5 finder fleet",
-     "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
-     "tree_hash": "8dc4d147509a13ef5d6a7508e32f84fd1eb6e978d60b8ed7ccacebcfbb70555f",
+     "audited_at": "0fe2cef653de2f97d74437f1f1be407e223037f8",
+     "tree_hash": "88b5bd6b99dcc9e09370201c283053e973e5515862b38ec9c37ee0ae7b13c31b",
      "counts": {},
      "report": "in flight; no reading recorded against this scope yet"
     },
@@ -2634,8 +2634,8 @@
      "round": 6,
      "result": "findings",
      "auditor": "opus-units-auditor-b",
-     "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
-     "tree_hash": "052a2b88e04b7516be9a6a641a4e60ac41be8a77144bc6c08a85f506ffe7421d",
+     "audited_at": "0fe2cef653de2f97d74437f1f1be407e223037f8",
+     "tree_hash": "88b5bd6b99dcc9e09370201c283053e973e5515862b38ec9c37ee0ae7b13c31b",
      "counts": {
       "HIGH": 1,
       "MEDIUM": 1,
@@ -2651,8 +2651,8 @@
    "paths": [
     "crates/busbar-kernel-ledger/src/cost"
    ],
-   "tree_hash": "49228f678db78e962beb2a0c1cbf1f9808640f5dee033f7669a6f5b1d60a3a41",
-   "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+   "tree_hash": "be1897ca63378366b1e62776d6fff9a667059527da73105de6a8919a70f7449b",
+   "audited_at": "0fe2cef653de2f97d74437f1f1be407e223037f8",
    "round": 6,
    "result": "findings",
    "counts": {
@@ -2669,8 +2669,8 @@
      "round": 5,
      "result": "findings",
      "auditor": "opus",
-     "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
-     "tree_hash": "a34511199b8fd92006b36882d871cefba80f2ad486e00f72d6ce4039017bee4d",
+     "audited_at": "0fe2cef653de2f97d74437f1f1be407e223037f8",
+     "tree_hash": "be1897ca63378366b1e62776d6fff9a667059527da73105de6a8919a70f7449b",
      "counts": {
       "HIGH": 1,
       "MEDIUM": 6,
@@ -2683,8 +2683,8 @@
      "round": 5,
      "result": "in_progress",
      "auditor": "round-5 finder fleet",
-     "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
-     "tree_hash": "a34511199b8fd92006b36882d871cefba80f2ad486e00f72d6ce4039017bee4d",
+     "audited_at": "0fe2cef653de2f97d74437f1f1be407e223037f8",
+     "tree_hash": "be1897ca63378366b1e62776d6fff9a667059527da73105de6a8919a70f7449b",
      "counts": {},
      "report": "in flight; no reading recorded against this scope yet"
     },
@@ -2692,8 +2692,8 @@
      "round": 6,
      "result": "findings",
      "auditor": "opus-units-auditor-b",
-     "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
-     "tree_hash": "49228f678db78e962beb2a0c1cbf1f9808640f5dee033f7669a6f5b1d60a3a41",
+     "audited_at": "0fe2cef653de2f97d74437f1f1be407e223037f8",
+     "tree_hash": "be1897ca63378366b1e62776d6fff9a667059527da73105de6a8919a70f7449b",
      "counts": {
       "MEDIUM": 1
      },
@@ -2707,8 +2707,8 @@
    "paths": [
     "crates/busbar-kernel-egress/src"
    ],
-   "tree_hash": "00077db60c5f40cd66b8c9e3a21a50b2455f010bda16bb2c05918b94cb8e3727",
-   "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+   "tree_hash": "b2600119e32c288ba2c7b50f43e8aa90cacaddc2d4a63f40356a4b0295f6f803",
+   "audited_at": "0fe2cef653de2f97d74437f1f1be407e223037f8",
    "round": 6,
    "result": "findings",
    "counts": {
@@ -2726,8 +2726,8 @@
      "round": 5,
      "result": "findings",
      "auditor": "opus",
-     "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
-     "tree_hash": "86a991d015258ffe1339be444aa1393157078bb63c647cb7b2735e97947cc2e3",
+     "audited_at": "0fe2cef653de2f97d74437f1f1be407e223037f8",
+     "tree_hash": "b2600119e32c288ba2c7b50f43e8aa90cacaddc2d4a63f40356a4b0295f6f803",
      "counts": {
       "HIGH": 1,
       "MEDIUM": 6,
@@ -2740,8 +2740,8 @@
      "round": 5,
      "result": "in_progress",
      "auditor": "round-5 finder fleet",
-     "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
-     "tree_hash": "86a991d015258ffe1339be444aa1393157078bb63c647cb7b2735e97947cc2e3",
+     "audited_at": "0fe2cef653de2f97d74437f1f1be407e223037f8",
+     "tree_hash": "b2600119e32c288ba2c7b50f43e8aa90cacaddc2d4a63f40356a4b0295f6f803",
      "counts": {},
      "report": "in flight; no reading recorded against this scope yet"
     },
@@ -2749,8 +2749,8 @@
      "round": 6,
      "result": "findings",
      "auditor": "opus-units-auditor-b",
-     "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
-     "tree_hash": "00077db60c5f40cd66b8c9e3a21a50b2455f010bda16bb2c05918b94cb8e3727",
+     "audited_at": "0fe2cef653de2f97d74437f1f1be407e223037f8",
+     "tree_hash": "b2600119e32c288ba2c7b50f43e8aa90cacaddc2d4a63f40356a4b0295f6f803",
      "counts": {
       "MEDIUM": 1,
       "LOW": 2
@@ -2765,8 +2765,8 @@
    "paths": [
     "crates/busbar-kernel-identity/src/egress_auth"
    ],
-   "tree_hash": "5939aeb6ef5fe59187b98ee0f9eab60b152abdfabc47f9d749bcb3871ede0fe4",
-   "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+   "tree_hash": "603ba963af915bbcb81beb2a91df3b75a281011dc591876950bf94c5dd612985",
+   "audited_at": "0fe2cef653de2f97d74437f1f1be407e223037f8",
    "round": 6,
    "result": "in_progress",
    "counts": {},
@@ -2781,8 +2781,8 @@
      "round": 5,
      "result": "findings",
      "auditor": "opus",
-     "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
-     "tree_hash": "addcd8b3ab04abc5881a86237b9f2a607d7c4ae53628bd771886360074cb2f0c",
+     "audited_at": "0fe2cef653de2f97d74437f1f1be407e223037f8",
+     "tree_hash": "603ba963af915bbcb81beb2a91df3b75a281011dc591876950bf94c5dd612985",
      "counts": {
       "HIGH": 1,
       "MEDIUM": 6,
@@ -2795,8 +2795,8 @@
      "round": 5,
      "result": "in_progress",
      "auditor": "round-5 finder fleet",
-     "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
-     "tree_hash": "addcd8b3ab04abc5881a86237b9f2a607d7c4ae53628bd771886360074cb2f0c",
+     "audited_at": "0fe2cef653de2f97d74437f1f1be407e223037f8",
+     "tree_hash": "603ba963af915bbcb81beb2a91df3b75a281011dc591876950bf94c5dd612985",
      "counts": {},
      "report": "in flight; no reading recorded against this scope yet"
     },
@@ -2804,8 +2804,8 @@
      "round": 6,
      "result": "in_progress",
      "auditor": "opus-units-auditor-b",
-     "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
-     "tree_hash": "5939aeb6ef5fe59187b98ee0f9eab60b152abdfabc47f9d749bcb3871ede0fe4",
+     "audited_at": "0fe2cef653de2f97d74437f1f1be407e223037f8",
+     "tree_hash": "603ba963af915bbcb81beb2a91df3b75a281011dc591876950bf94c5dd612985",
      "counts": {},
      "report": "the signer's canonicalization and key derivation were checked against the published algorithm and matched; the conformance reading covered a fifth of the scope, so this is a sample"
     }
@@ -2817,8 +2817,8 @@
    "paths": [
     "crates/busbar-kernel-ledger/src"
    ],
-   "tree_hash": "0f299a4a22bdd156b00a550c39179a3830a9b2bb7e2e61f02deff3778c92a99d",
-   "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+   "tree_hash": "188a0cff9e09072fdfe1260dd2cb78a6163054bccb3b1300d72bafaf1ca1a0b2",
+   "audited_at": "0fe2cef653de2f97d74437f1f1be407e223037f8",
    "round": 8,
    "result": "findings",
    "counts": {
@@ -2836,8 +2836,8 @@
      "round": 5,
      "result": "findings",
      "auditor": "opus",
-     "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
-     "tree_hash": "0f299a4a22bdd156b00a550c39179a3830a9b2bb7e2e61f02deff3778c92a99d",
+     "audited_at": "0fe2cef653de2f97d74437f1f1be407e223037f8",
+     "tree_hash": "188a0cff9e09072fdfe1260dd2cb78a6163054bccb3b1300d72bafaf1ca1a0b2",
      "counts": {
       "HIGH": 1,
       "MEDIUM": 6,
@@ -2850,8 +2850,8 @@
      "round": 5,
      "result": "in_progress",
      "auditor": "round-5 finder fleet",
-     "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
-     "tree_hash": "0f299a4a22bdd156b00a550c39179a3830a9b2bb7e2e61f02deff3778c92a99d",
+     "audited_at": "0fe2cef653de2f97d74437f1f1be407e223037f8",
+     "tree_hash": "188a0cff9e09072fdfe1260dd2cb78a6163054bccb3b1300d72bafaf1ca1a0b2",
      "counts": {},
      "report": "in flight; no reading recorded against this scope yet"
     },
@@ -2859,8 +2859,8 @@
      "round": 6,
      "result": "findings",
      "auditor": "opus-pass2",
-     "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
-     "tree_hash": "0f299a4a22bdd156b00a550c39179a3830a9b2bb7e2e61f02deff3778c92a99d",
+     "audited_at": "0fe2cef653de2f97d74437f1f1be407e223037f8",
+     "tree_hash": "188a0cff9e09072fdfe1260dd2cb78a6163054bccb3b1300d72bafaf1ca1a0b2",
      "counts": {
       "LOW": 1
      },
@@ -2870,8 +2870,8 @@
      "round": 7,
      "result": "findings",
      "auditor": "opus-p3-wal-ledger-verbs",
-     "audited_at": "7d32960f5c308c99ad8391e311e5dd0a60e3b41d",
-     "tree_hash": "0f299a4a22bdd156b00a550c39179a3830a9b2bb7e2e61f02deff3778c92a99d",
+     "audited_at": "0fe2cef653de2f97d74437f1f1be407e223037f8",
+     "tree_hash": "188a0cff9e09072fdfe1260dd2cb78a6163054bccb3b1300d72bafaf1ca1a0b2",
      "counts": {
       "LOW": 3,
       "NIT": 1
@@ -2882,8 +2882,8 @@
      "round": 8,
      "result": "findings",
      "auditor": "opus-units-auditor-b",
-     "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
-     "tree_hash": "0f299a4a22bdd156b00a550c39179a3830a9b2bb7e2e61f02deff3778c92a99d",
+     "audited_at": "0fe2cef653de2f97d74437f1f1be407e223037f8",
+     "tree_hash": "188a0cff9e09072fdfe1260dd2cb78a6163054bccb3b1300d72bafaf1ca1a0b2",
      "counts": {
       "HIGH": 1,
       "MEDIUM": 1
@@ -2898,8 +2898,8 @@
    "paths": [
     "crates/busbar-kernel-scope/src"
    ],
-   "tree_hash": "db92b3b96fee84a7073df0c4393177ec7ac4a1ee29e04e9c141bf873475076ed",
-   "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+   "tree_hash": "5dc5c96f3fa52888ec623c00295ec472956f750ba85f24c05b190a07d9420d88",
+   "audited_at": "0fe2cef653de2f97d74437f1f1be407e223037f8",
    "round": 6,
    "result": "in_progress",
    "counts": {},
@@ -2914,8 +2914,8 @@
      "round": 5,
      "result": "findings",
      "auditor": "opus",
-     "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
-     "tree_hash": "db92b3b96fee84a7073df0c4393177ec7ac4a1ee29e04e9c141bf873475076ed",
+     "audited_at": "0fe2cef653de2f97d74437f1f1be407e223037f8",
+     "tree_hash": "5dc5c96f3fa52888ec623c00295ec472956f750ba85f24c05b190a07d9420d88",
      "counts": {
       "HIGH": 1,
       "MEDIUM": 6,
@@ -2928,8 +2928,8 @@
      "round": 5,
      "result": "in_progress",
      "auditor": "round-5 finder fleet",
-     "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
-     "tree_hash": "db92b3b96fee84a7073df0c4393177ec7ac4a1ee29e04e9c141bf873475076ed",
+     "audited_at": "0fe2cef653de2f97d74437f1f1be407e223037f8",
+     "tree_hash": "5dc5c96f3fa52888ec623c00295ec472956f750ba85f24c05b190a07d9420d88",
      "counts": {},
      "report": "in flight; no reading recorded against this scope yet"
     },
@@ -2937,8 +2937,8 @@
      "round": 6,
      "result": "in_progress",
      "auditor": "opus-units-auditor-b",
-     "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
-     "tree_hash": "db92b3b96fee84a7073df0c4393177ec7ac4a1ee29e04e9c141bf873475076ed",
+     "audited_at": "0fe2cef653de2f97d74437f1f1be407e223037f8",
+     "tree_hash": "5dc5c96f3fa52888ec623c00295ec472956f750ba85f24c05b190a07d9420d88",
      "counts": {},
      "report": "read as the authority the auth unit's admin mirror defers to; nothing survived triage in what was opened"
     }
@@ -3020,8 +3020,8 @@
    "paths": [
     "crates/busbar-kernel-egress/src/trust"
    ],
-   "tree_hash": "12d3b9b5fb0a6209d7de8be5a246c033026d33b7866406cb5bea1a68823689f5",
-   "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+   "tree_hash": "60bd6832f61d20547c37f43ac7dc3939493bc48482a8ad95a7a0abb78c112433",
+   "audited_at": "0fe2cef653de2f97d74437f1f1be407e223037f8",
    "round": 6,
    "result": "findings",
    "counts": {
@@ -3038,8 +3038,8 @@
      "round": 5,
      "result": "findings",
      "auditor": "opus",
-     "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
-     "tree_hash": "5f9035866d73ea82d1971346a9f2f90575b017059118a3549014695e19656e42",
+     "audited_at": "0fe2cef653de2f97d74437f1f1be407e223037f8",
+     "tree_hash": "60bd6832f61d20547c37f43ac7dc3939493bc48482a8ad95a7a0abb78c112433",
      "counts": {
       "HIGH": 1,
       "MEDIUM": 6,
@@ -3052,8 +3052,8 @@
      "round": 5,
      "result": "in_progress",
      "auditor": "round-5 finder fleet",
-     "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
-     "tree_hash": "fbc6a4c033bc2c5d5fde6ca2cef59ea5910f9548b48ac54bd8201b3f3ce4dc94",
+     "audited_at": "0fe2cef653de2f97d74437f1f1be407e223037f8",
+     "tree_hash": "60bd6832f61d20547c37f43ac7dc3939493bc48482a8ad95a7a0abb78c112433",
      "counts": {},
      "report": "in flight; no reading recorded against this scope yet"
     },
@@ -3061,8 +3061,8 @@
      "round": 6,
      "result": "findings",
      "auditor": "opus-units-auditor-b",
-     "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
-     "tree_hash": "12d3b9b5fb0a6209d7de8be5a246c033026d33b7866406cb5bea1a68823689f5",
+     "audited_at": "0fe2cef653de2f97d74437f1f1be407e223037f8",
+     "tree_hash": "60bd6832f61d20547c37f43ac7dc3939493bc48482a8ad95a7a0abb78c112433",
      "counts": {
       "LOW": 1
      },
@@ -3076,8 +3076,8 @@
    "paths": [
     "crates/busbar-kernel-ledger/src/usage"
    ],
-   "tree_hash": "aec26e16a2f5da2d6ee4548ddf56f394999e5d483345e2300ba60d00c0c43031",
-   "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+   "tree_hash": "075cb87d00baede6021630627992189b87728b97b5117c07ea3931ccd0397282",
+   "audited_at": "0fe2cef653de2f97d74437f1f1be407e223037f8",
    "round": 6,
    "result": "findings",
    "counts": {
@@ -3094,8 +3094,8 @@
      "round": 5,
      "result": "findings",
      "auditor": "opus",
-     "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
-     "tree_hash": "873b9bdaa424db58b73adaedd22214841b2813ee0aa530b5ee345db7bf764303",
+     "audited_at": "0fe2cef653de2f97d74437f1f1be407e223037f8",
+     "tree_hash": "075cb87d00baede6021630627992189b87728b97b5117c07ea3931ccd0397282",
      "counts": {
       "HIGH": 1,
       "MEDIUM": 6,
@@ -3108,8 +3108,8 @@
      "round": 5,
      "result": "in_progress",
      "auditor": "round-5 finder fleet",
-     "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
-     "tree_hash": "47d129e75c87118d11b74c9d5bf02bd366ea71fc4e54a2739e50ff025232d655",
+     "audited_at": "0fe2cef653de2f97d74437f1f1be407e223037f8",
+     "tree_hash": "075cb87d00baede6021630627992189b87728b97b5117c07ea3931ccd0397282",
      "counts": {},
      "report": "in flight; no reading recorded against this scope yet"
     },
@@ -3117,8 +3117,8 @@
      "round": 6,
      "result": "findings",
      "auditor": "opus-units-auditor-b",
-     "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
-     "tree_hash": "aec26e16a2f5da2d6ee4548ddf56f394999e5d483345e2300ba60d00c0c43031",
+     "audited_at": "0fe2cef653de2f97d74437f1f1be407e223037f8",
+     "tree_hash": "075cb87d00baede6021630627992189b87728b97b5117c07ea3931ccd0397282",
      "counts": {
       "LOW": 1
      },
@@ -3210,8 +3210,8 @@
    "paths": [
     "crates/busbar-kernel-wal/src"
    ],
-   "tree_hash": "72b37e94e96e3314aa0d61d4a4cdb059f2b6cd1c3656266d32d0fe442f126144",
-   "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+   "tree_hash": "99a39ead4ce1d4c01adc4dbe3a419702349feda6d4f73f1d79f7af7bb5b66acd",
+   "audited_at": "0fe2cef653de2f97d74437f1f1be407e223037f8",
    "round": 8,
    "result": "in_progress",
    "counts": {},
@@ -3226,8 +3226,8 @@
      "round": 5,
      "result": "findings",
      "auditor": "opus",
-     "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
-     "tree_hash": "71b9271705405e0c00b42dc75e9ebdb2194786bda79bc847e3a6cbdef9896a7f",
+     "audited_at": "0fe2cef653de2f97d74437f1f1be407e223037f8",
+     "tree_hash": "99a39ead4ce1d4c01adc4dbe3a419702349feda6d4f73f1d79f7af7bb5b66acd",
      "counts": {
       "HIGH": 1,
       "MEDIUM": 6,
@@ -3240,8 +3240,8 @@
      "round": 5,
      "result": "in_progress",
      "auditor": "round-5 finder fleet",
-     "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
-     "tree_hash": "72d1220f81cba5c4dd951f45e84d5deab14866709b7b6882405cb01a859bb9d7",
+     "audited_at": "0fe2cef653de2f97d74437f1f1be407e223037f8",
+     "tree_hash": "99a39ead4ce1d4c01adc4dbe3a419702349feda6d4f73f1d79f7af7bb5b66acd",
      "counts": {},
      "report": "in flight; no reading recorded against this scope yet"
     },
@@ -3249,8 +3249,8 @@
      "round": 6,
      "result": "findings",
      "auditor": "opus-pass2",
-     "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
-     "tree_hash": "71b9271705405e0c00b42dc75e9ebdb2194786bda79bc847e3a6cbdef9896a7f",
+     "audited_at": "0fe2cef653de2f97d74437f1f1be407e223037f8",
+     "tree_hash": "99a39ead4ce1d4c01adc4dbe3a419702349feda6d4f73f1d79f7af7bb5b66acd",
      "counts": {
       "HIGH": 0,
       "MEDIUM": 1,
@@ -3263,8 +3263,8 @@
      "round": 7,
      "result": "findings",
      "auditor": "opus-p3-wal-ledger-verbs",
-     "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
-     "tree_hash": "71b9271705405e0c00b42dc75e9ebdb2194786bda79bc847e3a6cbdef9896a7f",
+     "audited_at": "0fe2cef653de2f97d74437f1f1be407e223037f8",
+     "tree_hash": "99a39ead4ce1d4c01adc4dbe3a419702349feda6d4f73f1d79f7af7bb5b66acd",
      "counts": {
       "MEDIUM": 1,
       "LOW": 2
@@ -3275,8 +3275,8 @@
      "round": 8,
      "result": "in_progress",
      "auditor": "opus-units-auditor-b",
-     "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
-     "tree_hash": "72b37e94e96e3314aa0d61d4a4cdb059f2b6cd1c3656266d32d0fe442f126144",
+     "audited_at": "0fe2cef653de2f97d74437f1f1be407e223037f8",
+     "tree_hash": "99a39ead4ce1d4c01adc4dbe3a419702349feda6d4f73f1d79f7af7bb5b66acd",
      "counts": {},
      "report": "segment, journal, recovery and shipping were read and nothing survived triage; three lenses left scope unread, so this is a sample"
     }
@@ -5367,8 +5367,8 @@
    "paths": [
     "crates/busbar-kernel-budget/src/tests"
    ],
-   "tree_hash": "5503756dbf5c8dab0316bb4edd74f53369235e90d18d7a5f643d63cfd6406b29",
-   "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+   "tree_hash": "9e43b63e03273c5dc079b22aaa442c22f1d9ecf89e9e2f80d976defcb882e070",
+   "audited_at": "0fe2cef653de2f97d74437f1f1be407e223037f8",
    "round": 2,
    "result": "in_progress",
    "counts": {},
@@ -5380,8 +5380,8 @@
      "round": 1,
      "result": "findings",
      "auditor": "opus-test-auditor-units",
-     "audited_at": "64b54387c4f177667ba688f7680877455579b293",
-     "tree_hash": "02b0ec22593c021a3706948c8e86cb828521460754bdd57f2789f1379224512b",
+     "audited_at": "0fe2cef653de2f97d74437f1f1be407e223037f8",
+     "tree_hash": "9e43b63e03273c5dc079b22aaa442c22f1d9ecf89e9e2f80d976defcb882e070",
      "counts": {
       "HIGH": 14,
       "MEDIUM": 16,
@@ -5393,8 +5393,8 @@
      "round": 2,
      "result": "in_progress",
      "auditor": "opus-units-auditor-b",
-     "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
-     "tree_hash": "5503756dbf5c8dab0316bb4edd74f53369235e90d18d7a5f643d63cfd6406b29",
+     "audited_at": "0fe2cef653de2f97d74437f1f1be407e223037f8",
+     "tree_hash": "9e43b63e03273c5dc079b22aaa442c22f1d9ecf89e9e2f80d976defcb882e070",
      "counts": {},
      "report": "read for tautologies and shared-fixture races; none found in what was opened"
     }
@@ -5406,8 +5406,8 @@
    "paths": [
     "crates/busbar-kernel-audit/src/tests"
    ],
-   "tree_hash": "0fe8e4dc1592bd440db786a819ce47ca9e16e0f602cbf48033b4152e443fb314",
-   "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+   "tree_hash": "2fdf5b76b2aad339cff6d2801e792492a3d8454a0efaaba2ea5e3837d215411c",
+   "audited_at": "0fe2cef653de2f97d74437f1f1be407e223037f8",
    "round": 2,
    "result": "in_progress",
    "counts": {},
@@ -5419,8 +5419,8 @@
      "round": 1,
      "result": "findings",
      "auditor": "opus-test-auditor-units",
-     "audited_at": "64b54387c4f177667ba688f7680877455579b293",
-     "tree_hash": "b50906b18350833559aa70818a1723c3ba1f49a23ee907a4418d777c1601632f",
+     "audited_at": "0fe2cef653de2f97d74437f1f1be407e223037f8",
+     "tree_hash": "2fdf5b76b2aad339cff6d2801e792492a3d8454a0efaaba2ea5e3837d215411c",
      "counts": {},
      "report": "busbar-landq-state/gate/audits/tests-units.md"
     },
@@ -5428,8 +5428,8 @@
      "round": 2,
      "result": "in_progress",
      "auditor": "opus-units-auditor-b",
-     "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
-     "tree_hash": "0fe8e4dc1592bd440db786a819ce47ca9e16e0f602cbf48033b4152e443fb314",
+     "audited_at": "0fe2cef653de2f97d74437f1f1be407e223037f8",
+     "tree_hash": "2fdf5b76b2aad339cff6d2801e792492a3d8454a0efaaba2ea5e3837d215411c",
      "counts": {},
      "report": "read for tautologies and shared-fixture races; none found in what was opened"
     }
@@ -5441,8 +5441,8 @@
    "paths": [
     "crates/busbar-kernel-identity/src/tests"
    ],
-   "tree_hash": "8041cbc11a6bd88d2ff31a4d1286b55f78905c08e42f88e21f11f21e48bf9dfa",
-   "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+   "tree_hash": "ffa21bcfe8f44adb39dbc28918acb1ac808e87b8f05963ba2daac74c1420d8ef",
+   "audited_at": "0fe2cef653de2f97d74437f1f1be407e223037f8",
    "round": 2,
    "result": "in_progress",
    "counts": {},
@@ -5454,8 +5454,8 @@
      "round": 1,
      "result": "findings",
      "auditor": "opus-test-auditor-units",
-     "audited_at": "64b54387c4f177667ba688f7680877455579b293",
-     "tree_hash": "8041cbc11a6bd88d2ff31a4d1286b55f78905c08e42f88e21f11f21e48bf9dfa",
+     "audited_at": "0fe2cef653de2f97d74437f1f1be407e223037f8",
+     "tree_hash": "ffa21bcfe8f44adb39dbc28918acb1ac808e87b8f05963ba2daac74c1420d8ef",
      "counts": {},
      "report": "busbar-landq-state/gate/audits/tests-units.md"
     },
@@ -5463,8 +5463,8 @@
      "round": 2,
      "result": "in_progress",
      "auditor": "opus-units-auditor-b",
-     "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
-     "tree_hash": "8041cbc11a6bd88d2ff31a4d1286b55f78905c08e42f88e21f11f21e48bf9dfa",
+     "audited_at": "0fe2cef653de2f97d74437f1f1be407e223037f8",
+     "tree_hash": "ffa21bcfe8f44adb39dbc28918acb1ac808e87b8f05963ba2daac74c1420d8ef",
      "counts": {},
      "report": "left unread by every lens this round; the production surface was read instead"
     }
@@ -5476,8 +5476,8 @@
    "paths": [
     "crates/busbar-kernel-breaker/src/tests"
    ],
-   "tree_hash": "b1f4bfa439fea9b374281db54ab68e48863b1ced8cb6a538f9ec9f68813361d8",
-   "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+   "tree_hash": "22297c4fe23f45d65ae6b68f4086ea7ba827dbc691f9b9ac08f9c2e5f372e952",
+   "audited_at": "0fe2cef653de2f97d74437f1f1be407e223037f8",
    "round": 1,
    "result": "in_progress",
    "counts": {},
@@ -5489,8 +5489,8 @@
      "round": 1,
      "result": "in_progress",
      "auditor": "opus-units-auditor-b",
-     "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
-     "tree_hash": "b1f4bfa439fea9b374281db54ab68e48863b1ced8cb6a538f9ec9f68813361d8",
+     "audited_at": "0fe2cef653de2f97d74437f1f1be407e223037f8",
+     "tree_hash": "22297c4fe23f45d65ae6b68f4086ea7ba827dbc691f9b9ac08f9c2e5f372e952",
      "counts": {},
      "report": "left unread by every lens this round; the production surface was read instead"
     }
@@ -5502,8 +5502,8 @@
    "paths": [
     "crates/busbar-kernel-ledger/src/cost/tests"
    ],
-   "tree_hash": "4116e5a07beb8821ac23737692b363165892a5807d26e9ee6a0d2a8275a7ad48",
-   "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+   "tree_hash": "5ff69ea1caaa3b77e4b8035bf54cb22e924ddfb0cd5e29679e2662a8065cfa92",
+   "audited_at": "0fe2cef653de2f97d74437f1f1be407e223037f8",
    "round": 2,
    "result": "in_progress",
    "counts": {},
@@ -5515,8 +5515,8 @@
      "round": 1,
      "result": "findings",
      "auditor": "opus-test-auditor-units",
-     "audited_at": "64b54387c4f177667ba688f7680877455579b293",
-     "tree_hash": "4116e5a07beb8821ac23737692b363165892a5807d26e9ee6a0d2a8275a7ad48",
+     "audited_at": "0fe2cef653de2f97d74437f1f1be407e223037f8",
+     "tree_hash": "5ff69ea1caaa3b77e4b8035bf54cb22e924ddfb0cd5e29679e2662a8065cfa92",
      "counts": {},
      "report": "busbar-landq-state/gate/audits/tests-units.md"
     },
@@ -5524,8 +5524,8 @@
      "round": 2,
      "result": "in_progress",
      "auditor": "opus-units-auditor-b",
-     "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
-     "tree_hash": "4116e5a07beb8821ac23737692b363165892a5807d26e9ee6a0d2a8275a7ad48",
+     "audited_at": "0fe2cef653de2f97d74437f1f1be407e223037f8",
+     "tree_hash": "5ff69ea1caaa3b77e4b8035bf54cb22e924ddfb0cd5e29679e2662a8065cfa92",
      "counts": {},
      "report": "read for tautologies and shared-fixture races; none found in what was opened"
     }
@@ -5537,8 +5537,8 @@
    "paths": [
     "crates/busbar-kernel-ledger/tests"
    ],
-   "tree_hash": "68f2b1307472249369cc3bb49c01faddc3d6b6892ae6e18c13c0200b5a523769",
-   "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+   "tree_hash": "67f2673d863249c9cdcbfde12836f5f1e28195c1258415d94fdfcc87d9735ed2",
+   "audited_at": "0fe2cef653de2f97d74437f1f1be407e223037f8",
    "round": 2,
    "result": "findings",
    "counts": {
@@ -5552,8 +5552,8 @@
      "round": 1,
      "result": "findings",
      "auditor": "opus-test-auditor-units",
-     "audited_at": "64b54387c4f177667ba688f7680877455579b293",
-     "tree_hash": "68f2b1307472249369cc3bb49c01faddc3d6b6892ae6e18c13c0200b5a523769",
+     "audited_at": "0fe2cef653de2f97d74437f1f1be407e223037f8",
+     "tree_hash": "67f2673d863249c9cdcbfde12836f5f1e28195c1258415d94fdfcc87d9735ed2",
      "counts": {},
      "report": "busbar-landq-state/gate/audits/tests-units.md"
     },
@@ -5561,8 +5561,8 @@
      "round": 2,
      "result": "findings",
      "auditor": "opus-units-auditor-b",
-     "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
-     "tree_hash": "68f2b1307472249369cc3bb49c01faddc3d6b6892ae6e18c13c0200b5a523769",
+     "audited_at": "0fe2cef653de2f97d74437f1f1be407e223037f8",
+     "tree_hash": "67f2673d863249c9cdcbfde12836f5f1e28195c1258415d94fdfcc87d9735ed2",
      "counts": {
       "MEDIUM": 1
      },
@@ -5576,8 +5576,8 @@
    "paths": [
     "crates/busbar-kernel-egress/src/tests"
    ],
-   "tree_hash": "2a45665002fd0fd1261d01e9813bb642e16a3baeb7698f870ad31f167aaf8dce",
-   "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+   "tree_hash": "c9d1fbb1e534cffa2099d064dc95f3201fb77eba891f51468ed5de67081d5451",
+   "audited_at": "0fe2cef653de2f97d74437f1f1be407e223037f8",
    "round": 2,
    "result": "in_progress",
    "counts": {},
@@ -5589,8 +5589,8 @@
      "round": 1,
      "result": "findings",
      "auditor": "opus-test-auditor-units",
-     "audited_at": "64b54387c4f177667ba688f7680877455579b293",
-     "tree_hash": "84ddc13107340567621751ebecfed66af3f65c8fe89daa91d44deb62682117dc",
+     "audited_at": "0fe2cef653de2f97d74437f1f1be407e223037f8",
+     "tree_hash": "c9d1fbb1e534cffa2099d064dc95f3201fb77eba891f51468ed5de67081d5451",
      "counts": {},
      "report": "busbar-landq-state/gate/audits/tests-units.md"
     },
@@ -5598,8 +5598,8 @@
      "round": 2,
      "result": "in_progress",
      "auditor": "opus-units-auditor-b",
-     "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
-     "tree_hash": "2a45665002fd0fd1261d01e9813bb642e16a3baeb7698f870ad31f167aaf8dce",
+     "audited_at": "0fe2cef653de2f97d74437f1f1be407e223037f8",
+     "tree_hash": "c9d1fbb1e534cffa2099d064dc95f3201fb77eba891f51468ed5de67081d5451",
      "counts": {},
      "report": "left unread by every lens this round; the production surface was read instead"
     }
@@ -5611,8 +5611,8 @@
    "paths": [
     "crates/busbar-kernel-egress/tests"
    ],
-   "tree_hash": "531952f1df3987fa04fbed0c057661635774566d3c0e5e7cc246752adfbaa0ed",
-   "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+   "tree_hash": "f0f0c7f0033c96cc68834552de022b9f3775487aa2d00df002448986ded6499f",
+   "audited_at": "0fe2cef653de2f97d74437f1f1be407e223037f8",
    "round": 2,
    "result": "in_progress",
    "counts": {},
@@ -5624,8 +5624,8 @@
      "round": 1,
      "result": "findings",
      "auditor": "opus-test-auditor-units",
-     "audited_at": "64b54387c4f177667ba688f7680877455579b293",
-     "tree_hash": "5eae17594fb58fc1ec321e5fe308e21dd4be86526ff5cfc43b65a90dff3888de",
+     "audited_at": "0fe2cef653de2f97d74437f1f1be407e223037f8",
+     "tree_hash": "f0f0c7f0033c96cc68834552de022b9f3775487aa2d00df002448986ded6499f",
      "counts": {},
      "report": "busbar-landq-state/gate/audits/tests-units.md"
     },
@@ -5633,8 +5633,8 @@
      "round": 2,
      "result": "in_progress",
      "auditor": "opus-units-auditor-b",
-     "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
-     "tree_hash": "531952f1df3987fa04fbed0c057661635774566d3c0e5e7cc246752adfbaa0ed",
+     "audited_at": "0fe2cef653de2f97d74437f1f1be407e223037f8",
+     "tree_hash": "f0f0c7f0033c96cc68834552de022b9f3775487aa2d00df002448986ded6499f",
      "counts": {},
      "report": "the cross-crate breaker adapter case was read and is a real agreement test, not one that passes by construction"
     }
@@ -5646,8 +5646,8 @@
    "paths": [
     "crates/busbar-kernel-ledger/src/tests"
    ],
-   "tree_hash": "7fca94edb019117dd26129b8b65c66fe426e54c6e82d90c65f5c204e68b0dc06",
-   "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+   "tree_hash": "d9664281e7223dd641b3ce8d1f5253b8ee9fb426213558efa40a2a2b89e3a158",
+   "audited_at": "0fe2cef653de2f97d74437f1f1be407e223037f8",
    "round": 2,
    "result": "in_progress",
    "counts": {},
@@ -5659,8 +5659,8 @@
      "round": 1,
      "result": "findings",
      "auditor": "opus-test-auditor-units",
-     "audited_at": "64b54387c4f177667ba688f7680877455579b293",
-     "tree_hash": "99fbe9adde51aaa97d36b9a230f9e6efc042ee10493aa72f6270ef6be843cf7c",
+     "audited_at": "0fe2cef653de2f97d74437f1f1be407e223037f8",
+     "tree_hash": "d9664281e7223dd641b3ce8d1f5253b8ee9fb426213558efa40a2a2b89e3a158",
      "counts": {},
      "report": "busbar-landq-state/gate/audits/tests-units.md"
     },
@@ -5668,8 +5668,8 @@
      "round": 2,
      "result": "in_progress",
      "auditor": "opus-units-auditor-b",
-     "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
-     "tree_hash": "7fca94edb019117dd26129b8b65c66fe426e54c6e82d90c65f5c204e68b0dc06",
+     "audited_at": "0fe2cef653de2f97d74437f1f1be407e223037f8",
+     "tree_hash": "d9664281e7223dd641b3ce8d1f5253b8ee9fb426213558efa40a2a2b89e3a158",
      "counts": {},
      "report": "read for tautologies and shared-fixture races; none found in what was opened"
     }
@@ -5681,8 +5681,8 @@
    "paths": [
     "crates/busbar-kernel-egress/src/trust/tests"
    ],
-   "tree_hash": "37885d786faaf1daf9ff22702495adeeb9da3e745251e83300115fd7e7a38f61",
-   "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+   "tree_hash": "4b7612e7fc171e557f956f95f03b04da9ebc53774e611e9f26a9d35b00187728",
+   "audited_at": "0fe2cef653de2f97d74437f1f1be407e223037f8",
    "round": 2,
    "result": "in_progress",
    "counts": {},
@@ -5694,8 +5694,8 @@
      "round": 1,
      "result": "findings",
      "auditor": "opus-test-auditor-units",
-     "audited_at": "64b54387c4f177667ba688f7680877455579b293",
-     "tree_hash": "3465d8043bdd22d492d3e4c6de31b7f25e05ff4556191e2ae503ac785f600b68",
+     "audited_at": "0fe2cef653de2f97d74437f1f1be407e223037f8",
+     "tree_hash": "4b7612e7fc171e557f956f95f03b04da9ebc53774e611e9f26a9d35b00187728",
      "counts": {},
      "report": "busbar-landq-state/gate/audits/tests-units.md"
     },
@@ -5703,8 +5703,8 @@
      "round": 2,
      "result": "in_progress",
      "auditor": "opus-units-auditor-b",
-     "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
-     "tree_hash": "37885d786faaf1daf9ff22702495adeeb9da3e745251e83300115fd7e7a38f61",
+     "audited_at": "0fe2cef653de2f97d74437f1f1be407e223037f8",
+     "tree_hash": "4b7612e7fc171e557f956f95f03b04da9ebc53774e611e9f26a9d35b00187728",
      "counts": {},
      "report": "sampled for tautologies and shared-fixture races; none found in what was opened"
     }
@@ -5716,8 +5716,8 @@
    "paths": [
     "crates/busbar-kernel-egress/tests"
    ],
-   "tree_hash": "e41b5b9fc6f4e5f18a8c07d67dfeea9eb1a39aac3585ca42b7244973e279b4f7",
-   "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+   "tree_hash": "f0f0c7f0033c96cc68834552de022b9f3775487aa2d00df002448986ded6499f",
+   "audited_at": "0fe2cef653de2f97d74437f1f1be407e223037f8",
    "round": 2,
    "result": "in_progress",
    "counts": {},
@@ -5729,8 +5729,8 @@
      "round": 1,
      "result": "findings",
      "auditor": "opus-test-auditor-units",
-     "audited_at": "64b54387c4f177667ba688f7680877455579b293",
-     "tree_hash": "e41b5b9fc6f4e5f18a8c07d67dfeea9eb1a39aac3585ca42b7244973e279b4f7",
+     "audited_at": "0fe2cef653de2f97d74437f1f1be407e223037f8",
+     "tree_hash": "f0f0c7f0033c96cc68834552de022b9f3775487aa2d00df002448986ded6499f",
      "counts": {},
      "report": "busbar-landq-state/gate/audits/tests-units.md"
     },
@@ -5738,8 +5738,8 @@
      "round": 2,
      "result": "in_progress",
      "auditor": "opus-units-auditor-b",
-     "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
-     "tree_hash": "e41b5b9fc6f4e5f18a8c07d67dfeea9eb1a39aac3585ca42b7244973e279b4f7",
+     "audited_at": "0fe2cef653de2f97d74437f1f1be407e223037f8",
+     "tree_hash": "f0f0c7f0033c96cc68834552de022b9f3775487aa2d00df002448986ded6499f",
      "counts": {},
      "report": "the weighted-allocation case was read and measures what it claims to"
     }
@@ -5751,8 +5751,8 @@
    "paths": [
     "crates/busbar-kernel-ledger/src/usage/tests"
    ],
-   "tree_hash": "3e8c8f152d742a0eca7d119bfe165d20707141d118140f4e99edef9a36c2ebdd",
-   "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+   "tree_hash": "9309abc5883ec589cea0970f58d1fcf88d56759f1117135f99738ad498ac1484",
+   "audited_at": "0fe2cef653de2f97d74437f1f1be407e223037f8",
    "round": 2,
    "result": "in_progress",
    "counts": {},
@@ -5764,8 +5764,8 @@
      "round": 1,
      "result": "findings",
      "auditor": "opus-test-auditor-units",
-     "audited_at": "64b54387c4f177667ba688f7680877455579b293",
-     "tree_hash": "3e8c8f152d742a0eca7d119bfe165d20707141d118140f4e99edef9a36c2ebdd",
+     "audited_at": "0fe2cef653de2f97d74437f1f1be407e223037f8",
+     "tree_hash": "9309abc5883ec589cea0970f58d1fcf88d56759f1117135f99738ad498ac1484",
      "counts": {},
      "report": "busbar-landq-state/gate/audits/tests-units.md"
     },
@@ -5773,8 +5773,8 @@
      "round": 2,
      "result": "in_progress",
      "auditor": "opus-units-auditor-b",
-     "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
-     "tree_hash": "3e8c8f152d742a0eca7d119bfe165d20707141d118140f4e99edef9a36c2ebdd",
+     "audited_at": "0fe2cef653de2f97d74437f1f1be407e223037f8",
+     "tree_hash": "9309abc5883ec589cea0970f58d1fcf88d56759f1117135f99738ad498ac1484",
      "counts": {},
      "report": "read for tautologies and shared-fixture races; none found in what was opened"
     }
@@ -5821,8 +5821,8 @@
    "paths": [
     "crates/busbar-kernel-wal/src/tests"
    ],
-   "tree_hash": "da7d9cab5fca1ad8035f853335bf54a0f5f9597f072bad9f64c7289325b923ff",
-   "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+   "tree_hash": "9033512d8f17e161bb7347938b0617278434d87a70d92d1b26268d454538f03a",
+   "audited_at": "0fe2cef653de2f97d74437f1f1be407e223037f8",
    "round": 2,
    "result": "in_progress",
    "counts": {},
@@ -5834,8 +5834,8 @@
      "round": 1,
      "result": "findings",
      "auditor": "opus-test-auditor-units",
-     "audited_at": "64b54387c4f177667ba688f7680877455579b293",
-     "tree_hash": "4d7a9bc6d5de8dd5737fbf82d132ff3d80fd56f86d9b75c10938b2bb569ef552",
+     "audited_at": "0fe2cef653de2f97d74437f1f1be407e223037f8",
+     "tree_hash": "9033512d8f17e161bb7347938b0617278434d87a70d92d1b26268d454538f03a",
      "counts": {},
      "report": "busbar-landq-state/gate/audits/tests-units.md"
     },
@@ -5843,8 +5843,8 @@
      "round": 2,
      "result": "in_progress",
      "auditor": "opus-units-auditor-b",
-     "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
-     "tree_hash": "da7d9cab5fca1ad8035f853335bf54a0f5f9597f072bad9f64c7289325b923ff",
+     "audited_at": "0fe2cef653de2f97d74437f1f1be407e223037f8",
+     "tree_hash": "9033512d8f17e161bb7347938b0617278434d87a70d92d1b26268d454538f03a",
      "counts": {},
      "report": "read for tautologies and shared-fixture races; none found in what was opened"
     }
