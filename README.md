@@ -16,8 +16,7 @@
 <a href="https://github.com/GetBusbar/busbar/actions/workflows/ci.yml"><img src="https://github.com/GetBusbar/busbar/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
 <a href="https://codecov.io/gh/GetBusbar/busbar"><img src="https://codecov.io/gh/GetBusbar/busbar/branch/main/graph/badge.svg" alt="Coverage"></a>
 <a href="https://securityscorecards.dev/viewer/?uri=github.com/GetBusbar/busbar"><img src="https://api.securityscorecards.dev/projects/github.com/GetBusbar/busbar/badge" alt="OpenSSF Scorecard"></a>
-<!-- OpenSSF Best Practices: replace <ID> with the project ID issued at registration (see docs/security/openssf-best-practices.md). -->
-<a href="https://www.bestpractices.dev/projects/<ID>"><img src="https://img.shields.io/badge/OpenSSF_Best_Practices-pending%20registration-lightgrey" alt="OpenSSF Best Practices"></a>
+[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/14739/badge)](https://www.bestpractices.dev/projects/14739)
 <a href="https://github.com/GetBusbar/busbar/actions/workflows/qa-security.yml"><img src="https://img.shields.io/badge/cargo--audit-RustSec-1f6feb" alt="cargo-audit (RustSec advisories)"></a>
 <a href="https://github.com/GetBusbar/busbar/actions/workflows/qa-security.yml"><img src="https://img.shields.io/badge/cargo--deny-advisories%20%C2%B7%20licenses%20%C2%B7%20sources%20%C2%B7%20bans-1f6feb" alt="cargo-deny"></a>
 <a href="https://github.com/GetBusbar/busbar/releases"><img src="https://img.shields.io/github/v/release/GetBusbar/busbar?include_prereleases" alt="Release"></a>
