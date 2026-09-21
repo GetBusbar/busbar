@@ -618,13 +618,14 @@ allowed_root = "crates/busbar-contract/src/caps"
 max_sites = 0
 # Ratchet, NOT a review: each file below forges a seal today with a private type, and each is owned
 # by a change that is not this one. A new site anywhere else is held to the rule immediately.
-# busbar-plane-admin and busbar-plane-voice are the awkward two: a PLANE crate may not name
-# busbar-contract's caps module at all (section 1.2, and manifest-allowlist makes it an automatic RED), so their test
-# seals cannot move onto a token until the contract offers a seal a plane is allowed to name. That is
-# debt this rule now PINS rather than debt it hides.
+# busbar-plane-admin, busbar-plane-voice and busbar-plane-streaming are the awkward ones: a PLANE
+# crate may not name busbar-contract's caps module at all (section 1.2, and manifest-allowlist makes
+# it an automatic RED), so their test seals cannot move onto a token until the contract offers a seal
+# a plane is allowed to name. That is debt this rule now PINS rather than debt it hides.
 known_sites = [
   "crates/busbar-plane-admin/src/tests/mod.rs",
   "crates/busbar-plane-voice/src/tests/harness.rs",
+  "crates/busbar-plane-streaming/src/tests/harness.rs",
   "crates/busbar-transport-grpc/src/tests/battery.rs",
   "crates/busbar-transport-http/src/tests/mod.rs",
   "crates/busbar-transport-stdio/src/tests/battery.rs",

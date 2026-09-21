@@ -162,7 +162,7 @@ pub struct TestSeal;
 
 impl KernelSeal for TestSeal {
     fn seal_origin(&self) -> &'static str {
-        "busbar-plane-voice tests"
+        "busbar-plane-streaming tests"
     }
 }
 
