@@ -1863,6 +1863,84 @@ jobs:
               - 'scripts/a2a-subject/**'
               - '.github/workflows/ci.yml'
 
+  # ── THE ONE CANONICAL RELEASE BINARY, BUILT ONCE AND SHARED ───────────────────────────────────
+  # Three jobs used to each run the identical `cargo build -p busbar --release --locked` in parallel
+  # — `plane-rigs` (the subject its rigs boot), `perf-build-gate` (the binary its provenance stamp is
+  # asserted on), and `shadow-oracle` (the candidate it records against 1.5.5). Same command, same
+  # default feature set, same pinned toolchain, same target: ONE artifact serves all three, so it is
+  # built here once (~15 min xlarge) and the three consumers `download-artifact` it instead of each
+  # paying that build again.
+  #
+  # WHY THE THREE ARE SAFELY THE SAME BINARY, and not merged carelessly (a rig grading the wrong
+  # binary is worse than a slow build). The build command is byte-for-byte identical across the three;
+  # `BUSBAR_RELEASE_PUBKEY` is a RUNTIME input (the shadow oracle's plugin-signature check at record
+  # time) and is NOT read by crates/busbar/build.rs — that build script keys only on BUSBAR_PGO,
+  # CARGO_ENCODED_RUSTFLAGS, PROFILE, OPT_LEVEL and TARGET — so setting it here changes no output bit
+  # while still satisfying the oracle's "the key must be set" guard; and the provenance stamp
+  # (profile=release, opt-level=3, debug-assertions=false, pgo=false) is a property of the plain
+  # release profile this job builds, asserted below on the exact bytes the three will download.
+  #
+  # NEEDS PREFLIGHT so a hygiene-failing branch never reaches this xlarge build. NO full-tier `if:`
+  # guard: `shadow-oracle` is a fast-tier job that consumes this artifact, so this build must run on
+  # every push and PR too — its RESULTS row is scored `fast`.
+  build-release:
+    name: build-release (the one canonical release binary, built once + shared)
+    runs-on: latchkey-xlarge
+    needs: [preflight]
+
+    # BOUNDED — see "EVERY JOB IS BOUNDED" at the top of this file. This is the release build the
+    # three consumers used to each pay; measured ~15 min cold. 45 leaves cold-cache headroom for the
+    # release profile, matching the ceiling plane-rigs carried for the same compile.
+    timeout-minutes: 60
+    env:
+      # RUNTIME key for the shadow oracle's plugins family; NOT read by build.rs, so it changes no
+      # output bit. Set here so the shared binary is built under the same environment the oracle's
+      # own build asserted, and so this job proves the key is present before the artifact is minted.
+      BUSBAR_RELEASE_PUBKEY: ${{ vars.BUSBAR_RELEASE_PUBKEY }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
+      - name: Resolve cargo home (Latchkey image sets CARGO_HOME off $HOME)
+        uses: ./.github/actions/cargo-home
+      - name: Latchkey Fast Cache (cargo registry + target, restore)
+        uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
+        with:
+          action: restore
+          key: cargo-${{ runner.os }}-build-release-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
+          path: |
+            ${{ env.CARGO_HOME }}/registry
+            ${{ env.CARGO_HOME }}/git
+            target
+      # THE ONE BUILD. RELEASE, default features, `--locked`, with the release public key set — the
+      # exact command the three consumers used to each run.
+      - name: Build the one canonical release binary
+        run: |
+          set -euo pipefail
+          [ -n "${BUSBAR_RELEASE_PUBKEY:-}" ] || { echo "::error::BUSBAR_RELEASE_PUBKEY is not set; the plugins family would be red for the wrong reason"; exit 1; }
+          cargo build -p busbar --release --locked
+      # PROVE THE SHARED BINARY CARRIES THE STAMP, on the exact bytes the three will download. A plain
+      # release build (no BUSBAR_PGO) must report profile=release, opt-level=3, debug-assertions=false,
+      # pgo=false. `perf-build-gate` re-asserts this on its download; asserting it here as well means a
+      # bad artifact never leaves this job.
+      - name: Assert build-provenance stamp on the canonical binary
+        run: scripts/build-provenance-gate.sh target/release/busbar release false
+      - name: Upload the canonical release binary (consumed by plane-rigs, perf-build-gate, shadow-oracle)
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: busbar-release
+          path: target/release/busbar
+          if-no-files-found: error
+          retention-days: 7
+      - name: Latchkey Fast Cache (cargo registry + target, save)
+        uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
+        with:
+          action: save
+          key: cargo-${{ runner.os }}-build-release-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
+          path: |
+            ${{ env.CARGO_HOME }}/registry
+            ${{ env.CARGO_HOME }}/git
+            target
+
   # ── EVERY H2 RIG SCENARIO THE TREE CARRIES IS RUN ─────────────────────────────────────────────
   # `qa/teller-steps.json` maps every Teller step of every gating plane to the scenario that proves
   # it, and `cargo xtask gate teller-steps` asserts each cell NAMES A REAL SCRIPT. It does not run
@@ -1889,8 +1967,9 @@ jobs:
     name: plane rigs (every H2 gating scenario for mcp and a2a, RUN)
     runs-on: latchkey-xlarge
     # `changes` stays a direct dependency because the `if:` below reads `needs.changes.outputs.plane`;
-    # `preflight` is added so this xlarge rig job also waits on the cheap hygiene tier.
-    needs: [changes, preflight]
+    # `preflight` is added so this xlarge rig job also waits on the cheap hygiene tier; `build-release`
+    # supplies the subject binary these rigs boot, downloaded below instead of rebuilt here.
+    needs: [changes, preflight, build-release]
     if: needs.changes.outputs.plane == 'true' || github.event_name != 'push' || contains(fromJSON('["refs/heads/main", "refs/heads/dev", "refs/heads/qa"]'), github.ref)
     # BOUNDED — see "EVERY JOB IS BOUNDED" at the top of this file. The release build dominates
     # (`teller-steps`, the other job that compiles the binary crate outside `check`'s cache, carries
@@ -1923,11 +2002,17 @@ jobs:
         run: cargo xtask gate teller-steps --selftest
       - name: Teller-steps matrix (every gating plane x step cell names a real scenario)
         run: cargo xtask gate teller-steps
-      - name: Build the subject the rigs boot
-        # RELEASE, because that is what `h2-lib.sh` resolves by default
-        # (`${…_SUBJECT_BUSBAR_BIN:-target/release/busbar}`) and a rig that silently graded a debug
-        # binary would be proving the admission path of something nobody ships.
-        run: cargo build -p busbar --release --locked
+      # THE SUBJECT THE RIGS BOOT — the ONE canonical release binary `build-release` built, downloaded
+      # instead of rebuilt. RELEASE, because that is what `h2-lib.sh` resolves by default
+      # (`${…_SUBJECT_BUSBAR_BIN:-target/release/busbar}`) and a rig that silently graded a debug
+      # binary would be proving the admission path of something nobody ships.
+      - name: Download the canonical release binary the rigs boot
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: busbar-release
+          path: target/release
+      - name: Make the downloaded binary executable
+        run: chmod +x target/release/busbar
       # ── the MCP plane's six ───────────────────────────────────────────────────────────────────
       - name: mcp.rig authenticate-refusal
         run: ./scripts/mcp-subject/h2-authenticate-refusal.sh
@@ -2454,8 +2539,9 @@ jobs:
   perf-build-gate:
     name: perf + build-parity gate
     runs-on: latchkey-xlarge
-    # Waits on the cheap hygiene tier.
-    needs: [preflight]
+    # Waits on the cheap hygiene tier, and on `build-release` for the shared binary whose provenance
+    # stamp this job asserts (downloaded below, no longer rebuilt here).
+    needs: [preflight, build-release]
 
     # BOUNDED — see "EVERY JOB IS BOUNDED" at the top of this file. Measured p95 9.9 min
     # over the last 7 green runs of this job; ceiling is p95 x1.5, floor 10.
@@ -2517,10 +2603,17 @@ jobs:
 
       # THE STAMP, PROVEN ON A REAL RELEASE BINARY. A plain release build (no BUSBAR_PGO) must report
       # profile=release, opt-level=3, debug-assertions=false, pgo=false. A debug/non-optimized binary
-      # would report otherwise and fail — the exact misdiagnosis the stamp exists to prevent.
-      - name: Build busbar (release) + assert build-provenance stamp
+      # would report otherwise and fail — the exact misdiagnosis the stamp exists to prevent. The
+      # binary is the ONE `build-release` built (downloaded, not rebuilt here); asserting the stamp on
+      # it is exactly the parity check this gate owes — proof the shared artifact carries the stamp.
+      - name: Download the shared release binary
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: busbar-release
+          path: target/release
+      - name: Assert build-provenance stamp on the shared release binary
         run: |
-          cargo build -p busbar --release --locked
+          chmod +x target/release/busbar
           scripts/build-provenance-gate.sh target/release/busbar release false
 
       # THE DETERMINISTIC ALLOCATION-COUNT PERF GATE, by name (also covered by the workspace test run).
@@ -2765,8 +2858,9 @@ jobs:
     name: shadow oracle (this build vs the published 1.5.5, 0 divergences)
     runs-on: latchkey-xlarge
     # Waits on the cheap hygiene tier — the whole point of this change: a one-minute fmt failure no
-    # longer burns this forty-minute record alongside it.
-    needs: [preflight]
+    # longer burns this forty-minute record alongside it — and on `build-release` for the candidate
+    # binary it records (downloaded below instead of rebuilt here).
+    needs: [preflight, build-release]
 
     timeout-minutes: 60
     env:
@@ -2903,11 +2997,20 @@ jobs:
           key: ${{ steps.rev.outputs.key }}
           path: ~/.cache/busbar-oracle
 
-      - name: Build the candidate (release, with the release public key)
+      # THE CANDIDATE is the ONE `build-release` built (release, under the release public key),
+      # downloaded here instead of rebuilt. The pubkey guard stays: the key is a RUNTIME input to the
+      # plugins family the oracle records below (not a build input), so it must be present in THIS
+      # job's environment — the download does not carry it.
+      - name: Download the candidate (release) binary + guard the release public key
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: busbar-release
+          path: target/release
+      - name: The release public key is set for the record (plugins family)
         run: |
           set -euo pipefail
           [ -n "${BUSBAR_RELEASE_PUBKEY:-}" ] || { echo "::error::BUSBAR_RELEASE_PUBKEY is not set; the plugins family would be red for the wrong reason"; exit 1; }
-          cargo build -p busbar --release --locked
+          chmod +x target/release/busbar
       - name: Both binaries accept the oracle config
         run: ./bin/oracle selftest target/release/busbar "$HOME/.cache/busbar-oracle/1.5.5/busbar"
       # THE GOLDEN IS COMMITTED, NOT RE-DERIVED. `testing/shadow-oracle/golden/1.5.5/` is the signed-off
@@ -3332,6 +3435,7 @@ jobs:
       - preflight
       - structure-lint
       - changes
+      - build-release
       - check
       - openapi-schema
       - migration-corpus
@@ -3398,6 +3502,7 @@ jobs:
         preflight|fast|${{ needs.preflight.result }}
         structure-lint|fast|${{ needs.structure-lint.result }}
         changes|fast|${{ needs.changes.result }}
+        build-release|fast|${{ needs.build-release.result }}
         check|fast|${{ needs.check.result }}
         config-stability|fast|${{ needs.config-stability.result }}
         generated-artifact-drift|fast|${{ needs.generated-artifact-drift.result }}
