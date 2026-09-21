@@ -11,6 +11,9 @@ Instead, report privately through either channel:
 - GitHub's [private vulnerability reporting](https://github.com/GetBusbar/busbar/security/advisories/new)
   (the **Security** tab on the repository).
 
+The **security contact** for this project is the Busbar maintainer, **Matthew Jackson**, who owns
+the disclosure queue and this policy and monitors **security@getbusbar.com**.
+
 Please include:
 
 - A description of the issue and its potential impact.
@@ -100,5 +103,6 @@ We would rather name what is not yet in place than imply it is:
 - **Bug bounty:** there is no paid bounty program today. We plan to begin with a published
   safe harbor and a hall of fame (recognition, not cash), then graduate to a funded tier as
   the team grows. Until then, the safe harbor above applies.
-- **Dedicated security owner:** security is currently owned by the maintainers. We plan to
-  name a dedicated security owner accountable for the disclosure queue and this policy.
+- **Security owner:** the disclosure queue and this policy are owned by the project maintainer
+  (**Matthew Jackson**, `security@getbusbar.com`), named above. As a solo-maintained project the
+  **bus factor is 1**; broadening ownership is a growth item we name rather than imply.
