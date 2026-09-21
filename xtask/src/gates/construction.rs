@@ -63,10 +63,10 @@ pub const CEILINGS: &str = "qa/construction.toml";
 /// label is not a threshold.
 const SURFACE: [(&str, &str, &str, &str, i64); 3] = [
     (
-        "contract+caps",
+        "contract",
         "contract_caps",
-        "busbar-contract,busbar-caps",
-        "the contract pair's plugin-visible surface",
+        "busbar-contract",
+        "the contract crate's plugin-visible surface (caps folded in, #37/#38)",
         3500,
     ),
     (

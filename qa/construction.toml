@@ -57,7 +57,7 @@ store = ["crates/store-*"]
 secret = ["crates/secret-*"]
 hook = ["crates/hook*"]
 # ONE auth kind. Inbound-verify and outbound-sign are two OPERATIONS of it (DECISIONS #3), not two
-# kinds: the auth PLUGINS live at crates/auth-*; the outbound-scheme units (busbar-unit-egress-auth,
+# kinds: the auth PLUGINS live at crates/auth-*; the outbound-scheme units (busbar-kernel-identity's egress_auth module,
 # …) are `unit` kind, scoped by `unit` below.
 auth = ["crates/auth-*"]
 export = ["crates/export-*"]
@@ -252,7 +252,7 @@ max_sites = 0
 # the pre-busbar-kernel path the `patterns` list above still ratchets against): `KernelSeal::
 # acquire_for_kernel(` mints the one seal every token constructor needs, and the unit crates'
 # OWN test modules call it directly to build sealed tokens for their tests (mirroring
-# busbar-caps/src/tests.rs) -- allowed there because production_only test-classification already
+# busbar-contract/src/caps/tests/mod.rs) -- allowed there because production_only test-classification already
 # excludes them, never allowed from a unit's production src. `AdmitToken::mint(` is the in-flight
 # table's arrival-hold constructor; `Kernel::admit_token()` (busbar-kernel/src/teller.rs) is its one
 # named seam, so the mint itself should never be spelled anywhere else -- it is scanned only by the
@@ -319,7 +319,7 @@ max_sites = 2
 # ── 14. loc-ceilings (ARCHITECTURE.md section 1.1) ─────────────────────────────────────────────────────────
 [rules.loc-ceilings]
 why = """The kernel stays small by construction, not by promise. section 1.1 gives one union ceiling, one \
-per-crate ceiling for busbar-caps + busbar-contract, one for the busbar-unit-* union (with a verbs \
+per-crate ceiling for busbar-contract (with the folded caps module), one for the busbar-unit-* union (with a verbs \
 sub-ceiling), and a NAMED per-file split of the kernel's own 8k. Counted BY CALL-GRAPH: a \
 busbar-unit-* file the Teller loop reaches WITHOUT crossing a sealed unit-trait boundary spends \
 kernel budget even though it lives in another crate — a kernel that stayed nominally small by \
@@ -334,7 +334,7 @@ lines only (owner decision): non-blank, non-comment lines under src/, excluding 
 bodies and src/tests/** -- a proof table, fixture or data table moved into a test-classified path is \
 a proof, not surface, and does not spend the ceiling. A separate, purpose-built \
 `surface-ceiling:contract+caps` row (scripts/loc-surface.py, another in-flight change) applies the \
-identical counting rule to busbar-caps + busbar-contract once their proof tables move out of src/; \
+identical counting rule to busbar-contract (with the folded caps module) once its proof tables move out of src/; \
 this rule's own `loc-ceilings:caps-contract` row is not that row and is not removed by it -- the two \
 are expected to converge once the move lands, not to be reconciled here."""
 kernel_crate = "busbar-kernel"
@@ -430,7 +430,7 @@ ceiling = 178
 why = """Core → plugin, never plugin → core. A plugin-kind crate (plane, store, auth, hook, export, \
 secret) may name `busbar-contract` and the closed grammar it is written on (`busbar-grammar`) freely; \
 every other workspace crate it names is either an \
-automatic RED (busbar-kernel, busbar-caps, a busbar-unit-*, another plane, a transport — the \
+automatic RED (busbar-kernel, a busbar-unit-*, another plane, a transport — the \
 coupling the ABI exists to prevent, and no allow-list can excuse it) or must be on the reviewed \
 list below, named once with its reason. Parsed out of every SHIPPED dependency table each crate \
 declares — `[dependencies]`, `[build-dependencies]` and the per-target forms of both, with \
@@ -548,7 +548,7 @@ max_defaulted = 0
 [rules.sealed-unit-traits]
 why = """The trait a unit implements to be called by the Teller is sealed on a private supertrait, \
 so no plugin crate can implement it and stand in for a unit the kernel itself must own. \
-busbar-unit-breaker's `Breaker` trait does this today (`mod sealed { pub trait Sealed {} }`, \
+busbar-kernel-breaker's `Breaker` trait does this today (`mod sealed { pub trait Sealed {} }`, \
 `pub trait Breaker: sealed::Sealed`); this rule requires the same shape of every unit's own \
 kernel-facing trait as each is written. NOT every `pub trait` in a busbar-unit-* crate is one of \
 these — most are internal ports (a header reader, a journal sink) a unit crate defines to keep its \
@@ -559,18 +559,18 @@ the explicit list below, maintained by the owner as each unit's sealed shape lan
 max_unsealed = 1
 # crate, trait, file (relative to repo root) — the unit's own kernel-facing trait.
 [rules.sealed-unit-traits.traits.admission]
-crate = "busbar-unit-admission"
-file = "crates/busbar-unit-admission/src/lib.rs"
+crate = "busbar-kernel-budget"
+file = "crates/busbar-kernel-budget/src/lib.rs"
 trait = "Admission"
 
 [rules.sealed-unit-traits.traits.breaker]
-crate = "busbar-unit-breaker"
-file = "crates/busbar-unit-breaker/src/lib.rs"
+crate = "busbar-kernel-breaker"
+file = "crates/busbar-kernel-breaker/src/lib.rs"
 trait = "Breaker"
 
 [rules.sealed-unit-traits.traits.audit]
-crate = "busbar-unit-audit"
-file = "crates/busbar-unit-audit/src/record.rs"
+crate = "busbar-kernel-audit"
+file = "crates/busbar-kernel-audit/src/record.rs"
 trait = "Audit"
 
 # ── 20. hold-discipline (ARCHITECTURE.md section 3.7 / section 8.3) ────────────────────────────────────────────────
@@ -602,9 +602,9 @@ max_uncancellable_await = 0
 [rules.kernel-seal-impls]
 why = """`busbar_contract::plugin::KernelSeal` is what every kernel-built view the contract declares \
 takes to be constructed: a verified destination, the unit a plane reads, a one-shot secret, a \
-transport key handle. It has to be a public trait, because busbar-caps implements it on every token \
+transport key handle. It has to be a public trait, because busbar-contract's caps module implements it on every token \
 and sits ABOVE the contract, and Rust cannot say "implementable by exactly one other crate". So the \
-type system does not close it and this scan does: outside busbar-caps, an in-tree crate that \
+type system does not close it and this scan does: outside busbar-contract's caps module, an in-tree crate that \
 implements this trait can mint its own kernel evidence, and it does not need a token, a kernel or a \
 review to do it. Scanned INCLUDING test code on purpose -- every site this rule found on the day it \
 was written was in a test module, so a production-only reading of it would be vacuous by \
@@ -612,12 +612,12 @@ construction and would prove nothing. This is the in-tree half only: an out-of-t
 implement the trait, and per the trust policy a loaded plugin is trusted code, so that is not a line \
 this rule pretends to draw."""
 pattern = 'impl(<[^>]*>)?\s+(busbar_contract::)?(plugin::)?KernelSeal\s+for'
-allowed_root = "crates/busbar-caps/src"
+allowed_root = "crates/busbar-contract/src/caps"
 max_sites = 0
 # Ratchet, NOT a review: each file below forges a seal today with a private type, and each is owned
 # by a change that is not this one. A new site anywhere else is held to the rule immediately.
 # busbar-plane-admin and busbar-plane-voice are the awkward two: a PLANE crate may not name
-# busbar-caps at all (section 1.2, and manifest-allowlist makes it an automatic RED), so their test
+# busbar-contract's caps module at all (section 1.2, and manifest-allowlist makes it an automatic RED), so their test
 # seals cannot move onto a token until the contract offers a seal a plane is allowed to name. That is
 # debt this rule now PINS rather than debt it hides.
 known_sites = [
@@ -630,7 +630,7 @@ known_sites = [
   "crates/busbar-transport-tls/src/tests/mod.rs",
   "crates/busbar-transport-ws/src/tests/battery.rs",
   "crates/busbar-transport-ws/src/transport.rs",
-  "crates/busbar-unit-egress/src/tests/harness.rs",
+  "crates/busbar-kernel-egress/src/tests/harness.rs",
 ]
 
 # ── 22. forbid-unsafe ────────────────────────────────────────────────────────────────────────────
@@ -681,12 +681,12 @@ why = """Rust has no linear types, so "this value must be consumed by exactly th
 expressible: `std::mem::forget`, `ManuallyDrop`, `Box::leak` and an `AssertUnwindSafe` wrapper all \
 compile, and a hold that goes away through one of them is a unit that was admitted and never \
 settled — money that vanishes with no canary arithmetic to catch it, because the canary only ever \
-sees the counts a settled unit leaves behind. busbar-caps writes the escape list down as data in \
-its `fixtures/lint_rules.rs` and says in its own honesty table that CI scans for it; this rule is \
+sees the counts a settled unit leaves behind. busbar-contract's caps module writes the escape list down as data in \
+its `caps/fixtures/lint_rules.rs` and says in its own honesty table that CI scans for it; this rule is \
 that scan. It reads the same symbols with the same scopes, over every crate's production sources \
 rather than only the kernel's, because a plugin-side crate that leaks a hold loses exactly as much \
 money as the kernel would. `hold-discipline` above is the narrower, shape-aware reading of the same \
-promise over busbar-kernel and busbar-unit-*; this one is the flat symbol scan the honesty table \
+promise over busbar-kernel and the unit crates; this one is the flat symbol scan the honesty table \
 names, workspace-wide."""
 scan_globs = ["crates/*/src"]
 max_sites = 0
@@ -737,7 +737,7 @@ known_sites = [
   "crates/plane-example/src/",
 ]
 
-# The escape list, mirroring crates/busbar-caps/fixtures/lint_rules.rs HOLD_ESCAPES. A test in that
+# The escape list, mirroring crates/busbar-contract/src/caps/fixtures/lint_rules.rs HOLD_ESCAPES. A test in that
 # crate asserts this table names every symbol the fixture does, and repeats the fixture's own
 # `confined_to` spelling, so the two cannot drift apart.
 #
@@ -792,13 +792,13 @@ root reads it ONCE per arrival and hands the reading down, which is also what ke
 one unit from landing in different seconds. Production code only: a test may read a clock to \
 measure a test."""
 # Where a unit crate's production code lives.
-scope_globs = ["crates/busbar-unit-*/src/*"]
+scope_globs = ["crates/busbar-kernel-*/src/*", "crates/busbar-unit-*/src/*"]
 # The clock reads a unit crate may not perform.
 forbidden = ["SystemTime::now", "Instant::now"]
 # A helper that exists FOR the root, in a unit crate's directory, that nothing in the crate calls.
 # Each entry is a whole file, exempt because it is the root's reading living next to the unit rather
 # than a decision inside one. Adding to this list needs the same argument.
-exempt_files = ["crates/busbar-unit-breaker/src/clock.rs"]
+exempt_files = ["crates/busbar-kernel-breaker/src/clock.rs"]
 max_hits = 0
 
 # ── 26. unit-no-finding-ids ──────────────────────────────────────────────────────────────────────
@@ -809,18 +809,18 @@ and the section number moves the next time the document is edited. The rule the 
 be stated in words, in the comment, so the comment survives the worksheet and the renumbering. RFC \
 citations are exempt by construction — they are stable, externally resolvable documents — and only \
 the identifier shapes below are searched for."""
-scope_globs = ["crates/busbar-unit-*/src/*"]
+scope_globs = ["crates/busbar-kernel-*/src/*", "crates/busbar-unit-*/src/*"]
 # The shapes searched for, as regular expressions over the raw comment text.
 patterns = ["PB-[0-9]", "CG-[0-9]", "ARCHITECTURE\\.md §"]
 # The one crate whose occurrence is knowingly left in place, so the rule can hold the line on every
 # other unit crate rather than waiting for that one citation to be rewritten. Emptying this list is
 # the goal, and nothing may be added to it without the same argument.
-exempt_crates = ["busbar-unit-ledger"]
+exempt_crates = ["busbar-kernel-ledger"]
 max_hits = 0
 
 # ── 27. seal-sites ───────────────────────────────────────────────────────────────────────────────
 [rules.seal-sites]
-why = """busbar-caps writes down two lists of rules the compiler cannot carry: the hold escapes, \
+why = """busbar-contract's caps module writes down two lists of rules the compiler cannot carry: the hold escapes, \
 scanned above, and the seal sites -- the symbols that decide who may build a capability at all. \
 Its honesty table said CI scanned for both. It scanned for one. The three seal-site symbols are \
 the seal every token constructor needs, the recovery token that materialises a hold from a journal \
@@ -832,7 +832,7 @@ scan_globs = ["crates/*/src"]
 max_sites = 0
 # The reviewed sites, each read before it was written down.
 #
-#   busbar-caps is the crate that DECLARES these capabilities: its own token, hold and unit-end
+#   busbar-contract's caps module is what DECLARES these capabilities: its own token, hold and unit-end
 #   modules necessarily spell their names, and its module documentation shows a kernel acquiring
 #   the seal so a reader can see what the sealed constructors are for. Declaring a capability is
 #   not minting one; what the rule is about is who may CALL these outside their one home.
@@ -841,16 +841,16 @@ max_sites = 0
 #   so it is the second place that legitimately holds a seal: durability, the ledger identity, the
 #   migration and the per-dialect unit wirings are all root-side construction, not unit code.
 #
-#   busbar-llm's unit modules and busbar-unit-breaker's port carry the same seal spelling in
+#   busbar-llm's unit modules and busbar-kernel-breaker's port carry the same seal spelling in
 #   fixtures that build a sealed token to show a step's shape.
 known_sites = [
-  "crates/busbar-caps/src/",
+  "crates/busbar-contract/src/caps/",
   "crates/busbar/src/root/",
   "crates/busbar-llm/src/unit/",
-  "crates/busbar-unit-breaker/src/port.rs",
+  "crates/busbar-kernel-breaker/src/port.rs",
 ]
 
-# The seal-site list, mirroring crates/busbar-caps/fixtures/lint_rules.rs SEAL_SITES. A test in that
+# The seal-site list, mirroring crates/busbar-contract/src/caps/fixtures/lint_rules.rs SEAL_SITES. A test in that
 # crate walks `lint::all()` and asserts this file names every symbol either list carries, with the
 # same scope both ways round, so the specification and the scan cannot drift apart.
 [rules.seal-sites.symbols.kernel-seal]
@@ -879,7 +879,7 @@ because = "there are three take sites -- the exit path, the sweep and the tick -
 why = """A plane says what HAPPENED; the cost unit says what it COST. A plane crate, the pure codec \
 half it shed, and a plane's own unit modules deal in usage CLASSES and QUANTITIES -- how many \
 tokens, how many frames, how many seconds, which meter class, which lane -- and never in an amount, \
-a rate, a fee or a card. Only busbar-unit-cost (the rate card, the per-request fee, the posting) and \
+a rate, a fee or a card. Only busbar-kernel-ledger's cost module (the rate card, the per-request fee, the posting) and \
 the composition root's meter/admission wiring may name a price. This is not a matter of taste: a \
 price named on the plane side is a price the kernel cannot re-derive, cannot seal into a posting and \
 cannot audit, and it is named inside a plugin-shaped crate that a third party may one day write. The \
@@ -917,9 +917,9 @@ allowed_vocabulary = [
   "as_nanos", "elapsed_nanos", "monotonic_nanos", "latency_nanos",
 ]
 # The cost crate and the cost host modules, named as module paths rather than as words.
-forbidden_module_paths = ["busbar_unit_cost::", "busbar_core::cost::", "busbar_core::plane_host::cost_host"]
+forbidden_module_paths = ["busbar_kernel_ledger::cost::", "busbar_core::cost::", "busbar_core::plane_host::cost_host"]
 # A manifest dependency is the same reach spelled where no source scan would see it.
-forbidden_deps = ["busbar-unit-cost", "busbar-unit-ledger"]
+forbidden_deps = ["busbar-kernel-ledger"]
 max_hits = 0
 # Reviewed per-file exceptions: file -> the symbols accepted there, the reason recorded here.
 #
@@ -948,7 +948,7 @@ scope_note = "production code only; a test may price whatever it likes to prove 
 # The seam verb that turns reported usage into an amount. Definitions and `use` lines are not calls.
 entry_verbs = ["cost_price_usage"]
 # The cost unit's own pricing entry points, named as paths.
-entry_path_patterns = ['busbar_unit_cost::[A-Za-z0-9_:]*price', 'busbar_unit_cost::apply_tier']
+entry_path_patterns = ['busbar_kernel_ledger::cost::[A-Za-z0-9_:]*price', 'busbar_kernel_ledger::cost::apply_tier']
 max_extra_sites = 0
 # The fee fields, and the two crates that may read them. `per_request_fee` is the card's OWN
 # spelling since the cost unit re-labelled `per_request_fee_cents` to it (the fee is carried in the
@@ -958,11 +958,11 @@ max_extra_sites = 0
 # card's own fee anywhere in the workspace. The old spelling stays so a re-introduction of it is
 # still caught.
 fee_fields = ["per_request_fee", "per_request_fee_cents", "fee_cents"]
-fee_reader_crates = ["busbar-unit-cost", "busbar-core"]
+fee_reader_crates = ["busbar-kernel-ledger", "busbar-core"]
 max_fee_readers = 0
 
 [rules.one-pricing-site.allowed.cost-unit]
-path = "crates/busbar-unit-cost/src/"
+path = "crates/busbar-kernel-ledger/src/cost/"
 because = "the cost unit IS the card; its own source names its own entry points"
 
 [rules.one-pricing-site.allowed.root-wiring]

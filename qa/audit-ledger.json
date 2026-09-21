@@ -504,10 +504,10 @@
    ]
   },
   {
-   "id": "crates/busbar-caps/src",
+   "id": "crates/busbar-contract/src/caps",
    "kind": "production",
    "paths": [
-    "crates/busbar-caps/src"
+    "crates/busbar-contract/src/caps"
    ],
    "tree_hash": "23e131ce5510c6d853bfbb964a039a2d4e02778db4bdb9bfa28992fb0b6df159",
    "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
@@ -522,7 +522,7 @@
    "auditor": "opus-p3-caps-contract-kernel",
    "fixed_at": null,
    "exclude": [
-    "crates/busbar-caps/src/tests"
+    "crates/busbar-contract/src/caps/tests"
    ],
    "rounds": [
     {
@@ -2397,10 +2397,10 @@
    ]
   },
   {
-   "id": "crates/busbar-unit-admission/src",
+   "id": "crates/busbar-kernel-budget/src",
    "kind": "production",
    "paths": [
-    "crates/busbar-unit-admission/src"
+    "crates/busbar-kernel-budget/src"
    ],
    "tree_hash": "fb870bf44ea33c2b91e54ed5e09d9f4e2a770305b27cf8548d141444d25072a9",
    "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
@@ -2414,7 +2414,7 @@
    "auditor": "opus-units-auditor-b",
    "fixed_at": null,
    "exclude": [
-    "crates/busbar-unit-admission/src/tests"
+    "crates/busbar-kernel-budget/src/tests"
    ],
    "rounds": [
     {
@@ -2455,10 +2455,10 @@
    ]
   },
   {
-   "id": "crates/busbar-unit-audit/src",
+   "id": "crates/busbar-kernel-audit/src",
    "kind": "production",
    "paths": [
-    "crates/busbar-unit-audit/src"
+    "crates/busbar-kernel-audit/src"
    ],
    "tree_hash": "26343255f8865554112494380c77058905872e5c89c8a5fc882d5675ed2d6031",
    "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
@@ -2469,7 +2469,7 @@
    "auditor": "opus-units-auditor-b",
    "fixed_at": null,
    "exclude": [
-    "crates/busbar-unit-audit/src/tests"
+    "crates/busbar-kernel-audit/src/tests"
    ],
    "rounds": [
     {
@@ -2528,10 +2528,10 @@
    ]
   },
   {
-   "id": "crates/busbar-unit-auth/src",
+   "id": "crates/busbar-kernel-identity/src",
    "kind": "production",
    "paths": [
-    "crates/busbar-unit-auth/src"
+    "crates/busbar-kernel-identity/src"
    ],
    "tree_hash": "484bf94021ea6a4ad7aed4d8d72c3f9d36a2788f31e5a2222a0b8247e738d57e",
    "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
@@ -2545,7 +2545,7 @@
    "auditor": "opus-units-auditor-b",
    "fixed_at": null,
    "exclude": [
-    "crates/busbar-unit-auth/src/tests"
+    "crates/busbar-kernel-identity/src/tests"
    ],
    "rounds": [
     {
@@ -2586,10 +2586,10 @@
    ]
   },
   {
-   "id": "crates/busbar-unit-breaker/src",
+   "id": "crates/busbar-kernel-breaker/src",
    "kind": "production",
    "paths": [
-    "crates/busbar-unit-breaker/src"
+    "crates/busbar-kernel-breaker/src"
    ],
    "tree_hash": "052a2b88e04b7516be9a6a641a4e60ac41be8a77144bc6c08a85f506ffe7421d",
    "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
@@ -2604,7 +2604,7 @@
    "auditor": "opus-units-auditor-b",
    "fixed_at": null,
    "exclude": [
-    "crates/busbar-unit-breaker/src/tests"
+    "crates/busbar-kernel-breaker/src/tests"
    ],
    "rounds": [
     {
@@ -2646,10 +2646,10 @@
    ]
   },
   {
-   "id": "crates/busbar-unit-cost/src",
+   "id": "crates/busbar-kernel-ledger/src/cost",
    "kind": "production",
    "paths": [
-    "crates/busbar-unit-cost/src"
+    "crates/busbar-kernel-ledger/src/cost"
    ],
    "tree_hash": "49228f678db78e962beb2a0c1cbf1f9808640f5dee033f7669a6f5b1d60a3a41",
    "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
@@ -2662,7 +2662,7 @@
    "auditor": "opus-units-auditor-b",
    "fixed_at": null,
    "exclude": [
-    "crates/busbar-unit-cost/src/tests"
+    "crates/busbar-kernel-ledger/src/cost/tests"
    ],
    "rounds": [
     {
@@ -2702,10 +2702,10 @@
    ]
   },
   {
-   "id": "crates/busbar-unit-egress/src",
+   "id": "crates/busbar-kernel-egress/src",
    "kind": "production",
    "paths": [
-    "crates/busbar-unit-egress/src"
+    "crates/busbar-kernel-egress/src"
    ],
    "tree_hash": "00077db60c5f40cd66b8c9e3a21a50b2455f010bda16bb2c05918b94cb8e3727",
    "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
@@ -2719,7 +2719,7 @@
    "auditor": "opus-units-auditor-b",
    "fixed_at": null,
    "exclude": [
-    "crates/busbar-unit-egress/src/tests"
+    "crates/busbar-kernel-egress/src/tests"
    ],
    "rounds": [
     {
@@ -2760,10 +2760,10 @@
    ]
   },
   {
-   "id": "crates/busbar-unit-egress-auth/src",
+   "id": "crates/busbar-kernel-identity/src/egress_auth",
    "kind": "production",
    "paths": [
-    "crates/busbar-unit-egress-auth/src"
+    "crates/busbar-kernel-identity/src/egress_auth"
    ],
    "tree_hash": "5939aeb6ef5fe59187b98ee0f9eab60b152abdfabc47f9d749bcb3871ede0fe4",
    "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
@@ -2774,7 +2774,7 @@
    "auditor": "opus-units-auditor-b",
    "fixed_at": null,
    "exclude": [
-    "crates/busbar-unit-egress-auth/src/tests"
+    "crates/busbar-kernel-identity/src/egress_auth/tests"
    ],
    "rounds": [
     {
@@ -2812,10 +2812,10 @@
    ]
   },
   {
-   "id": "crates/busbar-unit-ledger/src",
+   "id": "crates/busbar-kernel-ledger/src",
    "kind": "production",
    "paths": [
-    "crates/busbar-unit-ledger/src"
+    "crates/busbar-kernel-ledger/src"
    ],
    "tree_hash": "0f299a4a22bdd156b00a550c39179a3830a9b2bb7e2e61f02deff3778c92a99d",
    "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
@@ -2829,7 +2829,7 @@
    "auditor": "opus-units-auditor-b",
    "fixed_at": null,
    "exclude": [
-    "crates/busbar-unit-ledger/src/tests"
+    "crates/busbar-kernel-ledger/src/tests"
    ],
    "rounds": [
     {
@@ -2893,10 +2893,10 @@
    ]
   },
   {
-   "id": "crates/busbar-unit-scope/src",
+   "id": "crates/busbar-kernel-scope/src",
    "kind": "production",
    "paths": [
-    "crates/busbar-unit-scope/src"
+    "crates/busbar-kernel-scope/src"
    ],
    "tree_hash": "db92b3b96fee84a7073df0c4393177ec7ac4a1ee29e04e9c141bf873475076ed",
    "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
@@ -2907,7 +2907,7 @@
    "auditor": "opus-units-auditor-b",
    "fixed_at": null,
    "exclude": [
-    "crates/busbar-unit-scope/src/tests"
+    "crates/busbar-kernel-scope/src/tests"
    ],
    "rounds": [
     {
@@ -3015,10 +3015,10 @@
    ]
   },
   {
-   "id": "crates/busbar-unit-trust/src",
+   "id": "crates/busbar-kernel-egress/src/trust",
    "kind": "production",
    "paths": [
-    "crates/busbar-unit-trust/src"
+    "crates/busbar-kernel-egress/src/trust"
    ],
    "tree_hash": "12d3b9b5fb0a6209d7de8be5a246c033026d33b7866406cb5bea1a68823689f5",
    "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
@@ -3031,7 +3031,7 @@
    "auditor": "opus-units-auditor-b",
    "fixed_at": null,
    "exclude": [
-    "crates/busbar-unit-trust/src/tests"
+    "crates/busbar-kernel-egress/src/trust/tests"
    ],
    "rounds": [
     {
@@ -3071,10 +3071,10 @@
    ]
   },
   {
-   "id": "crates/busbar-unit-usage/src",
+   "id": "crates/busbar-kernel-ledger/src/usage",
    "kind": "production",
    "paths": [
-    "crates/busbar-unit-usage/src"
+    "crates/busbar-kernel-ledger/src/usage"
    ],
    "tree_hash": "aec26e16a2f5da2d6ee4548ddf56f394999e5d483345e2300ba60d00c0c43031",
    "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
@@ -3087,7 +3087,7 @@
    "auditor": "opus-units-auditor-b",
    "fixed_at": null,
    "exclude": [
-    "crates/busbar-unit-usage/src/tests"
+    "crates/busbar-kernel-ledger/src/usage/tests"
    ],
    "rounds": [
     {
@@ -3205,10 +3205,10 @@
    ]
   },
   {
-   "id": "crates/busbar-unit-wal/src",
+   "id": "crates/busbar-kernel-wal/src",
    "kind": "production",
    "paths": [
-    "crates/busbar-unit-wal/src"
+    "crates/busbar-kernel-wal/src"
    ],
    "tree_hash": "72b37e94e96e3314aa0d61d4a4cdb059f2b6cd1c3656266d32d0fe442f126144",
    "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
@@ -3219,7 +3219,7 @@
    "auditor": "opus-units-auditor-b",
    "fixed_at": null,
    "exclude": [
-    "crates/busbar-unit-wal/src/tests"
+    "crates/busbar-kernel-wal/src/tests"
    ],
    "rounds": [
     {
@@ -4207,10 +4207,10 @@
    "fixed_at": null
   },
   {
-   "id": "crates/busbar-caps/src/tests",
+   "id": "crates/busbar-contract/src/caps/tests",
    "kind": "test",
    "paths": [
-    "crates/busbar-caps/src/tests"
+    "crates/busbar-contract/src/caps/tests"
    ],
    "tree_hash": null,
    "audited_at": null,
@@ -5362,10 +5362,10 @@
    ]
   },
   {
-   "id": "crates/busbar-unit-admission/src/tests",
+   "id": "crates/busbar-kernel-budget/src/tests",
    "kind": "test",
    "paths": [
-    "crates/busbar-unit-admission/src/tests"
+    "crates/busbar-kernel-budget/src/tests"
    ],
    "tree_hash": "5503756dbf5c8dab0316bb4edd74f53369235e90d18d7a5f643d63cfd6406b29",
    "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
@@ -5401,10 +5401,10 @@
    ]
   },
   {
-   "id": "crates/busbar-unit-audit/src/tests",
+   "id": "crates/busbar-kernel-audit/src/tests",
    "kind": "test",
    "paths": [
-    "crates/busbar-unit-audit/src/tests"
+    "crates/busbar-kernel-audit/src/tests"
    ],
    "tree_hash": "0fe8e4dc1592bd440db786a819ce47ca9e16e0f602cbf48033b4152e443fb314",
    "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
@@ -5436,10 +5436,10 @@
    ]
   },
   {
-   "id": "crates/busbar-unit-auth/src/tests",
+   "id": "crates/busbar-kernel-identity/src/tests",
    "kind": "test",
    "paths": [
-    "crates/busbar-unit-auth/src/tests"
+    "crates/busbar-kernel-identity/src/tests"
    ],
    "tree_hash": "8041cbc11a6bd88d2ff31a4d1286b55f78905c08e42f88e21f11f21e48bf9dfa",
    "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
@@ -5471,10 +5471,10 @@
    ]
   },
   {
-   "id": "crates/busbar-unit-breaker/src/tests",
+   "id": "crates/busbar-kernel-breaker/src/tests",
    "kind": "test",
    "paths": [
-    "crates/busbar-unit-breaker/src/tests"
+    "crates/busbar-kernel-breaker/src/tests"
    ],
    "tree_hash": "b1f4bfa439fea9b374281db54ab68e48863b1ced8cb6a538f9ec9f68813361d8",
    "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
@@ -5497,10 +5497,10 @@
    ]
   },
   {
-   "id": "crates/busbar-unit-cost/src/tests",
+   "id": "crates/busbar-kernel-ledger/src/cost/tests",
    "kind": "test",
    "paths": [
-    "crates/busbar-unit-cost/src/tests"
+    "crates/busbar-kernel-ledger/src/cost/tests"
    ],
    "tree_hash": "4116e5a07beb8821ac23737692b363165892a5807d26e9ee6a0d2a8275a7ad48",
    "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
@@ -5532,10 +5532,10 @@
    ]
   },
   {
-   "id": "crates/busbar-unit-cost/tests",
+   "id": "crates/busbar-kernel-ledger/tests",
    "kind": "test",
    "paths": [
-    "crates/busbar-unit-cost/tests"
+    "crates/busbar-kernel-ledger/tests"
    ],
    "tree_hash": "68f2b1307472249369cc3bb49c01faddc3d6b6892ae6e18c13c0200b5a523769",
    "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
@@ -5571,10 +5571,10 @@
    ]
   },
   {
-   "id": "crates/busbar-unit-egress/src/tests",
+   "id": "crates/busbar-kernel-egress/src/tests",
    "kind": "test",
    "paths": [
-    "crates/busbar-unit-egress/src/tests"
+    "crates/busbar-kernel-egress/src/tests"
    ],
    "tree_hash": "2a45665002fd0fd1261d01e9813bb642e16a3baeb7698f870ad31f167aaf8dce",
    "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
@@ -5606,10 +5606,10 @@
    ]
   },
   {
-   "id": "crates/busbar-unit-egress/tests",
+   "id": "crates/busbar-kernel-egress/tests",
    "kind": "test",
    "paths": [
-    "crates/busbar-unit-egress/tests"
+    "crates/busbar-kernel-egress/tests"
    ],
    "tree_hash": "531952f1df3987fa04fbed0c057661635774566d3c0e5e7cc246752adfbaa0ed",
    "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
@@ -5641,10 +5641,10 @@
    ]
   },
   {
-   "id": "crates/busbar-unit-ledger/src/tests",
+   "id": "crates/busbar-kernel-ledger/src/tests",
    "kind": "test",
    "paths": [
-    "crates/busbar-unit-ledger/src/tests"
+    "crates/busbar-kernel-ledger/src/tests"
    ],
    "tree_hash": "7fca94edb019117dd26129b8b65c66fe426e54c6e82d90c65f5c204e68b0dc06",
    "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
@@ -5676,10 +5676,10 @@
    ]
   },
   {
-   "id": "crates/busbar-unit-trust/src/tests",
+   "id": "crates/busbar-kernel-egress/src/trust/tests",
    "kind": "test",
    "paths": [
-    "crates/busbar-unit-trust/src/tests"
+    "crates/busbar-kernel-egress/src/trust/tests"
    ],
    "tree_hash": "37885d786faaf1daf9ff22702495adeeb9da3e745251e83300115fd7e7a38f61",
    "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
@@ -5711,10 +5711,10 @@
    ]
   },
   {
-   "id": "crates/busbar-unit-trust/tests",
+   "id": "crates/busbar-kernel-egress/tests",
    "kind": "test",
    "paths": [
-    "crates/busbar-unit-trust/tests"
+    "crates/busbar-kernel-egress/tests"
    ],
    "tree_hash": "e41b5b9fc6f4e5f18a8c07d67dfeea9eb1a39aac3585ca42b7244973e279b4f7",
    "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
@@ -5746,10 +5746,10 @@
    ]
   },
   {
-   "id": "crates/busbar-unit-usage/src/tests",
+   "id": "crates/busbar-kernel-ledger/src/usage/tests",
    "kind": "test",
    "paths": [
-    "crates/busbar-unit-usage/src/tests"
+    "crates/busbar-kernel-ledger/src/usage/tests"
    ],
    "tree_hash": "3e8c8f152d742a0eca7d119bfe165d20707141d118140f4e99edef9a36c2ebdd",
    "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
@@ -5816,10 +5816,10 @@
    ]
   },
   {
-   "id": "crates/busbar-unit-wal/src/tests",
+   "id": "crates/busbar-kernel-wal/src/tests",
    "kind": "test",
    "paths": [
-    "crates/busbar-unit-wal/src/tests"
+    "crates/busbar-kernel-wal/src/tests"
    ],
    "tree_hash": "da7d9cab5fca1ad8035f853335bf54a0f5f9597f072bad9f64c7289325b923ff",
    "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
