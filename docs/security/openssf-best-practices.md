@@ -1,12 +1,17 @@
 # OpenSSF Best Practices Badge — criteria mapping
 
-**Purpose.** A registration and self-certification worksheet for the
+**Purpose.** A self-certification worksheet for the
 [OpenSSF Best Practices Badge](https://www.bestpractices.dev/) (formerly the CII Best
 Practices Badge). Each **passing**-level criterion is listed with the concrete evidence in
-this repository that satisfies it, so the maintainers can register the project at
-<https://www.bestpractices.dev/en/projects/new> (repo URL `https://github.com/GetBusbar/busbar`)
-and answer each question with a citation rather than from memory. A **silver** on-ramp is
-noted at the end.
+this repository that satisfies it, so each answer carries a citation rather than resting on
+memory. A **silver** on-ramp is noted at the end.
+
+> **Status.** The project is **registered and passing.** Project ID **14739**
+> ([`bestpractices.dev/projects/14739`](https://www.bestpractices.dev/projects/14739)),
+> repo URL `https://github.com/GetBusbar/busbar`, currently at **100% of the passing tier**.
+> The live badge is in [`README.md`](../../README.md). This worksheet is now maintenance
+> documentation: keep the rows below true as the repo evolves, and use the silver on-ramp to
+> drive the next tier.
 
 > Aligns with [`docs/design/1.6.0-security-posture.md`](../design/1.6.0-security-posture.md),
 > [`SECURITY.md`](../../SECURITY.md), and [`THREAT_MODEL.md`](../../THREAT_MODEL.md). Where a
@@ -29,7 +34,7 @@ The badge criteria are grouped as the bestpractices.dev form groups them. Answer
 | `sites_https` — project sites use HTTPS | Met | github.com/GetBusbar/busbar, getbusbar.com, bestpractices.dev all HTTPS. |
 | `discussion` — user discussion channel | Met | GitHub Issues + Discord. |
 | `english` — docs in English | Met | All docs are in English. |
-| `maintained` — actively maintained | Met | Recent commit history; monthly dependency refresh workflow (`sched-monthly-refresh.yml`). |
+| `maintained` — actively maintained | Met | Recent commit history; monthly dependency refresh workflow (`sched-monthly-refresh.yml`); automated dependency PRs (`.github/dependabot.yml`, cargo + github-actions, weekly). |
 
 ## Change control
 
@@ -109,13 +114,16 @@ The credible next steps toward **silver**, most already partly in place:
 - **Name a security owner** and stand up the safe-harbor/hall-of-fame intake — the two roadmap
   items above — to clear the silver governance questions.
 
-## How to register (maintainer steps)
+## Registration (done — maintenance reference)
+
+Registration is complete: the project is **14739** and the live badge is wired into
+`README.md`. To re-verify or update the entry:
 
 1. Sign in at <https://www.bestpractices.dev/> with the GitHub maintainer account.
-2. Create a project with repo URL `https://github.com/GetBusbar/busbar`.
-3. Walk each row above, answering `Met` with the cited link; the form auto-detects several
-   (repo public, license, HTTPS) from the URL.
-4. On submit, bestpractices.dev issues a **project ID**. Replace the placeholder badge in
-   `README.md` with the real one:
-   `https://www.bestpractices.dev/projects/<ID>/badge`
-   linking to `https://www.bestpractices.dev/projects/<ID>`.
+2. Open [`bestpractices.dev/projects/14739`](https://www.bestpractices.dev/projects/14739)
+   (repo URL `https://github.com/GetBusbar/busbar`).
+3. Walk each row above and confirm each answer still holds with its cited link; the form
+   auto-detects several (repo public, license, HTTPS) from the URL.
+4. The badge in `README.md` is
+   `https://www.bestpractices.dev/projects/14739/badge`
+   linking to `https://www.bestpractices.dev/projects/14739`.
