@@ -67,7 +67,7 @@
 //!
 //! The owner's scheme (2026-09-07) is `busbar-<kind>-<name>`: SEGMENT TWO IS THE KIND. The tree is
 //! not renamed yet, so the kinds whose crates predate it — `busbar-caps`, `busbar-kernel`,
-//! `busbar-contract`, `busbar-contract-transport`, `busbar-grammar`, `busbar-timing`,
+//! `busbar-contract`, `busbar-grammar`, `busbar-timing`,
 //! `busbar-api`, the `*-codec` halves and the `busbar-plugin-*` tooling — reach their kind through
 //! the EXPLICIT TABLE below rather than through segment two. That table is the whole of the
 //! exception: a name that is neither in it nor `busbar-<kind>-…` for a kind IN it is refused, in
@@ -303,11 +303,6 @@ static KINDS: &[KindDef] = &[
         matchers: &["=busbar-contract"],
     },
     KindDef {
-        kind: "contract-transport",
-        family: Family::Neutral,
-        matchers: &["=busbar-contract-transport"],
-    },
-    KindDef {
         kind: "grammar",
         family: Family::Neutral,
         matchers: &["=busbar-grammar"],
@@ -365,13 +360,7 @@ static KINDS: &[KindDef] = &[
     KindDef {
         kind: "legacy",
         family: Family::Plane,
-        matchers: &[
-            "=busbar-core",
-            "=busbar-llm",
-            "=busbar-mcp",
-            "=busbar-a2a",
-            "=busbar-voice",
-        ],
+        matchers: &["=busbar-llm", "=busbar-mcp", "=busbar-a2a", "=busbar-voice"],
     },
 ];
 
@@ -415,6 +404,7 @@ const PENDING_EDGES: &[(&str, &str)] = &[
     // names the missing class for it.
     ("core", "api"),
     ("core", "caps"),
+    ("core", "contract"),
     ("core", "grammar"),
     ("core", "kernel"),
     ("core", "substrate"),
@@ -422,13 +412,7 @@ const PENDING_EDGES: &[(&str, &str)] = &[
 ];
 
 /// The retiring 1.5.x crates, named so the ratchet can check they still exist.
-const LEGACY_CRATES: &[&str] = &[
-    "busbar-core",
-    "busbar-llm",
-    "busbar-mcp",
-    "busbar-a2a",
-    "busbar-voice",
-];
+const LEGACY_CRATES: &[&str] = &["busbar-llm", "busbar-mcp", "busbar-a2a", "busbar-voice"];
 
 /// THE MANIFESTS IN THIS REPOSITORY THAT ARE NOT CRATES OF THE TREE, each with the sentence that
 /// says why, and each on the expiry ratchet every allowance in this file lives under: an entry that
@@ -458,6 +442,16 @@ const OFF_TREE_MANIFESTS: &[(&str, &str)] = &[
          machine against the published plugin ABI. It is deliberately not a workspace member — \
          building it here would pin it to this tree's paths, which is the opposite of what the \
          example demonstrates.",
+    ),
+    (
+        "fuzz/Cargo.toml",
+        "the coverage-guided fuzz harnesses over the codec parse surface: a SELF-CONTAINED \
+         workspace (its own empty `[workspace]` table), deliberately not a member of the root \
+         workspace so a normal `cargo build`/`cargo test` never sees it and it adds zero cost to \
+         per-push CI. It only builds when `cargo fuzz` invokes it (qa-fuzz.yml, at the qa \
+         promotion boundary). It path-deps target crates by their sanctioned `test-support` \
+         feature and modifies no crate source, so it is an input to fuzzing rather than a crate of \
+         the product tree.",
     ),
 ];
 
@@ -491,7 +485,8 @@ const ACCEPTED_NAMES: &[(&str, &str)] = &[
         "busbar-unit-transport-key",
         "the unit that holds TRANSPORT KEYS. `transport` here is the kind word describing what the \
          unit's keys are for, never a transport instance — no transport is named, and the crate \
-         depends on busbar-contract-transport as every unit on that path does.",
+         depends on busbar-contract (contract-transport folded into it) as every unit on that path \
+         does.",
     ),
     (
         "busbar-core-hooks",
@@ -519,9 +514,13 @@ const ACCEPTED_NAMES: &[(&str, &str)] = &[
 const ARCHITECTURE_ALLOWED: &[(&str, &str)] = &[
     // The pre-split dialects: a codec is written on the closed span grammar the contract re-exports.
     ("codec", "grammar"),
-    ("contract", "contract-transport"),
     ("contract", "grammar"),
     ("kernel", "contract"),
+    // `busbar-kernel` names `busbar-core-config`, the config surface carved out of the retiring
+    // `busbar-core` (DECISIONS #19). The `core` kind's neutral spine is the sink set PENDING_EDGES
+    // grants it; `kernel` naming a `core` crate for its config is the same shape as `kernel`
+    // naming `contract` or `grammar` — a neutral surface the loop is written against.
+    ("kernel", "core"),
     // `busbar-kernel` (the loop) names the closed span grammar directly; the folded capability
     // vocabulary now lives in `busbar-contract`, so the former `kernel -> caps` edge is gone (W2.c).
     ("kernel", "grammar"),
@@ -555,7 +554,6 @@ const ARCHITECTURE_ALLOWED: &[(&str, &str)] = &[
     ("store", "contract"),
     ("substrate", "contract"),
     ("transport", "contract"),
-    ("transport", "contract-transport"),
     ("transport", "transport"),
     ("unit", "contract"),
     ("unit", "unit"),
@@ -2603,6 +2601,24 @@ fn word_ci(lower: &str, needle: &str) -> bool {
     false
 }
 
+/// A LIBRARY API SPELLING that happens to collide with a plane's instance noun, but names no
+/// plane: `tonic`'s own gRPC vocabulary spells its bidirectional-stream type `Streaming<T>`, its
+/// server builder method `.streaming(...)`, and its HTTP/2 concurrency knob
+/// `max_concurrent_streams`/`MAX_CONCURRENT_STREAMS` — none of which name the `busbar-plane-streaming`
+/// plane instance. This is not a blanket exemption for the word: it matches the EXACT library
+/// spellings tonic ships, so a source line that genuinely names the plane (`busbar_plane_streaming`,
+/// `busbar-streaming-codec`, a bare `streaming::` module path) still trips the ban.
+const GRPC_LIBRARY_VOCAB: &[&str] = &["tonic::streaming", ".streaming(", "max_concurrent_streams"];
+
+/// Whether a hit on `needle` at this source line is tonic's own gRPC API surface rather than a
+/// reach into the `streaming` plane's instance vocabulary.
+fn is_grpc_library_vocab(needle: &str, lower_code: &str) -> bool {
+    (needle == "streaming" || needle == "streams")
+        && GRPC_LIBRARY_VOCAB
+            .iter()
+            .any(|pat| lower_code.contains(pat))
+}
+
 /// Which crate directory a source file belongs to.
 fn owning_dir(rel: &str) -> Option<String> {
     let parts: Vec<&str> = rel.split('/').collect();
@@ -2746,6 +2762,9 @@ fn rule_vocab(cx: &Ctx, crates: &[CrateInfo], planes: &BTreeSet<String>) -> Row 
                 } else {
                     word_ci(&lower, needle)
                 };
+                if hit && is_grpc_library_vocab(needle, &lower) {
+                    continue;
+                }
                 if hit {
                     offenders.push(format!(
                         "{needle}\t{rel}:{lineno}\t{why} ({kind} crate): {}",
@@ -6582,14 +6601,14 @@ impl Gate for KindIsolationGate {
 
         // THE LEGACY RATCHET, proven by retiring one.
         let mut ov = Overlay::new();
-        ov.remove("crates/busbar-core/Cargo.toml");
+        ov.remove("crates/busbar-a2a/Cargo.toml");
         report.push(prove_rows_red(
             cx,
             self,
             "a legacy exemption that outlived its crate is refused",
             &[ROW_REGISTRY],
             ov,
-            &["legacy-retired", "busbar-core"],
+            &["legacy-retired", "busbar-a2a"],
         ));
 
         // THE THREE TRUTHS, each planted in the file that carries it.
@@ -6653,7 +6672,7 @@ impl Gate for KindIsolationGate {
             ),
             (
                 "a [[transitional]] glob that is not a trailing `*` is refused",
-                "[[transitional]]\nfrom = \"busbar-core\"\nto = \"busbar-unit-*-x\"\nreason = \
+                "[[transitional]]\nfrom = \"busbar-llm\"\nto = \"busbar-unit-*-x\"\nreason = \
                  \"planted\"\n",
                 &["bad-glob", "busbar-unit-*-x"][..],
             ),
@@ -6894,34 +6913,37 @@ impl Gate for KindIsolationGate {
 
         if !self.ship {
             // A LISTED DRAIN EDGE IS GREEN. The owner's ruling, as the per-push gate reads it:
-            // while busbar-core drains it MAY name a unit, because a `[[transitional]]` row names
-            // the edge.
+            // while a legacy crate drains it MAY name a unit, because a `[[transitional]]` row
+            // names the edge.
             //
             // IT OWES ITS `[[dep]]` ROW TOO, and both halves of that are the point. The
             // transitional row says the EDGE CLASS is the drain rather than the fusion; the `[[dep]]`
             // row says how many declarations there are, exactly, so the drain cannot quietly grow a
             // second one. The plant APPENDS to the real manifest rather than rewriting it, because
-            // a rewrite would strike busbar-core's real edges and the dead-row findings that
-            // produced are the ones a reader would mistake for this case's own.
+            // a rewrite would strike busbar-llm's real edges and the dead-row findings that
+            // produced are the ones a reader would mistake for this case's own. The transitional row
+            // itself is planted alongside it, on `busbar-llm` — still a live LEGACY_CRATES member —
+            // rather than on the now-retired `busbar-core`.
             let mut ov = Overlay::new();
             ov.set(
-                "crates/busbar-core/Cargo.toml",
+                "crates/busbar-llm/Cargo.toml",
                 manifest_plus(
                     cx,
-                    "crates/busbar-core/Cargo.toml",
+                    "crates/busbar-llm/Cargo.toml",
                     "\n[dependencies]\nbusbar-unit-audit = { workspace = true }\n",
                 ),
             );
             ov.set(
                 REGISTRY_FILE,
                 format!(
-                    "{}\n\n[[dep]]\nfrom    = \"busbar-core\"\nto      = \"busbar-unit-audit\"\n\
-                     half    = \"shipped\"\ncount   = \"1\"\nverdict = \"not-allowed\"\n\
-                     cite    = \"the legacy drain: ARCHITECTURE.md 1.1 grants a legacy crate no unit \
-                     edge, and the [[transitional]] row above names this one as the retirement in \
-                     flight.\"\nwhy     = \"busbar-core is moving the audit step out into \
-                     busbar-unit-audit; one shipped declaration states it.\"\ndrain   = \"finish \
-                     the move and delete busbar-core.\"\n",
+                    "{}\n\n[[transitional]]\nfrom = \"busbar-llm\"\nto = \"busbar-unit-*\"\n\
+                     reason = \"planted\"\n\n[[dep]]\nfrom    = \"busbar-llm\"\n\
+                     to      = \"busbar-unit-audit\"\nhalf    = \"shipped\"\ncount   = \"1\"\n\
+                     verdict = \"not-allowed\"\ncite    = \"the legacy drain: ARCHITECTURE.md 1.1 \
+                     grants a legacy crate no unit edge, and the [[transitional]] row above names \
+                     this one as the retirement in flight.\"\nwhy     = \"planted: proves the drain \
+                     row and its own dep count both being present is green.\"\ndrain   = \"planted \
+                     fixture; strike when the real drain lands.\"\n",
                     cx.read(REGISTRY_FILE).unwrap_or_default().trim_end()
                 ),
             );
@@ -7062,7 +7084,7 @@ impl Gate for KindIsolationGate {
             manifest_plant(
                 "crates/busbar-transport-stdio",
                 "busbar-transport-stdio",
-                &["busbar-contract-transport", "busbar-plane-llm"],
+                &["busbar-contract", "busbar-plane-llm"],
             ),
             &[
                 "ship-edge",

@@ -29,6 +29,8 @@
 //! `busbar-mcp` byte-safely while the money files stay — so it moves as one unit in the oracle-gated
 //! money cell, not this byte-safe one.
 
+#![forbid(unsafe_code)]
+
 /// THE MCP PLANE'S DIAGNOSTICS CATALOG — the `MCP_*` entries this plane owns and the [`DIAGNOSTICS`]
 /// slice the composition root installs. Relocated here from `busbar-mcp/src/diagnostics.rs` byte for
 /// byte; `busbar-mcp` re-exports the module under its old path.

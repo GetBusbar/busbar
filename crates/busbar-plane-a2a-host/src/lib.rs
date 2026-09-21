@@ -29,6 +29,8 @@
 //! seam. It cannot leave `busbar-a2a` byte-safely while the money files stay — so it moves as one unit
 //! in the oracle-gated money cell, not this byte-safe one.
 
+#![forbid(unsafe_code)]
+
 /// THE A2A PLANE'S DIAGNOSTICS CATALOG — the `A2A_*` entries this plane owns and the [`DIAGNOSTICS`]
 /// slice the composition root installs. Relocated here from `busbar-a2a/src/diagnostics.rs` byte for
 /// byte; `busbar-a2a` re-exports the module under its old path.

@@ -50,8 +50,29 @@ test_path_fragments = ["/tests/", "_tests.rs", "_test.rs", "/tests.rs"]
 # `kind-isolation:truths` reconciles this file, the gate's kind table and qa/kind-isolation.toml, in
 # both directions, on the DECISIONS #3 taxonomy: a key naming a struck kind (control/dialect/
 # egress_auth/pure_auth), or a plugin kind with no key here, is RED.
+# `plane` is an EXPLICIT list, not `crates/busbar-plane-*`, because two of the directories the glob
+# would match are not the pure plane kind: `busbar-plane-a2a-host` and `busbar-plane-mcp-host` are
+# each plane's IMPURE HOST crate (their own Cargo.toml header and lib.rs doc comment say so in
+# those words) — the bridged-ABI half that holds the runtime slot, `serve`, and the engine glue, and
+# that legitimately path-deps `busbar-kernel` and `busbar-substrate-values` the way a pure plane
+# never may. Scanning them under this glob would make manifest-allowlist and source-denylist run
+# the PURE kind's rule (no I/O, no `busbar-kernel` edge — "no allow-list can excuse it") over a
+# crate whose own docs declare it impure; excluding them here is the reclassification, and
+# `[gate.census.plugin_kinds].plane` below is the count that proves the exclusion is exact rather
+# than a glob nobody re-reads. Their `#![forbid(unsafe_code)]` and their `busbar-kernel`/
+# `busbar-substrate-values`/host-runtime deps (hyper, tokio, reqwest, libc transitively) are
+# reviewed like any other IMPURE crate's: by `kind-isolation`'s own dependency ledger
+# (`qa/kind-isolation.toml`), which already carries their `plane -> kernel` / `plane -> substrate`
+# rows — this file's purity rules are simply not the ones that apply to them.
 [gate.plugin_kinds]
-plane = ["crates/busbar-plane-*"]
+plane = [
+  "crates/busbar-plane-a2a",
+  "crates/busbar-plane-admin",
+  "crates/busbar-plane-llm",
+  "crates/busbar-plane-mcp",
+  "crates/busbar-plane-streaming",
+  "crates/busbar-plane-voice",
+]
 transport = ["crates/busbar-transport-*"]
 store = ["crates/store-*"]
 secret = ["crates/secret-*"]
@@ -116,13 +137,14 @@ busbar-voice = ["busbar-voice-codec"]
 # the pair's ceiling at whichever number is smaller while the larger one reads as the ruling — a
 # ceiling that has been raised in name only. 3543 is what `scripts/loc-surface.py` measures with the
 # upstream status table in the tree, and the audit of what that face is lives beside the other
-# number; see `[rules.loc-ceilings]`. `grammar` and `contract_transport` are NOT part of the ruling
-# and keep the figures the integration line measured them at: the status table is contract surface,
-# and nothing it adds is grammar or transport surface, so raising those two would be spending a
-# ruling on rows it was not written for.
+# number; see `[rules.loc-ceilings]`. `grammar` is NOT part of the ruling and keeps the figure the
+# integration line measured it at: the status table is contract surface, and nothing it adds is
+# grammar surface, so raising that one would be spending a ruling on a row it was not written for.
+# `contract_transport` is gone with the crate: `busbar-contract-transport` was folded into
+# `busbar-contract` (kind-isolation `contract-transport` kind struck), so there is no third surface
+# left to ceiling.
 contract_caps = 3543
 grammar = 388
-contract_transport = 845
 
 # ── 1. one-attempt-seam ──────────────────────────────────────────────────────────────────────────
 [rules.one-attempt-seam]
@@ -1198,11 +1220,13 @@ plane_crates = 4
 # going from five crates to one. The count catches the narrowing and leaves the intended zeros
 # alone; the day the codec split creates the first dialect crate, this number is raised with it.
 #
-# `plane` is 5 because `crates/busbar-plane-admin` matches the plane glob while being the `control`
-# kind — see the note above `[gate.plugin_kinds]`. Pinning the number the glob ACTUALLY matches is
-# the point: this table records what is scanned, not what ought to be.
+# `plane` is 6 (busbar-plane-{a2a,admin,llm,mcp,streaming,voice}): `crates/busbar-plane-admin`
+# matches the plane glob while being the `control` kind — see the note above
+# `[gate.plugin_kinds]` — and `busbar-plane-a2a-host`/`busbar-plane-mcp-host` are deliberately NOT
+# in the explicit list above (IMPURE HOST crates, same note). Pinning the number the glob ACTUALLY
+# matches is the point: this table records what is scanned, not what ought to be.
 [gate.census.plugin_kinds]
-plane = 5
+plane = 6
 dialect = 0
 control = 0
 unit = 14
