@@ -527,7 +527,7 @@ fn test_off_metrics_never_materializes_the_histogram_chunk() {
         for _ in 0..100_000 {
             slot.record_inner(0.001, false);
         }
-        hist_chunk_materialized(slot)
+        bank_internals::hist_chunk_materialized(slot)
     })
     .join()
     .unwrap();
