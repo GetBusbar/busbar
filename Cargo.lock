@@ -654,6 +654,7 @@ dependencies = [
 name = "busbar-kernel"
 version = "1.6.0"
 dependencies = [
+ "bumpalo",
  "busbar-contract",
  "busbar-grammar",
 ]

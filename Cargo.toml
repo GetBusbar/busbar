@@ -129,6 +129,13 @@ arc-swap = "1"
 async-trait = "0.1"
 axum = "0.8"
 base64 = "0.23"
+# THE CHUNK-CHAINING BUMP ALLOCATOR behind the per-call scratch pad (DECISIONS #41). It grows by
+# adding a chunk when the current one does not fit, which is exactly the grow-on-demand the design
+# requires; `try_alloc*` returns a Result on OOM rather than aborting, so the kernel — which is
+# `forbid(unsafe)` and must never crash on growth — refuses one request instead of the process
+# dying. Already in the lock via `sonic-rs`, so it adds no crate name to the graph. Only
+# `busbar-kernel` names it; it is deliberately NOT a dependency of `busbar-contract`.
+bumpalo = "3"
 bytes = "1"
 # CPU-core enumeration + per-thread pinning for the thread-per-core data plane (the one unix
 # topology). Used ONLY by the `busbar` binary's boot seam; nothing on the request path names it.

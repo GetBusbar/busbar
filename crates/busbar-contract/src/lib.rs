@@ -19,6 +19,7 @@ pub mod ids;
 pub mod kinds;
 pub mod plane;
 pub mod plugin;
+pub mod scratch;
 pub mod spans;
 pub mod surface;
 pub mod transport;
@@ -62,6 +63,7 @@ pub use plane::{
 // — the capability crate implements it on every token and sits above this one — so the scan named
 // in its own documentation is what holds the in-tree side.
 pub use plugin::{AbiVersion, Kind, KindMarker, Plugin, STORE_ABI};
+pub use scratch::{Scratch, ScratchRefused};
 pub use transport::{
     check_composition, CompositionError, FrameStream, Fut, Registered, Transport,
     TransportConfigView, TransportMeta, TRANSPORT_ABI,

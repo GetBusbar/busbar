@@ -27,6 +27,9 @@
 //! - [`grammar`] — the closed grammars: selectors, locations, and the JSON span scanner.
 //! - [`tick`] — the session tick, the node tick and its sweep, drain, and the fleet rule.
 //! - [`arena`] — the per-unit 4 KiB scratch space and the per-connection credential slab.
+//! - [`scratch`] — the grow-on-demand per-call scratch pad (DECISIONS #41): starts at a measured
+//!   4 KiB, grows a chunk for a big request instead of refusing, shrinks back on reset, and has an
+//!   abuse-only backstop that refuses one runaway request without ever panicking.
 //!
 //! ## What this crate names, and what it owns
 //!
@@ -77,6 +80,7 @@ pub mod pump;
 pub mod recovery;
 pub mod registry;
 pub mod reply;
+pub mod scratch;
 pub mod slice;
 pub mod teller;
 pub mod tick;

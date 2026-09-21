@@ -30,6 +30,10 @@ path = "src/lib.rs"
 [dependencies]
 busbar-contract = { path = "../busbar-contract" }
 busbar-grammar = { path = "../busbar-grammar" }
+# The chunk-chaining bump allocator behind `scratch::ScratchPad` (DECISIONS #41). Its own internals
+# use `unsafe`, which is fine — `forbid(unsafe_code)` on this crate constrains THIS crate's source,
+# not its dependencies — and the kernel only ever calls its safe, `try_*` (never-abort) surface.
+bumpalo = { workspace = true }
 
 # TEMPORARY (delete before hand-off, together with this comment): stand this crate up as its own
 # workspace root while sibling members are mid-landing. Several in-flight crates currently carry the
