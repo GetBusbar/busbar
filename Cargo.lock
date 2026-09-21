@@ -489,6 +489,7 @@ name = "busbar-api"
 version = "1.6.0"
 dependencies = [
  "async-trait",
+ "busbar-kernel-ledger",
  "busbar-secret-ref",
  "hex",
  "serde",
@@ -709,6 +710,8 @@ version = "1.6.0"
 dependencies = [
  "busbar-contract",
  "busbar-kernel-budget",
+ "serde",
+ "serde_json",
  "sha2 0.11.0",
 ]
 

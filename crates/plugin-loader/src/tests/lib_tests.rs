@@ -1794,17 +1794,24 @@ fn every_store_trait_method_has_an_abi_variant_and_a_dynstore_override() {
         out
     }
 
-    let trait_src = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../api/src/store.rs"));
+    // The Store trait relocated to `busbar-kernel-ledger` (de-collided to `RecordStore`) under #35
+    // (W3.a); `busbar-api` re-exports it as `Store`. The completeness gate reads the trait at its
+    // real home.
+    let trait_src = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../busbar-kernel-ledger/src/records.rs"
+    ));
     let abi_src = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../busbar-plugin/src/cold/mod.rs"
     ));
     let loader_src = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/lib.rs"));
 
-    // The trait's methods: `fn <name>` at exactly four spaces of indent, after `pub trait Store`.
+    // The trait's methods: `fn <name>` at exactly four spaces of indent, after
+    // `pub trait RecordStore` (the #35-de-collided name; api re-exports it as `Store`).
     let trait_body = trait_src
-        .split_once("pub trait Store")
-        .expect("the Store trait")
+        .split_once("pub trait RecordStore")
+        .expect("the RecordStore trait")
         .1;
     let methods: Vec<&str> = trait_body
         .lines()

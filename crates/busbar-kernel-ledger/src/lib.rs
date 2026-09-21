@@ -69,6 +69,14 @@ pub mod checkpoint;
 // rates+usage+ledger as three modules).
 pub mod cost;
 pub mod usage;
+// The money-path DURABLE RECORDS, relocated BYTE-IDENTICALLY from the retiring `busbar-api` under
+// DECISIONS #35 (W3.a). `#[allow(missing_docs)]` because the module is a verbatim module-path-only
+// move of the `busbar-api` store contract (which did not enforce `missing_docs`); documenting the
+// handful of self-evident required trait methods (`get_key`/`list_keys`/…) would EDIT the moved
+// surface, and the sacred constraint here is that the move changes nothing. The oracle proves the
+// wire bytes; the crate's own record tests prove the serde round-trips.
+#[allow(missing_docs)]
+pub mod records;
 pub mod digest;
 pub mod identity;
 pub mod legacy;

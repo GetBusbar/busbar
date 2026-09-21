@@ -269,8 +269,8 @@ fn attribution_fields_round_trip_and_are_backward_compatible() {
 fn scope_kinds_survive_store_round_trip() {
     // The plane scope kinds are registered at boot from each `PlaneDecl.scope_kinds`; a unit test
     // registers them itself (idempotent) so the neutral crate's SOURCE names no plane kind.
-    crate::register_scope_kind("mcp_server");
-    crate::register_scope_kind("mcp_tool");
+    register_scope_kind("mcp_server");
+    register_scope_kind("mcp_tool");
     let mut k = sample_key();
     k.allowed_scopes = Some(vec![
         ScopeRef::pool("fast"),
@@ -321,8 +321,8 @@ fn unknown_scope_kind_is_a_hard_serialize_error() {
 /// `allowed_pools: []` beside an MCP field stays the EMPTY pool set - never "all".
 #[test]
 fn mcp_scope_wire_fields_are_additive() {
-    crate::register_scope_kind("mcp_server");
-    crate::register_scope_kind("mcp_tool");
+    register_scope_kind("mcp_server");
+    register_scope_kind("mcp_tool");
     // Pool-only and None grants must not grow mcp fields on the wire.
     let pool_only = sample_key();
     let v = serde_json::to_value(&pool_only).unwrap();
@@ -512,20 +512,20 @@ fn default_add_usage_accumulates_via_get_put() {
     use std::sync::Mutex;
     #[derive(Default)]
     struct Double(Mutex<std::collections::HashMap<(String, u64), UsageLedger>>);
-    impl Store for Double {
-        fn put_key(&self, _: &VirtualKey) -> StoreResult<()> {
+    impl RecordStore for Double {
+        fn put_key(&self, _: &VirtualKey) -> RecordStoreResult<()> {
             Ok(())
         }
-        fn get_key(&self, _: &str) -> StoreResult<Option<VirtualKey>> {
+        fn get_key(&self, _: &str) -> RecordStoreResult<Option<VirtualKey>> {
             Ok(None)
         }
-        fn list_keys(&self) -> StoreResult<Vec<VirtualKey>> {
+        fn list_keys(&self) -> RecordStoreResult<Vec<VirtualKey>> {
             Ok(Vec::new())
         }
-        fn delete_key(&self, _: &str) -> StoreResult<()> {
+        fn delete_key(&self, _: &str) -> RecordStoreResult<()> {
             Ok(())
         }
-        fn get_usage(&self, b: &str, w: u64) -> StoreResult<UsageLedger> {
+        fn get_usage(&self, b: &str, w: u64) -> RecordStoreResult<UsageLedger> {
             Ok(self
                 .0
                 .lock()
@@ -534,14 +534,14 @@ fn default_add_usage_accumulates_via_get_put() {
                 .cloned()
                 .unwrap_or_default())
         }
-        fn put_usage(&self, b: &str, w: u64, l: &UsageLedger) -> StoreResult<()> {
+        fn put_usage(&self, b: &str, w: u64, l: &UsageLedger) -> RecordStoreResult<()> {
             self.0.lock().unwrap().insert((b.to_string(), w), l.clone());
             Ok(())
         }
-        fn add_metering(&self, _: &MeteringDelta) -> StoreResult<()> {
+        fn add_metering(&self, _: &MeteringDelta) -> RecordStoreResult<()> {
             Ok(())
         }
-        fn list_metering(&self, _: u64) -> StoreResult<Vec<MeteringRow>> {
+        fn list_metering(&self, _: u64) -> RecordStoreResult<Vec<MeteringRow>> {
             Ok(Vec::new())
         }
     }
@@ -642,37 +642,37 @@ fn usage_delta_is_zero_requires_requests_billable_and_every_model_zero() {
 
 #[test]
 fn store_error_display_wraps_the_inner_message() {
-    let e = StoreError("disk full".to_string());
+    let e = RecordStoreError("disk full".to_string());
     assert_eq!(e.to_string(), "store error: disk full");
 }
 
 struct AuditDouble(Vec<AuditRecord>, Vec<VirtualKey>);
-impl Store for AuditDouble {
-    fn put_key(&self, _: &VirtualKey) -> StoreResult<()> {
+impl RecordStore for AuditDouble {
+    fn put_key(&self, _: &VirtualKey) -> RecordStoreResult<()> {
         Ok(())
     }
-    fn get_key(&self, _: &str) -> StoreResult<Option<VirtualKey>> {
+    fn get_key(&self, _: &str) -> RecordStoreResult<Option<VirtualKey>> {
         Ok(None)
     }
-    fn list_keys(&self) -> StoreResult<Vec<VirtualKey>> {
+    fn list_keys(&self) -> RecordStoreResult<Vec<VirtualKey>> {
         Ok(self.1.clone())
     }
-    fn delete_key(&self, _: &str) -> StoreResult<()> {
+    fn delete_key(&self, _: &str) -> RecordStoreResult<()> {
         Ok(())
     }
-    fn get_usage(&self, _: &str, _: u64) -> StoreResult<UsageLedger> {
+    fn get_usage(&self, _: &str, _: u64) -> RecordStoreResult<UsageLedger> {
         Ok(UsageLedger::default())
     }
-    fn put_usage(&self, _: &str, _: u64, _: &UsageLedger) -> StoreResult<()> {
+    fn put_usage(&self, _: &str, _: u64, _: &UsageLedger) -> RecordStoreResult<()> {
         Ok(())
     }
-    fn add_metering(&self, _: &MeteringDelta) -> StoreResult<()> {
+    fn add_metering(&self, _: &MeteringDelta) -> RecordStoreResult<()> {
         Ok(())
     }
-    fn list_metering(&self, _: u64) -> StoreResult<Vec<MeteringRow>> {
+    fn list_metering(&self, _: u64) -> RecordStoreResult<Vec<MeteringRow>> {
         Ok(Vec::new())
     }
-    fn list_audit(&self) -> StoreResult<Vec<AuditRecord>> {
+    fn list_audit(&self) -> RecordStoreResult<Vec<AuditRecord>> {
         Ok(self.0.clone())
     }
 }
@@ -748,29 +748,29 @@ fn the_plane_record_verbs_default_to_accepting_and_keeping_nothing() {
     /// A backend that keeps no durable plane state: it implements the six REQUIRED methods and
     /// nothing else. That it compiles at all is half the assertion.
     struct PreTaskBackend;
-    impl Store for PreTaskBackend {
-        fn put_key(&self, _: &VirtualKey) -> StoreResult<()> {
+    impl RecordStore for PreTaskBackend {
+        fn put_key(&self, _: &VirtualKey) -> RecordStoreResult<()> {
             Ok(())
         }
-        fn get_key(&self, _: &str) -> StoreResult<Option<VirtualKey>> {
+        fn get_key(&self, _: &str) -> RecordStoreResult<Option<VirtualKey>> {
             Ok(None)
         }
-        fn list_keys(&self) -> StoreResult<Vec<VirtualKey>> {
+        fn list_keys(&self) -> RecordStoreResult<Vec<VirtualKey>> {
             Ok(Vec::new())
         }
-        fn delete_key(&self, _: &str) -> StoreResult<()> {
+        fn delete_key(&self, _: &str) -> RecordStoreResult<()> {
             Ok(())
         }
-        fn get_usage(&self, _: &str, _: u64) -> StoreResult<UsageLedger> {
+        fn get_usage(&self, _: &str, _: u64) -> RecordStoreResult<UsageLedger> {
             Ok(UsageLedger::default())
         }
-        fn put_usage(&self, _: &str, _: u64, _: &UsageLedger) -> StoreResult<()> {
+        fn put_usage(&self, _: &str, _: u64, _: &UsageLedger) -> RecordStoreResult<()> {
             Ok(())
         }
-        fn add_metering(&self, _: &MeteringDelta) -> StoreResult<()> {
+        fn add_metering(&self, _: &MeteringDelta) -> RecordStoreResult<()> {
             Ok(())
         }
-        fn list_metering(&self, _: u64) -> StoreResult<Vec<MeteringRow>> {
+        fn list_metering(&self, _: u64) -> RecordStoreResult<Vec<MeteringRow>> {
             Ok(Vec::new())
         }
     }
