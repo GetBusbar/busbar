@@ -856,13 +856,36 @@ pub fn token_sealed(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
 
 // ── 9. teller-step-order ─────────────────────────────────────────────────────────────────────────
 
+/// Whether `pos` in `bytes` is immediately preceded (modulo whitespace) by `=>` — i.e. whether the
+/// call starting there is a match arm's WHOLE tail expression rather than a statement in a block.
+fn preceded_by_fat_arrow(bytes: &[u8], pos: usize) -> bool {
+    let mut i = pos;
+    while i > 0 && bytes[i - 1].is_ascii_whitespace() {
+        i -= 1;
+    }
+    i >= 2 && bytes[i - 2] == b'=' && bytes[i - 1] == b'>'
+}
+
 /// Walk `entry`'s body in source order, splicing in the bodies of the file's own helper functions
 /// where they are called, and return the ordered list of step names met.
+///
+/// A step only counts when it is dispatched off one of `step_receivers` (the door driver's own
+/// `units` handle, spelled either `units` directly or `self.0` inside the [`Blocking`] leg that
+/// wraps it) — NOT any method of that name on some unrelated type. `HoldCell::admit`, for example,
+/// textually collides with the `Units::admit` step but is called as `run.cell.admit(...)`, off a
+/// receiver this scan never treats as a step site.
+///
+/// `dispatch_methods` names trait-object indirections the walker must follow by METHOD call, not
+/// just by bare call: [`RouteAwait::route_leg`] is invoked as `route.route_leg(...)`, and the actual
+/// `Units::route` step it forwards to (`self.0.route(...)`, inside the one local impl of that trait)
+/// is otherwise invisible to a scanner that only recurses into bare-call sites.
 fn expanded_calls(
     tree: &Tree,
     rel: &str,
     entry: &str,
     steps: &[String],
+    step_receivers: &[String],
+    dispatch_methods: &[String],
     depth: usize,
 ) -> Result<Vec<String>, String> {
     let local: BTreeMap<&str, &Fnc> = tree
@@ -874,7 +897,12 @@ fn expanded_calls(
         .map(|f| (f.name.as_str(), f))
         .collect();
     let step_rx = Regex::new(&format!(
-        r"\.({})\s*\(",
+        r"(?<![A-Za-z0-9_])(?:{})\.({})\s*\(",
+        step_receivers
+            .iter()
+            .map(|r| rx::escape(r))
+            .collect::<Vec<_>>()
+            .join("|"),
         steps
             .iter()
             .map(|s| rx::escape(s))
@@ -882,15 +910,57 @@ fn expanded_calls(
             .join("|")
     ))?;
     let call_rx = Regex::new(r"(?<![A-Za-z0-9_.:])([a-z_][a-z0-9_]*)\s*\(")?;
+    // The door driver writes its step chain as `units\n    .arrival(...)\n    .into_result(...)`
+    // (see `open_to_door`) — the receiver and the step live on DIFFERENT lines, so `step_rx` above
+    // (which only matches a receiver and a step on the SAME line) never sees them. These two
+    // patterns recover that: a step opening a line right after a line that is bare `units` (or
+    // `self.0`) still counts, because the earlier line is exactly what the chain read as the
+    // receiver.
+    let step_leading_rx = Regex::new(&format!(
+        r"^\s*\.({})\s*\(",
+        steps
+            .iter()
+            .map(|s| rx::escape(s))
+            .collect::<Vec<_>>()
+            .join("|")
+    ))?;
+    let receiver_tail_rx = Regex::new(&format!(
+        r"(?<![A-Za-z0-9_])(?:{})\s*$",
+        step_receivers
+            .iter()
+            .map(|r| rx::escape(r))
+            .collect::<Vec<_>>()
+            .join("|")
+    ))?;
+    // Method calls to a locally-defined function, but ONLY the ones named in `dispatch_methods` —
+    // widening this to every `.foo(` in the file would let the walker splice in the body of any
+    // same-named method on any receiver, which is exactly the kind of textual collision the step
+    // scan itself has to refuse.
+    let method_rx = (!dispatch_methods.is_empty())
+        .then(|| {
+            Regex::new(&format!(
+                r"\.({})\s*\(",
+                dispatch_methods
+                    .iter()
+                    .map(|m| rx::escape(m))
+                    .collect::<Vec<_>>()
+                    .join("|")
+            ))
+        })
+        .transpose()?;
     let mut seen: Vec<String> = Vec::new();
 
+    #[allow(clippy::too_many_arguments)]
     #[allow(clippy::too_many_arguments)]
     fn walk(
         tree: &Tree,
         rel: &str,
         local: &BTreeMap<&str, &Fnc>,
         step_rx: &Regex,
+        step_leading_rx: &Regex,
+        receiver_tail_rx: &Regex,
         call_rx: &Regex,
+        method_rx: &Option<Regex>,
         depth: usize,
         name: &str,
         d: usize,
@@ -902,6 +972,10 @@ fn expanded_calls(
             return;
         }
         let lines = &tree.files[rel];
+        // Whether the PREVIOUS line's code was bare `units` (or `self.0`) — the chain-continuation
+        // state `step_leading_rx` reads. Reset every function, since a receiver bared at the end of
+        // one function's last line means nothing to the next function's first.
+        let mut receiver_pending = false;
         for l in &lines[f.body_start - 1..f.end] {
             let bytes = l.code_bytes();
             // (offset, kind, name) — sorted exactly as Python sorts the tuple, so `call` precedes
@@ -911,10 +985,36 @@ fn expanded_calls(
                 .iter()
                 .filter_map(|m| m.str_of(bytes, 1).map(|n| (m.start, "step", n)))
                 .collect();
+            if receiver_pending {
+                if let Some(m) = step_leading_rx.search(bytes) {
+                    if let Some(n) = m.str_of(bytes, 1) {
+                        events.push((m.start, "step", n));
+                    }
+                }
+            }
             events.extend(call_rx.find_iter(bytes).iter().filter_map(|m| {
                 let n = m.str_of(bytes, 1)?;
-                (local.contains_key(n.as_str()) && n != name).then_some((m.start, "call", n))
+                // A bare call that IS a match arm's whole tail expression (`Pattern => callee(...),`)
+                // is a short-circuit out of the function, not the continuation the rest of the body's
+                // textual order stands in for — see `run_unit_async`'s `Some(outcome) =>
+                // terminal(...)` next to its `None => { … under_hold(...).await … }` sibling: the
+                // walker's source-order splice cannot tell these are MUTUALLY EXCLUSIVE, so without
+                // this it reads the short-circuit arm's callee as running before the sibling arm's,
+                // even though at most one of them ever does. Skipping it here, rather than reading it
+                // as "runs before route/meter", is what keeps a real early-exit's own step (this one's
+                // `audit`, reached the same way every admitted unit's is: through `terminal`) from
+                // being misread as a canonical-order violation.
+                (local.contains_key(n.as_str())
+                    && n != name
+                    && !preceded_by_fat_arrow(bytes, m.start))
+                .then_some((m.start, "call", n))
             }));
+            if let Some(mrx) = method_rx {
+                events.extend(mrx.find_iter(bytes).iter().filter_map(|m| {
+                    let n = m.str_of(bytes, 1)?;
+                    (local.contains_key(n.as_str()) && n != name).then_some((m.start, "call", n))
+                }));
+            }
             events.sort();
             for (_pos, kind, nm) in events {
                 if kind == "step" {
@@ -927,7 +1027,10 @@ fn expanded_calls(
                         rel,
                         local,
                         step_rx,
+                        step_leading_rx,
+                        receiver_tail_rx,
                         call_rx,
+                        method_rx,
                         depth,
                         &nm,
                         d + 1,
@@ -936,6 +1039,7 @@ fn expanded_calls(
                     );
                 }
             }
+            receiver_pending = receiver_tail_rx.is_match(bytes);
         }
     }
 
@@ -944,7 +1048,10 @@ fn expanded_calls(
         rel,
         &local,
         &step_rx,
+        &step_leading_rx,
+        &receiver_tail_rx,
         &call_rx,
+        &method_rx,
         depth,
         entry,
         0,
@@ -952,6 +1059,19 @@ fn expanded_calls(
         &mut seen,
     );
     Ok(seen)
+}
+
+/// Every step that occurs more than once, as a finding string — a step is money-sacred precisely
+/// because it must run exactly once; a duplicate is a real defect `in_order` cannot see on its own,
+/// since it only reads FIRST occurrences and a repeat elsewhere never moves one of those.
+fn duplicate_findings(seen: &[String], steps: &[String], who: &str) -> Vec<String> {
+    steps
+        .iter()
+        .filter_map(|s| {
+            let n = seen.iter().filter(|x| *x == s).count();
+            (n > 1).then(|| format!("`{who}` calls step `{s}` {n} times; it must run exactly once"))
+        })
+        .collect()
 }
 
 /// True when every step occurs and their FIRST occurrences are in order.
@@ -976,6 +1096,15 @@ pub fn teller_step_order(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
     let loop_function = need_str(c, "loop_function", "teller-step-order")?;
     let opener_function = need_str(c, "opener_function", "teller-step-order")?;
     let door_step = need_str(c, "door_step", "teller-step-order")?;
+    let step_receivers = c.list_of("step_receivers");
+    if step_receivers.is_empty() {
+        return Err(
+            "[rules.teller-step-order] `step_receivers` is empty — a step site is unanchored \
+             without at least one receiver naming the door driver's `units` handle"
+                .to_string(),
+        );
+    }
+    let dispatch_methods = c.list_of("dispatch_methods");
     let title = "the Teller loop calls the nine steps once each, in the canonical order";
 
     if !tree.fns.contains_key(rel) {
@@ -999,7 +1128,15 @@ pub fn teller_step_order(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
             "expected exactly one `fn {loop_function}` in {rel}, found {loops}"
         ));
     }
-    let run_seen = expanded_calls(tree, rel, loop_function, &steps, 4)?;
+    let run_seen = expanded_calls(
+        tree,
+        rel,
+        loop_function,
+        &steps,
+        &step_receivers,
+        &dispatch_methods,
+        4,
+    )?;
     if !in_order(&run_seen, &steps) {
         findings.push(format!(
             "`{loop_function}` (expanded through its helpers) calls the steps as {}; the canonical \
@@ -1008,21 +1145,39 @@ pub fn teller_step_order(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
             py_list(&steps)
         ));
     }
+    findings.extend(duplicate_findings(&run_seen, &steps, loop_function));
     let door_at = steps.iter().position(|s| s == door_step).ok_or_else(|| {
         format!("[rules.teller-step-order] door_step `{door_step}` is not a step")
     })?;
     let door = &steps[..door_at + 1];
-    let open_seen = expanded_calls(tree, rel, opener_function, &steps, 4)?;
+    // The opener's allowed sequence: the door steps, optionally followed by ONE named closing step
+    // (the opener's own documented post-door seal — `audit`, for the Teller). Nothing else — `route`
+    // and `meter` stay just as forbidden for the opener as before.
+    let mut allowed: Vec<String> = door.to_vec();
+    let closing_step = c.str_of("opener_closing_step");
+    if let Some(cs) = closing_step {
+        allowed.push(cs.to_string());
+    }
+    let open_seen = expanded_calls(
+        tree,
+        rel,
+        opener_function,
+        &steps,
+        &step_receivers,
+        &dispatch_methods,
+        4,
+    )?;
     if open_seen.is_empty() {
         findings.push(format!("`{opener_function}` calls no step at all in {rel}"));
-    } else if !in_order(&open_seen, door) || open_seen.iter().any(|s| !door.contains(s)) {
+    } else if !in_order(&open_seen, &allowed) || open_seen.iter().any(|s| !allowed.contains(s)) {
         findings.push(format!(
             "`{opener_function}` (expanded) calls {}; a session opener runs exactly the steps up \
              to the door, in order: {}",
             py_list(&open_seen),
-            py_list(door)
+            py_list(&allowed)
         ));
     }
+    findings.extend(duplicate_findings(&open_seen, &allowed, opener_function));
     let current = findings.len() as i64;
     let detail = format!(
         "{current} order finding(s) in {rel} (ceiling {max_findings}): {}",

@@ -354,6 +354,27 @@ loop_function = "run_unit"
 opener_function = "open_unit"
 door_step = "admit"
 steps = ["arrival", "decode", "authenticate", "verify", "approve", "admit", "route", "meter", "audit"]
+# A step counts only when dispatched off one of these receivers — the door driver's own `units`
+# handle, spelled either bare or as the field `Blocking` wraps it in (`self.0`) for the Route leg.
+# This is what keeps an unrelated same-named method (`HoldCell::admit`, called as `run.cell.admit(`)
+# from textually colliding with the real `Units::admit` step: `cell` is not a step receiver.
+step_receivers = ["units", "self.0"]
+# Trait-object indirections the walker must follow by METHOD call, not just by bare call:
+# `RouteAwait::route_leg` is invoked as `route.route_leg(...)`, and the one local impl of that trait
+# (`Blocking`) is where the real `Units::route` step it forwards to (`self.0.route(...)`) lives —
+# otherwise invisible to a scanner that only recurses into bare-call sites. `Abandoned::reached` is
+# the same shape one step later: `run_unit_async`'s one await hands its outcome to
+# `abandoned.reached(outcome)`, which is where the admitted path's `terminal(...)` (and so its
+# `audit`) actually lives — the OTHER call to `terminal`, from the cell-rejected short-circuit arm
+# next to it, is a bare call the walker already skips (see `preceded_by_fat_arrow` in rules.rs).
+dispatch_methods = ["route_leg", "reached"]
+# The one step a session opener runs AFTER its door, not just up to it: `open_unit` runs the SAME
+# arrival→…→admit chain as the one-shot loop, THEN records the outcome (success or refusal) through
+# the real `audit` step and returns — it never reaches `route` or `meter`, which have no Route leg or
+# spend to meter in a session that has not opened its own reservation yet. Declaring that here, rather
+# than pretending the opener stops dead at the door, is what keeps this rule from misreading the
+# opener's own documented closing step as it running a step outside its territory.
+opener_closing_step = "audit"
 max_findings = 0
 
 # ── 10. one-teller-loop ──────────────────────────────────────────────────────────────────────────
