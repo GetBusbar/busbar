@@ -432,7 +432,7 @@ pub struct RootCfg {
     /// generation. Lowering it here would give the registry two representations that could disagree
     /// about what the operator approved — precisely the disagreement the trust lifecycle removes by
     /// DERIVING state from intent-versus-observation instead of storing it.
-    pub tool_defs: Box<dyn busbar_substrate::plane::config::PlaneCfg>,
+    pub tool_defs: Box<dyn busbar_kernel::plane::config::PlaneCfg>,
     /// Optional native inbound TLS. `None` ⇒ plain HTTP (today's path, byte-for-byte).
     pub tls: Option<TlsCfg>,
     /// Separate admin listen address — the admin API is served ONLY here, never on the data
@@ -515,7 +515,7 @@ pub struct RootCfg {
     // Neutral capture when this section's owning plane is compiled out: the resolved registry type
     // does not exist then, and a non-empty `agents:` section is refused at `resolve` (the raw capture
     // is carried through unchanged, as `RootCfg` is for any plane section whose plane is off).
-    pub agent_defs: Box<dyn busbar_substrate::plane::config::PlaneCfg>,
+    pub agent_defs: Box<dyn busbar_kernel::plane::config::PlaneCfg>,
     /// The `tool_pools:` failover pools for this section's owning plane, carried through `resolve`
     /// VERBATIM — operator intent, like `tool_defs` beside it, projected onto
     /// `state::App::tool_pools` at build. Empty ⇒ no failover on that plane.
@@ -545,16 +545,16 @@ impl RootCfg {
 /// All three values are SECRET REFERENCES (`{ file: … }` / `{ env: … }` / a secret module)
 /// resolving to PEM bytes; they are resolved once at startup and any resolve/parse error is fatal
 /// (`die`). Key bytes are never logged.
-// Moved to `busbar_substrate::config::sections`; re-exported at its historical `config::` path.
-pub use busbar_substrate::config::sections::TlsCfg;
+// Moved to `busbar_kernel::config::sections`; re-exported at its historical `config::` path.
+pub use busbar_kernel::config::sections::TlsCfg;
 
 /// One entry in the top-level `identity-providers:` NAMED-DEFINITION map, the resolved auth-chain
 /// entry, the role-binding grant, the token-mint policy, the built-in provider names, and the
 /// WIRE/RESOLVED `auth:` block itself: plain data with serde derives and pure accessors — nothing
 /// here loads a file, resolves a secret, or touches the running `App`. Moved to
-/// `busbar_substrate::config::auth`; the resolver that joins chain NAMES to definitions
+/// `busbar_kernel::config::auth`; the resolver that joins chain NAMES to definitions
 /// (`resolve_auth`, just below) stays here. Re-exported at their historical `config::` path.
-pub use busbar_substrate::config::auth::{
+pub use busbar_kernel::config::auth::{
     AuthCfg, AuthChainEntry, AuthDeployCfg, AuthMethodCfg, AuthMethods, AuthPolicyCfg, BindingMode,
     BrowserLoginCfg, IdentityProviderCfg, IdentityProviders, MintCeilingCfg, RoleBindingCfg,
     RoleBindings, ADMIN_TOKENS_MODULE, BUILTIN_IDENTITY_PROVIDERS, DEFAULT_MAX_ADMIN_SCOPE,
@@ -835,39 +835,37 @@ pub const STORE_MODULE_VALKEY_ASSET_STEM: &str = "busbar-store-valkey";
 // The `providers:` / `models:` config SHAPES — the catalog definition, the operator deployment, the
 // resolved provider the runtime reads, the active-health block and the per-model entry — are plain
 // serde data; the catalog/deployment MERGE that produces a `ProviderCfg` stays here (`resolve`).
-// Moved to `busbar_substrate::config::providers`; re-exported at their historical `config::` path.
-pub use busbar_substrate::config::providers::{
+// Moved to `busbar_kernel::config::providers`; re-exported at their historical `config::` path.
+pub use busbar_kernel::config::providers::{
     default_protocol, neg1, HealthCfg, HealthMode, ModelCfg, ProviderCfg, ProviderDef,
     ProviderDeploy, DEFAULT_PROTOCOL,
 };
 
 // ABI-purity CONFIG-ENUMS: the per-provider auth-style selector is a plane-owned runtime config
-// value concept; it moved DOWN to `busbar_substrate::config` (serde `Deserialize` + the
+// value concept; it moved DOWN to `busbar_kernel::config` (serde `Deserialize` + the
 // `#[serde(rename)]` wire strings VERBATIM, byte-identical) so a plane names it via the ABI.
 // Re-exported here at its historical `config::ProviderAuth` path so the frozen providers.yaml
 // grammar parse is unchanged.
-pub use busbar_substrate::config::ProviderAuth;
 
 // ABI-purity CONFIG-ENUM: the resolved on_error/on_empty TERMINAL moved to
-// `busbar_substrate::config` (serde derives + rename VERBATIM); re-exported here at its historical
+// `busbar_kernel::config` (serde derives + rename VERBATIM); re-exported here at its historical
 // `config::PolicyOnError` path so the frozen config grammar + every deserialization are unchanged.
-pub use busbar_substrate::config::PolicyOnError;
 
 // The `hooks:` config SHAPES (the named definition, the runtime registry entry, the structured
 // `on_error:` value, the mode/access/stage enums, the reserved terminal + strategy vocabulary, and
 // the two pure scope predicates) and the `pools:` config SHAPES (the pool itself, its members, the
 // ranking strategy, the breaker/failover/affinity blocks and the `on_exhausted:` value) are plain
 // serde data with pure accessors — no loader, validator, or `App` touch. They moved to
-// `busbar_substrate::config::{hooks, pools}`; re-exported here at their historical `config::` path
+// `busbar_kernel::config::{hooks, pools}`; re-exported here at their historical `config::` path
 // so no caller (this module's own definition-to-registry lowering, validation, `config_validate`,
 // `store`) moves.
-pub use busbar_substrate::config::hooks::{
+pub use busbar_kernel::config::hooks::{
     caller_in_hook_groups, default_on_error, default_policy_timeout_ms, on_error_terminal, HookCfg,
     HookDefCfg, HookDefs, HookKind, HookStage, OnErrorCfg, PromptAccess, UserAccess,
     ALL_HOOK_STAGES, CORE_HOOK_PHASES, DEFAULT_POLICY_TIMEOUT_MS, FROZEN_HOOK_NAME_WORD_SPACE,
     ON_ERROR_FIRST, ON_ERROR_NOTHING, ON_ERROR_REJECT, ON_ERROR_WEIGHTED, RESERVED_HOOK_NAMES,
 };
-pub use busbar_substrate::config::pools::{
+pub use busbar_kernel::config::pools::{
     default_consecutive_n, default_cooldown, default_failover_timeout, default_max_cooldown,
     default_max_hops, default_min_requests, default_threshold, default_trip_mode, default_weight,
     default_window_secs, is_strategy_name, parse_strategy, AffinityCfg, AffinityMode, BreakerCfg,
@@ -879,15 +877,15 @@ pub use busbar_substrate::config::pools::{
 };
 
 // The FAILOVER BUDGET numeric defaults/bounds are plain scalars with no config grammar attached, so
-// they live in the neutral `busbar_substrate::failover` (a plane names the per-request failover
+// they live in the neutral `busbar_kernel::failover` (a plane names the per-request failover
 // budget without reaching into `busbar-core`); re-exported here at their historical
 // `crate::config::*` paths so every core call site (`appbuild`, `config_validate`, `test_support`,
 // the pools `default_failover_timeout`/`default_max_hops` serde defaults) resolves unchanged.
-pub use busbar_substrate::failover::{
+pub use busbar_kernel::failover::{
     DEFAULT_FAILOVER_CAP, DEFAULT_FAILOVER_DEADLINE_SECS, MAX_FAILOVER_DEADLINE_SECS,
 };
 
-pub use busbar_substrate::config::auth::{default_admin_auth, default_admin_auth_names};
+pub use busbar_kernel::config::auth::{default_admin_auth, default_admin_auth_names};
 
 // THE FROZEN reserved key set of the `pools:` SECTION (freeze blocker, 1.5.3): `hooks` and
 // `upstream_credentials` are section-level knobs, NOT pool names — `pools.hooks:` (LIST → ADDITIVE:
@@ -901,7 +899,7 @@ pub use busbar_substrate::config::auth::{default_admin_auth, default_admin_auth_
 // which costs one word ONCE and is then additive forever.
 //
 // THIS IS THE ONLY DECLARATION, on every plane, and it now lives in the neutral substrate as
-// `busbar_substrate::plane::config::RESERVED_SECTION_KEYS` (the shared section split that reads it
+// `busbar_kernel::plane::config::RESERVED_SECTION_KEYS` (the shared section split that reads it
 // moved there): `tools:` and `agents:` reserve the same two words by reading that ONE slice, not by
 // restating it. Pinned by `pools_reserved_section_keys_are_frozen` in the config tests.
 
@@ -994,7 +992,7 @@ fn check_failover_pool(
 }
 
 /// The top-level `pools:` map (1.5.3), which carries the two reserved section keys
-/// ([`busbar_substrate::plane::config::RESERVED_SECTION_KEYS`]) alongside the
+/// ([`busbar_kernel::plane::config::RESERVED_SECTION_KEYS`]) alongside the
 /// pools themselves. Every key that is NOT one of those two reserved words is a pool. A pool may NOT be
 /// named `hooks` or `upstream_credentials` — both are REJECTED at parse with a clear error. The custom
 /// `Deserialize` lifts the reserved keys out first, then parses the remainder as the pool map.
@@ -1025,7 +1023,7 @@ impl<'de> Deserialize<'de> for PoolsCfg {
         //
         // The pool plane declares NO value rules here: `PoolCfg`'s are run later, over the whole
         // config, where they can see the cross-section references a single entry cannot.
-        let section = crate::plane::config::split_section::<D, PoolCfg>(
+        let section = crate::plane::config::split_section_for_plane::<D, PoolCfg>(
             deserializer,
             crate::plane::fallback_key(),
             |_, _| Ok(()),
@@ -1080,8 +1078,8 @@ pub fn entity_only_hook_refs(section: &[String], entity: &[String]) -> Vec<Strin
 }
 
 // The two listen-address defaults are plain string literals; moved to
-// `busbar_substrate::config::sections`, re-exported at their historical `config::` path.
-pub use busbar_substrate::config::sections::{DEFAULT_ADMIN_LISTEN_ADDR, DEFAULT_LISTEN_ADDR};
+// `busbar_kernel::config::sections`, re-exported at their historical `config::` path.
+pub use busbar_kernel::config::sections::{DEFAULT_ADMIN_LISTEN_ADDR, DEFAULT_LISTEN_ADDR};
 
 fn default_listen() -> String {
     DEFAULT_LISTEN_ADDR.into()
@@ -1325,13 +1323,13 @@ impl DeployCfg {
     /// (the two core sections, or an unknown key). The two plane fields exist unconditionally (they
     /// hold a `RawPlaneSection` when their plane is compiled out), so a present key always answers
     /// `Some`; the section KEYS are read off the frozen static
-    /// [`busbar_substrate::plane::config::NAMED_MAP_SECTIONS`] mirror so this accessor spells no
+    /// [`busbar_kernel::plane::config::NAMED_MAP_SECTIONS`] mirror so this accessor spells no
     /// plane noun.
     pub fn plane_section(
         &self,
         section: &str,
-    ) -> Option<&dyn busbar_substrate::plane::config::PlaneCfg> {
-        let mirror = busbar_substrate::plane::config::NAMED_MAP_SECTIONS;
+    ) -> Option<&dyn busbar_kernel::plane::config::PlaneCfg> {
+        let mirror = busbar_kernel::plane::config::NAMED_MAP_SECTIONS;
         if section == mirror[2] {
             Some(&*self.tools.0)
         } else if section == mirror[3] {
@@ -1347,8 +1345,8 @@ impl DeployCfg {
     pub fn plane_section_mut(
         &mut self,
         section: &str,
-    ) -> Option<&mut dyn busbar_substrate::plane::config::PlaneCfg> {
-        let mirror = busbar_substrate::plane::config::NAMED_MAP_SECTIONS;
+    ) -> Option<&mut dyn busbar_kernel::plane::config::PlaneCfg> {
+        let mirror = busbar_kernel::plane::config::NAMED_MAP_SECTIONS;
         if section == mirror[2] {
             Some(&mut *self.tools.0)
         } else if section == mirror[3] {
@@ -1359,8 +1357,8 @@ impl DeployCfg {
     }
 }
 
-// Moved to `busbar_substrate::config::sections`; re-exported at its historical `config::` path.
-pub use busbar_substrate::config::sections::SecurityCfg;
+// Moved to `busbar_kernel::config::sections`; re-exported at its historical `config::` path.
+pub use busbar_kernel::config::sections::SecurityCfg;
 
 /// The top-level `plugins:` block — the ONLY configuration surface of the dynamic plugin subsystem.
 /// A plugin is a plugin: store, auth, and hook plugins share this one block (one directory, one
@@ -1676,18 +1674,18 @@ impl PluginsCfg {
 }
 
 // The `store:` block and the `secrets:` per-module init block are plain serde data (`{ module,
-// settings }` shapes). Moved to `busbar_substrate::config::sections`; re-exported at their
+// settings }` shapes). Moved to `busbar_kernel::config::sections`; re-exported at their
 // historical `config::` path.
-pub use busbar_substrate::config::sections::{
+pub use busbar_kernel::config::sections::{
     default_governance_store, SecretModuleCfg, StoreCfg, GOVERNANCE_STORE_MEMORY,
 };
 
 // The `advanced:` block (INTERNAL tuning knobs) and its nested `response_headers:` block are plain
 // serde data with `Default` impls that route through the same shared consts as their `#[serde(default
 // = ...)]` fns, so the omitted-block and omitted-field paths cannot drift. Moved to
-// `busbar_substrate::config::sections`; re-exported at their historical `config::` path. Needed here
+// `busbar_kernel::config::sections`; re-exported at their historical `config::` path. Needed here
 // (not just at their own call sites) because `LimitsResolved::from_sections` takes `&AdvancedCfg`.
-pub use busbar_substrate::config::sections::{
+pub use busbar_kernel::config::sections::{
     default_response_headers_route_policy, default_response_headers_server_timing, AdvancedCfg,
     ResponseHeadersCfg, DEFAULT_RESPONSE_HEADERS_ROUTE_POLICY,
     DEFAULT_RESPONSE_HEADERS_SERVER_TIMING,
@@ -1695,8 +1693,8 @@ pub use busbar_substrate::config::sections::{
 
 // The `config:` config-management-policy block, its `overlay:` backend selector, the `rate_card:`
 // entry, and the `export:` NAMED-DEFINITION entry (+ its module vocabulary) are plain serde data.
-// Moved to `busbar_substrate::config::sections`; re-exported at their historical `config::` path.
-pub use busbar_substrate::config::sections::{
+// Moved to `busbar_kernel::config::sections`; re-exported at their historical `config::` path.
+pub use busbar_kernel::config::sections::{
     rate_entry_per_mtok, ConfigMgmtCfg, ExportDefCfg, ExportDefs, OverlayBackend, OverlayCfg,
     RateEntryCfg, EXPORT_MODULES, EXPORT_MODULE_OTLP, EXPORT_MODULE_PROMETHEUS,
     EXPORT_MODULE_REQUEST_LOG_FILE, EXPORT_MODULE_REQUEST_LOG_WEBHOOK,
@@ -1754,11 +1752,11 @@ impl ExportCfg {
 
 /// The two limits `LimitsResolved` sources from the resolved `export:` block rather than from
 /// `limits:` itself (1.5.3: moved from the retired `observability.*`/`metrics.*` keys onto the
-/// built-in EXPORTER settings). `busbar_substrate::config::limits::LimitsResolved::from_sections`
+/// built-in EXPORTER settings). `busbar_kernel::config::limits::LimitsResolved::from_sections`
 /// takes anything that converts to `ExportLimits`, so core (the only crate that knows the typed
 /// `ExportCfg` shape) hands the reduction across through this `From` impl instead of the resolver
 /// re-walking `export.*` itself.
-impl From<&ExportCfg> for busbar_substrate::config::limits::ExportLimits {
+impl From<&ExportCfg> for busbar_kernel::config::limits::ExportLimits {
     fn from(export: &ExportCfg) -> Self {
         // `max_inflight_webhook_deliveries` seeds ONE shared `AdmissionGate` across every webhook
         // instance, so with several named instances it takes the MAXIMUM of the CONFIGURED values:
@@ -1980,10 +1978,10 @@ pub fn resolve_export(defs: &ExportDefs, errors: &mut Vec<String>) -> ExportCfg 
 // `limits:` / `health:` / `routing:` blocks and the flat resolved `LimitsResolved` every startup
 // wire reads. Every field defaults — via a `default = "fn"` whose body is the historical hardcoded
 // const — to today's behavior, so an absent key (the common case) is byte-for-byte unchanged. Moved
-// to `busbar_substrate::config::limits`; the process-wide INSTALL of the resolved values and the
+// to `busbar_kernel::config::limits`; the process-wide INSTALL of the resolved values and the
 // `ExportCfg` → `ExportLimits` reduction (see the `From` impl above `ExportCfg`) stay here.
 // Re-exported at their historical `config::` path so no caller moves.
-pub use busbar_substrate::config::limits::{
+pub use busbar_kernel::config::limits::{
     default_default_max_tokens, default_hard_down_cooldown_secs, default_hook_content_max_bytes,
     default_key_gauge_limit, default_max_auto_provisioned_groups,
     default_max_honored_retry_after_secs, default_max_inbound_concurrent,
@@ -2211,8 +2209,8 @@ pub fn resolve(
         // stays on the fallback lane. Reading the discriminant off the frozen named-map mirror (rather
         // than a hard-coded plane key) is what lets a registered plane's pools route with nothing
         // about that plane written here.
-        let tools_section = busbar_substrate::plane::config::NAMED_MAP_SECTIONS[2];
-        let agents_section = busbar_substrate::plane::config::NAMED_MAP_SECTIONS[3];
+        let tools_section = busbar_kernel::plane::config::NAMED_MAP_SECTIONS[2];
+        let agents_section = busbar_kernel::plane::config::NAMED_MAP_SECTIONS[3];
         let member_kind = |name: &str| -> Option<&'static str> {
             // Global-unique noun names make this a name-only lookup — the router never asks "which
             // kind of `x`?". A name defined in two nouns is a collision the validator rejects.
@@ -2509,14 +2507,14 @@ pub fn resolve(
     // `is_present()` for a section the operator wrote, and there is no decl for it.
     //
     // FAIL-CLOSED: this reads the FROZEN STATIC noun source
-    // `busbar_substrate::plane::config::NAMED_MAP_SECTIONS`, NOT the registry-derived
+    // `busbar_kernel::plane::config::NAMED_MAP_SECTIONS`, NOT the registry-derived
     // `NamedMapSection::sections()` — the latter goes EMPTY of a plane's section when the plane is
     // compiled out, which would let a `tools:`/`agents:` block for an absent plane slip through
     // silently. The mirror's two core sections (`identity-providers`/`export`) are not plane sections,
     // so `plane_section` answers `None` for them (never present) and they are skipped; only a plane
     // section that is present with no decl is refused, byte-identical to the former `[Tools, Agents]`
     // loop.
-    for section in busbar_substrate::plane::config::NAMED_MAP_SECTIONS {
+    for section in busbar_kernel::plane::config::NAMED_MAP_SECTIONS {
         let present = deploy
             .plane_section(section)
             .is_some_and(|cfg| cfg.is_present());
@@ -2608,7 +2606,7 @@ pub fn resolve(
                 // the `mcp:` door), so no plane key is named here. Compiled out ⇒ no decl ⇒ the
                 // deletion-gate refusal below.
                 match crate::plane::registry::plane_decl_for_config_section(
-                    busbar_substrate::plane::config::NAMED_MAP_SECTIONS[2],
+                    busbar_kernel::plane::config::NAMED_MAP_SECTIONS[2],
                 )
                 .and_then(|d| d.lower_endpoint)
                 {
@@ -2644,7 +2642,7 @@ pub fn resolve(
     > = std::collections::HashMap::new();
     if let Some(resource) = lowered_endpoint {
         endpoint_resources.insert(
-            busbar_substrate::plane::config::NAMED_MAP_SECTIONS[2],
+            busbar_kernel::plane::config::NAMED_MAP_SECTIONS[2],
             resource,
         );
     }
@@ -2747,3 +2745,51 @@ mod named_map_merge_tests;
 #[cfg(test)]
 #[path = "tests/config_backcompat_corpus.rs"]
 mod config_backcompat_corpus;
+
+// ==== merged from busbar-substrate (W4.b P2 engine drain) ====
+
+pub mod auth;
+pub mod hooks;
+pub mod limits;
+pub mod pools;
+pub mod providers;
+pub mod sections;
+
+/// A resolved on_error/on_empty TERMINAL. `Weighted` (default) is the non-negotiable safety
+/// stance: a broken/slow policy is indistinguishable from no policy and NEVER blocks or fails a
+/// request. `Reject` is fail-closed (503). `First` uses the configured member order (a
+/// deterministic degraded pick). The `on_error` CONFIG field is a free string (a fallback chain of
+/// hook names bottoming out on one of these three reserved terminals); `on_empty` parses this enum
+/// directly.
+#[derive(Debug, Deserialize, Serialize, Clone, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PolicyOnError {
+    #[default]
+    Weighted,
+    Reject,
+    First,
+}
+
+/// Per-provider auth-style override. Closed set: the request is signed with the protocol's native
+/// auth (`bearer`) unless `api-key` selects an `api-key: <key>` header (Azure OpenAI). The wire
+/// strings are unchanged from the pre-enum `Option<String>` field (`bearer` / `api-key`), so an
+/// unknown spelling is now a deserialize error instead of a hand-checked validation error.
+#[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq)]
+pub enum ProviderAuth {
+    #[serde(rename = "bearer")]
+    Bearer,
+    #[serde(rename = "api-key")]
+    ApiKey,
+    /// OAuth 2.0 JWT-bearer grant (RFC 7523): the provider's credential is a signing key (delivered as
+    /// a Google service-account JSON in `api_key_env`), which busbar uses to mint + auto-refresh a
+    /// short-lived bearer token per lane. Generic — Vertex AI is the first provider to select it. The
+    /// token minting/refresh lives in `crate::egress_auth::jwt_bearer`; this is only the selector.
+    #[serde(rename = "jwt-bearer")]
+    JwtBearer,
+    /// OAuth 2.0 client-credentials grant (RFC 6749 §4.4): `api_key_env` carries
+    /// `client_id:client_secret`, and the provider's `token_url` + `scope` complete the exchange for
+    /// an auto-refreshed bearer. Generic — Azure OpenAI via Microsoft Entra ID is the first consumer.
+    /// The token minting/refresh lives in `crate::egress_auth::oauth_client_credentials`.
+    #[serde(rename = "oauth-client-credentials")]
+    OAuthClientCredentials,
+}

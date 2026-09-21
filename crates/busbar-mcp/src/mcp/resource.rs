@@ -35,7 +35,7 @@
 // header. `GET /.well-known/oauth-protected-resource<mcp-path>` is served by
 // `super::envelope::metadata_route` — the plane's neutral-seam handler — which reads the three
 // deployment-specific facts off the host seam (`super::resource_of`) and frames them into the
-// once-defined `busbar_substrate::ingress::protocol` document, beside the rest of this protocol's
+// once-defined `busbar_kernel::ingress::protocol` document, beside the rest of this protocol's
 // vocabulary.
 //
 // The plane-coherence ledger had verified, on 2026-08-11, that this document and the A2A plane's

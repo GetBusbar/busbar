@@ -91,7 +91,7 @@ use busbar_kernel::teller::{AccrualMeter, Evidence, FeeEvidence, UnitCtx, Units}
 use busbar_llm::arrival::PathArrivalFacts;
 use busbar_llm::unit::walk::{LateReport, Tap, Walk, WalkArrival};
 use busbar_llm::unit::{admit, approve, arrival, audit, authenticate, decode, verify};
-use busbar_substrate::ingress::arrival::{Arrival as ArrivalRequest, ArrivalPayload};
+use busbar_kernel::ingress::arrival::{Arrival as ArrivalRequest, ArrivalPayload};
 use busbar_substrate_values::proxy::POOL_LABEL_UNRESOLVED;
 
 /// The transport stack every request on this plane arrives over.
@@ -670,7 +670,7 @@ impl LlmNode {
 /// from the billable count the report carries, which is what keeps one configured fee to one place.
 fn usage_record(
     token: &busbar_contract::caps::Grant<busbar_contract::caps::Consumption>,
-    usage: &busbar_substrate::billing::Usage,
+    usage: &busbar_substrate_values::billing::Usage,
 ) -> busbar_contract::caps::Usage {
     let lines = [
         busbar_api::UNIT_INPUT,
@@ -973,7 +973,7 @@ impl Drop for Occupied<'_> {
 /// reason of its own and a client is owed the same answer whichever gate stopped it. WHICH seat
 /// stopped the unit is the operator's diagnostic, and the step file already logs it.
 fn vetoed(proto: &str) -> Response {
-    busbar_substrate::proxy::ingress_error(
+    busbar_kernel::proxy::ingress_error(
         proto,
         StatusCode::FORBIDDEN,
         busbar_substrate_values::proxy::KIND_PERMISSION,
@@ -983,7 +983,7 @@ fn vetoed(proto: &str) -> Response {
 
 /// What a node that cannot take the unit at all answers with, in the caller's own dialect.
 fn unavailable(proto: &str) -> Response {
-    busbar_substrate::proxy::ingress_error(
+    busbar_kernel::proxy::ingress_error(
         proto,
         StatusCode::SERVICE_UNAVAILABLE,
         busbar_substrate_values::proxy::KIND_OVERLOADED,
@@ -1629,7 +1629,7 @@ async fn body_arrival(proto: &'static str, a: ArrivalRequest) -> Response {
         headers,
         body,
     } = a;
-    let Some(operation) = busbar_substrate::handlers::request_handler(proto)
+    let Some(operation) = busbar_substrate_values::handlers::request_handler(proto)
         .and_then(|rh| rh.resolve_operation(uri.path(), &body))
     else {
         return host.fallback_not_found(
@@ -1701,7 +1701,7 @@ body_arrivals! {
 async fn path_arrival(
     proto: &'static str,
     parsed: busbar_llm::arrival::PathArrivalFacts,
-    ctx: busbar_substrate::ingress::arrival::ArrivalCtx,
+    ctx: busbar_kernel::ingress::arrival::ArrivalCtx,
     headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
 ) -> Response {
@@ -1830,7 +1830,7 @@ fn bedrock_path_arrival(
 /// Same two dialects, same names, same table; what changes is the PATH a request takes to reach the
 /// answer. The composition root installs this one instead of the plane's when `root-llm` is on, and
 /// with it off this static does not exist and the surface is the one it was.
-pub static PATH_INGRESS: &[(&str, busbar_substrate::ingress::arrival::PathIngress)] = &[
+pub static PATH_INGRESS: &[(&str, busbar_kernel::ingress::arrival::PathIngress)] = &[
     (busbar_llm::proto_codec::PROTO_GEMINI, gemini_path_arrival),
     (busbar_llm::proto_codec::PROTO_BEDROCK, bedrock_path_arrival),
 ];
@@ -1844,7 +1844,7 @@ pub static PATH_INGRESS: &[(&str, busbar_substrate::ingress::arrival::PathIngres
 /// The URL-model pair keep their own `PATH_INGRESS` entry points, which parse their own URL space
 /// before they reach any step this file drives. Their BODY entries are here, because the generic
 /// body-model dispatch arm resolves them by name like every other dialect.
-pub static BODY_INGRESS: &[(&str, busbar_substrate::ingress::arrival::BodyIngress)] = &[
+pub static BODY_INGRESS: &[(&str, busbar_kernel::ingress::arrival::BodyIngress)] = &[
     (
         busbar_llm::proto_codec::PROTO_ANTHROPIC,
         anthropic_body_arrival,
@@ -1868,7 +1868,7 @@ pub static BODY_INGRESS: &[(&str, busbar_substrate::ingress::arrival::BodyIngres
 /// `busbar_llm::native_ingress::run` (native_ingress.rs:592) is the LIVE money authority: from the
 /// same resolved-op arrival — a known `model`, the dialect's already-resolved `operation`, the
 /// caller's headers and body — it builds a `NativePlane`/`GauntletRequest` and settles per-token
-/// billing through `busbar_substrate::plane_host::run_gauntlet` (the SUBSTRATE loop), late-accruing
+/// billing through `busbar_kernel::plane_host::run_gauntlet` (the SUBSTRATE loop), late-accruing
 /// against the admission-pinned `ROOT_CARD` snapshot. Every resolved-op arrival funnels through it:
 /// `operation_ingress` (once the body's model is read), `ingress_path_model` (once the URL's is), and
 /// the MCP-sampling re-entry `synthesize_completion`.
@@ -1890,7 +1890,7 @@ pub static BODY_INGRESS: &[(&str, busbar_substrate::ingress::arrival::BodyIngres
 #[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn native_run_via_loop(
-    host: &Arc<dyn busbar_substrate::plane_host::EngineHost>,
+    host: &Arc<dyn busbar_kernel::plane_host::EngineHost>,
     gov: &busbar_api::PlaneRequestCtx,
     proto: &'static str,
     operation: busbar_api::operation::Operation,

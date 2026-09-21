@@ -17,7 +17,6 @@ members = [
     "crates/busbar-plane-a2a-host",
     "crates/busbar-voice",
     "crates/busbar-voice-codec",
-    "crates/busbar-substrate",
     "crates/busbar-substrate-values",
     "crates/busbar-contract",
     "crates/busbar-grammar",

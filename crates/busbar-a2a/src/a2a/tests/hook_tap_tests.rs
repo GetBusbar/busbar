@@ -20,7 +20,7 @@
 
 use super::relay_harness::{backend_ok, call, call_agent, envelope, harness_gated, Gates, Outcome};
 use crate::testkit::engine_boot::engine;
-use busbar_substrate::testkit::engine_kit::HookNeed;
+use busbar_kernel::testkit::engine_kit::HookNeed;
 
 /// A `prompt: rw` REWRITE gate on the hermetic test cdylib, as the `hooks:` document an operator
 /// writes (the engine parses it with its own grammar at build). `raw_transform_reply` drives its

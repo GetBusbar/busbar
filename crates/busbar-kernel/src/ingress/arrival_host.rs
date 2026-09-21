@@ -1,15 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! CORE'S IMPLEMENTATION of the neutral [`busbar_substrate::ingress::arrival::ArrivalHost`] — the
+//! CORE'S IMPLEMENTATION of the neutral [`busbar_kernel::ingress::arrival::ArrivalHost`] — the
 //! request-pipeline seam a path-model dialect crate (one that parses its model out of the URL path,
 //! living outside core) calls back through. The dialect crate owns the URL parsing (its statement
 //! about its own URL space); core owns the resolution + forward + error shaping, reached here.
 //!
 //! Mirrors `crate::plane_host::EngineHostImpl`: a stateless core object each method drives against the
-//! live engine recovered from the opaque [`busbar_substrate::ingress::arrival::ArrivalCtx`] the dialect
+//! live engine recovered from the opaque [`busbar_kernel::ingress::arrival::ArrivalCtx`] the dialect
 //! threads back. App-retype WEDGE 3 (THE FLIP): the payload the dialect threads back is now the NEUTRAL
-//! [`busbar_substrate::ingress::arrival::ArrivalPayload`] carrying an `Arc<dyn EngineHost>` (minted
+//! [`busbar_kernel::ingress::arrival::ArrivalPayload`] carrying an `Arc<dyn EngineHost>` (minted
 //! core-side over the live `App`) rather than the `Arc<App>` it used to; each method reaches the engine
 //! through that host seam, so the neutral payload names no core type and an extracted dialect crate can
 //! downcast it without a backwards reach into `busbar-core`.
@@ -18,10 +18,10 @@ use std::time::Instant;
 
 use axum::http::StatusCode;
 use axum::response::Response;
-use busbar_substrate::ingress::arrival::{ArrivalCtx, ArrivalHost};
+use busbar_kernel::ingress::arrival::{ArrivalCtx, ArrivalHost};
 // Re-exported at the historical `crate::ingress::arrival_host::ArrivalPayload` path so core's arrival
 // construction sites keep naming it here after the type's pivot to the neutral substrate (WEDGE 3).
-pub use busbar_substrate::ingress::arrival::ArrivalPayload;
+pub use busbar_kernel::ingress::arrival::ArrivalPayload;
 
 fn payload(ctx: &ArrivalCtx) -> &ArrivalPayload {
     ctx.downcast_ref::<ArrivalPayload>()
@@ -29,7 +29,7 @@ fn payload(ctx: &ArrivalCtx) -> &ArrivalPayload {
 }
 
 /// The one core arrival host. Stateless (all state arrives via [`ArrivalCtx`]); an `Arc` of it rides
-/// every [`busbar_substrate::ingress::arrival::Arrival`] the catch-all mints.
+/// every [`busbar_kernel::ingress::arrival::Arrival`] the catch-all mints.
 pub(crate) struct CoreArrivalHost;
 
 impl ArrivalHost for CoreArrivalHost {

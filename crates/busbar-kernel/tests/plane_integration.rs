@@ -167,7 +167,7 @@ fn plane_slot_mirrors_the_typed_mcp_and_a2a_fields_when_configured() {
         "BUSBAR_TEST_NO_SUCH_KEY_PLANE_SLOT_PRESENT",
     ));
     cfg.endpoint_resources.insert(
-        busbar_substrate::plane::config::NAMED_MAP_SECTIONS[2],
+        busbar_kernel::plane::config::NAMED_MAP_SECTIONS[2],
         std::sync::Arc::new(
             busbar_mcp::mcp::McpResource::from_cfg(&busbar_mcp::testkit::mcp_cfg_at(
                 "https://gw.example.com/mcp",
@@ -588,7 +588,7 @@ mod metrics_scrape {
 async fn test_mcp_token_is_confined_to_the_mcp_plane() {
     use busbar_kernel::governance::{GovState, MemoryStore};
     use busbar_kernel::test_support::{LaneSpec, MockServer, MockServerState, TestApp};
-    use busbar_substrate::governance::signing::{TokenSigner, TokenVerifier, DEFAULT_KID};
+    use busbar_kernel::governance::signing::{TokenSigner, TokenVerifier, DEFAULT_KID};
     use std::sync::Arc;
 
     busbar_kernel::metrics::init();
@@ -625,7 +625,7 @@ async fn test_mcp_token_is_confined_to_the_mcp_plane() {
     // that can turn the audience-bound sibling away is the plane boundary itself, never a scope.
     let (key, plain_token) = gov
         .mint_signed(
-            busbar_substrate::governance::NewKeySpec {
+            busbar_kernel::governance::NewKeySpec {
                 name: "mcp-agent".to_string(),
                 allowed_pools: None,
                 group: None,

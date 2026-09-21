@@ -9,11 +9,11 @@
 //! computes from request params when the upstream returns no usage object).
 //!
 //! The type DEFINITIONS ([`TokenUsage`], [`Billing`]) RELOCATED to `busbar-substrate`
-//! (`busbar_substrate::billing`) at Batch C-0 — pure data naming zero core type, so a plane crate
+//! (`busbar_substrate_values::billing`) at Batch C-0 — pure data naming zero core type, so a plane crate
 //! names them without reaching into `busbar-core`. Core re-exports both from this
 //! historical path so every in-core and plugin caller (`crate::billing::Billing`) compiles unchanged.
 
-pub use busbar_substrate_values::billing::{Billing, TokenUsage};
+pub use busbar_substrate_values::billing::{Billing, RawTierRates, TokenUsage, Usage};
 
 #[cfg(test)]
 #[path = "tests/billing_tests.rs"]

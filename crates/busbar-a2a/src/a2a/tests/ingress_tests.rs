@@ -11,7 +11,7 @@
 use crate::testkit::engine_boot::engine;
 use crate::testkit::TestAppA2aExt;
 use busbar_plugin_loader::RouteAuth;
-use busbar_substrate::testkit::engine_kit_plus::EngineAppPlus;
+use busbar_kernel::testkit::engine_kit_plus::EngineAppPlus;
 
 // THE ONE `unpinned_agent`, not a third field-for-field copy of it. `AgentDefCfg` gaining a field
 // only forces the copy whose own file is being edited to be updated; the others go on compiling
@@ -163,9 +163,9 @@ async fn an_anonymous_caller_is_refused_and_told_where_to_get_a_token() {
             store,
             None,
             Some(
-                busbar_substrate::governance::signing::TokenSigner::from_secret_bytes(
+                busbar_kernel::governance::signing::TokenSigner::from_secret_bytes(
                     &[9u8; 32],
-                    busbar_substrate::governance::signing::DEFAULT_KID,
+                    busbar_kernel::governance::signing::DEFAULT_KID,
                 ),
             ),
         )
@@ -508,7 +508,7 @@ fn a_request_with_no_callback_has_none() {
 /// exposure, same browser reachability — had nothing. That is the exact failure mode the
 /// plane-coherence ledger exists to name: one concern implemented twice, one copy hardened, the
 /// other not. It is not fixed here; it ARRIVED here, because the check is
-/// `busbar_substrate::ingress::protocol::serve`'s and this plane now runs that sequence.
+/// `busbar_kernel::ingress::protocol::serve`'s and this plane now runs that sequence.
 ///
 /// The refusal is in THIS plane's envelope — A2A section 5.4 binds a JSON-RPC code and a ProtoJSON
 /// body to every refusal, and a body in the sibling's shape is one the official TCK rejects by
@@ -618,7 +618,7 @@ async fn a_panicking_reverify_reraises_and_latches_unreachable_never_swallowed()
         "the fixture must actually be a panicked join"
     );
 
-    let gate = busbar_substrate::trust::verify::VerifyGate::new();
+    let gate = busbar_kernel::trust::verify::VerifyGate::new();
     let subject = "planner";
 
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {

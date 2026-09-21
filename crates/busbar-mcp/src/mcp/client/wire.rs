@@ -6,10 +6,10 @@
 //!
 //! ## Why a vtable and not a `match` on the dispatch path
 //!
-//! [`busbar_substrate::transport::Transport`] is an axis of the matrix, and the `structure-lint` gate bans the core
+//! [`busbar_substrate_values::transport::Transport`] is an axis of the matrix, and the `structure-lint` gate bans the core
 //! from comparing one: a dispatch path that can see which transport it is on forks at every step it
 //! takes afterwards. So the axis answers the question once —
-//! [`busbar_substrate::transport::Transport::upstream_wire`] is the only `match` on it in the tree — and hands back
+//! [`busbar_substrate_values::transport::Transport::upstream_wire`] is the only `match` on it in the tree — and hands back
 //! an implementation of this trait. `mcp/upstream.rs` calls [`McpWire::send`] and cannot tell an
 //! HTTP POST from a child process's stdin, which is the property that keeps stdio from becoming a
 //! second dispatch path beside the first.
@@ -37,7 +37,7 @@ pub(crate) struct TransportResponse {
     pub(crate) status: u16,
     pub(crate) body: Vec<u8>,
     /// THE TRANSPORT-LAYER IDENTITY OF THE PEER THAT ANSWERED THIS LEG: the `sha256/…` SPKI pin
-    /// [`busbar_substrate::egress::seam::Buffered::peer_spki`] observed on the TLS hop, verbatim.
+    /// [`busbar_kernel::egress::seam::Buffered::peer_spki`] observed on the TLS hop, verbatim.
     ///
     /// `None` on stdio (no TLS hop exists to observe) and on an HTTP leg that ran over plaintext or
     /// whose certificate could not be walked. `super::super::connect::refresh` is this field's
@@ -153,15 +153,15 @@ pub(crate) trait McpWire: Send + Sync {
     async fn notify(&self, leg: &WireLeg<'_>, req: &OutboundRequest) -> Result<(), TransportError>;
 }
 
-/// RESOLVE A [`Transport`](busbar_substrate::transport::Transport) TO ITS MCP CLIENT WIRE — the plane half of
-/// the split the axis makes in [`busbar_substrate::transport::Transport::upstream_wire`]. The axis answers WHICH
+/// RESOLVE A [`Transport`](busbar_substrate_values::transport::Transport) TO ITS MCP CLIENT WIRE — the plane half of
+/// the split the axis makes in [`busbar_substrate_values::transport::Transport::upstream_wire`]. The axis answers WHICH
 /// channel with a neutral discriminant (so it names no plane type); this maps that discriminant to
 /// the plane's own zero-sized `&'static dyn McpWire` vtable. The `None` arm is loud for the reason the
 /// old `match` was: an A2A binding is never an MCP client leg, and `mcp/config.rs` refuses any
 /// `transport:` that is not `streamable_http` or `stdio` at boot, so a value reaching it here is a
 /// config-grammar defect, never a silently wrong channel.
-pub(crate) fn wire_for(transport: busbar_substrate::transport::Transport) -> &'static dyn McpWire {
-    use busbar_substrate::transport::UpstreamWireKind;
+pub(crate) fn wire_for(transport: busbar_substrate_values::transport::Transport) -> &'static dyn McpWire {
+    use busbar_substrate_values::transport::UpstreamWireKind;
     match transport.upstream_wire() {
         Some(UpstreamWireKind::StreamableHttp) => &super::transport::HttpTransport,
         Some(UpstreamWireKind::Stdio) => &super::stdio::StdioWire,
@@ -189,7 +189,7 @@ pub(crate) fn wire_for(transport: busbar_substrate::transport::Transport) -> &'s
 /// request arriving at busbar's MCP door and had no signal whatever about the upstream calls busbar
 /// itself originated: a registered server that had stopped answering was invisible on `/metrics`.
 ///
-/// The same argument `busbar_substrate::plane::observe` makes for putting the ingress count on the MOUNT rather
+/// The same argument `busbar_kernel::plane::observe` makes for putting the ingress count on the MOUNT rather
 /// than in each handler applies to the egress: there are two callers today (`mcp::upstream::call`
 /// and `mcp::client::issue::issue`) and a count at each of them is two sites that have to stay in
 /// agreement, plus a third the next verb author forgets. So the seam is the wire, the two callers
@@ -198,7 +198,7 @@ pub(crate) fn wire_for(transport: busbar_substrate::transport::Transport) -> &'s
 /// ## The label pair, and why it is the model plane's and not a new one
 ///
 /// `pool` is the operator's REGISTRATION ID (`leg.server`) and `lane` is the transport axis's own
-/// word (`busbar_substrate::transport::Transport::name()`) — both operator-configured, neither caller-supplied,
+/// word (`busbar_substrate_values::transport::Transport::name()`) — both operator-configured, neither caller-supplied,
 /// so the series count is bounded by the config file exactly as `pool` is on the model plane. A
 /// registration is one upstream, so its pool has one lane, and naming the CHANNEL there is what makes
 /// `busbar_upstream_failures_total{pool="fs"}` distinguishable between a child process that keeps
@@ -231,17 +231,17 @@ pub(crate) fn wire_for(transport: busbar_substrate::transport::Transport) -> &'s
 /// A JSON-RPC error inside a 2xx is not counted either: an upstream that answered `-32601` is
 /// reachable and healthy, which is the distinction [`TransportError`]'s own note is about.
 pub(crate) async fn send(
-    transport: busbar_substrate::transport::Transport,
+    transport: busbar_substrate_values::transport::Transport,
     leg: &WireLeg<'_>,
     req: &OutboundRequest,
 ) -> Result<TransportResponse, TransportError> {
-    busbar_substrate::telemetry::upstream_attempt_on(leg.server, transport.name());
+    busbar_kernel::telemetry::upstream_attempt_on(leg.server, transport.name());
     let out = wire_for(transport).send(leg, req).await;
     if let Err(TransportError::Io(_) | TransportError::Unreachable(_)) = &out {
-        busbar_substrate::telemetry::upstream_failure_on(
+        busbar_kernel::telemetry::upstream_failure_on(
             leg.server,
             transport.name(),
-            busbar_substrate::proxy::DISPOSITION_TRANSIENT,
+            busbar_kernel::proxy::DISPOSITION_TRANSIENT,
         );
     }
     out
@@ -254,17 +254,17 @@ pub(crate) async fn send(
 /// classify beyond the transport's own verdict.
 #[allow(dead_code)]
 pub(crate) async fn notify(
-    transport: busbar_substrate::transport::Transport,
+    transport: busbar_substrate_values::transport::Transport,
     leg: &WireLeg<'_>,
     req: &OutboundRequest,
 ) -> Result<(), TransportError> {
-    busbar_substrate::telemetry::upstream_attempt_on(leg.server, transport.name());
+    busbar_kernel::telemetry::upstream_attempt_on(leg.server, transport.name());
     let out = wire_for(transport).notify(leg, req).await;
     if let Err(TransportError::Io(_) | TransportError::Unreachable(_)) = &out {
-        busbar_substrate::telemetry::upstream_failure_on(
+        busbar_kernel::telemetry::upstream_failure_on(
             leg.server,
             transport.name(),
-            busbar_substrate::proxy::DISPOSITION_TRANSIENT,
+            busbar_kernel::proxy::DISPOSITION_TRANSIENT,
         );
     }
     out

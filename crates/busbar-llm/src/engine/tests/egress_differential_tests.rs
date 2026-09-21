@@ -5,7 +5,7 @@
 //!
 //! Two stacks serve busbar's outbound hops today: stack A, the owned hyper engine
 //! (`crate::engine::build_egress_client` — the LLM lanes), and stack B, the pinned reqwest client
-//! (`busbar_substrate::egress::build_pinned_client` — the plane hops). The owner ruling folds them
+//! (`busbar_kernel::egress::build_pinned_client` — the plane hops). The owner ruling folds them
 //! into ONE engine, and "no behavior change on any plane" is provable only by DIFFERENTIAL
 //! observation: drive both stacks against the same recording fixtures and compare what each one
 //! did — status, body bytes, the peer identity observed, and the error CLASS on the refusing arms
@@ -18,17 +18,17 @@
 //! redirect canary — are asserted equal across stacks; the pinned-only rows pin stack B's
 //! observable behavior so the engine that later replaces it has a recorded target to match.
 //!
-//! The fixtures live in `busbar_substrate::egress::fixtures` so the engine's own tests (in the
+//! The fixtures live in `busbar_kernel::egress::fixtures` so the engine's own tests (in the
 //! substrate crate) and this harness drive the SAME servers.
 
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use busbar_substrate::egress::fixtures::{
+use busbar_kernel::egress::fixtures::{
     ca_and_leaf, spawn_http, spawn_tls, CannedResponse, ClientAuth, RebindingResolver,
     TlsServerSpec,
 };
-use busbar_substrate::egress::{build_pinned_client, with_cause, RefuseSecondLookup};
+use busbar_kernel::egress::{build_pinned_client, with_cause, RefuseSecondLookup};
 use bytes::Bytes;
 use http_body_util::BodyExt;
 
@@ -113,7 +113,7 @@ async fn stack_b(
                 .extensions()
                 .get::<reqwest::tls::TlsInfo>()
                 .and_then(|t| t.peer_certificate())
-                .map(|der| busbar_substrate::plane_host::spki::pin(der).expect("walkable leaf"));
+                .map(|der| busbar_kernel::plane_host::spki::pin(der).expect("walkable leaf"));
             let body = resp.bytes().await.expect("body");
             (
                 Outcome::Answered {
@@ -236,7 +236,7 @@ async fn known_leaf_tls_spki_and_sni_are_observed_and_webpki_refuses_the_private
         }
     );
     let expected_pin =
-        busbar_substrate::plane_host::spki::pin(&material.leaf_der).expect("fixture leaf");
+        busbar_kernel::plane_host::spki::pin(&material.leaf_der).expect("fixture leaf");
     assert_eq!(
         spki.as_deref(),
         Some(expected_pin.as_str()),

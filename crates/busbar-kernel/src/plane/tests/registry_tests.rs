@@ -244,7 +244,7 @@ fn every_plane_key_answers_from_its_declaration() {
     // guard clears the registered set and holds the serial lock, so no sibling registration races or
     // leaks in, and restores it on drop. (Do NOT resolve against the built-ins directly instead: the
     // point is that the PRODUCTION by-key resolver answers from the declaration.)
-    let _isolation = busbar_substrate::plane::registry::TestRegistryIsolation::empty();
+    let _isolation = busbar_kernel::plane::registry::TestRegistryIsolation::empty();
     for decl in builtin_plane_decls() {
         let resolved = plane_decl_for(decl.key).expect("every built-in key resolves to a decl");
         assert!(std::ptr::eq(resolved, *decl));

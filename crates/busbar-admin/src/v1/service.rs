@@ -132,7 +132,7 @@ static PROCESS_START_EPOCH: std::sync::OnceLock<u64> = std::sync::OnceLock::new(
 /// it is safe to call unconditionally at startup.
 pub fn mark_start() {
     let _ = PROCESS_START.set(std::time::Instant::now());
-    let _ = PROCESS_START_EPOCH.set(busbar_substrate::store::now());
+    let _ = PROCESS_START_EPOCH.set(busbar_kernel::store::now());
 }
 
 /// One cached computation of `store_plugin_catalog`'s tarball-derived rows for one plugins
@@ -497,7 +497,7 @@ pub(crate) fn validate_hook_settings_size(
 // import list from growing for a single-use helper.
 
 /// The lane at `idx`'s model name projected through the neutral view; empty if the handle is stale.
-fn lane_model(view: &dyn busbar_substrate::plane_host::EngineTablesView, idx: usize) -> String {
+fn lane_model(view: &dyn busbar_kernel::plane_host::EngineTablesView, idx: usize) -> String {
     view.lane_view(idx)
         .map(|l| l.model.to_string())
         .unwrap_or_default()
@@ -926,7 +926,7 @@ impl AdminService {
     /// NEUTRAL `(lane idx, weight)` projection ([`EngineTablesView::pool_members`]), naming no plane type.
     fn pool_detail(&self, name: &str, members: &[(usize, u32)]) -> PoolDetailView {
         let view = self.app.engine_tables_view();
-        let now = busbar_substrate::store::now();
+        let now = busbar_kernel::store::now();
         let members = members
             .iter()
             .map(|&(idx, weight)| {
@@ -1169,7 +1169,7 @@ impl AdminService {
         let Some(rt) = self.app.cost.group_named(name) else {
             return Err(AdminError::not_found(format!("group `{name}`")));
         };
-        let now = busbar_substrate::store::now();
+        let now = busbar_kernel::store::now();
         let mut buckets = Vec::with_capacity(rt.buckets.len());
         for b in &rt.buckets {
             let usage = match &self.app.governance {
@@ -1412,7 +1412,7 @@ impl AdminService {
             return out;
         };
 
-        let now = busbar_substrate::store::now();
+        let now = busbar_kernel::store::now();
         // Bound the cache with the same TTL+`retain()` idiom
         // `admin/mod.rs`'s `idempotency_cache` uses: prune before every read, not just on write, so
         // an abandoned path's entry cannot sit forever just because nothing keeps writing to it.
@@ -2104,7 +2104,7 @@ impl AdminService {
     /// `window`: a caller-selected PAST bucket start (validated: bucket-aligned, not in the
     /// future); `None` = the current bucket. The response shape is pinned: always one bucket.
     pub(crate) async fn get_usage(&self, window: Option<u64>) -> Result<UsageView, AdminError> {
-        let now = busbar_substrate::store::now();
+        let now = busbar_kernel::store::now();
         let current = busbar_kernel::governance::metering_bucket(now);
         let bucket = match window {
             None => current,
@@ -2470,7 +2470,7 @@ fn plane_named_def_list(
     busbar_kernel::plane::registry::plane_decl_for_config_section(section.key())
         .and_then(|d| d.named_def_list)
         .map_or_else(Vec::new, |f| {
-            f(app as &dyn busbar_substrate::plane_host::PlaneSlots)
+            f(app as &dyn busbar_kernel::plane_host::PlaneSlots)
         })
 }
 
@@ -2483,7 +2483,7 @@ fn plane_named_def_get(
 ) -> Option<NamedDefView> {
     busbar_kernel::plane::registry::plane_decl_for_config_section(section.key())
         .and_then(|d| d.named_def_get)
-        .and_then(|f| f(app as &dyn busbar_substrate::plane_host::PlaneSlots, name))
+        .and_then(|f| f(app as &dyn busbar_kernel::plane_host::PlaneSlots, name))
 }
 
 #[cfg(test)]

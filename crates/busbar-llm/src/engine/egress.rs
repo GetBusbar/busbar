@@ -123,7 +123,7 @@ pub fn build_egress_targets(
 {
     use busbar_api::operation::Operation;
     let mut out = std::collections::HashMap::new();
-    let Some(rh) = busbar_substrate::handlers::request_handler(protocol) else {
+    let Some(rh) = busbar_substrate_values::handlers::request_handler(protocol) else {
         return Ok(out);
     };
     // The seven cross-dialect chat/completion-family operations, kept as a local seed set (a neutral
@@ -143,7 +143,7 @@ pub fn build_egress_targets(
     let ops = family_ops
         .iter()
         .chain(Operation::ALL.iter())
-        .chain(busbar_substrate::proto::declared_verbs().iter());
+        .chain(busbar_kernel::proto::declared_verbs().iter());
     for &op in ops {
         for stream in [false, true] {
             if out.contains_key(&(op, stream)) {
@@ -151,7 +151,7 @@ pub fn build_egress_targets(
             }
             let path = match path_override {
                 Some(p) => p.to_string(),
-                None => rh.upstream_path(&busbar_substrate::wire::EgressCtx {
+                None => rh.upstream_path(&busbar_substrate_values::wire::EgressCtx {
                     operation: op,
                     model: wire_model,
                     stream,
@@ -212,8 +212,8 @@ pub(crate) fn sign_and_wire_path_parts(url_path: &str) -> (String, String) {
         };
         return (wire, path.to_string());
     }
-    let wire_path = busbar_substrate::sigv4::uri_encode_path(path);
-    let canonical = busbar_substrate::sigv4::uri_encode_path(&wire_path); // double-encode (non-S3 SigV4 rule)
+    let wire_path = busbar_substrate_values::sigv4::uri_encode_path(path);
+    let canonical = busbar_substrate_values::sigv4::uri_encode_path(&wire_path); // double-encode (non-S3 SigV4 rule)
     let wire = match query {
         Some(q) => format!("{wire_path}?{q}"),
         None => wire_path,
@@ -239,7 +239,7 @@ pub(crate) fn sign_and_wire_path_parts(url_path: &str) -> (String, String) {
 pub(crate) fn lane_auth_headers(
     lane: &crate::engine::Lane,
     key: &str,
-    ctx: &busbar_substrate::proto::SigningContext,
+    ctx: &busbar_kernel::proto::SigningContext,
 ) -> Vec<(axum::http::HeaderName, axum::http::HeaderValue)> {
     if key.is_empty() && lane.credential.uses_key() {
         return Vec::new();
@@ -269,10 +269,10 @@ pub(crate) fn lane_auth_headers(
 // obligation carried in the doc on each decl field. Core reads whichever value the registered decl
 // declares through `egress_user_agent(name)` below and names none of them.
 // Unknown/foreign egress protocol default UA — the neutral substrate default
-// (`busbar_substrate::proxy::EGRESS_UA_DEFAULT`) so a codec-less protocol declaration in a plane
-// (`busbar_substrate::proxy::EGRESS_UA_DEFAULT`) so a codec-less protocol declaration in a plane
+// (`busbar_kernel::proxy::EGRESS_UA_DEFAULT`) so a codec-less protocol declaration in a plane
+// (`busbar_kernel::proxy::EGRESS_UA_DEFAULT`) so a codec-less protocol declaration in a plane
 // crate (`busbar-mcp`) states it as its `ProtocolDecl::egress_user_agent` default without reaching
-// into core. Re-exported through `busbar_substrate::proxy` (see `proxy/mod.rs`) so every `EGRESS_UA_DEFAULT`
+// into core. Re-exported through `busbar_kernel::proxy` (see `proxy/mod.rs`) so every `EGRESS_UA_DEFAULT`
 // call site here resolves unchanged.
 
 /// Plausible native-SDK `User-Agent` for the chosen EGRESS protocol. reqwest sends NO default
@@ -287,7 +287,7 @@ pub(crate) fn lane_auth_headers(
 /// writer (`writer.egress_user_agent()`) bypass this wrapper; it exists for test-code paths that
 /// look up by name.
 pub(crate) fn egress_user_agent(egress_protocol: &str) -> &'static str {
-    busbar_substrate::proto::decl_for(egress_protocol)
+    busbar_kernel::proto::decl_for(egress_protocol)
         .map(|d| d.egress_user_agent)
         .unwrap_or(crate::engine::EGRESS_UA_DEFAULT)
 }
@@ -304,7 +304,7 @@ pub(crate) fn egress_user_agent(egress_protocol: &str) -> &'static str {
 /// `application/json`. The by-name lookup path (probes, forward-header assembly).
 pub(crate) fn egress_accept(egress_protocol: &str, wants_stream: bool) -> &'static str {
     if wants_stream {
-        busbar_substrate::proto::decl_for(egress_protocol)
+        busbar_kernel::proto::decl_for(egress_protocol)
             .map(|d| d.egress_stream_accept)
             .unwrap_or(TEXT_EVENT_STREAM)
     } else {
@@ -317,7 +317,7 @@ pub(crate) fn egress_accept(egress_protocol: &str, wants_stream: bool) -> &'stat
 // busbar rebuilds the egress header map fresh (lane creds + CT/UA/Accept) and historically DROPPED
 // every client-supplied request header — silently discarding the caller's GA/beta/version selectors
 // (`anthropic-beta`, `OpenAI-Beta`, `anthropic-version`). Restoring that fidelity is a two-part split:
-// the NEUTRAL mechanism (`busbar_substrate::proxy::{collect,apply}_client_headers`) forwards exactly a
+// the NEUTRAL mechanism (`busbar_kernel::proxy::{collect,apply}_client_headers`) forwards exactly a
 // caller-supplied SET of header names it never hard-codes, and THIS table — the DIALECT policy — is
 // the set. It lives in the LLM plane because the header names and their dialect scoping are LLM
 // knowledge; the neutral crate names none of them.
@@ -375,13 +375,13 @@ pub(crate) trait OpEgressExt {
     fn upstream_path(&self, lane: &Lane, wants_stream: bool) -> Option<String>;
 }
 
-impl OpEgressExt for busbar_substrate::handlers::OpDispatch {
+impl OpEgressExt for busbar_substrate_values::handlers::OpDispatch {
     fn upstream_path(&self, lane: &Lane, wants_stream: bool) -> Option<String> {
         if let Some(p) = &lane.path {
             return Some(p.clone());
         }
-        busbar_substrate::handlers::request_handler(lane.protocol).map(|rh| {
-            rh.upstream_path(&busbar_substrate::wire::EgressCtx {
+        busbar_substrate_values::handlers::request_handler(lane.protocol).map(|rh| {
+            rh.upstream_path(&busbar_substrate_values::wire::EgressCtx {
                 operation: self.operation,
                 model: lane.wire_model(),
                 stream: wants_stream,

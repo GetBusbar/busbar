@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE ENGINE'S IMPLEMENTATION of the widened engine test-kit seam
-//! (`busbar_substrate::testkit::engine_kit_plus`), on the SAME fixture types the base kit is
+//! (`busbar_kernel::testkit::engine_kit_plus`), on the SAME fixture types the base kit is
 //! implemented for ([`CoreEngineKit`], `TestApp`, `App`): every verb is a thin delegate to the fixture
 //! builder, the built App's own tables (`planes`, `plane_breakers`, the data route table view) or the
 //! process-wide service (`metrics::render`, the prometheus exporter, `tls::install_crypto_provider`,
@@ -14,8 +14,8 @@ use super::engine_kit::CoreEngineKit;
 use super::TestApp;
 use busbar_api::SecretResolve;
 use busbar_plugin::cold::endpoint::RouteAuth;
-use busbar_substrate::plane::PlaneAdmission;
-use busbar_substrate::testkit::engine_kit_plus::{
+use busbar_kernel::plane::PlaneAdmission;
+use busbar_kernel::testkit::engine_kit_plus::{
     AppBuilder, EngineAppPlus, EngineTestKitPlus, NamedMapSectionFacts, TestAppKitPlus,
 };
 use std::sync::Arc;

@@ -7,7 +7,7 @@
 use crate::mcp::client::dispatch::{resolve, revalidate, DispatchRefusal};
 use crate::mcp::client::support::{key_wildcard, sid, simple_tool};
 use crate::mcp::client::{Endpoint, McpClientEngine, McpServerRegistration};
-use busbar_substrate::trust::TrustState;
+use busbar_kernel::trust::TrustState;
 
 fn http_reg(id: &str) -> McpServerRegistration {
     McpServerRegistration::new(

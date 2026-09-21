@@ -617,7 +617,7 @@ fn rate_nanos_from_cfg_clamps_a_non_finite_positive_rate_to_zero_not_max() {
 
 use crate::cost::{price, ExtraRates, STANDARD_TIER_BP};
 use crate::plane::cost::CostAmount;
-use busbar_substrate::billing::Usage as NeutralUsage;
+use busbar_substrate_values::billing::Usage as NeutralUsage;
 
 fn rate_2_5() -> crate::cost::RateNanos {
     // input 2 µ/tok → 2000 nano, output 5 µ/tok → 5000 nano.

@@ -2646,12 +2646,12 @@ async fn rewrite_call_failure_takes_the_configured_disposition() {
                 (TransformOutcome::Reject { status, message }, true, _) => {
                     assert_eq!(
                         *status,
-                        busbar_substrate::hooks::REQUIRED_HOOK_UNAVAILABLE_STATUS,
+                        busbar_kernel::hooks::REQUIRED_HOOK_UNAVAILABLE_STATUS,
                         "{which}: a failed load-bearing hook refuses with the shared status"
                     );
                     assert_eq!(
                         message,
-                        busbar_substrate::hooks::REQUIRED_HOOK_UNAVAILABLE_MESSAGE,
+                        busbar_kernel::hooks::REQUIRED_HOOK_UNAVAILABLE_MESSAGE,
                         "{which}: and the shared, content-free message"
                     );
                 }
@@ -2676,13 +2676,13 @@ async fn rewrite_call_failure_takes_the_configured_disposition() {
 #[test]
 fn only_reject_refuses_a_failed_call() {
     use crate::config::PolicyOnError;
-    assert!(busbar_substrate::hooks::failed_call_refuses(
+    assert!(busbar_kernel::hooks::failed_call_refuses(
         &PolicyOnError::Reject
     ));
-    assert!(!busbar_substrate::hooks::failed_call_refuses(
+    assert!(!busbar_kernel::hooks::failed_call_refuses(
         &PolicyOnError::Weighted
     ));
-    assert!(!busbar_substrate::hooks::failed_call_refuses(
+    assert!(!busbar_kernel::hooks::failed_call_refuses(
         &PolicyOnError::First
     ));
 }

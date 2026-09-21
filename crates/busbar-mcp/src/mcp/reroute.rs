@@ -2,16 +2,16 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE FAILOVER SEAM, MOUNTED ON THIS PLANE — `tool_pools:` becomes a candidate set, the set goes
-//! through the ONE selection loop ([`busbar_substrate::failover::walk`]), and the admitted member is
+//! through the ONE selection loop ([`busbar_kernel::failover::walk`]), and the admitted member is
 //! dispatched by the same `upstream::call` every un-pooled server has always been.
 //!
 //! ## What this module owns and what it inherits
 //!
-//! Owned here: the [`busbar_substrate::failover::Candidate`] impl for a tool-pool member (name, lane, pin),
+//! Owned here: the [`busbar_kernel::failover::Candidate`] impl for a tool-pool member (name, lane, pin),
 //! the route construction (which members exist, which are authorised for THIS caller, which cell
 //! each records into), and the reroute loop's bookkeeping. Inherited, deliberately and completely:
 //! the selection ORDER, the pin check, the retry-safety rule and the breaker admission are all
-//! [`busbar_substrate::failover::walk`]'s — this file contains no `if` about any of them.
+//! [`busbar_kernel::failover::walk`]'s — this file contains no `if` about any of them.
 //!
 //! ## The three movements, and which calls make them
 //!
@@ -20,7 +20,7 @@
 //!    milliseconds, exactly like the degenerate cell (it IS the degenerate cell when no pool is
 //!    configured: one member, lane 0, same walk).
 //! 2. **Reroute** (inside [`PoolRoute::dispatch`]) — a leg that fails with
-//!    [`busbar_substrate::failover::Stage::BeforeFirstByte`] (the wire says nothing was transmitted) records
+//!    [`busbar_kernel::failover::Stage::BeforeFirstByte`] (the wire says nothing was transmitted) records
 //!    against the failed member's cell and RE-ENTERS the walk with that member in `tried`. The
 //!    caller gets the twin's answer and never learns. A leg that fails AFTER dispatch re-enters
 //!    the walk too — and the walk's own safety rule refuses the hop unless the operator listed the
@@ -32,8 +32,8 @@
 
 use super::upstream::{Authorised, BreakerCell, LegFailure, LegOutcome};
 use busbar_plugin::hot::AdmissionId;
-use busbar_substrate::failover::{Attempt, Candidate, Refusal, Repeatable, Stage};
-use busbar_substrate::plane_host::DispatchScope;
+use busbar_kernel::failover::{Attempt, Candidate, Refusal, Repeatable, Stage};
+use busbar_kernel::plane_host::DispatchScope;
 use std::sync::{Arc, Mutex};
 
 /// One pool member as the walk sees it. `auth` is `None` when THIS CALLER cannot dispatch to the
@@ -115,7 +115,7 @@ impl PoolRoute {
     /// and a twin that refuses is skipped (pre-`tried`), never rendered: the caller asked for a
     /// tool, not for a twin inventory.
     pub(crate) fn build(
-        host: &std::sync::Arc<dyn busbar_substrate::plane_host::EngineHost>,
+        host: &std::sync::Arc<dyn busbar_kernel::plane_host::EngineHost>,
         principal: Option<&std::sync::Arc<busbar_api::VirtualKey>>,
         selected: &super::catalogue::ToolEntry,
         selected_auth: Authorised,
@@ -153,7 +153,7 @@ impl PoolRoute {
         let sightings = rt.sightings.load();
         let live = super::client::catalogue::LiveSightings::of(&sightings);
         let generation =
-            busbar_substrate::trust::validate::Generations::at_admission(rt.catalogue.generation());
+            busbar_kernel::trust::validate::Generations::at_admission(rt.catalogue.generation());
         let now = host.clock_now_secs();
         let mut selected_auth = Some(selected_auth);
         let mut tried = Vec::new();
@@ -205,7 +205,7 @@ impl PoolRoute {
             .collect();
 
         PoolRoute {
-            pool_key: busbar_substrate::store::tool_key(&pool_name),
+            pool_key: busbar_kernel::store::tool_key(&pool_name),
             display: pool_name.clone(),
             pooled: true,
             members,
@@ -250,12 +250,12 @@ impl PoolRoute {
     ///
     /// `scope` is the shared [`DispatchScope`] the won probe is REGISTERED in as a settle-capable
     /// admission — the sync request arena on the synchronous path, or the runner's durable arena
-    /// (via [`DurableScope::arena`](busbar_substrate::plane_host::DurableScope::arena)) on the task path, so the
+    /// (via [`DurableScope::arena`](busbar_kernel::plane_host::DurableScope::arena)) on the task path, so the
     /// task's probe is BORN in the durable scope. The plane holds only the POD [`AdmissionId`]; the
     /// arena owns the real probe and its outcome is later folded through the scope.
     pub(crate) fn admit(
         &self,
-        host: &Arc<dyn busbar_substrate::plane_host::EngineHost>,
+        host: &Arc<dyn busbar_kernel::plane_host::EngineHost>,
         scope: &DispatchScope,
     ) -> Result<(), Box<RouteRefused>> {
         let mut s = lock(&self.state);
@@ -278,7 +278,7 @@ impl PoolRoute {
     /// id per leg.
     fn select_locked(
         &self,
-        host: &Arc<dyn busbar_substrate::plane_host::EngineHost>,
+        host: &Arc<dyn busbar_kernel::plane_host::EngineHost>,
         s: &mut RouteState,
         stage: Stage,
         scope: &DispatchScope,
@@ -289,9 +289,9 @@ impl PoolRoute {
             repeatable: self.repeatable,
             operation: &self.operation,
         };
-        let mut order = busbar_substrate::failover::InOrder::new(&s.tried, self.members.len());
+        let mut order = busbar_kernel::failover::InOrder::new(&s.tried, self.members.len());
         let mut passed_over = Vec::new();
-        let admitted = busbar_substrate::failover::walk_with(
+        let admitted = busbar_kernel::failover::walk_with(
             &self.pool_key,
             &self.members,
             &attempt,
@@ -308,7 +308,7 @@ impl PoolRoute {
 
     /// The soonest any member's cooldown expires — the honest `Retry-After` for a pool where the
     /// members trip independently.
-    fn soonest_retry(&self, host: &Arc<dyn busbar_substrate::plane_host::EngineHost>) -> u64 {
+    fn soonest_retry(&self, host: &Arc<dyn busbar_kernel::plane_host::EngineHost>) -> u64 {
         self.members
             .iter()
             .map(|m| host.breaker_retry_after_secs(&self.pool_key, m.lane))
@@ -324,7 +324,7 @@ impl PoolRoute {
     #[allow(clippy::too_many_arguments)] // the routed dispatch's own facts, gathered where made.
     pub(crate) async fn dispatch(
         &self,
-        host: &Arc<dyn busbar_substrate::plane_host::EngineHost>,
+        host: &Arc<dyn busbar_kernel::plane_host::EngineHost>,
         pool: &super::client::pool::McpConnectionPool,
         scope: &DispatchScope,
         arguments: &serde_json::Value,
@@ -443,7 +443,7 @@ impl PoolRoute {
 /// record in place against the member's own cell — leaving a `Nothing` unrecorded exactly as dropping
 /// the raw probe did.
 fn settle_leg(
-    host: &Arc<dyn busbar_substrate::plane_host::EngineHost>,
+    host: &Arc<dyn busbar_kernel::plane_host::EngineHost>,
     cell: &BreakerCell,
     scope: Option<&DispatchScope>,
     admission_id: AdmissionId,
@@ -452,12 +452,12 @@ fn settle_leg(
     if let Some(scope) = scope {
         if !admission_id.is_none() {
             let sig = match outcome {
-                LegOutcome::Success => busbar_substrate::plane_host::breaker::success_signal(),
+                LegOutcome::Success => busbar_kernel::plane_host::breaker::success_signal(),
                 LegOutcome::Failure(cs) => {
-                    busbar_substrate::plane_host::breaker::failure_signal(cs)
+                    busbar_kernel::plane_host::breaker::failure_signal(cs)
                 }
                 // A settled `Refused` records nothing and RELEASES the probe — the raw-drop behaviour.
-                LegOutcome::Nothing => busbar_substrate::plane_host::breaker::refused_signal(),
+                LegOutcome::Nothing => busbar_kernel::plane_host::breaker::refused_signal(),
             };
             // Fold the outcome through the host `breaker_settle` seam over this leg's id. `Ok` means the
             // live admission was found and settled; `Gone` means the probe was already settled (a later

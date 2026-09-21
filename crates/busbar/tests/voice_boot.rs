@@ -7,7 +7,7 @@
 //! so the deletion gate that builds `busbar` WITHOUT voice still passes.
 #![cfg(feature = "plane-voice")]
 
-use busbar_substrate::plane::registry::{check_owned_config_claims, register_test_plane};
+use busbar_kernel::plane::registry::{check_owned_config_claims, register_test_plane};
 
 /// The real `CORE_OWNED_CONCRETE_SECTIONS` (providers/models/pools/rate_card/limits) — mirrored here
 /// because `busbar_kernel`'s const is `pub(crate)`. `busbar_kernel`'s own unit test
@@ -46,8 +46,8 @@ fn dup_claim_guard_admits_the_real_voice_decl() {
 /// A synthetic SECOND plane that also claims `streams`, built by functional update off the REAL voice
 /// decl (every field but `key` copied, so it claims `streams` exactly as voice does) — the planted
 /// collision the dup-claim guard must refuse by construction.
-static RIVAL_CLAIMS_STREAMS: busbar_substrate::plane::registry::PlaneDecl =
-    busbar_substrate::plane::registry::PlaneDecl {
+static RIVAL_CLAIMS_STREAMS: busbar_kernel::plane::registry::PlaneDecl =
+    busbar_kernel::plane::registry::PlaneDecl {
         key: "rival-voice",
         ..busbar_voice::PLANE_DECL
     };

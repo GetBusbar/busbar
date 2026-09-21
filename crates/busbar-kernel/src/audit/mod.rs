@@ -63,8 +63,12 @@
 
 pub mod journal;
 pub mod vocab {
-    pub use busbar_substrate::audit::vocab::*;
+    pub use busbar_contract::vocab::*;
 }
+
+/// How many entries the in-memory ring retains. Bounds RAM, not history — a durable sink keeps the
+/// full log. `pub` so the admin audit ring and the plane audit-log ring both name one cap.
+pub const MAX_AUDIT_ENTRIES: usize = 1000;
 
 use std::marker::PhantomData;
 

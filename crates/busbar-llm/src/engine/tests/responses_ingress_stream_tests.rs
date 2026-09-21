@@ -9,7 +9,7 @@
 //! path; this is what the oracle's mock upstream does for `/v1/responses`).
 use super::{forward_with_pool, UsageSink};
 use crate::test_support::{LaneSpec, TestApp};
-use busbar_substrate::testkit::engine_kit::{EngineTestKit as _, TestAppKit};
+use busbar_kernel::testkit::engine_kit::{EngineTestKit as _, TestAppKit};
 use serde_json::{json, Value};
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -81,7 +81,7 @@ async fn canned_upstream(content_type: &'static str, body: Vec<u8>) -> String {
 fn sse(frames: &[(&str, Value)]) -> Vec<u8> {
     let mut out = Vec::new();
     for (event, data) in frames {
-        busbar_substrate::proto::write_sse_frame(&mut out, event, data);
+        busbar_kernel::proto::write_sse_frame(&mut out, event, data);
     }
     out
 }
@@ -131,7 +131,7 @@ fn upstream_answer(egress: &str, shape: &Upstream) -> (&'static str, Vec<u8>) {
             last["choices"] = json!([{"index": 0, "delta": {}, "finish_reason": "stop"}]);
             last["usage"] = usage_oa;
             let mut body = sse(&[("", first), ("", last)]);
-            body.extend_from_slice(busbar_substrate::proto::SSE_DONE_FRAME);
+            body.extend_from_slice(busbar_kernel::proto::SSE_DONE_FRAME);
             ("text/event-stream", body)
         }
         ("openai", Upstream::Buffered) => (
@@ -151,7 +151,7 @@ fn upstream_answer(egress: &str, shape: &Upstream) -> (&'static str, Vec<u8>) {
                 ("", json!({"type": "message-end", "delta": {"finish_reason": "COMPLETE",
                     "usage": {"tokens": {"input_tokens": IN_TOK, "output_tokens": OUT_TOK}}}})),
             ]);
-            body.extend_from_slice(busbar_substrate::proto::SSE_DONE_FRAME);
+            body.extend_from_slice(busbar_kernel::proto::SSE_DONE_FRAME);
             ("text/event-stream", body)
         }
         ("cohere", Upstream::Buffered) => (
@@ -185,9 +185,9 @@ fn upstream_answer(egress: &str, shape: &Upstream) -> (&'static str, Vec<u8>) {
             ];
             let mut body = Vec::new();
             for (event, payload) in frames {
-                body.extend(busbar_substrate::eventstream::encode_frame(
+                body.extend(busbar_substrate_values::eventstream::encode_frame(
                     event,
-                    &busbar_substrate::json::to_vec(&payload).expect("frame json"),
+                    &busbar_substrate_values::json::to_vec(&payload).expect("frame json"),
                 ));
             }
             ("application/vnd.amazon.eventstream", body)
@@ -294,7 +294,7 @@ fn billed_m0() -> busbar_kernel::cost::CostModel {
 
 async fn run_case(egress: &str, shape: Upstream) {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let label = format!(
         "responses ingress -> {egress} egress ({})",
         match shape {
@@ -312,7 +312,7 @@ async fn run_case(egress: &str, shape: Upstream) {
         .expect("governance");
     let (key, _secret) = gov_kit
         .create_key(
-            busbar_substrate::governance::NewKeySpec {
+            busbar_kernel::governance::NewKeySpec {
                 name: "k".to_string(),
                 allowed_pools: None,
                 group: None,
@@ -334,7 +334,7 @@ async fn run_case(egress: &str, shape: Upstream) {
     let app = builder.build();
     let (host, _rt) = crate::engine::test_host_rt(&app);
 
-    let charged_at = busbar_substrate::store::now();
+    let charged_at = busbar_kernel::store::now();
     let sink = UsageSink {
         gov: host.governance().expect("governance is configured"),
         cost: host.cost(),
@@ -456,7 +456,7 @@ async fn run_case(egress: &str, shape: Upstream) {
     );
     gov_kit.flush_metering();
     let rows = gov_kit
-        .metering_for(busbar_substrate::governance::metering_bucket(charged_at))
+        .metering_for(busbar_kernel::governance::metering_bucket(charged_at))
         .expect("metering read");
     let mine: Vec<_> = rows.iter().filter(|r| r.key_id == key.id).collect();
     assert_eq!(

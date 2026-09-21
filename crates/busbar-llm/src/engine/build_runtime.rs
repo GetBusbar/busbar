@@ -8,7 +8,7 @@
 //! the carrier holds NO core type). Here, IN-PLANE, we downcast it and rebuild the concrete
 //! [`Lane`]/[`WeightedLane`]/[`MemberMeta`]/[`PoolRuntime`]/[`NativeRuntime`] routing tables, re-running
 //! the egress-target/credential/upstream-client/probe-schedule resolution against the widened core
-//! down-primitives (`busbar_substrate::egress_auth`, `busbar_substrate::topology::UpstreamClients`, this plane's own
+//! down-primitives (`busbar_kernel::egress_auth`, `busbar_kernel::topology::UpstreamClients`, this plane's own
 //! `EgressTarget`/`ProbeSchedule`) — the allowed plane→core edge. Byte-identical to the pre-pivot
 //! core-resident lowering (old `appbuild`'s lane/pool build loop).
 //!
@@ -19,10 +19,10 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use busbar_substrate::config::providers::{ProviderCfg, ProviderDef, ProviderDeploy};
-use busbar_substrate::plane_host::{AuthStyleInput, OnExhaustedInput, PlaneBuildInput, PlaneSlots};
+use busbar_kernel::config::providers::{ProviderCfg, ProviderDef, ProviderDeploy};
+use busbar_kernel::plane_host::{AuthStyleInput, OnExhaustedInput, PlaneBuildInput, PlaneSlots};
 
-use busbar_substrate::egress_auth::{self, MetadataSsrfPolicy};
+use busbar_kernel::egress_auth::{self, MetadataSsrfPolicy};
 
 use crate::engine::health::ProbeSchedule;
 use crate::engine::{
@@ -73,14 +73,14 @@ pub(crate) fn resolve_provider(def: &ProviderDef, deploy: &ProviderDeploy) -> Pr
 
 /// Map the neutral [`AuthStyleInput`] back to the core `Option<ProviderAuth>` the sync
 /// `egress_auth::resolve` reads (the OAuth styles never route through `resolve` — they mint at boot).
-fn provider_auth(style: AuthStyleInput) -> Option<busbar_substrate::config::ProviderAuth> {
+fn provider_auth(style: AuthStyleInput) -> Option<busbar_kernel::config::ProviderAuth> {
     match style {
         AuthStyleInput::Default => None,
-        AuthStyleInput::Bearer => Some(busbar_substrate::config::ProviderAuth::Bearer),
-        AuthStyleInput::ApiKey => Some(busbar_substrate::config::ProviderAuth::ApiKey),
-        AuthStyleInput::JwtBearer => Some(busbar_substrate::config::ProviderAuth::JwtBearer),
+        AuthStyleInput::Bearer => Some(busbar_kernel::config::ProviderAuth::Bearer),
+        AuthStyleInput::ApiKey => Some(busbar_kernel::config::ProviderAuth::ApiKey),
+        AuthStyleInput::JwtBearer => Some(busbar_kernel::config::ProviderAuth::JwtBearer),
         AuthStyleInput::OAuthClientCredentials => {
-            Some(busbar_substrate::config::ProviderAuth::OAuthClientCredentials)
+            Some(busbar_kernel::config::ProviderAuth::OAuthClientCredentials)
         }
     }
 }
@@ -93,11 +93,11 @@ pub(crate) fn build_runtime(
 ) -> Arc<dyn std::any::Any + Send + Sync> {
     // Under the test/test-support surface, ensure this plugin's six dialect declarations are in the
     // process protocol registry before the lane loop resolves `lane_protocol_name` — the lowering
-    // reads `busbar_substrate::proto::decl_for` (folds `register_test_protocols`), and a `TestApp`/`build_once`
+    // reads `busbar_kernel::proto::decl_for` (folds `register_test_protocols`), and a `TestApp`/`build_once`
     // build in a binary that has not yet folded them (core's own test binary, or a filtered plane run)
     // would otherwise panic "unknown protocol". Idempotent (dedupes by name); a no-op in production.
     #[cfg(any(test, feature = "test-support"))]
-    busbar_substrate::proto::register_test_protocols(crate::DECLS);
+    busbar_kernel::proto::register_test_protocols(crate::DECLS);
     let input = input
         .downcast_ref::<PlaneBuildInput>()
         .expect("PlaneBuildInput: the LLM plane's build_runtime received a foreign carrier");
@@ -105,7 +105,7 @@ pub(crate) fn build_runtime(
     // The PRIOR generation's runtime (for the warm-client + probe-schedule carry-over), read through
     // the neutral slot seam then downcast to THIS plane's own NativeRuntime.
     let prior_rt: Option<&NativeRuntime> = prior.and_then(|p| {
-        p.plane_slot(busbar_substrate::plane_host::runtime_slot_key(
+        p.plane_slot(busbar_kernel::plane_host::runtime_slot_key(
             crate::PLANE_DECL.key,
         ))
         .and_then(|slot| slot.downcast_ref::<NativeRuntime>())
@@ -128,7 +128,7 @@ pub(crate) fn build_runtime(
     for (i, li) in input.lanes.iter().enumerate() {
         by_model.insert(li.model.clone(), i);
         let protocol =
-            busbar_substrate::proto::lane_protocol_name(&li.protocol).unwrap_or_else(|| {
+            busbar_kernel::proto::lane_protocol_name(&li.protocol).unwrap_or_else(|| {
                 panic!(
                     "lane '{}' names unknown protocol '{}' (validated core-side)",
                     li.model, li.protocol
@@ -287,7 +287,7 @@ pub(crate) fn build_runtime(
                 breaker: p
                     .breaker
                     .as_ref()
-                    .map(busbar_substrate::store::BreakerCfg::from_llm),
+                    .map(busbar_kernel::store::BreakerCfg::from_llm),
             },
         );
     }
@@ -339,7 +339,7 @@ pub(crate) fn build_runtime(
     } else {
         crate::engine::install_proxy_tunnel_if_configured()
             .unwrap_or_else(|e| panic!("upstream proxy tunnel: {e}"));
-        let shard_count = busbar_substrate::topology::UpstreamClients::shard_count();
+        let shard_count = busbar_kernel::topology::UpstreamClients::shard_count();
         let idle_per_host_per_shard = input
             .client_settings
             .pool_max_idle_per_host
@@ -347,7 +347,7 @@ pub(crate) fn build_runtime(
             .max(1);
         let cs = input.client_settings;
         let make_one = || {
-            busbar_substrate::proxy::build_egress_client(
+            busbar_kernel::proxy::build_egress_client(
                 &crate::engine::EgressClientSpec::pooled_webpki(
                     idle_per_host_per_shard,
                     cs.pool_idle_timeout_secs,
@@ -356,7 +356,7 @@ pub(crate) fn build_runtime(
                 ),
             )
         };
-        busbar_substrate::topology::UpstreamClients::build(shard_count, make_one)
+        busbar_kernel::topology::UpstreamClients::build(shard_count, make_one)
     };
 
     Arc::new(NativeRuntime {
@@ -379,12 +379,12 @@ pub(crate) fn build_runtime(
 }
 
 /// THE `PlaneDecl::viewer` FN-POINTER for the LLM plane — project this generation's runtime slot into
-/// the neutral [`busbar_substrate::plane_host::EngineTablesView`] the core-resident `/metrics`,
+/// the neutral [`busbar_kernel::plane_host::EngineTablesView`] the core-resident `/metrics`,
 /// `/v1/models` and telemetry-label readers consult (cold/scrape paths only). Downcasts to this plane's
 /// own [`NativeRuntime`] (which impls the view) and returns the borrow.
 pub(crate) fn viewer(
     slot: &(dyn std::any::Any + Send + Sync),
-) -> &dyn busbar_substrate::plane_host::EngineTablesView {
+) -> &dyn busbar_kernel::plane_host::EngineTablesView {
     // Core resolves the viewer fn-pointer off the LIVE fallback-plane decl but reads the slot off the
     // App snapshot's own baked `fallback_runtime_key`. In production the registry is set once at boot, so the
     // slot the App carries is always THIS plane's `NativeRuntime` and the downcast hits. In a MULTI-TEST
@@ -395,6 +395,6 @@ pub(crate) fn viewer(
     // this is the same graceful fallback `engine_tables_view`'s own absent-slot branch already returns.
     match slot.downcast_ref::<NativeRuntime>() {
         Some(rt) => rt,
-        None => &busbar_substrate::plane_host::EMPTY_VIEW,
+        None => &busbar_kernel::plane_host::EMPTY_VIEW,
     }
 }

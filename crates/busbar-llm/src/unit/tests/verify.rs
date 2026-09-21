@@ -50,7 +50,7 @@ impl PoolView for View {
 /// step's named refusal against the live envelope; nothing in this directory returns one.
 fn envelope(status: u16, kind: &str, message: &str) -> (u16, Vec<u8>) {
     let code = axum::http::StatusCode::from_u16(status).expect("a status the doors emit");
-    let resp = busbar_substrate::proxy::ingress_error(
+    let resp = busbar_kernel::proxy::ingress_error(
         crate::proto_codec::PROTO_OPENAI,
         code,
         kind,

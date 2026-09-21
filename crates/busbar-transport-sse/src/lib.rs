@@ -8,7 +8,7 @@
 //! inherits the lower layer's status leg"). This crate does not open a socket itself: `dial`
 //! delegates straight to an [`busbar_transport_http::HttpTransport`] it holds, and `frames`
 //! re-segments the byte stream `http` already assembled at the SSE frame terminator (a blank
-//! line), using the terminator scan [`proto`] carries — ported from `busbar_substrate::proto` per
+//! line), using the terminator scan [`proto`] carries — ported from `busbar_kernel::proto` per
 //! the design's rule that a transport's own wire pieces live in the transport crate.
 //!
 //! The re-segmentation buffer is held to the design's per-connection reading budget

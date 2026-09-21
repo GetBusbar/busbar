@@ -8,7 +8,7 @@ use serde_json::json;
 fn app_with_lane(
     proto: &'static str,
     lane_model: &str,
-) -> std::sync::Arc<impl busbar_substrate::testkit::BuiltAppSeam> {
+) -> std::sync::Arc<impl busbar_kernel::testkit::BuiltAppSeam> {
     TestApp::new()
         .lane(LaneSpec::new(lane_model, proto, "http://unused.local"))
         .build()
@@ -23,14 +23,14 @@ fn shape_same_proto(
 ) -> Vec<u8> {
     let app = app_with_lane(proto, lane_model);
     // hop_bytes = the exact serialized source bytes the caller retained for this hop.
-    let hop_bytes = bytes::Bytes::from(busbar_substrate::json::to_vec(&body).unwrap());
+    let hop_bytes = bytes::Bytes::from(busbar_substrate_values::json::to_vec(&body).unwrap());
     let (host, rt) = crate::engine::test_host_rt(&app);
     translate_request_cross_protocol(
         &host,
         &rt,
         0,
         proto_name,
-        busbar_substrate::handlers::chat(proto_name, busbar_substrate::transport::Transport::Http),
+        busbar_substrate_values::handlers::chat(proto_name, busbar_substrate_values::transport::Transport::Http),
         Some(body),
         crate::engine::APPLICATION_JSON,
         true,
@@ -73,7 +73,7 @@ fn pristine_same_proto_is_byte_identical_body_model() {
     for (proto, name, body) in cases {
         // lane.model == body.model → rewrite_model_if_needed is a no-op (#3 not triggered).
         let lane_model = body.get("model").and_then(|m| m.as_str()).unwrap();
-        let hop_bytes = busbar_substrate::json::to_vec(body).unwrap();
+        let hop_bytes = busbar_substrate_values::json::to_vec(body).unwrap();
         let out = shape_same_proto(proto, name, lane_model, body.clone());
         assert_eq!(
             out, hop_bytes,
@@ -101,14 +101,14 @@ fn upstream_model_override_rewrites_body_and_url_model() {
         )
         .build();
     let body = json!({"model":"client-alias","messages":[]});
-    let hop_bytes = bytes::Bytes::from(busbar_substrate::json::to_vec(&body).unwrap());
+    let hop_bytes = bytes::Bytes::from(busbar_substrate_values::json::to_vec(&body).unwrap());
     let (host, rt) = crate::engine::test_host_rt(&app);
     let out = translate_request_cross_protocol(
         &host,
         &rt,
         0,
         "openai",
-        busbar_substrate::handlers::chat("openai", busbar_substrate::transport::Transport::Http),
+        busbar_substrate_values::handlers::chat("openai", busbar_substrate_values::transport::Transport::Http),
         Some(body),
         crate::engine::APPLICATION_JSON,
         true,
@@ -138,7 +138,7 @@ fn upstream_model_override_rewrites_body_and_url_model() {
     // registry (`decl_for(name).dialect()`), as production does — never the witnessed
     // `protocol_for(name).writer()`. `DialectCodec::upstream_path_for_stream` delegates to
     // `writer().upstream_path_for_stream`, so this is byte-identical to the pre-relocation path.
-    let dialect = busbar_substrate::proto::decl_for(app.engine_tables().lanes()[0].protocol)
+    let dialect = busbar_kernel::proto::decl_for(app.engine_tables().lanes()[0].protocol)
         .and_then(|d| d.dialect())
         .expect("lane protocol resolves");
     assert_eq!(
@@ -169,14 +169,14 @@ fn claude_on_vertex_drops_model_and_injects_anthropic_version() {
         )
         .build();
     let body = json!({"model":"claude-3-5-sonnet","max_tokens":7,"messages":[{"role":"user","content":"hi"}]});
-    let hop_bytes = bytes::Bytes::from(busbar_substrate::json::to_vec(&body).unwrap());
+    let hop_bytes = bytes::Bytes::from(busbar_substrate_values::json::to_vec(&body).unwrap());
     let (host, rt) = crate::engine::test_host_rt(&app);
     let out = translate_request_cross_protocol(
         &host,
         &rt,
         0,
         "anthropic",
-        busbar_substrate::handlers::chat("anthropic", busbar_substrate::transport::Transport::Http),
+        busbar_substrate_values::handlers::chat("anthropic", busbar_substrate_values::transport::Transport::Http),
         Some(body),
         crate::engine::APPLICATION_JSON,
         true,
@@ -217,7 +217,7 @@ fn pristine_same_proto_is_byte_identical_url_model() {
         ),
     ];
     for (proto, name, body) in cases {
-        let hop_bytes = busbar_substrate::json::to_vec(body).unwrap();
+        let hop_bytes = busbar_substrate_values::json::to_vec(body).unwrap();
         // The egress payload is byte-identical to the retained original. Bedrock reaches this via
         // the true short-circuit (its `rewrite_model_if_needed` is a no-op → pristine). Gemini's
         // default rewrite inserts the lane model which the same-proto strip then removes — a net
@@ -240,10 +240,10 @@ fn invalidator_1_gemini_array_shim_key_forces_non_pristine() {
     // Use a body-model ingress so only #1 fires (the key is stripped on EVERY egress).
     // The never-native array shim key, reached through the NEUTRAL registry accessor (it is a
     // Gemini-declared marker; core names no dialect module to obtain it).
-    let gemini_array_shim_key = busbar_substrate::proto::array_stream_shim_key_for("gemini")
+    let gemini_array_shim_key = busbar_kernel::proto::array_stream_shim_key_for("gemini")
         .expect("gemini declares a json-array shim key");
     let body = json!({"model":"gpt-4o","messages":[],(gemini_array_shim_key):true});
-    let hop_bytes = busbar_substrate::json::to_vec(&body).unwrap();
+    let hop_bytes = busbar_substrate_values::json::to_vec(&body).unwrap();
     let out = shape_same_proto(crate::proto_codec::PROTO_OPENAI, "openai", "gpt-4o", body);
     assert_ne!(
         out, hop_bytes,
@@ -261,7 +261,7 @@ fn invalidator_1_gemini_array_shim_key_forces_non_pristine() {
 fn invalidator_2_stream_on_path_model_egress_forces_non_pristine() {
     crate::testkit::install_test_seams();
     let body = json!({"contents":[{"role":"user","parts":[{"text":"hi"}]}],"stream":true});
-    let hop_bytes = busbar_substrate::json::to_vec(&body).unwrap();
+    let hop_bytes = busbar_substrate_values::json::to_vec(&body).unwrap();
     let out = shape_same_proto(
         crate::proto_codec::PROTO_GEMINI,
         "gemini",
@@ -285,7 +285,7 @@ fn invalidator_2_stream_on_path_model_egress_forces_non_pristine() {
 fn invalidator_2_stream_on_body_model_egress_stays_pristine() {
     crate::testkit::install_test_seams();
     let body = json!({"model":"gpt-4o","messages":[],"stream":true});
-    let hop_bytes = busbar_substrate::json::to_vec(&body).unwrap();
+    let hop_bytes = busbar_substrate_values::json::to_vec(&body).unwrap();
     let out = shape_same_proto(crate::proto_codec::PROTO_OPENAI, "openai", "gpt-4o", body);
     assert_eq!(
         out, hop_bytes,
@@ -299,7 +299,7 @@ fn invalidator_2_stream_on_body_model_egress_stays_pristine() {
 fn invalidator_3_model_rewrite_forces_non_pristine() {
     crate::testkit::install_test_seams();
     let body = json!({"model":"client-alias","messages":[]});
-    let hop_bytes = busbar_substrate::json::to_vec(&body).unwrap();
+    let hop_bytes = busbar_substrate_values::json::to_vec(&body).unwrap();
     let out = shape_same_proto(
         crate::proto_codec::PROTO_OPENAI,
         "openai",
@@ -323,7 +323,7 @@ fn invalidator_3_model_rewrite_forces_non_pristine() {
 fn invalidator_3_matching_model_stays_pristine() {
     crate::testkit::install_test_seams();
     let body = json!({"model":"gpt-4o-real","messages":[]});
-    let hop_bytes = busbar_substrate::json::to_vec(&body).unwrap();
+    let hop_bytes = busbar_substrate_values::json::to_vec(&body).unwrap();
     let out = shape_same_proto(
         crate::proto_codec::PROTO_OPENAI,
         "openai",
@@ -342,7 +342,7 @@ fn invalidator_3_matching_model_stays_pristine() {
 fn invalidator_4_same_proto_model_shim_strip_forces_non_pristine() {
     crate::testkit::install_test_seams();
     let body = json!({"model":"router-shim","contents":[{"role":"user","parts":[{"text":"hi"}]}]});
-    let hop_bytes = busbar_substrate::json::to_vec(&body).unwrap();
+    let hop_bytes = busbar_substrate_values::json::to_vec(&body).unwrap();
     let out = shape_same_proto(
         crate::proto_codec::PROTO_GEMINI,
         "gemini",
@@ -383,7 +383,7 @@ fn same_proto_gemini_thought_signature_round_trips_verbatim() {
             }
         ]
     });
-    let hop_bytes = busbar_substrate::json::to_vec(&body).unwrap();
+    let hop_bytes = busbar_substrate_values::json::to_vec(&body).unwrap();
     let out = shape_same_proto(
         crate::proto_codec::PROTO_GEMINI,
         "gemini",

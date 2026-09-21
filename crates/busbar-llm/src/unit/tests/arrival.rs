@@ -111,7 +111,7 @@ fn registered() {
 /// name rather than spelled, so this file names no dialect.
 fn a_registered_protocol() -> &'static str {
     registered();
-    busbar_substrate::proto::residual_default_protocol()
+    busbar_kernel::proto::residual_default_protocol()
         .expect("a chat dialect must be registered in this test binary")
 }
 
@@ -148,14 +148,14 @@ fn the_path_model_step_injects_the_bytes_the_live_splice_injects() {
         let step = arrival_path_model(&body, "pinned-model", true, false, proto)
             .unwrap_or_else(|r| panic!("{name} refused at arrival: {r:?}"));
         // The live arm, run here on the same bytes.
-        let mut v: Value = busbar_substrate::json::parse(&body).expect("live parse");
+        let mut v: Value = busbar_substrate_values::json::parse(&body).expect("live parse");
         let obj = v.as_object_mut().expect("a recorded request is a document");
         obj.insert(
             "model".to_string(),
             Value::String("pinned-model".to_string()),
         );
         obj.insert("stream".to_string(), Value::Bool(true));
-        let live: Bytes = busbar_substrate::json::to_vec(&v)
+        let live: Bytes = busbar_substrate_values::json::to_vec(&v)
             .expect("live serialize")
             .into();
         assert_eq!(
@@ -188,11 +188,11 @@ fn the_url_model_and_stream_flag_win_over_the_body() {
 #[test]
 fn the_array_stream_shim_is_spliced_only_when_asked() {
     registered();
-    for proto in busbar_substrate::proto::known_protocols().iter().copied() {
+    for proto in busbar_kernel::proto::known_protocols().iter().copied() {
         let body = Bytes::from_static(br#"{"a":1}"#);
         let off = arrival_path_model(&body, "m", true, false, proto).expect("accepted");
         let on = arrival_path_model(&body, "m", true, true, proto).expect("accepted");
-        match busbar_substrate::proto::array_stream_shim_key_for(proto) {
+        match busbar_kernel::proto::array_stream_shim_key_for(proto) {
             Some(key) => {
                 assert!(
                     off.parsed.probe().get(key).is_none(),
@@ -265,7 +265,7 @@ fn a_json_content_type_with_parameters_still_parses() {
 async fn a_malformed_body_refuses_with_the_live_arms_bytes() {
     registered();
     let body = Bytes::from_static(b"{ this is not json");
-    for proto in busbar_substrate::proto::known_protocols().iter().copied() {
+    for proto in busbar_kernel::proto::known_protocols().iter().copied() {
         // Body-model.
         let refusal = arrival_body(&json_headers(), &body).expect_err("must refuse");
         assert_eq!(refusal, ArrivalRefusal::BodyParse);
@@ -275,7 +275,7 @@ async fn a_malformed_body_refuses_with_the_live_arms_bytes() {
             ArrivalRefusal::BodyParse
         );
         // The live arm's literals, spelled here so a change to either side is a red test.
-        let live = busbar_substrate::proxy::ingress_error(
+        let live = busbar_kernel::proxy::ingress_error(
             proto,
             StatusCode::BAD_REQUEST,
             KIND_INVALID_REQUEST,
@@ -300,11 +300,11 @@ async fn a_non_object_body_refuses_with_the_live_arms_bytes() {
         Bytes::from_static(b"\"a string\""),
         Bytes::from_static(b"7"),
     ] {
-        for proto in busbar_substrate::proto::known_protocols().iter().copied() {
+        for proto in busbar_kernel::proto::known_protocols().iter().copied() {
             let refusal =
                 arrival_path_model(&body, "m", false, false, proto).expect_err("must refuse");
             assert_eq!(refusal, ArrivalRefusal::NotAnObject);
-            let live = busbar_substrate::proxy::ingress_error(
+            let live = busbar_kernel::proxy::ingress_error(
                 proto,
                 StatusCode::BAD_REQUEST,
                 KIND_INVALID_REQUEST,
@@ -325,8 +325,8 @@ async fn a_non_object_body_refuses_with_the_live_arms_bytes() {
 #[tokio::test]
 async fn the_reserialize_guard_renders_the_live_arms_bytes() {
     registered();
-    for proto in busbar_substrate::proto::known_protocols().iter().copied() {
-        let live = busbar_substrate::proxy::ingress_error(
+    for proto in busbar_kernel::proto::known_protocols().iter().copied() {
+        let live = busbar_kernel::proxy::ingress_error(
             proto,
             StatusCode::BAD_REQUEST,
             KIND_INVALID_REQUEST,
@@ -381,11 +381,11 @@ async fn every_arrival_refusal_renders_through_audit_to_the_legacy_bytes() {
     // Every registered dialect, and one that is not registered at all: a plane with no dialect
     // linked still has to answer, and the neutral envelope is as much the legacy path's as the
     // dialect-shaped ones are.
-    let mut protos: Vec<&str> = busbar_substrate::proto::known_protocols().to_vec();
+    let mut protos: Vec<&str> = busbar_kernel::proto::known_protocols().to_vec();
     protos.push("no-such-protocol");
     for proto in protos {
         for (refusal, status, kind, message) in cases {
-            let legacy = busbar_substrate::proxy::ingress_error(proto, status, kind, message);
+            let legacy = busbar_kernel::proxy::ingress_error(proto, status, kind, message);
             assert_eq!(
                 seen(render_refusal(proto, &refusal.outcome())).await,
                 seen(legacy).await,

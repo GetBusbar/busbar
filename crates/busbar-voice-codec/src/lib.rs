@@ -20,7 +20,7 @@
 
 /// THE REGISTRY KEY THE VOICE (STREAMING) PLANE IS KNOWN BY — the string the composition root flips
 /// onto the unified kernel loop's session admit
-/// ([`busbar_substrate::plane_host::register_session_runner`]) and the same string the voice session
+/// ([`busbar_kernel::plane_host::register_session_runner`]) and the same string the voice session
 /// gauntlet reports from its `GauntletPlane::capability_key`.
 ///
 /// Named ONCE, here, on the pure side of the split, because the plane's `capability_key` and the

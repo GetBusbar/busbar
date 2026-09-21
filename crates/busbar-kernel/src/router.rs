@@ -276,7 +276,7 @@ pub fn build_router(app: std::sync::Arc<state::App>) -> Router {
     // through `build_router_with_limits` with the operator-configured values.
     build_router_with_limits(
         app,
-        busbar_substrate::proxy::max_translate_body_bytes(),
+        busbar_kernel::proxy::max_translate_body_bytes(),
         crate::config::DEFAULT_MAX_INBOUND_CONCURRENT,
         crate::config::DEFAULT_RESPONSE_HEADERS_SERVER_TIMING,
     )
@@ -491,7 +491,7 @@ pub(crate) fn base_data_router(
         .into_parts()
 }
 
-/// Mount ONE neutral [`busbar_substrate::plane_routes::PlaneRouteSpec`] onto the core router (S4a
+/// Mount ONE neutral [`busbar_kernel::plane_routes::PlaneRouteSpec`] onto the core router (S4a
 /// Option A). This is the SINGLE place a plane's neutral route touches core router vocabulary: it
 /// calls the SAME [`crate::core_routes::CoreRouter::route`] the legacy `mount` fns called, with the
 /// spec's own `(path, method, auth)`, so the `CoreRouteTable` row is byte-identical — the security
@@ -500,14 +500,14 @@ pub(crate) fn base_data_router(
 /// middleware-resolved governance/principal extensions (absent — hence `Option` — on a
 /// `RouteAuth::None` route, which the auth middleware bypasses before attaching them), the path
 /// captures, the headers and the buffered body. It assembles a neutral
-/// [`busbar_substrate::plane_routes::PlaneReqCtx`] and awaits the plane's own handler. The plane
+/// [`busbar_kernel::plane_routes::PlaneReqCtx`] and awaits the plane's own handler. The plane
 /// names none of these core/axum types; this adapter names them all.
 fn mount_plane_route(
     router: crate::core_routes::CoreRouter,
     slot: std::sync::Arc<dyn std::any::Any + Send + Sync>,
-    spec: busbar_substrate::plane_routes::PlaneRouteSpec,
+    spec: busbar_kernel::plane_routes::PlaneRouteSpec,
 ) -> crate::core_routes::CoreRouter {
-    let busbar_substrate::plane_routes::PlaneRouteSpec {
+    let busbar_kernel::plane_routes::PlaneRouteSpec {
         path,
         method,
         auth,
@@ -550,7 +550,7 @@ fn mount_plane_route(
                 // on `ctx.host` rather than naming `busbar_kernel::plane_host::*_over`.
                 let host = crate::plane_host::engine_host_from_handle(&handle);
                 let engine: std::sync::Arc<dyn std::any::Any + Send + Sync> = handle;
-                let ctx = busbar_substrate::plane_routes::PlaneReqCtx {
+                let ctx = busbar_kernel::plane_routes::PlaneReqCtx {
                     path: ctx_path,
                     uri,
                     method,
@@ -580,7 +580,7 @@ fn mount_plane_route(
 ///
 /// The handler is a CORE-owned axum closure whose ONLY new extractor is
 /// [`axum::extract::ws::WebSocketUpgrade`] (named here and nowhere the default build compiles). It
-/// assembles a substrate-owned [`busbar_substrate::ingress::duplex_ws::WsArrival`] from the SAME
+/// assembles a substrate-owned [`busbar_kernel::ingress::duplex_ws::WsArrival`] from the SAME
 /// sources `mount_plane_route` reads (minus the body — a WS GET carries none), carrying the upgrade
 /// BY VALUE and the plane's live slot (resolved from `plane_slots` under the spec's `slot_key`, so an
 /// unconfigured plane mounts nothing), and hands it to the plane's neutral accept fn — which reaches
@@ -595,8 +595,8 @@ fn mount_ws_arrivals(
 ) -> crate::core_routes::CoreRouter {
     use busbar_plugin_loader::RouteMethod;
     let mut router = router;
-    for spec in busbar_substrate::ingress::duplex_ws::take_ws_arrivals() {
-        let busbar_substrate::ingress::duplex_ws::WsArrivalSpec {
+    for spec in busbar_kernel::ingress::duplex_ws::take_ws_arrivals() {
+        let busbar_kernel::ingress::duplex_ws::WsArrivalSpec {
             path,
             auth,
             slot_key,
@@ -634,7 +634,7 @@ fn mount_ws_arrivals(
                     // Mint the neutral host seam over the request's live engine snapshot, exactly as
                     // `mount_plane_route` does — the accept fn reaches host capabilities through it.
                     let host = crate::plane_host::engine_host_from_handle(&handle);
-                    let arrival = busbar_substrate::ingress::duplex_ws::WsArrival {
+                    let arrival = busbar_kernel::ingress::duplex_ws::WsArrival {
                         upgrade,
                         gov,
                         principal: principal.map(|axum::extract::Extension(p)| p),
@@ -692,7 +692,7 @@ pub(crate) fn apply_common_layers(
         ))
         // Cap request body size (buffered before the handler) to bound per-request memory. Driven by
         // `limits.request_body_max_bytes` (default 32 MiB); COUPLED with the egress translate-body cap
-        // (`busbar_substrate::proxy::max_translate_body_bytes`) — both read the SAME knob so an accepted request is
+        // (`busbar_kernel::proxy::max_translate_body_bytes`) — both read the SAME knob so an accepted request is
         // always buffer-translatable on the cross-protocol path.
         .layer(axum::extract::DefaultBodyLimit::max(request_body_max_bytes))
         // Outermost: reshape the body-limit layer's bare-text 413 into a protocol-native JSON

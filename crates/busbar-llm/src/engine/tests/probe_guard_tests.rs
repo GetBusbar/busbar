@@ -6,10 +6,10 @@
 //! must LEAVE the probe held for the owning request.
 use super::ProbeGuard;
 // R5-store: the breaker taxonomy and the lane-runtime seam are named from
-// `busbar_substrate::store`, where they are defined, rather than through the re-export the legacy
+// `busbar_kernel::store`, where they are defined, rather than through the re-export the legacy
 // crate used to publish. `HealthState`/`LaneData` — the in-memory breaker engine itself — are still
 // the legacy crate's, and still named from it: they have no home elsewhere yet.
-use busbar_substrate::store::{BreakerState, LaneRuntime};
+use busbar_kernel::store::{BreakerState, LaneRuntime};
 
 use busbar_kernel::store::{HealthState, LaneData};
 use std::sync::Arc;
@@ -24,7 +24,7 @@ fn win_probe(store: &Arc<HealthState>) {
     // Expired-Open → the mutating acquisition transitions Open→HalfOpen and CAS-wins the probe.
     store.force_open_in("", 0, 0);
     assert!(
-        store.acquire_for_dispatch_in("", 0, busbar_substrate::store::now().saturating_add(86_400)),
+        store.acquire_for_dispatch_in("", 0, busbar_kernel::store::now().saturating_add(86_400)),
         "precondition: this caller must WIN the single-flight probe"
     );
     assert!(
@@ -102,7 +102,7 @@ fn stalled_guard_does_not_release_a_newer_probe() {
     store.record_success_in("", 0);
     store.force_open_in("", 0, 0);
     assert!(
-        store.acquire_for_dispatch_in("", 0, busbar_substrate::store::now().saturating_add(86_400)),
+        store.acquire_for_dispatch_in("", 0, busbar_kernel::store::now().saturating_add(86_400)),
         "a NEW probe must be won on the re-opened lane"
     );
     assert!(

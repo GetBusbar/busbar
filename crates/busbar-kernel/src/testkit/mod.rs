@@ -26,7 +26,7 @@ use std::sync::Arc;
 /// The neutral warn-capture tracing layer a plane's tests assert diagnostics through — the fixture
 /// that used to be reachable only as `busbar_kernel::test_support::warn_capture`. It is a pure
 /// `tracing_subscriber::Layer`, so it moved into the values crate with the diagnostics it asserts on
-/// and is re-exported here: `busbar_substrate::testkit::warn_capture::WarnCapture` resolves as before.
+/// and is re-exported here: `busbar_kernel::testkit::warn_capture::WarnCapture` resolves as before.
 pub use busbar_substrate_values::testkit::warn_capture;
 
 /// The in-memory [`EngineHost`] a plane's tests drive when no engine `App` is in their closure at all

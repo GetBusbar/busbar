@@ -450,7 +450,7 @@ impl StdioChild {
         // `proxy::read_capped`; this is the same bound, from the same knob, on the other channel.
         let read = read_capped_line(
             &mut self.stdout,
-            busbar_substrate::proxy::max_upstream_buffered_bytes(),
+            busbar_kernel::proxy::max_upstream_buffered_bytes(),
         );
         tokio::time::timeout_at(deadline, read)
             .await
@@ -886,7 +886,7 @@ fn now_ms() -> u64 {
     start.elapsed().as_millis() as u64
 }
 
-/// THE STDIO WIRE — the dispatch arm [`busbar_substrate::transport::Transport::Stdio`] hands work to.
+/// THE STDIO WIRE — the dispatch arm [`busbar_substrate_values::transport::Transport::Stdio`] hands work to.
 ///
 /// Zero-sized: the children live in the pool that rides on [`WireLeg`], so this is the supervision
 /// POLICY applied to one call and nothing else.

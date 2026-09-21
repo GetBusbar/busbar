@@ -988,7 +988,7 @@ pub(crate) fn plugin_fetch_downloader_with_cap(
                     let uri: http::Uri = url
                         .parse()
                         .map_err(|e| format!("GET {url}: not a valid URI: {e}"))?;
-                    let request = busbar_substrate::egress::engine::request(
+                    let request = busbar_kernel::egress::engine::request(
                         http::Method::GET,
                         uri,
                         http::HeaderMap::new(),

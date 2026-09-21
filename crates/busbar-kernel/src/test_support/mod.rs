@@ -664,14 +664,14 @@ impl LaneSpec {
     /// reconstructs a `Lane` from (money-path Phase 3-4 C). The fixture hands `PlaneBuildInput` to the
     /// registered `build_runtime` fn-pointer exactly as production `appbuild` does, so core's test
     /// fixture names no `Lane`/`NativeRuntime` — plane-agnostic, like the MCP/A2A test-kits.
-    fn to_lane_input(&self) -> busbar_substrate::plane_host::LaneInput {
+    fn to_lane_input(&self) -> busbar_kernel::plane_host::LaneInput {
         let auth_style = match self.auth.as_deref() {
-            None => busbar_substrate::plane_host::AuthStyleInput::Default,
-            Some("api-key") => busbar_substrate::plane_host::AuthStyleInput::ApiKey,
-            Some("bearer") => busbar_substrate::plane_host::AuthStyleInput::Bearer,
+            None => busbar_kernel::plane_host::AuthStyleInput::Default,
+            Some("api-key") => busbar_kernel::plane_host::AuthStyleInput::ApiKey,
+            Some("bearer") => busbar_kernel::plane_host::AuthStyleInput::Bearer,
             Some(other) => panic!("unexpected test auth style in LaneSpec: {other}"),
         };
-        busbar_substrate::plane_host::LaneInput {
+        busbar_kernel::plane_host::LaneInput {
             model: self.model.clone(),
             provider: self.provider.clone(),
             protocol: self.protocol.to_string(),
@@ -688,16 +688,16 @@ impl LaneSpec {
             health: self
                 .health
                 .as_ref()
-                .map(|h| busbar_substrate::plane_host::HealthInput {
+                .map(|h| busbar_kernel::plane_host::HealthInput {
                     mode: match h.mode {
                         crate::config::HealthMode::None => {
-                            busbar_substrate::plane_host::HealthModeInput::None
+                            busbar_kernel::plane_host::HealthModeInput::None
                         }
                         crate::config::HealthMode::Dead => {
-                            busbar_substrate::plane_host::HealthModeInput::Dead
+                            busbar_kernel::plane_host::HealthModeInput::Dead
                         }
                         crate::config::HealthMode::Active => {
-                            busbar_substrate::plane_host::HealthModeInput::Active
+                            busbar_kernel::plane_host::HealthModeInput::Active
                         }
                     },
                     interval_secs: h.interval_secs,
@@ -772,7 +772,7 @@ type PlaneContainerHooks =
 /// same `test_support` doorway a plane already binds the fixture at, so a helper that only passes
 /// the built handle around stays inside that one binding instead of opening a second reach into the
 /// engine. A helper that needs a VERB rather than the handle should take the neutral port
-/// (`&dyn EngineHost`) or [`busbar_substrate::testkit::BuiltAppSeam`) instead.
+/// (`&dyn EngineHost`) or [`busbar_kernel::testkit::BuiltAppSeam`) instead.
 pub type BuiltApp = crate::state::App;
 
 /// The MCP plane's default-test-runtime factory, registered by an EXTERNAL `test-support` consumer
@@ -846,7 +846,7 @@ pub struct TestApp {
     /// (which named the plane's `PoolRuntime`) is replaced by the granular setters that fill these.
     pool_failover: std::collections::HashMap<String, crate::config::FailoverCfg>,
     pool_affinity: std::collections::HashMap<String, crate::config::AffinityCfg>,
-    pool_breaker: std::collections::HashMap<String, busbar_substrate::plane_host::BreakerInput>,
+    pool_breaker: std::collections::HashMap<String, busbar_kernel::plane_host::BreakerInput>,
     pool_upstream_creds: std::collections::HashMap<String, crate::auth::UpstreamCreds>,
     #[allow(clippy::type_complexity)]
     pool_member_meta: std::collections::HashMap<
@@ -944,7 +944,7 @@ pub struct TestApp {
     /// fluent `.mcp(...).mcp_server(...).build()` call shape working while the runtime/resource
     /// construction that NAMES plane types lives entirely in the plane crate's test-kit.
     #[allow(clippy::type_complexity)]
-    plane_finalizers: Vec<Box<dyn FnOnce(&mut dyn busbar_substrate::testkit::TestAppSeam)>>,
+    plane_finalizers: Vec<Box<dyn FnOnce(&mut dyn busbar_kernel::testkit::TestAppSeam)>>,
 }
 
 impl Default for TestApp {
@@ -963,7 +963,7 @@ impl TestApp {
         // wins), and gated on the neutral egress-seam capability the driver itself lives behind, so a
         // build with no plane that drives egress installs nothing.
         #[cfg(feature = "egress-seam")]
-        busbar_substrate::egress::seam::install_hostless_egress(
+        busbar_kernel::egress::seam::install_hostless_egress(
             &crate::egress::seam::CoreHostlessEgress,
         );
         Self {
@@ -1032,7 +1032,7 @@ impl TestApp {
     /// both an a2a plane and a card-signing governance key serves signed cards without running the boot
     /// fold. `None` when no governance / no card key — core exposes only the neutral value, never its
     /// `pub` governance accessor.
-    pub fn card_issuer(&self) -> Option<busbar_substrate::plane::registry::CardIssuer> {
+    pub fn card_issuer(&self) -> Option<busbar_kernel::plane::registry::CardIssuer> {
         self.governance.as_ref().and_then(|g| g.card_issuer())
     }
 
@@ -1066,7 +1066,7 @@ impl TestApp {
     pub fn admit_plane(
         &mut self,
         key: &'static str,
-        admission: busbar_substrate::plane::PlaneAdmission,
+        admission: busbar_kernel::plane::PlaneAdmission,
     ) -> &mut Self {
         let d = std::mem::take(&mut self.plane_dispatch);
         self.plane_dispatch = d.admit(key, admission);
@@ -1434,7 +1434,7 @@ impl TestApp {
     /// this unwraps it back to the concrete table and installs it exactly as [`Self::cost`] does.
     pub fn cost_kit(
         mut self,
-        c: std::sync::Arc<dyn busbar_substrate::testkit::engine_kit::CostKit>,
+        c: std::sync::Arc<dyn busbar_kernel::testkit::engine_kit::CostKit>,
     ) -> Self {
         self.cost = Some(engine_kit::cost_model(c));
         self
@@ -1445,7 +1445,7 @@ impl TestApp {
     /// the concrete `GovState` the fixture holds.
     pub fn governance_kit(
         self,
-        g: std::sync::Arc<dyn busbar_substrate::testkit::engine_kit::GovKit>,
+        g: std::sync::Arc<dyn busbar_kernel::testkit::engine_kit::GovKit>,
     ) -> Self {
         self.governance(engine_kit::gov_state(g))
     }
@@ -1467,7 +1467,7 @@ impl TestApp {
     }
     /// Set a pool's resolved `breaker:` config (the runtime `store::BreakerCfg`, flattened to the
     /// neutral carrier the plane reconstructs it from).
-    pub fn pool_breaker(mut self, name: &str, b: &busbar_substrate::store::BreakerCfg) -> Self {
+    pub fn pool_breaker(mut self, name: &str, b: &busbar_kernel::store::BreakerCfg) -> Self {
         self.pool_breaker.insert(name.into(), b.to_llm());
         self
     }
@@ -1607,7 +1607,7 @@ impl TestApp {
         // object, so admin mutations that walk the plane runtimes do not fault under either surface.
         #[cfg(any(test, feature = "test-support"))]
         if let Some(decl) = crate::plane::registry::plane_decl_for_config_section(
-            busbar_substrate::plane::config::NAMED_MAP_SECTIONS[2],
+            busbar_kernel::plane::config::NAMED_MAP_SECTIONS[2],
         ) {
             if let Some(rt) = default_test_mcp_runtime() {
                 plane_slots
@@ -1666,7 +1666,7 @@ impl TestApp {
             // lowering production runs (egress targets, credentials, upstream client, probe schedule).
             let member_input = |pool: &str, idx: usize, weight: u32| {
                 let meta = self.pool_member_meta.get(pool).and_then(|m| m.get(&idx));
-                busbar_substrate::plane_host::PoolMemberInput {
+                busbar_kernel::plane_host::PoolMemberInput {
                     model: lane_inputs
                         .get(idx)
                         .map(|l| l.model.clone())
@@ -1687,38 +1687,38 @@ impl TestApp {
             for (name, members) in self.fallback_pools.iter().chain(self.pools.iter()) {
                 pool_map.insert(name.clone(), members.clone());
             }
-            let pool_inputs: Vec<busbar_substrate::plane_host::PoolInput> = pool_map
+            let pool_inputs: Vec<busbar_kernel::plane_host::PoolInput> = pool_map
                 .into_iter()
-                .map(|(name, members)| busbar_substrate::plane_host::PoolInput {
+                .map(|(name, members)| busbar_kernel::plane_host::PoolInput {
                     members: members
                         .iter()
                         .map(|(idx, w)| member_input(&name, *idx, *w))
                         .collect(),
                     failover: self.pool_failover.get(&name).map(|f| {
-                        busbar_substrate::plane_host::FailoverInput {
+                        busbar_kernel::plane_host::FailoverInput {
                             timeout_secs: f.timeout_secs,
                             exclusions: f.exclusions.clone(),
                             max_hops: f.max_hops,
                         }
                     }),
                     affinity: self.pool_affinity.get(&name).map(|a| {
-                        busbar_substrate::plane_host::AffinityInput {
+                        busbar_kernel::plane_host::AffinityInput {
                             header_name: a.header_name.clone(),
                         }
                     }),
                     on_exhausted: match self.on_exhausted_cfgs.get(&name) {
                         Some(crate::config::OnExhausted::FallbackPool(p)) => {
-                            busbar_substrate::plane_host::OnExhaustedInput::FallbackPool(p.clone())
+                            busbar_kernel::plane_host::OnExhaustedInput::FallbackPool(p.clone())
                         }
                         Some(crate::config::OnExhausted::LeastBad) => {
-                            busbar_substrate::plane_host::OnExhaustedInput::LeastBad
+                            busbar_kernel::plane_host::OnExhaustedInput::LeastBad
                         }
                         Some(crate::config::OnExhausted::Queue { max_ms }) => {
-                            busbar_substrate::plane_host::OnExhaustedInput::Queue {
+                            busbar_kernel::plane_host::OnExhaustedInput::Queue {
                                 max_ms: *max_ms,
                             }
                         }
-                        _ => busbar_substrate::plane_host::OnExhaustedInput::Status503,
+                        _ => busbar_kernel::plane_host::OnExhaustedInput::Status503,
                     },
                     upstream_credentials: self.pool_upstream_creds.get(&name).copied(),
                     breaker: self.pool_breaker.get(&name).cloned(),
@@ -1728,24 +1728,24 @@ impl TestApp {
             let default_failover = self
                 .failover_cfg
                 .as_ref()
-                .map(|f| busbar_substrate::plane_host::FailoverInput {
+                .map(|f| busbar_kernel::plane_host::FailoverInput {
                     timeout_secs: f.timeout_secs,
                     exclusions: f.exclusions.clone(),
                     max_hops: f.max_hops,
                 })
-                .unwrap_or(busbar_substrate::plane_host::FailoverInput {
+                .unwrap_or(busbar_kernel::plane_host::FailoverInput {
                     timeout_secs: crate::config::DEFAULT_FAILOVER_DEADLINE_SECS,
                     exclusions: None,
                     max_hops: crate::config::DEFAULT_FAILOVER_CAP,
                 });
-            let build_input = busbar_substrate::plane_host::PlaneBuildInput {
+            let build_input = busbar_kernel::plane_host::PlaneBuildInput {
                 lanes: lane_inputs,
                 pools: pool_inputs,
                 upstream_credentials: self.upstream_credentials,
                 allow_metadata_hosts: Vec::new(),
                 allow_all_metadata: false,
                 blocked_metadata_hosts: Vec::new(),
-                client_settings: busbar_substrate::plane_host::ClientSettingsInput {
+                client_settings: busbar_kernel::plane_host::ClientSettingsInput {
                     upstream_request_timeout_secs: self.upstream_request_timeout_secs,
                     pool_max_idle_per_host: 4,
                     pool_idle_timeout_secs: 300,
@@ -1795,8 +1795,8 @@ impl TestApp {
         let plane_gates_map: crate::state::PlaneGateMap = {
             let mut m = std::collections::BTreeMap::new();
             for section in [
-                busbar_substrate::plane::config::NAMED_MAP_SECTIONS[2],
-                busbar_substrate::plane::config::NAMED_MAP_SECTIONS[3],
+                busbar_kernel::plane::config::NAMED_MAP_SECTIONS[2],
+                busbar_kernel::plane::config::NAMED_MAP_SECTIONS[3],
             ] {
                 if let Some(decl) = crate::plane::registry::plane_decl_for_config_section(section) {
                     let (containers, section_hooks) = self
@@ -1822,8 +1822,8 @@ impl TestApp {
         let plane_rewrites_map: crate::state::PlaneRewriteMap = {
             let mut m = std::collections::BTreeMap::new();
             for section in [
-                busbar_substrate::plane::config::NAMED_MAP_SECTIONS[2],
-                busbar_substrate::plane::config::NAMED_MAP_SECTIONS[3],
+                busbar_kernel::plane::config::NAMED_MAP_SECTIONS[2],
+                busbar_kernel::plane::config::NAMED_MAP_SECTIONS[3],
             ] {
                 if let Some(decl) = crate::plane::registry::plane_decl_for_config_section(section) {
                     let (containers, section_hooks) = self
@@ -1854,7 +1854,7 @@ impl TestApp {
             // exactly as `plane_pools`/`plane_gates` below. Absent that, a neutral empty placeholder no
             // test-path consumer downcasts (the A2A plane reads its `AgentsCfg` off its runtime object).
             agent_defs: crate::plane::registry::plane_decl_for_config_section(
-                busbar_substrate::plane::config::NAMED_MAP_SECTIONS[3],
+                busbar_kernel::plane::config::NAMED_MAP_SECTIONS[3],
             )
             .and_then(|decl| self.plane_defs_any.remove(decl.key))
             .unwrap_or_else(|| std::sync::Arc::new(())),
@@ -1875,7 +1875,7 @@ impl TestApp {
                 // read treats an absent key identically to the former empty-value entry).
                 let mut m = std::collections::BTreeMap::new();
                 if let Some(decl) = crate::plane::registry::plane_decl_for_config_section(
-                    busbar_substrate::plane::config::NAMED_MAP_SECTIONS[3],
+                    busbar_kernel::plane::config::NAMED_MAP_SECTIONS[3],
                 ) {
                     m.insert(decl.key, self.agent_pools);
                 }
@@ -2272,12 +2272,12 @@ pub mod warn_capture;
 pub mod plugin_store;
 
 /// The engine's implementation of the neutral engine test-kit seam
-/// (`busbar_substrate::testkit::engine_kit`): what a plane crate's test binary binds in one line so
+/// (`busbar_kernel::testkit::engine_kit`): what a plane crate's test binary binds in one line so
 /// its tests build and drive the whole fixture naming no other item of this crate.
 pub mod engine_kit;
 
 /// The engine's implementation of the WIDENED engine test-kit seam
-/// (`busbar_substrate::testkit::engine_kit_plus`), on the same fixture types as `engine_kit`.
+/// (`busbar_kernel::testkit::engine_kit_plus`), on the same fixture types as `engine_kit`.
 pub mod engine_kit_plus;
 
 /// Panic-safe process-env restore for a test that must temporarily override a `std::env` var (e.g.

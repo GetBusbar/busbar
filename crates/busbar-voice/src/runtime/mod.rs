@@ -37,7 +37,7 @@ pub use scope::{SessionHandle, VoiceSessionRow};
 pub use session::{serve_with_sweep, Outbound, SessionCore, UplinkForwarder, VoiceSession};
 pub use tools::{EchoToolExecutor, ToolExecutor};
 
-use busbar_substrate::plane::handle_engine::DurableHandleEngine;
+use busbar_kernel::plane::handle_engine::DurableHandleEngine;
 use std::sync::Arc;
 
 /// THE PLANE'S PER-GENERATION RUNTIME OBJECT — the type-erased slot `PLANE_DECL.build_runtime` builds
@@ -75,7 +75,7 @@ pub struct VoiceRuntime {
     /// write to). Carried so a governed session mutation can land ONE admin-audit row through the SAME
     /// seam the host's other planes journal through (see [`VoiceRuntime::audit_session`]), without the
     /// D2 metering port (`Arc<dyn MeteringPort>`) needing to widen into the full host trait itself.
-    pub host: Option<Arc<dyn busbar_substrate::plane_host::EngineHost>>,
+    pub host: Option<Arc<dyn busbar_kernel::plane_host::EngineHost>>,
 }
 
 impl VoiceRuntime {
@@ -186,7 +186,7 @@ impl VoiceRuntime {
 /// config-derived dependencies is a body change, not an ABI change.
 pub fn build_runtime(
     section: &dyn std::any::Any,
-    _prior: Option<&dyn busbar_substrate::plane_host::PlaneSlots>,
+    _prior: Option<&dyn busbar_kernel::plane_host::PlaneSlots>,
 ) -> Arc<dyn std::any::Any + Send + Sync> {
     // READ THE REAL `streams:` CONFIG: core passes the plane's own typed section as `cfg.streams.as_any()`
     // (the `PlaneCfg::as_any` of `StreamsCfg`). An absent/other section downcasts to `None` and falls back
@@ -218,12 +218,12 @@ pub fn build_runtime(
 #[must_use]
 pub fn build_runtime_hosted(
     base: &VoiceRuntime,
-    host: Arc<dyn busbar_substrate::plane_host::EngineHost>,
+    host: Arc<dyn busbar_kernel::plane_host::EngineHost>,
 ) -> VoiceRuntime {
     VoiceRuntime {
         engine: Arc::clone(&base.engine),
         metering: Arc::new(metering::HostMeteringPort::new(
-            Arc::clone(&host) as Arc<dyn busbar_substrate::plane_host::MeteringHost>
+            Arc::clone(&host) as Arc<dyn busbar_kernel::plane_host::MeteringHost>
         )),
         tools: Arc::clone(&base.tools),
         denied_destinations: base.denied_destinations.clone(),

@@ -23,22 +23,22 @@
 /// `install_path_ingress` — so a `test-support` consumer that builds a path-model `App` resolves the
 /// gemini/bedrock arrivals, while a body-model `App` (which never resolves one) is unaffected.
 pub fn install_test_seams() {
-    busbar_substrate::proto::register_test_protocols(crate::DECLS);
-    busbar_substrate::plane::registry::register_test_plane(&crate::PLANE_DECL);
-    busbar_substrate::ingress::arrival::set_test_path_ingress(|| crate::PATH_INGRESS);
-    busbar_substrate::ingress::arrival::set_test_body_ingress(|| crate::BODY_INGRESS);
+    busbar_kernel::proto::register_test_protocols(crate::DECLS);
+    busbar_kernel::plane::registry::register_test_plane(&crate::PLANE_DECL);
+    busbar_kernel::ingress::arrival::set_test_path_ingress(|| crate::PATH_INGRESS);
+    busbar_kernel::ingress::arrival::set_test_body_ingress(|| crate::BODY_INGRESS);
     // The resolved-completion synthesizer (the MCP-sampling re-entry) — seeded through the neutral
     // `set_test_completion_ingress` HOOK, the test-support twin of the set-once production
     // `install_completion_ingress`, so a `test-support` consumer that drives a synthesized completion
     // resolves the LLM plane's synthesizer instead of the "no default chat protocol" error.
-    busbar_substrate::ingress::arrival::set_test_completion_ingress(
+    busbar_kernel::ingress::arrival::set_test_completion_ingress(
         crate::native_ingress::synthesize_completion,
     );
-    // The cross-protocol STREAMING translator factory. `busbar_substrate::proto::new_stream_translator`
+    // The cross-protocol STREAMING translator factory. `busbar_kernel::proto::new_stream_translator`
     // routes through this installed pointer in a `test-support`/plugin test binary (where core's
     // `cfg(test)` is FALSE), so without it every cross-protocol streaming forward falls back to raw
     // passthrough — the exact composition-root write `main.rs::run` makes in production. Set-once.
-    busbar_substrate::proto::install_stream_translator_factory(
+    busbar_kernel::proto::install_stream_translator_factory(
         crate::proto_stream::new_stream_translator,
     );
 }

@@ -256,7 +256,7 @@ pub trait PlaneAdminEnvelope: Send + Sync {
     /// given status, `application/json`, the body verbatim.
     fn ok(&self, status: u16, body: String) -> Response;
     /// Record one self-audited verb outcome: core does `planeverbs::audit(plane, verb, name, outcome,
-    /// principal)`, `outcome` one of the neutral `busbar_substrate::audit::vocab::OUTCOME_*`.
+    /// principal)`, `outcome` one of the neutral `busbar_kernel::audit::vocab::OUTCOME_*`.
     fn audit(
         &self,
         plane: &'static str,

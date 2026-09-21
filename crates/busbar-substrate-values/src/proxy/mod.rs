@@ -225,7 +225,7 @@ pub const KIND_REQUEST_TOO_LARGE: &str = crate::proto::ERR_TYPE_REQUEST_TOO_LARG
 // ── Network-transient `err_type` values passed to `record_transient_in`. Distinct from the error-KIND
 //    tokens above: they label the *category* of network failure recorded in the breaker store, not the
 //    protocol-level error kind surfaced to the caller. Relocated DOWN from `busbar-core`'s `proxy` so
-//    the relocated LLM engine names them at `busbar_substrate::proxy::ERR_NET_*` without reaching into
+//    the relocated LLM engine names them at `busbar_kernel::proxy::ERR_NET_*` without reaching into
 //    `busbar-core`; core's `proxy` re-exports each at its historical `crate::proxy::ERR_NET_*` path.
 pub const ERR_NET_CONNECT: &str = "connect";
 pub const ERR_NET_TIMEOUT: &str = "timeout";
@@ -274,7 +274,7 @@ pub fn route_policy_headers_enabled() -> bool {
 // THE CUT (`UPSTREAM_RTT_US`): the per-request upstream-RTT slot is a `tokio::task_local!`, which
 // is the runtime's own storage — it cannot cross into a crate whose closure carries no tokio. It
 // stayed in `busbar-substrate` beside the middleware that scopes it and the forward path that writes
-// it, still single-compiled, still read through `busbar_substrate::proxy::UPSTREAM_RTT_US`.
+// it, still single-compiled, still read through `busbar_kernel::proxy::UPSTREAM_RTT_US`.
 
 /// The DEFAULT ceiling, in bytes, on the content a hook is shown in one projection. `0` = UNLIMITED
 /// (the default): the LLM prompt projection is sent UNCAPPED. A non-zero ceiling is an OPT-IN an
@@ -302,7 +302,7 @@ pub fn hook_content_max_bytes() -> usize {
 // THE CUT (`build_egress_client`): the shim's whole signature is the engine's — it takes an
 // `EngineSpec` and returns an `EngineClient`, both hyper types — so it is the engine's surface, not a
 // value. It stayed in `busbar-substrate` beside `egress::engine`, reachable as before at
-// `busbar_substrate::proxy::build_egress_client`.
+// `busbar_kernel::proxy::build_egress_client`.
 //
 // THE CUT (`ingress_error`): the shaper returns an `axum::response::Response`, i.e. a body backed by
 // the server stack, so it drags axum (and through it hyper and tokio) into anything that names it.

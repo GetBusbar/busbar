@@ -15,7 +15,7 @@ use std::time::Instant;
 use axum::body::{to_bytes, Body};
 use axum::http::StatusCode;
 use axum::response::Response;
-use busbar_substrate::plane_host::{
+use busbar_kernel::plane_host::{
     register_gauntlet_runner, register_session_runner, run_gauntlet, run_gauntlet_session,
     Admitted, GauntletPlane, GauntletRequest, VerifyOutcome,
 };
@@ -283,7 +283,7 @@ fn install_flips_mcp_onto_the_unified_kernel_loop() {
     // asserts the shipped MCP path is genuinely swapped onto the unified loop, not the substrate loop.
     crate::root::gauntlet_install::install();
     assert!(
-        busbar_substrate::plane_host::gauntlet_runner_registered(busbar_mcp::PLANE_KEY),
+        busbar_kernel::plane_host::gauntlet_runner_registered(busbar_mcp::PLANE_KEY),
         "install() must register MCP ({}) onto the unified kernel loop — the W2.a flip",
         busbar_mcp::PLANE_KEY,
     );
@@ -300,7 +300,7 @@ fn install_flips_mcp_onto_the_unified_kernel_loop() {
 fn install_flips_a2a_onto_the_unified_kernel_loop() {
     crate::root::gauntlet_install::install();
     assert!(
-        busbar_substrate::plane_host::gauntlet_runner_registered(busbar_a2a::PLANE_KEY),
+        busbar_kernel::plane_host::gauntlet_runner_registered(busbar_a2a::PLANE_KEY),
         "install() must register A2A ({}) onto the unified kernel loop — the W2.b flip",
         busbar_a2a::PLANE_KEY,
     );
@@ -311,7 +311,7 @@ fn install_flips_a2a_onto_the_unified_kernel_loop() {
 fn install_flips_llm_onto_the_unified_kernel_loop() {
     crate::root::gauntlet_install::install();
     assert!(
-        busbar_substrate::plane_host::gauntlet_runner_registered(busbar_llm::PLANE_KEY),
+        busbar_kernel::plane_host::gauntlet_runner_registered(busbar_llm::PLANE_KEY),
         "install() must register the LLM native plane ({}) onto the unified kernel loop — the W2.b flip",
         busbar_llm::PLANE_KEY,
     );
@@ -324,7 +324,7 @@ fn install_flips_voice_session_onto_the_unified_kernel_loop() {
     // asserted through the session read-side twin rather than the one-shot one.
     crate::root::gauntlet_install::install();
     assert!(
-        busbar_substrate::plane_host::session_runner_registered(busbar_voice::PLANE_KEY),
+        busbar_kernel::plane_host::session_runner_registered(busbar_voice::PLANE_KEY),
         "install() must register the voice session plane ({}) onto the unified kernel loop — the W2.b flip",
         busbar_voice::PLANE_KEY,
     );

@@ -127,12 +127,12 @@ pub struct RateNanos {
 }
 
 impl RateNanos {
-    /// Project the NEUTRAL raw-rate view ([`busbar_substrate::billing::RawTierRates`]) — the four raw
+    /// Project the NEUTRAL raw-rate view ([`busbar_substrate_values::billing::RawTierRates`]) — the four raw
     /// micro-float-per-token rates in canonical reserved order — to this integer nano-rate. This is
     /// the ONE projection: config micro-units × 1000, rounded once, with the defense-in-depth clamp.
     /// Core reads rates through this NEUTRAL view so the projection names no plane config type; the
     /// arithmetic (and thus every derived figure) is byte-identical to the pre-seam `from_cfg`.
-    pub fn from_raw(raw: &busbar_substrate::billing::RawTierRates) -> Self {
+    pub fn from_raw(raw: &busbar_substrate_values::billing::RawTierRates) -> Self {
         // Config values are validated finite + >= 0; the clamp here is defense-in-depth so a NaN
         // or negative that slipped past validation becomes 0, never a huge/garbage integer rate.
         fn nanos(utok: f64) -> u64 {
@@ -186,7 +186,7 @@ impl RateNanos {
     }
 }
 
-/// THE ONE ENFORCEMENT PRICER every plane's neutral [`busbar_substrate::billing::Usage`] reaches
+/// THE ONE ENFORCEMENT PRICER every plane's neutral [`busbar_substrate_values::billing::Usage`] reaches
 /// (§4.1 of `billing-unified.md`). Since M1b `Usage` is a SINGLE name-keyed map: the reserved four
 /// price via the [`RateNanos`] tiers (looked up by canonical key through [`RateNanos::reserved_rate`],
 /// the SAME arithmetic [`RateNanos::reserved_nanos`] gives the enforcement/derive summation), and
@@ -209,7 +209,7 @@ pub fn price(
     rate: &RateNanos,
     extras: &ExtraRates,
     tier_bp: u32,
-    usage: &busbar_substrate::billing::Usage,
+    usage: &busbar_substrate_values::billing::Usage,
 ) -> Result<crate::plane::cost::CostBreakdown, crate::plane::cost::CostError> {
     use crate::plane::cost::{CostAmount, CostBreakdown, CostComponent};
 
@@ -644,7 +644,7 @@ impl CostModel {
     ///
     /// `pub` (was crate-private): the first of the two questions the pre-admission pricing guard
     /// asks, answered for a plane through the
-    /// [`BudgetHost::cost_pricing_enabled`](busbar_substrate::plane_host::BudgetHost::cost_pricing_enabled)
+    /// [`BudgetHost::cost_pricing_enabled`](busbar_kernel::plane_host::BudgetHost::cost_pricing_enabled)
     /// seam, which downcasts the opaque cost handle and drives this same read.
     pub fn pricing_enabled(&self) -> bool {
         self.rates.is_some()
@@ -677,8 +677,8 @@ impl CostModel {
         }
     }
 
-    /// PRICE a neutral [`busbar_substrate::billing::Usage`] for `model` into nanodollars — the host-side
-    /// entry point the [`MeteringHost::price_usage`](busbar_substrate::plane_host::MeteringHost::price_usage)
+    /// PRICE a neutral [`busbar_substrate_values::billing::Usage`] for `model` into nanodollars — the host-side
+    /// entry point the [`MeteringHost::price_usage`](busbar_kernel::plane_host::MeteringHost::price_usage)
     /// seam a live carrier drives folds through. Byte-for-byte the SAME arithmetic the
     /// enforcement/derive summation uses ([`Self::rate_for`] → [`RateNanos::reserved_nanos`], exactly as
     /// [`Self::derive_spend_cents`]/[`derive_spend_micros`](Self::derive_spend_micros) price each model),
@@ -692,7 +692,7 @@ impl CostModel {
     pub fn price_usage_nanos(
         &self,
         model: &str,
-        usage: &busbar_substrate::billing::Usage,
+        usage: &busbar_substrate_values::billing::Usage,
     ) -> Option<u128> {
         self.rate_for(model)
             .map(|rate| rate.reserved_nanos(&usage.usage_units))
@@ -704,7 +704,7 @@ impl CostModel {
     ///
     /// `pub` (was crate-private): the second of the pricing guard's two questions, answered for a
     /// plane through the
-    /// [`BudgetHost::cost_model_unpriced`](busbar_substrate::plane_host::BudgetHost::cost_model_unpriced)
+    /// [`BudgetHost::cost_model_unpriced`](busbar_kernel::plane_host::BudgetHost::cost_model_unpriced)
     /// seam over the same opaque handle.
     #[inline]
     pub fn model_unpriced(&self, model: &str) -> bool {

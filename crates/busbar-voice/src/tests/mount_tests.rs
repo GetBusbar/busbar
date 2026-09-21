@@ -26,10 +26,10 @@ use crate::topology::telephony::{begin_telephony, g711_config};
 use crate::topology::SessionBudget;
 use busbar_api::{PlaneRecord, PlaneSelector, StoreResult};
 use busbar_plugin::cold::endpoint::{RouteAuth, RouteMethod};
-use busbar_substrate::plane::handle_engine::DurableHandleEngine;
-use busbar_substrate::plane::registry::{BuildCtx, CardIssuer, PlaneBootCtx, RestoredSummary};
-use busbar_substrate::plane::store::PlaneStore;
-use busbar_substrate::plane_host::EngineHost;
+use busbar_kernel::plane::handle_engine::DurableHandleEngine;
+use busbar_kernel::plane::registry::{BuildCtx, CardIssuer, PlaneBootCtx, RestoredSummary};
+use busbar_kernel::plane::store::PlaneStore;
+use busbar_kernel::plane_host::EngineHost;
 use futures::channel::mpsc::unbounded;
 use futures::StreamExt;
 use std::sync::{Arc, Mutex};
@@ -301,7 +301,7 @@ async fn arrival_runs_run_gauntlet_session_refusing_a_denied_destination_before_
     // ARRIVAL runs `run_gauntlet_session`: a denied destination is REFUSED at the open-pass gate before
     // any lease/durable open — the governed open returns the gate's `403`, proving the gate ran. This
     // is the D3 call-site invariant at the ROUTE layer: no byte, no charge on a refused destination.
-    let host = busbar_substrate::testkit::fixture_host::FixtureHost::new().into_host();
+    let host = busbar_kernel::testkit::fixture_host::FixtureHost::new().into_host();
     let denied = runtime_for("blocked-model", &["blocked-model"]);
     // Mint is a live `open_governed` production ingress (the browser `ek_` pass); the Sideband/Telephony
     // WS legs prove the same verify-before-charge through `ws_accept`'s destination gauntlet + the
@@ -496,7 +496,7 @@ fn a_failed_gemini_dial_does_not_write_the_provider_key_into_the_log() {
 
     // A `base_url` the neutral dialer cannot use quotes the whole target back — key and all.
     let refusal = crate::topology::DialProviderError::Dial(
-        busbar_substrate::egress::duplex_ws::DialError::Url(url.clone()),
+        busbar_kernel::egress::duplex_ws::DialError::Url(url.clone()),
     );
     let raw = refusal.to_string();
     assert!(

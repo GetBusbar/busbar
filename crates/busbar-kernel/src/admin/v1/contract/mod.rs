@@ -33,10 +33,10 @@ pub mod taxonomy;
 /// external protocol it mimics, not by busbar.
 pub const API_ROOT: &str = "/api";
 
-/// The frozen Admin API v1 path prefix — relocated to the neutral substrate (`busbar_substrate::api`)
+/// The frozen Admin API v1 path prefix — relocated to the neutral substrate (`busbar_kernel::api`)
 /// so a plane crate names it without reaching into core; re-exported here so every in-core caller
 /// (the router nest, the scope matrix, the OpenAPI doc) is unchanged.
-pub use busbar_substrate::api::ADMIN_PREFIX;
+pub use busbar_kernel::api::ADMIN_PREFIX;
 
 /// Relative (post-`ADMIN_PREFIX`) path segments matched in more than one place — the scope matrix
 /// (`required_scope`), auth.rs's mutation-rate classifier, and the json.rs router/OpenAPI builder —
@@ -85,7 +85,7 @@ pub use busbar_contract::authz::{Grants, Scope};
 /// refinements (a non-`full` caller must not register a hook wired into a security-critical path)
 /// remain at the service layer as defense-in-depth.
 // `pub` (not `pub`): the extracted plane crates' admin-verb conformance tests assert their
-// declared route scope equals the bar this one function ENFORCES (`busbar_substrate::admin_verbs`
+// declared route scope equals the bar this one function ENFORCES (`busbar_kernel::admin_verbs`
 // documents the invariant), so they name it across the honest crate boundary. A pure `(method, path)
 // → Scope` function with no state to leak.
 pub fn required_scope(method: &axum::http::Method, path: &str) -> Scope {
@@ -470,9 +470,9 @@ pub struct HookView {
 }
 
 /// The shared named-DEFINITION read VIEW — relocated to the neutral substrate
-/// (`busbar_substrate::api`) as pure serde data (no `Scope`, no core reach) so a plane crate names
+/// (`busbar_kernel::api`) as pure serde data (no `Scope`, no core reach) so a plane crate names
 /// it directly; re-exported here so every in-core (and a2a) caller is unchanged.
-pub use busbar_substrate::api::NamedDefView;
+pub use busbar_kernel::api::NamedDefView;
 
 /// A group definition in the registry read (`GET /api/v1/admin/groups`,
 /// `GET /api/v1/admin/groups/{name}`): the limit-tree read surface. Projects the `groups:` config

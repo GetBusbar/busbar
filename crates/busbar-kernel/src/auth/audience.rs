@@ -51,12 +51,12 @@ use base64::Engine as _;
 
 /// What could be established about a presented bearer's audience binding.
 ///
-/// The enum itself relocated to the neutral seam (`busbar_substrate::plane_host::AudienceBinding`) so
+/// The enum itself relocated to the neutral seam (`busbar_kernel::plane_host::AudienceBinding`) so
 /// a plane reads the [`inspect_bearer`] verdict — routed host-side through
 /// `EngineHost::identity_audience_binding` — without naming this core auth module. Re-exported at its
 /// original path so core's own callers (the auth-chain pre-filter, `oauth_as`) and every variant name
 /// are unchanged; the JUDGEMENT below stays here, since it reaches core's governance token prefix.
-pub use busbar_substrate::plane_host::AudienceBinding as Binding;
+pub use busbar_kernel::plane_host::AudienceBinding as Binding;
 
 /// Establish what can be established about `token`'s binding to `expected_aud`.
 ///

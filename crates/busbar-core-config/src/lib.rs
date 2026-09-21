@@ -36,9 +36,9 @@
 //! # Landed: `parse` (config neutral-half wave, DECISIONS #5/#19)
 //!
 //! [`parse`] — the neutral boot/validate-time config-parsing helpers (`parse_duration_secs`
-//! re-exported from `busbar_substrate::duration`, and the single `max_admin_scope:` ceiling-token
+//! re-exported from `busbar_contract::duration`, and the single `max_admin_scope:` ceiling-token
 //! check `parse_ceiling`) — is the first config helper reconciled in. It names ONLY the neutral
-//! spine (`busbar_substrate::{duration, config::auth}`, `busbar_contract::authz`), never the plane
+//! spine (`busbar_kernel::{duration, config::auth}`, `busbar_contract::authz`), never the plane
 //! or oauth config-by-value, so it moves as a byte-identical `git mv`. `busbar-core` re-exports it
 //! at its historical `busbar_kernel::config::parse` path, so every call site is unchanged. The rest
 //! of the config neutral half (migrate/overlay/named_map/prepass) stays in `busbar-core` this pass:

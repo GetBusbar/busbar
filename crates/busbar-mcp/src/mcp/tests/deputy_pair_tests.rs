@@ -230,8 +230,8 @@ async fn a_grant_for_a_different_tool_on_the_same_server_is_refused() {
 #[tokio::test]
 async fn the_callers_busbar_key_appears_nowhere_on_the_upstream_wire() {
     use busbar_store_memory::MemoryStore;
-    use busbar_substrate::governance::signing::{TokenSigner, TokenVerifier, DEFAULT_KID};
-    use busbar_substrate::governance::NewKeySpec;
+    use busbar_kernel::governance::signing::{TokenSigner, TokenVerifier, DEFAULT_KID};
+    use busbar_kernel::governance::NewKeySpec;
     metrics_init();
 
     let peer = Peer::start(Behaviour::Result, ISSUED).await;
@@ -261,11 +261,11 @@ async fn the_callers_busbar_key_appears_nowhere_on_the_upstream_wire() {
                 ..Default::default()
             },
             2_000_000_000,
-            busbar_substrate::store::now(),
+            busbar_kernel::store::now(),
         )
         .unwrap();
     let generation = TokenVerifier::single(signer.kid(), signer.verifying_key())
-        .verify(plain.as_str(), busbar_substrate::store::now(), None)
+        .verify(plain.as_str(), busbar_kernel::store::now(), None)
         .expect("the plain token verifies")
         .generation;
     let mut scoped = key.clone();
@@ -365,7 +365,7 @@ async fn the_callers_busbar_key_appears_nowhere_on_the_upstream_wire() {
     }
     // Belt and braces on the same haystack: no fragment of the token's payload segment either.
     let payload_segment = bearer
-        .trim_start_matches(busbar_substrate::governance::signing::TOKEN_PREFIX)
+        .trim_start_matches(busbar_kernel::governance::signing::TOKEN_PREFIX)
         .split('.')
         .next()
         .unwrap()

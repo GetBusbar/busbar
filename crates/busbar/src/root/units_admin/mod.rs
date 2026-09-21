@@ -2557,7 +2557,7 @@ fn mix_arrival(material: [u8; 16], at: u64) -> [u8; 16] {
 /// on the other side of the call writes hex — and if it ever did, the byte is left as the source's
 /// own zero rather than silently substituted.
 fn getrandom_into(buf: &mut [u8; 16]) {
-    let Ok(drawn) = busbar_substrate::plane::approvals::nonce() else {
+    let Ok(drawn) = busbar_kernel::plane::approvals::nonce() else {
         // The OS source refusing is not survivable for a secret this binds, and it is also not
         // something this root can refuse from: the seam it fills is infallible. So the buffer is
         // left as the caller's zeroes and the epoch below is what still distinguishes it — an

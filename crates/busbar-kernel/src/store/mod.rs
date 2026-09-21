@@ -82,11 +82,10 @@ fn write_recover<T>(m: &std::sync::RwLock<T>) -> std::sync::RwLockWriteGuard<'_,
 // name it without reaching into busbar-core.
 //
 // R5-store: the `crate::store::{now, now_ms}` re-export is DELETED and its ~110 call sites across
-// twelve core modules name `busbar_substrate::store::{now, now_ms}` — the crate that defines it —
+// twelve core modules name `busbar_kernel::store::{now, now_ms}` — the crate that defines it —
 // instead. Core keeps a PRIVATE import, not a re-export: `now()` is still the fallback the
 // #[cfg(test)] test-clock below (TEST_NOW / now_for_test) reads through, and that clock stays in
 // core because it owns the thread-local injection the in-core breaker/store tests drive.
-use busbar_substrate::store::now;
 
 // Test-clock storage, THREAD-LOCAL.
 //
@@ -133,7 +132,7 @@ fn now_for_test() -> u64 {
 //
 // The breaker-state taxonomy (`BreakerState`), the lane-availability taxonomy (`Unavailable`), the
 // `LaneRuntime` trait and the carriers its signatures name (`Admit`, `LaneSnapshot`, `Permit`) all
-// relocated DOWN to `busbar_substrate::store` — Phase-B B1 for the taxonomies (they travel with
+// relocated DOWN to `busbar_kernel::store` — Phase-B B1 for the taxonomies (they travel with
 // `failover::walk_with`, the neutral walk that carries them), 1.6.0 App-retype WEDGE 1 for the
 // lane-runtime seam — so a plane crate names them via the ABI without reaching into `busbar-core`.
 //
@@ -141,7 +140,7 @@ fn now_for_test() -> u64 {
 // only so the in-memory breaker engine in `in_memory/` keeps its bare-name use through `use super::*`
 // (`impl LaneRuntime for HealthState`, the FSM, the `/stats` and `/metrics` snapshot shapes). Every
 // reader outside this module — `endpoints`, `metrics`, `failover`, `appbuild`, `plane_host`, and the
-// one out-of-tree plugin crate's test — names `busbar_substrate::store::…`, the crate that defines them.
+// one out-of-tree plugin crate's test — names `busbar_kernel::store::…`, the crate that defines them.
 //
 // Four names were dropped outright rather than repointed, having no reader at either the
 // `crate::store::…` or the `busbar_kernel::store::…` path: `AT_CAPACITY_RECOVERY_FLOOR_MS` and
@@ -149,9 +148,6 @@ fn now_for_test() -> u64 {
 // `PoolCellHealthSnapshot` (read only by `in_memory/`, which now imports them directly).
 // `PROBE_RETRY_FLOOR_MS` moved earlier with its only reader, `recovery_hint_ms`, and is
 // substrate-private.
-use busbar_substrate::store::{
-    Admit, BreakerState, LaneRuntime, LaneSnapshot, Permit, Unavailable,
-};
 
 mod in_memory;
 pub use in_memory::*;
@@ -166,3 +162,7 @@ pub(crate) use planes::Admission as PlaneAdmission;
 #[cfg(test)]
 #[path = "tests/tests.rs"]
 mod tests;
+
+// The neutral store vocab (LaneRuntime/BreakerCfg/now/now_ms) relocated in from busbar-substrate (W4.b P2).
+mod vocab;
+pub use vocab::*;

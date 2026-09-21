@@ -8,7 +8,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use busbar_substrate::topology::UpstreamClients;
+use busbar_kernel::topology::UpstreamClients;
 
 // ---------- lane (one per model) ----------
 #[derive(Clone)]
@@ -51,8 +51,8 @@ pub(crate) struct Lane {
     /// and its constant facts via `decl_for(self.protocol).<field>`. Copy-cheap, so `Lane: Clone` stays.
     pub(crate) protocol: &'static str,
     /// Outbound credential — how this lane presents Busbar's identity to the upstream. Resolved once
-    /// at boot from (protocol, auth). See `busbar_substrate::egress_auth`; the request path calls `headers_for`.
-    pub(crate) credential: Arc<dyn busbar_substrate::egress_auth::CredentialProvider>,
+    /// at boot from (protocol, auth). See `busbar_kernel::egress_auth`; the request path calls `headers_for`.
+    pub(crate) credential: Arc<dyn busbar_kernel::egress_auth::CredentialProvider>,
     #[allow(dead_code)]
     pub(crate) max: usize,
     // error_map cloned into each lane at startup for Stage 1b normalization
@@ -67,7 +67,7 @@ pub(crate) struct Lane {
     pub(crate) path_base: Option<String>,
     /// Optional active health-probe settings (from the provider's `health:` block). `None` or
     /// `mode: none` means no background probing for this lane.
-    pub(crate) health: Option<busbar_substrate::plane_host::HealthInput>,
+    pub(crate) health: Option<busbar_kernel::plane_host::HealthInput>,
     /// Model-level per-ATTEMPT time-to-response-headers cap (ms) — the hang detector. A pool
     /// member's `attempt_timeout_ms` overrides it per workload; see `ModelCfg::attempt_timeout_ms`.
     pub(crate) attempt_timeout_ms: Option<u64>,
@@ -81,7 +81,7 @@ pub(crate) struct Lane {
     /// Optional default max output tokens, injected at the cross-protocol translation seam when the
     /// source request omitted `max_tokens` (legal for OpenAI) but this lane's protocol REQUIRES it
     /// (Anthropic Messages — see `ProtocolWriter::requires_max_tokens`). Falls back to
-    /// `busbar_substrate::proto::DEFAULT_MAX_TOKENS` when unset.
+    /// `busbar_kernel::proto::DEFAULT_MAX_TOKENS` when unset.
     pub(crate) default_max_tokens: Option<u32>,
     /// Optional upstream model name override. When set, this value is sent to the provider as the
     /// model identifier in the body and URL path, instead of `self.model` (the config key).
@@ -156,16 +156,16 @@ pub(crate) struct PoolRuntime {
     /// never touches it. Empty for a pool with no members declaring metadata.
     pub(crate) members: std::collections::HashMap<usize, MemberMeta>,
     /// Per-pool failover settings (deadline, cap, and member exclusions).
-    pub(crate) failover: Option<busbar_substrate::plane_host::FailoverInput>,
+    pub(crate) failover: Option<busbar_kernel::plane_host::FailoverInput>,
     /// Per-pool OVERRIDE of the all-pools `pools.upstream_credentials:` default (1.5.3).
     /// `None` = inherit `App::upstream_credentials`. Read per request by
     /// [`App::pool_upstream_creds`].
     pub(crate) upstream_credentials: Option<busbar_api::UpstreamCreds>,
     /// Per-pool session-affinity settings (which request header pins a session to a lane).
-    pub(crate) affinity: Option<busbar_substrate::plane_host::AffinityInput>,
+    pub(crate) affinity: Option<busbar_kernel::plane_host::AffinityInput>,
     /// Per-pool breaker settings (trip mode/thresholds + cooldown backoff), resolved into the
     /// runtime `store::BreakerCfg` the FSM evaluates. `None` falls back to ADR-0002 defaults.
-    pub(crate) breaker: Option<busbar_substrate::store::BreakerCfg>,
+    pub(crate) breaker: Option<busbar_kernel::store::BreakerCfg>,
     // NOTE (1.6.0 money-path Phase 3-4 C — the RATIFIED pool-hook facade): the per-pool routing
     // `policy` / decision `gates` / `rewrite_hooks` USED to live here, resolved at config load from
     // `hooks::resolve_pool_*`. They carry the core-owned `ResolvedPolicy`/`Arc<dyn RoutingPolicy>`
@@ -240,8 +240,8 @@ pub(crate) struct NativeRuntime {
     pub(crate) pool_runtime: HashMap<String, PoolRuntime>,
     pub(crate) fallback_pools: HashMap<String, Vec<WeightedLane>>,
     pub(crate) on_exhausted_cfgs:
-        std::collections::HashMap<String, busbar_substrate::plane_host::OnExhaustedInput>,
-    pub(crate) failover_cfg: Option<busbar_substrate::plane_host::FailoverInput>,
+        std::collections::HashMap<String, busbar_kernel::plane_host::OnExhaustedInput>,
+    pub(crate) failover_cfg: Option<busbar_kernel::plane_host::FailoverInput>,
     pub(crate) queued_depth: Arc<QueuedDepth>,
     pub(crate) probe_schedule: Arc<crate::engine::health::ProbeSchedule>,
     pub(crate) upstream_credentials: busbar_api::UpstreamCreds,
@@ -251,7 +251,7 @@ pub(crate) struct NativeRuntime {
     /// warm-pool-reuse compare in [`build_runtime`](crate::engine::build_runtime) reads: the next
     /// generation reuses this generation's warm `client` (its kept-alive upstream sockets) iff these
     /// are unchanged. Moved IN-PLANE from core's `App::client_settings` with the client build itself.
-    pub(crate) client_settings: busbar_substrate::plane_host::ClientSettingsInput,
+    pub(crate) client_settings: busbar_kernel::plane_host::ClientSettingsInput,
     /// The GLOBAL fallback `max_tokens` the cross-protocol translation seam injects when a lane has no
     /// per-lane `default_max_tokens` (`limits.default_max_tokens`). This is LLM-plane vocabulary; it
     /// USED to be read off the neutral `App`/`PlaneHost` (`App::default_max_tokens`) but now rides this
@@ -291,7 +291,7 @@ impl NativeRuntime {
 /// naming no `Lane`/`WeightedLane` — so they need not move when the tables do. Every projection is a
 /// cold/scrape-path read that may allocate; the hot engine path never touches this seam (it reads the
 /// concrete fields directly).
-impl busbar_substrate::plane_host::EngineTablesView for NativeRuntime {
+impl busbar_kernel::plane_host::EngineTablesView for NativeRuntime {
     fn pools(&self) -> Vec<(&str, Vec<usize>)> {
         self.pools
             .iter()
@@ -310,10 +310,10 @@ impl busbar_substrate::plane_host::EngineTablesView for NativeRuntime {
     fn model_index(&self, model: &str) -> Option<usize> {
         self.by_model.get(model).copied()
     }
-    fn lane_view(&self, idx: usize) -> Option<busbar_substrate::plane_host::LaneView<'_>> {
+    fn lane_view(&self, idx: usize) -> Option<busbar_kernel::plane_host::LaneView<'_>> {
         self.lanes
             .get(idx)
-            .map(|lane| busbar_substrate::plane_host::LaneView {
+            .map(|lane| busbar_kernel::plane_host::LaneView {
                 model: &lane.model,
                 provider: &lane.provider,
                 base_url: &lane.base_url,
@@ -333,7 +333,7 @@ impl busbar_substrate::plane_host::EngineTablesView for NativeRuntime {
     }
     fn on_exhausted_fallback(&self, pool: &str) -> Option<String> {
         match self.on_exhausted_cfgs.get(pool) {
-            Some(busbar_substrate::plane_host::OnExhaustedInput::FallbackPool(fallback)) => {
+            Some(busbar_kernel::plane_host::OnExhaustedInput::FallbackPool(fallback)) => {
                 Some(fallback.clone())
             }
             _ => None,
@@ -358,7 +358,7 @@ impl busbar_substrate::plane_host::EngineTablesView for NativeRuntime {
 /// threads `host: &Arc<dyn EngineHost>` + resolves `rt` via [`native_runtime_arc`] and builds
 /// [`EngineTables::new`]. This `&App` extension survives ONLY for the many tests that hold a `TestApp`
 /// and read `app.engine_tables()`, so the trait is `cfg(test)`-ONLY, and its impl is BLANKET over the
-/// neutral built-app seam (`busbar_substrate::testkit::BuiltAppSeam`) rather than over core's `App`,
+/// neutral built-app seam (`busbar_kernel::testkit::BuiltAppSeam`) rather than over core's `App`,
 /// so even this crate's test scope names no core type.
 #[cfg(test)]
 pub(crate) trait AppEngineExt {
@@ -377,7 +377,7 @@ pub(crate) trait AppEngineExt {
     fn llm_runtime_mut(&mut self) -> &mut NativeRuntime;
 }
 
-// The impl is BLANKET over the neutral built-app seam (`busbar_substrate::testkit::BuiltAppSeam`,
+// The impl is BLANKET over the neutral built-app seam (`busbar_kernel::testkit::BuiltAppSeam`,
 // which core implements for its `App`), so this file names no core type even in test scope: the
 // tests hold whatever `Arc<A>` the fixture's `build()` handed back and read `app.engine_tables()` /
 // `app.llm_runtime_mut()` through the trait, exactly as before.
@@ -388,7 +388,7 @@ pub(crate) use app_engine_ext_impl::test_host_rt;
 #[cfg(test)]
 mod app_engine_ext_impl {
     use super::*;
-    use busbar_substrate::testkit::BuiltAppSeam;
+    use busbar_kernel::testkit::BuiltAppSeam;
 
     /// TEST-ONLY: mint the neutral `(host, rt)` pair the production forward path threads, over the built
     /// test App — so a test that drives an internal engine fn (`translate_request_cross_protocol`,
@@ -399,10 +399,10 @@ mod app_engine_ext_impl {
     pub(crate) fn test_host_rt<A: BuiltAppSeam + ?Sized>(
         app: &Arc<A>,
     ) -> (
-        Arc<dyn busbar_substrate::plane_host::EngineHost>,
+        Arc<dyn busbar_kernel::plane_host::EngineHost>,
         Arc<NativeRuntime>,
     ) {
-        let host = busbar_substrate::testkit::engine_host(app);
+        let host = busbar_kernel::testkit::engine_host(app);
         let rt = super::native_runtime_arc(host.as_ref());
         (host, rt)
     }
@@ -469,13 +469,13 @@ fn empty_native_runtime() -> &'static NativeRuntime {
         upstream_credentials: busbar_api::UpstreamCreds::default(),
         any_pool_upstream_creds_override: false,
         client: UpstreamClients::build(1, || {
-            busbar_substrate::proxy::build_egress_client(
+            busbar_kernel::proxy::build_egress_client(
                 &crate::engine::EgressClientSpec::pooled_webpki(4, 300, false, false),
             )
         }),
         // The empty runtime's client is the never-dialled default shard; its settings key exists only
         // so the warm-reuse compare has a value to read (it never matches a real generation's).
-        client_settings: busbar_substrate::plane_host::ClientSettingsInput {
+        client_settings: busbar_kernel::plane_host::ClientSettingsInput {
             upstream_request_timeout_secs: 0,
             pool_max_idle_per_host: 4,
             pool_idle_timeout_secs: 300,
@@ -507,7 +507,7 @@ pub(crate) struct EngineTables<'a> {
 /// reads this cached `&'static str` — never re-running `format!` on the measured forward alloc path.
 fn llm_runtime_slot_key() -> &'static str {
     static KEY: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
-    KEY.get_or_init(|| busbar_substrate::plane_host::runtime_slot_key(crate::PLANE_DECL.key))
+    KEY.get_or_init(|| busbar_kernel::plane_host::runtime_slot_key(crate::PLANE_DECL.key))
 }
 
 /// Resolve THIS generation's LLM data-plane [`NativeRuntime`] through the neutral host seam, OWNED (an
@@ -518,7 +518,7 @@ fn llm_runtime_slot_key() -> &'static str {
 /// refcount without touching the heap. The zero-plane fallback (no slot / a foreign slot type) mints the
 /// process-lifetime EMPTY runtime into a fresh `Arc` — a cold, never-routed path, off the money path.
 pub(crate) fn native_runtime_arc(
-    host: &dyn busbar_substrate::plane_host::EngineHost,
+    host: &dyn busbar_kernel::plane_host::EngineHost,
 ) -> Arc<NativeRuntime> {
     host.plane_slot(llm_runtime_slot_key())
         .and_then(|slot| slot.downcast::<NativeRuntime>().ok())
@@ -550,7 +550,7 @@ impl<'a> EngineTables<'a> {
 
     /// The global default failover config (the fallback for pools that set none), if configured.
     /// Returns the field as-is so a call site keeps its own `.as_ref()` (a drop-in for `app.failover_cfg`).
-    pub(crate) fn failover_cfg(&self) -> &'a Option<busbar_substrate::plane_host::FailoverInput> {
+    pub(crate) fn failover_cfg(&self) -> &'a Option<busbar_kernel::plane_host::FailoverInput> {
         &self.rt.failover_cfg
     }
 
@@ -583,7 +583,7 @@ impl<'a> EngineTables<'a> {
     /// The per-pool `on_exhausted:` policy table (fallback-pool / queue / least-bad / 503).
     pub(crate) fn on_exhausted_cfgs(
         &self,
-    ) -> &'a std::collections::HashMap<String, busbar_substrate::plane_host::OnExhaustedInput> {
+    ) -> &'a std::collections::HashMap<String, busbar_kernel::plane_host::OnExhaustedInput> {
         &self.rt.on_exhausted_cfgs
     }
 
@@ -606,7 +606,7 @@ impl<'a> EngineTables<'a> {
     /// This generation's client-affecting resolved limits — the App-retype WEDGE 3 successor to the
     /// `App::client_settings` read (byte-identical: `build_runtime` lowers the SAME config values into
     /// this runtime field the flat `App::client_settings` carried).
-    pub(crate) fn client_settings(&self) -> &'a busbar_substrate::plane_host::ClientSettingsInput {
+    pub(crate) fn client_settings(&self) -> &'a busbar_kernel::plane_host::ClientSettingsInput {
         &self.rt.client_settings
     }
 }

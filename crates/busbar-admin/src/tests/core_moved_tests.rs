@@ -303,7 +303,7 @@ async fn split_admin_listener_no_double_exposure() {
         .build();
     let (data_router, admin_router, _handle) = crate::build_split_routers_with_limits(
         app,
-        busbar_substrate::proxy::max_translate_body_bytes(),
+        busbar_kernel::proxy::max_translate_body_bytes(),
         busbar_kernel::config::DEFAULT_MAX_INBOUND_CONCURRENT,
         busbar_kernel::config::DEFAULT_RESPONSE_HEADERS_SERVER_TIMING,
     );

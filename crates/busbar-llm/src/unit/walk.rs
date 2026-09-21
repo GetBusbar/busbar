@@ -31,7 +31,7 @@ use axum::http::HeaderMap;
 use axum::response::Response;
 
 use busbar_contract::caps::{Grant, Decision, Meter, Outcome, Route, Pass, Consumption};
-use busbar_substrate::plane_host::{EngineHost, EngineTablesView};
+use busbar_kernel::plane_host::{EngineHost, EngineTablesView};
 
 use crate::unit::admit::Admitted;
 use crate::unit::arrival::BodyArrival;
@@ -143,7 +143,7 @@ pub struct Tap(crate::engine::TapCell);
 pub struct LateReport {
     /// The tier split the tap reported, by neutral unit class — the same counts the governance
     /// ledger accrued when the cell filled. Empty for a response that billed nothing.
-    pub usage: busbar_substrate::billing::Usage,
+    pub usage: busbar_substrate_values::billing::Usage,
     /// How many billable requests this unit is: one for a delivered client request that reached an
     /// upstream, zero otherwise. It is the Meter step's own count, on the same base the previous
     /// release charges the flat fee on, and it is carried rather than re-decided so the two cannot
@@ -484,7 +484,7 @@ impl Walk {
         // billable count and does not refund it. The count is the Meter step's own, on the same base
         // the legacy accounting charges on, and it is read here rather than decided a second time.
         let usage = if facts.billing_failed {
-            busbar_substrate::billing::Usage::default()
+            busbar_substrate_values::billing::Usage::default()
         } else {
             facts
                 .usage
@@ -587,15 +587,15 @@ impl Walk {
                 busbar_contract::caps::Refusal::new(busbar_contract::caps::ReasonCode::NoDestination),
             );
         };
-        let op = busbar_substrate::handlers::frame(
-            busbar_substrate::transport::Transport::Http,
+        let op = busbar_substrate_values::handlers::frame(
+            busbar_substrate_values::transport::Transport::Http,
             self.operation,
             // The handler the Decode step resolved is looked up again here rather than carried,
             // because the lookup is a table read against a `&'static` registry and a borrowed vtable
             // is not a thing the carry holds. Same protocol, same operation, same table: the same
             // handler, or none — and none is unreachable, because the Decode step already refused a
             // unit whose pair has no handler.
-            match busbar_substrate::handlers::request_handler(self.proto)
+            match busbar_substrate_values::handlers::request_handler(self.proto)
                 .and_then(|rh| rh.operation_handler(self.operation))
             {
                 Some(h) => h,

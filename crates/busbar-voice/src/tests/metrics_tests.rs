@@ -12,8 +12,8 @@
 
 use crate::mount::{open_governed, GovernedOpen, Ingress};
 use crate::runtime::{EchoToolExecutor, LocalMeteringPort, VoiceRuntime};
-use busbar_substrate::plane::handle_engine::DurableHandleEngine;
-use busbar_substrate::testkit::{fixture_host::FixtureHost, metrics_capture};
+use busbar_kernel::plane::handle_engine::DurableHandleEngine;
+use busbar_kernel::testkit::{fixture_host::FixtureHost, metrics_capture};
 use std::sync::Arc;
 
 #[tokio::test]

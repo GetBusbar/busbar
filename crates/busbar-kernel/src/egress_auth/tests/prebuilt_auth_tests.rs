@@ -13,7 +13,7 @@ use crate::egress_auth::{prebuild_auth, resolve};
 use crate::proto::{convert_headers, SigningContext};
 
 /// Seed the core-test built-in `ProtocolDecl`s into the shared substrate registry the relocated
-/// `resolve` reads. `resolve` now lives in `busbar_substrate::egress_auth` and calls substrate's
+/// `resolve` reads. `resolve` now lives in `busbar_kernel::egress_auth` and calls substrate's
 /// `proto::decl_for` DIRECTLY, bypassing core's `#[cfg(test)]` self-seeding `registry()` veneer;
 /// without this seed the LLM dialect decls are absent and EVERY scheme collapses to `NoCredential`
 /// (a silent weakening — the bedrock arm below would then wrongly report lane-constant, and the

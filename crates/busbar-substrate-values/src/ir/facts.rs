@@ -25,7 +25,7 @@
 //! # Scope: the LLM family's walk, behind a seam two families now implement
 //!
 //! The concrete-IR projection (`impl IrFacts for IrRequest` + `project`) lives in the `busbar-llm`
-//! plugin (`ir::facts_impl`); the invocation IR (`busbar_substrate::ir::invoke`) is the second family
+//! plugin (`ir::facts_impl`); the invocation IR (`busbar_substrate_values::ir::invoke`) is the second family
 //! implementing this trait with its own walk rather than being folded into a superset — one IR per
 //! family is a standing rule, because a shared superset across families is a lossless-translation
 //! surface between things that never translate.

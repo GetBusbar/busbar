@@ -51,7 +51,7 @@ required-features = ["runtime", "test-support"]
 # The substrate crate: the neutral shared surface the plugin names instead of busbar-core — the plane
 # and protocol registry descriptors (`PlaneDecl`, `ProtocolDecl`), the diagnostics namespace, the
 # proxy/egress constants the `ProtocolDecl` fields carry.
-busbar-substrate = { path = "../busbar-substrate" }
+busbar-kernel = { path = "../busbar-kernel", default-features = false }
 # THE CODECS. The pure half of this plugin, split out so `busbar-plane-voice` can name the duplex IR
 # and the dialect grammars without pulling this crate's axum mount, WebSocket accept, tokio session
 # tasks and telephony dial into a pure kind's closure. Every module that moved is re-exported from
@@ -60,6 +60,7 @@ busbar-voice-codec = { path = "../busbar-voice-codec" }
 # The plugin contracts crate, named ahead of use (the `ProtocolDecl::verbs` field is a
 # `busbar_api::operation::Operation` slice), exactly as busbar-mcp names it.
 busbar-api = { path = "../api" }
+busbar-substrate-values = { path = "../busbar-substrate-values" }
 # `axum::http::StatusCode` appears in the `ProtocolDecl` field set (quota / auth-failure statuses).
 axum = { workspace = true }
 # The plane's OWN media-frame carrier: `IrAudioFrame.media` is opaque `bytes::Bytes` (`plane4-duplex-session.md` §2.4 identity IR).
@@ -94,7 +95,7 @@ futures = { workspace = true, optional = true }
 # (see `crate::mount::voice_start`), so this is pure harness/test weight, still `runtime`-gated.
 tokio = { workspace = true, features = ["rt", "sync", "macros", "time", "net", "rt-multi-thread"], optional = true }
 # THE LOOPBACK PROVIDER's WS ACCEPT SIDE — `topology::dial_provider` (and the substrate egress dialer
-# it rides) already pulls `tokio-tungstenite` transitively through `busbar-substrate/runtime`; this is
+# it rides) already pulls `tokio-tungstenite` transitively through `busbar-kernel/runtime`; this is
 # the harness's OWN direct dep for the ACCEPT half (`accept_async`), which the substrate crate has no
 # reason to expose. Same feature set as the substrate's own use (handshake only, no TLS/connector).
 tokio-tungstenite = { workspace = true, optional = true }
@@ -138,21 +139,21 @@ busbar-plane-voice = { path = "../busbar-plane-voice" }
 # lease + both topologies). OFF by default (HARD RULE 4): the default workspace build is UNAFFECTED and
 # the crate still compiles with the flag off (IR + declarations only, no async runtime pulled in). Turning it on pulls the
 # async closure (`async-trait` / `futures` / `tokio`) and compiles `session`/`topology`.
-# `busbar-substrate/runtime` ARMS the neutral full-duplex WS transport (the ingress acceptor + the
+# `busbar-kernel/runtime` ARMS the neutral full-duplex WS transport (the ingress acceptor + the
 # net-guard-pinned egress dialer): the plane SELECTS `Transport::WebSocket` and lets the substrate open
 # the socket, so the provider sideband WSS dials THROUGH `net_guard` and the plane holds no socket
 # plumbing of its own. Turned on in lock-step with the plane's own async runtime.
-runtime = ["dep:async-trait", "dep:futures", "dep:tokio", "dep:tokio-tungstenite", "dep:busbar-plugin", "dep:url", "dep:tracing", "dep:http", "dep:http-body-util", "dep:hyper", "dep:metrics", "busbar-substrate/runtime", "busbar-voice-codec/runtime"]
+runtime = ["dep:async-trait", "dep:futures", "dep:tokio", "dep:tokio-tungstenite", "dep:busbar-plugin", "dep:url", "dep:tracing", "dep:http", "dep:http-body-util", "dep:hyper", "dep:metrics", "busbar-kernel/runtime", "busbar-voice-codec/runtime"]
 # THE OPENAPI-SCHEMA EDGE, mirroring busbar-mcp/busbar-a2a: `PlaneDecl::openapi_schemas` is a field the
 # substrate struct gates on its own `openapi-schema` feature, so this forwards to substrate to keep the
 # `#[cfg(feature = "openapi-schema")]` field site and the struct definition in lock-step. The plane
 # contributes no schemas (the field is `None`), so no `schemars` dep is pulled.
-openapi-schema = ["busbar-substrate/openapi-schema"]
+openapi-schema = ["busbar-kernel/openapi-schema"]
 # THE HOST-DRIVING TEST SURFACE: reveals the substrate's `testkit` (the in-memory fixture host, the
 # loopback HTTP provider, the metrics capture) to the cells that drive a plane-host seam — the breaker,
 # hook-gate/tap, metrics, SDP-broker and billing-ledger batteries. Pulls NO busbar-core: the fixture
 # host is a substrate double reached through the same seam production uses.
-test-support = ["busbar-substrate/test-support"]
+test-support = ["busbar-kernel/test-support"]
 
 [dev-dependencies]
 # None beyond the workspace crates above: the test surface is the `test-support` feature.

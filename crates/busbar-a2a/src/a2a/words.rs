@@ -4,13 +4,13 @@
 //! THIS PLANE'S REFUSAL VOCABULARY, and the three facts of its RFC 9728 document.
 //!
 //! Everything in this file is an ANSWER TO A DECISION SOMETHING ELSE MADE. The decisions live in
-//! `busbar_substrate::ingress::protocol` — one sequence for every JSON-RPC plane busbar serves — and what
+//! `busbar_kernel::ingress::protocol` — one sequence for every JSON-RPC plane busbar serves — and what
 //! stays here is the WIRE: A2A section 5.4 binds a JSON-RPC code, an HTTP status and a ProtoJSON
 //! body to each of this protocol's errors at once, so a refusal rendered in the sibling plane's
 //! shape is a body the official TCK rejects by schema.
 //!
 //! That split — **a caller keeps its refusal VOCABULARY, not its DECISION** — is
-//! `busbar_substrate::net_guard`'s rule, stated for a second concern. It is why `mcp/envelope.rs` and this
+//! `busbar_kernel::net_guard`'s rule, stated for a second concern. It is why `mcp/envelope.rs` and this
 //! file can say completely different things about the same refusal without either of them deciding
 //! when it happens.
 
@@ -30,13 +30,13 @@ use super::inbound::InboundRefusal;
 /// Every message below is BYTE-IDENTICAL to the one this plane sent before the sequence moved to
 /// core, with ONE exception, and it is an ADDITION rather than a change: `ForbiddenOrigin` had no
 /// wording on this plane at all, because this plane had no `Origin` check. See
-/// `busbar_substrate::ingress::protocol::origin_admitted`.
+/// `busbar_kernel::ingress::protocol::origin_admitted`.
 #[derive(Default)]
 pub(crate) struct A2aWords;
 
-impl busbar_substrate::ingress::protocol::Words for A2aWords {
-    fn refuse(&self, refusal: busbar_substrate::ingress::protocol::CoreRefusal<'_>) -> Response {
-        use busbar_substrate::ingress::protocol::CoreRefusal;
+impl busbar_kernel::ingress::protocol::Words for A2aWords {
+    fn refuse(&self, refusal: busbar_kernel::ingress::protocol::CoreRefusal<'_>) -> Response {
+        use busbar_kernel::ingress::protocol::CoreRefusal;
         match refusal {
             // The mount and the config are created in one act, so this is unreachable; it is
             // answered rather than unwrapped because this is a request path.
@@ -132,9 +132,9 @@ impl busbar_substrate::ingress::protocol::Words for A2aWords {
 /// with no JSON-RPC message in hand at all, and JSON-RPC 2.0 section 5 spells "no correlation"
 /// `null`.
 pub(super) fn refuse_admission(refusal: &InboundRefusal) -> Response {
-    use busbar_substrate::ingress::protocol::Words as _;
+    use busbar_kernel::ingress::protocol::Words as _;
     A2aWords.refuse(
-        busbar_substrate::ingress::protocol::CoreRefusal::Admission {
+        busbar_kernel::ingress::protocol::CoreRefusal::Admission {
             id: serde_json::Value::Null,
             status: axum::http::StatusCode::from_u16(refusal.status())
                 .unwrap_or(axum::http::StatusCode::FORBIDDEN),
@@ -150,7 +150,7 @@ pub(super) fn refuse_admission(refusal: &InboundRefusal) -> Response {
 ///
 /// The document itself is not written twice: the plane-coherence ledger retired the second copy
 /// (verified 2026-08-11) — the two were the same document with the same audience rule — so
-/// `busbar_substrate::ingress::protocol` renders the shape and this reads the one fact that varies
+/// `busbar_kernel::ingress::protocol` renders the shape and this reads the one fact that varies
 /// (the audience) off the plane runtime. It is served at
 /// `/.well-known/oauth-protected-resource<mount>` by [`super::receive::metadata_route`], mounted
 /// `RouteAuth::None` for the reason the sibling plane's is — every caller who needs this document is
@@ -167,10 +167,10 @@ pub(super) fn refuse_admission(refusal: &InboundRefusal) -> Response {
 /// `RouteAuth::None` metadata handler reaches it without an `AppHandle` downcast. The audience is
 /// OWNED (a `Cow::Owned`), so the returned `Metadata` is `'static`.
 pub(super) fn document_of(
-    host: &std::sync::Arc<dyn busbar_substrate::plane_host::EngineHost>,
-) -> Option<busbar_substrate::ingress::protocol::Metadata<'static>> {
+    host: &std::sync::Arc<dyn busbar_kernel::plane_host::EngineHost>,
+) -> Option<busbar_kernel::ingress::protocol::Metadata<'static>> {
     let admission = crate::a2a::runtime_arc_of(host).and_then(|p| p.admission())?;
-    Some(busbar_substrate::ingress::protocol::Metadata {
+    Some(busbar_kernel::ingress::protocol::Metadata {
         resource: std::borrow::Cow::Owned(admission.audience),
         authorization_servers: &[],
         scopes_supported: &[],
@@ -184,6 +184,6 @@ pub(super) fn document_of(
 /// this plane says to a refusal core decided, so "this deployment has no A2A plane" is written in
 /// exactly one place and cannot come to mean two things.
 pub(super) fn plane_absent() -> Response {
-    use busbar_substrate::ingress::protocol::Words as _;
-    A2aWords.refuse(busbar_substrate::ingress::protocol::CoreRefusal::PlaneAbsent)
+    use busbar_kernel::ingress::protocol::Words as _;
+    A2aWords.refuse(busbar_kernel::ingress::protocol::CoreRefusal::PlaneAbsent)
 }

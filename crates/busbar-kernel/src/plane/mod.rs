@@ -94,7 +94,7 @@ pub mod approvals;
 pub mod auditlog;
 pub mod config;
 pub mod cost;
-pub(crate) mod observe;
+pub mod observe;
 pub(crate) mod quarantine;
 pub mod registry;
 // `store` is a core-internal plane primitive. Its module is widened to `pub` ONLY under the
@@ -102,9 +102,7 @@ pub mod registry;
 // helpers it exercises (`StoreNamedTestExt`, `KIND_TASK_EVENT`, `task_event_row_from_body`); the
 // tamper-critical `encode` stays `pub(crate)` regardless (see `store::encode`), so widening the
 // module does NOT hand any out-of-crate caller the row-forging primitive.
-#[cfg(not(any(test, feature = "test-support")))]
-pub(crate) mod store;
-#[cfg(any(test, feature = "test-support"))]
+// W4.b P2: widened to `pub` (planes absorbed substrate's neutral PlaneStore here); `encode` stays pub(crate).
 pub mod store;
 // A durable task set and its per-task provenance chain were RELOCATED wholesale to a plane crate
 // in the 1.7.0 plane extraction: a task is a SINGLE-plane mechanism, so it lives on the plane that
@@ -129,7 +127,6 @@ pub mod store;
 //                    upper-cased once, by the owning plane's own serve-layer binding-advertiser, into
 //                    the spelling a served card advertises — so the card cannot claim a binding the
 //                    plane does not list.
-pub use busbar_substrate::plane::{WIRE_GRPC, WIRE_HTTP_JSON, WIRE_JSONRPC};
 
 /// The FALLBACK plane's registry key — DERIVED from the plane registry rather than a hard-coded
 /// literal: the ONE built-in plane whose decl declares [`registry::PlaneDecl::fallback`]. Read by
@@ -337,16 +334,15 @@ struct Claim {
     wire: &'static str,
 }
 
-/// What a bearer token presented on a mounted plane must be BOUND to, and where a refused caller is
-/// told to go and get one that is — [`PlaneAdmission`].
-///
-/// Both fields are RFC values, not busbar inventions, and neither names a plane — which is the
-/// point. An audience-bound ingress is a general shape (OAuth 2.1 resource servers all have one);
-/// one plane is merely the first to mount one, and another plane will mount a second with different
-/// strings and no new code here. Phase-C config-seam relocated this POD to the neutral
-/// [`busbar_substrate::plane::PlaneAdmission`] so a plane crate contributes its admission across the
-/// mount seam without naming a core type; core re-exports it here so its own call sites are unchanged.
-pub use busbar_substrate::plane::PlaneAdmission;
+// What a bearer token presented on a mounted plane must be BOUND to, and where a refused caller is
+// told to go and get one that is — [`PlaneAdmission`].
+//
+// Both fields are RFC values, not busbar inventions, and neither names a plane — which is the
+// point. An audience-bound ingress is a general shape (OAuth 2.1 resource servers all have one);
+// one plane is merely the first to mount one, and another plane will mount a second with different
+// strings and no new code here. Phase-C config-seam relocated this POD to the neutral
+// [`busbar_kernel::plane::PlaneAdmission`] so a plane crate contributes its admission across the
+// mount seam without naming a core type; core re-exports it here so its own call sites are unchanged.
 
 impl PlaneDispatch {
     /// Declare the admission facts for `plane`. Independent of [`Self::mount`] so the two can be set
@@ -789,3 +785,65 @@ mod plane_tests;
 #[cfg(test)]
 #[path = "tests/sections_tests.rs"]
 mod sections_tests;
+
+// ==== merged from busbar-substrate (W4.b P2 engine drain) ====
+pub mod calllog;
+
+// The NEUTRAL plane-observe response marker `Counted` — the one type a plane's handler and core's
+// `plane::observe` boundary both name. It carries nothing and names no engine type, so it lives
+// here; core re-exports it from `busbar_kernel::plane::observe` so its middleware reads the same type.
+
+// The plane store seam's narrowing adapter: the `PlaneStore` trait a plane persists through and the
+// `PlaneStoreView` that narrows a real `busbar_api::Store` to it. Both name only `busbar_api` leaf
+// types, so they live here; core re-exports them from `busbar_kernel::plane::store`.
+
+// Phase-C config-seam: the NEUTRAL config-seam CONTRACTS a plane's config section is read through
+// (`PlaneCfg`/`PlaneEndpointCfg`/`ContainerGateInputs`) and the parse-time bare-hook-reference rule
+// (`refuse_cross_plane_reference`). They name only `busbar_api::SecretRef` + `serde_json`/`std`, so
+// they live here; core re-exports them. The registry-coupled READER half (`split_section`,
+// `config_sections`, the reserved-key literal) stays core.
+
+// S4b: the NEUTRAL PLANE-REGISTRY SURFACE — the plane VOCABULARY/SEAM declaration `PlaneDecl`, the
+// `BuildCtx` its `build` reads, the neutral `PlaneBootCtx` boot-context trait + its `RestoredSummary`
+// return, and the `BootHook` alias. Relocated here so an extracted plane crate constructs its own
+// `PlaneDecl` and every seam type its fields name without a path back to core. Core re-exports each
+// from `busbar_kernel::plane::registry`, and keeps the population glue + the concrete `BootCtx` (which
+// borrows the core-live `App`) that implements `PlaneBootCtx`.
+
+// SEAM-FIX #1 (axis-C): the NEUTRAL DURABLE-HANDLE ENGINE — the plane-agnostic async-handle /
+// durable-session capability (registry of cross-request handles, durable write-through, retention
+// sweep, boot rehydrate, inbound-push cursor, scoped anti-enumeration read). Lifted here out of the
+// A2A plane's task store so every plane consumes ONE substrate-single-compiled engine rather than
+// reaching into another plane. It names no plane noun: a plane's row is held opaquely behind
+// `Arc<dyn Any>` beside a neutral `HandleMeta` projection, and the plane supplies its shape/statuses/
+// vocab/digest through the entry-point callbacks.
+pub mod handle_engine;
+
+/// A PLANE'S OAUTH RESOURCE-SERVER ADMISSION FACTS — the audience a token must carry to be spent on
+/// this plane's mount, and the RFC 9728 metadata URL a refused caller is pointed at. A neutral POD so
+/// a plane crate contributes its admission across the mount seam without naming a core type; core
+/// re-exports it, so `busbar_kernel::plane::PlaneAdmission` still resolves there.
+///
+/// The confused-deputy defence (RFC 8707) is "a token minted for someone else must not be spendable
+/// here". Keeping the audience beside the MOUNT (not in a handler) means the check is a property of
+/// the door, so every path behind that door inherits it and a new handler cannot forget.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PlaneAdmission {
+    /// RFC 8707 resource indicator: the exact `aud` an admitted token must carry. Compared for
+    /// EQUALITY, never prefix or suffix — a resource indicator is an opaque identifier, and treating
+    /// it as a namespace is how `https://gw.example.com/mcp` starts admitting tokens minted for
+    /// `https://gw.example.com/mcp-staging`.
+    pub audience: String,
+    /// The absolute URL of this resource's RFC 9728 protected-resource metadata document, quoted
+    /// verbatim in the `resource_metadata` parameter of the `WWW-Authenticate` challenge. This is
+    /// the whole of an MCP client's discovery story: it arrives with no credential, reads this URL
+    /// out of the `401`, and follows it to the operator's authorization server.
+    pub resource_metadata: String,
+}
+
+/// THE THREE WIRE-FORMAT NAMES, re-exported at their historical path. They are read by
+/// `Transport::name` as well as by the declarations here — one spelling for the metric label, the
+/// plane's wire-format list and the served card's `protocolBinding`, which is the entire reason they
+/// are constants — so they moved into the values crate with the transport axis. Nothing about them
+/// changed: `busbar_kernel::plane::WIRE_JSONRPC` and its siblings still resolve to these strings.
+pub use busbar_substrate_values::plane::{WIRE_GRPC, WIRE_HTTP_JSON, WIRE_JSONRPC};

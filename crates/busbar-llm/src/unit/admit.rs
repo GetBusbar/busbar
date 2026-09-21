@@ -66,7 +66,7 @@ use busbar_contract::caps::{Grant,
     step::Admit, Admission, Admittance, Decision, Hold, PrincipalId, ReasonCode, Refusal,
     Pass, VerifiedDestination,
 };
-use busbar_substrate::plane_host::EngineHost;
+use busbar_kernel::plane_host::EngineHost;
 
 /// What the door needs that the step shape has nowhere to put.
 ///

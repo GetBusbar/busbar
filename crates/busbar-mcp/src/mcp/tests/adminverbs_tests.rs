@@ -72,9 +72,9 @@ async fn serve(
             Arc::new(busbar_store_memory::MemoryStore::new()),
             Some(TOKEN.to_string()),
             Some(
-                busbar_substrate::governance::signing::TokenSigner::from_secret_bytes(
+                busbar_kernel::governance::signing::TokenSigner::from_secret_bytes(
                     &[9u8; 32],
-                    busbar_substrate::governance::signing::DEFAULT_KID,
+                    busbar_kernel::governance::signing::DEFAULT_KID,
                 ),
             ),
         )
@@ -109,9 +109,9 @@ async fn serve_passthrough(peer: &Peer) -> (std::net::SocketAddr, tokio::task::J
             Arc::new(busbar_store_memory::MemoryStore::new()),
             Some(TOKEN.to_string()),
             Some(
-                busbar_substrate::governance::signing::TokenSigner::from_secret_bytes(
+                busbar_kernel::governance::signing::TokenSigner::from_secret_bytes(
                     &[9u8; 32],
-                    busbar_substrate::governance::signing::DEFAULT_KID,
+                    busbar_kernel::governance::signing::DEFAULT_KID,
                 ),
             ),
         )
@@ -261,7 +261,7 @@ async fn connect_needs_full_scope_while_the_reads_do_not() {
     metrics_init();
     assert_eq!(
         engine().admin_required_scope(&axum::http::Method::POST, "/api/v1/admin/tools/fs/connect"),
-        busbar_substrate::testkit::engine_kit::AdminScope::Full,
+        busbar_kernel::testkit::engine_kit::AdminScope::Full,
         "connect is a mutation: it contacts an endpoint and can quarantine a server"
     );
     for path in [
@@ -270,7 +270,7 @@ async fn connect_needs_full_scope_while_the_reads_do_not() {
     ] {
         assert_eq!(
             engine().admin_required_scope(&axum::http::Method::GET, path),
-            busbar_substrate::testkit::engine_kit::AdminScope::ReadOnly,
+            busbar_kernel::testkit::engine_kit::AdminScope::ReadOnly,
             "{path} is a derived read"
         );
     }
@@ -343,7 +343,7 @@ pub async fn drive_mcp_verb_errors() {
 #[tokio::test]
 async fn a_connect_stamps_the_ledger_so_the_sweep_is_not_still_due() {
     use crate::mcp::client::identity::ServerId;
-    use busbar_substrate::trust::reverify::{due, Due, Policy};
+    use busbar_kernel::trust::reverify::{due, Due, Policy};
 
     metrics_init();
     let peer = Peer::start(vec![wire_tool("read", DESCRIPTION, schema())]).await;
@@ -359,7 +359,7 @@ async fn a_connect_stamps_the_ledger_so_the_sweep_is_not_still_due() {
         ttl_ms: 3_600_000,
         recovery_backoff_ms: 0,
     };
-    let now = busbar_substrate::store::now_ms();
+    let now = busbar_kernel::store::now_ms();
     assert_eq!(
         due(&fresh, &policy, now, false),
         Due::NeverChecked,
@@ -375,7 +375,7 @@ async fn a_connect_stamps_the_ledger_so_the_sweep_is_not_still_due() {
         .map(|s| s.ledger.clone())
         .expect("the connect observed the server, so the cache has an entry");
     assert_eq!(
-        due(&stamped, &policy, busbar_substrate::store::now_ms(), false),
+        due(&stamped, &policy, busbar_kernel::store::now_ms(), false),
         Due::No,
         "the operator just looked; the unattended timer must not immediately look again \
          (ledger: {stamped:?})"

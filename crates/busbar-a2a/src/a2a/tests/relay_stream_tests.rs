@@ -435,13 +435,13 @@ async fn a_follow_up_on_the_same_context_resumes_the_paused_task_rather_than_ope
     // the answer was empty on every run and the `if !events.is_empty()` arm never ran: a regression
     // that stopped chaining `task.resumed` entirely would have shipped green.
     let events =
-        await_chain_with(&ledger, &first, busbar_substrate::audit::vocab::EV_RESUMED).await;
+        await_chain_with(&ledger, &first, busbar_contract::vocab::EV_RESUMED).await;
     crate::taskstore::TASKS.clear_sink_for_test();
     crate::taskstore::verify_chain(&events).expect("the chain verifies across a resume");
     assert!(
         events
             .iter()
-            .any(|e| e.kind == busbar_substrate::audit::vocab::EV_RESUMED),
+            .any(|e| e.kind == busbar_contract::vocab::EV_RESUMED),
         "a resume must be a chained event, not a silent state change: {events:?}"
     );
 }
@@ -711,7 +711,7 @@ async fn an_interrupt_the_relay_produced_rehydrates_only_where_the_store_is_dura
     // THE CHAIN SETTLES BEFORE THE RESTART IS MODELLED. The delegation record rides detached work,
     // so rehydrating the instant the response returns can read the chain mid-write and report a
     // `SequenceBreak` the plane never produced.
-    await_chain_with(&ledger, &id, busbar_substrate::audit::vocab::EV_DELEGATED).await;
+    await_chain_with(&ledger, &id, busbar_contract::vocab::EV_DELEGATED).await;
 
     // THE CONTEXT ID BUSBAR RECORDED BEFORE THE RESTART. Captured here so the rehydrated row can be
     // compared against a value that came from BEFORE the restart — the line below used to compare
@@ -731,7 +731,7 @@ async fn an_interrupt_the_relay_produced_rehydrates_only_where_the_store_is_dura
     let fresh = crate::taskstore::TaskRegistry::new();
     let rehydrated = fresh
         .restore_from_store(
-            busbar_substrate::plane::store::PlaneStoreView::narrow(ledger.clone()).as_ref(),
+            busbar_kernel::plane::store::PlaneStoreView::narrow(ledger.clone()).as_ref(),
             crate::a2a::task::readable_row,
         )
         .expect("the rehydrate completes");

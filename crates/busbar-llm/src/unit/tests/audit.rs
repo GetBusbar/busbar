@@ -10,7 +10,7 @@ use axum::response::IntoResponse;
 use busbar_contract::caps::KernelSeal;
 use busbar_kernel::proxy::reqlog::{RequestRecord, REQUESTS};
 use busbar_store_memory::MemoryStore;
-use busbar_substrate::testkit::engine_kit::EngineTestKit as _;
+use busbar_kernel::testkit::engine_kit::EngineTestKit as _;
 
 /// The one operation class these fixtures seal, as a plane names its own.
 const OP: OpClassId = OpClassId::new("chat");
@@ -50,16 +50,16 @@ fn governed(
     [busbar_api::VirtualKey; 2],
 ) {
     let store = Arc::new(MemoryStore::new());
-    let signer = busbar_substrate::governance::signing::TokenSigner::from_secret_bytes(
+    let signer = busbar_kernel::governance::signing::TokenSigner::from_secret_bytes(
         &[7u8; 32],
-        busbar_substrate::governance::signing::DEFAULT_KID,
+        busbar_kernel::governance::signing::DEFAULT_KID,
     );
     let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
         .governance(store, None, Some(signer))
         .unwrap();
     let keys = names.map(|name| {
         gov.mint_signed(
-            busbar_substrate::governance::NewKeySpec {
+            busbar_kernel::governance::NewKeySpec {
                 name: name.to_string(),
                 group: None,
                 labels: Default::default(),
@@ -132,10 +132,10 @@ async fn body_of(resp: Response) -> (u16, String) {
 #[tokio::test]
 async fn audit_matches_the_live_admitted_terminal_and_posts_once() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let (app, keys) = governed([&unique("audit-live"), &unique("audit-unit")]);
     let (host, _rt) = crate::engine::test_host_rt(&app);
-    let at = busbar_substrate::store::now();
+    let at = busbar_kernel::store::now();
 
     let live_gov = busbar_api::PlaneRequestCtx {
         key: Some(Arc::new(keys[0].clone())),
@@ -186,12 +186,12 @@ async fn audit_matches_the_live_admitted_terminal_and_posts_once() {
 #[tokio::test]
 async fn audit_refused_matches_the_live_rejected_terminal_and_posts_once() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let (app, keys) = governed([&unique("refused-live"), &unique("refused-unit")]);
     let (host, _rt) = crate::engine::test_host_rt(&app);
-    let at = busbar_substrate::store::now();
+    let at = busbar_kernel::store::now();
     let refusal = || {
-        busbar_substrate::proxy::ingress_error(
+        busbar_kernel::proxy::ingress_error(
             "openai",
             StatusCode::BAD_REQUEST,
             crate::engine::KIND_INVALID_REQUEST,
@@ -240,10 +240,10 @@ async fn audit_refused_matches_the_live_rejected_terminal_and_posts_once() {
 #[tokio::test]
 async fn the_two_doors_post_different_evidence_for_the_same_bytes() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let (app, keys) = governed([&unique("doors-admitted"), &unique("doors-refused")]);
     let (host, _rt) = crate::engine::test_host_rt(&app);
-    let at = busbar_substrate::store::now();
+    let at = busbar_kernel::store::now();
 
     let admitted_gov = busbar_api::PlaneRequestCtx {
         key: Some(Arc::new(keys[0].clone())),
@@ -279,10 +279,10 @@ async fn the_two_doors_post_different_evidence_for_the_same_bytes() {
 #[tokio::test]
 async fn the_chains_this_step_writes_verify() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let (app, keys) = governed([&unique("verify-a"), &unique("verify-b")]);
     let (host, _rt) = crate::engine::test_host_rt(&app);
-    let at = busbar_substrate::store::now();
+    let at = busbar_kernel::store::now();
     let gov = busbar_api::PlaneRequestCtx {
         key: Some(Arc::new(keys[0].clone())),
     };
@@ -319,10 +319,10 @@ async fn the_chains_this_step_writes_verify() {
 #[tokio::test]
 async fn the_refused_door_labels_a_configured_pool_with_its_own_name() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let (app, keys) = governed([&unique("label-live"), &unique("label-unit")]);
     let (host, _rt) = crate::engine::test_host_rt(&app);
-    let at = busbar_substrate::store::now();
+    let at = busbar_kernel::store::now();
 
     let live_gov = busbar_api::PlaneRequestCtx {
         key: Some(Arc::new(keys[0].clone())),
@@ -370,10 +370,10 @@ async fn the_refused_door_labels_a_configured_pool_with_its_own_name() {
 #[tokio::test]
 async fn the_sealed_end_is_the_taps_where_there_is_one_and_the_status_where_there_is_not() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let (app, keys) = governed([&unique("finish-a"), &unique("finish-b")]);
     let (host, _rt) = crate::engine::test_host_rt(&app);
-    let at = busbar_substrate::store::now();
+    let at = busbar_kernel::store::now();
     let gov = busbar_api::PlaneRequestCtx {
         key: Some(Arc::new(keys[0].clone())),
     };
@@ -528,7 +528,7 @@ fn refusal_classes() -> Vec<(
     &'static str,
     Vec<(HeaderName, HeaderValue)>,
 )> {
-    use busbar_substrate::proxy::{
+    use busbar_kernel::proxy::{
         KIND_AUTHENTICATION, KIND_INSUFFICIENT_QUOTA, KIND_INVALID_REQUEST, KIND_NOT_FOUND,
         KIND_PERMISSION, KIND_RATE_LIMIT, KIND_REQUEST_TOO_LARGE, PROVIDER_CODE_CONTEXT_LENGTH,
     };
@@ -632,7 +632,7 @@ async fn every_refusal_class_renders_byte_identically_on_both_paths() {
         for proto in dialects {
             // The legacy door: `ingress_error` with the three values, then the refusal's own
             // headers stamped over the envelope — the order every live arm stamps them in.
-            let mut legacy = busbar_substrate::proxy::ingress_error(proto, status, kind, message);
+            let mut legacy = busbar_kernel::proxy::ingress_error(proto, status, kind, message);
             for (n, v) in &own {
                 legacy.headers_mut().insert(n.clone(), v.clone());
             }

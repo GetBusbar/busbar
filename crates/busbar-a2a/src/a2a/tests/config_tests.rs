@@ -12,9 +12,9 @@ use crate::a2a::config::{
 /// `plane::config`, called with THIS plane's wording and the DERIVED section list. The wrapper
 /// exists only so these tests read as the boot path does.
 fn validate_section_hooks(hooks: &[String]) -> Result<(), String> {
-    let sections = busbar_substrate::plane::config::default_plane_sections();
+    let sections = busbar_kernel::plane::config::default_plane_sections();
     for hook in hooks {
-        busbar_substrate::plane::config::refuse_cross_plane_reference(
+        busbar_kernel::plane::config::refuse_cross_plane_reference(
             "`agents.hooks`",
             hook,
             &sections,
@@ -31,8 +31,8 @@ use crate::testkit::engine_boot::engine;
 /// crate's own test binary never links `busbar-llm`, so — exactly as core's `registry_tests::WIDGET_PLANE`
 /// stands in for an extracted plane there — this fixture supplies the `pools:` section the way a
 /// shipped "busbar with the LLM plane" binary would. Idempotent by key, registered process-wide.
-static LLM_POOLS_STANDIN: busbar_substrate::plane::registry::PlaneDecl =
-    busbar_substrate::plane::registry::PlaneDecl {
+static LLM_POOLS_STANDIN: busbar_kernel::plane::registry::PlaneDecl =
+    busbar_kernel::plane::registry::PlaneDecl {
         key: "llm",
         // Stands in for the residual LLM plane.
         fallback: true,
@@ -73,10 +73,10 @@ static LLM_POOLS_STANDIN: busbar_substrate::plane::registry::PlaneDecl =
 
 /// This plane's declared pin, read by the ONE reader every plane uses. The wrapper exists only so
 /// these tests read as the boot path does: the projection is this plane's grammar's
-/// (`AgentPinCfg::declaration`), the sequence is `busbar_substrate::trust::declared`'s, and the artifact is
+/// (`AgentPinCfg::declaration`), the sequence is `busbar_kernel::trust::declared`'s, and the artifact is
 /// this plane's `Declares` impl in `a2a::pin`.
 fn declared_pin(def: &AgentDefCfg) -> Option<CardPin> {
-    busbar_substrate::trust::declared::declared_pin::<CardPin>(def.pin.declaration())
+    busbar_kernel::trust::declared::declared_pin::<CardPin>(def.pin.declaration())
 }
 
 fn parse(yaml: &str) -> Result<AgentsCfg, String> {
@@ -222,7 +222,7 @@ fn a_root_without_a_fingerprint_is_pending_not_invalid() {
 
 /// THE NARROWING the shared reader brought to THIS plane.
 ///
-/// Before `busbar_substrate::trust::declared` owned the sequence, this plane's own reader took
+/// Before `busbar_kernel::trust::declared` owned the sequence, this plane's own reader took
 /// `key.unwrap_or_default()` and would have built a `JwsIssuerKey { issuer_key: "" }` out of a
 /// present-but-blank key; the sibling plane's reader refused one. `validate_agent` refuses it at
 /// boot, so nothing REACHABLE changed — and that is exactly the point: the reader no longer depends
@@ -284,7 +284,7 @@ fn the_policy_is_the_operator_cadence_and_the_default_is_named() {
     let p = policy_for(&bare, 7_000).unwrap();
     assert_eq!(
         p.ttl_ms,
-        busbar_substrate::duration::parse_duration_secs(DEFAULT_REVERIFY_TTL).unwrap() * 1000,
+        busbar_contract::duration::parse_duration_secs(DEFAULT_REVERIFY_TTL).unwrap() * 1000,
         "an absent ttl takes the named default, not zero"
     );
     assert_eq!(
@@ -308,11 +308,11 @@ fn a_cross_plane_hook_reference_is_refused() {
     // This test drives `validate_agent` directly (no plane build), so bind the section-list provider
     // the composition root binds in production; without it `plane_sections()` is empty and a dotted
     // reference reads as merely malformed rather than cross-plane. Idempotent.
-    busbar_substrate::plane::config::install_plane_sections(
-        busbar_substrate::plane::config::default_plane_sections,
+    busbar_kernel::plane::config::install_plane_sections(
+        busbar_kernel::plane::config::default_plane_sections,
     );
     // Make the `pools:` (LLM) plane a section this test binary knows about — see [`LLM_POOLS_STANDIN`].
-    busbar_substrate::plane::registry::register_test_plane(&LLM_POOLS_STANDIN);
+    busbar_kernel::plane::registry::register_test_plane(&LLM_POOLS_STANDIN);
     for bad in [
         "pools.fast",
         "agents.planner",
@@ -350,7 +350,7 @@ fn a_bare_hook_name_is_accepted_on_both_lists() {
 /// split that consults it. What stays testable is that every word in it is refused HERE.
 #[test]
 fn an_agent_may_not_be_named_by_a_reserved_word() {
-    for reserved in busbar_substrate::plane::config::RESERVED_SECTION_KEYS {
+    for reserved in busbar_kernel::plane::config::RESERVED_SECTION_KEYS {
         let err = parse(&format!(
             "{reserved}:\n  url: \"https://x/\"\n  pin: {{ mechanism: unpinned }}\n"
         ))

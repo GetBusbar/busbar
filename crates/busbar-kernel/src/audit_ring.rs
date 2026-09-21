@@ -167,11 +167,11 @@ impl ChainedRecord for AuditEntry {
 pub use crate::audit::vocab::{OUTCOME_APPLIED, OUTCOME_DEGRADED, OUTCOME_REJECTED};
 
 /// How many entries the in-memory ring retains. Bounds RAM, not history — the durable seam keeps the
-/// full log. Relocated to the neutral substrate (`busbar_substrate::audit::MAX_AUDIT_ENTRIES`) so the
+/// full log. Relocated to the neutral substrate (`crate::audit::MAX_AUDIT_ENTRIES`) so the
 /// admin ring and the plane audit-log ring name ONE cap; re-exported here so
 /// `crate::audit_ring::MAX_AUDIT_ENTRIES` (and the test asking for "every matching row that can
 /// exist") still resolves.
-pub use busbar_substrate::audit::MAX_AUDIT_ENTRIES;
+pub use crate::audit::MAX_AUDIT_ENTRIES;
 
 /// The in-memory admin audit ring. `record_by` is append-only + bounded (FIFO prune of the oldest — a
 /// hot cache of the recent tail); `list` returns most-recent-first. It holds NO durable state: the
@@ -206,7 +206,7 @@ impl AuditLog {
         // seam emitter after the ring block. Reading the clock twice (once here, once seam-side) would
         // let the two records carry timestamps up to a second apart — a divergence a single read
         // eliminates.
-        let ts = busbar_substrate::store::now();
+        let ts = busbar_kernel::store::now();
         {
             let mut q = self.entries.lock().unwrap_or_else(|e| e.into_inner());
             let seq = self.seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed);

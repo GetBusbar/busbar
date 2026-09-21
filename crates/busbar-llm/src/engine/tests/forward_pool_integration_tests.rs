@@ -2,8 +2,8 @@ use crate::engine::forward_with_pool;
 use crate::engine::AppEngineExt as _;
 use crate::test_support::*;
 use busbar_kernel::auth::AuthMiddleware;
-use busbar_substrate::config::auth::AuthCfg;
-use busbar_substrate::store::now;
+use busbar_kernel::config::auth::AuthCfg;
+use busbar_kernel::store::now;
 // The common vocabulary the former `use super::*` (busbar-core `test_support`) re-exported into this
 // integration suite, now that it lives in the plane crate and globs the plane's `test_support`.
 use axum::{
@@ -22,7 +22,7 @@ use serde_json::json;
 /// Test-only anthropic-ingress convenience wrapper (the former `proxy::forward`, kept here so
 /// the production entry point is a single `forward_with_pool`). Binds anthropic ingress, the
 /// lane-default breaker cell (empty pool name), and no affinity.
-async fn forward<A: busbar_substrate::testkit::BuiltAppSeam>(
+async fn forward<A: busbar_kernel::testkit::BuiltAppSeam>(
     app: std::sync::Arc<A>,
     cands: Vec<crate::engine::WeightedLane>,
     body: bytes::Bytes,
@@ -168,7 +168,7 @@ async fn capture_latency_metrics() {
     );
     // When `BUSBAR_PROFILE` is set, emit the per-stage breakdown accumulated across the run (the
     // `BUSBAR_PROFILE stage=...` lines). No-op otherwise.
-    busbar_substrate::profile::dump();
+    busbar_substrate_values::profile::dump();
     server.shutdown().await;
 }
 
@@ -269,7 +269,7 @@ async fn test_mock_server_5xx_error() {
 async fn test_non_stream_json_relay() {
     crate::testkit::install_test_seams();
     // ensure the Prometheus recorder is live so the forward path's counters record.
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let state = Arc::new(MockServerState::new());
     state.push(MockResponse::Ok {
         status: StatusCode::OK,
@@ -310,10 +310,10 @@ async fn test_non_stream_json_relay() {
     // the forward path (forward → forward_with_pool) must have emitted the
     // upstream-attempt counter into the Prometheus exposition.
     assert!(
-        busbar_substrate::metrics::render()
-            .contains(busbar_substrate::telemetry::UPSTREAM_ATTEMPTS_TOTAL),
+        busbar_kernel::metrics::render()
+            .contains(busbar_kernel::telemetry::UPSTREAM_ATTEMPTS_TOTAL),
         "forward path should emit {} into /metrics",
-        busbar_substrate::telemetry::UPSTREAM_ATTEMPTS_TOTAL
+        busbar_kernel::telemetry::UPSTREAM_ATTEMPTS_TOTAL
     );
     server.shutdown().await;
 }
@@ -326,7 +326,7 @@ async fn test_non_stream_json_relay() {
 #[tokio::test]
 async fn test_cross_protocol_nonstream_preserves_model() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let state = Arc::new(MockServerState::new());
     state.push(MockResponse::Ok {
             status: StatusCode::OK,
@@ -393,8 +393,8 @@ async fn test_cross_protocol_nonstream_preserves_model() {
 async fn test_cross_protocol_nonstream_records_tokens_for_tpm() {
     crate::testkit::install_test_seams();
     use busbar_store_memory::MemoryStore;
-    use busbar_substrate::testkit::engine_kit::EngineTestKit as _;
-    busbar_substrate::metrics::init();
+    use busbar_kernel::testkit::engine_kit::EngineTestKit as _;
+    busbar_kernel::metrics::init();
 
     let state = Arc::new(MockServerState::new());
     for _ in 0..2 {
@@ -410,16 +410,16 @@ async fn test_cross_protocol_nonstream_records_tokens_for_tpm() {
     let server = MockServer::new(state.clone()).await;
 
     let store = Arc::new(MemoryStore::new());
-    let signer = busbar_substrate::governance::signing::TokenSigner::from_secret_bytes(
+    let signer = busbar_kernel::governance::signing::TokenSigner::from_secret_bytes(
         &[7u8; 32],
-        busbar_substrate::governance::signing::DEFAULT_KID,
+        busbar_kernel::governance::signing::DEFAULT_KID,
     );
     let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
         .governance(store, Some("admintok".to_string()), Some(signer))
         .unwrap();
     let (_key, token) = gov
         .mint_signed(
-            busbar_substrate::governance::NewKeySpec {
+            busbar_kernel::governance::NewKeySpec {
                 name: "tpm".to_string(),
                 // The TPM cap lives on the bound GROUP now (keys are pure auth): 30 tokens/minute.
                 allowed_pools: Some(vec!["pa".to_string()]),
@@ -434,13 +434,13 @@ async fn test_cross_protocol_nonstream_records_tokens_for_tpm() {
     let secret = token.as_str();
     let groups = std::collections::BTreeMap::from([(
         "tpmgrp".to_string(),
-        busbar_substrate::config::groups::GroupCfg {
+        busbar_kernel::config::groups::GroupCfg {
             parent: None,
             enabled: true,
-            limits: vec![busbar_substrate::config::groups::LimitCfg {
-                metric: busbar_substrate::config::groups::LimitMetric::Tokens,
+            limits: vec![busbar_kernel::config::groups::LimitCfg {
+                metric: busbar_kernel::config::groups::LimitMetric::Tokens,
                 amount: 30,
-                per: Some(busbar_substrate::config::groups::LimitWindow::Minute),
+                per: Some(busbar_kernel::config::groups::LimitWindow::Minute),
                 scope: None,
                 on_exhaust: None,
                 downgrade_to: None,
@@ -465,7 +465,7 @@ async fn test_cross_protocol_nonstream_records_tokens_for_tpm() {
         .build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
 
-    let router = busbar_substrate::testkit::build_router(app);
+    let router = busbar_kernel::testkit::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -522,8 +522,8 @@ async fn test_cross_protocol_nonstream_records_tokens_for_tpm() {
 async fn test_cross_protocol_stream_records_tokens_for_tpm() {
     crate::testkit::install_test_seams();
     use busbar_store_memory::MemoryStore;
-    use busbar_substrate::testkit::engine_kit::EngineTestKit as _;
-    busbar_substrate::metrics::init();
+    use busbar_kernel::testkit::engine_kit::EngineTestKit as _;
+    busbar_kernel::metrics::init();
 
     // OpenAI-protocol SSE stream whose final chunk carries usage totalling 160 tokens
     // (prompt 100 + completion 60). The OpenAI reader decodes bare `data:`-framed chunks the
@@ -546,16 +546,16 @@ async fn test_cross_protocol_stream_records_tokens_for_tpm() {
     let server = MockServer::new(state.clone()).await;
 
     let store = Arc::new(MemoryStore::new());
-    let signer = busbar_substrate::governance::signing::TokenSigner::from_secret_bytes(
+    let signer = busbar_kernel::governance::signing::TokenSigner::from_secret_bytes(
         &[7u8; 32],
-        busbar_substrate::governance::signing::DEFAULT_KID,
+        busbar_kernel::governance::signing::DEFAULT_KID,
     );
     let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
         .governance(store, Some("admintok".to_string()), Some(signer))
         .unwrap();
     let (_key, token) = gov
         .mint_signed(
-            busbar_substrate::governance::NewKeySpec {
+            busbar_kernel::governance::NewKeySpec {
                 name: "tpm-stream".to_string(),
                 // The TPM cap lives on the bound GROUP now (keys are pure auth): 30 tokens/minute.
                 allowed_pools: Some(vec!["pas".to_string()]),
@@ -570,13 +570,13 @@ async fn test_cross_protocol_stream_records_tokens_for_tpm() {
     let secret = token.as_str();
     let groups = std::collections::BTreeMap::from([(
         "tpmsgrp".to_string(),
-        busbar_substrate::config::groups::GroupCfg {
+        busbar_kernel::config::groups::GroupCfg {
             parent: None,
             enabled: true,
-            limits: vec![busbar_substrate::config::groups::LimitCfg {
-                metric: busbar_substrate::config::groups::LimitMetric::Tokens,
+            limits: vec![busbar_kernel::config::groups::LimitCfg {
+                metric: busbar_kernel::config::groups::LimitMetric::Tokens,
                 amount: 30,
-                per: Some(busbar_substrate::config::groups::LimitWindow::Minute),
+                per: Some(busbar_kernel::config::groups::LimitWindow::Minute),
                 scope: None,
                 on_exhaust: None,
                 downgrade_to: None,
@@ -602,7 +602,7 @@ async fn test_cross_protocol_stream_records_tokens_for_tpm() {
         .build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
 
-    let router = busbar_substrate::testkit::build_router(app);
+    let router = busbar_kernel::testkit::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -656,7 +656,7 @@ async fn test_cross_protocol_stream_records_tokens_for_tpm() {
 #[tokio::test]
 async fn test_max_requests_budget_caps_lane_and_counts_ok() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let state = Arc::new(MockServerState::new());
     for _ in 0..3 {
         state.push(MockResponse::Ok {
@@ -755,7 +755,7 @@ async fn test_max_requests_budget_caps_lane_and_counts_ok() {
 #[tokio::test]
 async fn test_failover_exclusions_remove_member_from_pool() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let mk_server = |model: &'static str| async move {
         let state = Arc::new(MockServerState::new());
         for _ in 0..6 {
@@ -795,7 +795,7 @@ async fn test_failover_exclusions_remove_member_from_pool() {
         .pool("pe", &[(0, 1), (1, 1)])
         .pool_failover(
             "pe",
-            busbar_substrate::config::pools::FailoverCfg {
+            busbar_kernel::config::pools::FailoverCfg {
                 timeout_secs: 120,
                 exclusions: Some(vec!["beta".to_string()]),
                 max_hops: 3,
@@ -865,13 +865,13 @@ async fn test_failover_exclusions_remove_member_from_pool() {
 #[tokio::test]
 async fn test_metrics_admitted_in_open_relay_mode() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
-    metrics::counter!(busbar_substrate::metrics::REQUESTS_TOTAL, "outcome" => "ok").increment(1);
+    busbar_kernel::metrics::init();
+    metrics::counter!(busbar_kernel::metrics::REQUESTS_TOTAL, "outcome" => "ok").increment(1);
 
     let app = TestApp::new().build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
 
-    let router = busbar_substrate::testkit::build_router(app);
+    let router = busbar_kernel::testkit::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move {
@@ -893,7 +893,7 @@ async fn test_metrics_admitted_in_open_relay_mode() {
     assert!(ct.starts_with("text/plain"), "content-type was {ct}");
     let body = resp.text().await.unwrap();
     assert!(
-        body.contains(busbar_substrate::metrics::REQUESTS_TOTAL),
+        body.contains(busbar_kernel::metrics::REQUESTS_TOTAL),
         "exposition should contain a metric; got:\n{body}"
     );
 
@@ -912,19 +912,19 @@ async fn test_metrics_admitted_in_open_relay_mode() {
 #[tokio::test]
 async fn test_metrics_requires_auth_in_chain_mode() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
-    metrics::counter!(busbar_substrate::metrics::REQUESTS_TOTAL, "outcome" => "ok").increment(1);
+    busbar_kernel::metrics::init();
+    metrics::counter!(busbar_kernel::metrics::REQUESTS_TOTAL, "outcome" => "ok").increment(1);
 
     let token = "grp:metrics-scrapers";
-    let auth_cfg = busbar_substrate::config::auth::AuthCfg::with_chain(vec![
-        busbar_substrate::config::auth::AuthChainEntry::bare("test-groups-module"),
+    let auth_cfg = busbar_kernel::config::auth::AuthCfg::with_chain(vec![
+        busbar_kernel::config::auth::AuthChainEntry::bare("test-groups-module"),
     ]);
     let app = TestApp::new()
         .auth(Arc::new(AuthMiddleware::new_builtin(&auth_cfg)))
         .build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
 
-    let router = busbar_substrate::testkit::build_router(app);
+    let router = busbar_kernel::testkit::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move {
@@ -959,7 +959,7 @@ async fn test_metrics_requires_auth_in_chain_mode() {
     );
     let body = authed.text().await.unwrap();
     assert!(
-        body.contains(busbar_substrate::metrics::REQUESTS_TOTAL),
+        body.contains(busbar_kernel::metrics::REQUESTS_TOTAL),
         "authed exposition should contain a metric; got:\n{body}"
     );
 
@@ -971,20 +971,20 @@ async fn test_metrics_requires_auth_in_chain_mode() {
 async fn test_governance_vkey_auth_and_pool_acl() {
     crate::testkit::install_test_seams();
     use busbar_store_memory::MemoryStore;
-    use busbar_substrate::testkit::engine_kit::EngineTestKit as _;
+    use busbar_kernel::testkit::engine_kit::EngineTestKit as _;
 
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let store = Arc::new(MemoryStore::new());
-    let signer = busbar_substrate::governance::signing::TokenSigner::from_secret_bytes(
+    let signer = busbar_kernel::governance::signing::TokenSigner::from_secret_bytes(
         &[7u8; 32],
-        busbar_substrate::governance::signing::DEFAULT_KID,
+        busbar_kernel::governance::signing::DEFAULT_KID,
     );
     let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
         .governance(store, Some("admintok".to_string()), Some(signer))
         .unwrap();
     let (_key, token) = gov
         .mint_signed(
-            busbar_substrate::governance::NewKeySpec {
+            busbar_kernel::governance::NewKeySpec {
                 name: "tester".to_string(),
                 allowed_pools: Some(vec!["allowedpool".to_string()]),
                 group: None,
@@ -1000,7 +1000,7 @@ async fn test_governance_vkey_auth_and_pool_acl() {
     let app = TestApp::new().keys_chain().governance_kit(gov).build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
 
-    let router = busbar_substrate::testkit::build_router(app);
+    let router = busbar_kernel::testkit::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -1053,20 +1053,20 @@ async fn test_governance_budget_over_quota() {
     crate::testkit::install_test_seams();
     use busbar_api::Store;
     use busbar_store_memory::MemoryStore;
-    use busbar_substrate::testkit::engine_kit::EngineTestKit as _;
+    use busbar_kernel::testkit::engine_kit::EngineTestKit as _;
 
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let store = Arc::new(MemoryStore::new());
-    let signer = busbar_substrate::governance::signing::TokenSigner::from_secret_bytes(
+    let signer = busbar_kernel::governance::signing::TokenSigner::from_secret_bytes(
         &[7u8; 32],
-        busbar_substrate::governance::signing::DEFAULT_KID,
+        busbar_kernel::governance::signing::DEFAULT_KID,
     );
     let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
         .governance(store.clone(), Some("admintok".to_string()), Some(signer))
         .unwrap();
     let (_key, token) = gov
         .mint_signed(
-            busbar_substrate::governance::NewKeySpec {
+            busbar_kernel::governance::NewKeySpec {
                 name: "broke".to_string(),
                 allowed_pools: None, // all pools
                 // The 100c budget cap lives on the bound GROUP (keys are pure auth).
@@ -1094,13 +1094,13 @@ async fn test_governance_budget_over_quota() {
         .unwrap();
     let groups = std::collections::BTreeMap::from([(
         "bgrp".to_string(),
-        busbar_substrate::config::groups::GroupCfg {
+        busbar_kernel::config::groups::GroupCfg {
             parent: None,
             enabled: true,
-            limits: vec![busbar_substrate::config::groups::LimitCfg {
-                metric: busbar_substrate::config::groups::LimitMetric::Budget,
+            limits: vec![busbar_kernel::config::groups::LimitCfg {
+                metric: busbar_kernel::config::groups::LimitMetric::Budget,
                 amount: 100,
-                per: Some(busbar_substrate::config::groups::LimitWindow::Total),
+                per: Some(busbar_kernel::config::groups::LimitWindow::Total),
                 scope: None,
                 on_exhaust: None,
                 downgrade_to: None,
@@ -1121,7 +1121,7 @@ async fn test_governance_budget_over_quota() {
         .build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
 
-    let router = busbar_substrate::testkit::build_router(app);
+    let router = busbar_kernel::testkit::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -1177,19 +1177,19 @@ async fn test_governance_budget_over_quota() {
 async fn over_budget_router() -> (std::net::SocketAddr, tokio::task::JoinHandle<()>, String) {
     use busbar_api::Store;
     use busbar_store_memory::MemoryStore;
-    use busbar_substrate::testkit::engine_kit::EngineTestKit as _;
+    use busbar_kernel::testkit::engine_kit::EngineTestKit as _;
 
     let store = Arc::new(MemoryStore::new());
-    let signer = busbar_substrate::governance::signing::TokenSigner::from_secret_bytes(
+    let signer = busbar_kernel::governance::signing::TokenSigner::from_secret_bytes(
         &[7u8; 32],
-        busbar_substrate::governance::signing::DEFAULT_KID,
+        busbar_kernel::governance::signing::DEFAULT_KID,
     );
     let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
         .governance(store.clone(), Some("admintok".to_string()), Some(signer))
         .unwrap();
     let (_key, token) = gov
         .mint_signed(
-            busbar_substrate::governance::NewKeySpec {
+            busbar_kernel::governance::NewKeySpec {
                 name: "broke-multi".to_string(),
                 allowed_pools: None, // all pools
                 // The 100c budget cap lives on the bound GROUP (keys are pure auth).
@@ -1217,13 +1217,13 @@ async fn over_budget_router() -> (std::net::SocketAddr, tokio::task::JoinHandle<
         .unwrap();
     let groups = std::collections::BTreeMap::from([(
         "bgrpm".to_string(),
-        busbar_substrate::config::groups::GroupCfg {
+        busbar_kernel::config::groups::GroupCfg {
             parent: None,
             enabled: true,
-            limits: vec![busbar_substrate::config::groups::LimitCfg {
-                metric: busbar_substrate::config::groups::LimitMetric::Budget,
+            limits: vec![busbar_kernel::config::groups::LimitCfg {
+                metric: busbar_kernel::config::groups::LimitMetric::Budget,
                 amount: 100,
-                per: Some(busbar_substrate::config::groups::LimitWindow::Total),
+                per: Some(busbar_kernel::config::groups::LimitWindow::Total),
                 scope: None,
                 on_exhaust: None,
                 downgrade_to: None,
@@ -1242,7 +1242,7 @@ async fn over_budget_router() -> (std::net::SocketAddr, tokio::task::JoinHandle<
         .cost_kit(cost)
         .build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
-    let router = busbar_substrate::testkit::build_router(app);
+    let router = busbar_kernel::testkit::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -1254,7 +1254,7 @@ async fn over_budget_router() -> (std::net::SocketAddr, tokio::task::JoinHandle<
 #[tokio::test]
 async fn test_budget_over_quota_openai_envelope() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let (addr, handle, secret) = over_budget_router().await;
 
     let r = reqwest::Client::new()
@@ -1287,7 +1287,7 @@ async fn test_budget_over_quota_openai_envelope() {
 #[tokio::test]
 async fn test_budget_over_quota_responses_envelope() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let (addr, handle, secret) = over_budget_router().await;
 
     let r = reqwest::Client::new()
@@ -1321,7 +1321,7 @@ async fn test_budget_over_quota_responses_envelope() {
 #[tokio::test]
 async fn test_budget_over_quota_cohere_envelope() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let (addr, handle, secret) = over_budget_router().await;
 
     let r = reqwest::Client::new()
@@ -1350,7 +1350,7 @@ async fn test_budget_over_quota_cohere_envelope() {
 #[tokio::test]
 async fn test_budget_over_quota_gemini_envelope() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let (addr, handle, secret) = over_budget_router().await;
 
     let r = reqwest::Client::new()
@@ -1388,7 +1388,7 @@ async fn test_budget_over_quota_gemini_envelope() {
 #[tokio::test]
 async fn test_budget_over_quota_bedrock_envelope() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let (addr, handle, secret) = over_budget_router().await;
 
     let r = reqwest::Client::new()
@@ -1428,20 +1428,20 @@ async fn test_budget_over_quota_bedrock_envelope() {
 async fn test_governance_rate_limit_429() {
     crate::testkit::install_test_seams();
     use busbar_store_memory::MemoryStore;
-    use busbar_substrate::testkit::engine_kit::EngineTestKit as _;
+    use busbar_kernel::testkit::engine_kit::EngineTestKit as _;
 
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let store = Arc::new(MemoryStore::new());
-    let signer = busbar_substrate::governance::signing::TokenSigner::from_secret_bytes(
+    let signer = busbar_kernel::governance::signing::TokenSigner::from_secret_bytes(
         &[7u8; 32],
-        busbar_substrate::governance::signing::DEFAULT_KID,
+        busbar_kernel::governance::signing::DEFAULT_KID,
     );
     let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
         .governance(store, Some("admintok".to_string()), Some(signer))
         .unwrap();
     let (_key, token) = gov
         .mint_signed(
-            busbar_substrate::governance::NewKeySpec {
+            busbar_kernel::governance::NewKeySpec {
                 name: "rl".to_string(),
                 allowed_pools: None,
                 // The 2-requests-per-minute limit lives on the bound GROUP (keys are pure auth).
@@ -1457,13 +1457,13 @@ async fn test_governance_rate_limit_429() {
 
     let groups = std::collections::BTreeMap::from([(
         "rl2".to_string(),
-        busbar_substrate::config::groups::GroupCfg {
+        busbar_kernel::config::groups::GroupCfg {
             parent: None,
             enabled: true,
-            limits: vec![busbar_substrate::config::groups::LimitCfg {
-                metric: busbar_substrate::config::groups::LimitMetric::Requests,
+            limits: vec![busbar_kernel::config::groups::LimitCfg {
+                metric: busbar_kernel::config::groups::LimitMetric::Requests,
                 amount: 2,
-                per: Some(busbar_substrate::config::groups::LimitWindow::Minute),
+                per: Some(busbar_kernel::config::groups::LimitWindow::Minute),
                 scope: None,
                 on_exhaust: None,
                 downgrade_to: None,
@@ -1478,7 +1478,7 @@ async fn test_governance_rate_limit_429() {
         .build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
 
-    let router = busbar_substrate::testkit::build_router(app);
+    let router = busbar_kernel::testkit::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -1542,19 +1542,19 @@ async fn test_governance_rate_limit_429() {
 /// never short-circuits the rate gate.
 async fn over_rpm_router() -> (std::net::SocketAddr, tokio::task::JoinHandle<()>, String) {
     use busbar_store_memory::MemoryStore;
-    use busbar_substrate::testkit::engine_kit::EngineTestKit as _;
+    use busbar_kernel::testkit::engine_kit::EngineTestKit as _;
 
     let store = Arc::new(MemoryStore::new());
-    let signer = busbar_substrate::governance::signing::TokenSigner::from_secret_bytes(
+    let signer = busbar_kernel::governance::signing::TokenSigner::from_secret_bytes(
         &[7u8; 32],
-        busbar_substrate::governance::signing::DEFAULT_KID,
+        busbar_kernel::governance::signing::DEFAULT_KID,
     );
     let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
         .governance(store, Some("admintok".to_string()), Some(signer))
         .unwrap();
     let (_key, token) = gov
         .mint_signed(
-            busbar_substrate::governance::NewKeySpec {
+            busbar_kernel::governance::NewKeySpec {
                 name: "rl-multi".to_string(),
                 allowed_pools: None, // all pools
                 group: Some("rl0".to_string()),
@@ -1569,13 +1569,13 @@ async fn over_rpm_router() -> (std::net::SocketAddr, tokio::task::JoinHandle<()>
 
     let groups = std::collections::BTreeMap::from([(
         "rl0".to_string(),
-        busbar_substrate::config::groups::GroupCfg {
+        busbar_kernel::config::groups::GroupCfg {
             parent: None,
             enabled: true,
-            limits: vec![busbar_substrate::config::groups::LimitCfg {
-                metric: busbar_substrate::config::groups::LimitMetric::Requests,
+            limits: vec![busbar_kernel::config::groups::LimitCfg {
+                metric: busbar_kernel::config::groups::LimitMetric::Requests,
                 amount: 0,
-                per: Some(busbar_substrate::config::groups::LimitWindow::Minute),
+                per: Some(busbar_kernel::config::groups::LimitWindow::Minute),
                 scope: None,
                 on_exhaust: None,
                 downgrade_to: None,
@@ -1589,7 +1589,7 @@ async fn over_rpm_router() -> (std::net::SocketAddr, tokio::task::JoinHandle<()>
         .cost_kit(crate::test_support::engine_kit::CORE_ENGINE_KIT.cost_parts(None, 0, &groups))
         .build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
-    let router = busbar_substrate::testkit::build_router(app);
+    let router = busbar_kernel::testkit::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -1601,7 +1601,7 @@ async fn over_rpm_router() -> (std::net::SocketAddr, tokio::task::JoinHandle<()>
 #[tokio::test]
 async fn test_rate_limit_429_openai_native_envelope() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let (addr, handle, secret) = over_rpm_router().await;
 
     let r = reqwest::Client::new()
@@ -1639,7 +1639,7 @@ async fn test_rate_limit_429_openai_native_envelope() {
 #[tokio::test]
 async fn test_rate_limit_429_responses_native_envelope() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let (addr, handle, secret) = over_rpm_router().await;
 
     let r = reqwest::Client::new()
@@ -1670,7 +1670,7 @@ async fn test_rate_limit_429_responses_native_envelope() {
 #[tokio::test]
 async fn test_rate_limit_429_cohere_native_envelope() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let (addr, handle, secret) = over_rpm_router().await;
 
     let r = reqwest::Client::new()
@@ -1702,7 +1702,7 @@ async fn test_rate_limit_429_cohere_native_envelope() {
 #[tokio::test]
 async fn test_rate_limit_429_gemini_native_envelope() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let (addr, handle, secret) = over_rpm_router().await;
 
     let r = reqwest::Client::new()
@@ -1743,7 +1743,7 @@ async fn test_rate_limit_429_gemini_native_envelope() {
 #[tokio::test]
 async fn test_rate_limit_429_bedrock_native_envelope() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let (addr, handle, secret) = over_rpm_router().await;
 
     let r = reqwest::Client::new()
@@ -1838,7 +1838,7 @@ async fn test_sse_incremental_arrival() {
     let mut events_found = 0;
     for line in text.lines() {
         if line.starts_with("data: event-")
-            && !line.contains(busbar_substrate::proto::SSE_DONE_SENTINEL)
+            && !line.contains(busbar_kernel::proto::SSE_DONE_SENTINEL)
         {
             events_found += 1;
         }
@@ -2271,7 +2271,7 @@ async fn test_section6_passthrough_401_no_trip_vs_token_mode() {
     });
 
     let auth_cfg_token =
-        AuthCfg::with_chain(vec![busbar_substrate::config::auth::AuthChainEntry::bare(
+        AuthCfg::with_chain(vec![busbar_kernel::config::auth::AuthChainEntry::bare(
             "keys",
         )]);
     let app_token = TestApp::new()
@@ -2636,7 +2636,7 @@ async fn test_failover_deadline() {
             &server.base_url(),
         ))
         .pool("default", &[(0, 1), (1, 1)])
-        .failover(busbar_substrate::config::pools::FailoverCfg {
+        .failover(busbar_kernel::config::pools::FailoverCfg {
             timeout_secs: 120,
             exclusions: None,
             max_hops: 3,
@@ -2762,7 +2762,7 @@ async fn test_stream_inspection_tap_usage_parsing() {
 #[cfg(test)]
 mod disposition_matrix_tests {
     use super::*;
-    use busbar_substrate::breaker::{normalize_raw_error, status_class_from_str, RawUpstreamError};
+    use busbar_substrate_values::breaker::{normalize_raw_error, status_class_from_str, RawUpstreamError};
     use std::collections::HashMap;
 
     #[test]
@@ -2771,35 +2771,35 @@ mod disposition_matrix_tests {
         // Exhaustive check: all valid StatusClass names must parse correctly
         assert_eq!(
             status_class_from_str("rate_limit"),
-            Some(busbar_substrate::breaker::StatusClass::RateLimit)
+            Some(busbar_substrate_values::breaker::StatusClass::RateLimit)
         );
         assert_eq!(
             status_class_from_str("overloaded"),
-            Some(busbar_substrate::breaker::StatusClass::Overloaded)
+            Some(busbar_substrate_values::breaker::StatusClass::Overloaded)
         );
         assert_eq!(
             status_class_from_str("server_error"),
-            Some(busbar_substrate::breaker::StatusClass::ServerError)
+            Some(busbar_substrate_values::breaker::StatusClass::ServerError)
         );
         assert_eq!(
             status_class_from_str("timeout"),
-            Some(busbar_substrate::breaker::StatusClass::Timeout)
+            Some(busbar_substrate_values::breaker::StatusClass::Timeout)
         );
         assert_eq!(
             status_class_from_str("network"),
-            Some(busbar_substrate::breaker::StatusClass::Network)
+            Some(busbar_substrate_values::breaker::StatusClass::Network)
         );
         assert_eq!(
             status_class_from_str("auth"),
-            Some(busbar_substrate::breaker::StatusClass::Auth)
+            Some(busbar_substrate_values::breaker::StatusClass::Auth)
         );
         assert_eq!(
             status_class_from_str("billing"),
-            Some(busbar_substrate::breaker::StatusClass::Billing)
+            Some(busbar_substrate_values::breaker::StatusClass::Billing)
         );
         assert_eq!(
             status_class_from_str("client_error"),
-            Some(busbar_substrate::breaker::StatusClass::ClientError)
+            Some(busbar_substrate_values::breaker::StatusClass::ClientError)
         );
 
         // Unknown values return None (no _ => fallback)
@@ -2823,7 +2823,7 @@ mod disposition_matrix_tests {
             retry_after_secs: None,
         };
         let sig = normalize_raw_error(&raw, &error_map);
-        assert_eq!(sig.class, busbar_substrate::breaker::StatusClass::Billing);
+        assert_eq!(sig.class, busbar_substrate_values::breaker::StatusClass::Billing);
 
         // Different code not in map → fallback to HTTP status classification
         let raw2 = RawUpstreamError {
@@ -2835,7 +2835,7 @@ mod disposition_matrix_tests {
         let sig2 = normalize_raw_error(&raw2, &error_map);
         assert_eq!(
             sig2.class,
-            busbar_substrate::breaker::StatusClass::ServerError
+            busbar_substrate_values::breaker::StatusClass::ServerError
         );
     }
 
@@ -2852,7 +2852,7 @@ mod disposition_matrix_tests {
             retry_after_secs: None,
         };
         let sig = normalize_raw_error(&raw, &error_map);
-        assert_eq!(sig.class, busbar_substrate::breaker::StatusClass::Auth);
+        assert_eq!(sig.class, busbar_substrate_values::breaker::StatusClass::Auth);
 
         // HTTP 429 → RateLimit (universal spec)
         let raw2 = RawUpstreamError {
@@ -2864,7 +2864,7 @@ mod disposition_matrix_tests {
         let sig2 = normalize_raw_error(&raw2, &error_map);
         assert_eq!(
             sig2.class,
-            busbar_substrate::breaker::StatusClass::RateLimit
+            busbar_substrate_values::breaker::StatusClass::RateLimit
         );
 
         // HTTP 500 → ServerError (universal spec)
@@ -2877,7 +2877,7 @@ mod disposition_matrix_tests {
         let sig3 = normalize_raw_error(&raw3, &error_map);
         assert_eq!(
             sig3.class,
-            busbar_substrate::breaker::StatusClass::ServerError
+            busbar_substrate_values::breaker::StatusClass::ServerError
         );
 
         // HTTP 400 → ClientError (universal spec)
@@ -2890,7 +2890,7 @@ mod disposition_matrix_tests {
         let sig4 = normalize_raw_error(&raw4, &error_map);
         assert_eq!(
             sig4.class,
-            busbar_substrate::breaker::StatusClass::ClientError
+            busbar_substrate_values::breaker::StatusClass::ClientError
         );
     }
 
@@ -3286,7 +3286,7 @@ mod disposition_matrix_tests {
         let msg = v["error"]["message"].as_str().unwrap_or("");
         assert_eq!(
             msg,
-            busbar_substrate::proto::vendor_auth_failure_message("anthropic"),
+            busbar_kernel::proto::vendor_auth_failure_message("anthropic"),
             "auth message must be vendor-plausible copy, not busbar-internal vocabulary: {v}"
         );
         assert!(
@@ -3407,7 +3407,7 @@ mod disposition_matrix_tests {
         // with an unknown StatusClass value must still fail.
         use busbar_kernel::config::RootCfg;
 
-        let model = busbar_substrate::config::providers::ModelCfg {
+        let model = busbar_kernel::config::providers::ModelCfg {
             reasoning: None,
             prompt_caching: None,
             max_requests: -1,
@@ -3417,9 +3417,9 @@ mod disposition_matrix_tests {
             upstream_model: None,
             attempt_timeout_ms: None,
         };
-        let pool = busbar_substrate::config::pools::PoolCfg {
+        let pool = busbar_kernel::config::pools::PoolCfg {
             upstream_credentials: None,
-            members: vec![busbar_substrate::config::pools::PoolMember {
+            members: vec![busbar_kernel::config::pools::PoolMember {
                 reasoning: None,
                 model: "m".into(),
                 weight: 1,
@@ -3432,7 +3432,7 @@ mod disposition_matrix_tests {
             failover: None,
             on_exhausted: None,
             affinity: None,
-            policy: busbar_substrate::config::pools::PoolPolicy::default(),
+            policy: busbar_kernel::config::pools::PoolPolicy::default(),
             gates: Vec::new(),
             base_named: false,
             ..Default::default()
@@ -3441,7 +3441,7 @@ mod disposition_matrix_tests {
             let mut providers = HashMap::new();
             providers.insert(
                 "p".to_string(),
-                busbar_substrate::config::providers::ProviderCfg {
+                busbar_kernel::config::providers::ProviderCfg {
                     protocol: "anthropic".into(),
                     base_url: "https://api.example.com".into(),
                     api_key: busbar_api::SecretRef::env("API_KEY"),
@@ -3472,7 +3472,7 @@ mod disposition_matrix_tests {
                 listen: "0.0.0.0:8080".into(),
                 public_url: None,
                 tls: None,
-                admin_listen: busbar_substrate::config::sections::DEFAULT_ADMIN_LISTEN_ADDR
+                admin_listen: busbar_kernel::config::sections::DEFAULT_ADMIN_LISTEN_ADDR
                     .to_string(),
                 admin_tls: None,
                 auth: None,
@@ -3490,7 +3490,7 @@ mod disposition_matrix_tests {
                 blocked_metadata_hosts: Vec::new(),
                 allow_metadata_hosts: Vec::new(),
                 allow_all_metadata: false,
-                limits: busbar_substrate::config::limits::LimitsResolved::default(),
+                limits: busbar_kernel::config::limits::LimitsResolved::default(),
                 export: Default::default(),
                 identity_providers: Default::default(),
                 export_defs: Default::default(),
@@ -3535,7 +3535,7 @@ mod disposition_matrix_tests {
         // This FAILS the correctness check: billing should map to HardDown, not TransientUpstream
         assert_eq!(
             sig.class,
-            busbar_substrate::breaker::StatusClass::RateLimit,
+            busbar_substrate_values::breaker::StatusClass::RateLimit,
             "Wrong mapping: 1113 incorrectly classified as rate_limit instead of billing"
         );
 
@@ -3545,7 +3545,7 @@ mod disposition_matrix_tests {
         let correct_sig = normalize_raw_error(&raw, &correct_map);
         assert_eq!(
             correct_sig.class,
-            busbar_substrate::breaker::StatusClass::Billing,
+            busbar_substrate_values::breaker::StatusClass::Billing,
             "Correct mapping: 1113 → billing"
         );
     }
@@ -3597,7 +3597,7 @@ mod disposition_matrix_tests {
         let t = now();
         let breaker_state = app.store.breaker_state(0);
         assert!(
-            matches!(breaker_state, busbar_substrate::store::BreakerState::Closed),
+            matches!(breaker_state, busbar_kernel::store::BreakerState::Closed),
             "client fault must not trip breaker"
         );
 
@@ -3785,7 +3785,7 @@ async fn test_exhaustion_status_503_with_retry_after() {
 #[tokio::test]
 async fn test_exhaustion_least_bad_selects_soonest() {
     crate::testkit::install_test_seams();
-    use busbar_substrate::store::now as store_now;
+    use busbar_kernel::store::now as store_now;
 
     // Lane 0 server (the "wrong" member — far cooldown). Marker identifies it if picked.
     let state0 = Arc::new(MockServerState::new());
@@ -3830,7 +3830,7 @@ async fn test_exhaustion_least_bad_selects_soonest() {
         .pool("leastbad", &[(0, 1), (1, 1)])
         .on_exhausted(
             "leastbad",
-            busbar_substrate::config::pools::OnExhausted::LeastBad,
+            busbar_kernel::config::pools::OnExhausted::LeastBad,
         )
         .build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
@@ -3897,7 +3897,7 @@ async fn test_exhaustion_least_bad_selects_soonest() {
 #[tokio::test]
 async fn test_forward_once_records_success_and_spends_budget() {
     crate::testkit::install_test_seams();
-    use busbar_substrate::store::now as store_now;
+    use busbar_kernel::store::now as store_now;
     let state = Arc::new(MockServerState::new());
     state.push(MockResponse::Ok {
         status: StatusCode::OK,
@@ -3920,7 +3920,7 @@ async fn test_forward_once_records_success_and_spends_budget() {
         .pool("leastbad", &[(0, 1)])
         .on_exhausted(
             "leastbad",
-            busbar_substrate::config::pools::OnExhausted::LeastBad,
+            busbar_kernel::config::pools::OnExhausted::LeastBad,
         )
         .build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
@@ -3971,7 +3971,7 @@ async fn test_forward_once_records_success_and_spends_budget() {
 #[tokio::test]
 async fn test_gemini_json_array_shim_ignored_for_body_model_ingress() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let state = Arc::new(MockServerState::new());
     state.push(MockResponse::Sse {
             events: vec![
@@ -4048,9 +4048,9 @@ async fn test_gemini_json_array_shim_ignored_for_body_model_ingress() {
 #[tokio::test]
 async fn test_forward_once_cross_protocol_auth_kinds_match_main_path() {
     crate::testkit::install_test_seams();
-    use busbar_substrate::store::now as store_now;
+    use busbar_kernel::store::now as store_now;
     let (want_status, want_kind) =
-        busbar_substrate::proxy::auth_failure_status_and_kind("anthropic");
+        busbar_kernel::proxy::auth_failure_status_and_kind("anthropic");
     for upstream_status in [StatusCode::UNAUTHORIZED, StatusCode::FORBIDDEN] {
         let state = Arc::new(MockServerState::new());
         state.push(MockResponse::Auth {
@@ -4075,7 +4075,7 @@ async fn test_forward_once_cross_protocol_auth_kinds_match_main_path() {
             .pool("leastbad", &[(0, 1)])
             .on_exhausted(
                 "leastbad",
-                busbar_substrate::config::pools::OnExhausted::LeastBad,
+                busbar_kernel::config::pools::OnExhausted::LeastBad,
             )
             .build();
         let (_host, _rt) = crate::engine::test_host_rt(&app);
@@ -4119,7 +4119,7 @@ async fn test_forward_once_cross_protocol_auth_kinds_match_main_path() {
         assert!(
             matches!(
                 app.store.breaker_state_in("leastbad", 0),
-                busbar_substrate::store::BreakerState::Open { .. }
+                busbar_kernel::store::BreakerState::Open { .. }
             ),
             "a hard-down on the degraded path trips the lane exactly as on the main path"
         );
@@ -4133,7 +4133,7 @@ async fn test_forward_once_cross_protocol_auth_kinds_match_main_path() {
 #[tokio::test]
 async fn test_fallback_pool_loop_guard() {
     crate::testkit::install_test_seams();
-    use busbar_substrate::store::now as store_now;
+    use busbar_kernel::store::now as store_now;
 
     // No upstream is ever reached (all pools exhausted); the server only supplies base_urls.
     let state = Arc::new(MockServerState::new());
@@ -4172,11 +4172,11 @@ async fn test_fallback_pool_loop_guard() {
         .fallback_pool("pool_b", &[(2, 1), (3, 1)])
         .on_exhausted(
             "pool_a",
-            busbar_substrate::config::pools::OnExhausted::FallbackPool("pool_b".to_string()),
+            busbar_kernel::config::pools::OnExhausted::FallbackPool("pool_b".to_string()),
         )
         .on_exhausted(
             "pool_b",
-            busbar_substrate::config::pools::OnExhausted::FallbackPool("pool_a".to_string()),
+            busbar_kernel::config::pools::OnExhausted::FallbackPool("pool_a".to_string()),
         )
         .build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
@@ -4225,7 +4225,7 @@ async fn test_fallback_pool_loop_guard() {
 #[tokio::test]
 async fn test_fallback_pool_routes_to_backup() {
     crate::testkit::install_test_seams();
-    use busbar_substrate::store::now as store_now;
+    use busbar_kernel::store::now as store_now;
 
     // Backup member (lane 2) returns a recognizable success body.
     let state = Arc::new(MockServerState::new());
@@ -4265,7 +4265,7 @@ async fn test_fallback_pool_routes_to_backup() {
         .fallback_pool("backup", &[(2, 1)])
         .on_exhausted(
             "primary",
-            busbar_substrate::config::pools::OnExhausted::FallbackPool("backup".to_string()),
+            busbar_kernel::config::pools::OnExhausted::FallbackPool("backup".to_string()),
         )
         .build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
@@ -4515,7 +4515,7 @@ async fn test_sticky_session_while_healthy() {
 #[tokio::test]
 async fn test_sticky_yields_when_tripped() {
     crate::testkit::install_test_seams();
-    use busbar_substrate::store::now as store_now;
+    use busbar_kernel::store::now as store_now;
 
     // Separate mock servers for each lane, each returning a distinguishable body
     // so we can assert WHICH member served.
@@ -4639,8 +4639,8 @@ async fn test_health_probe_recovers_tripped_lane() {
             )
             .provider("p")
             .api_key("test-key")
-            .health(busbar_substrate::config::providers::HealthCfg {
-                mode: busbar_substrate::config::providers::HealthMode::Dead,
+            .health(busbar_kernel::config::providers::HealthCfg {
+                mode: busbar_kernel::config::providers::HealthMode::Dead,
                 interval_secs: None,
                 timeout_secs: None,
             }),
@@ -4652,12 +4652,12 @@ async fn test_health_probe_recovers_tripped_lane() {
     app.store.record_hard_down(0, "test trip");
     assert_ne!(
         app.store.breaker_state(0),
-        busbar_substrate::store::BreakerState::Closed,
+        busbar_kernel::store::BreakerState::Closed,
         "lane should be tripped before the probe"
     );
 
     crate::engine::health::probe_lane(
-        busbar_substrate::testkit::engine_host(&app).as_ref(),
+        busbar_kernel::testkit::engine_host(&app).as_ref(),
         0,
         Duration::from_secs(5),
     )
@@ -4665,7 +4665,7 @@ async fn test_health_probe_recovers_tripped_lane() {
 
     assert_eq!(
         app.store.breaker_state(0),
-        busbar_substrate::store::BreakerState::Closed,
+        busbar_kernel::store::BreakerState::Closed,
         "a 2xx health probe must recover the tripped lane"
     );
     server0.shutdown().await;
@@ -4691,8 +4691,8 @@ async fn test_health_probe_failure_records_transient() {
             )
             .provider("p")
             .api_key("test-key")
-            .health(busbar_substrate::config::providers::HealthCfg {
-                mode: busbar_substrate::config::providers::HealthMode::Active,
+            .health(busbar_kernel::config::providers::HealthCfg {
+                mode: busbar_kernel::config::providers::HealthMode::Active,
                 interval_secs: None,
                 timeout_secs: None,
             }),
@@ -4700,14 +4700,14 @@ async fn test_health_probe_failure_records_transient() {
         .build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
 
-    let before = app.store.snapshot(0, busbar_substrate::store::now()).err;
+    let before = app.store.snapshot(0, busbar_kernel::store::now()).err;
     crate::engine::health::probe_lane(
-        busbar_substrate::testkit::engine_host(&app).as_ref(),
+        busbar_kernel::testkit::engine_host(&app).as_ref(),
         0,
         Duration::from_secs(5),
     )
     .await;
-    let after = app.store.snapshot(0, busbar_substrate::store::now()).err;
+    let after = app.store.snapshot(0, busbar_kernel::store::now()).err;
     assert_eq!(
         after,
         before + 1,
@@ -5338,7 +5338,7 @@ async fn test_openai_omits_max_tokens_injects_fallback_for_anthropic() {
     .await;
     assert_eq!(
             got.get("max_tokens").and_then(|v| v.as_u64()),
-            Some(busbar_substrate::config::limits::DEFAULT_MAX_TOKENS as u64),
+            Some(busbar_kernel::config::limits::DEFAULT_MAX_TOKENS as u64),
             "absent max_tokens must be backfilled with the fallback on →anthropic translation; got: {got}"
         );
 }
@@ -5657,7 +5657,7 @@ async fn test_context_length_failover_no_penalty() {
     );
 
     // KEY: neither lane was penalized — context-length is a request problem, not a lane fault.
-    let now = busbar_substrate::store::now();
+    let now = busbar_kernel::store::now();
     for idx in 0..2 {
         assert_eq!(
             app.store.cooldown_remaining(idx, now),
@@ -5747,7 +5747,7 @@ async fn test_prefers_larger_context_max() {
     assert_eq!(response.status().as_u16(), 200);
 
     // Verify: lane 0 was NOT penalized (context-length is not a lane fault)
-    let t = busbar_substrate::store::now();
+    let t = busbar_kernel::store::now();
     assert!(
         app.store.usable(0, t),
         "lane 0 should remain usable after context-length"
@@ -5819,7 +5819,7 @@ async fn test_same_size_pool_exhausts() {
     assert_eq!(response.status().as_u16(), 503);
 
     // Verify: neither lane was penalized (context-length is not a lane fault)
-    let t = busbar_substrate::store::now();
+    let t = busbar_kernel::store::now();
     for idx in 0..2 {
         assert_eq!(
             app.store.cooldown_remaining(idx, t),
@@ -5838,7 +5838,7 @@ async fn test_same_size_pool_exhausts() {
 #[tokio::test]
 async fn test_clean_sse_end_records_success_not_failure() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let state = Arc::new(MockServerState::new());
 
     // Push several clean SSE responses (each ends normally with message_stop + [DONE]).
@@ -5912,7 +5912,7 @@ async fn test_clean_sse_end_records_success_not_failure() {
 #[tokio::test]
 async fn test_429_retry_after_header_sets_cooldown_floor() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let state = Arc::new(MockServerState::new());
     // Single lane; a 429 with Retry-After: 45. streak=0 → computed backoff is the base (15s),
     // so a floor of 45 must dominate, proving the header was honored end-to-end.
@@ -5978,7 +5978,7 @@ async fn test_429_retry_after_header_sets_cooldown_floor() {
 #[tokio::test]
 async fn test_saturated_lane_respects_deadline_no_infinite_spin() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let state = Arc::new(MockServerState::new());
     let server = MockServer::new(state.clone()).await;
 
@@ -5995,7 +5995,7 @@ async fn test_saturated_lane_respects_deadline_no_infinite_spin() {
         )
         .pool("default", &[(0, 1)])
         // 1s failover deadline so the test is fast but still exercises the bounded wait.
-        .failover(busbar_substrate::config::pools::FailoverCfg {
+        .failover(busbar_kernel::config::pools::FailoverCfg {
             timeout_secs: 1,
             max_hops: 0,
             exclusions: None,
@@ -6049,7 +6049,7 @@ async fn test_saturated_lane_respects_deadline_no_infinite_spin() {
 #[tokio::test]
 async fn test_unbounded_max_concurrent_never_throttles_a_burst() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let state = Arc::new(MockServerState::new());
     let server = MockServer::new(state).await;
 
@@ -6097,7 +6097,7 @@ async fn test_unbounded_max_concurrent_never_throttles_a_burst() {
 #[tokio::test]
 async fn test_bounded_max_concurrent_still_enforces_the_cap() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let state = Arc::new(MockServerState::new());
     let server = MockServer::new(state).await;
 

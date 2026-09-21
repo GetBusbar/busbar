@@ -6,7 +6,7 @@
 //!
 //! Before the plane split, `TestApp` in busbar-core built the MCP resource/runtime itself (naming
 //! `crate::mcp::*` back INTO core through the `#[path]` dual-compile). Now those builder methods live
-//! here as an extension trait over the neutral `busbar_substrate::testkit::TestAppSeam` (which core
+//! here as an extension trait over the neutral `busbar_kernel::testkit::TestAppSeam` (which core
 //! implements for its `TestApp`), and they lower to the real, externally-linked `busbar-mcp` crate
 //! through core's neutral install seams
 //! (`install_plane_runtime`, `mount_plane`/`admit_plane`, `set_container_hooks`, `on_built`).
@@ -18,7 +18,7 @@
 use crate::mcp::client::catalogue::CatalogueCache;
 use crate::mcp::config::{McpServerDefCfg, ToolsCfg};
 use crate::mcp::{McpCfg, McpResource, McpRuntime};
-use busbar_substrate::testkit::{TestAppSeam, TestAppSeamExt};
+use busbar_kernel::testkit::{TestAppSeam, TestAppSeamExt};
 use std::sync::Arc;
 
 /// The MCP plane's key in `TestApp`'s scratch map — the same string as `PLANE_DECL.key`.
@@ -30,14 +30,14 @@ const SCRATCH_KEY: &str = "mcp";
 /// finalizer (every plane-building test) AND directly by MCP config/admin tests that validate documents
 /// WITHOUT building a plane (they reach the same `config_sections()` fold).
 pub fn install_test_seams() {
-    busbar_substrate::plane::registry::register_test_plane(&crate::PLANE_DECL);
+    busbar_kernel::plane::registry::register_test_plane(&crate::PLANE_DECL);
     // Register MCP the PROTOCOL into the process registry too — the composition root installs
     // `PROTO_DECL` beside the plane in production, and core's registry must resolve `decl_for("mcp")`
     // for the cross-plane refusal / matrix fixtures. Idempotent; replaces the deleted `#[path]` witness
     // row that used to net the MCP codec into `busbar-core`'s test binary.
-    busbar_substrate::proto::register_test_protocol(&crate::PROTO_DECL);
-    busbar_substrate::plane::config::install_plane_sections(
-        busbar_substrate::plane::config::default_plane_sections,
+    busbar_kernel::proto::register_test_protocol(&crate::PROTO_DECL);
+    busbar_kernel::plane::config::install_plane_sections(
+        busbar_kernel::plane::config::default_plane_sections,
     );
 }
 
@@ -84,7 +84,7 @@ fn finalize(app: &mut dyn TestAppSeam) {
         app.mount_plane(
             crate::PLANE_DECL.key,
             &mount,
-            busbar_substrate::plane::WIRE_JSONRPC,
+            busbar_kernel::plane::WIRE_JSONRPC,
         );
         app.admit_plane(crate::PLANE_DECL.key, admission);
     }
@@ -103,7 +103,7 @@ fn finalize(app: &mut dyn TestAppSeam) {
         verify: Default::default(),
     });
     app.install_plane_runtime(
-        busbar_substrate::plane_host::runtime_slot_key(crate::PLANE_DECL.key),
+        busbar_kernel::plane_host::runtime_slot_key(crate::PLANE_DECL.key),
         runtime,
     );
 
@@ -257,10 +257,10 @@ pub fn swap_test_http_server(url: &str) -> McpServerDefCfg {
 /// from busbar-core's `test_support` (it names `mcp::runtime`/`mcp::client` types). Reads the runtime
 /// through the NEUTRAL `runtime_slots(&dyn PlaneSlots)` seam — `App` implements `PlaneSlots`, so a
 /// caller hands its `&App` straight in and this helper names no `busbar_kernel` type.
-pub fn prefresh_mcp_sightings(slots: &dyn busbar_substrate::plane_host::PlaneSlots) {
+pub fn prefresh_mcp_sightings(slots: &dyn busbar_kernel::plane_host::PlaneSlots) {
     use crate::mcp::client::catalogue::ServerCatalogue;
     use crate::mcp::client::identity::ServerId;
-    let now = busbar_substrate::store::now_ms();
+    let now = busbar_kernel::store::now_ms();
     let servers: Vec<_> = crate::mcp::runtime_slots(slots)
         .catalogue
         .servers()

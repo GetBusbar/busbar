@@ -14,7 +14,7 @@
 //! show that each field is LOAD-BEARING rather than merely present.
 
 use super::*;
-// The seal crypto lives in `busbar_substrate::plane::approvals`, so the base64url encoder these
+// The seal crypto lives in `busbar_kernel::plane::approvals`, so the base64url encoder these
 // tampering tests build forged blobs with is imported directly rather than inherited from the parent
 // module's private `use`.
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;

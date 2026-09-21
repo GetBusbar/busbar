@@ -44,8 +44,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use busbar_contract::{ClaimKey, OpClassId};
-use busbar_substrate::config::groups::{GroupCfg, LimitMetric};
-use busbar_substrate::config::limits::LimitsResolved;
+use busbar_kernel::config::groups::{GroupCfg, LimitMetric};
+use busbar_kernel::config::limits::LimitsResolved;
 use busbar_transport_http::ClientSettings;
 use busbar_kernel_budget::{GroupBucket, GroupRuntime, GroupTable, STANDARD_TIER_BP};
 use busbar_kernel_scope::{PolicyView, Scope};

@@ -6,7 +6,7 @@
 //! resolution + forward every dialect runs. RELOCATED here from `busbar-core` (it named the dialects
 //! and was the last piece of core→plane entanglement): the arrivals now live in the dialect crate and
 //! reach the `App`/`GovCtx`/`CallerToken`-bound core pipeline through the neutral
-//! [`busbar_substrate::ingress::arrival::ArrivalHost`] seam, crossing those core handles as the opaque
+//! [`busbar_kernel::ingress::arrival::ArrivalHost`] seam, crossing those core handles as the opaque
 //! [`ArrivalCtx`] and the neutral `Operation`/`Response`/`HeaderMap`/`Bytes` directly. So this crate
 //! names no core item and core names no dialect — byte-identical to the arms these replaced.
 //!
@@ -20,9 +20,9 @@ use std::time::Instant;
 use axum::body::Bytes;
 use axum::http::{HeaderMap, StatusCode, Uri};
 use axum::response::Response;
-use busbar_substrate::handlers::RequestHandler;
-use busbar_substrate::ingress::arrival::{Arrival, ArrivalCtx, ArrivalHost};
-use busbar_substrate::proxy::POOL_LABEL_UNRESOLVED;
+use busbar_substrate_values::handlers::RequestHandler;
+use busbar_kernel::ingress::arrival::{Arrival, ArrivalCtx, ArrivalHost};
+use busbar_kernel::proxy::POOL_LABEL_UNRESOLVED;
 
 use crate::proto_codec::{PROTO_BEDROCK, PROTO_GEMINI};
 // The terminal's neutral half, named one level up (see `unit/mod.rs`) rather than by the audit
@@ -35,7 +35,7 @@ type Fut = Pin<Box<dyn Future<Output = Response> + Send>>;
 /// The dialect's own installed `RequestHandler`, resolved through the neutral protocol registry (the
 /// byte-identical equivalent of core's old `handlers::request_handler(proto)`).
 fn request_handler(proto: &str) -> Option<&'static dyn RequestHandler> {
-    busbar_substrate::proto::registry()
+    busbar_kernel::proto::registry()
         .decl(proto)
         .and_then(|d| d.handler)
 }
@@ -172,7 +172,7 @@ async fn gemini_ingress(
     // never reaches the path-model core, where `started` is otherwise taken) is still counted through
     // `finish_rejected` — the same pre-routing observability invariant the body/path cores enforce.
     let started = Instant::now();
-    let charged_at = busbar_substrate::store::now();
+    let charged_at = busbar_kernel::store::now();
     let facts = match gemini_path_parse(&host, &ctx, &rest, &uri, &body) {
         PathArrivalFacts::PathModel(facts) => facts,
         // A pre-rendered fallback 404 (a different terminal): return its bytes unchanged.
@@ -253,7 +253,7 @@ pub fn gemini_path_parse(
         Some((m, a)) if !m.is_empty() && !a.is_empty() => (m, a),
         _ => {
             let envelope_proto = host.envelope_dialect(ctx, uri.path());
-            if busbar_substrate::proto::registry()
+            if busbar_kernel::proto::registry()
                 .decl(envelope_proto)
                 .is_some_and(|d| d.has_native_path_not_found)
             {
@@ -294,7 +294,7 @@ pub fn gemini_path_parse(
         (true, _) => false, // generateContent / embedContent / predict — non-stream in 1.2
         (false, other) => {
             let envelope_proto = host.envelope_dialect(ctx, uri.path());
-            if busbar_substrate::proto::registry()
+            if busbar_kernel::proto::registry()
                 .decl(envelope_proto)
                 .is_some_and(|d| d.has_native_path_not_found)
             {
@@ -371,7 +371,7 @@ pub fn bedrock_arrival(a: Arrival) -> Fut {
     // `finish_rejected` so it stays visible to Prometheus/the webhook, and the epoch it is finished
     // against is pinned before the parse rather than after it.
     let started = Instant::now();
-    let charged_at = busbar_substrate::store::now();
+    let charged_at = busbar_kernel::store::now();
     match bedrock_path_parse(&host, &ctx, &path, &uri, &body) {
         PathArrivalFacts::PathModel(facts) => Box::pin(bedrock_converse(ctx, facts, headers, body)),
         PathArrivalFacts::BodyModel {
@@ -541,7 +541,7 @@ async fn bedrock_invoke(
 // The four body-model dialects (anthropic/openai/cohere/responses) — and the body variants of the
 // URL-model pair — keep the model IN THE BODY: the convenience surfaces (`named`/`adhoc` `/v1/messages`)
 // and the generic `protocol_dispatch` body-model arm resolve them by protocol name through
-// `busbar_substrate::ingress::arrival::body_ingress_for(proto)`. This SIDE-TABLE is the body-axis twin
+// `busbar_kernel::ingress::arrival::body_ingress_for(proto)`. This SIDE-TABLE is the body-axis twin
 // of [`crate::PATH_INGRESS`]: it maps each dialect NAME to a `BodyIngress` fn that resolves the
 // operation off the endpoint (its own `RequestHandler::resolve_operation`) and runs the universal
 // [`crate::native_ingress::operation_ingress`] forward. Registered by the composition root

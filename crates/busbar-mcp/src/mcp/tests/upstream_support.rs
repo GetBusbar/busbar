@@ -652,7 +652,7 @@ pub(super) async fn call_response_caps(
     // The sync leg's shared host arena, exactly as production's `rpc_dispatch` opens one (its dispatch
     // guard stack-pins this same `DispatchScope`) — so the breaker/reroute batteries drive the
     // CLUSTER-1 admit+settle path, not a legacy in-place shim.
-    let scope = busbar_substrate::plane_host::DispatchScope::new();
+    let scope = busbar_kernel::plane_host::DispatchScope::new();
     let ctx = crate::mcp::method::Ctx {
         host: engine_host_from_handle(&handle),
         gov,

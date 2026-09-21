@@ -264,7 +264,7 @@ fn observed_identity(resp: &http::Response<hyper::body::Incoming>) -> Vec<u8> {
     // and the pool replayed it onto this response's extensions — per-connection-correctly, so a
     // pooled response is attributed to ITS connection's certificate. Absent on a plaintext hop
     // and on an unwalkable certificate: honestly absent, never a pass.
-    busbar_substrate::egress::engine::peer_spki(resp)
+    busbar_kernel::egress::engine::peer_spki(resp)
         .map(|pin| pin.as_bytes().to_vec())
         .unwrap_or_default()
 }
@@ -467,7 +467,7 @@ fn inject_credential(d: &EgressDesc, spec: &mut ReqSpec, destination: &str) -> C
         },
         _ => String::new(),
     };
-    let now = busbar_substrate::store::now_ms() / 1_000;
+    let now = busbar_kernel::store::now_ms() / 1_000;
     let Some(secret) = super::creds::resolve(d.credential_ref, now, destination) else {
         // unknown / expired / DESTINATION-MISMATCH ref → refuse the hop (fail-closed by denial).
         return CredInjection::Refused;
@@ -844,10 +844,10 @@ fn egress_runtime() -> Result<&'static tokio::runtime::Runtime, String> {
 /// they are minted per registration at boot, so equality of refs IS equality of posture. Bounded
 /// at the pool's default cap; eviction drops the pool's clone, releasing idle sockets.
 type HostClientKey = (String, std::net::SocketAddr, u64, u64);
-fn host_client_pool() -> &'static busbar_substrate::egress::PinnedClientPool<HostClientKey> {
-    static POOL: std::sync::OnceLock<busbar_substrate::egress::PinnedClientPool<HostClientKey>> =
+fn host_client_pool() -> &'static busbar_kernel::egress::PinnedClientPool<HostClientKey> {
+    static POOL: std::sync::OnceLock<busbar_kernel::egress::PinnedClientPool<HostClientKey>> =
         std::sync::OnceLock::new();
-    POOL.get_or_init(busbar_substrate::egress::PinnedClientPool::default)
+    POOL.get_or_init(busbar_kernel::egress::PinnedClientPool::default)
 }
 
 /// The body of the streaming thread: resolve-then-pin, connect, report the head, pump chunks.
@@ -861,7 +861,7 @@ fn run_http_stream(
     spec: &ReqSpec,
     identity: (
         u64,
-        Option<busbar_substrate::egress::engine::ClientIdentity>,
+        Option<busbar_kernel::egress::engine::ClientIdentity>,
     ),
     extra_roots: (u64, Vec<rustls_pki_types::CertificateDer<'static>>),
     pinned: Option<std::net::SocketAddr>,
@@ -904,7 +904,7 @@ fn run_http_stream(
             },
         };
         // THE PINNED ENGINE CLIENT, from the HOST POOL over the ONE engine builder
-        // ([`busbar_substrate::egress::engine::build_client`] on the `EngineSpec::pinned`
+        // ([`busbar_kernel::egress::engine::build_client`] on the `EngineSpec::pinned`
         // posture): the PIN IS THE RESOLVER (the socket goes to the judged address while Host,
         // SNI and the certificate name check stay on the hostname; every other name refuses with
         // the doctrine text), no redirect is ever followed (structural in hyper — a 3xx is an
@@ -926,8 +926,8 @@ fn run_http_stream(
                 trust_anchor_ref,
             ),
             || {
-                busbar_substrate::egress::engine::build_client(
-                    &busbar_substrate::egress::engine::EngineSpec::pinned(
+                busbar_kernel::egress::engine::build_client(
+                    &busbar_kernel::egress::engine::EngineSpec::pinned(
                         Arc::from(host_name),
                         socket_addr.ip(),
                         identity,
@@ -984,7 +984,7 @@ fn run_http_stream(
                 }
             }
         }
-        let req = busbar_substrate::egress::engine::request(
+        let req = busbar_kernel::egress::engine::request(
             spec.method.clone(),
             uri,
             headers,
@@ -992,7 +992,7 @@ fn run_http_stream(
         );
         let deadline = tokio::time::Instant::now() + timeout;
         let resp =
-            match busbar_substrate::egress::engine::send_bounded(&client, req, deadline).await {
+            match busbar_kernel::egress::engine::send_bounded(&client, req, deadline).await {
                 Ok(resp) => resp,
                 Err(hop) => {
                     // The real transport failure, already classified (connect vs everything that
@@ -1045,7 +1045,7 @@ fn run_http_stream(
                 () = stop.notified() => break,
                 () = tokio::time::sleep_until(deadline) => {
                     let _ = chunk_tx.send(ChunkMsg::Err(
-                        busbar_substrate::egress::engine::HOP_DEADLINE_CAUSE.to_string(),
+                        busbar_kernel::egress::engine::HOP_DEADLINE_CAUSE.to_string(),
                     ));
                     break;
                 }
@@ -1436,12 +1436,12 @@ pub(crate) struct OpenedHead {
 }
 
 // The fully-decoded egress fault the seam composes its own operator string over relocated to
-// `busbar_substrate::egress::seam::EgressFaultInfo` (field-neutral: the plugin `EgressFailClass`, a
+// `busbar_kernel::egress::seam::EgressFaultInfo` (field-neutral: the plugin `EgressFailClass`, a
 // status, and the flattened CAUSE and TARGET-url kept SEPARATE), so a plane crate reads it without
 // naming core. Re-exported here so every in-core construction/return below — `drive_open`,
 // `drive_fault`, `OpenOutcome::Fault` — is unchanged, and so is `busbar_kernel::egress::seam`'s use.
 #[cfg(feature = "egress-seam")]
-pub use busbar_substrate::egress::seam::EgressFaultInfo;
+pub use busbar_kernel::egress::seam::EgressFaultInfo;
 
 /// The outcome of driving [`egress_open`] over a host: the adopted head, or the neutral fault detail.
 #[cfg(feature = "egress-seam")]

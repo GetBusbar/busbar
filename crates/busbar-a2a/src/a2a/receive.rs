@@ -7,7 +7,7 @@
 //! the caller. The order is fixed and each step is the previous one's precondition:
 //!
 //! 1. AUTHENTICATE — done before a handler here runs, by the shared auth middleware. What makes it
-//!    an A2A authentication rather than a data-plane one is [`busbar_substrate::plane::PlaneAdmission`]: the
+//!    an A2A authentication rather than a data-plane one is [`busbar_kernel::plane::PlaneAdmission`]: the
 //!    middleware reads this mount's admission facts and threads its audience into the token
 //!    verifier, which refuses a token whose `aud` is absent or different.
 //! 2. AUTHORISE — [`super::inbound::authorize`], whose decision is `scope_allowed("agent", id)`.
@@ -47,7 +47,7 @@ use crate::diagnostics::{
     A2A_RELAYED_OUTCOME_UNRECORDED, A2A_RELAYED_STREAM_REFUSED, A2A_RELAYED_SUBMISSION_FAILED,
     A2A_RELAY_THREAD_INCOMPLETE, A2A_STREAM_EMPTY, A2A_STREAM_RELAY_INCOMPLETE,
 };
-use busbar_substrate::{diag_debug, diag_error, diag_warn};
+use busbar_kernel::{diag_debug, diag_error, diag_warn};
 
 /// The audit action every inbound call on this plane records under.
 pub(super) const AUDIT_ACTION: &str = "agent.call";
@@ -65,7 +65,7 @@ pub(super) const AUDIT_ACTION: &str = "agent.call";
 /// from the codec's single source rather than restated as a literal.
 ///
 /// It cannot collide with a member row: `super::route` keys those through
-/// `busbar_substrate::store::agent_key`, which prefixes `agent:`. A pool line and an agent line are
+/// `busbar_kernel::store::agent_key`, which prefixes `agent:`. A pool line and an agent line are
 /// therefore distinguishable in one ledger, which is the whole reason the prefix rule exists.
 const PLANE_POOL: &str = busbar_a2a_codec::CONFIG_SECTION;
 
@@ -75,7 +75,7 @@ const PLANE_POOL: &str = busbar_a2a_codec::CONFIG_SECTION;
 /// See the module doc for why this is derived rather than asserted. In one line: an audience-bound
 /// mount is the only place a token can have been checked against this plane's resource indicator,
 /// so it is the only place the presented credential is an A2A inbound credential.
-fn credential_kind_of(engine_host: &dyn busbar_substrate::plane_host::EngineHost) -> &'static str {
+fn credential_kind_of(engine_host: &dyn busbar_kernel::plane_host::EngineHost) -> &'static str {
     let bound = engine_host.plane_audience_bound(crate::PLANE_DECL.key);
     if bound {
         CREDENTIAL_KIND_A2A_INBOUND
@@ -111,17 +111,17 @@ pub(super) fn path_param(params: &[(String, String)], name: &str) -> String {
 /// specialised to [`A2aWords`], reading the live `App` off the seam's type-erased engine handle
 /// rather than a `CurrentApp` extractor. Declared `RouteAuth::None`, so the auth middleware bypasses
 /// the chain and hands this handler no resolved identity — matching the old open handler.
-pub(crate) async fn metadata_route(ctx: busbar_substrate::plane_routes::PlaneReqCtx) -> Response {
-    use busbar_substrate::ingress::protocol::{CoreRefusal, Words as _};
+pub(crate) async fn metadata_route(ctx: busbar_kernel::plane_routes::PlaneReqCtx) -> Response {
+    use busbar_kernel::ingress::protocol::{CoreRefusal, Words as _};
     // The document is read off the NEUTRAL host seam (`super::words::document_of` over `ctx.host`), so
     // this pure metadata read needs no `AppHandle` downcast.
     match super::words::document_of(&ctx.host) {
-        Some(doc) => busbar_substrate::ingress::protocol::metadata(&doc),
+        Some(doc) => busbar_kernel::ingress::protocol::metadata(&doc),
         None => A2aWords.refuse(CoreRefusal::MetadataUnavailable),
     }
 }
 
-pub(crate) async fn well_known_card(ctx: busbar_substrate::plane_routes::PlaneReqCtx) -> Response {
+pub(crate) async fn well_known_card(ctx: busbar_kernel::plane_routes::PlaneReqCtx) -> Response {
     // S7 neutral seam: this `RouteAuth::None` handler took only `CurrentApp`. Both the plane runtime
     // and the card signer are now reached through the neutral `ctx.host` seam, so this pure card read
     // needs no `AppHandle` downcast.
@@ -191,7 +191,7 @@ pub(super) struct Admitted {
 /// allocation on a request that is being turned away is cheaper than widening every `Result` on the
 /// admitted path by the size of a response nobody on it will ever carry.
 fn admit(
-    host: &Arc<dyn busbar_substrate::plane_host::EngineHost>,
+    host: &Arc<dyn busbar_kernel::plane_host::EngineHost>,
     key: &busbar_api::VirtualKey,
     agent_id: &str,
     shape: &super::registry::TaskShape,
@@ -204,10 +204,10 @@ fn admit(
     // READ ONCE, under the same acquisition as the registry itself, so the value carried forward is
     // the generation the decision below was actually taken on.
     let generation = plane.generation();
-    let caller = busbar_substrate::catalogue::Caller {
+    let caller = busbar_kernel::catalogue::Caller {
         key: Some(key),
         now: now_secs,
-        generation: busbar_substrate::trust::validate::Generations::at_admission(generation),
+        generation: busbar_kernel::trust::validate::Generations::at_admission(generation),
     };
     plane.with_registrations(|regs| {
         // 2. AUTHORISE. `Dispatch` is owned, so it escapes this closure; `Candidate` borrows the
@@ -300,17 +300,17 @@ fn admit(
 /// several agents that can all serve one shape has a caller who must say which — and that caller
 /// has an unambiguous address for it, `POST /a2a/agents/{id}`, which the refusal names.
 fn select(
-    host: &Arc<dyn busbar_substrate::plane_host::EngineHost>,
+    host: &Arc<dyn busbar_kernel::plane_host::EngineHost>,
     key: &busbar_api::VirtualKey,
     shape: &super::registry::TaskShape,
 ) -> Result<String, Box<Response>> {
     let Some(plane) = crate::a2a::runtime_arc_of(host) else {
         return Err(Box::new(plane_absent()));
     };
-    let caller = busbar_substrate::catalogue::Caller {
+    let caller = busbar_kernel::catalogue::Caller {
         key: Some(key),
         now: host.clock_now_secs(),
-        generation: busbar_substrate::trust::validate::Generations::at_admission(
+        generation: busbar_kernel::trust::validate::Generations::at_admission(
             plane.generation(),
         ),
     };
@@ -350,7 +350,7 @@ fn select(
 /// THE PLANE'S OWN ENDPOINT — `POST /a2a`, the one busbar's Agent Card publishes.
 ///
 /// Identical to [`agent_rpc`] in everything except how the agent is named. See [`select`].
-pub(crate) async fn plane_rpc(ctx: busbar_substrate::plane_routes::PlaneReqCtx) -> Response {
+pub(crate) async fn plane_rpc(ctx: busbar_kernel::plane_routes::PlaneReqCtx) -> Response {
     // S7 neutral seam: `RouteAuth::Key`, so the auth middleware resolved and attached `gov`/
     // `principal` BEFORE this handler ran — surfaced on `ctx`, never re-derived here. `Wire` is the
     // same three headers the extractor read, off `ctx.headers`.
@@ -367,7 +367,7 @@ pub(crate) async fn plane_rpc(ctx: busbar_substrate::plane_routes::PlaneReqCtx) 
         principal,
         FromCatalogue,
         wire,
-        busbar_substrate::transport::Transport::JsonRpc,
+        busbar_substrate_values::transport::Transport::JsonRpc,
         ctx.body,
     )
     .await
@@ -427,7 +427,7 @@ pub(crate) struct Wire {
     /// the specification defines as `0.3` rather than as a refusal.
     version: Option<String>,
     /// The caller's `Origin`, when it sent one. Read here rather than judged here: the verdict is
-    /// `busbar_substrate::ingress::protocol::origin_admitted`'s, once, for every JSON-RPC plane.
+    /// `busbar_kernel::ingress::protocol::origin_admitted`'s, once, for every JSON-RPC plane.
     origin: Option<String>,
 }
 
@@ -460,7 +460,7 @@ impl Wire {
     /// THE SAME THREE FACTS, READ OFF A `HeaderMap` RATHER THAN OFF REQUEST PARTS.
     ///
     /// The neutral route-mount seam hands a plane handler the request's [`HeaderMap`] on
-    /// [`busbar_substrate::plane_routes::PlaneReqCtx`] rather than letting it run a
+    /// [`busbar_kernel::plane_routes::PlaneReqCtx`] rather than letting it run a
     /// [`axum::extract::FromRequestParts`] extractor. This constructor is that extractor's body,
     /// verbatim: the SAME three headers (`content-type`, `a2a-version`, `origin`), read with the SAME
     /// non-UTF-8-reads-as-absent rule, so the `Wire` a neutralised handler builds is byte-identical to
@@ -606,7 +606,7 @@ impl Wire {
 /// fronts, and which agents exist is exactly what a caller with no grant on them must not learn.
 /// The refusal taxonomy does the rest — a caller with no grant gets the same 403 whether or not the
 /// agent exists, and only a caller that could reach it gets the 404.
-pub(crate) async fn card(ctx: busbar_substrate::plane_routes::PlaneReqCtx) -> Response {
+pub(crate) async fn card(ctx: busbar_kernel::plane_routes::PlaneReqCtx) -> Response {
     // S7 neutral seam: `RouteAuth::Key`. `gov` is the middleware-resolved ctx off the seam; the
     // `{agent_id}` capture, which an `axum::extract::Path` used to hand us, is read by name off
     // `ctx.path_params` (the core adapter collected the raw path captures in match order).
@@ -721,8 +721,8 @@ fn governance_required() -> Response {
 /// locally-answered verbs, and the pre-selection card — and a fourth spelled slightly differently
 /// is how one verb quietly stops appearing in a deployment's ledger.
 fn meter_request(
-    engine_host: &dyn busbar_substrate::plane_host::EngineHost,
-    cap_scope: &busbar_substrate::plane_host::DispatchScope,
+    engine_host: &dyn busbar_kernel::plane_host::EngineHost,
+    cap_scope: &busbar_kernel::plane_host::DispatchScope,
     billed_key_id: &str,
     resource: &str,
 ) {
@@ -762,7 +762,7 @@ pub(super) fn no_receiving_side() -> Response {
 /// answer or as a stream of them, or answers a busbar-attributed error and ends the task.
 ///
 /// The handler deliberately does NOT extract a `HeaderMap`. See step 7 below.
-pub(crate) async fn agent_rpc(ctx: busbar_substrate::plane_routes::PlaneReqCtx) -> Response {
+pub(crate) async fn agent_rpc(ctx: busbar_kernel::plane_routes::PlaneReqCtx) -> Response {
     // S7 neutral seam: `RouteAuth::Key`. Same shape as `plane_rpc` plus the `{agent_id}` capture,
     // read by name off `ctx.path_params`.
     let gov = ctx
@@ -779,7 +779,7 @@ pub(crate) async fn agent_rpc(ctx: busbar_substrate::plane_routes::PlaneReqCtx) 
         principal,
         Named(agent_id),
         wire,
-        busbar_substrate::transport::Transport::JsonRpc,
+        busbar_substrate_values::transport::Transport::JsonRpc,
         ctx.body,
     )
     .await
@@ -802,7 +802,7 @@ pub(super) enum Target {
 use Target::{FromCatalogue, Named};
 
 /// The A2A invoke path as this protocol's sibling on the NEUTRAL shared gauntlet sequence
-/// ([`busbar_substrate::plane_host::run_gauntlet`]) — the SAME sequence the LLM native plane and the
+/// ([`busbar_kernel::plane_host::run_gauntlet`]) — the SAME sequence the LLM native plane and the
 /// MCP `tools/call` plane ride. (`A2aInvokePlane`, not `A2aPlane`: the latter is this crate's
 /// `PlaneDecl` registration type.)
 ///
@@ -815,7 +815,7 @@ use Target::{FromCatalogue, Named};
 /// structural `Proceed`. Riding the seam expresses verify-before-admit + the audit-correlation join
 /// on the ONE shared path, making all three planes siblings.
 struct A2aInvokePlane {
-    engine_host: Arc<dyn busbar_substrate::plane_host::EngineHost>,
+    engine_host: Arc<dyn busbar_kernel::plane_host::EngineHost>,
     principal: busbar_api::AuthPrincipal,
     target: Target,
     wire: Wire,
@@ -823,19 +823,19 @@ struct A2aInvokePlane {
 }
 
 #[async_trait::async_trait]
-impl busbar_substrate::plane_host::GauntletPlane for A2aInvokePlane {
+impl busbar_kernel::plane_host::GauntletPlane for A2aInvokePlane {
     fn verify_destination(
         &self,
-        _req: &busbar_substrate::plane_host::GauntletRequest<'_>,
-    ) -> busbar_substrate::plane_host::VerifyOutcome {
+        _req: &busbar_kernel::plane_host::GauntletRequest<'_>,
+    ) -> busbar_kernel::plane_host::VerifyOutcome {
         // See the type doc: A2A's agent verification is async + interleaved with admission, so it stays
         // inside `drive` (byte-identical). The shared sequence's sync pre-admission gate is a no-op.
-        busbar_substrate::plane_host::VerifyOutcome::Proceed
+        busbar_kernel::plane_host::VerifyOutcome::Proceed
     }
 
     async fn drive(
         self: Box<Self>,
-        req: busbar_substrate::plane_host::GauntletRequest<'_>,
+        req: busbar_kernel::plane_host::GauntletRequest<'_>,
     ) -> Response {
         // The whole of `invoke_inner`, VERBATIM — protocol pre-checks, agent select/admit, hook gate,
         // per-hop credential mint, relay, per-hop metering and the provenance chain all unchanged. The
@@ -865,8 +865,8 @@ impl busbar_substrate::plane_host::GauntletPlane for A2aInvokePlane {
 
 /// THE INBOUND CALL, EVERY ENDPOINT AND EVERY BINDING, ONE SEQUENCE.
 ///
-/// `transport` is the leg the request arrived on — [`busbar_substrate::transport::Transport::JsonRpc`],
-/// [`busbar_substrate::transport::Transport::HttpJson`] or [`busbar_substrate::transport::Transport::Grpc`] — and it is
+/// `transport` is the leg the request arrived on — [`busbar_substrate_values::transport::Transport::JsonRpc`],
+/// [`busbar_substrate_values::transport::Transport::HttpJson`] or [`busbar_substrate_values::transport::Transport::Grpc`] — and it is
 /// carried as a VALUE, never compared. It is read in exactly one place, the metric label at the end
 /// of this function, and the reason it has to be carried at all is a consequence the second binding
 /// made unavoidable: `plane::observe` can only name the binding a DOOR declares, and two of this
@@ -876,12 +876,12 @@ impl busbar_substrate::plane_host::GauntletPlane for A2aInvokePlane {
 /// only from a conformance suite's stdout.
 #[allow(clippy::too_many_arguments)] // plumbing: each arg is an independent request input
 pub(super) async fn invoke(
-    engine_host: Arc<dyn busbar_substrate::plane_host::EngineHost>,
+    engine_host: Arc<dyn busbar_kernel::plane_host::EngineHost>,
     gov: busbar_api::PlaneRequestCtx,
     principal: busbar_api::AuthPrincipal,
     target: Target,
     wire: Wire,
-    transport: busbar_substrate::transport::Transport,
+    transport: busbar_substrate_values::transport::Transport,
     body: axum::body::Bytes,
 ) -> Response {
     let started = std::time::Instant::now();
@@ -890,7 +890,7 @@ pub(super) async fn invoke(
     // verify-before-admit ORDER is core-enforced by `run_gauntlet`, while the plane owns its drive
     // (the whole of `invoke_inner`, byte-identical — see `A2aInvokePlane`). `gov` stays owned here and
     // is borrowed into the neutral request; the plane's `drive` clones it for `invoke_inner`.
-    let req = busbar_substrate::plane_host::GauntletRequest {
+    let req = busbar_kernel::plane_host::GauntletRequest {
         gov: &gov,
         // The routing target is client-supplied; the drive reads it off the plane, not the request,
         // so this destination label is unused on the A2A path (verify_destination is a no-op).
@@ -899,7 +899,7 @@ pub(super) async fn invoke(
         charged_at: 0,
         started,
     };
-    let mut answered = busbar_substrate::plane_host::run_gauntlet(
+    let mut answered = busbar_kernel::plane_host::run_gauntlet(
         req,
         Box::new(A2aInvokePlane {
             engine_host,
@@ -916,8 +916,8 @@ pub(super) async fn invoke(
         // The same sentinel `plane::observe` stamps, and for the same reason it states there: the
         // routing target is client-supplied and an unbounded label value is a memory-exhaustion DoS
         // one valid credential can drive.
-        busbar_substrate::proxy::POOL_LABEL_UNRESOLVED,
-        busbar_substrate::telemetry::outcome_of(answered.status().as_u16()),
+        busbar_kernel::proxy::POOL_LABEL_UNRESOLVED,
+        busbar_kernel::telemetry::outcome_of(answered.status().as_u16()),
         started.elapsed().as_secs_f64(),
     );
     // AND THE BOUNDARY IS TOLD, so it does not count this request a second time under the binding
@@ -926,7 +926,7 @@ pub(super) async fn invoke(
     // there for.
     answered
         .extensions_mut()
-        .insert(busbar_substrate::plane::observe::Counted);
+        .insert(busbar_kernel::plane::observe::Counted);
     answered
 }
 
@@ -934,7 +934,7 @@ pub(super) async fn invoke(
 /// there are a dozen early returns below, and a metric emitted at each of them is a metric that
 /// will one day be missing from the thirteenth.
 async fn invoke_inner(
-    engine_host: Arc<dyn busbar_substrate::plane_host::EngineHost>,
+    engine_host: Arc<dyn busbar_kernel::plane_host::EngineHost>,
     gov: busbar_api::PlaneRequestCtx,
     principal: busbar_api::AuthPrincipal,
     target: Target,
@@ -953,7 +953,7 @@ async fn invoke_inner(
     // BEFORE THE JSON PARSE, because the order IS the behaviour: a request with a wrong media type
     // usually also carries a body that is not JSON, and a gate placed after the parse answers
     // `Parse` (-32700) forever and never reaches -32005. The caller is then told to fix its body
-    // when the thing to fix is a header. `busbar_substrate::ingress::protocol::serve` runs step 3 — this
+    // when the thing to fix is a header. `busbar_kernel::ingress::protocol::serve` runs step 3 — this
     // value — before its own parse for exactly that reason; it is the one pre-parse step that is
     // genuinely a protocol's.
     //
@@ -978,9 +978,9 @@ async fn invoke_inner(
     // STEPS 1, 2, 4, 5, 6, 7, 8 AND 13 ARE CORE'S. This plane states none of them any more, and
     // step 2 — the `Origin` / DNS-rebinding refusal — is one it never stated at all: it arrived
     // here by being core's, which is the entire argument for the concern having one home.
-    busbar_substrate::ingress::protocol::serve(
+    busbar_kernel::ingress::protocol::serve(
         &A2aWords,
-        busbar_substrate::ingress::protocol::Request {
+        busbar_kernel::ingress::protocol::Request {
             present: crate::a2a::runtime_arc_of(&engine_host).is_some(),
             origin: origin.as_deref(),
             // NO OPERATOR ALLOWLIST ON THIS PLANE, so loopback and nothing else. A2A is an
@@ -1015,7 +1015,7 @@ async fn invoke_inner(
 }
 
 /// EVERYTHING AFTER THE ENVELOPE: this plane's own vocabulary and its verb dispatch — steps 9 to
-/// 12 of the measurement in `busbar_substrate::ingress::protocol`.
+/// 12 of the measurement in `busbar_kernel::ingress::protocol`.
 ///
 /// `rpc_id` and `envelope` arrive ALREADY DECIDED by the shared reader: the id is a string or a
 /// number by construction, never `null` and never a notification's absence. A second reading of
@@ -1028,7 +1028,7 @@ async fn invoke_inner(
 // that convergence deletes.
 #[allow(clippy::too_many_arguments)]
 async fn admitted(
-    engine_host: Arc<dyn busbar_substrate::plane_host::EngineHost>,
+    engine_host: Arc<dyn busbar_kernel::plane_host::EngineHost>,
     gov: busbar_api::PlaneRequestCtx,
     principal: busbar_api::AuthPrincipal,
     target: Target,
@@ -1050,7 +1050,7 @@ async fn admitted(
     // any exit (return/cancel/panic) — a per-dispatch RAII arena — and so the meter's fire-and-forget
     // charge folds through the same arena. `DispatchScope::new()` is NEUTRAL and `Send`;
     // `EngineHostImpl` materializes the transient `HostCtx` over it internally.
-    let cap_scope = busbar_substrate::plane_host::DispatchScope::new();
+    let cap_scope = busbar_kernel::plane_host::DispatchScope::new();
     // Re-read rather than threaded: `wire_refusal` above already refused every request that has no
     // key, so this branch is unreachable and is a clean refusal rather than an unwrap because it
     // is on a request path.
@@ -1103,12 +1103,12 @@ async fn admitted(
                 key.id.as_bytes(),
                 key.group.as_deref().map(str::as_bytes),
             ),
-            busbar_substrate::plane_host::GovAdmit::Blocked { .. }
+            busbar_kernel::plane_host::GovAdmit::Blocked { .. }
         ) {
             engine_host.audit_emit(
                 AUDIT_ACTION,
                 PLANE_POOL,
-                busbar_substrate::audit::vocab::OUTCOME_REJECTED,
+                busbar_contract::vocab::OUTCOME_REJECTED,
                 &actor,
             );
             return (
@@ -1125,7 +1125,7 @@ async fn admitted(
         engine_host.audit_emit(
             AUDIT_ACTION,
             PLANE_POOL,
-            busbar_substrate::audit::vocab::OUTCOME_APPLIED,
+            busbar_contract::vocab::OUTCOME_APPLIED,
             &actor,
         );
         return super::route::extended_agent_card(&engine_host, key, &rpc_id);
@@ -1220,12 +1220,12 @@ async fn admitted(
             )
         })
         .await
-        .unwrap_or(busbar_substrate::plane_host::GateOutcome::Reject {
+        .unwrap_or(busbar_kernel::plane_host::GateOutcome::Reject {
             status: 403,
             message: String::new(),
             hook: String::new(),
         });
-        if let busbar_substrate::plane_host::GateOutcome::Reject {
+        if let busbar_kernel::plane_host::GateOutcome::Reject {
             status,
             message,
             hook,
@@ -1234,7 +1234,7 @@ async fn admitted(
             engine_host.audit_emit(
                 AUDIT_ACTION,
                 &resource,
-                busbar_substrate::audit::vocab::OUTCOME_REJECTED,
+                busbar_contract::vocab::OUTCOME_REJECTED,
                 &actor,
             );
             tracing::info!(
@@ -1307,12 +1307,12 @@ async fn admitted(
         .await
         // A join panic is FAIL-SAFE on the transform path (the gate already admitted): proceed with
         // the original `params`, unchanged.
-        .unwrap_or(busbar_substrate::plane_host::TransformVerdict::Proceed {
+        .unwrap_or(busbar_kernel::plane_host::TransformVerdict::Proceed {
             applied: false,
             args_json: Vec::new(),
         });
         match verdict {
-            busbar_substrate::plane_host::TransformVerdict::Reject {
+            busbar_kernel::plane_host::TransformVerdict::Reject {
                 status,
                 message,
                 hook,
@@ -1320,7 +1320,7 @@ async fn admitted(
                 engine_host.audit_emit(
                     AUDIT_ACTION,
                     &resource,
-                    busbar_substrate::audit::vocab::OUTCOME_REJECTED,
+                    busbar_contract::vocab::OUTCOME_REJECTED,
                     &actor,
                 );
                 tracing::info!(
@@ -1340,7 +1340,7 @@ async fn admitted(
                 )
                     .into_response();
             }
-            busbar_substrate::plane_host::TransformVerdict::Proceed { applied, args_json } => {
+            busbar_kernel::plane_host::TransformVerdict::Proceed { applied, args_json } => {
                 if applied {
                     if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&args_json) {
                         // Stash the rewritten params; the write-back into `envelope` happens at the
@@ -1378,12 +1378,12 @@ async fn admitted(
     );
     if matches!(
         admitted_budget,
-        busbar_substrate::plane_host::GovAdmit::Blocked { .. }
+        busbar_kernel::plane_host::GovAdmit::Blocked { .. }
     ) {
         engine_host.audit_emit(
             AUDIT_ACTION,
             &resource,
-            busbar_substrate::audit::vocab::OUTCOME_REJECTED,
+            busbar_contract::vocab::OUTCOME_REJECTED,
             &actor,
         );
         return (
@@ -1541,7 +1541,7 @@ async fn admitted(
             engine_host.audit_emit(
                 AUDIT_ACTION,
                 &resource,
-                busbar_substrate::audit::vocab::OUTCOME_APPLIED,
+                busbar_contract::vocab::OUTCOME_APPLIED,
                 &actor,
             );
             return response;
@@ -1566,7 +1566,7 @@ async fn admitted(
             engine_host.audit_emit(
                 AUDIT_ACTION,
                 &resource,
-                busbar_substrate::audit::vocab::OUTCOME_REJECTED,
+                busbar_contract::vocab::OUTCOME_REJECTED,
                 &actor,
             );
             return (
@@ -1735,7 +1735,7 @@ async fn admitted(
     // reclaims at hop end; on an early return before the hop it drops here, releasing any registered
     // walk probe owner-checked — exactly as the bare hold used to. `EngineHostImpl` materializes the
     // transient `HostCtx` over this scope internally, so no `App`/`SendHostDispatch` is threaded for it.
-    let hop_scope = busbar_substrate::plane_host::DispatchScope::new();
+    let hop_scope = busbar_kernel::plane_host::DispatchScope::new();
     let selected_member = super::route::select_member(
         engine_host.as_ref(),
         &hop_scope,
@@ -1943,7 +1943,7 @@ async fn admitted(
     engine_host.audit_emit(
         AUDIT_ACTION,
         &resource,
-        busbar_substrate::audit::vocab::OUTCOME_APPLIED,
+        busbar_contract::vocab::OUTCOME_APPLIED,
         &actor,
     );
 
@@ -1955,7 +1955,7 @@ async fn admitted(
     // out on the hop — masked, in the configured-credential case, by the leased header overwriting
     // it, which is why the no-credential twin exists in `tests/relay_tests.rs`.
     //
-    // Milliseconds, because a lease is minted and checked in milliseconds while `busbar_substrate::store::now`
+    // Milliseconds, because a lease is minted and checked in milliseconds while `busbar_kernel::store::now`
     // counts seconds. Converted once, here, rather than at each of the call sites that would
     // otherwise each have to remember.
     let now_ms = now.saturating_mul(1_000);
@@ -2199,7 +2199,7 @@ struct HopContext {
     /// the durable `task_event` seam through the same `EngineHost` methods (`task_journal_write` /
     /// `task_record_push_delivery`), which mint the transient `HostCtx` internally. Cloned by the writes
     /// that run AFTER the hop; `Send + Sync`, so it rides onto a detached task or a blocking thread.
-    engine_host: Arc<dyn busbar_substrate::plane_host::EngineHost>,
+    engine_host: Arc<dyn busbar_kernel::plane_host::EngineHost>,
     /// THE PLANE'S OUTBOUND SEAM, carried so the code that records a task's outcome can also
     /// DELIVER it. A push notification is the same fact as the state transition and belongs at the
     /// same instant; reaching for the plane again from `record_state` would be reading the world
@@ -2254,7 +2254,7 @@ struct HopContext {
 /// VERIFY-ON-CALL for one A2A delegation: re-verify `agent_id`'s card within `verify_ttl`,
 /// single-flight, fail-closed, BEFORE the relay's live trust gate compares it.
 ///
-/// The single-flight, the freshness bound and the fail-closed ordering are [`busbar_substrate::trust::verify`]'s,
+/// The single-flight, the freshness bound and the fail-closed ordering are [`busbar_kernel::trust::verify`]'s,
 /// once, for every plane; this plane's FETCH is [`super::plane::A2aPlane::reverify_agent`] — the
 /// signed-card read and verification against the operator's out-of-band root, on a blocking thread. A
 /// failed re-verification records `Error`, which the relay preamble's `still_delegable` gate then
@@ -2273,7 +2273,7 @@ struct HopContext {
 /// re-verification ever confirmed.
 fn fold_reverify_join(
     joined: Result<Option<super::verify::Pass>, tokio::task::JoinError>,
-    gate: &busbar_substrate::trust::verify::VerifyGate,
+    gate: &busbar_kernel::trust::verify::VerifyGate,
     subject: &str,
 ) -> Option<super::verify::Pass> {
     match joined {
@@ -2286,7 +2286,7 @@ fn fold_reverify_join(
 }
 
 async fn verify_agent_on_call(
-    host: &Arc<dyn busbar_substrate::plane_host::EngineHost>,
+    host: &Arc<dyn busbar_kernel::plane_host::EngineHost>,
     plane: &Arc<super::plane::A2aPlane>,
     agent_id: &str,
 ) {
@@ -2349,8 +2349,8 @@ async fn unary_hop(
     // The hop's neutral `EngineHost` and the ONE bare shared scope, moved into the `spawn_blocking`
     // closure below so `relay`'s breaker admit/settle/record reach the host seam over the same arena
     // the walk registered its probe into — no `!Send` `HostCtx` crosses the task boundary.
-    engine_host: Arc<dyn busbar_substrate::plane_host::EngineHost>,
-    hop_scope: busbar_substrate::plane_host::DispatchScope,
+    engine_host: Arc<dyn busbar_kernel::plane_host::EngineHost>,
+    hop_scope: busbar_kernel::plane_host::DispatchScope,
 ) -> Response {
     let agent_id = ctx.agent_id.clone();
     let backend_url = ctx.backend_url.clone();
@@ -2551,8 +2551,8 @@ async fn stream_hop(
     // durable-journal writes (state transition, artifact-cursor advance, push delivery) ride this same
     // `EngineHost` now — its methods mint the transient `HostCtx` internally, so no separate
     // `Send + 'static` route is threaded for them.
-    engine_host: Arc<dyn busbar_substrate::plane_host::EngineHost>,
-    hop_scope: busbar_substrate::plane_host::DispatchScope,
+    engine_host: Arc<dyn busbar_kernel::plane_host::EngineHost>,
+    hop_scope: busbar_kernel::plane_host::DispatchScope,
 ) -> Response {
     let (tx, mut rx) = tokio::sync::mpsc::channel::<Vec<u8>>(16);
 
@@ -2657,7 +2657,7 @@ async fn stream_hop(
             // draining an upstream into a channel nobody is reading.
             //
             // THE CONTEXT THIS CLOSURE RUNS IN: production's `post_stream` rides the hostless
-            // egress seam (`busbar_substrate::egress::seam`), whose host-side pump invokes the sink
+            // egress seam (`busbar_kernel::egress::seam`), whose host-side pump invokes the sink
             // synchronously on this `spawn_blocking` thread — a BARE blocking thread, no runtime
             // driving it. An earlier transport (`on_a_dedicated_runtime`, a nested current-thread
             // `Runtime::block_on`) is exactly what made a runtime-bound send panic on the first
@@ -2799,7 +2799,7 @@ async fn stream_hop(
     // DETACHED watcher: clone the admitted `EngineHost` so the terminal transition reaches the durable
     // seam through its own transient host (`task_journal_write` mints it per call, `Send + Sync`).
     let watched_engine_host = Arc::clone(&ctx.engine_host);
-    busbar_substrate::detached::spawn_detached(async move {
+    busbar_kernel::detached::spawn_detached(async move {
         match handle.await {
             Ok(Ok(_)) => {}
             Ok(Err(refusal)) => {
@@ -2900,7 +2900,7 @@ fn record_state(ctx: &HopContext, state: super::task::TaskState) {
 /// A task with no callback never spawns anything: the overwhelmingly common case costs one
 /// `Option` test.
 pub(super) fn notify_push(
-    engine_host: Arc<dyn busbar_substrate::plane_host::EngineHost>,
+    engine_host: Arc<dyn busbar_kernel::plane_host::EngineHost>,
     seam: &Arc<dyn super::relay::RelaySeam>,
     task: super::task::Task,
 ) {
@@ -3140,7 +3140,7 @@ fn refuse_hop(ctx: &HopContext, refusal: &super::relay::RelayRefusal) -> Respons
 /// about the RECORD rather than about the answer, split out because a refusal that carries the
 /// backend's own error code renders its answer differently and must still end the task identically.
 fn end_task(
-    engine_host: &Arc<dyn busbar_substrate::plane_host::EngineHost>,
+    engine_host: &Arc<dyn busbar_kernel::plane_host::EngineHost>,
     seam: &Arc<dyn super::relay::RelaySeam>,
     task_id: &str,
     request_id: &str,
@@ -3174,7 +3174,7 @@ fn end_task(
 }
 
 fn fail_task(
-    engine_host: &Arc<dyn busbar_substrate::plane_host::EngineHost>,
+    engine_host: &Arc<dyn busbar_kernel::plane_host::EngineHost>,
     seam: &Arc<dyn super::relay::RelaySeam>,
     rpc_id: &serde_json::Value,
     task_id: &str,
@@ -3301,7 +3301,7 @@ pub(crate) async fn validate_callback(
 /// The member names are [`super::idmap`]'s, because they are the same fact: the ids this reads are
 /// exactly the ids that translation rewrites.
 fn addressed_task(
-    _engine_host: &dyn busbar_substrate::plane_host::EngineHost,
+    _engine_host: &dyn busbar_kernel::plane_host::EngineHost,
     envelope: &serde_json::Value,
     principal: &str,
 ) -> Option<super::task::Task> {
@@ -3465,9 +3465,9 @@ fn uuid_like(body: &[u8], now: u64) -> String {
 /// no `Store`/`PlaneRequestCtx`/`audit::Chain` reaches this seam.
 pub(crate) fn a2a_routes(
     slot: &dyn std::any::Any,
-) -> Vec<busbar_substrate::plane_routes::PlaneRouteSpec> {
+) -> Vec<busbar_kernel::plane_routes::PlaneRouteSpec> {
     use busbar_plugin_loader::{RouteAuth, RouteMethod};
-    use busbar_substrate::plane_routes::{PlaneReqCtx, PlaneRouteFuture, PlaneRouteSpec};
+    use busbar_kernel::plane_routes::{PlaneReqCtx, PlaneRouteFuture, PlaneRouteSpec};
     let plane = slot
         .downcast_ref::<super::plane::A2aPlane>()
         .expect("the a2a plane's routes slot is an A2aPlane");

@@ -3,7 +3,7 @@
 
 //! ON_EXHAUSTED DISPOSITION — what the model plane does AFTER the one selection loop finds nowhere
 //! to send a request. Nothing here is a selection loop and nothing here sends: [`fallback`]
-//! re-enters `pick_among` — the model plane's [`busbar_substrate::failover::walk_with`] call site —
+//! re-enters `pick_among` — the model plane's [`busbar_kernel::failover::walk_with`] call site —
 //! for the spillover pool, [`queue`] waits for a permit and then re-asks the SAME
 //! `try_admit_breaker` every plane asks, [`least_bad`] is the ONE documented breaker bypass in the
 //! tree (a last-resort degraded route that owns no probe and says so), and every one of them
@@ -35,7 +35,7 @@ use crate::engine::attempt::{attempt, AttemptInput, AttemptOutcome, Hop};
 // path floors the whole-second `Retry-After` at that same value rather than a separate — and
 // regressing — literal.
 pub(crate) const AT_CAPACITY_RETRY_AFTER_SECS: u64 =
-    busbar_substrate::store::AT_CAPACITY_RECOVERY_FLOOR_MS / 1000;
+    busbar_kernel::store::AT_CAPACITY_RECOVERY_FLOOR_MS / 1000;
 
 /// Compute the `Retry-After` (whole seconds) for a 503 shed, reflecting the ACTUAL backpressure axis.
 ///
@@ -92,7 +92,7 @@ pub(crate) async fn handle_exhaustion_for_pool(
     caller_token: Option<&str>,
     request_ctx: &mut RequestCtx,
     ingress_protocol: &str,
-    op: busbar_substrate::handlers::Op,
+    op: busbar_substrate_values::handlers::Op,
     req_content_type: &str,
     usage_sink: Option<UsageSink>,
 ) -> Response {
@@ -223,19 +223,19 @@ pub(crate) async fn dispatch_degraded(
     caller_token: Option<&str>,
     remaining_secs: u64,
     ingress_protocol: &str,
-    op: busbar_substrate::handlers::Op,
+    op: busbar_substrate_values::handlers::Op,
     req_content_type: &str,
     usage_sink: &mut Option<UsageSink>,
     client_fwd: &[(axum::http::HeaderName, axum::http::HeaderValue)],
 ) -> Result<Response, ()> {
-    let hop_v: Option<Value> = match busbar_substrate::json::parse(body) {
+    let hop_v: Option<Value> = match busbar_substrate_values::json::parse(body) {
         Ok(v) => Some(v),
         Err(_) if !req_content_type.starts_with(APPLICATION_JSON) => None,
         Err(_) => {
             // Log a sanitized note for operators; never the parser's raw error (it embeds a fragment
             // of the input body) nor leak it into the client 400 body. Nothing was dispatched, so a
             // probe this dispatch won is released owner-checked here rather than by the attempt.
-            tracing::debug!(detail = %busbar_substrate::json::parse_err_log(body.len()), "request body JSON parse failed");
+            tracing::debug!(detail = %busbar_substrate_values::json::parse_err_log(body.len()), "request body JSON parse failed");
             if let Some(epoch) = probe_epoch {
                 host.lane_store().release_probe_owned_in(pool, i, epoch);
             }
@@ -264,7 +264,7 @@ pub(crate) async fn dispatch_degraded(
     // Gemini ingress streaming WITHOUT `?alt=sse` wants a JSON-array streamed body. Gated on the
     // ingress declaring the array shim (only a genuine Gemini client can ask) and on the operation
     // streaming at all, exactly as the hot loop gates it.
-    let ingress_decl = busbar_substrate::proto::decl_for(ingress_protocol);
+    let ingress_decl = busbar_kernel::proto::decl_for(ingress_protocol);
     let gemini_json_array = op.streaming()
         && ingress_decl.is_some_and(|d| d.uses_array_stream_shim)
         && ingress_decl

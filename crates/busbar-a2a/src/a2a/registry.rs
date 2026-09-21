@@ -5,8 +5,8 @@
 //!
 //! ## This is a RECORD, not a second state machine
 //!
-//! The trust state, the changes queue and the dispatch gate are [`busbar_substrate::trust`], reached through
-//! the [`busbar_substrate::trust::Approval`] this record CARRIES. Nothing here re-derives any of them.
+//! The trust state, the changes queue and the dispatch gate are [`busbar_kernel::trust`], reached through
+//! the [`busbar_kernel::trust::Approval`] this record CARRIES. Nothing here re-derives any of them.
 //! `tests/reuse_tests.rs::the_a2a_plane_declares_no_trust_state_of_its_own` reads this file, among
 //! the plane's others, and fails on a re-declaration — so the discipline is machine-checked rather
 //! than remembered.
@@ -32,9 +32,9 @@
 
 use serde_json::Value;
 
-use busbar_substrate::catalogue::{Caller, CatalogueItem};
-use busbar_substrate::trust::validate::Grant;
-use busbar_substrate::trust::{Approval, Sighting, TrustState};
+use busbar_kernel::catalogue::{Caller, CatalogueItem};
+use busbar_kernel::trust::validate::Grant;
+use busbar_kernel::trust::{Approval, Sighting, TrustState};
 
 use super::anomaly;
 use super::card::{AgentCard, CardError};
@@ -143,7 +143,7 @@ impl AgentRegistration {
     }
 
     /// The changes queue for the last sighting.
-    pub(crate) fn changes(&self) -> busbar_substrate::trust::Drift {
+    pub(crate) fn changes(&self) -> busbar_kernel::trust::Drift {
         self.approval.drift(&self.sighting)
     }
 
@@ -192,7 +192,7 @@ impl AgentRegistration {
     /// Whether this registration is a candidate for the DELEGATION CATALOGUE at all: approved, and
     /// therefore neither pending, quarantined, suspended nor in error.
     ///
-    /// Scope is the ordered gate's ([`busbar_substrate::trust::validate`]) and capability matching is
+    /// Scope is the ordered gate's ([`busbar_kernel::trust::validate`]) and capability matching is
     /// [`judge`]'s; this is only the trust half, and it is the same derivation the gate makes.
     pub(crate) fn is_delegable(&self) -> bool {
         self.trust_state() == TrustState::Approved
@@ -207,8 +207,8 @@ impl AgentRegistration {
 //
 // ## THE WALK IS CORE'S AND THE GATE IS CORE'S. THIS PLANE SUPPLIES AN ITEM TYPE.
 //
-// [`busbar_substrate::catalogue`] owns the mechanism — walk the inventory, collect what each item requires,
-// hand it to the ordered gate, keep the entitled subset, render it — and [`busbar_substrate::trust::validate`]
+// [`busbar_kernel::catalogue`] owns the mechanism — walk the inventory, collect what each item requires,
+// hand it to the ordered gate, keep the entitled subset, render it — and [`busbar_kernel::trust::validate`]
 // owns the entitlement decision. This file supplies the four things a plane owes them: the item
 // (`AgentRegistration`, the record this module already was), the grants it requires, its structural
 // fitness and refusal words, and its wire form. The catalogue module this plane kept of its own is
@@ -228,7 +228,7 @@ impl AgentRegistration {
 // 4. **Not suspended.** Folded into (1) rather than checked twice: `Suspended` outranks every other
 //    state in the lifecycle, so a suspended registration is not `Approved` and is already out.
 //
-// FILTERS 1, 2 AND 4 ARE ONE CALL to [`busbar_substrate::trust::validate::validate_request`], made from
+// FILTERS 1, 2 AND 4 ARE ONE CALL to [`busbar_kernel::trust::validate::validate_request`], made from
 // [`CatalogueItem::admit`] below. Only filter 3 is this file's, because only filter 3 is about this
 // wire format's document. THIS PLANE ASKS THE FULL ORDERED GATE — identity, grant, artifact,
 // generation — because on A2A a listing IS an admission: an agent that is not `Approved` is not a
@@ -311,7 +311,7 @@ pub(crate) enum Excluded {
 /// One catalogue row: the registration, and the skill it matched. Core's type, aliased rather than
 /// redeclared — a plane that keeps its own row type is a plane that can quietly add a field the
 /// mechanism does not know it is carrying.
-pub(crate) type Candidate<'a> = busbar_substrate::catalogue::Entitled<'a, AgentRegistration>;
+pub(crate) type Candidate<'a> = busbar_kernel::catalogue::Entitled<'a, AgentRegistration>;
 
 impl CatalogueItem for AgentRegistration {
     type Excluded = Excluded;
@@ -344,8 +344,8 @@ impl CatalogueItem for AgentRegistration {
     /// THE FULL ORDERED GATE. Identity, grant, artifact and generation, in one call, and it is the
     /// same call the invocation check and the pre-socket relay gate make.
     fn admit(&self, caller: &Caller<'_>, grants: &[Grant<'_>]) -> Result<(), Excluded> {
-        busbar_substrate::trust::validate::validate_request(
-            &busbar_substrate::trust::validate::Ask {
+        busbar_kernel::trust::validate::validate_request(
+            &busbar_kernel::trust::validate::Ask {
                 principal: caller.key,
                 now: caller.now,
                 grants,
@@ -359,14 +359,14 @@ impl CatalogueItem for AgentRegistration {
             },
         )
         .map_err(|refusal| match refusal {
-            busbar_substrate::trust::validate::Refusal::NotGranted { .. } => Excluded::NotInScope,
-            busbar_substrate::trust::validate::Refusal::EgressDenied { .. } => {
+            busbar_kernel::trust::validate::Refusal::NotGranted { .. } => Excluded::NotInScope,
+            busbar_kernel::trust::validate::Refusal::EgressDenied { .. } => {
                 Excluded::NoEgressGrant
             }
-            busbar_substrate::trust::validate::Refusal::IdentityNotLive { .. } => {
+            busbar_kernel::trust::validate::Refusal::IdentityNotLive { .. } => {
                 Excluded::CallerNotLive
             }
-            busbar_substrate::trust::validate::Refusal::NotServing { state, .. } => {
+            busbar_kernel::trust::validate::Refusal::NotServing { state, .. } => {
                 Excluded::NotTrusted(state)
             }
             // The catalogue asks at admission with no capability, where neither can fire; answered
@@ -477,7 +477,7 @@ pub(crate) fn inbound_catalogue<'a>(
     registrations: &'a [AgentRegistration],
     wanted: &Wanted,
 ) -> Vec<Candidate<'a>> {
-    busbar_substrate::catalogue::entitled(registrations, caller, wanted)
+    busbar_kernel::catalogue::entitled(registrations, caller, wanted)
 }
 
 /// DELEGATING: which registered agents THIS FRONTED AGENT may see as delegation targets.
@@ -489,7 +489,7 @@ pub(crate) fn delegation_catalogue<'a>(
     registrations: &'a [AgentRegistration],
     wanted: &Wanted,
 ) -> Vec<Candidate<'a>> {
-    busbar_substrate::catalogue::entitled(registrations, caller, wanted)
+    busbar_kernel::catalogue::entitled(registrations, caller, wanted)
 }
 
 /// THE ENTITLED AGENTS, AS THE EXTENDED CARD CARRIES THEM — the same walk as [`inbound_catalogue`],
@@ -497,14 +497,14 @@ pub(crate) fn delegation_catalogue<'a>(
 ///
 /// This is the data-exposure surface the extended card is: the naive implementation unions every
 /// fronted agent's `skills[]` and hands every authenticated caller the whole inventory. Rendering
-/// through [`busbar_substrate::catalogue::rendered`] makes that shape unreachable — an item is rendered only
+/// through [`busbar_kernel::catalogue::rendered`] makes that shape unreachable — an item is rendered only
 /// after core has decided the caller may see it, and there is no path here that renders first.
 pub(crate) fn entitled_agents<'a>(
     caller: &Caller<'_>,
     registrations: &'a [AgentRegistration],
     wanted: &Wanted,
 ) -> Vec<super::serve::EntitledAgent<'a>> {
-    busbar_substrate::catalogue::rendered(registrations, caller, wanted)
+    busbar_kernel::catalogue::rendered(registrations, caller, wanted)
 }
 
 /// WHY a named registration is not in a caller's catalogue. The same judgement, with the reason kept
@@ -514,7 +514,7 @@ pub(crate) fn explain(
     caller: &Caller<'_>,
     wanted: &Wanted,
 ) -> Result<(), Excluded> {
-    busbar_substrate::catalogue::judge(registration, caller, wanted).map(|_| ())
+    busbar_kernel::catalogue::judge(registration, caller, wanted).map(|_| ())
 }
 
 #[cfg(all(test, feature = "test-support"))]

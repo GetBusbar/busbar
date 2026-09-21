@@ -72,6 +72,6 @@ pub mod testkit;
 pub use a2a::PLANE_DECL;
 
 /// A2A'S PLANE-CONTRIBUTED DIAGNOSTICS — the `&'static [&'static Diagnostic]` the composition root
-/// hands to `busbar_substrate::diagnostics::install_diagnostics` at boot, re-exported at the crate
+/// hands to `busbar_substrate_values::diagnostics::install_diagnostics` at boot, re-exported at the crate
 /// root so the `busbar` binary names one stable path (`busbar_a2a::DIAGNOSTICS`). See [`diagnostics`].
 pub use diagnostics::DIAGNOSTICS;

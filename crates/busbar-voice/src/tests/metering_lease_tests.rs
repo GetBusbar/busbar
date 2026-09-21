@@ -21,8 +21,8 @@
 use crate::mount::{open_governed, GovernedOpen, Ingress};
 use crate::runtime::metering::TurnMeter;
 use crate::runtime::{cap_nanos_from_buckets, EchoToolExecutor, LocalMeteringPort, VoiceRuntime};
-use busbar_substrate::plane::handle_engine::DurableHandleEngine;
-use busbar_substrate::testkit::fixture_host::FixtureHost;
+use busbar_kernel::plane::handle_engine::DurableHandleEngine;
+use busbar_kernel::testkit::fixture_host::FixtureHost;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -86,7 +86,7 @@ async fn opening_a_session_reserves_on_the_hosts_own_lease() {
 
     let resp = open_governed(GovernedOpen {
         rt: &rt,
-        host: Arc::clone(&host) as Arc<dyn busbar_substrate::plane_host::EngineHost>,
+        host: Arc::clone(&host) as Arc<dyn busbar_kernel::plane_host::EngineHost>,
         provider: None,
         ingress: Ingress::Mint,
         owner: "acct-lease".to_string(),
@@ -114,14 +114,14 @@ async fn opening_a_session_reserves_on_the_hosts_own_lease() {
     usage_units.insert(busbar_api::UNIT_INPUT.to_string(), 120u64);
     usage_units.insert(busbar_api::UNIT_OUTPUT.to_string(), 80u64);
     TurnMeter::new(
-        Arc::clone(&host) as Arc<dyn busbar_substrate::plane_host::EngineHost>,
+        Arc::clone(&host) as Arc<dyn busbar_kernel::plane_host::EngineHost>,
         key.clone(),
         "voice-server",
         crate::OPENAI_REALTIME,
     )
     .record_turn(
         "voice-model",
-        &busbar_substrate::billing::Usage { usage_units },
+        &busbar_substrate_values::billing::Usage { usage_units },
     );
     assert_eq!(
         host.ledger_usage(&key.id).map(|u| u.tokens),

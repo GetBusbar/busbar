@@ -16,7 +16,7 @@
 
 use super::*;
 use crate::a2a::card;
-use busbar_substrate::trust::{Drift, Observation, TrustState};
+use busbar_kernel::trust::{Drift, Observation, TrustState};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 

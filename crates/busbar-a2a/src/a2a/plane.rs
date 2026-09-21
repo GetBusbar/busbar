@@ -26,7 +26,7 @@
 //!
 //! Every registration is built by `AgentRegistration::registered`, which is the fail-closed floor:
 //! `Pending`, no pin approved, no card cached, nothing delegable. A pin an operator DECLARED in
-//! config is deliberately NOT lifted into an approval here — [`busbar_substrate::trust::declared`] can read
+//! config is deliberately NOT lifted into an approval here — [`busbar_kernel::trust::declared`] can read
 //! one off [`super::config::AgentPinCfg::declaration`], but an approval is a statement about a
 //! document that was actually SEEN, and turning a
 //! config value into one at boot would approve a card nobody has fetched. The `connect` verb
@@ -41,7 +41,7 @@ use super::config::{AgentPinCfg, AgentsCfg, DEFAULT_RECOVERY_BACKOFF_MS};
 use super::fetch::FetchPolicy;
 use super::registry::AgentRegistration;
 use crate::diagnostics::A2A_REVERIFY_CADENCE_UNPARSED;
-use busbar_substrate::diag_warn;
+use busbar_substrate_values::diag_warn;
 
 /// THE PLANE. Built once per config generation; `None` when this deployment fronts no agents.
 pub struct A2aPlane {
@@ -63,7 +63,7 @@ pub struct A2aPlane {
     /// any instant.
     registrations: RwLock<Vec<AgentRegistration>>,
     /// THE GENERATION THIS REGISTRY IS AT, taken from the process-wide monotonic source in
-    /// [`busbar_substrate::trust::validate`] and re-taken on every mutation.
+    /// [`busbar_kernel::trust::validate`] and re-taken on every mutation.
     ///
     /// It is what makes an in-flight request unable to outlive the approval it was admitted under.
     /// Admission records this value; the gate immediately before the socket re-reads it; a move is a
@@ -85,15 +85,15 @@ pub struct A2aPlane {
     /// ingress against a recording seam without the ingress growing a test-shaped argument.
     relay: RwLock<Arc<dyn super::relay::RelaySeam>>,
     /// BUSBAR'S PUBLIC AGENT-CARD ISSUER KEY (`kid` + SPKI), stashed by the plane's `start` hook from
-    /// the host-computed [`busbar_substrate::plane::registry::PlaneBootCtx::card_issuer`]. PUBLIC material only — the
-    /// signing seed stays host-side and is reached through [`busbar_substrate::plane_host::EngineHost::card_sign`]. Held
+    /// the host-computed [`busbar_kernel::plane::registry::PlaneBootCtx::card_issuer`]. PUBLIC material only — the
+    /// signing seed stays host-side and is reached through [`busbar_kernel::plane_host::EngineHost::card_sign`]. Held
     /// here so [`super::sign::card_signer`] reads the issuer off the plane's OWN slot rather than off
     /// `app.governance`, which is what lets the extracted plane name no `GovState`. `None` until the
     /// start hook runs, or when the deployment holds no card-signing key (the governance-off path).
-    card_issuer: OnceLock<busbar_substrate::plane::registry::CardIssuer>,
+    card_issuer: OnceLock<busbar_kernel::plane::registry::CardIssuer>,
     /// THE A2A VERIFY-ON-CALL GATE — the per-agent single-flight coalescer that re-verifies a fronted
     /// agent's signed card on the DELEGATION path when its recorded observation is older than
-    /// `verify_ttl` (see [`busbar_substrate::trust::verify`]). Held HERE on the plane's own runtime object, like
+    /// `verify_ttl` (see [`busbar_kernel::trust::verify`]). Held HERE on the plane's own runtime object, like
     /// its MCP sibling holds `verify` on `McpRuntime`, rather than on the shared `App`: verify-on-call
     /// reads it off the plane slot, not off the host's application state.
     ///
@@ -102,7 +102,7 @@ pub struct A2aPlane {
     /// accumulated coordination state, not intent. When the `agents:` block is REMOVED there is no
     /// plane this generation, so the gate is dropped whole — the unobservable analogue of the old
     /// `retain(&empty)`, since a deployment fronting no agents runs no delegation to read it.
-    verify: Arc<busbar_substrate::trust::VerifyGate>,
+    verify: Arc<busbar_kernel::trust::VerifyGate>,
     /// THE A2A CARD-FETCH TRANSPORTS, resolved ONCE at boot (per-agent client identities, the same
     /// object the delegation hop relays through). Verify-on-call reads it on the request path to
     /// re-fetch and re-verify a stale card. Empty until the A2A `start` hook publishes it through
@@ -154,22 +154,22 @@ impl super::relay::DelegationGate for LiveGate {
                 // floor a fresh registration starts at rather than invented as something else.
                 return Err(super::relay::NotDelegable {
                     agent_id: agent_id.to_string(),
-                    state: busbar_substrate::trust::TrustState::Pending,
+                    state: busbar_kernel::trust::TrustState::Pending,
                     reason: Some("the registration no longer exists on this plane".to_string()),
                 });
             };
             // THE ONE ORDERED GATE, reached from the third of this plane's paths. It can only ever
             // be more closed than admission was, never differently closed, because it is the same
             // function admission called.
-            busbar_substrate::trust::validate::validate_request(
-                &busbar_substrate::trust::validate::Ask {
+            busbar_kernel::trust::validate::validate_request(
+                &busbar_kernel::trust::validate::Ask {
                     principal: None,
                     now: 0,
                     grants: &[],
                     approval: &reg.approval,
                     sighting: &reg.sighting,
                     capability: None,
-                    generation: busbar_substrate::trust::validate::Generations::since(
+                    generation: busbar_kernel::trust::validate::Generations::since(
                         admitted, live,
                     ),
                 },
@@ -178,7 +178,7 @@ impl super::relay::DelegationGate for LiveGate {
                 agent_id: agent_id.to_string(),
                 state: reg.trust_state(),
                 reason: match &refusal {
-                    busbar_substrate::trust::validate::Refusal::NotServing { reason, .. } => {
+                    busbar_kernel::trust::validate::Refusal::NotServing { reason, .. } => {
                         reason.clone()
                     }
                     other => Some(other.to_string()),
@@ -217,7 +217,7 @@ impl A2aPlane {
         Self::from_config_carrying(
             cfg,
             public_url,
-            Arc::new(busbar_substrate::trust::VerifyGate::new()),
+            Arc::new(busbar_kernel::trust::VerifyGate::new()),
             Arc::new(OnceLock::new()),
         )
     }
@@ -230,7 +230,7 @@ impl A2aPlane {
     pub(crate) fn from_config_carrying(
         cfg: &AgentsCfg,
         public_url: Option<&str>,
-        verify: Arc<busbar_substrate::trust::VerifyGate>,
+        verify: Arc<busbar_kernel::trust::VerifyGate>,
         cards: Arc<OnceLock<Arc<super::transport::LiveCardFetch>>>,
     ) -> Option<Arc<Self>> {
         if cfg.agents.is_empty() {
@@ -270,7 +270,7 @@ impl A2aPlane {
             fetch_policy,
             pins,
             registrations: RwLock::new(registrations),
-            generation: AtomicU64::new(busbar_substrate::trust::validate::next_generation()),
+            generation: AtomicU64::new(busbar_kernel::trust::validate::next_generation()),
             card_issuer: OnceLock::new(),
             verify,
             cards,
@@ -281,14 +281,14 @@ impl A2aPlane {
     /// THE VERIFY-ON-CALL GATE this plane re-verifies fronted agents through, as the delegation path
     /// and the `retain_verify_gates` prune read it. Held on the plane, not on `App`, mirroring MCP's
     /// `McpRuntime::verify`.
-    pub fn verify(&self) -> &Arc<busbar_substrate::trust::VerifyGate> {
+    pub fn verify(&self) -> &Arc<busbar_kernel::trust::VerifyGate> {
         &self.verify
     }
 
     /// The OWNED-`Arc` twin of [`Self::verify`], for the carry across a config apply
     /// ([`Self::from_config_carrying`]) — a refcount bump of the same gate, so the coalescing epochs
     /// persist.
-    pub(crate) fn verify_arc(&self) -> Arc<busbar_substrate::trust::VerifyGate> {
+    pub(crate) fn verify_arc(&self) -> Arc<busbar_kernel::trust::VerifyGate> {
         Arc::clone(&self.verify)
     }
 
@@ -314,13 +314,13 @@ impl A2aPlane {
     /// STASH BUSBAR'S PUBLIC CARD-ISSUER KEY, once, from the plane's `start` hook. Idempotent: a second
     /// call (a config re-apply reaching the same plane object) is a no-op, matching the `OnceLock`
     /// contract. Public material only.
-    pub(crate) fn set_card_issuer(&self, issuer: busbar_substrate::plane::registry::CardIssuer) {
+    pub(crate) fn set_card_issuer(&self, issuer: busbar_kernel::plane::registry::CardIssuer) {
         let _ = self.card_issuer.set(issuer);
     }
 
     /// BUSBAR'S PUBLIC CARD-ISSUER KEY for this deployment, as the card-signing path reads it. `None`
     /// before the start hook has run or when no card-signing key is configured.
-    pub(crate) fn card_issuer(&self) -> Option<&busbar_substrate::plane::registry::CardIssuer> {
+    pub(crate) fn card_issuer(&self) -> Option<&busbar_kernel::plane::registry::CardIssuer> {
         self.card_issuer.get()
     }
 
@@ -409,7 +409,7 @@ impl A2aPlane {
         // under the old generation. A bump after the release would leave exactly the window this
         // number exists to close.
         self.generation.store(
-            busbar_substrate::trust::validate::next_generation(),
+            busbar_kernel::trust::validate::next_generation(),
             Ordering::Relaxed,
         );
         out
@@ -423,7 +423,7 @@ impl A2aPlane {
     /// RE-VERIFY ONE FRONTED AGENT'S CARD ON THE DELEGATION PATH — this plane's FETCH for verify-on-call.
     ///
     /// The single-flight, the freshness bound and the fail-closed ordering are
-    /// [`busbar_substrate::trust::verify`]'s, once, for every plane; what is here is this plane's fetch: the same
+    /// [`busbar_kernel::trust::verify`]'s, once, for every plane; what is here is this plane's fetch: the same
     /// signed-card read, verification against the operator's out-of-band root, and settle that
     /// [`super::verify::reverify_once`] performs — over the per-agent transport that carries THIS
     /// registration's client certificate (`cards`), under the registry write lock. Blocking (a card
@@ -454,7 +454,7 @@ impl A2aPlane {
             self.with_registrations(|regs| regs.iter().find(|r| r.agent_id == agent_id).cloned())?;
         let transport = transports.for_agent(agent_id);
         // FETCH + VERIFY + SETTLE on a CLONE, entirely UNLOCKED. While this blocks, no reader is blocked
-        // on us. Single-flight (`busbar_substrate::trust::verify`) already guarantees at most one of these per agent
+        // on us. Single-flight (`busbar_kernel::trust::verify`) already guarantees at most one of these per agent
         // at a time, so nothing else is mutating this registration's accumulation concurrently.
         let mut working = original.clone();
         let pass = super::verify::reverify_once(
@@ -491,8 +491,8 @@ impl A2aPlane {
         &self,
         agent_id: &str,
     ) -> Option<(
-        busbar_substrate::trust::reverify::Ledger,
-        busbar_substrate::trust::reverify::Policy,
+        busbar_kernel::trust::reverify::Ledger,
+        busbar_kernel::trust::reverify::Policy,
     )> {
         self.with_registrations(|regs| {
             regs.iter()
@@ -519,9 +519,9 @@ impl A2aPlane {
     /// card advertises. A caller reads the audience to ask for off the card busbar served it, so the
     /// two must be one derivation — an independently configured audience is a confused-deputy gap
     /// that opens the first time somebody edits one of the two.
-    pub fn admission(&self) -> Option<busbar_substrate::plane::PlaneAdmission> {
+    pub fn admission(&self) -> Option<busbar_kernel::plane::PlaneAdmission> {
         let public = self.public_url.as_deref()?;
-        Some(busbar_substrate::plane::PlaneAdmission {
+        Some(busbar_kernel::plane::PlaneAdmission {
             audience: super::serve::canonical_uri(public).ok()?,
             resource_metadata: super::serve::metadata_url(public).ok()?,
         })

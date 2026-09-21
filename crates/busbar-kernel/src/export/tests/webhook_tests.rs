@@ -132,14 +132,14 @@ async fn delivery_failure_masks_userinfo() {
     let client = crate::proxy::build_egress_client(&crate::proxy::EgressClientSpec::pooled_webpki(
         1, 4, false, false,
     ));
-    let req = busbar_substrate::egress::engine::request(
+    let req = busbar_kernel::egress::engine::request(
         http::Method::POST,
         url.parse().expect("a URI"),
         http::HeaderMap::new(),
         bytes::Bytes::from_static(b"{}"),
     );
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(200);
-    let err = busbar_substrate::egress::engine::send_bounded(&client, req, deadline)
+    let err = busbar_kernel::egress::engine::send_bounded(&client, req, deadline)
         .await
         .expect_err("post to an unroutable host must fail");
     warn_webhook_delivery_failed(url, Err(err.into_cause()));

@@ -643,7 +643,7 @@ fn a_guard_refusal_surfaces_class_refused_with_the_guards_own_reason() {
 /// wall-clock deltas flake on shared runners; the connection count does not.
 #[test]
 fn a_repeat_hop_reuses_the_pooled_connection_instead_of_redialing() {
-    use busbar_substrate::egress::fixtures::{spawn_http, CannedResponse};
+    use busbar_kernel::egress::fixtures::{spawn_http, CannedResponse};
     let fixture = spawn_http(CannedResponse::ok("warm"), 8);
     let url = format!("http://{}/hop", fixture.addr);
     let desc = http_desc(url.as_bytes());

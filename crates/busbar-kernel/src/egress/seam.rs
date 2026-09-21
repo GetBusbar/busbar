@@ -19,7 +19,7 @@
 //! The wire bytes are the host's `build_pinned_client` reqwest codec — the SAME one a plane's own
 //! transport used — so status/body/headers/ALPN are unchanged by moving the hop host-side. The peer
 //! SPKI pin is decoded from the same observed-identity bytes the neutral
-//! `busbar_substrate::plane_host::spki` pin walk produces, which a plane's own transport calls to
+//! `busbar_kernel::plane_host::spki` pin walk produces, which a plane's own transport calls to
 //! compute its pin, so the pin string is byte-identical. The body cap / `ReadEnd` classification is
 //! re-expressed over the poll seam to match
 //! [`crate::proxy::read_capped`] exactly (Ok-0 = Complete, Fault = TransportError, an over-cap probe =
@@ -43,11 +43,10 @@ use crate::plane_host::scope::DispatchScope;
 use crate::proxy::ReadEnd;
 
 // The neutral buffered/fault RETURN shapes and the [`HostlessEgress`] driver trait relocated to
-// `busbar_substrate::egress::seam` (field-neutral `std` data + the plugin `EgressFailClass`), so a
+// `busbar_kernel::egress::seam` (field-neutral `std` data + the plugin `EgressFailClass`), so a
 // plane crate reads them without naming core. Re-exported here so every in-core `Buffered` /
 // `EgressFaultInfo` reach — `buffered`/`stream_head` below and the `crate::egress::seam::*` call
 // sites — is unchanged, and so `CoreHostlessEgress` below can implement the trait.
-pub use busbar_substrate::egress::seam::{Buffered, EgressFaultInfo, HostlessEgress};
 
 /// Mint a throw-away dispatch scope and run `f` over it — the HOSTLESS entry the extracted in-core
 /// planes drive this seam through (they hold no `HostCtx`). The scope lives for the whole closure, so a
@@ -60,12 +59,11 @@ pub fn with_hostless<R>(f: impl FnOnce(&DispatchScope) -> R) -> R {
     f(&scope)
 }
 
-// The neutral hop description this adapter consumes relocated to `busbar_substrate::egress::seam`
+// The neutral hop description this adapter consumes relocated to `busbar_kernel::egress::seam`
 // (pure `std` data — borrowed slices, allowlist flags, opaque host refs, a deadline and an
 // already-judged pinned address) so a plane crate builds a hop spec without reaching into core.
 // Re-exported here so every in-core `HopSpec` reach — `build_desc`/`buffered`/`stream_head` below,
 // and `crate::egress::seam::HopSpec` from the plane transports — is unchanged.
-pub use busbar_substrate::egress::seam::HopSpec;
 
 /// Pack `(name, value)` header pairs into the ABI's length-prefixed record form (`u32 name_len` LE,
 /// name, `u32 value_len` LE, value) — the form [`EgressDesc::headers_ptr`] carries.
@@ -370,4 +368,206 @@ impl HostlessEgress for CoreHostlessEgress {
             },
         })
     }
+}
+
+// ==== merged from busbar-substrate (W4.b P2 engine drain) ====
+/// The one hop the adapter opens, as neutral data. The plane composes protocol on top; this carries
+/// only what an outbound request IS — verb, url, headers, body — plus the host's allowlist stance and
+/// the opaque mTLS client-identity ref (never a key).
+pub struct HopSpec<'a> {
+    pub verb: &'a str,
+    pub url: &'a str,
+    pub headers: &'a [(String, String)],
+    pub body: &'a [u8],
+    /// The host allowlist stance for this hop (lowered from the plane's per-registration policy).
+    pub allow_private: bool,
+    pub allow_plaintext: bool,
+    /// The opaque host-side client-identity ref (`0` = present none). Never a key.
+    pub client_identity_ref: u64,
+    /// The opaque host-side trust-anchor ref (`0` = no extra roots — trust only the platform roots).
+    /// Never certificate bytes. Carries a private-CA registration (a `trusting_root` fixture).
+    pub trust_anchor_ref: u64,
+    /// The per-hop end-to-end deadline. [`Duration::ZERO`] ⇒ the host's default ceiling.
+    pub timeout: std::time::Duration,
+    /// The plane's ALREADY-JUDGED pinned address for this hop (Design A). `Some` ⇒ the host connects
+    /// to THIS address and does NOT resolve the URL host (the plane resolved-then-pinned plane-side and
+    /// hands the survivor over); `None` ⇒ the host resolves the URL host itself. The URL host is still
+    /// used for SNI / cert-name / mTLS in either case.
+    pub resolved_addr: Option<std::net::IpAddr>,
+}
+
+// ── THE NEUTRAL HOSTLESS-EGRESS SEAM ─────────────────────────────────────────────────────────────
+//
+// The buffered / streamed RETURN shapes a plane reads back from one governed hop, plus the neutral
+// DRIVER trait an extracted plane calls to run that hop without naming core. The concrete driver
+// stays core's (`busbar_kernel::egress::seam::CoreHostlessEgress`, over the `plane_host` FFI egress
+// vtable) and is installed at boot; a plane holds only `&dyn HostlessEgress` off [`hostless`]. The
+// shapes below are field-neutral (they name only `std` + the substrate `ReadEnd` and the plugin
+// `EgressFailClass`), relocated from `busbar_kernel::egress::seam` / `busbar_kernel::plane_host::egress`
+// so a plane crate reads them without reaching into core; core re-exports them so its own call sites
+// resolve unchanged. Gated to the plane features, this seam's only consumers.
+
+/// One buffered outbound round trip, reduced to what a caller reads back — the NEUTRAL projection every
+/// plane maps from (the [`Response`](super::Response) shape carries a subset; a dispatch caller reads
+/// status/body/content-type for its own `is_sse` / redirect refusal). `content_type` is surfaced
+/// VERBATIM (the host lower-cases nothing); a caller applies its own casing.
+#[cfg(any(feature = "dispatch", feature = "relay"))]
+pub struct Buffered {
+    pub status: u16,
+    pub location: Option<String>,
+    /// Read by the dispatch converter for its `is_sse` decision.
+    #[cfg_attr(not(feature = "dispatch"), allow(dead_code))]
+    pub content_type: Option<String>,
+    pub peer_spki: Option<String>,
+    pub client_identity_offered: bool,
+    pub body: Vec<u8>,
+    /// How the capped read ended — the poll-seam re-expression of [`crate::proxy::ReadEnd`].
+    pub end: crate::proxy::ReadEnd,
+}
+
+/// A fully-decoded egress fault the seam composes its own operator string over — the class, the status,
+/// and the flattened CAUSE and TARGET-url kept SEPARATE (one plane keeps the url, another strips it),
+/// exactly as the host `egress_fault` hands them across the ABI.
+#[cfg(any(feature = "dispatch", feature = "relay"))]
+#[derive(Debug)]
+pub struct EgressFaultInfo {
+    pub class: busbar_plugin::hot::EgressFailClass,
+    pub status: u16,
+    pub cause: String,
+    pub url: String,
+}
+
+/// THE NEUTRAL DRIVER an extracted plane runs a governed hop through — the trait `hostless()` hands
+/// back, whose only production implementation is core's `CoreHostlessEgress` (over the `plane_host`
+/// FFI egress vtable), installed once at boot. A plane names this trait, never the concrete driver, so
+/// the unsafe FFI half stays core's alone.
+///
+/// [`stream`](HostlessEgress::stream) is `relay`-only: its one implementation drives the core
+/// `stream_head` + `pump` streaming path, which is itself `relay`-gated, and its one caller is the
+/// relay path. The buffered hop is shared by every plane (a dispatch caller and a buffered fetch).
+#[cfg(any(feature = "dispatch", feature = "relay"))]
+pub trait HostlessEgress: Send + Sync {
+    /// One buffered outbound round trip: open a governed hop, read its body to `cap`, and hand back
+    /// the neutral [`Buffered`] projection (or the neutral [`EgressFaultInfo`] on an open/read fault).
+    fn buffered(&self, spec: &HopSpec<'_>, cap: usize) -> Result<Buffered, EgressFaultInfo>;
+
+    /// Open a streaming hop: read the head, then either hand back a non-stream reply buffered whole or
+    /// pump a live event-stream body into `on_chunk`. The relay path's one code path.
+    #[cfg(feature = "relay")]
+    fn stream(
+        &self,
+        spec: &HopSpec<'_>,
+        cap: usize,
+        on_chunk: &mut (dyn FnMut(&[u8]) -> super::ChunkFlow + Send),
+    ) -> Result<super::StreamHead, EgressFaultInfo>;
+}
+
+/// THE PROCESS-WIDE hostless-egress driver, installed once by the composition root
+/// ([`install_hostless_egress`]). A plane reads it back through [`hostless`] and gets `None` in a
+/// build that installed none (a plane running without the core-backed driver behind it).
+#[cfg(any(feature = "dispatch", feature = "relay"))]
+static HOSTLESS: std::sync::OnceLock<&'static dyn HostlessEgress> = std::sync::OnceLock::new();
+
+/// Install the process hostless-egress driver — the composition root's one write, at boot, before any
+/// plane dispatches. Idempotent by `OnceLock`: a second install is a no-op (the first driver wins).
+#[cfg(any(feature = "dispatch", feature = "relay"))]
+pub fn install_hostless_egress(driver: &'static dyn HostlessEgress) {
+    let _ = HOSTLESS.set(driver);
+}
+
+/// The installed hostless-egress driver, or `None` when none was installed. A plane that gets `None`
+/// has no egress backend behind it and refuses the hop rather than inventing one.
+#[cfg(any(feature = "dispatch", feature = "relay"))]
+pub fn hostless() -> Option<&'static dyn HostlessEgress> {
+    HOSTLESS.get().copied()
+}
+
+// ── SEND AN ALREADY-PINNED HOP ───────────────────────────────────────────────────────────────────
+//
+// The POST-PIN send skeleton every extracted plane shares: build the neutral [`HopSpec`] for a hop the
+// plane has ALREADY resolved-then-pinned plane-side, run it on the installed hostless driver, and hand
+// back the buffered projection (or the streamed head). It names no protocol and no plane — the plane
+// keeps its own PRE-pin door (resolve/guard/pin, live-trust re-check, credential attach) and its own
+// POST-return interpretation (`ReadEnd`, SSE, redirect refusal); ONLY the identical
+// `HopSpec`-literal + `hostless()` null-check + `buffered`/`stream` call lives here now, so the "no
+// second lookup" posture of an already-judged hop is expressed in exactly one place.
+
+/// One ALREADY-PINNED outbound hop, as neutral data. The plane resolved-then-pinned and judged `addr`
+/// plane-side, so the host re-judges nothing: the pinned address is handed straight through (Design A)
+/// and the allowlist stances are moot. The generic input both planes build AFTER their own pin — it
+/// carries only what an outbound request IS plus the opaque host-side refs, and names no protocol.
+#[cfg(any(feature = "dispatch", feature = "relay"))]
+pub struct PinnedHop<'a> {
+    pub verb: &'a str,
+    pub url: &'a str,
+    pub headers: &'a [(String, String)],
+    pub body: &'a [u8],
+    /// The opaque host-side client-identity ref (`0` = present none). Never a key.
+    pub client_identity_ref: u64,
+    /// The opaque host-side trust-anchor ref (`0` = platform roots only). Never certificate bytes.
+    pub trust_anchor_ref: u64,
+    /// The per-hop end-to-end deadline. [`Duration::ZERO`](std::time::Duration) ⇒ the host default.
+    pub timeout: std::time::Duration,
+    /// The plane's ALREADY-JUDGED pinned address (Design A): the host connects HERE and resolves
+    /// nothing. The URL host is still used for SNI / cert-name / mTLS.
+    pub addr: std::net::IpAddr,
+}
+
+#[cfg(any(feature = "dispatch", feature = "relay"))]
+impl PinnedHop<'_> {
+    /// Lower to the neutral [`HopSpec`] the driver consumes. The pin is expressed HERE, once: a
+    /// supplied `resolved_addr` means the host re-judges nothing, so `allow_private`/`allow_plaintext`
+    /// are moot and set open — the plane's own pre-pin guard already judged this hop.
+    fn spec(&self) -> HopSpec<'_> {
+        HopSpec {
+            verb: self.verb,
+            url: self.url,
+            headers: self.headers,
+            body: self.body,
+            allow_private: true,
+            allow_plaintext: true,
+            client_identity_ref: self.client_identity_ref,
+            trust_anchor_ref: self.trust_anchor_ref,
+            timeout: self.timeout,
+            resolved_addr: Some(self.addr),
+        }
+    }
+}
+
+/// The neutral fault a build with NO installed driver refuses a pinned hop with — the same
+/// `Fault`-class, url-carrying shape the host's `egress_fault` produces, so a caller that keeps the
+/// `cause` and a caller that classifies the `class` both read exactly what they read before.
+#[cfg(any(feature = "dispatch", feature = "relay"))]
+fn no_backend_fault(url: &str) -> EgressFaultInfo {
+    EgressFaultInfo {
+        class: busbar_plugin::hot::EgressFailClass::Fault,
+        status: 0,
+        cause: "no governed egress backend is installed for this build".to_string(),
+        url: url.to_string(),
+    }
+}
+
+/// SEND ONE ALREADY-PINNED HOP, BUFFERED. Builds the neutral [`HopSpec`] for a hop the plane already
+/// pinned, runs it on the installed hostless driver, and hands back the [`Buffered`] projection (or the
+/// neutral [`EgressFaultInfo`] — a build with no driver refuses here rather than inventing a client).
+/// The caller keeps its own `ReadEnd` / SSE / redirect interpretation.
+#[cfg(any(feature = "dispatch", feature = "relay"))]
+pub fn send_pinned_buffered(hop: &PinnedHop<'_>, cap: usize) -> Result<Buffered, EgressFaultInfo> {
+    hostless()
+        .ok_or_else(|| no_backend_fault(hop.url))?
+        .buffered(&hop.spec(), cap)
+}
+
+/// SEND ONE ALREADY-PINNED HOP, STREAMED. As [`send_pinned_buffered`], but drives the streaming path:
+/// read the head, then either buffer a non-stream reply whole or pump a live event-stream body into
+/// `on_chunk`. One hostless scope spans the head and the pump.
+#[cfg(feature = "relay")]
+pub fn send_pinned_stream(
+    hop: &PinnedHop<'_>,
+    cap: usize,
+    on_chunk: &mut (dyn FnMut(&[u8]) -> super::ChunkFlow + Send),
+) -> Result<super::StreamHead, EgressFaultInfo> {
+    hostless()
+        .ok_or_else(|| no_backend_fault(hop.url))?
+        .stream(&hop.spec(), cap, on_chunk)
 }

@@ -290,9 +290,7 @@ pub mod ratelimit;
 // gate's screen-cache tenant, the appbuild session_store construction and the App field — are
 // unchanged. The former hooks::gate ↔ core::session co-location edge is dissolved: the gate now
 // reaches `SessionStore` via the substrate type.
-pub mod session {
-    pub use busbar_substrate::session::*;
-}
+pub mod session;
 /// The wire error-type taxonomy (`ERR_TYPE_*`), relocated out of `admin::` (1.6.0 de-vocab): the
 /// constant string VALUES (the wire error-type tokens) are byte-identical; only their Rust binding
 /// path moved, since `ingress::dispatch`/`ingress::arrival_host`/`router` consume them, not the
@@ -303,6 +301,18 @@ pub(crate) mod taxonomy;
 pub use busbar_substrate_values::sigv4;
 pub mod state;
 pub mod store;
+
+// ── W4.b P2: substrate ENGINE absorbed INTO busbar-kernel; busbar-substrate deleted. The neutral
+// engine modules that had no kernel counterpart land here at their historical `busbar_kernel::` paths.
+pub mod api;
+pub mod admin_verbs;
+pub mod admin_witness;
+pub mod detached;
+pub mod plane_routes;
+pub mod rate_apply;
+pub mod topology;
+#[cfg(any(test, feature = "test-support"))]
+pub mod testkit;
 pub mod telemetry;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;

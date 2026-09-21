@@ -4,8 +4,8 @@
 //! busbar-voice — the DUPLEX / LIVE-VOICE plane (Plane 4), as ONE plugin crate.
 //!
 //! WHAT THIS CRATE HOLDS. The plane's DECLARATIONS — [`PLANE_DECL`] (a
-//! [`busbar_substrate::plane::registry::PlaneDecl`]) and [`DECLS`] (a
-//! [`busbar_substrate::proto::ProtocolDecl`] with `codec: None`) — plus the plane's OWN four-layer
+//! [`busbar_kernel::plane::registry::PlaneDecl`]) and [`DECLS`] (a
+//! [`busbar_kernel::proto::ProtocolDecl`] with `codec: None`) — plus the plane's OWN four-layer
 //! duplex/session IR ([`ir`]) and BOTH dialect codecs (OpenAI Realtime + Gemini Live). The live pump,
 //! reader/writer bodies, and session store are implemented in [`runtime`] behind the `runtime` feature
 //! (see `docs/design/plane4-duplex-session.md` §8). Boot-mounting that runtime into the composition
@@ -44,7 +44,7 @@ pub mod config;
 pub mod diagnostics;
 
 /// THE VOICE PLANE'S PLANE-CONTRIBUTED DIAGNOSTICS — the `&'static [&'static Diagnostic]` the
-/// composition root installs via `busbar_substrate::diagnostics::install_diagnostics`, re-exported at
+/// composition root installs via `busbar_substrate_values::diagnostics::install_diagnostics`, re-exported at
 /// the crate root so the `busbar` binary names one stable path (`busbar_voice::DIAGNOSTICS`), exactly
 /// as `busbar_mcp::DIAGNOSTICS` / `busbar_a2a::DIAGNOSTICS`. Not yet booted by the binary — voice
 /// joins `register_diagnostics` at M5; the export exists now so that is a one-line addition. See
@@ -75,14 +75,14 @@ pub mod mount;
 /// default `PLANE_DECL` is byte-unchanged. Split by `cfg` because the
 /// `runtime` module (and its constructor) only exist behind the feature.
 // `type_complexity`: this fn-pointer is the mirror of the frozen `PlaneDecl::build_runtime` field type
-// (`busbar_substrate::plane::registry`), which carries the SAME `#[allow(clippy::type_complexity)]` — the
+// (`busbar_kernel::plane::registry`), which carries the SAME `#[allow(clippy::type_complexity)]` — the
 // shape is the ABI, not a factorable local type.
 #[cfg(feature = "runtime")]
 #[allow(clippy::type_complexity)]
 const VOICE_BUILD_RUNTIME: Option<
     fn(
         &dyn std::any::Any,
-        Option<&dyn busbar_substrate::plane_host::PlaneSlots>,
+        Option<&dyn busbar_kernel::plane_host::PlaneSlots>,
     ) -> std::sync::Arc<dyn std::any::Any + Send + Sync>,
 > = Some(runtime::build_runtime);
 #[cfg(not(feature = "runtime"))]
@@ -90,7 +90,7 @@ const VOICE_BUILD_RUNTIME: Option<
 const VOICE_BUILD_RUNTIME: Option<
     fn(
         &dyn std::any::Any,
-        Option<&dyn busbar_substrate::plane_host::PlaneSlots>,
+        Option<&dyn busbar_kernel::plane_host::PlaneSlots>,
     ) -> std::sync::Arc<dyn std::any::Any + Send + Sync>,
 > = None;
 
@@ -105,11 +105,11 @@ const VOICE_BUILD_RUNTIME: Option<
 /// `crate::mount::voice_build` with the feature on; `|_| None` (no slot) with it off.
 #[cfg(feature = "runtime")]
 const VOICE_BUILD: fn(
-    &busbar_substrate::plane::registry::BuildCtx,
+    &busbar_kernel::plane::registry::BuildCtx,
 ) -> Option<std::sync::Arc<dyn std::any::Any + Send + Sync>> = mount::voice_build;
 #[cfg(not(feature = "runtime"))]
 const VOICE_BUILD: fn(
-    &busbar_substrate::plane::registry::BuildCtx,
+    &busbar_kernel::plane::registry::BuildCtx,
 ) -> Option<std::sync::Arc<dyn std::any::Any + Send + Sync>> = |_ctx| None;
 
 /// `PLANE_DECL.claims` — the one audience-checked base the plane answers on, or nothing off-feature.
@@ -120,38 +120,38 @@ const VOICE_CLAIMS: fn(&dyn std::any::Any) -> Vec<(String, &'static str)> = |_sl
 
 /// `PLANE_DECL.admission` — the RFC 8707 audience bound from `public_url`, or `None` off-feature.
 #[cfg(feature = "runtime")]
-const VOICE_ADMISSION: fn(&dyn std::any::Any) -> Option<busbar_substrate::plane::PlaneAdmission> =
+const VOICE_ADMISSION: fn(&dyn std::any::Any) -> Option<busbar_kernel::plane::PlaneAdmission> =
     mount::voice_admission;
 #[cfg(not(feature = "runtime"))]
-const VOICE_ADMISSION: fn(&dyn std::any::Any) -> Option<busbar_substrate::plane::PlaneAdmission> =
+const VOICE_ADMISSION: fn(&dyn std::any::Any) -> Option<busbar_kernel::plane::PlaneAdmission> =
     |_slot| None;
 
 /// `PLANE_DECL.routes` — the four neutral ingress routes, or `None` (no data path) off-feature.
 #[cfg(feature = "runtime")]
 #[allow(clippy::type_complexity)]
 const VOICE_ROUTES: Option<
-    fn(&dyn std::any::Any) -> Vec<busbar_substrate::plane_routes::PlaneRouteSpec>,
+    fn(&dyn std::any::Any) -> Vec<busbar_kernel::plane_routes::PlaneRouteSpec>,
 > = Some(mount::voice_routes);
 #[cfg(not(feature = "runtime"))]
 #[allow(clippy::type_complexity)]
 const VOICE_ROUTES: Option<
-    fn(&dyn std::any::Any) -> Vec<busbar_substrate::plane_routes::PlaneRouteSpec>,
+    fn(&dyn std::any::Any) -> Vec<busbar_kernel::plane_routes::PlaneRouteSpec>,
 > = None;
 
 /// `PLANE_DECL.hydrate` — boot-rehydrate the durable voice-session working-set before any listener
 /// binds ([`mount::voice_hydrate`]); `None` off-feature so the default decl is byte-unchanged.
 #[cfg(feature = "runtime")]
-const VOICE_HYDRATE: Option<busbar_substrate::plane::registry::BootHook> =
+const VOICE_HYDRATE: Option<busbar_kernel::plane::registry::BootHook> =
     Some(mount::voice_hydrate);
 #[cfg(not(feature = "runtime"))]
-const VOICE_HYDRATE: Option<busbar_substrate::plane::registry::BootHook> = None;
+const VOICE_HYDRATE: Option<busbar_kernel::plane::registry::BootHook> = None;
 
 /// `PLANE_DECL.start` — the post-listener boot step ([`mount::voice_start`]); `None` off-feature so the
 /// default decl is byte-unchanged.
 #[cfg(feature = "runtime")]
-const VOICE_START: Option<busbar_substrate::plane::registry::BootHook> = Some(mount::voice_start);
+const VOICE_START: Option<busbar_kernel::plane::registry::BootHook> = Some(mount::voice_start);
 #[cfg(not(feature = "runtime"))]
-const VOICE_START: Option<busbar_substrate::plane::registry::BootHook> = None;
+const VOICE_START: Option<busbar_kernel::plane::registry::BootHook> = None;
 
 /// THE VOICE (STREAMING) PLANE'S CAPABILITY KEY (`"voice"`) — the string the composition root flips
 /// onto the unified kernel loop's SESSION admit and the same string the voice session gauntlet reports
@@ -191,7 +191,7 @@ const VOICE_WIRE_FORMATS: &[&str] = &[OPENAI_REALTIME, GEMINI_LIVE];
 pub(crate) fn voice_provider_bearer(
     key: &str,
 ) -> Vec<(axum::http::HeaderName, axum::http::HeaderValue)> {
-    busbar_substrate::proto::bearer_auth_headers(OPENAI_REALTIME, key)
+    busbar_kernel::proto::bearer_auth_headers(OPENAI_REALTIME, key)
 }
 
 /// `ProtocolDecl::egress_auth_headers` — the plain-Bearer arm of `busbar-llm`'s OpenAI dialect (the
@@ -199,7 +199,7 @@ pub(crate) fn voice_provider_bearer(
 /// string (it reads nothing off the [`SigningContext`]), so [`DECLS`] declares it LANE-CONSTANT.
 fn voice_egress_auth_headers(
     key: &str,
-    _ctx: &busbar_substrate::proto::SigningContext,
+    _ctx: &busbar_kernel::proto::SigningContext,
 ) -> Vec<(axum::http::HeaderName, axum::http::HeaderValue)> {
     voice_provider_bearer(key)
 }
@@ -216,8 +216,8 @@ fn voice_egress_auth_headers(
 /// cells are request→response codecs), so the session driver lives in the plane's own runtime
 /// (`crate::topology`) over the neutral pump, not on that field. The neutral registry unions this
 /// without naming it (the MCP/A2A precedent).
-pub const PLANE_DECL: busbar_substrate::plane::registry::PlaneDecl =
-    busbar_substrate::plane::registry::PlaneDecl {
+pub const PLANE_DECL: busbar_kernel::plane::registry::PlaneDecl =
+    busbar_kernel::plane::registry::PlaneDecl {
         key: "voice",
         // A MOUNTED plane, not the fallback catch-all.
         fallback: false,
@@ -299,7 +299,7 @@ pub const PLANE_DECL: busbar_substrate::plane::registry::PlaneDecl =
 /// NOT YET MOUNTED: `handler: None` and `verbs: &[]` — route-mounting the duplex handler /
 /// gauntlet-session entry is follow-on work. Every other field carries the neutral default a codec-less
 /// protocol declares (the MCP `DECL` shape).
-pub static DECLS: busbar_substrate::proto::ProtocolDecl = busbar_substrate::proto::ProtocolDecl {
+pub static DECLS: busbar_kernel::proto::ProtocolDecl = busbar_kernel::proto::ProtocolDecl {
     name: OPENAI_REALTIME,
     // THE SUPERSET IS ITS OWN IR (`plane4-duplex-session.md` §1.4): the two dialects meet in the plane's
     // shared IR types, not a `DialectCodec` facade — so this field stays `None`, the MCP/A2A precedent.
@@ -314,7 +314,7 @@ pub static DECLS: busbar_substrate::proto::ProtocolDecl = busbar_substrate::prot
     streaming_content_type: None,
     array_stream_shim_key: None,
     native_tool_id_prefix: None,
-    ingress_auth: busbar_substrate::proto::IngressAuth::Bearer,
+    ingress_auth: busbar_kernel::proto::IngressAuth::Bearer,
     // THE ONE EGRESS CREDENTIAL MECHANISM: the provider bearer / WebRTC `ek_` / telephony carrier
     // credential is planned onto the dial's headers HERE, never a caller token passed through (see
     // [`voice_egress_auth_headers`]). LANE-CONSTANT: the builder is a pure function of the resolved
@@ -337,18 +337,18 @@ pub static DECLS: busbar_substrate::proto::ProtocolDecl = busbar_substrate::prot
     ingress_is_eventstream: false,
     emits_sse_done_terminator: false,
     max_citations_per_delta: None,
-    egress_user_agent: busbar_substrate::proxy::EGRESS_UA_DEFAULT,
+    egress_user_agent: busbar_kernel::proxy::EGRESS_UA_DEFAULT,
     has_model_in_url: false,
     auth_failure_status_and_kind: (
         axum::http::StatusCode::UNAUTHORIZED,
-        busbar_substrate::proto::ERR_TYPE_AUTHENTICATION,
+        busbar_kernel::proto::ERR_TYPE_AUTHENTICATION,
     ),
     ingress_relays_amzn_headers: false,
     ingress_relayed_response_header_names: &[],
     auth_failure_message: "authentication failed",
     uses_array_stream_shim: false,
     has_native_path_not_found: false,
-    egress_stream_accept: busbar_substrate::proxy::TEXT_EVENT_STREAM,
+    egress_stream_accept: busbar_kernel::proxy::TEXT_EVENT_STREAM,
     models_list_envelope: None,
     // Identified by its EXPLICIT mount, never by a wire fingerprint — so it claims no router or
     // residual rung, contributes no vendor response metadata, and is not the residual default.

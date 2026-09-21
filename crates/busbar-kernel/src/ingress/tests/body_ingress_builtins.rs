@@ -6,9 +6,9 @@
 //! dialect crate. The body-axis twin of `tests/path_ingress_builtins.rs`: it reproduces, for the
 //! pre-extraction fixture surface, the `(name, arrival)` pairs the composition root installs in
 //! production, so a `/v1/messages` (named/adhoc) or body-model dispatch request in a core test
-//! resolves its arrival through `busbar_substrate::ingress::arrival::body_ingress_for`.
+//! resolves its arrival through `busbar_kernel::ingress::arrival::body_ingress_for`.
 
-use busbar_substrate::ingress::arrival::BodyIngress;
+use busbar_kernel::ingress::arrival::BodyIngress;
 
 /// The shipped body-model arrivals for core's test binary — `busbar_llm::BODY_INGRESS` verbatim, so the
 /// fixture registry matches a shipped LLM binary's.

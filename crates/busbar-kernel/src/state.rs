@@ -5,15 +5,15 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 // R5-store: `crate::state::now` DELETED — it was a re-export of a re-export (`crate::store::now`,
-// itself `busbar_substrate::store::now`, itself `busbar_substrate_values::store::now`). Its nine
+// itself `busbar_kernel::store::now`, itself `busbar_substrate_values::store::now`). Its nine
 // readers (metrics, endpoints, plane/quarantine and the metrics tests) name
-// `busbar_substrate::store::now` directly, which is where the production wall clock lives.
+// `busbar_kernel::store::now` directly, which is where the production wall clock lives.
 //
 // R5-store: `LaneRuntime` is named from its defining crate. It relocated to
-// `busbar_substrate::store` with the rest of the lane-runtime seam; the `crate::state::LaneRuntime`
+// `busbar_kernel::store` with the rest of the lane-runtime seam; the `crate::state::LaneRuntime`
 // spelling had no reader anywhere — `state.rs` itself was the only one — so the shim is deleted, not
 // repointed.
-use busbar_substrate::store::LaneRuntime;
+use busbar_kernel::store::LaneRuntime;
 
 // ── DATA-PLANE TOPOLOGY + the sharded upstream client — RELOCATED to `busbar-substrate::topology`
 // (1.6.0 App-retype WEDGE 3-PREP) so the plane crates reach the neutral worker-count / worker-id
@@ -22,10 +22,10 @@ use busbar_substrate::store::LaneRuntime;
 // `crate::state::…` path and keep the `pub` visibility they had before the move.
 //
 // `set_data_workers`, `set_worker_id` and `UpstreamClients` are no longer re-exported: the
-// composition root's boot publish now targets `busbar_substrate::topology::…` directly, which left
+// composition root's boot publish now targets `busbar_kernel::topology::…` directly, which left
 // the three `busbar_kernel::state::…` spellings with no caller at all bar one `engine_facade`
 // re-export line, itself repointed here. Nothing outside core names them.
-pub use busbar_substrate::topology::{worker_stripe, worker_stripes};
+pub use busbar_kernel::topology::{worker_stripe, worker_stripes};
 
 /// The subset of resolved limits that FEEDS the upstream reqwest client build — every setting
 /// whose change must produce a different client. On a config apply the prior client is reused (for
@@ -71,7 +71,7 @@ impl UpstreamClientSettings {
 /// key would change the bare key's presence semantics, and with it the dispatch table
 /// `build_dispatch` derives from it). Composed into `plane_slots` by `appbuild` and read back by the
 /// owning plane, each passing its decl key — so this crate names no plane runtime type or token.
-pub use busbar_substrate::plane_host::runtime_slot_key;
+pub use busbar_kernel::plane_host::runtime_slot_key;
 
 /// One plane's per-container resolved submission-gate map: container name → resolved
 /// `(hook_id, ResolvedPolicy)` gate list. The value half of [`App::plane_gates`].
@@ -147,7 +147,7 @@ pub struct App {
     #[allow(dead_code)]
     pub tool_pools: std::collections::BTreeMap<String, crate::failover::CandidatePoolCfg>,
     /// THE PER-PLANE FAILOVER POOL MAPS reached through the GENERIC pool-member seam
-    /// ([`busbar_substrate::plane_host::LanePoolHost::plane_pool_members`]), keyed by the plane's stable
+    /// ([`busbar_kernel::plane_host::LanePoolHost::plane_pool_members`]), keyed by the plane's stable
     /// decl key (the opaque registry key) — a registry-keyed map in place of the former plane-named
     /// pool field, so core carries no plane vocabulary in its own field names. Each plane's
     /// entry is its own resolved pool-member set (member selection derives lanes from member position).
@@ -225,7 +225,7 @@ pub struct App {
     /// field names. Each plane's entry maps container → resolved `(hook_id, ResolvedPolicy)` gate list
     /// (`<section>.hooks:` ∪ `<section>.<container>.hooks:`), same combine rule and zero-cost absence
     /// as before. Composed at config apply by `appbuild` (and re-resolved on swap through
-    /// [`busbar_substrate::plane_host::ContainerGateSink`]); read on the dispatch path by
+    /// [`busbar_kernel::plane_host::ContainerGateSink`]); read on the dispatch path by
     /// [`App::plane_gates`]. Empty for a plane that attaches nothing — the lookup costs one probe.
     // Read on the plane dispatch/admission gate paths; with BOTH planes compiled out nothing fires a
     // gate, so the map goes unread in that config alone.
@@ -235,7 +235,7 @@ pub struct App {
     /// the TAP/observe-transform twin of [`Self::plane_gates`]. Each plane's entry maps container →
     /// resolved `(deadline, transport)` rewrite list (`<section>.hooks:` ∪ `<section>.<container>.hooks:`,
     /// the `prompt: rw` members only). Composed at config apply by `appbuild` and re-resolved on swap
-    /// through the same [`busbar_substrate::plane_host::ContainerGateSink`] callback the gates use. Empty
+    /// through the same [`busbar_kernel::plane_host::ContainerGateSink`] callback the gates use. Empty
     /// for a plane that attaches no rewrite hook — the tap firing site's lookup costs one probe and the
     /// path stays byte-identical.
     // Read on the plane transform/tap paths only; with BOTH planes compiled out nothing fires a tap, so
@@ -550,16 +550,16 @@ pub struct App {
 
 impl App {
     /// Borrow this snapshot's data-plane routing tables through the NEUTRAL [`EngineTablesView`]
-    /// (`busbar_substrate::plane_host`) read seam — the projection the core-resident scrape/discovery
+    /// (`busbar_kernel::plane_host`) read seam — the projection the core-resident scrape/discovery
     /// readers (`/metrics`, `/v1/models`, telemetry label bank) name so they need not know which plane
     /// crate the routing tables actually live in. The view is sourced by projecting the fallback
     /// plane's opaque runtime slot through that plane decl's `viewer` fn-pointer (the plane downcasts
     /// its OWN runtime type inside, so core never names it); an ABSENT slot — the featureless
     /// zero-plane boot, or a decl with no viewer — yields the substrate-resident
-    /// [`EMPTY_VIEW`](busbar_substrate::plane_host::EMPTY_VIEW) (an empty projection), so a scrape or
+    /// [`EMPTY_VIEW`](busbar_kernel::plane_host::EMPTY_VIEW) (an empty projection), so a scrape or
     /// discovery probe on a plane-less binary reads empty tables rather than panicking. Cold path: one
     /// `plane_slots` lookup + one downcast, then the neutral (allocating) projections.
-    pub fn engine_tables_view(&self) -> &dyn busbar_substrate::plane_host::EngineTablesView {
+    pub fn engine_tables_view(&self) -> &dyn busbar_kernel::plane_host::EngineTablesView {
         // THE PIVOT (1.6.0 money-path Phase 3-4 C): the runtime type now lives in the fallback plane's
         // own crate, so core no longer names it. Project the plane's opaque runtime slot into the
         // neutral view through the fallback plane decl's `viewer` fn-pointer (the plane downcasts its
@@ -572,7 +572,7 @@ impl App {
             self.plane_slot(key),
         ) {
             (Some(viewer), Some(slot)) => viewer(slot.as_ref()),
-            _ => &busbar_substrate::plane_host::EMPTY_VIEW,
+            _ => &busbar_kernel::plane_host::EMPTY_VIEW,
         }
     }
 
@@ -822,10 +822,10 @@ impl App {
 }
 
 /// THE NEUTRAL SLOT-READ SEAM the plane `PlaneDecl` callbacks name instead of `&App`. A thin delegate
-/// to the inherent [`App::plane_slot`]; [`as_any`](busbar_substrate::plane_host::PlaneSlots::as_any)
+/// to the inherent [`App::plane_slot`]; [`as_any`](busbar_kernel::plane_host::PlaneSlots::as_any)
 /// hands the concrete snapshot back to the owning plane's own reader for the field (`agent_defs`)
 /// that is not a `plane_slots` entry.
-impl busbar_substrate::plane_host::PlaneSlots for App {
+impl busbar_kernel::plane_host::PlaneSlots for App {
     fn plane_slot(&self, key: &str) -> Option<&Arc<dyn std::any::Any + Send + Sync>> {
         App::plane_slot(self, key)
     }
@@ -839,7 +839,7 @@ impl busbar_substrate::plane_host::PlaneSlots for App {
 /// [`App::resolve_container_gates`]) and stores them in the generic [`App::plane_gates`] map under the
 /// opaque registry `plane_key` — byte-identical to the old inline
 /// `next.plane_gates.insert(plane_key, next.resolve_container_gates(...))`.
-impl busbar_substrate::plane_host::ContainerGateSink for App {
+impl busbar_kernel::plane_host::ContainerGateSink for App {
     fn reresolve_container_gates(
         &mut self,
         plane_key: &str,
@@ -903,7 +903,7 @@ pub struct AppHandle {
     /// featureless (no-plane) or non-probing deployment simply never sets it. The `Arc<dyn EngineHost>`
     /// holds an `Arc<App>` clone of its generation — dropping it on swap releases that reference so the
     /// old `App` frees once its in-flight requests drain, exactly as the old `Weak<App>` prober did.
-    snapshot_host: std::sync::Mutex<Option<Arc<dyn busbar_substrate::plane_host::EngineHost>>>,
+    snapshot_host: std::sync::Mutex<Option<Arc<dyn busbar_kernel::plane_host::EngineHost>>>,
 }
 
 impl AppHandle {
@@ -921,7 +921,7 @@ impl AppHandle {
     /// spawned against this same host, so the handle owns the only strong reference the probers depend
     /// on: a later [`swap`](Self::swap) drops it, and every stale prober exits (its `Weak` fails to
     /// upgrade). Replacing an existing binding drops the prior host, retiring that generation's probers.
-    pub fn set_snapshot_host(&self, host: Arc<dyn busbar_substrate::plane_host::EngineHost>) {
+    pub fn set_snapshot_host(&self, host: Arc<dyn busbar_kernel::plane_host::EngineHost>) {
         *self.snapshot_host.lock().unwrap_or_else(|e| e.into_inner()) = Some(host);
     }
 
@@ -987,8 +987,8 @@ impl AppHandle {
         for decl in crate::plane::registry::plane_decls() {
             if let Some(on_swap) = decl.on_swap {
                 on_swap(
-                    &*prior as &dyn busbar_substrate::plane_host::PlaneSlots,
-                    &*next as &dyn busbar_substrate::plane_host::PlaneSlots,
+                    &*prior as &dyn busbar_kernel::plane_host::PlaneSlots,
+                    &*next as &dyn busbar_kernel::plane_host::PlaneSlots,
                 );
             }
         }
@@ -1057,7 +1057,7 @@ where
 // deliberately never link busbar-core) reach the same seam.
 //
 // The whole `crate::state::…` re-export block is DELETED: the composition root now targets
-// `busbar_substrate::detached::…` directly, after which four of the five names
+// `busbar_kernel::detached::…` directly, after which four of the five names
 // (`set_worker_detached`, `set_worker_shutdown`, `DetachedTasks`, `DETACHED_DRAIN_GRACE`) had no
 // caller left anywhere, and the fifth (`spawn_detached`) had exactly one — `export/webhook.rs` —
 // which now names the substrate directly.

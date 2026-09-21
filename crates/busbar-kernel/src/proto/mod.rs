@@ -17,7 +17,7 @@ pub use crate::breaker::StatusClass;
 // Consumed via `use super::*` by the proto test modules only, since the dialect that used them in
 // production moved out to its own plugin crate.
 
-// Neutral protocol atoms RELOCATED DOWN to `busbar-substrate` (`busbar_substrate::proto`) so an
+// Neutral protocol atoms RELOCATED DOWN to `busbar-substrate` (`busbar_kernel::proto`) so an
 // extracted dialect crate names them without reaching into `busbar-core` (the reverse-edge rule).
 // Re-exported here at their historical `busbar_kernel::proto::…` paths so every
 // in-core / plugin / witness-build caller compiles unchanged; the values are byte-identical.
@@ -28,50 +28,43 @@ pub use crate::breaker::StatusClass;
 // - `HDR_AUTHORIZATION`   — the canonical lowercase `Authorization` header name.
 // - `IrError`             — the IR-level error alias (`breaker::CanonicalSignal`).
 // - `bearer_auth_headers` — the shared `Authorization: Bearer <key>` builder (warn+OMIT on bad bytes).
-pub use busbar_substrate::proto::{
-    bearer_auth_headers, IrError, HDR_AUTHORIZATION, SIGNAL_IR_PARSE, SSE_DONE_FRAME,
-    SSE_DONE_SENTINEL,
-};
 
-/// Signal the RESPONSE-side dialect-specific metadata that an egress protocol carries and no ingress
-/// protocol can express, so it does not vanish from a translated response with nothing in the logs.
-///
-/// The request side has had this since `IrReq::prepare_for_egress` started naming every cleared
-/// `extra` key; the response side had no equivalent, so a cross-protocol hop could silently drop a
-/// backend's response-only metadata (for example a compliance/guardrail assessment) with nothing
-/// recording that it had happened.
-///
-/// These are true target-protocol limits, not unmodelled IR gaps: each such field is shaped by its own
-/// protocol's account model or category vocabulary — no other protocol in the matrix has a field of
-/// that shape to receive it. So the fix is the signal, not a carrier. (Metadata that IS expressible
-/// everywhere — citations, for instance — is read into the IR instead of named here.)
-///
-/// Called ONLY from the cross-protocol response seam, so a same-protocol route — where every one of
-/// these fields survives byte-for-byte — never logs a word about them.
-// RELOCATED DOWN to `busbar_substrate::proto` (the cross-protocol response seam lives in the extracted
+// Signal the RESPONSE-side dialect-specific metadata that an egress protocol carries and no ingress
+// protocol can express, so it does not vanish from a translated response with nothing in the logs.
+//
+// The request side has had this since `IrReq::prepare_for_egress` started naming every cleared
+// `extra` key; the response side had no equivalent, so a cross-protocol hop could silently drop a
+// backend's response-only metadata (for example a compliance/guardrail assessment) with nothing
+// recording that it had happened.
+//
+// These are true target-protocol limits, not unmodelled IR gaps: each such field is shaped by its own
+// protocol's account model or category vocabulary — no other protocol in the matrix has a field of
+// that shape to receive it. So the fix is the signal, not a carrier. (Metadata that IS expressible
+// everywhere — citations, for instance — is read into the IR instead of named here.)
+//
+// Called ONLY from the cross-protocol response seam, so a same-protocol route — where every one of
+// these fields survives byte-for-byte — never logs a word about them.
+// RELOCATED DOWN to `busbar_kernel::proto` (the cross-protocol response seam lives in the extracted
 // dialect plugin, which now names the substrate fn directly); re-exported here at its historical
 // `busbar_kernel::proto::warn_untranslatable_response_metadata` path so core's call sites are unchanged.
-pub use busbar_substrate::proto::warn_untranslatable_response_metadata;
 
-// RELOCATED DOWN to `busbar_substrate::config::limits`, beside the `limits.default_max_tokens` key
+// RELOCATED DOWN to `busbar_kernel::config::limits`, beside the `limits.default_max_tokens` key
 // that overrides it (and now literally the same const as that key's own default, so the two cannot
 // drift). Re-exported here at its historical `busbar_kernel::proto::DEFAULT_MAX_TOKENS` path so this
 // crate's call sites are unchanged.
-pub use busbar_substrate::config::limits::DEFAULT_MAX_TOKENS;
+pub use busbar_kernel::config::limits::DEFAULT_MAX_TOKENS;
 
-/// Mixed-case base62 alphabet (digits + lowercase + uppercase, no `-`/`_`) and the rejection-sampling
-/// threshold used when synthesizing opaque ids for protocols whose native ids are flat random tokens.
-/// Hoisted here as the single source of truth so the id generators cannot drift on the character set
-/// or the bias-elimination cutoff
-/// — `REJECT_THRESHOLD` is the largest multiple of 62 that fits in a `u8` (62 × 4 = 248); a draw in
-/// `0..248` maps uniformly via `% 62`, a draw `>= 248` is rejected and redrawn.
-// Relocated DOWN to `busbar_substrate::proto`; re-exported here (see the neutral-atoms block above).
-pub use busbar_substrate::proto::{BASE62_ALPHABET, BASE62_REJECT_THRESHOLD};
+// Mixed-case base62 alphabet (digits + lowercase + uppercase, no `-`/`_`) and the rejection-sampling
+// threshold used when synthesizing opaque ids for protocols whose native ids are flat random tokens.
+// Hoisted here as the single source of truth so the id generators cannot drift on the character set
+// or the bias-elimination cutoff
+// — `REJECT_THRESHOLD` is the largest multiple of 62 that fits in a `u8` (62 × 4 = 248); a draw in
+// `0..248` maps uniformly via `% 62`, a draw `>= 248` is rejected and redrawn.
+// Relocated DOWN to `busbar_kernel::proto`; re-exported here (see the neutral-atoms block above).
 
-// `STREAM_ABORT_DETAIL` RELOCATED DOWN to `busbar_substrate::proto` (a dialect's own stream
+// `STREAM_ABORT_DETAIL` RELOCATED DOWN to `busbar_kernel::proto` (a dialect's own stream
 // reassembler emits it without reaching into core); re-exported here at its historical
 // `busbar_kernel::proto::STREAM_ABORT_DETAIL` path so core's proxy-engine caller is unchanged.
-pub use busbar_substrate::proto::STREAM_ABORT_DETAIL;
 
 /// THE RESIDUAL ARM of the ingress resolver: which wire dialect a path names, from its shape alone.
 /// `None` when it names none.
@@ -120,67 +113,60 @@ pub fn residual_default_dialect() -> Option<&'static str> {
     registry::residual_default_protocol()
 }
 
-/// The vendor-plausible auth-failure wire MESSAGE for an ingress protocol. This string lands verbatim
-/// in the native error body (`error.message` for anthropic/openai/gemini/responses, the bare
-/// top-level `message` for cohere, the `message` beside `__type` for bedrock). It MUST read like the
-/// copy the REAL vendor returns for a bad/missing credential and carry NO busbar-internal vocabulary
-/// ("lane", "virtual key", "passthrough", …): any such word is a deterministic protocol tell that
-/// also discloses busbar's auth model. Canonical source of truth; `auth.rs::vendor_auth_failure_message`
-/// is a thin delegation wrapper to this, not a copy. Strings sampled from real 401/403 bodies:
-///   anthropic → "invalid x-api-key"; openai/responses → "Incorrect API key provided.";
-///   gemini → "API key not valid. Please pass a valid API key."; cohere → "invalid api token";
-///   bedrock → "" (AWS conveys AccessDenied via __type / x-amzn-errortype, not message prose).
-///
-/// Thin wrapper: dispatches through `ProtocolWriter::auth_failure_message` so the per-vendor copy
-/// lives in the writer vtable, not in this agnostic function. An unknown future proto falls back to
-/// the default generic copy.
-// RELOCATED DOWN to `busbar_substrate::proto`; re-exported here at its historical path.
-pub use busbar_substrate::proto::vendor_auth_failure_message;
+// The vendor-plausible auth-failure wire MESSAGE for an ingress protocol. This string lands verbatim
+// in the native error body (`error.message` for anthropic/openai/gemini/responses, the bare
+// top-level `message` for cohere, the `message` beside `__type` for bedrock). It MUST read like the
+// copy the REAL vendor returns for a bad/missing credential and carry NO busbar-internal vocabulary
+// ("lane", "virtual key", "passthrough", …): any such word is a deterministic protocol tell that
+// also discloses busbar's auth model. Canonical source of truth; `auth.rs::vendor_auth_failure_message`
+// is a thin delegation wrapper to this, not a copy. Strings sampled from real 401/403 bodies:
+//   anthropic → "invalid x-api-key"; openai/responses → "Incorrect API key provided.";
+//   gemini → "API key not valid. Please pass a valid API key."; cohere → "invalid api token";
+//   bedrock → "" (AWS conveys AccessDenied via __type / x-amzn-errortype, not message prose).
+//
+// Thin wrapper: dispatches through `ProtocolWriter::auth_failure_message` so the per-vendor copy
+// lives in the writer vtable, not in this agnostic function. An unknown future proto falls back to
+// the default generic copy.
+// RELOCATED DOWN to `busbar_kernel::proto`; re-exported here at its historical path.
 
-// Per-request signing context. RELOCATED DOWN to the neutral `busbar_substrate::proto` leaf so the
+// Per-request signing context. RELOCATED DOWN to the neutral `busbar_kernel::proto` leaf so the
 // substrate `ProtocolDecl`'s `egress_auth_headers` builder names it without depending on
 // `busbar-core`; re-exported here at its historical `busbar_kernel::proto::SigningContext` path so
 // every in-core / plugin caller (`egress_auth`, `proxy::egress`, `health`, the walk/engine forward
 // paths, the netted dialect writers) is unchanged. Its only non-primitive field is
 // `busbar_api::UpstreamCreds`, so the move carries no core-only machinery.
-pub use busbar_substrate::proto::SigningContext;
 
-/// ProtocolWriter rewrites intents for the upstream wire format.
-/// Extract `(role, text)` pairs from a hook's rewrite reply for a dialect that must RE-FRAME the
-/// turns rather than insert them verbatim. `None` means at least one reply message does not carry
-/// plain-string content — the re-framing dialects cannot render that faithfully, so their
-/// [`ProtocolWriter::apply_rewrite_to_ingress_body`] aborts and leaves the body untouched rather
-/// than shipping a half-applied rewrite.
-// Relocated DOWN to `busbar_substrate::proto`; re-exported here (see the neutral-atoms block above).
-pub use busbar_substrate::proto::rewrite_text_pairs;
+// ProtocolWriter rewrites intents for the upstream wire format.
+// Extract `(role, text)` pairs from a hook's rewrite reply for a dialect that must RE-FRAME the
+// turns rather than insert them verbatim. `None` means at least one reply message does not carry
+// plain-string content — the re-framing dialects cannot render that faithfully, so their
+// [`ProtocolWriter::apply_rewrite_to_ingress_body`] aborts and leaves the body untouched rather
+// than shipping a half-applied rewrite.
+// Relocated DOWN to `busbar_kernel::proto`; re-exported here (see the neutral-atoms block above).
 
 // `ArrayStreamFramer` (the streaming JSON-array reframer the SSE seam drives) and `DialectCodec` (the
 // 4th neutral per-PROTOCOL computed-codec seam the operation-blind driver reads) RELOCATED to
-// `busbar-substrate` (`busbar_substrate::proto`) so an extracted dialect crate implements them
+// `busbar-substrate` (`busbar_kernel::proto`) so an extracted dialect crate implements them
 // without reaching into `busbar-core`; re-exported here at their historical `busbar_kernel::proto::…`
 // paths so core's call sites and the netted dual-compile test build are unchanged. Both name only the
 // neutral surface (bytes / `Value` / `bool` / `TokenUsage` / `RawUpstreamError` / `CanonicalSignal`),
 // so the relocation carries no core-only machinery. `DialectCodec::make_array_stream_framer` returns a
 // `Box<dyn ArrayStreamFramer>`, so the two travel together. Reached via `decl_for(name).dialect()`.
-pub use busbar_substrate::proto::{ArrayStreamFramer, DialectCodec};
 
-/// The set of streaming `Content-Type` values across every declared protocol. A registry aggregate,
-/// folded once at boot from `ProtocolDecl::streaming_content_type` — where it used to be an
-/// `OnceLock` sweep that built a `Protocol` per known name to read one `&'static` off its writer.
-// RELOCATED DOWN to `busbar_substrate::proto`; re-exported here at its historical path.
-pub use busbar_substrate::proto::streaming_content_types;
+// The set of streaming `Content-Type` values across every declared protocol. A registry aggregate,
+// folded once at boot from `ProtocolDecl::streaming_content_type` — where it used to be an
+// `OnceLock` sweep that built a `Protocol` per known name to read one `&'static` off its writer.
+// RELOCATED DOWN to `busbar_kernel::proto`; re-exported here at its historical path.
 
-/// The set of array-stream shim keys across every declared protocol (most declare none).
-/// The same aggregate, from `ProtocolDecl::array_stream_shim_key`, and the reason
-/// `proxy::strip_router_shim_keys` can remove every protocol's marker while naming none of them.
-// RELOCATED DOWN to `busbar_substrate::proto`; re-exported here at its historical path.
-pub use busbar_substrate::proto::array_stream_shim_keys;
+// The set of array-stream shim keys across every declared protocol (most declare none).
+// The same aggregate, from `ProtocolDecl::array_stream_shim_key`, and the reason
+// `proxy::strip_router_shim_keys` can remove every protocol's marker while naming none of them.
+// RELOCATED DOWN to `busbar_kernel::proto`; re-exported here at its historical path.
 
-/// The array-stream shim key the NAMED protocol declares, or `None` if it declares none (most
-/// don't) or is not registered. The INJECTION site (`ingress::ingress_path_model`) reads it by name
-/// so it names no protocol submodule: delete a protocol and the marker is simply never injected.
-// RELOCATED DOWN to `busbar_substrate::proto`; re-exported here at its historical path.
-pub use busbar_substrate::proto::array_stream_shim_key_for;
+// The array-stream shim key the NAMED protocol declares, or `None` if it declares none (most
+// don't) or is not registered. The INJECTION site (`ingress::ingress_path_model`) reads it by name
+// so it names no protocol submodule: delete a protocol and the marker is simply never injected.
+// RELOCATED DOWN to `busbar_kernel::proto`; re-exported here at its historical path.
 
 /// The NEUTRAL streaming-translator seam (`StreamTranslator` trait + the fn-ptr factory) — STAYS in
 /// core (names zero concrete stream IR). See `stream_translator.rs`.
@@ -194,9 +180,8 @@ pub use stream_translator::new_stream_translator;
 #[cfg(test)]
 #[path = "tests/stream_factory_fixture.rs"]
 mod stream_factory_fixture;
-// The neutral `StreamTranslator` trait RELOCATED DOWN to `busbar_substrate::proto`; re-exported here
+// The neutral `StreamTranslator` trait RELOCATED DOWN to `busbar_kernel::proto`; re-exported here
 // at its historical `busbar_kernel::proto::StreamTranslator` path so core's forward path is unchanged.
-pub use busbar_substrate::proto::StreamTranslator;
 
 // THE EXTRACTED CONCRETE STREAM TRANSLATOR (`StreamTranslate`) and WIRE-CODEC SURFACE
 // (`ProtocolReader`/`ProtocolWriter`/`Protocol`/`protocol_for`/…) live wholly in the extracted dialect
@@ -208,28 +193,24 @@ pub use busbar_substrate::proto::StreamTranslator;
 // `crate::proto_codec::…` in the plugin. Production core drives translation through the neutral
 // `DialectCodec` seam + the installed `StreamTranslator` factory and names none of these.
 
-// `find_frame_terminator` and `parse_sse_frame` RELOCATED DOWN to `busbar_substrate::proto` (a
+// `find_frame_terminator` and `parse_sse_frame` RELOCATED DOWN to `busbar_kernel::proto` (a
 // dialect's stream translator and reassembler drive them); re-exported here at their
 // historical `busbar_kernel::proto::…` paths so every in-core caller is unchanged.
-pub use busbar_substrate::proto::{find_frame_terminator, parse_sse_frame};
 
-/// The `event:` name of one SSE frame, BORROWED from the frame bytes — the cheap probe for a
-/// consumer that only needs the event TYPE to decide whether a frame is worth parsing at all.
-/// [`parse_sse_frame`] pays three heap allocations per call (the event-type `String`, the
-/// `data:`-line `Vec`, the joined-payload `String`), which is exactly what a skip decision must
-/// not. Returns `""` when the frame carries no `event:` line (some dialects omit it) or the name is not
-/// UTF-8 — the same value `parse_sse_frame` reports for those shapes — and, like it, the LAST
-/// `event:` line wins when a frame illegally carries several.
-// Relocated DOWN to `busbar_substrate::proto`; re-exported here (see the neutral-atoms block above).
-pub use busbar_substrate::proto::sse_event_type;
+// The `event:` name of one SSE frame, BORROWED from the frame bytes — the cheap probe for a
+// consumer that only needs the event TYPE to decide whether a frame is worth parsing at all.
+// [`parse_sse_frame`] pays three heap allocations per call (the event-type `String`, the
+// `data:`-line `Vec`, the joined-payload `String`), which is exactly what a skip decision must
+// not. Returns `""` when the frame carries no `event:` line (some dialects omit it) or the name is not
+// UTF-8 — the same value `parse_sse_frame` reports for those shapes — and, like it, the LAST
+// `event:` line wins when a frame illegally carries several.
+// Relocated DOWN to `busbar_kernel::proto`; re-exported here (see the neutral-atoms block above).
 
 // `strip_top_level_usage_member` (and its two private JSON span scanners) RELOCATED DOWN to
-// `busbar_substrate::proto`; re-exported here at its historical path.
-pub use busbar_substrate::proto::strip_top_level_usage_member;
+// `busbar_kernel::proto`; re-exported here at its historical path.
 
-// `write_sse_frame` RELOCATED DOWN to `busbar_substrate::proto` (a dialect's own stream translator
+// `write_sse_frame` RELOCATED DOWN to `busbar_kernel::proto` (a dialect's own stream translator
 // emits through it); re-exported here at its historical `busbar_kernel::proto::write_sse_frame` path.
-pub use busbar_substrate::proto::write_sse_frame;
 
 // THE EXTRACTED WIRE DIALECTS live wholly in their own plugin crates. Their `#[path]` witness
 // re-includes into core (which existed only so the pre-extraction fixture surface could reach the
@@ -286,37 +267,36 @@ pub use dialect_test_names::{
 // not in this neutral crate. Core unions whatever `ProtocolDecl::head_keys` each registered protocol
 // declares (see `registry::Registry::new`) and names none of the keys itself.
 
-/// Every protocol name busbar ships a wire CODEC for — the set a provider's `protocol:` may name,
-/// and what the config validator rejects against so an unknown protocol is COLLECTED with every
-/// other config error rather than escaping to a lone `die()` at lane construction.
-///
-/// DERIVED from the declarations (`ProtocolDecl::codec`), not maintained beside them. It used to be
-/// a hand-written const that a `debug_assert` compared against the constructor match it had to agree
-/// with — two lists and an assertion to keep them equal, where there is now one list and nothing to
-/// drift from.
-///
-/// DECLARATION ORDER IS PRESERVED, AND IT IS LOAD-BEARING: `telemetry` indexes its per-protocol
-/// metric families by POSITION in this slice — `AppSlots::build` banks one family per entry in
-/// order, and `request_family` finds it again with `.position()`. That stays sound for the reason it
-/// always did, now stated rather than assumed: the slice is folded ONCE, from a `&'static`
-/// declaration table, inside a `OnceLock`, and no path appends to it afterwards — so the list a
-/// family was banked against and the list an index is computed from are the same list. A name that
-/// is not in it MISSES and falls through to `metrics.rs`'s cached-handle path, which renders a
-/// byte-identical series, so even a miss is not an operator-visible change.
-///
-/// THE EMPTY ANSWER IS A REAL ANSWER and `config_validate` has an arm for it: this was a
-/// compile-time const that could not be empty, and a derived list can be, so the site that refuses
-/// operator config on it names that cause once rather than refusing every provider with an empty
-/// "must be one of:" tail. `registry_tests::the_derived_protocol_list_is_not_empty` pins the other
-/// half.
-// RELOCATED DOWN to `busbar_substrate::proto::known_protocols` with the registry runtime (a plane's
+// Every protocol name busbar ships a wire CODEC for — the set a provider's `protocol:` may name,
+// and what the config validator rejects against so an unknown protocol is COLLECTED with every
+// other config error rather than escaping to a lone `die()` at lane construction.
+//
+// DERIVED from the declarations (`ProtocolDecl::codec`), not maintained beside them. It used to be
+// a hand-written const that a `debug_assert` compared against the constructor match it had to agree
+// with — two lists and an assertion to keep them equal, where there is now one list and nothing to
+// drift from.
+//
+// DECLARATION ORDER IS PRESERVED, AND IT IS LOAD-BEARING: `telemetry` indexes its per-protocol
+// metric families by POSITION in this slice — `AppSlots::build` banks one family per entry in
+// order, and `request_family` finds it again with `.position()`. That stays sound for the reason it
+// always did, now stated rather than assumed: the slice is folded ONCE, from a `&'static`
+// declaration table, inside a `OnceLock`, and no path appends to it afterwards — so the list a
+// family was banked against and the list an index is computed from are the same list. A name that
+// is not in it MISSES and falls through to `metrics.rs`'s cached-handle path, which renders a
+// byte-identical series, so even a miss is not an operator-visible change.
+//
+// THE EMPTY ANSWER IS A REAL ANSWER and `config_validate` has an arm for it: this was a
+// compile-time const that could not be empty, and a derived list can be, so the site that refuses
+// operator config on it names that cause once rather than refusing every provider with an empty
+// "must be one of:" tail. `registry_tests::the_derived_protocol_list_is_not_empty` pins the other
+// half.
+// RELOCATED DOWN to `busbar_kernel::proto::known_protocols` with the registry runtime (a plane's
 // own `PLANE_DECL.wire_format_names` now names the substrate fn directly, so the plane crate reaches
 // the registry aggregate through the neutral ABI, not back into `busbar-core`). Re-exported here at its
 // historical `busbar_kernel::proto::known_protocols` path — as the SAME fn pointer, which is what the
 // plane-decl identity pin in the plane's own test suite asserts — so every in-core caller is
 // unchanged. Still a pure read of the registry aggregate; no protocol vocabulary crosses here, only the
 // neutral derived list.
-pub use busbar_substrate::proto::known_protocols;
 
 // EACH PLANE'S VOCABULARY DECLARATION lives wholly in that plane's own plugin crate — it is the
 // plane's statement about ITSELF, so it leaves core with the plane. The composition root installs it
@@ -326,13 +306,12 @@ pub use busbar_substrate::proto::known_protocols;
 // field still points at [`known_protocols`] here (now `pub`) — its wire formats ARE the registered
 // codec protocols, wherever the declaration itself lives.
 
-/// Resolve a provider's configured protocol NAME to the registry's interned `&'static str` for the
-/// lane-build path, or `None` for an unknown name or one that declares no wire codec (some registered
-/// protocols carry no lane codec at all). Post-G6-A4b a lane stores this name, not a constructed `Protocol` (the concrete
-/// codec lives in the plugin and core reaches it via `decl_for(name).dialect()`), so the old
-/// `ProtocolRegistry` `Arc<Protocol>` cache is gone — this is the whole of what lane-build needed from it.
-// RELOCATED DOWN to `busbar_substrate::proto`; re-exported here at their historical paths.
-pub use busbar_substrate::proto::{convert_headers, lane_protocol_name};
+// Resolve a provider's configured protocol NAME to the registry's interned `&'static str` for the
+// lane-build path, or `None` for an unknown name or one that declares no wire codec (some registered
+// protocols carry no lane codec at all). Post-G6-A4b a lane stores this name, not a constructed `Protocol` (the concrete
+// codec lives in the plugin and core reaches it via `decl_for(name).dialect()`), so the old
+// `ProtocolRegistry` `Arc<Protocol>` cache is gone — this is the whole of what lane-build needed from it.
+// RELOCATED DOWN to `busbar_kernel::proto`; re-exported here at their historical paths.
 
 // THE CODEC/IR TEST SUITES that used to live here (`tests/tests.rs`, `registry_tests`,
 // `stream_fanout_tests`, `stream_translate_tests`, `same_proto_fidelity_tests`, per-dialect
@@ -342,3 +321,44 @@ pub use busbar_substrate::proto::{convert_headers, lane_protocol_name};
 // RELOCATED to the extracted dialect plugin crate's own test tree: they name the dialects
 // and the concrete wire codecs, which a neutral crate's tests must not, so they live beside the
 // types they exercise. The dialect/IR SOURCE `#[path]` witnesses above remain until Phase 2's flip.
+
+// ==== merged from busbar-substrate proto.rs (W4.b P2) ====
+pub use busbar_substrate_values::proto::*;
+
+use crate::ingress::arrival::{install_path_ingress, PathIngress};
+
+/// THE COMPOSITION ROOT'S ONE WRITE INTO BOTH PROTOCOL SEAMS — the declarations AND their path-model
+/// arrivals, registered together so the second seam [`install_protocols`] gained when `path_ingress`
+/// split off [`ProtocolDecl`] cannot drift from the first. Folds the two installs into one call and,
+/// before either lands, asserts the PARITY that keeps the split honest:
+///
+/// **Every declaration whose model is in the URL path (`has_model_in_url`) MUST register a
+/// `path_ingress` arrival.** A path-model protocol installed WITHOUT its arrival would resolve no
+/// arrival and SILENTLY fall through to the body-model branch — a wrong-behavior 404-shaped bug.
+/// Asserting it here makes that drift a LOUD PANIC at boot, and it is asserted BEFORE either install
+/// so a refused boot leaves both seams unwritten rather than one of the two.
+///
+/// # Panics
+/// - if a `has_model_in_url` decl has no registered arrival (the parity failure above).
+/// - if either underlying install was already called (two composition roots).
+pub fn install_protocols_with_path_ingress(
+    decls: Vec<&'static ProtocolDecl>,
+    path_ingress: Vec<(&'static str, PathIngress)>,
+) {
+    if let Some(name) = first_path_model_without_arrival(
+        &decls,
+        &path_ingress.iter().map(|(n, _)| *n).collect::<Vec<_>>(),
+    ) {
+        panic!(
+            "protocol '{name}' declares has_model_in_url == true but registered no path_ingress \
+             arrival: a request naming its URL model would silently fall through to the body-model \
+             branch. Register its arrival alongside its declaration."
+        );
+    }
+    install_protocols(decls);
+    install_path_ingress(path_ingress);
+}
+
+#[cfg(test)]
+#[path = "../tests/proto.rs"]
+mod tests;

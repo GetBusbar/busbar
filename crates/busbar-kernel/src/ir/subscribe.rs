@@ -39,7 +39,7 @@
 // `IrFacts` projection over `SubscribeReq` travelled with it (the trait is now substrate-resident, so
 // the impl sits beside the trait/type to satisfy the orphan rule). Core re-exports the data types from
 // this historical path; the projection reaches every in-core caller through the same re-export.
-pub use busbar_substrate::ir::subscribe::{SubscribeIntent, SubscribeReq, SubscribeResp};
+pub use busbar_substrate_values::ir::subscribe::{SubscribeIntent, SubscribeReq, SubscribeResp};
 
 #[cfg(test)]
 #[path = "tests/subscribe_tests.rs"]

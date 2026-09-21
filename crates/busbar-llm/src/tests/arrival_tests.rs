@@ -10,7 +10,7 @@ use std::time::Instant;
 use axum::body::Bytes;
 use axum::http::{StatusCode, Uri};
 use axum::response::Response;
-use busbar_substrate::ingress::arrival::{ArrivalCtx, ArrivalHost};
+use busbar_kernel::ingress::arrival::{ArrivalCtx, ArrivalHost};
 
 use super::{
     bedrock_path_parse, gemini_api_version, gemini_path_parse, gemini_rest, query_has_alt_sse,
@@ -85,7 +85,7 @@ impl ArrivalHost for ParseHost {
         kind: &str,
         message: &str,
     ) -> Response {
-        busbar_substrate::proxy::ingress_error(proto, status, kind, message)
+        busbar_kernel::proxy::ingress_error(proto, status, kind, message)
     }
 
     fn envelope_dialect(&self, _ctx: &ArrivalCtx, path: &str) -> &'static str {
@@ -94,7 +94,7 @@ impl ArrivalHost for ParseHost {
         if path.starts_with("/v1beta/") {
             crate::proto_codec::PROTO_GEMINI
         } else {
-            busbar_substrate::proto::residual_default_protocol().unwrap_or("")
+            busbar_kernel::proto::residual_default_protocol().unwrap_or("")
         }
     }
 
@@ -106,8 +106,8 @@ impl ArrivalHost for ParseHost {
         err_type: &str,
         message: &str,
     ) -> Response {
-        busbar_substrate::proxy::ingress_error(
-            busbar_substrate::proto::residual_default_protocol().unwrap_or(""),
+        busbar_kernel::proxy::ingress_error(
+            busbar_kernel::proto::residual_default_protocol().unwrap_or(""),
             status,
             err_type,
             message,
@@ -122,15 +122,15 @@ impl ArrivalHost for ParseHost {
     }
 
     fn kind_not_found(&self) -> &'static str {
-        busbar_substrate::proxy::KIND_NOT_FOUND
+        busbar_kernel::proxy::KIND_NOT_FOUND
     }
 
     fn kind_invalid_request(&self) -> &'static str {
-        busbar_substrate::proxy::KIND_INVALID_REQUEST
+        busbar_kernel::proxy::KIND_INVALID_REQUEST
     }
 
     fn err_type_not_found(&self) -> &'static str {
-        busbar_substrate::proxy::KIND_NOT_FOUND
+        busbar_kernel::proxy::KIND_NOT_FOUND
     }
 }
 
@@ -319,7 +319,7 @@ fn the_url_facts_drive_the_two_steps_to_the_live_paths_answer() {
         .unwrap_or_else(|r| panic!("{path} refused at arrival: {r:?}"));
 
         // The live splice, run here on the same bytes and the same facts.
-        let mut v: serde_json::Value = busbar_substrate::json::parse(&body).expect("live parse");
+        let mut v: serde_json::Value = busbar_substrate_values::json::parse(&body).expect("live parse");
         let obj = v.as_object_mut().expect("a native body is a document");
         obj.insert(
             "model".to_string(),
@@ -327,11 +327,11 @@ fn the_url_facts_drive_the_two_steps_to_the_live_paths_answer() {
         );
         obj.insert("stream".to_string(), serde_json::Value::Bool(f.stream));
         if f.gemini_json_array {
-            if let Some(key) = busbar_substrate::proto::array_stream_shim_key_for(proto) {
+            if let Some(key) = busbar_kernel::proto::array_stream_shim_key_for(proto) {
                 obj.insert(key.to_string(), serde_json::Value::Bool(true));
             }
         }
-        let live: Bytes = busbar_substrate::json::to_vec(&v)
+        let live: Bytes = busbar_substrate_values::json::to_vec(&v)
             .expect("live serialize")
             .into();
         assert_eq!(
@@ -342,14 +342,14 @@ fn the_url_facts_drive_the_two_steps_to_the_live_paths_answer() {
         // STEP 1, in the path-model spelling: the live arm's one chained lookup.
         let step1 = crate::unit::decode::decode_path_model(proto, f.operation, &f.model)
             .unwrap_or_else(|r| panic!("{path} refused at decode: {r:?}"));
-        let live_handler = busbar_substrate::handlers::request_handler(proto)
+        let live_handler = busbar_substrate_values::handlers::request_handler(proto)
             .and_then(|rh| rh.operation_handler(f.operation))
             .expect("the live lookup resolves this pair");
         assert!(
             std::ptr::eq(
-                live_handler as *const dyn busbar_substrate::handlers::OperationHandler
+                live_handler as *const dyn busbar_substrate_values::handlers::OperationHandler
                     as *const u8,
-                step1.op_handler as *const dyn busbar_substrate::handlers::OperationHandler
+                step1.op_handler as *const dyn busbar_substrate_values::handlers::OperationHandler
                     as *const u8
             ),
             "{path}: the step resolved a different handler than the live lookup"

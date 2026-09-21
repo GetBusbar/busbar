@@ -113,7 +113,7 @@ const BARE_AUTHORITIES: &[&str] = &[
 fn both_copies_of_the_extraction_read_the_same_host() {
     let mut compared = 0usize;
     for spelling in HOSTILE.iter().chain(BARE_AUTHORITIES) {
-        let live = busbar_substrate::net_guard::extract_normalized_host(spelling);
+        let live = busbar_kernel::net_guard::extract_normalized_host(spelling);
         let unit = busbar_kernel_egress::trust::net::extract_normalized_host(spelling);
         assert_eq!(
             live, unit,
@@ -145,19 +145,19 @@ fn both_copies_judge_the_same_hostile_table_the_same_way() {
     for spelling in HOSTILE {
         // The bare guard, no operator lists at all.
         assert_eq!(
-            busbar_substrate::net_guard::ssrf_blocked_host(spelling, &[], false, &[]),
+            busbar_kernel::net_guard::ssrf_blocked_host(spelling, &[], false, &[]),
             busbar_kernel_egress::trust::net::ssrf_blocked_host(spelling, &[], false, &[]),
             "bare guard disagrees on {spelling:?}"
         );
         // With the operator's denylist — the arm the trailing-space bypass defeated.
         assert_eq!(
-            busbar_substrate::net_guard::ssrf_blocked_host(spelling, &[], false, &operator_blocked),
+            busbar_kernel::net_guard::ssrf_blocked_host(spelling, &[], false, &operator_blocked),
             busbar_kernel_egress::trust::net::ssrf_blocked_host(spelling, &[], false, &operator_blocked),
             "operator denylist disagrees on {spelling:?}"
         );
         // With a surgical allow-override, which must win in both copies or in neither.
         assert_eq!(
-            busbar_substrate::net_guard::ssrf_blocked_host(
+            busbar_kernel::net_guard::ssrf_blocked_host(
                 spelling,
                 &operator_allowed,
                 false,
@@ -189,7 +189,7 @@ fn the_bare_authority_fallback_makes_the_unit_stricter_and_never_laxer() {
     for spelling in BARE_AUTHORITIES {
         for blocked in [&[][..], &operator_blocked[..]] {
             let live =
-                busbar_substrate::net_guard::ssrf_blocked_host(spelling, &[], false, blocked);
+                busbar_kernel::net_guard::ssrf_blocked_host(spelling, &[], false, blocked);
             let unit = busbar_kernel_egress::trust::net::ssrf_blocked_host(spelling, &[], false, blocked);
             assert!(
                 live.is_none(),
@@ -216,7 +216,7 @@ fn the_hostile_table_actually_reaches_the_guard_in_both_copies() {
     let mut blocked_by_live = 0usize;
     let mut blocked_by_unit = 0usize;
     for spelling in HOSTILE {
-        if busbar_substrate::net_guard::ssrf_blocked_host(spelling, &[], false, &[]).is_some() {
+        if busbar_kernel::net_guard::ssrf_blocked_host(spelling, &[], false, &[]).is_some() {
             blocked_by_live += 1;
         }
         if busbar_kernel_egress::trust::net::ssrf_blocked_host(spelling, &[], false, &[]).is_some() {

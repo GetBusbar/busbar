@@ -13,9 +13,9 @@
 
 use crate::engine::*;
 
-use busbar_substrate::diag_debug;
-use busbar_substrate::diagnostics::ATTEMPT_TIMEOUT_DEGRADED;
-use busbar_substrate::observability::HOTPATH_LEVEL;
+use busbar_substrate_values::diag_debug;
+use busbar_substrate_values::diagnostics::ATTEMPT_TIMEOUT_DEGRADED;
+use busbar_kernel::observability::HOTPATH_LEVEL;
 
 /// Forward one request to a specific lane and relay the response. Shared by the degraded
 /// last-resort exhaustion paths (FallbackPool routing + LeastBad). Unlike the main forward
@@ -32,7 +32,7 @@ use busbar_substrate::observability::HOTPATH_LEVEL;
 /// crossed boundary. Same-protocol targets pass through verbatim.
 #[allow(clippy::too_many_arguments)]
 // plumbing: each arg is an independent request input
-// `level = busbar_substrate::observability::HOTPATH_LEVEL` (the tracing seam): this span fires on EVERY
+// `level = busbar_kernel::observability::HOTPATH_LEVEL` (the tracing seam): this span fires on EVERY
 // degraded-path attempt (fallback-pool routing + least-bad), so it must be filtered off at the
 // default `RUST_LOG=info` the same as the main `forward` span in `engine/mod.rs` — routed through
 // the ONE named constant rather than a second hand-picked `"debug"` literal, so the hot-path level
@@ -67,7 +67,7 @@ pub(super) async fn forward_once(
     // and wins nothing), so NO guard is built and this call can never release/revert any probe — in
     // particular it can never revert a probe a concurrent PEER legitimately won on the same cell.
     probe_epoch: Option<u64>,
-    op: busbar_substrate::handlers::Op,
+    op: busbar_substrate_values::handlers::Op,
     req_content_type: &str,
     usage_sink: Option<UsageSink>,
     // The selected pool member's `reasoning` override (`WeightedLane.reasoning`), resolved by the
@@ -111,14 +111,14 @@ pub(super) async fn forward_once(
     // Re-parse body for per-lane model rewriting. An OPAQUE (non-JSON) body — multipart/binary
     // operations — parses to `None` and relays/translates at the byte level, exactly like the main
     // path; only a JSON-Content-Type body that FAILS to parse is the caller's 400.
-    let v: Option<Value> = match busbar_substrate::json::parse(body) {
+    let v: Option<Value> = match busbar_substrate_values::json::parse(body) {
         Ok(v) => Some(v),
         Err(_) if !req_content_type.starts_with(APPLICATION_JSON) => None,
         Err(_) => {
             // See the main forward path: log a sanitized note for operators; never the parser's raw
             // error (with sonic-rs it embeds a fragment of the input body — secrets/PII) nor leak it
             // into the client 400 body.
-            tracing::debug!(detail = %busbar_substrate::json::parse_err_log(body.len()), "request body JSON parse failed");
+            tracing::debug!(detail = %busbar_substrate_values::json::parse_err_log(body.len()), "request body JSON parse failed");
             // Pre-dispatch bail (no breaker outcome recorded): the armed `probe_guard` above releases
             // the POOL-cell single-flight probe on drop (owner-checked, idempotent, a no-op on the
             // default `""` / a non-HalfOpen cell), so the cell never wedges HalfOpen on this early exit.
@@ -140,7 +140,7 @@ pub(super) async fn forward_once(
     // Gemini ingress streaming WITHOUT `?alt=sse` → JSON-array streamed body (see main path). GATED
     // on `uses_array_stream_shim()` (true only for GeminiWriter) so a body-model client cannot
     // smuggle the shim key to force JSON-array reframing of its SSE stream.
-    let ingress_decl = busbar_substrate::proto::decl_for(ingress_protocol);
+    let ingress_decl = busbar_kernel::proto::decl_for(ingress_protocol);
     let gemini_json_array = ingress_decl.is_some_and(|d| d.uses_array_stream_shim)
         && ingress_decl
             .and_then(|d| d.dialect())
@@ -158,7 +158,7 @@ pub(super) async fn forward_once(
     // cell against its own thresholds, not a one-size default. Wrapped in an `Arc` so the streaming
     // `FirstByteBody` guard can record mid-stream failures with the SAME thresholds the synchronous
     // path used (mirrors `forward_with_pool`).
-    let forward_once_cfg: std::sync::Arc<busbar_substrate::store::BreakerCfg> =
+    let forward_once_cfg: std::sync::Arc<busbar_kernel::store::BreakerCfg> =
         resolve_breaker_cfg(rt, pool);
 
     // Cross-protocol request shaping through the SINGLE shared seam (read→clear-extra→write, shim-key
@@ -222,7 +222,7 @@ pub(super) async fn forward_once(
             DETAIL_INTERNAL_ERROR,
         ));
     };
-    let signing_ctx = busbar_substrate::proto::SigningContext {
+    let signing_ctx = busbar_kernel::proto::SigningContext {
         host: &EngineTables::new(rt).lanes()[i].signing_host,
         canonical_uri: &target.canonical_uri,
         body: &payload,
@@ -252,7 +252,7 @@ pub(super) async fn forward_once(
     } else if ingress_protocol == egress_name {
         req_content_type
     } else {
-        busbar_substrate::handlers::request_handler(egress_name)
+        busbar_substrate_values::handlers::request_handler(egress_name)
             .and_then(|rh| rh.operation_handler(op.operation))
             .map(|h| h.egress_request_content_type())
             .unwrap_or(APPLICATION_JSON)
@@ -294,7 +294,7 @@ pub(super) async fn forward_once(
     // beta/version headers, scoped to THIS lane's egress dialect (no cross-dialect leak) via the
     // plane's per-destination allowlist. No-op on an empty set, so this degraded route stays
     // byte-identical when the caller sent none.
-    busbar_substrate::proxy::apply_client_headers(
+    busbar_kernel::proxy::apply_client_headers(
         &mut egress_headers,
         client_fwd,
         &crate::engine::client_header_names_for_egress(egress_name),
@@ -424,22 +424,22 @@ pub(super) async fn forward_once(
                 // ClientFault/ContextLength arms). Body-only classification here (no headers);
                 // `retry_after` only floors the cooldown, not the disposition, so it is omitted.
                 let penalize_breaker = {
-                    let raw = busbar_substrate::handlers::op_for(
+                    let raw = busbar_substrate_values::handlers::op_for(
                         egress_name,
                         op.operation,
-                        busbar_substrate::transport::Transport::Http,
+                        busbar_substrate_values::transport::Transport::Http,
                     )
                     .map(|cell| cell.extract_error(status.as_u16(), &bytes))
                     .unwrap_or_else(|| {
-                        busbar_substrate::breaker::RawUpstreamError::from_status(status.as_u16())
+                        busbar_substrate_values::breaker::RawUpstreamError::from_status(status.as_u16())
                     });
-                    let sig = busbar_substrate::breaker::normalize_raw_error(
+                    let sig = busbar_substrate_values::breaker::normalize_raw_error(
                         &raw,
                         &EngineTables::new(rt).lanes()[i].error_map,
                     );
                     matches!(
-                        busbar_substrate::breaker::classify(&sig),
-                        busbar_substrate::breaker::Disposition::TransientUpstream
+                        busbar_substrate_values::breaker::classify(&sig),
+                        busbar_substrate_values::breaker::Disposition::TransientUpstream
                     )
                 };
                 // Cross-protocol: relaying the EGRESS provider's native error body+Content-Type to a
@@ -639,7 +639,7 @@ pub(super) async fn forward_once(
                 crate::proto_stream::new_stream_translator(ingress_protocol, egress_name, is_sse);
             let json_array = (gemini_json_array && is_sse)
                 .then(|| {
-                    busbar_substrate::proto::decl_for(ingress_protocol)
+                    busbar_kernel::proto::decl_for(ingress_protocol)
                         .and_then(|d| d.dialect())
                         .and_then(|dc| dc.make_array_stream_framer())
                 })

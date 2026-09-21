@@ -66,7 +66,7 @@
 //!
 //! A subscription is a decision made at open and trusted while open, so the question that matters is
 //! what is re-asked per poll. All of it: the CATALOGUE is re-read from the live handle, and the
-//! PRINCIPAL is RE-RESOLVED from the live registry by id through [`busbar_substrate::trust::validate::Standing`].
+//! PRINCIPAL is RE-RESOLVED from the live registry by id through [`busbar_kernel::trust::validate::Standing`].
 //!
 //! Holding the resolved key instead would have been the natural shape and it is the defect this
 //! guards: a `PlaneRequestCtx` cloned into the stream carries an `Arc<VirtualKey>` resolved at ingress, so an
@@ -225,7 +225,7 @@ fn change_key(mut parts: Vec<&str>) -> u64 {
 /// snapshot answers all three.
 fn change_keys(
     catalogue: &super::catalogue::Catalogue,
-    caller: &busbar_substrate::catalogue::Caller<'_>,
+    caller: &busbar_kernel::catalogue::Caller<'_>,
 ) -> [u64; 3] {
     let tools = catalogue.tools_for(caller);
     // The SCHEMA HASH rides in the tool change key and the name alone does not. A tool whose
@@ -310,10 +310,10 @@ struct Listen {
     /// makes (`principal_standing`, `clock_now_secs`) are engine-snapshot independent, and the per-poll
     /// catalogue/pool reads go through `runtime_live` off this host, which re-loads the CURRENT
     /// snapshot so a revoked key stops being served on the next poll.
-    host: std::sync::Arc<dyn busbar_substrate::plane_host::EngineHost>,
+    host: std::sync::Arc<dyn busbar_kernel::plane_host::EngineHost>,
     /// THE PRINCIPAL'S ID AND THE BOUND, never the principal. See the module header: a resolved key
     /// carried into a `'static` stream is an identity believed for five minutes.
-    standing: busbar_substrate::trust::validate::Standing,
+    standing: busbar_kernel::trust::validate::Standing,
     accepted: SubscriptionFilter,
     meta: serde_json::Value,
     id: serde_json::Value,
@@ -336,7 +336,7 @@ struct Listen {
 /// [`busbar_api::VirtualKey::scope_allowed`] — which reads `allowed_scopes` alone and looks at
 /// neither. It would have changed nothing: those fields lived on the SAME frozen snapshot, so they
 /// reported "live" for the whole life of the stream however long ago the store row said otherwise.
-/// Only re-reading the key closes it, which is what [`busbar_substrate::trust::validate::Standing`] does and
+/// Only re-reading the key closes it, which is what [`busbar_kernel::trust::validate::Standing`] does and
 /// why the fix is a core primitive rather than an extra `&&` on this line.
 ///
 /// A free function rather than a method, because the caller holds `&mut` on the phase while it holds
@@ -345,18 +345,18 @@ struct Listen {
 /// It builds a `Caller` rather than a grant closure so that the per-frame catalogue read asks the
 /// same ordered gate every other catalogue read asks, identity step included.
 fn caller_of<'a>(
-    host: &std::sync::Arc<dyn busbar_substrate::plane_host::EngineHost>,
+    host: &std::sync::Arc<dyn busbar_kernel::plane_host::EngineHost>,
     key: Option<&'a std::sync::Arc<busbar_api::VirtualKey>>,
     generation: u64,
-) -> busbar_substrate::catalogue::Caller<'a> {
-    busbar_substrate::catalogue::Caller {
+) -> busbar_kernel::catalogue::Caller<'a> {
+    busbar_kernel::catalogue::Caller {
         key: key.map(|k| &**k),
         now: host.clock_now_secs(),
         // AT ADMISSION for the FRAME, not for the stream. This value is re-built on every poll from
         // the generation the frame is being computed against, so the catalogue read cannot be judged
         // against a snapshot other than the one it is reading. The stream's own relationship to the
         // generation is `Snapshot::Watching`, held by `Standing` and re-asked above.
-        generation: busbar_substrate::trust::validate::Generations::at_admission(generation),
+        generation: busbar_kernel::trust::validate::Generations::at_admission(generation),
     }
 }
 
@@ -368,8 +368,8 @@ impl Listen {
     /// One function rather than a frame written at each exit, because a stream that ends by simply
     /// closing the socket is one a client cannot tell from a dropped connection — which is the whole
     /// reason anything is written at all.
-    fn closing_frame(&self, lapsed: &busbar_substrate::trust::validate::Lapsed) -> String {
-        use busbar_substrate::trust::validate::Lapsed;
+    fn closing_frame(&self, lapsed: &busbar_kernel::trust::validate::Lapsed) -> String {
+        use busbar_kernel::trust::validate::Lapsed;
         match lapsed {
             // The revision's own "this subscription ended gracefully" answer, correlated to the
             // request that opened the stream.
@@ -392,7 +392,7 @@ impl Listen {
                 "error": {
                     // The base protocol's own "invalid request", owned by the one envelope reader
                     // for both planes rather than re-spelled here.
-                    "code": busbar_substrate::ingress::jsonrpc::INVALID_REQUEST,
+                    "code": busbar_kernel::ingress::jsonrpc::INVALID_REQUEST,
                     "message": refusal.to_string(),
                     "data": { "reason": refusal.reason() },
                 },
@@ -548,7 +548,7 @@ pub(crate) fn listen(
     id: Option<serde_json::Value>,
 ) -> Response {
     // The SDK's parameter type is the acceptance test, for the reason the subscription codec in
-    // `busbar_substrate::handlers::mcp` states: a hand-read `params.notifications.toolsListChanged` accepts
+    // `busbar_substrate_values::handlers::mcp` states: a hand-read `params.notifications.toolsListChanged` accepts
     // shapes the specification does not, and each acceptance is a difference between what busbar
     // serves and what the protocol says.
     let requested: SubscriptionFilter = params
@@ -598,12 +598,12 @@ pub(crate) fn listen(
         // THE ID AND THE BOUND. `MAX_LIFETIME` is handed to the standing permission as well as used
         // for the deadline below so the cap on what a poll cannot re-check and the cap on the stream
         // are provably the same number rather than two that agree today.
-        standing: busbar_substrate::trust::validate::Standing::opened(
+        standing: busbar_kernel::trust::validate::Standing::opened(
             ctx.gov.key(),
             // WATCHING, not pinned: a generation move is what this response exists to report, and
             // every frame it writes is re-derived from the live snapshot. Pinning it would make the
             // subscription end on the first change it was opened to hear about.
-            busbar_substrate::trust::validate::Snapshot::Watching,
+            busbar_kernel::trust::validate::Snapshot::Watching,
             MAX_LIFETIME,
         ),
         accepted,

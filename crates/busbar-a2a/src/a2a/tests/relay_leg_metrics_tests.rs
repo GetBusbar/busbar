@@ -103,14 +103,14 @@ async fn a_relayed_task_counts_an_upstream_attempt_naming_the_agent_it_was_issue
     let exposition = scrape(&h);
     let attempts = series_for(
         &exposition,
-        busbar_substrate::telemetry::UPSTREAM_ATTEMPTS_TOTAL,
+        busbar_kernel::telemetry::UPSTREAM_ATTEMPTS_TOTAL,
         "planner",
     );
     assert!(
         !attempts.is_empty(),
         "the A2A relay leg reached a backend agent and left no `{}` series for pool=\"planner\". \
          An operator cannot see the hops busbar originates. Exposition:\n{exposition}",
-        busbar_substrate::telemetry::UPSTREAM_ATTEMPTS_TOTAL,
+        busbar_kernel::telemetry::UPSTREAM_ATTEMPTS_TOTAL,
     );
 
     // THE BINDING IS NAMED, off the transport axis's own word and not a spelling invented here, so
@@ -119,7 +119,7 @@ async fn a_relayed_task_counts_an_upstream_attempt_naming_the_agent_it_was_issue
     assert!(
         attempts.iter().any(|l| l.contains(&format!(
             "lane=\"{}\"",
-            busbar_substrate::plane::WIRE_JSONRPC
+            busbar_kernel::plane::WIRE_JSONRPC
         ))),
         "the hop's binding must be on the series: {attempts:?}"
     );
@@ -154,19 +154,19 @@ async fn a_backend_that_cannot_be_reached_is_counted_as_a_transient_upstream_fai
     let exposition = scrape(&h);
     let failures = series_for(
         &exposition,
-        busbar_substrate::telemetry::UPSTREAM_FAILURES_TOTAL,
+        busbar_kernel::telemetry::UPSTREAM_FAILURES_TOTAL,
         "planner",
     );
     assert!(
         !failures.is_empty(),
         "the backend was unreachable and left no `{}` series for pool=\"planner\". \
          Exposition:\n{exposition}",
-        busbar_substrate::telemetry::UPSTREAM_FAILURES_TOTAL,
+        busbar_kernel::telemetry::UPSTREAM_FAILURES_TOTAL,
     );
     assert!(
         failures.iter().any(|l| l.contains(&format!(
             "disposition=\"{}\"",
-            busbar_substrate::proxy::DISPOSITION_TRANSIENT
+            busbar_kernel::proxy::DISPOSITION_TRANSIENT
         ))),
         "the failure must carry the MODEL PLANE'S disposition word, not one of this plane's own: \
          {failures:?}"

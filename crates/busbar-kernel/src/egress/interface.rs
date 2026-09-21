@@ -8,7 +8,7 @@
 //! full `http::Response<Incoming>` header map a streaming relay reads, a persistent pooled
 //! [`engine::EngineClient`] handle a hot path holds across requests, or the non-pinned
 //! `pooled_webpki` posture a plane's own outbound client runs under. Today's native consumers
-//! therefore still name `egress::engine::*` directly — `busbar_substrate::egress::engine::…` —
+//! therefore still name `egress::engine::*` directly — `busbar_kernel::egress::engine::…` —
 //! which is exactly the coupling that blocks ever relocating the engine out of substrate: every
 //! caller of a concrete module path is a caller a relocation has to rewrite.
 //!

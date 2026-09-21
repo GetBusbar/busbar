@@ -5,9 +5,9 @@
 //! surface, projected HERE so core admin (`admin::v1::service`, `admin::v1::named_def_views`) reads a
 //! registered agent through the plane's view seam and names no `crate::a2a` config type. The MCP-plane
 //! counterpart is `crate::mcp::admin_view`; the seam that reaches both is
-//! [`busbar_substrate::plane::registry::PlaneDecl::named_def_list`] / `named_def_get`.
+//! [`busbar_kernel::plane::registry::PlaneDecl::named_def_list`] / `named_def_get`.
 
-use busbar_substrate::api::NamedDefView;
+use busbar_kernel::api::NamedDefView;
 
 /// Project one `agents:` DEFINITION onto the shared named-map view.
 ///
@@ -42,7 +42,7 @@ fn agent_def_view(name: &str, cfg: &crate::a2a::config::AgentDefCfg) -> NamedDef
 
 /// Every registered agent, as the shared named-definition view. The read half of
 /// `GET /api/v1/admin/agents`.
-pub(crate) fn list(slots: &dyn busbar_substrate::plane_host::PlaneSlots) -> Vec<NamedDefView> {
+pub(crate) fn list(slots: &dyn busbar_kernel::plane_host::PlaneSlots) -> Vec<NamedDefView> {
     // Read the operator's `agents:` definitions off the plane's OWN runtime object through the
     // neutral `plane_slots` seam (`runtime_off_slots` → `agent_defs()`), the byte-analog of MCP's
     // `runtime_slots(slots).servers.servers` — no `slots.as_any().downcast::<App>()`. The a2a slot
@@ -62,7 +62,7 @@ pub(crate) fn list(slots: &dyn busbar_substrate::plane_host::PlaneSlots) -> Vec<
 
 /// One registered agent, or `None`. The read half of `GET /api/v1/admin/agents/{name}`.
 pub(crate) fn get(
-    slots: &dyn busbar_substrate::plane_host::PlaneSlots,
+    slots: &dyn busbar_kernel::plane_host::PlaneSlots,
     name: &str,
 ) -> Option<NamedDefView> {
     // Off the plane's own slot through the neutral seam — `None` (plane absent) and a missing name
@@ -73,7 +73,7 @@ pub(crate) fn get(
 }
 
 /// Attach the A2A trust verbs' typed schemas — the A2A half of
-/// [`busbar_substrate::plane::registry::PlaneDecl::openapi_schemas`]. Registers `A2aTrustView` (response) and
+/// [`busbar_kernel::plane::registry::PlaneDecl::openapi_schemas`]. Registers `A2aTrustView` (response) and
 /// `ApproveReq` (request body) into the SHARED generators and attaches their `$ref`s onto the paths
 /// this plane's `openapi()` fragment inserted, byte-identically to the inline `typed!`/`body!` calls
 /// it replaced (same types, same order, same generators).
@@ -83,7 +83,7 @@ pub(crate) fn openapi_schemas(
     req_gen: &mut schemars::SchemaGenerator,
     paths: &mut serde_json::Map<String, serde_json::Value>,
 ) {
-    use busbar_substrate::api::{ap, set_request_body, set_response_schema};
+    use busbar_kernel::api::{ap, set_request_body, set_response_schema};
     let connect = serde_json::to_value(schema_gen.subschema_for::<super::verbs::A2aTrustView>())
         .unwrap_or_else(|_| serde_json::json!({}));
     set_response_schema(paths, &ap("/agents/{name}/connect"), "post", "200", connect);
@@ -97,7 +97,7 @@ pub(crate) fn openapi_schemas(
 
 /// Is `name` a live registered agent on this snapshot — the membership check the admin write path
 /// consults through the plane's `registry_contains` seam, so core names no `crate::a2a` registry type.
-pub(crate) fn contains(slots: &dyn busbar_substrate::plane_host::PlaneSlots, name: &str) -> bool {
+pub(crate) fn contains(slots: &dyn busbar_kernel::plane_host::PlaneSlots, name: &str) -> bool {
     // Membership read off the plane's own slot through the neutral seam — `None` (plane absent) is
     // `false`, byte-identical to the old empty-map `contains_key`.
     crate::a2a::runtime_off_slots(slots)
@@ -108,7 +108,7 @@ pub(crate) fn contains(slots: &dyn busbar_substrate::plane_host::PlaneSlots, nam
 /// config-swap gate rebuild, moved HERE so `admin::v1::service::reresolve_plane_gates` names no
 /// `crate::a2a` registry type. Reads this plane's own registry off the snapshot and writes its own
 /// gate field back.
-pub(crate) fn reresolve_gates(next: &mut dyn busbar_substrate::plane_host::ContainerGateSink) {
+pub(crate) fn reresolve_gates(next: &mut dyn busbar_kernel::plane_host::ContainerGateSink) {
     // Read the operator's `agents:` definitions off the plane's OWN slot through the neutral
     // `PlaneSlots` seam `ContainerGateSink` extends (owned clone, so the immutable borrow of `next`
     // ends before the `&mut` store below), then resolve-and-store through the neutral sink under the

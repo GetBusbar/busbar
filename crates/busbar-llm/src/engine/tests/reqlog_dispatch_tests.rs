@@ -34,7 +34,7 @@ use busbar_kernel::proxy::reqlog::{
     REQUESTS,
 };
 use busbar_store_memory::MemoryStore;
-use busbar_substrate::testkit::engine_kit::EngineTestKit as _;
+use busbar_kernel::testkit::engine_kit::EngineTestKit as _;
 use serde_json::json;
 use std::sync::Arc;
 
@@ -66,7 +66,7 @@ async fn a_governed_deployment(
     String,
 ) {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let state = Arc::new(MockServerState::new());
     for _ in 0..answers {
         state.push(MockResponse::Ok {
@@ -78,16 +78,16 @@ async fn a_governed_deployment(
     let a_url = server.base_url();
 
     let store = Arc::new(MemoryStore::new());
-    let signer = busbar_substrate::governance::signing::TokenSigner::from_secret_bytes(
+    let signer = busbar_kernel::governance::signing::TokenSigner::from_secret_bytes(
         &[9u8; 32],
-        busbar_substrate::governance::signing::DEFAULT_KID,
+        busbar_kernel::governance::signing::DEFAULT_KID,
     );
     let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
         .governance(store, None, Some(signer))
         .unwrap();
     let (key, secret) = gov
         .mint_signed(
-            busbar_substrate::governance::NewKeySpec {
+            busbar_kernel::governance::NewKeySpec {
                 name: "chained".to_string(),
                 // Allowed on A and NOT on B, so a request to B is refused by the pool ACL —
                 // a real governance decision, taken before any upstream is contacted.
@@ -116,7 +116,7 @@ async fn a_governed_deployment(
         .pool("A", &[(0, 1)])
         .pool("B", &[(1, 1)])
         .build();
-    let router = busbar_substrate::testkit::build_router(app);
+    let router = busbar_kernel::testkit::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -213,13 +213,13 @@ async fn every_model_request_lands_on_the_presenting_keys_hash_chain_dispatch_an
 /// go unrecorded.
 #[tokio::test]
 async fn a_request_with_no_resolved_key_is_chained_under_the_sentinel_rather_than_dropped() {
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let before = REQUESTS.records_for(PRINCIPAL_UNGOVERNED).len();
 
     // No `governance(..)`: nothing resolves a key, and the request is refused for want of a route.
     // The refusal is the point — this is the path that had no evidence of any kind.
     let app = TestApp::new().build();
-    let router = busbar_substrate::testkit::build_router(app);
+    let router = busbar_kernel::testkit::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });

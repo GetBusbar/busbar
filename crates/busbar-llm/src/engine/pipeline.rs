@@ -6,16 +6,16 @@ use super::*;
 // imported here and referenced unqualified at each instrument site instead.
 use axum::http::HeaderName;
 use busbar_api::VirtualKey;
-use busbar_substrate::observability::HOTPATH_LEVEL;
+use busbar_kernel::observability::HOTPATH_LEVEL;
 // The single neutral translate entrypoint (G6 step 4): the non-stream cross-protocol response arm
 // routes its read→prepare_for_ingress→write core through `TranslateCodec::translate_response`.
-use busbar_substrate::diagnostics::{
+use busbar_substrate_values::diagnostics::{
     DECISION_GATE_REJECTED, DECISION_GATE_RESTRICT_REJECT, DECISION_GATE_RESTRICT_WEIGHTED_ESCAPE,
     REWRITE_BODY_MATERIALIZE_FAILED, REWRITE_GATE_REJECTED, REWRITE_RESERIALIZE_FAILED,
     ROUTING_POLICY_REJECTED, ROUTING_POLICY_RESTRICT_REJECT,
     ROUTING_POLICY_RESTRICT_WEIGHTED_ESCAPE,
 };
-use busbar_substrate::{diag_debug, diag_error};
+use busbar_kernel::{diag_debug, diag_error};
 
 /// Forward with pool name context for on_exhausted config lookup.
 /// Thin wrapper: parse the body ONCE for callers that only hold bytes (tests, ad-hoc routes), then
@@ -33,7 +33,7 @@ use busbar_substrate::{diag_debug, diag_error};
 /// that construct a request from raw bytes.
 // App-retype WEDGE 3 (THE FLIP): the two bytes-in, key-less/keyed TEST-ONLY convenience entries live
 // in a `#[cfg(test)] mod` and take the built test App GENERICALLY, through the neutral built-app seam
-// (`busbar_substrate::testkit::BuiltAppSeam`, which core implements for its `App`) — so the ~81 test
+// (`busbar_kernel::testkit::BuiltAppSeam`, which core implements for its `App`) — so the ~81 test
 // call sites are unchanged and nothing here names a core type. Each mints the neutral `host`/`rt` the
 // production forward path threads (one `engine_host` Arc + the alloc-free `native_runtime_arc` slot
 // read) and delegates to the production `forward_with_pool_parsed`. Production ingress never routes
@@ -46,7 +46,7 @@ pub(crate) use test_forward_entry::{forward_with_pool, forward_with_pool_keyed};
 mod test_forward_entry {
     use super::*;
 
-    use busbar_substrate::testkit::BuiltAppSeam;
+    use busbar_kernel::testkit::BuiltAppSeam;
 
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn forward_with_pool<A: BuiltAppSeam + ?Sized>(
@@ -57,7 +57,7 @@ mod test_forward_entry {
         pool_name: &str,
         affinity_key: Option<&str>,
         ingress_protocol: &str,
-        op: busbar_substrate::handlers::Op,
+        op: busbar_substrate_values::handlers::Op,
         usage_sink: Option<UsageSink>,
     ) -> Response {
         forward_with_pool_keyed(
@@ -90,21 +90,21 @@ mod test_forward_entry {
         pool_name: &str,
         affinity_key: Option<&str>,
         ingress_protocol: &str,
-        op: busbar_substrate::handlers::Op,
+        op: busbar_substrate_values::handlers::Op,
         usage_sink: Option<UsageSink>,
         // The allowlisted client beta/version headers to forward (opt-in). A test entry that exercises
         // the forwarding path passes a collected set; every other test passes an empty Vec.
         client_fwd: Vec<(HeaderName, axum::http::HeaderValue)>,
     ) -> Response {
         // Mint the neutral host/rt the production path threads (see the module note).
-        let host = busbar_substrate::testkit::engine_host(app);
+        let host = busbar_kernel::testkit::engine_host(app);
         let rt = crate::engine::native_runtime_arc(host.as_ref());
         // Validate + head-project WITHOUT building a DOM (same malformed-body 400 contract as the
         // production entry — identical `LazyBody::parse` guard + parser).
         let v: LazyBody = match LazyBody::parse(&body) {
             Ok(v) => v,
             Err(_) => {
-                tracing::debug!(detail = %busbar_substrate::json::parse_err_log(body.len()), "request body JSON parse failed");
+                tracing::debug!(detail = %busbar_substrate_values::json::parse_err_log(body.len()), "request body JSON parse failed");
                 return ingress_error(
                     ingress_protocol,
                     StatusCode::BAD_REQUEST,
@@ -174,10 +174,10 @@ pub(crate) fn forward_with_pool_parsed<'a>(
     pool_name: &'a str,
     affinity_key: Option<&'a str>,
     ingress_protocol: &'a str,
-    op: busbar_substrate::handlers::Op,
+    op: busbar_substrate_values::handlers::Op,
     usage_sink: Option<UsageSink>,
     // The allowlisted client beta/version headers the caller ACTUALLY SENT (captured at ingress by the
-    // neutral `busbar_substrate::proxy::collect_client_headers`), threaded to the egress assembly sites
+    // neutral `busbar_kernel::proxy::collect_client_headers`), threaded to the egress assembly sites
     // where they are forwarded scoped to the matching egress dialect. Empty ⇒ byte-identical egress.
     client_fwd: Vec<(HeaderName, axum::http::HeaderValue)>,
 ) -> impl std::future::Future<Output = Response> + 'a {
@@ -199,7 +199,7 @@ pub(crate) fn forward_with_pool_parsed<'a>(
         // for the whole failover walk) AND kept as this plain local so the COMPLETION tap fired below —
         // after `inner` has returned and `RequestCtx` has gone out of scope — stamps the SAME value. That
         // identity (pre-forward routing message vs. post-response tap) is the whole join-key contract.
-        let _wrap = busbar_substrate::profile::start(busbar_substrate::profile::Stage::WrapSetup);
+        let _wrap = busbar_substrate_values::profile::start(busbar_substrate_values::profile::Stage::WrapSetup);
         let request_id = host.next_request_id();
         // Tag every event this span covers with the correlation id — a native `u64` `record`, not a
         // `format!`, so this costs nothing beyond what the (already debug-gated) span pays. A no-op at
@@ -267,7 +267,7 @@ pub(crate) fn forward_with_pool_parsed<'a>(
             fire_stage_taps(
                 host.tap_hooks_response(),
                 &shape,
-                busbar_substrate::hooks::wire::HookStageProjection {
+                busbar_kernel::hooks::wire::HookStageProjection {
                     at: "response",
                     model: None,
                     attempt_number: None,
@@ -316,7 +316,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
     // `op` is the kind of work. Everything below is the engine carrying that pair through pool
     // selection, failover, the breaker, and billing. The engine reads only capabilities off the
     // spec, never its identity; core's `handlers::CHAT` reproduces today's behavior byte-for-byte.
-    op: busbar_substrate::handlers::Op,
+    op: busbar_substrate_values::handlers::Op,
     // Borrowed by each attempt, consumed only by the one that delivers a body (moved whole into the
     // failover loop, which owns the per-attempt borrow/take from there).
     usage_sink: Option<UsageSink>,
@@ -326,7 +326,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
     // than re-derived per hop.
     request_id: u64,
     // The allowlisted client beta/version headers the caller ACTUALLY SENT, captured at ingress by the
-    // neutral `busbar_substrate::proxy::collect_client_headers` against the plane's
+    // neutral `busbar_kernel::proxy::collect_client_headers` against the plane's
     // `forwardable_client_header_names()` set. Stored on `RequestCtx` below so BOTH the hot path here
     // and the degraded exhaustion paths read the same set for the whole failover walk. Empty ⇒
     // nothing forwarded (byte-identical egress).
@@ -335,7 +335,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
     // Stage profiler: PREPARE spans all pre-dispatch bookkeeping (op-support filter, wants_stream +
     // affinity derivation, failover/breaker config) up to the failover loop. Zero cost when
     // `BUSBAR_PROFILE` is unset — `start` returns `None` and takes no `Instant`.
-    let _prep = busbar_substrate::profile::start(busbar_substrate::profile::Stage::Prepare);
+    let _prep = busbar_substrate_values::profile::start(busbar_substrate_values::profile::Stage::Prepare);
     // App-retype WEDGE 3: the failover loop's telemetry emits (upstream-attempt/failure, failover) and
     // every other host reach drive through the `host: &Arc<dyn EngineHost>` threaded in — no per-call
     // `engine_host_value` mint. The borrow is the stable payload Arc, so its borrowed returns outlive
@@ -510,8 +510,8 @@ fn fire_global_taps(
             with_prompt,
             request_id,
         );
-        busbar_substrate::json::to_vec(&busbar_substrate::hooks::wire::build(
-            busbar_substrate::hooks::wire::OP_NOTIFY,
+        busbar_substrate_values::json::to_vec(&busbar_kernel::hooks::wire::build(
+            busbar_kernel::hooks::wire::OP_NOTIFY,
             &req,
             &[],
             &ctx,
@@ -562,7 +562,7 @@ fn fire_global_taps(
 pub(crate) fn resolve_breaker_cfg(
     rt: &Arc<NativeRuntime>,
     pool_name: &str,
-) -> std::sync::Arc<busbar_substrate::store::BreakerCfg> {
+) -> std::sync::Arc<busbar_kernel::store::BreakerCfg> {
     match EngineTables::new(rt)
         .pool_runtime()
         .get(pool_name)
@@ -571,10 +571,10 @@ pub(crate) fn resolve_breaker_cfg(
         Some(cfg) => std::sync::Arc::new(cfg.clone()),
         None => {
             static DEFAULT: std::sync::OnceLock<
-                std::sync::Arc<busbar_substrate::store::BreakerCfg>,
+                std::sync::Arc<busbar_kernel::store::BreakerCfg>,
             > = std::sync::OnceLock::new();
             DEFAULT
-                .get_or_init(|| std::sync::Arc::new(busbar_substrate::store::BreakerCfg::default()))
+                .get_or_init(|| std::sync::Arc::new(busbar_kernel::store::BreakerCfg::default()))
                 .clone()
         }
     }
@@ -622,7 +622,7 @@ async fn decide_routing(
     req_content_type: &str,
     pool_name: &str,
     ingress_protocol: &str,
-    op: busbar_substrate::handlers::Op,
+    op: busbar_substrate_values::handlers::Op,
     wants_stream: bool,
     caller_token: Option<&str>,
     resolved_gov_key: Option<&std::sync::Arc<VirtualKey>>,
@@ -680,18 +680,18 @@ async fn run_failover_loop(
     pool_name: &str,
     ingress_protocol: &str,
     req_content_type: &str,
-    op: busbar_substrate::handlers::Op,
+    op: busbar_substrate_values::handlers::Op,
     wants_stream: bool,
     client_include_usage: bool,
     client_has_stream_options: bool,
     gemini_json_array: bool,
-    breaker_cfg: std::sync::Arc<busbar_substrate::store::BreakerCfg>,
+    breaker_cfg: std::sync::Arc<busbar_kernel::store::BreakerCfg>,
     max_cap: usize,
     policy_order: Option<Vec<usize>>,
     chosen_policy_name: Option<&'static str>,
     caller_token: Option<&str>,
     resolved_gov_key: Option<&std::sync::Arc<VirtualKey>>,
-    _prep: Option<busbar_substrate::profile::Timer>,
+    _prep: Option<busbar_substrate_values::profile::Timer>,
 ) -> Response {
     let body_is_json = v.is_some();
     // Candidate stage shape captured ONCE (scalars only, so it survives `v` moving into the first
@@ -733,7 +733,7 @@ async fn run_failover_loop(
             );
         }
 
-        let _pick = busbar_substrate::profile::start(busbar_substrate::profile::Stage::LanePick);
+        let _pick = busbar_substrate_values::profile::start(busbar_substrate_values::profile::Stage::LanePick);
         // `probe_epoch`: `Some(epoch)` when this pick WON a single-flight recovery probe (captured
         // synchronously by `pick_among` before any await), `None` otherwise. The RAII release covers
         // the WHOLE dispatch window (built inside `attempt`), including a dropped future.
@@ -780,7 +780,7 @@ async fn run_failover_loop(
         drop(_pick);
         // ATTEMPT_SETUP: per-hop bookkeeping between lane_pick and the attempt.
         let _asetup =
-            busbar_substrate::profile::start(busbar_substrate::profile::Stage::AttemptSetup);
+            busbar_substrate_values::profile::start(busbar_substrate_values::profile::Stage::AttemptSetup);
 
         // Mark this lane as excluded for future attempts in this request
         request_ctx.exclude(i);
@@ -868,11 +868,11 @@ async fn run_failover_loop(
 fn filter_candidates_for_op(
     rt: &Arc<NativeRuntime>,
     cands: Vec<WeightedLane>,
-    op: busbar_substrate::handlers::Op,
+    op: busbar_substrate_values::handlers::Op,
     ingress_protocol: &str,
 ) -> Result<Vec<WeightedLane>, Response> {
     let supports = |wl: &WeightedLane| {
-        busbar_substrate::handlers::request_handler(EngineTables::new(rt).lanes()[wl.idx].protocol)
+        busbar_substrate_values::handlers::request_handler(EngineTables::new(rt).lanes()[wl.idx].protocol)
             .and_then(|rh| rh.operation_handler(op.operation))
             .is_some()
     };
@@ -897,7 +897,7 @@ fn filter_candidates_for_op(
 /// inline reads; `probe()` answers without materializing the DOM in the common case.
 fn read_stream_intent(
     v: Option<&LazyBody>,
-    op: busbar_substrate::handlers::Op,
+    op: busbar_substrate_values::handlers::Op,
 ) -> (bool, bool, bool) {
     let wants_stream = v.map(|l| op.wants_stream(l.probe())).unwrap_or(false);
     let client_include_usage = wants_stream
@@ -930,7 +930,7 @@ async fn run_rewrite_pass(
     body: &mut Bytes,
     pool_name: &str,
     ingress_protocol: &str,
-    op: busbar_substrate::handlers::Op,
+    op: busbar_substrate_values::handlers::Op,
     wants_stream: bool,
     request_id: u64,
 ) -> Result<(), Response> {
@@ -1015,7 +1015,7 @@ async fn run_rewrite_pass(
             // retained bytes so every downstream reader of `body` sees the effective request.
             // Cost only on the rewrite path (a no-op request never reaches this serialize).
             if applied {
-                match busbar_substrate::json::to_vec(parsed) {
+                match busbar_substrate_values::json::to_vec(parsed) {
                     Ok(bytes) => *body = Bytes::from(bytes),
                     // A `prompt: rw` rewrite is a TRUSTED, possibly security-critical transform. If it
                     // cannot be serialized into the retained bytes, the first hop carries it but every
@@ -1046,7 +1046,7 @@ fn fire_request_ir_and_taps(
     v: &mut Option<LazyBody>,
     body: &Bytes,
     req_content_type: &str,
-    op: busbar_substrate::handlers::Op,
+    op: busbar_substrate_values::handlers::Op,
     pool_name: &str,
     ingress_protocol: &str,
     wants_stream: bool,
@@ -1081,11 +1081,11 @@ fn fire_request_ir_and_taps(
 /// `op.streaming()`; affinity prefers the header key, else the op's body-derived key).
 fn derive_route_signals(
     v: Option<&LazyBody>,
-    op: busbar_substrate::handlers::Op,
+    op: busbar_substrate_values::handlers::Op,
     ingress_protocol: &str,
     affinity_key: Option<&str>,
 ) -> (bool, Option<u64>) {
-    let ingress_decl = busbar_substrate::proto::decl_for(ingress_protocol);
+    let ingress_decl = busbar_kernel::proto::decl_for(ingress_protocol);
     let gemini_json_array = op.streaming()
         && ingress_decl.is_some_and(|d| d.uses_array_stream_shim)
         && ingress_decl
@@ -1111,7 +1111,7 @@ fn prepare_failover_ctx(
     client_fwd: Vec<(HeaderName, axum::http::HeaderValue)>,
 ) -> (
     RequestCtx,
-    std::sync::Arc<busbar_substrate::store::BreakerCfg>,
+    std::sync::Arc<busbar_kernel::store::BreakerCfg>,
     usize,
 ) {
     let pool_failover = EngineTables::new(rt)
@@ -1122,11 +1122,11 @@ fn prepare_failover_ctx(
     let (deadline_secs, max_cap) = match pool_failover {
         Some(f) => (f.timeout_secs, f.max_hops),
         None => (
-            busbar_substrate::failover::DEFAULT_FAILOVER_DEADLINE_SECS,
-            busbar_substrate::failover::DEFAULT_FAILOVER_CAP,
+            busbar_kernel::failover::DEFAULT_FAILOVER_DEADLINE_SECS,
+            busbar_kernel::failover::DEFAULT_FAILOVER_CAP,
         ),
     };
-    let breaker_cfg: std::sync::Arc<busbar_substrate::store::BreakerCfg> =
+    let breaker_cfg: std::sync::Arc<busbar_kernel::store::BreakerCfg> =
         resolve_breaker_cfg(rt, pool_name);
     let mut request_ctx = RequestCtx::new(deadline_secs, request_id);
     request_ctx.forwarded_client_headers = client_fwd;
@@ -1157,17 +1157,17 @@ async fn reconcile_phase2_gates(
     req_content_type: &str,
     pool_name: &str,
     ingress_protocol: &str,
-    op: busbar_substrate::handlers::Op,
+    op: busbar_substrate_values::handlers::Op,
     wants_stream: bool,
     caller_token: Option<&str>,
     resolved_gov_key: Option<&std::sync::Arc<VirtualKey>>,
 ) -> Result<Option<(Vec<usize>, &'static str)>, Response> {
-    let pool_gates: &[(u16, busbar_substrate::hooks::ResolvedPolicy)] = host.pool_gates(pool_name);
+    let pool_gates: &[(u16, busbar_kernel::hooks::ResolvedPolicy)] = host.pool_gates(pool_name);
     let mut gate_order: Option<(Vec<usize>, &'static str)> = None;
     if !host.global_gates().is_empty() || !pool_gates.is_empty() {
         // The chain: globals (pre-sorted ascending by priority) then pool gates (config order),
         // stable-sorted by priority — ties keep globals-first, then config order.
-        let mut chain: Vec<&(u16, busbar_substrate::hooks::ResolvedPolicy)> = host
+        let mut chain: Vec<&(u16, busbar_kernel::hooks::ResolvedPolicy)> = host
             .global_gates()
             .iter()
             .chain(pool_gates.iter())
@@ -1217,7 +1217,7 @@ async fn reconcile_phase2_gates(
                     name,
                 } => {
                     metrics::counter!(
-                        busbar_substrate::metrics::ROUTE_POLICY_REJECTIONS_TOTAL,
+                        busbar_kernel::metrics::ROUTE_POLICY_REJECTIONS_TOTAL,
                         "policy" => *name,
                         "pool" => pool_name.to_string(),
                         "status" => status.to_string(),
@@ -1246,11 +1246,11 @@ async fn reconcile_phase2_gates(
                     return Err(gate_rejected(ingress_error(
                         ingress_protocol,
                         StatusCode::from_u16(
-                            busbar_substrate::hooks::REQUIRED_HOOK_UNAVAILABLE_STATUS,
+                            busbar_kernel::hooks::REQUIRED_HOOK_UNAVAILABLE_STATUS,
                         )
                         .unwrap_or(StatusCode::SERVICE_UNAVAILABLE),
                         KIND_OVERLOADED,
-                        busbar_substrate::hooks::REQUIRED_HOOK_UNAVAILABLE_MESSAGE,
+                        busbar_kernel::hooks::REQUIRED_HOOK_UNAVAILABLE_MESSAGE,
                     )));
                 }
                 _ => {}
@@ -1289,7 +1289,7 @@ async fn reconcile_phase2_gates(
         }
         if let Some((_, name)) = &gate_order {
             metrics::counter!(
-                busbar_substrate::metrics::ROUTE_POLICY_SELECTIONS_TOTAL,
+                busbar_kernel::metrics::ROUTE_POLICY_SELECTIONS_TOTAL,
                 "policy" => *name,
                 "pool" => pool_name.to_string(),
             )
@@ -1344,7 +1344,7 @@ fn apply_gate_restricts(
                 .cloned()
                 .collect();
             if restricted.is_empty() {
-                if matches!(on_empty, busbar_substrate::config::PolicyOnError::Weighted) {
+                if matches!(on_empty, busbar_kernel::config::PolicyOnError::Weighted) {
                     diag_debug!(
                         DECISION_GATE_RESTRICT_WEIGHTED_ESCAPE,
                         policy = name,
@@ -1355,7 +1355,7 @@ fn apply_gate_restricts(
                     // leave `cands` unchanged and continue reconciling the next restrict.
                 } else {
                     metrics::counter!(
-                        busbar_substrate::metrics::ROUTE_POLICY_REJECTIONS_TOTAL,
+                        busbar_kernel::metrics::ROUTE_POLICY_REJECTIONS_TOTAL,
                         "policy" => *name,
                         "pool" => pool_name.to_string(),
                         "status" => "503".to_string(),
@@ -1378,7 +1378,7 @@ fn apply_gate_restricts(
             } else {
                 *cands = restricted;
                 metrics::counter!(
-                    busbar_substrate::metrics::ROUTE_POLICY_SELECTIONS_TOTAL,
+                    busbar_kernel::metrics::ROUTE_POLICY_SELECTIONS_TOTAL,
                     "policy" => *name,
                     "pool" => pool_name.to_string(),
                 )
@@ -1405,7 +1405,7 @@ async fn resolve_base_policy(
     req_content_type: &str,
     pool_name: &str,
     ingress_protocol: &str,
-    op: busbar_substrate::handlers::Op,
+    op: busbar_substrate_values::handlers::Op,
     wants_stream: bool,
     caller_token: Option<&str>,
     resolved_gov_key: Option<&std::sync::Arc<VirtualKey>>,
@@ -1467,7 +1467,7 @@ async fn resolve_base_policy(
                     PolicyOutcome::Order { order, name } => {
                         chosen_policy_name = Some(name);
                         metrics::counter!(
-                            busbar_substrate::metrics::ROUTE_POLICY_SELECTIONS_TOTAL,
+                            busbar_kernel::metrics::ROUTE_POLICY_SELECTIONS_TOTAL,
                             "policy" => name,
                             "pool" => pool_name.to_string(),
                         )
@@ -1501,7 +1501,7 @@ async fn resolve_base_policy(
                         // outcome clamps it to 400..=499 for every producer, so the worst-case series
                         // fan-out is 100 per (policy, pool).
                         metrics::counter!(
-                            busbar_substrate::metrics::ROUTE_POLICY_REJECTIONS_TOTAL,
+                            busbar_kernel::metrics::ROUTE_POLICY_REJECTIONS_TOTAL,
                             "policy" => name,
                             "pool" => pool_name.to_string(),
                             "status" => status.to_string(),
@@ -1576,7 +1576,7 @@ fn apply_base_policy_restrict(
     ingress_protocol: &str,
     tags_any: Vec<String>,
     name: &'static str,
-    on_empty: busbar_substrate::config::PolicyOnError,
+    on_empty: busbar_kernel::config::PolicyOnError,
 ) -> Result<Option<&'static str>, Response> {
     request_ctx.active_restricts.push(RestrictConstraint {
         tags_any: tags_any.clone(),
@@ -1602,7 +1602,7 @@ fn apply_base_policy_restrict(
         // Empty intersection → the gate's `on_empty`. `Weighted` is the advisory escape (leave
         // `cands` as the full pool → SWRR); default (and `First`, which has no eligible "first") is
         // fail-closed reject.
-        if matches!(on_empty, busbar_substrate::config::PolicyOnError::Weighted) {
+        if matches!(on_empty, busbar_kernel::config::PolicyOnError::Weighted) {
             diag_debug!(
                 ROUTING_POLICY_RESTRICT_WEIGHTED_ESCAPE,
                 policy = name,
@@ -1613,7 +1613,7 @@ fn apply_base_policy_restrict(
             Ok(None)
         } else {
             metrics::counter!(
-                busbar_substrate::metrics::ROUTE_POLICY_REJECTIONS_TOTAL,
+                busbar_kernel::metrics::ROUTE_POLICY_REJECTIONS_TOTAL,
                 "policy" => name,
                 "pool" => pool_name.to_string(),
                 "status" => "503".to_string(),
@@ -1638,7 +1638,7 @@ fn apply_base_policy_restrict(
         // failover hop, then let SWRR pick among them.
         *cands = restricted;
         metrics::counter!(
-            busbar_substrate::metrics::ROUTE_POLICY_SELECTIONS_TOTAL,
+            busbar_kernel::metrics::ROUTE_POLICY_SELECTIONS_TOTAL,
             "policy" => name,
             "pool" => pool_name.to_string(),
         )
@@ -1658,7 +1658,7 @@ fn capture_candidate_taps<'a>(
     req_content_type: &str,
     pool_name: &'a str,
     ingress_protocol: &'a str,
-    op: busbar_substrate::handlers::Op,
+    op: busbar_substrate_values::handlers::Op,
     wants_stream: bool,
     request_id: u64,
     cands_len: usize,
@@ -1687,7 +1687,7 @@ fn capture_candidate_taps<'a>(
         fire_stage_taps(
             host.tap_hooks_candidate(),
             shape,
-            busbar_substrate::hooks::wire::HookStageProjection {
+            busbar_kernel::hooks::wire::HookStageProjection {
                 at: "candidate",
                 model: None,
                 attempt_number: None,
@@ -1726,7 +1726,7 @@ fn fire_routing_tap(
         fire_stage_taps(
             host.tap_hooks_routing(),
             shape,
-            busbar_substrate::hooks::wire::HookStageProjection {
+            busbar_kernel::hooks::wire::HookStageProjection {
                 at: "routing",
                 model: Some(&EngineTables::new(rt).lanes()[i].model),
                 attempt_number: Some(
@@ -1761,7 +1761,7 @@ fn derive_hop_body(
     } else {
         let parsed = match v.take() {
             Some(l) => l.into_value(),
-            None => busbar_substrate::json::parse(body).map_err(|_| ()),
+            None => busbar_substrate_values::json::parse(body).map_err(|_| ()),
         };
         match parsed {
             Ok(hv) => Ok(Some(hv)),
@@ -1808,7 +1808,7 @@ async fn dispatch_hop(
     req_content_type: &str,
     ingress_protocol: &str,
     egress_name: &str,
-    op: busbar_substrate::handlers::Op,
+    op: busbar_substrate_values::handlers::Op,
     wants_stream: bool,
     client_include_usage: bool,
     client_has_stream_options: bool,
@@ -1817,7 +1817,7 @@ async fn dispatch_hop(
     upstream_creds: busbar_api::UpstreamCreds,
     resolved_gov_key: Option<&Arc<VirtualKey>>,
     request_ctx: &RequestCtx,
-    breaker_cfg: &Arc<busbar_substrate::store::BreakerCfg>,
+    breaker_cfg: &Arc<busbar_kernel::store::BreakerCfg>,
     chosen_policy_name: Option<&'static str>,
     metric_pool: &str,
     permit: Permit,
@@ -1874,7 +1874,7 @@ async fn exhaust_pool(
     caller_token: Option<&str>,
     request_ctx: &mut RequestCtx,
     ingress_protocol: &str,
-    op: busbar_substrate::handlers::Op,
+    op: busbar_substrate_values::handlers::Op,
     req_content_type: &str,
     usage_sink: Option<UsageSink>,
 ) -> Response {
@@ -1913,7 +1913,7 @@ async fn run_hop(
     req_content_type: &str,
     ingress_protocol: &str,
     egress_name: &str,
-    op: busbar_substrate::handlers::Op,
+    op: busbar_substrate_values::handlers::Op,
     wants_stream: bool,
     client_include_usage: bool,
     client_has_stream_options: bool,
@@ -1922,7 +1922,7 @@ async fn run_hop(
     upstream_creds: busbar_api::UpstreamCreds,
     resolved_gov_key: Option<&Arc<VirtualKey>>,
     request_ctx: &mut RequestCtx,
-    breaker_cfg: &Arc<busbar_substrate::store::BreakerCfg>,
+    breaker_cfg: &Arc<busbar_kernel::store::BreakerCfg>,
     chosen_policy_name: Option<&'static str>,
     metric_pool: &str,
     permit: Permit,

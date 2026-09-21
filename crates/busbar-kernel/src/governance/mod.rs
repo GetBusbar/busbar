@@ -16,17 +16,16 @@ use crate::diagnostics::{
     diag_debug, diag_warn, GOVERNANCE_KEY_RESERVED_NAMESPACE_COLLISION, LIMIT_WINDOW_UNRECOGNIZED,
 };
 
-/// Seconds in a UTC day, for `budget_window`'s day/month arithmetic.
-///
-/// Re-export BY IDENTITY of its canonical home, `busbar_substrate::governance::SECS_PER_DAY`: it is
-/// a bare calendar constant, so it belongs to the neutral governance vocabulary a plane's tests
-/// spell a day boundary with. `crate::governance::SECS_PER_DAY` resolves to the same value.
-/// Production modules that need it where layering prohibits the import (e.g. `sigv4.rs`) keep a
-/// private copy, as before.
-///
-/// The re-export is `pub`: the canonical public spelling is the substrate's own, and a
-/// caller outside this crate names it there. Nothing outside busbar-core reaches this path.
-pub use busbar_substrate::governance::SECS_PER_DAY;
+// Seconds in a UTC day, for `budget_window`'s day/month arithmetic.
+//
+// Re-export BY IDENTITY of its canonical home, `busbar_kernel::governance::SECS_PER_DAY`: it is
+// a bare calendar constant, so it belongs to the neutral governance vocabulary a plane's tests
+// spell a day boundary with. `crate::governance::SECS_PER_DAY` resolves to the same value.
+// Production modules that need it where layering prohibits the import (e.g. `sigv4.rs`) keep a
+// private copy, as before.
+//
+// The re-export is `pub`: the canonical public spelling is the substrate's own, and a
+// caller outside this crate names it there. Nothing outside busbar-core reaches this path.
 
 // ── Window sentinel tokens (nouns; matched in `budget_window`). The SAME strings are the
 // `groups:` config vocabulary (`per: minute|hour|day|month|total`), the ledger-bucket window
@@ -338,17 +337,16 @@ impl std::fmt::Debug for AdmitGrant {
     }
 }
 
-/// A derived (read-time) usage view for admin/metrics consumers: `spend_cents` is COMPUTED from
-/// the token ledger x the current rate card at the moment of the read - never stored.
-///
-/// Re-export BY IDENTITY of its canonical home, `busbar_substrate::governance::DerivedUsage`: the
-/// figure is three integers with no engine dependency, so it belongs to the neutral governance
-/// vocabulary a plane reads it back through. `crate::governance::DerivedUsage` resolves to the very
-/// same type it always did.
-///
-/// The re-export is `pub`: the canonical public spelling is the substrate's own, and a
-/// caller outside this crate names it there. Nothing outside busbar-core reaches this path.
-pub use busbar_substrate::governance::DerivedUsage;
+// A derived (read-time) usage view for admin/metrics consumers: `spend_cents` is COMPUTED from
+// the token ledger x the current rate card at the moment of the read - never stored.
+//
+// Re-export BY IDENTITY of its canonical home, `busbar_kernel::governance::DerivedUsage`: the
+// figure is three integers with no engine dependency, so it belongs to the neutral governance
+// vocabulary a plane reads it back through. `crate::governance::DerivedUsage` resolves to the very
+// same type it always did.
+//
+// The re-export is `pub`: the canonical public spelling is the substrate's own, and a
+// caller outside this crate names it there. Nothing outside busbar-core reaches this path.
 
 /// THE REVOCATION STALENESS WINDOW (seconds). The in-memory denylist is a CACHE of the durable
 /// store's revocation set, not the truth: every auth path re-reads the store denylist when its copy
@@ -421,7 +419,7 @@ impl<V> Sharded<V> {
     /// which is irrelevant to correctness (the maps are ephemeral) but keeps behaviour deterministic.
     #[inline]
     fn shard_for(&self, key_id: &str) -> &MapShard<V> {
-        let h = busbar_substrate::store::fnv1a_u64(key_id) as usize;
+        let h = busbar_kernel::store::fnv1a_u64(key_id) as usize;
         &self.shards[h & (GOV_SHARDS - 1)]
     }
 
@@ -430,7 +428,7 @@ impl<V> Sharded<V> {
     /// section deadlock-free).
     #[inline]
     fn shard_index(&self, key_id: &str) -> usize {
-        (busbar_substrate::store::fnv1a_u64(key_id) as usize) & (GOV_SHARDS - 1)
+        (busbar_kernel::store::fnv1a_u64(key_id) as usize) & (GOV_SHARDS - 1)
     }
 
     /// The shard at a known index (see [`Sharded::shard_index`]).
@@ -643,7 +641,6 @@ pub struct RotatedCredential {
 // substrate so a plane crate names it without reaching into busbar-core; re-exported here so every
 // `crate::governance::NewKeySpec` construction site is unchanged. `pub`: the canonical
 // public spelling is the substrate's own, and nothing outside busbar-core reaches this path.
-pub use busbar_substrate::governance::NewKeySpec;
 
 pub mod revocation;
 // The RESOLVED runtime mint policy (`auth.policy:`) — de-aliased out of `admin` (1.6.0, stage 2a):
@@ -659,7 +656,6 @@ pub mod group_provision;
 // module itself is re-exported here instead, `pub`, so every in-core
 // `crate::governance::signing::…` path resolves to exactly the same items and nothing outside
 // busbar-core reaches them through this crate.
-pub use busbar_substrate::governance::signing;
 mod state;
 
 /// Which self-serve mint operation [`mint_self_offloaded`] should run on the blocking pool.
@@ -993,7 +989,6 @@ pub use busbar_api::ScopeRef;
 // busbar-core; both re-exported here so every `crate::governance::…` caller is unchanged.
 // `pub`: the canonical public spelling is the substrate's own, and nothing outside
 // busbar-core reaches this path.
-pub use busbar_substrate::governance::{metering_bucket, METERING_BUCKET_SECS};
 
 /// One `pending_metering` entry: the same five counters `MeteringDelta` carries, accumulated
 /// in-memory across every `record_metering` call that lands on this key before the next flush.
@@ -1139,7 +1134,7 @@ impl PendingMetering {
     /// process-stable hash the budget map uses.
     #[inline]
     fn shard_for(&self, key_id: &str) -> &std::sync::Mutex<HashMap<MeterKey, MeterCounts>> {
-        &self.shards[(busbar_substrate::store::fnv1a_u64(key_id) as usize) & (GOV_SHARDS - 1)]
+        &self.shards[(busbar_kernel::store::fnv1a_u64(key_id) as usize) & (GOV_SHARDS - 1)]
     }
 
     /// Accrue on the hot path: lock ONLY the shard owning `key.0`, bounded to that shard's slice of
@@ -1292,3 +1287,66 @@ mod budget_cell_tests;
 #[cfg(test)]
 #[path = "../tests/key_expires_at_tests.rs"]
 mod key_expires_at_tests;
+
+// ==== merged from busbar-substrate (W4.b P2 engine drain) ====
+pub mod signing;
+
+/// Parameters for minting a new virtual key (from the management API) - PURE AUTH: identity,
+/// pool grants, at most one group binding, labels. No limits: they live on the bound group.
+///
+/// `Default` (1.6.0) is a construction convenience so a call site names the fields it cares about and
+/// leaves the 1.6.0 provenance/mode additions (`minted_by`/`binding_mode`) at `None` via
+/// `..Default::default()` — an omitted-provenance mint is byte-identical to a pre-1.6.0 one.
+#[derive(Default)]
+pub struct NewKeySpec {
+    pub name: String,
+    /// Pool grants with the intent carried intact: `None` = the mint body OMITTED
+    /// `allowed_pools` = ALL pools; `Some(list)` = exactly those; `Some([])` = NO pools.
+    pub allowed_pools: Option<Vec<String>>,
+    /// Optional `groups:` binding (validated to exist at mint).
+    pub group: Option<String>,
+    /// Optional mint-time labels echoed onto metrics (never interpreted by enforcement).
+    pub labels: std::collections::BTreeMap<String, String>,
+    /// PROVENANCE (1.6.0): the principal that minted this key, recorded on
+    /// [`busbar_api::VirtualKey::minted_by`]. `Some` for an APP/service token minted through the
+    /// admin API by a (possibly delegated) admin — the token OUTLIVES its minter (review H2/H3), and
+    /// this enables "list tokens minted-by X" re-attestation + mint-ceiling accounting. `None` leaves
+    /// the field unset (byte-identical to a pre-1.6.0 mint).
+    pub minted_by: Option<String>,
+    /// The BINDING MODE (1.6.0, wire spelling) recorded on [`busbar_api::VirtualKey::binding_mode`].
+    /// `Some("time-bound")` for an admin-minted app/service token (bounded by `exp`, no IdP tie);
+    /// `None` leaves it unset.
+    pub binding_mode: Option<String>,
+}
+
+/// Seconds in a metering day bucket. Metering is a TIME SERIES in fixed UTC-day buckets —
+/// deliberately decoupled from the per-key budget windows the enforcement counters use, so
+/// per-model aggregation ACROSS keys has one well-defined time base.
+pub const METERING_BUCKET_SECS: u64 = 86_400;
+
+/// Floor an epoch to its UTC-day metering bucket start.
+pub fn metering_bucket(now: u64) -> u64 {
+    now - (now % METERING_BUCKET_SECS)
+}
+
+/// A derived (read-time) usage view for admin/metrics consumers: `spend_cents` is COMPUTED from
+/// the token ledger x the current rate card at the moment of the read - never stored.
+///
+/// A pure three-field figure with no engine dependency at all, so it lives HERE (the neutral
+/// governance vocabulary) rather than in the engine: a plane's tests read it back off the neutral
+/// registry seam (`testkit::engine_kit::GovKit::usage_for`), and the engine re-exports this very
+/// type as `busbar_kernel::governance::DerivedUsage` — the same type, one home.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct DerivedUsage {
+    /// The spend derived from the token ledger at the CURRENT card, truncated to whole cents.
+    pub spend_cents: i64,
+    /// The token count the ledger holds for the bucket.
+    pub tokens: u64,
+    /// The admission count the ledger holds for the bucket.
+    pub requests: u64,
+}
+
+/// Seconds in a UTC day — the day boundary the budget windows and the metering buckets are floored
+/// to. A bare calendar constant with no engine dependency, so it lives here in the neutral
+/// governance vocabulary; the engine re-exports it as `busbar_kernel::governance::SECS_PER_DAY`.
+pub const SECS_PER_DAY: u64 = 86_400;

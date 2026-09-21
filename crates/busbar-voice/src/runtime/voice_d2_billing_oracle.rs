@@ -26,7 +26,7 @@ use crate::ir::usage::IrDuplexUsage;
 use crate::runtime::metering::{
     HostMeteringPort, LeaseState, MeteringLease, MeteringPort, MockMeteringHost,
 };
-use busbar_substrate::plane_host::MeteringHost;
+use busbar_kernel::plane_host::MeteringHost;
 use std::sync::Arc;
 
 /// A priced per-turn increment: fold an `IrDuplexUsage` frame onto the four reserved keys, price it

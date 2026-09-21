@@ -17,7 +17,7 @@ use crate::state::App;
 // table (the composition root wrote it via `install_body_ingress`; a `test-support` consumer seeds the
 // hook through the dialect crate's testkit).
 #[cfg(not(test))]
-pub(crate) use busbar_substrate::ingress::arrival::body_ingress_for;
+pub(crate) use busbar_kernel::ingress::arrival::body_ingress_for;
 
 /// CORE'S OWN `#[cfg(test)]` BINARY has no composition root, so — exactly as `path_ingress_for` seeds
 /// `set_test_path_ingress` and `proto::registry` seeds `set_test_builtins` — this seeds the neutral
@@ -27,9 +27,9 @@ pub(crate) use busbar_substrate::ingress::arrival::body_ingress_for;
 #[cfg(test)]
 pub(crate) fn body_ingress_for(
     name: &str,
-) -> Option<busbar_substrate::ingress::arrival::BodyIngress> {
-    busbar_substrate::ingress::arrival::set_test_body_ingress(test_body_ingress::test_body_ingress);
-    busbar_substrate::ingress::arrival::body_ingress_for(name)
+) -> Option<busbar_kernel::ingress::arrival::BodyIngress> {
+    busbar_kernel::ingress::arrival::set_test_body_ingress(test_body_ingress::test_body_ingress);
+    busbar_kernel::ingress::arrival::body_ingress_for(name)
 }
 
 /// The extracted-dialect body arrival list for core's OWN test binary — the shipped dialect crate's
@@ -633,7 +633,7 @@ fn finish_inner(
     // audit reqlog record below — the same instant, observed once. In 1.5.5 the only finish-time
     // read was the gated export one; the 1.6.0 audit record's ungated second read is what this
     // collapses away.
-    let finished_ts = busbar_substrate::store::now();
+    let finished_ts = busbar_kernel::store::now();
     if app
         .export_projections
         .wants_stream(busbar_plugin_loader::ExportStream::Logs)
@@ -712,9 +712,18 @@ pub fn ingress_error(proto: &str, status: StatusCode, kind: &str, message: &str)
 // lives under `ingress/` because that is the shared owner `structure-lint`'s plane ledger already
 // names for the ingress concern: "one plane-neutral admission in ingress/, with the plane supplying
 // its wire reader". This is the envelope half of that.
-pub mod jsonrpc {
-    pub use busbar_substrate::ingress::jsonrpc::*;
-}
+pub mod jsonrpc;
+
+/// THE NEUTRAL PATH-MODEL ARRIVAL SEAM — the `ArrivalHost` ABI a URL-model dialect calls to reach the
+/// core request pipeline, and the protocol-name-keyed side-table the composition root registers those
+/// arrivals through. Absorbed from busbar-substrate (W4.b P2).
+pub mod arrival;
+/// THE NEUTRAL INBOUND BYTE-DUPLEX TRANSPORT — the byte half of a single full-duplex channel.
+/// Absorbed from busbar-substrate (W4.b P2).
+pub mod byte_duplex;
+/// THE NEUTRAL FULL-DUPLEX WS INGRESS ACCEPTOR, armed under `runtime`. Absorbed from busbar-substrate.
+#[cfg(feature = "runtime")]
+pub mod duplex_ws;
 
 /// THE ONE JSON-RPC INGRESS SEQUENCE. Read its header: it carries the thirteen-step measurement
 /// that says which four steps are a protocol's and which nine are core's.
@@ -730,13 +739,13 @@ pub mod dispatch;
 // seam. (The universal resolved-op ingress it used to hold — `operation_resolved`/`operation_ingress`
 // — RELOCATED into the plane that owns it; core reaches it only through the neutral body-arrival seam.)
 pub(crate) use dispatch::protocol_dispatch;
-/// CORE'S IMPL of the neutral [`busbar_substrate::ingress::arrival::ArrivalHost`] — the request-pipeline
+/// CORE'S IMPL of the neutral [`busbar_kernel::ingress::arrival::ArrivalHost`] — the request-pipeline
 /// seam a path-model dialect crate (one that parses its model out of the URL, living outside core)
 /// calls back through. Core owns the resolution/forward/error-shaping; the dialect owns its URL parsing.
 pub mod arrival_host;
 /// THE PATH-MODEL ARRIVAL SIDE-REGISTRATION — the protocol-name-keyed table the composition root
 /// installs a URL-model dialect's arrival through. RELOCATED to the neutral `busbar-substrate`
-/// (`busbar_substrate::ingress::arrival`) so the dialect crate names the registration-pair type
+/// (`busbar_kernel::ingress::arrival`) so the dialect crate names the registration-pair type
 /// without reaching into `busbar-core`; this module is a thin core-test seeding veneer + re-exports.
 pub mod path_ingress;
 // The registration-pair fn-pointer type, re-exported at `busbar_kernel::ingress::PathIngress` so the
@@ -751,10 +760,16 @@ pub use path_ingress::PathIngress;
 /// supplies its own shaped body.
 // `pub` (was module-private): a mounted plane's engine shapes its model-miss 404 body through this
 // neutral helper — the allowed plane→core edge (names only `&str`).
-// RELOCATED (1.6.0 KEYSTONE) to `busbar_substrate::ingress::not_found_message` — a pure `&str`→`String`
+// RELOCATED (1.6.0 KEYSTONE) to `busbar_kernel::ingress::not_found_message` — a pure `&str`→`String`
 // shaper with no `App`/dialect — so the plane names it there; re-exported here byte-identically so
 // every core `crate::ingress::not_found_message` call site resolves unchanged.
-pub use busbar_substrate::ingress::not_found_message;
+#[must_use]
+pub fn not_found_message(model: &str, model_not_found_message: Option<&str>) -> String {
+    match model_not_found_message {
+        Some(shaped) => shaped.to_string(),
+        None => format!("The model '{model}' does not exist or you do not have access to it."),
+    }
+}
 
 /// Minimal percent-decoding for a single path segment (no external dependency). Decodes `%XX`
 /// escapes as UTF-8; on any malformed escape it leaves the bytes as-is.
@@ -837,14 +852,14 @@ async fn delegate_body_arrival(
 ) -> Response {
     if let Some(body_ingress) = crate::ingress::body_ingress_for(proto) {
         let uri = path.parse::<axum::http::Uri>().unwrap_or_default();
-        let ctx = busbar_substrate::ingress::arrival::ArrivalCtx::new(
+        let ctx = busbar_kernel::ingress::arrival::ArrivalCtx::new(
             crate::ingress::arrival_host::ArrivalPayload {
                 host: crate::plane_host::engine_host(&app),
                 gov,
                 caller_token: caller.0.clone(),
             },
         );
-        return body_ingress(busbar_substrate::ingress::arrival::Arrival {
+        return body_ingress(busbar_kernel::ingress::arrival::Arrival {
             host: std::sync::Arc::new(crate::ingress::arrival_host::CoreArrivalHost),
             ctx,
             path,

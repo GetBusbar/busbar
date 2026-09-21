@@ -7,7 +7,7 @@
 //! Relocated from `busbar-core/src/plane/taskstore.rs` in the 1.7.0 plane extraction: a task is a
 //! SINGLE-plane mechanism (A2A only), so the whole subsystem lives on the plane that owns it. The
 //! durable journal is backed by the GENERIC neutral `PlaneRecord` store
-//! ([`busbar_substrate::plane::store::PlaneStore`]) — the same opaque envelope every plane persists
+//! ([`busbar_kernel::plane::store::PlaneStore`]) — the same opaque envelope every plane persists
 //! through — so nothing A2A-specific crosses the store ABI. The per-task provenance CHAIN is computed
 //! here, plane-side, over the plane's own [`TaskEventRow`]. The DIGEST is VERSIONED on the row
 //! ([`TaskEventRow::digest_version`]): a new event is sealed under the INJECTIVE length-prefixed framing
@@ -42,11 +42,11 @@ use std::sync::Arc;
 use crate::record::{DIGEST_VERSION_LEN_PREFIXED, KIND_TASK, KIND_TASK_EVENT};
 use crate::{TaskEventRow, TaskRow};
 use busbar_api::{PlaneSelector, StoreError, StoreResult};
-use busbar_substrate::plane::handle_engine::{
+use busbar_kernel::plane::handle_engine::{
     ChainPosition, DurableHandleEngine, HandleEngineError, HandleMeta, MutateError, Mutation,
     RehydrateOutcome, SealedEvent, SubmitRecord, SweepBounds,
 };
-use busbar_substrate::plane::store::PlaneStore;
+use busbar_kernel::plane::store::PlaneStore;
 
 // ---------------------------------------------------------------------------------------------------
 // The per-task provenance chain — computed plane-side, byte-identical digest.
@@ -437,7 +437,7 @@ fn plan_abandon(
     candidate.state = "canceled".to_string();
     candidate.updated_at = now;
     let ev = EventInput {
-        kind: busbar_substrate::audit::vocab::EV_TERMINAL,
+        kind: busbar_contract::vocab::EV_TERMINAL,
         context_id: candidate.context_id.clone(),
         principal: candidate.principal.clone(),
         agent_id: candidate.agent_id.clone(),
@@ -463,7 +463,7 @@ fn report_abandon_fail(id: &str, e: &StoreError) {
     static ABANDON_UNRECORDED_WARNED: std::sync::atomic::AtomicBool =
         std::sync::atomic::AtomicBool::new(false);
     if !ABANDON_UNRECORDED_WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
-        busbar_substrate::diag_error!(
+        busbar_substrate_values::diag_error!(
             crate::diagnostics::A2A_FAILURE_UNRECORDED,
             task_id = %id,
             error = %e,
@@ -490,7 +490,7 @@ const SWEEP_BOUNDS: SweepBounds = SweepBounds {
 };
 
 /// The in-flight A2A task registry — now a THIN CONSUMER of the neutral
-/// [`busbar_substrate::plane::handle_engine::DurableHandleEngine`]. The engine owns the mechanics (the
+/// [`busbar_kernel::plane::handle_engine::DurableHandleEngine`]. The engine owns the mechanics (the
 /// working set, the durable write-through, the retention sweep, the boot rehydrate, the push cursor,
 /// the scoped anti-enumeration read); this type layers the A2A TASK SHAPE, STATUSES, VOCAB and DIGEST
 /// over it. No `Debug`: the engine holds a `dyn PlaneStore`.
@@ -552,7 +552,7 @@ impl TaskRegistry {
             let row = match TaskRow::from_body(body) {
                 Ok(r) => r,
                 Err(e) => {
-                    busbar_substrate::diag_error!(
+                    busbar_substrate_values::diag_error!(
                         crate::diagnostics::A2A_TASK_ROWS_UNREADABLE,
                         error = %e,
                         "a persisted A2A task row could not be DECODED on restore; it is being \
@@ -562,7 +562,7 @@ impl TaskRegistry {
                 }
             };
             if let Err(e) = readable(&row) {
-                busbar_substrate::diag_error!(
+                busbar_substrate_values::diag_error!(
                     crate::diagnostics::A2A_TASK_ROWS_UNREADABLE,
                     task_id = %row.task_id,
                     error = %e,
@@ -587,7 +587,7 @@ impl TaskRegistry {
                 match TaskEventRow::from_body(b) {
                     Ok(ev) => events.push(ev),
                     Err(e) => {
-                        busbar_substrate::diag_error!(
+                        busbar_substrate_values::diag_error!(
                             crate::diagnostics::A2A_TASK_ROWS_UNREADABLE,
                             task_id = %row.task_id,
                             error = %e,
@@ -599,7 +599,7 @@ impl TaskRegistry {
                 }
             }
             if let Err(brk) = verify_chain(&events) {
-                busbar_substrate::diag_error!(
+                busbar_substrate_values::diag_error!(
                     crate::diagnostics::A2A_TASK_CHAIN_VERIFY_FAILED,
                     task_id = %row.task_id,
                     break_detail = %brk,
@@ -641,7 +641,7 @@ impl TaskRegistry {
                 SWEEP_BOUNDS,
                 |pos| {
                     let ev = EventInput {
-                        kind: busbar_substrate::audit::vocab::EV_SUBMITTED,
+                        kind: busbar_contract::vocab::EV_SUBMITTED,
                         context_id: row.context_id.clone(),
                         principal: row.principal.clone(),
                         agent_id: row.agent_id.clone(),
@@ -722,7 +722,7 @@ impl TaskRegistry {
                 candidate.agent_id = agent_id.clone();
                 candidate.updated_at = now;
                 let ev = EventInput {
-                    kind: busbar_substrate::audit::vocab::EV_DELEGATED,
+                    kind: busbar_contract::vocab::EV_DELEGATED,
                     context_id: candidate.context_id.clone(),
                     principal: candidate.principal.clone(),
                     agent_id: candidate.agent_id.clone(),
@@ -798,7 +798,7 @@ impl TaskRegistry {
                 candidate.artifact_cursor = cursor;
                 candidate.updated_at = now;
                 let ev = EventInput {
-                    kind: busbar_substrate::audit::vocab::EV_ARTIFACT,
+                    kind: busbar_contract::vocab::EV_ARTIFACT,
                     context_id: candidate.context_id.clone(),
                     principal: candidate.principal.clone(),
                     agent_id: candidate.agent_id.clone(),
@@ -964,7 +964,7 @@ impl TaskTestHarness {
     /// Fresh isolated harness over `store` (the durable sink).
     pub fn over(store: Arc<dyn busbar_api::Store>) -> Self {
         let reg = TaskRegistry::new();
-        reg.set_sink(busbar_substrate::plane::store::PlaneStoreView::narrow(
+        reg.set_sink(busbar_kernel::plane::store::PlaneStoreView::narrow(
             store,
         ));
         Self { reg }

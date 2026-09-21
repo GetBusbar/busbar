@@ -26,7 +26,6 @@ path = "src/lib.rs"
 
 [dependencies]
 busbar-kernel = { path = "../busbar-kernel", default-features = false }
-busbar-substrate = { path = "../busbar-substrate" }
 busbar-plugin-loader = { path = "../plugin-loader" }
 busbar-plugin-sign = { path = "../plugin-sign" }
 busbar-api = { path = "../api" }

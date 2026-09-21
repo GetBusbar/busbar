@@ -5,7 +5,7 @@
 //! asked.
 //!
 //! The plane-neutral single-flight and freshness logic is proven generically in
-//! `busbar_substrate::trust::verify`'s own batteries; this file proves the WIRING — that `tools/call` actually
+//! `busbar_kernel::trust::verify`'s own batteries; this file proves the WIRING — that `tools/call` actually
 //! re-verifies the upstream's advertised surface before dispatch, coalesces concurrent stale-hits into
 //! one `tools/list`, bounds reuse to `verify_ttl`, and refuses fail-closed when the re-fetch fails —
 //! with NO background tick anywhere: every observation here is taken by a call.

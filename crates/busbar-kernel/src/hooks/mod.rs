@@ -62,24 +62,23 @@ pub use busbar_api::{
 #[allow(unused_imports)]
 pub use busbar_api::{Signal, SignalBag, SignalValue};
 
-/// The per-generation, config-derived UNION of every hook's declared [`Signal`] set — a dense
-/// bitmask ("which catalog entries does ANYTHING configured on this generation want"), consulted
-/// with a single `AND`+compare BEFORE any compute fn runs (`RequestedSignals::wants`), never
-/// call-then-discard. Mirrors the 846e4931 `usage_sink.is_some()` precedent generalized from one
-/// boolean to one bit per catalog entry.
-///
-/// SCOPE (deliberate, documented simplification for this additive pass): the bitmask is built ONCE
-/// per config generation as the union across EVERY configured hook, not per-pool. A pool with zero
-/// signal-declaring hooks still consults the same (possibly non-zero) global mask, so it may
-/// compute a signal only some OTHER pool's hook actually reads — strictly cheaper than a
-/// per-consumer mask (no per-request allocation to narrow it) at the cost of that coarser sharing,
-/// an accepted trade-off. A per-pool mask is a natural, purely-internal follow-up; the WIRE
-/// contract here does not change either way.
+// The per-generation, config-derived UNION of every hook's declared [`Signal`] set — a dense
+// bitmask ("which catalog entries does ANYTHING configured on this generation want"), consulted
+// with a single `AND`+compare BEFORE any compute fn runs (`RequestedSignals::wants`), never
+// call-then-discard. Mirrors the 846e4931 `usage_sink.is_some()` precedent generalized from one
+// boolean to one bit per catalog entry.
+//
+// SCOPE (deliberate, documented simplification for this additive pass): the bitmask is built ONCE
+// per config generation as the union across EVERY configured hook, not per-pool. A pool with zero
+// signal-declaring hooks still consults the same (possibly non-zero) global mask, so it may
+// compute a signal only some OTHER pool's hook actually reads — strictly cheaper than a
+// per-consumer mask (no per-request allocation to narrow it) at the cost of that coarser sharing,
+// an accepted trade-off. A per-pool mask is a natural, purely-internal follow-up; the WIRE
+// contract here does not change either way.
 // The `RequestedSignals` bitmask itself is the NEUTRAL plain-data layer — relocated to
-// `busbar_substrate::hooks` (App-retype WEDGE 2d) so the engine's `EngineHost::requested_signals`
+// `busbar_kernel::hooks` (App-retype WEDGE 2d) so the engine's `EngineHost::requested_signals`
 // seam returns it without naming core. Re-exported by identity here so `crate::hooks::RequestedSignals`
 // (and `App::requested_signals`) are unchanged; only the config-time builder below stays in core.
-pub use busbar_substrate::hooks::RequestedSignals;
 
 /// Build the config generation's [`RequestedSignals`] from the UNION of every registered hook's
 /// `signals:` declaration (`HookCfg::signals`, see `config::HookCfg`'s own doc comment for the
@@ -261,14 +260,13 @@ impl HookEnv {
     }
 }
 
-/// The per-pool routing-policy carriers [`ResolvedPolicy`] / [`FallbackHook`] — the plain-data layer
-/// resolved ONCE at config load — live in the NEUTRAL substrate (`busbar_substrate::hooks`) so the LLM
-/// model plane names them without reaching back into core (see docs/design/1.6.0-hooks-seam-notes.md).
-/// Every field is already-neutral (`Arc<dyn RoutingPolicy>` (api), `PolicyOnError` (substrate),
-/// `Duration`, `bool`) and no trait object crosses the plugin C-ABI here — the plane invokes
-/// `policy.decide(..)` in-process on the api trait. Re-exported by-identity so core-internal
-/// `crate::hooks::{ResolvedPolicy, FallbackHook}` paths (and the `App` gate maps) are unchanged.
-pub use busbar_substrate::hooks::{FallbackHook, ResolvedPolicy};
+// The per-pool routing-policy carriers [`ResolvedPolicy`] / [`FallbackHook`] — the plain-data layer
+// resolved ONCE at config load — live in the NEUTRAL substrate (`busbar_kernel::hooks`) so the LLM
+// model plane names them without reaching back into core (see docs/design/1.6.0-hooks-seam-notes.md).
+// Every field is already-neutral (`Arc<dyn RoutingPolicy>` (api), `PolicyOnError` (substrate),
+// `Duration`, `bool`) and no trait object crosses the plugin C-ABI here — the plane invokes
+// `policy.decide(..)` in-process on the api trait. Re-exported by-identity so core-internal
+// `crate::hooks::{ResolvedPolicy, FallbackHook}` paths (and the `App` gate maps) are unchanged.
 
 /// Resolve a pool's routing config into a runtime policy ONCE at config load. Returns `None` for the
 /// ZERO-COST default path: `route: weighted` (the default / absent case) AND the explicit
@@ -455,13 +453,13 @@ pub fn resolve_pool_rewrites(
 /// operator's disposition for free, and the sites keep their fail-safe shape.
 ///
 /// The refusal is minted as the transform path's own `Reject` verb ([`
-/// REQUIRED_HOOK_UNAVAILABLE_STATUS`](busbar_substrate::hooks::REQUIRED_HOOK_UNAVAILABLE_STATUS) +
+/// REQUIRED_HOOK_UNAVAILABLE_STATUS`](busbar_kernel::hooks::REQUIRED_HOOK_UNAVAILABLE_STATUS) +
 /// message) so it travels the reject route every firing site already implements — byte-identical to
 /// what the read-only decide seat renders for the same condition.
 ///
 /// `decide` is NOT intercepted: the read-only seat resolves `on_error` itself, and richer — it
 /// walks the configured FALLBACK CHAIN before it reaches a terminal. Both seats bottom out on the
-/// SAME rule (`busbar_substrate::hooks::failed_call_refuses`), which is what keeps them from
+/// SAME rule (`busbar_kernel::hooks::failed_call_refuses`), which is what keeps them from
 /// drifting. Every other trait method is a transparent delegate.
 struct RewriteOnError {
     inner: Arc<dyn RoutingPolicy>,
@@ -491,7 +489,7 @@ impl RoutingPolicy for RewriteOnError {
     ) -> busbar_api::TransformOutcome {
         match self.inner.transform(req, budget).await {
             busbar_api::TransformOutcome::Failed { message } => {
-                if busbar_substrate::hooks::failed_call_refuses(&self.on_error) {
+                if busbar_kernel::hooks::failed_call_refuses(&self.on_error) {
                     tracing::warn!(
                         hook = self.inner.name(),
                         error = %message,
@@ -502,8 +500,8 @@ impl RoutingPolicy for RewriteOnError {
                     // reaches the client is the shared, content-free body, the same one the
                     // read-only seat renders for the same condition.
                     busbar_api::TransformOutcome::Reject {
-                        status: busbar_substrate::hooks::REQUIRED_HOOK_UNAVAILABLE_STATUS,
-                        message: busbar_substrate::hooks::REQUIRED_HOOK_UNAVAILABLE_MESSAGE
+                        status: busbar_kernel::hooks::REQUIRED_HOOK_UNAVAILABLE_STATUS,
+                        message: busbar_kernel::hooks::REQUIRED_HOOK_UNAVAILABLE_MESSAGE
                             .to_string(),
                     }
                 } else {
@@ -1514,14 +1512,13 @@ pub fn resolve_rewrite_hooks(
     ranked.into_iter().map(|(_, t, p)| (t, p)).collect()
 }
 
-/// A resolved GLOBAL (all-pools) tap: `(per-hook deadline, prompt-grant, transport, caller-group
-/// scope)`. The 4th element is the hook's `groups:` SELECTION scope (1.5.3) — the firing site fires
-/// the tap only for a caller in that scope (empty = every caller); see [`TapEntry`] consumers in
-/// `proxy::engine` / `proxy::hooks`.
-// Relocated to `busbar_substrate::hooks::TapEntry` (App-retype WEDGE 2d) so the engine's tap-facet
+// A resolved GLOBAL (all-pools) tap: `(per-hook deadline, prompt-grant, transport, caller-group
+// scope)`. The 4th element is the hook's `groups:` SELECTION scope (1.5.3) — the firing site fires
+// the tap only for a caller in that scope (empty = every caller); see [`TapEntry`] consumers in
+// `proxy::engine` / `proxy::hooks`.
+// Relocated to `busbar_kernel::hooks::TapEntry` (App-retype WEDGE 2d) so the engine's tap-facet
 // host seams (`EngineHost::tap_hooks*`) can name it neutrally; re-exported by identity (a transparent
 // alias) so `crate::hooks::TapEntry` and every consumer are unchanged.
-pub use busbar_substrate::hooks::TapEntry;
 
 /// Resolve the GLOBAL TAP hooks observing at ONE stage — the all-pools (`global_hooks`) names whose
 /// registry entry is a `kind: tap` firing at `stage` (per its `phase:` list / legacy `at:`) — into
@@ -1603,8 +1600,8 @@ pub fn resolve_gate_hooks(
     ranked
 }
 
-/// THE ADDITIVE-LIST COMBINE RULE — relocated to the neutral seam (`busbar_substrate::plane::config`)
-/// beside the [`ContainerGateInputs`](busbar_substrate::plane::config::ContainerGateInputs) it folds,
+/// THE ADDITIVE-LIST COMBINE RULE — relocated to the neutral seam (`busbar_kernel::plane::config`)
+/// beside the [`ContainerGateInputs`](busbar_kernel::plane::config::ContainerGateInputs) it folds,
 /// so an extracted plane crate reaches it without naming `busbar_kernel::hooks`. Re-exported here so
 /// `crate::hooks::attach_list` (this module's [`resolve_container_gates`], and the A2A twin) is
 /// unchanged.
@@ -1612,7 +1609,7 @@ pub fn resolve_gate_hooks(
 // [`resolve_container_gates`] has no caller, so the re-export reads unused. Unconditional allow —
 // the neutral seam names no plane feature; it is a public re-export whichever planes are compiled in.
 #[allow(unused_imports)]
-pub use busbar_substrate::plane::config::attach_list;
+pub use busbar_kernel::plane::config::attach_list;
 
 /// Resolve the per-CONTAINER gate chains for one plane's registry: for each `(container name, that
 /// container's own hook list)`, the effective attach ([`attach_list`]) resolved through
@@ -1690,3 +1687,136 @@ pub fn resolve_container_rewrites<'a>(
 #[cfg(test)]
 #[path = "tests/tests.rs"]
 mod tests;
+
+// ==== merged from busbar-substrate (W4.b P2 engine drain) ====
+
+
+/// A resolved GLOBAL (all-pools) tap: `(per-hook deadline, prompt-grant, transport, caller-group
+/// scope)`. The 4th element is the hook's `groups:` SELECTION scope (1.5.3) — the firing site fires
+/// the tap only for a caller in that scope (empty = every caller).
+///
+/// Relocated here off `busbar_kernel::hooks::TapEntry` (App-retype WEDGE 2d): a purely-neutral tuple —
+/// [`Duration`](std::time::Duration), `bool`, the [`RoutingPolicy`](busbar_api::RoutingPolicy) trait
+/// object (busbar-api), `Vec<String>` — so the engine's tap-facet host seams
+/// (`EngineHost::tap_hooks*`) can name it without reaching back into core. Core re-exports this alias
+/// so `busbar_kernel::hooks::TapEntry` is unchanged (a transparent alias, identical by structure).
+pub type TapEntry = (
+    std::time::Duration,
+    bool,
+    Arc<dyn RoutingPolicy>,
+    Vec<String>,
+);
+
+/// The per-generation, config-derived UNION of every hook's declared [`Signal`] set — a dense
+/// bitmask ("which catalog entries does ANYTHING configured on this generation want"), consulted
+/// with a single `AND`+compare BEFORE any compute fn runs ([`RequestedSignals::wants`]), never
+/// call-then-discard.
+///
+/// Relocated here off `busbar_kernel::hooks::RequestedSignals` (App-retype WEDGE 2d) so the engine's
+/// `EngineHost::requested_signals` seam returns a NEUTRAL type; core re-exports it (identity) and its
+/// config-time builder (`busbar_kernel::hooks::requested_signals`, which takes core's `HookCfg`) stays
+/// in core and drives [`insert`](RequestedSignals::insert).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RequestedSignals(u64);
+
+impl RequestedSignals {
+    /// A single `u64` AND + compare — the same order of magnitude as the pre-existing
+    /// `app.tap_hooks_response.is_empty()` early-out this design generalizes.
+    #[inline]
+    pub fn wants(self, s: Signal) -> bool {
+        debug_assert!(
+            s.bit() < 64,
+            "Signal::bit() exceeded the u64 bitmask width; grow RequestedSignals to a bitset"
+        );
+        self.0 & (1u64 << s.bit()) != 0
+    }
+
+    /// True iff NOTHING is declared anywhere — the zero-cost default generation.
+    #[inline]
+    pub fn is_empty(self) -> bool {
+        self.0 == 0
+    }
+
+    /// Set the bit for `s`. `pub` (rather than the former core-private visibility) only because the
+    /// config-time builder that calls it — `busbar_kernel::hooks::requested_signals` — now lives across
+    /// the crate boundary from the type; it is otherwise the same one-line bit-OR.
+    #[inline]
+    pub fn insert(&mut self, s: Signal) {
+        self.0 |= 1u64 << s.bit();
+    }
+}
+
+/// The per-pool routing policy resolved ONCE at config load. `None` is the zero-cost default
+/// (`route: weighted` / absent): no policy object, no projection, the inline SWRR hot path. Stored
+/// on `App` keyed by pool name; the hot path is `if let Some(p) = app.pool_policies.get(pool) { … }`.
+#[derive(Clone)]
+pub enum ResolvedPolicy {
+    /// A constructed policy object (a dlopen hook plugin / native non-weighted) plus its fallback config.
+    /// The default SWRR / weighted path is represented as `None` by `resolve_policy` (it constructs no
+    /// policy object), so there is no `Weighted` variant — a weighted pool simply has no resolved
+    /// policy and takes the inline SWRR branch.
+    Policy {
+        policy: Arc<dyn RoutingPolicy>,
+        /// The TERMINAL the on_error chain bottoms out on (weighted/reject/first) — applied when
+        /// the policy fails and every chain link (below) also fails.
+        on_error: crate::config::PolicyOnError,
+        /// The resolved on_error FALLBACK CHAIN: hooks/strategies fired IN ORDER when the policy
+        /// errors or times out; the first that answers decides. Empty (the common case — a
+        /// terminal was named directly) costs nothing. Resolved once at config load; boot
+        /// validation proves termination (cycles/unknowns/taps never reach here).
+        on_error_chain: Vec<FallbackHook>,
+        timeout: std::time::Duration,
+        /// Derived from the hook's `prompt` grant (`ro`/`rw`) — build + send the prompt content
+        /// projection (default false, i.e. `prompt: no`).
+        send_prompt: bool,
+        /// Derived from the hook's `user` grant (`ro`) — build + send the caller identity projection
+        /// (default false, i.e. `user: no`).
+        send_user: bool,
+        /// Gate `on_empty` — behavior when a `restrict` reply leaves an EMPTY candidate intersection.
+        /// Default `Reject` (fail-closed; the spec default for a compliance restrict); `Weighted`
+        /// is the advisory escape (fall back to SWRR over the FULL pool). Inert for non-restricting
+        /// policies (native/order-only), which never produce an empty intersection.
+        on_empty: crate::config::PolicyOnError,
+    },
+}
+
+/// THE disposition rule for a hook call that FAILED — one rule, one place, for every seat that
+/// calls a hook. `on_error: reject` was the operator declaring that hook LOAD-BEARING: without its
+/// answer the unit is refused. Every other disposition (`weighted`, `first`) lets the unit proceed;
+/// the seat then applies its own degraded behavior (the read-only decide seat picks a degraded
+/// route — SWRR or the config order; the read-write transform seat simply skips that hook's
+/// rewrite). Both seats ask THIS function, so a change to the rule cannot land on one path and
+/// miss the other.
+///
+/// A hook's own `reject` REPLY is not a failure and never reaches here — that is a decision the
+/// hook made, carried with its own status and message.
+#[inline]
+#[must_use]
+pub fn failed_call_refuses(on_error: &crate::config::PolicyOnError) -> bool {
+    match on_error {
+        crate::config::PolicyOnError::Reject => true,
+        crate::config::PolicyOnError::Weighted | crate::config::PolicyOnError::First => false,
+    }
+}
+
+/// The client-facing refusal a load-bearing hook's FAILED call produces. Deliberately content-free
+/// and identical on both seats: it names the failure, never the hook, the transport, or the reason
+/// (a client learns nothing about the operator's hook topology from a hook being down). `503` +
+/// the overloaded error kind — the condition is transient by nature, so an SDK caller sees a
+/// retryable error rather than a request-shaped one.
+pub const REQUIRED_HOOK_UNAVAILABLE_STATUS: u16 = 503;
+/// The message paired with [`REQUIRED_HOOK_UNAVAILABLE_STATUS`].
+pub const REQUIRED_HOOK_UNAVAILABLE_MESSAGE: &str =
+    "A required gate could not complete. Please retry shortly.";
+
+/// One link in a gate's resolved `on_error` fallback chain: the fallback hook's transport plus
+/// the per-hook config the firing site needs (its own deadline, ITS grants — a fallback never
+/// sees a projection its own grants don't allow — and its own `on_empty`).
+#[derive(Clone)]
+pub struct FallbackHook {
+    pub policy: Arc<dyn RoutingPolicy>,
+    pub timeout: std::time::Duration,
+    pub send_prompt: bool,
+    pub send_user: bool,
+    pub on_empty: crate::config::PolicyOnError,
+}

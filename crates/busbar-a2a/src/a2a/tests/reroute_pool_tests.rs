@@ -130,7 +130,7 @@ async fn reroute_battery(h: Harness, submission: serde_json::Value) {
     assert!(
         matches!(
             h.app.breaker_state_at("agent:planner", 0),
-            busbar_substrate::store::BreakerState::Open { .. }
+            busbar_kernel::store::BreakerState::Open { .. }
         ),
         "A's trip is recorded on the pool cell at A's lane"
     );
@@ -234,7 +234,7 @@ async fn an_accepted_task_stays_pinned_to_its_member_and_a_tripped_pin_refuses_t
     h.app.breaker_force_open(
         "agent:planner",
         1,
-        busbar_substrate::store::now().saturating_add(600),
+        busbar_kernel::store::now().saturating_add(600),
     );
     let a_hits = hits(&h, "backend.agent.test");
     let b_hits = hits(&h, "backend-b.agent.test");
@@ -272,14 +272,14 @@ async fn a_member_approved_under_a_different_card_fingerprint_is_refused_never_d
                 let digests =
                     crate::a2a::card::skill_digests(&super::relay_harness::a_card()).expect("d");
                 let sighting =
-                    busbar_substrate::trust::Sighting::Seen(busbar_substrate::trust::Observation {
+                    busbar_kernel::trust::Sighting::Seen(busbar_kernel::trust::Observation {
                         pin: Some(crate::a2a::pin::CardPin::JwsIssuerKey {
                             issuer_key: "KEY".to_string(),
                             card_fingerprint: "sha256/A-DIFFERENT-CARD".to_string(),
                         }),
                         capabilities: digests,
                     });
-                reg.approval = busbar_substrate::trust::Approval::registered();
+                reg.approval = busbar_kernel::trust::Approval::registered();
                 crate::a2a::pin::approve_registration(&mut reg.approval, &sighting, None)
                     .expect("approve");
                 reg.sighting = sighting;
@@ -317,7 +317,7 @@ async fn a_client_fault_answer_never_penalizes_the_agent() {
     assert!(
         matches!(
             h.app.breaker_state_at("agent:planner", 0),
-            busbar_substrate::store::BreakerState::Closed
+            busbar_kernel::store::BreakerState::Closed
         ),
         "a 400 is the request's fault, never the member's"
     );

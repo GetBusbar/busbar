@@ -82,7 +82,7 @@ fn moderation_body_projects_text_and_marks_image_url_opaque() {
     let view = gate_view(&f);
     assert!(view.contains("SCREEN-THIS-TEXT"));
     // The ImageUrl is present-but-unscreenable, shown as the marker — not empty, not leaked.
-    assert!(view.contains(busbar_substrate::ir::facts::OPAQUE_CONTENT_MARKER));
+    assert!(view.contains(busbar_substrate_values::ir::facts::OPAQUE_CONTENT_MARKER));
     assert!(!view.contains("x.test"));
 }
 
@@ -104,7 +104,7 @@ fn subscribe_body_projects_its_target() {
     crate::testkit::install_test_seams();
     // SUBSCRIBE is an MCP operation — register the MCP protocol declaration too so `read_hook_facts`
     // resolves the `mcp` reader that projects the subscribe params (busbar-mcp is a dev-dep here).
-    busbar_substrate::proto::register_test_protocol(&busbar_mcp::PROTO_DECL);
+    busbar_kernel::proto::register_test_protocol(&busbar_mcp::PROTO_DECL);
     let v = serde_json::json!({
         "jsonrpc": "2.0",
         "id": 1,

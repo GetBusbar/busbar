@@ -525,9 +525,9 @@ async fn a_tool_call_is_charged_metered_and_audited_on_the_ordinary_budget_plane
     metrics_init();
 
     let store = Arc::new(MemoryStore::new());
-    let signer = busbar_substrate::governance::signing::TokenSigner::from_secret_bytes(
+    let signer = busbar_kernel::governance::signing::TokenSigner::from_secret_bytes(
         &[3u8; 32],
-        busbar_substrate::governance::signing::DEFAULT_KID,
+        busbar_kernel::governance::signing::DEFAULT_KID,
     );
     let gov_state = engine()
         .governance(store, Some("admintok".to_string()), Some(signer))
@@ -536,7 +536,7 @@ async fn a_tool_call_is_charged_metered_and_audited_on_the_ordinary_budget_plane
     // — which is the point: the thing under test is the meter, not the grant.
     let (key, _secret) = gov_state
         .mint_signed(
-            busbar_substrate::governance::NewKeySpec {
+            busbar_kernel::governance::NewKeySpec {
                 name: "mcp-agent".to_string(),
                 allowed_pools: None,
                 group: None,
@@ -555,11 +555,11 @@ async fn a_tool_call_is_charged_metered_and_audited_on_the_ordinary_budget_plane
     // pricing on and its presence changes not one byte of the row the round accrues.
     let billed_card: std::collections::BTreeMap<
         String,
-        busbar_substrate::config::sections::RateEntryCfg,
+        busbar_kernel::config::sections::RateEntryCfg,
     > = std::collections::BTreeMap::new();
     let billed_groups: std::collections::BTreeMap<
         String,
-        busbar_substrate::config::groups::GroupCfg,
+        busbar_kernel::config::groups::GroupCfg,
     > = std::collections::BTreeMap::new();
     let app = test_app()
         .mcp(&mcp_cfg())
@@ -615,7 +615,7 @@ async fn a_tool_call_is_charged_metered_and_audited_on_the_ordinary_budget_plane
         gov_state.flush_metering() > 0,
         "the round must have metered"
     );
-    let bucket = busbar_substrate::governance::metering_bucket(busbar_substrate::store::now());
+    let bucket = busbar_kernel::governance::metering_bucket(busbar_kernel::store::now());
     let rows = gov_state.metering_for(bucket).expect("metering rows");
     let ours: Vec<_> = rows.iter().filter(|r| r.key_id == key.id).collect();
     assert_eq!(
@@ -647,7 +647,7 @@ async fn a_tool_call_is_charged_metered_and_audited_on_the_ordinary_budget_plane
     engine().emit_admin_audit_now(
         "mcp_tool.call",
         "mcp_tool:fs_read",
-        busbar_substrate::audit::vocab::OUTCOME_REJECTED,
+        busbar_contract::vocab::OUTCOME_REJECTED,
         "test-principal",
     );
     let entries = engine().audit_entries();
@@ -663,7 +663,7 @@ async fn a_tool_call_is_charged_metered_and_audited_on_the_ordinary_budget_plane
     assert_eq!(row.resource, "mcp_tool:meter_probe");
     assert_eq!(
         row.outcome,
-        busbar_substrate::audit::vocab::OUTCOME_REJECTED
+        busbar_contract::vocab::OUTCOME_REJECTED
     );
     assert_eq!(row.principal, "test-principal");
 }

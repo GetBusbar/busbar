@@ -57,7 +57,7 @@
 //! engineering away. THE RELAY CHANGED THAT: [`super::relay`] is a second caller and it IS the
 //! request hot path. The blocking is handled at the call site — `ingress::invoke` enters this seam
 //! through `spawn_blocking`, so no axum worker is held for a backend agent's think time. The CLIENT
-//! is no longer per hop: this transport now holds a [`busbar_substrate::egress::PinnedClientPool`] keyed by the
+//! is no longer per hop: this transport now holds a [`busbar_kernel::egress::PinnedClientPool`] keyed by the
 //! judged `(host, pinned address)`, so a repeated hop to an already-judged target reuses the
 //! connection. That reuse is safe precisely because the key is the PINNED address and the pooled
 //! client still refuses a second lookup — reuse only ever reaches the address the guard already
@@ -72,7 +72,7 @@ use std::collections::BTreeMap;
 use std::net::IpAddr;
 use std::time::Duration;
 
-use busbar_substrate::egress::seam;
+use busbar_kernel::egress::seam;
 
 use super::fetch::{FetchPolicy, HttpResponse, Resolver, Transport};
 use super::relay::{ChunkFlow, RelayTransport, StreamHead};
@@ -158,7 +158,7 @@ impl Resolver for TokioResolver {
 //
 // The hop no longer runs behind a `reqwest::Response` this plane holds — the host owns the socket and
 // the verified handshake, and hands back the `sha256/…` pin on the seam's `seam::Buffered`, decoded
-// from the SAME bytes `busbar_substrate::plane_host::spki::pin` produces (which `super::spki::spki_pin`
+// from the SAME bytes `busbar_kernel::plane_host::spki::pin` produces (which `super::spki::spki_pin`
 // re-exports), so the pin string is byte-identical to the one this file used to compute. `None` on a
 // plaintext hop and `None` where the certificate cannot be read, unchanged: `super::verify` refuses
 // a transport-pinned registration whose fetch produced no observed pin, because "we could not look"
@@ -172,11 +172,11 @@ impl Resolver for TokioResolver {
 /// resolve at 03:00 would silently stop a registration being re-verified rather than stopping the
 /// operator at boot.
 pub(crate) type ClientIdentities =
-    BTreeMap<String, busbar_substrate::egress::engine::ClientIdentity>;
+    BTreeMap<String, busbar_kernel::egress::engine::ClientIdentity>;
 
 /// RESOLVE EVERY `agents.<name>.client_identity` INTO A USABLE CLIENT CERTIFICATE. FAIL-CLOSED.
 ///
-/// The PEM bytes come through [`busbar_substrate::tls::read_pem`] — the same function busbar's own inbound
+/// The PEM bytes come through [`busbar_kernel::tls::read_pem`] — the same function busbar's own inbound
 /// listener loads its cert and key with — so there is exactly one place in the tree that turns a
 /// [`busbar_api::SecretRef`] into TLS PEM, and it is the one that already knows not to log what it
 /// read. The cert and the key are concatenated because that is the single buffer the engine's
@@ -196,7 +196,7 @@ pub(crate) fn resolve_client_identities(
         let Some(identity) = def.client_identity.as_ref() else {
             continue;
         };
-        let mut pem = busbar_substrate::tls::read_pem(resolver, &identity.cert, "client cert")
+        let mut pem = busbar_kernel::tls::read_pem(resolver, &identity.cert, "client cert")
             .map_err(|e| format!("`agents.{name}.client_identity.cert`: {e}"))?;
         // A PEM section must start at the beginning of a line. A chain that ends without a trailing
         // newline would otherwise glue its `-----END-----` to the key's `-----BEGIN-----`, and the
@@ -205,12 +205,12 @@ pub(crate) fn resolve_client_identities(
             pem.push(b'\n');
         }
         pem.extend_from_slice(
-            &busbar_substrate::tls::read_pem(resolver, &identity.key, "client key")
+            &busbar_kernel::tls::read_pem(resolver, &identity.key, "client key")
                 .map_err(|e| format!("`agents.{name}.client_identity.key`: {e}"))?,
         );
         // NEVER echoes the buffer: the error is the TLS stack's own, and the buffer holds a private
         // key.
-        let id = busbar_substrate::egress::engine::ClientIdentity::from_pem(&pem).map_err(|e| {
+        let id = busbar_kernel::egress::engine::ClientIdentity::from_pem(&pem).map_err(|e| {
             format!(
                 "`agents.{name}.client_identity`: the certificate ({}) and key ({}) are not a \
                  usable client identity: {e}",
@@ -224,7 +224,7 @@ pub(crate) fn resolve_client_identities(
 }
 
 /// THE REAL TRANSPORT: a pinned `reqwest` hop to the PINNED ADDRESS, over the unified host egress
-/// backend behind [`busbar_substrate::egress::seam`] — pooled by the pinned address, so a repeated hop to an
+/// backend behind [`busbar_kernel::egress::seam`] — pooled by the pinned address, so a repeated hop to an
 /// already-judged target reuses the connection, and the client still refuses a second lookup.
 pub(crate) struct ReqwestTransport {
     /// Body ceiling, mirrored from the policy so the read stops at the cap rather than buffering an
@@ -232,7 +232,7 @@ pub(crate) struct ReqwestTransport {
     max_body_bytes: usize,
     timeout: Duration,
     /// Additional trust anchors (DER), accumulated by [`Self::trusting_root`] (test-only) so the full set
-    /// can be re-registered as one host-side [`busbar_substrate::plane_host::trust_anchor`] ref. EMPTY in
+    /// can be re-registered as one host-side [`busbar_kernel::plane_host::trust_anchor`] ref. EMPTY in
     /// production — the platform's roots are the roots.
     extra_roots: Vec<rustls_pki_types::CertificateDer<'static>>,
     /// THE OPAQUE host-side trust-anchor ref (`0` = platform roots only). Registered ONCE, when the
@@ -273,9 +273,9 @@ impl ReqwestTransport {
     /// here (at boot), not per hop — this transport keeps only the opaque ref.
     pub(crate) fn presenting(
         mut self,
-        identity: busbar_substrate::egress::engine::ClientIdentity,
+        identity: busbar_kernel::egress::engine::ClientIdentity,
     ) -> Self {
-        self.client_identity_ref = busbar_substrate::plane_host::identity::register(identity);
+        self.client_identity_ref = busbar_kernel::plane_host::identity::register(identity);
         self
     }
 
@@ -292,7 +292,7 @@ impl ReqwestTransport {
         // Re-register the FULL accumulated set (a fresh ref each time), so the desc's one ref resolves
         // to every root this transport was told to trust — the host owns the parsed certificates.
         self.trust_anchor_ref =
-            busbar_substrate::plane_host::trust_anchor::register(self.extra_roots.clone());
+            busbar_kernel::plane_host::trust_anchor::register(self.extra_roots.clone());
         self
     }
 }
@@ -384,7 +384,7 @@ impl ReqwestTransport {
             // A mid-body transport failure is reported with the SAME fixed line the plane's own read
             // produced — built HERE from the url the plane still holds (the seam kept the cause and the
             // url separate).
-            busbar_substrate::proxy::ReadEnd::TransportError => {
+            busbar_kernel::proxy::ReadEnd::TransportError => {
                 Err(format!("`{url}`: the connection failed mid-body"))
             }
             // Complete or Truncated both hand the bytes back: an over-cap body arrives one byte past

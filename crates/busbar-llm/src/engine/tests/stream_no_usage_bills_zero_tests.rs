@@ -4,7 +4,7 @@
 //! the stream-end tap runs once, with no usage to hand it.
 use super::{forward_with_pool, UsageSink};
 use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
-use busbar_substrate::testkit::engine_kit::{EngineTestKit as _, TestAppKit};
+use busbar_kernel::testkit::engine_kit::{EngineTestKit as _, TestAppKit};
 use std::sync::Arc;
 
 /// An OpenAI chat SSE stream with one content delta and a stop, and NO usage chunk.
@@ -62,7 +62,7 @@ async fn stream_without_usage_frame_bills_zero_on_every_dialect() {
             .expect("governance");
         let (key, _secret) = gov_kit
             .create_key(
-                busbar_substrate::governance::NewKeySpec {
+                busbar_kernel::governance::NewKeySpec {
                     name: "k".to_string(),
                     allowed_pools: None,
                     group: None,
@@ -99,7 +99,7 @@ async fn stream_without_usage_frame_bills_zero_on_every_dialect() {
         let app = builder.build();
         let (host, _rt) = crate::engine::test_host_rt(&app);
 
-        let charged_at = busbar_substrate::store::now();
+        let charged_at = busbar_kernel::store::now();
         let sink = UsageSink {
             gov: host.governance().expect("governance is configured"),
             cost: host.cost(),
@@ -151,7 +151,7 @@ async fn stream_without_usage_frame_bills_zero_on_every_dialect() {
         // the stream-end tap ran once and had no usage to hand it.
         gov_kit.flush_metering();
         let rows = gov_kit
-            .metering_for(busbar_substrate::governance::metering_bucket(charged_at))
+            .metering_for(busbar_kernel::governance::metering_bucket(charged_at))
             .expect("metering read");
         let mine: Vec<_> = rows.iter().filter(|r| r.key_id == key.id).collect();
         assert_eq!(

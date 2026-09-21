@@ -25,7 +25,7 @@
 //!
 //! ## The transport is a VALUE here, and it is never asked its identity
 //!
-//! [`busbar_substrate::transport::Transport::HttpJson`] is passed into `invoke` and used as a LABEL. There is
+//! [`busbar_substrate_values::transport::Transport::HttpJson`] is passed into `invoke` and used as a LABEL. There is
 //! no `if transport ==` anywhere on this path, and there is no place for one: which framing applies
 //! is settled by WHICH HANDLER THE ROUTER PICKED, before any code runs. That is what the framing
 //! seam is for — a cell of the matrix is selected by lookup, never by a branch in the agnostic core
@@ -52,8 +52,8 @@ use axum::response::Response;
 use serde_json::{json, Map, Value};
 
 use super::receive::{invoke, Target, Wire};
-use busbar_substrate::plane_routes::PlaneReqCtx;
-use busbar_substrate::transport::Transport;
+use busbar_kernel::plane_routes::PlaneReqCtx;
+use busbar_substrate_values::transport::Transport;
 
 /// THE `id` EVERY RE-FRAMED ENVELOPE CARRIES.
 ///
@@ -172,7 +172,7 @@ fn json_scalar(raw: &str) -> Value {
 /// THE ONE PATH EVERY REST HANDLER TAKES: compose the envelope, run the shared sequence, re-frame
 /// the answer.
 async fn compose_and_invoke(
-    engine_host: std::sync::Arc<dyn busbar_substrate::plane_host::EngineHost>,
+    engine_host: std::sync::Arc<dyn busbar_kernel::plane_host::EngineHost>,
     gov: busbar_api::PlaneRequestCtx,
     principal: busbar_api::AuthPrincipal,
     wire: Wire,
@@ -612,9 +612,9 @@ use axum::response::IntoResponse;
 /// `RouteAuth::Key` on every one, exactly as the JSON-RPC leg carries. A binding is a way of
 /// SPELLING a request, never a way around the admission the plane applies to it, and an unauthed
 /// REST leg beside an authed JSON-RPC one would be precisely that.
-pub(super) fn a2a_rest_routes() -> Vec<busbar_substrate::plane_routes::PlaneRouteSpec> {
+pub(super) fn a2a_rest_routes() -> Vec<busbar_kernel::plane_routes::PlaneRouteSpec> {
     use busbar_plugin_loader::{RouteAuth, RouteMethod};
-    use busbar_substrate::plane_routes::{PlaneReqCtx, PlaneRouteFuture, PlaneRouteSpec};
+    use busbar_kernel::plane_routes::{PlaneReqCtx, PlaneRouteFuture, PlaneRouteSpec};
     let mount = super::serve::MOUNT_PATH;
     // Each spec's `(path, method, auth)` is handed VERBATIM to `CoreRouter::route` by the core
     // adapter, so the `CoreRouteTable` rows are byte-identical to the ones the old `mount` recorded —

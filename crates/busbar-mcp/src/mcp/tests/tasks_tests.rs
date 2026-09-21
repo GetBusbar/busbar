@@ -14,7 +14,7 @@ use super::*;
 /// from an unknown id on purpose — see `Registry::get`.
 #[test]
 fn a_task_is_addressable_only_by_the_principal_it_was_created_for() {
-    let mine = TASKS.create("key-a", busbar_substrate::store::now_ms());
+    let mine = TASKS.create("key-a", busbar_kernel::store::now_ms());
     assert!(TASKS.get(&mine.id, "key-a").is_some());
     assert!(
         TASKS.get(&mine.id, "key-b").is_none(),
@@ -28,7 +28,7 @@ fn a_task_is_addressable_only_by_the_principal_it_was_created_for() {
 /// readable the instant the id exists, because `create` inserts before it returns.
 #[test]
 fn a_created_task_resolves_before_anything_else_runs() {
-    let task = TASKS.create("key-consistency", busbar_substrate::store::now_ms());
+    let task = TASKS.create("key-consistency", busbar_kernel::store::now_ms());
     assert!(
         TASKS.get(&task.id, "key-consistency").is_some(),
         "a `tasks/get` issued with no delay after `CreateTaskResult` must resolve; returning an id \
@@ -41,13 +41,13 @@ fn a_created_task_resolves_before_anything_else_runs() {
 /// the distinction the extension is most often implemented backwards.
 #[test]
 fn a_tool_error_settles_as_completed_and_a_protocol_error_settles_as_failed() {
-    let ran = TASKS.create("key-status", busbar_substrate::store::now_ms());
+    let ran = TASKS.create("key-status", busbar_kernel::store::now_ms());
     ran.complete(
         serde_json::json!({
             "isError": true,
             "content": [{ "type": "text", "text": "the file was not found" }],
         }),
-        busbar_substrate::store::now_ms(),
+        busbar_kernel::store::now_ms(),
     );
     let detailed = ran.detailed();
     assert_eq!(detailed["status"], "completed");
@@ -57,11 +57,11 @@ fn a_tool_error_settles_as_completed_and_a_protocol_error_settles_as_failed() {
         "a tool that RAN carries no protocol `error`"
     );
 
-    let broke = TASKS.create("key-status", busbar_substrate::store::now_ms());
+    let broke = TASKS.create("key-status", busbar_kernel::store::now_ms());
     broke.fail(
         -32603,
         "the upstream answered JSON-RPC error -32000".into(),
-        busbar_substrate::store::now_ms(),
+        busbar_kernel::store::now_ms(),
     );
     let detailed = broke.detailed();
     assert_eq!(detailed["status"], "failed");
@@ -76,12 +76,12 @@ fn a_tool_error_settles_as_completed_and_a_protocol_error_settles_as_failed() {
 /// contract requires so a client need not handle the terminate-then-cancel race.
 #[test]
 fn cancelling_a_terminal_task_leaves_its_settled_status_alone() {
-    let task = TASKS.create("key-cancel", busbar_substrate::store::now_ms());
+    let task = TASKS.create("key-cancel", busbar_kernel::store::now_ms());
     task.complete(
         serde_json::json!({ "content": [] }),
-        busbar_substrate::store::now_ms(),
+        busbar_kernel::store::now_ms(),
     );
-    task.cancel(busbar_substrate::store::now_ms());
+    task.cancel(busbar_kernel::store::now_ms());
     assert_eq!(
         task.detailed()["status"],
         "completed",
@@ -110,16 +110,16 @@ fn elicitation(key: &str) -> CallerAsk {
 /// parked on the other.
 #[test]
 fn answering_one_of_two_asks_leaves_the_task_parked_on_the_other() {
-    let task = TASKS.create("key-partial", busbar_substrate::store::now_ms());
+    let task = TASKS.create("key-partial", busbar_kernel::store::now_ms());
     task.park(
         vec![elicitation("first"), elicitation("second")],
-        busbar_substrate::store::now_ms(),
+        busbar_kernel::store::now_ms(),
     );
     assert_eq!(task.detailed()["status"], "input_required");
 
     let mut answered = serde_json::Map::new();
     answered.insert("first".into(), serde_json::json!({ "action": "accept" }));
-    task.deliver(&answered, busbar_substrate::store::now_ms());
+    task.deliver(&answered, busbar_kernel::store::now_ms());
 
     let detailed = task.detailed();
     assert_eq!(detailed["status"], "input_required");
@@ -135,7 +135,7 @@ fn answering_one_of_two_asks_leaves_the_task_parked_on_the_other() {
 
     let mut rest = serde_json::Map::new();
     rest.insert("second".into(), serde_json::json!({ "action": "accept" }));
-    task.deliver(&rest, busbar_substrate::store::now_ms());
+    task.deliver(&rest, busbar_kernel::store::now_ms());
     assert_eq!(
         task.detailed()["status"],
         "working",
@@ -146,7 +146,7 @@ fn answering_one_of_two_asks_leaves_the_task_parked_on_the_other() {
 /// The CreateTaskResult is FLAT and carries none of the DetailedTask-only members.
 #[test]
 fn the_creation_result_is_flat_and_carries_no_detailed_task_members() {
-    let task = TASKS.create("key-shape", busbar_substrate::store::now_ms());
+    let task = TASKS.create("key-shape", busbar_kernel::store::now_ms());
     let created = task.created();
     let obj = created.as_object().expect("an object");
     assert!(obj.contains_key("taskId"));
@@ -172,12 +172,12 @@ fn the_creation_result_is_flat_and_carries_no_detailed_task_members() {
 /// documents read together, which is why this is asserted rather than assumed.
 #[test]
 fn no_task_shape_ever_carries_request_state() {
-    let task = TASKS.create("key-no-state", busbar_substrate::store::now_ms());
+    let task = TASKS.create("key-no-state", busbar_kernel::store::now_ms());
     assert!(task.created().get("requestState").is_none());
     assert!(task.detailed().get("requestState").is_none());
     task.park(
         vec![elicitation("confirm")],
-        busbar_substrate::store::now_ms(),
+        busbar_kernel::store::now_ms(),
     );
     assert!(task.detailed().get("requestState").is_none());
 }
@@ -249,7 +249,7 @@ fn task_ids_are_unique_and_not_sequential() {
 /// caller polling for ever over a row stuck at `working`.
 #[tokio::test(flavor = "current_thread")]
 async fn a_shutdown_settles_a_working_task_as_cancelled_and_audits_it_once() {
-    let task = TASKS.create("key-shutdown", busbar_substrate::store::now_ms());
+    let task = TASKS.create("key-shutdown", busbar_kernel::store::now_ms());
     let (tx, rx) = tokio::sync::watch::channel(false);
     let audited = std::cell::Cell::new(0u32);
     let settle = settle_or_cancel_on_shutdown(
@@ -257,7 +257,7 @@ async fn a_shutdown_settles_a_working_task_as_cancelled_and_audits_it_once() {
         Some(rx),
         // The long-running task: work that will not finish on its own within any grace.
         std::future::pending::<()>(),
-        busbar_substrate::store::now_ms,
+        busbar_kernel::store::now_ms,
         |id| {
             assert_eq!(id, task.id, "the audit record names the task it cancelled");
             audited.set(audited.get() + 1);
@@ -283,10 +283,10 @@ async fn a_shutdown_settles_a_working_task_as_cancelled_and_audits_it_once() {
 /// terminal state nor emits a spurious audit record.
 #[tokio::test(flavor = "current_thread")]
 async fn a_completion_that_beat_the_shutdown_keeps_its_status_and_is_not_audited_again() {
-    let task = TASKS.create("key-shutdown-complete", busbar_substrate::store::now_ms());
+    let task = TASKS.create("key-shutdown-complete", busbar_kernel::store::now_ms());
     task.complete(
         serde_json::json!({ "content": [] }),
-        busbar_substrate::store::now_ms(),
+        busbar_kernel::store::now_ms(),
     );
     let (tx, rx) = tokio::sync::watch::channel(false);
     let _ = tx.send(true); // shutdown already fired when the arm runs
@@ -294,7 +294,7 @@ async fn a_completion_that_beat_the_shutdown_keeps_its_status_and_is_not_audited
         &task,
         Some(rx),
         std::future::pending::<()>(),
-        busbar_substrate::store::now_ms,
+        busbar_kernel::store::now_ms,
         |_| panic!("a task that completed must not get a shutdown-cancel audit record"),
     )
     .await;
@@ -310,13 +310,13 @@ async fn a_completion_that_beat_the_shutdown_keeps_its_status_and_is_not_audited
 /// `cancel` returns `false` so its audit closure never fires.
 #[tokio::test(flavor = "current_thread")]
 async fn a_caller_cancel_racing_the_shutdown_yields_one_transition_and_one_audit() {
-    let task = TASKS.create("key-shutdown-race", busbar_substrate::store::now_ms());
+    let task = TASKS.create("key-shutdown-race", busbar_kernel::store::now_ms());
     // The caller's `tasks/cancel` lands first (the verb path audits it on its own).
     assert!(TASKS
         .cancel(
             &task.id,
             "key-shutdown-race",
-            busbar_substrate::store::now_ms()
+            busbar_kernel::store::now_ms()
         )
         .is_some());
     let (tx, rx) = tokio::sync::watch::channel(false);
@@ -325,7 +325,7 @@ async fn a_caller_cancel_racing_the_shutdown_yields_one_transition_and_one_audit
         &task,
         Some(rx),
         std::future::pending::<()>(),
-        busbar_substrate::store::now_ms,
+        busbar_kernel::store::now_ms,
         |_| panic!("the shutdown arm lost the CAS and must not emit a second audit record"),
     )
     .await;
@@ -337,17 +337,17 @@ async fn a_caller_cancel_racing_the_shutdown_yields_one_transition_and_one_audit
 /// thread) is the same statement made structurally: the arm can never fire at all.
 #[tokio::test(flavor = "current_thread")]
 async fn the_inner_work_finishing_first_leaves_the_shutdown_arm_unrun() {
-    let task = TASKS.create("key-shutdown-none", busbar_substrate::store::now_ms());
+    let task = TASKS.create("key-shutdown-none", busbar_kernel::store::now_ms());
     settle_or_cancel_on_shutdown(
         &task,
         None,
         async {
             task.complete(
                 serde_json::json!({ "content": [] }),
-                busbar_substrate::store::now_ms(),
+                busbar_kernel::store::now_ms(),
             );
         },
-        busbar_substrate::store::now_ms,
+        busbar_kernel::store::now_ms,
         |_| panic!("no shutdown fired, so no cancel may be audited"),
     )
     .await;
@@ -358,13 +358,13 @@ async fn the_inner_work_finishing_first_leaves_the_shutdown_arm_unrun() {
 /// single-audit property rests on.
 #[test]
 fn cancel_reports_the_transition_it_made_and_only_that_one() {
-    let task = TASKS.create("key-cancel-cas", busbar_substrate::store::now_ms());
+    let task = TASKS.create("key-cancel-cas", busbar_kernel::store::now_ms());
     assert!(
-        task.cancel(busbar_substrate::store::now_ms()),
+        task.cancel(busbar_kernel::store::now_ms()),
         "the first cancel of a working task performs the transition"
     );
     assert!(
-        !task.cancel(busbar_substrate::store::now_ms()),
+        !task.cancel(busbar_kernel::store::now_ms()),
         "a second cancel finds the task terminal and reports no transition"
     );
 }

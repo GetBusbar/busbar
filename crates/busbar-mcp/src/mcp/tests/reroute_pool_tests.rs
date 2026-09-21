@@ -153,14 +153,14 @@ async fn a_tripped_pool_primary_reroutes_the_next_tools_call_to_its_twin_and_sta
     assert!(
         matches!(
             app.breaker_state_at("tool:fs", 0),
-            busbar_substrate::store::BreakerState::Open { .. }
+            busbar_kernel::store::BreakerState::Open { .. }
         ),
         "A's trip is recorded on the POOL cell at A's lane"
     );
     assert!(
         matches!(
             app.breaker_state_at("tool:fs", 1),
-            busbar_substrate::store::BreakerState::Closed
+            busbar_kernel::store::BreakerState::Closed
         ),
         "B's cell is untouched by A's failure"
     );
@@ -233,7 +233,7 @@ async fn a_member_with_a_different_approved_digest_is_refused_never_dispatched()
     let error = b2.get("error").expect("a JSON-RPC error object");
     assert_eq!(
         error["data"]["reason"],
-        busbar_substrate::audit::vocab::REASON_NOT_INTERCHANGEABLE,
+        busbar_contract::vocab::REASON_NOT_INTERCHANGEABLE,
         "{b2}"
     );
     let message = error["message"].as_str().unwrap_or_default();
@@ -293,7 +293,7 @@ async fn a_client_fault_answer_never_penalizes_the_member() {
     assert!(
         matches!(
             app.breaker_state_at("tool:fs", 0),
-            busbar_substrate::store::BreakerState::Closed
+            busbar_kernel::store::BreakerState::Closed
         ),
         "a 404 is the request's fault, never the member's"
     );

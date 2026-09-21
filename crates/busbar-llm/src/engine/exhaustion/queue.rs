@@ -44,11 +44,11 @@ pub(crate) async fn handle_queue(
     request_ctx: &RequestCtx,
     pool: &str,
     ingress_protocol: &str,
-    op: busbar_substrate::handlers::Op,
+    op: busbar_substrate_values::handlers::Op,
     req_content_type: &str,
     mut usage_sink: Option<UsageSink>,
 ) -> Response {
-    use busbar_substrate::store::Unavailable;
+    use busbar_kernel::store::Unavailable;
 
     // Pre-check: queue only helps if SOME excluded candidate is `AtCapacity` — a held permit can
     // drop. If every exclusion is Dead / BudgetExhausted / BreakerOpen / ProbeInFlight, nothing will
@@ -129,7 +129,7 @@ pub(crate) async fn handle_queue(
             // The semaphore was closed (shutdown) — no permit is coming; shed.
             Err(_) => return handle_status_503(host, cands, now(), pool, ingress_protocol),
         };
-        let permit = busbar_substrate::store::Permit::Bounded(owned);
+        let permit = busbar_kernel::store::Permit::Bounded(owned);
 
         // We hold capacity but have NOT passed the breaker. Run ONLY the breaker admission step on the
         // won lane — the dispatched request owns the probe it wins (the attempt releases it

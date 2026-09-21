@@ -13,7 +13,7 @@
 //! so a self-signed test CA cannot be reached through the seam — the same reason `egress_tests` uses
 //! plaintext). The peer-SPKI dimension is therefore `None == None` here; its byte-identity over TLS is
 //! by CONSTRUCTION — the host and the plane decode the pin through the one shared
-//! `busbar_substrate::plane_host::spki::pin` (`a2a::spki::spki_pin` re-exports it), so there is no second spelling
+//! `busbar_kernel::plane_host::spki::pin` (`a2a::spki::spki_pin` re-exports it), so there is no second spelling
 //! to diverge. `client_identity_offered` is asserted directly (both compute `is_some()`).
 
 use std::io::{Read, Write};
@@ -23,9 +23,9 @@ use std::sync::Arc;
 use crate::a2a::fetch::{FetchPolicy, Transport};
 use crate::a2a::relay::{ChunkFlow, RelayTransport};
 use crate::a2a::transport::ReqwestTransport;
-use busbar_substrate::egress::seam::{HopSpec, HostlessEgress};
-use busbar_substrate::egress::{build_pinned_client, RefuseSecondLookup};
-use busbar_substrate::proxy::{read_capped, ReadEnd};
+use busbar_kernel::egress::seam::{HopSpec, HostlessEgress};
+use busbar_kernel::egress::{build_pinned_client, RefuseSecondLookup};
+use busbar_kernel::proxy::{read_capped, ReadEnd};
 
 /// The installed hostless-egress driver — the engine's, bound by the transport's own test boot
 /// (`test_egress_boot`, the same binding the composition root makes) and read back through the ONE
@@ -33,7 +33,7 @@ use busbar_substrate::proxy::{read_capped, ReadEnd};
 /// buffered / streaming egress bodies whole over one hostless scope.
 fn driver() -> &'static dyn HostlessEgress {
     super::test_egress_boot::install();
-    busbar_substrate::egress::seam::hostless().expect("the hostless-egress driver is installed")
+    busbar_kernel::egress::seam::hostless().expect("the hostless-egress driver is installed")
 }
 
 const LOOPBACK: &str = "127.0.0.1";

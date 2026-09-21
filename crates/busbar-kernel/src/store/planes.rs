@@ -48,7 +48,7 @@
 // nothing holds it, so its items read dead — scoped to exactly that config.
 #![allow(dead_code)]
 
-use busbar_substrate::store::BreakerCfg;
+use busbar_kernel::store::BreakerCfg;
 
 use super::in_memory::{HealthState, LaneData};
 use super::{LaneRuntime, Unavailable};
@@ -170,7 +170,7 @@ impl PlaneBreakers {
     }
 
     // R5-store: `PlaneBreakers::{tool_key, agent_key}` DELETED. Both were one-line delegations to
-    // `busbar_substrate::store::{tool_key, agent_key}` — the prefix spellings had already moved down
+    // `busbar_kernel::store::{tool_key, agent_key}` — the prefix spellings had already moved down
     // to the neutral substrate — and both had ZERO production callers in the whole workspace (they
     // carried `#[allow(dead_code)]` for exactly that reason). The keyspace rule is unchanged and
     // single-sourced where it now lives; every caller left names the substrate directly.

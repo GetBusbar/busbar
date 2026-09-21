@@ -103,7 +103,7 @@ async fn a_black_holed_stream_send_times_out_at_the_ceiling_and_records_the_fail
         resp.status()
     );
     assert_eq!(
-        app.store.snapshot(0, busbar_substrate::store::now()).err,
+        app.store.snapshot(0, busbar_kernel::store::now()).err,
         1,
         "the ceiling expiry must record a breaker transient, not just an error status"
     );
@@ -125,11 +125,11 @@ async fn a_black_holed_stream_send_on_the_degraded_walk_times_out_at_the_ceiling
             &format!("http://{addr}"),
         ))
         .pool("p", &[(0, 1)])
-        .on_exhausted("p", busbar_substrate::config::pools::OnExhausted::LeastBad)
+        .on_exhausted("p", busbar_kernel::config::pools::OnExhausted::LeastBad)
         .build();
     // The only member's breaker is Open → the pool is exhausted → least_bad degrades onto it.
     app.store
-        .force_open_in("p", 0, busbar_substrate::store::now() + 300);
+        .force_open_in("p", 0, busbar_kernel::store::now() + 300);
 
     let body: bytes::Bytes = serde_json::to_vec(&json!({
         "model": "gpt-4o",
@@ -162,7 +162,7 @@ async fn a_black_holed_stream_send_on_the_degraded_walk_times_out_at_the_ceiling
         resp.status()
     );
     assert_eq!(
-        app.store.snapshot(0, busbar_substrate::store::now()).err,
+        app.store.snapshot(0, busbar_kernel::store::now()).err,
         1,
         "the degraded-path ceiling expiry must record the breaker transient too"
     );

@@ -358,7 +358,6 @@ dependencies = [
  "busbar-plugin-loader",
  "busbar-plugin-sign",
  "busbar-store-example-plugin",
- "busbar-substrate",
  "busbar-substrate-values",
  "busbar-transport-grpc",
  "busbar-transport-http",
@@ -405,6 +404,7 @@ dependencies = [
  "busbar-a2a-codec",
  "busbar-admin",
  "busbar-api",
+ "busbar-contract",
  "busbar-kernel",
  "busbar-plane-a2a-host",
  "busbar-plugin",
@@ -412,7 +412,7 @@ dependencies = [
  "busbar-plugin-sign",
  "busbar-secret-ref",
  "busbar-store-memory",
- "busbar-substrate",
+ "busbar-substrate-values",
  "bytes",
  "ed25519-dalek",
  "futures",
@@ -464,7 +464,6 @@ dependencies = [
  "busbar-plugin-loader",
  "busbar-plugin-sign",
  "busbar-store-memory",
- "busbar-substrate",
  "bytes",
  "flate2",
  "hex",
@@ -530,7 +529,6 @@ name = "busbar-core-config"
 version = "1.6.0"
 dependencies = [
  "busbar-contract",
- "busbar-substrate",
 ]
 
 [[package]]
@@ -596,7 +594,6 @@ dependencies = [
  "busbar-secret-ref",
  "busbar-store-example-plugin",
  "busbar-store-memory",
- "busbar-substrate",
  "busbar-substrate-values",
  "busbar-timing",
  "bytes",
@@ -644,6 +641,7 @@ dependencies = [
  "tikv-jemallocator",
  "tokio",
  "tokio-rustls",
+ "tokio-tungstenite",
  "tower",
  "tracing",
  "tracing-opentelemetry",
@@ -737,7 +735,7 @@ dependencies = [
  "busbar-mcp",
  "busbar-plugin",
  "busbar-store-memory",
- "busbar-substrate",
+ "busbar-substrate-values",
  "busbar-timing",
  "bytes",
  "crc32fast",
@@ -793,6 +791,7 @@ dependencies = [
  "base64 0.23.1",
  "busbar-admin",
  "busbar-api",
+ "busbar-contract",
  "busbar-kernel",
  "busbar-llm",
  "busbar-mcp-codec",
@@ -802,7 +801,7 @@ dependencies = [
  "busbar-plugin-sign",
  "busbar-secret-ref",
  "busbar-store-memory",
- "busbar-substrate",
+ "busbar-substrate-values",
  "bytes",
  "futures",
  "getrandom 0.3.4",
@@ -847,7 +846,6 @@ dependencies = [
  "base64 0.23.1",
  "busbar-kernel",
  "busbar-plugin-loader",
- "busbar-substrate",
  "bytes",
  "http",
  "http-body-util",
@@ -873,7 +871,8 @@ dependencies = [
 name = "busbar-plane-a2a-host"
 version = "1.6.0"
 dependencies = [
- "busbar-substrate",
+ "busbar-kernel",
+ "busbar-substrate-values",
 ]
 
 [[package]]
@@ -907,7 +906,8 @@ dependencies = [
 name = "busbar-plane-mcp-host"
 version = "1.6.0"
 dependencies = [
- "busbar-substrate",
+ "busbar-kernel",
+ "busbar-substrate-values",
 ]
 
 [[package]]
@@ -1057,57 +1057,6 @@ dependencies = [
  "busbar-api",
  "busbar-contract",
  "busbar-plugin-testkit",
-]
-
-[[package]]
-name = "busbar-substrate"
-version = "1.6.0"
-dependencies = [
- "async-trait",
- "axum",
- "base64 0.23.1",
- "busbar-api",
- "busbar-contract",
- "busbar-plugin",
- "busbar-substrate-values",
- "busbar-timing",
- "bytes",
- "crc32fast",
- "ed25519-dalek",
- "futures",
- "getrandom 0.3.4",
- "hex",
- "hmac",
- "http",
- "http-body-util",
- "httpdate",
- "hyper",
- "hyper-rustls",
- "hyper-util",
- "indexmap",
- "metrics",
- "metrics-exporter-prometheus",
- "metrics-util",
- "rcgen",
- "reqwest 0.12.28",
- "ring",
- "rustls",
- "rustls-pki-types",
- "schemars",
- "serde",
- "serde_json",
- "serde_urlencoded",
- "serde_yaml_ng",
- "sha2 0.11.0",
- "sonic-rs",
- "tokio",
- "tokio-rustls",
- "tokio-tungstenite",
- "tower",
- "tracing",
- "tracing-subscriber",
- "url",
- "webpki-roots",
 ]
 
 [[package]]
@@ -1273,9 +1222,10 @@ dependencies = [
  "async-trait",
  "axum",
  "busbar-api",
+ "busbar-kernel",
  "busbar-plane-voice",
  "busbar-plugin",
- "busbar-substrate",
+ "busbar-substrate-values",
  "busbar-voice-codec",
  "bytes",
  "futures",

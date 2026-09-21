@@ -17,7 +17,7 @@
 
 /// Bind core's `CorePlaneAdminEnvelope` into the substrate seam, idempotently (first-wins `OnceLock`).
 pub(crate) fn install() {
-    busbar_substrate::admin_verbs::install_plane_admin_envelope(
+    busbar_kernel::admin_verbs::install_plane_admin_envelope(
         &busbar_kernel::admin::planeverbs::CorePlaneAdminEnvelope,
     );
 }

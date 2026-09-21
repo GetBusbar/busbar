@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The lifecycle SCOPES a plane's host handles live at — RELOCATED to
-//! [`busbar_substrate::plane_host::scope`], re-exported here so in-core call sites are unchanged.
+//! [`busbar_kernel::plane_host::scope`], re-exported here so in-core call sites are unchanged.
 //!
 //! The scope types ([`DispatchScope`], [`DurableScope`], [`SessionScope`] and their supporting
 //! `SettleAdmission` / `EgressFaultDetail` vocabulary) name only [`busbar_plugin::hot`] + `std`, so
@@ -10,4 +10,596 @@
 //! in-core call site (`plane_host`'s own veneers, `a2a`) and the host `HostState` that materializes
 //! over a `DispatchScope` are untouched — the move is a pure relocation, not a code change.
 
-pub use busbar_substrate::plane_host::scope::*;
+// ==== merged from busbar-substrate (W4.b P2 engine drain) ====
+use crate::plane::handle_engine::{
+    ChainPosition, DurableHandleEngine, HandleDenied, HandleEngineError, MutateError, Mutation,
+    ScopedMutateError, SubmitRecord, SweepBounds,
+};
+use busbar_api::StoreError;
+use busbar_plugin::hot::{
+    AdmissionId, EgressFailClass, EgressId, PipeId, Signal, StatusClass, VerifyLease,
+};
+use std::any::Any;
+use std::sync::{Arc, Mutex};
+
+/// The neutral FAILURE detail the host stashes when an `egress_open` fails, so the plane can read it
+/// back through `egress_fault` and compose its OWN operator string. Held in the [`DispatchScope`] (not
+/// a process global) so the bytes live exactly for the dispatch that produced them and are reclaimed
+/// with it; the CAUSE (the flattened transport-error chain) and the URL are kept SEPARATE so each
+/// plane chooses to include or strip the url.
+#[derive(Clone, Debug)]
+pub struct EgressFaultDetail {
+    /// The neutral failure class the plane maps to its own failover/refusal taxonomy.
+    pub class: EgressFailClass,
+    /// The observed status (0 when the failure was before a response head).
+    pub status: u16,
+    /// The flattened cause-message bytes (the transport-error chain), url-free.
+    pub cause: String,
+    /// The target url bytes, kept separate from the cause.
+    pub url: String,
+}
+
+/// A reclaim action for a handle whose release is an explicit host call (close an egress, kill a
+/// subprocess, drop a leadership lease). Phase 2 fills these with the real host-side calls; each runs
+/// exactly once, when the [`DispatchScope`] drops.
+type Reclaim = Box<dyn FnOnce() + Send + 'static>;
+
+/// A settle-capable breaker admission held in the arena — the leak-safety-critical resource of the
+/// BREAKER family. Its `Drop` (run by [`DispatchScope::reclaim_all`]) releases the real single-flight
+/// half-open probe, so a dropped/cancelled dispatch that never settled cannot wedge the cell in
+/// `HalfOpen`; [`settle`](Self::settle) instead records the observed outcome against the breaker,
+/// after which the guard's release `Drop` is a no-op.
+///
+/// The concrete implementor (`plane_host::breaker::BreakerAdmission`) owns the real
+/// `store::planes::Admission` RAII token; this trait lets the arena hold it behind a boxed object and
+/// still drive its one settle, WITHOUT `scope` depending on the private breaker types.
+pub trait SettleAdmission: Send {
+    /// Record the observed `signal` against the breaker exactly once and return the resulting ABI
+    /// [`StatusClass`]. Invoked at most once via [`DispatchScope::settle_admission`]; after it, the
+    /// guard's probe-release `Drop` becomes a no-op (the recorded outcome already consumed HalfOpen).
+    fn settle(&mut self, signal: &Signal) -> StatusClass;
+}
+
+/// Which kind of host handle an [`Entry`] carries. Kept alongside the raw id so the Phase-2 fan-out
+/// can resolve a plane-held handle-id back to its registered resource (e.g. `egress_write(id)`), and
+/// so the same raw `u64` under two kinds never collides.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HandleKind {
+    /// A breaker/failover admission grant.
+    Admission,
+    /// A one-shot / duplex governed egress.
+    Egress,
+    /// A subprocess (or raw-connection) duplex byte pipe.
+    Pipe,
+    /// A single-flight counterparty-verification leadership lease.
+    VerifyLease,
+}
+
+/// One registered, reclaimable resource. Either an RAII guard whose `Drop` reclaims it (the shape the
+/// real breaker `store::planes::Admission` takes in Phase 2 — boxed as `dyn Send` so this scaffold does
+/// not reach a private type), or an explicit [`Reclaim`] closure the arena runs once on drop.
+enum Resource {
+    /// An RAII guard: dropping the box runs the guard's `Drop`. Used for the real admission guard in
+    /// Phase 2 and by the arena's own unit test.
+    Guard(Box<dyn Send>),
+    /// An explicit reclaim call, taken and run once on scope drop.
+    Closer(Option<Reclaim>),
+    /// A breaker admission: dropping it releases the single-flight half-open probe (the leak-safety
+    /// reclaim), and it can be SETTLED once — recording the outcome — before the scope ends. Boxed
+    /// behind [`SettleAdmission`] so the arena never names the private breaker types.
+    Admission(Box<dyn SettleAdmission>),
+}
+
+/// A registered handle: its kind, its raw id (what the plane holds), and the resource to reclaim.
+struct Entry {
+    // `kind` + `raw` are the Phase-2 lookup key: the fan-out resolves a plane-held handle-id back to
+    // its registered resource (e.g. `egress_write(EgressId)` → this entry). The scaffold only RECLAIMS
+    // (which needs `res` alone), so they are write-only until that fan-out lands.
+    #[allow(dead_code)]
+    kind: HandleKind,
+    #[allow(dead_code)]
+    raw: u64,
+    res: Resource,
+}
+
+/// The mutable interior of a [`DispatchScope`]. Guarded by a `Mutex` because every vtable fn holds
+/// only a shared `&DispatchScope` (via the recovered `HostState`) yet must register/reclaim.
+#[derive(Default)]
+struct Registry {
+    entries: Vec<Entry>,
+    /// Monotonic id source; `0` is the reserved `NONE` sentinel of every handle newtype, so ids start
+    /// at `1`.
+    next: u64,
+}
+
+/// The per-dispatch-invocation arena of acquired host handles — the leak-safety keystone.
+///
+/// Core opens ONE of these per dispatch, hands the plane a `HostCtx` that recovers a
+/// `HostState` referencing it, and the plane's host calls register every handle they acquire here. On
+/// `Drop` — whenever the dispatch future ends OR is dropped — [`reclaim_all`](Self::reclaim_all)
+/// reclaims every registered handle, so a cancelled/dropped dispatch can never leak a bare host handle.
+pub struct DispatchScope {
+    reg: Mutex<Registry>,
+    /// The last failed `egress_open`'s neutral fault detail, stashed here so the plane reads it back
+    /// through `egress_fault` after a non-`Ok` open. Lives with the dispatch (reclaimed on drop); holds
+    /// only the LAST fault (the "read it immediately after the failing open" contract, like the govern
+    /// refusal reason).
+    egress_fault: Mutex<Option<EgressFaultDetail>>,
+}
+
+impl Default for DispatchScope {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl DispatchScope {
+    /// Open an empty dispatch arena.
+    #[must_use]
+    pub fn new() -> Self {
+        DispatchScope {
+            reg: Mutex::new(Registry::default()),
+            egress_fault: Mutex::new(None),
+        }
+    }
+
+    /// STASH the neutral fault detail of a just-failed `egress_open`, so a following `egress_fault`
+    /// hands it to the plane. Overwrites any prior unread fault (the last-fault contract).
+    pub fn stash_egress_fault(&self, detail: EgressFaultDetail) {
+        *self.egress_fault.lock().unwrap_or_else(|e| e.into_inner()) = Some(detail);
+    }
+
+    /// TAKE (and clear) the stashed egress fault, or `None` when none is pending. Consuming so a stale
+    /// fault cannot be re-read against a later, unrelated open.
+    pub fn take_egress_fault(&self) -> Option<EgressFaultDetail> {
+        self.egress_fault
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+    }
+
+    /// Poison-recovering lock: a panic mid-register must not wedge the arena for the reclaim path, so
+    /// recover the guard rather than cascade the poison (same discipline as `store::*_recover`).
+    fn lock(&self) -> std::sync::MutexGuard<'_, Registry> {
+        self.reg.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Allocate the next non-zero raw handle id.
+    fn next_raw(reg: &mut Registry) -> u64 {
+        reg.next += 1;
+        reg.next
+    }
+
+    /// Register a breaker admission as an RAII `guard` (the real `store::planes::Admission` in Phase 2;
+    /// a test guard here). Its `Drop` runs the actual release when the scope drops.
+    pub fn register_admission(&self, guard: Box<dyn Send>) -> AdmissionId {
+        let mut reg = self.lock();
+        let raw = Self::next_raw(&mut reg);
+        reg.entries.push(Entry {
+            kind: HandleKind::Admission,
+            raw,
+            res: Resource::Guard(guard),
+        });
+        AdmissionId(raw)
+    }
+
+    /// Register a settle-capable breaker admission (the real `store::planes::Admission` RAII token,
+    /// wrapped so it can also be settled) — the BREAKER family's leak-safety keystone. Returns the
+    /// arena's [`AdmissionId`]; the plane never holds the bare probe. On scope drop the guard's `Drop`
+    /// releases the probe; a prior [`settle_admission`](Self::settle_admission) makes that a no-op.
+    pub fn register_settling_admission(&self, guard: Box<dyn SettleAdmission>) -> AdmissionId {
+        let mut reg = self.lock();
+        let raw = Self::next_raw(&mut reg);
+        reg.entries.push(Entry {
+            kind: HandleKind::Admission,
+            raw,
+            res: Resource::Admission(guard),
+        });
+        AdmissionId(raw)
+    }
+
+    /// Settle the breaker admission `id`: record the observed `signal` against the breaker and return
+    /// the resulting ABI [`StatusClass`], REMOVING the entry (so the guard's probe-release `Drop` runs
+    /// now, a no-op after the record). Returns `None` when no live admission carries `id` — a stale or
+    /// already-settled handle the caller maps to `Gone`. Recording runs with the lock released, matching
+    /// [`reclaim_all`](Self::reclaim_all)'s discipline.
+    pub fn settle_admission(&self, id: AdmissionId, signal: &Signal) -> Option<StatusClass> {
+        if id.is_none() {
+            return None;
+        }
+        let entry = {
+            let mut reg = self.lock();
+            let pos = reg
+                .entries
+                .iter()
+                .position(|e| e.raw == id.0 && matches!(e.res, Resource::Admission(_)))?;
+            reg.entries.remove(pos)
+        };
+        match entry.res {
+            Resource::Admission(mut guard) => {
+                let class = guard.settle(signal);
+                drop(guard); // release the probe (a no-op now the outcome is recorded)
+                Some(class)
+            }
+            // Unreachable: the `matches!` above selected an `Admission` entry.
+            _ => None,
+        }
+    }
+
+    /// Register a settle-capable breaker admission under a CALLER-SUPPLIED raw id rather than a
+    /// freshly-minted one — the receiving half of the [`DurableScope`] handoff (see
+    /// [`handoff_settling_to`](Self::handoff_settling_to)). The monotonic `next` counter is advanced
+    /// past `raw` so a later mint in this arena cannot collide with the adopted id.
+    ///
+    /// Returns the [`AdmissionId`] the entry now answers to, which is NOT always `AdmissionId(raw)`:
+    /// an id an already-live entry answers to is not adoptable, because every lookup here
+    /// ([`settle_admission`](Self::settle_admission), [`handoff_settling_to`](Self::handoff_settling_to))
+    /// resolves an id to the FIRST entry carrying it. A second entry under the same raw would settle
+    /// the wrong probe and strand the other one until scope drop. A collision therefore mints a fresh
+    /// id instead — callers consume the RETURNED id, so the handle they go on to hold still resolves
+    /// to the guard they adopted.
+    pub fn adopt_settling_admission(
+        &self,
+        raw: u64,
+        guard: Box<dyn SettleAdmission>,
+    ) -> AdmissionId {
+        let mut reg = self.lock();
+        let raw = if reg.entries.iter().any(|e| e.raw == raw) {
+            Self::next_raw(&mut reg)
+        } else {
+            if raw > reg.next {
+                reg.next = raw;
+            }
+            raw
+        };
+        reg.entries.push(Entry {
+            kind: HandleKind::Admission,
+            raw,
+            res: Resource::Admission(guard),
+        });
+        AdmissionId(raw)
+    }
+
+    /// HAND OFF the settling admission `id` from THIS (per-request) arena into `dst`, a
+    /// [`DurableScope`] whose lifetime is the unit of work's — WITHOUT losing settle-ability. The
+    /// `Box<dyn SettleAdmission>` (its real single-flight probe hold) is REMOVED from this arena so
+    /// the per-request future's drop no longer reclaims it, and re-homed into `dst` under the SAME
+    /// [`AdmissionId`] so a later [`DurableScope::settle`] still resolves it. Returns the preserved
+    /// id on success, `None` when `id` names no live settling admission here (stale / already handed).
+    ///
+    /// This is the durable handoff at the arena level: the breaker probe-hold leaves request scope
+    /// and joins the durable scope, so its owner-checked release fires at TASK end, not request end.
+    pub fn handoff_settling_to(&self, id: AdmissionId, dst: &DurableScope) -> Option<AdmissionId> {
+        if id.is_none() {
+            return None;
+        }
+        let entry = {
+            let mut reg = self.lock();
+            let pos = reg
+                .entries
+                .iter()
+                .position(|e| e.raw == id.0 && matches!(e.res, Resource::Admission(_)))?;
+            reg.entries.remove(pos)
+        };
+        match entry.res {
+            Resource::Admission(guard) => Some(dst.adopt_settling(id, guard)),
+            // Unreachable: the `position` above selected an `Admission` entry.
+            _ => None,
+        }
+    }
+
+    /// Register an open governed egress with the `reclaim` that closes it (Phase 2: `egress_close`).
+    pub fn register_egress(&self, reclaim: Reclaim) -> EgressId {
+        let mut reg = self.lock();
+        let raw = Self::next_raw(&mut reg);
+        reg.entries.push(Entry {
+            kind: HandleKind::Egress,
+            raw,
+            res: Resource::Closer(Some(reclaim)),
+        });
+        EgressId(raw)
+    }
+
+    /// Register a subprocess/raw-connection pipe with the `reclaim` that kills/closes it (Phase 2).
+    pub fn register_pipe(&self, reclaim: Reclaim) -> PipeId {
+        let mut reg = self.lock();
+        let raw = Self::next_raw(&mut reg);
+        reg.entries.push(Entry {
+            kind: HandleKind::Pipe,
+            raw,
+            res: Resource::Closer(Some(reclaim)),
+        });
+        PipeId(raw)
+    }
+
+    /// Register a verification leadership lease with the `reclaim` that releases it (Phase 2).
+    pub fn register_lease(&self, reclaim: Reclaim) -> VerifyLease {
+        let mut reg = self.lock();
+        let raw = Self::next_raw(&mut reg);
+        reg.entries.push(Entry {
+            kind: HandleKind::VerifyLease,
+            raw,
+            res: Resource::Closer(Some(reclaim)),
+        });
+        VerifyLease(raw)
+    }
+
+    /// How many handles are currently registered (test/observability hook).
+    #[must_use]
+    pub fn registered(&self) -> usize {
+        self.lock().entries.len()
+    }
+
+    /// Reclaim EVERY registered handle NOW, in reverse (LIFO) acquisition order: drop each guard
+    /// (running its real `Drop`) and run each closer exactly once. Idempotent — a second call finds an
+    /// empty registry. Called by `Drop`; exposed so a test can assert synchronous reclaim on abort.
+    ///
+    /// EVERY ENTRY GETS ITS OWN BOUNDARY. Reclaiming runs code this loop does not own — a closer that
+    /// kills a subprocess, a guard's real `Drop` — and one of those panicking must not cost the
+    /// others. Unbounded, a single panic here skips every remaining entry, leaking exactly what this
+    /// arena exists to reclaim; and because the loop is reached from `Drop`, that panic unwinding out
+    /// of a drop already running during an unwind aborts the process. The boundary contains it to the
+    /// entry that raised it, and the loop carries on.
+    pub fn reclaim_all(&self) {
+        // Take the entries OUT under the lock, then reclaim with the lock released so a reclaim that
+        // re-enters the arena cannot deadlock.
+        let drained: Vec<Entry> = {
+            let mut reg = self.lock();
+            std::mem::take(&mut reg.entries)
+        };
+        for entry in drained.into_iter().rev() {
+            let kind = entry.kind;
+            // `AssertUnwindSafe`: nothing observable survives a panicking reclaim. The entry is
+            // already out of the registry and is consumed here whichever way it ends, so there is no
+            // half-updated state left for a later reader to see.
+            let reclaimed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                match entry.res {
+                    Resource::Guard(g) => drop(g),
+                    Resource::Admission(g) => drop(g), // Drop releases the single-flight probe.
+                    Resource::Closer(Some(reclaim)) => reclaim(),
+                    Resource::Closer(None) => {}
+                }
+            }));
+            if reclaimed.is_err() {
+                tracing::warn!(
+                    handle_kind = ?kind,
+                    "a host-handle reclaim panicked; the remaining handles were reclaimed anyway"
+                );
+            }
+        }
+    }
+}
+
+impl Drop for DispatchScope {
+    fn drop(&mut self) {
+        self.reclaim_all();
+    }
+}
+
+/// The CONNECTION-lifetime scope (DESIGN-v5-taxonomy Axis 2): ONE live stateful session that owns a
+/// single durable handle in the [`DurableHandleEngine`] for longer than one exchange (a duplex/session
+/// plane; a DB-wire plane). It is a thin, NEUTRAL binding — an `Arc` on the process-wide engine plus
+/// the session's `(owner, id)` coordinates — and nothing about any one plane's record. It NAMES no
+/// engine mechanic of its own; every method delegates to the engine the substrate already owns.
+///
+/// The owner is load-bearing, not decorative: the session's whole lifecycle keys on it. [`get`] reads
+/// through the engine's SCOPED anti-enumeration lookup and [`mutate`]/[`close`] gate on ownership, so a
+/// SECOND session bound to the same `id` under a DIFFERENT owner collapses to the exact same
+/// indistinguishable refusal ([`HandleDenied::NotYours`] / [`ScopedMutateError::NotYours`]) the engine
+/// enforces — a foreign owner can neither read, resume, nor evict the handle, and cannot even tell it
+/// exists. That is the anti-enumeration contract carried up to the session surface unchanged.
+///
+/// [`get`]: SessionScope::get
+/// [`mutate`]: SessionScope::mutate
+/// [`close`]: SessionScope::close
+pub struct SessionScope {
+    /// The process-wide durable-handle engine this session's handle lives in.
+    engine: Arc<DurableHandleEngine>,
+    /// The principal the handle is attributed to — the ONLY key the engine's scoped read/write match
+    /// on. Every [`get`](Self::get)/[`mutate`](Self::mutate)/[`close`](Self::close) passes this owner,
+    /// so a session under the wrong owner is refused identically to a missing handle.
+    owner: String,
+    /// The opaque handle id this session is bound to (the engine's working-set key).
+    id: String,
+}
+
+impl SessionScope {
+    /// Bind a session to the durable handle keyed by `id`, attributed to `owner`, living in `engine`.
+    /// Pure binding — it touches the engine only on the later [`open`](Self::open) /
+    /// [`get`](Self::get) / [`mutate`](Self::mutate) / [`close`](Self::close). Use this to attach to a
+    /// handle the engine already holds (a boot-rehydrated one, or a second live view), or as the first
+    /// step before [`open`](Self::open) submits a fresh one.
+    #[must_use]
+    pub fn new(
+        engine: Arc<DurableHandleEngine>,
+        owner: impl Into<String>,
+        id: impl Into<String>,
+    ) -> Self {
+        SessionScope {
+            engine,
+            owner: owner.into(),
+            id: id.into(),
+        }
+    }
+
+    /// The principal this session's handle is attributed to.
+    #[must_use]
+    pub fn owner(&self) -> &str {
+        &self.owner
+    }
+
+    /// The opaque handle id this session is bound to.
+    #[must_use]
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    /// OPEN this session's handle: submit a fresh durable handle to the engine at the genesis position.
+    /// Delegates straight to [`DurableHandleEngine::submit`]; `plan` builds the row + records + optional
+    /// genesis event (the plane computes any digest), `abandon` is the retention-sweep transition, and
+    /// `report_fail` receives a sweep-time durable failure. Returns the installed opaque row.
+    ///
+    /// The caller's `plan` MUST stamp the returned [`SubmitRecord`] with THIS session's [`id`](Self::id)
+    /// and a [`HandleMeta`](crate::plane::handle_engine::HandleMeta) owner equal to this session's
+    /// [`owner`](Self::owner): the session keys every later scoped call on that pair, so a genesis under
+    /// a diverging owner/id would leave this session unable to read or resume what it just opened.
+    pub fn open<P, A, R>(
+        &self,
+        now: u64,
+        bounds: SweepBounds,
+        plan: P,
+        abandon: A,
+        report_fail: R,
+    ) -> Result<Arc<dyn Any + Send + Sync>, HandleEngineError>
+    where
+        P: FnOnce(&ChainPosition) -> Result<SubmitRecord, StoreError>,
+        A: Fn(&str, &(dyn Any + Send + Sync), &ChainPosition, u64) -> Option<Mutation>,
+        R: Fn(&str, &StoreError),
+    {
+        self.engine.submit(now, bounds, plan, abandon, report_fail)
+    }
+
+    /// GET this session's current opaque row through the engine's SCOPED read — a session bound under a
+    /// foreign owner (or to a since-evicted id) is refused with the one indistinguishable
+    /// [`HandleDenied::NotYours`], never learning whether the handle exists.
+    pub fn get(&self) -> Result<Arc<dyn Any + Send + Sync>, HandleDenied> {
+        self.engine.scoped_get(&self.owner, &self.id)
+    }
+
+    /// MUTATE this session's handle through [`DurableHandleEngine::scoped_mutate`], always under THIS
+    /// session's owner: the engine runs its owner gate FIRST, so a foreign-owner session is refused with
+    /// [`ScopedMutateError::NotYours`] BEFORE `plan` ever runs — identically to a missing handle, leaking
+    /// nothing. Only an owner match runs `plan` (which sees the current row + chain position) and the
+    /// engine's persist-then-update path. Returns the resulting opaque row.
+    pub fn mutate<F>(&self, plan: F) -> Result<Arc<dyn Any + Send + Sync>, ScopedMutateError>
+    where
+        F: FnOnce(
+            &(dyn Any + Send + Sync),
+            &ChainPosition,
+        ) -> Result<Option<Mutation>, MutateError>,
+    {
+        self.engine.scoped_mutate(&self.owner, &self.id, plan)
+    }
+
+    /// CLOSE this session: evict its handle from the working set once it has reached a TERMINAL state,
+    /// leaving its durable rows in the store. Ownership-gated the same way as [`mutate`](Self::mutate) —
+    /// a foreign-owner session evicts nothing and returns `false`, indistinguishable from a missing
+    /// handle. Returns `true` only when this session owns the handle AND it was terminal (so it was
+    /// evicted); a still-ACTIVE handle is refused eviction and returns `false`.
+    pub fn close(&self) -> bool {
+        // Prove ownership through the same scoped read the engine gates on: a foreign owner sees
+        // NotYours and evicts nothing, so close cannot become an enumeration oracle either.
+        if self.engine.scoped_get(&self.owner, &self.id).is_err() {
+            return false;
+        }
+        self.engine.evict_if_terminal(&self.id)
+    }
+}
+
+/// The DURABLE unit-of-work scope (DESIGN-v5-taxonomy Axis 2). Reclaims on explicit complete/expire
+/// and SURVIVES the process; holds durable work-handles and deferred-callback context. Critically a
+/// durable work-handle is NOT reclaimed at dispatch-future drop (that was the v4 arena bug) — the async
+/// plane parks a handle at a `202` and resumes it later by nested lookup.
+///
+/// The DURABLE HANDOFF (the `create_task` gap): a breaker probe-hold that `into_task_dispatch`
+/// moves out of the per-request [`DispatchScope`] into the detached runner must NOT reclaim when the
+/// REQUEST future drops (that would release the probe mid-task and wedge the cell). Handing it to a
+/// `DurableScope` the RUNNER owns re-homes its reclaim to TASK end: this scope drops with the runner —
+/// on the task's normal completion AND on a `tasks/cancel` abort — running the moved-in guard's `Drop`
+/// (the owner-checked probe release) exactly then, not a moment earlier.
+///
+/// SETTLE-CAPABLE, not merely drop-only (the create_task gap): a breaker probe-hold handed here
+/// can be RECORDED against the breaker exactly once via [`settle`](Self::settle) before the scope
+/// drops — so a detached runner leg can fold its observed outcome into the same `(key, lane)` cell
+/// the admission consulted, and only the UNSETTLED probe releases on drop. A settle before the drop
+/// makes the drop a no-op, exactly as it does in the per-request [`DispatchScope`].
+///
+/// Lazily allocated: the inner arena is empty (no heap) until a handle is actually handed off, so a
+/// durable scope that parks nothing costs nothing.
+#[derive(Default)]
+#[non_exhaustive]
+pub struct DurableScope {
+    /// The durable arena. Reuses the [`DispatchScope`] machinery (register / settle / reclaim) so the
+    /// handoff, the one settle, and the owner-checked release are byte-for-byte the per-request
+    /// arena's — the ONLY difference is WHO owns this scope (the detached runner, so it drops at TASK
+    /// end) rather than any change in mechanics. A `HostState` materialized over this arena
+    /// therefore drives the exact same `breaker_settle` seam the per-request path does.
+    arena: DispatchScope,
+}
+
+impl DurableScope {
+    /// Open an empty durable scope.
+    #[must_use]
+    pub fn new() -> Self {
+        DurableScope {
+            arena: DispatchScope::new(),
+        }
+    }
+
+    /// Open a durable scope that already owns a DROP-ONLY `guard` in one step (the guard's `Drop`
+    /// reclaims at TASK end). Prefer [`register_settling`](Self::register_settling) when the moved
+    /// resource is a breaker admission that a detached leg may still want to settle.
+    #[must_use]
+    pub fn with_handoff(guard: Box<dyn Send>) -> Self {
+        let dur = DurableScope::new();
+        dur.handoff(guard);
+        dur
+    }
+
+    /// Take DROP-ONLY durable ownership of `guard`: its `Drop` now reclaims when this scope drops
+    /// (task end), NOT at dispatch-future drop.
+    pub fn handoff(&self, guard: Box<dyn Send>) {
+        self.arena.register_admission(guard);
+    }
+
+    /// Take SETTLE-CAPABLE durable ownership of `guard` and return the [`AdmissionId`] it answers to.
+    /// Its probe-release `Drop` runs at scope drop unless [`settle`](Self::settle) records an outcome
+    /// first; this is the reroute path's handoff, which owns a bare probe hold rather than one already
+    /// registered in a [`DispatchScope`].
+    pub fn register_settling(&self, guard: Box<dyn SettleAdmission>) -> AdmissionId {
+        self.arena.register_settling_admission(guard)
+    }
+
+    /// Adopt a settling admission under a caller-supplied `id` — the receiving half of
+    /// [`DispatchScope::handoff_settling_to`], preserving the id across the arena move.
+    pub(super) fn adopt_settling(
+        &self,
+        id: AdmissionId,
+        guard: Box<dyn SettleAdmission>,
+    ) -> AdmissionId {
+        self.arena.adopt_settling_admission(id.0, guard)
+    }
+
+    /// SETTLE the durable breaker admission `id`: record `signal` against the breaker exactly once and
+    /// return the resulting ABI [`StatusClass`], releasing the probe (a no-op after the record).
+    /// `None` when no live admission carries `id` here (stale / already settled). This is the
+    /// detached-leg settle the runner reaches for on the create_task path.
+    pub fn settle(&self, id: AdmissionId, signal: &Signal) -> Option<StatusClass> {
+        self.arena.settle_admission(id, signal)
+    }
+
+    /// Borrow the durable arena as a [`DispatchScope`] so a `HostState` can be materialized
+    /// over it — the seam that lets the host `breaker_settle` vtable slot settle a durable admission
+    /// with no change to the breaker path.
+    #[must_use]
+    pub fn arena(&self) -> &DispatchScope {
+        &self.arena
+    }
+
+    /// How many durable handles this scope owns (test/observability hook).
+    #[must_use]
+    pub fn registered(&self) -> usize {
+        self.arena.registered()
+    }
+
+    /// Reclaim EVERY handed-off handle NOW, in reverse (LIFO) handoff order. Idempotent; the inner
+    /// arena's own `Drop` runs it when this scope drops, so an explicit call is only for a task-complete
+    /// path that reclaims synchronously.
+    pub fn reclaim_all(&self) {
+        self.arena.reclaim_all();
+    }
+}
+
+#[cfg(test)]
+#[path = "tests/scope_tests.rs"]
+mod tests;

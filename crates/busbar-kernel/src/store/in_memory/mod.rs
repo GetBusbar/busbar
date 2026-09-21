@@ -1,10 +1,10 @@
 use super::*;
 
 // R5-store: the two health-snapshot carriers are named from their DEFINING crate rather than through
-// a `crate::store::…` re-export. They live in `busbar_substrate::store` and this engine — the config-
+// a `crate::store::…` re-export. They live in `busbar_kernel::store` and this engine — the config-
 // apply export/restore path (`export_health`/`restore_health_impl`) — is their only reader left in
 // core, so the shim had exactly one caller and is deleted instead of repointed twice.
-use busbar_substrate::store::{LaneHealthSnapshot, PoolCellHealthSnapshot};
+use busbar_kernel::store::{LaneHealthSnapshot, PoolCellHealthSnapshot};
 
 use crate::diagnostics::{diag_warn, LANE_HARD_DOWN};
 
@@ -105,17 +105,17 @@ pub(crate) fn swrr_shard_index(pool: &str) -> usize {
 /// hash (`fnv1a_u64`) and the cooldown-jitter seed mixer (which folds 128-bit inputs with the same
 /// FNV step) share one named definition instead of repeating the bare magic literals.
 // The FNV-1a hash + its two algorithm-fixed constants now live in the neutral
-// `busbar_substrate::store` so a plane crate hashes without reaching into `busbar-core`. Re-exported
+// `busbar_kernel::store` so a plane crate hashes without reaching into `busbar-core`. Re-exported
 // here (the breaker seed-mixer in `breaker.rs` names the constants directly, and core's `crate::store`
 // re-exports `fnv1a_u64` for `hooks`/`governance`).
-pub(crate) use busbar_substrate::store::{FNV1A_OFFSET_BASIS, FNV1A_PRIME};
+pub(crate) use busbar_kernel::store::{FNV1A_OFFSET_BASIS, FNV1A_PRIME};
 
-// `fnv1a_u64` moved to `busbar_substrate::store`.
+// `fnv1a_u64` moved to `busbar_kernel::store`.
 //
 // R5-store: the re-export up through `crate::store` is DELETED — its four readers outside this
 // engine (`governance/mod.rs`, `hooks/gate.rs`) name the substrate directly. What stays is a private
 // import for this module's own shard-index and key hashing.
-use busbar_substrate::store::fnv1a_u64;
+use busbar_kernel::store::fnv1a_u64;
 
 /// Number of SWRR lock shards. The SWRR weight read-modify-write only needs to be serialized
 /// PER POOL (the `Σ current_weight == 0` invariant is pool-local — two disjoint pools share no
@@ -580,7 +580,7 @@ pub(crate) fn make_lane_data_with_weight(id: usize, max_permits: usize) -> (Lane
 }
 
 // The RESOLVED runtime breaker cfg (`BreakerCfg`/`TripConfig`/`TripMode`) is neutral DATA and now
-// lives in `busbar_substrate::store` (re-exported below via `pub use in_memory::*` from the parent
+// lives in `busbar_kernel::store` (re-exported below via `pub use in_memory::*` from the parent
 // `store` module) so an out-of-tree plugin crate names it without reaching into `busbar-core`. Its
 // conversion helpers move WITH it; only the config->runtime lowering stays here (core owns the
 // `config::BreakerCfg` grammar), rehomed from a `From` impl (orphan-rule blocked once the target type
@@ -588,8 +588,8 @@ pub(crate) fn make_lane_data_with_weight(id: usize, max_permits: usize) -> (Lane
 // `on_exhausted`/`OnExhausted` lowering already uses.
 // R5-store: a private import, not a re-export. `TripConfig`/`TripMode` never had a reader outside
 // this engine, and `BreakerCfg`'s two — `failover/mod.rs` and the test-support pool builder — name
-// `busbar_substrate::store::BreakerCfg` directly.
-use busbar_substrate::store::{BreakerCfg, TripConfig, TripMode};
+// `busbar_kernel::store::BreakerCfg` directly.
+use busbar_kernel::store::{BreakerCfg, TripConfig, TripMode};
 
 /// Resolve the parsed `breaker:` config into the runtime [`BreakerCfg`] the FSM evaluates.
 /// `honor_retry_after` has no config knob (always honored), and an absent `trip` block falls
@@ -622,7 +622,7 @@ pub(crate) fn breaker_cfg_to_runtime(cfg: &crate::config::BreakerCfg) -> Breaker
     }
 }
 
-// `TripMode` / `TripConfig` (+ its `Default`) moved to `busbar_substrate::store` with `BreakerCfg`
+// `TripMode` / `TripConfig` (+ its `Default`) moved to `busbar_kernel::store` with `BreakerCfg`
 // (re-exported above); only the signal-catalog window const stays here.
 
 /// The window (seconds) the `Signal::CandidateErrorRate` catalog entry reads the

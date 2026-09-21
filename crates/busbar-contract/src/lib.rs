@@ -91,3 +91,8 @@ pub use wire::{
     Listener, ListenerHandle, RawIo, RawStream, StatusAt, TransportEnvelope, TransportError,
     Unit0Trigger, WireStatus, WireStatusClass,
 };
+
+/// The default admin-scope CEILING for an identity provider that names none (`read-only`). Relocated
+/// here (W4.b P2) from the deleted `busbar-substrate::config::auth` so the below-kernel `busbar-core-config`
+/// spine can name it without a path back to the engine; `busbar_kernel::config::auth` re-exports it.
+pub const DEFAULT_MAX_ADMIN_SCOPE: &str = "read-only";

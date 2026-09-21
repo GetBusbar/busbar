@@ -1,10 +1,10 @@
 use super::*;
 
-use busbar_substrate::diagnostics::{
+use busbar_substrate_values::diagnostics::{
     ON_ERROR_FALLBACK_ANSWERED, ON_ERROR_FALLBACK_DEADLINE_EXCEEDED, ON_ERROR_FALLBACK_HOOK_FAILED,
     ROUTING_POLICY_DEADLINE_EXCEEDED, ROUTING_POLICY_FAILED_ON_ERROR_FALLBACK,
 };
-use busbar_substrate::{diag_debug, diag_warn};
+use busbar_kernel::{diag_debug, diag_warn};
 
 /// The coerced result of running a routing policy at the seam — what the ordered walk should do.
 pub(crate) enum PolicyOutcome {
@@ -38,7 +38,7 @@ pub(crate) enum PolicyOutcome {
         /// Behavior when the intersection is empty: `Reject` (default, fail-closed 503) or `Weighted`
         /// (advisory escape — SWRR over the FULL pool). `First` is treated as `Reject` (a restrict
         /// with no eligible member has no "first" to fall to).
-        on_empty: busbar_substrate::config::PolicyOnError,
+        on_empty: busbar_kernel::config::PolicyOnError,
     },
 }
 
@@ -61,7 +61,7 @@ pub(crate) fn apply_rewrite_to_body(
         return false;
     };
     let Some(dialect) =
-        busbar_substrate::proto::decl_for(ingress_protocol).and_then(|d| d.dialect())
+        busbar_kernel::proto::decl_for(ingress_protocol).and_then(|d| d.dialect())
     else {
         return false;
     };
@@ -80,7 +80,7 @@ pub(crate) fn apply_rewrite_to_body(
 
 /// What the hook seam knows about a request, read from the IR.
 //
-// `Chat` holds the request behind the neutral [`busbar_substrate::ir::facts::IrFacts`] trait, NOT a concrete
+// `Chat` holds the request behind the neutral [`busbar_substrate_values::ir::facts::IrFacts`] trait, NOT a concrete
 // `IrRequest`: this seam consumes only the projection (`shape`/`end_user`/`content`), so naming the
 // concrete chat type here would be core reaching into the LLM plane's representation for no gain. The
 // box is the price of the trait object, and it is the RIGHT price now — the concrete IR belongs to
@@ -90,9 +90,9 @@ pub(crate) enum HookFacts {
     /// A request the ingress OPERATION's reader understood, seen through its neutral facts. Named
     /// `Facts` and not `Chat` because the seam is operation-general now: a chat body reaches it as
     /// `IrReq::Chat`, an embeddings/image/audio/rerank/moderation/subscribe body as its own family's
-    /// IR, and every one of them is screened through the SAME [`busbar_substrate::ir::facts::IrFacts`] projection
+    /// IR, and every one of them is screened through the SAME [`busbar_substrate_values::ir::facts::IrFacts`] projection
     /// — closing the hole where a non-chat operation forwarded past a content gate that saw nothing.
-    Facts(Box<dyn busbar_substrate::ir::facts::IrFacts + Send + Sync>),
+    Facts(Box<dyn busbar_substrate_values::ir::facts::IrFacts + Send + Sync>),
     /// The body carries no readable facts for this seam: a JSON body with no resolvable operation
     /// handler, an unregistered protocol, or the engine's absent-body sentinel with no bytes to read.
     /// Projects as the zeroed shape with no content, which is exactly what the seam projected for such
@@ -144,7 +144,7 @@ pub(crate) fn read_hook_facts(
     // lazy-IR seam use, so the hook sees exactly the IR that will be built from these bytes. No
     // handler (an unregistered protocol, or a protocol that does not serve this operation) is
     // `Absent`: there is no reader to ask, which is not the same as a reader refusing.
-    let Some(handler) = busbar_substrate::handlers::request_handler(ingress_protocol)
+    let Some(handler) = busbar_substrate_values::handlers::request_handler(ingress_protocol)
         .and_then(|rh| rh.operation_handler(operation))
     else {
         return Ok(HookFacts::Absent);
@@ -153,7 +153,7 @@ pub(crate) fn read_hook_facts(
     // reader directly — byte-identical to the pre-change seam). A non-object body is either a
     // multipart/binary payload (transcription/speech audio) whose caller text is reachable ONLY
     // through the byte reader, or the engine's absent-body sentinel with no bytes at all.
-    use busbar_substrate::handlers::TranslateCodec;
+    use busbar_substrate_values::handlers::TranslateCodec;
     // THE ONE READ, through the codec cell's neutral `read_facts` entrypoint — the same reader the
     // cross-protocol translate path uses, projected straight to `IrFacts` so this seam never holds the
     // concrete IR. A JSON OBJECT body takes the value-codec fast path (chat calls its proto reader
@@ -177,10 +177,10 @@ pub(crate) fn read_hook_facts(
 
 impl HookFacts {
     /// The shape/size signal bucket every hook gets, granted or not.
-    pub(crate) fn shape(&self) -> busbar_substrate::ir::facts::Shape {
+    pub(crate) fn shape(&self) -> busbar_substrate_values::ir::facts::Shape {
         match self {
             HookFacts::Facts(ir) => ir.shape(),
-            HookFacts::Absent => busbar_substrate::ir::facts::Shape::EMPTY,
+            HookFacts::Absent => busbar_substrate_values::ir::facts::Shape::EMPTY,
         }
     }
 
@@ -206,7 +206,7 @@ impl HookFacts {
     /// yields no items still yields an entry with empty text: a screening hook must never see fewer
     /// turns than the provider does.
     pub(crate) fn prompt(&self) -> busbar_api::PromptProjection<'_> {
-        use busbar_substrate::ir::facts::{ContentItem, Slot};
+        use busbar_substrate_values::ir::facts::{ContentItem, Slot};
         use std::borrow::Cow;
         let HookFacts::Facts(ir) = self else {
             return busbar_api::PromptProjection {
@@ -271,8 +271,8 @@ fn join_pieces(mut pieces: Vec<std::borrow::Cow<'_, str>>) -> Option<std::borrow
 
 // The DEFAULT/effective content-ceiling knob (`DEFAULT_HOOK_CONTENT_MAX_BYTES`, the process-wide
 // `HOOK_CONTENT_MAX_BYTES` cell, `set_hook_content_max_bytes`/`hook_content_max_bytes`) is NEUTRAL
-// vocabulary that STAYS in core (`busbar_substrate::proxy::proxy_vocab`); the enforcer below reads the
-// installed ceiling straight off the substrate, `busbar_substrate::proxy::hook_content_max_bytes()`.
+// vocabulary that STAYS in core (`busbar_kernel::proxy::proxy_vocab`); the enforcer below reads the
+// installed ceiling straight off the substrate, `busbar_kernel::proxy::hook_content_max_bytes()`.
 
 /// Enforce the content ceiling on a built projection, on SERIALIZED BYTES and BEFORE the call.
 ///
@@ -293,7 +293,7 @@ pub(crate) fn enforce_content_cap(
     prompt: Option<busbar_api::PromptProjection<'_>>,
 ) -> Option<busbar_api::PromptProjection<'_>> {
     let p = prompt?;
-    let cap = busbar_substrate::proxy::hook_content_max_bytes();
+    let cap = busbar_kernel::proxy::hook_content_max_bytes();
     if cap == 0 {
         // Explicitly unlimited — the operator turned the ceiling off.
         return Some(p);
@@ -306,7 +306,7 @@ pub(crate) fn enforce_content_cap(
     if bytes <= cap {
         return Some(p);
     }
-    metrics::counter!(busbar_substrate::metrics::HOOK_CONTENT_TRUNCATED_TOTAL).increment(1);
+    metrics::counter!(busbar_kernel::metrics::HOOK_CONTENT_TRUNCATED_TOTAL).increment(1);
     // Per-request condition on a configured ceiling; the HOOK_CONTENT_TRUNCATED_TOTAL counter above
     // is the operator-facing signal, so log the detail at `debug!` rather than warn-spamming per call.
     tracing::debug!(
@@ -461,7 +461,7 @@ pub(crate) fn reject_kind_for_status(status: u16) -> &'static str {
         404 => KIND_NOT_FOUND,
         408 => KIND_TIMEOUT,
         429 => KIND_RATE_LIMIT,
-        busbar_substrate::hooks::REQUIRED_HOOK_UNAVAILABLE_STATUS => KIND_OVERLOADED,
+        busbar_kernel::hooks::REQUIRED_HOOK_UNAVAILABLE_STATUS => KIND_OVERLOADED,
         _ => KIND_INVALID_REQUEST,
     }
 }
@@ -508,7 +508,7 @@ fn policy_fault_clear(key: &str) {
 pub(crate) async fn decide_policy_order(
     host: &Arc<dyn EngineHost>,
     rt: &Arc<NativeRuntime>,
-    resolved: &busbar_substrate::hooks::ResolvedPolicy,
+    resolved: &busbar_kernel::hooks::ResolvedPolicy,
     cands: &[WeightedLane],
     request_ctx: &RequestCtx,
     v: &Value,
@@ -525,7 +525,7 @@ pub(crate) async fn decide_policy_order(
     // substrate. Named at their canonical homes (the reverse-edge rule) rather than through the
     // core `hooks` re-export.
     use busbar_api::{Candidate, RoutingContext, RoutingDecision, RoutingRequest};
-    use busbar_substrate::hooks::ResolvedPolicy;
+    use busbar_kernel::hooks::ResolvedPolicy;
 
     // A weighted/default pool resolves to `None` at config load (no policy object is constructed), so
     // the only `ResolvedPolicy` that can reach this seam is a constructed `Policy`.
@@ -686,9 +686,9 @@ pub(crate) async fn decide_policy_order(
                         .lane_store()
                         .breaker_state_snapshot_in(pool_name, wl.idx)
                     {
-                        busbar_substrate::store::BreakerState::Closed => "closed",
-                        busbar_substrate::store::BreakerState::Open { .. } => "open",
-                        busbar_substrate::store::BreakerState::HalfOpen => "half_open",
+                        busbar_kernel::store::BreakerState::Closed => "closed",
+                        busbar_kernel::store::BreakerState::Open { .. } => "open",
+                        busbar_kernel::store::BreakerState::HalfOpen => "half_open",
                     };
                     signals.push(
                         busbar_api::Signal::CandidateBreakerState,
@@ -834,8 +834,8 @@ pub(crate) async fn decide_policy_order(
 /// Every link failing lands on the chain's reserved TERMINAL (weighted/reject/first). The common
 /// case — `on_error: weighted` etc. — has an EMPTY chain and goes straight to the terminal.
 pub(crate) async fn run_on_error_chain(
-    chain: &[busbar_substrate::hooks::FallbackHook],
-    terminal: &busbar_substrate::config::PolicyOnError,
+    chain: &[busbar_kernel::hooks::FallbackHook],
+    terminal: &busbar_kernel::config::PolicyOnError,
     req: &busbar_api::RoutingRequest<'_>,
     candidates: &[busbar_api::Candidate<'_>],
     ctx: &busbar_api::RoutingContext<'_>,
@@ -932,7 +932,7 @@ pub(crate) fn map_decision(
     decision: busbar_api::RoutingDecision,
     policy_name: &'static str,
     candidates: &[busbar_api::Candidate<'_>],
-    on_empty: &busbar_substrate::config::PolicyOnError,
+    on_empty: &busbar_kernel::config::PolicyOnError,
 ) -> PolicyOutcome {
     use busbar_api::RoutingDecision;
 
@@ -966,8 +966,8 @@ pub(crate) fn map_decision(
         // defense in depth: no policy, present or future, can mint a success/redirect/5xx or a
         // log/client-injecting message through this path.
         RoutingDecision::Reject { status, message } => PolicyOutcome::RejectRequest {
-            status: busbar_substrate::hooks::wire::clamp_reject_status(status),
-            message: busbar_substrate::hooks::wire::sanitize_reject_message(&message),
+            status: busbar_kernel::hooks::wire::clamp_reject_status(status),
+            message: busbar_kernel::hooks::wire::sanitize_reject_message(&message),
             name: policy_name,
         },
         // The hook's RESTRICT verb: keep only candidates carrying one of `tags_any` (a compliance
@@ -987,16 +987,16 @@ pub(crate) fn map_decision(
 /// ⇒ a 503. `first` advertises the policy name so the degraded pick is still observable.
 ///
 /// The REFUSE/PROCEED half of this decision is not made here: it is asked of
-/// `busbar_substrate::hooks::failed_call_refuses`, the one rule the read-write (transform) seat's
+/// `busbar_kernel::hooks::failed_call_refuses`, the one rule the read-write (transform) seat's
 /// decorator also asks. Only the shape of "proceed" is seat-specific — this seat has a candidate
 /// set to fall back over, the rewrite seat has a body to leave alone.
 pub(crate) fn coerce_on_error(
-    on_error: &busbar_substrate::config::PolicyOnError,
+    on_error: &busbar_kernel::config::PolicyOnError,
     candidates: &[busbar_api::Candidate<'_>],
     policy_name: &'static str,
 ) -> PolicyOutcome {
-    use busbar_substrate::config::PolicyOnError;
-    if busbar_substrate::hooks::failed_call_refuses(on_error) {
+    use busbar_kernel::config::PolicyOnError;
+    if busbar_kernel::hooks::failed_call_refuses(on_error) {
         return PolicyOutcome::Reject;
     }
     match on_error {
@@ -1009,7 +1009,7 @@ pub(crate) fn coerce_on_error(
     }
 }
 
-// The STAGE-tap primitives are NEUTRAL vocabulary that lives in `busbar_substrate::proxy::proxy_vocab`:
+// The STAGE-tap primitives are NEUTRAL vocabulary that lives in `busbar_kernel::proxy::proxy_vocab`:
 // the shape struct, the fire-and-forget tap fan-out, the bounded spawn guard, and the gate-rejection
 // marker. Only `capture_stage_shape` below (which reads the LLM IR to fill the shape) stays here, and
 // it fills the neutral `StageShape` (its fields are `pub`) across the crate boundary.
@@ -1019,7 +1019,7 @@ pub(crate) fn coerce_on_error(
 // `fire_stage_taps` reads the group-scope seam through, and unifying the bounded-spawn on the substrate
 // `spawn_bounded_tap` keeps stage + global taps (and core's own auth-denial tap) on ONE 1024-permit
 // gate. Core's `fire_stage_taps`/`spawn_bounded_tap` are retired with this flip.
-pub(crate) use busbar_substrate::proxy::proxy_vocab::{
+pub(crate) use busbar_kernel::proxy::proxy_vocab::{
     fire_stage_taps, gate_rejected, spawn_bounded_tap, GateRejected, StageShape,
 };
 
@@ -1054,7 +1054,7 @@ pub(crate) fn capture_stage_shape<'a>(
         operation,
     )
     .map(|f| f.shape())
-    .unwrap_or(busbar_substrate::ir::facts::Shape::EMPTY);
+    .unwrap_or(busbar_substrate_values::ir::facts::Shape::EMPTY);
     StageShape {
         request_id,
         pool,
@@ -1069,6 +1069,6 @@ pub(crate) fn capture_stage_shape<'a>(
 
 // `fire_stage_taps`, the bounded-tap spawn guard (`spawn_bounded_tap`), the `GateRejected` marker, and
 // the `gate_rejected` tagger are NEUTRAL vocabulary; the `StageShape`/`GateRejected`/`gate_rejected`
-// trio is named straight off `busbar_substrate::proxy::proxy_vocab` (imported above), while
+// trio is named straight off `busbar_kernel::proxy::proxy_vocab` (imported above), while
 // `fire_stage_taps`/`spawn_bounded_tap` are named off the same substrate module since wedge 3 (see
 // the import note above). The engine names all of them at their historical short paths.

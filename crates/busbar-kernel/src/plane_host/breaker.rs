@@ -88,7 +88,7 @@ impl SettleAdmission for BreakerAdmission {
 /// [`AdmissionId`]; it NEVER holds a [`PlaneAdmission`].
 ///
 /// On a refusal the returned [`AdmissionId`] is [`NONE`](AdmissionId::NONE), reconstructed into the
-/// store's own [`Unavailable`](busbar_substrate::store::Unavailable) taxonomy so [`crate::failover::walk_with`]'s
+/// store's own [`Unavailable`](busbar_kernel::store::Unavailable) taxonomy so [`crate::failover::walk_with`]'s
 /// `admit` closure gets the SAME refusal shape `try_admit_breaker` handed it — the reconstruction is
 /// the inverse of [`classify_unavailable`] (coarse: the ABI carries a fine [`Unavailability`] + a
 /// second-rounded recovery floor, not the exact internal epoch; the sync sites render `Retry-After`
@@ -102,7 +102,7 @@ pub fn breaker_admit_over(
     scope: &super::DispatchScope,
     pool: &[u8],
     lane: u32,
-) -> Result<AdmissionId, busbar_substrate::store::Unavailable> {
+) -> Result<AdmissionId, busbar_kernel::store::Unavailable> {
     let key = Key {
         size: core::mem::size_of::<Key>() as u32,
         version: busbar_plugin::hot::POD_VERSION,
@@ -134,7 +134,7 @@ pub fn breaker_admit_over(
     ))
 }
 
-/// The inverse of [`classify_unavailable`]: rebuild the store's own [`Unavailable`](busbar_substrate::store::Unavailable)
+/// The inverse of [`classify_unavailable`]: rebuild the store's own [`Unavailable`](busbar_kernel::store::Unavailable)
 /// from the ABI [`Unavailability`] reason + the second-rounded recovery floor a [`breaker_admit_over`]
 /// refusal carried back. Coarse by construction — the ABI does not carry the exact internal epoch, so
 /// the `BreakerOpen`/`AtCapacity` payloads are reconstituted from the floor. This feeds
@@ -146,13 +146,13 @@ pub fn breaker_admit_over(
 fn reconstruct_unavailable(
     reason: Unavailability,
     retry_after_secs: u64,
-) -> busbar_substrate::store::Unavailable {
-    use busbar_substrate::store::Unavailable;
+) -> busbar_kernel::store::Unavailable {
+    use busbar_kernel::store::Unavailable;
     match reason {
         Unavailability::Dead => Unavailable::Dead,
         Unavailability::Budget => Unavailable::BudgetExhausted,
         Unavailability::Open | Unavailability::NoneAdmissible => Unavailable::BreakerOpen {
-            until: busbar_substrate::store::now().saturating_add(retry_after_secs),
+            until: busbar_kernel::store::now().saturating_add(retry_after_secs),
         },
         Unavailability::AtCapacity => Unavailable::AtCapacity {
             drain_hint_ms: Some(retry_after_secs.saturating_mul(1_000)),
@@ -167,10 +167,9 @@ fn reconstruct_unavailable(
 
 // The plane-side `Signal` constructors a settle leg builds (`success_signal`/`failure_signal`/
 // `refused_signal`) are pure `#[repr(C)]` PODs naming only `busbar_plugin::hot` + the neutral
-// `CanonicalSignal`, so they now live in `busbar_substrate::plane_host::breaker`; core re-exports
+// `CanonicalSignal`, so they now live in `busbar_kernel::plane_host::breaker`; core re-exports
 // them so every in-core caller (the a2a relay/route settle legs) is unchanged. `fault_of` moved with
 // them (it was their only reader); this module keeps the INVERSE `classify` the host slot drives.
-pub use busbar_substrate::plane_host::breaker::{failure_signal, refused_signal, success_signal};
 
 /// What a reported ABI [`StatusClass`] means to the breaker's disposition pipeline.
 enum Outcome {
@@ -336,14 +335,14 @@ pub(super) extern "C-unwind" fn breaker_admit(host: HostCtx, key: *const Key) ->
     .unwrap_or(AdmissionId::NONE) // fail-closed: a panicked admit refuses.
 }
 
-/// Map the store's [`Unavailable`](busbar_substrate::store::Unavailable) refusal taxonomy onto the neutral ABI
+/// Map the store's [`Unavailable`](busbar_kernel::store::Unavailable) refusal taxonomy onto the neutral ABI
 /// [`Unavailability`] reason + a recovery-floor in whole seconds — so a refused admit keeps its
 /// SPECIFIC meaning (Open vs probe-lost vs dead vs budget vs capacity) across the host boundary rather
 /// than collapsing to a bare [`AdmissionId::NONE`]. The floor is the store's own single definition of
 /// "when could this be usable again" (`recovery_hint_ms`), rounded up to seconds; `0` for a refusal
 /// that does not self-recover (administratively down / budget spent).
 fn classify_unavailable(
-    u: &busbar_substrate::store::Unavailable,
+    u: &busbar_kernel::store::Unavailable,
     now: u64,
 ) -> (Unavailability, u64) {
     let retry = u
@@ -351,12 +350,12 @@ fn classify_unavailable(
         .map(|ms| ms.div_ceil(1_000))
         .unwrap_or(0);
     let reason = match u {
-        busbar_substrate::store::Unavailable::Dead => Unavailability::Dead,
-        busbar_substrate::store::Unavailable::BudgetExhausted => Unavailability::Budget,
-        busbar_substrate::store::Unavailable::BreakerOpen { .. } => Unavailability::Open,
-        busbar_substrate::store::Unavailable::ProbeInFlight => Unavailability::ProbeInFlight,
-        busbar_substrate::store::Unavailable::AtCapacity { .. } => Unavailability::AtCapacity,
-        busbar_substrate::store::Unavailable::Shedding => Unavailability::Shedding,
+        busbar_kernel::store::Unavailable::Dead => Unavailability::Dead,
+        busbar_kernel::store::Unavailable::BudgetExhausted => Unavailability::Budget,
+        busbar_kernel::store::Unavailable::BreakerOpen { .. } => Unavailability::Open,
+        busbar_kernel::store::Unavailable::ProbeInFlight => Unavailability::ProbeInFlight,
+        busbar_kernel::store::Unavailable::AtCapacity { .. } => Unavailability::AtCapacity,
+        busbar_kernel::store::Unavailable::Shedding => Unavailability::Shedding,
     };
     (reason, retry)
 }
@@ -417,7 +416,7 @@ pub(super) extern "C-unwind" fn breaker_admit_reason(
                 })),
             Err(unavailable) => {
                 let (reason, retry) =
-                    classify_unavailable(&unavailable, busbar_substrate::store::now());
+                    classify_unavailable(&unavailable, busbar_kernel::store::now());
                 // SAFETY: as above.
                 unsafe { write_refusal(out, reason, retry) };
                 AdmissionId::NONE
@@ -456,3 +455,115 @@ pub(super) extern "C-unwind" fn breaker_settle(
 #[cfg(test)]
 #[path = "tests/breaker_tests.rs"]
 mod tests;
+
+// ==== merged from busbar-substrate (W4.b P2 engine drain) ====
+use busbar_plugin::hot::{RawFault, RawStatus};
+
+/// The inverse of the host `classify`'s fine [`FaultClass`] → [`BreakerClass`] table: the plane's own
+/// canonical class back to the ABI fine class the settle carries. Total — every [`BreakerClass`] maps
+/// to exactly one [`FaultClass`], so a settle built here round-trips through the host `classify`.
+// Built only by the plane settle paths behind the `dispatch`/`relay` features (via `failure_signal`),
+// so it reads dead when both are compiled out; live with either on.
+#[cfg_attr(not(any(feature = "dispatch", feature = "relay")), allow(dead_code))]
+fn fault_of(class: BreakerClass) -> FaultClass {
+    match class {
+        BreakerClass::RateLimit => FaultClass::RateLimit,
+        BreakerClass::Overloaded => FaultClass::Overloaded,
+        BreakerClass::ServerError => FaultClass::UpstreamError,
+        BreakerClass::Timeout => FaultClass::Timeout,
+        BreakerClass::Network => FaultClass::Network,
+        BreakerClass::Auth => FaultClass::Auth,
+        BreakerClass::Billing => FaultClass::Billing,
+        BreakerClass::ClientError => FaultClass::ClientError,
+        BreakerClass::ContextLength => FaultClass::ContextLength,
+    }
+}
+
+/// Build the ABI [`Signal`] a host settle carries FROM the plane's own [`CanonicalSignal`] — the
+/// INVERSE of the host `classify`, so a settle folded through the host scope reproduces the EXACT
+/// disposition the plane's own `record_signal` would. A failure rides its fine [`FaultClass`], the
+/// `Retry-After` floor (flagged in `fault_flags` bit 0 so a `0`-second header is distinct from "no
+/// header"), and the borrowed provider error-code — the exact three inputs the host `classify` reads
+/// back. The coarse `class` is the neutral failure carrier [`StatusClass::Fault`]; the FINE
+/// `fault_class` is what the host reads.
+///
+/// The returned `Signal` BORROWS `cs.provider_signal`; it MUST NOT outlive `cs`.
+// Built only by the plane settle paths behind the `dispatch`/`relay` features, so it reads dead when
+// both are compiled out; live with either on.
+#[cfg_attr(not(any(feature = "dispatch", feature = "relay")), allow(dead_code))]
+#[must_use]
+pub fn failure_signal(cs: &CanonicalSignal) -> Signal {
+    let (flags, secs) = match cs.retry_after {
+        Some(s) => (0x01u8, s),
+        None => (0, 0),
+    };
+    let (ptr, len) = match cs.provider_signal.as_deref() {
+        Some(code) => (code.as_ptr(), code.len()),
+        None => (core::ptr::null(), 0),
+    };
+    Signal {
+        size: core::mem::size_of::<Signal>() as u32,
+        version: busbar_plugin::hot::POD_VERSION,
+        class: RawStatus::of(StatusClass::Fault),
+        _reserved: 0,
+        latency_nanos: 0,
+        bytes: 0,
+        fault_class: RawFault::of(fault_of(cs.class)),
+        fault_flags: flags,
+        _reserved2: 0,
+        _reserved3: 0,
+        retry_after_secs: secs,
+        provider_signal_ptr: ptr,
+        provider_signal_len: len,
+    }
+}
+
+/// The ABI [`Signal`] a host settle carries for a SUCCESS — the host `classify` maps `Ok` straight to
+/// `record_success`, closing the half-open probe exactly as the plane's own success record does.
+// Built only by the plane settle paths behind the `dispatch`/`relay` features, so it reads dead when
+// both are compiled out; live with either on.
+#[cfg_attr(not(any(feature = "dispatch", feature = "relay")), allow(dead_code))]
+#[must_use]
+pub fn success_signal() -> Signal {
+    Signal {
+        size: core::mem::size_of::<Signal>() as u32,
+        version: busbar_plugin::hot::POD_VERSION,
+        class: RawStatus::of(StatusClass::Ok),
+        _reserved: 0,
+        latency_nanos: 0,
+        bytes: 0,
+        fault_class: RawFault::of(FaultClass::Unspecified),
+        fault_flags: 0,
+        _reserved2: 0,
+        _reserved3: 0,
+        retry_after_secs: 0,
+        provider_signal_ptr: core::ptr::null(),
+        provider_signal_len: 0,
+    }
+}
+
+/// The ABI [`Signal`] a host settle carries for an outcome that is NOT an upstream health signal —
+/// the host `classify` maps `Refused` to `RecordNothing`, so settling this RELEASES the half-open probe
+/// without recording, exactly as dropping the raw `PlaneAdmission` did (the "record nothing"
+/// disposition: a busbar-side refusal / a not-transmitted leg).
+// Built only by the settle leg behind the `dispatch` feature — the `relay` settle path never carries
+// the "record nothing" outcome — so it reads dead whenever `dispatch` is compiled out.
+#[cfg_attr(not(feature = "dispatch"), allow(dead_code))]
+#[must_use]
+pub fn refused_signal() -> Signal {
+    Signal {
+        size: core::mem::size_of::<Signal>() as u32,
+        version: busbar_plugin::hot::POD_VERSION,
+        class: RawStatus::of(StatusClass::Refused),
+        _reserved: 0,
+        latency_nanos: 0,
+        bytes: 0,
+        fault_class: RawFault::of(FaultClass::Unspecified),
+        fault_flags: 0,
+        _reserved2: 0,
+        _reserved3: 0,
+        retry_after_secs: 0,
+        provider_signal_ptr: core::ptr::null(),
+        provider_signal_len: 0,
+    }
+}

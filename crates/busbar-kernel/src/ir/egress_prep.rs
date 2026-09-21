@@ -6,8 +6,8 @@
 //! IR — and a plane's own engine (`busbar-llm`'s `engine/wire.rs`) is what *constructs* it from lane
 //! config.
 //!
-//! The type DEFINITION RELOCATED to `busbar-substrate` (`busbar_substrate::ir::egress_prep`) at
+//! The type DEFINITION RELOCATED to `busbar-substrate` (`busbar_substrate_values::ir::egress_prep`) at
 //! Batch C-1 so a plane crate names it without reaching into `busbar-core`; core re-exports it from
 //! this historical path (`crate::ir::egress_prep::EgressPrep`) so every in-core caller is unchanged.
 
-pub use busbar_substrate::ir::egress_prep::EgressPrep;
+pub use busbar_substrate_values::ir::egress_prep::EgressPrep;

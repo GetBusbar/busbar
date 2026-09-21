@@ -7,7 +7,7 @@ use super::*;
 use crate::plane_host::{recover, with_dispatch_scope, HostState};
 use busbar_plugin::hot::host::{HostCtx, PlaneHostVtable};
 use busbar_plugin::hot::{RawFault, RawStatus, Signal, POD_VERSION};
-use busbar_substrate::store::BreakerState;
+use busbar_kernel::store::BreakerState;
 
 const POOL: &[u8] = b"tool:fs";
 const POOL_STR: &str = "tool:fs";
@@ -320,7 +320,7 @@ fn breaker_admit_reason_carries_the_refusal_reason() {
     app.plane_breakers.force_open(
         POOL_STR,
         0,
-        busbar_substrate::store::now().saturating_add(3600),
+        busbar_kernel::store::now().saturating_add(3600),
     );
     with_dispatch_scope(&app, |host, vt| {
         let admit_reason = vt.breaker_admit_reason.unwrap();
@@ -609,7 +609,7 @@ fn settle_through_host_matches_direct_record_signal() {
         // relaxed: the states must still be EQUAL, deadline included.
         let mut sample = None;
         for _ in 0..16 {
-            let started = busbar_substrate::store::now();
+            let started = busbar_kernel::store::now();
 
             // Direct path: normalize + record straight onto a fresh cell.
             let direct = crate::test_support::TestApp::new().build();
@@ -631,7 +631,7 @@ fn settle_through_host_matches_direct_record_signal() {
             });
             let hosted_state = hosted.plane_breakers.state_at(POOL_STR, 0);
 
-            if busbar_substrate::store::now() == started {
+            if busbar_kernel::store::now() == started {
                 sample = Some((direct_state, hosted_state));
                 break;
             }

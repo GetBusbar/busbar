@@ -515,7 +515,7 @@ fn a_recorded_update_is_not_delivered_to_a_caller_whose_grant_does_not_reach_it(
         .expect("a memory-backed registry constructs");
     let (wide, _s1) = gov
         .create_key(
-            busbar_substrate::governance::NewKeySpec {
+            busbar_kernel::governance::NewKeySpec {
                 name: "k-wide".to_string(),
                 allowed_pools: None, // the store's wildcard: every scope kind
                 group: None,
@@ -527,7 +527,7 @@ fn a_recorded_update_is_not_delivered_to_a_caller_whose_grant_does_not_reach_it(
         .expect("mint");
     let (narrow, _s2) = gov
         .create_key(
-            busbar_substrate::governance::NewKeySpec {
+            busbar_kernel::governance::NewKeySpec {
                 name: "k-narrow".to_string(),
                 allowed_pools: Some(vec![]), // exactly nothing
                 group: None,
@@ -543,9 +543,9 @@ fn a_recorded_update_is_not_delivered_to_a_caller_whose_grant_does_not_reach_it(
         let id = serde_json::json!(7);
         crate::mcp::subscribe::Listen {
             host: engine_host_from_handle(&handle),
-            standing: busbar_substrate::trust::validate::Standing::opened(
+            standing: busbar_kernel::trust::validate::Standing::opened(
                 Some(key),
-                busbar_substrate::trust::validate::Snapshot::Watching,
+                busbar_kernel::trust::validate::Snapshot::Watching,
                 crate::mcp::subscribe::MAX_LIFETIME,
             ),
             accepted: crate::mcp::subscribe::accept(
@@ -688,7 +688,7 @@ async fn discover_declares_the_capabilities_the_listen_stream_delivers() {
 /// Its own doc said a change making revocation bite is a FIX and must REPLACE it rather than be
 /// blocked by it, and its `Arc::ptr_eq` assertion carried the trigger in as many words: *"if this
 /// now fails, the freeze is FIXED and this whole test should be replaced by one asserting revocation
-/// bites"*. [`busbar_substrate::trust::validate::Standing`] is that fix, and this is that replacement. Renamed
+/// bites"*. [`busbar_kernel::trust::validate::Standing`] is that fix, and this is that replacement. Renamed
 /// from the negative to the positive; same subject, opposite polarity.
 ///
 /// **THE PLACEBO FINDING IS PRESERVED, because it is the reason the fix had to be a core primitive.**
@@ -721,7 +721,7 @@ fn a_revoked_key_stops_being_served_on_the_next_poll() {
     // legitimately admitted; a key already dead at open is one the auth chain would have refused.
     let (admitted, _secret) = gov
         .create_key(
-            busbar_substrate::governance::NewKeySpec {
+            busbar_kernel::governance::NewKeySpec {
                 name: "k-live".to_string(),
                 allowed_pools: None,
                 group: None,
@@ -740,9 +740,9 @@ fn a_revoked_key_stops_being_served_on_the_next_poll() {
         // THE ID AND THE BOUND, never the principal. `Snapshot::Watching` because a generation move
         // is what this response exists to REPORT — pinning it would end the stream on the first
         // change it was opened to hear about.
-        standing: busbar_substrate::trust::validate::Standing::opened(
+        standing: busbar_kernel::trust::validate::Standing::opened(
             Some(&admitted),
-            busbar_substrate::trust::validate::Snapshot::Watching,
+            busbar_kernel::trust::validate::Snapshot::Watching,
             crate::mcp::subscribe::MAX_LIFETIME,
         ),
         // Through the production narrowing rather than hand-built, so this fixture cannot ask for a
@@ -788,7 +788,7 @@ fn a_revoked_key_stops_being_served_on_the_next_poll() {
         "a revoked key must END the stream with a refusal, not keep it open: {closing}"
     );
     assert!(
-        closing.contains(busbar_substrate::audit::vocab::REASON_IDENTITY_NOT_LIVE),
+        closing.contains(busbar_contract::vocab::REASON_IDENTITY_NOT_LIVE),
         "and the refusal must name WHICH lapse it was, in the shared vocabulary: {closing}"
     );
     assert!(state.step().is_none(), "and the stream is then closed");
@@ -801,14 +801,14 @@ fn a_revoked_key_stops_being_served_on_the_next_poll() {
         Duration::from_secs(300),
         "MAX_LIFETIME is the bound on what a poll cannot re-check; raising it widens that window"
     );
-    let expired = busbar_substrate::trust::validate::Standing::opened(
+    let expired = busbar_kernel::trust::validate::Standing::opened(
         Some(&admitted),
-        busbar_substrate::trust::validate::Snapshot::Watching,
+        busbar_kernel::trust::validate::Snapshot::Watching,
         Duration::ZERO,
     );
     assert_eq!(
         expired.still_permitted(Some(gov.gov_resolve()), 1, 0),
-        Err(busbar_substrate::trust::validate::Lapsed::Expired),
+        Err(busbar_kernel::trust::validate::Lapsed::Expired),
         "the bound still ends a standing permission on its own"
     );
 }

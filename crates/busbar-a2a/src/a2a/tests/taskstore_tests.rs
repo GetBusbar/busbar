@@ -279,7 +279,7 @@ fn restart_and_restore(store: Arc<dyn busbar_api::Store>) -> (TaskTestHarness, R
     let out = h
         .reg
         .restore_from_store(
-            busbar_substrate::plane::store::PlaneStoreView::narrow(store).as_ref(),
+            busbar_kernel::plane::store::PlaneStoreView::narrow(store).as_ref(),
             crate::a2a::task::readable_row,
         )
         .expect("rehydrate must succeed");
@@ -427,7 +427,7 @@ fn the_verifier_detects_a_tampered_link_in_the_persisted_chain() {
     let n = h
         .reg
         .verify_task_chain(
-            busbar_substrate::plane::store::PlaneStoreView::narrow(handle.clone()).as_ref(),
+            busbar_kernel::plane::store::PlaneStoreView::narrow(handle.clone()).as_ref(),
             "t-paused",
         )
         .unwrap()
@@ -442,7 +442,7 @@ fn the_verifier_detects_a_tampered_link_in_the_persisted_chain() {
     let brk = h
         .reg
         .verify_task_chain(
-            busbar_substrate::plane::store::PlaneStoreView::narrow(handle.clone()).as_ref(),
+            busbar_kernel::plane::store::PlaneStoreView::narrow(handle.clone()).as_ref(),
             "t-paused",
         )
         .unwrap()
@@ -505,7 +505,7 @@ fn the_task_event_digest_covers_every_content_field_and_excludes_the_join_key() 
         store.tamper_event("t-paused", 2, edit);
         h.reg
             .verify_task_chain(
-                busbar_substrate::plane::store::PlaneStoreView::narrow(handle).as_ref(),
+                busbar_kernel::plane::store::PlaneStoreView::narrow(handle).as_ref(),
                 "t-paused",
             )
             .expect("verify reads")
@@ -1080,7 +1080,7 @@ fn an_abandoned_active_task_is_cancelled_with_a_chained_event_and_then_ages_out(
     let handle: Arc<dyn busbar_api::Store> = store.clone();
     let h = process_one(handle.clone());
     let reg = &h.reg;
-    let view = busbar_substrate::plane::store::PlaneStoreView::narrow(handle.clone());
+    let view = busbar_kernel::plane::store::PlaneStoreView::narrow(handle.clone());
 
     // t-work last moved at NOW+1, t-paused at NOW+4. A submit at NOW+4+abandon puts t-work
     // strictly PAST the ceiling and t-paused exactly AT it — one sweep, both bounds pinned.

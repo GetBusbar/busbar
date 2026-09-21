@@ -27,7 +27,7 @@ const METADATA_PATH: &str = "/.well-known/oauth-protected-resource/mcp";
 
 async fn serve() -> (String, tokio::task::JoinHandle<()>) {
     use busbar_store_memory::MemoryStore;
-    use busbar_substrate::governance::signing::{TokenSigner, DEFAULT_KID};
+    use busbar_kernel::governance::signing::{TokenSigner, DEFAULT_KID};
     use std::sync::Arc;
 
     metrics_init();
@@ -338,7 +338,7 @@ async fn a_token_minted_for_another_resource_is_refused_even_when_the_chain_woul
 /// function.
 #[test]
 fn challenge_values_cannot_escape_their_quoted_string() {
-    use busbar_substrate::auth::challenge::{www_authenticate, ChallengeError};
+    use busbar_kernel::auth::challenge::{www_authenticate, ChallengeError};
     let hostile = "https://h.example/\"x\\y\r\nInjected: yes";
     let v = www_authenticate(ChallengeError::InvalidToken, hostile, None, None);
     assert!(
@@ -364,7 +364,7 @@ fn challenge_values_cannot_escape_their_quoted_string() {
 /// `401` would send the client round a loop that cannot terminate.
 #[test]
 fn insufficient_scope_is_a_403_and_still_names_the_metadata() {
-    use busbar_substrate::auth::challenge::{refuse, ChallengeError};
+    use busbar_kernel::auth::challenge::{refuse, ChallengeError};
     let resp = refuse(
         ChallengeError::InsufficientScope,
         "https://h.example/.well-known/oauth-protected-resource/mcp",

@@ -89,7 +89,7 @@
 //! exact leak the replacement exists to prevent, surviving under the other name.
 
 use crate::diagnostics::A2A_EXTENDED_CARD_AGENT_OMITTED;
-use busbar_substrate::diag_debug;
+use busbar_substrate_values::diag_debug;
 use serde_json::{json, Map, Value};
 
 use super::card::CardError;
@@ -179,7 +179,7 @@ impl std::fmt::Display for ServeError {
 /// A card busbar serves points every interface at BUSBAR'S OWN ADDRESS, so the `protocolBinding` on
 /// that interface is a claim about what BUSBAR speaks, not about what the backend speaks. The set of
 /// protocols busbar speaks on this plane is already stated once, in the A2A plane's registry
-/// declaration ([`busbar_substrate::plane::registry::PlaneDecl::wire_format_names`]) — the same list that decides whether the plane has earned a superset IR and what its
+/// declaration ([`busbar_kernel::plane::registry::PlaneDecl::wire_format_names`]) — the same list that decides whether the plane has earned a superset IR and what its
 /// ingress metric label may say. Reading it here rather than restating it is what makes this
 /// function a RULE: when the HTTP+JSON and gRPC bindings land on the A2A plane, that list grows and
 /// these cards start advertising them, with nobody having to remember this function exists. Written
@@ -224,7 +224,7 @@ pub(crate) fn servable_bindings() -> Vec<String> {
 /// with is the binding it reads, so this answers that transport's name and cannot drift from what
 /// that route actually does. When a per-agent REST mount lands, it lands beside its entry here.
 fn agent_address_bindings() -> Vec<String> {
-    vec![busbar_substrate::transport::Transport::JsonRpc
+    vec![busbar_substrate_values::transport::Transport::JsonRpc
         .name()
         .to_uppercase()]
 }
@@ -278,7 +278,7 @@ pub use busbar_a2a_codec::{GRPC_MOUNT_PATH, MOUNT_PATH};
 pub(crate) use busbar_a2a_codec::METADATA_PATH;
 
 /// THE PLANE'S CANONICAL URI — the RFC 8707 resource indicator a token must be minted FOR to be
-/// spendable here, and the audience [`busbar_substrate::plane::PlaneAdmission`] carries.
+/// spendable here, and the audience [`busbar_kernel::plane::PlaneAdmission`] carries.
 ///
 /// Derived from `public_url` rather than configured separately, and that is the point: the card
 /// this plane serves points callers at [`agent_endpoint`], which is derived from the same value.
@@ -326,7 +326,7 @@ pub(crate) fn grpc_endpoint(public_url: &str) -> Result<String, ServeError> {
 /// defect that filter was written to prevent: `{"url": "https://busbar/a2a/agents/x",
 /// "protocolBinding": "GRPC"}`, a gRPC interface at an address no gRPC client can dial.
 fn binding_url(binding: &str, public_url: &str, http_endpoint: &str) -> Result<String, ServeError> {
-    if binding.eq_ignore_ascii_case(busbar_substrate::plane::WIRE_GRPC) {
+    if binding.eq_ignore_ascii_case(busbar_kernel::plane::WIRE_GRPC) {
         return grpc_endpoint(public_url);
     }
     Ok(http_endpoint.to_string())
@@ -545,7 +545,7 @@ pub(crate) fn rewrite_card(
 
 /// The RFC 7235 authentication scheme a caller presents on [`INBOUND_HEADER`]. Spelled exactly as
 /// the `WWW-Authenticate` challenge an unauthenticated caller receives spells it
-/// ([`busbar_substrate::auth::challenge`]), so the card and the challenge describe one mechanism rather than
+/// ([`busbar_kernel::auth::challenge`]), so the card and the challenge describe one mechanism rather than
 /// two.
 pub(crate) const INBOUND_AUTH_SCHEME: &str = "Bearer";
 

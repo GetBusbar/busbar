@@ -18,7 +18,7 @@
 //! is the engine's money-path suite to prove; this plane's tests do not link the engine.
 
 use crate::runtime::metering::TurnMeter;
-use busbar_substrate::testkit::fixture_host::FixtureHost;
+use busbar_kernel::testkit::fixture_host::FixtureHost;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -36,7 +36,7 @@ fn governed_fixture() -> (Arc<FixtureHost>, busbar_api::VirtualKey) {
 
 /// A voice turn's usage carrier — the same neutral `billing::Usage` `to_billing_usage()` produces,
 /// with the canonical `UNIT_INPUT`/`UNIT_OUTPUT` keys the rate card and ledger price against.
-fn turn_usage(input: u64, output: u64) -> busbar_substrate::billing::Usage {
+fn turn_usage(input: u64, output: u64) -> busbar_substrate_values::billing::Usage {
     let mut usage_units = BTreeMap::new();
     if input != 0 {
         usage_units.insert(busbar_api::UNIT_INPUT.to_string(), input);
@@ -44,7 +44,7 @@ fn turn_usage(input: u64, output: u64) -> busbar_substrate::billing::Usage {
     if output != 0 {
         usage_units.insert(busbar_api::UNIT_OUTPUT.to_string(), output);
     }
-    busbar_substrate::billing::Usage { usage_units }
+    busbar_substrate_values::billing::Usage { usage_units }
 }
 
 #[test]
@@ -61,7 +61,7 @@ fn a_voice_turn_lands_spend_on_the_presenting_keys_ledger() {
     // Drive ONE voice turn's usage through the SHIPPED Meter seam — the exact call `SessionCore`
     // makes per turn (`TurnMeter::record_turn` → `host.meter_ledger` + `host.meter_series`).
     let meter = TurnMeter::new(
-        Arc::clone(&host) as Arc<dyn busbar_substrate::plane_host::EngineHost>,
+        Arc::clone(&host) as Arc<dyn busbar_kernel::plane_host::EngineHost>,
         key.clone(),
         "voice-server",
         crate::OPENAI_REALTIME,

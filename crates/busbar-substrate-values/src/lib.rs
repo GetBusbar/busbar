@@ -18,13 +18,13 @@
 //! WHAT DOES NOT: anything whose closure opens something. The egress engine, the net guard, the
 //! runtime hosts, the async doors and the axum-shaped response builders stay in `busbar-substrate`,
 //! which depends on this crate and RE-EXPORTS every module below at its historical path — so
-//! `busbar_substrate::proto::…` and every other old spelling still resolve, unchanged, for the
+//! `busbar_kernel::proto::…` and every other old spelling still resolve, unchanged, for the
 //! composed binary.
 
 // The neutral coded-diagnostic catalog and the cross-crate emit macros (`diag_warn!`/`diag_error!`/
 // `diag_debug!`, hoisted to this crate's ROOT by `#[macro_export]`). `busbar-substrate` re-exports
-// both the module and the three macros so `busbar_substrate::diagnostics::…` and
-// `busbar_substrate::diag_warn!` resolve exactly as before.
+// both the module and the three macros so `busbar_substrate_values::diagnostics::…` and
+// `busbar_substrate_values::diag_warn!` resolve exactly as before.
 pub mod diagnostics;
 
 // The five neutral transport/crypto utility leaves: JSON canonicalization + the depth-guarded parser
@@ -39,7 +39,7 @@ pub mod sigv4;
 // The ENV-guarded hot-path stage profiler (`Stage`/`start`/`record`/`dump`): pure std
 // (atomics/Mutex/Instant), no `App`/`Store` reach, its accumulator buckets SINGLE-COMPILED here so a
 // dual-compiled plane test binary shares one profiler. Relocated DOWN from `busbar-substrate` (1.6.0
-// W4.b P1 pure-foundation drain); `busbar-substrate` re-exports it so `busbar_substrate::profile::…`
+// W4.b P1 pure-foundation drain); `busbar-substrate` re-exports it so `busbar_substrate_values::profile::…`
 // resolves unchanged.
 pub mod profile;
 
@@ -49,7 +49,7 @@ pub mod profile;
 /// one spelling for the metric label, the plane's wire-format list and the served card's
 /// `protocolBinding`), so they crossed with the axis. The rest of `plane` (the declaration/registry
 /// surface, which names the host seams and the route mount) stays in `busbar-substrate`.
-/// `busbar-substrate`'s own `plane` re-exports all three, so `busbar_substrate::plane::WIRE_JSONRPC`
+/// `busbar-substrate`'s own `plane` re-exports all three, so `busbar_kernel::plane::WIRE_JSONRPC`
 /// and its siblings resolve unchanged.
 pub use busbar_contract::transport::transport::plane;
 
@@ -103,7 +103,7 @@ pub mod store {
 /// its two arguments. The CUT: every other credential mechanism in that module mints over the
 /// network (the RFC 7523 / RFC 6749 §4.4 token-endpoint POSTs) or reads a service-account key off
 /// disk, so the module's remainder stayed in `busbar-substrate`, which re-exports this name at its
-/// historical `busbar_substrate::egress_auth::api_key_headers` path.
+/// historical `busbar_kernel::egress_auth::api_key_headers` path.
 pub mod egress_auth {
     use http::{HeaderName, HeaderValue};
 
@@ -117,7 +117,7 @@ pub mod egress_auth {
 
 // The neutral warn-capture tracing Layer a plane's tests assert coded diagnostics through. Revealed
 // only under the test surface, exactly as in the parent crate; `busbar-substrate`'s `testkit`
-// re-exports this module so `busbar_substrate::testkit::warn_capture::WarnCapture` resolves.
+// re-exports this module so `busbar_kernel::testkit::warn_capture::WarnCapture` resolves.
 #[cfg(any(test, feature = "test-support"))]
 pub mod testkit {
     pub mod warn_capture;

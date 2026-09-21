@@ -61,7 +61,7 @@
 //! fact — and this control fires precisely when a callback that was legitimate at registration has
 //! been re-pointed at something that is not, which is the event an incident review goes looking for.
 //! Every attempt now appends to the TASK's own provenance chain (the neutral audit vocabulary's three
-//! `task.push_*` kinds), through the one mechanism in [`busbar_substrate::audit`]. A log line is still emitted;
+//! `task.push_*` kinds), through the one mechanism in [`busbar_kernel::audit`]. A log line is still emitted;
 //! it is no longer the only thing that happens.
 
 use std::collections::HashMap;
@@ -71,8 +71,8 @@ use super::pushnotify::{self, PinnedCallback, PushNotifyError};
 use super::relay::RelaySeam;
 use super::task::Task;
 use crate::diagnostics::A2A_PUSH_OUTCOME_UNCHAINED;
-use busbar_substrate::audit::vocab as provenance;
-use busbar_substrate::diag_debug;
+use busbar_contract::vocab as provenance;
+use busbar_substrate_values::diag_debug;
 
 /// THE HEADER EVERY DELIVERY CARRIES, whatever else it carries.
 ///
@@ -284,7 +284,7 @@ pub(crate) fn auth_for_test(task_id: &str) -> Option<DeliveryAuth> {
 ///
 /// Stated here because the absence looks exactly like the defect this plane's other three response
 /// sites really did have. Every other place busbar puts JSON on this plane's wire is a JSON-RPC
-/// message and is read or written through [`busbar_substrate::ingress::jsonrpc`]; a reviewer who has just been
+/// message and is read or written through [`busbar_kernel::ingress::jsonrpc`]; a reviewer who has just been
 /// through those will read the missing `jsonrpc`, `method` and `id` members here as a fourth
 /// instance and add them. It would be a protocol violation.
 ///
@@ -329,7 +329,7 @@ pub(crate) fn notification_body(task: &Task) -> Vec<u8> {
                 // types deserialise the field as a date-time and a JSON NUMBER is a type error at the
                 // boundary — the delivery parsed as far as this member and then failed. `task.updated_at`
                 // is whole seconds since the epoch; it is rendered rather than emitted raw.
-                "timestamp": busbar_substrate::civil::rfc3339_from_secs(task.updated_at),
+                "timestamp": busbar_contract::civil::rfc3339_from_secs(task.updated_at),
             },
         }
     });
@@ -354,7 +354,7 @@ pub(crate) fn notification_body(task: &Task) -> Vec<u8> {
 ///
 /// The record is written BEFORE the outcome is returned, so no caller can decide not to be audited.
 pub(crate) fn deliver(
-    engine_host: &dyn busbar_substrate::plane_host::EngineHost,
+    engine_host: &dyn busbar_kernel::plane_host::EngineHost,
     seam: &dyn RelaySeam,
     task: &Task,
 ) -> Result<(), PushRefusal> {
@@ -363,7 +363,7 @@ pub(crate) fn deliver(
     outcome
 }
 
-/// APPEND THE DELIVERY'S OUTCOME to the task's chain, in the ONE mechanism (`busbar_substrate::audit`, through
+/// APPEND THE DELIVERY'S OUTCOME to the task's chain, in the ONE mechanism (`busbar_kernel::audit`, through
 /// the task registry that owns this task's chain position).
 ///
 /// [`PushRefusal::NoCallback`] writes NOTHING, and that is not an exception to the rule: no delivery
@@ -375,7 +375,7 @@ pub(crate) fn deliver(
 /// the harm that posture exists to prevent — but it is logged at WARN rather than swallowed, because
 /// a missing audit record is itself the thing this file was changed to stop.
 fn record_attempt(
-    engine_host: &dyn busbar_substrate::plane_host::EngineHost,
+    engine_host: &dyn busbar_kernel::plane_host::EngineHost,
     task: &Task,
     outcome: &Result<(), PushRefusal>,
 ) {

@@ -16,10 +16,10 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde_json::Value;
 
-use busbar_substrate::ingress::arrival::ArrivalCtx;
+use busbar_kernel::ingress::arrival::ArrivalCtx;
 // The neutral host seam — the plane holds an `Arc<dyn EngineHost>` (carried on the arrival) and reaches
 // the engine's finish/label/guard/admission capabilities through its typed methods (App-retype WEDGE 3).
-use busbar_substrate::plane_host::EngineHost;
+use busbar_kernel::plane_host::EngineHost;
 
 use crate::engine::{native_runtime_arc, EngineTables, NativeRuntime, WeightedLane};
 // The two door pass-throughs, named one level up (see `unit/mod.rs`) rather than by the audit step's
@@ -231,7 +231,7 @@ pub(crate) async fn operation_ingress_inner(
     // App-retype WEDGE 3: the pre-routing finish/label/guard capabilities route through the `host`
     // threaded in (the arrival's `Arc<dyn EngineHost>`), so this plane names no core ingress module.
 
-    let Some(rh) = busbar_substrate::handlers::request_handler(proto) else {
+    let Some(rh) = busbar_substrate_values::handlers::request_handler(proto) else {
         return finish_rejected_via_audit(
             host,
             gov,
@@ -239,7 +239,7 @@ pub(crate) async fn operation_ingress_inner(
             crate::engine::POOL_LABEL_UNRESOLVED,
             started,
             charged_at,
-            busbar_substrate::proxy::ingress_error(
+            busbar_kernel::proxy::ingress_error(
                 proto,
                 StatusCode::NOT_FOUND,
                 crate::engine::KIND_NOT_FOUND,
@@ -255,7 +255,7 @@ pub(crate) async fn operation_ingress_inner(
             crate::engine::POOL_LABEL_UNRESOLVED,
             started,
             charged_at,
-            busbar_substrate::proxy::ingress_error(
+            busbar_kernel::proxy::ingress_error(
                 proto,
                 StatusCode::NOT_FOUND,
                 crate::engine::KIND_NOT_FOUND,
@@ -280,7 +280,7 @@ pub(crate) async fn operation_ingress_inner(
         match crate::engine::LazyBody::parse(&body) {
             Ok(v) => Some(v),
             Err(_) => {
-                tracing::debug!(detail = %busbar_substrate::json::parse_err_log(body.len()), "request body JSON parse failed");
+                tracing::debug!(detail = %busbar_substrate_values::json::parse_err_log(body.len()), "request body JSON parse failed");
                 return finish_rejected_via_audit(
                     host,
                     gov,
@@ -288,7 +288,7 @@ pub(crate) async fn operation_ingress_inner(
                     crate::engine::POOL_LABEL_UNRESOLVED,
                     started,
                     charged_at,
-                    busbar_substrate::proxy::ingress_error(
+                    busbar_kernel::proxy::ingress_error(
                         proto,
                         StatusCode::BAD_REQUEST,
                         crate::engine::KIND_INVALID_REQUEST,
@@ -324,7 +324,7 @@ pub(crate) async fn operation_ingress_inner(
                 crate::engine::POOL_LABEL_UNRESOLVED,
                 started,
                 charged_at,
-                busbar_substrate::proxy::ingress_error(
+                busbar_kernel::proxy::ingress_error(
                     proto,
                     StatusCode::BAD_REQUEST,
                     crate::engine::KIND_INVALID_REQUEST,
@@ -353,7 +353,7 @@ pub(crate) async fn operation_ingress_inner(
 }
 /// THE NATIVE (LLM) PLANE — the pool/engine routing that lives in-core today (the path an LLM arrival
 /// takes), now expressed as a sibling on the NEUTRAL gauntlet seam
-/// ([`busbar_substrate::plane_host::GauntletPlane`]) so it rides the exact SAME shared sequence as the
+/// ([`busbar_kernel::plane_host::GauntletPlane`]) so it rides the exact SAME shared sequence as the
 /// extracted MCP/A2A planes. Named plane-neutrally so the neutral core spells no plane-family type
 /// (per the freeze and purity law). Holds this request's owned + borrowed payload; `drive` moves it
 /// into the one engine.
@@ -369,7 +369,7 @@ struct NativePlane<'a> {
     host: &'a Arc<dyn EngineHost>,
     proto: &'static str,
     operation: busbar_api::operation::Operation,
-    op_handler: &'static dyn busbar_substrate::handlers::OperationHandler,
+    op_handler: &'static dyn busbar_substrate_values::handlers::OperationHandler,
     headers: &'a HeaderMap,
     body: Bytes,
     parsed_v: Option<crate::engine::LazyBody>,
@@ -382,12 +382,12 @@ struct NativePlane<'a> {
 }
 
 #[async_trait::async_trait]
-impl busbar_substrate::plane_host::GauntletPlane for NativePlane<'_> {
+impl busbar_kernel::plane_host::GauntletPlane for NativePlane<'_> {
     fn verify_destination(
         &self,
-        req: &busbar_substrate::plane_host::GauntletRequest<'_>,
-    ) -> busbar_substrate::plane_host::VerifyOutcome {
-        use busbar_substrate::plane_host::VerifyOutcome;
+        req: &busbar_kernel::plane_host::GauntletRequest<'_>,
+    ) -> busbar_kernel::plane_host::VerifyOutcome {
+        use busbar_kernel::plane_host::VerifyOutcome;
         // STAGE 2 — the pre-admission destination guard, verbatim. Its `Err` is the already-finished,
         // protocol-native rejection; the seam returns it as `Refuse` (byte-identical shaping).
         match self.host.destination_guard(
@@ -404,7 +404,7 @@ impl busbar_substrate::plane_host::GauntletPlane for NativePlane<'_> {
 
     async fn drive(
         self: Box<Self>,
-        req: busbar_substrate::plane_host::GauntletRequest<'_>,
+        req: busbar_kernel::plane_host::GauntletRequest<'_>,
     ) -> Response {
         // Move the owned per-request payload out of the box; the borrowed fields ride along.
         let NativePlane {
@@ -453,11 +453,11 @@ impl busbar_substrate::plane_host::GauntletPlane for NativePlane<'_> {
             } else {
                 // The destination did not resolve — the dialect-shaped not-found, finished through the
                 // SAME stage-6 tail as a served request (so the pre-seam not-found accounting is exact).
-                let resp = busbar_substrate::proxy::ingress_error(
+                let resp = busbar_kernel::proxy::ingress_error(
                     proto,
                     StatusCode::NOT_FOUND,
                     crate::engine::KIND_NOT_FOUND,
-                    &busbar_substrate::ingress::not_found_message(model, model_not_found_message),
+                    &busbar_kernel::ingress::not_found_message(model, model_not_found_message),
                 );
                 return finish_admitted_via_audit(
                     host,
@@ -510,8 +510,8 @@ impl busbar_substrate::plane_host::GauntletPlane for NativePlane<'_> {
             // an axum handler: the exchange came in on one HTTP request and leaves on its response, so
             // the transport is `Http` and saying so is a statement of fact, not a default. The stdio
             // and gRPC arrivals get their own entry points and frame the same codecs.
-            busbar_substrate::handlers::frame(
-                busbar_substrate::transport::Transport::Http,
+            busbar_substrate_values::handlers::frame(
+                busbar_substrate_values::transport::Transport::Http,
                 operation,
                 op_handler,
             ),
@@ -520,7 +520,7 @@ impl busbar_substrate::plane_host::GauntletPlane for NativePlane<'_> {
             // ACTUALLY SENT (opt-in — empty unless one is present), via the neutral collector fed the
             // plane's forwardable-name set. Dialect scoping to the matching egress lane is applied
             // later, at the egress assembly site.
-            busbar_substrate::proxy::collect_client_headers(
+            busbar_kernel::proxy::collect_client_headers(
                 headers,
                 &crate::engine::forwardable_client_header_names(),
             ),
@@ -566,7 +566,7 @@ pub async fn run(
     gov: &busbar_api::PlaneRequestCtx,
     proto: &'static str,
     operation: busbar_api::operation::Operation,
-    op_handler: &'static dyn busbar_substrate::handlers::OperationHandler,
+    op_handler: &'static dyn busbar_substrate_values::handlers::OperationHandler,
     model: &str,
     headers: &HeaderMap,
     body: Bytes,
@@ -592,14 +592,14 @@ pub async fn run(
     // is `0` here: the LLM engine stamps its own per-request id inside `forward_with_pool_parsed`
     // (`App::next_request_id`), so the shared field is unused on this path and must NOT pre-stamp one
     // (that would double-advance the counter and shift every request id).
-    let req = busbar_substrate::plane_host::GauntletRequest {
+    let req = busbar_kernel::plane_host::GauntletRequest {
         gov,
         destination: model,
         correlation_id: 0,
         charged_at,
         started,
     };
-    busbar_substrate::plane_host::run_gauntlet(req, Box::new(plane)).await
+    busbar_kernel::plane_host::run_gauntlet(req, Box::new(plane)).await
 }
 
 /// The stable ingress name for the resolved-operation gauntlet, retained as a thin delegator to the
@@ -613,7 +613,7 @@ pub async fn operation_resolved(
     gov: &busbar_api::PlaneRequestCtx,
     proto: &'static str,
     operation: busbar_api::operation::Operation,
-    op_handler: &'static dyn busbar_substrate::handlers::OperationHandler,
+    op_handler: &'static dyn busbar_substrate_values::handlers::OperationHandler,
     model: &str,
     headers: &HeaderMap,
     body: Bytes,
@@ -645,7 +645,7 @@ pub(crate) fn usage_sink(
     gov: &busbar_api::PlaneRequestCtx,
     pool: &str,
     charged_at: u64,
-    admit: Option<busbar_substrate::plane_host::AdmitHandle>,
+    admit: Option<busbar_kernel::plane_host::AdmitHandle>,
 ) -> Option<crate::engine::UsageSink> {
     // App-retype WEDGE 3: the sink holds the OPAQUE governance/cost handles the host mints over the
     // SAME `GovState`/`CostModel` the pre-flip `app.governance`/`app.cost` named — byte-identical accrual
@@ -717,13 +717,13 @@ async fn ingress_path_model_inner(
     let charged_at = host.clock_now_secs();
     // App-retype WEDGE 3: the pre-routing finish seam routes through the threaded `host` (the body-model
     // twin does the same).
-    let mut v: Value = match busbar_substrate::json::parse(&body) {
+    let mut v: Value = match busbar_substrate_values::json::parse(&body) {
         Ok(v) => v,
         Err(_) => {
             // Log a SANITIZED note for operators (just the byte length), never the parser's raw error:
             // with sonic-rs it embeds a fragment of the malformed body, which can contain secrets/PII.
             // The client gets only the generic, vendor-plausible message.
-            tracing::debug!(detail = %busbar_substrate::json::parse_err_log(body.len()), "request body JSON parse failed");
+            tracing::debug!(detail = %busbar_substrate_values::json::parse_err_log(body.len()), "request body JSON parse failed");
             // Pre-routing failure (model never resolved): route through `finish_rejected` with the
             // bounded `"unresolved"` label so the malformed-body request is still counted in REQUESTS_TOTAL /
             // REQUEST_DURATION_SECONDS and fires the request-log webhook, mirroring the model-miss
@@ -735,7 +735,7 @@ async fn ingress_path_model_inner(
                 crate::engine::POOL_LABEL_UNRESOLVED,
                 started,
                 charged_at,
-                busbar_substrate::proxy::ingress_error(
+                busbar_kernel::proxy::ingress_error(
                     proto,
                     StatusCode::BAD_REQUEST,
                     crate::engine::KIND_INVALID_REQUEST,
@@ -759,7 +759,7 @@ async fn ingress_path_model_inner(
             // before the upstream call (`proxy::strip_router_shim_keys`); cross-protocol egress
             // drops it via the IR.
             if gemini_json_array {
-                if let Some(shim_key) = busbar_substrate::proto::array_stream_shim_key_for(proto) {
+                if let Some(shim_key) = busbar_kernel::proto::array_stream_shim_key_for(proto) {
                     obj.insert(shim_key.to_string(), Value::Bool(true));
                 }
             }
@@ -775,7 +775,7 @@ async fn ingress_path_model_inner(
                 crate::engine::POOL_LABEL_UNRESOLVED,
                 started,
                 charged_at,
-                busbar_substrate::proxy::ingress_error(
+                busbar_kernel::proxy::ingress_error(
                     proto,
                     StatusCode::BAD_REQUEST,
                     crate::engine::KIND_INVALID_REQUEST,
@@ -790,7 +790,7 @@ async fn ingress_path_model_inner(
     // `Err` arm is kept as a non-panicking, protocol-shaped guard (never `unwrap`) so the request
     // path stays panic-free even if a future change introduces a non-serializable injected value;
     // it is effectively unreachable today, hence not exercised by a dedicated test.
-    let injected: Bytes = match busbar_substrate::json::to_vec(&v) {
+    let injected: Bytes = match busbar_substrate_values::json::to_vec(&v) {
         Ok(b) => b.into(),
         Err(_e) => {
             // Same leak class as the parse arms above: the JSON library's error Display is a
@@ -810,7 +810,7 @@ async fn ingress_path_model_inner(
                 crate::engine::POOL_LABEL_UNRESOLVED,
                 started,
                 charged_at,
-                busbar_substrate::proxy::ingress_error(
+                busbar_kernel::proxy::ingress_error(
                     proto,
                     StatusCode::BAD_REQUEST,
                     crate::engine::KIND_INVALID_REQUEST,
@@ -823,7 +823,7 @@ async fn ingress_path_model_inner(
     // UNIVERSAL: the caller (that protocol's routing arm) already resolved WHICH operation this is
     // (`RequestHandler::resolve_operation`); look its handler up through the registry — identical
     // for every protocol and operation. This arm's only per-protocol work was the URL parsing above.
-    let Some(op_handler) = busbar_substrate::handlers::request_handler(proto)
+    let Some(op_handler) = busbar_substrate_values::handlers::request_handler(proto)
         .and_then(|rh| rh.operation_handler(operation))
     else {
         return finish_rejected_via_audit(
@@ -833,7 +833,7 @@ async fn ingress_path_model_inner(
             crate::engine::POOL_LABEL_UNRESOLVED,
             started,
             charged_at,
-            busbar_substrate::proxy::ingress_error(
+            busbar_kernel::proxy::ingress_error(
                 proto,
                 StatusCode::NOT_FOUND,
                 crate::engine::KIND_NOT_FOUND,
@@ -861,8 +861,8 @@ async fn ingress_path_model_inner(
     .await
 }
 
-fn payload(ctx: &ArrivalCtx) -> &busbar_substrate::ingress::arrival::ArrivalPayload {
-    ctx.downcast_ref::<busbar_substrate::ingress::arrival::ArrivalPayload>()
+fn payload(ctx: &ArrivalCtx) -> &busbar_kernel::ingress::arrival::ArrivalPayload {
+    ctx.downcast_ref::<busbar_kernel::ingress::arrival::ArrivalPayload>()
         .expect("ArrivalCtx must carry the neutral ArrivalPayload -- a wiring bug otherwise")
 }
 
@@ -876,10 +876,10 @@ fn payload(ctx: &ArrivalCtx) -> &busbar_substrate::ingress::arrival::ArrivalPayl
 /// registry (so this spells no dialect), `Transport::Http`, `caller_token` from the arrival, model
 /// explicit, `model_not_found_message = None`. Matches the `CompletionIngress` fn-pointer shape.
 pub fn synthesize_completion(
-    a: busbar_substrate::ingress::arrival::CompletionArrival,
+    a: busbar_kernel::ingress::arrival::CompletionArrival,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Response> + Send>> {
     Box::pin(async move {
-        let busbar_substrate::ingress::arrival::CompletionArrival {
+        let busbar_kernel::ingress::arrival::CompletionArrival {
             ctx,
             model,
             headers,
@@ -890,7 +890,7 @@ pub fn synthesize_completion(
         // residual-default protocol, read by NAME so no dialect literal appears here. `None` is the
         // all-planes-off configuration with no chat dialect to drive; the caller reads the non-2xx
         // body as an unsatisfiable ask, the same honest error the neutral seam returns when unlinked.
-        let Some(proto) = busbar_substrate::proto::residual_default_protocol() else {
+        let Some(proto) = busbar_kernel::proto::residual_default_protocol() else {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "no default chat protocol is installed",
@@ -907,8 +907,8 @@ pub fn synthesize_completion(
         let parsed = match crate::engine::LazyBody::parse(&body) {
             Ok(v) => Some(v),
             Err(_) => {
-                tracing::debug!(detail = %busbar_substrate::json::parse_err_log(body.len()), "synthesized completion body JSON parse failed");
-                return busbar_substrate::proxy::ingress_error(
+                tracing::debug!(detail = %busbar_substrate_values::json::parse_err_log(body.len()), "synthesized completion body JSON parse failed");
+                return busbar_kernel::proxy::ingress_error(
                     proto,
                     StatusCode::BAD_REQUEST,
                     crate::engine::KIND_INVALID_REQUEST,
@@ -917,7 +917,7 @@ pub fn synthesize_completion(
             }
         };
         let op =
-            busbar_substrate::handlers::chat(proto, busbar_substrate::transport::Transport::Http);
+            busbar_substrate_values::handlers::chat(proto, busbar_substrate_values::transport::Transport::Http);
         operation_resolved(
             &p.host,
             &p.gov,

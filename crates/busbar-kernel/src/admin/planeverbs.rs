@@ -2,14 +2,14 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE PLANE TRUST VERB SURFACE on the admin API, written ONCE and parameterised by plane — the
-//! CORE-side half of the neutral seam whose plane-facing half is [`busbar_substrate::admin_verbs`].
+//! CORE-side half of the neutral seam whose plane-facing half is [`busbar_kernel::admin_verbs`].
 //!
 //! Every plane that fronts a registered upstream owes an operator the same three things, in the same
 //! order: resolve the registration or refuse with a `404`, GO AND LOOK at the upstream, and record
 //! what was found in the audit trail whatever it turned out to be. That sequence is
-//! [`busbar_substrate::admin_verbs::connect_reply`], neutral and written once; this file is what stays
+//! [`busbar_kernel::admin_verbs::connect_reply`], neutral and written once; this file is what stays
 //! CORE about it: the audit record (the frozen `<kind>.<verb>` on `<kind>:<name>`), and the boundary
-//! that maps the neutral [`busbar_substrate::admin_verbs::PlaneVerbError`] back onto the frozen
+//! that maps the neutral [`busbar_kernel::admin_verbs::PlaneVerbError`] back onto the frozen
 //! [`AdminError`] the JSON envelope speaks.
 //!
 //! ## What the plane supplies, and what it may not
@@ -28,14 +28,14 @@
 //! A registration present in the catalogue and absent from config — or the reverse — is not a state a
 //! config generation can produce. Both planes therefore answer a missing EITHER half with the same
 //! not-found rather than two answers a caller could tell apart, and
-//! [`busbar_substrate::admin_verbs::registered`] is where that is decided once; the not-found WORDING is
+//! [`busbar_kernel::admin_verbs::registered`] is where that is decided once; the not-found WORDING is
 //! reconstructed here, in [`to_admin_error`], from the plane decl.
 
 use crate::admin::v1::contract::AdminError;
 
 /// Re-export the relocated resolve/look seam so `crate::admin::planeverbs::{PlaneTrust, PlaneVerbError,
 /// registered}` keeps resolving for the in-core (a2a) callers and the shared `connect` bound.
-pub use busbar_substrate::admin_verbs::{registered, PlaneTrust, PlaneVerbError};
+pub use busbar_kernel::admin_verbs::{registered, PlaneTrust, PlaneVerbError};
 
 /// RECORD ONE PLANE TRUST VERB in the audit trail.
 ///
@@ -75,7 +75,7 @@ pub fn to_admin_error(plane: &'static str, name: &str, err: PlaneVerbError) -> A
 }
 
 /// THE CORE BACKING for the self-enveloping verb seam
-/// ([`busbar_substrate::admin_verbs::PlaneAdminEnvelope`]) — the one place a plane's `Prebuilt` verb
+/// ([`busbar_kernel::admin_verbs::PlaneAdminEnvelope`]) — the one place a plane's `Prebuilt` verb
 /// reaches the frozen envelope helpers (`err_json`/`err_json_cond`/`ok_json`), the neutral→frozen
 /// error boundary ([`to_admin_error`]), and the audit chain ([`audit`]), so the plane names none of
 /// them. A ZST: it carries no state, promoting to `'static` for the composition-root bind.
@@ -85,12 +85,12 @@ pub fn to_admin_error(plane: &'static str, name: &str, err: PlaneVerbError) -> A
 /// byte-identical to the pre-seam handler.
 pub struct CorePlaneAdminEnvelope;
 
-impl busbar_substrate::admin_verbs::PlaneAdminEnvelope for CorePlaneAdminEnvelope {
+impl busbar_kernel::admin_verbs::PlaneAdminEnvelope for CorePlaneAdminEnvelope {
     fn plane_error(
         &self,
         plane: &'static str,
         name: &str,
-        err: busbar_substrate::admin_verbs::PlaneVerbError,
+        err: busbar_kernel::admin_verbs::PlaneVerbError,
     ) -> axum::response::Response {
         crate::admin::v1::json::err_json(&to_admin_error(plane, name, err))
     }
@@ -98,10 +98,10 @@ impl busbar_substrate::admin_verbs::PlaneAdminEnvelope for CorePlaneAdminEnvelop
     fn validation(
         &self,
         msg: String,
-        cond: Option<busbar_substrate::admin_verbs::PlaneAdminCond>,
+        cond: Option<busbar_kernel::admin_verbs::PlaneAdminCond>,
     ) -> axum::response::Response {
         use crate::admin::v1::contract::taxonomy::Cond;
-        use busbar_substrate::admin_verbs::PlaneAdminCond;
+        use busbar_kernel::admin_verbs::PlaneAdminCond;
         let e = AdminError::Validation(msg);
         match cond {
             Some(PlaneAdminCond::MalformedBody) => {

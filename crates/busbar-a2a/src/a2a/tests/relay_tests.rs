@@ -29,7 +29,7 @@
 //! rule one and vice versa. Both hold; neither implies the other.
 
 use crate::testkit::engine_boot::engine;
-use busbar_substrate::testkit::engine_kit_plus::metric_sum;
+use busbar_kernel::testkit::engine_kit_plus::metric_sum;
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::atomic::Ordering;
 
@@ -118,7 +118,7 @@ async fn the_callers_busbar_key_appears_nowhere_on_the_relayed_wire() {
     // Belt and braces on the same haystack: not even the token's claims segment may leave.
     let payload_segment = h
         .bearer
-        .trim_start_matches(busbar_substrate::governance::signing::TOKEN_PREFIX)
+        .trim_start_matches(busbar_kernel::governance::signing::TOKEN_PREFIX)
         .split('.')
         .next()
         .expect("a token has a first segment")
@@ -343,7 +343,7 @@ async fn every_relayed_task_leaves_a_verifying_hash_chained_delegation_event() {
         .unwrap_or_default()
         .to_string();
 
-    let events = await_chain_with(&ledger, &id, busbar_substrate::audit::vocab::EV_DELEGATED).await;
+    let events = await_chain_with(&ledger, &id, busbar_contract::vocab::EV_DELEGATED).await;
     crate::taskstore::TASKS.clear_sink_for_test();
     // `await_chain_with` panics rather than returning when the chain never settles, so reaching here
     // already proves BOTH halves: the chain recomputes, and `task.delegated` is on it. Re-asserted so
@@ -352,7 +352,7 @@ async fn every_relayed_task_leaves_a_verifying_hash_chained_delegation_event() {
     assert!(
         events
             .iter()
-            .any(|e| e.kind == busbar_substrate::audit::vocab::EV_DELEGATED),
+            .any(|e| e.kind == busbar_contract::vocab::EV_DELEGATED),
         "the hop must leave a `task.delegated` event on the task's own chain: {events:?}"
     );
 }
@@ -389,8 +389,8 @@ async fn the_hop_is_metered_and_the_callees_own_reported_spend_is_not() {
     let rows = h
         .gov
         .store()
-        .list_metering(busbar_substrate::governance::metering_bucket(
-            busbar_substrate::store::now(),
+        .list_metering(busbar_kernel::governance::metering_bucket(
+            busbar_kernel::store::now(),
         ))
         .expect("metering reads back");
     let mine: Vec<_> = rows.iter().filter(|r| r.provider == "a2a").collect();

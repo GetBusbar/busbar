@@ -1,7 +1,7 @@
 use super::*;
 
-use busbar_substrate::diag_debug;
-use busbar_substrate::diagnostics::{
+use busbar_substrate_values::diag_debug;
+use busbar_substrate_values::diagnostics::{
     UPSTREAM_MIDSTREAM_TRANSPORT_ERROR, UPSTREAM_PREFIRSTBYTE_TRANSPORT_ERROR,
     USAGE_TAP_REASSEMBLY_CAP_EXCEEDED,
 };
@@ -11,15 +11,15 @@ use busbar_substrate::diagnostics::{
 #[derive(Clone)]
 pub(crate) struct UsageSink {
     /// The OPAQUE governance handle (App-retype WEDGE 3): the sink holds `busbar_substrate`'s
-    /// [`GovHandle`](busbar_substrate::plane_host::GovHandle) (minted host-side via
+    /// [`GovHandle`](busbar_kernel::plane_host::GovHandle) (minted host-side via
     /// `EngineHost::governance`) rather than naming core's `governance::GovState`. It is handed
     /// BACK to the host metering seams (`EngineHost::meter_ledger`/`meter_series`), which downcast it —
     /// byte-identical accrual against the SAME `GovState` the handle wraps.
-    pub(crate) gov: busbar_substrate::plane_host::GovHandle,
+    pub(crate) gov: busbar_kernel::plane_host::GovHandle,
     /// The OPAQUE cost handle (App-retype WEDGE 3) — the twin of `gov`, minted via `EngineHost::cost`
     /// and downcast host-side at accrual. Was an `Arc` of core's `cost::CostModel`; an Arc bump per
     /// request, rebuilt on config apply.
-    pub(crate) cost: busbar_substrate::plane_host::CostHandle,
+    pub(crate) cost: busbar_kernel::plane_host::CostHandle,
     /// The resolved virtual key, shared via `Arc`: `key_id` is read THROUGH it (`key.id`) at
     /// charge time, so building the sink (once per request) and cloning it (once per failover
     /// attempt) is a refcount bump, not a per-request `String` clone.
@@ -43,7 +43,7 @@ pub(crate) struct UsageSink {
     /// a chain with no concurrent caps or a test sink built off the admission path. Never read:
     /// the field exists purely so its Drop (on the last clone) releases the gauges.
     #[allow(dead_code)]
-    pub(crate) admit: Option<busbar_substrate::plane_host::AdmitHandle>,
+    pub(crate) admit: Option<busbar_kernel::plane_host::AdmitHandle>,
 }
 
 /// HOW A RESPONSE ENDED, in the ENGINE'S OWN vocabulary.
@@ -89,7 +89,7 @@ pub(crate) struct TapReport {
     pub(crate) lane: usize,
     /// The token usage the dialect's reader found, or `None` where nothing reported any. Present as
     /// EVIDENCE even on an end that bills nothing: `billing_failed` is what decides the charge.
-    pub(crate) usage: Option<busbar_substrate::billing::TokenUsage>,
+    pub(crate) usage: Option<busbar_substrate_values::billing::TokenUsage>,
     /// The terminal-error / abort / transport-cut fact the tap reads at the end of the response.
     /// True means the figures above are evidence and not a charge.
     pub(crate) billing_failed: bool,
@@ -149,8 +149,8 @@ pub(crate) use busbar_llm_codec::wire_shim::TRUNCATED_TAIL_BYTES_PER_TOKEN;
 /// fail-open-to-free defect. Attribute the floor to the OUTPUT tier — the overflow is generated
 /// content — so it prices under the model's output rate; `.max(1)` keeps it non-zero even for a
 /// pathologically small tail.
-fn estimate_usage_from_truncated_tail(tail_len: usize) -> busbar_substrate::billing::TokenUsage {
-    busbar_substrate::billing::TokenUsage {
+fn estimate_usage_from_truncated_tail(tail_len: usize) -> busbar_substrate_values::billing::TokenUsage {
+    busbar_substrate_values::billing::TokenUsage {
         output: (tail_len as u64 / TRUNCATED_TAIL_BYTES_PER_TOKEN).max(1),
         ..Default::default()
     }
@@ -181,7 +181,7 @@ pub(crate) struct FirstByteBody<S, P> {
     /// The operation this response belongs to. Drives whether the non-stream body is buffered for
     /// usage extraction (`taps_nonstream_usage`) and how usage is read from it (`extract_usage`).
     /// Chat reads the egress reader's IR usage; a flat-fee op taps nothing.
-    op: busbar_substrate::handlers::Op,
+    op: busbar_substrate_values::handlers::Op,
     /// True when the INGRESS client decodes a binary `application/vnd.amazon.eventstream` body (a
     /// native AWS SDK Bedrock client). A mid-stream error must then be a BINARY exception frame, not
     /// an SSE `event: error` text frame — writing SSE text into a binary eventstream body yields an
@@ -197,20 +197,20 @@ pub(crate) struct FirstByteBody<S, P> {
     lane_idx: usize,
     /// Resolved breaker config for the routing pool, so a mid-stream failure trips this lane using
     /// the same thresholds the synchronous path used (defaults on the degraded path).
-    breaker_cfg: Arc<busbar_substrate::store::BreakerCfg>,
+    breaker_cfg: Arc<busbar_kernel::store::BreakerCfg>,
     /// Routing pool name, so a mid-stream failure trips this lane's per-pool breaker cell (empty on
     /// the degraded path → the lane-default cell).
     pool: Box<str>,
     /// when Some, translate each egress SSE chunk to the caller's ingress protocol.
     /// None = native passthrough (same-protocol or non-SSE). Held behind the neutral
-    /// [`busbar_substrate::proto::StreamTranslator`] seam so this streaming body never names the concrete
+    /// [`busbar_kernel::proto::StreamTranslator`] seam so this streaming body never names the concrete
     /// translator.
-    translate: Option<Box<dyn busbar_substrate::proto::StreamTranslator>>,
+    translate: Option<Box<dyn busbar_kernel::proto::StreamTranslator>>,
     /// When set (gemini ingress streaming WITHOUT `?alt=sse`), the SSE bytes — whether from a
     /// same-protocol passthrough or the cross-protocol `translate` stage above, both of which are
     /// gemini SSE here — are reframed into the JSON-array streaming format the native non-`alt=sse`
     /// `:streamGenerateContent` request expects (`[{...},{...}]`). Runs AFTER `translate`.
-    json_array: Option<Box<dyn busbar_substrate::proto::ArrayStreamFramer>>,
+    json_array: Option<Box<dyn busbar_kernel::proto::ArrayStreamFramer>>,
     /// When set, the token usage tapped from this response is charged to a virtual key's budget at
     /// stream end (token-accurate accounting). Taken (fired) exactly once when the stream completes.
     usage_sink: Option<UsageSink>,
@@ -282,16 +282,16 @@ where
         inner: S,
         is_sse: bool,
         ingress_protocol: &str,
-        op: busbar_substrate::handlers::Op,
+        op: busbar_substrate_values::handlers::Op,
         permit: P,
         ceiling_deadline: tokio::time::Instant,
         host: Arc<dyn EngineHost>,
         rt: Arc<NativeRuntime>,
         lane_idx: usize,
-        breaker_cfg: Arc<busbar_substrate::store::BreakerCfg>,
+        breaker_cfg: Arc<busbar_kernel::store::BreakerCfg>,
         pool: &str,
-        translate: Option<Box<dyn busbar_substrate::proto::StreamTranslator>>,
-        json_array: Option<Box<dyn busbar_substrate::proto::ArrayStreamFramer>>,
+        translate: Option<Box<dyn busbar_kernel::proto::StreamTranslator>>,
+        json_array: Option<Box<dyn busbar_kernel::proto::ArrayStreamFramer>>,
         usage_sink: Option<UsageSink>,
         budget_spent: bool,
         tap: TapCell,
@@ -304,7 +304,7 @@ where
         // behavior-preserving — and core spells no dialect name to state it.
         // Resolve the ingress protocol ONCE (was two linear `decl_for` scans) — it supplies both the
         // binary-eventstream flag AND the interned `&'static` name we store.
-        let ingress_decl = busbar_substrate::proto::decl_for(ingress_protocol);
+        let ingress_decl = busbar_kernel::proto::decl_for(ingress_protocol);
         // Arm the stream ceiling on the CALLER's per-attempt deadline — see the `ceiling` field
         // docs for the one-envelope exactness argument.
         let ceiling = Box::pin(tokio::time::sleep_until(ceiling_deadline));
@@ -318,7 +318,7 @@ where
             ingress_eventstream: ingress_decl.is_some_and(|d| d.ingress_is_eventstream),
             ingress_protocol: ingress_decl
                 .map(|d| d.name)
-                .or_else(busbar_substrate::proto::residual_default_protocol)
+                .or_else(busbar_kernel::proto::residual_default_protocol)
                 .unwrap_or_default(),
             op,
             permit: Some(permit),
@@ -464,7 +464,7 @@ where
                                 // `cap` itself) is still observable here, not silent.
                                 this.nonstream_buf_truncated = true;
                                 metrics::counter!(
-                                    busbar_substrate::metrics::BILLING_TRUNCATED_TOTAL
+                                    busbar_kernel::metrics::BILLING_TRUNCATED_TOTAL
                                 )
                                 .increment(1);
                                 diag_debug!(
@@ -784,7 +784,7 @@ where
                     // recovery, `op.extract_usage`) still hand back the concrete `IrUsage`, projected
                     // here. Either way the billing consumers below speak token totals and name zero
                     // concrete IR. Byte-identical (the projection carries the four billed totals).
-                    let token_usage: Option<busbar_substrate::billing::TokenUsage> =
+                    let token_usage: Option<busbar_substrate_values::billing::TokenUsage> =
                         if this.usage_sink.is_none() {
                             None
                         } else if let Some(t) = this.translate.as_ref() {
@@ -804,7 +804,7 @@ where
                                 // `usage::recover_truncated_usage`'s doc comment for why this is safe and
                                 // why it duplicates rather than reuses each reader's field mapping).
                                 let tail_len = buf.len();
-                                busbar_substrate::proto::decl_for(this.ingress_protocol)
+                                busbar_kernel::proto::decl_for(this.ingress_protocol)
                                     .and_then(|d| d.dialect())
                                     .and_then(|di| di.recover_truncated_usage(&buf))
                                     // C2 fail-open-to-free fix: a body large enough to OVERFLOW the

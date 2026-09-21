@@ -17,7 +17,7 @@
 //!
 //! ## What this plane does NOT rebuild
 //!
-//! The trust lifecycle. [`busbar_substrate::trust`] is the plane-neutral machine, written with the pinned
+//! The trust lifecycle. [`busbar_kernel::trust`] is the plane-neutral machine, written with the pinned
 //! artifact as a type parameter; this plane supplies an artifact ([`pin::CardPin`]) and nothing else.
 //! `tests/reuse_tests.rs` drives one transition table over this plane's REAL artifact and a
 //! single-value transport pin of the shape the sibling plane offers, so the claim that the machine
@@ -27,13 +27,13 @@
 // list of nine unmounted modules in its prose is gone from this file, because the thing it was
 // describing is gone: [`ingress`] mounts `GET`/`POST /a2a/agents/{agent_id}` and this plane's RFC
 // 9728 metadata document, and a request arriving there is authenticated by the shared middleware
-// against [`busbar_substrate::plane::PlaneAdmission`], authorised by [`inbound::authorize`], filtered by
+// against [`busbar_kernel::plane::PlaneAdmission`], authorised by [`inbound::authorize`], filtered by
 // [`registry::inbound_catalogue`], attributed by [`meter::Attribution`], recorded through
 // [`task`]/[`taskstore`]/[`provenance`], and served through [`serve::rewrite_card`].
 //
 // AND THE ROUTER NOW RELAYS. [`relay`] is the hop `ingress::invoke` makes to the registered backend
 // agent: it guards and pins the target through the SAME `fetch::guard_hop` — and therefore the
-// same `busbar_substrate::net_guard` resolve-then-pin — the card fetch
+// same `busbar_kernel::net_guard` resolve-then-pin — the card fetch
 // uses, RE-ASKS the trust question against the live registry immediately before the socket so a
 // mid-flight demotion is not something an in-flight request escapes, presents BUSBAR'S OWN leased
 // credential or none, and turns every way the hop can fail into a busbar-attributed error rather
@@ -43,7 +43,7 @@
 // NORMAL path rather than an edge case. Every outcome lands on the per-task provenance chain.
 //
 // AND THE TRUST VERBS ARE REACHABLE. `POST /agents/{name}/connect` is the shared
-// [`busbar_substrate::admin_verbs::connect_reply`] mounted over this plane's [`verbs::A2aAgents`], and
+// [`busbar_kernel::admin_verbs::connect_reply`] mounted over this plane's [`verbs::A2aAgents`], and
 // `POST /agents/{name}/approve` is [`verbs::approve`]; together they are what takes a registration
 // out of the fail-closed `Pending` its only constructor puts it in. Before that, [`verbs::connect`]
 // was written, unit-tested and callable from nothing: `A2aPlane::from_config` rightly refuses to
@@ -69,8 +69,8 @@
 /// the JSON-RPC envelope (which a door refusal is shaped in), HTTP+JSON, and the gRPC service.
 /// `serve::servable_bindings` reads this list to decide what a served card may advertise, and its
 /// length (> 1) is what earns this plane a superset IR and denies it a `sole_wire_format`.
-pub const PLANE_DECL: busbar_substrate::plane::registry::PlaneDecl =
-    busbar_substrate::plane::registry::PlaneDecl {
+pub const PLANE_DECL: busbar_kernel::plane::registry::PlaneDecl =
+    busbar_kernel::plane::registry::PlaneDecl {
         // THE KEY IS THE CODEC'S OWN, named once on the pure side of the split so this declaration
         // and the contract plane in `busbar-plane-a2a` cannot drift apart.
         key: busbar_a2a_codec::PLANE_KEY,
@@ -83,9 +83,9 @@ pub const PLANE_DECL: busbar_substrate::plane::registry::PlaneDecl =
         audit_kind: "a2a_agent",
         wire_format_names: || {
             &[
-                busbar_substrate::plane::WIRE_JSONRPC,
-                busbar_substrate::plane::WIRE_HTTP_JSON,
-                busbar_substrate::plane::WIRE_GRPC,
+                busbar_kernel::plane::WIRE_JSONRPC,
+                busbar_kernel::plane::WIRE_HTTP_JSON,
+                busbar_kernel::plane::WIRE_GRPC,
             ]
         },
         // THE A2A DOOR — TWO claims, and only when the plane has a RECEIVING side. `/a2a` (canonical,
@@ -102,11 +102,11 @@ pub const PLANE_DECL: busbar_substrate::plane::registry::PlaneDecl =
                 vec![
                     (
                         crate::a2a::serve::MOUNT_PATH.to_string(),
-                        busbar_substrate::plane::WIRE_JSONRPC,
+                        busbar_kernel::plane::WIRE_JSONRPC,
                     ),
                     (
                         crate::a2a::serve::GRPC_MOUNT_PATH.to_string(),
-                        busbar_substrate::plane::WIRE_GRPC,
+                        busbar_kernel::plane::WIRE_GRPC,
                     ),
                 ]
             } else {
@@ -183,7 +183,7 @@ pub const PLANE_DECL: busbar_substrate::plane::registry::PlaneDecl =
     };
 
 /// VALIDATE ONE `agents:` NAMED-DEFINITION DOCUMENT — the A2A plane's half of
-/// [`busbar_substrate::plane::registry::PlaneDecl::config_validate`]. Parses the raw document into
+/// [`busbar_kernel::plane::registry::PlaneDecl::config_validate`]. Parses the raw document into
 /// [`crate::a2a::config::AgentDefCfg`] (`deny_unknown_fields`, refusing a typo'd key HERE exactly as
 /// the file refuses it) and applies the same value rules boot applies through the identical
 /// [`crate::a2a::config::validate_agent`]. Naming `crate::a2a` types HERE is correct: this is the A2A
@@ -196,29 +196,29 @@ fn a2a_config_validate(name: &str, def: &serde_json::Value) -> Result<(), String
 }
 
 /// PARSE THE `agents:` SECTION through the A2A plane's own `Deserialize` — the
-/// [`busbar_substrate::plane::registry::PlaneDecl::parse_section`] hook, so `DeployCfg` deserializes its
+/// [`busbar_kernel::plane::registry::PlaneDecl::parse_section`] hook, so `DeployCfg` deserializes its
 /// `agents:` field without naming [`crate::a2a::config::AgentsCfg`]. The `serde_yaml::Value`
 /// intermediate carries no source position, so the plane's own `split_section` / passthrough refusals
 /// reach the operator by their SENTENCE, the `at line`/`column` suffix aside.
 fn a2a_parse_section(
     v: &serde_yaml::Value,
-) -> Result<Box<dyn busbar_substrate::plane::config::PlaneCfg>, String> {
+) -> Result<Box<dyn busbar_kernel::plane::config::PlaneCfg>, String> {
     serde_yaml::from_value::<crate::a2a::config::AgentsCfg>(v.clone())
-        .map(|c| Box::new(c) as Box<dyn busbar_substrate::plane::config::PlaneCfg>)
+        .map(|c| Box::new(c) as Box<dyn busbar_kernel::plane::config::PlaneCfg>)
         .map_err(|e| e.to_string())
 }
 
-/// [`busbar_substrate::plane::registry::PlaneDecl::default_section`] hook — the empty `agents:` registry, so an
+/// [`busbar_kernel::plane::registry::PlaneDecl::default_section`] hook — the empty `agents:` registry, so an
 /// ABSENT section defaults to `AgentsCfg::default()` byte-identically to the pre-seam typed field.
-fn a2a_default_section() -> Box<dyn busbar_substrate::plane::config::PlaneCfg> {
+fn a2a_default_section() -> Box<dyn busbar_kernel::plane::config::PlaneCfg> {
     Box::<crate::a2a::config::AgentsCfg>::default()
 }
 
 /// PRUNE THE A2A VERIFY-ON-CALL GATES to the agents THIS generation fronts — the
-/// [`busbar_substrate::plane::registry::PlaneDecl::retain_verify_gates`] hook. UNCONDITIONAL: when the operator
+/// [`busbar_kernel::plane::registry::PlaneDecl::retain_verify_gates`] hook. UNCONDITIONAL: when the operator
 /// removes the `agents:` block the live set is EMPTY, so retain drops every carried flight/latch
 /// instead of leaking one per removed agent. Byte-identical to the old inline `appbuild` arm.
-fn a2a_retain_verify_gates(slots: &dyn busbar_substrate::plane_host::PlaneSlots) {
+fn a2a_retain_verify_gates(slots: &dyn busbar_kernel::plane_host::PlaneSlots) {
     // Read the plane's OWN runtime object off the neutral `plane_slots` seam and prune ITS verify
     // gate — the byte-analog of `mcp_retain_verify_gates` reading `runtime_slots(slots).verify`, with
     // no `slots.as_any().downcast::<App>()` recovery. When `agents:` is REMOVED this generation there
@@ -232,14 +232,14 @@ fn a2a_retain_verify_gates(slots: &dyn busbar_substrate::plane_host::PlaneSlots)
     }
 }
 
-/// THE A2A RUNTIME OBJECT off the NEUTRAL [`busbar_substrate::plane_host::PlaneSlots`] seam rather than
+/// THE A2A RUNTIME OBJECT off the NEUTRAL [`busbar_kernel::plane_host::PlaneSlots`] seam rather than
 /// off `&App` — the twin of [`runtime`] the core-owned `PlaneDecl` callbacks (`retain_verify_gates`)
 /// name, so they read the plane through the same slot key without `slots.as_any().downcast::<App>()`.
 /// The a2a analog of MCP's own `PlaneSlots`-seam runtime read (named distinctly so the plane-coherence
 /// lint sees two per-plane accessors, not one shared concern). `None` exactly when `agents:` is not
 /// configured this generation (no slot); the downcast never fails (the a2a slot is always an `A2aPlane`).
 pub(crate) fn runtime_off_slots(
-    slots: &dyn busbar_substrate::plane_host::PlaneSlots,
+    slots: &dyn busbar_kernel::plane_host::PlaneSlots,
 ) -> Option<&crate::a2a::plane::A2aPlane> {
     slots.plane_slot(PLANE_DECL.key).map(|slot| {
         slot.downcast_ref::<crate::a2a::plane::A2aPlane>()
@@ -248,15 +248,15 @@ pub(crate) fn runtime_off_slots(
 }
 
 /// CARRY the A2A verify-on-call gate and the boot-resolved card transports off the PRIOR generation's
-/// plane, read through the neutral [`busbar_substrate::plane_host::PlaneSlots`] seam
-/// ([`busbar_substrate::plane::registry::BuildCtx::prior`]) and downcast HERE, inside the plane. Returns fresh
+/// plane, read through the neutral [`busbar_kernel::plane_host::PlaneSlots`] seam
+/// ([`busbar_kernel::plane::registry::BuildCtx::prior`]) and downcast HERE, inside the plane. Returns fresh
 /// defaults when there was no prior generation or it fronted no agents (no a2a slot) — so the
 /// coalescing epochs and the boot-set transports survive a config apply exactly as the MCP runtime's
 /// `verify` does, and start empty on a fresh boot.
 pub(crate) fn carried_a2a_gates(
-    prior: Option<&dyn busbar_substrate::plane_host::PlaneSlots>,
+    prior: Option<&dyn busbar_kernel::plane_host::PlaneSlots>,
 ) -> (
-    std::sync::Arc<busbar_substrate::trust::VerifyGate>,
+    std::sync::Arc<busbar_kernel::trust::VerifyGate>,
     std::sync::Arc<std::sync::OnceLock<std::sync::Arc<crate::a2a::transport::LiveCardFetch>>>,
 ) {
     match prior
@@ -265,14 +265,14 @@ pub(crate) fn carried_a2a_gates(
     {
         Some(plane) => (plane.verify_arc(), plane.cards_arc()),
         None => (
-            std::sync::Arc::new(busbar_substrate::trust::VerifyGate::new()),
+            std::sync::Arc::new(busbar_kernel::trust::VerifyGate::new()),
             std::sync::Arc::new(std::sync::OnceLock::new()),
         ),
     }
 }
 
 /// THE A2A RUNTIME OBJECT for this config generation, read through the TYPE-ERASED `plane_slots`
-/// seam ([`busbar_substrate::plane_host::PlaneSlots::plane_slot`]) and downcast back to [`crate::a2a::plane::A2aPlane`]
+/// seam ([`busbar_kernel::plane_host::PlaneSlots::plane_slot`]) and downcast back to [`crate::a2a::plane::A2aPlane`]
 /// HERE, inside the plane — so core OUTSIDE this module reaches the plane only as an opaque
 /// `Arc<dyn Any>` slot and names no `crate::a2a` type. `None` exactly when `agents:` is not
 /// configured this generation (the plane contributed no slot — the same absence the deleted
@@ -285,7 +285,7 @@ pub(crate) fn carried_a2a_gates(
 /// the in-crate tests that assert plane presence/absence off a built `App`.
 #[cfg(feature = "test-support")]
 pub fn runtime(
-    app: &dyn busbar_substrate::plane_host::PlaneSlots,
+    app: &dyn busbar_kernel::plane_host::PlaneSlots,
 ) -> Option<&crate::a2a::plane::A2aPlane> {
     app.plane_slot(PLANE_DECL.key).map(|slot| {
         slot.downcast_ref::<crate::a2a::plane::A2aPlane>()
@@ -305,7 +305,7 @@ pub fn runtime(
 #[cfg(feature = "test-support")]
 #[allow(dead_code)]
 pub(crate) fn runtime_arc(
-    app: &dyn busbar_substrate::plane_host::PlaneSlots,
+    app: &dyn busbar_kernel::plane_host::PlaneSlots,
 ) -> Option<std::sync::Arc<crate::a2a::plane::A2aPlane>> {
     app.plane_slot(PLANE_DECL.key).map(|slot| {
         slot.clone()
@@ -315,12 +315,12 @@ pub(crate) fn runtime_arc(
 }
 
 /// THE HOST TWIN of [`runtime_arc`] — the A2A plane's runtime object off the host's BOUND snapshot,
-/// read through the neutral [`busbar_substrate::plane_host::EngineHost::plane_slot`] seam so the
+/// read through the neutral [`busbar_kernel::plane_host::EngineHost::plane_slot`] seam so the
 /// trust-verb `resolve` reaches it without `&Arc<App>`. Owned `Arc` (the host returns an owned clone);
 /// `None` exactly when `agents:` is not configured this generation, the same absence `runtime_arc`
 /// encodes off `&App`.
 pub(crate) fn runtime_arc_of(
-    host: &std::sync::Arc<dyn busbar_substrate::plane_host::EngineHost>,
+    host: &std::sync::Arc<dyn busbar_kernel::plane_host::EngineHost>,
 ) -> Option<std::sync::Arc<crate::a2a::plane::A2aPlane>> {
     host.plane_slot(PLANE_DECL.key).map(|slot| {
         slot.downcast::<crate::a2a::plane::A2aPlane>()
@@ -338,10 +338,10 @@ use crate::diagnostics::{
 /// the plane-narrowed `Arc<dyn PlaneStore>` (task/provenance methods only), never the `Store` that
 /// also carries `append_audit`. With `store: memory` `ctx.store` is `None` and in-flight tasks are
 /// ephemeral BY DESIGN, exactly as the audit ring is.
-use busbar_substrate::{diag_error, diag_warn};
+use busbar_kernel::{diag_error, diag_warn};
 
 pub(crate) fn a2a_hydrate(
-    ctx: &dyn busbar_substrate::plane::registry::PlaneBootCtx,
+    ctx: &dyn busbar_kernel::plane::registry::PlaneBootCtx,
 ) -> Result<(), String> {
     // With `store: memory` `ctx` carries no store and in-flight tasks are ephemeral BY DESIGN — the
     // same skip the old `let Some(store) = ctx.store` guard opened with. The plane OWNS its durable
@@ -405,7 +405,7 @@ pub(crate) fn a2a_hydrate(
 /// `cards` `OnceLock`). There is no sweep loop to spawn: a fronted agent nobody delegates to is never
 /// re-fetched, and one that is delegated to is re-verified on the call path within its `verify_ttl`.
 pub(crate) fn a2a_start(
-    ctx: &dyn busbar_substrate::plane::registry::PlaneBootCtx,
+    ctx: &dyn busbar_kernel::plane::registry::PlaneBootCtx,
 ) -> Result<(), String> {
     // MINT THE LIVE HOST off the neutral seam (`engine_host` returns a `from_handle` host in the start
     // phase, byte-identical to the old `handle.load()` reads) and read the plane's runtime object off
@@ -477,9 +477,9 @@ pub(crate) fn a2a_start(
 /// serve. `connect` is the shared plane verb; `approve` locks a registration to a seen fingerprint.
 pub(crate) fn admin_routes(
     _slot: &dyn std::any::Any,
-) -> Vec<busbar_substrate::admin_verbs::AdminRouteSpec> {
+) -> Vec<busbar_kernel::admin_verbs::AdminRouteSpec> {
     use busbar_plugin::cold::endpoint::RouteMethod;
-    use busbar_substrate::admin_verbs::{
+    use busbar_kernel::admin_verbs::{
         connect_reply, AdminReplyFuture, AdminReqCtx, AdminRouteSpec, AdminScope, AdminVerbKind,
     };
     vec![
@@ -514,7 +514,7 @@ pub(crate) fn admin_routes(
 // Read only by the OpenAPI generator (feature `openapi-schema`) and the non-vacuity floor test.
 #[cfg_attr(not(any(test, feature = "openapi-schema")), allow(dead_code))]
 pub(crate) fn openapi_fragment() -> serde_json::Value {
-    let ap = |rel: &str| format!("{}{rel}", busbar_substrate::api::ADMIN_PREFIX);
+    let ap = |rel: &str| format!("{}{rel}", busbar_kernel::api::ADMIN_PREFIX);
     serde_json::json!({
         ap("/agents/{name}/connect"): {
             "post": {
@@ -580,7 +580,7 @@ pub(crate) mod pushback;
 pub(crate) mod pushdeliver;
 pub mod pushnotify;
 /// THE RECEIVING HOT PATH. Not `ingress` any more, and the rename is the statement: the ingress
-/// SEQUENCE is `busbar_substrate::ingress::protocol`, once, for every JSON-RPC plane. What is in here is what
+/// SEQUENCE is `busbar_kernel::ingress::protocol`, once, for every JSON-RPC plane. What is in here is what
 /// was left when it moved out — this plane's method vocabulary, its verb dispatch and its refusal
 /// wording.
 pub mod receive;
@@ -594,14 +594,14 @@ pub(crate) mod rest;
 pub(crate) mod route;
 pub(crate) mod rpcerror;
 /// THIS PLANE'S REFUSAL VOCABULARY: `A2aWords`, the total match that gives every refusal
-/// `busbar_substrate::ingress::protocol` decides a sentence in A2A's own error envelope, plus the three facts
+/// `busbar_kernel::ingress::protocol` decides a sentence in A2A's own error envelope, plus the three facts
 /// of its RFC 9728 document.
 pub(crate) mod words;
 // THE CADENCE MOVED, and the plane keeps its spelling. `super::reverify::…` still resolves, so no
 // call site in this plane changed — but there is now exactly ONE cadence in the tree and the MCP
 // refresh timer drives the same `due` this one does. See the standing rule: unify the duplicate
 // before a second copy can drift from the first.
-pub(crate) use busbar_substrate::trust::reverify;
+pub(crate) use busbar_kernel::trust::reverify;
 pub mod serve;
 pub(crate) mod sign;
 pub(crate) mod spki;

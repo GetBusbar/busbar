@@ -213,8 +213,8 @@ fn approval_redeem_q_spends_against_the_marshalled_expiry() {
             _reserved: 0,
             scope: 0,
             _reserved2: 0,
-            expires_at: busbar_substrate::store::now().saturating_add(3_600),
-            now: busbar_substrate::store::now(),
+            expires_at: busbar_kernel::store::now().saturating_add(3_600),
+            now: busbar_kernel::store::now(),
             key_ptr: nonce.as_ptr(),
             key_len: nonce.len(),
         };

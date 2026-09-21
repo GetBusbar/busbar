@@ -21,9 +21,9 @@ use std::time::Duration;
 
 use axum::http::header::{ACCEPT, CONTENT_TYPE, USER_AGENT};
 
-use busbar_substrate::breaker::{classify, normalize_raw_error, Disposition, RawUpstreamError};
-use busbar_substrate::plane_host::{EngineHost, HealthModeInput as HealthMode};
-use busbar_substrate::store::{now, BreakerCfg};
+use busbar_substrate_values::breaker::{classify, normalize_raw_error, Disposition, RawUpstreamError};
+use busbar_kernel::plane_host::{EngineHost, HealthModeInput as HealthMode};
+use busbar_kernel::store::{now, BreakerCfg};
 
 use crate::engine::NativeRuntime;
 
@@ -32,7 +32,7 @@ use crate::engine::NativeRuntime;
 /// `None` when the bound snapshot carries no LLM runtime (the featureless zero-plane boot), in which
 /// case there is nothing to probe. The returned `Arc` MUST be held while the downcast borrow is live.
 fn host_runtime_slot(host: &dyn EngineHost) -> Option<Arc<dyn std::any::Any + Send + Sync>> {
-    host.plane_slot(busbar_substrate::plane_host::runtime_slot_key(
+    host.plane_slot(busbar_kernel::plane_host::runtime_slot_key(
         crate::PLANE_DECL.key,
     ))
 }
@@ -304,12 +304,12 @@ pub(crate) async fn probe_lane(host: &dyn EngineHost, i: usize, timeout: Duratio
     }
 
     // Probe body via the neutral dialect seam (the concrete writer relocated to the plugin at A4b).
-    let body = busbar_substrate::proto::decl_for(lane.protocol)
+    let body = busbar_kernel::proto::decl_for(lane.protocol)
         .and_then(|d| d.dialect())
         .map(|dc| dc.probe_body(lane.wire_model()))
         .unwrap_or_default();
     let url_path = lane.path.clone().unwrap_or_else(|| {
-        busbar_substrate::proto::decl_for(lane.protocol)
+        busbar_kernel::proto::decl_for(lane.protocol)
             .and_then(|d| d.dialect())
             .map(|dc| dc.upstream_path_for_stream(lane.wire_model(), false))
             .unwrap_or_default()
@@ -321,7 +321,7 @@ pub(crate) async fn probe_lane(host: &dyn EngineHost, i: usize, timeout: Duratio
     // shared `sign_and_wire_path` helper — the identical primitive the organic forward path uses —
     // and reuse it for both the signed canonical URI and the wire URL so signed == sent.
     let wire_path = crate::engine::sign_and_wire_path(&url_path);
-    let signing_ctx = busbar_substrate::proto::SigningContext {
+    let signing_ctx = busbar_kernel::proto::SigningContext {
         host: &lane.signing_host,
         canonical_uri: wire_path.split('?').next().unwrap_or(&wire_path),
         body: &body,
@@ -418,7 +418,7 @@ pub(crate) async fn probe_lane(host: &dyn EngineHost, i: usize, timeout: Duratio
             // vocabulary for all six protocols (chat's codec delegates to that very reader), and an
             // outbound attempt with no lane behind it can be attributed the same way.
             let status = r.status();
-            let retry_after_secs = busbar_substrate::breaker::parse_retry_after(r.headers());
+            let retry_after_secs = busbar_substrate_values::breaker::parse_retry_after(r.headers());
             let body = read_capped_error_body(r.into_body(), deadline).await;
             // Stage 1a asks the CELL that spoke to this upstream. For chat over HTTP that cell's
             // `extract_error` is uniformly `protocol_error(protocol, …)` (its error vocabulary is the
@@ -427,7 +427,7 @@ pub(crate) async fn probe_lane(host: &dyn EngineHost, i: usize, timeout: Duratio
             // chat codec, which core no longer carries in production (G6 A4b: `ChatOperation` and the
             // chat IR relocated to the `busbar-llm` plugin).
             let mut raw: RawUpstreamError =
-                busbar_substrate::handlers::protocol_error(lane.protocol, status.as_u16(), &body);
+                busbar_substrate_values::handlers::protocol_error(lane.protocol, status.as_u16(), &body);
             raw.retry_after_secs = retry_after_secs;
             (
                 classify(&normalize_raw_error(&raw, &lane.error_map)),

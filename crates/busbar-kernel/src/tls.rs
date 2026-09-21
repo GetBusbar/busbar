@@ -91,7 +91,7 @@ const BODY_THROUGHPUT_GRACE: Duration = Duration::from_secs(10);
 /// always admits exactly "the whole cap, sustained at the floor," regardless of how the operator has
 /// configured the cap.
 fn total_body_deadline() -> Duration {
-    let cap_bytes = busbar_substrate::proxy::max_translate_body_bytes() as u64;
+    let cap_bytes = busbar_kernel::proxy::max_translate_body_bytes() as u64;
     Duration::from_secs(cap_bytes / MIN_BODY_THROUGHPUT_BYTES_PER_SEC)
 }
 
@@ -126,16 +126,15 @@ pub fn install_crypto_provider() {
     let _ = rustls::crypto::ring::default_provider().install_default();
 }
 
-/// Resolve a TLS secret reference to its PEM bytes, mapping any resolve error into a clear,
-/// source-named message. Never logs contents.
-///
-/// The ONE turn-a-`SecretRef`-into-TLS-PEM function now lives NEUTRALLY in
-/// [`busbar_substrate::tls::read_pem`] and is re-exported here so this crate's inbound-listener call
-/// sites (`load_cert_chain`/`load_private_key`/`load_client_roots`) are unchanged — and so a
-/// plane's OUTBOUND client identity resolver names the neutral home rather than reaching into core.
-/// One place in the tree turns a `SecretRef` into TLS PEM; a second would be a second place for the
-/// "never echo what you read" rule to be forgotten.
-pub(crate) use busbar_substrate::tls::read_pem;
+// Resolve a TLS secret reference to its PEM bytes, mapping any resolve error into a clear,
+// source-named message. Never logs contents.
+//
+// The ONE turn-a-`SecretRef`-into-TLS-PEM function now lives NEUTRALLY in
+// [`busbar_kernel::tls::read_pem`] and is re-exported here so this crate's inbound-listener call
+// sites (`load_cert_chain`/`load_private_key`/`load_client_roots`) are unchanged — and so a
+// plane's OUTBOUND client identity resolver names the neutral home rather than reaching into core.
+// One place in the tree turns a `SecretRef` into TLS PEM; a second would be a second place for the
+// "never echo what you read" rule to be forgotten.
 
 /// Parse the PEM certificate chain (leaf first). Errors name the secret source; cert bytes are
 /// public, but we still avoid echoing them.
@@ -915,3 +914,16 @@ async fn serve_one(
 #[cfg(test)]
 #[path = "tests/tls_tests.rs"]
 mod tests;
+
+// ==== merged from busbar-substrate (W4.b P2 engine drain) ====
+/// Resolve a TLS secret reference to its PEM bytes, mapping any resolve error into a clear,
+/// source-named message. Never logs contents.
+pub fn read_pem(
+    resolver: &dyn busbar_api::SecretResolve,
+    secret: &busbar_api::SecretRef,
+    what: &str,
+) -> Result<Vec<u8>, String> {
+    resolver
+        .resolve(secret)
+        .map_err(|e| format!("cannot resolve TLS {what} ({}): {e}", secret.describe()))
+}

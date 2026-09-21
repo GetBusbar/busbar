@@ -8,7 +8,7 @@
 //! The rules, stated once here and inherited by `receive`:
 //!
 //! - A FRESH submission to a pooled agent goes through the ONE candidate loop
-//!   ([`busbar_substrate::failover::walk`] over the pool's members, pin-checked against the approved card
+//!   ([`busbar_kernel::failover::walk`] over the pool's members, pin-checked against the approved card
 //!   fingerprints, admitted through the one breaker), so a tripped primary reroutes to its
 //!   verified twin BEFORE anything reaches a socket and the caller never learns.
 //! - An ADDRESSED or RESUMED task is PINNED to the member that accepted it — the task id names
@@ -24,7 +24,7 @@ use crate::diagnostics::{
     A2A_EXTENDED_CARD_BUILD_FAILED, A2A_PIN_REFUSAL_UNRECORDED, A2A_POOL_NOT_INTERCHANGEABLE,
 };
 use axum::response::{IntoResponse as _, Response};
-use busbar_substrate::{diag_debug, diag_error, diag_warn};
+use busbar_kernel::{diag_debug, diag_error, diag_warn};
 use std::sync::Arc;
 
 /// One `agent_pools:` member as the walk sees it — this plane's whole cost of inheriting the
@@ -40,7 +40,7 @@ struct AgentCandidate {
     eligible: bool,
 }
 
-impl busbar_substrate::failover::Candidate for AgentCandidate {
+impl busbar_kernel::failover::Candidate for AgentCandidate {
     fn name(&self) -> &str {
         &self.name
     }
@@ -55,7 +55,7 @@ impl busbar_substrate::failover::Candidate for AgentCandidate {
 /// The pool the caller-named agent belongs to, if any — resolved ONCE per call and read by the
 /// resume lookup, the walk and the pinning.
 pub(super) fn pool_of(
-    engine_host: &dyn busbar_substrate::plane_host::EngineHost,
+    engine_host: &dyn busbar_kernel::plane_host::EngineHost,
     agent_id: &str,
 ) -> Option<(String, Vec<String>)> {
     // The neutral host seam (`a2a_agent_pool_members`) runs the SAME `.find` over `agent_pools` and
@@ -88,8 +88,8 @@ pub(super) struct SelectedMember {
 /// Decide the target member for one admitted call. See the module header for the three rules.
 #[allow(clippy::too_many_arguments)] // the admission's own facts, gathered where they were made.
 pub(super) fn select_member(
-    engine_host: &dyn busbar_substrate::plane_host::EngineHost,
-    scope: &busbar_substrate::plane_host::DispatchScope,
+    engine_host: &dyn busbar_kernel::plane_host::EngineHost,
+    scope: &busbar_kernel::plane_host::DispatchScope,
     plane: &super::plane::A2aPlane,
     key: &busbar_api::VirtualKey,
     kind: &'static str,
@@ -117,7 +117,7 @@ pub(super) fn select_member(
             selected.agent_id = pinned.to_string();
             selected.breaker = match members.iter().position(|m| m == pinned) {
                 Some(lane) => RelayBreaker {
-                    key: busbar_substrate::store::agent_key(&pool_name),
+                    key: busbar_kernel::store::agent_key(&pool_name),
                     lane,
                     pre_admitted: false,
                 },
@@ -159,16 +159,16 @@ pub(super) fn select_member(
                     })
                     .collect()
             });
-            let pool_key = busbar_substrate::store::agent_key(&pool_name);
+            let pool_key = busbar_kernel::store::agent_key(&pool_name);
             let tried: Vec<usize> = candidates
                 .iter()
                 .filter(|c| !c.eligible)
                 .map(|c| c.lane)
                 .collect();
-            let attempt = busbar_substrate::failover::Attempt {
+            let attempt = busbar_kernel::failover::Attempt {
                 tried: &tried,
-                stage: busbar_substrate::failover::Stage::BeforeFirstByte,
-                repeatable: busbar_substrate::failover::Repeatable::No,
+                stage: busbar_kernel::failover::Stage::BeforeFirstByte,
+                repeatable: busbar_kernel::failover::Repeatable::No,
                 operation: method,
             };
             // THE WALK, INVERTED onto the host `breaker_admit` seam (CLUSTER-1, mirroring the MCP
@@ -178,9 +178,9 @@ pub(super) fn select_member(
             // pin/repeatability/order still select (probe-win-last preserved: `walk_with` runs the pin
             // check BEFORE the admit closure). The hop's recorded outcome settles through the same
             // arena over that id; an abandoned hop releases the probe when the scope drops.
-            let mut order = busbar_substrate::failover::InOrder::new(&tried, candidates.len());
+            let mut order = busbar_kernel::failover::InOrder::new(&tried, candidates.len());
             let mut passed_over = Vec::new();
-            match busbar_substrate::failover::walk_with(
+            match busbar_kernel::failover::walk_with(
                 &pool_key,
                 &candidates,
                 &attempt,
@@ -216,7 +216,7 @@ pub(super) fn select_member(
                     // id to poll; the refusal fires after the row exists, through the same
                     // rendering the degenerate breaker refusal uses.
                     match &refusal {
-                        busbar_substrate::failover::Refusal::NotInterchangeable { .. } => {
+                        busbar_kernel::failover::Refusal::NotInterchangeable { .. } => {
                             selected.pin_mismatch = Some(refusal.to_string());
                         }
                         _ => {
@@ -263,7 +263,7 @@ fn member_facts(
 /// audited `rejected` here so a second caller cannot forget to.
 #[allow(clippy::too_many_arguments)] // the hop's own facts, no more.
 pub(super) fn hop_facts<'a>(
-    engine_host: &dyn busbar_substrate::plane_host::EngineHost,
+    engine_host: &dyn busbar_kernel::plane_host::EngineHost,
     plane: &super::plane::A2aPlane,
     key: &busbar_api::VirtualKey,
     admitted: &'a super::receive::Admitted,
@@ -297,7 +297,7 @@ pub(super) fn hop_facts<'a>(
             engine_host.audit_emit(
                 super::receive::AUDIT_ACTION,
                 resource,
-                busbar_substrate::audit::vocab::OUTCOME_REJECTED,
+                busbar_contract::vocab::OUTCOME_REJECTED,
                 actor,
             );
             Err(Some(Box::new(
@@ -320,7 +320,7 @@ pub(super) fn hop_facts<'a>(
 /// `Retry-After`, but the task is equally NOT ACCEPTED and the id still resolves.
 #[allow(clippy::too_many_arguments)] // the refusal's own facts, no more.
 pub(super) fn render_pin_mismatch(
-    engine_host: &Arc<dyn busbar_substrate::plane_host::EngineHost>,
+    engine_host: &Arc<dyn busbar_kernel::plane_host::EngineHost>,
     seam: &Arc<dyn super::relay::RelaySeam>,
     rpc_id: &serde_json::Value,
     task_id: &str,
@@ -387,7 +387,7 @@ pub(super) fn render_pin_mismatch(
 /// caller may reach at all. Passing a shape here would silently drop every agent that cannot serve
 /// whatever shape was invented.
 pub(super) fn extended_agent_card(
-    engine_host: &Arc<dyn busbar_substrate::plane_host::EngineHost>,
+    engine_host: &Arc<dyn busbar_kernel::plane_host::EngineHost>,
     key: &busbar_api::VirtualKey,
     rpc_id: &serde_json::Value,
 ) -> Response {
@@ -409,10 +409,10 @@ pub(super) fn extended_agent_card(
     // A caller entitled to none of several configured agents DOES get the empty card, and the
     // distinction is deliberate: that is a statement about that caller's grants, which is exactly
     // what the caller is entitled to be told.
-    let caller = busbar_substrate::catalogue::Caller {
+    let caller = busbar_kernel::catalogue::Caller {
         key: Some(key),
         now: engine_host.clock_now_secs(),
-        generation: busbar_substrate::trust::validate::Generations::at_admission(
+        generation: busbar_kernel::trust::validate::Generations::at_admission(
             plane.generation(),
         ),
     };

@@ -36,7 +36,7 @@ path = "src/lib.rs"
 # shape `busbar-mcp` exposes. Forwards ONLY to the substrate's test seams (`register_test_protocols`
 # and friends): this plane has NO production dependency on busbar-core, so there is nothing of core's
 # to forward. The G6 A4b leaf-op read/write free fns are `#[cfg(any(test, feature = "test-support"))]`.
-test-support = ["busbar-substrate/test-support", "busbar-llm-codec/test-support"]
+test-support = ["busbar-kernel/test-support", "busbar-llm-codec/test-support"]
 # THE TELLER WAIST, written dark. DEFAULT OFF, and it stays off until the whole step set is wired and
 # the owed golden is clean on both legs. With it off `src/unit/` compiles to nothing (the module root
 # carries an inner `cfg`), so the default dependency graph, the default build and every default-feature
@@ -52,10 +52,10 @@ timing = ["busbar-timing/timing", "busbar-llm-codec/timing"]
 # The CI-only OpenAPI schema derive, mirroring `busbar-mcp`: the LLM `PLANE_DECL`'s `openapi_schemas`
 # field is `#[cfg(feature = "openapi-schema")]` on `busbar_substrate::plane::registry::PlaneDecl`, so
 # this feature must resolve that `#[cfg]` in lock-step with the struct definition. FORWARDS straight
-# to `busbar-substrate/openapi-schema` — the plugin carries no `schemars` derive of its own (the LLM
+# to `busbar-kernel/openapi-schema` — the plugin carries no `schemars` derive of its own (the LLM
 # plane contributes `openapi_schemas: None`), it only needs the field-site `#[cfg]` to agree with
 # substrate's. The binary's `openapi-schema` forwards `busbar-llm?/openapi-schema`.
-openapi-schema = ["busbar-substrate/openapi-schema", "busbar-llm-codec/openapi-schema"]
+openapi-schema = ["busbar-kernel/openapi-schema", "busbar-llm-codec/openapi-schema"]
 # T3 — inbound OpenAI Responses async/background WEBHOOK RECEIVER, LIVE HTTP-ROUTE MOUNT. DEFAULT OFF.
 # The parse+verify+surface HANDLER (`openai_responses::webhook`) compiles and is tested
 # UNCONDITIONALLY; only MOUNTING it as a live `/v1/llm/webhooks/openai` route is gated here, because
@@ -78,7 +78,7 @@ webhook-receiver = ["dep:busbar-plugin"]
 # plane ABI rather than a reach into the kernel. `busbar-kernel` is deliberately NOT named here: the
 # type that implements the loop's step seam lives in the composition root, and these files are the
 # per-step bodies it delegates to.
-teller-waist = ["dep:busbar-contract"]
+teller-waist = []
 
 [dependencies]
 # NO `busbar-core` HERE, ON PURPOSE. A plane is a plugin on the plane ABI: the ONLY surface between
@@ -95,8 +95,9 @@ teller-waist = ["dep:busbar-contract"]
 # The NEUTRAL ABI (the substrate + contract crates). A plane depends on these DIRECTLY. `busbar-core`
 # re-exports these same items, so every historical repoint from a core path to `busbar_substrate::X` /
 # `busbar_api::X` was by-identity (the very same type/const), i.e. byte-identical behaviour.
-busbar-substrate = { path = "../busbar-substrate", default-features = false }
+busbar-kernel = { path = "../busbar-kernel", default-features = false, features = ["plane-llm"] }
 busbar-api = { path = "../api" }
+busbar-substrate-values = { path = "../busbar-substrate-values" }
 # THE CODECS. The pure half of this plugin, split out so `busbar-plane-llm` can name the dialect
 # readers/writers, the IR, the stream translator and the answer-normalization pass without pulling
 # this crate's HTTP stack and async runtime into a pure kind's closure. Every module that moved is
@@ -145,13 +146,12 @@ busbar-plugin = { path = "../busbar-plugin", optional = true }
 # Optional so the default dependency graph — and therefore the default build — is unchanged.
 # The other half of the plugin-visible pair: the meter class direction the Meter step's usage lines
 # carry lives in the contract and nowhere else. Optional, and enabled only by `teller-waist`.
-busbar-contract = { path = "../busbar-contract", optional = true }
+busbar-contract = { path = "../busbar-contract" }
 
 [dev-dependencies]
 # THE NEUTRAL TEST KIT (`busbar_substrate::testkit`: the built-app seam the money-path tests forward
 # through, the warn-capture layer, the fixture seams), named explicitly here so this crate's test build
 # turns the substrate's test surface on in its own right — not as a side effect of core's dev-edge.
-busbar-substrate = { path = "../busbar-substrate", features = ["test-support"] }
 # THE CODECS' TEST SEAM (`ensure_test_protocols_registered`) is gated on the codec crate's
 # `test-support`, so this crate's own test binary turns it on in its own right rather than relying on
 # a dependent's feature selection.

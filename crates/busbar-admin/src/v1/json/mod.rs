@@ -255,10 +255,10 @@ fn service(handle: &Arc<AppHandle>) -> AdminService {
 }
 
 /// Absolute admin path from a RELATIVE one — relocated to the neutral substrate
-/// (`busbar_substrate::api::ap`) alongside `ADMIN_PREFIX`, re-exported here so `openapi_doc()` and
+/// (`busbar_kernel::api::ap`) alongside `ADMIN_PREFIX`, re-exported here so `openapi_doc()` and
 /// every in-core caller are unchanged.
 #[cfg_attr(not(feature = "openapi-schema"), allow(unused_imports))]
-pub use busbar_substrate::api::ap;
+pub use busbar_kernel::api::ap;
 
 /// The config-plane mutation choke point. Every mutation — from any transport, in any module — runs
 /// inside `txn::config_transaction`, which owns the (file-private) mutation lock, hands the body a
@@ -280,7 +280,7 @@ pub(crate) mod named_map;
 /// MOUNT EVERY PLANE'S ADMIN TRUST VERBS onto the admin router — the ADMIN-3 mirror of the data
 /// plane's `router::mount_plane_routes`. Iterates the plane decls in the registry's DECLARATION
 /// ORDER, preserving the operator-visible route order, asks each for its neutral
-/// [`busbar_substrate::admin_verbs::AdminRouteSpec`] list, and registers each spec at its VERBATIM
+/// [`busbar_kernel::admin_verbs::AdminRouteSpec`] list, and registers each spec at its VERBATIM
 /// `(method, path)` so the auth middleware's `required_scope(method, path)` is byte-identical.
 ///
 /// The `&dyn Any` a plane's `admin_routes` fn takes is the seam's shared shape (it mirrors
@@ -298,19 +298,19 @@ fn mount_plane_admin_routes(mut router: Router<Arc<AppHandle>>) -> Router<Arc<Ap
     router
 }
 
-/// Mount ONE neutral [`busbar_substrate::admin_verbs::AdminRouteSpec`] onto the admin router. This is
+/// Mount ONE neutral [`busbar_kernel::admin_verbs::AdminRouteSpec`] onto the admin router. This is
 /// the single place a plane's admin verb touches `Arc<AppHandle>` / `ok_json` / `err_json` / the audit
 /// chain: the shim loads the handle, mints the neutral host, builds an
-/// [`busbar_substrate::admin_verbs::AdminReqCtx`], awaits the plane's own handler, and frames the
-/// [`busbar_substrate::admin_verbs::AdminReply`] — mapping the neutral `PlaneVerbError` back onto
+/// [`busbar_kernel::admin_verbs::AdminReqCtx`], awaits the plane's own handler, and frames the
+/// [`busbar_kernel::admin_verbs::AdminReply`] — mapping the neutral `PlaneVerbError` back onto
 /// `AdminError` and, for an `Audited` verb, recording the audit row EXACTLY where the pre-seam
 /// `connect` did (applied on a view, rejected on a look refusal, NOTHING on the resolve-time `404`).
 fn mount_one_admin_spec(
     router: Router<Arc<AppHandle>>,
     plane: &'static str,
-    spec: busbar_substrate::admin_verbs::AdminRouteSpec,
+    spec: busbar_kernel::admin_verbs::AdminRouteSpec,
 ) -> Router<Arc<AppHandle>> {
-    use busbar_substrate::admin_verbs::{AdminReqCtx, AdminRouteSpec};
+    use busbar_kernel::admin_verbs::{AdminReqCtx, AdminRouteSpec};
     let AdminRouteSpec {
         method,
         path,
@@ -344,18 +344,18 @@ fn mount_one_admin_spec(
     router.route(&path, axum::routing::on(method_filter, shim))
 }
 
-/// Frame a plane handler's [`busbar_substrate::admin_verbs::AdminReply`] onto the wire, and record the
+/// Frame a plane handler's [`busbar_kernel::admin_verbs::AdminReply`] onto the wire, and record the
 /// audit row for an `Audited` verb. The variants encode the pre-seam behaviour exactly: `Refused` is
 /// the un-audited resolve-time refusal, `Applied`/`Rejected` are the audited look-time outcomes, and
 /// `Prebuilt` is a verb that built its own envelope and audited itself (returned verbatim).
 fn finish_admin_reply(
     plane: &'static str,
     name: &str,
-    kind: busbar_substrate::admin_verbs::AdminVerbKind,
+    kind: busbar_kernel::admin_verbs::AdminVerbKind,
     principal: Option<busbar_kernel::auth::AuthPrincipal>,
-    reply: busbar_substrate::admin_verbs::AdminReply,
+    reply: busbar_kernel::admin_verbs::AdminReply,
 ) -> Response {
-    use busbar_substrate::admin_verbs::{AdminReply, AdminVerbKind};
+    use busbar_kernel::admin_verbs::{AdminReply, AdminVerbKind};
     let record_audit = |outcome: &'static str| {
         if let AdminVerbKind::Audited { verb } = kind {
             let anon = busbar_kernel::auth::AuthPrincipal(None);
@@ -501,10 +501,10 @@ mod handlers;
 pub(crate) use handlers::*;
 // An extracted plane contributes its trust verbs' typed response schemas through
 // this exact helper (`admin_view::openapi_schemas`). It is relocated to the neutral substrate
-// (`busbar_substrate::api::set_response_schema`) so the plane names it directly; re-exported here at
+// (`busbar_kernel::api::set_response_schema`) so the plane names it directly; re-exported here at
 // its old path, gated the same as the helper itself, so in-core callers are unchanged.
 #[cfg(feature = "openapi-schema")]
-pub use busbar_substrate::api::set_response_schema;
+pub use busbar_kernel::api::set_response_schema;
 
 #[cfg(test)]
 #[path = "tests/tests.rs"]

@@ -11,7 +11,7 @@ use axum::{
 use serde_json::{json, Value};
 
 use crate::governance::{pool_allowed, GovCtx};
-use busbar_substrate::store::now;
+use busbar_kernel::store::now;
 
 use crate::state::App;
 
@@ -100,9 +100,9 @@ pub(crate) async fn stats(
                 ),
             };
             let breaker_state = match snap.breaker_state {
-                busbar_substrate::store::BreakerState::Closed => "closed",
-                busbar_substrate::store::BreakerState::Open { .. } => "open",
-                busbar_substrate::store::BreakerState::HalfOpen => "half_open",
+                busbar_kernel::store::BreakerState::Closed => "closed",
+                busbar_kernel::store::BreakerState::Open { .. } => "open",
+                busbar_kernel::store::BreakerState::HalfOpen => "half_open",
             };
             json!({
                 "model": snap.model,

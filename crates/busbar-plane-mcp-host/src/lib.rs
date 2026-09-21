@@ -13,7 +13,7 @@
 //! ## What lives here today
 //!
 //! The MCP plane's DIAGNOSTICS catalog — the `MCP_*` entries the composition root installs via
-//! [`install_diagnostics`](busbar_substrate::diagnostics::install_diagnostics). This is the one
+//! [`install_diagnostics`](busbar_substrate_values::diagnostics::install_diagnostics). This is the one
 //! byte-safe, non-money, cycle-free leaf of the host surface: it names nothing in `busbar-mcp`, so it
 //! moves down here cleanly while `busbar-mcp` re-exports it under its old paths
 //! (`busbar_mcp::DIAGNOSTICS`, `busbar_mcp::diagnostics::…`) so every caller resolves what it always

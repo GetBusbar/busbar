@@ -6,7 +6,7 @@
 //! no `repr`); only [`Transport::name`]'s returned strings are frozen
 //! ("http"/"websocket"/"stdio" plus the `WIRE_JSONRPC`/`WIRE_HTTP_JSON`/`WIRE_GRPC` constants in
 //! [`super::plane`]), so re-exporting the type at this historical path changes no byte a caller
-//! reads. Every existing `busbar_substrate_values::transport::…` / `busbar_substrate::transport::…`
+//! reads. Every existing `busbar_substrate_values::transport::…` / `busbar_substrate_values::transport::…`
 //! call site resolves unchanged through this re-export.
 pub use busbar_contract::transport::transport::Transport;
 #[cfg(any(feature = "dispatch", feature = "runtime"))]

@@ -55,8 +55,8 @@
 use axum::body::Bytes;
 use axum::http::StatusCode;
 use busbar_api::operation::Operation;
-use busbar_substrate::handlers::OperationHandler;
-use busbar_substrate::proxy::{KIND_INVALID_REQUEST, KIND_NOT_FOUND};
+use busbar_substrate_values::handlers::OperationHandler;
+use busbar_kernel::proxy::{KIND_INVALID_REQUEST, KIND_NOT_FOUND};
 
 use crate::engine::LazyBody;
 use crate::unit::audit::RefusalOutcome;
@@ -192,7 +192,7 @@ pub fn handler_for(
     operation: Operation,
 ) -> Result<&'static dyn OperationHandler, DecodeRefusal> {
     let rh =
-        busbar_substrate::handlers::request_handler(proto).ok_or(DecodeRefusal::UnknownProtocol)?;
+        busbar_substrate_values::handlers::request_handler(proto).ok_or(DecodeRefusal::UnknownProtocol)?;
     rh.operation_handler(operation)
         .ok_or(DecodeRefusal::UnsupportedOperation)
 }
@@ -207,7 +207,7 @@ pub fn handler_for_path_model(
     proto: &str,
     operation: Operation,
 ) -> Result<&'static dyn OperationHandler, DecodeRefusal> {
-    busbar_substrate::handlers::request_handler(proto)
+    busbar_substrate_values::handlers::request_handler(proto)
         .and_then(|rh| rh.operation_handler(operation))
         .ok_or(DecodeRefusal::UnsupportedOperation)
 }

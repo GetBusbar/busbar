@@ -10,7 +10,7 @@
 //! binary links the plugin as a dev-dependency and reaches its registry-resolved factory directly,
 //! byte-identical to what the netted `super::stream::new_stream_translator` returned before.
 
-use busbar_substrate::proto::StreamTranslator;
+use busbar_kernel::proto::StreamTranslator;
 
 /// Forward to the LLM plugin's registry-resolved streaming-translator factory. Same signature the
 /// production `install_stream_translator_factory` pointer has, so the routing is byte-identical.

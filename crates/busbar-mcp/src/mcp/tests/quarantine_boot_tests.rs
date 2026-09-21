@@ -4,7 +4,7 @@
 //! A QUARANTINE IS ONLY A DEFENCE IF IT OUTLIVES THE THING THAT NOTICED IT.
 //!
 //! Under verify-on-call the thing that notices a drifted upstream is the CALL itself
-//! (`busbar_substrate::trust::verify`): a `tools/call` re-verifies the server's advertised surface within
+//! (`busbar_kernel::trust::verify`): a `tools/call` re-verifies the server's advertised surface within
 //! `verify_ttl`, single-flight, and refuses fail-closed before dispatch. These cases drive that path
 //! at `verify_ttl: 0` (strict-live) so the drift is deterministic without a wall clock, and they are
 //! about what happens to the resulting quarantine when nobody is calling:
@@ -94,7 +94,7 @@ fn boot(
     // BEFORE the first request. No-op when no durable store is configured.
     if let Some(store) = replay_store {
         let host = engine_host(&app);
-        let plane_store = busbar_substrate::plane::store::PlaneStoreView::narrow(store);
+        let plane_store = busbar_kernel::plane::store::PlaneStoreView::narrow(store);
         crate::mcp::demotion::hydrate(&host, Some(&plane_store));
     }
     app

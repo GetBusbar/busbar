@@ -13,7 +13,7 @@ const BUDGET_ASSERT_EPSILON: std::time::Duration = std::time::Duration::from_sec
 #[derive(Debug, Clone)]
 pub(crate) struct RestrictConstraint {
     pub(crate) tags_any: Vec<String>,
-    pub(crate) on_empty: busbar_substrate::config::PolicyOnError,
+    pub(crate) on_empty: busbar_kernel::config::PolicyOnError,
     pub(crate) name: &'static str,
 }
 
@@ -46,7 +46,7 @@ pub(crate) struct RequestCtx {
     // Consumed by the queue/least_bad/Retry-After wiring in a later phase; populated and asserted by
     // the taxonomy/refactor unit tests now — silence the release-build dead-code lint meanwhile.
     #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) excluded_reasons: Vec<(usize, busbar_substrate::store::Unavailable)>,
+    pub(crate) excluded_reasons: Vec<(usize, busbar_kernel::store::Unavailable)>,
     /// This request's correlation id — a single `u64` `fetch_add`'d off [`App::next_request_id`]
     /// ONCE at ingress (see `forward_with_pool_parsed`), Copy-threaded everywhere `RequestCtx`
     /// already flows for the lifetime of the request (including every failover hop — it is NOT
@@ -60,13 +60,13 @@ pub(crate) struct RequestCtx {
     pub(crate) request_id: u64,
     /// The allowlisted client request headers (`anthropic-beta` / `OpenAI-Beta` / `anthropic-version`)
     /// the caller ACTUALLY SENT, captured ONCE at ingress by the neutral
-    /// [`busbar_substrate::proxy::collect_client_headers`] against the plane's
+    /// [`busbar_kernel::proxy::collect_client_headers`] against the plane's
     /// [`crate::engine::forwardable_client_header_names`] set, and threaded through the whole failover
     /// walk so BOTH the hot forward path (`pipeline.rs`) and the degraded
     /// [`crate::engine::walk::forward_once`] path forward the SAME set. EMPTY on a request that sent
     /// none (the common case) — the egress map is then byte-identical to the non-forwarding build.
     /// Dialect scoping (the no-cross-dialect-leak guard) is applied at the egress assembly site via
-    /// [`busbar_substrate::proxy::apply_client_headers`] with
+    /// [`busbar_kernel::proxy::apply_client_headers`] with
     /// [`crate::engine::client_header_names_for_egress`], NOT here — a request may fail over to a
     /// different dialect's lane after this is captured.
     pub(crate) forwarded_client_headers: Vec<(axum::http::HeaderName, axum::http::HeaderValue)>,
@@ -93,7 +93,7 @@ impl RequestCtx {
                 .unwrap_or_else(|| {
                     std::time::Instant::now()
                         + std::time::Duration::from_secs(
-                            busbar_substrate::failover::MAX_FAILOVER_DEADLINE_SECS,
+                            busbar_kernel::failover::MAX_FAILOVER_DEADLINE_SECS,
                         )
                 }),
             excluded: std::collections::HashSet::new(),
@@ -140,7 +140,7 @@ impl RequestCtx {
             if restricted.is_empty() {
                 if matches!(
                     r.on_empty,
-                    busbar_substrate::config::PolicyOnError::Weighted
+                    busbar_kernel::config::PolicyOnError::Weighted
                 ) {
                     continue; // advisory escape — skip this restrict on this hop
                 }
@@ -238,7 +238,7 @@ impl RequestCtx {
 /// is gone — `try_admit` is now a single non-async admission that releases a won-but-undispatched probe
 /// internally, with no await between winning the probe and returning.)
 pub(crate) struct ProbeGuard<'a> {
-    pub(crate) store: &'a dyn busbar_substrate::store::LaneRuntime,
+    pub(crate) store: &'a dyn busbar_kernel::store::LaneRuntime,
     pub(crate) pool: &'a str,
     pub(crate) lane: usize,
     pub(crate) armed: bool,
@@ -317,7 +317,7 @@ pub(crate) async fn pick_among(
         .map(|(position, _)| position)
         .collect();
 
-    let attempt = busbar_substrate::failover::Attempt {
+    let attempt = busbar_kernel::failover::Attempt {
         tried: &tried,
         // THE MODEL PLANE'S REPEAT POSTURE, STATED RATHER THAN ASSUMED. A hop after the first is a
         // genuine `AfterDispatch` retry — the previous lane may already have received the request —
@@ -328,11 +328,11 @@ pub(crate) async fn pick_among(
         // refuses their after-dispatch hop. The rule is one; the answer differs because the operations
         // differ, which is exactly what the rule is for.
         stage: if tried.is_empty() {
-            busbar_substrate::failover::Stage::BeforeFirstByte
+            busbar_kernel::failover::Stage::BeforeFirstByte
         } else {
-            busbar_substrate::failover::Stage::AfterDispatch
+            busbar_kernel::failover::Stage::AfterDispatch
         },
-        repeatable: busbar_substrate::failover::Repeatable::Yes,
+        repeatable: busbar_kernel::failover::Repeatable::Yes,
         operation: "completion",
     };
 
@@ -377,12 +377,12 @@ pub(crate) async fn pick_among(
     // single-flight probe). Everything the loop decides — is there anything here, is this a repeat
     // and is that allowed, do the pins agree, will the breaker have it, and what is the refusal —
     // is decided in core, identically for all three planes.
-    let mut passed_over: Vec<(usize, busbar_substrate::store::Unavailable)> = Vec::new();
+    let mut passed_over: Vec<(usize, busbar_kernel::store::Unavailable)> = Vec::new();
     // ONE wall-clock read for every admission this walk tries: the breaker consults it at
     // second granularity and the whole walk (candidates × try_admit) spans microseconds, so a
     // per-candidate `clock_gettime` bought nothing over this shared read.
     let admit_now = now();
-    let admitted = busbar_substrate::failover::walk_with(
+    let admitted = busbar_kernel::failover::walk_with(
         pool_name,
         &members,
         &attempt,
@@ -418,14 +418,14 @@ pub(crate) async fn pick_among(
     }
 }
 
-/// THE MODEL PLANE'S [`busbar_substrate::failover::Candidate`] — a pool member, borrowed for one selection.
+/// THE MODEL PLANE'S [`busbar_kernel::failover::Candidate`] — a pool member, borrowed for one selection.
 struct LaneCandidate<'a> {
     wl: &'a WeightedLane,
     model: &'a str,
     pool: &'a str,
 }
 
-impl busbar_substrate::failover::Candidate for LaneCandidate<'_> {
+impl busbar_kernel::failover::Candidate for LaneCandidate<'_> {
     fn name(&self) -> &str {
         self.model
     }
@@ -450,7 +450,7 @@ impl busbar_substrate::failover::Candidate for LaneCandidate<'_> {
     }
 }
 
-/// THE MODEL PLANE'S [`busbar_substrate::failover::Order`]: session affinity first, then SWRR — or the routing
+/// THE MODEL PLANE'S [`busbar_kernel::failover::Order`]: session affinity first, then SWRR — or the routing
 /// policy's ranked walk — over what is left.
 ///
 /// ORDER ONLY. Nothing here admits anything: `ready_in` and `select_weighted_in` are read-only peeks
@@ -483,7 +483,7 @@ struct SwrrOrder<'a> {
     weights: smallvec::SmallVec<[u32; 8]>,
 }
 
-impl busbar_substrate::failover::Order for SwrrOrder<'_> {
+impl busbar_kernel::failover::Order for SwrrOrder<'_> {
     fn next(&mut self, refused: Option<usize>) -> Option<usize> {
         if let Some(position) = refused {
             // A REFUSED STICKY IS NOT LOCALLY EXCLUDED, and that is this plane's long-standing
@@ -610,7 +610,7 @@ pub(crate) fn is_streaming_content_type(ct: &str) -> bool {
     // (SSE protocols → `text/event-stream`; Bedrock → `application/vnd.amazon.eventstream`). The
     // set is a registry aggregate folded once at boot from the declarations, so naming no
     // protocol/MIME literal here keeps the agnostic core clean.
-    busbar_substrate::proto::streaming_content_types()
+    busbar_kernel::proto::streaming_content_types()
         .iter()
         .any(|p| ct.starts_with(p))
 }
@@ -627,5 +627,5 @@ pub(crate) fn is_streaming_content_type(ct: &str) -> bool {
 /// a fact the protocol DECLARED, not the name string, and reading a declaration allocates nothing
 /// where building a writer to ask it allocated two boxes.
 pub(crate) fn ingress_stream_content_type(ingress: &str) -> Option<&'static str> {
-    busbar_substrate::proto::decl_for(ingress).and_then(|d| d.streaming_content_type)
+    busbar_kernel::proto::decl_for(ingress).and_then(|d| d.streaming_content_type)
 }

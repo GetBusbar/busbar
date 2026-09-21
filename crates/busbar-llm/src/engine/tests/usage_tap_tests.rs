@@ -1,6 +1,6 @@
 use super::{record_token_usage, stable_hash, UsageSink};
 use crate::engine::AppEngineExt as _;
-use busbar_substrate::billing::TokenUsage;
+use busbar_substrate_values::billing::TokenUsage;
 use std::sync::Arc;
 
 /// `apply_rewrite_to_body` replaces the `messages` array + injects tools on a chat-shaped body,
@@ -233,9 +233,9 @@ async fn apply_global_rewrites_chains_in_order() {
 fn test_nonstream_token_fee_uses_charged_at_window_not_clock() {
     crate::testkit::install_test_seams();
     use busbar_store_memory::MemoryStore;
-    use busbar_substrate::governance::NewKeySpec;
-    use busbar_substrate::governance::SECS_PER_DAY;
-    use busbar_substrate::testkit::engine_kit::EngineTestKit as _;
+    use busbar_kernel::governance::NewKeySpec;
+    use busbar_kernel::governance::SECS_PER_DAY;
+    use busbar_kernel::testkit::engine_kit::EngineTestKit as _;
 
     let store = Arc::new(MemoryStore::new());
     let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
@@ -246,13 +246,13 @@ fn test_nonstream_token_fee_uses_charged_at_window_not_clock() {
     // day bucket (a loose day budget materialises it without ever blocking).
     let groups = std::collections::BTreeMap::from([(
         "daygrp".to_string(),
-        busbar_substrate::config::groups::GroupCfg {
+        busbar_kernel::config::groups::GroupCfg {
             parent: None,
             enabled: true,
-            limits: vec![busbar_substrate::config::groups::LimitCfg {
-                metric: busbar_substrate::config::groups::LimitMetric::Budget,
+            limits: vec![busbar_kernel::config::groups::LimitCfg {
+                metric: busbar_kernel::config::groups::LimitMetric::Budget,
                 amount: 1_000_000,
-                per: Some(busbar_substrate::config::groups::LimitWindow::Day),
+                per: Some(busbar_kernel::config::groups::LimitWindow::Day),
                 scope: None,
                 on_exhaust: None,
                 downgrade_to: None,
@@ -278,15 +278,15 @@ fn test_nonstream_token_fee_uses_charged_at_window_not_clock() {
     // different (later) day — making the bug observable: the old code charged into "today".
     let charged_at: u64 = 1_700_000_000; // 2023-11-14 (day window = 1_700_000_000/86400*86400)
     let day_window = charged_at / SECS_PER_DAY * SECS_PER_DAY;
-    let today_window = busbar_substrate::store::now() / SECS_PER_DAY * SECS_PER_DAY;
+    let today_window = busbar_kernel::store::now() / SECS_PER_DAY * SECS_PER_DAY;
     assert_ne!(
         day_window, today_window,
         "test precondition: charged_at must be a different day than now, or the bug is masked"
     );
 
     let sink = Some(UsageSink {
-        gov: busbar_substrate::plane_host::GovHandle(gov.clone()),
-        cost: busbar_substrate::plane_host::CostHandle(cost.clone()),
+        gov: busbar_kernel::plane_host::GovHandle(gov.clone()),
+        cost: busbar_kernel::plane_host::CostHandle(cost.clone()),
         key: std::sync::Arc::new(key.clone()),
         pool: std::sync::Arc::from(""),
         charged_at,
@@ -333,7 +333,7 @@ fn test_nonstream_token_fee_uses_charged_at_window_not_clock() {
             "group:daygrp@day",
             "day",
             true,
-            busbar_substrate::store::now(),
+            busbar_kernel::store::now(),
         )
         .expect("usage read")
         .tokens;
@@ -343,7 +343,7 @@ fn test_nonstream_token_fee_uses_charged_at_window_not_clock() {
     );
     // The key's all-time attribution bucket sees the tokens regardless of the day (sanity).
     assert_eq!(
-        gov.usage_for(&*cost, &key.id, busbar_substrate::store::now())
+        gov.usage_for(&*cost, &key.id, busbar_kernel::store::now())
             .expect("usage read")
             .map(|u| u.tokens)
             .unwrap_or(0),
@@ -360,8 +360,8 @@ fn test_nonstream_token_fee_uses_charged_at_window_not_clock() {
 fn test_nonstream_token_sum_saturates_no_panic_on_overflow() {
     crate::testkit::install_test_seams();
     use busbar_store_memory::MemoryStore;
-    use busbar_substrate::governance::NewKeySpec;
-    use busbar_substrate::testkit::engine_kit::EngineTestKit as _;
+    use busbar_kernel::governance::NewKeySpec;
+    use busbar_kernel::testkit::engine_kit::EngineTestKit as _;
 
     let store = Arc::new(MemoryStore::new());
     // No fee, no rate card → the derived-spend math can't overflow, isolating the SUM under test.
@@ -382,8 +382,8 @@ fn test_nonstream_token_sum_saturates_no_panic_on_overflow() {
         )
         .expect("create key");
     let sink = Some(UsageSink {
-        gov: busbar_substrate::plane_host::GovHandle(gov.clone()),
-        cost: busbar_substrate::plane_host::CostHandle(cost.clone()),
+        gov: busbar_kernel::plane_host::GovHandle(gov.clone()),
+        cost: busbar_kernel::plane_host::CostHandle(cost.clone()),
         key: std::sync::Arc::new(key.clone()),
         pool: std::sync::Arc::from(""),
         charged_at: 1_700_000_000,
@@ -442,8 +442,8 @@ fn test_stable_hash_is_deterministic() {
 fn ledger_prices_an_aliased_lane_at_the_rate_card() {
     crate::testkit::install_test_seams();
     use busbar_store_memory::MemoryStore;
-    use busbar_substrate::governance::NewKeySpec;
-    use busbar_substrate::testkit::engine_kit::EngineTestKit as _;
+    use busbar_kernel::governance::NewKeySpec;
+    use busbar_kernel::testkit::engine_kit::EngineTestKit as _;
 
     let store = Arc::new(MemoryStore::new());
     let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
@@ -453,7 +453,7 @@ fn ledger_prices_an_aliased_lane_at_the_rate_card() {
     // 1000 micro-units per token on input and output (a micro-unit is 1e-4 cents), nothing else.
     let card = std::collections::BTreeMap::from([(
         "gpt-4o".to_string(),
-        busbar_substrate::config::sections::RateEntryCfg {
+        busbar_kernel::config::sections::RateEntryCfg {
             input_utok: 1000.0,
             output_utok: 1000.0,
             cache_read_utok: 0.0,
@@ -462,13 +462,13 @@ fn ledger_prices_an_aliased_lane_at_the_rate_card() {
     )]);
     let groups = std::collections::BTreeMap::from([(
         "g".to_string(),
-        busbar_substrate::config::groups::GroupCfg {
+        busbar_kernel::config::groups::GroupCfg {
             parent: None,
             enabled: true,
-            limits: vec![busbar_substrate::config::groups::LimitCfg {
-                metric: busbar_substrate::config::groups::LimitMetric::Budget,
+            limits: vec![busbar_kernel::config::groups::LimitCfg {
+                metric: busbar_kernel::config::groups::LimitMetric::Budget,
                 amount: 1_000_000_000,
-                per: Some(busbar_substrate::config::groups::LimitWindow::Day),
+                per: Some(busbar_kernel::config::groups::LimitWindow::Day),
                 scope: None,
                 on_exhaust: None,
                 downgrade_to: None,
@@ -491,8 +491,8 @@ fn ledger_prices_an_aliased_lane_at_the_rate_card() {
         .expect("create key");
     let charged_at: u64 = 1_700_000_000;
     let sink = Some(UsageSink {
-        gov: busbar_substrate::plane_host::GovHandle(gov.clone()),
-        cost: busbar_substrate::plane_host::CostHandle(cost.clone()),
+        gov: busbar_kernel::plane_host::GovHandle(gov.clone()),
+        cost: busbar_kernel::plane_host::CostHandle(cost.clone()),
         key: std::sync::Arc::new(key.clone()),
         pool: std::sync::Arc::from(""),
         charged_at,

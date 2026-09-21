@@ -140,7 +140,7 @@ pub fn agent_key(agent: &str) -> String {
 /// `tokio::sync` — the lane-availability taxonomy's semaphore-permit arm and the `lane_semaphore`
 /// accessor — while `now`/`now_ms` are a pure `SystemTime` read that a dialect writer calls on the
 /// response path (an omitted `created` timestamp). So the clock crossed into the values crate and
-/// the semaphore-shaped remainder stayed here; `busbar_substrate::store::now` resolves unchanged.
+/// the semaphore-shaped remainder stayed here; `busbar_kernel::store::now` resolves unchanged.
 pub use busbar_substrate_values::store::{now, now_ms};
 
 // ── The FNV-1a 64-bit string hash, relocated DOWN from `busbar-core`'s `store` so a plane crate

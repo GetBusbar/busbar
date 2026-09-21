@@ -43,7 +43,7 @@
 use busbar_contract::caps::{
     Decision, PrincipalId, ReasonCode, Refusal, Pass, VerifiedDestination, Verify,
 };
-use busbar_substrate::plane_host::{CostHandle, EngineHost, EngineTablesView};
+use busbar_kernel::plane_host::{CostHandle, EngineHost, EngineTablesView};
 
 use crate::unit::audit::RefusalOutcome;
 
@@ -86,8 +86,8 @@ impl VerifyRefusal {
     #[must_use]
     pub fn kind(&self) -> &'static str {
         match self {
-            VerifyRefusal::NotAuthorized => busbar_substrate::proxy::KIND_PERMISSION,
-            VerifyRefusal::NoRate { .. } => busbar_substrate::proxy::KIND_INVALID_REQUEST,
+            VerifyRefusal::NotAuthorized => busbar_kernel::proxy::KIND_PERMISSION,
+            VerifyRefusal::NoRate { .. } => busbar_kernel::proxy::KIND_INVALID_REQUEST,
         }
     }
 

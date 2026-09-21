@@ -18,7 +18,7 @@
 
 use super::relay_harness::{call, call_agent, envelope, harness_gated, Gates, Outcome};
 use crate::testkit::engine_boot::engine;
-use busbar_substrate::testkit::engine_kit::HookNeed;
+use busbar_kernel::testkit::engine_kit::HookNeed;
 
 /// The `hooks:` DEFINITION a test attaches, as the document an operator writes (the engine parses
 /// it with its own grammar at build): a `kind: gate` on the hermetic test cdylib, holding the

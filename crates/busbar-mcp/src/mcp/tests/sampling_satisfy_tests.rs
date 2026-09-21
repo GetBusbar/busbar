@@ -27,7 +27,7 @@ use super::upstream_support::{call, exchanging_server, gov_with_scopes, mcp_cfg,
 use crate::mcp::test_engine::*;
 use crate::testkit::TestAppMcpExt;
 use axum::http::StatusCode;
-use busbar_substrate::testkit::loopback_http::{MockResponse, MockServer, MockServerState};
+use busbar_kernel::testkit::loopback_http::{MockResponse, MockServer, MockServerState};
 use std::sync::Arc;
 
 const CANONICAL: &str = "https://gateway.example.com/mcp";
@@ -94,12 +94,12 @@ async fn app_with_provider(
     // the process fallback plane — so `TestApp::build` seeds the data-plane runtime slot the money path
     // reads `lanes`/`by_model` through (R3/R4 sub-phase B moved those off the flat `App.llm_runtime`
     // field into that slot, populated only when a fallback LLM plane is registered).
-    busbar_substrate::proto::register_test_protocols(busbar_llm::DECLS);
-    busbar_substrate::plane::registry::register_test_plane(&busbar_llm::PLANE_DECL);
+    busbar_kernel::proto::register_test_protocols(busbar_llm::DECLS);
+    busbar_kernel::plane::registry::register_test_plane(&busbar_llm::PLANE_DECL);
     // The resolved-completion synthesizer the sampling re-entry drives (`EngineHost::synthesize_
     // completion`) — the same seam the composition root installs via `install_completion_ingress`,
     // seeded here as a test through the neutral `set_test_completion_ingress` hook.
-    busbar_substrate::ingress::arrival::set_test_completion_ingress(
+    busbar_kernel::ingress::arrival::set_test_completion_ingress(
         busbar_llm::native_ingress::synthesize_completion,
     );
     let app = test_app()
@@ -298,12 +298,12 @@ async fn an_ungranted_sampling_ask_is_still_refused_and_spends_nothing() {
     // the process fallback plane — so `TestApp::build` seeds the data-plane runtime slot the money path
     // reads `lanes`/`by_model` through (R3/R4 sub-phase B moved those off the flat `App.llm_runtime`
     // field into that slot, populated only when a fallback LLM plane is registered).
-    busbar_substrate::proto::register_test_protocols(busbar_llm::DECLS);
-    busbar_substrate::plane::registry::register_test_plane(&busbar_llm::PLANE_DECL);
+    busbar_kernel::proto::register_test_protocols(busbar_llm::DECLS);
+    busbar_kernel::plane::registry::register_test_plane(&busbar_llm::PLANE_DECL);
     // The resolved-completion synthesizer the sampling re-entry drives (`EngineHost::synthesize_
     // completion`) — the same seam the composition root installs via `install_completion_ingress`,
     // seeded here as a test through the neutral `set_test_completion_ingress` hook.
-    busbar_substrate::ingress::arrival::set_test_completion_ingress(
+    busbar_kernel::ingress::arrival::set_test_completion_ingress(
         busbar_llm::native_ingress::synthesize_completion,
     );
     let app = test_app()
@@ -364,12 +364,12 @@ async fn a_granted_ask_with_no_policy_refuses_and_names_the_key() {
     // the process fallback plane — so `TestApp::build` seeds the data-plane runtime slot the money path
     // reads `lanes`/`by_model` through (R3/R4 sub-phase B moved those off the flat `App.llm_runtime`
     // field into that slot, populated only when a fallback LLM plane is registered).
-    busbar_substrate::proto::register_test_protocols(busbar_llm::DECLS);
-    busbar_substrate::plane::registry::register_test_plane(&busbar_llm::PLANE_DECL);
+    busbar_kernel::proto::register_test_protocols(busbar_llm::DECLS);
+    busbar_kernel::plane::registry::register_test_plane(&busbar_llm::PLANE_DECL);
     // The resolved-completion synthesizer the sampling re-entry drives (`EngineHost::synthesize_
     // completion`) — the same seam the composition root installs via `install_completion_ingress`,
     // seeded here as a test through the neutral `set_test_completion_ingress` hook.
-    busbar_substrate::ingress::arrival::set_test_completion_ingress(
+    busbar_kernel::ingress::arrival::set_test_completion_ingress(
         busbar_llm::native_ingress::synthesize_completion,
     );
     let app = test_app()

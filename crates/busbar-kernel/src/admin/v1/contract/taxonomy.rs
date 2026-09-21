@@ -786,14 +786,14 @@ pub mod observed {
     /// audit in `admin::tests`.
     #[cfg(all(any(test, feature = "test-support"), feature = "auth-admin-tokens"))]
     pub fn snapshot() -> BTreeSet<Emission> {
-        busbar_substrate::admin_witness::snapshot()
+        busbar_kernel::admin_witness::snapshot()
     }
 
     /// Record one observed emission (called by the router's recording layer) into the process-wide
     /// substrate ledger, so a witness produced through EITHER copy of `busbar-core` is visible to the
     /// audit that reads [`snapshot`].
     pub fn record(rel: &str, method: MethodTag, tag: Tag) {
-        busbar_substrate::admin_witness::record(
+        busbar_kernel::admin_witness::record(
             rel,
             method.as_str(),
             &kind_str(tag.kind),

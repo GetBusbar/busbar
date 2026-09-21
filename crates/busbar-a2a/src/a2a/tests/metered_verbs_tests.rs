@@ -31,8 +31,8 @@ async fn a2a_rows(h: &Harness) -> Vec<busbar_api::MeteringRow> {
     h.gov.flush_metering();
     h.gov
         .store()
-        .list_metering(busbar_substrate::governance::metering_bucket(
-            busbar_substrate::store::now(),
+        .list_metering(busbar_kernel::governance::metering_bucket(
+            busbar_kernel::store::now(),
         ))
         .expect("metering reads back")
         .into_iter()
@@ -78,7 +78,7 @@ fn list_call() -> serde_json::Value {
 /// to, and that absence is what kept it off the ledger. The subject is the plane's own pool
 /// (`receive::PLANE_POOL`, read from the codec's config section rather than restated), which cannot
 /// collide with a member line because members are keyed through
-/// `busbar_substrate::store::agent_key` and carry an `agent:` prefix.
+/// `busbar_kernel::store::agent_key` and carry an `agent:` prefix.
 ///
 /// The counts are asserted too. `requests` is 1 — the accrual — and every token field is 0, because
 /// the kernel's flat per-request fee needs a SELECTED UPSTREAM and a relayed response frame, and a

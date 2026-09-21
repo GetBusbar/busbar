@@ -1461,7 +1461,7 @@ fn signing_key_secret_ref_re_resolves_on_apply_and_fails_closed() {
         labels: Default::default(),
         ..Default::default()
     };
-    let now = busbar_substrate::store::now();
+    let now = busbar_kernel::store::now();
     let (_binding, old_token) = gov.mint_signed(spec, now + 10_000, now).expect("mint");
     assert!(
         gov.verify_token(&old_token, now, None).is_some(),
@@ -1606,7 +1606,7 @@ fn secrets_block_rejects_alias_and_canonical_for_one_module() {
 /// after that is fallible (semantic validation, the plugin pre-flight, secret-ref resolution, the
 /// store open), and no error path used to put the previous values back. A `POST /config/apply` that
 /// returned 400 therefore mutated live, process-wide caps under the old `App` that kept serving:
-/// `busbar_substrate::proxy::max_translate_body_bytes()` bounds both the SigV4 auth-middleware body buffer and the
+/// `busbar_kernel::proxy::max_translate_body_bytes()` bounds both the SigV4 auth-middleware body buffer and the
 /// cross-protocol translate buffer, so a rejected apply could silently start 401-ing larger Bedrock
 /// requests and failing larger cross-protocol completions.
 ///
@@ -1640,7 +1640,7 @@ fn a_rejected_config_leaves_no_limits_behind() {
         "the build failed for the expected reason: {err}"
     );
     assert_ne!(
-        busbar_substrate::proxy::max_translate_body_bytes(),
+        busbar_kernel::proxy::max_translate_body_bytes(),
         ILLEGAL,
         "the REJECTED config's limits are installed process-wide — an invalid apply changed the \
          live SigV4 and cross-protocol translate body caps"
@@ -2447,7 +2447,7 @@ fn planeless_config_gets_inert_plane_breakers_and_apply_upgrades() {
     assert!(
         matches!(
             app.plane_breakers.try_admit("tool:x", 0),
-            Err(busbar_substrate::store::Unavailable::Shedding)
+            Err(busbar_kernel::store::Unavailable::Shedding)
         ),
         "inert admit must refuse, not panic"
     );

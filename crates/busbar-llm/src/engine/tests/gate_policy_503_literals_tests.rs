@@ -8,7 +8,7 @@ use crate::test_support::{LaneSpec, TestApp};
 use busbar_api::{
     Candidate, PolicyResult, RoutingContext, RoutingDecision, RoutingPolicy, RoutingRequest,
 };
-use busbar_substrate::hooks::ResolvedPolicy;
+use busbar_kernel::hooks::ResolvedPolicy;
 use std::sync::Arc;
 
 const GATE_COULD_NOT_COMPLETE: &str = "A required gate could not complete. Please retry shortly.";
@@ -50,7 +50,7 @@ impl RoutingPolicy for FaultyHook {
 
 /// Fail-closed on the restriction axis; `on_error` is the caller's, because the whole point of the
 /// disposition is that it is the OPERATOR's to choose.
-fn resolved(fault: Fault, on_error: busbar_substrate::config::PolicyOnError) -> ResolvedPolicy {
+fn resolved(fault: Fault, on_error: busbar_kernel::config::PolicyOnError) -> ResolvedPolicy {
     ResolvedPolicy::Policy {
         policy: Arc::new(FaultyHook(fault)),
         on_error,
@@ -58,7 +58,7 @@ fn resolved(fault: Fault, on_error: busbar_substrate::config::PolicyOnError) -> 
         timeout: std::time::Duration::from_millis(50),
         send_prompt: false,
         send_user: false,
-        on_empty: busbar_substrate::config::PolicyOnError::Reject,
+        on_empty: busbar_kernel::config::PolicyOnError::Reject,
     }
 }
 
@@ -87,14 +87,14 @@ enum Seat {
 /// Fire one request at a two-lane pool with the faulty hook in the given seat; return
 /// (status, error kind, error message) from the OpenAI-shaped envelope.
 async fn fire(seat: Seat, fault: Fault) -> (u16, String, String) {
-    fire_with(seat, fault, busbar_substrate::config::PolicyOnError::Reject).await
+    fire_with(seat, fault, busbar_kernel::config::PolicyOnError::Reject).await
 }
 
 /// [`fire`], with the hook's `on_error` disposition chosen by the caller.
 async fn fire_with(
     seat: Seat,
     fault: Fault,
-    on_error: busbar_substrate::config::PolicyOnError,
+    on_error: busbar_kernel::config::PolicyOnError,
 ) -> (u16, String, String) {
     crate::testkit::install_test_seams();
     let mut builder = TestApp::new()
@@ -196,7 +196,7 @@ async fn decision_gate_that_cannot_complete_only_refuses_when_declared_load_bear
     let (_status, _kind, message) = fire_with(
         Seat::DecisionGate,
         Fault::Error,
-        busbar_substrate::config::PolicyOnError::Weighted,
+        busbar_kernel::config::PolicyOnError::Weighted,
     )
     .await;
     assert_ne!(
@@ -213,11 +213,11 @@ async fn decision_gate_that_cannot_complete_only_refuses_when_declared_load_bear
 fn the_refusal_literal_is_the_shared_constant() {
     assert_eq!(
         GATE_COULD_NOT_COMPLETE,
-        busbar_substrate::hooks::REQUIRED_HOOK_UNAVAILABLE_MESSAGE
+        busbar_kernel::hooks::REQUIRED_HOOK_UNAVAILABLE_MESSAGE
     );
     assert_eq!(
         503,
-        busbar_substrate::hooks::REQUIRED_HOOK_UNAVAILABLE_STATUS
+        busbar_kernel::hooks::REQUIRED_HOOK_UNAVAILABLE_STATUS
     );
 }
 

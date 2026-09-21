@@ -67,7 +67,7 @@ impl NamedMapSection {
     /// This is a REGISTRY-DERIVED list, so it goes EMPTY of plane sections when a plane is compiled
     /// out. It must NOT be the source the config deletion-gate reads (that would silently accept a
     /// `tools:` block for a compiled-out plane) — the gate reads the frozen static
-    /// [`busbar_substrate::plane::config::NAMED_MAP_SECTIONS`] instead.
+    /// [`busbar_kernel::plane::config::NAMED_MAP_SECTIONS`] instead.
     pub fn sections() -> Vec<NamedMapSection> {
         let mut out = vec![NamedMapSection::IdentityProviders, NamedMapSection::Export];
         for decl in crate::plane::registry::plane_decls() {

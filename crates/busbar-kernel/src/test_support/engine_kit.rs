@@ -2,22 +2,22 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE ENGINE'S IMPLEMENTATION of the neutral engine test-kit seam
-//! (`busbar_substrate::testkit::engine_kit`): every verb is a thin delegate to the fixture or
+//! (`busbar_kernel::testkit::engine_kit`): every verb is a thin delegate to the fixture or
 //! process-wide service a plane's tests used to name directly (`TestApp`, `GovState`, `metrics::init`,
 //! the call log, the audit ring, the admin contract table, the store-plugin fixture, `build_router`,
 //! `plane_host::engine_host`, `AppHandle`). A plane's test tree binds [`CORE_ENGINE_KIT`] in one
-//! function and reaches all of it through `busbar_substrate::testkit::engine_kit::EngineTestKit` —
+//! function and reaches all of it through `busbar_kernel::testkit::engine_kit::EngineTestKit` —
 //! the plane names this crate in exactly that one binding line and nowhere else.
 
 use super::TestApp;
 use busbar_api::{AuditRecord, MeteringRow, Store, VirtualKey};
-use busbar_substrate::governance::signing::TokenSigner;
-use busbar_substrate::governance::NewKeySpec;
-use busbar_substrate::plane::calllog::CallRecorded;
-use busbar_substrate::plane::store::PlaneStore;
-use busbar_substrate::plane_host::{EngineHost, LiveHostFactory};
-use busbar_substrate::store::BreakerState;
-use busbar_substrate::testkit::engine_kit::{
+use busbar_kernel::governance::signing::TokenSigner;
+use busbar_kernel::governance::NewKeySpec;
+use busbar_kernel::plane::calllog::CallRecorded;
+use busbar_kernel::plane::store::PlaneStore;
+use busbar_kernel::plane_host::{EngineHost, LiveHostFactory};
+use busbar_kernel::store::BreakerState;
+use busbar_kernel::testkit::engine_kit::{
     AdminScope, CostKit, EngineApp, EngineHandle, EngineTestKit, GovKit, HookEnvHandle, HookNeed,
     TestAppKit,
 };
@@ -66,9 +66,9 @@ impl EngineTestKit for CoreEngineKit {
 
     fn cost_parts(
         &self,
-        rate_card: Option<&BTreeMap<String, busbar_substrate::config::sections::RateEntryCfg>>,
+        rate_card: Option<&BTreeMap<String, busbar_kernel::config::sections::RateEntryCfg>>,
         price_per_request_cents: i64,
-        groups: &BTreeMap<String, busbar_substrate::config::groups::GroupCfg>,
+        groups: &BTreeMap<String, busbar_kernel::config::groups::GroupCfg>,
     ) -> Arc<dyn CostKit> {
         Arc::new(crate::cost::CostModel::resolve_parts(
             rate_card,
@@ -222,7 +222,7 @@ impl GovKit for crate::governance::GovState {
     fn refresh(&self) -> Result<(), String> {
         crate::governance::GovState::refresh(self).map_err(|e| e.to_string())
     }
-    fn gov_resolve(&self) -> &dyn busbar_substrate::trust::validate::GovResolve {
+    fn gov_resolve(&self) -> &dyn busbar_kernel::trust::validate::GovResolve {
         self
     }
     fn store(&self) -> Arc<dyn Store> {
@@ -243,7 +243,7 @@ impl GovKit for crate::governance::GovState {
         cost: &dyn CostKit,
         id: &str,
         now: u64,
-    ) -> Result<Option<busbar_substrate::governance::DerivedUsage>, String> {
+    ) -> Result<Option<busbar_kernel::governance::DerivedUsage>, String> {
         crate::governance::GovState::usage_for(self, cost_model_ref(cost), id, now)
             .map_err(|e| e.to_string())
     }
@@ -254,7 +254,7 @@ impl GovKit for crate::governance::GovState {
         budget_period: &str,
         include_request_fee: bool,
         now: u64,
-    ) -> Result<busbar_substrate::governance::DerivedUsage, String> {
+    ) -> Result<busbar_kernel::governance::DerivedUsage, String> {
         crate::governance::GovState::derived_bucket_usage(
             self,
             cost_model_ref(cost),
@@ -350,7 +350,7 @@ impl EngineApp for crate::state::App {
     fn router_with_handle(self: Arc<Self>) -> (axum::Router, Arc<dyn EngineHandle>) {
         let (router, handle) = crate::build_router_with_limits(
             self,
-            busbar_substrate::proxy::max_translate_body_bytes(),
+            busbar_kernel::proxy::max_translate_body_bytes(),
             crate::config::DEFAULT_MAX_INBOUND_CONCURRENT,
             crate::config::DEFAULT_RESPONSE_HEADERS_SERVER_TIMING,
         );

@@ -459,7 +459,7 @@ pub const BUILTIN_IDENTITY_PROVIDERS: &[&str] = &[KEYS_MODULE, ADMIN_TOKENS_MODU
 /// exactly (the retired chain-entry field defaulted the same way); the built-in `admin-tokens`
 /// operator credential is EXEMPT (full by definition), which is why `resolve_auth` applies this
 /// only to non-`admin-tokens` providers.
-pub const DEFAULT_MAX_ADMIN_SCOPE: &str = "read-only";
+pub use busbar_contract::DEFAULT_MAX_ADMIN_SCOPE;
 
 /// The serde default for `auth.admin_auth:` - the built-in `admin-tokens` provider, referenced bare
 /// (the single operator admin token; byte-identical to the pre-chain behavior).

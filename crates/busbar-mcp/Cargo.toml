@@ -38,12 +38,11 @@ path = "src/lib.rs"
 # weak `auth-admin-tokens` forward below no longer needs an optional dep to hang off — is a change to
 # that one function and this manifest, not to the tests. (Optional rather than a dev-dependency today
 # because a feature cannot reference a dev-dep-only crate.)
-busbar-kernel = { path = "../busbar-kernel", default-features = false, features = ["plane-mcp"], optional = true }
+busbar-kernel = { path = "../busbar-kernel", default-features = false, features = ["plane-mcp"] }
 # The substrate crate: the neutral shared surface the plugin names instead of busbar-core — the
 # diagnostics macros, the approvals seal, the config-section split, the hostless-egress seam. Carries
 # `plane-mcp` so the plane-gated items (the `HostlessEgress` seam, the relocated leaves) are present
 # in this crate's own default build.
-busbar-substrate = { path = "../busbar-substrate", features = ["plane-mcp"] }
 # THE CODEC. The pure half of this plugin, split out so `busbar-plane-mcp` can name the protocol
 # declaration, the JSON-RPC dialect, the two operation cells and the record vocabulary without
 # pulling this crate's axum routes, stdio serve loop and tokio transports into a pure kind's
@@ -56,6 +55,8 @@ busbar-mcp-codec = { path = "../busbar-mcp-codec" }
 busbar-plane-mcp-host = { path = "../busbar-plane-mcp-host" }
 # The plugin contracts crate, named ahead of use per owner ruling R-E (see header).
 busbar-api = { path = "../api" }
+busbar-substrate-values = { path = "../busbar-substrate-values" }
+busbar-contract = { path = "../busbar-contract" }
 # The specification authors' own crate, pinned narrow (see busbar-kernel/Cargo.toml's rationale): the
 # codec takes the protocol VOCABULARY — MCP method names and parameter shapes — from it and nothing
 # else, so a name the SDK retires stops compiling here instead of being served.
@@ -130,11 +131,11 @@ schemars = { workspace = true, optional = true }
 # derive crate — so this forwards to SUBSTRATE (not busbar-core, which is no longer a prod dep) to keep
 # the `#[cfg(feature = "openapi-schema")]` field site and the struct definition in lock-step, plus its
 # own `schemars`. The dual-compile into busbar-core resolves the same `#[cfg]` against CORE's feature.
-openapi-schema = ["busbar-substrate/openapi-schema", "dep:schemars"]
+openapi-schema = ["busbar-kernel/openapi-schema", "dep:schemars"]
 # The one `auth-admin-tokens` site is a test module. Forwarded WEAKLY (`?`) so enabling it never
 # force-pulls the optional busbar-core into a non-test-support build; it only cascades where
 # busbar-core is already in the closure (the test-support / dual-compile surface that test needs).
-auth-admin-tokens = ["busbar-kernel?/auth-admin-tokens"]
+auth-admin-tokens = ["busbar-kernel/auth-admin-tokens"]
 # Pulls busbar-core (the optional dep) and its test fixtures so the plane's test binary can bind the
 # engine's test kit (`src/mcp/tests/engine.rs`); the plane tests themselves name only the neutral
 # `busbar_substrate::testkit::engine_kit` seam. This feature is the one edge that puts busbar-core in
@@ -142,9 +143,7 @@ auth-admin-tokens = ["busbar-kernel?/auth-admin-tokens"]
 # planes' config types unconditionally (`crate::a2a::config::AgentsCfg`, the `tools:` types), so this
 # forwards `plane-mcp`/`plane-a2a` too — the same both-planes shape core's own dual-compile test binary
 # builds with — or the fixture's `crate::a2a` references are configured out and cannot resolve.
-test-support = [
-    "dep:busbar-kernel",
-    "busbar-kernel/test-support",
+test-support = [    "busbar-kernel/test-support",
     "busbar-kernel/plane-mcp",
     "busbar-kernel/plane-a2a",
     "dep:reqwest",

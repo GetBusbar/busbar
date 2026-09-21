@@ -8,13 +8,13 @@
 //! [`crate::root::gauntlet_kernel::run_gauntlet_via_kernel`]. [`run_a2a_via_kernel`] drives the SAME
 //! A2A `GauntletPlane` — the crate-private `A2aInvokePlane` in `busbar-a2a`'s `receive.rs`, whose
 //! `drive` is the whole of `invoke_inner` UNCHANGED — through `busbar_kernel::teller::run_unit_async`
-//! instead of `busbar_substrate::plane_host::run_gauntlet`. A2A's metering stays inside
+//! instead of `busbar_kernel::plane_host::run_gauntlet`. A2A's metering stays inside
 //! `A2aInvokePlane::drive`/`invoke_inner` and settles exactly where 1.5.5 does (the one flat
 //! per-call `Queries` charge, `receive.rs:723-740`); the kernel exit opens an empty `ZeroHold`,
 //! reports `Evidence::default` and binds no book, so it settles NOTHING and cannot double-count.
 //!
 //! DORMANT — DUAL-PATH, MONEY AUTHORITY NOT FLIPPED. The shipped A2A authority stays
-//! `busbar_substrate::plane_host::run_gauntlet` at `crates/busbar-a2a/src/a2a/receive.rs:892`. This
+//! `busbar_kernel::plane_host::run_gauntlet` at `crates/busbar-a2a/src/a2a/receive.rs:892`. This
 //! rider is built and shadow-proven byte-identical here, but the one-line flip (re-point that call
 //! to `run_a2a_via_kernel`) waits on the fleet-box money oracle (DECISIONS #29): `bin/oracle
 //! record`+`replay` run DIRECTLY on a fleet box (docker present), scoped to the money families, vs
@@ -32,7 +32,7 @@
 //! rider names A2A, and it does so only to point the neutral bridge at the A2A plane.
 
 use axum::response::Response;
-use busbar_substrate::plane_host::{GauntletPlane, GauntletRequest};
+use busbar_kernel::plane_host::{GauntletPlane, GauntletRequest};
 
 use crate::root::gauntlet_kernel::run_gauntlet_via_kernel;
 
@@ -42,7 +42,7 @@ use crate::root::gauntlet_kernel::run_gauntlet_via_kernel;
 ///
 /// A one-line delegation to the plane-neutral bridge: the A2A plane rides it with ZERO new bridge
 /// code, exactly as the module header promises. The flip is re-pointing `receive.rs:892` from
-/// `busbar_substrate::plane_host::run_gauntlet(req, plane)` to this function — nothing else changes,
+/// `busbar_kernel::plane_host::run_gauntlet(req, plane)` to this function — nothing else changes,
 /// because A2A's `drive` (and its metering) is byte-identical on both loops.
 pub(crate) async fn run_a2a_via_kernel(
     req: GauntletRequest<'_>,

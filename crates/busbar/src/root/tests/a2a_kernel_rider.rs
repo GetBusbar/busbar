@@ -5,7 +5,7 @@
 //! BYTE-FOR-BYTE and MONEY-FOR-MONEY.
 //!
 //! The A2A analogue of `gauntlet_kernel`'s MCP-witness shadow (commit `0e2564d8`): drive one A2A
-//! plane through BOTH loops — `leg_legacy` = `busbar_substrate::plane_host::run_gauntlet` (the
+//! plane through BOTH loops — `leg_legacy` = `busbar_kernel::plane_host::run_gauntlet` (the
 //! shipped authority), `leg_loop` = the dormant `run_a2a_via_kernel` (→ `run_gauntlet_via_kernel`)
 //! — on the same input, and assert (1) byte-identical status/headers/body AND (2) identical
 //! `meter_charge` rows. Both loops are pass-through wrappers around the SAME `GauntletPlane::drive`,
@@ -24,7 +24,7 @@ use std::time::Instant;
 use axum::body::{to_bytes, Body};
 use axum::http::StatusCode;
 use axum::response::Response;
-use busbar_substrate::plane_host::{run_gauntlet, GauntletPlane, GauntletRequest, VerifyOutcome};
+use busbar_kernel::plane_host::{run_gauntlet, GauntletPlane, GauntletRequest, VerifyOutcome};
 
 use crate::root::a2a_kernel_rider::run_a2a_via_kernel;
 

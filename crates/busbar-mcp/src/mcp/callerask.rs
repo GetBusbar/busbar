@@ -63,7 +63,7 @@
 //! the one that would still hold if the specification said nothing.
 
 use super::config::{AskEntryCfg, AskRoundCfg};
-use busbar_substrate::plane::approvals::{self, AskState, Sealer};
+use busbar_kernel::plane::approvals::{self, AskState, Sealer};
 
 /// The three client-side methods an ask may name, and the capability key each is gated by.
 ///
@@ -314,7 +314,7 @@ pub struct Approvals<'a> {
     /// The neutral host seam the completion arm redeems the one-time approval through — its
     /// `approval_redeem` method spends against the shared spent-approval ledger it pulls host-side,
     /// minting the transient `HostCtx` internally, so this carries no raw `HostCtx` across the plane.
-    pub host: &'a dyn busbar_substrate::plane_host::EngineHost,
+    pub host: &'a dyn busbar_kernel::plane_host::EngineHost,
 }
 
 /// THE DECISION. Config, caller input, a clock — and the ledger of approvals already spent. It is

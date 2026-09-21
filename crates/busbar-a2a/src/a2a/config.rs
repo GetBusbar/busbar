@@ -15,7 +15,7 @@
 //! `hooks` and `upstream_credentials` are reserved at the section level here for the same reason
 //! they are on `pools:` — so the word space is IDENTICAL across planes. An operator who learns the
 //! rule once should not discover that a name legal on one plane is a section knob on another. There
-//! is ONE declaration of the pair ([`busbar_substrate::plane::config::RESERVED_SECTION_KEYS`]) and one reader
+//! is ONE declaration of the pair ([`busbar_kernel::plane::config::RESERVED_SECTION_KEYS`]) and one reader
 //! of it, so that cannot drift. The reserved set is closed; a new A2A knob lands under a per-entry
 //! key, never as a new section word.
 //!
@@ -48,7 +48,7 @@
 //! operator believing a control is attached that is not.
 
 // PARTLY UNMOUNTED. Everything here is driven by boot and by the admin write path except
-// [`AgentPinCfg::declaration`], the projection [`busbar_substrate::trust::declared`] reads this plane's pin
+// [`AgentPinCfg::declaration`], the projection [`busbar_kernel::trust::declared`] reads this plane's pin
 // through. The `connect`/`approve` verbs it was waiting for are now mounted
 // (`super::verbs`), and they deliberately do NOT consult it: an approval locks the pin that was
 // OBSERVED and verified against the operator's out-of-band root, and the operator attests to it by
@@ -125,7 +125,7 @@ impl PinMechanism {
     /// are meaningless without material, and the fourth is meaningless WITH it.
     ///
     /// ONE predicate answers both questions on purpose. It is the boot-time rule below AND the one
-    /// question [`busbar_substrate::trust::declared`] asks of a mechanism, so the reader that builds the
+    /// question [`busbar_kernel::trust::declared`] asks of a mechanism, so the reader that builds the
     /// artifact and the refusal that fires at boot cannot come to disagree about what "rooted"
     /// means.
     pub(crate) fn is_a_root(self) -> bool {
@@ -241,7 +241,7 @@ pub struct AgentDefCfg {
     ///
     /// WHAT IT NEVER PERMITS, and this is the half that makes the knob safe to have: a
     /// CLOUD-METADATA endpoint. `169.254.169.254` and its family are refused whether this is set or
-    /// not — see [`busbar_substrate::net_guard::ip_is_cloud_metadata`], whose own doc gives the reason: an
+    /// not — see [`busbar_kernel::net_guard::ip_is_cloud_metadata`], whose own doc gives the reason: an
     /// `allow_private` that reached IMDS would be a configuration flag that hands out cloud
     /// credentials.
     ///
@@ -271,7 +271,7 @@ pub struct AgentDefCfg {
     pub hooks: Vec<String>,
 }
 
-/// The top-level `agents:` map, carrying the two [`busbar_substrate::plane::config::RESERVED_SECTION_KEYS`]
+/// The top-level `agents:` map, carrying the two [`busbar_kernel::plane::config::RESERVED_SECTION_KEYS`]
 /// alongside the agents.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct AgentsCfg {
@@ -295,7 +295,7 @@ impl<'de> Deserialize<'de> for AgentsCfg {
         // stays here is what is genuinely this plane's: `validate_agent`, run through the same
         // function the admin write path calls so the API rejects exactly what the file rejects, and
         // the passthrough refusal below.
-        let section = busbar_substrate::plane::config::split_section::<D, AgentDefCfg>(
+        let section = busbar_kernel::plane::config::split_section::<D, AgentDefCfg>(
             deserializer,
             super::PLANE_DECL.config_section,
             super::PLANE_DECL.subject_noun,
@@ -318,7 +318,7 @@ impl<'de> Deserialize<'de> for AgentsCfg {
     }
 }
 
-impl busbar_substrate::plane::config::PlaneCfg for AgentsCfg {
+impl busbar_kernel::plane::config::PlaneCfg for AgentsCfg {
     /// The A2A plane's secret references: each agent's LEASED outbound delegation credential
     /// (`agents.<name>.upstream_credential.secret`) and both halves of its outbound client identity
     /// (`agents.<name>.client_identity.cert` / `.key`). Moved here VERBATIM from the core
@@ -403,8 +403,8 @@ impl busbar_substrate::plane::config::PlaneCfg for AgentsCfg {
         Ok(())
     }
 
-    fn container_gates(&self) -> busbar_substrate::plane::config::ContainerGateInputs {
-        busbar_substrate::plane::config::ContainerGateInputs {
+    fn container_gates(&self) -> busbar_kernel::plane::config::ContainerGateInputs {
+        busbar_kernel::plane::config::ContainerGateInputs {
             section_hooks: self.all_agent_hooks.clone(),
             containers: self
                 .agents
@@ -430,7 +430,7 @@ impl busbar_substrate::plane::config::PlaneCfg for AgentsCfg {
         self
     }
 
-    fn clone_box(&self) -> Box<dyn busbar_substrate::plane::config::PlaneCfg> {
+    fn clone_box(&self) -> Box<dyn busbar_kernel::plane::config::PlaneCfg> {
         Box::new(self.clone())
     }
 
@@ -538,11 +538,11 @@ pub fn validate_agent(name: &str, def: &AgentDefCfg) -> Result<(), String> {
     }
 
     if let Some(ttl) = def.reverify_ttl.as_deref() {
-        busbar_substrate::duration::parse_duration_secs(ttl)
+        busbar_contract::duration::parse_duration_secs(ttl)
             .map_err(|e| format!("{at}: `reverify_ttl:` {e}"))?;
     }
     if let Some(backoff) = def.recovery_backoff.as_deref() {
-        busbar_substrate::duration::parse_duration_secs(backoff)
+        busbar_contract::duration::parse_duration_secs(backoff)
             .map_err(|e| format!("{at}: `recovery_backoff:` {e}"))?;
     }
 
@@ -550,9 +550,9 @@ pub fn validate_agent(name: &str, def: &AgentDefCfg) -> Result<(), String> {
     // wording for the site. The section list it judges against is DERIVED from the config grammar,
     // so a section added to `Plane::ALL` or `NamedMapSection::ALL` is refused here with nothing
     // written in this file.
-    let sections = busbar_substrate::plane::config::plane_sections();
+    let sections = busbar_kernel::plane::config::plane_sections();
     for hook in &def.hooks {
-        busbar_substrate::plane::config::refuse_cross_plane_reference(&at, hook, &sections)?;
+        busbar_kernel::plane::config::refuse_cross_plane_reference(&at, hook, &sections)?;
     }
     Ok(())
 }
@@ -567,10 +567,10 @@ pub(crate) fn policy_for(
     default_backoff_ms: u64,
 ) -> Result<super::reverify::Policy, String> {
     let ttl = def.reverify_ttl.as_deref().unwrap_or(DEFAULT_REVERIFY_TTL);
-    let ttl_ms = busbar_substrate::duration::parse_duration_secs(ttl)?.saturating_mul(1_000);
+    let ttl_ms = busbar_contract::duration::parse_duration_secs(ttl)?.saturating_mul(1_000);
     let recovery_backoff_ms = match def.recovery_backoff.as_deref() {
         None => default_backoff_ms,
-        Some(v) => busbar_substrate::duration::parse_duration_secs(v)?.saturating_mul(1_000),
+        Some(v) => busbar_contract::duration::parse_duration_secs(v)?.saturating_mul(1_000),
     };
     Ok(super::reverify::Policy {
         ttl_ms,
@@ -580,12 +580,12 @@ pub(crate) fn policy_for(
 
 impl AgentPinCfg {
     /// This `pin:` object as the plane-neutral reader takes it. A projection, not a decision: every
-    /// question asked of it is [`busbar_substrate::trust::declared`]'s, and this plane's answers are its
-    /// [`busbar_substrate::trust::declared::Declares`] impl in [`super::pin`].
+    /// question asked of it is [`busbar_kernel::trust::declared`]'s, and this plane's answers are its
+    /// [`busbar_kernel::trust::declared::Declares`] impl in [`super::pin`].
     pub(crate) fn declaration(
         &self,
-    ) -> busbar_substrate::trust::declared::Declaration<'_, PinMechanism> {
-        busbar_substrate::trust::declared::Declaration {
+    ) -> busbar_kernel::trust::declared::Declaration<'_, PinMechanism> {
+        busbar_kernel::trust::declared::Declaration {
             mechanism: self.mechanism,
             key: self.key.as_deref(),
             fingerprint: self.fingerprint.as_deref(),

@@ -161,7 +161,7 @@ impl Status {
 /// The mutable half of a task. Behind its own lock so a poll never waits on the runner.
 struct State {
     status: Status,
-    /// Unix milliseconds, from the engine's one millisecond clock ([`busbar_substrate::store::now_ms`]).
+    /// Unix milliseconds, from the engine's one millisecond clock ([`busbar_kernel::store::now_ms`]).
     /// Rendered ISO-8601 on the wire; kept numeric here so the retention sweep does not parse
     /// strings back.
     created_ms: u64,
@@ -550,7 +550,7 @@ impl Registry {
 pub(crate) struct Runner {
     pub(crate) pool: Arc<super::client::pool::McpConnectionPool>,
     /// THE DETACHED RUNNER'S DURABLE ARENA, holding the single-flight probe `create_task` won.
-    /// [`DurableScope`](busbar_substrate::plane_host::DurableScope): `create_task` ran the task admit
+    /// [`DurableScope`](busbar_kernel::plane_host::DurableScope): `create_task` ran the task admit
     /// through the host `breaker_admit` seam OVER this arena, so the probe was BORN durable (no
     /// per-request win + re-home) and releases owner-checked when THIS scope drops WITH the runner —
     /// covering the runner being ABORTED by `tasks/cancel` as well as its normal end, the case an
@@ -562,7 +562,7 @@ pub(crate) struct Runner {
     /// `record_signal`/`record_success` disposition the plane's own recorder runs — and the durable
     /// scope's drop (with the runner) releases only an UNSETTLED probe, covering a `tasks/cancel`
     /// abort as well as normal end.
-    pub(crate) durable: busbar_substrate::plane_host::DurableScope,
+    pub(crate) durable: busbar_kernel::plane_host::DurableScope,
     /// The durable admission's id — what the detached leg settles by. `AdmissionId::NONE` when no
     /// settling admission was handed off (a degenerate route that won nothing to re-home).
     pub(crate) admission: busbar_plugin::hot::AdmissionId,
@@ -570,7 +570,7 @@ pub(crate) struct Runner {
     /// Cloned from the request's `ctx.host`: its clock is engine-snapshot independent and its
     /// `plane_breakers` is the process-shared instance, so a single mint is byte-identical to
     /// re-loading the handle per read.
-    pub(crate) engine: std::sync::Arc<dyn busbar_substrate::plane_host::EngineHost>,
+    pub(crate) engine: std::sync::Arc<dyn busbar_kernel::plane_host::EngineHost>,
     /// The breaker cell the admitted member records into — `("tool:<pool>", lane)` for a pooled
     /// member, the degenerate `("tool:<server>", 0)` otherwise. Carried from `create_task`'s walk
     /// so the runner's legs record against exactly the cell the admission consulted.
@@ -582,7 +582,7 @@ pub(crate) struct Runner {
     /// it is re-read from THIS COPY, so the key being deleted, disabled or re-scoped underneath a
     /// running task is not seen at all. The sibling surface with the same shape,
     /// `subscriptions/listen`, does not have this hole: it holds a
-    /// [`busbar_substrate::trust::validate::Standing`] and re-resolves the principal from the live registry on
+    /// [`busbar_kernel::trust::validate::Standing`] and re-resolves the principal from the live registry on
     /// every poll.
     ///
     /// WHY THIS ONE IS BOUNDED INSTEAD, stated rather than left to be discovered: the task path's
@@ -617,8 +617,8 @@ pub(crate) struct Runner {
 /// the request. `None` (a non-worker thread — the stdio serve mode, a test that registered
 /// nothing) leaves the runner's shutdown arm inert.
 pub(crate) fn spawn(task: Arc<McpTask>, runner: Runner) {
-    let shutdown = busbar_substrate::detached::worker_shutdown();
-    let handle = busbar_substrate::detached::spawn_detached({
+    let shutdown = busbar_kernel::detached::worker_shutdown();
+    let handle = busbar_kernel::detached::spawn_detached({
         let task = Arc::clone(&task);
         async move { run(task, runner, shutdown).await }
     });
@@ -633,7 +633,7 @@ const SHUTDOWN_ACTOR: &str = "system:shutdown";
 /// THE RUNNER'S OUTER FRAME: drive [`dispatch`] to completion, UNLESS the worker's shutdown fires
 /// first — in which case the runner performs the SAME terminal transition a caller-issued
 /// `tasks/cancel` performs and exits within the detached drain grace
-/// ([`busbar_substrate::detached::DETACHED_DRAIN_GRACE`]), so a shutdown-aborted long task settles
+/// ([`busbar_kernel::detached::DETACHED_DRAIN_GRACE`]), so a shutdown-aborted long task settles
 /// `cancelled` instead of vanishing mid-`working` with a caller polling for ever.
 async fn run(
     task: Arc<McpTask>,
@@ -654,7 +654,7 @@ async fn run(
             host.audit_emit(
                 "mcp_task.cancel",
                 &format!("mcp_task:{task_id}"),
-                busbar_substrate::audit::vocab::OUTCOME_APPLIED,
+                busbar_contract::vocab::OUTCOME_APPLIED,
                 SHUTDOWN_ACTOR,
             );
         },
@@ -688,7 +688,7 @@ async fn settle_or_cancel_on_shutdown<F>(
 {
     tokio::select! {
         () = inner => {}
-        () = busbar_substrate::detached::shutdown_fired(shutdown) => {
+        () = busbar_kernel::detached::shutdown_fired(shutdown) => {
             if task.cancel(now_ms()) {
                 audit_cancel(&task.id);
             }
@@ -703,9 +703,9 @@ async fn settle_or_cancel_on_shutdown<F>(
 /// per-round in-place records. A `Nothing` settles `Refused` (releases the probe, records nothing) or
 /// records nothing in place.
 fn settle_task_leg(
-    durable: &busbar_substrate::plane_host::DurableScope,
+    durable: &busbar_kernel::plane_host::DurableScope,
     admission: busbar_plugin::hot::AdmissionId,
-    engine: &Arc<dyn busbar_substrate::plane_host::EngineHost>,
+    engine: &Arc<dyn busbar_kernel::plane_host::EngineHost>,
     cell: &super::upstream::BreakerCell,
     outcome: &super::upstream::LegOutcome,
 ) {
@@ -713,9 +713,9 @@ fn settle_task_leg(
     let id = admission;
     if !id.is_none() {
         let sig = match outcome {
-            LegOutcome::Success => busbar_substrate::plane_host::breaker::success_signal(),
-            LegOutcome::Failure(cs) => busbar_substrate::plane_host::breaker::failure_signal(cs),
-            LegOutcome::Nothing => busbar_substrate::plane_host::breaker::refused_signal(),
+            LegOutcome::Success => busbar_kernel::plane_host::breaker::success_signal(),
+            LegOutcome::Failure(cs) => busbar_kernel::plane_host::breaker::failure_signal(cs),
+            LegOutcome::Nothing => busbar_kernel::plane_host::breaker::refused_signal(),
         };
         if durable.settle(id, &sig).is_some() {
             return;
@@ -861,7 +861,7 @@ async fn dispatch(task: Arc<McpTask>, runner: Runner) {
     // bill a request that has already been answered, against a budget window the caller cannot
     // see, with no way to report the refusal except by failing the task.
     let mut charge_seam =
-        |_: &super::inputreq::RoundRecord, _: &busbar_substrate::plane_host::DispatchScope| Ok(());
+        |_: &super::inputreq::RoundRecord, _: &busbar_kernel::plane_host::DispatchScope| Ok(());
     let outcome = super::inputreq::drive(
         &runner.server_id,
         runner.max_rounds,
@@ -994,7 +994,7 @@ fn iso8601_ms(ms: u64) -> String {
     let millis = ms.rem_euclid(1000);
     let days = secs.div_euclid(86_400);
     let tod = secs.rem_euclid(86_400);
-    let (y, m, d) = busbar_substrate::civil::civil_from_days(days);
+    let (y, m, d) = busbar_contract::civil::civil_from_days(days);
     let (h, mi, s) = (tod / 3600, (tod % 3600) / 60, tod % 60);
     format!("{y:04}-{m:02}-{d:02}T{h:02}:{mi:02}:{s:02}.{millis:03}Z")
 }

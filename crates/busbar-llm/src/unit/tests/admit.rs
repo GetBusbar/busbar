@@ -7,7 +7,7 @@ use crate::test_support::TestApp;
 use busbar_api::Store as _;
 use busbar_contract::caps::{Grant, KernelSeal, WriteMoney, Posted, StepName, Usage, Consumption};
 use busbar_store_memory::MemoryStore;
-use busbar_substrate::testkit::engine_kit::EngineTestKit as _;
+use busbar_kernel::testkit::engine_kit::EngineTestKit as _;
 use std::collections::BTreeMap;
 use std::time::Instant;
 
@@ -31,14 +31,14 @@ const FEE_CENTS: i64 = 1;
 
 /// A governed app with one key, a one-cent flat fee, and whatever groups the caller declares.
 fn governed(
-    groups: BTreeMap<String, busbar_substrate::config::groups::GroupCfg>,
+    groups: BTreeMap<String, busbar_kernel::config::groups::GroupCfg>,
     group: Option<&str>,
     seed: Option<(&str, u64)>,
 ) -> (
     std::sync::Arc<crate::test_support::BuiltApp>,
     std::sync::Arc<busbar_api::VirtualKey>,
 ) {
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let store = std::sync::Arc::new(MemoryStore::new());
     if let Some((bucket, requests)) = seed {
         store
@@ -58,7 +58,7 @@ fn governed(
         .expect("governance");
     let (key, _) = gov
         .create_key(
-            busbar_substrate::governance::NewKeySpec {
+            busbar_kernel::governance::NewKeySpec {
                 name: "identity".to_string(),
                 allowed_pools: None,
                 group: group.map(str::to_string),
@@ -123,7 +123,7 @@ async fn the_step_charges_the_same_slot_fee_base_and_cent_as_the_live_door() {
     let gov = busbar_api::PlaneRequestCtx {
         key: Some(key.clone()),
     };
-    let charged_at = busbar_substrate::store::now();
+    let charged_at = busbar_kernel::store::now();
 
     // LEG 1 — the live door, reached through the very seam the plane's step calls.
     let live = match host.admission_door(
@@ -252,13 +252,13 @@ async fn the_step_charges_the_same_slot_fee_base_and_cent_as_the_live_door() {
 async fn over_budget_refuses_with_no_charge_and_nothing_to_refund() {
     let groups = BTreeMap::from([(
         "bgrp".to_string(),
-        busbar_substrate::config::groups::GroupCfg {
+        busbar_kernel::config::groups::GroupCfg {
             parent: None,
             enabled: true,
-            limits: vec![busbar_substrate::config::groups::LimitCfg {
-                metric: busbar_substrate::config::groups::LimitMetric::Budget,
+            limits: vec![busbar_kernel::config::groups::LimitCfg {
+                metric: busbar_kernel::config::groups::LimitMetric::Budget,
                 amount: 100,
-                per: Some(busbar_substrate::config::groups::LimitWindow::Total),
+                per: Some(busbar_kernel::config::groups::LimitWindow::Total),
                 scope: None,
                 on_exhaust: None,
                 downgrade_to: None,
@@ -271,7 +271,7 @@ async fn over_budget_refuses_with_no_charge_and_nothing_to_refund() {
     let gov = busbar_api::PlaneRequestCtx {
         key: Some(key.clone()),
     };
-    let charged_at = busbar_substrate::store::now();
+    let charged_at = busbar_kernel::store::now();
 
     let group_before = ledger(&app, "group:bgrp@total", charged_at);
     assert_eq!(

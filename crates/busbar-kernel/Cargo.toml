@@ -35,11 +35,6 @@ bumpalo = { workspace = true }
 # — that edge is the cycle Cargo refuses) and re-exports its neutral config helpers at their
 # historical `crate::config::…` paths. First reconciled-in helper: `config::parse`.
 busbar-core-config = { path = "../busbar-core-config" }
-# The NEUTRAL SUBSTRATE. Phase-B B0-b relocated the Tier-0 leaves (net-guard primitives, the
-# diagnostics catalog, the audit vocabulary, the JSON-RPC envelope reader, the wire-format names,
-# and the capped upstream-body read) DOWN into this crate; core re-exports each unchanged so the
-# in-core call sites keep naming `crate::…`. Substrate never depends back on core.
-busbar-substrate = { path = "../busbar-substrate" }
 # The PURE half of the neutral substrate (value families a codec/plane names). 1.6.0 W4.b P2 drains
 # the substrate ENGINE up into this crate and deletes `busbar-substrate`, but this pure crate STAYS a
 # kernel dependency — kernel names its value modules (breaker/eventstream/json/lossless/media/profile/
@@ -138,6 +133,13 @@ hyper-util = { workspace = true }
 tokio-rustls = { workspace = true }
 rustls = { workspace = true }
 rustls-pki-types = { workspace = true }
+# W4.b P2 (absorbed from busbar-substrate): the client WS handshake for the neutral full-duplex
+# WEBSOCKET transport, OPTIONAL behind the `runtime` capability — OFF in a default/shipped build.
+tokio-tungstenite = { workspace = true, optional = true }
+# W4.b P2 (absorbed from busbar-substrate): the egress differential-harness fixtures + the relocated
+# plane_host identity/trust_anchor registry tests mint throw-away certs with rcgen; OPTIONAL, pulled
+# only by `test-support`. (A dev-dependency copy below still serves plain `cargo test -p`.)
+rcgen = { workspace = true, optional = true }
 
 [features]
 # The `#[cfg(feature = ...)]` sites live in this crate, so this crate declares the features and
@@ -168,8 +170,11 @@ hooks-ranking = ["dep:busbar-hooks-ranking"]
 # substrate item the LLM plane later claims resolves in lock-step, exactly as `plane-mcp`/`plane-a2a`
 # do. Default-on. The binary's `proto-llm` (which also carries the `dep:busbar-llm` edge) forwards to
 # this via `busbar-kernel/plane-llm`.
-plane-llm = ["busbar-substrate/plane-llm"]
-plane-mcp = ["egress-seam", "jsonrpc-ingress", "egress-auth-gate", "busbar-substrate/plane-mcp"]
+# W4.b P2: substrate absorbed. The neutral capability markers `dispatch`/`relay`/`runtime` (formerly
+# forwarded via `busbar-substrate/*`) are now declared HERE and forward to the pure value crate's
+# same-named markers so the value-side `#[cfg]` sites arm in lock-step, exactly as before.
+plane-llm = []
+plane-mcp = ["egress-seam", "jsonrpc-ingress", "egress-auth-gate", "dispatch"]
 # THE A2A PLANE, in-core today (`src/a2a`), behind the SAME switch the binary already uses for the
 # A2A crate (`busbar-a2a`): one plane-kind name for A2A-the-protocol and A2A-the-plane, never two.
 # Default-on — the shipped engine speaks A2A. With it OFF, `src/a2a` (and its plane-side helper
@@ -181,7 +186,7 @@ plane-mcp = ["egress-seam", "jsonrpc-ingress", "egress-auth-gate", "busbar-subst
 # Phase-B B1 FORWARDS to substrate, exactly as `plane-mcp` does — `Due::from_verify_decision` and the
 # other relocated `#[cfg(feature = "plane-a2a")]` sites now live in substrate, so this must turn the
 # substrate marker on with it.
-plane-a2a = ["egress-seam", "egress-stream", "card-signing", "jsonrpc-ingress", "egress-auth-gate", "busbar-substrate/plane-a2a"]
+plane-a2a = ["egress-seam", "egress-stream", "card-signing", "jsonrpc-ingress", "egress-auth-gate", "relay"]
 # THE VOICE PLANE (Plane 4), a fully separate crate (`busbar-voice`) exactly like `busbar-llm`: core
 # holds NO voice source, so this gates nothing in core directly — it FORWARDS to substrate's matching
 # `plane-voice` marker so any relocated substrate seam the voice plane consumes (the full-duplex WS
@@ -189,7 +194,7 @@ plane-a2a = ["egress-seam", "egress-stream", "card-signing", "jsonrpc-ingress", 
 # crate with one flip, exactly as `plane-llm` does. NOT default-on: voice is dev-only until DoD, so
 # the shipped/default build is byte-unchanged; the binary's `plane-voice` (which also carries the
 # `dep:busbar-voice` + `busbar-voice/runtime` edges) forwards to this via `busbar-kernel/plane-voice`.
-plane-voice = ["busbar-substrate/plane-voice", "duplex-ws"]
+plane-voice = ["duplex-ws"]
 # THE NEUTRAL INBOUND WS-ACCEPT CAPABILITY — arms the core-side `mount_ws_arrivals` seam (router.rs)
 # that mounts a plane's gauntlet-gated inbound-WebSocket arrivals. NAMES NO PLANE: any duplex plane
 # (voice today, a future telephony/stream plane tomorrow) turns on the same capability. Forwards to
@@ -197,7 +202,13 @@ plane-voice = ["busbar-substrate/plane-voice", "duplex-ws"]
 # newtype/registry). OFF by default and pulled ONLY by `plane-voice` above, so the default/shipped
 # money-path build carries no `axum/ws` edge (no tokio-tungstenite/sha1/base64) and this seam is
 # compiled out entirely — byte-identical assembly, strong-form deletable.
-duplex-ws  = ["busbar-substrate/runtime"]
+duplex-ws  = ["runtime"]
+# W4.b P2 neutral capability markers, absorbed from busbar-substrate. `dispatch`/`relay` gate the
+# `#[cfg]`/dead-code-allowance sites in the absorbed engine source; each forwards to the value crate's
+# same-named marker. `runtime` arms the full-duplex WS transport (client handshake + `axum/ws`).
+dispatch = ["busbar-substrate-values/dispatch"]
+relay = ["busbar-substrate-values/relay"]
+runtime = ["dep:tokio-tungstenite", "axum/ws", "busbar-substrate-values/runtime"]
 # ── NEUTRAL CAPABILITY MARKERS (plane-purity) ──────────────────────────────────────────────────────
 # The neutral crates must name NO plane token in source (enforced by the plane-purity
 # lint). These pure markers stand in for the `#[cfg(feature = "plane-mcp"/"plane-a2a")]` gates that
@@ -232,13 +243,13 @@ egress-auth-gate = []
 # FORWARDS to substrate: the relocated `admin::v1` data helpers (`NamedDefView`'s `schemars` derive
 # and `set_response_schema`) live behind substrate's matching feature, and core re-exports them, so
 # enabling this must enable substrate's so the re-exported view keeps its schema impl in lock-step.
-openapi-schema = ["dep:schemars", "busbar-substrate/openapi-schema", "busbar-llm/openapi-schema", "busbar-mcp/openapi-schema", "busbar-a2a/openapi-schema"]
+openapi-schema = ["dep:schemars", "busbar-llm/openapi-schema", "busbar-mcp/openapi-schema", "busbar-a2a/openapi-schema"]
 loom-model = ["dep:loom"]
 # Exposes `test_support` to a DEPENDENT crate's tests (the bin's). Never on in a normal build;
 # the bin enables it from its [dev-dependencies] edge only. Forwards to substrate's matching feature
 # so the relocated test-only `governance::signing::TokenSigner::mint_for_audience` is likewise
 # revealed to a dependent test binary.
-test-support = ["busbar-substrate/test-support", "dep:rmcp", "dep:reqwest"]
+test-support = ["busbar-substrate-values/test-support", "dep:rmcp", "dep:reqwest", "dep:rcgen"]
 # Passthrough to `busbar-timing`'s debug-only per-method micro-timing. DEFAULT OFF: with this off,
 # `busbar_timing::timeit!` expands to `()` and the RAII guards it produces are zero-sized no-ops, so
 # the `drop(_guard)` calls that end a timed span are compiled in ONLY under this feature (dropping a
@@ -268,11 +279,11 @@ busbar-a2a-codec = { path = "../busbar-a2a-codec", features = ["test-support"] }
 # `#[path]` dual-compile of its source. `busbar-llm` normal-depends on `busbar-core`; a dev-dep the
 # other way is not a build cycle (lib built first, then dev-deps, then the test binary).
 busbar-llm = { path = "../busbar-llm", features = ["test-support"] }
-# The plain `cargo test -p busbar-core` build does not turn on core's own `test-support` feature, so
-# name substrate's here to reveal the relocated test-only `TokenSigner::mint_for_audience` (used by
-# the auth/governance/a2a tests and the mcp plane tests dual-compiled into this crate's test binary).
-# Feature unification means the one substrate instance carries it for the whole test build.
-busbar-substrate = { path = "../busbar-substrate", features = ["test-support"] }
+# The plain `cargo test -p busbar-kernel` build does not turn on this crate's own `test-support`
+# feature; name busbar-substrate-values' here to reveal the relocated test-only
+# `TokenSigner::mint_for_audience` (used by the auth/governance/a2a tests and the mcp plane tests
+# dual-compiled into this crate's test binary). Feature unification carries it for the whole test build.
+busbar-substrate-values = { path = "../busbar-substrate-values", features = ["test-support"] }
 busbar-store-example-plugin = { path = "../store-example-plugin" }
 tokio = { workspace = true, features = ["test-util"] }
 reqwest = { workspace = true, features = ["json"] }

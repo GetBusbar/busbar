@@ -618,7 +618,7 @@ fn detector_is_non_vacuous_across_single_multi_and_zero_plane_methods() {
     );
     assert!(
         !calls_method(
-            "busbar_substrate::plane_host::plane_slot(key)",
+            "busbar_kernel::plane_host::plane_slot(key)",
             "plane_slot"
         ),
         "calls_method wrongly matched a `::path` form as a `.`-method call"

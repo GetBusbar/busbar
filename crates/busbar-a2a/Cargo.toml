@@ -36,13 +36,14 @@ path = "src/lib.rs"
 # test kit, and the engine's implementation of that kit is bound in the `tests/`-path boot files
 # alone (see the header). Optional rather than a dev-dependency because a feature cannot reference a
 # dev-dep-only crate.
-busbar-kernel = { path = "../busbar-kernel", default-features = false, features = ["plane-a2a"], optional = true }
+busbar-kernel = { path = "../busbar-kernel", default-features = false, features = ["plane-a2a"] }
 # The substrate crate: the neutral shared surface the plugin names instead of busbar-core — the
 # diagnostics macros, the config-section split, the task-reader / hostless-egress / admin-envelope
 # seams. Carries `plane-a2a` so the plane-gated items are present in this crate's own default build.
-busbar-substrate = { path = "../busbar-substrate", features = ["plane-a2a"] }
 # The plugin contracts crate, named ahead of use per owner ruling R-E (see header).
 busbar-api = { path = "../api" }
+busbar-substrate-values = { path = "../busbar-substrate-values" }
+busbar-contract = { path = "../busbar-contract" }
 # THE WIRE VOCABULARY. The pure half of this plugin, split out so `busbar-plane-a2a` can name the
 # canonicalization, the anomaly grammar, the id remap, the meter classes, the durable task record
 # shapes and the mount paths without pulling this crate's axum routes, tonic binding, reqwest relay
@@ -125,20 +126,18 @@ schemars = { workspace = true, optional = true }
 # these sources compile here or dual-compile into busbar-core. The openapi-schema forward points at
 # SUBSTRATE (where `PlaneDecl` lives) since busbar-core is no longer a prod dep; the admin-tokens
 # forward is weak (off by default, exactly as in core).
-openapi-schema = ["busbar-substrate/openapi-schema", "dep:schemars"]
+openapi-schema = ["busbar-kernel/openapi-schema", "dep:schemars"]
 # The one `auth-admin-tokens` site is a test module. Forwarded WEAKLY (`?`) so enabling it never
 # force-pulls the optional busbar-core into a non-test-support build; it only cascades where
 # busbar-core is already in the closure.
-auth-admin-tokens = ["busbar-kernel?/auth-admin-tokens"]
+auth-admin-tokens = ["busbar-kernel/auth-admin-tokens"]
 # Pulls busbar-core (the optional dep) and its test fixtures: the plane's App-driving tests reach the
 # engine fixture through the neutral substrate test kit, whose engine-side implementation the
 # `tests/`-path boot files bind from busbar-core, so this feature is the one edge that puts
 # busbar-core in the closure — the default/prod build has none. Core's `TestApp` fixture names BOTH
 # planes' config types unconditionally, so this forwards `plane-mcp`/`plane-a2a` too — the same
 # both-planes shape core's own dual-compile test binary builds with.
-test-support = [
-    "dep:busbar-kernel",
-    "busbar-kernel/test-support",
+test-support = [    "busbar-kernel/test-support",
     "busbar-kernel/plane-mcp",
     "busbar-kernel/plane-a2a",
     "dep:reqwest",

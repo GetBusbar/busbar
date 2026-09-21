@@ -21,8 +21,8 @@
 
 use crate::testkit::engine_boot::engine;
 use crate::testkit::TestAppA2aExt;
-use busbar_substrate::testkit::engine_kit::{GovKit, HookEnvHandle};
-use busbar_substrate::testkit::engine_kit_plus::EngineAppPlus;
+use busbar_kernel::testkit::engine_kit::{GovKit, HookEnvHandle};
+use busbar_kernel::testkit::engine_kit_plus::EngineAppPlus;
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -425,7 +425,7 @@ pub(super) fn approve(reg: &mut AgentRegistration) {
 /// The same, against a card that declares a binding.
 pub(super) fn approve_card(reg: &mut AgentRegistration, card: serde_json::Value) {
     let digests = crate::a2a::card::skill_digests(&card).expect("digests");
-    let sighting = busbar_substrate::trust::Sighting::Seen(busbar_substrate::trust::Observation {
+    let sighting = busbar_kernel::trust::Sighting::Seen(busbar_kernel::trust::Observation {
         pin: Some(crate::a2a::pin::CardPin::JwsIssuerKey {
             issuer_key: "KEY".to_string(),
             card_fingerprint: "sha256/CARD".to_string(),
@@ -490,7 +490,7 @@ pub(super) async fn with_ledger() -> (
     let ledger = Arc::new(crate::taskstore::event_ledger::EventLedger::new());
     // A sink SWAP, not a re-register, so the working-set tests' shared registration and every
     // position stay intact.
-    crate::taskstore::TASKS.set_sink(busbar_substrate::plane::store::PlaneStoreView::narrow(
+    crate::taskstore::TASKS.set_sink(busbar_kernel::plane::store::PlaneStoreView::narrow(
         ledger.clone(),
     ));
     (ledger, guard)
@@ -660,8 +660,8 @@ pub(super) async fn harness_full(
     pools: &[(&str, &[&str])],
     billed: bool,
 ) -> Harness {
-    use busbar_substrate::governance::signing::{TokenSigner, TokenVerifier, DEFAULT_KID};
-    use busbar_substrate::governance::NewKeySpec;
+    use busbar_kernel::governance::signing::{TokenSigner, TokenVerifier, DEFAULT_KID};
+    use busbar_kernel::governance::NewKeySpec;
     engine().metrics_init();
 
     let store: Arc<dyn busbar_api::Store> = Arc::new(busbar_store_memory::MemoryStore::new());
@@ -686,11 +686,11 @@ pub(super) async fn harness_full(
                 ..Default::default()
             },
             2_000_000_000,
-            busbar_substrate::store::now(),
+            busbar_kernel::store::now(),
         )
         .expect("mint");
     let generation = TokenVerifier::single(signer.kid(), signer.verifying_key())
-        .verify(plain.as_str(), busbar_substrate::store::now(), None)
+        .verify(plain.as_str(), busbar_kernel::store::now(), None)
         .expect("the plain token verifies")
         .generation;
     // THE GRANT. `agent:<id>` is what `inbound::authorize`, the catalogue and the EGRESS gate all
@@ -745,9 +745,9 @@ pub(super) async fn harness_full(
         // posting is a read-time projection that never lands in the metering row either.
         let card: std::collections::BTreeMap<
             String,
-            busbar_substrate::config::sections::RateEntryCfg,
+            busbar_kernel::config::sections::RateEntryCfg,
         > = std::collections::BTreeMap::new();
-        let groups: std::collections::BTreeMap<String, busbar_substrate::config::groups::GroupCfg> =
+        let groups: std::collections::BTreeMap<String, busbar_kernel::config::groups::GroupCfg> =
             std::collections::BTreeMap::new();
         builder = builder.cost(engine().cost_parts(Some(&card), 1, &groups));
     }

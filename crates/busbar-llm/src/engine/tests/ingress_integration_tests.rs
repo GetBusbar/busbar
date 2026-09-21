@@ -43,8 +43,8 @@ fn minimal_app() -> Arc<App> {
 /// the way a composition root states it, and only this one takes the registry and the table as the
 /// neutral kit handles, so a fixture never has to name the engine's `GovState`/`CostModel`.
 fn governed_minimal_app(
-    gov: std::sync::Arc<dyn busbar_substrate::testkit::engine_kit::GovKit>,
-    cost: std::sync::Arc<dyn busbar_substrate::testkit::engine_kit::CostKit>,
+    gov: std::sync::Arc<dyn busbar_kernel::testkit::engine_kit::GovKit>,
+    cost: std::sync::Arc<dyn busbar_kernel::testkit::engine_kit::CostKit>,
 ) -> Arc<App> {
     TestApp::new()
         .governance_kit(gov)
@@ -56,7 +56,7 @@ fn governed_minimal_app(
 #[test]
 fn test_finish_emits_request_metrics() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let resp = (StatusCode::OK, "ok").into_response();
     let out = finish(
         &minimal_app(),
@@ -64,15 +64,15 @@ fn test_finish_emits_request_metrics() {
         "openai",
         "mypool",
         Instant::now(),
-        busbar_substrate::store::now(),
+        busbar_kernel::store::now(),
         resp,
     );
     // finish must pass the response through unchanged.
     assert_eq!(out.status(), StatusCode::OK);
 
-    let scrape = busbar_substrate::metrics::render();
+    let scrape = busbar_kernel::metrics::render();
     assert!(
-        scrape.contains(busbar_substrate::metrics::REQUESTS_TOTAL),
+        scrape.contains(busbar_kernel::metrics::REQUESTS_TOTAL),
         "finish should emit requests_total; got:\n{scrape}"
     );
     assert!(
@@ -80,7 +80,7 @@ fn test_finish_emits_request_metrics() {
         "a 2xx response maps to outcome=ok; got:\n{scrape}"
     );
     assert!(
-        scrape.contains(busbar_substrate::metrics::REQUEST_DURATION_SECONDS),
+        scrape.contains(busbar_kernel::metrics::REQUEST_DURATION_SECONDS),
         "finish should emit the request-duration histogram; got:\n{scrape}"
     );
 }
@@ -105,7 +105,7 @@ fn test_affinity_header_honors_configured_name() {
             upstream_credentials: None,
             members: Default::default(),
             failover: None,
-            affinity: Some(busbar_substrate::plane_host::AffinityInput {
+            affinity: Some(busbar_kernel::plane_host::AffinityInput {
                 header_name: Some("x-user-id".to_string()),
             }),
             breaker: None,
@@ -131,7 +131,7 @@ fn test_affinity_header_session_mode_without_name_uses_default() {
             upstream_credentials: None,
             members: Default::default(),
             failover: None,
-            affinity: Some(busbar_substrate::plane_host::AffinityInput { header_name: None }),
+            affinity: Some(busbar_kernel::plane_host::AffinityInput { header_name: None }),
             breaker: None,
         },
     );
@@ -145,8 +145,8 @@ fn test_affinity_header_session_mode_without_name_uses_default() {
 /// can pass a matching GovCtx to `finish`. Just assembles the App + key; it performs no charge.
 fn governed_app_with_key() -> (Arc<App>, busbar_api::VirtualKey) {
     use busbar_store_memory::MemoryStore;
-    use busbar_substrate::governance::NewKeySpec;
-    use busbar_substrate::testkit::engine_kit::EngineTestKit as _;
+    use busbar_kernel::governance::NewKeySpec;
+    use busbar_kernel::testkit::engine_kit::EngineTestKit as _;
     let store = Arc::new(MemoryStore::new());
     // 30 cents flat per request, no per-token fee (the fee now lives on the CostModel).
     let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
@@ -191,7 +191,7 @@ fn key_spend(app: &Arc<App>, key_id: &str) -> i64 {
 #[test]
 fn test_ungrouped_key_is_authed_but_unlimited_admission_never_blocks() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     // `governed_app_with_key` mints a `group: None` key — the ungrouped case under test.
     let (app, key) = governed_app_with_key();
     assert!(
@@ -233,7 +233,7 @@ fn test_ungrouped_key_is_authed_but_unlimited_admission_never_blocks() {
 #[test]
 fn test_finish_refunds_flat_fee_on_non_2xx_keeps_on_2xx() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let (app, key) = governed_app_with_key();
     let gov = busbar_api::PlaneRequestCtx {
         key: Some(std::sync::Arc::new(key.clone())),
@@ -306,7 +306,7 @@ fn test_finish_refunds_flat_fee_on_non_2xx_keeps_on_2xx() {
 #[test]
 fn test_pre_routing_failure_does_not_refund_prior_charge() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let (app, key) = governed_app_with_key();
     let gov = busbar_api::PlaneRequestCtx {
         key: Some(std::sync::Arc::new(key.clone())),
@@ -353,7 +353,7 @@ fn test_pre_routing_failure_does_not_refund_prior_charge() {
 #[test]
 fn test_finish_outcome_mapping_503_is_exhausted() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let resp = (StatusCode::SERVICE_UNAVAILABLE, "x").into_response();
     let _ = finish(
         &minimal_app(),
@@ -361,11 +361,11 @@ fn test_finish_outcome_mapping_503_is_exhausted() {
         "anthropic",
         "p2",
         Instant::now(),
-        busbar_substrate::store::now(),
+        busbar_kernel::store::now(),
         resp,
     );
     assert!(
-        busbar_substrate::metrics::render().contains("outcome=\"exhausted\""),
+        busbar_kernel::metrics::render().contains("outcome=\"exhausted\""),
         "503 maps to outcome=exhausted"
     );
 }
@@ -382,10 +382,10 @@ fn test_finish_outcome_mapping_503_is_exhausted() {
 fn test_flat_fee_charge_and_refund_use_charged_at_window() {
     crate::testkit::install_test_seams();
     use busbar_store_memory::MemoryStore;
-    use busbar_substrate::governance::NewKeySpec;
-    use busbar_substrate::governance::SECS_PER_DAY;
-    use busbar_substrate::testkit::engine_kit::EngineTestKit as _;
-    busbar_substrate::metrics::init();
+    use busbar_kernel::governance::NewKeySpec;
+    use busbar_kernel::governance::SECS_PER_DAY;
+    use busbar_kernel::testkit::engine_kit::EngineTestKit as _;
+    busbar_kernel::metrics::init();
 
     let store = std::sync::Arc::new(MemoryStore::new());
     let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
@@ -413,7 +413,7 @@ fn test_flat_fee_charge_and_refund_use_charged_at_window() {
     let day_window = charged_at / SECS_PER_DAY * SECS_PER_DAY;
     assert_ne!(
         day_window,
-        busbar_substrate::store::now() / SECS_PER_DAY * SECS_PER_DAY,
+        busbar_kernel::store::now() / SECS_PER_DAY * SECS_PER_DAY,
         "test precondition: charged_at must be a different day than now"
     );
 
@@ -450,7 +450,7 @@ fn test_flat_fee_charge_and_refund_use_charged_at_window() {
         "non-2xx refund must land in the charged_at window (net 0)"
     );
     let in_today = gov
-        .usage_for(cost.as_ref(), &key.id, busbar_substrate::store::now())
+        .usage_for(cost.as_ref(), &key.id, busbar_kernel::store::now())
         .unwrap()
         .map(|u| u.spend_cents)
         .unwrap_or(0);
@@ -476,16 +476,16 @@ fn test_flat_fee_charge_and_refund_use_charged_at_window() {
 async fn test_admit_check_uses_charged_at_window_not_clock() {
     crate::testkit::install_test_seams();
     use busbar_store_memory::MemoryStore;
-    use busbar_substrate::governance::NewKeySpec;
-    use busbar_substrate::governance::SECS_PER_DAY;
-    use busbar_substrate::testkit::engine_kit::EngineTestKit as _;
-    busbar_substrate::metrics::init();
+    use busbar_kernel::governance::NewKeySpec;
+    use busbar_kernel::governance::SECS_PER_DAY;
+    use busbar_kernel::testkit::engine_kit::EngineTestKit as _;
+    busbar_kernel::metrics::init();
 
     let past_day: u64 = 1_700_000_000; // a fixed past day
     let past_window = past_day / SECS_PER_DAY * SECS_PER_DAY;
     assert_ne!(
         past_window,
-        busbar_substrate::store::now() / SECS_PER_DAY * SECS_PER_DAY,
+        busbar_kernel::store::now() / SECS_PER_DAY * SECS_PER_DAY,
         "test precondition: charged_at must be a different day than now"
     );
 
@@ -500,13 +500,13 @@ async fn test_admit_check_uses_charged_at_window_not_clock() {
         .unwrap();
     let groups = std::collections::BTreeMap::from([(
         "daycap".to_string(),
-        busbar_substrate::config::groups::GroupCfg {
+        busbar_kernel::config::groups::GroupCfg {
             parent: None,
             enabled: true,
-            limits: vec![busbar_substrate::config::groups::LimitCfg {
-                metric: busbar_substrate::config::groups::LimitMetric::Budget,
+            limits: vec![busbar_kernel::config::groups::LimitCfg {
+                metric: busbar_kernel::config::groups::LimitMetric::Budget,
                 amount: 30,
-                per: Some(busbar_substrate::config::groups::LimitWindow::Day),
+                per: Some(busbar_kernel::config::groups::LimitWindow::Day),
                 scope: None,
                 on_exhaust: None,
                 downgrade_to: None,
@@ -557,7 +557,7 @@ async fn test_admit_check_uses_charged_at_window_not_clock() {
 
     // Sanity: today's window is empty, so a gate keyed off the wall clock (the OLD behaviour)
     // would have WRONGLY admitted. This proves the bug was real and the pin fixes it.
-    let admitted_today = admit_check(&app, &govctx, "openai", "", busbar_substrate::store::now());
+    let admitted_today = admit_check(&app, &govctx, "openai", "", busbar_kernel::store::now());
     assert!(
         admitted_today.is_ok(),
         "today's window is empty; the old clock-based gate would have admitted here"
@@ -583,7 +583,7 @@ use std::sync::Arc as StdArc;
 
 /// Spin up the real router over a loopback listener; returns (addr, abort-handle).
 async fn serve(app: StdArc<App>) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
-    let router = busbar_substrate::testkit::build_router(app);
+    let router = busbar_kernel::testkit::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -624,7 +624,7 @@ fn anthropic_ok_body() -> serde_json::Value {
 #[tokio::test]
 async fn test_cohere_ingress_to_openai_backend() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let state = StdArc::new(MockServerState::new());
     state.push(MockResponse::Ok {
         status: StatusCode::OK,
@@ -677,7 +677,7 @@ async fn test_cohere_ingress_to_openai_backend() {
 #[tokio::test]
 async fn test_responses_ingress_to_anthropic_backend() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let state = StdArc::new(MockServerState::new());
     state.push(MockResponse::Ok {
         status: StatusCode::OK,
@@ -736,7 +736,7 @@ async fn test_responses_ingress_to_anthropic_backend() {
 #[tokio::test]
 async fn test_gemini_path_resolves_model_and_stream() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     // Two backend responses: one for the non-stream call, one we won't reach (stream call uses
     // a fresh state below). Keep them separate for clarity.
     let state = StdArc::new(MockServerState::new());
@@ -829,7 +829,7 @@ fn test_path_model_injects_model_and_stream_into_body() {
 #[tokio::test]
 async fn test_gemini_unknown_action_is_404() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let app = TestApp::new().build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
     let (addr, handle) = serve(app).await;
@@ -864,7 +864,7 @@ async fn test_gemini_unknown_action_is_404() {
 #[tokio::test]
 async fn test_bedrock_converse_routes_and_returns_json() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let state = StdArc::new(MockServerState::new());
     state.push(MockResponse::Ok {
         status: StatusCode::OK,
@@ -964,7 +964,7 @@ fn openai_stream_events() -> Vec<String> {
 #[tokio::test]
 async fn test_bedrock_converse_stream_returns_binary_eventstream() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let state = StdArc::new(MockServerState::new());
     state.push(MockResponse::Sse {
         events: openai_stream_events(),
@@ -1040,7 +1040,7 @@ async fn test_bedrock_converse_stream_returns_binary_eventstream() {
     // The body must decode as a clean sequence of binary AWS event-stream frames.
     let body = resp.bytes().await.unwrap();
     let mut buf = body.to_vec();
-    let frames = busbar_substrate::eventstream::drain_frames(&mut buf);
+    let frames = busbar_substrate_values::eventstream::drain_frames(&mut buf);
     assert!(
         !frames.is_empty(),
         "at least one binary eventstream frame must decode; body len {}",
@@ -1081,7 +1081,7 @@ async fn test_bedrock_converse_stream_returns_binary_eventstream() {
 #[tokio::test]
 async fn test_bedrock_same_protocol_stream_passthrough_forwards_upstream_request_id() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     // Fixed upstream request id: NOT UUID-shaped, so a synthesized id can never accidentally
     // match it — the only way the assertion passes is verbatim passthrough.
     const UPSTREAM_REQ_ID: &str = "fixed-upstream-amzn-req-id-0001";
@@ -1166,7 +1166,7 @@ async fn test_bedrock_same_protocol_stream_passthrough_forwards_upstream_request
     // drain_frames with the buffer empty, carrying the native ConverseStream event names.
     let body = resp.bytes().await.unwrap();
     let mut buf = body.to_vec();
-    let frames = busbar_substrate::eventstream::drain_frames(&mut buf);
+    let frames = busbar_substrate_values::eventstream::drain_frames(&mut buf);
     assert!(
         buf.is_empty(),
         "verbatim-relayed body must be a whole frame sequence (no trailing partial bytes); \
@@ -1211,7 +1211,7 @@ async fn test_bedrock_same_protocol_stream_passthrough_forwards_upstream_request
 #[tokio::test]
 async fn test_bedrock_same_protocol_converse_non_stream_forwards_upstream_request_id() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     // Fixed upstream request id: NOT UUID-shaped, so a synthesized id can never accidentally
     // match — the assertion passes ONLY on verbatim passthrough.
     const UPSTREAM_REQ_ID: &str = "fixed-upstream-amzn-req-id-nonstream-0001";
@@ -1330,7 +1330,7 @@ async fn test_bedrock_same_protocol_converse_non_stream_forwards_upstream_reques
 #[tokio::test]
 async fn test_bedrock_same_protocol_stream_mid_stream_transport_error_appends_binary_exception() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let state = StdArc::new(MockServerState::new());
     state.push(MockResponse::EventStreamTransportError {
         ok_frames: vec![("messageStart", br#"{"role":"assistant"}"#.to_vec())],
@@ -1385,7 +1385,7 @@ async fn test_bedrock_same_protocol_stream_mid_stream_transport_error_appends_bi
     // The body decodes as a whole sequence of CRC-valid binary frames (real frame(s) + the
     // appended exception frame), with no trailing partial bytes.
     let mut buf = body.to_vec();
-    let frames = busbar_substrate::eventstream::drain_frames(&mut buf);
+    let frames = busbar_substrate_values::eventstream::drain_frames(&mut buf);
     assert!(
         buf.is_empty(),
         "body must be a whole sequence of CRC-valid frames; {} bytes left",
@@ -1420,7 +1420,7 @@ async fn test_bedrock_same_protocol_stream_mid_stream_transport_error_appends_bi
 #[tokio::test]
 async fn test_bedrock_ingress_mid_stream_transport_error_appends_binary_exception() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let state = StdArc::new(MockServerState::new());
     state.push(MockResponse::SseTransportError {
         ok_events: vec![r#"{"choices":[{"delta":{"role":"assistant"}}]}"#.to_string()],
@@ -1452,7 +1452,7 @@ async fn test_bedrock_ingress_mid_stream_transport_error_appends_binary_exceptio
     );
     // The body decodes as a sequence of binary frames, the LAST of which is an exception frame.
     let mut buf = body.to_vec();
-    let frames = busbar_substrate::eventstream::drain_frames(&mut buf);
+    let frames = busbar_substrate_values::eventstream::drain_frames(&mut buf);
     assert!(
         buf.is_empty(),
         "body must be a whole sequence of CRC-valid frames; {} bytes left",
@@ -1482,7 +1482,7 @@ async fn test_bedrock_ingress_mid_stream_transport_error_appends_binary_exceptio
 #[tokio::test]
 async fn test_openai_ingress_mid_stream_transport_error_appends_native_sse() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let state = StdArc::new(MockServerState::new());
     state.push(MockResponse::SseTransportError {
         ok_events: vec![r#"{"choices":[{"delta":{"content":"hi"}}]}"#.to_string()],
@@ -1544,7 +1544,7 @@ async fn test_openai_ingress_mid_stream_transport_error_appends_native_sse() {
 #[tokio::test]
 async fn test_bedrock_same_protocol_passthrough_strips_shim_keys() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let state = StdArc::new(MockServerState::new());
     // A minimal native-shaped Bedrock Converse response; same-protocol passthrough relays it
     // verbatim, so any 2xx body suffices for the round-trip.
@@ -1615,7 +1615,7 @@ async fn test_bedrock_same_protocol_passthrough_strips_shim_keys() {
 #[tokio::test]
 async fn test_gemini_same_protocol_passthrough_strips_shim_keys() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let state = StdArc::new(MockServerState::new());
     state.push(MockResponse::Ok {
         status: StatusCode::OK,
@@ -1682,7 +1682,7 @@ async fn test_gemini_same_protocol_passthrough_strips_shim_keys() {
 #[tokio::test]
 async fn test_gemini_stream_generate_content_alt_sse_is_event_stream() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let state = StdArc::new(MockServerState::new());
     state.push(MockResponse::Sse {
         events: openai_stream_events(),
@@ -1742,7 +1742,7 @@ async fn test_gemini_stream_generate_content_alt_sse_is_event_stream() {
         .lines()
         .filter_map(|line| line.strip_prefix("data:"))
         .map(str::trim)
-        .filter(|data| !data.is_empty() && *data != busbar_substrate::proto::SSE_DONE_SENTINEL)
+        .filter(|data| !data.is_empty() && *data != busbar_kernel::proto::SSE_DONE_SENTINEL)
         .filter_map(|data| serde_json::from_str(data).ok())
         .collect();
     assert!(
@@ -1774,7 +1774,7 @@ async fn test_gemini_stream_generate_content_alt_sse_is_event_stream() {
 #[tokio::test]
 async fn test_gemini_alt_sse_mid_stream_transport_error_appends_native_sse_frame() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let state = StdArc::new(MockServerState::new());
     state.push(MockResponse::SseTransportError {
         ok_events: vec![r#"{"choices":[{"delta":{"content":"hi"}}]}"#.to_string()],
@@ -1821,7 +1821,7 @@ async fn test_gemini_alt_sse_mid_stream_transport_error_appends_native_sse_frame
         .lines()
         .filter_map(|line| line.strip_prefix("data:"))
         .map(str::trim)
-        .filter(|data| !data.is_empty() && *data != busbar_substrate::proto::SSE_DONE_SENTINEL)
+        .filter(|data| !data.is_empty() && *data != busbar_kernel::proto::SSE_DONE_SENTINEL)
         .filter_map(|data| serde_json::from_str(data).ok())
         .collect();
     assert!(
@@ -1859,7 +1859,7 @@ async fn test_gemini_alt_sse_mid_stream_transport_error_appends_native_sse_frame
 #[tokio::test]
 async fn test_unresolved_model_uses_bounded_pool_label_not_raw_string() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     // A lane/pool named "foo" exists, but the client asks for a DISTINCT unknown model so both
     // `app.pools` and `app.by_model` miss and the 404 path runs.
     let app = TestApp::new()
@@ -1893,7 +1893,7 @@ async fn test_unresolved_model_uses_bounded_pool_label_not_raw_string() {
         .unwrap();
     assert_eq!(resp.status().as_u16(), 404, "unknown model is a 404");
 
-    let scrape = busbar_substrate::metrics::render();
+    let scrape = busbar_kernel::metrics::render();
     // The raw attacker string must NEVER appear as a label value in the exposition.
     assert!(
         !scrape.contains(attacker_model),
@@ -1917,7 +1917,7 @@ fn requests_total_for(scrape: &str, pool: &str, outcome: &str) -> u64 {
     let outcome_frag = format!("outcome=\"{outcome}\"");
     scrape
         .lines()
-        .filter(|l| l.starts_with(busbar_substrate::metrics::REQUESTS_TOTAL))
+        .filter(|l| l.starts_with(busbar_kernel::metrics::REQUESTS_TOTAL))
         .filter(|l| l.contains(&pool_frag) && l.contains(&outcome_frag))
         .filter_map(|l| l.rsplit(' ').next())
         .filter_map(|v| v.trim().parse::<u64>().ok())
@@ -1934,7 +1934,7 @@ fn requests_total_for(scrape: &str, pool: &str, outcome: &str) -> u64 {
 #[tokio::test]
 async fn test_body_model_parse_error_is_observable() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     // No backend needed: the request never gets past the body parse.
     let app = TestApp::new()
         .lane(
@@ -1951,7 +1951,7 @@ async fn test_body_model_parse_error_is_observable() {
     let (addr, handle) = serve(app).await;
 
     let before = requests_total_for(
-        &busbar_substrate::metrics::render(),
+        &busbar_kernel::metrics::render(),
         "unresolved",
         "client_error",
     ); // golden wire-contract literal (kept bare on purpose)
@@ -1966,7 +1966,7 @@ async fn test_body_model_parse_error_is_observable() {
     assert_eq!(resp.status().as_u16(), 400, "malformed body is a 400");
 
     let after = requests_total_for(
-        &busbar_substrate::metrics::render(),
+        &busbar_kernel::metrics::render(),
         "unresolved",
         "client_error",
     ); // golden wire-contract literal (kept bare on purpose)
@@ -1988,7 +1988,7 @@ async fn test_body_model_parse_error_is_observable() {
 #[tokio::test]
 async fn test_bedrock_invoke_unresolvable_body_is_observable() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let app = TestApp::new()
         .lane(
             LaneSpec::new(
@@ -2004,7 +2004,7 @@ async fn test_bedrock_invoke_unresolvable_body_is_observable() {
     let (addr, handle) = serve(app).await;
 
     let before = requests_total_for(
-        &busbar_substrate::metrics::render(),
+        &busbar_kernel::metrics::render(),
         "unresolved",
         "client_error",
     ); // golden wire-contract literal (kept bare on purpose)
@@ -2025,7 +2025,7 @@ async fn test_bedrock_invoke_unresolvable_body_is_observable() {
     );
 
     let after = requests_total_for(
-        &busbar_substrate::metrics::render(),
+        &busbar_kernel::metrics::render(),
         "unresolved",
         "client_error",
     ); // golden wire-contract literal (kept bare on purpose)
@@ -2067,15 +2067,15 @@ async fn test_served_request_increments_hot_path_metrics() {
 
     let dur_count = format!(
         "{}_count",
-        busbar_substrate::metrics::REQUEST_DURATION_SECONDS
+        busbar_kernel::metrics::REQUEST_DURATION_SECONDS
     );
     let req_before = metric_sum(
-        busbar_substrate::metrics::REQUESTS_TOTAL,
+        busbar_kernel::metrics::REQUESTS_TOTAL,
         &[("pool", POOL), ("outcome", "ok")],
     );
     let dur_before = metric_sum(&dur_count, &[("pool", POOL)]);
     let att_before = metric_sum(
-        busbar_substrate::telemetry::UPSTREAM_ATTEMPTS_TOTAL,
+        busbar_kernel::telemetry::UPSTREAM_ATTEMPTS_TOTAL,
         &[("pool", POOL), ("lane", MODEL)],
     );
 
@@ -2090,12 +2090,12 @@ async fn test_served_request_increments_hot_path_metrics() {
     assert_eq!(resp.status().as_u16(), 200);
 
     let req_after = metric_sum(
-        busbar_substrate::metrics::REQUESTS_TOTAL,
+        busbar_kernel::metrics::REQUESTS_TOTAL,
         &[("pool", POOL), ("outcome", "ok")],
     );
     let dur_after = metric_sum(&dur_count, &[("pool", POOL)]);
     let att_after = metric_sum(
-        busbar_substrate::telemetry::UPSTREAM_ATTEMPTS_TOTAL,
+        busbar_kernel::telemetry::UPSTREAM_ATTEMPTS_TOTAL,
         &[("pool", POOL), ("lane", MODEL)],
     );
     assert!(
@@ -2124,8 +2124,8 @@ async fn test_served_request_increments_hot_path_metrics() {
 async fn test_role_bound_principal_governed_like_a_virtual_key() {
     crate::testkit::install_test_seams();
     use busbar_store_memory::MemoryStore;
-    use busbar_substrate::testkit::engine_kit::EngineTestKit as _;
-    busbar_substrate::metrics::init();
+    use busbar_kernel::testkit::engine_kit::EngineTestKit as _;
+    busbar_kernel::metrics::init();
     let state = StdArc::new(MockServerState::new());
     for _ in 0..3 {
         state.push(MockResponse::Ok {
@@ -2138,8 +2138,8 @@ async fn test_role_bound_principal_governed_like_a_virtual_key() {
     let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
         .governance(store, Some("admintok".to_string()), None)
         .unwrap();
-    let auth_cfg = busbar_substrate::config::auth::AuthCfg::with_chain(vec![
-        busbar_substrate::config::auth::AuthChainEntry::bare("test-groups-module"),
+    let auth_cfg = busbar_kernel::config::auth::AuthCfg::with_chain(vec![
+        busbar_kernel::config::auth::AuthChainEntry::bare("test-groups-module"),
     ]);
     let mut app = TestApp::new()
         .lane(
@@ -2164,7 +2164,7 @@ async fn test_role_bound_principal_governed_like_a_virtual_key() {
         let mut table = std::collections::BTreeMap::new();
         table.insert(
             "llm-users".to_string(),
-            busbar_substrate::config::auth::RoleBindingCfg {
+            busbar_kernel::config::auth::RoleBindingCfg {
                 allowed_pools: Some(vec!["gpool-a".to_string()]),
                 ..Default::default()
             },
@@ -2172,12 +2172,12 @@ async fn test_role_bound_principal_governed_like_a_virtual_key() {
         // OMITTED allowed_pools = ALL pools.
         table.insert(
             "batch".to_string(),
-            busbar_substrate::config::auth::RoleBindingCfg::default(),
+            busbar_kernel::config::auth::RoleBindingCfg::default(),
         );
         // Explicit [] = NO pools (the empty set, fail closed).
         table.insert(
             "locked".to_string(),
-            busbar_substrate::config::auth::RoleBindingCfg {
+            busbar_kernel::config::auth::RoleBindingCfg {
                 allowed_pools: Some(vec![]),
                 ..Default::default()
             },
@@ -2312,7 +2312,7 @@ async fn timing_gate_hot_path_p50_p99() {
 #[tokio::test]
 async fn test_body_model_missing_model_is_observable() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let app = TestApp::new()
         .lane(
             LaneSpec::new(
@@ -2328,7 +2328,7 @@ async fn test_body_model_missing_model_is_observable() {
     let (addr, handle) = serve(app).await;
 
     let before = requests_total_for(
-        &busbar_substrate::metrics::render(),
+        &busbar_kernel::metrics::render(),
         "unresolved",
         "client_error",
     ); // golden wire-contract literal (kept bare on purpose)
@@ -2344,7 +2344,7 @@ async fn test_body_model_missing_model_is_observable() {
     assert_eq!(resp.status().as_u16(), 400, "missing model is a 400");
 
     let after = requests_total_for(
-        &busbar_substrate::metrics::render(),
+        &busbar_kernel::metrics::render(),
         "unresolved",
         "client_error",
     ); // golden wire-contract literal (kept bare on purpose)
@@ -2363,7 +2363,7 @@ async fn test_body_model_missing_model_is_observable() {
 #[tokio::test]
 async fn test_path_model_non_object_body_is_observable() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let app = TestApp::new()
         .lane(
             LaneSpec::new(
@@ -2379,7 +2379,7 @@ async fn test_path_model_non_object_body_is_observable() {
     let (addr, handle) = serve(app).await;
 
     let before = requests_total_for(
-        &busbar_substrate::metrics::render(),
+        &busbar_kernel::metrics::render(),
         "unresolved",
         "client_error",
     ); // golden wire-contract literal (kept bare on purpose)
@@ -2395,7 +2395,7 @@ async fn test_path_model_non_object_body_is_observable() {
     assert_eq!(resp.status().as_u16(), 400, "non-object body is a 400");
 
     let after = requests_total_for(
-        &busbar_substrate::metrics::render(),
+        &busbar_kernel::metrics::render(),
         "unresolved",
         "client_error",
     ); // golden wire-contract literal (kept bare on purpose)
@@ -2415,7 +2415,7 @@ async fn test_path_model_non_object_body_is_observable() {
 #[tokio::test]
 async fn test_gemini_unsupported_action_is_observable() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let app = TestApp::new()
         .lane(
             LaneSpec::new(
@@ -2431,7 +2431,7 @@ async fn test_gemini_unsupported_action_is_observable() {
     let (addr, handle) = serve(app).await;
 
     let before = requests_total_for(
-        &busbar_substrate::metrics::render(),
+        &busbar_kernel::metrics::render(),
         "unresolved",
         "client_error",
     ); // golden wire-contract literal (kept bare on purpose)
@@ -2452,7 +2452,7 @@ async fn test_gemini_unsupported_action_is_observable() {
     );
 
     let after = requests_total_for(
-        &busbar_substrate::metrics::render(),
+        &busbar_kernel::metrics::render(),
         "unresolved",
         "client_error",
     ); // golden wire-contract literal (kept bare on purpose)
@@ -2504,7 +2504,7 @@ fn test_pool_label_bounds_cardinality() {
 #[tokio::test]
 async fn test_gemini_stream_generate_content_no_alt_sse_is_json_array() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let state = StdArc::new(MockServerState::new());
     state.push(MockResponse::Sse {
         events: openai_stream_events(),
@@ -2576,7 +2576,7 @@ async fn test_gemini_stream_generate_content_no_alt_sse_is_json_array() {
 #[tokio::test]
 async fn test_gemini_json_array_mid_stream_error_closes_array_no_sse() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let state = StdArc::new(MockServerState::new());
     state.push(MockResponse::SseTransportError {
         ok_events: vec![r#"{"choices":[{"delta":{"content":"hi"}}]}"#.to_string()],
@@ -2651,7 +2651,7 @@ async fn test_gemini_json_array_mid_stream_error_closes_array_no_sse() {
 #[tokio::test]
 async fn test_gemini_json_array_shim_not_leaked_cross_protocol() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let state = StdArc::new(MockServerState::new());
     state.push(MockResponse::Sse {
         events: openai_stream_events(),
@@ -2710,7 +2710,7 @@ async fn test_gemini_json_array_shim_not_leaked_cross_protocol() {
 #[tokio::test]
 async fn test_anthropic_cross_protocol_message_start_full_skeleton() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let state = StdArc::new(MockServerState::new());
     state.push(MockResponse::Sse {
         events: openai_stream_events(),
@@ -2782,7 +2782,7 @@ async fn test_anthropic_cross_protocol_message_start_full_skeleton() {
 #[tokio::test]
 async fn test_passthrough_401_cross_protocol_reshaped_to_ingress() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let state = StdArc::new(MockServerState::new());
     state.push(MockResponse::Auth {
         status: StatusCode::UNAUTHORIZED,
@@ -2834,7 +2834,7 @@ async fn test_passthrough_401_cross_protocol_reshaped_to_ingress() {
 #[tokio::test]
 async fn test_gemini_malformed_path_no_colon_is_404() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let app = TestApp::new().build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
     let (addr, handle) = serve(app).await;
@@ -2868,7 +2868,7 @@ async fn test_gemini_malformed_path_no_colon_is_404() {
 #[tokio::test]
 async fn test_gemini_empty_model_is_404() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let app = TestApp::new().build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
     let (addr, handle) = serve(app).await;
@@ -2894,7 +2894,7 @@ async fn test_gemini_empty_model_is_404() {
 #[tokio::test]
 async fn test_gemini_v1_surface_error_echoes_v1_not_v1beta() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let app = TestApp::new().build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
     let (addr, handle) = serve(app).await;
@@ -2957,7 +2957,7 @@ async fn test_gemini_v1_surface_error_echoes_v1_not_v1beta() {
 #[tokio::test]
 async fn test_gemini_v1beta_surface_error_still_echoes_v1beta() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let app = TestApp::new().build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
     let (addr, handle) = serve(app).await;
@@ -2994,7 +2994,7 @@ async fn test_gemini_v1beta_surface_error_still_echoes_v1beta() {
 #[tokio::test]
 async fn test_gemini_v1_no_action_returns_openai_shaped_404() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let app = TestApp::new().build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
     let (addr, handle) = serve(app).await;
@@ -3153,7 +3153,7 @@ async fn test_gemini_v1_no_action_returns_openai_shaped_404() {
 #[tokio::test]
 async fn test_gemini_model_with_colon_splits_on_last_colon() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let state = StdArc::new(MockServerState::new());
     state.push(MockResponse::Ok {
         status: StatusCode::OK,
@@ -3246,7 +3246,7 @@ fn test_percent_decode_trailing_percent_is_safe() {
 #[tokio::test]
 async fn test_unknown_model_404_uses_canonical_openai_type() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let app = TestApp::new().build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
     let (addr, handle) = serve(app).await;
@@ -3275,8 +3275,8 @@ async fn test_unknown_model_404_uses_canonical_openai_type() {
 /// request to any other pool is pool-rejected with 403). Returns the key for the GovCtx.
 fn governed_app_pool_restricted() -> (Arc<App>, busbar_api::VirtualKey) {
     use busbar_store_memory::MemoryStore;
-    use busbar_substrate::governance::NewKeySpec;
-    use busbar_substrate::testkit::engine_kit::EngineTestKit as _;
+    use busbar_kernel::governance::NewKeySpec;
+    use busbar_kernel::testkit::engine_kit::EngineTestKit as _;
     let store = Arc::new(MemoryStore::new());
     let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
         .governance(store, Some("admintok".to_string()), None)
@@ -3307,7 +3307,7 @@ fn governed_app_pool_restricted() -> (Arc<App>, busbar_api::VirtualKey) {
 #[tokio::test]
 async fn test_governance_rejection_is_counted_via_finish() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let (app, key) = governed_app_pool_restricted();
     let gov = busbar_api::PlaneRequestCtx {
         key: Some(std::sync::Arc::new(key.clone())),
@@ -3320,7 +3320,7 @@ async fn test_governance_rejection_is_counted_via_finish() {
         "openai",
         "denied-pool",
         Instant::now(),
-        busbar_substrate::store::now(),
+        busbar_kernel::store::now(),
     )
     .expect_err("a disallowed pool must be rejected by the governance guard");
     assert_eq!(
@@ -3330,9 +3330,9 @@ async fn test_governance_rejection_is_counted_via_finish() {
     );
 
     // The rejection went through `finish`: a client_error outcome is now in the scrape.
-    let scrape = busbar_substrate::metrics::render();
+    let scrape = busbar_kernel::metrics::render();
     assert!(
-        scrape.contains(busbar_substrate::metrics::REQUESTS_TOTAL),
+        scrape.contains(busbar_kernel::metrics::REQUESTS_TOTAL),
         "governance rejection still emits requests_total; got:\n{scrape}"
     );
     assert!(
@@ -3340,7 +3340,7 @@ async fn test_governance_rejection_is_counted_via_finish() {
         "a 403 governance rejection maps to outcome=client_error; got:\n{scrape}"
     );
     assert!(
-        scrape.contains(busbar_substrate::metrics::REQUEST_DURATION_SECONDS),
+        scrape.contains(busbar_kernel::metrics::REQUEST_DURATION_SECONDS),
         "governance rejection still emits the duration histogram; got:\n{scrape}"
     );
 
@@ -3357,7 +3357,7 @@ async fn test_governance_rejection_is_counted_via_finish() {
 #[tokio::test]
 async fn test_governance_guard_passes_when_allowed() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let (app, key) = governed_app_pool_restricted();
     let gov = busbar_api::PlaneRequestCtx {
         key: Some(std::sync::Arc::new(key.clone())),
@@ -3368,7 +3368,7 @@ async fn test_governance_guard_passes_when_allowed() {
         "openai",
         "allowed-only",
         Instant::now(),
-        busbar_substrate::store::now(),
+        busbar_kernel::store::now(),
     );
     assert!(
         matches!(passed, Ok((Some(_), _))),
@@ -3383,7 +3383,7 @@ async fn test_governance_guard_passes_when_allowed() {
 #[tokio::test]
 async fn finish_admitted_does_not_refund_an_uncharged_admit() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let (app, key) = governed_app_pool_restricted();
     let gov = busbar_api::PlaneRequestCtx {
         key: Some(std::sync::Arc::new(key.clone())),
@@ -3433,7 +3433,7 @@ async fn body_string(resp: Response) -> String {
 #[tokio::test]
 async fn test_governance_rejection_bodies_leak_no_internal_vocab() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
 
     // --- 403: pool not allowed ---
     let (app, key) = governed_app_pool_restricted();
@@ -3453,7 +3453,7 @@ async fn test_governance_rejection_bodies_leak_no_internal_vocab() {
     let gov2 = busbar_api::PlaneRequestCtx {
         key: Some(std::sync::Arc::new(key2.clone())),
     };
-    let resp = admit_check(&app2, &gov2, "openai", "", busbar_substrate::store::now())
+    let resp = admit_check(&app2, &gov2, "openai", "", busbar_kernel::store::now())
         .expect_err("a zero-budget group ⇒ over-budget response");
     assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
     let body = body_string(*resp).await;
@@ -3470,7 +3470,7 @@ async fn test_governance_rejection_bodies_leak_no_internal_vocab() {
         &gov2b,
         "bedrock",
         "",
-        busbar_substrate::store::now(),
+        busbar_kernel::store::now(),
     )
     .expect_err("a zero-budget group ⇒ over-budget response (bedrock)");
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
@@ -3487,7 +3487,7 @@ async fn test_governance_rejection_bodies_leak_no_internal_vocab() {
     let gov3 = busbar_api::PlaneRequestCtx {
         key: Some(std::sync::Arc::new(key3.clone())),
     };
-    let resp = admit_check(&app3, &gov3, "openai", "", busbar_substrate::store::now())
+    let resp = admit_check(&app3, &gov3, "openai", "", busbar_kernel::store::now())
         .expect_err("requests=0 group ⇒ 429 response");
     let resp = *resp;
     assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
@@ -3529,8 +3529,8 @@ fn assert_leak_free(body: &str, key_id: &str, pool: &str) {
 /// Governance-enabled App whose only key has a zero budget cap, so it is immediately over budget.
 fn governed_app_over_budget() -> (Arc<App>, busbar_api::VirtualKey) {
     use busbar_store_memory::MemoryStore;
-    use busbar_substrate::governance::NewKeySpec;
-    use busbar_substrate::testkit::engine_kit::EngineTestKit as _;
+    use busbar_kernel::governance::NewKeySpec;
+    use busbar_kernel::testkit::engine_kit::EngineTestKit as _;
     let store = Arc::new(MemoryStore::new());
     let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
         .governance(store, Some("admintok".to_string()), None)
@@ -3550,13 +3550,13 @@ fn governed_app_over_budget() -> (Arc<App>, busbar_api::VirtualKey) {
     // A ZERO-cap GROUP budget: the very first request is over budget (keys carry no caps).
     let groups = std::collections::BTreeMap::from([(
         "empty".to_string(),
-        busbar_substrate::config::groups::GroupCfg {
+        busbar_kernel::config::groups::GroupCfg {
             parent: None,
             enabled: true,
-            limits: vec![busbar_substrate::config::groups::LimitCfg {
-                metric: busbar_substrate::config::groups::LimitMetric::Budget,
+            limits: vec![busbar_kernel::config::groups::LimitCfg {
+                metric: busbar_kernel::config::groups::LimitMetric::Budget,
                 amount: 0,
-                per: Some(busbar_substrate::config::groups::LimitWindow::Total),
+                per: Some(busbar_kernel::config::groups::LimitWindow::Total),
                 scope: None,
                 on_exhaust: None,
                 downgrade_to: None,
@@ -3575,8 +3575,8 @@ fn governed_app_over_budget() -> (Arc<App>, busbar_api::VirtualKey) {
 /// first request is rate-limited (keys carry no caps; the group is the limiter).
 fn governed_app_rate_limited() -> (Arc<App>, busbar_api::VirtualKey) {
     use busbar_store_memory::MemoryStore;
-    use busbar_substrate::governance::NewKeySpec;
-    use busbar_substrate::testkit::engine_kit::EngineTestKit as _;
+    use busbar_kernel::governance::NewKeySpec;
+    use busbar_kernel::testkit::engine_kit::EngineTestKit as _;
     let store = Arc::new(MemoryStore::new());
     let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
         .governance(store, Some("admintok".to_string()), None)
@@ -3595,13 +3595,13 @@ fn governed_app_rate_limited() -> (Arc<App>, busbar_api::VirtualKey) {
         .unwrap();
     let groups = std::collections::BTreeMap::from([(
         "closed".to_string(),
-        busbar_substrate::config::groups::GroupCfg {
+        busbar_kernel::config::groups::GroupCfg {
             parent: None,
             enabled: true,
-            limits: vec![busbar_substrate::config::groups::LimitCfg {
-                metric: busbar_substrate::config::groups::LimitMetric::Requests,
+            limits: vec![busbar_kernel::config::groups::LimitCfg {
+                metric: busbar_kernel::config::groups::LimitMetric::Requests,
                 amount: 0,
-                per: Some(busbar_substrate::config::groups::LimitWindow::Minute),
+                per: Some(busbar_kernel::config::groups::LimitWindow::Minute),
                 scope: None,
                 on_exhaust: None,
                 downgrade_to: None,
@@ -3725,7 +3725,7 @@ fn test_bedrock_errortype_header_matches_body_and_others_omit() {
 #[tokio::test]
 async fn test_cohere_bad_json_is_400_native_envelope() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let app = TestApp::new().build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
     let (addr, handle) = serve(app).await;
@@ -3760,7 +3760,7 @@ async fn test_cohere_bad_json_is_400_native_envelope() {
 #[tokio::test]
 async fn test_responses_bad_json_is_400_native_envelope() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let app = TestApp::new().build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
     let (addr, handle) = serve(app).await;
@@ -3785,7 +3785,7 @@ async fn test_responses_bad_json_is_400_native_envelope() {
 #[tokio::test]
 async fn test_openai_missing_model_is_400_native_envelope() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let app = TestApp::new().build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
     let (addr, handle) = serve(app).await;
@@ -3817,7 +3817,7 @@ async fn test_openai_missing_model_is_400_native_envelope() {
 #[tokio::test]
 async fn test_openai_empty_model_is_400_native_envelope() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let app = TestApp::new().build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
     let (addr, handle) = serve(app).await;
@@ -3845,7 +3845,7 @@ async fn test_openai_empty_model_is_400_native_envelope() {
 #[tokio::test]
 async fn test_cohere_empty_model_is_400_native_envelope() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let app = TestApp::new().build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
     let (addr, handle) = serve(app).await;
@@ -3874,7 +3874,7 @@ async fn test_cohere_empty_model_is_400_native_envelope() {
 #[tokio::test]
 async fn test_responses_empty_model_is_400_native_envelope() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let app = TestApp::new().build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
     let (addr, handle) = serve(app).await;
@@ -3910,7 +3910,7 @@ async fn test_responses_empty_model_is_400_native_envelope() {
 #[tokio::test]
 async fn test_openai_numeric_model_is_400_native_envelope() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let app = TestApp::new().build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
     let (addr, handle) = serve(app).await;
@@ -3944,7 +3944,7 @@ async fn test_openai_numeric_model_is_400_native_envelope() {
 #[tokio::test]
 async fn test_cohere_numeric_model_is_400_native_envelope() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let app = TestApp::new().build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
     let (addr, handle) = serve(app).await;
@@ -3977,7 +3977,7 @@ async fn test_cohere_numeric_model_is_400_native_envelope() {
 #[tokio::test]
 async fn test_responses_numeric_model_is_400_native_envelope() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let app = TestApp::new().build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
     let (addr, handle) = serve(app).await;
@@ -4010,7 +4010,7 @@ async fn test_responses_numeric_model_is_400_native_envelope() {
 #[tokio::test]
 async fn test_gemini_non_object_body_is_400() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let app = TestApp::new().build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
     let (addr, handle) = serve(app).await;
@@ -4050,7 +4050,7 @@ async fn test_gemini_non_object_body_is_400() {
 #[tokio::test]
 async fn test_bedrock_non_object_body_is_400() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let app = TestApp::new().build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
     let (addr, handle) = serve(app).await;
@@ -4086,7 +4086,7 @@ async fn test_bedrock_non_object_body_is_400() {
 #[tokio::test]
 async fn test_gemini_unknown_model_404_native_shape() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let app = TestApp::new().build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
     let (addr, handle) = serve(app).await;
@@ -4116,7 +4116,7 @@ async fn test_gemini_unknown_model_404_native_shape() {
 #[tokio::test]
 async fn test_bedrock_unknown_model_404_native_shape() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let app = TestApp::new().build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
     let (addr, handle) = serve(app).await;
@@ -4148,7 +4148,7 @@ async fn test_bedrock_unknown_model_404_native_shape() {
 #[tokio::test]
 async fn test_cohere_unknown_model_404_native_shape() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let app = TestApp::new().build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
     let (addr, handle) = serve(app).await;
@@ -4173,7 +4173,7 @@ async fn test_cohere_unknown_model_404_native_shape() {
 #[tokio::test]
 async fn test_responses_unknown_model_404_native_shape() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let app = TestApp::new().build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
     let (addr, handle) = serve(app).await;
@@ -4216,7 +4216,7 @@ fn sse_frames(body: &str) -> Vec<(String, String)> {
             }
         }
         if let Some(d) = data {
-            if d == busbar_substrate::proto::SSE_DONE_SENTINEL {
+            if d == busbar_kernel::proto::SSE_DONE_SENTINEL {
                 continue;
             }
             out.push((event_name, d));
@@ -4251,7 +4251,7 @@ fn openai_native_stream_events() -> Vec<String> {
 #[tokio::test]
 async fn test_openai_ingress_stream_emits_native_openai_frames() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let state = StdArc::new(MockServerState::new());
     state.push(MockResponse::Sse {
         events: openai_native_stream_events(),
@@ -4345,7 +4345,7 @@ async fn test_openai_ingress_stream_emits_native_openai_frames() {
 #[tokio::test]
 async fn test_cohere_ingress_stream_emits_native_cohere_frames() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let state = StdArc::new(MockServerState::new());
     state.push(MockResponse::Sse {
         events: openai_stream_events(),
@@ -4435,7 +4435,7 @@ async fn test_cohere_ingress_stream_emits_native_cohere_frames() {
 #[tokio::test]
 async fn test_responses_ingress_stream_emits_native_responses_events() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let state = StdArc::new(MockServerState::new());
     state.push(MockResponse::Sse {
         events: openai_stream_events(),
@@ -4518,7 +4518,7 @@ async fn test_responses_ingress_stream_emits_native_responses_events() {
 #[tokio::test]
 async fn test_bedrock_percent_encoded_model_id_converse_stream() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let state = StdArc::new(MockServerState::new());
     state.push(MockResponse::Sse {
         events: openai_stream_events(),
@@ -4567,7 +4567,7 @@ async fn test_bedrock_percent_encoded_model_id_converse_stream() {
     );
     let body = resp.bytes().await.unwrap();
     let mut buf = body.to_vec();
-    let frames = busbar_substrate::eventstream::drain_frames(&mut buf);
+    let frames = busbar_substrate_values::eventstream::drain_frames(&mut buf);
     assert!(
         !frames.is_empty(),
         "at least one binary eventstream frame decodes for the percent-encoded model"
@@ -4592,7 +4592,7 @@ async fn test_bedrock_percent_encoded_model_id_converse_stream() {
 #[tokio::test]
 async fn test_cohere_ingress_mid_stream_transport_error_appends_native_sse() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let state = StdArc::new(MockServerState::new());
     state.push(MockResponse::SseTransportError {
         ok_events: vec![r#"{"choices":[{"delta":{"content":"hi"}}]}"#.to_string()],
@@ -4668,7 +4668,7 @@ async fn test_cohere_ingress_mid_stream_transport_error_appends_native_sse() {
 #[tokio::test]
 async fn test_responses_ingress_mid_stream_transport_error_appends_response_failed() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let state = StdArc::new(MockServerState::new());
     state.push(MockResponse::SseTransportError {
         ok_events: vec![r#"{"choices":[{"delta":{"content":"hi"}}]}"#.to_string()],
@@ -4752,7 +4752,7 @@ async fn test_responses_ingress_mid_stream_transport_error_appends_response_fail
 #[tokio::test]
 async fn test_real_failover_serves_second_member_after_first_5xx() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     const POOL: &str = "failover-e2e-pool";
     const MODEL_BAD: &str = "failover-e2e-bad";
     const MODEL_GOOD: &str = "failover-e2e-good";
@@ -4801,7 +4801,7 @@ async fn test_real_failover_serves_second_member_after_first_5xx() {
     let (_host, _rt) = crate::engine::test_host_rt(&app);
     let (addr, handle) = serve(app.clone()).await;
 
-    let err_before = app.store.snapshot(0, busbar_substrate::store::now()).err;
+    let err_before = app.store.snapshot(0, busbar_kernel::store::now()).err;
 
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/v1/chat/completions"))
@@ -4824,7 +4824,7 @@ async fn test_real_failover_serves_second_member_after_first_5xx() {
          dispatched by the real retry loop, not a mock/short-circuit); got {body}"
     );
 
-    let err_after = app.store.snapshot(0, busbar_substrate::store::now()).err;
+    let err_after = app.store.snapshot(0, busbar_kernel::store::now()).err;
     assert_eq!(
         err_after,
         err_before + 1,
@@ -4848,7 +4848,7 @@ async fn test_real_failover_serves_second_member_after_first_5xx() {
 #[tokio::test]
 async fn test_real_mid_stream_failure_does_not_fail_over_to_second_member() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     const POOL: &str = "mid-stream-e2e-pool";
     const MODEL_BAD: &str = "mid-stream-e2e-primary";
     const MODEL_GOOD: &str = "mid-stream-e2e-secondary";
@@ -4888,7 +4888,7 @@ async fn test_real_mid_stream_failure_does_not_fail_over_to_second_member() {
     let (_host, _rt) = crate::engine::test_host_rt(&app);
     let (addr, handle) = serve(app.clone()).await;
 
-    let err_before = app.store.snapshot(0, busbar_substrate::store::now()).err;
+    let err_before = app.store.snapshot(0, busbar_kernel::store::now()).err;
 
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/v1/chat/completions"))
@@ -4936,7 +4936,7 @@ async fn test_real_mid_stream_failure_does_not_fail_over_to_second_member() {
         "the in-band terminal frame must be OpenAI's native error envelope; got {v}"
     );
 
-    let err_after = app.store.snapshot(0, busbar_substrate::store::now()).err;
+    let err_after = app.store.snapshot(0, busbar_kernel::store::now()).err;
     assert_eq!(
         err_after,
         err_before + 1,
@@ -4960,7 +4960,7 @@ async fn test_real_mid_stream_failure_does_not_fail_over_to_second_member() {
 #[tokio::test]
 async fn test_no_client_error_message_carries_router_prefix() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let app = TestApp::new().build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
     let (addr, handle) = serve(app).await;
@@ -5069,20 +5069,20 @@ async fn governed_pool_acl_router(
     provider: &str,
 ) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>, String) {
     use busbar_store_memory::MemoryStore;
-    use busbar_substrate::testkit::engine_kit::EngineTestKit as _;
+    use busbar_kernel::testkit::engine_kit::EngineTestKit as _;
     // The lane needs a base_url, but the pool-ACL 403 short-circuits before any forward, so an
     // unreachable upstream is fine.
     let store = StdArc::new(MemoryStore::new());
-    let signer = busbar_substrate::governance::signing::TokenSigner::from_secret_bytes(
+    let signer = busbar_kernel::governance::signing::TokenSigner::from_secret_bytes(
         &[7u8; 32],
-        busbar_substrate::governance::signing::DEFAULT_KID,
+        busbar_kernel::governance::signing::DEFAULT_KID,
     );
     let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
         .governance(store, Some("admintok".to_string()), Some(signer))
         .unwrap();
     let (_key, secret) = gov
         .mint_signed(
-            busbar_substrate::governance::NewKeySpec {
+            busbar_kernel::governance::NewKeySpec {
                 name: "acl".to_string(),
                 // Allowed ONLY on a pool the requests never use → every request is pool-rejected 403.
                 allowed_pools: Some(vec!["other-pool".to_string()]),
@@ -5110,7 +5110,7 @@ async fn governed_pool_acl_router(
 #[tokio::test]
 async fn test_governance_pool_acl_403_cohere_native_envelope() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let (addr, handle, secret) =
         governed_pool_acl_router("co", crate::proto_codec::PROTO_OPENAI, "zai").await;
     let resp = reqwest::Client::new()
@@ -5144,7 +5144,7 @@ async fn test_governance_pool_acl_403_cohere_native_envelope() {
 #[tokio::test]
 async fn test_governance_pool_acl_403_responses_native_envelope() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let (addr, handle, secret) =
         governed_pool_acl_router("re", crate::proto_codec::PROTO_OPENAI, "zai").await;
     let resp = reqwest::Client::new()
@@ -5185,7 +5185,7 @@ async fn test_governance_pool_acl_403_responses_native_envelope() {
 #[tokio::test]
 async fn test_governance_pool_acl_403_openai_native_envelope() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let (addr, handle, secret) =
         governed_pool_acl_router("gpt-4o", crate::proto_codec::PROTO_OPENAI, "openai").await;
     let resp = reqwest::Client::new()
@@ -5224,7 +5224,7 @@ async fn test_governance_pool_acl_403_openai_native_envelope() {
 #[tokio::test]
 async fn test_governance_pool_acl_403_gemini_native_envelope() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let (addr, handle, secret) =
         governed_pool_acl_router("foo", crate::proto_codec::PROTO_OPENAI, "zai").await;
     let resp = reqwest::Client::new()
@@ -5269,7 +5269,7 @@ async fn test_governance_pool_acl_403_gemini_native_envelope() {
 #[tokio::test]
 async fn test_governance_pool_acl_403_bedrock_native_envelope() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let (addr, handle, secret) =
         governed_pool_acl_router("foo", crate::proto_codec::PROTO_OPENAI, "zai").await;
     let resp = reqwest::Client::new()
@@ -5330,8 +5330,8 @@ async fn test_governance_pool_acl_403_bedrock_native_envelope() {
 async fn test_fallback_pool_acl_denies_key_not_allowed_on_fallback_target() {
     crate::testkit::install_test_seams();
     use busbar_store_memory::MemoryStore;
-    use busbar_substrate::testkit::engine_kit::EngineTestKit as _;
-    busbar_substrate::metrics::init();
+    use busbar_kernel::testkit::engine_kit::EngineTestKit as _;
+    busbar_kernel::metrics::init();
 
     // Pool A's backend would succeed (200) if the request ever reached it — proving the 403 is
     // due ONLY to the fallback-pool ACL, not to A being unreachable.
@@ -5344,16 +5344,16 @@ async fn test_fallback_pool_acl_denies_key_not_allowed_on_fallback_target() {
     let a_url = server.base_url();
 
     let store = StdArc::new(MemoryStore::new());
-    let signer = busbar_substrate::governance::signing::TokenSigner::from_secret_bytes(
+    let signer = busbar_kernel::governance::signing::TokenSigner::from_secret_bytes(
         &[7u8; 32],
-        busbar_substrate::governance::signing::DEFAULT_KID,
+        busbar_kernel::governance::signing::DEFAULT_KID,
     );
     let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
         .governance(store, Some("admintok".to_string()), Some(signer))
         .unwrap();
     let (_key, secret) = gov
         .mint_signed(
-            busbar_substrate::governance::NewKeySpec {
+            busbar_kernel::governance::NewKeySpec {
                 name: "fb".to_string(),
                 // Allowed ONLY on pool A. Pool B (the fallback target) is NOT in the list.
                 allowed_pools: Some(vec!["A".to_string()]),
@@ -5385,7 +5385,7 @@ async fn test_fallback_pool_acl_denies_key_not_allowed_on_fallback_target() {
         .fallback_pool("B", &[(1, 1)])
         .on_exhausted(
             "A",
-            busbar_substrate::config::pools::OnExhausted::FallbackPool("B".to_string()),
+            busbar_kernel::config::pools::OnExhausted::FallbackPool("B".to_string()),
         )
         .build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
@@ -5426,8 +5426,8 @@ async fn test_fallback_pool_acl_denies_key_not_allowed_on_fallback_target() {
 async fn test_fallback_pool_acl_allows_key_permitted_on_both_pools() {
     crate::testkit::install_test_seams();
     use busbar_store_memory::MemoryStore;
-    use busbar_substrate::testkit::engine_kit::EngineTestKit as _;
-    busbar_substrate::metrics::init();
+    use busbar_kernel::testkit::engine_kit::EngineTestKit as _;
+    busbar_kernel::metrics::init();
 
     let state = StdArc::new(MockServerState::new());
     state.push(MockResponse::Ok {
@@ -5438,16 +5438,16 @@ async fn test_fallback_pool_acl_allows_key_permitted_on_both_pools() {
     let a_url = server.base_url();
 
     let store = StdArc::new(MemoryStore::new());
-    let signer = busbar_substrate::governance::signing::TokenSigner::from_secret_bytes(
+    let signer = busbar_kernel::governance::signing::TokenSigner::from_secret_bytes(
         &[7u8; 32],
-        busbar_substrate::governance::signing::DEFAULT_KID,
+        busbar_kernel::governance::signing::DEFAULT_KID,
     );
     let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
         .governance(store, Some("admintok".to_string()), Some(signer))
         .unwrap();
     let (_key, secret) = gov
         .mint_signed(
-            busbar_substrate::governance::NewKeySpec {
+            busbar_kernel::governance::NewKeySpec {
                 name: "fb2".to_string(),
                 // Allowed on BOTH A and the fallback target B → no ACL rejection on either.
                 allowed_pools: Some(vec!["A".to_string(), "B".to_string()]),
@@ -5477,7 +5477,7 @@ async fn test_fallback_pool_acl_allows_key_permitted_on_both_pools() {
         .fallback_pool("B", &[(1, 1)])
         .on_exhausted(
             "A",
-            busbar_substrate::config::pools::OnExhausted::FallbackPool("B".to_string()),
+            busbar_kernel::config::pools::OnExhausted::FallbackPool("B".to_string()),
         )
         .build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
@@ -5515,7 +5515,7 @@ async fn test_fallback_pool_acl_allows_key_permitted_on_both_pools() {
 #[tokio::test]
 async fn test_adhoc_success_round_trip_via_router() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let state = StdArc::new(MockServerState::new());
     state.push(MockResponse::Ok {
         status: StatusCode::OK,
@@ -5557,7 +5557,7 @@ async fn test_adhoc_success_round_trip_via_router() {
 #[tokio::test]
 async fn test_adhoc_provider_mismatch_400_anthropic_envelope_via_router() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let app = TestApp::new()
         .lane(
             LaneSpec::new(
@@ -5618,19 +5618,19 @@ async fn test_adhoc_provider_mismatch_400_anthropic_envelope_via_router() {
 async fn test_adhoc_governance_pool_acl_403_via_router() {
     crate::testkit::install_test_seams();
     use busbar_store_memory::MemoryStore;
-    use busbar_substrate::testkit::engine_kit::EngineTestKit as _;
-    busbar_substrate::metrics::init();
+    use busbar_kernel::testkit::engine_kit::EngineTestKit as _;
+    busbar_kernel::metrics::init();
     let store = StdArc::new(MemoryStore::new());
-    let signer = busbar_substrate::governance::signing::TokenSigner::from_secret_bytes(
+    let signer = busbar_kernel::governance::signing::TokenSigner::from_secret_bytes(
         &[7u8; 32],
-        busbar_substrate::governance::signing::DEFAULT_KID,
+        busbar_kernel::governance::signing::DEFAULT_KID,
     );
     let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
         .governance(store, Some("admintok".to_string()), Some(signer))
         .unwrap();
     let (_key, secret) = gov
         .mint_signed(
-            busbar_substrate::governance::NewKeySpec {
+            busbar_kernel::governance::NewKeySpec {
                 name: "adhoc-acl".to_string(),
                 allowed_pools: Some(vec!["other-pool".to_string()]),
                 group: None,
@@ -5718,7 +5718,7 @@ fn test_not_found_message_is_protocol_native() {
 #[tokio::test]
 async fn test_gemini_model_not_found_uses_native_message() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let app = TestApp::new().build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
     let (addr, handle) = serve(app).await;
@@ -5770,7 +5770,7 @@ async fn test_gemini_model_not_found_uses_native_message() {
 #[tokio::test]
 async fn test_gemini_v1_stable_stream_generate_content_alt_sse() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let state = StdArc::new(MockServerState::new());
     state.push(MockResponse::Sse {
         events: openai_stream_events(),
@@ -5822,7 +5822,7 @@ async fn test_gemini_v1_stable_stream_generate_content_alt_sse() {
         .lines()
         .filter_map(|line| line.strip_prefix("data:"))
         .map(str::trim)
-        .filter(|data| !data.is_empty() && *data != busbar_substrate::proto::SSE_DONE_SENTINEL)
+        .filter(|data| !data.is_empty() && *data != busbar_kernel::proto::SSE_DONE_SENTINEL)
         .filter_map(|data| serde_json::from_str(data).ok())
         .collect();
     assert!(
@@ -5849,7 +5849,7 @@ async fn test_gemini_v1_stable_stream_generate_content_alt_sse() {
 #[tokio::test]
 async fn test_gemini_v1_stable_stream_generate_content_no_alt_sse() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let state = StdArc::new(MockServerState::new());
     state.push(MockResponse::Sse {
         events: openai_stream_events(),
@@ -5940,19 +5940,19 @@ async fn governed_limit_router(
     over: &'static str,
 ) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>, String) {
     use busbar_store_memory::MemoryStore;
-    use busbar_substrate::config::groups::{LimitCfg, LimitMetric, LimitWindow};
-    use busbar_substrate::testkit::engine_kit::EngineTestKit as _;
+    use busbar_kernel::config::groups::{LimitCfg, LimitMetric, LimitWindow};
+    use busbar_kernel::testkit::engine_kit::EngineTestKit as _;
     let store = StdArc::new(MemoryStore::new());
-    let signer = busbar_substrate::governance::signing::TokenSigner::from_secret_bytes(
+    let signer = busbar_kernel::governance::signing::TokenSigner::from_secret_bytes(
         &[7u8; 32],
-        busbar_substrate::governance::signing::DEFAULT_KID,
+        busbar_kernel::governance::signing::DEFAULT_KID,
     );
     let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
         .governance(store, Some("admintok".to_string()), Some(signer))
         .unwrap();
     let (_key, secret) = gov
         .mint_signed(
-            busbar_substrate::governance::NewKeySpec {
+            busbar_kernel::governance::NewKeySpec {
                 name: "limit".to_string(),
                 allowed_pools: None, // all pools; ACL never short-circuits
                 group: Some("tripped".to_string()),
@@ -5984,7 +5984,7 @@ async fn governed_limit_router(
     };
     let groups = std::collections::BTreeMap::from([(
         "tripped".to_string(),
-        busbar_substrate::config::groups::GroupCfg {
+        busbar_kernel::config::groups::GroupCfg {
             parent: None,
             enabled: true,
             limits: vec![tripping],
@@ -6008,7 +6008,7 @@ async fn governed_limit_router(
 #[tokio::test]
 async fn test_governance_rate_limit_429_native_envelope_all_ingress() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
 
     // openai / responses / cohere: body-model routes, native error envelope is JSON.
     for (path, payload) in [
@@ -6088,7 +6088,7 @@ async fn test_governance_rate_limit_429_native_envelope_all_ingress() {
 #[tokio::test]
 async fn test_governance_over_budget_native_envelope_all_ingress() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
 
     // 429-mapping protocols: openai / responses / cohere / gemini.
     for (path, payload) in [
@@ -6149,7 +6149,7 @@ async fn test_governance_over_budget_native_envelope_all_ingress() {
 #[tokio::test]
 async fn test_named_by_model_fallback_round_trip_via_router() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let state = StdArc::new(MockServerState::new());
     state.push(MockResponse::Ok {
         status: StatusCode::OK,
@@ -6236,7 +6236,7 @@ async fn test_named_by_model_fallback_round_trip_via_router() {
 #[tokio::test]
 async fn test_forward_resolved_by_model_uses_lane_default_breaker_cell() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let state = StdArc::new(MockServerState::new());
     // One upstream 5xx is enough: a single transient failure sets a pending cooldown on the
     // routed breaker OperationHandler (the trip-to-Open threshold is irrelevant — the cooldown is recorded
@@ -6283,7 +6283,7 @@ async fn test_forward_resolved_by_model_uses_lane_default_breaker_cell() {
     assert!(
             app_for_inspect
                 .store
-                .cooldown_remaining_in("", 0, busbar_substrate::store::now())
+                .cooldown_remaining_in("", 0, busbar_kernel::store::now())
                 > 0,
             "by_model forwards must record breaker state on the lane-default \"\" OperationHandler (the OperationHandler \
              /<model>/v1/messages selects against); a 0 cooldown means the failure was tracked under \
@@ -6301,21 +6301,21 @@ async fn test_forward_resolved_by_model_uses_lane_default_breaker_cell() {
 #[allow(clippy::field_reassign_with_default)]
 fn governed_app_group_blocked() -> (Arc<App>, busbar_api::VirtualKey) {
     use busbar_store_memory::MemoryStore;
-    use busbar_substrate::governance::NewKeySpec;
-    use busbar_substrate::testkit::engine_kit::EngineTestKit as _;
+    use busbar_kernel::governance::NewKeySpec;
+    use busbar_kernel::testkit::engine_kit::EngineTestKit as _;
     let store = Arc::new(MemoryStore::new());
     let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
         .governance(store, Some("admintok".to_string()), None)
         .unwrap();
     let groups = std::collections::BTreeMap::from([(
         "finance".to_string(),
-        busbar_substrate::config::groups::GroupCfg {
+        busbar_kernel::config::groups::GroupCfg {
             parent: None,
             enabled: true,
-            limits: vec![busbar_substrate::config::groups::LimitCfg {
-                metric: busbar_substrate::config::groups::LimitMetric::Budget,
+            limits: vec![busbar_kernel::config::groups::LimitCfg {
+                metric: busbar_kernel::config::groups::LimitMetric::Budget,
                 amount: 0,
-                per: Some(busbar_substrate::config::groups::LimitWindow::Total),
+                per: Some(busbar_kernel::config::groups::LimitWindow::Total),
                 scope: None,
                 on_exhaust: None,
                 downgrade_to: None,
@@ -6346,12 +6346,12 @@ fn governed_app_group_blocked() -> (Arc<App>, busbar_api::VirtualKey) {
 #[tokio::test]
 async fn test_group_blocked_429_names_the_budget_group() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let (app, key) = governed_app_group_blocked();
     let gov = busbar_api::PlaneRequestCtx {
         key: Some(std::sync::Arc::new(key.clone())),
     };
-    let at = busbar_substrate::store::now();
+    let at = busbar_kernel::store::now();
     let resp = admit_check(&app, &gov, "openai", "", at)
         .expect_err("a zero-cap group blocks the whole chain");
     assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
@@ -6381,14 +6381,14 @@ async fn test_group_blocked_429_names_the_budget_group() {
 #[tokio::test]
 async fn test_missing_group_fails_closed_at_ingress() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let (app, key) = governed_app_group_blocked();
     let mut orphan = key.clone();
     orphan.group = Some("ghost".to_string());
     let gov = busbar_api::PlaneRequestCtx {
         key: Some(std::sync::Arc::new(orphan)),
     };
-    let resp = admit_check(&app, &gov, "openai", "", busbar_substrate::store::now())
+    let resp = admit_check(&app, &gov, "openai", "", busbar_kernel::store::now())
         .expect_err("a missing group must fail closed");
     assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
     let body = body_string(*resp).await;
@@ -6405,10 +6405,10 @@ async fn test_missing_group_fails_closed_at_ingress() {
 #[allow(clippy::field_reassign_with_default)]
 async fn test_unpriced_passthrough_model_rejected_when_rate_card_present() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     use busbar_store_memory::MemoryStore;
-    use busbar_substrate::governance::NewKeySpec;
-    use busbar_substrate::testkit::engine_kit::EngineTestKit as _;
+    use busbar_kernel::governance::NewKeySpec;
+    use busbar_kernel::testkit::engine_kit::EngineTestKit as _;
     let store = Arc::new(MemoryStore::new());
     let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
         .governance(store, Some("admintok".to_string()), None)
@@ -6427,7 +6427,7 @@ async fn test_unpriced_passthrough_model_rejected_when_rate_card_present() {
         .unwrap();
     let rate_card = std::collections::BTreeMap::from([(
         "m".to_string(),
-        busbar_substrate::config::sections::RateEntryCfg::default(),
+        busbar_kernel::config::sections::RateEntryCfg::default(),
     )]);
     let cost = crate::test_support::engine_kit::CORE_ENGINE_KIT.cost_parts(
         Some(&rate_card),
@@ -6445,7 +6445,7 @@ async fn test_unpriced_passthrough_model_rejected_when_rate_card_present() {
         "openai",
         "mystery-model",
         std::time::Instant::now(),
-        busbar_substrate::store::now(),
+        busbar_kernel::store::now(),
     )
     .expect_err("an unpriced passthrough model must be rejected pre-forward");
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
@@ -6462,7 +6462,7 @@ async fn test_unpriced_passthrough_model_rejected_when_rate_card_present() {
         "openai",
         "m",
         std::time::Instant::now(),
-        busbar_substrate::store::now(),
+        busbar_kernel::store::now(),
     );
     assert!(ok.is_ok(), "a priced configured lane admits");
 }
@@ -6476,23 +6476,23 @@ fn governed_app_downgrade(
     allowed_pools: Option<Vec<String>>,
 ) -> (Arc<App>, busbar_api::VirtualKey) {
     use busbar_store_memory::MemoryStore;
-    use busbar_substrate::governance::NewKeySpec;
-    use busbar_substrate::testkit::engine_kit::EngineTestKit as _;
+    use busbar_kernel::governance::NewKeySpec;
+    use busbar_kernel::testkit::engine_kit::EngineTestKit as _;
     let store = Arc::new(MemoryStore::new());
     let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
         .governance(store, Some("admintok".to_string()), None)
         .unwrap();
     let groups = std::collections::BTreeMap::from([(
         "team".to_string(),
-        busbar_substrate::config::groups::GroupCfg {
+        busbar_kernel::config::groups::GroupCfg {
             parent: None,
             enabled: true,
-            limits: vec![busbar_substrate::config::groups::LimitCfg {
-                metric: busbar_substrate::config::groups::LimitMetric::Budget,
+            limits: vec![busbar_kernel::config::groups::LimitCfg {
+                metric: busbar_kernel::config::groups::LimitMetric::Budget,
                 amount: 25,
-                per: Some(busbar_substrate::config::groups::LimitWindow::Day),
+                per: Some(busbar_kernel::config::groups::LimitWindow::Day),
                 scope: Some(busbar_api::ScopeRef::pool("frontier")),
-                on_exhaust: Some(busbar_substrate::config::groups::OnExhaust::Downgrade),
+                on_exhaust: Some(busbar_kernel::config::groups::OnExhaust::Downgrade),
                 downgrade_to: Some(busbar_api::ScopeRef::pool("value")),
             }],
             ..Default::default()
@@ -6534,7 +6534,7 @@ async fn test_budget_exhaustion_downgrades_pool() {
     let gov = busbar_api::PlaneRequestCtx {
         key: Some(std::sync::Arc::new(key.clone())),
     };
-    let at = busbar_substrate::store::now();
+    let at = busbar_kernel::store::now();
     // fee=10, cap=25: two frontier admissions spend 20; the 3rd would reach 30 > 25.
     for i in 0..2 {
         let (grant, effective) = admit_check(&app, &gov, "openai", "frontier", at)
@@ -6564,43 +6564,43 @@ async fn test_budget_exhaustion_downgrades_pool() {
 async fn test_downgrade_cycle_terminates_via_the_revisit_guard() {
     crate::testkit::install_test_seams();
     use busbar_store_memory::MemoryStore;
-    use busbar_substrate::governance::NewKeySpec;
-    use busbar_substrate::testkit::engine_kit::EngineTestKit as _;
+    use busbar_kernel::governance::NewKeySpec;
+    use busbar_kernel::testkit::engine_kit::EngineTestKit as _;
     let store = Arc::new(MemoryStore::new());
     let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
         .governance(store, Some("admintok".to_string()), None)
         .unwrap();
     let groups = std::collections::BTreeMap::from([(
         "team".to_string(),
-        busbar_substrate::config::groups::GroupCfg {
+        busbar_kernel::config::groups::GroupCfg {
             parent: None,
             enabled: true,
             limits: vec![
                 // a: 1 request budget (10c cap, 10c fee) -> downgrades to b on exhaustion.
-                busbar_substrate::config::groups::LimitCfg {
-                    metric: busbar_substrate::config::groups::LimitMetric::Budget,
+                busbar_kernel::config::groups::LimitCfg {
+                    metric: busbar_kernel::config::groups::LimitMetric::Budget,
                     amount: 10,
-                    per: Some(busbar_substrate::config::groups::LimitWindow::Day),
+                    per: Some(busbar_kernel::config::groups::LimitWindow::Day),
                     scope: Some(busbar_api::ScopeRef::pool("a")),
-                    on_exhaust: Some(busbar_substrate::config::groups::OnExhaust::Downgrade),
+                    on_exhaust: Some(busbar_kernel::config::groups::OnExhaust::Downgrade),
                     downgrade_to: Some(busbar_api::ScopeRef::pool("b")),
                 },
                 // b: budget is ALREADY exhausted (cap 0) -> downgrades to c.
-                busbar_substrate::config::groups::LimitCfg {
-                    metric: busbar_substrate::config::groups::LimitMetric::Budget,
+                busbar_kernel::config::groups::LimitCfg {
+                    metric: busbar_kernel::config::groups::LimitMetric::Budget,
                     amount: 0,
-                    per: Some(busbar_substrate::config::groups::LimitWindow::Day),
+                    per: Some(busbar_kernel::config::groups::LimitWindow::Day),
                     scope: Some(busbar_api::ScopeRef::pool("b")),
-                    on_exhaust: Some(busbar_substrate::config::groups::OnExhaust::Downgrade),
+                    on_exhaust: Some(busbar_kernel::config::groups::OnExhaust::Downgrade),
                     downgrade_to: Some(busbar_api::ScopeRef::pool("c")),
                 },
                 // c: budget is ALSO already exhausted -> downgrades back to b, the CYCLE.
-                busbar_substrate::config::groups::LimitCfg {
-                    metric: busbar_substrate::config::groups::LimitMetric::Budget,
+                busbar_kernel::config::groups::LimitCfg {
+                    metric: busbar_kernel::config::groups::LimitMetric::Budget,
                     amount: 0,
-                    per: Some(busbar_substrate::config::groups::LimitWindow::Day),
+                    per: Some(busbar_kernel::config::groups::LimitWindow::Day),
                     scope: Some(busbar_api::ScopeRef::pool("c")),
-                    on_exhaust: Some(busbar_substrate::config::groups::OnExhaust::Downgrade),
+                    on_exhaust: Some(busbar_kernel::config::groups::OnExhaust::Downgrade),
                     downgrade_to: Some(busbar_api::ScopeRef::pool("b")),
                 },
             ],
@@ -6638,7 +6638,7 @@ async fn test_downgrade_cycle_terminates_via_the_revisit_guard() {
     let gov = busbar_api::PlaneRequestCtx {
         key: Some(std::sync::Arc::new(key.clone())),
     };
-    let at = busbar_substrate::store::now();
+    let at = busbar_kernel::store::now();
     // a's single-request budget admits once (no downgrade needed yet).
     let (grant, effective) =
         admit_check(&app, &gov, "openai", "a", at).expect("first admission under a's cap");
@@ -6683,7 +6683,7 @@ async fn test_downgrade_never_bypasses_pool_acl() {
     let gov = busbar_api::PlaneRequestCtx {
         key: Some(std::sync::Arc::new(key.clone())),
     };
-    let at = busbar_substrate::store::now();
+    let at = busbar_kernel::store::now();
     assert!(admit_check(&app, &gov, "openai", "frontier", at).is_ok());
     assert!(admit_check(&app, &gov, "openai", "frontier", at).is_ok());
     let resp = admit_check(&app, &gov, "openai", "frontier", at)

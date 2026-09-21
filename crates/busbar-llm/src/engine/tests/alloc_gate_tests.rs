@@ -117,7 +117,7 @@ fn alloc_gate_translate_write_stable() {
     // forward thread passes. Both are resolved ONCE, OUTSIDE the measured window (the host is one
     // `Arc::new`, the runtime an alloc-free slot read), so the pinned per-call count still measures
     // ONLY `translate_request_cross_protocol`'s own allocations — which stay ZERO.
-    let host = busbar_substrate::testkit::engine_host(&app);
+    let host = busbar_kernel::testkit::engine_host(&app);
     let rt = crate::engine::native_runtime_arc(host.as_ref());
 
     // WARM the path once OUTSIDE the measured window: first-touch lazy statics (the protocol
@@ -187,7 +187,7 @@ fn alloc_gate_dialect_seam_resolution_is_free_for_every_dialect() {
         mint: impl Fn() -> W,
         body: &serde_json::Value,
     ) {
-        let dialect = busbar_substrate::proto::decl_for(name)
+        let dialect = busbar_kernel::proto::decl_for(name)
             .and_then(|d| d.dialect())
             .unwrap_or_else(|| panic!("{name} declares a codec"));
         // WARM both sides outside the measured windows: a first touch of the registry or of a lazy
@@ -287,7 +287,7 @@ async fn alloc_gate_openai_passthrough_forward() {
         .pool("", &[(0, 1)])
         .build();
 
-    async fn one_request<A: busbar_substrate::testkit::BuiltAppSeam + ?Sized>(app: &Arc<A>) {
+    async fn one_request<A: busbar_kernel::testkit::BuiltAppSeam + ?Sized>(app: &Arc<A>) {
         let resp = crate::engine::forward_with_pool(
             app,
             vec![member(0)],
@@ -399,7 +399,7 @@ async fn alloc_gate_request_echo_body_materialized_once() {
         .pool("", &[(0, 1)])
         .build();
 
-    async fn one_request<A: busbar_substrate::testkit::BuiltAppSeam + ?Sized>(
+    async fn one_request<A: busbar_kernel::testkit::BuiltAppSeam + ?Sized>(
         app: &Arc<A>,
         body: bytes::Bytes,
     ) {

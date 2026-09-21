@@ -77,20 +77,19 @@ use axum::response::Response;
 use std::sync::Arc;
 use std::time::Instant;
 
-/// A MARKER A PLANE'S HANDLER PUTS ON A RESPONSE IT HAS ALREADY LABELLED.
-///
-/// It carries nothing, and carrying nothing is the point: this is not a channel for the handler to
-/// pass its labels up through, which would put the emit back in one place and the label vocabulary
-/// in another. The handler emits its own series with the binding only it knows, and this says so, so
-/// [`observe`] can cover exactly the requests no handler saw without counting anything twice.
-///
-/// A response extension rather than a request one, because the answer is what carries the fact and
-/// the boundary reads it after the handler has run.
-///
-/// The type itself is the neutral [`busbar_substrate::plane::observe::Counted`], re-exported here so
-/// a plane crate (`busbar_substrate::plane::observe::Counted`) and this middleware name the SAME type
-/// across the extraction seam.
-pub(crate) use busbar_substrate::plane::observe::Counted;
+// A MARKER A PLANE'S HANDLER PUTS ON A RESPONSE IT HAS ALREADY LABELLED.
+//
+// It carries nothing, and carrying nothing is the point: this is not a channel for the handler to
+// pass its labels up through, which would put the emit back in one place and the label vocabulary
+// in another. The handler emits its own series with the binding only it knows, and this says so, so
+// [`observe`] can cover exactly the requests no handler saw without counting anything twice.
+//
+// A response extension rather than a request one, because the answer is what carries the fact and
+// the boundary reads it after the handler has run.
+//
+// The type itself is the neutral [`busbar_kernel::plane::observe::Counted`], re-exported here so
+// a plane crate (`busbar_kernel::plane::observe::Counted`) and this middleware name the SAME type
+// across the extraction seam.
 
 /// Emit `busbar_plane_requests_total` + `busbar_plane_request_duration_seconds` for one request
 /// served by a MOUNTED plane, labelled with the plane it arrived on.
@@ -160,3 +159,17 @@ pub(crate) async fn observe(
     );
     resp
 }
+
+// ==== merged from busbar-substrate (W4.b P2 engine drain) ====
+/// A MARKER A PLANE'S HANDLER PUTS ON A RESPONSE IT HAS ALREADY LABELLED.
+///
+/// It carries nothing, and carrying nothing is the point: this is not a channel for the handler to
+/// pass its labels up through, which would put the emit back in one place and the label vocabulary
+/// in another. The handler emits its own series with the binding only it knows, and this says so, so
+/// core's `plane::observe` can cover exactly the requests no handler saw without counting anything
+/// twice.
+///
+/// A response extension rather than a request one, because the answer is what carries the fact and
+/// the boundary reads it after the handler has run.
+#[derive(Clone, Copy)]
+pub struct Counted;

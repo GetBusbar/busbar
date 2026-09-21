@@ -6,7 +6,7 @@
 //! fresh render. Relocated out of `diagnostics.rs` per the tests-in-their-own-file convention.
 
 use super::*;
-use busbar_substrate::diagnostics::{render_json_for, render_markdown_for};
+use busbar_substrate_values::diagnostics::{render_json_for, render_markdown_for};
 
 /// Committed per-plane markdown snapshot (relative to this crate's manifest dir).
 const COMMITTED_MD: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/diagnostics-mcp.md");

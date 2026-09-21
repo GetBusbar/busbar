@@ -559,9 +559,9 @@ fn the_seal_answers_now_that_every_claim_names_a_registered_transport() {
 #[test]
 fn the_operators_body_cap_reaches_every_mounted_planes_transport() {
     const CAP: usize = 1024;
-    let limits = busbar_substrate::config::limits::LimitsResolved {
+    let limits = busbar_kernel::config::limits::LimitsResolved {
         request_body_max_bytes: CAP,
-        ..busbar_substrate::config::limits::LimitsResolved::default()
+        ..busbar_kernel::config::limits::LimitsResolved::default()
     };
     let sealed = crate::root::registry::seal(crate::root::policy::client_settings(&limits))
         .expect("every claim names a live transport");
@@ -596,7 +596,7 @@ fn the_operators_body_cap_reaches_every_mounted_planes_transport() {
 
     // The other direction: a deployment that set nothing is where it always was.
     let unset = crate::root::registry::seal(crate::root::policy::client_settings(
-        &busbar_substrate::config::limits::LimitsResolved::default(),
+        &busbar_kernel::config::limits::LimitsResolved::default(),
     ))
     .expect("every claim names a live transport");
     assert_eq!(

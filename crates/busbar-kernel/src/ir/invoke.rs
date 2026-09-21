@@ -46,4 +46,4 @@
 // `InvokeReq` travelled with it (the trait is now substrate-resident, so the impl must sit beside the
 // trait or the type to satisfy the orphan rule). Core re-exports the data type from this historical
 // path; the projection reaches every in-core caller through the same re-export.
-pub use busbar_substrate::ir::invoke::{InvokeReq, InvokeResp};
+pub use busbar_substrate_values::ir::invoke::{InvokeReq, InvokeResp};

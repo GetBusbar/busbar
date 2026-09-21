@@ -1961,7 +1961,7 @@ routing:
 
 /// The body-size COUPLING: `limits.request_body_max_bytes` is the SINGLE knob; the resolved value
 /// the inbound `DefaultBodyLimit` uses IS the same value the egress translate-body cap reads
-/// (`busbar_substrate::proxy::max_translate_body_bytes` returns `request_body_max_bytes`). So an accepted
+/// (`busbar_kernel::proxy::max_translate_body_bytes` returns `request_body_max_bytes`). So an accepted
 /// request is always buffer-translatable on egress.
 #[test]
 fn test_request_body_size_couples_ingress_and_translate() {
@@ -3420,7 +3420,7 @@ fn omitted_phase_is_exactly_the_four_core_stages() {
 #[test]
 fn the_phase_field_doc_agrees_with_the_frozen_omitted_phase_answer() {
     // `HookCfg` (and its `phase:` field doc this test pins) moved to
-    // `busbar_substrate::config::hooks` — busbar-core re-exports it at the historical
+    // `busbar_kernel::config::hooks` — busbar-core re-exports it at the historical
     // `config::HookCfg` path, but the doc comment this test greps for now lives in the substrate
     // source file, not here.
     let src = std::fs::read_to_string(concat!(
@@ -3518,7 +3518,7 @@ fn additive_hook_lists_dedupe_at_first_position() {
 #[test]
 fn pools_reserved_section_keys_are_frozen() {
     assert_eq!(
-        busbar_substrate::plane::config::RESERVED_SECTION_KEYS,
+        busbar_kernel::plane::config::RESERVED_SECTION_KEYS,
         ["hooks", "upstream_credentials"],
         "the `pools:` reserved-key set is CLOSED. A new all-scope knob must go under a reserved \
          `defaults:` sub-key, never a new top-level reserved word — adding one would turn a \
@@ -3526,7 +3526,7 @@ fn pools_reserved_section_keys_are_frozen() {
     );
 
     // BOTH reserved words are rejected as pool names, with a message that says why.
-    for reserved in busbar_substrate::plane::config::RESERVED_SECTION_KEYS {
+    for reserved in busbar_kernel::plane::config::RESERVED_SECTION_KEYS {
         let err = serde_yaml::from_str::<crate::config::PoolsCfg>(&format!(
             "{reserved}:\n  members: [ {{ model: a }} ]\n"
         ))

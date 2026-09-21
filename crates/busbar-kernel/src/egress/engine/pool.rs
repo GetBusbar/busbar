@@ -277,7 +277,7 @@ impl EngineError {
 
 impl fmt::Debug for EngineError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mut t = f.debug_tuple("busbar_substrate::egress::engine::EngineError");
+        let mut t = f.debug_tuple("busbar_kernel::egress::engine::EngineError");
         t.field(&self.kind);
         if let Some(cause) = &self.source {
             t.field(cause);

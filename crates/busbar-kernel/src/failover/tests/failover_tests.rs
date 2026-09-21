@@ -12,7 +12,7 @@
 //! 5. the pins are CHECKED, so "interchangeable" is a fact and not a claim.
 
 use super::*;
-use busbar_substrate::store::{BreakerCfg, LaneRuntime};
+use busbar_kernel::store::{BreakerCfg, LaneRuntime};
 
 use crate::store::HealthState;
 
@@ -145,7 +145,7 @@ fn mcp_a_dead_upstream_fails_fast_and_is_named() {
             assert!(
                 matches!(
                     tried[0].1,
-                    busbar_substrate::store::Unavailable::BreakerOpen { until } if until == now + 60
+                    busbar_kernel::store::Unavailable::BreakerOpen { until } if until == now + 60
                 ),
                 "and WHY, with the exact recovery deadline: {:?}",
                 tried[0].1
@@ -188,7 +188,7 @@ fn a2a_a_dead_upstream_fails_fast_and_is_named() {
             assert_eq!(tried[0].0, "planner@eu");
             assert!(matches!(
                 tried[0].1,
-                busbar_substrate::store::Unavailable::BreakerOpen { until } if until == now + 30
+                busbar_kernel::store::Unavailable::BreakerOpen { until } if until == now + 30
             ));
         }
         other => panic!("expected NoneAdmissible, got {other}"),
@@ -211,7 +211,7 @@ fn the_seam_and_the_model_plane_share_one_breaker_cell() {
     // to consult.
     let direct = store.try_admit_breaker(POOL, 0, now);
     assert!(
-        matches!(direct, Err(busbar_substrate::store::Unavailable::BreakerOpen { until }) if until == now + 45),
+        matches!(direct, Err(busbar_kernel::store::Unavailable::BreakerOpen { until }) if until == now + 45),
         "the model plane's own admission sees the cell Open: {direct:?}"
     );
 
@@ -235,7 +235,7 @@ fn the_seam_and_the_model_plane_share_one_breaker_cell() {
         now,
     ) {
         Err(Refusal::NoneAdmissible { tried, .. }) => assert!(
-            matches!(tried[0].1, busbar_substrate::store::Unavailable::BreakerOpen { until } if until == now + 45),
+            matches!(tried[0].1, busbar_kernel::store::Unavailable::BreakerOpen { until } if until == now + 45),
             "the seam reads the SAME cell: {:?}",
             tried[0].1
         ),
@@ -297,7 +297,7 @@ fn your_search_server_in_two_regions_one_dies_and_the_agent_never_learns() {
     record_success(&store, POOL, cand);
     assert_eq!(
         store.breaker_state_in(POOL, 1),
-        busbar_substrate::store::BreakerState::Closed
+        busbar_kernel::store::BreakerState::Closed
     );
 }
 
@@ -333,7 +333,7 @@ fn two_registrations_of_one_agent_reroute_the_same_way() {
 #[test]
 fn a_transient_failure_trips_the_primary_and_the_next_request_reroutes() {
     let store = store_with(2);
-    let now = busbar_substrate::store::now();
+    let now = busbar_kernel::store::now();
     const POOL: &str = "mcp/pool:search";
     let members = two_regions();
     // A cooldown long enough that the trip is still in force on the follow-up request.
@@ -373,7 +373,7 @@ fn a_transient_failure_trips_the_primary_and_the_next_request_reroutes() {
     assert!(
         matches!(
             store.breaker_state_in(POOL, 0),
-            busbar_substrate::store::BreakerState::Open { .. }
+            busbar_kernel::store::BreakerState::Open { .. }
         ),
         "the primary's cell tripped: {:?}",
         store.breaker_state_in(POOL, 0)
@@ -657,7 +657,7 @@ impl Candidate for GroundStation {
 #[test]
 fn a_third_plane_costs_a_candidate_type_and_nothing_else() {
     let store = store_with(2);
-    let now = busbar_substrate::store::now();
+    let now = busbar_kernel::store::now();
     const POOL: &str = "sat/pool:downlink";
     let members = vec![
         GroundStation {
@@ -703,7 +703,7 @@ fn a_third_plane_costs_a_candidate_type_and_nothing_else() {
     }
     assert!(matches!(
         store.breaker_state_in(POOL, 0),
-        busbar_substrate::store::BreakerState::Open { .. }
+        busbar_kernel::store::BreakerState::Open { .. }
     ));
 
     // REROUTE — inherited.
@@ -791,7 +791,7 @@ fn a_client_fault_never_trips_a_plane_upstream() {
     }
     assert_eq!(
         store.breaker_state_in(POOL, 0),
-        busbar_substrate::store::BreakerState::Closed,
+        busbar_kernel::store::BreakerState::Closed,
         "sixty-four malformed calls must not bench a healthy server"
     );
 }
@@ -815,12 +815,12 @@ fn an_auth_failure_hard_downs_the_plane_upstream_everywhere() {
     );
     assert!(matches!(
         store.breaker_state_in(POOL, 0),
-        busbar_substrate::store::BreakerState::Open { .. }
+        busbar_kernel::store::BreakerState::Open { .. }
     ));
     assert!(
         matches!(
             store.breaker_state_in("mcp/pool:other", 0),
-            busbar_substrate::store::BreakerState::Open { .. }
+            busbar_kernel::store::BreakerState::Open { .. }
         ),
         "a rejected credential is rejected in every pool fronting the same upstream"
     );

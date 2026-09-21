@@ -22,7 +22,7 @@
 //! diag_warn!(DURABLE_WRITETHROUGH_BELOW_FLOOR, seq, durable_floor, "seq predates the durable floor");
 //! ```
 
-pub use busbar_substrate::diagnostics::*;
+pub use busbar_substrate_values::diagnostics::*;
 
 #[cfg(test)]
 mod tests;

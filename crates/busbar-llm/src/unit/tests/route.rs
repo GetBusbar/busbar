@@ -6,7 +6,7 @@ use super::*;
 use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
 use busbar_contract::caps::KernelSeal;
 use busbar_contract::Registration;
-use busbar_substrate::store::{now as store_now, BreakerState};
+use busbar_kernel::store::{now as store_now, BreakerState};
 use serde_json::json;
 
 /// A kernel seal for the length of one leg, and the step-5 token minted from it — exactly as
@@ -134,7 +134,7 @@ struct Observed(Vec<(&'static str, String)>);
 
 async fn observe(
     resp: Response,
-    store: &dyn busbar_substrate::store::LaneRuntime,
+    store: &dyn busbar_kernel::store::LaneRuntime,
     state: &MockServerState,
     ids_drawn: u64,
 ) -> Observed {
@@ -672,11 +672,11 @@ async fn completion_tap_fires_once_on_the_walk_and_never_on_a_pre_forward_refusa
                 }
                 // The live shell resolves candidates before it forwards, so an unresolved
                 // destination never reaches the walk on that path either.
-                None => busbar_substrate::proxy::ingress_error(
+                None => busbar_kernel::proxy::ingress_error(
                     proto,
                     StatusCode::NOT_FOUND,
                     KIND_NOT_FOUND,
-                    &busbar_substrate::ingress::not_found_message(destination, None),
+                    &busbar_kernel::ingress::not_found_message(destination, None),
                 ),
             }
         };

@@ -20,14 +20,14 @@
 
 use crate::testkit::engine_boot::engine;
 use crate::testkit::TestAppA2aExt;
-use busbar_substrate::testkit::engine_kit_plus::EngineAppPlus;
+use busbar_kernel::testkit::engine_kit_plus::EngineAppPlus;
 use ed25519_dalek::{Verifier, VerifyingKey};
 use serde_json::{json, Value};
 
 use super::*;
 use crate::a2a::jws::{self, IssuerKey, JwsError, B64URL};
 use crate::a2a::serve::rewrite_card;
-use busbar_substrate::governance::signing::{TokenSigner, DEFAULT_KID};
+use busbar_kernel::governance::signing::{TokenSigner, DEFAULT_KID};
 
 const BACKEND: &str = "https://internal-planner.corp.example/a2a";
 const PUBLIC: &str = "https://gateway.example.com";

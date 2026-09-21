@@ -17,9 +17,9 @@
 
 use crate::mount::{open_governed, GovernedOpen, Ingress};
 use crate::runtime::{EchoToolExecutor, LocalMeteringPort, VoiceRuntime};
-use busbar_substrate::plane::handle_engine::DurableHandleEngine;
-use busbar_substrate::plane_host::{EngineHost, GateOutcome};
-use busbar_substrate::testkit::fixture_host::{FixtureHost, GateScript};
+use busbar_kernel::plane::handle_engine::DurableHandleEngine;
+use busbar_kernel::plane_host::{EngineHost, GateOutcome};
+use busbar_kernel::testkit::fixture_host::{FixtureHost, GateScript};
 use std::sync::Arc;
 
 /// The `streams:` container the voice plane files its operator hooks under.
@@ -121,7 +121,7 @@ async fn streams_hooks_reject_all_refuses_a_session_open() {
 /// The plane's real dispatch slot, built the way `appbuild` does — a `BuildCtx` over a `public_url`.
 fn a_slot() -> Arc<dyn std::any::Any + Send + Sync> {
     let unit = ();
-    let ctx = busbar_substrate::plane::registry::BuildCtx {
+    let ctx = busbar_kernel::plane::registry::BuildCtx {
         endpoint_slot: None,
         agent_defs: &unit,
         public_url: Some("https://voice.example"),
@@ -144,7 +144,7 @@ async fn ws_accept_handshake(host: Arc<dyn EngineHost>) -> Result<(), ()> {
         axum::extract::State(s): axum::extract::State<S>,
         upgrade: axum::extract::ws::WebSocketUpgrade,
     ) -> axum::response::Response {
-        let arrival = busbar_substrate::ingress::duplex_ws::WsArrival {
+        let arrival = busbar_kernel::ingress::duplex_ws::WsArrival {
             upgrade,
             gov: None,
             principal: None,
@@ -174,12 +174,12 @@ async fn ws_accept_handshake(host: Arc<dyn EngineHost>) -> Result<(), ()> {
     tokio::spawn(async move {
         axum::serve(listener, app).await.unwrap();
     });
-    let policy = busbar_substrate::net_guard::GuardPolicy {
+    let policy = busbar_kernel::net_guard::GuardPolicy {
         allow_private: true,
         allow_plaintext: true,
-        ..busbar_substrate::net_guard::GuardPolicy::default()
+        ..busbar_kernel::net_guard::GuardPolicy::default()
     };
-    match busbar_substrate::egress::duplex_ws::dial(
+    match busbar_kernel::egress::duplex_ws::dial(
         &format!("ws://{addr}/telephony/call-ws"),
         policy,
     )

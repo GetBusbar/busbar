@@ -12,7 +12,7 @@
 
 /// Bind core's `CoreHostlessEgress` into the substrate seam, idempotently.
 pub(crate) fn install() {
-    busbar_substrate::egress::seam::install_hostless_egress(
+    busbar_kernel::egress::seam::install_hostless_egress(
         &busbar_kernel::egress::seam::CoreHostlessEgress,
     );
 }

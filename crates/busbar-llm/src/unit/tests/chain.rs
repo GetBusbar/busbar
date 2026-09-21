@@ -14,8 +14,8 @@ use busbar_contract::caps::{Grant,
     PrincipalId, Route, Dial, Pass, Consumption, VerifiedDestination, Verify,
 };
 use busbar_kernel::proxy::reqlog::REQUESTS;
-use busbar_substrate::plane_host::EngineTablesView;
-use busbar_substrate::testkit::engine_kit::EngineTestKit as _;
+use busbar_kernel::plane_host::EngineTablesView;
+use busbar_kernel::testkit::engine_kit::EngineTestKit as _;
 
 use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
 use crate::unit::{admit, approve, arrival, audit, authenticate, decode, meter, route, verify};
@@ -239,7 +239,7 @@ async fn rig_billed(fixture: Fixture) -> Rig {
 
 async fn rig_inner(fixture: Fixture, billed: bool) -> Rig {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
 
     let state = Arc::new(MockServerState::new());
     // Enough for every failover hop the walk may take; a delivered fixture consumes one.
@@ -253,13 +253,13 @@ async fn rig_inner(fixture: Fixture, billed: bool) -> Rig {
     if fixture.seeded_group_requests().is_some() {
         groups.insert(
             group.clone(),
-            busbar_substrate::config::groups::GroupCfg {
+            busbar_kernel::config::groups::GroupCfg {
                 parent: None,
                 enabled: true,
-                limits: vec![busbar_substrate::config::groups::LimitCfg {
-                    metric: busbar_substrate::config::groups::LimitMetric::Budget,
+                limits: vec![busbar_kernel::config::groups::LimitCfg {
+                    metric: busbar_kernel::config::groups::LimitMetric::Budget,
                     amount: 100,
-                    per: Some(busbar_substrate::config::groups::LimitWindow::Total),
+                    per: Some(busbar_kernel::config::groups::LimitWindow::Total),
                     scope: None,
                     on_exhaust: None,
                     downgrade_to: None,
@@ -289,7 +289,7 @@ async fn rig_inner(fixture: Fixture, billed: bool) -> Rig {
         .expect("governance");
     let (key, _) = gov
         .create_key(
-            busbar_substrate::governance::NewKeySpec {
+            busbar_kernel::governance::NewKeySpec {
                 name: "chain".to_string(),
                 allowed_pools: fixture.key_scopes(),
                 group: fixture
@@ -309,7 +309,7 @@ async fn rig_inner(fixture: Fixture, billed: bool) -> Rig {
     // rig keeps the historical no-card posture.
     let billed_card = std::collections::BTreeMap::from([(
         LANE.to_string(),
-        busbar_substrate::config::sections::RateEntryCfg {
+        busbar_kernel::config::sections::RateEntryCfg {
             input_utok: 0.0,
             output_utok: 0.0,
             cache_read_utok: 0.0,
@@ -335,7 +335,7 @@ async fn rig_inner(fixture: Fixture, billed: bool) -> Rig {
         // the upstream's own answer when every lane is unhealthy, which is what makes this fixture
         // a FAILED TRANSFER (the destination answered, badly) rather than a pool-empty 503.
         builder =
-            builder.on_exhausted(POOL, busbar_substrate::config::pools::OnExhausted::LeastBad);
+            builder.on_exhausted(POOL, busbar_kernel::config::pools::OnExhausted::LeastBad);
     }
     let app = builder.build();
 
@@ -343,7 +343,7 @@ async fn rig_inner(fixture: Fixture, billed: bool) -> Rig {
         app,
         key: Arc::new(key),
         server,
-        charged_at: busbar_substrate::store::now(),
+        charged_at: busbar_kernel::store::now(),
         group,
     }
 }
@@ -420,7 +420,7 @@ fn normalize(s: &str) -> String {
 }
 
 async fn observe(rig: &Rig, resp: Response) -> Observed {
-    use busbar_substrate::store::BreakerState;
+    use busbar_kernel::store::BreakerState;
 
     let mut fields: Vec<(&'static str, String)> = Vec::new();
     fields.push(("status", resp.status().as_u16().to_string()));
@@ -463,7 +463,7 @@ async fn observe(rig: &Rig, resp: Response) -> Observed {
     fields.push(("ledger_spend_cents", derived.spend_cents.to_string()));
     gov.flush_metering();
     let mut rows: Vec<busbar_api::MeteringRow> = gov
-        .metering_for(busbar_substrate::governance::metering_bucket(
+        .metering_for(busbar_kernel::governance::metering_bucket(
             rig.charged_at,
         ))
         .expect("metering read")
@@ -504,7 +504,7 @@ async fn observe(rig: &Rig, resp: Response) -> Observed {
     ));
     fields.push((
         "cooldown",
-        if store.cooldown_remaining_in(POOL, 0, busbar_substrate::store::now()) > 0 {
+        if store.cooldown_remaining_in(POOL, 0, busbar_kernel::store::now()) > 0 {
             "running".to_string()
         } else {
             "none".to_string()
@@ -585,7 +585,7 @@ const OP_CLASS: OpClassId = OpClassId::new(busbar_api::operation::Operation::CHA
 /// been read for one refused before the door, and the reserved unresolved label for one refused
 /// before any destination existed to read.
 fn audit_ctx<'a>(
-    host: &'a Arc<dyn busbar_substrate::plane_host::EngineHost>,
+    host: &'a Arc<dyn busbar_kernel::plane_host::EngineHost>,
     gov: &'a busbar_api::PlaneRequestCtx,
     destination: &'a str,
     started: Instant,
@@ -607,7 +607,7 @@ fn audit_ctx<'a>(
 /// what the live pre-routing arms name it too.
 fn refused_before_a_destination(
     seal: &KernelSeal,
-    host: &Arc<dyn busbar_substrate::plane_host::EngineHost>,
+    host: &Arc<dyn busbar_kernel::plane_host::EngineHost>,
     gov: &busbar_api::PlaneRequestCtx,
     started: Instant,
     charged_at: u64,
@@ -670,7 +670,7 @@ impl Metering {
 }
 
 /// The two token figures of a report, as a pair, so a fixture can spell what it expects.
-fn split(usage: Option<&busbar_substrate::billing::TokenUsage>) -> Option<(u64, u64)> {
+fn split(usage: Option<&busbar_substrate_values::billing::TokenUsage>) -> Option<(u64, u64)> {
     usage.map(|u| (u.input, u.output))
 }
 
@@ -742,7 +742,7 @@ async fn leg_chain_metered_with(fixture: Fixture, billed: bool) -> (Observed, Me
 #[allow(clippy::too_many_arguments)]
 async fn drive(
     seal: &KernelSeal,
-    host: &Arc<dyn busbar_substrate::plane_host::EngineHost>,
+    host: &Arc<dyn busbar_kernel::plane_host::EngineHost>,
     rt: &Arc<crate::engine::NativeRuntime>,
     gov: &busbar_api::PlaneRequestCtx,
     headers: &HeaderMap,
@@ -915,8 +915,8 @@ async fn drive(
             host,
             rt,
             proto: PROTO,
-            op: busbar_substrate::handlers::frame(
-                busbar_substrate::transport::Transport::Http,
+            op: busbar_substrate_values::handlers::frame(
+                busbar_substrate_values::transport::Transport::Http,
                 busbar_api::operation::Operation::CHAT,
                 decoded.op_handler,
             ),

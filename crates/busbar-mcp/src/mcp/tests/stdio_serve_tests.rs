@@ -534,9 +534,9 @@ fn signing_governance() -> Arc<dyn GovKit> {
             Arc::new(busbar_store_memory::MemoryStore::new()),
             None,
             Some(
-                busbar_substrate::governance::signing::TokenSigner::from_secret_bytes(
+                busbar_kernel::governance::signing::TokenSigner::from_secret_bytes(
                     &[7u8; 32],
-                    busbar_substrate::governance::signing::DEFAULT_KID,
+                    busbar_kernel::governance::signing::DEFAULT_KID,
                 ),
             ),
         )
@@ -653,16 +653,16 @@ async fn a_budgeted_key_is_refused_over_budget_through_the_stdio_binding() {
         entry.input_schema = Some(schema());
     }
     let store = Arc::new(MemoryStore::new());
-    let signer = busbar_substrate::governance::signing::TokenSigner::from_secret_bytes(
+    let signer = busbar_kernel::governance::signing::TokenSigner::from_secret_bytes(
         &[3u8; 32],
-        busbar_substrate::governance::signing::DEFAULT_KID,
+        busbar_kernel::governance::signing::DEFAULT_KID,
     );
     let gov_state = engine()
         .governance(store, None, Some(signer))
         .expect("gov state");
     let (key, _secret) = gov_state
         .mint_signed(
-            busbar_substrate::governance::NewKeySpec {
+            busbar_kernel::governance::NewKeySpec {
                 name: "tiny-agent".to_string(),
                 allowed_pools: None,
                 group: Some("tiny".to_string()),
@@ -1147,16 +1147,16 @@ async fn an_early_closed_subscription_is_announced_with_cancelled() {
     use busbar_store_memory::MemoryStore;
     metrics_init();
     let store = Arc::new(MemoryStore::new());
-    let signer = busbar_substrate::governance::signing::TokenSigner::from_secret_bytes(
+    let signer = busbar_kernel::governance::signing::TokenSigner::from_secret_bytes(
         &[9u8; 32],
-        busbar_substrate::governance::signing::DEFAULT_KID,
+        busbar_kernel::governance::signing::DEFAULT_KID,
     );
     let gov_state = engine()
         .governance(store, None, Some(signer))
         .expect("gov state");
     let (key, _secret) = gov_state
         .mint_signed(
-            busbar_substrate::governance::NewKeySpec {
+            busbar_kernel::governance::NewKeySpec {
                 name: "sub-agent".to_string(),
                 allowed_pools: None,
                 group: None,
@@ -1242,14 +1242,14 @@ async fn a_tasks_transition_is_pushed_over_the_channel() {
     // so the pump has handed the session that handle.
     client.prime().await;
     // The session's actor is `anonymous` (ungoverned fixture); create its task in the registry.
-    let task = crate::mcp::tasks::TASKS.create("anonymous", busbar_substrate::store::now_ms());
+    let task = crate::mcp::tasks::TASKS.create("anonymous", busbar_kernel::store::now_ms());
     // Attach the watcher exactly as `deliver` does when it hands the caller a task result.
     client.session.watch_task_result(&serde_json::json!({
         "jsonrpc": "2.0", "id": "t0",
         "result": { "resultType": "task", "taskId": task.id, "status": "submitted" },
     }));
     crate::mcp::tasks::TASKS
-        .cancel(&task.id, "anonymous", busbar_substrate::store::now_ms())
+        .cancel(&task.id, "anonymous", busbar_kernel::store::now_ms())
         .expect("cancel the task");
     let pushed = client.recv().await;
     assert_eq!(

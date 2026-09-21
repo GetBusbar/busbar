@@ -11,7 +11,7 @@
 //!
 //! ## THE TRUST VERBS live here too, and this is where the plane's half of them stops
 //!
-//! `connect` is NOT here. It is [`busbar_substrate::admin_verbs::connect_reply`], written once and
+//! `connect` is NOT here. It is [`busbar_kernel::admin_verbs::connect_reply`], written once and
 //! parameterised by plane, because "resolve the registration, go and look, audit whatever you
 //! found" is one sequence and it was written down twice. What this file supplies is the plane's
 //! half of that contract — [`McpServers`], which says where an MCP registration is resolved from
@@ -27,10 +27,10 @@
 
 use std::sync::Arc;
 
-use busbar_substrate::admin_verbs::{
+use busbar_kernel::admin_verbs::{
     registered, AdminReply, AdminReqCtx, PlaneTrust, PlaneVerbError,
 };
-use busbar_substrate::api::NamedDefView;
+use busbar_kernel::api::NamedDefView;
 
 /// Project one `tools:` entry — one registered MCP server — onto the shared named-definition view.
 ///
@@ -80,7 +80,7 @@ pub(crate) fn mcp_server_view(
 
 /// Every registered MCP server, as the shared named-definition view. The read half of
 /// `GET /api/v1/admin/tools`.
-pub(crate) fn list(slots: &dyn busbar_substrate::plane_host::PlaneSlots) -> Vec<NamedDefView> {
+pub(crate) fn list(slots: &dyn busbar_kernel::plane_host::PlaneSlots) -> Vec<NamedDefView> {
     super::runtime_slots(slots)
         .servers
         .servers
@@ -91,7 +91,7 @@ pub(crate) fn list(slots: &dyn busbar_substrate::plane_host::PlaneSlots) -> Vec<
 
 /// One registered MCP server, or `None`. The read half of `GET /api/v1/admin/tools/{name}`.
 pub(crate) fn get(
-    slots: &dyn busbar_substrate::plane_host::PlaneSlots,
+    slots: &dyn busbar_kernel::plane_host::PlaneSlots,
     name: &str,
 ) -> Option<NamedDefView> {
     super::runtime_slots(slots)
@@ -102,7 +102,7 @@ pub(crate) fn get(
 }
 
 /// Attach the MCP trust verbs' typed success-body schemas — the MCP half of
-/// [`busbar_substrate::plane::registry::PlaneDecl::openapi_schemas`]. Registers `McpTrustView`/`McpHealthView`
+/// [`busbar_kernel::plane::registry::PlaneDecl::openapi_schemas`]. Registers `McpTrustView`/`McpHealthView`
 /// into the SHARED response generator and attaches their `$ref`s onto the paths this plane's
 /// `openapi()` fragment inserted, byte-identically to the inline `typed!` calls it replaced (same
 /// types, same order, same generator).
@@ -112,8 +112,8 @@ pub(crate) fn openapi_schemas(
     _req_gen: &mut schemars::SchemaGenerator,
     paths: &mut serde_json::Map<String, serde_json::Value>,
 ) {
-    use busbar_substrate::api::ap;
-    use busbar_substrate::api::set_response_schema;
+    use busbar_kernel::api::ap;
+    use busbar_kernel::api::set_response_schema;
     let connect = serde_json::to_value(schema_gen.subschema_for::<McpTrustView>())
         .unwrap_or_else(|_| serde_json::json!({}));
     set_response_schema(paths, &ap("/tools/{name}/connect"), "post", "200", connect);
@@ -128,7 +128,7 @@ pub(crate) fn openapi_schemas(
 /// Is `name` a live registered MCP server on this snapshot — the membership check the admin write
 /// path consults through the plane's `registry_contains` seam, so core names no `crate::mcp` runtime
 /// type.
-pub(crate) fn contains(slots: &dyn busbar_substrate::plane_host::PlaneSlots, name: &str) -> bool {
+pub(crate) fn contains(slots: &dyn busbar_kernel::plane_host::PlaneSlots, name: &str) -> bool {
     super::runtime_slots(slots)
         .servers
         .servers
@@ -139,7 +139,7 @@ pub(crate) fn contains(slots: &dyn busbar_substrate::plane_host::PlaneSlots, nam
 /// config-swap gate rebuild, moved HERE so `admin::v1::service::reresolve_plane_gates` names no
 /// `crate::mcp` runtime type. Reads this plane's own registry off the snapshot and writes its own
 /// gate field back.
-pub(crate) fn reresolve_gates(next: &mut dyn busbar_substrate::plane_host::ContainerGateSink) {
+pub(crate) fn reresolve_gates(next: &mut dyn busbar_kernel::plane_host::ContainerGateSink) {
     // Read this plane's own registry off the neutral slot seam (owned `Arc` clone, so the immutable
     // borrow ends before the `&mut` store), then resolve-and-store host-side through the neutral sink
     // under this plane's OWN registry key (`PLANE_DECL.key`) — so this plane names neither `&mut App`
@@ -166,7 +166,7 @@ pub(crate) fn reresolve_gates(next: &mut dyn busbar_substrate::plane_host::Conta
 //
 // Every value below is DERIVED on read from the operator's standing approval and the last sighting.
 // Nothing here stores a state, and nothing here takes a transition — the transitions are
-// `busbar_substrate::trust`'s and this is the window onto them.
+// `busbar_kernel::trust`'s and this is the window onto them.
 
 /// ONE CAPABILITY'S STANDING STATUS, the three-way answer a trust view has to render.
 ///
@@ -257,7 +257,7 @@ pub(crate) fn health_view(report: &crate::mcp::connect::ConnectReport) -> McpHea
     McpHealthView {
         name: report.server.clone(),
         state: report.state_word(),
-        serving: report.state == busbar_substrate::trust::TrustState::Approved,
+        serving: report.state == busbar_kernel::trust::TrustState::Approved,
         contacted: report.observed > 0 || report.failure.is_some(),
         failure: report.failure.clone(),
         observed_tools: report.observed,
@@ -273,7 +273,7 @@ fn capability_views(
     server: &crate::mcp::catalogue::ServerEntry,
     cfg: &crate::mcp::config::McpServerDefCfg,
 ) -> Vec<McpCapabilityView> {
-    use busbar_substrate::trust::CapabilityApproval;
+    use busbar_kernel::trust::CapabilityApproval;
     let mut out: std::collections::BTreeMap<String, McpCapabilityView> =
         std::collections::BTreeMap::new();
     for (tool, capability) in server.approval.capabilities() {
@@ -328,7 +328,7 @@ impl PlaneTrust for McpServers {
     type View = McpTrustView;
 
     fn resolve(
-        host: &Arc<dyn busbar_substrate::plane_host::EngineHost>,
+        host: &Arc<dyn busbar_kernel::plane_host::EngineHost>,
         name: &str,
     ) -> Result<McpSubject, PlaneVerbError> {
         // The bound-snapshot runtime, read once off the neutral host seam — byte-identical to the
@@ -349,7 +349,7 @@ impl PlaneTrust for McpServers {
 
     async fn look(
         subject: McpSubject,
-        host: Arc<dyn busbar_substrate::plane_host::EngineHost>,
+        host: Arc<dyn busbar_kernel::plane_host::EngineHost>,
         _name: String,
     ) -> Result<McpTrustView, PlaneVerbError> {
         let report =

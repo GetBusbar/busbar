@@ -33,7 +33,7 @@ fn head_matches_dom_for_captured_keys() {
     for raw in bodies {
         let bytes = Bytes::from(raw.as_bytes().to_vec());
         let lazy = LazyBody::parse(&bytes).expect("valid JSON must head-parse");
-        let dom: Value = busbar_substrate::json::parse(&bytes).unwrap();
+        let dom: Value = busbar_substrate_values::json::parse(&bytes).unwrap();
         for key in captured_head_keys() {
             assert_eq!(
                 lazy.probe().get(key),
@@ -65,7 +65,7 @@ fn head_parse_rejects_iff_dom_parse_rejects() {
     ];
     for raw in inputs {
         let bytes = Bytes::copy_from_slice(raw);
-        let dom_ok = busbar_substrate::json::parse::<Value>(&bytes).is_ok();
+        let dom_ok = busbar_substrate_values::json::parse::<Value>(&bytes).is_ok();
         let head_ok = LazyBody::parse(&bytes).is_ok();
         assert_eq!(
             head_ok,
@@ -125,7 +125,7 @@ fn head_pristine_matches_translate_output() {
         let app = TestApp::new()
             .lane(LaneSpec::new(lane_model, proto, "http://unused.local"))
             .build();
-        let hop_bytes = Bytes::from(busbar_substrate::json::to_vec(body).unwrap());
+        let hop_bytes = Bytes::from(busbar_substrate_values::json::to_vec(body).unwrap());
         let lazy = LazyBody::parse(&hop_bytes).unwrap();
         let (host, rt) = crate::engine::test_host_rt(&app);
         let head_says = head_provably_pristine(&rt, 0, lazy.probe());
@@ -134,7 +134,7 @@ fn head_pristine_matches_translate_output() {
             &rt,
             0,
             name,
-            busbar_substrate::handlers::chat(name, busbar_substrate::transport::Transport::Http),
+            busbar_substrate_values::handlers::chat(name, busbar_substrate_values::transport::Transport::Http),
             Some(body.clone()),
             APPLICATION_JSON,
             true,
@@ -190,7 +190,7 @@ fn ensure_dom_materializes_and_probe_tracks_mutation() {
     let dom = lazy.ensure_dom().expect("validated bytes must re-parse");
     assert_eq!(
         *dom,
-        busbar_substrate::json::parse::<Value>(&bytes).unwrap()
+        busbar_substrate_values::json::parse::<Value>(&bytes).unwrap()
     );
     dom.as_object_mut()
         .unwrap()
@@ -207,9 +207,9 @@ fn ensure_dom_materializes_and_probe_tracks_mutation() {
 }
 
 /// The first user-turn text projected from a request's facts — the read these tests use to tell one
-/// parse of a body from another. Reads through the neutral [`busbar_substrate::ir::facts::IrFacts`] projection
+/// parse of a body from another. Reads through the neutral [`busbar_substrate_values::ir::facts::IrFacts`] projection
 /// (turn 0's content items) rather than the concrete IR, mirroring `ensure_ir`'s facts return.
-fn first_user_text(ir: &(dyn busbar_substrate::ir::facts::IrFacts + Send + Sync)) -> String {
+fn first_user_text(ir: &(dyn busbar_substrate_values::ir::facts::IrFacts + Send + Sync)) -> String {
     ir.content()
         .into_iter()
         .filter(|it| it.slot().turn_index() == Some(0))

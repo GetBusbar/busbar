@@ -10,8 +10,8 @@
 //! back exhaustion so the carrier is closed the moment `settled ≥ cap`.
 //!
 //! THE NEUTRAL-SEAM GAP IS NOW CLOSED (minor-19). The neutral seam a statically-linked plane is handed
-//! at request time — `busbar_substrate::plane_host::EngineHost` — now carries a real reserve-then-settle
-//! cost lease through its [`MeteringHost`](busbar_substrate::plane_host::MeteringHost) supertrait
+//! at request time — `busbar_kernel::plane_host::EngineHost` — now carries a real reserve-then-settle
+//! cost lease through its [`MeteringHost`](busbar_kernel::plane_host::MeteringHost) supertrait
 //! (`cost_reserve`/`cost_settle`/`cost_settled`/`cost_close`), backed host-side by the SAME `CostHold`
 //! registry the frozen hot-ABI cost slots fill. So the D2 money hop is REAL: [`HostMeteringPort`] opens a
 //! host-owned lease against the caller's live grant ceiling, [`HostLease`] settles EXACT increments
@@ -24,7 +24,7 @@
 //! settle accrues exact increments, exhausted = `settled ≥ cap`, refuse-all cap denies at the door). The
 //! port abstraction ([`MeteringLease`] / [`MeteringPort`]) is the seam both share.
 
-use busbar_substrate::plane_host::{CostLeaseId, EngineHost, MeteringHost, SettleOutcome};
+use busbar_kernel::plane_host::{CostLeaseId, EngineHost, MeteringHost, SettleOutcome};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
@@ -67,7 +67,7 @@ impl TurnMeter {
     /// voice twin of the LLM plane's `ledger_and_meter`. The budget-chain accrual (`meter_ledger`)
     /// is the money signal `usage_for(key)` derives spend from; the raw series (`meter_series`) feeds
     /// the admin usage report. No-ops when governance is off (the host mints no `GovHandle`).
-    pub(crate) fn record_turn(&self, model: &str, usage: &busbar_substrate::billing::Usage) {
+    pub(crate) fn record_turn(&self, model: &str, usage: &busbar_substrate_values::billing::Usage) {
         if let Some(gov) = self.host.governance() {
             let cost = self.host.cost();
             let now = self.host.clock_now_secs();
@@ -153,7 +153,7 @@ pub trait MeteringLease: Send + Sync {
     /// and hard-closes the carrier, exactly as on exhaustion); `Some(0)` when pricing is off (no rate
     /// card) or the turn is empty. The host u128 nanodollars clamp saturating into u64 (a per-turn
     /// increment fits u64 far below the ~$18.4B ceiling), fail-closed HIGH.
-    fn price_usage(&self, model: &str, usage: &busbar_substrate::billing::Usage) -> Option<u64>;
+    fn price_usage(&self, model: &str, usage: &busbar_substrate_values::billing::Usage) -> Option<u64>;
 
     /// Settle ONE exact already-priced increment (nanodollars) against this lease and read back the
     /// post-settle state — the `cost_settle` leg. Idempotent after exhaustion: once dry it stays dry.
@@ -256,7 +256,7 @@ impl LocalLease {
 }
 
 impl MeteringLease for LocalLease {
-    fn price_usage(&self, _model: &str, _usage: &busbar_substrate::billing::Usage) -> Option<u64> {
+    fn price_usage(&self, _model: &str, _usage: &busbar_substrate_values::billing::Usage) -> Option<u64> {
         // The in-process TEST/DEV lease carries NO rate card (the money hop's rates live host-side): a
         // dev build with no configured rate card prices at 0, exactly as core's `CostModel` does when
         // `rate_card` is absent. This is NOT a plane-private price book — it holds no rates, labels or
@@ -360,7 +360,7 @@ pub struct HostLease {
 }
 
 impl MeteringLease for HostLease {
-    fn price_usage(&self, model: &str, usage: &busbar_substrate::billing::Usage) -> Option<u64> {
+    fn price_usage(&self, model: &str, usage: &busbar_substrate_values::billing::Usage) -> Option<u64> {
         // The REAL money hop's pricing leg: the host prices the turn's usage_units against the deployment
         // rate card (the SAME `CostModel` arithmetic the LLM path uses), so the plane never names a pricer.
         // A per-turn increment fits u64 far below the ~$18.4B ceiling; saturate defensively (fail-closed
@@ -512,7 +512,7 @@ impl MeteringHost for MockMeteringHost {
         Some(l.settled)
     }
 
-    fn price_usage(&self, model: &str, usage: &busbar_substrate::billing::Usage) -> Option<u128> {
+    fn price_usage(&self, model: &str, usage: &busbar_substrate_values::billing::Usage) -> Option<u128> {
         if model == Self::UNPRICED_MODEL {
             return None; // rate card present, model unpriced → the caller fails closed.
         }

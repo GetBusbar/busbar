@@ -13,7 +13,7 @@
 //! ## What lives here today
 //!
 //! The A2A plane's DIAGNOSTICS catalog — the `A2A_*` entries the composition root installs via
-//! [`install_diagnostics`](busbar_substrate::diagnostics::install_diagnostics). This is the one
+//! [`install_diagnostics`](busbar_substrate_values::diagnostics::install_diagnostics). This is the one
 //! byte-safe, non-money, cycle-free leaf of the host surface: it names nothing in `busbar-a2a`, so it
 //! moves down here cleanly while `busbar-a2a` re-exports it under its old paths
 //! (`busbar_a2a::DIAGNOSTICS`, `busbar_a2a::diagnostics::…`) so every caller resolves what it always

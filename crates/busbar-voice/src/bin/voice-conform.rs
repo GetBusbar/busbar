@@ -15,8 +15,8 @@
 //! Non-`RESULT` lines (`NOTE:` / `SUBITEM`) are ignored by the runner and used to record documented
 //! sub-item gaps that must stay HONESTLY PENDING rather than be dressed as a green.
 
-use busbar_substrate::plane_host::{CostLeaseId, EngineHost, MeteringHost, SettleOutcome};
-use busbar_substrate::testkit::fixture_host::FixtureHost;
+use busbar_kernel::plane_host::{CostLeaseId, EngineHost, MeteringHost, SettleOutcome};
+use busbar_kernel::testkit::fixture_host::FixtureHost;
 use busbar_voice::ir::{
     DecodeState, DuplexReader, DuplexWriter, GeminiLiveCodec, IrClientEvent, IrDuplexControl,
     IrDuplexTool, IrServerEvent, OpenAiRealtimeCodec, WireEvent,
@@ -1054,7 +1054,7 @@ impl MeteringHost for ConformHost {
         Some(self.inner.lock().unwrap().leases.remove(&lease.0)?.0)
     }
 
-    fn price_usage(&self, _model: &str, usage: &busbar_substrate::billing::Usage) -> Option<u128> {
+    fn price_usage(&self, _model: &str, usage: &busbar_substrate_values::billing::Usage) -> Option<u128> {
         Some(usage.usage_units.values().copied().map(u128::from).sum())
     }
 }
@@ -1120,7 +1120,7 @@ async fn gov_d2() -> (&'static str, String) {
 async fn gov_v1() -> (&'static str, String) {
     let (core, _drx) = core_with_downlink(None);
     let payload = vec![0u8; 96]; // 2 ms of pcm16
-    let b64 = busbar_substrate::media::base64_encode(&Bytes::from(payload));
+    let b64 = busbar_substrate_values::media::base64_encode(&Bytes::from(payload));
     let _ = core
         .on_server_frame(wire_of(
             &serde_json::json!({ "type": "response.output_audio.delta", "delta": b64 }),
@@ -1629,7 +1629,7 @@ fn probe_tool_reply() -> (&'static str, String) {
 /// and no caller's budget can ever hard-close it.
 fn probe_metering_lease() -> (&'static str, String) {
     let base = VoiceRuntime::new(
-        Arc::new(busbar_substrate::plane::handle_engine::DurableHandleEngine::new()),
+        Arc::new(busbar_kernel::plane::handle_engine::DurableHandleEngine::new()),
         Arc::new(LocalMeteringPort),
         Arc::new(EchoToolExecutor),
     );
@@ -1759,7 +1759,7 @@ fn probe_session_scope() -> (&'static str, String) {
 
 fn probe_gemini_live_route() -> (&'static str, String) {
     let unit = ();
-    let ctx = busbar_substrate::plane::registry::BuildCtx {
+    let ctx = busbar_kernel::plane::registry::BuildCtx {
         endpoint_slot: None,
         agent_defs: &unit,
         public_url: Some("https://gw.conform.example.com"),
@@ -1882,25 +1882,25 @@ fn probe_gemini_live_route() -> (&'static str, String) {
 // called it — a session never dialed a live socket, so no leg drove one.
 // ══════════════════════════════════════════════════════════════════════════════════════════════════
 
-/// A minimal [`busbar_substrate::plane_host::BreakerHost`] — `dial_provider` reads only the breaker
+/// A minimal [`busbar_kernel::plane_host::BreakerHost`] — `dial_provider` reads only the breaker
 /// slice of the host seam (never the rest of `EngineHost`), so the loopback leg needs only this much:
 /// admit always, record nothing, no cooldown. Not a plane-private breaker implementation — it lives
 /// only in this dev-only conformance binary, mirroring `ConformHost`'s role for the governance probes.
 #[derive(Default)]
 struct AlwaysAdmitBreakerHost;
 
-impl busbar_substrate::plane_host::BreakerHost for AlwaysAdmitBreakerHost {
+impl busbar_kernel::plane_host::BreakerHost for AlwaysAdmitBreakerHost {
     fn breaker_admit(
         &self,
-        scope: &busbar_substrate::plane_host::DispatchScope,
+        scope: &busbar_kernel::plane_host::DispatchScope,
         _pool: &[u8],
         _lane: u32,
-    ) -> Result<busbar_plugin::hot::AdmissionId, busbar_substrate::store::Unavailable> {
+    ) -> Result<busbar_plugin::hot::AdmissionId, busbar_kernel::store::Unavailable> {
         Ok(scope.register_admission(Box::new(())))
     }
     fn breaker_settle(
         &self,
-        scope: &busbar_substrate::plane_host::DispatchScope,
+        scope: &busbar_kernel::plane_host::DispatchScope,
         admission: busbar_plugin::hot::AdmissionId,
         signal: &busbar_plugin::hot::Signal,
     ) -> busbar_plugin::hot::StatusClass {
@@ -1913,7 +1913,7 @@ impl busbar_substrate::plane_host::BreakerHost for AlwaysAdmitBreakerHost {
         &self,
         _pool: &str,
         _lane: usize,
-        _sig: &busbar_substrate::breaker::CanonicalSignal,
+        _sig: &busbar_substrate_values::breaker::CanonicalSignal,
     ) {
     }
     fn breaker_retry_after_secs(&self, _pool: &str, _lane: usize) -> u64 {
@@ -1952,10 +1952,10 @@ fn probe_provider_dial() -> (&'static str, String) {
 
         let host = AlwaysAdmitBreakerHost;
         let url = format!("ws://{addr}");
-        let policy = busbar_substrate::net_guard::GuardPolicy {
+        let policy = busbar_kernel::net_guard::GuardPolicy {
             allow_private: true,
             allow_plaintext: true,
-            ..busbar_substrate::net_guard::GuardPolicy::default()
+            ..busbar_kernel::net_guard::GuardPolicy::default()
         };
         let (mut provider_in, _provider_out) = match busbar_voice::topology::dial_provider(
             &host,
@@ -2028,7 +2028,7 @@ fn probe_provider_dial() -> (&'static str, String) {
 /// [`build_runtime_hosted`] call, shared by every probe below that needs a governed session.
 fn hosted_runtime(host: Arc<dyn EngineHost>) -> VoiceRuntime {
     let base = VoiceRuntime::new(
-        Arc::new(busbar_substrate::plane::handle_engine::DurableHandleEngine::new()),
+        Arc::new(busbar_kernel::plane::handle_engine::DurableHandleEngine::new()),
         Arc::new(LocalMeteringPort),
         Arc::new(EchoToolExecutor),
     );
@@ -2140,7 +2140,7 @@ fn probe_route_failover() -> (&'static str, String) {
     tokio_rt.block_on(async move {
         let host = FixtureHost::new();
         let pool = "stream:conform-route-failover";
-        let policy = busbar_substrate::net_guard::GuardPolicy::default();
+        let policy = busbar_kernel::net_guard::GuardPolicy::default();
 
         // ATTEMPT 1 — breaker CLOSED: a real dial to a target the default fail-closed guard refuses (a
         // plaintext `ws://` loopback address, `allow_plaintext: false` by default) genuinely fails,
@@ -2157,7 +2157,7 @@ fn probe_route_failover() -> (&'static str, String) {
         }
         if !matches!(
             host.breaker_state(pool, 0),
-            busbar_substrate::store::BreakerState::Open { .. }
+            busbar_kernel::store::BreakerState::Open { .. }
         ) {
             return (
                 "FAIL",

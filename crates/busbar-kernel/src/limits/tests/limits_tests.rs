@@ -10,7 +10,7 @@ struct RestoreOnDrop(Option<LimitsResolved>);
 
 impl Drop for RestoreOnDrop {
     fn drop(&mut self) {
-        busbar_substrate::config::limits::set_installed(self.0.take());
+        busbar_kernel::config::limits::set_installed(self.0.take());
     }
 }
 
@@ -42,7 +42,7 @@ fn uninstalled_accessors_return_historical_defaults() {
     // fallbacks it is asserting.
     let _lock = LIMITS_TEST_LOCK.blocking_lock();
     assert_eq!(
-        busbar_substrate::proxy::max_translate_body_bytes(),
+        busbar_kernel::proxy::max_translate_body_bytes(),
         DEFAULT_REQUEST_BODY_MAX_BYTES
     );
     assert_eq!(key_gauge_limit(), DEFAULT_KEY_GAUGE_LIMIT);
@@ -91,7 +91,7 @@ fn committed_guard_keeps_its_limits_live_after_the_guard_is_gone() {
         "a COMMITTED guard must not roll back when it drops: an accepted config's limits stay live"
     );
     assert_eq!(
-        busbar_substrate::proxy::max_translate_body_bytes(),
+        busbar_kernel::proxy::max_translate_body_bytes(),
         7 * 1024 * 1024
     );
     assert_eq!(default_probe_interval_secs(), 37);
@@ -113,7 +113,7 @@ fn uncommitted_guard_restores_the_previous_limits_exactly_not_the_defaults() {
 
     // The accepted config that is already serving traffic.
     let previous = distinctive(1_111, 5 * 1024 * 1024, 17);
-    busbar_substrate::config::limits::install(&previous);
+    busbar_kernel::config::limits::install(&previous);
 
     {
         // The candidate config whose build is about to fail. Its limits ARE installed while the
@@ -121,7 +121,7 @@ fn uncommitted_guard_restores_the_previous_limits_exactly_not_the_defaults() {
         let _rejected = InstallGuard::install(&distinctive(2_222, 1024, 3));
         assert_eq!(key_gauge_limit(), 2_222);
         assert_eq!(
-            busbar_substrate::proxy::max_translate_body_bytes(),
+            busbar_kernel::proxy::max_translate_body_bytes(),
             1024,
             "the candidate's limits must be live DURING the build — including the dangerous ones \
              the later validation step exists to reject"
@@ -141,7 +141,7 @@ fn uncommitted_guard_restores_the_previous_limits_exactly_not_the_defaults() {
          a real restore from a reset-to-defaults"
     );
     assert_eq!(
-        busbar_substrate::proxy::max_translate_body_bytes(),
+        busbar_kernel::proxy::max_translate_body_bytes(),
         5 * 1024 * 1024
     );
     assert_eq!(default_probe_interval_secs(), 17);
@@ -157,7 +157,7 @@ fn uncommitted_guard_restores_the_uninstalled_state_when_nothing_was_installed()
     let _lock = LIMITS_TEST_LOCK.blocking_lock();
     let _restore = RestoreOnDrop(get());
 
-    busbar_substrate::config::limits::set_installed(None);
+    busbar_kernel::config::limits::set_installed(None);
 
     {
         let _rejected = InstallGuard::install(&distinctive(3_333, 2048, 51));
@@ -171,7 +171,7 @@ fn uncommitted_guard_restores_the_uninstalled_state_when_nothing_was_installed()
     );
     assert_eq!(key_gauge_limit(), DEFAULT_KEY_GAUGE_LIMIT);
     assert_eq!(
-        busbar_substrate::proxy::max_translate_body_bytes(),
+        busbar_kernel::proxy::max_translate_body_bytes(),
         DEFAULT_REQUEST_BODY_MAX_BYTES
     );
     assert_eq!(default_probe_interval_secs(), DEFAULT_PROBE_INTERVAL_SECS);
@@ -183,7 +183,7 @@ fn uncommitted_guard_restores_the_uninstalled_state_when_nothing_was_installed()
 /// `guard.prior` would pass with `Drop` deleted entirely — it would report success while proving
 /// nothing. So every read here goes through the module's accessors, which are the exact functions
 /// the deep call-stack use sites call per request/per connection (`auth`'s SigV4 body buffer and
-/// `tls`'s total-deadline derivation both call `busbar_substrate::proxy::max_translate_body_bytes()`; `metrics` calls
+/// `tls`'s total-deadline derivation both call `busbar_kernel::proxy::max_translate_body_bytes()`; `metrics` calls
 /// `key_gauge_limit()`), and they are read FROM ANOTHER THREAD — the guard is not on that thread's
 /// stack and is not reachable from it, so the only thing that can carry the restored value across is
 /// the process-global `INSTALLED` slot that a request would read.
@@ -195,7 +195,7 @@ fn rollback_is_visible_on_the_live_read_path_from_another_thread() {
     let _restore = RestoreOnDrop(get());
 
     let previous = distinctive(1_234, 9 * 1024 * 1024, 23);
-    busbar_substrate::config::limits::install(&previous);
+    busbar_kernel::config::limits::install(&previous);
 
     // A request-shaped read, off-thread, WHILE the candidate is installed: proves the read path this
     // test uses actually observes an install (so the post-drop read below is a real observation and
@@ -204,7 +204,7 @@ fn rollback_is_visible_on_the_live_read_path_from_another_thread() {
     let during = std::thread::spawn(|| {
         (
             key_gauge_limit(),
-            busbar_substrate::proxy::max_translate_body_bytes(),
+            busbar_kernel::proxy::max_translate_body_bytes(),
         )
     })
     .join()
@@ -220,7 +220,7 @@ fn rollback_is_visible_on_the_live_read_path_from_another_thread() {
     let after = std::thread::spawn(|| {
         (
             key_gauge_limit(),
-            busbar_substrate::proxy::max_translate_body_bytes(),
+            busbar_kernel::proxy::max_translate_body_bytes(),
             default_probe_interval_secs(),
         )
     })

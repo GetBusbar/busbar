@@ -7,7 +7,7 @@
 //! ([`pipeline`]/[`attempt`]/[`exhaustion`]/[`select`]/[`wire`]/[`egress`]/[`response_body`]/
 //! [`lazy_body`]/[`usage`]/[`hooks`]), the active-probe health loop ([`health`]) and the native fallback plane now live in the
 //! plane crate. Core is a plane-agnostic router: it reaches these only through the neutral
-//! `busbar_substrate::plane_host::EngineTablesView` seam and the fallback plane decl's `build_runtime`
+//! `busbar_kernel::plane_host::EngineTablesView` seam and the fallback plane decl's `build_runtime`
 //! / `viewer` fn-pointers. This engine calls DOWN into core only through the neutral ABI (the substrate's
 //! ports) — the allowed plane→core edge.
 
@@ -33,18 +33,18 @@ use http::StatusCode;
 use serde_json::Value;
 
 #[cfg_attr(not(test), allow(unused_imports))]
-use busbar_substrate::breaker::StatusClass;
-use busbar_substrate::breaker::{
+use busbar_substrate_values::breaker::StatusClass;
+use busbar_substrate_values::breaker::{
     classify as classify_disposition, normalize_raw_error, Disposition,
 };
-use busbar_substrate::plane_host::OnExhaustedInput as OnExhausted;
-use busbar_substrate::proto::convert_headers;
+use busbar_kernel::plane_host::OnExhaustedInput as OnExhausted;
+use busbar_kernel::proto::convert_headers;
 // App-retype WEDGE 3 (THE FLIP): the engine no longer names core's `state::App`. The forward
 // path threads the neutral `host: &Arc<dyn EngineHost>` (minted core-side, carried on the arrival) and
 // the plane's own `rt: &Arc<NativeRuntime>` (resolved off the host slot) instead. Every `app.X` reach
 // flipped to the host seam (`host.X()`) or the runtime tables (`EngineTables::new(rt)`).
-use busbar_substrate::plane_host::EngineHost;
-use busbar_substrate::store::{now, Permit};
+use busbar_kernel::plane_host::EngineHost;
+use busbar_kernel::store::{now, Permit};
 
 pub(crate) mod build_runtime;
 pub(crate) mod tables;
@@ -85,30 +85,30 @@ pub(crate) use wire::*;
 // into the flattened engine namespace so the relocated wire/pipeline call sites keep naming them at
 // their historical short paths (`crate::engine::{route_policy_headers_enabled, HDR_ROUTE_POLICY,
 // HDR_ROUTE_TARGET, UPSTREAM_RTT_US}`).
-pub(crate) use busbar_substrate::proxy::{
+pub(crate) use busbar_kernel::proxy::{
     route_policy_headers_enabled, HDR_ROUTE_POLICY, HDR_ROUTE_TARGET, UPSTREAM_RTT_US,
 };
 
 // NEUTRAL egress-engine primitives the pipeline drives. Named at their TRUE substrate home
-// (`busbar_substrate::egress::engine`) — core merely re-exports these verbatim, so the plane names the
+// (`busbar_kernel::egress::engine`) — core merely re-exports these verbatim, so the plane names the
 // neutral ABI crate directly rather than reaching backwards through core's `proxy`. The
 // historical `EgressClientSpec`/`EgressError` short names are preserved via the same aliases core used.
 #[cfg_attr(not(test), allow(unused_imports))]
-pub(crate) use busbar_substrate::egress::engine::{
+pub(crate) use busbar_kernel::egress::engine::{
     egress_request, install_proxy_tunnel_if_configured, EngineError as EgressError,
     EngineSpec as EgressClientSpec,
 };
 
 // The NEUTRAL content-type / disposition / error-KIND vocabulary named at its TRUE substrate home
-// (`busbar_substrate::proxy`) — the plane names the neutral ABI crate directly. Re-exported into the
+// (`busbar_kernel::proxy`) — the plane names the neutral ABI crate directly. Re-exported into the
 // flattened engine namespace so the moved classification/error-envelope call sites keep naming them at
 // their historical short paths (`crate::engine::{KIND_*, DISPOSITION_TRANSIENT, APPLICATION_JSON, …}`).
-pub(crate) use busbar_substrate::proxy::{
+pub(crate) use busbar_kernel::proxy::{
     APPLICATION_JSON, EGRESS_UA_DEFAULT, POOL_LABEL_UNRESOLVED, PROVIDER_CODE_CONTEXT_LENGTH,
     TEXT_EVENT_STREAM,
 };
 #[cfg_attr(not(test), allow(unused_imports))]
-pub(crate) use busbar_substrate::proxy::{
+pub(crate) use busbar_kernel::proxy::{
     DISPOSITION_ATTEMPT_TIMEOUT, DISPOSITION_CONTEXT_LENGTH, DISPOSITION_HARD_DOWN,
     DISPOSITION_TRANSIENT, ERR_DEGRADED_NON2XX, ERR_NET_CONNECT, ERR_NET_TIMEOUT,
     ERR_NET_TRANSPORT, KIND_API_ERROR, KIND_AUTHENTICATION, KIND_INSUFFICIENT_QUOTA,
@@ -116,10 +116,10 @@ pub(crate) use busbar_substrate::proxy::{
     KIND_TIMEOUT,
 };
 // The NEUTRAL hook-content ceiling knob + the egress-client builder now live in the neutral substrate
-// (`busbar_substrate::proxy`) — re-exported into the flattened engine namespace so the relocated tests
+// (`busbar_kernel::proxy`) — re-exported into the flattened engine namespace so the relocated tests
 // (which named them at `proxy::…`) keep resolving at `crate::engine::…`.
 #[cfg_attr(not(test), allow(unused_imports))]
-pub(crate) use busbar_substrate::proxy::{
+pub(crate) use busbar_kernel::proxy::{
     build_egress_client, set_hook_content_max_bytes, DEFAULT_HOOK_CONTENT_MAX_BYTES,
 };
 

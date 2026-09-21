@@ -32,7 +32,7 @@
 //! ## The dependency seam, stated honestly
 //!
 //! `busbar-voice`'s own plane machinery (`PLANE_DECL`, `mount`, `runtime`, `topology`) is built
-//! against a different, older plane architecture (`busbar_substrate::plane::registry::PlaneDecl`,
+//! against a different, older plane architecture (`busbar_kernel::plane::registry::PlaneDecl`,
 //! the same shape `busbar-mcp`/`busbar-a2a` use) and is gated behind busbar-voice's `runtime` cargo
 //! feature. This crate depends on `busbar-voice` with `default-features = false` and never turns
 //! `runtime` on, so none of that machinery, and none of the async runtime it would pull in

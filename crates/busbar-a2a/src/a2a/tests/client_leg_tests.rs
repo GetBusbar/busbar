@@ -1292,7 +1292,7 @@ async fn the_delegation_hop_lands_in_the_per_task_chain_naming_the_agent_it_was_
     let sink = std::sync::Arc::new(ChainSink::new());
     // Aim the process-wide `task_event` stream the front door writes through at THIS sink (a swap, not
     // a re-register) — the plane owns its task store now, so this is a single `set_sink`.
-    crate::taskstore::TASKS.set_sink(busbar_substrate::plane::store::PlaneStoreView::narrow(
+    crate::taskstore::TASKS.set_sink(busbar_kernel::plane::store::PlaneStoreView::narrow(
         sink.clone(),
     ));
 
@@ -1322,13 +1322,13 @@ async fn the_delegation_hop_lands_in_the_per_task_chain_naming_the_agent_it_was_
 
     let delegated: Vec<_> = events
         .iter()
-        .filter(|e| e.kind == busbar_substrate::audit::vocab::EV_DELEGATED)
+        .filter(|e| e.kind == busbar_contract::vocab::EV_DELEGATED)
         .collect();
     assert_eq!(
         delegated.len(),
         1,
         "exactly one `{}` event for one hop; got kinds {:?}",
-        busbar_substrate::audit::vocab::EV_DELEGATED,
+        busbar_contract::vocab::EV_DELEGATED,
         events.iter().map(|e| &e.kind).collect::<Vec<_>>()
     );
     assert_eq!(
@@ -1348,13 +1348,13 @@ async fn the_delegation_hop_lands_in_the_per_task_chain_naming_the_agent_it_was_
     assert!(
         events
             .iter()
-            .any(|e| e.kind == busbar_substrate::audit::vocab::EV_SUBMITTED),
+            .any(|e| e.kind == busbar_contract::vocab::EV_SUBMITTED),
         "the hop's record must sit in the SAME chain as the submission it serves, not a second \
          log of its own: {:?}",
         events.iter().map(|e| &e.kind).collect::<Vec<_>>()
     );
 
-    crate::taskstore::TASKS.set_sink(busbar_substrate::plane::store::PlaneStoreView::narrow(
+    crate::taskstore::TASKS.set_sink(busbar_kernel::plane::store::PlaneStoreView::narrow(
         std::sync::Arc::new(busbar_store_memory::MemoryStore::new()),
     ));
 }
@@ -1376,7 +1376,7 @@ async fn a_failed_hop_is_chained_too_and_the_chain_carries_its_terminal_outcome(
     let sink = std::sync::Arc::new(ChainSink::new());
     // Aim the process-wide `task_event` stream the front door writes through at THIS sink (a swap, not
     // a re-register) — the plane owns its task store now, so this is a single `set_sink`.
-    crate::taskstore::TASKS.set_sink(busbar_substrate::plane::store::PlaneStoreView::narrow(
+    crate::taskstore::TASKS.set_sink(busbar_kernel::plane::store::PlaneStoreView::narrow(
         sink.clone(),
     ));
 
@@ -1417,7 +1417,7 @@ async fn a_failed_hop_is_chained_too_and_the_chain_carries_its_terminal_outcome(
     assert!(
         events
             .iter()
-            .any(|e| e.kind == busbar_substrate::audit::vocab::EV_DELEGATED),
+            .any(|e| e.kind == busbar_contract::vocab::EV_DELEGATED),
         "the hop was ATTEMPTED, so it must be chained — the record is written before the socket \
          precisely so a hop that fails is not invisible: {:?}",
         events.iter().map(|e| &e.kind).collect::<Vec<_>>()
@@ -1425,7 +1425,7 @@ async fn a_failed_hop_is_chained_too_and_the_chain_carries_its_terminal_outcome(
     assert!(
         events
             .iter()
-            .any(|e| e.kind == busbar_substrate::audit::vocab::EV_TERMINAL),
+            .any(|e| e.kind == busbar_contract::vocab::EV_TERMINAL),
         "a failed hop must END the task in the chain rather than leave it open forever: {:?}",
         events
             .iter()
@@ -1435,7 +1435,7 @@ async fn a_failed_hop_is_chained_too_and_the_chain_carries_its_terminal_outcome(
     crate::taskstore::verify_chain(&events)
         .expect("the failed leg's persisted chain must verify against its own hashes");
 
-    crate::taskstore::TASKS.set_sink(busbar_substrate::plane::store::PlaneStoreView::narrow(
+    crate::taskstore::TASKS.set_sink(busbar_kernel::plane::store::PlaneStoreView::narrow(
         std::sync::Arc::new(busbar_store_memory::MemoryStore::new()),
     ));
 }

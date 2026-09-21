@@ -147,7 +147,7 @@ pub(crate) fn deliver_logs(cache: &mut PayloadCache<'_>) {
         // THIS sink's payload, built to THIS sink's projection (shared with any sibling holding the
         // identical projection). The build happens here, per sink — never once and broadcast.
         let payload = cache.get(target.projection);
-        busbar_substrate::detached::spawn_detached(async move {
+        busbar_kernel::detached::spawn_detached(async move {
             let _permit = permit; // slot releases on task end via the owned permit's Drop.
             let Ok(uri) = url.as_str().parse::<http::Uri>() else {
                 // Structurally unreachable: the target survived `validate_webhook_url` at boot.
@@ -167,7 +167,7 @@ pub(crate) fn deliver_logs(cache: &mut PayloadCache<'_>) {
                     headers.insert(n, v);
                 }
             }
-            let req = busbar_substrate::egress::engine::request(
+            let req = busbar_kernel::egress::engine::request(
                 http::Method::POST,
                 uri,
                 headers,
@@ -176,7 +176,7 @@ pub(crate) fn deliver_logs(cache: &mut PayloadCache<'_>) {
             // This target's own per-delivery deadline over the whole send — the same span the
             // retired per-request reqwest `.timeout()` covered.
             let deadline = tokio::time::Instant::now() + timeout;
-            match busbar_substrate::egress::engine::send_bounded(&client, req, deadline).await {
+            match busbar_kernel::egress::engine::send_bounded(&client, req, deadline).await {
                 Ok(resp) if resp.status().is_success() => {}
                 Ok(resp) => warn_webhook_delivery_failed(url.as_str(), Ok(resp.status())),
                 Err(e) => warn_webhook_delivery_failed(url.as_str(), Err(e.into_cause())),

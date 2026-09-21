@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE CONNECTION-LIFETIME SESSION STATE — a thin binding over the neutral
-//! `busbar_substrate::plane_host::SessionScope` (design `plane4-duplex-session.md` §4). One voice session owns ONE durable handle
+//! `busbar_kernel::plane_host::SessionScope` (design `plane4-duplex-session.md` §4). One voice session owns ONE durable handle
 //! in the process-wide `DurableHandleEngine`, keyed by `(owner, id)`. The owner is load-bearing: a
 //! second session bound to the same `id` under a DIFFERENT owner collapses to the exact same
 //! indistinguishable refusal (`HandleDenied::NotYours` / `ScopedMutateError::NotYours`) — a foreign
@@ -11,12 +11,12 @@
 //! session's `(owner, id)` into the row and drives open → bump → close.
 
 use busbar_api::{PlaneDisposition, PlaneRecord, StoreResult};
-use busbar_substrate::plane::handle_engine::{
+use busbar_kernel::plane::handle_engine::{
     ChainPosition, DurableHandleEngine, HandleEngineError, HandleMeta, Mutation, RehydrateCounts,
     RehydrateOutcome, ScopedMutateError, SealedEvent, SubmitRecord, SweepBounds,
 };
-use busbar_substrate::plane::store::PlaneStore;
-use busbar_substrate::plane_host::SessionScope;
+use busbar_kernel::plane::store::PlaneStore;
+use busbar_kernel::plane_host::SessionScope;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 

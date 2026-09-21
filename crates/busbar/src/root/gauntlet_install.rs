@@ -5,7 +5,7 @@
 //!
 //! The kernel-loop runners ([`run_gauntlet_via_kernel`] / [`open_gauntlet_via_kernel`]) live here in
 //! the root (the only tier that sees both `busbar-kernel` and the plane engines). This module injects
-//! them into the neutral per-capability-keyed registry in `busbar_substrate::plane_host` as
+//! them into the neutral per-capability-keyed registry in `busbar_kernel::plane_host` as
 //! fn-pointers, mirroring `busbar_admin::install()`.
 //!
 //! DORMANT: [`install`] registers ZERO planes, so every gauntlet/session path stays on the substrate
@@ -17,13 +17,13 @@ use std::future::Future;
 use std::pin::Pin;
 
 use axum::response::Response;
-use busbar_substrate::plane_host::{
+use busbar_kernel::plane_host::{
     register_gauntlet_runner, register_session_runner, GauntletPlane, GauntletRequest,
 };
 
 use crate::root::gauntlet_kernel::{open_gauntlet_via_kernel, run_gauntlet_via_kernel};
 
-/// The kernel-loop one-shot runner as a `busbar_substrate::plane_host::GauntletRunner` fn-pointer:
+/// The kernel-loop one-shot runner as a `busbar_kernel::plane_host::GauntletRunner` fn-pointer:
 /// the async runner boxed into the erased future the neutral seam holds.
 fn kernel_one_shot<'a>(
     req: GauntletRequest<'a>,

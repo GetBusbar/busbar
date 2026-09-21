@@ -10,7 +10,7 @@
 //! ## What moved here, byte-identical
 //!
 //! [`HttpTransport::dial`] builds ONE pooled `hyper_util` client per transport instance, with the
-//! exact posture 1.5.5's egress client used (`busbar_substrate::egress::engine`, read before this
+//! exact posture 1.5.5's egress client used (`busbar_kernel::egress::engine`, read before this
 //! was written): redirects never followed (hyper's client is structurally incapable of following
 //! one — no policy to set), `connect_timeout` 10s, TCP keepalive 60s + nodelay, HTTP/2 keep-alive
 //! interval 30s / timeout 10s with the adaptive window on, `pool_max_idle_per_host` /

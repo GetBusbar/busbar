@@ -953,7 +953,7 @@ fn the_scope_kinds_are_the_codecs_own() {
 /// The pool prefix is the substrate's own, single-sourced there.
 #[test]
 fn the_pool_prefix_is_the_substrates_own() {
-    let substrate = include_str!("../../../../busbar-substrate/src/store.rs");
+    let substrate = include_str!("../../../../busbar-kernel/src/store/vocab.rs");
     assert!(
         substrate.contains(&format!("format!(\"{POOL_PREFIX_TOOL}{{server}}\")")),
         "the substrate no longer keys this plane's cells under {POOL_PREFIX_TOOL}"
@@ -1304,11 +1304,11 @@ fn the_door_opens_a_reservation_sized_off_this_planes_estimate() {
 fn one_call_at_a_time(group: &str) -> busbar_kernel_budget::GroupTable {
     let groups = BTreeMap::from([(
         group.to_string(),
-        busbar_substrate::config::groups::GroupCfg {
+        busbar_kernel::config::groups::GroupCfg {
             parent: None,
             enabled: true,
-            limits: vec![busbar_substrate::config::groups::LimitCfg {
-                metric: busbar_substrate::config::groups::LimitMetric::Concurrent,
+            limits: vec![busbar_kernel::config::groups::LimitCfg {
+                metric: busbar_kernel::config::groups::LimitMetric::Concurrent,
                 amount: 1,
                 per: None,
                 scope: None,

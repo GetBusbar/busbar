@@ -51,7 +51,7 @@
 use axum::http::StatusCode;
 use axum::response::Response;
 
-use busbar_substrate::catalogue::CatalogueItem;
+use busbar_kernel::catalogue::CatalogueItem;
 
 use super::callerask::{self, AskDecision, Bind, Retry};
 use super::catalogue::{DispatchRefusal, ToolEntry};
@@ -132,7 +132,7 @@ pub(crate) struct Ctx<'a> {
     /// ([`super::runtime_of`]) off the snapshot the host was minted on, LIVE re-reads
     /// ([`super::runtime_live`]) off the host's retained handle. Minted `from_handle` by the core
     /// route adapter, so the live re-read genuinely re-reads.
-    pub(crate) host: std::sync::Arc<dyn busbar_substrate::plane_host::EngineHost>,
+    pub(crate) host: std::sync::Arc<dyn busbar_kernel::plane_host::EngineHost>,
     /// The caller's resolved governance key. `None` when governance is disabled.
     pub(crate) gov: &'a busbar_api::PlaneRequestCtx,
     /// The attributed principal, for the audit row.
@@ -154,12 +154,12 @@ pub(crate) struct Ctx<'a> {
     /// here, rather than ingress growing a grant-scoped lookup or this module growing a second
     /// header parser. Both halves still answer `-32020` / `400`.
     pub(crate) headers: &'a axum::http::HeaderMap,
-    /// THE SYNC LEG'S SHARED HOST [`DispatchScope`](busbar_substrate::plane_host::DispatchScope) — the arena the
+    /// THE SYNC LEG'S SHARED HOST [`DispatchScope`](busbar_kernel::plane_host::DispatchScope) — the arena the
     /// `tools/call` breaker admit registers into and the leg settle folds through (CLUSTER-1). Opened
     /// once at the top of `rpc_dispatch` and held for the whole future, so a host handle is reachable
     /// at every downstream breaker admit/settle site and reclaims on any exit. `None` for the task
     /// path (which re-homes its probe into a `DurableScope`) and for unit tests that admit directly.
-    pub(crate) scope: Option<&'a busbar_substrate::plane_host::DispatchScope>,
+    pub(crate) scope: Option<&'a busbar_kernel::plane_host::DispatchScope>,
 }
 
 impl Ctx<'_> {
@@ -170,19 +170,19 @@ impl Ctx<'_> {
     /// snapshot. It replaced a grant CLOSURE, which could only carry the grant: the identity and
     /// expiry steps had nowhere to arrive, so a listing served a deleted key.
     ///
-    /// A `None` key means governance is DISABLED for this deployment. `busbar_substrate::trust::validate`
+    /// A `None` key means governance is DISABLED for this deployment. `busbar_kernel::trust::validate`
     /// states that posture once for the whole tree — with no key there is no grant to narrow, and
     /// refusing everything would make an ungoverned deployment unable to serve at all — so this
     /// carries the `Option` rather than restating the rule.
     ///
     /// `at_admission`, because a listing IS its own admission: there is no earlier snapshot for it
-    /// to have outlived. `tools/call` says [`busbar_substrate::trust::validate::Generations::since`] instead,
+    /// to have outlived. `tools/call` says [`busbar_kernel::trust::validate::Generations::since`] instead,
     /// out loud, at its own call site.
-    fn caller(&self) -> busbar_substrate::catalogue::Caller<'_> {
-        busbar_substrate::catalogue::Caller {
+    fn caller(&self) -> busbar_kernel::catalogue::Caller<'_> {
+        busbar_kernel::catalogue::Caller {
             key: self.gov.key(),
             now: self.host.clock_now_secs(),
-            generation: busbar_substrate::trust::validate::Generations::at_admission(
+            generation: busbar_kernel::trust::validate::Generations::at_admission(
                 super::runtime_of(&self.host).catalogue.generation(),
             ),
         }
@@ -378,7 +378,7 @@ fn tasks_cancel(
     ctx.host.audit_emit(
         "mcp_task.cancel",
         &format!("mcp_task:{}", task.id),
-        busbar_substrate::audit::vocab::OUTCOME_APPLIED,
+        busbar_contract::vocab::OUTCOME_APPLIED,
         ctx.actor,
     );
     result(id, serde_json::json!({}))
@@ -711,7 +711,7 @@ fn prompts_get(
             // admission registers into) so it releases when the request future ends — the lifetime
             // the caller-held `Vec<AdmitGrant>` had. A `None` scope (unit tests) falls back to a local
             // arena that drops at this fn's return, the same drop point.
-            let fallback_scope = busbar_substrate::plane_host::DispatchScope::new();
+            let fallback_scope = busbar_kernel::plane_host::DispatchScope::new();
             let scope = ctx.scope.unwrap_or(&fallback_scope);
             if let Err(reason) = charge_round(
                 ctx,
@@ -737,7 +737,7 @@ fn prompts_get(
             ctx.host.audit_emit(
                 "mcp.caller_ask",
                 &format!("mcp_prompt:{}", prompt.namespaced),
-                busbar_substrate::audit::vocab::OUTCOME_APPLIED,
+                busbar_contract::vocab::OUTCOME_APPLIED,
                 ctx.actor,
             );
             return input_required_result(id, &asks, &request_state);
@@ -1024,9 +1024,9 @@ struct CallLog<'a> {
     pin_generation: u64,
     /// The NEUTRAL host seam this call rides — cloned from the request `Ctx`. The record's timestamp
     /// comes through its `clock_now` seam, and the durable per-call chain append rides its
-    /// [`call_log_emit`](busbar_substrate::plane_host::EngineHost::call_log_emit) method (which mints
+    /// [`call_log_emit`](busbar_kernel::plane_host::EngineHost::call_log_emit) method (which mints
     /// the transient host + arena INTERNALLY), so this holds no `&App` / `DispatchScope` of its own.
-    host: std::sync::Arc<dyn busbar_substrate::plane_host::EngineHost>,
+    host: std::sync::Arc<dyn busbar_kernel::plane_host::EngineHost>,
 }
 
 impl<'a> CallLog<'a> {
@@ -1054,7 +1054,7 @@ impl<'a> CallLog<'a> {
     }
 
     fn write(&self, outcome: &'static str, reason: &str) {
-        let input = busbar_substrate::plane::calllog::CallInput {
+        let input = busbar_kernel::plane::calllog::CallInput {
             ts: self.host.clock_now_secs(),
             server: self.server.clone(),
             tool: self.tool.clone(),
@@ -1074,14 +1074,14 @@ impl<'a> CallLog<'a> {
     /// Record a refusal and hand the response back. Takes the response BY VALUE so the record and
     /// the answer are produced in one statement and a terminal cannot quietly skip the record.
     fn refused(&self, reason: &str, response: Response) -> Response {
-        self.write(busbar_substrate::audit::vocab::OUTCOME_REFUSED, reason);
+        self.write(busbar_contract::vocab::OUTCOME_REFUSED, reason);
         response
     }
 
     /// Record a call that WENT OUT and was answered. `reason` is empty on a dispatch, per the store
     /// contract — the field is a refusal token, not a description.
     fn dispatched(&self, response: Response) -> Response {
-        self.write(busbar_substrate::audit::vocab::OUTCOME_DISPATCHED, "");
+        self.write(busbar_contract::vocab::OUTCOME_DISPATCHED, "");
         response
     }
 
@@ -1093,7 +1093,7 @@ impl<'a> CallLog<'a> {
     /// as free on a dispatch rather than forbidden: what it forbids is a DESCRIPTION, and
     /// `upstream_failed` is a stable, greppable token exactly like the refusal ones beside it.
     fn dispatched_with_reason(&self, reason: &'static str, response: Response) -> Response {
-        self.write(busbar_substrate::audit::vocab::OUTCOME_DISPATCHED, reason);
+        self.write(busbar_contract::vocab::OUTCOME_DISPATCHED, reason);
         response
     }
 }
@@ -1101,7 +1101,7 @@ impl<'a> CallLog<'a> {
 /// VERIFY-ON-CALL for one `tools/call`: freshen the named tool's server within `verify_ttl`,
 /// single-flight, fail-closed. See the call site in [`tools_call`] for the ordering rationale.
 ///
-/// The single-flight, the freshness bound and the fail-closed ordering are [`busbar_substrate::trust::verify`]'s,
+/// The single-flight, the freshness bound and the fail-closed ordering are [`busbar_kernel::trust::verify`]'s,
 /// once, for every plane; what is here is this plane's FETCH — an async `tools/list` re-hash through
 /// [`crate::mcp::connect::refresh`], stamped so the freshness clock records when it looked — and this
 /// plane's ledger reader. A tool name no registration exposes is a no-op, and so is a fresh snapshot:
@@ -1182,7 +1182,7 @@ async fn verify_on_call(ctx: &Ctx<'_>, name: &str) {
 }
 
 /// The MCP `tools/call` plane — this protocol's sibling on the NEUTRAL shared gauntlet sequence
-/// ([`busbar_substrate::plane_host::run_gauntlet`]), the SAME sequence the LLM native plane rides.
+/// ([`busbar_kernel::plane_host::run_gauntlet`]), the SAME sequence the LLM native plane rides.
 ///
 /// MCP's destination trust/scope entry (`verify_on_call` freshens the sightings that the entitlement
 /// `resolve` then reads) is ASYNC and INTERLEAVED with resolve/re-validation, and its per-round
@@ -1200,19 +1200,19 @@ struct ToolCallPlane<'a> {
 }
 
 #[async_trait::async_trait]
-impl busbar_substrate::plane_host::GauntletPlane for ToolCallPlane<'_> {
+impl busbar_kernel::plane_host::GauntletPlane for ToolCallPlane<'_> {
     fn verify_destination(
         &self,
-        _req: &busbar_substrate::plane_host::GauntletRequest<'_>,
-    ) -> busbar_substrate::plane_host::VerifyOutcome {
+        _req: &busbar_kernel::plane_host::GauntletRequest<'_>,
+    ) -> busbar_kernel::plane_host::VerifyOutcome {
         // See the type doc: MCP's trust/scope entry is async + interleaved with resolve, so it stays
         // inside `drive` (byte-identical). The shared sequence's sync pre-admission gate is a no-op.
-        busbar_substrate::plane_host::VerifyOutcome::Proceed
+        busbar_kernel::plane_host::VerifyOutcome::Proceed
     }
 
     async fn drive(
         self: Box<Self>,
-        _req: busbar_substrate::plane_host::GauntletRequest<'_>,
+        _req: busbar_kernel::plane_host::GauntletRequest<'_>,
     ) -> Response {
         // The whole of `tools_call`, VERBATIM — admission/breaker/per-round metering/reroute/envelope/
         // call-log all unchanged, driven off `ctx`. The shared `GauntletRequest` is informational on
@@ -1233,7 +1233,7 @@ impl busbar_substrate::plane_host::GauntletPlane for ToolCallPlane<'_> {
 
 /// Route one `tools/call` through the shared gauntlet sequence — the seam entry the dispatch arm
 /// calls instead of [`tools_call`] directly. Threads the resolved identity + the tool name (as the
-/// destination label) into the neutral [`busbar_substrate::plane_host::GauntletRequest`]; the MCP
+/// destination label) into the neutral [`busbar_kernel::plane_host::GauntletRequest`]; the MCP
 /// plane's `drive` reads `ctx` rather than `req`, so behaviour is byte-identical to calling
 /// `tools_call` inline while the OUTER sequence now runs through `run_gauntlet`.
 async fn tools_call_via_gauntlet(
@@ -1241,7 +1241,7 @@ async fn tools_call_via_gauntlet(
     params: Option<&serde_json::Value>,
     id: Option<serde_json::Value>,
 ) -> Response {
-    let req = busbar_substrate::plane_host::GauntletRequest {
+    let req = busbar_kernel::plane_host::GauntletRequest {
         gov: ctx.gov,
         destination: string_param(params, "name").unwrap_or(""),
         correlation_id: 0,
@@ -1266,7 +1266,7 @@ async fn tools_call(
         // what `McpCallRecord` documents as "a refusal that matched no registration".
         let log = CallLog::open(ctx, "", selected_gen);
         return log.refused(
-            busbar_substrate::audit::vocab::REASON_MALFORMED,
+            busbar_contract::vocab::REASON_MALFORMED,
             invalid_params(id, "`params.name` is required and must be a string."),
         );
     };
@@ -1298,7 +1298,7 @@ async fn tools_call(
         ctx.gov.key(),
         LiveSightings::of(&admitted_sightings),
         name,
-        busbar_substrate::trust::validate::Generations::at_admission(selected_gen),
+        busbar_kernel::trust::validate::Generations::at_admission(selected_gen),
         ctx.host.clock_now_secs(),
     ) {
         Ok(entry) => entry.clone(),
@@ -1359,7 +1359,7 @@ async fn tools_call(
         ctx.host.audit_emit(
             "mcp_tool.call",
             &format!("mcp_tool:{}", selected.namespaced),
-            busbar_substrate::audit::vocab::OUTCOME_REJECTED,
+            busbar_contract::vocab::OUTCOME_REJECTED,
             ctx.actor,
         );
         return log.refused("tasks_capability_undeclared", missing_tasks_capability(id));
@@ -1415,7 +1415,7 @@ async fn tools_call(
             // amplification the upstream cap exists to stop, pointed the other way.
             // The govern grant rides the request-wide arena (`ctx.scope`) — released at request end,
             // the `Vec<AdmitGrant>` lifetime; a `None` scope (tests) uses a local arena dropped here.
-            let fallback_scope = busbar_substrate::plane_host::DispatchScope::new();
+            let fallback_scope = busbar_kernel::plane_host::DispatchScope::new();
             let scope = ctx.scope.unwrap_or(&fallback_scope);
             if let Err(reason) = charge_round(
                 ctx,
@@ -1437,11 +1437,11 @@ async fn tools_call(
             ctx.host.audit_emit(
                 "mcp.caller_ask",
                 &format!("mcp_tool:{}", selected.namespaced),
-                busbar_substrate::audit::vocab::OUTCOME_APPLIED,
+                busbar_contract::vocab::OUTCOME_APPLIED,
                 ctx.actor,
             );
             return log.refused(
-                busbar_substrate::audit::vocab::REASON_CALLER_ASK_PENDING,
+                busbar_contract::vocab::REASON_CALLER_ASK_PENDING,
                 input_required_result(id, &asks, &request_state),
             );
         }
@@ -1583,12 +1583,12 @@ async fn tools_call(
             )
         })
         .await
-        .unwrap_or(busbar_substrate::plane_host::GateOutcome::Reject {
+        .unwrap_or(busbar_kernel::plane_host::GateOutcome::Reject {
             status: 403,
             message: String::new(),
             hook: String::new(),
         });
-        if let busbar_substrate::plane_host::GateOutcome::Reject {
+        if let busbar_kernel::plane_host::GateOutcome::Reject {
             status,
             message,
             hook,
@@ -1597,7 +1597,7 @@ async fn tools_call(
             ctx.host.audit_emit(
                 "mcp_tool.call",
                 &format!("mcp_tool:{}", selected.namespaced),
-                busbar_substrate::audit::vocab::OUTCOME_REJECTED,
+                busbar_contract::vocab::OUTCOME_REJECTED,
                 ctx.actor,
             );
             tracing::info!(
@@ -1607,13 +1607,13 @@ async fn tools_call(
                 "mcp tools/call refused by a hook gate"
             );
             return log.refused(
-                busbar_substrate::audit::vocab::REASON_HOOK_REJECTED,
+                busbar_contract::vocab::REASON_HOOK_REJECTED,
                 error(
                     StatusCode::from_u16(status).unwrap_or(StatusCode::FORBIDDEN),
                     id,
                     CODE_REFUSED,
                     &message,
-                    Some(serde_json::json!({ "reason": busbar_substrate::audit::vocab::REASON_HOOK_REJECTED, "hook": hook })),
+                    Some(serde_json::json!({ "reason": busbar_contract::vocab::REASON_HOOK_REJECTED, "hook": hook })),
                 ),
             );
         }
@@ -1670,12 +1670,12 @@ async fn tools_call(
         .await
         // A join panic is FAIL-SAFE on the transform path (the gate already admitted the request):
         // proceed with the original arguments, unchanged.
-        .unwrap_or(busbar_substrate::plane_host::TransformVerdict::Proceed {
+        .unwrap_or(busbar_kernel::plane_host::TransformVerdict::Proceed {
             applied: false,
             args_json: Vec::new(),
         });
         match verdict {
-            busbar_substrate::plane_host::TransformVerdict::Reject {
+            busbar_kernel::plane_host::TransformVerdict::Reject {
                 status,
                 message,
                 hook,
@@ -1683,7 +1683,7 @@ async fn tools_call(
                 ctx.host.audit_emit(
                     "mcp_tool.call",
                     &format!("mcp_tool:{}", selected.namespaced),
-                    busbar_substrate::audit::vocab::OUTCOME_REJECTED,
+                    busbar_contract::vocab::OUTCOME_REJECTED,
                     ctx.actor,
                 );
                 tracing::info!(
@@ -1693,17 +1693,17 @@ async fn tools_call(
                     "mcp tools/call refused by a rewrite (prompt: rw) hook"
                 );
                 return log.refused(
-                    busbar_substrate::audit::vocab::REASON_HOOK_REJECTED,
+                    busbar_contract::vocab::REASON_HOOK_REJECTED,
                     error(
                         StatusCode::from_u16(status).unwrap_or(StatusCode::FORBIDDEN),
                         id,
                         CODE_REFUSED,
                         &message,
-                        Some(serde_json::json!({ "reason": busbar_substrate::audit::vocab::REASON_HOOK_REJECTED, "hook": hook })),
+                        Some(serde_json::json!({ "reason": busbar_contract::vocab::REASON_HOOK_REJECTED, "hook": hook })),
                     ),
                 );
             }
-            busbar_substrate::plane_host::TransformVerdict::Proceed { applied, args_json } => {
+            busbar_kernel::plane_host::TransformVerdict::Proceed { applied, args_json } => {
                 // A committed rewrite REPLACES the arguments the rest of this path uses (ask-merge is
                 // already done above; the egress gate, task row and dispatch all read `arguments`).
                 if applied {
@@ -1770,7 +1770,7 @@ async fn tools_call(
     // registers into: `ctx.scope` in production, a local fallback that drops at this fn's return for a
     // `None` scope (unit tests). Resolved BEFORE the admit so the won probe is born in it — the breaker
     // admit now always registers through a real arena, never a raw hold.
-    let fallback_scope = busbar_substrate::plane_host::DispatchScope::new();
+    let fallback_scope = busbar_kernel::plane_host::DispatchScope::new();
     let scope = ctx.scope.unwrap_or(&fallback_scope);
     if let Err(refused) = route.admit(&ctx.host, scope) {
         return log.refused(
@@ -1868,7 +1868,7 @@ async fn tools_call(
     // time rather than one per round for the request's whole life. The budget fee, rate check and
     // metering `charge_round` performs still run once per round — only the hold's lifetime changes.
     let mut charge_seam =
-        |rec: &RoundRecord, round_scope: &busbar_substrate::plane_host::DispatchScope| {
+        |rec: &RoundRecord, round_scope: &busbar_kernel::plane_host::DispatchScope| {
             charge_round(ctx, &selected.namespaced, rec, round_scope)
         };
     let outcome = inputreq::drive(
@@ -1905,7 +1905,7 @@ async fn tools_call(
             // a result that says it is unfinished is not a finished result, and handing the caller a
             // silently-truncated one would be answering a question nobody asked.
             if let Some(field) = upstream_ask_field(&value) {
-                busbar_substrate::diag_error!(
+                busbar_substrate_values::diag_error!(
                     crate::diagnostics::MCP_ASK_RECOGNISER_MISSED,
                     tool = %selected.namespaced,
                     field,
@@ -1915,7 +1915,7 @@ async fn tools_call(
                 ctx.host.audit_emit(
                     "mcp_tool.call",
                     &resource,
-                    busbar_substrate::audit::vocab::OUTCOME_REJECTED,
+                    busbar_contract::vocab::OUTCOME_REJECTED,
                     ctx.actor,
                 );
                 return log.refused(
@@ -1951,7 +1951,7 @@ async fn tools_call(
             if let Some(schema) = &selected.output_schema {
                 if let Some(structured) = value.get("structuredContent") {
                     if let Err(why) = super::outputschema::check(structured, schema) {
-                        busbar_substrate::diag_debug!(
+                        busbar_substrate_values::diag_debug!(
                             crate::diagnostics::MCP_OUTPUT_SCHEMA_VIOLATION,
                             tool = %selected.namespaced,
                             why = %why,
@@ -1960,11 +1960,11 @@ async fn tools_call(
                         ctx.host.audit_emit(
                             "mcp_tool.call",
                             &resource,
-                            busbar_substrate::audit::vocab::OUTCOME_REJECTED,
+                            busbar_contract::vocab::OUTCOME_REJECTED,
                             ctx.actor,
                         );
                         return log.dispatched_with_reason(
-                            busbar_substrate::audit::vocab::REASON_UPSTREAM_FAILED,
+                            busbar_contract::vocab::REASON_UPSTREAM_FAILED,
                             result(
                                 id,
                                 upstream_failure_result(
@@ -1985,7 +1985,7 @@ async fn tools_call(
             ctx.host.audit_emit(
                 "mcp_tool.call",
                 &resource,
-                busbar_substrate::audit::vocab::OUTCOME_APPLIED,
+                busbar_contract::vocab::OUTCOME_APPLIED,
                 ctx.actor,
             );
             // Tool OUTPUT is markup-normalised before it re-enters model context: an upstream's
@@ -1997,10 +1997,10 @@ async fn tools_call(
             ctx.host.audit_emit(
                 "mcp_tool.call",
                 &resource,
-                busbar_substrate::audit::vocab::OUTCOME_REJECTED,
+                busbar_contract::vocab::OUTCOME_REJECTED,
                 ctx.actor,
             );
-            busbar_substrate::diag_debug!(
+            busbar_substrate_values::diag_debug!(
                 crate::diagnostics::MCP_TOOLCALL_REFUSED,
                 tool = %selected.namespaced,
                 reason = refusal.audit_reason(),
@@ -2048,17 +2048,17 @@ async fn tools_call(
             ctx.host.audit_emit(
                 "mcp_tool.call",
                 &resource,
-                busbar_substrate::audit::vocab::OUTCOME_REJECTED,
+                busbar_contract::vocab::OUTCOME_REJECTED,
                 ctx.actor,
             );
-            busbar_substrate::diag_debug!(
+            busbar_substrate_values::diag_debug!(
                 crate::diagnostics::MCP_TOOLCALL_UPSTREAM_FAILED,
                 tool = %selected.namespaced,
                 reason = %reason,
                 "mcp tools/call upstream failed"
             );
             log.dispatched_with_reason(
-                busbar_substrate::audit::vocab::REASON_UPSTREAM_FAILED,
+                busbar_contract::vocab::REASON_UPSTREAM_FAILED,
                 result(id, upstream_failure_result(&selected.server, &reason)),
             )
         }
@@ -2133,7 +2133,7 @@ async fn create_task(
     // settling-handoff), so its owner-checked release already reclaims at TASK end, not request-future
     // drop. The immutable borrow the admit takes on `durable.arena()` ends when `admit` returns, so
     // `durable` moves into the runner's `DurableHostDispatch` below.
-    let durable = busbar_substrate::plane_host::DurableScope::new();
+    let durable = busbar_kernel::plane_host::DurableScope::new();
     if let Err(refused) = route.admit(&ctx.host, durable.arena()) {
         return log.refused(
             route_refusal_reason(&refused),
@@ -2156,7 +2156,7 @@ async fn create_task(
     // wire), so the govern grant rides a SHORT-LIVED `DurableScope` opened just for this charge and
     // reclaimed immediately below — NOT the runner's durable scope, which holds the probe for the
     // task's whole life. The host `govern_admit_reason` seam registers the grant in this arena.
-    let grant_scope = busbar_substrate::plane_host::DurableScope::new();
+    let grant_scope = busbar_kernel::plane_host::DurableScope::new();
     if let Err(reason) = charge_round(
         ctx,
         &selected.namespaced,
@@ -2209,14 +2209,14 @@ async fn create_task(
     ctx.host.audit_emit(
         "mcp_tool.call",
         &format!("mcp_tool:{}", selected.namespaced),
-        busbar_substrate::audit::vocab::OUTCOME_APPLIED,
+        busbar_contract::vocab::OUTCOME_APPLIED,
         ctx.actor,
     );
     // RECORDED AS `refused`/`task_created`, and the module header for `calllog` says why: at the
     // moment this request is answered nothing has gone out. What the runner does next belongs to the
     // task's own provenance, not to a second per-call record under a request already answered.
     log.refused(
-        busbar_substrate::audit::vocab::REASON_TASK_CREATED,
+        busbar_contract::vocab::REASON_TASK_CREATED,
         task_result(id, created),
     )
 }
@@ -2351,7 +2351,7 @@ fn charge_round(
     ctx: &Ctx<'_>,
     namespaced: &str,
     rec: &RoundRecord,
-    scope: &busbar_substrate::plane_host::DispatchScope,
+    scope: &busbar_kernel::plane_host::DispatchScope,
 ) -> Result<(), String> {
     if !ctx.host.governance_enabled() {
         // Governance disabled: no key, no budget, nothing to charge. The same posture the LLM path
@@ -2371,7 +2371,7 @@ fn charge_round(
     // `budget_remaining` are 0 so the POD gate is a no-op and the chain is the sole decider. On a
     // BLOCKED limit the host renders the SAME `format!("{blocked:?}")` bytes the in-place
     // `Err(format!("{blocked:?}"))` returned, so the operator-facing refusal is byte-identical.
-    if let busbar_substrate::plane_host::GovAdmit::Blocked { reason, .. } =
+    if let busbar_kernel::plane_host::GovAdmit::Blocked { reason, .. } =
         ctx.host.govern_admit_reason(
             scope,
             namespaced.as_bytes(),
@@ -2422,10 +2422,10 @@ fn refuse_setup(
     ctx.host.audit_emit(
         "mcp_tool.call",
         &format!("mcp_tool:{namespaced}"),
-        busbar_substrate::audit::vocab::OUTCOME_REJECTED,
+        busbar_contract::vocab::OUTCOME_REJECTED,
         ctx.actor,
     );
-    busbar_substrate::diag_debug!(
+    busbar_substrate_values::diag_debug!(
         crate::diagnostics::MCP_TOOLCALL_REFUSED_PRE_UPSTREAM,
         tool = %namespaced,
         reason = denied.audit_reason(),
@@ -2454,11 +2454,11 @@ fn refuse_catalogue(
     refusal: &DispatchRefusal,
     id: Option<serde_json::Value>,
 ) -> Response {
-    use busbar_substrate::ingress::protocol::Words as _;
+    use busbar_kernel::ingress::protocol::Words as _;
     ctx.host.audit_emit(
         "mcp_tool.call",
         &format!("mcp_tool:{name}"),
-        busbar_substrate::audit::vocab::OUTCOME_REJECTED,
+        busbar_contract::vocab::OUTCOME_REJECTED,
         ctx.actor,
     );
     // A caller that may not see a tool and a caller naming one that does not exist get the SAME
@@ -2479,7 +2479,7 @@ fn refuse_catalogue(
         | DispatchRefusal::Quarantined { .. } => StatusCode::FORBIDDEN,
     };
     super::envelope::McpWords.refuse(
-        busbar_substrate::ingress::protocol::CoreRefusal::Admission {
+        busbar_kernel::ingress::protocol::CoreRefusal::Admission {
             id: id.unwrap_or(serde_json::Value::Null),
             status,
             message: refusal.to_string(),
@@ -2557,7 +2557,7 @@ fn refuse_upstream_unavailable(
 /// un-pooled path's records are byte-identical to the breaker unit's).
 fn route_refusal_reason(refused: &super::reroute::RouteRefused) -> &'static str {
     match &refused.refusal {
-        busbar_substrate::failover::Refusal::NotInterchangeable { .. } => refused.refusal.reason(),
+        busbar_kernel::failover::Refusal::NotInterchangeable { .. } => refused.refusal.reason(),
         _ => REASON_UPSTREAM_UNAVAILABLE,
     }
 }
@@ -2567,7 +2567,7 @@ fn refuse_route(
     route: &super::reroute::PoolRoute,
     refused: &super::reroute::RouteRefused,
 ) -> Response {
-    if let busbar_substrate::failover::Refusal::NotInterchangeable { .. } = &refused.refusal {
+    if let busbar_kernel::failover::Refusal::NotInterchangeable { .. } = &refused.refusal {
         return error(
             StatusCode::SERVICE_UNAVAILABLE,
             id,
@@ -2743,10 +2743,10 @@ fn refuse_ask(
     ctx.host.audit_emit(
         "mcp.caller_ask",
         resource,
-        busbar_substrate::audit::vocab::OUTCOME_REJECTED,
+        busbar_contract::vocab::OUTCOME_REJECTED,
         ctx.actor,
     );
-    busbar_substrate::diag_debug!(
+    busbar_substrate_values::diag_debug!(
         crate::diagnostics::MCP_CALLER_ASK_REFUSED,
         capability = %resource,
         reason = refusal.audit_reason(),
@@ -2874,7 +2874,7 @@ fn caller_ask_decision(
                 roots_epoch: super::runtime_of(&ctx.host).roots_epochs.current(principal),
             }
         },
-        &busbar_substrate::plane::approvals::digest_arguments(arguments),
+        &busbar_kernel::plane::approvals::digest_arguments(arguments),
         callerask::Approvals {
             sealer: sealer.as_ref(),
             host: ctx.host.as_ref(),

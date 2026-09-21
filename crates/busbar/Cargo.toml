@@ -25,7 +25,6 @@ path = "src/main.rs"
 # that live there — the hostless-egress driver (`egress::seam::install_hostless_egress`), which the
 # binary backs with core's `CoreHostlessEgress`. Core already depends on substrate; naming it here is
 # the one composition-root edge, not a new leaf.
-busbar-substrate = { path = "../busbar-substrate" }
 # THE PURE HALF OF THE SUBSTRATE, named directly. The value families — the clock readers, the proxy
 # vocabularies, the neutral request handler — were split out of `busbar-substrate` into this crate
 # and are only RE-EXPORTED from their historical paths. The composition root names the definition

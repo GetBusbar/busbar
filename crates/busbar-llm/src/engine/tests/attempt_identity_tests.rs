@@ -27,7 +27,7 @@ mod legacy;
 
 use crate::engine::{RequestCtx, APPLICATION_JSON};
 use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
-use busbar_substrate::store::{now as store_now, BreakerState};
+use busbar_kernel::store::{now as store_now, BreakerState};
 use reqwest::StatusCode;
 use serde_json::json;
 use std::sync::Arc;
@@ -448,7 +448,7 @@ const VOLATILE_HEADERS: [&str; 5] = [
 
 async fn observe(
     result: Result<axum::response::Response, ()>,
-    store: &dyn busbar_substrate::store::LaneRuntime,
+    store: &dyn busbar_kernel::store::LaneRuntime,
     upstream: &Upstream,
 ) -> Observed {
     let mut fields: Vec<(&'static str, String)> = Vec::new();
@@ -521,7 +521,7 @@ macro_rules! build_leg {
 
 /// The probe token for this posture: `try_admit_breaker` drives the expired-Open cell HalfOpen and
 /// hands this dispatch the single-flight probe (`Some(epoch)`); a Closed cell yields `None`.
-fn admit(store: &dyn busbar_substrate::store::LaneRuntime, case: &Case) -> Option<u64> {
+fn admit(store: &dyn busbar_kernel::store::LaneRuntime, case: &Case) -> Option<u64> {
     match case.posture {
         Posture::Closed => None,
         Posture::HalfOpenProbe => store

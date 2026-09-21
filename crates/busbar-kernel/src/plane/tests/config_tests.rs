@@ -33,7 +33,7 @@ fn the_section_list_is_derived_from_the_config_grammar_rather_than_written() {
     let mut expected: Vec<&'static str> = Vec::new();
     for s in crate::plane::plane_keys()
         .map(|k| crate::plane::plane_decl(k).config_section)
-        .chain(busbar_substrate::plane::config::NAMED_MAP_SECTIONS)
+        .chain(busbar_kernel::plane::config::NAMED_MAP_SECTIONS)
     {
         if !expected.contains(&s) {
             expected.push(s);
@@ -78,7 +78,7 @@ fn every_section_the_grammar_declares_is_refused_on_both_planes() {
     // reach. Registration is idempotent by key, so this is a no-op past the first run.
     busbar_mcp::testkit::install_test_seams();
     busbar_a2a::testkit::install_test_seams();
-    busbar_substrate::plane::registry::register_test_plane(&busbar_llm::PLANE_DECL);
+    busbar_kernel::plane::registry::register_test_plane(&busbar_llm::PLANE_DECL);
 
     for section in config_sections() {
         let hook = format!("{section}.some-hook");

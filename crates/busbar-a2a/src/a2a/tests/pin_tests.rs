@@ -4,7 +4,7 @@
 //! The A2A identity pin, and the one A2A rule that is NOT in the plane-neutral machine.
 
 use super::*;
-use busbar_substrate::trust::{Observation, TrustState};
+use busbar_kernel::trust::{Observation, TrustState};
 use std::collections::BTreeMap;
 
 fn caps() -> BTreeMap<String, String> {
@@ -262,7 +262,7 @@ fn a_signed_pin_cannot_be_produced_from_a_card_that_did_not_verify() {
 /// field beside the trust state, and it is what replaces the deleted reward loop.
 ///
 /// This test moved here from the codec crate's anomaly suite: it exercises the pin (this plane's
-/// artifact) and `busbar_substrate::trust` together, both of which are the I/O half's business, not
+/// artifact) and `busbar_kernel::trust` together, both of which are the I/O half's business, not
 /// the wire vocabulary's.
 #[test]
 fn a_trip_suspends_an_otherwise_perfectly_healthy_registration() {

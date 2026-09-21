@@ -63,7 +63,7 @@ fn settle(id: u64, settle_nanos: u64) -> Option<bool> {
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 // THE NEUTRAL-SEAM (`MeteringHost`) SHIMS — the SAME host-owned `CostHold` registry above, reached by a
-// STATICALLY-LINKED plane through the plain-Rust `busbar_substrate::plane_host::MeteringHost` trait
+// STATICALLY-LINKED plane through the plain-Rust `busbar_kernel::plane_host::MeteringHost` trait
 // (core's `EngineHostImpl`) rather than the C-ABI vtable. A compiled-in voice plane's lease and a dlopen
 // plane's lease are therefore ONE ledger: both mint from `NEXT_ID`, both live in `LEASES`, both accrue
 // against the same `CostHold` cap — so exhaustion reflects the real grant ceiling the reserve was opened

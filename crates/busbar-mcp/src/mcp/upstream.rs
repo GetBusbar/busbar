@@ -98,10 +98,10 @@ pub(crate) struct Authorised {
     /// address; the wire that needs it is the wire that has one.
     pub(crate) url: String,
     /// THE CHANNEL this dispatch rides, resolved once here and turned into a vtable by
-    /// [`busbar_substrate::transport::Transport::upstream_wire`] at the send site. Nothing between the two asks it
+    /// [`busbar_substrate_values::transport::Transport::upstream_wire`] at the send site. Nothing between the two asks it
     /// which one it is — that is the axis rule, and it is what keeps a second transport from
     /// becoming a second dispatch path.
-    pub(crate) transport: busbar_substrate::transport::Transport,
+    pub(crate) transport: busbar_substrate_values::transport::Transport,
     /// The spawn recipe for a child-process upstream, carried verbatim from the snapshot. `None` on
     /// every registration that is reached over a network.
     pub(crate) stdio: Option<super::client::stdio::StdioCommand>,
@@ -152,13 +152,13 @@ pub(crate) enum SetupRefusal {
     Argument(String),
     /// THE ORDERED VALIDATOR REFUSED. Carried whole rather than flattened to a string, because its
     /// arms are four different operator remedies and its `reason()` is already an audit word — see
-    /// `busbar_substrate::trust::validate`, whose header is explicit that collapsing them is the cheap
+    /// `busbar_kernel::trust::validate`, whose header is explicit that collapsing them is the cheap
     /// unification and the wrong one.
     ///
     /// Reached only by [`authorise_verb`]. A `tools/call` meets the same validator one layer up, in
     /// the catalogue's `resolve`, and renders its refusal in that path's own vocabulary.
     #[cfg_attr(any(not(test), not(feature = "test-support")), allow(dead_code))]
-    Trust(busbar_substrate::trust::validate::Refusal),
+    Trust(busbar_kernel::trust::validate::Refusal),
 }
 
 impl std::fmt::Display for SetupRefusal {
@@ -178,9 +178,9 @@ impl SetupRefusal {
     pub(crate) fn audit_reason(&self) -> &'static str {
         match self {
             SetupRefusal::Malformed(_) => "malformed_identity",
-            // Core's word — see `busbar_substrate::audit::vocab::REASON_EGRESS_DENIED` for why an
+            // Core's word — see `busbar_contract::vocab::REASON_EGRESS_DENIED` for why an
             // egress refusal is deliberately distinguishable from a grant refusal.
-            SetupRefusal::Egress(_) => busbar_substrate::audit::vocab::REASON_EGRESS_DENIED,
+            SetupRefusal::Egress(_) => busbar_contract::vocab::REASON_EGRESS_DENIED,
             SetupRefusal::Credential(_) => "credential_unavailable",
             SetupRefusal::Argument(_) => "tool_argument_refused",
             // The validator's OWN word, not a fifth one invented here. It is already an
@@ -263,7 +263,7 @@ pub(crate) fn authorise(
 ///
 /// ## It is the ORDERED VALIDATOR, not a fourth sequence
 ///
-/// A `tools/call` meets `busbar_substrate::trust::validate::validate_request` one layer up, inside the
+/// A `tools/call` meets `busbar_kernel::trust::validate::validate_request` one layer up, inside the
 /// catalogue's `resolve`, which owns the tool half of the question. A server-scoped verb never
 /// touches the catalogue's tool index, so it asks the validator DIRECTLY — identity, then the
 /// `mcp_server` grant, then whether the registration is serving at all, then whether the snapshot
@@ -282,9 +282,9 @@ pub(crate) fn authorise(
 #[cfg_attr(any(not(test), not(feature = "test-support")), allow(dead_code))]
 pub(crate) fn authorise_verb(
     server: &ServerEntry,
-    sighting: &busbar_substrate::trust::Sighting<super::client::catalogue::TransportPin>,
+    sighting: &busbar_kernel::trust::Sighting<super::client::catalogue::TransportPin>,
     caller: Option<&Arc<VirtualKey>>,
-    generation: busbar_substrate::trust::validate::Generations,
+    generation: busbar_kernel::trust::validate::Generations,
     now: u64,
 ) -> Result<Authorised, SetupRefusal> {
     let server_id =
@@ -294,10 +294,10 @@ pub(crate) fn authorise_verb(
         Some(k) => Arc::clone(k),
         None => Arc::new(ungoverned_principal()),
     };
-    busbar_substrate::trust::validate::validate_request(&busbar_substrate::trust::validate::Ask {
+    busbar_kernel::trust::validate::validate_request(&busbar_kernel::trust::validate::Ask {
         principal: Some(caller.as_ref()),
         now,
-        grants: &[busbar_substrate::trust::validate::Grant::Scope {
+        grants: &[busbar_kernel::trust::validate::Grant::Scope {
             kind: "mcp_server",
             name: &server.id,
         }],
@@ -405,7 +405,7 @@ impl BreakerCell {
     /// breaker unit landed.
     pub(crate) fn degenerate(server: &str) -> Self {
         BreakerCell {
-            key: busbar_substrate::store::tool_key(server),
+            key: busbar_kernel::store::tool_key(server),
             lane: 0,
         }
     }
@@ -418,17 +418,17 @@ impl BreakerCell {
 #[derive(Debug)]
 pub(crate) struct LegFailure {
     pub(crate) message: String,
-    /// [`busbar_substrate::failover::Stage::BeforeFirstByte`] iff the wire itself says nothing was
+    /// [`busbar_kernel::failover::Stage::BeforeFirstByte`] iff the wire itself says nothing was
     /// transmitted (a connect-class failure, or busbar's own pre-wire refusal). Everything
     /// ambiguous is `AfterDispatch`.
-    pub(crate) stage: busbar_substrate::failover::Stage,
+    pub(crate) stage: busbar_kernel::failover::Stage,
 }
 
 impl LegFailure {
     fn dispatched(message: String) -> Self {
         LegFailure {
             message,
-            stage: busbar_substrate::failover::Stage::AfterDispatch,
+            stage: busbar_kernel::failover::Stage::AfterDispatch,
         }
     }
 }
@@ -469,7 +469,7 @@ pub(crate) async fn call(
             message: "a `tools/call` needs the tool's bound identity and this leg was authorised \
                       for a server-scoped verb, which names none"
                 .to_string(),
-            stage: busbar_substrate::failover::Stage::BeforeFirstByte,
+            stage: busbar_kernel::failover::Stage::BeforeFirstByte,
         }
     })?;
     let plan =
@@ -477,7 +477,7 @@ pub(crate) async fn call(
             // The grant/credential plan refused BEFORE any socket: nothing left busbar.
             LegFailure {
                 message: e.to_string(),
-                stage: busbar_substrate::failover::Stage::BeforeFirstByte,
+                stage: busbar_kernel::failover::Stage::BeforeFirstByte,
             }
         })?;
     let bearer = match plan {
@@ -492,7 +492,7 @@ pub(crate) async fn call(
                 // server's cell for its AS being down.
                 .map_err(|message| LegFailure {
                     message,
-                    stage: busbar_substrate::failover::Stage::BeforeFirstByte,
+                    stage: busbar_kernel::failover::Stage::BeforeFirstByte,
                 })?,
         ),
     };
@@ -555,8 +555,8 @@ pub(crate) async fn call(
         // (401/403 → Auth → hard down; 5xx → transient; true 4xx → ClientFault, never a penalty).
         // Classifying does NOT change what the caller is answered: the parse below renders exactly
         // what it always rendered. The SETTLE of this fact is the caller's (CLUSTER-1).
-        *outcome = LegOutcome::Failure(busbar_substrate::breaker::normalize_raw_error(
-            &busbar_substrate::breaker::RawUpstreamError::from_status(response.status),
+        *outcome = LegOutcome::Failure(busbar_substrate_values::breaker::normalize_raw_error(
+            &busbar_substrate_values::breaker::RawUpstreamError::from_status(response.status),
             &std::collections::HashMap::new(),
         ));
     } else {
@@ -601,7 +601,7 @@ pub(crate) async fn call(
 }
 
 /// The TRANSPORT half of this plane's Stage-1 normalizer: how one failed wire leg is CLASSIFIED (the
-/// caller settles it, CLUSTER-1), and (for the reroute loop) the [`busbar_substrate::failover::Stage`] the
+/// caller settles it, CLUSTER-1), and (for the reroute loop) the [`busbar_kernel::failover::Stage`] the
 /// failure leaves the request at.
 ///
 /// - `Unreachable` — a connect-class failure: the destination never received a byte. Classified as
@@ -621,24 +621,24 @@ pub(crate) async fn call(
 /// - `Refused` — busbar's OWN dispatch-time refusal (SSRF, a malformed target): nothing left
 ///   busbar and the upstream answered nothing, so nothing is recorded against it.
 ///   `BeforeFirstByte` for the same reason.
-fn classify_wire_failure(err: &TransportError) -> (busbar_substrate::failover::Stage, LegOutcome) {
+fn classify_wire_failure(err: &TransportError) -> (busbar_kernel::failover::Stage, LegOutcome) {
     let network = || {
-        LegOutcome::Failure(busbar_substrate::breaker::CanonicalSignal {
-            class: busbar_substrate::breaker::StatusClass::Network,
+        LegOutcome::Failure(busbar_substrate_values::breaker::CanonicalSignal {
+            class: busbar_substrate_values::breaker::StatusClass::Network,
             provider_signal: None,
             retry_after: None,
         })
     };
     match err {
         TransportError::Unreachable(_) => (
-            busbar_substrate::failover::Stage::BeforeFirstByte,
+            busbar_kernel::failover::Stage::BeforeFirstByte,
             network(),
         ),
-        TransportError::Io(_) => (busbar_substrate::failover::Stage::AfterDispatch, network()),
+        TransportError::Io(_) => (busbar_kernel::failover::Stage::AfterDispatch, network()),
         // Nothing left busbar (supervisor backoff / busbar's own dispatch refusal): `Nothing`, so no
         // fact is recorded against the target's cell. See the doc above for the double-accounting rule.
         TransportError::Supervision(_) | TransportError::Refused(_) => (
-            busbar_substrate::failover::Stage::BeforeFirstByte,
+            busbar_kernel::failover::Stage::BeforeFirstByte,
             LegOutcome::Nothing,
         ),
     }
@@ -646,16 +646,16 @@ fn classify_wire_failure(err: &TransportError) -> (busbar_substrate::failover::S
 
 /// The classified breaker outcome of ONE upstream leg — built in [`call`], where the raw
 /// transport/status structure still exists (Stage 1), and SETTLED by the CALLER through the host
-/// scope it owns (CLUSTER-1): the sync leg through its per-leg [`DispatchScope`](busbar_substrate::plane_host::DispatchScope)
-/// admission, the task leg through the runner's [`DurableScope`](busbar_substrate::plane_host::DurableScope).
-/// Classification stays put; only the settle moves — [`busbar_substrate::plane_host::breaker::failure_signal`]
+/// scope it owns (CLUSTER-1): the sync leg through its per-leg [`DispatchScope`](busbar_kernel::plane_host::DispatchScope)
+/// admission, the task leg through the runner's [`DurableScope`](busbar_kernel::plane_host::DurableScope).
+/// Classification stays put; only the settle moves — [`busbar_kernel::plane_host::breaker::failure_signal`]
 /// is the inverse of the host `classify`, so a settle folds through the SAME `record_signal`/`record_success`
 /// disposition the in-place call ran.
 pub(crate) enum LegOutcome {
     /// The wire worked (2xx): close the half-open probe / dilute the error window (`record_success`).
     Success,
     /// A wire or status failure to fold, carried as the plane's own canonical signal (`record_signal`).
-    Failure(busbar_substrate::breaker::CanonicalSignal),
+    Failure(busbar_substrate_values::breaker::CanonicalSignal),
     /// Not an upstream health signal — a busbar-side refusal or a leg that never left busbar. Records
     /// nothing; a settled probe is released without a record, an unadmitted one is untouched.
     Nothing,
@@ -691,7 +691,7 @@ pub(super) async fn exchange(
         http::header::CONTENT_TYPE,
         http::HeaderValue::from_static("application/x-www-form-urlencoded"),
     );
-    let request = busbar_substrate::egress::engine::request(
+    let request = busbar_kernel::egress::engine::request(
         http::Method::POST,
         uri,
         headers,
@@ -703,7 +703,7 @@ pub(super) async fn exchange(
     // construction (hyper errors never carry the URL — reqwest's did, which an operator may have
     // written userinfo into; that was the `without_url()` this path used to need).
     let deadline = tokio::time::Instant::now() + timeout;
-    let response = busbar_substrate::egress::engine::send_bounded(&client, request, deadline)
+    let response = busbar_kernel::egress::engine::send_bounded(&client, request, deadline)
         .await
         .map_err(|e| format!("the RFC 8693 exchange failed: {}", e.into_cause()))?;
     let status = response.status().as_u16();
@@ -714,7 +714,7 @@ pub(super) async fn exchange(
             .map_err(|_| {
                 format!(
                     "the RFC 8693 exchange body could not be read: {}",
-                    busbar_substrate::egress::engine::HOP_DEADLINE_CAUSE
+                    busbar_kernel::egress::engine::HOP_DEADLINE_CAUSE
                 )
             })?;
         collected

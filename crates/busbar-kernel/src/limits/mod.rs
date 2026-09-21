@@ -28,7 +28,7 @@ use crate::config::{
 #[cfg(test)]
 use crate::config::DEFAULT_REQUEST_BODY_MAX_BYTES;
 
-// THE INSTALL SIDE lives with the shape it installs, in `busbar_substrate::config::limits`: the
+// THE INSTALL SIDE lives with the shape it installs, in `busbar_kernel::config::limits`: the
 // process-global slot, the build-scoped rollback guard, and the test-only unconditional installer
 // with the lock that serializes it. Re-exported here BY IDENTITY at their historical
 // `busbar_kernel::limits::` paths — same statics, same guard type, same lock — so this crate's
@@ -36,21 +36,21 @@ use crate::config::DEFAULT_REQUEST_BODY_MAX_BYTES;
 // install the same posture against the same slot without naming this crate.
 // `pub(crate)`: the canonical public spelling is the substrate's own, and nothing outside
 // busbar-core reaches this path.
-pub(crate) use busbar_substrate::config::limits::InstallGuard;
+pub(crate) use busbar_kernel::config::limits::InstallGuard;
 // `install` is dropped: nothing in the workspace names `busbar_kernel::limits::install` -- every real
-// caller spells `busbar_substrate::config::limits::install`, its home. `LIMITS_TEST_LOCK` stays,
+// caller spells `busbar_kernel::config::limits::install`, its home. `LIMITS_TEST_LOCK` stays,
 // `pub(crate)`, for this crate's own serialized limit tests.
 #[cfg(test)]
-pub(crate) use busbar_substrate::config::limits::LIMITS_TEST_LOCK;
+pub(crate) use busbar_kernel::config::limits::LIMITS_TEST_LOCK;
 
 /// Read the installed value (or `None` when uninstalled — tests / pre-install).
 fn get() -> Option<LimitsResolved> {
-    busbar_substrate::config::limits::installed()
+    busbar_kernel::config::limits::installed()
 }
 
 // THE EGRESS TRANSLATE-BODY CAP is READ AT ITS OWN HOME, not here. It was a `pub fn
 // translate_body_max_bytes()` on this page reading `installed().request_body_max_bytes` with a
-// 32 MiB uninstalled fallback -- and `busbar_substrate::proxy::max_translate_body_bytes()` is the
+// 32 MiB uninstalled fallback -- and `busbar_kernel::proxy::max_translate_body_bytes()` is the
 // same number, mirrored out of the same slot by `mirror_derived_caps` on EVERY mutation (install,
 // reload, `InstallGuard` rollback, the raw `set_installed` poke) with the same fallback constant,
 // `TRANSLATE_BODY_MAX_BYTES_DEFAULT`. The codec crates already read it there. Two names for one
@@ -118,7 +118,7 @@ pub(crate) fn usage_flush_interval_ms() -> u64 {
 /// Process-wide active-probe interval fallback (seconds). Per-lane `health.interval_secs` overrides.
 ///
 /// `pub(crate)`: the PUBLIC form of this reading is the host seam
-/// `busbar_substrate::plane_host::PlaneHost::default_probe_interval_secs`, whose own doc already
+/// `busbar_kernel::plane_host::PlaneHost::default_probe_interval_secs`, whose own doc already
 /// names itself "the neutral home" for it — the accessor cannot relocate by identity because it
 /// reads the process-global slot, so the seam is the home and this free fn is the one line behind
 /// it. Its single caller is this crate's `impl PlaneHost` (`plane_host/mod.rs`).
@@ -131,7 +131,7 @@ pub(crate) fn default_probe_interval_secs() -> u64 {
 /// Process-wide active-probe timeout fallback (seconds). Per-lane `health.timeout_secs` overrides.
 ///
 /// `pub(crate)`, for the same reason as its interval twin above: the public form is
-/// `busbar_substrate::plane_host::PlaneHost::default_probe_timeout_secs`, and this crate's
+/// `busbar_kernel::plane_host::PlaneHost::default_probe_timeout_secs`, and this crate's
 /// `impl PlaneHost` is its only caller.
 pub(crate) fn default_probe_timeout_secs() -> u64 {
     get()

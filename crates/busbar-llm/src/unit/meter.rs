@@ -103,7 +103,7 @@ use busbar_contract::caps::{Grant,
     UsageLine, Consumption,
 };
 use busbar_contract::ClassDirection;
-use busbar_substrate::plane_host::EngineHost;
+use busbar_kernel::plane_host::EngineHost;
 
 /// WHAT THE ROUTE STEP OBSERVED — the facts this step is bound to, as the step before it hands
 /// them over.
@@ -137,7 +137,7 @@ pub(crate) struct MeterFacts {
     /// The usage the dialect's reader found. Same source and the same timing: a stream's terminal
     /// usage frame has not arrived when Route returns, so the snapshot is empty and the cell is what
     /// answers later.
-    pub(crate) usage: Option<busbar_substrate::billing::TokenUsage>,
+    pub(crate) usage: Option<busbar_substrate_values::billing::TokenUsage>,
     /// The status the CLIENT saw — the fee basis, decided at the frame that carried it.
     pub(crate) status: u16,
     /// The terminal-error/abort/cut fact the taps read at the end of the response.
@@ -179,7 +179,7 @@ pub struct MeterCtx<'a> {
     host: &'a Arc<dyn EngineHost>,
     sink: Option<&'a crate::engine::UsageSink>,
     lane: Option<&'a crate::engine::Lane>,
-    usage: Option<&'a busbar_substrate::billing::TokenUsage>,
+    usage: Option<&'a busbar_substrate_values::billing::TokenUsage>,
     status: u16,
     charged: bool,
     upstream_leg: bool,
@@ -204,7 +204,7 @@ impl<'a> MeterCtx<'a> {
         host: &'a Arc<dyn EngineHost>,
         sink: Option<&'a crate::engine::UsageSink>,
         lane: Option<&'a crate::engine::Lane>,
-        usage: Option<&'a busbar_substrate::billing::TokenUsage>,
+        usage: Option<&'a busbar_substrate_values::billing::TokenUsage>,
         status: u16,
         charged: bool,
         upstream_leg: bool,
@@ -468,7 +468,7 @@ fn push_line(
 fn metering_row(
     sink: &crate::engine::UsageSink,
     lane: &crate::engine::Lane,
-    usage: Option<&busbar_substrate::billing::TokenUsage>,
+    usage: Option<&busbar_substrate_values::billing::TokenUsage>,
 ) -> busbar_api::MeteringRow {
     busbar_api::MeteringRow {
         key_id: sink.key.id.clone(),

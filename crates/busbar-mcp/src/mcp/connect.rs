@@ -15,7 +15,7 @@
 //!
 //! ## Nothing here decides trust
 //!
-//! Every transition is `busbar_substrate::trust`'s: [`busbar_substrate::trust::Approval::approve`],
+//! Every transition is `busbar_kernel::trust`'s: [`busbar_kernel::trust::Approval::approve`],
 //! `approve_capability`, `reject_capability`, `approve_pin`, and the DERIVED state and changes queue.
 //! This module fetches, parses, and calls `ServerCatalogue::observe` / `observe_failure` — which
 //! re-hash from the definitions rather than adopting a digest the upstream supplied, because an
@@ -26,7 +26,7 @@
 //! ## The refresh is OUR trigger
 //!
 //! An operator asks for it, or verify-on-call does when a `tools/call` finds the snapshot older than
-//! `verify_ttl` (see [`busbar_substrate::trust::verify`]). An upstream's own `notifications/tools/list_changed`
+//! `verify_ttl` (see [`busbar_kernel::trust::verify`]). An upstream's own `notifications/tools/list_changed`
 //! can only ever bring one forward through `client::catalogue::RefreshGate`, and its contents are
 //! never read — an attacker-controlled trigger may not choose the moment freely and may not choose
 //! the content at all.
@@ -38,7 +38,7 @@
 //! now observed too, for the two mechanisms MCP can actually check it on: [`observed_pin`] builds a
 //! [`TransportPin`] from the SPKI the live HTTP hop presented
 //! (`super::client::wire::TransportResponse::peer_spki`, itself
-//! `busbar_substrate::egress::seam::Buffered::peer_spki`) and hands THAT to [`ServerCatalogue::observe`], never
+//! `busbar_kernel::egress::seam::Buffered::peer_spki`) and hands THAT to [`ServerCatalogue::observe`], never
 //! the declared pin echoed back as its own proof. A rotated or substituted certificate now disagrees
 //! with the locked pin exactly as a changed tool digest does, and `Approval::drift`'s `pin_changed`
 //! demotes the server to `Quarantined` — dispatch refuses via `Approval::serves` until an operator
@@ -59,7 +59,7 @@ use super::client::jsonrpc::{self, RpcOutcome};
 use super::client::pool::McpConnectionPool;
 use super::client::ssrf::SsrfPolicy;
 use super::client::wire::WireLeg;
-use busbar_substrate::trust::{Drift, PinnedArtifact, TrustState};
+use busbar_kernel::trust::{Drift, PinnedArtifact, TrustState};
 use std::time::Duration;
 
 /// The wall-clock budget for one refresh leg. The same order as a dispatch leg, for the same reason:
@@ -453,14 +453,14 @@ pub(crate) fn changes(cache: &CatalogueCache, server: &ServerEntry) -> ConnectRe
         .and_then(|id| snapshot.server(&id).cloned())
     {
         Some(sc) => sc.sighting,
-        None => busbar_substrate::trust::Sighting::Never,
+        None => busbar_kernel::trust::Sighting::Never,
     };
     let observed = match &sighting {
-        busbar_substrate::trust::Sighting::Seen(o) => o.capabilities.len(),
+        busbar_kernel::trust::Sighting::Seen(o) => o.capabilities.len(),
         _ => 0,
     };
     let failure = match &sighting {
-        busbar_substrate::trust::Sighting::Failed(reason) => Some(reason.clone()),
+        busbar_kernel::trust::Sighting::Failed(reason) => Some(reason.clone()),
         _ => None,
     };
     ConnectReport {
@@ -494,15 +494,15 @@ pub(crate) fn changes(cache: &CatalogueCache, server: &ServerEntry) -> ConnectRe
 #[allow(dead_code)]
 pub(crate) fn overlay_patch(
     server: &str,
-    approval: &busbar_substrate::trust::Approval<TransportPin>,
+    approval: &busbar_kernel::trust::Approval<TransportPin>,
 ) -> serde_json::Value {
     let mut tools = serde_json::Map::new();
     for (name, capability) in approval.capabilities() {
         let hash = match capability {
-            busbar_substrate::trust::CapabilityApproval::At(digest) => {
+            busbar_kernel::trust::CapabilityApproval::At(digest) => {
                 serde_json::Value::String(digest.clone())
             }
-            busbar_substrate::trust::CapabilityApproval::Rejected => serde_json::Value::Null,
+            busbar_kernel::trust::CapabilityApproval::Rejected => serde_json::Value::Null,
         };
         tools.insert(name.to_string(), serde_json::json!({ "schema_hash": hash }));
     }
@@ -510,7 +510,7 @@ pub(crate) fn overlay_patch(
     if let Some(pin) = approval.pin() {
         entry.insert(
             "pin".to_string(),
-            serde_json::json!({ "key": busbar_substrate::trust::PinnedArtifact::digest(pin) }),
+            serde_json::json!({ "key": busbar_kernel::trust::PinnedArtifact::digest(pin) }),
         );
     }
     entry.insert("tools_allow".to_string(), serde_json::Value::Object(tools));
@@ -520,13 +520,13 @@ pub(crate) fn overlay_patch(
 /// This server's verification ledger, or a fresh one for a registration nothing has ever observed.
 ///
 /// The verify-on-call gate reads it as the plane's `fetched_at` source: a missing cache entry yields
-/// [`busbar_substrate::trust::reverify::Ledger::default`], whose `last_checked_ms` is `None` — which `due` reads
+/// [`busbar_kernel::trust::reverify::Ledger::default`], whose `last_checked_ms` is `None` — which `due` reads
 /// as `NeverChecked`, i.e. VERIFY NOW. That is the fail-closed direction: the alternative would treat
 /// "we have no record of ever looking" as freshness.
 pub(crate) fn ledger_of(
     cache: &CatalogueCache,
     id: &str,
-) -> busbar_substrate::trust::reverify::Ledger {
+) -> busbar_kernel::trust::reverify::Ledger {
     ServerId::new(id)
         .ok()
         .and_then(|sid| cache.load().server(&sid).map(|sc| sc.ledger.clone()))
@@ -536,7 +536,7 @@ pub(crate) fn ledger_of(
 /// MARK a server's snapshot STALE — reset its freshness clock so the next call re-verifies.
 ///
 /// The one thing an untrusted peer's `notifications/tools/list_changed` may do: it moves TIMING, not
-/// content. Clearing `last_checked_ms` makes [`busbar_substrate::trust::reverify::due`] answer `NeverChecked`,
+/// content. Clearing `last_checked_ms` makes [`busbar_kernel::trust::reverify::due`] answer `NeverChecked`,
 /// so the next `tools/call` re-fetches the AUTHORITATIVE tool list (single-flighted) and re-hashes it
 /// — the notification's body is never read. Rate-limited before it reaches here by
 /// [`super::client::catalogue::RefreshGate`].
@@ -555,7 +555,7 @@ pub(crate) fn invalidate(cache: &CatalogueCache, id: &str) {
 ///
 /// Called by the MCP verify fetch AFTER [`refresh`] so the freshness clock records when we looked —
 /// success or failure — which is what bounds reuse to `verify_ttl`. Deliberately mirrors the ledger
-/// half of [`busbar_substrate::trust::reverify::settle`] and stops there: the half `settle` adds on top is the
+/// half of [`busbar_kernel::trust::reverify::settle`] and stops there: the half `settle` adds on top is the
 /// recovery hold, which this plane's `observe` cannot express (`recovery_backoff_ms` is `0` here).
 pub(crate) fn stamp(cache: &CatalogueCache, id: &str, now_ms: u64, drifted: bool) {
     let Ok(sid) = ServerId::new(id) else {

@@ -222,7 +222,7 @@ fn pack_bodies(bodies: &[Vec<u8>]) -> Vec<u8> {
 // These tokens name the call stream's outcomes; another plane may use only a subset, so a build with
 // this consumer disabled re-exports them with no local user.
 // Re-export of the hook-gate refusal reason (definition relocated to
-// `busbar_substrate::audit::vocab` alongside the rest of the audit vocabulary, so a plane names it
+// `busbar_contract::vocab` alongside the rest of the audit vocabulary, so a plane names it
 // without reaching into `busbar_kernel::calllog`); re-exported here so in-core call sites and
 // the legacy `busbar_kernel::calllog::REASON_HOOK_REJECTED` path are unchanged.
 #[allow(unused_imports)]
@@ -235,7 +235,7 @@ pub use crate::audit::vocab::{
 // naming `busbar_kernel::calllog`; re-exported here so `CALLS.record`/[`emit`] and every in-core
 // call site is unchanged. `seq`/`prev_hash`/`hash` are still NOT on it — they are the chain's own
 // business, supplied by [`crate::audit::Chain::append`].
-pub use busbar_substrate::plane::calllog::{CallInput, CallRecorded};
+pub use busbar_kernel::plane::calllog::{CallInput, CallRecorded};
 
 // ── THE DURABLE JOURNAL SEAM — the call chain's framing, held PLANE-SIDE ─────────────────────
 //

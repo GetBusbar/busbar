@@ -10,18 +10,18 @@
 //! `install_protocols`).
 
 // The neutral `StreamTranslator` trait AND the fn-ptr factory (the `OnceLock`, its installer, and the
-// production construction seam) RELOCATED DOWN to `busbar_substrate::proto` so the dialect plugin
+// production construction seam) RELOCATED DOWN to `busbar_kernel::proto` so the dialect plugin
 // installs and drives them through the neutral ABI without reaching into `busbar-core`. The trait is
 // re-exported at `crate::proto::StreamTranslator` (see `proto/mod.rs`); the installer is re-exported
 // below in every build. What STAYS in core is only the `#[cfg(test)]` fixture-routing arm of the
 // construction seam — core's OWN test binary routes straight to the netted plugin's concrete
 // factory through a `tests/` fixture the neutral-purity lint excludes.
 #[cfg(test)]
-use busbar_substrate::proto::StreamTranslator;
+use busbar_kernel::proto::StreamTranslator;
 
 // The installer is neutral in every build — the composition root (production) and the plugin test
 // setup both register their factory through the substrate `OnceLock`.
-pub use busbar_substrate::proto::install_stream_translator_factory;
+pub use busbar_kernel::proto::install_stream_translator_factory;
 
 /// The SINGLE streaming-translator construction seam both forward paths (`engine/mod.rs`,
 /// `engine/walk.rs`) call. Neutral in and out.
@@ -43,4 +43,4 @@ pub fn new_stream_translator(
 }
 
 #[cfg(not(test))]
-pub use busbar_substrate::proto::new_stream_translator;
+pub use busbar_kernel::proto::new_stream_translator;

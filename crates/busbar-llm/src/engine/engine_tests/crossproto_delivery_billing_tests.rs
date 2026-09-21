@@ -17,8 +17,8 @@ use super::{translate_response_cross_protocol, BudgetSpendGuard};
 use crate::engine::AppEngineExt as _;
 use crate::engine::TapCell;
 use busbar_store_memory::MemoryStore;
-use busbar_substrate::governance::NewKeySpec;
-use busbar_substrate::testkit::engine_kit::{CostKit, EngineTestKit as _, GovKit};
+use busbar_kernel::governance::NewKeySpec;
+use busbar_kernel::testkit::engine_kit::{CostKit, EngineTestKit as _, GovKit};
 use std::sync::Arc;
 
 /// A governed fixture: an `App` whose sole lane is the OpenAI EGRESS with a limited request budget of
@@ -37,13 +37,13 @@ fn fixture() -> (
         .expect("gov");
     let groups = std::collections::BTreeMap::from([(
         "g".to_string(),
-        busbar_substrate::config::groups::GroupCfg {
+        busbar_kernel::config::groups::GroupCfg {
             parent: None,
             enabled: true,
-            limits: vec![busbar_substrate::config::groups::LimitCfg {
-                metric: busbar_substrate::config::groups::LimitMetric::Budget,
+            limits: vec![busbar_kernel::config::groups::LimitCfg {
+                metric: busbar_kernel::config::groups::LimitMetric::Budget,
                 amount: 1_000_000_000,
-                per: Some(busbar_substrate::config::groups::LimitWindow::Day),
+                per: Some(busbar_kernel::config::groups::LimitWindow::Day),
                 scope: None,
                 on_exhaust: None,
                 downgrade_to: None,
@@ -93,21 +93,21 @@ struct Outcome {
 /// the guard is responsible for refunding — then arm a `BudgetSpendGuard` exactly as the live caller
 /// does. The guard is dropped (its refund seam) before we read the budget back.
 async fn drive(
-    op: busbar_substrate::handlers::Op,
+    op: busbar_substrate_values::handlers::Op,
     ingress: &'static str,
     body: Vec<u8>,
 ) -> Outcome {
     let (app, gov, cost, key) = fixture();
     let (host, rt) = crate::engine::test_host_rt(&app);
     let sink = Some(crate::engine::UsageSink {
-        gov: busbar_substrate::plane_host::GovHandle(gov.clone()),
-        cost: busbar_substrate::plane_host::CostHandle(cost.clone()),
+        gov: busbar_kernel::plane_host::GovHandle(gov.clone()),
+        cost: busbar_kernel::plane_host::CostHandle(cost.clone()),
         key: Arc::new(key.clone()),
         pool: Arc::from("p"),
         charged_at: 1_700_000_000,
         admit: None,
     });
-    let breaker = busbar_substrate::store::BreakerCfg::default();
+    let breaker = busbar_kernel::store::BreakerCfg::default();
 
     // The headers-time budget unit the buffered path spends before it buffers the body (the unit the
     // guard refunds on a non-delivery return). 5 -> 4.
@@ -167,7 +167,7 @@ async fn drive(
             &breaker,
             upstream,
             tokio::time::Instant::now() + std::time::Duration::from_secs(5),
-            busbar_substrate::store::Permit::Unbounded,
+            busbar_kernel::store::Permit::Unbounded,
             &mut guard,
             sink,
             axum::http::StatusCode::OK,
@@ -185,7 +185,7 @@ async fn drive(
     };
 
     let ledger_tokens = gov
-        .usage_for(&*cost, &key.id, busbar_substrate::store::now())
+        .usage_for(&*cost, &key.id, busbar_kernel::store::now())
         .expect("usage read")
         .map(|u| u.tokens)
         .unwrap_or(0);
@@ -208,7 +208,7 @@ async fn delivered_cross_protocol_response_bills_once() {
     crate::testkit::install_test_seams();
     let body = br#"{"id":"x","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}],"usage":{"prompt_tokens":13,"completion_tokens":9}}"#.to_vec();
     let out = drive(
-        busbar_substrate::handlers::chat("openai", busbar_substrate::transport::Transport::Http),
+        busbar_substrate_values::handlers::chat("openai", busbar_substrate_values::transport::Transport::Http),
         "anthropic",
         body,
     )
@@ -238,10 +238,10 @@ async fn ingress_unsupported_404_does_not_charge() {
     let body = br#"{"object":"list","data":[{"object":"embedding","index":0,"embedding":[0.1,0.2,0.3]}],"model":"text-embedding-3-small","usage":{"prompt_tokens":42}}"#.to_vec();
     crate::testkit::install_test_seams();
     let out = drive(
-        busbar_substrate::handlers::op_for(
+        busbar_substrate_values::handlers::op_for(
             "openai",
             busbar_api::operation::Operation::EMBEDDINGS,
-            busbar_substrate::transport::Transport::Http,
+            busbar_substrate_values::transport::Transport::Http,
         )
         .expect("openai serves embeddings"),
         "anthropic",
@@ -277,10 +277,10 @@ async fn untranslatable_500_does_not_charge() {
     ];
     crate::testkit::install_test_seams();
     let out = drive(
-        busbar_substrate::handlers::op_for(
+        busbar_substrate_values::handlers::op_for(
             "openai",
             busbar_api::operation::Operation::SPEECH,
-            busbar_substrate::transport::Transport::Http,
+            busbar_substrate_values::transport::Transport::Http,
         )
         .expect("openai serves speech"),
         "anthropic",

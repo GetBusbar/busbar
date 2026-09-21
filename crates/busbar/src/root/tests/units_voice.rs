@@ -2282,11 +2282,11 @@ fn a_credential_is_resolved_against_this_planes_own_audience() {
 fn one_turn_at_a_time(group: &str) -> busbar_kernel_budget::GroupTable {
     let groups = std::collections::BTreeMap::from([(
         group.to_string(),
-        busbar_substrate::config::groups::GroupCfg {
+        busbar_kernel::config::groups::GroupCfg {
             parent: None,
             enabled: true,
-            limits: vec![busbar_substrate::config::groups::LimitCfg {
-                metric: busbar_substrate::config::groups::LimitMetric::Concurrent,
+            limits: vec![busbar_kernel::config::groups::LimitCfg {
+                metric: busbar_kernel::config::groups::LimitMetric::Concurrent,
                 amount: 1,
                 per: None,
                 scope: None,

@@ -33,7 +33,7 @@
 //! Modelled on `crates/busbar/tests/capability_equality.rs` -- the house oracle pattern: one `verify`
 //! fn drives both the real gate and the fixture self-tests, so a self-test proves the REAL gate fires.
 
-use busbar_substrate::plane::registry::PlaneDecl;
+use busbar_kernel::plane::registry::PlaneDecl;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 

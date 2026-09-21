@@ -4,7 +4,7 @@
 //! busbar-mcp — the Model Context Protocol, as ONE plugin crate.
 //!
 //! WHAT THIS CRATE HOLDS TODAY. The MCP protocol codec — the [`codec`] module: the
-//! [`ProtocolDecl`](busbar_substrate::proto::ProtocolDecl) ([`PROTO_DECL`]), the JSON-RPC dialect, and
+//! [`ProtocolDecl`](busbar_kernel::proto::ProtocolDecl) ([`PROTO_DECL`]), the JSON-RPC dialect, and
 //! the `tools/call` and subscription operation cells that core resolves through the support matrix.
 //! This is the whole of what `busbar-core/src/handlers/mcp.rs` was and what the standalone
 //! `busbar-proto-mcp` crate carried before it folded in here.
@@ -22,7 +22,7 @@
 //! Everything the codec consumes from the engine comes through `busbar-core`'s public surface;
 //! nothing in `busbar-core` names this crate in production, and the `busbar` BINARY — the
 //! composition root — links it and hands [`PROTO_DECL`] to
-//! the substrate's protocol registry (`busbar_substrate::proto::install_protocols`) at boot.
+//! the substrate's protocol registry (`busbar_kernel::proto::install_protocols`) at boot.
 
 /// THE CODEC, THE RECORD VOCABULARY AND THE TWO PURE CONTENT PASSES, RE-EXPORTED FROM
 /// `busbar-mcp-codec`.
@@ -71,7 +71,7 @@ pub mod testkit;
 pub use mcp::PLANE_DECL;
 
 /// MCP'S PLANE-CONTRIBUTED DIAGNOSTICS — the `&'static [&'static Diagnostic]` the composition root
-/// hands to `busbar_substrate::diagnostics::install_diagnostics` at boot, re-exported at the crate
+/// hands to `busbar_substrate_values::diagnostics::install_diagnostics` at boot, re-exported at the crate
 /// root so the `busbar` binary names one stable path (`busbar_mcp::DIAGNOSTICS`). See [`diagnostics`].
 pub use diagnostics::DIAGNOSTICS;
 
@@ -81,7 +81,7 @@ pub use diagnostics::DIAGNOSTICS;
 pub use busbar_mcp_codec::PROTO_DECL;
 
 /// MCP'S PLANE CAPABILITY KEY (`"mcp"`) — the string the composition root flips onto the unified
-/// kernel loop ([`busbar_substrate::plane_host::register_gauntlet_runner`]) and the same string the
+/// kernel loop ([`busbar_kernel::plane_host::register_gauntlet_runner`]) and the same string the
 /// `tools/call` plane reports from its `GauntletPlane::capability_key`. Re-exported at the crate root
 /// so the `busbar` binary names ONE stable path (`busbar_mcp::PLANE_KEY`) and the plane and the flip
 /// cannot drift onto two different literals.

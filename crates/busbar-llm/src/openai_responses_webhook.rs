@@ -128,7 +128,7 @@ impl ResponsesWebhookEvent {
     }
 }
 
-/// HMAC-SHA256 of `data` under `key`. Mirrors `busbar_substrate::sigv4::hmac` (which is private, so it
+/// HMAC-SHA256 of `data` under `key`. Mirrors `busbar_substrate_values::sigv4::hmac` (which is private, so it
 /// cannot be reused): `Hmac::new_from_slice` is infallible for HMAC (any key length is legal), but we
 /// avoid `expect()`/panic on the request path — an unreachable init error yields an empty digest,
 /// which simply fails the signature comparison (a safe refusal) rather than aborting the task.
@@ -306,9 +306,9 @@ const WEBHOOK_PATH: &str = "/v1/llm/webhooks/openai";
 #[cfg(feature = "webhook-receiver")]
 pub fn webhook_routes(
     _slot: &dyn std::any::Any,
-) -> Vec<busbar_substrate::plane_routes::PlaneRouteSpec> {
+) -> Vec<busbar_kernel::plane_routes::PlaneRouteSpec> {
     use busbar_plugin::cold::endpoint::{RouteAuth, RouteMethod};
-    use busbar_substrate::plane_routes::{PlaneReqCtx, PlaneRouteFuture, PlaneRouteSpec};
+    use busbar_kernel::plane_routes::{PlaneReqCtx, PlaneRouteFuture, PlaneRouteSpec};
 
     // Read once at mount time; a route is contributed only when a secret is configured.
     let Ok(secret) = std::env::var(SECRET_ENV) else {
@@ -336,8 +336,8 @@ pub fn webhook_routes(
 #[cfg(feature = "webhook-receiver")]
 fn webhook_route_handler(
     secret: &str,
-    ctx: busbar_substrate::plane_routes::PlaneReqCtx,
-) -> busbar_substrate::plane_routes::PlaneResponse {
+    ctx: busbar_kernel::plane_routes::PlaneReqCtx,
+) -> busbar_kernel::plane_routes::PlaneResponse {
     use axum::response::IntoResponse as _;
     match receive(secret, &ctx.headers, &ctx.body) {
         Ok(event) => {

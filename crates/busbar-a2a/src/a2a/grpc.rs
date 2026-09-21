@@ -120,7 +120,7 @@ const A2A_VERSION_METADATA: &str = "a2a-version";
 /// rather than the SDK's: `gov` carries the key every meter and audit record is written against, and
 /// `principal` is who the auth middleware said is calling. Neither is reachable from inside a
 /// `tower::Service` mounted as a router, which is the other reason this shape is the right one.
-pub(crate) async fn serve(ctx: busbar_substrate::plane_routes::PlaneReqCtx) -> Response {
+pub(crate) async fn serve(ctx: busbar_kernel::plane_routes::PlaneReqCtx) -> Response {
     // S7 neutral seam (D-2a): this handler took a whole `axum::extract::Request` plus `CurrentApp`
     // and the two auth extensions. The seam hands the request's pieces on `ctx`, so we RECONSTRUCT
     // the request the generated tonic service consumes from `ctx.{uri, headers, body}`. A2A gRPC
@@ -149,7 +149,7 @@ pub(crate) async fn serve(ctx: busbar_substrate::plane_routes::PlaneReqCtx) -> R
     // per-transport conformance number readable from busbar's own telemetry once a second transport
     // arms" — this is that second transport, and this is the only place on it that knows.
     tracing::debug!(
-        transport = busbar_substrate::transport::Transport::Grpc.name(),
+        transport = busbar_substrate_values::transport::Transport::Grpc.name(),
         rpc = req.uri().path(),
         "a2a: a request arrived on the gRPC binding"
     );
@@ -176,7 +176,7 @@ pub(crate) async fn serve(ctx: busbar_substrate::plane_routes::PlaneReqCtx) -> R
 /// an `Arc` clone and two small owned values, and holding the principal IN the service is what makes
 /// "this call was admitted" a fact the type carries rather than one a handler has to re-derive.
 struct Busbar {
-    engine_host: Arc<dyn busbar_substrate::plane_host::EngineHost>,
+    engine_host: Arc<dyn busbar_kernel::plane_host::EngineHost>,
     gov: busbar_api::PlaneRequestCtx,
     principal: busbar_api::AuthPrincipal,
 }
@@ -207,7 +207,7 @@ impl Busbar {
             // the metric label it emits for every A2A request — and this is the only site that
             // knows a gRPC frame arrived, because everything below it has already been re-framed
             // as the JSON-RPC envelope above.
-            busbar_substrate::transport::Transport::Grpc,
+            busbar_substrate_values::transport::Transport::Grpc,
             axum::body::Bytes::from(body.to_string().into_bytes()),
         )
         .await;
@@ -610,7 +610,7 @@ impl Busbar {
             // the metric label it emits for every A2A request — and this is the only site that
             // knows a gRPC frame arrived, because everything below it has already been re-framed
             // as the JSON-RPC envelope above.
-            busbar_substrate::transport::Transport::Grpc,
+            busbar_substrate_values::transport::Transport::Grpc,
             axum::body::Bytes::from(body.to_string().into_bytes()),
         )
         .await;

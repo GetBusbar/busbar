@@ -13,7 +13,7 @@ use crate::engine::WeightedLane;
 use crate::test_support::{LaneSpec, TestApp};
 use busbar_api::{Candidate, PolicyResult, RoutingContext, RoutingPolicy};
 use busbar_api::{Signal, SignalValue};
-use busbar_substrate::hooks::ResolvedPolicy;
+use busbar_kernel::hooks::ResolvedPolicy;
 use std::sync::Mutex as StdMutex;
 
 /// A no-op policy that just records the candidate projections it was handed, then Abstains.
@@ -42,14 +42,14 @@ impl RoutingPolicy for CapturingCandidatesPolicy {
 /// `hooks:` registry (never wired as the pool's actual policy) purely to populate
 /// `App::requested_signals` via `hooks::requested_signals`'s union-across-every-hook walk, exactly
 /// as an operator's real `signals:` declaration would.
-fn declaring_hook(signals: Vec<Signal>) -> busbar_substrate::config::hooks::HookCfg {
-    busbar_substrate::config::hooks::HookCfg {
-        kind: busbar_substrate::config::hooks::HookKind::Tap,
+fn declaring_hook(signals: Vec<Signal>) -> busbar_kernel::config::hooks::HookCfg {
+    busbar_kernel::config::hooks::HookCfg {
+        kind: busbar_kernel::config::hooks::HookKind::Tap,
         plugin: "test-hook".to_string(),
-        timeout_ms: busbar_substrate::config::hooks::DEFAULT_POLICY_TIMEOUT_MS,
+        timeout_ms: busbar_kernel::config::hooks::DEFAULT_POLICY_TIMEOUT_MS,
         on_error: "weighted".to_string(),
-        prompt: busbar_substrate::config::hooks::PromptAccess::No,
-        user: busbar_substrate::config::hooks::UserAccess::No,
+        prompt: busbar_kernel::config::hooks::PromptAccess::No,
+        user: busbar_kernel::config::hooks::UserAccess::No,
         priority: 0,
         at: None,
         settings: serde_json::Map::new(),
@@ -83,19 +83,19 @@ async fn run_with_declared(signals: Vec<Signal>) -> Vec<busbar_api::SignalBag> {
 /// Run `decide_policy_order` once against an ALREADY-BUILT one-lane app, returning the
 /// per-candidate signal bags the policy observed. Split out of [`run_with_declared`] so a caller can
 /// hand in any already-built snapshot rather than only the one the `TestApp` fixture produces.
-async fn run_decide<A: busbar_substrate::testkit::BuiltAppSeam + ?Sized>(
+async fn run_decide<A: busbar_kernel::testkit::BuiltAppSeam + ?Sized>(
     app: &std::sync::Arc<A>,
 ) -> Vec<busbar_api::SignalBag> {
     let (host, rt) = crate::engine::test_host_rt(app);
     let seen = std::sync::Arc::new(StdMutex::new(None));
     let resolved = ResolvedPolicy::Policy {
         policy: std::sync::Arc::new(CapturingCandidatesPolicy { seen: seen.clone() }),
-        on_error: busbar_substrate::config::PolicyOnError::default(),
+        on_error: busbar_kernel::config::PolicyOnError::default(),
         on_error_chain: Vec::new(),
         timeout: std::time::Duration::from_millis(500),
         send_prompt: false,
         send_user: false,
-        on_empty: busbar_substrate::config::PolicyOnError::Reject,
+        on_empty: busbar_kernel::config::PolicyOnError::Reject,
     };
     let cands = vec![WeightedLane {
         reasoning: None,
@@ -206,17 +206,17 @@ async fn breaker_state_projects_open_after_a_trip() {
     // Force the ROUTING POOL cell (not the lane-default cell) Open with a cooldown far in the
     // future, so the projected state reads "open" (not an already-expired-back-to-recoverable one).
     app.store
-        .force_open_in("p", 0, busbar_substrate::store::now() + 3600);
+        .force_open_in("p", 0, busbar_kernel::store::now() + 3600);
 
     let seen = std::sync::Arc::new(StdMutex::new(None));
     let resolved = ResolvedPolicy::Policy {
         policy: std::sync::Arc::new(CapturingCandidatesPolicy { seen: seen.clone() }),
-        on_error: busbar_substrate::config::PolicyOnError::default(),
+        on_error: busbar_kernel::config::PolicyOnError::default(),
         on_error_chain: Vec::new(),
         timeout: std::time::Duration::from_millis(500),
         send_prompt: false,
         send_user: false,
-        on_empty: busbar_substrate::config::PolicyOnError::Reject,
+        on_empty: busbar_kernel::config::PolicyOnError::Reject,
     };
     let cands = vec![WeightedLane {
         reasoning: None,
@@ -270,7 +270,7 @@ async fn error_rate_projects_the_outcome_window_fraction() {
         .hook("declarer", declaring_hook(vec![Signal::CandidateErrorRate]))
         .build();
     let (host, rt) = crate::engine::test_host_rt(&app);
-    let cfg = busbar_substrate::store::BreakerCfg::default();
+    let cfg = busbar_kernel::store::BreakerCfg::default();
     // 1 error + 3 successes = 25% error rate, well under the default trip threshold (so the
     // breaker itself stays Closed — this test is purely about the PROJECTED rate).
     app.store.record_transient_in("p", 0, "test", &cfg, None);
@@ -281,12 +281,12 @@ async fn error_rate_projects_the_outcome_window_fraction() {
     let seen = std::sync::Arc::new(StdMutex::new(None));
     let resolved = ResolvedPolicy::Policy {
         policy: std::sync::Arc::new(CapturingCandidatesPolicy { seen: seen.clone() }),
-        on_error: busbar_substrate::config::PolicyOnError::default(),
+        on_error: busbar_kernel::config::PolicyOnError::default(),
         on_error_chain: Vec::new(),
         timeout: std::time::Duration::from_millis(500),
         send_prompt: false,
         send_user: false,
-        on_empty: busbar_substrate::config::PolicyOnError::Reject,
+        on_empty: busbar_kernel::config::PolicyOnError::Reject,
     };
     let cands = vec![WeightedLane {
         reasoning: None,

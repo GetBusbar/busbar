@@ -16,7 +16,7 @@
 //! so the word space is IDENTICAL across planes. An operator who learns the rule once should not
 //! discover that a name legal on one plane is a section knob on another. It is no longer a claim
 //! about two constants that agree: there is ONE declaration
-//! ([`busbar_substrate::plane::config::RESERVED_SECTION_KEYS`]), and this section is read by the shared split
+//! ([`busbar_kernel::plane::config::RESERVED_SECTION_KEYS`]), and this section is read by the shared split
 //! that consults it.
 //!
 //! ## `tools_allow` is a MAP, and that is the whole bound-identity rule compressed into one field
@@ -128,7 +128,7 @@ impl McpPinMechanism {
     /// is meaningless with it, which is the rule the object form exists to make expressible.
     ///
     /// ONE predicate answers both questions on purpose. It is the boot-time rule below AND the one
-    /// question [`busbar_substrate::trust::declared`] asks of a mechanism, so the reader that builds the
+    /// question [`busbar_kernel::trust::declared`] asks of a mechanism, so the reader that builds the
     /// artifact and the refusal that fires at boot cannot come to disagree about what "rooted"
     /// means.
     pub(crate) fn is_a_root(self) -> bool {
@@ -161,8 +161,8 @@ pub struct ServerPinCfg {
 
 impl ServerPinCfg {
     /// This `pin:` object as the plane-neutral reader takes it. A projection, not a decision: every
-    /// question asked of it is [`busbar_substrate::trust::declared`]'s, and this plane's answers are its
-    /// [`busbar_substrate::trust::declared::Declares`] impl in [`super::client::catalogue`].
+    /// question asked of it is [`busbar_kernel::trust::declared`]'s, and this plane's answers are its
+    /// [`busbar_kernel::trust::declared::Declares`] impl in [`super::client::catalogue`].
     ///
     /// `fingerprint` is `None` and there is no field for it. An MCP server offers ONE opaque
     /// transport-layer value and no manifest fingerprint an operator could have approved out of
@@ -170,8 +170,8 @@ impl ServerPinCfg {
     /// artifact a type parameter in the first place.
     pub(crate) fn declaration(
         &self,
-    ) -> busbar_substrate::trust::declared::Declaration<'_, McpPinMechanism> {
-        busbar_substrate::trust::declared::Declaration {
+    ) -> busbar_kernel::trust::declared::Declaration<'_, McpPinMechanism> {
+        busbar_kernel::trust::declared::Declaration {
             mechanism: self.mechanism,
             key: self.key.as_deref(),
             fingerprint: None,
@@ -711,7 +711,7 @@ pub struct McpServerDefCfg {
     /// per-server "skip if it failed last time" — every one of those would be a window an upstream
     /// could open for itself by misbehaving, and choosing when to misbehave is entirely within its
     /// gift. A LARGER value is an explicit security downgrade (a wider drift-serving window), which is
-    /// why the default is seconds rather than the old daemon's hours. See [`busbar_substrate::trust::verify`],
+    /// why the default is seconds rather than the old daemon's hours. See [`busbar_kernel::trust::verify`],
     /// the one gate both planes run on the call path.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) verify_ttl: Option<String>,
@@ -869,7 +869,7 @@ pub(crate) enum Transport {
     /// Spelled and REFUSED for two releases, because there was no supervisor to reach — the one that
     /// existed was deleted rather than left unreachable. It is implemented now: `command:` names the
     /// binary, `mcp/client/stdio.rs` spawns and supervises it, and
-    /// [`busbar_substrate::transport::Transport::upstream_wire`] is the arm a `tools/call` takes to get there.
+    /// [`busbar_substrate_values::transport::Transport::upstream_wire`] is the arm a `tools/call` takes to get there.
     ///
     /// This registration is reached by SPAWNING, so the keys it takes are disjoint from the network
     /// ones: `command:`, `args:`, `env:` and `cwd:` instead of `url:`, and no credential keys at all
@@ -895,12 +895,12 @@ impl Transport {
     /// The ENGINE axis this config value names.
     ///
     /// Two types, deliberately: this one is the operator's GRAMMAR, frozen and additive-only, and
-    /// [`busbar_substrate::transport::Transport`] is the engine's dispatch axis. Collapsing them would tie a
+    /// [`busbar_substrate_values::transport::Transport`] is the engine's dispatch axis. Collapsing them would tie a
     /// wire word an operator has already written to an enum the engine is free to reshape.
-    pub(crate) fn axis(self) -> busbar_substrate::transport::Transport {
+    pub(crate) fn axis(self) -> busbar_substrate_values::transport::Transport {
         match self {
-            Transport::StreamableHttp => busbar_substrate::transport::Transport::Http,
-            Transport::Stdio => busbar_substrate::transport::Transport::Stdio,
+            Transport::StreamableHttp => busbar_substrate_values::transport::Transport::Http,
+            Transport::Stdio => busbar_substrate_values::transport::Transport::Stdio,
         }
     }
 }
@@ -943,7 +943,7 @@ pub(crate) enum ChildEnvValue {
 /// a config apply can be recognised as a no-op.
 impl Eq for ChildEnvValue {}
 
-/// The top-level `tools:` map, carrying the two [`busbar_substrate::plane::config::RESERVED_SECTION_KEYS`]
+/// The top-level `tools:` map, carrying the two [`busbar_kernel::plane::config::RESERVED_SECTION_KEYS`]
 /// alongside the servers.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ToolsCfg {
@@ -978,7 +978,7 @@ impl ToolsCfg {
         // the sibling plane reads it too (core re-exports it at `hooks::attach_list`): the combine is
         // a property of the config GRAMMAR, and a second copy here is how the two planes come to
         // dedupe differently.
-        busbar_substrate::plane::config::attach_list(
+        busbar_kernel::plane::config::attach_list(
             &self.all_server_hooks,
             self.servers.get(server).map_or(&[], |d| d.hooks.as_slice()),
         )
@@ -1008,7 +1008,7 @@ impl<'de> Deserialize<'de> for ToolsCfg {
         // the file rejects.
         // The neutral substrate split, called with THIS plane's own section/noun consts (a standalone
         // plane holds no plane registry to look up); byte-identical to the core wrapper's forward.
-        let section = busbar_substrate::plane::config::split_section::<D, McpServerDefCfg>(
+        let section = busbar_kernel::plane::config::split_section::<D, McpServerDefCfg>(
             deserializer,
             super::PLANE_DECL.config_section,
             super::PLANE_DECL.subject_noun,
@@ -1023,7 +1023,7 @@ impl<'de> Deserialize<'de> for ToolsCfg {
     }
 }
 
-impl busbar_substrate::plane::config::PlaneCfg for ToolsCfg {
+impl busbar_kernel::plane::config::PlaneCfg for ToolsCfg {
     /// The MCP plane's secret references: `tools.<name>.token_exchange.subject_token` (busbar's OWN
     /// token, the SUBJECT of an RFC 8693 exchange, never the caller's) and each reference-valued
     /// `tools.<name>.env.<var>` a stdio child is handed. Moved here VERBATIM from the core
@@ -1132,8 +1132,8 @@ impl busbar_substrate::plane::config::PlaneCfg for ToolsCfg {
         Ok(())
     }
 
-    fn container_gates(&self) -> busbar_substrate::plane::config::ContainerGateInputs {
-        busbar_substrate::plane::config::ContainerGateInputs {
+    fn container_gates(&self) -> busbar_kernel::plane::config::ContainerGateInputs {
+        busbar_kernel::plane::config::ContainerGateInputs {
             section_hooks: self.all_server_hooks.clone(),
             containers: self
                 .servers
@@ -1157,7 +1157,7 @@ impl busbar_substrate::plane::config::PlaneCfg for ToolsCfg {
         self
     }
 
-    fn clone_box(&self) -> Box<dyn busbar_substrate::plane::config::PlaneCfg> {
+    fn clone_box(&self) -> Box<dyn busbar_kernel::plane::config::PlaneCfg> {
         Box::new(self.clone())
     }
 
@@ -1174,7 +1174,7 @@ impl busbar_substrate::plane::config::PlaneCfg for ToolsCfg {
 /// core's named-map section parser (through this plane's `config_validate` declaration hook), so the two paths cannot drift into
 /// different grammars — the ONE GRAMMAR, TWO PATHS rule.
 /// THE OPERATOR'S MAX VERIFICATION STALENESS for one registration, lifted into the plane-neutral
-/// [`busbar_substrate::trust::reverify::Policy`] the verify-on-call gate consumes.
+/// [`busbar_kernel::trust::reverify::Policy`] the verify-on-call gate consumes.
 ///
 /// Config in, policy out, no clock and no I/O — so the bound an operator wrote and the bound the
 /// decision uses are provably the same value rather than two parallel readings of it. Deliberately
@@ -1190,10 +1190,10 @@ impl busbar_substrate::plane::config::PlaneCfg for ToolsCfg {
 /// BEFORE the call, and demotion is the half that is never held on either plane.
 pub(crate) fn verify_policy_for(
     def: &McpServerDefCfg,
-) -> Result<busbar_substrate::trust::reverify::Policy, String> {
+) -> Result<busbar_kernel::trust::reverify::Policy, String> {
     let ttl = def.verify_ttl.as_deref().unwrap_or(DEFAULT_MCP_VERIFY_TTL);
-    let ttl_ms = busbar_substrate::duration::parse_duration_secs(ttl)?.saturating_mul(1_000);
-    Ok(busbar_substrate::trust::reverify::Policy {
+    let ttl_ms = busbar_contract::duration::parse_duration_secs(ttl)?.saturating_mul(1_000);
+    Ok(busbar_kernel::trust::reverify::Policy {
         ttl_ms,
         recovery_backoff_ms: 0,
     })
@@ -1391,7 +1391,7 @@ pub fn validate_server(name: &str, def: &McpServerDefCfg) -> Result<(), String> 
     // rather than silently falling back to a default later — a defence that quietly uses a bound the
     // operator did not write is a defence whose behaviour nobody can predict.
     if let Some(ttl) = def.verify_ttl.as_deref() {
-        busbar_substrate::duration::parse_duration_secs(ttl)
+        busbar_contract::duration::parse_duration_secs(ttl)
             .map_err(|e| format!("{at}: `verify_ttl:` {e}"))?;
     }
 
@@ -1401,7 +1401,7 @@ pub fn validate_server(name: &str, def: &McpServerDefCfg) -> Result<(), String> 
     // wrote. There is deliberately no spelling for "unlimited" — a leg with no deadline holds a
     // concurrency slot for as long as the upstream chooses.
     if let Some(t) = def.timeout.as_deref() {
-        let secs = busbar_substrate::duration::parse_duration_secs(t)
+        let secs = busbar_contract::duration::parse_duration_secs(t)
             .map_err(|e| format!("{at}: `timeout:` {e}"))?;
         if secs == 0 {
             return Err(format!(
@@ -1603,7 +1603,7 @@ pub fn validate_server(name: &str, def: &McpServerDefCfg) -> Result<(), String> 
     // function rather than two copies that agreed only because one was pasted from the other.
     //
     // The cross-plane list is read back through the NEUTRAL provider seam
-    // (`busbar_substrate::plane::config::plane_sections`), which the composition root (and, under
+    // (`busbar_kernel::plane::config::plane_sections`), which the composition root (and, under
     // `test-support`, the plane test-kit's `install_test_seams`) binds to core's registry-coupled
     // `config_sections` fold — so this plane reads the whole section list without naming
     // `busbar_kernel`. Standalone (`not(feature = "test-support")`) binds no provider and never drives
@@ -1611,11 +1611,11 @@ pub fn validate_server(name: &str, def: &McpServerDefCfg) -> Result<(), String> 
     // to this plane's own section, the only one a standalone build knows; it is unreachable in
     // practice, and no cross-plane reference is possible when only one plane exists.
     #[cfg(feature = "test-support")]
-    let sections = busbar_substrate::plane::config::plane_sections();
+    let sections = busbar_kernel::plane::config::plane_sections();
     #[cfg(not(feature = "test-support"))]
     let sections = vec![super::PLANE_DECL.config_section];
     for hook in &def.hooks {
-        busbar_substrate::plane::config::refuse_cross_plane_reference(&at, hook, &sections)?;
+        busbar_kernel::plane::config::refuse_cross_plane_reference(&at, hook, &sections)?;
     }
     Ok(())
 }

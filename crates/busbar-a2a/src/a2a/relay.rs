@@ -34,7 +34,7 @@
 //! ## 2. THE NAME IS RESOLVED ONCE, BY THE GUARD, AND THE JUDGED ADDRESS IS WHAT CONNECTS
 //!
 //! This module does not open its own client. It reuses [`super::fetch::guard_hop`], and through it
-//! [`busbar_substrate::net_guard::resolve_and_pin`] — the same
+//! [`busbar_kernel::net_guard::resolve_and_pin`] — the same
 //! guard the card fetch goes through — and hands the surviving address to the transport, which pins
 //! it. A relay that handed the URL to `reqwest` and let the client resolve the host would reinstate
 //! the second lookup, which is the whole of DNS rebinding, and would pass every test that does not
@@ -83,7 +83,7 @@
 //! path answered the caller under busbar's own `ctx.rpc_id`, while the streamed path passed the
 //! BACKEND's id through verbatim, so on a stream the backend chose the value busbar's caller
 //! correlated on. The unary path was right. Both now read the envelope through
-//! [`busbar_substrate::ingress::jsonrpc::read_response`] — the same reader the MCP client direction uses, and
+//! [`busbar_kernel::ingress::jsonrpc::read_response`] — the same reader the MCP client direction uses, and
 //! the response-side sibling of the request reader both ingresses share — and an answer that names
 //! a different request is [`RelayRefusal::Uncorrelated`], never a result.
 
@@ -92,7 +92,7 @@ use std::net::IpAddr;
 use super::creds::{Lease, LeaseError};
 use super::fetch::{FetchPolicy, FetchRefusal, HttpResponse, Resolver};
 use super::task::TaskState;
-use busbar_substrate::net_guard::PinnedTarget;
+use busbar_kernel::net_guard::PinnedTarget;
 
 /// The HTTP round trip the relay makes, as a seam.
 ///
@@ -134,18 +134,18 @@ pub(crate) trait RelayTransport: Send + Sync {
     ) -> Result<StreamHead, String>;
 }
 
-/// What the chunk sink says about continuing — the neutral host-owned [`busbar_substrate::egress::ChunkFlow`],
+/// What the chunk sink says about continuing — the neutral host-owned [`busbar_kernel::egress::ChunkFlow`],
 /// re-exported under this plane's historical name. A sink whose receiver has gone away asks the hop
 /// to STOP rather than being written to forever: a caller that disconnected mid-stream must not
 /// leave busbar holding a blocking thread against an upstream that is happy to keep talking.
-pub(crate) use busbar_substrate::egress::ChunkFlow;
+pub(crate) use busbar_kernel::egress::ChunkFlow;
 
-pub(crate) use busbar_substrate::egress::StreamHead;
+pub(crate) use busbar_kernel::egress::StreamHead;
 /// The head of a streaming reply: what the backend answered before any body arrived — the neutral
-/// host-owned [`busbar_substrate::egress::StreamHead`], re-exported under this plane's historical name so the
-/// relay call sites read unchanged. It lives in [`busbar_substrate::egress`] because the streaming round trip
+/// host-owned [`busbar_kernel::egress::StreamHead`], re-exported under this plane's historical name so the
+/// relay call sites read unchanged. It lives in [`busbar_kernel::egress`] because the streaming round trip
 /// is the same one whatever framing sits on top of it.
-pub(crate) use busbar_substrate::proxy::sse::{sse_data, SseReader};
+pub(crate) use busbar_kernel::proxy::sse::{sse_data, SseReader};
 
 /// THE RELAY'S SEAMS, HELD TOGETHER, for the reason [`super::transport::LiveCardFetch`] gives for
 /// holding its own two: a caller that picked up a resolver and a transport from different places
@@ -183,7 +183,7 @@ pub(crate) trait DelegationGate: Send + Sync {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct NotDelegable {
     pub(crate) agent_id: String,
-    pub(crate) state: busbar_substrate::trust::TrustState,
+    pub(crate) state: busbar_kernel::trust::TrustState,
     pub(crate) reason: Option<String>,
 }
 
@@ -237,7 +237,7 @@ pub(crate) struct RelayCall<'a> {
     pub(crate) policy: &'a FetchPolicy,
     /// The caller's request, VERBATIM. busbar is content-blind on this plane.
     pub(crate) body: &'a [u8],
-    /// THE `id` THIS HOP IS ANSWERING, established by [`busbar_substrate::ingress::jsonrpc::read`] at the
+    /// THE `id` THIS HOP IS ANSWERING, established by [`busbar_kernel::ingress::jsonrpc::read`] at the
     /// ingress: a string or a number, never `null` and never absent.
     ///
     /// It is the id the BACKEND's answer must carry, and it is that only because `body` above goes
@@ -269,13 +269,13 @@ pub(crate) struct RelayCall<'a> {
     /// this unit) admits everything and records nothing.
     pub(crate) breakers: Option<RelayBreaker>,
     /// THE NEUTRAL HOST SEAM this hop admits, settles and records its breaker through — the
-    /// [`EngineHost`](busbar_substrate::plane_host::EngineHost) minted over the hop's admitted engine
+    /// [`EngineHost`](busbar_kernel::plane_host::EngineHost) minted over the hop's admitted engine
     /// snapshot. [`prepare`]'s un-pooled admit WINS its probe through `host.breaker_admit` over
     /// [`host_scope`](Self::host_scope) (CLUSTER-1: the plane holds only the POD id, never a
     /// `PlaneAdmission`), [`record_hop_outcome`] settles/records through the same seam, and a refusal
     /// reads its `Retry-After` from `host.breaker_retry_after_secs`. Threaded (with `host_scope`) from
     /// the request path; `None` only where no scoped seam is wired.
-    pub(crate) host: Option<&'a dyn busbar_substrate::plane_host::EngineHost>,
+    pub(crate) host: Option<&'a dyn busbar_kernel::plane_host::EngineHost>,
     /// THE ONE HOST SCOPE THIS HOP'S ADMIT AND SETTLE SHARE (§4 a2a scope unification). Created
     /// BEFORE `select_member` and moved onto the blocking relay thread, it is the single arena both
     /// the pooled WALK admit (pre-admitted upstream, its id in [`admission`](Self::admission)) and the
@@ -283,7 +283,7 @@ pub(crate) struct RelayCall<'a> {
     /// probe hold into — so [`record_hop_outcome`] settles through it by a host
     /// [`AdmissionId`](busbar_plugin::hot::AdmissionId) in the same scope (the CLUSTER-1 inversion).
     /// `None` only where no scoped seam is wired.
-    pub(crate) host_scope: Option<&'a busbar_substrate::plane_host::DispatchScope>,
+    pub(crate) host_scope: Option<&'a busbar_kernel::plane_host::DispatchScope>,
     /// THE HOST ADMISSION ID FOR A PRE-ADMITTED (pooled WALK) HOP — the id the walk's probe hold was
     /// registered under in [`host_scope`](Self::host_scope) before this call was built.
     /// [`AdmissionId::NONE`](busbar_plugin::hot::AdmissionId::NONE) for an un-pooled hop (whose id
@@ -314,7 +314,7 @@ impl RelayBreaker {
     /// `(key, lane)` identity.
     pub(crate) fn degenerate(agent_id: &str) -> Self {
         RelayBreaker {
-            key: busbar_substrate::store::agent_key(agent_id),
+            key: busbar_kernel::store::agent_key(agent_id),
             lane: 0,
             pre_admitted: false,
         }
@@ -554,7 +554,7 @@ pub(crate) const SSE_CONTENT_TYPE: &str = "text/event-stream";
 //   * how the payload is WRAPPED — a JSON-RPC envelope, a bare document, or a length-prefixed
 //     protobuf frame.
 //
-// That is FRAMING, and it is exactly the split `busbar_substrate::transport`'s header states: `framing =
+// That is FRAMING, and it is exactly the split `busbar_substrate_values::transport`'s header states: `framing =
 // transport.frame(codec)`, with the codec never learning which channel spoke. So [`relay`] and
 // [`relay_stream`] below are ONE implementation — one guard, one live trust gate, one lease, one
 // correlation, one identity substitution — and the only thing that varies across the three legs is
@@ -632,8 +632,8 @@ pub(crate) trait OutboundFraming: Send + Sync {
     fn word(&self) -> &'static str;
 
     /// The axis label for this leg, for telemetry. A STATEMENT OF FACT at a known arrival, which is
-    /// what `busbar_substrate::transport`'s own note says naming a variant is for; nothing compares it.
-    fn leg(&self) -> busbar_substrate::transport::Transport;
+    /// what `busbar_substrate_values::transport`'s own note says naming a variant is for; nothing compares it.
+    fn leg(&self) -> busbar_substrate_values::transport::Transport;
 
     /// Compose the wire request. `base` is the operator's guarded, pinned endpoint.
     fn compose(
@@ -729,8 +729,8 @@ impl OutboundFraming for JsonRpcFraming {
         BINDING_JSONRPC
     }
 
-    fn leg(&self) -> busbar_substrate::transport::Transport {
-        busbar_substrate::transport::Transport::JsonRpc
+    fn leg(&self) -> busbar_substrate_values::transport::Transport {
+        busbar_substrate_values::transport::Transport::JsonRpc
     }
 
     fn compose(
@@ -929,8 +929,8 @@ impl OutboundFraming for HttpJsonFraming {
         BINDING_HTTP_JSON
     }
 
-    fn leg(&self) -> busbar_substrate::transport::Transport {
-        busbar_substrate::transport::Transport::HttpJson
+    fn leg(&self) -> busbar_substrate_values::transport::Transport {
+        busbar_substrate_values::transport::Transport::HttpJson
     }
 
     fn compose(
@@ -1171,8 +1171,8 @@ impl OutboundFraming for GrpcFraming {
         BINDING_GRPC
     }
 
-    fn leg(&self) -> busbar_substrate::transport::Transport {
-        busbar_substrate::transport::Transport::Grpc
+    fn leg(&self) -> busbar_substrate_values::transport::Transport {
+        busbar_substrate_values::transport::Transport::Grpc
     }
 
     /// The rpc's own path under the service `a2a.proto` declares, and one length-prefixed message.
@@ -1460,7 +1460,7 @@ fn outbound_of(body: &[u8]) -> (String, serde_json::Value) {
 /// owns this hop's probe, the classified outcome is settled through it over `settle` — the same arena
 /// the walk-admit registered into. Without a shared scope (originate / unit tests that admit directly)
 /// the classified outcome records IN PLACE against the local probe. The disposition is byte-identical
-/// either way: [`busbar_substrate::plane_host::breaker::failure_signal`] is the inverse of the host's `classify`,
+/// either way: [`busbar_kernel::plane_host::breaker::failure_signal`] is the inverse of the host's `classify`,
 /// so a settle folds through the SAME `record_signal` the in-place call runs.
 ///
 /// CLASSIFICATION stays here — where the refusal's transport/status structure still exists (Stage 1) —
@@ -1493,14 +1493,14 @@ fn record_hop_outcome(
                 host.breaker_settle(
                     scope,
                     settle,
-                    &busbar_substrate::plane_host::breaker::success_signal(),
+                    &busbar_kernel::plane_host::breaker::success_signal(),
                 );
             }
             HopOutcome::Failure(cs) => {
                 host.breaker_settle(
                     scope,
                     settle,
-                    &busbar_substrate::plane_host::breaker::failure_signal(&cs),
+                    &busbar_kernel::plane_host::breaker::failure_signal(&cs),
                 );
             }
             // Not an upstream health signal: leave the probe UNSETTLED so the shared scope's drop
@@ -1529,7 +1529,7 @@ enum HopOutcome {
     /// well-formed backend A2A error — the WORK failing, not the wire).
     Success,
     /// A wire/answer failure to fold, carried as the plane's own canonical signal.
-    Failure(busbar_substrate::breaker::CanonicalSignal),
+    Failure(busbar_substrate_values::breaker::CanonicalSignal),
     /// A busbar-side refusal that is not an upstream health signal — record nothing.
     Nothing,
 }
@@ -1541,15 +1541,15 @@ fn classify_hop(refusal: Option<&RelayRefusal>) -> HopOutcome {
     match refusal {
         None | Some(RelayRefusal::BackendError { .. }) => HopOutcome::Success,
         Some(RelayRefusal::Transport { .. }) => {
-            HopOutcome::Failure(busbar_substrate::breaker::CanonicalSignal {
-                class: busbar_substrate::breaker::StatusClass::Network,
+            HopOutcome::Failure(busbar_substrate_values::breaker::CanonicalSignal {
+                class: busbar_substrate_values::breaker::StatusClass::Network,
                 provider_signal: None,
                 retry_after: None,
             })
         }
         Some(RelayRefusal::Status { status, .. }) => {
-            HopOutcome::Failure(busbar_substrate::breaker::normalize_raw_error(
-                &busbar_substrate::breaker::RawUpstreamError::from_status(*status),
+            HopOutcome::Failure(busbar_substrate_values::breaker::normalize_raw_error(
+                &busbar_substrate_values::breaker::RawUpstreamError::from_status(*status),
                 &std::collections::HashMap::new(),
             ))
         }
@@ -1557,8 +1557,8 @@ fn classify_hop(refusal: Option<&RelayRefusal>) -> HopOutcome {
             RelayRefusal::BodyTooLarge { .. }
             | RelayRefusal::NotJson { .. }
             | RelayRefusal::Uncorrelated { .. },
-        ) => HopOutcome::Failure(busbar_substrate::breaker::CanonicalSignal {
-            class: busbar_substrate::breaker::StatusClass::ServerError,
+        ) => HopOutcome::Failure(busbar_substrate_values::breaker::CanonicalSignal {
+            class: busbar_substrate_values::breaker::StatusClass::ServerError,
             provider_signal: None,
             retry_after: None,
         }),
@@ -1585,7 +1585,7 @@ fn prepare<'a>(
     admit_id: &mut busbar_plugin::hot::AdmissionId,
 ) -> Result<(url::Url, PinnedTarget, OutboundRelayRequest), RelayRefusal> {
     // ── THE GUARD. One resolution, every answered address judged, one pinned address out. It is
-    //    `busbar_substrate::net_guard`'s, reached through the card fetch's hop door, so a relayed submission
+    //    `busbar_kernel::net_guard`'s, reached through the card fetch's hop door, so a relayed submission
     //    and a card fetch cannot be guarded to two different standards.
     // `call.policy`, NOT `seam.policy()`. The seam answers with the plane's fail-closed default and
     // knows nothing about any registration; the call carries the one the operator's `allow_private:`
@@ -1654,7 +1654,7 @@ fn prepare<'a>(
             method: method.clone(),
             reason,
         })?;
-    // THE LEG, NAMED. A statement of fact at a known point, which is what `busbar_substrate::transport`'s own
+    // THE LEG, NAMED. A statement of fact at a known point, which is what `busbar_substrate_values::transport`'s own
     // note says naming a variant is for; nothing on this path compares it.
     tracing::debug!(
         agent = call.agent_id,
@@ -1671,7 +1671,7 @@ fn prepare<'a>(
     // refusal (the guard, the live trust decision, an unframable method, a lease that would not
     // build) and none of it reaches a backend, so counting an attempt for one of those would report
     // traffic at an agent busbar never contacted. See `count_leg_failure` for the other half.
-    busbar_substrate::telemetry::upstream_attempt_on(call.agent_id, framed_leg(call.framing));
+    busbar_kernel::telemetry::upstream_attempt_on(call.agent_id, framed_leg(call.framing));
     Ok((framed_url, pin, request))
 }
 
@@ -1700,10 +1700,10 @@ fn prepare<'a>(
 /// healthy.
 fn count_leg_failure(call: &RelayCall<'_>, refusal: RelayRefusal) -> RelayRefusal {
     if matches!(refusal, RelayRefusal::Transport { .. }) {
-        busbar_substrate::telemetry::upstream_failure_on(
+        busbar_kernel::telemetry::upstream_failure_on(
             call.agent_id,
             framed_leg(call.framing),
-            busbar_substrate::proxy::DISPOSITION_TRANSIENT,
+            busbar_kernel::proxy::DISPOSITION_TRANSIENT,
         );
     }
     refusal
@@ -1797,7 +1797,7 @@ fn relay_once(
 
 /// Read one JSON-RPC answer off a completed body, AS THE ANSWER TO `rpc_id`.
 ///
-/// The envelope rules are [`busbar_substrate::ingress::jsonrpc::read_response`]'s — the same reader the MCP
+/// The envelope rules are [`busbar_kernel::ingress::jsonrpc::read_response`]'s — the same reader the MCP
 /// client direction uses, and the response-side sibling of the request reader both ingresses share.
 /// Before it this function read `error` and `result` straight off the value: no `jsonrpc` member
 /// check, and the `id` member never read at all, so a backend could answer this hop with the reply
@@ -1807,7 +1807,7 @@ fn read_reply(
     url: &str,
     rpc_id: &serde_json::Value,
 ) -> Result<RelayReply, RelayRefusal> {
-    use busbar_substrate::ingress::jsonrpc::{read_response, NotAnAnswerKind, Reply};
+    use busbar_kernel::ingress::jsonrpc::{read_response, NotAnAnswerKind, Reply};
 
     let envelope: serde_json::Value =
         serde_json::from_slice(body).map_err(|e| RelayRefusal::NotJson {
@@ -2075,7 +2075,7 @@ pub(crate) fn read_event(
     context_id: &str,
     matched_skill: Option<&str>,
 ) -> Result<RelayEvent, String> {
-    use busbar_substrate::ingress::jsonrpc::{read_response, Reply};
+    use busbar_kernel::ingress::jsonrpc::{read_response, Reply};
 
     let verbatim = || {
         Ok(RelayEvent {

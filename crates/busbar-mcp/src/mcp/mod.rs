@@ -38,7 +38,7 @@
 //! carries no audience at all.
 //!
 //! The check lives in the VERIFIER, reached through the plane's mount
-//! (`busbar_substrate::plane::PlaneAdmission`), not in a handler — so a route added to this plane tomorrow
+//! (`busbar_kernel::plane::PlaneAdmission`), not in a handler — so a route added to this plane tomorrow
 //! inherits it and cannot forget it.
 //!
 //! ## The revision this targets, and what that means
@@ -119,8 +119,8 @@
 ///
 /// `wire_format_names` is the single JSON-RPC 2.0 dialect, carried over any of three transports — a
 /// transport is not a wire format, so this list has one entry and the plane earns no superset IR.
-pub const PLANE_DECL: busbar_substrate::plane::registry::PlaneDecl =
-    busbar_substrate::plane::registry::PlaneDecl {
+pub const PLANE_DECL: busbar_kernel::plane::registry::PlaneDecl =
+    busbar_kernel::plane::registry::PlaneDecl {
         // THE KEY IS THE CODEC'S OWN, named once on the pure side of the split so this declaration,
         // the protocol declaration and the contract plane in `busbar-plane-mcp` cannot drift apart.
         key: busbar_mcp_codec::PLANE_KEY,
@@ -131,7 +131,7 @@ pub const PLANE_DECL: busbar_substrate::plane::registry::PlaneDecl =
         subject_noun: "MCP server",
         admin_noun: "mcp-server",
         audit_kind: "mcp_server",
-        wire_format_names: || &[busbar_substrate::plane::WIRE_JSONRPC],
+        wire_format_names: || &[busbar_kernel::plane::WIRE_JSONRPC],
         // THE MCP DOOR, from the validated resource. One claim — the ingress mount — spoken in
         // JSON-RPC, and the audience is that resource's canonical URI. Whenever `mcp:` is configured
         // the plane both mounts and admits, so the ratchet's "mounted ⇒ admitted" holds by
@@ -142,7 +142,7 @@ pub const PLANE_DECL: busbar_substrate::plane::registry::PlaneDecl =
                 .expect("the mcp plane's dispatch slot is an McpResource");
             vec![(
                 r.mount_path().to_string(),
-                busbar_substrate::plane::WIRE_JSONRPC,
+                busbar_kernel::plane::WIRE_JSONRPC,
             )]
         },
         admission: |slot| {
@@ -173,7 +173,7 @@ pub const PLANE_DECL: busbar_substrate::plane::registry::PlaneDecl =
         openapi_schemas: Some(admin_view::openapi_schemas),
         hydrate: Some(mcp_hydrate),
         // NO START HOOK. Verify-on-call is LAZY — it re-verifies on the `tools/call` path against a
-        // ≤`verify_ttl` single-flight snapshot (see `busbar_substrate::trust::verify`), so there is no background
+        // ≤`verify_ttl` single-flight snapshot (see `busbar_kernel::trust::verify`), so there is no background
         // sweep to spawn at boot. A server nobody calls is never fetched. The daemon this replaced is
         // gone; its removal is the whole of this plane's boot change.
         start: None,
@@ -191,7 +191,7 @@ pub const PLANE_DECL: busbar_substrate::plane::registry::PlaneDecl =
     };
 
 /// VALIDATE ONE `tools:` NAMED-DEFINITION DOCUMENT — the MCP plane's half of
-/// [`busbar_substrate::plane::registry::PlaneDecl::config_validate`]. Parses the raw document into
+/// [`busbar_kernel::plane::registry::PlaneDecl::config_validate`]. Parses the raw document into
 /// [`config::McpServerDefCfg`] (`deny_unknown_fields`, so a typo'd key is refused HERE exactly as the
 /// file refuses it) and applies the same value rules boot applies through the identical
 /// [`config::validate_server`]. Naming `crate::mcp` types HERE is correct: this is the MCP plane's
@@ -203,7 +203,7 @@ fn mcp_config_validate(name: &str, def: &serde_json::Value) -> Result<(), String
 }
 
 /// THE MCP RUNTIME OBJECT for this config generation, read through the TYPE-ERASED `plane_slots`
-/// seam ([`busbar_substrate::plane_host::PlaneSlots::plane_slot`]) and downcast back to
+/// seam ([`busbar_kernel::plane_host::PlaneSlots::plane_slot`]) and downcast back to
 /// [`McpResource`] HERE, inside the plane — so core OUTSIDE this module reaches the resource only as
 /// an opaque `Arc<dyn Any>` slot and names no `crate::mcp` type. `None` exactly when `mcp:` is not
 /// configured this generation (the plane contributed no slot — the same absence the deleted
@@ -234,7 +234,7 @@ pub(crate) use test_app_reads::runtime;
 #[cfg(feature = "test-support")]
 mod test_app_reads {
     use super::{McpResource, McpRuntime, PLANE_DECL};
-    use busbar_substrate::plane_host::PlaneSlots;
+    use busbar_kernel::plane_host::PlaneSlots;
 
     /// See the module-level note: the snapshot-typed read of the config-conditional dispatch slot.
     pub fn resource<S: PlaneSlots + ?Sized>(app: &S) -> Option<&McpResource> {
@@ -246,7 +246,7 @@ mod test_app_reads {
 
     /// See the module-level note: the snapshot-typed read of the always-present runtime slot.
     pub fn runtime<S: PlaneSlots + ?Sized>(app: &S) -> &McpRuntime {
-        app.plane_slot(busbar_substrate::plane_host::runtime_slot_key(
+        app.plane_slot(busbar_kernel::plane_host::runtime_slot_key(
             PLANE_DECL.key,
         ))
         .expect("the mcp runtime slot is present on every generation the plane is compiled into")
@@ -256,12 +256,12 @@ mod test_app_reads {
 }
 
 /// THE HOST-BASED TWIN of [`resource`] — the plane's dispatch object off the BOUND snapshot, read
-/// through the neutral [`busbar_substrate::plane_host::EngineHost::plane_slot`] seam and downcast HERE.
+/// through the neutral [`busbar_kernel::plane_host::EngineHost::plane_slot`] seam and downcast HERE.
 /// Returns an OWNED `Arc<McpResource>` (a refcount bump of the same `Arc` `plane_slots` holds) so it
 /// outlives the call, since the borrow now comes from an owned host, not an `&App`. `None` exactly
 /// when `mcp:` is not configured this generation; the downcast never fails ([`PLANE_DECL::build`]).
 pub(crate) fn resource_of(
-    host: &std::sync::Arc<dyn busbar_substrate::plane_host::EngineHost>,
+    host: &std::sync::Arc<dyn busbar_kernel::plane_host::EngineHost>,
 ) -> Option<std::sync::Arc<McpResource>> {
     host.plane_slot(PLANE_DECL.key).map(|slot| {
         slot.downcast::<McpResource>()
@@ -272,7 +272,7 @@ pub(crate) fn resource_of(
 /// THE MCP PLANE'S PER-GENERATION CLIENT-DIRECTION RUNTIME — the objects the plane carries for one
 /// config generation, bundled into ONE mcp-owned struct so core's `App` names no `crate::mcp` type for
 /// any of them. It is carried in the engine snapshot's type-erased `plane_slots` map behind `Arc<dyn Any>` under
-/// the always-present companion key [`runtime_slot_key`](busbar_substrate::plane_host::runtime_slot_key), and [`runtime`] downcasts
+/// the always-present companion key [`runtime_slot_key`](busbar_kernel::plane_host::runtime_slot_key), and [`runtime`] downcasts
 /// it back HERE, inside the plane.
 ///
 /// It rides its OWN `plane_slots` key rather than the plane's decl key (`"mcp"`, where the server-side
@@ -296,12 +296,12 @@ pub(crate) struct McpRuntime {
     pub(crate) sampling_spend: std::sync::Arc<sampling::SamplingSpend>,
     /// THE MCP VERIFY-ON-CALL GATE — the per-server single-flight coalescer that re-verifies an
     /// upstream's advertised tool surface on the `tools/call` path when its recorded observation is
-    /// older than `verify_ttl` (see [`busbar_substrate::trust::verify`]). It is the plane's OWN coalescing
+    /// older than `verify_ttl` (see [`busbar_kernel::trust::verify`]). It is the plane's OWN coalescing
     /// state, so it lives ON the plane's runtime object (reached via `ctx.slot`) rather than as a flat
     /// `App` field. Arc-shared ACROSS config applies, like the `sightings` cache it freshens, and for
     /// the same reason: the coalescing epochs are ACCUMULATED coordination state, not intent, so
     /// [`McpRuntime::build`] carries it from `prior` rather than rebuilding it.
-    pub(crate) verify: std::sync::Arc<busbar_substrate::trust::VerifyGate>,
+    pub(crate) verify: std::sync::Arc<busbar_kernel::trust::VerifyGate>,
 }
 
 impl McpRuntime {
@@ -333,7 +333,7 @@ impl McpRuntime {
             // edit reset. Pruned to the live server set by [`mcp_retain_verify_gates`] after the
             // build, exactly as it was when this was the flat `App::mcp_verify` field.
             verify: prior.map_or_else(
-                std::sync::Arc::<busbar_substrate::trust::VerifyGate>::default,
+                std::sync::Arc::<busbar_kernel::trust::VerifyGate>::default,
                 |p| p.verify.clone(),
             ),
         }
@@ -341,13 +341,13 @@ impl McpRuntime {
 }
 
 /// THE NEUTRAL-SLOT twin of [`runtime`] — the plane's runtime object read through the
-/// [`busbar_substrate::plane_host::PlaneSlots`] seam rather than off `&App`, so the core-owned
+/// [`busbar_kernel::plane_host::PlaneSlots`] seam rather than off `&App`, so the core-owned
 /// `PlaneDecl` callbacks the MCP plane fills (`on_swap`, `registry_contains`, `retain_verify_gates`)
 /// name no concrete engine-snapshot type. Same borrowed `&McpRuntime` and never-failing `.expect`s as
 /// [`runtime`]; the slot key is the always-present runtime companion in the neutral substrate.
-pub(crate) fn runtime_slots(slots: &dyn busbar_substrate::plane_host::PlaneSlots) -> &McpRuntime {
+pub(crate) fn runtime_slots(slots: &dyn busbar_kernel::plane_host::PlaneSlots) -> &McpRuntime {
     slots
-        .plane_slot(busbar_substrate::plane_host::runtime_slot_key(
+        .plane_slot(busbar_kernel::plane_host::runtime_slot_key(
             crate::PLANE_DECL.key,
         ))
         .expect("the mcp runtime slot is present on every generation the plane is compiled into")
@@ -357,15 +357,15 @@ pub(crate) fn runtime_slots(slots: &dyn busbar_substrate::plane_host::PlaneSlots
 
 /// THE BOUND-SNAPSHOT host twin of [`runtime`] — the plane's runtime object off the snapshot the host
 /// was minted on, read through the neutral
-/// [`busbar_substrate::plane_host::EngineHost::plane_slot`] seam under the always-present runtime slot
-/// [`runtime_slot_key`](busbar_substrate::plane_host::runtime_slot_key) and downcast HERE. Returns an OWNED
+/// [`busbar_kernel::plane_host::EngineHost::plane_slot`] seam under the always-present runtime slot
+/// [`runtime_slot_key`](busbar_kernel::plane_host::runtime_slot_key) and downcast HERE. Returns an OWNED
 /// `Arc<McpRuntime>` so the caller binds it to a local and reaches its fields through the owned `Arc`
 /// (the borrow no longer comes from `&App`). Both the lookup and the downcast `.expect`: the slot is
 /// present on every generation the plane is compiled into and is always an `McpRuntime`.
 pub(crate) fn runtime_of(
-    host: &std::sync::Arc<dyn busbar_substrate::plane_host::EngineHost>,
+    host: &std::sync::Arc<dyn busbar_kernel::plane_host::EngineHost>,
 ) -> std::sync::Arc<McpRuntime> {
-    host.plane_slot(busbar_substrate::plane_host::runtime_slot_key(
+    host.plane_slot(busbar_kernel::plane_host::runtime_slot_key(
         crate::PLANE_DECL.key,
     ))
     .expect("the mcp runtime slot is present on every generation the plane is compiled into")
@@ -374,15 +374,15 @@ pub(crate) fn runtime_of(
 }
 
 /// THE LIVE-SNAPSHOT twin of [`runtime_of`] — the plane's runtime object off the CURRENT snapshot,
-/// re-loading the live handle through [`busbar_substrate::plane_host::EngineHost::plane_slot_live`] so
+/// re-loading the live handle through [`busbar_kernel::plane_host::EngineHost::plane_slot_live`] so
 /// a config swap or revocation AFTER admission is seen. Used only where the re-read is semantically
 /// required (dispatch-time re-validation, per-round grant/roots re-reads, background/poll
 /// generation-watch loops); the bound [`runtime_of`] is used everywhere the request's own snapshot is
 /// the intended one. Same owned-`Arc` return and never-failing `.expect`s as [`runtime_of`].
 pub(crate) fn runtime_live(
-    host: &std::sync::Arc<dyn busbar_substrate::plane_host::EngineHost>,
+    host: &std::sync::Arc<dyn busbar_kernel::plane_host::EngineHost>,
 ) -> std::sync::Arc<McpRuntime> {
-    host.plane_slot_live(busbar_substrate::plane_host::runtime_slot_key(
+    host.plane_slot_live(busbar_kernel::plane_host::runtime_slot_key(
         crate::PLANE_DECL.key,
     ))
     .expect("the mcp runtime slot is present on every generation the plane is compiled into")
@@ -391,55 +391,55 @@ pub(crate) fn runtime_live(
 }
 
 /// BUILD THE GENERATION'S MCP RUNTIME, TYPE-ERASED for the neutral `plane_slots` runtime slot
-/// ([`runtime_slot_key`](busbar_substrate::plane_host::runtime_slot_key)) — the one entry point `appbuild` calls so the
+/// ([`runtime_slot_key`](busbar_kernel::plane_host::runtime_slot_key)) — the one entry point `appbuild` calls so the
 /// composition of the `App` names no `crate::mcp` runtime type.
 /// `prior` is the prior generation's snapshot, read through the neutral
-/// [`busbar_substrate::plane_host::PlaneSlots`] seam (for the carry-over rules in
+/// [`busbar_kernel::plane_host::PlaneSlots`] seam (for the carry-over rules in
 /// [`McpRuntime::build`]) so this function, not `appbuild`, owns the downcast and the signature names
 /// no concrete engine-snapshot type.
 pub(crate) fn build_runtime(
     tool_defs: &config::ToolsCfg,
-    prior: Option<&dyn busbar_substrate::plane_host::PlaneSlots>,
+    prior: Option<&dyn busbar_kernel::plane_host::PlaneSlots>,
 ) -> std::sync::Arc<dyn std::any::Any + Send + Sync> {
     std::sync::Arc::new(McpRuntime::build(tool_defs, prior.map(runtime_slots)))
 }
 
 /// PARSE THE `tools:` SECTION through the MCP plane's own `Deserialize` — the
-/// [`busbar_substrate::plane::registry::PlaneDecl::parse_section`] hook, so `DeployCfg` deserializes its `tools:`
+/// [`busbar_kernel::plane::registry::PlaneDecl::parse_section`] hook, so `DeployCfg` deserializes its `tools:`
 /// field without naming [`config::ToolsCfg`]. The `serde_yaml::Value` intermediate carries no source
 /// position, so the plane's own `split_section` refusals reach the operator by their SENTENCE (the
 /// content core pins), the `at line`/`column` suffix aside.
 fn mcp_parse_section(
     v: &serde_yaml::Value,
-) -> Result<Box<dyn busbar_substrate::plane::config::PlaneCfg>, String> {
+) -> Result<Box<dyn busbar_kernel::plane::config::PlaneCfg>, String> {
     serde_yaml::from_value::<config::ToolsCfg>(v.clone())
-        .map(|c| Box::new(c) as Box<dyn busbar_substrate::plane::config::PlaneCfg>)
+        .map(|c| Box::new(c) as Box<dyn busbar_kernel::plane::config::PlaneCfg>)
         .map_err(|e| e.to_string())
 }
 
-/// [`busbar_substrate::plane::registry::PlaneDecl::default_section`] hook — the empty `tools:` registry, so an
+/// [`busbar_kernel::plane::registry::PlaneDecl::default_section`] hook — the empty `tools:` registry, so an
 /// ABSENT section defaults to `ToolsCfg::default()` byte-identically to the pre-seam typed field.
-fn mcp_default_section() -> Box<dyn busbar_substrate::plane::config::PlaneCfg> {
+fn mcp_default_section() -> Box<dyn busbar_kernel::plane::config::PlaneCfg> {
     Box::<config::ToolsCfg>::default()
 }
 
 /// PARSE THE `mcp:` ENDPOINT block through the MCP plane's own `Deserialize` — the
-/// [`busbar_substrate::plane::registry::PlaneDecl::parse_endpoint`] hook, so `DeployCfg` deserializes its `mcp:`
+/// [`busbar_kernel::plane::registry::PlaneDecl::parse_endpoint`] hook, so `DeployCfg` deserializes its `mcp:`
 /// field without naming [`McpCfg`].
 fn mcp_parse_endpoint(
     v: &serde_yaml::Value,
-) -> Result<Box<dyn busbar_substrate::plane::config::PlaneEndpointCfg>, String> {
+) -> Result<Box<dyn busbar_kernel::plane::config::PlaneEndpointCfg>, String> {
     serde_yaml::from_value::<McpCfg>(v.clone())
-        .map(|c| Box::new(c) as Box<dyn busbar_substrate::plane::config::PlaneEndpointCfg>)
+        .map(|c| Box::new(c) as Box<dyn busbar_kernel::plane::config::PlaneEndpointCfg>)
         .map_err(|e| e.to_string())
 }
 
 /// LOWER THE `mcp:` ENDPOINT into the validated [`McpResource`], type-erased — the
-/// [`busbar_substrate::plane::registry::PlaneDecl::lower_endpoint`] hook, so `config::resolve` derives
+/// [`busbar_kernel::plane::registry::PlaneDecl::lower_endpoint`] hook, so `config::resolve` derives
 /// `RootCfg::mcp` (`Option<Arc<dyn Any>>`) without naming [`McpResource`] or its constructor. The
 /// error string is `McpCfgError`'s `Display`, verbatim, so the boot refusal is byte-identical.
 fn mcp_lower_endpoint(
-    endpoint: &dyn busbar_substrate::plane::config::PlaneEndpointCfg,
+    endpoint: &dyn busbar_kernel::plane::config::PlaneEndpointCfg,
 ) -> Result<std::sync::Arc<dyn std::any::Any + Send + Sync>, String> {
     let cfg = endpoint
         .as_any()
@@ -451,13 +451,13 @@ fn mcp_lower_endpoint(
 }
 
 /// BUILD THE MCP RUNTIME from the type-erased `tool_defs` slot — the
-/// [`busbar_substrate::plane::registry::PlaneDecl::build_runtime`] hook, so `appbuild` composes the MCP
+/// [`busbar_kernel::plane::registry::PlaneDecl::build_runtime`] hook, so `appbuild` composes the MCP
 /// runtime slot (the plane's `runtime_slot_key` bundle) through the plane without naming
 /// [`config::ToolsCfg`]. Downcasts back to `ToolsCfg` HERE (inside the plane) and delegates to
 /// [`build_runtime`].
 fn mcp_build_runtime(
     tool_defs: &dyn std::any::Any,
-    prior: Option<&dyn busbar_substrate::plane_host::PlaneSlots>,
+    prior: Option<&dyn busbar_kernel::plane_host::PlaneSlots>,
 ) -> std::sync::Arc<dyn std::any::Any + Send + Sync> {
     let tool_defs = tool_defs
         .downcast_ref::<config::ToolsCfg>()
@@ -466,19 +466,19 @@ fn mcp_build_runtime(
 }
 
 /// PRUNE THE MCP VERIFY-ON-CALL GATES to the servers THIS generation fronts — the
-/// [`busbar_substrate::plane::registry::PlaneDecl::retain_verify_gates`] hook, so `appbuild` prunes the carried
+/// [`busbar_kernel::plane::registry::PlaneDecl::retain_verify_gates`] hook, so `appbuild` prunes the carried
 /// coalescing state without naming the MCP runtime. Byte-identical to the old inline `appbuild` arm.
-fn mcp_retain_verify_gates(slots: &dyn busbar_substrate::plane_host::PlaneSlots) {
+fn mcp_retain_verify_gates(slots: &dyn busbar_kernel::plane_host::PlaneSlots) {
     let rt = runtime_slots(slots);
     let live: std::collections::HashSet<String> =
         rt.catalogue.servers().map(|s| s.id.clone()).collect();
     rt.verify.retain(&live);
 }
 
-/// The `mcp:` ENDPOINT block, as the neutral [`busbar_substrate::plane::config::PlaneEndpointCfg`] seam — a
+/// The `mcp:` ENDPOINT block, as the neutral [`busbar_kernel::plane::config::PlaneEndpointCfg`] seam — a
 /// present `McpCfg` (a fully-deserialized block) is always present; the deletion-gate `is_present`
 /// question is only ASKED of the raw carrier the compiled-out build captures.
-impl busbar_substrate::plane::config::PlaneEndpointCfg for McpCfg {
+impl busbar_kernel::plane::config::PlaneEndpointCfg for McpCfg {
     fn is_present(&self) -> bool {
         true
     }
@@ -504,8 +504,8 @@ impl busbar_substrate::plane::config::PlaneEndpointCfg for McpCfg {
 /// pool and catalogue move out of the flat `App` fields into the plane's own slot object, this
 /// downcasts that slot instead of the `App`.
 pub(crate) fn mcp_on_swap(
-    _prior: &dyn busbar_substrate::plane_host::PlaneSlots,
-    next: &dyn busbar_substrate::plane_host::PlaneSlots,
+    _prior: &dyn busbar_kernel::plane_host::PlaneSlots,
+    next: &dyn busbar_kernel::plane_host::PlaneSlots,
 ) {
     let rt = runtime_slots(next);
     rt.pool.children.retain(
@@ -524,7 +524,7 @@ pub(crate) fn mcp_on_swap(
 /// governance store) `ctx.store` is `None` and every block below is skipped — the call log, the
 /// demotion record and the spent ledger are ephemeral BY DESIGN there, exactly as the audit ring is.
 pub(crate) fn mcp_hydrate(
-    ctx: &dyn busbar_substrate::plane::registry::PlaneBootCtx,
+    ctx: &dyn busbar_kernel::plane::registry::PlaneBootCtx,
 ) -> Result<(), String> {
     if !ctx.has_store() {
         return Ok(());
@@ -546,7 +546,7 @@ pub(crate) fn mcp_hydrate(
     ctx.register_call_stream();
     let restored = ctx.restore_call_log();
     match restored {
-        Ok(r) if r == busbar_substrate::plane::registry::RestoredSummary::default() => {}
+        Ok(r) if r == busbar_kernel::plane::registry::RestoredSummary::default() => {}
         Ok(r) => {
             tracing::info!(
                 principals = r.principals,
@@ -559,8 +559,8 @@ pub(crate) fn mcp_hydrate(
             // at the boot summary and at WARN, and fired whenever `unreadable > 0` even if `records`
             // is zero (a scope whose rows were ALL undecodable), so the aggregate is never invisible.
             if r.unreadable > 0 {
-                busbar_substrate::diag_warn!(
-                    busbar_substrate::diagnostics::PLANE_CALLLOG_ROW_UNREADABLE,
+                busbar_substrate_values::diag_warn!(
+                    busbar_substrate_values::diagnostics::PLANE_CALLLOG_ROW_UNREADABLE,
                     rows = r.unreadable,
                     "persisted MCP per-call records could not be decoded on restore and were SKIPPED; \
                      they were most likely written by a different engine version or the store is corrupt"
@@ -570,7 +570,7 @@ pub(crate) fn mcp_hydrate(
             // is what one caller's evidence being deleted wholesale looks like. Surfaced separately
             // rather than summed into `principals`.
             if r.empty_chains > 0 {
-                busbar_substrate::diag_warn!(
+                busbar_substrate_values::diag_warn!(
                     crate::diagnostics::MCP_CALLLOG_EMPTY_CHAINS,
                     principals = r.empty_chains,
                     "the durable MCP call log enumerates these principals but holds NO records \
@@ -578,14 +578,14 @@ pub(crate) fn mcp_hydrate(
                 );
             }
             for brk in &r.chain_breaks {
-                busbar_substrate::diag_error!(
+                busbar_substrate_values::diag_error!(
                     crate::diagnostics::MCP_CALLLOG_CHAIN_VERIFY_FAILED,
                     break_detail = %brk,
                     "MCP per-call CHAIN VERIFICATION FAILED on restore — TAMPER EVIDENCE"
                 );
             }
         }
-        Err(e) => busbar_substrate::diag_warn!(
+        Err(e) => busbar_substrate_values::diag_warn!(
             crate::diagnostics::MCP_CALLLOG_UNREAD,
             error = %e,
             "could not read the durable MCP per-call log; chains start at their persisted \
@@ -610,7 +610,7 @@ pub(crate) fn mcp_hydrate(
     let host = ctx.engine_host();
     match crate::mcp::demotion::hydrate(&host, ctx.plane_store().as_ref()) {
         0 => {}
-        n => busbar_substrate::diag_warn!(
+        n => busbar_substrate_values::diag_warn!(
             crate::diagnostics::MCP_DEMOTIONS_RESTORED,
             servers = n,
             "MCP upstream demotions restored from the durable governance store: these servers \
@@ -630,9 +630,9 @@ pub(crate) fn mcp_hydrate(
 /// no sessions this revision) behind the same key bar.
 pub(crate) fn mcp_routes(
     slot: &dyn std::any::Any,
-) -> Vec<busbar_substrate::plane_routes::PlaneRouteSpec> {
+) -> Vec<busbar_kernel::plane_routes::PlaneRouteSpec> {
     use busbar_plugin_loader::{RouteAuth, RouteMethod};
-    use busbar_substrate::plane_routes::{PlaneReqCtx, PlaneRouteFuture, PlaneRouteSpec};
+    use busbar_kernel::plane_routes::{PlaneReqCtx, PlaneRouteFuture, PlaneRouteSpec};
     let resource = slot
         .downcast_ref::<McpResource>()
         .expect("the mcp plane's routes slot is an McpResource");
@@ -685,10 +685,10 @@ pub(crate) fn mcp_routes(
 /// nothing.
 pub(crate) fn mcp_admin_routes(
     _slot: &dyn std::any::Any,
-) -> Vec<busbar_substrate::admin_verbs::AdminRouteSpec> {
+) -> Vec<busbar_kernel::admin_verbs::AdminRouteSpec> {
     use crate::mcp::admin_view::McpServers;
     use busbar_plugin::cold::endpoint::RouteMethod;
-    use busbar_substrate::admin_verbs::{
+    use busbar_kernel::admin_verbs::{
         connect_reply, AdminReplyFuture, AdminReqCtx, AdminRouteSpec, AdminScope, AdminVerbKind,
     };
     vec![
@@ -730,7 +730,7 @@ pub(crate) fn mcp_admin_routes(
 // Read only by the OpenAPI generator (feature `openapi-schema`) and the non-vacuity floor test.
 #[cfg_attr(not(any(test, feature = "openapi-schema")), allow(dead_code))]
 pub(crate) fn mcp_openapi_fragment() -> serde_json::Value {
-    let ap = |rel: &str| format!("{}{rel}", busbar_substrate::api::ADMIN_PREFIX);
+    let ap = |rel: &str| format!("{}{rel}", busbar_kernel::api::ADMIN_PREFIX);
     serde_json::json!({
         ap("/tools/{name}/connect"): {
             "post": {
@@ -777,7 +777,7 @@ pub(crate) fn mcp_openapi_fragment() -> serde_json::Value {
 /// THE MCP PLANE'S ADMIN PROJECTION, and the plane's half of the shared trust verb surface —
 /// where an MCP registration is resolved from, what looking at one means, and the two derived reads
 /// (`changes`, `health`) that contact nothing. `connect` itself is
-/// [`busbar_substrate::admin_verbs::connect_reply`], written once for every plane.
+/// [`busbar_kernel::admin_verbs::connect_reply`], written once for every plane.
 pub mod admin_view;
 /// THE SEALED `requestState` busbar mints for its OWN asks: HMAC over a payload binding the
 /// authenticated principal, the request, the catalogue generation, a round index and a TTL.
@@ -862,11 +862,11 @@ tokio::task_local! {
 pub mod config;
 /// THE CONNECT / REFRESH PATH: fetch an upstream's LIVE tool list, re-hash it, and feed the
 /// trust lifecycle — the missing right-hand side of the rug-pull comparison. On-demand now, driven by
-/// verify-on-call ([`busbar_substrate::trust::verify`]) rather than a boot-time sweep.
+/// verify-on-call ([`busbar_kernel::trust::verify`]) rather than a boot-time sweep.
 pub(crate) mod connect;
 
 /// THIS REVISION'S ENVELOPE RULES. Not `ingress` any more, and the rename is the statement: the
-/// ingress SEQUENCE is `busbar_substrate::ingress::protocol`, once, for every JSON-RPC plane. Every rule left
+/// ingress SEQUENCE is `busbar_kernel::ingress::protocol`, once, for every JSON-RPC plane. Every rule left
 /// in here is a statement about the ENVELOPE — `params._meta`, the mirrored routing headers, the
 /// protocol version — which is what its own header said it was all along.
 pub mod envelope;
@@ -1115,10 +1115,10 @@ impl McpResource {
     /// THE OPERATOR'S BROWSER-ORIGIN ALLOWLIST, as data.
     ///
     /// This used to be `origin_allowed(&self, origin) -> bool` — the DECISION. The decision is now
-    /// `busbar_substrate::ingress::protocol::origin_admitted`, made once for every JSON-RPC plane, because
+    /// `busbar_kernel::ingress::protocol::origin_admitted`, made once for every JSON-RPC plane, because
     /// DNS-rebinding is not a fact about MCP: A2A had no `Origin` check at all for as long as this
     /// one was a method here. The plane keeps the DATA and core keeps the verdict, which is
-    /// `busbar_substrate::net_guard`'s rule stated for a second concern — a caller keeps its refusal
+    /// `busbar_kernel::net_guard`'s rule stated for a second concern — a caller keeps its refusal
     /// VOCABULARY, not its DECISION.
     ///
     /// The empty allowlist admits no browser origin, which is the documented default; loopback is
@@ -1129,8 +1129,8 @@ impl McpResource {
 
     /// The plane admission facts this resource contributes to the dispatch table: the audience a
     /// token must carry here, and where a refused caller is told to go.
-    pub fn admission(&self) -> busbar_substrate::plane::PlaneAdmission {
-        busbar_substrate::plane::PlaneAdmission {
+    pub fn admission(&self) -> busbar_kernel::plane::PlaneAdmission {
+        busbar_kernel::plane::PlaneAdmission {
             audience: self.canonical_uri().to_string(),
             resource_metadata: self.metadata_url().to_string(),
         }

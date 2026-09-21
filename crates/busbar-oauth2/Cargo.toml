@@ -33,7 +33,6 @@ busbar-kernel = { path = "../busbar-kernel", default-features = false }
 # directly — the SAME bounded-body/hop-deadline guard the rest of busbar's egress uses — rather than
 # a second copy of it, exactly as it did when this file compiled inside busbar-core (core names this
 # crate directly too; it is the shared Tier-0 leaf, not a plane-owned one).
-busbar-substrate = { path = "../busbar-substrate" }
 busbar-plugin-loader = { path = "../plugin-loader" }
 axum = { workspace = true }
 base64 = { workspace = true }

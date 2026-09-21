@@ -43,19 +43,19 @@ use crate::topology::{
     begin_session, dial_provider, open_admitted_session, stream_breaker_key, SessionBudget,
     SessionGauntlet, StartError,
 };
-use busbar_substrate::egress::engine::{send_bounded, EngineClient};
-use busbar_substrate::ingress::byte_duplex::serve_messages;
-use busbar_substrate::ingress::duplex_ws::{
+use busbar_kernel::egress::engine::{send_bounded, EngineClient};
+use busbar_kernel::ingress::byte_duplex::serve_messages;
+use busbar_kernel::ingress::duplex_ws::{
     accept_gauntlet, WsAcceptFuture, WsArrival, WsArrivalSpec,
 };
-use busbar_substrate::net_guard::GuardPolicy;
-use busbar_substrate::plane::handle_engine::DurableHandleEngine;
-use busbar_substrate::plane::observe::Counted;
-use busbar_substrate::plane::registry::{BuildCtx, PlaneBootCtx};
-use busbar_substrate::plane::PlaneAdmission;
-use busbar_substrate::plane_host::{EngineHost, GateOutcome, TransformVerdict};
-use busbar_substrate::plane_host::{GauntletPlane, GauntletRequest};
-use busbar_substrate::plane_routes::PlaneRouteSpec;
+use busbar_kernel::net_guard::GuardPolicy;
+use busbar_kernel::plane::handle_engine::DurableHandleEngine;
+use busbar_kernel::plane::observe::Counted;
+use busbar_kernel::plane::registry::{BuildCtx, PlaneBootCtx};
+use busbar_kernel::plane::PlaneAdmission;
+use busbar_kernel::plane_host::{EngineHost, GateOutcome, TransformVerdict};
+use busbar_kernel::plane_host::{GauntletPlane, GauntletRequest};
+use busbar_kernel::plane_routes::PlaneRouteSpec;
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full};
 use std::any::Any;
@@ -546,7 +546,7 @@ pub fn voice_admission(slot: &dyn Any) -> Option<PlaneAdmission> {
 #[must_use]
 pub fn voice_routes(slot: &dyn Any) -> Vec<PlaneRouteSpec> {
     use busbar_plugin::cold::endpoint::{RouteAuth, RouteMethod};
-    use busbar_substrate::plane_routes::{PlaneReqCtx, PlaneRouteFuture};
+    use busbar_kernel::plane_routes::{PlaneReqCtx, PlaneRouteFuture};
 
     if slot.downcast_ref::<VoiceMount>().is_none() {
         return Vec::new();
@@ -786,7 +786,7 @@ pub(crate) async fn open_governed(req: GovernedOpen<'_>) -> axum::response::Resp
 /// the [`Counted`] marker on the response tells the core `plane::observe` middleware this request was
 /// already counted, so the front-door series is never double-counted at the boundary.
 fn finish(mut resp: axum::response::Response) -> axum::response::Response {
-    let outcome = busbar_substrate::telemetry::outcome_of(resp.status().as_u16());
+    let outcome = busbar_kernel::telemetry::outcome_of(resp.status().as_u16());
     metrics::counter!(
         PLANE_REQUESTS_TOTAL,
         "plane" => "voice",
@@ -1013,8 +1013,8 @@ fn rtc_call_id_of(location: &str) -> Option<String> {
 /// The substrate egress client the one-shot HTTPS passes dial through (the same posture the concrete
 /// minter uses). Built per pass; the composition root pools one once the provider config is threaded.
 fn egress_client() -> EngineClient {
-    busbar_substrate::proxy::build_egress_client(
-        &busbar_substrate::egress::engine::EngineSpec::pooled_webpki(4, 300, false, false),
+    busbar_kernel::proxy::build_egress_client(
+        &busbar_kernel::egress::engine::EngineSpec::pooled_webpki(4, 300, false, false),
     )
 }
 
@@ -1099,7 +1099,7 @@ fn hook_refusal(status: u16, message: &str) -> axum::response::Response {
 /// what creates the route), so the downcast never fails on a mounted route; the `Option` survives only
 /// so a future refactor that mounted the route without the slot answers `500` rather than panicking.
 async fn serve(
-    ctx: busbar_substrate::plane_routes::PlaneReqCtx,
+    ctx: busbar_kernel::plane_routes::PlaneReqCtx,
     ingress: Ingress,
 ) -> axum::response::Response {
     let Some(mount) = ctx.slot.downcast_ref::<VoiceMount>() else {
@@ -1147,20 +1147,20 @@ async fn serve(
 /// clock (`store::now_ms()` scaled to nanos and divided back to seconds), so the value — and with it
 /// the session's `charged_at` money stamp — is byte-identical. Generic over the port rather than
 /// taking `&dyn ClockHost`, so no trait-object upcast is needed at the call sites.
-fn unix_secs<H: busbar_substrate::plane_host::ClockHost + ?Sized>(clock: &H) -> u64 {
+fn unix_secs<H: busbar_kernel::plane_host::ClockHost + ?Sized>(clock: &H) -> u64 {
     clock.clock_now_secs()
 }
 
-async fn mint_route(ctx: busbar_substrate::plane_routes::PlaneReqCtx) -> axum::response::Response {
+async fn mint_route(ctx: busbar_kernel::plane_routes::PlaneReqCtx) -> axum::response::Response {
     serve(ctx, Ingress::Mint).await
 }
-async fn sdp_route(ctx: busbar_substrate::plane_routes::PlaneReqCtx) -> axum::response::Response {
+async fn sdp_route(ctx: busbar_kernel::plane_routes::PlaneReqCtx) -> axum::response::Response {
     serve(ctx, Ingress::Sdp).await
 }
 /// THE PROVIDER SIDE OF A WS DIAL — the origin, converted to `ws(s)://`, plus the fixed path the
 /// dialect's realtime endpoint answers on. `api_key` rides in the URL for the ONE dialect whose native
 /// scheme allows it (Gemini's documented `?key=` query form); OpenAI Realtime's native scheme is a
-/// header (`Authorization: Bearer`) the neutral WS dialer (`busbar_substrate::egress::duplex_ws::dial`,
+/// header (`Authorization: Bearer`) the neutral WS dialer (`busbar_kernel::egress::duplex_ws::dial`,
 /// a `tokio_tungstenite::client_async` call with no custom-header hook) cannot carry today — a known,
 /// stated limit of the shared dialer, not something this plane's dial call papers over. A loopback test
 /// provider (this plane's own conformance harness) does not check either scheme, so the wiring proves

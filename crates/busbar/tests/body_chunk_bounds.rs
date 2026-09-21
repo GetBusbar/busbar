@@ -26,7 +26,7 @@ use busbar_kernel::inflight::InFlight;
 use busbar_kernel::pump::{
     BodySpool, Direction, Dispatch, Scheduler, Shape, SpillBudget, StreamId, MAX_NEEDMORE_FRAMES,
 };
-use busbar_substrate::config::limits::{
+use busbar_kernel::config::limits::{
     DEFAULT_REQUEST_BODY_MAX_BYTES, REQUEST_BODY_MAX_BYTES_CEIL, REQUEST_BODY_MAX_BYTES_FLOOR,
 };
 use busbar_transport_http::HttpTransport;

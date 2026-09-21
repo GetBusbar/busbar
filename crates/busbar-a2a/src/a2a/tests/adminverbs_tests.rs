@@ -151,9 +151,9 @@ async fn serve(
             Arc::new(busbar_store_memory::MemoryStore::new()),
             Some(TOKEN.to_string()),
             Some(
-                busbar_substrate::governance::signing::TokenSigner::from_secret_bytes(
+                busbar_kernel::governance::signing::TokenSigner::from_secret_bytes(
                     &[9u8; 32],
-                    busbar_substrate::governance::signing::DEFAULT_KID,
+                    busbar_kernel::governance::signing::DEFAULT_KID,
                 ),
             ),
         )
@@ -417,7 +417,7 @@ async fn the_trust_verbs_need_full_scope() {
     ] {
         assert_eq!(
             engine().admin_required_scope(&axum::http::Method::POST, path),
-            busbar_substrate::testkit::engine_kit::AdminScope::Full,
+            busbar_kernel::testkit::engine_kit::AdminScope::Full,
             "{path} is a mutation"
         );
     }

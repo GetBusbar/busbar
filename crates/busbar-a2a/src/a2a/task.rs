@@ -348,14 +348,14 @@ impl Task {
 /// side at the D4 codec inversion: the neutral core engine only hash-chains and persists whatever
 /// `kind` it is handed, so the classification — which needs the [`TaskState`] enum — lives here and
 /// the resulting `&'static str` is passed INTO the engine's record path. The kind CONSTANTS are still
-/// the neutral audit vocabulary's (`busbar_substrate::audit::vocab::EV_*`), so the emitted strings are unchanged; only the mapping
+/// the neutral audit vocabulary's (`busbar_contract::vocab::EV_*`), so the emitted strings are unchanged; only the mapping
 /// moved.
 ///
 /// `from` is the state BEFORE the move and it is load-bearing: an `interrupted → working` move is a
 /// RESUME, a distinct event from a fresh `working`, and the two are only separable by looking at the
 /// prior state. The fallthrough is `working`, matching the pre-cleave inline mapping byte-for-byte.
 pub(crate) fn event_kind_for_transition(from: TaskState, to: TaskState) -> &'static str {
-    use busbar_substrate::audit::vocab::{EV_INTERRUPTED, EV_RESUMED, EV_TERMINAL, EV_WORKING};
+    use busbar_contract::vocab::{EV_INTERRUPTED, EV_RESUMED, EV_TERMINAL, EV_WORKING};
     match to {
         TaskState::Working if from.is_interrupted() => EV_RESUMED,
         TaskState::Working => EV_WORKING,

@@ -12,10 +12,10 @@
 use super::{AttemptOutcome, Hop};
 use crate::engine::*;
 
-use busbar_substrate::diagnostics::{
+use busbar_substrate_values::diagnostics::{
     ATTEMPT_TIMEOUT_DEGRADED, ATTEMPT_TIMEOUT_FAILOVER, LANE_HARD_DOWN,
 };
-use busbar_substrate::{diag_debug, diag_warn};
+use busbar_kernel::{diag_debug, diag_warn};
 
 /// The attempt cap fired before response headers arrived: a transient failure on the pool cell,
 /// counted as its own `attempt_timeout` series so operators can see hang-hops separately.
@@ -115,7 +115,7 @@ impl UpstreamError {
         let ct = r.headers().get(CONTENT_TYPE).cloned();
         // The upstream `Retry-After` header (whole seconds) is captured here: the per-protocol
         // `extract_error` only sees the body, so the cooldown floor would otherwise be dropped.
-        let retry_after_secs = busbar_substrate::breaker::parse_retry_after(r.headers());
+        let retry_after_secs = busbar_substrate_values::breaker::parse_retry_after(r.headers());
         let amzn_headers = if ingress_relays_amzn_headers(hop.ingress_protocol) {
             ingress_relayed_response_header_names(hop.ingress_protocol)
                 .iter()
@@ -211,13 +211,13 @@ fn classify_error(
 
     // Two-stage pipeline: the cell that spoke to this upstream extracts the raw error, the lane's
     // error map normalizes it, the breaker classifies it.
-    let mut raw = busbar_substrate::handlers::op_for(
+    let mut raw = busbar_substrate_values::handlers::op_for(
         hop.egress_name,
         hop.op.operation,
-        busbar_substrate::transport::Transport::Http,
+        busbar_substrate_values::transport::Transport::Http,
     )
     .map(|cell| cell.extract_error(status.as_u16(), &err.bytes))
-    .unwrap_or_else(|| busbar_substrate::breaker::RawUpstreamError::from_status(status.as_u16()));
+    .unwrap_or_else(|| busbar_substrate_values::breaker::RawUpstreamError::from_status(status.as_u16()));
     raw.retry_after_secs = err.retry_after_secs;
     let sig = normalize_raw_error(&raw, &hop.lane_row().error_map);
     let disposition = classify_disposition(&sig);
@@ -309,7 +309,7 @@ fn classify_error(
 fn hard_down(
     hop: &Hop<'_>,
     err: &UpstreamError,
-    sig: &busbar_substrate::breaker::CanonicalSignal,
+    sig: &busbar_substrate_values::breaker::CanonicalSignal,
     status: StatusCode,
     permit: Permit,
 ) -> AttemptOutcome {
@@ -342,12 +342,12 @@ fn hard_down(
         // a 403 AccessDeniedException, a real Gemini bad key a 400 INVALID_ARGUMENT), with the
         // vendor-plausible message — never the egress backend's raw status or body.
         let (auth_status, auth_kind) =
-            busbar_substrate::proxy::auth_failure_status_and_kind(hop.ingress_protocol);
+            busbar_kernel::proxy::auth_failure_status_and_kind(hop.ingress_protocol);
         return AttemptOutcome::Response(ingress_error(
             hop.ingress_protocol,
             auth_status,
             auth_kind,
-            busbar_substrate::proto::vendor_auth_failure_message(hop.ingress_protocol),
+            busbar_kernel::proto::vendor_auth_failure_message(hop.ingress_protocol),
         ));
     }
     AttemptOutcome::Failed {

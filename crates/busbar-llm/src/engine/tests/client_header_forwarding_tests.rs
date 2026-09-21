@@ -8,7 +8,7 @@
 //! (`anthropic-beta`, `OpenAI-Beta`, `anthropic-version`). The forwarding seam restores that fidelity
 //! as a NEUTRAL mechanism plus a PLANE policy:
 //!
-//!   * NEUTRAL (`busbar_substrate::proxy::{collect,apply}_client_headers`) — forwards EXACTLY the set
+//!   * NEUTRAL (`busbar_kernel::proxy::{collect,apply}_client_headers`) — forwards EXACTLY the set
 //!     of header names it is handed, hard-coding NONE. Proven by `neutral_mechanism_*` below.
 //!   * PLANE (`crate::engine::{FORWARDED_CLIENT_HEADERS, forwardable_client_header_names,
 //!     client_header_names_for_egress}`) — the dialect-scoped allowlist that supplies those names. The
@@ -58,13 +58,13 @@ fn collect(pairs: &[(&'static str, &str)]) -> Vec<(HeaderName, HeaderValue)> {
             HeaderValue::from_str(value).unwrap(),
         );
     }
-    busbar_substrate::proxy::collect_client_headers(
+    busbar_kernel::proxy::collect_client_headers(
         &hm,
         &crate::engine::forwardable_client_header_names(),
     )
 }
 
-async fn drive<A: busbar_substrate::testkit::BuiltAppSeam + ?Sized>(
+async fn drive<A: busbar_kernel::testkit::BuiltAppSeam + ?Sized>(
     app: &Arc<A>,
     ingress_protocol: &'static str,
     client_fwd: Vec<(HeaderName, HeaderValue)>,
@@ -315,7 +315,7 @@ async fn non_allowlisted_client_header_is_not_forwarded() {
 }
 
 // ── NEUTRAL-MECHANISM DIRECT TESTS ────────────────────────────────────────────────────────────────
-// These bypass the plane policy entirely and drive `busbar_substrate::proxy::{collect,apply}` with
+// These bypass the plane policy entirely and drive `busbar_kernel::proxy::{collect,apply}` with
 // ARBITRARY, made-up header names to prove the neutral mechanism forwards EXACTLY the set it is given
 // and hard-codes nothing — the whole point of the redo.
 
@@ -342,7 +342,7 @@ fn neutral_collect_captures_exactly_the_given_names() {
     );
 
     // Ask for two arbitrary names the neutral crate has never heard of.
-    let got = busbar_substrate::proxy::collect_client_headers(
+    let got = busbar_kernel::proxy::collect_client_headers(
         &hm,
         &["x-made-up-alpha", "x-made-up-beta"],
     );
@@ -387,7 +387,7 @@ fn neutral_apply_forwards_exactly_the_allowed_set() {
 
     // Only the arbitrary allowed name rides through — the neutral crate never heard of either name.
     let mut egress = HeaderMap::new();
-    busbar_substrate::proxy::apply_client_headers(&mut egress, &collected, &["x-made-up-allowed"]);
+    busbar_kernel::proxy::apply_client_headers(&mut egress, &collected, &["x-made-up-allowed"]);
     assert_eq!(
         egress.get("x-made-up-allowed").map(|v| v.to_str().unwrap()),
         Some("yes"),
@@ -400,7 +400,7 @@ fn neutral_apply_forwards_exactly_the_allowed_set() {
 
     // Empty allowlist ⇒ nothing forwarded (byte-identical egress).
     let mut egress_empty = HeaderMap::new();
-    busbar_substrate::proxy::apply_client_headers(&mut egress_empty, &collected, &[]);
+    busbar_kernel::proxy::apply_client_headers(&mut egress_empty, &collected, &[]);
     assert!(
         egress_empty.is_empty(),
         "an empty allowlist forwards nothing — no hidden hard-coded names"
@@ -420,7 +420,7 @@ fn neutral_apply_replaces_then_appends() {
     // A busbar default the caller's value must override.
     egress.insert(name.clone(), HeaderValue::from_static("busbar-default"));
 
-    busbar_substrate::proxy::apply_client_headers(&mut egress, &collected, &["x-made-up-multi"]);
+    busbar_kernel::proxy::apply_client_headers(&mut egress, &collected, &["x-made-up-multi"]);
 
     let values: Vec<_> = egress
         .get_all(&name)

@@ -8,7 +8,7 @@
 //! forcing a re-verification the timer has not asked for, and `suspend` is a human pulling an agent
 //! out of service on evidence the machine does not have. This module is the verb layer: it decides
 //! what each verb DOES to the trust lifecycle, and it is written over the plane-neutral machine in
-//! [`busbar_substrate::trust`] so none of these adds a state or a transition to it.
+//! [`busbar_kernel::trust`] so none of these adds a state or a transition to it.
 //!
 //! ## `connect` PREVIEWS. It never grants.
 //!
@@ -45,7 +45,7 @@
 //! served a different card the second time".
 
 // `connect` IS MOUNTED, and the mount is not here. `POST /api/v1/admin/agents/{name}/connect` is
-// [`busbar_substrate::admin_verbs::connect_reply`], written once and parameterised by plane; what this plane
+// [`busbar_kernel::admin_verbs::connect_reply`], written once and parameterised by plane; what this plane
 // supplies is [`A2aAgents`] at the foot of this file — where a registration is resolved from, and
 // what looking at one means. The approval half, `POST .../approve`, IS here, because echoing a
 // fingerprint back is a verb only this plane has. Until both landed, this file was tested and
@@ -68,12 +68,12 @@ use super::plane::A2aPlane;
 use super::registry::AgentRegistration;
 use super::reverify::{self, Due, Ledger, Policy};
 use crate::diagnostics::A2A_CARD_FETCH_PANICKED;
-use busbar_substrate::admin_verbs::{
+use busbar_kernel::admin_verbs::{
     plane_admin_envelope, registered, AdminReply, AdminReqCtx, PlaneAdminCond, PlaneTrust,
     PlaneVerbError,
 };
-use busbar_substrate::diag_error;
-use busbar_substrate::trust::{Approval, Drift, Observation, Sighting, TrustState};
+use busbar_substrate_values::diag_error;
+use busbar_kernel::trust::{Approval, Drift, Observation, Sighting, TrustState};
 
 /// A CARD, PLUS WHAT THE CONNECTION IT ARRIVED ON PROVED.
 ///
@@ -376,7 +376,7 @@ pub(crate) fn operator_resume(approval: &mut Approval<CardPin>) {
     approval.resume();
 }
 
-// ══ THE ADMIN MOUNT: this plane's half of the ONE surface in `busbar_substrate::admin_verbs` ══════════
+// ══ THE ADMIN MOUNT: this plane's half of the ONE surface in `busbar_kernel::admin_verbs` ══════════
 //
 // The sequence a trust verb follows — resolve the registration or refuse with a `404`, go and look,
 // audit whatever was found — is not this plane's. It is `admin::planeverbs`, once, because it was
@@ -459,7 +459,7 @@ impl PlaneTrust for A2aAgents {
     type View = A2aTrustView;
 
     fn resolve(
-        host: &Arc<dyn busbar_substrate::plane_host::EngineHost>,
+        host: &Arc<dyn busbar_kernel::plane_host::EngineHost>,
         name: &str,
     ) -> Result<A2aSubject, PlaneVerbError> {
         registered(|| {
@@ -477,7 +477,7 @@ impl PlaneTrust for A2aAgents {
 
     async fn look(
         subject: A2aSubject,
-        _host: Arc<dyn busbar_substrate::plane_host::EngineHost>,
+        _host: Arc<dyn busbar_kernel::plane_host::EngineHost>,
         name: String,
     ) -> Result<A2aTrustView, PlaneVerbError> {
         let preview = look(&subject).await?;
@@ -587,7 +587,7 @@ pub(crate) async fn approve(ctx: AdminReqCtx) -> AdminReply {
             "a2a",
             VERB,
             &name,
-            busbar_substrate::audit::vocab::OUTCOME_REJECTED,
+            busbar_contract::vocab::OUTCOME_REJECTED,
             &principal,
         );
         return AdminReply::Prebuilt(
@@ -639,7 +639,7 @@ pub(crate) async fn approve(ctx: AdminReqCtx) -> AdminReply {
                 "a2a",
                 VERB,
                 &name,
-                busbar_substrate::audit::vocab::OUTCOME_REJECTED,
+                busbar_contract::vocab::OUTCOME_REJECTED,
                 &principal,
             );
             return AdminReply::Prebuilt(match e {
@@ -652,7 +652,7 @@ pub(crate) async fn approve(ctx: AdminReqCtx) -> AdminReply {
         "a2a",
         VERB,
         &name,
-        busbar_substrate::audit::vocab::OUTCOME_APPLIED,
+        busbar_contract::vocab::OUTCOME_APPLIED,
         &principal,
     );
     // The success view, SERIALIZED here (declaration key order) and framed by the envelope exactly as
@@ -751,7 +751,7 @@ fn registration_view(name: &str, reg: &AgentRegistration) -> A2aTrustView {
 /// asking on this surface is what the endpoint proved, and echoing back the mechanism they
 /// configured would answer it with their own input.
 fn mechanism_of(sighting: &Sighting<CardPin>) -> &'static str {
-    use busbar_substrate::trust::PinnedArtifact as _;
+    use busbar_kernel::trust::PinnedArtifact as _;
     sighting
         .observation()
         .and_then(|o| o.pin.as_ref())

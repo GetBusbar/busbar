@@ -3474,7 +3474,7 @@ pub(crate) async fn hook_status(
     let desired_version = current.config_version;
     let reported =
         busbar_kernel::hooks::fetch_status(&name, hook, desired_version, &current.hook_env).await;
-    let as_of = busbar_substrate::store::now();
+    let as_of = busbar_kernel::store::now();
     let body = match reported {
         Some(r) => {
             // Drift: the hook runs a different settings version, or a DESIRED key is missing/
@@ -3614,7 +3614,7 @@ pub(crate) const V1_GET_PATHS: &[(&str, &str)] = &[
 ];
 
 // `set_request_body` (the write verb's request-body schema attach) relocated to the neutral
-// `busbar_substrate::api::set_request_body` beside `set_response_schema` — its one caller is a
+// `busbar_kernel::api::set_request_body` beside `set_response_schema` — its one caller is a
 // plane's `openapi_schemas` contributor, which names the substrate twin directly.
 
 #[cfg(feature = "openapi-schema")]

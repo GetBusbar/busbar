@@ -384,7 +384,7 @@ pub static ROOT_CARD: LazyLock<RootHistory> = LazyLock::new(RootHistory::default
 /// node's money in" in a file that has no business deciding, and the two answers would be free to
 /// drift.
 pub(crate) fn card_from_config<'r>(
-    rates: impl IntoIterator<Item = (&'r str, busbar_substrate::billing::RawTierRates)>,
+    rates: impl IntoIterator<Item = (&'r str, busbar_substrate_values::billing::RawTierRates)>,
     flat_minor: i64,
     present: bool,
     currency: busbar_kernel_ledger::cost::CurrencyCode,
@@ -423,8 +423,8 @@ pub(crate) fn card_from_config<'r>(
 #[derive(Debug, Clone, Copy)]
 pub struct CardRepricer;
 
-impl busbar_substrate::rate_apply::RateApply for CardRepricer {
-    fn rates_applied(&self, rates: &busbar_substrate::rate_apply::RawRates<'_>) {
+impl busbar_kernel::rate_apply::RateApply for CardRepricer {
+    fn rates_applied(&self, rates: &busbar_kernel::rate_apply::RawRates<'_>) {
         ROOT_CARD.apply(
             card_from_config(
                 rates.lanes.iter().map(|(lane, r)| (lane.as_str(), *r)),
@@ -432,14 +432,14 @@ impl busbar_substrate::rate_apply::RateApply for CardRepricer {
                 rates.present,
                 node_currency(),
             ),
-            busbar_substrate::store::now_ms(),
+            busbar_kernel::store::now_ms(),
         );
     }
 }
 
 /// Install the root as the process's rate holder. Boot only, once.
 pub fn install_card_repricer() {
-    busbar_substrate::rate_apply::install_rate_apply(&CardRepricer);
+    busbar_kernel::rate_apply::install_rate_apply(&CardRepricer);
 }
 
 /// The admission unit, standing at the in-flight table's arrival door.

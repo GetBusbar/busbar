@@ -94,14 +94,14 @@ pub(crate) async fn protocol_dispatch(
         // `path`/`uri`/`headers`/`body` directly, and it reaches core's resolution/forward pipeline
         // through `host`, threading the core-only `App`/`GovCtx`/`CallerToken` back opaquely as `ctx`
         // — so it names no `busbar_kernel::` item and core names no dialect.
-        let ctx = busbar_substrate::ingress::arrival::ArrivalCtx::new(
+        let ctx = busbar_kernel::ingress::arrival::ArrivalCtx::new(
             crate::ingress::arrival_host::ArrivalPayload {
                 host: crate::plane_host::engine_host(&app),
                 gov,
                 caller_token: caller.0.clone(),
             },
         );
-        return path_ingress(busbar_substrate::ingress::arrival::Arrival {
+        return path_ingress(busbar_kernel::ingress::arrival::Arrival {
             host: std::sync::Arc::new(crate::ingress::arrival_host::CoreArrivalHost),
             ctx,
             path,
@@ -118,14 +118,14 @@ pub(crate) async fn protocol_dispatch(
     // arrival, exactly like the path-model arm above — core names no plane-specific type. No plane
     // linked (core booted plane-agnostic) → the honest no-handler 404.
     if let Some(body_ingress) = crate::ingress::body_ingress_for(proto) {
-        let ctx = busbar_substrate::ingress::arrival::ArrivalCtx::new(
+        let ctx = busbar_kernel::ingress::arrival::ArrivalCtx::new(
             crate::ingress::arrival_host::ArrivalPayload {
                 host: crate::plane_host::engine_host(&app),
                 gov,
                 caller_token: caller.0.clone(),
             },
         );
-        return body_ingress(busbar_substrate::ingress::arrival::Arrival {
+        return body_ingress(busbar_kernel::ingress::arrival::Arrival {
             host: std::sync::Arc::new(crate::ingress::arrival_host::CoreArrivalHost),
             ctx,
             path,

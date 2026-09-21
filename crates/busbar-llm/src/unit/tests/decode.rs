@@ -249,7 +249,7 @@ fn the_ladder_floor_catches_every_shape_of_no_model() {
     // answers a name nothing matches with the charged model-miss 404. Refusing it would make
     // one dialect's unrecognised path segment an uncharged 400 instead.
     registered();
-    let proto = busbar_substrate::proto::residual_default_protocol().expect("a chat dialect");
+    let proto = busbar_kernel::proto::residual_default_protocol().expect("a chat dialect");
     assert_eq!(
         decode_path_model(proto, Operation::CHAT, "")
             .expect("an empty URL model is resolution's answer to give, not this step's")
@@ -267,8 +267,8 @@ fn the_ladder_floor_catches_every_shape_of_no_model() {
 #[test]
 fn every_registered_dialect_resolves_the_live_paths_handler() {
     registered();
-    for proto in busbar_substrate::proto::known_protocols().iter().copied() {
-        let live = busbar_substrate::handlers::request_handler(proto)
+    for proto in busbar_kernel::proto::known_protocols().iter().copied() {
+        let live = busbar_substrate_values::handlers::request_handler(proto)
             .and_then(|rh| rh.operation_handler(Operation::CHAT));
         let step = handler_for(proto, Operation::CHAT).ok();
         match (live, step) {
@@ -297,7 +297,7 @@ fn every_registered_dialect_resolves_the_live_paths_handler() {
 #[tokio::test]
 async fn the_two_handler_misses_carry_the_live_arms_distinct_bytes() {
     registered();
-    for proto in busbar_substrate::proto::known_protocols().iter().copied() {
+    for proto in busbar_kernel::proto::known_protocols().iter().copied() {
         // An unregistered protocol name: the body-model path's first lookup.
         assert_eq!(
             handler_for("no-such-protocol", Operation::CHAT)
@@ -313,13 +313,13 @@ async fn the_two_handler_misses_carry_the_live_arms_distinct_bytes() {
             DecodeRefusal::UnsupportedOperation
         );
 
-        let protocol_miss = busbar_substrate::proxy::ingress_error(
+        let protocol_miss = busbar_kernel::proxy::ingress_error(
             proto,
             StatusCode::NOT_FOUND,
             KIND_NOT_FOUND,
             "This protocol does not support that operation.",
         );
-        let endpoint_miss = busbar_substrate::proxy::ingress_error(
+        let endpoint_miss = busbar_kernel::proxy::ingress_error(
             proto,
             StatusCode::NOT_FOUND,
             KIND_NOT_FOUND,
@@ -365,8 +365,8 @@ async fn the_two_handler_misses_carry_the_live_arms_distinct_bytes() {
 #[tokio::test]
 async fn the_missing_model_refusal_carries_the_live_arms_bytes() {
     registered();
-    for proto in busbar_substrate::proto::known_protocols().iter().copied() {
-        let live = busbar_substrate::proxy::ingress_error(
+    for proto in busbar_kernel::proto::known_protocols().iter().copied() {
+        let live = busbar_kernel::proxy::ingress_error(
             proto,
             StatusCode::BAD_REQUEST,
             KIND_INVALID_REQUEST,
@@ -468,11 +468,11 @@ async fn every_decode_refusal_renders_through_audit_to_the_legacy_bytes() {
         ),
     ];
     assert_eq!(cases.len(), 3, "the closed set grew without a case here");
-    let mut protos: Vec<&str> = busbar_substrate::proto::known_protocols().to_vec();
+    let mut protos: Vec<&str> = busbar_kernel::proto::known_protocols().to_vec();
     protos.push("no-such-protocol");
     for proto in protos {
         for (refusal, status, kind, message) in cases {
-            let legacy = busbar_substrate::proxy::ingress_error(proto, status, kind, message);
+            let legacy = busbar_kernel::proxy::ingress_error(proto, status, kind, message);
             assert_eq!(
                 seen(render_refusal(proto, &refusal.outcome())).await,
                 seen(legacy).await,
@@ -517,7 +517,7 @@ fn the_refusal_set_is_three_and_they_do_not_collide() {
 #[test]
 fn the_whole_step_resolves_both_facts_for_a_recorded_request() {
     registered();
-    let proto = busbar_substrate::proto::residual_default_protocol().expect("a chat dialect");
+    let proto = busbar_kernel::proto::residual_default_protocol().expect("a chat dialect");
     // The first recorded request that carries a model in its BODY. Thirteen of the corpus's
     // sixty-four do not, and that is not a gap: they are the bodies recorded for the two
     // dialects that carry the model in the URL, so the body-model spelling is the wrong reader

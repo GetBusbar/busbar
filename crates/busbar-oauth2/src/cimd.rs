@@ -118,8 +118,8 @@ impl CimdFetch for GuardedFetch {
             // tree, which is exactly the divergence-by-duplication failure mode `net_guard`'s
             // header warns about. Redirect non-following is structural in hyper; the 3xx is
             // still surfaced to `refuse_redirect` below so the refusal keeps its own wording.
-            let client = busbar_substrate::egress::engine::build_client(
-                &busbar_substrate::egress::engine::EngineSpec::pinned(
+            let client = busbar_kernel::egress::engine::build_client(
+                &busbar_kernel::egress::engine::EngineSpec::pinned(
                     Arc::from(host.as_str()),
                     pin.socket_addr().ip(),
                     None,
@@ -131,7 +131,7 @@ impl CimdFetch for GuardedFetch {
             let uri: http::Uri = url
                 .parse()
                 .map_err(|e| format!("`{url}` does not parse as a URI: {e}"))?;
-            let request = busbar_substrate::egress::engine::request(
+            let request = busbar_kernel::egress::engine::request(
                 http::Method::GET,
                 uri,
                 http::HeaderMap::new(),
@@ -140,7 +140,7 @@ impl CimdFetch for GuardedFetch {
             // ONE deadline for the whole exchange, exactly the client-level total the retired
             // reqwest builder carried: send to head, then every body chunk, under one instant.
             let deadline = tokio::time::Instant::now() + policy.timeout;
-            let resp = busbar_substrate::egress::engine::send_bounded(&client, request, deadline)
+            let resp = busbar_kernel::egress::engine::send_bounded(&client, request, deadline)
                 .await
                 .map_err(|e| format!("fetching `{url}` failed: {}", e.into_cause()))?;
             let status = resp.status();
@@ -167,7 +167,7 @@ impl CimdFetch for GuardedFetch {
                     .map_err(|_| {
                         format!(
                             "reading `{url}` failed: {}",
-                            busbar_substrate::egress::engine::HOP_DEADLINE_CAUSE
+                            busbar_kernel::egress::engine::HOP_DEADLINE_CAUSE
                         )
                     })?;
                 match frame {

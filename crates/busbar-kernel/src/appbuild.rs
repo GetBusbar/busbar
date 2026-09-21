@@ -30,7 +30,7 @@ use crate::{
     observability, operation, plane, plugin_routes, profile, proto, proxy, ratelimit, sigv4, state,
     store, telemetry, tls, transport, trust,
 };
-use busbar_substrate::plane_host::{
+use busbar_kernel::plane_host::{
     AffinityInput, AuthStyleInput, ClientSettingsInput, FailoverInput, HealthInput,
     HealthModeInput, LaneInput, OnExhaustedInput, PlaneBuildInput, PoolInput, PoolMemberInput,
 };
@@ -39,7 +39,7 @@ use busbar_substrate::plane_host::{
 // are now operator-tunable (`limits.upstream_request_timeout_secs` / `pool_max_idle_per_host` /
 // `request_body_max_bytes`), each defaulting to its historical value at the config layer. They are
 // threaded from `cfg.limits` into the client builder and router below; the egress translate-body cap
-// is COUPLED to `request_body_max_bytes` via `busbar_substrate::proxy::max_translate_body_bytes`.
+// is COUPLED to `request_body_max_bytes` via `busbar_kernel::proxy::max_translate_body_bytes`.
 
 /// Environment variable name for the config.yaml path — the one irreducible bootstrap env var.
 pub const ENV_CONFIG: &str = "BUSBAR_CONFIG";
@@ -599,7 +599,7 @@ pub fn build_app_from_config(
     // rates are resolved raises the one seam that says so, and it says it on the boot resolution and
     // on every apply/reload alike, because this function is both. Nothing is installed in a build
     // with no such holder and the call is a no-op there.
-    busbar_substrate::rate_apply::rates_applied(&busbar_substrate::rate_apply::RawRates {
+    busbar_kernel::rate_apply::rates_applied(&busbar_kernel::rate_apply::RawRates {
         lanes: &cfg
             .rate_card
             .iter()
@@ -906,7 +906,7 @@ pub fn build_app_from_config(
     // (both default to their historical const at the config layer).
     // Carry-over: an APPLY/RELOAD (prior = Some) restores every surviving lane's learned
     // health state BY STABLE IDENTITY from the prior store; boot (None) starts fresh.
-    let store: Arc<dyn busbar_substrate::store::LaneRuntime> = match prior {
+    let store: Arc<dyn busbar_kernel::store::LaneRuntime> = match prior {
         Some(p) => Arc::new(HealthState::new_with_limits_restored(
             lanes_data.clone(),
             cfg.limits.hard_down_cooldown_secs,
@@ -1155,7 +1155,7 @@ pub fn build_app_from_config(
                 // the persisted ledger. A no-op for the empty RAM store.
                 // Fail-open: a store error here is FATAL - resuming with empty (reset) budget
                 // cells would let a maxed-out key spend its whole cap again. Fail boot loudly.
-                if let Err(e) = gs.hydrate_budgets(&cost, busbar_substrate::store::now()) {
+                if let Err(e) = gs.hydrate_budgets(&cost, busbar_kernel::store::now()) {
                     return Err(format!(
                         "governance boot: budget hydration failed ({e}); refusing to start with an \
                          unenforced (reset) ledger. Fix the durable store and restart."
@@ -1413,7 +1413,7 @@ pub fn build_app_from_config(
             // owning plane is compiled out (resolve produced no resource then).
             endpoint_slot: cfg
                 .endpoint_resources
-                .get(busbar_substrate::plane::config::NAMED_MAP_SECTIONS[2])
+                .get(busbar_kernel::plane::config::NAMED_MAP_SECTIONS[2])
                 .cloned(),
             // The neutral registry section, erased as `&dyn Any` via `PlaneCfg::as_any` so `BuildCtx`
             // names no plane-owned config type; the `agents:` container plane's `build` closure
@@ -1425,7 +1425,7 @@ pub fn build_app_from_config(
             // carries its verify-on-call gate and boot-resolved card transports off its own prior
             // runtime object) — the same neutral `&dyn PlaneSlots` a container plane's `build_runtime`
             // receives below.
-            prior: prior.map(|p| p as &dyn busbar_substrate::plane_host::PlaneSlots),
+            prior: prior.map(|p| p as &dyn busbar_kernel::plane_host::PlaneSlots),
         };
         crate::plane::registry::plane_decls()
             .iter()
@@ -1447,7 +1447,7 @@ pub fn build_app_from_config(
     // the config that produced it never disagree. With that plane compiled out there is no built-in
     // decl, so no slot is inserted and nothing downcasts it (no accessor exists then).
     if let Some((slot_key, runtime_slot)) = crate::plane::registry::plane_decl_for_config_section(
-        busbar_substrate::plane::config::NAMED_MAP_SECTIONS[2],
+        busbar_kernel::plane::config::NAMED_MAP_SECTIONS[2],
     )
     .and_then(|d| {
         d.build_runtime
@@ -1458,7 +1458,7 @@ pub fn build_app_from_config(
             slot_key,
             f(
                 cfg.tool_defs.as_any(),
-                prior.map(|p| p as &dyn busbar_substrate::plane_host::PlaneSlots),
+                prior.map(|p| p as &dyn busbar_kernel::plane_host::PlaneSlots),
             ),
         )
     }) {
@@ -1518,7 +1518,7 @@ pub fn build_app_from_config(
         // The FIXED global-default failover (production has no operator knob for it) — carried so the
         // plane's `build_runtime` sets its own runtime object's failover config identically to the
         // pre-pivot inline lowering, and so the test fixture can override the whole-App deadline.
-        default_failover: Some(busbar_substrate::plane_host::FailoverInput {
+        default_failover: Some(busbar_kernel::plane_host::FailoverInput {
             timeout_secs: crate::config::DEFAULT_FAILOVER_DEADLINE_SECS,
             exclusions: None,
             max_hops: crate::config::DEFAULT_FAILOVER_CAP,
@@ -1542,7 +1542,7 @@ pub fn build_app_from_config(
         {
             let slot = f(
                 &llm_build_input as &dyn std::any::Any,
-                prior.map(|p| p as &dyn busbar_substrate::plane_host::PlaneSlots),
+                prior.map(|p| p as &dyn busbar_kernel::plane_host::PlaneSlots),
             );
             plane_slots.insert(fallback_runtime_key, slot);
         }
@@ -1583,10 +1583,10 @@ pub fn build_app_from_config(
             // deployment protects no such audience).
             let protected_resources: Vec<String> = cfg
                 .endpoint_resources
-                .get(busbar_substrate::plane::config::NAMED_MAP_SECTIONS[2])
+                .get(busbar_kernel::plane::config::NAMED_MAP_SECTIONS[2])
                 .and_then(|slot| {
                     crate::plane::registry::plane_decl_for_config_section(
-                        busbar_substrate::plane::config::NAMED_MAP_SECTIONS[2],
+                        busbar_kernel::plane::config::NAMED_MAP_SECTIONS[2],
                     )
                     .and_then(|d| (d.admission)(slot.as_ref()))
                 })
@@ -1691,7 +1691,7 @@ pub fn build_app_from_config(
             // key identically to the former empty-value entry.
             let mut m = std::collections::BTreeMap::new();
             if let Some(decl) = crate::plane::registry::plane_decl_for_config_section(
-                busbar_substrate::plane::config::NAMED_MAP_SECTIONS[3],
+                busbar_kernel::plane::config::NAMED_MAP_SECTIONS[3],
             ) {
                 m.insert(decl.key, cfg.agent_pools.clone());
             }
@@ -1720,12 +1720,12 @@ pub fn build_app_from_config(
             // (empty) gate map is simply not inserted — byte-identical to the former empty-value entry.
             let mut m = std::collections::BTreeMap::new();
             if let Some(decl) = crate::plane::registry::plane_decl_for_config_section(
-                busbar_substrate::plane::config::NAMED_MAP_SECTIONS[2],
+                busbar_kernel::plane::config::NAMED_MAP_SECTIONS[2],
             ) {
                 m.insert(decl.key, tools_gates);
             }
             if let Some(decl) = crate::plane::registry::plane_decl_for_config_section(
-                busbar_substrate::plane::config::NAMED_MAP_SECTIONS[3],
+                busbar_kernel::plane::config::NAMED_MAP_SECTIONS[3],
             ) {
                 m.insert(decl.key, agents_gates);
             }
@@ -1736,12 +1736,12 @@ pub fn build_app_from_config(
         plane_rewrites: {
             let mut m = std::collections::BTreeMap::new();
             if let Some(decl) = crate::plane::registry::plane_decl_for_config_section(
-                busbar_substrate::plane::config::NAMED_MAP_SECTIONS[2],
+                busbar_kernel::plane::config::NAMED_MAP_SECTIONS[2],
             ) {
                 m.insert(decl.key, tools_rewrites);
             }
             if let Some(decl) = crate::plane::registry::plane_decl_for_config_section(
-                busbar_substrate::plane::config::NAMED_MAP_SECTIONS[3],
+                busbar_kernel::plane::config::NAMED_MAP_SECTIONS[3],
             ) {
                 m.insert(decl.key, agents_rewrites);
             }

@@ -10,11 +10,11 @@
 
 use super::translate_request_cross_protocol;
 use crate::test_support::{LaneSpec, TestApp};
-use busbar_substrate::testkit::engine_kit::EngineTestKit as _;
+use busbar_kernel::testkit::engine_kit::EngineTestKit as _;
 use serde_json::json;
 
-fn http() -> busbar_substrate::transport::Transport {
-    busbar_substrate::transport::Transport::Http
+fn http() -> busbar_substrate_values::transport::Transport {
+    busbar_substrate_values::transport::Transport::Http
 }
 
 /// Cross-protocol OpenAI → Anthropic request carrying `response_format` forwards (Ok, body rebuilt)
@@ -36,7 +36,7 @@ fn openai_to_anthropic_response_format_forwards_and_translates_not_dropped() {
         "messages": [{"role": "user", "content": "hi"}],
         "response_format": {"type": "json_object"}
     });
-    let hop_bytes = bytes::Bytes::from(busbar_substrate::json::to_vec(&body).unwrap());
+    let hop_bytes = bytes::Bytes::from(busbar_substrate_values::json::to_vec(&body).unwrap());
     // Unique principal so the assertion below reads THIS test's event out of the shared audit ring
     // without racing other tests that append to the same global log.
     let caller = "test-key-anthropic-respfmt";
@@ -46,7 +46,7 @@ fn openai_to_anthropic_response_format_forwards_and_translates_not_dropped() {
         &rt,
         0,
         "openai",
-        busbar_substrate::handlers::chat("openai", http()),
+        busbar_substrate_values::handlers::chat("openai", http()),
         Some(body),
         crate::engine::APPLICATION_JSON,
         true,
@@ -103,7 +103,7 @@ fn openai_to_bedrock_tool_choice_none_forwards_and_audits_degraded() {
         }],
         "tool_choice": "none"
     });
-    let hop_bytes = bytes::Bytes::from(busbar_substrate::json::to_vec(&body).unwrap());
+    let hop_bytes = bytes::Bytes::from(busbar_substrate_values::json::to_vec(&body).unwrap());
     let caller = "test-key-bedrock-toolnone";
     let (host, rt) = crate::engine::test_host_rt(&app);
     let out = translate_request_cross_protocol(
@@ -111,7 +111,7 @@ fn openai_to_bedrock_tool_choice_none_forwards_and_audits_degraded() {
         &rt,
         0,
         "openai",
-        busbar_substrate::handlers::chat("openai", http()),
+        busbar_substrate_values::handlers::chat("openai", http()),
         Some(body),
         crate::engine::APPLICATION_JSON,
         true,
@@ -143,7 +143,7 @@ fn openai_to_bedrock_tool_choice_none_forwards_and_audits_degraded() {
 #[test]
 fn egress_dropped_controls_reports_the_right_controls_per_dialect() {
     crate::testkit::install_test_seams();
-    let ingress = busbar_substrate::handlers::chat("openai", http());
+    let ingress = busbar_substrate_values::handlers::chat("openai", http());
     let body = json!({
         "model": "gpt-4o",
         "messages": [{"role": "user", "content": "hi"}],

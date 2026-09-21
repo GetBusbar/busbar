@@ -101,7 +101,7 @@ pub const AUDIT_RESOURCE_PREFIX_TOOL: &str = "mcp_tool:";
 
 /// The prefix this plane's destinations occupy in the breaker's and the pool table's keyspace.
 ///
-/// **A seam to the neutral substrate.** The single source is `busbar_substrate::store::tool_key`;
+/// **A seam to the neutral substrate.** The single source is `busbar_kernel::store::tool_key`;
 /// the prefix is restated here so the root can build the key without a substrate edge on this path,
 /// and pinned by a test that reads that function's own source.
 pub const POOL_PREFIX_TOOL: &str = "tool:";

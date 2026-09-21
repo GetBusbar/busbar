@@ -5,19 +5,18 @@
 //!
 //! ## Why this is not `unauthorized_response`
 //!
-//! The data plane's 401 shaper (`super::unauthorized_response`) deliberately impersonates the wire
-//! dialect the caller spoke, echoing back that dialect's own native error shape. That is right for
-//! a gateway that answers each caller in the protocol it arrived speaking, and it is exactly wrong
-//! here. An audience-bound plane's caller is not a dialect-native client; it is an OAuth client
+//! The data plane's 401 shaper (`super::unauthorized_response`) deliberately impersonates the vendor
+//! whose dialect the caller spoke: an OpenAI SDK gets OpenAI's copy, a Bedrock SDK gets
+//! `AccessDeniedException`. That is right for a gateway pretending to be six vendors, and it is
+//! exactly wrong here. An audience-bound plane's caller is not an LLM SDK; it is an OAuth client
 //! that has been TOLD, by RFC 6750 and RFC 9728, that a `401` carries a machine-readable challenge
-//! naming where to go and get a token. Hand it a dialect-shaped JSON body with no
+//! naming where to go and get a token. Hand it a vendor-shaped JSON body with no
 //! `WWW-Authenticate` header and the discovery loop simply does not close: the client has no way to
 //! find the authorization server, because the only place that URL was ever going to come from is the
 //! header we did not send.
 //!
-//! This is the whole of the bootstrap story for an audience-bound plane, and it is the reason a
-//! caller can log into busbar with no prior configuration: connect with no credential, read
-//! `resource_metadata` out of the
+//! This is the whole of the MCP bootstrap story, and it is the reason an agent can log into busbar
+//! with no prior configuration: connect with no credential, read `resource_metadata` out of the
 //! challenge, fetch the protected-resource metadata document, discover the operator's authorization
 //! server, do ordinary OAuth, come back with a token.
 //!
@@ -36,7 +35,7 @@ use axum::response::{IntoResponse, Response};
 /// the only codes that RFC defines for a bearer-token resource server, and inventing a fourth would
 /// produce a challenge no compliant client knows how to act on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum ChallengeError {
+pub enum ChallengeError {
     /// No credential was presented at all. RFC 6750 §3.1 is explicit that this case omits `error`
     /// entirely — the bare challenge means "authenticate", where `error="invalid_token"` would mean
     /// "you tried and the token was bad". Clients branch on the difference, so we do too.
@@ -80,7 +79,7 @@ impl ChallengeError {
 /// `description` is optional and advisory. It never carries the reason a token failed in any detail
 /// a caller could use to probe — "the audience does not match" is safe (the caller knows its own
 /// token's audience), "no key with id 7fa3" is not.
-pub(crate) fn www_authenticate(
+pub fn www_authenticate(
     error: ChallengeError,
     resource_metadata: &str,
     description: Option<&str>,
@@ -133,7 +132,7 @@ fn quoted(v: &str) -> String {
 /// The body is OAuth-shaped (`{"error": …, "error_description": …}`), NOT vendor-shaped, for the
 /// reason in the module header — and it is small on purpose. Every fact in it is already in the
 /// header; the body exists so a human reading a `curl` sees something, not so a client parses it.
-pub(crate) fn refuse(
+pub fn refuse(
     error: ChallengeError,
     resource_metadata: &str,
     description: &str,

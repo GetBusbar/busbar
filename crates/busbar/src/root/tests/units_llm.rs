@@ -221,15 +221,15 @@ async fn rig_with_billing(fixture: Fixture, billed: bool) -> Rig {
     // the deployment's own door can be asked to resolve them. Without one a rig could only ever
     // hand the plane a hand-built context, which is the one thing an authenticate fixture must
     // not do.
-    let signer = busbar_substrate::governance::signing::TokenSigner::from_secret_bytes(
+    let signer = busbar_kernel::governance::signing::TokenSigner::from_secret_bytes(
         &SIGNING_SECRET,
-        busbar_substrate::governance::signing::DEFAULT_KID,
+        busbar_kernel::governance::signing::DEFAULT_KID,
     );
     let gov = Arc::new(
         busbar_kernel::governance::GovState::new_with_signer(store, None, Some(signer))
             .expect("governance"),
     );
-    let spec = |name: &str| busbar_substrate::governance::NewKeySpec {
+    let spec = |name: &str| busbar_kernel::governance::NewKeySpec {
         name: name.to_string(),
         allowed_pools: fixture.key_scopes(),
         group: fixture
@@ -283,7 +283,7 @@ async fn rig_with_billing(fixture: Fixture, billed: bool) -> Rig {
         expired_token,
         server,
         upstream: state,
-        charged_at: busbar_substrate::store::now(),
+        charged_at: busbar_kernel::store::now(),
         group,
     }
 }
@@ -295,7 +295,7 @@ impl Rig {
         }
     }
 
-    fn host(&self) -> Arc<dyn busbar_substrate::plane_host::EngineHost> {
+    fn host(&self) -> Arc<dyn busbar_kernel::plane_host::EngineHost> {
         busbar_kernel::plane_host::engine_host(&self.app)
     }
 }
@@ -378,7 +378,7 @@ fn compare(label: &str, legacy: &Observed, looped: &Observed, failures: &mut Vec
 }
 
 async fn observe(rig: &Rig, resp: Response) -> Observed {
-    use busbar_substrate::store::BreakerState;
+    use busbar_kernel::store::BreakerState;
 
     let mut fields: Vec<(&'static str, String)> = Vec::new();
     fields.push(("status", resp.status().as_u16().to_string()));
@@ -421,7 +421,7 @@ async fn observe(rig: &Rig, resp: Response) -> Observed {
     fields.push(("ledger_spend_cents", derived.spend_cents.to_string()));
     gov.flush_metering();
     let mut rows: Vec<busbar_api::MeteringRow> = gov
-        .metering_for(busbar_substrate::governance::metering_bucket(
+        .metering_for(busbar_kernel::governance::metering_bucket(
             rig.charged_at,
         ))
         .expect("metering read")
@@ -468,7 +468,7 @@ async fn observe(rig: &Rig, resp: Response) -> Observed {
 /// LEG 1 — the shipped entry point, on its own deployment.
 async fn leg_legacy(fixture: Fixture) -> Observed {
     let rig = rig(fixture).await;
-    let ctx = busbar_substrate::ingress::arrival::ArrivalCtx::new(ArrivalPayload {
+    let ctx = busbar_kernel::ingress::arrival::ArrivalCtx::new(ArrivalPayload {
         host: rig.host(),
         gov: rig.gov(),
         caller_token: None,
@@ -646,7 +646,7 @@ fn two_units_of_one_second_are_ordered_by_the_monotonic_stamp() {
 /// somewhere and that is where it would land.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_unit_arriving_at_a_window_boundary_bills_in_the_window_it_arrived_in() {
-    use busbar_substrate::governance::metering_bucket;
+    use busbar_kernel::governance::metering_bucket;
 
     // BILLED: this test asserts a metering row lands in the bucket the unit arrived in, and #42 emits
     // a metering row only when billing is on.
@@ -739,7 +739,7 @@ fn history_of(entries: &[(u64, f64)]) -> crate::root::kernel::PinnedHistory {
         let card = crate::root::kernel::card_from_config(
             [(
                 "lane",
-                busbar_substrate::billing::RawTierRates {
+                busbar_substrate_values::billing::RawTierRates {
                     input: 0.0,
                     output: *output,
                     cache_read: 0.0,
@@ -769,7 +769,7 @@ fn history_of(entries: &[(u64, f64)]) -> crate::root::kernel::PinnedHistory {
 /// A report of `output` tokens on the lane the histories above price.
 fn report_of(output: u64) -> LateReport {
     LateReport {
-        usage: busbar_substrate::billing::Usage {
+        usage: busbar_substrate_values::billing::Usage {
             usage_units: std::collections::BTreeMap::from([(
                 busbar_api::UNIT_OUTPUT.to_string(),
                 output,
@@ -825,7 +825,7 @@ fn a_snapshot_pinned_at_admission_cannot_see_an_entry_appended_behind_it() {
         crate::root::kernel::card_from_config(
             [(
                 "lane",
-                busbar_substrate::billing::RawTierRates {
+                busbar_substrate_values::billing::RawTierRates {
                     input: 0.0,
                     output: 1.0,
                     cache_read: 0.0,
@@ -847,7 +847,7 @@ fn a_snapshot_pinned_at_admission_cannot_see_an_entry_appended_behind_it() {
         crate::root::kernel::card_from_config(
             [(
                 "lane",
-                busbar_substrate::billing::RawTierRates {
+                busbar_substrate_values::billing::RawTierRates {
                     input: 0.0,
                     output: 100.0,
                     cache_read: 0.0,
@@ -1128,7 +1128,7 @@ async fn drive_keeping_the_unit<'n>(
             provider_of_open_session: false,
             zero_hold_tick: false,
             arrival: hold,
-            now: busbar_substrate::store::now_ms(),
+            now: busbar_kernel::store::now_ms(),
         })
         .expect("the uncapped table takes the unit");
     let ctx = UnitCtx {
@@ -1321,7 +1321,7 @@ async fn one_unit_leaves_exactly_one_link_on_the_chain() {
         // LEG 1 — the shipped entry point names a destination on its link; whatever it names is
         // what the loop's link has to name too, so the expectation is READ rather than spelled.
         let shipped_rig = rig(fixture).await;
-        let ctx = busbar_substrate::ingress::arrival::ArrivalCtx::new(ArrivalPayload {
+        let ctx = busbar_kernel::ingress::arrival::ArrivalCtx::new(ArrivalPayload {
             host: shipped_rig.host(),
             gov: shipped_rig.gov(),
             caller_token: None,
@@ -1426,7 +1426,7 @@ fn path_facts(proto: &'static str, fixture: Fixture) -> PathFacts {
 /// LEG 1 — the shipped path-model entry point, on its own deployment.
 async fn leg_legacy_path(fixture: Fixture, proto: &'static str) -> Observed {
     let rig = rig(fixture).await;
-    let ctx = busbar_substrate::ingress::arrival::ArrivalCtx::new(ArrivalPayload {
+    let ctx = busbar_kernel::ingress::arrival::ArrivalCtx::new(ArrivalPayload {
         host: rig.host(),
         gov: rig.gov(),
         caller_token: None,
@@ -1574,7 +1574,7 @@ async fn an_empty_url_model_ends_where_the_shipped_path_model_entry_point_ends_i
     for proto in [GEMINI, BEDROCK] {
         let shipped = {
             let rig = rig(Fixture::UnknownModel).await;
-            let ctx = busbar_substrate::ingress::arrival::ArrivalCtx::new(ArrivalPayload {
+            let ctx = busbar_kernel::ingress::arrival::ArrivalCtx::new(ArrivalPayload {
                 host: rig.host(),
                 gov: rig.gov(),
                 caller_token: None,
@@ -1826,7 +1826,7 @@ async fn leg_legacy_decode(
     body: Bytes,
 ) -> Observed {
     let rig = rig(Fixture::BufferedOk).await;
-    let ctx = busbar_substrate::ingress::arrival::ArrivalCtx::new(ArrivalPayload {
+    let ctx = busbar_kernel::ingress::arrival::ArrivalCtx::new(ArrivalPayload {
         host: rig.host(),
         gov: rig.gov(),
         caller_token: None,
@@ -2031,7 +2031,7 @@ async fn principal_the_loop_settled_on(rig: &Rig, gov: busbar_api::PlaneRequestC
 
 /// LEG 1 — the shipped entry point, driven with a context the DOOR produced.
 async fn leg_legacy_as(rig: &Rig, gov: busbar_api::PlaneRequestCtx) -> Observed {
-    let ctx = busbar_substrate::ingress::arrival::ArrivalCtx::new(ArrivalPayload {
+    let ctx = busbar_kernel::ingress::arrival::ArrivalCtx::new(ArrivalPayload {
         host: rig.host(),
         gov,
         caller_token: None,
@@ -2543,7 +2543,7 @@ const RESOLVED_OP_CASES: [Fixture; 5] = [
 /// this leg is `run_gauntlet` reached with exactly the parsed head its production callers hand it.
 async fn leg_native_run(fixture: Fixture) -> Observed {
     let rig = rig(fixture).await;
-    let ctx = busbar_substrate::ingress::arrival::ArrivalCtx::new(ArrivalPayload {
+    let ctx = busbar_kernel::ingress::arrival::ArrivalCtx::new(ArrivalPayload {
         host: rig.host(),
         gov: rig.gov(),
         caller_token: None,
