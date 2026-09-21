@@ -3355,6 +3355,7 @@ jobs:
   # Self-test FIRST, as everywhere else in this file.
   design-bindings:
     name: design bindings (every Appendix B binding proven by a check that exists · regen-clean)
+    needs: [preflight]
     runs-on: latchkey-large
 
     timeout-minutes: 10
