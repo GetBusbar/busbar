@@ -13,7 +13,7 @@
 //! names them without reaching into `busbar-core`. Core re-exports both from this
 //! historical path so every in-core and plugin caller (`crate::billing::Billing`) compiles unchanged.
 
-pub use busbar_substrate::billing::{Billing, TokenUsage};
+pub use busbar_substrate_values::billing::{Billing, TokenUsage};
 
 #[cfg(test)]
 #[path = "tests/billing_tests.rs"]

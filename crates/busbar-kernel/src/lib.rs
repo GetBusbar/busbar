@@ -203,7 +203,7 @@ pub mod boot;
 /// SHAPE for core's one audit chain — named at the crate root rather than under the
 /// neutral `plane::` namespace. See the module header.
 pub mod calllog;
-pub use busbar_substrate::breaker;
+pub use busbar_substrate_values::breaker;
 pub mod catalogue;
 pub mod config;
 pub mod config_validate;
@@ -234,7 +234,7 @@ pub mod engine_facade;
 // wt2/neutral-utils: relocated DOWN to busbar-substrate (the neutral crate a plane's own extracted
 // crate may name) so a plane reaches the AWS EventStream framing codec via the ABI, not
 // `busbar_kernel::`. Core re-exports it here so `crate::eventstream::…` call sites are unchanged.
-pub use busbar_substrate::eventstream;
+pub use busbar_substrate_values::eventstream;
 pub mod export;
 pub mod failover;
 pub mod governance;
@@ -244,13 +244,13 @@ pub mod ingress;
 pub mod ir;
 // wt2/neutral-utils: relocated DOWN to busbar-substrate. The depth-guarded JSON parse/serialize seam
 // (sonic-rs) is a neutral utility; core re-exports it so `crate::json::{parse,to_vec,…}` are unchanged.
-pub use busbar_substrate::json;
+pub use busbar_substrate_values::json;
 pub mod limits;
 pub mod lineage;
 // wt2/neutral-utils: both relocated DOWN to busbar-substrate (neutral value/util leaves). Core
 // re-exports them so `crate::lossless`/`crate::media` and any `busbar_kernel::{lossless,media}` are unchanged.
-pub use busbar_substrate::lossless;
-pub use busbar_substrate::media;
+pub use busbar_substrate_values::lossless;
+pub use busbar_substrate_values::media;
 pub mod metrics;
 pub mod net_guard;
 pub mod oauth_as;
@@ -278,7 +278,7 @@ pub mod plugin_routes;
 // A′ (ABI-purity P4): the hot-path stage profiler relocated DOWN to busbar-substrate so a plane's
 // own extracted engine names it via the ABI. Re-exported here so `crate::profile::…` (the
 // auth/ingress stage spans) is unchanged and byte-identical.
-pub use busbar_substrate::profile;
+pub use busbar_substrate_values::profile;
 pub mod proto;
 pub mod proxy;
 /// Per-principal admin MUTATION rate limits (`MutationLimiter`), relocated out of `admin::` (1.6.0
@@ -300,14 +300,14 @@ pub mod session {
 pub(crate) mod taxonomy;
 // wt2/neutral-utils: the hand-rolled SigV4 signer relocated DOWN to busbar-substrate (neutral crypto,
 // verifies via `busbar_api::constant_time_eq`). Core re-exports it so `crate::sigv4::…` is unchanged.
-pub use busbar_substrate::sigv4;
+pub use busbar_substrate_values::sigv4;
 pub mod state;
 pub mod store;
 pub mod telemetry;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
 pub mod tls;
-pub use busbar_substrate::transport;
+pub use busbar_substrate_values::transport;
 
 #[cfg(test)]
 #[path = "tests/transport_tests.rs"]

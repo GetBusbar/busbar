@@ -40,6 +40,11 @@ busbar-core-config = { path = "../busbar-core-config" }
 # and the capped upstream-body read) DOWN into this crate; core re-exports each unchanged so the
 # in-core call sites keep naming `crate::…`. Substrate never depends back on core.
 busbar-substrate = { path = "../busbar-substrate" }
+# The PURE half of the neutral substrate (value families a codec/plane names). 1.6.0 W4.b P2 drains
+# the substrate ENGINE up into this crate and deletes `busbar-substrate`, but this pure crate STAYS a
+# kernel dependency — kernel names its value modules (breaker/eventstream/json/lossless/media/profile/
+# sigv4/transport/billing) directly rather than via the retiring `busbar-substrate` re-export layer.
+busbar-substrate-values = { path = "../busbar-substrate-values" }
 # The plugin-visible contract. Core names it directly for the GENERIC authorization lattice
 # (`busbar_contract::authz::{Scope, Grants}`) — the admin-worded ceiling/error/path vocabulary
 # stays on the admin surface; only the neutral scope model lives here, so a non-admin core
