@@ -4,6 +4,7 @@ members = [
     "crates/busbar",
     "crates/busbar-core-config",
     "crates/busbar-core-hooks",
+    "crates/busbar-core-transport",
     "crates/busbar-admin",
     "crates/busbar-oauth2",
     "crates/busbar-timing",

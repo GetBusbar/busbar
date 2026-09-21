@@ -18,6 +18,86 @@ use tokio::sync::oneshot;
 
 use crate::config::TlsCfg;
 
+// The production `rustls::ServerConfig` BUILD moved to `busbar-core-transport` (DECISIONS #40) —
+// this crate no longer names a rustls type for that job at all (see `tls.rs`'s module doc). This
+// crate's OWN tests still need a real `ConnectionSecurity` to hand `super::serve`, so the small
+// helpers below are a TEST-ONLY fixture: they are not a second production copy of
+// `busbar_core_transport::build_server_config` (that function is `busbar-core-transport`'s own,
+// tested there) — a cross-crate dev-dependency back-edge to reuse it directly was tried and
+// reverted: `busbar-core-transport` normal-depends on this crate with `default-features = false`,
+// which does not unify with this crate's own (default-feature) test build and Cargo links TWO
+// distinct compiled instances of `busbar_kernel`, breaking every type shared between them (a
+// well-known dev-dependency-cycle pitfall, not something worth carrying for a handful of tests).
+struct TestTlsSecurity(std::sync::Arc<rustls::ServerConfig>);
+
+impl busbar_contract::transport::wire::ConnectionSecurity for TestTlsSecurity {
+    fn wrap<'a>(
+        &'a self,
+        io: Box<dyn busbar_contract::transport::wire::RawIo>,
+    ) -> busbar_contract::transport::wire::SecuredIoFut<'a> {
+        Box::pin(async move {
+            use tokio_util::compat::{FuturesAsyncReadCompatExt, TokioAsyncReadCompatExt};
+            let tokio_io = FuturesAsyncReadCompatExt::compat(io);
+            let acceptor = tokio_rustls::TlsAcceptor::from(self.0.clone());
+            let tls_stream = acceptor.accept(tokio_io).await?;
+            let raw: Box<dyn busbar_contract::transport::wire::RawIo> =
+                Box::new(TokioAsyncReadCompatExt::compat(tls_stream));
+            Ok(raw)
+        })
+    }
+}
+
+/// TEST-ONLY: build a `rustls::ServerConfig` from a `TlsCfg`, exactly like
+/// `busbar_core_transport::build_server_config` (the production function this fixture stands in
+/// for) — client-cert verifier installed when `client_ca` is set, `http/1.1`-only ALPN otherwise.
+fn test_build_server_config(
+    tls: &TlsCfg,
+    resolver: &crate::config::secret::SecretResolver,
+) -> Result<rustls::ServerConfig, String> {
+    use rustls::pki_types::pem::PemObject;
+    use rustls::pki_types::{CertificateDer, PrivateKeyDer};
+    use rustls::server::WebPkiClientVerifier;
+    use rustls::RootCertStore;
+
+    let load = |secret: &crate::config::SecretRef| -> Result<Vec<u8>, String> {
+        super::read_pem(resolver, secret, "test")
+    };
+
+    let cert_bytes = load(&tls.cert)?;
+    let certs = CertificateDer::pem_slice_iter(&cert_bytes)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("cannot parse TLS cert: {e}"))?;
+    let key_bytes = load(&tls.key)?;
+    let key = PrivateKeyDer::from_pem_slice(&key_bytes)
+        .map_err(|e| format!("cannot parse TLS key: {e}"))?;
+
+    let builder = rustls::ServerConfig::builder();
+    let builder = match &tls.client_ca {
+        Some(ca) => {
+            let ca_bytes = load(ca)?;
+            let cas = CertificateDer::pem_slice_iter(&ca_bytes)
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| format!("cannot parse TLS client_ca: {e}"))?;
+            let mut roots = RootCertStore::empty();
+            for ca in cas {
+                roots
+                    .add(ca)
+                    .map_err(|e| format!("invalid CA certificate in TLS client_ca: {e}"))?;
+            }
+            let verifier = WebPkiClientVerifier::builder(std::sync::Arc::new(roots))
+                .build()
+                .map_err(|e| format!("cannot build client-cert verifier: {e}"))?;
+            builder.with_client_cert_verifier(verifier)
+        }
+        None => builder.with_no_client_auth(),
+    };
+    let mut config = builder
+        .with_single_cert(certs, key)
+        .map_err(|e| format!("TLS cert/key are not a valid pair: {e}"))?;
+    config.alpn_protocols = vec![b"http/1.1".to_vec()];
+    Ok(config)
+}
+
 /// `crate::limits::install` is a PROCESS-GLOBAL swap, and cargo runs this file's `#[tokio::test]`
 /// fns concurrently by default. Any test that installs a non-default `LimitsResolved` (the
 /// body-read-timeout / throughput-floor / total-deadline tests below) can otherwise stomp a
@@ -132,13 +212,16 @@ fn gen_ca_and_leaf(cn_sans: Vec<String>) -> (String, String, String) {
 }
 
 /// Boot a busbar TLS listener from a `TlsCfg` on an ephemeral port. Returns the bound address and
-/// a shutdown sender (drop or send to stop + drain). Mirrors `main`'s TLS branch exactly:
-/// install provider → build ServerConfig → `tls::serve`.
+/// a shutdown sender (drop or send to stop + drain). Mirrors `main`'s TLS branch (DECISIONS #40):
+/// install the crypto provider, build the `ConnectionSecurity` wrap (the test fixture above stands
+/// in for `busbar_core_transport::prepare`), then hand the opaque wrap to `tls::serve`.
 async fn spawn_tls_server(tls: &TlsCfg) -> (SocketAddr, oneshot::Sender<()>) {
     super::install_crypto_provider();
-    let server_config =
-        super::build_server_config(tls, &crate::config::secret::SecretResolver::builtins_only())
+    let config =
+        test_build_server_config(tls, &crate::config::secret::SecretResolver::builtins_only())
             .expect("valid test TLS config");
+    let security: std::sync::Arc<dyn busbar_contract::transport::wire::ConnectionSecurity> =
+        std::sync::Arc::new(TestTlsSecurity(std::sync::Arc::new(config)));
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let (tx, rx) = oneshot::channel::<()>();
@@ -146,7 +229,7 @@ async fn spawn_tls_server(tls: &TlsCfg) -> (SocketAddr, oneshot::Sender<()>) {
         let shutdown = async {
             let _ = rx.await;
         };
-        super::serve(listener, test_router(), server_config, shutdown, None)
+        super::serve(listener, test_router(), security, shutdown, None)
             .await
             .unwrap();
     });
@@ -309,43 +392,11 @@ async fn plain_http_still_works_without_tls() {
 }
 
 /// TEST 4b — fail-fast: a bad cert path produces a clear, file-named error from
-/// `build_server_config` (which `main` turns into `die`). No server is started.
-#[test]
-fn bad_cert_path_errors_clearly() {
-    let tls = TlsCfg {
-        cert: crate::config::SecretRef::file("/nonexistent/busbar/does-not-exist-cert.pem"),
-        key: crate::config::SecretRef::file("/nonexistent/busbar/does-not-exist-key.pem"),
-        client_ca: None,
-    };
-    let err = super::build_server_config(
-        &tls,
-        &crate::config::secret::SecretResolver::builtins_only(),
-    )
-    .expect_err("missing cert file must error");
-    assert!(
-        err.contains("cert") && err.contains("does-not-exist-cert.pem"),
-        "error must name the offending file: {err}"
-    );
-}
-
-/// TEST 4c — fail-fast: a syntactically invalid PEM cert errors with the file named, not a panic.
-#[test]
-fn malformed_cert_errors_clearly() {
-    let cert_file = temp_pem("bad-cert", "-----BEGIN CERTIFICATE-----\nnot base64\n");
-    let (_c, key_pem) = gen_self_signed();
-    let key_file = temp_pem("ok-key", &key_pem);
-    let tls = TlsCfg {
-        cert: crate::config::SecretRef::file(cert_file.to_string_lossy().into_owned()),
-        key: crate::config::SecretRef::file(key_file.to_string_lossy().into_owned()),
-        client_ca: None,
-    };
-    let err = super::build_server_config(
-        &tls,
-        &crate::config::secret::SecretResolver::builtins_only(),
-    )
-    .expect_err("malformed cert must error");
-    assert!(err.contains("cert"), "error must reference the cert: {err}");
-}
+/// `busbar_core_transport::build_server_config` (which `main` turns into `die`). MOVED to
+/// `busbar-core-transport`'s own test suite (DECISIONS #40): that crate now owns the function and
+/// its exact error-message format, so its error-path coverage belongs there, not a second copy
+/// here pointed at this file's test-only fixture (whose error strings intentionally do not try to
+/// match production's byte-for-byte). See `busbar_core_transport::tests::prepare_fails_closed_on_missing_cert`.
 
 /// TEST 5 - REGRESSION (slow-loris BODY): the inbound body-read timeout trips on a stalled
 /// request body. Before the fix, only the header-read phase was bounded; a client that finished
@@ -934,7 +985,7 @@ async fn server_posture_matches_the_1_5_5_defaults() {
         key: crate::config::SecretRef::file(key_file.to_string_lossy().into_owned()),
         client_ca: None,
     };
-    let server_config = super::build_server_config(
+    let server_config = test_build_server_config(
         &tls,
         &crate::config::secret::SecretResolver::builtins_only(),
     )

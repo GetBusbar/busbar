@@ -24,6 +24,15 @@
 //! The plain-HTTP path in `main.rs` is left exactly as it was; only `cfg.tls == Some(_)` reaches
 //! this module.
 //!
+//! ## Connection security is opaque here (DECISIONS #40)
+//!
+//! [`serve`] does not build a `rustls::ServerConfig` and does not decide TLS vs. plaintext for
+//! itself: it is handed an already-built `busbar_contract::transport::wire::ConnectionSecurity`
+//! and calls nothing on it but `wrap`. Reading the operator's `tls:` config, resolving the key
+//! material through the secret kind, and building the rustls config live in
+//! `busbar-core-transport` — this module is the LISTENER half of the seam (the accept loop,
+//! hyper serving, graceful shutdown), not the connection-security-prep half.
+//!
 //! ## Crypto provider
 //!
 //! rustls 0.23 requires a process-wide [`rustls::crypto::CryptoProvider`]. busbar already links
@@ -100,149 +109,38 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 
 use axum::Router;
+use busbar_contract::transport::wire::{ConnectionSecurity, RawIo};
 use bytes::Buf;
 use http_body::{Body, Frame, SizeHint};
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use hyper_util::server::conn::auto::Builder as ConnBuilder;
 use hyper_util::server::graceful::GracefulShutdown;
 use hyper_util::service::TowerToHyperService;
-use rustls::pki_types::pem::PemObject;
-use rustls::pki_types::{CertificateDer, PrivateKeyDer};
-use rustls::server::WebPkiClientVerifier;
-use rustls::{RootCertStore, ServerConfig};
 use tokio::net::TcpListener;
-use tokio_rustls::TlsAcceptor;
-
-use crate::config::TlsCfg;
+use tokio_util::compat::{FuturesAsyncReadCompatExt, TokioAsyncReadCompatExt};
 
 /// Install ring's [`rustls::crypto::CryptoProvider`] as the process default.
 ///
 /// Idempotent and safe to call alongside reqwest/hyper-rustls, which also use ring: a "provider
 /// already installed" error is expected and ignored, because all we require is that *a ring provider*
-/// is the process default before any `ServerConfig` is built. Must run before [`build_server_config`].
+/// is the process default before any `ServerConfig` is built. Must run before
+/// `busbar_core_transport::build_server_config` (which now owns that build — DECISIONS #40) — and
+/// before any other subsystem in this process builds a rustls config, which is why several
+/// unrelated call sites (the egress engine's client-side TLS, test setup) also call this directly
+/// rather than assuming the inbound listener already has.
 pub fn install_crypto_provider() {
     // Err(_) => some other code path already installed a provider. Since busbar only ever links ring,
     // that provider is ring too, so there is nothing to fix and nothing to warn about.
     let _ = rustls::crypto::ring::default_provider().install_default();
 }
 
-// Resolve a TLS secret reference to its PEM bytes, mapping any resolve error into a clear,
-// source-named message. Never logs contents.
-//
-// The ONE turn-a-`SecretRef`-into-TLS-PEM function now lives NEUTRALLY in
-// [`busbar_kernel::tls::read_pem`] and is re-exported here so this crate's inbound-listener call
-// sites (`load_cert_chain`/`load_private_key`/`load_client_roots`) are unchanged — and so a
-// plane's OUTBOUND client identity resolver names the neutral home rather than reaching into core.
-// One place in the tree turns a `SecretRef` into TLS PEM; a second would be a second place for the
-// "never echo what you read" rule to be forgotten.
-
-/// Parse the PEM certificate chain (leaf first). Errors name the secret source; cert bytes are
-/// public, but we still avoid echoing them.
-fn load_cert_chain(
-    resolver: &crate::config::secret::SecretResolver,
-    secret: &crate::config::SecretRef,
-) -> Result<Vec<CertificateDer<'static>>, String> {
-    let src = secret.describe();
-    let bytes = read_pem(resolver, secret, "cert")?;
-    let certs = CertificateDer::pem_slice_iter(&bytes)
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| format!("cannot parse TLS cert ({src}): {e}"))?;
-    if certs.is_empty() {
-        return Err(format!(
-            "TLS cert ({src}) contains no certificates (expected a PEM chain, leaf first)"
-        ));
-    }
-    Ok(certs)
-}
-
-/// Parse the PEM private key, accepting PKCS#8, PKCS#1 (RSA), or SEC1 (EC) encodings. NEVER logs key
-/// material - error messages name only the secret source.
-fn load_private_key(
-    resolver: &crate::config::secret::SecretResolver,
-    secret: &crate::config::SecretRef,
-) -> Result<PrivateKeyDer<'static>, String> {
-    let src = secret.describe();
-    let bytes = read_pem(resolver, secret, "key")?;
-    // `PrivateKeyDer::from_pem_slice` accepts PKCS#8, PKCS#1 (RSA), and SEC1 (EC) sections, picking the
-    // first private-key section it finds. `NoItemsFound` means none was present; any other variant is a
-    // genuine parse error. Neither path echoes key material - error messages name only the source.
-    use rustls::pki_types::pem::Error as PemError;
-    PrivateKeyDer::from_pem_slice(&bytes).map_err(|e| match e {
-        PemError::NoItemsFound => {
-            format!("TLS key ({src}) contains no private key (expected PKCS#8 / PKCS#1 / SEC1 PEM)")
-        }
-        other => format!("cannot parse TLS key ({src}): {other}"),
-    })
-}
-
-/// Build the client-cert verifier root store from the operator's CA bundle (mTLS).
-fn load_client_roots(
-    resolver: &crate::config::secret::SecretResolver,
-    secret: &crate::config::SecretRef,
-) -> Result<RootCertStore, String> {
-    let src = secret.describe();
-    let bytes = read_pem(resolver, secret, "client_ca")?;
-    let cas = CertificateDer::pem_slice_iter(&bytes)
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| format!("cannot parse TLS client_ca ({src}): {e}"))?;
-    if cas.is_empty() {
-        return Err(format!("TLS client_ca ({src}) contains no CA certificates"));
-    }
-    let mut roots = RootCertStore::empty();
-    for ca in cas {
-        roots
-            .add(ca)
-            .map_err(|e| format!("invalid CA certificate in TLS client_ca ({src}): {e}"))?;
-    }
-    Ok(roots)
-}
-
-/// Construct the rustls [`ServerConfig`] from the operator's [`TlsCfg`].
-///
-/// * `client_ca` present ⇒ a [`WebPkiClientVerifier`] is installed: the client MUST present a
-///   certificate chaining to that CA or the handshake fails (mTLS required).
-/// * `client_ca` absent ⇒ `with_no_client_auth()` (server-only TLS).
-///
-/// ALPN advertises only `http/1.1` — busbar's axum server speaks http/1.1, so we must not advertise
-/// h2. Returns a clear, source-named error on any load/parse problem (the caller turns it into `die`).
-pub fn build_server_config(
-    tls: &TlsCfg,
-    resolver: &crate::config::secret::SecretResolver,
-) -> Result<ServerConfig, String> {
-    let certs = load_cert_chain(resolver, &tls.cert)?;
-    let key = load_private_key(resolver, &tls.key)?;
-
-    let builder = ServerConfig::builder();
-
-    let builder = match &tls.client_ca {
-        Some(ca) => {
-            let roots = load_client_roots(resolver, ca)?;
-            let verifier = WebPkiClientVerifier::builder(Arc::new(roots))
-                .build()
-                .map_err(|e| {
-                    format!(
-                        "cannot build client-cert verifier from TLS client_ca ({}): {e}",
-                        ca.describe()
-                    )
-                })?;
-            builder.with_client_cert_verifier(verifier)
-        }
-        None => builder.with_no_client_auth(),
-    };
-
-    let mut config = builder.with_single_cert(certs, key).map_err(|e| {
-        format!(
-            "TLS cert/key are not a valid pair (cert {}, key {}): {e}",
-            tls.cert.describe(),
-            tls.key.describe()
-        )
-    })?;
-
-    // http/1.1 only — busbar's axum 0.7 server does not serve h2.
-    config.alpn_protocols = vec![b"http/1.1".to_vec()];
-
-    Ok(config)
-}
+// The cert/key/client-CA PARSING and the `rustls::ServerConfig` BUILD that used to sit here moved
+// verbatim to `busbar-core-transport` (DECISIONS #40, the core-side connection-security seam):
+// this crate's own inbound listener now names no rustls/cert type of its own for that job — it is
+// handed an already-built, opaque `ConnectionSecurity` wrap (`serve`'s `security` parameter, below)
+// and calls nothing on it but `wrap`. `read_pem` (below) stays here: `busbar-a2a`'s OUTBOUND client
+// identity resolver still reads PEM bytes through it directly, an egress concern this move does not
+// touch, so the one turn-a-`SecretRef`-into-PEM function keeps its historical home.
 
 /// THE ONE ACCEPT-ERROR POLICY, shared by both listener loops below.
 ///
@@ -473,11 +371,10 @@ impl Drop for ConnCountGuard {
 pub async fn serve(
     listener: TcpListener,
     router: Router,
-    server_config: ServerConfig,
+    security: Arc<dyn ConnectionSecurity>,
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
     mut balancer: Option<ConnBalancer>,
 ) -> io::Result<()> {
-    let acceptor = TlsAcceptor::from(Arc::new(server_config));
     let graceful = GracefulShutdown::new();
     let conn_builder = Arc::new(hardened_conn_builder());
 
@@ -522,13 +419,13 @@ pub async fn serve(
             },
         };
 
-        let acceptor = acceptor.clone();
+        let security = security.clone();
         let router = router.clone();
         let conn_builder = conn_builder.clone();
         let watcher = graceful.watcher();
 
         tokio::spawn(async move {
-            serve_one(acceptor, conn_builder, watcher, stream, peer, router).await;
+            serve_one(security, conn_builder, watcher, stream, peer, router).await;
             drop(guard);
         });
     }
@@ -543,12 +440,12 @@ pub async fn serve(
             let Ok(stream) = tokio::net::TcpStream::from_std(std_stream) else {
                 continue;
             };
-            let acceptor = acceptor.clone();
+            let security = security.clone();
             let router = router.clone();
             let conn_builder = conn_builder.clone();
             let watcher = graceful.watcher();
             tokio::spawn(async move {
-                serve_one(acceptor, conn_builder, watcher, stream, peer, router).await;
+                serve_one(security, conn_builder, watcher, stream, peer, router).await;
                 drop(guard);
             });
         }
@@ -870,8 +767,14 @@ async fn serve_one_plain(
 }
 
 /// Handshake + serve a single accepted TCP connection. Any failure is contained to this connection.
+///
+/// `security` is the opaque connection-security wrap `serve`'s caller was handed by
+/// `busbar-core-transport` (DECISIONS #40): this function calls `wrap` on the raw accepted stream
+/// and nothing else — it names no rustls type, no cert, no key byte. The `RawIo`/tokio-io compat
+/// bridge on either side of `wrap` is the same seam `busbar-transport-tls` uses to cross the same
+/// futures-io/tokio-io boundary.
 async fn serve_one(
-    acceptor: TlsAcceptor,
+    security: Arc<dyn ConnectionSecurity>,
     conn_builder: Arc<ConnBuilder<TokioExecutor>>,
     watcher: hyper_util::server::graceful::Watcher,
     stream: tokio::net::TcpStream,
@@ -883,10 +786,10 @@ async fn serve_one(
         tracing::debug!(error = %e, %peer, "tls: set_nodelay failed; continuing");
     }
 
-    // Bound the handshake (see `handshake_timeout()`): on elapse the `accept` future is dropped, which
+    let raw: Box<dyn RawIo> = Box::new(TokioAsyncReadCompatExt::compat(stream));
+    // Bound the handshake (see `handshake_timeout()`): on elapse the `wrap` future is dropped, which
     // closes the half-open connection and frees the task + FDs. Cancel-safe — no state escapes.
-    let tls_stream = match tokio::time::timeout(handshake_timeout(), acceptor.accept(stream)).await
-    {
+    let wrapped = match tokio::time::timeout(handshake_timeout(), security.wrap(raw)).await {
         Ok(Ok(s)) => s,
         Ok(Err(e)) => {
             // Handshake failure (bad/missing client cert under mTLS, protocol mismatch, client gone).
@@ -901,7 +804,7 @@ async fn serve_one(
     };
 
     let service = BodyTimeoutService::new(router, body_read_timeout());
-    let io = TokioIo::new(tls_stream);
+    let io = TokioIo::new(FuturesAsyncReadCompatExt::compat(wrapped));
     let conn = conn_builder.serve_connection_with_upgrades(io, service);
     let conn = watcher.watch(conn);
 

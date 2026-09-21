@@ -338,6 +338,7 @@ dependencies = [
  "busbar-admin",
  "busbar-api",
  "busbar-contract",
+ "busbar-core-transport",
  "busbar-kernel",
  "busbar-kernel-audit",
  "busbar-kernel-breaker",
@@ -536,6 +537,21 @@ name = "busbar-core-hooks"
 version = "1.6.0"
 
 [[package]]
+name = "busbar-core-transport"
+version = "1.6.0"
+dependencies = [
+ "busbar-contract",
+ "busbar-kernel",
+ "futures",
+ "rcgen",
+ "rustls",
+ "rustls-pki-types",
+ "tokio",
+ "tokio-rustls",
+ "tokio-util",
+]
+
+[[package]]
 name = "busbar-export-example-plugin"
 version = "1.5.0"
 dependencies = [
@@ -642,6 +658,7 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "tokio-tungstenite",
+ "tokio-util",
  "tower",
  "tracing",
  "tracing-opentelemetry",

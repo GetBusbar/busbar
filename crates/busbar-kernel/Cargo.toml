@@ -133,6 +133,10 @@ hyper-util = { workspace = true }
 tokio-rustls = { workspace = true }
 rustls = { workspace = true }
 rustls-pki-types = { workspace = true }
+# The futures-io/tokio-io compat seam `tls::serve_one` bridges the accepted `TcpStream` and the
+# `ConnectionSecurity::wrap` result through (DECISIONS #40) — the same seam `busbar-transport-tls`
+# already uses to cross the same boundary.
+tokio-util = { workspace = true }
 # W4.b P2 (absorbed from busbar-substrate): the client WS handshake for the neutral full-duplex
 # WEBSOCKET transport, OPTIONAL behind the `runtime` capability — OFF in a default/shipped build.
 tokio-tungstenite = { workspace = true, optional = true }
