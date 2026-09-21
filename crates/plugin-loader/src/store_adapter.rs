@@ -42,7 +42,7 @@
 //! # The shim's semantics, stated rather than implied
 //!
 //! - **Slices.** A node whose store cannot hold a fleet-wide window has exactly one generation of
-//!   leases and nothing that can advance it, so [`epoch`](busbar_kernel::slice::SliceStore::epoch)
+//!   leases and nothing that can advance it, so [`epoch`](busbar_contract::slice::SliceStore::epoch)
 //!   is constant and a reservation is granted in full, stamped with that epoch — a request carrying
 //!   some other epoch is stamped, not refused, because a stale-epoch refusal would be an error and
 //!   there is no fleet for it to be stale against. The grant never expires for the same reason.
@@ -79,7 +79,7 @@ use crate::DynStore;
 use busbar_api::Store as AbiStore;
 use busbar_api::{StoreError, UNIT_CACHE_READ, UNIT_CACHE_WRITE, UNIT_INPUT, UNIT_OUTPUT};
 use busbar_contract::caps::{AdminVerb, Grant};
-use busbar_kernel::slice::{Epoch, SliceError, SliceGrant, SliceId, SliceRequest, SliceStore};
+use busbar_contract::slice::{Epoch, SliceError, SliceGrant, SliceId, SliceRequest, SliceStore};
 use busbar_kernel_ledger::legacy::{LegacyHead, LegacyMigrationSource};
 use busbar_kernel_ledger::migration::{
     LegacyFamily, LegacyFigure, LegacyFigures, LegacyLedgerRows, MigrationError, MigrationMarker,
@@ -781,7 +781,7 @@ impl SliceStore for StoreAdapter {
             id: SliceId(id),
             granted: request.wanted,
             // Nothing expires a lease that no other node can take, so the grant is open-ended.
-            valid_until: busbar_kernel::Millis::MAX,
+            valid_until: busbar_contract::Millis::MAX,
             // The shim's epoch, not the requested one: stamping is not refusing.
             epoch: SHIM_EPOCH,
         })

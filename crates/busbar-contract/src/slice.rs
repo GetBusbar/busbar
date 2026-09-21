@@ -26,7 +26,7 @@
 
 use std::collections::HashMap;
 
-use busbar_contract::caps::{OriginKind, ReasonCode};
+use crate::caps::{OriginKind, ReasonCode};
 
 use crate::Millis;
 
@@ -40,7 +40,7 @@ use crate::Millis;
 /// the class a cap is taken on and a refusal names the bucket back to the caller. What stays here
 /// is the kernel's reading OF a bucket — how to build one, and whether it draws for a given pool —
 /// which is loop policy rather than part of what a bucket is.
-pub use busbar_contract::{BucketRef as BucketId, BucketScope, CapDimension};
+pub use crate::{BucketRef as BucketId, BucketScope, CapDimension};
 
 /// Whether a dimension accrues DURING a unit, and can therefore overdraw.
 ///

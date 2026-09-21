@@ -20,12 +20,21 @@ pub mod kinds;
 pub mod plane;
 pub mod plugin;
 pub mod scratch;
+pub mod slice;
 pub mod spans;
 pub mod surface;
 pub mod transport;
 pub mod unit;
 pub mod upstream;
 pub mod wire;
+
+/// Milliseconds on the kernel's monotonic clock.
+///
+/// The kernel never reads a wall clock: every deadline, every tick interval and every lease
+/// lifetime is a difference between two of these, handed in by the caller. It lives on the contract
+/// (the ONE ABI crate, DECISIONS #38) because the slice/lease types it stamps — the store-facing
+/// ABI a plugin's store implements and the kernel consumes — are the contract's own.
+pub type Millis = u64;
 
 pub use bounded::{
     Arena, ArenaBudget, ArenaBytes, BoundedVec, FactValue, Facts, FactsExhausted, Ir, IrEdit,

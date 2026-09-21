@@ -81,15 +81,19 @@ pub mod recovery;
 pub mod registry;
 pub mod reply;
 pub mod scratch;
-pub mod slice;
+// The node's slice/lease types moved DOWN to `busbar-contract` (the ONE ABI crate, DECISIONS #38):
+// `SliceStore` is implemented by the integrator's store plugin and consumed by this loop, so it is
+// an ABI type. Re-exported here so every `crate::slice::…` / `busbar_kernel::slice::…` path is
+// byte-unchanged.
+pub use busbar_contract::slice;
 pub mod teller;
 pub mod tick;
 
 /// Milliseconds on the kernel's monotonic clock.
 ///
-/// The kernel never reads a wall clock: every deadline, every tick interval and every lease
-/// lifetime in this crate is a difference between two of these, handed in by the caller.
-pub type Millis = u64;
+/// Moved DOWN to `busbar-contract` (the ONE ABI crate, DECISIONS #38) with the slice/lease types
+/// it stamps; re-exported here so every `crate::Millis` / `busbar_kernel::Millis` path is unchanged.
+pub use busbar_contract::Millis;
 
 /// Nanoseconds, for the one thing measured that finely: the pacing gap between two emitted frames.
 pub type Nanos = u64;

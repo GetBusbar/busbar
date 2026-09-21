@@ -16,7 +16,12 @@ busbar-plugin-sign = { path = "../plugin-sign" }
 # side of the seam — where the loaded plugin and its declared payload schema already are. All three
 # depend only on `busbar-caps`/`busbar-contract`, so there is no cycle back into this crate.
 busbar-contract = { path = "../busbar-contract" }
-busbar-kernel = { path = "../busbar-kernel" }
+# NOTE (1.6.0 W4.a chunk 0): the `busbar-kernel` edge was DROPPED. The only kernel items this crate
+# named — `slice::{Epoch,SliceError,SliceGrant,SliceId,SliceRequest,SliceStore,bucket_all}` +
+# `Millis` — moved DOWN to `busbar-contract` (the ONE ABI crate, DECISIONS #38: `SliceStore` is
+# implemented HERE and consumed by the kernel loop, so it is an ABI type). Removing this edge is what
+# breaks the core→plugin-loader→kernel cycle that the busbar-core→busbar-kernel absorption would
+# otherwise create.
 busbar-unit-verbs = { path = "../busbar-unit-verbs" }
 # The migration's read off the previous release's rows. The ledger unit states WHAT an opening
 # figure is; the row shapes it is read from are on this side of the seam, where the loaded plugin

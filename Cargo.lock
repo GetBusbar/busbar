@@ -963,7 +963,6 @@ dependencies = [
  "async-trait",
  "busbar-api",
  "busbar-contract",
- "busbar-kernel",
  "busbar-kernel-ledger",
  "busbar-kernel-wal",
  "busbar-plugin",

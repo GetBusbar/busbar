@@ -31,7 +31,7 @@ use crate::store_adapter::{
     speaks_new_ops, ShimClock, StoreAdapter, REPLAY_TTL_SECS, STORE_ABI_WITH_NEW_OPS,
 };
 use busbar_contract::caps::{Grant, AdminVerb, KernelSeal};
-use busbar_kernel::slice::{bucket_all, CapDimension, Epoch, SliceId, SliceRequest, SliceStore};
+use busbar_contract::slice::{bucket_all, CapDimension, Epoch, SliceId, SliceRequest, SliceStore};
 use busbar_unit_verbs::store::Store as VerbStore;
 use busbar_kernel_wal::Record;
 use std::sync::Arc;
@@ -101,7 +101,7 @@ fn the_slice_seam_reserves_in_full_at_the_shim_epoch() {
     assert_eq!(grant.epoch, adapter.epoch(), "granted at the shim's epoch");
     assert_eq!(
         grant.valid_until,
-        busbar_kernel::Millis::MAX,
+        busbar_contract::Millis::MAX,
         "nothing expires a lease no other node can take"
     );
     let state = adapter.shim_state();
