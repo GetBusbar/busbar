@@ -1776,9 +1776,11 @@ fn serve_thread_per_core(
     // Validate the TLS material ONCE, here on the control thread, before any worker exists: every
     // worker builds the same server config from the same files, so a bad cert or key must be
     // reported exactly once and stop the boot (workers racing to `die` would each print it).
-    if let Some(tls) = tls_cfg.as_ref() {
-        tls::install_crypto_provider();
-        let _ = tls::build_server_config(tls, &secret_resolver)
+    // Reconciliation + fail-closed (DECISIONS #40): the built-in axum/hyper listener always
+    // declares itself TLS-capable, so this can only fail on unresolvable/unparsable material —
+    // exactly the boot failure `build_server_config` always reported here.
+    if tls_cfg.is_some() {
+        let _ = busbar_core_transport::prepare(&addr, tls_cfg.as_ref(), &secret_resolver, true)
             .unwrap_or_else(|e| die(format!("TLS configuration error for '{addr}': {e}")));
     }
     let core_ids = core_affinity::get_core_ids().unwrap_or_default();
@@ -1948,22 +1950,26 @@ async fn serve_listener(
             }
         }
         Some(tls) => {
-            tls::install_crypto_provider();
             // blocking-ffi-lint: allow — BOOT, once per listener, before that listener accepts.
             // `serve_listener` is never spawned as a task: the admin call runs directly under
             // `run()` on the control thread, and each per-worker data call is the FIRST thing its
             // freshly-built runtime `block_on`s — in both shapes this resolve parks a thread that
             // is not yet serving anything. It also completes before `tls::serve` below is reached,
             // so no connection on this listener can be waiting on it.
-            let server_config = tls::build_server_config(&tls, &secret_resolver)
-                .unwrap_or_else(|e| die(format!("TLS configuration error for '{label}': {e}")));
+            //
+            // The built-in axum/hyper listener below always declares itself TLS-capable
+            // (`transport_capable = true`); `prepare` still fails closed rather than silently
+            // downgrading to plaintext if the material cannot be resolved/parsed (DECISIONS #40).
+            let security =
+                busbar_core_transport::prepare(label, Some(&tls), &secret_resolver, true)
+                    .unwrap_or_else(|e| die(format!("TLS configuration error for '{label}': {e}")));
             let mtls = tls.client_ca.is_some();
             if log_at_info {
                 tracing::info!(listen = %label, mtls, "busbar listening (TLS)");
             } else {
                 tracing::debug!(listen = %label, mtls, "busbar listening (TLS)");
             }
-            if let Err(e) = tls::serve(listener, router, server_config, shutdown, balancer).await {
+            if let Err(e) = tls::serve(listener, router, security, shutdown, balancer).await {
                 die(format!("server error on '{label}': {e}"));
             }
         }

@@ -142,6 +142,16 @@ pub trait TransportMeta {
     /// declaration and the frames cannot disagree. `None` for a transport that reports no number,
     /// which is every transport whose `STATUS_CLASS` is `None`.
     const STATUS_NAMESPACE: Option<&'static str>;
+    /// Whether this transport can apply a [`crate::transport::wire::ConnectionSecurity`] wrap to a
+    /// freshly accepted/dialled raw stream (DECISIONS #40, the core-side transport-security seam).
+    ///
+    /// This is the static "wrappable byte stream" capability the composition root reconciles
+    /// against the operator's binding config: `TLS`-configured binding + a transport that declares
+    /// this `true` ⇒ it is handed a real rustls-backed wrap; `TLS`-configured binding + a transport
+    /// that leaves this at the default `false` ⇒ the binding fails closed at boot rather than being
+    /// silently served in plaintext. A transport with no byte stream to wrap at all (stdio) simply
+    /// never overrides the default.
+    const WRAPPABLE_BYTE_STREAM: bool = false;
 }
 
 /// The transport's own configuration block, as a read-only view.
