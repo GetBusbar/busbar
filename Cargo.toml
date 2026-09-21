@@ -41,6 +41,7 @@ members = [
     "crates/busbar-plane-admin",
     "crates/busbar-plane-voice",
     "crates/busbar-plane-streaming",
+    "crates/busbar-plane-decision",
     "crates/busbar-unit-transport-key",
     "crates/busbar-unit-verbs",
     "crates/api",

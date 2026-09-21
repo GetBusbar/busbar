@@ -1,0 +1,13 @@
+{
+  "schema": "busbar.conformance.verdict/1",
+  "suite": "llm-gemini",
+  "standard": "Google Gemini API",
+  "plan": "spec battery vs pinned discovery document",
+  "spec_version": "v1beta",
+  "status": "pass",
+  "armed": true,
+  "commit": "dc7bb3233bf9cf73f02b7d0afd59cbce05d022b6",
+  "run_id": "https://github.com/GetBusbar/busbar/actions/runs/1205",
+  "evidence": "https://github.com/GetBusbar/busbar/actions/runs/1205",
+  "generated_at": "2026-09-19T14:05:00Z"
+}

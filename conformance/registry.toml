@@ -1,118 +1,180 @@
-# Conformance suite registry — the ONE hand-authored input to the conformance
-# manifest generator (`cargo xtask conformance-manifest --write`, not yet
-# built — see `conformance/README.md`). Holds no status; status comes only
-# from real verdict artifacts at manifest-generation time.
+# THE CONFORMANCE SUITE REGISTRY — the ONE hand-authored input, and it holds NO status.
 #
-# Design: CONFORMANCE-SYNC-DESIGN.md §3.3 (schema), §4 (honesty tiering — the
-# `tier` here is a CEILING the rendered claim can never exceed).
-# Ruling:  CONFORMANCE-MATRIX-RULING.md (owner-agreed 2026-09-19) — the MUST
-#          set and the free-vs-paid classification of each suite.
-# Turnstile-side consumer: `busbar-release` `crates/busbar-release-turnstile/
-#          src/conformance.rs` (DEFAULT_MUST_SUITES) and `auto_apply.rs`
-#          (FREE_SUITES / PAID_SUITES) — the `cost` field below is this
-#          registry's copy of that same classification, kept in the repo whose
-#          workflows actually produce the verdicts.
+# DERIVED-never-typed (scripts/release-gate/expected-ids.sh:11-14): this file lists WHICH suites
+# exist and their claim TYPE (`tier`) — the ceiling a suite may ever claim. It does NOT record
+# whether a suite passed; that is read from the per-suite verdict artifacts (conformance/verdicts/)
+# and reconciled into conformance/manifest.json by `cargo xtask gate conformance-sync --write`.
 #
-# Adding a suite: add one [suite.<id>] block here (CONFORMANCE-SYNC-DESIGN.md
-# §7 "onboarding a brand-new suite") — nothing else changes on either
-# human-visible surface. Do NOT set tier="certified" without a real, issued
-# cert_id/issuer/expires in the suite's verdict; the generator refuses it.
+# `tier` is a registry constant and is the CEILING (CONFORMANCE-MATRIX-RULING.md):
+#   certified        a third-party body ISSUED a cert (requires cert fields in the verdict)
+#   conformant       passes an official/authoritative suite
+#   spec-conformant  validated against a published spec; no vendor cert program exists
+#   capable          implements the mechanism; not externally validated
+#   evidence-only    busbar supplies audit EVIDENCE; never busbar's own cert
+#
+# A green suite may render only AT OR BELOW its ceiling. Adding a suite is one block here plus the
+# suite's own verdict artifact — nothing on the README is hand-edited (design §7).
 
-[suite.mcp]
+# ── GREEN in 1.6.0 (verdict artifacts present) ───────────────────────────────────────────────────
+
+[[suite]]
+id = "a2a"
+standard = "Agent2Agent (A2A) Protocol"
+plan = "official a2aproject/a2a-tck + a2a-harness + a2a-go reference peer"
+tier = "conformant"
+label = "A2A"
+verdict = "conformance-verdict-a2a"
+public = "true"
+
+[[suite]]
+id = "llm-anthropic"
+standard = "Anthropic Messages API"
+plan = "spec battery vs pinned vendor OpenAPI"
+tier = "spec-conformant"
+label = "LLM Anthropic"
+verdict = "conformance-verdict-llm-anthropic"
+public = "true"
+
+[[suite]]
+id = "llm-bedrock"
+standard = "Amazon Bedrock Runtime API"
+plan = "spec battery vs pinned botocore models"
+tier = "spec-conformant"
+label = "LLM Bedrock"
+verdict = "conformance-verdict-llm-bedrock"
+public = "true"
+
+[[suite]]
+id = "llm-cohere"
+standard = "Cohere Chat API"
+plan = "spec battery vs pinned vendor OpenAPI"
+tier = "spec-conformant"
+label = "LLM Cohere"
+verdict = "conformance-verdict-llm-cohere"
+public = "true"
+
+[[suite]]
+id = "llm-gemini"
+standard = "Google Gemini API"
+plan = "spec battery vs pinned discovery document"
+tier = "spec-conformant"
+label = "LLM Gemini"
+verdict = "conformance-verdict-llm-gemini"
+public = "true"
+
+[[suite]]
+id = "llm-openai"
+standard = "OpenAI Chat Completions API"
+plan = "spec battery vs pinned vendor OpenAPI"
+tier = "spec-conformant"
+label = "LLM OpenAI"
+verdict = "conformance-verdict-llm-openai"
+public = "true"
+
+[[suite]]
+id = "llm-responses"
+standard = "OpenAI Responses API"
+plan = "spec battery vs pinned vendor OpenAPI"
+tier = "spec-conformant"
+label = "LLM Responses"
+verdict = "conformance-verdict-llm-responses"
+public = "true"
+
+[[suite]]
+id = "mcp"
 standard = "Model Context Protocol"
-plan     = "official modelcontextprotocol/typescript-sdk TCK + in-house battery"
-tier     = "conformant"
-cost     = "free"
-verdict  = "conformance-verdict-mcp"
-public   = true
-# Already wired: mcp-conformance.yml -> "MCP conformance verdict" (required
-# GitHub check today). Turnstile CommandCheck id: conformance:mcp.
+plan = "official modelcontextprotocol TCK + in-house battery"
+tier = "conformant"
+label = "MCP"
+verdict = "conformance-verdict-mcp"
+public = "true"
 
-[suite.a2a]
-standard = "Agent2Agent (A2A) protocol"
-plan     = "official a2aproject/a2a-tck + in-house battery + a2a-go reference peer"
-tier     = "conformant"
-cost     = "free"
-verdict  = "conformance-verdict-a2a"
-public   = true
-# Already wired: a2a-conformance.yml -> "A2A conformance verdict" (required
-# GitHub check today). Turnstile CommandCheck id: conformance:a2a.
+[[suite]]
+id = "voice-gemini-live"
+standard = "Google Gemini Live API"
+plan = "spec battery + replay"
+tier = "spec-conformant"
+label = "Voice Gemini Live"
+verdict = "conformance-verdict-voice-gemini-live"
+public = "true"
 
-[suite.ws-autobahn]
-standard = "RFC 6455 WebSocket (Autobahn|Testsuite)"
-plan     = "Docker crossbario/autobahn-testsuite fuzzingclient vs a booted busbar-transport-ws subject"
-tier     = "conformant"
-cost     = "free"
-verdict  = "conformance-verdict-ws-autobahn"
-public   = true
-# NOT built yet (CONFORMANCE-GATES-PLAN.md §5.1). Turnstile CommandCheck id:
-# conformance:ws-autobahn.
+[[suite]]
+id = "voice-openai-realtime"
+standard = "OpenAI Realtime API"
+plan = "spec battery + replay"
+tier = "spec-conformant"
+label = "Voice OpenAI Realtime"
+verdict = "conformance-verdict-voice-openai-realtime"
+public = "true"
 
-[suite.http2-h2spec]
-standard = "HTTP/2 (h2spec)"
-plan     = "summerwind/h2spec -k (h2c prior-knowledge) vs the served a2a-gRPC h2c listener"
-tier     = "conformant"
-cost     = "free"
-verdict  = "conformance-verdict-http2-h2spec"
-public   = true
-# NOT built yet; scope pending DICTATOR-D2 (CONFORMANCE-GATES-PLAN.md §5.2,
-# §7 D2). Turnstile CommandCheck id: conformance:http2-h2spec.
+# ── PLANNED for 1.6.0 (no verdict yet → not-run → renders NOTHING) ────────────────────────────────
 
-[suite.tls-testssl]
-standard = "TLS configuration grade (testssl.sh)"
-plan     = "Docker drwetter/testssl.sh vs a booted busbar-transport-tls (rustls) subject, grade >= A"
-tier     = "conformant"
-cost     = "free"
-verdict  = "conformance-verdict-tls-testssl"
-public   = true
-# NOT built yet (CONFORMANCE-GATES-PLAN.md §5.3). Turnstile CommandCheck id:
-# conformance:tls-testssl.
+[[suite]]
+id = "fapi2"
+standard = "FAPI 2.0 Security Profile"
+plan = "OIDF FAPI2 conformance suite (self-hosted)"
+tier = "conformant"
+label = "FAPI2"
+verdict = "conformance-verdict-fapi2"
+public = "true"
+not_run_reason = "planned 1.6.0 — PAR/DPoP/client-assertion wiring in flight; paid OIDF listing is owner-owned, the code is built to pass the suite (MATRIX-RULING owner ruling 2026-09-19)"
 
-[suite.slsa-verifier]
-standard = "SLSA Build provenance (L2 today, L3 aspirational)"
-plan     = "slsa-verifier verify-artifact/verify-image beside gh attestation verify, + self-assessment doc"
-tier     = "capable"
-cost     = "free"
-verdict  = "conformance-verdict-slsa-verifier"
-public   = true
-# NOT built yet (CONFORMANCE-GATES-PLAN.md §5.4). Release-time, not a PR
-# check. Turnstile CommandCheck id: conformance:slsa-verifier.
+[[suite]]
+id = "h2"
+standard = "HTTP/2 (RFC 9113)"
+plan = "h2spec against busbar-transport-http"
+tier = "conformant"
+label = "HTTP/2"
+verdict = "conformance-verdict-h2"
+public = "true"
+not_run_reason = "planned 1.6.0 — h2spec leg not yet green (MATRIX-RULING B-tier report card)"
 
-[suite.oidf-oauth2]
-standard = "OpenID Foundation OAuth 2.0 conformance suite (self-hosted, no logo)"
-plan     = "gitlab.com/openid/conformance-suite self-hosted run vs busbar-oauth2 (oauth-as 0.10.0 FAPI2 harness)"
-tier     = "conformant"
-cost     = "free"
-verdict  = "conformance-verdict-oidf-oauth2"
-public   = true
-# $0, self-hosted, no logo (owner ruling 2026-09-19). Turnstile CommandCheck
-# id: conformance:oidf-oauth2.
+[[suite]]
+id = "jev"
+standard = "jev decision plane"
+plan = "2 typesafe SDK peers exercising /v1/systemone + /v1/models"
+tier = "conformant"
+label = "jev"
+verdict = "conformance-verdict-jev"
+public = "true"
+not_run_reason = "planned 1.6.0 — jev wiring stage in flight (MATRIX-RULING §jev)"
 
-[suite.fapi2]
-standard = "FAPI 2.0 Security Profile (OpenID Foundation OP certification)"
-plan     = "OIDF FAPI2 conformance suite self-hosted to green (PAR + DPoP + client-assertion wired)"
-tier     = "conformant"
-cost     = "paid"
-verdict  = "conformance-verdict-fapi2"
-public   = true
-# Suite-green is buildable now and is self-hosted/free; the PUBLIC OIDF
-# listing + logo is a paid, owner-owned step ($5k non-member / ~$2k as new
-# member — CONFORMANCE-MATRIX-RULING.md "OWNER (2026-09-19): FAPI2 paid
-# listing is owner-owned"). tier stays "conformant" ("passes the FAPI2
-# suite") until the owner completes the paid listing; bumping to
-# tier="certified" requires the issued cert_id/issuer/expires in the verdict
-# (CONFORMANCE-SYNC-DESIGN.md §4) — the generator refuses otherwise. This is
-# the manifest-side half of the never-overclaim guard; the turnstile-side
-# half is `busbar-release` `auto_apply::PAID_SUITES`.
+[[suite]]
+id = "oidf-oauth2"
+standard = "OpenID Foundation OAuth2 conformance suite"
+plan = "self-hosted OIDF OAuth2 plan (openid=plain_oauth)"
+tier = "conformant"
+label = "OIDF OAuth2"
+verdict = "conformance-verdict-oidf-oauth2"
+public = "true"
+not_run_reason = "planned 1.6.0 — self-hosted OIDF leg not yet green; claim is 'passes the suite', NEVER 'certified' (MATRIX-RULING owner ruling 2026-09-19)"
 
-[suite.jev]
-standard = "jev decision plane (client.models.list() dialect probes)"
-plan     = "2 typesafe SDKs exercising /v1/systemone + /v1/models"
-tier     = "conformant"
-cost     = "free"
-verdict  = "conformance-verdict-jev"
-public   = true
-# Build item in the jev wiring stage (CONFORMANCE-MATRIX-RULING.md line
-# 10-11); registers here ahead of the wiring landing so `conformance:coverage`
-# (CONFORMANCE-SYNC-DESIGN.md §5) starts owing it now rather than being
-# retrofitted later.
+[[suite]]
+id = "slsa-verifier"
+standard = "SLSA provenance (v1.0)"
+plan = "slsa-verifier over the release attestations"
+tier = "conformant"
+label = "SLSA"
+verdict = "conformance-verdict-slsa-verifier"
+public = "true"
+not_run_reason = "planned 1.6.0 — slsa-verifier leg not yet wired as an arm-or-red verdict"
+
+[[suite]]
+id = "tls"
+standard = "TLS (rustls, no OpenSSL)"
+plan = "testssl.sh grade against a loopback subject"
+tier = "conformant"
+label = "TLS"
+verdict = "conformance-verdict-tls"
+public = "true"
+not_run_reason = "planned 1.6.0 — testssl leg not yet green (MATRIX-RULING B-tier report card)"
+
+[[suite]]
+id = "ws"
+standard = "WebSocket (RFC 6455)"
+plan = "Autobahn|Testsuite against busbar-transport-ws"
+tier = "conformant"
+label = "WebSocket"
+verdict = "conformance-verdict-ws"
+public = "true"
+not_run_reason = "planned 1.6.0 — Autobahn leg not yet green; currently zero coverage (MATRIX-RULING)"
