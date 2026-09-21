@@ -68,7 +68,10 @@ pub mod observability {
 // Core re-exports each from its old `busbar_kernel::<mod>` path so its own call sites are unchanged.
 pub use busbar_substrate_values::{eventstream, json, lossless, media, sigv4};
 pub mod audit {
-    pub mod vocab;
+    // THE AUDIT VOCABULARY moved DOWN to `busbar-contract` (1.6.0 W4.b P0 value-leaf drain); this
+    // re-export keeps `busbar_substrate::audit::vocab::…` and in-crate `crate::audit::vocab::…`
+    // resolving unchanged.
+    pub use busbar_contract::vocab;
 
     /// How many entries the in-memory ring retains. Bounds RAM, not history — a durable sink keeps the
     /// full log. `pub` (was `pub(crate)` in core) so the admin audit ring and the plane audit-log ring
@@ -118,9 +121,10 @@ pub use busbar_substrate_values::{billing, breaker};
 pub mod rate_apply;
 // The proleptic-Gregorian civil-date split shared by the plane crates that render an epoch timestamp
 // (MCP task `iso8601_ms`, A2A push `status.timestamp`) without pulling a date-time crate into their
-// closure. One copy here, in the substrate both planes depend on, rather than one per plane.
-pub mod civil;
-pub mod duration;
+// closure. Moved DOWN to `busbar-contract` (1.6.0 W4.b P0 value-leaf drain); re-exported here so
+// `busbar_substrate::civil::…`/`::duration::…` and in-crate `crate::civil`/`crate::duration` resolve
+// unchanged.
+pub use busbar_contract::{civil, duration};
 // The neutral protocol handler matrix — `OperationHandler`/`RequestHandler` and their codec-cell
 // value families (`Cell`/`cell_of`/`IngressReject`/`CodecError`/`TranslateCodec`). Relocated from
 // `busbar-core` so the dialect crates implement them here; core re-exports each from

@@ -13,7 +13,9 @@
 pub mod authz;
 pub mod bounded;
 pub mod caps;
+pub mod civil;
 pub mod dest;
+pub mod duration;
 pub mod grammar;
 pub mod ids;
 pub mod kinds;
@@ -26,6 +28,7 @@ pub mod surface;
 pub mod transport;
 pub mod unit;
 pub mod upstream;
+pub mod vocab;
 pub mod wire;
 
 /// Milliseconds on the kernel's monotonic clock.
