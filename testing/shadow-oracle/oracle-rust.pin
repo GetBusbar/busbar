@@ -1,0 +1,17 @@
+# The shadow-oracle ENGINE this checkout is judged by (Phase C cutover).
+#
+# The money oracle is now the Rust `busbar-oracle` crate in GetBusbar/busbar-release. bin/oracle
+# obtains that binary from the SOURCE pin below and runs it against this directory's DATA. This
+# source pin (repo + git ref + crate) REPLACES the old archive digest-pin in oracle.pin: the thing
+# that must not change quietly is which judge ran, and a git ref + `cargo build --locked` from that
+# tree is the reproducible source identity (the Cargo.lock at the ref pins every dependency). The
+# ref moves only by editing this file, exactly as the old sha256 did.
+#
+# oracle.pin (the Python archive digest-pin) is KEPT for this pass as a fallback and is NOT deleted;
+# the Python tool is retired in a later step (see the Phase C cutover checklist).
+#
+# To move the pin: set release_ref to the new busbar-release commit and re-run.
+release_repo=https://github.com/GetBusbar/busbar-release.git
+release_ref=24975c6b0510be2dd7f3e7bb18981f7c37370d72
+crate=busbar-release-oracle
+bin=busbar-oracle

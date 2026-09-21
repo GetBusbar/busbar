@@ -2,45 +2,177 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (C) 2026 Busbar Inc and contributors
 #
-# The shadow oracle is a separate product now (GetBusbar/busbar-oracle). This is the ONE piece of
-# glue busbar keeps: it installs the PINNED tool into target/oracle/tool and runs it against this
-# checkout's data. The pin (tag + sha256 of the release archive) is testing/shadow-oracle/oracle.pin;
-# a tool whose archive does not hash to the pin is refused, because an unpinned judge is not a judge.
+# The shadow oracle is a separate product now. This is the ONE piece of glue busbar keeps: it
+# obtains the PINNED Rust `busbar-oracle` engine and runs it against this checkout's data.
+#
+# PHASE C CUTOVER (branch-only): the money oracle is now the Rust `busbar-oracle` crate that lives in
+# GetBusbar/busbar-release. This shim builds/obtains that binary from a SOURCE pin
+# (testing/shadow-oracle/oracle-rust.pin: the busbar-release repo + git ref + crate) — the source pin
+# replaces the old archive digest-pin (an unpinned judge is not a judge; money integrity). The argv
+# contract is UNCHANGED (cells / record / replay / diff / normalize / merge / renormalize /
+# harness-rev / owed-baseline / fetch-golden / fetch-plugin / replay-selftest / selftest / tool-dir),
+# so every caller (ci.yml's `./bin/oracle <sub>`, the turnstile's HarnessOracle) is unchanged.
+#
+# TOOL_DIR is a SHIM directory this shim generates beside the binary: `record.sh` there forwards to
+# `busbar-oracle record --native` so the turnstile's HarnessOracle — which drives
+# `$BUSBAR_ORACLE_TOOL_DIR/record.sh` — records 100% natively without a code change; replay is already
+# the in-process Rust differ. (The product data-driver scripts that still call the Python
+# mock-upstream.py/capture-exec.py via TOOL_DIR are the documented remaining step for full Python
+# deletion — see PHASE-C notes; this pass keeps Python as a fallback and does not delete it.)
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-pin="$here/testing/shadow-oracle/oracle.pin"
-tag="$(awk -F= '$1=="tag"{print $2}' "$pin")"; sha="$(awk -F= '$1=="sha256"{print $2}' "$pin")"
-root="$here/target/oracle/tool/$tag"
-if [ ! -x "$root/bin/busbar-oracle" ]; then
-  mkdir -p "$root"; tgz="$here/target/oracle/$tag.tar.gz"
-  curl -fsSL -o "$tgz" "https://github.com/GetBusbar/busbar-oracle/archive/refs/tags/$tag.tar.gz"
-  got="$( (command -v sha256sum >/dev/null && sha256sum "$tgz" || shasum -a 256 "$tgz") | cut -d' ' -f1)"
-  [ "$got" = "$sha" ] || { echo "oracle: $tag archive is $got, pinned $sha" >&2; exit 1; }
-  tar -xzf "$tgz" -C "$root" --strip-components=1
-  # --no-cache-dir IS THE PIN. Without it pip happily reuses a wheel it built earlier for the same
-  # name+version, so a digest-verified download can be silently shadowed by whatever "busbar-oracle
-  # 0.1.0" happened to be on this machine first — which is exactly the substitution the pin exists
-  # to prevent. Observed, not theoretical: it served a stale judge on the first run of this shim.
-  python3 -m venv "$root/.venv" && "$root/.venv/bin/pip" -q install --no-cache-dir "$root" && ln -sfn "$root/.venv/bin" "$root/bin"
-fi
-# The pin IS the harness's tool half: harness-rev hashes this digest instead of the tool's files.
-export BUSBAR_ORACLE_TOOL_DIGEST="$tag@$sha"
-# Defaults, not overrides. The tool's own self-tests prove the harness revision MOVES when a file
-# that decides a verdict changes, which they do by editing a throwaway copy of the data and re-asking
-# — impossible if this shim forced every run at busbar's real directory.
+
+pin="$here/testing/shadow-oracle/oracle-rust.pin"
+[ -f "$pin" ] || { echo "oracle: missing source pin $pin" >&2; exit 1; }
+_pin() { awk -F= -v k="$1" '$1==k{sub(/^[^=]*=/,"");print;exit}' "$pin"; }
+RELEASE_REPO="$(_pin release_repo)"
+RELEASE_REF="$(_pin release_ref)"
+CRATE="$(_pin crate)"; CRATE="${CRATE:-busbar-release-oracle}"
+BINNAME="$(_pin bin)"; BINNAME="${BINNAME:-busbar-oracle}"
+[ -n "$RELEASE_REF" ] || { echo "oracle: $pin has no release_ref" >&2; exit 1; }
+
+root="$here/target/oracle/rust/$RELEASE_REF"
+shim_dir="$root/tool"
+mkdir -p "$root"
+
+# ── obtain the Rust engine ──────────────────────────────────────────────────────────────────────
+# Precedence (soundest first, per the Phase C ruling "prefer `cargo build --release` from the pinned
+# busbar-release checkout"):
+#   1. BUSBAR_ORACLE_RUST_BIN=<path>   a prebuilt binary (CI builds it once, passes it here).
+#   2. BUSBAR_RELEASE_CHECKOUT=<dir>   a busbar-release checkout to `cargo build --release` from.
+#   3. else                            git clone busbar-release at the pinned ref, then build.
+resolve_bin() {
+  if [ -n "${BUSBAR_ORACLE_RUST_BIN:-}" ]; then
+    [ -x "$BUSBAR_ORACLE_RUST_BIN" ] || { echo "oracle: BUSBAR_ORACLE_RUST_BIN is not executable: $BUSBAR_ORACLE_RUST_BIN" >&2; exit 1; }
+    printf '%s\n' "$BUSBAR_ORACLE_RUST_BIN"; return 0
+  fi
+  local built="$root/checkout/target/release/$BINNAME"
+  if [ -x "$built" ]; then printf '%s\n' "$built"; return 0; fi
+  local checkout
+  if [ -n "${BUSBAR_RELEASE_CHECKOUT:-}" ]; then
+    checkout="$BUSBAR_RELEASE_CHECKOUT"
+  else
+    checkout="$root/checkout"
+    if [ ! -d "$checkout/.git" ]; then
+      git clone --no-checkout "$RELEASE_REPO" "$checkout" >&2
+    fi
+    git -C "$checkout" fetch --depth 1 origin "$RELEASE_REF" >&2 2>/dev/null || git -C "$checkout" fetch origin >&2
+    git -C "$checkout" checkout --force "$RELEASE_REF" >&2
+  fi
+  ( cd "$checkout" && cargo build --release -p "$CRATE" --bin "$BINNAME" >&2 )
+  built="$checkout/target/release/$BINNAME"
+  [ -x "$built" ] || { echo "oracle: build produced no $BINNAME under $checkout/target/release" >&2; exit 1; }
+  printf '%s\n' "$built"
+}
+RUST_BIN="$(resolve_bin)"
+
+# ── the shim tool-dir (record.sh -> native) ─────────────────────────────────────────────────────
+# HarnessOracle drives `$BUSBAR_ORACLE_TOOL_DIR/record.sh --bin <candidate> --out <work>/candidate
+# [--filter <F>]`. Translate that to the native Rust recorder, which writes `<work-dir>/candidate`,
+# so the recording lands exactly where HarnessOracle then loads it.
+mkdir -p "$shim_dir"
+cat >"$shim_dir/record.sh" <<SHIM
+#!/usr/bin/env bash
+# GENERATED by bin/oracle (Phase C) — forwards record.sh's contract to the native Rust recorder.
+set -euo pipefail
+BIN="" OUT="" FILTER="" PLANE="all"
+while [ \$# -gt 0 ]; do case "\$1" in
+  --bin) BIN="\$2"; shift 2;;
+  --out) OUT="\$2"; shift 2;;
+  --filter) FILTER="\$2"; shift 2;;
+  --plane) PLANE="\$2"; shift 2;;
+  --shared-state) shift;;
+  *) shift;;
+esac; done
+[ -n "\$BIN" ] && [ -n "\$OUT" ] || { echo "record.sh(shim): need --bin and --out" >&2; exit 2; }
+WORK="\$(cd "\$(dirname "\$OUT")" && pwd)"   # native writes <WORK>/candidate == --out
+exec "$RUST_BIN" record --native \\
+  --busbar-repo "\${BUSBAR_ORACLE_PRODUCT_ROOT:-$here}" \\
+  --candidate-bin "\$BIN" \\
+  --oracle-data "\${BUSBAR_ORACLE_DATA:-$here/testing/shadow-oracle}" \\
+  --work-dir "\$WORK" \\
+  --family "\$PLANE" \${FILTER:+--filter "\$FILTER"}
+SHIM
+chmod +x "$shim_dir/record.sh"
+# replay.sh shim, for any TOOL_DIR-driven caller (the turnstile replays in-process, not via this).
+cat >"$shim_dir/replay.sh" <<SHIM
+#!/usr/bin/env bash
+# GENERATED by bin/oracle (Phase C) — forwards to the native Rust replay/diff.
+exec "$RUST_BIN" replay "\$@"
+SHIM
+chmod +x "$shim_dir/replay.sh"
+
+# ── the tool-location + data contract (unchanged names) ─────────────────────────────────────────
+# The source pin IS the harness's tool half: harness-rev folds this ref instead of the tool's files.
+export BUSBAR_ORACLE_TOOL_DIGEST="rust:${RELEASE_REPO}@${RELEASE_REF}"
 export BUSBAR_ORACLE_PRODUCT_ROOT="${BUSBAR_ORACLE_PRODUCT_ROOT:-$here}"
-# The tool must not litter the DATA directory with byte-code caches: the segregation gate walks
-# that directory and refuses a file it cannot read as source, and a cache is not a data file.
-export PYTHONDONTWRITEBYTECODE=1
 export BUSBAR_ORACLE_DATA="${BUSBAR_ORACLE_DATA:-$here/testing/shadow-oracle}"
-# The cell DRIVERS under the data directory call the tool's fetchers (fetch-plugin.sh, fetch-golden.sh),
-# which left this tree with the tool. They find them through this variable, never by a path beside
-# themselves, so a driver cannot silently fall back to a stale in-tree copy.
-export BUSBAR_ORACLE_TOOL_DIR="${BUSBAR_ORACLE_TOOL_DIR:-$("$root/.venv/bin/python" -c 'import busbar_oracle, os; print(os.path.dirname(busbar_oracle.__file__))')}"
-# `tool-dir` is BUSBAR'S OWN word, handled here and never passed through: it installs the pin if it
-# is not installed yet (the block above) and prints where the tool landed. It exists so a caller that
-# needs ONE tool FILE rather than a tool COMMAND -- the llm-conformance gate reaches for the tool's
-# build-request.py when a recording lacks raw request bytes -- can find it through the same pin every
-# other caller is judged by, instead of guessing a path beside busbar's data directory.
-if [ "${1:-}" = tool-dir ]; then echo "$BUSBAR_ORACLE_TOOL_DIR"; exit 0; fi
-exec "$root/bin/busbar-oracle" "$@"
+# TOOL_DIR is the shim dir (record.sh -> native). NOTE (Phase C, documented): product data-driver
+# scripts under $BUSBAR_ORACLE_DATA/scripts still hardcode `python3 mock-upstream.py`/`capture-exec.py`
+# via this var; repointing them to a Rust mock is the remaining step before the Python tool can be
+# deleted. This pass keeps Python installable as a fallback but does not require it for the judge,
+# record --native, replay, cells --check, or replay-selftest.
+export BUSBAR_ORACLE_TOOL_DIR="${BUSBAR_ORACLE_TOOL_DIR:-$shim_dir}"
+
+# ── argv contract (unchanged for callers) → the Rust CLI ────────────────────────────────────────
+# The committed callers (ci.yml, manual-keep-proof.yml, the turnstile's record.sh shim) speak the
+# historical Python argv. The Rust CLI takes explicit paths; this dispatcher fills the same
+# BUSBAR_ORACLE_DATA-derived defaults the Python tool derived, so `./bin/oracle <sub> …` is unchanged.
+DATA="$BUSBAR_ORACLE_DATA"
+ROOT="$BUSBAR_ORACLE_PRODUCT_ROOT"
+CACHE="${BUSBAR_ORACLE_CACHE:-$HOME/.cache/busbar-oracle}"
+sub="${1:-}"; shift || true
+
+case "$sub" in
+  tool-dir)
+    echo "$BUSBAR_ORACLE_TOOL_DIR"; exit 0 ;;
+
+  cells)
+    # `cells --check` / `--selftest` — default --cells from the data dir (Python read $DATA).
+    has_cells=0; for a in "$@"; do [ "$a" = "--cells" ] && has_cells=1; done
+    if [ "$has_cells" -eq 0 ]; then set -- "$@" --cells "$DATA/cells.json"; fi
+    exec "$RUST_BIN" cells "$@" ;;
+
+  replay-selftest)
+    # the owed-baseline ratchet over the committed golden (Python read $DATA).
+    exec "$RUST_BIN" replay-selftest --golden "$DATA/golden/1.5.5" --baseline "$DATA/owed-baseline.txt" "$@" ;;
+
+  owed-baseline)
+    exec "$RUST_BIN" owed-baseline --baseline "$DATA/owed-baseline.txt" "$@" ;;
+
+  fetch-golden)
+    exec "$RUST_BIN" fetch-golden --digests "$DATA/golden-digests.tsv" --cache-dir "$CACHE" "$@" ;;
+
+  fetch-plugin)
+    # `fetch-plugin <name> [--check]` — the data dir carries plugin-digests.tsv.
+    exec "$RUST_BIN" fetch-plugin "$1" --data "$DATA" "${@:2}" ;;
+
+  record)
+    # OLD: record --bin B --plane P --out O [--filter F]  →  native Rust recorder.
+    BIN="" OUT="" PLANE="all" FILTER=""
+    while [ $# -gt 0 ]; do case "$1" in
+      --bin) BIN="$2"; shift 2;;
+      --out) OUT="$2"; shift 2;;
+      --plane) PLANE="$2"; shift 2;;
+      --filter) FILTER="$2"; shift 2;;
+      --shared-state) shift;;
+      *) shift;;
+    esac; done
+    [ -n "$BIN" ] && [ -n "$OUT" ] || { echo "oracle record: need --bin and --out" >&2; exit 2; }
+    mkdir -p "$OUT"; WORK="$(cd "$(dirname "$OUT")" && pwd)"   # native writes <WORK>/candidate == --out
+    [ "$(basename "$OUT")" = candidate ] || echo "oracle record: note — native recorder writes <work>/candidate; --out basename '$(basename "$OUT")' is honored as that dir" >&2
+    exec "$RUST_BIN" record --native --busbar-repo "$ROOT" --candidate-bin "$BIN" \
+      --oracle-data "$DATA" --work-dir "$WORK" --family "$PLANE" ${FILTER:+--filter "$FILTER"} ;;
+
+  replay)
+    # OLD: replay --golden G --candidate C --out R  →  the in-process Rust differ (the judge).
+    # A Python-recorded golden vs a Rust-recorded candidate is a harness change by design, so the
+    # differ's same-revision guard is told to compare across it (--allow-harness-skew). Re-recording
+    # the golden with the Rust engine (oracle-rerecord workflow) makes the revisions agree and drops
+    # this flag — see the Phase C cutover checklist.
+    exec "$RUST_BIN" diff "$@" --cells "$DATA/cells.json" --allow-harness-skew ;;
+
+  *)
+    # diff / normalize / merge / renormalize / harness-rev / selftest / … pass through unchanged.
+    exec "$RUST_BIN" "$sub" "$@" ;;
+esac
