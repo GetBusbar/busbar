@@ -212,6 +212,9 @@ jobs:
       # other 23 shards the moment one of them finds a hole reports one hole and hides the rest,
       # which turns a single mechanical run into a queue of runs.
       fail-fast: false
+      # Cap concurrent shards so a full run does not monopolise the parked xlarge fleet.
+      # Shard count and contents are unchanged; this only bounds how many run at once.
+      max-parallel: 12
       matrix:
         shard: ${{ fromJSON(needs.scope.outputs.matrix) }}
     steps:

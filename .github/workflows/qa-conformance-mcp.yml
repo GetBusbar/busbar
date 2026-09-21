@@ -54,19 +54,34 @@ name: MCP conformance
 # This is a separate workflow rather than a job in ci.yml on purpose: the control leg builds a
 # 53-package third-party TypeScript workspace, which has no business on the per-commit fast tier.
 on:
-  push:
-    # QA-gate only (owner ruling, DECISIONS #78): conformance is an exhaustive promotion gate, not
-    # per-commit dev feedback — run it once at the qa boundary, not on every dev/integration push.
-    branches: ['qa']
+  # SERIALISED BEHIND CI (mirrors qa-gate.yml). This battery is an expensive promotion gate; there is
+  # no point spending it on a qa commit whose cheap compile (ci.yml) has not even gone green yet. So
+  # it runs on CI's COMPLETION rather than on the qa push directly, and the job `if:` below only lets
+  # it proceed when that CI run concluded `success` on `qa`. `workflow_run` loads THIS file from the
+  # default branch and checks out the default branch by default, so every checkout below pins
+  # `github.event.workflow_run.head_sha` to judge the commit CI actually tested, not main.
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
   workflow_dispatch:
 
 concurrency:
-  group: mcp-conformance-${{ github.ref }}
+  # Keyed on the TRIGGERING branch, not github.ref: for a workflow_run event github.ref is always the
+  # default branch, so every run (including the ones a dev/main CI completion spawns that then skip
+  # via the job `if:`) would otherwise share one group and cancel the real in-flight qa run.
+  group: mcp-conformance-${{ github.event.workflow_run.head_branch || github.ref }}
   cancel-in-progress: true
 
 jobs:
   gate-selftest:
     name: gate self-test (the coverage assertion cannot be lied to)
+    # THE ONE GATE (mirrors qa-gate.yml). Every other job needs this one (directly or transitively),
+    # so gating it here cascades: on a non-qa CI completion this skips and the whole battery skips
+    # with it. A manual workflow_dispatch always proceeds.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       contains(fromJSON('["qa"]'), github.event.workflow_run.head_branch))
     runs-on: latchkey-small
     # BOUNDED. Measured p95 0.2 min over the last 9 runs of this job; the
     # ceiling is the 10-minute floor of the `p95 x 1.5` rule ci.yml documents.
@@ -74,6 +89,9 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # workflow_run defaults to the default branch; pin to the CI run's tested commit (see on:).
+          ref: ${{ github.event.workflow_run.head_sha || github.ref }}
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: '3.12'
@@ -119,6 +137,9 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # workflow_run defaults to the default branch; pin to the CI run's tested commit (see on:).
+          ref: ${{ github.event.workflow_run.head_sha || github.ref }}
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: '22'
@@ -181,6 +202,9 @@ jobs:
       armed: ${{ steps.arm.outputs.armed }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # workflow_run defaults to the default branch; pin to the CI run's tested commit (see on:).
+          ref: ${{ github.event.workflow_run.head_sha || github.ref }}
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: '22'
@@ -221,6 +245,22 @@ jobs:
             ${{ env.CARGO_HOME }}/registry
             ${{ env.CARGO_HOME }}/git
             target
+
+      # BUILD ONCE, RUN EVERYWHERE — the pattern qa-conformance-voice.yml already uses. This is the
+      # byte-identical `cargo build --bin busbar` (debug, default features, CARGO_INCREMENTAL=0) that
+      # `battery-subject` also needs; building it there again means a second latchkey-xlarge paying a
+      # full cargo compile for the same source. It is handed down as an artifact instead, so
+      # `battery-subject` needs no Rust toolchain and no cargo cache. `fixture-absence` is NOT a
+      # consumer: it builds `--release --locked` (scripts/mcp-fixture-absence-gate.sh), a different
+      # profile, and keeps its own build.
+      - name: Hand the built subject binary to the battery-subject leg
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: mcp-subject-busbar-bin
+          path: target/debug/busbar
+          if-no-files-found: error
+          # Exists only to be handed to the sibling job in THIS run.
+          retention-days: 1
 
       # This step RECORDS the arm state and does not judge it; the `Judge busbar` step below fails
       # on its own when unarmed, and the verdict fails independently on the output. Two mechanisms
@@ -291,6 +331,9 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # workflow_run defaults to the default branch; pin to the CI run's tested commit (see on:).
+          ref: ${{ github.event.workflow_run.head_sha || github.ref }}
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: '22'
@@ -321,6 +364,9 @@ jobs:
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # workflow_run defaults to the default branch; pin to the CI run's tested commit (see on:).
+          ref: ${{ github.event.workflow_run.head_sha || github.ref }}
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: '22'
@@ -341,54 +387,40 @@ jobs:
 
   battery-subject:
     name: in-house battery · SUBJECT (busbar — ARMED OR RED)
-    needs: battery-control
+    # `official-subject` ADDED so the byte-identical `cargo build --bin busbar` it produced can be
+    # handed down instead of built a second time here (build-once, the pattern
+    # qa-conformance-voice.yml uses). `battery-control` stays: its report is the differential's
+    # comparison baseline, downloaded below.
+    needs: [battery-control, official-subject]
     runs-on: latchkey-xlarge
     timeout-minutes: 30
     outputs:
       armed: ${{ steps.arm.outputs.armed }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # workflow_run defaults to the default branch; pin to the CI run's tested commit (see on:).
+          ref: ${{ github.event.workflow_run.head_sha || github.ref }}
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: '22'
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: '3.12'
-      - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
-      - name: Resolve cargo home (Latchkey image sets CARGO_HOME off $HOME)
-        uses: ./.github/actions/cargo-home
-      - name: Latchkey Fast Cache (cargo registry + target, restore)
-        uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
-        with:
-          action: restore
-          key: cargo-${{ runner.os }}-battery-subject-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
-          path: |
-            ${{ env.CARGO_HOME }}/registry
-            ${{ env.CARGO_HOME }}/git
-            target
 
-      # THE SUBJECT IS BUILT FROM THIS COMMIT, the same change that made the official subject leg
-      # mean something, applied to the leg that never ran at all. This one was armed out of
-      # `vars.MCP_SUBJECT_SERVER_CMD` -- a command line naming a binary on somebody's machine -- and
-      # CI supplied neither it nor its client twin for the whole of 1.5.5, so the leg reported `NOT
-      # ARMED, SO NOT RUN` from the day the rule was written. A variable nobody can set correctly
-      # from a GitHub-hosted runner is not an arm; a file this job just built is.
-      #
-      # `CARGO_INCREMENTAL=0` for the reason the official leg gives: a partially populated
-      # incremental cache has produced spurious build failures, which is a red that is not a defect.
-      - name: Build the subject from this commit
-        env:
-          CARGO_INCREMENTAL: '0'
-        run: cargo build --bin busbar
-      - name: Latchkey Fast Cache (cargo registry + target, save)
-        uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
+      # THE SUBJECT IS BUILT FROM THIS COMMIT — by `official-subject`, and handed down here as an
+      # artifact. It is the same `cargo build --bin busbar` (debug, default features,
+      # CARGO_INCREMENTAL=0) this leg used to run itself; consuming the pre-built binary drops the
+      # duplicate cargo compile (and its cache), so no Rust toolchain is needed here. The arm-state
+      # check below still reads `target/debug/busbar`, so a missing hand-down disarms the leg, which
+      # is RED — the same honest failure the local build gave. The executable bit does not survive
+      # the artifact zip, so restore it.
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
-          action: save
-          key: cargo-${{ runner.os }}-battery-subject-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
-          path: |
-            ${{ env.CARGO_HOME }}/registry
-            ${{ env.CARGO_HOME }}/git
-            target
+          name: mcp-subject-busbar-bin
+          path: target/debug
+      - name: Restore the subject binary's executable bit
+        run: chmod +x target/debug/busbar
       - name: Record the arm state
         id: arm
         env:
@@ -458,6 +490,9 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # workflow_run defaults to the default branch; pin to the CI run's tested commit (see on:).
+          ref: ${{ github.event.workflow_run.head_sha || github.ref }}
       - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
       - name: Resolve cargo home (Latchkey image sets CARGO_HOME off $HOME)
         uses: ./.github/actions/cargo-home
@@ -491,7 +526,14 @@ jobs:
     # ceiling is the 10-minute floor of the `p95 x 1.5` rule ci.yml documents.
     # Unbounded, this job inherits the runner's six-hour default.
     timeout-minutes: 10
-    if: always()
+    # `!cancelled()` preserves the always-run-the-verdict property WITHIN a real run (a failing leg
+    # must still be judged), but the same CI/branch gate as the rest keeps it from running — and
+    # reporting every leg as skipped-is-red — on a non-qa CI completion.
+    if: >-
+      !cancelled() &&
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event.workflow_run.conclusion == 'success' &&
+        contains(fromJSON('["qa"]'), github.event.workflow_run.head_branch)))
     needs:
       - gate-selftest
       - official-control

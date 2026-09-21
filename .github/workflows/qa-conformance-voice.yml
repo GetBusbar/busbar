@@ -47,19 +47,34 @@ name: Voice conformance
 # secret anywhere in this file.
 
 on:
-  push:
-    # QA-gate only (owner ruling, DECISIONS #78): conformance is an exhaustive promotion gate, not
-    # per-commit dev feedback — run it once at the qa boundary, not on every dev/integration push.
-    branches: ['qa']
+  # SERIALISED BEHIND CI (mirrors qa-gate.yml). This battery is an expensive promotion gate; there is
+  # no point spending it on a qa commit whose cheap compile (ci.yml) has not even gone green yet. So
+  # it runs on CI's COMPLETION rather than on the qa push directly, and the job `if:` below only lets
+  # it proceed when that CI run concluded `success` on `qa`. `workflow_run` loads THIS file from the
+  # default branch and checks out the default branch by default, so every checkout below pins
+  # `github.event.workflow_run.head_sha` to judge the commit CI actually tested, not main.
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
   workflow_dispatch:
 
 concurrency:
-  group: voice-conformance-${{ github.ref }}
+  # Keyed on the TRIGGERING branch, not github.ref: for a workflow_run event github.ref is always the
+  # default branch, so every run (including the ones a dev/main CI completion spawns that then skip
+  # via the job `if:`) would otherwise share one group and cancel the real in-flight qa run.
+  group: voice-conformance-${{ github.event.workflow_run.head_branch || github.ref }}
   cancel-in-progress: true
 
 jobs:
   gate-selftest:
     name: gate self-test (the accounting cannot be lied to)
+    # THE ONE GATE (mirrors qa-gate.yml). Every other job needs this one, so gating it here cascades:
+    # on a non-qa CI completion this skips and the whole battery skips with it. A manual
+    # workflow_dispatch always proceeds.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       contains(fromJSON('["qa"]'), github.event.workflow_run.head_branch))
     runs-on: latchkey-xlarge
     # BOUNDED. Measured p95 0.9 min over the last 9 runs of this job; the
     # ceiling is the 10-minute floor of the `p95 x 1.5` rule ci.yml documents.
@@ -71,6 +86,9 @@ jobs:
       VOICE_CONFORM_BIN: ${{ github.workspace }}/target/debug/voice-conform
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # workflow_run defaults to the default branch; pin to the CI run's tested commit (see on:).
+          ref: ${{ github.event.workflow_run.head_sha || github.ref }}
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: '3.12'
@@ -161,6 +179,9 @@ jobs:
         dialect: [openai, gemini]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # workflow_run defaults to the default branch; pin to the CI run's tested commit (see on:).
+          ref: ${{ github.event.workflow_run.head_sha || github.ref }}
       # The harness this leg drives is the ONE gate-selftest built and proved itself against; no
       # Rust toolchain is needed here because $VOICE_CONFORM_BIN short-circuits conform-bin.sh's
       # build. The executable bit does not survive the artifact zip, so restore it.
@@ -199,6 +220,9 @@ jobs:
       VOICE_CONFORM_BIN: ${{ github.workspace }}/target/debug/voice-conform
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # workflow_run defaults to the default branch; pin to the CI run's tested commit (see on:).
+          ref: ${{ github.event.workflow_run.head_sha || github.ref }}
       # The harness this leg drives is the ONE gate-selftest built and proved itself against; no
       # Rust toolchain is needed here because $VOICE_CONFORM_BIN short-circuits conform-bin.sh's
       # build. The executable bit does not survive the artifact zip, so restore it.
@@ -231,6 +255,9 @@ jobs:
       VOICE_CONFORM_BIN: ${{ github.workspace }}/target/debug/voice-conform
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # workflow_run defaults to the default branch; pin to the CI run's tested commit (see on:).
+          ref: ${{ github.event.workflow_run.head_sha || github.ref }}
       # The harness this leg drives is the ONE gate-selftest built and proved itself against; no
       # Rust toolchain is needed here because $VOICE_CONFORM_BIN short-circuits conform-bin.sh's
       # build. The executable bit does not survive the artifact zip, so restore it.
@@ -263,6 +290,9 @@ jobs:
       VOICE_CONFORM_BIN: ${{ github.workspace }}/target/debug/voice-conform
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # workflow_run defaults to the default branch; pin to the CI run's tested commit (see on:).
+          ref: ${{ github.event.workflow_run.head_sha || github.ref }}
       # The harness this leg drives is the ONE gate-selftest built and proved itself against; no
       # Rust toolchain is needed here because $VOICE_CONFORM_BIN short-circuits conform-bin.sh's
       # build. The executable bit does not survive the artifact zip, so restore it.
@@ -298,6 +328,9 @@ jobs:
       VOICE_CONFORM_BIN: ${{ github.workspace }}/target/debug/voice-conform
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # workflow_run defaults to the default branch; pin to the CI run's tested commit (see on:).
+          ref: ${{ github.event.workflow_run.head_sha || github.ref }}
       # The harness this leg drives is the ONE gate-selftest built and proved itself against; no
       # Rust toolchain is needed here because $VOICE_CONFORM_BIN short-circuits conform-bin.sh's
       # build. The executable bit does not survive the artifact zip, so restore it.
@@ -340,6 +373,9 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # workflow_run defaults to the default branch; pin to the CI run's tested commit (see on:).
+          ref: ${{ github.event.workflow_run.head_sha || github.ref }}
       - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
       - name: Resolve cargo home (Latchkey image sets CARGO_HOME off $HOME)
         uses: ./.github/actions/cargo-home
@@ -396,6 +432,9 @@ jobs:
       VOICE_CONFORM_BIN: ${{ github.workspace }}/target/debug/voice-conform
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # workflow_run defaults to the default branch; pin to the CI run's tested commit (see on:).
+          ref: ${{ github.event.workflow_run.head_sha || github.ref }}
       # The harness this leg drives is the ONE gate-selftest built and proved itself against; no
       # Rust toolchain is needed here because $VOICE_CONFORM_BIN short-circuits conform-bin.sh's
       # build. The executable bit does not survive the artifact zip, so restore it.
@@ -426,7 +465,14 @@ jobs:
     # ceiling is the 10-minute floor of the `p95 x 1.5` rule ci.yml documents.
     # Unbounded, this job inherits the runner's six-hour default.
     timeout-minutes: 10
-    if: always()
+    # `!cancelled()` preserves the always-run-the-verdict property WITHIN a real run (a failing leg
+    # must still be judged), but the same CI/branch gate as the rest keeps it from running — and
+    # reporting every leg as skipped-is-red — on a non-qa CI completion.
+    if: >-
+      !cancelled() &&
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event.workflow_run.conclusion == 'success' &&
+        contains(fromJSON('["qa"]'), github.event.workflow_run.head_branch)))
     needs:
       - gate-selftest
       - spec-per-dialect

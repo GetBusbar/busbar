@@ -734,6 +734,10 @@ jobs:
         with:
           action: restore
           key: cargo-${{ runner.os }}-sbom-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
+          # Warm-start off the `gate` job's cache (same runner.os) when this job's exact key misses,
+          # instead of cold-compiling the whole dependency graph.
+          restore-keys: |
+            cargo-${{ runner.os }}-
           path: |
             ${{ env.CARGO_HOME }}/registry
             ${{ env.CARGO_HOME }}/git
@@ -783,6 +787,10 @@ jobs:
         with:
           action: restore
           key: cargo-${{ runner.os }}-openapi-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
+          # Warm-start off the `gate` job's cache (same runner.os) when this job's exact key misses,
+          # instead of cold-compiling the whole dependency graph.
+          restore-keys: |
+            cargo-${{ runner.os }}-
           path: |
             ${{ env.CARGO_HOME }}/registry
             ${{ env.CARGO_HOME }}/git

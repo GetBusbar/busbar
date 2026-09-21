@@ -1663,6 +1663,9 @@ jobs:
     if: github.event_name != 'push' || contains(fromJSON('["refs/heads/main", "refs/heads/dev", "refs/heads/qa"]'), github.ref)
     strategy:
       fail-fast: false
+      # Cap concurrent legs so a full-tier run does not monopolise the parked xlarge fleet.
+      # Leg contents and count are unchanged; this only serialises how many run at once.
+      max-parallel: 3
       matrix:
         include:
           - name: mcp removed (a2a kept)
@@ -1675,6 +1678,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
       - name: Resolve cargo home (Latchkey image sets CARGO_HOME off $HOME)
+        uses: ./.github/actions/cargo-home
         uses: ./.github/actions/cargo-home
       - name: Latchkey Fast Cache (cargo registry + target, restore)
         uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
@@ -1753,6 +1757,9 @@ jobs:
     if: github.event_name != 'push' || contains(fromJSON('["refs/heads/main", "refs/heads/dev", "refs/heads/qa"]'), github.ref)
     strategy:
       fail-fast: false
+      # Cap concurrent legs so a full-tier run does not bust the parked xlarge fleet.
+      # Leg contents and count are unchanged; this only serialises how many run at once.
+      max-parallel: 4
       matrix:
         include:
           # The six sets. `features` is passed verbatim to `--features`; `tests` is passed verbatim

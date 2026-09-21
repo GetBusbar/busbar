@@ -61,14 +61,22 @@ name: A2A conformance
 # cancelled control leg is RED there. That is the only required check.
 
 on:
-  push:
-    # QA-gate only (owner ruling, DECISIONS #78): conformance is an exhaustive promotion gate, not
-    # per-commit dev feedback — run it once at the qa boundary, not on every dev/integration push.
-    branches: ['qa']
+  # SERIALISED BEHIND CI (mirrors qa-gate.yml). This battery is an expensive promotion gate; there is
+  # no point spending it on a qa commit whose cheap compile (ci.yml) has not even gone green yet. So
+  # it runs on CI's COMPLETION rather than on the qa push directly, and the job `if:` on EVERY job
+  # below only lets it proceed when that CI run concluded `success` on `qa`. `workflow_run` loads THIS
+  # file from the default branch and checks out the default branch by default, so every checkout below
+  # pins `github.event.workflow_run.head_sha` to judge the commit CI actually tested, not main.
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
   workflow_dispatch:
 
 concurrency:
-  group: a2a-conformance-${{ github.ref }}
+  # Keyed on the TRIGGERING branch, not github.ref: for a workflow_run event github.ref is always the
+  # default branch, so every run (including the ones a dev/main CI completion spawns that then skip
+  # via the job `if:`) would otherwise share one group and cancel the real in-flight qa run.
+  group: a2a-conformance-${{ github.event.workflow_run.head_branch || github.ref }}
   cancel-in-progress: true
 
 env:
@@ -86,6 +94,13 @@ jobs:
   # ---------------------------------------------------------------- the battery's own machinery
   harness-selftest:
     name: harness selftest (before believing any verdict)
+    # CI/BRANCH GATE (mirrors qa-gate.yml). a2a's jobs are independent roots — none `needs` a single
+    # gate job — so the gate is repeated on EVERY job rather than cascaded from one. A manual
+    # workflow_dispatch always proceeds; a non-qa CI completion skips every job.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       contains(fromJSON('["qa"]'), github.event.workflow_run.head_branch))
     runs-on: latchkey-small
     # BOUNDED. Measured p95 0.3 min over the last 9 runs of this job; the
     # ceiling is the 10-minute floor of the `p95 x 1.5` rule ci.yml documents.
@@ -93,6 +108,9 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # workflow_run defaults to the default branch; pin to the CI run's tested commit (see on:).
+          ref: ${{ github.event.workflow_run.head_sha || github.ref }}
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with: { python-version: '3.12' }
       - name: The battery's own guards, each made to fail
@@ -129,6 +147,11 @@ jobs:
   # -------------------------------------------------------- instrument 1: the independent battery
   control-a2a-go:
     name: control a2a-go (${{ matrix.binding }})
+    # CI/branch gate — see harness-selftest. Skips on a non-qa CI completion.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       contains(fromJSON('["qa"]'), github.event.workflow_run.head_branch))
     runs-on: latchkey-small
     # BOUNDED. Measured p95 1.7 min over the last 9 runs of this job; the
     # ceiling is the 10-minute floor of the `p95 x 1.5` rule ci.yml documents.
@@ -146,6 +169,9 @@ jobs:
             baseline: control-a2a-go-jsonrpc.json
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # workflow_run defaults to the default branch; pin to the CI run's tested commit (see on:).
+          ref: ${{ github.event.workflow_run.head_sha || github.ref }}
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with: { python-version: '3.12' }
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
@@ -189,6 +215,11 @@ jobs:
 
   control-a2a-python:
     name: control a2a-python (the second, independent oracle)
+    # CI/branch gate — see harness-selftest. Skips on a non-qa CI completion.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       contains(fromJSON('["qa"]'), github.event.workflow_run.head_branch))
     runs-on: latchkey-small
     # A HANG IS A FAILURE, AND IT MUST LOOK LIKE ONE WITHIN MINUTES. The battery has no overall
     # deadline of its own: if a launched control never becomes ready, `--launch` waits, and the job
@@ -198,6 +229,9 @@ jobs:
     timeout-minutes: 12
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # workflow_run defaults to the default branch; pin to the CI run's tested commit (see on:).
+          ref: ${{ github.event.workflow_run.head_sha || github.ref }}
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with: { python-version: '3.12' }
       - name: Install the pinned control
@@ -262,6 +296,11 @@ jobs:
 
   negative-control:
     name: negative control (a broken peer MUST be red)
+    # CI/branch gate — see harness-selftest. Skips on a non-qa CI completion.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       contains(fromJSON('["qa"]'), github.event.workflow_run.head_branch))
     runs-on: latchkey-small
     # BOUNDED. Measured p95 0.6 min over the last 9 runs of this job; the
     # ceiling is the 10-minute floor of the `p95 x 1.5` rule ci.yml documents.
@@ -269,6 +308,9 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # workflow_run defaults to the default branch; pin to the CI run's tested commit (see on:).
+          ref: ${{ github.event.workflow_run.head_sha || github.ref }}
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with: { python-version: '3.12' }
       # A NEGATIVE CONTROL PROVES DISCRIMINATION, NOT MERELY DISPLEASURE.
@@ -412,6 +454,11 @@ jobs:
 
   swap-proof:
     name: swap proof (six states the gate must tell apart)
+    # CI/branch gate — see harness-selftest. Skips on a non-qa CI completion.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       contains(fromJSON('["qa"]'), github.event.workflow_run.head_branch))
     runs-on: latchkey-small
     # BOUNDED. Measured p95 2.3 min over the last 9 runs of this job; the
     # ceiling is the 10-minute floor of the `p95 x 1.5` rule ci.yml documents.
@@ -419,6 +466,9 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # workflow_run defaults to the default branch; pin to the CI run's tested commit (see on:).
+          ref: ${{ github.event.workflow_run.head_sha || github.ref }}
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with: { python-version: '3.12' }
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
@@ -435,6 +485,11 @@ jobs:
 
   tz-is-load-bearing:
     name: the timezone pin still changes the answer
+    # CI/branch gate — see harness-selftest. Skips on a non-qa CI completion.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       contains(fromJSON('["qa"]'), github.event.workflow_run.head_branch))
     runs-on: latchkey-small
     # BOUNDED. Measured p95 1.7 min over the last 9 runs of this job; the
     # ceiling is the 10-minute floor of the `p95 x 1.5` rule ci.yml documents.
@@ -442,6 +497,9 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # workflow_run defaults to the default branch; pin to the CI run's tested commit (see on:).
+          ref: ${{ github.event.workflow_run.head_sha || github.ref }}
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with: { python-version: '3.12' }
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
@@ -455,6 +513,11 @@ jobs:
   # ------------------------------------------------------------------- instrument 2: official TCK
   tck-control:
     name: official TCK vs control (${{ matrix.leg }})
+    # CI/branch gate — see harness-selftest. Skips on a non-qa CI completion.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       contains(fromJSON('["qa"]'), github.event.workflow_run.head_branch))
     runs-on: latchkey-small
     # BOUNDED. Measured p95 0.9 min over the last 9 runs of this job; the
     # ceiling is the 10-minute floor of the `p95 x 1.5` rule ci.yml documents.
@@ -466,6 +529,9 @@ jobs:
         leg: [control-http-json, control-jsonrpc]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # workflow_run defaults to the default branch; pin to the CI run's tested commit (see on:).
+          ref: ${{ github.event.workflow_run.head_sha || github.ref }}
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with: { python-version: '3.12' }
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
@@ -483,6 +549,11 @@ jobs:
   # --------------------------------------------------------------- the governance tier, separate
   governance-probe:
     name: governance probe (NOT a conformance result)
+    # CI/branch gate — see harness-selftest. Skips on a non-qa CI completion.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       contains(fromJSON('["qa"]'), github.event.workflow_run.head_branch))
     runs-on: latchkey-small
     # BOUNDED. Measured p95 0.7 min over the last 9 runs of this job; the
     # ceiling is the 10-minute floor of the `p95 x 1.5` rule ci.yml documents.
@@ -490,6 +561,9 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # workflow_run defaults to the default branch; pin to the CI run's tested commit (see on:).
+          ref: ${{ github.event.workflow_run.head_sha || github.ref }}
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with: { python-version: '3.12' }
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
@@ -533,6 +607,11 @@ jobs:
   # ------------------------------------------------------------------------------ the subject
   subject:
     name: subject (busbar, built from this commit — ARMED OR RED)
+    # CI/branch gate — see harness-selftest. Skips on a non-qa CI completion.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       contains(fromJSON('["qa"]'), github.event.workflow_run.head_branch))
     runs-on: latchkey-xlarge
     timeout-minutes: 45
     # PUBLISHED, not inferred. A job whose steps all skip still reports `success`, so the
@@ -544,6 +623,9 @@ jobs:
       armed: ${{ steps.arm.outputs.armed }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # workflow_run defaults to the default branch; pin to the CI run's tested commit (see on:).
+          ref: ${{ github.event.workflow_run.head_sha || github.ref }}
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with: { python-version: '3.12' }
       # Node is the credential shim and the token minter, both shared with the MCP subject leg.
@@ -673,7 +755,14 @@ jobs:
     # ceiling is the 10-minute floor of the `p95 x 1.5` rule ci.yml documents.
     # Unbounded, this job inherits the runner's six-hour default.
     timeout-minutes: 10
-    if: always()
+    # `!cancelled()` preserves the always-run-the-verdict property WITHIN a real run (a failing leg
+    # must still be judged), but the same CI/branch gate as the rest keeps it from running — and
+    # reporting every leg as skipped-is-red — on a non-qa CI completion.
+    if: >-
+      !cancelled() &&
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event.workflow_run.conclusion == 'success' &&
+        contains(fromJSON('["qa"]'), github.event.workflow_run.head_branch)))
     needs:
       - harness-selftest
       - control-a2a-go

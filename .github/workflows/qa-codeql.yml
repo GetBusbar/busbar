@@ -33,8 +33,14 @@
 name: CodeQL
 
 on:
-  push:
-    branches: [qa]
+  # Runs on CI's COMPLETION rather than on the qa push directly (mirrors qa-gate.yml): a whole-
+  # workspace CodeQL database build should not start until the cheap compile is green. The job `if:`
+  # below only proceeds when that CI run concluded `success` on `qa`. `workflow_run` checks out the
+  # default branch by default, so the checkout pins the CI run's head sha to analyse the tested
+  # commit, not main.
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
   workflow_dispatch: {}
 
 # Read-only by default; the one job that needs to WRITE anything says so itself and says exactly
@@ -46,7 +52,10 @@ permissions:
 # A second push to qa supersedes the first: the analysis is a statement about the tip, and an
 # in-flight run against a commit that has already been superseded is spend with no consumer.
 concurrency:
-  group: codeql-${{ github.ref }}
+  # Keyed on the TRIGGERING branch, not github.ref: for a workflow_run event github.ref is always the
+  # default branch, so every run (including non-qa completions that then skip via the job `if:`) would
+  # otherwise share one group and cancel the real in-flight qa analysis.
+  group: codeql-${{ github.event.workflow_run.head_branch || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -54,6 +63,11 @@ jobs:
   # .github/required-status-checks.md under the qa full tier.
   analyze:
     name: CodeQL (rust)
+    # Run after a qa CI run went green, or on manual dispatch. A non-qa CI completion skips.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       contains(fromJSON('["qa"]'), github.event.workflow_run.head_branch))
     runs-on: latchkey-xlarge
     # A hang is a failure. The database build plus query run is single-digit-to-low-double-digit
     # minutes on this workspace; 90 is real headroom over that without letting a wedged extractor
@@ -67,6 +81,9 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # workflow_run defaults to the default branch; pin to the CI run's tested commit (see on:).
+          ref: ${{ github.event.workflow_run.head_sha || github.ref }}
 
       # rust-toolchain.toml pins 1.98.0 and rustup honours it for every cargo invocation in this
       # repo, INCLUDING the ones CodeQL's extractor makes to resolve the workspace. Installing it

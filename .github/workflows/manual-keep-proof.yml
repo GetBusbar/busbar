@@ -186,6 +186,9 @@ jobs:
       # A red shard must not cancel the others: the harvester wants the whole picture of the
       # hand-back in one pass, not the first failure and four unknowns.
       fail-fast: false
+      # Cap concurrent shards so this manual run does not monopolise the parked xlarge fleet.
+      # Shard set is unchanged; this only bounds how many run at once.
+      max-parallel: 4
       matrix:
         shard: [1, 2, 3, 4, xtask]
     # The live-DB roundtrip tests read these URLs and HARD-FAIL rather than skip when `CI` is set, so

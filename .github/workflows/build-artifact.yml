@@ -89,6 +89,25 @@ jobs:
         with:
           targets: ${{ inputs.triple }}
 
+      - name: Resolve cargo home (Latchkey image sets CARGO_HOME off $HOME)
+        uses: ./.github/actions/cargo-home
+
+      # REGISTRY + GIT ONLY, NEVER `target/`. This job's build is scripts/release-build.sh's PGO
+      # build, and target/ carries the PGO proof markers verify-artifact.py binds to the shipped
+      # bytes; a restored target/ could seed a stale marker, so it is deliberately excluded. Caching
+      # the downloaded dependency crates (registry) and any git dependencies is safe -- they are pure
+      # inputs -- and saves the per-target crate re-download on every release build.
+      - name: Latchkey Fast Cache (cargo registry + git, restore)
+        uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
+        with:
+          action: restore
+          key: cargo-${{ runner.os }}-build-artifact-${{ inputs.target }}-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-
+          path: |
+            ${{ env.CARGO_HOME }}/registry
+            ${{ env.CARGO_HOME }}/git
+
       # THE BUILD. One step, one script, one env block, five targets.
       #
       # BUSBAR_RELEASE_PUBKEY is a repository/org VARIABLE, not a secret -- it is the PUBLIC half of
@@ -106,6 +125,15 @@ jobs:
         env:
           BUSBAR_RELEASE_PUBKEY: ${{ vars.BUSBAR_RELEASE_PUBKEY }}
         run: scripts/release-build.sh "${{ inputs.target }}" --evidence-dir build-evidence
+
+      - name: Latchkey Fast Cache (cargo registry + git, save)
+        uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
+        with:
+          action: save
+          key: cargo-${{ runner.os }}-build-artifact-${{ inputs.target }}-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
+          path: |
+            ${{ env.CARGO_HOME }}/registry
+            ${{ env.CARGO_HOME }}/git
 
       # Upload to the DRAFT by tag. Under this release order there is no git tag yet -- the tag is an
       # output of a verified run -- so the asset is placed on the draft explicitly rather than by a
