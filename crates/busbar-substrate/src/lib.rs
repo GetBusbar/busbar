@@ -207,9 +207,11 @@ pub mod config;
 // historical `busbar_core::hooks::` paths; the reply-side normalizers stay core-side.
 pub mod hooks;
 
-// THE TELLER: the one governed request loop every plane rides — the sealed step markers, the
-// token-sealed capability types, the per-step plane trait and the single `run_unit` loop.
-pub mod teller;
+// THE SUBSTRATE TELLER IS GONE (W2.b, DECISIONS #28). The one governed request loop every plane rode
+// was UNIFIED onto `busbar_kernel::teller` — every plane now rides the kernel loop via a runner
+// registered on the `plane_host` host-selection seam. The old per-plane substrate loop
+// (`src/teller/`, ~973 prod LOC) was redundant and is deleted; its neutral seat (`GauntletAdapter`)
+// went with it, replaced by the byte-identical inline fallback in `plane_host::run_gauntlet[_session]`.
 
 // THE NEUTRAL TEST-APP SEAM the plane test-kits drive the engine's test fixture through, so a plane
 // crate builds/reaches the test App without naming `busbar_core::state::App`/`test_support::TestApp`.

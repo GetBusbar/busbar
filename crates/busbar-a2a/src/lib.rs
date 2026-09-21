@@ -55,6 +55,12 @@ pub use busbar_a2a_codec::record;
 /// resolve. The neutral crates name neither.
 pub use busbar_a2a_codec::{TaskEventRow, TaskRow};
 
+/// A2A'S PLANE CAPABILITY KEY (`"a2a"`) — the string the composition root flips onto the unified
+/// kernel loop and the same string the A2A invoke plane reports from its
+/// `GauntletPlane::capability_key`. Re-exported at the crate root so the `busbar` binary names ONE
+/// stable path (`busbar_a2a::PLANE_KEY`) and the plane and the flip cannot drift onto two literals.
+pub use busbar_a2a_codec::PLANE_KEY;
+
 /// THE A2A PLANE'S TEST-KIT (feature `test-support` only): the fixture builders that name A2A plane
 /// types, kept on the plane so busbar-core's neutral `test_support::TestApp` names none of them. This
 /// is the seam that lets core drop the `#[path]` dual-compile of `src/a2a` for its own tests.

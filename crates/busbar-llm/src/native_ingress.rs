@@ -549,6 +549,16 @@ impl busbar_substrate::plane_host::GauntletPlane for NativePlane<'_> {
             charged,
         )
     }
+
+    /// THE LLM NATIVE PLANE'S CAPABILITY KEY on the composition-tier host-selection seam (loop
+    /// unification, #28). The plane DECLARES its identity here; the LOOP CHOICE is the composition
+    /// root's — it registers a kernel-loop runner under this same key ([`crate::PLANE_KEY`]) or leaves
+    /// it UNSET. With W2.b the root flips `llm` on, so this reported key routes native ingress through
+    /// the unified kernel loop; the `drive` above is byte-identical either way, so declaring the key is
+    /// safe with or without the flip.
+    fn capability_key(&self) -> Option<&str> {
+        Some(crate::PLANE_KEY)
+    }
 }
 #[allow(clippy::too_many_arguments)]
 pub async fn run(

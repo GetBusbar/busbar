@@ -48,13 +48,25 @@ pub fn flip_session_to_kernel(capability_key: &'static str) {
 /// Install the kernel-backed runners into the host-selection seam. Called once by `main.rs` at boot,
 /// AFTER the planes are registered (mirror of `busbar_admin::install()`).
 ///
-/// W2.a — MCP is FLIPPED onto the unified kernel loop (the first path-swap, DECISIONS #28/#29). The
-/// MCP `tools/call` plane reports its capability key (`busbar_mcp::PLANE_KEY`) and this registers the
-/// kernel-loop runner under it, so the SHIPPED MCP serving path now flows through
-/// `busbar_kernel::teller::run_unit` — proven byte-identical (oracle, #29). Every OTHER plane still
-/// rides the substrate loop until its own oracle-gated one-liner lands here (W2.b: a2a/streaming/llm;
-/// sessions via `flip_session_to_kernel`).
+/// W2.b — EVERY plane is FLIPPED onto the unified kernel loop (DECISIONS #28/#29). Each plane reports
+/// its capability key and this registers the kernel-loop runner under it, so the SHIPPED serving path
+/// for all four flows through `busbar_kernel::teller::run_unit[_async]` / `open_unit` — proven
+/// byte-identical (the shadow-compare rider tests + the fleet-box oracle, #29). With every plane
+/// flipped, the redundant substrate teller loop was DELETED: an unregistered plane now fails closed
+/// in `run_gauntlet[_session]` rather than riding a second loop.
+///
+/// - MCP (W2.a) + A2A + LLM native are ONE-SHOT planes → [`flip_one_shot_to_kernel`].
+/// - Voice/streaming is a SESSION plane (open-pass admit, no one-shot `drive`) → [`flip_session_to_kernel`].
+///
+/// Each flip is gated on the SAME `cfg` feature that pulls its plane crate, so a build that omits a
+/// plane also omits its flip (and that plane's `GauntletPlane` never runs).
 pub fn install() {
     #[cfg(feature = "plane-mcp")]
     flip_one_shot_to_kernel(busbar_mcp::PLANE_KEY);
+    #[cfg(feature = "plane-a2a")]
+    flip_one_shot_to_kernel(busbar_a2a::PLANE_KEY);
+    #[cfg(feature = "proto-llm")]
+    flip_one_shot_to_kernel(busbar_llm::PLANE_KEY);
+    #[cfg(feature = "plane-voice")]
+    flip_session_to_kernel(busbar_voice::PLANE_KEY);
 }

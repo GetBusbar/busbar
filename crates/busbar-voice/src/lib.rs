@@ -153,6 +153,12 @@ const VOICE_START: Option<busbar_substrate::plane::registry::BootHook> = Some(mo
 #[cfg(not(feature = "runtime"))]
 const VOICE_START: Option<busbar_substrate::plane::registry::BootHook> = None;
 
+/// THE VOICE (STREAMING) PLANE'S CAPABILITY KEY (`"voice"`) — the string the composition root flips
+/// onto the unified kernel loop's SESSION admit and the same string the voice session gauntlet reports
+/// from its `GauntletPlane::capability_key`. Re-exported at the crate root so the `busbar` binary names
+/// ONE stable path (`busbar_voice::PLANE_KEY`) and the plane and the flip cannot drift onto two.
+pub use busbar_voice_codec::PLANE_KEY;
+
 /// THE DIALECT NAME this plane speaks first — OpenAI's bidirectional Realtime voice API. Named once
 /// here; it is the [`DECLS`] registry key and the FIRST of the plane's [`PLANE_DECL`] wire formats.
 pub const OPENAI_REALTIME: &str = "openai_realtime";

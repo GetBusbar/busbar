@@ -129,6 +129,16 @@ pub fn write_error_envelope(
 /// The member the anthropic error envelope carries its minted identifier under.
 const ANTHROPIC_REQUEST_ID_MEMBER: &str = "request_id";
 
+/// THE REGISTRY KEY THE LLM PLANE IS KNOWN BY — the string the composition root flips onto the
+/// unified kernel loop ([`busbar_substrate::plane_host::register_gauntlet_runner`]) and the same
+/// string the LLM native plane reports from its `GauntletPlane::capability_key`.
+///
+/// Named ONCE, here, on the pure side of the split, because the plane's `capability_key` and the
+/// composition-root FLIP must reference the SAME literal or a swap could drift onto two. It agrees
+/// with `busbar-llm`'s `PLANE_DECL.key` (`"llm"`, the fallback plane's identity). `busbar-llm`
+/// re-exports it as `busbar_llm::PLANE_KEY`, the one stable path the `busbar` binary names.
+pub const PLANE_KEY: &str = "llm";
+
 /// PUBLISH THIS PLUGIN'S DIALECT DECLARATIONS into the SHARED substrate test registry, ONCE — the
 /// lazy, self-installing counterpart of the composition root's `install_protocols`, for the test
 /// surface where no `main` runs a composition root.

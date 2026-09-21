@@ -322,7 +322,7 @@ pub trait GauntletPlane: Send + Sync {
     }
 }
 
-/// The successful OPEN-PASS ADMISSION result of [`admit_open`] — the request cleared the verify-before-
+/// The successful OPEN-PASS ADMISSION result of the session gate in [`run_gauntlet_session`] — the request cleared the verify-before-
 /// charge gate. Carries the per-request `correlation_id` so a SESSION opener ([`run_gauntlet_session`])
 /// can join its own later durable/audit rows on it. A one-shot [`run_gauntlet`] discards it and proceeds
 /// straight to `drive`; a session opener returns it to the plane, which then reserves/binds/opens its
@@ -334,189 +334,12 @@ pub struct Admitted {
     pub correlation_id: u64,
 }
 
-/// The gauntlet's seat on the Teller loop: a [`GauntletPlane`] expressed as a [`TellerPlane`]
-/// (`crate::teller`), so the older two-stage sequence rides the ONE loop without changing what any
-/// plane sees. Verify is the plane's `verify_destination`; Route is the plane's `drive`; every other
-/// step proceeds with nothing to add (the plane's own admission, routing, metering and finish all
-/// still live inside `drive`, byte-identical). The hold Admit opens here is empty (no grant, not
-/// charged) because the door itself is still inside `drive` for these planes.
-///
-/// `drive` consumes its box, so the plane sits in an `Option` that Route takes; `verify_destination`
-/// borrows it before that.
-struct GauntletAdapter<'p> {
-    plane: Option<Box<dyn GauntletPlane + 'p>>,
-}
-
-impl GauntletAdapter<'_> {
-    /// The older per-request facts, rebuilt field-for-field from the unit the loop threads.
-    fn request<'u>(unit: &'u crate::teller::Unit<'u>) -> GauntletRequest<'u> {
-        GauntletRequest {
-            gov: unit.gov,
-            destination: unit.destination,
-            correlation_id: unit.correlation(),
-            charged_at: unit.charged_at,
-            started: unit.started,
-        }
-    }
-
-    /// The response for a plane that was already consumed — unreachable by construction (the loop
-    /// runs Verify before Route and Route at most once), kept so the adapter never panics.
-    fn plane_spent() -> axum::response::Response {
-        axum::response::Response::builder()
-            .status(axum::http::StatusCode::INTERNAL_SERVER_ERROR)
-            .body(axum::body::Body::empty())
-            .unwrap_or_default()
-    }
-}
-
-#[async_trait::async_trait]
-impl crate::teller::TellerPlane for GauntletAdapter<'_> {
-    fn arrival(
-        &mut self,
-        token: &crate::teller::UnitToken<crate::teller::Arrival>,
-        _unit: &crate::teller::Unit<'_>,
-    ) -> crate::teller::Decision<crate::teller::Arrival> {
-        token.proceed(())
-    }
-
-    fn decode(
-        &mut self,
-        token: &crate::teller::UnitToken<crate::teller::Decode>,
-        _unit: &crate::teller::Unit<'_>,
-    ) -> crate::teller::Decision<crate::teller::Decode> {
-        token.proceed(())
-    }
-
-    fn authenticate(
-        &mut self,
-        token: &crate::teller::UnitToken<crate::teller::Authenticate>,
-        unit: &crate::teller::Unit<'_>,
-    ) -> crate::teller::Decision<crate::teller::Authenticate> {
-        token.proceed(crate::teller::Principal {
-            key: unit.gov.key.clone(),
-        })
-    }
-
-    fn verify(
-        &mut self,
-        token: &crate::teller::UnitToken<crate::teller::Verify>,
-        unit: &crate::teller::Unit<'_>,
-        _principal: &crate::teller::Principal,
-    ) -> crate::teller::Decision<crate::teller::Verify> {
-        let Some(plane) = self.plane.as_deref() else {
-            return token.refuse(Self::plane_spent());
-        };
-        match plane.verify_destination(&Self::request(unit)) {
-            VerifyOutcome::Proceed => token.proceed(()),
-            VerifyOutcome::Refuse(resp) => token.refuse(resp),
-        }
-    }
-
-    fn approve(
-        &mut self,
-        token: &crate::teller::UnitToken<crate::teller::Approve>,
-        _unit: &crate::teller::Unit<'_>,
-        _principal: &crate::teller::Principal,
-    ) -> crate::teller::Decision<crate::teller::Approve> {
-        token.proceed(())
-    }
-
-    fn admit(
-        &mut self,
-        token: &crate::teller::UnitToken<crate::teller::Admit>,
-        _unit: &crate::teller::Unit<'_>,
-        _principal: &crate::teller::Principal,
-    ) -> crate::teller::Decision<crate::teller::Admit> {
-        token.proceed(token.hold(None, None, false))
-    }
-
-    async fn route(
-        &mut self,
-        token: &crate::teller::UnitToken<crate::teller::Route>,
-        unit: &crate::teller::Unit<'_>,
-        _hold: &crate::teller::Hold,
-    ) -> crate::teller::Decision<crate::teller::Route> {
-        let Some(plane) = self.plane.take() else {
-            return token.refuse(Self::plane_spent());
-        };
-        token.proceed(plane.drive(Self::request(unit)).await)
-    }
-
-    async fn meter(
-        &mut self,
-        token: &crate::teller::UnitToken<crate::teller::Meter>,
-        _unit: &crate::teller::Unit<'_>,
-        _hold: &crate::teller::Hold,
-        resp: axum::response::Response,
-    ) -> crate::teller::Decision<crate::teller::Meter> {
-        token.proceed(crate::teller::Metered {
-            status: resp.status().as_u16(),
-            resp,
-        })
-    }
-
-    fn audit(
-        &mut self,
-        token: &crate::teller::UnitToken<crate::teller::Audit>,
-        _unit: &crate::teller::Unit<'_>,
-        hold: crate::teller::Hold,
-        closing: crate::teller::Closing,
-    ) -> crate::teller::Decision<crate::teller::Audit> {
-        // The plane's own finish already ran inside `drive`; the empty hold has nothing to close.
-        let (_admit, _downgraded, _charged) = hold.into_parts();
-        token.proceed(closing.resp)
-    }
-
-    fn audit_refused(
-        &mut self,
-        token: &crate::teller::UnitToken<crate::teller::Audit>,
-        _unit: &crate::teller::Unit<'_>,
-        refusal: crate::teller::Refusal,
-    ) -> crate::teller::Decision<crate::teller::Audit> {
-        // The plane already finished its refusal (metrics/webhook emitted plane-side); return it verbatim.
-        token.proceed(refusal.into_response())
-    }
-
-    fn posted(&mut self, _unit: &crate::teller::Unit<'_>, _posted: crate::teller::Posted) {}
-}
-
-/// The Teller unit for one gauntlet request: the same facts, field for field.
-fn gauntlet_unit<'a>(req: &GauntletRequest<'a>) -> crate::teller::Unit<'a> {
-    crate::teller::Unit::new(req.gov, req.destination, req.charged_at, req.started)
-        .with_correlation(req.correlation_id)
-}
-
-/// THE ONE OPEN-PASS ADMISSION GATE both gauntlet siblings share — the Teller loop's steps up to and
-/// including the door ([`crate::teller::open_unit`] over the [`GauntletAdapter`]), which puts the
-/// plane's `verify_destination` in its verify-STRICTLY-before-charge position, so NOTHING may reject
-/// an already-charged request. Returns [`Admitted`] on a pass, or the plane's OWN finished,
-/// protocol-native refusal (returned verbatim so refusal shaping stays byte-identical to the plane's
-/// in-place rejection). The plane's OWN govern/breaker/charge stay inside its `drive`
-/// ([`run_gauntlet`]) or its post-admit reserve/bind/open (the session) — this gate owns only the
-/// ORDER.
-///
-/// (`result_large_err`: the `Err` is the plane's OWN finished refusal `Response`, carried BY VALUE so
-/// refusal shaping stays byte-identical to [`run_gauntlet`]'s verbatim return — the same type that path
-/// returns un-boxed. Boxing it here to shrink the cold refuse path would diverge the two siblings.)
-#[allow(clippy::result_large_err)]
-fn admit_open(
-    req: &GauntletRequest<'_>,
-    plane: Box<dyn GauntletPlane + '_>,
-) -> Result<Admitted, axum::response::Response> {
-    let unit = gauntlet_unit(req);
-    let mut adapter = GauntletAdapter { plane: Some(plane) };
-    match crate::teller::open_unit(&mut adapter, &unit) {
-        // The adapter's hold is empty (the door is still inside `drive` for these planes); the
-        // session plane closes its own admission later, as before.
-        Ok(hold) => {
-            let (_admit, _downgraded, _charged) = hold.into_parts();
-            Ok(Admitted {
-                correlation_id: unit.correlation(),
-            })
-        }
-        Err(resp) => Err(resp),
-    }
-}
+// THE SUBSTRATE TELLER LOOP IS GONE (W2.b, DECISIONS #28). The gauntlet's old seat on that loop — the
+// `GauntletAdapter` (a pass-through `TellerPlane`), `gauntlet_unit`, and the `admit_open` open-pass gate —
+// was deleted with `busbar-substrate/src/teller/`. Every shipped plane now rides the UNIFIED
+// `busbar_kernel::teller` loop via a registered runner on the host-selection seam below; the fallback for
+// an unregistered/test plane is the inline verify-then-drive in `run_gauntlet[_session]`, byte-identical
+// to what that adapter loop produced (it wrapped nothing).
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 // THE COMPOSITION-TIER HOST-SELECTION SEAM (loop unification, DECISIONS #28).
@@ -578,6 +401,15 @@ pub fn gauntlet_runner_registered(key: &str) -> bool {
     one_shot_runner(key).is_some()
 }
 
+/// Whether a SESSION kernel-loop runner is registered for this capability key — i.e. whether that
+/// session plane (voice/streaming) has been FLIPPED onto the unified kernel loop's session admit. The
+/// read-side twin of [`register_session_runner`], for a composition-root boot assertion or a per-plane
+/// cutover regression test. NEUTRAL: a bare `&str` lookup that names no plane.
+#[must_use]
+pub fn session_runner_registered(key: &str) -> bool {
+    session_runner(key).is_some()
+}
+
 fn one_shot_runner(key: &str) -> Option<GauntletRunner> {
     ONE_SHOT_RUNNERS
         .read()
@@ -596,9 +428,10 @@ fn session_runner(key: &str) -> Option<SessionRunner> {
 
 /// THE SHARED GAUNTLET SEQUENCE — the ONE request path every protocol plane rides. It consults the
 /// host-selection seam first: a plane whose capability key has a kernel-loop runner registered rides
-/// the UNIFIED kernel loop; every other plane (the default) rides the substrate Teller loop
-/// ([`crate::teller::run_unit`]) over the [`GauntletAdapter`], byte-identical to the shipped release.
-/// Stage 1 identity is already resolved (threaded via `req.gov`); the loop runs the plane's
+/// the UNIFIED `busbar_kernel::teller` loop; every other plane (a not-yet-flipped or test plane) runs
+/// the inline verify-then-`drive` fallback below, byte-identical to the deleted substrate Teller loop
+/// this seam used to ride (that loop wrapped nothing — see the fallback comment).
+/// Stage 1 identity is already resolved (threaded via `req.gov`); the path runs the plane's
 /// `verify_destination` at Verify, in the correct PRE-ADMISSION position, and only if it proceeds the
 /// plane's `drive` at Route (its own byte-identical engine + metering). Returns the plane's (possibly
 /// streaming) response verbatim. The plane owns admission/route/metering/finish; the loop owns solely
@@ -611,17 +444,28 @@ pub async fn run_gauntlet(
     if let Some(runner) = selected {
         return runner(req, plane).await;
     }
-    let unit = gauntlet_unit(&req);
-    crate::teller::run_unit(GauntletAdapter { plane: Some(plane) }, unit).await
+    // NO kernel-loop runner registered for this key. With W2.b every shipped plane is flipped onto the
+    // unified kernel loop, so this arm is the DEFAULT only for a plane not (yet) flipped or a test
+    // plane. It runs the plane's OWN two-stage sequence inline — verify STRICTLY before drive — which
+    // is BYTE-IDENTICAL to the (now-deleted) substrate Teller loop the gauntlet used to ride: that loop
+    // proceeded every step, opened an empty hold, settled nothing, and returned the plane's `drive`
+    // response (or its own pre-charge refusal) verbatim. The loop wrapped nothing, so inlining it
+    // removes only the redundant loop, not any behaviour (the kernel-vs-substrate shadow-compare proved
+    // the two produced identical bytes before the substrate loop was removed).
+    match plane.verify_destination(&req) {
+        VerifyOutcome::Refuse(resp) => resp,
+        VerifyOutcome::Proceed => plane.drive(req).await,
+    }
 }
 
 /// THE SESSION SIBLING of [`run_gauntlet`] — the OPEN-PASS admission for a live, session-oriented plane
-/// (voice/duplex) that has no one-shot `drive`-shaped Response to return. It runs the SAME shared
-/// [`admit_open`] gate (verify STRICTLY before any charge) and returns the [`Admitted`] result instead of
+/// (voice/duplex) that has no one-shot `drive`-shaped Response to return. It runs the SAME
+/// verify-STRICTLY-before-charge gate (a registered kernel-loop session runner, else the inline
+/// fallback) and returns the [`Admitted`] result instead of
 /// driving a request: the plane's own reserve/bind/open + socket bind proceed only on `Ok`, so a `Refuse`
 /// costs ZERO bytes and ZERO charge (nothing opened before the gate cleared). Distinct from
-/// [`run_gauntlet`] (one Response) but a TRUE sibling — they share `admit_open`, so a refactor can neither
-/// inline nor foreclose this opener, and both enforce the one verify-before-charge order.
+/// [`run_gauntlet`] (one Response) but a TRUE sibling — they share the one verify-before-charge gate, so
+/// a refactor can neither inline nor foreclose this opener, and both enforce that one order.
 ///
 /// Synchronous: the admission gate is `verify_destination` (sync), so a session opener (a sync
 /// `begin_session`) calls this directly — there is no async `drive` leg on the session path.
@@ -638,7 +482,18 @@ pub fn run_gauntlet_session(
     if let Some(runner) = selected {
         return runner(req, plane);
     }
-    admit_open(&req, plane)
+    // NO kernel-loop session runner registered for this key — the inline open-pass admit, BYTE-IDENTICAL
+    // to the (now-deleted) substrate `admit_open`: it ran the SAME verify-STRICTLY-before-charge gate
+    // through the substrate Teller's `open_unit` over a pass-through adapter that opened an empty hold
+    // and settled nothing, returning `Admitted` (the request's own correlation) on a pass or the plane's
+    // OWN finished refusal verbatim. Inlining removes only the redundant loop: on `Refuse` NOTHING is
+    // opened (zero bytes, zero charge); on `Proceed` the caller opens its own carrier next.
+    match plane.verify_destination(&req) {
+        VerifyOutcome::Refuse(resp) => Err(resp),
+        VerifyOutcome::Proceed => Ok(Admitted {
+            correlation_id: req.correlation_id,
+        }),
+    }
 }
 
 /// The `plane_slots` companion key under which a plane's ALWAYS-PRESENT per-generation runtime object

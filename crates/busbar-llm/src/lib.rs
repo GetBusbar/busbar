@@ -119,6 +119,12 @@ pub use busbar_llm_codec::{
     usage_tail, wire_shim, DECLS,
 };
 
+/// THE LLM PLANE'S CAPABILITY KEY (`"llm"`) — the string the composition root flips onto the unified
+/// kernel loop and the same string the LLM native plane reports from its
+/// `GauntletPlane::capability_key`. Re-exported at the crate root so the `busbar` binary names ONE
+/// stable path (`busbar_llm::PLANE_KEY`) and the plane and the flip cannot drift onto two literals.
+pub use busbar_llm_codec::PLANE_KEY;
+
 /// THE RELOCATED LLM MONEY-PATH ENGINE (1.6.0 money-path Phase 3-4 C). Routing tables, egress
 /// pipeline, health probe loop and native fallback plane — see [`engine`].
 pub mod engine;

@@ -259,6 +259,16 @@ impl GauntletPlane for SessionGauntlet {
             ))
             .expect("static fault response builds")
     }
+
+    /// THE VOICE (STREAMING) PLANE'S CAPABILITY KEY on the composition-tier host-selection seam (loop
+    /// unification, #28). The plane DECLARES its identity here; the LOOP CHOICE is the composition
+    /// root's — it registers a kernel-loop SESSION runner under this same key ([`crate::PLANE_KEY`]) or
+    /// leaves it UNSET. With W2.b the root flips `voice` on, so this reported key routes the session
+    /// open-pass admit through the unified kernel loop; the admit gate is byte-identical either way, so
+    /// declaring the key is safe with or without the flip.
+    fn capability_key(&self) -> Option<&str> {
+        Some(crate::PLANE_KEY)
+    }
 }
 
 /// BEGIN a governed session, common to both topologies: open the D2 metering lease (fail-closed on a
