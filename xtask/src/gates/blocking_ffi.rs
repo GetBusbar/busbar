@@ -66,7 +66,10 @@ pub const ROW_SCAN_FLOOR: &str = "blocking-ffi:scan-floor";
 pub const ROW_SCAN_STATUS: &str = "blocking-ffi:scan-status";
 pub const ROW_NO_INLINE: &str = "blocking-ffi:no-inline-ffi";
 
-const CORE: &str = "crates/busbar-core/src";
+// `busbar-core` was absorbed into `busbar-kernel` (W4.a, 673ecdaaa) — the hook/store offload seams
+// (`Txn::read_store`, `Txn::store_write`, `hooks::offload_bounded`) this gate polices now live
+// under `crates/busbar-kernel/src`.
+const CORE: &str = "crates/busbar-kernel/src";
 const FIXED_ROOTS: &[&str] = &[CORE, "crates/busbar/src", "crates/busbar-llm/src"];
 const PLANE_KEYS: &[&str] = &["mcp", "a2a"];
 const EXCLUDE_TESTS_DIR: &str = "/tests/";

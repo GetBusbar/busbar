@@ -12,8 +12,8 @@
 //!
 //! | row | build | the WS crate |
 //! | --- | --- | --- |
-//! | `:core-default` | `busbar-core`, default features | ABSENT |
-//! | `:core-no-default` | `busbar-core`, `--no-default-features` | ABSENT |
+//! | `:core-default` | `busbar-kernel`, default features | ABSENT |
+//! | `:core-no-default` | `busbar-kernel`, `--no-default-features` | ABSENT |
 //! | `:binary-default` | `busbar`, default features | PRESENT — voice is armed default-on |
 //! | `:binary-no-default` | `busbar`, `--no-default-features` | ABSENT — the edge goes with voice |
 //! | `:voice-feature-control` | `busbar --features plane-voice` | PRESENT — the positive control |
@@ -62,15 +62,15 @@ struct Claim {
 const CLAIMS: &[Claim] = &[
     Claim {
         row: ROW_CORE_DEFAULT,
-        args: &["-p", "busbar-core"],
+        args: &["-p", "busbar-kernel"],
         expects: Expects::Absent,
-        label: "busbar-core (default, money path)",
+        label: "busbar-kernel (default, money path)",
     },
     Claim {
         row: ROW_CORE_NO_DEFAULT,
-        args: &["-p", "busbar-core", "--no-default-features"],
+        args: &["-p", "busbar-kernel", "--no-default-features"],
         expects: Expects::Absent,
-        label: "busbar-core (--no-default)",
+        label: "busbar-kernel (--no-default)",
     },
     Claim {
         row: ROW_BINARY_DEFAULT,
@@ -180,7 +180,7 @@ impl Gate for DuplexWsDefaultEdgeGate {
         // "no tokio-tungstenite", which is the answer this gate wants and must not be handed for
         // free.
         let mut ov = Overlay::new();
-        ov.set_command("cargo-tree:-p busbar-core", "");
+        ov.set_command("cargo-tree:-p busbar-kernel", "");
         report.push(prove_red(
             cx,
             self,
@@ -207,8 +207,8 @@ impl Gate for DuplexWsDefaultEdgeGate {
         // crate, which is what welding `axum/ws` onto a default-on feature would produce.
         let mut ov = Overlay::new();
         ov.set_command(
-            "cargo-tree:-p busbar-core --no-default-features",
-            format!("busbar-core v1.6.0\naxum v0.8.0\n{WS_CRATE} v0.24.0\n"),
+            "cargo-tree:-p busbar-kernel --no-default-features",
+            format!("busbar-kernel v1.6.0\naxum v0.8.0\n{WS_CRATE} v0.24.0\n"),
         );
         report.push(prove_red(
             cx,
