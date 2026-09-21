@@ -2218,7 +2218,7 @@ fn the_unset_seam_builds_the_same_posture_as_the_bare_entry_point() {
 fn build_egress_trust_all_none() -> EgressTrust {
     EgressTrust {
         extra_anchors: Vec::new(),
-        pinned_spki: Vec::new(),
+        pinned_public_keys: Vec::new(),
         client_identity: None,
     }
 }

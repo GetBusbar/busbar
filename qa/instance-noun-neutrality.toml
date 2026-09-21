@@ -190,14 +190,6 @@ wave = "core neutralization — DECISION #1 (core names no instance); auth schem
 [[leak]]
 noun = "a2a"
 kind = "plane"
-file = "crates/busbar-kernel/src/trust/tests/reverify_tests.rs"
-count = 1
-category = "core"
-wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
-
-[[leak]]
-noun = "a2a"
-kind = "plane"
 file = "crates/busbar-kernel/src/trust/tests/verify_edge_tests.rs"
 count = 8
 category = "core"
@@ -3874,14 +3866,6 @@ file = "crates/busbar-admin/src/v1/tests/service_tests.rs"
 count = 1
 category = "core"
 wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
-
-[[leak]]
-noun = "spki"
-kind = "auth"
-file = "crates/busbar-contract/src/transport/trust.rs"
-count = 4
-category = "shared-crate"
-wave = "shared-crate neutralization — the ABI-side crates must compile with every plugin removed"
 
 [[leak]]
 noun = "spki"
