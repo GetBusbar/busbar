@@ -5,6 +5,8 @@
 //! (`Refused(Approve, InsufficientApprovers)`, `Refused(Approve, SelfApproval)`, and so on) so a
 //! caller can render or audit the exact reason without re-deriving it from a status code.
 
+use busbar_contract::verb_store::StoreError;
+
 /// A refused verb call. `step` mirrors the ten-step names `busbar-caps` seals (this crate only ever
 /// refuses at `Approve` or `Admit` — the other eight belong to units this crate is not); `reason` is
 /// the stable machine-readable code.
@@ -66,4 +68,18 @@ pub enum ReasonCode {
     /// Anything else — logged, never detailed to the caller (secrets may be in scope for a verb
     /// call, so an internal error never echoes its cause).
     Internal,
+}
+
+/// The refusal a store failure becomes, mapped the same fail-closed way
+/// [`crate::governance::GovernanceError::into_refusal`] maps a governance failure. Was
+/// `StoreError::into_refusal` before the store face was pulled forward to
+/// `busbar_contract::verb_store` (DECISIONS #38/#40): the inherent method could not follow the type
+/// to the leaf ABI crate without dragging this refusal vocabulary along, so it is a free function
+/// here instead — same mapping, verbatim.
+pub fn store_error_into_refusal(err: StoreError) -> Refusal {
+    let reason = match err {
+        StoreError::NotFound => ReasonCode::NotFound,
+        StoreError::Failed => ReasonCode::StoreError,
+    };
+    Refusal::new(RefusalStep::Verify, reason)
 }

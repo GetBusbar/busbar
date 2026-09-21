@@ -21,6 +21,36 @@ pub mod restart;
 pub mod transport;
 pub mod v1;
 
+// ── KERNEL-VERB EXECUTION (absorbed from busbar-unit-verbs, W4.b #36) ────────────────────────────
+// The admin plane decodes a request into a `KernelVerb` and hands it here; this is the only place a
+// kernel verb's SEMANTICS live. The store face (`Store`/`StoreError`) and the idempotency window
+// (`IDEMPOTENCY_TTL_SECS`) it binds against now live on `busbar_contract::verb_store` (DECISIONS
+// #38/#40), so this unit and `busbar-plugin-loader`'s store adapter reach one face rather than
+// naming each other's crate.
+pub mod governance;
+pub mod idempotency;
+pub mod mint;
+pub mod posture;
+pub mod rate;
+pub mod refusal;
+pub mod verb;
+pub mod verbs;
+
+pub use governance::{Governance, GovernanceError, MintedKey, RotateOutcome};
+pub use idempotency::ReplayEncoder;
+pub use posture::{ApprovalState, DualControl, OperatorState, PostureCtx};
+pub use rate::ConfigClassRule;
+pub use refusal::{ReasonCode, Refusal, RefusalStep};
+pub use verb::{
+    KernelVerb, VerbScope, IRREDUCIBLE_VERBS, LEDGER_VERBS, LEGACY_VERBS, NAMED_SURFACES,
+    NEW_VERBS, READ_ONLY_NEW_VERBS,
+};
+pub use verbs::{required_scope, MintOutcome, MintedKeyOutcome, NonceSource, Verbs};
+
+#[cfg(test)]
+#[path = "tests/table_matches_openapi.rs"]
+mod table_matches_openapi;
+
 pub use v1::service::mark_start;
 
 /// Register this crate's implementation of the admin-service mount seam

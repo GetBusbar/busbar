@@ -26,6 +26,9 @@ path = "src/lib.rs"
 
 [dependencies]
 busbar-kernel = { path = "../busbar-kernel", default-features = false }
+# The kernel-verb store face + idempotency window the absorbed verb-execution unit binds against
+# (DECISIONS #38/#40): `busbar_contract::verb_store::{Store, StoreError, IDEMPOTENCY_TTL_SECS}`.
+busbar-contract = { path = "../busbar-contract" }
 busbar-plugin-loader = { path = "../plugin-loader" }
 busbar-plugin-sign = { path = "../plugin-sign" }
 busbar-api = { path = "../api" }

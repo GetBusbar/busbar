@@ -20,8 +20,11 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
 
-/// Replay window (seconds) — 600 s, exactly `IDEMPOTENCY_TTL_SECS` in 1.5.5/1.6.0-legacy admin.
-pub const IDEMPOTENCY_TTL_SECS: u64 = 600;
+// The replay window (600 s) is the store face's own constant now — pulled forward to the ONE ABI
+// crate (DECISIONS #38/#40) so `busbar-plugin-loader`'s sealed store cache and this in-process
+// cache age their slots against one number. Re-exported here so the doc links and the existing
+// `crate::idempotency::IDEMPOTENCY_TTL_SECS` call sites keep resolving.
+pub use busbar_contract::verb_store::IDEMPOTENCY_TTL_SECS;
 
 /// The idempotency cache's encoder seam. This crate has no serializer of its own, so a
 /// replayable verb's cached value must be the EXACT bytes the composition root's own writer would

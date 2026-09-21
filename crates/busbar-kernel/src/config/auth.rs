@@ -359,10 +359,10 @@ pub struct AuthCfg {
     /// ed25519 VERIFYING key the fleet's operator ceremony sealed (`operator.pub` — 32 raw bytes or
     /// 64 hex chars). This is the key D38's `amend_rate_history` verifies a back-dated rate
     /// correction's detached signature against. Fleet-shared, like `signing_key`. ABSENT (the
-    /// default) ⇒ the operator ceremony has not run: [`busbar_unit_verbs::OperatorState::Unset`], so
+    /// default) ⇒ the operator ceremony has not run: the verb-execution unit's `OperatorState::Unset`, so
     /// every irreducible money-governance verb (amend included) is refused at the ceremony gate,
     /// byte-for-byte as the release without this field. Present ⇒
-    /// [`busbar_unit_verbs::OperatorState::Set`], which lifts that gate for the sealed key and makes
+    /// the verb-execution unit's `OperatorState::Set`, which lifts that gate for the sealed key and makes
     /// a valid-signed amend performable + verified.
     pub operator_pub: Option<SecretRef>,
     /// The DATA-PLANE authentication CHAIN — resolved provider entries in config order. Empty is the

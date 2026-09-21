@@ -27,7 +27,7 @@
 //!    their doc comments for why they are not folded into the generic dispatch).
 //!
 //! Only once all of that has admitted the call does anything reach [`crate::governance::Governance`]
-//! or [`crate::store::Store`]. That holds for the three disaster-recovery verbs too: their effect
+//! or [`busbar_contract::verb_store::Store`]. That holds for the three disaster-recovery verbs too: their effect
 //! lands on the store rather than on governance, but they are new verbs like any other, so they
 //! reach the store only through [`Verbs::chain_break`], [`Verbs::store_restore`] and
 //! [`Verbs::reseal_epoch_floor`], each of which runs the same admission first. The bound store is
@@ -39,8 +39,8 @@ use crate::idempotency::{IdempotencyCache, Probe, ReplayEncoder};
 use crate::mint::{plan_mint_group, GroupLookup, MintPlan};
 use crate::posture::{ApprovalState, PostureCtx};
 use crate::rate::{ConfigClassRule, MutationClass, MutationLimiter, RateCheck};
-use crate::refusal::{ReasonCode, Refusal, RefusalStep};
-use crate::store::{Store, StoreError};
+use crate::refusal::{store_error_into_refusal, ReasonCode, Refusal, RefusalStep};
+use busbar_contract::verb_store::Store;
 use crate::verb::{
     KernelVerb, VerbScope, LEDGER_VERBS, LEGACY_VERBS, NEW_VERBS, READ_ONLY_NEW_VERBS,
 };
@@ -535,7 +535,7 @@ impl<G: Governance, S: Store, N: NonceSource, E: ReplayEncoder<MintedKeyOutcome>
         )?;
         self.store
             .chain_break(admin)
-            .map_err(StoreError::into_refusal)
+            .map_err(store_error_into_refusal)
     }
 
     /// `store_restore` — restore the store from a named backup. Admitted through
@@ -561,7 +561,7 @@ impl<G: Governance, S: Store, N: NonceSource, E: ReplayEncoder<MintedKeyOutcome>
         )?;
         self.store
             .store_restore(admin, backup_ref)
-            .map_err(StoreError::into_refusal)
+            .map_err(store_error_into_refusal)
     }
 
     /// `reseal_epoch_floor` — reseal the epoch floor after a chain break or restore. Admitted
@@ -585,7 +585,7 @@ impl<G: Governance, S: Store, N: NonceSource, E: ReplayEncoder<MintedKeyOutcome>
         )?;
         self.store
             .reseal_epoch_floor(admin)
-            .map_err(StoreError::into_refusal)
+            .map_err(store_error_into_refusal)
     }
 }
 

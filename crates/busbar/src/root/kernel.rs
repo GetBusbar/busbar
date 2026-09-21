@@ -467,33 +467,33 @@ impl ArrivalDoor for AdmissionDoor {
 #[derive(Debug, Default, Clone, Copy)]
 pub struct RefusingStore;
 
-impl busbar_unit_verbs::store::Store for RefusingStore {
+impl busbar_contract::verb_store::Store for RefusingStore {
     fn chain_break(
         &self,
         _admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
-    ) -> Result<(), busbar_unit_verbs::StoreError> {
-        Err(busbar_unit_verbs::StoreError::Failed)
+    ) -> Result<(), busbar_contract::verb_store::StoreError> {
+        Err(busbar_contract::verb_store::StoreError::Failed)
     }
 
     fn store_restore(
         &self,
         _admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
         _backup_ref: &str,
-    ) -> Result<(), busbar_unit_verbs::StoreError> {
-        Err(busbar_unit_verbs::StoreError::Failed)
+    ) -> Result<(), busbar_contract::verb_store::StoreError> {
+        Err(busbar_contract::verb_store::StoreError::Failed)
     }
 
     fn reseal_epoch_floor(
         &self,
         _admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
-    ) -> Result<(), busbar_unit_verbs::StoreError> {
-        Err(busbar_unit_verbs::StoreError::Failed)
+    ) -> Result<(), busbar_contract::verb_store::StoreError> {
+        Err(busbar_contract::verb_store::StoreError::Failed)
     }
 
     fn replay_new_verb(
         &self,
         _key: &(String, String),
-    ) -> Result<Option<Vec<u8>>, busbar_unit_verbs::StoreError> {
+    ) -> Result<Option<Vec<u8>>, busbar_contract::verb_store::StoreError> {
         Ok(None)
     }
 
@@ -501,7 +501,7 @@ impl busbar_unit_verbs::store::Store for RefusingStore {
         &self,
         _key: &(String, String),
         _response: &[u8],
-    ) -> Result<(), busbar_unit_verbs::StoreError> {
+    ) -> Result<(), busbar_contract::verb_store::StoreError> {
         Ok(())
     }
 }
@@ -571,7 +571,7 @@ pub struct ProductionUnits {
     pub admin: crate::root::units_admin::AdminBinding,
     /// The store, behind the published ABI. The verbs unit's disaster-recovery subset and its
     /// sealed idempotency cache both reach it, and both reach the same one.
-    pub store: Arc<dyn busbar_unit_verbs::store::Store + Send + Sync>,
+    pub store: Arc<dyn busbar_contract::verb_store::Store + Send + Sync>,
     /// The credential the kernel lends the verbs unit for the length of an execution.
     ///
     /// Minted once, at boot, from the node's one authority — the second token in the tree minted
@@ -612,7 +612,7 @@ impl ProductionUnits {
         meter_policy: crate::root::policy::MeterPolicyHandle,
         scope_policy: crate::root::policy::ScopePolicy,
         #[cfg(feature = "root-admin")] admin: crate::root::units_admin::AdminBinding,
-        store: Arc<dyn busbar_unit_verbs::store::Store + Send + Sync>,
+        store: Arc<dyn busbar_contract::verb_store::Store + Send + Sync>,
     ) -> Self {
         ProductionUnits::new_sharing(
             kernel,
@@ -643,7 +643,7 @@ impl ProductionUnits {
         meter_policy: crate::root::policy::MeterPolicyHandle,
         scope_policy: crate::root::policy::ScopePolicy,
         #[cfg(feature = "root-admin")] admin: crate::root::units_admin::AdminBinding,
-        store: Arc<dyn busbar_unit_verbs::store::Store + Send + Sync>,
+        store: Arc<dyn busbar_contract::verb_store::Store + Send + Sync>,
     ) -> Self {
         #[cfg_attr(not(feature = "root-admin"), allow(unused_mut))]
         let mut units = ProductionUnits {
@@ -828,12 +828,12 @@ impl ProductionUnits {
     pub(crate) fn admin_grant(
         &self,
         principal: &PrincipalId,
-    ) -> Option<busbar_unit_verbs::VerbScope> {
+    ) -> Option<busbar_admin::VerbScope> {
         if self.front_door_is_open() {
-            return Some(busbar_unit_verbs::VerbScope::Full);
+            return Some(busbar_admin::VerbScope::Full);
         }
         if principal.as_str() == crate::root::auth_bindings::ADMIN_PRINCIPAL_ID {
-            return Some(busbar_unit_verbs::VerbScope::Full);
+            return Some(busbar_admin::VerbScope::Full);
         }
         None
     }

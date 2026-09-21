@@ -53,8 +53,8 @@ use busbar_kernel_scope::Scope;
 
 use crate::root::kernel::{ProductionUnits, RegisteredUnits};
 use crate::root::ledger_identity::{LedgerSnapshot, LegacySnapshot};
-use busbar_unit_verbs::rate::{MutationClass, CONFIG_CLASS_RULES};
-use busbar_unit_verbs::{
+use busbar_admin::rate::{MutationClass, CONFIG_CLASS_RULES};
+use busbar_admin::{
     ApprovalState, KernelVerb, PostureCtx, VerbScope, LEDGER_VERBS, LEGACY_VERBS, NAMED_SURFACES,
     NEW_VERBS,
 };
@@ -571,7 +571,7 @@ impl CoreGovernance {
     }
 }
 
-impl busbar_unit_verbs::Governance for CoreGovernance {
+impl busbar_admin::Governance for CoreGovernance {
     fn group_exists(&self, _name: &str) -> bool {
         // The surface that owns groups is the one that answers whether a group exists, and it
         // answers it inside the operation rather than as a question the root may ask beforehand.
@@ -589,7 +589,7 @@ impl busbar_unit_verbs::Governance for CoreGovernance {
         _admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
         _group: &str,
         _parent: &str,
-    ) -> Result<(), busbar_unit_verbs::GovernanceError> {
+    ) -> Result<(), busbar_admin::GovernanceError> {
         Ok(())
     }
 
@@ -597,19 +597,19 @@ impl busbar_unit_verbs::Governance for CoreGovernance {
         &self,
         _admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
         _group: Option<&str>,
-    ) -> Result<busbar_unit_verbs::MintedKey, busbar_unit_verbs::GovernanceError> {
+    ) -> Result<busbar_admin::MintedKey, busbar_admin::GovernanceError> {
         // A minted secret is revealed by the operation's own response and by nothing else. The root
         // does not hold one, does not copy one out of a body and does not re-render one: the answer
         // the dispatch produced is what leaves, byte for byte.
-        Err(busbar_unit_verbs::GovernanceError::Validation)
+        Err(busbar_admin::GovernanceError::Validation)
     }
 
     fn rotate_key(
         &self,
         _admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
         _id: &str,
-    ) -> Result<busbar_unit_verbs::RotateOutcome, busbar_unit_verbs::GovernanceError> {
-        Err(busbar_unit_verbs::GovernanceError::Validation)
+    ) -> Result<busbar_admin::RotateOutcome, busbar_admin::GovernanceError> {
+        Err(busbar_admin::GovernanceError::Validation)
     }
 
     fn execute_legacy(
@@ -617,7 +617,7 @@ impl busbar_unit_verbs::Governance for CoreGovernance {
         _verb: KernelVerb,
         _admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
         _request: &[u8],
-    ) -> Result<Vec<u8>, busbar_unit_verbs::GovernanceError> {
+    ) -> Result<Vec<u8>, busbar_admin::GovernanceError> {
         Ok(self.run())
     }
 
@@ -626,8 +626,8 @@ impl busbar_unit_verbs::Governance for CoreGovernance {
         verb: KernelVerb,
         _admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
         request: &[u8],
-        operator: busbar_unit_verbs::OperatorState,
-    ) -> Result<Vec<u8>, busbar_unit_verbs::GovernanceError> {
+        operator: busbar_admin::OperatorState,
+    ) -> Result<Vec<u8>, busbar_admin::GovernanceError> {
         // `amend_rate_history` (D38) is the one new verb whose effect is NOT the mounted router's:
         // its correction lands on this root's own dated rate-card history, which no 1.5.5 handler
         // knows about. The scope, rate class, operator ceremony and dual control were already run by
@@ -650,13 +650,13 @@ impl busbar_unit_verbs::Governance for CoreGovernance {
         verb: KernelVerb,
         _admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
         _request: &[u8],
-    ) -> Result<Vec<u8>, busbar_unit_verbs::GovernanceError> {
+    ) -> Result<Vec<u8>, busbar_admin::GovernanceError> {
         // The request body is deliberately unread. Every view is a `GET` whose whole identity is its
         // path, so a body would be an argument to an operation that takes none — and an operation
         // that quietly read one would have a second way to be asked a question, which is exactly the
         // kind of surface a closed table exists to prevent.
         let body = render_ledger_view(verb, self.ledger.as_ref())
-            .ok_or(busbar_unit_verbs::GovernanceError::NotFound)?;
+            .ok_or(busbar_admin::GovernanceError::NotFound)?;
         Ok(ledger_answer(body).pack())
     }
 }
@@ -705,9 +705,9 @@ fn amend_rate_history_effect(
     history: &crate::root::kernel::RootHistory,
     body: &[u8],
     arrival_secs: u64,
-    operator: busbar_unit_verbs::OperatorState,
-) -> Result<Vec<u8>, busbar_unit_verbs::GovernanceError> {
-    use busbar_unit_verbs::GovernanceError;
+    operator: busbar_admin::OperatorState,
+) -> Result<Vec<u8>, busbar_admin::GovernanceError> {
+    use busbar_admin::GovernanceError;
     use sha2::Digest as _;
 
     let doc: serde_json::Value =
@@ -809,7 +809,7 @@ fn amend_rate_history_effect(
     // small-order keys and non-canonical signatures) against that key over the canonical payload the
     // operator signed. Every failure here is the client-safe `Validation`, the same 400 a missing
     // signer already produced.
-    let busbar_unit_verbs::OperatorState::Set(operator_key) = operator else {
+    let busbar_admin::OperatorState::Set(operator_key) = operator else {
         // The operator gate admits `amend_rate_history` only under `Set`, so this is unreachable in
         // an admitted call; refusing rather than trusting an unverified correction is the only safe
         // reading if the seam is ever reached without a sealed key.
@@ -1408,8 +1408,8 @@ impl PostureView for UnsealedPosture {
     fn resolve(&self, _verb: KernelVerb, _actor: &str) -> Option<(PostureCtx, ApprovalState)> {
         Some((
             PostureCtx {
-                operator: busbar_unit_verbs::OperatorState::Unset,
-                dual_control: busbar_unit_verbs::DualControl::Single,
+                operator: busbar_admin::OperatorState::Unset,
+                dual_control: busbar_admin::DualControl::Single,
             },
             ApprovalState::NotYetApproved,
         ))
@@ -1436,7 +1436,7 @@ impl PostureView for UnsealedPosture {
 /// increment seals those, they resolve here beside the operator key, through this same seam.
 #[derive(Debug, Clone, Copy)]
 pub struct SealedPosture {
-    operator: busbar_unit_verbs::OperatorState,
+    operator: busbar_admin::OperatorState,
 }
 
 impl SealedPosture {
@@ -1447,8 +1447,8 @@ impl SealedPosture {
     pub fn new(operator_key: Option<[u8; 32]>) -> Self {
         SealedPosture {
             operator: match operator_key {
-                Some(key) => busbar_unit_verbs::OperatorState::Set(key),
-                None => busbar_unit_verbs::OperatorState::Unset,
+                Some(key) => busbar_admin::OperatorState::Set(key),
+                None => busbar_admin::OperatorState::Unset,
             },
         }
     }
@@ -1459,7 +1459,7 @@ impl PostureView for SealedPosture {
         Some((
             PostureCtx {
                 operator: self.operator,
-                dual_control: busbar_unit_verbs::DualControl::Single,
+                dual_control: busbar_admin::DualControl::Single,
             },
             ApprovalState::NotYetApproved,
         ))
@@ -1790,7 +1790,7 @@ pub(crate) fn admit(
 /// the unit's decision, from its own closed table, and not this step's.
 pub(crate) fn route(
     binding: &AdminBinding,
-    store: Arc<dyn busbar_unit_verbs::store::Store + Send + Sync>,
+    store: Arc<dyn busbar_contract::verb_store::Store + Send + Sync>,
     admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
     token: &Pass<Route>,
     ctx: &UnitCtx,
@@ -1821,7 +1821,7 @@ pub(crate) fn route(
         return Decision::proceed(token, busbar_contract::RoutePlan::default());
     }
 
-    let verbs = busbar_unit_verbs::Verbs::new(
+    let verbs = busbar_admin::Verbs::new(
         CoreGovernance::new(
             Arc::clone(&binding.dispatch),
             Arc::clone(&binding.ledger),
@@ -1845,7 +1845,7 @@ pub(crate) fn route(
     let resolved_posture = binding.posture.resolve(verb, &actor);
     let (posture, approval) = match resolved_posture {
         Some((posture, approval)) => (Some(posture), approval),
-        None => (None, busbar_unit_verbs::ApprovalState::NotYetApproved),
+        None => (None, busbar_admin::ApprovalState::NotYetApproved),
     };
 
     // THE THREE DISASTER-RECOVERY VERBS REACH THE STORE, not the governance seam. They are new
@@ -2050,8 +2050,8 @@ fn actor_of(binding: &AdminBinding, key: UnitKey) -> String {
 /// Two closed lists that name the same events. Mapping them here rather than merging them keeps a
 /// unit's reasons its own — the verbs unit may gain a reason the kernel has no step for, and the
 /// kernel may gain a step no verb reaches.
-fn verbs_reason(reason: busbar_unit_verbs::ReasonCode) -> ReasonCode {
-    use busbar_unit_verbs::ReasonCode as V;
+fn verbs_reason(reason: busbar_admin::ReasonCode) -> ReasonCode {
+    use busbar_admin::ReasonCode as V;
     match reason {
         V::Unauthorized => ReasonCode::ScopeDenied,
         V::RateLimited => ReasonCode::RateLimited,
@@ -2470,13 +2470,13 @@ impl<S: busbar_contract::caps::Step> TapAdmin for Decision<S> {}
 /// A thin newtype rather than a second implementation: the adapter the loader already builds is what
 /// answers, and this exists only because the unit takes its store by value while the root holds one
 /// for the whole node.
-struct StoreRef(Arc<dyn busbar_unit_verbs::store::Store + Send + Sync>);
+struct StoreRef(Arc<dyn busbar_contract::verb_store::Store + Send + Sync>);
 
-impl busbar_unit_verbs::store::Store for StoreRef {
+impl busbar_contract::verb_store::Store for StoreRef {
     fn chain_break(
         &self,
         admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
-    ) -> Result<(), busbar_unit_verbs::StoreError> {
+    ) -> Result<(), busbar_contract::verb_store::StoreError> {
         self.0.chain_break(admin)
     }
 
@@ -2484,21 +2484,21 @@ impl busbar_unit_verbs::store::Store for StoreRef {
         &self,
         admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
         backup_ref: &str,
-    ) -> Result<(), busbar_unit_verbs::StoreError> {
+    ) -> Result<(), busbar_contract::verb_store::StoreError> {
         self.0.store_restore(admin, backup_ref)
     }
 
     fn reseal_epoch_floor(
         &self,
         admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
-    ) -> Result<(), busbar_unit_verbs::StoreError> {
+    ) -> Result<(), busbar_contract::verb_store::StoreError> {
         self.0.reseal_epoch_floor(admin)
     }
 
     fn replay_new_verb(
         &self,
         key: &(String, String),
-    ) -> Result<Option<Vec<u8>>, busbar_unit_verbs::StoreError> {
+    ) -> Result<Option<Vec<u8>>, busbar_contract::verb_store::StoreError> {
         self.0.replay_new_verb(key)
     }
 
@@ -2506,7 +2506,7 @@ impl busbar_unit_verbs::store::Store for StoreRef {
         &self,
         key: &(String, String),
         response: &[u8],
-    ) -> Result<(), busbar_unit_verbs::StoreError> {
+    ) -> Result<(), busbar_contract::verb_store::StoreError> {
         self.0.commit_new_verb_replay(key, response)
     }
 }
@@ -2519,7 +2519,7 @@ impl busbar_unit_verbs::store::Store for StoreRef {
 /// only what makes it distinct.
 struct ArrivalNonce(u64);
 
-impl busbar_unit_verbs::NonceSource for ArrivalNonce {
+impl busbar_admin::NonceSource for ArrivalNonce {
     fn fill(&self, buf: &mut [u8; 16]) {
         let mut material = [0u8; 16];
         getrandom_into(&mut material);
@@ -2581,8 +2581,8 @@ fn getrandom_into(buf: &mut [u8; 16]) {
 /// the register named; this returns what was written and nothing else.
 struct PackedReplay;
 
-impl busbar_unit_verbs::ReplayEncoder<busbar_unit_verbs::MintedKeyOutcome> for PackedReplay {
-    fn encode(&self, value: &busbar_unit_verbs::MintedKeyOutcome) -> Vec<u8> {
+impl busbar_admin::ReplayEncoder<busbar_admin::MintedKeyOutcome> for PackedReplay {
+    fn encode(&self, value: &busbar_admin::MintedKeyOutcome) -> Vec<u8> {
         // Reached only on the unit's own key-minting path, which this root does not take: the
         // operation's own surface mints and renders, so there is no second rendering here to get
         // wrong. The identity is enough to key a replay slot and carries no secret.

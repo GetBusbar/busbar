@@ -22,7 +22,6 @@ busbar-contract = { path = "../busbar-contract" }
 # implemented HERE and consumed by the kernel loop, so it is an ABI type). Removing this edge is what
 # breaks the core→plugin-loader→kernel cycle that the busbar-core→busbar-kernel absorption would
 # otherwise create.
-busbar-unit-verbs = { path = "../busbar-unit-verbs" }
 # The migration's read off the previous release's rows. The ledger unit states WHAT an opening
 # figure is; the row shapes it is read from are on this side of the seam, where the loaded plugin
 # already is — the same division the ledger's dual write makes in the other direction. The ledger

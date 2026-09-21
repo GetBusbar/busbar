@@ -4,8 +4,9 @@
 //! The store adapter: the three unit-side store seams over ONE loaded store plugin.
 //!
 //! Three crates bind to a store and none of them may name one — `busbar-kernel` (slices),
-//! `busbar-unit-verbs` (the disaster-recovery verbs and the sealed new-verb replay cache) and
-//! `busbar-unit-wal` (shipping). The composition root binds all three to a single adapter over the
+//! the admin verb-execution unit (the disaster-recovery verbs and the sealed new-verb replay
+//! cache, reached here through the `busbar_contract::verb_store::Store` face) and `busbar-unit-wal`
+//! (shipping). The composition root binds all three to a single adapter over the
 //! store this crate loaded, so there is exactly one store handle in the process and exactly one
 //! place that knows what the loaded plugin can and cannot do.
 //!
@@ -86,7 +87,7 @@ use busbar_kernel_ledger::migration::{
     MigrationRecords,
 };
 use busbar_kernel_ledger::totals::CapDimension;
-use busbar_unit_verbs::store::{Store as VerbStore, StoreError as VerbStoreError};
+use busbar_contract::verb_store::{Store as VerbStore, StoreError as VerbStoreError};
 use busbar_kernel_wal::{Record, ShipError, Shipper};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -164,10 +165,10 @@ type ReplaySlots = HashMap<(String, String), (u64, Option<Vec<u8>>)>;
 /// How long a sealed replay slot answers for, in seconds.
 ///
 /// The seam's own contract names the window, and the in-process sibling
-/// [`busbar_unit_verbs::idempotency`] keeps exactly this one — so a deployment whose store predates
+/// [`busbar_contract::verb_store::IDEMPOTENCY_TTL_SECS`] keeps exactly this one — so a deployment whose store predates
 /// the durable cache gets the same replay window it would get from the store, rather than a
 /// different one because the shim is answering.
-pub const REPLAY_TTL_SECS: u64 = busbar_unit_verbs::idempotency::IDEMPOTENCY_TTL_SECS;
+pub const REPLAY_TTL_SECS: u64 = busbar_contract::verb_store::IDEMPOTENCY_TTL_SECS;
 
 /// The clock the sealed replay cache ages its slots against, in unix seconds.
 ///

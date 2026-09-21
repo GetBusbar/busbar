@@ -402,8 +402,8 @@ fn a_money_governance_verb_is_checked_against_the_posture_the_fleet_sealed() {
 
     let required = Sealed(Some((
         PostureCtx {
-            operator: busbar_unit_verbs::OperatorState::Unset,
-            dual_control: busbar_unit_verbs::DualControl::Required,
+            operator: busbar_admin::OperatorState::Unset,
+            dual_control: busbar_admin::DualControl::Required,
         },
         ApprovalState::NotYetApproved,
     )));
@@ -414,8 +414,8 @@ fn a_money_governance_verb_is_checked_against_the_posture_the_fleet_sealed() {
 
     let ceremony_run = Sealed(Some((
         PostureCtx {
-            operator: busbar_unit_verbs::OperatorState::Set([0u8; 32]),
-            dual_control: busbar_unit_verbs::DualControl::Single,
+            operator: busbar_admin::OperatorState::Set([0u8; 32]),
+            dual_control: busbar_admin::DualControl::Single,
         },
         ApprovalState::NotYetApproved,
     )));
@@ -445,8 +445,8 @@ fn an_unsealed_node_reports_the_posture_a_fresh_install_is_actually_in() {
     let (posture, approval) = UnsealedPosture
         .resolve(KernelVerb::Adjust, "admin")
         .expect("a node with no journal knows what it has not sealed");
-    assert_eq!(posture.operator, busbar_unit_verbs::OperatorState::Unset);
-    assert_eq!(posture.dual_control, busbar_unit_verbs::DualControl::Single);
+    assert_eq!(posture.operator, busbar_admin::OperatorState::Unset);
+    assert_eq!(posture.dual_control, busbar_admin::DualControl::Single);
     assert_eq!(approval, ApprovalState::NotYetApproved);
 }
 
@@ -590,7 +590,7 @@ fn an_admin_unit_settles_at_zero_requests_and_zero_fee() {
 /// secret's placeholder would be predictable from the secret it protects.
 #[test]
 fn two_nonces_over_one_unit_do_not_agree() {
-    use busbar_unit_verbs::NonceSource;
+    use busbar_admin::NonceSource;
     let source = ArrivalNonce(1_700_000_000);
     let mut first = [0u8; 16];
     let mut second = [0u8; 16];
@@ -612,7 +612,7 @@ fn two_nonces_over_one_unit_do_not_agree() {
 /// key secret is minted from — rather than by anything checkable here.
 #[test]
 fn both_halves_of_a_nonce_are_drawn_and_neither_repeats() {
-    use busbar_unit_verbs::NonceSource;
+    use busbar_admin::NonceSource;
     use std::collections::HashSet;
 
     let source = ArrivalNonce(1_700_000_000);
@@ -679,11 +679,11 @@ fn only_the_two_minting_verbs_are_reached_through_the_seam_directly() {
 #[derive(Default)]
 struct ReplaySlots(Mutex<HashMap<(String, String), Vec<u8>>>);
 
-impl busbar_unit_verbs::store::Store for ReplaySlots {
+impl busbar_contract::verb_store::Store for ReplaySlots {
     fn chain_break(
         &self,
         _admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
-    ) -> Result<(), busbar_unit_verbs::StoreError> {
+    ) -> Result<(), busbar_contract::verb_store::StoreError> {
         Ok(())
     }
 
@@ -691,21 +691,21 @@ impl busbar_unit_verbs::store::Store for ReplaySlots {
         &self,
         _admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
         _backup_ref: &str,
-    ) -> Result<(), busbar_unit_verbs::StoreError> {
+    ) -> Result<(), busbar_contract::verb_store::StoreError> {
         Ok(())
     }
 
     fn reseal_epoch_floor(
         &self,
         _admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
-    ) -> Result<(), busbar_unit_verbs::StoreError> {
+    ) -> Result<(), busbar_contract::verb_store::StoreError> {
         Ok(())
     }
 
     fn replay_new_verb(
         &self,
         key: &(String, String),
-    ) -> Result<Option<Vec<u8>>, busbar_unit_verbs::StoreError> {
+    ) -> Result<Option<Vec<u8>>, busbar_contract::verb_store::StoreError> {
         Ok(self
             .0
             .lock()
@@ -718,7 +718,7 @@ impl busbar_unit_verbs::store::Store for ReplaySlots {
         &self,
         key: &(String, String),
         response: &[u8],
-    ) -> Result<(), busbar_unit_verbs::StoreError> {
+    ) -> Result<(), busbar_contract::verb_store::StoreError> {
         self.0
             .lock()
             .expect("no test panics under this lock")
@@ -733,7 +733,7 @@ impl busbar_unit_verbs::store::Store for ReplaySlots {
 /// bytes is that there is no decode step here that could.
 #[test]
 fn a_replayed_idempotency_key_answers_the_first_answers_bytes() {
-    use busbar_unit_verbs::store::Store;
+    use busbar_contract::verb_store::Store;
 
     let answer = AdminAnswer {
         status: 201,
@@ -765,10 +765,10 @@ fn a_replayed_idempotency_key_answers_the_first_answers_bytes() {
 /// enough to key a slot and carries nothing a second holder could present.
 #[test]
 fn the_replay_encoder_carries_an_identity_and_never_a_secret() {
-    use busbar_unit_verbs::ReplayEncoder;
+    use busbar_admin::ReplayEncoder;
 
     let admin = crate::root::kernel::new_kernel().admin_token();
-    let outcome = busbar_unit_verbs::MintedKeyOutcome {
+    let outcome = busbar_admin::MintedKeyOutcome {
         id: "vk_1".to_string(),
         secret: busbar_contract::caps::SecretOnce::mint(&admin, 42, UnitKey::new(1), "body.secret"),
         expires_at: None,
@@ -1376,42 +1376,42 @@ fn each_recovery_verb_reaches_the_store_and_a_refusing_store_is_the_answer() {
     #[derive(Debug, Default)]
     struct RecordingStore(Mutex<Vec<String>>);
 
-    impl busbar_unit_verbs::store::Store for RecordingStore {
+    impl busbar_contract::verb_store::Store for RecordingStore {
         fn chain_break(
             &self,
             _admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
-        ) -> Result<(), busbar_unit_verbs::StoreError> {
+        ) -> Result<(), busbar_contract::verb_store::StoreError> {
             self.0.lock().unwrap().push("chain_break".to_string());
-            Err(busbar_unit_verbs::StoreError::Failed)
+            Err(busbar_contract::verb_store::StoreError::Failed)
         }
 
         fn store_restore(
             &self,
             _admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
             backup_ref: &str,
-        ) -> Result<(), busbar_unit_verbs::StoreError> {
+        ) -> Result<(), busbar_contract::verb_store::StoreError> {
             self.0
                 .lock()
                 .unwrap()
                 .push(format!("store_restore:{backup_ref}"));
-            Err(busbar_unit_verbs::StoreError::Failed)
+            Err(busbar_contract::verb_store::StoreError::Failed)
         }
 
         fn reseal_epoch_floor(
             &self,
             _admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
-        ) -> Result<(), busbar_unit_verbs::StoreError> {
+        ) -> Result<(), busbar_contract::verb_store::StoreError> {
             self.0
                 .lock()
                 .unwrap()
                 .push("reseal_epoch_floor".to_string());
-            Err(busbar_unit_verbs::StoreError::Failed)
+            Err(busbar_contract::verb_store::StoreError::Failed)
         }
 
         fn replay_new_verb(
             &self,
             _key: &(String, String),
-        ) -> Result<Option<Vec<u8>>, busbar_unit_verbs::StoreError> {
+        ) -> Result<Option<Vec<u8>>, busbar_contract::verb_store::StoreError> {
             Ok(None)
         }
 
@@ -1419,7 +1419,7 @@ fn each_recovery_verb_reaches_the_store_and_a_refusing_store_is_the_answer() {
             &self,
             _key: &(String, String),
             _response: &[u8],
-        ) -> Result<(), busbar_unit_verbs::StoreError> {
+        ) -> Result<(), busbar_contract::verb_store::StoreError> {
             Ok(())
         }
     }
@@ -1449,8 +1449,8 @@ fn each_recovery_verb_reaches_the_store_and_a_refusing_store_is_the_answer() {
             ) -> Option<(PostureCtx, ApprovalState)> {
                 Some((
                     PostureCtx {
-                        operator: busbar_unit_verbs::OperatorState::Set([0u8; 32]),
-                        dual_control: busbar_unit_verbs::DualControl::Single,
+                        operator: busbar_admin::OperatorState::Set([0u8; 32]),
+                        dual_control: busbar_admin::DualControl::Single,
                     },
                     ApprovalState::NotYetApproved,
                 ))
@@ -1497,7 +1497,7 @@ fn each_recovery_verb_reaches_the_store_and_a_refusing_store_is_the_answer() {
         let token: Pass<Route> = Pass::mint(&seal);
         let outcome = route(
             &binding,
-            Arc::clone(&store) as Arc<dyn busbar_unit_verbs::store::Store + Send + Sync>,
+            Arc::clone(&store) as Arc<dyn busbar_contract::verb_store::Store + Send + Sync>,
             &admin,
             &token,
             &ctx,
@@ -2645,8 +2645,8 @@ fn a_ledger_view_is_read_only_in_every_table_that_has_an_opinion() {
         let verb = kernel_verb(&row).unwrap_or_else(|| panic!("{path} names no kernel verb"));
         assert!(LEDGER_VERBS.contains(&verb), "{path} is not a ledger verb");
         assert_eq!(
-            busbar_unit_verbs::required_scope(verb),
-            busbar_unit_verbs::required_scope(KernelVerb::GetUsage),
+            busbar_admin::required_scope(verb),
+            busbar_admin::required_scope(KernelVerb::GetUsage),
             "{path} does not require what the legacy /usage read requires"
         );
         assert_eq!(
@@ -2689,7 +2689,7 @@ fn a_view_reaches_neither_the_dispatch_nor_the_posture_check() {
     let admin = crate::root::kernel::new_kernel().admin_token();
 
     for verb in LEDGER_VERBS {
-        let verbs = busbar_unit_verbs::Verbs::new(
+        let verbs = busbar_admin::Verbs::new(
             CoreGovernance::new(
                 Arc::new(CountingDispatch(Arc::clone(&calls))),
                 Arc::new(SeededLedger),
@@ -2711,11 +2711,11 @@ fn a_view_reaches_neither_the_dispatch_nor_the_posture_check() {
                 // The posture a fleet is in before its operator ceremony has run, under which
                 // every one of the 17 money-governance verbs is refused. A view answers anyway,
                 // because there is nothing for an operator to have approved about a read.
-                Some(busbar_unit_verbs::PostureCtx {
-                    operator: busbar_unit_verbs::OperatorState::Unset,
-                    dual_control: busbar_unit_verbs::DualControl::Required,
+                Some(busbar_admin::PostureCtx {
+                    operator: busbar_admin::OperatorState::Unset,
+                    dual_control: busbar_admin::DualControl::Required,
                 }),
-                busbar_unit_verbs::ApprovalState::NotYetApproved,
+                busbar_admin::ApprovalState::NotYetApproved,
                 b"",
             )
             .unwrap_or_else(|r| panic!("{verb:?} was refused: {r:?}"));
@@ -2730,7 +2730,7 @@ fn a_view_reaches_neither_the_dispatch_nor_the_posture_check() {
 
     // The control: a money-governance verb under the same posture IS refused, so the green above
     // is the views being exempt rather than the posture check being unbound.
-    let verbs = busbar_unit_verbs::Verbs::new(
+    let verbs = busbar_admin::Verbs::new(
         CoreGovernance::new(
             Arc::new(CountingDispatch(Arc::clone(&calls))),
             Arc::new(SeededLedger),
@@ -2749,11 +2749,11 @@ fn a_view_reaches_neither_the_dispatch_nor_the_posture_check() {
             "admin",
             VerbScope::Full,
             1_700_000_000,
-            Some(busbar_unit_verbs::PostureCtx {
-                operator: busbar_unit_verbs::OperatorState::Unset,
-                dual_control: busbar_unit_verbs::DualControl::Required,
+            Some(busbar_admin::PostureCtx {
+                operator: busbar_admin::OperatorState::Unset,
+                dual_control: busbar_admin::DualControl::Required,
             }),
-            busbar_unit_verbs::ApprovalState::NotYetApproved,
+            busbar_admin::ApprovalState::NotYetApproved,
             b"",
         )
         .is_err());
@@ -2892,8 +2892,8 @@ fn a_test_operator_signing_key() -> ed25519_dalek::SigningKey {
 /// The sealed-posture operator state the effect verifies against: the single operator PUBLIC key, as
 /// the fleet would seal it in `Policy` and the posture seam would carry it to the verb.
 #[cfg(test)]
-fn a_sealed_operator() -> busbar_unit_verbs::OperatorState {
-    busbar_unit_verbs::OperatorState::Set(a_test_operator_signing_key().verifying_key().to_bytes())
+fn a_sealed_operator() -> busbar_admin::OperatorState {
+    busbar_admin::OperatorState::Set(a_test_operator_signing_key().verifying_key().to_bytes())
 }
 
 /// The `operator_fingerprint` a correction names to confirm WHICH key signed it: the SHA-256 of the
@@ -3027,7 +3027,7 @@ fn amend_rate_history_refuses_a_correction_that_names_no_signer_window_or_price(
         let err = amend_rate_history_effect(&history, &body, 6, a_sealed_operator())
             .expect_err("a malformed correction must be refused");
         assert!(
-            matches!(err, busbar_unit_verbs::GovernanceError::Validation),
+            matches!(err, busbar_admin::GovernanceError::Validation),
             "{case} must refuse Validation, got {err:?}"
         );
         assert_eq!(
@@ -3040,7 +3040,7 @@ fn amend_rate_history_refuses_a_correction_that_names_no_signer_window_or_price(
     let history = a_seeded_history();
     assert!(matches!(
         amend_rate_history_effect(&history, b"not json", 6, a_sealed_operator()),
-        Err(busbar_unit_verbs::GovernanceError::Validation)
+        Err(busbar_admin::GovernanceError::Validation)
     ));
     assert_eq!(history.len(), 1);
 }
@@ -3052,7 +3052,7 @@ fn amend_rate_history_refuses_when_there_is_no_history_to_amend() {
     let empty = crate::root::kernel::RootHistory::default();
     let err = amend_rate_history_effect(&empty, &a_correction_body(), 6, a_sealed_operator())
         .expect_err("an empty history cannot be amended");
-    assert!(matches!(err, busbar_unit_verbs::GovernanceError::NotFound));
+    assert!(matches!(err, busbar_admin::GovernanceError::NotFound));
     assert_eq!(empty.len(), 0);
 }
 
@@ -3123,7 +3123,7 @@ fn amend_rate_history_refuses_a_correction_from_an_unknown_operator_fingerprint(
     let err = amend_rate_history_effect(&history, &body, 6, a_sealed_operator())
         .expect_err("an unknown signer must be refused");
     assert!(
-        matches!(err, busbar_unit_verbs::GovernanceError::Validation),
+        matches!(err, busbar_admin::GovernanceError::Validation),
         "an unknown fingerprint refuses Validation, got {err:?}"
     );
     assert_eq!(history.len(), 1, "a refused correction appends nothing");
@@ -3144,7 +3144,7 @@ fn amend_rate_history_refuses_a_correction_whose_signature_does_not_verify() {
     let err = amend_rate_history_effect(&history, &body, 6, a_sealed_operator())
         .expect_err("a signature that does not cover the body must be refused");
     assert!(
-        matches!(err, busbar_unit_verbs::GovernanceError::Validation),
+        matches!(err, busbar_admin::GovernanceError::Validation),
         "a bad signature refuses Validation, got {err:?}"
     );
     assert_eq!(history.len(), 1, "a refused correction appends nothing");
@@ -3169,7 +3169,7 @@ fn amend_rate_history_refuses_a_correction_whose_signature_does_not_verify() {
 ///   release without an operator key.
 #[test]
 fn the_production_posture_view_seals_the_operator_key_the_verify_path_admits_against() {
-    use busbar_unit_verbs::{DualControl, OperatorState};
+    use busbar_admin::{DualControl, OperatorState};
 
     // The fleet's sealed operator PUBLIC key — the 32 raw ed25519 bytes `set_operator_key` seals.
     let sealed_pub = a_test_operator_signing_key().verifying_key().to_bytes();
@@ -3214,7 +3214,7 @@ fn the_production_posture_view_seals_the_operator_key_the_verify_path_admits_aga
     assert!(
         matches!(
             amend_rate_history_effect(&fresh, &a_correction_body(), 6, unset_ctx.operator),
-            Err(busbar_unit_verbs::GovernanceError::Validation)
+            Err(busbar_admin::GovernanceError::Validation)
         ),
         "with no sealed operator key the amend is refused, byte-for-byte as the release without it"
     );

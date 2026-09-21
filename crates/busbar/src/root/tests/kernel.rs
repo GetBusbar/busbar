@@ -232,7 +232,7 @@ fn the_admin_grant_is_the_previous_releases_three_arms() {
     ));
     assert_eq!(
         open.admin_grant(&PrincipalId::new("anonymous")),
-        Some(busbar_unit_verbs::VerbScope::Full),
+        Some(busbar_admin::VerbScope::Full),
         "the explicit open posture — no credential configured — is full, as it has always been"
     );
 
@@ -244,7 +244,7 @@ fn the_admin_grant_is_the_previous_releases_three_arms() {
         closed.admin_grant(&PrincipalId::new(
             crate::root::auth_bindings::ADMIN_PRINCIPAL_ID
         )),
-        Some(busbar_unit_verbs::VerbScope::Full),
+        Some(busbar_admin::VerbScope::Full),
         "the operator credential is the root credential, and carries the full tier by definition"
     );
     assert_eq!(

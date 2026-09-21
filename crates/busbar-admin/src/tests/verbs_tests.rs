@@ -9,7 +9,7 @@ use crate::governance::{Governance, GovernanceError, MintedKey, RotateOutcome};
 use crate::idempotency::ReplayEncoder;
 use crate::posture::{ApprovalState, DualControl, OperatorState, PostureCtx};
 use crate::rate::CONFIG_CLASS_RULES;
-use crate::store::{Store, StoreError};
+use busbar_contract::verb_store::{Store, StoreError};
 use crate::verb::{KernelVerb, VerbScope};
 use crate::verbs::{MintedKeyOutcome, NonceSource, Verbs};
 use busbar_contract::caps::{Grant, AdminVerb, KernelSeal, UnitKey};

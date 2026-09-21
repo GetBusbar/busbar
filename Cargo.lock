@@ -367,7 +367,6 @@ dependencies = [
  "busbar-transport-tls",
  "busbar-transport-ws",
  "busbar-unit-transport-key",
- "busbar-unit-verbs",
  "busbar-voice",
  "bytes",
  "core_affinity",
@@ -458,6 +457,7 @@ dependencies = [
  "base64 0.23.1",
  "busbar-a2a",
  "busbar-api",
+ "busbar-contract",
  "busbar-kernel",
  "busbar-llm",
  "busbar-mcp",
@@ -961,7 +961,6 @@ dependencies = [
  "busbar-plugin",
  "busbar-plugin-example-plane",
  "busbar-plugin-sign",
- "busbar-unit-verbs",
  "flate2",
  "getrandom 0.3.4",
  "libc",
@@ -1205,14 +1204,6 @@ dependencies = [
  "busbar-contract",
  "rcgen",
  "rustls",
-]
-
-[[package]]
-name = "busbar-unit-verbs"
-version = "1.6.0"
-dependencies = [
- "busbar-contract",
- "serde_json",
 ]
 
 [[package]]

@@ -32,7 +32,7 @@ use crate::store_adapter::{
 };
 use busbar_contract::caps::{Grant, AdminVerb, KernelSeal};
 use busbar_contract::slice::{bucket_all, CapDimension, Epoch, SliceId, SliceRequest, SliceStore};
-use busbar_unit_verbs::store::Store as VerbStore;
+use busbar_contract::verb_store::Store as VerbStore;
 use busbar_kernel_wal::Record;
 use std::sync::Arc;
 

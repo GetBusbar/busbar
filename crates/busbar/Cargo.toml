@@ -103,7 +103,6 @@ busbar-kernel-breaker = { path = "../busbar-kernel-breaker" }
 busbar-kernel-wal = { path = "../busbar-kernel-wal" }
 busbar-kernel-audit = { path = "../busbar-kernel-audit" }
 busbar-unit-transport-key = { path = "../busbar-unit-transport-key" }
-busbar-unit-verbs = { path = "../busbar-unit-verbs" }
 # The five planes. The root is the only thing that knows both a plane's type (and therefore its
 # `PlaneMeta` associated constants, which a `dyn Plugin` cannot read) and its registry key, so the
 # root is what pairs them into the claim slice the boot check reads.
