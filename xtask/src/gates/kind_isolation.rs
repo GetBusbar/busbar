@@ -495,6 +495,16 @@ const ACCEPTED_NAMES: &[(&str, &str)] = &[
          implements the hook ABI, while this crate is the neutral caller that runs them. It is \
          `core` kind on the same terms as kernel and caps, and reaches only the neutral spine.",
     ),
+    (
+        "busbar-core-transport",
+        "the core-side CONNECTION-SECURITY seam, carved out of busbar-kernel (DECISIONS #40). \
+         `transport` here is the kind word describing what its opaque `ConnectionSecurity` wrap is \
+         FOR — the TLS/identity build a transport applies blind — never a transport instance: no \
+         transport is named, the crate implements no `Transport` face, and it runs once per \
+         listener at boot rather than per connection byte. It is `core` kind on the same terms as \
+         kernel and caps (a compiled-in cleanliness sibling, one-way dep on the neutral spine), \
+         and reaches only busbar-contract and busbar-kernel.",
+    ),
 ];
 
 // ------------------------------------------------------------------------------------------------

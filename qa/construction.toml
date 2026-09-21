@@ -176,25 +176,29 @@ follows."""
 
 [gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"]
 from = 3545
-to = 5230
+to = 5238
 because = """2c9eddecf (W2.c "fold busbar-caps into busbar-contract; 12 units -> 8 \
 busbar-kernel-<name>") and b65fbfb83 (DECISIONS #38 "fold busbar-contract-transport INTO \
 busbar-contract") both dissolve into busbar-contract's own src tree, on top of the upstream-status \
 raise this ceiling already carried (3478 -> 3543). busbar-caps is now empty (0, see the \
 loc-ceilings:caps-contract row) and its former content, plus the transport module, live inside \
-busbar-contract's 5230 surface lines. Pinned to today's measurement, no headroom."""
+busbar-contract's surface lines. RAISED AGAIN 5230 -> 5238: busbar-core-transport (DECISIONS #40) \
+added the opaque `ConnectionSecurity` transport face — the wrap a transport applies blind — to \
+busbar-contract's src tree, ~8 lines. Pinned to today's measurement, no headroom."""
 
 [gate.ceiling_raises."gate.surface_ceilings.contract_caps"]
 from = 3543
-to = 7004
+to = 7012
 because = """The same W2.c caps fold and #38 contract-transport fold (see \
 rules.loc-ceilings.caps_contract_ceiling above) also move the plugin-visible surface \
 `scripts/loc-surface.py` counts: caps's own plugin-visible types and the transport module's \
 plugin-visible types both now live inside busbar-contract, which is why this row's measured surface \
 (a different counting method than loc-ceilings, hence a different absolute number for the same \
-crate) rose from 3543 to 7004. Pinned to today's measurement, no headroom, in the same commit as the \
-loc-ceilings caps_contract_ceiling raise, per this file's own stated rule that the two rows are ONE \
-owner decision measured two ways."""
+crate) rose from 3543 to 7004. RAISED AGAIN 7004 -> 7012: busbar-core-transport (DECISIONS #40) \
+added the opaque `busbar_contract::transport::wire::ConnectionSecurity` face to busbar-contract, \
+which the plugin-visible surface counts. Pinned to today's measurement, no headroom, in the same \
+commit as the loc-ceilings caps_contract_ceiling raise, per this file's own stated rule that the \
+two rows are ONE owner decision measured two ways."""
 
 # The surface ceilings from ARCHITECTURE.md section 1.1: what a PLUGIN AUTHOR has to read. These are
 # owner decisions, not ratchets that drift upward with the tree — the gate reads them
@@ -215,7 +219,12 @@ owner decision measured two ways."""
 # left to ceiling — its former LOC now lives inside `contract_caps` itself, which is why this row
 # rises all the way to 7004 (caps fold + transport fold, see `[rules.loc-ceilings]` above) rather
 # than stopping at the caps-only figure.
-contract_caps = 7004
+# RAISED AGAIN 7004 -> 7012: busbar-core-transport (DECISIONS #40) added the opaque
+# `busbar_contract::transport::wire::ConnectionSecurity` face — the wrap a transport applies blind —
+# to busbar-contract, which the plugin-visible surface counts. Pinned to today's measurement, no
+# headroom, in the same commit as the loc-ceilings caps_contract_ceiling raise. See the declared
+# raise above.
+contract_caps = 7012
 grammar = 388
 
 # ── 1. one-attempt-seam ──────────────────────────────────────────────────────────────────────────
@@ -492,7 +501,10 @@ contract_crate = "busbar-contract"
 # (DECISIONS #38, fold busbar-contract-transport into busbar-contract) both dissolve into this
 # crate's src tree; busbar-caps is now empty (0). Pinned at today's measurement. See the declared
 # raise above.
-caps_contract_ceiling = 5230
+# RAISED AGAIN 5230 -> 5238: busbar-core-transport (DECISIONS #40) added the opaque
+# `ConnectionSecurity` transport face to busbar-contract's src tree (~8 lines). busbar-caps stays
+# empty (0). Pinned at today's measurement. See the declared raise above.
+caps_contract_ceiling = 5238
 unit_crate_glob = "busbar-unit-*"
 # RE-KEYED on cherry-pick onto 143db6db6: this commit's own delta is -53 (two units stopped
 # declaring their own copies), measured against whatever unit_total_ceiling read when the line was

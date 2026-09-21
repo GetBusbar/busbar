@@ -815,6 +815,24 @@
    ]
   },
   {
+   "id": "crates/busbar-core-transport/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-core-transport/src"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-core-transport/src/tests"
+   ]
+  },
+  {
    "id": "crates/busbar-grammar/src",
    "kind": "production",
    "paths": [
