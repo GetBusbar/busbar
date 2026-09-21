@@ -120,7 +120,18 @@ pub async fn oversized_413_body(
     let (router, _handle) = crate::build_router_with_limits(app, 64, 1024, false);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    // Cooperative shutdown rather than `JoinHandle::abort`: `axum::serve`'s own graceful-shutdown
+    // future is raced INSIDE its accept loop, so telling it to stop is a signal the server notices at
+    // its own next poll, never a forced mid-flight interruption.
+    let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, router)
+            .with_graceful_shutdown(async move {
+                let _ = stop_rx.await;
+            })
+            .await
+            .unwrap()
+    });
 
     let oversized = "x".repeat(4096);
     let r = reqwest::Client::new()
@@ -136,7 +147,8 @@ pub async fn oversized_413_body(
         "the body cap must reject the oversized POST to {path}"
     );
     let body = r.text().await.unwrap();
-    server.abort();
+    let _ = stop_tx.send(());
+    let _ = server.await;
     serde_json::from_str(&body)
         .unwrap_or_else(|e| panic!("the 413 body must be JSON ({e}): {body}"))
 }

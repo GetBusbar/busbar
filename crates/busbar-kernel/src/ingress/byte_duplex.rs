@@ -223,12 +223,15 @@ struct Shared {
     /// The monotonic mint; starts at 1 so [`CallRef::NONE`] (`0`) is never handed out.
     next_ref: AtomicU64,
     /// In-flight per-frame handlers, keyed on a private sequence so each removes itself on
-    /// completion (bounded memory) and the loop can abort the remainder at EOF. The slot is RESERVED
-    /// under the lock before the handler is spawned and only then filled in with its abort handle —
-    /// `None` is a handler already running whose handle has not landed yet. Reserving first is what
-    /// makes a handler's self-removal authoritative: it can only ever remove a key that exists, so
-    /// the dispatcher never writes an entry back in behind it.
-    inflight: Mutex<HashMap<u64, Option<tokio::task::AbortHandle>>>,
+    /// completion (bounded memory) and the drain can tell whether any are still running. The key is
+    /// RESERVED under the lock before the handler is spawned, so a handler that finishes first can
+    /// only ever remove a key that already exists — the dispatcher never writes an entry back in
+    /// behind it.
+    ///
+    /// Deliberately carries no abort handle: EOF drain stops waiting on a straggling handler rather
+    /// than forcing it, per the hold-discipline rule against `JoinHandle::abort` (see
+    /// [`drain_and_flush`]'s cooperative stop for why).
+    inflight: Mutex<std::collections::HashSet<u64>>,
     /// The private sequence behind the `inflight` keys.
     next_inflight: AtomicU64,
     /// THIS SESSION'S handler permits — [`MAX_INFLIGHT_HANDLERS`] of them. A permit is taken before
@@ -321,7 +324,7 @@ fn new_shared(sink: Box<dyn FrameSink>) -> Arc<Shared> {
         sink: tokio::sync::Mutex::new(sink),
         pending: Mutex::new(HashMap::new()),
         next_ref: AtomicU64::new(1),
-        inflight: Mutex::new(HashMap::new()),
+        inflight: Mutex::new(std::collections::HashSet::new()),
         next_inflight: AtomicU64::new(0),
         handlers: Arc::new(tokio::sync::Semaphore::new(MAX_INFLIGHT_HANDLERS)),
         queued: std::sync::atomic::AtomicUsize::new(0),
@@ -382,10 +385,14 @@ fn offer_frame<P: DuplexPlane>(
 /// START THE DISPATCHER for one session: the task that does the waiting the reader must not do. It
 /// takes queued non-reply frames in the order the reader accepted them, acquires a handler permit for
 /// each (parking here, where parking costs nothing but the queue backing up), and spawns the handler
-/// under a private key so it clears itself on completion and the EOF path can abort whatever remains.
+/// under a private key so it clears itself on completion and the EOF path can tell when the drain is
+/// done.
 ///
-/// Returns the sender the reader hands frames to, and the dispatcher's own handle so the end of the
-/// session can stop it.
+/// Returns the sender the reader hands frames to, the dispatcher's own handle, and a STOP signal the
+/// end of the session raises instead of aborting the task (see [`drain_and_flush`]). The dispatcher
+/// races the stop against EVERY await point in its loop body — the queue receive AND the permit
+/// acquire — so raising it always lands promptly regardless of which one it is currently parked in;
+/// nothing here needs `JoinHandle::abort` to stop the dispatcher on a bound.
 fn spawn_dispatcher<P: DuplexPlane>(
     shared: &Arc<Shared>,
     handle: &DuplexHandle,
@@ -393,21 +400,36 @@ fn spawn_dispatcher<P: DuplexPlane>(
 ) -> (
     tokio::sync::mpsc::Sender<Vec<u8>>,
     tokio::task::JoinHandle<()>,
+    tokio::sync::watch::Sender<bool>,
 ) {
     let (tx, mut rx) = tokio::sync::mpsc::channel::<Vec<u8>>(QUEUE_DEPTH);
+    let (stop_tx, mut stop_rx) = tokio::sync::watch::channel(false);
     let shared = shared.clone();
     let handle = handle.clone();
     let plane = plane.clone();
     let task = tokio::spawn(async move {
-        while let Some(frame) = rx.recv().await {
-            // `Err` is a closed semaphore, which nothing here ever does.
-            let Ok(permit) = shared.handlers.clone().acquire_owned().await else {
-                return;
+        loop {
+            // `biased`: on every poll, prefer noticing the stop over taking on more work, so a
+            // session already told to wind down never spawns one more handler than it has to.
+            let frame = tokio::select! {
+                biased;
+                _ = stop_rx.changed() => return,
+                frame = rx.recv() => frame,
             };
+            let Some(frame) = frame else { return };
+            // `Err` is a closed semaphore, which nothing here ever does; racing the stop here too is
+            // what keeps a dispatcher parked on a saturated session's permits from outliving the
+            // drain bound.
+            let permit = tokio::select! {
+                biased;
+                _ = stop_rx.changed() => return,
+                permit = shared.handlers.clone().acquire_owned() => permit,
+            };
+            let Ok(permit) = permit else { return };
             spawn_handler(&shared, &handle, &plane, frame, permit);
         }
     });
-    (tx, task)
+    (tx, task, stop_tx)
 }
 
 /// SPAWN ONE handler for one frame, holding the permit it was admitted on. The permit rides into the
@@ -422,9 +444,9 @@ fn spawn_handler<P: DuplexPlane>(
     let key = shared.next_inflight.fetch_add(1, Ordering::Relaxed);
     // RESERVE the slot before the handler exists. This runs on the dispatcher's task and the handler
     // on the runtime's, so a handler that finishes first would otherwise clear a key not yet
-    // written — and the write would then land on a slot nobody will ever remove again, holding the
-    // EOF drain open for its full bound and growing the registry for the life of the session.
-    shared.inflight.lock().unwrap().insert(key, None);
+    // written — and the write would then land on a slot nobody will ever remove again, growing the
+    // registry for the life of the session.
+    shared.inflight.lock().unwrap().insert(key);
     // The frame is now accounted for by `inflight` instead of by the queue counter; releasing it only
     // AFTER the reservation lands is what keeps the union of the two non-empty across the handoff.
     shared
@@ -433,23 +455,28 @@ fn spawn_handler<P: DuplexPlane>(
     let plane = plane.clone();
     let handle = handle.clone();
     let for_cleanup = shared.clone();
-    let running = tokio::spawn(async move {
+    // No abort handle is kept: `plane.handle` is a plane-supplied future this transport does not
+    // control the inside of, and `JoinHandle::abort` can interrupt it between ANY two of its own
+    // `.await`s — exactly the kind of forced, uncontracted mid-flight interruption the hold-discipline
+    // rule this crate holds itself to exists to rule out. If EOF's bounded drain (`drain_and_flush`)
+    // elapses before this finishes, the session stops WAITING on it rather than killing it; the task
+    // keeps the `Arc<Shared>` (and its permit) alive and runs to its own natural completion, detached.
+    tokio::spawn(async move {
         let _permit = permit;
         plane.handle(frame, handle).await;
         for_cleanup.inflight.lock().unwrap().remove(&key);
     });
-    // Fill the reservation in ONLY while it is still there: a handler that already finished has taken
-    // the slot with it, and its abort handle is of no use to anyone.
-    if let Some(slot) = shared.inflight.lock().unwrap().get_mut(&key) {
-        *slot = Some(running.abort_handle());
-    }
 }
 
-/// END OF SESSION: DRAIN the in-flight handlers under a bound, then abort the remainder and flush. A
-/// one-shot invocation (one frame, then EOF/close) has its answer computed after the far end goes
-/// away, so a straight abort would serve nothing to exactly the caller who asked for one thing. Shared
-/// by both entry points.
-async fn drain_and_flush(shared: &Arc<Shared>, dispatcher: tokio::task::JoinHandle<()>) {
+/// END OF SESSION: DRAIN the in-flight handlers under a bound, then STOP WAITING on the remainder
+/// (cooperatively, never forced) and flush. A one-shot invocation (one frame, then EOF/close) has its
+/// answer computed after the far end goes away, so a straight abort would serve nothing to exactly the
+/// caller who asked for one thing. Shared by both entry points.
+async fn drain_and_flush(
+    shared: &Arc<Shared>,
+    dispatcher: tokio::task::JoinHandle<()>,
+    stop_dispatcher: tokio::sync::watch::Sender<bool>,
+) {
     let deadline = tokio::time::Instant::now() + EOF_DRAIN;
     // "Still working" is the UNION of frames the dispatcher has not yet spawned and handlers already
     // running. Reading only the second would end a one-shot invocation before its single handler ever
@@ -463,14 +490,24 @@ async fn drain_and_flush(shared: &Arc<Shared>, dispatcher: tokio::task::JoinHand
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
     // Stop admitting: anything still queued is a frame this session will not get to, and letting the
-    // dispatcher keep spawning past the drain would start handlers nobody is left to answer.
-    dispatcher.abort();
-    for (_, h) in shared.inflight.lock().unwrap().drain() {
-        // A reservation with no handle yet is a handler spawned moments ago; the runtime drops it
-        // with the session, and there is nothing here to abort it with.
-        if let Some(h) = h {
-            h.abort();
-        }
+    // dispatcher keep spawning past the drain would start handlers nobody is left to answer. This
+    // RAISES a signal the dispatcher races against every one of its own await points rather than
+    // aborting its task, so it always winds down on its own terms — see [`spawn_dispatcher`]. The
+    // watch send cannot fail (this fn holds the receiver's task handle, so the receiver is alive),
+    // and joining afterwards is bounded by that same race rather than by `plane.handle` finishing.
+    let _ = stop_dispatcher.send(true);
+    let _ = dispatcher.await;
+    // Whatever handlers are STILL in `inflight` past the bound above are not killed — see
+    // [`spawn_handler`] for why forcing them is exactly the interruption hold-discipline rules out.
+    // They keep the `Arc<Shared>` alive and finish on their own; this session simply stops waiting for
+    // them so a wedged handler never holds `serve`/`serve_messages` open past its bound.
+    let stragglers = shared.inflight.lock().unwrap().len();
+    if stragglers > 0 {
+        tracing::debug!(
+            stragglers,
+            "duplex: end-of-session drain bound reached with handler(s) still running; letting them \
+             finish in the background rather than forcing them"
+        );
     }
     // END-OF-SESSION policy: whatever is still buffered is already unanswerable — the session is
     // over and there is no one left to tell — so a failed final flush is a diagnostic, not a
@@ -495,7 +532,7 @@ where
     let handle = DuplexHandle {
         shared: shared.clone(),
     };
-    let (frames, dispatcher) = spawn_dispatcher(&shared, &handle, &plane);
+    let (frames, dispatcher, stop_dispatcher) = spawn_dispatcher(&shared, &handle, &plane);
     let mut lines = tokio::io::BufReader::new(reader);
     let mut buf: Vec<u8> = Vec::new();
     loop {
@@ -531,7 +568,7 @@ where
             break;
         }
     }
-    drain_and_flush(&shared, dispatcher).await;
+    drain_and_flush(&shared, dispatcher, stop_dispatcher).await;
 }
 
 /// SERVE one inbound MESSAGE-duplex channel until the stream ends, driving the SAME `plane` callbacks,
@@ -554,7 +591,7 @@ where
     let handle = DuplexHandle {
         shared: shared.clone(),
     };
-    let (frames, dispatcher) = spawn_dispatcher(&shared, &handle, &plane);
+    let (frames, dispatcher, stop_dispatcher) = spawn_dispatcher(&shared, &handle, &plane);
     // One frame per message, no framing to strip. The stream ending (close / dropped sender) is the
     // message-duplex analogue of EOF.
     while let Some(frame) = stream.next().await {
@@ -565,7 +602,7 @@ where
             break;
         }
     }
-    drain_and_flush(&shared, dispatcher).await;
+    drain_and_flush(&shared, dispatcher, stop_dispatcher).await;
 }
 
 #[cfg(all(test, feature = "test-support"))]
