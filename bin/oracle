@@ -156,7 +156,16 @@ case "$sub" in
     exec "$RUST_BIN" owed-baseline --baseline "$DATA/owed-baseline.txt" "$@" ;;
 
   fetch-golden)
-    exec "$RUST_BIN" fetch-golden --digests "$DATA/golden-digests.tsv" --cache-dir "$CACHE" "$@" ;;
+    # WORKAROUND for a parser bug in the pinned Rust engine (busbar-release @ oracle-rust.pin): its
+    # fetch-golden `pinned()` reader does `let (v,a,d)=(f.next()?,f.next()?,f.next()?)` per line, so the
+    # FIRST tab-less comment line in golden-digests.tsv (`# Pinned from …`) makes the `?` return None
+    # from the whole function — it never reaches the data rows and exits 3 ("no pinned digest"). The
+    # sibling `pinned_binary_digests()`/`find_pin()` correctly `continue` on short rows, so only
+    # fetch-golden is affected (replay's --check-golden gate is fine). Feed the engine a de-commented
+    # copy (identical data rows, tabs preserved) until the parser is fixed upstream and re-pinned.
+    clean="$root/golden-digests.clean.tsv"
+    grep -vE '^[[:space:]]*#|^[[:space:]]*$' "$DATA/golden-digests.tsv" > "$clean"
+    exec "$RUST_BIN" fetch-golden --digests "$clean" --cache-dir "$CACHE" "$@" ;;
 
   fetch-plugin)
     # `fetch-plugin <name> [--check]` — the data dir carries plugin-digests.tsv.
