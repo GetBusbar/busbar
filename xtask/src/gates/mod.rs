@@ -37,6 +37,7 @@ pub mod inventory_coverage;
 pub mod inventory_ref;
 pub mod kernel_token_wire_purity;
 pub mod kind_isolation;
+pub mod money_invariants;
 pub mod no_deferral;
 pub mod no_self_filed_issues;
 pub mod no_tracked_ignored;
@@ -1994,6 +1995,13 @@ pub static REGISTRY: &[Registration] = &[
         tier: Tier::Fast,
         build: || Box::new(seal_witness::SealWitnessGate),
         summary: "capability proofs are exactly Pass<stage> + Grant<capability> + one kernel minter (#65/#73)",
+    },
+    Registration {
+        name: "money-invariants",
+        batch: 1,
+        tier: Tier::Fast,
+        build: || Box::new(money_invariants::MoneyInvariantsGate),
+        summary: "money records hold no plugin/plane field, store no price, seal one facts-line per unit (#77)",
     },
     Registration {
         name: "kind-isolation",
