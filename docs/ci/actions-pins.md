@@ -36,8 +36,7 @@ Resolved 2026-09-11 from `https://github.com/<owner>/<repo>` (git ls-remote, liv
 | actions/upload-artifact | v4 | `ea165f8d65b6e75b540449e92b4886f43607fa02` | 2026-09-11 | `git ls-remote` (tag) |
 | actions/upload-artifact | v7 | `043fb46d1a93c77aae656e7c1c64a875d1fc6a0a` | 2026-09-11 | `git ls-remote` (tag) |
 | azure/setup-helm | v4 | `1a275c3b69536ee54be43f2070a358922e12c8d4` | 2026-09-11 | `git ls-remote` (tag, peeled) |
-| codecov/codecov-action | v5 | `0fb7174895f61a3b6b78fc075e0cd60383518dac` | 2026-09-11 | `git ls-remote` (tag, peeled) |
-| codecov/codecov-action | v5.5.5 | `0fb7174895f61a3b6b78fc075e0cd60383518dac` | 2026-09-11 | `git ls-remote` (tag, peeled) |
+| codecov/codecov-action | v7.1.1 | `303a32d7a59b442fa8d48b6a1cc6825c09c847a5` | 2026-09-21 | `git ls-remote` (tag, peeled) |
 | docker/build-push-action | v7 | `53b7df96c91f9c12dcc8a07bcb9ccacbed38856a` | 2026-09-11 | `git ls-remote` (tag) |
 | docker/login-action | v4 | `dbcb813823bdd20940b903addbd779551569679f` | 2026-09-11 | `git ls-remote` (tag) |
 | docker/metadata-action | v6 | `dc802804100637a589fabce1cb79ff13a1411302` | 2026-09-11 | `git ls-remote` (tag) |
