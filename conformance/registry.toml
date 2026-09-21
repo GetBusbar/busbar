@@ -13,8 +13,8 @@
 #          registry's copy of that same classification, kept in the repo whose
 #          workflows actually produce the verdicts.
 #
-# Adding a suite: add one [suite.<id>] block here (CONFORMANCE-SYNC-DESIGN.md
-# §7 "onboarding a brand-new suite") — nothing else changes on either
+# Adding a suite: add one [suite.<id>] block here — onboarding a brand-new
+# suite changes nothing else on either
 # human-visible surface. Do NOT set tier="certified" without a real, issued
 # cert_id/issuer/expires in the suite's verdict; the generator refuses it.
 
@@ -55,8 +55,8 @@ tier     = "conformant"
 cost     = "free"
 verdict  = "conformance-verdict-http2-h2spec"
 public   = true
-# NOT built yet; scope pending DICTATOR-D2 (CONFORMANCE-GATES-PLAN.md §5.2,
-# §7 D2). Turnstile CommandCheck id: conformance:http2-h2spec.
+# NOT built yet; scope pending the DICTATOR-D2 ruling. Turnstile CommandCheck
+# id: conformance:http2-h2spec.
 
 [suite.tls-testssl]
 standard = "TLS configuration grade (testssl.sh)"

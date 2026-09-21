@@ -757,7 +757,7 @@ fn plants(cx: &Ctx) -> Vec<Plant> {
         ov.set(
             WORKFLOW,
             format!(
-                "{t}\n  {DECL} busbar-core/loom-model{SEP}no-such-job{SEP}a job key that this \
+                "{t}\n  {DECL} busbar-kernel/loom-model{SEP}no-such-job{SEP}a job key that this \
                  workflow does not define, declared anyway\n"
             ),
         );
@@ -769,7 +769,7 @@ fn plants(cx: &Ctx) -> Vec<Plant> {
         let mut ov = Overlay::new();
         ov.set(
             WORKFLOW,
-            format!("{t}\n  {DECL} busbar-core/loom-model{SEP}check{SEP}because\n"),
+            format!("{t}\n  {DECL} busbar-kernel/loom-model{SEP}check{SEP}because\n"),
         );
         ov
     });

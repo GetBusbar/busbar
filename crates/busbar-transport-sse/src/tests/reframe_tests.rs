@@ -50,7 +50,7 @@ fn a_multi_line_payload_is_split_across_data_lines() {
 
 #[test]
 fn the_seam_is_a_byte_for_byte_pass_through_to_the_free_functions() {
-    // The HOST-CAPS S3 seam must be a FAITHFUL pass-through: a mount that opts onto it (W2) must
+    // The HOST-CAPS seam must be a FAITHFUL pass-through: a mount that opts onto it must
     // get exactly the bytes the free functions produce today, or the reframe is not byte-safe.
     let reframer = PassThroughReframe;
     for accept in [

@@ -57,7 +57,7 @@ The badge criteria are grouped as the bestpractices.dev form groups them. Answer
 |---|---|---|
 | `build` + `build_common_tools` + `build_floss_tools` | Met | `cargo` build; standard Rust toolchain pinned in `rust-toolchain.toml`. |
 | `automated_test_suite` + `test` + `test_invocation` | Met | 2,000+ unit tests, offline acceptance harness; `cargo test`. Full CI in `ci.yml` (owned separately) and `qa-gate.yml`. |
-| `test_most` — tests cover most of the code | Met | Codecov coverage badge in README; mutation testing (`scripts/run-mutants-ec2.sh`, `gate-mutants.yml`). |
+| `test_most` — tests cover most of the code | Met | Codecov coverage badge in README; a mutation-strength test gate (`scripts/run-mutants-ec2.sh`, `gate-mutants.yml`). |
 | `test_policy` + `tests_are_added` + `tests_documented_added` | Met | Repo discipline: a bug becomes a regression test **and**, where the class allows, a CI gate — documented in `docs/design/1.6.0-security-posture.md` §4.2 and enforced by the xtask gate battery (`xtask/src/gates/`). |
 | `warnings` + `warnings_fixed` + `warnings_strict` | Met | `cargo clippy --workspace --all-targets -- -D warnings` (warnings are errors) in CI and `sched-monthly-refresh.yml`. |
 
@@ -76,7 +76,7 @@ The badge criteria are grouped as the bestpractices.dev form groups them. Answer
 | `no_leaked_credentials` | Met | `Redacted<T>` (no `Serialize`/`Deserialize`), `SecretRef` (inline literal unrepresentable), and the `cargo xtask gate settings-leak` gate. |
 | `static_analysis` + `static_analysis_common_vulnerabilities` | Met | CodeQL (`qa-codeql.yml`); clippy at `-D warnings`; the xtask gate battery. |
 | `static_analysis_fixed` + `static_analysis_often` | Met | CodeQL on every `qa` promotion; clippy on every push. |
-| `dynamic_analysis` / `dynamic_analysis_unsafe` | Met | loom concurrency model (`scripts/loom.sh`) for the config-swap invariant; mutation testing. |
+| `dynamic_analysis` / `dynamic_analysis_unsafe` | Met | loom concurrency model (`scripts/loom.sh`) for the config-swap invariant; a mutation-strength test gate. |
 | **Dependency advisory scanning** (`static_analysis` supply-chain dimension) | Met | `qa-security.yml` runs **cargo-deny** (advisories · licenses · sources · bans) **and cargo-audit** (RustSec) at the qa boundary and weekly; **OpenSSF Scorecard** (`sched-scorecard.yml`) weekly. |
 
 ## Analysis / other

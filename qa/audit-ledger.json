@@ -644,6 +644,21 @@
    ]
   },
   {
+   "id": "crates/busbar-contract/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-contract/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
    "id": "crates/busbar-contract-transport/src",
    "kind": "production",
    "paths": [
@@ -937,6 +952,36 @@
      "report": "challenge round dropped its accrual, Sessions::open displaced a live session, NestedPool::leave unbounded (all fixed); canary identity mis-specified (owner); 18/18 plants caught, 4 survivors named"
     }
    ]
+  },
+  {
+   "id": "crates/busbar-kernel/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-kernel/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-kernel/benches",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-kernel/benches"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
   },
   {
    "id": "crates/busbar-llm/src",
@@ -2943,6 +2988,21 @@
      "report": "read as the authority the auth unit's admin mirror defers to; nothing survived triage in what was opened"
     }
    ]
+  },
+  {
+   "id": "crates/busbar-kernel-scope/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-kernel-scope/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
   },
   {
    "id": "crates/busbar-unit-transport-key/src",

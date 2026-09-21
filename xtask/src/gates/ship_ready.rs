@@ -16,7 +16,7 @@
 //! | [`ROW_ROSE`] | `ceiling-rose` is green: no number in a qa ceilings file went up on this branch |
 //! | [`ROW_STANDING`] | the standing-red list is EMPTY, for a `qa`/`main` posture |
 //!
-//! The `gate-mutants` (mutation testing) job used to be a fifth row here, read from the GitHub
+//! The `gate-mutants` job used to be a fifth row here, read from the GitHub
 //! checks API. Per owner ruling it is now MANUAL-ONLY and entirely OPTIONAL — it tests the tests,
 //! it does not gate a release — so ship-ready no longer owes or reads a mutation verdict, and
 //! branch protection no longer requires the `gate-mutants` check.

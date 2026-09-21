@@ -28,10 +28,10 @@
 //! [`PassThroughInboundJws`] delegates to the exact `pin_a_signed_card` the shipped path calls today —
 //! same pin, same `Verified`, same `JwsError`, byte for byte. And NOTHING on the shipped path consults
 //! the seam yet: `verify_document` still calls `pin_a_signed_card` directly, so inbound verification is
-//! unchanged until the call site opts in (W2). Reading [`inbound_card_jws`] in a build that installed
+//! unchanged until the call site opts in. Reading [`inbound_card_jws`] in a build that installed
 //! no capability returns `None`.
 
-// The seam's install/get are reached by tests until the `verify_document` call site flips onto it (W2)
+// The seam's install/get are reached by tests until the `verify_document` call site flips onto it
 // — the same not-yet-mounted posture the plane's other staged pieces record.
 #![cfg_attr(not(test), allow(dead_code))]
 
@@ -57,7 +57,7 @@ pub(crate) trait InboundCardJws: Send + Sync {
 
 /// The production inbound-JWS capability: a BYTE-FOR-BYTE pass-through to
 /// [`pin::pin_a_signed_card`](super::pin::pin_a_signed_card). The plane's composition installs this, so
-/// a call site that opts onto the seam (W2) gets exactly the pin/`Verified`/`JwsError` the free
+/// a call site that opts onto the seam gets exactly the pin/`Verified`/`JwsError` the free
 /// function produces now.
 pub(crate) struct PassThroughInboundJws;
 

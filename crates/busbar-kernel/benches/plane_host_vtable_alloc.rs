@@ -3,12 +3,12 @@
 
 //! THE HOT-PATH ALLOC INSTRUMENT — the zero-allocation witness of
 //! `docs/design/1.6.0-plane-extraction-LOCKED.md` §8 ("Alloc gate: `#[global_allocator]` counter =
-//! 0 across the ISOLATED POD host-call batch"), owed alongside the perf instrument by §11b's
+//! 0 across the ISOLATED POD host-call batch"), owed alongside the perf instrument as part of the
 //! tests/benches 8→9 rise.
 //!
 //! # What is measured
 //!
-//! §2's HOT tier promises "zero alloc / zero serde on the call": a plane crossing into the host
+//! The HOT tier promises "zero alloc / zero serde on the call": a plane crossing into the host
 //! through the [`PlaneHostVtable`] slots — POD args by pointer, results by value — must not touch the
 //! global allocator at all. This file proves it with a counting `#[global_allocator]`
 //! ([`CountingAlloc`]) that is ARMED only around the isolated POD host-call batch
@@ -18,7 +18,7 @@
 //!
 //! Arming ONLY the batch is load-bearing: criterion itself allocates freely, so a global counter
 //! that was live for the whole process would measure the harness, not the seam. `ARMED` gates the
-//! count to the exact window §8 names.
+//! count to the exact window the alloc budget names.
 //!
 //! The `BUSBAR_ALLOC_INJECT` environment knob allocates inside the armed region on purpose, which is
 //! how the `== 0` assertion is proven RED-able rather than vacuously green.
@@ -37,7 +37,7 @@
 //! cargo bench -p busbar-core --bench plane_host_vtable_alloc
 //! ```
 //!
-//! `cargo xtask gate hot-path-alloc` enforces that this instrument keeps making the §8 claim; this
+//! `cargo xtask gate hot-path-alloc` enforces that this instrument keeps making the alloc-budget claim; this
 //! file is what measures it.
 
 use busbar_plugin::hot::host::{GovernAdmitFn, HostCtx, PlaneHostVtable};
@@ -115,7 +115,7 @@ fn pod_facts() -> Facts {
     f
 }
 
-/// THE §8 ASSERTION — zero allocations across the isolated POD host-call batch.
+/// THE ALLOC-BUDGET ASSERTION — zero allocations across the isolated POD host-call batch.
 fn assert_zero_alloc_pod_batch() {
     let null: HostCtx = std::ptr::null_mut();
     let vt = armed_vtable();
@@ -134,7 +134,7 @@ fn assert_zero_alloc_pod_batch() {
         let decision = admit(null, black_box(facts_ptr));
         sink = sink.wrapping_add(decision as u64);
         if inject {
-            // The RED shape: an allocation inside the isolated batch, which §8 forbids.
+            // The RED shape: an allocation inside the isolated batch, which the budget forbids.
             let v: Vec<u8> = Vec::with_capacity(16);
             sink = sink.wrapping_add(black_box(v).capacity() as u64);
         }
@@ -146,7 +146,7 @@ fn assert_zero_alloc_pod_batch() {
     assert_eq!(
         allocations, 0,
         "HOT-PATH ALLOC: the isolated POD host-call batch performed {allocations} global \
-         allocation(s); §8 requires 0 (zero alloc / zero serde on the HOT-tier crossing)."
+         allocation(s); the budget requires 0 (zero alloc / zero serde on the HOT-tier crossing)."
     );
 }
 

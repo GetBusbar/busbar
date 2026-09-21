@@ -1,4 +1,4 @@
-//! THE §8 HOT-PATH GATES, DRIVEN THROUGH THE DISPATCHER.
+//! THE HOT-PATH GATES, DRIVEN THROUGH THE DISPATCHER.
 //!
 //! `docs/design/1.6.0-plane-extraction-LOCKED.md` §8 owes a perf gate and an alloc gate; §11b counts
 //! their criterion benches toward the core-engine tests/benches 8→9 rise. Both are registered but
@@ -27,7 +27,7 @@ fn the_hot_path_alloc_gate_is_green_over_the_committed_instrument() {
 }
 
 /// Both gates prove they can still go RED — the property `cargo xtask selftest` refuses a gate for
-/// lacking. Driven here too so the whole §8 witness pair has a home under `xtask/tests/`.
+/// lacking. Driven here too so the whole hot-path witness pair has a home under `xtask/tests/`.
 #[test]
 fn both_hot_path_gates_prove_red_in_their_selftests() {
     assert_eq!(run(&["gate", "hot-path-perf", "--selftest"]), 0);

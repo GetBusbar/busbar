@@ -40,7 +40,7 @@
 # this script was written — they are the literal `name:` fields of jobs in
 # that file.
 #
-# "gate-mutants" (mutation testing, from .github/workflows/gate-mutants.yml)
+# "gate-mutants" (the mutation-strength gate, from .github/workflows/gate-mutants.yml)
 # was a fifth required check. Per owner ruling it is now MANUAL-ONLY and
 # OPTIONAL — it tests the tests, it does not gate a release — so it is NO
 # LONGER a required status check and has been removed from the list below.

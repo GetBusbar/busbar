@@ -23,11 +23,11 @@
 //! shipped path calls today — the pins, refs and identities it produces are BYTE-FOR-BYTE the ones
 //! `identity::register`/`resolve`, `trust_anchor::register`/`resolve` and `spki::pin` produce now. And
 //! NOTHING on the shipped path consults the seam yet: the egress chokepoint still calls the free
-//! functions directly, so the outbound path is unchanged until a call site opts in (W2). Reading
+//! functions directly, so the outbound path is unchanged until a call site opts in. Reading
 //! [`egress_trust_host`] in a build that installed no capability returns `None`.
 
 // The registries' `register` entry points are boot-only and reached by tests until the egress call
-// sites flip onto the seam (W2) — the same not-yet-mounted posture `identity`/`trust_anchor` record.
+// sites flip onto the seam — the same not-yet-mounted posture `identity`/`trust_anchor` record.
 #![cfg_attr(not(test), allow(dead_code))]
 
 use crate::egress::engine::ClientIdentity;
@@ -63,7 +63,7 @@ pub trait EgressTrustHost: Send + Sync {
 }
 
 /// The production egress-trust capability: a BYTE-FOR-BYTE pass-through to the host-side primitives.
-/// The composition root installs this today, so a call site that opts onto the seam (W2) gets exactly
+/// The composition root installs this today, so a call site that opts onto the seam gets exactly
 /// the refs, identities and pins the free functions produce now.
 pub struct PassThroughEgressTrust;
 

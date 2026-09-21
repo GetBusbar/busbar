@@ -105,7 +105,7 @@ fn push_event(out: &mut Vec<u8>, event: &str, payload: &[u8]) {
 // directly, so the composition root can install the reframer once at boot and a later pass swap the
 // implementation WITHOUT the mount changing. ADDITIVE AND DORMANT: the production impl
 // [`PassThroughReframe`] delegates to the exact free functions above, and NOTHING on the shipped path
-// consults the seam yet — the transport is byte-for-byte unchanged until a mount opts in (W2). The
+// consults the seam yet — the transport is byte-for-byte unchanged until a mount opts in. The
 // composition-root install ([`install_sse_reframe`]) mirrors the egress seam's `install_hostless_egress`.
 
 /// THE SERVER-SIDE SSE-REFRAME HOST CAPABILITY, as a neutral trait a mount reaches through instead of
@@ -123,7 +123,7 @@ pub trait SseReframe: Send + Sync {
 
 /// The production SSE-reframe capability: a BYTE-FOR-BYTE pass-through to the free functions
 /// [`prefers_event_stream`] and [`reframe`]. The composition root installs this today, so a mount
-/// that opts onto the seam (W2) gets exactly the bytes the free functions produce now.
+/// that opts onto the seam gets exactly the bytes the free functions produce now.
 pub struct PassThroughReframe;
 
 impl SseReframe for PassThroughReframe {
