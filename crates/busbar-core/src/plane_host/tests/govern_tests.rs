@@ -59,6 +59,24 @@ fn disabled_group_cost(name: &str) -> crate::cost::CostModel {
     crate::cost::CostModel::resolve_parts(None, 1, &groups)
 }
 
+/// A BILLING-ON cost model: a `rate_card:` is PRESENT (one priced model), so
+/// [`CostModel::pricing_enabled`] is `true` and the host charge path records a metering row. Since
+/// DECISION #42 (`the money surface goes quiet when no rate_card is configured`) the metering row
+/// only fires with billing on, so the charge/metering tests below build the App with this — they are
+/// about the host→meter MECHANISM, which only runs on a billed plane.
+fn billing_on_cost() -> crate::cost::CostModel {
+    let mut card = std::collections::BTreeMap::new();
+    card.insert(
+        "m".to_string(),
+        crate::config::RateEntryCfg {
+            input_utok: 1.0,
+            output_utok: 1.0,
+            ..Default::default()
+        },
+    );
+    crate::cost::CostModel::resolve_parts(Some(&card), 1, &std::collections::BTreeMap::new())
+}
+
 /// The minimal [`VirtualKey`](busbar_api::VirtualKey) `try_admit`/`chain_for` read — `id` + `group`
 /// — so a direct `try_admit` and the host `govern_admit_reason` drive the identical chain.
 fn test_key(id: &str, group: Option<&str>) -> busbar_api::VirtualKey {
@@ -310,6 +328,7 @@ fn charge_over_usage_matches_record_metering() {
     // HOST: charge a Usage carrying the SAME (key_id, model, provider).
     let app = crate::test_support::TestApp::new()
         .governance(Arc::clone(&gov))
+        .cost(billing_on_cost())
         .build();
     with_dispatch_scope(&app, |host, vt| {
         let usage = Usage::with_attribution(
@@ -346,6 +365,7 @@ fn charge_without_attribution_falls_back_to_synth() {
     let gov = gov();
     let app = crate::test_support::TestApp::new()
         .governance(Arc::clone(&gov))
+        .cost(billing_on_cost())
         .build();
     with_dispatch_scope(&app, |host, vt| {
         let usage = Usage::charge(UsageComponent::Tokens, 10, 1, AdmissionId(99));

@@ -272,6 +272,26 @@ fn parse_frames(body: &str) -> Vec<(String, String)> {
 
 /// Drive one `stream: true` Responses request at a lane speaking `egress`, whose upstream answers
 /// with `shape`; assert the SSE contract and the metering.
+/// A BILLING-ON cost model priced for the sole lane model `m0` (fee 0). DECISION #42 makes the
+/// metering row conditional on billing being on (a `rate_card:` present); these tests assert a
+/// metering row is written, so they model a billed plane. The rates are nonzero but no admission
+/// fee is charged on this path, so token/spend assertions are unaffected.
+fn billed_m0() -> busbar_core::cost::CostModel {
+    busbar_core::cost::CostModel::resolve_parts(
+        Some(&std::collections::BTreeMap::from([(
+            "m0".to_string(),
+            busbar_core::config::RateEntryCfg {
+                input_utok: 2.0,
+                output_utok: 6.0,
+                cache_read_utok: 0.0,
+                cache_write_utok: 0.0,
+            },
+        )])),
+        0,
+        &Default::default(),
+    )
+}
+
 async fn run_case(egress: &str, shape: Upstream) {
     crate::testkit::install_test_seams();
     busbar_substrate::metrics::init();
@@ -306,7 +326,10 @@ async fn run_case(egress: &str, shape: Upstream) {
     if egress == "bedrock" {
         lane = lane.provider("aws");
     }
-    let mut builder = TestApp::new().lane(lane).pool("p", &[(0, 1)]);
+    let mut builder = TestApp::new()
+        .lane(lane)
+        .pool("p", &[(0, 1)])
+        .cost(billed_m0());
     TestAppKit::set_governance(&mut builder, gov_kit.clone());
     let app = builder.build();
     let (host, _rt) = crate::engine::test_host_rt(&app);

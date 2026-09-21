@@ -231,21 +231,28 @@ pub(super) fn charge(state: &HostState, usage: &Usage) -> MeterOutcome {
     // provider)` the in-process meter would (proven by `charge_over_usage_matches_record_metering`);
     // when it is absent the row falls back to the synthetic attribution derived from the admission id,
     // the pre-enrichment behaviour.
-    if let Some(gov) = state.app.governance.as_ref() {
-        let attribution = resolved_attribution(usage);
-        // The synthetic fallback key id, materialized here so it outlives the borrow below.
-        let synth_key_id = format!("plane:admission:{}", usage.admission.0);
-        let (key_id, model, provider) = match attribution.as_ref() {
-            Some((k, m, p)) => (k.as_str(), m.as_str(), p.as_str()),
-            None => (
-                synth_key_id.as_str(),
-                MODEL_UNATTRIBUTED,
-                PROVIDER_UNATTRIBUTED,
-            ),
-        };
-        let token_usage = token_usage_for(component, usage.amount);
-        let now = busbar_substrate::store::now_ms() / 1_000;
-        gov.record_metering(key_id, model, provider, token_usage.as_ref(), now);
+    // BILLING OFF ⇒ NO METERING ROW (DECISION #42). With no `rate_card:` this plane serves free and
+    // emits no metering-series row, exactly as the llm path (`ledger_and_meter`) does. The card
+    // presence is the switch; with a card PRESENT this is `true` and the row is recorded byte-for-byte
+    // as before (every rate_card-present recording is unchanged). The charge/admission itself stays on
+    // its own path, so concurrency and breaker still govern an unbilled plane.
+    if state.app.cost.pricing_enabled() {
+        if let Some(gov) = state.app.governance.as_ref() {
+            let attribution = resolved_attribution(usage);
+            // The synthetic fallback key id, materialized here so it outlives the borrow below.
+            let synth_key_id = format!("plane:admission:{}", usage.admission.0);
+            let (key_id, model, provider) = match attribution.as_ref() {
+                Some((k, m, p)) => (k.as_str(), m.as_str(), p.as_str()),
+                None => (
+                    synth_key_id.as_str(),
+                    MODEL_UNATTRIBUTED,
+                    PROVIDER_UNATTRIBUTED,
+                ),
+            };
+            let token_usage = token_usage_for(component, usage.amount);
+            let now = busbar_substrate::store::now_ms() / 1_000;
+            gov.record_metering(key_id, model, provider, token_usage.as_ref(), now);
+        }
     }
     MeterOutcome::Charged
 }
