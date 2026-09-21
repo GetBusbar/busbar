@@ -18,7 +18,7 @@
 //! ABI's [`RouteAuth`], the store contract's [`SecretResolve`], `serde_json::Value` for the
 //! documents the engine parses itself.
 
-use super::engine_kit::{EngineApp, EngineTestKit, GovKit, HookEnvHandle, TestAppKit};
+use super::engine_kit::{CostKit, EngineApp, EngineTestKit, GovKit, HookEnvHandle, TestAppKit};
 use super::TestAppSeam;
 use crate::plane::registry::CardIssuer;
 use crate::plane::PlaneAdmission;
@@ -149,6 +149,15 @@ impl AppBuilder {
     #[must_use]
     pub fn governance(mut self, gov: Arc<dyn GovKit>) -> Self {
         self.inner.set_governance(gov);
+        self
+    }
+    /// Chaining twin of [`TestAppKit::set_cost`]: attach the pricing table the built App bills
+    /// through (minted from [`EngineTestKit::cost_flat`] / [`EngineTestKit::cost_parts`]). A plane
+    /// whose tests assert a metering row builds a BILLED plane this way — under DECISION #42 the
+    /// metering row is emitted only when a `rate_card:` is present (`cost_pricing_enabled` true).
+    #[must_use]
+    pub fn cost(mut self, cost: Arc<dyn CostKit>) -> Self {
+        self.inner.set_cost(cost);
         self
     }
     /// Chaining twin of [`TestAppKit::add_hook`].

@@ -548,6 +548,19 @@ async fn a_tool_call_is_charged_metered_and_audited_on_the_ordinary_budget_plane
         )
         .unwrap();
 
+    // BILLED: a `rate_card:` is present, so `cost_pricing_enabled` is true and — per DECISION #42 —
+    // the plane's `meter_charge` seam writes its metering row (an unbilled plane serves free and
+    // emits none). An MCP tool call accrues a pure request meter (attributed to the namespaced tool
+    // name and the `mcp` plane), not a priced LLM-lane model, so the card needs no entry to flip
+    // pricing on and its presence changes not one byte of the row the round accrues.
+    let billed_card: std::collections::BTreeMap<
+        String,
+        busbar_substrate::config::sections::RateEntryCfg,
+    > = std::collections::BTreeMap::new();
+    let billed_groups: std::collections::BTreeMap<
+        String,
+        busbar_substrate::config::groups::GroupCfg,
+    > = std::collections::BTreeMap::new();
     let app = test_app()
         .mcp(&mcp_cfg())
         // A UNIQUE server+tool for THIS test, so the `mcp_tool.call` row it audits carries a
@@ -557,6 +570,7 @@ async fn a_tool_call_is_charged_metered_and_audited_on_the_ordinary_budget_plane
         // passed on someone else's row or went flaky. The resource filter on the lookup below leans
         // on this name being ours alone.
         .mcp_server("meter", poisoned_server("meter", "probe"))
+        .cost(engine().cost_parts(Some(&billed_card), 1, &billed_groups))
         .governance(gov_state.clone())
         .build();
     let gov = busbar_api::PlaneRequestCtx {

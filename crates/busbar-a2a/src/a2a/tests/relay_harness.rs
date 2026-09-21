@@ -623,6 +623,27 @@ pub(super) async fn harness_gated(
         gates,
         &[("planner", BACKEND), ("payments", OTHER_BACKEND)],
         &[],
+        false,
+    )
+    .await
+}
+
+/// THE DEFAULT DEPLOYMENT, BUT BILLED — a `rate_card:` is present, so `cost_pricing_enabled` is
+/// true and, under DECISION #42, the plane's `meter_charge` seam writes a metering row. The default
+/// [`harness`] builds an UNBILLED plane (`CostModel::flat`, no card) that serves free and — per #42
+/// — emits no metering row; the metering-row batteries opt into this billed twin. Every OTHER byte
+/// of the deployment is identical, so the row's SHAPE (its model, request accrual and all-zero token
+/// split) is exactly what the unbilled plane computed — #42 changed only the emission gate, never the
+/// row's values.
+pub(super) async fn harness_billed(outcome: Outcome, with_credential: bool) -> Harness {
+    harness_full(
+        outcome,
+        with_credential,
+        &["planner"],
+        None,
+        &[("planner", BACKEND), ("payments", OTHER_BACKEND)],
+        &[],
+        true,
     )
     .await
 }
@@ -637,6 +658,7 @@ pub(super) async fn harness_full(
     gates: Option<Gates>,
     defs: &[(&str, &str)],
     pools: &[(&str, &[&str])],
+    billed: bool,
 ) -> Harness {
     use busbar_substrate::governance::signing::{TokenSigner, TokenVerifier, DEFAULT_KID};
     use busbar_substrate::governance::NewKeySpec;
@@ -712,6 +734,22 @@ pub(super) async fn harness_full(
         for (name, cfg) in g.hooks {
             builder = builder.hook(&name, cfg);
         }
+    }
+    if billed {
+        // A BILLED plane: a `rate_card:` is present, so `cost_pricing_enabled` is true and DECISION
+        // #42 lets the `meter_charge` seam write its metering row. The card's entries never touch the
+        // A2A meter path — an A2A verb accrues a pure request (component `Queries`, amount 0), which
+        // `record_metering` stores as raw counts under the plane pool / agent key regardless of any
+        // price — so a card with no entries is enough to flip pricing on without altering one byte of
+        // the row. The flat fee stays `1` (the unbilled default's `CostModel::flat(1)`), and fee
+        // posting is a read-time projection that never lands in the metering row either.
+        let card: std::collections::BTreeMap<
+            String,
+            busbar_substrate::config::sections::RateEntryCfg,
+        > = std::collections::BTreeMap::new();
+        let groups: std::collections::BTreeMap<String, busbar_substrate::config::groups::GroupCfg> =
+            std::collections::BTreeMap::new();
+        builder = builder.cost(engine().cost_parts(Some(&card), 1, &groups));
     }
     let app = builder.build();
     // The front door writes the A2A task chain through the process-wide `TASKS` registry; the plane

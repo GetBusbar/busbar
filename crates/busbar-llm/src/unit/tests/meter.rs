@@ -72,9 +72,36 @@ async fn rig() -> (
             LaneSpec::new("m0", crate::proto_codec::PROTO_OPENAI, &server.base_url())
                 .provider("zai"),
         )
-        .pool("p", &[(0, 1)]);
+        .pool("p", &[(0, 1)])
+        // BILLED: a `rate_card:` is present, so `cost_pricing_enabled` is true and — per DECISION #42
+        // — the `meter_charge` seam writes its metering row (an unbilled plane serves free and emits
+        // none). The card prices the one lane `m0` at ZERO on every tier, matching the historical
+        // no-card posture's token pricing (a rig with no card already prices every tier at 0), and
+        // the flat per-request fee stays `1` (the builder's `CostModel::flat(1)` default). So the
+        // row's counts, the derived token ledger and the zero-cent derived spend are byte-identical
+        // to the unbilled rig — #42 changed only whether the row is emitted, never its values.
+        .cost(billed_zero_card());
     TestAppKit::set_governance(&mut builder, gov_kit);
     (builder.build(), std::sync::Arc::new(key), server)
+}
+
+/// A PRESENT rate card that prices the lane `m0` at zero on every tier, with the flat fee (`1`) the
+/// unbilled rig's `CostModel::flat(1)` default carried. `pricing_enabled` is true (a card is present)
+/// so #42 lets the metering row through, while every priced figure stays the no-card baseline's.
+fn billed_zero_card() -> busbar_core::cost::CostModel {
+    busbar_core::cost::CostModel::resolve_parts(
+        Some(&std::collections::BTreeMap::from([(
+            "m0".to_string(),
+            busbar_core::config::RateEntryCfg {
+                input_utok: 0.0,
+                output_utok: 0.0,
+                cache_read_utok: 0.0,
+                cache_write_utok: 0.0,
+            },
+        )])),
+        1,
+        &Default::default(),
+    )
 }
 
 /// The sink the admit step builds and every accrual site carries to the end of the response.

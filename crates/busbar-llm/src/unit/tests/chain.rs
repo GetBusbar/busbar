@@ -223,6 +223,21 @@ fn unique(prefix: &str) -> String {
 }
 
 async fn rig(fixture: Fixture) -> Rig {
+    rig_inner(fixture, false).await
+}
+
+/// THE SAME GOVERNED RIG, BILLED — a `rate_card:` is present (`cost_pricing_enabled` true), so under
+/// DECISION #42 a delivered unit's `meter_charge` writes its metering row. The card prices the one
+/// lane at ZERO on every tier, so token pricing stays exactly the absent-card baseline (rate_card
+/// absent already prices every tier at 0) and the flat per-request fee is unchanged: the metering
+/// row's counts, the derived token ledger and the fee posting are byte-identical to the unbilled
+/// rig — #42 changed only whether the row is EMITTED, never its values. The metering-row batteries
+/// opt into this; every other rig stays unbilled (`CostModel::flat`-shaped, no card).
+async fn rig_billed(fixture: Fixture) -> Rig {
+    rig_inner(fixture, true).await
+}
+
+async fn rig_inner(fixture: Fixture, billed: bool) -> Rig {
     crate::testkit::install_test_seams();
     busbar_substrate::metrics::init();
 
@@ -287,8 +302,25 @@ async fn rig(fixture: Fixture) -> Rig {
             1_700_000_000,
         )
         .expect("create key");
-    let cost =
-        crate::test_support::engine_kit::CORE_ENGINE_KIT.cost_parts(None, FEE_CENTS, &groups);
+    // A BILLED rig carries a `rate_card:` (so #42 lets a delivered unit's metering row through); it
+    // prices the one lane at ZERO on every tier, which is exactly what an ABSENT card already does to
+    // token pricing (rate_card absent => every tier prices at 0), so the only thing that changes is
+    // `pricing_enabled` — never a token count, a derived-spend figure or the flat fee. An unbilled
+    // rig keeps the historical no-card posture.
+    let billed_card = std::collections::BTreeMap::from([(
+        LANE.to_string(),
+        busbar_substrate::config::sections::RateEntryCfg {
+            input_utok: 0.0,
+            output_utok: 0.0,
+            cache_read_utok: 0.0,
+            cache_write_utok: 0.0,
+        },
+    )]);
+    let cost = crate::test_support::engine_kit::CORE_ENGINE_KIT.cost_parts(
+        billed.then_some(&billed_card),
+        FEE_CENTS,
+        &groups,
+    );
     // Enforcement is in-memory and authoritative, so the seeded durable spend has to be hydrated
     // into the cells exactly as boot hydrates it; without this the door would not see it.
     gov.hydrate_budgets(cost.as_ref(), 0).expect("hydrate");
@@ -647,10 +679,30 @@ async fn leg_chain(fixture: Fixture) -> Observed {
     leg_chain_metered(fixture).await.0
 }
 
+/// The chained leg on a BILLED rig — for the metering-row batteries, which #42 emits a row for only
+/// when a `rate_card:` is present. The billed rig prices the lane at zero, so every asserted figure
+/// (row counts, token ledger, fee) is the unbilled rig's; only the row's EMISSION is switched on.
+async fn leg_chain_billed(fixture: Fixture) -> Observed {
+    leg_chain_metered_with(fixture, true).await.0
+}
+
 /// The same leg, with what the Meter step answered kept alongside what the client and the operator
 /// can see.
 async fn leg_chain_metered(fixture: Fixture) -> (Observed, Metering) {
-    let rig = rig(fixture).await;
+    leg_chain_metered_with(fixture, false).await
+}
+
+/// The BILLED twin of [`leg_chain_metered`].
+async fn leg_chain_metered_billed(fixture: Fixture) -> (Observed, Metering) {
+    leg_chain_metered_with(fixture, true).await
+}
+
+async fn leg_chain_metered_with(fixture: Fixture, billed: bool) -> (Observed, Metering) {
+    let rig = if billed {
+        rig_billed(fixture).await
+    } else {
+        rig(fixture).await
+    };
     let (host, rt) = crate::engine::test_host_rt(&rig.app);
     let gov = rig.gov();
     let headers = json_headers();
@@ -1216,7 +1268,7 @@ async fn the_chain_leaves_the_money_where_the_legacy_plane_leaves_it() {
 
     // A STREAMED unit accrues at stream end rather than at the buffered tap, so it is asserted in
     // its own right: without this the rehearsal could be green on a stream that metered nothing.
-    let streamed = leg_chain(Fixture::StreamedOk).await;
+    let streamed = leg_chain_billed(Fixture::StreamedOk).await;
     assert_eq!(field(&streamed, "ledger_requests"), "1");
     assert_eq!(
         field(&streamed, "ledger_tokens"),
@@ -1234,7 +1286,7 @@ async fn the_chain_leaves_the_money_where_the_legacy_plane_leaves_it() {
     assert_eq!(field(&failed, "ledger_tokens"), "0");
     assert_eq!(field(&failed, "metering_rows"), "");
 
-    let delivered = leg_chain(Fixture::BufferedOk).await;
+    let delivered = leg_chain_billed(Fixture::BufferedOk).await;
     assert_eq!(field(&delivered, "ledger_requests"), "1");
     assert_eq!(
         field(&delivered, "ledger_tokens"),
@@ -1253,7 +1305,7 @@ async fn the_chain_leaves_the_money_where_the_legacy_plane_leaves_it() {
     // The arm SEALS: `MeterFacts::accrued` says the walk's tap already posted, so the row and the
     // report are reported and the ledger is not touched a second time. That is what this asserts —
     // the figures are the 1.5.5 figures, once, with the arm live.
-    let buffered_stream_out = leg_chain(Fixture::BufferedStreamOut).await;
+    let buffered_stream_out = leg_chain_billed(Fixture::BufferedStreamOut).await;
     assert_eq!(field(&buffered_stream_out, "ledger_requests"), "1");
     assert_eq!(
         field(&buffered_stream_out, "ledger_tokens"),
@@ -1347,7 +1399,7 @@ async fn the_walks_tap_and_the_meter_step_make_one_posting_between_them() {
     }
 
     for fixture in [Fixture::BufferedOk, Fixture::StreamedOk] {
-        let (observed, metering) = leg_chain_metered(fixture).await;
+        let (observed, metering) = leg_chain_metered_billed(fixture).await;
         assert!(metering.reached, "{fixture:?}: the Meter step ran");
         assert!(
             !metering.posted_here,

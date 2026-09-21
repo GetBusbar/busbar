@@ -88,6 +88,7 @@ async fn pool_harness_answering(a_status: u16, b_answer: String) -> Harness {
         None,
         &[("planner-a", BACKEND), ("planner-b", BACKEND_B)],
         &[("planner", &["planner-a", "planner-b"])],
+        false,
     )
     .await
 }

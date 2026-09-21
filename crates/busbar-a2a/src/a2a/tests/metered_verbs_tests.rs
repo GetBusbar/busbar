@@ -86,7 +86,7 @@ fn list_call() -> serde_json::Value {
 /// would be the other way to get this wrong.
 #[tokio::test]
 async fn the_catalogue_card_verb_is_metered_against_the_plane_pool() {
-    let h = harness(Outcome::Answers(200, backend_ok()), false).await;
+    let h = harness_billed(Outcome::Answers(200, backend_ok()), false).await;
     let (status, body) = call_catalogue(&h, &card_call()).await;
     assert_eq!(status, 200, "the card is still answered: {body}");
     assert!(
@@ -131,7 +131,7 @@ async fn the_catalogue_card_verb_is_metered_against_the_plane_pool() {
 /// caller nothing at all.
 #[tokio::test]
 async fn list_tasks_is_metered_under_the_agent_it_was_admitted_on() {
-    let h = harness(Outcome::Answers(200, backend_ok()), false).await;
+    let h = harness_billed(Outcome::Answers(200, backend_ok()), false).await;
     let (status, body) = call_agent(&h, "planner", &list_call()).await;
     assert_eq!(status, 200, "the list is still answered: {body}");
 
@@ -156,7 +156,7 @@ async fn list_tasks_is_metered_under_the_agent_it_was_admitted_on() {
 /// Without this, "meter everything" would pass the two tests above by billing every call twice.
 #[tokio::test]
 async fn an_ordinary_hop_is_still_metered_exactly_once() {
-    let h = harness(Outcome::Answers(200, backend_ok()), false).await;
+    let h = harness_billed(Outcome::Answers(200, backend_ok()), false).await;
     let (status, body) = call(&h).await;
     assert_eq!(status, 200, "{body}");
 

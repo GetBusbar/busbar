@@ -380,7 +380,7 @@ async fn the_hop_is_metered_and_the_callees_own_reported_spend_is_not() {
         }
     })
     .to_string();
-    let h = harness(Outcome::Answers(200, reply), false).await;
+    let h = harness_billed(Outcome::Answers(200, reply), false).await;
     let (status, body) = call(&h).await;
     assert_eq!(status, 200, "{body}");
 
