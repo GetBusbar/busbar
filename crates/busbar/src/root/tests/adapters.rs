@@ -7,13 +7,13 @@ use busbar_contract::caps::KernelSeal;
 use busbar_contract::WireStatus;
 use busbar_kernel_egress::ports::Disposition;
 
-/// A fresh `UnitToken<Route>` for one `observe`/`ready`/`cooldown_remaining` call — test-only,
+/// A fresh `Pass<Route>` for one `observe`/`ready`/`cooldown_remaining` call — test-only,
 /// minted through the kernel seal exactly as CG-29 says a real deployment would
 /// (`KernelSeal::acquire_for_kernel` is `// contract:` kernel-only outside test modules; the
 /// production adapter above never mints one of its own — it forwards the borrow its caller
 /// lent it).
-fn route_token() -> UnitToken<Route> {
-    UnitToken::mint(&KernelSeal::acquire_for_kernel())
+fn route_token() -> Pass<Route> {
+    Pass::mint(&KernelSeal::acquire_for_kernel())
 }
 
 /// A sink for a test that is about a ladder rather than about a diagnostic. The breaker crate's

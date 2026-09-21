@@ -98,9 +98,9 @@
 
 use std::sync::Arc;
 
-use busbar_contract::caps::{
-    step::Meter, Decision, Hold, MeterClassId, Outcome, QuantitySource, UnitToken, Usage,
-    UsageLine, UsageToken,
+use busbar_contract::caps::{Grant, 
+    step::Meter, Decision, Hold, MeterClassId, Outcome, QuantitySource, Pass, Usage,
+    UsageLine, Consumption,
 };
 use busbar_contract::ClassDirection;
 use busbar_substrate::plane_host::EngineHost;
@@ -312,7 +312,7 @@ impl Metered {
 /// returned explicitly, because a plane holds no cell and the point is that the hold leaves this
 /// step exactly as it arrived plus its accrual.
 pub type MeterStep =
-    for<'a> fn(&UnitToken<Meter>, &UsageToken, &MeterCtx<'a>, Option<Hold>, &Outcome) -> Metered;
+    for<'a> fn(&Pass<Meter>, &Grant<Consumption>, &MeterCtx<'a>, Option<Hold>, &Outcome) -> Metered;
 
 /// The four reserved meter classes, in the canonical order the pricer prices them.
 ///
@@ -330,8 +330,8 @@ const CLASS_CACHE_WRITE: MeterClassId = MeterClassId::new(busbar_api::UNIT_CACHE
 /// at the frame that carried the status, and a unit that ended badly after that still delivered
 /// what the caller was billed for.
 pub fn meter(
-    unit_token: &UnitToken<Meter>,
-    usage_token: &UsageToken,
+    unit_token: &Pass<Meter>,
+    usage_token: &Grant<Consumption>,
     ctx: &MeterCtx<'_>,
     hold: Option<Hold>,
     _provisional: &Outcome,

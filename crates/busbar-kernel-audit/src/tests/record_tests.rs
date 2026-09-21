@@ -5,7 +5,7 @@
 
 use busbar_contract::caps::{
     Audit as AuditStep, KernelSeal, Origin, OriginKind, Outcome, ReasonCode, StepName, UnitKey,
-    UnitToken,
+    Pass,
 };
 
 use crate::record::{
@@ -13,8 +13,8 @@ use crate::record::{
     OpClassId, OutcomeFacts, QuantitySource, Subject, UsageLine, What,
 };
 
-fn token() -> UnitToken<AuditStep> {
-    UnitToken::mint(&KernelSeal::acquire_for_kernel())
+fn token() -> Pass<AuditStep> {
+    Pass::mint(&KernelSeal::acquire_for_kernel())
 }
 
 fn origin() -> Origin {

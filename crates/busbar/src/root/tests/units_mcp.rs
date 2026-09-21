@@ -113,7 +113,7 @@ fn the_arrival_facts_are_the_stack_the_claim_was_matched_on() {
             record: &record,
             claim_transport: claims::TRANSPORT_HTTP,
         },
-        &UnitToken::mint(&seal),
+        &Pass::mint(&seal),
     );
     let carried = decision
         .into_result(&seal)
@@ -136,7 +136,7 @@ fn the_arrival_facts_are_the_stack_the_claim_was_matched_on() {
                     record: &record,
                     claim_transport: transport,
                 },
-                &UnitToken::mint(&seal),
+                &Pass::mint(&seal),
             )
             .into_result(&seal)
             .is_ok(),
@@ -154,7 +154,7 @@ fn the_arrival_facts_are_the_stack_the_claim_was_matched_on() {
             record: &ws,
             claim_transport: "ws",
         },
-        &UnitToken::mint(&seal),
+        &Pass::mint(&seal),
     )
     .into_result(&seal)
     .expect_err("this plane claims no socket surface");
@@ -170,7 +170,7 @@ fn the_arrival_facts_are_the_stack_the_claim_was_matched_on() {
             record: &sse,
             claim_transport: claims::TRANSPORT_HTTP,
         },
-        &UnitToken::mint(&seal),
+        &Pass::mint(&seal),
     )
     .into_result(&seal)
     .expect_err("http is below the layer this stack ended on, not the layer itself");
@@ -316,7 +316,7 @@ fn an_envelope_resolves_to_an_operation_and_a_malformed_one_is_refused() {
     // from — proof the same read served the whole pointer table and not just the envelope.
     assert_eq!(facts.get(f::FACT_SUBJECT), Some(FactValue::Str("grep")));
     assert_eq!(
-        decode(&read, &UnitToken::mint(&seal))
+        decode(&read, &Pass::mint(&seal))
             .into_result(&seal)
             .expect("a resolved operation proceeds"),
         ops::OP_TOOL_CALL
@@ -358,7 +358,7 @@ fn an_envelope_resolves_to_an_operation_and_a_malformed_one_is_refused() {
         let ctx = Ctx::new(clock, &config, None, &transport, &labels, &arena);
         let read = read_ingress(&plane, &mut cursor, &ctx);
         assert_eq!(read, Err(ReasonCode::DecodeFailed), "{malformed} was read");
-        let refusal = decode(&read, &UnitToken::mint(&seal))
+        let refusal = decode(&read, &Pass::mint(&seal))
             .into_result(&seal)
             .expect_err("a body this plane cannot read is refused");
         assert_eq!(refusal.reason(), ReasonCode::DecodeFailed);
@@ -442,7 +442,7 @@ fn the_bound_form_authenticates_through_the_nodes_own_seams() {
         new_unit: true,
     };
     let seal = KernelSeal::acquire_for_kernel();
-    let decision = authenticate_bound(&auth, &arriving, &bindings, &UnitToken::mint(&seal));
+    let decision = authenticate_bound(&auth, &arriving, &bindings, &Pass::mint(&seal));
 
     match decision.into_result(&seal) {
         Ok(Authenticated::Principal(p)) => assert_eq!(p.as_str(), "key-mcp-1"),
@@ -1250,7 +1250,7 @@ fn memory_durability() -> crate::root::durability::Durability {
 /// it opens it only because the decision said yes. Nothing about the size is a decision.
 #[test]
 fn the_door_opens_a_reservation_sized_off_this_planes_estimate() {
-    use busbar_contract::caps::{step::Admit as AdmitStep, AdmitToken, KernelSeal, UnitToken};
+    use busbar_contract::caps::{Grant, step::Admit as AdmitStep, Admittance, KernelSeal, Pass};
     let seal = KernelSeal::acquire_for_kernel();
     let door = Door::new(InMemoryCells::new());
     let pricer = Pricer::flat(0);
@@ -1272,8 +1272,8 @@ fn the_door_opens_a_reservation_sized_off_this_planes_estimate() {
     };
     let decision = admit(
         &unit,
-        &AdmitToken::<AdmitStep>::mint(&seal),
-        &UnitToken::<AdmitStep>::mint(&seal),
+        &Grant::<Admittance>::mint(&seal),
+        &Pass::<AdmitStep>::mint(&seal),
         &GroupLeaseSlip::new(),
     );
     let busbar_contract::caps::Admission::Own(hold) = decision
@@ -1291,9 +1291,9 @@ fn the_door_opens_a_reservation_sized_off_this_planes_estimate() {
         hold,
         // The unit is only admitted here, never run, so it priced at nothing.
         0,
-        &busbar_contract::caps::Usage::report(&busbar_contract::caps::UsageToken::mint(&seal), Vec::new())
+        &busbar_contract::caps::Usage::report(&busbar_contract::caps::Grant::<busbar_contract::caps::Consumption>::mint(&seal), Vec::new())
             .expect("empty"),
-        &busbar_contract::caps::LedgerToken::mint(&seal),
+        &busbar_contract::caps::Grant::<busbar_contract::caps::WriteMoney>::mint(&seal),
     );
 }
 
@@ -1332,7 +1332,7 @@ fn ask_the_door(
     chain: &BucketChain,
     who: &PrincipalId,
 ) -> (Result<busbar_contract::caps::Admission, Refusal>, GroupLeaseSlip) {
-    use busbar_contract::caps::{step::Admit as AdmitStep, AdmitToken, KernelSeal, UnitToken};
+    use busbar_contract::caps::{Grant, step::Admit as AdmitStep, Admittance, KernelSeal, Pass};
     let seal = KernelSeal::acquire_for_kernel();
     let pricer = Pricer::flat(0);
     let est = estimate(ops::OP_TOOL_CALL, 10, &ClassPrices::default(), 0);
@@ -1348,8 +1348,8 @@ fn ask_the_door(
     let slip = GroupLeaseSlip::new();
     let decision = admit(
         &unit,
-        &AdmitToken::<AdmitStep>::mint(&seal),
-        &UnitToken::<AdmitStep>::mint(&seal),
+        &Grant::<Admittance>::mint(&seal),
+        &Pass::<AdmitStep>::mint(&seal),
         &slip,
     );
     (decision.into_result(&seal), slip)
@@ -1405,19 +1405,19 @@ fn an_mcp_group_capped_at_one_call_refuses_the_second_and_admits_it_after_the_fi
 /// happened nowhere at all.
 #[test]
 fn the_exit_settles_the_reservation_onto_the_books_and_the_journal() {
-    use busbar_contract::caps::{
-        step::Admit as AdmitStep, AdmitToken, DurabilityToken, Hold, KernelSeal, LedgerToken,
-        MeterClassId, QuantitySource, Usage, UsageLine, UsageToken,
+    use busbar_contract::caps::{Grant, 
+        Admittance, DurableWrite, Hold, KernelSeal, WriteMoney,
+        MeterClassId, QuantitySource, Usage, UsageLine, Consumption,
     };
     let seal = KernelSeal::acquire_for_kernel();
     let mut durability = memory_durability();
     let who = PrincipalId::new("vk_mcp");
 
-    let mut hold = Hold::open(&AdmitToken::<AdmitStep>::mint(&seal), who.clone(), 1_000);
+    let mut hold = Hold::open(&Grant::<Admittance>::mint(&seal), who.clone(), 1_000);
     // The slice had room, so the reservation grows rather than the unit carrying anything.
     assert_eq!(hold.spend(400, u64::MAX).overdraft, 0);
     let usage = Usage::report(
-        &UsageToken::mint(&seal),
+        &Grant::<Consumption>::mint(&seal),
         vec![UsageLine {
             class: MeterClassId::new("nano_units"),
             quantity: 400,
@@ -1428,7 +1428,7 @@ fn the_exit_settles_the_reservation_onto_the_books_and_the_journal() {
     .expect("one line");
     // The line's class is `nano_units`, so its quantity IS the money — the same shape the
     // kernel's exit path builds, and the same figure passed on both sides.
-    let posted = busbar_contract::caps::Posted::settle(hold, 400, &usage, &LedgerToken::mint(&seal));
+    let posted = busbar_contract::caps::Posted::settle(hold, 400, &usage, &Grant::<WriteMoney>::mint(&seal));
 
     let mono = Mono::new();
     let settled = settle(
@@ -1438,7 +1438,7 @@ fn the_exit_settles_the_reservation_onto_the_books_and_the_journal() {
             wall: 1_700_000_000,
             mono: mono.tick(),
         },
-        &DurabilityToken::mint(&seal),
+        &Grant::<DurableWrite>::mint(&seal),
         posted,
     )
     .expect("the memory-buffered journal takes it");
@@ -1479,9 +1479,9 @@ fn the_exit_settles_the_reservation_onto_the_books_and_the_journal() {
 /// stepped backwards writes records that read as having happened in an order they did not.
 #[test]
 fn two_units_of_one_second_are_ordered_by_the_monotonic_stamp_and_not_the_wall_clock() {
-    use busbar_contract::caps::{
-        step::Admit as AdmitStep, AdmitToken, DurabilityToken, Hold, KernelSeal, LedgerToken,
-        Usage, UsageToken,
+    use busbar_contract::caps::{Grant, 
+        Admittance, DurableWrite, Hold, KernelSeal, WriteMoney,
+        Usage, Consumption,
     };
     const SAME_SECOND: u64 = 1_700_000_000;
     let seal = KernelSeal::acquire_for_kernel();
@@ -1496,18 +1496,18 @@ fn two_units_of_one_second_are_ordered_by_the_monotonic_stamp_and_not_the_wall_c
             wall: SAME_SECOND,
             mono: clock.tick(),
         };
-        let hold = Hold::open(&AdmitToken::<AdmitStep>::mint(&seal), who.clone(), 0);
+        let hold = Hold::open(&Grant::<Admittance>::mint(&seal), who.clone(), 0);
         let posted = busbar_contract::caps::Posted::settle(
             hold,
             0,
-            &Usage::report(&UsageToken::mint(&seal), Vec::new()).expect("empty"),
-            &LedgerToken::mint(&seal),
+            &Usage::report(&Grant::<Consumption>::mint(&seal), Vec::new()).expect("empty"),
+            &Grant::<WriteMoney>::mint(&seal),
         );
         let settled = settle(
             &mut durability,
             &who,
             at,
-            &DurabilityToken::mint(&seal),
+            &Grant::<DurableWrite>::mint(&seal),
             posted,
         )
         .expect("the memory-buffered journal takes it");
@@ -1532,14 +1532,14 @@ fn two_units_of_one_second_are_ordered_by_the_monotonic_stamp_and_not_the_wall_c
 /// its own on the chain beside the posting it came out of.
 #[test]
 fn a_unit_that_outran_its_reservation_carries_the_rest_onto_the_chain() {
-    use busbar_contract::caps::{
-        step::Admit as AdmitStep, AdmitToken, DurabilityToken, Hold, KernelSeal, LedgerToken,
-        MeterClassId, PostingFlags, QuantitySource, Usage, UsageLine, UsageToken,
+    use busbar_contract::caps::{Grant, 
+        Admittance, DurableWrite, Hold, KernelSeal, WriteMoney,
+        MeterClassId, PostingFlags, QuantitySource, Usage, UsageLine, Consumption,
     };
     let seal = KernelSeal::acquire_for_kernel();
     let mut durability = memory_durability();
     let mut hold = Hold::open(
-        &AdmitToken::<AdmitStep>::mint(&seal),
+        &Grant::<Admittance>::mint(&seal),
         PrincipalId::new("vk_mcp"),
         1_000,
     );
@@ -1547,7 +1547,7 @@ fn a_unit_that_outran_its_reservation_carries_the_rest_onto_the_chain() {
     assert_eq!(spend.accrued, 4_000, "the spend is never trimmed");
     assert_eq!(spend.overdraft, 3_000);
     let usage = Usage::report(
-        &UsageToken::mint(&seal),
+        &Grant::<Consumption>::mint(&seal),
         vec![UsageLine {
             class: MeterClassId::new("nano_units"),
             quantity: 4_000,
@@ -1558,7 +1558,7 @@ fn a_unit_that_outran_its_reservation_carries_the_rest_onto_the_chain() {
     .expect("one line");
     // Money on both sides again: the spend ran 3_000 past a 1_000 reservation with no slice to
     // draw on, so the hold's own counter raises the flag and the settlement agrees with it.
-    let posted = busbar_contract::caps::Posted::settle(hold, 4_000, &usage, &LedgerToken::mint(&seal));
+    let posted = busbar_contract::caps::Posted::settle(hold, 4_000, &usage, &Grant::<WriteMoney>::mint(&seal));
     assert!(posted.flags().contains(PostingFlags::OVERDRAFT));
 
     let settled = settle(
@@ -1568,7 +1568,7 @@ fn a_unit_that_outran_its_reservation_carries_the_rest_onto_the_chain() {
             wall: 1_700_000_000,
             mono: Mono::new().tick(),
         },
-        &DurabilityToken::mint(&seal),
+        &Grant::<DurableWrite>::mint(&seal),
         posted,
     )
     .expect("the journal takes both records");

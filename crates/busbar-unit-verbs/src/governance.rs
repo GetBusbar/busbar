@@ -23,7 +23,7 @@
 
 use crate::refusal::{ReasonCode, Refusal, RefusalStep};
 use crate::verb::KernelVerb;
-use busbar_contract::caps::AdminToken;
+use busbar_contract::caps::{AdminVerb, Grant};
 
 /// A governance-layer error, mapped to a [`Refusal`] by [`GovernanceError::into_refusal`] rather
 /// than exposed to the caller directly — the same fail-closed shape 1.5.5's admin handlers use
@@ -93,7 +93,7 @@ pub trait Governance {
     /// `build_with_group`-shaped validate-then-swap.
     fn provision_group(
         &self,
-        admin: &AdminToken,
+        admin: &Grant<AdminVerb>,
         group: &str,
         parent: &str,
     ) -> Result<(), GovernanceError>;
@@ -103,14 +103,14 @@ pub trait Governance {
     /// key-cap check plus the actual credential mint.
     fn mint_key(
         &self,
-        admin: &AdminToken,
+        admin: &Grant<AdminVerb>,
         group: Option<&str>,
     ) -> Result<MintedKey, GovernanceError>;
 
     /// Rotate an existing key's credential in place (same id, budgets, usage; the previous
     /// credential stops authenticating immediately). `// contract:` — the integrator's
     /// check-then-act under its own existence-serializing lock (1.5.5's `EXISTENCE_GATE`).
-    fn rotate_key(&self, admin: &AdminToken, id: &str) -> Result<RotateOutcome, GovernanceError>;
+    fn rotate_key(&self, admin: &Grant<AdminVerb>, id: &str) -> Result<RotateOutcome, GovernanceError>;
 
     /// `// contract:` every OTHER legacy verb's actual effect (60 of the 66 — everything but
     /// create/rotate key, whose SEMANTICS this crate ports directly). `Verbs::execute` has already
@@ -120,7 +120,7 @@ pub trait Governance {
     fn execute_legacy(
         &self,
         verb: KernelVerb,
-        admin: &AdminToken,
+        admin: &Grant<AdminVerb>,
         request: &[u8],
     ) -> Result<Vec<u8>, GovernanceError>;
 
@@ -136,7 +136,7 @@ pub trait Governance {
     fn execute_new_verb(
         &self,
         verb: KernelVerb,
-        admin: &AdminToken,
+        admin: &Grant<AdminVerb>,
         request: &[u8],
         operator: crate::posture::OperatorState,
     ) -> Result<Vec<u8>, GovernanceError>;
@@ -160,7 +160,7 @@ pub trait Governance {
     fn execute_ledger_read(
         &self,
         verb: KernelVerb,
-        admin: &AdminToken,
+        admin: &Grant<AdminVerb>,
         request: &[u8],
     ) -> Result<Vec<u8>, GovernanceError> {
         let (_, _, _) = (verb, admin, request);

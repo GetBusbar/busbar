@@ -49,9 +49,9 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use busbar_api::{PlaneDisposition, PlaneRecord, PlaneSelector, Store as AbiStore};
-use busbar_contract::caps::{
-    Admit, AdmitToken, Arrival, ArrivalRecord, Authenticate, Decision, Decode, PrincipalId,
-    ReasonCode, Refusal, TrustToken, UnitToken, UsageToken, Verify,
+use busbar_contract::caps::{Grant, 
+    Admit, Admittance, Arrival, ArrivalRecord, Authenticate, Decision, Decode, PrincipalId,
+    ReasonCode, Refusal, Dial, Pass, Consumption, Verify,
 };
 use busbar_contract::dest::DestinationFacts;
 use busbar_contract::ids::{ClaimKey, LaneId, OpClassId, RecordSchemaId};
@@ -155,7 +155,7 @@ pub struct Arrived<'a> {
 /// the claim carries a scheme at all; every location the later steps resolve is resolved against
 /// this record and re-resolved after an upgrade. A record handed on under the wrong claim is a unit
 /// authenticated for one surface and answered on another.
-pub fn arrival(arrived: &Arrived<'_>, token: &UnitToken<Arrival>) -> Decision<Arrival> {
+pub fn arrival(arrived: &Arrived<'_>, token: &Pass<Arrival>) -> Decision<Arrival> {
     // A claim is the ONLY way this plane names a transport, so a transport no claim names is one no
     // unit of this plane may arrive on — whatever else the node has registered.
     if !claims::declares(arrived.claim_transport) {
@@ -251,7 +251,7 @@ pub fn read_ingress<'u>(
 /// The bytes are read once, at the one step entitled to read them, and this restates that answer
 /// rather than re-deriving it: re-reading here would advance the codec a second time over the same
 /// frame and could disagree with the draft every later step is built from.
-pub fn decode(read: &Result<Read<'_>, ReasonCode>, token: &UnitToken<Decode>) -> Decision<Decode> {
+pub fn decode(read: &Result<Read<'_>, ReasonCode>, token: &Pass<Decode>) -> Decision<Decode> {
     match read {
         Ok(Read::Unit(decoded)) => Decision::proceed(token, decoded.op),
         // Neither of these opens a unit, so neither should have reached a step. Refusing rather
@@ -340,7 +340,7 @@ pub fn authenticate(
     cache: Option<&CredentialCache>,
     keys: Option<&dyn KeyVerifier>,
     revocations: Option<&dyn RevocationView>,
-    token: &UnitToken<Authenticate>,
+    token: &Pass<Authenticate>,
 ) -> Decision<Authenticate> {
     let declared = declared_schemes();
     let narrowing = arriving
@@ -378,7 +378,7 @@ pub fn authenticate_bound(
     auth: &Auth,
     arriving: &Arriving<'_>,
     bindings: &crate::root::kernel::auth_bindings::AuthBindings,
-    token: &UnitToken<Authenticate>,
+    token: &Pass<Authenticate>,
 ) -> Decision<Authenticate> {
     authenticate(
         auth,
@@ -667,8 +667,8 @@ pub fn verify(
     pool: &str,
     views: Views<'_>,
     now: u64,
-    trust_token: &TrustToken,
-    token: &UnitToken<Verify>,
+    trust_token: &Grant<Dial>,
+    token: &Pass<Verify>,
 ) -> Decision<Verify> {
     let request = VerifyRequest {
         // Every unit of this plane is a client's own request or a frame a paired server pushed; the
@@ -907,8 +907,8 @@ pub struct Admitting<'a> {
 /// with no capped group — neither is decided here.
 pub fn admit(
     unit: &Admitting<'_>,
-    admit_token: &AdmitToken<Admit>,
-    token: &UnitToken<Admit>,
+    admit_token: &Grant<Admittance>,
+    token: &Pass<Admit>,
     leases: &GroupLeaseSlip,
 ) -> Decision<Admit> {
     let mut door = AdmissionUnit::new(unit.door, unit.pricer, unit.pool, unit.arrival_epoch);
@@ -1236,7 +1236,7 @@ pub fn meter(
     retained: &RetainedLocatorValues,
     kernel: &KernelCounts,
     policy: &busbar_kernel_ledger::usage::MeterPolicy,
-    token: &UsageToken,
+    token: &Grant<Consumption>,
 ) -> Result<Metered, busbar_contract::caps::UsageError> {
     fold_usage(retained, kernel, policy, &leg_declaration(), token)
 }
@@ -1381,7 +1381,7 @@ pub fn settle(
     durability: &mut crate::root::durability::Durability,
     principal: &PrincipalId,
     at: Clocks,
-    token: &busbar_contract::caps::DurabilityToken,
+    token: &busbar_contract::caps::Grant<busbar_contract::caps::DurableWrite>,
     posted: busbar_contract::caps::Posted,
 ) -> Result<crate::root::durability::Settled, busbar_contract::caps::DurabilityLost> {
     let key = balance(principal);

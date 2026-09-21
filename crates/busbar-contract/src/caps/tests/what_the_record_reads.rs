@@ -20,9 +20,43 @@ fn seal() -> KernelSeal {
 }
 
 #[test]
+fn a_proof_from_one_call_is_rejected_in_another() {
+    // #74 in-process per-call binding: a Pass or Grant the loop mints for one request carries that
+    // request's generation, and a stage compares it against the generation the unit context carries.
+    // A proof stamped for call A therefore does not match call B, so a stray or stored proof cannot
+    // be replayed across flows. RED BEFORE GREEN: without the generation stamp `bound_to` would be a
+    // constant `true` and every assertion below that expects a REJECTION would fail.
+    let k = seal();
+    let call_a = CallId::seal(&k, 1);
+    let call_b = CallId::seal(&k, 2);
+
+    // A pass minted for call A is accepted under call A and rejected under call B.
+    let pass_a: Pass<Meter> = Pass::mint_bound(&k, call_a);
+    assert!(pass_a.bound_to(call_a), "a pass must match its own call");
+    assert!(
+        !pass_a.bound_to(call_b),
+        "a pass from call A must be rejected in call B"
+    );
+
+    // Likewise for a capability grant — the money door is the sharpest case.
+    let door_a: Grant<Admittance> = Grant::<Admittance>::mint_bound(&k, call_a);
+    assert!(door_a.bound_to(call_a));
+    assert!(
+        !door_a.bound_to(call_b),
+        "an admittance grant from call A must be rejected in call B"
+    );
+
+    // An unbound proof (a direct mint, as tests and the composition-root seams make) belongs to no
+    // request, so it matches no bound context.
+    let unbound: Grant<WriteMoney> = Grant::<WriteMoney>::mint(&k);
+    assert!(!unbound.bound_to(call_a));
+    assert!(!unbound.bound_to(CallId::UNBOUND));
+}
+
+#[test]
 fn a_holds_debug_shows_the_four_figures_a_reader_has_to_reconcile() {
     let k = seal();
-    let admit: AdmitToken<Admit> = AdmitToken::mint(&k);
+    let admit: Grant<Admittance> = Grant::<Admittance>::mint(&k);
     let mut hold = Hold::open(&admit, PrincipalId::new("acct-77"), 1_000);
     hold.spend(1_500, 200);
 
@@ -43,7 +77,7 @@ fn a_recovered_holds_debug_says_it_came_back_from_a_journal_record() {
     // admitted one cannot tell which postings the crash is responsible for.
     let k = seal();
     let hold = Hold::materialize(
-        &RecoveryToken::mint(&k),
+        &Grant::<Recover>::mint(&k),
         PrincipalId::new("acct-9"),
         500,
         120,
@@ -135,13 +169,13 @@ fn a_decisions_debug_names_its_own_step_and_the_reason_it_refused() {
     // is mid-flight can be looked at at all. It has to say which step, and — when it is a refusal —
     // which reason, because "a decision" tells a reader nothing they did not already know.
     let k = seal();
-    let admit: UnitToken<Admit> = UnitToken::mint(&k);
+    let admit: Pass<Admit> = Pass::mint(&k);
     let proceed = Decision::proceed(&admit, Admission::ZeroHold);
     let printed = format!("{proceed:?}");
     assert!(printed.contains("admit"), "{printed}");
     assert!(printed.contains("Proceed"), "{printed}");
 
-    let route: UnitToken<Route> = UnitToken::mint(&k);
+    let route: Pass<Route> = Pass::mint(&k);
     let refused = Decision::refuse(&route, Refusal::new(ReasonCode::BreakerOpen));
     let printed = format!("{refused:?}");
     assert!(printed.contains("route"), "{printed}");
@@ -164,29 +198,29 @@ fn a_token_prints_the_capability_it_seals_and_nothing_else() {
         format!("{:?}", KernelSeal::acquire_for_kernel()),
         "KernelSeal"
     );
-    assert_eq!(format!("{:?}", LedgerToken::mint(&k)), "LedgerToken");
-    assert_eq!(format!("{:?}", UsageToken::mint(&k)), "UsageToken");
-    assert_eq!(format!("{:?}", TrustToken::mint(&k)), "TrustToken");
-    assert_eq!(format!("{:?}", ExitToken::mint(&k)), "ExitToken");
-    assert_eq!(format!("{:?}", RecoveryToken::mint(&k)), "RecoveryToken");
-    assert_eq!(format!("{:?}", AdminToken::mint(&k)), "AdminToken");
+    assert_eq!(format!("{:?}", Grant::<WriteMoney>::mint(&k)), "Grant<write-money>");
+    assert_eq!(format!("{:?}", Grant::<Consumption>::mint(&k)), "Grant<consumption>");
+    assert_eq!(format!("{:?}", Grant::<Dial>::mint(&k)), "Grant<dial>");
+    assert_eq!(format!("{:?}", Grant::<Exit>::mint(&k)), "Grant<exit>");
+    assert_eq!(format!("{:?}", Grant::<Recover>::mint(&k)), "Grant<recover>");
+    assert_eq!(format!("{:?}", Grant::<AdminVerb>::mint(&k)), "Grant<admin-verb>");
     assert_eq!(
-        format!("{:?}", DurabilityToken::mint(&k)),
-        "DurabilityToken"
+        format!("{:?}", Grant::<DurableWrite>::mint(&k)),
+        "Grant<durable-write>"
     );
     assert_eq!(
-        format!("{:?}", EgressAuthToken::mint(&k)),
-        "EgressAuthToken"
+        format!("{:?}", Grant::<Sign>::mint(&k)),
+        "Grant<sign>"
     );
     assert_eq!(
-        format!("{:?}", TransportKeyToken::mint(&k)),
-        "TransportKeyToken"
+        format!("{:?}", Grant::<KeyHandle>::mint(&k)),
+        "Grant<key-handle>"
     );
 
-    let meter: UnitToken<Meter> = UnitToken::mint(&k);
-    assert_eq!(format!("{meter:?}"), "UnitToken<meter>");
-    let admit: AdmitToken<Admit> = AdmitToken::mint(&k);
-    assert_eq!(format!("{admit:?}"), "AdmitToken<admit>");
+    let meter: Pass<Meter> = Pass::mint(&k);
+    assert_eq!(format!("{meter:?}"), "Pass<meter>");
+    let admit: Grant<Admittance> = Grant::<Admittance>::mint(&k);
+    assert_eq!(format!("{admit:?}"), "Grant<admittance>");
 }
 
 #[test]
@@ -196,40 +230,27 @@ fn every_token_names_itself_as_the_contract_seal_it_satisfies() {
     // records about who opened it, and a marker that answered with somebody else's name would put
     // the wrong unit on the record.
     use crate::plugin::KernelSeal as ContractSeal;
+    // Under the unified vocabulary (#73) every grant satisfies the contract marker as "Grant" and
+    // every stage-pass as "Pass"; the specific capability travels in the type, not the origin string.
     let k = seal();
-    let table: Vec<(&str, String)> = vec![
-        (
-            "LedgerToken",
-            LedgerToken::mint(&k).seal_origin().to_string(),
-        ),
-        ("UsageToken", UsageToken::mint(&k).seal_origin().to_string()),
-        ("TrustToken", TrustToken::mint(&k).seal_origin().to_string()),
-        ("ExitToken", ExitToken::mint(&k).seal_origin().to_string()),
-        ("AdminToken", AdminToken::mint(&k).seal_origin().to_string()),
-        (
-            "RecoveryToken",
-            RecoveryToken::mint(&k).seal_origin().to_string(),
-        ),
-        (
-            "DurabilityToken",
-            DurabilityToken::mint(&k).seal_origin().to_string(),
-        ),
-        (
-            "EgressAuthToken",
-            EgressAuthToken::mint(&k).seal_origin().to_string(),
-        ),
-        (
-            "TransportKeyToken",
-            TransportKeyToken::mint(&k).seal_origin().to_string(),
-        ),
+    let origins: Vec<String> = vec![
+        Grant::<WriteMoney>::mint(&k).seal_origin().to_string(),
+        Grant::<Consumption>::mint(&k).seal_origin().to_string(),
+        Grant::<Dial>::mint(&k).seal_origin().to_string(),
+        Grant::<Exit>::mint(&k).seal_origin().to_string(),
+        Grant::<AdminVerb>::mint(&k).seal_origin().to_string(),
+        Grant::<Recover>::mint(&k).seal_origin().to_string(),
+        Grant::<DurableWrite>::mint(&k).seal_origin().to_string(),
+        Grant::<Sign>::mint(&k).seal_origin().to_string(),
+        Grant::<KeyHandle>::mint(&k).seal_origin().to_string(),
     ];
-    for (name, origin) in &table {
-        assert_eq!(name, origin, "a token answered with another's name");
+    for origin in &origins {
+        assert_eq!(origin, "Grant", "a grant answered with another's name");
     }
-    let step_token: UnitToken<Verify> = UnitToken::mint(&k);
-    assert_eq!(step_token.seal_origin(), "UnitToken");
-    let door: AdmitToken<Admit> = AdmitToken::mint(&k);
-    assert_eq!(door.seal_origin(), "AdmitToken");
+    let step_token: Pass<Verify> = Pass::mint(&k);
+    assert_eq!(step_token.seal_origin(), "Pass");
+    let door: Grant<Admittance> = Grant::<Admittance>::mint(&k);
+    assert_eq!(door.seal_origin(), "Grant");
 }
 
 #[test]
@@ -238,7 +259,7 @@ fn a_secret_slot_says_where_the_substitution_happens_and_nothing_about_the_secre
     // because the type sits in the family that touches secrets and a derived one would follow the
     // struct wherever it grows.
     let k = seal();
-    let slot = SecretSlot::declare(&EgressAuthToken::mint(&k), "header:authorization");
+    let slot = SecretSlot::declare(&Grant::<Sign>::mint(&k), "header:authorization");
     assert_eq!(slot.location(), "header:authorization");
     let printed = format!("{slot:?}");
     assert!(printed.contains("SecretSlot"), "{printed}");
@@ -246,7 +267,7 @@ fn a_secret_slot_says_where_the_substitution_happens_and_nothing_about_the_secre
 
     // Two slots at two locations are two different renderings; one that had stopped reading the
     // field would print the same thing for both.
-    let other = SecretSlot::declare(&EgressAuthToken::mint(&k), "body:/auth/token");
+    let other = SecretSlot::declare(&Grant::<Sign>::mint(&k), "body:/auth/token");
     assert_ne!(format!("{slot:?}"), format!("{other:?}"));
     assert_ne!(slot, other);
 }
@@ -256,7 +277,7 @@ fn a_one_shot_secret_is_bound_to_one_unit_and_one_target() {
     // The mint is reversed unless the nonce appears exactly once at exactly this target, so both
     // facts have to be readable — and the nonce, which IS the secret, must not be.
     let k = seal();
-    let once = SecretOnce::mint(&AdminToken::mint(&k), 42, UnitKey::new(6), "/body/token");
+    let once = SecretOnce::mint(&Grant::<AdminVerb>::mint(&k), 42, UnitKey::new(6), "/body/token");
     assert_eq!(once.target(), "/body/token");
     assert_eq!(once.unit(), UnitKey::new(6));
     assert!(once.matches(42));
@@ -264,7 +285,7 @@ fn a_one_shot_secret_is_bound_to_one_unit_and_one_target() {
 
     // A second placeholder at a different target is a different capability, and the accessor is what
     // the substitution site reads to tell them apart.
-    let elsewhere = SecretOnce::mint(&AdminToken::mint(&k), 42, UnitKey::new(6), "/header/x-key");
+    let elsewhere = SecretOnce::mint(&Grant::<AdminVerb>::mint(&k), 42, UnitKey::new(6), "/header/x-key");
     assert_ne!(once.target(), elsewhere.target());
     assert_ne!(once, elsewhere);
 }
@@ -275,9 +296,9 @@ fn a_durability_loss_names_the_step_the_write_was_attempted_at() {
     // Which step it happened at is what decides whether the posting is retained or the unit is
     // refused outright, so it travels with the loss rather than being inferred at the far end.
     let k = seal();
-    let lost = DurabilityLost::observed(&DurabilityToken::mint(&k), StepName::Audit);
+    let lost = DurabilityLost::observed(&Grant::<DurableWrite>::mint(&k), StepName::Audit);
     assert_eq!(lost.step(), StepName::Audit);
-    let at_route = DurabilityLost::observed(&DurabilityToken::mint(&k), StepName::Route);
+    let at_route = DurabilityLost::observed(&Grant::<DurableWrite>::mint(&k), StepName::Route);
     assert_eq!(at_route.step(), StepName::Route);
     assert_ne!(lost, at_route);
 }

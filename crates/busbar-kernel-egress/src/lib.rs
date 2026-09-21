@@ -78,7 +78,7 @@ pub use select::{RequestCtx, WeightedFloor};
 pub use walk::RouteRequest;
 pub use wire::{Delivered, RouteOutcome, Shed};
 
-use busbar_contract::caps::{Route, UnitToken};
+use busbar_contract::caps::{Route, Pass};
 
 mod sealed {
     /// The private supertrait that closes the unit trait below.
@@ -87,7 +87,7 @@ mod sealed {
 
 /// The egress unit's sealed trait shape.
 ///
-/// The design writes it as `Egress::route(&RoutePlan, &Pool, &UnitToken<Route>)`, and that is what
+/// The design writes it as `Egress::route(&RoutePlan, &Pool, &Pass<Route>)`, and that is what
 /// is below: the plane's plan, the pool to walk it over, and the token that proves the loop is at
 /// the route step for this unit right now. The token is taken by reference and never stored — the
 /// kernel mints a fresh one per step call and drops it when the call returns — so this unit cannot
@@ -107,7 +107,7 @@ pub trait Egress: sealed::Sealed {
         &'a self,
         request: &'a RouteRequest<'a>,
         ctx: &'a mut RequestCtx,
-        token: &'a UnitToken<Route>,
+        token: &'a Pass<Route>,
     ) -> ports::BoxFut<'a, RouteOutcome>;
 }
 
@@ -143,7 +143,7 @@ impl Egress for EgressUnit {
         &'a self,
         request: &'a RouteRequest<'a>,
         ctx: &'a mut RequestCtx,
-        _token: &'a UnitToken<Route>,
+        _token: &'a Pass<Route>,
     ) -> ports::BoxFut<'a, RouteOutcome> {
         // `request.token` (not `_token`) is what actually reaches every `Breaker::observe` call
         // through `Hop`/`RouteRequest` — see those types' own doc comments. `route`'s own token

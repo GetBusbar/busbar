@@ -34,7 +34,7 @@
 //! `Revoked` refusal respectively, and the table above grows a row; until they do, an empty refusal
 //! set is the honest description of what the plane's authenticate step does.
 
-use busbar_contract::caps::{Authenticate, Authenticated, Decision, PrincipalId, UnitToken};
+use busbar_contract::caps::{Authenticate, Authenticated, Decision, PrincipalId, Pass};
 
 /// The actor id an unkeyed request is attributed to.
 ///
@@ -53,7 +53,7 @@ fn anonymous_actor_id() -> &'static str {
 /// always `Decision::proceed`, and the facts are always an established identity: this plane opens
 /// no handshake unit, so the challenge arm is unreachable from here rather than unimplemented.
 pub fn authenticate(
-    token: &UnitToken<Authenticate>,
+    token: &Pass<Authenticate>,
     gov: &busbar_api::PlaneRequestCtx,
 ) -> Decision<Authenticate> {
     Decision::proceed(token, Authenticated::Principal(principal_id(gov)))

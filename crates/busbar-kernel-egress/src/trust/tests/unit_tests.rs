@@ -3,7 +3,7 @@
 
 //! The sealed answer: what the loop actually receives from the verify step.
 
-use busbar_contract::caps::{KernelSeal, LaneId, ReasonCode, StepName, TrustToken, UnitToken, Verify};
+use busbar_contract::caps::{Grant, KernelSeal, LaneId, ReasonCode, StepName, Dial, Pass, Verify};
 
 use super::destination_tests::AllYes;
 use super::Pools;
@@ -15,10 +15,10 @@ const UNPRICED: &str = "no configured rate for model 'arbitrary'";
 /// The pinned arrival epoch these tests ask every readiness peek at.
 const NOW: u64 = 7;
 
-fn kernel() -> (KernelSeal, TrustToken, UnitToken<Verify>) {
+fn kernel() -> (KernelSeal, Grant<Dial>, Pass<Verify>) {
     let seal = KernelSeal::acquire_for_kernel();
-    let trust = TrustToken::mint(&seal);
-    let token = UnitToken::mint(&seal);
+    let trust = Grant::<Dial>::mint(&seal);
+    let token = Pass::mint(&seal);
     (seal, trust, token)
 }
 

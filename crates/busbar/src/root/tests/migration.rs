@@ -113,11 +113,11 @@ fn the_second_boot_reads_nothing() {
 #[test]
 fn the_marker_is_sealed_on_the_journal() {
     use crate::root::durability::{build_for_node, DurabilityConfig};
-    use busbar_contract::caps::{DurabilityToken, KernelSeal, StepName};
+    use busbar_contract::caps::{Grant, DurableWrite, KernelSeal, StepName};
     use busbar_kernel_wal::{NullShipper, RecordClass};
 
     let rows = rows();
-    let token = DurabilityToken::mint(&KernelSeal::acquire_for_kernel());
+    let token = Grant::<DurableWrite>::mint(&KernelSeal::acquire_for_kernel());
     let mut durability = build_for_node(
         &DurabilityConfig { data_dir: None },
         1,

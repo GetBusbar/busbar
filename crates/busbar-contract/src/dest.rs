@@ -432,7 +432,7 @@ pub struct TransportKeyHandle {
 impl TransportKeyHandle {
     /// Hand out a handle for resolved key material. Transport-key-unit-only.
     ///
-    /// The token is what says so: the capability crate lends a `TransportKeyToken` to the
+    /// The token is what says so: the capability crate lends a `Grant<KeyHandle>` to the
     /// transport-key unit and to nothing else, so this is the one place a handle comes from. There
     /// is no second spelling of this type — the transports, the egress unit and the unit that
     /// resolves the key all name this one.

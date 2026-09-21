@@ -12,7 +12,7 @@
 //! relayed to the client as it came, and only an attempt that produced no answer at all moves on
 //! to the next member.
 
-use busbar_contract::caps::{Route, UnitToken};
+use busbar_contract::caps::{Route, Pass};
 
 use crate::attempt::{attempt, AttemptInput, AttemptOutcome, Hop};
 use crate::pool::{Member, OnExhausted, Pool};
@@ -50,7 +50,7 @@ pub fn retry_after_secs(
     members: &[Member],
     pool: &str,
     now: u64,
-    token: &UnitToken<Route>,
+    token: &Pass<Route>,
 ) -> u64 {
     members
         .iter()
@@ -70,7 +70,7 @@ pub fn handle_status_503(
     members: &[Member],
     pool: &str,
     now: u64,
-    token: &UnitToken<Route>,
+    token: &Pass<Route>,
 ) -> RouteOutcome {
     RouteOutcome::Refused(Shed::overloaded(retry_after_secs(
         breaker, members, pool, now, token,

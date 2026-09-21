@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! `Verbs` — the one entry point the admin codec calls: `execute(KernelVerb, &AdminToken)`, plus
+//! `Verbs` — the one entry point the admin codec calls: `execute(KernelVerb, &Grant<AdminVerb>)`, plus
 //! the call context every verb needs (who is calling, what scope they were granted, the current
 //! time, and — for the two replayable legacy operations and the mint/rotate arguments this crate
 //! ports semantics for — the extra fields those specific verbs read).
@@ -44,7 +44,7 @@ use crate::store::{Store, StoreError};
 use crate::verb::{
     KernelVerb, VerbScope, LEDGER_VERBS, LEGACY_VERBS, NEW_VERBS, READ_ONLY_NEW_VERBS,
 };
-use busbar_contract::caps::{AdminToken, SecretOnce, UnitKey};
+use busbar_contract::caps::{Grant, AdminVerb, SecretOnce, UnitKey};
 
 /// The nonce seam. This crate has no CSPRNG dependency of its own, so the 128-bit nonce a
 /// [`SecretOnce`] is bound to — the thing that proves exactly one occurrence of the minted secret
@@ -261,7 +261,7 @@ impl<G: Governance, S: Store, N: NonceSource, E: ReplayEncoder<MintedKeyOutcome>
     /// value derivable from the unit key or the secret's own shape.
     fn to_secret_once(
         &self,
-        admin: &AdminToken,
+        admin: &Grant<AdminVerb>,
         unit: UnitKey,
         minted: crate::governance::MintedKey,
         target: &str,
@@ -291,7 +291,7 @@ impl<G: Governance, S: Store, N: NonceSource, E: ReplayEncoder<MintedKeyOutcome>
     #[allow(clippy::too_many_arguments)]
     pub fn create_key(
         &self,
-        admin: &AdminToken,
+        admin: &Grant<AdminVerb>,
         actor: &str,
         granted: VerbScope,
         now: u64,
@@ -371,7 +371,7 @@ impl<G: Governance, S: Store, N: NonceSource, E: ReplayEncoder<MintedKeyOutcome>
     #[allow(clippy::too_many_arguments)]
     pub fn rotate_key(
         &self,
-        admin: &AdminToken,
+        admin: &Grant<AdminVerb>,
         actor: &str,
         granted: VerbScope,
         now: u64,
@@ -434,7 +434,7 @@ impl<G: Governance, S: Store, N: NonceSource, E: ReplayEncoder<MintedKeyOutcome>
     pub fn execute(
         &self,
         verb: KernelVerb,
-        admin: &AdminToken,
+        admin: &Grant<AdminVerb>,
         actor: &str,
         granted: VerbScope,
         now: u64,
@@ -518,7 +518,7 @@ impl<G: Governance, S: Store, N: NonceSource, E: ReplayEncoder<MintedKeyOutcome>
     /// [`Verbs::admit_recovery_verb`] and only then handed to the store.
     pub fn chain_break(
         &self,
-        admin: &AdminToken,
+        admin: &Grant<AdminVerb>,
         actor: &str,
         granted: VerbScope,
         now: u64,
@@ -543,7 +543,7 @@ impl<G: Governance, S: Store, N: NonceSource, E: ReplayEncoder<MintedKeyOutcome>
     #[allow(clippy::too_many_arguments)]
     pub fn store_restore(
         &self,
-        admin: &AdminToken,
+        admin: &Grant<AdminVerb>,
         actor: &str,
         granted: VerbScope,
         now: u64,
@@ -568,7 +568,7 @@ impl<G: Governance, S: Store, N: NonceSource, E: ReplayEncoder<MintedKeyOutcome>
     /// through [`Verbs::admit_recovery_verb`] and only then handed to the store.
     pub fn reseal_epoch_floor(
         &self,
-        admin: &AdminToken,
+        admin: &Grant<AdminVerb>,
         actor: &str,
         granted: VerbScope,
         now: u64,

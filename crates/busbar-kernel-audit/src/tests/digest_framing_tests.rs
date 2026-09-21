@@ -31,7 +31,7 @@
 //!    inferred from a digest agreeing with itself.
 
 use busbar_contract::caps::{
-    Audit as AuditStep, KernelSeal, Origin, OriginKind, Outcome, UnitKey, UnitToken,
+    Audit as AuditStep, KernelSeal, Origin, OriginKind, Outcome, UnitKey, Pass,
 };
 
 use crate::legacy::chain::{digest, seal, verify_chain, ChainedRecord, Digest, Framing};
@@ -182,8 +182,8 @@ fn moving_a_caller_supplied_bar_between_adjacent_fields_always_changes_the_diges
     }
 }
 
-fn token() -> UnitToken<AuditStep> {
-    UnitToken::mint(&KernelSeal::acquire_for_kernel())
+fn token() -> Pass<AuditStep> {
+    Pass::mint(&KernelSeal::acquire_for_kernel())
 }
 
 /// One set of record inputs, with the two caller-named text fields under the test's control.

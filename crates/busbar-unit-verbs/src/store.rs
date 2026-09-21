@@ -11,7 +11,7 @@
 //! Every method here is `// contract:` — this crate has no store dependency of its own (it depends
 //! on `busbar-caps` only), so the actual durable operation is always the integrator's.
 
-use busbar_contract::caps::AdminToken;
+use busbar_contract::caps::{AdminVerb, Grant};
 
 use crate::refusal::{ReasonCode, Refusal, RefusalStep};
 
@@ -41,13 +41,13 @@ pub trait Store {
     /// `// contract:` deliberately break the journal chain (disaster recovery). Off-node CLI also
     /// exists on a stopped node; this is the ADMIN-VERB path, admitted only under the
     /// irreducible-set rules in `crate::posture`.
-    fn chain_break(&self, admin: &AdminToken) -> Result<(), StoreError>;
+    fn chain_break(&self, admin: &Grant<AdminVerb>) -> Result<(), StoreError>;
 
     /// `// contract:` restore the store from a named backup.
-    fn store_restore(&self, admin: &AdminToken, backup_ref: &str) -> Result<(), StoreError>;
+    fn store_restore(&self, admin: &Grant<AdminVerb>, backup_ref: &str) -> Result<(), StoreError>;
 
     /// `// contract:` reseal the epoch floor after a chain break or restore.
-    fn reseal_epoch_floor(&self, admin: &AdminToken) -> Result<(), StoreError>;
+    fn reseal_epoch_floor(&self, admin: &Grant<AdminVerb>) -> Result<(), StoreError>;
 
     /// `// contract:` the store-backed sealed idempotency cache for the NEW credential-minting
     /// verbs (`set_operator_key`, `export_keyset`'s recipient-sealed export, and any future

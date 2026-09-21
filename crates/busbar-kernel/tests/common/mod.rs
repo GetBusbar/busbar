@@ -12,10 +12,10 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use busbar_contract::caps::{
-    Admission, Admit, AdmitToken, Approve, Arrival, Audit, Authenticate, Decision, Decode, Encode,
+use busbar_contract::caps::{Grant, 
+    Admission, Admit, Admittance, Approve, Arrival, Audit, Authenticate, Decision, Decode, Encode,
     Hold, HoldCell, Meter, MeterClassId, OriginKind, Outcome, PrincipalId, ReasonCode, Refusal,
-    Route, ScopeFacts, StepName, UnitKey, UnitToken, Usage, UsageLine, UsageToken,
+    Route, ScopeFacts, StepName, UnitKey, Pass, Usage, UsageLine, Consumption,
     VerifiedDestination, Verify,
 };
 use busbar_kernel::registry::Generation;
@@ -223,7 +223,7 @@ impl Drop for Never<'_> {
 impl busbar_kernel::teller::RouteAwait for NeverRoutes<'_> {
     fn route_leg<'a>(
         &'a self,
-        _token: &'a UnitToken<Route>,
+        _token: &'a Pass<Route>,
         _ctx: &'a UnitCtx,
         _meter: &'a AccrualMeter,
     ) -> busbar_kernel::teller::RouteLeg<'a> {
@@ -273,7 +273,7 @@ impl busbar_kernel::inflight::ArrivalDoor for TestDoor {
     fn arrival_hold(
         &self,
         principal: PrincipalId,
-        token: &busbar_contract::caps::AdmitToken<busbar_contract::caps::Admit>,
+        token: &busbar_contract::caps::Grant<busbar_contract::caps::Admittance>,
     ) -> Hold {
         Hold::open(token, principal, 0)
     }
@@ -301,7 +301,7 @@ pub fn cell(kernel: &Kernel) -> HoldCell {
 }
 
 /// A usage report of one line, for tests that need one directly.
-pub fn usage(token: &UsageToken, quantity: u64) -> Usage {
+pub fn usage(token: &Grant<Consumption>, quantity: u64) -> Usage {
     Usage::report(
         token,
         vec![UsageLine {
@@ -325,11 +325,11 @@ macro_rules! step {
 }
 
 impl Units for TestUnits {
-    fn arrival(&self, token: &UnitToken<Arrival>, _ctx: &UnitCtx) -> Decision<Arrival> {
+    fn arrival(&self, token: &Pass<Arrival>, _ctx: &UnitCtx) -> Decision<Arrival> {
         step!(self, token, Arrival, StepName::Arrival, arrival_record())
     }
 
-    fn decode(&self, token: &UnitToken<Decode>, _ctx: &UnitCtx) -> Decision<Decode> {
+    fn decode(&self, token: &Pass<Decode>, _ctx: &UnitCtx) -> Decision<Decode> {
         step!(
             self,
             token,
@@ -341,7 +341,7 @@ impl Units for TestUnits {
 
     fn authenticate(
         &self,
-        token: &UnitToken<Authenticate>,
+        token: &Pass<Authenticate>,
         _ctx: &UnitCtx,
     ) -> Decision<Authenticate> {
         let facts = if self.challenge {
@@ -358,8 +358,8 @@ impl Units for TestUnits {
 
     fn verify(
         &self,
-        token: &UnitToken<Verify>,
-        trust: &busbar_contract::caps::TrustToken,
+        token: &Pass<Verify>,
+        trust: &busbar_contract::caps::Grant<busbar_contract::caps::Dial>,
         _ctx: &UnitCtx,
         _principal: &PrincipalId,
     ) -> Decision<Verify> {
@@ -381,7 +381,7 @@ impl Units for TestUnits {
 
     fn approve(
         &self,
-        token: &UnitToken<Approve>,
+        token: &Pass<Approve>,
         _ctx: &UnitCtx,
         _principal: &PrincipalId,
         destinations: &[VerifiedDestination],
@@ -401,8 +401,8 @@ impl Units for TestUnits {
 
     fn admit(
         &self,
-        token: &UnitToken<Admit>,
-        admit: &AdmitToken<Admit>,
+        token: &Pass<Admit>,
+        admit: &Grant<Admittance>,
         _ctx: &UnitCtx,
         principal: &PrincipalId,
         _destinations: &[VerifiedDestination],
@@ -447,7 +447,7 @@ impl Units for TestUnits {
 
     fn route(
         &self,
-        token: &UnitToken<Route>,
+        token: &Pass<Route>,
         _ctx: &UnitCtx,
         meter: &AccrualMeter,
     ) -> Decision<Route> {
@@ -461,8 +461,8 @@ impl Units for TestUnits {
 
     fn meter(
         &self,
-        token: &UnitToken<Meter>,
-        usage_token: &UsageToken,
+        token: &Pass<Meter>,
+        usage_token: &Grant<Consumption>,
         _ctx: &UnitCtx,
         _provisional: &Outcome,
     ) -> Decision<Meter> {
@@ -475,7 +475,7 @@ impl Units for TestUnits {
 
     fn audit(
         &self,
-        token: &UnitToken<Audit>,
+        token: &Pass<Audit>,
         _ctx: &UnitCtx,
         _outcome: &Outcome,
     ) -> Decision<Audit> {
@@ -486,7 +486,7 @@ impl Units for TestUnits {
 
     fn audit_refused(
         &self,
-        token: &UnitToken<Audit>,
+        token: &Pass<Audit>,
         _ctx: &UnitCtx,
         _refusal: &Refusal,
     ) -> Decision<Audit> {
@@ -497,7 +497,7 @@ impl Units for TestUnits {
 
     fn encode(
         &self,
-        token: &UnitToken<Encode>,
+        token: &Pass<Encode>,
         _ctx: &UnitCtx,
         _outcome: &Outcome,
     ) -> Decision<Encode> {

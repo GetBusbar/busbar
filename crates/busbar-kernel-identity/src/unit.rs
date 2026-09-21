@@ -3,7 +3,7 @@
 
 //! The sealed answer: the unit the loop calls at the authenticate step.
 
-use busbar_contract::caps::{Authenticate, Authenticated, Decision, ReasonCode, Refusal, UnitToken};
+use busbar_contract::caps::{Authenticate, Authenticated, Decision, ReasonCode, Refusal, Pass};
 
 use crate::cache::CredentialCache;
 use crate::chain::{AuthChain, ChainVerdict, KeyVerifier, RevocationView};
@@ -71,7 +71,7 @@ impl Auth {
         keys: Option<&dyn KeyVerifier>,
         revocations: Option<&dyn RevocationView>,
         pending: Option<Challenge>,
-        token: &UnitToken<Authenticate>,
+        token: &Pass<Authenticate>,
     ) -> Decision<Authenticate> {
         // 1. The caller may only narrow within what the claim declared.
         if let Some(scheme) = req.scheme {

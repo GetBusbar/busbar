@@ -17,7 +17,7 @@
 use std::future::Future;
 use std::pin::Pin;
 
-use busbar_contract::caps::{Route, UnitToken};
+use busbar_contract::caps::{Route, Pass};
 
 /// Which member of the verified set a call is about.
 ///
@@ -181,7 +181,7 @@ pub trait Breaker: Send + Sync {
         pool: &str,
         destination: DestinationId,
         now: u64,
-        token: &UnitToken<Route>,
+        token: &Pass<Route>,
     ) -> bool;
 
     /// Side-effect-free: is this destination usable at all — not administratively down, and with
@@ -200,7 +200,7 @@ pub trait Breaker: Send + Sync {
         pool: &str,
         destination: DestinationId,
         now: u64,
-        token: &UnitToken<Route>,
+        token: &Pass<Route>,
     ) -> u64;
 
     /// Turn one upstream answer into a disposition and a breaker outcome.
@@ -215,7 +215,7 @@ pub trait Breaker: Send + Sync {
     /// trip counter should increment on, never a re-trip of an already-open cell.
     ///
     /// `token` is the capability token that proves the loop is at the route step for this unit
-    /// right now (per `busbar-caps`'s `&UnitToken<Route>`, mirroring the breaker unit's own sealed
+    /// right now (per `busbar-caps`'s `&Pass<Route>`, mirroring the breaker unit's own sealed
     /// `Breaker::observe`) — a unit may only act at the step its token names, and the token is the
     /// proof of that rather than a convention. This unit's `route` entry point already receives one; every
     /// call down through the walk to this port threads the same borrow.
@@ -225,7 +225,7 @@ pub trait Breaker: Send + Sync {
         destination: DestinationId,
         outcome: Outcome,
         now: u64,
-        token: &UnitToken<Route>,
+        token: &Pass<Route>,
     ) -> bool;
 
     /// Release a probe that was won but never dispatched. Owner-checked against the epoch that was

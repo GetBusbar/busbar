@@ -22,7 +22,7 @@
 //! 6. the send;
 //! 7. the plane's response decode, per frame, relayed under the hold.
 
-use busbar_contract::caps::{Route, UnitToken};
+use busbar_contract::caps::{Route, Pass};
 use busbar_contract::transport::wire::{Conn, WireStatusClass};
 use busbar_contract::{Ctx, EgressBody, Frame, Plane, Transport, Unit};
 use futures::StreamExt;
@@ -45,9 +45,9 @@ pub struct Hop<'a> {
     /// The breaker unit.
     pub breaker: &'a dyn Breaker,
     /// The capability token proving the loop is at the route step for this unit right now, lent
-    /// down from [`crate::Egress::route`]'s own `&UnitToken<Route>` and threaded through to every
+    /// down from [`crate::Egress::route`]'s own `&Pass<Route>` and threaded through to every
     /// [`Breaker::observe`] call this hop makes.
-    pub token: &'a UnitToken<Route>,
+    pub token: &'a Pass<Route>,
     /// The pool's permit store. Held so a failure can drop the permit at the exact point the
     /// previous release dropped it.
     pub capacity: &'a dyn Capacity,

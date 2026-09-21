@@ -10,7 +10,7 @@
 //! coexistence claim checkable rather than asserted.
 //!
 //! WHAT A STEP FILE IS. Each one holds the body of exactly one of the loop's steps for this plane,
-//! typed the way the loop's step seam types it: a step is handed `&UnitToken<S>` for its OWN step
+//! typed the way the loop's step seam types it: a step is handed `&Pass<S>` for its OWN step
 //! and answers with a `Decision<S>`, so it can neither answer a question it was not asked nor read
 //! its own answer back. The type that implements that seam is the composition root's, not this
 //! crate's — these are the per-step bodies it delegates to, which is why nothing here names the

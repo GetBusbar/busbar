@@ -21,9 +21,9 @@
 //! **Drain** is how a node stops without cutting anyone off mid-sentence, and the fleet rule is how
 //! a node decides whether stopping is even the right thing to do when it cannot reach the store.
 
-use busbar_contract::caps::{
-    Abort, Canary, ExitToken, LedgerToken, Outcome, Posted, PostingFlags, QuantitySource,
-    ReasonCode, StepName, UnitEnd, Usage, UsageLine, UsageToken,
+use busbar_contract::caps::{Grant, 
+    Abort, Canary, Exit, WriteMoney, Outcome, Posted, PostingFlags, QuantitySource,
+    ReasonCode, StepName, UnitEnd, Usage, UsageLine, Consumption,
 };
 
 use crate::inflight::UnitSlot;
@@ -285,7 +285,7 @@ pub fn sweep_settle(
         Some(outcome) => {
             // One token witnesses both ends of this path: the take and the seal are the same
             // exit, and the token carries no state that could tell them apart.
-            let exit = ExitToken::mint(kernel.seal());
+            let exit = Grant::<Exit>::mint(kernel.seal());
             let taken = slot.cell().take(&exit);
             // A lost task holds its concurrency leases until somebody gives them back, and the
             // exit path it would have used is never going to run. The rule is that leases go back
@@ -306,7 +306,7 @@ pub fn sweep_settle(
                     source: QuantitySource::Count,
                     estimated,
                 }];
-                let token = UsageToken::mint(kernel.seal());
+                let token = Grant::<Consumption>::mint(kernel.seal());
                 let usage = if estimated {
                     Usage::estimate(&token, lines)
                 } else {
@@ -315,7 +315,7 @@ pub fn sweep_settle(
                 .expect("one usage line is always within the record's bound");
                 // As every other settling site: the table's `amount` is the money, and the one
                 // line is the evidence it was derived from.
-                let ledger = LedgerToken::mint(kernel.seal());
+                let ledger = Grant::<WriteMoney>::mint(kernel.seal());
                 let posted =
                     Posted::settle(hold, u128::from(amount), &usage, &ledger).flagged(flags);
                 canary.settled();

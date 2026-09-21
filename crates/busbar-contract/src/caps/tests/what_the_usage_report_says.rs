@@ -152,7 +152,7 @@ fn a_report_hands_back_the_lines_it_was_given() {
             estimated: false,
         },
     ];
-    let usage = Usage::report(&UsageToken::mint(&k), lines.clone()).expect("two lines fit");
+    let usage = Usage::report(&Grant::<Consumption>::mint(&k), lines.clone()).expect("two lines fit");
     assert_eq!(usage.lines(), &lines[..]);
     assert_eq!(usage.lines().len(), 2);
     assert_eq!(usage.lines()[0].quantity, 900);
@@ -170,7 +170,7 @@ fn the_largest_report_the_record_can_hold_is_accepted() {
     let full: Vec<UsageLine> = (0..MAX_USAGE_LINES)
         .map(|_| line(QuantitySource::Count))
         .collect();
-    let usage = Usage::report(&UsageToken::mint(&k), full).expect("exactly the bound fits");
+    let usage = Usage::report(&Grant::<Consumption>::mint(&k), full).expect("exactly the bound fits");
     assert_eq!(usage.lines().len(), MAX_USAGE_LINES);
     assert_eq!(usage.total(), MAX_USAGE_LINES as u64);
 
@@ -179,11 +179,11 @@ fn the_largest_report_the_record_can_hold_is_accepted() {
         .map(|_| line(QuantitySource::Count))
         .collect();
     assert_eq!(
-        Usage::report(&UsageToken::mint(&k), over.clone()),
+        Usage::report(&Grant::<Consumption>::mint(&k), over.clone()),
         Err(UsageError::TooManyLines)
     );
     assert_eq!(
-        Usage::estimate(&UsageToken::mint(&k), over),
+        Usage::estimate(&Grant::<Consumption>::mint(&k), over),
         Err(UsageError::TooManyLines),
         "the estimate goes through the same bound rather than around it"
     );
@@ -246,7 +246,7 @@ fn a_cell_counts_the_accruals_it_took_and_starts_at_none() {
     // canary reporting a settlement missing on every clean run; one that never moved would let a
     // child's spend disappear without the arithmetic noticing.
     let k = seal();
-    let admit: AdmitToken<Admit> = AdmitToken::mint(&k);
+    let admit: Grant<Admittance> = Grant::<Admittance>::mint(&k);
     let cell = HoldCell::new(Hold::open(&admit, PrincipalId::new("acct-1"), 0));
     assert_eq!(cell.accruals(), 0, "a fresh cell has taken nothing");
 
@@ -272,21 +272,21 @@ fn a_cell_counts_the_accruals_it_took_and_starts_at_none() {
         .expect_err("another principal's child is refused");
     assert_eq!(cell.accruals(), 3);
 
-    let ledger = LedgerToken::mint(&k);
+    let ledger = Grant::<WriteMoney>::mint(&k);
     for child in children {
         let _ = Posted::into_parent(child, &cell, &ledger).expect("the parent is still open");
     }
-    let taken = cell.take(&ExitToken::mint(&k)).expect("the exit takes it");
+    let taken = cell.take(&Grant::<Exit>::mint(&k)).expect("the exit takes it");
     let _ = Posted::settle(
         arrival,
         0,
-        &Usage::report(&UsageToken::mint(&k), Vec::new()).unwrap(),
+        &Usage::report(&Grant::<Consumption>::mint(&k), Vec::new()).unwrap(),
         &ledger,
     );
     let _ = Posted::settle(
         taken,
         30,
-        &Usage::report(&UsageToken::mint(&k), Vec::new()).unwrap(),
+        &Usage::report(&Grant::<Consumption>::mint(&k), Vec::new()).unwrap(),
         &ledger,
     );
 }

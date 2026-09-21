@@ -256,7 +256,7 @@ mod sealed {
 ///     fn seal(
 ///         &mut self,
 ///         _inputs: crate::AuditInputs,
-///         _token: &busbar_contract::caps::UnitToken<busbar_contract::caps::Audit>,
+///         _token: &busbar_contract::caps::Pass<busbar_contract::caps::Audit>,
 ///     ) -> crate::AuditRecord {
 ///         unimplemented!()
 ///     }
@@ -267,7 +267,7 @@ pub trait Audit: sealed::Sealed {
     fn seal(
         &mut self,
         inputs: AuditInputs,
-        token: &busbar_contract::caps::UnitToken<busbar_contract::caps::Audit>,
+        token: &busbar_contract::caps::Pass<busbar_contract::caps::Audit>,
     ) -> AuditRecord;
 }
 
@@ -487,7 +487,7 @@ impl Audit for AuditChain {
     fn seal(
         &mut self,
         inputs: AuditInputs,
-        _token: &busbar_contract::caps::UnitToken<busbar_contract::caps::Audit>,
+        _token: &busbar_contract::caps::Pass<busbar_contract::caps::Audit>,
     ) -> AuditRecord {
         let mut record = AuditRecord {
             subject: inputs.subject,

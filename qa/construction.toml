@@ -245,7 +245,7 @@ be opened by Admit, a posting can only be minted after Audit. Every one of those
 a token, so a unit spelling Decision::proceed or Hold::open with its own token is the design working; \
 the forgery surface is MINTING a token. That holds exactly as long as nothing outside the kernel can \
 spell a token constructor. Every such spelling elsewhere is a forged token."""
-patterns = ["UnitToken::mint(", "LedgerToken::mint(", "UsageToken::mint(", "AuditToken::mint(", "ExitToken::mint("]
+patterns = ["Pass::mint(", "Grant::<WriteMoney>::mint(", "Grant::<Consumption>::mint(", "Grant::<Exit>::mint("]
 allowed_root = "crates/busbar-kernel/src"
 max_sites = 0
 # Two more of the same shape, scoped to busbar-kernel (not busbar-substrate/src/teller, which is
@@ -259,7 +259,7 @@ max_sites = 0
 # admit-token-mint sub-rule below, not by the `patterns` list above, so each seal-site symbol has
 # exactly one scanner.
 kernel_seal_pattern = 'KernelSeal::acquire_for_kernel\('
-admit_token_mint_pattern = 'AdmitToken::mint\('
+admit_token_mint_pattern = 'Grant::<Admittance>::mint\('
 kernel_root = "crates/busbar-kernel/src"
 max_kernel_seal_sites = 0
 max_admit_token_mint_sites = 0
@@ -861,14 +861,14 @@ confined_to_paths = ["crates/busbar-kernel/src/"]
 because = "the seal is what mints every token; only the kernel may obtain one"
 
 [rules.seal-sites.symbols.recovery-token]
-symbol = "RecoveryToken"
+symbol = "Grant::<Recover>::mint("
 confined_to = "recovery"
 # The scope resolved against this tree, matched as path prefixes.
 confined_to_paths = ["crates/busbar-kernel/src/recovery.rs"]
 because = "it materialises a hold from a journal record with no admission behind it"
 
 [rules.seal-sites.symbols.hold-cell-take]
-symbol = "take(&ExitToken::mint("
+symbol = "take(&Grant::<Exit>::mint("
 confined_to = "kernel/src"
 # The scope resolved against this tree, matched as path prefixes.
 confined_to_paths = ["crates/busbar-kernel/src/teller.rs", "crates/busbar-kernel/src/tick.rs"]

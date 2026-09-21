@@ -43,17 +43,17 @@ impl Kernel {
             seal: KernelSeal::acquire_for_kernel(),
         }
     }
-    fn admit_token(&self) -> AdmitToken<Admit> {
-        AdmitToken::mint(&self.seal)
+    fn admit_token(&self) -> Grant<Admittance> {
+        Grant::<Admittance>::mint(&self.seal)
     }
-    fn exit_token(&self) -> ExitToken {
-        ExitToken::mint(&self.seal)
+    fn exit_token(&self) -> Grant<Exit> {
+        Grant::<Exit>::mint(&self.seal)
     }
-    fn ledger_token(&self) -> LedgerToken {
-        LedgerToken::mint(&self.seal)
+    fn ledger_token(&self) -> Grant<WriteMoney> {
+        Grant::<WriteMoney>::mint(&self.seal)
     }
-    fn usage_token(&self) -> UsageToken {
-        UsageToken::mint(&self.seal)
+    fn usage_token(&self) -> Grant<Consumption> {
+        Grant::<Consumption>::mint(&self.seal)
     }
 }
 
@@ -146,7 +146,7 @@ fn the_ten_steps_are_in_order_and_three_belong_to_the_kernel() {
 #[test]
 fn a_refusal_is_stamped_with_the_step_that_raised_it() {
     let k = Kernel::new();
-    let token: UnitToken<Approve> = UnitToken::mint(&k.seal);
+    let token: Pass<Approve> = Pass::mint(&k.seal);
     let decision = Decision::refuse(
         &token,
         Refusal::new(ReasonCode::ScopeDenied).retry_after(30),
@@ -177,7 +177,7 @@ fn a_refusal_that_was_never_stamped_names_no_step() {
         "a refusal with no step cannot have been raised under a hold"
     );
 
-    let token: UnitToken<Meter> = UnitToken::mint(&k.seal);
+    let token: Pass<Meter> = Pass::mint(&k.seal);
     let refusal = Decision::refuse(&token, Refusal::new(ReasonCode::OverBudget))
         .into_result(&k.seal)
         .expect_err("this decision refuses");
@@ -188,7 +188,7 @@ fn a_refusal_that_was_never_stamped_names_no_step() {
 #[test]
 fn a_decision_carries_the_facts_of_its_own_step() {
     let k = Kernel::new();
-    let token: UnitToken<Meter> = UnitToken::mint(&k.seal);
+    let token: Pass<Meter> = Pass::mint(&k.seal);
     let decision = Decision::proceed(&token, usage_of(&k, 42));
     let usage = decision.into_result(&k.seal).expect("this one proceeds");
     assert_eq!(usage.total(), 42);
@@ -274,11 +274,11 @@ fn two_threads_racing_the_take_produce_exactly_one_hold() {
         handles.push(std::thread::spawn(move || {
             // Each thread is its own exit-path caller; only one can win.
             let seal = KernelSeal::acquire_for_kernel();
-            let exit = ExitToken::mint(&seal);
+            let exit = Grant::<Exit>::mint(&seal);
             if let Some(hold) = cell.take(&exit) {
                 winners.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                let ledger = LedgerToken::mint(&seal);
-                let usage = UsageToken::mint(&seal);
+                let ledger = Grant::<WriteMoney>::mint(&seal);
+                let usage = Grant::<Consumption>::mint(&seal);
                 let usage = Usage::report(&usage, Vec::new()).expect("empty is fine");
                 let _ = Posted::settle(hold, 0, &usage, &ledger);
             }
@@ -337,15 +337,15 @@ fn a_child_posting_racing_the_sweep_answers_under_one_guard() {
         let sweep_start = std::sync::Arc::clone(&start);
         let sweep = std::thread::spawn(move || {
             let seal = KernelSeal::acquire_for_kernel();
-            let exit = ExitToken::mint(&seal);
+            let exit = Grant::<Exit>::mint(&seal);
             sweep_start.wait();
             jitter((round % 64) * 64);
             let taken = sweep_cell.take(&exit);
             sweep_flag.store(true, Order::SeqCst);
             if let Some(hold) = taken {
                 let usage =
-                    Usage::report(&UsageToken::mint(&seal), Vec::new()).expect("empty is fine");
-                let _ = Posted::settle(hold, 0, &usage, &LedgerToken::mint(&seal));
+                    Usage::report(&Grant::<Consumption>::mint(&seal), Vec::new()).expect("empty is fine");
+                let _ = Posted::settle(hold, 0, &usage, &Grant::<WriteMoney>::mint(&seal));
             }
         });
 
@@ -469,7 +469,7 @@ fn an_accrual_is_sealed_to_an_admitted_parent_with_the_same_principal() {
 #[test]
 fn a_recovered_hold_says_so_all_the_way_onto_the_posting() {
     let k = Kernel::new();
-    let recovery = RecoveryToken::mint(&k.seal);
+    let recovery = Grant::<Recover>::mint(&k.seal);
     let hold = Hold::materialize(&recovery, who("acct-1"), 1_000, 250);
     assert!(hold.is_recovered());
     assert_eq!(hold.accrued(), 250, "the last checkpointed accrual");
@@ -531,7 +531,7 @@ fn a_unit_end_carries_its_posting_or_the_loss_that_replaced_it() {
     assert!(end.outcome().is_completed());
     assert_eq!(end.posted().map(Posted::settled), Ok(10));
 
-    let lost = DurabilityLost::observed(&DurabilityToken::mint(&k.seal), StepName::Meter);
+    let lost = DurabilityLost::observed(&Grant::<DurableWrite>::mint(&k.seal), StepName::Meter);
     let end = UnitEnd::seal(
         &exit,
         Outcome::Failed(StepName::Meter, ReasonCode::DurabilityUnavailable),
@@ -636,14 +636,14 @@ fn the_kernels_own_types_are_sealed_and_readable() {
 #[test]
 fn the_egress_capabilities_never_print_what_they_carry() {
     let k = Kernel::new();
-    let handle = TransportKeyHandle::issue(&TransportKeyToken::mint(&k.seal), 11, "sha256:ab");
+    let handle = TransportKeyHandle::issue(&Grant::<KeyHandle>::mint(&k.seal), 11, "sha256:ab");
     assert_eq!(
         format!("{handle:?}"),
         "TransportKeyHandle(slot 11, sha256:ab <no material>)"
     );
 
     let once = SecretOnce::mint(
-        &AdminToken::mint(&k.seal),
+        &Grant::<AdminVerb>::mint(&k.seal),
         0xdead_beef_dead_beef_dead_beef_dead_beef,
         UnitKey::new(1),
         "/body/secret",
@@ -661,15 +661,15 @@ fn the_egress_capabilities_never_print_what_they_carry() {
 #[test]
 fn a_sealed_destination_carries_the_lane_the_money_side_reads() {
     let k = Kernel::new();
-    let dest = VerifiedDestination::seal(&TrustToken::mint(&k.seal), LaneId::new("openai:gpt-4o"));
+    let dest = VerifiedDestination::seal(&Grant::<Dial>::mint(&k.seal), LaneId::new("openai:gpt-4o"));
     assert_eq!(dest.lane().as_str(), "openai:gpt-4o");
 
     let decoration = AuthDecoration::decorate(
-        &EgressAuthToken::mint(&k.seal),
+        &Grant::<Sign>::mint(&k.seal),
         vec![("authorization".into(), "Bearer {slot}".into())],
         true,
         vec![SecretSlot::declare(
-            &EgressAuthToken::mint(&k.seal),
+            &Grant::<Sign>::mint(&k.seal),
             "header:authorization",
         )],
     );
@@ -689,7 +689,7 @@ fn a_sealed_destination_carries_the_lane_the_money_side_reads() {
 #[test]
 fn a_handshake_decoration_carries_its_two_bounds_in_the_order_it_declares_them() {
     let k = Kernel::new();
-    let token = EgressAuthToken::mint(&k.seal);
+    let token = Grant::<Sign>::mint(&k.seal);
     match AuthDecoration::handshake(&token, 7, 4096) {
         AuthDecoration::Handshake {
             max_frames,
@@ -781,8 +781,8 @@ fn the_lint_hooks_name_every_escape_the_compiler_cannot_close() {
         "Box::leak",
         "AssertUnwindSafe",
         "KernelSeal::acquire_for_kernel",
-        "RecoveryToken",
-        "take(&ExitToken::mint(",
+        "Grant::<Recover>::mint(",
+        "take(&Grant::<Exit>::mint(",
     ] {
         assert!(
             symbols.contains(&expected),
@@ -914,18 +914,18 @@ fn a_reason_code_reads_the_same_in_the_journal_and_the_refusal() {
 #[test]
 fn a_token_says_which_step_it_is_for() {
     let k = Kernel::new();
-    let token: UnitToken<Verify> = UnitToken::mint(&k.seal);
-    assert_eq!(format!("{token:?}"), "UnitToken<verify>");
-    let admit: AdmitToken<Admit> = AdmitToken::mint(&k.seal);
-    assert_eq!(format!("{admit:?}"), "AdmitToken<admit>");
-    assert_eq!(format!("{:?}", TrustToken::mint(&k.seal)), "TrustToken");
+    let token: Pass<Verify> = Pass::mint(&k.seal);
+    assert_eq!(format!("{token:?}"), "Pass<verify>");
+    let admit: Grant<Admittance> = Grant::<Admittance>::mint(&k.seal);
+    assert_eq!(format!("{admit:?}"), "Grant<admittance>");
+    assert_eq!(format!("{:?}", Grant::<Dial>::mint(&k.seal)), "Grant<dial>");
 }
 
 #[test]
 fn the_doors_answer_is_one_of_three_shapes() {
     let k = Kernel::new();
     let admit = k.admit_token();
-    let token: UnitToken<Admit> = UnitToken::mint(&k.seal);
+    let token: Pass<Admit> = Pass::mint(&k.seal);
 
     let decision = Decision::proceed(&token, Admission::Own(Hold::open(&admit, who("acct-1"), 5)));
     match decision.into_result(&k.seal).expect("proceeds") {
@@ -936,7 +936,7 @@ fn the_doors_answer_is_one_of_three_shapes() {
     }
 
     // A zero-priced unit holds nothing, which is why the heartbeat always runs.
-    let token: UnitToken<Admit> = UnitToken::mint(&k.seal);
+    let token: Pass<Admit> = Pass::mint(&k.seal);
     let decision = Decision::proceed(&token, Admission::ZeroHold);
     assert!(matches!(
         decision.into_result(&k.seal).expect("proceeds"),

@@ -9,7 +9,8 @@
 //! never shows what they carry.
 
 use crate::caps::step::{LaneId, UnitKey};
-use crate::caps::token::{AdminToken, EgressAuthToken};
+use crate::caps::capability::{AdminVerb, Dial, Sign};
+use crate::caps::token::Grant;
 
 /// A destination the trust unit judged and sealed.
 ///
@@ -33,7 +34,7 @@ impl VerifiedDestination {
     /// at the sealing site. That is what lets a deployment's own lanes be sealed at all, and it is
     /// why this signature does not take a `String`: a lane id minted per unit would be a leak per
     /// request, which is the one thing the interning rule exists to forbid.
-    pub fn seal(_token: &crate::caps::token::TrustToken, lane: LaneId) -> Self {
+    pub fn seal(_token: &crate::caps::token::Grant<Dial>, lane: LaneId) -> Self {
         VerifiedDestination { lane }
     }
 
@@ -54,7 +55,7 @@ pub struct SecretSlot {
 
 impl SecretSlot {
     /// Declare a slot. Egress-auth unit only.
-    pub fn declare(_token: &EgressAuthToken, location: impl Into<String>) -> Self {
+    pub fn declare(_token: &Grant<Sign>, location: impl Into<String>) -> Self {
         SecretSlot {
             location: location.into(),
         }
@@ -102,7 +103,7 @@ pub enum AuthDecoration {
 impl AuthDecoration {
     /// Build a decoration. Egress-auth unit only.
     pub fn decorate(
-        _token: &EgressAuthToken,
+        _token: &Grant<Sign>,
         fields: Vec<(String, String)>,
         body_signature: bool,
         slots: Vec<SecretSlot>,
@@ -115,7 +116,7 @@ impl AuthDecoration {
     }
 
     /// Build a handshake decoration. Egress-auth unit only.
-    pub fn handshake(_token: &EgressAuthToken, max_frames: u32, max_bytes: u32) -> Self {
+    pub fn handshake(_token: &Grant<Sign>, max_frames: u32, max_bytes: u32) -> Self {
         AuthDecoration::Handshake {
             max_frames,
             max_bytes,
@@ -127,7 +128,7 @@ impl AuthDecoration {
 ///
 /// Defined once, in `busbar-contract`, because the transports and the egress unit consume it and
 /// may not name this crate; re-exported here because the transport-key unit that builds it is lent
-/// its [`crate::caps::TransportKeyToken`] by the loop. `TransportKeyHandle::issue` takes that token, so this is
+/// its [`Grant`](crate::caps::Grant)`<KeyHandle>` by the loop. `TransportKeyHandle::issue` takes that grant, so this is
 /// one type with one constructor rather than two types that nothing bridges.
 pub use crate::TransportKeyHandle;
 
@@ -147,7 +148,7 @@ pub struct SecretOnce {
 impl SecretOnce {
     /// Mint the placeholder. Verbs unit only.
     pub fn mint(
-        _token: &AdminToken,
+        _token: &Grant<AdminVerb>,
         nonce: u128,
         unit: UnitKey,
         target: impl Into<String>,

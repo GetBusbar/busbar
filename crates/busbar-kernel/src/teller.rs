@@ -56,12 +56,12 @@
 
 use std::future::Future;
 
-use busbar_contract::caps::{
-    Abort, AdminToken, Admission, Admit, AdmitToken, Approve, Arrival, Audit, Authenticate,
-    Authenticated, Canary, Decision, Decode, DurabilityLost, Encode, ExitToken, Hold, HoldAccrual,
-    HoldCell, KernelSeal, LedgerToken, Meter, MeterClassId, Origin, OriginKind, Outcome, Posted,
+use busbar_contract::caps::{Grant, CallId,
+    Abort, AdminVerb, Admission, Admit, Admittance, Approve, Arrival, Audit, Authenticate,
+    Authenticated, Canary, Decision, Decode, DurabilityLost, Encode, Exit, Hold, HoldAccrual,
+    HoldCell, KernelSeal, WriteMoney, Meter, MeterClassId, Origin, OriginKind, Outcome, Posted,
     PostingFlags, PrincipalId, QuantitySource, ReasonCode, Refusal, Route, SessionId, StepName,
-    TransportKeyToken, TrustToken, UnitEnd, UnitKey, UnitToken, Usage, UsageLine, UsageToken,
+    KeyHandle, Dial, UnitEnd, UnitKey, Pass, Usage, UsageLine, Consumption,
     VerifiedDestination, Verify,
 };
 
@@ -75,6 +75,10 @@ use crate::slice::{takes_lease, ConcurrencyGauge, GroupLeaseSlip, LeaseCell, IN_
 #[derive(Debug)]
 pub struct Kernel {
     seal: KernelSeal,
+    /// The per-request generation counter (#74). Bumped once per unit, so every request's proofs
+    /// carry a generation distinct from the last, and a proof stamped for one request does not match
+    /// another. A plain `u64` compared by the stages — no crypto on the hot path (#71).
+    call_gen: std::sync::atomic::AtomicU64,
 }
 
 impl Default for Kernel {
@@ -88,7 +92,27 @@ impl Kernel {
     pub fn new() -> Self {
         Kernel {
             seal: KernelSeal::acquire_for_kernel(),
+            call_gen: std::sync::atomic::AtomicU64::new(0),
         }
+    }
+
+    /// Open a new per-request generation (#74). Called once at the top of a unit; the value is
+    /// carried in the unit context and stamped onto every `Pass`/`Grant` the loop mints for it, so a
+    /// stray or stored proof from an earlier request is rejected. Wraps below `u64::MAX`, which is
+    /// reserved for the unbound sentinel.
+    pub fn next_call(&self) -> CallId {
+        let gen = self
+            .call_gen
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            % (u64::MAX - 1);
+        CallId::seal(&self.seal, gen)
+    }
+
+    /// The door's grant, bound to one request (#74). The bound counterpart of [`admit_token`]: the
+    /// loop mints the admittance grant for the current call so a hold cannot be opened with a grant
+    /// minted for a different one.
+    pub fn admit_token_for(&self, call: CallId) -> Grant<Admittance> {
+        Grant::<Admittance>::mint_bound(&self.seal, call)
     }
 
     /// Seal an origin, which nothing outside the kernel can construct.
@@ -108,8 +132,8 @@ impl Kernel {
     /// asks the door for rather than opening itself. This is the seam that hands the unit its
     /// token, and it is a named symbol precisely so the source scan can see every use of it. The
     /// batteries name it too, to drive the door directly and prove what the cell does under a race.
-    pub fn admit_token(&self) -> AdmitToken<Admit> {
-        AdmitToken::<Admit>::mint(&self.seal)
+    pub fn admit_token(&self) -> Grant<Admittance> {
+        Grant::<Admittance>::mint(&self.seal)
     }
 
     /// The transport-key unit's token, as the composition root lends it.
@@ -122,8 +146,8 @@ impl Kernel {
     ///
     /// Kept beside `admit_token` and named the same way, so the source scan that accounts for every
     /// mint sees this one too.
-    pub fn transport_key_token(&self) -> TransportKeyToken {
-        TransportKeyToken::mint(&self.seal)
+    pub fn transport_key_token(&self) -> Grant<KeyHandle> {
+        Grant::<KeyHandle>::mint(&self.seal)
     }
 
     /// The verbs unit's token, as the composition root lends it.
@@ -136,8 +160,8 @@ impl Kernel {
     ///
     /// Kept beside the other two and named the same way, so the source scan that accounts for every
     /// mint sees this one too.
-    pub fn admin_token(&self) -> AdminToken {
-        AdminToken::mint(&self.seal)
+    pub fn admin_token(&self) -> Grant<AdminVerb> {
+        Grant::<AdminVerb>::mint(&self.seal)
     }
 
     /// The journal's token, as the composition root lends it to an exit arm.
@@ -151,8 +175,8 @@ impl Kernel {
     ///
     /// Kept beside the other two and named the same way, so the source scan that accounts for every
     /// mint sees this one too.
-    pub fn durability_token(&self) -> busbar_contract::caps::DurabilityToken {
-        busbar_contract::caps::DurabilityToken::mint(&self.seal)
+    pub fn durability_token(&self) -> busbar_contract::caps::Grant<busbar_contract::caps::DurableWrite> {
+        busbar_contract::caps::Grant::<busbar_contract::caps::DurableWrite>::mint(&self.seal)
     }
 
     /// The ledger unit's token, as the composition root lends it to a posting made after the exit.
@@ -169,8 +193,8 @@ impl Kernel {
     ///
     /// Kept beside the other three and named the same way, so the source scan that accounts for
     /// every mint sees this one too.
-    pub fn ledger_token(&self) -> busbar_contract::caps::LedgerToken {
-        busbar_contract::caps::LedgerToken::mint(&self.seal)
+    pub fn ledger_token(&self) -> busbar_contract::caps::Grant<busbar_contract::caps::WriteMoney> {
+        busbar_contract::caps::Grant::<busbar_contract::caps::WriteMoney>::mint(&self.seal)
     }
 
     /// The usage record's token, as the composition root lends it to a report assembled after the exit.
@@ -188,8 +212,8 @@ impl Kernel {
     ///
     /// Kept beside the other four and named the same way, so the source scan that accounts for every
     /// mint sees this one too.
-    pub fn usage_token(&self) -> UsageToken {
-        UsageToken::mint(&self.seal)
+    pub fn usage_token(&self) -> Grant<Consumption> {
+        Grant::<Consumption>::mint(&self.seal)
     }
 
     /// The seal itself, for the other two places in the kernel that mint tokens: the recovery
@@ -473,15 +497,15 @@ pub fn requests_settled(reached_admitted: bool, drawn: u32) -> u32 {
 // contract: the sealed unit traits (auth, trust, scope, admission, egress, usage, ledger, audit)
 pub trait Units {
     /// The kernel's own gate: size, rate, source and the budgets, before any plane is known.
-    fn arrival(&self, token: &UnitToken<Arrival>, ctx: &UnitCtx) -> Decision<Arrival>;
+    fn arrival(&self, token: &Pass<Arrival>, ctx: &UnitCtx) -> Decision<Arrival>;
 
     /// The plane says what shape arrived.
-    fn decode(&self, token: &UnitToken<Decode>, ctx: &UnitCtx) -> Decision<Decode>;
+    fn decode(&self, token: &Pass<Decode>, ctx: &UnitCtx) -> Decision<Decode>;
 
     /// Who is calling.
     fn authenticate(
         &self,
-        token: &UnitToken<Authenticate>,
+        token: &Pass<Authenticate>,
         ctx: &UnitCtx,
     ) -> Decision<Authenticate>;
 
@@ -495,8 +519,8 @@ pub trait Units {
     /// nowhere else, so no other step can seal a destination.
     fn verify(
         &self,
-        token: &UnitToken<Verify>,
-        trust: &TrustToken,
+        token: &Pass<Verify>,
+        trust: &Grant<Dial>,
         ctx: &UnitCtx,
         principal: &PrincipalId,
     ) -> Decision<Verify>;
@@ -504,7 +528,7 @@ pub trait Units {
     /// Whether the caller may do this at all.
     fn approve(
         &self,
-        token: &UnitToken<Approve>,
+        token: &Pass<Approve>,
         ctx: &UnitCtx,
         principal: &PrincipalId,
         destinations: &[VerifiedDestination],
@@ -526,8 +550,8 @@ pub trait Units {
     /// released before the unit it admitted has run.
     fn admit(
         &self,
-        token: &UnitToken<Admit>,
-        admit: &AdmitToken<Admit>,
+        token: &Pass<Admit>,
+        admit: &Grant<Admittance>,
         ctx: &UnitCtx,
         principal: &PrincipalId,
         destinations: &[VerifiedDestination],
@@ -537,7 +561,7 @@ pub trait Units {
     /// Dial, send, relay — all under the hold, with the meter running.
     fn route(
         &self,
-        token: &UnitToken<Route>,
+        token: &Pass<Route>,
         ctx: &UnitCtx,
         meter: &AccrualMeter,
     ) -> Decision<Route>;
@@ -545,19 +569,19 @@ pub trait Units {
     /// What the unit actually cost, folded from what the legs reported.
     fn meter(
         &self,
-        token: &UnitToken<Meter>,
-        usage: &UsageToken,
+        token: &Pass<Meter>,
+        usage: &Grant<Consumption>,
         ctx: &UnitCtx,
         provisional: &Outcome,
     ) -> Decision<Meter>;
 
     /// Seal the end for the record. The door a unit that PASSED the door leaves through.
-    fn audit(&self, token: &UnitToken<Audit>, ctx: &UnitCtx, outcome: &Outcome) -> Decision<Audit>;
+    fn audit(&self, token: &Pass<Audit>, ctx: &UnitCtx, outcome: &Outcome) -> Decision<Audit>;
 
     /// Seal the end of a unit that never passed the door. Nothing was charged.
     fn audit_refused(
         &self,
-        token: &UnitToken<Audit>,
+        token: &Pass<Audit>,
         ctx: &UnitCtx,
         refusal: &Refusal,
     ) -> Decision<Audit>;
@@ -565,7 +589,7 @@ pub trait Units {
     /// The bytes that leave.
     fn encode(
         &self,
-        token: &UnitToken<Encode>,
+        token: &Pass<Encode>,
         ctx: &UnitCtx,
         outcome: &Outcome,
     ) -> Decision<Encode>;
@@ -596,7 +620,7 @@ pub trait RouteAwait {
     /// by writing `async move` and the loop reads as a single await.
     fn route_leg<'a>(
         &'a self,
-        token: &'a UnitToken<Route>,
+        token: &'a Pass<Route>,
         ctx: &'a UnitCtx,
         meter: &'a AccrualMeter,
     ) -> RouteLeg<'a>;
@@ -615,7 +639,7 @@ struct Blocking<'u, U>(&'u U);
 impl<U: Units> RouteAwait for Blocking<'_, U> {
     fn route_leg<'a>(
         &'a self,
-        token: &'a UnitToken<Route>,
+        token: &'a Pass<Route>,
         ctx: &'a UnitCtx,
         meter: &'a AccrualMeter,
     ) -> RouteLeg<'a> {
@@ -720,10 +744,10 @@ pub async fn run_unit_async<U: Units, R: RouteAwait>(
             let outcome =
                 Outcome::Refused(refusal.step().unwrap_or(StepName::Admit), refusal.reason());
             let _sealed = units
-                .audit_refused(&UnitToken::<Audit>::mint(seal), ctx, &refusal)
+                .audit_refused(&Pass::<Audit>::mint(seal), ctx, &refusal)
                 .into_result(seal);
             let _bytes = units
-                .encode(&UnitToken::<Encode>::mint(seal), ctx, &outcome)
+                .encode(&Pass::<Encode>::mint(seal), ctx, &outcome)
                 .into_result(seal);
             exit(kernel, units, ctx, run, outcome, false)
         }
@@ -745,7 +769,7 @@ pub async fn run_unit_async<U: Units, R: RouteAwait>(
                 Admission::ZeroHold => (Settling::Exit(false), None),
                 // The ordinary case: the door's hold replaces the arrival hold in the cell, once.
                 Admission::Own(hold) => {
-                    match run.cell.admit(hold, &AdmitToken::<Admit>::mint(seal)) {
+                    match run.cell.admit(hold, &Grant::<Admittance>::mint(seal)) {
                         Ok(arrival) => {
                             run.canary.hold_opened();
                             // The arrival hold has done its job; the admitted hold has taken its
@@ -797,17 +821,17 @@ fn open_to_door<U: Units>(
     run: &Run<'_>,
 ) -> Result<Admission, Refusal> {
     units
-        .arrival(&UnitToken::<Arrival>::mint(seal), ctx)
+        .arrival(&Pass::<Arrival>::mint(seal), ctx)
         .into_result(seal)
         .and_then(|_| {
             units
-                .decode(&UnitToken::<Decode>::mint(seal), ctx)
+                .decode(&Pass::<Decode>::mint(seal), ctx)
                 .into_result(seal)
         })
         .and_then(|_| {
             run.canary.draft_accepted();
             units
-                .authenticate(&UnitToken::<Authenticate>::mint(seal), ctx)
+                .authenticate(&Pass::<Authenticate>::mint(seal), ctx)
                 .into_result(seal)
         })
         // A challenge is not a decision about this unit: it is a request for one more round before
@@ -819,8 +843,8 @@ fn open_to_door<U: Units>(
             Authenticated::Challenge(_) => Ok(Admission::ZeroHold),
             Authenticated::Principal(principal) => units
                 .verify(
-                    &UnitToken::<Verify>::mint(seal),
-                    &TrustToken::mint(seal),
+                    &Pass::<Verify>::mint(seal),
+                    &Grant::<Dial>::mint(seal),
                     ctx,
                     &principal,
                 )
@@ -830,7 +854,7 @@ fn open_to_door<U: Units>(
                     |(principal, destinations): (PrincipalId, Vec<VerifiedDestination>)| {
                         units
                             .approve(
-                                &UnitToken::<Approve>::mint(seal),
+                                &Pass::<Approve>::mint(seal),
                                 ctx,
                                 &principal,
                                 &destinations,
@@ -848,8 +872,8 @@ fn open_to_door<U: Units>(
                         let groups = GroupLeaseSlip::new();
                         let admitted = units
                             .admit(
-                                &UnitToken::<Admit>::mint(seal),
-                                &AdmitToken::<Admit>::mint(seal),
+                                &Pass::<Admit>::mint(seal),
+                                &Grant::<Admittance>::mint(seal),
                                 ctx,
                                 &principal,
                                 &destinations,
@@ -905,10 +929,10 @@ pub fn open_unit<U: Units>(kernel: &Kernel, units: &U, ctx: &UnitCtx, run: Run<'
             let outcome =
                 Outcome::Refused(refusal.step().unwrap_or(StepName::Admit), refusal.reason());
             let _sealed = units
-                .audit_refused(&UnitToken::<Audit>::mint(seal), ctx, &refusal)
+                .audit_refused(&Pass::<Audit>::mint(seal), ctx, &refusal)
                 .into_result(seal);
             let _bytes = units
-                .encode(&UnitToken::<Encode>::mint(seal), ctx, &outcome)
+                .encode(&Pass::<Encode>::mint(seal), ctx, &outcome)
                 .into_result(seal);
             SessionOpen::Refused
         }
@@ -917,10 +941,10 @@ pub fn open_unit<U: Units>(kernel: &Kernel, units: &U, ctx: &UnitCtx, run: Run<'
         Ok(_admission) => {
             let outcome = Outcome::Completed;
             let _sealed = units
-                .audit(&UnitToken::<Audit>::mint(seal), ctx, &outcome)
+                .audit(&Pass::<Audit>::mint(seal), ctx, &outcome)
                 .into_result(seal);
             let _bytes = units
-                .encode(&UnitToken::<Encode>::mint(seal), ctx, &outcome)
+                .encode(&Pass::<Encode>::mint(seal), ctx, &outcome)
                 .into_result(seal);
             SessionOpen::Admitted
         }
@@ -1085,10 +1109,10 @@ fn terminal<U: Units>(
 ) -> Ended {
     let seal = &kernel.seal;
     let _sealed = units
-        .audit(&UnitToken::<Audit>::mint(seal), ctx, &outcome)
+        .audit(&Pass::<Audit>::mint(seal), ctx, &outcome)
         .into_result(seal);
     let _bytes = units
-        .encode(&UnitToken::<Encode>::mint(seal), ctx, &outcome)
+        .encode(&Pass::<Encode>::mint(seal), ctx, &outcome)
         .into_result(seal);
     match settling {
         Settling::Exit(reached_admitted) => {
@@ -1100,7 +1124,7 @@ fn terminal<U: Units>(
             // Emptying the cell HERE is what makes the child's end final: leaving it full would
             // leave the sweep free to settle a unit that already finished, and the parent's hold
             // already carries this spend.
-            let taken = run.cell.take(&ExitToken::mint(seal));
+            let taken = run.cell.take(&Grant::<Exit>::mint(seal));
             run.leases.release_all(run.gauge);
             match taken {
                 None => Ended::AlreadySettled,
@@ -1111,7 +1135,7 @@ fn terminal<U: Units>(
                     // which already carries this spend. A parent that exited while the child ran
                     // hands the accrual back and it posts late instead — always posted, flagged as
                     // late, against a synchronous draw.
-                    let ledger = LedgerToken::mint(seal);
+                    let ledger = Grant::<WriteMoney>::mint(seal);
                     let parent = run.parent.unwrap_or(run.cell);
                     let posted = match Posted::into_parent(accrual, parent, &ledger) {
                         Ok(posted) => posted,
@@ -1119,7 +1143,7 @@ fn terminal<U: Units>(
                     };
                     run.canary.settled();
                     Ended::Settled {
-                        end: UnitEnd::seal(&ExitToken::mint(seal), outcome, Ok(posted)),
+                        end: UnitEnd::seal(&Grant::<Exit>::mint(seal), outcome, Ok(posted)),
                         // A child draws no request slot and posts no flat fee: the unit that drew
                         // both is the parent it is spending against.
                         requests: 0,
@@ -1143,7 +1167,7 @@ async fn under_hold<U: Units, R: RouteAwait>(
     meter: &AccrualMeter,
 ) -> Outcome {
     let seal = &kernel.seal;
-    let token = UnitToken::<Route>::mint(seal);
+    let token = Pass::<Route>::mint(seal);
     match route.route_leg(&token, ctx, meter).await.into_result(seal) {
         Err(refusal) => {
             Outcome::Failed(refusal.step().unwrap_or(StepName::Route), refusal.reason())
@@ -1152,8 +1176,8 @@ async fn under_hold<U: Units, R: RouteAwait>(
             let provisional = Outcome::Completed;
             match units
                 .meter(
-                    &UnitToken::<Meter>::mint(seal),
-                    &UsageToken::mint(seal),
+                    &Pass::<Meter>::mint(seal),
+                    &Grant::<Consumption>::mint(seal),
                     ctx,
                     &provisional,
                 )
@@ -1188,7 +1212,7 @@ pub fn exit<U: Units>(
     reached_admitted: bool,
 ) -> Ended {
     let seal = &kernel.seal;
-    let taken = run.cell.take(&ExitToken::mint(seal));
+    let taken = run.cell.take(&Grant::<Exit>::mint(seal));
     run.leases.release_all(run.gauge);
     match taken {
         None => Ended::AlreadySettled,
@@ -1216,7 +1240,7 @@ pub fn exit<U: Units>(
                 source: QuantitySource::Count,
                 estimated: flags.contains(PostingFlags::ESTIMATED),
             }];
-            let usage_token = UsageToken::mint(seal);
+            let usage_token = Grant::<Consumption>::mint(seal);
             let usage = if flags.contains(PostingFlags::ESTIMATED) {
                 Usage::estimate(&usage_token, lines)
             } else {
@@ -1228,7 +1252,7 @@ pub fn exit<U: Units>(
                     // above carries it as a quantity against whichever class the unit metered on.
                     // The posting settles the money, and reads the report for its evidence.
                     Ok(
-                        Posted::settle(hold, u128::from(amount), &usage, &LedgerToken::mint(seal))
+                        Posted::settle(hold, u128::from(amount), &usage, &Grant::<WriteMoney>::mint(seal))
                             .flagged(flags),
                     )
                 }
@@ -1237,17 +1261,51 @@ pub fn exit<U: Units>(
                 Err(_) => {
                     drop_arrival(hold);
                     Err(DurabilityLost::observed(
-                        &busbar_contract::caps::DurabilityToken::mint(seal),
+                        &busbar_contract::caps::Grant::<busbar_contract::caps::DurableWrite>::mint(seal),
                         StepName::Meter,
                     ))
                 }
             };
             run.canary.settled();
             Ended::Settled {
-                end: UnitEnd::seal(&ExitToken::mint(seal), outcome, posted),
+                end: UnitEnd::seal(&Grant::<Exit>::mint(seal), outcome, posted),
                 requests,
                 fee,
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod call_binding_tests {
+    use super::Kernel;
+    use busbar_contract::caps::CallId;
+
+    #[test]
+    fn each_request_opens_a_distinct_generation() {
+        // #74: the loop bumps one generation per unit, so no two requests share one.
+        let kernel = Kernel::new();
+        let a = kernel.next_call();
+        let b = kernel.next_call();
+        assert_ne!(a.get(), b.get(), "two requests must not share a generation");
+        assert_ne!(a, CallId::UNBOUND);
+        assert_ne!(b, CallId::UNBOUND);
+    }
+
+    #[test]
+    fn a_door_grant_bound_to_one_call_is_rejected_in_another() {
+        // The money door is the sharpest case: an admittance grant minted for call A must not open a
+        // hold under call B. RED BEFORE GREEN: with an unbound mint (the plain `admit_token`) the
+        // second assertion below would fail, because an unbound grant matches nothing but also the
+        // bound one would match every call.
+        let kernel = Kernel::new();
+        let call_a = kernel.next_call();
+        let call_b = kernel.next_call();
+        let door = kernel.admit_token_for(call_a);
+        assert!(door.bound_to(call_a), "a grant must match its own call");
+        assert!(
+            !door.bound_to(call_b),
+            "a grant from call A must be rejected in call B"
+        );
     }
 }

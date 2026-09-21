@@ -204,7 +204,7 @@ fn an_empty_destination_set_proceeds_rather_than_refusing() {
     let seal = seal();
     let view = View::default();
     let d = verify(
-        &UnitToken::<Verify>::mint(&seal),
+        &Pass::<Verify>::mint(&seal),
         &view,
         "pool-a",
         &PrincipalId::new("vk_x"),
@@ -225,7 +225,7 @@ fn the_step_stamps_its_refusal_with_verify() {
         ..Default::default()
     };
     let answer = verify(
-        &UnitToken::<Verify>::mint(&seal),
+        &Pass::<Verify>::mint(&seal),
         &view,
         "denied",
         &PrincipalId::new("vk_x"),

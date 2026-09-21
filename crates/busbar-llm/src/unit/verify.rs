@@ -41,7 +41,7 @@
 //! carry no HTTP vocabulary beyond the two kind constants the live doors already spell.
 
 use busbar_contract::caps::{
-    Decision, PrincipalId, ReasonCode, Refusal, UnitToken, VerifiedDestination, Verify,
+    Decision, PrincipalId, ReasonCode, Refusal, Pass, VerifiedDestination, Verify,
 };
 use busbar_substrate::plane_host::{CostHandle, EngineHost, EngineTablesView};
 
@@ -334,7 +334,7 @@ impl PoolView for HostPoolView<'_> {
 /// before its exhaustion answer. Refusing here would move the charge, and moving a charge is not a
 /// refactor.
 pub fn verify(
-    token: &UnitToken<Verify>,
+    token: &Pass<Verify>,
     view: &dyn PoolView,
     pool: &str,
     principal: &PrincipalId,

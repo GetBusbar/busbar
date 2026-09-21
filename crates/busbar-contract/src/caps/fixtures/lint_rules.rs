@@ -81,7 +81,7 @@ pub const SEAL_SITES: &[LintRule] = &[
         because: "the seal is what mints every token; only the kernel may obtain one",
     },
     LintRule {
-        symbol: "RecoveryToken",
+        symbol: "Grant::<Recover>::mint(",
         scope: LintScope::ConfinedTo("recovery"),
         because: "it materialises a hold from a journal record with no admission behind it, so \
                   only the recovery path may name it; the capability crate that declares it is the \
@@ -90,7 +90,7 @@ pub const SEAL_SITES: &[LintRule] = &[
     LintRule {
         // The take is spelled on a `HoldCell` value rather than through the type, so the literal
         // that finds every take site is the exit token the take demands.
-        symbol: "take(&ExitToken::mint(",
+        symbol: "take(&Grant::<Exit>::mint(",
         scope: LintScope::ConfinedTo("kernel/src"),
         because: "there are three take sites -- the exit path, the sweep and the tick -- all in \
                   the kernel, and no fourth anywhere",

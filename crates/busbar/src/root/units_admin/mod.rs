@@ -40,9 +40,9 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use busbar_contract::caps::{
-    Admission, Admit, AdmitToken, Approve, Audit, Authenticate, Decision, Decode, Encode, Meter,
-    Outcome, PrincipalId, ReasonCode, Refusal, Route, UnitToken, Usage, UsageToken,
+use busbar_contract::caps::{Grant, 
+    Admission, Admit, Admittance, Approve, Audit, Authenticate, Decision, Decode, Encode, Meter,
+    Outcome, PrincipalId, ReasonCode, Refusal, Route, Pass, Usage, Consumption,
     VerifiedDestination, Verify,
 };
 use busbar_contract::UnitKey;
@@ -586,7 +586,7 @@ impl busbar_unit_verbs::Governance for CoreGovernance {
 
     fn provision_group(
         &self,
-        _admin: &busbar_contract::caps::AdminToken,
+        _admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
         _group: &str,
         _parent: &str,
     ) -> Result<(), busbar_unit_verbs::GovernanceError> {
@@ -595,7 +595,7 @@ impl busbar_unit_verbs::Governance for CoreGovernance {
 
     fn mint_key(
         &self,
-        _admin: &busbar_contract::caps::AdminToken,
+        _admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
         _group: Option<&str>,
     ) -> Result<busbar_unit_verbs::MintedKey, busbar_unit_verbs::GovernanceError> {
         // A minted secret is revealed by the operation's own response and by nothing else. The root
@@ -606,7 +606,7 @@ impl busbar_unit_verbs::Governance for CoreGovernance {
 
     fn rotate_key(
         &self,
-        _admin: &busbar_contract::caps::AdminToken,
+        _admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
         _id: &str,
     ) -> Result<busbar_unit_verbs::RotateOutcome, busbar_unit_verbs::GovernanceError> {
         Err(busbar_unit_verbs::GovernanceError::Validation)
@@ -615,7 +615,7 @@ impl busbar_unit_verbs::Governance for CoreGovernance {
     fn execute_legacy(
         &self,
         _verb: KernelVerb,
-        _admin: &busbar_contract::caps::AdminToken,
+        _admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
         _request: &[u8],
     ) -> Result<Vec<u8>, busbar_unit_verbs::GovernanceError> {
         Ok(self.run())
@@ -624,7 +624,7 @@ impl busbar_unit_verbs::Governance for CoreGovernance {
     fn execute_new_verb(
         &self,
         verb: KernelVerb,
-        _admin: &busbar_contract::caps::AdminToken,
+        _admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
         request: &[u8],
         operator: busbar_unit_verbs::OperatorState,
     ) -> Result<Vec<u8>, busbar_unit_verbs::GovernanceError> {
@@ -648,7 +648,7 @@ impl busbar_unit_verbs::Governance for CoreGovernance {
     fn execute_ledger_read(
         &self,
         verb: KernelVerb,
-        _admin: &busbar_contract::caps::AdminToken,
+        _admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
         _request: &[u8],
     ) -> Result<Vec<u8>, busbar_unit_verbs::GovernanceError> {
         // The request body is deliberately unread. Every view is a `GET` whose whole identity is its
@@ -1597,7 +1597,7 @@ pub fn mutation_class(verb: KernelVerb) -> MutationClass {
 /// the budgets it would otherwise apply are the data listener's.
 pub(crate) fn arrival(
     binding: &AdminBinding,
-    token: &UnitToken<busbar_contract::caps::Arrival>,
+    token: &Pass<busbar_contract::caps::Arrival>,
     ctx: &UnitCtx,
 ) -> Decision<busbar_contract::caps::Arrival> {
     let _ = binding;
@@ -1622,7 +1622,7 @@ pub(crate) fn arrival(
 /// be asked to authorize an operation that does not exist.
 pub(crate) fn decode(
     binding: &AdminBinding,
-    token: &UnitToken<Decode>,
+    token: &Pass<Decode>,
     ctx: &UnitCtx,
 ) -> Decision<Decode> {
     let Some(request) = binding.units.request(ctx.key) else {
@@ -1653,7 +1653,7 @@ pub(crate) fn authenticate(
     auth: &busbar_kernel_identity::Auth,
     binding: &AdminBinding,
     bindings: &crate::root::auth_bindings::AuthBindings,
-    token: &UnitToken<Authenticate>,
+    token: &Pass<Authenticate>,
     ctx: &UnitCtx,
 ) -> Decision<Authenticate> {
     let Some(request) = binding.units.request(ctx.key) else {
@@ -1693,7 +1693,7 @@ pub(crate) fn authenticate(
 /// differently here.
 pub(crate) fn verify(
     binding: &AdminBinding,
-    token: &UnitToken<Verify>,
+    token: &Pass<Verify>,
     ctx: &UnitCtx,
     principal: &PrincipalId,
 ) -> Decision<Verify> {
@@ -1715,7 +1715,7 @@ pub(crate) fn verify(
 pub(crate) fn approve(
     binding: &AdminBinding,
     granted: Option<VerbScope>,
-    token: &UnitToken<Approve>,
+    token: &Pass<Approve>,
     ctx: &UnitCtx,
     _principal: &PrincipalId,
     _destinations: &[VerifiedDestination],
@@ -1756,8 +1756,8 @@ fn scope_as_verb_scope(scope: Scope) -> VerbScope {
 /// table forbids outright.
 pub(crate) fn admit(
     binding: &AdminBinding,
-    token: &UnitToken<Admit>,
-    _admit: &AdmitToken<Admit>,
+    token: &Pass<Admit>,
+    _admit: &Grant<Admittance>,
     ctx: &UnitCtx,
     _principal: &PrincipalId,
     _destinations: &[VerifiedDestination],
@@ -1791,8 +1791,8 @@ pub(crate) fn admit(
 pub(crate) fn route(
     binding: &AdminBinding,
     store: Arc<dyn busbar_unit_verbs::store::Store + Send + Sync>,
-    admin: &busbar_contract::caps::AdminToken,
-    token: &UnitToken<Route>,
+    admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
+    token: &Pass<Route>,
     ctx: &UnitCtx,
     _meter: &busbar_kernel::teller::AccrualMeter,
 ) -> Decision<Route> {
@@ -2074,8 +2074,8 @@ fn verbs_reason(reason: busbar_unit_verbs::ReasonCode) -> ReasonCode {
 /// request postings under a non-zero configured fee: nothing was metered because nothing priced was
 /// reached.
 pub(crate) fn meter(
-    token: &UnitToken<Meter>,
-    usage: &UsageToken,
+    token: &Pass<Meter>,
+    usage: &Grant<Consumption>,
     _ctx: &UnitCtx,
     _provisional: &Outcome,
 ) -> Decision<Meter> {
@@ -2094,7 +2094,7 @@ pub(crate) fn meter(
 pub(crate) fn audit(
     binding: &AdminBinding,
     legacy: &busbar_kernel_audit::AuditLog,
-    token: &UnitToken<Audit>,
+    token: &Pass<Audit>,
     ctx: &UnitCtx,
     outcome: &Outcome,
 ) -> Decision<Audit> {
@@ -2132,7 +2132,7 @@ pub(crate) fn audit(
 pub(crate) fn audit_refused(
     binding: &AdminBinding,
     legacy: &busbar_kernel_audit::AuditLog,
-    token: &UnitToken<Audit>,
+    token: &Pass<Audit>,
     ctx: &UnitCtx,
     refusal: &Refusal,
 ) -> Decision<Audit> {
@@ -2249,7 +2249,7 @@ fn finish_of(outcome: &Outcome) -> busbar_contract::FinishClass {
 /// the answer out, which is the shape that makes it impossible for a byte to be re-derived here.
 pub(crate) fn encode(
     binding: &AdminBinding,
-    token: &UnitToken<Encode>,
+    token: &Pass<Encode>,
     ctx: &UnitCtx,
     _outcome: &Outcome,
 ) -> Decision<Encode> {
@@ -2315,7 +2315,7 @@ impl RegisteredUnits for AdminPlane {
     fn arrival(
         &self,
         root: &ProductionUnits,
-        token: &UnitToken<busbar_contract::caps::Arrival>,
+        token: &Pass<busbar_contract::caps::Arrival>,
         ctx: &UnitCtx,
     ) -> Decision<busbar_contract::caps::Arrival> {
         arrival(&root.admin, token, ctx)
@@ -2324,7 +2324,7 @@ impl RegisteredUnits for AdminPlane {
     fn decode(
         &self,
         root: &ProductionUnits,
-        token: &UnitToken<Decode>,
+        token: &Pass<Decode>,
         ctx: &UnitCtx,
     ) -> Decision<Decode> {
         decode(&root.admin, token, ctx)
@@ -2333,7 +2333,7 @@ impl RegisteredUnits for AdminPlane {
     fn authenticate(
         &self,
         root: &ProductionUnits,
-        token: &UnitToken<Authenticate>,
+        token: &Pass<Authenticate>,
         ctx: &UnitCtx,
     ) -> Decision<Authenticate> {
         authenticate(&root.auth, &root.admin, &root.auth_bindings, token, ctx)
@@ -2342,8 +2342,8 @@ impl RegisteredUnits for AdminPlane {
     fn verify(
         &self,
         root: &ProductionUnits,
-        token: &UnitToken<Verify>,
-        _trust: &busbar_contract::caps::TrustToken,
+        token: &Pass<Verify>,
+        _trust: &busbar_contract::caps::Grant<busbar_contract::caps::Dial>,
         ctx: &UnitCtx,
         principal: &PrincipalId,
     ) -> Decision<Verify> {
@@ -2353,7 +2353,7 @@ impl RegisteredUnits for AdminPlane {
     fn approve(
         &self,
         root: &ProductionUnits,
-        token: &UnitToken<Approve>,
+        token: &Pass<Approve>,
         ctx: &UnitCtx,
         principal: &PrincipalId,
         destinations: &[VerifiedDestination],
@@ -2372,8 +2372,8 @@ impl RegisteredUnits for AdminPlane {
     fn admit(
         &self,
         root: &ProductionUnits,
-        token: &UnitToken<Admit>,
-        admit_token: &AdmitToken<Admit>,
+        token: &Pass<Admit>,
+        admit_token: &Grant<Admittance>,
         ctx: &UnitCtx,
         principal: &PrincipalId,
         destinations: &[VerifiedDestination],
@@ -2394,7 +2394,7 @@ impl RegisteredUnits for AdminPlane {
     fn route(
         &self,
         root: &ProductionUnits,
-        token: &UnitToken<Route>,
+        token: &Pass<Route>,
         ctx: &UnitCtx,
         meter: &busbar_kernel::teller::AccrualMeter,
     ) -> Decision<Route> {
@@ -2411,8 +2411,8 @@ impl RegisteredUnits for AdminPlane {
     fn meter(
         &self,
         _root: &ProductionUnits,
-        token: &UnitToken<Meter>,
-        usage: &UsageToken,
+        token: &Pass<Meter>,
+        usage: &Grant<Consumption>,
         ctx: &UnitCtx,
         provisional: &Outcome,
     ) -> Decision<Meter> {
@@ -2422,7 +2422,7 @@ impl RegisteredUnits for AdminPlane {
     fn audit(
         &self,
         root: &ProductionUnits,
-        token: &UnitToken<Audit>,
+        token: &Pass<Audit>,
         ctx: &UnitCtx,
         outcome: &Outcome,
     ) -> Decision<Audit> {
@@ -2433,7 +2433,7 @@ impl RegisteredUnits for AdminPlane {
     fn audit_refused(
         &self,
         root: &ProductionUnits,
-        token: &UnitToken<Audit>,
+        token: &Pass<Audit>,
         ctx: &UnitCtx,
         refusal: &Refusal,
     ) -> Decision<Audit> {
@@ -2444,7 +2444,7 @@ impl RegisteredUnits for AdminPlane {
     fn encode(
         &self,
         root: &ProductionUnits,
-        token: &UnitToken<Encode>,
+        token: &Pass<Encode>,
         ctx: &UnitCtx,
         outcome: &Outcome,
     ) -> Decision<Encode> {
@@ -2475,14 +2475,14 @@ struct StoreRef(Arc<dyn busbar_unit_verbs::store::Store + Send + Sync>);
 impl busbar_unit_verbs::store::Store for StoreRef {
     fn chain_break(
         &self,
-        admin: &busbar_contract::caps::AdminToken,
+        admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
     ) -> Result<(), busbar_unit_verbs::StoreError> {
         self.0.chain_break(admin)
     }
 
     fn store_restore(
         &self,
-        admin: &busbar_contract::caps::AdminToken,
+        admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
         backup_ref: &str,
     ) -> Result<(), busbar_unit_verbs::StoreError> {
         self.0.store_restore(admin, backup_ref)
@@ -2490,7 +2490,7 @@ impl busbar_unit_verbs::store::Store for StoreRef {
 
     fn reseal_epoch_floor(
         &self,
-        admin: &busbar_contract::caps::AdminToken,
+        admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
     ) -> Result<(), busbar_unit_verbs::StoreError> {
         self.0.reseal_epoch_floor(admin)
     }

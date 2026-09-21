@@ -17,9 +17,9 @@ const OP: OpClassId = OpClassId::new("chat");
 
 /// A kernel seal for the length of one test, and the step-7 token minted from it — exactly as
 /// the loop lends it, and dropped when the call it was lent to returns.
-fn tokens() -> (KernelSeal, UnitToken<Audit>) {
+fn tokens() -> (KernelSeal, Pass<Audit>) {
     let seal = KernelSeal::acquire_for_kernel();
-    let token = UnitToken::mint(&seal);
+    let token = Pass::mint(&seal);
     (seal, token)
 }
 

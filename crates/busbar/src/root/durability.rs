@@ -92,7 +92,7 @@
 
 use std::path::{Path, PathBuf};
 
-use busbar_contract::caps::{DurabilityLost, DurabilityToken, StepName};
+use busbar_contract::caps::{Grant, DurabilityLost, DurableWrite, StepName};
 use busbar_kernel_audit::{AuditChain, AuditLog, AuditRecord, Clock, NoSeam};
 use busbar_kernel_ledger::checkpoint::Checkpoint;
 use busbar_kernel_ledger::legacy::{LegacyRows, RecordingRows};
@@ -168,7 +168,7 @@ impl Durability {
     pub fn journal_audit(
         &mut self,
         record: &AuditRecord,
-        token: &DurabilityToken,
+        token: &Grant<DurableWrite>,
         at: StepName,
     ) -> Result<JournalAck, DurabilityLost> {
         let entry = Entry::new(RecordClass::Transaction, audit_body(record))
@@ -185,7 +185,7 @@ impl Durability {
     pub fn journal_posting(
         &mut self,
         posting: &Posting,
-        token: &DurabilityToken,
+        token: &Grant<DurableWrite>,
         at: StepName,
     ) -> Result<JournalAck, DurabilityLost> {
         let entry =
@@ -206,7 +206,7 @@ impl Durability {
     pub fn journal_checkpoint(
         &mut self,
         checkpoint: &Checkpoint,
-        token: &DurabilityToken,
+        token: &Grant<DurableWrite>,
         at: StepName,
     ) -> Result<JournalAck, DurabilityLost> {
         let entry =
@@ -262,7 +262,7 @@ impl Durability {
         hold: busbar_contract::caps::Hold,
         priced_nanos: u128,
         usage: &busbar_contract::caps::Usage,
-        ledger: &busbar_contract::caps::LedgerToken,
+        ledger: &busbar_contract::caps::Grant<busbar_contract::caps::WriteMoney>,
     ) -> Result<Settled, DurabilityLost> {
         let settlement =
             self.ledger
@@ -347,7 +347,7 @@ impl Durability {
     /// nowhere durable to live.
     pub fn migration_records<'a>(
         &'a mut self,
-        token: &'a DurabilityToken,
+        token: &'a Grant<DurableWrite>,
         at: StepName,
     ) -> JournalMigrationRecords<'a> {
         JournalMigrationRecords {
@@ -384,7 +384,7 @@ pub struct Settling<'a> {
     /// Which window it moves in.
     pub window: WindowStart,
     /// The token the journal append is made under.
-    pub durability: &'a DurabilityToken,
+    pub durability: &'a Grant<DurableWrite>,
     /// Which step the append is attributed to.
     pub step: StepName,
     /// What the record carries beyond the figures.
@@ -613,7 +613,7 @@ pub fn migration_marker_from(body: &[u8]) -> Option<MigrationMarker> {
 /// second path while the migration step holds this one.
 pub struct JournalMigrationRecords<'a> {
     journal: &'a mut Journal,
-    token: &'a DurabilityToken,
+    token: &'a Grant<DurableWrite>,
     at: StepName,
 }
 

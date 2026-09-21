@@ -145,7 +145,7 @@ impl Node {
         // real deployment would (`KernelSeal::acquire_for_kernel` is `// contract:` kernel-only
         // outside test modules).
         let seal = busbar_contract::caps::KernelSeal::acquire_for_kernel();
-        let token: busbar_contract::caps::UnitToken<busbar_contract::caps::Route> = busbar_contract::caps::UnitToken::mint(&seal);
+        let token: busbar_contract::caps::Pass<busbar_contract::caps::Route> = busbar_contract::caps::Pass::mint(&seal);
         let request = crate::walk::RouteRequest {
             breaker: self.breaker.as_ref(),
             token: &token,
@@ -187,7 +187,7 @@ impl Node {
         // real deployment would (`KernelSeal::acquire_for_kernel` is `// contract:` kernel-only
         // outside test modules), matching `route_with`'s own minting above.
         let seal = busbar_contract::caps::KernelSeal::acquire_for_kernel();
-        let token: busbar_contract::caps::UnitToken<busbar_contract::caps::Route> = busbar_contract::caps::UnitToken::mint(&seal);
+        let token: busbar_contract::caps::Pass<busbar_contract::caps::Route> = busbar_contract::caps::Pass::mint(&seal);
         crate::select::pick_among(
             &crate::select::PickInput {
                 breaker: self.breaker.as_ref(),

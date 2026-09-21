@@ -20,13 +20,13 @@
 //! honest about WHY it fails:
 //!
 //! ```
-//! use busbar_contract::caps::{Admit, AdmitToken, Hold, KernelSeal, LedgerToken, Posted, PrincipalId, Usage, UsageToken};
+//! use busbar_contract::caps::{Admit, Admittance, Consumption, Grant, Hold, KernelSeal, Posted, PrincipalId, Usage, WriteMoney};
 //! let seal = KernelSeal::acquire_for_kernel();          // the kernel, and only the kernel
-//! let admit: AdmitToken<Admit> = AdmitToken::mint(&seal);
+//! let admit: Grant<Admittance> = Grant::<Admittance>::mint(&seal);
 //! let hold = Hold::open(&admit, PrincipalId::new("acct-1"), 1_000);
 //! assert_eq!(hold.remaining(), 1_000);
-//! let usage = Usage::report(&UsageToken::mint(&seal), Vec::new()).unwrap();
-//! let posted = Posted::settle(hold, 0, &usage, &LedgerToken::mint(&seal));
+//! let usage = Usage::report(&Grant::<Consumption>::mint(&seal), Vec::new()).unwrap();
+//! let posted = Posted::settle(hold, 0, &usage, &Grant::<WriteMoney>::mint(&seal));
 //! assert_eq!(posted.settled(), 0);
 //! ```
 //!
@@ -82,8 +82,9 @@
 //! — and the symbols it looks for are written down in the crate's `fixtures/lint_rules.rs` rather
 //! than left to a reviewer to remember; a test in this crate holds the two tables to each other.
 
-use crate::caps::step::{PrincipalId, Step};
-use crate::caps::token::{AdmitToken, ExitToken, LedgerToken, RecoveryToken};
+use crate::caps::step::PrincipalId;
+use crate::caps::capability::{Admittance, DurableWrite, Exit, Recover, WriteMoney};
+use crate::caps::token::Grant;
 use crate::caps::usage::Usage;
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -157,7 +158,7 @@ pub struct Spend {
 
 impl Hold {
     /// Open the unit's hold at the door, sized at `reserved` nano-units.
-    pub fn open<S: Step>(_token: &AdmitToken<S>, principal: PrincipalId, reserved: u64) -> Self {
+    pub fn open(_token: &Grant<Admittance>, principal: PrincipalId, reserved: u64) -> Self {
         Hold::raw(principal, reserved, 0, false)
     }
 
@@ -165,7 +166,7 @@ impl Hold {
     /// checkpointed. The one way a hold exists without passing the door, and the reason the
     /// recovery token is confined to one module.
     pub fn materialize(
-        _token: &RecoveryToken,
+        _token: &Grant<Recover>,
         principal: PrincipalId,
         reserved: u64,
         checkpointed: u64,
@@ -442,7 +443,7 @@ impl HoldCell {
     pub fn admit(
         &self,
         admitted: Hold,
-        _token: &AdmitToken<crate::caps::step::Admit>,
+        _token: &Grant<Admittance>,
     ) -> Result<Hold, AdmitRejected> {
         let mut slot = self.slot();
         match std::mem::replace(&mut *slot, Slot::Taken) {
@@ -469,7 +470,7 @@ impl HoldCell {
 
     /// Take the hold, whichever state it is in. Exactly two callers hold an exit token — the exit
     /// path and the node's sweep — and the second one to arrive gets `None`.
-    pub fn take(&self, _token: &ExitToken) -> Option<Hold> {
+    pub fn take(&self, _token: &Grant<Exit>) -> Option<Hold> {
         let mut slot = self.slot();
         match std::mem::replace(&mut *slot, Slot::Taken) {
             Slot::Arrival(h) | Slot::Admitted(h) => Some(h),
@@ -485,7 +486,7 @@ impl HoldCell {
         &self,
         principal: &PrincipalId,
         amount: u64,
-        _token: &AdmitToken<crate::caps::step::Admit>,
+        _token: &Grant<Admittance>,
     ) -> Result<HoldAccrual, AccrualRefused> {
         let mut slot = self.slot();
         match &mut *slot {
@@ -528,7 +529,7 @@ impl HoldCell {
     pub fn post_child(
         &self,
         accrual: HoldAccrual,
-        _token: &LedgerToken,
+        _token: &Grant<WriteMoney>,
     ) -> Result<Posted, HoldAccrual> {
         let slot = self.slot();
         match &*slot {
@@ -560,7 +561,7 @@ impl HoldAccrual {
     /// parent exits with a child still running, the child's accrual becomes a hold of its own,
     /// sized at the child's maximum reported push and drawn synchronously — so the child cannot
     /// afterwards post late with no reservation behind it, whatever it goes on to spend.
-    pub fn convert_at_parent_exit<S: Step>(self, sized: u64, token: &AdmitToken<S>) -> Hold {
+    pub fn convert_at_parent_exit(self, sized: u64, token: &Grant<Admittance>) -> Hold {
         Hold::open(token, self.principal, sized)
     }
 
@@ -581,7 +582,7 @@ impl HoldAccrual {
     /// The ledger's token is required and unread, exactly as [`Posted::settle_late`] requires and
     /// does not read it: minting one is the kernel's, so an accrual cannot be conjured by anything
     /// the kernel did not hand a token to.
-    pub fn after_terminal(principal: PrincipalId, amount: u64, _token: &LedgerToken) -> Self {
+    pub fn after_terminal(principal: PrincipalId, amount: u64, _token: &Grant<WriteMoney>) -> Self {
         HoldAccrual {
             principal,
             amount,
@@ -660,7 +661,7 @@ impl Posted {
     /// A priced total wider than the reservation's own width settles at the ceiling rather than
     /// wrapping: there is no amount above it to post, and a wrap would post nearly nothing for the
     /// most expensive unit the node has ever run.
-    pub fn settle(hold: Hold, priced_nanos: u128, usage: &Usage, _token: &LedgerToken) -> Self {
+    pub fn settle(hold: Hold, priced_nanos: u128, usage: &Usage, _token: &Grant<WriteMoney>) -> Self {
         // Read the figures out before the principal moves: the hold is owned here, has no Drop,
         // and its two sibling constructors both move theirs.
         let reserved = hold.reserved();
@@ -711,7 +712,7 @@ impl Posted {
     pub fn into_parent(
         accrual: HoldAccrual,
         parent: &HoldCell,
-        token: &LedgerToken,
+        token: &Grant<WriteMoney>,
     ) -> Result<Self, HoldAccrual> {
         parent.post_child(accrual, token)
     }
@@ -725,7 +726,7 @@ impl Posted {
     /// the slice is a draw the caller makes against the principal's bucket; this constructor holds
     /// no slice and makes none, which is exactly what the `LATE_ACCRUAL` and `OVERDRAFT` flags
     /// together are for.
-    pub fn settle_late(accrual: HoldAccrual, _token: &LedgerToken) -> Self {
+    pub fn settle_late(accrual: HoldAccrual, _token: &Grant<WriteMoney>) -> Self {
         Posted {
             principal: accrual.principal,
             reserved: 0,
@@ -782,7 +783,7 @@ pub struct DurabilityLost {
 
 impl DurabilityLost {
     /// Record the loss. Only the write-ahead-log unit can, and only on an observed failure.
-    pub fn observed(_token: &crate::caps::token::DurabilityToken, at: crate::caps::step::StepName) -> Self {
+    pub fn observed(_token: &crate::caps::token::Grant<DurableWrite>, at: crate::caps::step::StepName) -> Self {
         DurabilityLost { at }
     }
 

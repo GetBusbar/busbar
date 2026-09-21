@@ -8,7 +8,7 @@
 //! older release's derivation at a pinned card against the sum of the stored nano-units.
 
 use busbar_contract::caps::step::MeterClassId;
-use busbar_contract::caps::{KernelSeal, QuantitySource, Usage, UsageLine, UsageToken};
+use busbar_contract::caps::{Grant, KernelSeal, QuantitySource, Usage, UsageLine, Consumption};
 
 use crate::cost::{price, CurrencyCode, History, LaneClass, Posting, Priced, RateCard, Unpriceable};
 
@@ -33,7 +33,7 @@ pub(crate) const CACHE_WRITE: &str = "cache_write";
 /// test-only and are the same exception the capability crate's own tests take.
 pub(crate) fn usage(lines: &[(&'static str, u64)]) -> Usage {
     let seal = KernelSeal::acquire_for_kernel();
-    let token = UsageToken::mint(&seal);
+    let token = Grant::<Consumption>::mint(&seal);
     let lines = lines
         .iter()
         .map(|(class, quantity)| UsageLine {
@@ -49,7 +49,7 @@ pub(crate) fn usage(lines: &[(&'static str, u64)]) -> Usage {
 /// The same, marked as the kernel's own floor rather than a reported figure.
 pub(crate) fn estimated_usage(lines: &[(&'static str, u64)]) -> Usage {
     let seal = KernelSeal::acquire_for_kernel();
-    let token = UsageToken::mint(&seal);
+    let token = Grant::<Consumption>::mint(&seal);
     let lines = lines
         .iter()
         .map(|(class, quantity)| UsageLine {

@@ -66,9 +66,9 @@ pub use estimate::{ClassEstimate, Estimate};
 pub use price::{Pricer, RateNanos};
 pub use window::{budget_window, window_end};
 
-use busbar_contract::caps::{
-    step::Admit, AdmitToken, Decision, Hold, HoldCell, PostingFlags, PrincipalId, ReasonCode,
-    Refusal, UnitToken,
+use busbar_contract::caps::{Grant, 
+    step::Admit, Admittance, Decision, Hold, HoldCell, PostingFlags, PrincipalId, ReasonCode,
+    Refusal, Pass,
 };
 
 /// The sealed step-4 shape: the door, asked.
@@ -84,8 +84,8 @@ pub trait Admission {
         estimate: &Estimate,
         principal: &PrincipalId,
         chain: &BucketChain,
-        admit_token: &AdmitToken<Admit>,
-        unit_token: &UnitToken<Admit>,
+        admit_token: &Grant<Admittance>,
+        unit_token: &Pass<Admit>,
     ) -> Decision<Admit>;
 }
 
@@ -98,7 +98,7 @@ pub trait Admission {
 /// It lives here, in the door, rather than in the table that carries it, because the design's claim
 /// is that a hold cannot exist without this unit's own token. The kernel lends the token for the
 /// length of this call, exactly as the loop does at step 4; the constructor is called here.
-pub fn arrival_hold(principal: PrincipalId, admit_token: &AdmitToken<Admit>) -> Hold {
+pub fn arrival_hold(principal: PrincipalId, admit_token: &Grant<Admittance>) -> Hold {
     Hold::open(admit_token, principal, 0)
 }
 
@@ -284,8 +284,8 @@ impl<S: CellStore> Admission for AdmissionUnit<'_, S> {
         estimate: &Estimate,
         principal: &PrincipalId,
         chain: &BucketChain,
-        admit_token: &AdmitToken<Admit>,
-        unit_token: &UnitToken<Admit>,
+        admit_token: &Grant<Admittance>,
+        unit_token: &Pass<Admit>,
     ) -> Decision<Admit> {
         match self.door.try_admit(self.pricer, chain, self.pool, self.now) {
             Ok(grant) => {

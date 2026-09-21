@@ -227,7 +227,7 @@ impl AmendChain {
     pub fn append(
         &mut self,
         body: AmendBody,
-        _token: &busbar_contract::caps::UnitToken<busbar_contract::caps::Audit>,
+        _token: &busbar_contract::caps::Pass<busbar_contract::caps::Audit>,
     ) -> Amendment {
         let mut amendment = Amendment {
             seq: self.next_seq,

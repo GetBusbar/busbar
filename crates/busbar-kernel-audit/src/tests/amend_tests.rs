@@ -3,13 +3,13 @@
 
 //! The two amendment classes.
 
-use busbar_contract::caps::{Audit as AuditStep, KernelSeal, UnitToken};
+use busbar_contract::caps::{Audit as AuditStep, KernelSeal, Pass};
 
 use crate::amend::{content_access, correction, AmendBody, AmendChain, AmendClass, Reader};
 use crate::record::{AuditBreakKind, OpClassId, Subject};
 
-fn token() -> UnitToken<AuditStep> {
-    UnitToken::mint(&KernelSeal::acquire_for_kernel())
+fn token() -> Pass<AuditStep> {
+    Pass::mint(&KernelSeal::acquire_for_kernel())
 }
 
 /// The two constructors are pinned against each other, as the previous release's chain already pins

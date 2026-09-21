@@ -16,9 +16,9 @@
 //! captured red/green output.
 
 use busbar_api::{ModelTokensDelta, UsageDelta, UsageLedger};
-use busbar_contract::caps::{
-    Admit, AdmitToken, Hold, KernelSeal, LedgerToken, MeterClassId, PrincipalId, QuantitySource,
-    Usage, UsageLine, UsageToken,
+use busbar_contract::caps::{Grant, 
+    Admittance, Hold, KernelSeal, WriteMoney, MeterClassId, PrincipalId, QuantitySource,
+    Usage, UsageLine, Consumption,
 };
 use busbar_kernel_ledger::settle::Ledger;
 use busbar_kernel_ledger::totals::{BucketId, BucketScope, CapDimension, TotalsKey};
@@ -27,14 +27,14 @@ use crate::root::money_book::{AuditFacts, MeterCounts, MeteringFacts, MoneyBook,
 
 // ── local props (the ledger crate's fixtures are private to it) ──────────────────────────────────
 
-fn admit_token() -> AdmitToken<Admit> {
-    AdmitToken::mint(&KernelSeal::acquire_for_kernel())
+fn admit_token() -> Grant<Admittance> {
+    Grant::<Admittance>::mint(&KernelSeal::acquire_for_kernel())
 }
-fn ledger_token() -> LedgerToken {
-    LedgerToken::mint(&KernelSeal::acquire_for_kernel())
+fn ledger_token() -> Grant<WriteMoney> {
+    Grant::<WriteMoney>::mint(&KernelSeal::acquire_for_kernel())
 }
-fn usage_token() -> UsageToken {
-    UsageToken::mint(&KernelSeal::acquire_for_kernel())
+fn usage_token() -> Grant<Consumption> {
+    Grant::<Consumption>::mint(&KernelSeal::acquire_for_kernel())
 }
 fn hold(who: &str, reserved: u64) -> Hold {
     Hold::open(&admit_token(), PrincipalId::new(who), reserved)

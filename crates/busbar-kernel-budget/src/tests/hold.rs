@@ -9,9 +9,9 @@
 //! path that turns into a refusal. The last case says it directly — the door admits, the slice is
 //! empty, the spend lands anyway.
 
-use busbar_contract::caps::{
-    step::Admit, AccrualRefused, AdmitToken, ExitToken, Hold, HoldCell, KernelSeal, PrincipalId,
-    UnitToken,
+use busbar_contract::caps::{Grant, 
+    step::Admit, AccrualRefused, Admittance, Exit, Hold, HoldCell, KernelSeal, PrincipalId,
+    Pass,
 };
 
 use super::*;
@@ -148,7 +148,7 @@ fn a_spent_window_reports_zero_headroom_rather_than_a_refusal() {
 #[test]
 fn the_door_sizes_the_reservation_off_the_estimate() {
     let seal = KernelSeal::acquire_for_kernel();
-    let admit: AdmitToken<Admit> = AdmitToken::mint(&seal);
+    let admit: Grant<Admittance> = Grant::<Admittance>::mint(&seal);
     let d = door();
     let p = no_card(0);
     let t = table(&[("g", group_cfg(None, true, Vec::new()))]);
@@ -160,7 +160,7 @@ fn the_door_sizes_the_reservation_off_the_estimate() {
         &who,
         &c,
         &admit,
-        &UnitToken::<Admit>::mint(&seal),
+        &Pass::<Admit>::mint(&seal),
     );
     let admission = decision
         .into_result(&seal)
@@ -173,9 +173,9 @@ fn the_door_sizes_the_reservation_off_the_estimate() {
             let _ = busbar_contract::caps::Posted::settle(
                 hold,
                 0,
-                &busbar_contract::caps::Usage::report(&busbar_contract::caps::UsageToken::mint(&seal), Vec::new())
+                &busbar_contract::caps::Usage::report(&busbar_contract::caps::Grant::<busbar_contract::caps::Consumption>::mint(&seal), Vec::new())
                     .expect("no lines"),
-                &busbar_contract::caps::LedgerToken::mint(&seal),
+                &busbar_contract::caps::Grant::<busbar_contract::caps::WriteMoney>::mint(&seal),
             );
         }
         other => panic!("a priced unit opens a hold of its own, got {other:?}"),
@@ -191,7 +191,7 @@ fn the_door_sizes_the_reservation_off_the_estimate() {
 #[test]
 fn a_unit_the_door_admits_is_never_refused_by_hold_sizing() {
     let seal = KernelSeal::acquire_for_kernel();
-    let admit: AdmitToken<Admit> = AdmitToken::mint(&seal);
+    let admit: Grant<Admittance> = Grant::<Admittance>::mint(&seal);
     let d = door();
     let p = card(0, &[("m", 10.0, 0.0)]);
     let t = table(&[(
@@ -221,7 +221,7 @@ fn a_unit_the_door_admits_is_never_refused_by_hold_sizing() {
             &who,
             &c,
             &admit,
-            &UnitToken::<Admit>::mint(&seal),
+            &Pass::<Admit>::mint(&seal),
         )
         .into_result(&seal)
         .expect("the door admits: the unit is under every configured limit");
@@ -246,7 +246,7 @@ fn a_unit_the_door_admits_is_never_refused_by_hold_sizing() {
     assert_eq!(hold.accrued(), 9_000);
 
     let usage = busbar_contract::caps::Usage::report(
-        &busbar_contract::caps::UsageToken::mint(&seal),
+        &busbar_contract::caps::Grant::<busbar_contract::caps::Consumption>::mint(&seal),
         vec![busbar_contract::caps::UsageLine {
             class: busbar_contract::caps::MeterClassId::new("tokens"),
             quantity: 9_000,
@@ -256,7 +256,7 @@ fn a_unit_the_door_admits_is_never_refused_by_hold_sizing() {
     )
     .expect("one line");
     let posted =
-        busbar_contract::caps::Posted::settle(hold, 9_000, &usage, &busbar_contract::caps::LedgerToken::mint(&seal));
+        busbar_contract::caps::Posted::settle(hold, 9_000, &usage, &busbar_contract::caps::Grant::<busbar_contract::caps::WriteMoney>::mint(&seal));
     assert_eq!(posted.settled(), 9_000, "the unit ran and posted in full");
     assert_eq!(posted.overdraft(), 8_999);
     assert!(posted
@@ -269,7 +269,7 @@ fn a_unit_the_door_admits_is_never_refused_by_hold_sizing() {
 #[test]
 fn a_reservation_that_can_grow_grows_instead_of_carrying() {
     let seal = KernelSeal::acquire_for_kernel();
-    let admit: AdmitToken<Admit> = AdmitToken::mint(&seal);
+    let admit: Grant<Admittance> = Grant::<Admittance>::mint(&seal);
     let d = door();
     let p = card(0, &[("m", 10.0, 0.0)]);
     let t = table(&[(
@@ -288,9 +288,9 @@ fn a_reservation_that_can_grow_grows_instead_of_carrying() {
     let _ = busbar_contract::caps::Posted::settle(
         hold,
         0,
-        &busbar_contract::caps::Usage::report(&busbar_contract::caps::UsageToken::mint(&seal), Vec::new())
+        &busbar_contract::caps::Usage::report(&busbar_contract::caps::Grant::<busbar_contract::caps::Consumption>::mint(&seal), Vec::new())
             .expect("no lines"),
-        &busbar_contract::caps::LedgerToken::mint(&seal),
+        &busbar_contract::caps::Grant::<busbar_contract::caps::WriteMoney>::mint(&seal),
     );
 }
 
@@ -312,9 +312,9 @@ fn settle(hold: Hold, seal: &KernelSeal) {
     let _ = busbar_contract::caps::Posted::settle(
         hold,
         0,
-        &busbar_contract::caps::Usage::report(&busbar_contract::caps::UsageToken::mint(seal), Vec::new())
+        &busbar_contract::caps::Usage::report(&busbar_contract::caps::Grant::<busbar_contract::caps::Consumption>::mint(seal), Vec::new())
             .expect("an empty report is within the bound"),
-        &busbar_contract::caps::LedgerToken::mint(seal),
+        &busbar_contract::caps::Grant::<busbar_contract::caps::WriteMoney>::mint(seal),
     );
 }
 
@@ -322,7 +322,7 @@ fn settle(hold: Hold, seal: &KernelSeal) {
 fn admitted_cell(
     parent_who: &PrincipalId,
     seal: &KernelSeal,
-    admit: &AdmitToken<Admit>,
+    admit: &Grant<Admittance>,
 ) -> HoldCell {
     let cell = HoldCell::new(crate::arrival_hold(parent_who.clone(), admit));
     let arrival = cell
@@ -333,7 +333,7 @@ fn admitted_cell(
 }
 
 /// A cell whose arrival hold is still in the slot: the parent has not reached the door.
-fn parent_not_admitted(admit: &AdmitToken<Admit>) -> ParentCase {
+fn parent_not_admitted(admit: &Grant<Admittance>) -> ParentCase {
     let who = PrincipalId::new("vk_par");
     ParentCase {
         cell: HoldCell::new(crate::arrival_hold(who.clone(), admit)),
@@ -342,7 +342,7 @@ fn parent_not_admitted(admit: &AdmitToken<Admit>) -> ParentCase {
 }
 
 /// A cell admitted for one principal, with the child claiming a different one.
-fn parent_principal_mismatch(seal: &KernelSeal, admit: &AdmitToken<Admit>) -> ParentCase {
+fn parent_principal_mismatch(seal: &KernelSeal, admit: &Grant<Admittance>) -> ParentCase {
     ParentCase {
         cell: admitted_cell(&PrincipalId::new("vk_par"), seal, admit),
         child: PrincipalId::new("vk_other"),
@@ -350,16 +350,16 @@ fn parent_principal_mismatch(seal: &KernelSeal, admit: &AdmitToken<Admit>) -> Pa
 }
 
 /// A cell whose hold has already been taken: the parent has exited.
-fn parent_exited(seal: &KernelSeal, admit: &AdmitToken<Admit>) -> ParentCase {
+fn parent_exited(seal: &KernelSeal, admit: &Grant<Admittance>) -> ParentCase {
     let who = PrincipalId::new("vk_par");
     let cell = admitted_cell(&who, seal, admit);
-    let taken = cell.take(&ExitToken::mint(seal)).expect("the parent exits");
+    let taken = cell.take(&Grant::<Exit>::mint(seal)).expect("the parent exits");
     settle(taken, seal);
     ParentCase { cell, child: who }
 }
 
 /// A cell admitted for the same principal the child claims: the accrual succeeds.
-fn parent_ready(seal: &KernelSeal, admit: &AdmitToken<Admit>) -> ParentCase {
+fn parent_ready(seal: &KernelSeal, admit: &Grant<Admittance>) -> ParentCase {
     let who = PrincipalId::new("vk_par");
     ParentCase {
         cell: admitted_cell(&who, seal, admit),
@@ -371,7 +371,7 @@ fn parent_ready(seal: &KernelSeal, admit: &AdmitToken<Admit>) -> ParentCase {
 /// child was admitted with, and what the diagnostic seam says afterwards.
 fn run_child(case: &ParentCase) -> (busbar_contract::caps::Admission, Option<AccrualRefused>) {
     let seal = KernelSeal::acquire_for_kernel();
-    let admit: AdmitToken<Admit> = AdmitToken::mint(&seal);
+    let admit: Grant<Admittance> = Grant::<Admittance>::mint(&seal);
     let d = door();
     let p = no_card(0);
     let t = table(&[(
@@ -389,7 +389,7 @@ fn run_child(case: &ParentCase) -> (busbar_contract::caps::Admission, Option<Acc
         &case.child,
         &c,
         &admit,
-        &UnitToken::<Admit>::mint(&seal),
+        &Pass::<Admit>::mint(&seal),
     );
     let admission = decision
         .into_result(&seal)
@@ -405,7 +405,7 @@ fn run_child(case: &ParentCase) -> (busbar_contract::caps::Admission, Option<Acc
 #[test]
 fn a_parent_that_exited_falls_through_silently() {
     let seal = KernelSeal::acquire_for_kernel();
-    let admit: AdmitToken<Admit> = AdmitToken::mint(&seal);
+    let admit: Grant<Admittance> = Grant::<Admittance>::mint(&seal);
     let case = parent_exited(&seal, &admit);
     let (admission, refused) = run_child(&case);
     match admission {
@@ -425,7 +425,7 @@ fn a_parent_that_exited_falls_through_silently() {
 #[test]
 fn a_parent_not_yet_admitted_is_surfaced_and_the_child_still_runs() {
     let seal = KernelSeal::acquire_for_kernel();
-    let admit: AdmitToken<Admit> = AdmitToken::mint(&seal);
+    let admit: Grant<Admittance> = Grant::<Admittance>::mint(&seal);
     let case = parent_not_admitted(&admit);
     let (admission, refused) = run_child(&case);
     match admission {
@@ -435,7 +435,7 @@ fn a_parent_not_yet_admitted_is_surfaced_and_the_child_still_runs() {
     assert_eq!(refused, Some(AccrualRefused::ParentNotAdmitted));
     let arrival = case
         .cell
-        .take(&ExitToken::mint(&seal))
+        .take(&Grant::<Exit>::mint(&seal))
         .expect("the parent's arrival hold is still there");
     settle(arrival, &seal);
 }
@@ -448,7 +448,7 @@ fn a_parent_not_yet_admitted_is_surfaced_and_the_child_still_runs() {
 #[test]
 fn a_principal_mismatch_is_surfaced_and_the_child_still_runs() {
     let seal = KernelSeal::acquire_for_kernel();
-    let admit: AdmitToken<Admit> = AdmitToken::mint(&seal);
+    let admit: Grant<Admittance> = Grant::<Admittance>::mint(&seal);
     let case = parent_principal_mismatch(&seal, &admit);
     let (admission, refused) = run_child(&case);
     match admission {
@@ -459,7 +459,7 @@ fn a_principal_mismatch_is_surfaced_and_the_child_still_runs() {
     // The parent's reservation is untouched: the mismatch accrued nothing into it.
     let parent = case
         .cell
-        .take(&ExitToken::mint(&seal))
+        .take(&Grant::<Exit>::mint(&seal))
         .expect("the parent still holds");
     assert_eq!(parent.accrued(), 0, "nothing landed on the wrong parent");
     settle(parent, &seal);
@@ -470,7 +470,7 @@ fn a_principal_mismatch_is_surfaced_and_the_child_still_runs() {
 #[test]
 fn a_ready_parent_takes_the_accrual_and_reports_nothing() {
     let seal = KernelSeal::acquire_for_kernel();
-    let admit: AdmitToken<Admit> = AdmitToken::mint(&seal);
+    let admit: Grant<Admittance> = Grant::<Admittance>::mint(&seal);
     let case = parent_ready(&seal, &admit);
     let (admission, refused) = run_child(&case);
     match admission {
@@ -487,7 +487,7 @@ fn a_ready_parent_takes_the_accrual_and_reports_nothing() {
     assert_eq!(refused, None);
     let parent = case
         .cell
-        .take(&ExitToken::mint(&seal))
+        .take(&Grant::<Exit>::mint(&seal))
         .expect("the parent still holds");
     assert_eq!(parent.accrued(), 700, "the child's spend landed on it");
     settle(parent, &seal);

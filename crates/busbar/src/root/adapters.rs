@@ -45,7 +45,7 @@
 //!    crates have no common dependency that could hold one, and putting an open-vocabulary key
 //!    where the kernel could compare against it is the thing the lean-core scan exists to catch.
 
-use busbar_contract::caps::{Route, UnitToken};
+use busbar_contract::caps::{Route, Pass};
 use busbar_contract::WireStatusClass;
 use busbar_kernel_breaker::cfg::BreakerCfg;
 use busbar_kernel_breaker::classify::Diagnostics;
@@ -284,7 +284,7 @@ impl Breaker for BreakerAdapter {
         pool: &str,
         destination: DestinationId,
         now: u64,
-        token: &UnitToken<Route>,
+        token: &Pass<Route>,
     ) -> bool {
         matches!(
             self.unit.state(pool, destination, now, token),
@@ -305,7 +305,7 @@ impl Breaker for BreakerAdapter {
         pool: &str,
         destination: DestinationId,
         now: u64,
-        token: &UnitToken<Route>,
+        token: &Pass<Route>,
     ) -> u64 {
         match self.unit.state(pool, destination, now, token) {
             busbar_kernel_breaker::LaneState::Suppressed { until } => until.saturating_sub(now),
@@ -335,7 +335,7 @@ impl Breaker for BreakerAdapter {
         destination: DestinationId,
         outcome: Outcome,
         now: u64,
-        token: &UnitToken<Route>,
+        token: &Pass<Route>,
     ) -> bool {
         // THE point of this adapter. The port carries no configuration, the unit requires it, and
         // the ladder is what decides how long a tripped lane stays down. A pool nobody configured

@@ -32,7 +32,7 @@ fn the_keys_arm_names_the_resolved_key_and_the_live_read_names_it_too() {
     let gov = governed("vk_live_key");
 
     let live = gov.key().map(|k| k.id.clone()).expect("governed");
-    let stepped = super::authenticate(&UnitToken::<Authenticate>::mint(&seal), &gov)
+    let stepped = super::authenticate(&Pass::<Authenticate>::mint(&seal), &gov)
         .into_result(&seal)
         .expect("the plane's authenticate step never refuses");
 
@@ -51,7 +51,7 @@ fn the_open_arm_names_the_same_anonymous_actor_the_live_attribution_names() {
     let gov = ungoverned();
 
     let live = busbar_api::AuthPrincipal(None).actor_id().to_string();
-    let stepped = super::authenticate(&UnitToken::<Authenticate>::mint(&seal), &gov)
+    let stepped = super::authenticate(&Pass::<Authenticate>::mint(&seal), &gov)
         .into_result(&seal)
         .expect("the plane's authenticate step never refuses");
 
@@ -69,7 +69,7 @@ fn the_open_arm_names_the_same_anonymous_actor_the_live_attribution_names() {
 fn no_input_the_middleware_can_leave_makes_this_step_refuse() {
     let seal = KernelSeal::acquire_for_kernel();
     for gov in [ungoverned(), governed("vk_a"), governed("group:ops")] {
-        let d = super::authenticate(&UnitToken::<Authenticate>::mint(&seal), &gov);
+        let d = super::authenticate(&Pass::<Authenticate>::mint(&seal), &gov);
         assert!(
             d.into_result(&seal).is_ok(),
             "the 401 is the middleware's; this step raises none"

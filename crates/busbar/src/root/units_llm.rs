@@ -80,10 +80,10 @@ use std::time::Instant;
 use axum::http::StatusCode;
 use axum::response::Response;
 
-use busbar_contract::caps::{
-    Admit, AdmitToken, Approve, Arrival, ArrivalRecord, Audit, Authenticate, Decision, Decode,
+use busbar_contract::caps::{Grant, 
+    Admit, Admittance, Approve, Arrival, ArrivalRecord, Audit, Authenticate, Decision, Decode,
     Encode, Meter, OpClassId, OriginKind, Outcome, PrincipalId, ReasonCode, Refusal, Route,
-    TrustToken, UnitToken, UsageToken, VerifiedDestination, Verify,
+    Dial, Pass, Consumption, VerifiedDestination, Verify,
 };
 use busbar_contract::{LaneId, Registration, UnitKey};
 use busbar_kernel::slice::GroupLeaseSlip;
@@ -265,7 +265,7 @@ pub struct LlmNode {
     /// Minted outside the loop because making a posting durable happens after the exit has sealed
     /// the end: there is no step of the unit whose token could stand in, which is the same reason
     /// the verbs unit's and the transport-key unit's are minted outside it.
-    durability_token: busbar_contract::caps::DurabilityToken,
+    durability_token: busbar_contract::caps::Grant<busbar_contract::caps::DurableWrite>,
     // THE RATE-CARD HISTORY THIS NODE PRICES AGAINST is NOT a field here. It belongs to the root
     // (`crate::root::kernel::ROOT_CARD`) rather than to this node, and it is appended to rather than
     // bound once, because a rate is a statement about a deployment and a deployment's rates change
@@ -287,7 +287,7 @@ pub struct LlmNode {
     /// Minted outside the loop for the same reason the journal's and the ledger's are: the report a
     /// late accrual prices arrives after the exit sealed the end, so there is no step of the unit
     /// whose token could stand in.
-    usage_token: busbar_contract::caps::UsageToken,
+    usage_token: busbar_contract::caps::Grant<busbar_contract::caps::Consumption>,
     /// THE ONE SEAM THIS PLANE'S ROUTE STEP REACHES THE ENGINE THROUGH.
     ///
     /// On the node rather than on the unit because what it instruments is a statement about a SET of
@@ -669,7 +669,7 @@ impl LlmNode {
 /// The flat fee is NOT a line built here. It is the card's, added by the pricing as a line of its own
 /// from the billable count the report carries, which is what keeps one configured fee to one place.
 fn usage_record(
-    token: &busbar_contract::caps::UsageToken,
+    token: &busbar_contract::caps::Grant<busbar_contract::caps::Consumption>,
     usage: &busbar_substrate::billing::Usage,
 ) -> busbar_contract::caps::Usage {
     let lines = [
@@ -723,7 +723,7 @@ fn usage_record(
 fn priced_posting(
     history: &crate::root::kernel::PinnedHistory,
     arrived: Arrived,
-    token: &busbar_contract::caps::UsageToken,
+    token: &busbar_contract::caps::Grant<busbar_contract::caps::Consumption>,
     report: &LateReport,
 ) -> (busbar_kernel_ledger::cost::Posting, Option<busbar_kernel_ledger::cost::Priced>) {
     // A POSTING IS QUANTITIES AND AN INSTANT, and both are stated here: the plane's report supplies
@@ -764,7 +764,7 @@ fn priced_posting(
 fn priced_amount(
     history: &crate::root::kernel::PinnedHistory,
     arrived: Arrived,
-    token: &busbar_contract::caps::UsageToken,
+    token: &busbar_contract::caps::Grant<busbar_contract::caps::Consumption>,
     report: &LateReport,
 ) -> u64 {
     let (_posting, priced) = priced_posting(history, arrived, token, report);
@@ -797,9 +797,9 @@ struct LateAccrual {
     /// request an operator edited a price underneath — which is the request the distinction exists
     /// for.
     history: crate::root::kernel::PinnedHistory,
-    durability_token: busbar_contract::caps::DurabilityToken,
-    ledger_token: busbar_contract::caps::LedgerToken,
-    usage_token: busbar_contract::caps::UsageToken,
+    durability_token: busbar_contract::caps::Grant<busbar_contract::caps::DurableWrite>,
+    ledger_token: busbar_contract::caps::Grant<busbar_contract::caps::WriteMoney>,
+    usage_token: busbar_contract::caps::Grant<busbar_contract::caps::Consumption>,
     principal: PrincipalId,
     arrived: Arrived,
     /// The unit's carry, kept alive for exactly as long as the body is: the reading needs the lane
@@ -1096,7 +1096,7 @@ impl LlmUnit<'_> {
 // ---------------------------------------------------------------------------------------------
 
 impl Units for LlmUnit<'_> {
-    fn arrival(&self, token: &UnitToken<Arrival>, _ctx: &UnitCtx) -> Decision<Arrival> {
+    fn arrival(&self, token: &Pass<Arrival>, _ctx: &UnitCtx) -> Decision<Arrival> {
         let record = ArrivalRecord {
             source: String::new(),
             port: 0,
@@ -1156,7 +1156,7 @@ impl Units for LlmUnit<'_> {
         }
     }
 
-    fn decode(&self, token: &UnitToken<Decode>, _ctx: &UnitCtx) -> Decision<Decode> {
+    fn decode(&self, token: &Pass<Decode>, _ctx: &UnitCtx) -> Decision<Decode> {
         let refuse = |refusal: decode::DecodeRefusal| {
             self.walk
                 .hold_bytes(audit::render_refusal(self.walk.proto(), &refusal.outcome()));
@@ -1211,7 +1211,7 @@ impl Units for LlmUnit<'_> {
 
     fn authenticate(
         &self,
-        token: &UnitToken<Authenticate>,
+        token: &Pass<Authenticate>,
         _ctx: &UnitCtx,
     ) -> Decision<Authenticate> {
         // The read of the auth middleware's already-resolved outcome. It cannot refuse — every
@@ -1223,8 +1223,8 @@ impl Units for LlmUnit<'_> {
 
     fn verify(
         &self,
-        token: &UnitToken<Verify>,
-        trust: &TrustToken,
+        token: &Pass<Verify>,
+        trust: &Grant<Dial>,
         _ctx: &UnitCtx,
         principal: &PrincipalId,
     ) -> Decision<Verify> {
@@ -1272,7 +1272,7 @@ impl Units for LlmUnit<'_> {
 
     fn approve(
         &self,
-        token: &UnitToken<Approve>,
+        token: &Pass<Approve>,
         _ctx: &UnitCtx,
         principal: &PrincipalId,
         destinations: &[VerifiedDestination],
@@ -1311,8 +1311,8 @@ impl Units for LlmUnit<'_> {
 
     fn admit(
         &self,
-        token: &UnitToken<Admit>,
-        admit_token: &AdmitToken<Admit>,
+        token: &Pass<Admit>,
+        admit_token: &Grant<Admittance>,
         _ctx: &UnitCtx,
         principal: &PrincipalId,
         destinations: &[VerifiedDestination],
@@ -1346,7 +1346,7 @@ impl Units for LlmUnit<'_> {
 
     fn route(
         &self,
-        token: &UnitToken<Route>,
+        token: &Pass<Route>,
         _ctx: &UnitCtx,
         _meter: &AccrualMeter,
     ) -> Decision<Route> {
@@ -1360,8 +1360,8 @@ impl Units for LlmUnit<'_> {
 
     fn meter(
         &self,
-        token: &UnitToken<Meter>,
-        usage: &UsageToken,
+        token: &Pass<Meter>,
+        usage: &Grant<Consumption>,
         _ctx: &UnitCtx,
         _provisional: &Outcome,
     ) -> Decision<Meter> {
@@ -1382,7 +1382,7 @@ impl Units for LlmUnit<'_> {
 
     fn audit(
         &self,
-        token: &UnitToken<Audit>,
+        token: &Pass<Audit>,
         _ctx: &UnitCtx,
         _outcome: &Outcome,
     ) -> Decision<Audit> {
@@ -1397,7 +1397,7 @@ impl Units for LlmUnit<'_> {
 
     fn audit_refused(
         &self,
-        token: &UnitToken<Audit>,
+        token: &Pass<Audit>,
         _ctx: &UnitCtx,
         _refusal: &Refusal,
     ) -> Decision<Audit> {
@@ -1413,7 +1413,7 @@ impl Units for LlmUnit<'_> {
 
     fn encode(
         &self,
-        token: &UnitToken<Encode>,
+        token: &Pass<Encode>,
         _ctx: &UnitCtx,
         _outcome: &Outcome,
     ) -> Decision<Encode> {
@@ -1496,7 +1496,7 @@ impl Units for LlmUnit<'_> {
 impl busbar_kernel::teller::RouteAwait for LlmUnit<'_> {
     fn route_leg<'a>(
         &'a self,
-        token: &'a UnitToken<Route>,
+        token: &'a Pass<Route>,
         _ctx: &'a UnitCtx,
         _meter: &'a AccrualMeter,
     ) -> busbar_kernel::teller::RouteLeg<'a> {
@@ -1566,7 +1566,7 @@ pub fn settle(
     book: &dyn crate::root::durability::MoneyBook,
     principal: &PrincipalId,
     arrived: Arrived,
-    token: &busbar_contract::caps::DurabilityToken,
+    token: &busbar_contract::caps::Grant<busbar_contract::caps::DurableWrite>,
     posted: busbar_contract::caps::Posted,
 ) -> Result<crate::root::durability::Settled, busbar_contract::caps::DurabilityLost> {
     let key = balance(principal);

@@ -12,7 +12,7 @@ use crate::rate::CONFIG_CLASS_RULES;
 use crate::store::{Store, StoreError};
 use crate::verb::{KernelVerb, VerbScope};
 use crate::verbs::{MintedKeyOutcome, NonceSource, Verbs};
-use busbar_contract::caps::{AdminToken, KernelSeal, UnitKey};
+use busbar_contract::caps::{Grant, AdminVerb, KernelSeal, UnitKey};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use std::sync::Mutex;
@@ -126,7 +126,7 @@ impl Governance for FakeGovernance {
     }
     fn provision_group(
         &self,
-        _admin: &AdminToken,
+        _admin: &Grant<AdminVerb>,
         group: &str,
         parent: &str,
     ) -> Result<(), GovernanceError> {
@@ -141,7 +141,7 @@ impl Governance for FakeGovernance {
     }
     fn mint_key(
         &self,
-        _admin: &AdminToken,
+        _admin: &Grant<AdminVerb>,
         _group: Option<&str>,
     ) -> Result<MintedKey, GovernanceError> {
         if let Some(e) = self.injected() {
@@ -155,7 +155,7 @@ impl Governance for FakeGovernance {
             expires_at: Some(9_999_999),
         })
     }
-    fn rotate_key(&self, _admin: &AdminToken, id: &str) -> Result<RotateOutcome, GovernanceError> {
+    fn rotate_key(&self, _admin: &Grant<AdminVerb>, id: &str) -> Result<RotateOutcome, GovernanceError> {
         if let Some(e) = self.injected() {
             return Err(e);
         }
@@ -173,7 +173,7 @@ impl Governance for FakeGovernance {
     fn execute_legacy(
         &self,
         _verb: KernelVerb,
-        _admin: &AdminToken,
+        _admin: &Grant<AdminVerb>,
         _request: &[u8],
     ) -> Result<Vec<u8>, GovernanceError> {
         if let Some(e) = self.injected() {
@@ -184,7 +184,7 @@ impl Governance for FakeGovernance {
     fn execute_new_verb(
         &self,
         verb: KernelVerb,
-        _admin: &AdminToken,
+        _admin: &Grant<AdminVerb>,
         _request: &[u8],
         _operator: OperatorState,
     ) -> Result<Vec<u8>, GovernanceError> {
@@ -198,13 +198,13 @@ impl Governance for FakeGovernance {
 
 struct FakeStore;
 impl Store for FakeStore {
-    fn chain_break(&self, _admin: &AdminToken) -> Result<(), StoreError> {
+    fn chain_break(&self, _admin: &Grant<AdminVerb>) -> Result<(), StoreError> {
         Ok(())
     }
-    fn store_restore(&self, _admin: &AdminToken, _backup_ref: &str) -> Result<(), StoreError> {
+    fn store_restore(&self, _admin: &Grant<AdminVerb>, _backup_ref: &str) -> Result<(), StoreError> {
         Ok(())
     }
-    fn reseal_epoch_floor(&self, _admin: &AdminToken) -> Result<(), StoreError> {
+    fn reseal_epoch_floor(&self, _admin: &Grant<AdminVerb>) -> Result<(), StoreError> {
         Ok(())
     }
     fn replay_new_verb(&self, _key: &(String, String)) -> Result<Option<Vec<u8>>, StoreError> {
@@ -219,8 +219,8 @@ impl Store for FakeStore {
     }
 }
 
-fn admin() -> AdminToken {
-    AdminToken::mint(&KernelSeal::acquire_for_kernel())
+fn admin() -> Grant<AdminVerb> {
+    Grant::<AdminVerb>::mint(&KernelSeal::acquire_for_kernel())
 }
 
 #[test]
@@ -853,7 +853,7 @@ impl Governance for GatedGovernance {
     }
     fn provision_group(
         &self,
-        admin: &AdminToken,
+        admin: &Grant<AdminVerb>,
         group: &str,
         parent: &str,
     ) -> Result<(), GovernanceError> {
@@ -861,21 +861,21 @@ impl Governance for GatedGovernance {
     }
     fn mint_key(
         &self,
-        admin: &AdminToken,
+        admin: &Grant<AdminVerb>,
         group: Option<&str>,
     ) -> Result<MintedKey, GovernanceError> {
         self.park();
         self.mints.fetch_add(1, Ordering::SeqCst);
         self.inner.mint_key(admin, group)
     }
-    fn rotate_key(&self, admin: &AdminToken, id: &str) -> Result<RotateOutcome, GovernanceError> {
+    fn rotate_key(&self, admin: &Grant<AdminVerb>, id: &str) -> Result<RotateOutcome, GovernanceError> {
         self.park();
         self.inner.rotate_key(admin, id)
     }
     fn execute_legacy(
         &self,
         verb: KernelVerb,
-        admin: &AdminToken,
+        admin: &Grant<AdminVerb>,
         request: &[u8],
     ) -> Result<Vec<u8>, GovernanceError> {
         self.inner.execute_legacy(verb, admin, request)
@@ -883,7 +883,7 @@ impl Governance for GatedGovernance {
     fn execute_new_verb(
         &self,
         verb: KernelVerb,
-        admin: &AdminToken,
+        admin: &Grant<AdminVerb>,
         request: &[u8],
         operator: OperatorState,
     ) -> Result<Vec<u8>, GovernanceError> {
@@ -1248,7 +1248,7 @@ impl Governance for RoutingGovernance {
     }
     fn provision_group(
         &self,
-        _admin: &AdminToken,
+        _admin: &Grant<AdminVerb>,
         _group: &str,
         _parent: &str,
     ) -> Result<(), GovernanceError> {
@@ -1256,18 +1256,18 @@ impl Governance for RoutingGovernance {
     }
     fn mint_key(
         &self,
-        _admin: &AdminToken,
+        _admin: &Grant<AdminVerb>,
         _group: Option<&str>,
     ) -> Result<MintedKey, GovernanceError> {
         Err(GovernanceError::Validation)
     }
-    fn rotate_key(&self, _admin: &AdminToken, _id: &str) -> Result<RotateOutcome, GovernanceError> {
+    fn rotate_key(&self, _admin: &Grant<AdminVerb>, _id: &str) -> Result<RotateOutcome, GovernanceError> {
         Err(GovernanceError::Validation)
     }
     fn execute_legacy(
         &self,
         verb: KernelVerb,
-        _admin: &AdminToken,
+        _admin: &Grant<AdminVerb>,
         _request: &[u8],
     ) -> Result<Vec<u8>, GovernanceError> {
         self.0.lock().unwrap().push((verb, "legacy"));
@@ -1276,7 +1276,7 @@ impl Governance for RoutingGovernance {
     fn execute_new_verb(
         &self,
         verb: KernelVerb,
-        _admin: &AdminToken,
+        _admin: &Grant<AdminVerb>,
         _request: &[u8],
         _operator: OperatorState,
     ) -> Result<Vec<u8>, GovernanceError> {
@@ -1286,7 +1286,7 @@ impl Governance for RoutingGovernance {
     fn execute_ledger_read(
         &self,
         verb: KernelVerb,
-        _admin: &AdminToken,
+        _admin: &Grant<AdminVerb>,
         _request: &[u8],
     ) -> Result<Vec<u8>, GovernanceError> {
         self.0.lock().unwrap().push((verb, "ledger"));
@@ -1405,7 +1405,7 @@ fn an_unbound_integrator_serves_no_view_rather_than_an_empty_one() {
         }
         fn provision_group(
             &self,
-            _admin: &AdminToken,
+            _admin: &Grant<AdminVerb>,
             _group: &str,
             _parent: &str,
         ) -> Result<(), GovernanceError> {
@@ -1413,14 +1413,14 @@ fn an_unbound_integrator_serves_no_view_rather_than_an_empty_one() {
         }
         fn mint_key(
             &self,
-            _admin: &AdminToken,
+            _admin: &Grant<AdminVerb>,
             _group: Option<&str>,
         ) -> Result<MintedKey, GovernanceError> {
             Err(GovernanceError::Validation)
         }
         fn rotate_key(
             &self,
-            _admin: &AdminToken,
+            _admin: &Grant<AdminVerb>,
             _id: &str,
         ) -> Result<RotateOutcome, GovernanceError> {
             Err(GovernanceError::Validation)
@@ -1428,7 +1428,7 @@ fn an_unbound_integrator_serves_no_view_rather_than_an_empty_one() {
         fn execute_legacy(
             &self,
             _verb: KernelVerb,
-            _admin: &AdminToken,
+            _admin: &Grant<AdminVerb>,
             _request: &[u8],
         ) -> Result<Vec<u8>, GovernanceError> {
             Ok(Vec::new())
@@ -1436,7 +1436,7 @@ fn an_unbound_integrator_serves_no_view_rather_than_an_empty_one() {
         fn execute_new_verb(
             &self,
             _verb: KernelVerb,
-            _admin: &AdminToken,
+            _admin: &Grant<AdminVerb>,
             _request: &[u8],
             _operator: OperatorState,
         ) -> Result<Vec<u8>, GovernanceError> {
@@ -1609,15 +1609,15 @@ impl RecordingStore {
 }
 
 impl Store for RecordingStore {
-    fn chain_break(&self, _admin: &AdminToken) -> Result<(), StoreError> {
+    fn chain_break(&self, _admin: &Grant<AdminVerb>) -> Result<(), StoreError> {
         self.0.lock().unwrap().push("chain_break");
         Ok(())
     }
-    fn store_restore(&self, _admin: &AdminToken, _backup_ref: &str) -> Result<(), StoreError> {
+    fn store_restore(&self, _admin: &Grant<AdminVerb>, _backup_ref: &str) -> Result<(), StoreError> {
         self.0.lock().unwrap().push("store_restore");
         Ok(())
     }
-    fn reseal_epoch_floor(&self, _admin: &AdminToken) -> Result<(), StoreError> {
+    fn reseal_epoch_floor(&self, _admin: &Grant<AdminVerb>) -> Result<(), StoreError> {
         self.0.lock().unwrap().push("reseal_epoch_floor");
         Ok(())
     }

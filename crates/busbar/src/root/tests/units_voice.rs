@@ -395,7 +395,7 @@ fn a_caller_who_holds_less_than_the_class_requires_is_refused() {
 
     let decide = |shape: UnitShape, held: Grants| -> bool {
         let unit = VoiceUnit::new(&node, shape, 7, 1_700_000_000).holding(held);
-        let token: UnitToken<busbar_contract::caps::step::Approve> = UnitToken::mint(&seal);
+        let token: Pass<busbar_contract::caps::step::Approve> = Pass::mint(&seal);
         unit.approve(&token, &ctx(1), &PrincipalId::new("acct:voice"), &[])
             .into_result(&seal)
             .is_ok()
@@ -1630,7 +1630,7 @@ fn an_errored_turn_bills_nothing_though_it_located_a_figure() {
             ..TurnUsage::default()
         });
     let seal = busbar_contract::caps::KernelSeal::acquire_for_kernel();
-    let token: UnitToken<Audit> = UnitToken::mint(&seal);
+    let token: Pass<Audit> = Pass::mint(&seal);
     let refusal = Refusal::new(ReasonCode::DeadlineExceeded);
     let _ = unit.audit_refused(&token, &ctx(1), &refusal);
 
@@ -1697,8 +1697,8 @@ fn a_turn_opens_a_reservation_the_door_sized_off_the_estimate() {
     );
 
     let seal = busbar_contract::caps::KernelSeal::acquire_for_kernel();
-    let admit = busbar_contract::caps::AdmitToken::<Admit>::mint(&seal);
-    let token: UnitToken<Admit> = UnitToken::mint(&seal);
+    let admit = busbar_contract::caps::Grant::<busbar_contract::caps::Admittance>::mint(&seal);
+    let token: Pass<Admit> = Pass::mint(&seal);
     let admission = unit
         .admit(
             &token,
@@ -1717,9 +1717,9 @@ fn a_turn_opens_a_reservation_the_door_sized_off_the_estimate() {
             let _ = busbar_contract::caps::Posted::settle(
                 hold,
                 0,
-                &busbar_contract::caps::Usage::report(&busbar_contract::caps::UsageToken::mint(&seal), Vec::new())
+                &busbar_contract::caps::Usage::report(&busbar_contract::caps::Grant::<busbar_contract::caps::Consumption>::mint(&seal), Vec::new())
                     .expect("empty"),
-                &busbar_contract::caps::LedgerToken::mint(&seal),
+                &busbar_contract::caps::Grant::<busbar_contract::caps::WriteMoney>::mint(&seal),
             );
         }
         other => panic!("a priced turn opens a hold of its own, got {other:?}"),
@@ -1745,8 +1745,8 @@ fn the_door_step_hands_its_count_to_the_slot_rather_than_dropping_it() {
     let unit =
         VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000).charging_through(ungoverned());
     let seal = busbar_contract::caps::KernelSeal::acquire_for_kernel();
-    let admit = busbar_contract::caps::AdmitToken::<Admit>::mint(&seal);
-    let token: UnitToken<Admit> = UnitToken::mint(&seal);
+    let admit = busbar_contract::caps::Grant::<busbar_contract::caps::Admittance>::mint(&seal);
+    let token: Pass<Admit> = Pass::mint(&seal);
     let leases = GroupLeaseSlip::new();
 
     let admission = unit
@@ -1768,9 +1768,9 @@ fn the_door_step_hands_its_count_to_the_slot_rather_than_dropping_it() {
         let _ = busbar_contract::caps::Posted::settle(
             hold,
             0,
-            &busbar_contract::caps::Usage::report(&busbar_contract::caps::UsageToken::mint(&seal), Vec::new())
+            &busbar_contract::caps::Usage::report(&busbar_contract::caps::Grant::<busbar_contract::caps::Consumption>::mint(&seal), Vec::new())
                 .expect("empty"),
-            &busbar_contract::caps::LedgerToken::mint(&seal),
+            &busbar_contract::caps::Grant::<busbar_contract::caps::WriteMoney>::mint(&seal),
         );
     }
 }
@@ -1786,8 +1786,8 @@ fn an_admission_that_never_reaches_the_chain_hands_over_no_count() {
     let node = priced_node(serviceable());
     let unit = VoiceUnit::new(&node, UnitShape::SessionOpen, 7, 1_700_000_000);
     let seal = busbar_contract::caps::KernelSeal::acquire_for_kernel();
-    let admit = busbar_contract::caps::AdmitToken::<Admit>::mint(&seal);
-    let token: UnitToken<Admit> = UnitToken::mint(&seal);
+    let admit = busbar_contract::caps::Grant::<busbar_contract::caps::Admittance>::mint(&seal);
+    let token: Pass<Admit> = Pass::mint(&seal);
     let leases = GroupLeaseSlip::new();
 
     let _ = unit
@@ -1844,7 +1844,7 @@ fn a_turn_opens_accrues_settles_and_lands_on_the_journal() {
 
     let who = PrincipalId::new("acct:voice");
     let settled = unit
-        .settle(&who, posted, &busbar_contract::caps::DurabilityToken::mint(&seal))
+        .settle(&who, posted, &busbar_contract::caps::Grant::<busbar_contract::caps::DurableWrite>::mint(&seal))
         .expect("the memory-buffered journal takes it");
     assert_eq!(
         settled.settlement.released,
@@ -1917,7 +1917,7 @@ fn a_turn_that_outruns_its_reservation_posts_in_full_and_carries_the_rest() {
     // The hold the door would have opened, and a spend far past it with an empty slice behind.
     let reserved = TURN_OPENING_TOKENS * 5_000;
     let mut hold = busbar_contract::caps::Hold::open(
-        &busbar_contract::caps::AdmitToken::<Admit>::mint(&seal),
+        &busbar_contract::caps::Grant::<busbar_contract::caps::Admittance>::mint(&seal),
         who.clone(),
         reserved,
     );
@@ -1930,7 +1930,7 @@ fn a_turn_that_outruns_its_reservation_posts_in_full_and_carries_the_rest() {
     assert_eq!(spend.overdraft, 7_000);
 
     let usage = busbar_contract::caps::Usage::report(
-        &busbar_contract::caps::UsageToken::mint(&seal),
+        &busbar_contract::caps::Grant::<busbar_contract::caps::Consumption>::mint(&seal),
         vec![UsageLine {
             class: MeterClassId::new("audio_tokens_out"),
             quantity: reserved + 7_000,
@@ -1943,7 +1943,7 @@ fn a_turn_that_outruns_its_reservation_posts_in_full_and_carries_the_rest() {
         hold,
         u128::from(reserved + 7_000),
         &usage,
-        &busbar_contract::caps::LedgerToken::mint(&seal),
+        &busbar_contract::caps::Grant::<busbar_contract::caps::WriteMoney>::mint(&seal),
     );
     assert!(posted
         .flags()
@@ -1952,7 +1952,7 @@ fn a_turn_that_outruns_its_reservation_posts_in_full_and_carries_the_rest() {
     let unit =
         VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000).charging_through(ungoverned());
     let settled = unit
-        .settle(&who, posted, &busbar_contract::caps::DurabilityToken::mint(&seal))
+        .settle(&who, posted, &busbar_contract::caps::Grant::<busbar_contract::caps::DurableWrite>::mint(&seal))
         .expect("the journal takes both records");
     let note = settled
         .settlement
@@ -2122,7 +2122,7 @@ fn a_client_event_opens_a_turn_and_a_later_one_relays_onto_it() {
     let unit =
         VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000).charging_through(ungoverned());
     assert_eq!(
-        unit.decode(&UnitToken::mint(&seal), &ctx(1))
+        unit.decode(&Pass::mint(&seal), &ctx(1))
             .into_result(&seal)
             .expect("a turn proceeds"),
         opened
@@ -2245,7 +2245,7 @@ fn a_credential_is_resolved_against_this_planes_own_audience() {
         if let Some(credential) = credential {
             unit = unit.with_credential(credential);
         }
-        unit.authenticate(&UnitToken::mint(&seal), &ctx(1))
+        unit.authenticate(&Pass::mint(&seal), &ctx(1))
             .into_result(&seal)
     };
 
@@ -2315,7 +2315,7 @@ fn ask_the_door(
     let slip = GroupLeaseSlip::new();
     let decision = Units::admit(
         unit,
-        &busbar_contract::caps::UnitToken::mint(&busbar_contract::caps::KernelSeal::acquire_for_kernel()),
+        &busbar_contract::caps::Pass::mint(&busbar_contract::caps::KernelSeal::acquire_for_kernel()),
         &kernel.admit_token(),
         &ctx(1),
         who,

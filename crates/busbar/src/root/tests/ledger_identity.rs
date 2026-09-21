@@ -4,8 +4,8 @@
 
 use super::*;
 
-use busbar_contract::caps::{Admit, AdmitToken};
-use busbar_contract::caps::{Hold, LedgerToken, Usage, UsageToken};
+use busbar_contract::caps::{Grant, Admittance};
+use busbar_contract::caps::{Hold, WriteMoney, Usage, Consumption};
 use busbar_contract::caps::{KernelSeal, MeterClassId, PrincipalId, QuantitySource, UsageLine};
 use busbar_kernel_ledger::cost::{
     derive_spend_micros, price, CurrencyCode, History, LaneClass, Posting, RateCard,
@@ -38,16 +38,16 @@ fn card() -> RateCard {
     )
 }
 
-fn ledger_token() -> LedgerToken {
-    LedgerToken::mint(&KernelSeal::acquire_for_kernel())
+fn ledger_token() -> Grant<WriteMoney> {
+    Grant::<WriteMoney>::mint(&KernelSeal::acquire_for_kernel())
 }
 
-fn admit_token() -> AdmitToken<Admit> {
-    AdmitToken::mint(&KernelSeal::acquire_for_kernel())
+fn admit_token() -> Grant<Admittance> {
+    Grant::<Admittance>::mint(&KernelSeal::acquire_for_kernel())
 }
 
-fn usage_token() -> UsageToken {
-    UsageToken::mint(&KernelSeal::acquire_for_kernel())
+fn usage_token() -> Grant<Consumption> {
+    Grant::<Consumption>::mint(&KernelSeal::acquire_for_kernel())
 }
 
 fn lines(input: u64, output: u64) -> Vec<UsageLine> {

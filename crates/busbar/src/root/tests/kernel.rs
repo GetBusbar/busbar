@@ -283,7 +283,7 @@ fn a_unit_this_root_did_not_compose_is_not_sealed_as_an_admin_read() {
     );
     let admin_read = busbar_contract::ids::OpClassId::new("admin_read");
 
-    let token: UnitToken<Audit> = UnitToken::mint(&seal);
+    let token: Pass<Audit> = Pass::mint(&seal);
     let refused = units
         .audit_refused(
             &token,
@@ -299,7 +299,7 @@ fn a_unit_this_root_did_not_compose_is_not_sealed_as_an_admin_read() {
     );
     assert_eq!(refused.finish, busbar_contract::FinishClass::Error);
 
-    let token: UnitToken<Audit> = UnitToken::mint(&seal);
+    let token: Pass<Audit> = Pass::mint(&seal);
     let ended = units
         .audit(&token, &ctx, &Outcome::Completed)
         .into_result(&seal)

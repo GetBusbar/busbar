@@ -314,7 +314,7 @@ impl Breaker for TestBreaker {
         _pool: &str,
         destination: DestinationId,
         _now: u64,
-        _token: &busbar_contract::caps::UnitToken<busbar_contract::caps::Route>,
+        _token: &busbar_contract::caps::Pass<busbar_contract::caps::Route>,
     ) -> bool {
         let health = self.health_of(destination);
         !health.dead
@@ -333,7 +333,7 @@ impl Breaker for TestBreaker {
         _pool: &str,
         destination: DestinationId,
         _now: u64,
-        _token: &busbar_contract::caps::UnitToken<busbar_contract::caps::Route>,
+        _token: &busbar_contract::caps::Pass<busbar_contract::caps::Route>,
     ) -> u64 {
         self.health_of(destination).cooldown
     }
@@ -423,7 +423,7 @@ impl Breaker for TestBreaker {
         destination: DestinationId,
         outcome: Outcome,
         _now: u64,
-        _token: &busbar_contract::caps::UnitToken<busbar_contract::caps::Route>,
+        _token: &busbar_contract::caps::Pass<busbar_contract::caps::Route>,
     ) -> bool {
         self.record(Recorded::Observed(pool.to_string(), destination, outcome));
         false
