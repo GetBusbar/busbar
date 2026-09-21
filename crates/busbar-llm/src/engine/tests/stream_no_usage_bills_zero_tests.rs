@@ -77,7 +77,23 @@ async fn stream_without_usage_frame_bills_zero_on_every_dialect() {
                 LaneSpec::new("m0", crate::proto_codec::PROTO_OPENAI, &server.base_url())
                     .provider("zai"),
             )
-            .pool("p", &[(0, 1)]);
+            .pool("p", &[(0, 1)])
+            // BILLING ON (a `rate_card:` present for `m0`, fee 0): DECISION #42 makes the metering row
+            // conditional on billing, and this test asserts a metering row exists. No admission fee is
+            // charged on this path, so `spend_cents == 0` still holds; the rates only enable metering.
+            .cost(busbar_core::cost::CostModel::resolve_parts(
+                Some(&std::collections::BTreeMap::from([(
+                    "m0".to_string(),
+                    busbar_core::config::RateEntryCfg {
+                        input_utok: 2.0,
+                        output_utok: 6.0,
+                        cache_read_utok: 0.0,
+                        cache_write_utok: 0.0,
+                    },
+                )])),
+                0,
+                &Default::default(),
+            ));
         // The governance registry rides in through the neutral engine test kit seam.
         TestAppKit::set_governance(&mut builder, gov_kit.clone());
         let app = builder.build();

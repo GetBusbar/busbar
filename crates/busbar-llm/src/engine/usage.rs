@@ -101,14 +101,25 @@ pub(crate) fn ledger_and_meter(
     );
     // Metering (raw per-model consumption series, token SPLIT preserved) — even a zero-token
     // delivered response counts its request. Same pinned epoch as the budget charges (#29).
-    host.meter_series(
-        &sink.gov,
-        &sink.key.id,
-        &lane.model,
-        &lane.provider,
-        usage,
-        sink.charged_at,
-    );
+    //
+    // BILLING OFF ⇒ NO METERING ROW (DECISION #42). With no `rate_card:` the node serves free as a
+    // failover/routing proxy and writes no per-model FinOps/usage row; the metering series is the
+    // billing-facing usage ledger, and #42 says an unbilled plane emits none. The switch is the card's
+    // presence, read through the host seam (`cost_pricing_enabled`); with a card PRESENT this is `true`
+    // and the row is recorded byte-for-byte as before, so every rate_card-present recording is
+    // unchanged. The budget/ledger accrual ABOVE is deliberately NOT gated: token-COUNT rate caps
+    // (a non-money limit, like `concurrent`) enforce off that accrual, and #42 keeps admission,
+    // concurrency and breaker on for an unbilled plane — only the money surface goes quiet.
+    if host.cost_pricing_enabled(&sink.cost) {
+        host.meter_series(
+            &sink.gov,
+            &sink.key.id,
+            &lane.model,
+            &lane.provider,
+            usage,
+            sink.charged_at,
+        );
+    }
 }
 
 /// `lane` is the SERVING lane - the model attribution for BOTH the token ledger and the metering

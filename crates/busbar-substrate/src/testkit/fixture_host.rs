@@ -116,6 +116,11 @@ pub struct FixtureHost {
     lanes: InertLanes,
     /// No hook on the fixture requests a candidate signal (the all-zero mask).
     signals: RequestedSignals,
+    /// Whether this host models a BILLED plane (a `rate_card:` present). `true` by default: the
+    /// fixture's metering/pricing seams behave as a billed deployment, which is what the metering
+    /// tests exercise. DECISION #42 makes the metering row conditional on billing, so a test that
+    /// wants the unbilled/no-card posture (metering goes quiet) opts in with [`Self::unbilled`].
+    pricing_enabled: bool,
 }
 
 impl Default for FixtureHost {
@@ -135,7 +140,18 @@ impl FixtureHost {
             next_lease: AtomicU64::new(1),
             lanes: InertLanes,
             signals: RequestedSignals::default(),
+            pricing_enabled: true,
         }
+    }
+
+    /// Model an UNBILLED plane: no `rate_card:` configured, so [`Self::cost_pricing_enabled`] is
+    /// `false` and — per DECISION #42 — the metering row goes quiet (the money surface is off; the
+    /// plane still admits, limits concurrency and trips its breaker). The posture the fixture had
+    /// before #42 made metering conditional.
+    #[must_use]
+    pub fn unbilled(mut self) -> Self {
+        self.pricing_enabled = false;
+        self
     }
 
     /// Turn governance ON: `governance()` mints a handle and the metering seams land on the fixture's
@@ -536,10 +552,11 @@ impl BudgetHost for FixtureHost {
     fn cost(&self) -> CostHandle {
         CostHandle(Arc::new(()))
     }
-    // The fixture carries no cost model, so it prices nothing and nothing is left unpriced — the
-    // posture of a deployment with no rate card, which is what the fixture's `cost()` hands back.
+    // Billing is on when this host models a billed plane (a `rate_card:` present) — the default; a
+    // test wanting the unbilled/no-card posture builds the host with `.unbilled()`. DECISION #42
+    // reads this to decide whether a metering row is emitted at all.
     fn cost_pricing_enabled(&self, _cost: &CostHandle) -> bool {
-        false
+        self.pricing_enabled
     }
     fn cost_model_unpriced(&self, _cost: &CostHandle, _model: &str) -> bool {
         false

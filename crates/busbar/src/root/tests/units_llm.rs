@@ -159,7 +159,19 @@ const MINTED_AT: u64 = 1_700_000_000;
 const LIVE_EXP: u64 = 4_000_000_000;
 const DEAD_EXP: u64 = 1_000_000_000;
 
+/// The default rig: BILLING OFF (no `rate_card:`), the historical posture most fixtures run under.
 async fn rig(fixture: Fixture) -> Rig {
+    rig_with_billing(fixture, false).await
+}
+
+/// A BILLED rig: a `rate_card:` prices the one lane model `m0`, so [`CostModel::pricing_enabled`] is
+/// true and — per DECISION #42 — the metering row + ledger fire. Used by the tests that ASSERT a
+/// metering row; the money surface only runs on a billed plane.
+async fn rig_billed(fixture: Fixture) -> Rig {
+    rig_with_billing(fixture, true).await
+}
+
+async fn rig_with_billing(fixture: Fixture, billed: bool) -> Rig {
     busbar_llm::testkit::install_test_seams();
     busbar_core::metrics::init();
 
@@ -233,7 +245,25 @@ async fn rig(fixture: Fixture) -> Rig {
     let (_, expired_token) = gov
         .mint_signed(spec("root-llm-expired"), DEAD_EXP, MINTED_AT)
         .expect("mint the expired key");
-    let cost = busbar_core::cost::CostModel::resolve_parts(None, FEE_CENTS, &groups);
+    // DECISION #42: billing is on exactly when a `rate_card:` is present. A BILLED rig prices the
+    // one lane model `m0` (so the metering row + ledger run); the default rig configures no card (the
+    // money surface stays quiet). Either way the flat per-request fee stays `FEE_CENTS` — fee posting
+    // is independent of the token rates — and every non-`m0` fixture keeps working because the billed
+    // card only exists in the billed rig, which those fixtures never build.
+    let priced_card = std::collections::BTreeMap::from([(
+        LANE.to_string(),
+        busbar_core::config::RateEntryCfg {
+            input_utok: 1.0,
+            output_utok: 1.0,
+            cache_read_utok: 0.0,
+            cache_write_utok: 0.0,
+        },
+    )]);
+    let cost = busbar_core::cost::CostModel::resolve_parts(
+        billed.then_some(&priced_card),
+        FEE_CENTS,
+        &groups,
+    );
     gov.hydrate_budgets(&cost, 0).expect("hydrate");
 
     let app = TestApp::new()
@@ -466,6 +496,17 @@ async fn leg_loop(fixture: Fixture) -> Observed {
     observed
 }
 
+/// [`leg_loop`] on a BILLED rig (a `rate_card:` present) — for the tests that assert the metering
+/// row, which #42 emits only when billing is on. The fixtures it is driven with all serve the priced
+/// `m0` lane, so the card names every model they reach and none is refused as unpriced.
+async fn leg_loop_billed(fixture: Fixture) -> Observed {
+    let rig = rig_billed(fixture).await;
+    let resp = drive(&rig, fixture).await;
+    let observed = observe(&rig, resp).await;
+    rig.server.shutdown().await;
+    observed
+}
+
 /// One request, through the real loop, awaited on this task — exactly as the mount drives it.
 async fn drive(rig: &Rig, fixture: Fixture) -> Response {
     let node = LlmNode::new();
@@ -562,8 +603,10 @@ fn two_units_of_one_second_are_ordered_by_the_monotonic_stamp() {
     let seam = crate::root::durability::SharedBook::over(std::sync::Arc::clone(&book));
     let who = PrincipalId::new("acct:llm");
     for arrived in [Arrived::at(EPOCH * 1_000, 7), Arrived::at(EPOCH * 1_000, 8)] {
-        let ledger_token = busbar_contract::caps::Grant::<busbar_contract::caps::WriteMoney>::mint(&seal);
-        let accrual = busbar_contract::caps::HoldAccrual::after_terminal(who.clone(), 0, &ledger_token);
+        let ledger_token =
+            busbar_contract::caps::Grant::<busbar_contract::caps::WriteMoney>::mint(&seal);
+        let accrual =
+            busbar_contract::caps::HoldAccrual::after_terminal(who.clone(), 0, &ledger_token);
         let posted = busbar_contract::caps::Posted::settle_late(accrual, &ledger_token);
         settle(
             &seam,
@@ -605,7 +648,9 @@ fn two_units_of_one_second_are_ordered_by_the_monotonic_stamp() {
 async fn a_unit_arriving_at_a_window_boundary_bills_in_the_window_it_arrived_in() {
     use busbar_substrate::governance::metering_bucket;
 
-    let rig = rig(Fixture::BufferedOk).await;
+    // BILLED: this test asserts a metering row lands in the bucket the unit arrived in, and #42 emits
+    // a metering row only when billing is on.
+    let rig = rig_billed(Fixture::BufferedOk).await;
     // The last SECOND of the bucket BEFORE the one the node's own clock is in, and the last
     // MILLISECOND of that second. Before, so that a figure derived from a fresh clock read
     // instead of from this arrival lands somewhere visibly different — in the live bucket,
@@ -842,8 +887,10 @@ fn a_pin_below_the_head_reads_the_history_as_it_stood_at_that_seq() {
     let kernel = busbar_kernel::teller::Kernel::new();
     let token = kernel.usage_token();
     let head = history_of(&[(0, 1.0), (5_000, 100.0)]);
-    let earlier =
-        crate::root::kernel::PinnedHistory::for_test_at(&head, busbar_kernel_ledger::cost::HistorySeq(0));
+    let earlier = crate::root::kernel::PinnedHistory::for_test_at(
+        &head,
+        busbar_kernel_ledger::cost::HistorySeq(0),
+    );
 
     let at = Arrived::at(9_000, 1);
     assert_eq!(
@@ -1174,7 +1221,11 @@ async fn every_fixture_reaches_the_end_it_names() {
 async fn the_loop_leaves_the_money_where_the_shipped_plane_leaves_it() {
     // A STREAMED unit accrues at stream end rather than at the buffered tap, so it is asserted
     // in its own right: without this the comparison could be green on a stream metering nothing.
-    let streamed = leg_loop(Fixture::StreamedOk).await;
+    // BILLED (a `rate_card:` present): the delivered legs assert the metering row #42 emits only when
+    // billing is on. The refusal legs below stay on the default UNBILLED rig — their assertions are
+    // about the door/guard, and `UnknownModel` in particular must reach the POST-door refusal it
+    // names rather than the pre-admission unpriced-model refusal a card would trigger.
+    let streamed = leg_loop_billed(Fixture::StreamedOk).await;
     assert_eq!(field(&streamed, "ledger_requests"), "1");
     assert_eq!(
         field(&streamed, "ledger_tokens"),
@@ -1186,7 +1237,7 @@ async fn the_loop_leaves_the_money_where_the_shipped_plane_leaves_it() {
         format!("{LANE}/test in={INPUT} out={OUTPUT} cr=0 cw=0 req=1 billable=1")
     );
 
-    let delivered = leg_loop(Fixture::BufferedOk).await;
+    let delivered = leg_loop_billed(Fixture::BufferedOk).await;
     assert_eq!(field(&delivered, "ledger_requests"), "1");
     assert_eq!(
         field(&delivered, "metering_rows"),
@@ -1207,6 +1258,48 @@ async fn the_loop_leaves_the_money_where_the_shipped_plane_leaves_it() {
     let post_door = leg_loop(Fixture::UnknownModel).await;
     assert_eq!(field(&post_door, "ledger_requests"), "1");
     assert_eq!(field(&post_door, "metering_rows"), "");
+}
+
+/// W3.c / DECISION #42: BILLING OFF (no `rate_card:`) ⇒ SERVE FREE WITH ZERO METERING ROWS, YET
+/// STILL GOVERNED. The complement of `the_loop_leaves_the_money_where_the_shipped_plane_leaves_it`
+/// (which drives the BILLED rig): with no card the node is a pure failover/routing proxy — the SAME
+/// delivered request is served identically (status 200) but writes NO metering row, because #42 says
+/// an unbilled plane emits none. And the plane is NOT unlimited: admission/governance still runs — a
+/// pool-ACL guard refuses exactly as it does on a billed plane — which is the "breaker + concurrency
+/// still enforced" half of #42 (both live on the admission/egress path, independent of the card).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn billing_off_serves_free_with_zero_metering_rows_yet_still_governs() {
+    // BILLING OFF (default rig, no `rate_card:`): a delivered request is served, and writes no
+    // metering row (#42), where the BILLED rig would write one — the only difference the card makes.
+    let free = leg_loop(Fixture::BufferedOk).await;
+    assert_eq!(
+        field(&free, "status"),
+        "200",
+        "billing off still serves the request (a free failover/routing proxy)"
+    );
+    assert_eq!(
+        field(&free, "metering_rows"),
+        "",
+        "billing off (no rate_card) emits ZERO metering rows (#42)"
+    );
+    // The exact same delivered request on a BILLED rig DOES write a metering row — proof the empty
+    // result above is billing-off and not a metering path that never ran.
+    let billed = leg_loop_billed(Fixture::BufferedOk).await;
+    assert_eq!(
+        field(&billed, "metering_rows"),
+        format!("{LANE}/test in={INPUT} out={OUTPUT} cr=0 cw=0 req=1 billable=1"),
+        "the same request on a billed plane writes exactly one metering row"
+    );
+    // STILL GOVERNED with billing off: the admission-time pool-ACL guard refuses, exactly as on a
+    // billed plane — the plane is a proxy, never unlimited. (Breaker + concurrency ride the same
+    // admission/egress path, which the card's absence never touches.)
+    let guarded = leg_loop(Fixture::PoolAcl).await;
+    assert_eq!(
+        field(&guarded, "ledger_requests"),
+        "0",
+        "billing off still runs admission governance — the pool-ACL guard refuses"
+    );
+    assert_eq!(field(&guarded, "metering_rows"), "");
 }
 
 /// EXACTLY ONE LINK PER UNIT on the principal's chain, whichever door the unit left through.

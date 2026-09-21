@@ -3981,6 +3981,48 @@ fn test_validate_rate_card_completeness_fails_closed_with_paste_stub() {
     assert!(validate(&cfg_absent).is_ok());
 }
 
+/// W3.c / DECISION #77(5) + #42: UNPRICED CLASS WITH BILLING ON ⇒ THE SERVER REFUSES TO BOOT.
+///
+/// Billing is on exactly when a `rate_card:` is present (there is no `billing: on/off` flag — the
+/// card's presence IS the switch, #42). With billing on, a configured class that the card does not
+/// price is money-sacred boot refusal, never a silent zero: `validate()` is the SAME pipeline boot
+/// runs (`build_app_from_config`) and `--validate` runs, so a non-empty error here is the boot
+/// `die()`. This test pins the refusal itself — billing on, one unpriced class, boot fails — and its
+/// twin below (`..._absent_card_boots_free`) pins the other arm of #42: billing off, no refusal.
+#[test]
+fn test_validate_unpriced_class_with_billing_on_refuses_boot() {
+    // Billing ON: a rate_card is present. One configured class (`claude-opus-4`) is left unpriced.
+    let mut cfg = cost_cfg(&["claude-opus-4"]);
+    cfg.rate_card = Some(rate_card_of(&["some-priced-model"]));
+    cfg.models
+        .insert("some-priced-model".to_string(), make_model("p", 10));
+    let errs = validate(&cfg)
+        .expect_err("billing on + an unpriced class must REFUSE boot (unpriced ⇒ boot-refusal)");
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("rate_card is present but") && e.contains("no rate entry")),
+        "the refusal must name the completeness rule (unpriced ⇒ boot-refusal): {errs:?}"
+    );
+}
+
+/// W3.c / DECISION #42: BILLING OFF (rate_card ABSENT) ⇒ NO boot refusal — busbar boots as a free
+/// failover/routing proxy. The complement of the refusal above: with no card present, an unpriced
+/// class is not a refusal because there is no card for it to be missing from, so boot succeeds.
+#[test]
+fn test_validate_absent_card_boots_free_no_refusal() {
+    // Billing OFF: no rate_card at all. Every class is unpriced, and that is legal (serve free).
+    let cfg = cost_cfg(&["claude-opus-4", "claude-sonnet-4"]);
+    assert!(
+        cfg.rate_card.is_none(),
+        "the fixture must start with no rate_card (billing off)"
+    );
+    assert!(
+        validate(&cfg).is_ok(),
+        "billing off (no rate_card) must NOT refuse boot; got: {:?}",
+        validate(&cfg)
+    );
+}
+
 /// EVERY missing model is stubbed (sorted), not just the first - the operator pastes once.
 #[test]
 fn test_validate_rate_card_stubs_every_missing_model() {

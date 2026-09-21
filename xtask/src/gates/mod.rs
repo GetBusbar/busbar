@@ -38,6 +38,7 @@ pub mod inventory_ref;
 pub mod kernel_token_wire_purity;
 pub mod kind_isolation;
 pub mod no_deferral;
+pub mod no_float_money;
 pub mod no_self_filed_issues;
 pub mod no_tracked_ignored;
 pub mod plane_abi_neutrality;
@@ -1987,6 +1988,13 @@ pub static REGISTRY: &[Registration] = &[
         tier: Tier::Fast,
         build: || Box::new(kernel_token_wire_purity::KernelTokenWirePurityGate),
         summary: "the kernel never re-derives a usage token class from a raw provider wire pointer",
+    },
+    Registration {
+        name: "no-float-money",
+        batch: 1,
+        tier: Tier::Fast,
+        build: || Box::new(no_float_money::NoFloatMoneyGate),
+        summary: "no floating point on the money runtime path (#77.8); the #44 card-build boundary is exempt",
     },
     Registration {
         name: "seal-witness",
