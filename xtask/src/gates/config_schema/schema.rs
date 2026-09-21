@@ -3,7 +3,7 @@
 //! Every serde-`Deserialize` struct and enum in the TRACKED SOURCE SET, plus each hand-written
 //! `Deserialize` impl's accepted wire keys / declared member types / REFUSED input forms, plus the
 //! named-definition-map type aliases, rendered as canonical JSON. That rendering is what
-//! `crates/busbar-core/src/config/config-schema.snapshot.json` freezes, and the freeze is worth
+//! `crates/busbar-kernel/src/config/config-schema.snapshot.json` freezes, and the freeze is worth
 //! nothing unless the two generators agree BYTE FOR BYTE, so the port keeps the Python's shape down
 //! to the `_meta` prose and the sorted-key two-space emitter.
 //!
@@ -19,15 +19,17 @@ use serde_json::{Map, Value};
 use super::scan;
 use crate::ctx::{Ctx, WalkSpec};
 
-/// THE LEGACY ENGINE CRATE, still one of the core-kind roots and named here only so
-/// [`core_roots`] can put it first. It is NOT the tracked root any more: see [`core_roots`].
-const CORE: &str = "crates/busbar-core";
+/// THE ENGINE CRATE — `busbar-core` was absorbed INTO `busbar-kernel` (W4 core-absorption,
+/// DECISIONS #19/#37), so the loop/registry engine that carries the config module is now
+/// `busbar-kernel`. Named here only so [`core_roots`] can put it first; it is still resolved BY
+/// CENSUS, not treated as the single hardcoded root — see [`core_roots`].
+const CORE: &str = "crates/busbar-kernel";
 
 /// The committed fingerprint. DATA: it stays where the config module keeps it.
-pub const SNAPSHOT: &str = "crates/busbar-core/src/config/config-schema.snapshot.json";
+pub const SNAPSHOT: &str = "crates/busbar-kernel/src/config/config-schema.snapshot.json";
 
 /// The committed per-path break-waiver file, beside it.
-pub const WAIVERS: &str = "crates/busbar-core/src/config/config-schema.waivers";
+pub const WAIVERS: &str = "crates/busbar-kernel/src/config/config-schema.waivers";
 
 /// The `_meta` block, verbatim. It names the generator, and the generator's name is part of the
 /// frozen bytes: moving it is a snapshot rewrite and belongs in a commit whose whole diff is that
@@ -99,12 +101,14 @@ pub fn plane_dir(cx: &Ctx, root: &str, plane: &str, grammar: &str) -> Result<Str
 /// as a deletion, and it is the one thing this gate must not say — nothing an operator writes
 /// changed by a byte.
 ///
-/// So the root is a CENSUS. A crate is core-kind BY NAME (`busbar-core`, or the `busbar-core-`
-/// prefix `kind-isolation`'s own kind table uses), and membership is read from the workspace
+/// So the root is a CENSUS. A crate is core-kind BY NAME — the engine `busbar-kernel` that
+/// absorbed `busbar-core`, the legacy `busbar-core` while it exists, or the `busbar-core-` config
+/// surfaces `kind-isolation`'s own kind table names — and membership is read from the workspace
 /// manifest rather than from the directory listing, so a crate that is on disk but not in the
-/// workspace is not silently tracked. `busbar-core` sorts first while it exists; the order is
-/// cosmetic (`resolve_sources` sorts the file set) and is only there so a report reads in the
-/// direction the drain runs.
+/// workspace is not silently tracked. The kernel WORKFLOW crates (`busbar-kernel-*`) are not
+/// config-grammar roots, so the exact `busbar-kernel` name is matched, never the prefix. The engine
+/// (`CORE`) sorts first; the order is cosmetic (`resolve_sources` sorts the file set) and is only
+/// there so a report reads in the direction the drain runs.
 ///
 /// AN EMPTY CENSUS IS A HARD ERROR, for the same reason a missing tracked source is: a set with no
 /// roots renders no types, and "no delta" is the passing answer to every question this gate asks.
@@ -132,7 +136,12 @@ pub fn core_roots(cx: &Ctx) -> Result<Vec<String>, String> {
         let Some(name) = package_name(&text) else {
             continue;
         };
-        if name == "busbar-core" || name.starts_with("busbar-core-") {
+        // `busbar-kernel` is the ENGINE that absorbed `busbar-core` (W4 core-absorption); the
+        // `busbar-core-*` surfaces (`busbar-core-config`, `busbar-core-hooks`, and whatever the
+        // drain names next) are the config layer carved out beside it. The kernel WORKFLOW crates
+        // (`busbar-kernel-*`) are NOT config-grammar roots, so the exact `busbar-kernel` name is
+        // matched here, never the prefix.
+        if name == "busbar-kernel" || name == "busbar-core" || name.starts_with("busbar-core-") {
             roots.push(format!("{dir}/src"));
         }
     }
@@ -140,8 +149,9 @@ pub fn core_roots(cx: &Ctx) -> Result<Vec<String>, String> {
     roots.dedup();
     if roots.is_empty() {
         return Err(
-            "config-schema: the workspace manifest names no core-kind crate (`busbar-core` or a \
-             `busbar-core-*`). The config grammar lives in the core kind; a census that finds none \
+            "config-schema: the workspace manifest names no core-kind crate (`busbar-kernel`, \
+             `busbar-core`, or a `busbar-core-*`). The config grammar lives in the core kind; a \
+             census that finds none \
              renders no types, and a render of no types answers every question this gate asks with \
              \"no delta\"."
                 .to_string(),
@@ -237,11 +247,11 @@ pub fn sources(cx: &Ctx) -> Result<Vec<String>, String> {
     let mut out: Vec<String> = core.iter().map(|r| grammar_dir(cx, r)).collect();
     out.dedup();
     out.extend([
-        // The bulk of the config GRAMMAR's PURE SHAPES moved DOWN to `busbar-substrate` in the
-        // 1.6.0 config-seam migration; the loaders and resolvers that consume them stayed in
-        // `busbar-core`, which re-exports every moved item at its historical `config::` path.
-        // Tracked as a DIRECTORY so a future file split under it is automatically covered.
-        "crates/busbar-substrate/src/config".to_string(),
+        // The config GRAMMAR's PURE SHAPES were carved DOWN to `busbar-substrate` in the 1.6.0
+        // config-seam migration and then ABSORBED BACK into `busbar-kernel` when the substrate
+        // engine was folded into the kernel (W4.b P2). Both the shapes and the loaders that consume
+        // them now live under `busbar-kernel/src/config`, which the core-kind census above already
+        // tracks as that crate's grammar directory — so there is no separate hardcoded entry for it.
         "crates/secret-ref/src/lib.rs".to_string(),
         // `UpstreamCreds` — the `upstream_credentials:` value grammar — moved to the neutral
         // contracts crate in the plane extraction, exactly as `SecretRef` did to `secret-ref`.
