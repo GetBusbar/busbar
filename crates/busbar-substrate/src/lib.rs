@@ -28,6 +28,9 @@ pub mod api;
 pub mod auth {
     pub mod challenge;
 }
+// `detached` is an async-door (tokio::spawn helper), not a pure value — it stays in
+// `busbar-substrate` and will land in `busbar-kernel` during P2 rather than the tokio-free
+// `busbar-substrate-values` (W4.b ambiguous-home call).
 pub mod detached;
 // THE VALUE HALF, RE-EXPORTED AT ITS HISTORICAL PATH. `diagnostics` — and the twelve sibling modules
 // re-exported further down — now live in `busbar-substrate-values`, the pure crate a codec names
@@ -47,8 +50,10 @@ pub mod net_guard;
 // reach, and — like the metrics registry — its accumulator buckets live SINGLE-COMPILED here so a
 // dual-compiled plane test binary shares one profiler rather than splitting the sample set across
 // two core instances. Core re-exports it from `busbar_kernel::profile` so its own call sites (the
-// `auth`/`ingress` stage spans) are unchanged.
-pub mod profile;
+// `auth`/`ingress` stage spans) are unchanged. Moved DOWN to `busbar-substrate-values` (1.6.0 W4.b
+// P1 pure-foundation drain); re-exported here so `busbar_substrate::profile::…` and in-crate
+// `crate::profile::…` resolve unchanged.
+pub use busbar_substrate_values::profile;
 // A′ (ABI-purity P4): the neutral hot-path OBSERVABILITY floor a plane names via the ABI. Only the
 // pure `HOTPATH_LEVEL` compile-time const lives here (the OTLP/stderr two-filter split's DEBUG
 // floor); the App/webhook/net_guard-facing remainder of observability stays in busbar-core. Core
