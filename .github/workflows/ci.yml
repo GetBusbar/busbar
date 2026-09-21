@@ -150,7 +150,7 @@ jobs:
               echo "### CI tier: FAST"
               echo ""
               echo "Push to a non-promotion branch (\`$REF\`), so this run proved:"
-              echo "structure lint, fmt/clippy/build/test, config-stability, public-hygiene,"
+              echo "structure lint, fmt, clippy/build/test, config-stability, public-hygiene,"
               echo "generated-artifact-drift, shadow-oracle, llm-conformance, design-bindings"
               echo "and construction-gate (blocking on its posture: a NEW red fails the run)."
               echo ""
@@ -164,6 +164,68 @@ jobs:
             } >> "$GITHUB_STEP_SUMMARY"
           fi
           cat "$GITHUB_STEP_SUMMARY"
+
+  # ── THE CHEAP PREFLIGHT TIER, AND WHY THE EXPENSIVE JOBS WAIT ON IT ────────────────────────────
+  # `fmt`, split out of the bundled `check` job below so a `cargo fmt --check` verdict costs SECONDS
+  # on a latchkey-small runner instead of riding a full workspace build. It is one member of the
+  # cheap hygiene tier — the fast (<~2 min), deterministic, no-full-build checks: this `fmt`,
+  # `structure-lint`, `config-stability`, the `changes` classifier, `public-hygiene`,
+  # `service-image-pins` and `generated-artifact-drift`. They stay INDEPENDENT jobs (not chained
+  # steps) so every cheap failure surfaces in ONE pass: a dev sees fmt AND structure-lint AND a
+  # config drift together, fixes them together, and the expensive tier runs ONCE.
+  #
+  # The `preflight` job below is the BARRIER: it `needs:` every cheap check and does nothing but go
+  # green when they all pass. Every expensive job (`check`, `shadow-oracle`, the plane rigs, the
+  # feature legs, the timing/txn/coverage/windows compiles — every latchkey-*large job that compiles
+  # or records) `needs: preflight`, so none of them launches until the cheap tier is green. That
+  # kills the waste this whole change exists for: a one-minute fmt failure no longer burns the
+  # forty-minute shadow oracle alongside it. `preflight` carries NO `if:` guard, so the default
+  # `success()` applies — if any cheap check fails or is skipped, `preflight` is skipped and every
+  # job that needs it is skipped in turn, while the cheap jobs themselves all still run and report.
+  fmt:
+    name: fmt (cargo fmt --check)
+    runs-on: latchkey-small
+
+    # BOUNDED — see "EVERY JOB IS BOUNDED" at the top of this file. NEW JOB, no run history yet:
+    # floored at 10 per that section's rule. `cargo fmt --check` parses source and compiles nothing,
+    # so this is seconds; re-measure to p95 x1.5 once ten green runs exist.
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      # Only rustfmt — this job compiles nothing, so it takes neither clippy nor the registry/target
+      # cache the build jobs carry. That is the point of splitting it out: gating on fmt costs a
+      # checkout and a rustfmt parse, not a workspace build.
+      - name: Install Rust toolchain (rustfmt only)
+        uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
+        with:
+          components: rustfmt
+      - name: Format check
+        run: cargo fmt --all -- --check
+
+  # THE PREFLIGHT BARRIER. `needs:` every member of the cheap hygiene tier; its only step is a green
+  # echo. It has NO `if:` on purpose: the implicit `success()` means it runs (and goes green) only
+  # when ALL of its dependencies succeeded, and is SKIPPED the moment one fails or is skipped — which
+  # cascades to every expensive job that `needs: preflight`. Every one of its dependencies is a
+  # fast-tier job (none carries the full-tier guard), so `preflight` itself runs on every push and PR
+  # and is scored `fast` in the umbrella's RESULTS ledger below.
+  preflight:
+    name: preflight (cheap hygiene tier green — the expensive tier may launch)
+    needs:
+      - fmt
+      - structure-lint
+      - config-stability
+      - changes
+      - public-hygiene
+      - service-image-pins
+      - generated-artifact-drift
+    runs-on: latchkey-small
+
+    # BOUNDED — see "EVERY JOB IS BOUNDED" at the top of this file. NEW JOB, a no-op barrier: it
+    # compiles nothing and runs one echo, so it is seconds. Floored at 10 per that section's rule.
+    timeout-minutes: 10
+    steps:
+      - name: Cheap hygiene tier is green
+        run: echo "fmt, structure-lint, config-stability, changes, public-hygiene, service-image-pins and generated-artifact-drift all passed — the expensive tier may launch."
 
   # LAYOUT GATE — its OWN job, deliberately. It used to be the first step of `check`, ahead of
   # clippy/build/test, which made it a MASK: any layout violation aborted the job before a single
@@ -635,8 +697,12 @@ jobs:
             target
 
   check:
-    name: fmt · clippy · build · test
+    name: clippy · build · test
     runs-on: latchkey-xlarge
+    # WAITS ON THE CHEAP TIER. `cargo fmt --check` is now its own `fmt` job in the preflight tier, so
+    # this xlarge build/clippy/test job does not launch until the cheap hygiene checks are green.
+    needs:
+      - preflight
 
     # A hung test burns the runner's 6-HOUR default in silence without this: one never-finishing
     # test leaves the job printing nothing until someone notices and cancels by hand. A green run
@@ -724,7 +790,9 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
         with:
-          components: rustfmt, clippy
+          # `cargo fmt --check` moved to the fast `fmt` job in the preflight tier, so this job no
+          # longer installs rustfmt — only clippy for the lint step below.
+          components: clippy
 
       - name: Resolve cargo home (Latchkey image sets CARGO_HOME off $HOME)
         uses: ./.github/actions/cargo-home
@@ -737,9 +805,6 @@ jobs:
             ${{ env.CARGO_HOME }}/registry
             ${{ env.CARGO_HOME }}/git
             target
-
-      - name: Format check
-        run: cargo fmt --all -- --check
 
       - name: Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
@@ -1010,6 +1075,8 @@ jobs:
   openapi-schema:
     name: openapi-schema clippy · drift · coverage
     runs-on: latchkey-large
+    # Waits on the cheap hygiene tier.
+    needs: [preflight]
 
     # BOUNDED — see "EVERY JOB IS BOUNDED" at the top of this file. Measured p95 3.9 min
     # over the last 14 green runs of this job; ceiling is p95 x1.5, floor 10.
@@ -1082,6 +1149,8 @@ jobs:
   migration-corpus:
     name: migration corpus (every shipped config still migrates)
     runs-on: latchkey-xlarge
+    # Waits on the cheap hygiene tier.
+    needs: [preflight]
 
     # BOUNDED — see "EVERY JOB IS BOUNDED" at the top of this file. Measured p95 2.7 min
     # over the last 14 green runs of this job; ceiling is p95 x1.5, floor 10.
@@ -1415,6 +1484,8 @@ jobs:
   executable-config-lint:
     name: executable-config gate (heredocs · test literals · shipped yaml)
     runs-on: latchkey-large
+    # Waits on the cheap hygiene tier.
+    needs: [preflight]
 
     # BOUNDED — see "EVERY JOB IS BOUNDED" at the top of this file. Measured p95 2.7 min
     # over the last 14 green runs of this job; ceiling is p95 x1.5, floor 10.
@@ -1481,6 +1552,8 @@ jobs:
   no-default-features:
     name: no-default-features build · clippy · test
     runs-on: latchkey-xlarge
+    # Waits on the cheap hygiene tier.
+    needs: [preflight]
 
     # BOUNDED — see "EVERY JOB IS BOUNDED" at the top of this file. Measured p95 22.0 min
     # over the last 13 green runs of this job; ceiling is p95 x1.5, floor 10.
@@ -1579,6 +1652,8 @@ jobs:
   deletion-test-matrix:
     name: deletion-test (neutral crates compile with a plane removed)
     runs-on: latchkey-xlarge
+    # Waits on the cheap hygiene tier.
+    needs: [preflight]
 
     # BOUNDED — see "EVERY JOB IS BOUNDED" at the top of this file. Measured p95 1.6 min
     # over the last 15 green runs of this job; ceiling is p95 x1.5, floor 10.
@@ -1663,6 +1738,8 @@ jobs:
     # SAME RUNNER LABEL AND SAME PINNED TOOLCHAIN AS `check`. A feature leg that builds on a
     # different runner class or a different compiler is answering a different question.
     runs-on: latchkey-xlarge
+    # Waits on the cheap hygiene tier.
+    needs: [preflight]
     # BOUNDED — see "EVERY JOB IS BOUNDED" at the top of this file. A row is one workspace clippy
     # plus one set of crate test binaries; `check`'s own workspace clippy+build+test is ~13 min warm
     # and ~40 cold, and a row is a strict subset of that work. 45 leaves cold-cache headroom.
@@ -1811,7 +1888,9 @@ jobs:
   plane-rigs:
     name: plane rigs (every H2 gating scenario for mcp and a2a, RUN)
     runs-on: latchkey-xlarge
-    needs: [changes]
+    # `changes` stays a direct dependency because the `if:` below reads `needs.changes.outputs.plane`;
+    # `preflight` is added so this xlarge rig job also waits on the cheap hygiene tier.
+    needs: [changes, preflight]
     if: needs.changes.outputs.plane == 'true' || github.event_name != 'push' || contains(fromJSON('["refs/heads/main", "refs/heads/dev", "refs/heads/qa"]'), github.ref)
     # BOUNDED — see "EVERY JOB IS BOUNDED" at the top of this file. The release build dominates
     # (`teller-steps`, the other job that compiles the binary crate outside `check`'s cache, carries
@@ -1951,6 +2030,8 @@ jobs:
   no-plugins-gate:
     name: no-plugins gate (compiled out · not installed)
     runs-on: latchkey-xlarge
+    # Waits on the cheap hygiene tier.
+    needs: [preflight]
 
     # BOUNDED — see "EVERY JOB IS BOUNDED" at the top of this file. Measured p95 2.9 min
     # over the last 14 green runs of this job; ceiling is p95 x1.5, floor 10.
@@ -1994,6 +2075,8 @@ jobs:
   txn-guards:
     name: txn compile fence · loom model
     runs-on: latchkey-xlarge
+    # Waits on the cheap hygiene tier.
+    needs: [preflight]
 
     # BOUNDED — see "EVERY JOB IS BOUNDED" at the top of this file. Measured p95 12.1 min
     # over the last 14 green runs of this job; ceiling is p95 x1.5, floor 10.
@@ -2036,6 +2119,8 @@ jobs:
   timing:
     name: timing gate (release)
     runs-on: latchkey-xlarge
+    # Waits on the cheap hygiene tier.
+    needs: [preflight]
 
     # BOUNDED — see "EVERY JOB IS BOUNDED" at the top of this file. Measured p95 18.1 min
     # over the last 14 green runs of this job; ceiling is p95 x1.5, floor 10.
@@ -2096,6 +2181,8 @@ jobs:
   windows:
     name: windows build · clippy · test
     runs-on: windows-latest
+    # Waits on the cheap hygiene tier.
+    needs: [preflight]
     # BOUNDED — see "EVERY JOB IS BOUNDED" at the top of this file. Measured p95 18.3 min
     # over the last 7 green runs of this job; ceiling is p95 x1.5, floor 10.
     timeout-minutes: 27
@@ -2252,6 +2339,8 @@ jobs:
   coverage:
     name: coverage (llvm-cov · codecov)
     runs-on: latchkey-xlarge
+    # Waits on the cheap hygiene tier.
+    needs: [preflight]
 
     # BOUNDED — see "EVERY JOB IS BOUNDED" at the top of this file. Measured p95 6.4 min
     # over the last 9 green runs of this job; ceiling is p95 x1.5, floor 10.
@@ -2365,6 +2454,8 @@ jobs:
   perf-build-gate:
     name: perf + build-parity gate
     runs-on: latchkey-xlarge
+    # Waits on the cheap hygiene tier.
+    needs: [preflight]
 
     # BOUNDED — see "EVERY JOB IS BOUNDED" at the top of this file. Measured p95 9.9 min
     # over the last 7 green runs of this job; ceiling is p95 x1.5, floor 10.
@@ -2673,6 +2764,9 @@ jobs:
   shadow-oracle:
     name: shadow oracle (this build vs the published 1.5.5, 0 divergences)
     runs-on: latchkey-xlarge
+    # Waits on the cheap hygiene tier — the whole point of this change: a one-minute fmt failure no
+    # longer burns this forty-minute record alongside it.
+    needs: [preflight]
 
     timeout-minutes: 60
     env:
@@ -3024,6 +3118,8 @@ jobs:
   teller-steps:
     name: teller steps (one cell per Teller step per plane, and the cells RUN)
     runs-on: latchkey-xlarge
+    # Waits on the cheap hygiene tier.
+    needs: [preflight]
 
     timeout-minutes: 30
     # FULL TIER. --root-legs compiles the binary crate under a feature combination no other job
@@ -3072,6 +3168,8 @@ jobs:
   construction-gate:
     name: construction gate (how the tree is built vs ARCHITECTURE.md — BLOCKING, on its posture)
     runs-on: latchkey-xlarge
+    # Waits on the cheap hygiene tier.
+    needs: [preflight]
 
     timeout-minutes: 15
     # `continue-on-error: true` IS GONE, AND SO IS THE REASON FOR IT. It was here because the gate
@@ -3230,6 +3328,8 @@ jobs:
     if: always()
     needs:
       - gate-tier
+      - fmt
+      - preflight
       - structure-lint
       - changes
       - check
@@ -3294,6 +3394,8 @@ jobs:
       # that distinction mean anything.
       RESULTS: |
         gate-tier|fast|${{ needs.gate-tier.result }}
+        fmt|fast|${{ needs.fmt.result }}
+        preflight|fast|${{ needs.preflight.result }}
         structure-lint|fast|${{ needs.structure-lint.result }}
         changes|fast|${{ needs.changes.result }}
         check|fast|${{ needs.check.result }}
