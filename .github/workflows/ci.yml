@@ -1282,6 +1282,10 @@ jobs:
     # BOUNDED — see "EVERY JOB IS BOUNDED" at the top of this file. Measured p95 0.7 min
     # over the last 10 green runs of this job; ceiling is p95 x1.5, floor 10.
     timeout-minutes: 10
+    env:
+      # This job's `./bin/oracle cells --{selftest,check}` also builds the Rust engine from the
+      # PRIVATE GetBusbar/busbar-release pin, so it needs the same cross-repo token as shadow-oracle.
+      BUSBAR_RELEASE_TOKEN: ${{ secrets.RELEASE_DISPATCH_TOKEN }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Install Rust toolchain
@@ -2871,6 +2875,11 @@ jobs:
     timeout-minutes: 60
     env:
       BUSBAR_RELEASE_PUBKEY: ${{ vars.BUSBAR_RELEASE_PUBKEY }}
+      # bin/oracle (Phase C) builds the money oracle from the PRIVATE sibling GetBusbar/busbar-release
+      # pinned in testing/shadow-oracle/oracle-rust.pin. The default GITHUB_TOKEN is scoped to THIS
+      # repo, so bin/oracle's clone of that private repo needs a cross-repo token — the same PAT the
+      # release-dispatch path already uses. Without it every ./bin/oracle call dies before recording.
+      BUSBAR_RELEASE_TOKEN: ${{ secrets.RELEASE_DISPATCH_TOKEN }}
     # THE BACKENDS BOTH SIDES RECORD AGAINST.
     #
     # The store families' cells boot a real backend, spend, restart and read back — persistence IS

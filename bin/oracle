@@ -52,9 +52,24 @@ resolve_bin() {
   if [ -n "${BUSBAR_RELEASE_CHECKOUT:-}" ]; then
     checkout="$BUSBAR_RELEASE_CHECKOUT"
   else
+    # busbar-release is a PRIVATE first-party repo, so a plain `git clone https://…` of it fails
+    # unauthenticated on CI (the default GITHUB_TOKEN is scoped to THIS repo, not the sibling).
+    # Fold a token — the first of BUSBAR_RELEASE_TOKEN / GH_TOKEN / GITHUB_TOKEN that is set — into
+    # the github.com https URL as `x-access-token`, exactly as ci.yml already does for this repo's
+    # own authenticated remote. No token set (local dev over ssh / a cached credential helper) →
+    # the URL is used verbatim, so nothing regresses off CI.
+    local clone_url="$RELEASE_REPO"
+    local _tok="${BUSBAR_RELEASE_TOKEN:-${GH_TOKEN:-${GITHUB_TOKEN:-}}}"
+    if [ -n "$_tok" ]; then
+      case "$RELEASE_REPO" in
+        https://github.com/*) clone_url="https://x-access-token:${_tok}@github.com/${RELEASE_REPO#https://github.com/}" ;;
+      esac
+    fi
     checkout="$root/checkout"
     if [ ! -d "$checkout/.git" ]; then
-      git clone --no-checkout "$RELEASE_REPO" "$checkout" >&2
+      git clone --no-checkout "$clone_url" "$checkout" >&2
+    else
+      git -C "$checkout" remote set-url origin "$clone_url" >&2 2>/dev/null || true
     fi
     git -C "$checkout" fetch --depth 1 origin "$RELEASE_REF" >&2 2>/dev/null || git -C "$checkout" fetch origin >&2
     git -C "$checkout" checkout --force "$RELEASE_REF" >&2
