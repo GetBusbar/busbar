@@ -1679,7 +1679,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
       - name: Resolve cargo home (Latchkey image sets CARGO_HOME off $HOME)
         uses: ./.github/actions/cargo-home
-        uses: ./.github/actions/cargo-home
       - name: Latchkey Fast Cache (cargo registry + target, restore)
         uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
         with:
