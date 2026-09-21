@@ -81,7 +81,7 @@ The badge criteria are grouped as the bestpractices.dev form groups them. Answer
 | `no_leaked_credentials` | Met | `Redacted<T>` (no `Serialize`/`Deserialize`), `SecretRef` (inline literal unrepresentable), and the `cargo xtask gate settings-leak` gate. |
 | `static_analysis` + `static_analysis_common_vulnerabilities` | Met | CodeQL (`qa-codeql.yml`); clippy at `-D warnings`; the xtask gate battery. |
 | `static_analysis_fixed` + `static_analysis_often` | Met | CodeQL on every `qa` promotion; clippy on every push. |
-| `dynamic_analysis` / `dynamic_analysis_unsafe` | Met | loom concurrency model (`scripts/loom.sh`) for the config-swap invariant; a mutation-strength test gate. |
+| `dynamic_analysis` / `dynamic_analysis_unsafe` | Met | Coverage-guided **cargo-fuzz** over the codec parse surface (`fuzz/`, `.github/workflows/qa-fuzz.yml`); loom concurrency model (`scripts/loom.sh`) for the config-swap invariant; mutation testing. |
 | **Dependency advisory scanning** (`static_analysis` supply-chain dimension) | Met | `qa-security.yml` runs **cargo-deny** (advisories · licenses · sources · bans) **and cargo-audit** (RustSec) at the qa boundary and weekly; **OpenSSF Scorecard** (`sched-scorecard.yml`) weekly. |
 
 ## Analysis / other
@@ -98,21 +98,78 @@ Called out so the self-certification stays credible (all tracked in the posture 
 - **`vulnerability_report_credit` / bug bounty** — no paid bounty yet; `SECURITY.md` publishes a
   safe harbor and credits reporters (hall-of-fame planned). Passing does *not* require a paid
   bounty, so this does not block the badge.
-- **Dedicated security owner** — currently the maintainers (`SECURITY.md` roadmap). Not a
-  passing blocker.
+- **Security owner named** — the maintainer is the named security contact (`SECURITY.md`); the
+  project's bus factor is 1 (solo), tracked as a silver growth item below.
 
-## Silver on-ramp (after passing)
+## Silver tier — criteria mapping
 
-The credible next steps toward **silver**, most already partly in place:
+The project is at 100% of the **passing** tier; this section tracks **silver**. Silver adds
+governance, review discipline, and stronger crypto/quality requirements. Each row is `Met` with
+evidence, or **`Not met (solo)`** where the criterion needs more than one person and is honestly
+unmet for a solo-maintained project — we leave those open rather than overclaim.
 
-- `crypto_used_network`, `crypto_tls12` — document the TLS floor explicitly.
-- `installation_common`, `external_dependencies` — already strong (SBOM + pinned deps).
-- `test_statement_coverage80` — Codecov already reports; state the threshold.
-- `signed_releases` (silver) — already met (attestation + cosign); just cite it.
-- `hardened_site`, `security_review` — cite `THREAT_MODEL.md` + the posture-doc audit and the
-  `security-review` process.
-- **Name a security owner** and stand up the safe-harbor/hall-of-fame intake — the two roadmap
-  items above — to clear the silver governance questions.
+### Met now (docs / policy / already in place)
+
+| Silver criterion | Status | Evidence |
+|---|---|---|
+| `dco` — Developer Certificate of Origin on contributions | Met | `CONTRIBUTING.md` sign-off/DCO flow. |
+| `governance` — documented governance | Met | Maintainer-led governance; roles in `SECURITY.md` + `CONTRIBUTING.md`. |
+| `code_of_conduct` | Met | [`CODE_OF_CONDUCT.md`](../../CODE_OF_CONDUCT.md). |
+| `roles_responsibilities` — roles documented | Met | Maintainer role + **named security contact** (`SECURITY.md`). |
+| `documentation_roadmap` | Met | `docs/design/1.6.0-*` release plans + roadmap sections. |
+| `documentation_architecture` | Met | `README.md` architecture; `docs/design/1.6.0-security-posture.md`; `THREAT_MODEL.md`. |
+| `documentation_security` — how to report + secure use | Met | `SECURITY.md`, posture doc, k8s `securityContext` example in README. |
+| `documentation_quick_start` | Met | `README.md` quick start; `docs/` getting-started. |
+| `documentation_current` | Met | Docs tracked with releases; `changelog-lint` refuses to stage stale release docs (`RELEASE.md`). |
+| `coding_standards` + `coding_standards_enforced` | Met | `rustfmt` + `clippy -D warnings` + the xtask gate battery, enforced in CI. |
+| `test_continuous_integration` | Met | `ci.yml`, `qa-gate.yml`. |
+| `test_policy_mandated` + `tests_documented_added` | Met | Bug→regression-test(+gate) discipline (posture doc §4.2). |
+| `warnings_strict` | Met | `clippy -D warnings` workspace-wide. |
+| `vulnerability_report_credit` | Met | `SECURITY.md` credits reporters who wish to be credited. |
+| `vulnerability_response_process` | Met | `SECURITY.md` — 48h ack, coordinated disclosure, advisory + CVE. |
+| `vulnerabilities_fixed_60_days` | Met | `SECURITY.md` severity-driven backport policy. |
+| `signed_releases` | Met | SLSA build-provenance attestation + cosign-signed image (`release.yml`, `docker.yml`). |
+| `version_tags_signed` | Met | Release tags are an output of the green release pipeline, never hand-cut (`RELEASE.md`). |
+| `installation_common` | Met | `cargo` install + published GHCR / Docker Hub image. |
+| `external_dependencies` — deps listed | Met | `Cargo.toml` / `Cargo.lock`; SBOM emitted at release (`release-stage.yml`). |
+| `dependency_monitoring` | Met | `.github/dependabot.yml` (cargo + actions), cargo-audit / cargo-deny (`qa-security.yml`), OpenSSF Scorecard. |
+| `updateable_reused_components` | Met | Standard cargo dependency management; dependabot PRs. |
+| `input_validation` — documented | Met | Codec ingress readers + `IngressReject`; posture doc — and now **fuzzed** (`fuzz/`, `qa-fuzz.yml`). |
+| `crypto_used_network` + `crypto_tls12` + `crypto_certificate_verification` | Met | TLS / mTLS floor; posture doc §2.x. |
+| `crypto_weaknesses` + `crypto_algorithm_agility` + `crypto_credential_agility` | Met | Vetted crates, no home-grown crypto; posture doc §2.3 / §2.6. |
+| `hardening` | Met | Static binary, credential boundary, fail-closed gauntlet, FFI `catch_unwind`; k8s `securityContext`. |
+| `assurance_case` | Met | `docs/design/1.6.0-security-posture.md` class→mechanism→gate case. |
+| `security_review` — design **and** code reviewed | Met (internal) | `THREAT_MODEL.md` design review + the posture-doc audit + the repo's `security-review` / `codeaudit` process — a documented internal review, which silver accepts. |
+| `dynamic_analysis` — a dynamic/fuzz tool is applied | Met | Coverage-guided **cargo-fuzz** over the codec parse surface (`fuzz/`, `qa-fuzz.yml`); loom; mutation testing. |
+
+### Coverage statement (for `test_statement_coverage80`)
+
+Coverage is measured on **product paths only** via Codecov (`codecov.yml` ignores tests, examples,
+sample plugins, and docs) and surfaced on the README badge and per-PR context. By design coverage
+is **informational, not a hard gate**: the correctness gate is CI's `check` job, backed by the
+mutation-testing gate (`gate-mutants.yml`), which measures *test effectiveness* (killed mutants) — a
+stronger signal than line coverage alone. We treat **80% statement coverage on product paths** as
+the working floor and rely on mutation score to catch weak tests that line coverage would call
+"covered." `test_statement_coverage80` is therefore attested by the live Codecov figure rather than
+a pinned CI threshold.
+
+### Honestly not met — require more than one person (solo project)
+
+Busbar is currently solo-maintained. These silver criteria are people-gated and we leave them
+**open rather than overclaim**:
+
+- `two_person_review` — silver expects ≥50% of new commits reviewed by someone other than the
+  author. Not achievable solo. *Mitigation:* every change still passes the full CI gate battery,
+  `clippy -D warnings`, and the xtask gates before merge.
+- `contributors_unassociated` — expects contributors from ≥2 organizations. **Not met (solo).**
+- `bus_factor` (≥2) — the project's bus factor is 1 today. A named security contact is in place
+  (`SECURITY.md`); raising the bus factor is a growth item, not a docs fix.
+- `access_continuity` / succession — single maintainer; documented as a known gap, revisited as the
+  team grows.
+
+We also **decline per-file SPDX / REUSE headers** (`copyright_per_file` / `license_per_file`, which
+are *suggested*, not required, at silver): the repository is uniformly Apache-2.0 with `LICENSE` at
+the root, and a per-file header program is intentionally not adopted.
 
 ## Registration (done — maintenance reference)
 
