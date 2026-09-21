@@ -27,7 +27,7 @@
 
 use std::collections::BTreeMap;
 
-use busbar_contract::caps::{Hold, LedgerToken, Posted, Usage};
+use busbar_contract::caps::{Grant, Hold, WriteMoney, Posted, Usage};
 use crate::cost::{CurrencyCode, HistorySeq, HistoryView};
 
 use crate::legacy::{LegacyPosting, LegacyRows};
@@ -143,7 +143,7 @@ impl Ledger {
         hold: Hold,
         priced_nanos: u128,
         usage: &Usage,
-        token: &LedgerToken,
+        token: &Grant<WriteMoney>,
     ) -> Posted {
         self.settle_recording(key, window, hold, priced_nanos, usage, token)
             .posted
@@ -161,7 +161,7 @@ impl Ledger {
         hold: Hold,
         priced_nanos: u128,
         usage: &Usage,
-        token: &LedgerToken,
+        token: &Grant<WriteMoney>,
     ) -> Settlement {
         let posted = Posted::settle(hold, priced_nanos, usage, token);
         self.post(key, window, posted)

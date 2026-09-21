@@ -8,9 +8,9 @@
 //! It cannot answer a step it was not asked. The token names the step; so does the answer:
 //!
 //! ```compile_fail,E0308
-//! use busbar_contract::caps::{Admit, Admission, Decision, Meter, UnitToken};
+//! use busbar_contract::caps::{Admit, Admission, Decision, Meter, Pass};
 //!
-//! fn forge(token: &UnitToken<Meter>) -> Decision<Admit> {
+//! fn forge(token: &Pass<Meter>) -> Decision<Admit> {
 //!     // The token is for the meter step; the decision it builds is a meter decision.
 //!     Decision::proceed(token, Admission::ZeroHold)
 //! }
@@ -20,10 +20,10 @@
 //! reason it is meant to and not because something was misspelled:
 //!
 //! ```
-//! use busbar_contract::caps::{Decision, KernelSeal, Meter, Usage, UnitToken, UsageToken};
+//! use busbar_contract::caps::{Consumption, Decision, Grant, KernelSeal, Meter, Pass, Usage};
 //! let seal = KernelSeal::acquire_for_kernel();
-//! let token: UnitToken<Meter> = UnitToken::mint(&seal);
-//! let usage = Usage::report(&UsageToken::mint(&seal), Vec::new()).unwrap();
+//! let token: Pass<Meter> = Pass::mint(&seal);
+//! let usage = Usage::report(&Grant::<Consumption>::mint(&seal), Vec::new()).unwrap();
 //! let decision: Decision<Meter> = Decision::proceed(&token, usage);
 //! assert_eq!(decision.into_result(&seal).unwrap().total(), 0);
 //! ```
@@ -62,7 +62,7 @@
 //! ```
 
 use crate::caps::step::{Step, StepName};
-use crate::caps::token::{KernelSeal, UnitToken};
+use crate::caps::token::{KernelSeal, Pass};
 
 macro_rules! reasons {
     ($($(#[$doc:meta])* $name:ident => $wire:literal, $refusal:ident,)*) => {
@@ -284,12 +284,12 @@ enum Inner<S: Step> {
 
 impl<S: Step> Decision<S> {
     /// Proceed past step `S`, carrying `facts` to the next step.
-    pub fn proceed(_token: &UnitToken<S>, facts: S::Facts) -> Self {
+    pub fn proceed(_token: &Pass<S>, facts: S::Facts) -> Self {
         Decision(Inner::Proceed(facts))
     }
 
     /// Stop the unit at step `S`. The refusal is stamped with `S`, so the record says where.
-    pub fn refuse(_token: &UnitToken<S>, refusal: Refusal) -> Self {
+    pub fn refuse(_token: &Pass<S>, refusal: Refusal) -> Self {
         Decision(Inner::Refuse(refusal.at(S::NAME)))
     }
 

@@ -67,6 +67,7 @@
 #![allow(missing_debug_implementations)]
 
 pub mod canary;
+pub mod capability;
 pub mod decision;
 pub mod egress;
 pub mod hold;
@@ -87,10 +88,11 @@ pub use step::{
     Challenge, Decode, Encode, Frame, LaneId, Meter, MeterClassId, OpClassId, PrincipalId, Route,
     RoutePlan, ScopeFacts, Step, StepName, UnitKey, Verify,
 };
-pub use token::{
-    AdminToken, AdmitToken, DurabilityToken, EgressAuthToken, ExitToken, KernelSeal, LedgerToken,
-    RecoveryToken, TransportKeyToken, TrustToken, UnitToken, UsageToken,
+pub use capability::{
+    AdminVerb, Admittance, Capability, Consumption, Dial, DurableWrite, Exit, KeyHandle, Recover,
+    Sign, WriteMoney,
 };
+pub use token::{CallId, Grant, KernelSeal, Pass};
 pub use unit_end::{Abort, IdempotencyKey, Origin, OriginKind, Outcome, SessionId, UnitEnd};
 pub use usage::{LocatorPtr, QuantitySource, Usage, UsageError, UsageLine, MAX_USAGE_LINES};
 

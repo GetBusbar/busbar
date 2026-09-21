@@ -287,7 +287,7 @@ fn the_arrival_carries_the_transports_own_record_and_a_full_table_refuses_at_arr
 
     // The step that unit then reaches carries the transport's record forward, both layers named.
     let draft = draft(ops::OP_MESSAGE_SEND);
-    let record = arrival_answer(&draft, &UnitToken::mint(&seal))
+    let record = arrival_answer(&draft, &Pass::mint(&seal))
         .into_result(&seal)
         .expect("the plane's arrival step admits a unit the gate let through");
     assert_eq!(record.transport_chain, vec!["tcp", "http"]);
@@ -409,7 +409,7 @@ fn a_bad_credential_is_refused_before_verify_through_the_nodes_own_seams() {
             seams.keys(),
             seams.revocations(),
             None,
-            &UnitToken::mint(&seal),
+            &Pass::mint(&seal),
         )
         .into_result(&seal)
     };
@@ -440,7 +440,7 @@ fn a_bad_credential_is_refused_before_verify_through_the_nodes_own_seams() {
             seams.keys(),
             seams.revocations(),
             None,
-            &UnitToken::mint(&seal),
+            &Pass::mint(&seal),
         )
         .into_result(&seal);
     match crossed {
@@ -894,7 +894,7 @@ fn the_root_guard_and_the_trust_units_own_door_agree() {
     // The token the loop lends the trust unit, which is what seals a destination in a running
     // deployment. A private type carrying an impl of the contract's sealing trait would forge
     // the same value while reading as if that were the ordinary way to obtain one.
-    let trust = busbar_contract::caps::TrustToken::mint(&busbar_contract::caps::KernelSeal::acquire_for_kernel());
+    let trust = busbar_contract::caps::Grant::<busbar_contract::caps::Dial>::mint(&busbar_contract::caps::KernelSeal::acquire_for_kernel());
     let resolver = FixedResolver(vec!["93.184.216.34".parse().expect("an address")]);
     for authority in [
         "https://agent.example/",
@@ -1614,7 +1614,7 @@ fn one_call_at_a_time(group: &str) -> busbar_kernel_budget::GroupTable {
 struct Deployment {
     auth: Auth,
     auth_bindings: crate::root::kernel::auth_bindings::AuthBindings,
-    trust: busbar_contract::caps::TrustToken,
+    trust: busbar_contract::caps::Grant<busbar_contract::caps::Dial>,
     pools: UnrestrictedKey,
     kinds: EveryKindPasses,
     resolver: FixedResolver,
@@ -1646,7 +1646,7 @@ fn deployment_priced(groups: busbar_kernel_budget::GroupTable, pricer: Pricer) -
     Deployment {
         auth: Auth::new(busbar_kernel_identity::AuthChain::new(Vec::new(), false)),
         auth_bindings: crate::root::kernel::auth_bindings::AuthBindings::without_directory(),
-        trust: busbar_contract::caps::TrustToken::mint(&busbar_contract::caps::KernelSeal::acquire_for_kernel()),
+        trust: busbar_contract::caps::Grant::<busbar_contract::caps::Dial>::mint(&busbar_contract::caps::KernelSeal::acquire_for_kernel()),
         pools: UnrestrictedKey,
         kinds: EveryKindPasses,
         resolver: FixedResolver(vec!["203.0.113.7".parse().expect("a public address")]),
@@ -1765,8 +1765,8 @@ fn ask_the_door_as(
     let slip = GroupLeaseSlip::new();
     let decision = Units::admit(
         unit,
-        &busbar_contract::caps::UnitToken::mint(&seal),
-        &busbar_contract::caps::AdmitToken::mint(&seal),
+        &busbar_contract::caps::Pass::mint(&seal),
+        &busbar_contract::caps::Grant::<busbar_contract::caps::Admittance>::mint(&seal),
         &a2a_ctx_from(origin),
         who,
         &[],

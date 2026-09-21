@@ -30,7 +30,7 @@ use super::*;
 use crate::store_adapter::{
     speaks_new_ops, ShimClock, StoreAdapter, REPLAY_TTL_SECS, STORE_ABI_WITH_NEW_OPS,
 };
-use busbar_contract::caps::{AdminToken, KernelSeal};
+use busbar_contract::caps::{Grant, AdminVerb, KernelSeal};
 use busbar_kernel::slice::{bucket_all, CapDimension, Epoch, SliceId, SliceRequest, SliceStore};
 use busbar_unit_verbs::store::Store as VerbStore;
 use busbar_kernel_wal::Record;
@@ -38,8 +38,8 @@ use std::sync::Arc;
 
 /// The verbs unit's admin token. Minting one is what the kernel does for the length of an admin
 /// verb; a test standing in for the kernel mints its own.
-fn admin() -> AdminToken {
-    AdminToken::mint(&KernelSeal::acquire_for_kernel())
+fn admin() -> Grant<AdminVerb> {
+    Grant::<AdminVerb>::mint(&KernelSeal::acquire_for_kernel())
 }
 
 /// An adapter over a store bound to the PUBLISHED payload schema (2), built through the same

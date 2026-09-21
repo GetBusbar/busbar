@@ -5,7 +5,7 @@
 //! settles against.
 
 use busbar_contract::caps::step::MeterClassId;
-use busbar_contract::caps::{Usage, UsageError, UsageLine, UsageToken};
+use busbar_contract::caps::{Grant, Usage, UsageError, UsageLine, Consumption};
 
 use crate::usage::evidence::{KernelCounts, MeterPolicy, RetainedLocatorValues};
 use crate::usage::lane::{cross_check_lane, LaneCheck, LegDeclaration};
@@ -91,7 +91,7 @@ pub fn meter(
     kernel: &KernelCounts,
     policy: &MeterPolicy,
     declared: &LegDeclaration,
-    token: &UsageToken,
+    token: &Grant<Consumption>,
 ) -> Result<Metered, UsageError> {
     let mut lines: Vec<UsageLine> = Vec::with_capacity(retained.values().len());
     let mut disputes: Vec<Dispute> = Vec::new();

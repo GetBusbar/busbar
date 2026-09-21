@@ -562,14 +562,14 @@ fn two_units_of_one_second_are_ordered_by_the_monotonic_stamp() {
     let seam = crate::root::durability::SharedBook::over(std::sync::Arc::clone(&book));
     let who = PrincipalId::new("acct:llm");
     for arrived in [Arrived::at(EPOCH * 1_000, 7), Arrived::at(EPOCH * 1_000, 8)] {
-        let ledger_token = busbar_contract::caps::LedgerToken::mint(&seal);
+        let ledger_token = busbar_contract::caps::Grant::<busbar_contract::caps::WriteMoney>::mint(&seal);
         let accrual = busbar_contract::caps::HoldAccrual::after_terminal(who.clone(), 0, &ledger_token);
         let posted = busbar_contract::caps::Posted::settle_late(accrual, &ledger_token);
         settle(
             &seam,
             &who,
             arrived,
-            &busbar_contract::caps::DurabilityToken::mint(&seal),
+            &busbar_contract::caps::Grant::<busbar_contract::caps::DurableWrite>::mint(&seal),
             posted,
         )
         .expect("the memory-buffered journal takes it");
@@ -951,7 +951,7 @@ async fn the_exit_arm_puts_the_loops_posting_on_the_journal() {
         &crate::root::durability::SharedBook::over(std::sync::Arc::clone(&book)),
         &who,
         Arrived::at(EPOCH * 1_000, 0),
-        &busbar_contract::caps::DurabilityToken::mint(&seal),
+        &busbar_contract::caps::Grant::<busbar_contract::caps::DurableWrite>::mint(&seal),
         posted,
     )
     .expect("the memory-buffered journal takes it");

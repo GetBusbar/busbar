@@ -297,9 +297,9 @@ fn a_recorded_mutation_names_the_principal_and_not_the_credential() {
             admin_listener: true,
             kernel_verb_only: true,
         };
-        let decode_token: UnitToken<Decode> = UnitToken::mint(&seal);
+        let decode_token: Pass<Decode> = Pass::mint(&seal);
         let _ = decode(&binding, &decode_token, &ctx).into_result(&seal);
-        let verify_token: UnitToken<Verify> = UnitToken::mint(&seal);
+        let verify_token: Pass<Verify> = Pass::mint(&seal);
         let _ = verify(
             &binding,
             &verify_token,
@@ -308,7 +308,7 @@ fn a_recorded_mutation_names_the_principal_and_not_the_credential() {
         )
         .into_result(&seal);
 
-        let audit_token: UnitToken<Audit> = UnitToken::mint(&seal);
+        let audit_token: Pass<Audit> = Pass::mint(&seal);
         if completed {
             let _ =
                 audit(&binding, &log, &audit_token, &ctx, &Outcome::Completed).into_result(&seal);
@@ -381,12 +381,12 @@ fn a_money_governance_verb_is_checked_against_the_posture_the_fleet_sealed() {
             admin_listener: true,
             kernel_verb_only: true,
         };
-        let decode_token: UnitToken<Decode> = UnitToken::mint(&seal);
+        let decode_token: Pass<Decode> = Pass::mint(&seal);
         decode(&binding, &decode_token, &ctx)
             .into_result(&seal)
             .expect("the plane's table declares this operation");
         binding.units.set_granted(key, VerbScope::Full);
-        let token: UnitToken<Route> = UnitToken::mint(&seal);
+        let token: Pass<Route> = Pass::mint(&seal);
         let outcome = route(
             &binding,
             Arc::new(crate::root::kernel::RefusingStore),
@@ -682,14 +682,14 @@ struct ReplaySlots(Mutex<HashMap<(String, String), Vec<u8>>>);
 impl busbar_unit_verbs::store::Store for ReplaySlots {
     fn chain_break(
         &self,
-        _admin: &busbar_contract::caps::AdminToken,
+        _admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
     ) -> Result<(), busbar_unit_verbs::StoreError> {
         Ok(())
     }
 
     fn store_restore(
         &self,
-        _admin: &busbar_contract::caps::AdminToken,
+        _admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
         _backup_ref: &str,
     ) -> Result<(), busbar_unit_verbs::StoreError> {
         Ok(())
@@ -697,7 +697,7 @@ impl busbar_unit_verbs::store::Store for ReplaySlots {
 
     fn reseal_epoch_floor(
         &self,
-        _admin: &busbar_contract::caps::AdminToken,
+        _admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
     ) -> Result<(), busbar_unit_verbs::StoreError> {
         Ok(())
     }
@@ -1083,7 +1083,7 @@ fn a_bound_unit(request: AdminRequest) -> (AdminBinding, UnitCtx, busbar_contrac
     let seal = busbar_contract::caps::KernelSeal::acquire_for_kernel();
     // Decode is what puts the verb in the table. A cell that called `set_verb` itself would be
     // asserting over a row the loop never wrote.
-    let _ = decode(&binding, &UnitToken::mint(&seal), &ctx);
+    let _ = decode(&binding, &Pass::mint(&seal), &ctx);
     (binding, ctx, seal)
 }
 
@@ -1167,7 +1167,7 @@ fn the_admin_listener_is_exempt_from_the_cap_the_data_listener_is_refused_at() {
     // The step's own answer, for the unit that got through.
     let (binding, ctx, seal) = a_bound_unit(a_request());
     assert!(ctx.admin_listener, "the fixture is on the admin listener");
-    let record = arrival(&binding, &UnitToken::mint(&seal), &ctx)
+    let record = arrival(&binding, &Pass::mint(&seal), &ctx)
         .into_result(&seal)
         .expect("an admin unit is never refused at the gate");
     assert_eq!(record.transport_chain, vec![ADMIN_TRANSPORT]);
@@ -1200,7 +1200,7 @@ fn a_verb_the_table_never_named_has_nowhere_to_go_and_a_resolved_one_has_nowhere
         binding.units.verb(ctx.key).is_none(),
         "the fixture must be a path the table never resolved"
     );
-    let refusal = verify(&binding, &UnitToken::mint(&seal), &ctx, &principal)
+    let refusal = verify(&binding, &Pass::mint(&seal), &ctx, &principal)
         .into_result(&seal)
         .expect_err("a verb that resolved to nothing has nowhere to go");
     assert_eq!(refusal.reason(), ReasonCode::NoDestination);
@@ -1211,7 +1211,7 @@ fn a_verb_the_table_never_named_has_nowhere_to_go_and_a_resolved_one_has_nowhere
         binding.units.verb(ctx.key).is_some(),
         "the fixture must be a path the table did resolve"
     );
-    let destinations = verify(&binding, &UnitToken::mint(&seal), &ctx, &principal)
+    let destinations = verify(&binding, &Pass::mint(&seal), &ctx, &principal)
         .into_result(&seal)
         .expect("a resolved verb has somewhere to go");
     assert!(
@@ -1266,7 +1266,7 @@ fn one_admin_unit_seals_exactly_one_entry_and_a_read_seals_none() {
     let _ = audit(
         &binding,
         &legacy,
-        &UnitToken::mint(&seal),
+        &Pass::mint(&seal),
         &ctx,
         &Outcome::Completed,
     );
@@ -1294,7 +1294,7 @@ fn one_admin_unit_seals_exactly_one_entry_and_a_read_seals_none() {
     let _ = audit(
         &binding,
         &legacy,
-        &UnitToken::mint(&seal),
+        &Pass::mint(&seal),
         &ctx,
         &Outcome::Completed,
     );
@@ -1312,7 +1312,7 @@ fn one_admin_unit_seals_exactly_one_entry_and_a_read_seals_none() {
     let _ = audit_refused(
         &binding,
         &legacy,
-        &UnitToken::mint(&seal),
+        &Pass::mint(&seal),
         &ctx,
         &Refusal::new(ReasonCode::OverBudget),
     );
@@ -1339,7 +1339,7 @@ fn one_admin_unit_seals_exactly_one_entry_and_a_read_seals_none() {
     let _ = audit_refused(
         &binding,
         &legacy,
-        &UnitToken::mint(&seal),
+        &Pass::mint(&seal),
         &ctx,
         &Refusal::new(ReasonCode::Unauthenticated),
     );
@@ -1379,7 +1379,7 @@ fn each_recovery_verb_reaches_the_store_and_a_refusing_store_is_the_answer() {
     impl busbar_unit_verbs::store::Store for RecordingStore {
         fn chain_break(
             &self,
-            _admin: &busbar_contract::caps::AdminToken,
+            _admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
         ) -> Result<(), busbar_unit_verbs::StoreError> {
             self.0.lock().unwrap().push("chain_break".to_string());
             Err(busbar_unit_verbs::StoreError::Failed)
@@ -1387,7 +1387,7 @@ fn each_recovery_verb_reaches_the_store_and_a_refusing_store_is_the_answer() {
 
         fn store_restore(
             &self,
-            _admin: &busbar_contract::caps::AdminToken,
+            _admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
             backup_ref: &str,
         ) -> Result<(), busbar_unit_verbs::StoreError> {
             self.0
@@ -1399,7 +1399,7 @@ fn each_recovery_verb_reaches_the_store_and_a_refusing_store_is_the_answer() {
 
         fn reseal_epoch_floor(
             &self,
-            _admin: &busbar_contract::caps::AdminToken,
+            _admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
         ) -> Result<(), busbar_unit_verbs::StoreError> {
             self.0
                 .lock()
@@ -1489,12 +1489,12 @@ fn each_recovery_verb_reaches_the_store_and_a_refusing_store_is_the_answer() {
             admin_listener: true,
             kernel_verb_only: true,
         };
-        decode(&binding, &UnitToken::mint(&seal), &ctx)
+        decode(&binding, &Pass::mint(&seal), &ctx)
             .into_result(&seal)
             .unwrap_or_else(|_| panic!("{path} is a row the plane's table declares"));
         binding.units.set_granted(key, VerbScope::Full);
 
-        let token: UnitToken<Route> = UnitToken::mint(&seal);
+        let token: Pass<Route> = Pass::mint(&seal);
         let outcome = route(
             &binding,
             Arc::clone(&store) as Arc<dyn busbar_unit_verbs::store::Store + Send + Sync>,
@@ -1730,7 +1730,7 @@ fn the_refused_door_seals_the_refusal_that_happened() {
     let facts = audit_refused(
         &binding,
         &legacy,
-        &UnitToken::mint(&seal),
+        &Pass::mint(&seal),
         &ctx,
         &Refusal::new(ReasonCode::Unauthenticated),
     )
@@ -2274,9 +2274,9 @@ impl LegacyRowsRead for RowsThatLose {
 /// path settles through — so what the views read is what a served request would have left.
 #[cfg(feature = "root-admin")]
 fn settle_on(units: &crate::root::kernel::ProductionUnits, bucket: &str, nanos: u64) {
-    use busbar_contract::caps::{
-        step::Admit, AdmitToken, Hold, KernelSeal, LedgerToken, MeterClassId, PrincipalId,
-        QuantitySource, Usage, UsageLine, UsageToken,
+    use busbar_contract::caps::{Grant, 
+        Admittance, Hold, KernelSeal, WriteMoney, MeterClassId, PrincipalId,
+        QuantitySource, Usage, UsageLine, Consumption,
     };
     use busbar_kernel_ledger::totals::{BucketId, BucketScope, CapDimension, TotalsKey};
 
@@ -2287,7 +2287,7 @@ fn settle_on(units: &crate::root::kernel::ProductionUnits, bucket: &str, nanos: 
         BucketScope::All,
     );
     let usage = Usage::report(
-        &UsageToken::mint(&seal),
+        &Grant::<Consumption>::mint(&seal),
         vec![UsageLine {
             class: MeterClassId::new("nano_units"),
             quantity: nanos,
@@ -2297,7 +2297,7 @@ fn settle_on(units: &crate::root::kernel::ProductionUnits, bucket: &str, nanos: 
     )
     .expect("one line");
 
-    let token = busbar_contract::caps::DurabilityToken::mint(&seal);
+    let token = busbar_contract::caps::Grant::<busbar_contract::caps::DurableWrite>::mint(&seal);
     let mut durability = units.durability.lock().unwrap_or_else(|p| p.into_inner());
     durability.ledger.record_hold_opened(&key, A_DAY, nanos);
     durability
@@ -2314,13 +2314,13 @@ fn settle_on(units: &crate::root::kernel::ProductionUnits, bucket: &str, nanos: 
                 },
             },
             Hold::open(
-                &AdmitToken::<Admit>::mint(&seal),
+                &Grant::<Admittance>::mint(&seal),
                 PrincipalId::new(bucket),
                 nanos,
             ),
             u128::from(nanos),
             &usage,
-            &LedgerToken::mint(&seal),
+            &Grant::<WriteMoney>::mint(&seal),
         )
         .expect("the memory-buffered journal takes it");
 }
@@ -2438,7 +2438,7 @@ fn the_seal_and_the_marker_this_node_made_are_the_ones_it_serves() {
 
     let units = crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch));
     let seal = busbar_contract::caps::KernelSeal::acquire_for_kernel();
-    let token = busbar_contract::caps::DurabilityToken::mint(&seal);
+    let token = busbar_contract::caps::Grant::<busbar_contract::caps::DurableWrite>::mint(&seal);
     let marker = busbar_kernel_ledger::migration::MigrationMarker {
         checkpoint_seq: 0,
         node: 0,
@@ -2595,7 +2595,7 @@ fn a_read_only_credential_reaches_every_view_and_still_no_mutation() {
             admin_listener: true,
             kernel_verb_only: true,
         };
-        let token: UnitToken<Approve> = UnitToken::mint(&seal);
+        let token: Pass<Approve> = Pass::mint(&seal);
         let decision = approve(
             &binding,
             Some(granted),

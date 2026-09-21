@@ -47,7 +47,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io;
 
-use busbar_contract::caps::{DurabilityLost, DurabilityToken, StepName};
+use busbar_contract::caps::{Grant, DurabilityLost, DurableWrite, StepName};
 
 use crate::backend::{DirectoryFactory, MemoryFactory, SegmentFactory};
 use crate::record::Record;
@@ -374,7 +374,7 @@ impl Wal {
     /// first, on a fresh segment, and this one follows it.
     pub fn append_batch(
         &mut self,
-        token: &DurabilityToken,
+        token: &Grant<DurableWrite>,
         at: StepName,
         records: &[Record],
     ) -> Result<BatchAck, DurabilityLost> {

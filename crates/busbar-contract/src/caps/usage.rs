@@ -4,7 +4,8 @@
 //! What a unit used, as the usage unit reports it.
 
 use crate::caps::step::MeterClassId;
-use crate::caps::token::UsageToken;
+use crate::caps::capability::Consumption;
+use crate::caps::token::Grant;
 use crate::ClassDirection;
 
 /// The most lines one unit's usage report may carry. A bound, not a guess: the record the journal
@@ -150,7 +151,7 @@ pub struct Usage {
 
 impl Usage {
     /// Report what the unit used.
-    pub fn report(_token: &UsageToken, lines: Vec<UsageLine>) -> Result<Self, UsageError> {
+    pub fn report(_token: &Grant<Consumption>, lines: Vec<UsageLine>) -> Result<Self, UsageError> {
         if lines.len() > MAX_USAGE_LINES {
             return Err(UsageError::TooManyLines);
         }
@@ -161,7 +162,7 @@ impl Usage {
     }
 
     /// Report the kernel's own floor, because the destination reported nothing.
-    pub fn estimate(token: &UsageToken, lines: Vec<UsageLine>) -> Result<Self, UsageError> {
+    pub fn estimate(token: &Grant<Consumption>, lines: Vec<UsageLine>) -> Result<Self, UsageError> {
         let mut usage = Usage::report(token, lines)?;
         usage.estimated = true;
         Ok(usage)

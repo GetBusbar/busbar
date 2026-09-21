@@ -6,15 +6,15 @@
 use std::io;
 use std::sync::{Arc, Mutex};
 
-use busbar_contract::caps::{DurabilityToken, KernelSeal};
+use busbar_contract::caps::{Grant, DurableWrite, KernelSeal};
 
 use crate::backend::{MemoryFactory, SegmentBackend, SegmentFactory};
 use crate::record::Record;
 
 /// A durability token. In production only the kernel mints one; in a test the kernel's own seal is
 /// available, which is exactly the hole the capability crate names out loud.
-pub fn durability_token() -> DurabilityToken {
-    DurabilityToken::mint(&KernelSeal::acquire_for_kernel())
+pub fn durability_token() -> Grant<DurableWrite> {
+    Grant::<DurableWrite>::mint(&KernelSeal::acquire_for_kernel())
 }
 
 /// What a failing disk should do on its next operation.

@@ -22,9 +22,9 @@
 //! and a checksum, the reader stops at the first record that does not check out, and the tail is
 //! truncated there. A torn tail is normal. A torn record in the MIDDLE is not, and says so.
 
-use busbar_contract::caps::{
-    Canary, Hold, LedgerToken, Outcome, Posted, PrincipalId, QuantitySource, ReasonCode,
-    RecoveryToken, StepName, UnitKey, Usage, UsageLine, UsageToken,
+use busbar_contract::caps::{Grant, 
+    Canary, Hold, WriteMoney, Outcome, Posted, PrincipalId, QuantitySource, ReasonCode,
+    Recover, StepName, UnitKey, Usage, UsageLine, Consumption,
 };
 
 use crate::slice::Epoch;
@@ -58,7 +58,7 @@ pub struct HoldRecord {
 /// it eventually produces is marked without anyone having to remember to mark it.
 pub fn materialize(kernel: &Kernel, record: &HoldRecord) -> Hold {
     Hold::materialize(
-        &RecoveryToken::mint(kernel.seal()),
+        &Grant::<Recover>::mint(kernel.seal()),
         record.principal.clone(),
         record.reserved,
         record.checkpointed,
@@ -81,7 +81,7 @@ pub fn settle(kernel: &Kernel, record: &HoldRecord, canary: &Canary) -> Posted {
     let (amount, flags) = settle_amount(&outcome, &evidence);
     // One line, and the record holds sixteen: this report is within the bound by construction.
     let usage = Usage::estimate(
-        &UsageToken::mint(kernel.seal()),
+        &Grant::<Consumption>::mint(kernel.seal()),
         vec![UsageLine {
             class: KERNEL_ACCRUAL_CLASS,
             quantity: amount,
@@ -100,7 +100,7 @@ pub fn settle(kernel: &Kernel, record: &HoldRecord, canary: &Canary) -> Posted {
         hold,
         u128::from(amount),
         &usage,
-        &LedgerToken::mint(kernel.seal()),
+        &Grant::<WriteMoney>::mint(kernel.seal()),
     )
     .flagged(flags);
     canary.settled();

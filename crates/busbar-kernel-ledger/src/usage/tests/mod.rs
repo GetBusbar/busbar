@@ -5,7 +5,7 @@
 //! metering series.
 
 use busbar_contract::caps::step::MeterClassId;
-use busbar_contract::caps::{KernelSeal, Usage, UsageLine, UsageToken};
+use busbar_contract::caps::{Grant, KernelSeal, Usage, UsageLine, Consumption};
 
 use crate::usage::{
     Direction, KernelCounts, KernelLine, LocatedValue, LocatorPtr, QuantitySource,
@@ -26,9 +26,9 @@ pub(crate) const OUTPUT: &str = "output";
 /// A report can only be built by the usage unit holding its own token, which is the property this
 /// crate exists to preserve; a test therefore needs one. The seal is confined to the kernel in real
 /// code, and these lines are the same test-only exception the capability crate's own tests take.
-pub(crate) fn token() -> UsageToken {
+pub(crate) fn token() -> Grant<Consumption> {
     let seal = KernelSeal::acquire_for_kernel();
-    UsageToken::mint(&seal)
+    Grant::<Consumption>::mint(&seal)
 }
 
 /// A located value: the destination reported this figure at a declared place in its payload.

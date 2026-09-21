@@ -71,7 +71,7 @@
 
 use std::collections::VecDeque;
 
-use busbar_contract::caps::{DurabilityLost, DurabilityToken, StepName};
+use busbar_contract::caps::{Grant, DurabilityLost, DurableWrite, StepName};
 use sha2::{Digest as _, Sha256};
 
 use crate::record::Record;
@@ -909,7 +909,7 @@ impl Journal {
     /// and re-offered on the next append, up to the bound.
     pub fn append(
         &mut self,
-        token: &DurabilityToken,
+        token: &Grant<DurableWrite>,
         at: StepName,
         entries: &[Entry],
     ) -> Result<JournalAck, DurabilityLost> {

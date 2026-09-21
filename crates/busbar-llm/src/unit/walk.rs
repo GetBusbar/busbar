@@ -30,7 +30,7 @@ use axum::body::Bytes;
 use axum::http::HeaderMap;
 use axum::response::Response;
 
-use busbar_contract::caps::{Decision, Meter, Outcome, Route, UnitToken, UsageToken};
+use busbar_contract::caps::{Grant, Decision, Meter, Outcome, Route, Pass, Consumption};
 use busbar_substrate::plane_host::{EngineHost, EngineTablesView};
 
 use crate::unit::admit::Admitted;
@@ -536,7 +536,7 @@ impl Walk {
     /// still has to say something if it is.
     pub fn audit(
         &self,
-        token: &UnitToken<busbar_contract::caps::step::Audit>,
+        token: &Pass<busbar_contract::caps::step::Audit>,
         ctx: &crate::unit::audit::AuditCtx<'_>,
         fallback: impl FnOnce() -> Served,
     ) -> Decision<busbar_contract::caps::step::Audit> {
@@ -552,7 +552,7 @@ impl Walk {
     /// is the refund. See [`Walk::audit`] for why the bytes are fetched here rather than passed in.
     pub fn audit_refused(
         &self,
-        token: &UnitToken<busbar_contract::caps::step::Audit>,
+        token: &Pass<busbar_contract::caps::step::Audit>,
         ctx: &crate::unit::audit::AuditCtx<'_>,
         fallback: impl FnOnce() -> Served,
     ) -> Decision<busbar_contract::caps::step::Audit> {
@@ -573,7 +573,7 @@ impl Walk {
     /// in-flight table's rather than a thread pool's. Dropping this future is what a client going
     /// away does to the upstream leg, and it is what the loop does to it when the caller drops the
     /// unit. What the walk SEES travels back here; the sealing happens here, where the token is.
-    pub async fn route(&self, token: &UnitToken<Route>, destination: &str) -> Decision<Route> {
+    pub async fn route(&self, token: &Pass<Route>, destination: &str) -> Decision<Route> {
         let (arrived, sink) = {
             let mut carry = self.lock();
             (carry.arrived.take(), carry.sink.take())
@@ -668,7 +668,7 @@ impl Walk {
     ///
     /// Nothing on this side names a rate: the step assembles what the unit consumed and hands it
     /// back on the report, and the side that holds the card is the one that turns it into an amount.
-    pub fn meter(&self, token: &UnitToken<Meter>, usage: &UsageToken) -> Decision<Meter> {
+    pub fn meter(&self, token: &Pass<Meter>, usage: &Grant<Consumption>) -> Decision<Meter> {
         let mut carry = self.lock();
         let charged = carry.charged;
         let Some(facts) = carry.facts.as_ref() else {

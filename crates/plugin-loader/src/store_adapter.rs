@@ -78,7 +78,7 @@
 use crate::DynStore;
 use busbar_api::Store as AbiStore;
 use busbar_api::{StoreError, UNIT_CACHE_READ, UNIT_CACHE_WRITE, UNIT_INPUT, UNIT_OUTPUT};
-use busbar_contract::caps::AdminToken;
+use busbar_contract::caps::{AdminVerb, Grant};
 use busbar_kernel::slice::{Epoch, SliceError, SliceGrant, SliceId, SliceRequest, SliceStore};
 use busbar_kernel_ledger::legacy::{LegacyHead, LegacyMigrationSource};
 use busbar_kernel_ledger::migration::{
@@ -805,7 +805,7 @@ impl SliceStore for StoreAdapter {
 impl VerbStore for StoreAdapter {
     /// Break the journal chain. On a deployment whose journal is memory-buffered, the chain is the
     /// node's own, so the break is recorded here and the node's next entry starts a new one.
-    fn chain_break(&self, _admin: &AdminToken) -> Result<(), VerbStoreError> {
+    fn chain_break(&self, _admin: &Grant<AdminVerb>) -> Result<(), VerbStoreError> {
         let mut recovery = self.inner.shim.recovery();
         recovery.chain_breaks = recovery.chain_breaks.saturating_add(1);
         Ok(())
@@ -816,7 +816,7 @@ impl VerbStore for StoreAdapter {
     /// that a restore was taken and reseal the node-local state that depends on it.
     ///
     /// The sealed replay cache deliberately survives — see the module preamble.
-    fn store_restore(&self, _admin: &AdminToken, backup_ref: &str) -> Result<(), VerbStoreError> {
+    fn store_restore(&self, _admin: &Grant<AdminVerb>, backup_ref: &str) -> Result<(), VerbStoreError> {
         let mut recovery = self.inner.shim.recovery();
         recovery.restores = recovery.restores.saturating_add(1);
         recovery.last_restore = Some(backup_ref.to_string());
@@ -835,7 +835,7 @@ impl VerbStore for StoreAdapter {
     }
 
     /// Reseal the epoch floor. The shim has one epoch, so the floor becomes it.
-    fn reseal_epoch_floor(&self, _admin: &AdminToken) -> Result<(), VerbStoreError> {
+    fn reseal_epoch_floor(&self, _admin: &Grant<AdminVerb>) -> Result<(), VerbStoreError> {
         let mut recovery = self.inner.shim.recovery();
         recovery.epoch_floor = SHIM_EPOCH.0;
         Ok(())

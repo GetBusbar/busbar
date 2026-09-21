@@ -118,10 +118,10 @@ fn accrued(
 }
 
 /// A kernel seal for the length of one test.
-fn tokens() -> (KernelSeal, UnitToken<Meter>, UsageToken) {
+fn tokens() -> (KernelSeal, Pass<Meter>, Grant<Consumption>) {
     let seal = KernelSeal::acquire_for_kernel();
-    let unit = UnitToken::mint(&seal);
-    let usage = UsageToken::mint(&seal);
+    let unit = Pass::mint(&seal);
+    let usage = Grant::<Consumption>::mint(&seal);
     (seal, unit, usage)
 }
 

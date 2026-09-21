@@ -61,7 +61,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
 use serde_json::Value;
 
-use busbar_contract::caps::{step::Route, Decision, LaneId, ReasonCode, Refusal, RoutePlan, UnitToken};
+use busbar_contract::caps::{step::Route, Decision, LaneId, ReasonCode, Refusal, RoutePlan, Pass};
 use busbar_contract::{DestinationFacts, Leg, UpstreamAddress};
 use busbar_substrate::observability::HOTPATH_LEVEL;
 use busbar_substrate::plane_host::EngineHost;
@@ -236,12 +236,12 @@ pub(crate) struct RouteParts {
 /// The body is [`route_parts`]; this is the sealing, and it is the whole of the difference between
 /// them. Keeping the two apart is what lets a driver run the walk on the runtime and seal the answer
 /// on the thread the loop's token was minted on, without either half learning about the other's.
-pub(crate) async fn route(unit_token: &UnitToken<Route>, input: RouteInput<'_>) -> Routed {
+pub(crate) async fn route(unit_token: &Pass<Route>, input: RouteInput<'_>) -> Routed {
     seal(unit_token, route_parts(input).await)
 }
 
 /// Seal what the walk saw with the step's own token.
-pub(crate) fn seal(unit_token: &UnitToken<Route>, parts: RouteParts) -> Routed {
+pub(crate) fn seal(unit_token: &Pass<Route>, parts: RouteParts) -> Routed {
     let RouteParts {
         refusal,
         plan,

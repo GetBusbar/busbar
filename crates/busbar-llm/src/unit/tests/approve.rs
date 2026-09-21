@@ -45,7 +45,7 @@ fn caller() -> PrincipalId {
 fn with_no_seat_installed_the_step_is_a_no_op_exactly_as_the_live_path_is() {
     let seal = seal();
     let facts = approve(
-        &UnitToken::<Approve>::mint(&seal),
+        &Pass::<Approve>::mint(&seal),
         &caller(),
         &[],
         &[], // today's deployment: nothing is seated here
@@ -65,7 +65,7 @@ fn a_seat_that_abstains_leaves_the_unit_exactly_as_it_found_it() {
     let seal = seal();
     let never = Never;
     let seats: [&dyn VetoSeat; 1] = [&never];
-    let facts = approve(&UnitToken::<Approve>::mint(&seal), &caller(), &[], &seats)
+    let facts = approve(&Pass::<Approve>::mint(&seal), &caller(), &[], &seats)
         .into_result(&seal)
         .expect("an abstaining gate refuses nothing");
     assert_eq!(facts, ScopeFacts::default());
@@ -78,7 +78,7 @@ fn a_veto_refuses_at_approve_which_is_before_the_door() {
     let seal = seal();
     let always = Always;
     let seats: [&dyn VetoSeat; 1] = [&always];
-    let refusal = approve(&UnitToken::<Approve>::mint(&seal), &caller(), &[], &seats)
+    let refusal = approve(&Pass::<Approve>::mint(&seal), &caller(), &[], &seats)
         .into_result(&seal)
         .expect_err("the seat vetoed");
     assert_eq!(refusal.reason(), ReasonCode::HookVeto);
@@ -97,7 +97,7 @@ fn the_first_veto_wins_and_nothing_after_it_is_consulted() {
     let always = Always;
     let after = Recording(std::cell::Cell::new(false));
     let seats: [&dyn VetoSeat; 2] = [&always, &after];
-    let refusal = approve(&UnitToken::<Approve>::mint(&seal), &caller(), &[], &seats)
+    let refusal = approve(&Pass::<Approve>::mint(&seal), &caller(), &[], &seats)
         .into_result(&seal)
         .expect_err("the first seat vetoed");
     assert_eq!(refusal.reason(), ReasonCode::HookVeto);
@@ -112,7 +112,7 @@ fn a_seat_before_the_vetoing_one_is_consulted() {
     let before = Recording(std::cell::Cell::new(false));
     let always = Always;
     let seats: [&dyn VetoSeat; 2] = [&before, &always];
-    let _ = approve(&UnitToken::<Approve>::mint(&seal), &caller(), &[], &seats)
+    let _ = approve(&Pass::<Approve>::mint(&seal), &caller(), &[], &seats)
         .into_result(&seal)
         .expect_err("the second seat vetoed");
     assert!(before.0.get(), "the seat before the veto was asked");
@@ -130,7 +130,7 @@ fn the_closed_refusal_set_is_exactly_the_veto() {
         vec![&always as &dyn VetoSeat],
         vec![&always as &dyn VetoSeat, &always as &dyn VetoSeat],
     ] {
-        let d = approve(&UnitToken::<Approve>::mint(&seal), &caller(), &[], &seats);
+        let d = approve(&Pass::<Approve>::mint(&seal), &caller(), &[], &seats);
         if let Err(refusal) = d.into_result(&seal) {
             assert_eq!(refusal.reason(), ReasonCode::HookVeto);
         }

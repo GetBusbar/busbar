@@ -638,7 +638,7 @@ async fn the_transport_key_unit_is_what_gives_a_listener_its_key() {
         &source,
         &journal,
         &*server,
-        &busbar_contract::caps::TransportKeyToken::mint(&seal),
+        &busbar_contract::caps::Grant::<busbar_contract::caps::KeyHandle>::mint(&seal),
         busbar_unit_transport_key::Slot {
             index: 0,
             fingerprint: "fixture",
@@ -691,7 +691,7 @@ async fn the_transport_key_unit_is_what_gives_a_listener_its_key() {
     let client = StdArc::new(TlsTransport::new());
     let client_keys = busbar_unit_transport_key::provision_client(
         &*client,
-        &busbar_contract::caps::TransportKeyToken::mint(&seal),
+        &busbar_contract::caps::Grant::<busbar_contract::caps::KeyHandle>::mint(&seal),
         busbar_unit_transport_key::Slot {
             index: 0,
             fingerprint: "fixture-client",
@@ -1172,7 +1172,7 @@ mod cg_49_sni {
             &source,
             &journal,
             &*server,
-            &busbar_contract::caps::TransportKeyToken::mint(&seal),
+            &busbar_contract::caps::Grant::<busbar_contract::caps::KeyHandle>::mint(&seal),
             Slot {
                 index: 0,
                 fingerprint: "fixture",

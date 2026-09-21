@@ -9,9 +9,9 @@ use axum::body::Bytes;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
 
-use busbar_contract::caps::{
-    Admission, AdmitToken, Approve, Audit, Authenticate, KernelSeal, OpClassId, Outcome,
-    PrincipalId, Route, TrustToken, UnitToken, UsageToken, VerifiedDestination, Verify,
+use busbar_contract::caps::{Grant, 
+    Admission, Admittance, Approve, Audit, Authenticate, KernelSeal, OpClassId, Outcome,
+    PrincipalId, Route, Dial, Pass, Consumption, VerifiedDestination, Verify,
 };
 use busbar_core::proxy::reqlog::REQUESTS;
 use busbar_substrate::plane_host::EngineTablesView;
@@ -542,7 +542,7 @@ fn sealed_destinations(seal: &KernelSeal, lane: &str) -> Vec<VerifiedDestination
         .expect("the rehearsal's interner is never poisoned")
         .lane(lane)
         .expect("the rehearsal's vocabulary is open and holds this fixture's lane");
-    vec![VerifiedDestination::seal(&TrustToken::mint(seal), lane)]
+    vec![VerifiedDestination::seal(&Grant::<Dial>::mint(seal), lane)]
 }
 
 /// The one operation class these fixtures are, as the Audit step's facts name it.
@@ -582,7 +582,7 @@ fn refused_before_a_destination(
     resp: Response,
 ) -> Response {
     audit::audit_refused(
-        &UnitToken::mint(seal),
+        &Pass::mint(seal),
         &audit_ctx(
             host,
             gov,
@@ -749,7 +749,7 @@ async fn drive(
     // plane — so the principal is always established. It is still called, and its answer is still
     // opened, because the chain is about what each step ACTUALLY returns.
     let principal: PrincipalId = {
-        let token: UnitToken<Authenticate> = UnitToken::mint(seal);
+        let token: Pass<Authenticate> = Pass::mint(seal);
         let decision = authenticate::authenticate(&token, gov);
         match decision.into_result(seal) {
             Ok(facts) => facts
@@ -772,7 +772,7 @@ async fn drive(
     let destinations = sealed_destinations(seal, &configured_lane);
     let view = verify::HostPoolView::new(&**host, &**rt, gov.key.as_deref());
     let destinations = {
-        let token: UnitToken<Verify> = UnitToken::mint(seal);
+        let token: Pass<Verify> = Pass::mint(seal);
         let answer = verify::verify(&token, &view, &model, &principal, destinations);
         // The step's own named refusal, carried back beside the decision — the guards are read once
         // and the wire triple is the step's, not the driver's.
@@ -789,7 +789,7 @@ async fn drive(
                 // from, so that is the pool the record names — the same bound the live
                 // pre-admission guard applies to the same string.
                 return audit::audit_refused(
-                    &UnitToken::mint(seal),
+                    &Pass::mint(seal),
                     &audit_ctx(host, gov, &model, started, charged_at),
                     audit::Served::of(audit::render_refusal(PROTO, &outcome)),
                 )
@@ -803,7 +803,7 @@ async fn drive(
     // No seat is installed on any deployment today, so the step is a no-op — and it is still
     // called, because "nothing is seated" is a fact about config, not a licence to skip a step.
     {
-        let token: UnitToken<Approve> = UnitToken::mint(seal);
+        let token: Pass<Approve> = Pass::mint(seal);
         let decision = approve::approve(&token, &principal, &destinations, &[]);
         if decision.into_result(seal).is_err() {
             unreachable!("no veto seat is installed, so this step cannot refuse");
@@ -812,8 +812,8 @@ async fn drive(
 
     // ---- STEP 4, ADMIT ----------------------------------------------------------------------
     let admitted = admit::admit(
-        &UnitToken::mint(seal),
-        &AdmitToken::mint(seal),
+        &Pass::mint(seal),
+        &Grant::<Admittance>::mint(seal),
         &admit::AdmitCtx {
             host,
             gov,
@@ -836,7 +836,7 @@ async fn drive(
     if let Some(resp) = admitted.refusal {
         let _ = admitted.decision;
         return audit::audit_refused(
-            &UnitToken::mint(seal),
+            &Pass::mint(seal),
             &audit_ctx(host, gov, &model, started, charged_at),
             audit::Served::of(resp),
         )
@@ -858,7 +858,7 @@ async fn drive(
     // that fed the step a `None` the root does not feed it would be rehearsing a different unit.
     let meter_half = admitted.sink.clone();
     let routed = route::route(
-        &UnitToken::mint(seal),
+        &Pass::mint(seal),
         route::RouteInput {
             host,
             rt,
@@ -904,8 +904,8 @@ async fn drive(
     // the money actually comes to is the composition root's, proven where the card is. The hold
     // below reaches no exit path here anyway.
     let metered = meter::meter(
-        &UnitToken::mint(seal),
-        &UsageToken::mint(seal),
+        &Pass::mint(seal),
+        &Grant::<Consumption>::mint(seal),
         &ctx,
         hold,
         &Outcome::Completed,
@@ -934,7 +934,7 @@ async fn drive(
     // own answer says which of the two ends this was; both end here.
     let _ = route_decision;
     let audited = audit::audit(
-        &UnitToken::mint(seal),
+        &Pass::mint(seal),
         &audit_ctx(host, gov, &effective, started, charged_at),
         audit::Served::of(response),
         charged,
@@ -1108,7 +1108,7 @@ async fn a_stream_audited_at_its_end_seals_the_class_the_tap_reported() {
         let seal = kernel_seal();
         let body = request_body(fixture);
         let routed = route::route(
-            &UnitToken::mint(&seal),
+            &Pass::mint(&seal),
             route::RouteInput {
                 host: &host,
                 rt: &rt,
@@ -1142,7 +1142,7 @@ async fn a_stream_audited_at_its_end_seals_the_class_the_tap_reported() {
         let drained = Response::from_parts(parts, axum::body::Body::from(bytes));
 
         let audited = audit::audit(
-            &UnitToken::mint(&seal),
+            &Pass::mint(&seal),
             &audit_ctx(&host, &gov, POOL, Instant::now(), rig.charged_at),
             audit::Served::of(drained),
             true,
@@ -1427,7 +1427,7 @@ async fn the_live_carry_hands_the_meter_step_the_meter_half_the_walk_took() {
     walk.keep_arrival(arrived);
 
     let principal: PrincipalId = {
-        let token: UnitToken<Authenticate> = UnitToken::mint(&seal);
+        let token: Pass<Authenticate> = Pass::mint(&seal);
         authenticate::authenticate(&token, &gov)
             .into_result(&seal)
             .ok()
@@ -1446,8 +1446,8 @@ async fn the_live_carry_hands_the_meter_step_the_meter_half_the_walk_took() {
     // unit's reservation and is what the loop puts in its own cell, so it is dropped here: this test
     // is not a loop and has no cell to put one in.
     let admitted = admit::admit(
-        &UnitToken::mint(&seal),
-        &AdmitToken::mint(&seal),
+        &Pass::mint(&seal),
+        &Grant::<Admittance>::mint(&seal),
         &admit::AdmitCtx {
             host: &host,
             gov: &gov,
@@ -1465,7 +1465,7 @@ async fn the_live_carry_hands_the_meter_step_the_meter_half_the_walk_took() {
     let _admission = walk.take_admission(admitted);
 
     // STEP 5 and STEP 6, through the carry.
-    let routed = walk.route(&UnitToken::mint(&seal), &model).await;
+    let routed = walk.route(&Pass::mint(&seal), &model).await;
     assert!(
         routed.into_result(&seal).is_ok(),
         "the fixture's destination resolves and the walk dispatches"
@@ -1479,7 +1479,7 @@ async fn the_live_carry_hands_the_meter_step_the_meter_half_the_walk_took() {
     // THE STEP BUILDS ITS REPORT, and the carry keeps it — the whole instrument here, because the
     // arm that builds it is the one that used to be unreachable: a step bound with no meter half
     // keeps nothing, and that None is what a dead arm and a live one both used to leave behind.
-    let decision = walk.meter(&UnitToken::mint(&seal), &UsageToken::mint(&seal));
+    let decision = walk.meter(&Pass::mint(&seal), &Grant::<Consumption>::mint(&seal));
     assert!(decision.into_result(&seal).is_ok(), "the step proceeds");
 
     let report = walk
@@ -1535,7 +1535,7 @@ async fn the_verify_refusal_carries_the_wire_triple_the_guards_named() {
     let view = verify::HostPoolView::new(&*host, &*rt, gov.key.as_deref());
     let seal = kernel_seal();
     let answer = verify::verify(
-        &UnitToken::mint(&seal),
+        &Pass::mint(&seal),
         &view,
         POOL,
         &PrincipalId::new(rig.key.id.clone()),
@@ -1799,7 +1799,7 @@ async fn the_refused_terminal_labels_a_configured_pool_with_its_name() {
 
 /// GAP 8, CLOSED — ROUTE and AUDIT are on the token seam.
 ///
-/// Both now take a `UnitToken<S>` and answer with a `Decision<S>` over the step's own facts:
+/// Both now take a `Pass<S>` and answer with a `Decision<S>` over the step's own facts:
 /// `route::route` with a `RoutePlan`, `audit::audit` and `audit::audit_refused` with `AuditFacts`.
 /// The response each of them still carries rides beside the decision rather than instead of it, the
 /// way the admit step's rendered refusal already does — a plane's steps decide, and the last of
@@ -1825,7 +1825,7 @@ async fn route_and_audit_are_on_the_token_seam() {
     // leg names the lane this deployment CONFIGURED — the runtime name off the tables, interned
     // once through the node's own registration, the same bridge the verified set crosses.
     let body = request_body(Fixture::BufferedOk);
-    let token: UnitToken<Route> = UnitToken::mint(&seal);
+    let token: Pass<Route> = Pass::mint(&seal);
     let routed = route::route(
         &token,
         route::RouteInput {
@@ -1863,7 +1863,7 @@ async fn route_and_audit_are_on_the_token_seam() {
 
     // AUDIT, over those same bytes: a proceed carrying what the plane says the unit was and how it
     // says it ended.
-    let token: UnitToken<Audit> = UnitToken::mint(&seal);
+    let token: Pass<Audit> = Pass::mint(&seal);
     let audited = audit::audit(
         &token,
         &audit_ctx(&host, &gov, POOL, Instant::now(), rig.charged_at),
@@ -1892,7 +1892,7 @@ async fn route_and_audit_are_on_the_token_seam() {
     // ROUTE again, on a destination that resolves to nothing: a refusal stamped with its own step,
     // which is the half of the seam a proceed cannot show.
     let body = request_body(Fixture::UnknownModel);
-    let token: UnitToken<Route> = UnitToken::mint(&seal);
+    let token: Pass<Route> = Pass::mint(&seal);
     let missed = route::route(
         &token,
         route::RouteInput {

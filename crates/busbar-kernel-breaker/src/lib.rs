@@ -43,7 +43,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
 use budget::LifetimeBudget;
-use busbar_contract::caps::{Route, UnitToken};
+use busbar_contract::caps::{Route, Pass};
 use cell::{BreakerCell, BreakerState as CellState, BreakerVerdict, DeniedBy, ProbeAdmit};
 use cfg::BreakerCfg;
 use classify::Diagnostics;
@@ -141,7 +141,7 @@ mod sealed {
 /// The breaker unit's sealed trait shape (`docs/design/ARCHITECTURE.md` §3.1: `Breaker::observe/
 /// state`). Sealed on a private supertrait so no plugin crate can implement it — only
 /// [`BreakerUnit`] does. Like the design's other seven token-taking unit traits, every call also
-/// takes a `&UnitToken<Route>` (`busbar-caps`'s capability token): the proof that the loop is at
+/// takes a `&Pass<Route>` (`busbar-caps`'s capability token): the proof that the loop is at
 /// the route step for this unit right now. The token is minted fresh per step call and taken by
 /// reference, never stored, so this trait cannot be driven outside the step it was lent for.
 pub trait Breaker: sealed::Sealed {
@@ -158,7 +158,7 @@ pub trait Breaker: sealed::Sealed {
         outcome: Outcome,
         cfg: &BreakerCfg,
         now: u64,
-        token: &UnitToken<Route>,
+        token: &Pass<Route>,
     ) -> bool;
 
     /// Side-effect-free: this `(pool, destination)` cell's current [`LaneState`], folding in the
@@ -169,7 +169,7 @@ pub trait Breaker: sealed::Sealed {
         pool: &str,
         destination: DestinationId,
         now: u64,
-        token: &UnitToken<Route>,
+        token: &Pass<Route>,
     ) -> LaneState;
 }
 
@@ -531,7 +531,7 @@ impl<J: JournalSink, D: Diagnostics> Breaker for BreakerUnit<J, D> {
         outcome: Outcome,
         cfg: &BreakerCfg,
         now: u64,
-        _token: &UnitToken<Route>,
+        _token: &Pass<Route>,
     ) -> bool {
         match outcome {
             Outcome::RecordNothing => false,
@@ -584,7 +584,7 @@ impl<J: JournalSink, D: Diagnostics> Breaker for BreakerUnit<J, D> {
         pool: &str,
         destination: DestinationId,
         now: u64,
-        _token: &UnitToken<Route>,
+        _token: &Pass<Route>,
     ) -> LaneState {
         if self.budget_exhausted(destination) {
             return LaneState::BudgetExhausted;

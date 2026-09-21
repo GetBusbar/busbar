@@ -23,7 +23,7 @@
 //! frame the answer belongs to that member: the walk returns it, and a later failure ends the
 //! answer rather than starting another attempt.
 
-use busbar_contract::caps::{Route, UnitToken};
+use busbar_contract::caps::{Route, Pass};
 use busbar_contract::{Ctx, Plane, Transport, Unit, VerifiedDestination};
 
 use crate::attempt::{attempt, AttemptInput, AttemptOutcome, Hop};
@@ -40,10 +40,10 @@ pub struct RouteRequest<'a> {
     /// The breaker unit.
     pub breaker: &'a dyn Breaker,
     /// The capability token proving the loop is at the route step for this unit right now
-    /// (`busbar-caps`'s `&UnitToken<Route>`): a unit may only act at the step its token names, and
+    /// (`busbar-caps`'s `&Pass<Route>`): a unit may only act at the step its token names, and
     /// the token is the proof of that rather than a convention. Threaded down to
     /// every [`crate::ports::Breaker::observe`] call the walk and its terminals make.
-    pub token: &'a UnitToken<Route>,
+    pub token: &'a Pass<Route>,
     /// The pool's permit store.
     pub capacity: &'a dyn Capacity,
     /// The write-ahead journal.

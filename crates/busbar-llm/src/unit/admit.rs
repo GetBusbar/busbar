@@ -62,9 +62,9 @@
 use std::sync::Arc;
 
 use axum::response::Response;
-use busbar_contract::caps::{
-    step::Admit, Admission, AdmitToken, Decision, Hold, PrincipalId, ReasonCode, Refusal,
-    UnitToken, VerifiedDestination,
+use busbar_contract::caps::{Grant, 
+    step::Admit, Admission, Admittance, Decision, Hold, PrincipalId, ReasonCode, Refusal,
+    Pass, VerifiedDestination,
 };
 use busbar_substrate::plane_host::EngineHost;
 
@@ -137,8 +137,8 @@ impl Admitted {
 /// everything else — the two tokens, the principal, the verified set, the sealed answer — is the
 /// kernel's own vocabulary, named at `busbar-caps` where a plugin is entitled to name it.
 pub type AdmitStep = for<'a, 'b> fn(
-    &UnitToken<Admit>,
-    &AdmitToken<Admit>,
+    &Pass<Admit>,
+    &Grant<Admittance>,
     &AdmitCtx<'a>,
     &PrincipalId,
     &'b [VerifiedDestination],
@@ -150,8 +150,8 @@ pub type AdmitStep = for<'a, 'b> fn(
 /// destination this plane verifies is an upstream lane, so a non-empty set is that fact; the kind
 /// tag that would say so directly is not on a verified destination yet.
 pub fn admit(
-    unit_token: &UnitToken<Admit>,
-    admit_token: &AdmitToken<Admit>,
+    unit_token: &Pass<Admit>,
+    admit_token: &Grant<Admittance>,
     ctx: &AdmitCtx<'_>,
     principal: &PrincipalId,
     destinations: &[VerifiedDestination],
@@ -199,7 +199,7 @@ pub fn admit(
 /// status, the `kind`, the message and the retry hint an SDK reads — is the response itself, which
 /// is why it is carried rather than re-derived. The retry hint is lifted onto the refusal so the
 /// record carries the same number the wire does.
-fn refused(unit_token: &UnitToken<Admit>, resp: Response) -> Admitted {
+fn refused(unit_token: &Pass<Admit>, resp: Response) -> Admitted {
     let mut refusal = Refusal::new(ReasonCode::OverBudget);
     if let Some(secs) = retry_after_secs(&resp) {
         refusal = refusal.retry_after(secs);

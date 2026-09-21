@@ -55,8 +55,8 @@
 //!
 //! ## Two seams the kernel has not opened, stated rather than worked around
 //!
-//! - **The trust unit's seal.** `Trust::verify` requires a `TrustToken` as well as the step's own
-//!   `UnitToken<Verify>`, and the kernel mints an admit token and a transport-key token publicly
+//! - **The trust unit's seal.** `Trust::verify` requires a `Grant<Dial>` as well as the step's own
+//!   `Pass<Verify>`, and the kernel mints an admit token and a transport-key token publicly
 //!   but not a trust token. So the token is carried into [`A2aBindings`] by whoever holds the seal
 //!   rather than minted here. The judgement itself — the guards, the network guard, the per-kind
 //!   rules — is [`A2aUnits::verified_lanes`], which needs no token and is testable without one.
@@ -68,10 +68,10 @@
 
 use std::sync::{Arc, Mutex};
 
-use busbar_contract::caps::{
-    Admit, AdmitToken, Approve, Arrival, ArrivalRecord, Audit, AuditFacts, Authenticate, Decision,
+use busbar_contract::caps::{Grant, 
+    Admit, Admittance, Approve, Arrival, ArrivalRecord, Audit, AuditFacts, Authenticate, Decision,
     Decode, Encode, Meter, Outcome, PrincipalId, ReasonCode, Refusal, Route, RoutePlan, ScopeFacts,
-    TrustToken, UnitToken, UsageToken, VerifiedDestination, Verify,
+    Dial, Pass, Consumption, VerifiedDestination, Verify,
 };
 use busbar_contract::dest::{DestinationFacts, Leg};
 use busbar_contract::ids::{ClaimKey, LaneId, OpClassId, RecordSchemaId};
@@ -608,7 +608,7 @@ pub struct A2aBindings<'r, S: CellStore> {
     pub auth_bindings: &'r crate::root::kernel::auth_bindings::AuthBindings,
     /// The seal the trust unit's verified destinations are minted under. Carried rather than minted
     /// because the kernel mints it and this is not the kernel.
-    pub trust_token: &'r TrustToken,
+    pub trust_token: &'r Grant<Dial>,
     /// What the deployment says about its pools and this caller's key.
     pub pools: &'r dyn PoolView,
     /// What the per-kind destination rules consult.
@@ -803,7 +803,7 @@ impl<'r, S: CellStore> A2aUnits<'r, S> {
         &self,
         principal: &PrincipalId,
         posted: busbar_contract::caps::Posted,
-        token: &busbar_contract::caps::DurabilityToken,
+        token: &busbar_contract::caps::Grant<busbar_contract::caps::DurableWrite>,
     ) -> Result<crate::root::durability::Settled, busbar_contract::caps::DurabilityLost> {
         let key = Self::balance(principal);
         let at = crate::root::durability::Settling {
@@ -1093,16 +1093,16 @@ fn auth_request(draft: &A2aDraft, now: u64) -> AuthRequest<'_> {
 /// the field that makes this matter — a copy that re-derived it from the plane's own claims would
 /// agree with itself while the step quietly stopped reporting the layer the bytes actually came in
 /// on.
-fn arrival_answer(draft: &A2aDraft, token: &UnitToken<Arrival>) -> Decision<Arrival> {
+fn arrival_answer(draft: &A2aDraft, token: &Pass<Arrival>) -> Decision<Arrival> {
     Decision::proceed(token, draft.arrival.clone())
 }
 
 impl<S: CellStore> Units for A2aUnits<'_, S> {
-    fn arrival(&self, token: &UnitToken<Arrival>, _ctx: &UnitCtx) -> Decision<Arrival> {
+    fn arrival(&self, token: &Pass<Arrival>, _ctx: &UnitCtx) -> Decision<Arrival> {
         arrival_answer(&self.draft, token)
     }
 
-    fn decode(&self, token: &UnitToken<Decode>, _ctx: &UnitCtx) -> Decision<Decode> {
+    fn decode(&self, token: &Pass<Decode>, _ctx: &UnitCtx) -> Decision<Decode> {
         // The plane read the bytes; this is its answer. A body carrying a method this plane does
         // not name is a refusal at the step that read it, not a guess at the nearest class.
         match self.draft.op {
@@ -1113,7 +1113,7 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
 
     fn authenticate(
         &self,
-        token: &UnitToken<Authenticate>,
+        token: &Pass<Authenticate>,
         _ctx: &UnitCtx,
     ) -> Decision<Authenticate> {
         let request = auth_request(&self.draft, self.bindings.now);
@@ -1136,8 +1136,8 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
 
     fn verify(
         &self,
-        token: &UnitToken<Verify>,
-        trust: &TrustToken,
+        token: &Pass<Verify>,
+        trust: &Grant<Dial>,
         ctx: &UnitCtx,
         principal: &PrincipalId,
     ) -> Decision<Verify> {
@@ -1168,7 +1168,7 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
 
     fn approve(
         &self,
-        token: &UnitToken<Approve>,
+        token: &Pass<Approve>,
         _ctx: &UnitCtx,
         _principal: &PrincipalId,
         _destinations: &[VerifiedDestination],
@@ -1200,8 +1200,8 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
 
     fn admit(
         &self,
-        token: &UnitToken<Admit>,
-        admit: &AdmitToken<Admit>,
+        token: &Pass<Admit>,
+        admit: &Grant<Admittance>,
         ctx: &UnitCtx,
         principal: &PrincipalId,
         _destinations: &[VerifiedDestination],
@@ -1248,7 +1248,7 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
 
     fn route(
         &self,
-        token: &UnitToken<Route>,
+        token: &Pass<Route>,
         _ctx: &UnitCtx,
         meter: &AccrualMeter,
     ) -> Decision<Route> {
@@ -1355,8 +1355,8 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
 
     fn meter(
         &self,
-        token: &UnitToken<Meter>,
-        usage: &UsageToken,
+        token: &Pass<Meter>,
+        usage: &Grant<Consumption>,
         _ctx: &UnitCtx,
         _provisional: &Outcome,
     ) -> Decision<Meter> {
@@ -1395,7 +1395,7 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
         }
     }
 
-    fn audit(&self, token: &UnitToken<Audit>, ctx: &UnitCtx, outcome: &Outcome) -> Decision<Audit> {
+    fn audit(&self, token: &Pass<Audit>, ctx: &UnitCtx, outcome: &Outcome) -> Decision<Audit> {
         let inputs = self.audit_inputs(ctx, *outcome, None);
         let record = {
             let mut durability = read_through_poison(self.bindings.durability);
@@ -1415,7 +1415,7 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
 
     fn audit_refused(
         &self,
-        token: &UnitToken<Audit>,
+        token: &Pass<Audit>,
         ctx: &UnitCtx,
         refusal: &Refusal,
     ) -> Decision<Audit> {
@@ -1442,7 +1442,7 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
 
     fn encode(
         &self,
-        token: &UnitToken<Encode>,
+        token: &Pass<Encode>,
         _ctx: &UnitCtx,
         _outcome: &Outcome,
     ) -> Decision<Encode> {

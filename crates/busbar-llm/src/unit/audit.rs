@@ -65,7 +65,7 @@ use axum::response::Response;
 // pass-throughs would otherwise repeat it per signature.
 use busbar_api::PlaneRequestCtx;
 #[cfg(feature = "teller-waist")]
-use busbar_contract::caps::{step::Audit, AuditFacts, Decision, OpClassId, UnitToken};
+use busbar_contract::caps::{step::Audit, AuditFacts, Decision, OpClassId, Pass};
 #[cfg(feature = "teller-waist")]
 use busbar_contract::FinishClass;
 use busbar_substrate::plane_host::EngineHost;
@@ -322,7 +322,7 @@ impl Audited {
 /// plane's and the provisional end is the response itself, while the token and the sealed answer
 /// are the kernel's own vocabulary, named at `busbar-caps` where a plugin may name it.
 #[cfg(feature = "teller-waist")]
-pub type AuditStep = for<'a> fn(&UnitToken<Audit>, &AuditCtx<'a>, Served, bool) -> Audited;
+pub type AuditStep = for<'a> fn(&Pass<Audit>, &AuditCtx<'a>, Served, bool) -> Audited;
 
 /// How the plane says a unit ended.
 ///
@@ -375,7 +375,7 @@ fn finish_of(resp: &Response) -> FinishClass {
 /// window and there is nothing of this unit's in it.
 #[cfg(feature = "teller-waist")]
 pub fn audit(
-    unit_token: &UnitToken<Audit>,
+    unit_token: &Pass<Audit>,
     ctx: &AuditCtx<'_>,
     resp: Served,
     charged: bool,
@@ -408,7 +408,7 @@ pub fn audit(
 /// taken before the model was ever read — passes [`busbar_substrate::proxy::POOL_LABEL_UNRESOLVED`], which
 /// the bound maps to itself because no deployment may configure a pool by that name.
 #[cfg(feature = "teller-waist")]
-pub fn audit_refused(unit_token: &UnitToken<Audit>, ctx: &AuditCtx<'_>, resp: Served) -> Audited {
+pub fn audit_refused(unit_token: &Pass<Audit>, ctx: &AuditCtx<'_>, resp: Served) -> Audited {
     // A refusal is never a completion, whatever status it wears.
     let facts = AuditFacts {
         op_class: ctx.op_class,

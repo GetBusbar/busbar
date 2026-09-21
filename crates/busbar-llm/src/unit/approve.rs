@@ -38,7 +38,7 @@
 //! is the whole point of having the seat at this step rather than the next one.
 
 use busbar_contract::caps::{
-    Approve, Decision, PrincipalId, ReasonCode, Refusal, ScopeFacts, UnitToken, VerifiedDestination,
+    Approve, Decision, PrincipalId, ReasonCode, Refusal, ScopeFacts, Pass, VerifiedDestination,
 };
 
 /// A 1.6.0-native gate seated at Approve.
@@ -71,7 +71,7 @@ pub trait VetoSeat {
 /// gate is not consulted about a unit that has already been refused — consulting it would hand a
 /// refused unit's facts to something that has no decision left to make.
 pub fn approve(
-    token: &UnitToken<Approve>,
+    token: &Pass<Approve>,
     principal: &PrincipalId,
     destinations: &[VerifiedDestination],
     seats: &[&dyn VetoSeat],

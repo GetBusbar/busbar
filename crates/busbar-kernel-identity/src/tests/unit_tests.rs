@@ -3,7 +3,7 @@
 
 //! The sealed answer: what the loop actually receives.
 
-use busbar_contract::caps::{Authenticate, KernelSeal, ReasonCode, StepName, UnitToken};
+use busbar_contract::caps::{Authenticate, KernelSeal, ReasonCode, StepName, Pass};
 
 use super::{entry, Canned};
 use crate::admin::{admin_grants, kernel_verb_scope_satisfied, Grants, Scope};
@@ -25,9 +25,9 @@ fn request<'a>() -> AuthRequest<'a> {
     }
 }
 
-fn seal_and_token() -> (KernelSeal, UnitToken<Authenticate>) {
+fn seal_and_token() -> (KernelSeal, Pass<Authenticate>) {
     let seal = KernelSeal::acquire_for_kernel();
-    let token = UnitToken::mint(&seal);
+    let token = Pass::mint(&seal);
     (seal, token)
 }
 

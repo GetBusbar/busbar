@@ -2,14 +2,14 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use super::*;
-use busbar_contract::caps::{KernelSeal, LaneId, TrustToken};
+use busbar_contract::caps::{Grant, KernelSeal, LaneId, Dial};
 
-fn token() -> EgressAuthToken {
-    EgressAuthToken::mint(&KernelSeal::acquire_for_kernel())
+fn token() -> Grant<Sign> {
+    Grant::<Sign>::mint(&KernelSeal::acquire_for_kernel())
 }
 
-fn trust_token() -> TrustToken {
-    TrustToken::mint(&KernelSeal::acquire_for_kernel())
+fn trust_token() -> Grant<Dial> {
+    Grant::<Dial>::mint(&KernelSeal::acquire_for_kernel())
 }
 
 /// The destination the trust unit judged for this lane: the sealed lane is what the
@@ -333,7 +333,7 @@ fn continue_handshake_is_zero_budget_placeholder() {
     assert_eq!(
         decoration,
         AuthDecoration::handshake(
-            &EgressAuthToken::mint(&KernelSeal::acquire_for_kernel()),
+            &Grant::<Sign>::mint(&KernelSeal::acquire_for_kernel()),
             0,
             0
         )
@@ -393,9 +393,9 @@ fn substitute_touches_only_the_field_the_slot_names() {
 /// sealed, or the unit refuses with `EnvelopeDivergedFromVerifiedDestination`.
 #[test]
 fn lane_cross_check_catches_envelope_divergence_after_decoration() {
-    use busbar_contract::caps::{LaneId, TrustToken};
+    use busbar_contract::caps::{Grant, LaneId, Dial};
     let seal = KernelSeal::acquire_for_kernel();
-    let trust = TrustToken::mint(&seal);
+    let trust = Grant::<Dial>::mint(&seal);
     let verified =
         VerifiedDestination::seal(&trust, LaneId::new("bedrock.us-east-1.amazonaws.com"));
 
@@ -418,9 +418,9 @@ fn lane_cross_check_catches_envelope_divergence_after_decoration() {
 /// is the authority, and a mismatch against it is a refusal.
 #[test]
 fn lane_cross_check_is_against_the_sealed_lane_not_the_callers_belief() {
-    use busbar_contract::caps::{LaneId, TrustToken};
+    use busbar_contract::caps::{Grant, LaneId, Dial};
     let seal = KernelSeal::acquire_for_kernel();
-    let trust = TrustToken::mint(&seal);
+    let trust = Grant::<Dial>::mint(&seal);
     let verified = VerifiedDestination::seal(&trust, LaneId::new("bedrock-us-east-1"));
 
     // The envelope carries a lane the trust unit did NOT seal.

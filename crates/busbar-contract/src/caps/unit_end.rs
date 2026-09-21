@@ -20,20 +20,21 @@
 //! The exit path, holding its token, seals the same end without ceremony:
 //!
 //! ```
-//! use busbar_contract::caps::{Admit, AdmitToken, ExitToken, Hold, KernelSeal, LedgerToken, Outcome,
-//!                   Posted, PrincipalId, UnitEnd, Usage, UsageToken};
+//! use busbar_contract::caps::{Admittance, Consumption, Exit, Grant, Hold, KernelSeal, Outcome,
+//!                   Posted, PrincipalId, UnitEnd, Usage, WriteMoney};
 //! let seal = KernelSeal::acquire_for_kernel();
-//! let admit: AdmitToken<Admit> = AdmitToken::mint(&seal);
+//! let admit: Grant<Admittance> = Grant::<Admittance>::mint(&seal);
 //! let hold = Hold::open(&admit, PrincipalId::new("acct-1"), 10);
-//! let usage = Usage::report(&UsageToken::mint(&seal), Vec::new()).unwrap();
-//! let posted = Posted::settle(hold, 0, &usage, &LedgerToken::mint(&seal));
-//! let end = UnitEnd::seal(&ExitToken::mint(&seal), Outcome::Completed, Ok(posted));
+//! let usage = Usage::report(&Grant::<Consumption>::mint(&seal), Vec::new()).unwrap();
+//! let posted = Posted::settle(hold, 0, &usage, &Grant::<WriteMoney>::mint(&seal));
+//! let end = UnitEnd::seal(&Grant::<Exit>::mint(&seal), Outcome::Completed, Ok(posted));
 //! assert!(end.outcome().is_completed());
 //! ```
 
 use crate::caps::hold::{DurabilityLost, Posted};
 use crate::caps::step::{StepName, UnitKey};
-use crate::caps::token::{ExitToken, KernelSeal};
+use crate::caps::capability::Exit;
+use crate::caps::token::{Grant, KernelSeal};
 use crate::caps::ReasonCode;
 
 /// Where a unit came from, sealed.
@@ -220,7 +221,7 @@ pub struct UnitEnd {
 impl UnitEnd {
     /// Seal the unit's end. Exit path only.
     pub fn seal(
-        _token: &ExitToken,
+        _token: &Grant<Exit>,
         outcome: Outcome,
         posted: Result<Posted, DurabilityLost>,
     ) -> Self {

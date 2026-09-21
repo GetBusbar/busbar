@@ -4,7 +4,7 @@
 //! The sealed answer: the unit the loop calls at the verify step.
 
 use busbar_contract::caps::VerifiedDestination;
-use busbar_contract::caps::{Decision, Refusal, TrustToken, UnitToken, Verify};
+use busbar_contract::caps::{Grant, Decision, Refusal, Dial, Pass, Verify};
 
 use crate::trust::destination::{
     kind_permitted, kind_rule_passes, DestinationFacts, KindFacts, OriginKind,
@@ -48,8 +48,8 @@ impl Trust {
         pools: &dyn PoolView,
         facts: &dyn KindFacts,
         breaker: &dyn BreakerView,
-        trust: &TrustToken,
-        token: &UnitToken<Verify>,
+        trust: &Grant<Dial>,
+        token: &Pass<Verify>,
     ) -> Decision<Verify> {
         // The three guards, in their fixed order, all before anything is charged.
         if let Err(refusal) = destination_guard(pools, req.pool, req.unpriced_message) {

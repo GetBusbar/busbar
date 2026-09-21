@@ -55,9 +55,9 @@ pub use super::auth_bindings;
 
 use std::sync::{Arc, LazyLock, Mutex};
 
-use busbar_contract::caps::{
-    Admit, AdmitToken, Approve, Arrival, Audit, Authenticate, Decision, Decode, Encode, Hold,
-    Meter, Outcome, PrincipalId, Refusal, Route, UnitToken, UsageToken, VerifiedDestination,
+use busbar_contract::caps::{Grant, 
+    Admit, Admittance, Approve, Arrival, Audit, Authenticate, Decision, Decode, Encode, Hold,
+    Meter, Outcome, PrincipalId, Refusal, Route, Pass, Consumption, VerifiedDestination,
     Verify,
 };
 use busbar_kernel::inflight::ArrivalDoor;
@@ -453,7 +453,7 @@ pub fn install_card_repricer() {
 pub struct AdmissionDoor;
 
 impl ArrivalDoor for AdmissionDoor {
-    fn arrival_hold(&self, principal: PrincipalId, token: &AdmitToken<Admit>) -> Hold {
+    fn arrival_hold(&self, principal: PrincipalId, token: &Grant<Admittance>) -> Hold {
         busbar_kernel_budget::arrival_hold(principal, token)
     }
 }
@@ -470,14 +470,14 @@ pub struct RefusingStore;
 impl busbar_unit_verbs::store::Store for RefusingStore {
     fn chain_break(
         &self,
-        _admin: &busbar_contract::caps::AdminToken,
+        _admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
     ) -> Result<(), busbar_unit_verbs::StoreError> {
         Err(busbar_unit_verbs::StoreError::Failed)
     }
 
     fn store_restore(
         &self,
-        _admin: &busbar_contract::caps::AdminToken,
+        _admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
         _backup_ref: &str,
     ) -> Result<(), busbar_unit_verbs::StoreError> {
         Err(busbar_unit_verbs::StoreError::Failed)
@@ -485,7 +485,7 @@ impl busbar_unit_verbs::store::Store for RefusingStore {
 
     fn reseal_epoch_floor(
         &self,
-        _admin: &busbar_contract::caps::AdminToken,
+        _admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
     ) -> Result<(), busbar_unit_verbs::StoreError> {
         Err(busbar_unit_verbs::StoreError::Failed)
     }
@@ -577,7 +577,7 @@ pub struct ProductionUnits {
     /// Minted once, at boot, from the node's one authority — the second token in the tree minted
     /// outside the loop, for the same reason as the first: a kernel verb is a Route destination
     /// rather than a step, so no step's token stands in for it.
-    pub admin_token: busbar_contract::caps::AdminToken,
+    pub admin_token: busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
     /// The planes registered onto this loop, in registration order.
     ///
     /// Every step consults this table before it does anything: the FIRST plane whose `claims`
@@ -871,7 +871,7 @@ pub trait RegisteredUnits: Send + Sync {
     fn arrival(
         &self,
         root: &ProductionUnits,
-        token: &UnitToken<Arrival>,
+        token: &Pass<Arrival>,
         ctx: &UnitCtx,
     ) -> Decision<Arrival>;
 
@@ -879,7 +879,7 @@ pub trait RegisteredUnits: Send + Sync {
     fn decode(
         &self,
         root: &ProductionUnits,
-        token: &UnitToken<Decode>,
+        token: &Pass<Decode>,
         ctx: &UnitCtx,
     ) -> Decision<Decode>;
 
@@ -887,7 +887,7 @@ pub trait RegisteredUnits: Send + Sync {
     fn authenticate(
         &self,
         root: &ProductionUnits,
-        token: &UnitToken<Authenticate>,
+        token: &Pass<Authenticate>,
         ctx: &UnitCtx,
     ) -> Decision<Authenticate>;
 
@@ -895,8 +895,8 @@ pub trait RegisteredUnits: Send + Sync {
     fn verify(
         &self,
         root: &ProductionUnits,
-        token: &UnitToken<Verify>,
-        trust: &busbar_contract::caps::TrustToken,
+        token: &Pass<Verify>,
+        trust: &busbar_contract::caps::Grant<busbar_contract::caps::Dial>,
         ctx: &UnitCtx,
         principal: &PrincipalId,
     ) -> Decision<Verify>;
@@ -905,7 +905,7 @@ pub trait RegisteredUnits: Send + Sync {
     fn approve(
         &self,
         root: &ProductionUnits,
-        token: &UnitToken<Approve>,
+        token: &Pass<Approve>,
         ctx: &UnitCtx,
         principal: &PrincipalId,
         destinations: &[VerifiedDestination],
@@ -919,8 +919,8 @@ pub trait RegisteredUnits: Send + Sync {
     fn admit(
         &self,
         root: &ProductionUnits,
-        token: &UnitToken<Admit>,
-        admit: &AdmitToken<Admit>,
+        token: &Pass<Admit>,
+        admit: &Grant<Admittance>,
         ctx: &UnitCtx,
         principal: &PrincipalId,
         destinations: &[VerifiedDestination],
@@ -931,7 +931,7 @@ pub trait RegisteredUnits: Send + Sync {
     fn route(
         &self,
         root: &ProductionUnits,
-        token: &UnitToken<Route>,
+        token: &Pass<Route>,
         ctx: &UnitCtx,
         meter: &AccrualMeter,
     ) -> Decision<Route>;
@@ -940,8 +940,8 @@ pub trait RegisteredUnits: Send + Sync {
     fn meter(
         &self,
         root: &ProductionUnits,
-        token: &UnitToken<Meter>,
-        usage: &UsageToken,
+        token: &Pass<Meter>,
+        usage: &Grant<Consumption>,
         ctx: &UnitCtx,
         provisional: &Outcome,
     ) -> Decision<Meter>;
@@ -950,7 +950,7 @@ pub trait RegisteredUnits: Send + Sync {
     fn audit(
         &self,
         root: &ProductionUnits,
-        token: &UnitToken<Audit>,
+        token: &Pass<Audit>,
         ctx: &UnitCtx,
         outcome: &Outcome,
     ) -> Decision<Audit>;
@@ -959,7 +959,7 @@ pub trait RegisteredUnits: Send + Sync {
     fn audit_refused(
         &self,
         root: &ProductionUnits,
-        token: &UnitToken<Audit>,
+        token: &Pass<Audit>,
         ctx: &UnitCtx,
         refusal: &Refusal,
     ) -> Decision<Audit>;
@@ -968,7 +968,7 @@ pub trait RegisteredUnits: Send + Sync {
     fn encode(
         &self,
         root: &ProductionUnits,
-        token: &UnitToken<Encode>,
+        token: &Pass<Encode>,
         ctx: &UnitCtx,
         outcome: &Outcome,
     ) -> Decision<Encode>;
@@ -1033,14 +1033,14 @@ impl ProductionUnits {
 // never takes at runtime. The old `allow(unused_variables)` the no-plane build once needed is gone
 // with the per-method refusals that made the arguments dead.
 impl Units for ProductionUnits {
-    fn arrival(&self, token: &UnitToken<Arrival>, ctx: &UnitCtx) -> Decision<Arrival> {
+    fn arrival(&self, token: &Pass<Arrival>, ctx: &UnitCtx) -> Decision<Arrival> {
         if let Some(plane) = self.registry.resolve(self, ctx) {
             return plane.arrival(self, token, ctx);
         }
         Decision::refuse(token, Refusal::new(busbar_contract::caps::ReasonCode::NoDestination))
     }
 
-    fn decode(&self, token: &UnitToken<Decode>, ctx: &UnitCtx) -> Decision<Decode> {
+    fn decode(&self, token: &Pass<Decode>, ctx: &UnitCtx) -> Decision<Decode> {
         if let Some(plane) = self.registry.resolve(self, ctx) {
             return plane.decode(self, token, ctx);
         }
@@ -1049,7 +1049,7 @@ impl Units for ProductionUnits {
 
     fn authenticate(
         &self,
-        token: &UnitToken<Authenticate>,
+        token: &Pass<Authenticate>,
         ctx: &UnitCtx,
     ) -> Decision<Authenticate> {
         if let Some(plane) = self.registry.resolve(self, ctx) {
@@ -1063,8 +1063,8 @@ impl Units for ProductionUnits {
 
     fn verify(
         &self,
-        token: &UnitToken<Verify>,
-        trust: &busbar_contract::caps::TrustToken,
+        token: &Pass<Verify>,
+        trust: &busbar_contract::caps::Grant<busbar_contract::caps::Dial>,
         ctx: &UnitCtx,
         principal: &PrincipalId,
     ) -> Decision<Verify> {
@@ -1076,7 +1076,7 @@ impl Units for ProductionUnits {
 
     fn approve(
         &self,
-        token: &UnitToken<Approve>,
+        token: &Pass<Approve>,
         ctx: &UnitCtx,
         principal: &PrincipalId,
         destinations: &[VerifiedDestination],
@@ -1089,8 +1089,8 @@ impl Units for ProductionUnits {
 
     fn admit(
         &self,
-        token: &UnitToken<Admit>,
-        admit: &AdmitToken<Admit>,
+        token: &Pass<Admit>,
+        admit: &Grant<Admittance>,
         ctx: &UnitCtx,
         principal: &PrincipalId,
         destinations: &[VerifiedDestination],
@@ -1104,7 +1104,7 @@ impl Units for ProductionUnits {
 
     fn route(
         &self,
-        token: &UnitToken<Route>,
+        token: &Pass<Route>,
         ctx: &UnitCtx,
         meter: &AccrualMeter,
     ) -> Decision<Route> {
@@ -1116,8 +1116,8 @@ impl Units for ProductionUnits {
 
     fn meter(
         &self,
-        token: &UnitToken<Meter>,
-        usage: &UsageToken,
+        token: &Pass<Meter>,
+        usage: &Grant<Consumption>,
         ctx: &UnitCtx,
         provisional: &Outcome,
     ) -> Decision<Meter> {
@@ -1127,7 +1127,7 @@ impl Units for ProductionUnits {
         Decision::refuse(token, Refusal::new(busbar_contract::caps::ReasonCode::Unpriced))
     }
 
-    fn audit(&self, token: &UnitToken<Audit>, ctx: &UnitCtx, outcome: &Outcome) -> Decision<Audit> {
+    fn audit(&self, token: &Pass<Audit>, ctx: &UnitCtx, outcome: &Outcome) -> Decision<Audit> {
         if let Some(plane) = self.registry.resolve(self, ctx) {
             return plane.audit(self, token, ctx, outcome);
         }
@@ -1136,7 +1136,7 @@ impl Units for ProductionUnits {
 
     fn audit_refused(
         &self,
-        token: &UnitToken<Audit>,
+        token: &Pass<Audit>,
         ctx: &UnitCtx,
         refusal: &Refusal,
     ) -> Decision<Audit> {
@@ -1157,7 +1157,7 @@ impl Units for ProductionUnits {
 
     fn encode(
         &self,
-        token: &UnitToken<Encode>,
+        token: &Pass<Encode>,
         ctx: &UnitCtx,
         outcome: &Outcome,
     ) -> Decision<Encode> {

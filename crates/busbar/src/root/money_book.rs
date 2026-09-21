@@ -42,7 +42,7 @@
 //! plane's field mapping byte-for-byte, and the tests lock that it does.
 
 use busbar_api::{AuditRecord, MeteringRow, UsageDelta, UsageLedger};
-use busbar_contract::caps::{Hold, LedgerToken, Posted, Usage};
+use busbar_contract::caps::{Grant, Hold, WriteMoney, Posted, Usage};
 use busbar_kernel_ledger::settle::{Ledger, Settlement};
 use busbar_kernel_ledger::totals::{TotalsKey, WindowStart};
 
@@ -131,7 +131,7 @@ pub trait MoneyBook {
         hold: Hold,
         priced_nanos: u128,
         usage: &Usage,
-        token: &LedgerToken,
+        token: &Grant<WriteMoney>,
     ) -> Settlement;
 
     /// Move the books for a posting the exit path already built (it owned the hold and consumed it
@@ -179,7 +179,7 @@ impl MoneyBook for PassThroughBook {
         hold: Hold,
         priced_nanos: u128,
         usage: &Usage,
-        token: &LedgerToken,
+        token: &Grant<WriteMoney>,
     ) -> Settlement {
         ledger.settle_recording(key, window, hold, priced_nanos, usage, token)
     }

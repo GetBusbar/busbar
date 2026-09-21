@@ -52,7 +52,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 use std::time::{Duration, Instant};
 
-use busbar_contract::caps::{KernelSeal, MeterClassId, QuantitySource, Usage, UsageLine, UsageToken};
+use busbar_contract::caps::{Grant, KernelSeal, MeterClassId, QuantitySource, Usage, UsageLine, Consumption};
 use busbar_kernel_ledger::cost::{
     price, CurrencyCode, History, LaneClass, Posting, RateCard, STANDARD_TIER_BP,
 };
@@ -535,7 +535,7 @@ fn card() -> RateCard {
 
 /// One delivered response's usage report, as the mock fixes it.
 fn one_response() -> Usage {
-    let token = UsageToken::mint(&KernelSeal::acquire_for_kernel());
+    let token = Grant::<Consumption>::mint(&KernelSeal::acquire_for_kernel());
     Usage::report(
         &token,
         [("input", IN_TOK), ("output", OUT_TOK)]

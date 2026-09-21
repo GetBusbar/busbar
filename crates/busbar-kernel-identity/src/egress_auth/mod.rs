@@ -34,7 +34,7 @@
 
 pub mod sigv4;
 
-use busbar_contract::caps::{AuthDecoration, EgressAuthToken, SecretSlot, VerifiedDestination};
+use busbar_contract::caps::{Grant, AuthDecoration, Sign, SecretSlot, VerifiedDestination};
 
 /// The outbound request the egress-auth unit decorates. Everything the schemes below need to
 /// compute a decoration, and nothing else — no plane, no transport, no framework header type.
@@ -103,7 +103,7 @@ fn is_valid_header_value(s: &str) -> bool {
 /// no-header decoration — the upstream then answers 401, the same graceful path every dialect
 /// already takes for a malformed credential.
 pub fn decorate(
-    token: &EgressAuthToken,
+    token: &Grant<Sign>,
     scheme: &Scheme,
     secret: &str,
     body: &EgressBody<'_>,
@@ -181,7 +181,7 @@ pub fn decorate(
 /// `frame`, and returns either another `AuthDecoration::Handshake` (more rounds needed, within the
 /// bounds it already declared) or the terminal `AuthDecoration::Decorate`. The bound stays whatever
 /// the FIRST decoration for this scheme declared — `continue_handshake` never widens it.
-pub fn continue_handshake(token: &EgressAuthToken, _state: &[u8], _frame: &[u8]) -> AuthDecoration {
+pub fn continue_handshake(token: &Grant<Sign>, _state: &[u8], _frame: &[u8]) -> AuthDecoration {
     // No shipped scheme reaches this path; refuse to guess at a shape with no real scheme to
     // validate it against, and hand back a zero-budget handshake so a caller that DOES reach here
     // fails closed rather than silently proceeding unauthenticated.

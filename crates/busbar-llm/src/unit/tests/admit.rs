@@ -5,7 +5,7 @@
 use super::*;
 use crate::test_support::TestApp;
 use busbar_api::Store as _;
-use busbar_contract::caps::{KernelSeal, LedgerToken, Posted, StepName, Usage, UsageToken};
+use busbar_contract::caps::{Grant, KernelSeal, WriteMoney, Posted, StepName, Usage, Consumption};
 use busbar_store_memory::MemoryStore;
 use busbar_substrate::testkit::engine_kit::EngineTestKit as _;
 use std::collections::BTreeMap;
@@ -101,10 +101,10 @@ fn durable(app: &std::sync::Arc<crate::test_support::BuiltApp>, bucket: &str) ->
 
 /// A kernel seal for the length of one test: the tokens the step is lent are minted from it
 /// and dropped when the call returns, exactly as the loop lends them.
-fn tokens() -> (KernelSeal, UnitToken<Admit>, AdmitToken<Admit>) {
+fn tokens() -> (KernelSeal, Pass<Admit>, Grant<Admittance>) {
     let seal = KernelSeal::acquire_for_kernel();
-    let unit = UnitToken::mint(&seal);
-    let admit = AdmitToken::mint(&seal);
+    let unit = Pass::mint(&seal);
+    let admit = Grant::<Admittance>::mint(&seal);
     (seal, unit, admit)
 }
 
@@ -222,14 +222,14 @@ async fn the_step_charges_the_same_slot_fee_base_and_cent_as_the_live_door() {
         "the hold is accounting; sizing it is later"
     );
     assert_eq!(hold.accrued(), 0, "nothing has been spent against it yet");
-    let usage_token = UsageToken::mint(&seal);
+    let usage_token = Grant::<Consumption>::mint(&seal);
     let posted = Posted::settle(
         hold,
         // Nothing was routed, so the priced total is zero — and it is passed as money rather
         // than derived from the report, which carries no lines to derive one from.
         0,
         &Usage::report(&usage_token, Vec::new()).expect("no lines is a legal report"),
-        &LedgerToken::mint(&seal),
+        &Grant::<WriteMoney>::mint(&seal),
     );
     assert_eq!(posted.principal().as_str(), key.id.as_str());
     assert_eq!(

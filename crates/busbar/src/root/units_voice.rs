@@ -121,11 +121,11 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
-use busbar_contract::caps::{
-    Admission, Admit, AdmitToken, Approve, Arrival, ArrivalRecord, Audit, AuditFacts, Authenticate,
+use busbar_contract::caps::{Grant, 
+    Admission, Admit, Admittance, Approve, Arrival, ArrivalRecord, Audit, AuditFacts, Authenticate,
     Decision, Decode, Encode, Meter, MeterClassId, OpClassId, Outcome, PrincipalId, QuantitySource,
-    ReasonCode, Refusal, Route, RoutePlan, ScopeFacts, TrustToken, UnitKey, UnitToken, Usage,
-    UsageLine, UsageToken, VerifiedDestination, Verify,
+    ReasonCode, Refusal, Route, RoutePlan, ScopeFacts, Dial, UnitKey, Pass, Usage,
+    UsageLine, Consumption, VerifiedDestination, Verify,
 };
 use busbar_contract::dest::ClientMode;
 use busbar_contract::ids::{CorrelationRef, CorrelationValue, LaneId};
@@ -1404,14 +1404,14 @@ impl<'n> VoiceUnit<'n> {
 // ---------------------------------------------------------------------------------------------
 
 impl Units for VoiceUnit<'_> {
-    fn arrival(&self, token: &UnitToken<Arrival>, _ctx: &UnitCtx) -> Decision<Arrival> {
+    fn arrival(&self, token: &Pass<Arrival>, _ctx: &UnitCtx) -> Decision<Arrival> {
         // The kernel's own gate, over the configured budgets. There is no unit behind this step and
         // there was never meant to be: what it answers is the connection's own arrival record, which
         // the transport built and this file carries.
         Decision::proceed(token, self.arrival.clone())
     }
 
-    fn decode(&self, token: &UnitToken<Decode>, _ctx: &UnitCtx) -> Decision<Decode> {
+    fn decode(&self, token: &Pass<Decode>, _ctx: &UnitCtx) -> Decision<Decode> {
         // The plane already read the frame; the pump already turned what it read into a shape. What
         // reaches the loop here is the operation class that shape is, and re-reading the frame to
         // re-derive it would advance the codec's per-session sequence a second time.
@@ -1420,7 +1420,7 @@ impl Units for VoiceUnit<'_> {
 
     fn authenticate(
         &self,
-        token: &UnitToken<Authenticate>,
+        token: &Pass<Authenticate>,
         _ctx: &UnitCtx,
     ) -> Decision<Authenticate> {
         let request = AuthRequest {
@@ -1458,8 +1458,8 @@ impl Units for VoiceUnit<'_> {
 
     fn verify(
         &self,
-        token: &UnitToken<Verify>,
-        trust: &TrustToken,
+        token: &Pass<Verify>,
+        trust: &Grant<Dial>,
         ctx: &UnitCtx,
         principal: &PrincipalId,
     ) -> Decision<Verify> {
@@ -1509,7 +1509,7 @@ impl Units for VoiceUnit<'_> {
 
     fn approve(
         &self,
-        token: &UnitToken<Approve>,
+        token: &Pass<Approve>,
         _ctx: &UnitCtx,
         _principal: &PrincipalId,
         _destinations: &[VerifiedDestination],
@@ -1541,8 +1541,8 @@ impl Units for VoiceUnit<'_> {
 
     fn admit(
         &self,
-        token: &UnitToken<Admit>,
-        admit: &AdmitToken<Admit>,
+        token: &Pass<Admit>,
+        admit: &Grant<Admittance>,
         _ctx: &UnitCtx,
         principal: &PrincipalId,
         _destinations: &[VerifiedDestination],
@@ -1625,7 +1625,7 @@ impl Units for VoiceUnit<'_> {
 
     fn route(
         &self,
-        token: &UnitToken<Route>,
+        token: &Pass<Route>,
         ctx: &UnitCtx,
         meter: &AccrualMeter,
     ) -> Decision<Route> {
@@ -1669,8 +1669,8 @@ impl Units for VoiceUnit<'_> {
 
     fn meter(
         &self,
-        token: &UnitToken<Meter>,
-        usage: &UsageToken,
+        token: &Pass<Meter>,
+        usage: &Grant<Consumption>,
         _ctx: &UnitCtx,
         _provisional: &Outcome,
     ) -> Decision<Meter> {
@@ -1697,13 +1697,13 @@ impl Units for VoiceUnit<'_> {
         }
     }
 
-    fn audit(&self, token: &UnitToken<Audit>, ctx: &UnitCtx, outcome: &Outcome) -> Decision<Audit> {
+    fn audit(&self, token: &Pass<Audit>, ctx: &UnitCtx, outcome: &Outcome) -> Decision<Audit> {
         self.seal(token, ctx, *outcome, outcome_finish(outcome))
     }
 
     fn audit_refused(
         &self,
-        token: &UnitToken<Audit>,
+        token: &Pass<Audit>,
         ctx: &UnitCtx,
         refusal: &Refusal,
     ) -> Decision<Audit> {
@@ -1719,7 +1719,7 @@ impl Units for VoiceUnit<'_> {
 
     fn encode(
         &self,
-        token: &UnitToken<Encode>,
+        token: &Pass<Encode>,
         _ctx: &UnitCtx,
         _outcome: &Outcome,
     ) -> Decision<Encode> {
@@ -1827,7 +1827,7 @@ impl VoiceUnit<'_> {
         &self,
         principal: &PrincipalId,
         posted: busbar_contract::caps::Posted,
-        token: &busbar_contract::caps::DurabilityToken,
+        token: &busbar_contract::caps::Grant<busbar_contract::caps::DurableWrite>,
     ) -> Result<crate::root::durability::Settled, busbar_contract::caps::DurabilityLost> {
         let key = Self::balance(principal);
         let at = crate::root::durability::Settling {
@@ -1861,7 +1861,7 @@ impl VoiceUnit<'_> {
     /// own token, which the loop lends for the length of this call.
     fn seal(
         &self,
-        token: &UnitToken<Audit>,
+        token: &Pass<Audit>,
         ctx: &UnitCtx,
         outcome: Outcome,
         finish: busbar_contract::FinishClass,

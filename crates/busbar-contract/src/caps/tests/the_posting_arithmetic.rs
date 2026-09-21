@@ -22,11 +22,11 @@ fn seal() -> KernelSeal {
 }
 
 fn nothing_used(k: &KernelSeal) -> Usage {
-    Usage::report(&UsageToken::mint(k), Vec::new()).expect("an empty report is within the bound")
+    Usage::report(&Grant::<Consumption>::mint(k), Vec::new()).expect("an empty report is within the bound")
 }
 
 fn opened(k: &KernelSeal, reserved: u64) -> Hold {
-    let admit: AdmitToken<Admit> = AdmitToken::mint(k);
+    let admit: Grant<Admittance> = Grant::<Admittance>::mint(k);
     Hold::open(&admit, PrincipalId::new("acct-1"), reserved)
 }
 
@@ -40,7 +40,7 @@ fn a_unit_that_spent_exactly_its_reservation_settles_clean() {
         opened(&k, 1_000),
         1_000,
         &nothing_used(&k),
-        &LedgerToken::mint(&k),
+        &Grant::<WriteMoney>::mint(&k),
     );
     assert_eq!(posted.settled(), 1_000);
     assert_eq!(posted.reserved(), 1_000);
@@ -62,7 +62,7 @@ fn one_nano_unit_past_the_reservation_is_already_an_overdraft() {
         opened(&k, 1_000),
         1_001,
         &nothing_used(&k),
-        &LedgerToken::mint(&k),
+        &Grant::<WriteMoney>::mint(&k),
     );
     assert_eq!(posted.settled(), 1_001);
     assert_eq!(
@@ -80,7 +80,7 @@ fn a_unit_that_spent_one_less_than_its_reservation_releases_that_one() {
         opened(&k, 1_000),
         999,
         &nothing_used(&k),
-        &LedgerToken::mint(&k),
+        &Grant::<WriteMoney>::mint(&k),
     );
     assert_eq!(posted.released(), 1);
     assert!(posted.flags().is_clean());
@@ -92,7 +92,7 @@ fn a_priced_total_wider_than_the_reservation_settles_at_the_ceiling_and_never_wr
     // most expensive unit the node has ever run — the failure is silent, and it is in the node's
     // favour, which is the worst combination a billing defect can have.
     let k = seal();
-    let ledger = LedgerToken::mint(&k);
+    let ledger = Grant::<WriteMoney>::mint(&k);
     let posted = Posted::settle(opened(&k, 1_000), u128::MAX, &nothing_used(&k), &ledger);
     assert_eq!(posted.settled(), u64::MAX, "the ceiling, not a wrap");
     assert!(posted.flags().contains(PostingFlags::OVERDRAFT));
@@ -104,14 +104,14 @@ fn a_priced_total_wider_than_the_reservation_settles_at_the_ceiling_and_never_wr
         opened(&k, u64::MAX),
         u128::from(u64::MAX) + 1,
         &nothing_used(&k),
-        &LedgerToken::mint(&k),
+        &Grant::<WriteMoney>::mint(&k),
     );
     assert_eq!(over.settled(), u64::MAX);
     let exact = Posted::settle(
         opened(&k, u64::MAX),
         u128::from(u64::MAX),
         &nothing_used(&k),
-        &LedgerToken::mint(&k),
+        &Grant::<WriteMoney>::mint(&k),
     );
     assert_eq!(exact.settled(), u64::MAX);
     assert_eq!(exact.reserved(), u64::MAX);
@@ -131,7 +131,7 @@ fn a_holds_own_overdraft_flags_the_posting_even_when_the_priced_total_is_small()
     let mut hold = opened(&k, 1_000);
     let spend = hold.spend(1_400, 0);
     assert_eq!(spend.overdraft, 400, "nothing could back the excess");
-    let posted = Posted::settle(hold, 10, &nothing_used(&k), &LedgerToken::mint(&k));
+    let posted = Posted::settle(hold, 10, &nothing_used(&k), &Grant::<WriteMoney>::mint(&k));
     assert_eq!(posted.settled(), 10);
     assert_eq!(posted.overdraft(), 400);
     assert!(
@@ -157,7 +157,7 @@ fn a_unit_that_runs_past_the_end_twice_carries_each_share_once() {
     assert_eq!(hold.overdraft(), 100, "50 + 30 + 20, counted once each");
     assert_eq!(hold.accrued(), 200);
 
-    let posted = Posted::settle(hold, 200, &nothing_used(&k), &LedgerToken::mint(&k));
+    let posted = Posted::settle(hold, 200, &nothing_used(&k), &Grant::<WriteMoney>::mint(&k));
     assert_eq!(posted.overdraft(), 100);
     assert!(posted.flags().contains(PostingFlags::OVERDRAFT));
 }
@@ -266,7 +266,7 @@ fn a_flag_the_ledger_decides_on_is_added_without_clearing_what_the_hold_decided(
     let k = seal();
     let mut hold = opened(&k, 10);
     hold.spend(50, 0);
-    let posted = Posted::settle(hold, 50, &nothing_used(&k), &LedgerToken::mint(&k))
+    let posted = Posted::settle(hold, 50, &nothing_used(&k), &Grant::<WriteMoney>::mint(&k))
         .flagged(PostingFlags::METER_DISPUTED)
         .flagged(PostingFlags::DOWNGRADED);
     assert!(posted.flags().contains(PostingFlags::OVERDRAFT));
@@ -281,7 +281,7 @@ fn a_late_accrual_posts_wholly_overdrawn_because_nothing_was_ever_held_back_for_
     // reservation is gone. The two figures the reconciliation reads have to say so: nothing
     // reserved, and every unit of it unbacked.
     let k = seal();
-    let ledger = LedgerToken::mint(&k);
+    let ledger = Grant::<WriteMoney>::mint(&k);
     let accrual = HoldAccrual::after_terminal(PrincipalId::new("acct-3"), 640, &ledger);
     assert_eq!(accrual.amount(), 640);
     assert_eq!(
@@ -312,7 +312,7 @@ fn the_live_slot_is_not_displaced_by_a_second_admission() {
     // a reservation the door never granted, with both holds still accounted for and nothing else
     // able to tell. So the cell is emptied afterwards and the hold that comes out is identified.
     let k = seal();
-    let admit: AdmitToken<Admit> = AdmitToken::mint(&k);
+    let admit: Grant<Admittance> = Grant::<Admittance>::mint(&k);
     let cell = HoldCell::new(Hold::open(&admit, PrincipalId::new("acct-1"), 0));
     let arrival = cell
         .admit(
@@ -332,12 +332,12 @@ fn the_live_slot_is_not_displaced_by_a_second_admission() {
     assert_eq!(rejected.hold.principal().as_str(), "acct-2");
 
     let live = cell
-        .take(&ExitToken::mint(&k))
+        .take(&Grant::<Exit>::mint(&k))
         .expect("the cell still holds the admitted hold");
     assert_eq!(live.reserved(), 1_000, "the live slot was not displaced");
     assert_eq!(live.principal().as_str(), "acct-1");
 
-    let ledger = LedgerToken::mint(&k);
+    let ledger = Grant::<WriteMoney>::mint(&k);
     let _ = Posted::settle(arrival, 0, &nothing_used(&k), &ledger);
     let _ = Posted::settle(rejected.hold, 0, &nothing_used(&k), &ledger);
     let _ = Posted::settle(live, 0, &nothing_used(&k), &ledger);
@@ -349,8 +349,8 @@ fn a_child_that_missed_its_parent_is_handed_back_rather_than_posted_against_an_e
     // child's posting, and the refusal has to give the accrual BACK: a child that missed its parent
     // still has to post, late, on its own.
     let k = seal();
-    let admit: AdmitToken<Admit> = AdmitToken::mint(&k);
-    let ledger = LedgerToken::mint(&k);
+    let admit: Grant<Admittance> = Grant::<Admittance>::mint(&k);
+    let ledger = Grant::<WriteMoney>::mint(&k);
     let cell = HoldCell::new(Hold::open(&admit, PrincipalId::new("acct-1"), 0));
     let arrival = cell
         .admit(Hold::open(&admit, PrincipalId::new("acct-1"), 500), &admit)
@@ -361,7 +361,7 @@ fn a_child_that_missed_its_parent_is_handed_back_rather_than_posted_against_an_e
         .expect("an admitted parent takes a child's spend");
     assert_eq!(cell.accruals(), 1);
 
-    let taken = cell.take(&ExitToken::mint(&k)).expect("the parent exits");
+    let taken = cell.take(&Grant::<Exit>::mint(&k)).expect("the parent exits");
     let handed_back = Posted::into_parent(accrual, &cell, &ledger)
         .expect_err("the parent is gone; the child posts late");
     assert_eq!(handed_back.amount(), 120);

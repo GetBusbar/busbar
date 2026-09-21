@@ -12,8 +12,8 @@ use futures::StreamExt;
 /// forging kernel evidence in order to test something else, and it read as if that were the
 /// ordinary way to obtain one. The ordinary way is a token the loop lends out, so the fixture uses
 /// that and the transport under test receives exactly what a deployment hands it.
-fn fixture_seal() -> busbar_contract::caps::TransportKeyToken {
-    busbar_contract::caps::TransportKeyToken::mint(&busbar_contract::caps::KernelSeal::acquire_for_kernel())
+fn fixture_seal() -> busbar_contract::caps::Grant<busbar_contract::caps::KeyHandle> {
+    busbar_contract::caps::Grant::<busbar_contract::caps::KeyHandle>::mint(&busbar_contract::caps::KernelSeal::acquire_for_kernel())
 }
 
 fn fixture_key() -> TransportKeyHandle {

@@ -8,26 +8,26 @@
 //! then muted; and a crate whose entire dependency list is the capability crate should not grow a
 //! second one to shuffle some integers.
 
-use busbar_contract::caps::{
-    Admit, AdmitToken, Hold, KernelSeal, LedgerToken, MeterClassId, PrincipalId, Usage, UsageLine,
-    UsageToken,
+use busbar_contract::caps::{Grant, 
+    Admittance, Hold, KernelSeal, WriteMoney, MeterClassId, PrincipalId, Usage, UsageLine,
+    Consumption,
 };
 
 use crate::totals::{BucketId, BucketScope, CapDimension, TotalsKey};
 
 /// An admission token.
-pub fn admit_token() -> AdmitToken<Admit> {
-    AdmitToken::mint(&KernelSeal::acquire_for_kernel())
+pub fn admit_token() -> Grant<Admittance> {
+    Grant::<Admittance>::mint(&KernelSeal::acquire_for_kernel())
 }
 
 /// A ledger token.
-pub fn ledger_token() -> LedgerToken {
-    LedgerToken::mint(&KernelSeal::acquire_for_kernel())
+pub fn ledger_token() -> Grant<WriteMoney> {
+    Grant::<WriteMoney>::mint(&KernelSeal::acquire_for_kernel())
 }
 
 /// A usage token.
-pub fn usage_token() -> UsageToken {
-    UsageToken::mint(&KernelSeal::acquire_for_kernel())
+pub fn usage_token() -> Grant<Consumption> {
+    Grant::<Consumption>::mint(&KernelSeal::acquire_for_kernel())
 }
 
 /// A hold for `who`, reserving `reserved`.

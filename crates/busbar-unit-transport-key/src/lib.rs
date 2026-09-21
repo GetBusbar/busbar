@@ -35,7 +35,7 @@
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
-use busbar_contract::caps::{TransportKeyHandle, TransportKeyToken};
+use busbar_contract::caps::{Grant, TransportKeyHandle, KeyHandle};
 use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use rustls::server::danger::ClientCertVerifier;
@@ -234,14 +234,14 @@ pub fn build_server_config(material: &TlsMaterial) -> Result<ServerConfig, Strin
 }
 
 /// Hand out an opaque handle for resolved key material. The transport-key unit is the only caller —
-/// `TransportKeyHandle::issue` demands a [`TransportKeyToken`], which only the kernel lends to this
+/// `TransportKeyHandle::issue` demands a [`Grant<KeyHandle>`], which only the kernel lends to this
 /// unit. `slot` is whatever local slot the caller keeps the actual material under, and
 /// `fingerprint` is what the journal's access entry records; nothing about the material itself is
 /// recoverable from the handle. The handle is the contract's own, which is what the transports and
 /// the egress unit consume, so the unit that resolves a key and the code that dials with it now
 /// name one type.
 pub fn issue_handle(
-    token: &TransportKeyToken,
+    token: &Grant<KeyHandle>,
     slot: u64,
     fingerprint: &'static str,
 ) -> TransportKeyHandle {
@@ -306,7 +306,7 @@ pub fn provision_server(
     source: &dyn SecretSource,
     journal: &dyn AccessJournal,
     sink: &dyn TlsConfigSink,
-    token: &TransportKeyToken,
+    token: &Grant<KeyHandle>,
     slot: Slot,
     at: &TlsLocations<'_>,
     alpn: &[&[u8]],
@@ -326,7 +326,7 @@ pub fn provision_server(
 /// a public root store is not a secret — so nothing is journaled either.
 pub fn provision_client(
     sink: &dyn TlsConfigSink,
-    token: &TransportKeyToken,
+    token: &Grant<KeyHandle>,
     slot: Slot,
     cfg: Arc<rustls::ClientConfig>,
 ) -> TransportKeyHandle {
@@ -459,7 +459,7 @@ pub fn provision_server_named(
     source: &dyn SecretSource,
     journal: &dyn AccessJournal,
     sink: &dyn TlsConfigSink,
-    token: &TransportKeyToken,
+    token: &Grant<KeyHandle>,
     slot: Slot,
     names: &[NamedTlsLocations<'_>],
     default_at: &TlsLocations<'_>,

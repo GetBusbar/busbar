@@ -47,6 +47,7 @@ pub mod population;
 pub mod qa_gate_dispatch;
 pub mod release_order;
 pub mod response_header;
+pub mod seal_witness;
 pub mod segregation;
 pub mod service_images;
 pub mod settings_leak;
@@ -1986,6 +1987,13 @@ pub static REGISTRY: &[Registration] = &[
         tier: Tier::Fast,
         build: || Box::new(kernel_token_wire_purity::KernelTokenWirePurityGate),
         summary: "the kernel never re-derives a usage token class from a raw provider wire pointer",
+    },
+    Registration {
+        name: "seal-witness",
+        batch: 1,
+        tier: Tier::Fast,
+        build: || Box::new(seal_witness::SealWitnessGate),
+        summary: "capability proofs are exactly Pass<stage> + Grant<capability> + one kernel minter (#65/#73)",
     },
     Registration {
         name: "kind-isolation",

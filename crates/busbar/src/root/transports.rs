@@ -53,7 +53,7 @@ use busbar_transport_ws::MESSAGE_MAX_BYTES_KEY;
 
 use std::sync::Arc;
 
-use busbar_contract::caps::{TransportKeyHandle, TransportKeyToken};
+use busbar_contract::caps::{Grant, TransportKeyHandle, KeyHandle};
 use busbar_unit_transport_key::{
     provision_client, provision_server, AccessJournal, SecretSource, Slot, TlsConfigSink,
     TlsLocations,
@@ -144,7 +144,7 @@ pub fn provision_servers(
     source: &dyn SecretSource,
     journal: &dyn AccessJournal,
     sink: &dyn TlsConfigSink,
-    token: &TransportKeyToken,
+    token: &Grant<KeyHandle>,
 ) -> Result<Vec<ProvisionedListener>, String> {
     let mut provisioned = Vec::with_capacity(listeners.len());
     for listener in listeners {
@@ -281,7 +281,7 @@ pub async fn listen_all(
 /// a public root store is not a secret — so nothing is journaled either.
 pub fn provision_dial(
     sink: &dyn TlsConfigSink,
-    token: &TransportKeyToken,
+    token: &Grant<KeyHandle>,
     role: ListenerRole,
     fingerprint: &'static str,
     cfg: Arc<rustls::ClientConfig>,

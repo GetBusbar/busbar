@@ -6,7 +6,7 @@ use super::*;
 use crate::cfg::BreakerCfg;
 use crate::classify::{Diagnostics, NoopDiagnostics, WarnOnceDiagnostics};
 use crate::{Breaker, BreakerUnit, DestinationId, Outcome};
-use busbar_contract::caps::{KernelSeal, Route, UnitToken};
+use busbar_contract::caps::{KernelSeal, Route, Pass};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
@@ -17,10 +17,10 @@ fn err_map(pairs: &[(&str, &str)]) -> HashMap<String, String> {
         .collect()
 }
 
-/// A fresh `UnitToken<Route>` for one `observe`/`state` call — test-only, minted through the
+/// A fresh `Pass<Route>` for one `observe`/`state` call — test-only, minted through the
 /// kernel seal exactly as CG-29 says a real deployment would.
-fn route_token() -> UnitToken<Route> {
-    UnitToken::mint(&KernelSeal::acquire_for_kernel())
+fn route_token() -> Pass<Route> {
+    Pass::mint(&KernelSeal::acquire_for_kernel())
 }
 
 /// A [`Diagnostics`] sink that records every call it receives, unconditionally (no dedup of

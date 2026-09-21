@@ -84,8 +84,8 @@ fn rows() -> Box<dyn LegacyRows> {
     Box::new(RecordingRows::new())
 }
 
-fn token() -> DurabilityToken {
-    DurabilityToken::mint(&KernelSeal::acquire_for_kernel())
+fn token() -> Grant<DurableWrite> {
+    Grant::<DurableWrite>::mint(&KernelSeal::acquire_for_kernel())
 }
 
 fn marker(seq: u64, sealed_at: u64) -> MigrationMarker {
@@ -236,7 +236,7 @@ fn audit_inputs(unit: u64) -> busbar_kernel_audit::AuditInputs {
 /// where a reader asking "under which policy" looks.
 #[test]
 fn a_sealed_audit_record_goes_on_the_journal() {
-    use busbar_contract::caps::{Audit as AuditStep, KernelSeal, UnitToken};
+    use busbar_contract::caps::{Audit as AuditStep, KernelSeal, Pass};
     use busbar_kernel_audit::Audit as _;
 
     let mut durability = build_for_node(
@@ -247,7 +247,7 @@ fn a_sealed_audit_record_goes_on_the_journal() {
     )
     .expect("memory-buffered cannot fail");
     let token = token();
-    let audit_token: UnitToken<AuditStep> = UnitToken::mint(&KernelSeal::acquire_for_kernel());
+    let audit_token: Pass<AuditStep> = Pass::mint(&KernelSeal::acquire_for_kernel());
 
     let sealed = durability.record.seal(audit_inputs(11), &audit_token);
     let ack = durability
@@ -616,7 +616,7 @@ fn stamp() -> PostingStamp {
     }
 }
 
-fn settling<'a>(key: &'a TotalsKey, durability: &'a DurabilityToken) -> Settling<'a> {
+fn settling<'a>(key: &'a TotalsKey, durability: &'a Grant<DurableWrite>) -> Settling<'a> {
     Settling {
         key,
         window: 86_400,
@@ -631,9 +631,9 @@ fn settling<'a>(key: &'a TotalsKey, durability: &'a DurabilityToken) -> Settling
 /// to close.
 #[test]
 fn settling_a_hold_moves_the_books_and_puts_the_posting_on_the_chain() {
-    use busbar_contract::caps::{
-        step::Admit, AdmitToken, Hold, KernelSeal, LedgerToken, MeterClassId, PrincipalId,
-        QuantitySource, Usage, UsageLine, UsageToken,
+    use busbar_contract::caps::{Grant, 
+        Admittance, Hold, KernelSeal, WriteMoney, MeterClassId, PrincipalId,
+        QuantitySource, Usage, UsageLine, Consumption,
     };
     let seal = KernelSeal::acquire_for_kernel();
     let mut durability = memory_node();
@@ -641,12 +641,12 @@ fn settling_a_hold_moves_the_books_and_puts_the_posting_on_the_chain() {
     durability.ledger.record_hold_opened(&key, 86_400, 5_000);
 
     let hold = Hold::open(
-        &AdmitToken::<Admit>::mint(&seal),
+        &Grant::<Admittance>::mint(&seal),
         PrincipalId::new("vk_settle"),
         5_000,
     );
     let usage = Usage::report(
-        &UsageToken::mint(&seal),
+        &Grant::<Consumption>::mint(&seal),
         vec![UsageLine {
             class: MeterClassId::new("nano_units"),
             quantity: 4_200,
@@ -663,7 +663,7 @@ fn settling_a_hold_moves_the_books_and_puts_the_posting_on_the_chain() {
             hold,
             4_200,
             &usage,
-            &LedgerToken::mint(&seal),
+            &Grant::<WriteMoney>::mint(&seal),
         )
         .expect("the null shipper takes it");
 
@@ -689,9 +689,9 @@ fn settling_a_hold_moves_the_books_and_puts_the_posting_on_the_chain() {
 /// already carries both, and a replay that added them twice would double the window.
 #[test]
 fn an_overdraft_is_its_own_record_beside_the_posting_it_came_out_of() {
-    use busbar_contract::caps::{
-        step::Admit, AdmitToken, Hold, KernelSeal, LedgerToken, MeterClassId, PrincipalId,
-        QuantitySource, Usage, UsageLine, UsageToken,
+    use busbar_contract::caps::{Grant, 
+        Admittance, Hold, KernelSeal, WriteMoney, MeterClassId, PrincipalId,
+        QuantitySource, Usage, UsageLine, Consumption,
     };
     let seal = KernelSeal::acquire_for_kernel();
     let mut durability = memory_node();
@@ -699,7 +699,7 @@ fn an_overdraft_is_its_own_record_beside_the_posting_it_came_out_of() {
     durability.ledger.record_hold_opened(&key, 86_400, 1_000);
 
     let mut hold = Hold::open(
-        &AdmitToken::<Admit>::mint(&seal),
+        &Grant::<Admittance>::mint(&seal),
         PrincipalId::new("vk_over"),
         1_000,
     );
@@ -707,7 +707,7 @@ fn an_overdraft_is_its_own_record_beside_the_posting_it_came_out_of() {
     let spend = hold.spend(4_000, 0);
     assert_eq!(spend.overdraft, 3_000);
     let usage = Usage::report(
-        &UsageToken::mint(&seal),
+        &Grant::<Consumption>::mint(&seal),
         vec![UsageLine {
             class: MeterClassId::new("nano_units"),
             quantity: 4_000,
@@ -724,7 +724,7 @@ fn an_overdraft_is_its_own_record_beside_the_posting_it_came_out_of() {
             hold,
             4_000,
             &usage,
-            &LedgerToken::mint(&seal),
+            &Grant::<WriteMoney>::mint(&seal),
         )
         .expect("the null shipper takes it");
 
@@ -787,9 +787,9 @@ impl busbar_kernel_wal::Shipper for CountingShipper {
 /// what makes the pair atomic against a crash rather than merely adjacent.
 #[test]
 fn a_settlement_and_its_carry_reach_the_journal_in_one_batch() {
-    use busbar_contract::caps::{
-        step::Admit, AdmitToken, Hold, KernelSeal, LedgerToken, MeterClassId, PrincipalId,
-        QuantitySource, Usage, UsageLine, UsageToken,
+    use busbar_contract::caps::{Grant, 
+        Admittance, Hold, KernelSeal, WriteMoney, MeterClassId, PrincipalId,
+        QuantitySource, Usage, UsageLine, Consumption,
     };
     let seal = KernelSeal::acquire_for_kernel();
     let batches = CountingShipper::default();
@@ -803,13 +803,13 @@ fn a_settlement_and_its_carry_reach_the_journal_in_one_batch() {
     let key = totals_key("vk_batch");
     durability.ledger.record_hold_opened(&key, 86_400, 1_000);
     let mut hold = Hold::open(
-        &AdmitToken::<Admit>::mint(&seal),
+        &Grant::<Admittance>::mint(&seal),
         PrincipalId::new("vk_batch"),
         1_000,
     );
     assert_eq!(hold.spend(4_000, 0).overdraft, 3_000);
     let usage = Usage::report(
-        &UsageToken::mint(&seal),
+        &Grant::<Consumption>::mint(&seal),
         vec![UsageLine {
             class: MeterClassId::new("nano_units"),
             quantity: 4_000,
@@ -826,7 +826,7 @@ fn a_settlement_and_its_carry_reach_the_journal_in_one_batch() {
             hold,
             4_000,
             &usage,
-            &LedgerToken::mint(&seal),
+            &Grant::<WriteMoney>::mint(&seal),
         )
         .expect("the counting shipper takes it");
     assert!(settled.overdraft.is_some(), "the fixture overdrafts");
@@ -864,16 +864,16 @@ fn a_settlement_and_its_carry_reach_the_journal_in_one_batch() {
 /// through.
 #[test]
 fn a_posting_the_exit_path_built_settles_exactly_as_a_hold_does() {
-    use busbar_contract::caps::{
-        step::Admit, AdmitToken, Hold, KernelSeal, LedgerToken, MeterClassId, Posted, PrincipalId,
-        QuantitySource, Usage, UsageLine, UsageToken,
+    use busbar_contract::caps::{Grant, 
+        Admittance, Hold, KernelSeal, WriteMoney, MeterClassId, Posted, PrincipalId,
+        QuantitySource, Usage, UsageLine, Consumption,
     };
     let seal = KernelSeal::acquire_for_kernel();
-    let admit = AdmitToken::<Admit>::mint(&seal);
+    let admit = Grant::<Admittance>::mint(&seal);
     let key = totals_key("vk_both");
     let usage = |q: u64| {
         Usage::report(
-            &UsageToken::mint(&seal),
+            &Grant::<Consumption>::mint(&seal),
             vec![UsageLine {
                 class: MeterClassId::new("nano_units"),
                 quantity: q,
@@ -895,7 +895,7 @@ fn a_posting_the_exit_path_built_settles_exactly_as_a_hold_does() {
             Hold::open(&admit, PrincipalId::new("vk_both"), 5_000),
             4_200,
             &usage(4_200),
-            &LedgerToken::mint(&seal),
+            &Grant::<WriteMoney>::mint(&seal),
         )
         .expect("settles");
 
@@ -907,7 +907,7 @@ fn a_posting_the_exit_path_built_settles_exactly_as_a_hold_does() {
         Hold::open(&admit, PrincipalId::new("vk_both"), 5_000),
         4_200,
         &usage(4_200),
-        &LedgerToken::mint(&seal),
+        &Grant::<WriteMoney>::mint(&seal),
     );
     let b = through_posting.settle_posted(&at, posted).expect("settles");
 

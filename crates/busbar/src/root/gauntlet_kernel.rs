@@ -23,10 +23,10 @@
 
 use axum::response::Response;
 
-use busbar_contract::caps::{
-    Admission, Admit, AdmitToken, Approve, Arrival, ArrivalRecord, Audit, Authenticate,
+use busbar_contract::caps::{Grant, 
+    Admission, Admit, Admittance, Approve, Arrival, ArrivalRecord, Audit, Authenticate,
     Authenticated, Decision, Decode, Encode, Frame, Meter, OpClassId, OriginKind, Outcome,
-    PrincipalId, ReasonCode, Refusal, Route, TrustToken, UnitToken, Usage, UsageToken,
+    PrincipalId, ReasonCode, Refusal, Route, Dial, Pass, Usage, Consumption,
     VerifiedDestination, Verify,
 };
 use busbar_contract::{AuditFacts, FinishClass, RoutePlan, ScopeFacts, UnitKey};
@@ -89,7 +89,7 @@ impl<'p> GauntletKernelUnit<'p> {
 }
 
 impl Units for GauntletKernelUnit<'_> {
-    fn arrival(&self, token: &UnitToken<Arrival>, _ctx: &UnitCtx) -> Decision<Arrival> {
+    fn arrival(&self, token: &Pass<Arrival>, _ctx: &UnitCtx) -> Decision<Arrival> {
         Decision::proceed(
             token,
             ArrivalRecord {
@@ -103,13 +103,13 @@ impl Units for GauntletKernelUnit<'_> {
         )
     }
 
-    fn decode(&self, token: &UnitToken<Decode>, _ctx: &UnitCtx) -> Decision<Decode> {
+    fn decode(&self, token: &Pass<Decode>, _ctx: &UnitCtx) -> Decision<Decode> {
         Decision::proceed(token, self.op_class)
     }
 
     fn authenticate(
         &self,
-        token: &UnitToken<Authenticate>,
+        token: &Pass<Authenticate>,
         _ctx: &UnitCtx,
     ) -> Decision<Authenticate> {
         // Identity is already resolved upstream and threaded via `gov`; this step states it.
@@ -118,8 +118,8 @@ impl Units for GauntletKernelUnit<'_> {
 
     fn verify(
         &self,
-        token: &UnitToken<Verify>,
-        _trust: &TrustToken,
+        token: &Pass<Verify>,
+        _trust: &Grant<Dial>,
         _ctx: &UnitCtx,
         _principal: &PrincipalId,
     ) -> Decision<Verify> {
@@ -148,7 +148,7 @@ impl Units for GauntletKernelUnit<'_> {
 
     fn approve(
         &self,
-        token: &UnitToken<Approve>,
+        token: &Pass<Approve>,
         _ctx: &UnitCtx,
         _principal: &PrincipalId,
         _destinations: &[VerifiedDestination],
@@ -158,8 +158,8 @@ impl Units for GauntletKernelUnit<'_> {
 
     fn admit(
         &self,
-        token: &UnitToken<Admit>,
-        _admit: &AdmitToken<Admit>,
+        token: &Pass<Admit>,
+        _admit: &Grant<Admittance>,
         _ctx: &UnitCtx,
         _principal: &PrincipalId,
         _destinations: &[VerifiedDestination],
@@ -172,7 +172,7 @@ impl Units for GauntletKernelUnit<'_> {
 
     fn route(
         &self,
-        token: &UnitToken<Route>,
+        token: &Pass<Route>,
         _ctx: &UnitCtx,
         _meter: &AccrualMeter,
     ) -> Decision<Route> {
@@ -184,8 +184,8 @@ impl Units for GauntletKernelUnit<'_> {
 
     fn meter(
         &self,
-        token: &UnitToken<Meter>,
-        usage: &UsageToken,
+        token: &Pass<Meter>,
+        usage: &Grant<Consumption>,
         _ctx: &UnitCtx,
         _provisional: &Outcome,
     ) -> Decision<Meter> {
@@ -199,7 +199,7 @@ impl Units for GauntletKernelUnit<'_> {
 
     fn audit(
         &self,
-        token: &UnitToken<Audit>,
+        token: &Pass<Audit>,
         _ctx: &UnitCtx,
         _outcome: &Outcome,
     ) -> Decision<Audit> {
@@ -214,7 +214,7 @@ impl Units for GauntletKernelUnit<'_> {
 
     fn audit_refused(
         &self,
-        token: &UnitToken<Audit>,
+        token: &Pass<Audit>,
         _ctx: &UnitCtx,
         _refusal: &Refusal,
     ) -> Decision<Audit> {
@@ -230,7 +230,7 @@ impl Units for GauntletKernelUnit<'_> {
 
     fn encode(
         &self,
-        token: &UnitToken<Encode>,
+        token: &Pass<Encode>,
         _ctx: &UnitCtx,
         _outcome: &Outcome,
     ) -> Decision<Encode> {
@@ -258,7 +258,7 @@ impl Units for GauntletKernelUnit<'_> {
 impl RouteAwait for GauntletKernelUnit<'_> {
     fn route_leg<'a>(
         &'a self,
-        token: &'a UnitToken<Route>,
+        token: &'a Pass<Route>,
         _ctx: &'a UnitCtx,
         _meter: &'a AccrualMeter,
     ) -> RouteLeg<'a> {

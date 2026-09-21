@@ -11,9 +11,9 @@ use serde_json::json;
 
 /// A kernel seal for the length of one leg, and the step-5 token minted from it — exactly as
 /// the loop lends it, and dropped when the call it was lent to returns.
-fn tokens() -> (KernelSeal, UnitToken<Route>) {
+fn tokens() -> (KernelSeal, Pass<Route>) {
     let seal = KernelSeal::acquire_for_kernel();
-    let token = UnitToken::mint(&seal);
+    let token = Pass::mint(&seal);
     (seal, token)
 }
 

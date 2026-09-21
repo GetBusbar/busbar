@@ -9,8 +9,8 @@
 //! slots, and the under-sized hold that tops up rather than refusing. They are written as tables
 //! here so adding a window word or a cap kind adds a row, not a copied test.
 
-use busbar_contract::caps::{
-    step::Admit, Accrual, AdmitToken, Hold, KernelSeal, PrincipalId, ReasonCode, UnitToken,
+use busbar_contract::caps::{Grant, 
+    step::Admit, Accrual, Admittance, Hold, KernelSeal, PrincipalId, ReasonCode, Pass,
 };
 
 use super::*;
@@ -566,8 +566,8 @@ fn estimate(quantity: u64, price: u64) -> Estimate {
 #[test]
 fn admit_yields_a_hold_sized_from_the_estimate() {
     let seal = KernelSeal::acquire_for_kernel();
-    let admit_token: AdmitToken<Admit> = AdmitToken::mint(&seal);
-    let unit_token: UnitToken<Admit> = UnitToken::mint(&seal);
+    let admit_token: Grant<Admittance> = Grant::<Admittance>::mint(&seal);
+    let unit_token: Pass<Admit> = Pass::mint(&seal);
     let d = door();
     let p = no_card(0);
     let t = table(&[(
@@ -629,8 +629,8 @@ fn admit_yields_a_hold_sized_from_the_estimate() {
 #[test]
 fn refusal_reason_code_matches_the_kind_of_block_not_just_that_something_blocked() {
     let seal = KernelSeal::acquire_for_kernel();
-    let admit_token: AdmitToken<Admit> = AdmitToken::mint(&seal);
-    let unit_token: UnitToken<Admit> = UnitToken::mint(&seal);
+    let admit_token: Grant<Admittance> = Grant::<Admittance>::mint(&seal);
+    let unit_token: Pass<Admit> = Pass::mint(&seal);
     let now = 1_700_000_000;
     let principal = PrincipalId::new("vk_reason");
 
@@ -698,8 +698,8 @@ fn refusal_reason_code_matches_the_kind_of_block_not_just_that_something_blocked
 #[test]
 fn tier_scales_the_hold_and_not_the_decision() {
     let seal = KernelSeal::acquire_for_kernel();
-    let admit_token: AdmitToken<Admit> = AdmitToken::mint(&seal);
-    let unit_token: UnitToken<Admit> = UnitToken::mint(&seal);
+    let admit_token: Grant<Admittance> = Grant::<Admittance>::mint(&seal);
+    let unit_token: Pass<Admit> = Pass::mint(&seal);
     let d = door();
     let p = no_card(0);
     let mut g = group_cfg(None, true, vec![limit(LimitMetric::Requests, 4, Some(DAY))]);
@@ -725,8 +725,8 @@ fn tier_scales_the_hold_and_not_the_decision() {
 #[test]
 fn a_zero_estimate_holds_nothing() {
     let seal = KernelSeal::acquire_for_kernel();
-    let admit_token: AdmitToken<Admit> = AdmitToken::mint(&seal);
-    let unit_token: UnitToken<Admit> = UnitToken::mint(&seal);
+    let admit_token: Grant<Admittance> = Grant::<Admittance>::mint(&seal);
+    let unit_token: Pass<Admit> = Pass::mint(&seal);
     let d = door();
     let p = no_card(0);
     let t = table(&[("g", group_cfg(None, true, vec![]))]);
@@ -746,7 +746,7 @@ fn a_zero_estimate_holds_nothing() {
 #[test]
 fn an_undersized_hold_tops_up_and_never_refuses() {
     let seal = KernelSeal::acquire_for_kernel();
-    let admit_token: AdmitToken<Admit> = AdmitToken::mint(&seal);
+    let admit_token: Grant<Admittance> = Grant::<Admittance>::mint(&seal);
     let principal = PrincipalId::new("vk_top");
     let mut hold = Hold::open(&admit_token, principal, 100);
     // Spend inside the reservation.
@@ -793,7 +793,7 @@ fn a_mixed_tier_chain_is_a_boot_refusal() {
 #[test]
 fn the_door_opens_the_arrival_hold_and_it_reserves_nothing() {
     let seal = KernelSeal::acquire_for_kernel();
-    let admit_token: AdmitToken<Admit> = AdmitToken::mint(&seal);
+    let admit_token: Grant<Admittance> = Grant::<Admittance>::mint(&seal);
     let hold = crate::arrival_hold(PrincipalId::new("acct-1"), &admit_token);
     assert_eq!(
         hold.reserved(),
@@ -804,9 +804,9 @@ fn the_door_opens_the_arrival_hold_and_it_reserves_nothing() {
     let _ = busbar_contract::caps::Posted::settle(
         hold,
         0,
-        &busbar_contract::caps::Usage::report(&busbar_contract::caps::UsageToken::mint(&seal), Vec::new())
+        &busbar_contract::caps::Usage::report(&busbar_contract::caps::Grant::<busbar_contract::caps::Consumption>::mint(&seal), Vec::new())
             .expect("an empty report is within the bound"),
-        &busbar_contract::caps::LedgerToken::mint(&seal),
+        &busbar_contract::caps::Grant::<busbar_contract::caps::WriteMoney>::mint(&seal),
     );
 }
 
@@ -836,8 +836,8 @@ fn a_unit_the_cascade_narrowed_is_posted_as_downgraded() {
     d.try_admit(&p, &c, "frontier", now).expect("2nd");
 
     let seal = KernelSeal::acquire_for_kernel();
-    let admit_token: AdmitToken<Admit> = AdmitToken::mint(&seal);
-    let unit_token: UnitToken<Admit> = UnitToken::mint(&seal);
+    let admit_token: Grant<Admittance> = Grant::<Admittance>::mint(&seal);
+    let unit_token: Pass<Admit> = Pass::mint(&seal);
 
     // The frontier pool blocks and names where to go.
     let mut blocked_unit = AdmissionUnit::new(&d, &p, "frontier", now);
@@ -860,7 +860,7 @@ fn a_unit_the_cascade_narrowed_is_posted_as_downgraded() {
 
     // The re-admission through the pool it named carries the mark; nothing else about the unit
     // says it was ever anywhere else.
-    let unit_token: UnitToken<Admit> = UnitToken::mint(&seal);
+    let unit_token: Pass<Admit> = Pass::mint(&seal);
     let mut downgraded = AdmissionUnit::new(&d, &p, &to, now).after_downgrade("frontier");
     let admitted = downgraded.admit(
         &Estimate::default(),
@@ -876,7 +876,7 @@ fn a_unit_the_cascade_narrowed_is_posted_as_downgraded() {
         .contains(busbar_contract::caps::PostingFlags::DOWNGRADED));
 
     // A unit that was never downgraded carries nothing.
-    let unit_token: UnitToken<Admit> = UnitToken::mint(&seal);
+    let unit_token: Pass<Admit> = Pass::mint(&seal);
     let mut plain = AdmissionUnit::new(&d, &p, "value", now);
     let _ = plain.admit(
         &Estimate::default(),

@@ -23,7 +23,7 @@ use crate::classify::{
     Disposition, NoopDiagnostics, RawUpstreamError, StatusClass, PROVIDER_CODE_CONTEXT_LENGTH,
 };
 use crate::{Admit, Breaker, BreakerUnit, DestinationId, LaneState, Outcome};
-use busbar_contract::caps::{KernelSeal, Route, UnitToken};
+use busbar_contract::caps::{KernelSeal, Route, Pass};
 use std::collections::HashMap;
 
 /// A fixed "now" for the tests that need one but are not ABOUT it — the kernel supplies this value
@@ -37,11 +37,11 @@ fn err_map(pairs: &[(&str, &str)]) -> HashMap<String, String> {
         .collect()
 }
 
-/// A fresh `UnitToken<Route>` for one `observe`/`state` call — test-only, minted through the
+/// A fresh `Pass<Route>` for one `observe`/`state` call — test-only, minted through the
 /// kernel seal exactly as CG-29 says a real deployment would (`KernelSeal::acquire_for_kernel` is
 /// `// contract:` kernel-only outside test modules).
-fn route_token() -> UnitToken<Route> {
-    UnitToken::mint(&KernelSeal::acquire_for_kernel())
+fn route_token() -> Pass<Route> {
+    Pass::mint(&KernelSeal::acquire_for_kernel())
 }
 
 // ── Ported: classification pipeline ─────────────────────────────────────────────────────────────

@@ -21,7 +21,7 @@
 //!   with the number — the adapter maps one namespaced code onto the other, and folds the coarse
 //!   class down to a representative HTTP-shaped code only when no number was reported at all.
 
-use busbar_contract::caps::{KernelSeal, Route, UnitToken};
+use busbar_contract::caps::{KernelSeal, Route, Pass};
 use busbar_contract::transport::registry::status_ns;
 use busbar_contract::transport::wire::WireStatus;
 use busbar_contract::transport::wire::WireStatusClass;
@@ -31,10 +31,10 @@ use busbar_kernel_egress::ports::{
     Admit, Breaker, Classified, DestinationId, Disposition, Outcome, Unavailable, UpstreamStatus,
 };
 
-/// A fresh `UnitToken<Route>` for one `observe`/`state` call — test-only, minted through the
+/// A fresh `Pass<Route>` for one `observe`/`state` call — test-only, minted through the
 /// kernel seal exactly as CG-29 says a real deployment would.
-fn route_token() -> UnitToken<Route> {
-    UnitToken::mint(&KernelSeal::acquire_for_kernel())
+fn route_token() -> Pass<Route> {
+    Pass::mint(&KernelSeal::acquire_for_kernel())
 }
 
 /// The integrator's binding of the egress unit's `Breaker` port onto the breaker unit's
@@ -121,7 +121,7 @@ impl Breaker for BreakerAdapter {
         pool: &str,
         destination: DestinationId,
         now: u64,
-        token: &UnitToken<Route>,
+        token: &Pass<Route>,
     ) -> bool {
         matches!(
             self.0.state(pool, destination, now, token),
@@ -141,7 +141,7 @@ impl Breaker for BreakerAdapter {
         pool: &str,
         destination: DestinationId,
         now: u64,
-        token: &UnitToken<Route>,
+        token: &Pass<Route>,
     ) -> u64 {
         match self.0.state(pool, destination, now, token) {
             busbar_kernel_breaker::LaneState::Suppressed { until } => until.saturating_sub(now),
@@ -189,9 +189,9 @@ impl Breaker for BreakerAdapter {
         destination: DestinationId,
         outcome: Outcome,
         now: u64,
-        token: &UnitToken<Route>,
+        token: &Pass<Route>,
     ) -> bool {
-        // Both crates name the same `busbar-caps` `UnitToken<Route>`, so the token this call was
+        // Both crates name the same `busbar-caps` `Pass<Route>`, so the token this call was
         // actually lent is what crosses the seam — no adapter-minted stand-in.
         self.0.observe(
             pool,
