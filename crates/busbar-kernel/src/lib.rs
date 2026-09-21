@@ -22,9 +22,11 @@
 // hard-fails on `unsafe`. See `plane_host`.
 #![deny(unsafe_code)]
 
-// W4.a (#19/#37): this crate's source was absorbed INTO busbar-kernel. Every internal
-// `busbar_kernel::` spelling is rewritten to `busbar_kernel::` (the crate's real name now), so no
-// `extern crate self` alias is needed — the former dual-compile of protocol dialects is gone.
+// W4.a (#19/#37): this crate's source was absorbed INTO busbar-kernel; every internal
+// `busbar_core::` spelling was rewritten to `busbar_kernel::`. The self-alias keeps those crate-name
+// spellings (used by cfg(test)/test-support modules compiled into this crate's own test binary)
+// resolving to this crate, exactly as `extern crate self as busbar_core` did before the absorption.
+extern crate self as busbar_kernel;
 
 // The lib's TEST binary runs on jemalloc for two reasons: (1) the telemetry recovery tests
 // (src/tests/telemetry_tests.rs) measure per-thread jemalloc counters via `tikv_jemalloc_ctl`
