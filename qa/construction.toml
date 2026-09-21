@@ -157,8 +157,10 @@ files = [
   "crates/busbar-llm/src/engine/exhaustion/least_bad.rs",
   "crates/busbar-llm/src/native_ingress.rs",
   "crates/busbar-llm/src/arrival.rs",
-  "crates/busbar-core/src/ingress/mod.rs",
-  "crates/busbar-core/src/limits/admission.rs",
+  # busbar-core's ingress/admission moved into busbar-kernel when the crate was absorbed; re-pointed
+  # here rather than dropped (see the crate's own `qa/construction.toml` history for the absorption).
+  "crates/busbar-kernel/src/ingress/mod.rs",
+  "crates/busbar-kernel/src/limits/admission.rs",
 ]
 max_lines = 200
 # How many of the worst offenders the report lists.

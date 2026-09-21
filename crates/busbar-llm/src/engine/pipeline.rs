@@ -735,13 +735,7 @@ async fn run_failover_loop(
             );
         }
 
-        let _pick = busbar_substrate_values::profile::start(
-            busbar_substrate_values::profile::Stage::LanePick,
-        );
-        // `probe_epoch`: `Some(epoch)` when this pick WON a single-flight recovery probe (captured
-        // synchronously by `pick_among` before any await), `None` otherwise. The RAII release covers
-        // the WHOLE dispatch window (built inside `attempt`), including a dropped future.
-        let (i, permit, probe_epoch) = match pick_among(
+        let (i, permit, probe_epoch) = match pick_lane_or_exhaust(
             host,
             rt,
             &cands,
@@ -749,69 +743,34 @@ async fn run_failover_loop(
             affinity_key_hash,
             pool_name,
             policy_order.as_deref(),
+            &body,
+            caller_token,
+            ingress_protocol,
+            op,
+            req_content_type,
+            &usage_sink,
         )
         .await
         {
-            Some(x) => x,
-            None => {
-                if cands.is_empty() {
-                    // Pool has no members at all — nothing to do.
-                    return ingress_error(
-                        ingress_protocol,
-                        StatusCode::SERVICE_UNAVAILABLE,
-                        KIND_OVERLOADED,
-                        "The service is temporarily overloaded. Please retry shortly.",
-                    );
-                }
-                // No usable lane — apply the configured exhaustion mode with loop prevention.
-                return exhaust_pool(
-                    host,
-                    rt,
-                    &cands,
-                    pool_name,
-                    body,
-                    caller_token,
-                    &mut request_ctx,
-                    ingress_protocol,
-                    op,
-                    req_content_type,
-                    usage_sink.clone(),
-                )
-                .await;
-            }
+            Ok(x) => x,
+            Err(resp) => return resp,
         };
-        // LANE_PICK ends here (a lane + permit are in hand).
-        drop(_pick);
         // ATTEMPT_SETUP: per-hop bookkeeping between lane_pick and the attempt.
         let _asetup = busbar_substrate_values::profile::start(
             busbar_substrate_values::profile::Stage::AttemptSetup,
         );
-
-        // Mark this lane as excluded for future attempts in this request
-        request_ctx.exclude(i);
-
-        // ── STAGE TAPS: routing ── the full failover story, per dispatch attempt (see
-        // `fire_routing_tap`).
-        fire_routing_tap(
+        let (metric_pool, egress_name) = prepare_attempt(
             host,
             rt,
             stage_shape.as_ref(),
             &cands,
-            &request_ctx,
+            &mut request_ctx,
             i,
             attempt_no,
             last_failure,
             resolved_gov_key,
+            pool_name,
         );
-
-        // The bounded `pool` LABEL for THIS hop's upstream/failover/breaker metrics.
-        let metric_pool: &str = metric_pool_label(rt, pool_name, i);
-
-        // count this upstream attempt (re-entrant across failover hops — each is a real attempt).
-        host.telemetry_upstream_attempt(metric_pool, i);
-        tracing::debug!(pool = %pool_name, lane = %EngineTables::new(rt).lanes()[i].model, "upstream attempt");
-
-        let egress_name = EngineTables::new(rt).lanes()[i].protocol;
         drop(_asetup);
         if let Some(resp) = run_hop(
             host,
@@ -863,6 +822,122 @@ async fn run_failover_loop(
         usage_sink,
     )
     .await
+}
+
+/// LANE_PICK for one failover hop, extracted straight out of [`run_failover_loop`]'s dispatch
+/// loop (pure extraction — no behavior change; see its call site for why). Runs `pick_among` under
+/// its own profiling span and turns a miss into the SAME terminal `Response` the inline code
+/// returned: the plain "no members" 503 when the pool is empty, or the configured exhaustion mode
+/// otherwise. `Ok` is a picked lane ready for [`prepare_attempt`]; `Err` is the response the loop
+/// must return immediately, in place of the `return` the inline code used to make here.
+#[allow(clippy::too_many_arguments)]
+async fn pick_lane_or_exhaust(
+    host: &Arc<dyn EngineHost>,
+    rt: &Arc<NativeRuntime>,
+    cands: &[WeightedLane],
+    request_ctx: &mut RequestCtx,
+    affinity_key_hash: Option<u64>,
+    pool_name: &str,
+    policy_order: Option<&[usize]>,
+    body: &Bytes,
+    caller_token: Option<&str>,
+    ingress_protocol: &str,
+    op: busbar_substrate_values::handlers::Op,
+    req_content_type: &str,
+    usage_sink: &Option<UsageSink>,
+) -> Result<(usize, Permit, Option<u64>), Response> {
+    let _pick =
+        busbar_substrate_values::profile::start(busbar_substrate_values::profile::Stage::LanePick);
+    // `probe_epoch`: `Some(epoch)` when this pick WON a single-flight recovery probe (captured
+    // synchronously by `pick_among` before any await), `None` otherwise. The RAII release covers
+    // the WHOLE dispatch window (built inside `attempt`), including a dropped future.
+    match pick_among(
+        host,
+        rt,
+        cands,
+        request_ctx,
+        affinity_key_hash,
+        pool_name,
+        policy_order,
+    )
+    .await
+    {
+        Some(x) => Ok(x),
+        None => {
+            if cands.is_empty() {
+                // Pool has no members at all — nothing to do.
+                return Err(ingress_error(
+                    ingress_protocol,
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    KIND_OVERLOADED,
+                    "The service is temporarily overloaded. Please retry shortly.",
+                ));
+            }
+            // No usable lane — apply the configured exhaustion mode with loop prevention. `body` is
+            // cheap-cloned (a `Bytes` clone is a refcount bump, not a copy): the caller still owns
+            // its `body` for the hop it dispatches once a lane IS picked, so this cannot take it.
+            Err(exhaust_pool(
+                host,
+                rt,
+                cands,
+                pool_name,
+                body.clone(),
+                caller_token,
+                request_ctx,
+                ingress_protocol,
+                op,
+                req_content_type,
+                usage_sink.clone(),
+            )
+            .await)
+        }
+    }
+}
+
+/// ATTEMPT_SETUP for one failover hop, extracted straight out of [`run_failover_loop`]'s dispatch
+/// loop (pure extraction — no behavior change): mark the picked lane excluded, fire the routing
+/// stage tap, and resolve this hop's metric `pool` label and egress protocol name — the bookkeeping
+/// between [`pick_lane_or_exhaust`] and the attempt itself. Returns `(metric_pool, egress_name)` for
+/// `run_hop`.
+#[allow(clippy::too_many_arguments)]
+fn prepare_attempt<'a>(
+    host: &Arc<dyn EngineHost>,
+    rt: &'a Arc<NativeRuntime>,
+    stage_shape: Option<&StageShape<'_>>,
+    cands: &[WeightedLane],
+    request_ctx: &mut RequestCtx,
+    i: usize,
+    attempt_no: usize,
+    last_failure: Option<&'static str>,
+    resolved_gov_key: Option<&std::sync::Arc<VirtualKey>>,
+    pool_name: &'a str,
+) -> (&'a str, &'static str) {
+    // Mark this lane as excluded for future attempts in this request
+    request_ctx.exclude(i);
+
+    // ── STAGE TAPS: routing ── the full failover story, per dispatch attempt (see
+    // `fire_routing_tap`).
+    fire_routing_tap(
+        host,
+        rt,
+        stage_shape,
+        cands,
+        request_ctx,
+        i,
+        attempt_no,
+        last_failure,
+        resolved_gov_key,
+    );
+
+    // The bounded `pool` LABEL for THIS hop's upstream/failover/breaker metrics.
+    let metric_pool: &str = metric_pool_label(rt, pool_name, i);
+
+    // count this upstream attempt (re-entrant across failover hops — each is a real attempt).
+    host.telemetry_upstream_attempt(metric_pool, i);
+    tracing::debug!(pool = %pool_name, lane = %EngineTables::new(rt).lanes()[i].model, "upstream attempt");
+
+    let egress_name = EngineTables::new(rt).lanes()[i].protocol;
+    (metric_pool, egress_name)
 }
 
 /// The op-support candidate filter: every candidate lane's protocol must HOLD this operation's
@@ -1468,104 +1543,125 @@ async fn resolve_base_policy(
                     resolved_gov_key,
                 ))
                 .await;
-                match outcome {
-                    // The policy returned a usable ranked order — record its name (for the
-                    // `x-busbar-route-policy` header + the metric) and hand the order to the ordered walk.
-                    PolicyOutcome::Order { order, name } => {
-                        chosen_policy_name = Some(name);
-                        metrics::counter!(
-                            busbar_kernel::metrics::ROUTE_POLICY_SELECTIONS_TOTAL,
-                            "policy" => name,
-                            "pool" => pool_name.to_string(),
-                        )
-                        .increment(1);
-                        Some(order)
-                    }
-                    // Abstain / error-coerced-to-weighted: fall through to today's exact SWRR.
-                    PolicyOutcome::Weighted => None,
-                    // on_error == reject (and the policy errored/timed out / saturated): fail closed with a
-                    // 503 rather than silently degrading. Never strands as a hang — a clean rejection.
-                    PolicyOutcome::Reject => {
-                        return Err(gate_rejected(ingress_error(
-                            ingress_protocol,
-                            StatusCode::SERVICE_UNAVAILABLE,
-                            KIND_OVERLOADED,
-                            "The routing policy could not select an upstream. Please retry \
-                             shortly.",
-                        )));
-                    }
-                    // The hook's REJECT verb: a deliberate, first-class policy decision (a guardrail /
-                    // PII screen said no) — a 4xx to the caller, no upstream dispatched, and an
-                    // operator-visible counter. `status` was clamped to 400..=499 and `message`
-                    // sanitized at the seam that constructed the outcome (for every producer, wire or
-                    // direct), so this arm can trust both.
-                    PolicyOutcome::RejectRequest {
-                        status,
-                        message,
-                        name,
-                    } => {
-                        // The `status` label is hook-influenced but BOUNDED: the seam that built this
-                        // outcome clamps it to 400..=499 for every producer, so the worst-case series
-                        // fan-out is 100 per (policy, pool).
-                        metrics::counter!(
-                            busbar_kernel::metrics::ROUTE_POLICY_REJECTIONS_TOTAL,
-                            "policy" => name,
-                            "pool" => pool_name.to_string(),
-                            "status" => status.to_string(),
-                        )
-                        .increment(1);
-                        // The message is safe to log: the seam that built this outcome sanitized it
-                        // (control/invisible chars stripped, length capped — for EVERY producer, not
-                        // just the wire transports), and it is the exact string the CLIENT receives.
-                        diag_debug!(
-                            ROUTING_POLICY_REJECTED,
-                            policy = name,
-                            pool = pool_name,
-                            status,
-                            message = %message,
-                            "routing policy rejected the request"
-                        );
-                        return Err(gate_rejected(ingress_error(
-                            ingress_protocol,
-                            StatusCode::from_u16(status).unwrap_or(StatusCode::FORBIDDEN),
-                            reject_kind_for_status(status),
-                            &message,
-                        )));
-                    }
-                    // The hook's RESTRICT verb: intersect the failover candidate set with members
-                    // carrying one of `tags_any`, then let SWRR pick among the survivors. Shrinking
-                    // `cands` here makes the restriction PERSIST across every failover hop (each hop
-                    // selects from this set) — the compliance guarantee ("only these lanes, ever"). An
-                    // EMPTY intersection is fail-closed (`on_empty` default reject), never allow-all;
-                    // an empty `tags_any` (fail-closed-normalized malformed restrict) forces it.
-                    PolicyOutcome::Restrict {
-                        tags_any,
-                        name,
-                        on_empty,
-                    } => {
-                        // The base routing-policy RESTRICT verb (see `apply_base_policy_restrict`):
-                        // it commits the survivor set on `cands`, records the restrict, and returns
-                        // the policy name to advertise (or `None` on a weighted escape). SWRR then
-                        // picks among the survivors, so the base order stays `None`.
-                        if let Some(n) = apply_base_policy_restrict(
-                            rt,
-                            cands,
-                            request_ctx,
-                            pool_name,
-                            ingress_protocol,
-                            tags_any,
-                            name,
-                            on_empty,
-                        )? {
-                            chosen_policy_name = Some(n);
-                        }
-                        None
-                    }
+                let (order, chosen) = apply_policy_outcome(
+                    outcome,
+                    rt,
+                    cands,
+                    request_ctx,
+                    pool_name,
+                    ingress_protocol,
+                )?;
+                if chosen.is_some() {
+                    chosen_policy_name = chosen;
                 }
+                order
             }
         }
     };
     Ok((policy_order, chosen_policy_name))
+}
+
+/// The `PolicyOutcome` match, extracted straight out of [`resolve_base_policy`] (pure extraction —
+/// no behavior change; see its call site). Turns a decided [`PolicyOutcome`] into the ranked order
+/// (or `None` ⇒ SWRR) plus the policy name to advertise, exactly as the inline `match` did; `Err` is
+/// the same ingress-native rejection the inline code returned early with.
+fn apply_policy_outcome(
+    outcome: PolicyOutcome,
+    rt: &Arc<NativeRuntime>,
+    cands: &mut Vec<WeightedLane>,
+    request_ctx: &mut RequestCtx,
+    pool_name: &str,
+    ingress_protocol: &str,
+) -> Result<(Option<Vec<usize>>, Option<&'static str>), Response> {
+    match outcome {
+        // The policy returned a usable ranked order — record its name (for the
+        // `x-busbar-route-policy` header + the metric) and hand the order to the ordered walk.
+        PolicyOutcome::Order { order, name } => {
+            metrics::counter!(
+                busbar_kernel::metrics::ROUTE_POLICY_SELECTIONS_TOTAL,
+                "policy" => name,
+                "pool" => pool_name.to_string(),
+            )
+            .increment(1);
+            Ok((Some(order), Some(name)))
+        }
+        // Abstain / error-coerced-to-weighted: fall through to today's exact SWRR.
+        PolicyOutcome::Weighted => Ok((None, None)),
+        // on_error == reject (and the policy errored/timed out / saturated): fail closed with a
+        // 503 rather than silently degrading. Never strands as a hang — a clean rejection.
+        PolicyOutcome::Reject => Err(gate_rejected(ingress_error(
+            ingress_protocol,
+            StatusCode::SERVICE_UNAVAILABLE,
+            KIND_OVERLOADED,
+            "The routing policy could not select an upstream. Please retry \
+             shortly.",
+        ))),
+        // The hook's REJECT verb: a deliberate, first-class policy decision (a guardrail /
+        // PII screen said no) — a 4xx to the caller, no upstream dispatched, and an
+        // operator-visible counter. `status` was clamped to 400..=499 and `message`
+        // sanitized at the seam that constructed the outcome (for every producer, wire or
+        // direct), so this arm can trust both.
+        PolicyOutcome::RejectRequest {
+            status,
+            message,
+            name,
+        } => {
+            // The `status` label is hook-influenced but BOUNDED: the seam that built this
+            // outcome clamps it to 400..=499 for every producer, so the worst-case series
+            // fan-out is 100 per (policy, pool).
+            metrics::counter!(
+                busbar_kernel::metrics::ROUTE_POLICY_REJECTIONS_TOTAL,
+                "policy" => name,
+                "pool" => pool_name.to_string(),
+                "status" => status.to_string(),
+            )
+            .increment(1);
+            // The message is safe to log: the seam that built this outcome sanitized it
+            // (control/invisible chars stripped, length capped — for EVERY producer, not
+            // just the wire transports), and it is the exact string the CLIENT receives.
+            diag_debug!(
+                ROUTING_POLICY_REJECTED,
+                policy = name,
+                pool = pool_name,
+                status,
+                message = %message,
+                "routing policy rejected the request"
+            );
+            Err(gate_rejected(ingress_error(
+                ingress_protocol,
+                StatusCode::from_u16(status).unwrap_or(StatusCode::FORBIDDEN),
+                reject_kind_for_status(status),
+                &message,
+            )))
+        }
+        // The hook's RESTRICT verb: intersect the failover candidate set with members
+        // carrying one of `tags_any`, then let SWRR pick among the survivors. Shrinking
+        // `cands` here makes the restriction PERSIST across every failover hop (each hop
+        // selects from this set) — the compliance guarantee ("only these lanes, ever"). An
+        // EMPTY intersection is fail-closed (`on_empty` default reject), never allow-all;
+        // an empty `tags_any` (fail-closed-normalized malformed restrict) forces it.
+        PolicyOutcome::Restrict {
+            tags_any,
+            name,
+            on_empty,
+        } => {
+            // The base routing-policy RESTRICT verb (see `apply_base_policy_restrict`):
+            // it commits the survivor set on `cands`, records the restrict, and returns
+            // the policy name to advertise (or `None` on a weighted escape). SWRR then
+            // picks among the survivors, so the base order stays `None`.
+            let chosen = apply_base_policy_restrict(
+                rt,
+                cands,
+                request_ctx,
+                pool_name,
+                ingress_protocol,
+                tags_any,
+                name,
+                on_empty,
+            )?;
+            Ok((None, chosen))
+        }
+    }
 }
 
 /// The base routing-policy RESTRICT verb: intersect `cands` with members carrying one of `tags_any`,
