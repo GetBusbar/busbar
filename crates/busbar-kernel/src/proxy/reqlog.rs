@@ -170,7 +170,7 @@ impl ChainedRecord for RequestRecord {
     type Input = RequestInput;
 
     const LABELS: &'static ChainLabels = &ChainLabels {
-        chain: "the model per-request chain",
+        chain: "the routed per-request chain",
         scope: "principal",
     };
 

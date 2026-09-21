@@ -577,7 +577,7 @@ pub fn refresh_scrape_gauges(app: &App) {
         };
         let lane_model = view
             .lane_view(lane_idx)
-            .expect("model-routed lane index is in range")
+            .expect("the routed lane index is in range")
             .model
             .to_string();
         metrics::gauge!(

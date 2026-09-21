@@ -509,7 +509,12 @@ pub fn lean_core(cx: &Ctx, tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> 
             .map(|d| crate_name_of_dir(d)),
     );
 
-    let mut offenders = Vec::new();
+    // A SITE-LEVEL review, not a file-level one: a busbar-kernel file this size is otherwise-neutral
+    // and a directory-wide excuse would hide a genuinely new dialect word landing anywhere else in
+    // it. Each entry is `path:line`, exact, so reviewing a site does not excuse its neighbours.
+    let known_sites = c.list_of("known_sites");
+
+    let (mut offenders, mut tracked) = (Vec::new(), Vec::new());
     for crate_name in &crates {
         for rel in tree.crate_files(crate_name) {
             for l in tree.files[&rel].iter() {
@@ -519,22 +524,32 @@ pub fn lean_core(cx: &Ctx, tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> 
                 for (_, (bs, be)) in tree.lexer.string_literals(&l.code) {
                     let content = &l.code.as_bytes()[bs..be];
                     if word_rx.is_match(content) {
-                        offenders.push(format!(
-                            "\"{}\" at {rel}:{}",
-                            String::from_utf8_lossy(content),
-                            l.no
-                        ));
+                        let where_ =
+                            format!("\"{}\" at {rel}:{}", String::from_utf8_lossy(content), l.no);
+                        if known_sites.iter().any(|s| s == &format!("{rel}:{}", l.no)) {
+                            tracked.push(where_);
+                        } else {
+                            offenders.push(where_);
+                        }
                     }
                 }
             }
         }
     }
     let current = offenders.len() as i64;
+    let mut parts = vec![head(&offenders, 8)];
+    if !tracked.is_empty() {
+        parts.push(format!(
+            "reviewed frozen-wire/schema sites (qa/construction.toml known_sites): {} of {}",
+            tracked.len().min(3),
+            tracked.len()
+        ));
+    }
     let detail = format!(
         "{current} string literal(s) in {} naming a dialect or the section 1.3 pinned word list \
          (ceiling {max_hits}): {}",
         py_list(&crates),
-        head(&offenders, 8)
+        parts.join("; ")
     );
     Ok(vec![plain(
         "lean-core",

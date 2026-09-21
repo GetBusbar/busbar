@@ -52,7 +52,7 @@ where
                 Ok(done) => done.map_err(Into::into),
                 Err(_) => Err(Box::new(std::io::Error::new(
                     std::io::ErrorKind::TimedOut,
-                    "egress connect (TCP + tunnel + TLS handshake) exceeded the connect deadline",
+                    "egress connect (TCP + CONNECT proxy + TLS handshake) exceeded the connect deadline",
                 )) as BoxError),
             }
         })

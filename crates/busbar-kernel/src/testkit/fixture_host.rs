@@ -763,7 +763,7 @@ impl CompletionHost for FixtureHost {
         _body: bytes::Bytes,
         _max_body_bytes: usize,
     ) -> Result<HostCompletion, String> {
-        Err("the fixture host drives no completion pipeline".to_string())
+        Err("the fixture host drives no dispatch pipeline".to_string())
     }
 }
 

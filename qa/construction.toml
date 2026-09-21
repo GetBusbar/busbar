@@ -535,6 +535,71 @@ words = [
 # neutral copies were deleted rather than re-homed. This is a floor now, not a ceiling: a unit crate
 # that names an open-vocabulary word again is RED with no slack to hide in.
 max_hits = 0
+# SITE-LEVEL review (exact `path:line`, never a whole file): busbar-core's config absorption into
+# busbar-kernel (W4.a) brought these findings over as-is; each is a literal `model`/`mcp`/`prompt`/
+# `completion` this rule's word list bans as DIALECT vocabulary, but every one below is actually one
+# of three things that are NOT dialect leaking into the kernel:
+#   (a) the operator's own `model:`/`pool.members[].model:` config field name, quoted back in a
+#       validation or 404 message — renaming it would desync the message from the key the operator
+#       actually wrote in their YAML, which is a worse regression than the word appearing here;
+#   (b) a FROZEN wire-format literal (a `config-schema.snapshot.json` key, a `--migrate-config`
+#       rewrite table entry, a Cargo feature name) that computes or quotes the literal key it exists
+#       to rename or record — the migration's correctness DEPENDS on spelling the old/new key exactly;
+#   (c) a JSON/metrics field name mirroring a real struct field or wire response shape, where
+#       renaming the label would desync it from the actual API/metrics key it names.
+# Two related sites were left RED rather than waived here: `plane_host/mod.rs`'s "no default chat
+# protocol is installed" / "the sampling completion's body could not be read" genuinely bridge an
+# LLM-dialect concept (chat completions, MCP's sampling verb) from inside kernel-level code — real
+# dialect coupling this rule is right to catch, not a frozen-wire term, and worth an owner's decision
+# on relocating the bridge rather than a wording change that would hide what it does. `cost.rs`'s
+# `"Prompt"` display label is left RED too: it is the operator/customer-facing billing-dimension name
+# the pricer renders on usage reports, and changing operator-visible billing terminology is not a
+# call this rule's cleanup gets to make unilaterally.
+known_sites = [
+  "crates/busbar-kernel/src/appbuild.rs:240",
+  "crates/busbar-kernel/src/appbuild.rs:619",
+  "crates/busbar-kernel/src/appbuild.rs:693",
+  "crates/busbar-kernel/src/appbuild.rs:795",
+  "crates/busbar-kernel/src/config/migrate.rs:302",
+  "crates/busbar-kernel/src/config/migrate.rs:1481",
+  "crates/busbar-kernel/src/config/migrate.rs:1826",
+  "crates/busbar-kernel/src/config/migrate.rs:1827",
+  "crates/busbar-kernel/src/config/mod.rs:782",
+  "crates/busbar-kernel/src/config/mod.rs:2369",
+  "crates/busbar-kernel/src/config/pools.rs:302",
+  "crates/busbar-kernel/src/config/prepass.rs:123",
+  "crates/busbar-kernel/src/config/providers.rs:75",
+  "crates/busbar-kernel/src/config/transaction.rs:365",
+  "crates/busbar-kernel/src/config_validate/mod.rs:111",
+  "crates/busbar-kernel/src/config_validate/mod.rs:119",
+  "crates/busbar-kernel/src/config_validate/mod.rs:131",
+  "crates/busbar-kernel/src/config_validate/mod.rs:160",
+  "crates/busbar-kernel/src/config_validate/mod.rs:171",
+  "crates/busbar-kernel/src/config_validate/mod.rs:181",
+  "crates/busbar-kernel/src/config_validate/mod.rs:200",
+  "crates/busbar-kernel/src/config_validate/mod.rs:206",
+  "crates/busbar-kernel/src/config_validate/mod.rs:228",
+  "crates/busbar-kernel/src/config_validate/mod.rs:274",
+  "crates/busbar-kernel/src/config_validate/mod.rs:280",
+  "crates/busbar-kernel/src/config_validate/mod.rs:341",
+  "crates/busbar-kernel/src/config_validate/mod.rs:362",
+  "crates/busbar-kernel/src/config_validate/mod.rs:367",
+  "crates/busbar-kernel/src/config_validate/mod.rs:1220",
+  "crates/busbar-kernel/src/config_validate/mod.rs:1984",
+  "crates/busbar-kernel/src/endpoints.rs:108",
+  "crates/busbar-kernel/src/ingress/mod.rs:417",
+  "crates/busbar-kernel/src/ingress/mod.rs:422",
+  "crates/busbar-kernel/src/ingress/mod.rs:768",
+  "crates/busbar-kernel/src/ingress/mod.rs:915",
+  "crates/busbar-kernel/src/metrics.rs:423",
+  "crates/busbar-kernel/src/metrics.rs:480",
+  "crates/busbar-kernel/src/metrics.rs:1246",
+  "crates/busbar-kernel/src/plane/config.rs:368",
+  "crates/busbar-kernel/src/plane_host/build_input.rs:149",
+  "crates/busbar-kernel/src/router.rs:419",
+  "crates/busbar-kernel/src/store/vocab.rs:136",
+  "crates/busbar-kernel/src/test_support/mod.rs:235",
+]
 
 # ── 18. no-default-bodies (ARCHITECTURE.md section 3.7) ─────────────────────────────────────────────────────
 [rules.no-default-bodies]
