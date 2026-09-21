@@ -1,0 +1,66 @@
+# Coverage-guided fuzzing of busbar's untrusted parse surface (provider/client wire bodies decoded
+# into IR by the codec readers). See fuzz/ for the harnesses.
+#
+# WHY qa (not per-push, not weekly): fuzzing is expensive, so it does NOT run on dev/main pushes.
+# It runs at the qa promotion boundary — the same cadence as qa-security.yml — where a bounded,
+# time-boxed run is a proportionate gate. Each target gets a short wall-clock budget so the whole
+# job stays well inside the hard Latchkey ($100) cost cap; use workflow_dispatch for a longer soak.
+name: Fuzz
+
+on:
+  push:
+    # QA-gate cadence (mirrors qa-security.yml): the qa promotion boundary, not dev/main per-push.
+    branches: [qa]
+  # On-demand lever for a longer manual soak against the default branch.
+  workflow_dispatch: {}
+
+# Read-only: fuzzing needs nothing but the source under test.
+permissions:
+  contents: read
+
+jobs:
+  cargo-fuzz:
+    name: cargo-fuzz (bounded, qa boundary)
+    runs-on: latchkey-large
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      # Per-target wall-clock budget in seconds. Keep the sum across targets well under the job
+      # timeout and the cost cap; lengthen a soak via workflow_dispatch, not by raising this.
+      FUZZ_MAX_TOTAL_TIME: "300"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Install nightly toolchain + cargo-fuzz
+        run: |
+          set -euo pipefail
+          # cargo-fuzz requires a nightly rustc (sanitizer support); the binary itself installs on
+          # whatever cargo is present.
+          rustup toolchain install nightly --profile minimal
+          cargo install cargo-fuzz --locked
+
+      - name: Fuzz codec parse targets (bounded)
+        run: |
+          set -euo pipefail
+          # -max_total_time bounds each target; -rss_limit_mb turns runaway memory into a reported
+          # failure instead of a silent OOM. A crash/panic makes cargo-fuzz exit non-zero -> the
+          # gate fails, and the crashing input is written under fuzz/artifacts for the upload below.
+          for target in $(cargo +nightly fuzz list); do
+            echo "::group::fuzz ${target}"
+            cargo +nightly fuzz run "${target}" -- \
+              -max_total_time="${FUZZ_MAX_TOTAL_TIME}" \
+              -rss_limit_mb=4096
+            echo "::endgroup::"
+          done
+
+      - name: Upload crashing inputs
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: fuzz-artifacts
+          path: fuzz/artifacts/
+          if-no-files-found: ignore
+          retention-days: 14
